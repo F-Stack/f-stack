@@ -1,6 +1,6 @@
-# Ring IPC 性能劣化离线深度分析（v3.4 · 终版 · 单 worker 收敛）
+# Ring IPC 性能劣化离线深度分析（v3.6 · 终版 · 短/长连接全场景收敛）
 
-> 修订历史：v1 主因 H10/H11（drain 不存在于 sem）已被用户证伪；v2 主因 H15（cache miss）已被 perf stat 证伪；v3 基于 F-Stack 官方"事件匹配度"理论重定位主因为 H17；v3.1（2026-05-21 上午）实测证伪 H18，方案 A 废弃为 §5.A；v3.2（2026-05-21 晚）三组实测协同证伪 H17/H21/H24，主因收敛到 H19-final + H23；v3.3（2026-05-22）方案 C 实测劣化 4% 废弃（H25 证伪），方案 C+/D2 实测成功 +9.7% QPS，新增方案 D5；**v3.4（2026-05-22 晚）方案 D5 (+1.3%) + D6 (+0.9%) 实施收尾，QPS 9.1w → 10.22w 总收益 +12.3%（达 sem 97.3%），剩余 2.7% 已识别为 ring SPSC 架构固有开销不可消除。单 worker 优化收敛，转向多 worker 对比测试**。完整教训总结见 §4。
+> 修订历史：v1 主因 H10/H11（drain 不存在于 sem）已被用户证伪；v2 主因 H15（cache miss）已被 perf stat 证伪；v3 基于 F-Stack 官方"事件匹配度"理论重定位主因为 H17；v3.1（2026-05-21 上午）实测证伪 H18，方案 A 废弃为 §5.A；v3.2（2026-05-21 晚）三组实测协同证伪 H17/H21/H24，主因收敛到 H19-final + H23；v3.3（2026-05-22）方案 C 实测劣化 4% 废弃（H25 证伪），方案 C+/D2 实测成功 +9.7% QPS，新增方案 D5；**v3.4（2026-05-22 晚）方案 D5 (+1.3%) + D6 (+0.9%) 实施收尾，QPS 9.1w → 10.22w 总收益 +12.3%（达 sem 97.3%），剩余 2.7% 已识别为 ring SPSC 架构固有开销不可消除**；v3.4.1（2026-05-25）补充 §9 附录 D，记录多 worker sem 模式 `idle_sleep=0` 启动饥饿现象；v3.4.2（2026-05-25）§9.6 同步源头修复进展（提交 `8125beece6`，正常负载零开销）；v3.5（2026-05-25 晚）多核短连接实测三组（1/2/4 核）联合证实"ring 在 FF_MULTI_SC 多 worker 短连接场景下相对 sem 无性能优势"；**v3.6（2026-05-25 晚）多核长连接实测三组（1/2/4 核）显示 ring 持续劣于 sem 2.4%–4.5%，差距方向稳定且大于短连接噪声范围。最终收敛：ring 路径在 LD_PRELOAD + FF_MULTI_SC 任何场景下均无性能优势，仅保留代码作为未来"多线程同进程共享 sc"扩展场景的预留能力。生产推荐配置回归 sem。详见 §1.4 与 §10 附录 E**。完整教训总结见 §4。
 
 ---
 
@@ -48,7 +48,75 @@
 | ✅ **D5**：rte_ring_empty 快速空判断 | 5 行 | **+1.3%**（10.0w → 10.13w）| **H19-final 函数调用栈消除·已合入** |
 | ✅ **D6**：内联 dispatch（消除函数指针）| 15 行 | **+0.9%**（10.13w → 10.22w）| **架构对齐 sem·已合入** |
 | 🔵 剩余 2.7% | 不可消除 | -- | ring SPSC 架构固有开销（acquire fence + 元数据维护）|
-| 🔜 多 worker 对比测试 | 0 行（仅改配置）| -- | **后续工作**（详见 plan.md §8）|
+| ✅ 多 worker 短连接对比测试 | 0 行（仅改配置）| -- | **已完成**（详见 §1.4.1 / §10.1-§10.4），ring ≡ sem |
+| ✅ 多 worker 长连接对比测试 | 0 行（仅改配置）| -- | **已完成**（详见 §1.4.2 / §10.5-§10.7），ring **稳定劣于** sem 2.4%–4.5%，最终证伪 ring 设计目标 |
+
+### 1.4 多核短连接 + 长连接实测收敛（v3.6 · 2026-05-25 晚 · 用户预判证实 + 长连接证伪 ring 设计目标）
+
+> **用户预判**（贯穿 v3.0 起多次提出）："ring 在 FF_MULTI_SC 多 worker 模式下相对 sem 没有性能优势，因为每个 worker 已是独立 zone 独立 lock，本就无跨 worker 锁竞争。"
+> **结论**：实测短连接 + 长连接共 6 组数据**完全证实**该预判，且**长连接下 ring 反而稳定劣势 2.4%–4.5%**。
+
+#### 1.4.1 短连接实测（wrk 默认）
+
+| lcores | Sem QPS（万）| Ring QPS（万）| 差距 |
+|---|---|---|---|
+| 1 | 10.4 | 10.2 | -1.92% |
+| 2 | 20.8 | 20.8 | **0%** |
+| 4 | 35.9 | 35.8 | **-0.3%** |
+
+差距 ≤ 2% 噪声范围内，可视为 ring ≡ sem。详见 §10.1–§10.4。
+
+#### 1.4.2 长连接实测（keep-alive）
+
+| lcores | Sem QPS（万）| Ring QPS（万）| 差距 | Ring/Sem 比值 |
+|---|---|---|---|---|
+| 1 | 33.3 | 31.8 | **-4.50%** | 95.50% |
+| 2 | 65.9 | 64.3 | **-2.43%** | 97.57% |
+| 4 | 130.5 | 127.0 | **-2.68%** | 97.32% |
+
+**关键观察**：
+- **三组数据全部 ring 劣于 sem，方向稳定**（不同于短连接 0/-0.3%/-1.9% 的噪声分布）
+- **长连接绝对 QPS 是短连接 ~3.1–3.6 倍**，更接近 IPC 层真实极限
+- **多核扩展系数都很好**：sem 1→2 ×1.98、1→4 ×3.92；ring 1→2 ×2.02、1→4 ×3.99 → **再次证实 sem 无跨 worker 锁竞争**
+- 长连接下 ring 的劣势比短连接更稳定，与单 worker v3.4 收敛的 2.7% 固有开销同量级
+
+详见 §10.5–§10.7。
+
+#### 1.4.3 为何长连接下 ring 反而稳定劣势（笔者预测被证伪）
+
+笔者在 v3.5 §10.5 预测："长连接下 sem 全程持 zone lock 50-100μs，ring lock-free 优势可能显现"。**这一预测被实测证伪**。深层原因：
+
+| 推断（旧）| 实际情况 |
+|---|---|
+| sem 长连接下 `tmp` 持续 > 0 → 全程持 zone lock → fstack lcore 与 nginx worker 锁竞争升高 | sem `FF_MULTI_SC` 下 fstack lcore 与 nginx worker **是 1:1 同 zone 关系**，但 nginx worker 进入 zone lock 的频率本就极低（仅 attach/detach），**正常 read/write 路径根本不抢 zone lock** |
+| ring lock-free 主循环节省 sem 持锁开销 | sem 持锁是 fstack lcore **独占持有**，cache line 一直 exclusive 状态，持锁开销极低；ring 反而每次 `rte_ring_sc_dequeue_burst` 都要 acquire fence 同步内存系统 → **长连接高 QPS 把这个开销线性放大** |
+
+**结论**：v3.4 §1.2 锁定的"ring SPSC 架构固有开销"在长连接高 QPS 下被**线性放大**而非被相对优势抵消。
+
+#### 1.4.4 最终收尾结论
+
+| 场景 | Ring vs Sem 差距 |
+|---|---|
+| 单 worker 短连接（v3.4）| -2.7% |
+| 多 worker 短连接（§1.4.1）| -0.3% ~ -1.9%（噪声范围） |
+| 多 worker 长连接（§1.4.2）| **-2.4% ~ -4.5%（持续稳定劣势）** |
+
+**最终判定**：
+1. **性能层面**：sem 仍是 LD_PRELOAD + FF_MULTI_SC 的最优配置，ring 在**任何已测场景下均无性能 net win**
+2. **鲁棒性层面**：ring 主循环 lock-free 的理论价值（启动饥饿免疫）已被提交 `8125beece6` 在 sem 源头修复，**鲁棒性优势也已被消除**
+3. **架构层面**：ring 路径**保留代码与编译开关**（`FF_USE_RING_IPC` + D2/D5/D6），作为"多线程同进程共享 sc"未来扩展场景的预留能力。当前 LD_PRELOAD fork 多进程场景**默认不启用 ring**
+
+**生产推荐配置（2026-05-25 终版）**：
+
+```bash
+# LD_PRELOAD + nginx 多 worker 推荐（默认）
+make FF_KERNEL_EVENT=1 FF_MULTI_SC=1
+# config.ini: idle_sleep = 0（提交 8125beec 后安全），pkt_tx_delay = 50（短连接）/ 100（长连接）
+```
+
+ring 路径仅在以下任一情况启用：
+- 单进程内有多线程需共享 sc（当前 LD_PRELOAD 不命中）
+- 用户接受 -2.4%~-4.5% 性能损失换取主循环 lock-free 设计
 
 ---
 
@@ -672,9 +740,275 @@ while (rte_ring_sc_dequeue(ring, obj_p) != 0) {
 | 本文档章节 | plan.md 对应章节 |
 |---|---|
 | §1.3 修复路径 | plan.md §4 验证方案 A/B/C |
+| §1.4 多核短连接 + 长连接收敛结论 | plan.md §8.2 / §8.3 / §8.5 实测数据 |
 | §2 官方文档证据链 | plan.md §1 概述 |
 | §3 perf 数据交叉验证 | plan.md §1.2 已证伪假设链 |
 | §4 教训总结段 | plan.md §2 教训总结 |
 | §5 修复方案详细设计 | plan.md §4 验证方案的代码草案 |
 | §6 决策矩阵 | plan.md §5 决策矩阵 |
 | §7 双边代码对照 | plan.md §3 假设清单的代码引用 |
+| §9 附录 D 饥饿现象 | plan.md §8.6 启动饥饿 |
+| §10 附录 E 多核短/长连接测试 | plan.md §8.2 / §8.5 |
+
+---
+
+## 9. 附录 D：sem 模式 `idle_sleep=0` + 多 worker 启动饥饿现象（非真死锁）
+
+> 触发条件：`FF_USE_RING_IPC` **未开启**（即 sem 老路径） + `FF_MULTI_SC=1` + fstack `config.ini` 配置 `idle_sleep = 0` + nb_procs ≥ 2。
+> 现象：fstack/nginx 启动完成、**尚未发起任何流量**时，nginx 第二个 worker 在 `ff_attach_so_context(idx=1)` 内 `rte_spinlock_lock(&ff_so_zone->lock)` 处永久 hang，gdb 堆栈表象与死锁完全一致。
+> 用户验证（2026-05-25）：将 fstack 的 `idle_sleep` 从 `0` 改为 `1`（仅 1μs）即可正常启动。**与 ring 模式无关**（ring 主循环 lock-free，已规避此问题）。
+
+### 9.1 现象的本质：自旋锁饥饿，非死锁
+
+锁未被任何进程"持有不释放"。fstack secondary lcore 在 sem 老路径主循环里**高频抢占—释放**同一把 zone 锁，nginx worker 进程在持续 cmpxchg 竞争中**永远抢不到**，外观与死锁完全一致。
+
+### 9.2 调用链与代码引用
+
+**fstack secondary 进程主循环**（`adapter/syscall/fstack.c:7` → `ff_socket_ops.c:622`）：
+
+```
+ff_main_loop                                    # DPDK lcore 紧循环
+  └─ ff_dpdk_if.c:2422-2428                     # idle_sleep==0 → 不让 CPU
+  └─ ff_handle_each_context()
+       └─ #else（sem 分支，ff_socket_ops.c:700-747）
+            ├─ rte_spinlock_lock(&ff_so_zone->lock)    ← line 702
+            ├─ while(1) { ... 遍历 sc，等待 drain_tsc 满 ... }
+            └─ rte_spinlock_unlock(&ff_so_zone->lock)  ← line 747
+```
+
+**nginx worker 启动路径**（`adapter/syscall/ff_so_zone.c:160`）：
+
+```
+ff_adapter_init() → ff_attach_so_context(worker_id % nb_procs)
+  └─ ff_so_zone.c:192  rte_spinlock_lock(&ff_so_zone->lock)   ← 卡死在这里
+```
+
+两条路径竞争**同一把锁**：fstack secondary（proc_id=1）的 `ff_so_zone` 指向 zone1（`ff_so_zone.c:153`），nginx worker1 的 attach 也针对 zone1（`ff_hook_syscall.c:3292` 计算 idx=1）。
+
+### 9.3 饥饿三要素叠加
+
+| 编号 | 要素 | 代码位置 | 量级 |
+|---|---|---|---|
+| **P1** | 持锁时长 = `pkt_tx_delay`（与 sc 数量无关） | `ff_socket_ops.c:700-744`，`while(1)` 直到 `diff_tsc ≥ drain_tsc` 才 break | 50–100 μs/次 |
+| **P2** | 释锁后无 idle 让步 | `ff_dpdk_if.c:2423` `if (likely(idle && idle_sleep))`，`idle_sleep==0` 时直接 fall-through | 释锁→重新抢锁间隔 **<<1 μs** |
+| **P3** | `rte_spinlock` 非公平（裸 cmpxchg） | DPDK rte_spinlock 实现：`while(__atomic_compare_exchange_n(&sl->locked, &exp=0, 1, ...) == 0) rte_pause();` | 无票据队列、无 backoff |
+
+**叠加效应**：
+- fstack lcore 专核 + 紧自旋 + 同 NUMA → 持续保有 zone 锁 cache line，**释锁瞬间下一个 tsc 就重新拿到**
+- nginx worker 是普通调度进程，cmpxchg 频率低、cache line 需先拉到自己核心 → **每次释锁窗口都慢一拍**
+- 持锁 50μs ≫ 空窗 <<1μs，nginx worker 命中空窗的概率趋近于 0
+
+### 9.4 时间线对账
+
+```
+fstack lcore (idle_sleep=0)                 nginx worker 抢锁
+  T0      lock zone1                            cmpxchg fail, rte_pause
+  T0+50μs unlock                                ←  空窗 <<1μs（fstack 立刻 cmpxchg）
+  T0+50μs lock zone1（fstack 抢回）              cmpxchg fail, rte_pause
+  T0+100μs unlock                               ←  空窗 <<1μs
+  ...                                           （持续饿死）
+
+fstack lcore (idle_sleep=1μs)               nginx worker 抢锁
+  T0      lock zone1                            cmpxchg fail, rte_pause
+  T0+50μs unlock                                ←  空窗 ≥1μs ✓
+  T0+50μs rte_delay_us_sleep(1)                 cmpxchg succeed → 持锁、初始化
+```
+
+cmpxchg 自身只需几十 ns，**1μs 空窗内成功概率趋近 100%**。
+
+### 9.5 为何 ring 模式天然免疫
+
+`ff_socket_ops.c:622-688`（`#ifdef FF_USE_RING_IPC` 分支）：
+
+```c
+624: #ifdef FF_USE_RING_IPC
+626:  * Ring mode: O(1) batch dequeue from req_ring.
+627:  * No global zone lock needed — ring is lock-free.
+```
+
+Ring 主循环**完全不锁 zone**，仅在 `ff_attach_so_context` 启动时一次性短暂持锁（毫秒级），不存在 fstack lcore 高频抢占。**v3.4 优化后的 ring 路径在架构上规避此问题**——这进一步佐证 ring 路径相对 sem 老路径的体系收益（不止性能，还有启动鲁棒性）。
+
+### 9.6 解法（按代价递增）
+
+| 方案 | 代价 | 效果 | 状态 |
+|---|---|---|---|
+| **A. 用户级 workaround** | fstack `config.ini` 设 `idle_sleep ≥ 1` | lcore CPU 占用从 100% 降至 ~95%，sem 模式可正常启动 | ✅ 已验证 |
+| **B. 代码补丁**（仅 sem 路径，提交 `8125beec`） | `ff_socket_ops.c:744-752` 仅在 `tmp==0`（无 in-use sc）时让出锁窗口 | 启动期消除饥饿；**有负载时零影响**（`tmp>0` 走原路径，仍 `rte_pause()`，不释锁） | ✅ 已合入主线 |
+| **C. 长期架构**（已完成） | 启用 ring 模式（`FF_USE_RING_IPC=1`），主循环 lock-free | 规避此问题；同时获得 +12.3% QPS | ✅ v3.4 已交付 |
+
+### 9.6.1 方案 B 修复细节（提交 `8125beece6`，2026-05-25）
+
+**修改位置**：`adapter/syscall/ff_socket_ops.c:707-752`（sem 分支 `ff_handle_each_context` 内 while 循环）
+
+**修改要点**（仅 13+/5- 行）：
+
+1. **line 705**：保留 `tmp = nb_handled = ff_so_zone->count - ff_so_zone->free`（进入循环时 in-use sc 总数快照）
+2. **line 709**：`if (nb_handled)` → `if (likely(nb_handled))`，编译器分支预测提示（正常负载有 in-use sc）
+3. **line 744-752**：新增"无负载时让出锁窗口"逻辑：
+
+```c
+if (unlikely(!tmp)) {                            // 本轮进入时 in-use sc 数为 0
+    rte_spinlock_unlock(&ff_so_zone->lock);      // 释锁
+    rte_pause();                                  // 暂停
+    rte_spinlock_lock(&ff_so_zone->lock);        // 重新拿锁
+}
+```
+
+**为什么用 `tmp` 而不是 `nb_handled`**：
+- `tmp` 是**本轮进入循环时**的快照（line 705），整个 `drain_tsc` 窗口内保持不变
+- `nb_handled` 在每轮 for 内会递减到 0（line 728），不能作为"是否有负载"的判据
+- → `tmp==0` 精确表达"启动期/空闲期，本进程当前确实没有任何 sc"
+
+**为什么这是最优修复**：
+
+| 场景 | tmp 值 | 行为 | 影响 |
+|---|---|---|---|
+| 启动期（nginx 未 attach）| `tmp == 0` | 每轮释锁→pause→重锁，**给 attach 留窗口** | 解决饥饿 ✓ |
+| 正常压测（多 sc 在用） | `tmp > 0` | 走 `rte_pause()` 不释锁，保持持锁 drain | **零性能影响** ✓ |
+| 仅个别 sc 短暂空闲 | `tmp > 0` | 同上 | 不触发释锁，避免 sc 处理延迟 ✓ |
+
+**与笔者 §9.6 方案 B 原始建议的差异**（提交方更优）：
+
+- 笔者原建议：无条件 `unlock → pause → lock`，会让所有压测路径多两次原子操作
+- 提交方修复：用 `unlikely(!tmp)` 限定到**仅启动/全空闲**场景，正常负载零开销
+- 同时加了 `likely(nb_handled)` 优化常路径分支预测，体现作者对 sem 路径仍在生产使用的尊重
+
+**回归风险**：
+- 仅 sem 路径生效（`#else` 分支，line 689-754），不影响 ring 路径
+- 不改变锁不变量：进入 while 前持锁、退出 while 后持锁、`unlock→lock` 间无对 zone 字段的访问
+- `tmp` 是本地变量、不受 unlock 期间他人修改 zone 的影响
+
+### 9.6.2 推荐配置组合
+
+| 部署形态 | 编译开关 | config.ini | 备注 |
+|---|---|---|---|
+| 单实例 sem（兼容老部署）| `FF_KERNEL_EVENT=1`（不开 ring） | `idle_sleep = 0` 即可 | 需基于提交 `8125beec` 之后 |
+| 单实例 sem（保守起见）| 同上 | `idle_sleep = 1` | 双重保险，CPU 占用 ~95% |
+| 多 worker sem | 同上 | `idle_sleep = 0`（提交后）或 `1`（提交前）| 多 worker 是 `8125beec` 主要修复目标 |
+| 多 worker ring（v3.4 推荐）| `FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1 FF_RING_SC_COMPLETION=1 FF_RING_FAST_EMPTY_CHECK=1 FF_RING_INLINE_DISPATCH=1` | `idle_sleep` 任意（ring 主循环不锁 zone）| 性能 +12.3%，无饥饿问题
+
+### 9.7 与本文主线的关系
+
+本附录与 §1–§7 的单 worker ring 性能优化**正交**——不影响任何已实施方案（D2/D5/D6）的结论。但它揭示了 sem 老路径在多实例部署下**除性能差距之外的额外架构缺陷**，是 ring 路径必要性论证的补充证据。
+
+**修复状态（2026-05-25）**：提交 `8125beece6` 已在 sem 路径源头修复（见 §9.6.1），生产 sem 部署不再需要依赖 `idle_sleep` workaround。Ring 路径自始就免疫此问题。
+
+排查教训（与 §4 一脉相承）：
+- 启动期 hang 优先排查"高频抢占 + 非公平锁"型饥饿，而非真死锁（gdb 堆栈一致，但锁状态会显示为短暂 locked，`*sl` 值在 0/1 之间快速翻转）
+- 跨进程自旋锁竞争中，**专核 DPDK lcore 永远胜过普通调度进程**，这是物理机制而非代码 bug
+- 用户提供的"`idle_sleep` 改 1 即可"是关键证据——能用配置消除的现象，根因 99% 是时间窗/调度类问题
+- **最优补丁应是"条件性让出"而非"无条件让出"**：用 `unlikely(!tmp)` 把开销限定在饥饿场景，正常负载零影响（提交 `8125beec` 范式）
+---
+
+## 10. 附录 E：多核短连接 + 长连接实测数据（v3.6 · 2026-05-25 晚 · 终版）
+
+> 本附录为 §1.4 收敛结论的完整数据存档。短连接（§10.1–§10.4）来自 v3.5；长连接（§10.5–§10.7）为 v3.6 新增，最终证伪 ring 路径设计目标。
+
+### 10.1 测试环境（短连接 / 长连接共用）
+
+- **平台**：与单 worker 测试同环境（同 NUMA、同 lcore 配置原则）
+- **fstack worker 数**：与 nginx worker 数 1:1 匹配
+- **编译开关**：
+  - sem 路径：`FF_KERNEL_EVENT=1 FF_MULTI_SC=1`（含提交 `8125beece6` 启动饥饿修复）
+  - ring 路径：`FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1 FF_RING_SC_COMPLETION=1 FF_RING_FAST_EMPTY_CHECK=1 FF_RING_INLINE_DISPATCH=1`（v3.4 推荐组合 D2+D5+D6）
+- **wrk 参数**：`-c 128 -t 24 -d 10 -L`（短连接默认；长连接使用 keep-alive 模式）
+- **`config.ini`**：`pkt_tx_delay = 50`（短连接）/ `100`（长连接），`idle_sleep = 0`
+
+### 10.2 实测数据
+
+| lcores | Sem QPS（万）| Ring QPS（万）| Ring/Sem 差距 | Sem 单核效率 | Ring 单核效率 | 扩展系数 (Ring) |
+|---|---|---|---|---|---|---|
+| 1 | 10.4 | 10.2 | -1.92% | 10.40w | 10.20w | 基准 |
+| 2 | 20.8 | 20.8 | 0.00% | 10.40w | 10.40w | ×2.04 |
+| 4 | 35.9 | 35.8 | -0.28% | 8.98w | 8.95w | ×3.51 |
+
+### 10.3 数据解读
+
+**结论 1：ring ≡ sem（差距 ≤ 2% 噪声范围内）**
+
+三组数据中，1 核场景 ring 略低 1.92%（与 §1.4 单 worker v3.4 收敛的 2.7% 接近），2/4 核基本完全持平。**统计上可视为两条路径性能等价**。
+
+**结论 2：2 核接近线性扩展（×2.04），证实 sem 无跨 worker 锁竞争**
+
+若 sem 模式存在跨 worker zone lock 竞争，2 核扩展系数会显著低于 ×2。实测 ×2.04 略超 ×2 的原因：1 核基线含一些固定开销（DPDK 元数据维护、系统中断）被 2 核分摊。**这是 v3.0 起用户预判"`FF_MULTI_SC` 下每个 worker 独立 zone 独立 lock"的直接证据**。
+
+**结论 3：4 核亚线性（×3.51）瓶颈不在 IPC 层**
+
+ring 与 sem 衰减系数完全一致（Ring ×3.51 vs Sem 实际 ×3.45 = 35.9/10.4），说明 4 核瓶颈两条路径**共享同一来源**：
+- 候选 1：wrk 客户端 / 网卡 RSS 哈希分布不均
+- 候选 2：NUMA 节点边界（lcore 4-7 是否跨 NUMA？）
+- 候选 3：fstack 主循环跨核 cache（如 mempool 共享）
+
+→ **不属于 IPC 层问题**，已超出本分析文档（ring vs sem 对比）的范畴。
+
+### 10.4 与单 worker 收敛结论的一致性
+
+| 场景 | Ring vs Sem 差距 | 解释 |
+|---|---|---|
+| 单 worker（§1）| -2.7%（10.22 vs 10.5）| ring SPSC 架构固有开销（acquire fence + 元数据）|
+| 多 worker 1 核（§10.2）| -1.92%（10.2 vs 10.4）| 同上（差异 0.78% 为不同测试日的噪声）|
+| 多 worker 2 核 | 0%（20.8 vs 20.8）| 噪声覆盖固有开销 |
+| 多 worker 4 核 | -0.28%（35.8 vs 35.9）| 同上 |
+
+→ **单 worker 的 2.7% 固有开销在多核下被噪声平均掉了**，未放大也未消除。两条路径的 scalability 完全一致。
+
+### 10.5 长连接实测数据（v3.6 新增）
+
+| lcores | Sem QPS（万）| Ring QPS（万）| Ring/Sem 差距 | Sem 单核效率 | Ring 单核效率 | Sem 扩展系数 | Ring 扩展系数 |
+|---|---|---|---|---|---|---|---|
+| 1 | 33.3 | 31.8 | **-4.50%** | 33.30w | 31.80w | 基准 | 基准 |
+| 2 | 65.9 | 64.3 | **-2.43%** | 32.95w | 32.15w | ×1.98 | ×2.02 |
+| 4 | 130.5 | 127.0 | **-2.68%** | 32.63w | 31.75w | ×3.92 | ×3.99 |
+
+### 10.6 数据解读
+
+**结论 1：ring 在长连接下持续劣于 sem 2.4%–4.5%，方向稳定**
+
+不同于短连接 0/-0.3%/-1.9% 的噪声分布（无方向性），长连接三组数据**全部 ring 劣于 sem，且差距大于短连接的噪声范围**。这与单 worker v3.4 收敛的 -2.7% 固有开销同量级，说明该开销在长连接高 QPS 下被**线性放大**。
+
+**结论 2：长连接绝对 QPS 是短连接的 ~3.1–3.6 倍**
+
+| lcores | Sem 短/长 | Ring 短/长 |
+|---|---|---|
+| 1 | 10.4 → 33.3（×3.20）| 10.2 → 31.8（×3.12）|
+| 2 | 20.8 → 65.9（×3.17）| 20.8 → 64.3（×3.09）|
+| 4 | 35.9 → 130.5（×3.64）| 35.8 → 127.0（×3.55）|
+
+短连接瓶颈主要在 socket/close 路径（每次都过 `ff_attach_so_context` 等慢路径），长连接绕过这些后**更接近 IPC 层真实极限**。两条路径吃到的"长连接红利"接近一致（~3.1-3.6×），说明 ring 没有从 sem 的"持锁压力升高"中获得相对优势。
+
+**结论 3：多核扩展系数都很好，再次证实 sem 无跨 worker 锁竞争**
+
+- sem：1→2 ×1.98（≈ 线性），1→4 ×3.92（≈ 线性）
+- ring：1→2 ×2.02（≈ 线性），1→4 ×3.99（≈ 线性）
+
+**长连接下 sem 不仅未出现锁竞争恶化，反而比短连接（4 核 ×3.45）扩展更好**。这彻底证伪了 v3.5 §10.5 的预测"长连接下 sem 持锁压力升高 → 锁竞争"。
+
+### 10.7 设计假设的最终证伪与原因复盘
+
+笔者在 v3.5 §10.5 预测："长连接下 sem 全程持 zone lock 50-100μs，ring lock-free 优势可能显现"。**实测彻底证伪**。
+
+**深层原因复盘**：
+
+| 推断（v3.5 旧）| 实际情况（v3.6 实测）|
+|---|---|
+| sem 长连接 `tmp` 持续 > 0 → 全程持 zone lock → fstack lcore 与 nginx worker 锁竞争升高 | sem `FF_MULTI_SC` 下 fstack lcore 与 nginx worker **是 1:1 同 zone 关系**，但 nginx worker 进入 zone lock 频率本就极低（仅 attach/detach），**正常 read/write 路径根本不抢 zone lock** → 持锁时间变长**不会引起额外竞争** |
+| ring lock-free 主循环节省 sem 持锁开销 | sem 持锁是 fstack lcore **独占持有**，cache line 一直 exclusive 状态，持锁本身近乎零成本；ring 反而每次 `rte_ring_sc_dequeue_burst` 都要 acquire fence 同步内存系统 → **长连接高 QPS 把 acquire fence 开销线性放大** |
+| 长连接 `tmp > 0` 时 sem 不进 §9.6.1 释锁分支 → 持锁更连续 → 与 ring lock-free 差距应缩小 | 持锁更连续**反而对 sem 有利**（cache line 不被 invalidate），ring 的相对劣势因此放大 |
+
+**关键认知**：sem 路径的"持锁"在 `FF_MULTI_SC` 单 lcore 独占模型下**不是性能负担而是性能优势**——cache line 始终在 fstack lcore 上保持 exclusive 状态，无任何跨核同步开销；而 ring 的 SPSC 设计**始终需要跨核 acquire fence**（哪怕生产者消费者在不同核都已成立的常态），这个固有开销在高 QPS 下被线性放大。
+
+### 10.8 与单 worker / 全场景的一致性总结
+
+| 场景 | Ring vs Sem 差距 | 解释 |
+|---|---|---|
+| 单 worker（§1）| -2.7%（10.22 vs 10.5）| ring SPSC 架构固有开销（acquire fence + 元数据）|
+| 多 worker 1 核 短连接（§10.2）| -1.92%（10.2 vs 10.4）| 同上（与 v3.4 单 worker 同量级）|
+| 多 worker 2 核 短连接 | 0%（20.8 vs 20.8）| 噪声覆盖固有开销 |
+| 多 worker 4 核 短连接 | -0.28%（35.8 vs 35.9）| 同上 |
+| **多 worker 1 核 长连接（§10.5）**| **-4.50%（31.8 vs 33.3）**| **ring 固有开销在长连接高 QPS 下放大** |
+| **多 worker 2 核 长连接** | **-2.43%（64.3 vs 65.9）**| **同上** |
+| **多 worker 4 核 长连接** | **-2.68%（127.0 vs 130.5）**| **同上** |
+
+**最终判定（已写入 §1.4.4）**：
+- ring 在 LD_PRELOAD + FF_MULTI_SC **任何已测场景下均无性能 net win**
+- sem 是生产推荐配置；ring 仅保留代码作未来"多线程同进程共享 sc"扩展场景预留
