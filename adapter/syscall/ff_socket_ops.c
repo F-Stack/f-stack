@@ -640,24 +640,12 @@ ff_handle_each_context()
     cur_tsc = rte_rdtsc();
 
     while (1) {
-#ifdef FF_RING_PENDING_BYPASS
-        /* v3.2 H19-final attempt (FAILED, see plan.md §4.3): skip dequeue
-         * when no pending requests via atomic pending_count.实测劣化 4%
-         * due to cross-core atomic ping-pong. Kept for research only. */
-        if (rte_atomic32_read(&ff_so_zone->pending_count) > 0) {
-            uint16_t nb = ff_ring_process_requests(ff_so_zone->ring_zone,
-                ff_handle_socket_ops_ring, FF_RING_SIZE);
-            if (nb > 0) {
-                rte_atomic32_sub(&ff_so_zone->pending_count, nb);
-            }
-        }
-#else
         /* v3.3 D5 + v3.4 D6 (default for FF_USE_RING_IPC):
          * (1) D5: inline empty check via rte_ring_empty, avoiding the full
          *     ff_ring_process_requests() call stack when req_ring is empty.
          *     Reuses existing prod.tail/cons.tail (same cross-core fields as
          *     baseline dequeue_burst), introducing NO new shared cache line
-         *     — unlike the failed pending_count approach.
+         *     — unlike the failed pending_count approach (v3.2/H25, removed).
          * (2) D6: inline dequeue burst + handler call, eliminating the
          *     ff_ring_process_requests() call stack AND the function pointer
          *     indirection to ff_handle_socket_ops_ring. The compiler can now
@@ -671,7 +659,6 @@ ff_handle_each_context()
                 ff_handle_socket_ops_ring((struct ff_so_context *)objs[i]);
             }
         }
-#endif
 
         diff_tsc = rte_rdtsc() - cur_tsc;
         if (diff_tsc >= drain_tsc) {

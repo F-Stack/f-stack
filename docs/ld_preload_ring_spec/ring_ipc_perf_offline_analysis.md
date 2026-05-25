@@ -1,6 +1,6 @@
 # Ring IPC Performance Regression — Offline Deep Analysis (v3.7 · Final · Short/Long Connection Full-Scenario Convergence · Compile-Flag Consolidation)
 
-> Revision history: v1 root cause H10/H11 (drain not present in sem) was falsified by the user; v2 root cause H15 (cache miss) was falsified by perf stat; v3 relocated the root cause to H17 based on F-Stack's official "event aggregation" theory; v3.1 (2026-05-21 morning) falsified H18 in measurement, plan A archived to §5.A; v3.2 (2026-05-21 evening) three sets of measurements jointly falsified H17/H21/H24, and the root cause converged to H19-final + H23; v3.3 (2026-05-22) plan C measured 4% regression and was discarded (H25 falsified), plan C+/D2 measured +9.7% QPS, plan D5 added; **v3.4 (2026-05-22 evening) plan D5 (+1.3%) + D6 (+0.9%) implementation closed out, QPS 91k → 102.2k for total +12.3% (reaching 97.3% of sem). The remaining 2.7% has been identified as ring SPSC architectural inherent overhead and cannot be eliminated**; v3.4.1 (2026-05-25) added §9 Appendix D documenting the multi-worker sem-mode `idle_sleep=0` startup starvation phenomenon; v3.4.2 (2026-05-25) §9.6 synced upstream fix progress (commit `8125beece6`, zero overhead under normal load); v3.5 (2026-05-25 evening) multi-core short-connection measurements across three groups (1/2/4 cores) jointly confirmed "ring has no performance advantage over sem under FF_MULTI_SC multi-worker short-connection scenarios"; **v3.6 (2026-05-25 evening) multi-core long-connection measurements across three groups (1/2/4 cores) showed ring consistently 2.4%–4.5% worse than sem, with stable direction and beyond the noise band of short-connection. Final convergence: the ring path has no performance advantage in any scenario under LD_PRELOAD + FF_MULTI_SC; the code is retained only as a reserve capability for future "multi-threaded sc sharing within a single process" and "cross-process sc sharing (where the worker count exceeds the fstack instance count)" extension scenarios. Production recommendation reverts to sem. See §1.4 and §10 Appendix E**; v3.7 (2026-05-25 evening) the three independent compile flags `FF_RING_SC_COMPLETION` / `FF_RING_FAST_EMPTY_CHECK` / `FF_RING_INLINE_DISPATCH` have been removed; the corresponding D2/D5/D6 implementations are now merged as the default behavior of the `FF_USE_RING_IPC` branch, and the legacy rsp_ring wait path and function-pointer dispatch branch have been deleted. Full lessons summary in §4.
+> Revision history: v1 root cause H10/H11 (drain not present in sem) was falsified by the user; v2 root cause H15 (cache miss) was falsified by perf stat; v3 relocated the root cause to H17 based on F-Stack's official "event aggregation" theory; v3.1 (2026-05-21 morning) falsified H18 in measurement, plan A archived to §5.A; v3.2 (2026-05-21 evening) three sets of measurements jointly falsified H17/H21/H24, and the root cause converged to H19-final + H23; v3.3 (2026-05-22) plan C measured 4% regression and was discarded (H25 falsified), plan C+/D2 measured +9.7% QPS, plan D5 added; **v3.4 (2026-05-22 evening) plan D5 (+1.3%) + D6 (+0.9%) implementation closed out, QPS 91k → 102.2k for total +12.3% (reaching 97.3% of sem). The remaining 2.7% has been identified as ring SPSC architectural inherent overhead and cannot be eliminated**; v3.4.1 (2026-05-25) added §9 Appendix D documenting the multi-worker sem-mode `idle_sleep=0` startup starvation phenomenon; v3.4.2 (2026-05-25) §9.6 synced upstream fix progress (commit `8125beece6`, zero overhead under normal load); v3.5 (2026-05-25 evening) multi-core short-connection measurements across three groups (1/2/4 cores) jointly confirmed "ring has no performance advantage over sem under FF_MULTI_SC multi-worker short-connection scenarios"; **v3.6 (2026-05-25 evening) multi-core long-connection measurements across three groups (1/2/4 cores) showed ring consistently 2.4%–4.5% worse than sem, with stable direction and beyond the noise band of short-connection. Final convergence: the ring path has no performance advantage in any scenario under LD_PRELOAD + FF_MULTI_SC; the code is retained only as a reserve capability for future "multi-threaded sc sharing within a single process" and "cross-process sc sharing (where the worker count exceeds the fstack instance count)" extension scenarios. Production recommendation reverts to sem. See §1.4 and §10 Appendix E**; v3.7 (2026-05-25 evening) the three independent compile flags `FF_RING_SC_COMPLETION` / `FF_RING_FAST_EMPTY_CHECK` / `FF_RING_INLINE_DISPATCH` have been removed; the corresponding D2/D5/D6 implementations are now merged as the default behavior of the `FF_USE_RING_IPC` branch, and the legacy rsp_ring wait path and function-pointer dispatch branch have been deleted; the previously-discarded plan C compile flag `FF_RING_PENDING_BYPASS`, the `pending_count` field, and all its inc/dec/atomic_read paths have also been removed (§5.3 retains only the lessons record). Full lessons summary in §4.
 
 ---
 
@@ -419,99 +419,13 @@ Ring mode measurement (fstack lcore 1):
 - sem mode: `avg_handled/drain` > 6, `bucket[0]` < 50%
 - The direction must be ring aggregation lower than sem; otherwise H17 is falsified
 
-### 5.3 Plan C: atomic pending_count bypass — ❌ **Implemented, regressed, discarded**
+### 5.3 Plan C: atomic pending_count bypass — ❌ **Implemented, regressed, discarded, code removed**
 
-> **2026-05-22 measurement conclusion**: QPS 91k → 87k (**4% regression**), `ff_handle_each_context` Self 19.39% → 36.27% (surged +16.88pp). **H25 falsified**. Reverted immediately (compile flag `FF_RING_PENDING_BYPASS` defaulted off); code retained for future research.
+> **2026-05-22 measurement conclusion**: QPS 91k → 87k (**4% regression**), `ff_handle_each_context` Self 19.39% → 36.27% (surged +16.88pp). **H25 falsified**. Reverted immediately; subsequently (post-v3.7) the compile flag `FF_RING_PENDING_BYPASS`, the `pending_count` field, and all its inc/dec paths were also removed from the code (`ff_socket_ops.h` / `ff_socket_ops.c` / `ff_hook_syscall.c` / `Makefile`); the plan is no longer kept as a research branch.
 >
 > **Failure root cause**: nginx originally only writes `req_ring->prod.tail` once on enqueue (frequency ~100k/s), but plan C makes nginx write `pending_count` 2-4 times per syscall (inc + possible dec/inc retry), more than doubling the write frequency → fstack reads cross-core every drain spin → cache line is constantly invalidated in a ping-pong → CPU wasted on cache miss is worse than the original dequeue path.
 >
-> **Lesson**: plan design must use a "Symmetric Assessment Table", listing "physical quantities removed" and "physical quantities newly introduced". See §4 Lessons.
->
-> ---
->
-> The original plan C draft is kept below for retrospective comparison:
-
-**Change points**: `ff_socket_ops.h` adds a field + `ff_socket_ops.c` ring-branch rewrite + `ff_hook_syscall.c` enqueue inc/dec.
-
-**ff_socket_ops.h change** (line 89-111 `struct ff_socket_ops_zone`):
-```c
-struct ff_socket_ops_zone {
-    rte_spinlock_t lock;
-    uint8_t count;
-    uint8_t mask;
-    uint8_t free;
-    uint8_t idx;
-    uint8_t inuse[SOCKET_OPS_CONTEXT_MAX_NUM];
-    struct ff_so_context *sc;
-
-#ifdef FF_USE_RING_IPC
-    struct ff_sc_ring_zone *ring_zone;
-#ifdef FF_RING_PENDING_BYPASS
-    rte_atomic32_t pending_count;     /* 4B: APP inc before enqueue, fstack dec after handling */
-    uint8_t padding[4];
-#else
-    uint8_t padding[8];
-#endif
-#else
-    uint8_t padding[16];
-#endif
-} __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
-```
-
-**ff_socket_ops.c ring branch change** (line 636-645):
-```c
-    while (1) {
-#ifdef FF_RING_PENDING_BYPASS
-        /* H17 fix: read pending_count from local cache line, avoiding cross-core read of prod.tail on empty dequeue */
-        if (rte_atomic32_read(&ff_so_zone->pending_count) > 0) {
-            uint16_t nb = ff_ring_process_requests(ff_so_zone->ring_zone,
-                ff_handle_socket_ops_ring, FF_RING_SIZE);
-            if (nb > 0) {
-                rte_atomic32_sub(&ff_so_zone->pending_count, nb);
-            }
-        }
-#else
-        ff_ring_process_requests(ff_so_zone->ring_zone,
-            ff_handle_socket_ops_ring, FF_RING_SIZE);
-#endif
-
-        diff_tsc = rte_rdtsc() - cur_tsc;
-        if (diff_tsc >= drain_tsc) {
-            break;
-        }
-        rte_pause();
-    }
-```
-
-**ff_hook_syscall.c ff_ring_submit_and_wait change** (line 3392 before enqueue):
-```c
-    /* Enqueue request — spin if ring full */
-#ifdef FF_RING_PENDING_BYPASS
-    rte_atomic32_inc(&ff_so_zone->pending_count);
-#endif
-    while (rte_ring_sp_enqueue(ring_zone->req_ring, sc) != 0) {
-#ifdef FF_RING_PENDING_BYPASS
-        /* Rare: roll back pending_count when ring is full to avoid drift */
-        rte_atomic32_dec(&ff_so_zone->pending_count);
-#endif
-        ERR_LOG("req_ring full, waiting... sc:%p, ops:%d\n", sc, sc->ops);
-        rte_pause();
-#ifdef FF_RING_PENDING_BYPASS
-        rte_atomic32_inc(&ff_so_zone->pending_count);
-#endif
-    }
-```
-
-**FR-005 compatibility confirmation**:
-- pending_count is used only as the "whether to enter dequeue" condition
-- The drain_tsc time window with rte_pause multi-iteration semantics is **fully preserved** (even if pending_count==0, it still pauses+rdtsc until drain_tsc expires)
-- Satisfies the SPEC constraint
-
-**Expected physical-quantity changes**:
-- Ring-mode fstack main-loop empty-spin path: `rte_ring_sc_dequeue_burst` (~30 instructions) → `rte_atomic32_read` (1 instruction + 1 cache line load)
-- This cache line (pending_count) is frequently read by the fstack lcore and sparsely written by the APP lcore → high L1 hit rate on the fstack side
-- `ff_ring_process_requests` perf share expected: 17.70% → < 2%
-- QPS expected: 92k → ≥ 105k (catch up with sem), possibly higher (no global zone lock advantage emerges)
+> **Lesson**: plan design must use a "Symmetric Assessment Table", listing "physical quantities removed" and "physical quantities newly introduced". See §4 Lessons. The path that was finally taken in code is §5.5 plan D5 (`rte_ring_empty` inline fast empty check) — the same goal (avoiding the empty-dequeue function call stack) achieved by **reusing existing ring metadata with zero new cross-core fields**, passing the symmetric assessment and confirmed by measurement.
 
 ---
 

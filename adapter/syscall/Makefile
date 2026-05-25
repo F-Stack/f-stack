@@ -70,13 +70,6 @@ endif
 	CFLAGS+= -DFF_USE_RING_IPC
 endif
 
-# v3.2 H19-final fix: fstack main loop fast-path bypass via pending_count.
-# Only meaningful when FF_USE_RING_IPC=1.
-# NOTE: 2026-05-22 实测劣化 4%（atomic_read 高频跨核乒乓），默认不启用，保留供后续 D1 探索。
-ifdef FF_RING_PENDING_BYPASS
-	CFLAGS+= -DFF_RING_PENDING_BYPASS
-endif
-
 # v3.3 H23 fix (D2): response path via sc->completion (same cache line as sc->result),
 # replacing rsp_ring enqueue. Always enabled as part of FF_USE_RING_IPC default behavior.
 

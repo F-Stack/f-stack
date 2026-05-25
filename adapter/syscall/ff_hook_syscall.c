@@ -3391,21 +3391,9 @@ ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
      * might finish processing and set completion=1 before we clear it,
      * causing us to spin forever waiting for a flag that's already been reset. */
     __atomic_store_n(&sc->completion, 0, __ATOMIC_RELAXED);
-#ifdef FF_RING_PENDING_BYPASS
-    /* v3.2 H19-final fix: bump pending_count before enqueue so that
-     * fstack main loop sees the request via the fast-path bypass.
-     * Roll back on full-ring spin to avoid count drift. */
-    rte_atomic32_inc(&ff_so_zone->pending_count);
-#endif
     while (rte_ring_sp_enqueue(ring_zone->req_ring, sc) != 0) {
-#ifdef FF_RING_PENDING_BYPASS
-        rte_atomic32_dec(&ff_so_zone->pending_count);
-#endif
         ERR_LOG("req_ring full, waiting... sc:%p, ops:%d\n", sc, sc->ops);
         rte_pause();
-#ifdef FF_RING_PENDING_BYPASS
-        rte_atomic32_inc(&ff_so_zone->pending_count);
-#endif
     }
 
     /* Notify fstack via eventfd if configured */

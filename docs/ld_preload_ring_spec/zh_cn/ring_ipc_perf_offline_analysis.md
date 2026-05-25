@@ -1,6 +1,6 @@
 # Ring IPC 性能劣化离线深度分析（v3.7 · 终版 · 短/长连接全场景收敛 · 编译开关收敛）
 
-> 修订历史：v1 主因 H10/H11（drain 不存在于 sem）已被用户证伪；v2 主因 H15（cache miss）已被 perf stat 证伪；v3 基于 F-Stack 官方"事件匹配度"理论重定位主因为 H17；v3.1（2026-05-21 上午）实测证伪 H18，方案 A 废弃为 §5.A；v3.2（2026-05-21 晚）三组实测协同证伪 H17/H21/H24，主因收敛到 H19-final + H23；v3.3（2026-05-22）方案 C 实测劣化 4% 废弃（H25 证伪），方案 C+/D2 实测成功 +9.7% QPS，新增方案 D5；**v3.4（2026-05-22 晚）方案 D5 (+1.3%) + D6 (+0.9%) 实施收尾，QPS 9.1w → 10.22w 总收益 +12.3%（达 sem 97.3%），剩余 2.7% 已识别为 ring SPSC 架构固有开销不可消除**；v3.4.1（2026-05-25）补充 §9 附录 D，记录多 worker sem 模式 `idle_sleep=0` 启动饥饿现象；v3.4.2（2026-05-25）§9.6 同步源头修复进展（提交 `8125beece6`，正常负载零开销）；v3.5（2026-05-25 晚）多核短连接实测三组（1/2/4 核）联合证实"ring 在 FF_MULTI_SC 多 worker 短连接场景下相对 sem 无性能优势"；**v3.6（2026-05-25 晚）多核长连接实测三组（1/2/4 核）显示 ring 持续劣于 sem 2.4%–4.5%，差距方向稳定且大于短连接噪声范围。最终收敛：ring 路径在 LD_PRELOAD + FF_MULTI_SC 任何场景下均无性能优势，仅保留代码作为未来"多线程同进程共享 sc"和"多进程间共享 sc（worker 数量多于 fstack 实例数量）"扩展场景的预留能力。生产推荐配置回归 sem。详见 §1.4 与 §10 附录 E**；v3.7（2026-05-25 晚）三个独立编译开关 `FF_RING_SC_COMPLETION` / `FF_RING_FAST_EMPTY_CHECK` / `FF_RING_INLINE_DISPATCH` 已删除，对应 D2/D5/D6 实现作为 `FF_USE_RING_IPC` 分支的默认行为合入，旧的 rsp_ring 等待路径与函数指针 dispatch 分支已删除。完整教训总结见 §4。
+> 修订历史：v1 主因 H10/H11（drain 不存在于 sem）已被用户证伪；v2 主因 H15（cache miss）已被 perf stat 证伪；v3 基于 F-Stack 官方"事件匹配度"理论重定位主因为 H17；v3.1（2026-05-21 上午）实测证伪 H18，方案 A 废弃为 §5.A；v3.2（2026-05-21 晚）三组实测协同证伪 H17/H21/H24，主因收敛到 H19-final + H23；v3.3（2026-05-22）方案 C 实测劣化 4% 废弃（H25 证伪），方案 C+/D2 实测成功 +9.7% QPS，新增方案 D5；**v3.4（2026-05-22 晚）方案 D5 (+1.3%) + D6 (+0.9%) 实施收尾，QPS 9.1w → 10.22w 总收益 +12.3%（达 sem 97.3%），剩余 2.7% 已识别为 ring SPSC 架构固有开销不可消除**；v3.4.1（2026-05-25）补充 §9 附录 D，记录多 worker sem 模式 `idle_sleep=0` 启动饥饿现象；v3.4.2（2026-05-25）§9.6 同步源头修复进展（提交 `8125beece6`，正常负载零开销）；v3.5（2026-05-25 晚）多核短连接实测三组（1/2/4 核）联合证实"ring 在 FF_MULTI_SC 多 worker 短连接场景下相对 sem 无性能优势"；**v3.6（2026-05-25 晚）多核长连接实测三组（1/2/4 核）显示 ring 持续劣于 sem 2.4%–4.5%，差距方向稳定且大于短连接噪声范围。最终收敛：ring 路径在 LD_PRELOAD + FF_MULTI_SC 任何场景下均无性能优势，仅保留代码作为未来"多线程同进程共享 sc"和"多进程间共享 sc（worker 数量多于 fstack 实例数量）"扩展场景的预留能力。生产推荐配置回归 sem。详见 §1.4 与 §10 附录 E**；v3.7（2026-05-25 晚）三个独立编译开关 `FF_RING_SC_COMPLETION` / `FF_RING_FAST_EMPTY_CHECK` / `FF_RING_INLINE_DISPATCH` 已删除，对应 D2/D5/D6 实现作为 `FF_USE_RING_IPC` 分支的默认行为合入，旧的 rsp_ring 等待路径与函数指针 dispatch 分支已删除；同时删除 v3.3 已废弃的方案 C 编译开关 `FF_RING_PENDING_BYPASS`、`pending_count` 字段及其 inc/dec/atomic_read 路径（§5.3 仅保留教训记录）。完整教训总结见 §4。
 
 ---
 
@@ -419,99 +419,13 @@ Ring 模式实测（fstack lcore 1）：
 - sem 模式：`avg_handled/drain` > 6，`bucket[0]` 占 <50%
 - 差异方向必须是 ring 聚合度低于 sem，否则 H17 被证伪
 
-### 5.3 方案 C：atomic pending_count 旁路 — ❌ **已实施实测劣化·废弃**
+### 5.3 方案 C：atomic pending_count 旁路 — ❌ **已实施实测劣化·废弃·代码已删除**
 
-> **2026-05-22 实测结论**：QPS 9.1w → 8.7w（**劣化 4%**），`ff_handle_each_context` Self 19.39% → 36.27%（暴涨 +16.88pp）。**H25 证伪**。已立即回退（编译开关 `FF_RING_PENDING_BYPASS` 默认关闭），代码保留供未来研究。
+> **2026-05-22 实测结论**：QPS 9.1w → 8.7w（**劣化 4%**），`ff_handle_each_context` Self 19.39% → 36.27%（暴涨 +16.88pp）。**H25 证伪**。已立即回退；后续（v3.7 之后）连同编译开关 `FF_RING_PENDING_BYPASS`、`pending_count` 字段及其 inc/dec 路径一并从代码中删除（`ff_socket_ops.h` / `ff_socket_ops.c` / `ff_hook_syscall.c` / `Makefile`），不再保留为研究分支。
 >
 > **失败根因**：nginx 端原本只在 enqueue 时写 `req_ring->prod.tail` 一次（频率 ~10w/s），方案 C 让 nginx 多写 `pending_count` 2-4 次/syscall（inc + 可能 dec/inc 重试），写频率翻倍以上 → fstack 端每次 drain spin 跨核读 → cache line 持续 invalidate ping-pong → CPU 浪费在 cache miss 上反而比原 dequeue 路径更糟。
 >
-> **教训**：方案设计必须做"对称评估表"，列出"消除的物理量"和"新引入的物理量"两栏。详见 §4 教训段。
->
-> ---
->
-> 以下为方案 C 原草案，保留供复盘对照：
-
-**改动点**：`ff_socket_ops.h` 加字段 + `ff_socket_ops.c` ring 分支重写 + `ff_hook_syscall.c` 入队前后增减。
-
-**ff_socket_ops.h 修改**（line 89-111 `struct ff_socket_ops_zone`）：
-```c
-struct ff_socket_ops_zone {
-    rte_spinlock_t lock;
-    uint8_t count;
-    uint8_t mask;
-    uint8_t free;
-    uint8_t idx;
-    uint8_t inuse[SOCKET_OPS_CONTEXT_MAX_NUM];
-    struct ff_so_context *sc;
-
-#ifdef FF_USE_RING_IPC
-    struct ff_sc_ring_zone *ring_zone;
-#ifdef FF_RING_PENDING_BYPASS
-    rte_atomic32_t pending_count;     /* 4B：APP 入队前 inc，fstack 处理后 dec */
-    uint8_t padding[4];
-#else
-    uint8_t padding[8];
-#endif
-#else
-    uint8_t padding[16];
-#endif
-} __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
-```
-
-**ff_socket_ops.c ring 分支修改**（line 636-645）：
-```c
-    while (1) {
-#ifdef FF_RING_PENDING_BYPASS
-        /* H17 修复：本地 cache line 读 pending_count，避免空 dequeue 跨核读 prod.tail */
-        if (rte_atomic32_read(&ff_so_zone->pending_count) > 0) {
-            uint16_t nb = ff_ring_process_requests(ff_so_zone->ring_zone,
-                ff_handle_socket_ops_ring, FF_RING_SIZE);
-            if (nb > 0) {
-                rte_atomic32_sub(&ff_so_zone->pending_count, nb);
-            }
-        }
-#else
-        ff_ring_process_requests(ff_so_zone->ring_zone,
-            ff_handle_socket_ops_ring, FF_RING_SIZE);
-#endif
-
-        diff_tsc = rte_rdtsc() - cur_tsc;
-        if (diff_tsc >= drain_tsc) {
-            break;
-        }
-        rte_pause();
-    }
-```
-
-**ff_hook_syscall.c ff_ring_submit_and_wait 修改**（line 3392 入队前）：
-```c
-    /* Enqueue request — spin if ring full */
-#ifdef FF_RING_PENDING_BYPASS
-    rte_atomic32_inc(&ff_so_zone->pending_count);
-#endif
-    while (rte_ring_sp_enqueue(ring_zone->req_ring, sc) != 0) {
-#ifdef FF_RING_PENDING_BYPASS
-        /* 极少触发：ring 满时回滚 pending_count 避免计数漂移 */
-        rte_atomic32_dec(&ff_so_zone->pending_count);
-#endif
-        ERR_LOG("req_ring full, waiting... sc:%p, ops:%d\n", sc, sc->ops);
-        rte_pause();
-#ifdef FF_RING_PENDING_BYPASS
-        rte_atomic32_inc(&ff_so_zone->pending_count);
-#endif
-    }
-```
-
-**FR-005 兼容性确认**：
-- pending_count 仅作为"是否进入 dequeue"的判断条件
-- drain_tsc 时间窗口与 rte_pause 多次轮询语义**完全保留**（即使 pending_count==0 也会 pause+rdtsc 直到 drain_tsc 到期）
-- 满足 SPEC 约束
-
-**预期物理量变化**：
-- ring 模式 fstack 主循环空跑路径：`rte_ring_sc_dequeue_burst`（~30 指令） → `rte_atomic32_read`（1 指令 + 1 cache line load）
-- 这条 cache line（pending_count）由 fstack lcore 频繁读、APP lcore 稀疏写 → fstack 端 L1 命中率高
-- `ff_ring_process_requests` perf 占比预期：17.70% → <2%
-- QPS 预期：9.2w → ≥10.5w（追平 sem），可能更高（无全局 zone lock 优势显现）
+> **教训**：方案设计必须做"对称评估表"，列出"消除的物理量"和"新引入的物理量"两栏。详见 §4 教训段。代码层最终走的是 §5.5 方案 D5（`rte_ring_empty` 内联快速空判断），实现同一目标——避免空 dequeue 的函数调用栈——但**复用现有 ring 元数据，零新跨核字段**，对称评估通过且实测成功。
 
 ---
 
