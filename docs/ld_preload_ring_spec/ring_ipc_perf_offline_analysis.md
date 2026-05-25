@@ -1,6 +1,6 @@
-# Ring IPC Performance Regression — Offline Deep Analysis (v3.6 · Final · Short/Long Connection Full-Scenario Convergence)
+# Ring IPC Performance Regression — Offline Deep Analysis (v3.7 · Final · Short/Long Connection Full-Scenario Convergence · Compile-Flag Consolidation)
 
-> Revision history: v1 root cause H10/H11 (drain not present in sem) was falsified by the user; v2 root cause H15 (cache miss) was falsified by perf stat; v3 relocated the root cause to H17 based on F-Stack's official "event aggregation" theory; v3.1 (2026-05-21 morning) falsified H18 in measurement, plan A archived to §5.A; v3.2 (2026-05-21 evening) three sets of measurements jointly falsified H17/H21/H24, and the root cause converged to H19-final + H23; v3.3 (2026-05-22) plan C measured 4% regression and was discarded (H25 falsified), plan C+/D2 measured +9.7% QPS, plan D5 added; **v3.4 (2026-05-22 evening) plan D5 (+1.3%) + D6 (+0.9%) implementation closed out, QPS 91k → 102.2k for total +12.3% (reaching 97.3% of sem). The remaining 2.7% has been identified as ring SPSC architectural inherent overhead and cannot be eliminated**; v3.4.1 (2026-05-25) added §9 Appendix D documenting the multi-worker sem-mode `idle_sleep=0` startup starvation phenomenon; v3.4.2 (2026-05-25) §9.6 synced upstream fix progress (commit `8125beece6`, zero overhead under normal load); v3.5 (2026-05-25 evening) multi-core short-connection measurements across three groups (1/2/4 cores) jointly confirmed "ring has no performance advantage over sem under FF_MULTI_SC multi-worker short-connection scenarios"; **v3.6 (2026-05-25 evening) multi-core long-connection measurements across three groups (1/2/4 cores) showed ring consistently 2.4%–4.5% worse than sem, with stable direction and beyond the noise band of short-connection. Final convergence: the ring path has no performance advantage in any scenario under LD_PRELOAD + FF_MULTI_SC; the code is retained only as a reserve capability for future "multi-threaded sc sharing within a single process" and "cross-process sc sharing (where the worker count exceeds the fstack instance count)" extension scenarios. Production recommendation reverts to sem. See §1.4 and §10 Appendix E**. Full lessons summary in §4.
+> Revision history: v1 root cause H10/H11 (drain not present in sem) was falsified by the user; v2 root cause H15 (cache miss) was falsified by perf stat; v3 relocated the root cause to H17 based on F-Stack's official "event aggregation" theory; v3.1 (2026-05-21 morning) falsified H18 in measurement, plan A archived to §5.A; v3.2 (2026-05-21 evening) three sets of measurements jointly falsified H17/H21/H24, and the root cause converged to H19-final + H23; v3.3 (2026-05-22) plan C measured 4% regression and was discarded (H25 falsified), plan C+/D2 measured +9.7% QPS, plan D5 added; **v3.4 (2026-05-22 evening) plan D5 (+1.3%) + D6 (+0.9%) implementation closed out, QPS 91k → 102.2k for total +12.3% (reaching 97.3% of sem). The remaining 2.7% has been identified as ring SPSC architectural inherent overhead and cannot be eliminated**; v3.4.1 (2026-05-25) added §9 Appendix D documenting the multi-worker sem-mode `idle_sleep=0` startup starvation phenomenon; v3.4.2 (2026-05-25) §9.6 synced upstream fix progress (commit `8125beece6`, zero overhead under normal load); v3.5 (2026-05-25 evening) multi-core short-connection measurements across three groups (1/2/4 cores) jointly confirmed "ring has no performance advantage over sem under FF_MULTI_SC multi-worker short-connection scenarios"; **v3.6 (2026-05-25 evening) multi-core long-connection measurements across three groups (1/2/4 cores) showed ring consistently 2.4%–4.5% worse than sem, with stable direction and beyond the noise band of short-connection. Final convergence: the ring path has no performance advantage in any scenario under LD_PRELOAD + FF_MULTI_SC; the code is retained only as a reserve capability for future "multi-threaded sc sharing within a single process" and "cross-process sc sharing (where the worker count exceeds the fstack instance count)" extension scenarios. Production recommendation reverts to sem. See §1.4 and §10 Appendix E**; v3.7 (2026-05-25 evening) the three independent compile flags `FF_RING_SC_COMPLETION` / `FF_RING_FAST_EMPTY_CHECK` / `FF_RING_INLINE_DISPATCH` have been removed; the corresponding D2/D5/D6 implementations are now merged as the default behavior of the `FF_USE_RING_IPC` branch, and the legacy rsp_ring wait path and function-pointer dispatch branch have been deleted. Full lessons summary in §4.
 
 ---
 
@@ -517,7 +517,7 @@ struct ff_socket_ops_zone {
 
 ### 5.4 Plan C+ / D2: sc->completion replaces rsp_ring (fix H23) — ✅ **Implemented and measured successful**
 
-> **2026-05-22 measurement**: QPS 91k → **100k (+9.7%)**, wrk Avg 1.20ms → 1.06ms (-12%), `ff_ring_send_response` Self 3.33% → **0%**. **H23 fix confirmed**. Merged (compile flag `FF_RING_SC_COMPLETION=1`).
+> **2026-05-22 measurement**: QPS 91k → **100k (+9.7%)**, wrk Avg 1.20ms → 1.06ms (-12%), `ff_ring_send_response` Self 3.33% → **0%**. **H23 fix confirmed**. Merged as the **default behavior** of the `FF_USE_RING_IPC` branch (the standalone compile flag is no longer needed; the legacy rsp_ring path has been deleted).
 
 **Core idea**: eliminate `rsp_ring` enqueue; let fstack write directly to **`sc->completion`** after handling (already in sc cache line 0, offset 32, originally reserved for ring IPC). The response path is fully equivalent to sem mode's `sc->status=REP`.
 
@@ -547,7 +547,7 @@ APP-side ff_ring_submit_and_wait:                fstack-side ff_ring_send_respon
 
 **Memory ordering**: fstack-side RELEASE store ensures sc->result is written first; APP-side ACQUIRE load ensures the sc->result read after seeing completion=1 is not reordered before it.
 
-**Risk**: low. The `ff_ring_alarm_wakeup` path is updated synchronously to also set `sc->completion=1`, ensuring alarm wakeups still work under D2; rsp_ring is retained as legacy fallback. Rollback: removing `FF_RING_SC_COMPLETION=1` at compile time restores the original behavior.
+**Risk**: low. The `ff_ring_alarm_wakeup` path is updated synchronously to also set `sc->completion=1`, ensuring alarm wakeups still work under D2; the rsp_ring enqueue is retained as a sentinel/legacy fallback for the alarm path. This plan has been merged as the default behavior of `FF_USE_RING_IPC` and the standalone `FF_RING_SC_COMPLETION` compile flag has been removed (D5/D6 below were similarly defaulted).
 
 ---
 
@@ -561,7 +561,7 @@ APP-side ff_ring_submit_and_wait:                fstack-side ff_ring_send_respon
 
 **Core idea**: use the DPDK public inline function `rte_ring_empty(r)` for the fast empty check, avoiding the function-call-stack expansion overhead of `ff_ring_process_requests`. **No new cross-core fields** — this is the fundamental difference between plan D5 and the failed plan C.
 
-**Change point**: `ff_socket_ops.c` main-loop ring branch (same location as plan C but a completely different implementation, with independent compile flag `FF_RING_FAST_EMPTY_CHECK`).
+**Change point**: `ff_socket_ops.c` main-loop ring branch (same location as plan C but a completely different implementation). This plan has been merged as the **default behavior** of the `FF_USE_RING_IPC` branch and the standalone `FF_RING_FAST_EMPTY_CHECK` compile flag has been removed.
 
 **Symmetric Assessment Table**:
 
@@ -577,10 +577,10 @@ APP-side ff_ring_submit_and_wait:                fstack-side ff_ring_send_respon
 
 ✅ Symmetric assessment passes: only reductions, no new ping-pongs.
 
-**Minimal diff draft**:
+**Historical draft (v3.3 evaluation phase)** — this flag has been defaulted in v3.7+, the mainline code no longer relies on this switch:
 ```c
 while (1) {
-#ifdef FF_RING_FAST_EMPTY_CHECK
+#ifdef FF_RING_FAST_EMPTY_CHECK     /* historical: defaulted, mainline no longer checks */
     if (!rte_ring_empty(ff_so_zone->ring_zone->req_ring)) {
         ff_ring_process_requests(...);
     }
@@ -628,7 +628,7 @@ while (1) {
 
 ✅ Symmetric assessment passes.
 
-**Files changed**: `ff_socket_ops.c` (`ff_handle_socket_ops_ring` marked `inline` + main-loop inlined dispatch, embedded in the D5 path) + `Makefile` (new `FF_RING_INLINE_DISPATCH` flag, depends on `FF_RING_FAST_EMPTY_CHECK`).
+**Files changed**: `ff_socket_ops.c` (`ff_handle_socket_ops_ring` marked `inline` + main-loop inlined dispatch, embedded in the D5 path). This plan has been merged as the **default behavior** of the `FF_USE_RING_IPC` branch and the standalone `FF_RING_INLINE_DISPATCH` compile flag has been removed.
 
 **Measured physical-quantity changes**:
 - `ff_ring_process_requests` perf top: 4.53% → **completely gone** (inlined)
@@ -886,7 +886,7 @@ if (unlikely(!tmp)) {                            // in-use sc count is 0 at iter
 | Single-instance sem (compat with legacy deployments) | `FF_KERNEL_EVENT=1` (no ring) | `idle_sleep = 0` is fine | Requires being based on commit `8125beec` or later |
 | Single-instance sem (conservative) | Same as above | `idle_sleep = 1` | Double safety, CPU usage ~95% |
 | Multi-worker sem | Same as above | `idle_sleep = 0` (post-commit) or `1` (pre-commit) | Multi-worker is the main target of `8125beec` |
-| Multi-worker ring (v3.4 recommended) | `FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1 FF_RING_SC_COMPLETION=1 FF_RING_FAST_EMPTY_CHECK=1 FF_RING_INLINE_DISPATCH=1` | `idle_sleep` arbitrary (ring main loop does not lock zone) | +12.3% performance, no starvation issue
+| Multi-worker ring (v3.4 recommended) | `FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1` | `idle_sleep` arbitrary (ring main loop does not lock zone) | +12.3% performance, no starvation issue (D2/D5/D6 are the default behavior of the ring branch since v3.7, no separate flags needed)
 
 ### 9.7 Relation to the Main Document
 
@@ -912,7 +912,7 @@ Investigation lessons (consistent with §4):
 - **fstack worker count**: 1:1 with nginx worker count
 - **Compile flags**:
   - sem path: `FF_KERNEL_EVENT=1 FF_MULTI_SC=1` (including commit `8125beece6` startup-starvation fix)
-  - ring path: `FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1 FF_RING_SC_COMPLETION=1 FF_RING_FAST_EMPTY_CHECK=1 FF_RING_INLINE_DISPATCH=1` (v3.4 recommended combo D2+D5+D6)
+  - ring path: `FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1` (D2+D5+D6 are merged as the default behavior of the ring branch since v3.7; the standalone flags `FF_RING_SC_COMPLETION` / `FF_RING_FAST_EMPTY_CHECK` / `FF_RING_INLINE_DISPATCH` have been removed)
 - **wrk parameters**: `-c 128 -t 24 -d 10 -L` (short connection default; long connection uses keep-alive mode)
 - **`config.ini`**: `pkt_tx_delay = 50` (short) / `100` (long), `idle_sleep = 0`
 

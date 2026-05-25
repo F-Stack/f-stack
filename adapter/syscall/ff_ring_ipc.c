@@ -50,7 +50,6 @@ int
 ff_ring_send_response(struct ff_sc_ring_zone *ring_zone,
                       struct ff_so_context *sc)
 {
-#ifdef FF_RING_SC_COMPLETION
     /* v3.3 H23 fix (D2): notify APP via sc->completion (same cache line as
      * sc->status/result) instead of rsp_ring enqueue. Eliminates the
      * cross-core write to rsp_ring->prod.tail (Self 3.33% in baseline). */
@@ -73,29 +72,6 @@ ff_ring_send_response(struct ff_sc_ring_zone *ring_zone,
     }
 
     return 0;
-#else
-    int ret;
-
-    if (ring_zone == NULL || ring_zone->rsp_ring == NULL) {
-        return -1;
-    }
-
-    ret = rte_ring_sp_enqueue(ring_zone->rsp_ring, sc);
-    if (ret != 0) {
-        ERR_LOG("rsp_ring enqueue failed, sc:%p, ret:%d\n", sc, ret);
-        return -1;
-    }
-
-    if (ring_zone->wait_mode == FF_RING_WAIT_EVENTFD &&
-        ring_zone->eventfd_rsp >= 0) {
-        uint64_t val = 1;
-        if (write(ring_zone->eventfd_rsp, &val, sizeof(val)) < 0) {
-            ERR_LOG("eventfd_rsp write failed, errno:%d\n", errno);
-        }
-    }
-
-    return 0;
-#endif
 }
 
 /*
@@ -169,12 +145,10 @@ ff_ring_alarm_wakeup(struct ff_sc_ring_zone *ring_zone,
         return;
     }
 
-#ifdef FF_RING_SC_COMPLETION
     /* v3.3 H23 fix (D2): wakeup via sc->completion since APP no longer
      * dequeues rsp_ring. The rsp_ring enqueue below is kept as a no-op
      * fallback for any legacy path that might still poll rsp_ring. */
     __atomic_store_n(&sc->completion, 1, __ATOMIC_RELEASE);
-#endif
 
     /* Enqueue sc as sentinel — APP will dequeue and check */
     rte_ring_sp_enqueue(ring_zone->rsp_ring, sc);

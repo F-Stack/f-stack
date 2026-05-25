@@ -3387,12 +3387,10 @@ ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
     }
 
     /* Enqueue request — spin if ring full */
-#ifdef FF_RING_SC_COMPLETION
     /* v3.3 H23 fix (D2): clear completion BEFORE enqueue, otherwise fstack
      * might finish processing and set completion=1 before we clear it,
      * causing us to spin forever waiting for a flag that's already been reset. */
     __atomic_store_n(&sc->completion, 0, __ATOMIC_RELAXED);
-#endif
 #ifdef FF_RING_PENDING_BYPASS
     /* v3.2 H19-final fix: bump pending_count before enqueue so that
      * fstack main loop sees the request via the fast-path bypass.
@@ -3417,7 +3415,6 @@ ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
         write(ring_zone->eventfd_req, &val, sizeof(val));
     }
 
-#ifdef FF_RING_SC_COMPLETION
     /* v3.3 H23 fix (D2): wait via sc->completion (same cache line as sc->result),
      * mirroring sem mode's `while (sc->status != FF_SC_REP) rte_pause()`. */
     {
@@ -3447,24 +3444,7 @@ ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
                 break;
             }
         }
-
-        return 0;
     }
-#else
-    /* Wait for response from rsp_ring */
-    void *obj = NULL;
-    int ret = ff_ring_dequeue_wait(ring_zone->rsp_ring, &obj,
-        timeout_us, ring_zone->wait_mode);
-
-    if (ret == -ETIMEDOUT) {
-        return -ETIMEDOUT;
-    }
-
-    /* Verify we got our own sc back (SPSC guarantees ordering) */
-    if (obj != sc) {
-        ERR_LOG("ring response mismatch: expected sc:%p, got:%p\n", sc, obj);
-    }
-#endif
 
     return 0;
 }

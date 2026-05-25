@@ -516,10 +516,10 @@ ff_so_handler(int ops, void *args)
  * No lock needed — SPSC dequeue guarantees mutual exclusion.
  *
  * v3.4 D6: marked `inline` (mirrors sem mode's ff_handle_socket_ops) so the
- * compiler can inline this into the main loop's direct call site when
- * FF_RING_INLINE_DISPATCH is enabled. Function-pointer call sites in
- * ff_ring_process_requests still take its address (compiler will keep an
- * out-of-line copy for those — that's fine).
+ * compiler can inline this into the main loop's direct call site (the inline
+ * dequeue burst path is now the default for FF_USE_RING_IPC). Function-pointer
+ * call sites in ff_ring_process_requests still take its address (compiler
+ * will keep an out-of-line copy for those — that's fine).
  */
 static inline void
 ff_handle_socket_ops_ring(struct ff_so_context *sc)
@@ -651,18 +651,18 @@ ff_handle_each_context()
                 rte_atomic32_sub(&ff_so_zone->pending_count, nb);
             }
         }
-#elif defined(FF_RING_FAST_EMPTY_CHECK)
-        /* v3.3 H19-final fix (D5): inline empty check via rte_ring_empty,
-         * avoiding the full ff_ring_process_requests() call stack when
-         * req_ring is empty. Reuses existing prod.tail/cons.tail (same
-         * cross-core fields as baseline dequeue_burst), introducing NO
-         * new shared cache line — unlike the failed pending_count approach. */
+#else
+        /* v3.3 D5 + v3.4 D6 (default for FF_USE_RING_IPC):
+         * (1) D5: inline empty check via rte_ring_empty, avoiding the full
+         *     ff_ring_process_requests() call stack when req_ring is empty.
+         *     Reuses existing prod.tail/cons.tail (same cross-core fields as
+         *     baseline dequeue_burst), introducing NO new shared cache line
+         *     — unlike the failed pending_count approach.
+         * (2) D6: inline dequeue burst + handler call, eliminating the
+         *     ff_ring_process_requests() call stack AND the function pointer
+         *     indirection to ff_handle_socket_ops_ring. The compiler can now
+         *     inline ff_handle_socket_ops_ring directly. */
         if (!rte_ring_empty(ff_so_zone->ring_zone->req_ring)) {
-#ifdef FF_RING_INLINE_DISPATCH
-            /* v3.4 D6: inline dequeue burst + handler call, eliminating
-             * the ff_ring_process_requests() call stack AND the function
-             * pointer indirection to ff_handle_socket_ops_ring. The compiler
-             * can now inline ff_handle_socket_ops_ring directly. */
             void *objs[SOCKET_OPS_CONTEXT_MAX_NUM];
             unsigned int nb = rte_ring_sc_dequeue_burst(
                 ff_so_zone->ring_zone->req_ring,
@@ -670,14 +670,7 @@ ff_handle_each_context()
             for (unsigned int i = 0; i < nb; i++) {
                 ff_handle_socket_ops_ring((struct ff_so_context *)objs[i]);
             }
-#else
-            ff_ring_process_requests(ff_so_zone->ring_zone,
-                ff_handle_socket_ops_ring, FF_RING_SIZE);
-#endif
         }
-#else
-        ff_ring_process_requests(ff_so_zone->ring_zone,
-            ff_handle_socket_ops_ring, FF_RING_SIZE);
 #endif
 
         diff_tsc = rte_rdtsc() - cur_tsc;

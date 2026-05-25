@@ -1,6 +1,6 @@
-# Ring IPC 性能劣化离线深度分析（v3.6 · 终版 · 短/长连接全场景收敛）
+# Ring IPC 性能劣化离线深度分析（v3.7 · 终版 · 短/长连接全场景收敛 · 编译开关收敛）
 
-> 修订历史：v1 主因 H10/H11（drain 不存在于 sem）已被用户证伪；v2 主因 H15（cache miss）已被 perf stat 证伪；v3 基于 F-Stack 官方"事件匹配度"理论重定位主因为 H17；v3.1（2026-05-21 上午）实测证伪 H18，方案 A 废弃为 §5.A；v3.2（2026-05-21 晚）三组实测协同证伪 H17/H21/H24，主因收敛到 H19-final + H23；v3.3（2026-05-22）方案 C 实测劣化 4% 废弃（H25 证伪），方案 C+/D2 实测成功 +9.7% QPS，新增方案 D5；**v3.4（2026-05-22 晚）方案 D5 (+1.3%) + D6 (+0.9%) 实施收尾，QPS 9.1w → 10.22w 总收益 +12.3%（达 sem 97.3%），剩余 2.7% 已识别为 ring SPSC 架构固有开销不可消除**；v3.4.1（2026-05-25）补充 §9 附录 D，记录多 worker sem 模式 `idle_sleep=0` 启动饥饿现象；v3.4.2（2026-05-25）§9.6 同步源头修复进展（提交 `8125beece6`，正常负载零开销）；v3.5（2026-05-25 晚）多核短连接实测三组（1/2/4 核）联合证实"ring 在 FF_MULTI_SC 多 worker 短连接场景下相对 sem 无性能优势"；**v3.6（2026-05-25 晚）多核长连接实测三组（1/2/4 核）显示 ring 持续劣于 sem 2.4%–4.5%，差距方向稳定且大于短连接噪声范围。最终收敛：ring 路径在 LD_PRELOAD + FF_MULTI_SC 任何场景下均无性能优势，仅保留代码作为未来"多线程同进程共享 sc"和"多进程间共享 sc（worker 数量多于 fstack 实例数量）"扩展场景的预留能力。生产推荐配置回归 sem。详见 §1.4 与 §10 附录 E**。完整教训总结见 §4。
+> 修订历史：v1 主因 H10/H11（drain 不存在于 sem）已被用户证伪；v2 主因 H15（cache miss）已被 perf stat 证伪；v3 基于 F-Stack 官方"事件匹配度"理论重定位主因为 H17；v3.1（2026-05-21 上午）实测证伪 H18，方案 A 废弃为 §5.A；v3.2（2026-05-21 晚）三组实测协同证伪 H17/H21/H24，主因收敛到 H19-final + H23；v3.3（2026-05-22）方案 C 实测劣化 4% 废弃（H25 证伪），方案 C+/D2 实测成功 +9.7% QPS，新增方案 D5；**v3.4（2026-05-22 晚）方案 D5 (+1.3%) + D6 (+0.9%) 实施收尾，QPS 9.1w → 10.22w 总收益 +12.3%（达 sem 97.3%），剩余 2.7% 已识别为 ring SPSC 架构固有开销不可消除**；v3.4.1（2026-05-25）补充 §9 附录 D，记录多 worker sem 模式 `idle_sleep=0` 启动饥饿现象；v3.4.2（2026-05-25）§9.6 同步源头修复进展（提交 `8125beece6`，正常负载零开销）；v3.5（2026-05-25 晚）多核短连接实测三组（1/2/4 核）联合证实"ring 在 FF_MULTI_SC 多 worker 短连接场景下相对 sem 无性能优势"；**v3.6（2026-05-25 晚）多核长连接实测三组（1/2/4 核）显示 ring 持续劣于 sem 2.4%–4.5%，差距方向稳定且大于短连接噪声范围。最终收敛：ring 路径在 LD_PRELOAD + FF_MULTI_SC 任何场景下均无性能优势，仅保留代码作为未来"多线程同进程共享 sc"和"多进程间共享 sc（worker 数量多于 fstack 实例数量）"扩展场景的预留能力。生产推荐配置回归 sem。详见 §1.4 与 §10 附录 E**；v3.7（2026-05-25 晚）三个独立编译开关 `FF_RING_SC_COMPLETION` / `FF_RING_FAST_EMPTY_CHECK` / `FF_RING_INLINE_DISPATCH` 已删除，对应 D2/D5/D6 实现作为 `FF_USE_RING_IPC` 分支的默认行为合入，旧的 rsp_ring 等待路径与函数指针 dispatch 分支已删除。完整教训总结见 §4。
 
 ---
 
@@ -517,7 +517,7 @@ struct ff_socket_ops_zone {
 
 ### 5.4 方案 C+ / D2：sc->completion 替代 rsp_ring（修复 H23）— ✅ **已实施实测成功**
 
-> **2026-05-22 实测**：QPS 9.1w → **10.0w（+9.7%）**，wrk Avg 1.20ms → 1.06ms（-12%），`ff_ring_send_response` Self 3.33% → **0%**。**H23 修复确认**。已合入（编译开关 `FF_RING_SC_COMPLETION=1`）。
+> **2026-05-22 实测**：QPS 9.1w → **10.0w（+9.7%）**，wrk Avg 1.20ms → 1.06ms（-12%），`ff_ring_send_response` Self 3.33% → **0%**。**H23 修复确认**。已合入并作为 `FF_USE_RING_IPC` 分支的**默认行为**（不再使用独立编译开关；旧 rsp_ring 路径已删除）。
 
 **核心思想**：消除 `rsp_ring` enqueue，让 fstack 处理完后**直接写 `sc->completion`**（已存在于 sc cache line 0，offset 32，原本预留为 ring IPC 字段）。响应路径与 sem 模式 `sc->status=REP` 完全等价。
 
@@ -547,7 +547,7 @@ APP 端 ff_ring_submit_and_wait:                 fstack 端 ff_ring_send_respons
 
 **Memory ordering**：fstack 端 RELEASE store 保证 sc->result 等先写完；APP 端 ACQUIRE load 保证看到 completion=1 后再读 sc->result 不会乱序前置。
 
-**风险**：低。`ff_ring_alarm_wakeup` 路径同步加 `sc->completion=1` 写入，确保 alarm 唤醒在 D2 模式下生效；rsp_ring 保留作 legacy fallback。回退：编译时移除 `FF_RING_SC_COMPLETION=1` 即恢复。
+**风险**：低。`ff_ring_alarm_wakeup` 路径同步加 `sc->completion=1` 写入，确保 alarm 唤醒在 D2 模式下生效；rsp_ring enqueue 保留作 alarm 路径的 sentinel/legacy fallback。该方案已作为 `FF_USE_RING_IPC` 默认行为合入主线，独立的 `FF_RING_SC_COMPLETION` 编译开关已移除（历史草案见后文 5.5/5.6 同样默认化处理）。
 
 ---
 
@@ -561,7 +561,7 @@ APP 端 ff_ring_submit_and_wait:                 fstack 端 ff_ring_send_respons
 
 **核心思想**：用 DPDK 公共内联函数 `rte_ring_empty(r)` 做快速空判断，避免 `ff_ring_process_requests` 函数调用栈展开开销。**不引入任何新跨核字段**——这是方案 D5 与失败的方案 C 的根本差异。
 
-**改动点**：`ff_socket_ops.c` 主循环 ring 分支（与方案 C 同位置但实现完全不同，独立编译开关 `FF_RING_FAST_EMPTY_CHECK`）。
+**改动点**：`ff_socket_ops.c` 主循环 ring 分支（与方案 C 同位置但实现完全不同）。该方案已作为 `FF_USE_RING_IPC` 分支的**默认行为**合入主线，独立的 `FF_RING_FAST_EMPTY_CHECK` 编译开关已移除。
 
 **对称评估表**：
 
@@ -577,10 +577,10 @@ APP 端 ff_ring_submit_and_wait:                 fstack 端 ff_ring_send_respons
 
 ✅ 对称评估通过：仅减少消耗、不引入新乒乓。
 
-**最小 diff 草案**：
+**历史草案（v3.3 评估期）**——该宏已在 v3.6 后默认化，主线代码不再依赖此开关：
 ```c
 while (1) {
-#ifdef FF_RING_FAST_EMPTY_CHECK
+#ifdef FF_RING_FAST_EMPTY_CHECK     /* 历史：已默认化，主线不再判断 */
     if (!rte_ring_empty(ff_so_zone->ring_zone->req_ring)) {
         ff_ring_process_requests(...);
     }
@@ -628,7 +628,7 @@ while (1) {
 
 ✅ 对称评估通过。
 
-**改动文件**：`ff_socket_ops.c`（`ff_handle_socket_ops_ring` 加 `inline` + main loop 内联 dispatch，嵌在 D5 路径内）+ `Makefile`（新增 `FF_RING_INLINE_DISPATCH` 开关，依赖 `FF_RING_FAST_EMPTY_CHECK`）。
+**改动文件**：`ff_socket_ops.c`（`ff_handle_socket_ops_ring` 加 `inline` + main loop 内联 dispatch，嵌在 D5 路径内）。该方案已作为 `FF_USE_RING_IPC` 分支的**默认行为**合入主线，独立的 `FF_RING_INLINE_DISPATCH` 编译开关已移除。
 
 **实测物理量变化**：
 - `ff_ring_process_requests` perf top：4.53% → **完全消失**（被内联）
@@ -886,7 +886,7 @@ if (unlikely(!tmp)) {                            // 本轮进入时 in-use sc �
 | 单实例 sem（兼容老部署）| `FF_KERNEL_EVENT=1`（不开 ring） | `idle_sleep = 0` 即可 | 需基于提交 `8125beec` 之后 |
 | 单实例 sem（保守起见）| 同上 | `idle_sleep = 1` | 双重保险，CPU 占用 ~95% |
 | 多 worker sem | 同上 | `idle_sleep = 0`（提交后）或 `1`（提交前）| 多 worker 是 `8125beec` 主要修复目标 |
-| 多 worker ring（v3.4 推荐）| `FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1 FF_RING_SC_COMPLETION=1 FF_RING_FAST_EMPTY_CHECK=1 FF_RING_INLINE_DISPATCH=1` | `idle_sleep` 任意（ring 主循环不锁 zone）| 性能 +12.3%，无饥饿问题
+| 多 worker ring（v3.4 推荐）| `FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1` | `idle_sleep` 任意（ring 主循环不锁 zone）| 性能 +12.3%，无饥饿问题（D2/D5/D6 自 v3.6 起作为 ring 默认行为，无需独立开关）
 
 ### 9.7 与本文主线的关系
 
@@ -911,7 +911,7 @@ if (unlikely(!tmp)) {                            // 本轮进入时 in-use sc �
 - **fstack worker 数**：与 nginx worker 数 1:1 匹配
 - **编译开关**：
   - sem 路径：`FF_KERNEL_EVENT=1 FF_MULTI_SC=1`（含提交 `8125beece6` 启动饥饿修复）
-  - ring 路径：`FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1 FF_RING_SC_COMPLETION=1 FF_RING_FAST_EMPTY_CHECK=1 FF_RING_INLINE_DISPATCH=1`（v3.4 推荐组合 D2+D5+D6）
+  - ring 路径：`FF_USE_RING_IPC=1 FF_KERNEL_EVENT=1 FF_MULTI_SC=1`（D2+D5+D6 自 v3.6 起作为 ring 默认行为合入，独立开关 `FF_RING_SC_COMPLETION` / `FF_RING_FAST_EMPTY_CHECK` / `FF_RING_INLINE_DISPATCH` 已删除）
 - **wrk 参数**：`-c 128 -t 24 -d 10 -L`（短连接默认；长连接使用 keep-alive 模式）
 - **`config.ini`**：`pkt_tx_delay = 50`（短连接）/ `100`（长连接），`idle_sleep = 0`
 

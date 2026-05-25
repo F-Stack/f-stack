@@ -78,26 +78,17 @@ ifdef FF_RING_PENDING_BYPASS
 endif
 
 # v3.3 H23 fix (D2): response path via sc->completion (same cache line as sc->result),
-# replacing rsp_ring enqueue. Only meaningful when FF_USE_RING_IPC=1.
-ifdef FF_RING_SC_COMPLETION
-	CFLAGS+= -DFF_RING_SC_COMPLETION
-endif
+# replacing rsp_ring enqueue. Always enabled as part of FF_USE_RING_IPC default behavior.
 
 # v3.3 H19-final fix (D5): inline rte_ring_empty fast-path check before
 # ff_ring_process_requests, avoiding the dequeue burst function call stack
 # when req_ring is empty. Reuses existing ring metadata, NO new cross-core
-# fields. Independent from FF_RING_PENDING_BYPASS (which was abandoned).
-ifdef FF_RING_FAST_EMPTY_CHECK
-	CFLAGS+= -DFF_RING_FAST_EMPTY_CHECK
-endif
+# fields. Always enabled as part of FF_USE_RING_IPC default behavior.
 
 # v3.4 D6: inline dequeue burst + handler call within ff_handle_each_context,
 # eliminating ff_ring_process_requests() call stack and function pointer
-# indirection. Requires FF_RING_FAST_EMPTY_CHECK to be set (D6 lives inside
-# the D5 branch). NO new cross-core fields, only reduces local CPU.
-ifdef FF_RING_INLINE_DISPATCH
-	CFLAGS+= -DFF_RING_INLINE_DISPATCH
-endif
+# indirection. NO new cross-core fields, only reduces local CPU.
+# Always enabled as part of FF_USE_RING_IPC default behavior.
 
 ifdef FF_USE_THREAD_STRUCT_HANDLE
 	CFLAGS+= -DFF_USE_THREAD_STRUCT_HANDLE
