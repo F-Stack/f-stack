@@ -212,7 +212,7 @@ F-Stack 架构知识库
 
 工具与集成
   → 11 个 IPC 运维工具
-  → LD_PRELOAD 集成方式
+  → LD_PRELOAD 集成方式（libff_syscall.so：fork / accept4 / __recv_chk / epoll polling / FF_USE_RING_IPC ring IPC）
   → 应用集成接口
 ```
 
@@ -592,7 +592,7 @@ net.inet.tcp.functions_default=bbr    # BBR 算法 (高延迟网络), freebsd/ra
    → 研究网络丢包原因
 
 4. 应用集成
-   → 学习 LD_PRELOAD 机制
+   → 学习 LD_PRELOAD 机制（adapter/syscall/ 下的 libff_syscall.so，参见 adapter/syscall/README.md）
    → 研究 Nginx/Redis 集成方式
    → 开发自定义集成方案
 ```

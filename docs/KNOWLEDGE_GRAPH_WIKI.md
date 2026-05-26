@@ -240,12 +240,27 @@ f-stack/
 
 ### 5.2 Adapter Layer (`adapter/`)
 
+The `adapter/syscall/` directory builds two binaries — `libff_syscall.so` (preloaded
+into the user application) and a standalone `fstack` instance — that together
+implement the LD_PRELOAD path. Key files:
+
 | File | Responsibility |
 |------|---------------|
-| `syscall/ff_hook_syscall.c` | LD_PRELOAD system call interception (3254 lines) |
-| `syscall/ff_socket_ops.h` / `.c` | Socket operation context and handling |
-| `syscall/ff_so_zone.c` | Shared memory zone management |
-| `syscall/ff_epoll.c` | Epoll adaptation |
+| `syscall/ff_hook_syscall.c` / `.h` | LD_PRELOAD POSIX hooks: `socket/bind/connect/accept/accept4/listen/close/read/write/send*/recv*/__read_chk/__recv_chk/__recvfrom_chk/ioctl/epoll_*/fork` etc., dispatched to ff_* via shared memory |
+| `syscall/ff_linux_syscall.c` / `ff_declare_syscalls.h` | Linux-flag to FreeBSD-flag translation (e.g. `LINUX_SOCK_CLOEXEC`, `LINUX_SOCK_NONBLOCK`) and hook declarations |
+| `syscall/ff_socket_ops.h` / `.c` | Per-socket operation context (`sc`) and the producer/consumer dispatch logic between the application and the fstack instance |
+| `syscall/ff_sysproto.h` | Cross-boundary syscall argument struct definitions |
+| `syscall/ff_so_zone.c` | Hugepage shared-memory zone management (semaphore IPC path) |
+| `syscall/ff_event.c` / `ff_epoll.c` | Epoll adaptation (incl. polling mode) and event delivery |
+| `syscall/ff_ring_ops.c` / `.h` *(FF_USE_RING_IPC)* | Lock-free DPDK SPSC `rte_ring` IPC path; replaces the `ff_so_zone` global lock |
+| `syscall/Makefile` | Builds both `libff_syscall.so` and the `fstack` instance binary |
+
+LD_PRELOAD-mode applications run as **two separate processes**: the `fstack`
+instance (links libfstack.a + DPDK) plus the user app preloaded with
+`libff_syscall.so`. The two communicate over Hugepage shared memory — sem-based by
+default, or a lock-free DPDK SPSC ring when `FF_USE_RING_IPC=1` is set. Compile /
+runtime switches `FF_KERNEL_EVENT`, `FF_MULTI_SC` and `FF_USE_RING_IPC` further tune
+behavior; full details in `adapter/syscall/README.md` and `docs/ld_preload_ring_spec/`.
 
 ---
 

@@ -288,7 +288,7 @@ DPDK 版本: 23.11.5
 ├── lib/               # 核心库 (~21K 行)
 ├── freebsd/           # FreeBSD 协议栈移植
 ├── dpdk/              # DPDK 23.11.5 依赖
-├── adapter/           # 中间适配器，LD_PRELOAD和micro_thread
+├── adapter/           # 中间适配器：micro_thread + syscall（构建 libff_syscall.so 供 LD_PRELOAD 使用）
 ├── example/           # 应用示例 (main.c 推荐)
 ├── app/               # Nginx/Redis 集成
 ├── tools/             # 运维工具

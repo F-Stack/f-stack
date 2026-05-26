@@ -288,7 +288,7 @@ Total lines: ~5839 lines (based on actual file count)
 ├── lib/               # Core library (~21K lines)
 ├── freebsd/           # FreeBSD protocol stack port
 ├── dpdk/              # DPDK 23.11.5 dependency
-├── adapter/           # Middleware adapters, LD_PRELOAD and micro_thread
+├── adapter/           # Middleware adapters: micro_thread + syscall (builds libff_syscall.so for LD_PRELOAD)
 ├── example/           # Application examples (main.c recommended)
 ├── app/               # Nginx/Redis integration
 ├── tools/             # Operations tools

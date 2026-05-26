@@ -212,7 +212,7 @@ Application Development Guidelines
 
 Tools and Integration
   → 11 IPC operations tools
-  → LD_PRELOAD integration method
+  → LD_PRELOAD integration method (libff_syscall.so: fork / accept4 / __recv_chk / epoll polling / FF_USE_RING_IPC ring IPC)
   → Application integration interfaces
 ```
 
@@ -592,7 +592,7 @@ Issue 4: Multi-process synchronization issues
    → Study causes of network packet loss
 
 4. Application Integration
-   → Learn LD_PRELOAD mechanism
+   → Learn the LD_PRELOAD mechanism (libff_syscall.so in adapter/syscall/, see adapter/syscall/README.md)
    → Study Nginx/Redis integration methods
    → Develop custom integration solutions
 ```

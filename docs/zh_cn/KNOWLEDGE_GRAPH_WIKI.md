@@ -240,12 +240,25 @@ f-stack/
 
 ### 5.2 适配器层 (`adapter/`)
 
+`adapter/syscall/` 同时构建出 `libff_syscall.so`（被预加载到用户应用进程）与独立的
+`fstack` 实例二进制，二者共同实现 LD_PRELOAD 模式。主要文件如下：
+
 | 文件 | 职责 |
 |------|------|
-| `syscall/ff_hook_syscall.c` | LD_PRELOAD 系统调用劫持（3254 行） |
-| `syscall/ff_socket_ops.h` / `.c` | Socket 操作上下文和处理 |
-| `syscall/ff_so_zone.c` | 共享内存区域管理 |
-| `syscall/ff_epoll.c` | Epoll 适配 |
+| `syscall/ff_hook_syscall.c` / `.h` | LD_PRELOAD POSIX hook：`socket/bind/connect/accept/accept4/listen/close/read/write/send*/recv*/__read_chk/__recv_chk/__recvfrom_chk/ioctl/epoll_*/fork` 等，经共享内存转发给 ff_* |
+| `syscall/ff_linux_syscall.c` / `ff_declare_syscalls.h` | Linux 标志位到 FreeBSD 标志位的转换（如 `LINUX_SOCK_CLOEXEC`、`LINUX_SOCK_NONBLOCK`）与 hook 声明 |
+| `syscall/ff_socket_ops.h` / `.c` | 单 socket 操作上下文（`sc`）以及应用与 fstack 实例之间的生产/消费派发逻辑 |
+| `syscall/ff_sysproto.h` | 跨进程的 syscall 参数结构定义 |
+| `syscall/ff_so_zone.c` | Hugepage 共享内存 zone 管理（信号量 IPC 路径） |
+| `syscall/ff_event.c` / `ff_epoll.c` | Epoll 适配（含 polling 模式）与事件投递 |
+| `syscall/ff_ring_ops.c` / `.h` *(FF_USE_RING_IPC)* | Lock-free DPDK SPSC `rte_ring` IPC 路径，移除 `ff_so_zone` 全局锁 |
+| `syscall/Makefile` | 同时编译 `libff_syscall.so` 与 `fstack` 实例二进制 |
+
+LD_PRELOAD 模式下应用以 **两个独立进程** 运行：`fstack` 实例（链接 libfstack.a + DPDK）
+与预加载 `libff_syscall.so` 的用户应用。二者通过 Hugepage 共享内存通信——默认走信号量
+路径，置 `FF_USE_RING_IPC=1` 后切换为 lock-free DPDK SPSC ring 路径。编译/运行期开关
+`FF_KERNEL_EVENT`、`FF_MULTI_SC`、`FF_USE_RING_IPC` 用于进一步调整行为；完整说明参见
+`adapter/syscall/README.md` 与 `docs/ld_preload_ring_spec/`。
 
 ---
 
