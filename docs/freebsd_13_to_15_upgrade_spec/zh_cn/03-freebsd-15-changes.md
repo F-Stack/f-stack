@@ -1,0 +1,293 @@
+# 03 — FreeBSD 13.0 → 14.x → 15.0 关键变更清单
+
+> 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
+> 文档版本：v0.1（2026-05-26）
+> 数据来源：**Sub-Agent B（Analyzer-15）** 调研产物 + 本地双版本源码实测对比
+> 校验：所有 P0/P1 结论均可在本地 `/data/workspace/freebsd-src-releng-{13.0,15.0}/sys/` 源码中复核
+
+---
+
+## 0. 一句话结论
+
+FreeBSD 13.0 → 15.0 跨越了 4 年 + 6 个 release（13.0 → 14.0 → 14.1 → 14.2 → 14.3 → 14.4 → 15.0），其中**网络栈核心 KBI/KPI 多处不兼容**。F-Stack 的 `freebsd/` 子树 **不能简单 patch** 升级，必须基于 15.0 `sys/` 重做"裁剪 + 改造"基线（对应 `02-architecture-analysis.md` 的 9 大改造手法在 15.0 基线上重新应用）。
+
+---
+
+## 1. 版本号事实
+
+| 项目 | 13.0 | 15.0 |
+|---|---|---|
+| `REVISION` | 13.0 | 15.0 |
+| `BRANCH` | RELEASE-p2 | RELEASE-p9 |
+| `__FreeBSD_version` | **1300139** | **1500068** |
+| 实测路径 | `sys/sys/param.h:63` | `sys/sys/param.h:77` |
+| 最大 syscall 号 | `SYS_sigfastblock=573` | `SYS_jail_remove_jd=598` |
+| `SYS_MAXSYSCALL` | 574 | 599 |
+
+---
+
+## 2. 架构级变更（影响整体编译边界）
+
+### 2.1 [P0] mips 架构整体移除
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 14.0 移除；本地 `freebsd-src-releng-15.0/sys/` 中无 `mips/` 子目录 |
+| **来源** | FreeBSD 14.0R Release Notes —— "Removal of the mips architecture from the tree as Tier 2 platform" |
+| **对 F-Stack 影响** | `f-stack/freebsd/mips/`（来自 13.0 拷贝）必须删除；所有 Makefile / mk 中 mips-条件分支需清理 |
+| **动作** | FR-4 / DP-1 → 删除 |
+| **优先级** | **P0**（不删除会引入大量编译错误） |
+
+### 2.2 [P1] clang/llvm 工具链版本要求
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 13.0R 默认 clang/lld 11.0.1，要求 GCC ≥ 6；14.0R clang 16，要求 GCC ≥ 9；15.0R clang/llvm 19.x |
+| **对 F-Stack 影响** | F-Stack 头文件用 GCC 扩展（`__attribute__((packed))` 等向后兼容）；但 15.0 内核大量使用 C11 `_Atomic(T)` / `atomic_load_explicit`，宿主编译器需 ≥ clang 11 / GCC 9 |
+| **动作** | 在 `05-implementation-plan.md` §前置中固化 |
+| **优先级** | P1 |
+
+### 2.3 [P3] pkgbase / EXPERIMENTAL knob
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 14.0R/15.0R 引入 pkgbase 作为可选发布形态；15.0 默认仍为 installworld + installkernel |
+| **对 F-Stack 影响** | 无影响（F-Stack 不依赖 base 安装） |
+| **优先级** | P3（out of scope） |
+
+### 2.4 [P3] 抗量子加密 / inotify / timerfd 等新 syscall
+
+| 项目 | syscall 号 | 优先级 |
+|---|---|---|
+| `__realpathat` | 574 | P3 |
+| `close_range` | 575 | P3 |
+| `aio_writev / aio_readv` | 578 / 579 | P3（F-Stack 无 AIO） |
+| `fspacectl` | 580 | P3 |
+| `sched_getcpu` | 581 | P3 |
+| `swapoff` | 582 | P3 |
+| `kqueuex` | 583 | P3 |
+| `membarrier` | 584 | P3 |
+| `timerfd_create / gettime / settime` | 585-587 | P3 |
+| `kcmp / getrlimitusage / fchroot / setcred / exterrctl` | 588-592 | P3 |
+| **`inotify_add_watch_at / inotify_rm_watch`** | 593 / 594 | P3 (out of scope) |
+| `getgroups / setgroups / jail_attach_jd / jail_remove_jd` | 595-598 | P3 |
+
+> F-Stack 不走 host syscall 层（用户态自家分发），上述对 F-Stack 无直接影响。仅当 `ff_syscall_wrapper.c` 需要暴露这些时才动手。本次升级不引入（约束 C-1）。
+
+### 2.5 [P2] syscall 表扩展整体影响
+
+虽然单 syscall out-of-scope，但 `init_sysent.c` 体系变化会影响 F-Stack 静态链接整体大小与编译。**P2**：监控编译告警即可。
+
+---
+
+## 3. 协议栈级变更（核心战场）
+
+### 3.1 [P0 ★] `pr_usrreqs` 整体废除合并入 `protosw`
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 13.0：`struct protosw` 含 `struct pr_usrreqs *pr_usrreqs;` 字段，protocol 用户请求向量通过此结构暴露。15.0：`pr_usrreqs` 整体取消，所有方法直接合并入 `protosw` 顶层字段（`pru_*` 系列直接挂在 `struct protosw`） |
+| **影响文件** | 所有 protocol 注册点（tcp_usrreq.c / udp_usrreq.c / raw_ip.c 等）+ 所有调用 `pr->pr_usrreqs->pru_*()` 的位置 |
+| **对 F-Stack 影响** | `ff_glue.c` + `kern_event.c` + `uipc_socket.c` 中所有 `pru_*` 函数指针引用都要改写 |
+| **风险 ID** | R-011 |
+| **优先级** | **P0**（编译破坏） |
+
+### 3.2 [P0 ★] `struct inpcb` 从 epoch 转 SMR
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 13.0：`inpcb` hash lookup 走 NET_EPOCH 保护。15.0：改用 SMR（Safe Memory Reclamation），`inpcbgroup` 哈希重写 |
+| **影响文件** | `in_pcb.c` / `in_pcb.h` / `tcp_input.c` / `udp_usrreq.c` / `raw_ip.c` |
+| **对 F-Stack 影响** | F-Stack 现状把 epoch 用 `ff_subr_epoch.c` stub 成空（FSTACK-stub）；SMR 出现后需评估：是 stub 化（更简单）还是引入新 SMR wrapper |
+| **风险 ID** | R-012 |
+| **优先级** | **P0** |
+
+### 3.3 [P0 ★] `struct ifnet` 不透明化为 `if_t`
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 13.0：`struct ifnet` 字段直接访问（`ifp->if_flags`、`ifp->if_xname` 等）。15.0：定义 `typedef void *if_t`，所有访问改走 `if_getflags(ifp)`、`if_name(ifp)` 等访问函数；`if_alloc()` 签名从返回 `struct ifnet*` 改成返回 `if_t`，新增 `if_alloc(type)` 不带 dev 版本 |
+| **影响文件** | `net/if.c` / `if_var.h` / 所有驱动 / `ff_veth.c` |
+| **对 F-Stack 影响** | `ff_veth.c` 是 F-Stack 自家的 DPDK 桥，必须改用 `if_t` 访问函数；F-Stack `freebsd/net/if.c` 改造点需重新评估（H-1 / H-9 标签的 stub 是否还成立） |
+| **风险 ID** | R-013 |
+| **优先级** | **P0** |
+
+### 3.4 [P0] mbuf 字段调整（13→14→15）
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 14.0 调整 `m_pkthdr`（加 `numa_domain` 等）；15.0 进一步调整 `m_ext`（refcnt / ext_type / ext_free 重组） |
+| **影响文件** | `uipc_mbuf.c` / `kern_mbuf.c` / `mbuf.h` / 所有 `m_*` 操作宏 |
+| **对 F-Stack 影响** | F-Stack 在 `uipc_mbuf.c` 中已有 `FSTACK-stub` + `FSTACK_ZC_SEND` 改造，需基于 15.0 新字段重新落地；`FSTACK_ZC_SEND` 路径中 `m_uiotombuf` 的 iov_base 挂载要适配新 `m_ext` 布局 |
+| **风险 ID** | R-003 |
+| **优先级** | **P0** |
+
+### 3.5 [P1] netlink 子系统（15.0 新增）
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 14.0 引入 `sys/netlink/` 子目录（10 个 .c：netlink_domain.c / netlink_io.c / netlink_message_parser.c / netlink_message_writer.c / netlink_module.c / netlink_route.c 等），Linux netlink 兼容层 |
+| **对 F-Stack 影响** | 本次约束 C-1 决定 **不引入**（DP-2），但需在 spec 中显式记录 |
+| **次生影响** | 15.0 中 `route.c` / `if.c` 的内部 API 与 netlink 紧耦合，删除 netlink 后部分 #include 与符号引用需 stub 化 |
+| **风险 ID** | R-002 |
+| **优先级** | P1（DP-2 暂不引入，但实施时仍需处理依赖切断） |
+
+### 3.6 [P1] TCP RACK 默认化
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 14.0 起 `tcp_stacks/rack` 进入 base；15.0 默认 TCP 栈仍是 freebsd default，但 RACK 已经更成熟，符号、统计、`sysctl` knob 大量增加 |
+| **影响文件** | `tcp_stacks/rack.c` + 配套 `rack_bbr_common.c` |
+| **对 F-Stack 影响** | F-Stack 现有 `tcp_stacks/rack.c` 改了 module name（H-5），需在 15.0 新基线上重新应用此改名 |
+| **风险 ID** | R-004 |
+| **优先级** | P1 |
+
+### 3.7 [P1] kernel TLS API 变化
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 14.0 引入 KTLS 完整 API；15.0 进一步重构 |
+| **对 F-Stack 影响** | F-Stack 当前未启用 KTLS，无直接破坏；但 `sys_socket.c` / `uipc_socket.c` 中含 KTLS 相关 #ifdef 分支，stub 化策略需评估 |
+| **风险 ID** | R-006 |
+| **优先级** | P2 |
+
+### 3.8 [P1] routing 表结构变更（rib / nexthop）
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 14.0 把 routing 表从老 `rtentry` 重构为 `rib` + `nexthop`；15.0 稳定到新结构 |
+| **影响文件** | `net/route.c` / `net/route.h` / `net/route_var.h` / 所有 `rtinit / rtalloc` 调用点 |
+| **对 F-Stack 影响** | `ff_route.c` 必须重写为 rib/nexthop API |
+| **优先级** | **P0**（与 R-013 并列，属 P0 KPI 破坏） |
+
+### 3.9 [P1] VNET API 演进
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | VNET 在 14.0 / 15.0 多次内部重构（vnet_data_*、CURVNET_SET 优化） |
+| **对 F-Stack 影响** | F-Stack 不开 VNET（单实例），但所有引用 `VNET(*)` 的源文件随上游升级 |
+| **优先级** | P2 |
+
+### 3.10 [P1] epoch / rmlock 同步原语调整
+
+| 维度 | 内容 |
+|---|---|
+| **事实** | 14.0 多个 NET_EPOCH 场景替换为 SMR / rmlock；epoch_call 函数语义在 15.0 微调 |
+| **对 F-Stack 影响** | `ff_subr_epoch.c` 的 stub 需要重新评估覆盖面 |
+| **优先级** | P1 |
+
+### 3.11 [P2] wifi 栈 / pf / dummynet / netgraph 改动
+
+| 子项 | 优先级 | F-Stack 影响 |
+|---|---|---|
+| wifi 栈重构 | P3 | F-Stack 不用 wifi |
+| pf 升级（13.x → 15.x） | P2 | F-Stack 不直接用 pf |
+| dummynet | P3 | F-Stack 不直接用 |
+| netgraph | P1 | `ng_socket.c` 改动小，F-Stack 已有 H-2 改造 |
+
+---
+
+## 4. ABI / KPI / KBI 变更（影响用户态 libff）
+
+### 4.1 关键 struct 布局变化（全部不兼容）
+
+| struct | 13→15 变化 | 优先级 |
+|---|---|---|
+| `struct protosw` | 合并 `pr_usrreqs` 进顶层 | **P0** |
+| `struct inpcb` | epoch → SMR；字段重排 | **P0** |
+| `struct tcpcb` | RACK 相关字段增 | **P0** |
+| `struct sockbuf` | KTLS / mbuf 字段增 | **P0** |
+| `struct ifnet` → `if_t` | 不透明化 | **P0** |
+| `struct mbuf::m_pkthdr` | 加 numa_domain 等 | **P0** |
+| `struct mbuf::m_ext` | 字段重组 | **P0** |
+| `struct rtentry` → `rib`+`nexthop` | 整表重写 | **P0** |
+
+### 4.2 用户态 libc 接口
+
+仅 `libc` 中 F-Stack 引用部分相关；本次升级 F-Stack 不切换 libc，故 P3。
+
+### 4.3 ABI break 总体
+
+13→15 跨 2 个主版本，按 FreeBSD 政策 ABI 不保证向后兼容。F-Stack 用户态 libff 的 ABI 需重新审视，特别是：
+- `struct ff_ev`（在 `ff_event.h`）
+- `ff_msg`（在 `ff_msg.h`，IPC 命令通道）
+- `ff_veth_softc`（在 `ff_veth.h`）
+
+→ `01-requirements-spec.md` 的 R-007。
+
+---
+
+## 5. 构建级变更
+
+### 5.1 src.conf / src.opts.mk 的 KNOB 增减
+
+13→15 增减约 60 个 KNOB（如 `WITHOUT_GOOGLETEST` → `WITH_GOOGLETEST`，新增 `WITH_LLVM_AWK` 等）。F-Stack 不使用 freebsd base 构建系统，影响 P3。
+
+### 5.2 Makefile.inc 体系演进
+
+`bsd.prog.mk / bsd.lib.mk` 在 15.0 有微调，新增 PIE 支持等。F-Stack 工具构建走自家 Makefile，需确认 `include` 路径是否包含 `<bsd.prog.mk>` —— 实测 F-Stack 工具 Makefile 用 `lib.mk / prog.mk`（在 `f-stack-lib/tools/`），与 base 解耦，**P3**。
+
+### 5.3 CTF / DTrace 等可选项
+
+F-Stack 不启用，P3。
+
+---
+
+## 6. crypto/ 子目录变更
+
+| 项 | 13.0 | 15.0 | 优先级 |
+|---|---|---|---|
+| `chacha20_poly1305.c/.h` | 不存在 | 新增 | P2（F-Stack 不直接用） |
+| `curve25519.c/.h` | 不存在 | 新增 | P3 |
+| `blowfish/` | 存在 | **删除** | P3 |
+| `sha1.c` 内容微调 | 8.64 KB | 8.6 KB | P3 |
+
+---
+
+## 7. 升级风险全景表（按优先级排序）
+
+| ID | 风险 | 优先级 | 来源 | 处置 |
+|---|---|---|---|---|
+| **R-011** | `pr_usrreqs` 合并入 `protosw` | **P0** | §3.1 | 重写 `ff_glue.c` 等所有 pru_* 引用 |
+| **R-012** | `inpcb` epoch → SMR | **P0** | §3.2 | 评估 stub vs 重写 `ff_subr_epoch.c` |
+| **R-013** | `ifnet` → `if_t` 不透明化 | **P0** | §3.3 | 重写 `ff_veth.c` |
+| R-003 | mbuf 字段调整 | **P0** | §3.4 | 适配 `m_pkthdr`/`m_ext` 新布局 |
+| **新** | rib/nexthop 路由表重写 | **P0** | §3.8 | 重写 `ff_route.c` |
+| R-001 / FR-4 | mips 整体移除 | **P0** | §2.1 | 删除 `f-stack/freebsd/mips/` |
+| R-002 | netlink 新增 | P1 (DP-2) | §3.5 | 不引入；切断依赖 |
+| R-004 | RACK 默认化 / tcp_stacks 改动 | P1 | §3.6 | 重新应用 H-5 改名 |
+| R-007 | ABI break | P1 | §4 | 用户态 libff ABI 审视 |
+| R-009 | clang/llvm 14→15 提升 | P1 | §2.2 | 编译环境前置 |
+| R-006 | KTLS / wlan API 变化 | P2 | §3.7 | stub 化策略评估 |
+| R-008 | f-stack-lib 与 f-stack 漂移 | P2 | §1.4 of 01 | diff -rq 实测清理 SKIP 噪声 |
+| R-005 | pkgbase | P3 | §2.3 | 信息留档 |
+| R-010 | inotify / 抗量子加密 | P3 (OOS) | §2.4 | 信息留档 |
+
+> P0 共 **6 项**；P1 共 4 项；P2 共 3 项；P3 共 2 项。这是 04 / 05 排里程碑的依据。
+
+---
+
+## 8. 14.0 → 14.4 中间版本里程碑事件（选录）
+
+| 版本 | 时间 | 关键事件 |
+|---|---|---|
+| 14.0R | 2023-11 | mips 移除；clang 16；KTLS 完整；rib/nexthop 稳定；netlink 引入；RACK 进 base |
+| 14.1R | 2024-05 | OpenSSH 9.7；ZFS 2.2.4 |
+| 14.2R | 2024-12 | ZFS 2.2.6；vnet 路由微调 |
+| 14.3R | 2025-06 | clang 18；netlink 强化 |
+| 14.4R | 2025-12 | 进入 ESR；最后一个 14.x |
+| 15.0R | 2025 末 | clang/llvm 19；pr_usrreqs 合并；inpcb SMR；if_t 不透明化；mbuf m_ext 字段重组；syscall 表扩到 599 |
+| 15.1R | 2026 上半年 | 后续维护 |
+
+---
+
+## 9. 与本系列其他文档的衔接
+
+| 本节产物 | 衔接对象 |
+|---|---|
+| 6 项 P0 风险（§7） | `04-diff-and-port-strategy.md` 的"必修任务" |
+| 改造文件矩阵（§3） | `04-diff-and-port-strategy.md` 的"按 P0 风险定位文件" |
+| ABI break（§4.3） | `01-requirements-spec.md` FR-3 + R-007 |
+| 升级里程碑（§8） | `05-implementation-plan.md` 引用作为 baseline 时间线参考 |
+
+> 下一步：`04-diff-and-port-strategy.md` 把本节风险与 02 改造点交叉，产出最终 port 任务清单。
