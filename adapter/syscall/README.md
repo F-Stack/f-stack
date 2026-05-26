@@ -1,4 +1,4 @@
-# F-Stack LD_PRELOAD Beta Introduction
+# F-Stack LD_PRELOAD Introduction
 
 This document mainly [Translated](https://lovelyping.com/?p=267) by ChatGPT.
 
@@ -15,11 +15,40 @@ Overall conclusion:
   - The new group of application instances needs to run on two CPU cores, while the  standard F-Stack application process only needs to run on one CPU core. Overall, the cost-effectiveness is not high, and whether to use it depends on the specific situation of each business.
   - In the Nginx 600-byte body memory response test, the same number of new application instance groups in long connections is slightly higher than the  standard F-Stack application process, while the same number of new application instance groups in short connections is slightly lower than the  standard F-Stack application process, as shown in the Nginx access introduction section, but the CPU usage almost doubles.
 
-【Note:】 Currently, the `libff_syscall.so` function is not yet complete and is only for testing purposes. All developers are welcome to work together to improve it. There are some issues as follows:
+## Known Limitations
 
-- There are still memory leaks and easy deadlocks when the process ends.
-- Some interfaces (such as `sendmsg`, `readv`, `readmsg`, etc.) have not been optimized and tested because they have not been used yet, and further performance optimization and testing are needed.
-- Lack of longer running verification, there may be some unknown hidden problems that have not been discovered yet.
+`libff_syscall.so` has been continuously iterated since 2023 and many features that were originally open issues (such as `fork`, `accept4`, `__recv_chk` family, `epoll` polling mode and lock-free ring IPC) have already been implemented — see the [Feature Updates](#feature-updates-since-v122-2023-05-04--2026-05-25) section below. The following limitations are still tracked and contributions from the community are welcome:
+
+- There are still potential memory leaks and risk of deadlocks when the process ends.
+- Some interfaces (such as `sendmsg`, `readv`, `readmsg`, etc.) have not been heavily exercised yet, and further performance optimization and testing are needed (newer additions such as `accept4`, `__recv_chk`, `__read_chk`, `__recvfrom_chk` have already been covered).
+- The project keeps iterating in production-like environments; long-haul stability feedback from the community is appreciated.
+- When multiple F-Stack instances are running, it cannot be used as a client temporarily, such as Nginx's proxy. The reference modification plan is as follows:
+  - @铁皮大爷: I have implemented a similar logic before, but I added RSS in the hook. Delay the socket establishment (only after determining the target and source, then select which F-Stack as the worker process. It is required to set RSS symmetric hash when receiving on the network card to ensure that the output and input can be in the same F-Stack worker).
+    - app -> `socket`: hold a socket operation, create fd (fd1), and return it to the user. 
+    - app -> `bind`: hold a bind operation, bind the bind parameters to fd1, and return it to the user.
+    -  app -> `connect`: add a connect parameter to bind on fd1, calculate according to RSS symmetric hash, select an F-Stack process (worker), and hand over the held `socket`, `bind`, and `connect` to the F-Stack process, and wait for synchronous return results.
+
+## Feature Updates Since v1.22 (2023-05-04 ~ 2026-05-25)
+
+The following items summarize the major changes accumulated in the `adapter/syscall/` directory since v1.22.
+
+### New Features
+
+- **Lock-free `rte_ring` IPC (`FF_USE_RING_IPC`)** — replaces the legacy semaphore-based shared-memory IPC with a DPDK SPSC ring, completely removing the global `ff_so_zone->lock` from the fstack main loop. Multi-core short / long connection measurements show ring performance is on par with or slightly below sem within 2–4%, with no cross-worker lock contention and natural immunity to startup-time spinlock starvation. The default behavior of the ring branch already enables the v3.4 optimizations (D2: `sc->completion` based wakeup; D5: inline `rte_ring_empty` fast empty check; D6: inline dequeue burst + dispatch). See appendix `FF_USE_RING_IPC` for the compile flag and `docs/ld_preload_ring_spec/` for the full design and benchmark.
+- **`epoll` polling mode** — improves latency for RTT-sensitive workloads when waiting for events.
+- **`fork` support** — every forked process now owns its own FreeBSD `struct thread`, behaving similarly to the Linux kernel. This removes the previous limitation of running `fork`-based applications under LD_PRELOAD.
+- **`accept4` with `SOCK_CLOEXEC` / `SOCK_NONBLOCK`** — adds `accept4` hook and supports `LINUX_SOCK_CLOEXEC` / `LINUX_SOCK_NONBLOCK` flags on `ff_socket`.
+- **Glibc `_FORTIFY_SOURCE` wrappers** — hooks `__recv_chk`, `__read_chk` and `__recvfrom_chk` so that applications compiled with `-D_FORTIFY_SOURCE` work correctly under LD_PRELOAD.
+
+### Improvements & Bug Fixes
+
+- **`FF_KERNEL_EVENT` kernel epoll fd leak fix** — `ff_hook_close` now closes the kernel-side epoll fd when `FF_KERNEL_EVENT` is enabled, eliminating kernel fd leakage observed under long-running Nginx workloads.
+- **`cplen` calculation fix in `ff_hook_syscall.c`** — fixes incorrect length calculation in the hook path; the style was later aligned with `ff_hook_accept` for consistency.
+- **`ff_hook_recvfrom` `sh_fromlen` uninitialized fix** — `sh_fromlen` is now initialized before `ff_sys_recvfrom` is invoked, fixing a `-1` return regression.
+- **`ioctl` conflicting types compile error fix (#942)** — resolves a function-prototype conflict that broke the build on newer toolchains.
+- **Ring IPC startup starvation fix** — under `FF_MULTI_SC` with `idle_sleep = 0`, an nginx worker could appear deadlocked while attaching to the second fstack instance's `ff_so_zone`; the sem path now performs a conditional `unlock → pause → lock` only when there are no in-use socket contexts, removing the starvation with zero impact on normal load.
+- **Ubuntu 22.04 / kernel 5.19 / gcc 11.4 build fixes** — including a pre-C99 declaration issue, references #777.
+- **Miscellaneous compile / log / Makefile / header polishing** — including fixes to the syscall directory build, log message cleanups and a series of small refinements across `ff_hook_syscall.c`, `ff_socket_ops.c`, `ff_socket_ops.h`, `ff_linux_syscall.c`, `ff_sysproto.h`, `ff_declare_syscalls.h` and `Makefile`.
 
 ## Compilation of `libff_syscall.so`
 
@@ -337,6 +366,18 @@ In this mode, the context `sc` associated with the user application program and 
 export FF_KERNEL_EVENT=1
 ```
 
+#### FF_USE_RING_IPC
+
+Whether to switch the IPC between `libff_syscall.so` and the `fstack` instance from the legacy semaphore-based shared-memory path to a lock-free DPDK SPSC `rte_ring`. Disabled by default.
+
+```
+export FF_USE_RING_IPC=1
+```
+
+When this flag is enabled, the v3.4 ring-path optimizations are compiled in as the default behavior (`sc->completion`-based wakeup, inline `rte_ring_empty` fast empty check, and inline dequeue burst + dispatch); no separate sub-flags are needed.
+
+Performance summary: under LD_PRELOAD + `FF_MULTI_SC` with one fstack instance per nginx worker, ring is on par with sem within 2–4% across 1 / 2 / 4 cores for both short and long connections. The ring path's main value is structural — its lock-free main loop is naturally immune to startup-time spinlock starvation and removes the need for any zone-level lock on the fstack side. For production deployments where each worker has its own dedicated fstack instance, the sem path remains the recommended configuration; the ring path is kept as a reserve for future scenarios such as multi-threaded `sc` sharing within a single process, or cross-process `sc` sharing where the worker count exceeds the fstack instance count. Full design and benchmark are in `docs/ld_preload_ring_spec/`.
+
 ### Running Parameters
 
 You can set some parameter values required by the user application program through environment variables. If you configure them through a configuration file later, you may need to modify the original application, so temporarily use the method of setting environment variables.
@@ -385,4 +426,13 @@ Configure the process ID of the user application program, which can be used with
 export FF_PROC_ID=1
 ```
 
-If the user application program can configure CPU affinity, you can ignore this parameter, such as the `worker_cpu_affinity` parameter in the Nginx 
+If the user application program can configure CPU affinity, you can ignore this parameter, such as the `worker_cpu_affinity` parameter in the Nginx configuration file.
+
+## Acknowledgements
+
+Special thanks to the following external contributors whose pull requests and commits since 2023-05-04 have significantly extended `libff_syscall.so`:
+
+- **[liujinhui-job](https://github.com/liujinhui-job)** — contributed the largest number of commits and pull requests, including `fork` support (PR #887), `accept4` with `SOCK_CLOEXEC` / `SOCK_NONBLOCK`, the `__recv_chk` / `__read_chk` / `__recvfrom_chk` family of `_FORTIFY_SOURCE` hooks, `epoll` polling mode, the `ff_hook_recvfrom` `sh_fromlen` initialization fix (PR #872), and a series of refinements across `ff_hook_syscall.c`, `ff_socket_ops.c`, `ff_socket_ops.h`, `ff_linux_syscall.c`, `ff_sysproto.h`, `ff_declare_syscalls.h` and `Makefile`.
+- **[zhaozihanzzh](https://github.com/zhaozihanzzh)** — fixed the `cplen` calculation in `ff_hook_syscall.c` (and aligned the style with `ff_hook_accept`), and resolved the kernel-side epoll fd leakage in `ff_hook_close` when running under `FF_KERNEL_EVENT`.
+
+Their contributions have substantially improved the completeness, correctness and Nginx-friendliness of the LD_PRELOAD path. All community pull requests are welcome.
