@@ -126,6 +126,16 @@ cn10k_ml_model_metadata_check(uint8_t *buffer, uint64_t size)
 		return -EINVAL;
 	}
 
+	/* Validate total section sizes fit within the provided buffer */
+	if ((uint64_t)sizeof(struct cn10k_ml_model_metadata) +
+		    metadata->init_model.file_size +
+		    metadata->main_model.file_size +
+		    metadata->finish_model.file_size +
+		    metadata->weights_bias.file_size > size) {
+		plt_err("Invalid metadata, model section sizes exceed buffer size");
+		return -EINVAL;
+	}
+
 	if (metadata->weights_bias.relocatable != 1) {
 		plt_err("Model not supported, non-relocatable weights and bias");
 		return -ENOTSUP;
