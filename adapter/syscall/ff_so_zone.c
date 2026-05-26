@@ -3,11 +3,22 @@
 
 #include <rte_eal.h>
 #include <rte_memzone.h>
+#ifdef FF_USE_RING_IPC
+#include <rte_ring.h>
+#include <rte_errno.h>
+#include <sys/eventfd.h>
+#endif
 
 #include "ff_config.h"
 #include "ff_socket_ops.h"
 
 #define SOCKET_OPS_ZONE_NAME "ff_socket_ops_zone_%d"
+
+#ifdef FF_USE_RING_IPC
+#define FF_SC_REQ_RING_NAME  "ff_sc_req_ring_%d"
+#define FF_SC_RSP_RING_NAME  "ff_sc_rsp_ring_%d"
+#define FF_SC_RING_ZONE_NAME "ff_sc_ring_zone_%d"
+#endif
 
 #define SOCKET_OPS_CONTEXT_NAME_SIZE 32
 #define SOCKET_OPS_CONTEXT_NAME "ff_so_context_"
@@ -98,11 +109,29 @@ ff_create_so_memzone()
                 sc->ff_thread_handle = NULL;
                 //so_zone_tmp->inuse[i] = 0;
 
+#ifdef FF_USE_RING_IPC
+                sc->completion = 0;
+                sc->ring_zone_id = proc_id;
+#else
                 if (sem_init(&sc->wait_sem, 1, 0) == -1) {
                     ERR_LOG("Initialize semaphore failed:%d\n", errno);
                     return -1;
                 }
+#endif
             }
+
+#ifdef FF_USE_RING_IPC
+            if (ff_create_sc_ring_zone(proc_id, FF_RING_SIZE,
+                    FF_RING_DEFAULT_WAIT_MODE) != 0) {
+                ERR_LOG("Failed to create ring zone for proc_id:%d\n", proc_id);
+                return -1;
+            }
+            so_zone_tmp->ring_zone = ff_attach_sc_ring_zone(proc_id);
+            if (so_zone_tmp->ring_zone == NULL) {
+                ERR_LOG("Failed to attach ring zone for proc_id:%d\n", proc_id);
+                return -1;
+            }
+#endif
 
             if (proc_id == 0) {
                 ff_so_zone = so_zone_tmp;
@@ -233,3 +262,110 @@ ff_detach_so_context(struct ff_so_context *sc)
     rte_spinlock_unlock(&sc->lock);
     rte_spinlock_unlock(&ff_so_zone->lock);
 }
+
+#ifdef FF_USE_RING_IPC
+/*
+ * Create ring zone for a fstack instance (called by primary process).
+ *
+ * Creates req_ring and rsp_ring in Hugepage shared memory,
+ * plus a memzone to hold the ff_sc_ring_zone metadata.
+ */
+int
+ff_create_sc_ring_zone(int proc_id, uint32_t ring_size, uint8_t wait_mode)
+{
+    char name[64];
+    struct rte_ring *req_ring, *rsp_ring;
+    const struct rte_memzone *mz;
+    struct ff_sc_ring_zone *rz;
+    unsigned int flags = RING_F_SP_ENQ | RING_F_SC_DEQ;
+
+    /* Create request ring */
+    snprintf(name, sizeof(name), FF_SC_REQ_RING_NAME, proc_id);
+    req_ring = rte_ring_create(name, ring_size, rte_socket_id(), flags);
+    if (req_ring == NULL) {
+        ERR_LOG("Failed to create req_ring:%s, errno:%d\n", name, rte_errno);
+        return -1;
+    }
+
+    /* Create response ring */
+    snprintf(name, sizeof(name), FF_SC_RSP_RING_NAME, proc_id);
+    rsp_ring = rte_ring_create(name, ring_size, rte_socket_id(), flags);
+    if (rsp_ring == NULL) {
+        ERR_LOG("Failed to create rsp_ring:%s, errno:%d\n", name, rte_errno);
+        rte_ring_free(req_ring);
+        return -1;
+    }
+
+    /* Create ring zone metadata in shared memzone */
+    snprintf(name, sizeof(name), FF_SC_RING_ZONE_NAME, proc_id);
+    mz = rte_memzone_reserve_aligned(name, sizeof(struct ff_sc_ring_zone),
+        rte_socket_id(), 0, RTE_CACHE_LINE_SIZE);
+    if (mz == NULL) {
+        ERR_LOG("Failed to reserve ring zone memzone:%s, errno:%d\n",
+            name, rte_errno);
+        rte_ring_free(req_ring);
+        rte_ring_free(rsp_ring);
+        return -1;
+    }
+
+    rz = (struct ff_sc_ring_zone *)mz->addr;
+    memset(rz, 0, sizeof(*rz));
+    rz->req_ring = req_ring;
+    rz->rsp_ring = rsp_ring;
+    rz->ring_size = ring_size;
+    rz->wait_mode = wait_mode;
+    rz->eventfd_req = -1;
+    rz->eventfd_rsp = -1;
+
+    /* Create eventfd pair if eventfd mode */
+    if (wait_mode == FF_RING_WAIT_EVENTFD) {
+        rz->eventfd_req = eventfd(0, EFD_NONBLOCK);
+        rz->eventfd_rsp = eventfd(0, EFD_NONBLOCK);
+        if (rz->eventfd_req < 0 || rz->eventfd_rsp < 0) {
+            ERR_LOG("Failed to create eventfd for proc_id:%d\n", proc_id);
+            rte_ring_free(req_ring);
+            rte_ring_free(rsp_ring);
+            return -1;
+        }
+    }
+
+    ERR_LOG("Created ring zone for proc_id:%d, req_ring:%p, rsp_ring:%p, "
+        "ring_size:%u, wait_mode:%u\n",
+        proc_id, req_ring, rsp_ring, ring_size, wait_mode);
+
+    return 0;
+}
+
+/*
+ * Attach to an existing ring zone (called by secondary / APP process).
+ *
+ * Looks up the ring zone memzone and both rings by name.
+ */
+struct ff_sc_ring_zone *
+ff_attach_sc_ring_zone(int proc_id)
+{
+    char name[64];
+    const struct rte_memzone *mz;
+    struct ff_sc_ring_zone *rz;
+
+    snprintf(name, sizeof(name), FF_SC_RING_ZONE_NAME, proc_id);
+    mz = rte_memzone_lookup(name);
+    if (mz == NULL) {
+        ERR_LOG("Lookup ring zone memzone:%s failed\n", name);
+        return NULL;
+    }
+
+    rz = (struct ff_sc_ring_zone *)mz->addr;
+
+    /* Verify rings are accessible */
+    if (rz->req_ring == NULL || rz->rsp_ring == NULL) {
+        ERR_LOG("Ring zone proc_id:%d has NULL rings\n", proc_id);
+        return NULL;
+    }
+
+    ERR_LOG("Attached ring zone for proc_id:%d, req_ring:%p, rsp_ring:%p\n",
+        proc_id, rz->req_ring, rz->rsp_ring);
+
+    return rz;
+}
+#endif /* FF_USE_RING_IPC */
