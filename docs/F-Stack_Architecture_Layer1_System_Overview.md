@@ -140,7 +140,10 @@ Actual data on 10GbE link:
 │
 ├── adapter/                                # Network adapters
 │   ├── micro_thread/             # Micro-thread interface for stateful applications using F-Stack
-│   └── syscall/                  # Intercept Linux syscalls as F-Stack APIs via LD_PRELOAD
+│   └── syscall/                  # Builds libff_syscall.so + fstack instance binary; intercepts
+│                                  # Linux syscalls via LD_PRELOAD and forwards them to the fstack
+│                                  # instance through Hugepage shared memory (sem path or
+│                                  # FF_USE_RING_IPC lock-free ring path). See adapter/syscall/README.md
 ├── doc/                                    # Original English documentation
 ├── docs/                                   # Three-layer architecture knowledge base docs
 ├── config.ini                # Default configuration file
@@ -775,24 +778,42 @@ int main() {
 ```
 
 **Method 2: LD_PRELOAD Interception (e.g., Nginx)**
-```bash
-# Enable F-Stack support for Nginx
-LD_PRELOAD=libff_syscall.so nginx
 
-# LD_PRELOAD hooks intercept:
-  socket() → ff_socket()
-  bind() → ff_bind()
-  connect() → ff_connect()
-  read() → ff_read()
-  write() → ff_write()
-  send() → ff_send()
-  sendto() → ff_sendto()
-  sendmsg() → ff_sendmsg()
-  recv() → ff_recv()
-  recvfrom() → ff_recvfrom()
-  recvmsg() → ff_recvmsg()
+In LD_PRELOAD mode the application runs in two separate processes: a standalone `fstack`
+instance (links libfstack.a, polls DPDK) plus the user application (e.g. nginx) preloaded
+with `libff_syscall.so`. The two processes communicate over Hugepage shared memory — the
+default is a semaphore-based path; setting `FF_USE_RING_IPC=1` switches the data plane to
+a lock-free DPDK SPSC `rte_ring`. The `fstack` instance must be started before the
+LD_PRELOAD application.
+
+```bash
+# 1) Start the fstack instance first (one or more instances)
+./fstack --conf config.ini --proc-type=primary --proc-id=0 &
+
+# 2) Then enable F-Stack support for Nginx via LD_PRELOAD
+LD_PRELOAD=/path/to/libff_syscall.so nginx
+
+# Hooked POSIX entries forwarded to ff_* / kqueue:
+  socket()     → ff_socket()                 accept()     → ff_accept()
+  bind()       → ff_bind()                   accept4()    → ff_accept() + SOCK_CLOEXEC/NONBLOCK
+  connect()    → ff_connect()                listen()     → ff_listen()
+  read()       → ff_read()                   close()      → ff_close()
+  write()      → ff_write()                  ioctl()      → ff_ioctl()
+  send/sendto/sendmsg() → ff_send/sendto/sendmsg()
+  recv/recvfrom/recvmsg() → ff_recv/recvfrom/recvmsg()
+  __read_chk / __recv_chk / __recvfrom_chk   (glibc _FORTIFY_SOURCE wrappers)
+  epoll_create/ctl/wait() → kqueue-backed events (optional polling mode)
+  fork()       → per-process FreeBSD struct thread (Linux-kernel-like semantics)
   ...
+
+# Key environment variables / compile switches:
+#   FF_KERNEL_EVENT=1   Forward kernel-only fds to host epoll in parallel
+#   FF_MULTI_SC=1       SO_REUSEPORT-style multi-sc, one sc per worker fd
+#   FF_USE_RING_IPC=1   Switch IPC to lock-free DPDK SPSC ring (default v3.4 opts)
 ```
+
+See `adapter/syscall/README.md` for the full feature list, compile flags, known
+limitations, and acknowledgements.
 
 ### 7.2 Tool Support
 

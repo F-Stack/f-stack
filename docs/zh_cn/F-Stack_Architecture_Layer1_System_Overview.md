@@ -138,7 +138,10 @@ F-Stack 模式 (用户态网络)
 │
 ├── adapter/                                # 网络适配器
 │   ├── micro_thread/             # 微线程接口，方便有状态应用使用 F-Stack
-│   └── syscall/                  # 通过 LD_PRELOAD 劫持 Linux syscall 为 F-Stack API
+│   └── syscall/                  # 编译产物为 libff_syscall.so 与独立 fstack 实例二进制；通过
+│                                  # LD_PRELOAD 劫持 Linux syscall 转发给 fstack 实例，IPC 走
+│                                  # Hugepage 共享内存（默认 sem 路径，或开关 FF_USE_RING_IPC 后
+│                                  # 切到 lock-free ring 路径），详见 adapter/syscall/README.md
 ├── doc/                                    # 原始英文文档
 ├── docs/                                   # 三层架构知识库文档
 ├── config.ini                # 默认配置文件
@@ -770,24 +773,39 @@ int main() {
 ```
 
 **方式 2：LD_PRELOAD 拦截 (如 Nginx)**
-```bash
-# Nginx 启用 F-Stack 支持
-LD_PRELOAD=libff_syscall.so nginx
 
-# LD_PRELOAD 钩子拦截：
-  socket() → ff_socket()
-  bind() → ff_bind()
-  connect() → ff_connect()
-  read() → ff_read()
-  write() → ff_write()
-  send() → ff_send()
-  sendto() → ff_sendto()
-  sendmsg() → ff_sendmsg()
-  recv() → ff_recv()
-  recvfrom() → ff_recvfrom()
-  recvmsg() → ff_recvmsg()
+LD_PRELOAD 模式下应用以两个进程方式运行：独立的 `fstack` 实例（链接 libfstack.a，跑
+DPDK 轮询），以及预加载 `libff_syscall.so` 的用户应用（如 nginx）。两者通过 Hugepage
+共享内存通信——默认走信号量路径，置 `FF_USE_RING_IPC=1` 后切换为基于 DPDK SPSC
+`rte_ring` 的 lock-free 路径。**`fstack` 实例必须在 LD_PRELOAD 应用之前启动**。
+
+```bash
+# 1) 先启动 fstack 实例（可启动多个）
+./fstack --conf config.ini --proc-type=primary --proc-id=0 &
+
+# 2) 再使用 LD_PRELOAD 启用 Nginx 的 F-Stack 支持
+LD_PRELOAD=/path/to/libff_syscall.so nginx
+
+# LD_PRELOAD 钩子拦截（转发至 ff_* / kqueue）：
+  socket()     → ff_socket()                 accept()     → ff_accept()
+  bind()       → ff_bind()                   accept4()    → ff_accept() + SOCK_CLOEXEC/NONBLOCK
+  connect()    → ff_connect()                listen()     → ff_listen()
+  read()       → ff_read()                   close()      → ff_close()
+  write()      → ff_write()                  ioctl()      → ff_ioctl()
+  send/sendto/sendmsg() → ff_send/sendto/sendmsg()
+  recv/recvfrom/recvmsg() → ff_recv/recvfrom/recvmsg()
+  __read_chk / __recv_chk / __recvfrom_chk   (glibc _FORTIFY_SOURCE 包装)
+  epoll_create/ctl/wait() → kqueue 事件（可选 polling 模式）
+  fork()       → 每进程独立 FreeBSD struct thread（贴近 Linux kernel 语义）
   ...
+
+# 关键环境变量 / 编译开关：
+#   FF_KERNEL_EVENT=1   并行转发内核 fd 给宿主 epoll
+#   FF_MULTI_SC=1       SO_REUSEPORT 风格的多 sc，每 worker fd 一个 sc
+#   FF_USE_RING_IPC=1   将 IPC 切到 lock-free DPDK SPSC ring（默认含 v3.4 优化）
 ```
+
+完整功能列表、编译开关、已知限制及致谢请参考 `adapter/syscall/README.md`。
 
 ### 7.2 工具支持
 

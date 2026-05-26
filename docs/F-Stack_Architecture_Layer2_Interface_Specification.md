@@ -1026,20 +1026,42 @@ symmetric_rss = 1  # Bidirectional connections to same queue
 
 ### 6.2 Application Integration Interfaces
 
-**Direct Call Mode**: Application directly links `libfstack.a` and calls `ff_*` APIs
+**Direct Call Mode**: Application directly links `libfstack.a` and calls `ff_*` APIs.
 
-**LD_PRELOAD Mode**: Use `LD_PRELOAD=libfstack.so` to intercept system calls
+**LD_PRELOAD Mode**: Application is preloaded with `libff_syscall.so` (built from
+`adapter/syscall/`); it runs as a **separate process** from the `fstack` instance
+binary and the two communicate over Hugepage shared memory. The default IPC path is
+semaphore-based; setting `FF_USE_RING_IPC=1` switches to a lock-free DPDK SPSC ring.
+The `fstack` instance must be started before the LD_PRELOAD application.
 
 ```bash
+# Start the fstack instance(s) first
+./fstack --conf config.ini --proc-type=primary --proc-id=0 &
+
 # Nginx integration
-LD_PRELOAD=/path/to/libfstack.so /usr/sbin/nginx -g "daemon off;"
+LD_PRELOAD=/path/to/libff_syscall.so /usr/sbin/nginx -g "daemon off;"
 
 # Redis integration
-LD_PRELOAD=/path/to/libfstack.so /usr/bin/redis-server /etc/redis.conf
+LD_PRELOAD=/path/to/libff_syscall.so /usr/bin/redis-server /etc/redis.conf
 
 # Custom application
-LD_PRELOAD=/path/to/libfstack.so ./my_app
+LD_PRELOAD=/path/to/libff_syscall.so ./my_app
 ```
+
+Hooked POSIX entries include `socket / bind / connect / accept / accept4 / listen /
+close / read / write / send / sendto / sendmsg / recv / recvfrom / recvmsg /
+__read_chk / __recv_chk / __recvfrom_chk / ioctl / epoll_create|ctl|wait / fork`.
+
+Common runtime / compile switches:
+
+| Switch | Default | Effect |
+|---|---|---|
+| `FF_KERNEL_EVENT` | off | Forward kernel-only fds to host epoll in parallel |
+| `FF_MULTI_SC` | off | SO_REUSEPORT-style multi-sc, one sc per worker fd |
+| `FF_USE_RING_IPC` | off | Switch IPC to lock-free DPDK SPSC ring (v3.4 opts on by default) |
+
+For the full design, supported modes, environment variables, performance notes and
+known limitations, see `adapter/syscall/README.md`.
 
 ---
 

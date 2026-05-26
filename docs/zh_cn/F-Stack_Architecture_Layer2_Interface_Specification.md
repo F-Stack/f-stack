@@ -1181,20 +1181,40 @@ symmetric_rss = 1  # 双向连接到同一队列
 
 ### 6.2 应用集成接口
 
-**直接调用模式**：应用直接链接 libfstack.a 并调用 ff_* API
+**直接调用模式**：应用直接链接 libfstack.a 并调用 ff_* API。
 
-**LD_PRELOAD 模式**：使用 LD_PRELOAD=libfstack.so 拦截系统调用
+**LD_PRELOAD 模式**：应用预加载 `libff_syscall.so`（由 `adapter/syscall/` 构建），与
+独立的 `fstack` 实例**以两个进程方式运行**，两者通过 Hugepage 共享内存通信；默认走
+信号量路径，置 `FF_USE_RING_IPC=1` 后切换为基于 DPDK SPSC `rte_ring` 的 lock-free
+路径。**`fstack` 实例必须在 LD_PRELOAD 应用之前启动**。
 
 ```bash
+# 先启动 fstack 实例（可启动多个）
+./fstack --conf config.ini --proc-type=primary --proc-id=0 &
+
 # Nginx 集成
-LD_PRELOAD=/path/to/libfstack.so /usr/sbin/nginx -g "daemon off;"
+LD_PRELOAD=/path/to/libff_syscall.so /usr/sbin/nginx -g "daemon off;"
 
 # Redis 集成
-LD_PRELOAD=/path/to/libfstack.so /usr/bin/redis-server /etc/redis.conf
+LD_PRELOAD=/path/to/libff_syscall.so /usr/bin/redis-server /etc/redis.conf
 
 # 自定义应用
-LD_PRELOAD=/path/to/libfstack.so ./my_app
+LD_PRELOAD=/path/to/libff_syscall.so ./my_app
 ```
+
+被劫持的 POSIX 入口包括：`socket / bind / connect / accept / accept4 / listen /
+close / read / write / send / sendto / sendmsg / recv / recvfrom / recvmsg /
+__read_chk / __recv_chk / __recvfrom_chk / ioctl / epoll_create|ctl|wait / fork`。
+
+常用运行时 / 编译开关：
+
+| 开关 | 默认 | 作用 |
+|---|---|---|
+| `FF_KERNEL_EVENT` | 关 | 并行转发内核 fd 给宿主 epoll |
+| `FF_MULTI_SC` | 关 | SO_REUSEPORT 风格的多 sc，每 worker fd 一个 sc |
+| `FF_USE_RING_IPC` | 关 | 将 IPC 切到 lock-free DPDK SPSC ring（默认含 v3.4 优化） |
+
+完整设计、支持模式、环境变量、性能数据与已知限制详见 `adapter/syscall/README.md`。
 
 ---
 

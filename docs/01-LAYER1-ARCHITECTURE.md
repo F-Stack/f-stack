@@ -92,7 +92,11 @@ NIC Hardware
 ├── tools/                        # Tool scripts
 ├── adapter/                      # Network adapters
 │   ├── micro_thread/             # Micro-thread interface for stateful applications using F-Stack
-│   └── syscall/                  # Intercept Linux syscalls as F-Stack APIs via LD_PRELOAD
+│   └── syscall/                  # Builds libff_syscall.so + an fstack instance binary; intercepts
+│                                  # Linux syscalls (socket/bind/connect/read/write/send/recv/
+│                                  # epoll/accept4/__recv_chk/fork/ioctl ...) via LD_PRELOAD and
+│                                  # forwards them to the fstack instance through Hugepage-backed
+│                                  # shared memory (sem path or FF_USE_RING_IPC lock-free ring path)
 ├── doc/                          # Original English documentation
 ├── docs/                         # Three-layer architecture knowledge base docs
 └── config.ini                    # Default configuration file

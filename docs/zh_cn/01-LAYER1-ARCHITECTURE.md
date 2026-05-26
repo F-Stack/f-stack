@@ -92,7 +92,11 @@ NIC 驱动 (igb_uio / vfio-pci)
 ├── tools/                        # 工具脚本
 ├── adapter/                      # 网络适配器
 │   ├── micro_thread/             # 微线程接口，方便有状态应用使用 F-Stack
-│   └── syscall/                  # 通过 LD_PRELOAD 劫持 Linux syscall 为 F-Stack API
+│   └── syscall/                  # 编译产物为 libff_syscall.so 与独立 fstack 实例二进制；通过
+│                                  # LD_PRELOAD 劫持 Linux syscall（socket/bind/connect/read/write/
+│                                  # send/recv/epoll/accept4/__recv_chk/fork/ioctl 等）转发给
+│                                  # fstack 实例，IPC 走 Hugepage 共享内存（sem 路径或开关
+│                                  # FF_USE_RING_IPC 后的 lock-free ring 路径）
 ├── doc/                          # 原始英文文档
 ├── docs/                         # 三层架构知识库文档
 └── config.ini                    # 默认配置文件
