@@ -251,17 +251,17 @@ q2 决定的范围（来自 plan.md §1.5）：
 
 | 里程碑 | 任务 ID | 文件 | 优先级 | 状态 | 实施人 | 完成时间 |
 |---|---|---|---|---|---|---|
-| **M1** | T-cleanup-01 | mips 删除 | P0 | 待办 | — | — |
-| M1 | T-sys-01 | sys/systm.h | P0 | 待办 | — | — |
-| M1 | T-sys-02 | sys/refcount.h | P0 | 待办 | — | — |
-| M1 | T-sys-03 | sys/callout.h+_callout.h | P1 | 待办 | — | — |
-| M1 | T-libkern-01 | libkern/ cp -a | P1 | 待办 | — | — |
-| M1 | T-crypto-01 | crypto/ cp -a | P2 | 待办 | — | — |
-| M1 | T-opencrypto-01 | opencrypto/ cp -a | P1 | 待办 | — | — |
-| M1 | T-vm-01 | vm/ cp -a | P1 | 待办 | — | — |
-| M1 | T-arch-01 | amd64/x86 头 | P2 | 待办 | — | — |
-| M1 | T-arch-02 | arm64/ | P2 | 待办 | — | — |
-| M1 | T-misc-01 | netipsec/netgraph/libalias | P2 | 待办 | — | — |
+| **M1** | T-cleanup-01 | mips 删除 | P0 | ✅ 完成 | m1-leader | 2026-05-28 |
+| M1 | T-sys-01 | sys/systm.h | P0 | ⚠️ DP-9 回滚到 13.0（M2 重做）| m1-leader | 2026-05-28 |
+| M1 | T-sys-02 | sys/refcount.h | P0 | ⚠️ DP-9 回滚到 13.0（M2 重做）| m1-leader | 2026-05-28 |
+| M1 | T-sys-03 | sys/callout.h+_callout.h | P1 | ⚠️ DP-9 回滚到 13.0（M2 重做）| m1-leader | 2026-05-28 |
+| M1 | T-libkern-01 | libkern/ cp -a | P1 | ✅ 完成 | m1-leader | 2026-05-28 |
+| M1 | T-crypto-01 | crypto/ cp -a | P2 | ✅ 完成 | m1-leader | 2026-05-28 |
+| M1 | T-opencrypto-01 | opencrypto/ cp -a | P1 | ✅ 完成 | m1-leader | 2026-05-28 |
+| M1 | T-vm-01 | vm/ cp -a | P1 | ⚠️ DP-9 整体回滚到 13.0（M2 重做）| m1-leader | 2026-05-28 |
+| M1 | T-arch-01 | amd64/x86 头 | P2 | ⚠️ 推迟到 M2（DP-8） | m1-leader | 2026-05-28 |
+| M1 | T-arch-02 | arm64/ | P2 | ⚠️ 推迟到 M2（DP-8） | m1-leader | 2026-05-28 |
+| M1 | T-misc-01 | netipsec/netgraph/libalias | P2 | ⚠️ 部分（netipsec+netgraph ✅；libalias 因 DP-9 回滚 13.0）| m1-leader | 2026-05-28 |
 | **M2** | T-kern-01 | kern_descrip.c | P0 | 待办 | — | — |
 | M2 | T-kern-02 | kern_event.c | P0 | 待办 | — | — |
 | M2 | T-kern-03 | kern_linker.c | P1 | 待办 | — | — |
