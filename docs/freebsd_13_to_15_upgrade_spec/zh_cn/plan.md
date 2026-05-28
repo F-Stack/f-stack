@@ -331,4 +331,4 @@ Phase 1.4 已完成的工作：
 
 ---
 
-> **当前状态：Phase 1-5 + 独立审计 v0.2 全部交付（2026-05-28）。下一步进入 M1 实施阶段（按 05-implementation-plan.md 拾取任务）。**
+> **当前状态：Phase 1-5 + 独立审计 v0.2 全部交付，spec 系列已冻结为 v0.3 并 ✅ 评审通过（2026-05-28）。下一步进入 M1 实施阶段（按 05-implementation-plan.md 拾取任务）。详见 `99-review-report.md` 顶部「最终评审结论」与 `98-independent-audit-report.md` §9。**
