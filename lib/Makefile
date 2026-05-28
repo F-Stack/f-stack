@@ -191,21 +191,6 @@ ifeq (${MACHINE_CPUARCH},i386)
 MACHINE=i386
 endif
 
-#
-# Distilled from FreeBSD src/sys/conf/Makefile.mips
-#
-ifeq (${MACHINE_CPUARCH},mips)
-
-# We default to the MIPS32 ISA, if none specified in the
-# kernel configuration file.
-ARCH_FLAGS?=-march=mips32
-
-HACK_EXTRA_FLAGS=-shared
-
-CFLAGS+=${EXTRA_FLAGS} $(ARCH_FLAGS)
-HACK_EXTRA_FLAGS+=${EXTRA_FLAGS} $(ARCH_FLAGS)
-endif
-
 CFLAGS+= -DFSTACK
 
 ifdef FF_ZC_SEND

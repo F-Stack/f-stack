@@ -96,11 +96,6 @@ ifeq (${MACHINE_ARCH},powerpc64)
 CFLAGS+=	
 endif
 
-ifeq (${MACHINE_CPUARCH},mips)
-CFLAGS+=	
-INLINE_LIMIT?=	8000
-endif
-
 ifeq (${MACHINE_CPUARCH},arm64)
 INLINE_LIMIT?=	15000
 endif
@@ -111,9 +106,7 @@ endif
 ifneq (${MK_SSP},no)
 ifneq (${MACHINE_CPUARCH},ia64)
 ifneq (${MACHINE_CPUARCH},arm)
-ifneq (${MACHINE_CPUARCH},mips)
 CFLAGS+=	-fstack-protector
-endif
 endif
 endif
 endif
