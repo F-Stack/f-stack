@@ -39,3 +39,9 @@ adapter/syscall/helloworld_stack_epoll
 adapter/syscall/helloworld_stack_epoll_kernel
 adapter/syscall/helloworld_stack_epoll_thread_socket
 adapter/syscall/helloworld_stack_thread_socket
+
+# AI agent / planning artifacts (local only)
+.claude/
+AGENTS.md
+CLAUDE.md
+plan.md
