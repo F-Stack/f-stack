@@ -24,14 +24,10 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/malloc.h>
-
-#include <machine/stdarg.h>
+#include <sys/stdarg.h>
 
 int
 vasprintf(char **buf, struct malloc_type *mtp, const char *format, va_list va)

@@ -1,8 +1,12 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 1990, 1993
+ * Copyright (c) 1992, 1993
  *	The Regents of the University of California.  All rights reserved.
+ *
+ * This software was developed by the Computer Systems Engineering group
+ * at Lawrence Berkeley Laboratory under DARPA contract BG 91-66 and
+ * contributed to Berkeley.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -29,22 +33,33 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
-#include <sys/libkern.h>
+#include <libkern/quad.h>
 
 /*
- * Find Last Set bit
+ * Divide two signed quads.
  */
-int
-flsl(long mask)
+quad_t
+__divmoddi4(quad_t a, quad_t b, quad_t *rem)
 {
-	int bit;
+	u_quad_t ua, ub, uq, urem;
+	int negq, negr;
 
-	if (mask == 0)
-		return (0);
-	for (bit = 1; mask != 1; bit++)
-		mask = (unsigned long)mask >> 1;
-	return (bit);
+	if (a < 0) {
+		ua = -(u_quad_t)a;
+		negq = 1;
+		negr = 1;
+	} else {
+		ua = a;
+		negq = 0;
+		negr = 0;
+	}
+	if (b < 0) {
+		ub = -(u_quad_t)b;
+		negq ^= 1;
+	} else
+		ub = b;
+	uq = __qdivrem(ua, ub, &urem);
+	if (rem != 0)
+		*rem = negr ? -urem : urem;
+	return (negq ? -uq : uq);
 }

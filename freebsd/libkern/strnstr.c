@@ -1,8 +1,12 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
+ * Copyright (c) 2001 Mike Barcroft <mike@FreeBSD.org>
  * Copyright (c) 1990, 1993
  *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * Chris Torek.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -30,21 +34,31 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
+#include <sys/param.h>
 #include <sys/libkern.h>
 
 /*
- * Find First Set bit
+ * Find the first occurrence of find in s, where the search is limited to the
+ * first slen characters of s.
  */
-int
-ffsl(long mask)
+char *
+strnstr(const char *s, const char *find, size_t slen)
 {
-	int bit;
+	char c, sc;
+	size_t len;
 
-	if (mask == 0)
-		return (0);
-	for (bit = 1; !(mask & 1); bit++)
-		mask = (unsigned long)mask >> 1;
-	return (bit);
+	if ((c = *find++) != '\0') {
+		len = strlen(find);
+		do {
+			do {
+				if (slen-- < 1 || (sc = *s++) == '\0')
+					return (NULL);
+			} while (sc != c);
+			if (len > slen)
+				return (NULL);
+		} while (strncmp(s, find, len) != 0);
+		s--;
+	}
+	return (__DECONST(char *, s));
 }

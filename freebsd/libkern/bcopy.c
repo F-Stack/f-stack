@@ -32,17 +32,6 @@
  * SUCH DAMAGE.
  */
 
-#if defined(LIBC_SCCS) && !defined(lint)
-#if 0
-static char *sccsid = "from: @(#)bcopy.c      5.11 (Berkeley) 6/21/91";
-#endif
-#if 0
-static char *rcsid = "$NetBSD: bcopy.c,v 1.2 1997/04/16 22:09:41 thorpej Exp $";
-#endif
-#endif /* LIBC_SCCS and not lint */
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #ifdef _KERNEL
 #include <sys/systm.h>
@@ -52,7 +41,6 @@ __FBSDID("$FreeBSD$");
 
 #undef memcpy
 #undef memmove
-#undef bcopy
 
 /*
  * sizeof(word) MUST BE A POWER OF TWO
@@ -147,10 +135,3 @@ done:
 }
 
 __strong_reference(memcpy, memmove);
-
-void
-(bcopy)(const void *src0, void *dst0, size_t length)
-{
-
-	memcpy(dst0, src0, length);
-}
