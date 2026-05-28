@@ -376,3 +376,18 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 修订后状态 | `98 P1-001` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变（事实订正属可执行性维度的精度提升，不影响一致性/完整性/风险覆盖度结论）。 |
 | 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；全目录 `grep '574|新增 25 项|SYS_sigfastblock=573'` 应无残留。 |
 
+### 12.2 修订 R-2026-05-28-02：`if_t` 类型定义订正
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联审计条目 | `98-independent-audit-report.md` §3 P1-002，§6.1 第 2 项 |
+| 错误根因 | Phase 2 Sub-Agent B（Analyzer-15）将 15.0 的 `if_t` 误描述为 `typedef void *if_t`；并把"不透明化"等同于"底层类型变为 `void *`"。Phase 4 reviewer 未实测 `sys/net/if.h` / `sys/net/if_var.h` 中 typedef 的具体形式。 |
+| 实测基线 | 13.0 `sys/net/if_var.h:127`：`typedef struct ifnet * if_t;`；15.0 `sys/net/if.h:667`：`typedef struct ifnet *if_t;`。**两版均为 `struct ifnet *`，从来不是 `void *`**。差异在于 15.0 把该 typedef 上提到 `if.h` 并把 `if_alloc()` 等内核 API 签名统一改用 `if_t`，配套提供 `if_get*/if_set*` 访问函数。"不透明化"指 API 契约（外部代码应用访问函数操作），不是底层类型抹除。来源：`grep -nE 'typedef.*if_t' /data/workspace/freebsd-src-releng-{13.0,15.0}/sys/net/if.h /data/workspace/freebsd-src-releng-{13.0,15.0}/sys/net/if_var.h`（2026-05-28 实测）。 |
+| 修订动作 1 | `03-freebsd-15-changes.md` §3.3 行 137"事实"格：删除 `typedef void *if_t` 错误说法，改写为分两版本对照（13.0 已有 typedef 但 API 仍以 `struct ifnet *` 暴露；15.0 上提 typedef 并统一 API），并显式声明"底层类型并未变成 `void *`"。 |
+| 修订动作 2 | `00-overview-and-glossary.md` §术语表 `if_t` 行重写：明确 `typedef struct ifnet *if_t`，配以"`if_t` 不是 `void *`"的反向澄清，并加跳转到 `03 §3.3` 的指引。 |
+| 修订动作 3 | `06-test-and-acceptance-spec.md` §4.2 行 118 测试点描述：保留语义"`if_alloc(IFT_ETHER)` 返回 `if_t`"，但在括号内补"typedef 为 `struct ifnet *`，13.0 中该 API 直接返回 `struct ifnet *`"消除歧义。 |
+| 影响范围 | `R-013`（`ifnet → if_t` 不透明化，P0）的优先级与处置决定不变，仅修正其事实底数。`ff_veth.c` 适配策略需注意：仍可使用 `struct ifnet *` 兼容写法（typedef 可互转），但**应**遵循"通过访问函数操作"的 15.0 API 契约，不应直接依赖字段布局。 |
+| 修订后状态 | `98 P1-002` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
+| 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；全目录 `grep -nE 'void \*if_t'` 应无残留。 |
+

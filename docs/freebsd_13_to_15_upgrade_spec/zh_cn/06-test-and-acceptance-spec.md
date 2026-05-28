@@ -115,7 +115,7 @@ TC-XX：用例名
 
 | 测试点 | 期望 |
 |---|---|
-| `if_alloc(IFT_ETHER)` 返回 `if_t`（非 `struct ifnet *`） | 类型匹配；F-Stack 自家 ifp 操作走访问函数 |
+| `if_alloc(IFT_ETHER)` 返回 `if_t`（typedef 为 `struct ifnet *`，13.0 中该 API 直接返回 `struct ifnet *`） | 类型匹配；F-Stack 自家 ifp 操作统一通过 `if_get*/if_set*` 访问函数，不直接依赖字段布局 |
 | `if_setflags / if_getflags / if_setname` 等访问函数 | 行为与 13.0 直接字段访问等价 |
 
 ### 4.3 ff_route.c（T-ff-03）单元

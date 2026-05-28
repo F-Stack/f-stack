@@ -134,7 +134,7 @@ FreeBSD 13.0 → 15.0 跨越了 4 年 + 6 个 release（13.0 → 14.0 → 14.1 �
 
 | 维度 | 内容 |
 |---|---|
-| **事实** | 13.0：`struct ifnet` 字段直接访问（`ifp->if_flags`、`ifp->if_xname` 等）。15.0：定义 `typedef void *if_t`，所有访问改走 `if_getflags(ifp)`、`if_name(ifp)` 等访问函数；`if_alloc()` 签名从返回 `struct ifnet*` 改成返回 `if_t`，新增 `if_alloc(type)` 不带 dev 版本 |
+| **事实** | 13.0：`sys/net/if_var.h:127` 已有 `typedef struct ifnet * if_t;`，但内核 API 仍以 `struct ifnet *` 出现（如 `if_alloc()` 返回 `struct ifnet *`），驱动/桥接代码普遍直接访问字段（`ifp->if_flags`、`ifp->if_xname` 等）。15.0：将该 typedef 上提到 `sys/net/if.h:667`（`typedef struct ifnet *if_t;`），并把 `if_alloc()` 等内核 API 签名统一改用 `if_t`；同时配套提供大量 `if_getflags(ifp)`、`if_name(ifp)`、`if_setname(ifp, ...)` 等访问函数（`sys/net/if_var.h`）。**底层类型并未变成 `void *`，"不透明化"指的是 API 契约：外部代码应通过 `if_get*/if_set*` 访问函数操作 `if_t`，不应直接依赖 `struct ifnet` 字段布局**。 |
 | **影响文件** | `net/if.c` / `if_var.h` / 所有驱动 / `ff_veth.c` |
 | **对 F-Stack 影响** | `ff_veth.c` 是 F-Stack 自家的 DPDK 桥，必须改用 `if_t` 访问函数；F-Stack `freebsd/net/if.c` 改造点需重新评估（H-1 / H-9 标签的 stub 是否还成立） |
 | **风险 ID** | R-013 |

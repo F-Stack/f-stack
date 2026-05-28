@@ -87,7 +87,7 @@ F-Stack 是把 FreeBSD 内核协议栈剥离出来跑在 DPDK 用户态的工程
 | **VNET** | Virtualized Network Stack | FreeBSD 的网络栈虚拟化机制 |
 | **SMR** | Safe Memory Reclamation | FreeBSD 14/15 用来替换部分 epoch 场景的安全内存回收机制 |
 | **`pr_usrreqs`** | 协议用户请求向量表 | 13.0 时代 socket protocol 接口；15.0 已合并入 `struct protosw` |
-| **`if_t`** | 不透明 ifnet 句柄 | 15.0 把 `struct ifnet *` 不透明化为 `if_t`，所有访问走访问函数 |
+| **`if_t`** | ifnet 不透明访问句柄 | 13.0 在 `sys/net/if_var.h` 已有 `typedef struct ifnet * if_t;` 但内核 API 仍以 `struct ifnet *` 暴露；15.0 将该 typedef 上提到 `sys/net/if.h`（仍是 `typedef struct ifnet *if_t`，**不是** `void *`），并把 `if_alloc()` 等内核 API 改用 `if_t`，配套提供 `if_get*/if_set*` 访问函数。"不透明化"是 API 契约层语义：外部代码应通过访问函数操作，不应直接依赖字段布局。详见 `03-freebsd-15-changes.md §3.3` |
 | **inpcbgroup** | inpcb 分组哈希 | 13.0 epoch 保护，15.0 改为 SMR |
 | **netlink（FreeBSD）** | netlink 兼容子系统 | 15.0 新增（实际 14.0 引入），Linux netlink 兼容层，sys/netlink/ |
 | **RACK** | Recent ACKnowledgment | FreeBSD 14/15 默认开启的 TCP 重传算法栈 |
