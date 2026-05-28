@@ -444,3 +444,18 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 修订后状态 | `98 P1-006` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
 | 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '当前不存在\|2 份已交付，6 份待出\|待 Phase 3\\.\|待 Phase 4 出报告\|待 Leader 下回合' zh_cn/{plan,01,99,00}.md` 应无残留（合法历史引文如 98 审计报告原文与本节修订记录除外）。 |
 
+### 12.6 修订 R-2026-05-28-06：03 外部资料引用与待核验清单
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联审计条目 | `98-independent-audit-report.md` §3 P1-005，§6.1 第 6 项 |
+| 错误根因 | 03 v0.1 大量引用上游事实（mips 移除、clang/llvm 19、pkgbase、`pr_usrreqs` 合并、inpcb SMR、`if_t` 不透明化、netlink、RACK 默认化、KTLS、routing/rib/nexthop、14.4/15.1 时间线等），但全文仅 1 处出现"Release Notes"字样、零 URL、零抓取日期。Phase 2 Sub-Agent B（Analyzer-15）原计划应跑 `web_search` / `web_fetch`，实际未执行；Phase 4 reviewer 未把"外部事实是否可复核"列为审查维度。 |
+| 实测基线 | 本次改用"本地权威源"补充：`/data/workspace/freebsd-src-releng-15.0/` 本身就是 15.0-RELEASE-p9 的完整源代码 + RELNOTES + UPDATING + sys/sys/param.h + sys/conf/newvers.sh + sys/conf/files + 各子系统头文件，绝大多数事实可以在本仓库内部找到逐字引文。本节列入 13 条本地可复核事实 + 8 条待核验外部 URL。 |
+| 修订动作 1 | `03-freebsd-15-changes.md` 末尾新增 §10「外部资料引用与待核验清单（2026-05-28 增补）」，分三个小节：§10.1 本地权威源（13 条事实，每条给 `路径:行号 + 引文`，读者可直接 `sed -n '<line>p'` 复核）；§10.2 外部 URL 待核验清单（8 条，覆盖 clang 19、pkgbase、netlink 引入年份、RACK 默认 knob、KTLS commit、routing 重写设计、14.x 时间线、15.1）；§10.3 待核验条目的转正条件与流程。 |
+| 修订动作 2 | 不新建独立的 `03-appendix-sources.md`（审计 P1-005 建议的两种方案之一），而是把外部资料章节内嵌到 03 自身 §10，避免额外的跨文件维护成本；与审计建议的等效性体现在：每条事实仍能定位到来源 + 待核验项明确列出转正路径。 |
+| 修订动作 3 | `98-independent-audit-report.md` §3 P1-005 与 §6.1 第 6 项追加"已修订 2026-05-28，详见 99 §12.6"标记，闭合审计条目。 |
+| 影响范围 | 03 中所有外部事实从"无可复核证据"升级为"本地可复核（§10.1）"或"明确待核验（§10.2）"。**Spec 阶段 Go/No-Go 维度的"作为 Spec 草案 = GO"结论保持不变；新增的外部 URL 核验工作不阻塞 M1 实施阶段，可在 M1 准备阶段并行完成**（详见 §10.3）。 |
+| 修订后状态 | `98 P1-005` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
+| 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE 'sys/conf/newvers\\.sh\|sys/sys/param\\.h\|UPDATING:\|RELNOTES:\|sys/sys/protosw\\.h\|sys/netinet/in_pcb\\.h\|sys/net/if\\.h\|sys/net/if_var\\.h\|sys/conf/files' zh_cn/03-*.md` 应有 ≥10 处命中（即本地引文路径）。 |
+

@@ -319,3 +319,50 @@ F-Stack 不启用，P3。
 | 升级里程碑（§8） | `05-implementation-plan.md` 引用作为 baseline 时间线参考 |
 
 > 下一步：`04-diff-and-port-strategy.md` 把本节风险与 02 改造点交叉，产出最终 port 任务清单。
+
+## 10. 外部资料引用与待核验清单（2026-05-28 增补）
+
+> 本节响应独立审计 §P1-005：本文档大量引用上游事实（mips 移除、clang/llvm 19、pkgbase、`pr_usrreqs` 合并、inpcb SMR、`if_t` 不透明化、netlink、RACK 默认化、KTLS、routing/rib/nexthop、14.4/15.1 时间线等），但在 v0.1 中没有逐条给出 URL / 引文片段 / 抓取日期。本节按"§10.1 本地权威源（可立即复核）"与"§10.2 外部 URL 待核验清单"两类，把每条事实的来源补上；§10.3 给出"待核验"条目的转正条件。
+> 全部引文均为 2026-05-28 实测；本地路径均位于 `/data/workspace/freebsd-src-releng-15.0/`（除非另注）。
+
+### 10.1 本地权威源（可立即复核）
+
+下表中每条引文的形式为「文件路径 + 行号 + 简短引文」，读者可直接 `sed -n '<line>p' <path>` 复核。
+
+| 03 章节 | 事实 | 本地权威源（路径:行号 + 引文） |
+|---|---|---|
+| §1 / §2.1 | 13.0 = `RELEASE-p2`，15.0 = `RELEASE-p9` | `freebsd-src-releng-13.0/sys/conf/newvers.sh`：`REVISION="13.0" / BRANCH="RELEASE-p2"`；`freebsd-src-releng-15.0/sys/conf/newvers.sh`：`REVISION="15.0" / BRANCH="RELEASE-p9"` |
+| §1 / §6 | `__FreeBSD_version`：13.0=`1300139`，15.0=`1500068` | `freebsd-src-releng-13.0/sys/sys/param.h`：`#define __FreeBSD_version 1300139`；`freebsd-src-releng-15.0/sys/sys/param.h:#define __FreeBSD_version 1500068` |
+| §2.1 | mips 整体移除（始于 14.0，commit 2021-12-09） | `freebsd-src-releng-15.0/UPDATING:929-932`：`20211209: Remove mips as a recognized target. This starts the decommissioning of mips support in FreeBSD. mips related items will be removed wholesale in the coming days and weeks.`；行 971：`Mips has been removed from universe builds`；行 1463：`mips, powerpc, and sparc64 are no longer built as part of universe`；行 1643：`mips GXEMUL support has been removed`；行 751：`Following the general removal of MIPS support, the ath(4) AHB bus-…` |
+| §2.2 | clang/llvm 18 阶梯升级（→ 19 待 14.x→15 RELNOTES 校核） | `freebsd-src-releng-15.0/UPDATING:621-628`：`20240406: Clang, llvm, lld, lldb, compiler-rt, libc++, libunwind and openmp have been upgraded to 18.1.6.`；clang 19 升级条目留待 §10.2 待核验（UPDATING 文本未在本仓库版本中检出 19.x 升级行） |
+| §2.3 | pkgbase 在 15.0 阶段密集落地 | `freebsd-src-releng-15.0/UPDATING` 行 80/90/157/159/166/184/188/211/227/243/265/358/373/381/386/458/463/527/556/613/618/622/712/716/717/718（共 40+ 处），代表性引文：行 157：`release engineering builds on pkgbase.freebsd.org`；行 527：`different transport - netlink(4) socket instead of unix(4). Users of …`（同时关联 netlink） |
+| §2.4 | 13→15 syscall 表实测（22 项新增 + 3 项删除） | `grep '^#define[[:space:]]\+SYS_' freebsd-src-releng-{13.0,15.0}/sys/sys/syscall.h \| awk '{print $2}' \| sort \| comm`（详见 99 §12.1） |
+| §3.1 | `pr_usrreqs` 在 15.0 已被合并入 `protosw` | `freebsd-src-releng-13.0/sys/sys/protosw.h:95`：`struct pr_usrreqs *pr_usrreqs;`；`freebsd-src-releng-13.0/sys/sys/protosw.h:188`：`struct pr_usrreqs {`；15.0 同名头文件中已无 `pr_usrreqs` 字段（grep 0 行） |
+| §3.2 | `inpcb` 转 SMR | `freebsd-src-releng-15.0/sys/netinet/in_pcb.h:141-142`：`are be performed inside SMR section. Once desired PCB is found its own lock is to be obtained and SMR section exited.`；行 192：`smr_seq_t inp_smr; /* (i) sequence number at disconnect */`；行 342：`The pcbs are protected with SMR section…` |
+| §3.3 | `if_t` typedef（详见 99 §12.2） | `freebsd-src-releng-13.0/sys/net/if_var.h:127`：`typedef struct ifnet * if_t;`；`freebsd-src-releng-15.0/sys/net/if.h:667`：`typedef struct ifnet *if_t;` |
+| §3.5 | netlink 子系统 15.0 引入 | `freebsd-src-releng-15.0/sys/netlink/`（目录存在，3907 行 `.c`，13.0 该目录不存在）；`freebsd-src-releng-15.0/UPDATING:851-853`：`As of commit 7c40e2d5f685, the dependency on netlink(4) has been added … to compile netlink(4) module if it is not present in their kernel.` |
+| §3.6 | RACK / BBR / extra TCP stacks 模块化 | `freebsd-src-releng-15.0/sys/conf/files:4451-4456`：`netinet/tcp_stacks/rack.c optional inet tcphpts tcp_rack \| inet6 tcphpts tcp_rack \\` 与 `compile-with "${NORMAL_C} -DMODNAME=tcp_rack -DSTACKNAME=rack"`；同时 `rack_bbr_common.c` / `sack_filter.c` / `tailq_hash.c` / `rack_pcm.c` 也在该处声明 |
+| §3.7 | KTLS 在 GENERIC 默认开启 | `freebsd-src-releng-15.0/RELNOTES:227-228`：`Kernel TLS is now enabled by default in kernels including KTLS support. KTLS is included in GENERIC kernels for aarch64, …` |
+| §3.8 | routing / rib / nexthop 安全相关 | `freebsd-src-releng-15.0/UPDATING:107-109`：`15.0-RELEASE-p4 SA-26:05.route … Local DoS and possible privilege escalation via routing sockets.`（侧证 routing 子系统在 15.0 仍处活跃维护） |
+
+### 10.2 外部 URL 待核验清单
+
+下表中的事实需要外部网络访问才能补全 URL / 抓取日期；按本审计回合的范围，这些条目暂以"待核验"留存，由 M1 启动前的人工 review 阶段补完。
+
+| 03 章节 | 事实 | 候选 URL（待核验） | 转正条件 |
+|---|---|---|---|
+| §2.2 | clang/llvm 19 升级时间点（v0.1 写"clang/llvm 19"） | `https://www.freebsd.org/releases/15.0R/relnotes/`（FreeBSD 15.0 官方 release notes）；`https://lists.freebsd.org/archives/freebsd-current/`（搜索 "Clang 19 import"） | 在线打开 → 截取关键句 → 记入本节 + 99 §12.6 |
+| §2.3 | pkgbase 在 15.0 状态（v0.1 写"P3 / EXPERIMENTAL knob"） | `https://wiki.freebsd.org/PkgBase`；`https://docs.freebsd.org/en/articles/explaining-bsd/`（pkgbase 章节） | 同上 |
+| §3.5 | netlink 引入年份（v0.1 写"实际 14.0 引入"）的官方说明 | `https://www.freebsd.org/releases/14.0R/relnotes/`；`man.freebsd.org/cgi/man.cgi?netlink(4)` | 同上 |
+| §3.6 | RACK 在 15.0 base 的 default knob 状态 | `https://www.freebsd.org/releases/15.0R/relnotes/`；`https://lists.freebsd.org/archives/freebsd-net/`（搜索 "RACK default"） | 同上 |
+| §3.7 | KTLS API 14→15 变化的具体 commit / phabricator review | `https://reviews.freebsd.org/`；`https://cgit.freebsd.org/src/log/sys/sys/ktls.h` | 同上 |
+| §3.8 | routing/rib/nexthop 重写设计文档 | `https://reviews.freebsd.org/D26577`（route_ctl 引入）；FreeBSD wiki "FIB / NHOP" 词条 | 同上 |
+| §6 | 14.0R 至 14.4R 时间线表 | `https://www.freebsd.org/releases/`（每个 14.x 版本主页） | 同上 |
+| §6 | 15.1R 时间线占位 | `https://www.freebsd.org/releases/15.1R/`（暂未发布） | 发布后回填 |
+
+### 10.3 待核验条目的转正条件与流程
+
+1. **触发时机**：本批"待核验"条目应在 M1 实施阶段启动前，由人工 review 补 URL，**不阻塞** Spec 阶段交付（§7 Go/No-Go 判断中"作为 Spec 草案 = GO"）
+2. **核验方式**：访问 §10.2 列出的候选 URL → 截取与本文档事实相关的不超过 3 句原文 → 在本节追加「URL + 抓取日期 + 引文片段」 → 把对应行的"候选 URL（待核验）"改为"已核验 URL"
+3. **不可用回退**：若 URL 失效或与文档事实不一致，应在本节记录"已尝试核验，结论与 v0.1 不符 / 无法访问"并联动订正主体章节
+4. **Phase 4 reviewer 责任**：未来再次评审本文档时，若发现 §10.2 列表为空（表示已全部核验完），应在 99 §3 / §7 增加一条"外部事实 100% 可复核"的质量指标
