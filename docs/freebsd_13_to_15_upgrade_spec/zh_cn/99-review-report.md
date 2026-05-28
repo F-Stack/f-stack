@@ -558,3 +558,20 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 修订后状态 | `98 §6.2 第 5 项` 闭合；至此 §6.2 推荐修订 5 项全部完成；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
 | 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '^## 0\\. 文档定位声明' zh_cn/99-*.md` 应有 1 行命中；`grep -nE '99-review-report\\.md' zh_cn/*.md \| wc -l` 数量应不变（即未对引用做改动）。 |
 
+### 12.12 修订 R-2026-05-28-12：15.0 f-stack-lib tools/compat/include/ 全量重新基线化
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联条目 | 用户在 R-07~R-11 完成后追加发现的"15.0 备份不正确"问题；与审计 §6.1 第 5 项（plan/01/99 状态对齐）相邻但属新发现，独立成 §12.12。 |
+| 错误根因 | Phase 1.4（2026-05-26）创建 `freebsd-src-releng-15.0/f-stack-lib/` 时，对 `tools/compat/` 子树采用了"按 13.0 同位置目录直接拷贝"策略；其中 `tools/compat/include/` 含 171 个头文件，全部从 `freebsd-src-releng-13.0/f-stack-lib/tools/compat/include/` 整体复制，与"15.0 上游原始备份"定位不符。`diff -rq 13.0/f-stack-lib/tools/compat/include 15.0/f-stack-lib/tools/compat/include` 修订前为 0 differ（100% 字节一致），即整个目录都是 13.0 旧基线。 |
+| 实测分类 | 171 个头文件按 15.0 上游来源分为 4 类（实测命令：对每个文件 `cmp` 4 个候选源 sys / include / MOVED 路径 / 13.0 备份）：(a) **`[OK-SYS]` 162**：在 `freebsd-src-releng-15.0/sys/<原相对路径>` 同位置存在 → 同位置覆盖；(b) **`[OK-MOVED]` 2**：`alias.h` ← `sys/netinet/libalias/alias.h`（13.0 时代独立放置，15.0 已纳入 libalias）；`ifaddrs.h` ← `sys/netlink/route/ifaddrs.h`（15.0 随 netlink 引入）；(c) **`[OK-INC]` 5**：用户态系统头，在 `freebsd-src-releng-15.0/include/` 而非 `sys/`：`arpa/inet.h` / `netdb.h` / `nlist.h` / `stringlist.h` / `timeconv.h`；(d) **`[LEGACY-13]` 2**：`netgraph/ng_atmllc.h` 与 `netgraph/ng_sppp.h` 在 15.0 上游已被整体删除（`UPDATING:981`：`The synchronous PPP kernel driver sppp(4) has been removed.`；`ng_atmllc` 在 15.0 sys/ 树中无源码且无 UPDATING 条目），保留 13.0 旧版仅作 F-Stack tools/compat 历史兼容。 |
+| 修复动作 1（数据层）| 在 `/data/workspace/freebsd-src-releng-15.0/f-stack-lib/tools/compat/include/` 实际执行：`for f in $(find . -type f); do cp -f /data/workspace/freebsd-src-releng-15.0/sys/$f $f 2>/dev/null; done`（覆盖 162 个 `[OK-SYS]`），再按映射表逐个 `cp -f` 7 个非同位置文件（2 MOVED + 5 INC）；保留 2 个 `[LEGACY-13]` 字节不变。 |
+| 修复动作 2（标记层）| 新增 `/data/workspace/freebsd-src-releng-15.0/f-stack-lib/tools/compat/include/netgraph/LEGACY.md`，列出 `ng_atmllc.h` / `ng_sppp.h` 的 13.0 来源与 15.0 上游删除证据（含 `UPDATING:981` 引文），明确"不视为 15.0 上游基线"。该子目录文件数从 171 升至 172。 |
+| 修复动作 3（清单层）| 在 `freebsd-src-releng-15.0/f-stack-lib/INVENTORY.md` 末尾追加 §6\"修订记录 R-2026-05-28-12\"（含 4 类分类、修复命令、影响范围、校验方式）；保持 INVENTORY 与实际目录现状一致。 |
+| 修复动作 4（spec 层）| `plan.md` §1.3「Phase 1.4 已完成的工作」列表后追加段落：说明 2026-05-28 重新基线化的范围、4 类分类、文件数变化、关联引用；指向本节（99 §12.12）与 INVENTORY §6。 |
+| 复核结果 | `find tools/compat/include -type f \| wc -l` = 172（修订前 171 + LEGACY.md 1）；按 4 类候选源逐文件 `cmp` 复核：[OK-SYS] 162 / [OK-INC] 5 / [OK-MOVED] 2 / [LEGACY-13] 2 / [ERROR] 0；`diff -rq 13.0 vs 15.0` 输出 169 differ + 1 only-in-15（修订前为 0 differ）。 |
+| 影响范围 | 仅订正 `freebsd-src-releng-15.0/f-stack-lib/tools/compat/include/` 子树文件内容，不动 `f-stack-lib/freebsd/`（Phase 1.4 已按 15.0 上游 `sys/` 子目录直接拷贝，本身无该问题）、不动 `f-stack-lib/tools/` 其它子目录、不动 F-Stack 改造目录 `f-stack/tools/compat/include/`（那是 spec §1.1/§1.2 定义的"用户改造后副本"，按计划应在 M5 阶段按需迁移）。本修订**不改变**任何 spec 风险识别、任务排期、§6.1/§6.2 已完成项的结论。 |
+| 修订后状态 | `15.0 f-stack-lib tools/compat/include/` 现已是真正的 15.0 上游基线（含 2 处 LEGACY 显式标记）；M1 实施阶段对该子目录的引用、对比、迁移基准全部以本次修订后的状态为准。 |
+| 校验 | `read_lints zh_cn/` 返回 0 diagnostics；`diff -rq /data/workspace/freebsd-src-releng-13.0/f-stack-lib/tools/compat/include /data/workspace/freebsd-src-releng-15.0/f-stack-lib/tools/compat/include 2>&1 \| awk '/^Files/{d++} /^Only in/{o++} END{print d,o}'` 应输出 `169 1`。 |
+

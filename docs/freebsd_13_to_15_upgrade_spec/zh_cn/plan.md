@@ -55,6 +55,8 @@ Phase 1.4 已完成的工作：
 2. 已创建 `f-stack-lib/tools/`，按 `13.0/f-stack-lib/tools/` 的子目录清单从 `freebsd-src-releng-15.0/{tools,sbin,usr.sbin}/` 拷贝（451 个文件）
 3. 已生成 `INVENTORY.md` 记录每项来源路径、版本、文件数、与 13.0 备份的 `diff -rq` 计数
 
+**2026-05-28 修订（R-2026-05-28-12）**：Phase 1.4 创建 `15.0/f-stack-lib/tools/compat/include/` 时，171 个头文件曾整体从 13.0 同位置拷贝（即 13.0 / 15.0 备份在该子目录字节级一致），与"15.0 上游原始备份"定位不符。本次（2026-05-28）按 15.0 上游对应位置重新基线化：162 个从 `freebsd-src-releng-15.0/sys/<相对路径>` 同位置覆盖；2 个 MOVED（`alias.h` ← `sys/netinet/libalias/`，`ifaddrs.h` ← `sys/netlink/route/`，后者是 15.0 随 netlink 引入）；5 个用户态系统头从 `freebsd-src-releng-15.0/include/` 取（`arpa/inet.h` / `netdb.h` / `nlist.h` / `stringlist.h` / `timeconv.h`）；2 个上游已删除的 LEGACY 头（`netgraph/ng_atmllc.h` 上游删除无 UPDATING 条目；`netgraph/ng_sppp.h` 由 `freebsd-src-releng-15.0/UPDATING:981` 记录 `sppp(4) has been removed`）保留 13.0 旧版，并新增 `tools/compat/include/netgraph/LEGACY.md` 标记说明。修订后该子目录文件数 171 → 172（+1 LEGACY.md），`diff -rq 13 vs 15` 从 0 differ 升至 169 differ + 1 only-in-15。详见 `freebsd-src-releng-15.0/f-stack-lib/INVENTORY.md` §6 与 `99-review-report.md` §12.12。
+
 ### 1.4 F-Stack 已改造目录（本次升级的核心对象）
 
 | 目录 | 文件数 | 与 13.0 原始备份的差异 | 角色 |
