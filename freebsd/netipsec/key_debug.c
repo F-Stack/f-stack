@@ -1,4 +1,3 @@
-/*	$FreeBSD$	*/
 /*	$KAME: key_debug.c,v 1.26 2001/06/27 10:46:50 sakane Exp $	*/
 
 /*-
@@ -156,6 +155,8 @@ kdebug_sadb_exttype(uint16_t type)
 	X_NAME(SA_REPLAY);
 	X_NAME(NEW_ADDRESS_SRC);
 	X_NAME(NEW_ADDRESS_DST);
+	X_NAME(LFT_CUR_SW_OFFL);
+	X_NAME(LFT_CUR_HW_OFFL);
 	default:
 		return ("UNKNOWN");
 	};
@@ -190,11 +191,12 @@ kdebug_sadb(struct sadb_msg *base)
 		    ext->sadb_ext_len, ext->sadb_ext_type,
 		    kdebug_sadb_exttype(ext->sadb_ext_type));
 
-		if (ext->sadb_ext_len == 0) {
+		extlen = PFKEY_UNUNIT64(ext->sadb_ext_len);
+		if (extlen == 0) {
 			printf("%s: invalid ext_len=0 was passed.\n", __func__);
 			return;
 		}
-		if (ext->sadb_ext_len > tlen) {
+		if (extlen > tlen) {
 			printf("%s: ext_len too big (%u > %u).\n",
 				__func__, ext->sadb_ext_len, tlen);
 			return;
@@ -252,13 +254,15 @@ kdebug_sadb(struct sadb_msg *base)
 		case SADB_X_EXT_NAT_T_DPORT:
 			kdebug_sadb_x_natt(ext);
 			break;
+		case SADB_X_EXT_LFT_CUR_SW_OFFL:
+		case SADB_X_EXT_LFT_CUR_HW_OFFL:
+			kdebug_sadb_lifetime(ext);
 		default:
 			printf("%s: invalid ext_type %u\n", __func__,
 			    ext->sadb_ext_type);
 			return;
 		}
 
-		extlen = PFKEY_UNUNIT64(ext->sadb_ext_len);
 		tlen -= extlen;
 		ext = (struct sadb_ext *)((caddr_t)ext + extlen);
 	}
@@ -808,12 +812,15 @@ kdebug_secreplay(struct secreplay *rpl)
 {
 	int len, l;
 
+	SECREPLAY_LOCK(rpl);
+
 	IPSEC_ASSERT(rpl != NULL, ("null rpl"));
 	printf(" secreplay{ count=%lu bitmap_size=%u wsize=%u last=%lu",
 	    rpl->count, rpl->bitmap_size, rpl->wsize, rpl->last);
 
 	if (rpl->bitmap == NULL) {
 		printf("  }\n");
+		SECREPLAY_UNLOCK(rpl);
 		return;
 	}
 
@@ -823,6 +830,7 @@ kdebug_secreplay(struct secreplay *rpl)
 			printf("%u", (((rpl->bitmap)[len] >> l) & 1) ? 1 : 0);
 	}
 	printf("    }\n");
+	SECREPLAY_UNLOCK(rpl);
 }
 #endif /* IPSEC_DEBUG */
 
@@ -878,9 +886,11 @@ kdebug_secasv(struct secasvar *sav)
 		kdebug_secnatt(sav->natt);
 	if (sav->replay != NULL) {
 		KEYDBG(DUMP,
-		    SECASVAR_LOCK(sav);
+		    SECASVAR_RLOCK_TRACKER;
+
+		    SECASVAR_RLOCK(sav);
 		    kdebug_secreplay(sav->replay);
-		    SECASVAR_UNLOCK(sav));
+		    SECASVAR_RUNLOCK(sav));
 	}
 	printf("}\n");
 }
@@ -916,9 +926,9 @@ void
 kdebug_mbuf(const struct mbuf *m0)
 {
 	const struct mbuf *m = m0;
-	int i, j;
+	int i;
 
-	for (j = 0; m; m = m->m_next) {
+	for (; m; m = m->m_next) {
 		kdebug_mbufhdr(m);
 		printf("  m_data:\n");
 		for (i = 0; i < m->m_len; i++) {
@@ -927,7 +937,6 @@ kdebug_mbuf(const struct mbuf *m0)
 			if (i % 4 == 0)
 				printf(" ");
 			printf("%02x", mtod(m, const u_char *)[i]);
-			j++;
 		}
 		printf("\n");
 	}
