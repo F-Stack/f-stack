@@ -93,7 +93,7 @@ F-Stack 是把 FreeBSD 内核协议栈剥离出来跑在 DPDK 用户态的工程
 | **RACK** | Recent ACKnowledgment | FreeBSD 14/15 默认开启的 TCP 重传算法栈 |
 | **mips** | MIPS 架构 | 14.0 整体从 base 移除，影响 F-Stack `freebsd/mips/` 子目录 |
 | **`__FreeBSD_version`** | FreeBSD 版本宏 | 13.0 = `1300139`；15.0 = `1500068` |
-| **`SYS_MAXSYSCALL`** | 最大 syscall 号 | 13.0 = 574；15.0 = 599（新增 25 项含 inotify/timerfd/kqueuex/membarrier 等） |
+| **`SYS_MAXSYSCALL`** | 最大 syscall 号 | 13.0 = 580；15.0 = 599（13→15 净新增 22 项 + 删除 3 项；新增代表：`fspacectl`、`kqueuex`、`membarrier`、`timerfd_create/gettime/settime`、`inotify_add_watch_at`、`inotify_rm_watch`、`jail_remove_jd` 等；删除：`gssd_syscall`、`sbrk`、`sstk`。完整清单见 `03-freebsd-15-changes.md` §2.4） |
 | **pkgbase** | base 系统包化 | 15.0 可选发布形态，与 F-Stack 无关 |
 | **`m_pkthdr` / `m_ext`** | mbuf 头与外存指针 | 14→15 字段调整 |
 | **`mb_unmapped_*` / `pcpu_page_alloc`** | unmapped mbuf 路径 | F-Stack 屏蔽的 host VM 依赖 |

@@ -353,3 +353,26 @@ q2 决定的范围（来自 plan.md §1.5）：
 | Leader（主对话内执行）| ✓ | 2026-05-26 |
 | Reviewer（兼）| ✓ | 2026-05-26 |
 | **Spec 阶段交付** | **✅ 通过** | 2026-05-26 |
+
+---
+
+## 12. 修订记录
+
+> 本章记录 spec 交付后基于独立审计（`98-independent-audit-report.md`）所做的事实订正，遵循"事实错误 → 审计发现 → 修订记录"的可追溯链。
+
+### 12.1 修订 R-2026-05-28-01：`SYS_MAXSYSCALL` 与 13→15 syscall 增量订正
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联审计条目 | `98-independent-audit-report.md` §3 P1-001 |
+| 错误根因 | Phase 2 Sub-Agent B（Analyzer-15）未对 `sys/sys/syscall.h` 执行 grep 实测，而是凭 release notes 描述与局部观察推断 13.0 `SYS_MAXSYSCALL` 与 13→15 增量项数量；Phase 4 reviewer 在 4 维审查中未对该数值做回溯校验，错误流入 7 份 spec 中的 2 份。 |
+| 实测基线 | 13.0 `SYS_MAXSYSCALL=580`（420 个 `SYS_*` 名称），15.0 `SYS_MAXSYSCALL=599`（439 个）；13→15 净新增 22 项、删除 3 项。来源：`grep '^#define[[:space:]]\+SYS_' /data/workspace/freebsd-src-releng-{13.0,15.0}/sys/sys/syscall.h | awk '{print $2}' | sort | comm`（2026-05-28 实测）。 |
+| 修订动作 1 | `03-freebsd-15-changes.md` §1：`SYS_MAXSYSCALL` 表 13.0 列由 `574` 改为 `580`；"最大 syscall 号"行由 `SYS_sigfastblock=573` 改为 `SYS_aio_readv=579`。 |
+| 修订动作 2 | `03-freebsd-15-changes.md` §2.4：整段重写为"实测 13→15 syscall 表增量"，分 §2.4.1（22 项新增 + compat shim，附 15.0 编号）/ §2.4.2（3 项删除：`gssd_syscall`/`sbrk`/`sstk`）/ §2.4.3（13.0 已存在但此前误列为新增的 6 项澄清）三段；删除原表中的 `__realpathat` 误项；附实测来源脚注。 |
+| 修订动作 3 | `00-overview-and-glossary.md` §术语表：`SYS_MAXSYSCALL` 行 13.0 由 `574` 改为 `580`；"新增 25 项"改为"净新增 22 项 + 删除 3 项"；代表举例改为基于实测的 `fspacectl` / `kqueuex` / `membarrier` / `timerfd_*` / `inotify_*` / `jail_remove_jd` 等，并指向 `03 §2.4` 完整清单。 |
+| 修订动作 4 | `98-independent-audit-report.md` §3 P1-001 与 §6.1 第 1 项追加"已修订 2026-05-28，详见 99 §12.1"标记，闭合审计条目。 |
+| 影响范围 | `R-010`（"inotify / 抗量子 / out-of-scope"）的 syscall 增量背景同步更新；本次修订**不**改变 R-010 的优先级（仍为 P3）与"约束 C-1 不引入"的处置决定，仅修正其事实底数。 |
+| 修订后状态 | `98 P1-001` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变（事实订正属可执行性维度的精度提升，不影响一致性/完整性/风险覆盖度结论）。 |
+| 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；全目录 `grep '574|新增 25 项|SYS_sigfastblock=573'` 应无残留。 |
+

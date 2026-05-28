@@ -21,8 +21,8 @@ FreeBSD 13.0 → 15.0 跨越了 4 年 + 6 个 release（13.0 → 14.0 → 14.1 �
 | `BRANCH` | RELEASE-p2 | RELEASE-p9 |
 | `__FreeBSD_version` | **1300139** | **1500068** |
 | 实测路径 | `sys/sys/param.h:63` | `sys/sys/param.h:77` |
-| 最大 syscall 号 | `SYS_sigfastblock=573` | `SYS_jail_remove_jd=598` |
-| `SYS_MAXSYSCALL` | 574 | 599 |
+| 最大 syscall 号 | `SYS_aio_readv=579` | `SYS_jail_remove_jd=598` |
+| `SYS_MAXSYSCALL` | 580 | 599 |
 
 ---
 
@@ -55,24 +55,52 @@ FreeBSD 13.0 → 15.0 跨越了 4 年 + 6 个 release（13.0 → 14.0 → 14.1 �
 | **对 F-Stack 影响** | 无影响（F-Stack 不依赖 base 安装） |
 | **优先级** | P3（out of scope） |
 
-### 2.4 [P3] 抗量子加密 / inotify / timerfd 等新 syscall
+### 2.4 [P3] 13→15 syscall 表增量（实测）
 
-| 项目 | syscall 号 | 优先级 |
-|---|---|---|
-| `__realpathat` | 574 | P3 |
-| `close_range` | 575 | P3 |
-| `aio_writev / aio_readv` | 578 / 579 | P3（F-Stack 无 AIO） |
-| `fspacectl` | 580 | P3 |
-| `sched_getcpu` | 581 | P3 |
-| `swapoff` | 582 | P3 |
-| `kqueuex` | 583 | P3 |
-| `membarrier` | 584 | P3 |
-| `timerfd_create / gettime / settime` | 585-587 | P3 |
-| `kcmp / getrlimitusage / fchroot / setcred / exterrctl` | 588-592 | P3 |
-| **`inotify_add_watch_at / inotify_rm_watch`** | 593 / 594 | P3 (out of scope) |
-| `getgroups / setgroups / jail_attach_jd / jail_remove_jd` | 595-598 | P3 |
+13.0 `SYS_MAXSYSCALL=580`（共 420 个 `SYS_*` 名称），15.0 `SYS_MAXSYSCALL=599`（共 439 个）。**13→15 净新增 22 项，删除 3 项**（按 `SYS_*` 名称集求差实测）。
 
-> F-Stack 不走 host syscall 层（用户态自家分发），上述对 F-Stack 无直接影响。仅当 `ff_syscall_wrapper.c` 需要暴露这些时才动手。本次升级不引入（约束 C-1）。
+#### 2.4.1 13→15 新增 22 项（按 15.0 编号）
+
+| 项目 | 15.0 syscall 号 | 类型 | 优先级 | 备注 |
+|---|---:|---|---|---|
+| `fspacectl` | 580 | 新功能 | P3 | 文件空洞分配 |
+| `sched_getcpu` | 581 | 新功能 | P3 | — |
+| `freebsd13_swapoff` | （compat） | compat shim | P3 | 13.0 中 `swapoff=424`，15.0 重排为 582 并保留旧号兼容入口 |
+| `kqueuex` | 583 | 新功能 | P3 | kqueue 扩展 |
+| `membarrier` | 584 | 新功能 | P3 | — |
+| `timerfd_create` | 585 | 新功能 | P3 | Linux 兼容 |
+| `timerfd_gettime` | 586 | 新功能 | P3 | Linux 兼容 |
+| `timerfd_settime` | 587 | 新功能 | P3 | Linux 兼容 |
+| `kcmp` | 588 | 新功能 | P3 | — |
+| `getrlimitusage` | 589 | 新功能 | P3 | — |
+| `fchroot` | 590 | 新功能 | P3 | — |
+| `setcred` | 591 | 新功能 | P3 | — |
+| `exterrctl` | 592 | 新功能 | P3 | — |
+| **`inotify_add_watch_at`** | 593 | 新功能 | P3 (OOS) | 约束 C-1 不引入 |
+| **`inotify_rm_watch`** | 594 | 新功能 | P3 (OOS) | 约束 C-1 不引入 |
+| `freebsd14_getgroups` | （compat） | compat shim | P3 | 13.0 中 `getgroups=79`，15.0 重排为 595 并保留旧号兼容入口 |
+| `freebsd14_setgroups` | （compat） | compat shim | P3 | 13.0 中 `setgroups=80`，15.0 重排为 596 并保留旧号兼容入口 |
+| `jail_attach_jd` | 597 | 新功能 | P3 | — |
+| `jail_remove_jd` | 598 | 新功能 | P3 | — |
+| `_exit` | （compat） | compat shim | P3 | 旧编号 1 的兼容别名 |
+| `freebsd10__umtx_lock` | （compat） | compat shim | P3 | freebsd10 兼容 |
+| `freebsd10__umtx_unlock` | （compat） | compat shim | P3 | freebsd10 兼容 |
+
+#### 2.4.2 13→15 删除 3 项
+
+| 项目 | 13.0 syscall 号 | 删除原因 | 优先级 |
+|---|---:|---|---|
+| `gssd_syscall` | 505 | gssd 用户态 daemon 接口废弃 | P3 |
+| `sbrk` | 69 | brk/sbrk 用户态接口在 14.0 移除 syscall 实现（仅保留 libc 模拟） | P3 |
+| `sstk` | 70 | 与 `sbrk` 同期废除 | P3 |
+
+#### 2.4.3 13.0 中已存在的 syscall（**不属 13→15 新增**）
+
+以下 syscall 在 13.0 `sys/sys/syscall.h` 已经定义，**只是文档此前误列为 15.0 新增**：`SYS___realpathat=574`、`SYS_close_range=575`、`SYS_rpctls_syscall=576`、`SYS___specialfd=577`、`SYS_aio_writev=578`、`SYS_aio_readv=579`。
+
+> **实测来源**：`grep '^#define[[:space:]]\+SYS_' /data/workspace/freebsd-src-releng-{13.0,15.0}/sys/sys/syscall.h | awk '{print $2}' | sort | comm`（2026-05-28 实测）。
+>
+> F-Stack 不走 host syscall 层（用户态自家分发），上述对 F-Stack 无直接影响。仅当 `ff_syscall_wrapper.c` 需要暴露这些时才动手。本次升级不引入新 syscall（约束 C-1）。
 
 ### 2.5 [P2] syscall 表扩展整体影响
 
