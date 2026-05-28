@@ -11,6 +11,23 @@
 
 FreeBSD 13.0 → 15.0 跨越了 4 年 + 6 个 release（13.0 → 14.0 → 14.1 → 14.2 → 14.3 → 14.4 → 15.0），其中**网络栈核心 KBI/KPI 多处不兼容**。F-Stack 的 `freebsd/` 子树 **不能简单 patch** 升级，必须基于 15.0 `sys/` 重做"裁剪 + 改造"基线（对应 `02-architecture-analysis.md` 的 9 大改造手法在 15.0 基线上重新应用）。
 
+### 0.1 优先级两维度约定（2026-05-28 增补；响应审计 §6.2-1）
+
+本系列 spec 中所有 `P0` / `P1` / `P2` / `P3` 标签**分两个独立维度**使用，读者在交叉文档时应明确所引用的是哪一维：
+
+| 维度 | 含义 | 决定因素 |
+|---|---|---|
+| **风险等级**（risk level） | 该上游变化对 F-Stack 的破坏严重度 | KBI/KPI 是否破坏；范围与可恢复性；是 fact 维 |
+| **任务优先级**（task priority） | 该任务在实施进度中的迫切度 | 是否阻塞其它里程碑；是否必修（mandatory cleanup）；是 schedule 维 |
+
+二者**可独立**——典型对照：
+
+- **mips 移除（R-001）**：风险等级 = P2（上游事实，与 F-Stack 不强相关）；任务优先级 = **P0**（必须在 M1 清理掉 `f-stack/freebsd/mips/` 才能继续推进，否则 build 链断）
+- **netlink 引入（R-002）**：风险等级 = P1（15.0 新增重要子系统）；任务优先级 = P3（DP-2 决策"不引入"，本次升级不触碰）
+- **多数 P0 风险与 P0 任务一致**：`pr_usrreqs` 合并 / inpcb SMR / `if_t` / mbuf / routing 重写等
+
+为避免歧义，本文档 §2/§3 各小节的 heading 中括号 `[Pn]` **统一表示任务优先级**；`§4.1`、`§7` 等"风险表"中的"优先级"列**统一表示风险等级**；不一致处会在表内显式分两列（参见 §3.7 / §3.8）。`plan.md §4.1` 已按本约定改为两列。
+
 ---
 
 ## 1. 版本号事实
@@ -36,7 +53,7 @@ FreeBSD 13.0 → 15.0 跨越了 4 年 + 6 个 release（13.0 → 14.0 → 14.1 �
 | **来源** | FreeBSD 14.0R Release Notes —— "Removal of the mips architecture from the tree as Tier 2 platform" |
 | **对 F-Stack 影响** | `f-stack/freebsd/mips/`（来自 13.0 拷贝）必须删除；所有 Makefile / mk 中 mips-条件分支需清理 |
 | **动作** | FR-4 / DP-1 → 删除 |
-| **优先级** | **P0**（不删除会引入大量编译错误） |
+| **优先级** | **任务优先级 P0**（不删除会引入大量编译错误，M1 必修）；**风险等级 P2**（上游事实，与 F-Stack 业务能力无关）。详见 `§0.1` 两维度约定与 `plan.md §4.1` R-001。 |
 
 ### 2.2 [P1] clang/llvm 工具链版本要求
 
@@ -170,23 +187,23 @@ FreeBSD 13.0 → 15.0 跨越了 4 年 + 6 个 release（13.0 → 14.0 → 14.1 �
 | **风险 ID** | R-004 |
 | **优先级** | P1 |
 
-### 3.7 [P1] kernel TLS API 变化
+### 3.7 [P2] kernel TLS API 变化
 
 | 维度 | 内容 |
 |---|---|
 | **事实** | 14.0 引入 KTLS 完整 API；15.0 进一步重构 |
 | **对 F-Stack 影响** | F-Stack 当前未启用 KTLS，无直接破坏；但 `sys_socket.c` / `uipc_socket.c` 中含 KTLS 相关 #ifdef 分支，stub 化策略需评估 |
 | **风险 ID** | R-006 |
-| **优先级** | P2 |
+| **优先级** | **任务优先级 P2 / 风险等级 P2**（详见 `§0.1` 两维度约定） |
 
-### 3.8 [P1] routing 表结构变更（rib / nexthop）
+### 3.8 [P0] routing 表结构变更（rib / nexthop）
 
 | 维度 | 内容 |
 |---|---|
 | **事实** | 14.0 把 routing 表从老 `rtentry` 重构为 `rib` + `nexthop`；15.0 稳定到新结构 |
 | **影响文件** | `net/route.c` / `net/route.h` / `net/route_var.h` / 所有 `rtinit / rtalloc` 调用点 |
 | **对 F-Stack 影响** | `ff_route.c` 必须重写为 rib/nexthop API |
-| **优先级** | **P0**（与 R-013 并列，属 P0 KPI 破坏） |
+| **优先级** | **任务优先级 P0 / 风险等级 P0**（与 R-013 并列，KPI 破坏；详见 `§0.1` 两维度约定） |
 
 ### 3.9 [P1] VNET API 演进
 

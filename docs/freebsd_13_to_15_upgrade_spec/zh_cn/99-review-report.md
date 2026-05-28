@@ -459,3 +459,21 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 修订后状态 | `98 P1-005` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
 | 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE 'sys/conf/newvers\\.sh\|sys/sys/param\\.h\|UPDATING:\|RELNOTES:\|sys/sys/protosw\\.h\|sys/netinet/in_pcb\\.h\|sys/net/if\\.h\|sys/net/if_var\\.h\|sys/conf/files' zh_cn/03-*.md` 应有 ≥10 处命中（即本地引文路径）。 |
 
+### 12.7 修订 R-2026-05-28-07：优先级两维度约定（风险等级 vs 任务优先级）
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联审计条目 | `98-independent-audit-report.md` §4 P2-001，§6.2 第 1 项 |
+| 错误根因 | 多份 spec 把"优先级"作为单一标签使用，但实际上"该上游变化对 F-Stack 的破坏严重度（fact 维）"与"该任务在实施进度中的迫切度（schedule 维）"是两个独立维度。`mips` 在 `plan.md §4.1` 标 P2（fact 维），但在 `03 §2.1` 标题写 [P0]（schedule 维）；`KTLS` 在 `03 §3.7` heading 写 [P1]、表内写 P2；`routing` 在 `03 §3.8` heading 写 [P1]、表内写 P0；三处 heading 与表内冲突。 |
+| 实测基线 | 直接 `grep -nE '\[P[0-3]\]' 03-freebsd-15-changes.md` 与 `grep -n '优先级' 03-freebsd-15-changes.md` 对比，确认 KTLS / routing / mips 三处 heading 与表内不一致；`plan.md §4.1` 行 260-265 仅有单列"优先级"，未区分维度。 |
+| 修订动作 1 | `03-freebsd-15-changes.md` §0 末尾新增 §0.1「优先级两维度约定」段：定义"风险等级（risk level）"与"任务优先级（task priority）"两维度，并给三个典型对照（mips / netlink / 多数 P0 风险）。约定 §2/§3 heading 中的 `[Pn]` 统一表示任务优先级；§4.1/§7 等"风险表"的"优先级"列统一表示风险等级；不一致处显式分两列。 |
+| 修订动作 2 | `03 §2.1` mips 表内"优先级"行：从单值 **P0** 改为"任务优先级 P0 / 风险等级 P2"两维度，并指向 §0.1 与 plan §4.1 R-001。 |
+| 修订动作 3 | `03 §3.7` KTLS：heading `[P1]` → `[P2]`（与表内任务优先级 P2 对齐）；表内"优先级"行改为"任务优先级 P2 / 风险等级 P2"，指向 §0.1。 |
+| 修订动作 4 | `03 §3.8` routing：heading `[P1]` → `[P0]`（与表内 P0 对齐）；表内"优先级"行改为"任务优先级 P0 / 风险等级 P0（与 R-013 并列，KPI 破坏）"，指向 §0.1。 |
+| 修订动作 5 | `plan.md §4.1` 风险表头从"ID / 风险 / 优先级 / 来源"4 列扩为"ID / 风险 / 风险等级 / 任务优先级 / 来源"5 列；R-001 mips（P2 / P0）、R-002 netlink（P1 / P3，DP-2 决策"不引入"）、R-006 KTLS（P2 / P2）三行显式分值；其余 R-XXX 行风险=任务保持原值；表头加引导句指向 03 §0.1。 |
+| 修订动作 6 | `98-independent-audit-report.md` §4 P2-001 与 §6.2 第 1 项追加"已修订 2026-05-28，详见 99 §12.7"标记，闭合审计条目。 |
+| 影响范围 | 仅订正口径表述，不改变任何 R-XXX 风险识别、不改变 M1-M5 任务排期、不影响 04 §1 / §2 实测数据。后续阅读 P0/P1/P2 标签的人工 reviewer 与 AI 代理可按 §0.1 明确区分两维度。 |
+| 修订后状态 | `98 P2-001`（§6.2 第 1 项部分）闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
+| 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '^### 3\.7 \[P1\]\|^### 3\.8 \[P1\]' 03-freebsd-15-changes.md` 应无残留；plan §4.1 表头列数从 4 升到 5。 |
+

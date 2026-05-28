@@ -255,18 +255,20 @@ Phase 1.4 已完成的工作：
 
 ### 4.1 已识别风险（待 Spec 文档逐一展开）
 
-| ID | 风险 | 优先级 | 来源 |
-|---|---|---|---|
-| R-001 | 15.0 移除 mips 架构 —— f-stack/freebsd/mips/ 子目录何去何从 | P2 | 实测 sys 顶层 diff |
-| R-002 | 15.0 新增 netlink 子系统 —— 是否需要 port 进 f-stack 内核协议栈 | P1 | 实测 sys 顶层 diff |
-| R-003 | 14→15 的 mbuf 结构调整 —— 影响 `uipc_mbuf.c`、`kern_mbuf.c`、所有 `if_*.c` | **P0** | 待 Analyzer-15 / web 调研确认 |
-| R-004 | 14→15 的 TCP RACK 默认化 —— f-stack/freebsd/netinet/tcp_stacks/ 已含 RACK，需对齐新版接口 | P1 | 待 Analyzer-15 确认 |
-| R-005 | 15.0 base 系统转 pkgbase —— 不影响 F-Stack 的内核源裁剪，但影响开发环境 | P3 | release notes 已确认 |
-| R-006 | 15.0 移除 wlan 接口的旧接口 / kernel TLS API 变化 | P2 | 待 Analyzer-15 确认 |
-| R-007 | 14→15 ABI break —— f-stack 用户态 libff 的 ABI 需要重新审视 | P1 | 待 Analyzer-15 确认 |
-| R-008 | 13.0/f-stack-lib 与 f-stack 当前实际改造可能存在"漂移"（102 处差异中含部分元数据噪声） | P2 | 实测 |
-| R-009 | clang/llvm 版本要求 14→15 已有提升 —— 影响构建 | P2 | release notes |
-| R-010 | 15.0 引入 inotify、抗量子加密 —— 与 f-stack 无直接交集，但需在 spec 中明确"out of scope" | P3 | release notes |
+> 优先级两维度（详见 `03-freebsd-15-changes.md` §0 「优先级两维度约定」）：**风险等级** = 该上游变化对 F-Stack 的破坏严重度（fact 维度）；**任务优先级** = 该任务在实施进度中的迫切度（schedule 维度）；二者可独立。下表大多数行二者一致，**仅 mips/netlink/KTLS 三项需分别给值**。
+
+| ID | 风险 | 风险等级 | 任务优先级 | 来源 |
+|---|---|---|---|---|
+| R-001 | 15.0 移除 mips 架构 —— f-stack/freebsd/mips/ 子目录何去何从 | P2 | **P0** | 实测 sys 顶层 diff |
+| R-002 | 15.0 新增 netlink 子系统 —— 是否需要 port 进 f-stack 内核协议栈 | P1 | P3（DP-2 决策"不引入"）| 实测 sys 顶层 diff |
+| R-003 | 14→15 的 mbuf 结构调整 —— 影响 `uipc_mbuf.c`、`kern_mbuf.c`、所有 `if_*.c` | **P0** | **P0** | 待 Analyzer-15 / web 调研确认 |
+| R-004 | 14→15 的 TCP RACK 默认化 —— f-stack/freebsd/netinet/tcp_stacks/ 已含 RACK，需对齐新版接口 | P1 | P1 | 待 Analyzer-15 确认 |
+| R-005 | 15.0 base 系统转 pkgbase —— 不影响 F-Stack 的内核源裁剪，但影响开发环境 | P3 | P3 | release notes 已确认 |
+| R-006 | 15.0 移除 wlan 接口的旧接口 / kernel TLS API 变化 | P2 | P2 | 待 Analyzer-15 确认 |
+| R-007 | 14→15 ABI break —— f-stack 用户态 libff 的 ABI 需要重新审视 | P1 | P1 | 待 Analyzer-15 确认 |
+| R-008 | 13.0/f-stack-lib 与 f-stack 当前实际改造可能存在"漂移"（102 处差异中含部分元数据噪声） | P2 | P2 | 实测 |
+| R-009 | clang/llvm 版本要求 14→15 已有提升 —— 影响构建 | P2 | P2 | release notes |
+| R-010 | 15.0 引入 inotify、抗量子加密 —— 与 f-stack 无直接交集，但需在 spec 中明确"out of scope" | P3 | P3 | release notes |
 
 ### 4.2 关键决策点（在 Phase 3 写 spec 时必须给出明确选择）
 
