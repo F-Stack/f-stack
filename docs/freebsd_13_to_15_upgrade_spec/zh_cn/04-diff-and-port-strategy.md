@@ -30,32 +30,50 @@
 
 ---
 
-## 1. 子目录级 diff 全景（来自 Diff-Comparator）
+## 1. 子目录级 diff 全景（实测）
 
-> 单元：文件数 / MOD 文件数（13.0 vs 15.0 上游，启发式：大小变化即 MOD）
-> P 标志：来自该子目录对 F-Stack 的影响优先级
+> **数据口径（已订正 2026-05-28，详见 `99-review-report.md` §12.3）**：
+> - **13 / 15 列**：该子目录递归下所有 `*.c` / `*.h` / `*.S` 文件总数（`find -type f`）
+> - **DEL / NEW / MOD 列**：基于 `diff -rq freebsd-src-releng-{13.0,15.0}/sys/<subdir>` 的文件级实测，DEL = 仅 13.0 存在，NEW = 仅 15.0 存在，MOD = 两侧均存在但内容不同
+> - **MOD 计数为绝对值**（不再是"启发式：大小变化即 MOD"），因此普遍高于本表 v0.1 给出的估算
+> - **P 标志**：该子目录对 F-Stack 的影响优先级（与 diff 数字独立判定）
+> - 实测命令见本节末尾脚注
 
 | 子目录 | 13 | 15 | DEL | NEW | MOD | P | F-Stack 链接 |
 |---|---:|---:|---:|---:|---:|---|---|
-| **kern** | 233 | 249 | 0-2 | 16-18 | **~95** | **P0** | 38 KERN_SRCS |
-| **net** | 52 | 49 | 5 | 2 | **~38** | **P0** | ~20 NET_SRCS |
-| **netinet** | 74 | 75 | 2 | 3 | **~52** | **P0** | ~22 NETINET_SRCS |
-| **netinet6** | 34 | 33 | 2 | 1 | ~28 | **P0** | ~12 NETINET6_SRCS |
-| **sys** (头) | 337 | 372 | 4-6 | 39-41 | **~180** | **P0** | 大部分 .h |
-| **libkern** | 73 | 69 | 8 | 4 | ~28 | P1 | LIBKERN_SRCS |
-| **opencrypto** | 23 | 23 | 4 | 4 | ~12 | P1 | OPENCRYPTO_SRCS（可选） |
-| **netipsec** | 15 | 16 | 0 | 1 | ~13 | P1 | NETIPSEC_SRCS（可选） |
-| **netgraph** | 50 | 49 | 2 | 1 | ~25 | P1 | NETGRAPH_SRCS（可选） |
-| **netpfil/ipfw** | 40 | 40 | 1 | 1 | ~22 | P1 | IPFW_SRCS（可选） |
-| **vm** | 28 | 26 | 3 | 1 | ~22 | P1 | VM_SRCS |
-| **amd64** | 26 | 24 | 4 | 2 | ~20 | P1 | 极少（仅头） |
-| **arm64** | 41 | 47 | 1 | 7 | ~33 | P1 | 极少（仅头） |
-| **x86** | 25 | 28 | 1 | 4 | ~21 | P1 | 极少（仅头） |
-| **crypto**（顶） | 18 | 22 | 1 | 4 | 少 | P2 | 不直链 |
-| **contrib** | 巨量 | 巨量 | 多 | 多 | 数千 | P3 | 只 `#include` |
-| **bsm** | 少 | 少 | 0 | 0 | 几乎 0 | P3 | 不链 |
-| **ddb** | 少 | 少 | 0 | 0 | 几乎 0 | P3 | 不链 |
-| **netlink** | — | 10 | — | 10 | — | DP-2 | **不引入** |
+| **kern** | 217 | 234 | 2 | 18 | **231** | **P0** | 38 KERN_SRCS |
+| **net** | 158 | 159 | 10 | 11 | **149** | **P0** | NET_SRCS（详见 §2.X） |
+| **netinet** | 185 | 191 | 6 | 12 | **181** | **P0** | NETINET_SRCS（详见 §2.X） |
+| **netinet6** | 59 | 57 | 2 | 0 | **57** | **P0** | NETINET6_SRCS（详见 §2.X） |
+| **sys** (头) | 342 | 376 | 4 | 38 | **339** | **P0** | 大部分 `.h` |
+| **libkern** | 85 | 80 | 9 | 4 | 77 | P1 | LIBKERN_SRCS |
+| **opencrypto** | 35 | 35 | 3 | 3 | 33 | P1 | OPENCRYPTO_SRCS（可选） |
+| **netipsec** | 30 | 32 | 0 | 2 | 30 | P1 | NETIPSEC_SRCS（可选） |
+| **netgraph** | 170 | 152 | 7 | 4 | 152 | P1 | NETGRAPH_SRCS（可选） |
+| **netpfil/ipfw** | 59 | 59 | 1 | 1 | 60 | P1 | NETIPFW_SRCS（可选） |
+| **vm** | 53 | 52 | 2 | 1 | 51 | P1 | VM_SRCS |
+| **amd64** | 231 | 234 | 17 | 24 | 238 | P1 | 极少（F-Stack 仅取部分 `.h`） |
+| **arm64** | 270 | 317 | 20 | 98 | 248 | P1 | 极少（同上） |
+| **x86** | 124 | 142 | 9 | 29 | 116 | P1 | 极少（同上） |
+| **crypto**（顶） | 191 | 299 | 1 | 48 | 189 | P2 | 不直链 |
+| **contrib** | 巨量 | 巨量 | 多 | 多 | 数千 | P3 | 只 `#include`，不直链；本表不再给具体数字（`diff -rq` 在该子目录耗时过长，不属本审计回合范围） |
+| **bsm** | 8 | 8 | 0 | 0 | 8 | P3 | 不链 |
+| **ddb** | 29 | 32 | 0 | 3 | 29 | P3 | 不链 |
+| **netlink** | — | 39 | — | — | — | DP-2 | **不引入**（13.0 不存在该子目录，15.0 共 39 个文件，详见 03 §3.5） |
+
+> **实测来源脚注**（2026-05-28）：
+> ```bash
+> for d in kern net netinet netinet6 sys libkern opencrypto netipsec \
+>          netgraph netpfil/ipfw vm amd64 arm64 x86 crypto bsm ddb netlink; do
+>   a=$(find freebsd-src-releng-13.0/sys/$d -type f \( -name '*.c' -o -name '*.h' -o -name '*.S' \) | wc -l)
+>   b=$(find freebsd-src-releng-15.0/sys/$d -type f \( -name '*.c' -o -name '*.h' -o -name '*.S' \) | wc -l)
+>   diff -rq freebsd-src-releng-13.0/sys/$d freebsd-src-releng-15.0/sys/$d \
+>     | awk '/^Only in.*-13\.0/{del++} /^Only in.*-15\.0/{new++} /^Files /{mod++}
+>            END{print del, new, mod}'
+> done
+> ```
+> 与本表 v0.1（启发式估算）相比的主要差异：`kern` MOD 从 ~95 升到 231；`netinet` 从 ~52 升到 181；`net` 从 ~38 升到 149；`netinet6` 从 ~28 升到 57；`amd64`/`arm64`/`x86` 因递归口径调整，13/15 文件总数同步上调。**这意味着 04 §9 的任务规模与 05 §3 的排期需在 M1 启动前以本表为新基线复评**（不在本次审计修订回合范围内，记入 P2-001 跟踪）。
+
 
 ---
 
