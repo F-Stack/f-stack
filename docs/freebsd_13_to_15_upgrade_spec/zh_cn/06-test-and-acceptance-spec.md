@@ -92,7 +92,28 @@ TC-XX：用例名
     - <PASS / FAIL>
 ```
 
-### 3.3 各里程碑应跑的用例子集
+### 3.3 TC-01..TC-09 最小可执行映射（2026-05-28 增补；响应审计 §6.2-4）
+
+> 本节响应独立审计 P2-007："TC-01..TC-09 只有名称与模板，未指定实际 F-Stack 示例程序、配置文件、网卡绑定命令、预期 stdout 关键字"。
+> 数据来源（实测 2026-05-28）：`/data/workspace/f-stack/example/Makefile`（产物 `helloworld` / `helloworld_epoll`，源 `main.c` / `main_epoll.c`，含 `#ifdef INET6` 双栈分支）；`/data/workspace/f-stack/config.ini`（标准入口配置，含 `[dpdk] lcore_mask / port_list / numa_on` 等字段）；`/data/workspace/f-stack/tools/{arp,ifconfig,ipfw,ndp,netstat,ngctl,route,sysctl,knictl,top,traffic}/` 命令工具集（详见 §2.2）。
+> 当前 F-Stack 仓内**无独立 UDP / IPFW / NETGRAPH example**；TC-03 / TC-07 / TC-09 标"待 M1 准备阶段补"，**不凭猜测填路径**。
+
+| TC | example 程序 | 最小 config 字段 | 网卡/前置命令 | stdout 预期关键字（PASS 标志）| 实测前置条件 |
+|---|---|---|---|---|---|
+| **TC-01** | `example/helloworld` | `[dpdk] lcore_mask=1, channel=4, promiscuous=1, numa_on=1, allow=<PCI>, port_list=0; [port0] addr=192.168.1.2/24, gateway=192.168.1.1` | `dpdk-devbind.py --bind=vfio-pci <PCI>` 后 `./helloworld --conf config.ini` | DPDK 启动横幅（`EAL: Detected ...`）+ 监听端口（`f-stack helloworld start, port=80`，详见 main.c 行 124-217 含 `ff_init` / `ff_run`）；无 panic / 0 exit | 至少 1 块 DPDK 兼容 NIC；2MB×1024 hugepage |
+| **TC-02** | 同 TC-01 | 同 TC-01；`port_list=0` | TC-01 启动后，外部主机 `curl http://192.168.1.2/` | 外部主机收到 `<html>...</html>` 静态页（main.c 顶部硬编码字符串）；helloworld stdout 出现 accept/read/write 日志 | TC-01 已 PASS |
+| **TC-03** | （待 M1 准备阶段补；F-Stack 仓内无独立 UDP example，建议参考 main.c socket 类型改为 `SOCK_DGRAM` 或新增 `main_udp.c`） | UDP 监听端口字段（待补） | 待补 | 待补 | 待 M1 实测后填 |
+| **TC-04** | `example/helloworld`（编译时定义 `INET6`，main.c 行 165-169 已含 `sockfd6` 双栈分支） | TC-01 + `[port0] addr6=2001:db8::2/64` | `./helloworld --conf config.ini`；外部主机 `curl -6 'http://[2001:db8::2]/'` | 同 TC-02 但走 IPv6；helloworld stdout 同 TC-02 路径 | TC-01 + IPv6 上联 |
+| **TC-05** | F-Stack tools/ifconfig（产物 `ff_ifconfig`） | 复用 TC-01 config | `./ff_ifconfig f-stack-0 inet 192.168.1.2/24 alias`；查询 `./ff_ifconfig -a` | 输出含 `f-stack-0: ... inet 192.168.1.2 netmask 0xffffff00`（freebsd ifconfig 标准格式） | helloworld 已运行（提供 ff_ipc 通道） |
+| **TC-06** | F-Stack tools/netstat（产物 `ff_netstat`，源同 freebsd `tools/netstat/main.c`） | 复用 TC-01 config | `./ff_netstat -an` | 输出 `Active Internet connections (including servers)` 表头 + 至少 1 行 `tcp4 ... LISTEN`（即 helloworld 监听 port 80） | TC-01 已 PASS |
+| **TC-07** | F-Stack tools/ipfw（产物 `ff_ipfw`） | 复用 TC-01 config；`f-stack.conf` 启用 `FF_IPFW=1`（详见 04 §2.13 NETIPFW_SRCS） | `./ff_ipfw add 100 allow tcp from any to me 80` 后 `./ff_ipfw list` | 输出 `00100 allow tcp from any to me dst-port 80`（freebsd ipfw 标准格式） | 编译时 `FF_IPFW=1`；helloworld 已运行 |
+| **TC-08** | F-Stack tools/route（产物 `ff_route`） | 复用 TC-01 config | `./ff_route add -net 10.0.0.0/8 192.168.1.1` 后 `./ff_route get 10.1.2.3` | 输出 `route to: 10.1.2.3` + `gateway: 192.168.1.1`（rib/nexthop 重写后必须仍能产生该输出，是 R-014 验收点） | helloworld 已运行；R-014 ff_route.c 已重写为 rib/nexthop API（M3 末验收点） |
+| **TC-09** | （待 M1 准备阶段补；F-Stack 仓内无独立 NETGRAPH example）；产物 `ff_ngctl` 存在但需 `FF_NETGRAPH=1` 编译 | 复用 TC-01 config + 启用 `FF_NETGRAPH=1`（详见 04 §2.9） | 待补；建议参考 freebsd `ngctl mkpeer` / `ngctl list` 用法 | 待补；至少 `ff_ngctl list` 应输出 `There are X total nodes:` 表头 | 编译时 `FF_NETGRAPH=1`；helloworld 已运行；待 M1 实测 |
+
+> 实施约束：以上 9 行除 TC-03 / TC-09 标"待 M1 准备阶段补"外，其余 7 行的 example 程序、config 字段、tool 命令均与 F-Stack 仓内实际产物一一对应。**TC-03 / TC-09 在 M1 实施阶段必须先实测对应 example 是否需要新增（如 `main_udp.c` / `main_ng.c`），再回填本表对应行**。
+> 若 example 缺失导致 TC 无法跑通，应在 99 §6 实施进度跟踪表中记录"TC-XX BLOCKED, missing example"并补开 T-example-XX 任务。
+
+### 3.4 各里程碑应跑的用例子集
 
 | 里程碑 | 必跑用例 |
 |---|---|

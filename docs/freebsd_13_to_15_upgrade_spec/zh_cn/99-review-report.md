@@ -509,3 +509,18 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 修订后状态 | `98 P2-004` 与 `§6.2 第 3 项` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
 | 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '12 个 tools 二进制\|ff_libmemstat' zh_cn/06-*.md` 应无残留（合法历史引文如 98 审计报告原文 + 本节修订记录除外）。 |
 
+### 12.10 修订 R-2026-05-28-10：06 §3 TC-01..TC-09 最小可执行映射
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联审计条目 | `98-independent-audit-report.md` §4 P2-007，§6.2 第 4 项 |
+| 错误根因 | 06 §3.1 TC 表仅 4 列（用例 ID / 名称 / 类型 / 优先级），§3.2 给"标准格式"模板（前置条件 / 执行步骤 / 期望结果），但模板中"配置文件 config.ini 内容（最小化）"、"./fstack --config config.ini"、"stdout 含关键字 ..."全部留白。Phase 4 reviewer 把"模板已就绪"等同于"用例可执行"，未跟进 example 程序与 config 字段的实际映射。 |
+| 实测基线 | `ls /data/workspace/f-stack/example/` = `main.c` / `main_epoll.c` / `main_zc.c` / `Makefile`（产物 `helloworld` 与 `helloworld_epoll`，main.c 行 124-217 含 `ff_init` / `ff_run`，行 165-169 含 `#ifdef INET6` 双栈分支）；`/data/workspace/f-stack/config.ini` 为标准入口配置（含 `[dpdk] lcore_mask / channel / port_list / numa_on / promiscuous` 等字段）；`/data/workspace/f-stack/tools/` 含 11 PROG（详见 §12.9）。**仓内无独立 UDP / IPFW / NETGRAPH example**，TC-03 / TC-07 / TC-09 必须在 M1 准备阶段补 example，否则无法实测。 |
+| 修订动作 1 | `06-test-and-acceptance-spec.md` 在 §3.2 与原 §3.3 之间插入新 §3.3「TC-01..TC-09 最小可执行映射」；表 6 列：TC / example 程序 / 最小 config 字段 / 网卡前置命令 / stdout 预期关键字（PASS 标志）/ 实测前置条件。9 行中 7 行（TC-01/02/04/05/06/07/08）填具体值；TC-03（UDP）/ TC-09（NETGRAPH）显式标"待 M1 准备阶段补"，并指明 example 应如何新增（建议 `main_udp.c` / `main_ng.c`）。原"各里程碑应跑的用例子集"小节顺延为 §3.4，内容不动。 |
+| 修订动作 2 | 在新 §3.3 末尾加约束声明：仓内无对应 example 时**不凭猜测填路径**；缺失项应在 99 §6 实施进度跟踪表登记"TC-XX BLOCKED, missing example"并补开 T-example-XX 任务。 |
+| 修订动作 3 | `98-independent-audit-report.md` §4 P2-007 与 §6.2 第 4 项追加"已修订 2026-05-28，详见 99 §12.10"标记，闭合审计条目。 |
+| 影响范围 | 06 §3 从模板级升级到"7/9 可直接 M3-M5 验收"；TC-03 / TC-09 显式标 BLOCKED 项进入 M1 准备阶段补 example 待办。不改变 §3.1 用例清单本身、不改变 §3.4（原 §3.3）里程碑应跑用例分配；§4 单元测试 / §5 性能基线 / §6 回归测试不受影响。 |
+| 修订后状态 | `98 P2-007` 与 `§6.2 第 4 项` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变；06 §3 升级到"实施级精度"。 |
+| 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '^### 3\\.[1-4]' zh_cn/06-*.md` 应有 4 行（§3.1-§3.4 完整）；`grep -nE '待 M1 准备阶段补' zh_cn/06-*.md` 应至少 2 处命中（TC-03 / TC-09）。 |
+
