@@ -22,8 +22,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SHA384_H_
@@ -72,10 +70,6 @@ __BEGIN_DECLS
 #endif
 #ifndef SHA384_Data
 #define SHA384_Data		_libmd_SHA384_Data
-#endif
-
-#ifndef SHA384_version
-#define SHA384_version		_libmd_SHA384_version
 #endif
 
 void	SHA384_Init(SHA384_CTX *);

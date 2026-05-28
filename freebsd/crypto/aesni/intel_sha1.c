@@ -55,8 +55,6 @@
 * gcc -msha -msse4 intel_sha_extensions_sha1_intrinsic.c
 *
 *******************************************************************************/
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/types.h>
 #include <crypto/aesni/aesni_os.h>

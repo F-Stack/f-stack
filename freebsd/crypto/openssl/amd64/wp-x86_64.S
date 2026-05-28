@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 /* Do not modify. This file is auto-generated from wp-x86_64.pl. */
 .text	
 
@@ -610,6 +609,7 @@ whirlpool_block:
 .cfi_endproc	
 .size	whirlpool_block,.-whirlpool_block
 
+.section	.rodata
 .align	64
 .type	.Ltable,@object
 .Ltable:
@@ -879,3 +879,24 @@ whirlpool_block:
 .byte	228,39,65,139,167,125,149,216
 .byte	251,238,124,102,221,23,71,158
 .byte	202,45,191,7,173,90,131,51
+	.section ".note.gnu.property", "a"
+	.p2align 3
+	.long 1f - 0f
+	.long 4f - 1f
+	.long 5
+0:
+	# "GNU" encoded with .byte, since .asciz isn't supported
+	# on Solaris.
+	.byte 0x47
+	.byte 0x4e
+	.byte 0x55
+	.byte 0
+1:
+	.p2align 3
+	.long 0xc0000002
+	.long 3f - 2f
+2:
+	.long 3
+3:
+	.p2align 3
+4:

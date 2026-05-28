@@ -22,8 +22,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SHA512_H_
@@ -73,12 +71,8 @@ __BEGIN_DECLS
 #ifndef SHA512_Data
 #define SHA512_Data		_libmd_SHA512_Data
 #endif
-
 #ifndef SHA512_Transform
-#define SHA512_Transform	_libmd_SHA512_Transform
-#endif
-#ifndef SHA512_version
-#define SHA512_version		_libmd_SHA512_version
+#define SHA512_Transform		_libmd_SHA512_Transform
 #endif
 
 void	SHA512_Init(SHA512_CTX *);

@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 /* Do not modify. This file is auto-generated from chacha-x86.pl. */
 #ifdef PIC
 .text
@@ -7,6 +6,11 @@
 .align	16
 ChaCha20_ctr32:
 .L_ChaCha20_ctr32_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -380,6 +384,11 @@ ChaCha20_ctr32:
 .align	16
 ChaCha20_ssse3:
 .L_ChaCha20_ssse3_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -535,6 +544,11 @@ ChaCha20_ssse3:
 .align	16
 ChaCha20_xop:
 .L_ChaCha20_xop_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -1008,7 +1022,24 @@ ChaCha20_xop:
 	popl	%ebp
 	ret
 .size	ChaCha20_xop,.-.L_ChaCha20_xop_begin
-.comm	OPENSSL_ia32cap_P,16,4
+.comm	OPENSSL_ia32cap_P,40,4
+
+	.section ".note.gnu.property", "a"
+	.p2align 2
+	.long 1f - 0f
+	.long 4f - 1f
+	.long 5
+0:
+	.asciz "GNU"
+1:
+	.p2align 2
+	.long 0xc0000002
+	.long 3f - 2f
+2:
+	.long 3
+3:
+	.p2align 2
+4:
 #else
 .text
 .globl	ChaCha20_ctr32
@@ -1016,6 +1047,11 @@ ChaCha20_xop:
 .align	16
 ChaCha20_ctr32:
 .L_ChaCha20_ctr32_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -1389,6 +1425,11 @@ ChaCha20_ctr32:
 .align	16
 ChaCha20_ssse3:
 .L_ChaCha20_ssse3_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -1544,6 +1585,11 @@ ChaCha20_ssse3:
 .align	16
 ChaCha20_xop:
 .L_ChaCha20_xop_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -2017,5 +2063,22 @@ ChaCha20_xop:
 	popl	%ebp
 	ret
 .size	ChaCha20_xop,.-.L_ChaCha20_xop_begin
-.comm	OPENSSL_ia32cap_P,16,4
+.comm	OPENSSL_ia32cap_P,40,4
+
+	.section ".note.gnu.property", "a"
+	.p2align 2
+	.long 1f - 0f
+	.long 4f - 1f
+	.long 5
+0:
+	.asciz "GNU"
+1:
+	.p2align 2
+	.long 0xc0000002
+	.long 3f - 2f
+2:
+	.long 3
+3:
+	.p2align 2
+4:
 #endif
