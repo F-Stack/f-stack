@@ -35,7 +35,7 @@
 | 检查项 | 标准 |
 |---|---|
 | `libff.a` 生成 | 必须成功 |
-| 12 个 tools 二进制生成（ff_arp, ff_ifconfig, ff_ipfw, ff_libmemstat, ff_ndp, ff_netstat, ff_ngctl, ff_route, ff_sysctl + 3 个自带 knictl/traffic/top）| 必须全部生成 |
+| `tools/` 编译目标全部生成（按 `f-stack/tools/` 子目录 Makefile target 实测，2026-05-28 订正）| 共 17 个子目录：**11 个 PROG（用户态命令）** = 9 freebsd 原生（`arp` / `ifconfig` / `ipfw` / `ndp` / `netstat` / `ngctl` / `route` / `sysctl` / `knictl`）+ 2 F-Stack 自带（`top` / `traffic`）；**4 个 LIB（库目标）** = `libmemstat`→LIB=memstat / `libnetgraph`→LIB=netgraph / `libutil`→LIB=util / `libxo`→LIB=xo；**2 个辅助子目录**：`compat/`（占位，无 Makefile target）/ `sbin/`（无 Makefile）。F-Stack 实际 ff_* 包装名：`ff_arp` / `ff_ifconfig` / `ff_ipfw` / `ff_ndp` / `ff_netstat` / `ff_ngctl` / `ff_route` / `ff_sysctl` / `ff_top` / `ff_traffic`（`knictl` 通常不加 `ff_` 前缀；`libmemstat` 等是库不是命令，无 `ff_` 前缀）。**全部 11 个 PROG 二进制 + 4 个 LIB 静态/动态库目标必须成功生成；详见 `99-review-report.md` §12.9** |
 | 错误数 | 0 |
 | 新增 warning 数 | 0（相对 13.0 baseline）。新增项必须在 `99-review-report.md` 中显式记录并标 P2/P3 |
 | 编译时间 | 不退化 > 30%（信息项，不强制）|

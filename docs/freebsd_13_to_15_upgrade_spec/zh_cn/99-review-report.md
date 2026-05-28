@@ -495,3 +495,17 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 修订后状态 | `98 P2-001 后段` 与 `§6.2 第 2 项` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
 | 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '⚠ 数字略不一致' zh_cn/99-*.md` 应无残留；`grep -nE '全局唯一台账基准' zh_cn/{04,05,99}-*.md` 在三份文档中至少各 1 处命中。 |
 
+### 12.9 修订 R-2026-05-28-09：06 §2.2 tools 编译目标表述订正
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联审计条目 | `98-independent-audit-report.md` §4 P2-004，§6.2 第 3 项 |
+| 错误根因 | `06-test-and-acceptance-spec.md` §2.2 编译验收标准把 `tools/` 子目录全部当作"二进制"统计："12 个 tools 二进制生成（ff_arp, ff_ifconfig, ff_ipfw, **ff_libmemstat**, ff_ndp, ff_netstat, ff_ngctl, ff_route, ff_sysctl + 3 个自带 knictl/traffic/top）"。两类错误：(a) 总数 12 与实测不符（实测 PROG 11 个，不含 `libmemstat` 等库目标）；(b) `ff_libmemstat` 实际是 LIB 目标（产物 `libmemstat.a/.so`）不是 PROG。 |
+| 实测基线 | `ls -d /data/workspace/f-stack/tools/*/` 显示 17 个子目录；逐 Makefile 抽取 `PROG=` / `LIB=` 行，结果：**9 个 freebsd 原生 PROG**（arp / ifconfig / ipfw / ndp / netstat / ngctl / route / sysctl / knictl）+ **2 个 F-Stack 自带 PROG**（top / traffic）= **11 个 PROG**；**4 个 LIB 目标**（libmemstat→memstat / libnetgraph→netgraph / libutil→util / libxo→xo）；**2 个辅助子目录**（compat/ 占位 + sbin/ 无 Makefile）。命令样例：`for d in /data/workspace/f-stack/tools/*/; do grep -m1 -E '^[[:space:]]*PROG[[:space:]]*=\|^[[:space:]]*LIB[[:space:]]*=' "$d/Makefile" 2>/dev/null; done`。 |
+| 修订动作 1 | `06-test-and-acceptance-spec.md` §2.2 单格表述按 c-precision-surgery 风格重写：从一行 35 字扩为分类清单（11 PROG + 4 LIB + 2 辅助），并加注 F-Stack ff_* 包装名规则（`knictl` 不加 ff_ 前缀；libmemstat/libnetgraph/libutil/libxo 是库不加 ff_ 前缀）；末尾点出"11 PROG + 4 LIB 必须成功生成"作为编译验收硬指标。 |
+| 修订动作 2 | `98-independent-audit-report.md` §4 P2-004 与 §6.2 第 3 项追加"已修订 2026-05-28，详见 99 §12.9"标记，闭合审计条目。 |
+| 影响范围 | 06 §2.2 编译验收口径精度提升；不改变其它编译矩阵维度（编译器、架构、DPDK、KNOB）；不改变 §2.3 跑法。后续 QA 按 11 PROG + 4 LIB 构建产物清单逐项核对，可直接用作 M5 末编译矩阵的 must-pass 列表。 |
+| 修订后状态 | `98 P2-004` 与 `§6.2 第 3 项` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
+| 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '12 个 tools 二进制\|ff_libmemstat' zh_cn/06-*.md` 应无残留（合法历史引文如 98 审计报告原文 + 本节修订记录除外）。 |
+

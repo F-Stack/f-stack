@@ -163,7 +163,7 @@
 
 | 位置 | `06-test-and-acceptance-spec.md` §2.2 |
 | 问题 | 12 个 freebsd 原生 tools 子目录包含 `libmemstat`、`libnetgraph`、`libutil`、`libxo` 等库目录，不全是二进制；表中列了 `ff_libmemstat` 这种可能并不存在的工具二进制 |
-| 建议 | 改成"12 个 tools/lib 目标全部生成：8 个用户态命令 + 4 个库目标 + 3 个 F-Stack 自带工具"，并用实际 Makefile target 名称替换示例 |
+| 建议 | 改成"12 个 tools/lib 目标全部生成：8 个用户态命令 + 4 个库目标 + 3 个 F-Stack 自带工具"，并用实际 Makefile target 名称替换示例 |【已修订 2026-05-28，详见 `99-review-report.md` §12.9】
 
 ### P2-005：FR-7 验收命令过粗
 
@@ -212,7 +212,7 @@
 
 1. 统一 P0/P1/P2/P3 口径，区分风险等级与任务优先级。【已完成 2026-05-28，详见 `99-review-report.md` §12.7】
 2. 统一 57/75/18/19/24 等任务数字口径，给一个唯一"实施任务台账"。【已完成 2026-05-28，详见 `99-review-report.md` §12.8】
-3. 修正 tools 编译目标描述，明确哪些是命令、哪些是库、哪些是 F-Stack 自带工具。
+3. 修正 tools 编译目标描述，明确哪些是命令、哪些是库、哪些是 F-Stack 自带工具。【已完成 2026-05-28，详见 `99-review-report.md` §12.9】
 4. 扩充 06 中 TC-01..09 的实际命令与预期输出。
 5. 把 `99-review-report.md` 改名或新增"自审报告"说明，避免与本独立审计报告混淆。
 
