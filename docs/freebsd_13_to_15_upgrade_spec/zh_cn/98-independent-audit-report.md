@@ -103,7 +103,7 @@
 | 实测事实 | `f-stack/lib/Makefile` 中 `NET_SRCS` 实际包含 `bpf.c`、`if_bridge.c`、`if_dead.c`、`if_vxlan.c`、`in_fib.c`、`route_tables.c`、`nhop.c`、`nhop_ctl.c` 等多项，04 中未完整列出；`NETINET_SRCS`、`NETINET6_SRCS` 也未全量展开 |
 | 影响 | 后续 AI 代理按 04 拾取任务会漏掉实际参与编译的源文件；M3 的"网络栈全量升级"验收缺少精确 checklist |
 | 建议 | 从 `f-stack/lib/Makefile` 重新抽取所有 `*_SRCS+=`，按变量完整落表；条件项（`FF_NETGRAPH`、`FF_IPFW`、`FF_IPSEC`、`FF_INET6`、`FF_EXTRA_TCP_STACKS`、`FF_KNI`、`FF_USE_PAGE_ARRAY`）单独列明 |
-| 严重度 | **P1** |
+| 严重度 | **P1**【已修订 2026-05-28，详见 `99-review-report.md` §12.4】 |
 
 ### P1-005：外部资料引用缺可复核证据
 
@@ -204,7 +204,7 @@
 1. 修正 13.0 syscall 最大号与 13→15 syscall 增量列表。【已完成 2026-05-28，详见 `99-review-report.md` §12.1】
 2. 修正 `if_t` 类型定义，保留"访问方式不透明化"但去掉 `void *` 说法。【已完成 2026-05-28，详见 `99-review-report.md` §12.2】
 3. 重新生成真实 `diff -rq` / checksum 的 `04` 统计，或把现有统计全部降级为估算。【已完成 2026-05-28，详见 `99-review-report.md` §12.3】
-4. 从 `f-stack/lib/Makefile` 重新抽取全量 `*_SRCS` 表，替换 04 的省略号版本。
+4. 从 `f-stack/lib/Makefile` 重新抽取全量 `*_SRCS` 表，替换 04 的省略号版本。【已完成 2026-05-28，详见 `99-review-report.md` §12.4】
 5. 清理文档状态：plan/01/99 中所有"待完成/下一步等待 Phase 1.4"的过期表述。
 6. 给 03 外部事实补 URL + 引文 + 抓取日期，或将不可核验条目标为"待核验"。
 

@@ -407,3 +407,19 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 修订后状态 | `98 P1-003` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变，但 04 §1 升级到"实施级精度"。 |
 | 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '启发式：大小变化即 MOD' zh_cn/04-*.md` 应无残留；99 §7 与 04 §1 不再语义冲突。 |
 
+### 12.4 修订 R-2026-05-28-04：04 §2 SRCS 链接清单全量展开
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联审计条目 | `98-independent-audit-report.md` §3 P1-004，§6.1 第 4 项 |
+| 错误根因 | 04 v0.1 §2 自称"F-Stack 实际链接清单 / Sub-Agent C 实测"，但 `NET_SRCS` / `NETINET_SRCS` / `NETINET6_SRCS` / `LIBKERN_SRCS` 等关键变量均使用"典型 + ..."省略号写法；`FF_SRCS` / `FF_HOST_SRCS` 仅给区间数（17-21 / 9）；`NETIPSEC_SRCS` / `NETGRAPH_SRCS` / `NETIPFW_SRCS` / `VM_SRCS` / `OPENCRYPTO_SRCS` 仅以一句话提及未展开。Phase 4 reviewer 把这些"典型清单"误认为已完整，未对 Makefile 实际 `+=` 行数做交叉。 |
+| 实测基线 | `f-stack/lib/Makefile` 共 765 行；16 个 `*_SRCS` 变量 + 24 处 `+=`；用 `sed -n` 按行号区间逐块抽取，并用 `grep -oE '[a-zA-Z_0-9]+\.c' \| sort -u \| wc -l` 校验每个变量的去重计数。命令样例：`sed -n '479,525p' lib/Makefile \| grep -oE '[a-zA-Z_0-9]+\.c' \| sort -u`。 |
+| 默认配置（`FF_INET6=1, FF_TCPHPTS=1, FF_EXTRA_TCP_STACKS=1`）下的实测计数 | FF_SRCS 17 / FF_HOST_SRCS 9 / CRYPTO_SRCS 2 / KERN_SRCS 38 / LIBKERN_SRCS 6（arm64 7）/ MACHINE_SRCS 1 / NET_SRCS 33 / NETINET_SRCS 44 / NETINET6_SRCS 29 / EXTRA_TCP_STACKS_SRCS 8 / VM_SRCS 1 = **188 个 `.c`**（不含 `*.m` 与由 mk 文件生成的 ASM）。条件编译开启后再加：FF_NETGRAPH FF_SRCS+2 / NETGRAPH_SRCS+43；FF_KNI FF_HOST_SRCS+1；FF_USE_PAGE_ARRAY FF_HOST_SRCS+1；FF_IPFW NETIPFW_SRCS+13；FF_IPSEC NETIPSEC_SRCS+10 / OPENCRYPTO_SRCS+6 / CRYPTO_SRCS 由 2 改为 14。 |
+| 修订动作 1 | `04-diff-and-port-strategy.md` §2 整体重写：从 7 节（§2.1-§2.7）扩为 18 节（§2.1-§2.18），先给 16 个变量的索引表（含默认/条件计数与 VPATH 来源），再按变量分节列出**完整文件清单**（不再使用省略号）；新增 §2.18 说明 mips 在 `lib/Makefile` 中只有 `ARCH_FLAGS`，**无任何 `*_SRCS+=`**，与 03 §2.1 的 mips 移除任务衔接。 |
+| 修订动作 2 | 原 §2.6"FF_SRCS（17-21 个）+ FF_HOST_SRCS（9 个）"区间数收敛为精确数：FF_SRCS 默认 17，FF_NETGRAPH 时 +2；FF_HOST_SRCS 默认 9，FF_KNI / FF_USE_PAGE_ARRAY / 非 FreeBSD 各 +1。审计 P2-003"FF_SRCS=21 / FF_HOST_SRCS=9 / +2 隐式"的口径不一致问题同步消解。 |
+| 修订动作 3 | `98-independent-audit-report.md` §3 P1-004 与 §6.1 第 4 项追加"已修订 2026-05-28，详见 99 §12.4"标记，闭合审计条目。 |
+| 影响范围 | 04 §3（交集热点）原本以"~20 NET_SRCS / ~22 NETINET_SRCS / ~12 NETINET6_SRCS"为基础——本次实测后真实数字分别是 33 / 44 / 29，**实际受影响文件比 v0.1 估计多 50% 左右**；建议 M1 启动前以 §2 完整清单逐文件标注 P0/P1/P2 标签（不在本回合范围）。R-001 ~ R-014 风险识别方向不变。 |
+| 修订后状态 | `98 P1-004` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变；§2 升级到"实施级精度"。 |
+| 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '\\.\\.\\.[[:space:]]*$' zh_cn/04-*.md` 应无残留（合法历史段落不含此 pattern）；`grep -cE '^[a-zA-Z_0-9]+\\.c' f-stack/lib/Makefile` 与本节文件清单总数一致（默认配置 188，全部条件开启 247）。 |
+

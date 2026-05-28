@@ -77,69 +77,249 @@
 
 ---
 
-## 2. F-Stack 实际链接清单（来自 f-stack/lib/Makefile，Sub-Agent C 实测）
+## 2. F-Stack 实际链接清单（来自 `f-stack/lib/Makefile` 全量抽取）
 
-> 这是**真正影响"是否需要 port"的过滤器**：只有列在 `*_SRCS` 中的文件才会被链接进 `libff.a`，未列出的 freebsd 文件可以延后或永不处理。
+> 本节为 `f-stack/lib/Makefile`（765 行，16 个 `*_SRCS` 变量、24 处 `+=`）的完整结构化展开，**已订正 2026-05-28，详见 `99-review-report.md` §12.4**。
+> - 数据来源：`grep -nE '^[A-Z_]+_SRCS' /data/workspace/f-stack/lib/Makefile` + `sed -n` 直接抽取
+> - 每节标注变量名、来源 VPATH（即 `sys/` 子目录）、默认与各条件块文件清单
+> - 真正影响"是否需要 port"的过滤器：只有列在 `*_SRCS` 中的文件才会被链接进 `libff.a`，未列出的 freebsd 文件可以延后或永不处理
 
-### 2.1 KERN_SRCS（38 个 .c，全部来自 `sys/kern/`）
+变量索引（共 16 个 `_SRCS`，按 Makefile 出现顺序）：
+
+| # | 变量 | 默认数 | 条件分支 | 主要来源 VPATH |
+|---|---|---:|---|---|
+| 1 | `FF_SRCS` | 17 | `FF_NETGRAPH` (+2) | F-Stack 自家 `lib/`（`ff_*.c`） |
+| 2 | `FF_HOST_SRCS` | 9 | `FF_KNI` (+1) / `FF_USE_PAGE_ARRAY` (+1) / `!FreeBSD && !FF_KNI` (+1, dup) | F-Stack 自家 `lib/`（`ff_*.c` 用户态部分） |
+| 3 | `CRYPTO_SRCS` | 2 / 14 | else 默认 2；`FF_IPSEC` 14 | `sys/crypto/` 各算法子目录 |
+| 4 | `KERN_SRCS` | 38 | — | `sys/kern/` |
+| 5 | `KERN_MHEADERS` / `KERN_MSRCS` | 3 / 1 | — | `sys/kern/`（`*.m` 接口模板） |
+| 6 | `LIBKERN_SRCS` | 7 / 6 | `arm64` 7；else 6 | `sys/libkern/` |
+| 7 | `MACHINE_SRCS` | 1 | — | `sys/${MACHINE_CPUARCH}/${MACHINE_CPUARCH}/` |
+| 8 | `NET_SRCS` | 33 | — | `sys/net/` + `sys/net/route/` |
+| 9 | `NETGRAPH_SRCS` | 0 / 43 | `FF_NETGRAPH` 43 | `sys/netgraph/` |
+| 10 | `NETINET_SRCS` | 44 | — | `sys/netinet/` + `sys/netinet/cc/` + `sys/netinet/libalias/` |
+| 11 | `NETINET6_SRCS` | 0 / 29 | `FF_INET6` 29 | `sys/netinet6/` |
+| 12 | `EXTRA_TCP_STACKS_SRCS` | 0 | `FF_TCPHPTS` (+1) / `FF_EXTRA_TCP_STACKS` (+7) | `sys/netinet/tcp_stacks/` |
+| 13 | `NETIPFW_SRCS` | 0 / 13 | `FF_IPFW` 13 | `sys/netpfil/ipfw/` + `sys/netpfil/ipfw/pmod/` |
+| 14 | `NETIPSEC_SRCS` | 0 / 10 | `FF_IPSEC` 10 | `sys/netipsec/` |
+| 15 | `OPENCRYPTO_SRCS` (+ MHEADERS/MSRCS) | 0 / 6 (+1 m) | `FF_IPSEC` 6 | `sys/opencrypto/` |
+| 16 | `VM_SRCS` | 1 | — | `sys/vm/` |
+| 17 | `ASM_SRCS` | `${CRYPTO_ASM_SRCS}` | 由 mk 文件生成 | `sys/crypto/.../*.S` |
+| 18 | `HOST_SRCS` | `${FF_HOST_SRCS}` | 别名 | 同 `FF_HOST_SRCS` |
+
+> 注：以默认配置（`FF_INET6=1, FF_TCPHPTS=1, FF_EXTRA_TCP_STACKS=1`，无 `FF_NETGRAPH/FF_IPFW/FF_IPSEC/FF_USE_PAGE_ARRAY/FF_LOOPBACK_SUPPORT/FF_ZC_SEND`）下，链接进 `libff.a` 的 `.c` 文件总数：FF_SRCS(17) + FF_HOST_SRCS(9) + CRYPTO_SRCS(2) + KERN_SRCS(38) + LIBKERN_SRCS(6) + MACHINE_SRCS(1) + NET_SRCS(33) + NETINET_SRCS(44) + NETINET6_SRCS(29) + EXTRA_TCP_STACKS_SRCS(8) + VM_SRCS(1) = **188 个 `.c`**（不含 `*.m` 与 ASM）。
+
+### 2.1 `FF_SRCS`（F-Stack 自家内核胶水层，共 17，`FF_NETGRAPH` +2）
+
+**默认（17）**：
+```
+ff_compat.c, ff_glue.c, ff_freebsd_init.c, ff_init_main.c,
+ff_kern_condvar.c, ff_kern_environment.c, ff_kern_intr.c,
+ff_kern_subr.c, ff_kern_synch.c, ff_kern_timeout.c, ff_subr_epoch.c,
+ff_lock.c, ff_syscall_wrapper.c, ff_subr_prf.c, ff_vfs_ops.c,
+ff_veth.c, ff_route.c
+```
+
+**`ifdef FF_NETGRAPH` 增加 2**：
+```
+ff_ng_base.c, ff_ngctl.c
+```
+
+### 2.2 `FF_HOST_SRCS`（F-Stack 用户态部分，默认 9，多条件可加）
+
+**默认（9）**：
+```
+ff_host_interface.c, ff_thread.c, ff_config.c, ff_ini_parser.c,
+ff_dpdk_if.c, ff_dpdk_pcap.c, ff_epoll.c, ff_log.c, ff_init.c
+```
+
+**`ifdef FF_KNI` 增加 1**：
+```
+ff_dpdk_kni.c
+```
+
+**`ifdef FF_USE_PAGE_ARRAY` 增加 1**：
+```
+ff_memory.c
+```
+
+**`ifneq ($(TGT_OS),FreeBSD) && ifndef FF_KNI` 增加 1**（与 `FF_KNI` 互斥的非 FreeBSD 旁路）：
+```
+ff_dpdk_kni.c
+```
+
+### 2.3 `CRYPTO_SRCS`（来自 `sys/crypto/...`，`FF_IPSEC` 决定大小）
+
+**默认 / else（无 `FF_IPSEC`，2 个）**：
+```
+sha1.c, siphash.c
+```
+
+**`ifdef FF_IPSEC`（14 个）**：
+```
+aesni_wrap.c, bf_ecb.c, bf_enc.c, bf_skey.c, camellia.c,
+camellia-api.c, des_ecb.c, des_enc.c, des_setkey.c,
+rijndael-alg-fst.c, rijndael-api.c, sha1.c, sha256c.c, sha512c.c,
+siphash.c
+```
+> Makefile 行 301 中 `aesni.c` 被注释（`#aesni.c`），实际不参与链接。
+
+### 2.4 `KERN_SRCS`（38 个，全部来自 `sys/kern/`，无条件）
 
 ```
 kern_descrip.c, kern_event.c, kern_fail.c, kern_khelp.c, kern_hhook.c,
-kern_linker.c, kern_mbuf.c, kern_module.c, kern_mtxpool.c, kern_ntptime.c,
-kern_osd.c, kern_sysctl.c, kern_tc.c, kern_uuid.c, link_elf.c, md5c.c,
-subr_capability.c, subr_counter.c, subr_eventhandler.c, subr_kobj.c,
-subr_lock.c, subr_module.c, subr_param.c, subr_pcpu.c, subr_sbuf.c,
-subr_taskqueue.c, subr_unit.c, subr_smr.c, sys_capability.c, sys_generic.c,
-sys_socket.c, uipc_accf.c, uipc_mbuf.c, uipc_mbuf2.c, uipc_domain.c,
+kern_linker.c, kern_mbuf.c, kern_module.c, kern_mtxpool.c,
+kern_ntptime.c, kern_osd.c, kern_sysctl.c, kern_tc.c, kern_uuid.c,
+link_elf.c, md5c.c, subr_capability.c, subr_counter.c,
+subr_eventhandler.c, subr_kobj.c, subr_lock.c, subr_module.c,
+subr_param.c, subr_pcpu.c, subr_sbuf.c, subr_taskqueue.c, subr_unit.c,
+subr_smr.c, sys_capability.c, sys_generic.c, sys_socket.c,
+uipc_accf.c, uipc_mbuf.c, uipc_mbuf2.c, uipc_domain.c,
 uipc_sockbuf.c, uipc_socket.c, uipc_syscalls.c
 ```
 
-### 2.2 NET_SRCS（典型，来自 `sys/net/`）
+### 2.5 `KERN_MHEADERS` / `KERN_MSRCS`（接口模板）
 
+`KERN_MHEADERS`（3 个 `.m`，`MHEADERS = $(patsubst %.m,%.h,...)`）：
 ```
-if.c, if_ethersubr.c, if_loop.c, if_clone.c, if_disc.c, if_epair.c,
-if_ethersubr.c, if_iso88025subr.c, if_llatbl.c, if_media.c, if_mib.c,
-if_tap.c, if_tun.c, if_vlan.c, if_lagg.c, netisr.c, route.c,
-rtsock.c, raw_cb.c, raw_usrreq.c, route_ctl.c, route_helpers.c, ...
+bus_if.m, device_if.m, linker_if.m
 ```
 
-### 2.3 NETINET_SRCS（典型，来自 `sys/netinet/`）
-
+`KERN_MSRCS`（1 个）：
 ```
-in.c, in_pcb.c, in_proto.c, in_rmx.c, ip_id.c, ip_input.c, ip_output.c,
-ip_options.c, raw_ip.c, tcp_input.c, tcp_output.c, tcp_reass.c,
-tcp_subr.c, tcp_syncache.c, tcp_timer.c, tcp_timewait.c, tcp_usrreq.c,
-udp_usrreq.c, igmp.c, ip_icmp.c, ...
+linker_if.m
 ```
 
-### 2.4 NETINET6_SRCS（典型，来自 `sys/netinet6/`）
+### 2.6 `LIBKERN_SRCS`（按架构分支，arm64 7 / else 6，无 `gsb_crc32` 仅 arm64）
 
+**`ifeq (${MACHINE_CPUARCH},arm64)`（7 个）**：
 ```
-in6.c, in6_proto.c, in6_pcb.c, in6_src.c, in6_rmx.c, in6_ifattach.c,
-ip6_input.c, ip6_output.c, ip6_forward.c, icmp6.c, nd6.c, nd6_nbr.c,
-udp6_usrreq.c, ...
-```
-
-### 2.5 LIBKERN_SRCS（典型，来自 `sys/libkern/`）
-
-```
-arc4random.c, bsearch.c, fnmatch.c, gmtime_r.c, inet_aton.c, inet_pton.c,
-inet_ntoa.c, inet_ntop.c, jenkins_hash.c, lookup_path.c, mcount.c,
-memmem.c, qsort.c, qsort_r.c, random.c, strcasecmp.c, strncmp.c,
-strdup.c, strlcpy.c, strlcat.c, ...
+bcd.c, inet_ntoa.c, jenkins_hash.c, strlcpy.c, strnlen.c, fls.c, flsl.c
 ```
 
-### 2.6 FF_SRCS（17-21 个 ff_*.c）+ FF_HOST_SRCS（9 个）
+**else（amd64 / arm / i386 / aarch64 / mips，6 个）**：
+```
+bcd.c, gsb_crc32.c, inet_ntoa.c, jenkins_hash.c, strlcpy.c, strnlen.c
+```
 
-详见 `02-architecture-analysis.md` §4。
+### 2.7 `MACHINE_SRCS`（1 个，来自 `sys/${MACHINE_CPUARCH}/${MACHINE_CPUARCH}/`）
 
-### 2.7 条件可选 SRCS
+```
+in_cksum.c
+```
 
-- `NETIPSEC_SRCS`：IPSEC 启用时
-- `NETGRAPH_SRCS`：NETGRAPH 启用时
-- `IPFW_SRCS`：IPFW 启用时
-- `VM_SRCS`：vm 子集
-- `OPENCRYPTO_SRCS`：opencrypto 子集
+### 2.8 `NET_SRCS`（33 个，来自 `sys/net/` + `sys/net/route/`）
+
+```
+bpf.c, bridgestp.c, if.c, if_bridge.c, if_clone.c, if_dead.c,
+if_ethersubr.c, if_loop.c, if_llatbl.c, if_media.c, if_spppfr.c,
+if_spppsubr.c, if_vlan.c, if_vxlan.c, in_fib.c, in_gif.c, ip_reass.c,
+netisr.c, pfil.c, radix.c, raw_cb.c, raw_usrreq.c, route.c,
+route_ctl.c, route_tables.c, route_helpers.c, route_ifaddrs.c,
+route_temporal.c, nhop_utils.c, nhop.c, nhop_ctl.c, rtsock.c,
+slcompress.c
+```
+> 注：本节明确包含 13.0 版本的 `route_*.c` / `nhop*.c`；15.0 routing/rib/nexthop 重写后这些文件**全数受 R-014 影响**（详见 03 §3.8）。
+
+### 2.9 `NETGRAPH_SRCS`（默认 0，`FF_NETGRAPH` 时 43 个，来自 `sys/netgraph/`）
+
+**`ifdef FF_NETGRAPH`（43 个）**：
+```
+ng_async.c, ng_atmllc.c, ng_bridge.c, ng_car.c, ng_cisco.c,
+ng_deflate.c, ng_echo.c, ng_eiface.c, ng_etf.c, ng_ether.c,
+ng_ether_echo.c, ng_frame_relay.c, ng_gif.c, ng_gif_demux.c,
+ng_hole.c, ng_hub.c, ng_iface.c, ng_ip_input.c, ng_ipfw.c,
+ng_ksocket.c, ng_l2tp.c, ng_lmi.c, ng_nat.c, ng_one2many.c,
+ng_parse.c, ng_patch.c, ng_pipe.c, ng_ppp.c, ng_pppoe.c, ng_pptpgre.c,
+ng_pred1.c, ng_rfc1490.c, ng_sample.c, ng_socket.c, ng_source.c,
+ng_split.c, ng_sppp.c, ng_tag.c, ng_tcpmss.c, ng_tee.c, ng_UI.c,
+ng_vjc.c, ng_vlan.c
+```
+
+### 2.10 `NETINET_SRCS`（44 个，无条件，来自 `sys/netinet/` + `cc/` + `libalias/`）
+
+```
+if_ether.c, if_gif.c, igmp.c, in.c, in_mcast.c, in_pcb.c, in_proto.c,
+in_rmx.c, ip_carp.c, ip_divert.c, ip_ecn.c, ip_encap.c, ip_fastfwd.c,
+ip_icmp.c, ip_id.c, ip_input.c, ip_mroute.c, ip_options.c, ip_output.c,
+raw_ip.c, tcp_debug.c, tcp_hostcache.c, tcp_input.c, tcp_lro.c,
+tcp_offload.c, tcp_output.c, tcp_reass.c, tcp_sack.c, tcp_subr.c,
+tcp_syncache.c, tcp_timer.c, tcp_timewait.c, tcp_usrreq.c,
+udp_usrreq.c, cc.c, cc_newreno.c, cc_htcp.c, cc_cubic.c, alias.c,
+alias_db.c, alias_mod.c, alias_proxy.c, alias_sctp.c, alias_util.c
+```
+> 注：包含 13.0 时代的 `tcp_debug.c`（15.0 已删除）；本节多个 TCP 文件直接受 R-001 / R-002 / R-005（pr_usrreqs / inpcb SMR / mbuf）影响。
+
+### 2.11 `NETINET6_SRCS`（默认 0，`FF_INET6` 时 29 个，来自 `sys/netinet6/`）
+
+**`ifdef FF_INET6`（29 个）**：
+```
+dest6.c, frag6.c, icmp6.c, in6.c, in6_ifattach.c, in6_mcast.c,
+in6_pcb.c, in6_pcbgroup.c, in6_proto.c, in6_rmx.c, in6_src.c,
+ip6_forward.c, ip6_id.c, ip6_input.c, ip6_fastfwd.c, ip6_mroute.c,
+ip6_output.c, mld6.c, nd6.c, nd6_nbr.c, nd6_rtr.c, raw_ip6.c, route6.c,
+scope6.c, send.c, udp6_usrreq.c, in6_cksum.c, in6_fib.c, in6_gif.c
+```
+> Makefile 行 555-558 中 `ip6_gre.c` / `ip6_ipsec.c` / `sctp6_usrreq.c` / `in6_rss.c` 被注释（`#`），不参与链接。
+
+### 2.12 `EXTRA_TCP_STACKS_SRCS`（按 `FF_TCPHPTS` / `FF_EXTRA_TCP_STACKS` 分支累加）
+
+**`ifdef FF_TCPHPTS`（+1）**：
+```
+tcp_hpts.c
+```
+
+**`ifdef FF_EXTRA_TCP_STACKS`（+7）**：
+```
+subr_filter.c, tcp_ratelimit.c, arc4random_uniform.c, sack_filter.c,
+rack_bbr_common.c, rack.c, bbr.c
+```
+
+### 2.13 `NETIPFW_SRCS`（默认 0，`FF_IPFW` 时 13 个，来自 `sys/netpfil/ipfw/`）
+
+**`ifdef FF_IPFW`（13 个）**：
+```
+ip_fw_dynamic.c, ip_fw_eaction.c, ip_fw_iface.c, ip_fw_log.c,
+ip_fw_nat.c, ip_fw_pfil.c, ip_fw_sockopt.c, ip_fw_table.c,
+ip_fw_table_algo.c, ip_fw_table_value.c, ip_fw2.c, ip_fw_pmod.c,
+tcpmod.c
+```
+
+### 2.14 `NETIPSEC_SRCS`（默认 0，`FF_IPSEC` 时 10 个，来自 `sys/netipsec/`）
+
+**`ifdef FF_IPSEC`（10 个）**：
+```
+ipsec.c, ipsec_input.c, ipsec_mbuf.c, ipsec_output.c, key.c,
+key_debug.c, keysock.c, xform_ah.c, xform_esp.c, xform_ipcomp.c
+```
+> Makefile 行 617-618 注释了 `xform_tcp.c`（仅当 `TCP_SIGNATURE` 定义时启用）。
+
+### 2.15 `OPENCRYPTO_SRCS` / `OPENCRYPTO_MHEADERS` / `OPENCRYPTO_MSRCS`
+
+**`ifdef FF_IPSEC`（6 个）**：
+```
+criov.c, crypto.c, cryptosoft.c, cryptodeflate.c, rmd160.c, xform.c
+```
+> Makefile 行 631 注释了 `cryptodev.c`。
+
+**`OPENCRYPTO_MHEADERS`（无条件 1）**：`cryptodev_if.m`
+**`OPENCRYPTO_MSRCS`（无条件 1）**：`cryptodev_if.m`
+
+### 2.16 `VM_SRCS`（1 个，无条件，来自 `sys/vm/`）
+
+```
+uma_core.c
+```
+
+### 2.17 间接变量：`ASM_SRCS` 与 `HOST_SRCS`
+
+- `ASM_SRCS+= ${CRYPTO_ASM_SRCS}`：由 `mk/kern.pre.mk` 体系基于架构动态生成（amd64 / arm64 / x86 各架构的 SHA / AES / ChaCha 优化汇编），不在 Makefile 文本中静态枚举
+- `HOST_SRCS+= ${FF_HOST_SRCS}`：等同于 `FF_HOST_SRCS`（见 §2.2），仅作为目标变量传入用户态构建链
+
+### 2.18 mips 架构在 `f-stack/lib/Makefile` 中的实际形态
+
+Makefile 行 197-207 的 `ifeq (${MACHINE_CPUARCH},mips)` 块只设置 `ARCH_FLAGS=-march=mips32` 和 `HACK_EXTRA_FLAGS=-shared`，**不引用任何 `*_SRCS+=`**。这意味着 13.0 时代的 F-Stack mips 路径仅有编译参数，**没有对应的链接文件清单**。结合 03 §2.1（15.0 上游 mips 整体移除）、03 §3.7（mips 删除任务），mips 在 `lib/Makefile` 中的逻辑残留可与 `freebsd/mips/` 删除任务一并清理（详见 03 §3.7 / 04 §3.7）。
+
 
 ---
 
