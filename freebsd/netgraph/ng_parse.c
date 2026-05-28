@@ -38,7 +38,6 @@
  * Author: Archie Cobbs <archie@freebsd.org>
  *
  * $Whistle: ng_parse.c,v 1.3 1999/11/29 01:43:48 archie Exp $
- * $FreeBSD$
  */
 
 #include <sys/types.h>
@@ -50,8 +49,7 @@
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
 #include <sys/ctype.h>
-
-#include <machine/stdarg.h>
+#include <sys/stdarg.h>
 
 #include <net/ethernet.h>
 
@@ -960,9 +958,11 @@ ng_ipaddr_parse(const struct ng_parse_type *type,
 		if ((error = ng_int8_parse(&ng_parse_int8_type,
 		    s, off, start, buf + i, buflen)) != 0)
 			return (error);
-		if (i < 3 && s[*off] != '.')
-			return (EINVAL);
-		(*off)++;
+		if (i < 3) {
+			if (s[*off] != '.')
+				return (EINVAL);
+			(*off)++;
+		}
 	}
 	*buflen = 4;
 	return (0);
@@ -1199,13 +1199,15 @@ ng_parse_composite(const struct ng_parse_type *type, const char *s,
 	int *off, const u_char *const start, u_char *const buf, int *buflen,
 	const enum comptype ctype)
 {
-	const int num = ng_get_composite_len(type, start, buf, ctype);
 	int nextIndex = 0;		/* next implicit array index */
 	u_int index;			/* field or element index */
 	int *foff;			/* field value offsets in string */
 	int align, len, blen, error = 0;
 
 	/* Initialize */
+	const int num = ng_get_composite_len(type, start, buf, ctype);
+	if (num < 0 || num > INT_MAX / sizeof(*foff))
+		return (EINVAL);
 	foff = malloc(num * sizeof(*foff), M_NETGRAPH_PARSE, M_NOWAIT | M_ZERO);
 	if (foff == NULL) {
 		error = ENOMEM;

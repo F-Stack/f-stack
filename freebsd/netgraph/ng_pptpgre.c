@@ -36,8 +36,6 @@
  * OF SUCH DAMAGE.
  *
  * Author: Archie Cobbs <archie@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_pptpgre.c,v 1.7 1999/12/08 00:10:06 archie Exp $
  */
 
@@ -74,6 +72,12 @@
 #include <netgraph/netgraph.h>
 #include <netgraph/ng_parse.h>
 #include <netgraph/ng_pptpgre.h>
+
+#ifdef NG_SEPARATE_MALLOC
+static MALLOC_DEFINE(M_NETGRAPH_PPTP, "netgraph_pptp", "netgraph pptpgre node");
+#else
+#define M_NETGRAPH_PPTP M_NETGRAPH
+#endif
 
 /* GRE packet format, as used by PPTP */
 struct greheader {
@@ -128,7 +132,7 @@ typedef u_int64_t		pptptime_t;
 #define PPTP_REORDER_TIMEOUT	1
 
 /* When we receive a packet, we wait to see if there's an outgoing packet
-   we can piggy-back the ACK off of. These parameters determine the mimimum
+   we can piggy-back the ACK off of. These parameters determine the minimum
    and maxmimum length of time we're willing to wait in order to do that.
    These have no effect unless "enableDelayedAck" is turned on. */
 #define PPTP_MIN_ACK_DELAY	(PPTP_TIME_SCALE / 500)	/* 2 milliseconds */
@@ -322,7 +326,7 @@ ng_pptpgre_constructor(node_p node)
 	int i;
 
 	/* Allocate private structure */
-	priv = malloc(sizeof(*priv), M_NETGRAPH, M_WAITOK | M_ZERO);
+	priv = malloc(sizeof(*priv), M_NETGRAPH_PPTP, M_WAITOK | M_ZERO);
 
 	NG_NODE_SET_PRIVATE(node, priv);
 
@@ -382,7 +386,7 @@ ng_pptpgre_newhook(node_p node, hook_p hook, const char *name)
 		if (hex[i] != '\0')
 			return (EINVAL);
 
-		hpriv = malloc(sizeof(*hpriv), M_NETGRAPH, M_NOWAIT | M_ZERO);
+		hpriv = malloc(sizeof(*hpriv), M_NETGRAPH_PPTP, M_NOWAIT | M_ZERO);
 		if (hpriv == NULL)
 			return (ENOMEM);
 
@@ -544,7 +548,7 @@ ng_pptpgre_disconnect(hook_p hook)
 
 		LIST_REMOVE(hpriv, sessions);
 		mtx_destroy(&hpriv->mtx);
-		free(hpriv, M_NETGRAPH);
+		free(hpriv, M_NETGRAPH_PPTP);
 	}
 
 	/* Go away if no longer connected to anything */
@@ -568,7 +572,7 @@ ng_pptpgre_shutdown(node_p node)
 	LIST_REMOVE(&priv->uppersess, sessions);
 	mtx_destroy(&priv->uppersess.mtx);
 
-	free(priv, M_NETGRAPH);
+	free(priv, M_NETGRAPH_PPTP);
 
 	/* Decrement ref count */
 	NG_NODE_UNREF(node);
@@ -733,7 +737,7 @@ ng_pptpgre_sendq(const hpriv_p hpriv, roqh *q, const struct ng_pptpgre_roq *st)
 		NGI_GET_M(np->item, m);
 		NG_FWD_NEW_DATA(error, np->item, hpriv->hook, m);
 		if (np != st)
-			free(np, M_NETGRAPH);
+			free(np, M_NETGRAPH_PPTP);
 	}
 	return (error);
 }
@@ -969,7 +973,7 @@ badAck:
 	hpriv->recvSeq = np->seq;
 
 enqueue:
-	np = malloc(sizeof(*np), M_NETGRAPH, M_NOWAIT | M_ZERO);
+	np = malloc(sizeof(*np), M_NETGRAPH_PPTP, M_NOWAIT | M_ZERO);
 	if (np == NULL) {
 		priv->stats.memoryFailures++;
 		/*
@@ -1265,7 +1269,7 @@ ng_pptpgre_reset(hpriv_p hpriv)
 		np = SLIST_FIRST(&hpriv->roq);
 		SLIST_REMOVE_HEAD(&hpriv->roq, next);
 		NG_FREE_ITEM(np->item);
-		free(np, M_NETGRAPH);
+		free(np, M_NETGRAPH_PPTP);
 	}
 	hpriv->roq_len = 0;
 }

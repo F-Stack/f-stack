@@ -36,8 +36,6 @@
  * OF SUCH DAMAGE.
  *
  * Author: Julian Elischer <julian@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_sample.c,v 1.13 1999/11/01 09:24:52 julian Exp $
  */
 
@@ -273,7 +271,7 @@ ng_xxx_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			struct ngxxxstat *stats;
 
 			NG_MKRESPONSE(resp, msg, sizeof(*stats), M_NOWAIT);
-			if (!resp) {
+			if (resp == NULL) {
 				error = ENOMEM;
 				break;
 			}
@@ -322,7 +320,7 @@ ng_xxx_rcvmsg(node_p node, item_p item, hook_p lasthook)
  * in the connect() method.
  */
 static int
-ng_xxx_rcvdata(hook_p hook, item_p item )
+ng_xxx_rcvdata(hook_p hook, item_p item)
 {
 	const xxx_p xxxp = NG_NODE_PRIVATE(NG_HOOK_NODE(hook));
 	int chan = -2;
@@ -356,17 +354,8 @@ ng_xxx_rcvdata(hook_p hook, item_p item )
 				NG_FREE_M(m);
 				return (ENETUNREACH);
 			}
-			/* If we were called at splnet, use the following:
-			 * NG_SEND_DATA_ONLY(error, otherhook, m); if this
-			 * node is running at some SPL other than SPLNET
-			 * then you should use instead: error =
-			 * ng_queueit(otherhook, m, NULL); m = NULL;
-			 * This queues the data using the standard NETISR
-			 * system and schedules the data to be picked
-			 * up again once the system has moved to SPLNET and
-			 * the processing of the data can continue. After
-			 * these are run 'm' should be considered
-			 * as invalid and NG_SEND_DATA actually zaps them. */
+			/* After this are run 'm' should be considered
+			 * as invalid. */
 			NG_FWD_NEW_DATA(error, item,
 				xxxp->channel[chan].hook, m);
 			xxxp->packets_in++;

@@ -36,8 +36,6 @@
  * OF SUCH DAMAGE.
  *
  * Author: Julian Elischer <julian@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_sample.h,v 1.3 1999/01/20 00:22:14 archie Exp $
  */
 
@@ -75,7 +73,7 @@ struct ngxxxstat {
 
 /*
  * This is used to define the 'parse type' for a struct ngxxxstat, which
- * is bascially a description of how to convert a binary struct ngxxxstat
+ * is basically a description of how to convert a binary struct ngxxxstat
  * to an ASCII string and back.  See ng_parse.h for more info.
  *
  * This needs to be kept in sync with the above structure definition

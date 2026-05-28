@@ -36,15 +36,16 @@
  * OF SUCH DAMAGE.
  *
  * Author: Julian Elischer <julian@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_message.h,v 1.12 1999/01/25 01:17:44 archie Exp $
  */
 
 #ifndef _NETGRAPH_NG_MESSAGE_H_
 #define _NETGRAPH_NG_MESSAGE_H_
 
-/* ASCII string size limits */
+/*
+ * ASCII string size limits
+ * Check with struct sockaddr_ng if changing.
+ */
 #define	NG_TYPESIZ	32	/* max type name len (including null) */
 #define	NG_HOOKSIZ	32	/* max hook name len (including null) */
 #define	NG_NODESIZ	32	/* max node name len (including null) */

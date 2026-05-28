@@ -36,8 +36,6 @@
  * OF SUCH DAMAGE.
  *
  * Author: Julian Elischer <julian@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_lmi.c,v 1.38 1999/11/01 09:24:52 julian Exp $
  */
 
@@ -742,7 +740,9 @@ nglmi_checkdata(hook_p hook, struct mbuf *m)
 	u_char  nextbyte;
 	int     seq_seen = 0;
 	int     resptype_seen = 0;	/* 0 , 1 (partial) or 2 (full) */
+#if 0
 	int     highest_dlci = 0;
+#endif
 
 	packetlen = m->m_len;
 	data = mtod(m, const u_char *);
@@ -959,7 +959,9 @@ nglmi_checkdata(hook_p hook, struct mbuf *m)
 				log(LOG_WARNING, "nglmi: DLCI out of range\n");
 				goto reject;
 			}
+#if 0
 			highest_dlci = dlci;
+#endif
 			break;
 		default:
 			log(LOG_WARNING,

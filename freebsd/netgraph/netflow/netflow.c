@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010-2011 Alexander V. Chernikov <melifaro@ipfw.ru>
  * Copyright (c) 2004-2005 Gleb Smirnoff <glebius@FreeBSD.org>
@@ -31,8 +31,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_route.h"
@@ -51,6 +49,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/route/nhop.h>
 #include <net/route/route_ctl.h>
@@ -108,15 +107,16 @@ static int export_send(priv_p, fib_export_p, item_p, int);
 
 #ifdef INET
 static int hash_insert(priv_p, struct flow_hash_entry *, struct flow_rec *,
-    int, uint8_t, uint8_t);
+    int, uint8_t, uint16_t);
 #endif
 #ifdef INET6
 static int hash6_insert(priv_p, struct flow_hash_entry *, struct flow6_rec *,
-    int, uint8_t, uint8_t);
+    int, uint8_t, uint16_t);
 #endif
 
 static void expire_flow(priv_p, fib_export_p, struct flow_entry *, int);
 
+#ifdef INET
 /*
  * Generate hash for a given flow record.
  *
@@ -140,6 +140,7 @@ ip_hash(struct flow_rec *r)
 		return ADDR_HASH(r->r_src.s_addr, r->r_dst.s_addr);
 	}
 }
+#endif
 
 #ifdef INET6
 /* Generate hash for a given flow6 record. Use lower 4 octets from v6 addresses */
@@ -319,7 +320,7 @@ ng_netflow_copyinfo(priv_p priv, struct ng_netflow_info *i)
 #ifdef INET
 static int
 hash_insert(priv_p priv, struct flow_hash_entry *hsh, struct flow_rec *r,
-	int plen, uint8_t flags, uint8_t tcp_flags)
+	int plen, uint8_t flags, uint16_t tcp_flags)
 {
 	struct flow_entry *fle;
 
@@ -360,8 +361,12 @@ hash_insert(priv_p priv, struct flow_hash_entry *hsh, struct flow_rec *r,
 
 			rt_get_inet_prefix_plen(rt, &addr, &plen, &scopeid);
 			fle->f.fle_o_ifx = nh->nh_ifp->if_index;
-			if (nh->gw_sa.sa_len == AF_INET)
+			if (nh->gw_sa.sa_family == AF_INET)
 				fle->f.next_hop = nh->gw4_sa.sin_addr;
+			/*
+			 * XXX we're leaving an empty gateway here for
+			 * IPv6 nexthops.
+			 */
 			fle->f.dst_mask = plen;
 		}
 	}
@@ -392,7 +397,7 @@ hash_insert(priv_p priv, struct flow_hash_entry *hsh, struct flow_rec *r,
 #ifdef INET6
 static int
 hash6_insert(priv_p priv, struct flow_hash_entry *hsh6, struct flow6_rec *r,
-	int plen, uint8_t flags, uint8_t tcp_flags)
+	int plen, uint8_t flags, uint16_t tcp_flags)
 {
 	struct flow6_entry *fle6;
 
@@ -434,7 +439,7 @@ hash6_insert(priv_p priv, struct flow_hash_entry *hsh6, struct flow6_rec *r,
 
 			rt_get_inet6_prefix_plen(rt, &addr, &plen, &scopeid);
 			fle6->f.fle_o_ifx = nh->nh_ifp->if_index;
-			if (nh->gw_sa.sa_len == AF_INET6)
+			if (nh->gw_sa.sa_family == AF_INET6)
 				fle6->f.n.next_hop6 = nh->gw6_sa.sin6_addr;
 			fle6->f.dst_mask = plen;
 		}
@@ -654,8 +659,7 @@ ng_netflow_flow_add(priv_p priv, fib_export_p fe, struct ip *ip,
 	struct flow_rec		r;
 	int			hlen, plen;
 	int			error = 0;
-	uint16_t		eproto;
-	uint8_t			tcp_flags = 0;
+	uint16_t		tcp_flags = 0;
 
 	bzero(&r, sizeof(r));
 
@@ -666,7 +670,6 @@ ng_netflow_flow_add(priv_p priv, fib_export_p fe, struct ip *ip,
 	if (hlen < sizeof(struct ip))
 		return (EINVAL);
 
-	eproto = ETHERTYPE_IP;
 	/* Assume L4 template by default */
 	r.flow_type = NETFLOW_V9_FLOW_V4_L4;
 
@@ -699,7 +702,7 @@ ng_netflow_flow_add(priv_p priv, fib_export_p fe, struct ip *ip,
 			tcp = (struct tcphdr *)((caddr_t )ip + hlen);
 			r.r_sport = tcp->th_sport;
 			r.r_dport = tcp->th_dport;
-			tcp_flags = tcp->th_flags;
+			tcp_flags = tcp_get_flags(tcp);
 			break;
 		    }
 		case IPPROTO_UDP:
@@ -784,7 +787,7 @@ ng_netflow_flow6_add(priv_p priv, fib_export_p fe, struct ip6_hdr *ip6,
 	struct flow6_rec	r;
 	int			plen;
 	int			error = 0;
-	uint8_t			tcp_flags = 0;
+	uint16_t		tcp_flags = 0;
 
 	/* check version */
 	if ((ip6->ip6_vfc & IPV6_VERSION_MASK) != IPV6_VERSION)
@@ -813,7 +816,7 @@ ng_netflow_flow6_add(priv_p priv, fib_export_p fe, struct ip6_hdr *ip6,
 
 			tcp = (struct tcphdr *)upper_ptr;
 			r.r_ports = *(uint32_t *)upper_ptr;
-			tcp_flags = tcp->th_flags;
+			tcp_flags = tcp_get_flags(tcp);
 			break;
 		    }
  		case IPPROTO_UDP:

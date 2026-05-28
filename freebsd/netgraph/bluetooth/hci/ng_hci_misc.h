@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -30,7 +30,6 @@
  * SUCH DAMAGE.
  *
  * $Id: ng_hci_misc.h,v 1.3 2003/09/08 18:57:51 max Exp $
- * $FreeBSD$
  */
 
 #ifndef _NETGRAPH_HCI_MISC_H_
