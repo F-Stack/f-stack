@@ -46,13 +46,14 @@
 - `f-stack-lib/freebsd/` —— F-Stack 启动时从 freebsd-13.0/sys/ 拷贝的"原始未修改副本"（25 个子目录，与 `f-stack/freebsd/` 顶层完全对齐）
 - `f-stack-lib/tools/` —— F-Stack 启动时从 freebsd-13.0/(tools+sbin+usr.sbin) 拷贝的"原始未修改副本"（22 个子目录，与 `f-stack/tools/` 顶层完全对齐）
 
-### 1.3 15.0 原始备份（**本计划需要创建**）
+### 1.3 15.0 原始备份（**已于 Phase 1.4 创建，2026-05-26**）
 
-`/data/workspace/freebsd-src-releng-15.0/f-stack-lib/`（**当前不存在**）
+`/data/workspace/freebsd-src-releng-15.0/f-stack-lib/`（**已存在 25 044 个文件**，含 `freebsd/`、`tools/`、`INVENTORY.md`；详见 `freebsd-src-releng-15.0/f-stack-lib/INVENTORY.md`）
 
-需要：
-1. 创建 `f-stack-lib/freebsd/`，按 `13.0/f-stack-lib/freebsd/` 的子目录清单从 `freebsd-src-releng-15.0/sys/` 拷贝对应内容（处理 15.0 新增的 netlink、移除的 mips）
-2. 创建 `f-stack-lib/tools/`，按 `13.0/f-stack-lib/tools/` 的子目录清单从 `freebsd-src-releng-15.0/{tools,sbin,usr.sbin}/` 拷贝对应内容
+Phase 1.4 已完成的工作：
+1. 已创建 `f-stack-lib/freebsd/`，按 `13.0/f-stack-lib/freebsd/` 的子目录清单从 `freebsd-src-releng-15.0/sys/` 拷贝（24 593 个文件；处理：跳过 mips、新增 netlink、其余子目录与 13.0 备份对齐）
+2. 已创建 `f-stack-lib/tools/`，按 `13.0/f-stack-lib/tools/` 的子目录清单从 `freebsd-src-releng-15.0/{tools,sbin,usr.sbin}/` 拷贝（451 个文件）
+3. 已生成 `INVENTORY.md` 记录每项来源路径、版本、文件数、与 13.0 备份的 `diff -rq` 计数
 
 ### 1.4 F-Stack 已改造目录（本次升级的核心对象）
 
@@ -320,10 +321,10 @@
 
 ## 8. 节奏控制（按 harness-engineering-orchestrator 风格）
 
-- **本计划即 "Plan 阶段产物"**，下一步进入 "Discovery + Analysis"（Phase 1.4 + Phase 2）
-- 每个 Phase 结束有一次明确的"Gate"：把本 Phase 产物给用户过目，得到 GO 信号后再进入下一 Phase
-- **本回合**：产出 plan.md（已完成本文档）→ 等用户确认 plan → 进入 Phase 1.4
+- **本计划已完整执行完毕**：Phase 1（含 1.1-1.4）/ Phase 2（3 路 code-explorer 子代理调研）/ Phase 3（产出 7 份 spec）/ Phase 4（reviewer 出 99-review-report）/ Phase 5（交付汇报）+ 独立审计 v0.2（98-independent-audit-report，2026-05-28）已全部交付
+- 每个 Phase 结束的"Gate"已逐一通过；当前位于"独立审计 v0.2 修订执行"阶段（2026-05-28），按 98 §6.1 必修项逐项 commit
+- **历史回合记录**：2026-05-26 产出 plan.md → 用户确认 → Phase 1.4 → Phase 2 三路并行 → Phase 3 七份 spec → Phase 4 reviewer 报告 → Phase 5 交付；2026-05-28 进入审计修订（详见 99 §12）
 
 ---
 
-> **下一步等待用户确认本 plan.md，然后开始执行 Phase 1.4（创建 15.0/f-stack-lib/ 并拷贝原始备份）。**
+> **当前状态：Phase 1-5 + 独立审计 v0.2 全部交付（2026-05-28）。下一步进入 M1 实施阶段（按 05-implementation-plan.md 拾取任务）。**

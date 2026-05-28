@@ -222,16 +222,19 @@
 
 ---
 
-## 11. 输出物（本 Spec 阶段最终交付，2 份已交付，6 份待出）
+## 11. 输出物（本 Spec 阶段最终交付，9 份全部已交付）
+
+> 状态截至 2026-05-28：全部 9 份已交付（2026-05-26 完成 Phase 1-5），并在 2026-05-28 追加独立审计 v0.2（98-independent-audit-report.md）及 6 项必修修订。详见 `99-review-report.md` §1（体量表）与 §12（修订记录）。
 
 | # | 文件 | 状态 |
 |---|---|---|
-| 1 | `plan.md` | 已交付 |
-| 2 | `00-overview-and-glossary.md` | 已交付 |
-| 3 | **`01-requirements-spec.md`** | **本文档** |
-| 4 | `02-architecture-analysis.md` | 待 Phase 3.3 |
-| 5 | `03-freebsd-15-changes.md` | 待 Phase 3.4 |
-| 6 | `04-diff-and-port-strategy.md` | 待 Phase 3.5 |
-| 7 | `05-implementation-plan.md` | 待 Phase 3.6 |
-| 8 | `06-test-and-acceptance-spec.md` | 待 Phase 3.7 |
-| 9 | `99-review-report.md` | 待 Phase 4 |
+| 1 | `plan.md` | 已交付（2026-05-26；§1.3/§8 状态 2026-05-28 已订正） |
+| 2 | `00-overview-and-glossary.md` | 已交付（2026-05-26；§5 syscall/if_t 2026-05-28 已订正） |
+| 3 | **`01-requirements-spec.md`** | **本文档**（2026-05-26 交付；§11 状态 2026-05-28 已订正） |
+| 4 | `02-architecture-analysis.md` | 已交付（2026-05-26） |
+| 5 | `03-freebsd-15-changes.md` | 已交付（2026-05-26；§1/§2.4/§3.3 2026-05-28 已订正） |
+| 6 | `04-diff-and-port-strategy.md` | 已交付（2026-05-26；§1/§2 2026-05-28 已重写为实测版本） |
+| 7 | `05-implementation-plan.md` | 已交付（2026-05-26） |
+| 8 | `06-test-and-acceptance-spec.md` | 已交付（2026-05-26；§4.2 if_t 2026-05-28 已订正） |
+| 9 | `99-review-report.md` | 已交付（2026-05-26；§7/§10/§12 2026-05-28 已扩展） |
+| 10 | `98-independent-audit-report.md` | 独立审计 v0.2（2026-05-26 19:45 出报告，2026-05-28 完成 6 项必修修订） |

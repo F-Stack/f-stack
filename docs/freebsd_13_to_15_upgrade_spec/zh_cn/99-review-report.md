@@ -79,7 +79,7 @@ q2 决定的范围（来自 plan.md §1.5）：
 | Phase 2 | 3 个 code-explorer 子代理调研 | ✓ 已完成（Analyzer-13/15/Diff-Comparator 三路）|
 | Phase 3 | 7 份 spec 产出 | ✓ 已交付 |
 | Phase 4 | reviewer 出 99 报告 | ✓ **本文档** |
-| Phase 5 | 交付汇报 | 待 Leader 下回合产出 |
+| Phase 5 | 交付汇报 | ✓ 已交付（2026-05-26 完成；2026-05-28 增补独立审计 v0.2 修订）|
 
 **完整性**：✓
 
@@ -337,12 +337,15 @@ q2 决定的范围（来自 plan.md §1.5）：
 
 ---
 
-## 10. 待 Phase 5 完成的事
+## 10. Phase 5 完成事项归档
+
+> 状态：Phase 5 交付汇报已于 2026-05-26 完成；2026-05-28 增补独立审计 v0.2（`98-independent-audit-report.md`）及 6 项必修修订（详见 §12.1-§12.6）。
 
 | 项 | 详情 |
 |---|---|
-| 汇总产物清单 + 字数 | Leader 在 Phase 5 主对话内 |
-| 显式声明不做 git / 不做代码修改 | 同上 |
+| 汇总产物清单 + 字数 | 见 §1（体量表）；本 99 文档与 98 审计报告均已纳入 |
+| 显式声明不做 git / 不做代码修改 | 已声明；2026-05-28 进入审计修订阶段后**仅修订 docs/freebsd_13_to_15_upgrade_spec/zh_cn/ 下文档**，不改 F-Stack 源码（C/Makefile） |
+| 实施阶段拾取入口 | `05-implementation-plan.md` M1 任务（实施前请按 04 §1（diff -rq 实测基线）+ 04 §2（SRCS 全量清单）复评 P0 任务工作量） |
 
 ---
 
@@ -422,4 +425,22 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 影响范围 | 04 §3（交集热点）原本以"~20 NET_SRCS / ~22 NETINET_SRCS / ~12 NETINET6_SRCS"为基础——本次实测后真实数字分别是 33 / 44 / 29，**实际受影响文件比 v0.1 估计多 50% 左右**；建议 M1 启动前以 §2 完整清单逐文件标注 P0/P1/P2 标签（不在本回合范围）。R-001 ~ R-014 风险识别方向不变。 |
 | 修订后状态 | `98 P1-004` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变；§2 升级到"实施级精度"。 |
 | 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '\\.\\.\\.[[:space:]]*$' zh_cn/04-*.md` 应无残留（合法历史段落不含此 pattern）；`grep -cE '^[a-zA-Z_0-9]+\\.c' f-stack/lib/Makefile` 与本节文件清单总数一致（默认配置 188，全部条件开启 247）。 |
+
+### 12.5 修订 R-2026-05-28-05：文档过期状态清理
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-28 |
+| 关联审计条目 | `98-independent-audit-report.md` §3 P1-006，§6.1 第 5 项 |
+| 错误根因 | `plan.md` 是 Phase 1.3 产物，写于 Phase 1.4 启动前；`01-requirements-spec.md` 是 Phase 3.2 产物，写于 02-06 + 99 出炉前；`99-review-report.md` §3.2 / §10 写于 Phase 5 完成前。这些文档发布后未再回扫并对齐当前阶段，导致截至 2026-05-28，仍残留"f-stack-lib/ 当前不存在 / 2 份已交付 6 份待出 / Phase 5 待 Leader 下回合产出"等过期表述，与项目实际状态（5 个 Phase + 独立审计 v0.2 已交付）严重不一致。Phase 4 reviewer 未把"状态字段对齐"列为审查维度。 |
+| 实测基线 | `ls -la /data/workspace/freebsd-src-releng-15.0/f-stack-lib/` 显示该目录已存在（含 `freebsd/` 24 593 文件、`tools/` 451 文件、`INVENTORY.md`），即 Phase 1.4 已完成；`ls /data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/` 显示 9 份 spec + 98 + 99 + plan + plan-spec-fix-r2-r6 全部已交付。 |
+| 修订动作 1 | `plan.md` §1.3：标题"15.0 原始备份（**本计划需要创建**）"改为"已于 Phase 1.4 创建，2026-05-26"；正文"`/data/workspace/freebsd-src-releng-15.0/f-stack-lib/`（**当前不存在**）"改为"已存在 25 044 个文件，含 freebsd/、tools/、INVENTORY.md"；"需要"段改为"Phase 1.4 已完成的工作"。 |
+| 修订动作 2 | `plan.md` §8 与末尾占位段：把"本计划即 'Plan 阶段产物'，下一步进入 Discovery + Analysis"改为"本计划已完整执行完毕"；末尾"等待用户确认本 plan.md"改为"当前状态：Phase 1-5 + 独立审计 v0.2 全部交付（2026-05-28）。下一步进入 M1 实施阶段"。 |
+| 修订动作 3 | `01-requirements-spec.md` §11：标题"2 份已交付，6 份待出"改为"9 份全部已交付"；表格 9 行的"待 Phase 3.x / 待 Phase 4"全部改为"已交付（2026-05-26；某节 2026-05-28 已订正）"；新增第 10 行"98-independent-audit-report.md"。 |
+| 修订动作 4 | `99-review-report.md` §3.2 行 82："Phase 5 待 Leader 下回合产出"改为"已交付（2026-05-26 完成；2026-05-28 增补独立审计 v0.2 修订）"；§10 标题"待 Phase 5 完成的事"改为"Phase 5 完成事项归档"，正文重写为已完成清单 + 实施阶段拾取入口。 |
+| 修订动作 5 | `00-overview-and-glossary.md` §6 行 151"审查：Reviewer（待 Phase 4 出报告）"改为"已于 2026-05-26 出 99；2026-05-28 增补 98 与 6 项修订"。 |
+| 修订动作 6 | `98-independent-audit-report.md` §3 P1-006 与 §6.1 第 5 项追加"已修订 2026-05-28，详见 99 §12.5"标记，闭合审计条目。 |
+| 影响范围 | 项目状态可信度恢复。无源码层影响；spec 内容（事实/数字/任务）与状态字段相互独立，本次修订不改变任何技术结论。 |
+| 修订后状态 | `98 P1-006` 闭合；`spec 阶段交付`整体结论保持 **✅ 通过** 不变。 |
+| 校验 | `read_lints` 在 zh_cn/ 目录返回 0 diagnostics；`grep -nE '当前不存在\|2 份已交付，6 份待出\|待 Phase 3\\.\|待 Phase 4 出报告\|待 Leader 下回合' zh_cn/{plan,01,99,00}.md` 应无残留（合法历史引文如 98 审计报告原文与本节修订记录除外）。 |
 

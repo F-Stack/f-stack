@@ -148,6 +148,6 @@ F-Stack 是把 FreeBSD 内核协议栈剥离出来跑在 DPDK 用户态的工程
 
 - **作者**：Agent Team Leader（主对话内执行）
 - **协作**：Sub-Agent A/B/C（已通过 code-explorer 子代理完成）
-- **审查**：Reviewer（待 Phase 4 出报告 `99-review-report.md`）
+- **审查**：Reviewer（已于 2026-05-26 出 `99-review-report.md`；2026-05-28 增补独立审计 v0.2 `98-independent-audit-report.md` 及 6 项必修修订）
 - **校验**：所有数字均来自实测命令输出；非实测的推断在文末"7. 8 项核心决策" 表格中标注来源
 - **下一步**：阅读 `01-requirements-spec.md` 了解本次升级要解决/不解决的具体问题
