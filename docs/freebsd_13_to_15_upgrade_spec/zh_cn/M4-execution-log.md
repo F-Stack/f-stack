@@ -206,13 +206,19 @@ spec 05 §2.4 列 5 子系统 + M3 推迟的 2 P0 任务（T-ff-02 / T-ff-03）+
 5. **G-M4 严格 Gate ✅**：libfstack.a 严格 link 通过 + read_lints=0 + diff -rq 0 differ + .o 缓存问题彻底解决
 6. **文档资产**：M4-execution-log.md（7 章节）+ 99 §6（更新 22 行 M3 任务，T-ff-02/03 改为 ✅ 完成）+ 99 §12.17（DP-M4 8 类 ABI 偏差修订）
 
-### 7.3 M5 输入清单（M4 → M5 交接）
+### 7.3 M5 输入清单（M4 → M5 交接） — ✅ M5 已启动 (2026-05-29 17:28)
 
 M5 阶段开工前需阅读：
 - 本 execution-log §4 颠覆性发现的 5 项实测验证
 - 本 execution-log §5.1.3 11 文件 ABI 变化清单（M5 性能基线 / 编译器优化时复用）
 - 99-review-report.md §6 中 M4 任务标 ✅
 - 99-review-report.md §12.17 DP-M4 8 类 ABI 偏差修订
+
+**M5 启动确认**：
+- M5 plan ID: freebsd_13_to_15_upgrade_M5（plan status=building）
+- M5 启动备份: `/data/workspace/f-stack-M5-start/` 32797 文件
+- M5 决策点: DP-M5-1=B / DP-M5-2=B / DP-M5-3=B（用户接受默认）
+- M5 execution log: `M5-execution-log.md` 已建
 
 **M5 范围建议**（spec 06 全量验收 + 性能基线 + 编译器深度优化）：
 - **M5 P0**：(1) spec 06 9 个用例运行时验证；(2) 编译矩阵（GCC 12+ / Clang 14+ / aarch64 / arm64）；(3) RSS / inpcb SMR runtime 验证（M3 推迟）
