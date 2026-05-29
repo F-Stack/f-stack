@@ -30,6 +30,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/poll.h>
@@ -63,7 +64,7 @@ void ff_stop_run(void);
 
 int ff_fcntl(int fd, int cmd, ...);
 
-int ff_sysctl(const int *name, u_int namelen, void *oldp, size_t *oldlenp,
+int ff_sysctl(const int *name, unsigned int namelen, void *oldp, size_t *oldlenp,
     const void *newp, size_t newlen);
 
 int ff_ioctl(int fd, unsigned long request, ...);
@@ -150,9 +151,12 @@ int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 int ff_dup(int oldfd);
 int ff_dup2(int oldfd, int newfd);
 
+#ifndef _KERNEL
+#include <pthread.h>
 int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr,
     void * (* start_routine) (void *), void * arg);
 int ff_pthread_join(pthread_t thread, void **retval);
+#endif
 
 /* POSIX-LIKE api end */
 

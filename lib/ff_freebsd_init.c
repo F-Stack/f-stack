@@ -51,6 +51,7 @@
 #include <sys/sockio.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <netinet/in_var.h>
 
 int lo_set_defaultaddr(void);

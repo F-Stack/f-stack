@@ -66,7 +66,7 @@
 #include "ff_dpdk_if.h"
 
 struct ff_veth_softc {
-    struct ifnet *ifp;
+    if_t ifp;
     uint8_t mac[ETHER_ADDR_LEN];
     char host_ifname[IF_NAMESIZE];
 
@@ -209,15 +209,14 @@ static void
 ff_veth_init(void *arg)
 {
     struct ff_veth_softc *sc = arg;
-    struct ifnet *ifp = sc->ifp;
+    if_t ifp = sc->ifp;
 
-    ifp->if_drv_flags |= IFF_DRV_RUNNING;
-    ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
-    ifp->if_flags |= IFF_UP;
+    if_setdrvflagbits(ifp, IFF_DRV_RUNNING, IFF_DRV_OACTIVE);
+    if_setflagbits(ifp, IFF_UP, 0);
 }
 
 static void
-ff_veth_start(struct ifnet *ifp)
+ff_veth_start(if_t ifp)
 {
     /* nothing to do */
 }
@@ -225,23 +224,23 @@ ff_veth_start(struct ifnet *ifp)
 static void
 ff_veth_stop(struct ff_veth_softc *sc)
 {
-    struct ifnet *ifp = sc->ifp;
+    if_t ifp = sc->ifp;
 
-    ifp->if_drv_flags &= ~(IFF_DRV_RUNNING|IFF_DRV_OACTIVE);
-    ifp->if_flags &= ~IFF_UP;
+    if_setdrvflagbits(ifp, 0, IFF_DRV_RUNNING | IFF_DRV_OACTIVE);
+    if_setflagbits(ifp, 0, IFF_UP);
 }
 
 static int
-ff_veth_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
+ff_veth_ioctl(if_t ifp, u_long cmd, caddr_t data)
 {
     int error = 0;
-    struct ff_veth_softc *sc = ifp->if_softc;
+    struct ff_veth_softc *sc = if_getsoftc(ifp);
 
     switch (cmd) {
     case SIOCSIFFLAGS:
-        if (ifp->if_flags & IFF_UP) {
+        if (if_getflags(ifp) & IFF_UP) {
             ff_veth_init(sc);
-        } else if (ifp->if_drv_flags & IFF_DRV_RUNNING)
+        } else if (if_getdrvflags(ifp) & IFF_DRV_RUNNING)
             ff_veth_stop(sc);
         break;
     default:
@@ -413,23 +412,23 @@ ff_mbuf_get(void *p, void *m, void *data, uint16_t len)
 void
 ff_veth_process_packet(void *arg, void *m)
 {
-    struct ifnet *ifp = (struct ifnet *)arg;
+    if_t ifp = (if_t)arg;
     struct mbuf *mb = (struct mbuf *)m;
 
     mb->m_pkthdr.rcvif = ifp;
 
-    ifp->if_input(ifp, mb);
+    if_input(ifp, mb);
 }
 
 static int
-ff_veth_transmit(struct ifnet *ifp, struct mbuf *m)
+ff_veth_transmit(if_t ifp, struct mbuf *m)
 {
-    struct ff_veth_softc *sc = (struct ff_veth_softc *)ifp->if_softc;
+    struct ff_veth_softc *sc = (struct ff_veth_softc *)if_getsoftc(ifp);
     return ff_dpdk_if_send(sc->host_ctx, (void*)m, m->m_pkthdr.len);
 }
 
 static void
-ff_veth_qflush(struct ifnet *ifp)
+ff_veth_qflush(if_t ifp)
 {
 
 }
@@ -443,7 +442,7 @@ ff_veth_setaddr(struct ff_veth_softc *sc, const char *if_name)
     if (if_name) {
         strcpy(req.ifra_name, if_name);
     } else {
-        strcpy(req.ifra_name, sc->ifp->if_dname);
+        strcpy(req.ifra_name, if_getdname(sc->ifp));
     }
 
     struct sockaddr_in sa;
@@ -512,7 +511,7 @@ ff_veth_setvaddr(struct ff_veth_softc *sc, struct ff_port_cfg *cfg, const char *
     } else if (cfg->vip_ifname) {
         strlcpy(req.ifra_name, cfg->vip_ifname, IFNAMSIZ);
     } else {
-        strlcpy(req.ifra_name, sc->ifp->if_dname, IFNAMSIZ);
+        strlcpy(req.ifra_name, if_getdname(sc->ifp), IFNAMSIZ);
     }
 
     struct sockaddr_in sa;
@@ -713,7 +712,7 @@ ff_veth_setaddr6(struct ff_veth_softc *sc, const char *if_name)
     if (if_name) {
         strcpy(ifr6.ifra_name, if_name);
     } else {
-        strcpy(ifr6.ifra_name, sc->ifp->if_dname);
+        strcpy(ifr6.ifra_name, if_getdname(sc->ifp));
     }
 
     ifr6.ifra_addr.sin6_len = sizeof ifr6.ifra_addr;
@@ -780,7 +779,7 @@ ff_veth_setvaddr6(struct ff_veth_softc *sc, struct ff_port_cfg *cfg, const char 
     } else if (cfg->vip_ifname) {
         strlcpy(ifr6.ifra_name, cfg->vip_ifname, IFNAMSIZ);
     } else {
-        strlcpy(ifr6.ifra_name, sc->ifp->if_dname, IFNAMSIZ);
+        strlcpy(ifr6.ifra_name, if_getdname(sc->ifp), IFNAMSIZ);
     }
 
     ifr6.ifra_addr.sin6_len = sizeof ifr6.ifra_addr;
@@ -823,39 +822,39 @@ done:
 static int
 ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
 {
-    struct ifnet *ifp;
+    if_t ifp;
     int ret;
     uint32_t fib_num = RT_DEFAULT_FIB;
 
     ifp = sc->ifp = if_alloc(IFT_ETHER);
 
-    ifp->if_init = ff_veth_init;
-    ifp->if_softc = sc;
+    if_setinitfn(ifp, ff_veth_init);
+    if_setsoftc(ifp, sc);
 
     if_initname(ifp, sc->host_ifname, IF_DUNIT_NONE);
-    ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
-    ifp->if_ioctl = ff_veth_ioctl;
-    ifp->if_start = ff_veth_start;
-    ifp->if_transmit = ff_veth_transmit;
-    ifp->if_qflush = ff_veth_qflush;
+    if_setflags(ifp, IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
+    if_setioctlfn(ifp, ff_veth_ioctl);
+    if_setstartfn(ifp, ff_veth_start);
+    if_settransmitfn(ifp, ff_veth_transmit);
+    if_setqflushfn(ifp, ff_veth_qflush);
     ether_ifattach(ifp, sc->mac);
 
     if (cfg->hw_features.rx_csum) {
-        ifp->if_capabilities |= IFCAP_RXCSUM;
+        if_setcapabilitiesbit(ifp, IFCAP_RXCSUM, 0);
     }
     if (cfg->hw_features.tx_csum_ip) {
-        ifp->if_capabilities |= IFCAP_TXCSUM;
-        ifp->if_hwassist |= CSUM_IP;
+        if_setcapabilitiesbit(ifp, IFCAP_TXCSUM, 0);
+        if_sethwassistbits(ifp, CSUM_IP, 0);
     }
     if (cfg->hw_features.tx_csum_l4) {
-        ifp->if_hwassist |= CSUM_DELAY_DATA;
+        if_sethwassistbits(ifp, CSUM_DELAY_DATA, 0);
     }
     if (cfg->hw_features.tx_tso) {
-        ifp->if_capabilities |= IFCAP_TSO;
-        ifp->if_hwassist |= CSUM_TSO;
+        if_setcapabilitiesbit(ifp, IFCAP_TSO, 0);
+        if_sethwassistbits(ifp, CSUM_TSO, 0);
     }
 
-    ifp->if_capenable = ifp->if_capabilities;
+    if_setcapenable(ifp, if_getcapabilities(ifp));
 
     sc->host_ctx = ff_dpdk_register_if((void *)sc, (void *)sc->ifp, cfg);
     if (sc->host_ctx == NULL) {
