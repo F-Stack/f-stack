@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007-2008
  * 	Swinburne University of Technology, Melbourne, Australia
@@ -49,9 +49,6 @@
  *   http://caia.swin.edu.au/urp/newtcp/
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/limits.h>
@@ -64,6 +61,10 @@ __FBSDID("$FreeBSD$");
 
 #include <net/vnet.h>
 
+#include <net/route.h>
+#include <net/route/nhop.h>
+
+#include <netinet/in_pcb.h>
 #include <netinet/tcp.h>
 #include <netinet/tcp_seq.h>
 #include <netinet/tcp_timer.h>
@@ -135,16 +136,17 @@ __FBSDID("$FreeBSD$");
 	(((diff) / hz) * (((diff) << HTCP_ALPHA_INC_SHIFT) / (4 * hz))) \
 ) >> HTCP_ALPHA_INC_SHIFT)
 
-static void	htcp_ack_received(struct cc_var *ccv, uint16_t type);
+static void	htcp_ack_received(struct cc_var *ccv, ccsignal_t type);
 static void	htcp_cb_destroy(struct cc_var *ccv);
-static int	htcp_cb_init(struct cc_var *ccv);
-static void	htcp_cong_signal(struct cc_var *ccv, uint32_t type);
+static int	htcp_cb_init(struct cc_var *ccv, void *ptr);
+static void	htcp_cong_signal(struct cc_var *ccv, ccsignal_t type);
 static int	htcp_mod_init(void);
 static void	htcp_post_recovery(struct cc_var *ccv);
 static void	htcp_recalc_alpha(struct cc_var *ccv);
 static void	htcp_recalc_beta(struct cc_var *ccv);
 static void	htcp_record_rtt(struct cc_var *ccv);
 static void	htcp_ssthresh_update(struct cc_var *ccv);
+static size_t	htcp_data_sz(void);
 
 struct htcp {
 	/* cwnd before entering cong recovery. */
@@ -175,9 +177,6 @@ VNET_DEFINE_STATIC(u_int, htcp_rtt_scaling) = 0;
 #define	V_htcp_adaptive_backoff    VNET(htcp_adaptive_backoff)
 #define	V_htcp_rtt_scaling    VNET(htcp_rtt_scaling)
 
-static MALLOC_DEFINE(M_HTCP, "htcp data",
-    "Per connection data required for the HTCP congestion control algorithm");
-
 struct cc_algo htcp_cc_algo = {
 	.name = "htcp",
 	.ack_received = htcp_ack_received,
@@ -186,12 +185,15 @@ struct cc_algo htcp_cc_algo = {
 	.cong_signal = htcp_cong_signal,
 	.mod_init = htcp_mod_init,
 	.post_recovery = htcp_post_recovery,
+	.cc_data_sz = htcp_data_sz,
+	.after_idle = newreno_cc_after_idle,
 };
 
 static void
-htcp_ack_received(struct cc_var *ccv, uint16_t type)
+htcp_ack_received(struct cc_var *ccv, ccsignal_t type)
 {
 	struct htcp *htcp_data;
+	uint32_t mss = tcp_fixed_maxseg(ccv->tp);
 
 	htcp_data = ccv->cc_data;
 	htcp_record_rtt(ccv);
@@ -214,12 +216,12 @@ htcp_ack_received(struct cc_var *ccv, uint16_t type)
 		 */
 		if (htcp_data->alpha == 1 ||
 		    CCV(ccv, snd_cwnd) <= CCV(ccv, snd_ssthresh))
-			newreno_cc_algo.ack_received(ccv, type);
+			newreno_cc_ack_received(ccv, type);
 		else {
 			if (V_tcp_do_rfc3465) {
 				/* Increment cwnd by alpha segments. */
 				CCV(ccv, snd_cwnd) += htcp_data->alpha *
-				    CCV(ccv, t_maxseg);
+				    mss;
 				ccv->flags &= ~CCF_ABC_SENTAWND;
 			} else
 				/*
@@ -228,9 +230,9 @@ htcp_ack_received(struct cc_var *ccv, uint16_t type)
 				 * per RTT.
 				 */
 				CCV(ccv, snd_cwnd) += (((htcp_data->alpha <<
-				    HTCP_SHIFT) / (CCV(ccv, snd_cwnd) /
-				    CCV(ccv, t_maxseg))) * CCV(ccv, t_maxseg))
-				    >> HTCP_SHIFT;
+				    HTCP_SHIFT) / (max(1,
+				    CCV(ccv, snd_cwnd) / mss))) *
+				    mss)  >> HTCP_SHIFT;
 		}
 	}
 }
@@ -238,18 +240,27 @@ htcp_ack_received(struct cc_var *ccv, uint16_t type)
 static void
 htcp_cb_destroy(struct cc_var *ccv)
 {
-	free(ccv->cc_data, M_HTCP);
+	free(ccv->cc_data, M_CC_MEM);
+}
+
+static size_t
+htcp_data_sz(void)
+{
+	return(sizeof(struct htcp));
 }
 
 static int
-htcp_cb_init(struct cc_var *ccv)
+htcp_cb_init(struct cc_var *ccv, void *ptr)
 {
 	struct htcp *htcp_data;
 
-	htcp_data = malloc(sizeof(struct htcp), M_HTCP, M_NOWAIT);
-
-	if (htcp_data == NULL)
-		return (ENOMEM);
+	INP_WLOCK_ASSERT(tptoinpcb(ccv->tp));
+	if (ptr == NULL) {
+		htcp_data = malloc(sizeof(struct htcp), M_CC_MEM, M_NOWAIT);
+		if (htcp_data == NULL)
+			return (ENOMEM);
+	} else
+		htcp_data = ptr;
 
 	/* Init some key variables with sensible defaults. */
 	htcp_data->alpha = HTCP_INIT_ALPHA;
@@ -268,13 +279,13 @@ htcp_cb_init(struct cc_var *ccv)
  * Perform any necessary tasks before we enter congestion recovery.
  */
 static void
-htcp_cong_signal(struct cc_var *ccv, uint32_t type)
+htcp_cong_signal(struct cc_var *ccv, ccsignal_t type)
 {
 	struct htcp *htcp_data;
-	u_int mss;
+	uint32_t mss, pipe;
 
 	htcp_data = ccv->cc_data;
-	mss = tcp_maxseg(ccv->ccvc.tcp);
+	mss = tcp_fixed_maxseg(ccv->tp);
 
 	switch (type) {
 	case CC_NDUPACK:
@@ -313,9 +324,11 @@ htcp_cong_signal(struct cc_var *ccv, uint32_t type)
 		break;
 
 	case CC_RTO:
-		CCV(ccv, snd_ssthresh) = max(min(CCV(ccv, snd_wnd),
-						 CCV(ccv, snd_cwnd)) / 2 / mss,
-					     2) * mss;
+		if (CCV(ccv, t_rxtshift) == 1) {
+			pipe = tcp_compute_pipe(ccv->tp);
+			CCV(ccv, snd_ssthresh) = max(2,
+				min(CCV(ccv, snd_wnd), pipe) / 2 / mss) * mss;
+		}
 		CCV(ccv, snd_cwnd) = mss;
 		/*
 		 * Grab the current time and record it so we know when the
@@ -327,22 +340,20 @@ htcp_cong_signal(struct cc_var *ccv, uint32_t type)
 		if (CCV(ccv, t_rxtshift) >= 2)
 			htcp_data->t_last_cong = ticks;
 		break;
+	default:
+		break;
 	}
 }
 
 static int
 htcp_mod_init(void)
 {
-
-	htcp_cc_algo.after_idle = newreno_cc_algo.after_idle;
-
 	/*
 	 * HTCP_RTT_REF is defined in ms, and t_srtt in the tcpcb is stored in
 	 * units of TCP_RTT_SCALE*hz. Scale HTCP_RTT_REF to be in the same units
 	 * as t_srtt.
 	 */
 	htcp_rtt_ref = (HTCP_RTT_REF * TCP_RTT_SCALE * hz) / 1000;
-
 	return (0);
 }
 
@@ -354,6 +365,7 @@ htcp_post_recovery(struct cc_var *ccv)
 {
 	int pipe;
 	struct htcp *htcp_data;
+	uint32_t mss = tcp_fixed_maxseg(ccv->tp);
 
 	pipe = 0;
 	htcp_data = ccv->cc_data;
@@ -363,25 +375,18 @@ htcp_post_recovery(struct cc_var *ccv)
 		 * If inflight data is less than ssthresh, set cwnd
 		 * conservatively to avoid a burst of data, as suggested in the
 		 * NewReno RFC. Otherwise, use the HTCP method.
-		 *
-		 * XXXLAS: Find a way to do this without needing curack
 		 */
-		if (V_tcp_do_rfc6675_pipe)
-			pipe = tcp_compute_pipe(ccv->ccvc.tcp);
-		else
-			pipe = CCV(ccv, snd_max) - ccv->curack;
-
+		pipe = tcp_compute_pipe(ccv->tp);
 		if (pipe < CCV(ccv, snd_ssthresh))
 			/*
 			 * Ensure that cwnd down not collape to 1 MSS under
 			 * adverse conditions. Implements RFC6582
 			 */
-			CCV(ccv, snd_cwnd) = max(pipe, CCV(ccv, t_maxseg)) +
-			    CCV(ccv, t_maxseg);
+			CCV(ccv, snd_cwnd) = max(pipe, mss) + mss;
 		else
 			CCV(ccv, snd_cwnd) = max(1, ((htcp_data->beta *
-			    htcp_data->prev_cwnd / CCV(ccv, t_maxseg))
-			    >> HTCP_SHIFT)) * CCV(ccv, t_maxseg);
+			    htcp_data->prev_cwnd / mss)
+			    >> HTCP_SHIFT)) * mss;
 	}
 }
 
@@ -435,7 +440,7 @@ htcp_recalc_alpha(struct cc_var *ccv)
 			 */
 			if (V_htcp_rtt_scaling)
 				alpha = max(1, (min(max(HTCP_MINROWE,
-				    (CCV(ccv, t_srtt) << HTCP_SHIFT) /
+				    (tcp_get_srtt(ccv->tp, TCP_TMR_GRANULARITY_TICKS) << HTCP_SHIFT) /
 				    htcp_rtt_ref), HTCP_MAXROWE) * alpha)
 				    >> HTCP_SHIFT);
 
@@ -486,18 +491,18 @@ htcp_record_rtt(struct cc_var *ccv)
 	 * or minrtt is currently equal to its initialised value. Ignore SRTT
 	 * until a min number of samples have been taken.
 	 */
-	if ((CCV(ccv, t_srtt) < htcp_data->minrtt ||
+	if ((tcp_get_srtt(ccv->tp, TCP_TMR_GRANULARITY_TICKS) < htcp_data->minrtt ||
 	    htcp_data->minrtt == TCPTV_SRTTBASE) &&
 	    (CCV(ccv, t_rttupdated) >= HTCP_MIN_RTT_SAMPLES))
-		htcp_data->minrtt = CCV(ccv, t_srtt);
+		htcp_data->minrtt = tcp_get_srtt(ccv->tp, TCP_TMR_GRANULARITY_TICKS);
 
 	/*
 	 * Record the current SRTT as our maxrtt if it's the largest we've
 	 * seen. Ignore SRTT until a min number of samples have been taken.
 	 */
-	if (CCV(ccv, t_srtt) > htcp_data->maxrtt
+	if (tcp_get_srtt(ccv->tp, TCP_TMR_GRANULARITY_TICKS) > htcp_data->maxrtt
 	    && CCV(ccv, t_rttupdated) >= HTCP_MIN_RTT_SAMPLES)
-		htcp_data->maxrtt = CCV(ccv, t_srtt);
+		htcp_data->maxrtt = tcp_get_srtt(ccv->tp, TCP_TMR_GRANULARITY_TICKS);
 }
 
 /*
@@ -535,4 +540,4 @@ SYSCTL_UINT(_net_inet_tcp_cc_htcp, OID_AUTO, rtt_scaling,
     "enable H-TCP RTT scaling");
 
 DECLARE_CC_MODULE(htcp, &htcp_cc_algo);
-MODULE_VERSION(htcp, 1);
+MODULE_VERSION(htcp, 2);

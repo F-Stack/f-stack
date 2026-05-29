@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007-2009 Robert N. M. Watson
  * Copyright (c) 2010-2011 Juniper Networks, Inc.
@@ -31,8 +31,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * netisr is a packet dispatch service, allowing synchronous (directly
  * dispatched) and asynchronous (deferred dispatch) processing of packets by
@@ -93,6 +91,7 @@ __FBSDID("$FreeBSD$");
 #define	_WANT_NETISR_INTERNAL	/* Enable definitions from netisr_internal.h */
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/netisr.h>
 #include <net/netisr_internal.h>
 #include <net/vnet.h>
@@ -134,7 +133,7 @@ static SYSCTL_NODE(_net, OID_AUTO, isr, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
  * Three global direct dispatch policies are supported:
  *
  * NETISR_DISPATCH_DEFERRED: All work is deferred for a netisr, regardless of
- * context (may be overriden by protocols).
+ * context (may be overridden by protocols).
  *
  * NETISR_DISPATCH_HYBRID: If the executing context allows direct dispatch,
  * and we're running on the CPU the work would be performed on, then direct
@@ -396,6 +395,8 @@ netisr_register(const struct netisr_handler *nhp)
 	/*
 	 * Test that the requested registration is valid.
 	 */
+	CURVNET_ASSERT_SET();
+	MPASS(IS_DEFAULT_VNET(curvnet));
 	KASSERT(nhp->nh_name != NULL,
 	    ("%s: nh_name NULL for %u", __func__, proto));
 	KASSERT(nhp->nh_handler != NULL,
@@ -456,14 +457,11 @@ netisr_register(const struct netisr_handler *nhp)
 	}
 
 #ifdef VIMAGE
-	/*
-	 * Test that we are in vnet0 and have a curvnet set.
-	 */
-	KASSERT(curvnet != NULL, ("%s: curvnet is NULL", __func__));
-	KASSERT(IS_DEFAULT_VNET(curvnet), ("%s: curvnet %p is not vnet0 %p",
-	    __func__, curvnet, vnet0));
+	V_netisr_enable[proto] = 1;
 	VNET_LIST_RLOCK_NOSLEEP();
 	VNET_FOREACH(vnet_iter) {
+		if (vnet_iter == curvnet)
+			continue;
 		CURVNET_SET(vnet_iter);
 		V_netisr_enable[proto] = 1;
 		CURVNET_RESTORE();
@@ -700,9 +698,11 @@ netisr_register_vnet(const struct netisr_handler *nhp)
 static void
 netisr_drain_proto_vnet(struct vnet *vnet, u_int proto)
 {
+	struct epoch_tracker et;
 	struct netisr_workstream *nwsp;
 	struct netisr_work *npwp;
 	struct mbuf *m, *mp, *n, *ne;
+	struct ifnet *ifp;
 	u_int i;
 
 	KASSERT(vnet != NULL, ("%s: vnet is NULL", __func__));
@@ -723,11 +723,14 @@ netisr_drain_proto_vnet(struct vnet *vnet, u_int proto)
 		 */
 		m = npwp->nw_head;
 		n = ne = NULL;
+		NET_EPOCH_ENTER(et);
 		while (m != NULL) {
 			mp = m;
 			m = m->m_nextpkt;
 			mp->m_nextpkt = NULL;
-			if (mp->m_pkthdr.rcvif->if_vnet != vnet) {
+			if ((ifp = ifnet_byindexgen(mp->m_pkthdr.rcvidx,
+			    mp->m_pkthdr.rcvgen)) != NULL &&
+			    ifp->if_vnet != vnet) {
 				if (n == NULL) {
 					n = ne = mp;
 				} else {
@@ -736,10 +739,12 @@ netisr_drain_proto_vnet(struct vnet *vnet, u_int proto)
 				}
 				continue;
 			}
-			/* This is a packet in the selected vnet. Free it. */
+			/* This is a packet in the selected vnet, or belongs
+			   to destroyed interface. Free it. */
 			npwp->nw_len--;
 			m_freem(mp);
 		}
+		NET_EPOCH_EXIT(et);
 		npwp->nw_head = n;
 		npwp->nw_tail = ne;
 		NWS_UNLOCK(nwsp);
@@ -913,8 +918,10 @@ netisr_process_workstream_proto(struct netisr_workstream *nwsp, u_int proto)
 		if (local_npw.nw_head == NULL)
 			local_npw.nw_tail = NULL;
 		local_npw.nw_len--;
-		VNET_ASSERT(m->m_pkthdr.rcvif != NULL,
-		    ("%s:%d rcvif == NULL: m=%p", __func__, __LINE__, m));
+		if (__predict_false(m_rcvif_restore(m) == NULL)) {
+			m_freem(m);
+			continue;
+		}
 		CURVNET_SET(m->m_pkthdr.rcvif->if_vnet);
 		netisr_proto[proto].np_handler(m);
 		CURVNET_RESTORE();
@@ -960,8 +967,8 @@ swi_net(void *arg)
 	nwsp->nws_flags |= NWS_RUNNING;
 	nwsp->nws_flags &= ~NWS_SCHEDULED;
 	while ((bits = nwsp->nws_pendingbits) != 0) {
-		while ((prot = ffs(bits)) != 0) {
-			prot--;
+		while (bits != 0) {
+			prot = ffs(bits) - 1;
 			bits &= ~(1 << prot);
 			(void)netisr_process_workstream_proto(nwsp, prot);
 		}
@@ -977,14 +984,6 @@ out:
 #endif
 }
 
-void inline
-ff_swi_net_excute(void)
-{
-	struct netisr_workstream *nwsp = DPCPU_ID_PTR(0, nws);
-
-	return swi_net((void*)nwsp);
-}
-
 static int
 netisr_queue_workstream(struct netisr_workstream *nwsp, u_int proto,
     struct netisr_work *npwp, struct mbuf *m, int *dosignalp)
@@ -994,6 +993,7 @@ netisr_queue_workstream(struct netisr_workstream *nwsp, u_int proto,
 
 	*dosignalp = 0;
 	if (npwp->nw_len < npwp->nw_qlimit) {
+		m_rcvif_serialize(m);
 		m->m_nextpkt = NULL;
 		if (npwp->nw_head == NULL) {
 			npwp->nw_head = m;

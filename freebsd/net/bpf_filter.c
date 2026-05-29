@@ -32,12 +32,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *      @(#)bpf_filter.c	8.1 (Berkeley) 6/10/93
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 
@@ -570,7 +565,7 @@ bpf_validate(const struct bpf_insn *f, int len)
 		if (!BPF_VALIDATE_CODE(p->code))
 			return (0);
 		/*
-		 * Check that that jumps are forward, and within
+		 * Check that the jumps are forward, and within
 		 * the code block.
 		 */
 		if (BPF_CLASS(p->code) == BPF_JMP) {

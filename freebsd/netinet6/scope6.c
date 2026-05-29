@@ -31,9 +31,6 @@
  *	$KAME: scope6.c,v 1.10 2000/07/24 13:29:31 itojun Exp $
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
@@ -46,6 +43,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/vnet.h>
 
 #include <netinet/in.h>
@@ -177,16 +175,22 @@ scope6_set(struct ifnet *ifp, struct scope6_id *idlist)
 				return (EINVAL);
 			}
 
-			if (i == IPV6_ADDR_SCOPE_LINKLOCAL &&
-			    idlist->s6id_list[i] > V_if_index) {
-				/*
-				 * XXX: theoretically, there should be no
-				 * relationship between link IDs and interface
-				 * IDs, but we check the consistency for
-				 * safety in later use.
-				 */
-				IF_AFDATA_WUNLOCK(ifp);
-				return (EINVAL);
+			if (i == IPV6_ADDR_SCOPE_LINKLOCAL) {
+				struct epoch_tracker et;
+
+				NET_EPOCH_ENTER(et);
+				if (!ifnet_byindex(idlist->s6id_list[i])) {
+					/*
+					 * XXX: theoretically, there should be
+					 * no relationship between link IDs and
+					 * interface IDs, but we check the
+					 * consistency for safety in later use.
+					 */
+					NET_EPOCH_EXIT(et);
+					IF_AFDATA_WUNLOCK(ifp);
+					return (EINVAL);
+				}
+				NET_EPOCH_EXIT(et);
 			}
 
 			/*
@@ -325,14 +329,20 @@ sa6_embedscope(struct sockaddr_in6 *sin6, int defaultok)
 	if (zoneid != 0 &&
 	    (IN6_IS_SCOPE_LINKLOCAL(&sin6->sin6_addr) ||
 	    IN6_IS_ADDR_MC_INTFACELOCAL(&sin6->sin6_addr))) {
+		struct epoch_tracker et;
+
 		/*
 		 * At this moment, we only check interface-local and
 		 * link-local scope IDs, and use interface indices as the
 		 * zone IDs assuming a one-to-one mapping between interfaces
 		 * and links.
 		 */
-		if (V_if_index < zoneid || ifnet_byindex(zoneid) == NULL)
+		NET_EPOCH_ENTER(et);
+		if (ifnet_byindex(zoneid) == NULL) {
+			NET_EPOCH_EXIT(et);
 			return (ENXIO);
+		}
+		NET_EPOCH_EXIT(et);
 
 		/* XXX assignment to 16bit from 32bit variable */
 		sin6->sin6_addr.s6_addr16[1] = htons(zoneid & 0xffff);
@@ -358,14 +368,15 @@ sa6_recoverscope(struct sockaddr_in6 *sin6)
 		 */
 		zoneid = ntohs(sin6->sin6_addr.s6_addr16[1]);
 		if (zoneid) {
+			struct epoch_tracker et;
+
+			NET_EPOCH_ENTER(et);
 			/* sanity check */
-			if (V_if_index < zoneid)
+			if (!ifnet_byindex(zoneid)) {
+				NET_EPOCH_EXIT(et);
 				return (ENXIO);
-#if 0
-			/* XXX: Disabled due to possible deadlock. */
-			if (!ifnet_byindex(zoneid))
-				return (ENXIO);
-#endif
+			}
+			NET_EPOCH_EXIT(et);
 			if (sin6->sin6_scope_id != 0 &&
 			    zoneid != sin6->sin6_scope_id) {
 				log(LOG_NOTICE,
@@ -494,8 +505,23 @@ in6_set_unicast_scopeid(struct in6_addr *in6, uint32_t scopeid)
 struct ifnet*
 in6_getlinkifnet(uint32_t zoneid)
 {
+	struct ifnet *ifp;
 
-	return (ifnet_byindex((u_short)zoneid));
+	ifp = ifnet_byindex((u_short)zoneid);
+
+	if (ifp == NULL)
+		return (NULL);
+
+	/* An interface might not be IPv6 capable. */
+	if (ifp->if_afdata[AF_INET6] == NULL) {
+		log(LOG_NOTICE,
+		    "%s: embedded scope points to an interface without "
+		    "IPv6: %s%%%d.\n", __func__,
+		    if_name(ifp), zoneid);
+		return (NULL);
+	}
+
+	return (ifp);
 }
 
 /*
@@ -514,7 +540,7 @@ in6_getscopezone(const struct ifnet *ifp, int scope)
 }
 
 /*
- * Extracts scope from adddress @dst, stores cleared address
+ * Extracts scope from address @dst, stores cleared address
  * inside @dst and zone inside @scopeid
  */
 void

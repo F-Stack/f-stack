@@ -1,7 +1,7 @@
 /*	$NetBSD: ieee8023ad_lacp.c,v 1.3 2005/12/11 12:24:54 christos Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c)2005 YAMAMOTO Takashi,
  * Copyright (c)2008 Andrew Thompson <thompsa@FreeBSD.org>
@@ -30,8 +30,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_kern_tls.h"
 #include "opt_ratelimit.h"
 
@@ -44,14 +42,16 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h> /* hz */
 #include <sys/socket.h> /* for net/if.h */
 #include <sys/sockio.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
-#include <machine/stdarg.h>
 #include <sys/lock.h>
 #include <sys/rwlock.h>
 #include <sys/taskqueue.h>
+#include <sys/time.h>
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_dl.h>
 #include <net/ethernet.h>
 #include <net/infiniband.h>
@@ -115,9 +115,9 @@ static void	lacp_fill_aggregator_id(struct lacp_aggregator *,
 		    const struct lacp_port *);
 static void	lacp_fill_aggregator_id_peer(struct lacp_peerinfo *,
 		    const struct lacp_peerinfo *);
-static int	lacp_aggregator_is_compatible(const struct lacp_aggregator *,
+static bool	lacp_aggregator_is_compatible(const struct lacp_aggregator *,
 		    const struct lacp_port *);
-static int	lacp_peerinfo_is_compatible(const struct lacp_peerinfo *,
+static bool	lacp_peerinfo_is_compatible(const struct lacp_peerinfo *,
 		    const struct lacp_peerinfo *);
 
 static struct lacp_aggregator *lacp_aggregator_get(struct lacp_softc *,
@@ -875,9 +875,6 @@ lacp_select_tx_port_by_hash(struct lagg_softc *sc, uint32_t hash,
 	hash %= count;
 	lp = map[hash];
 
-	KASSERT((lp->lp_state & LACP_STATE_DISTRIBUTING) != 0,
-	    ("aggregated port is not distributing"));
-
 	return (lp->lp_lagg);
 }
 
@@ -919,7 +916,8 @@ lacp_suppress_distributing(struct lacp_softc *lsc, struct lacp_aggregator *la)
 	/* send a marker frame down each port to verify the queues are empty */
 	LIST_FOREACH(lp, &lsc->lsc_ports, lp_next) {
 		lp->lp_flags |= LACP_PORT_MARK;
-		lacp_xmit_marker(lp);
+		if (lacp_xmit_marker(lp) != 0)
+			lp->lp_flags &= ~LACP_PORT_MARK;
 	}
 
 	/* set a timeout for the marker frames */
@@ -1088,6 +1086,8 @@ lacp_update_portmap(struct lacp_softc *lsc)
 		speed = lacp_aggregator_bandwidth(la);
 	}
 	sc->sc_ifp->if_baudrate = speed;
+	EVENTHANDLER_INVOKE(ifnet_event, sc->sc_ifp,
+	    IFNET_EVENT_UPDATE_BAUDRATE);
 
 	/* switch the active portmap over */
 	atomic_store_rel_int(&lsc->lsc_activemap, newmap);
@@ -1137,6 +1137,7 @@ lacp_compose_key(struct lacp_port *lp)
 		case IFM_100_T2:
 		case IFM_100_T:
 		case IFM_100_SGMII:
+		case IFM_100_BX:
 			key = IFM_100_TX;
 			break;
 		case IFM_1000_SX:
@@ -1146,6 +1147,7 @@ lacp_compose_key(struct lacp_port *lp)
 		case IFM_1000_KX:
 		case IFM_1000_SGMII:
 		case IFM_1000_CX_SGMII:
+		case IFM_1000_BX:
 			key = IFM_1000_SX;
 			break;
 		case IFM_10G_LR:
@@ -1363,44 +1365,40 @@ lacp_fill_aggregator_id_peer(struct lacp_peerinfo *lpi_aggr,
  * lacp_aggregator_is_compatible: check if a port can join to an aggregator.
  */
 
-static int
+static bool
 lacp_aggregator_is_compatible(const struct lacp_aggregator *la,
     const struct lacp_port *lp)
 {
 	if (!(lp->lp_state & LACP_STATE_AGGREGATION) ||
 	    !(lp->lp_partner.lip_state & LACP_STATE_AGGREGATION)) {
-		return (0);
+		return (false);
 	}
 
-	if (!(la->la_actor.lip_state & LACP_STATE_AGGREGATION)) {
-		return (0);
-	}
+	if (!(la->la_actor.lip_state & LACP_STATE_AGGREGATION))
+		return (false);
 
-	if (!lacp_peerinfo_is_compatible(&la->la_partner, &lp->lp_partner)) {
-		return (0);
-	}
+	if (!lacp_peerinfo_is_compatible(&la->la_partner, &lp->lp_partner))
+		return (false);
 
-	if (!lacp_peerinfo_is_compatible(&la->la_actor, &lp->lp_actor)) {
-		return (0);
-	}
+	if (!lacp_peerinfo_is_compatible(&la->la_actor, &lp->lp_actor))
+		return (false);
 
-	return (1);
+	return (true);
 }
 
-static int
+static bool
 lacp_peerinfo_is_compatible(const struct lacp_peerinfo *a,
     const struct lacp_peerinfo *b)
 {
 	if (memcmp(&a->lip_systemid, &b->lip_systemid,
-	    sizeof(a->lip_systemid))) {
-		return (0);
+	    sizeof(a->lip_systemid)) != 0) {
+		return (false);
 	}
 
-	if (memcmp(&a->lip_key, &b->lip_key, sizeof(a->lip_key))) {
-		return (0);
-	}
+	if (memcmp(&a->lip_key, &b->lip_key, sizeof(a->lip_key)) != 0)
+		return (false);
 
-	return (1);
+	return (true);
 }
 
 static void
@@ -1730,6 +1728,7 @@ lacp_sm_rx(struct lacp_port *lp, const struct lacpdu *du)
 	 * EXPIRED, DEFAULTED, CURRENT -> CURRENT
 	 */
 
+	microuptime(&lp->lp_last_lacpdu_rx);
 	lacp_sm_rx_update_selected(lp, du);
 	lacp_sm_rx_update_ntt(lp, du);
 	lacp_sm_rx_record_pdu(lp, du);
@@ -1939,14 +1938,26 @@ static void
 lacp_run_timers(struct lacp_port *lp)
 {
 	int i;
+	struct timeval time_diff;
 
 	for (i = 0; i < LACP_NTIMER; i++) {
 		KASSERT(lp->lp_timer[i] >= 0,
 		    ("invalid timer value %d", lp->lp_timer[i]));
 		if (lp->lp_timer[i] == 0) {
 			continue;
-		} else if (--lp->lp_timer[i] <= 0) {
-			if (lacp_timer_funcs[i]) {
+		} else {
+			if (i == LACP_TIMER_CURRENT_WHILE) {
+				microuptime(&time_diff);
+				timevalsub(&time_diff, &lp->lp_last_lacpdu_rx);
+				if (time_diff.tv_sec) {
+					/* At least one sec has elapsed since last LACP packet. */
+					--lp->lp_timer[i];
+				}
+			} else {
+				--lp->lp_timer[i];
+			}
+
+			if ((lp->lp_timer[i] <= 0) && (lacp_timer_funcs[i])) {
 				(*lacp_timer_funcs[i])(lp);
 			}
 		}

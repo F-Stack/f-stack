@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 The NetBSD Foundation, Inc.
  * Copyright (c) 2014, 2018 Andrey V. Elsukov <ae@FreeBSD.org>
@@ -35,8 +35,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_rss.h"
@@ -60,6 +58,7 @@ __FBSDID("$FreeBSD$");
 #include <net/ethernet.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_clone.h>
 #include <net/if_types.h>
 #include <net/netisr.h>
@@ -610,10 +609,11 @@ gre_output(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
 {
 	uint32_t af;
 
-	if (dst->sa_family == AF_UNSPEC)
+	/* BPF writes need to be handled specially. */
+	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
 		bcopy(dst->sa_data, &af, sizeof(af));
 	else
-		af = dst->sa_family;
+		af = RO_GET_FAMILY(ro, dst);
 	/*
 	 * Now save the af in the inbound pkt csum data, this is a cheat since
 	 * we are using the inbound csum_data field to carry the af over to
@@ -643,46 +643,37 @@ gre_setseqn(struct grehdr *gh, uint32_t seq)
 static uint32_t
 gre_flowid(struct gre_softc *sc, struct mbuf *m, uint32_t af)
 {
-	uint32_t flowid;
+	uint32_t flowid = 0;
 
 	if ((sc->gre_options & GRE_UDPENCAP) == 0 || sc->gre_port != 0)
-		return (0);
-#ifndef RSS
+		return (flowid);
 	switch (af) {
 #ifdef INET
 	case AF_INET:
+#ifdef RSS
+		flowid = rss_hash_ip4_2tuple(mtod(m, struct ip *)->ip_src,
+		    mtod(m, struct ip *)->ip_dst);
+		break;
+#endif
 		flowid = mtod(m, struct ip *)->ip_src.s_addr ^
 		    mtod(m, struct ip *)->ip_dst.s_addr;
 		break;
 #endif
 #ifdef INET6
 	case AF_INET6:
-		flowid = mtod(m, struct ip6_hdr *)->ip6_src.s6_addr32[3] ^
-		    mtod(m, struct ip6_hdr *)->ip6_dst.s6_addr32[3];
-		break;
-#endif
-	default:
-		flowid = 0;
-	}
-#else /* RSS */
-	switch (af) {
-#ifdef INET
-	case AF_INET:
-		flowid = rss_hash_ip4_2tuple(mtod(m, struct ip *)->ip_src,
-		    mtod(m, struct ip *)->ip_dst);
-		break;
-#endif
-#ifdef INET6
-	case AF_INET6:
+#ifdef RSS
 		flowid = rss_hash_ip6_2tuple(
 		    &mtod(m, struct ip6_hdr *)->ip6_src,
 		    &mtod(m, struct ip6_hdr *)->ip6_dst);
 		break;
 #endif
-	default:
-		flowid = 0;
-	}
+		flowid = mtod(m, struct ip6_hdr *)->ip6_src.s6_addr32[3] ^
+		    mtod(m, struct ip6_hdr *)->ip6_dst.s6_addr32[3];
+		break;
 #endif
+	default:
+		break;
+	}
 	return (flowid);
 }
 

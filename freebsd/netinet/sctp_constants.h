@@ -32,9 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifndef _NETINET_SCTP_CONSTANTS_H_
 #define _NETINET_SCTP_CONSTANTS_H_
 
@@ -410,7 +407,7 @@ __FBSDID("$FreeBSD$");
 
 /*************0x8000 series*************/
 #define SCTP_ECN_CAPABLE		0x8000
-
+#define SCTP_ZERO_CHECKSUM_ACCEPTABLE	0x8001
 /* RFC 4895 */
 #define SCTP_RANDOM			0x8002
 #define SCTP_CHUNK_LIST			0x8003
@@ -596,7 +593,7 @@ __FBSDID("$FreeBSD$");
 
 #define SCTP_RTO_UPPER_BOUND	(60000)	/* 60 sec in ms */
 #define SCTP_RTO_LOWER_BOUND	(1000)	/* 1 sec is ms */
-#define SCTP_RTO_INITIAL	(3000)	/* 3 sec in ms */
+#define SCTP_RTO_INITIAL	(1000)	/* 1 sec in ms */
 
 #define SCTP_INP_KILL_TIMEOUT 20	/* number of ms to retry kill of inpcb */
 #define SCTP_ASOC_KILL_TIMEOUT 10	/* number of ms to retry kill of inpcb */
@@ -673,8 +670,6 @@ __FBSDID("$FreeBSD$");
 /* amount peer is obligated to have in rwnd or I will abort */
 #define SCTP_MIN_RWND	1500
 
-#define SCTP_DEFAULT_MAXSEGMENT 65535
-
 #define SCTP_CHUNK_BUFFER_SIZE	512
 #define SCTP_PARAM_BUFFER_SIZE	512
 
@@ -711,11 +706,14 @@ __FBSDID("$FreeBSD$");
 #define SCTP_NOTIFY_STR_RESET_FAILED_IN         20
 #define SCTP_NOTIFY_STR_RESET_DENIED_OUT        21
 #define SCTP_NOTIFY_STR_RESET_DENIED_IN         22
-#define SCTP_NOTIFY_AUTH_NEW_KEY                23
-#define SCTP_NOTIFY_AUTH_FREE_KEY               24
-#define SCTP_NOTIFY_NO_PEER_AUTH                25
-#define SCTP_NOTIFY_SENDER_DRY                  26
-#define SCTP_NOTIFY_REMOTE_ERROR                27
+#define SCTP_NOTIFY_STR_RESET_ADD               23
+#define SCTP_NOTIFY_STR_RESET_TSN               24
+#define SCTP_NOTIFY_AUTH_NEW_KEY                25
+#define SCTP_NOTIFY_AUTH_FREE_KEY               26
+#define SCTP_NOTIFY_NO_PEER_AUTH                27
+#define SCTP_NOTIFY_SENDER_DRY                  28
+#define SCTP_NOTIFY_REMOTE_ERROR                29
+#define SCTP_NOTIFY_ASSOC_TIMEDOUT              30
 
 /* This is the value for messages that are NOT completely
  * copied down where we will start to split the message.
@@ -969,7 +967,7 @@ __FBSDID("$FreeBSD$");
 #define sctp_sowwakeup(inp, so) \
 do { \
 	if (inp->sctp_flags & SCTP_PCB_FLAGS_DONT_WAKE) { \
-		inp->sctp_flags |= SCTP_PCB_FLAGS_WAKEOUTPUT; \
+		sctp_pcb_add_flags(inp, SCTP_PCB_FLAGS_WAKEOUTPUT); \
 	} else { \
 		sowwakeup(so); \
 	} \
@@ -978,8 +976,8 @@ do { \
 #define sctp_sowwakeup_locked(inp, so) \
 do { \
 	if (inp->sctp_flags & SCTP_PCB_FLAGS_DONT_WAKE) { \
+		sctp_pcb_add_flags(inp, SCTP_PCB_FLAGS_WAKEOUTPUT); \
 		SOCKBUF_UNLOCK(&((so)->so_snd)); \
-		inp->sctp_flags |= SCTP_PCB_FLAGS_WAKEOUTPUT; \
 	} else { \
 		sowwakeup_locked(so); \
 	} \
@@ -988,7 +986,7 @@ do { \
 #define sctp_sorwakeup(inp, so) \
 do { \
 	if (inp->sctp_flags & SCTP_PCB_FLAGS_DONT_WAKE) { \
-		inp->sctp_flags |= SCTP_PCB_FLAGS_WAKEINPUT; \
+		sctp_pcb_add_flags(inp, SCTP_PCB_FLAGS_WAKEINPUT); \
 	} else { \
 		sorwakeup(so); \
 	} \
@@ -997,7 +995,7 @@ do { \
 #define sctp_sorwakeup_locked(inp, so) \
 do { \
 	if (inp->sctp_flags & SCTP_PCB_FLAGS_DONT_WAKE) { \
-		inp->sctp_flags |= SCTP_PCB_FLAGS_WAKEINPUT; \
+		sctp_pcb_add_flags(inp, SCTP_PCB_FLAGS_WAKEINPUT); \
 		SOCKBUF_UNLOCK(&((so)->so_rcv)); \
 	} else { \
 		sorwakeup_locked(so); \

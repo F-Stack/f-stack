@@ -25,8 +25,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef NETMAP_VIRT_H
@@ -44,8 +42,8 @@
 /* PCI identifiers and PCI BARs for ptnetmap-memdev and ptnet. */
 #define PTNETMAP_MEMDEV_NAME            "ptnetmap-memdev"
 #define PTNETMAP_PCI_VENDOR_ID          0x1b36  /* QEMU virtual devices */
-#define PTNETMAP_PCI_DEVICE_ID          0xcccc  /* memory device */
-#define PTNETMAP_PCI_NETIF_ID           0xcccd  /* ptnet network interface */
+#define PTNETMAP_PCI_DEVICE_ID          0x000c  /* memory device */
+#define PTNETMAP_PCI_NETIF_ID           0x000d  /* ptnet network interface */
 #define PTNETMAP_IO_PCI_BAR             0
 #define PTNETMAP_MEM_PCI_BAR            1
 #define PTNETMAP_MSIX_PCI_BAR           2

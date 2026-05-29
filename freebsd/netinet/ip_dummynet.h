@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998-2010 Luigi Rizzo, Universita` di Pisa
  * Portions Copyright (c) 2000 Akamba Corp.
@@ -25,8 +25,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _IP_DUMMYNET_H
@@ -131,7 +129,7 @@ struct dn_link {
 	 * XXX what about burst ?
 	 */
 	int32_t		link_nr;
-	int		bandwidth;	/* bit/s or bits/tick.   */
+	uint32_t	bandwidth;	/* bit/s or bits/tick.   */
 	int		delay;		/* ms and ticks */
 	uint64_t	burst;		/* scaled. bits*Hz  XXX */
 };
@@ -147,7 +145,7 @@ struct dn_fs {
 	uint32_t fs_nr;		/* the flowset number */
 	uint32_t flags;		/* userland flags */
 	int qsize;		/* queue size in slots or bytes */
-	int32_t plr;		/* PLR, pkt loss rate (2^31-1 means 100%) */
+	int32_t pl_state;	/* packet loss state */
 	uint32_t buckets;	/* buckets used for the queue hash table */
 
 	struct ipfw_flow_id flow_mask;
@@ -170,6 +168,7 @@ struct dn_fs {
 	int min_th ;		/* minimum threshold for queue (scaled) */
 	int max_p ;		/* maximum value for p_b (scaled) */
 
+	int32_t plr[4];		/* PLR, pkt loss rate (2^31-1 means 100%) */
 };
 
 /*
@@ -214,7 +213,7 @@ struct dn_profile {
 	char	name[ED_MAX_NAME_LEN];
 	int	link_nr;
 	int	loss_level;
-	int	bandwidth;			// XXX use link bandwidth?
+	uint32_t	bandwidth;			// XXX use link bandwidth?
 	int	samples_no;			/* actual len of samples[] */
 	int	samples[ED_MAX_SAMPLES_NO];	/* may be shorter */
 };

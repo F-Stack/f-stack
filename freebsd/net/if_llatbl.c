@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 Luigi Rizzo, Alessandro Cerri. All rights reserved.
  * Copyright (c) 2004-2008 Qing Li. All rights reserved.
@@ -27,8 +27,6 @@
  * SUCH DAMAGE.
  */
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_inet.h"
 #include "opt_inet6.h"
@@ -57,8 +55,10 @@ __FBSDID("$FreeBSD$");
 #include <net/if.h>
 #include <net/if_dl.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/route/route_ctl.h>
+#include <net/route/route_debug.h>
 #include <net/vnet.h>
 #include <netinet/if_ether.h>
 #include <netinet6/in6_var.h>
@@ -125,6 +125,41 @@ done:
 	LLTABLE_LIST_RUNLOCK();
 	return (error);
 }
+
+/*
+ * Adds a mbuf to hold queue. Drops old packets if the queue is full.
+ *
+ * Returns the number of held packets that were dropped.
+ */
+size_t
+lltable_append_entry_queue(struct llentry *lle, struct mbuf *m,
+    size_t maxheld)
+{
+	size_t pkts_dropped = 0;
+
+	LLE_WLOCK_ASSERT(lle);
+
+	while (lle->la_numheld >= maxheld && lle->la_hold != NULL) {
+		struct mbuf *next = lle->la_hold->m_nextpkt;
+		m_freem(lle->la_hold);
+		lle->la_hold = next;
+		lle->la_numheld--;
+		pkts_dropped++;
+	}
+
+	if (lle->la_hold != NULL) {
+		struct mbuf *curr = lle->la_hold;
+		while (curr->m_nextpkt != NULL)
+			curr = curr->m_nextpkt;
+		curr->m_nextpkt = m;
+	} else
+		lle->la_hold = m;
+
+	lle->la_numheld++;
+
+	return pkts_dropped;
+}
+
 
 /*
  * Common function helpers for chained hash table.
@@ -284,14 +319,12 @@ llentries_unlink(struct lltable *llt, struct llentries *head)
 size_t
 lltable_drop_entry_queue(struct llentry *lle)
 {
-	size_t pkts_dropped;
-	struct mbuf *next;
+	size_t pkts_dropped = 0;
 
 	LLE_WLOCK_ASSERT(lle);
 
-	pkts_dropped = 0;
-	while ((lle->la_numheld > 0) && (lle->la_hold != NULL)) {
-		next = lle->la_hold->m_nextpkt;
+	while (lle->la_hold != NULL) {
+		struct mbuf *next = lle->la_hold->m_nextpkt;
 		m_freem(lle->la_hold);
 		lle->la_hold = next;
 		lle->la_numheld--;
@@ -299,7 +332,7 @@ lltable_drop_entry_queue(struct llentry *lle)
 	}
 
 	KASSERT(lle->la_numheld == 0,
-		("%s: la_numheld %d > 0, pkts_droped %zd", __func__,
+		("%s: la_numheld %d > 0, pkts_dropped %zd", __func__,
 		 lle->la_numheld, pkts_dropped));
 
 	return (pkts_dropped);
@@ -318,6 +351,35 @@ lltable_set_entry_addr(struct ifnet *ifp, struct llentry *lle,
 }
 
 /*
+ * Acquires lltable write lock.
+ *
+ * Returns true on success, with both lltable and lle lock held.
+ * On failure, false is returned and lle wlock is still held.
+ */
+bool
+lltable_acquire_wlock(struct ifnet *ifp, struct llentry *lle)
+{
+	NET_EPOCH_ASSERT();
+
+	/* Perform real LLE update */
+	/* use afdata WLOCK to update fields */
+	LLE_WUNLOCK(lle);
+	IF_AFDATA_WLOCK(ifp);
+	LLE_WLOCK(lle);
+
+	/*
+	 * Since we droppped LLE lock, other thread might have deleted
+	 * this lle. Check and return
+	 */
+	if ((lle->la_flags & LLE_DELETED) != 0) {
+		IF_AFDATA_WUNLOCK(ifp);
+		return (false);
+	}
+
+	return (true);
+}
+
+/*
  * Tries to update @lle link-level address.
  * Since update requires AFDATA WLOCK, function
  * drops @lle lock, acquires AFDATA lock and then acquires
@@ -330,30 +392,13 @@ lltable_try_set_entry_addr(struct ifnet *ifp, struct llentry *lle,
     const char *linkhdr, size_t linkhdrsize, int lladdr_off)
 {
 
-	/* Perform real LLE update */
-	/* use afdata WLOCK to update fields */
-	LLE_WLOCK_ASSERT(lle);
-	LLE_ADDREF(lle);
-	LLE_WUNLOCK(lle);
-	IF_AFDATA_WLOCK(ifp);
-	LLE_WLOCK(lle);
-
-	/*
-	 * Since we droppped LLE lock, other thread might have deleted
-	 * this lle. Check and return
-	 */
-	if ((lle->la_flags & LLE_DELETED) != 0) {
-		IF_AFDATA_WUNLOCK(ifp);
-		LLE_FREE_LOCKED(lle);
+	if (!lltable_acquire_wlock(ifp, lle))
 		return (0);
-	}
 
 	/* Update data */
 	lltable_set_entry_addr(ifp, lle, linkhdr, linkhdrsize, lladdr_off);
 
 	IF_AFDATA_WUNLOCK(ifp);
-
-	LLE_REMREF(lle);
 
 	return (1);
 }
@@ -384,6 +429,160 @@ lltable_calc_llheader(struct ifnet *ifp, int family, char *lladdr,
 	}
 
 	return (error);
+}
+
+/*
+ * Searches for the child entry matching @family inside @lle.
+ * Returns the entry or NULL.
+ */
+struct llentry *
+llentry_lookup_family(struct llentry *lle, int family)
+{
+	struct llentry *child_lle;
+
+	if (lle == NULL)
+		return (NULL);
+
+	CK_SLIST_FOREACH(child_lle, &lle->lle_children, lle_child_next) {
+		if (child_lle->r_family == family)
+			return (child_lle);
+	}
+
+	return (NULL);
+}
+
+/*
+ * Retrieves upper protocol family for the llentry.
+ * By default, all "normal" (e.g. upper_family == transport_family)
+ * llentries have r_family set to 0.
+ * Thus, use @default_family in that regard, otherwise use r_family.
+ *
+ * Returns upper protocol family
+ */
+int
+llentry_get_upper_family(const struct llentry *lle, int default_family)
+{
+	return (lle->r_family == 0 ? default_family : lle->r_family);
+}
+
+/*
+ * Prints llentry @lle data into provided buffer.
+ * Example: lle/inet/valid/em0/1.2.3.4
+ *
+ * Returns @buf.
+ */
+char *
+llentry_print_buf(const struct llentry *lle, struct ifnet *ifp, int family,
+    char *buf, size_t bufsize)
+{
+#if defined(INET) || defined(INET6)
+	char abuf[INET6_ADDRSTRLEN];
+#endif
+
+	const char *valid = (lle->r_flags & RLLE_VALID) ? "valid" : "no_l2";
+	const char *upper_str = rib_print_family(llentry_get_upper_family(lle, family));
+
+	switch (family) {
+#ifdef INET
+	case AF_INET:
+		inet_ntop(AF_INET, &lle->r_l3addr.addr4, abuf, sizeof(abuf));
+		snprintf(buf, bufsize, "lle/%s/%s/%s/%s", upper_str,
+		    valid, if_name(ifp), abuf);
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		inet_ntop(AF_INET6, &lle->r_l3addr.addr6, abuf, sizeof(abuf));
+		snprintf(buf, bufsize, "lle/%s/%s/%s/%s", upper_str,
+		    valid, if_name(ifp), abuf);
+		break;
+#endif
+	default:
+		snprintf(buf, bufsize, "lle/%s/%s/%s/????", upper_str,
+		    valid, if_name(ifp));
+		break;
+	}
+
+	return (buf);
+}
+
+char *
+llentry_print_buf_lltable(const struct llentry *lle, char *buf, size_t bufsize)
+{
+	struct lltable *tbl = lle->lle_tbl;
+
+	return (llentry_print_buf(lle, lltable_get_ifp(tbl), lltable_get_af(tbl), buf, bufsize));
+}
+
+/*
+ * Requests feedback from the datapath.
+ * First packet using @lle should result in
+ * setting r_skip_req back to 0 and updating
+ * lle_hittime to the current time_uptime.
+ */
+void
+llentry_request_feedback(struct llentry *lle)
+{
+	struct llentry *child_lle;
+
+	LLE_REQ_LOCK(lle);
+	lle->r_skip_req = 1;
+	LLE_REQ_UNLOCK(lle);
+
+	CK_SLIST_FOREACH(child_lle, &lle->lle_children, lle_child_next) {
+		LLE_REQ_LOCK(child_lle);
+		child_lle->r_skip_req = 1;
+		LLE_REQ_UNLOCK(child_lle);
+	}
+}
+
+/*
+ * Updates the lle state to mark it has been used
+ * and record the time.
+ * Used by the llentry_provide_feedback() wrapper.
+ */
+void
+llentry_mark_used(struct llentry *lle)
+{
+	LLE_REQ_LOCK(lle);
+	lle->r_skip_req = 0;
+	lle->lle_hittime = time_uptime;
+	LLE_REQ_UNLOCK(lle);
+}
+
+/*
+ * Fetches the time when lle was used.
+ * Return 0 if the entry was not used, relevant time_uptime
+ *  otherwise.
+ */
+static time_t
+llentry_get_hittime_raw(struct llentry *lle)
+{
+	time_t lle_hittime = 0;
+
+	LLE_REQ_LOCK(lle);
+	if ((lle->r_skip_req == 0) && (lle_hittime < lle->lle_hittime))
+		lle_hittime = lle->lle_hittime;
+	LLE_REQ_UNLOCK(lle);
+
+	return (lle_hittime);
+}
+
+time_t
+llentry_get_hittime(struct llentry *lle)
+{
+	time_t lle_hittime = 0;
+	struct llentry *child_lle;
+
+	lle_hittime = llentry_get_hittime_raw(lle);
+
+	CK_SLIST_FOREACH(child_lle, &lle->lle_children, lle_child_next) {
+		time_t hittime = llentry_get_hittime_raw(child_lle);
+		if (hittime > lle_hittime)
+			lle_hittime = hittime;
+	}
+
+	return (lle_hittime);
 }
 
 /*
@@ -507,7 +706,7 @@ lltable_free(struct lltable *llt)
 		llentry_free(lle);
 	}
 
-	KASSERT(llt->llt_entries == 0, ("%s: lltable %p (%s) entires not 0: %d",
+	KASSERT(llt->llt_entries == 0, ("%s: lltable %p (%s) entries not 0: %d",
 	    __func__, llt, llt->llt_ifp->if_xname, llt->llt_entries));
 
 	llt->llt_free_tbl(llt);
@@ -527,7 +726,7 @@ lltable_delete_addr(struct lltable *llt, u_int flags,
 
 	ifp = llt->llt_ifp;
 	IF_AFDATA_WLOCK(ifp);
-	lle = lla_lookup(llt, LLE_EXCLUSIVE, l3addr);
+	lle = lla_lookup(llt, LLE_SF(l3addr->sa_family, LLE_EXCLUSIVE), l3addr);
 
 	if (lle == NULL) {
 		IF_AFDATA_WUNLOCK(ifp);
@@ -561,6 +760,51 @@ lltable_prefix_free(int af, struct sockaddr *addr, struct sockaddr *mask,
 		llt->llt_prefix_free(llt, addr, mask, flags);
 	}
 	LLTABLE_LIST_RUNLOCK();
+}
+
+/*
+ * Delete llentries that func() returns true.
+ */
+struct lle_match_data {
+	struct llentries dchain;
+	llt_match_cb_t *func;
+	void *farg;
+};
+
+static int
+lltable_delete_conditional_cb(struct lltable *llt, struct llentry *lle,
+    void *farg)
+{
+	struct lle_match_data *lmd;
+
+	lmd = (struct lle_match_data *)farg;
+	if (lmd->func(llt, lle, lmd->farg)) {
+		LLE_WLOCK(lle);
+		CK_LIST_INSERT_HEAD(&lmd->dchain, lle, lle_chain);
+	}
+
+	return (0);
+}
+
+void
+lltable_delete_conditional(struct lltable *llt, llt_match_cb_t *func,
+    void *farg)
+{
+	struct llentry *lle, *next;
+	struct lle_match_data lmd;
+
+	bzero(&lmd, sizeof(lmd));
+	CK_LIST_INIT(&lmd.dchain);
+	lmd.func = func;
+	lmd.farg = farg;
+
+	IF_AFDATA_WLOCK(llt->llt_ifp);
+	lltable_foreach_lle(llt, lltable_delete_conditional_cb, &lmd);
+	llentries_unlink(llt, &lmd.dchain);
+	IF_AFDATA_WUNLOCK(llt->llt_ifp);
+
+	CK_LIST_FOREACH_SAFE(lle, &lmd.dchain, lle_chain, next)
+		llt->llt_delete_entry(llt, lle);
 }
 
 struct lltable *
@@ -610,6 +854,26 @@ lltable_unlink(struct lltable *llt)
 }
 
 /*
+ * Gets interface @ifp lltable for the specified @family
+ */
+struct lltable *
+lltable_get(struct ifnet *ifp, int family)
+{
+	switch (family) {
+#ifdef INET
+	case AF_INET:
+		return (in_lltable_get(ifp));
+#endif
+#ifdef INET6
+	case AF_INET6:
+		return (in6_lltable_get(ifp));
+#endif
+	}
+
+	return (NULL);
+}
+
+/*
  * External methods used by lltable consumers
  */
 
@@ -638,8 +902,31 @@ lltable_free_entry(struct lltable *llt, struct llentry *lle)
 int
 lltable_link_entry(struct lltable *llt, struct llentry *lle)
 {
+	int error = llt->llt_link_entry(llt, lle);
 
-	return (llt->llt_link_entry(llt, lle));
+	if (error == 0 && (lle->la_flags & LLE_PUB) != 0)
+		llt->llt_flags |= LLT_ADDEDPROXY;
+
+	return (error);
+}
+
+void
+lltable_link_child_entry(struct llentry *lle, struct llentry *child_lle)
+{
+	child_lle->lle_parent = lle;
+	child_lle->lle_tbl = lle->lle_tbl;
+	child_lle->la_flags |= LLE_LINKED;
+	CK_SLIST_INSERT_HEAD(&lle->lle_children, child_lle, lle_child_next);
+}
+
+void
+lltable_unlink_child_entry(struct llentry *child_lle)
+{
+	struct llentry *lle = child_lle->lle_parent;
+
+	child_lle->la_flags &= ~LLE_LINKED;
+	child_lle->lle_parent = NULL;
+	CK_SLIST_REMOVE(&lle->lle_children, child_lle, llentry, lle_child_next);
 }
 
 int
@@ -701,14 +988,8 @@ lla_rt_output(struct rt_msghdr *rtm, struct rt_addrinfo *info)
 		return EINVAL;
 	}
 
-	/* XXX linked list may be too expensive */
-	LLTABLE_LIST_RLOCK();
-	SLIST_FOREACH(llt, &V_lltables, llt_link) {
-		if (llt->llt_af == dst->sa_family &&
-		    llt->llt_ifp == ifp)
-			break;
-	}
-	LLTABLE_LIST_RUNLOCK();
+	llt = lltable_get(ifp, dst->sa_family);
+
 	if (llt == NULL)
 		return (ESRCH);
 
@@ -726,8 +1007,10 @@ lla_rt_output(struct rt_msghdr *rtm, struct rt_addrinfo *info)
 
 		linkhdrsize = sizeof(linkhdr);
 		if (lltable_calc_llheader(ifp, dst->sa_family, LLADDR(dl),
-		    linkhdr, &linkhdrsize, &lladdr_off) != 0)
+		    linkhdr, &linkhdrsize, &lladdr_off) != 0) {
+			lltable_free_entry(llt, lle);
 			return (EINVAL);
+		}
 		lltable_set_entry_addr(ifp, lle, linkhdr, linkhdrsize,
 		    lladdr_off);
 		if ((rtm->rtm_flags & RTF_ANNOUNCE))
@@ -768,15 +1051,7 @@ lla_rt_output(struct rt_msghdr *rtm, struct rt_addrinfo *info)
 		 */
 		EVENTHANDLER_INVOKE(lle_event, lle, LLENTRY_RESOLVED);
 		LLE_WUNLOCK(lle);
-#ifdef INET
-		/* gratuitous ARP */
-		if ((laflags & LLE_PUB) && dst->sa_family == AF_INET)
-			arprequest(ifp,
-			    &((struct sockaddr_in *)dst)->sin_addr,
-			    &((struct sockaddr_in *)dst)->sin_addr,
-			    (u_char *)LLADDR(dl));
-#endif
-
+		llt->llt_post_resolved(llt, lle);
 		break;
 
 	case RTM_DELETE:
@@ -790,18 +1065,13 @@ lla_rt_output(struct rt_msghdr *rtm, struct rt_addrinfo *info)
 }
 
 #ifdef DDB
-struct llentry_sa {
-	struct llentry		base;
-	struct sockaddr		l3_addr;
-};
-
 static void
-llatbl_lle_show(struct llentry_sa *la)
+llatbl_lle_show(struct llentry *lle)
 {
-	struct llentry *lle;
 	uint8_t octet[6];
+	sa_family_t af = AF_UNSPEC;
+	char l3_addr_fmt[] = " l3_addr=%s (af=%d)\n";
 
-	lle = &la->base;
 	db_printf("lle=%p\n", lle);
 	db_printf(" lle_next=%p\n", lle->lle_next.cle_next);
 	db_printf(" lle_lock=%p\n", &lle->lle_lock);
@@ -822,33 +1092,37 @@ llatbl_lle_show(struct llentry_sa *la)
 	    octet[0], octet[1], octet[2], octet[3], octet[4], octet[5]);
 	db_printf(" lle_timer=%p\n", &lle->lle_timer);
 
-	switch (la->l3_addr.sa_family) {
+	if (lle->lle_tbl) {
+		af = lle->lle_tbl->llt_af;
+	}
+
+	switch (af) {
 #ifdef INET
 	case AF_INET:
 	{
-		struct sockaddr_in *sin;
+		struct sockaddr_in sin;
 		char l3s[INET_ADDRSTRLEN];
 
-		sin = (struct sockaddr_in *)&la->l3_addr;
-		inet_ntoa_r(sin->sin_addr, l3s);
-		db_printf(" l3_addr=%s\n", l3s);
+		lltable_fill_sa_entry(lle, (struct sockaddr *)&sin);
+		(void) inet_ntop(af, &sin.sin_addr, l3s, sizeof(l3s));
+		db_printf(l3_addr_fmt, l3s, af);
 		break;
 	}
 #endif
 #ifdef INET6
 	case AF_INET6:
 	{
-		struct sockaddr_in6 *sin6;
+		struct sockaddr_in6 sin6;
 		char l3s[INET6_ADDRSTRLEN];
 
-		sin6 = (struct sockaddr_in6 *)&la->l3_addr;
-		ip6_sprintf(l3s, &sin6->sin6_addr);
-		db_printf(" l3_addr=%s\n", l3s);
+		lltable_fill_sa_entry(lle, (struct sockaddr *)&sin6);
+		(void) inet_ntop(af, &sin6.sin6_addr, l3s, sizeof(l3s));
+		db_printf(l3_addr_fmt, l3s, af);
 		break;
 	}
 #endif
 	default:
-		db_printf(" l3_addr=N/A (af=%d)\n", la->l3_addr.sa_family);
+		db_printf(l3_addr_fmt, "N/A", af);
 		break;
 	}
 }
@@ -861,7 +1135,7 @@ DB_SHOW_COMMAND(llentry, db_show_llentry)
 		return;
 	}
 
-	llatbl_lle_show((struct llentry_sa *)addr);
+	llatbl_lle_show((struct llentry *)addr);
 }
 
 static void
@@ -875,7 +1149,7 @@ llatbl_llt_show(struct lltable *llt)
 
 	for (i = 0; i < llt->llt_hsize; i++) {
 		CK_LIST_FOREACH(lle, &llt->lle_head[i], lle_next) {
-			llatbl_lle_show((struct llentry_sa *)lle);
+			llatbl_lle_show(lle);
 			if (db_pager_quit)
 				return;
 		}

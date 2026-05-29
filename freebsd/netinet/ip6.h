@@ -1,4 +1,3 @@
-/*	$FreeBSD$	*/
 /*	$KAME: ip6.h,v 1.18 2001/03/29 05:34:30 itojun Exp $	*/
 
 /*-
@@ -59,8 +58,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ip.h	8.1 (Berkeley) 6/10/93
  */
 
 #ifndef _NETINET_IP6_H_
@@ -98,13 +95,19 @@ struct ip6_hdr {
 #if BYTE_ORDER == BIG_ENDIAN
 #define IPV6_FLOWINFO_MASK	0x0fffffff	/* flow info (28 bits) */
 #define IPV6_FLOWLABEL_MASK	0x000fffff	/* flow label (20 bits) */
+#define IPV6_ECN_MASK		0x00300000	/* ECN code point (2 bits) */
 #else
 #if BYTE_ORDER == LITTLE_ENDIAN
 #define IPV6_FLOWINFO_MASK	0xffffff0f	/* flow info (28 bits) */
 #define IPV6_FLOWLABEL_MASK	0xffff0f00	/* flow label (20 bits) */
+#define IPV6_ECN_MASK		0x00003000	/* ECN code point (2 bits) */
 #endif /* LITTLE_ENDIAN */
 #endif
 #define IPV6_FLOWLABEL_LEN	20
+
+#define	IPV6_TRAFFIC_CLASS(ip6)	((ntohl((ip6)->ip6_flow) >> IPV6_FLOWLABEL_LEN) & 0xff)
+#define	IPV6_DSCP(ip6)		((ntohl((ip6)->ip6_flow) >> IPV6_FLOWLABEL_LEN) & 0xfc)
+#define	IPV6_ECN(ip6)		((ntohl((ip6)->ip6_flow) >> IPV6_FLOWLABEL_LEN) & 0x03)
 
 /*
  * Extension Headers
@@ -250,7 +253,7 @@ struct ip6_frag {
  */
 #define IPV6_MAXHLIM	255	/* maximum hoplimit */
 #define IPV6_DEFHLIM	64	/* default hlim */
-#define IPV6_FRAGTTL	120	/* ttl for fragment packets, in slowtimo tick */
+#define IPV6_DEFFRAGTTL	60000	/* Default fragment packets lifetime, in milliseconds */
 #define IPV6_HLIMDEC	1	/* subtracted when forwarding */
 
 #define IPV6_MMTU	1280	/* minimal MTU and reassembly. 1024 + 256 */

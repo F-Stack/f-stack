@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alexander V. Chernikov
  *
@@ -26,8 +26,8 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 #include "opt_inet.h"
+#include "opt_inet6.h"
 #include "opt_route.h"
 
 #include <sys/param.h>
@@ -42,6 +42,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_dl.h>
 #include <net/route.h>
 #include <net/route/route_ctl.h>
@@ -51,6 +52,11 @@ __FBSDID("$FreeBSD$");
 #include <net/route/nhop_var.h>
 #include <net/vnet.h>
 
+#define	DEBUG_MOD_NAME	nhop_ctl
+#define	DEBUG_MAX_LEVEL	LOG_DEBUG
+#include <net/route/route_debug.h>
+_DECLARE_DEBUG(LOG_INFO);
+
 /*
  * This file contains core functionality for the nexthop ("nhop") route subsystem.
  * The business logic needed to create nexhop objects is implemented here.
@@ -58,7 +64,7 @@ __FBSDID("$FreeBSD$");
  * Nexthops in the original sense are the objects containing all the necessary
  * information to forward the packet to the selected destination.
  * In particular, nexthop is defined by a combination of
- *  ifp, ifa, aifp, mtu, gw addr(if set), nh_type, nh_family, mask of rt_flags and
+ *  ifp, ifa, aifp, mtu, gw addr(if set), nh_type, nh_upper_family, mask of rt_flags and
  *    NHF_DEFAULT
  *
  * Additionally, each nexthop gets assigned its unique index (nexthop index).
@@ -79,18 +85,12 @@ __FBSDID("$FreeBSD$");
 
 static int dump_nhop_entry(struct rib_head *rh, struct nhop_object *nh, struct sysctl_req *w);
 
-static struct nhop_priv *alloc_nhop_structure(void);
-static int get_nhop(struct rib_head *rnh, struct rt_addrinfo *info,
-    struct nhop_priv **pnh_priv);
-static int finalize_nhop(struct nh_control *ctl, struct rt_addrinfo *info,
-    struct nhop_priv *nh_priv);
-static struct ifnet *get_aifp(const struct nhop_object *nh, int reference);
+static int finalize_nhop(struct nh_control *ctl, struct nhop_object *nh, bool link);
+static struct ifnet *get_aifp(const struct nhop_object *nh);
 static void fill_sdl_from_ifp(struct sockaddr_dl_short *sdl, const struct ifnet *ifp);
 
 static void destroy_nhop_epoch(epoch_context_t ctx);
-static void destroy_nhop(struct nhop_priv *nh_priv);
-
-static void print_nhop(const char *prefix, const struct nhop_object *nh);
+static void destroy_nhop(struct nhop_object *nh);
 
 _Static_assert(__offsetof(struct nhop_object, nh_ifp) == 32,
     "nhop_object: wrong nh_ifp offset");
@@ -120,12 +120,10 @@ nhops_init(void)
  * this interface ifp instead of loopback. This is needed to support
  * link-local IPv6 loopback communications.
  *
- * If @reference is non-zero, found ifp is referenced.
- *
  * Returns found ifp.
  */
 static struct ifnet *
-get_aifp(const struct nhop_object *nh, int reference)
+get_aifp(const struct nhop_object *nh)
 {
 	struct ifnet *aifp = NULL;
 
@@ -138,21 +136,15 @@ get_aifp(const struct nhop_object *nh, int reference)
 	 */
 	if ((nh->nh_ifp->if_flags & IFF_LOOPBACK) &&
 			nh->gw_sa.sa_family == AF_LINK) {
-		if (reference)
-			aifp = ifnet_byindex_ref(nh->gwl_sa.sdl_index);
-		else
-			aifp = ifnet_byindex(nh->gwl_sa.sdl_index);
+		aifp = ifnet_byindex(nh->gwl_sa.sdl_index);
 		if (aifp == NULL) {
-			DPRINTF("unable to get aifp for %s index %d",
+			FIB_NH_LOG(LOG_WARNING, nh, "unable to get aifp for %s index %d",
 				if_name(nh->nh_ifp), nh->gwl_sa.sdl_index);
 		}
 	}
 
-	if (aifp == NULL) {
+	if (aifp == NULL)
 		aifp = nh->nh_ifp;
-		if (reference)
-			if_ref(aifp);
-	}
 
 	return (aifp);
 }
@@ -176,24 +168,8 @@ cmp_priv(const struct nhop_priv *_one, const struct nhop_priv *_two)
 static void
 set_nhop_mtu_from_info(struct nhop_object *nh, const struct rt_addrinfo *info)
 {
-
-	if (info->rti_mflags & RTV_MTU) {
-		if (info->rti_rmx->rmx_mtu != 0) {
-			/*
-			 * MTU was explicitly provided by user.
-			 * Keep it.
-			 */
-
-			nh->nh_priv->rt_flags |= RTF_FIXEDMTU;
-		} else {
-			/*
-			 * User explicitly sets MTU to 0.
-			 * Assume rollback to default.
-			 */
-			nh->nh_priv->rt_flags &= ~RTF_FIXEDMTU;
-		}
-		nh->nh_mtu = info->rti_rmx->rmx_mtu;
-	}
+	if (info->rti_mflags & RTV_MTU)
+		nhop_set_mtu(nh, info->rti_rmx->rmx_mtu, true);
 }
 
 /*
@@ -217,92 +193,56 @@ set_nhop_gw_from_info(struct nhop_object *nh, struct rt_addrinfo *info)
 	struct sockaddr *gw;
 
 	gw = info->rti_info[RTAX_GATEWAY];
-	KASSERT(gw != NULL, ("gw is NULL"));
+	MPASS(gw != NULL);
+	bool is_gw = info->rti_flags & RTF_GATEWAY;
 
-	if (info->rti_flags & RTF_GATEWAY) {
-		if (gw->sa_len > sizeof(struct sockaddr_in6)) {
-			DPRINTF("nhop SA size too big: AF %d len %u",
-			    gw->sa_family, gw->sa_len);
-			return (ENOMEM);
-		}
-		memcpy(&nh->gw_sa, gw, gw->sa_len);
-	} else {
+	if ((gw->sa_family == AF_LINK) && !is_gw) {
 
 		/*
-		 * Interface route. Currently the route.c code adds
-		 * sa of type AF_LINK, which is 56 bytes long. The only
-		 * meaningful data there is the interface index. It is used
-		 * used is the IPv6 loopback output, where we need to preserve
-		 * the original interface to maintain proper scoping.
+		 * Interface route with interface specified by the interface
+		 * index in sockadd_dl structure. It is used in the IPv6 loopback
+		 * output code, where we need to preserve the original interface
+		 * to maintain proper scoping.
 		 * Despite the fact that nexthop code stores original interface
 		 * in the separate field (nh_aifp, see below), write AF_LINK
 		 * compatible sa with shorter total length.
 		 */
-		struct sockaddr_dl *sdl;
-		struct ifnet *ifp;
-
-		/* Fetch and validate interface index */
-		sdl = (struct sockaddr_dl *)gw;
-		if (sdl->sdl_family != AF_LINK) {
-			DPRINTF("unsupported AF: %d", sdl->sdl_family);
-			return (ENOTSUP);
-		}
-		ifp = ifnet_byindex(sdl->sdl_index);
+		struct sockaddr_dl *sdl = (struct sockaddr_dl *)gw;
+		struct ifnet *ifp = ifnet_byindex(sdl->sdl_index);
 		if (ifp == NULL) {
-			DPRINTF("invalid ifindex %d", sdl->sdl_index);
+			FIB_NH_LOG(LOG_DEBUG, nh, "error: invalid ifindex %d",
+			    sdl->sdl_index);
 			return (EINVAL);
 		}
-		fill_sdl_from_ifp(&nh->gwl_sa, ifp);
+		nhop_set_direct_gw(nh, ifp);
+	} else {
+
+		/*
+		 * Multiple options here:
+		 *
+		 * 1) RTF_GATEWAY with IPv4/IPv6 gateway data
+		 * 2) Interface route with IPv4/IPv6 address of the
+		 *   matching interface. Some routing daemons do that
+		 *   instead of specifying ifindex in AF_LINK.
+		 *
+		 * In both cases, save the original nexthop to make the callers
+		 *   happy.
+		 */
+		if (!nhop_set_gw(nh, gw, is_gw))
+			return (EINVAL);
 	}
-
 	return (0);
 }
 
-static uint16_t
-convert_rt_to_nh_flags(int rt_flags)
+static void
+set_nhop_expire_from_info(struct nhop_object *nh, const struct rt_addrinfo *info)
 {
-	uint16_t res;
+	uint32_t nh_expire = 0;
 
-	res = (rt_flags & RTF_REJECT) ? NHF_REJECT : 0;
-	res |= (rt_flags & RTF_HOST) ? NHF_HOST : 0;
-	res |= (rt_flags & RTF_BLACKHOLE) ? NHF_BLACKHOLE : 0;
-	res |= (rt_flags & (RTF_DYNAMIC|RTF_MODIFIED)) ? NHF_REDIRECT : 0;
-	res |= (rt_flags & RTF_BROADCAST) ? NHF_BROADCAST : 0;
-	res |= (rt_flags & RTF_GATEWAY) ? NHF_GATEWAY : 0;
-
-	return (res);
-}
-
-static int
-fill_nhop_from_info(struct nhop_priv *nh_priv, struct rt_addrinfo *info)
-{
-	int error, rt_flags;
-	struct nhop_object *nh;
-
-	nh = nh_priv->nh;
-
-	rt_flags = info->rti_flags & NHOP_RT_FLAG_MASK;
-
-	nh->nh_priv->rt_flags = rt_flags;
-	nh_priv->nh_family = info->rti_info[RTAX_DST]->sa_family;
-	nh_priv->nh_type = 0; // hook responsibility to set nhop type
-
-	nh->nh_flags = convert_rt_to_nh_flags(rt_flags);
-	set_nhop_mtu_from_info(nh, info);
-	if ((error = set_nhop_gw_from_info(nh, info)) != 0)
-		return (error);
-
-	nh->nh_ifp = info->rti_ifa->ifa_ifp;
-	nh->nh_ifa = info->rti_ifa;
-	/* depends on the gateway */
-	nh->nh_aifp = get_aifp(nh, 0);
-
-	/*
-	 * Note some of the remaining data is set by the
-	 * per-address-family pre-add hook.
-	 */
-
-	return (0);
+	/* Kernel -> userland timebase conversion. */
+	if ((info->rti_mflags & RTV_EXPIRE) && (info->rti_rmx->rmx_expire > 0))
+		nh_expire = info->rti_rmx->rmx_expire - time_second + time_uptime;
+	nhop_set_expire(nh, nh_expire);
 }
 
 /*
@@ -316,93 +256,142 @@ int
 nhop_create_from_info(struct rib_head *rnh, struct rt_addrinfo *info,
     struct nhop_object **nh_ret)
 {
-	struct nhop_priv *nh_priv;
 	int error;
 
 	NET_EPOCH_ASSERT();
 
-	if (info->rti_info[RTAX_GATEWAY] == NULL)
+	MPASS(info->rti_ifa != NULL);
+	MPASS(info->rti_ifp != NULL);
+
+	if (info->rti_info[RTAX_GATEWAY] == NULL) {
+		FIB_RH_LOG(LOG_DEBUG, rnh, "error: empty gateway");
 		return (EINVAL);
-
-	nh_priv = alloc_nhop_structure();
-
-	error = fill_nhop_from_info(nh_priv, info);
-	if (error != 0) {
-		uma_zfree(nhops_zone, nh_priv->nh);
-		return (error);
 	}
 
-	error = get_nhop(rnh, info, &nh_priv);
-	if (error == 0)
-		*nh_ret = nh_priv->nh;
+	struct nhop_object *nh = nhop_alloc(rnh->rib_fibnum, rnh->rib_family);
+	if (nh == NULL)
+		return (ENOMEM);
+
+	if ((error = set_nhop_gw_from_info(nh, info)) != 0) {
+		nhop_free(nh);
+		return (error);
+	}
+	nhop_set_transmit_ifp(nh, info->rti_ifp);
+
+	nhop_set_blackhole(nh, info->rti_flags & (RTF_BLACKHOLE | RTF_REJECT));
+
+	error = rnh->rnh_set_nh_pfxflags(rnh->rib_fibnum, info->rti_info[RTAX_DST],
+	    info->rti_info[RTAX_NETMASK], nh);
+
+	nhop_set_redirect(nh, info->rti_flags & RTF_DYNAMIC);
+	nhop_set_pinned(nh, info->rti_flags & RTF_PINNED);
+	set_nhop_expire_from_info(nh, info);
+	nhop_set_rtflags(nh, info->rti_flags);
+
+	set_nhop_mtu_from_info(nh, info);
+	nhop_set_src(nh, info->rti_ifa);
+
+	/*
+	 * The remaining fields are either set from nh_preadd hook
+	 * or are computed from the provided data
+	 */
+	*nh_ret = nhop_get_nhop(nh, &error);
 
 	return (error);
 }
 
 /*
- * Gets linked nhop using the provided @pnh_priv nexhop data.
+ * Gets linked nhop using the provided @nh nexhop data.
  * If linked nhop is found, returns it, freeing the provided one.
  * If there is no such nexthop, attaches the remaining data to the
  *  provided nexthop and links it.
  *
- * Returns 0 on success, storing referenced nexthop in @pnh_priv.
+ * Returns 0 on success, storing referenced nexthop in @pnh.
  * Otherwise, errno is returned.
  */
-static int
-get_nhop(struct rib_head *rnh, struct rt_addrinfo *info,
-    struct nhop_priv **pnh_priv)
+struct nhop_object *
+nhop_get_nhop(struct nhop_object *nh, int *perror)
 {
-	const struct sockaddr *dst, *gateway, *netmask;
-	struct nhop_priv *nh_priv, *tmp_priv;
-	int error;
+	struct rib_head *rnh = nhop_get_rh(nh);
 
-	nh_priv = *pnh_priv;
-
-	/* Give the protocols chance to augment the request data */
-	dst = info->rti_info[RTAX_DST];
-	netmask = info->rti_info[RTAX_NETMASK];
-	gateway = info->rti_info[RTAX_GATEWAY];
-
-	error = rnh->rnh_preadd(rnh->rib_fibnum, dst, netmask, nh_priv->nh);
-	if (error != 0) {
-		uma_zfree(nhops_zone, nh_priv->nh);
-		return (error);
+	if (__predict_false(rnh == NULL)) {
+		*perror = EAFNOSUPPORT;
+		nhop_free(nh);
+		return (NULL);
 	}
 
-	tmp_priv = find_nhop(rnh->nh_control, nh_priv);
+	return (nhop_get_nhop_internal(rnh, nh, perror));
+}
+
+struct nhop_object *
+nhop_get_nhop_internal(struct rib_head *rnh, struct nhop_object *nh, int *perror)
+{
+	struct nhop_priv *tmp_priv;
+	int error;
+
+	nh->nh_aifp = get_aifp(nh);
+
+	/* Give the protocols chance to augment nexthop properties */
+	error = rnh->rnh_augment_nh(rnh->rib_fibnum, nh);
+	if (error != 0) {
+		nhop_free(nh);
+		*perror = error;
+		return (NULL);
+	}
+
+	tmp_priv = find_nhop(rnh->nh_control, nh->nh_priv);
 	if (tmp_priv != NULL) {
-		uma_zfree(nhops_zone, nh_priv->nh);
-		*pnh_priv = tmp_priv;
-		return (0);
+		nhop_free(nh);
+		*perror = 0;
+		return (tmp_priv->nh);
 	}
 
 	/*
 	 * Existing nexthop not found, need to create new one.
-	 * Note: multiple simultaneous get_nhop() requests
+	 * Note: multiple simultaneous requests
 	 *  can result in multiple equal nexhops existing in the
 	 *  nexthop table. This is not a not a problem until the
 	 *  relative number of such nexthops is significant, which
 	 *  is extremely unlikely.
 	 */
-
-	error = finalize_nhop(rnh->nh_control, info, nh_priv);
-	if (error != 0)
-		return (error);
-
-	return (0);
+	*perror = finalize_nhop(rnh->nh_control, nh, true);
+	return (*perror == 0 ? nh : NULL);
 }
+
+/*
+ * Gets referenced but unlinked nhop.
+ * Alocates/references the remaining bits of the nexthop data, so
+ *  it can be safely linked later or used as a clone source.
+ *
+ * Returns 0 on success.
+ */
+int
+nhop_get_unlinked(struct nhop_object *nh)
+{
+	struct rib_head *rnh = nhop_get_rh(nh);
+
+	if (__predict_false(rnh == NULL)) {
+		nhop_free(nh);
+		return (EAFNOSUPPORT);
+	}
+
+	nh->nh_aifp = get_aifp(nh);
+
+	return (finalize_nhop(rnh->nh_control, nh, false));
+}
+
 
 /*
  * Update @nh with data supplied in @info.
  * This is a helper function to support route changes.
  *
  * It limits the changes that can be done to the route to the following:
- * 1) all combination of gateway changes (gw, interface, blackhole/reject)
- * 2) route flags (FLAG[123],STATIC,BLACKHOLE,REJECT)
+ * 1) all combination of gateway changes
+ * 2) route flags (FLAG[123],STATIC)
  * 3) route MTU
  *
  * Returns:
- * 0 on success
+ * 0 on success, errno otherwise
  */
 static int
 alter_nhop_from_info(struct nhop_object *nh, struct rt_addrinfo *info)
@@ -413,11 +402,10 @@ alter_nhop_from_info(struct nhop_object *nh, struct rt_addrinfo *info)
 	/* Update MTU if set in the request*/
 	set_nhop_mtu_from_info(nh, info);
 
-	/* XXX: allow only one of BLACKHOLE,REJECT,GATEWAY */
-
-	/* Allow some flags (FLAG1,STATIC,BLACKHOLE,REJECT) to be toggled on change. */
-	nh->nh_priv->rt_flags &= ~RTF_FMASK;
-	nh->nh_priv->rt_flags |= info->rti_flags & RTF_FMASK;
+	/* Only RTF_FLAG[123] and RTF_STATIC */
+	uint32_t rt_flags = nhop_get_rtflags(nh) & ~RT_CHANGE_RTFLAGS_MASK;
+	rt_flags |= info->rti_flags & RT_CHANGE_RTFLAGS_MASK;
+	nhop_set_rtflags(nh, rt_flags);
 
 	/* Consider gateway change */
 	info_gw = info->rti_info[RTAX_GATEWAY];
@@ -425,18 +413,12 @@ alter_nhop_from_info(struct nhop_object *nh, struct rt_addrinfo *info)
 		error = set_nhop_gw_from_info(nh, info);
 		if (error != 0)
 			return (error);
-		/* Update RTF_GATEWAY flag status */
-		nh->nh_priv->rt_flags &= ~RTF_GATEWAY;
-		nh->nh_priv->rt_flags |= (RTF_GATEWAY & info->rti_flags);
 	}
-	/* Update datapath flags */
-	nh->nh_flags = convert_rt_to_nh_flags(nh->nh_priv->rt_flags);
 
 	if (info->rti_ifa != NULL)
-		nh->nh_ifa = info->rti_ifa;
+		nhop_set_src(nh, info->rti_ifa);
 	if (info->rti_ifp != NULL)
-		nh->nh_ifp = info->rti_ifp;
-	nh->nh_aifp = get_aifp(nh, 0);
+		nhop_set_transmit_ifp(nh, info->rti_ifp);
 
 	return (0);
 }
@@ -454,60 +436,47 @@ int
 nhop_create_from_nhop(struct rib_head *rnh, const struct nhop_object *nh_orig,
     struct rt_addrinfo *info, struct nhop_object **pnh)
 {
-	struct nhop_priv *nh_priv;
 	struct nhop_object *nh;
 	int error;
 
 	NET_EPOCH_ASSERT();
 
-	nh_priv = alloc_nhop_structure();
-	nh = nh_priv->nh;
+	nh = nhop_alloc(rnh->rib_fibnum, rnh->rib_family);
+	if (nh == NULL)
+		return (ENOMEM);
 
-	/* Start with copying data from original nexthop */
-	nh_priv->nh_family = nh_orig->nh_priv->nh_family;
-	nh_priv->rt_flags = nh_orig->nh_priv->rt_flags;
-	nh_priv->nh_type = nh_orig->nh_priv->nh_type;
-
-	nh->nh_ifp = nh_orig->nh_ifp;
-	nh->nh_ifa = nh_orig->nh_ifa;
-	nh->nh_aifp = nh_orig->nh_aifp;
-	nh->nh_mtu = nh_orig->nh_mtu;
-	nh->nh_flags = nh_orig->nh_flags;
-	memcpy(&nh->gw_sa, &nh_orig->gw_sa, nh_orig->gw_sa.sa_len);
+	nhop_copy(nh, nh_orig);
 
 	error = alter_nhop_from_info(nh, info);
 	if (error != 0) {
-		uma_zfree(nhops_zone, nh_priv->nh);
+		nhop_free(nh);
 		return (error);
 	}
 
-	error = get_nhop(rnh, info, &nh_priv);
-	if (error == 0)
-		*pnh = nh_priv->nh;
+	*pnh = nhop_get_nhop(nh, &error);
 
 	return (error);
 }
 
-/*
- * Allocates memory for public/private nexthop structures.
- *
- * Returns pointer to nhop_priv or NULL.
- */
-static struct nhop_priv *
-alloc_nhop_structure()
+static bool
+reference_nhop_deps(struct nhop_object *nh)
 {
-	struct nhop_object *nh;
-	struct nhop_priv *nh_priv;
+	if (!ifa_try_ref(nh->nh_ifa))
+		return (false);
+	nh->nh_aifp = get_aifp(nh);
+	if (!if_try_ref(nh->nh_aifp)) {
+		ifa_free(nh->nh_ifa);
+		return (false);
+	}
+	FIB_NH_LOG(LOG_DEBUG2, nh, "nh_aifp: %s nh_ifp %s",
+	    if_name(nh->nh_aifp), if_name(nh->nh_ifp));
+	if (!if_try_ref(nh->nh_ifp)) {
+		ifa_free(nh->nh_ifa);
+		if_rele(nh->nh_aifp);
+		return (false);
+	}
 
-	nh = (struct nhop_object *)uma_zalloc(nhops_zone, M_NOWAIT | M_ZERO);
-	if (nh == NULL)
-		return (NULL);
-	nh_priv = (struct nhop_priv *)((char *)nh + NHOP_OBJECT_ALIGNED_SIZE);
-
-	nh->nh_priv = nh_priv;
-	nh_priv->nh = nh;
-
-	return (nh_priv);
+	return (true);
 }
 
 /*
@@ -517,97 +486,66 @@ alloc_nhop_structure()
  *  errno otherwise. @nh_priv is freed in case of error.
  */
 static int
-finalize_nhop(struct nh_control *ctl, struct rt_addrinfo *info,
-    struct nhop_priv *nh_priv)
+finalize_nhop(struct nh_control *ctl, struct nhop_object *nh, bool link)
 {
-	struct nhop_object *nh;
-
-	nh = nh_priv->nh;
 
 	/* Allocate per-cpu packet counter */
 	nh->nh_pksent = counter_u64_alloc(M_NOWAIT);
 	if (nh->nh_pksent == NULL) {
-		uma_zfree(nhops_zone, nh);
+		nhop_free(nh);
 		RTSTAT_INC(rts_nh_alloc_failure);
-		DPRINTF("nh_alloc_finalize failed");
+		FIB_NH_LOG(LOG_WARNING, nh, "counter_u64_alloc() failed");
 		return (ENOMEM);
 	}
 
+	if (!reference_nhop_deps(nh)) {
+		counter_u64_free(nh->nh_pksent);
+		nhop_free(nh);
+		RTSTAT_INC(rts_nh_alloc_failure);
+		FIB_NH_LOG(LOG_WARNING, nh, "interface reference failed");
+		return (EAGAIN);
+	}
+
 	/* Save vnet to ease destruction */
-	nh_priv->nh_vnet = curvnet;
-
-	/* Reference external objects and calculate (referenced) ifa */
-	if_ref(nh->nh_ifp);
-	ifa_ref(nh->nh_ifa);
-	nh->nh_aifp = get_aifp(nh, 1);
-	DPRINTF("AIFP: %p nh_ifp %p", nh->nh_aifp, nh->nh_ifp);
-
-	refcount_init(&nh_priv->nh_refcnt, 1);
+	nh->nh_priv->nh_vnet = curvnet;
 
 	/* Please see nhop_free() comments on the initial value */
-	refcount_init(&nh_priv->nh_linked, 2);
+	refcount_init(&nh->nh_priv->nh_linked, 2);
 
-	print_nhop("FINALIZE", nh);
+	MPASS(nh->nh_priv->nh_fibnum == ctl->ctl_rh->rib_fibnum);
 
-	if (link_nhop(ctl, nh_priv) == 0) {
+	if (!link) {
+		refcount_release(&nh->nh_priv->nh_linked);
+		NHOPS_WLOCK(ctl);
+		nh->nh_priv->nh_finalized = 1;
+		NHOPS_WUNLOCK(ctl);
+	} else if (link_nhop(ctl, nh->nh_priv) == 0) {
 		/*
 		 * Adding nexthop to the datastructures
 		 *  failed. Call destructor w/o waiting for
 		 *  the epoch end, as nexthop is not used
 		 *  and return.
 		 */
-		DPRINTF("link_nhop failed!");
-		destroy_nhop(nh_priv);
+		char nhbuf[NHOP_PRINT_BUFSIZE];
+		FIB_NH_LOG(LOG_WARNING, nh, "failed to link %s",
+		    nhop_print_buf(nh, nhbuf, sizeof(nhbuf)));
+		destroy_nhop(nh);
 
 		return (ENOBUFS);
+	}
+
+	IF_DEBUG_LEVEL(LOG_DEBUG) {
+		char nhbuf[NHOP_PRINT_BUFSIZE] __unused;
+		FIB_NH_LOG(LOG_DEBUG, nh, "finalized: %s",
+		    nhop_print_buf(nh, nhbuf, sizeof(nhbuf)));
 	}
 
 	return (0);
 }
 
 static void
-print_nhop_sa(char *buf, size_t buflen, const struct sockaddr *sa)
+destroy_nhop(struct nhop_object *nh)
 {
-
-	if (sa->sa_family == AF_INET) {
-		const struct sockaddr_in *sin4;
-		sin4 = (const struct sockaddr_in *)sa;
-		inet_ntop(AF_INET, &sin4->sin_addr, buf, buflen);
-	} else if (sa->sa_family == AF_INET6) {
-		const struct sockaddr_in6 *sin6;
-		sin6 = (const struct sockaddr_in6 *)sa;
-		inet_ntop(AF_INET6, &sin6->sin6_addr, buf, buflen);
-	} else if (sa->sa_family == AF_LINK) {
-		const struct sockaddr_dl *sdl;
-		sdl = (const struct sockaddr_dl *)sa;
-		snprintf(buf, buflen, "if#%d", sdl->sdl_index);
-	} else
-		snprintf(buf, buflen, "af:%d", sa->sa_family);
-}
-
-static void
-print_nhop(const char *prefix, const struct nhop_object *nh)
-{
-	char src_buf[INET6_ADDRSTRLEN], addr_buf[INET6_ADDRSTRLEN];
-
-	print_nhop_sa(src_buf, sizeof(src_buf), nh->nh_ifa->ifa_addr);
-	print_nhop_sa(addr_buf, sizeof(addr_buf), &nh->gw_sa);
-
-	DPRINTF("%s nhop priv %p: AF %d ifp %p %s addr %s src %p %s aifp %p %s mtu %d nh_flags %X",
-	    prefix, nh->nh_priv, nh->nh_priv->nh_family, nh->nh_ifp,
-	    if_name(nh->nh_ifp), addr_buf, nh->nh_ifa, src_buf, nh->nh_aifp,
-	    if_name(nh->nh_aifp), nh->nh_mtu, nh->nh_flags);
-}
-
-static void
-destroy_nhop(struct nhop_priv *nh_priv)
-{
-	struct nhop_object *nh;
-
-	nh = nh_priv->nh;
-
-	print_nhop("DEL", nh);
-
 	if_rele(nh->nh_ifp);
 	if_rele(nh->nh_aifp);
 	ifa_free(nh->nh_ifa);
@@ -626,13 +564,13 @@ destroy_nhop_epoch(epoch_context_t ctx)
 
 	nh_priv = __containerof(ctx, struct nhop_priv, nh_epoch_ctx);
 
-	destroy_nhop(nh_priv);
+	destroy_nhop(nh_priv->nh);
 }
 
 void
 nhop_ref_object(struct nhop_object *nh)
 {
-	u_int old;
+	u_int old __diagused;
 
 	old = refcount_acquire(&nh->nh_priv->nh_refcnt);
 	KASSERT(old > 0, ("%s: nhop object %p has 0 refs", __func__, nh));
@@ -654,6 +592,18 @@ nhop_free(struct nhop_object *nh)
 
 	if (!refcount_release(&nh_priv->nh_refcnt))
 		return;
+
+	/* allows to use nhop_free() during nhop init */
+	if (__predict_false(nh_priv->nh_finalized == 0)) {
+		uma_zfree(nhops_zone, nh);
+		return;
+	}
+
+	IF_DEBUG_LEVEL(LOG_DEBUG) {
+		char nhbuf[NHOP_PRINT_BUFSIZE] __unused;
+		FIB_NH_LOG(LOG_DEBUG, nh, "deleting %s",
+		    nhop_print_buf(nh, nhbuf, sizeof(nhbuf)));
+	}
 
 	/*
 	 * There are only 2 places, where nh_linked can be decreased:
@@ -679,15 +629,16 @@ nhop_free(struct nhop_object *nh)
 		ctl = nh_priv->nh_control;
 		if (unlink_nhop(ctl, nh_priv) == NULL) {
 			/* Do not try to reclaim */
-			DPRINTF("Failed to unlink nexhop %p", nh_priv);
+			char nhbuf[NHOP_PRINT_BUFSIZE];
+			FIB_NH_LOG(LOG_WARNING, nh, "failed to unlink %s",
+			    nhop_print_buf(nh, nhbuf, sizeof(nhbuf)));
 			NET_EPOCH_EXIT(et);
 			return;
 		}
 	}
 	NET_EPOCH_EXIT(et);
 
-	epoch_call(net_epoch_preempt, destroy_nhop_epoch,
-	    &nh_priv->nh_epoch_ctx);
+	NET_EPOCH_CALL(destroy_nhop_epoch, &nh_priv->nh_epoch_ctx);
 }
 
 void
@@ -717,13 +668,228 @@ nhop_free_any(struct nhop_object *nh)
 #endif
 }
 
-/* Helper functions */
+/* Nhop-related methods */
+
+/*
+ * Allocates an empty unlinked nhop object.
+ * Returns object pointer or NULL on failure
+ */
+struct nhop_object *
+nhop_alloc(uint32_t fibnum, int family)
+{
+	struct nhop_object *nh;
+	struct nhop_priv *nh_priv;
+
+	nh = (struct nhop_object *)uma_zalloc(nhops_zone, M_NOWAIT | M_ZERO);
+	if (__predict_false(nh == NULL))
+		return (NULL);
+
+	nh_priv = (struct nhop_priv *)((char *)nh + NHOP_OBJECT_ALIGNED_SIZE);
+	nh->nh_priv = nh_priv;
+	nh_priv->nh = nh;
+
+	nh_priv->nh_upper_family = family;
+	nh_priv->nh_fibnum = fibnum;
+
+	/* Setup refcount early to allow nhop_free() to work */
+	refcount_init(&nh_priv->nh_refcnt, 1);
+
+	return (nh);
+}
+
+void
+nhop_copy(struct nhop_object *nh, const struct nhop_object *nh_orig)
+{
+	struct nhop_priv *nh_priv = nh->nh_priv;
+
+	nh->nh_flags = nh_orig->nh_flags;
+	nh->nh_mtu = nh_orig->nh_mtu;
+	memcpy(&nh->gw_sa, &nh_orig->gw_sa, nh_orig->gw_sa.sa_len);
+	nh->nh_ifp = nh_orig->nh_ifp;
+	nh->nh_ifa = nh_orig->nh_ifa;
+	nh->nh_aifp = nh_orig->nh_aifp;
+
+	nh_priv->nh_upper_family = nh_orig->nh_priv->nh_upper_family;
+	nh_priv->nh_neigh_family = nh_orig->nh_priv->nh_neigh_family;
+	nh_priv->nh_type = nh_orig->nh_priv->nh_type;
+	nh_priv->rt_flags = nh_orig->nh_priv->rt_flags;
+	nh_priv->nh_fibnum = nh_orig->nh_priv->nh_fibnum;
+	nh_priv->nh_origin = nh_orig->nh_priv->nh_origin;
+}
+
+void
+nhop_set_direct_gw(struct nhop_object *nh, struct ifnet *ifp)
+{
+	nh->nh_flags &= ~NHF_GATEWAY;
+	nh->nh_priv->rt_flags &= ~RTF_GATEWAY;
+	nh->nh_priv->nh_neigh_family = nh->nh_priv->nh_upper_family;
+
+	fill_sdl_from_ifp(&nh->gwl_sa, ifp);
+	memset(&nh->gw_buf[nh->gw_sa.sa_len], 0, sizeof(nh->gw_buf) - nh->gw_sa.sa_len);
+}
+
+bool
+nhop_check_gateway(int upper_family, int neigh_family)
+{
+	if (upper_family == neigh_family)
+		return (true);
+	else if (neigh_family == AF_UNSPEC || neigh_family == AF_LINK)
+		return (true);
+#if defined(INET) && defined(INET6)
+	else if (upper_family == AF_INET && neigh_family == AF_INET6 &&
+	    rib_can_4o6_nhop())
+		return (true);
+#endif
+	else
+		return (false);
+}
+
+/*
+ * Sets gateway for the nexthop.
+ * It can be "normal" gateway with is_gw set or a special form of
+ * adding interface route, refering to it by specifying local interface
+ * address. In that case is_gw is set to false.
+ */
+bool
+nhop_set_gw(struct nhop_object *nh, const struct sockaddr *gw, bool is_gw)
+{
+	if (gw->sa_len > sizeof(nh->gw_buf)) {
+		FIB_NH_LOG(LOG_DEBUG, nh, "nhop SA size too big: AF %d len %u",
+		    gw->sa_family, gw->sa_len);
+		return (false);
+	}
+
+	if (!nhop_check_gateway(nh->nh_priv->nh_upper_family, gw->sa_family)) {
+		FIB_NH_LOG(LOG_DEBUG, nh,
+		    "error: invalid dst/gateway family combination (%d, %d)",
+		    nh->nh_priv->nh_upper_family, gw->sa_family);
+		return (false);
+	}
+
+	memcpy(&nh->gw_sa, gw, gw->sa_len);
+	memset(&nh->gw_buf[gw->sa_len], 0, sizeof(nh->gw_buf) - gw->sa_len);
+
+	if (is_gw) {
+		nh->nh_flags |= NHF_GATEWAY;
+		nh->nh_priv->rt_flags |= RTF_GATEWAY;
+		nh->nh_priv->nh_neigh_family = gw->sa_family;
+	} else {
+		nh->nh_flags &= ~NHF_GATEWAY;
+		nh->nh_priv->rt_flags &= ~RTF_GATEWAY;
+		nh->nh_priv->nh_neigh_family = nh->nh_priv->nh_upper_family;
+	}
+
+	return (true);
+}
+
+bool
+nhop_set_upper_family(struct nhop_object *nh, int family)
+{
+	if (!nhop_check_gateway(nh->nh_priv->nh_upper_family, family)) {
+		FIB_NH_LOG(LOG_DEBUG, nh,
+		    "error: invalid upper/neigh family combination (%d, %d)",
+		    nh->nh_priv->nh_upper_family, family);
+		return (false);
+	}
+
+	nh->nh_priv->nh_upper_family = family;
+	return (true);
+}
+
+void
+nhop_set_broadcast(struct nhop_object *nh, bool is_broadcast)
+{
+	if (is_broadcast) {
+		nh->nh_flags |= NHF_BROADCAST;
+		nh->nh_priv->rt_flags |= RTF_BROADCAST;
+	} else {
+		nh->nh_flags &= ~NHF_BROADCAST;
+		nh->nh_priv->rt_flags &= ~RTF_BROADCAST;
+	}
+}
+
+void
+nhop_set_blackhole(struct nhop_object *nh, int blackhole_rt_flag)
+{
+	nh->nh_flags &= ~(NHF_BLACKHOLE | NHF_REJECT);
+	nh->nh_priv->rt_flags &= ~(RTF_BLACKHOLE | RTF_REJECT);
+	switch (blackhole_rt_flag) {
+	case RTF_BLACKHOLE:
+		nh->nh_flags |= NHF_BLACKHOLE;
+		nh->nh_priv->rt_flags |= RTF_BLACKHOLE;
+		break;
+	case RTF_REJECT:
+		nh->nh_flags |= NHF_REJECT;
+		nh->nh_priv->rt_flags |= RTF_REJECT;
+		break;
+	default:
+		/* Not a blackhole nexthop */
+		return;
+	}
+
+	nh->nh_ifp = V_loif;
+	nh->nh_flags &= ~NHF_GATEWAY;
+	nh->nh_priv->rt_flags &= ~RTF_GATEWAY;
+	nh->nh_priv->nh_neigh_family = nh->nh_priv->nh_upper_family;
+
+	bzero(&nh->gw_sa, sizeof(nh->gw_sa));
+
+	switch (nh->nh_priv->nh_upper_family) {
+#ifdef INET
+	case AF_INET:
+		nh->gw4_sa.sin_family = AF_INET;
+		nh->gw4_sa.sin_len = sizeof(struct sockaddr_in);
+		nh->gw4_sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		nh->gw6_sa.sin6_family = AF_INET6;
+		nh->gw6_sa.sin6_len = sizeof(struct sockaddr_in6);
+		nh->gw6_sa.sin6_addr = in6addr_loopback;
+		break;
+#endif
+	}
+}
+
+void
+nhop_set_redirect(struct nhop_object *nh, bool is_redirect)
+{
+	if (is_redirect) {
+		nh->nh_priv->rt_flags |= RTF_DYNAMIC;
+		nh->nh_flags |= NHF_REDIRECT;
+	} else {
+		nh->nh_priv->rt_flags &= ~RTF_DYNAMIC;
+		nh->nh_flags &= ~NHF_REDIRECT;
+	}
+}
+
+void
+nhop_set_pinned(struct nhop_object *nh, bool is_pinned)
+{
+	if (is_pinned)
+		nh->nh_priv->rt_flags |= RTF_PINNED;
+	else
+		nh->nh_priv->rt_flags &= ~RTF_PINNED;
+}
 
 uint32_t
 nhop_get_idx(const struct nhop_object *nh)
 {
 
 	return (nh->nh_priv->nh_idx);
+}
+
+uint32_t
+nhop_get_uidx(const struct nhop_object *nh)
+{
+	return (nh->nh_priv->nh_uidx);
+}
+
+void
+nhop_set_uidx(struct nhop_object *nh, uint32_t uidx)
+{
+	nh->nh_priv->nh_uidx = uidx;
 }
 
 enum nhop_type
@@ -747,12 +913,64 @@ nhop_get_rtflags(const struct nhop_object *nh)
 	return (nh->nh_priv->rt_flags);
 }
 
+/*
+ * Sets generic rtflags that are not covered by other functions.
+ */
 void
 nhop_set_rtflags(struct nhop_object *nh, int rt_flags)
 {
-
-	nh->nh_priv->rt_flags = rt_flags;
+	nh->nh_priv->rt_flags &= ~RT_SET_RTFLAGS_MASK;
+	nh->nh_priv->rt_flags |= (rt_flags & RT_SET_RTFLAGS_MASK);
 }
+
+/*
+ * Sets flags that are specific to the prefix (NHF_HOST or NHF_DEFAULT).
+ */
+void
+nhop_set_pxtype_flag(struct nhop_object *nh, int nh_flag)
+{
+	if (nh_flag == NHF_HOST) {
+		nh->nh_flags |= NHF_HOST;
+		nh->nh_flags &= ~NHF_DEFAULT;
+		nh->nh_priv->rt_flags |= RTF_HOST;
+	} else if (nh_flag == NHF_DEFAULT) {
+		nh->nh_flags |= NHF_DEFAULT;
+		nh->nh_flags &= ~NHF_HOST;
+		nh->nh_priv->rt_flags &= ~RTF_HOST;
+	} else {
+		nh->nh_flags &= ~(NHF_HOST | NHF_DEFAULT);
+		nh->nh_priv->rt_flags &= ~RTF_HOST;
+	}
+}
+
+/*
+ * Sets nhop MTU. Sets RTF_FIXEDMTU if mtu is explicitly
+ * specified by userland.
+ */
+void
+nhop_set_mtu(struct nhop_object *nh, uint32_t mtu, bool from_user)
+{
+	if (from_user) {
+		if (mtu != 0)
+			nh->nh_priv->rt_flags |= RTF_FIXEDMTU;
+		else
+			nh->nh_priv->rt_flags &= ~RTF_FIXEDMTU;
+	}
+	nh->nh_mtu = mtu;
+}
+
+void
+nhop_set_src(struct nhop_object *nh, struct ifaddr *ifa)
+{
+	nh->nh_ifa = ifa;
+}
+
+void
+nhop_set_transmit_ifp(struct nhop_object *nh, struct ifnet *ifp)
+{
+	nh->nh_ifp = ifp;
+}
+
 
 struct vnet *
 nhop_get_vnet(const struct nhop_object *nh)
@@ -766,6 +984,71 @@ nhop_select_func(struct nhop_object *nh, uint32_t flowid)
 {
 
 	return (nhop_select(nh, flowid));
+}
+
+/*
+ * Returns address family of the traffic uses the nexthop.
+ */
+int
+nhop_get_upper_family(const struct nhop_object *nh)
+{
+	return (nh->nh_priv->nh_upper_family);
+}
+
+/*
+ * Returns address family of the LLE or gateway that is used
+ * to forward the traffic to.
+ */
+int
+nhop_get_neigh_family(const struct nhop_object *nh)
+{
+	return (nh->nh_priv->nh_neigh_family);
+}
+
+uint32_t
+nhop_get_fibnum(const struct nhop_object *nh)
+{
+	return (nh->nh_priv->nh_fibnum);
+}
+
+void
+nhop_set_fibnum(struct nhop_object *nh, uint32_t fibnum)
+{
+	nh->nh_priv->nh_fibnum = fibnum;
+}
+
+uint32_t
+nhop_get_expire(const struct nhop_object *nh)
+{
+	return (nh->nh_priv->nh_expire);
+}
+
+void
+nhop_set_expire(struct nhop_object *nh, uint32_t expire)
+{
+	MPASS(!NH_IS_LINKED(nh));
+	nh->nh_priv->nh_expire = expire;
+}
+
+struct rib_head *
+nhop_get_rh(const struct nhop_object *nh)
+{
+	uint32_t fibnum = nhop_get_fibnum(nh);
+	int family = nhop_get_neigh_family(nh);
+
+	return (rt_tables_get_rnh(fibnum, family));
+}
+
+uint8_t
+nhop_get_origin(const struct nhop_object *nh)
+{
+	return (nh->nh_priv->nh_origin);
+}
+
+void
+nhop_set_origin(struct nhop_object *nh, uint8_t origin)
+{
+	nh->nh_priv->nh_origin = origin;
 }
 
 void
@@ -792,6 +1075,108 @@ nhops_update_ifmtu(struct rib_head *rh, struct ifnet *ifp, uint32_t mtu)
 
 }
 
+struct nhop_object *
+nhops_iter_start(struct nhop_iter *iter)
+{
+	if (iter->rh == NULL)
+		iter->rh = rt_tables_get_rnh_safe(iter->fibnum, iter->family);
+	if (iter->rh != NULL) {
+		struct nh_control *ctl = iter->rh->nh_control;
+
+		NHOPS_RLOCK(ctl);
+
+		iter->_i = 0;
+		iter->_next = CHT_FIRST(&ctl->nh_head, iter->_i);
+
+		return (nhops_iter_next(iter));
+	} else
+		return (NULL);
+}
+
+struct nhop_object *
+nhops_iter_next(struct nhop_iter *iter)
+{
+	struct nhop_priv *nh_priv = iter->_next;
+
+	if (nh_priv != NULL) {
+		iter->_next = nh_priv->nh_next;
+		return (nh_priv->nh);
+	}
+
+	struct nh_control *ctl = iter->rh->nh_control;
+	while (++iter->_i < ctl->nh_head.hash_size) {
+		nh_priv = CHT_FIRST(&ctl->nh_head, iter->_i);
+		if (nh_priv != NULL) {
+			iter->_next = nh_priv->nh_next;
+			return (nh_priv->nh);
+		}
+	}
+
+	return (NULL);
+}
+
+void
+nhops_iter_stop(struct nhop_iter *iter)
+{
+	if (iter->rh != NULL) {
+		struct nh_control *ctl = iter->rh->nh_control;
+
+		NHOPS_RUNLOCK(ctl);
+	}
+}
+
+/*
+ * Prints nexthop @nh data in the provided @buf.
+ * Example: nh#33/inet/em0/192.168.0.1
+ */
+char *
+nhop_print_buf(const struct nhop_object *nh, char *buf, size_t bufsize)
+{
+#if defined(INET) || defined(INET6)
+	char abuf[INET6_ADDRSTRLEN];
+#endif
+	struct nhop_priv *nh_priv = nh->nh_priv;
+	const char *upper_str = rib_print_family(nh->nh_priv->nh_upper_family);
+
+	switch (nh->gw_sa.sa_family) {
+#ifdef INET
+	case AF_INET:
+		inet_ntop(AF_INET, &nh->gw4_sa.sin_addr, abuf, sizeof(abuf));
+		snprintf(buf, bufsize, "nh#%d/%s/%s/%s", nh_priv->nh_idx, upper_str,
+		    if_name(nh->nh_ifp), abuf);
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		inet_ntop(AF_INET6, &nh->gw6_sa.sin6_addr, abuf, sizeof(abuf));
+		snprintf(buf, bufsize, "nh#%d/%s/%s/%s", nh_priv->nh_idx, upper_str,
+		    if_name(nh->nh_ifp), abuf);
+		break;
+#endif
+	case AF_LINK:
+		snprintf(buf, bufsize, "nh#%d/%s/%s/resolve", nh_priv->nh_idx, upper_str,
+		    if_name(nh->nh_ifp));
+		break;
+	default:
+		snprintf(buf, bufsize, "nh#%d/%s/%s/????", nh_priv->nh_idx, upper_str,
+		    if_name(nh->nh_ifp));
+		break;
+	}
+
+	return (buf);
+}
+
+char *
+nhop_print_buf_any(const struct nhop_object *nh, char *buf, size_t bufsize)
+{
+#ifdef ROUTE_MPATH
+	if (NH_IS_NHGRP(nh))
+		return (nhgrp_print_buf((const struct nhgrp_object *)nh, buf, bufsize));
+	else
+#endif
+		return (nhop_print_buf(nh, buf, bufsize));
+}
+
 /*
  * Dumps a single entry to sysctl buffer.
  *
@@ -814,8 +1199,6 @@ dump_nhop_entry(struct rib_head *rh, struct nhop_object *nh, struct sysctl_req *
 	size_t addrs_len;
 	int error;
 
-	//DPRINTF("Dumping: head %p nh %p flags %X req %p\n", rh, nh, nh->nh_flags, w);
-
 	memset(&arpc, 0, sizeof(arpc));
 
 	arpc.rtm.rtm_msglen = sizeof(arpc);
@@ -831,7 +1214,7 @@ dump_nhop_entry(struct rib_head *rh, struct nhop_object *nh, struct sysctl_req *
 	pnhe->nh_fib = rh->rib_fibnum;
 	pnhe->ifindex = nh->nh_ifp->if_index;
 	pnhe->aifindex = nh->nh_aifp->if_index;
-	pnhe->nh_family = nh->nh_priv->nh_family;
+	pnhe->nh_family = nh->nh_priv->nh_upper_family;
 	pnhe->nh_type = nh->nh_priv->nh_type;
 	pnhe->nh_mtu = nh->nh_mtu;
 	pnhe->nh_flags = nh->nh_flags;
@@ -897,7 +1280,7 @@ nhops_dump_sysctl(struct rib_head *rh, struct sysctl_req *w)
 	ctl = rh->nh_control;
 
 	NHOPS_RLOCK(ctl);
-	DPRINTF("NHDUMP: count=%u", ctl->nh_head.items_count);
+	FIB_RH_LOG(LOG_DEBUG, rh, "dump %u items", ctl->nh_head.items_count);
 	CHT_SLIST_FOREACH(&ctl->nh_head, nhops, nh_priv) {
 		error = dump_nhop_entry(rh, nh_priv->nh, w);
 		if (error != 0) {

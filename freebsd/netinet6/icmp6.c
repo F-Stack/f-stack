@@ -58,13 +58,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ip_icmp.c	8.2 (Berkeley) 1/4/94
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #define	MBUF_PRIVATE	/* XXXRW: Optimisation tries to avoid M_EXT mbufs */
 
 #include "opt_inet.h"
@@ -91,6 +87,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if_var.h>
 #include <net/if_dl.h>
 #include <net/if_llatbl.h>
+#include <net/if_private.h>
 #include <net/if_types.h>
 #include <net/route.h>
 #include <net/route/route_ctl.h>
@@ -107,40 +104,51 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/in6_fib.h>
 #include <netinet6/in6_ifattach.h>
 #include <netinet6/in6_pcb.h>
-#include <netinet6/ip6protosw.h>
 #include <netinet6/ip6_var.h>
 #include <netinet6/scope6_var.h>
 #include <netinet6/mld6_var.h>
 #include <netinet6/nd6.h>
 #include <netinet6/send.h>
 
-extern struct domain inet6domain;
+extern ip6proto_ctlinput_t	*ip6_ctlprotox[];
 
 VNET_PCPUSTAT_DEFINE(struct icmp6stat, icmp6stat);
 VNET_PCPUSTAT_SYSINIT(icmp6stat);
+SYSCTL_VNET_PCPUSTAT(_net_inet6_icmp6, ICMPV6CTL_STATS, stats,
+    struct icmp6stat, icmp6stat,
+    "ICMPv6 statistics (struct icmp6stat, netinet/icmp6.h)");
 
 #ifdef VIMAGE
 VNET_PCPUSTAT_SYSUNINIT(icmp6stat);
 #endif /* VIMAGE */
 
-VNET_DECLARE(struct inpcbinfo, ripcbinfo);
-VNET_DECLARE(struct inpcbhead, ripcb);
-VNET_DECLARE(int, icmp6errppslim);
-VNET_DEFINE_STATIC(int, icmp6errpps_count) = 0;
-VNET_DEFINE_STATIC(struct timeval, icmp6errppslim_last);
-VNET_DECLARE(int, icmp6_nodeinfo);
+VNET_DEFINE_STATIC(int, icmp6_rediraccept) = 1;
+#define	V_icmp6_rediraccept	VNET(icmp6_rediraccept)
+SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_REDIRACCEPT, rediraccept,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6_rediraccept), 0,
+    "Accept ICMPv6 redirect messages");
 
-#define	V_ripcbinfo			VNET(ripcbinfo)
-#define	V_ripcb				VNET(ripcb)
-#define	V_icmp6errppslim		VNET(icmp6errppslim)
-#define	V_icmp6errpps_count		VNET(icmp6errpps_count)
-#define	V_icmp6errppslim_last		VNET(icmp6errppslim_last)
-#define	V_icmp6_nodeinfo		VNET(icmp6_nodeinfo)
+VNET_DEFINE_STATIC(int, icmp6_redirtimeout) = 10 * 60;	/* 10 minutes */
+#define	V_icmp6_redirtimeout	VNET(icmp6_redirtimeout)
+SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_REDIRTIMEOUT, redirtimeout,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6_redirtimeout), 0,
+    "Delay in seconds before expiring redirect route");
+
+VNET_DEFINE_STATIC(int, icmp6_nodeinfo) = 0;
+#define	V_icmp6_nodeinfo	VNET(icmp6_nodeinfo)
+SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_NODEINFO, nodeinfo,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6_nodeinfo), 0,
+    "Mask of enabled RFC4620 node information query types");
+
+VNET_DECLARE(struct inpcbinfo, ripcbinfo);
+#define	V_ripcbinfo		VNET(ripcbinfo)
+
+VNET_DECLARE(int, rip_bind_all_fibs);
+#define	V_rip_bind_all_fibs	VNET(rip_bind_all_fibs)
 
 static void icmp6_errcount(int, int);
 static int icmp6_rip6_input(struct mbuf **, int);
 static void icmp6_reflect(struct mbuf *, size_t);
-static int icmp6_ratelimit(const struct in6_addr *, const int, const int);
 static const char *icmp6_redirect_diag(struct in6_addr *,
 	struct in6_addr *, struct in6_addr *);
 static struct mbuf *ni6_input(struct mbuf *, int, struct prison *);
@@ -150,7 +158,8 @@ static int ni6_addrs(struct icmp6_nodeinfo *, struct mbuf *,
 			  struct ifnet **, struct in6_addr *);
 static int ni6_store_addrs(struct icmp6_nodeinfo *, struct icmp6_nodeinfo *,
 				struct ifnet *, int);
-static int icmp6_notify_error(struct mbuf **, int, int, int);
+static int icmp6_notify_error(struct mbuf **, int, int);
+static void icmp6_mtudisc_update(struct ip6ctlparam *ip6cp);
 
 /*
  * Kernel module interface for updating icmp6stat.  The argument is an index
@@ -260,6 +269,7 @@ icmp6_error(struct mbuf *m, int type, int code, int param)
 {
 	struct ip6_hdr *oip6, *nip6;
 	struct icmp6_hdr *icmp6;
+	struct epoch_tracker et;
 	u_int preplen;
 	int off;
 	int nxt;
@@ -347,10 +357,8 @@ icmp6_error(struct mbuf *m, int type, int code, int param)
 	}
 
 	/* Finally, do rate limitation check. */
-	if (icmp6_ratelimit(&oip6->ip6_src, type, code)) {
-		ICMP6STAT_INC(icp6s_toofreq);
+	if (icmp6_ratelimit(&oip6->ip6_src, type, code))
 		goto freeit;
-	}
 
 	/*
 	 * OK, ICMP6 can be generated.
@@ -378,8 +386,10 @@ icmp6_error(struct mbuf *m, int type, int code, int param)
 	icmp6->icmp6_code = code;
 	icmp6->icmp6_pptr = htonl((u_int32_t)param);
 
-	ICMP6STAT_INC(icp6s_outhist[type]);
+	ICMP6STAT_INC2(icp6s_outhist, type);
+	NET_EPOCH_ENTER(et);
 	icmp6_reflect(m, sizeof(struct ip6_hdr)); /* header order: IPv6 - ICMPv6 */
+	NET_EPOCH_EXIT(et);
 
 	return;
 
@@ -388,6 +398,50 @@ icmp6_error(struct mbuf *m, int type, int code, int param)
 	 * If we can't tell whether or not we can generate ICMP6, free it.
 	 */
 	m_freem(m);
+}
+
+int
+icmp6_errmap(const struct icmp6_hdr *icmp6)
+{
+
+	switch (icmp6->icmp6_type) {
+	case ICMP6_DST_UNREACH:
+		switch (icmp6->icmp6_code) {
+		case ICMP6_DST_UNREACH_NOROUTE:
+		case ICMP6_DST_UNREACH_ADDR:
+			return (EHOSTUNREACH);
+		case ICMP6_DST_UNREACH_NOPORT:
+		case ICMP6_DST_UNREACH_ADMIN:
+			return (ECONNREFUSED);
+		case ICMP6_DST_UNREACH_BEYONDSCOPE:
+			return (ENOPROTOOPT);
+		default:
+			return (0);	/* Shouldn't happen. */
+		}
+	case ICMP6_PACKET_TOO_BIG:
+		return (EMSGSIZE);
+	case ICMP6_TIME_EXCEEDED:
+		switch (icmp6->icmp6_code) {
+		case ICMP6_TIME_EXCEED_TRANSIT:
+			return (EHOSTUNREACH);
+		case ICMP6_TIME_EXCEED_REASSEMBLY:
+			return (0);
+		default:
+			return (0);	/* Shouldn't happen. */
+		}
+	case ICMP6_PARAM_PROB:
+		switch (icmp6->icmp6_code) {
+		case ICMP6_PARAMPROB_NEXTHEADER:
+			return (ECONNREFUSED);
+		case ICMP6_PARAMPROB_HEADER:
+		case ICMP6_PARAMPROB_OPTION:
+			return (ENOPROTOOPT);
+		default:
+			return (0);	/* Shouldn't happen. */
+		}
+	default:
+		return (0);
+	}
 }
 
 /*
@@ -457,7 +511,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 		goto freeit;
 	}
 
-	ICMP6STAT_INC(icp6s_inhist[icmp6->icmp6_type]);
+	ICMP6STAT_INC2(icp6s_inhist, icmp6->icmp6_type);
 	icmp6_ifstat_inc(ifp, ifs6_in_msg);
 	if (icmp6->icmp6_type < ICMP6_INFOMSG_MASK)
 		icmp6_ifstat_inc(ifp, ifs6_in_error);
@@ -467,76 +521,49 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 	case ICMP6_DST_UNREACH:
 		icmp6_ifstat_inc(ifp, ifs6_in_dstunreach);
 		switch (code) {
-		case ICMP6_DST_UNREACH_NOROUTE:
-		case ICMP6_DST_UNREACH_ADDR:	/* PRC_HOSTDEAD is a DOS */
-			code = PRC_UNREACH_NET;
-			break;
 		case ICMP6_DST_UNREACH_ADMIN:
 			icmp6_ifstat_inc(ifp, ifs6_in_adminprohib);
-			code = PRC_UNREACH_ADMIN_PROHIB;
-			break;
+		case ICMP6_DST_UNREACH_NOROUTE:
+		case ICMP6_DST_UNREACH_ADDR:
 		case ICMP6_DST_UNREACH_BEYONDSCOPE:
-			/* I mean "source address was incorrect." */
-			code = PRC_PARAMPROB;
-			break;
 		case ICMP6_DST_UNREACH_NOPORT:
-			code = PRC_UNREACH_PORT;
-			break;
+			goto deliver;
 		default:
 			goto badcode;
 		}
-		goto deliver;
-		break;
-
 	case ICMP6_PACKET_TOO_BIG:
 		icmp6_ifstat_inc(ifp, ifs6_in_pkttoobig);
-
-		/* validation is made in icmp6_mtudisc_update */
-
-		code = PRC_MSGSIZE;
-
 		/*
+		 * Validation is made in icmp6_mtudisc_update.
 		 * Updating the path MTU will be done after examining
 		 * intermediate extension headers.
 		 */
 		goto deliver;
-		break;
-
 	case ICMP6_TIME_EXCEEDED:
 		icmp6_ifstat_inc(ifp, ifs6_in_timeexceed);
 		switch (code) {
 		case ICMP6_TIME_EXCEED_TRANSIT:
-			code = PRC_TIMXCEED_INTRANS;
-			break;
 		case ICMP6_TIME_EXCEED_REASSEMBLY:
-			code = PRC_TIMXCEED_REASS;
-			break;
+			goto deliver;
 		default:
 			goto badcode;
 		}
-		goto deliver;
-		break;
-
 	case ICMP6_PARAM_PROB:
 		icmp6_ifstat_inc(ifp, ifs6_in_paramprob);
 		switch (code) {
 		case ICMP6_PARAMPROB_NEXTHEADER:
-			code = PRC_UNREACH_PROTOCOL;
-			break;
 		case ICMP6_PARAMPROB_HEADER:
 		case ICMP6_PARAMPROB_OPTION:
-			code = PRC_PARAMPROB;
-			break;
+			goto deliver;
 		default:
 			goto badcode;
 		}
-		goto deliver;
-		break;
-
 	case ICMP6_ECHO_REQUEST:
 		icmp6_ifstat_inc(ifp, ifs6_in_echo);
 		if (code != 0)
 			goto badcode;
+		if (icmp6_ratelimit(&ip6->ip6_src, ICMP6_ECHO_REPLY, 0))
+			break;
 		if ((n = m_copym(m, 0, M_COPYALL, M_NOWAIT)) == NULL) {
 			/* Give up remote */
 			break;
@@ -589,7 +616,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 			nicmp6->icmp6_type = ICMP6_ECHO_REPLY;
 			nicmp6->icmp6_code = 0;
 			ICMP6STAT_INC(icp6s_reflect);
-			ICMP6STAT_INC(icp6s_outhist[ICMP6_ECHO_REPLY]);
+			ICMP6STAT_INC2(icp6s_outhist, ICMP6_ECHO_REPLY);
 			icmp6_reflect(n, noff);
 		}
 		break;
@@ -721,7 +748,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 		}
 		if (n) {
 			ICMP6STAT_INC(icp6s_reflect);
-			ICMP6STAT_INC(icp6s_outhist[ICMP6_WRUREPLY]);
+			ICMP6STAT_INC2(icp6s_outhist, ICMP6_WRUREPLY);
 			icmp6_reflect(n, noff);
 		}
 		break;
@@ -856,14 +883,13 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 		    ifp ? ifp->if_index : 0));
 		if (icmp6->icmp6_type < ICMP6_ECHO_REQUEST) {
 			/* ICMPv6 error: MUST deliver it by spec... */
-			code = PRC_NCMDS;
-			/* deliver */
+			goto deliver;
 		} else {
 			/* ICMPv6 informational: MUST not deliver */
 			break;
 		}
 	deliver:
-		if (icmp6_notify_error(&m, off, icmp6len, code) != 0) {
+		if (icmp6_notify_error(&m, off, icmp6len) != 0) {
 			/* In this case, m should've been freed. */
 			*mp = NULL;
 			return (IPPROTO_DONE);
@@ -892,7 +918,7 @@ icmp6_input(struct mbuf **mp, int *offp, int proto)
 }
 
 static int
-icmp6_notify_error(struct mbuf **mp, int off, int icmp6len, int code)
+icmp6_notify_error(struct mbuf **mp, int off, int icmp6len)
 {
 	struct mbuf *m;
 	struct icmp6_hdr *icmp6;
@@ -921,7 +947,6 @@ icmp6_notify_error(struct mbuf **mp, int off, int icmp6len, int code)
 
 	/* Detect the upper level protocol */
 	{
-		void (*ctlfunc)(int, struct sockaddr *, void *);
 		u_int8_t nxt = eip6->ip6_nxt;
 		int eoff = off + sizeof(struct icmp6_hdr) +
 		    sizeof(struct ip6_hdr);
@@ -1057,6 +1082,14 @@ icmp6_notify_error(struct mbuf **mp, int off, int icmp6len, int code)
 		 */
 		eip6 = (struct ip6_hdr *)(icmp6 + 1);
 
+		/*
+		 * Protocol layers can't do anything useful with unspecified
+		 * addresses.
+		 */
+		if (IN6_IS_ADDR_UNSPECIFIED(&eip6->ip6_src) ||
+		    IN6_IS_ADDR_UNSPECIFIED(&eip6->ip6_dst))
+			goto freeit;
+
 		icmp6dst.sin6_len = sizeof(struct sockaddr_in6);
 		icmp6dst.sin6_family = AF_INET6;
 		if (IN6_IS_ADDR_UNSPECIFIED(&icmp6dst.sin6_addr))
@@ -1076,22 +1109,18 @@ icmp6_notify_error(struct mbuf **mp, int off, int icmp6len, int code)
 		ip6cp.ip6c_icmp6 = icmp6;
 		ip6cp.ip6c_ip6 = (struct ip6_hdr *)(icmp6 + 1);
 		ip6cp.ip6c_off = eoff;
-		ip6cp.ip6c_finaldst = &icmp6dst.sin6_addr;
+		ip6cp.ip6c_finaldst = &icmp6dst;
 		ip6cp.ip6c_src = &icmp6src;
 		ip6cp.ip6c_nxt = nxt;
 
 		if (icmp6type == ICMP6_PACKET_TOO_BIG) {
 			notifymtu = ntohl(icmp6->icmp6_mtu);
 			ip6cp.ip6c_cmdarg = (void *)&notifymtu;
-			icmp6_mtudisc_update(&ip6cp, 1);	/*XXX*/
+			icmp6_mtudisc_update(&ip6cp);
 		}
 
-		ctlfunc = (void (*)(int, struct sockaddr *, void *))
-		    (inet6sw[ip6_protox[nxt]].pr_ctlinput);
-		if (ctlfunc) {
-			(void) (*ctlfunc)(code, (struct sockaddr *)&icmp6dst,
-			    &ip6cp);
-		}
+		if (ip6_ctlprotox[nxt] != NULL)
+			ip6_ctlprotox[nxt](&ip6cp);
 	}
 	*mp = m;
 	return (0);
@@ -1102,46 +1131,18 @@ icmp6_notify_error(struct mbuf **mp, int off, int icmp6len, int code)
 	return (-1);
 }
 
-void
-icmp6_mtudisc_update(struct ip6ctlparam *ip6cp, int validated)
+static void
+icmp6_mtudisc_update(struct ip6ctlparam *ip6cp)
 {
-	struct in6_addr *dst = ip6cp->ip6c_finaldst;
+	struct in6_addr *dst = &ip6cp->ip6c_finaldst->sin6_addr;
 	struct icmp6_hdr *icmp6 = ip6cp->ip6c_icmp6;
-	struct mbuf *m = ip6cp->ip6c_m;	/* will be necessary for scope issue */
+	struct mbuf *m = ip6cp->ip6c_m;
 	u_int mtu = ntohl(icmp6->icmp6_mtu);
 	struct in_conninfo inc;
+	uint32_t max_mtu;
 
-#if 0
-	/*
-	 * RFC2460 section 5, last paragraph.
-	 * even though minimum link MTU for IPv6 is IPV6_MMTU,
-	 * we may see ICMPv6 too big with mtu < IPV6_MMTU
-	 * due to packet translator in the middle.
-	 * see ip6_output() and ip6_getpmtu() "alwaysfrag" case for
-	 * special handling.
-	 */
 	if (mtu < IPV6_MMTU)
 		return;
-#endif
-
-	/*
-	 * we reject ICMPv6 too big with abnormally small value.
-	 * XXX what is the good definition of "abnormally small"?
-	 */
-	if (mtu < sizeof(struct ip6_hdr) + sizeof(struct ip6_frag) + 8)
-		return;
-
-	if (!validated)
-		return;
-
-	/*
-	 * In case the suggested mtu is less than IPV6_MMTU, we
-	 * only need to remember that it was for above mentioned
-	 * "alwaysfrag" case.
-	 * Try to be as close to the spec as possible.
-	 */
-	if (mtu < IPV6_MMTU)
-		mtu = IPV6_MMTU - 8;
 
 	bzero(&inc, sizeof(inc));
 	inc.inc_fibnum = M_GETFIB(m);
@@ -1150,7 +1151,11 @@ icmp6_mtudisc_update(struct ip6ctlparam *ip6cp, int validated)
 	if (in6_setscope(&inc.inc6_faddr, m->m_pkthdr.rcvif, NULL))
 		return;
 
-	if (mtu < tcp_maxmtu6(&inc, NULL)) {
+	max_mtu = tcp_hc_getmtu(&inc);
+	if (max_mtu == 0)
+		max_mtu = tcp_maxmtu6(&inc, NULL);
+
+	if (mtu < max_mtu) {
 		tcp_hc_updatemtu(&inc, mtu);
 		ICMP6STAT_INC(icp6s_pmtuchg);
 	}
@@ -1218,19 +1223,17 @@ ni6_input(struct mbuf *m, int off, struct prison *pr)
 			goto bad;
 		/* else it's a link-local multicast, fine */
 	} else {		/* unicast or anycast */
-		ia6 = in6ifa_ifwithaddr(&ip6->ip6_dst, 0 /* XXX */);
+		ia6 = in6ifa_ifwithaddr(&ip6->ip6_dst, 0 /* XXX */, false);
 		if (ia6 == NULL)
 			goto bad; /* XXX impossible */
 
 		if ((ia6->ia6_flags & IN6_IFF_TEMPORARY) &&
 		    !(V_icmp6_nodeinfo & ICMP6_NODEINFO_TMPADDROK)) {
-			ifa_free(&ia6->ia_ifa);
 			nd6log((LOG_DEBUG, "ni6_input: ignore node info to "
 				"a temporary address in %s:%d",
 			       __FILE__, __LINE__));
 			goto bad;
 		}
-		ifa_free(&ia6->ia_ifa);
 	}
 
 	/* validate query Subject field. */
@@ -1874,21 +1877,39 @@ ni6_store_addrs(struct icmp6_nodeinfo *ni6, struct icmp6_nodeinfo *nni6,
 	return (copied);
 }
 
+static bool
+icmp6_rip6_match(const struct inpcb *inp, void *v)
+{
+	struct ip6_hdr *ip6 = v;
+
+	if ((inp->inp_vflag & INP_IPV6) == 0)
+		return (false);
+	if (inp->inp_ip_p != IPPROTO_ICMPV6)
+		return (false);
+	if (!IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr) &&
+	   !IN6_ARE_ADDR_EQUAL(&inp->in6p_laddr, &ip6->ip6_dst))
+		return (false);
+	if (!IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_faddr) &&
+	   !IN6_ARE_ADDR_EQUAL(&inp->in6p_faddr, &ip6->ip6_src))
+		return (false);
+	return (true);
+}
+
 /*
  * XXX almost dup'ed code with rip6_input.
  */
 static int
 icmp6_rip6_input(struct mbuf **mp, int off)
 {
-	struct mbuf *m = *mp;
+	struct mbuf *n, *m = *mp;
 	struct ip6_hdr *ip6 = mtod(m, struct ip6_hdr *);
+	struct inpcb_iterator inpi = INP_ITERATOR(&V_ripcbinfo,
+	    INPLOOKUP_RLOCKPCB, icmp6_rip6_match, ip6);
 	struct inpcb *inp;
-	struct inpcb *last = NULL;
 	struct sockaddr_in6 fromsa;
 	struct icmp6_hdr *icmp6;
 	struct mbuf *opts = NULL;
-
-	NET_EPOCH_ASSERT();
+	int delivered = 0, fib;
 
 	/* This is assumed to be safe; icmp6_input() does a pullup. */
 	icmp6 = (struct icmp6_hdr *)((caddr_t)ip6 + off);
@@ -1907,127 +1928,72 @@ icmp6_rip6_input(struct mbuf **mp, int off)
 		return (IPPROTO_DONE);
 	}
 
-	CK_LIST_FOREACH(inp, &V_ripcb, inp_list) {
-		if ((inp->inp_vflag & INP_IPV6) == 0)
-			continue;
-		if (inp->inp_ip_p != IPPROTO_ICMPV6)
-			continue;
-		if (!IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr) &&
-		   !IN6_ARE_ADDR_EQUAL(&inp->in6p_laddr, &ip6->ip6_dst))
-			continue;
-		if (!IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_faddr) &&
-		   !IN6_ARE_ADDR_EQUAL(&inp->in6p_faddr, &ip6->ip6_src))
-			continue;
-		INP_RLOCK(inp);
-		if (__predict_false(inp->inp_flags2 & INP_FREED)) {
-			INP_RUNLOCK(inp);
-			continue;
-		}
-		if (ICMP6_FILTER_WILLBLOCK(icmp6->icmp6_type,
-		    inp->in6p_icmp6filt)) {
-			INP_RUNLOCK(inp);
-			continue;
-		}
-		if (last != NULL) {
-			struct	mbuf *n = NULL;
+	fib = M_GETFIB(m);
 
+	while ((inp = inp_next(&inpi)) != NULL) {
+		if (V_rip_bind_all_fibs == 0 && fib != inp->inp_inc.inc_fibnum)
 			/*
-			 * Recent network drivers tend to allocate a single
-			 * mbuf cluster, rather than to make a couple of
-			 * mbufs without clusters.  Also, since the IPv6 code
-			 * path tries to avoid m_pullup(), it is highly
-			 * probable that we still have an mbuf cluster here
-			 * even though the necessary length can be stored in an
-			 * mbuf's internal buffer.
-			 * Meanwhile, the default size of the receive socket
-			 * buffer for raw sockets is not so large.  This means
-			 * the possibility of packet loss is relatively higher
-			 * than before.  To avoid this scenario, we copy the
-			 * received data to a separate mbuf that does not use
-			 * a cluster, if possible.
-			 * XXX: it is better to copy the data after stripping
-			 * intermediate headers.
+			 * Sockets bound to a specific FIB can only receive
+			 * packets from that FIB.
 			 */
-			if ((m->m_flags & M_EXT) && m->m_next == NULL &&
-			    m->m_len <= MHLEN) {
-				n = m_get(M_NOWAIT, m->m_type);
-				if (n != NULL) {
-					if (m_dup_pkthdr(n, m, M_NOWAIT)) {
-						bcopy(m->m_data, n->m_data,
-						      m->m_len);
-						n->m_len = m->m_len;
-					} else {
-						m_free(n);
-						n = NULL;
-					}
-				}
-			}
-			if (n != NULL ||
-			    (n = m_copym(m, 0, M_COPYALL, M_NOWAIT)) != NULL) {
-				if (last->inp_flags & INP_CONTROLOPTS)
-					ip6_savecontrol(last, n, &opts);
-				/* strip intermediate headers */
-				m_adj(n, off);
-				SOCKBUF_LOCK(&last->inp_socket->so_rcv);
-				if (sbappendaddr_locked(
-				    &last->inp_socket->so_rcv,
-				    (struct sockaddr *)&fromsa, n, opts)
-				    == 0) {
-					/* should notify about lost packet */
-					m_freem(n);
-					if (opts) {
-						m_freem(opts);
-					}
-					SOCKBUF_UNLOCK(
-					    &last->inp_socket->so_rcv);
-				} else
-					sorwakeup_locked(last->inp_socket);
-				opts = NULL;
-			}
-			INP_RUNLOCK(last);
-		}
-		last = inp;
-	}
-	if (last != NULL) {
-		if (last->inp_flags & INP_CONTROLOPTS)
-			ip6_savecontrol(last, m, &opts);
-		/* strip intermediate headers */
-		m_adj(m, off);
-
-		/* avoid using mbuf clusters if possible (see above) */
+			continue;
+		if (ICMP6_FILTER_WILLBLOCK(icmp6->icmp6_type,
+		    inp->in6p_icmp6filt))
+			continue;
+		/*
+		 * Recent network drivers tend to allocate a single
+		 * mbuf cluster, rather than to make a couple of
+		 * mbufs without clusters.  Also, since the IPv6 code
+		 * path tries to avoid m_pullup(), it is highly
+		 * probable that we still have an mbuf cluster here
+		 * even though the necessary length can be stored in an
+		 * mbuf's internal buffer.
+		 * Meanwhile, the default size of the receive socket
+		 * buffer for raw sockets is not so large.  This means
+		 * the possibility of packet loss is relatively higher
+		 * than before.  To avoid this scenario, we copy the
+		 * received data to a separate mbuf that does not use
+		 * a cluster, if possible.
+		 * XXX: it is better to copy the data after stripping
+		 * intermediate headers.
+		 */
 		if ((m->m_flags & M_EXT) && m->m_next == NULL &&
 		    m->m_len <= MHLEN) {
-			struct mbuf *n;
-
 			n = m_get(M_NOWAIT, m->m_type);
 			if (n != NULL) {
 				if (m_dup_pkthdr(n, m, M_NOWAIT)) {
 					bcopy(m->m_data, n->m_data, m->m_len);
 					n->m_len = m->m_len;
-
-					m_freem(m);
-					m = n;
 				} else {
-					m_freem(n);
+					m_free(n);
 					n = NULL;
 				}
 			}
-		}
-		SOCKBUF_LOCK(&last->inp_socket->so_rcv);
-		if (sbappendaddr_locked(&last->inp_socket->so_rcv,
-		    (struct sockaddr *)&fromsa, m, opts) == 0) {
-			m_freem(m);
+		} else
+			n = m_copym(m, 0, M_COPYALL, M_NOWAIT);
+		if (n == NULL)
+			continue;
+		if (inp->inp_flags & INP_CONTROLOPTS)
+			ip6_savecontrol(inp, n, &opts);
+		/* strip intermediate headers */
+		m_adj(n, off);
+		SOCKBUF_LOCK(&inp->inp_socket->so_rcv);
+		if (sbappendaddr_locked(&inp->inp_socket->so_rcv,
+		    (struct sockaddr *)&fromsa, n, opts) == 0) {
+			soroverflow_locked(inp->inp_socket);
+			m_freem(n);
 			if (opts)
 				m_freem(opts);
-			SOCKBUF_UNLOCK(&last->inp_socket->so_rcv);
-		} else
-			sorwakeup_locked(last->inp_socket);
-		INP_RUNLOCK(last);
-	} else {
-		m_freem(m);
-		IP6STAT_DEC(ip6s_delivered);
+		} else {
+			sorwakeup_locked(inp->inp_socket);
+			delivered++;
+		}
+		opts = NULL;
 	}
+	m_freem(m);
 	*mp = NULL;
+	if (delivered == 0)
+		IP6STAT_DEC(ip6s_delivered);
 	return (IPPROTO_DONE);
 }
 
@@ -2093,6 +2059,12 @@ icmp6_reflect(struct mbuf *m, size_t off)
 	hlim = 0;
 	srcp = NULL;
 
+	if (__predict_false(IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_src))) {
+		nd6log((LOG_DEBUG,
+		    "icmp6_reflect: source address is unspecified\n"));
+		goto bad;
+	}
+
 	/*
 	 * If the incoming packet was addressed directly to us (i.e. unicast),
 	 * use dst as the src for the reply.
@@ -2101,7 +2073,7 @@ icmp6_reflect(struct mbuf *m, size_t off)
 	 * destined to a duplicated address of ours.
 	 */
 	if (!IN6_IS_ADDR_MULTICAST(&ip6->ip6_dst)) {
-		ia = in6ifa_ifwithaddr(&ip6->ip6_dst, 0 /* XXX */);
+		ia = in6ifa_ifwithaddr(&ip6->ip6_dst, 0 /* XXX */, false);
 		if (ia != NULL && !(ia->ia6_flags &
 		    (IN6_IFF_ANYCAST|IN6_IFF_NOTREADY))) {
 			src6 = ia->ia_addr.sin6_addr;
@@ -2113,8 +2085,6 @@ icmp6_reflect(struct mbuf *m, size_t off)
 			} else
 				hlim = V_ip6_defhlim;
 		}
-		if (ia != NULL)
-			ifa_free(&ia->ia_ifa);
 	}
 
 	if (srcp == NULL) {
@@ -2172,20 +2142,6 @@ icmp6_reflect(struct mbuf *m, size_t off)
  bad:
 	m_freem(m);
 	return;
-}
-
-void
-icmp6_fasttimo(void)
-{
-
-	mld_fasttimo();
-}
-
-void
-icmp6_slowtimo(void)
-{
-
-	mld_slowtimo();
 }
 
 static const char *
@@ -2393,16 +2349,6 @@ icmp6_redirect_input(struct mbuf *m, int off)
 			    (struct sockaddr *)&ssrc, ifp, rt_flags,
 			    V_icmp6_redirtimeout);
 	}
-	/* finally update cached route in each socket via pfctlinput */
-    {
-	struct sockaddr_in6 sdst;
-
-	bzero(&sdst, sizeof(sdst));
-	sdst.sin6_family = AF_INET6;
-	sdst.sin6_len = sizeof(struct sockaddr_in6);
-	bcopy(&reddst6, &sdst.sin6_addr, sizeof(struct in6_addr));
-	pfctlinput(PRC_REDIRECT_HOST, (struct sockaddr *)&sdst);
-    }
 
  freeit:
 	m_freem(m);
@@ -2417,7 +2363,7 @@ void
 icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 {
 	struct ifnet *ifp;	/* my outgoing interface */
-	struct in6_addr *ifp_ll6;
+	struct in6_addr ifp_ll6;
 	struct in6_addr *router_ll6;
 	struct ip6_hdr *sip6;	/* m0 as struct ip6_hdr */
 	struct mbuf *m = NULL;	/* newly allocated one */
@@ -2487,8 +2433,7 @@ icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 						 IN6_IFF_NOTREADY|
 						 IN6_IFF_ANYCAST)) == NULL)
 			goto fail;
-		ifp_ll6 = &ia->ia_addr.sin6_addr;
-		/* XXXRW: reference released prematurely. */
+		bcopy(&ia->ia_addr.sin6_addr, &ifp_ll6, sizeof(ifp_ll6));
 		ifa_free(&ia->ia_ifa);
 	}
 
@@ -2511,7 +2456,7 @@ icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 	ip6->ip6_nxt = IPPROTO_ICMPV6;
 	ip6->ip6_hlim = 255;
 	/* ip6->ip6_src must be linklocal addr for my outgoing if. */
-	bcopy(ifp_ll6, &ip6->ip6_src, sizeof(struct in6_addr));
+	bcopy(&ifp_ll6, &ip6->ip6_src, sizeof(struct in6_addr));
 	bcopy(&sip6->ip6_src, &ip6->ip6_dst, sizeof(struct in6_addr));
 
 	/* ND Redirect */
@@ -2549,7 +2494,7 @@ icmp6_redirect_output(struct mbuf *m0, struct nhop_object *nh)
 		struct nd_opt_hdr *nd_opt;
 		char *lladdr;
 
-		ln = nd6_lookup(router_ll6, 0, ifp);
+		ln = nd6_lookup(router_ll6, LLE_SF(AF_INET6,  0), ifp);
 		if (ln == NULL)
 			goto nolladdropt;
 
@@ -2631,6 +2576,7 @@ nolladdropt:
 				/* pad if easy enough, truncate if not */
 				if (8 - extra <= M_TRAILINGSPACE(m0)) {
 					/* pad */
+					bzero(m0->m_data + m0->m_len, 8 - extra);
 					m0->m_len += (8 - extra);
 					m0->m_pkthdr.len += (8 - extra);
 				} else {
@@ -2691,7 +2637,7 @@ noredhdropt:;
 		icmp6_ifstat_inc(outif, ifs6_out_msg);
 		icmp6_ifstat_inc(outif, ifs6_out_redirect);
 	}
-	ICMP6STAT_INC(icp6s_outhist[ND_REDIRECT]);
+	ICMP6STAT_INC2(icp6s_outhist, ND_REDIRECT);
 
 	return;
 
@@ -2726,7 +2672,7 @@ icmp6_ctloutput(struct socket *so, struct sockopt *sopt)
 	}
 
 	switch (op) {
-	case PRCO_SETOPT:
+	case SOPT_SET:
 		switch (optname) {
 		case ICMP6_FILTER:
 		    {
@@ -2751,7 +2697,7 @@ icmp6_ctloutput(struct socket *so, struct sockopt *sopt)
 		}
 		break;
 
-	case PRCO_GETOPT:
+	case SOPT_GET:
 		switch (optname) {
 		case ICMP6_FILTER:
 		    {
@@ -2774,6 +2720,129 @@ icmp6_ctloutput(struct socket *so, struct sockopt *sopt)
 	return (error);
 }
 
+static int sysctl_icmp6lim_and_jitter(SYSCTL_HANDLER_ARGS);
+VNET_DEFINE_STATIC(u_int, icmp6errppslim) = 100;
+#define	V_icmp6errppslim	VNET(icmp6errppslim)
+SYSCTL_PROC(_net_inet6_icmp6, ICMPV6CTL_ERRPPSLIMIT, errppslimit,
+    CTLTYPE_UINT | CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6errppslim), 0,
+    &sysctl_icmp6lim_and_jitter, "IU",
+    "Maximum number of ICMPv6 error/reply messages per second");
+
+typedef enum {
+	RATELIM_PARAM_PROB = 0,
+	RATELIM_TOO_BIG,
+	RATELIM_UNREACH,
+	RATELIM_TEXCEED,
+	RATELIM_REDIR,
+	RATELIM_REPLY,
+	RATELIM_OTHER,
+	RATELIM_MAX
+} ratelim_which;
+
+static const char *icmp6_rate_descrs[RATELIM_MAX] = {
+	[RATELIM_PARAM_PROB] = "bad IPv6 header",
+	[RATELIM_TOO_BIG] = "packet too big",
+	[RATELIM_UNREACH] = "destination unreachable",
+	[RATELIM_TEXCEED] = "time exceeded",
+	[RATELIM_REPLY] = "echo reply",
+	[RATELIM_REDIR] = "neighbor discovery redirect",
+	[RATELIM_OTHER] = "(other)",
+};
+
+VNET_DEFINE_STATIC(int, icmp6lim_curr_jitter[RATELIM_MAX]) = {0};
+#define	V_icmp6lim_curr_jitter	VNET(icmp6lim_curr_jitter)
+
+VNET_DEFINE_STATIC(u_int, icmp6lim_jitter) = 8;
+#define	V_icmp6lim_jitter	VNET(icmp6lim_jitter)
+SYSCTL_PROC(_net_inet6_icmp6, OID_AUTO, icmp6lim_jitter, CTLTYPE_UINT |
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6lim_jitter), 0,
+    &sysctl_icmp6lim_and_jitter, "IU",
+    "Random errppslimit jitter adjustment limit");
+
+VNET_DEFINE_STATIC(int, icmp6lim_output) = 1;
+#define	V_icmp6lim_output	VNET(icmp6lim_output)
+SYSCTL_INT(_net_inet6_icmp6, OID_AUTO, icmp6lim_output,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(icmp6lim_output), 0,
+    "Enable logging of ICMPv6 response rate limiting");
+
+static void
+icmp6lim_new_jitter(int which)
+{
+	/*
+	 * Adjust limit +/- to jitter the measurement to deny a side-channel
+	 * port scan as in https://dl.acm.org/doi/10.1145/3372297.3417280
+	 */
+	KASSERT(which >= 0 && which < RATELIM_MAX,
+	    ("%s: which %d", __func__, which));
+	if (V_icmp6lim_jitter > 0)
+		V_icmp6lim_curr_jitter[which] =
+		    arc4random_uniform(V_icmp6lim_jitter * 2 + 1) -
+		    V_icmp6lim_jitter;
+}
+
+static int
+sysctl_icmp6lim_and_jitter(SYSCTL_HANDLER_ARGS)
+{
+	uint32_t new;
+	int error;
+	bool lim;
+
+	MPASS(oidp->oid_arg1 == &VNET_NAME(icmp6errppslim) ||
+	    oidp->oid_arg1 == &VNET_NAME(icmp6lim_jitter));
+
+	lim = (oidp->oid_arg1 == &VNET_NAME(icmp6errppslim));
+	new = lim ? V_icmp6errppslim : V_icmp6lim_jitter;
+	error = sysctl_handle_int(oidp, &new, 0, req);
+	if (error == 0 && req->newptr) {
+		if (lim) {
+			if (new != 0 && new <= V_icmp6lim_jitter)
+				error = EINVAL;
+			else
+				V_icmp6errppslim = new;
+		} else {
+			if (new >= V_icmp6errppslim)
+				error = EINVAL;
+			else {
+				V_icmp6lim_jitter = new;
+				for (int i = 0; i < RATELIM_MAX; i++) {
+					icmp6lim_new_jitter(i);
+				}
+			}
+		}
+	}
+	MPASS(V_icmp6errppslim == 0 || V_icmp6errppslim > V_icmp6lim_jitter);
+
+	return (error);
+}
+
+
+VNET_DEFINE_STATIC(struct counter_rate *, icmp6_rates[RATELIM_MAX]);
+#define	V_icmp6_rates	VNET(icmp6_rates)
+
+static void
+icmp6_ratelimit_init(void)
+{
+
+	for (int i = 0; i < RATELIM_MAX; i++) {
+		V_icmp6_rates[i] = counter_rate_alloc(M_WAITOK, 1);
+		icmp6lim_new_jitter(i);
+	}
+}
+VNET_SYSINIT(icmp6_ratelimit, SI_SUB_PROTO_DOMAIN, SI_ORDER_ANY,
+    icmp6_ratelimit_init, NULL);
+
+#ifdef VIMAGE
+static void
+icmp6_ratelimit_uninit(void)
+{
+
+	for (int i = 0; i < RATELIM_MAX; i++)
+		counter_rate_free(V_icmp6_rates[i]);
+}
+VNET_SYSUNINIT(icmp6_ratelimit, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD,
+    icmp6_ratelimit_uninit, NULL);
+#endif
+
 /*
  * Perform rate limit check.
  * Returns 0 if it is okay to send the icmp6 packet.
@@ -2783,23 +2852,55 @@ icmp6_ctloutput(struct socket *so, struct sockopt *sopt)
  * XXX per-destination/type check necessary?
  *
  * dst - not used at this moment
- * type - not used at this moment
  * code - not used at this moment
  */
-static int
-icmp6_ratelimit(const struct in6_addr *dst, const int type,
-    const int code)
+int
+icmp6_ratelimit(const struct in6_addr *dst, const int type, const int code)
 {
-	int ret;
+	ratelim_which which;
+	int64_t pps;
 
-	ret = 0;	/* okay to send */
+	if (V_icmp6errppslim == 0)
+		return (0);
 
-	/* PPS limit */
-	if (!ppsratecheck(&V_icmp6errppslim_last, &V_icmp6errpps_count,
-	    V_icmp6errppslim)) {
-		/* The packet is subject to rate limit */
-		ret++;
+	switch (type) {
+	case ICMP6_PARAM_PROB:
+		which = RATELIM_PARAM_PROB;
+		break;
+	case ICMP6_PACKET_TOO_BIG:
+		which = RATELIM_TOO_BIG;
+		break;
+	case ICMP6_DST_UNREACH:
+		which = RATELIM_UNREACH;
+		break;
+	case ICMP6_TIME_EXCEEDED:
+		which = RATELIM_TEXCEED;
+		break;
+	case ND_REDIRECT:
+		which = RATELIM_REDIR;
+		break;
+	case ICMP6_ECHO_REPLY:
+		which = RATELIM_REPLY;
+		break;
+	default:
+		which = RATELIM_OTHER;
+		break;
+	};
+
+	pps = counter_ratecheck(V_icmp6_rates[which], V_icmp6errppslim +
+	    V_icmp6lim_curr_jitter[which]);
+	if (pps > 0) {
+		if (V_icmp6lim_output)
+			log(LOG_NOTICE, "Limiting ICMPv6 %s output from %jd "
+			    "to %d packets/sec\n", icmp6_rate_descrs[which],
+			    (intmax_t )pps, V_icmp6errppslim +
+			    V_icmp6lim_curr_jitter[which]);
+		icmp6lim_new_jitter(which);
+	}
+	if (pps == -1) {
+		ICMP6STAT_INC(icp6s_toofreq);
+		return (-1);
 	}
 
-	return ret;
+	return (0);
 }

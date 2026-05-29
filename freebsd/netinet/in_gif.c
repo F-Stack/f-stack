@@ -33,8 +33,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
@@ -53,6 +51,7 @@ __FBSDID("$FreeBSD$");
 #include <net/ethernet.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/vnet.h>
 
@@ -196,6 +195,7 @@ int
 in_gif_ioctl(struct gif_softc *sc, u_long cmd, caddr_t data)
 {
 	struct ifreq *ifr = (struct ifreq *)data;
+	struct epoch_tracker et;
 	struct sockaddr_in *dst, *src;
 	struct ip *ip;
 	int error;
@@ -245,7 +245,9 @@ in_gif_ioctl(struct gif_softc *sc, u_long cmd, caddr_t data)
 		sc->gif_family = AF_INET;
 		sc->gif_iphdr = ip;
 		in_gif_attach(sc);
+		NET_EPOCH_ENTER(et);
 		in_gif_set_running(sc);
+		NET_EPOCH_EXIT(et);
 		break;
 	case SIOCGIFPSRCADDR:
 	case SIOCGIFPDSTADDR:
@@ -272,31 +274,16 @@ in_gif_output(struct ifnet *ifp, struct mbuf *m, int proto, uint8_t ecn)
 {
 	struct gif_softc *sc = ifp->if_softc;
 	struct ip *ip;
-	int len;
 
 	/* prepend new IP header */
 	NET_EPOCH_ASSERT();
-	len = sizeof(struct ip);
-#ifndef __NO_STRICT_ALIGNMENT
-	if (proto == IPPROTO_ETHERIP)
-		len += ETHERIP_ALIGN;
-#endif
-	M_PREPEND(m, len, M_NOWAIT);
+	M_PREPEND(m, sizeof(struct ip), M_NOWAIT);
 	if (m == NULL)
 		return (ENOBUFS);
-#ifndef __NO_STRICT_ALIGNMENT
-	if (proto == IPPROTO_ETHERIP) {
-		len = mtod(m, vm_offset_t) & 3;
-		KASSERT(len == 0 || len == ETHERIP_ALIGN,
-		    ("in_gif_output: unexpected misalignment"));
-		m->m_data += len;
-		m->m_len -= ETHERIP_ALIGN;
-	}
-#endif
 	ip = mtod(m, struct ip *);
 
 	MPASS(sc->gif_family == AF_INET);
-	bcopy(sc->gif_iphdr, ip, sizeof(struct ip));
+	memcpy(ip, sc->gif_iphdr, sizeof(struct ip));
 	ip->ip_p = proto;
 	/* version will be set in ip_output() */
 	ip->ip_ttl = V_ip_gif_ttl;

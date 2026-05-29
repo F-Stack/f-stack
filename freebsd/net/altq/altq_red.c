@@ -57,7 +57,6 @@
  * SUCH DAMAGE.
  *
  * $KAME: altq_red.c,v 1.18 2003/09/05 22:40:36 itojun Exp $
- * $FreeBSD$	
  */
 
 #include "opt_altq.h"
@@ -523,9 +522,7 @@ mark_ecn(struct mbuf *m, struct altq_pktattr *pktattr, int flags)
 }
 
 struct mbuf *
-red_getq(rp, q)
-	red_t *rp;
-	class_queue_t *q;
+red_getq(red_t *rp, class_queue_t *q)
 {
 	struct mbuf *m;
 

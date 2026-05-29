@@ -33,8 +33,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
@@ -54,6 +52,7 @@ __FBSDID("$FreeBSD$");
 #include <net/ethernet.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/vnet.h>
 
@@ -195,6 +194,11 @@ in6_gif_setopts(struct gif_softc *sc, u_int options)
 		sc->gif_options = options;
 		in6_gif_attach(sc);
 	}
+
+	if ((options & GIF_NOCLAMP) !=
+	    (sc->gif_options & GIF_NOCLAMP)) {
+		sc->gif_options = options;
+	}
 	return (0);
 }
 
@@ -290,41 +294,31 @@ in6_gif_output(struct ifnet *ifp, struct mbuf *m, int proto, uint8_t ecn)
 {
 	struct gif_softc *sc = ifp->if_softc;
 	struct ip6_hdr *ip6;
-	int len;
+	u_long mtu;
 
 	/* prepend new IP header */
 	NET_EPOCH_ASSERT();
-	len = sizeof(struct ip6_hdr);
-#ifndef __NO_STRICT_ALIGNMENT
-	if (proto == IPPROTO_ETHERIP)
-		len += ETHERIP_ALIGN;
-#endif
-	M_PREPEND(m, len, M_NOWAIT);
+	M_PREPEND(m, sizeof(struct ip6_hdr), M_NOWAIT);
 	if (m == NULL)
 		return (ENOBUFS);
-#ifndef __NO_STRICT_ALIGNMENT
-	if (proto == IPPROTO_ETHERIP) {
-		len = mtod(m, vm_offset_t) & 3;
-		KASSERT(len == 0 || len == ETHERIP_ALIGN,
-		    ("in6_gif_output: unexpected misalignment"));
-		m->m_data += len;
-		m->m_len -= ETHERIP_ALIGN;
-	}
-#endif
 
 	ip6 = mtod(m, struct ip6_hdr *);
 	MPASS(sc->gif_family == AF_INET6);
-	bcopy(sc->gif_ip6hdr, ip6, sizeof(struct ip6_hdr));
+	memcpy(ip6, sc->gif_ip6hdr, sizeof(struct ip6_hdr));
 
 	ip6->ip6_flow  |= htonl((uint32_t)ecn << 20);
 	ip6->ip6_nxt	= proto;
 	ip6->ip6_hlim	= V_ip6_gif_hlim;
 	/*
-	 * force fragmentation to minimum MTU, to avoid path MTU discovery.
-	 * it is too painful to ask for resend of inner packet, to achieve
-	 * path MTU discovery for encapsulated packets.
+	 * Enforce fragmentation to minimum MTU, even if the interface MTU
+	 * is larger, to avoid path MTU discovery when NOCLAMP is not
+	 * set (default).  IPv6 does not allow fragmentation on intermediate
+	 * router nodes, so it is too painful to ask for resend of inner
+	 * packet, to achieve path MTU discovery for encapsulated packets.
 	 */
-	return (ip6_output(m, 0, NULL, IPV6_MINMTU, 0, NULL, NULL));
+	mtu = ((sc->gif_options & GIF_NOCLAMP) == 0) ? IPV6_MINMTU : 0;
+
+	return (ip6_output(m, 0, NULL, mtu, 0, NULL, NULL));
 }
 
 static int
@@ -344,7 +338,7 @@ in6_gif_input(struct mbuf *m, int off, int proto, void *arg)
 	gifp = GIF2IFP(sc);
 	if ((gifp->if_flags & IFF_UP) != 0) {
 		ip6 = mtod(m, struct ip6_hdr *);
-		ecn = (ntohl(ip6->ip6_flow) >> 20) & 0xff;
+		ecn = IPV6_TRAFFIC_CLASS(ip6);
 		m_adj(m, off);
 		gif_input(m, gifp, proto, ecn);
 	} else {

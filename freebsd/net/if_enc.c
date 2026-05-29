@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2006 The FreeBSD Project.
  * Copyright (c) 2015 Andrey V. Elsukov <ae@FreeBSD.org>
@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include "opt_inet.h"
@@ -50,6 +48,7 @@
 #include <net/if.h>
 #include <net/if_enc.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_clone.h>
 #include <net/if_types.h>
 #include <net/pfil.h>
@@ -95,9 +94,10 @@ VNET_DEFINE_STATIC(struct if_clone *, enc_cloner);
 static int	enc_ioctl(struct ifnet *, u_long, caddr_t);
 static int	enc_output(struct ifnet *, struct mbuf *,
     const struct sockaddr *, struct route *);
-static int	enc_clone_create(struct if_clone *, int, caddr_t);
-static void	enc_clone_destroy(struct ifnet *);
-static int	enc_add_hhooks(struct enc_softc *);
+static int	enc_clone_create(struct if_clone *, char *, size_t,
+    struct ifc_data *, struct ifnet **);
+static int	enc_clone_destroy(struct if_clone *, struct ifnet *, uint32_t);
+static void	enc_add_hhooks(struct enc_softc *);
 static void	enc_remove_hhooks(struct enc_softc *);
 
 static const char encname[] = "enc";
@@ -140,10 +140,13 @@ SYSCTL_INT(_net_enc_out, OID_AUTO, ipsec_bpf_mask,
     CTLFLAG_RW | CTLFLAG_VNET, &VNET_NAME(bpf_mask_out), 0,
     "IPsec output bpf mask");
 
-static void
-enc_clone_destroy(struct ifnet *ifp)
+static int
+enc_clone_destroy(struct if_clone *ifc, struct ifnet *ifp, uint32_t flags)
 {
 	struct enc_softc *sc;
+
+	if (ifp->if_dunit == 0 && (flags & IFC_F_FORCE) == 0)
+		return (EINVAL);
 
 	sc = ifp->if_softc;
 	KASSERT(sc == V_enc_sc, ("sc != ifp->if_softc"));
@@ -152,35 +155,26 @@ enc_clone_destroy(struct ifnet *ifp)
 	if_detach(ifp);
 	if_free(ifp);
 	free(sc, M_DEVBUF);
-	V_enc_sc = NULL;
+	return (0);
 }
 
 static int
-enc_clone_create(struct if_clone *ifc, int unit, caddr_t params)
+enc_clone_create(struct if_clone *ifc, char *name, size_t len,
+    struct ifc_data *ifd, struct ifnet **ifpp)
 {
 	struct ifnet *ifp;
 	struct enc_softc *sc;
 
-	sc = malloc(sizeof(struct enc_softc), M_DEVBUF,
-	    M_WAITOK | M_ZERO);
+	sc = malloc(sizeof(struct enc_softc), M_DEVBUF, M_WAITOK | M_ZERO);
 	ifp = sc->sc_ifp = if_alloc(IFT_ENC);
-	if (ifp == NULL) {
-		free(sc, M_DEVBUF);
-		return (ENOSPC);
-	}
-	if (V_enc_sc != NULL) {
-		if_free(ifp);
-		free(sc, M_DEVBUF);
-		return (EEXIST);
-	}
-	V_enc_sc = sc;
-	if_initname(ifp, encname, unit);
+	if_initname(ifp, encname, ifd->unit);
 	ifp->if_mtu = ENCMTU;
 	ifp->if_ioctl = enc_ioctl;
 	ifp->if_output = enc_output;
 	ifp->if_softc = sc;
 	if_attach(ifp);
 	bpfattach(ifp, DLT_ENC, sizeof(struct enchdr));
+	*ifpp = ifp;
 	return (0);
 }
 
@@ -218,7 +212,7 @@ enc_bpftap(struct ifnet *ifp, struct mbuf *m, const struct secasvar *sav,
 	else if (hhook_type == HHOOK_TYPE_IPSEC_OUT &&
 	    (enc & V_bpf_mask_out) == 0)
 		return;
-	if (bpf_peers_present(ifp->if_bpf) == 0)
+	if (!bpf_peers_present(ifp->if_bpf))
 		return;
 	hdr.af = af;
 	hdr.spi = sav->spi;
@@ -246,7 +240,7 @@ enc_hhook(int32_t hhook_type, int32_t hhook_id, void *udata, void *ctx_data,
 	struct enc_softc *sc;
 	struct ifnet *ifp, *rcvif;
 	struct pfil_head *ph;
-	int pdir;
+	int pdir, ret;
 
 	sc = (struct enc_softc *)udata;
 	ifp = sc->sc_ifp;
@@ -306,7 +300,11 @@ enc_hhook(int32_t hhook_type, int32_t hhook_id, void *udata, void *ctx_data,
 	/* Make a packet looks like it was received on enc(4) */
 	rcvif = (*ctx->mp)->m_pkthdr.rcvif;
 	(*ctx->mp)->m_pkthdr.rcvif = ifp;
-	if (pfil_run_hooks(ph, ctx->mp, ifp, pdir, ctx->inp) != PFIL_PASS) {
+	if (pdir == PFIL_IN)
+		ret = pfil_mbuf_in(ph, ctx->mp, ifp, ctx->inp);
+	else
+		ret = pfil_mbuf_out(ph, ctx->mp, ifp, ctx->inp);
+	if (ret != PFIL_PASS) {
 		*ctx->mp = NULL; /* consumed by filter */
 		return (EACCES);
 	}
@@ -316,13 +314,12 @@ enc_hhook(int32_t hhook_type, int32_t hhook_id, void *udata, void *ctx_data,
 	return (0);
 }
 
-static int
+static void
 enc_add_hhooks(struct enc_softc *sc)
 {
 	struct hookinfo hki;
-	int error;
+	int error __diagused;
 
-	error = EPFNOSUPPORT;
 	hki.hook_func = enc_hhook;
 	hki.hook_helper = NULL;
 	hki.hook_udata = sc;
@@ -331,28 +328,23 @@ enc_add_hhooks(struct enc_softc *sc)
 	hki.hook_type = HHOOK_TYPE_IPSEC_IN;
 	error = hhook_add_hook(V_ipsec_hhh_in[HHOOK_IPSEC_INET],
 	    &hki, HHOOK_WAITOK);
-	if (error != 0)
-		return (error);
+	MPASS(error == 0);
 	hki.hook_type = HHOOK_TYPE_IPSEC_OUT;
 	error = hhook_add_hook(V_ipsec_hhh_out[HHOOK_IPSEC_INET],
 	    &hki, HHOOK_WAITOK);
-	if (error != 0)
-		return (error);
+	MPASS(error == 0);
 #endif
 #ifdef INET6
 	hki.hook_id = AF_INET6;
 	hki.hook_type = HHOOK_TYPE_IPSEC_IN;
 	error = hhook_add_hook(V_ipsec_hhh_in[HHOOK_IPSEC_INET6],
 	    &hki, HHOOK_WAITOK);
-	if (error != 0)
-		return (error);
+	MPASS(error == 0);
 	hki.hook_type = HHOOK_TYPE_IPSEC_OUT;
 	error = hhook_add_hook(V_ipsec_hhh_out[HHOOK_IPSEC_INET6],
 	    &hki, HHOOK_WAITOK);
-	if (error != 0)
-		return (error);
+	MPASS(error == 0);
 #endif
-	return (error);
 }
 
 static void
@@ -382,10 +374,18 @@ enc_remove_hhooks(struct enc_softc *sc)
 static void
 vnet_enc_init(const void *unused __unused)
 {
+	struct ifnet *ifp;
 
-	V_enc_sc = NULL;
-	V_enc_cloner = if_clone_simple(encname, enc_clone_create,
-	    enc_clone_destroy, 1);
+	struct if_clone_addreq req = {
+		.create_f = enc_clone_create,
+		.destroy_f = enc_clone_destroy,
+		.flags = IFC_F_AUTOUNIT | IFC_F_LIMITUNIT,
+		.maxunit = 0,
+	};
+	V_enc_cloner = ifc_attach_cloner(encname, &req);
+	struct ifc_data ifd = { .unit = 0 };
+	ifc_create_ifp(encname, &ifd, &ifp);
+	V_enc_sc = ifp->if_softc;
 }
 VNET_SYSINIT(vnet_enc_init, SI_SUB_PSEUDO, SI_ORDER_ANY,
     vnet_enc_init, NULL);
@@ -395,8 +395,7 @@ vnet_enc_init_proto(void *unused __unused)
 {
 	KASSERT(V_enc_sc != NULL, ("%s: V_enc_sc is %p\n", __func__, V_enc_sc));
 
-	if (enc_add_hhooks(V_enc_sc) != 0)
-		enc_clone_destroy(V_enc_sc->sc_ifp);
+	enc_add_hhooks(V_enc_sc);
 }
 VNET_SYSINIT(vnet_enc_init_proto, SI_SUB_PROTO_IFATTACHDOMAIN, SI_ORDER_ANY,
     vnet_enc_init_proto, NULL);
@@ -406,7 +405,8 @@ vnet_enc_uninit(const void *unused __unused)
 {
 	KASSERT(V_enc_sc != NULL, ("%s: V_enc_sc is %p\n", __func__, V_enc_sc));
 
-	if_clone_detach(V_enc_cloner);
+	ifc_detach_cloner(V_enc_cloner);
+	V_enc_sc = NULL;
 }
 VNET_SYSUNINIT(vnet_enc_uninit, SI_SUB_INIT_IF, SI_ORDER_ANY,
     vnet_enc_uninit, NULL);

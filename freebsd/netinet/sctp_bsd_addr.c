@@ -32,9 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <netinet/sctp_os.h>
 #include <netinet/sctp_var.h>
 #include <netinet/sctp_pcb.h>
@@ -108,7 +105,7 @@ sctp_startup_iterator(void)
 	kproc_create(sctp_iterator_thread,
 	    (void *)NULL,
 	    &sctp_it_ctl.thread_proc,
-	    RFPROC,
+	    0,
 	    SCTP_KTHREAD_PAGES,
 	    SCTP_KTRHEAD_NAME);
 }
@@ -120,25 +117,26 @@ sctp_gather_internal_ifa_flags(struct sctp_ifa *ifa)
 {
 	struct in6_ifaddr *ifa6;
 
+	KASSERT(ifa->address.sa.sa_family == AF_INET6,
+	    ("sctp_gather_internal_ifa_flags() called with address family %u",
+	    ifa->address.sa.sa_family));
 	ifa6 = (struct in6_ifaddr *)ifa->ifa;
 	ifa->flags = ifa6->ia6_flags;
-	if (!MODULE_GLOBAL(ip6_use_deprecated)) {
-		if (ifa->flags &
-		    IN6_IFF_DEPRECATED) {
+	if (MODULE_GLOBAL(ip6_use_deprecated)) {
+		ifa->localifa_flags &= ~SCTP_ADDR_IFA_UNUSEABLE;
+	} else {
+		if (ifa->flags & IN6_IFF_DEPRECATED) {
 			ifa->localifa_flags |= SCTP_ADDR_IFA_UNUSEABLE;
 		} else {
 			ifa->localifa_flags &= ~SCTP_ADDR_IFA_UNUSEABLE;
 		}
-	} else {
-		ifa->localifa_flags &= ~SCTP_ADDR_IFA_UNUSEABLE;
 	}
-	if (ifa->flags &
-	    (IN6_IFF_DETACHED |
-	    IN6_IFF_ANYCAST |
-	    IN6_IFF_NOTREADY)) {
+	if (ifa->flags & (IN6_IFF_DETACHED | IN6_IFF_DUPLICATED)) {
 		ifa->localifa_flags |= SCTP_ADDR_IFA_UNUSEABLE;
-	} else {
-		ifa->localifa_flags &= ~SCTP_ADDR_IFA_UNUSEABLE;
+	}
+	/* Right now, do not support IPv6 anycast addresses */
+	if (ifa->flags & IN6_IFF_ANYCAST) {
+		ifa->localifa_flags |= SCTP_ADDR_IFA_UNUSEABLE;
 	}
 }
 #endif				/* INET6 */
@@ -224,7 +222,7 @@ sctp_init_ifns_for_vrf(int vrfid)
 #ifdef INET6
 			case AF_INET6:
 				if (IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr)) {
-					/* skip unspecifed addresses */
+					/* skip unspecified addresses */
 					continue;
 				}
 				break;
@@ -326,7 +324,7 @@ sctp_addr_change(struct ifaddr *ifa, int cmd)
 	case AF_INET6:
 		ifa_flags = ((struct in6_ifaddr *)ifa)->ia6_flags;
 		if (IN6_IS_ADDR_UNSPECIFIED(&((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr)) {
-			/* skip unspecifed addresses */
+			/* skip unspecified addresses */
 			return;
 		}
 		break;
@@ -341,8 +339,8 @@ sctp_addr_change(struct ifaddr *ifa, int cmd)
 		    (void *)ifa, ifa->ifa_addr, ifa_flags, 1);
 	} else {
 		sctp_del_addr_from_vrf(SCTP_DEFAULT_VRFID, ifa->ifa_addr,
-		    ifa->ifa_ifp->if_index,
-		    ifa->ifa_ifp->if_xname);
+		    (void *)ifa->ifa_ifp,
+		    ifa->ifa_ifp->if_index);
 
 		/*
 		 * We don't bump refcount here so when it completes the
@@ -486,11 +484,10 @@ sctp_copy_out_packet_log(uint8_t *target, int length)
 	 * We wind through the packet log starting at start copying up to
 	 * length bytes out. We return the number of bytes copied.
 	 */
-	int tocopy, this_copy;
+	int this_copy;
 	int *lenat;
 	int did_delay = 0;
 
-	tocopy = length;
 	if (length < (int)(2 * sizeof(int))) {
 		/* not enough room */
 		return (0);

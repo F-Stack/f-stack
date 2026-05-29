@@ -1,9 +1,8 @@
 /*-
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 1980, 1986, 1993
- *	The Regents of the University of California.
- * All rights reserved.
+ * Copyright (c) 1982, 1986, 1993, 1994, 1995
+ *	The Regents of the University of California.  All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -28,64 +27,28 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)raw_cb.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
-#ifndef _NET_RAW_CB_H_
-#define _NET_RAW_CB_H_
-
-#include <sys/queue.h>
-
-/*
- * Raw protocol interface control block.  Used to tie a socket to the generic
- * raw interface.
- */
-struct rawcb {
-	LIST_ENTRY(rawcb) list;
-	struct	socket *rcb_socket;	/* back pointer to socket */
-	struct	sockproto rcb_proto;	/* protocol family, protocol */
-};
-
-#define	sotorawcb(so)		((struct rawcb *)(so)->so_pcb)
-
-/*
- * Nominal space allocated to a raw socket.
- */
-#define	RAWSNDQ		8192
-#define	RAWRCVQ		8192
+#ifndef _NETINET_TCP_ECN_H_
+#define _NETINET_TCP_ECN_H_
 
 #ifdef _KERNEL
-VNET_DECLARE(LIST_HEAD(rawcb_list_head, rawcb), rawcb_list);
-#define	V_rawcb_list	VNET(rawcb_list)
 
-extern struct mtx rawcb_mtx;
+#include <netinet/tcp.h>
+#include <netinet/tcp_var.h>
+#include <netinet/tcp_syncache.h>
 
-/*
- * Generic protosw entries for raw socket protocols.
- */
-pr_ctlinput_t	raw_ctlinput;
-pr_init_t	raw_init;
+#define TH_ACE_SHIFT 6
 
-/*
- * Library routines for raw socket usrreq functions; will always be wrapped
- * so that protocol-specific functions can be handled.
- */
-typedef int (*raw_input_cb_fn)(struct mbuf *, struct sockproto *,
-    struct sockaddr *, struct rawcb *);
+void	 tcp_ecn_input_syn_sent(struct tcpcb *, uint16_t, int);
+void	 tcp_ecn_input_parallel_syn(struct tcpcb *, uint16_t, int);
+int	 tcp_ecn_input_segment(struct tcpcb *, uint16_t, int, int, int);
+uint16_t tcp_ecn_output_syn_sent(struct tcpcb *);
+int	 tcp_ecn_output_established(struct tcpcb *, uint16_t *, int, bool);
+void	 tcp_ecn_syncache_socket(struct tcpcb *, struct syncache *);
+int	 tcp_ecn_syncache_add(uint16_t, int);
+uint16_t tcp_ecn_syncache_respond(uint16_t, struct syncache *);
 
-int	 raw_attach(struct socket *, int);
-void	 raw_detach(struct rawcb *);
-void	 raw_input(struct mbuf *, struct sockproto *, struct sockaddr *);
-void	 raw_input_ext(struct mbuf *, struct sockproto *, struct sockaddr *,
-	    raw_input_cb_fn);
+#endif /* _KERNEL */
 
-/*
- * Generic pr_usrreqs entries for raw socket protocols, usually wrapped so
- * that protocol-specific functions can be handled.
- */
-extern	struct pr_usrreqs raw_usrreqs;
-#endif
-
-#endif
+#endif /* _NETINET_TCP_ECN_H_ */

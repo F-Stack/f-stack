@@ -25,8 +25,6 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
  * OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <sys/param.h>
@@ -38,6 +36,7 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_mib.h>
 #include <net/vnet.h>
 
@@ -63,15 +62,6 @@
  * of other per-interface data living down here as well (e.g., integrated
  * services stuff).
  */
-
-SYSCTL_DECL(_net_link_generic);
-static SYSCTL_NODE(_net_link_generic, IFMIB_SYSTEM, system,
-    CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
-    "Variables global to all interfaces");
-
-SYSCTL_INT(_net_link_generic_system, IFMIB_IFCOUNT, ifcount,
-	CTLFLAG_VNET | CTLFLAG_RD, &VNET_NAME(if_index), 0,
-	"Number of configured interfaces");
 
 static int
 sysctl_ifdata(SYSCTL_HANDLER_ARGS) /* XXX bad syntax! */
@@ -147,6 +137,7 @@ out:
 	return error;
 }
 
+SYSCTL_DECL(_net_link_generic);
 static SYSCTL_NODE(_net_link_generic, IFMIB_IFDATA, ifdata,
     CTLFLAG_RD | CTLFLAG_MPSAFE, sysctl_ifdata,
     "Interface table");

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Tom Jones <thj@freebsd.org>
  *
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _NETINET_DCCP_H_
@@ -66,7 +64,7 @@ struct dccphdr {
                        uint8_t seq[6];
                } longseq;
        } d_seqno;
-};
+}  __packed;
 
 #define d_seqno_short d_seqno.shortseq;
 #define d_seqno_long d_seqno.longseq.seq;

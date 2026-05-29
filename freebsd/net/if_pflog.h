@@ -24,14 +24,14 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _NET_IF_PFLOG_H_
 #define	_NET_IF_PFLOG_H_
 
-#define	PFLOGIFS_MAX	16
+#include <sys/types.h>
+
+#include <net/if.h>
 
 #define	PFLOG_RULESET_NAME_SIZE	16
 
@@ -49,12 +49,19 @@ struct pfloghdr {
 	uid_t		rule_uid;
 	pid_t		rule_pid;
 	u_int8_t	dir;
-	u_int8_t	pad[3];
+	u_int8_t	pad1;	/* rewritten, on OpenBSD */
+	sa_family_t	naf;
+	u_int8_t	pad[1];
+	u_int32_t	ridentifier;
+	u_int8_t	reserve;	/* Appease broken software like Wireshark. */
+	u_int8_t	pad2[3];
 };
 
-#define	PFLOG_HDRLEN		sizeof(struct pfloghdr)
+#define PFLOG_ALIGNMENT		sizeof(uint32_t)
+#define PFLOG_ALIGN(x)		(((x) + PFLOG_ALIGNMENT - 1) & ~(PFLOG_ALIGNMENT - 1))
+#define	PFLOG_HDRLEN		PFLOG_ALIGN(offsetof(struct pfloghdr, pad2))
 /* minus pad, also used as a signature */
-#define	PFLOG_REAL_HDRLEN	offsetof(struct pfloghdr, pad)
+#define	PFLOG_REAL_HDRLEN	offsetof(struct pfloghdr, pad2)
 
 #ifdef _KERNEL
 struct pf_rule;
@@ -62,9 +69,9 @@ struct pf_ruleset;
 struct pfi_kif;
 struct pf_pdesc;
 
-#define	PFLOG_PACKET(i,a,b,c,d,e,f,g,h,di) do {		\
+#define	PFLOG_PACKET(b,t,c,d,e,f,g,h) do {		\
 	if (pflog_packet_ptr != NULL)			\
-		pflog_packet_ptr(i,a,b,c,d,e,f,g,h,di);	\
+		pflog_packet_ptr(b,t,c,d,e,f,g,h);	\
 } while (0)
 #endif /* _KERNEL */
 #endif /* _NET_IF_PFLOG_H_ */
