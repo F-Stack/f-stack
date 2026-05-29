@@ -27,13 +27,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)uipc_mbuf.c	8.2 (Berkeley) 1/4/94
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_param.h"
 #include "opt_mbuf_stress_test.h"
 #include "opt_mbuf_profiling.h"
@@ -50,6 +46,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/protosw.h>
 #include <sys/uio.h>
 #include <sys/vmmeter.h>
+#include <sys/sbuf.h>
 #include <sys/sdt.h>
 #include <vm/vm.h>
 #include <vm/vm_pageout.h>
@@ -62,7 +59,17 @@ SDT_PROBE_DEFINE5_XLATE(sdt, , , m__init,
     "uint32_t", "uint32_t",
     "uint32_t", "uint32_t");
 
+SDT_PROBE_DEFINE3_XLATE(sdt, , , m__gethdr_raw,
+    "uint32_t", "uint32_t",
+    "uint16_t", "uint16_t",
+    "struct mbuf *", "mbufinfo_t *");
+
 SDT_PROBE_DEFINE3_XLATE(sdt, , , m__gethdr,
+    "uint32_t", "uint32_t",
+    "uint16_t", "uint16_t",
+    "struct mbuf *", "mbufinfo_t *");
+
+SDT_PROBE_DEFINE3_XLATE(sdt, , , m__get_raw,
     "uint32_t", "uint32_t",
     "uint16_t", "uint16_t",
     "struct mbuf *", "mbufinfo_t *");
@@ -104,32 +111,61 @@ SDT_PROBE_DEFINE1_XLATE(sdt, , , m__free,
 SDT_PROBE_DEFINE1_XLATE(sdt, , , m__freem,
     "struct mbuf *", "mbufinfo_t *");
 
+SDT_PROBE_DEFINE1_XLATE(sdt, , , m__freemp,
+    "struct mbuf *", "mbufinfo_t *");
+
 #include <security/mac/mac_framework.h>
 
-int	max_linkhdr;
-int	max_protohdr;
-int	max_hdr;
-int	max_datalen;
+/*
+ * Provide minimum possible defaults for link and protocol header space,
+ * assuming IPv4 over Ethernet.  Enabling IPv6, IEEE802.11 or some other
+ * protocol may grow these values.
+ */
+u_int	max_linkhdr = 16;
+u_int	max_protohdr = 40;
+u_int	max_hdr = 16 + 40;
+SYSCTL_INT(_kern_ipc, KIPC_MAX_LINKHDR, max_linkhdr, CTLFLAG_RD,
+	   &max_linkhdr, 16, "Size of largest link layer header");
+SYSCTL_INT(_kern_ipc, KIPC_MAX_PROTOHDR, max_protohdr, CTLFLAG_RD,
+	   &max_protohdr, 40, "Size of largest protocol layer header");
+SYSCTL_INT(_kern_ipc, KIPC_MAX_HDR, max_hdr, CTLFLAG_RD,
+	   &max_hdr, 16 + 40, "Size of largest link plus protocol header");
+
+static void
+max_hdr_grow(void)
+{
+
+	max_hdr = max_linkhdr + max_protohdr;
+	MPASS(max_hdr <= MHLEN);
+}
+
+void
+max_linkhdr_grow(u_int new)
+{
+
+	if (new > max_linkhdr) {
+		max_linkhdr = new;
+		max_hdr_grow();
+	}
+}
+
+void
+max_protohdr_grow(u_int new)
+{
+
+	if (new > max_protohdr) {
+		max_protohdr = new;
+		max_hdr_grow();
+	}
+}
+
 #ifdef MBUF_STRESS_TEST
 int	m_defragpackets;
 int	m_defragbytes;
 int	m_defraguseless;
 int	m_defragfailure;
 int	m_defragrandomfailures;
-#endif
 
-/*
- * sysctl(8) exported objects
- */
-SYSCTL_INT(_kern_ipc, KIPC_MAX_LINKHDR, max_linkhdr, CTLFLAG_RD,
-	   &max_linkhdr, 0, "Size of largest link layer header");
-SYSCTL_INT(_kern_ipc, KIPC_MAX_PROTOHDR, max_protohdr, CTLFLAG_RD,
-	   &max_protohdr, 0, "Size of largest protocol layer header");
-SYSCTL_INT(_kern_ipc, KIPC_MAX_HDR, max_hdr, CTLFLAG_RD,
-	   &max_hdr, 0, "Size of largest link plus protocol header");
-SYSCTL_INT(_kern_ipc, KIPC_MAX_DATALEN, max_datalen, CTLFLAG_RD,
-	   &max_datalen, 0, "Minimum space left in mbuf after max_hdr");
-#ifdef MBUF_STRESS_TEST
 SYSCTL_INT(_kern_ipc, OID_AUTO, m_defragpackets, CTLFLAG_RD,
 	   &m_defragpackets, 0, "");
 SYSCTL_INT(_kern_ipc, OID_AUTO, m_defragbytes, CTLFLAG_RD,
@@ -169,16 +205,16 @@ CTASSERT(offsetof(struct mbuf, m_pktdat) % 8 == 0);
  */
 #if defined(__LP64__)
 CTASSERT(offsetof(struct mbuf, m_dat) == 32);
-CTASSERT(sizeof(struct pkthdr) == 56);
+CTASSERT(sizeof(struct pkthdr) == 64);
 CTASSERT(sizeof(struct m_ext) == 160);
 #else
 CTASSERT(offsetof(struct mbuf, m_dat) == 24);
-CTASSERT(sizeof(struct pkthdr) == 48);
+CTASSERT(sizeof(struct pkthdr) == 56);
 #if defined(__powerpc__) && defined(BOOKE)
 /* PowerPC booke has 64-bit physical pointers. */
-CTASSERT(sizeof(struct m_ext) == 184);
+CTASSERT(sizeof(struct m_ext) == 176);
 #else
-CTASSERT(sizeof(struct m_ext) == 180);
+CTASSERT(sizeof(struct m_ext) == 172);
 #endif
 #endif
 
@@ -203,10 +239,10 @@ mb_dupcl(struct mbuf *n, struct mbuf *m)
 {
 	volatile u_int *refcnt;
 
-	KASSERT(m->m_flags & (M_EXT|M_EXTPG),
-	    ("%s: M_EXT|M_EXTPG not set on %p", __func__, m));
-	KASSERT(!(n->m_flags & (M_EXT|M_EXTPG)),
-	    ("%s: M_EXT|M_EXTPG set on %p", __func__, n));
+	KASSERT(m->m_flags & (M_EXT | M_EXTPG),
+	    ("%s: M_EXT | M_EXTPG not set on %p", __func__, m));
+	KASSERT(!(n->m_flags & (M_EXT | M_EXTPG)),
+	    ("%s: M_EXT | M_EXTPG set on %p", __func__, n));
 
 	/*
 	 * Cache access optimization.
@@ -252,6 +288,7 @@ m_demote_pkthdr(struct mbuf *m)
 {
 
 	M_ASSERTPKTHDR(m);
+	M_ASSERT_NO_SND_TAG(m);
 
 	m_tag_delete_chain(m, NULL);
 	m->m_flags &= ~M_PKTHDR;
@@ -268,13 +305,14 @@ m_demote(struct mbuf *m0, int all, int flags)
 {
 	struct mbuf *m;
 
+	flags |= M_DEMOTEFLAGS;
+
 	for (m = all ? m0 : m0->m_next; m != NULL; m = m->m_next) {
 		KASSERT(m->m_nextpkt == NULL, ("%s: m_nextpkt in m %p, m0 %p",
 		    __func__, m, m0));
 		if (m->m_flags & M_PKTHDR)
 			m_demote_pkthdr(m);
-		m->m_flags = m->m_flags & (M_EXT | M_RDONLY | M_NOFREE |
-		    M_EXTPG | flags);
+		m->m_flags &= flags;
 	}
 }
 
@@ -534,7 +572,7 @@ m_copym(struct mbuf *m, int off0, int len, int wait)
 			copyhdr = 0;
 		}
 		n->m_len = min(len, m->m_len - off);
-		if (m->m_flags & (M_EXT|M_EXTPG)) {
+		if (m->m_flags & (M_EXT | M_EXTPG)) {
 			n->m_data = m->m_data + off;
 			mb_dupcl(n, m);
 		} else
@@ -576,7 +614,7 @@ m_copypacket(struct mbuf *m, int how)
 	if (!m_dup_pkthdr(n, m, how))
 		goto nospace;
 	n->m_len = m->m_len;
-	if (m->m_flags & (M_EXT|M_EXTPG)) {
+	if (m->m_flags & (M_EXT | M_EXTPG)) {
 		n->m_data = m->m_data;
 		mb_dupcl(n, m);
 	} else {
@@ -594,7 +632,7 @@ m_copypacket(struct mbuf *m, int how)
 		n = n->m_next;
 
 		n->m_len = m->m_len;
-		if (m->m_flags & (M_EXT|M_EXTPG)) {
+		if (m->m_flags & (M_EXT | M_EXTPG)) {
 			n->m_data = m->m_data;
 			mb_dupcl(n, m);
 		} else {
@@ -614,7 +652,7 @@ m_copyfromunmapped(const struct mbuf *m, int off, int len, caddr_t cp)
 {
 	struct iovec iov;
 	struct uio uio;
-	int error;
+	int error __diagused;
 
 	KASSERT(off >= 0, ("m_copyfromunmapped: negative off %d", off));
 	KASSERT(len >= 0, ("m_copyfromunmapped: negative len %d", len));
@@ -628,8 +666,8 @@ m_copyfromunmapped(const struct mbuf *m, int off, int len, caddr_t cp)
 	uio.uio_iovcnt = 1;
 	uio.uio_offset = 0;
 	uio.uio_rw = UIO_READ;
-	error = m_unmappedtouio(m, off, &uio, len);
-	KASSERT(error == 0, ("m_unmappedtouio failed: off %d, len %d", off,
+	error = m_unmapped_uiomove(m, off, &uio, len);
+	KASSERT(error == 0, ("m_unmapped_uiomove failed: off %d, len %d", off,
 	   len));
 }
 
@@ -719,7 +757,7 @@ m_dup(const struct mbuf *m, int how)
 		while (n->m_len < nsize && m != NULL) {
 			int chunk = min(nsize - n->m_len, m->m_len - moff);
 
-			bcopy(m->m_data + moff, n->m_data + n->m_len, chunk);
+			m_copydata(m, moff, chunk, n->m_data + n->m_len);
 			moff += chunk;
 			n->m_len += chunk;
 			remain -= chunk;
@@ -851,6 +889,29 @@ m_adj(struct mbuf *mp, int req_len)
 				break;
 			}
 			count -= m->m_len;
+		}
+	}
+}
+
+void
+m_adj_decap(struct mbuf *mp, int len)
+{
+	uint8_t rsstype;
+
+	m_adj(mp, len);
+	if ((mp->m_flags & M_PKTHDR) != 0) {
+		/*
+		 * If flowid was calculated by card from the inner
+		 * headers, move flowid to the decapsulated mbuf
+		 * chain, otherwise clear.  This depends on the
+		 * internals of m_adj, which keeps pkthdr as is, in
+		 * particular not changing rsstype and flowid.
+		 */
+		rsstype = mp->m_pkthdr.rsstype;
+		if ((rsstype & M_HASHTYPE_INNER) != 0) {
+			M_HASHTYPE_SET(mp, rsstype & ~M_HASHTYPE_INNER);
+		} else {
+			M_HASHTYPE_CLEAR(mp);
 		}
 	}
 }
@@ -1012,7 +1073,7 @@ m_split(struct mbuf *m0, int len0, int wait)
 			n->m_pkthdr.rcvif = m0->m_pkthdr.rcvif;
 		n->m_pkthdr.len = m0->m_pkthdr.len - len0;
 		m0->m_pkthdr.len = len0;
-		if (m->m_flags & (M_EXT|M_EXTPG))
+		if (m->m_flags & (M_EXT | M_EXTPG))
 			goto extpacket;
 		if (remain > MHLEN) {
 			/* m can't be the lead packet */
@@ -1038,7 +1099,7 @@ m_split(struct mbuf *m0, int len0, int wait)
 		M_ALIGN(n, remain);
 	}
 extpacket:
-	if (m->m_flags & (M_EXT|M_EXTPG)) {
+	if (m->m_flags & (M_EXT | M_EXTPG)) {
 		n->m_data = m->m_data + len;
 		mb_dupcl(n, m);
 	} else {
@@ -1050,6 +1111,72 @@ extpacket:
 	m->m_next = NULL;
 	return (n);
 }
+
+/*
+ * Partition mchain in two pieces, keeping len0 bytes in head and transferring
+ * remainder to tail.  In case of failure, both chains to be left untouched.
+ * M_EOR is observed correctly.
+ * Resulting mbufs might be read-only.
+ */
+int
+mc_split(struct mchain *head, struct mchain *tail, u_int len0, int wait)
+{
+	struct mbuf *m, *n;
+	u_int len, mlen, remain;
+
+	MPASS(!(mc_first(head)->m_flags & M_PKTHDR));
+	MBUF_CHECKSLEEP(wait);
+
+	mlen = 0;
+	len = len0;
+	STAILQ_FOREACH(m, &head->mc_q, m_stailq) {
+		mlen += MSIZE;
+		if (m->m_flags & M_EXT)
+			mlen += m->m_ext.ext_size;
+		if (len > m->m_len)
+			len -= m->m_len;
+		else
+			break;
+	}
+	if (__predict_false(m == NULL)) {
+		*tail = MCHAIN_INITIALIZER(tail);
+		return (0);
+	}
+	remain = m->m_len - len;
+	if (remain > 0) {
+		if (__predict_false((n = m_get(wait, m->m_type)) == NULL))
+			return (ENOMEM);
+		m_align(n, remain);
+		if (m->m_flags & M_EXT) {
+			n->m_data = m->m_data + len;
+			mb_dupcl(n, m);
+		} else
+			bcopy(mtod(m, char *) + len, mtod(n, char *), remain);
+	}
+
+	/* XXXGL: need STAILQ_SPLIT */
+	STAILQ_FIRST(&tail->mc_q) = STAILQ_NEXT(m, m_stailq);
+	tail->mc_q.stqh_last = head->mc_q.stqh_last;
+	tail->mc_len = head->mc_len - len0;
+	tail->mc_mlen = head->mc_mlen - mlen;
+	if (remain > 0) {
+		MPASS(n->m_len == 0);
+		mc_prepend(tail, n);
+		n->m_len = remain;
+		m->m_len -= remain;
+		if (m->m_flags & M_EOR) {
+			m->m_flags &= ~M_EOR;
+			n->m_flags |= M_EOR;
+		}
+	}
+	head->mc_q.stqh_last = &STAILQ_NEXT(m, m_stailq);
+	STAILQ_NEXT(m, m_stailq) = NULL;
+	head->mc_len = len0;
+	head->mc_mlen = mlen;
+
+	return (0);
+}
+
 /*
  * Routine to copy from device local memory into mbufs.
  * Note that `off' argument is offset into first mbuf of target chain from
@@ -1116,6 +1243,29 @@ m_devget(char *buf, int totlen, int off, struct ifnet *ifp,
 	return (top);
 }
 
+static void
+m_copytounmapped(const struct mbuf *m, int off, int len, c_caddr_t cp)
+{
+	struct iovec iov;
+	struct uio uio;
+	int error __diagused;
+
+	KASSERT(off >= 0, ("m_copytounmapped: negative off %d", off));
+	KASSERT(len >= 0, ("m_copytounmapped: negative len %d", len));
+	KASSERT(off < m->m_len, ("m_copytounmapped: len exceeds mbuf length"));
+	iov.iov_base = __DECONST(caddr_t, cp);
+	iov.iov_len = len;
+	uio.uio_resid = len;
+	uio.uio_iov = &iov;
+	uio.uio_segflg = UIO_SYSSPACE;
+	uio.uio_iovcnt = 1;
+	uio.uio_offset = 0;
+	uio.uio_rw = UIO_WRITE;
+	error = m_unmapped_uiomove(m, off, &uio, len);
+	KASSERT(error == 0, ("m_unmapped_uiomove failed: off %d, len %d", off,
+	   len));
+}
+
 /*
  * Copy data from a buffer back into the indicated mbuf chain,
  * starting "off" bytes from the beginning, extending the mbuf
@@ -1149,7 +1299,10 @@ m_copyback(struct mbuf *m0, int off, int len, c_caddr_t cp)
 			    M_TRAILINGSPACE(m));
 		}
 		mlen = min (m->m_len - off, len);
-		bcopy(cp, off + mtod(m, caddr_t), (u_int)mlen);
+		if ((m->m_flags & M_EXTPG) != 0)
+			m_copytounmapped(m, off, mlen, cp);
+		else
+			bcopy(cp, off + mtod(m, caddr_t), (u_int)mlen);
 		cp += mlen;
 		len -= mlen;
 		mlen += off;
@@ -1216,6 +1369,62 @@ m_append(struct mbuf *m0, int len, c_caddr_t cp)
 	return (remainder == 0);
 }
 
+static int
+m_apply_extpg_one(struct mbuf *m, int off, int len,
+    int (*f)(void *, void *, u_int), void *arg)
+{
+	void *p;
+	u_int i, count, pgoff, pglen;
+	int rval;
+
+	KASSERT(PMAP_HAS_DMAP,
+	    ("m_apply_extpg_one does not support unmapped mbufs"));
+	off += mtod(m, vm_offset_t);
+	if (off < m->m_epg_hdrlen) {
+		count = min(m->m_epg_hdrlen - off, len);
+		rval = f(arg, m->m_epg_hdr + off, count);
+		if (rval)
+			return (rval);
+		len -= count;
+		off = 0;
+	} else
+		off -= m->m_epg_hdrlen;
+	pgoff = m->m_epg_1st_off;
+	for (i = 0; i < m->m_epg_npgs && len > 0; i++) {
+		pglen = m_epg_pagelen(m, i, pgoff);
+		if (off < pglen) {
+			count = min(pglen - off, len);
+			p = (void *)PHYS_TO_DMAP(m->m_epg_pa[i] + pgoff + off);
+			rval = f(arg, p, count);
+			if (rval)
+				return (rval);
+			len -= count;
+			off = 0;
+		} else
+			off -= pglen;
+		pgoff = 0;
+	}
+	if (len > 0) {
+		KASSERT(off < m->m_epg_trllen,
+		    ("m_apply_extpg_one: offset beyond trailer"));
+		KASSERT(len <= m->m_epg_trllen - off,
+		    ("m_apply_extpg_one: length beyond trailer"));
+		return (f(arg, m->m_epg_trail + off, len));
+	}
+	return (0);
+}
+
+/* Apply function f to the data in a single mbuf. */
+static int
+m_apply_one(struct mbuf *m, int off, int len,
+    int (*f)(void *, void *, u_int), void *arg)
+{
+	if ((m->m_flags & M_EXTPG) != 0)
+		return (m_apply_extpg_one(m, off, len, f, arg));
+	else
+		return (f(arg, mtod(m, caddr_t) + off, len));
+}
+
 /*
  * Apply function f to the data in an mbuf chain starting "off" bytes from
  * the beginning, continuing for "len" bytes.
@@ -1230,16 +1439,18 @@ m_apply(struct mbuf *m, int off, int len,
 	KASSERT(off >= 0, ("m_apply, negative off %d", off));
 	KASSERT(len >= 0, ("m_apply, negative len %d", len));
 	while (off > 0) {
-		KASSERT(m != NULL, ("m_apply, offset > size of mbuf chain"));
+		KASSERT(m != NULL, ("m_apply, offset > size of mbuf chain "
+		    "(%d extra)", off));
 		if (off < m->m_len)
 			break;
 		off -= m->m_len;
 		m = m->m_next;
 	}
 	while (len > 0) {
-		KASSERT(m != NULL, ("m_apply, offset > size of mbuf chain"));
+		KASSERT(m != NULL, ("m_apply, length > size of mbuf chain "
+		    "(%d extra)", len));
 		count = min(m->m_len - off, len);
-		rval = (*f)(arg, mtod(m, caddr_t) + off, count);
+		rval = m_apply_one(m, off, count, f, arg);
 		if (rval)
 			return (rval);
 		len -= count;
@@ -1657,10 +1868,10 @@ m_uiotombuf_nomap(struct uio *uio, int how, int len, int maxseg, int flags)
 	vm_page_t pg_array[MBUF_PEXT_MAX_PGS];
 	int error, length, i, needed;
 	ssize_t total;
-	int pflags = malloc2vm_flags(how) | VM_ALLOC_NOOBJ | VM_ALLOC_NODUMP |
-	    VM_ALLOC_WIRED;
+	int pflags = malloc2vm_flags(how) | VM_ALLOC_NODUMP | VM_ALLOC_WIRED;
 
 	MPASS((flags & M_PKTHDR) == 0);
+	MPASS((how & M_ZERO) == 0);
 
 	/*
 	 * len can be zero or an arbitrary large value bound by
@@ -1681,7 +1892,7 @@ m_uiotombuf_nomap(struct uio *uio, int how, int len, int maxseg, int flags)
 	 * ciphersuites.
 	 */
 	if (__predict_false(total == 0)) {
-		mb = mb_alloc_ext_pgs(how, mb_free_mext_pgs);
+		mb = mb_alloc_ext_pgs(how, mb_free_mext_pgs, 0);
 		if (mb == NULL)
 			return (NULL);
 		mb->m_epg_flags = EPG_FLAG_ANON;
@@ -1693,7 +1904,7 @@ m_uiotombuf_nomap(struct uio *uio, int how, int len, int maxseg, int flags)
 	 */
 	m = NULL;
 	while (total > 0) {
-		mb = mb_alloc_ext_pgs(how, mb_free_mext_pgs);
+		mb = mb_alloc_ext_pgs(how, mb_free_mext_pgs, 0);
 		if (mb == NULL)
 			goto failed;
 		if (m == NULL)
@@ -1705,7 +1916,7 @@ m_uiotombuf_nomap(struct uio *uio, int how, int len, int maxseg, int flags)
 		needed = length = MIN(maxseg, total);
 		for (i = 0; needed > 0; i++, needed -= PAGE_SIZE) {
 retry_page:
-			pg_array[i] = vm_page_alloc(NULL, 0, pflags);
+			pg_array[i] = vm_page_alloc_noobj(pflags);
 			if (pg_array[i] == NULL) {
 				if (how & M_NOWAIT) {
 					goto failed;
@@ -1714,7 +1925,6 @@ retry_page:
 					goto retry_page;
 				}
 			}
-			pg_array[i]->flags &= ~PG_ZERO;
 			mb->m_epg_pa[i] = VM_PAGE_TO_PHYS(pg_array[i]);
 			mb->m_epg_npgs++;
 		}
@@ -1739,6 +1949,53 @@ failed:
 
 /*
  * Copy the contents of uio into a properly sized mbuf chain.
+ * A compat KPI.  Users are recommended to use direct calls to backing
+ * functions.
+ */
+#ifndef FSTACK
+struct mbuf *
+m_uiotombuf(struct uio *uio, int how, int len, int lspace, int flags)
+{
+
+	if (flags & M_EXTPG) {
+		/* XXX: 'lspace' magically becomes maxseg! */
+		return (m_uiotombuf_nomap(uio, how, len, lspace, flags));
+	} else if (__predict_false(uio->uio_resid == 0)) {
+		struct mbuf *m;
+
+		/*
+		 * m_uiotombuf() is known to return zero length buffer, keep
+		 * this compatibility. mc_uiotomc() won't do that.
+		 */
+		if (flags & M_PKTHDR) {
+			m = m_gethdr(how, MT_DATA);
+			m->m_pkthdr.memlen = MSIZE;
+		} else
+			m = m_get(how, MT_DATA);
+		if (m != NULL)
+			m->m_data += lspace;
+		return (m);
+	} else {
+		struct mchain mc;
+		int error;
+
+		error = mc_uiotomc(&mc, uio, len, lspace, how, flags);
+		if (__predict_true(error == 0)) {
+			if (flags & M_PKTHDR) {
+				mc_first(&mc)->m_pkthdr.len = mc.mc_len;
+				mc_first(&mc)->m_pkthdr.memlen = mc.mc_mlen;
+			}
+			return (mc_first(&mc));
+		} else
+			return (NULL);
+	}
+}
+#else
+/*
+ * F-Stack m_uiotombuf compat: keep the simple 13.0-era semantics so
+ * the FSTACK_ZC_SEND zero-copy fast path remains valid. F-Stack does
+ * not implement unmapped mbuf pools (M_EXTPG) nor mchain, so the
+ * 14.0+ branches are never reached at runtime.
  */
 struct mbuf *
 m_uiotombuf(struct uio *uio, int how, int len, int align, int flags)
@@ -1747,11 +2004,6 @@ m_uiotombuf(struct uio *uio, int how, int len, int align, int flags)
 	int error, length;
 	ssize_t total;
 	int progress = 0;
-
-#ifndef FSTACK
-	if (flags & M_EXTPG)
-		return (m_uiotombuf_nomap(uio, how, len, align, flags));
-#endif
 
 	/*
 	 * len can be zero or an arbitrary large value bound by
@@ -1810,13 +2062,71 @@ m_uiotombuf(struct uio *uio, int how, int len, int align, int flags)
 
 	return (m);
 }
+#endif /* FSTACK */
 
-#ifndef FSTACK
 /*
- * Copy data from an unmapped mbuf into a uio limited by len if set.
+ * Copy the contents of uio into a properly sized mbuf chain.
+ * @param length Limit copyout length.  If 0 entire uio_resid is copied.
+ * @param lspace Provide leading space in the first mbuf in the chain.
  */
 int
-m_unmappedtouio(const struct mbuf *m, int m_off, struct uio *uio, int len)
+mc_uiotomc(struct mchain *mc, struct uio *uio, u_int length, u_int lspace,
+    int how, int flags)
+{
+	struct mbuf *mb;
+	u_int total;
+	int error;
+
+	MPASS(lspace < MHLEN);
+	MPASS(UINT_MAX - lspace >= length);
+	MPASS(uio->uio_rw == UIO_WRITE);
+	MPASS(uio->uio_resid >= 0);
+
+	if (length > 0) {
+		if (uio->uio_resid > length) {
+			total = length;
+			flags &= ~M_EOR;
+		} else
+			total = uio->uio_resid;
+	} else if (__predict_false(uio->uio_resid + lspace > UINT_MAX))
+		return (EOVERFLOW);
+	else
+		total = uio->uio_resid;
+
+	if (__predict_false(total + lspace == 0)) {
+		*mc = MCHAIN_INITIALIZER(mc);
+		return (0);
+	}
+
+	error = mc_get(mc, total + lspace, how, MT_DATA, flags);
+	if (__predict_false(error))
+		return (error);
+	mc_first(mc)->m_data += lspace;
+
+	/* Fill all mbufs with uio data and update header information. */
+	STAILQ_FOREACH(mb, &mc->mc_q, m_stailq) {
+		u_int mlen;
+
+		mlen = min(M_TRAILINGSPACE(mb), total - mc->mc_len);
+		error = uiomove(mtod(mb, void *), mlen, uio);
+		if (__predict_false(error)) {
+			mc_freem(mc);
+			*mc = MCHAIN_INITIALIZER(mc);
+			return (error);
+		}
+		mb->m_len = mlen;
+		mc->mc_len += mlen;
+	}
+	MPASS(mc->mc_len == total);
+
+	return (0);
+}
+
+/*
+ * Copy data to/from an unmapped mbuf into a uio limited by len if set.
+ */
+int
+m_unmapped_uiomove(const struct mbuf *m, int m_off, struct uio *uio, int len)
 {
 	vm_page_t pg;
 	int error, i, off, pglen, pgoff, seglen, segoff;
@@ -1867,13 +2177,6 @@ m_unmappedtouio(const struct mbuf *m, int m_off, struct uio *uio, int len)
 	}
 	return (error);
 }
-#else
-int
-m_unmappedtouio(const struct mbuf *m, int m_off, struct uio *uio, int len)
-{
-    return uiomove(mtod(m, void *), len, uio);
-}
-#endif
 
 /*
  * Copy an mbuf chain into a uio limited by len if set.
@@ -1894,7 +2197,7 @@ m_mbuftouio(struct uio *uio, const struct mbuf *m, int len)
 		length = min(m->m_len, total - progress);
 
 		if ((m->m_flags & M_EXTPG) != 0)
-			error = m_unmappedtouio(m, 0, uio, length);
+			error = m_unmapped_uiomove(m, 0, uio, length);
 		else
 			error = uiomove(mtod(m, void *), length, uio);
 		if (error)
@@ -2042,16 +2345,6 @@ struct mbufprofile {
 	uintmax_t segments[MP_BUCKETS];
 } mbprof;
 
-#define MP_MAXDIGITS 21	/* strlen("16,000,000,000,000,000,000") == 21 */
-#define MP_NUMLINES 6
-#define MP_NUMSPERLINE 16
-#define MP_EXTRABYTES 64	/* > strlen("used:\nwasted:\nsegments:\n") */
-/* work out max space needed and add a bit of spare space too */
-#define MP_MAXLINE ((MP_MAXDIGITS+1) * MP_NUMSPERLINE)
-#define MP_BUFSIZE ((MP_MAXLINE * MP_NUMLINES) + 1 + MP_EXTRABYTES)
-
-char mbprofbuf[MP_BUFSIZE];
-
 void
 m_profile(struct mbuf *m)
 {
@@ -2087,16 +2380,18 @@ m_profile(struct mbuf *m)
 	mbprof.wasted[fls(wasted)]++;
 }
 
-static void
-mbprof_textify(void)
+static int
+mbprof_handler(SYSCTL_HANDLER_ARGS)
 {
-	int offset;
-	char *c;
+	char buf[256];
+	struct sbuf sb;
+	int error;
 	uint64_t *p;
 
+	sbuf_new_for_sysctl(&sb, buf, sizeof(buf), req);
+
 	p = &mbprof.wasted[0];
-	c = mbprofbuf;
-	offset = snprintf(c, MP_MAXLINE + 10,
+	sbuf_printf(&sb,
 	    "wasted:\n"
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
@@ -2104,16 +2399,14 @@ mbprof_textify(void)
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #ifdef BIG_ARRAY
 	p = &mbprof.wasted[16];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE,
+	sbuf_printf(&sb,
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
 	    p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #endif
 	p = &mbprof.used[0];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE + 10,
+	sbuf_printf(&sb,
 	    "used:\n"
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
@@ -2121,16 +2414,14 @@ mbprof_textify(void)
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #ifdef BIG_ARRAY
 	p = &mbprof.used[16];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE,
+	sbuf_printf(&sb,
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
 	    p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #endif
 	p = &mbprof.segments[0];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE + 10,
+	sbuf_printf(&sb,
 	    "segments:\n"
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %ju\n",
@@ -2138,22 +2429,15 @@ mbprof_textify(void)
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #ifdef BIG_ARRAY
 	p = &mbprof.segments[16];
-	c += offset;
-	offset = snprintf(c, MP_MAXLINE,
+	sbuf_printf(&sb,
 	    "%ju %ju %ju %ju %ju %ju %ju %ju "
 	    "%ju %ju %ju %ju %ju %ju %ju %jju",
 	    p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7],
 	    p[8], p[9], p[10], p[11], p[12], p[13], p[14], p[15]);
 #endif
-}
 
-static int
-mbprof_handler(SYSCTL_HANDLER_ARGS)
-{
-	int error;
-
-	mbprof_textify();
-	error = SYSCTL_OUT(req, mbprofbuf, strlen(mbprofbuf) + 1);
+	error = sbuf_finish(&sb);
+	sbuf_delete(&sb);
 	return (error);
 }
 
@@ -2175,12 +2459,12 @@ mbprof_clr_handler(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_kern_ipc, OID_AUTO, mbufprofile,
-    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
     mbprof_handler, "A",
     "mbuf profiling statistics");
 
 SYSCTL_PROC(_kern_ipc, OID_AUTO, mbufprofileclr,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, NULL, 0,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
     mbprof_clr_handler, "I",
     "clear mbuf profiling statistics");
 #endif
