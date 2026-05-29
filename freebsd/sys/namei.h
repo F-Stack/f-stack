@@ -292,6 +292,8 @@ do {										\
 	filecaps_free(&_ndp->ni_filecaps);					\
 } while (0)
 
+extern uma_zone_t namei_zone;
+
 #define	NDFREE_PNBUF(ndp) do {							\
 	struct nameidata *_ndp = (ndp);						\
 	MPASS(_ndp->ni_cnd.cn_pnbuf != NULL);					\
