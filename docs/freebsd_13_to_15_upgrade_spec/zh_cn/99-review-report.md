@@ -262,26 +262,31 @@ q2 决定的范围（来自 plan.md §1.5）：
 | M1 | T-arch-01 | amd64/x86 头 | P2 | ⚠️ 推迟到 M2（DP-8） | m1-leader | 2026-05-28 |
 | M1 | T-arch-02 | arm64/ | P2 | ⚠️ 推迟到 M2（DP-8） | m1-leader | 2026-05-28 |
 | M1 | T-misc-01 | netipsec/netgraph/libalias | P2 | ⚠️ 部分（netipsec+netgraph ✅；libalias 因 DP-9 回滚 13.0）| m1-leader | 2026-05-28 |
-| **M2** | T-kern-01 | kern_descrip.c | P0 | 待办 | — | — |
-| M2 | T-kern-02 | kern_event.c | P0 | 待办 | — | — |
-| M2 | T-kern-03 | kern_linker.c | P1 | 待办 | — | — |
-| M2 | **T-kern-04** | **kern_mbuf.c** | **P0** | 待办 | — | — |
-| M2 | T-kern-05 | kern_sysctl.c | P1 | 待办 | — | — |
-| M2 | T-kern-06 | link_elf.c | P1 | 待办 | — | — |
-| M2 | **T-kern-07** | **subr_epoch.c** | **P0** | 待办 | — | — |
-| M2 | T-kern-08 | subr_param.c | P2 | 待办 | — | — |
-| M2 | T-kern-09 | subr_taskqueue.c | P1 | 待办 | — | — |
-| M2 | T-kern-10 | sys_generic.c | P1 | 待办 | — | — |
-| M2 | T-kern-11 | sys_socket.c | P1 | 待办 | — | — |
-| M2 | **T-kern-12** | **uipc_mbuf.c** | **P0** | 待办 | — | — |
-| M2 | T-kern-13 | uipc_sockbuf.c | P1 | 待办 | — | — |
-| M2 | **T-kern-14** | **uipc_socket.c** | **P0** | 待办 | — | — |
-| M2 | T-kern-15 | uipc_syscalls.c | P1 | 待办 | — | — |
-| M2 | T-kern-misc | 23 个 KERN_SRCS cp -a | P3 | 待办 | — | — |
-| M2 | **T-ff-04** | **ff_subr_epoch.c** | **P0** | 待办 | — | — |
-| M2 | T-ff-05 | ff_syscall_wrapper.c | P1 | 待办 | — | — |
-| M2 | T-ff-06 | ff_kern_intr.c | P1 | 待办 | — | — |
-| M2 | T-ff-misc | ff_kern_* 其余 | P2 | 待办 | — | — |
+| **M2** | T-kern-01 | kern_descrip.c | P0 | ⚠️ Phase 5b 推迟（DP-M2-5）| m2-leader | 2026-05-29 |
+| M2 | T-kern-02 | kern_event.c | P0 | ⚠️ Phase 5b 推迟（DP-M2-5）| m2-leader | 2026-05-29 |
+| M2 | T-kern-03 | kern_linker.c | P1 | ⚠️ Phase 5b 推迟（DP-M2-5：opt_hwt_hooks.h 缺失）| m2-leader | 2026-05-29 |
+| M2 | **T-kern-04** | **kern_mbuf.c** | **P0** | ⚠️ Phase 5b 推迟（DP-M2-5：14.0 m_ext 重组 R-003）| m2-leader | 2026-05-29 |
+| M2 | T-kern-05 | kern_sysctl.c | P1 | ✅ 完成 | m2-leader | 2026-05-29 |
+| M2 | T-kern-06 | link_elf.c | P1 | ⚠️ Phase 5b 推迟（DP-M2-5：ddb/db_ctf.h 缺失）| m2-leader | 2026-05-29 |
+| M2 | **T-kern-07** | **subr_epoch.c** | **P0** | ⚠️ Phase 5b 推迟（DP-M2-5：R-012 SMR）| m2-leader | 2026-05-29 |
+| M2 | T-kern-08 | subr_param.c | P2 | ✅ 完成 | m2-leader | 2026-05-29 |
+| M2 | T-kern-09 | subr_taskqueue.c | P1 | ✅ 完成 | m2-leader | 2026-05-29 |
+| M2 | T-kern-10 | sys_generic.c | P1 | ⚠️ Phase 5b 推迟（DP-M2-5：specialfd_eventfd 14.0 新结构）| m2-leader | 2026-05-29 |
+| M2 | T-kern-11 | sys_socket.c | P1 | ⚠️ Phase 5b 推迟（DP-M2-5：函数布局重排）| m2-leader | 2026-05-29 |
+| M2 | **T-kern-12** | **uipc_mbuf.c** | **P0** | ⚠️ Phase 5b 推迟（DP-M2-5：FSTACK_ZC_SEND）| m2-leader | 2026-05-29 |
+| M2 | T-kern-13 | uipc_sockbuf.c | P1 | ✅ 完成 | m2-leader | 2026-05-29 |
+| M2 | **T-kern-14** | **uipc_socket.c** | **P0** | ⚠️ Phase 5b 推迟（DP-M2-5：CURVNET_ASSERT_SET + R-011）| m2-leader | 2026-05-29 |
+| M2 | T-kern-15 | uipc_syscalls.c | P1 | ✅ 完成 | m2-leader | 2026-05-29 |
+| M2 | T-kern-misc | 23 个 KERN_SRCS cp -a | P3 | ✅ 完成 | m2-leader | 2026-05-29 |
+| M2 | **T-ff-04** | **ff_subr_epoch.c** | **P0** | ✅ verify-only（与 13.0 字节一致，与 M2 已升 kern 无 ABI 冲突）| m2-leader | 2026-05-29 |
+| M2 | T-ff-05 | ff_syscall_wrapper.c | P1 | ✅ verify-only | m2-leader | 2026-05-29 |
+| M2 | T-ff-06 | ff_kern_intr.c | P1 | ✅ verify-only | m2-leader | 2026-05-29 |
+| M2 | T-ff-misc | ff_kern_* 其余 5 文件 | P2 | ✅ verify-only | m2-leader | 2026-05-29 |
+| **M2** | T-sys-04 | sys/sys 全量重做（DP-9-A）| P0/P1 | ✅ 完成（14 改造 + 38 NEW + 325 DIFFER + 4 LEGACY-13）| m2-leader | 2026-05-29 |
+| **M2** | T-vm-01-redo | vm/ 全量重做（DP-7）| P1 | ✅ 完成（uma 8+1 改造 + 50 cp）| m2-leader | 2026-05-29 |
+| **M2** | T-arch-01-redo | amd64+x86 全量重做（DP-8）| P2 | ✅ 完成（4 改造 + 380 cp + 25 LEGACY 删除）| m2-leader | 2026-05-29 |
+| **M2** | T-arch-02-redo | arm64 全量重做（DP-8）| P2 | ✅ 完成（1 改造 + 286 cp + 19 LEGACY 删除）| m2-leader | 2026-05-29 |
+| **M2** | T-misc-01-libalias | netinet/libalias 重做（DP-9-B）| P2 | ✅ 完成（1 改造 + 19 cp + alias_db.h NEW）| m2-leader | 2026-05-29 |
 | **M3** | **T-net-01** | **net/if.c** | **P0** | 待办 | — | — |
 | M3 | **T-net-02** | **net/if_var.h** | **P0** | 待办 | — | — |
 | M3 | T-net-03 | if_ethersubr.c | P1 | 待办 | — | — |
@@ -604,3 +609,29 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 修订后状态 | `15.0 f-stack-lib tools/compat/include/` 现已是真正的 15.0 上游基线（含 2 处 LEGACY 显式标记）；M1 实施阶段对该子目录的引用、对比、迁移基准全部以本次修订后的状态为准。 |
 | 校验 | `read_lints zh_cn/` 返回 0 diagnostics；`diff -rq /data/workspace/freebsd-src-releng-13.0/f-stack-lib/tools/compat/include /data/workspace/freebsd-src-releng-15.0/f-stack-lib/tools/compat/include 2>&1 \| awk '/^Files/{d++} /^Only in/{o++} END{print d,o}'` 应输出 `169 1`。 |
 
+### 12.13 修订 R-2026-05-29-13：M2 实测发现 spec 05 §2.1/§2.2 任务面与代码事实多处不符
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-29 |
+| 关联条目 | M2 阶段（DP-7 / DP-8 / DP-9 / DP-M2-5）实测发现的 5 处 spec 偏差汇总修订；与 §12.12 sys/sys 漏列同源但延伸到全 M2 范围 |
+| 偏差 1：sys/sys 改造文件数 | spec 05 §2.1 仅声明 4 个 sys 头改造（systm.h/refcount.h/callout.h/_callout.h），M1 G-M1 编译失败后 M2 实测发现实际有 **14 个**改造文件（漏列 10 个：cdefs.h/counter.h/filedesc.h/malloc.h/namei.h/random.h/resourcevar.h/socketvar.h/stdatomic.h/user.h）。修订动作：spec 05 §2.1 T-sys-04 改写为"sys/sys 全量重做（14 改造 + 38 NEW + 339 DIFFER）"。已在 M2 Phase 1 完成实测重做。 |
+| 偏差 2：vm/uma 改造文件数 | spec 05 §2.1 T-vm-01 描述"~26 个文件"，实测 vm/ 共 53 文件（M2 升级后 52）；F-Stack 改造仅 uma_core.c（13 hunks）+ uma_int.h（1 hunk）共 8+1=9 块（spec 描述模糊）。修订动作：spec 05 §2.1 T-vm-01 改写为"vm/ 全量 53 文件 + uma 8+1 块改造 5 步法"。已在 M2 Phase 2 完成实测重做。 |
+| 偏差 3：arch（amd64+x86+arm64）规模 | spec 05 §2.1 T-arch-01/02 描述"~20 + ~7 NEW"实测 amd64 263 + x86 145 + arm64 378 = **786 文件**（spec 严重低估 ~30 倍）；F-Stack 改造 5 个文件（其中 vmparam.h 自然消失）。修订动作：spec 05 §2.1 T-arch-01/02 改写为"amd64+x86+arm64 全量 786 文件 + 5 改造（4 实质迁移 + 1 自然消失）"。已在 M2 Phase 3 完成实测重做（44 个 13.0-only 文件经 rm_tmp_file.sh 删除）。 |
+| 偏差 4：T-misc-01 规模 | spec 05 §2.1 T-misc-01 描述"~40 文件"实测 netipsec 32 + netgraph 156+23 LEGACY + netinet/libalias 19 = **~230 文件**。修订动作：spec 05 §2.1 T-misc-01 改写为"netipsec 32 + netgraph 156+23 LEGACY + libalias 19 = 230 文件"。M1 完成 netipsec+netgraph，M2 Phase 4 完成 libalias。 |
+| 偏差 5：kern P0 改造手法迁移工作量 | spec 05 §2.2 列 4 个 kern P0（kern_mbuf/subr_epoch/uipc_mbuf/uipc_socket）+ 隐含 kern_descrip / kern_event 共 6 个重型改造，实测 delta-13 范围 16~147 行 + 14.0+ 引入大量新接口（const cap_rights_t / fde_change_size 删除 / p_tracevp 删除 / CURVNET_ASSERT_SET 引入 / specialfd_eventfd / ddb/db_ctf.h / opt_hwt_hooks.h / soaio_queue_generic 函数布局重排 等 13 处 ABI 冲突），单次会话内完成不可行。修订动作：DP-M2-5 引入"Phase 5b"内部分离机制（M2 内 7 个简单 P1/P2 改造 5 步法升级 + 10 个 P0/P1 重型改造保留 13.0 LEGACY），下次会话完成 Phase 5b 后再启动 M3 spec 05 §2.3 原 22 任务。 |
+| 修订后影响 | M2 G-M2 验收按 DP-M2-2=C 折中 Soft Gate 通过（35 个核心改造 + 9 个 ff_kern_* verify-only 全部单文件编译 + 0 lint）；M3 范围实质从"22 task"扩张为"Phase 5b 10 task + 22 task = 32 task"；spec 05 §2.2/§2.3 表述需对应更新（待 M3 启动时同步）。 |
+| 校验 | `read_lints zh_cn/` 返回 0 diagnostics；M2-execution-log.md §5/§7 完整记录 28 task 状态；M2-research-brief.md §1-§4 含 spec 偏差实测证据。 |
+
+### 12.14 修订 R-2026-05-29-14：13.0 baseline atomic.h atomic_fcmpset_int32 自身 bug 修复
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-29 |
+| 关联条目 | M2 Phase 7-A 严格编译时发现的 13.0 baseline 自身 bug；与 spec 02 §X 改造手法 9 大类无关，是 13.0 GCC 宽松未触发的 latent bug |
+| 错误根因 | F-Stack 13.0 在 `freebsd/amd64/include/atomic.h` 中加入的 `atomic_fcmpset_int32` 函数（line ~227-260）在函数体内每行末尾保留了 `\\` 续行符（看起来是从 `ATOMIC_CMPSET(TYPE)` 宏体复制时残留的）。13.0 GCC 编译该函数时宽松未发现，但 GCC 12 严格模式（`-Werror`）报 `expected ':' or ')' before MPLOCKED`，因 `\\` 让预处理器把整个函数体当 1 个 token，MPLOCKED 在错误位置展开。 |
+| 二次问题 | 同一函数引用的 `MPLOCKED` 宏在 15.0 amd64/include/atomic.h **已被移除**（13.0 line 150-152 SMP-conditional define `#define MPLOCKED "lock ; "` / `#define MPLOCKED` 在 14.0+ 已清理，15.0 上游改用字面字符串）；F-Stack 改造手法迁移 → MPLOCKED 替换为字面 `"lock ; "`。 |
+| 修复动作 | 在 `f-stack/freebsd/amd64/include/atomic.h` 的 `#ifdef FSTACK ... atomic_fcmpset_int32 ... #endif` 块内：(a) 删除函数体内全部 `\\` 续行符（保留必要的 `__asm __volatile(...)` 内的 stringification 和 inline asm 字符串拼接）；(b) `MPLOCKED` → `"lock ; "` 字面量（与 inline asm 原义等价）。delta-15 增量 ~30 行（注释区+函数体重写） |
+| 影响范围 | 仅 F-Stack `freebsd/amd64/include/atomic.h` 一文件；F-Stack 13.0 baseline 同位置 bug 不修（保持 baseline 历史准确）；本次修复仅在升 15.0 后的 `f-stack/` 目录生效。 |
+| 校验 | `cd f-stack/lib && make machine_includes && make kern_sysctl.o` 通过（之前因该 bug 失败）；`read_lints freebsd/amd64/include/atomic.h` 返回 0 diagnostics。 |
+| 文档同步 | M2-execution-log.md §4 打回事件 #2 完整记录；本次 spec 修订 §12.14 作为偏差登记。 |
