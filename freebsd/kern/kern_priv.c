@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2006 nCircle Network Security, Inc.
  * Copyright (c) 2009 Robert N. M. Watson
@@ -30,9 +30,6 @@
  * NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/jail.h>
@@ -245,7 +242,9 @@ priv_check_cred(struct ucred *cred, int priv)
 	 * but non-root users are expected to be able to read it (provided they
 	 * have permission to access /dev/[k]mem).
 	 */
-	if (priv == PRIV_KMEM_READ) {
+	switch (priv) {
+	case PRIV_KMEM_READ:
+	case PRIV_PROC_MEM_WRITE:	/* we already checked candebug */
 		error = 0;
 		goto out;
 	}

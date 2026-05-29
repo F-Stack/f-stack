@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c)2006,2007,2008,2009 YAMAMOTO Takashi,
  * Copyright (c) 2013 EMC Corp.
@@ -41,8 +41,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 
 #include <sys/param.h>
@@ -181,7 +179,7 @@ struct vmem {
 #define	BT_END(bt)	((bt)->bt_start + (bt)->bt_size - 1)
 
 #if defined(DIAGNOSTIC)
-static int enable_vmem_check = 1;
+static int enable_vmem_check = 0;
 SYSCTL_INT(_debug, OID_AUTO, vmem_check, CTLFLAG_RWTUN,
     &enable_vmem_check, 0, "Enable vmem check");
 static void vmem_check(vmem_t *);
@@ -238,9 +236,7 @@ static uma_zone_t vmem_bt_zone;
 static struct vmem kernel_arena_storage;
 static struct vmem buffer_arena_storage;
 static struct vmem transient_arena_storage;
-/* kernel and kmem arenas are aliased for backwards KPI compat. */
 vmem_t *kernel_arena = &kernel_arena_storage;
-vmem_t *kmem_arena = &kernel_arena_storage;
 vmem_t *buffer_arena = &buffer_arena_storage;
 vmem_t *transient_arena = &transient_arena_storage;
 
@@ -626,14 +622,14 @@ qc_drain(vmem_t *vm)
 		uma_zone_reclaim(vm->vm_qcache[i].qc_cache, UMA_RECLAIM_DRAIN);
 }
 
-#ifndef UMA_MD_SMALL_ALLOC
+#ifndef UMA_USE_DMAP
 
 static struct mtx_padalign __exclusive_cache_line vmem_bt_lock;
 
 /*
  * vmem_bt_alloc:  Allocate a new page of boundary tags.
  *
- * On architectures with uma_small_alloc there is no recursion; no address
+ * On architectures with UMA_USE_DMAP there is no recursion; no address
  * space need be allocated to allocate boundary tags.  For the others, we
  * must handle recursion.  Boundary tags are necessary to allocate new
  * boundary tags.
@@ -709,7 +705,7 @@ vmem_startup(void)
 	vmem_bt_zone = uma_zcreate("vmem btag",
 	    sizeof(struct vmem_btag), NULL, NULL, NULL, NULL,
 	    UMA_ALIGN_PTR, UMA_ZONE_VM);
-#ifndef UMA_MD_SMALL_ALLOC
+#ifndef UMA_USE_DMAP
 	mtx_init(&vmem_bt_lock, "btag lock", NULL, MTX_DEF);
 	uma_prealloc(vmem_bt_zone, BT_MAXALLOC);
 	/*

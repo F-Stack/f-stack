@@ -1,5 +1,4 @@
 #!/bin/sh
-# $FreeBSD$
 
 usage()
 {
@@ -46,7 +45,7 @@ work()
 
 
 #
-#MAIN PROGGRAM
+# MAIN PROGRAM
 #
 use_outfile="no"
 while getopts "o:" option
@@ -57,7 +56,7 @@ do
 	*)	usage;;
 	esac
 done
-shift $(($OPTIND - 1))
+shift $((OPTIND - 1))
 case $# in
 1)	;;
 *)	usage;;
@@ -65,8 +64,8 @@ esac
 
 if [ "$use_outfile" = "yes" ]
 then
-	work $1  3>"$outfile" >&3 3>&-
+	work "$1"  3>"$outfile" >&3 3>&-
 else
-	work $1
+	work "$1"
 fi
 

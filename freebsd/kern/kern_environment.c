@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 Michael Smith
  * All rights reserved.
@@ -36,26 +36,25 @@
  * the kernel.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
-#include <sys/proc.h>
-#include <sys/queue.h>
+#include <sys/eventhandler.h>
+#include <sys/systm.h>
+#include <sys/kenv.h>
+#include <sys/kernel.h>
+#include <sys/libkern.h>
+#include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
 #include <sys/priv.h>
-#include <sys/kenv.h>
-#include <sys/kernel.h>
-#include <sys/systm.h>
+#include <sys/proc.h>
+#include <sys/queue.h>
 #include <sys/sysent.h>
 #include <sys/sysproto.h>
-#include <sys/libkern.h>
-#include <sys/kenv.h>
-#include <sys/limits.h>
 
 #include <security/mac/mac_framework.h>
+
+#include <vm/uma.h>
 
 static char *_getenv_dynamic_locked(const char *name, int *idx);
 static char *_getenv_dynamic(const char *name, int *idx);
@@ -92,60 +91,103 @@ bool	dynamic_kenv;
 #define KENV_CHECK	if (!dynamic_kenv) \
 			    panic("%s: called before SI_SUB_KMEM", __func__)
 
-int
-sys_kenv(td, uap)
-	struct thread *td;
-	struct kenv_args /* {
-		int what;
-		const char *name;
-		char *value;
-		int len;
-	} */ *uap;
+static int
+kenv_dump(struct thread *td, char **envp, int what, char *value, int len)
 {
-	char *name, *value, *buffer = NULL;
-	size_t len, done, needed, buflen;
-	int error, i;
+	char *buffer, *senv;
+	size_t done, needed, buflen;
+	int error;
+
+	error = 0;
+	buffer = NULL;
+	done = needed = 0;
+
+	MPASS(what == KENV_DUMP || what == KENV_DUMP_LOADER ||
+	    what == KENV_DUMP_STATIC);
+
+	/*
+	 * For non-dynamic kernel environment, we pass in either md_envp or
+	 * kern_envp and we must traverse with kernenv_next().  This shuffling
+	 * of pointers simplifies the below loop by only differing in how envp
+	 * is modified.
+	 */
+	if (what != KENV_DUMP) {
+		senv = (char *)envp;
+		envp = &senv;
+	}
+
+	buflen = len;
+	if (buflen > KENV_SIZE * (KENV_MNAMELEN + kenv_mvallen + 2))
+		buflen = KENV_SIZE * (KENV_MNAMELEN +
+		    kenv_mvallen + 2);
+	if (len > 0 && value != NULL)
+		buffer = malloc(buflen, M_TEMP, M_WAITOK|M_ZERO);
+
+	/* Only take the lock for the dynamic kenv. */
+	if (what == KENV_DUMP)
+		mtx_lock(&kenv_lock);
+	while (*envp != NULL) {
+		len = strlen(*envp) + 1;
+		needed += len;
+		len = min(len, buflen - done);
+		/*
+		 * If called with a NULL or insufficiently large
+		 * buffer, just keep computing the required size.
+		 */
+		if (value != NULL && buffer != NULL && len > 0) {
+			bcopy(*envp, buffer + done, len);
+			done += len;
+		}
+
+		/* Advance the pointer depending on the kenv format. */
+		if (what == KENV_DUMP)
+			envp++;
+		else
+			senv = kernenv_next(senv);
+	}
+	if (what == KENV_DUMP)
+		mtx_unlock(&kenv_lock);
+	if (buffer != NULL) {
+		error = copyout(buffer, value, done);
+		free(buffer, M_TEMP);
+	}
+	td->td_retval[0] = ((done == needed) ? 0 : needed);
+	return (error);
+}
+
+int
+sys_kenv(struct thread *td, struct kenv_args *uap)
+{
+	char *name, *value;
+	size_t len;
+	int error;
 
 	KASSERT(dynamic_kenv, ("kenv: dynamic_kenv = false"));
 
 	error = 0;
-	if (uap->what == KENV_DUMP) {
+
+	switch (uap->what) {
+	case KENV_DUMP:
 #ifdef MAC
 		error = mac_kenv_check_dump(td->td_ucred);
 		if (error)
 			return (error);
 #endif
-		done = needed = 0;
-		buflen = uap->len;
-		if (buflen > KENV_SIZE * (KENV_MNAMELEN + kenv_mvallen + 2))
-			buflen = KENV_SIZE * (KENV_MNAMELEN +
-			    kenv_mvallen + 2);
-		if (uap->len > 0 && uap->value != NULL)
-			buffer = malloc(buflen, M_TEMP, M_WAITOK|M_ZERO);
-		mtx_lock(&kenv_lock);
-		for (i = 0; kenvp[i] != NULL; i++) {
-			len = strlen(kenvp[i]) + 1;
-			needed += len;
-			len = min(len, buflen - done);
-			/*
-			 * If called with a NULL or insufficiently large
-			 * buffer, just keep computing the required size.
-			 */
-			if (uap->value != NULL && buffer != NULL && len > 0) {
-				bcopy(kenvp[i], buffer + done, len);
-				done += len;
-			}
-		}
-		mtx_unlock(&kenv_lock);
-		if (buffer != NULL) {
-			error = copyout(buffer, uap->value, done);
-			free(buffer, M_TEMP);
-		}
-		td->td_retval[0] = ((done == needed) ? 0 : needed);
-		return (error);
-	}
-
-	switch (uap->what) {
+		return (kenv_dump(td, kenvp, uap->what, uap->value, uap->len));
+	case KENV_DUMP_LOADER:
+	case KENV_DUMP_STATIC:
+#ifdef MAC
+		error = mac_kenv_check_dump(td->td_ucred);
+		if (error)
+			return (error);
+#endif
+#ifdef PRESERVE_EARLY_KENV
+		return (kenv_dump(td,
+		    uap->what == KENV_DUMP_LOADER ? (char **)md_envp :
+		    (char **)kern_envp, uap->what, uap->value, uap->len));
+#else
+		return (ENOENT);
+#endif
 	case KENV_SET:
 		error = priv_check(td, PRIV_KENV_SET);
 		if (error)
@@ -317,11 +359,33 @@ init_static_kenv(char *buf, size_t len)
 	}
 }
 
+/* Maximum suffix number appended for duplicate environment variable names. */
+#define MAXSUFFIX 9999
+#define SUFFIXLEN strlen("_" __XSTRING(MAXSUFFIX))
+
+static void
+getfreesuffix(char *cp, size_t *n)
+{
+	size_t len = strlen(cp);
+	char * ncp;
+
+	ncp = malloc(len + SUFFIXLEN + 1, M_KENV, M_WAITOK);
+	memcpy(ncp, cp, len);
+	for (*n = 1; *n <= MAXSUFFIX; (*n)++) {
+		sprintf(&ncp[len], "_%zu", *n);
+		if (!_getenv_dynamic_locked(ncp, NULL))
+			break;
+	}
+	free(ncp, M_KENV);
+	if (*n > MAXSUFFIX)
+		panic("Too many duplicate kernel environment values: %s", cp);
+}
+
 static void
 init_dynamic_kenv_from(char *init_env, int *curpos)
 {
 	char *cp, *cpnext, *eqpos, *found;
-	size_t len;
+	size_t len, n;
 	int i;
 
 	if (init_env && *init_env != '\0') {
@@ -330,6 +394,12 @@ init_dynamic_kenv_from(char *init_env, int *curpos)
 		for (cp = init_env; cp != NULL; cp = cpnext) {
 			cpnext = kernenv_next(cp);
 			len = strlen(cp) + 1;
+			if (i > KENV_SIZE) {
+				printf(
+				"WARNING: too many kenv strings, ignoring %s\n",
+				    cp);
+				goto sanitize;
+			}
 			if (len > KENV_MNAMELEN + 1 + kenv_mvallen + 1) {
 				printf(
 				"WARNING: too long kenv string, ignoring %s\n",
@@ -345,27 +415,37 @@ init_dynamic_kenv_from(char *init_env, int *curpos)
 			}
 			*eqpos = 0;
 			/*
-			 * De-dupe the environment as we go.  We don't add the
-			 * duplicated assignments because config(8) will flip
-			 * the order of the static environment around to make
-			 * kernel processing match the order of specification
-			 * in the kernel config.
+			 * Handle duplicates in the environment as we go; we
+			 * add the duplicated assignments with _N suffixes.
+			 * This ensures that (a) if a variable is set in the
+			 * static environment and in the "loader" environment
+			 * provided by MD code, the value from the loader will
+			 * have the expected variable name and the value from
+			 * the static environment will have the suffix; and (b)
+			 * if the "loader" environment has the same variable
+			 * set multiple times (as is possible with values being
+			 * passed via the kernel "command line") the extra
+			 * values are visible to code which knows where to look
+			 * for them.
 			 */
 			found = _getenv_dynamic_locked(cp, NULL);
-			*eqpos = '=';
-			if (found != NULL)
-				goto sanitize;
-			if (i > KENV_SIZE) {
-				printf(
-				"WARNING: too many kenv strings, ignoring %s\n",
-				    cp);
-				goto sanitize;
+			if (found != NULL) {
+				getfreesuffix(cp, &n);
+				kenvp[i] = malloc(len + SUFFIXLEN,
+				    M_KENV, M_WAITOK);
+				sprintf(kenvp[i++], "%s_%zu=%s", cp, n,
+				    &eqpos[1]);
+			} else {
+				kenvp[i] = malloc(len, M_KENV, M_WAITOK);
+				*eqpos = '=';
+				strcpy(kenvp[i++], cp);
 			}
-
-			kenvp[i] = malloc(len, M_KENV, M_WAITOK);
-			strcpy(kenvp[i++], cp);
 sanitize:
+#ifdef PRESERVE_EARLY_KENV
+			continue;
+#else
 			explicit_bzero(cp, len - 1);
+#endif
 		}
 		*curpos = i;
 	}
@@ -588,6 +668,7 @@ kern_setenv(const char *name, const char *value)
 		kenvp[i + 1] = NULL;
 		mtx_unlock(&kenv_lock);
 	}
+	EVENTHANDLER_INVOKE(setenv, name);
 	return (0);
 }
 
@@ -611,6 +692,7 @@ kern_unsetenv(const char *name)
 		kenvp[i] = NULL;
 		mtx_unlock(&kenv_lock);
 		zfree(oldenv, M_KENV);
+		EVENTHANDLER_INVOKE(unsetenv, name);
 		return (0);
 	}
 	mtx_unlock(&kenv_lock);
@@ -702,7 +784,7 @@ getenv_array(const char *name, void *pdata, int size, int *psize,
 		/* check for invalid value */
 		if (ptr == end)
 			goto error;
-		
+
 		/* check for valid suffix */
 		switch (*end) {
 		case 't':
@@ -1016,65 +1098,65 @@ kernenv_next(char *cp)
 }
 
 void
-tunable_int_init(void *data)
+tunable_int_init(const void *data)
 {
-	struct tunable_int *d = (struct tunable_int *)data;
+	const struct tunable_int *d = data;
 
 	TUNABLE_INT_FETCH(d->path, d->var);
 }
 
 void
-tunable_long_init(void *data)
+tunable_long_init(const void *data)
 {
-	struct tunable_long *d = (struct tunable_long *)data;
+	const struct tunable_long *d = data;
 
 	TUNABLE_LONG_FETCH(d->path, d->var);
 }
 
 void
-tunable_ulong_init(void *data)
+tunable_ulong_init(const void *data)
 {
-	struct tunable_ulong *d = (struct tunable_ulong *)data;
+	const struct tunable_ulong *d = data;
 
 	TUNABLE_ULONG_FETCH(d->path, d->var);
 }
 
 void
-tunable_int64_init(void *data)
+tunable_int64_init(const void *data)
 {
-	struct tunable_int64 *d = (struct tunable_int64 *)data;
+	const struct tunable_int64 *d = data;
 
 	TUNABLE_INT64_FETCH(d->path, d->var);
 }
 
 void
-tunable_uint64_init(void *data)
+tunable_uint64_init(const void *data)
 {
-	struct tunable_uint64 *d = (struct tunable_uint64 *)data;
+	const struct tunable_uint64 *d = data;
 
 	TUNABLE_UINT64_FETCH(d->path, d->var);
 }
 
 void
-tunable_quad_init(void *data)
+tunable_quad_init(const void *data)
 {
-	struct tunable_quad *d = (struct tunable_quad *)data;
+	const struct tunable_quad *d = data;
 
 	TUNABLE_QUAD_FETCH(d->path, d->var);
 }
 
 void
-tunable_bool_init(void *data)
+tunable_bool_init(const void *data)
 {
-	struct tunable_bool *d = (struct tunable_bool *)data;
+	const struct tunable_bool *d = data;
 
 	TUNABLE_BOOL_FETCH(d->path, d->var);
 }
 
 void
-tunable_str_init(void *data)
+tunable_str_init(const void *data)
 {
-	struct tunable_str *d = (struct tunable_str *)data;
+	const struct tunable_str *d = data;
 
 	TUNABLE_STR_FETCH(d->path, d->var, d->size);
 }

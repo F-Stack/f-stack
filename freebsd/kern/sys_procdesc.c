@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009, 2016 Robert N. M. Watson
  * All rights reserved.
@@ -55,17 +55,12 @@
  *   generate SIGCHLD on termination, or be picked up by waitpid().
  * - The pdkill(2) system call may be used to deliver a signal to the process
  *   using its process descriptor.
- * - The pdwait4(2) system call may be used to block (or not) on a process
- *   descriptor to collect termination information.
  *
  * Open questions:
  *
  * - Will we want to add a pidtoprocdesc(2) system call to allow process
  *   descriptors to be created for processes without pdfork(2)?
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/capsicum.h>
@@ -99,8 +94,9 @@ static fo_kqfilter_t	procdesc_kqfilter;
 static fo_stat_t	procdesc_stat;
 static fo_close_t	procdesc_close;
 static fo_fill_kinfo_t	procdesc_fill_kinfo;
+static fo_cmp_t		procdesc_cmp;
 
-static struct fileops procdesc_ops = {
+static const struct fileops procdesc_ops = {
 	.fo_read = invfo_rdwr,
 	.fo_write = invfo_rdwr,
 	.fo_truncate = invfo_truncate,
@@ -113,6 +109,7 @@ static struct fileops procdesc_ops = {
 	.fo_chown = invfo_chown,
 	.fo_sendfile = invfo_sendfile,
 	.fo_fill_kinfo = procdesc_fill_kinfo,
+	.fo_cmp = procdesc_cmp,
 	.fo_flags = DFLAG_PASSABLE,
 };
 
@@ -121,7 +118,7 @@ static struct fileops procdesc_ops = {
  * died.
  */
 int
-procdesc_find(struct thread *td, int fd, cap_rights_t *rightsp,
+procdesc_find(struct thread *td, int fd, const cap_rights_t *rightsp,
     struct proc **p)
 {
 	struct procdesc *pd;
@@ -168,7 +165,8 @@ procdesc_pid(struct file *fp_procdesc)
  * Retrieve the PID associated with a process descriptor.
  */
 int
-kern_pdgetpid(struct thread *td, int fd, cap_rights_t *rightsp, pid_t *pidp)
+kern_pdgetpid(struct thread *td, int fd, const cap_rights_t *rightsp,
+    pid_t *pidp)
 {
 	struct file *fp;
 	int error;
@@ -272,6 +270,7 @@ procdesc_free(struct procdesc *pd)
 		KASSERT((pd->pd_flags & PDF_CLOSED),
 		    ("procdesc_free: !PDF_CLOSED"));
 
+		seldrain(&pd->pd_selinfo);
 		knlist_destroy(&pd->pd_selinfo.si_note);
 		PROCDESC_LOCK_DESTROY(pd);
 		free(pd, M_PROCDESC);
@@ -314,18 +313,15 @@ procdesc_exit(struct proc *p)
 		procdesc_free(pd);
 		return (1);
 	}
-	if (pd->pd_flags & PDF_SELECTED) {
-		pd->pd_flags &= ~PDF_SELECTED;
-		selwakeup(&pd->pd_selinfo);
-	}
+	selwakeup(&pd->pd_selinfo);
 	KNOTE_LOCKED(&pd->pd_selinfo.si_note, NOTE_EXIT);
 	PROCDESC_UNLOCK(pd);
 	return (0);
 }
 
 /*
- * When a process descriptor is reaped, perhaps as a result of close() or
- * pdwait4(), release the process's reference on the process descriptor.
+ * When a process descriptor is reaped, perhaps as a result of close(), release
+ * the process's reference on the process descriptor.
  */
 void
 procdesc_reap(struct proc *p)
@@ -432,10 +428,8 @@ procdesc_poll(struct file *fp, int events, struct ucred *active_cred,
 	PROCDESC_LOCK(pd);
 	if (pd->pd_flags & PDF_EXITED)
 		revents |= POLLHUP;
-	if (revents == 0) {
+	else
 		selrecord(td, &pd->pd_selinfo);
-		pd->pd_flags |= PDF_SELECTED;
-	}
 	PROCDESC_UNLOCK(pd);
 	return (revents);
 }
@@ -484,7 +478,7 @@ procdesc_kqops_event(struct knote *kn, long hint)
 	return (kn->kn_fflags != 0);
 }
 
-static struct filterops procdesc_kqops = {
+static const struct filterops procdesc_kqops = {
 	.f_isfd = 1,
 	.f_detach = procdesc_kqops_detach,
 	.f_event = procdesc_kqops_event,
@@ -508,8 +502,7 @@ procdesc_kqfilter(struct file *fp, struct knote *kn)
 }
 
 static int
-procdesc_stat(struct file *fp, struct stat *sb, struct ucred *active_cred,
-    struct thread *td)
+procdesc_stat(struct file *fp, struct stat *sb, struct ucred *active_cred)
 {
 	struct procdesc *pd;
 	struct timeval pstart, boottime;
@@ -557,4 +550,16 @@ procdesc_fill_kinfo(struct file *fp, struct kinfo_file *kif,
 	pdp = fp->f_data;
 	kif->kf_un.kf_proc.kf_pid = pdp->pd_pid;
 	return (0);
+}
+
+static int
+procdesc_cmp(struct file *fp1, struct file *fp2, struct thread *td)
+{
+	struct procdesc *pdp1, *pdp2;
+
+	if (fp2->f_type != DTYPE_PROCDESC)
+		return (3);
+	pdp1 = fp1->f_data;
+	pdp2 = fp2->f_data;
+	return (kcmp_cmp((uintptr_t)pdp1->pd_pid, (uintptr_t)pdp2->pd_pid));
 }

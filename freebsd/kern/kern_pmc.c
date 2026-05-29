@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2008 Joseph Koshy
  * Copyright (c) 2007 The FreeBSD Foundation
@@ -31,8 +31,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_hwpmc_hooks.h"
 
 #include <sys/param.h>
@@ -73,6 +71,10 @@ int __read_mostly (*pmc_hook)(struct thread *td, int function, void *arg) = NULL
 
 /* Interrupt handler */
 int __read_mostly (*pmc_intr)(struct trapframe *tf) = NULL;
+
+/* HWT hooks */
+void __read_mostly (*hwt_hook)(struct thread *td, int func, void *arg) = NULL;
+int __read_mostly (*hwt_intr)(struct trapframe *tf) = NULL;
 
 DPCPU_DEFINE(uint8_t, pmc_sampled);
 

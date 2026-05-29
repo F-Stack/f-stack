@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014, 2017 Mark Johnston <markj@FreeBSD.org>
  * Copyright (c) 2017 Conrad Meyer <cem@FreeBSD.org>
@@ -32,8 +32,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_gzio.h"
 #include "opt_zstdio.h"
 
@@ -41,6 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 
 #include <sys/compressor.h>
+#include <sys/endian.h>
 #include <sys/kernel.h>
 #include <sys/linker_set.h>
 #include <sys/malloc.h>
@@ -201,9 +200,9 @@ gz_write(void *stream, void *data, size_t len, compressor_cb_t cb,
 				 * Try to pack as much of the trailer into the
 				 * output buffer as we can.
 				 */
-				((uint32_t *)trailer)[0] = s->gz_crc;
+				((uint32_t *)trailer)[0] = htole32(s->gz_crc);
 				((uint32_t *)trailer)[1] =
-				    s->gz_stream.total_in;
+				    htole32(s->gz_stream.total_in);
 				room = MIN(sizeof(trailer),
 				    s->gz_bufsz - len);
 				memcpy(s->gz_buffer + len, trailer, room);
@@ -337,9 +336,14 @@ zstdio_reset(void *stream)
 	size_t res;
 
 	s = stream;
-	res = ZSTD_resetCStream(s->zst_stream, 0);
+	res = ZSTD_CCtx_reset(s->zst_stream, ZSTD_reset_session_only);
 	if (ZSTD_isError(res))
 		panic("%s: could not reset stream %p: %s\n", __func__, s,
+		    ZSTD_getErrorName(res));
+	res = ZSTD_CCtx_setPledgedSrcSize(s->zst_stream,
+	    ZSTD_CONTENTSIZE_UNKNOWN);
+	if (ZSTD_isError(res))
+		panic("%s: could not set src size on %p: %s\n", __func__, s,
 		    ZSTD_getErrorName(res));
 
 	s->zst_off = 0;
@@ -532,6 +536,12 @@ compressor_init(compressor_cb_t cb, int format, size_t maxiosize, int level,
 	s->cb = cb;
 	s->arg = arg;
 	return (s);
+}
+
+int
+compressor_format(const struct compressor *stream)
+{
+	return (stream->methods->format);
 }
 
 void

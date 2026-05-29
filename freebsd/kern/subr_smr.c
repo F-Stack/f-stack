@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019,2020 Jeffrey Roberson <jeff@FreeBSD.org>
  *
@@ -24,9 +24,6 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -579,6 +576,7 @@ out:
 	 */
 	atomic_thread_fence_acq();
 
+	KASSERT(success || !wait, ("%s: blocking poll failed", __func__));
 	return (success);
 }
 

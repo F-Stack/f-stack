@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2001 Jason Evans <jasone@freebsd.org>.  All rights reserved.
  *
@@ -34,9 +34,6 @@
  * "owners" (a misnomer in the context of semaphores), so should not be relied
  * upon in combination with semaphores.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>

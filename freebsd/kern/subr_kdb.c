@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 The FreeBSD Project
  * All rights reserved.
@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_kdb.h"
 #include "opt_stack.h"
 
@@ -40,11 +38,13 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/lock.h>
 #include <sys/pcpu.h>
+#include <sys/priv.h>
 #include <sys/proc.h>
 #include <sys/sbuf.h>
 #include <sys/smp.h>
 #include <sys/stack.h>
 #include <sys/sysctl.h>
+#include <sys/tslog.h>
 
 #include <machine/kdb.h>
 #include <machine/pcb.h>
@@ -52,6 +52,8 @@ __FBSDID("$FreeBSD$");
 #ifdef SMP
 #include <machine/smp.h>
 #endif
+
+#include <security/mac/mac_framework.h>
 
 u_char __read_frequently kdb_active = 0;
 static void *kdb_jmpbufp = NULL;
@@ -75,6 +77,7 @@ struct trapframe *kdb_frame = NULL;
 
 static int	kdb_break_to_debugger = KDB_BREAK_TO_DEBUGGER;
 static int	kdb_alt_break_to_debugger = KDB_ALT_BREAK_TO_DEBUGGER;
+static int	kdb_enter_securelevel = 0;
 
 KDB_BACKEND(null, NULL, NULL, NULL, NULL);
 
@@ -101,7 +104,7 @@ SYSCTL_PROC(_debug_kdb, OID_AUTO, current,
     "currently selected KDB backend");
 
 SYSCTL_PROC(_debug_kdb, OID_AUTO, enter,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_SECURE | CTLFLAG_MPSAFE, NULL, 0,
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, NULL, 0,
     kdb_sysctl_enter, "I",
     "set to enter the debugger");
 
@@ -131,12 +134,17 @@ SYSCTL_PROC(_debug_kdb, OID_AUTO, stack_overflow,
     "set to cause a stack overflow");
 
 SYSCTL_INT(_debug_kdb, OID_AUTO, break_to_debugger,
-    CTLFLAG_RWTUN | CTLFLAG_SECURE,
+    CTLFLAG_RWTUN,
     &kdb_break_to_debugger, 0, "Enable break to debugger");
 
 SYSCTL_INT(_debug_kdb, OID_AUTO, alt_break_to_debugger,
-    CTLFLAG_RWTUN | CTLFLAG_SECURE,
+    CTLFLAG_RWTUN,
     &kdb_alt_break_to_debugger, 0, "Enable alternative break to debugger");
+
+SYSCTL_INT(_debug_kdb, OID_AUTO, enter_securelevel,
+    CTLFLAG_RWTUN | CTLFLAG_SECURE,
+    &kdb_enter_securelevel, 0,
+    "Maximum securelevel to enter a KDB backend");
 
 /*
  * Flag to indicate to debuggers why the debugger was entered.
@@ -230,7 +238,7 @@ static int
 kdb_sysctl_trap(SYSCTL_HANDLER_ARGS)
 {
 	int error, i;
-	int *addr = (int *)0x10;
+	int *volatile addr = (int *)0x10;
 
 	error = sysctl_wire_old_buffer(req, sizeof(int));
 	if (error == 0) {
@@ -292,6 +300,7 @@ void
 kdb_panic(const char *msg)
 {
 
+	kdb_why = KDB_WHY_PANIC;
 	printf("KDB: panic\n");
 	panic("%s", msg);
 }
@@ -300,6 +309,7 @@ void
 kdb_reboot(void)
 {
 
+	kdb_why = KDB_WHY_REBOOT;
 	printf("KDB: reboot requested\n");
 	shutdown_nice(0);
 }
@@ -438,7 +448,6 @@ kdb_backtrace(void)
 		struct stack st;
 
 		printf("KDB: stack backtrace:\n");
-		stack_zero(&st);
 		stack_save(&st);
 		stack_print_ddb(&st);
 	}
@@ -475,6 +484,11 @@ int
 kdb_dbbe_select(const char *name)
 {
 	struct kdb_dbbe *be, **iter;
+	int error;
+
+	error = priv_check(curthread, PRIV_KDB_SET_BACKEND);
+	if (error)
+		return (error);
 
 	SET_FOREACH(iter, kdb_dbbe_set) {
 		be = *iter;
@@ -484,6 +498,42 @@ kdb_dbbe_select(const char *name)
 		}
 	}
 	return (EINVAL);
+}
+
+static bool
+kdb_backend_permitted(struct kdb_dbbe *be, struct thread *td)
+{
+	struct ucred *cred;
+	int error;
+
+	cred = td->td_ucred;
+	if (cred == NULL) {
+		KASSERT(td == &thread0 && cold,
+		    ("%s: missing cred for %p", __func__, td));
+		error = 0;
+	} else {
+		error = securelevel_gt(cred, kdb_enter_securelevel);
+	}
+#ifdef MAC
+	/*
+	 * Give MAC a chance to weigh in on the policy: if the securelevel is
+	 * not raised, then MAC may veto the backend, otherwise MAC may
+	 * explicitly grant access.
+	 */
+	if (error == 0) {
+		error = mac_kdb_check_backend(be);
+		if (error != 0) {
+			printf("MAC prevented execution of KDB backend: %s\n",
+			    be->dbbe_name);
+			return (false);
+		}
+	} else if (mac_kdb_grant_backend(be) == 0) {
+		error = 0;
+	}
+#endif
+	if (error != 0)
+		printf("refusing to enter KDB with elevated securelevel\n");
+	return (error == 0);
 }
 
 /*
@@ -499,9 +549,9 @@ kdb_enter(const char *why, const char *msg)
 {
 
 	if (kdb_dbbe != NULL && kdb_active == 0) {
+		kdb_why = why;
 		if (msg != NULL)
 			printf("KDB: enter: %s\n", msg);
-		kdb_why = why;
 		breakpoint();
 		kdb_why = KDB_WHY_UNSET;
 	}
@@ -516,6 +566,7 @@ kdb_init(void)
 	struct kdb_dbbe *be, **iter;
 	int cur_pri, pri;
 
+	TSENTER();
 	kdb_active = 0;
 	kdb_dbbe = NULL;
 	cur_pri = -1;
@@ -539,6 +590,7 @@ kdb_init(void)
 		printf("KDB: current backend: %s\n",
 		    kdb_dbbe->dbbe_name);
 	}
+	TSEXIT();
 }
 
 /*
@@ -584,18 +636,18 @@ kdb_reenter_silent(void)
 struct pcb *
 kdb_thr_ctx(struct thread *thr)
 {
-#if defined(SMP) && defined(KDB_STOPPEDPCB)
+#ifdef SMP
 	struct pcpu *pc;
 #endif
 
 	if (thr == curthread)
 		return (&kdb_pcb);
 
-#if defined(SMP) && defined(KDB_STOPPEDPCB)
+#ifdef SMP
 	STAILQ_FOREACH(pc, &cpuhead, pc_allcpu)  {
 		if (pc->pc_curthread == thr &&
 		    CPU_ISSET(pc->pc_cpuid, &stopped_cpus))
-			return (KDB_STOPPEDPCB(pc));
+			return (&stoppcbs[pc->pc_cpuid]);
 	}
 #endif
 	return (thr->td_pcb);
@@ -607,6 +659,10 @@ kdb_thr_first(void)
 	struct proc *p;
 	struct thread *thr;
 	u_int i;
+
+	/* This function may be called early. */
+	if (pidhashtbl == NULL)
+		return (&thread0);
 
 	for (i = 0; i <= pidhash; i++) {
 		LIST_FOREACH(p, &pidhashtbl[i], p_hash) {
@@ -651,6 +707,8 @@ kdb_thr_next(struct thread *thr)
 	thr = TAILQ_NEXT(thr, td_plist);
 	if (thr != NULL)
 		return (thr);
+	if (pidhashtbl == NULL)
+		return (NULL);
 	hash = p->p_pid & pidhash;
 	for (;;) {
 		p = LIST_NEXT(p, p_hash);
@@ -702,11 +760,11 @@ kdb_trap(int type, int code, struct trapframe *tf)
 	if (!SCHEDULER_STOPPED()) {
 #ifdef SMP
 		other_cpus = all_cpus;
-		CPU_ANDNOT(&other_cpus, &stopped_cpus);
+		CPU_ANDNOT(&other_cpus, &other_cpus, &stopped_cpus);
 		CPU_CLR(PCPU_GET(cpuid), &other_cpus);
 		stop_cpus_hard(other_cpus);
 #endif
-		curthread->td_stopsched = 1;
+		scheduler_stopped = true;
 		did_stop_cpus = 1;
 	} else
 		did_stop_cpus = 0;
@@ -724,6 +782,11 @@ kdb_trap(int type, int code, struct trapframe *tf)
 	cngrab();
 
 	for (;;) {
+		if (!kdb_backend_permitted(be, curthread)) {
+			/* Unhandled breakpoint traps are fatal. */
+			handled = 1;
+			break;
+		}
 		handled = be->dbbe_trap(type, code);
 		if (be == kdb_dbbe)
 			break;
@@ -738,9 +801,9 @@ kdb_trap(int type, int code, struct trapframe *tf)
 	kdb_active--;
 
 	if (did_stop_cpus) {
-		curthread->td_stopsched = 0;
+		scheduler_stopped = false;
 #ifdef SMP
-		CPU_AND(&other_cpus, &stopped_cpus);
+		CPU_AND(&other_cpus, &other_cpus, &stopped_cpus);
 		restart_cpus(other_cpus);
 #endif
 	}

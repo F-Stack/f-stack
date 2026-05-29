@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002 Alfred Perlstein <alfred@FreeBSD.org>
  * Copyright (c) 2003-2005 SPARTA, Inc.
@@ -39,8 +39,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_posix.h"
 
 #include <sys/param.h>
@@ -125,8 +123,8 @@ static int	ksem_create(struct thread *td, const char *path,
 		    semid_t *semidp, mode_t mode, unsigned int value,
 		    int flags, int compat32);
 static void	ksem_drop(struct ksem *ks);
-static int	ksem_get(struct thread *td, semid_t id, cap_rights_t *rightsp,
-    struct file **fpp);
+static int	ksem_get(struct thread *td, semid_t id,
+		    const cap_rights_t *rightsp, struct file **fpp);
 static struct ksem *ksem_hold(struct ksem *ks);
 static void	ksem_insert(char *path, Fnv32_t fnv, struct ksem *ks);
 static struct ksem *ksem_lookup(char *path, Fnv32_t fnv);
@@ -142,7 +140,7 @@ static fo_chown_t	ksem_chown;
 static fo_fill_kinfo_t	ksem_fill_kinfo;
 
 /* File descriptor operations. */
-static struct fileops ksem_ops = {
+static const struct fileops ksem_ops = {
 	.fo_read = invfo_rdwr,
 	.fo_write = invfo_rdwr,
 	.fo_truncate = invfo_truncate,
@@ -155,14 +153,14 @@ static struct fileops ksem_ops = {
 	.fo_chown = ksem_chown,
 	.fo_sendfile = invfo_sendfile,
 	.fo_fill_kinfo = ksem_fill_kinfo,
+	.fo_cmp = file_kcmp_generic,
 	.fo_flags = DFLAG_PASSABLE
 };
 
 FEATURE(posix_sem, "POSIX semaphores");
 
 static int
-ksem_stat(struct file *fp, struct stat *sb, struct ucred *active_cred,
-    struct thread *td)
+ksem_stat(struct file *fp, struct stat *sb, struct ucred *active_cred)
 {
 	struct ksem *ks;
 #ifdef MAC
@@ -589,7 +587,7 @@ ksem_create(struct thread *td, const char *name, semid_t *semidp, mode_t mode,
 }
 
 static int
-ksem_get(struct thread *td, semid_t id, cap_rights_t *rightsp,
+ksem_get(struct thread *td, semid_t id, const cap_rights_t *rightsp,
     struct file **fpp)
 {
 	struct ksem *ks;
@@ -971,7 +969,7 @@ int
 freebsd32_ksem_init(struct thread *td, struct freebsd32_ksem_init_args *uap)
 {
 
-	return (ksem_create(td, NULL, uap->idp, S_IRWXU | S_IRWXG, uap->value,
+	return (ksem_create(td, NULL, (semid_t *)uap->idp, S_IRWXU | S_IRWXG, uap->value,
 	    0, 1));
 }
 
@@ -981,7 +979,7 @@ freebsd32_ksem_open(struct thread *td, struct freebsd32_ksem_open_args *uap)
 
 	if ((uap->oflag & ~(O_CREAT | O_EXCL)) != 0)
 		return (EINVAL);
-	return (ksem_create(td, uap->name, uap->idp, uap->mode, uap->value,
+	return (ksem_create(td, uap->name, (semid_t *)uap->idp, uap->mode, uap->value,
 	    uap->oflag, 1));
 }
 

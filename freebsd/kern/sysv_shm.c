@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-4-Clause AND BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-4-Clause AND BSD-2-Clause
  *
  * Copyright (c) 1994 Adam Glass and Charles Hannum.  All rights reserved.
  *
@@ -68,9 +68,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_sysvipc.h"
 
 #include <sys/param.h>
@@ -111,10 +108,6 @@ FEATURE(sysv_shm, "System V shared memory segments support");
 
 static MALLOC_DEFINE(M_SHM, "shm", "SVID compatible shared memory segments");
 
-#define	SHMSEG_FREE     	0x0200
-#define	SHMSEG_REMOVED  	0x0400
-#define	SHMSEG_ALLOCATED	0x0800
-
 static int shm_last_free, shm_nused, shmalloced;
 vm_size_t shm_committed;
 static struct shmid_kernel *shmsegs;
@@ -140,6 +133,8 @@ static int shmunload(void);
 #ifndef SYSVSHM
 static void shmexit_myhook(struct vmspace *vm);
 static void shmfork_myhook(struct proc *p1, struct proc *p2);
+static void shmobjinfo_myhook(vm_object_t obj, key_t *key,
+    unsigned short *seq);
 #endif
 static int sysctl_shmsegs(SYSCTL_HANDLER_ARGS);
 static void shm_remove(struct shmid_kernel *, int);
@@ -155,7 +150,7 @@ static void shm_prison_cleanup(struct prison *);
  * Tuneable values.
  */
 #ifndef SHMMAXPGS
-#define	SHMMAXPGS	131072	/* Note: sysv shared memory is swap backed. */
+#define	SHMMAXPGS	131072ul /* Note: sysv shared memory is swap backed. */
 #endif
 #ifndef SHMMAX
 #define	SHMMAX	(SHMMAXPGS*PAGE_SIZE)
@@ -749,6 +744,10 @@ shmget_allocate_segment(struct thread *td, key_t key, size_t size, int mode)
 		return (ENOMEM);
 	}
 
+	VM_OBJECT_WLOCK(shm_object);
+	vm_object_set_flag(shm_object, OBJ_SYSVSHM);
+	VM_OBJECT_WUNLOCK(shm_object);
+
 	shmseg->object = shm_object;
 	shmseg->u.shm_perm.cuid = shmseg->u.shm_perm.uid = cred->cr_uid;
 	shmseg->u.shm_perm.cgid = shmseg->u.shm_perm.gid = cred->cr_gid;
@@ -859,6 +858,29 @@ shmexit_myhook(struct vmspace *vm)
 	}
 }
 
+#ifdef SYSVSHM
+void
+shmobjinfo(vm_object_t obj, key_t *key, unsigned short *seq)
+#else
+static void
+shmobjinfo_myhook(vm_object_t obj, key_t *key, unsigned short *seq)
+#endif
+{
+	int i;
+
+	*key = 0;	/* For statically compiled-in sysv_shm.c */
+	*seq = 0;
+	SYSVSHM_LOCK();
+	for (i = 0; i < shmalloced; i++) {
+		if (shmsegs[i].object == obj) {
+			*key = shmsegs[i].u.shm_perm.key;
+			*seq = shmsegs[i].u.shm_perm.seq;
+			break;
+		}
+	}
+	SYSVSHM_UNLOCK();
+}
+
 static void
 shmrealloc(void)
 {
@@ -965,6 +987,7 @@ shminit(void)
 #ifndef SYSVSHM
 	shmexit_hook = &shmexit_myhook;
 	shmfork_hook = &shmfork_myhook;
+	shmobjinfo_hook = &shmobjinfo_myhook;
 #endif
 
 	/* Set current prisons according to their allow.sysvipc. */
@@ -979,7 +1002,7 @@ shminit(void)
 		if (rsv == NULL)
 			rsv = osd_reserve(shm_prison_slot);
 		prison_lock(pr);
-		if (prison_isvalid(pr) && (pr->pr_allow & PR_ALLOW_SYSVIPC)) {
+		if (pr->pr_allow & PR_ALLOW_SYSVIPC) {
 			(void)osd_jail_set_reserved(pr, shm_prison_slot, rsv,
 			    &prison0);
 			rsv = NULL;
@@ -1032,6 +1055,7 @@ shmunload(void)
 #ifndef SYSVSHM
 	shmexit_hook = NULL;
 	shmfork_hook = NULL;
+	shmobjinfo_hook = NULL;
 #endif
 	sx_destroy(&sysvshmsx);
 	return (0);
@@ -1093,6 +1117,42 @@ sysctl_shmsegs(SYSCTL_HANDLER_ARGS)
 	}
 	SYSVSHM_UNLOCK();
 	return (error);
+}
+
+int
+kern_get_shmsegs(struct thread *td, struct shmid_kernel **res, size_t *sz)
+{
+	struct shmid_kernel *pshmseg;
+	struct prison *pr, *rpr;
+	int i;
+
+	SYSVSHM_LOCK();
+	*sz = shmalloced;
+	if (res == NULL)
+		goto out;
+
+	pr = td->td_ucred->cr_prison;
+	rpr = shm_find_prison(td->td_ucred);
+	*res = malloc(sizeof(struct shmid_kernel) * shmalloced, M_TEMP,
+	    M_WAITOK);
+	for (i = 0; i < shmalloced; i++) {
+		pshmseg = &(*res)[i];
+		if ((shmsegs[i].u.shm_perm.mode & SHMSEG_ALLOCATED) == 0 ||
+		    rpr == NULL || shm_prison_cansee(rpr, &shmsegs[i]) != 0) {
+			bzero(pshmseg, sizeof(*pshmseg));
+			pshmseg->u.shm_perm.mode = SHMSEG_FREE;
+		} else {
+			*pshmseg = shmsegs[i];
+			if (pshmseg->cred->cr_prison != pr)
+				pshmseg->u.shm_perm.key = IPC_PRIVATE;
+		}
+		pshmseg->object = NULL;
+		pshmseg->label = NULL;
+		pshmseg->cred = NULL;
+	}
+out:
+	SYSVSHM_UNLOCK();
+	return (0);
 }
 
 static int
@@ -1414,7 +1474,7 @@ freebsd32_shmsys(struct thread *td, struct freebsd32_shmsys_args *uap)
 		return (EINVAL);
 	}
 #else
-	return (nosys(td, NULL));
+	return (kern_nosys(td, 0));
 #endif
 }
 
@@ -1431,7 +1491,7 @@ freebsd7_freebsd32_shmctl(struct thread *td,
 		struct shminfo shminfo;
 	} u;
 	union {
-		struct shmid_ds32_old shmid_ds32;
+		struct shmid_ds_old32 shmid_ds32;
 		struct shm_info32 shm_info32;
 		struct shminfo32 shminfo32;
 	} u32;

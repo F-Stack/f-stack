@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 Poul-Henning Kamp.  All rights reserved.
  *
@@ -24,9 +24,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -68,9 +65,7 @@ ctty_clone(void *arg, struct ucred *cred, char *name, int namelen,
 	if (strcmp(name, "tty"))
 		return;
 	p = curproc;
-	sx_sunlock(&clone_drain_lock);
 	sx_slock(&proctree_lock);
-	sx_slock(&clone_drain_lock);
 	dev_lock();
 	if (!(p->p_flag & P_CONTROLT))
 		*dev = ctty;

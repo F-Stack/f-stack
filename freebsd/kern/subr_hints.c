@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000,2001 Peter Wemm <peter@FreeBSD.org>
  * All rights reserved.
@@ -25,9 +25,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/lock.h>
@@ -127,7 +124,7 @@ res_find(char **hintp_cookie, int *line, int *startln,
     const char **ret_name, int *ret_namelen, int *ret_unit,
     const char **ret_resname, int *ret_resnamelen, const char **ret_value)
 {
-	int fbacklvl = FBACK_MDENV, i = 0, n = 0;
+	int fbacklvl = FBACK_MDENV, i = 0, n = 0, namelen;
 	char r_name[32];
 	int r_unit;
 	char r_resname[32];
@@ -229,12 +226,16 @@ fallback:
 		i = 0;
 	}
 
+	if (name)
+		namelen = strlen(name);
 	cp = hintp;
 	while (cp) {
 		(*line)++;
 		if (strncmp(cp, "hint.", 5) != 0)
 			goto nexthint;
-		n = sscanf(cp, "hint.%32[^.].%d.%32[^=]=%127s", r_name, &r_unit,
+		if (name && strncmp(cp + 5, name, namelen) != 0)
+			goto nexthint;
+		n = sscanf(cp + 5, "%32[^.].%d.%32[^=]=%127s", r_name, &r_unit,
 		    r_resname, r_value);
 		if (n != 4) {
 			printf("CONFIG: invalid hint '%s'\n", cp);

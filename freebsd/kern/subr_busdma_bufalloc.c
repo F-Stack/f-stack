@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Ian Lepore
  * All rights reserved.
@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * Buffer allocation support routines for bus_dmamem_alloc implementations.
  */
@@ -74,7 +72,7 @@ struct busdma_bufalloc {
 
 busdma_bufalloc_t 
 busdma_bufalloc_create(const char *name, bus_size_t minimum_alignment,
-    uma_alloc alloc_func, uma_free free_func, u_int32_t zcreate_flags)
+    uma_alloc alloc_func, uma_free free_func, uint32_t zcreate_flags)
 {
 	struct busdma_bufalloc *ba;
 	struct busdma_bufzone *bz;
@@ -102,10 +100,6 @@ busdma_bufalloc_create(const char *name, bus_size_t minimum_alignment,
 		bz->size = cursize;
 		bz->umazone = uma_zcreate(bz->name, bz->size,
 		    NULL, NULL, NULL, NULL, bz->size - 1, zcreate_flags);
-		if (bz->umazone == NULL) {
-			busdma_bufalloc_destroy(ba);
-			return (NULL);
-		}
 		if (alloc_func != NULL)
 			uma_zone_set_allocf(bz->umazone, alloc_func);
 		if (free_func != NULL)
@@ -158,7 +152,7 @@ busdma_bufalloc_alloc_uncacheable(uma_zone_t zone, vm_size_t size, int domain,
 	/* Inform UMA that this allocator uses kernel_arena/object. */
 	*pflag = UMA_SLAB_KERNEL;
 
-	return ((void *)kmem_alloc_attr_domainset(DOMAINSET_FIXED(domain), size,
+	return (kmem_alloc_attr_domainset(DOMAINSET_FIXED(domain), size,
 	    wait, 0, BUS_SPACE_MAXADDR, VM_MEMATTR_UNCACHEABLE));
 #else
 	panic("VM_MEMATTR_UNCACHEABLE unavailable");
@@ -169,5 +163,5 @@ void
 busdma_bufalloc_free_uncacheable(void *item, vm_size_t size, uint8_t pflag)
 {
 
-	kmem_free((vm_offset_t)item, size);
+	kmem_free(item, size);
 }

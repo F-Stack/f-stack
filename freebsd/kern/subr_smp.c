@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001, John Baldwin <jhb@FreeBSD.org>.
  *
@@ -30,9 +30,6 @@
  * used for the kernel SMP support.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -48,6 +45,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 
 #include <machine/cpu.h>
+#include <machine/pcb.h>
 #include <machine/smp.h>
 
 #include "opt_sched.h"
@@ -75,6 +73,9 @@ int mp_maxcpus = MAXCPU;
 
 volatile int smp_started;
 u_int mp_maxid;
+
+/* Array of CPU contexts saved during a panic. */
+struct pcb *stoppcbs;
 
 static SYSCTL_NODE(_kern, OID_AUTO, smp,
     CTLFLAG_RD | CTLFLAG_CAPRD | CTLFLAG_MPSAFE, NULL,
@@ -111,12 +112,6 @@ SYSCTL_INT(_kern_smp, OID_AUTO, topology, CTLFLAG_RDTUN, &smp_topology, 0,
     "Topology override setting; 0 is default provided by hardware.");
 
 #ifdef SMP
-/* Enable forwarding of a signal to a process running on a different CPU */
-static int forward_signal_enabled = 1;
-SYSCTL_INT(_kern_smp, OID_AUTO, forward_signal_enabled, CTLFLAG_RW,
-	   &forward_signal_enabled, 0,
-	   "Forwarding of a signal to a process on a different CPU");
-
 /* Variables needed for SMP rendezvous. */
 static volatile int smp_rv_ncpus;
 static void (*volatile smp_rv_setup_func)(void *arg);
@@ -125,11 +120,11 @@ static void (*volatile smp_rv_teardown_func)(void *arg);
 static void *volatile smp_rv_func_arg;
 static volatile int smp_rv_waiters[4];
 
-/* 
+/*
  * Shared mutex to restrict busywaits between smp_rendezvous() and
  * smp(_targeted)_tlb_shootdown().  A deadlock occurs if both of these
  * functions trigger at once and cause multiple CPUs to busywait with
- * interrupts disabled. 
+ * interrupts disabled.
  */
 struct mtx smp_ipi_mtx;
 
@@ -148,6 +143,8 @@ mp_setmaxid(void *dummy)
 	KASSERT(mp_maxid >= mp_ncpus - 1,
 	    ("%s: counters out of sync: max %d, count %d", __func__,
 		mp_maxid, mp_ncpus));
+
+	cpusetsizemin = howmany(mp_maxid + 1, NBBY);
 }
 SYSINIT(cpu_mp_setmaxid, SI_SUB_TUNABLES, SI_ORDER_FIRST, mp_setmaxid, NULL);
 
@@ -176,6 +173,9 @@ mp_start(void *dummy)
 	if (mp_ncores < 0)
 		mp_ncores = mp_ncpus;
 
+	stoppcbs = mallocarray(mp_maxid + 1, sizeof(struct pcb), M_DEVBUF,
+	    M_WAITOK | M_ZERO);
+
 	cpu_mp_announce();
 }
 SYSINIT(cpu_mp, SI_SUB_CPU, SI_ORDER_THIRD, mp_start, NULL);
@@ -186,7 +186,7 @@ forward_signal(struct thread *td)
 	int id;
 
 	/*
-	 * signotify() has already set TDF_ASTPENDING and TDF_NEEDSIGCHECK on
+	 * signotify() has already set TDA_AST and TDA_SIG on td_ast for
 	 * this thread, so all we need to do is poke it if it is currently
 	 * executing so that it executes ast().
 	 */
@@ -197,8 +197,6 @@ forward_signal(struct thread *td)
 	CTR1(KTR_SMP, "forward_signal(%p)", td->td_proc);
 
 	if (!smp_started || cold || KERNEL_PANICKED())
-		return;
-	if (!forward_signal_enabled)
 		return;
 
 	/* No need to IPI ourself. */
@@ -332,7 +330,7 @@ suspend_cpus(cpuset_t map)
 #endif
 
 /*
- * Called by a CPU to restart stopped CPUs. 
+ * Called by a CPU to restart stopped CPUs.
  *
  * Usually (but not necessarily) called with 'stopped_cpus' as its arg.
  *
@@ -435,7 +433,7 @@ resume_cpus(cpuset_t map)
 #undef X86
 
 /*
- * All-CPU rendezvous.  CPUs are signalled, all execute the setup function 
+ * All-CPU rendezvous.  CPUs are signalled, all execute the setup function
  * (if specified), rendezvous, execute the action function (if specified),
  * rendezvous again, execute the teardown function (if specified), and then
  * resume.
@@ -500,8 +498,8 @@ smp_rendezvous_action(void)
 	 * function before moving on to the action function.
 	 */
 	if (local_setup_func != smp_no_rendezvous_barrier) {
-		if (smp_rv_setup_func != NULL)
-			smp_rv_setup_func(smp_rv_func_arg);
+		if (local_setup_func != NULL)
+			local_setup_func(local_func_arg);
 		atomic_add_int(&smp_rv_waiters[1], 1);
 		while (smp_rv_waiters[1] < smp_rv_ncpus)
                 	cpu_spinwait();
@@ -628,13 +626,29 @@ smp_rendezvous(void (* setup_func)(void *),
 	smp_rendezvous_cpus(all_cpus, setup_func, action_func, teardown_func, arg);
 }
 
-static struct cpu_group group[MAXCPU * MAX_CACHE_LEVELS + 1];
+static void
+smp_topo_fill(struct cpu_group *cg)
+{
+	int c;
+
+	for (c = 0; c < cg->cg_children; c++)
+		smp_topo_fill(&cg->cg_child[c]);
+	cg->cg_first = CPU_FFS(&cg->cg_mask) - 1;
+	cg->cg_last = CPU_FLS(&cg->cg_mask) - 1;
+}
 
 struct cpu_group *
 smp_topo(void)
 {
 	char cpusetbuf[CPUSETBUFSIZ], cpusetbuf2[CPUSETBUFSIZ];
-	struct cpu_group *top;
+	static struct cpu_group *top = NULL;
+
+	/*
+	 * The first call to smp_topo() is guaranteed to occur
+	 * during the kernel boot while we are still single-threaded.
+	 */
+	if (top != NULL)
+		return (top);
 
 	/*
 	 * Check for a fake topology request for debugging purposes.
@@ -693,15 +707,21 @@ smp_topo(void)
 		top = &top->cg_child[0];
 		top->cg_parent = NULL;
 	}
+	smp_topo_fill(top);
 	return (top);
 }
 
 struct cpu_group *
 smp_topo_alloc(u_int count)
 {
+	static struct cpu_group *group = NULL;
 	static u_int index;
 	u_int curr;
 
+	if (group == NULL) {
+		group = mallocarray((mp_maxid + 1) * MAX_CACHE_LEVELS + 1,
+		    sizeof(*group), M_DEVBUF, M_WAITOK | M_ZERO);
+	}
 	curr = index;
 	index += count;
 	return (&group[curr]);
@@ -712,7 +732,7 @@ smp_topo_none(void)
 {
 	struct cpu_group *top;
 
-	top = &group[0];
+	top = smp_topo_alloc(1);
 	top->cg_parent = NULL;
 	top->cg_child = NULL;
 	top->cg_mask = all_cpus;
@@ -749,7 +769,7 @@ smp_topo_addleaf(struct cpu_group *parent, struct cpu_group *child, int share,
 			    parent,
 			    cpusetobj_strprint(cpusetbuf, &parent->cg_mask),
 			    cpusetobj_strprint(cpusetbuf2, &child->cg_mask));
-		CPU_OR(&parent->cg_mask, &child->cg_mask);
+		CPU_OR(&parent->cg_mask, &parent->cg_mask, &child->cg_mask);
 		parent->cg_count += child->cg_count;
 	}
 
@@ -766,9 +786,9 @@ smp_topo_1level(int share, int count, int flags)
 	int i;
 
 	cpu = 0;
-	top = &group[0];
 	packages = mp_ncpus / count;
-	top->cg_child = child = &group[1];
+	top = smp_topo_alloc(1 + packages);
+	top->cg_child = child = top + 1;
 	top->cg_level = CG_SHARE_NONE;
 	for (i = 0; i < packages; i++, child++)
 		cpu = smp_topo_addleaf(top, child, share, count, flags, cpu);
@@ -787,8 +807,9 @@ smp_topo_2level(int l2share, int l2count, int l1share, int l1count,
 	int j;
 
 	cpu = 0;
-	top = &group[0];
-	l2g = &group[1];
+	top = smp_topo_alloc(1 + mp_ncpus / (l2count * l1count) +
+	    mp_ncpus / l1count);
+	l2g = top + 1;
 	top->cg_child = l2g;
 	top->cg_level = CG_SHARE_NONE;
 	top->cg_children = mp_ncpus / (l2count * l1count);
@@ -895,6 +916,8 @@ smp_rendezvous_cpus_retry(cpuset_t map,
 {
 	int cpu;
 
+	CPU_COPY(&map, &arg->cpus);
+
 	/*
 	 * Only one CPU to execute on.
 	 */
@@ -914,7 +937,6 @@ smp_rendezvous_cpus_retry(cpuset_t map,
 	 * Execute an action on all specified CPUs while retrying until they
 	 * all acknowledge completion.
 	 */
-	CPU_COPY(&map, &arg->cpus);
 	for (;;) {
 		smp_rendezvous_cpus(
 		    arg->cpus,
@@ -942,25 +964,32 @@ smp_rendezvous_cpus_done(struct smp_rendezvous_cpus_retry_arg *arg)
 }
 
 /*
+ * If (prio & PDROP) == 0:
  * Wait for specified idle threads to switch once.  This ensures that even
  * preempted threads have cycled through the switch function once,
  * exiting their codepaths.  This allows us to change global pointers
  * with no other synchronization.
+ * If (prio & PDROP) != 0:
+ * Force the specified CPUs to switch context at least once.
  */
 int
 quiesce_cpus(cpuset_t map, const char *wmesg, int prio)
 {
 	struct pcpu *pcpu;
-	u_int gen[MAXCPU];
+	u_int *gen;
 	int error;
 	int cpu;
 
 	error = 0;
-	for (cpu = 0; cpu <= mp_maxid; cpu++) {
-		if (!CPU_ISSET(cpu, &map) || CPU_ABSENT(cpu))
-			continue;
-		pcpu = pcpu_find(cpu);
-		gen[cpu] = pcpu->pc_idlethread->td_generation;
+	if ((prio & PDROP) == 0) {
+		gen = mallocarray(sizeof(u_int), mp_maxid + 1, M_TEMP,
+		    M_WAITOK);
+		for (cpu = 0; cpu <= mp_maxid; cpu++) {
+			if (!CPU_ISSET(cpu, &map) || CPU_ABSENT(cpu))
+				continue;
+			pcpu = pcpu_find(cpu);
+			gen[cpu] = pcpu->pc_idlethread->td_generation;
+		}
 	}
 	for (cpu = 0; cpu <= mp_maxid; cpu++) {
 		if (!CPU_ISSET(cpu, &map) || CPU_ABSENT(cpu))
@@ -969,8 +998,10 @@ quiesce_cpus(cpuset_t map, const char *wmesg, int prio)
 		thread_lock(curthread);
 		sched_bind(curthread, cpu);
 		thread_unlock(curthread);
+		if ((prio & PDROP) != 0)
+			continue;
 		while (gen[cpu] == pcpu->pc_idlethread->td_generation) {
-			error = tsleep(quiesce_cpus, prio, wmesg, 1);
+			error = tsleep(quiesce_cpus, prio & ~PDROP, wmesg, 1);
 			if (error != EWOULDBLOCK)
 				goto out;
 			error = 0;
@@ -980,6 +1011,8 @@ out:
 	thread_lock(curthread);
 	sched_unbind(curthread);
 	thread_unlock(curthread);
+	if ((prio & PDROP) == 0)
+		free(gen, M_TEMP);
 
 	return (error);
 }

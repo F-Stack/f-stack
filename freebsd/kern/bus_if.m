@@ -23,7 +23,6 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-# $FreeBSD$
 #
 
 #include <sys/types.h>
@@ -64,29 +63,32 @@ CODE {
 	    int unit)
 	{
 
-		panic("bus_add_child is not implemented");
+		panic("%s: bus_add_child is not implemented, name '%s', "
+		    "unit %d", device_get_nameunit(bus), name, unit);
 	}
 
-	static int null_reset_post(device_t bus, device_t dev)
-	{
-		return (0);
-	}
-
-	static int null_reset_prepare(device_t bus, device_t dev)
+	static int
+	null_reset_post(device_t bus, device_t dev)
 	{
 		return (0);
 	}
 
 	static int
-	null_translate_resource(device_t bus, int type, rman_res_t start,
-		rman_res_t *newstart)
+	null_reset_prepare(device_t bus, device_t dev)
 	{
-		if (device_get_parent(bus) != NULL)
-			return (BUS_TRANSLATE_RESOURCE(device_get_parent(bus),
-			    type, start, newstart));
-
-		*newstart = start;
 		return (0);
+	}
+
+	static struct rman *
+	null_get_rman(device_t bus, int type, u_int flags)
+	{
+		return (NULL);
+	}
+
+	static struct resource_list *
+	null_get_resource_list(device_t bus, device_t dev)
+	{
+		return (NULL);
 	}
 };
 
@@ -264,7 +266,7 @@ METHOD device_t add_child {
  */
 METHOD int rescan {
 	device_t _dev;
-}
+} DEFAULT bus_null_rescan;
 
 /**
  * @brief Allocate a system resource
@@ -315,15 +317,11 @@ METHOD struct resource * alloc_resource {
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which allocated the resource
- * @param _type		the type of resource
- * @param _rid		the resource identifier
  * @param _r		the resource to activate
  */
 METHOD int activate_resource {
 	device_t	_dev;
 	device_t	_child;
-	int		_type;
-	int		_rid;
 	struct resource *_r;
 };
 
@@ -337,7 +335,6 @@ METHOD int activate_resource {
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which allocated the resource
- * @param _type		the type of resource
  * @param _r		the resource to map
  * @param _args		optional attributes of the mapping
  * @param _map		the mapping
@@ -345,7 +342,6 @@ METHOD int activate_resource {
 METHOD int map_resource {
 	device_t	_dev;
 	device_t	_child;
-	int		_type;
 	struct resource *_r;
 	struct resource_map_request *_args;
 	struct resource_map *_map;
@@ -361,14 +357,12 @@ METHOD int map_resource {
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which allocated the resource
- * @param _type		the type of resource
  * @param _r		the resource
  * @param _map		the mapping to release
  */
 METHOD int unmap_resource {
 	device_t	_dev;
 	device_t	_child;
-	int		_type;
 	struct resource *_r;
 	struct resource_map *_map;
 } DEFAULT bus_generic_unmap_resource;
@@ -382,15 +376,11 @@ METHOD int unmap_resource {
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which allocated the resource
- * @param _type		the type of resource
- * @param _rid		the resource identifier
  * @param _r		the resource to deactivate
  */
 METHOD int deactivate_resource {
 	device_t	_dev;
 	device_t	_child;
-	int		_type;
-	int		_rid;
 	struct resource *_r;
 };
 
@@ -404,7 +394,6 @@ METHOD int deactivate_resource {
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which allocated the resource
- * @param _type		the type of resource
  * @param _res		the resource to adjust
  * @param _start	the new starting address of the resource range
  * @param _end		the new ending address of the resource range
@@ -412,16 +401,17 @@ METHOD int deactivate_resource {
 METHOD int adjust_resource {
 	device_t	_dev;
 	device_t	_child;
-	int		_type;
 	struct resource *_res;
 	rman_res_t	_start;
 	rman_res_t	_end;
 };
 
-
 /**
  * @brief translate a resource value
  *
+ * Give a bus driver the opportunity to translate resource ranges.  If
+ * successful, the host's view of the resource starting at @p _start is
+ * returned in @p _newstart, otherwise an error is returned.
  *
  * @param _dev		the device associated with the resource
  * @param _type		the type of resource
@@ -433,7 +423,7 @@ METHOD int translate_resource {
 	int		_type;
 	rman_res_t	_start;
 	rman_res_t	*_newstart;
-} DEFAULT null_translate_resource;
+} DEFAULT bus_generic_translate_resource;
 
 /**
  * @brief Release a resource
@@ -444,15 +434,11 @@ METHOD int translate_resource {
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which allocated the resource
- * @param _type		the type of resource
- * @param _rid		the resource identifier
  * @param _r		the resource to release
  */
 METHOD int release_resource {
 	device_t	_dev;
 	device_t	_child;
-	int		_type;
-	int		_rid;
 	struct resource *_res;
 };
 
@@ -629,7 +615,25 @@ METHOD void delete_resource {
 METHOD struct resource_list * get_resource_list {
 	device_t	_dev;
 	device_t	_child;
-} DEFAULT bus_generic_get_resource_list;
+} DEFAULT null_get_resource_list;
+
+/**
+ * @brief Return a struct rman.
+ *
+ * Used by drivers which use bus_generic_rman_alloc_resource() etc. to
+ * implement their resource handling. It should return the resource
+ * manager used for the given resource type.
+ *
+ * @param _dev		the bus device
+ * @param _type		the resource type
+ * @param _flags	resource flags (@c RF_XXX flags in
+ *			<sys/rman.h>)
+ */
+METHOD struct rman * get_rman {
+	device_t	_dev;
+	int		_type;
+	u_int		_flags;
+} DEFAULT null_get_rman;
 
 /**
  * @brief Is the hardware described by @p _child still attached to the
@@ -654,8 +658,7 @@ METHOD int child_present {
 /**
  * @brief Returns the pnp info for this device.
  *
- * Return it as a string.  If the storage is insufficient for the
- * string, then return EOVERFLOW.
+ * Return it as a string, appended to @p _sb
  *
  * The string must be formatted as a space-separated list of
  * name=value pairs.  Names may only contain alphanumeric characters,
@@ -666,22 +669,18 @@ METHOD int child_present {
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which is being examined
- * @param _buf		the address of a buffer to receive the pnp
- *			string
- * @param _buflen	the size of the buffer pointed to by @p _buf
+ * @param _sb		sbuf for results string
  */
-METHOD int child_pnpinfo_str {
+METHOD int child_pnpinfo {
 	device_t	_dev;
 	device_t	_child;
-	char		*_buf;
-	size_t		_buflen;
-};
+	struct sbuf	*_sb;
+} DEFAULT bus_generic_child_pnpinfo;
 
 /**
  * @brief Returns the location for this device.
  *
- * Return it as a string.  If the storage is insufficient for the
- * string, then return EOVERFLOW.
+ * Return it as a string, appended to @p _sb
  *
  * The string must be formatted as a space-separated list of
  * name=value pairs.  Names may only contain alphanumeric characters,
@@ -692,16 +691,13 @@ METHOD int child_pnpinfo_str {
  *
  * @param _dev		the parent device of @p _child
  * @param _child	the device which is being examined
- * @param _buf		the address of a buffer to receive the location
- *			string
- * @param _buflen	the size of the buffer pointed to by @p _buf
+ * @param _sb		sbuf for results string
  */
-METHOD int child_location_str {
+METHOD int child_location {
 	device_t	_dev;
 	device_t	_child;
-	char		*_buf;
-	size_t		_buflen;
-};
+	struct sbuf	*_sb;
+} DEFAULT bus_generic_child_location;
 
 /**
  * @brief Allow drivers to request that an interrupt be bound to a specific
@@ -932,3 +928,47 @@ METHOD int reset_child {
 	device_t _child;
 	int _flags;
 };
+
+/**
+ * @brief Gets child's specific property
+ *
+ * The bus_get_property can be used to access device
+ * specific properties stored on the bus. If _propvalue
+ * is NULL or _size is 0, then method only returns size
+ * of the property.
+ *
+ * @param _dev			the bus device
+ * @param _child		the child device
+ * @param _propname		property name
+ * @param _propvalue	property value destination
+ * @param _size			property value size
+ *
+ * @returns size of property if successful otherwise -1
+ */
+METHOD ssize_t get_property {
+	device_t _dev;
+	device_t _child;
+	const char *_propname;
+	void *_propvalue;
+	size_t _size;
+	device_property_type_t type;
+} DEFAULT bus_generic_get_property;
+
+/**
+ * @brief Gets a child's full path to the device
+ *
+ * The get_device_path method retrieves a device's
+ * full path to the device using one of several
+ * locators present in the system.
+ *
+ * @param _bus			the bus device
+ * @param _child		the child device
+ * @param _locator		locator name
+ * @param _sb			buffer loaction string
+ */
+METHOD int get_device_path {
+	device_t _bus;
+	device_t _child;
+	const char *_locator;
+	struct sbuf *_sb;
+} DEFAULT bus_generic_get_device_path;
