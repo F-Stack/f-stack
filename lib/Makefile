@@ -260,7 +260,8 @@ FF_SRCS+=                     \
 	ff_subr_prf.c         \
 	ff_vfs_ops.c          \
 	ff_veth.c             \
-	ff_route.c
+	ff_route.c            \
+	ff_stub_14_extra.c
 
 ifdef FF_NETGRAPH
 FF_SRCS+=                   \
@@ -422,7 +423,6 @@ NET_SRCS+=		 \
 ifdef FF_NETGRAPH
 NETGRAPH_SRCS +=         \
 	ng_async.c       \
-	ng_atmllc.c      \
 	ng_bridge.c      \
 	ng_car.c         \
 	ng_cisco.c       \
@@ -457,7 +457,6 @@ NETGRAPH_SRCS +=         \
 	ng_socket.c      \
 	ng_source.c      \
 	ng_split.c       \
-	ng_sppp.c        \
 	ng_tag.c         \
 	ng_tcpmss.c      \
 	ng_tee.c         \
