@@ -1,5 +1,7 @@
 /*-
- * Copyright (c) 2014 Yandex LLC
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2014-2025 Yandex LLC
  * Copyright (c) 2014 Alexander V. Chernikov
  *
  * Redistribution and use in source and binary forms, with or without
@@ -25,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * Multi-field value support for ipfw tables.
  *
@@ -67,7 +67,7 @@ static int list_table_values(struct ip_fw_chain *ch, ip_fw3_opheader *op3,
     struct sockopt_data *sd);
 
 static struct ipfw_sopt_handler	scodes[] = {
-	{ IP_FW_TABLE_VLIST,	0,	HDIR_GET,	list_table_values },
+    { IP_FW_TABLE_VLIST, IP_FW3_OPVER, HDIR_GET, list_table_values },
 };
 
 #define	CHAIN_TO_VI(chain)	(CHAIN_TO_TCFG(chain)->valhash)
@@ -78,6 +78,7 @@ struct table_val_link
 	struct table_value	*pval;	/* Pointer to real table value */
 };
 #define	VALDATA_START_SIZE	64	/* Allocate 64-items array by default */
+#define	VALDATA_HASH_SIZE	65536
 
 struct vdump_args {
 	struct ip_fw_chain *ch;
@@ -114,6 +115,8 @@ mask_table_value(struct table_value *src, struct table_value *dst,
 	_MCPY(netgraph, IPFW_VTYPE_NETGRAPH);
 	_MCPY(fib, IPFW_VTYPE_FIB);
 	_MCPY(nat, IPFW_VTYPE_NAT);
+	_MCPY(limit, IPFW_VTYPE_LIMIT);
+	_MCPY(mark, IPFW_VTYPE_MARK);
 	_MCPY(dscp, IPFW_VTYPE_DSCP);
 	_MCPY(nh4, IPFW_VTYPE_NH4);
 	_MCPY(nh6, IPFW_VTYPE_NH6);
@@ -362,10 +365,10 @@ rollback_table_values(struct tableop_state *ts)
  */
 static int
 alloc_table_vidx(struct ip_fw_chain *ch, struct tableop_state *ts,
-    struct namedobj_instance *vi, uint16_t *pvidx, uint8_t flags)
+    struct namedobj_instance *vi, uint32_t *pvidx, uint8_t flags)
 {
 	int error, vlimit;
-	uint16_t vidx;
+	uint32_t vidx;
 
 	IPFW_UH_WLOCK_ASSERT(ch);
 
@@ -474,8 +477,7 @@ ipfw_link_table_values(struct ip_fw_chain *ch, struct tableop_state *ts,
 	struct namedobj_instance *vi;
 	struct table_config *tc;
 	struct tentry_info *tei, *ptei;
-	uint32_t count, vlimit;
-	uint16_t vidx;
+	uint32_t count, vidx, vlimit;
 	struct table_val_link *ptv;
 	struct table_value tval, *pval;
 
@@ -597,41 +599,6 @@ ipfw_link_table_values(struct ip_fw_chain *ch, struct tableop_state *ts,
 }
 
 /*
- * Compatibility function used to import data from old
- * IP_FW_TABLE_ADD / IP_FW_TABLE_XADD opcodes.
- */
-void
-ipfw_import_table_value_legacy(uint32_t value, struct table_value *v)
-{
-
-	memset(v, 0, sizeof(*v));
-	v->tag = value;
-	v->pipe = value;
-	v->divert = value;
-	v->skipto = value;
-	v->netgraph = value;
-	v->fib = value;
-	v->nat = value;
-	v->nh4 = value; /* host format */
-	v->dscp = value;
-	v->limit = value;
-}
-
-/*
- * Export data to legacy table dumps opcodes.
- */
-uint32_t
-ipfw_export_table_value_legacy(struct table_value *v)
-{
-
-	/*
-	 * TODO: provide more compatibility depending on
-	 * vmask value.
-	 */
-	return (v->tag);
-}
-
-/*
  * Imports table value from current userland format.
  * Saves value in kernel format to the same place.
  */
@@ -653,6 +620,7 @@ ipfw_import_table_value_v1(ipfw_table_value *iv)
 	v.nh6 = iv->nh6;
 	v.limit = iv->limit;
 	v.zoneid = iv->zoneid;
+	v.mark = iv->mark;
 
 	memcpy(iv, &v, sizeof(ipfw_table_value));
 }
@@ -679,33 +647,34 @@ ipfw_export_table_value_v1(struct table_value *v, ipfw_table_value *piv)
 	iv.nh4 = v->nh4;
 	iv.nh6 = v->nh6;
 	iv.zoneid = v->zoneid;
+	iv.mark = v->mark;
 
 	memcpy(piv, &iv, sizeof(iv));
 }
 
 /*
- * Exports real value data into ipfw_table_value structure.
- * Utilizes "spare1" field to store kernel index.
+ * Exports real value data into ipfw_table_value structure including refcnt.
  */
 static int
 dump_tvalue(struct namedobj_instance *ni, struct named_object *no, void *arg)
 {
 	struct vdump_args *da;
 	struct table_val_link *ptv;
-	struct table_value *v;
+	ipfw_table_value *v;
 
 	da = (struct vdump_args *)arg;
 	ptv = (struct table_val_link *)no;
 
-	v = (struct table_value *)ipfw_get_sopt_space(da->sd, sizeof(*v));
+	v = (ipfw_table_value *)ipfw_get_sopt_space(da->sd, sizeof(*v));
 	/* Out of memory, returning */
 	if (v == NULL) {
 		da->error = ENOMEM;
 		return (ENOMEM);
 	}
 
-	memcpy(v, ptv->pval, sizeof(*v));
-	v->spare1 = ptv->no.kidx;
+	ipfw_export_table_value_v1(ptv->pval, v);
+	v->refcnt = ptv->pval->refcnt;
+	v->kidx = ptv->no.kidx;
 	return (0);
 }
 
@@ -773,7 +742,7 @@ ipfw_table_value_init(struct ip_fw_chain *ch, int first)
 	tcfg = ch->tblcfg;
 
 	tcfg->val_size = VALDATA_START_SIZE;
-	tcfg->valhash = ipfw_objhash_create(tcfg->val_size);
+	tcfg->valhash = ipfw_objhash_create(tcfg->val_size, VALDATA_HASH_SIZE);
 	ipfw_objhash_set_funcs(tcfg->valhash, hash_table_value,
 	    cmp_table_value);
 
