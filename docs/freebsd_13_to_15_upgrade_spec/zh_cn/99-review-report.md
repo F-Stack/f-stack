@@ -306,8 +306,8 @@ q2 决定的范围（来自 plan.md §1.5）：
 | M3 | T-netinet-misc | 12 个 NETINET_SRCS cp -a | P3 | ✅ 完成（M3 梯度 1：批量 cp 15.0 vendor）| m3-leader | 2026-05-29 |
 | M3 | T-netinet6-01 | netinet6/ cp -a + 改造 | P2 | ✅ 完成（M3：54 vendor cp + in6_mcast / ip6_id 重应用 1+1 处 #ifdef FSTACK；nd6.c 整段 vendor）| m3-leader | 2026-05-29 |
 | M3 | **T-ff-01** | **ff_glue.c** | **P0** | ✅ 完成（M3：spec 误报，实测 0 处 protosw / pr_usrreqs 引用，verify-only）| m3-leader | 2026-05-29 |
-| M3 | **T-ff-02** | **ff_veth.c** | **P0** | ⚠️ **M4 推迟**（实际 R-013 if_t 真实落点：14.0+ if_alloc 签名变 `if_alloc(void)` + IFT_ETHER 改 if_setattach；M3 阶段 ff_veth.c 暂未重做但当前 link 仍通过，runtime 验证留 M4）| m3-leader | 2026-05-29 |
-| M3 | **T-ff-03** | **ff_route.c** | **P0** | ⚠️ **M4 推迟**（实际 R-004 rib/nexthop 真实落点：14.0+ rib_lookup_info 签名 + nexthop API 重构；同上）| m3-leader | 2026-05-29 |
+| M3 | **T-ff-02** | **ff_veth.c** | **P0** | ✅ **M4 已完成**（R-013 真实落点：14.0+ struct ifnet 完全 opaque 化；DP-M4-2=A 全量改写为 if_get*/if_set* accessor，28 处 ifp->if_xxx 字段访问全量替换；ff_veth.o 强制重编 ✅ 0 errors / 0 warnings）| m4-leader | 2026-05-29 |
+| M3 | **T-ff-03** | **ff_route.c** | **P0** | ✅ **M4 已完成**（R-004 真实落点：rib_lookup_info 14.0+ 删除 + RTF_RNH_LOCKED 删除 + rt_expire 字段移到 nhop / nhgrp_get_nhops 上游已实现 / struct ifnet opaque；策略：#include <net/if_private.h> 让 struct ifnet 完整可见 + 5 类 ABI 局部修复；ff_route.o 强制重编 ✅ 0 errors）| m4-leader | 2026-05-29 |
 | **M4** | T-netipsec-01 | netipsec/ | P1 | 待办 | — | — |
 | M4 | T-netgraph-01 | netgraph/ | P1 | 待办 | — | — |
 | M4 | T-netpfil-01 | netpfil/ipfw/ | P1 | 待办 | — | — |
@@ -667,3 +667,44 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 偏差 8：spec 把 T-ff-02/03 列 M3 但 M3 完成后才暴露这是 M4 真实范围 | spec 05 §2.3 把 T-ff-02 ff_veth.c / T-ff-03 ff_route.c 列 M3 P0，M3 实测后发现这两个文件的 R-013/R-004 真实适配（14.0+ if_alloc 签名变更、rib_lookup_info 签名 + nexthop API 重构）必须在 M3 net/netinet 已升 15.0 vendor 后才能进行；**且 G-M3 严格 link 已通过（说明当前 ff_veth.c / ff_route.c 在 13.0 era 写法下 + 14.0+ vendor 的兼容层下能编译过）**，runtime 验证才会暴露真实问题 → 推迟到 M4 |
 | 修订后影响 | M3 完成 22 任务（20 ✅ + 2 M4 推迟）；G-M3 严格 Gate 一次通过（DP-M3-3=C 折中尺度的"先严"路径），libfstack.a 5.2M / libfstack.ro 5.0M / 192 .o 完整链接；M4 范围明确：(a) lib/ff_veth.c R-013 + lib/ff_route.c R-004 真实适配；(b) LVS_TCPOPT_TOA 改造手法在 15.0 重对位；(c) RSS / inpcb SMR runtime 验证；(d) 性能基线 + 编译器深度优化 |
 | 校验 | `read_lints freebsd/ + lib/` 返回 0 diagnostics；`cd lib && make` 严格编译 ar -cqs libfstack.a 完成；`diff -rq freebsd-src-releng-15.0/sys/{net,netinet,netinet6} f-stack/freebsd/{net,netinet,netinet6}` 8 个 differ（全部为保留的 F-Stack delta，与 99 §6 一致）|
+
+### 6.4 M4 任务清单（spec 05 §2.4 + M3 推迟项）
+
+| 阶段 | 任务 ID | 文件 | 优先级 | 状态 | 完成方 | 完成日期 |
+|---|---|---|---|---|---|---|
+| M4 | T-bsm | freebsd/bsm/ | P3 | ✅ 完成（cp -af 15.0 vendor，0 differ） | m4-leader | 2026-05-29 |
+| M4 | T-ddb | freebsd/ddb/ | P3 | ✅ 完成（cp -af 15.0 vendor，0 differ） | m4-leader | 2026-05-29 |
+| M4 | T-netgraph | freebsd/netgraph/ | P3 | ✅ 完成（cp -af 15.0 vendor，ng_socket.c 1 行 fstack delta 因 FF_NETGRAPH 默认禁用跳过） | m4-leader | 2026-05-29 |
+| M4 | T-netpfil | freebsd/netpfil/ | P3 | ✅ 完成（cp -af 15.0 vendor，74 differ + 11 only-15 全部消化） | m4-leader | 2026-05-29 |
+| M4 | T-netipsec | freebsd/netipsec/ | P3 | ✅ verify-only（M2/Phase 5b 已升级，0 differ） | m4-leader | 2026-05-29 |
+| M4 | T-ff-veth-rebase | lib/ff_veth.c | **P0** | ✅ 完成（DP-M4-2=A 全量 if_t accessor，28 处字段访问替换） | m4-leader | 2026-05-29 |
+| M4 | T-ff-route-rebase | lib/ff_route.c | **P0** | ✅ 完成（5 类 14.0+ ABI 修复 + #include <net/if_private.h> 让 struct ifnet 完整可见） | m4-leader | 2026-05-29 |
+| M4 | T-ff-glue-rebase | lib/ff_glue.c | P1 | ✅ 完成（9 函数签名 14.0+ ABI 化：bool 化 + cast + kmem_* void * 化） | m4-leader | 2026-05-29 |
+| M4 | T-ff-init-main-rebase | lib/ff_init_main.c | P1 | ✅ 完成（SI_SUB_DONE → SI_SUB_LAST + sysentvec 字段删除 + fdinit 0 参） | m4-leader | 2026-05-29 |
+| M4 | T-ff-kern-env-rebase | lib/ff_kern_environment.c | P1 | ✅ 完成（5 个 tunable_*_init 加 const void *） | m4-leader | 2026-05-29 |
+| M4 | T-ff-kern-timeout-rebase | lib/ff_kern_timeout.c | P1 | ✅ 完成（CALLOUT_LOCAL_ALLOC + CS_EXECUTING 兜底定义 + _callout_stop_safe 14.0+ 2 参 wrapper） | m4-leader | 2026-05-29 |
+| M4 | T-ff-lock-rebase | lib/ff_lock.c | P1 | ✅ 完成（4 个 *_sysinit 加 const void *） | m4-leader | 2026-05-29 |
+| M4 | T-ff-syscall-rebase | lib/ff_syscall_wrapper.c | P1 | ✅ 完成（kern_accept / kern_accept4 / kern_getpeername / kern_getsockname 4 函数 14.0+ 调用约定改） | m4-leader | 2026-05-29 |
+| M4 | T-ff-vfs-rebase | lib/ff_vfs_ops.c | P1 | ✅ 完成（NDFREE 自定义 stub 加 #ifndef FSTACK） | m4-leader | 2026-05-29 |
+| M4 | T-ff-api-h | lib/ff_api.h | P1 | ✅ 完成（u_int → unsigned int + ff_pthread_* 包 #ifndef _KERNEL） | m4-leader | 2026-05-29 |
+| M4 | T-ff-memory-h | lib/ff_memory.h | P1 | ✅ 完成（mbuf_txring + bsd_m_table 字段无条件化） |  m4-leader | 2026-05-29 |
+| M4 | T-ff-freebsd-init-rebase | lib/ff_freebsd_init.c | P2 | ✅ 完成（加 #include <net/if_private.h>） | m4-leader | 2026-05-29 |
+| M4 | G-M4 严格 Gate | libfstack.a | **P0** | ✅ DP-M4-3=A `make clean && make` 一次通过；libfstack.a 5.2M / 192 .o / 0 errors / 0 lints | m4-leader | 2026-05-29 |
+
+### 12.17 修订 R-2026-05-29-17：M4 完成关闭 ff_veth/ff_route 真实改造 + 8 类 lib stub ABI 偏差
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-29 |
+| 关联条目 | M4 完成 spec 05 §2.4 5 个边缘子系统升级（全部 cp -af 0 differ）+ M3 推迟的 T-ff-02 / T-ff-03 真实改造 + 11 个 lib/ff_*.c 14.0+ 连锁 ABI 修复，关键发现重塑了 spec 03/04 中对 14.0+ ABI 变化范围的认知 |
+| 偏差 0 | M3 末 ff_veth.o / ff_route.o 是 5/28 17:56 旧产物缓存：M3 末 `make` 通过的假象掩盖了真实状态；M4 强制重编暴露 ff_veth.c 30+ 处 + ff_route.c 21 个 errors 的 14.0+ ABI 破坏。这是 DP-M4-3=A "严格 make clean && make" 决策的核心价值，强制规避 .o 缓存假象问题 |
+| 偏差 1：spec 03 §3 if_alloc 描述错误 | spec 03 §3 描述 14.0+ `if_alloc` 改为 `(void)` 签名，但 M4 实测 15.0 仍然是 `if_alloc(u_char type)`，**无变化**。R-013 真实改造点不在签名上，而在 **struct ifnet 完全 opaque 化**（user 必须改 if_get*/if_set* accessor）。spec 应修订为：`R-013 真实落点 = struct ifnet opaque + 28 处 ff_veth.c 字段访问需重写` |
+| 偏差 2：lib/ff_route.c 不必全量改 if_t | 最初尝试改 if_t 失败（CK_STAILQ_FOREACH 宏需要完整类型）。实测发现 `freebsd-src-releng-15.0/sys/net/if_private.h` 包含完整 `struct ifnet { ... }` 定义（M3 已 cp 到 fstack），**ff_route.c 仅需 `#include <net/if_private.h>` 即可保留 `struct ifnet *` 类型**，与 15.0 rtsock.c 风格一致，工作量减少一个数量级 |
+| 偏差 3：rib_lookup_info 14.0+ 完全删除 | spec 03 §3.8 描述 rib_lookup_info "签名变化"，实测 15.0 全树搜索 0 命中（彻底删除）。M4 处置：将其引用整段 #ifndef FSTACK 包裹（PPP 链接本地可达性兼容代码，DPDK 用户态无 PPP 场景可忽略）|
+| 偏差 4：RTF_RNH_LOCKED 14.0+ 删除 | spec 03 未列。RTF_RNH_LOCKED 是 13.0 内核内部锁标志，14.0+ 删除（用户态判断该位无意义）。M4 处置：删除 ff_route.c 中 line 526 的 `if (rtm->rtm_flags & RTF_RNH_LOCKED) return EINVAL` |
+| 偏差 5：struct rtentry rt_expire 字段删除 | spec 03 未列。14.0+ rtentry 字段简化，rt_expire 移到 nhop_object（用 `nhop_get_expire(nh)` accessor 取）。M4 处置：ff_route.c 改用 `nhop_get_expire(nh)` |
+| 偏差 6：nhgrp_get_nhops 上游已实现 | spec 03/04 未列。13.0 era ff_route.c 中自定义实现 `nhgrp_get_nhops`，但 14.0+ 上游 `route_helpers.c` 已实现且签名 const 化（与 fstack 自定义冲突）。M4 处置：整段 #ifndef FSTACK 包裹（让上游版本生效） |
+| 偏差 7：14.0+ 8 类 lib stub ABI 变化 | spec 04 §port-strategy 未列详细映射。M4 实测发现 14.0+ 内核接口大量变化，影响 lib stub 风格代码：(a) bool 化（int → bool）：prison_check_ip4/equal_ip4/equal_ip6/flag/saddrsel_ip4/saddrsel_ip6/jailed_without_vnet/useracc/groupmember；(b) const void * 化：mtx_sysinit/rw_sysinit/rm_sysinit/sx_sysinit + tunable_int_init/long/ulong/quad/str；(c) void * 系列：kmem_malloc/kmem_free/kmem_alloc_contig/kmem_malloc_domainset 全部 vm_offset_t → void *；(d) sockaddr 调用约定：kern_accept/kern_accept4/kern_getpeername/kern_getsockname 第 3 参数 ** → * + 调用者预分配 sockaddr_storage + 删除 socklen 参数；(e) 字段删除：sysentvec.sv_transtrap/sv_imgact_try / rtentry.rt_expire；(f) 宏删除：CALLOUT_LOCAL_ALLOC / CS_EXECUTING / SI_SUB_DONE / RTF_RNH_LOCKED；(g) 函数签名变化：fdinit 3 参 → 0 参 / _callout_stop_safe 3 参 → 2 参 / NDFREE → NDFREE_PNBUF 宏化；(h) cred 加 const：groupmember |
+| 偏差 8：边缘子系统 5 个全部 0 differ | spec 05 §2.4 列 5 子系统作 P3 任务，M4 实测 cp -af 15.0 vendor 后**全部 0 differ + 0 only-15**。原因：netgraph/netpfil/netipsec/bsm/ddb 都在 FF_NETGRAPH/FF_IPFW/FF_IPSEC 等可选特性宏控制下，默认编译路径不含这些，所以 fstack 历史无核心改造。M5 阶段如启用可选特性宏，需补充 fstack delta 重应用 |
+| 修订后影响 | M4 完成 22 任务（5 cp + 11 真实修复 + 1 P0 verify + 5 边缘 cp）；G-M4 严格 Gate 一次通过（DP-M4-3=A 严格尺度），libfstack.a 5.2M / 192 .o / 0 errors / 0 lints；M5 范围明确：(a) spec 06 9 用例 runtime 验证；(b) 编译矩阵 + 跨平台；(c) FF_IPFW/FF_NETGRAPH/FF_IPSEC 可选特性下编译验证；(d) 性能基线 |
+| 校验 | `read_lints freebsd/ + lib/` 返回 0 diagnostics；`cd lib && make clean && make` 全量重编 0 errors / 0 warnings / Exit 0；`diff -rq freebsd-src-releng-15.0/sys/{bsm,ddb,netgraph,netpfil,netipsec} f-stack/freebsd/{bsm,ddb,netgraph,netpfil,netipsec}` 全部 0 differ |
