@@ -1,5 +1,7 @@
 # M2 启动调研 Brief（M2-research-brief）
 
+> English version: ../M2-research-brief.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-29）
 > 适用：M2 里程碑（kern + DP-7/DP-8/DP-9 推迟项重做）开工前内外调研产出

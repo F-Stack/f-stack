@@ -1,5 +1,7 @@
 # M1 — 执行日志（Execution Log）
 
+> English version: ../M1-execution-log.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-28，M1 启动）
 > 维护人：Leader（m1-leader，主对话内）

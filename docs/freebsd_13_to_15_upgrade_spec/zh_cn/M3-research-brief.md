@@ -1,5 +1,7 @@
 # M3 研究简报（Research Brief）
 
+> English version: ../M3-research-brief.md
+
 > 由 m3-leader 整合 4 个 [subagent:code-explorer] 一次性调研产出。覆盖 net + netinet + netinet6 + ff_glue.c 共 25 个 F-Stack 改造文件 delta-13 + 14.0+/15.0 ABI 变化 + 跨范围连锁。
 > 100% 实测命令背书，无猜测。
 

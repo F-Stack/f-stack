@@ -1,5 +1,7 @@
 # 04 — 13↔15 差异分析与移植策略（Diff & Port Strategy）
 
+> English version: ../04-diff-and-port-strategy.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-26）
 > 数据来源：**Sub-Agent A + B + C 三路调研交叉** + 02 / 03 文档汇总

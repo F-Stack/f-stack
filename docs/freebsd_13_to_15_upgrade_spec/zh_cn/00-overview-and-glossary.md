@@ -1,5 +1,7 @@
 # 00 — 项目概览与术语表
 
+> English version: ../00-overview-and-glossary.md
+
 > 文档语言：中文（首版）
 > 系列文档根目录：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-26）

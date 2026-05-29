@@ -1,5 +1,7 @@
 # Phase 5b 执行日志（M2 遗留任务）
 
+> English version: ../Phase-5b-execution-log.md
+
 > M2 末（2026-05-29 11:55 push）DP-M2-5 选项 B 推迟的 10 个 kern 文件 5 步法重应用。
 > 本文件遵循 spec 05 §4 SOP + spec 06 §7 验收门禁；由 Leader（Phase-5b 主对话）单线程执行 5 角色逻辑分工。
 

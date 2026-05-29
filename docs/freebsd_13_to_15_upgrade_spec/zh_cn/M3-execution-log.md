@@ -1,5 +1,7 @@
 # M3 执行日志（FreeBSD 13.0 → 15.0 升级第三里程碑）
 
+> English version: ../M3-execution-log.md
+
 > 本文档由 m3-leader 主对话维护，记录 M3 阶段的元信息、4 梯度执行进度、打回事件、Gate 决策、结案小节。
 > 沿用 M2/Phase 5b 7 章节模板（参 `M2-execution-log.md` / `Phase-5b-execution-log.md`）。
 

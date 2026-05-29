@@ -1,5 +1,7 @@
 # F-Stack FreeBSD 13.0 → 15.0 升级 Spec 工作计划（Plan）
 
+> English version: ../plan.md
+
 > 文档语言：中文（首版）。英文版待人工审计完成后再考虑。
 > 输出根目录：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 计划版本：v0.1（2026-05-26）

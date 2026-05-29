@@ -1,5 +1,7 @@
 # M1 — 研究简报（Research Brief）
 
+> English version: ../M1-research-brief.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-28）
 > 作者：m1-leader（因 m1-analyzer 子代理工具配给不足，由 Leader 主对话内同步执行调研产出，已记录于 `M1-execution-log.md` §3 打回事件 #1）

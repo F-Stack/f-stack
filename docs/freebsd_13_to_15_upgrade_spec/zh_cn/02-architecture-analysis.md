@@ -1,5 +1,7 @@
 # 02 — F-Stack 当前架构分析（对 FreeBSD 13.0 的改造点全景）
 
+> English version: ../02-architecture-analysis.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-26）
 > 数据来源：**Sub-Agent A（Analyzer-13）** 实测调研产物 + leader 后续整理

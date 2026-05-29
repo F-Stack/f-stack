@@ -1,5 +1,7 @@
 # 98 — Independent Audit Report（独立审计报告）
 
+> English version: ../98-independent-audit-report.md
+
 > 审计对象：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/` 下 9 份 Spec 文档，以及 Phase 1.4 产物 `/data/workspace/freebsd-src-releng-15.0/f-stack-lib/INVENTORY.md`
 > 审计时间：2026-05-26 19:45
 > 审计方式：独立复读文档 + 抽样核验本地源码事实 + 一致性/完整性/可执行性审查

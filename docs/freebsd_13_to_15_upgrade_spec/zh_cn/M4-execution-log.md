@@ -1,5 +1,7 @@
 # M4 执行日志 — lib/ff_*.c R-013/R-004 真实 ABI 适配 + spec 05 §2.4 边缘子系统升级
 
+> English version: ../M4-execution-log.md
+
 ## 1. 元信息
 
 | 项 | 值 |

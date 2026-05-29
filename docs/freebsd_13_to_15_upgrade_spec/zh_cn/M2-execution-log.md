@@ -1,5 +1,7 @@
 # M2 执行日志（M2-execution-log）
 
+> English version: ../M2-execution-log.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-29 启动）
 > 适用里程碑：M2（kern 核心 + DP-7/DP-8/DP-9 推迟项重做）

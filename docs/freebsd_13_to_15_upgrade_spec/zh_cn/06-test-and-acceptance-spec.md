@@ -1,5 +1,7 @@
 # 06 — 测试与验收 Spec（Test & Acceptance Spec）
 
+> English version: ../06-test-and-acceptance-spec.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-26）
 > 输入：`01-requirements-spec.md` FR-5 / FR-6 / NFR-1

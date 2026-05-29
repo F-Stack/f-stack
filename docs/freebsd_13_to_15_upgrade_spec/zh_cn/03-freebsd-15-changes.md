@@ -1,5 +1,7 @@
 # 03 — FreeBSD 13.0 → 14.x → 15.0 关键变更清单
 
+> English version: ../03-freebsd-15-changes.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-26）
 > 数据来源：**Sub-Agent B（Analyzer-15）** 调研产物 + 本地双版本源码实测对比

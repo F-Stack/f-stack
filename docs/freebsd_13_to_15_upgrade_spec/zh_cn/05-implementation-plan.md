@@ -1,5 +1,7 @@
 # 05 — 详细实施计划（Implementation Plan）
 
+> English version: ../05-implementation-plan.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-26）
 > 输入：`04-diff-and-port-strategy.md` 的 57 个 T-* 任务清单

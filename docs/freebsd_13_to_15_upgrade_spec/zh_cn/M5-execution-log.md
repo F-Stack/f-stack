@@ -1,5 +1,7 @@
 # M5 Execution Log（FreeBSD 13.0 → 15.0 升级 — 第五（最后）阶段里程碑）
 
+> English version: ../M5-execution-log.md
+
 > 文档目的：记录 M5 里程碑的启动元信息、5 角色 Agent Team 物理形态、5 梯度执行进度、关键决策点、打回事件、G-M5 决议、9 TC runtime 结果、性能基线对比、编译矩阵 6 格结果与项目最终结案。
 >
 > 沿用 M2 / Phase 5b / M3 / M4 规约（Leader 主对话承担所有写操作；DP-10 / DP-10-reinforce 强制 rm_tmp_file.sh；commit message 强制英文）。

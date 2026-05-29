@@ -1,5 +1,7 @@
 # 99 — Review Report（一致性 / 完整性 / 风险覆盖度 / 可执行性审查）
 
+> English version: ../99-review-report.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-26）；v0.2（2026-05-28，追加独立审计修订记录 §12.1-§12.11）；**v0.3（2026-05-28，最终评审通过）**
 > 审查人：Leader 兼 Reviewer（按 plan.md §2.5 设定）

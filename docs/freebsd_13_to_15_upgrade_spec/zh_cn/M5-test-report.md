@@ -1,5 +1,7 @@
 # F-Stack 13→15 升级测试报告（spec 06 §9 模板填写交付）
 
+> English version: ../M5-test-report.md
+
 > 报告日期：2026-05-29
 > 项目周期：2026-05-21（M0）→ 2026-05-29（M5），9 天
 > 报告对象：F-Stack 用户态网络栈在 FreeBSD 13.0 → FreeBSD 15.0 内核基线升级闭环

@@ -1,5 +1,7 @@
 # 01 — 升级需求规约（Requirements Spec）
 
+> English version: ../01-requirements-spec.md
+
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
 > 文档版本：v0.1（2026-05-26）
 > 前序：`00-overview-and-glossary.md`
