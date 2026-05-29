@@ -26,13 +26,13 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS__MUTEX_H_
 #define	_SYS__MUTEX_H_
 
+#include <sys/_types.h>
+#include <sys/_lock.h>
 #include <machine/param.h>
 
 /*
@@ -46,7 +46,7 @@
  */
 struct mtx {
 	struct lock_object	lock_object;	/* Common lock properties. */
-	volatile uintptr_t	mtx_lock;	/* Owner and flags. */
+	volatile __uintptr_t	mtx_lock;	/* Owner and flags. */
 };
 
 /*
@@ -60,7 +60,7 @@ struct mtx {
  */
 struct mtx_padalign {
 	struct lock_object	lock_object;	/* Common lock properties. */
-	volatile uintptr_t	mtx_lock;	/* Owner and flags. */
+	volatile __uintptr_t	mtx_lock;	/* Owner and flags. */
 } __aligned(CACHE_LINE_SIZE);
 
 #endif /* !_SYS__MUTEX_H_ */

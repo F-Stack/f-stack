@@ -1,5 +1,4 @@
 /*-
- * $FreeBSD$
  */
 
 #ifndef	_SYS_KBIO_H_
@@ -70,6 +69,13 @@ struct keyboard_info {
 };
 typedef struct keyboard_info keyboard_info_t;
 
+/* keyboard repeat rate mapping table */
+static const int kbdelays[]  = { 250, 500, 750, 1000 };
+static const int kbrates[] = { 34,  38,  42,  46,  50,
+	55,  59,  63, 68,  76,  84,  92, 100, 110, 118, 126,
+	136, 152, 168, 184, 200, 220, 236, 252, 272, 304, 336,
+	368, 400, 440, 472, 504 };
+
 /* add/remove keyboard to/from mux */
 #define KBADDKBD	_IOW('K', 68, keyboard_info_t)	/* add keyboard */
 #define KBRELKBD	_IOW('K', 69, keyboard_info_t)	/* release keyboard */
@@ -120,7 +126,7 @@ struct keymap {
 };
 typedef struct keymap keymap_t;
 
-#ifdef _KERNEL
+#ifdef COMPAT_FREEBSD13
 struct okeyent_t {
 	u_char		map[NUM_STATES];
 	u_char		spcl;
@@ -132,7 +138,7 @@ struct okeymap {
 	struct okeyent_t key[NUM_KEYS];
 };
 typedef struct okeymap okeymap_t;
-#endif /* _KERNEL */
+#endif /* COMPAT_FREEBSD13 */
 
 #endif /* !_KEYMAP_DECLARED */
 
@@ -199,8 +205,8 @@ typedef struct okeymap okeymap_t;
 #define ACC(x)		((x)+F_ACC)
 
 struct acc_t {
-	u_char		accchar;
-	u_char		map[NUM_ACCENTCHARS][2];
+	u_int		accchar;
+	u_int		map[NUM_ACCENTCHARS][2];
 };
 
 struct accentmap {
@@ -208,6 +214,19 @@ struct accentmap {
 	struct acc_t	acc[NUM_DEADKEYS];
 };
 typedef struct accentmap accentmap_t;
+
+#ifdef COMPAT_FREEBSD13
+struct oacc_t {
+	u_char		accchar;
+	u_char		map[NUM_ACCENTCHARS][2];
+};
+
+struct oaccentmap {
+	u_short		n_accs;
+	struct oacc_t	acc[NUM_DEADKEYS];
+};
+typedef struct oaccentmap oaccentmap_t;
+#endif /* COMPAT_FREEBSD13 */
 
 struct keyarg {
 	u_short		keynum;
@@ -237,12 +256,17 @@ typedef struct fkeyarg	fkeyarg_t;
 /* XXX: Should have keymap_t as an argument, but that's too big for ioctl()! */
 #define GIO_KEYMAP 	 _IO('k', 6)
 #define PIO_KEYMAP 	 _IO('k', 7)
-#ifdef _KERNEL
+#ifdef COMPAT_FREEBSD13
 #define OGIO_KEYMAP 	_IOR('k', 6, okeymap_t)
 #define OPIO_KEYMAP 	_IOW('k', 7, okeymap_t)
-#endif /* _KERNEL */
-#define GIO_DEADKEYMAP 	_IOR('k', 8, accentmap_t)
-#define PIO_DEADKEYMAP 	_IOW('k', 9, accentmap_t)
+#endif /* COMPAT_FREEBSD13 */
+/* XXX: Should have accentmap_t as an argument, but that's too big for ioctl()! */
+#define GIO_DEADKEYMAP 	 _IO('k', 8)
+#define PIO_DEADKEYMAP 	 _IO('k', 9)
+#ifdef COMPAT_FREEBSD13
+#define OGIO_DEADKEYMAP	_IOR('k', 8, oaccentmap_t)
+#define OPIO_DEADKEYMAP	_IOW('k', 9, oaccentmap_t)
+#endif /* COMPAT_FREEBSD13 */
 #define GIO_KEYMAPENT 	_IOWR('k', 10, keyarg_t)
 #define PIO_KEYMAPENT 	_IOW('k', 11, keyarg_t)
 

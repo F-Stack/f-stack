@@ -7,8 +7,6 @@
  * can do whatever you want with this stuff. If we meet some day, and you think
  * this stuff is worth it, you can buy me a beer in return.   Poul-Henning Kamp
  * ----------------------------------------------------------------------------
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_SMP_H_
@@ -81,6 +79,8 @@ struct cpu_group {
 	struct cpu_group *cg_child;	/* Optional children groups. */
 	cpuset_t	cg_mask;	/* Mask of cpus in this group. */
 	int32_t		cg_count;	/* Count of cpus in this group. */
+	int32_t		cg_first;	/* First cpu in this group. */
+	int32_t		cg_last;	/* Last cpu in this group. */
 	int16_t		cg_children;	/* Number of children groups. */
 	int8_t		cg_level;	/* Shared cache level. */
 	int8_t		cg_flags;	/* Traversal modifiers. */
@@ -105,6 +105,7 @@ typedef struct cpu_group *cpu_group_t;
 #define	CG_FLAG_HTT	0x01		/* Schedule the alternate core last. */
 #define	CG_FLAG_SMT	0x02		/* New age htt, less crippled. */
 #define	CG_FLAG_THREAD	(CG_FLAG_HTT | CG_FLAG_SMT)	/* Any threading. */
+#define	CG_FLAG_NODE	0x04		/* NUMA node. */
 
 /*
  * Convenience routines for building and traversing topologies.
@@ -175,6 +176,9 @@ extern int smp_threads_per_core;
 extern cpuset_t all_cpus;
 extern cpuset_t cpuset_domain[MAXMEMDOM]; 	/* CPUs in each NUMA domain. */
 
+struct pcb;
+extern struct pcb *stoppcbs;
+
 /*
  * Macro allowing us to determine whether a CPU is absent at any given
  * time, thus permitting us to configure sparse maps of cpuid-dependent
@@ -210,7 +214,7 @@ cpu_next(int i)
 
 	for (;;) {
 		i++;
-		if (i > mp_maxid)
+		if ((u_int)i > mp_maxid)
 			i = 0;
 		if (!CPU_ABSENT(i))
 			return (i);

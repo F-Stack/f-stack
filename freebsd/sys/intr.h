@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2015-2016 Svatopluk Kraus
  * Copyright (c) 2015-2016 Michal Meloun
@@ -25,8 +25,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_INTR_H_
@@ -35,9 +33,11 @@
 #error Need INTRNG for this file
 #endif
 
-#include <sys/systm.h>
+#include <machine/intr.h>
 
 #define	INTR_IRQ_INVALID	0xFFFFFFFF
+
+#ifndef LOCORE
 
 enum intr_map_data_type {
 	INTR_MAP_DATA_ACPI = 0,
@@ -112,12 +112,13 @@ u_int intr_irq_next_cpu(u_int current_cpu, cpuset_t *cpumask);
 
 struct intr_pic *intr_pic_register(device_t, intptr_t);
 int intr_pic_deregister(device_t, intptr_t);
-int intr_pic_claim_root(device_t, intptr_t, intr_irq_filter_t *, void *, u_int);
-struct intr_pic *intr_pic_add_handler(device_t, struct intr_pic *,
+int intr_pic_claim_root(device_t, intptr_t, intr_irq_filter_t *, void *,
+    uint32_t);
+int intr_pic_add_handler(device_t, struct intr_pic *,
     intr_child_irq_filter_t *, void *, uintptr_t, uintptr_t);
 bool intr_is_per_cpu(struct resource *);
 
-extern device_t intr_irq_root_dev;
+device_t intr_irq_root_device(uint32_t);
 
 /* Intr interface for BUS. */
 
@@ -150,21 +151,24 @@ int intr_release_msix(device_t, device_t, intptr_t, int);
 int intr_bind_irq(device_t, struct resource *, int);
 
 void intr_pic_init_secondary(void);
-
-/* Virtualization for interrupt source IPI counter increment. */
-static inline void
-intr_ipi_increment_count(u_long *counter, u_int cpu)
-{
-
-	KASSERT(cpu < MAXCPU, ("%s: too big cpu %u", __func__, cpu));
-	counter[cpu]++;
-}
-
-/* Virtualization for interrupt source IPI counters setup. */
-u_long * intr_ipi_setup_counters(const char *name);
-
 #endif
 
-extern int	intr_nirq;	/* number of IRQs on intrng platforms */
+extern u_int	intr_nirq;	/* number of IRQs on intrng platforms */
+
+/* Intr interface for IPIs. */
+#ifdef SMP
+typedef void intr_ipi_handler_t(void *);
+
+int intr_ipi_pic_register(device_t dev, u_int priority);
+void intr_ipi_setup(u_int ipi, const char *name, intr_ipi_handler_t *hand,
+    void *arg);
+void intr_ipi_send(cpuset_t cpus, u_int ipi);
+void intr_ipi_dispatch(u_int ipi);
+#endif
+
+/* Main interrupt handler called from asm on most archs except riscv. */
+void intr_irq_handler(struct trapframe *tf, uint32_t rootnum);
+
+#endif /* !LOCORE */
 
 #endif	/* _SYS_INTR_H */

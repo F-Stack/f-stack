@@ -1,7 +1,7 @@
 /* $NetBSD: gpio.h,v 1.7 2009/09/25 20:27:50 mbalmer Exp $ */
 /*	$OpenBSD: gpio.h,v 1.7 2008/11/26 14:51:20 mbalmer Exp $	*/
 /*-
- * SPDX-License-Identifier: (BSD-2-Clause-FreeBSD AND ISC)
+ * SPDX-License-Identifier: (BSD-2-Clause AND ISC)
  *
  * Copyright (c) 2009, Oleksandr Tymoshenko <gonzo@FreeBSD.org>
  * All rights reserved.
@@ -28,8 +28,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $FreeBSD$
- *
  */
 
 /*
@@ -53,7 +51,7 @@
 #define __GPIO_H__
 
 #include <sys/ioccom.h>
-#ifndef _KERNEL
+#if !defined(_KERNEL) && !defined(_STANDALONE)
 #include <stdbool.h>
 #endif
 
@@ -85,10 +83,10 @@
 #define GPIO_INTR_EDGE_FALLING	0x00080000	/* edge trigger, falling */
 #define GPIO_INTR_EDGE_BOTH	0x00100000	/* edge trigger, both */
 #define GPIO_INTR_ATTACHED	0x00200000	/* interrupt attached to file */
+#define GPIO_INTR_EDGE_MASK	(GPIO_INTR_EDGE_RISING | \
+				GPIO_INTR_EDGE_FALLING | GPIO_INTR_EDGE_BOTH )
 #define GPIO_INTR_MASK		(GPIO_INTR_LEVEL_LOW | GPIO_INTR_LEVEL_HIGH |  \
-				GPIO_INTR_EDGE_RISING |			       \
-				GPIO_INTR_EDGE_FALLING | GPIO_INTR_EDGE_BOTH | \
-				GPIO_INTR_ATTACHED)
+				GPIO_INTR_EDGE_MASK | GPIO_INTR_ATTACHED)
 
 struct gpio_pin {
 	uint32_t gp_pin;			/* pin number */

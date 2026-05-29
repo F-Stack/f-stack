@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1999 Michael Smith <msmith@freebsd.org>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_EVENTHANDLER_H_
@@ -93,7 +91,7 @@ struct eventhandler_list {
  * to pre-define a symbol for the eventhandler list. This symbol can be used by
  * EVENTHANDLER_DIRECT_INVOKE, which has the advantage of not needing to do a
  * locked search of the global list of eventhandler lists. At least
- * EVENTHANDLER_LIST_DEFINE must be be used for EVENTHANDLER_DIRECT_INVOKE to
+ * EVENTHANDLER_LIST_DEFINE must be used for EVENTHANDLER_DIRECT_INVOKE to
  * work. EVENTHANDLER_LIST_DECLARE is only needed if the call to
  * EVENTHANDLER_DIRECT_INVOKE is in a different compilation unit from
  * EVENTHANDLER_LIST_DEFINE. If the events are even relatively high frequency
@@ -147,7 +145,7 @@ do {									\
 									\
 	if ((_el = eventhandler_find_list(#name)) != NULL)		\
 		eventhandler_deregister(_el, tag);			\
-} while(0)
+} while (0)
 
 #define EVENTHANDLER_DEREGISTER_NOWAIT(name, tag)			\
 do {									\
@@ -155,7 +153,7 @@ do {									\
 									\
 	if ((_el = eventhandler_find_list(#name)) != NULL)		\
 		eventhandler_deregister_nowait(_el, tag);		\
-} while(0)
+} while (0)
 
 eventhandler_tag eventhandler_register(struct eventhandler_list *list, 
 	    const char *name, void *func, void *arg, int priority);
@@ -184,7 +182,14 @@ eventhandler_tag vimage_eventhandler_register(struct eventhandler_list *list,
 #define	EVENTHANDLER_PRI_ANY	10000
 #define	EVENTHANDLER_PRI_LAST	20000
 
-/* Shutdown events */
+/*
+ * Successive shutdown events invoked by kern_reboot(9).
+ *
+ * Handlers will receive the 'howto' value as their second argument.
+ *
+ * All handlers must be prepared to be executed from a panic/debugger context;
+ * see the man page for details.
+ */
 typedef void (*shutdown_fn)(void *, int);
 
 #define	SHUTDOWN_PRI_FIRST	EVENTHANDLER_PRI_FIRST
@@ -205,6 +210,8 @@ EVENTHANDLER_DECLARE(power_suspend_early, power_change_fn);
 typedef void (*vm_lowmem_handler_t)(void *, int);
 #define	LOWMEM_PRI_DEFAULT	EVENTHANDLER_PRI_FIRST
 EVENTHANDLER_DECLARE(vm_lowmem, vm_lowmem_handler_t);
+/* Some of mbuf(9) zones reached maximum */
+EVENTHANDLER_DECLARE(mbuf_lowmem, vm_lowmem_handler_t);
 
 /* Root mounted event */
 typedef void (*mountroot_handler_t)(void *);
@@ -309,12 +316,19 @@ enum evhdev_detach {
 };
 typedef void (*device_attach_fn)(void *, device_t);
 typedef void (*device_detach_fn)(void *, device_t, enum evhdev_detach);
+typedef void (*device_nomatch_fn)(void *, device_t);
 EVENTHANDLER_DECLARE(device_attach, device_attach_fn);
 EVENTHANDLER_DECLARE(device_detach, device_detach_fn);
+EVENTHANDLER_DECLARE(device_nomatch, device_nomatch_fn);
 
 /* Interface address addition and removal event */
 struct ifaddr;
 typedef void (*rt_addrmsg_fn)(void *, struct ifaddr *, int);
 EVENTHANDLER_DECLARE(rt_addrmsg, rt_addrmsg_fn);
+
+/* Kernel environment variable change event */
+typedef void (*env_change_fn)(void *, const char *);
+EVENTHANDLER_DECLARE(setenv, env_change_fn);
+EVENTHANDLER_DECLARE(unsetenv, env_change_fn);
 
 #endif /* _SYS_EVENTHANDLER_H_ */

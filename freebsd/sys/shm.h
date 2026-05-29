@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 /*	$NetBSD: shm.h,v 1.15 1994/06/29 06:45:17 cgd Exp $	*/
 
 /*-
@@ -52,7 +51,7 @@
 
 #define SHM_RDONLY  010000  /* Attach read-only (else read-write) */
 #define SHM_RND     020000  /* Round attach address to SHMLBA */
-#define	SHM_REMAP   030000  /* Unmap before mapping */
+#define	SHM_REMAP   040000  /* Unmap before mapping */
 #define SHMLBA      PAGE_SIZE /* Segment low boundary address multiple */
 
 /* "official" access mode definitions; somewhat braindead since you have
@@ -150,11 +149,19 @@ struct shm_info {
 #ifdef _KERNEL
 struct proc;
 struct vmspace;
+struct vm_object;
 
 extern struct shminfo	shminfo;
 
+#define	SHMSEG_FREE     	0x0200
+#define	SHMSEG_REMOVED  	0x0400
+#define	SHMSEG_ALLOCATED	0x0800
+
 void	shmexit(struct vmspace *);
 void	shmfork(struct proc *, struct proc *);
+void	shmobjinfo(struct vm_object *obj, key_t *key, unsigned short *seq);
+int	kern_get_shmsegs(struct thread *td, struct shmid_kernel **res,
+	    size_t *sz);
 
 #else /* !_KERNEL */
 
@@ -166,9 +173,6 @@ typedef __size_t        size_t;
 #endif
 
 __BEGIN_DECLS
-#if __BSD_VISIBLE
-int shmsys(int, ...);
-#endif
 void *shmat(int, const void *, int);
 int shmget(key_t, size_t, int);
 int shmctl(int, int, struct shmid_ds *);

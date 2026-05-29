@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 Ed Schouten <ed@FreeBSD.org>
  *                    David Chisnall <theraven@FreeBSD.org>
@@ -25,8 +25,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _STDATOMIC_H_
@@ -35,7 +33,8 @@
 #include <sys/cdefs.h>
 #include <sys/_types.h>
 
-#if defined(__clang__) && (__has_extension(c_atomic) || __has_extension(cxx_atomic))
+#if (__has_extension(c_atomic) || __has_extension(cxx_atomic)) && \
+    defined(__clang__)
 #define	__CLANG_ATOMICS
 #elif __GNUC_PREREQ__(4, 9)
 #define	__GNUC_ATOMICS
@@ -165,6 +164,11 @@ atomic_signal_fence(memory_order __order __unused)
 	__asm volatile ("" ::: "memory");
 #endif
 }
+
+#if defined(__cplusplus) && !defined(_Bool)
+#define	_Bool	bool
+#define	__bool_locally_defined
+#endif
 
 /*
  * 7.17.5 Lock-free property.
@@ -408,5 +412,10 @@ atomic_flag_clear(volatile atomic_flag *__object)
 	atomic_flag_clear_explicit(__object, memory_order_seq_cst);
 }
 #endif /* !_KERNEL */
+
+#ifdef __bool_locally_defined
+#undef _Bool
+#undef __bool_locally_defined
+#endif
 
 #endif /* !_STDATOMIC_H_ */

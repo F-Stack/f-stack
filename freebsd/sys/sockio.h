@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)sockio.h	8.1 (Berkeley) 3/28/94
- * $FreeBSD$
  */
 
 #ifndef _SYS_SOCKIO_H_
@@ -146,5 +143,12 @@
 #define	SIOCSLANPCP	 _IOW('i', 153, struct ifreq)	/* Set (V)LAN PCP */
 
 #define	SIOCGIFDOWNREASON	_IOWR('i', 154, struct ifdownreason)
+
+#define	SIOCSIFCAPNV	_IOW('i', 155, struct ifreq)	/* set IF features */
+#define	SIOCGIFCAPNV	_IOWR('i', 156, struct ifreq)	/* get IF features */
+
+#define	SIOCGUMBINFO	_IOWR('i', 157, struct ifreq)	/* get MBIM info */
+#define	SIOCSUMBPARAM	 _IOW('i', 158, struct ifreq)	/* set MBIM param */
+#define	SIOCGUMBPARAM	_IOWR('i', 159, struct ifreq)	/* get MBIM param */
 
 #endif /* !_SYS_SOCKIO_H_ */

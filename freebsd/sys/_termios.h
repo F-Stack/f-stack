@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)termios.h	8.3 (Berkeley) 3/28/94
- * $FreeBSD$
  */
 
 #ifndef _SYS__TERMIOS_H_
@@ -98,6 +95,7 @@
 #endif
 #if __BSD_VISIBLE
 #define	IMAXBEL		0x00002000	/* ring bell on input queue full */
+#define IUTF8		0x00004000	/* assume input is utf-8 encoded */
 #endif
 
 /*
@@ -208,7 +206,15 @@
 #define	B115200	115200
 #define	B230400	230400
 #define	B460800	460800
+#define B500000 500000
 #define	B921600	921600
+#define B1000000	1000000U
+#define B1500000	1500000U
+#define B2000000	2000000U
+#define B2500000	2500000U
+#define B3000000	3000000U
+#define B3500000	3500000U
+#define B4000000	4000000U
 #define	EXTA	19200
 #define	EXTB	38400
 #endif

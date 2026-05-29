@@ -9,12 +9,9 @@
  * ----------------------------------------------------------------------------
  *
  * Copyright (c) 2011 The FreeBSD Foundation
- * All rights reserved.
  *
  * Portions of this software were developed by Julien Ridoux at the University
  * of Melbourne under sponsorship from the FreeBSD Foundation.
- *
- * $FreeBSD$
  *
  * The is a FreeBSD version of the RFC 2783 API for Pulse Per Second 
  * timing interfaces.  

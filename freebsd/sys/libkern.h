@@ -27,19 +27,16 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)libkern.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 #ifndef _SYS_LIBKERN_H_
 #define	_SYS_LIBKERN_H_
 
-#include <sys/cdefs.h>
 #include <sys/types.h>
 #ifdef _KERNEL
 #include <sys/systm.h>
 #endif
+#include <sys/kassert.h>
 
 #ifndef	LIBKERN_INLINE
 #define	LIBKERN_INLINE  static __inline
@@ -114,6 +111,7 @@ static __inline off_t omax(off_t a, off_t b) { return (a > b ? a : b); }
 static __inline off_t omin(off_t a, off_t b) { return (a < b ? a : b); }
 static __inline int abs(int a) { return (a < 0 ? -a : a); }
 static __inline long labs(long a) { return (a < 0 ? -a : a); }
+static __inline int64_t abs64(int64_t a) { return (a < 0 ? -a : a); }
 static __inline quad_t qabs(quad_t a) { return (a < 0 ? -a : a); }
 
 #ifndef RANDOM_FENESTRASX
@@ -132,24 +130,106 @@ void	 arc4rand(void *, u_int, int);
 int	 timingsafe_bcmp(const void *, const void *, size_t);
 void	*bsearch(const void *, const void *, size_t,
 	    size_t, int (*)(const void *, const void *));
-#ifndef	HAVE_INLINE_FFS
-int	 ffs(int);
-#endif
-#ifndef	HAVE_INLINE_FFSL
-int	 ffsl(long);
-#endif
-#ifndef	HAVE_INLINE_FFSLL
-int	 ffsll(long long);
-#endif
-#ifndef	HAVE_INLINE_FLS
-int	 fls(int);
-#endif
-#ifndef	HAVE_INLINE_FLSL
-int	 flsl(long);
-#endif
-#ifndef	HAVE_INLINE_FLSLL
-int	 flsll(long long);
-#endif
+
+/*
+ * MHTODO: remove the 'HAVE_INLINE_FOO' defines once use of these flags has
+ * been purged everywhere. For now we provide them unconditionally.
+ */
+#define	HAVE_INLINE_FFS
+#define	HAVE_INLINE_FFSL
+#define	HAVE_INLINE_FFSLL
+#define	HAVE_INLINE_FLS
+#define	HAVE_INLINE_FLSL
+#define	HAVE_INLINE_FLSLL
+
+static __inline __pure2 int
+ffs(int mask)
+{
+
+	return (__builtin_ffs((u_int)mask));
+}
+
+static __inline __pure2 int
+ffsl(long mask)
+{
+
+	return (__builtin_ffsl((u_long)mask));
+}
+
+static __inline __pure2 int
+ffsll(long long mask)
+{
+
+	return (__builtin_ffsll((unsigned long long)mask));
+}
+
+static __inline __pure2 int
+fls(int mask)
+{
+
+	return (mask == 0 ? 0 :
+	    8 * sizeof(mask) - __builtin_clz((u_int)mask));
+}
+
+static __inline __pure2 int
+flsl(long mask)
+{
+
+	return (mask == 0 ? 0 :
+	    8 * sizeof(mask) - __builtin_clzl((u_long)mask));
+}
+
+static __inline __pure2 int
+flsll(long long mask)
+{
+
+	return (mask == 0 ? 0 :
+	    8 * sizeof(mask) - __builtin_clzll((unsigned long long)mask));
+}
+
+static __inline __pure2 int
+ilog2_int(int n)
+{
+
+	KASSERT(n != 0, ("ilog argument must be nonzero"));
+	return (8 * sizeof(n) - 1 - __builtin_clz((u_int)n));
+}
+
+static __inline __pure2 int
+ilog2_long(long n)
+{
+
+	KASSERT(n != 0, ("ilog argument must be nonzero"));
+	return (8 * sizeof(n) - 1 - __builtin_clzl((u_long)n));
+}
+
+static __inline __pure2 int
+ilog2_long_long(long long n)
+{
+
+	KASSERT(n != 0, ("ilog argument must be nonzero"));
+	return (8 * sizeof(n) - 1 -
+	    __builtin_clzll((unsigned long long)n));
+}
+
+#define ilog2_var(n)				\
+	_Generic((n),				\
+	    default: ilog2_int,			\
+	    long: ilog2_long,			\
+	    unsigned long: ilog2_long,		\
+	    long long: ilog2_long_long,		\
+	    unsigned long long: ilog2_long_long	\
+	)(n)
+
+#define	ilog2_const(n)				\
+    (8 * (int)sizeof(unsigned long long) - 1 -	\
+    __builtin_clzll(n))
+
+#define	ilog2(n) (__builtin_constant_p(n) ? ilog2_const(n) : ilog2_var(n))
+#define	rounddown_pow_of_two(n)	((__typeof(n))1 << ilog2(n))
+#define order_base_2(n) ilog2(2*(n)-1)
+#define	roundup_pow_of_two(n)	((__typeof(n))1 << order_base_2(n))
+
 #define	bitcount64(x)	__bitcount64((uint64_t)(x))
 #define	bitcount32(x)	__bitcount32((uint32_t)(x))
 #define	bitcount16(x)	__bitcount16((uint16_t)(x))
@@ -163,8 +243,8 @@ void	*memcchr(const void *s, int c, size_t n);
 void	*memmem(const void *l, size_t l_len, const void *s, size_t s_len);
 void	 qsort(void *base, size_t nmemb, size_t size,
 	    int (*compar)(const void *, const void *));
-void	 qsort_r(void *base, size_t nmemb, size_t size, void *thunk,
-	    int (*compar)(void *, const void *, const void *));
+void	 qsort_r(void *base, size_t nmemb, size_t size,
+	    int (*compar)(const void *, const void *, void *), void *thunk);
 u_long	 random(void);
 int	 scanc(u_int, const u_char *, const u_char *, int);
 int	 strcasecmp(const char *, const char *);
@@ -174,8 +254,8 @@ char	*strchr(const char *, int);
 char	*strchrnul(const char *, int);
 int	 strcmp(const char *, const char *);
 char	*strcpy(char * __restrict, const char * __restrict);
-size_t	 strcspn(const char * __restrict, const char * __restrict) __pure;
 char	*strdup_flags(const char *__restrict, struct malloc_type *, int);
+size_t	 strcspn(const char *, const char *) __pure;
 char	*strdup(const char *__restrict, struct malloc_type *);
 char	*strncat(char *, const char *, size_t);
 char	*strndup(const char *__restrict, size_t, struct malloc_type *);
@@ -186,20 +266,31 @@ int	 strncasecmp(const char *, const char *, size_t);
 int	 strncmp(const char *, const char *, size_t);
 char	*strncpy(char * __restrict, const char * __restrict, size_t);
 size_t	 strnlen(const char *, size_t);
+char	*strnstr(const char *, const char *, size_t);
 char	*strrchr(const char *, int);
 char	*strsep(char **, const char *delim);
 size_t	 strspn(const char *, const char *);
 char	*strstr(const char *, const char *);
 int	 strvalid(const char *, size_t);
 
-#ifdef KCSAN
-char	*kcsan_strcpy(char *, const char *);
-int	kcsan_strcmp(const char *, const char *);
-size_t	kcsan_strlen(const char *);
-#define	strcpy(d, s) kcsan_strcpy((d), (s))
-#define	strcmp(s1, s2) kcsan_strcmp((s1), (s2))
-#define	strlen(s) kcsan_strlen((s))
+#ifdef SAN_NEEDS_INTERCEPTORS
+#ifndef SAN_INTERCEPTOR
+#define	SAN_INTERCEPTOR(func)	\
+	__CONCAT(SAN_INTERCEPTOR_PREFIX, __CONCAT(_, func))
 #endif
+char	*SAN_INTERCEPTOR(strcpy)(char *, const char *);
+int	SAN_INTERCEPTOR(strcmp)(const char *, const char *);
+size_t	SAN_INTERCEPTOR(strlen)(const char *);
+#ifndef SAN_RUNTIME
+#define	strcpy(d, s)	SAN_INTERCEPTOR(strcpy)((d), (s))
+#define	strcmp(s1, s2)	SAN_INTERCEPTOR(strcmp)((s1), (s2))
+#define	strlen(s)	SAN_INTERCEPTOR(strlen)(s)
+#endif /* !SAN_RUNTIME */
+#else /* !SAN_NEEDS_INTERCEPTORS */
+#define strcpy(d, s)	__builtin_strcpy((d), (s))
+#define strcmp(s1, s2)	__builtin_strcmp((s1), (s2))
+#define strlen(s)	__builtin_strlen((s))
+#endif /* SAN_NEEDS_INTERCEPTORS */
 
 static __inline char *
 index(const char *p, int ch)
@@ -215,6 +306,22 @@ rindex(const char *p, int ch)
 	return (strrchr(p, ch));
 }
 
+static __inline int64_t
+signed_extend64(uint64_t bitmap, int lsb, int width)
+{
+
+	return ((int64_t)(bitmap << (63 - lsb - (width - 1)))) >>
+	    (63 - (width - 1));
+}
+
+static __inline int32_t
+signed_extend32(uint32_t bitmap, int lsb, int width)
+{
+
+	return ((int32_t)(bitmap << (31 - lsb - (width - 1)))) >>
+	    (31 - (width - 1));
+}
+
 /* fnmatch() return values. */
 #define	FNM_NOMATCH	1	/* Match failed. */
 
@@ -226,5 +333,11 @@ rindex(const char *p, int ch)
 #define	FNM_CASEFOLD	0x10	/* Case insensitive search. */
 #define	FNM_IGNORECASE	FNM_CASEFOLD
 #define	FNM_FILE_NAME	FNM_PATHNAME
+
+#if !defined(_KERNEL) && __has_include(<ssp/ssp.h>)
+#include <ssp/ssp.h>	/* __ssp_real */
+#else
+#define __ssp_real(fun)		fun
+#endif
 
 #endif /* !_SYS_LIBKERN_H_ */

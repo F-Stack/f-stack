@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 Marcel Moolenaar
  * All rights reserved.
@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef NULL
@@ -33,9 +31,7 @@
 #if !defined(__cplusplus)
 #define	NULL	((void *)0)
 #else
-#if __cplusplus >= 201103L
-#define	NULL	nullptr
-#elif defined(__GNUG__) && defined(__GNUC__) && __GNUC__ >= 4
+#if defined(__GNUG__) && defined(__GNUC__) && __GNUC__ >= 4
 #define	NULL	__null
 #else
 #if defined(__LP64__)

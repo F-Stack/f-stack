@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 /*	$NetBSD: msg.h,v 1.4 1994/06/29 06:44:43 cgd Exp $	*/
 
 /*-
@@ -153,6 +152,9 @@ struct msqid_kernel {
 #ifdef _KERNEL
 extern struct msginfo	msginfo;
 
+int	kern_get_msqids(struct thread *td, struct msqid_kernel **res,
+	    size_t *sz);
+
 #else /* _KERNEL */
 
 __BEGIN_DECLS
@@ -160,9 +162,6 @@ int msgctl(int, int, struct msqid_ds *);
 int msgget(key_t, int);
 ssize_t msgrcv(int, void *, size_t, long, int);
 int msgsnd(int, const void *, size_t, int);
-#if __BSD_VISIBLE
-int msgsys(int, ...);
-#endif
 __END_DECLS
 #endif /* !_KERNEL */
 

@@ -28,7 +28,6 @@
  * SUCH DAMAGE.
  *
  *	from BSDI $Id: mutex.h,v 2.7.2.35 2000/04/27 03:10:26 cp Exp $
- * $FreeBSD$
  */
 
 #ifndef _SYS_MUTEX_H_
@@ -92,7 +91,7 @@
 void	_mtx_init(volatile uintptr_t *c, const char *name, const char *type,
 	    int opts);
 void	_mtx_destroy(volatile uintptr_t *c);
-void	mtx_sysinit(void *arg);
+void	mtx_sysinit(const void *arg);
 int	_mtx_trylock_flags_int(struct mtx *m, int opts LOCK_FILE_LINE_ARG_DEF);
 int	_mtx_trylock_flags_(volatile uintptr_t *c, int opts, const char *file,
 	    int line);
@@ -236,14 +235,15 @@ void	_thread_lock(struct thread *);
  */
 
 /* Lock a normal mutex. */
-#define __mtx_lock(mp, tid, opts, file, line) do {			\
+#define __mtx_lock(mp, tid, opts, file, line) __extension__ ({		\
 	uintptr_t _tid = (uintptr_t)(tid);				\
 	uintptr_t _v = MTX_UNOWNED;					\
 									\
 	if (__predict_false(LOCKSTAT_PROFILE_ENABLED(adaptive__acquire) ||\
 	    !_mtx_obtain_lock_fetch((mp), &_v, _tid)))			\
 		_mtx_lock_sleep((mp), _v, (opts), (file), (line));	\
-} while (0)
+	(void)0; /* ensure void type for expression */			\
+})
 
 /*
  * Lock a spin mutex.  For spinlocks, we handle recursion inline (it
@@ -252,7 +252,7 @@ void	_thread_lock(struct thread *);
  * inlining this code is not too big a deal.
  */
 #ifdef SMP
-#define __mtx_lock_spin(mp, tid, opts, file, line) do {			\
+#define __mtx_lock_spin(mp, tid, opts, file, line) __extension__ ({	\
 	uintptr_t _tid = (uintptr_t)(tid);				\
 	uintptr_t _v = MTX_UNOWNED;					\
 									\
@@ -260,7 +260,8 @@ void	_thread_lock(struct thread *);
 	if (__predict_false(LOCKSTAT_PROFILE_ENABLED(spin__acquire) ||	\
 	    !_mtx_obtain_lock_fetch((mp), &_v, _tid))) 			\
 		_mtx_lock_spin((mp), _v, (opts), (file), (line)); 	\
-} while (0)
+	(void)0; /* ensure void type for expression */			\
+})
 #define __mtx_trylock_spin(mp, tid, opts, file, line) __extension__  ({	\
 	uintptr_t _tid = (uintptr_t)(tid);				\
 	int _ret;							\
@@ -270,14 +271,14 @@ void	_thread_lock(struct thread *);
 		spinlock_exit();					\
 		_ret = 0;						\
 	} else {							\
-		LOCKSTAT_PROFILE_OBTAIN_LOCK_SUCCESS(spin__acquire,	\
+		LOCKSTAT_PROFILE_OBTAIN_SPIN_LOCK_SUCCESS(spin__acquire,	\
 		    mp, 0, 0, file, line);				\
 		_ret = 1;						\
 	}								\
 	_ret;								\
 })
 #else /* SMP */
-#define __mtx_lock_spin(mp, tid, opts, file, line) do {			\
+#define __mtx_lock_spin(mp, tid, opts, file, line) __extension__ ({	\
 	uintptr_t _tid = (uintptr_t)(tid);				\
 									\
 	spinlock_enter();						\
@@ -287,7 +288,8 @@ void	_thread_lock(struct thread *);
 		KASSERT((mp)->mtx_lock == MTX_UNOWNED, ("corrupt spinlock")); \
 		(mp)->mtx_lock = _tid;					\
 	}								\
-} while (0)
+	(void)0; /* ensure void type for expression */			\
+})
 #define __mtx_trylock_spin(mp, tid, opts, file, line) __extension__  ({	\
 	uintptr_t _tid = (uintptr_t)(tid);				\
 	int _ret;							\
@@ -305,13 +307,14 @@ void	_thread_lock(struct thread *);
 #endif /* SMP */
 
 /* Unlock a normal mutex. */
-#define __mtx_unlock(mp, tid, opts, file, line) do {			\
+#define __mtx_unlock(mp, tid, opts, file, line) __extension__ ({	\
 	uintptr_t _v = (uintptr_t)(tid);				\
 									\
 	if (__predict_false(LOCKSTAT_PROFILE_ENABLED(adaptive__release) ||\
 	    !_mtx_release_lock_fetch((mp), &_v)))			\
 		_mtx_unlock_sleep((mp), _v, (opts), (file), (line));	\
-} while (0)
+	(void)0; /* ensure void type for expression */			\
+})
 
 /*
  * Unlock a spin mutex.  For spinlocks, we can handle everything
@@ -324,25 +327,25 @@ void	_thread_lock(struct thread *);
  * releasing a spin lock.  This includes the recursion cases.
  */
 #ifdef SMP
-#define __mtx_unlock_spin(mp) do {					\
+#define __mtx_unlock_spin(mp) __extension__ ({				\
 	if (mtx_recursed((mp)))						\
 		(mp)->mtx_recurse--;					\
 	else {								\
-		LOCKSTAT_PROFILE_RELEASE_LOCK(spin__release, mp);	\
+		LOCKSTAT_PROFILE_RELEASE_SPIN_LOCK(spin__release, mp);	\
 		_mtx_release_lock_quick((mp));				\
 	}								\
 	spinlock_exit();						\
-} while (0)
+})
 #else /* SMP */
-#define __mtx_unlock_spin(mp) do {					\
+#define __mtx_unlock_spin(mp) __extension__ ({				\
 	if (mtx_recursed((mp)))						\
 		(mp)->mtx_recurse--;					\
 	else {								\
-		LOCKSTAT_PROFILE_RELEASE_LOCK(spin__release, mp);	\
+		LOCKSTAT_PROFILE_RELEASE_SPIN_LOCK(spin__release, mp);	\
 		(mp)->mtx_lock = MTX_UNOWNED;				\
 	}								\
 	spinlock_exit();						\
-} while (0)
+})
 #endif /* SMP */
 
 /*
@@ -505,16 +508,13 @@ do {									\
 	}
 
 #define PICKUP_GIANT()							\
-	PARTIAL_PICKUP_GIANT();						\
-} while (0)
-
-#define PARTIAL_PICKUP_GIANT()						\
 	mtx_assert(&Giant, MA_NOTOWNED);				\
 	if (__predict_false(_giantcnt > 0)) {				\
 		while (_giantcnt--)					\
 			mtx_lock(&Giant);				\
 		WITNESS_RESTORE(&Giant.lock_object, Giant);		\
-	}
+	}								\
+} while (0)
 #endif
 
 struct mtx_args {

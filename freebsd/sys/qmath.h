@@ -1,5 +1,5 @@
 /*-
- * Copyright (c) 2018 Netflix, Inc.
+ * Copyright (c) 2018-2024 Netflix, Inc.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -22,8 +22,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -380,15 +378,18 @@ typedef	u64q_t		umaxq_t;
 #define	Q_QMINQ(a, b)	(Q_LT(a, b) ? (a) : (b))
 
 /*
- * Test if 'a' can be represented by 'b' with full accuracy (T) or not (F).
- * The type casting has to be done to a's type so that any truncation caused by
- * the casts will not affect the logic.
+ * Test if 'a' can be represented by 'b' with full accuracy (0) or not
+ * (EOVERFLOW). If 'b' has fewer integer and/or fractional bits than 'a',
+ * the integer and fractional values stored in 'a' must fit in the available
+ * number of integer and fractional bits in 'b'.
  */
-#define	Q_QCANREPQ(a, b) \
-    ((((Q_LTZ(a) && Q_SIGNED(b)) || !Q_LTZ(a)) && \
-    Q_GIABSVAL(a) <= Q_TC(a, Q_IMAXVAL(b)) && \
-    Q_GFABSVAL(a) <= Q_TC(a, Q_FMAXVAL(b))) ? \
-    0 : EOVERFLOW)
+#define	Q_QCANREPQ(a, b) (( \
+    (!Q_LTZ(a) || Q_SIGNED(b)) \
+ && (   Q_NIBITS(a) <= Q_NIBITS(b) \
+     || 0 == (Q_GIABSVAL(a) & (~Q_TC(a, 0) << Q_NIBITS(b)))) \
+ && (   Q_NFBITS(a) <= Q_NFBITS(b) \
+     || 0 == (Q_GFABSVAL(a) & ~(~Q_TC(a, 0) << (Q_NFBITS(a) - Q_NFBITS(b))))) \
+    ) ? 0 : EOVERFLOW)
 
 /* Test if raw integer value 'i' can be represented by 'q' (T) or not (F). */
 #define	Q_QCANREPI(q, i) \
@@ -501,7 +502,7 @@ typedef	u64q_t		umaxq_t;
 #define	Q_QADDSUBQ(a, b, eop)						\
 ({									\
 	int _aserr;							\
-	if ((_aserr = Q_NORMPREC(a, b))) while(0); /* NOP */		\
+	if ((_aserr = Q_NORMPREC(a, b))) while (0); /* NOP */		\
 	else if ((eop) == '+') {					\
 		if (Q_IFMAXVAL(*(a)) - Q_GIFABSVAL(b) < Q_GIFVAL(*(a)))	\
 			_aserr = EOVERFLOW; /* [+/-a + +b] > max(a) */	\
@@ -523,7 +524,7 @@ typedef	u64q_t		umaxq_t;
 #define	Q_QDIVQ(a, b)							\
 ({									\
 	int _err;							\
-	if ((_err = Q_NORMPREC(a, b))) while(0); /* NOP */		\
+	if ((_err = Q_NORMPREC(a, b))) while (0); /* NOP */		\
 	else if (Q_GIFABSVAL(b) == 0 || (!Q_SIGNED(*(a)) && Q_LTZ(b)))	\
 		_err = EINVAL; /* Divide by zero or cannot represent. */\
 	/* XXXLAS: Handle overflow. */					\
@@ -539,7 +540,7 @@ typedef	u64q_t		umaxq_t;
 #define	Q_QMULQ(a, b)							\
 ({									\
 	int _mulerr;							\
-	if ((_mulerr = Q_NORMPREC(a, b))) while(0); /* NOP */		\
+	if ((_mulerr = Q_NORMPREC(a, b))) while (0); /* NOP */		\
 	else if (!Q_SIGNED(*(a)) && Q_LTZ(b))				\
 		_mulerr = EINVAL;					\
 	else if (Q_GIFABSVAL(b) != 0 &&					\
