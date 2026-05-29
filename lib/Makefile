@@ -127,6 +127,12 @@ ifeq "$(GCCVERGE11)" "1"
     CFLAGS+= -Wno-error=stringop-overread
 endif
 
+GCCVERGE12 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 12)
+ifeq "$(GCCVERGE12)" "1"
+    CFLAGS+= -Wno-error=array-bounds
+    CFLAGS+= -Wno-error=cast-qual
+endif
+
 GCCVERGE13 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 13)
 ifeq "$(GCCVERGE13)" "1"
     CFLAGS+= -Wno-error=dangling-pointer

@@ -2108,7 +2108,7 @@ startup_alloc(uma_zone_t zone, vm_size_t bytes, int domain, uint8_t *pflag,
 static void
 startup_free(void *mem, vm_size_t bytes)
 {
-	kmem_free((vm_offset_t)mem, bytes);
+	kmem_free(mem, bytes);
 }
 
 #endif
