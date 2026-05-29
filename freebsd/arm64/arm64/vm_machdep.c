@@ -27,9 +27,6 @@
 
 #include "opt_platform.h"
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/limits.h>
@@ -55,9 +52,14 @@ __FBSDID("$FreeBSD$");
 #include <machine/vfp.h>
 #endif
 
-uint32_t initial_fpcr = VFPCR_DN;
-
 #include <dev/psci/psci.h>
+
+/*
+ * psci.c is "default" in ARM64 kernel config files
+ * psci_reset will do nothing until/unless the psci device probes/attaches.
+ * Therefore, it is safe to default the cpu_reset_hook to psci_reset.
+ */
+cpu_reset_hook_t cpu_reset_hook = psci_reset;
 
 /*
  * Finish a fork operation, with process p2 nearly set up.
@@ -93,6 +95,11 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 	td2->td_pcb = pcb2;
 	bcopy(td1->td_pcb, pcb2, sizeof(*pcb2));
 
+	/* Clear the debug register state. */
+	bzero(&pcb2->pcb_dbg_regs, sizeof(pcb2->pcb_dbg_regs));
+
+	ptrauth_fork(td2, td1);
+
 	tf = (struct trapframe *)STACKALIGN((struct trapframe *)pcb2 - 1);
 	bcopy(td1->td_frame, tf, sizeof(*tf));
 	tf->tf_x[0] = 0;
@@ -102,38 +109,35 @@ cpu_fork(struct thread *td1, struct proc *p2, struct thread *td2, int flags)
 	td2->td_frame = tf;
 
 	/* Set the return value registers for fork() */
-	td2->td_pcb->pcb_x[8] = (uintptr_t)fork_return;
-	td2->td_pcb->pcb_x[9] = (uintptr_t)td2;
-	td2->td_pcb->pcb_lr = (uintptr_t)fork_trampoline;
+	td2->td_pcb->pcb_x[PCB_X19] = (uintptr_t)fork_return;
+	td2->td_pcb->pcb_x[PCB_X20] = (uintptr_t)td2;
+	td2->td_pcb->pcb_x[PCB_LR] = (uintptr_t)fork_trampoline;
 	td2->td_pcb->pcb_sp = (uintptr_t)td2->td_frame;
-	td2->td_pcb->pcb_fpusaved = &td2->td_pcb->pcb_fpustate;
-	td2->td_pcb->pcb_vfpcpu = UINT_MAX;
-	td2->td_pcb->pcb_fpusaved->vfp_fpcr = initial_fpcr;
+
+	vfp_new_thread(td2, td1, true);
 
 	/* Setup to release spin count in fork_exit(). */
 	td2->td_md.md_spinlock_count = 1;
-	td2->td_md.md_saved_daif = td1->td_md.md_saved_daif & ~DAIF_I_MASKED;
+	td2->td_md.md_saved_daif = PSR_DAIF_DEFAULT;
+
+	/* Copy the TCR_EL1 value */
+	td2->td_proc->p_md.md_tcr = td1->td_proc->p_md.md_tcr;
+
+#if defined(PERTHREAD_SSP)
+	/* Set the new canary */
+	arc4random_buf(&td2->td_md.md_canary, sizeof(td2->td_md.md_canary));
+#endif
 }
 
 void
 cpu_reset(void)
 {
 
-	psci_reset();
+	cpu_reset_hook();
 
 	printf("cpu_reset failed");
 	while(1)
 		__asm volatile("wfi" ::: "memory");
-}
-
-void
-cpu_thread_swapin(struct thread *td)
-{
-}
-
-void
-cpu_thread_swapout(struct thread *td)
-{
 }
 
 void
@@ -143,12 +147,14 @@ cpu_set_syscall_retval(struct thread *td, int error)
 
 	frame = td->td_frame;
 
-	switch (error) {
-	case 0:
+	if (__predict_true(error == 0)) {
 		frame->tf_x[0] = td->td_retval[0];
 		frame->tf_x[1] = td->td_retval[1];
 		frame->tf_spsr &= ~PSR_C;	/* carry bit */
-		break;
+		return;
+	}
+
+	switch (error) {
 	case ERESTART:
 		frame->tf_elr -= 4;
 		break;
@@ -174,40 +180,55 @@ cpu_copy_thread(struct thread *td, struct thread *td0)
 	bcopy(td0->td_frame, td->td_frame, sizeof(struct trapframe));
 	bcopy(td0->td_pcb, td->td_pcb, sizeof(struct pcb));
 
-	td->td_pcb->pcb_x[8] = (uintptr_t)fork_return;
-	td->td_pcb->pcb_x[9] = (uintptr_t)td;
-	td->td_pcb->pcb_lr = (uintptr_t)fork_trampoline;
+	td->td_pcb->pcb_x[PCB_X19] = (uintptr_t)fork_return;
+	td->td_pcb->pcb_x[PCB_X20] = (uintptr_t)td;
+	td->td_pcb->pcb_x[PCB_LR] = (uintptr_t)fork_trampoline;
 	td->td_pcb->pcb_sp = (uintptr_t)td->td_frame;
-	td->td_pcb->pcb_fpflags &= ~(PCB_FP_STARTED | PCB_FP_KERN | PCB_FP_NOSAVE);
-	td->td_pcb->pcb_fpusaved = &td->td_pcb->pcb_fpustate;
-	td->td_pcb->pcb_vfpcpu = UINT_MAX;
+
+	/* Update VFP state for the new thread */
+	vfp_new_thread(td, td0, false);
 
 	/* Setup to release spin count in fork_exit(). */
 	td->td_md.md_spinlock_count = 1;
-	td->td_md.md_saved_daif = td0->td_md.md_saved_daif & ~DAIF_I_MASKED;
+	td->td_md.md_saved_daif = PSR_DAIF_DEFAULT;
+
+#if defined(PERTHREAD_SSP)
+	/* Set the new canary */
+	arc4random_buf(&td->td_md.md_canary, sizeof(td->td_md.md_canary));
+#endif
+
+	/* Generate new pointer authentication keys. */
+	ptrauth_copy_thread(td, td0);
 }
 
 /*
  * Set that machine state for performing an upcall that starts
  * the entry function with the given argument.
  */
-void
+int
 cpu_set_upcall(struct thread *td, void (*entry)(void *), void *arg,
 	stack_t *stack)
 {
 	struct trapframe *tf = td->td_frame;
 
 	/* 32bits processes use r13 for sp */
-	if (td->td_frame->tf_spsr & PSR_M_32)
-		tf->tf_x[13] = STACKALIGN((uintptr_t)stack->ss_sp + stack->ss_size);
-	else
-		tf->tf_sp = STACKALIGN((uintptr_t)stack->ss_sp + stack->ss_size);
+	if (td->td_frame->tf_spsr & PSR_M_32) {
+		tf->tf_x[13] = STACKALIGN((uintptr_t)stack->ss_sp +
+		    stack->ss_size);
+		if ((register_t)entry & 1)
+			tf->tf_spsr |= PSR_T;
+	} else
+		tf->tf_sp = STACKALIGN((uintptr_t)stack->ss_sp +
+		    stack->ss_size);
 	tf->tf_elr = (register_t)entry;
 	tf->tf_x[0] = (register_t)arg;
+	tf->tf_x[29] = 0;
+	tf->tf_lr = 0;
+	return (0);
 }
 
 int
-cpu_set_user_tls(struct thread *td, void *tls_base)
+cpu_set_user_tls(struct thread *td, void *tls_base, int thr_flags __unused)
 {
 	struct pcb *pcb;
 
@@ -245,6 +266,7 @@ cpu_thread_alloc(struct thread *td)
 	    td->td_kstack_pages * PAGE_SIZE) - 1;
 	td->td_frame = (struct trapframe *)STACKALIGN(
 	    (struct trapframe *)td->td_pcb - 1);
+	ptrauth_thread_alloc(td);
 }
 
 void
@@ -267,8 +289,16 @@ void
 cpu_fork_kthread_handler(struct thread *td, void (*func)(void *), void *arg)
 {
 
-	td->td_pcb->pcb_x[8] = (uintptr_t)func;
-	td->td_pcb->pcb_x[9] = (uintptr_t)arg;
+	td->td_pcb->pcb_x[PCB_X19] = (uintptr_t)func;
+	td->td_pcb->pcb_x[PCB_X20] = (uintptr_t)arg;
+}
+
+void
+cpu_update_pcb(struct thread *td)
+{
+	MPASS(td == curthread);
+	td->td_pcb->pcb_tpidr_el0 = READ_SPECIALREG(tpidr_el0);
+	td->td_pcb->pcb_tpidrro_el0 = READ_SPECIALREG(tpidrro_el0);
 }
 
 void
@@ -292,9 +322,12 @@ cpu_procctl(struct thread *td __unused, int idtype __unused, id_t id __unused,
 }
 
 void
-swi_vm(void *v)
+cpu_sync_core(void)
 {
-
-	if (busdma_swi_pending != 0)
-		busdma_swi();
+	/*
+	 * Do nothing. According to ARM ARMv8 D1.11 Exception return
+	 * If FEAT_ExS is not implemented, or if FEAT_ExS is
+	 * implemented and the SCTLR_ELx.EOS field is set, exception
+	 * return from ELx is a context synchronization event.
+	 */
 }

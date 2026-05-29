@@ -25,10 +25,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)param.h	5.8 (Berkeley) 6/28/91
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/_align.h>
+#else /* !__arm__ */
 
 #ifndef _MACHINE__ALIGN_H_
 #define	_MACHINE__ALIGN_H_
@@ -42,3 +43,5 @@
 #define	_ALIGN(p)	(((u_long)(p) + _ALIGNBYTES) & ~_ALIGNBYTES)
 
 #endif /* !_MACHINE__ALIGN_H_ */
+
+#endif /* !__arm__ */

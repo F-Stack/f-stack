@@ -25,9 +25,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
@@ -95,15 +92,14 @@ static device_method_t brcm_mdionexus_fdt_methods[] = {
 DEFINE_CLASS_0(brcm_mdionexus, brcm_mdionexus_fdt_driver, brcm_mdionexus_fdt_methods,
     sizeof(struct brcm_mdionexus_softc));
 
-static devclass_t brcm_mdionexus_fdt_devclass;
-
 static driver_t brcm_mdionexus_driver = {
         "brcm_mdionexus",
 	brcm_mdionexus_fdt_methods,
         sizeof(struct brcm_mdionexus_softc)
 };
+
 EARLY_DRIVER_MODULE(brcm_mdionexus, brcm_iproc_mdio, brcm_mdionexus_driver,
-    brcm_mdionexus_fdt_devclass, NULL, NULL, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
+    NULL, NULL, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
 
 static int brcm_mdionexus_ofw_bus_attach(device_t);
 
@@ -178,7 +174,8 @@ brcm_mdionexus_fdt_attach(device_t dev)
 	if (err != 0)
 		return (err);
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static const struct ofw_bus_devinfo *
@@ -219,7 +216,7 @@ brcm_mdionexus_ofw_bus_attach(device_t dev)
 		ofw_bus_intr_to_rl(dev, node, &di->di_rl, NULL);
 
 		/* Add newbus device for this FDT node */
-		child = device_add_child(dev, NULL, -1);
+		child = device_add_child(dev, NULL, DEVICE_UNIT_ANY);
 		if (child == NULL) {
 			resource_list_free(&di->di_rl);
 			ofw_bus_gen_destroy_devinfo(&di->di_dinfo);

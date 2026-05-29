@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Semihalf under
  * the sponsorship of the FreeBSD Foundation.
@@ -27,9 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -44,7 +40,7 @@ __FBSDID("$FreeBSD$");
  * Read configuration space register
  */
 uint32_t
-pci_cfgregread(int bus, int slot, int func, int reg, int bytes)
+pci_cfgregread(int domain, int bus, int slot, int func, int reg, int bytes)
 {
 
 	/* ARM64TODO */
@@ -56,7 +52,8 @@ pci_cfgregread(int bus, int slot, int func, int reg, int bytes)
  * Write configuration space register
  */
 void
-pci_cfgregwrite(int bus, int slot, int func, int reg, u_int32_t data, int bytes)
+pci_cfgregwrite(int domain, int bus, int slot, int func, int reg, uint32_t data,
+    int bytes)
 {
 
 	/* ARM64TODO */

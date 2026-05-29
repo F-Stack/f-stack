@@ -34,9 +34,6 @@
  * Intel Stratix 10 Service Layer
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -265,7 +262,5 @@ static driver_t s10_svc_driver = {
 	sizeof(struct s10_svc_softc),
 };
 
-static devclass_t s10_svc_devclass;
-
-EARLY_DRIVER_MODULE(s10_svc, firmware, s10_svc_driver,
-    s10_svc_devclass, 0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(s10_svc, simplebus, s10_svc_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);

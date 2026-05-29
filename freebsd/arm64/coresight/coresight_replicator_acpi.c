@@ -32,9 +32,6 @@
 
 #include "opt_acpi.h"
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/types.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -87,8 +84,5 @@ static device_method_t replicator_acpi_methods[] = {
 DEFINE_CLASS_1(replicator, replicator_acpi_driver, replicator_acpi_methods,
     sizeof(struct replicator_softc), replicator_driver);
 
-static devclass_t replicator_acpi_devclass;
-
-EARLY_DRIVER_MODULE(replicator, acpi, replicator_acpi_driver,
-    replicator_acpi_devclass, 0, 0,
+EARLY_DRIVER_MODULE(replicator, acpi, replicator_acpi_driver, 0, 0,
     BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);

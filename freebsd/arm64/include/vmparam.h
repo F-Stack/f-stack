@@ -30,11 +30,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)vmparam.h     5.9 (Berkeley) 5/12/91
  *	from: FreeBSD: src/sys/i386/include/vmparam.h,v 1.33 2000/03/30
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/vmparam.h>
+#else /* !__arm__ */
 
 #ifndef	_MACHINE_VMPARAM_H_
 #define	_MACHINE_VMPARAM_H_
@@ -72,44 +73,74 @@
 #define	VM_PHYSSEG_MAX		64
 
 /*
- * Create two free page pools: VM_FREEPOOL_DEFAULT is the default pool
- * from which physical pages are allocated and VM_FREEPOOL_DIRECT is
- * the pool from which physical pages for small UMA objects are
- * allocated.
+ * Create three free page pools: VM_FREEPOOL_DEFAULT is the default pool from
+ * which physical pages are allocated and VM_FREEPOOL_DIRECT is the pool from
+ * which physical pages for page tables and small UMA objects are allocated.
+ * VM_FREEPOOL_LAZYINIT is a special-purpose pool that is populated only during
+ * boot and is used to implement deferred initialization of page structures.
  */
-#define	VM_NFREEPOOL		2
-#define	VM_FREEPOOL_DEFAULT	0
-#define	VM_FREEPOOL_DIRECT	1
+#define	VM_NFREEPOOL		3
+#define	VM_FREEPOOL_LAZYINIT	0
+#define	VM_FREEPOOL_DEFAULT	1
+#define	VM_FREEPOOL_DIRECT	2
 
 /*
- * Create one free page lists: VM_FREELIST_DEFAULT is for all physical
- * pages.
+ * Create two free page lists: VM_FREELIST_DMA32 is for physical pages that have
+ * physical addresses below 4G, and VM_FREELIST_DEFAULT is for all other
+ * physical pages.
  */
-#define	VM_NFREELIST		1
+#define	VM_NFREELIST		2
 #define	VM_FREELIST_DEFAULT	0
+#define	VM_FREELIST_DMA32	1
 
 /*
- * An allocation size of 16MB is supported in order to optimize the
- * use of the direct map by UMA.  Specifically, a cache line contains
- * at most four TTEs, collectively mapping 16MB of physical memory.
- * By reducing the number of distinct 16MB "pages" that are used by UMA,
- * the physical memory allocator reduces the likelihood of both 4MB
- * page TLB misses and cache misses caused by 4MB page TLB misses.
+ * When PAGE_SIZE is 4KB, an allocation size of 16MB is supported in order
+ * to optimize the use of the direct map by UMA.  Specifically, a 64-byte
+ * cache line contains at most 8 L2 BLOCK entries, collectively mapping 16MB
+ * of physical memory.  By reducing the number of distinct 16MB "pages" that
+ * are used by UMA, the physical memory allocator reduces the likelihood of
+ * both 2MB page TLB misses and cache misses during the page table walk when
+ * a 2MB page TLB miss does occur.
+ *
+ * When PAGE_SIZE is 16KB, an allocation size of 32MB is supported.  This
+ * size is used by level 0 reservations and L2 BLOCK mappings.
  */
+#if PAGE_SIZE == PAGE_SIZE_4K
+#define	VM_NFREEORDER		13
+#elif PAGE_SIZE == PAGE_SIZE_16K
 #define	VM_NFREEORDER		12
-
-/*
- * Enable superpage reservations: 1 level.
- */
-#ifndef	VM_NRESERVLEVEL
-#define	VM_NRESERVLEVEL		1
+#else
+#error Unsupported page size
 #endif
 
 /*
- * Level 0 reservations consist of 512 pages.
+ * Enable superpage reservations: 2 levels.
  */
+#ifndef	VM_NRESERVLEVEL
+#define	VM_NRESERVLEVEL		2
+#endif
+
+/*
+ * Level 0 reservations consist of 16 pages when PAGE_SIZE is 4KB, and 128
+ * pages when PAGE_SIZE is 16KB.  Level 1 reservations consist of 32 64KB
+ * pages when PAGE_SIZE is 4KB, and 16 2M pages when PAGE_SIZE is 16KB.
+ */
+#if PAGE_SIZE == PAGE_SIZE_4K
 #ifndef	VM_LEVEL_0_ORDER
-#define	VM_LEVEL_0_ORDER	9
+#define	VM_LEVEL_0_ORDER	4
+#endif
+#ifndef	VM_LEVEL_1_ORDER
+#define	VM_LEVEL_1_ORDER	5
+#endif
+#elif PAGE_SIZE == PAGE_SIZE_16K
+#ifndef	VM_LEVEL_0_ORDER
+#define	VM_LEVEL_0_ORDER	7
+#endif
+#ifndef	VM_LEVEL_1_ORDER
+#define	VM_LEVEL_1_ORDER	4
+#endif
+#else
+#error Unsupported page size
 #endif
 
 /**
@@ -125,7 +156,16 @@
  * Upper region:    0xffffffffffffffff  Top of virtual memory
  *
  *                  0xfffffeffffffffff  End of DMAP
- *                  0xfffffd0000000000  Start of DMAP
+ *                  0xffffa00000000000  Start of DMAP
+ *
+ *                  0xffff027fffffffff  End of KMSAN origin map
+ *                  0xffff020000000000  Start of KMSAN origin map
+ *
+ *                  0xffff017fffffffff  End of KMSAN shadow map
+ *                  0xffff010000000000  Start of KMSAN shadow map
+ *
+ *                  0xffff009fffffffff  End of KASAN shadow map
+ *                  0xffff008000000000  Start of KASAN shadow map
  *
  *                  0xffff007fffffffff  End of KVA
  *                  0xffff000000000000  Kernel base address & start of KVA
@@ -156,6 +196,43 @@
 #define	VM_MIN_KERNEL_ADDRESS	(0xffff000000000000UL)
 #define	VM_MAX_KERNEL_ADDRESS	(0xffff008000000000UL)
 
+/* 128 GiB KASAN shadow map */
+#define	KASAN_MIN_ADDRESS	(0xffff008000000000UL)
+#define	KASAN_MAX_ADDRESS	(0xffff00a000000000UL)
+
+/* 512GiB KMSAN shadow map */
+#define	KMSAN_SHAD_MIN_ADDRESS	(0xffff010000000000UL)
+#define	KMSAN_SHAD_MAX_ADDRESS	(0xffff018000000000UL)
+
+/* 512GiB KMSAN origin map */
+#define	KMSAN_ORIG_MIN_ADDRESS	(0xffff020000000000UL)
+#define	KMSAN_ORIG_MAX_ADDRESS	(0xffff028000000000UL)
+
+/* The address bits that hold a pointer authentication code */
+#define	PAC_ADDR_MASK		(0x007f000000000000UL)
+#define	PAC_ADDR_MASK_14	(0xff7f000000000000UL)
+
+/* The top-byte ignore address bits */
+#define	TBI_ADDR_MASK		0xff00000000000000UL
+
+/* If true addr is in the kernel address space */
+#define	ADDR_IS_KERNEL(addr)	(((addr) & (1ul << 55)) == (1ul << 55))
+/* If true addr is in the user address space */
+#define	ADDR_IS_USER(addr)	(((addr) & (1ul << 55)) == 0)
+/* If true addr is in its canonical form (i.e. no TBI, PAC, etc.) */
+#define	ADDR_IS_CANONICAL(addr)	\
+    (((addr) & 0xffff000000000000UL) == 0 || \
+     ((addr) & 0xffff000000000000UL) == 0xffff000000000000UL)
+#define	ADDR_MAKE_CANONICAL(addr) ({			\
+	__typeof(addr) _tmp_addr = (addr);		\
+							\
+	_tmp_addr &= ~0xffff000000000000UL;		\
+	if (ADDR_IS_KERNEL(addr))			\
+		_tmp_addr |= 0xffff000000000000UL;	\
+							\
+	_tmp_addr;					\
+})
+
 /* 95 TiB maximum for the direct map region */
 #define	DMAP_MIN_ADDRESS	(0xffffa00000000000UL)
 #define	DMAP_MAX_ADDRESS	(0xffffff0000000000UL)
@@ -163,9 +240,21 @@
 #define	DMAP_MIN_PHYSADDR	(dmap_phys_base)
 #define	DMAP_MAX_PHYSADDR	(dmap_phys_max)
 
-/* True if pa is in the dmap range */
-#define	PHYS_IN_DMAP(pa)	((pa) >= DMAP_MIN_PHYSADDR && \
+/*
+ * Checks to see if a physical address is in the DMAP range.
+ * - PHYS_IN_DMAP_RANGE will return true that may be within the DMAP range
+ *   but not accessible through the DMAP, e.g. device memory between two
+ *   DMAP physical address regions.
+ * - PHYS_IN_DMAP will check if DMAP address is mapped before returning true.
+ *
+ * PHYS_IN_DMAP_RANGE should only be used when a check on the address is
+ * performed, e.g. by checking the physical address is within phys_avail,
+ * or checking the virtual address is mapped.
+ */
+#define	PHYS_IN_DMAP_RANGE(pa)	((pa) >= DMAP_MIN_PHYSADDR && \
     (pa) < DMAP_MAX_PHYSADDR)
+#define	PHYS_IN_DMAP(pa)	(PHYS_IN_DMAP_RANGE(pa) && \
+    pmap_klookup(PHYS_TO_DMAP(pa), NULL))
 /* True if va is in the dmap range */
 #define	VIRT_IN_DMAP(va)	((va) >= DMAP_MIN_ADDRESS && \
     (va) < (dmap_max_addr))
@@ -173,7 +262,7 @@
 #define	PMAP_HAS_DMAP	1
 #define	PHYS_TO_DMAP(pa)						\
 ({									\
-	KASSERT(PHYS_IN_DMAP(pa),					\
+	KASSERT(PHYS_IN_DMAP_RANGE(pa),					\
 	    ("%s: PA out of range, PA: 0x%lx", __func__,		\
 	    (vm_paddr_t)(pa)));						\
 	((pa) - dmap_phys_base) + DMAP_MIN_ADDRESS;			\
@@ -220,15 +309,15 @@
 #define	VM_INITIAL_PAGEIN	16
 #endif
 
-#define	UMA_MD_SMALL_ALLOC
+#if !defined(KASAN) && !defined(KMSAN)
+#define UMA_USE_DMAP
+#endif
 
 #ifndef LOCORE
 
 extern vm_paddr_t dmap_phys_base;
 extern vm_paddr_t dmap_phys_max;
 extern vm_offset_t dmap_max_addr;
-extern vm_offset_t vm_max_kernel_address;
-extern vm_offset_t init_pt_va;
 
 #endif
 
@@ -245,5 +334,8 @@ extern vm_offset_t init_pt_va;
  * Need a page dump array for minidump.
  */
 #define MINIDUMP_PAGE_TRACKING	1
+#define MINIDUMP_STARTUP_PAGE_TRACKING 1
 
 #endif /* !_MACHINE_VMPARAM_H_ */
+
+#endif /* !__arm__ */

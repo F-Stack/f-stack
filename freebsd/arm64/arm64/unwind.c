@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Semihalf under
  * the sponsorship of the FreeBSD Foundation.
@@ -27,8 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 #include <sys/param.h>
 #include <sys/proc.h>
 
@@ -42,14 +39,14 @@ unwind_frame(struct thread *td, struct unwind_state *frame)
 
 	fp = frame->fp;
 
-	if (!kstack_contains(td, fp, sizeof(uintptr_t) * 2))
+	if (!__is_aligned(fp, sizeof(fp)) ||
+	    !kstack_contains(td, fp, sizeof(fp) * 2))
 		return (false);
 
-	frame->sp = fp + sizeof(uintptr_t) * 2;
 	/* FP to previous frame (X29) */
 	frame->fp = ((uintptr_t *)fp)[0];
 	/* LR (X30) */
-	frame->pc = ((uintptr_t *)fp)[1] - 4;
+	frame->pc = ADDR_MAKE_CANONICAL(((uintptr_t *)fp)[1] - 4);
 
 	return (true);
 }

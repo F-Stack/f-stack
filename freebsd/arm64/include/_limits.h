@@ -22,10 +22,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)limits.h	8.3 (Berkeley) 1/4/94
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/_limits.h>
+#else /* !__arm__ */
 
 #ifndef _MACHINE__LIMITS_H_
 #define	_MACHINE__LIMITS_H_
@@ -83,3 +84,5 @@
 #define	__MINSIGSTKSZ	(1024 * 4)
 
 #endif /* !_MACHINE__LIMITS_H_ */
+
+#endif /* !__arm__ */

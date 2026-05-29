@@ -2,7 +2,6 @@
  * System call numbers.
  *
  * DO NOT EDIT-- this file is automatically @generated.
- * $FreeBSD$
  */
 
 #define	LINUX_SYS_linux_setxattr	5
@@ -61,9 +60,9 @@
 #define	LINUX_SYS_linux_getdents64	61
 #define	LINUX_SYS_linux_lseek	62
 #define	LINUX_SYS_read	63
-#define	LINUX_SYS_write	64
+#define	LINUX_SYS_linux_write	64
 #define	LINUX_SYS_readv	65
-#define	LINUX_SYS_writev	66
+#define	LINUX_SYS_linux_writev	66
 #define	LINUX_SYS_linux_pread	67
 #define	LINUX_SYS_linux_pwrite	68
 #define	LINUX_SYS_linux_preadv	69
@@ -188,7 +187,7 @@
 #define	LINUX_SYS_linux_semget	190
 #define	LINUX_SYS_linux_semctl	191
 #define	LINUX_SYS_linux_semtimedop	192
-#define	LINUX_SYS_linux_semop	193
+#define	LINUX_SYS_semop	193
 #define	LINUX_SYS_linux_shmget	194
 #define	LINUX_SYS_linux_shmctl	195
 #define	LINUX_SYS_linux_shmat	196
@@ -269,4 +268,37 @@
 #define	LINUX_SYS_linux_pkey_mprotect	288
 #define	LINUX_SYS_linux_pkey_alloc	289
 #define	LINUX_SYS_linux_pkey_free	290
-#define	LINUX_SYS_MAXSYSCALL	292
+#define	LINUX_SYS_linux_statx	291
+#define	LINUX_SYS_linux_io_pgetevents	292
+#define	LINUX_SYS_linux_rseq	293
+#define	LINUX_SYS_linux_kexec_file_load	294
+#define	LINUX_SYS_linux_pidfd_send_signal	424
+#define	LINUX_SYS_linux_io_uring_setup	425
+#define	LINUX_SYS_linux_io_uring_enter	426
+#define	LINUX_SYS_linux_io_uring_register	427
+#define	LINUX_SYS_linux_open_tree	428
+#define	LINUX_SYS_linux_move_mount	429
+#define	LINUX_SYS_linux_fsopen	430
+#define	LINUX_SYS_linux_fsconfig	431
+#define	LINUX_SYS_linux_fsmount	432
+#define	LINUX_SYS_linux_fspick	433
+#define	LINUX_SYS_linux_pidfd_open	434
+#define	LINUX_SYS_linux_clone3	435
+#define	LINUX_SYS_linux_close_range	436
+#define	LINUX_SYS_linux_openat2	437
+#define	LINUX_SYS_linux_pidfd_getfd	438
+#define	LINUX_SYS_linux_faccessat2	439
+#define	LINUX_SYS_linux_process_madvise	440
+#define	LINUX_SYS_linux_epoll_pwait2	441
+#define	LINUX_SYS_linux_mount_setattr	442
+#define	LINUX_SYS_linux_quotactl_fd	443
+#define	LINUX_SYS_linux_landlock_create_ruleset	444
+#define	LINUX_SYS_linux_landlock_add_rule	445
+#define	LINUX_SYS_linux_landlock_restrict_self	446
+#define	LINUX_SYS_linux_memfd_secret	447
+#define	LINUX_SYS_linux_process_mrelease	448
+#define	LINUX_SYS_linux_futex_waitv	449
+#define	LINUX_SYS_linux_set_mempolicy_home_node	450
+#define	LINUX_SYS_linux_cachestat	451
+#define	LINUX_SYS_linux_fchmodat2	452
+#define	LINUX_SYS_MAXSYSCALL	453

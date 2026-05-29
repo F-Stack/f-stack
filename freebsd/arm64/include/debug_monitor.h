@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2014 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Semihalf under
  * the sponsorship of the FreeBSD Foundation.
@@ -25,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_DEBUG_MONITOR_H_
@@ -57,11 +54,9 @@ enum dbg_access_t {
 
 void dbg_monitor_init(void);
 void dbg_register_sync(struct debug_monitor_state *);
-int dbg_setup_watchpoint(struct debug_monitor_state *, vm_offset_t, vm_size_t,
-    enum dbg_access_t);
-int dbg_remove_watchpoint(struct debug_monitor_state *, vm_offset_t, vm_size_t);
 
 #ifdef DDB
+void dbg_show_breakpoint(void);
 void dbg_show_watchpoint(void);
 #endif
 

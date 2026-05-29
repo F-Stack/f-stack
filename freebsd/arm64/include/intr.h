@@ -22,30 +22,24 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_INTR_H_
 #define	_MACHINE_INTR_H_
 
+#ifndef LOCORE
 #ifdef FDT
 #include <dev/ofw/openfirm.h>
-#endif
-
-#include <sys/intr.h>
-
-#ifndef NIRQ
-#define	NIRQ		16384	/* XXX - It should be an option. */
 #endif
 
 static inline void
 arm_irq_memory_barrier(uintptr_t irq)
 {
 }
+#endif /* !LOCORE */
 
-#ifdef SMP
-void intr_ipi_dispatch(u_int, struct trapframe *);
+#ifndef NIRQ
+#define	NIRQ		16384	/* XXX - It should be an option. */
 #endif
 
 #ifdef DEV_ACPI
@@ -53,5 +47,9 @@ void intr_ipi_dispatch(u_int, struct trapframe *);
 #define	ACPI_MSI_XREF	2
 #define	ACPI_GPIO_XREF	3
 #endif
+
+#define	INTR_ROOT_IRQ	0
+#define	INTR_ROOT_FIQ	1
+#define	INTR_ROOT_COUNT	2
 
 #endif	/* _MACHINE_INTR_H */

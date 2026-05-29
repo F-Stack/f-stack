@@ -26,9 +26,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/ucontext.h>
+#else /* !__arm__ */
 
 #ifndef _MACHINE_UCONTEXT_H_
 #define	_MACHINE_UCONTEXT_H_
@@ -38,8 +40,7 @@ struct gpregs {
 	__register_t	gp_lr;
 	__register_t	gp_sp;
 	__register_t	gp_elr;
-	__uint32_t	gp_spsr;
-	int		gp_pad;
+	__uint64_t	gp_spsr;
 };
 
 struct fpregs {
@@ -50,14 +51,36 @@ struct fpregs {
 	int		fp_pad;
 };
 
+/*
+ * Support for registers that don't fit into gpregs or fpregs, e.g. SVE.
+ * There are some registers that have been added so are optional. To support
+ * these create an array of headers that point at the register data.
+ */
+struct arm64_reg_context {
+	__uint32_t	ctx_id;
+	__uint32_t	ctx_size;
+};
+
+#define	ARM64_CTX_END		0xa5a5a5a5
+#define	ARM64_CTX_SVE		0x00657673
+
+struct sve_context {
+	struct arm64_reg_context sve_ctx;
+	__uint16_t	sve_vector_len;
+	__uint16_t	sve_flags;
+	__uint16_t	sve_reserved[2];
+};
+
 struct __mcontext {
 	struct gpregs	mc_gpregs;
 	struct fpregs	mc_fpregs;
 	int		mc_flags;
 #define	_MC_FP_VALID	0x1		/* Set when mc_fpregs has valid data */
 	int		mc_pad;		/* Padding */
-	__uint64_t	mc_spare[8];	/* Space for expansion, set to zero */
+	__uint64_t	mc_ptr;		/* Address of extra_regs struct */
+	__uint64_t	mc_spare[7];	/* Space for expansion, set to zero */
 };
+
 
 typedef struct __mcontext mcontext_t;
 
@@ -87,3 +110,5 @@ typedef struct __mcontext32_vfp {
 #endif /* COMPAT_FREEBSD32 */
 
 #endif	/* !_MACHINE_UCONTEXT_H_ */
+
+#endif /* !__arm__ */

@@ -27,8 +27,6 @@
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <machine/cpufunc.h>
@@ -76,12 +74,8 @@ kcsan_md_unwind(void)
 	const char *symname;
 #endif
 	struct unwind_state frame;
-	uintptr_t sp;
 	int nsym;
 
-	__asm __volatile("mov %0, sp" : "=&r" (sp));
-
-	frame.sp = sp;
 	frame.fp = (uintptr_t)__builtin_frame_address(0);
 	frame.pc = (uintptr_t)kcsan_md_unwind;
 	nsym = 0;

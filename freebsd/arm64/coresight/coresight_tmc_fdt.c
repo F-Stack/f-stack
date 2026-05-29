@@ -29,9 +29,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -88,7 +85,5 @@ static device_method_t tmc_fdt_methods[] = {
 DEFINE_CLASS_1(tmc, tmc_fdt_driver, tmc_fdt_methods,
     sizeof(struct tmc_softc), tmc_driver);
 
-static devclass_t tmc_fdt_devclass;
-
-EARLY_DRIVER_MODULE(tmc, simplebus, tmc_fdt_driver, tmc_fdt_devclass,
-    0, 0, BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(tmc, simplebus, tmc_fdt_driver, 0, 0,
+    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);

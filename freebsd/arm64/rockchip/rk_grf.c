@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2018 Emmanuel Vadot <manu@FreeBSD.org>
  *
@@ -25,9 +25,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
@@ -40,7 +37,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
-#include <dev/extres/syscon/syscon.h>
+#include <dev/syscon/syscon.h>
 #include <dev/fdt/simple_mfd.h>
 
 static struct ofw_compat_data compat_data[] = {
@@ -48,6 +45,13 @@ static struct ofw_compat_data compat_data[] = {
 	{"rockchip,rk3328-grf", 1},
 	{"rockchip,rk3399-grf", 1},
 	{"rockchip,rk3399-pmugrf", 1},
+	{"rockchip,rk3568-grf", 1},
+	{"rockchip,rk3568-pmugrf", 1},
+	{"rockchip,rk3568-usb2phy-grf", 1},
+	{"rockchip,rk3566-pipe-grf", 1},
+	{"rockchip,rk3568-pipe-grf", 1},
+	{"rockchip,rk3568-pipe-phy-grf", 1},
+	{"rockchip,rk3568-pcie3-phy-grf", 1},
 	{NULL,             0}
 };
 
@@ -73,7 +77,6 @@ static device_method_t rk_grf_methods[] = {
 DEFINE_CLASS_1(rk_grf, rk_grf_driver, rk_grf_methods,
     sizeof(struct simple_mfd_softc), simple_mfd_driver);
 
-static devclass_t rk_grf_devclass;
-EARLY_DRIVER_MODULE(rk_grf, simplebus, rk_grf_driver, rk_grf_devclass,
-    0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(rk_grf, simplebus, rk_grf_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
 MODULE_VERSION(rk_grf, 1);

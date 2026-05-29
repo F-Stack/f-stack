@@ -1,6 +1,6 @@
 /*-
  *
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright  2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * Thermometer driver for QorIQ  SoCs.
  */
@@ -44,7 +42,7 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/bus.h>
 
-#include <dev/extres/clk/clk.h>
+#include <dev/clk/clk.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
@@ -88,13 +86,104 @@ static struct sysctl_ctx_list qoriq_therm_sysctl_ctx;
 
 struct tsensor default_sensors[] =
 {
-	{ 0, "site0", 0},
-	{ 1, "site1", 1},
-	{ 2, "site2", 2},
-	{ 3, "site3", 3},
-	{ 4, "site4", 4},
-	{ 5, "site5", 5},
-	{ 6, "site6", 6},
+	{ 0,	"site0",		0 },
+	{ 1,	"site1",		1 },
+	{ 2,	"site2",		2 },
+	{ 3,	"site3",		3 },
+	{ 4,	"site4",		4 },
+	{ 5,	"site5",		5 },
+	{ 6,	"site6",		6 },
+	{ 7,	"site7",		7 },
+	{ 8,	"site8",		8 },
+	{ 9,	"site9",		9 },
+	{ 10,	"site10",		10 },
+	{ 11,	"site11",		11 },
+	{ 12,	"site12",		12 },
+	{ 13,	"site13",		13 },
+	{ 14,	"site14",		14 },
+	{ 15,	"site15",		15 },
+};
+
+static struct tsensor imx8mq_sensors[] =
+{
+	{ 0,	"cpu",			0 },
+	{ 1,	"gpu",			1 },
+	{ 2,	"vpu",			2 },
+};
+
+static struct tsensor ls1012_sensors[] =
+{
+	{ 0,	"cpu-thermal",		0 },
+};
+
+static struct tsensor ls1028_sensors[] =
+{
+	{ 0,	"ddr-controller",	0 },
+	{ 1,	"core-cluster",		1 },
+};
+
+static struct tsensor ls1043_sensors[] =
+{
+	{ 0,	"ddr-controller",	0 },
+	{ 1,	"serdes",		1 },
+	{ 2,	"fman",			2 },
+	{ 3,	"core-cluster",		3 },
+};
+
+static struct tsensor ls1046_sensors[] =
+{
+	{ 0,	"ddr-controller",	0 },
+	{ 1,	"serdes",		1 },
+	{ 2,	"fman",			2 },
+	{ 3,	"core-cluster",		3 },
+	{ 4,	"sec",			4 },
+};
+
+static struct tsensor ls1088_sensors[] =
+{
+	{ 0,	"core-cluster",		0 },
+	{ 1,	"soc",			1 },
+};
+
+/* Note: tmu[1..7] not [0..6]. */
+static struct tsensor lx2080_sensors[] =
+{
+	{ 1,	"ddr-controller1",	0 },
+	{ 2,	"ddr-controller2",	1 },
+	{ 3,	"ddr-controller3",	2 },
+	{ 4,	"core-cluster1",	3 },
+	{ 5,	"core-cluster2",	4 },
+	{ 6,	"core-cluster3",	5 },
+	{ 7,	"core-cluster4",	6 },
+};
+
+static struct tsensor lx2160_sensors[] =
+{
+	{ 0,	"cluster6-7",		0 },
+	{ 1,	"ddr-cluster5",		1 },
+	{ 2,	"wriop",		2 },
+	{ 3,	"dce-qbman-hsio2",	3 },
+	{ 4,	"ccn-dpaa-tbu",		4 },
+	{ 5,	"cluster4-hsio3",	5 },
+	{ 6,	"cluster2-3",		6 },
+};
+
+struct qoriq_therm_socs {
+	const char		*name;
+	struct tsensor		*tsensors;
+	int			ntsensors;
+} qoriq_therm_socs[] = {
+#define	_SOC(_n, _a)	{ _n, _a, nitems(_a) }
+	_SOC("fsl,imx8mq",	imx8mq_sensors),
+	_SOC("fsl,ls1012a",	ls1012_sensors),
+	_SOC("fsl,ls1028a",	ls1028_sensors),
+	_SOC("fsl,ls1043a",	ls1043_sensors),
+	_SOC("fsl,ls1046a",	ls1046_sensors),
+	_SOC("fsl,ls1088a",	ls1088_sensors),
+	_SOC("fsl,ls2080a",	lx2080_sensors),
+	_SOC("fsl,lx2160a",	lx2160_sensors),
+	{ NULL,	NULL, 0 }
+#undef _SOC
 };
 
 static struct ofw_compat_data compat_data[] = {
@@ -190,7 +279,6 @@ qoriq_therm_init_sysctl(struct qoriq_therm_softc *sc)
 	int i;
 	struct sysctl_oid *oid, *tmp;
 
-	sysctl_ctx_init(&qoriq_therm_sysctl_ctx);
 	/* create node for hw.temp */
 	oid = SYSCTL_ADD_NODE(&qoriq_therm_sysctl_ctx,
 	    SYSCTL_STATIC_CHILDREN(_hw), OID_AUTO, "temperature",
@@ -260,7 +348,8 @@ static int
 qoriq_therm_attach(device_t dev)
 {
 	struct qoriq_therm_softc *sc;
-	phandle_t node;
+	struct qoriq_therm_socs *soc;
+	phandle_t node, root;
 	uint32_t sites;
 	int rid, rv;
 
@@ -268,6 +357,8 @@ qoriq_therm_attach(device_t dev)
 	sc->dev = dev;
 	node = ofw_bus_get_node(sc->dev);
 	sc->little_endian = OF_hasprop(node, "little-endian");
+
+	sysctl_ctx_init(&qoriq_therm_sysctl_ctx);
 
 	rid = 0;
 	sc->mem_res = bus_alloc_resource_any(dev, SYS_RES_MEMORY, &rid,
@@ -307,9 +398,26 @@ qoriq_therm_attach(device_t dev)
 
 	sc->ver = (RD4(sc, TMU_VERSION) >> 8) & 0xFF;
 
-	/* XXX add per SoC customization */
-	sc->ntsensors = nitems(default_sensors);
-	sc->tsensors = default_sensors;
+	/* Select per SoC configuration. */
+	root = OF_finddevice("/");
+	if (root < 0) {
+		device_printf(dev, "Cannot get root node: %d\n", root);
+		goto fail;
+	}
+	soc = qoriq_therm_socs;
+	while (soc != NULL && soc->name != NULL) {
+		if (ofw_bus_node_is_compatible(root, soc->name))
+			break;
+		soc++;
+	}
+	if (soc == NULL) {
+		device_printf(dev, "Unsupported SoC, using default sites.\n");
+		sc->tsensors = default_sensors;
+		sc->ntsensors = nitems(default_sensors);
+	} else {
+		sc->tsensors = soc->tsensors;
+		sc->ntsensors = soc->ntsensors;
+	}
 
 	/* stop monitoring */
 	WR4(sc, TMU_TMR, 0);
@@ -325,8 +433,8 @@ qoriq_therm_attach(device_t dev)
 		WR4(sc, TMUV2_TMTMIR, 0x0F);	/* disable */
 		/* these registers are not of settings is not in TRM */
 		WR4(sc, TMUV2_TEUMR(0), 0x51009c00);
-		for (int i = 0; i < 7; i++)
-			WR4(sc, TMUV2_TMSAR(0), 0xE);
+		for (int i = 0; i < sc->ntsensors; i++)
+			WR4(sc, TMUV2_TMSAR(sc->tsensors[i].site_id), 0xE);
 	}
 
 	/* prepare calibration tables */
@@ -337,10 +445,14 @@ qoriq_therm_attach(device_t dev)
 		goto fail;
 	}
 	/* start monitoring */
-	sites = (1U << sc->ntsensors) - 1;
+	sites = 0;
 	if (sc->ver == 1) {
+		for (int i = 0; i < sc->ntsensors; i++)
+			sites |= 1 << (15 - sc->tsensors[i].site_id);
 		WR4(sc, TMU_TMR, 0x8C000000 | sites);
 	} else {
+		for (int i = 0; i < sc->ntsensors; i++)
+			sites |= 1 << sc->tsensors[i].site_id;
 		WR4(sc, TMUV2_TMSR, sites);
 		WR4(sc, TMU_TMR, 0x83000000);
 	}
@@ -352,7 +464,8 @@ qoriq_therm_attach(device_t dev)
 	}
 
 	OF_device_register_xref(OF_xref_from_node(node), dev);
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 
 fail:
 	if (sc->irq_ih != NULL)
@@ -399,8 +512,6 @@ static device_method_t qoriq_qoriq_therm_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t qoriq_qoriq_therm_devclass;
 static DEFINE_CLASS_0(soctherm, qoriq_qoriq_therm_driver, qoriq_qoriq_therm_methods,
     sizeof(struct qoriq_therm_softc));
-DRIVER_MODULE(qoriq_soctherm, simplebus, qoriq_qoriq_therm_driver,
-    qoriq_qoriq_therm_devclass, NULL, NULL);
+DRIVER_MODULE(qoriq_soctherm, simplebus, qoriq_qoriq_therm_driver, NULL, NULL);

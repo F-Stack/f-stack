@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Semihalf under
  * the sponsorship of the FreeBSD Foundation.
@@ -27,9 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bitstring.h>
@@ -54,11 +50,9 @@ __FBSDID("$FreeBSD$");
  */
 static int gic_v3_fdt_probe(device_t);
 static int gic_v3_fdt_attach(device_t);
-static int gic_v3_fdt_print_child(device_t, device_t);
 
-static struct resource *gic_v3_ofw_bus_alloc_res(device_t, device_t, int, int *,
-    rman_res_t, rman_res_t, rman_res_t, u_int);
 static const struct ofw_bus_devinfo *gic_v3_ofw_get_devinfo(device_t, device_t);
+static bus_get_resource_list_t gic_v3_fdt_get_resource_list;
 
 static device_method_t gic_v3_fdt_methods[] = {
 	/* Device interface */
@@ -66,9 +60,8 @@ static device_method_t gic_v3_fdt_methods[] = {
 	DEVMETHOD(device_attach,	gic_v3_fdt_attach),
 
 	/* Bus interface */
-	DEVMETHOD(bus_print_child,		gic_v3_fdt_print_child),
-	DEVMETHOD(bus_alloc_resource,		gic_v3_ofw_bus_alloc_res),
-	DEVMETHOD(bus_activate_resource,	bus_generic_activate_resource),
+	DEVMETHOD(bus_get_resource_list,	gic_v3_fdt_get_resource_list),
+	DEVMETHOD(bus_get_device_path,  ofw_bus_gen_get_device_path),
 
 	/* ofw_bus interface */
 	DEVMETHOD(ofw_bus_get_devinfo,	gic_v3_ofw_get_devinfo),
@@ -85,12 +78,10 @@ static device_method_t gic_v3_fdt_methods[] = {
 DEFINE_CLASS_1(gic, gic_v3_fdt_driver, gic_v3_fdt_methods,
     sizeof(struct gic_v3_softc), gic_v3_driver);
 
-static devclass_t gic_v3_fdt_devclass;
-
-EARLY_DRIVER_MODULE(gic_v3, simplebus, gic_v3_fdt_driver, gic_v3_fdt_devclass,
-    0, 0, BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
-EARLY_DRIVER_MODULE(gic_v3, ofwbus, gic_v3_fdt_driver, gic_v3_fdt_devclass,
-    0, 0, BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(gic_v3, simplebus, gic_v3_fdt_driver, 0, 0,
+    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(gic_v3, ofwbus, gic_v3_fdt_driver, 0, 0,
+    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
 
 /*
  * Helper functions declarations.
@@ -144,7 +135,7 @@ gic_v3_fdt_attach(device_t dev)
 		if (ret % 2 == 0) {
 			/* Limit to a single range for now. */
 			sc->gic_mbi_start = mbi_ranges[0];
-			sc->gic_mbi_end = mbi_ranges[0] + mbi_ranges[1] - 1;
+			sc->gic_mbi_end = mbi_ranges[0] + mbi_ranges[1];
 		} else {
 			if (bootverbose)
 				device_printf(dev, "Malformed mbi-ranges property\n");
@@ -170,11 +161,19 @@ gic_v3_fdt_attach(device_t dev)
 	/* Register xref */
 	OF_device_register_xref(xref, dev);
 
-	if (intr_pic_claim_root(dev, xref, arm_gic_v3_intr, sc,
-	    GIC_LAST_SGI - GIC_FIRST_SGI + 1) != 0) {
+	err = intr_pic_claim_root(dev, xref, arm_gic_v3_intr, sc, INTR_ROOT_IRQ);
+	if (err != 0) {
 		err = ENXIO;
 		goto error;
 	}
+
+#ifdef SMP
+	err = intr_ipi_pic_register(dev, 0);
+	if (err != 0) {
+		device_printf(dev, "could not register for IPIs\n");
+		goto error;
+	}
+#endif
 
 	/*
 	 * Try to register ITS to this GIC.
@@ -211,71 +210,75 @@ struct gic_v3_ofw_devinfo {
 	struct resource_list	di_rl;
 };
 
-static int
-gic_v3_fdt_print_child(device_t bus, device_t child)
-{
-	struct gic_v3_ofw_devinfo *di = device_get_ivars(child);
-	struct resource_list *rl = &di->di_rl;
-	int retval = 0;
-
-	retval += bus_print_child_header(bus, child);
-	retval += resource_list_print_type(rl, "mem", SYS_RES_MEMORY, "%#jx");
-	retval += bus_print_child_footer(bus, child);
-
-	return (retval);
-}
-
 static const struct ofw_bus_devinfo *
 gic_v3_ofw_get_devinfo(device_t bus __unused, device_t child)
 {
 	struct gic_v3_ofw_devinfo *di;
 
 	di = device_get_ivars(child);
+	if (di->di_gic_dinfo.is_vgic)
+		return (NULL);
 	return (&di->di_dinfo);
 }
 
-static struct resource *
-gic_v3_ofw_bus_alloc_res(device_t bus, device_t child, int type, int *rid,
-    rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
+/* Helper functions */
+static int
+gic_v3_ofw_fill_ranges(phandle_t parent, struct gic_v3_softc *sc,
+    pcell_t *addr_cellsp, pcell_t *size_cellsp)
 {
-	struct gic_v3_ofw_devinfo *di;
-	struct resource_list_entry *rle;
-	int ranges_len;
+	pcell_t addr_cells, host_cells, size_cells;
+	cell_t *base_ranges;
+	ssize_t nbase_ranges;
+	int i, j, k;
 
-	if (RMAN_IS_DEFAULT_RANGE(start, end)) {
-		if ((di = device_get_ivars(child)) == NULL)
-			return (NULL);
-		if (type != SYS_RES_MEMORY)
-			return (NULL);
+	host_cells = 1;
+	OF_getencprop(OF_parent(parent), "#address-cells", &host_cells,
+	    sizeof(host_cells));
+	addr_cells = 2;
+	OF_getencprop(parent, "#address-cells", &addr_cells,
+	    sizeof(addr_cells));
+	size_cells = 2;
+	OF_getencprop(parent, "#size-cells", &size_cells,
+	    sizeof(size_cells));
 
-		/* Find defaults for this rid */
-		rle = resource_list_find(&di->di_rl, type, *rid);
-		if (rle == NULL)
-			return (NULL);
+	*addr_cellsp = addr_cells;
+	*size_cellsp = size_cells;
 
-		start = rle->start;
-		end = rle->end;
-		count = rle->count;
-	}
-	/*
-	 * XXX: No ranges remap!
-	 *	Absolute address is expected.
-	 */
-	if (ofw_bus_has_prop(bus, "ranges")) {
-		ranges_len = OF_getproplen(ofw_bus_get_node(bus), "ranges");
-		if (ranges_len != 0) {
-			if (bootverbose) {
-				device_printf(child,
-				    "Ranges remap not supported\n");
-			}
-			return (NULL);
+	nbase_ranges = OF_getproplen(parent, "ranges");
+	if (nbase_ranges < 0)
+		return (EINVAL);
+
+	sc->nranges = nbase_ranges / sizeof(cell_t) /
+	    (addr_cells + host_cells + size_cells);
+	if (sc->nranges == 0)
+		return (0);
+
+	sc->ranges = malloc(sc->nranges * sizeof(sc->ranges[0]), M_GIC_V3,
+	    M_WAITOK);
+	base_ranges = malloc(nbase_ranges, M_DEVBUF, M_WAITOK);
+	OF_getencprop(parent, "ranges", base_ranges, nbase_ranges);
+
+	for (i = 0, j = 0; i < sc->nranges; i++) {
+		sc->ranges[i].bus = 0;
+		for (k = 0; k < addr_cells; k++) {
+			sc->ranges[i].bus <<= 32;
+			sc->ranges[i].bus |= base_ranges[j++];
+		}
+		sc->ranges[i].host = 0;
+		for (k = 0; k < host_cells; k++) {
+			sc->ranges[i].host <<= 32;
+			sc->ranges[i].host |= base_ranges[j++];
+		}
+		sc->ranges[i].size = 0;
+		for (k = 0; k < size_cells; k++) {
+			sc->ranges[i].size <<= 32;
+			sc->ranges[i].size |= base_ranges[j++];
 		}
 	}
-	return (bus_generic_alloc_resource(bus, child, type, rid, start, end,
-	    count, flags));
-}
 
-/* Helper functions */
+	free(base_ranges, M_DEVBUF);
+	return (0);
+}
 
 /*
  * Bus capability support for GICv3.
@@ -290,18 +293,26 @@ gic_v3_ofw_bus_attach(device_t dev)
 	device_t child;
 	phandle_t parent, node;
 	pcell_t addr_cells, size_cells;
+	int rv;
 
 	sc = device_get_softc(dev);
 	parent = ofw_bus_get_node(dev);
 	if (parent > 0) {
-		addr_cells = 2;
-		OF_getencprop(parent, "#address-cells", &addr_cells,
-		    sizeof(addr_cells));
-		size_cells = 2;
-		OF_getencprop(parent, "#size-cells", &size_cells,
-		    sizeof(size_cells));
+		rv = gic_v3_ofw_fill_ranges(parent, sc, &addr_cells,
+		    &size_cells);
+		if (rv != 0)
+			return (rv);
+
 		/* Iterate through all GIC subordinates */
 		for (node = OF_child(parent); node > 0; node = OF_peer(node)) {
+			/*
+			 * Ignore children that lack a compatible property.
+			 * Some of them may be for configuration, for example
+			 * ppi-partitions.
+			 */
+			if (!OF_hasprop(node, "compatible"))
+				continue;
+
 			/* Allocate and populate devinfo. */
 			di = malloc(sizeof(*di), M_GIC_V3, M_WAITOK | M_ZERO);
 
@@ -329,7 +340,7 @@ gic_v3_ofw_bus_attach(device_t dev)
 			/* Should not have any interrupts, so don't add any */
 
 			/* Add newbus device for this FDT node */
-			child = device_add_child(dev, NULL, -1);
+			child = device_add_child(dev, NULL, DEVICE_UNIT_ANY);
 			if (!child) {
 				if (bootverbose) {
 					device_printf(dev,
@@ -347,5 +358,35 @@ gic_v3_ofw_bus_attach(device_t dev)
 		}
 	}
 
-	return (bus_generic_attach(dev));
+	/*
+	 * If there is a vgic maintanance interrupt add a virtual gic
+	 * child so we can use this in the vmm module for bhyve.
+	 */
+	if (OF_hasprop(parent, "interrupts")) {
+		child = device_add_child(dev, "vgic", DEVICE_UNIT_ANY);
+		if (child == NULL) {
+			device_printf(dev, "Could not add vgic child\n");
+		} else {
+			di = malloc(sizeof(*di), M_GIC_V3, M_WAITOK | M_ZERO);
+			resource_list_init(&di->di_rl);
+			di->di_gic_dinfo.gic_domain = -1;
+			di->di_gic_dinfo.is_vgic = 1;
+			device_set_ivars(child, di);
+			sc->gic_nchildren++;
+		}
+	}
+
+	bus_attach_children(dev);
+	return (0);
+}
+
+static struct resource_list *
+gic_v3_fdt_get_resource_list(device_t bus, device_t child)
+{
+	struct gic_v3_ofw_devinfo *di;
+
+	di = device_get_ivars(child);
+	KASSERT(di != NULL, ("%s: No devinfo", __func__));
+
+	return (&di->di_rl);
 }

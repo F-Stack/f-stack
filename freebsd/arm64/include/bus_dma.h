@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 
 #ifndef _MACHINE_BUS_DMA_H_
 #define	_MACHINE_BUS_DMA_H_
@@ -63,7 +62,7 @@ bus_dmamem_alloc(bus_dma_tag_t dmat, void** vaddr, int flags,
 
 /*
  * Free a piece of memory and it's allociated dmamap, that was allocated
- * via bus_dmamem_alloc.  Make the same choice for free/contigfree.
+ * via bus_dmamem_alloc.
  */
 static inline void
 bus_dmamem_free(bus_dma_tag_t dmat, void *vaddr, bus_dmamap_t map)
@@ -149,5 +148,17 @@ _bus_dmamap_complete(bus_dma_tag_t dmat, bus_dmamap_t map,
 	tc = (struct bus_dma_tag_common *)dmat;
 	return (tc->impl->map_complete(dmat, map, segs, nsegs, error));
 }
+
+#ifdef KMSAN
+static inline void
+_bus_dmamap_load_kmsan(bus_dma_tag_t dmat, bus_dmamap_t map,
+    struct memdesc *mem)
+{
+	struct bus_dma_tag_common *tc;
+
+	tc = (struct bus_dma_tag_common *)dmat;
+	return (tc->impl->load_kmsan(map, mem));
+}
+#endif
 
 #endif /* !_MACHINE_BUS_DMA_H_ */

@@ -22,9 +22,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/pcb.h>
+#else /* !__arm__ */
 
 #ifndef	_MACHINE_PCB_H_
 #define	_MACHINE_PCB_H_
@@ -36,10 +38,16 @@
 
 struct trapframe;
 
+/* The first register in pcb_x is x19 */
+#define	PCB_X_START	19
+
+#define	PCB_X19		0
+#define	PCB_X20		1
+#define	PCB_FP		10
+#define	PCB_LR		11
+
 struct pcb {
-	uint64_t	pcb_x[30];
-	uint64_t	pcb_lr;
-	uint64_t	_reserved;	/* Was pcb_pc */
+	uint64_t	pcb_x[12];
 	/* These two need to be in order as we access them together */
 	uint64_t	pcb_sp;
 	uint64_t	pcb_tpidr_el0;
@@ -51,15 +59,19 @@ struct pcb {
 	u_int		pcb_flags;
 #define	PCB_SINGLE_STEP_SHIFT	0
 #define	PCB_SINGLE_STEP		(1 << PCB_SINGLE_STEP_SHIFT)
+	u_int		pcb_sve_len;	/* The SVE vector length */
 
 	struct vfpstate	*pcb_fpusaved;
 	int		pcb_fpflags;
-#define	PCB_FP_STARTED	0x01
-#define	PCB_FP_KERN	0x02
-#define	PCB_FP_NOSAVE	0x04
+#define	PCB_FP_STARTED	0x00000001
+#define	PCB_FP_SVEVALID	0x00000002
+#define	PCB_FP_KERN	0x40000000
+#define	PCB_FP_NOSAVE	0x80000000
 /* The bits passed to userspace in get_fpcontext */
-#define	PCB_FP_USERMASK	(PCB_FP_STARTED)
+#define	PCB_FP_USERMASK	(PCB_FP_STARTED | PCB_FP_SVEVALID)
 	u_int		pcb_vfpcpu;	/* Last cpu this thread ran VFP code */
+	void		*pcb_svesaved;
+	uint64_t	pcb_reserved[4];
 
 	/*
 	 * The userspace VFP state. The pcb_fpusaved pointer will point to
@@ -73,9 +85,11 @@ struct pcb {
 
 #ifdef _KERNEL
 void	makectx(struct trapframe *tf, struct pcb *pcb);
-int	savectx(struct pcb *pcb) __returns_twice;
+void	savectx(struct pcb *pcb) __returns_twice;
 #endif
 
 #endif /* !LOCORE */
 
 #endif /* !_MACHINE_PCB_H_ */
+
+#endif /* !__arm__ */
