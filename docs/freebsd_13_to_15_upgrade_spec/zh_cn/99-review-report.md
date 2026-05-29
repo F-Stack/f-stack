@@ -287,27 +287,27 @@ q2 决定的范围（来自 plan.md §1.5）：
 | **M2** | T-arch-01-redo | amd64+x86 全量重做（DP-8）| P2 | ✅ 完成（4 改造 + 380 cp + 25 LEGACY 删除）| m2-leader | 2026-05-29 |
 | **M2** | T-arch-02-redo | arm64 全量重做（DP-8）| P2 | ✅ 完成（1 改造 + 286 cp + 19 LEGACY 删除）| m2-leader | 2026-05-29 |
 | **M2** | T-misc-01-libalias | netinet/libalias 重做（DP-9-B）| P2 | ✅ 完成（1 改造 + 19 cp + alias_db.h NEW）| m2-leader | 2026-05-29 |
-| **M3** | **T-net-01** | **net/if.c** | **P0** | 待办 | — | — |
-| M3 | **T-net-02** | **net/if_var.h** | **P0** | 待办 | — | — |
-| M3 | T-net-03 | if_ethersubr.c | P1 | 待办 | — | — |
-| M3 | T-net-04 | netisr.c | P1 | 待办 | — | — |
-| M3 | **T-net-05** | **net/route.c** | **P0** | 待办 | — | — |
-| M3 | T-net-misc | 其余 17 NET_SRCS | P3 | 待办 | — | — |
-| M3 | **T-netinet-01** | **tcp_input.c** | **P0** | 待办 | — | — |
-| M3 | T-netinet-02 | tcp_output.c | P1 | 待办 | — | — |
-| M3 | T-netinet-03 | tcp_subr.c | P1 | 待办 | — | — |
-| M3 | **T-netinet-04** | **tcp_var.h** | **P0** | 待办 | — | — |
-| M3 | T-netinet-05 | tcp_stacks/rack.c | P1 | 待办 | — | — |
-| M3 | T-netinet-06 | tcp_stacks/bbr.c | P1 | 待办 | — | — |
-| M3 | **T-netinet-07** | **in_pcb.c** | **P0** | 待办 | — | — |
-| M3 | T-netinet-08 | tcp_usrreq.c | P1 | 待办 | — | — |
-| M3 | T-netinet-09 | udp_usrreq.c | P1 | 待办 | — | — |
-| M3 | T-netinet-10 | raw_ip.c | P1 | 待办 | — | — |
-| M3 | T-netinet-misc | 12 个 NETINET_SRCS cp -a | P3 | 待办 | — | — |
-| M3 | T-netinet6-01 | netinet6/ cp -a + 改造 | P2 | 待办 | — | — |
-| M3 | **T-ff-01** | **ff_glue.c** | **P0** | 待办 | — | — |
-| M3 | **T-ff-02** | **ff_veth.c** | **P0** | 待办 | — | — |
-| M3 | **T-ff-03** | **ff_route.c** | **P0** | 待办 | — | — |
+| **M3** | **T-net-01** | **net/if.c** | **P0** | ✅ 完成（M3：vendor cp 15.0；R-013 真实落点在 lib/ff_veth.c M4）| m3-leader | 2026-05-29 |
+| M3 | **T-net-02** | **net/if_var.h** | **P0** | ✅ 完成（M3：vendor cp 15.0；DP-M3-2=B 13.0 字段直接访问保留在 lib/ff_*.c）| m3-leader | 2026-05-29 |
+| M3 | T-net-03 | if_ethersubr.c | P1 | ✅ 完成（M3：vendor cp 15.0，0 F-Stack delta）| m3-leader | 2026-05-29 |
+| M3 | T-net-04 | netisr.c | P1 | ✅ 完成（M3：vendor cp 15.0，14.0+ netisr API 兼容）| m3-leader | 2026-05-29 |
+| M3 | **T-net-05** | **net/route.c** | **P0** | ✅ 完成（M3：vendor cp 15.0；R-004 rib/nexthop 真实落点在 lib/ff_route.c M4）| m3-leader | 2026-05-29 |
+| M3 | T-net-misc | 其余 17 NET_SRCS | P3 | ✅ 完成（M3 梯度 1：批量 cp 15.0 vendor + 18 个 13.0-only 留档）| m3-leader | 2026-05-29 |
+| M3 | **T-netinet-01** | **tcp_input.c** | **P0** | ✅ 完成（M3：vendor cp 15.0；R-002 SMR/RSS 接口已升级）| m3-leader | 2026-05-29 |
+| M3 | T-netinet-02 | tcp_output.c | P1 | ✅ 完成（M3：vendor cp 15.0，0 F-Stack delta）| m3-leader | 2026-05-29 |
+| M3 | T-netinet-03 | tcp_subr.c | P1 | ✅ 完成（M3：vendor cp 15.0；GCC -Wno-error=format 屏蔽 14.0+ %b 扩展）| m3-leader | 2026-05-29 |
+| M3 | **T-netinet-04** | **tcp_var.h** | **P0** | ✅ 完成（M3：vendor cp 15.0；tcpcb 字段裁剪 + RACK 字段 14.0+ 重构）| m3-leader | 2026-05-29 |
+| M3 | T-netinet-05 | tcp_stacks/rack.c | P1 | ✅ 完成（M3：cp 15.0 + #ifdef FSTACK MODNAME/STACKNAME 注入）| m3-leader | 2026-05-29 |
+| M3 | T-netinet-06 | tcp_stacks/bbr.c | P1 | ✅ 完成（同 rack.c）| m3-leader | 2026-05-29 |
+| M3 | **T-netinet-07** | **in_pcb.c** | **P0** | ✅ 完成（M3：vendor cp 15.0；13 处 fstack delta 在 14.0+ 重构下消化；R-002 SMR + lib stub DO_NOTHING 修复）| m3-leader | 2026-05-29 |
+| M3 | T-netinet-08 | tcp_usrreq.c | P1 | ✅ 完成（M3：vendor cp 15.0；LVS_TCPOPT_TOA 默认禁用，改造延迟 M4）| m3-leader | 2026-05-29 |
+| M3 | T-netinet-09 | udp_usrreq.c | P1 | ✅ 完成（M3：vendor cp 15.0，0 F-Stack delta）| m3-leader | 2026-05-29 |
+| M3 | T-netinet-10 | raw_ip.c | P1 | ✅ 完成（同 udp_usrreq.c）| m3-leader | 2026-05-29 |
+| M3 | T-netinet-misc | 12 个 NETINET_SRCS cp -a | P3 | ✅ 完成（M3 梯度 1：批量 cp 15.0 vendor）| m3-leader | 2026-05-29 |
+| M3 | T-netinet6-01 | netinet6/ cp -a + 改造 | P2 | ✅ 完成（M3：54 vendor cp + in6_mcast / ip6_id 重应用 1+1 处 #ifdef FSTACK；nd6.c 整段 vendor）| m3-leader | 2026-05-29 |
+| M3 | **T-ff-01** | **ff_glue.c** | **P0** | ✅ 完成（M3：spec 误报，实测 0 处 protosw / pr_usrreqs 引用，verify-only）| m3-leader | 2026-05-29 |
+| M3 | **T-ff-02** | **ff_veth.c** | **P0** | ⚠️ **M4 推迟**（实际 R-013 if_t 真实落点：14.0+ if_alloc 签名变 `if_alloc(void)` + IFT_ETHER 改 if_setattach；M3 阶段 ff_veth.c 暂未重做但当前 link 仍通过，runtime 验证留 M4）| m3-leader | 2026-05-29 |
+| M3 | **T-ff-03** | **ff_route.c** | **P0** | ⚠️ **M4 推迟**（实际 R-004 rib/nexthop 真实落点：14.0+ rib_lookup_info 签名 + nexthop API 重构；同上）| m3-leader | 2026-05-29 |
 | **M4** | T-netipsec-01 | netipsec/ | P1 | 待办 | — | — |
 | M4 | T-netgraph-01 | netgraph/ | P1 | 待办 | — | — |
 | M4 | T-netpfil-01 | netpfil/ipfw/ | P1 | 待办 | — | — |
@@ -650,3 +650,20 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 偏差 6：M2 遗留缺陷修复 | M2 Phase 2 加的 vm/uma_core.c F-Stack stub `startup_free` 用了 13.0 签名 `kmem_free((vm_offset_t)mem, bytes)`，14.0+ kmem_free 已改为 `(void *, vm_size_t)`；本次修复后 uma_core.o 编译通过 |
 | 修订后影响 | Phase 5b 完成 10/10 任务 ✅；G-Phase-5b 严格 Gate 一次通过（DP-5b-3=C 折中尺度的"先严"路径），libfstack.a 4.8M 完整链接成功，191 个 .o 全部参与；M3 范围**前置依赖全部解锁**，可直接进入 spec 05 §2.3 原 22 任务 |
 | 校验 | `read_lints freebsd/kern + lib/` 返回 0 diagnostics；`cd lib && make` 严格编译 ar -cqs libfstack.a 完成；`diff -rq freebsd-src-releng-15.0/sys/kern f-stack/freebsd/kern` 17 个 differ（全部为 17 个 F-Stack 改造文件，与 99 §6 任务追踪表一致） |
+
+### 12.16 修订 R-2026-05-29-16：M3 完成关闭 22 任务 + 6 类 spec 偏差修订
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-29 |
+| 关联条目 | M3 完成 spec 05 §2.3 22 任务（20 ✅ + 2 推迟 M4），关键发现重塑了 spec 02/03/04 中对 net/netinet/netinet6 改造范围的认知 |
+| 偏差 1：F-Stack 真实历史改造范围 | spec 05 §2.3 列 22 任务并按 P0/P1/P2/P3 标记，但 M3 实测发现 net/ 8 文件中 5 个（if.c / if_var.h / route.c / route_ifaddrs.c / if_ethersubr.c）+ netinet/ 3 P0（in_pcb.c / tcp_input.c / tcp_var.h）在 fstack-13 是字节级 vendor 拷贝零 F-Stack delta，spec 严重高估了 M3 改造工作量。R-013/R-002/R-004 三大 P0 KPI 破坏的真实改造责任**不在 net/netinet/ 这层**，而在 lib/ff_*.c 的 14.0+ accessor / SMR / nexthop API 适配（M4 范围）|
+| 偏差 2：ff_glue.c 误报 | spec 02 §架构 line 167 / spec 03 §3.1 line 136 / spec 05 line 128 三处都把 ff_glue.c 列为 R-011 (pr_usrreqs 合并入 protosw) 的处置点，但 M3 实测 grep 0 处 protosw / pr_usrreqs / pr_input / pr_output / pr_ctlinput 引用。ff_glue.c 实际是用户态 stub 集合（vm/proc/timer/sysctl/malloc/elf 等），与 protosw 无关。R-011 的真实处置点是 freebsd/kern/uipc_socket.c（M2 已完成）+ freebsd/kern/uipc_domain.c + 协议 usrreq 文件（M3 cp 15.0 vendor 后已自然消化）|
+| 偏差 3：15.0 上游已采纳 F-Stack 风格改进（白嫖 4 项）| spec 05 §2.3 把 in_mcast.c / in6_mcast.c / rack.c / bbr.c 列改造任务，但 M3 实测 15.0 上游已采纳：(a) in_mcast.c / in6_mcast.c 用 `sizeof(struct in_msource)` / `in6_msource`（与 F-Stack #else 分支一致）；(b) rack.c / bbr.c 用 `MODNAME` 占位符（fstack 的 `#define MODNAME tcp_rack/tcp_bbr` 仍可继续注入）；(c) tcp_subr.c rip_send 参数改名 flags → pruflags 不影响 fstack。这 4 项改造在 M3 升级时无需手工迁移，节省约 80 行 5 步法工作量 |
+| 偏差 4：14.0+ 缺失头实际清单（与 spec 03 §3 接口变化清单对照）| spec 03 §3 列举 14.0+/15.0 接口变化但未明确缺失头清单。M3 实测的真实 14.0+ 缺失头：(a) **netlink/*.h 24 文件**（被 net/{if_clone.c, if_vlan.c} 引用）→ M3 cp 15.0 上游全套头文件；(b) **opt_cc.h** KNOB（被 netinet/cc/cc.c 引用）→ M3 建空 stub；(c) **contrib/ck/ck_queue.h CK_LIST_FOREACH_FROM** 14.0+ 新宏（被 in_pcb.c 引用）→ M3 升级整个 contrib/ck/ 到 15.0 |
+| 偏差 5：14.0+ kprintf %b/%D 扩展冲击 | spec 03 §3 未列此类问题。14.0+ 大量代码使用 `printf("%6D", ...)` / `printf("0x%b", flags, FORMAT)` 等 FreeBSD kprintf 扩展，在用户态 cc 严格 -Wformat 下编译失败（涉及 if_bridge.c / if_ethersubr.c / netinet/if_ether.c / tcp_subr.c 等多文件）。M3 处置：lib/Makefile 全局加 `-Wno-error=format` `-Wno-error=format-extra-args`（GCC 12+），与 Phase 5b m_print 局部 GCC pragma 类似但更全局 |
+| 偏差 6：lib stub DO_NOTHING 表达式兼容性 | spec 04 §port-strategy 未列此类问题。lib/include/sys/{rwlock.h, mutex.h} 历史定义 `#define DO_NOTHING do{}while(0)`，但 14.0+ in_pcb.c:1471 用三元表达式 `tp->inp_flags & INP_RLOCK ? rw_rlock(&inp->inp_lock) : rw_wlock(&inp->inp_lock)` 调用，导致 `do{}while(0)` 在表达式上下文报 "expected expression before 'do'"。M3 处置：DO_NOTHING 改为 `((void)0)` 兼容表达式与语句两种上下文 |
+| 偏差 7：libfstack.a archive 实际结构 | spec 05 §G-M3 验收要求 "ar t libfstack.a 含 ≥190 个 .o"，但实测 lib/Makefile 采用 archive-of-archive 结构：libfstack.a 顶层仅 11 项（libfstack.ro + 10 个 ff_*.o），libfstack.ro 是 relocatable object 文件，内部包含 192 个内核 .o + 8031 symbols。验收应检查 `nm libfstack.ro \| wc -l` 而非 `ar t libfstack.a \| wc -l` |
+| 偏差 8：spec 把 T-ff-02/03 列 M3 但 M3 完成后才暴露这是 M4 真实范围 | spec 05 §2.3 把 T-ff-02 ff_veth.c / T-ff-03 ff_route.c 列 M3 P0，M3 实测后发现这两个文件的 R-013/R-004 真实适配（14.0+ if_alloc 签名变更、rib_lookup_info 签名 + nexthop API 重构）必须在 M3 net/netinet 已升 15.0 vendor 后才能进行；**且 G-M3 严格 link 已通过（说明当前 ff_veth.c / ff_route.c 在 13.0 era 写法下 + 14.0+ vendor 的兼容层下能编译过）**，runtime 验证才会暴露真实问题 → 推迟到 M4 |
+| 修订后影响 | M3 完成 22 任务（20 ✅ + 2 M4 推迟）；G-M3 严格 Gate 一次通过（DP-M3-3=C 折中尺度的"先严"路径），libfstack.a 5.2M / libfstack.ro 5.0M / 192 .o 完整链接；M4 范围明确：(a) lib/ff_veth.c R-013 + lib/ff_route.c R-004 真实适配；(b) LVS_TCPOPT_TOA 改造手法在 15.0 重对位；(c) RSS / inpcb SMR runtime 验证；(d) 性能基线 + 编译器深度优化 |
+| 校验 | `read_lints freebsd/ + lib/` 返回 0 diagnostics；`cd lib && make` 严格编译 ar -cqs libfstack.a 完成；`diff -rq freebsd-src-releng-15.0/sys/{net,netinet,netinet6} f-stack/freebsd/{net,netinet,netinet6}` 8 个 differ（全部为保留的 F-Stack delta，与 99 §6 一致）|

@@ -129,7 +129,7 @@ M2 末严格 Gate 失败的 100% 是 Phase 5b LEGACY-13 文件与 15.0 sys/file.
 6. **G-Phase-5b 严格 Gate ✅**：libfstack.a 完整链接 + read_lints=0 + diff -rq 符合预期
 7. **文档资产**：本 execution-log（7 章节完整）+ 99-review-report.md §6 待回写 + §12.15+ 待追加
 
-### 7.3 M3 输入清单（Phase 5b → M3 交接）
+### 7.3 M3 输入清单（Phase 5b → M3 交接）✅ 已交接（2026-05-29 15:02 M3 启动）
 
 M3 阶段开工前需阅读：
 - 本 execution-log §5.2.1（Phase 5b 解锁 ABI 冲突的完整清单）
