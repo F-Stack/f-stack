@@ -2,6 +2,12 @@
  * Copyright (c) 2003 Peter Wemm <peter@FreeBSD.org>
  * All rights reserved.
  *
+ * Copyright (c) 2020, 2021 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by
+ * Konstantin Belousov <kib@FreeBSD.org> under sponsorship from
+ * the FreeBSD Foundation.
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -22,8 +28,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <machine/asmacros.h>
@@ -36,11 +40,11 @@
 /*
  * Compiled KERNBASE location
  */
-	.globl	kernbase, kernload, loc_PTmap, loc_PDmap, loc_PDPmap, dmapbase, dmapend
+	.globl	kernbase, kernload
 	.set	kernbase,KERNBASE
 	.set    kernload,KERNLOAD
-	.set	dmapbase,DMAP_MIN_ADDRESS
-	.set	dmapend,DMAP_MAX_ADDRESS
+
+#define	BOOTSTACK_SIZE	(PAGE_SIZE * KSTACK_PAGES)
 
 	.text
 /**********************************************************************
@@ -54,23 +58,28 @@
  *
  * We are already in long mode, on a 64 bit %cs and running at KERNBASE.
  */
-NON_GPROF_ENTRY(btext)
-
-	/* Tell the bios to warmboot next time */
-	movw	$0x1234,0x472
+ENTRY(btext)
 
 	/* Don't trust what the loader gives for rflags. */
 	pushq	$PSL_KERNEL
 	popfq
 
-	/* Find the metadata pointers before we lose them */
+	/* Get onto a stack that we can trust - there is no going back now. */
 	movq	%rsp, %rbp
+	movq	$bootstack,%rsp
+
+#ifdef KASAN
+	/* Bootstrap a shadow map for the boot stack. */
+	movq	$bootstack, %rdi
+	subq	$BOOTSTACK_SIZE, %rdi
+	movq	$BOOTSTACK_SIZE, %rsi
+	call	kasan_init_early
+#endif
+
+	/* Grab metadata pointers from the loader. */
 	movl	4(%rbp),%edi		/* modulep (arg 1) */
 	movl	8(%rbp),%esi		/* kernend (arg 2) */
-
-	/* Get onto a stack that we can trust - there is no going back now. */
-	movq	$bootstack,%rsp
-	xorl	%ebp, %ebp
+	xorq	%rbp, %rbp
 
 	call	hammer_time		/* set up cpu for unix operation */
 	movq	%rax,%rsp		/* set up kstack for mi_startup() */
@@ -78,13 +87,40 @@ NON_GPROF_ENTRY(btext)
 0:	hlt
 	jmp	0b
 
-/* la57_trampoline(%rdi pml5) */
-NON_GPROF_ENTRY(la57_trampoline)
-	movq	%rsp,%r11
-	movq	%rbx,%r10
-	leaq	la57_trampoline_end(%rip),%rsp
+/*
+ * void la57_trampoline(%rdi pml5)
+ *
+ * Entered in 4-level paging long mode on AP, hopefully returns alive in
+ * 5-level paging mode. The parameter is a pointer to a 5-level page
+ * table root. The passed 5-level page table, and the current 4-level page
+ * table, both must map the trampoline code page 1:1 physical, below 4G.
+ * The trampoline must be PIC because it is copied from kernel text into
+ * this page.
+ *
+ * The current paging level cannot be changed while paging is enabled, and
+ * paging cannot be disabled while in long mode.  As consequence, code
+ * switches into the compat mode, then disables paging to descend into
+ * protected mode.  There, the paging level bit CR4.LA57 can be changed,
+ * and code directly jumps back into long mode.
+ *
+ * Falling into the protected mode requires single-purpose GDT entries,
+ * which are provided by the private GDT.  It is the caller's responsibility
+ * to
+ * - restore the GDT and %gsbase after the call
+ * - reset IDT back to long mode.
+ */
+ENTRY(la57_trampoline)
+	movq	%rsp,lst(%rip)		/* save registers into memory */
+	movq	%rbx,lst+8(%rip)	/* upper halves are not saved .. */
+	movq	%rbp,lst+0x10(%rip)	/* by 64->32->64 switch */
+	movq	%cr4,%rax
+	orq	$CR4_LA57,%rax		/* 5-lvl %cr4 */
+	movq	%rax,lst+0x18(%rip)
+	leaq	la57_trampoline_end(%rip),%rsp /* priv stack */
 
-	movq	%cr0,%rdx
+	movq	%cr0,%rbp
+	leaq	la57_trampoline_gdt(%rip),%rax
+	movq	%rax,la57_trampoline_gdt_desc+2(%rip)
 	lgdtq	la57_trampoline_gdt_desc(%rip)
 
 	pushq	$(2<<3)
@@ -96,33 +132,52 @@ NON_GPROF_ENTRY(la57_trampoline)
 	.code32
 
 l1:	movl	$(3<<3),%eax
-	movl	%eax,%ss
-
-	movl	%edx,%eax
-	andl	$~CR0_PG,%eax
-	movl	%eax,%cr0
+	movl	%eax,%ss		/* 32bit paged, priv gdt and stack */
 
 	movl	%cr4,%eax
+	andl	$~(CR4_PGE | CR4_PCIDE),%eax /* clear sensitive paging ctrls */
+	movl	%eax,%cr4
+
+	movl	%ebp,%eax
+	andl	$~CR0_PG,%eax		/* protected mode */
+	movl	%eax,%cr0
+
+	movl	$MSR_EFER,%ecx		/* disable long mode bit */
+	rdmsr				/* to safer tweaking LA57 */
+	andl	$~EFER_LME,%eax
+	wrmsr
+
+	movl	%cr4,%eax		/* finally safe to switch bit */
 	orl	$CR4_LA57,%eax
 	movl	%eax,%cr4
 
-	movl	%edi,%cr3
-	movl	%edx,%cr0
+	movl	%edi,%cr3		/* and load the 5-level pgtable root */
 
-	pushl	$(1<<3)
+	rdmsr
+	orl	$EFER_LME,%eax
+	wrmsr				/* prepare for ... */
+
+	movl	%ebp,%cr0		/* and jump back directly into long */
+	jmp	1f			/* mode from protected by enabling pg */
+
+1:	pushl	$(1<<3)			/* reload %cs */
 	pushl	%ebx
 	lretl
 	.code64
 
-l2:	movq	%r11,%rsp
-	movq	%r10,%rbx
-	retq
+l2:	movq	lst(%rip),%rsp		/* back on C stack */
+	movq	lst+8(%rip),%rbx
+	movq	lst+0x10(%rip),%rbp
+	movq	lst+0x18(%rip),%rax
+	movq	%rax,%cr4		/* re-enable paging controls */
+	retq				/* back to C */
 	.p2align 4,0
-NON_GPROF_ENTRY(la57_trampoline_gdt_desc)
+lst:	.quad	0,0,0,0
+ENTRY(la57_trampoline_gdt_desc)
 	.word	la57_trampoline_end - la57_trampoline_gdt
-	.long	0		/* filled by pmap_bootstrap_la57 */
+	.long	0, 0		/* filled by pmap_bootstrap_la57 */
 	.p2align 4,0
-NON_GPROF_ENTRY(la57_trampoline_gdt)
+ENTRY(la57_trampoline_gdt)
 	.long	0x00000000	/* null desc */
 	.long	0x00000000
 	.long	0x00000000	/* 64bit code */
@@ -132,10 +187,10 @@ NON_GPROF_ENTRY(la57_trampoline_gdt)
 	.long	0x0000ffff	/* universal data */
 	.long	0x00cf9300
 	.dcb.l	16,0
-NON_GPROF_ENTRY(la57_trampoline_end)
+ENTRY(la57_trampoline_end)
 
 	.bss
-	ALIGN_DATA			/* just to be sure */
+	.p2align PAGE_SHIFT
 	.globl	bootstack
-	.space	0x1000			/* space for bootstack - temporary stack */
+	.space	BOOTSTACK_SIZE		/* space for bootstack - temporary stack */
 bootstack:

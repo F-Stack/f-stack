@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_DUMP_H_
@@ -40,7 +38,14 @@
 
 /* 20 phys_avail entry pairs correspond to 10 pa's */
 #define	DUMPSYS_MD_PA_NPAIRS	10
+#ifdef __amd64__
+#define	DUMPSYS_NUM_AUX_HDRS	1
+#else
 #define	DUMPSYS_NUM_AUX_HDRS	0
+#endif
+
+/* How often to check the dump progress bar? */
+#define	DUMPSYS_PB_CHECK_BITS	24	/* Every 16MB */
 
 static inline void
 dumpsys_pa_init(void)
@@ -70,12 +75,16 @@ dumpsys_unmap_chunk(vm_paddr_t pa, size_t s, void *va)
 	dumpsys_gen_unmap_chunk(pa, s, va);
 }
 
+#ifdef __amd64__
+int dumpsys_write_aux_headers(struct dumperinfo *di);
+#else
 static inline int
 dumpsys_write_aux_headers(struct dumperinfo *di)
 {
 
 	return (dumpsys_gen_write_aux_headers(di));
 }
+#endif
 
 static inline int
 dumpsys(struct dumperinfo *di)

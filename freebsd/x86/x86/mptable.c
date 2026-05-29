@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1996, by Steve Passe
  * All rights reserved.
@@ -27,9 +27,8 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_mptable_force_htt.h"
+#include "opt_mptable_linux_bug_compat.h"
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -37,28 +36,23 @@ __FBSDID("$FreeBSD$");
 #include <sys/limits.h>
 #include <sys/malloc.h>
 #include <sys/smp.h>
-#ifdef NEW_PCIB
 #include <sys/rman.h>
-#endif
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
 #include <vm/pmap.h>
 
 #include <dev/pci/pcivar.h>
-#ifdef NEW_PCIB
 #include <dev/pci/pcib_private.h>
-#endif
 #include <x86/apicreg.h>
+#include <x86/legacyvar.h>
 #include <x86/mptable.h>
 #include <machine/frame.h>
 #include <machine/intr_machdep.h>
 #include <x86/apicvar.h>
 #include <machine/md_var.h>
 #include <machine/pc/bios.h>
-#ifdef NEW_PCIB
 #include <machine/resource.h>
-#endif
 #include <machine/specialreg.h>
 
 /* string defined by the Intel MP Spec as identifying the MP table */
@@ -163,7 +157,7 @@ struct pci_route_interrupt_args {
 static mpfps_t mpfps;
 static mpcth_t mpct;
 static ext_entry_ptr mpet;
-static void *ioapics[IOAPIC_MAX_ID + 1];
+static ioapic_drv_t ioapics[IOAPIC_MAX_ID + 1];
 static bus_datum *busses;
 static int mptable_nioapics, mptable_nbusses, mptable_maxbusid;
 static int pci0 = -1;
@@ -199,10 +193,8 @@ static void	mptable_setup_cpus_handler(u_char *entry, void *arg __unused);
 static void	mptable_register(void *dummy);
 static int	mptable_setup_local(void);
 static int	mptable_setup_io(void);
-#ifdef NEW_PCIB
 static void	mptable_walk_extended_table(
     mptable_extended_entry_handler *handler, void *arg);
-#endif
 static void	mptable_walk_table(mptable_entry_handler *handler, void *arg);
 static int	search_for_sig(u_int32_t target, int count);
 
@@ -244,6 +236,34 @@ lookup_bus_type(char *name)
 	return (UNKNOWN_BUSTYPE);
 }
 
+#ifdef MPTABLE_LINUX_BUG_COMPAT
+/* Compute the correct entry_count value. */
+static void
+compute_entry_count(void)
+{
+	u_char *end = (u_char *)(mpct) + mpct->base_table_length;
+	u_char *entry = (u_char *)(mpct + 1);
+	size_t nentries = 0;
+
+	while (entry < end) {
+		switch (*entry) {
+		case MPCT_ENTRY_PROCESSOR:
+		case MPCT_ENTRY_IOAPIC:
+		case MPCT_ENTRY_BUS:
+		case MPCT_ENTRY_INT:
+		case MPCT_ENTRY_LOCAL_INT:
+			break;
+		default:
+			panic("%s: Unknown MP Config Entry %d\n", __func__,
+			    (int)*entry);
+		}
+		entry += basetable_entry_types[*entry].length;
+		nentries++;
+	}
+	mpct->entry_count = (uint16_t)(nentries);
+}
+#endif
+
 /*
  * Look for an Intel MP spec table (ie, SMP capable hardware).
  */
@@ -271,6 +291,17 @@ mptable_probe(void)
 	target = (u_int32_t) BIOS_BASE;
 	if ((x = search_for_sig(target, BIOS_COUNT)) >= 0)
 		goto found;
+
+#ifdef MPTABLE_LINUX_BUG_COMPAT
+	/*
+	 * Linux assumes that it always has 640 kB of base memory and
+	 * searches for the MP table at 639k regardless of whether that
+	 * address is present in the system memory map.  Some VM systems
+	 * rely on this buggy behaviour.
+	 */
+	if ((x = search_for_sig(639 * 1024, 1024 / 4)) >= 0)
+		goto found;
+#endif
 
 	/* nothing found */
 	return (ENXIO);
@@ -320,6 +351,16 @@ found:
 			printf(
 			"MP Configuration Table version 1.%d found at %p\n",
 			    mpct->spec_rev, mpct);
+#ifdef MPTABLE_LINUX_BUG_COMPAT
+		/*
+		 * Linux ignores entry_count and instead scans the MP table
+		 * until it runs out of bytes of table (as specified by the
+		 * base_table_length field).  Some VM systems rely on this
+		 * buggy behaviour and record an entry_count of zero.
+		 */
+		if (mpct->entry_count == 0)
+			compute_entry_count();
+#endif
 	}
 
 	return (-100);
@@ -455,7 +496,6 @@ mptable_walk_table(mptable_entry_handler *handler, void *arg)
 	}
 }
 
-#ifdef NEW_PCIB
 /*
  * Call the handler routine for each entry in the MP config extended
  * table.
@@ -474,7 +514,6 @@ mptable_walk_extended_table(mptable_extended_entry_handler *handler, void *arg)
 		entry = (ext_entry_ptr)((char *)entry + entry->length);
 	}
 }
-#endif
 
 static void
 mptable_probe_cpus_handler(u_char *entry, void *arg)
@@ -721,7 +760,7 @@ intentry_trigger(int_entry_ptr intr)
 static void
 mptable_parse_io_int(int_entry_ptr intr)
 {
-	void *ioapic;
+	ioapic_drv_t ioapic;
 	u_int pin, apic_id;
 
 	apic_id = intr->dst_apic_id;
@@ -1129,7 +1168,6 @@ mptable_pci_route_interrupt(device_t pcib, device_t dev, int pin)
 	return (args.vector);
 }
 
-#ifdef NEW_PCIB
 struct host_res_args {
 	struct mptable_hostb_softc *sc;
 	device_t dev;
@@ -1213,7 +1251,7 @@ mptable_host_res_handler(ext_entry_ptr entry, void *arg)
 			break;
 		default:
 			printf(
-    "MPTable: Unknown compatiblity address space range for bus %u: %d\n",
+    "MPTable: Unknown compatibility address space range for bus %u: %d\n",
 			    cbasm->bus_id, cbasm->predefined_range);
 			return;
 		}
@@ -1250,11 +1288,10 @@ mptable_pci_host_res_init(device_t pcib)
 	struct host_res_args args;
 
 	KASSERT(pci0 != -1, ("do not know how to map PCI bus IDs"));
-	args.bus = pci_get_bus(pcib) + pci0;
+	args.bus = legacy_get_pcibus(pcib) + pci0;
 	args.dev = pcib;
 	args.sc = device_get_softc(pcib);
 	if (pcib_host_res_init(pcib, &args.sc->sc_host_res) != 0)
 		panic("failed to init hostb resources");
 	mptable_walk_extended_table(mptable_host_res_handler, &args);
 }
-#endif

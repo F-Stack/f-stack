@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,12 +24,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/pcpu.h>
@@ -41,11 +36,11 @@ __FBSDID("$FreeBSD$");
 #include <machine/md_var.h>
 #include <machine/segments.h>
 #include <machine/specialreg.h>
-
 #include <machine/vmm.h>
 
+#include <dev/vmm/vmm_ktr.h>
+
 #include "vmm_host.h"
-#include "vmm_ktr.h"
 #include "vmm_util.h"
 #include "x86.h"
 
@@ -53,7 +48,12 @@ SYSCTL_DECL(_hw_vmm);
 static SYSCTL_NODE(_hw_vmm, OID_AUTO, topology, CTLFLAG_RD | CTLFLAG_MPSAFE, 0,
     NULL);
 
-#define	CPUID_VM_HIGH		0x40000000
+#define CPUID_VM_SIGNATURE	0x40000000
+#define CPUID_BHYVE_FEATURES	0x40000001
+#define	CPUID_VM_HIGH		CPUID_BHYVE_FEATURES
+
+/* Features advertised in CPUID_BHYVE_FEATURES %eax */
+#define CPUID_BHYVE_FEAT_EXT_DEST_ID	(1UL << 0) /* MSI Extended Dest ID */
 
 static const char bhyve_id[12] = "bhyve bhyve ";
 
@@ -61,35 +61,26 @@ static uint64_t bhyve_xcpuids;
 SYSCTL_ULONG(_hw_vmm, OID_AUTO, bhyve_xcpuids, CTLFLAG_RW, &bhyve_xcpuids, 0,
     "Number of times an unknown cpuid leaf was accessed");
 
-#if __FreeBSD_version < 1200060	/* Remove after 11 EOL helps MFCing */
-extern u_int threads_per_core;
-SYSCTL_UINT(_hw_vmm_topology, OID_AUTO, threads_per_core, CTLFLAG_RDTUN,
-    &threads_per_core, 0, NULL);
-
-extern u_int cores_per_package;
-SYSCTL_UINT(_hw_vmm_topology, OID_AUTO, cores_per_package, CTLFLAG_RDTUN,
-    &cores_per_package, 0, NULL);
-#endif
-
 static int cpuid_leaf_b = 1;
 SYSCTL_INT(_hw_vmm_topology, OID_AUTO, cpuid_leaf_b, CTLFLAG_RDTUN,
     &cpuid_leaf_b, 0, NULL);
 
 /*
- * Round up to the next power of two, if necessary, and then take log2.
- * Returns -1 if argument is zero.
+ * Compute ceil(log2(x)).  Returns -1 if x is zero.
  */
 static __inline int
 log2(u_int x)
 {
 
-	return (fls(x << (1 - powerof2(x))) - 1);
+	return (x == 0 ? -1 : order_base_2(x));
 }
 
 int
-x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
+x86_emulate_cpuid(struct vcpu *vcpu, uint64_t *rax, uint64_t *rbx,
     uint64_t *rcx, uint64_t *rdx)
 {
+	struct vm *vm = vcpu_vm(vcpu);
+	int vcpu_id = vcpu_vcpuid(vcpu);
 	const struct xsave_limits *limits;
 	uint64_t cr4;
 	int error, enable_invpcid, enable_rdpid, enable_rdtscp, level,
@@ -114,7 +105,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 	if (cpu_exthigh != 0 && func >= 0x80000000) {
 		if (func > cpu_exthigh)
 			func = cpu_exthigh;
-	} else if (func >= 0x40000000) {
+	} else if (func >= CPUID_VM_SIGNATURE) {
 		if (func > CPUID_VM_HIGH)
 			func = CPUID_VM_HIGH;
 	} else if (func > cpu_high) {
@@ -164,8 +155,6 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 				 * pkg_id_shift and other OSes may rely on it.
 				 */
 				width = MIN(0xF, log2(threads * cores));
-				if (width < 0x4)
-					width = 0;
 				logical_cpus = MIN(0xFF, threads * cores - 1);
 				regs[2] = (width << AMDID_COREID_SIZE_SHIFT) | logical_cpus;
 			}
@@ -202,7 +191,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 			regs[2] &= ~AMDID2_MWAITX;
 
 			/* Advertise RDTSCP if it is enabled. */
-			error = vm_get_capability(vm, vcpu_id,
+			error = vm_get_capability(vcpu,
 			    VM_CAP_RDTSCP, &enable_rdtscp);
 			if (error == 0 && enable_rdtscp)
 				regs[3] |= AMDID_RDTSCP;
@@ -247,7 +236,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 				goto default_leaf;
 
 			/*
-			 * Similar to Intel, generate a ficticious cache
+			 * Similar to Intel, generate a fictitious cache
 			 * topology for the guest with L3 shared by the
 			 * package, and L1 and L2 local to a core.
 			 */
@@ -270,7 +259,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 				func = 3;	/* unified cache */
 				break;
 			default:
-				logical_cpus = 0;
+				logical_cpus = sockets * threads * cores;
 				level = 0;
 				func = 0;
 				break;
@@ -280,7 +269,14 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 			regs[0] = (logical_cpus << 14) | (1 << 8) |
 			    (level << 5) | func;
 			regs[1] = (func > 0) ? (CACHE_LINE_SIZE - 1) : 0;
+
+			/*
+			 * ecx: Number of cache ways for non-fully
+			 * associative cache, minus 1.  Reported value
+			 * of zero means there is one way.
+			 */
 			regs[2] = 0;
+
 			regs[3] = 0;
 			break;
 
@@ -309,7 +305,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 		case CPUID_0000_0001:
 			do_cpuid(1, regs);
 
-			error = vm_get_x2apic_state(vm, vcpu_id, &x2apic_state);
+			error = vm_get_x2apic_state(vcpu, &x2apic_state);
 			if (error) {
 				panic("x86_emulate_cpuid: error %d "
 				      "fetching x2apic state", error);
@@ -349,7 +345,7 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 			 */
 			regs[2] &= ~CPUID2_OSXSAVE;
 			if (regs[2] & CPUID2_XSAVE) {
-				error = vm_get_register(vm, vcpu_id,
+				error = vm_get_register(vcpu,
 				    VM_REG_GUEST_CR4, &cr4);
 				if (error)
 					panic("x86_emulate_cpuid: error %d "
@@ -439,26 +435,32 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 				/*
 				 * Expose known-safe features.
 				 */
-				regs[1] &= (CPUID_STDEXT_FSGSBASE |
+				regs[1] &= CPUID_STDEXT_FSGSBASE |
 				    CPUID_STDEXT_BMI1 | CPUID_STDEXT_HLE |
-				    CPUID_STDEXT_AVX2 | CPUID_STDEXT_BMI2 |
+				    CPUID_STDEXT_AVX2 | CPUID_STDEXT_SMEP |
+				    CPUID_STDEXT_BMI2 |
 				    CPUID_STDEXT_ERMS | CPUID_STDEXT_RTM |
 				    CPUID_STDEXT_AVX512F |
+				    CPUID_STDEXT_AVX512DQ |
 				    CPUID_STDEXT_RDSEED |
+				    CPUID_STDEXT_SMAP |
 				    CPUID_STDEXT_AVX512PF |
 				    CPUID_STDEXT_AVX512ER |
-				    CPUID_STDEXT_AVX512CD | CPUID_STDEXT_SHA);
-				regs[2] = 0;
+				    CPUID_STDEXT_AVX512CD | CPUID_STDEXT_SHA |
+				    CPUID_STDEXT_AVX512BW |
+				    CPUID_STDEXT_AVX512VL;
+				regs[2] &= CPUID_STDEXT2_VAES |
+				    CPUID_STDEXT2_VPCLMULQDQ;
 				regs[3] &= CPUID_STDEXT3_MD_CLEAR;
 
 				/* Advertise RDPID if it is enabled. */
-				error = vm_get_capability(vm, vcpu_id,
-				    VM_CAP_RDPID, &enable_rdpid);
+				error = vm_get_capability(vcpu, VM_CAP_RDPID,
+				    &enable_rdpid);
 				if (error == 0 && enable_rdpid)
 					regs[2] |= CPUID_STDEXT2_RDPID;
 
 				/* Advertise INVPCID if it is enabled. */
-				error = vm_get_capability(vm, vcpu_id,
+				error = vm_get_capability(vcpu,
 				    VM_CAP_ENABLE_INVPCID, &enable_invpcid);
 				if (error == 0 && enable_invpcid)
 					regs[1] |= CPUID_STDEXT_INVPCID;
@@ -574,6 +576,24 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 			}
 			break;
 
+		case CPUID_0000_000F:
+		case CPUID_0000_0010:
+			/*
+			 * Do not report any Resource Director Technology
+			 * capabilities.  Exposing control of cache or memory
+			 * controller resource partitioning to the guest is not
+			 * at all sensible.
+			 *
+			 * This is already hidden at a high level by masking of
+			 * leaf 0x7.  Even still, a guest may look here for
+			 * detailed capability information.
+			 */
+			regs[0] = 0;
+			regs[1] = 0;
+			regs[2] = 0;
+			regs[3] = 0;
+			break;
+
 		case CPUID_0000_0015:
 			/*
 			 * Don't report CPU TSC/Crystal ratio and clock
@@ -586,11 +606,18 @@ x86_emulate_cpuid(struct vm *vm, int vcpu_id, uint64_t *rax, uint64_t *rbx,
 			regs[3] = 0;
 			break;
 
-		case 0x40000000:
+		case CPUID_VM_SIGNATURE:
 			regs[0] = CPUID_VM_HIGH;
 			bcopy(bhyve_id, &regs[1], 4);
 			bcopy(bhyve_id + 4, &regs[2], 4);
 			bcopy(bhyve_id + 8, &regs[3], 4);
+			break;
+
+		case CPUID_BHYVE_FEATURES:
+			regs[0] = CPUID_BHYVE_FEAT_EXT_DEST_ID;
+			regs[1] = 0;
+			regs[2] = 0;
+			regs[3] = 0;
 			break;
 
 		default:
@@ -617,7 +644,7 @@ default_leaf:
 }
 
 bool
-vm_cpuid_capability(struct vm *vm, int vcpuid, enum vm_cpuid_capability cap)
+vm_cpuid_capability(struct vcpu *vcpu, enum vm_cpuid_capability cap)
 {
 	bool rv;
 
@@ -645,4 +672,86 @@ vm_cpuid_capability(struct vm *vm, int vcpuid, enum vm_cpuid_capability cap)
 		panic("%s: unknown vm_cpu_capability %d", __func__, cap);
 	}
 	return (rv);
+}
+
+int
+vm_rdmtrr(struct vm_mtrr *mtrr, u_int num, uint64_t *val)
+{
+	switch (num) {
+	case MSR_MTRRcap:
+		*val = MTRR_CAP_WC | MTRR_CAP_FIXED | VMM_MTRR_VAR_MAX;
+		break;
+	case MSR_MTRRdefType:
+		*val = mtrr->def_type;
+		break;
+	case MSR_MTRR4kBase ... MSR_MTRR4kBase + 7:
+		*val = mtrr->fixed4k[num - MSR_MTRR4kBase];
+		break;
+	case MSR_MTRR16kBase ... MSR_MTRR16kBase + 1:
+		*val = mtrr->fixed16k[num - MSR_MTRR16kBase];
+		break;
+	case MSR_MTRR64kBase:
+		*val = mtrr->fixed64k;
+		break;
+	case MSR_MTRRVarBase ... MSR_MTRRVarBase + (VMM_MTRR_VAR_MAX * 2) - 1: {
+		u_int offset = num - MSR_MTRRVarBase;
+		if (offset % 2 == 0) {
+			*val = mtrr->var[offset / 2].base;
+		} else {
+			*val = mtrr->var[offset / 2].mask;
+		}
+		break;
+	}
+	default:
+		return (-1);
+	}
+
+	return (0);
+}
+
+int
+vm_wrmtrr(struct vm_mtrr *mtrr, u_int num, uint64_t val)
+{
+	switch (num) {
+	case MSR_MTRRcap:
+		/* MTRRCAP is read only */
+		return (-1);
+	case MSR_MTRRdefType:
+		if (val & ~VMM_MTRR_DEF_MASK) {
+			/* generate #GP on writes to reserved fields */
+			return (-1);
+		}
+		mtrr->def_type = val;
+		break;
+	case MSR_MTRR4kBase ... MSR_MTRR4kBase + 7:
+		mtrr->fixed4k[num - MSR_MTRR4kBase] = val;
+		break;
+	case MSR_MTRR16kBase ... MSR_MTRR16kBase + 1:
+		mtrr->fixed16k[num - MSR_MTRR16kBase] = val;
+		break;
+	case MSR_MTRR64kBase:
+		mtrr->fixed64k = val;
+		break;
+	case MSR_MTRRVarBase ... MSR_MTRRVarBase + (VMM_MTRR_VAR_MAX * 2) - 1: {
+		u_int offset = num - MSR_MTRRVarBase;
+		if (offset % 2 == 0) {
+			if (val & ~VMM_MTRR_PHYSBASE_MASK) {
+				/* generate #GP on writes to reserved fields */
+				return (-1);
+			}
+			mtrr->var[offset / 2].base = val;
+		} else {
+			if (val & ~VMM_MTRR_PHYSMASK_MASK) {
+				/* generate #GP on writes to reserved fields */
+				return (-1);
+			}
+			mtrr->var[offset / 2].mask = val;
+		}
+		break;
+	}
+	default:
+		return (-1);
+	}
+
+	return (0);
 }

@@ -30,9 +30,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)trap.h	5.4 (Berkeley) 5/9/91
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_TRAP_H_
@@ -65,8 +62,5 @@
 #define	T_XMMFLT	29	/* SIMD floating-point exception */
 #define	T_RESERVED	30	/* reserved (unknown) */
 #define	T_DTRACE_RET	32	/* DTrace pid return */
-
-/* Trap's coming from user mode */
-#define	T_USER	0x100
 
 #endif /* !_MACHINE_TRAP_H_ */

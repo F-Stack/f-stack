@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1996, by Steve Passe
  * All rights reserved.
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef __MACHINE_MPTABLE_H__
@@ -190,16 +188,12 @@ typedef struct CBASMENTRY {
 
 #ifdef _KERNEL
 struct mptable_hostb_softc {
-#ifdef NEW_PCIB
 	struct pcib_host_resources sc_host_res;
 	int		sc_decodes_vga_io;
 	int		sc_decodes_isa_io;
-#endif
 };
 
-#ifdef NEW_PCIB
 void	mptable_pci_host_res_init(device_t pcib);
-#endif
 int	mptable_pci_probe_table(int bus);
 int	mptable_pci_route_interrupt(device_t pcib, device_t dev, int pin);
 #endif

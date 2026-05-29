@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _VMX_MSR_H_
@@ -34,13 +32,13 @@
 struct vmx;
 
 void vmx_msr_init(void);
-void vmx_msr_guest_init(struct vmx *vmx, int vcpuid);
-void vmx_msr_guest_enter_tsc_aux(struct vmx *vmx, int vcpuid);
-void vmx_msr_guest_enter(struct vmx *vmx, int vcpuid);
-void vmx_msr_guest_exit(struct vmx *vmx, int vcpuid);
-void vmx_msr_guest_exit_tsc_aux(struct vmx *vmx, int vcpuid);
-int vmx_rdmsr(struct vmx *, int vcpuid, u_int num, uint64_t *val, bool *retu);
-int vmx_wrmsr(struct vmx *, int vcpuid, u_int num, uint64_t val, bool *retu);
+void vmx_msr_guest_init(struct vmx *vmx, struct vmx_vcpu *vcpu);
+void vmx_msr_guest_enter_tsc_aux(struct vmx *vmx, struct vmx_vcpu *vcpu);
+void vmx_msr_guest_enter(struct vmx_vcpu *vcpu);
+void vmx_msr_guest_exit(struct vmx_vcpu *vcpu);
+void vmx_msr_guest_exit_tsc_aux(struct vmx *vmx, struct vmx_vcpu *vcpu);
+int vmx_rdmsr(struct vmx_vcpu *vcpu, u_int num, uint64_t *val, bool *retu);
+int vmx_wrmsr(struct vmx_vcpu *vcpu, u_int num, uint64_t val, bool *retu);
 
 uint32_t vmx_revision(void);
 

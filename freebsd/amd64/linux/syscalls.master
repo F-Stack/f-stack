@@ -1,6 +1,4 @@
- $FreeBSD$
 
-;	@(#)syscalls.master	8.1 (Berkeley) 7/19/93
 ; System call name/number master file (or rather, slave, from LINUX).
 ; Processed to create linux_sysent.c, linux_proto.h and linux_syscall.h.
 
@@ -26,17 +24,15 @@
 ;		function prototype in sys/sysproto.h.  Does add a
 ;		definition to syscall.h besides adding a sysent.
 
+; #include's, #defines's, etc. may be included, and are copied to the output
+; files. However, #ifdef, etc will be copied, but any lines that don't start
+; with # will not. Caveat Emptor.
+
 #include <sys/param.h>
 #include <sys/sysent.h>
 #include <sys/sysproto.h>
-#include <compat/linux/linux_sysproto.h>
 #include <amd64/linux/linux.h>
 #include <amd64/linux/linux_proto.h>
-
-; Isn't pretty, but there seems to be no other way to trap nosys
-#define	nosys	linux_nosys
-
-; #ifdef's, etc. may be included, and are copied to the output files.
 
 0	AUE_NULL	NOPROTO {
 		int read(
@@ -45,8 +41,8 @@
 		    l_size_t nbyte
 		);
 	}
-1	AUE_NULL	NOPROTO {
-		int write(
+1	AUE_NULL	STD {
+		int linux_write(
 		    int fd,
 		    char *buf,
 		    l_size_t nbyte
@@ -82,8 +78,8 @@
 		    struct l_newstat *buf
 		);
 	}
-7	AUE_POLL	NOPROTO {
-		int poll(
+7	AUE_POLL	STD {
+		int linux_poll(
 		    struct pollfd *fds,
 		    u_int nfds,
 		    int timeout
@@ -175,8 +171,8 @@
 		    u_int iovcnt
 		);
 	}
-20	AUE_WRITEV	NOPROTO {
-		int writev(
+20	AUE_WRITEV	STD {
+		int linux_writev(
 		    int fd,
 		    struct iovec *iovp,
 		    u_int iovcnt
@@ -422,10 +418,10 @@
 56	AUE_RFORK	STD {
 		int linux_clone(
 		    l_ulong flags,
-		    void *stack,
-		    void *parent_tidptr,
-		    void *child_tidptr,
-		    void *tls
+		    l_ulong stack,
+		    l_int *parent_tidptr,
+		    l_int *child_tidptr,
+		    l_ulong tls
 		);
 	}
 57	AUE_FORK	STD {
@@ -437,8 +433,8 @@
 59	AUE_EXECVE	STD {
 		int linux_execve(
 		    char *path,
-		    char **argp,
-		    char **envp
+		    l_uintptr_t *argp,
+		    l_uintptr_t *envp
 		);
 	}
 60	AUE_EXIT	STD {
@@ -472,11 +468,11 @@
 		    l_int semflg
 		);
 	}
-65	AUE_NULL	STD {
-		int linux_semop(
+65	AUE_NULL	NOPROTO {
+		int semop(
 		    l_int semid,
-		    struct l_sembuf *tsops,
-		    l_uint nsops
+		    struct sembuf *sops,
+		    l_size_t nsops
 		);
 	}
 66	AUE_NULL	STD {
@@ -839,7 +835,7 @@
 		int linux_rt_sigtimedwait(
 		    l_sigset_t *mask,
 		    l_siginfo_t *ptr,
-		    struct l_timeval *timeout,
+		    struct l_timespec *timeout,
 		    l_size_t sigsetsize
 		);
 	}
@@ -872,7 +868,7 @@
 		int linux_mknod(
 		    char *path,
 		    l_mode_t mode,
-		    l_uint dev
+		    l_dev_t dev
 		);
 	}
 134	AUE_USELIB	UNIMPL	uselib
@@ -1115,7 +1111,7 @@
 		int linux_setxattr(
 		    const char *path,
 		    const char *name,
-		    const char *value,
+		    void *value,
 		    l_size_t size,
 		    l_int flags
 		);
@@ -1124,7 +1120,7 @@
 		int linux_lsetxattr(
 		    const char *path,
 		    const char *name,
-		    const char *value,
+		    void *value,
 		    l_size_t size,
 		    l_int flags
 		);
@@ -1133,7 +1129,7 @@
 		int linux_fsetxattr(
 		    l_int fd,
 		    const char *name,
-		    const char *value,
+		    void *value,
 		    l_size_t size,
 		    l_int flags
 		);
@@ -1142,7 +1138,7 @@
 		int linux_getxattr(
 		    const char *path,
 		    const char *name,
-		    char *value,
+		    void *value,
 		    l_size_t size
 		);
 	}
@@ -1150,7 +1146,7 @@
 		int linux_lgetxattr(
 		    const char *path,
 		    const char *name,
-		    char *value,
+		    void *value,
 		    l_size_t size
 		);
 	}
@@ -1158,28 +1154,28 @@
 		int linux_fgetxattr(
 		    l_int fd,
 		    const char *name,
-		    char *value,
+		    void *value,
 		    l_size_t size
 		);
 	}
 194	AUE_NULL	STD {
 		int linux_listxattr(
 		    const char *path,
-		    const char *list,
+		    char *list,
 		    l_size_t size
 		);
 	}
 195	AUE_NULL	STD {
 		int linux_llistxattr(
 		    const char *path,
-		    const char *list,
+		    char *list,
 		    l_size_t size
 		);
 	}
 196	AUE_NULL	STD {
 		int linux_flistxattr(
 		    l_int fd,
-		    const char *list,
+		    char *list,
 		    l_size_t size
 		);
 	}
@@ -1214,12 +1210,12 @@
 	}
 202	AUE_NULL	STD {
 		int linux_sys_futex(
-		    void *uaddr,
+		    uint32_t *uaddr,
 		    l_int op,
-		    l_int val,
+		    uint32_t val,
 		    struct l_timespec *timeout,
-		    void *uaddr2,
-		    l_int val3
+		    uint32_t *uaddr2,
+		    uint32_t val3
 		);
 	}
 203	AUE_NULL	STD {
@@ -1282,7 +1278,12 @@
 		int linux_restart_syscall(void);
 	}
 220	AUE_NULL	STD {
-		int linux_semtimedop(void);
+		int linux_semtimedop(
+		    l_int semid,
+		    struct sembuf *tsops,
+		    l_size_t nsops,
+		    struct l_timespec *timeout
+		);
 	}
 221	AUE_NULL	STD {
 		int linux_fadvise64(
@@ -1295,7 +1296,7 @@
 222	AUE_NULL	STD {
 		int linux_timer_create(
 		    clockid_t clock_id,
-		    struct sigevent *evp,
+		    struct l_sigevent *evp,
 		    l_timer_t *timerid
 		);
 	}
@@ -1427,7 +1428,7 @@
 244	AUE_NULL	STD {
 		int linux_mq_notify(
 		    l_mqd_t mqd,
-		    const struct l_timespec *abs_timeout
+		    const struct l_sigevent *sevp,
 		);
 	}
 245	AUE_NULL	STD {
@@ -1458,20 +1459,34 @@
 250	AUE_NULL	STD {
 		int linux_keyctl(void);
 	}
-251	AUE_NULL	STD {
-		int linux_ioprio_set(void);
+251	AUE_SETPRIORITY	STD	{
+		int linux_ioprio_set(
+		    l_int which,
+		    l_int who,
+		    l_int ioprio
+		);
 	}
-252	AUE_NULL	STD {
-		int linux_ioprio_get(void);
+252	AUE_GETPRIORITY	STD	{
+		int linux_ioprio_get(
+		    l_int which,
+		    l_int who
+		);
 	}
 253	AUE_NULL	STD {
 		int linux_inotify_init(void);
 	}
 254	AUE_NULL	STD {
-		int linux_inotify_add_watch(void);
+		int linux_inotify_add_watch(
+		    l_int fd,
+		    const char *pathname,
+		    uint32_t mask
+		);
 	}
 255	AUE_NULL	STD {
-		int linux_inotify_rm_watch(void);
+		int linux_inotify_rm_watch(
+		    l_int fd,
+		    uint32_t wd
+		);
 	}
 256	AUE_NULL	STD {
 		int linux_migrate_pages(void);
@@ -1496,7 +1511,7 @@
 		    l_int dfd,
 		    const char *filename,
 		    l_mode_t mode,
-		    l_uint dev
+		    l_dev_t dev
 		);
 	}
 260	AUE_FCHOWNAT	STD {
@@ -2039,9 +2054,14 @@
 		int linux_io_pgetevents(void);
 	}
 334	AUE_NULL	STD {
-		int linux_rseq(void);
+		int linux_rseq(
+		    struct linux_rseq *rseq,
+		    uint32_t rseq_len,
+		    l_int flags,
+		    uint32_t sig
+		);
 	}
-; Linux 5.0:
+; Linux 5.1:
 335-423	AUE_NULL	UNIMPL	nosys
 424	AUE_NULL	STD {
 		int linux_pidfd_send_signal(
@@ -2060,6 +2080,118 @@
 427	AUE_NULL	STD {
 		int linux_io_uring_register(void);
 	}
-; please, keep this line at the end.
-428	AUE_NULL	UNIMPL	nosys
+; Linux 5.2:
+428    AUE_NULL		STD {
+		int linux_open_tree(void);
+	}
+429    AUE_NULL		STD {
+		int linux_move_mount(void);
+	}
+430    AUE_NULL		STD {
+		int linux_fsopen(void);
+	}
+431    AUE_NULL		STD {
+		int linux_fsconfig(void);
+	}
+432    AUE_NULL		STD {
+		int linux_fsmount(void);
+	}
+433    AUE_NULL		STD {
+		int linux_fspick(void);
+	}
+; Linux 5.3:
+434    AUE_NULL		STD {
+		int linux_pidfd_open(void);
+	}
+435    AUE_NULL		STD {
+		int linux_clone3(
+		    struct l_user_clone_args *uargs,
+		    l_size_t usize
+		);
+	}
+; Linux 5.9:
+436    AUE_CLOSERANGE	STD {
+		int linux_close_range(
+		    l_uint first,
+		    l_uint last,
+		    l_uint flags
+		);
+	}
+; Linux 5.6:
+437    AUE_NULL		STD {
+		int linux_openat2(void);
+	}
+438    AUE_NULL		STD {
+		int linux_pidfd_getfd(void);
+	}
+; Linux 5.8:
+439    AUE_NULL		STD {
+		int linux_faccessat2(
+		    l_int dfd,
+		    const char *filename,
+		    l_int amode,
+		    l_int flags
+		);
+	}
+; Linux 5.10:
+440    AUE_NULL		STD {
+		int linux_process_madvise(void);
+	}
+; Linux 5.11:
+441    AUE_NULL		STD {
+		int linux_epoll_pwait2(
+		    l_int epfd,
+		    struct epoll_event *events,
+		    l_int maxevents,
+		    struct l_timespec *timeout,
+		    l_sigset_t *mask,
+		    l_size_t sigsetsize
+		);
+	}
+; Linux 5.12:
+442    AUE_NULL		STD {
+		int linux_mount_setattr(void);
+	}
+; Linux 5.14:
+443	AUE_NULL		STD {
+		int linux_quotactl_fd(void);
+	}
+; Linux 5.13:
+444	AUE_NULL		STD {
+		int linux_landlock_create_ruleset(void);
+	}
+445	AUE_NULL		STD {
+		int linux_landlock_add_rule(void);
+	}
+446	AUE_NULL		STD {
+		int linux_landlock_restrict_self(void);
+	}
+; Linux 5.14:
+447	AUE_NULL		STD {
+		int linux_memfd_secret(void);
+	}
+; Linux 5.15:
+448	AUE_NULL		STD {
+		int linux_process_mrelease(void);
+	}
+; Linux 5.16:
+449	AUE_NULL		STD {
+		int linux_futex_waitv(void);
+	}
+; Linux 5.17:
+450	AUE_NULL		STD {
+		int linux_set_mempolicy_home_node(void);
+	}
+; Linux 6.5:
+451	AUE_NULL		STD {
+		int linux_cachestat(void);
+	}
+; Linux 6.6:
+452	AUE_NULL		STD {
+		int linux_fchmodat2(void);
+	}
+453	AUE_NULL		STD {
+		int linux_map_shadow_stack(void);
+	}
+
 ; vim: syntax=off

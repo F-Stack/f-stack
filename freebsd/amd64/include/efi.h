@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2016 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Konstantin Belousov <kib@FreeBSD.org>
  * under sponsorship from the FreeBSD Foundation.
@@ -25,12 +24,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef __AMD64_INCLUDE_EFI_H_
 #define __AMD64_INCLUDE_EFI_H_
+
+#include <sys/types.h>
 
 /*
  * XXX: from gcc 6.2 manual:
@@ -47,12 +46,17 @@
 
 #ifdef _KERNEL
 #include <isa/rtc.h>
+#define ARCH_MAY_USE_EFI
 
 #define	EFI_TIME_LOCK()		mtx_lock(&atrtc_time_lock)
 #define	EFI_TIME_UNLOCK()	mtx_unlock(&atrtc_time_lock)
 #define	EFI_TIME_OWNED()	mtx_assert(&atrtc_time_lock, MA_OWNED)
 
 #define	EFI_RT_HANDLE_FAULTS_DEFAULT	1
+
+#define EFI_MAP_BOOTTYPE_ALLOWED(type) (((efi_map_regs >> (type)) & 1) != 0)
+
+extern uint32_t efi_map_regs;
 #endif
 
 struct efirt_callinfo {

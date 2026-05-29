@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,15 +24,10 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include "opt_bhyve_snapshot.h"
 #include "opt_ddb.h"
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/sysctl.h>
@@ -124,10 +119,13 @@ vmcs_field_encoding(int ident)
 		return (VMCS_GUEST_PDPTE3);
 	case VM_REG_GUEST_ENTRY_INST_LENGTH:
 		return (VMCS_ENTRY_INST_LENGTH);
+	case VM_REG_GUEST_FS_BASE:
+		return (VMCS_GUEST_FS_BASE);
+	case VM_REG_GUEST_GS_BASE:
+		return (VMCS_GUEST_GS_BASE);
 	default:
 		return (-1);
 	}
-
 }
 
 static int

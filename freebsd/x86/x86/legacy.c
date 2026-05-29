@@ -28,8 +28,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * This code implements a system driver for legacy systems that do not
  * support ACPI or when ACPI support is not present in the kernel.
@@ -99,9 +97,8 @@ static driver_t legacy_driver = {
 	legacy_methods,
 	1,			/* no softc */
 };
-static devclass_t legacy_devclass;
 
-DRIVER_MODULE(legacy, nexus, legacy_driver, legacy_devclass, 0, 0);
+DRIVER_MODULE(legacy, nexus, legacy_driver, 0, 0);
 
 static int
 legacy_probe(device_t dev)
@@ -127,23 +124,23 @@ legacy_pci_cfgregopen(device_t dev)
 		return;
 
 	/* Check for supported chipsets */
-	vid = pci_cfgregread(0, 0, 0, PCIR_VENDOR, 2);
-	did = pci_cfgregread(0, 0, 0, PCIR_DEVICE, 2);
+	vid = pci_cfgregread(0, 0, 0, 0, PCIR_VENDOR, 2);
+	did = pci_cfgregread(0, 0, 0, 0, PCIR_DEVICE, 2);
 	switch (vid) {
 	case 0x8086:
 		switch (did) {
 		case 0x3590:
 		case 0x3592:
 			/* Intel 7520 or 7320 */
-			pciebar = pci_cfgregread(0, 0, 0, 0xce, 2) << 16;
-			pcie_cfgregopen(pciebar, 0, 255);
+			pciebar = pci_cfgregread(0, 0, 0, 0, 0xce, 2) << 16;
+			pcie_cfgregopen(pciebar, 0, 0, 255);
 			break;
 		case 0x2580:
 		case 0x2584:
 		case 0x2590:
 			/* Intel 915, 925, or 915GM */
-			pciebar = pci_cfgregread(0, 0, 0, 0x48, 4);
-			pcie_cfgregopen(pciebar, 0, 255);
+			pciebar = pci_cfgregread(0, 0, 0, 0, 0x48, 4);
+			pcie_cfgregopen(pciebar, 0, 0, 255);
 			break;
 		}
 	}
@@ -164,8 +161,8 @@ legacy_attach(device_t dev)
 	 * can find.  Once that is done attach any devices that we
 	 * found.
 	 */
-	bus_generic_probe(dev);
-	bus_generic_attach(dev);
+	bus_identify_children(dev);
+	bus_attach_children(dev);
 
 	/*
 	 * If we didn't see ISA on a PCI bridge, add a top-level bus.
@@ -270,6 +267,8 @@ legacy_write_ivar(device_t dev, device_t child, int which, uintptr_t value)
  * cpufreq(4) hang off this.
  */
 static void	cpu_identify(driver_t *driver, device_t parent);
+static device_probe_t cpu_probe;
+static device_attach_t cpu_attach;
 static int	cpu_read_ivar(device_t dev, device_t child, int index,
 		    uintptr_t *result);
 static device_t cpu_add_child(device_t bus, u_int order, const char *name,
@@ -284,8 +283,8 @@ struct cpu_device {
 static device_method_t cpu_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_identify,	cpu_identify),
-	DEVMETHOD(device_probe,		bus_generic_probe),
-	DEVMETHOD(device_attach,	bus_generic_attach),
+	DEVMETHOD(device_probe,		cpu_probe),
+	DEVMETHOD(device_attach,	cpu_attach),
 	DEVMETHOD(device_detach,	bus_generic_detach),
 	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
 	DEVMETHOD(device_suspend,	bus_generic_suspend),
@@ -312,8 +311,8 @@ static driver_t cpu_driver = {
 	cpu_methods,
 	1,		/* no softc */
 };
-static devclass_t cpu_devclass;
-DRIVER_MODULE(cpu, legacy, cpu_driver, cpu_devclass, 0, 0);
+
+DRIVER_MODULE(cpu, legacy, cpu_driver, 0, 0);
 
 static void
 cpu_identify(driver_t *driver, device_t parent)
@@ -331,6 +330,21 @@ cpu_identify(driver_t *driver, device_t parent)
 		if (child == NULL)
 			panic("legacy_attach cpu");
 	}
+}
+
+static int
+cpu_probe(device_t dev)
+{
+	device_set_desc(dev, "legacy CPU");
+	return (BUS_PROBE_DEFAULT);
+}
+
+static int
+cpu_attach(device_t dev)
+{
+	bus_identify_children(dev);
+	bus_attach_children(dev);
+	return (0);
 }
 
 static device_t

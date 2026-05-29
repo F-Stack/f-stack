@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1996, by Peter Wemm and Steve Passe
  * All rights reserved.
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _X86_APICREG_H_
@@ -298,6 +296,8 @@ typedef struct IOAPIC ioapic_t;
 /* constants relating to APIC ID registers */
 #define APIC_ID_MASK		0xff000000
 #define	APIC_ID_SHIFT		24
+#define APIC_EXT_ID_MASK	0x00fe0000
+#define	APIC_EXT_ID_SHIFT	17
 #define	APIC_ID_CLUSTER		0xf0
 #define	APIC_ID_CLUSTER_ID	0x0f
 #define	APIC_MAX_CLUSTER	0xe

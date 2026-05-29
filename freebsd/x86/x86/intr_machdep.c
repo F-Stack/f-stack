@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 John Baldwin <jhb@FreeBSD.org>
  *
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -74,8 +72,6 @@
 
 #include <vm/vm.h>
 
-#define	MAX_STRAY_LOG	5
-
 typedef void (*mask_fn)(void *);
 
 static int intrcnt_index;
@@ -94,9 +90,10 @@ static TAILQ_HEAD(pics_head, pic) pics;
 u_int num_io_irqs;
 
 #if defined(SMP) && !defined(EARLY_AP_STARTUP)
-static int assign_cpu;
+#error EARLY_AP_STARTUP required on x86
 #endif
 
+#define	INTRNAME_LEN	(MAXCOMLEN + 1)
 u_long *intrcnt;
 char *intrnames;
 size_t sintrcnt = sizeof(intrcnt);
@@ -191,10 +188,10 @@ intr_init_sources(void *arg)
 #endif
 	intrcnt = mallocarray(nintrcnt, sizeof(u_long), M_INTR, M_WAITOK |
 	    M_ZERO);
-	intrnames = mallocarray(nintrcnt, MAXCOMLEN + 1, M_INTR, M_WAITOK |
+	intrnames = mallocarray(nintrcnt, INTRNAME_LEN, M_INTR, M_WAITOK |
 	    M_ZERO);
 	sintrcnt = nintrcnt * sizeof(u_long);
-	sintrnames = nintrcnt * (MAXCOMLEN + 1);
+	sintrnames = nintrcnt * INTRNAME_LEN;
 
 	intrcnt_setname("???", 0);
 	intrcnt_index = 1;
@@ -258,16 +255,12 @@ intr_lookup_source(int vector)
 }
 
 int
-intr_add_handler(const char *name, int vector, driver_filter_t filter,
+intr_add_handler(struct intsrc *isrc, const char *name, driver_filter_t filter,
     driver_intr_t handler, void *arg, enum intr_type flags, void **cookiep,
     int domain)
 {
-	struct intsrc *isrc;
 	int error;
 
-	isrc = intr_lookup_source(vector);
-	if (isrc == NULL)
-		return (EINVAL);
 	error = intr_event_add_handler(isrc->is_event, name, filter, handler,
 	    arg, intr_priority(flags), flags, cookiep);
 	if (error == 0) {
@@ -306,13 +299,10 @@ intr_remove_handler(void *cookie)
 }
 
 int
-intr_config_intr(int vector, enum intr_trigger trig, enum intr_polarity pol)
+intr_config_intr(struct intsrc *isrc, enum intr_trigger trig,
+    enum intr_polarity pol)
 {
-	struct intsrc *isrc;
 
-	isrc = intr_lookup_source(vector);
-	if (isrc == NULL)
-		return (EINVAL);
 	return (isrc->is_pic->pic_config_intr(isrc, trig, pol));
 }
 
@@ -357,9 +347,9 @@ intr_execute_handlers(struct intsrc *isrc, struct trapframe *frame)
 	if (intr_event_handle(ie, frame) != 0) {
 		isrc->is_pic->pic_disable_source(isrc, PIC_EOI);
 		(*isrc->is_straycount)++;
-		if (*isrc->is_straycount < MAX_STRAY_LOG)
+		if (*isrc->is_straycount < INTR_STRAY_LOG_MAX)
 			log(LOG_ERR, "stray irq%d\n", vector);
-		else if (*isrc->is_straycount == MAX_STRAY_LOG)
+		else if (*isrc->is_straycount == INTR_STRAY_LOG_MAX)
 			log(LOG_CRIT,
 			    "too many stray irq %d's: not logging anymore\n",
 			    vector);
@@ -402,18 +392,10 @@ intr_assign_cpu(void *arg, int cpu)
 	struct intsrc *isrc;
 	int error;
 
-#ifdef EARLY_AP_STARTUP
 	MPASS(mp_ncpus == 1 || smp_started);
 
 	/* Nothing to do if there is only a single CPU. */
 	if (mp_ncpus > 1 && cpu != NOCPU) {
-#else
-	/*
-	 * Don't do anything during early boot.  We will pick up the
-	 * assignment once the APs are started.
-	 */
-	if (assign_cpu && cpu != NOCPU) {
-#endif
 		isrc = arg;
 		sx_xlock(&intrsrc_lock);
 		error = isrc->is_pic->pic_assign_cpu(isrc, cpu_apic_ids[cpu]);
@@ -432,8 +414,8 @@ static void
 intrcnt_setname(const char *name, int index)
 {
 
-	snprintf(intrnames + (MAXCOMLEN + 1) * index, MAXCOMLEN + 1, "%-*s",
-	    MAXCOMLEN, name);
+	snprintf(intrnames + INTRNAME_LEN * index, INTRNAME_LEN, "%-*s",
+	    INTRNAME_LEN - 1, name);
 }
 
 static void
@@ -446,14 +428,14 @@ intrcnt_updatename(struct intsrc *is)
 static void
 intrcnt_register(struct intsrc *is)
 {
-	char straystr[MAXCOMLEN + 1];
+	char straystr[INTRNAME_LEN];
 
 	KASSERT(is->is_event != NULL, ("%s: isrc with no event", __func__));
 	mtx_lock_spin(&intrcnt_lock);
 	MPASS(intrcnt_index + 2 <= nintrcnt);
 	is->is_index = intrcnt_index;
 	intrcnt_index += 2;
-	snprintf(straystr, MAXCOMLEN + 1, "stray irq%d",
+	snprintf(straystr, sizeof(straystr), "stray irq%d",
 	    is->is_pic->pic_vector(is));
 	intrcnt_updatename(is);
 	is->is_count = &intrcnt[is->is_index];
@@ -524,14 +506,10 @@ atpic_reset(void)
 
 /* Add a description to an active interrupt handler. */
 int
-intr_describe(u_int vector, void *ih, const char *descr)
+intr_describe(struct intsrc *isrc, void *ih, const char *descr)
 {
-	struct intsrc *isrc;
 	int error;
 
-	isrc = intr_lookup_source(vector);
-	if (isrc == NULL)
-		return (EINVAL);
 	error = intr_event_describe_handler(isrc->is_event, ih, descr);
 	if (error)
 		return (error);
@@ -581,10 +559,17 @@ DB_SHOW_COMMAND(irqs, db_show_irqs)
 /*
  * Support for balancing interrupt sources across CPUs.  For now we just
  * allocate CPUs round-robin.
+ *
+ * XXX If the system has a domain with without any usable CPUs (e.g., where all
+ * APIC IDs are 256 or greater and we do not have an IOMMU) we use
+ * intr_no_domain to fall back to assigning interrupts without regard for
+ * domain.  Once we can rely on the presence of an IOMMU on all x86 platforms
+ * we can revert this.
  */
 
 cpuset_t intr_cpus = CPUSET_T_INITIALIZER(0x1);
 static int current_cpu[MAXMEMDOM];
+static bool intr_no_domain;
 
 static void
 intr_init_cpus(void)
@@ -592,7 +577,15 @@ intr_init_cpus(void)
 	int i;
 
 	for (i = 0; i < vm_ndomains; i++) {
+		if (CPU_OVERLAP(&cpuset_domain[i], &intr_cpus) == 0) {
+			intr_no_domain = true;
+			printf("%s: unable to route interrupts to CPUs in domain %d\n",
+			    __func__, i);
+		}
+
 		current_cpu[i] = 0;
+		if (intr_no_domain && i > 0)
+			continue;
 		if (!CPU_ISSET(current_cpu[i], &intr_cpus) ||
 		    !CPU_ISSET(current_cpu[i], &cpuset_domain[i]))
 			intr_next_cpu(i);
@@ -608,16 +601,12 @@ intr_next_cpu(int domain)
 {
 	u_int apic_id;
 
-#ifdef EARLY_AP_STARTUP
 	MPASS(mp_ncpus == 1 || smp_started);
 	if (mp_ncpus == 1)
 		return (PCPU_GET(apic_id));
-#else
-	/* Leave all interrupts on the BSP during boot. */
-	if (!assign_cpu)
-		return (PCPU_GET(apic_id));
-#endif
 
+	if (intr_no_domain)
+		domain = 0;
 	mtx_lock_spin(&icu_lock);
 	apic_id = cpu_apic_ids[current_cpu[domain]];
 	do {
@@ -625,21 +614,10 @@ intr_next_cpu(int domain)
 		if (current_cpu[domain] > mp_maxid)
 			current_cpu[domain] = 0;
 	} while (!CPU_ISSET(current_cpu[domain], &intr_cpus) ||
-	    !CPU_ISSET(current_cpu[domain], &cpuset_domain[domain]));
+	    (!CPU_ISSET(current_cpu[domain], &cpuset_domain[domain]) &&
+	    !intr_no_domain));
 	mtx_unlock_spin(&icu_lock);
 	return (apic_id);
-}
-
-/* Attempt to bind the specified IRQ to the specified CPU. */
-int
-intr_bind(u_int vector, u_char cpu)
-{
-	struct intsrc *isrc;
-
-	isrc = intr_lookup_source(vector);
-	if (isrc == NULL)
-		return (EINVAL);
-	return (intr_event_bind(isrc->is_event, cpu));
 }
 
 /*
@@ -651,7 +629,7 @@ intr_add_cpu(u_int cpu)
 {
 
 	if (cpu >= MAXCPU)
-		panic("%s: Invalid CPU ID", __func__);
+		panic("%s: Invalid CPU ID %u", __func__, cpu);
 	if (bootverbose)
 		printf("INTR: Adding local APIC %d as a target\n",
 		    cpu_apic_ids[cpu]);
@@ -659,7 +637,6 @@ intr_add_cpu(u_int cpu)
 	CPU_SET(cpu, &intr_cpus);
 }
 
-#ifdef EARLY_AP_STARTUP
 static void
 intr_smp_startup(void *arg __unused)
 {
@@ -669,52 +646,6 @@ intr_smp_startup(void *arg __unused)
 }
 SYSINIT(intr_smp_startup, SI_SUB_SMP, SI_ORDER_SECOND, intr_smp_startup,
     NULL);
-
-#else
-/*
- * Distribute all the interrupt sources among the available CPUs once the
- * AP's have been launched.
- */
-static void
-intr_shuffle_irqs(void *arg __unused)
-{
-	struct intsrc *isrc;
-	u_int cpu, i;
-
-	intr_init_cpus();
-	/* Don't bother on UP. */
-	if (mp_ncpus == 1)
-		return;
-
-	/* Round-robin assign a CPU to each enabled source. */
-	sx_xlock(&intrsrc_lock);
-	assign_cpu = 1;
-	for (i = 0; i < num_io_irqs; i++) {
-		isrc = interrupt_sources[i];
-		if (isrc != NULL && isrc->is_handlers > 0) {
-			/*
-			 * If this event is already bound to a CPU,
-			 * then assign the source to that CPU instead
-			 * of picking one via round-robin.  Note that
-			 * this is careful to only advance the
-			 * round-robin if the CPU assignment succeeds.
-			 */
-			cpu = isrc->is_event->ie_cpu;
-			if (cpu == NOCPU)
-				cpu = current_cpu[isrc->is_domain];
-			if (isrc->is_pic->pic_assign_cpu(isrc,
-			    cpu_apic_ids[cpu]) == 0) {
-				isrc->is_cpu = cpu;
-				if (isrc->is_event->ie_cpu == NOCPU)
-					intr_next_cpu(isrc->is_domain);
-			}
-		}
-	}
-	sx_xunlock(&intrsrc_lock);
-}
-SYSINIT(intr_shuffle_irqs, SI_SUB_SMP, SI_ORDER_SECOND, intr_shuffle_irqs,
-    NULL);
-#endif
 
 /*
  * TODO: Export this information in a non-MD fashion, integrate with vmstat -i.

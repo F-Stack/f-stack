@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 John Baldwin <jhb@FreeBSD.org>
  *
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef __X86_INTR_MACHDEP_H__
@@ -63,8 +61,6 @@ extern u_int num_msi_irqs;
  * Default base address for MSI messages on x86 platforms.
  */
 #define	MSI_INTEL_ADDR_BASE		0xfee00000
-
-#ifndef LOCORE
 
 typedef void inthand_t(void);
 
@@ -140,15 +136,12 @@ void	elcr_write_trigger(u_int irq, enum intr_trigger trigger);
 #ifdef SMP
 void	intr_add_cpu(u_int cpu);
 #endif
-int	intr_add_handler(const char *name, int vector, driver_filter_t filter,
-    driver_intr_t handler, void *arg, enum intr_type flags, void **cookiep,
-    int domain);
-#ifdef SMP
-int	intr_bind(u_int vector, u_char cpu);
-#endif
-int	intr_config_intr(int vector, enum intr_trigger trig,
+int	intr_add_handler(struct intsrc *isrc, const char *name,
+     driver_filter_t filter, driver_intr_t handler, void *arg,
+     enum intr_type flags, void **cookiep, int domain);
+int	intr_config_intr(struct intsrc *isrc, enum intr_trigger trig,
     enum intr_polarity pol);
-int	intr_describe(u_int vector, void *ih, const char *descr);
+int	intr_describe(struct intsrc *isrc, void *ih, const char *descr);
 void	intr_execute_handlers(struct intsrc *isrc, struct trapframe *frame);
 u_int	intr_next_cpu(int domain);
 struct intsrc *intr_lookup_source(int vector);
@@ -170,6 +163,5 @@ int	msix_release(int irq);
 void	xen_intr_alloc_irqs(void);
 #endif
 
-#endif	/* !LOCORE */
 #endif	/* _KERNEL */
 #endif	/* !__X86_INTR_MACHDEP_H__ */

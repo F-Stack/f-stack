@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Konstantin Belousov <kib@FreeBSD.org>
  * under sponsorship from the FreeBSD Foundation.
@@ -27,12 +26,10 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
+#include <sys/domainset.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
@@ -58,6 +55,7 @@ __FBSDID("$FreeBSD$");
 #include <x86/include/busdma_impl.h>
 #include <dev/iommu/busdma_iommu.h>
 #include <x86/iommu/intel_reg.h>
+#include <x86/iommu/x86_iommu.h>
 #include <x86/iommu/intel_dmar.h>
 #include <x86/iommu/iommu_intrmap.h>
 
@@ -68,7 +66,7 @@ static void dmar_ir_program_irte(struct dmar_unit *unit, u_int idx,
 static int dmar_ir_free_irte(struct dmar_unit *unit, u_int cookie);
 
 int
-iommu_alloc_msi_intr(device_t src, u_int *cookies, u_int count)
+dmar_alloc_msi_intr(device_t src, u_int *cookies, u_int count)
 {
 	struct dmar_unit *unit;
 	vmem_addr_t vmem_res;
@@ -96,7 +94,7 @@ iommu_alloc_msi_intr(device_t src, u_int *cookies, u_int count)
 }
 
 int
-iommu_map_msi_intr(device_t src, u_int cpu, u_int vector, u_int cookie,
+dmar_map_msi_intr(device_t src, u_int cpu, u_int vector, u_int cookie,
     uint64_t *addr, uint32_t *data)
 {
 	struct dmar_unit *unit;
@@ -142,7 +140,7 @@ iommu_map_msi_intr(device_t src, u_int cpu, u_int vector, u_int cookie,
 }
 
 int
-iommu_unmap_msi_intr(device_t src, u_int cookie)
+dmar_unmap_msi_intr(device_t src, u_int cookie)
 {
 	struct dmar_unit *unit;
 
@@ -153,7 +151,7 @@ iommu_unmap_msi_intr(device_t src, u_int cookie)
 }
 
 int
-iommu_map_ioapic_intr(u_int ioapic_id, u_int cpu, u_int vector, bool edge,
+dmar_map_ioapic_intr(u_int ioapic_id, u_int cpu, u_int vector, bool edge,
     bool activehi, int irq, u_int *cookie, uint32_t *hi, uint32_t *lo)
 {
 	struct dmar_unit *unit;
@@ -216,7 +214,7 @@ iommu_map_ioapic_intr(u_int ioapic_id, u_int cpu, u_int vector, bool edge,
 }
 
 int
-iommu_unmap_ioapic_intr(u_int ioapic_id, u_int *cookie)
+dmar_unmap_ioapic_intr(u_int ioapic_id, u_int *cookie)
 {
 	struct dmar_unit *unit;
 	u_int idx;
@@ -236,6 +234,8 @@ dmar_ir_find(device_t src, uint16_t *rid, int *is_dmar)
 {
 	devclass_t src_class;
 	struct dmar_unit *unit;
+	device_t requester;
+	int error __diagused;
 
 	/*
 	 * We need to determine if the interrupt source generates FSB
@@ -255,8 +255,10 @@ dmar_ir_find(device_t src, uint16_t *rid, int *is_dmar)
 		unit = dmar_find_hpet(src, rid);
 	} else {
 		unit = dmar_find(src, bootverbose);
-		if (unit != NULL && rid != NULL)
-			iommu_get_requester(src, rid);
+		if (unit != NULL && rid != NULL) {
+			error = iommu_get_requester(src, &requester, rid);
+			MPASS(error == 0);
+		}
 	}
 	return (unit);
 }
@@ -274,7 +276,7 @@ dmar_ir_program_irte(struct dmar_unit *unit, u_int idx, uint64_t low,
 	high = DMAR_IRTE2_SVT_RID | DMAR_IRTE2_SQ_RID |
 	    DMAR_IRTE2_SID_RID(rid);
 	if (bootverbose) {
-		device_printf(unit->dev,
+		device_printf(unit->iommu.dev,
 		    "programming irte[%d] rid %#x high %#jx low %#jx\n",
 		    idx, rid, (uintmax_t)high, (uintmax_t)low);
 	}
@@ -318,35 +320,42 @@ dmar_ir_free_irte(struct dmar_unit *unit, u_int cookie)
 	return (0);
 }
 
-static u_int
-clp2(u_int v)
-{
-
-	return (powerof2(v) ? v : 1 << fls(v));
-}
-
 int
 dmar_init_irt(struct dmar_unit *unit)
 {
-
+	SYSCTL_ADD_INT(&unit->iommu.sysctl_ctx,
+	    SYSCTL_CHILDREN(device_get_sysctl_tree(unit->iommu.dev)),
+	    OID_AUTO, "ir", CTLFLAG_RD, &unit->ir_enabled, 0,
+	    "Interrupt remapping ops enabled");
 	if ((unit->hw_ecap & DMAR_ECAP_IR) == 0)
 		return (0);
 	unit->ir_enabled = 1;
 	TUNABLE_INT_FETCH("hw.dmar.ir", &unit->ir_enabled);
+	TUNABLE_INT_FETCH("hw.iommu.ir", &unit->ir_enabled);
 	if (!unit->ir_enabled)
 		return (0);
 	if (!unit->qi_enabled) {
 		unit->ir_enabled = 0;
 		if (bootverbose)
-			device_printf(unit->dev,
+			device_printf(unit->iommu.dev,
 	     "QI disabled, disabling interrupt remapping\n");
 		return (0);
 	}
-	unit->irte_cnt = clp2(num_io_irqs);
-	unit->irt = (dmar_irte_t *)(uintptr_t)kmem_alloc_contig(
-	    unit->irte_cnt * sizeof(dmar_irte_t), M_ZERO | M_WAITOK, 0,
-	    dmar_high, PAGE_SIZE, 0, DMAR_IS_COHERENT(unit) ?
-	    VM_MEMATTR_DEFAULT : VM_MEMATTR_UNCACHEABLE);
+	unit->irte_cnt = roundup_pow_of_two(num_io_irqs);
+	if (unit->memdomain == -1) {
+		unit->irt = kmem_alloc_contig(
+		    unit->irte_cnt * sizeof(dmar_irte_t),
+		    M_ZERO | M_WAITOK, 0, iommu_high, PAGE_SIZE, 0,
+		    DMAR_IS_COHERENT(unit) ?
+		    VM_MEMATTR_DEFAULT : VM_MEMATTR_UNCACHEABLE);
+	} else {
+		unit->irt = kmem_alloc_contig_domainset(
+		    DOMAINSET_PREF(unit->memdomain),
+		    unit->irte_cnt * sizeof(dmar_irte_t),
+		    M_ZERO | M_WAITOK, 0, iommu_high, PAGE_SIZE, 0,
+		    DMAR_IS_COHERENT(unit) ?
+		    VM_MEMATTR_DEFAULT : VM_MEMATTR_UNCACHEABLE);
+	}
 	if (unit->irt == NULL)
 		return (ENOMEM);
 	unit->irt_phys = pmap_kextract((vm_offset_t)unit->irt);
@@ -379,7 +388,6 @@ dmar_fini_irt(struct dmar_unit *unit)
 		dmar_disable_ir(unit);
 		dmar_qi_invalidate_iec_glob(unit);
 		vmem_destroy(unit->irtids);
-		kmem_free((vm_offset_t)unit->irt, unit->irte_cnt *
-		    sizeof(dmar_irte_t));
+		kmem_free(unit->irt, unit->irte_cnt * sizeof(dmar_irte_t));
 	}
 }

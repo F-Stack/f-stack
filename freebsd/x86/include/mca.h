@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Hudson River Trading LLC
  * Written by: John H. Baldwin <jhb@FreeBSD.org>
@@ -25,8 +25,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef __X86_MCA_H__
@@ -44,6 +42,31 @@ struct mca_record {
 	int		mr_cpu_id;
 	int		mr_cpu_vendor_id;
 	int		mr_cpu;
+};
+
+enum mca_stat_types {
+	MCA_T_NONE = 0,
+	MCA_T_UNCLASSIFIED,
+	MCA_T_UCODE_ROM_PARITY,
+	MCA_T_EXTERNAL,
+	MCA_T_FRC,
+	MCA_T_INTERNAL_PARITY,
+	MCA_T_SMM_HANDLER,
+	MCA_T_INTERNAL_TIMER,
+	MCA_T_GENERIC_IO,
+	MCA_T_INTERNAL,
+	MCA_T_MEMORY,
+	MCA_T_TLB,
+	MCA_T_MEMCONTROLLER_GEN,
+	MCA_T_MEMCONTROLLER_RD,
+	MCA_T_MEMCONTROLLER_WR,
+	MCA_T_MEMCONTROLLER_AC,
+	MCA_T_MEMCONTROLLER_MS,
+	MCA_T_MEMCONTROLLER_OTHER,
+	MCA_T_CACHE,
+	MCA_T_BUS,
+	MCA_T_UNKNOWN,
+	MCA_T_COUNT /* Must stay last */
 };
 
 #ifdef _KERNEL
