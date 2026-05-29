@@ -54,7 +54,7 @@
 #undef DROP_GIANT
 #undef PICKUP_GIANT
 
-#define DO_NOTHING do {} while(0)
+#define DO_NOTHING ((void)0)
 
 #define __mtx_lock(mp, tid, opts, file, line) DO_NOTHING
 #define __mtx_unlock(mp, tid, opts, file, line) DO_NOTHING

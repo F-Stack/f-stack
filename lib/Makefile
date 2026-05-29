@@ -131,6 +131,8 @@ GCCVERGE12 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 12)
 ifeq "$(GCCVERGE12)" "1"
     CFLAGS+= -Wno-error=array-bounds
     CFLAGS+= -Wno-error=cast-qual
+    CFLAGS+= -Wno-error=format
+    CFLAGS+= -Wno-error=format-extra-args
 endif
 
 GCCVERGE13 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 13)
@@ -396,8 +398,6 @@ NET_SRCS+=		 \
 	if_loop.c	 \
 	if_llatbl.c	 \
 	if_media.c       \
-	if_spppfr.c      \
-	if_spppsubr.c    \
 	if_vlan.c        \
 	if_vxlan.c       \
 	in_fib.c	 \
@@ -406,8 +406,7 @@ NET_SRCS+=		 \
 	netisr.c	 \
 	pfil.c		 \
 	radix.c		 \
-	raw_cb.c	 \
-	raw_usrreq.c	 \
+	ifq.c		 \
 	route.c		 \
 	route_ctl.c	 \
 	route_tables.c	 \
@@ -488,7 +487,6 @@ NETINET_SRCS+=		\
 	ip_options.c	\
 	ip_output.c	\
 	raw_ip.c	\
-	tcp_debug.c	\
 	tcp_hostcache.c	\
 	tcp_input.c	\
 	tcp_lro.c	\
@@ -522,7 +520,6 @@ NETINET6_SRCS+=		\
 	in6_ifattach.c	\
 	in6_mcast.c	\
 	in6_pcb.c	\
-	in6_pcbgroup.c	\
 	in6_proto.c	\
 	in6_rmx.c	\
 	in6_src.c	\
