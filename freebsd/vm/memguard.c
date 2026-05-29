@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005, Bosko Milekic <bmilekic@FreeBSD.org>.
  * Copyright (c) 2010 Isilon Systems, Inc. (http://www.isilon.com/)
@@ -28,8 +28,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * MemGuard is a simple replacement allocator for debugging only
  * which provides ElectricFence-style memory barrier protection on
@@ -464,7 +462,7 @@ memguard_cmp_mtp(struct malloc_type *mtp, unsigned long size)
 
 #if 1
 	/*
-	 * The safest way of comparsion is to always compare short description
+	 * The safest way of comparison is to always compare short description
 	 * string of memory type, but it is also the slowest way.
 	 */
 	return (strcmp(mtp->ks_shortdesc, vm_memguard_desc) == 0);
@@ -498,7 +496,7 @@ memguard_cmp_zone(uma_zone_t zone)
 		return (1);
 
 	/*
-	 * The safest way of comparsion is to always compare zone name,
+	 * The safest way of comparison is to always compare zone name,
 	 * but it is also the slowest way.
 	 */
 	return (strcmp(zone->uz_name, vm_memguard_desc) == 0);
