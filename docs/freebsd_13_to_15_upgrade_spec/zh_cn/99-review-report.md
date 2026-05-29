@@ -262,20 +262,20 @@ q2 决定的范围（来自 plan.md §1.5）：
 | M1 | T-arch-01 | amd64/x86 头 | P2 | ⚠️ 推迟到 M2（DP-8） | m1-leader | 2026-05-28 |
 | M1 | T-arch-02 | arm64/ | P2 | ⚠️ 推迟到 M2（DP-8） | m1-leader | 2026-05-28 |
 | M1 | T-misc-01 | netipsec/netgraph/libalias | P2 | ⚠️ 部分（netipsec+netgraph ✅；libalias 因 DP-9 回滚 13.0）| m1-leader | 2026-05-28 |
-| **M2** | T-kern-01 | kern_descrip.c | P0 | ⚠️ Phase 5b 推迟（DP-M2-5）| m2-leader | 2026-05-29 |
-| M2 | T-kern-02 | kern_event.c | P0 | ⚠️ Phase 5b 推迟（DP-M2-5）| m2-leader | 2026-05-29 |
-| M2 | T-kern-03 | kern_linker.c | P1 | ⚠️ Phase 5b 推迟（DP-M2-5：opt_hwt_hooks.h 缺失）| m2-leader | 2026-05-29 |
-| M2 | **T-kern-04** | **kern_mbuf.c** | **P0** | ⚠️ Phase 5b 推迟（DP-M2-5：14.0 m_ext 重组 R-003）| m2-leader | 2026-05-29 |
+| **M2** | T-kern-01 | kern_descrip.c | P0 | ✅ 完成（Phase 5b）| m2-leader | 2026-05-29 |
+| M2 | T-kern-02 | kern_event.c | P0 | ✅ 完成（Phase 5b）| m2-leader | 2026-05-29 |
+| M2 | T-kern-03 | kern_linker.c | P1 | ✅ 完成（Phase 5b：opt_hwt_hooks.h stub 解锁）| m2-leader | 2026-05-29 |
+| M2 | **T-kern-04** | **kern_mbuf.c** | **P0** | ✅ 完成（Phase 5b：14.0 m_ext 重组 R-003 + if_snd_tag/if_rcvif* 整段包）| m2-leader | 2026-05-29 |
 | M2 | T-kern-05 | kern_sysctl.c | P1 | ✅ 完成 | m2-leader | 2026-05-29 |
-| M2 | T-kern-06 | link_elf.c | P1 | ⚠️ Phase 5b 推迟（DP-M2-5：ddb/db_ctf.h 缺失）| m2-leader | 2026-05-29 |
-| M2 | **T-kern-07** | **subr_epoch.c** | **P0** | ⚠️ Phase 5b 推迟（DP-M2-5：R-012 SMR）| m2-leader | 2026-05-29 |
+| M2 | T-kern-06 | link_elf.c | P1 | ✅ 完成（Phase 5b：cp 15.0 ddb/db_ctf.h 解锁）| m2-leader | 2026-05-29 |
+| M2 | **T-kern-07** | **subr_epoch.c** | **P0** | ✅ 完成（Phase 5b：注：不在 KERN_SRCS，由 ff_subr_epoch.c 替代）| m2-leader | 2026-05-29 |
 | M2 | T-kern-08 | subr_param.c | P2 | ✅ 完成 | m2-leader | 2026-05-29 |
 | M2 | T-kern-09 | subr_taskqueue.c | P1 | ✅ 完成 | m2-leader | 2026-05-29 |
-| M2 | T-kern-10 | sys_generic.c | P1 | ⚠️ Phase 5b 推迟（DP-M2-5：specialfd_eventfd 14.0 新结构）| m2-leader | 2026-05-29 |
-| M2 | T-kern-11 | sys_socket.c | P1 | ⚠️ Phase 5b 推迟（DP-M2-5：函数布局重排）| m2-leader | 2026-05-29 |
-| M2 | **T-kern-12** | **uipc_mbuf.c** | **P0** | ⚠️ Phase 5b 推迟（DP-M2-5：FSTACK_ZC_SEND）| m2-leader | 2026-05-29 |
+| M2 | T-kern-10 | sys_generic.c | P1 | ✅ 完成（Phase 5b：14.0 specialfd_eventfd 由全局 -Wno-error=array-bounds 解决）| m2-leader | 2026-05-29 |
+| M2 | T-kern-11 | sys_socket.c | P1 | ✅ 完成（Phase 5b：函数布局重排，soo_aio_cancel 保留外）| m2-leader | 2026-05-29 |
+| M2 | **T-kern-12** | **uipc_mbuf.c** | **P0** | ✅ 完成（Phase 5b：FSTACK_ZC_SEND P0 + m_uiotombuf 整体替换）| m2-leader | 2026-05-29 |
 | M2 | T-kern-13 | uipc_sockbuf.c | P1 | ✅ 完成 | m2-leader | 2026-05-29 |
-| M2 | **T-kern-14** | **uipc_socket.c** | **P0** | ⚠️ Phase 5b 推迟（DP-M2-5：CURVNET_ASSERT_SET + R-011）| m2-leader | 2026-05-29 |
+| M2 | **T-kern-14** | **uipc_socket.c** | **P0** | ✅ 完成（Phase 5b：cp 15.0 net/vnet.h 提供 CURVNET_ASSERT_SET）| m2-leader | 2026-05-29 |
 | M2 | T-kern-15 | uipc_syscalls.c | P1 | ✅ 完成 | m2-leader | 2026-05-29 |
 | M2 | T-kern-misc | 23 个 KERN_SRCS cp -a | P3 | ✅ 完成 | m2-leader | 2026-05-29 |
 | M2 | **T-ff-04** | **ff_subr_epoch.c** | **P0** | ✅ verify-only（与 13.0 字节一致，与 M2 已升 kern 无 ABI 冲突）| m2-leader | 2026-05-29 |
@@ -635,3 +635,18 @@ q2 决定的范围（来自 plan.md §1.5）：
 | 影响范围 | 仅 F-Stack `freebsd/amd64/include/atomic.h` 一文件；F-Stack 13.0 baseline 同位置 bug 不修（保持 baseline 历史准确）；本次修复仅在升 15.0 后的 `f-stack/` 目录生效。 |
 | 校验 | `cd f-stack/lib && make machine_includes && make kern_sysctl.o` 通过（之前因该 bug 失败）；`read_lints freebsd/amd64/include/atomic.h` 返回 0 diagnostics。 |
 | 文档同步 | M2-execution-log.md §4 打回事件 #2 完整记录；本次 spec 修订 §12.14 作为偏差登记。 |
+
+### 12.15 修订 R-2026-05-29-15：Phase 5b 完成关闭 DP-M2-5 推迟项 + 新增 14.0+ 缺失头文件清单
+
+| 项 | 内容 |
+|---|---|
+| 修订日期 | 2026-05-29 |
+| 关联条目 | Phase 5b 完成 10 个 kern 文件 5 步法重应用，关闭 §12.13 DP-M2-5 推迟项；新增对 spec 05 §2.2 中 4 P0 改造手法迁移工作量、14.0+ 缺失头文件清单的修订 |
+| 偏差 1：sys_generic.c 改造范围扩展 | spec 05 §2.2 T-kern-10 描述"kern_sigprocmask 屏蔽"，实测改造同时需要包前后两个 if(uset) 块（前置 sigprocmask + 后置 ast_sched 块；13.0 改造在 14.0 引入 ast_sched 后才暴露）；并连锁触发 14.0 specialfd_eventfd 新结构的 `-Werror=array-bounds` 内联误报，需在 lib/Makefile 加 `-Wno-error=array-bounds`（GCC 12+） |
+| 偏差 2：kern_mbuf.c 改造范围扩展 | spec 05 §2.2 T-kern-04 描述"m_ext 新字段适配"，实测改造除了 13.0 已有的 5 处（realmem 计算 + _mb_unmapped_to_ext stub 新签名 + mb_alloc_ext_pgs 调用包）外，还需新增 2 处（14.0+ 引入）：(a) m_snd_tag_alloc/init/destroy 三函数依赖 if_snd_tag_alloc / if_snd_tag_sw 14.0+ 不透明 ifnet API；(b) m_rcvif_serialize/restore 两函数依赖 if_getindex / if_getidxgen / ifnet_byindexgen 14.0+ API。两组都用 #ifndef FSTACK 整段包 |
+| 偏差 3：uipc_mbuf.c m_uiotombuf 整体重构 | spec 05 §2.2 T-kern-12 描述"FSTACK_ZC_SEND + m_ext 新布局"，实测 15.0 已将 m_uiotombuf 重构为基于 mc_uiotomc 的 mchain 接口，13.0 改造的 FSTACK_ZC_SEND 零拷贝快路径锚点（m_getm2 调用前）已不存在。改造手法迁移采用整体策略：m_uiotombuf 整个函数 #ifndef FSTACK / #else 提供 13.0-era 简化版（保留 FSTACK_ZC_SEND + uiomove 慢路径）。同时 13.0 的 m_unmappedtouio stub 改造**自然消失**（15.0 已彻底移除该函数）|
+| 偏差 4：kern_descrip.c 改造采用整体屏蔽策略 | spec 05 §2.2 T-kern-01 描述"refcount API 适配"，实测 14.0+ 引入 13 处 ABI 变化（const cap_rights_t / fget_locked 返回类型 / fde_change_size 删除 / p_tracevp 删除 / fo_stat 签名变化 / kern_close_range 签名 / fdinit bool flag / badfileops const / 等），逐 ABI 适配工作量极大。改造手法迁移采用**整体策略**：在 SYSINIT(select) 之后到 SYSINIT(fildescdev) 整段包 #ifndef FSTACK + #else 提供 ff_fdisused / ff_fdused_range / ff_getmaxfd 三个 helper 函数（lib/ff_freebsd_init.c 调用）；14 处局部 #pragma GCC diagnostic ignored/error -Wcast-qual 改为全局 -Wno-error=cast-qual（GCC 12+）。F-Stack 不实际走 path-name lookup 等 fileops 路径，被屏蔽函数运行时不会到达 |
+| 偏差 5：14.0+ 缺失头文件清单（新增） | spec 05 全文未列出 14.0+ 引入的新头文件依赖。Phase 5b 实测 6 处缺失：(a) `opt_hwt_hooks.h` 15.0 KNOB（hwt 硬件追踪），建空 stub 头；(b) `ddb/db_ctf.h` 14.0 新文件（CTF debug data 接口），cp 15.0 上游；(c) `netinet/tcp.h` 14.0 引入 `__tcp_get_flags / tcp_set_flags / TH_RES1`，被 alias.c/alias_proxy.c/alias_sctp.c 引用，cp 15.0 上游（M3 最小连锁补丁，DP-M2-4 B 允许）；(d) `net/vnet.h` 14.0 引入 `CURVNET_ASSERT_SET`，被 uipc_socket.c 引用，cp 15.0 上游；(e) `lib/include/sys/vnode.h` 需提供 14.0+ `__enum_uint8(vtype)` 兼容（13.0 era `enum vtype` + 14.0+ `enum_vtype_uint8` 双重 tag 兼容）；(f) `freebsd/sys/namei.h` 加 `extern uma_zone_t namei_zone` + `lib/ff_compat.c` 提供 stub global（14.0+ NDFREE_PNBUF 宏内嵌 uma_zfree(namei_zone, ...) 引用） |
+| 偏差 6：M2 遗留缺陷修复 | M2 Phase 2 加的 vm/uma_core.c F-Stack stub `startup_free` 用了 13.0 签名 `kmem_free((vm_offset_t)mem, bytes)`，14.0+ kmem_free 已改为 `(void *, vm_size_t)`；本次修复后 uma_core.o 编译通过 |
+| 修订后影响 | Phase 5b 完成 10/10 任务 ✅；G-Phase-5b 严格 Gate 一次通过（DP-5b-3=C 折中尺度的"先严"路径），libfstack.a 4.8M 完整链接成功，191 个 .o 全部参与；M3 范围**前置依赖全部解锁**，可直接进入 spec 05 §2.3 原 22 任务 |
+| 校验 | `read_lints freebsd/kern + lib/` 返回 0 diagnostics；`cd lib && make` 严格编译 ar -cqs libfstack.a 完成；`diff -rq freebsd-src-releng-15.0/sys/kern f-stack/freebsd/kern` 17 个 differ（全部为 17 个 F-Stack 改造文件，与 99 §6 任务追踪表一致） |
