@@ -34,6 +34,22 @@
 #include <vm/vm_page.h>
 #include <machine/pmap.h>
 
+/*
+ * F-Stack DP-RT-2026-06-01: forward declarations for rtbridge no-op stubs.
+ * We deliberately avoid including <net/route/route_ctl.h> here because doing
+ * so pulls in conflicting prototypes for other rib_* stubs further down in
+ * this file. Instead, declare just the minimal types we need to define the
+ * rtbridge initializer below.
+ */
+struct ifnet;
+struct rib_cmd_info;
+typedef void route_event_f(uint32_t fibnum, const struct rib_cmd_info *rc);
+typedef void ifmsg_event_f(struct ifnet *ifp, int if_flags_mask);
+struct rtbridge {
+    route_event_f *route_f;
+    ifmsg_event_f *ifmsg_f;
+};
+
 /* Forward decls for opaque kernel types not pulled by includes above. */
 struct kaiocb;
 typedef int (aio_cancel_fn_t)(struct kaiocb *);
@@ -270,7 +286,37 @@ void mtx_wait_unlocked(struct mtx *m)
     
 }
 
-struct rtbridge *netlink_callback_p = NULL;
+/*
+ * F-Stack DP-RT-2026-06-01: rtbridge no-op stubs.
+ *
+ * Background: 14.0+ refactored rt_ifmsg() / rt_routemsg() to dispatch via
+ * rtsock_callback_p->ifmsg_f() and netlink_callback_p->ifmsg_f() (see
+ * 15.0 net/route.c:rt_ifmsg). The original M5 stubs set both pointers to
+ * NULL, which causes a SIGSEGV in ifioctl() when configuring an IP via
+ * the example startup path.
+ *
+ * F-Stack does not implement kernel routing-socket or netlink subsystems
+ * in user space, but we must not crash. Provide a static rtbridge whose
+ * function pointers are no-op shims; rt_ifmsg() / rt_routemsg() callers
+ * will then dispatch into harmless no-ops instead of dereferencing NULL.
+ */
+static void
+ff_stub_rt_ifmsg_noop(struct ifnet *ifp __unused, int if_flags_mask __unused)
+{
+}
+
+static void
+ff_stub_rt_routemsg_noop(uint32_t fibnum __unused,
+    const struct rib_cmd_info *rc __unused)
+{
+}
+
+static struct rtbridge ff_stub_rtbridge_noop = {
+    .route_f = ff_stub_rt_routemsg_noop,
+    .ifmsg_f = ff_stub_rt_ifmsg_noop,
+};
+
+struct rtbridge *netlink_callback_p = &ff_stub_rtbridge_noop;
 
 bool nlattr_add(struct nl_writer *nw, uint16_t attr_type, uint16_t attr_len, const void *data);
 bool nlattr_add(struct nl_writer *nw, uint16_t attr_type, uint16_t attr_len, const void *data)
@@ -550,7 +596,8 @@ bool rt_is_host(const struct rtentry *rt)
     return (false);
 }
 
-struct rtbridge *rtsock_callback_p = NULL;
+/* See ff_stub_rtbridge_noop above for context. */
+struct rtbridge *rtsock_callback_p = &ff_stub_rtbridge_noop;
 
 int sendfile_wait_generic(struct sendfile_sync *sfs, int *err);
 int sendfile_wait_generic(struct sendfile_sync *sfs, int *err)
@@ -708,10 +755,39 @@ int uiomove_fromphys(vm_page_t ma[], vm_offset_t offset, int n, struct uio *uio)
     return (EFAULT);
 }
 
+/*
+ * F-Stack runtime-fix DP-RT-2026-06-01: vm_page_alloc_noobj_domain panic stub.
+ *
+ * Background: M5 introduced a "return NULL" stub here so example/ could link.
+ * Runtime debug found this causes an infinite spin loop in uma_startup1 ->
+ * keg_fetch_slab when UMA_USE_DMAP picks uma_small_alloc as the allocator
+ * (root cause: amd64/arm64 vmparam.h forgot the #ifndef FSTACK guard around
+ * UMA_USE_DMAP after the 14.0+ rename from UMA_MD_SMALL_ALLOC).
+ *
+ * The vmparam.h fix already routes uma to page_alloc -> kmem_malloc, so this
+ * stub should NEVER be called at runtime in normal F-Stack flows. Make any
+ * stray call fail loudly via panic() so a future regression (e.g. another
+ * subsystem accidentally taking the vm_page path) is exposed immediately
+ * instead of silently spinning the CPU.
+ */
 vm_page_t vm_page_alloc_noobj_domain(int domain, int req);
 vm_page_t vm_page_alloc_noobj_domain(int domain, int req)
 {
-    return (NULL);
+    panic("F-Stack: vm_page_alloc_noobj_domain stub called (domain=%d req=%#x); "
+          "this indicates UMA picked uma_small_alloc — check UMA_USE_DMAP guard "
+          "in freebsd/{amd64,arm64}/include/vmparam.h",
+          domain, req);
+    return (NULL); /* unreachable, keeps compiler happy */
+}
+
+vm_page_t vm_page_alloc_noobj(int req);
+vm_page_t vm_page_alloc_noobj(int req)
+{
+    panic("F-Stack: vm_page_alloc_noobj stub called (req=%#x); "
+          "this indicates pcpu_page_alloc / similar vm-page path was taken — "
+          "check UMA_USE_DMAP guard in freebsd/{amd64,arm64}/include/vmparam.h",
+          req);
+    return (NULL); /* unreachable */
 }
 
 struct bitset *vm_page_dump = NULL;
