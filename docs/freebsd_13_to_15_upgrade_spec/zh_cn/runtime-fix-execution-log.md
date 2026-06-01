@@ -41,7 +41,8 @@
 | 规约 | AI memory ID | 内容 |
 |---|---|---|
 | rm_tmp_file.sh 强制（继承） | 81725399 | 所有删除走 `/data/workspace/rm_tmp_file.sh`；严禁直接 `rm` |
-| **kill_process.sh 强制（新增 2026-06-01 19:30）** | **90098233** | 所有进程终止走 `/data/workspace/kill_process.sh`；严禁直接 `kill / pkill / killall / kill -9 / pgrep+kill` |
+| **kill_process.sh 强制（runtime-fix 阶段新增 2026-06-01 19:30）** | **90098233** | 所有进程终止走 `/data/workspace/kill_process.sh`；严禁直接 `kill / pkill / killall / kill -9 / pgrep+kill` |
+| **chmod_modify.sh 强制（runtime-fix 阶段新增 2026-06-01 20:36）** | **21626578** | 所有权限修改走 `/data/workspace/chmod_modify.sh <mode> <path>...`；严禁直接 `chmod / install -m / setfacl` 等任何形式的权限修改命令 |
 | commit message 英文（继承） | 73362122 | 所有 git commit 全英文 |
 | 实测优先 | - | 4 方交叉验证（spec / 现状 / 13.0 / 15.0），不一致以代码为准 |
 | 强制重编 | - | 每修一处必跑 `cd lib && make clean && make`（吸取 M3 末 .o 缓存假象教训） |
