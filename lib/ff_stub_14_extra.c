@@ -530,71 +530,32 @@ struct rib_subscription *rib_subscribe_internal(struct rib_head *rnh, void (*cb)
     return (NULL);
 }
 
-struct rtentry *rt_alloc(struct rib_head *rnh, const struct sockaddr *dst, struct route_nhop_data *rnd);
-struct rtentry *rt_alloc(struct rib_head *rnh, const struct sockaddr *dst, struct route_nhop_data *rnd)
-{
-    return (NULL);
-}
-
-void rt_free(struct rtentry *rt);
-void rt_free(struct rtentry *rt)
-{
-    
-}
-
-void rt_free_immediate(struct rtentry *rt);
-void rt_free_immediate(struct rtentry *rt)
-{
-    
-}
-
-int rt_get_family(const struct rtentry *rt);
-int rt_get_family(const struct rtentry *rt)
-{
-    return (AF_UNSPEC);
-}
-
-void rt_get_inet6_prefix_plen(const struct rtentry *rt, struct in6_addr *paddr, int *plen, uint32_t *pscopeid);
-void rt_get_inet6_prefix_plen(const struct rtentry *rt, struct in6_addr *paddr, int *plen, uint32_t *pscopeid)
-{
-    
-}
-
-void rt_get_inet6_prefix_pmask(const struct rtentry *rt, struct in6_addr *paddr, struct in6_addr *pmask, uint32_t *pscopeid);
-void rt_get_inet6_prefix_pmask(const struct rtentry *rt, struct in6_addr *paddr, struct in6_addr *pmask, uint32_t *pscopeid)
-{
-    
-}
-
-void rt_get_inet_prefix_plen(const struct rtentry *rt, struct in_addr *paddr, int *plen, uint32_t *pscopeid);
-void rt_get_inet_prefix_plen(const struct rtentry *rt, struct in_addr *paddr, int *plen, uint32_t *pscopeid)
-{
-    
-}
-
-void rt_get_inet_prefix_pmask(const struct rtentry *rt, struct in_addr *paddr, struct in_addr *pmask, uint32_t *pscopeid);
-void rt_get_inet_prefix_pmask(const struct rtentry *rt, struct in_addr *paddr, struct in_addr *pmask, uint32_t *pscopeid)
-{
-    
-}
-
-struct nhop_object *rt_get_raw_nhop(const struct rtentry *rt);
-struct nhop_object *rt_get_raw_nhop(const struct rtentry *rt)
-{
-    return (NULL);
-}
-
-bool rt_is_exportable(const struct rtentry *rt, struct ucred *cr);
-bool rt_is_exportable(const struct rtentry *rt, struct ucred *cr)
-{
-    return (true);
-}
-
-bool rt_is_host(const struct rtentry *rt);
-bool rt_is_host(const struct rtentry *rt)
-{
-    return (false);
-}
+/*
+ * F-Stack DP-RT-FIX-1 (2026-06-01 20:52): rt_*() stubs removed.
+ *
+ * These 11 rt_* functions were originally stubbed here in M5 because the
+ * link-time symbol-discovery generator did not realize freebsd/net/route/
+ * route_rtentry.c provides the real implementations. Worse, rt_alloc()'s
+ * stub had the wrong signature (3rd arg `struct route_nhop_data *` instead
+ * of the real `struct sockaddr *netmask`) and unconditionally returned
+ * NULL, which caused rib_add_route() -> add_route_byinfo() to bail out
+ * with ENOBUFS (errno 55) — making ff_veth_setaddr() and
+ * ifa_maintain_loopback_route() always fail, so f-stack-0 never got
+ * `inet 9.134.214.176`.
+ *
+ * Real implementations now come from route_rtentry.o (added to
+ * VM/NET_SRCS in lib/Makefile in the same change). The functions
+ * resolved by route_rtentry.o are:
+ *   rt_alloc, rt_free, rt_free_immediate, rt_is_host, rt_get_family,
+ *   rt_get_raw_nhop, rt_get_rnd, rt_is_exportable,
+ *   rt_get_inet_prefix_plen,  rt_get_inet_prefix_pmask,
+ *   rt_get_inet6_prefix_plen, rt_get_inet6_prefix_pmask,
+ *   vnet_rtzone_init, vnet_rtzone_destroy.
+ *
+ * Keeping any of the old stubs here would create a multiple-definition
+ * link error or, worse, win over the real implementation depending on
+ * archive order. Hence: removed wholesale.
+ */
 
 /* See ff_stub_rtbridge_noop above for context. */
 struct rtbridge *rtsock_callback_p = &ff_stub_rtbridge_noop;
@@ -822,11 +783,11 @@ void vm_wait_domain(int domain)
     
 }
 
-void vnet_rtzone_init(void);
-void vnet_rtzone_init(void)
-{
-    
-}
+/*
+ * vnet_rtzone_init stub removed: real implementation now provided by
+ * route_rtentry.o (see DP-RT-FIX-1 comment block above for full
+ * background).
+ */
 
 
 /* ===== End of stubs ===== */

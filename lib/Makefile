@@ -410,6 +410,7 @@ NET_SRCS+=		 \
 	ifq.c		 \
 	route.c		 \
 	route_ctl.c	 \
+	route_rtentry.c	 \
 	route_tables.c	 \
 	route_helpers.c	 \
 	route_ifaddrs.c	 \
