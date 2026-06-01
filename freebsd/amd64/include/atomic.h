@@ -322,12 +322,18 @@ atomic_testandclear_long(volatile u_long *p, u_int v)
 static __inline void
 __storeload_barrier(void)
 {
-#if defined(_KERNEL)
+#if defined(_KERNEL) && !defined(FSTACK)
 	__asm __volatile("lock; addl $0,%%gs:%c0"
 	    : : "i" (OFFSETOF_MONITORBUF) : "memory", "cc");
-#else /* !_KERNEL */
+#else /* !_KERNEL || FSTACK */
+	/*
+	 * F-Stack DP-RT-2026-06-01: F-Stack runs in user space; %gs PCPU
+	 * segment is not set up by the userland process, so accessing
+	 * %gs:OFFSETOF_MONITORBUF would SIGSEGV (observed in smr_create()).
+	 * Fall back to the userland-safe rsp variant.
+	 */
 	__asm __volatile("lock; addl $0,-8(%%rsp)" : : : "memory", "cc");
-#endif /* _KERNEL*/
+#endif /* _KERNEL && !FSTACK */
 }
 
 #define	ATOMIC_LOAD(TYPE)					\
