@@ -116,11 +116,87 @@
 3. ✅ rt_ifmsg SEGV（NULL deref） — rtbridge no-op stub
 4. ✅ helloworld init success 输出 — 编译 + 启动闭环
 
-### 10.3 待解决的非致命问题
+### 10.3 待解决的非致命问题（runtime-fix Phase 1 阶段记录；Phase 2 已修 1+2）
 
-1. 🟡 `ff_veth_setaddr failed` — rib_action(RTM_ADD) 返 errno 55 EOPNOTSUPP（14.0+ rib/nexthop 重写后 fstack lib stub 未对齐）
-2. 🟡 `ifa_maintain_loopback_route: insertion failed: 55` — 同根因
-3. 🟡 `kernel_sysctlbyname failed: net.inet.tcp.hpts.skip_swi=1, error:2` — sysctl 节点未注册（非致命）
+1. ~~🟡 `ff_veth_setaddr failed` — rib_action(RTM_ADD) 返 errno 55 EOPNOTSUPP（14.0+ rib/nexthop 重写后 fstack lib stub 未对齐）~~ → **✅ Phase 2 已修复**（详见 §11；errno 55 实为 ENOBUFS 非 EOPNOTSUPP — 此处原记录有误读，Phase 2 已纠正）
+2. ~~🟡 `ifa_maintain_loopback_route: insertion failed: 55` — 同根因~~ → **✅ Phase 2 已修复**
+3. 🟡 `kernel_sysctlbyname failed: net.inet.tcp.hpts.skip_swi=1, error:2` — sysctl 节点未注册（非致命；不影响 ff_ifconfig/ff_netstat 验收）
+
+## 11. Phase 2 (rib/rtentry IP 配置修复) — 2026-06-01 20:52
+
+### 11.1 关键纠错：errno 55 ≠ EOPNOTSUPP
+
+Phase 1 记录中误把 errno 55 标为 EOPNOTSUPP，实际：
+- **FreeBSD errno 55 = ENOBUFS**（No buffer space available），见 `freebsd/sys/errno.h:118`
+- FreeBSD EOPNOTSUPP = 45
+- Linux EOPNOTSUPP = 95（值不同 — Phase 1 时直接套用 Linux mapping 是错误的）
+
+### 11.2 真实根因调用链（4 方交叉验证）
+
+```
+ff_veth_setaddr → socreate(AF_INET) → ifioctl(SIOCAIFADDR)
+  → in_control_ioctl → in_aifaddr_ioctl → ifa_maintain_loopback_route
+    → rib_action(RTM_ADD) → rib_add_route → add_route_byinfo
+      → rt_alloc(rnh, dst, netmask) → NULL → return ENOBUFS (55)
+```
+
+### 11.3 4 方实测取证
+
+| 数据源 | rt_alloc 签名 |
+|---|---|
+| 15.0 baseline `/data/workspace/freebsd-src-releng-15.0/sys/net/route/route_rtentry.c:82` | `(rnh, dst, struct sockaddr *netmask)` ✅ |
+| fstack `f-stack/freebsd/net/route/route_rtentry.c:82`（8375 字节 / 6 个 14.0+ rib 重写后的核心函数）| `(rnh, dst, struct sockaddr *netmask)` ✅ |
+| 调用方 `f-stack/freebsd/net/route/route_ctl.c:762` | `rt_alloc(rnh, dst, netmask)` ✅ |
+| fstack stub `f-stack/lib/ff_stub_14_extra.c:534`（旧）| `(rnh, dst, struct route_nhop_data *rnd)` ❌ |
+
+**双重错误**：
+1. `lib/Makefile` SRCS 漏添 `route_rtentry.c` — 真实 rt_alloc/rt_free/rt_is_host/rt_get_family/rt_get_raw_nhop/rt_get_rnd/rt_is_exportable/rt_get_inet*_prefix_p{len,mask}/vnet_rtzone_{init,destroy} 这 11 个函数全部未编译
+2. `ff_stub_14_extra.c` M5 期间根据 link error 自动生成 11 个 stub 截胡链接，其中 rt_alloc 签名还错了（第 3 参 `route_nhop_data *` ≠ 真实 `sockaddr *`），所有 stub 返 NULL/empty
+
+### 11.4 修复（2 文件，最小 diff）
+
+| 文件 | 改动 |
+|---|---|
+| `lib/Makefile` | NET_SRCS 加 `route_rtentry.c`（+1 行）|
+| `lib/ff_stub_14_extra.c` | 删除 11 个错 stub（rt_alloc + rt_free + rt_free_immediate + rt_is_host + rt_get_family + rt_get_raw_nhop + rt_is_exportable + rt_get_inet_prefix_plen + rt_get_inet_prefix_pmask + rt_get_inet6_prefix_plen + rt_get_inet6_prefix_pmask + vnet_rtzone_init），用 DP-RT-FIX-1 注释块说明背景 |
+
+修复后：libfstack.a 5.2M / 251 .o（+1 = route_rtentry.o），nm 显示 rt_alloc 为真实函数（地址 `0x100180`，非空 stub）。
+
+### 11.5 严格 3 项验收实测（DP-RT-FIX-2=B）
+
+| 验收点 | 期望 | 实测 | 状态 |
+|---|---|---|---|
+| 1. helloworld init success（不退化） | `helloworld init success.` + ff_run loop | helloworld.log 含 `helloworld init success.`；进程 PID 141652 持续运行，主线程 S sleeping（健康状态）；ifa_maintain_loopback_route / ff_veth_setaddr 错误信息**消失** | ✅ **PASS** |
+| 2. ff_ifconfig 显示 inet | `f-stack-0` 含 `inet 9.134.214.176` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> ... inet 9.134.214.176 netmask 0xfffff800 broadcast 9.134.215.255`；bonus：`lo0: inet 127.0.0.1` 也正常出来 | ✅ **PASS** |
+| 3. ff_netstat -a 显示 :80 LISTEN | `tcp4 *.80 LISTEN` | `tcp4 0 0 *.80 *.* LISTEN` + `tcp6 0 0 *.80 *.* LISTEN` 两条都出现 | ✅ **PASS** |
+
+**runtime-fix 项目总评**：3/3 严格验收 PASS — **完整闭环 ✅**
+
+### 11.6 备份
+
+- 启动备份：`/data/workspace/f-stack-rib-fix-start/` 33,128 文件
+- 完成备份：`/data/workspace/f-stack-rib-fix-done/` 33,130 文件
+
+### 11.7 Phase 1+2 总成果汇总
+
+| # | 现象 | 根因 | 修复 |
+|---|---|---|---|
+| 1 | UMA 死循环 (CPU 100% busy-loop) | 14.0+ 把 UMA_MD_SMALL_ALLOC 重命名为 UMA_USE_DMAP，amd64/arm64 vmparam.h 缺 `#ifndef FSTACK` 包裹 | vmparam.h × 2 加 `#ifndef FSTACK` 包裹 |
+| 2 | smr_create SIGSEGV (`%gs:0x100`) | atomic.h `__storeload_barrier` `_KERNEL` 路径用 %gs PCPU 段，用户态无该段 | atomic.h `#if defined(_KERNEL) && !defined(FSTACK)` |
+| 3 | rt_ifmsg SIGSEGV (NULL deref) | 14.0+ 改用 rtsock_callback_p/netlink_callback_p 函数指针表，M5 stub 设 NULL | ff_stub_14_extra.c 提供 ff_stub_rtbridge_noop |
+| 防御 #1 | vm_page_alloc_noobj* 静默 NULL 难调试 | panic stub | ff_stub_14_extra.c panic |
+| **4 (Phase 2)** | **ff_veth_setaddr / loopback route 失败 errno 55** | **lib/Makefile 漏添 route_rtentry.c + ff_stub_14_extra.c 中 11 个错 stub 截胡链接** | **lib/Makefile +1 SRCS + 删 11 个错 stub** |
+
+完整 git 历史（runtime-fix 全阶段）：
+```
+(Phase 2)  <new>      rib-fix #1: link route_rtentry.c into libfstack + drop 11 wrong rt_* stubs
+(Phase 2)  <new>      docs(rib-fix): add Phase 2 rib/rtentry IP configuration fix log
+(Phase 1)  d173a88b8  docs(runtime-fix): record chmod_modify.sh enforcement convention
+(Phase 1)  747da452c  docs(runtime-fix): add execution log for FreeBSD 13->15 runtime hang fix
+(Phase 1)  f4b77d3bd  runtime-fix #3: provide no-op rtbridge stubs + panic on stray vm_page_alloc
+(Phase 1)  ee424b8e8  runtime-fix #2: route __storeload_barrier to userland path under FSTACK
+(Phase 1)  424f8a9f6  runtime-fix #1: guard UMA_USE_DMAP with #ifndef FSTACK in amd64/arm64 vmparam.h
+```
 
 ### 10.4 关键诊断手段总结
 
