@@ -118,7 +118,13 @@ void ast_register(int ast, int t, int f, void (*hdlr)(struct thread *, int))
     
 }
 
-const struct fileops badfileops = {0};
+/*
+ * FSTACK runtime-fix: badfileops is now provided by the real definition in
+ * freebsd/kern/kern_descrip.c (moved out of the #ifndef FSTACK guard so its
+ * 11 badfo_* placeholder ops are linked in).  An all-zero stub here would
+ * leave fp->f_ops with a NULL fo_close, crashing _fdrop() in error paths
+ * such as kern_accept4 -> noconnection -> fdclose.
+ */
 
 int boottrace(const char *tdname, const char *eventfmt, ...);
 int boottrace(const char *tdname, const char *eventfmt, ...)

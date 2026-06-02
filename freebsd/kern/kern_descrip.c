@@ -5369,8 +5369,17 @@ filelistinit(void *dummy)
 }
 SYSINIT(select, SI_SUB_LOCK, SI_ORDER_FIRST, filelistinit, NULL);
 
-#ifndef FSTACK
 /*-------------------------------------------------------------------*/
+/*
+ * FSTACK runtime-fix: badfo_* + badfileops are required by falloc()/_fdrop()
+ * to provide a placeholder fileops vector before finit() installs the real
+ * one (e.g. socketops in kern_accept4).  Without these the new fp keeps a
+ * NULL fo_close and any error-path _fdrop() jumps to NULL.
+ *
+ * 13.0 baseline kept badfileops outside the FSTACK guard.  15.0 vendor
+ * widened the guard to cover this region; we move the #ifndef FSTACK
+ * marker down past badfileops so the placeholder stays compiled in.
+ */
 
 static int
 badfo_readwrite(struct file *fp, struct uio *uio, struct ucred *active_cred,
@@ -5471,6 +5480,8 @@ const struct fileops badfileops = {
 	.fo_sendfile = badfo_sendfile,
 	.fo_fill_kinfo = badfo_fill_kinfo,
 };
+
+#ifndef FSTACK
 
 static int
 path_poll(struct file *fp, int events, struct ucred *active_cred,
