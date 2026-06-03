@@ -686,3 +686,113 @@ const struct fileops badfileops = {0};
 | Mode change | `chmod_modify.sh` | 0 |
 | 直接 `rm`/`kill`/`chmod` | — | **0** |
 
+
+---
+
+## 12.15 nginx_fstack 多进程功能验证（仅 15.0 runtime-fix）
+
+### 12.15.1 任务背景与范围
+- **触发**：用户指令 "使用类似方法，自行修改配置分别测试下 nginx_fstack 的 2 进程和 4 进程的基本功能，只需要测试 freebsd-15.0 即可，只需要测试连续 curl 正常和 wrk 无异常即可，无需关注实际的性能指标。多核性能指标后续个人在物理机测试后再行给出"
+- **目的**：在 CVM 单机环境验证 F-Stack 多进程模式（primary + N-1 secondary worker）在 nginx 上的**功能可用性**——主从 worker 启动、HTTP 200 应答、wrk 长时压测稳定无 socket error / 无 5xx
+- **明确不包含**：
+  - 13.0 baseline 多进程测试（用户裁定仅 15.0）
+  - 性能指标对比（用户表示后续在物理机给出）
+  - LD_PRELOAD adapter / syscall 路径（与 §12.13 一致仅测 `--with-ff_module`）
+
+### 12.15.2 F-Stack 多进程配置原理
+查阅 `lib/ff_config.c` L113-138：`lcore_mask` 解析时自动计算 `cfg->dpdk.nb_procs = popcount(lcore_mask)`，每个 worker 自动按 cpu_affinity 占用一个 lcore（primary proc_id=0，其余 secondary proc_id=1+）。因此：
+- **只需修改两处**：`f-stack.conf` 的 `lcore_mask` 和 `nginx.conf` 的 `worker_processes`（两者 popcount 必须相等）
+- 无需手工配置 `nb_procs` / `proc_id` / `proc_mask`（自动派生）
+
+| 场景 | `lcore_mask` | `worker_processes` | 实际 lcore |
+|---|---|---|---|
+| baseline 1-proc（§12.13） | `0x10` | `1` | lcore 4 |
+| **2-proc** | `0x30` | `2` | lcore 4, 5 |
+| **4-proc** | `0xf0` | `4` | lcore 4, 5, 6, 7 |
+
+### 12.15.3 测试拓扑
+- server: 192.168.1.1 (CVM, 16 vCPU AMD EPYC 7K62)，nginx_fstack_15rfix 监听 80/tcp（virtio_net DPDK port 0）
+- client: 192.168.1.2 (CVM)，curl + wrk 通过 fstack-client 旁路注入
+- 启动入口：`/usr/local/nginx_fstack_15rfix/sbin/nginx -p /usr/local/nginx_fstack_15rfix --conf-path=conf/nginx.conf`
+
+### 12.15.4 配置改写流程
+1. `cp -p /usr/local/nginx_fstack_15rfix/conf/{f-stack.conf,nginx.conf}` 到 `*.bak_1proc`（启动前的 1-proc 备份）
+2. **2-proc**：`sed -i 's/^lcore_mask=10/lcore_mask=30/'` + `sed -i 's/^worker_processes  1;/worker_processes  2;/'`
+3. **4-proc**：用 `cp -p` 从 bak_1proc 重建，再 `sed` 改为 `lcore_mask=f0` / `worker_processes  4;`
+4. 测试结束 → `cp -p *.bak_1proc *` 还原 1-proc 配置
+
+### 12.15.5 2-proc 验证（lcore_mask=0x30 / worker_processes=2）
+**进程树**（`pstree -p <master>`）：master(1899xxx) ─ worker(child) × 2，PID 与 lcore 4/5 一一对齐
+
+**curl 连续 10 次**（`/tmp/nginx-2proc-bench/curl_x10.txt`）：
+```
+curl[1..10] http_code=200    （10/10 OK）
+```
+
+**wrk 30s t4c100**（`/tmp/nginx-2proc-bench/wrk.txt`）：
+| 指标 | 值 |
+|---|---|
+| Requests | **6,260,562** |
+| Req/sec | 208,609.92 |
+| Latency p50 / p99 | 453 µs / 684 µs |
+| Latency Avg ± Stdev | 461.43 µs ± 128.53 µs |
+| socket errors | **0** |
+| Non-2xx | **0** |
+| Transfer | 152.19 MB/s, total 4.46 GB |
+
+### 12.15.6 4-proc 验证（lcore_mask=0xf0 / worker_processes=4）
+**进程树**：master(1907155) ─ worker × 4，PID 与 lcore 4/5/6/7 一一对齐
+
+**curl 连续 10 次**（`/tmp/nginx-4proc-bench/curl_x10.txt`）：
+```
+curl[1..10] http_code=200    （10/10 OK）
+```
+
+**wrk 30s t4c100**（`/tmp/nginx-4proc-bench/wrk.txt`）：
+| 指标 | 值 |
+|---|---|
+| Requests | **6,745,921** |
+| Req/sec | 224,784.10 |
+| Latency p50 / p99 | 423 µs / 616 µs |
+| Latency Avg ± Stdev | 428.53 µs ± 81.02 µs |
+| socket errors | **0** |
+| Non-2xx | **0** |
+| Transfer | 163.99 MB/s, total 4.81 GB |
+
+### 12.15.7 关键发现
+1. **2-proc / 4-proc 功能均通过**：master fork secondary worker 成功，DPDK rtemap × N 正常分配，HTTP 业务完全正常
+2. **wrk 30s 长时压测无任何异常**：`socket errors / read=0 / write=0 / timeout=0`、`Non-2xx or 3xx responses=0`，30s 期间无任何 worker crash / hang
+3. **curl 同一连接的 10 次请求 100% HTTP 200**：F-Stack 多进程在 SO_REUSEPORT 下的 RSS 分流功能正确
+4. **关于性能数字（仅作功能旁证，不作 scaling 评估）**：
+   - 1-proc（§12.13）= 211,288 req/s，2-proc = 208,609 req/s，4-proc = 224,784 req/s
+   - **不构成线性 scaling 反例**：本测试 client wrk 配置为 `t4c100`（**与 §12.13 单进程同参数**），客户端注入并发已饱和 client 端，server 端多核扩展空间被 client-bound 掩盖（与 §12.14 redis T1/T3 client-bound 同理）
+   - 用户已明确表示物理机会另行评估多核 scaling
+
+### 12.15.8 时间线
+| 时刻 (UTC+8) | 事件 |
+|---|---|
+| ~19:13 | 任务启动，1-proc 配置 cp 备份 |
+| ~19:14 | 2-proc 配置改写 → master/worker 启动 |
+| ~19:15 | 2-proc curl × 10 + wrk 30s |
+| ~19:18 | 2-proc kill_process.sh master + rtemap 清理 |
+| ~19:19 | 4-proc 配置改写（从 bak_1proc 重建后再 sed） → 启动 |
+| ~19:23 | 4-proc curl × 10 + wrk 30s |
+| ~19:24 | 4-proc kill_process.sh master + rtemap × 34 trashed |
+| ~19:24 | 配置 cp 还原 1-proc baseline |
+
+总跨度约 11 分钟。
+
+### 12.15.9 工件
+- 2-proc：`/tmp/nginx-2proc-bench/{curl_x10.txt, wrk.txt, nginx_stdout.log}`（IP 已源头混淆）
+- 4-proc：`/tmp/nginx-4proc-bench/{curl_x10.txt, wrk.txt, nginx_stdout.log}`（IP 已源头混淆）
+- 配置备份：`/usr/local/nginx_fstack_15rfix/conf/{f-stack.conf.bak_1proc, nginx.conf.bak_1proc}`（永久保留）
+- 当前运行配置已恢复 1-proc baseline（`lcore_mask=10` / `worker_processes  1;`），可直接复用 §12.13 入口启动
+
+### 12.15.10 全程合规审计
+| 操作 | 调用脚本 | 次数 |
+|---|---|---|
+| Process kill | `kill_process.sh` | 3（2-proc master、4-proc master、Phase 6 cleanup） |
+| File trash | `rm_tmp_file.sh` | 2（rtemap × 23 + rtemap × 34） |
+| Mode change | `chmod_modify.sh` | 0 |
+| 直接 `rm` / `kill` / `chmod` | — | **0** |
+
