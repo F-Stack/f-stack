@@ -167,7 +167,7 @@ ff_veth_setaddr → socreate(AF_INET) → ifioctl(SIOCAIFADDR)
 | 验收点 | 期望 | 实测 | 状态 |
 |---|---|---|---|
 | 1. helloworld init success（不退化） | `helloworld init success.` + ff_run loop | helloworld.log 含 `helloworld init success.`；进程 PID 141652 持续运行，主线程 S sleeping（健康状态）；ifa_maintain_loopback_route / ff_veth_setaddr 错误信息**消失** | ✅ **PASS** |
-| 2. ff_ifconfig 显示 inet | `f-stack-0` 含 `inet 9.134.214.176` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> ... inet 9.134.214.176 netmask 0xfffff800 broadcast 9.134.215.255`；bonus：`lo0: inet 127.0.0.1` 也正常出来 | ✅ **PASS** |
+| 2. ff_ifconfig 显示 inet | `f-stack-0` 含 `inet 192.168.1.1` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> ... inet 192.168.1.1 netmask 0xfffff800 broadcast 9.134.215.255`；bonus：`lo0: inet 127.0.0.1` 也正常出来 | ✅ **PASS** |
 | 3. ff_netstat -a 显示 :80 LISTEN | `tcp4 *.80 LISTEN` | `tcp4 0 0 *.80 *.* LISTEN` + `tcp6 0 0 *.80 *.* LISTEN` 两条都出现 | ✅ **PASS** |
 
 **runtime-fix 项目总评**：3/3 严格验收 PASS — **完整闭环 ✅**
@@ -207,11 +207,11 @@ ff_veth_setaddr → socreate(AF_INET) → ifioctl(SIOCAIFADDR)
 
 ## 12. Phase 3 (端到端联通 + 压测基线 — 含 badfileops 修复) — 2026-06-02 19:50
 
-承接 Phase 2 验收完成，进入端到端跨机验证阶段：本机 9.134.214.176 作 F-Stack server，f-stack-client (9.134.211.87) 作压测客户端，通过 ssh 远程触发 curl / wrk。
+承接 Phase 2 验收完成，进入端到端跨机验证阶段：本机 192.168.1.1 作 F-Stack server，f-stack-client (192.168.1.3) 作压测客户端，通过 ssh 远程触发 curl / wrk。
 
 ### 12.1 触发场景与现象
 
-- 单 `curl http://9.134.214.176/` ✅ HTTP/1.1 **200 OK**，response header 含 `Server: F-Stack`，body 438 字节完整，RTT ≈ 1.3 ms
+- 单 `curl http://192.168.1.1/` ✅ HTTP/1.1 **200 OK**，response header 含 `Server: F-Stack`，body 438 字节完整，RTT ≈ 1.3 ms
 - 任意并发（即便 `wrk -t1 -c2`）→ helloworld 立即 **SIGSEGV** 退出
 - dmesg：`helloworld[…]: segfault at 0 ip 0x0 sp 0x… error 14` —— `ip=0` + `error 14`(instruction-fetch) = **跳转到 NULL 函数指针**
 - helloworld.log 末尾出现 `unknown event: 00000000`（main.c loop() 兜底分支，filter=0 异常 kevent）
@@ -265,8 +265,8 @@ const struct fileops badfileops = {0};
 | 项 | 结果 |
 |---|---|
 | ssh 客户端登录（id_ed25519_fstack） | ✅ 免密 PubkeyAuth |
-| `ping 9.134.214.176` (走 kernel virtio NIC) | ✅ 3/3，RTT 0.418 / 0.457 / 0.533 ms |
-| `curl http://9.134.214.176/` | ✅ HTTP 200, RTT ≈ 1.3 ms |
+| `ping 192.168.1.1` (走 kernel virtio NIC) | ✅ 3/3，RTT 0.418 / 0.457 / 0.533 ms |
+| `curl http://192.168.1.1/` | ✅ HTTP 200, RTT ≈ 1.3 ms |
 | Response 头 `Server:` | ✅ `F-Stack`（确认走用户态协议栈） |
 | 连续 10 次 curl | ✅ 10/10 全 200 |
 | `curl http://f-stack2/` (DNS) | ✅ HTTP 200 |
@@ -313,7 +313,7 @@ const struct fileops badfileops = {0};
 | 验收项 | 状态 |
 |---|---|
 | helloworld init success | ✅ |
-| `f-stack-0: inet 9.134.214.176` | ✅ |
+| `f-stack-0: inet 192.168.1.1` | ✅ |
 | `tcp4/tcp6 *.80 LISTEN` | ✅ |
 | 跨机 curl HTTP/1.1 200 + `Server: F-Stack` | ✅ |
 | 连续 10 次 curl 全 200 | ✅ |
@@ -378,7 +378,7 @@ const struct fileops badfileops = {0};
 #### 12.10.7 系统终态（首轮 Step 1-5）
 
 - 13.0 baseline helloworld：已 kill (PID 1735251)，hugepages 23 个 rtemap 残留通过 `rm_tmp_file.sh` 清入 trash
-- 15.0 runtime-fix-done helloworld：**仍后台在跑**（PID 1738072, lcore=4, hugepages 23/4096, port0 9.134.214.176:80 监听），log: `/tmp/15rfix-bench/hello.log`
+- 15.0 runtime-fix-done helloworld：**仍后台在跑**（PID 1738072, lcore=4, hugepages 23/4096, port0 192.168.1.1:80 监听），log: `/tmp/15rfix-bench/hello.log`
 - 双 binary 已备份保留，后续切换无需重编（cp 替换 `./example/helloworld` + 重启即可）
 - 强制规约遵守：本节全程 `kill_process.sh` × 2、`rm_tmp_file.sh` × 3（rtemap×23 + lib 产物×195 + rtemap×23），零直接 `rm`/`kill`/`chmod` 调用
 

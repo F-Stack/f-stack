@@ -1,6 +1,6 @@
 # Rib/rtentry IP Configuration Fix Plan（runtime-fix Phase 2）
 
-> 目标：让 `ff_ifconfig` 显示 `f-stack-0` 的 `inet 9.134.214.176`，`ff_netstat -a` 继续显示 `tcp4/tcp6 *.80 LISTEN`。
+> 目标：让 `ff_ifconfig` 显示 `f-stack-0` 的 `inet 192.168.1.1`，`ff_netstat -a` 继续显示 `tcp4/tcp6 *.80 LISTEN`。
 
 > 文档目的：在已有 runtime-fix 5 commit（UMA / atomic / rtbridge / docs ×2）的基础上，攻克"最后一公里"IP 配置失败问题。
 
@@ -8,7 +8,7 @@
 
 ## 1. 用户原始需求（2026-06-01 20:41）
 
-继续 runtime-fix。已修 3 个根本问题（UMA 死循环 + smr_create %gs + rt_ifmsg NULL deref），helloworld init success ✅，ff_netstat -a tcp4/tcp6 *.80 LISTEN ✅。**剩 1 项严格验收**：`ff_ifconfig` 显示 `inet 9.134.214.176`。
+继续 runtime-fix。已修 3 个根本问题（UMA 死循环 + smr_create %gs + rt_ifmsg NULL deref），helloworld init success ✅，ff_netstat -a tcp4/tcp6 *.80 LISTEN ✅。**剩 1 项严格验收**：`ff_ifconfig` 显示 `inet 192.168.1.1`。
 
 用户原话："验收标准为执行 ff_ifconfig 和 ff_netstat -a 可以获取到相关网卡和监听 80 端口信息，暂不需要实际 curl 测试"。
 
