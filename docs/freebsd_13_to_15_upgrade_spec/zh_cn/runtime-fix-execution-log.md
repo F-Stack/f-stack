@@ -590,3 +590,99 @@ const struct fileops badfileops = {0};
 | Mode change | `/data/workspace/chmod_modify.sh` | 0 (cp -p 保留源 mode 0755 已满足) |
 | 直接 `rm`/`kill`/`chmod` | — | **0** |
 
+
+---
+
+## §12.14 redis 双树 A/B 验证（13.0 baseline + 15.0 runtime-fix-done）
+
+### 12.14.1 范围决策与方法
+- 范围（与 §12.13 nginx 同套"类似方法"）：双树 build → redis-benchmark T1/T2/T3 同时间窗
+- 工具切换：wrk → **redis-benchmark**（redis 协议专用，stock redis-7.2.7-6.tl4，向下兼容 redis 6.2.6 server）
+- redis-benchmark 与 redis-cli 由 server `dnf install redis` 安装后 scp 到 client `/tmp/`（fstack-linked 版本不能在 client 普通环境运行，会因 ff_init 失败 segfault）
+- IP 混淆从源头：192.168.1.1（server）/ 192.168.1.3（client），:22 替代 :36000
+
+### 12.14.2 规约合规说明
+- redis 自带 Makefile 的 `make install` 会触发 install -m → 规避：仅 `make`，手动 `mkdir + cp -p` 部署到独立 prefix
+- jemalloc autogen.sh 仅运行 `autoconf` 生成 configure，无 chmod 调用
+- `dnf install redis` 仅在 server 端执行（client 端通过 scp 部署，避免对 client 环境产生 dnf 副作用）
+- 全程零直接 `rm`/`kill`/`chmod`：kill_process.sh × 3（helloworld/13.0 redis/15.0 redis stop）+ rm_tmp_file.sh × 3（rtemap × 23 each）+ chmod_modify.sh × 0
+
+### 12.14.3 Build 数据
+| 树 | jemalloc autogen | redis make 时间 | redis-server | redis-cli | redis-benchmark |
+|---|---|---|---|---|---|
+| 15.0 main | OK | 22.66 s | 37,503,464 B | 32,967,616 B | 32,808,048 B |
+| 13.0 baseline | OK | 30.28 s | 37,174,400 B | 32,638,584 B | 32,479,000 B |
+
+两版 redis.conf 一致（cp -p 同一份模板，差异仅 prefix 路径 sed 替换为各自 install 目录）。两版 f-stack.conf MD5 一致（`9e443c8c494167d9a814a4fb26347869`，与 nginx 同源）。
+
+### 12.14.4 部署细节
+- 安装 prefix：`/usr/local/redis_fstack_{13baseline,15rfix}/`（避免冲突，独立目录）
+- 修改项（vs 上游模板）：`bind 127.0.0.1 -::1` → `bind 0.0.0.0`、`protected-mode yes` → `protected-mode no`、pidfile/logfile 重定向到 prefix 内
+- 启动命令：`./redis-server --conf ./f-stack.conf --proc-type=primary --proc-id=0 ./redis.conf`
+- 监听：tcp_port 6379（fstack stack 上的 0.0.0.0）
+
+### 12.14.5 同时间窗测试时序
+| 时刻 (UTC) | 事件 |
+|---|---|
+| 09:21:36 | 13.0 baseline redis launch (PID 1836866) |
+| 09:21:48 | 13.0 smoke OK：PING/SET/GET 一致, redis_version=6.2.6 |
+| 09:21:48 ~ 09:24:14 | 13.0 redis-benchmark T1+T2+T3 |
+| 09:24:15 | 13.0 stop + rtemap 清理 |
+| 09:24:22 | 15.0 redis launch (PID 1838640) |
+| 09:24:34 | 15.0 smoke OK |
+| 09:24:34 ~ 09:25:55 | 15.0 redis-benchmark T1+T2+T3 |
+| 09:25:59 | 15.0 stop + rtemap 清理 |
+
+总跨度约 4 min 30 s。
+
+### 12.14.6 Smoke 数据
+两版均通过：`PING → PONG`、`SET smoke_key 'hello-fstack-XX' → OK`、`GET smoke_key → 写入值`、`INFO server` 报告 redis_version=6.2.6 / tcp_port=6379
+
+### 12.14.7 redis-benchmark 完整对比
+
+**T1 c10 n50000 t=ping,set,get --threads 2**
+| 命令 | 13.0 rps | 15.0 rps | Δ% | 13.0 p50 | 15.0 p50 |
+|---|---|---|---|---|---|
+| PING_INLINE | 19,968.05 | 19,968.05 | 0.00% | 0.503 ms | 0.495 ms |
+| PING_MBULK | 19,968.05 | 19,968.05 | 0.00% | 0.503 ms | 0.487 ms |
+| SET | 19,984.01 | 19,984.01 | 0.00% | 0.503 ms | 0.479 ms |
+| GET | 19,968.05 | 19,968.05 | 0.00% | 0.503 ms | 0.487 ms |
+
+**T2 c50 n500000 t=ping,set,get --threads 4**
+| 命令 | 13.0 rps | 15.0 rps | Δ% | 13.0 p50 | 15.0 p50 |
+|---|---|---|---|---|---|
+| PING_INLINE | 99,960.02 | 105,108.27 | **+5.15%** | 0.455 ms | 0.447 ms |
+| PING_MBULK | 105,108.27 | 105,130.36 | +0.02% | 0.447 ms | 0.447 ms |
+| SET | 99,880.14 | 99,980.01 | +0.10% | 0.455 ms | 0.455 ms |
+| GET | 99,860.20 | 105,218.86 | **+5.37%** | 0.455 ms | 0.447 ms |
+
+**T3 c200 n1000000 t=set,get --threads 8 -P 16**
+| 命令 | 13.0 rps | 15.0 rps | Δ% | 13.0 p50 | 15.0 p50 |
+|---|---|---|---|---|---|
+| SET | 1,329,787.25 | 1,329,787.25 | 0.00% | 2.175 ms | 2.239 ms |
+| GET | 1,329,787.25 | 1,331,558.00 | +0.13% | 1.735 ms | 1.871 ms |
+
+### 12.14.8 关键发现
+1. **redis 13→15 throughput 无回归**：T1/T3 几乎完全一致（client-bound），T2 真实 server 测试反而 PING_INLINE/GET +5%
+2. **T1/T3 client-bound 信号**：T1 c10 + 2 thread 锁在 ~20K rps（ssh/network rtt 主导），T3 P=16 锁在 ~1.33M rps（client CPU + 网络带宽接近上限），server 端有富余
+3. **p50 趋势一致**：T1/T2 在 15.0 略低 1~5%（更优），T3 SET/GET 略高 3%~8%（高并发尾延迟略恶化，与 nginx T3 +18.6% / helloworld T3 +27.8% 同方向但幅度小得多）
+4. **跨应用横向对比**（同环境同 lcore=4）：
+   - helloworld（kqueue 同步阻塞）：T2 −7.59%、T3 −9.37%（**显著回归**）
+   - nginx（epoll event loop）：T2 −1.05%、T3 −0.55%（持平）
+   - redis（自定义 ae 事件循环）：T2 +0.10%~+5.37%、T3 ≈0%（**无回归甚至小幅领先**）
+5. **结论**：§12.11 火焰图归纳的 13→15 厂商演进路径（tcp_default_output vtable wrapper、CUBIC 升级、socket buffer locking 重构、ether_nh_input pipeline）的负面影响被 event-driven 应用模型有效摊薄；redis 的 ae（event loop）+ pipeline 进一步将开销分摊到批处理中，对回归的免疫力强于 nginx
+
+### 12.14.9 工件
+- 13.0: `/tmp/13baseline-redis-bench/{smoke.txt,T1.txt,T2.txt,T3.txt,redis_stdout.log}`（IP 混淆）
+- 15.0: `/tmp/15rfix-redis-bench/{smoke.txt,T1.txt,T2.txt,T3.txt,redis_stdout.log}`（IP 混淆）
+- 安装目录：`/usr/local/redis_fstack_{13baseline,15rfix}/`（含 redis-server / redis.conf / f-stack.conf / logs/redis.log）
+- Stock redis-7.2.7 已通过 `dnf install redis` 留在 server `/usr/bin/redis-{server,cli,benchmark}`，client `/tmp/redis-{cli,benchmark}` 永久保留
+
+### 12.14.10 全程合规审计
+| 操作 | 调用脚本 | 次数 |
+|---|---|---|
+| Process kill | `kill_process.sh` | 3 |
+| File trash | `rm_tmp_file.sh` | 3（rtemap × 69） |
+| Mode change | `chmod_modify.sh` | 0 |
+| 直接 `rm`/`kill`/`chmod` | — | **0** |
+
