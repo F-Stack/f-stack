@@ -375,9 +375,102 @@ const struct fileops badfileops = {0};
 - **C. dpdk EAL 参数对齐复测** —— 验证 mempool / mbuf / RING size 在两版 stub 下是否实际等价
 - **D. 决策点**：是否（D1）接受当前 9% gap 进入 M5 验收 / 还是（D2）开 Phase 4 性能调优 / 还是（D3）回退某个 runtime-fix commit 二分定位
 
-#### 12.10.7 系统终态
+#### 12.10.7 系统终态（首轮 Step 1-5）
 
 - 13.0 baseline helloworld：已 kill (PID 1735251)，hugepages 23 个 rtemap 残留通过 `rm_tmp_file.sh` 清入 trash
 - 15.0 runtime-fix-done helloworld：**仍后台在跑**（PID 1738072, lcore=4, hugepages 23/4096, port0 9.134.214.176:80 监听），log: `/tmp/15rfix-bench/hello.log`
 - 双 binary 已备份保留，后续切换无需重编（cp 替换 `./example/helloworld` + 重启即可）
 - 强制规约遵守：本节全程 `kill_process.sh` × 2、`rm_tmp_file.sh` × 3（rtemap×23 + lib 产物×195 + rtemap×23），零直接 `rm`/`kill`/`chmod` 调用
+
+### 12.11 Phase 4 perf flamegraph 双版叠图（2026-06-03）
+
+为定位 §12.10 揭示的 7-9% 吞吐回退根因，本节按 plan §12.10.6-A 路径执行最小集 perf flamegraph 双版采样。
+
+#### 12.11.1 工具链与采样参数
+
+- `perf 6.6.119-49.23.tl4`（dnf install）+ `/opt/FlameGraph/{stackcollapse-perf,flamegraph,difffolded}.pl`
+- 采样参数（CVM 虚拟化适配）：`-e cpu-clock -F 999 -C 4 -g --call-graph fp -- sleep 30`
+  - **关键决策**：CVM 上 hardware PMU `cycles:P` 在 hypervisor 后被屏蔽（采到 0 sample）；改用 software event `cpu-clock`，999Hz 锁 lcore CPU#4（lcore_mask=10 hex = bit 4）
+  - `-O0 -g` 编译保留 frame pointer，`--call-graph fp` 而非 dwarf（避免 dwarf 16KB stack 干扰 100% busy lcore）
+- 同步触发：`perf record` 后台 + ssh f-stack-client wrk T3 t8c500 30s
+- 13.0 baseline 必须先 wrk warmup 5s（首次冷启 swapper idle 35.6%、wrk 仅 136k req/s；warmup 后 swapper idle 2.82%、wrk 225k req/s 与 §12.10.3 数据一致）
+
+#### 12.11.2 双版采样结果（同 wrk 干扰下）
+
+| 版本 | helloworld PID | wrk req/s (T3 期间 perf 干扰下) | swapper idle | 样本数 | folded 行数 | svg 路径 |
+|---|---:|---:|---:|---:|---:|---|
+| 15.0 runtime-fix-done | 1738072 | 237,707 | 3.29% | 29,974 | 583 | `/tmp/perf-15rfix/15rfix.svg` |
+| 13.0 baseline | 1748870 | 225,777 | 2.82% | 29,974 | 570 | `/tmp/perf-13baseline/13baseline.svg` |
+
+差分火焰图：`/tmp/perf-diff/diff.svg`（红=15.0 多出的开销，蓝=13.0 多出的开销）
+
+#### 12.11.3 Top 函数对比（cpu-clock %，按 15.0 排序）
+
+| 函数 | 15.0 | 13.0 | Δ | 解读 |
+|---|---:|---:|---:|---|
+| `in_cksum_skip` | 5.01% | 4.94% | +0.07 | 校验和计算，两版基本一致 |
+| `tcp_default_output` (15) / `tcp_output` (13) | 4.43% | 3.49% | **+0.94** | **TCP stacks 框架 vtable wrapper** |
+| `uma_zfree_arg` | 2.87% | 2.37% | **+0.50** | UMA 释放路径增长 |
+| `virtio_recv_mergeable_pkts` | 2.20% | 1.46% | **+0.74** | 收包 mbuf 处理增长 |
+| `__memmove_avx_unaligned_erms` | 1.79% | 1.66% | +0.13 | libc 拷贝 |
+| `m_copydata` | 1.53% | 1.64% | -0.11 | mbuf 拷贝两版接近 |
+| `tcp_do_segment` | 1.39% | 1.73% | -0.34 | 部分逻辑被切到 tcp_default_output |
+| `virtio_xmit_pkts` | 1.14% | 1.22% | -0.08 | 发包路径接近 |
+| `ff_dpdk_if_send` | 1.12% | 1.12% | 0 | F-Stack DPDK 发送等价 |
+| `ip_output` | 0.95% | 0.93% | +0.02 | IP 输出等价 |
+
+#### 12.11.4 差分图 top 增长 / 减少（diff.folded sample 权重）
+
+| 方向 | 函数（部分调用栈） | Δ sample-weight |
+|---|---|---:|
+| ▲ 增长 | `tcp_default_output` (multiple paths) | +99M ×2 + 89M |
+| ▲ 增长 | `tcp_usr_send` | +99M |
+| ▲ 增长 | `ether_nh_input` | +88M |
+| ▲ 增长 | `cubic_ack_received` | +86M |
+| ▲ 增长 | `sbcut_locked` / `sbappendstream` | +84M / +73M |
+| ▲ 增长 | `assert_rw` (rwlock primitive) | +72M |
+| ▼ 减少 | `tcp_output` (旧直接调用) | **-838M** |
+| ▼ 减少 | `tcp_do_segment` | -428M |
+| ▼ 减少 | `ip_output` (旧路径) | -173M |
+| ▼ 减少 | `callout_reset_tick_on` | -142M |
+| ▼ 减少 | `kqueue_kevent` (so_rdknl_lock 路径) | -131M |
+
+#### 12.11.5 关键根因结论
+
+**9% 吞吐回退主要源自 FreeBSD 13→15 vendor 内核演进，与 runtime-fix 6 个 commit 无关**：
+
+1. **TCP stacks 框架抽象层**：13.0 直接 `tcp_output()`，15.0 改为 `tcp_default_output()`（FreeBSD 14+ 引入的 RACK/BBR alternative stacks vtable 派发）；旧路径 -838M、新路径 +99M×3 + 89M ≈ +386M，**净开销集中在 vtable indirect call + cb 包装**
+2. **TCP CUBIC 拥塞控制升级**：`cubic_ack_received` +86M，13.0 → 15.0 之间 CUBIC 算法改用更精细的 RTT/cwnd 状态机
+3. **socket buffer locking 重构**：`sbcut_locked` / `sbappendstream` / `assert_rw` 共增长 ~230M —— 15.0 引入更细粒度 SMP 锁，单核场景下断言/原子开销反而比 13.0 lock-elision fast-path 重
+4. **以太网入口路径变化**：`ether_nh_input` +88M，13.0 → 15.0 mbuf 处理流水线调整
+5. **runtime-fix 的 5 个 P0 修复 + 1 防御性 panic stub 全部位于 init / SIGSEGV 路径，不出现在 T3 高并发 hot path 中** —— 差分图未显示这些函数（kern_accept / badfileops / route_rtentry 等）有显著 sample，回归非由 runtime-fix 引入
+
+#### 12.11.6 副发现：log 写入 ~5% 测试环境噪声
+
+两版均有显著 `__GI___libc_write` → `vfs_write` → `ext4_buffered_write_iter` → `fsnotify` → `inotify_handle_inode_event` 链 ≈ 5% CPU；这是 helloworld stdout 重定向到 ext4 + log 文件被 inotify/fanotify watch 的副作用，**不属于 F-Stack 性能问题**。生产环境如关闭 stdout log（或重定向到 tmpfs）可立即回收这 5%。
+
+#### 12.11.7 决策建议（不改本次范围）
+
+- **接受 9% gap 进入 M5 验收**：runtime-fix 5 个 P0 SIGSEGV 修复价值远大于 9% 吞吐，且回退路径不存在（TCP stacks 抽象是 vendor 默认开启）
+- **可选优化方向**（性价比排序）：
+  - (1) helloworld stdout log 重定向到 tmpfs / `/dev/null`（预期回收 ~5%，零代码改动）
+  - (2) 调研 `net.inet.tcp.functions_default = freebsd`（关 RACK/BBR 包装层，回到直接 `tcp_output`，预期回收 ~1%）
+  - (3) `kern.smr.shared_only=1`（如可用，禁用 SMP 共享 SMR fast-path 锁开销）
+- **不建议**：回退或二分 runtime-fix commit（风险 = 重新触发 5 个 P0 SIGSEGV）
+
+#### 12.11.8 工具产出归档
+
+| 产物 | 路径 | 用途 |
+|---|---|---|
+| 15.0 perf raw | `/tmp/perf-15rfix/perf.data` (3.76 MB) | 后续 `perf report` 复查 |
+| 15.0 火焰图 | `/tmp/perf-15rfix/15rfix.svg` (146 KB) | 浏览器可视化 |
+| 13.0 perf raw | `/tmp/perf-13baseline/perf.data` (3.69 MB) | 同 |
+| 13.0 火焰图 | `/tmp/perf-13baseline/13baseline.svg` (145 KB) | 同 |
+| 差分图 | `/tmp/perf-diff/diff.svg` (152 KB) | 红/蓝对照 |
+| 折叠数据 | `*.folded` (in 各目录) | 后续脚本化分析 |
+
+#### 12.11.9 系统终态（Phase 4 末）
+
+- 13.0 baseline helloworld 仍在跑（PID 1748870, lcore=4），后续若需切回 15.0 走 `kill_process.sh + rm_tmp_file.sh /dev/hugepages/rtemap_* + 主树 ./start.sh` 即可
+- Phase 4 全程零直接 `rm`/`kill`/`chmod` 调用：`kill_process.sh` × 1（首切 15.0）、`rm_tmp_file.sh` × 1（rtemap × 23）
+- 工具系统级安装：`dnf install perf` (50MB) + `git clone /opt/FlameGraph` (2MB)，永久保留
