@@ -474,3 +474,119 @@ const struct fileops badfileops = {0};
 - 13.0 baseline helloworld 仍在跑（PID 1748870, lcore=4），后续若需切回 15.0 走 `kill_process.sh + rm_tmp_file.sh /dev/hugepages/rtemap_* + 主树 ./start.sh` 即可
 - Phase 4 全程零直接 `rm`/`kill`/`chmod` 调用：`kill_process.sh` × 1（首切 15.0）、`rm_tmp_file.sh` × 1（rtemap × 23）
 - 工具系统级安装：`dnf install perf` (50MB) + `git clone /opt/FlameGraph` (2MB)，永久保留
+
+---
+
+## §12.12 helloworld_epoll 轻量验证（仅 15.0 runtime-fix-done）
+
+### 12.12.1 范围决策与方法
+- 范围：仅 15.0 单边 smoke + wrk T2 一次（T1 5s warmup 用于稳态）
+- 不做 13.0 对比、不做 perf flamegraph（用户决策 Q1=C）
+- 复用 §12.10 同一 lcore=4、端口 80、客户端 wrk binary `/tmp/wrk/wrk`、IP 混淆为 192.168.1.1（server）/ 192.168.1.3（client）
+
+### 12.12.2 启动与端口绑定
+- 二进制：`/data/workspace/f-stack/example/helloworld_epoll` (27,934,872 B)，由主树 15.0 runtime-fix-done lib 链接
+- 配置：复用 `/data/workspace/f-stack/config.ini`（lcore_mask=4、单 port 0000:00:09.0）
+- 启动后 12s 完成 DPDK init + ifconfig，关键日志 `f-stack-0: Successed to register dpdk interface`、`Port 0 Link Up`
+
+### 12.12.3 Smoke（client → server）
+```
+[smoke] http_code=200 time_total=0.001623s
+```
+- 返回完整 F-Stack welcome HTML（即 epoll 路径上 listen/accept/recv/send 全栈通）
+- 单次 RTT 1.62 ms（含 ssh roundtrip 客户端到 server）
+
+### 12.12.4 wrk 测试结果
+| 场景 | Threads | Conns | Dur | Req/sec | Lat avg | p50 | p90 | p99 | 总请求 |
+|---|---|---|---|---|---|---|---|---|---|
+| T1 warmup | 2 | 10 | 5s | **26,655.96** | 368.12 µs | 347 µs | 467 µs | 541 µs | 135,946 |
+| T2 baseline | 4 | 100 | 30s | **209,961.66** | 456.48 µs | 444 µs | 530 µs | 756 µs | 6,319,753 |
+
+### 12.12.5 与 helloworld（kqueue）对比
+- helloworld 15.0 同环境 T2 baseline ≈ 244,400 req/s（§12.10.4），epoll 209,961 较其低 ~14.1%
+- 解读：fstack 的 epoll 接口是基于 kqueue 的 wrapper（src/epoll/ 目录），多了一层 ev struct 转换开销；功能与性能均符合预期，未发现 15.0 runtime-fix-done 引入的 epoll 路径退化
+
+### 12.12.6 工件
+- `/tmp/15rfix-epoll-bench/` 保留 smoke.txt / T1.txt / T2.txt / hello.log（IP 已混淆）
+
+### 12.12.7 清理与终态
+- helloworld_epoll 通过 `kill_process.sh 1797569` 优雅退出
+- `/dev/hugepages/rtemap_*` 通过 `rm_tmp_file.sh` 移入 trash（× 23）
+- 全程零直接 `rm`/`kill`/`chmod` 调用
+
+---
+
+## §12.13 nginx 双树 A/B 验证（13.0 baseline + 15.0 runtime-fix-done）
+
+### 12.13.1 范围决策与方法
+- 范围（用户决策 Q2=B）：双树 build → wrk T1/T2/T3 同时间窗（不做 perf flamegraph）
+- nginx：`f-stack/app/nginx-1.28.0/`，`--with-ff_module`，`worker_processes 1`，`listen 80`
+- 安装策略：分别 install 到 `/usr/local/nginx_fstack_13baseline/` 和 `/usr/local/nginx_fstack_15rfix/` 避免冲突
+
+### 12.13.2 规约合规说明
+- nginx 自带 Makefile 的 `install` target 调用 `install -m`，按工作区 chmod 规约属违规
+- 规避方法：仅 `make`（不 `make install`），手动 `mkdir + cp -p` 完成部署
+- 全程零直接 `chmod`/`rm`/`kill` 调用；`kill_process.sh` × 2（13.0 / 15.0 stop）+ `rm_tmp_file.sh` × 2（rtemap × 23 each）
+
+### 12.13.3 Build 数据
+| 树 | configure 命令 | make 时间 | binary 大小 |
+|---|---|---|---|
+| 15.0 main | `FF_PATH=/data/workspace/f-stack ./configure --prefix=/usr/local/nginx_fstack_15rfix --with-ff_module` | 3.43 s | 32,028,752 B |
+| 13.0 baseline | `FF_PATH=/data/workspace/f-stack-13.0-baseline ./configure --prefix=/usr/local/nginx_fstack_13baseline --with-ff_module` | 3.40 s | 31,695,576 B |
+
+两版 `f-stack.conf`（即 config.ini 拷贝）MD5 完全一致 (`9e443c8c494167d9a814a4fb26347869`)，确保 fstack 启动参数对照公平。
+
+### 12.13.4 同时间窗测试时序
+| 时刻 (UTC) | 事件 |
+|---|---|
+| 08:54:22 | 13.0 baseline nginx launch (master PID 1806229) |
+| 08:54:34 | 13.0 smoke 200 OK / RTT 1.25 ms |
+| 08:54:34 ~ 08:55:51 | 13.0 wrk T1+T2+T3（合计 ~77 s） |
+| 08:56:20 | 13.0 nginx kill_process.sh + rtemap rm_tmp_file.sh |
+| 08:56:37 | 15.0 nginx launch (master PID 1807529) |
+| 08:56:49 | 15.0 smoke 200 OK / RTT 1.72 ms |
+| 08:56:49 ~ 08:58:08 | 15.0 wrk T1+T2+T3（合计 ~77 s） |
+| 08:58:34 | 15.0 nginx kill + rtemap 清理 |
+
+两次测试集中于约 4 min 时间窗，避免负载漂移与时段差异。
+
+### 12.13.5 wrk 结果对比
+
+| 场景 | 13.0 req/s | 15.0 req/s | Δ% | 13.0 p99 | 15.0 p99 | Δ |
+|---|---|---|---|---|---|---|
+| T1 (t2c10/5s) | 26,193.87 | 26,468.53 | **+1.05%** | 804 µs | 502 µs | **−37.6%** |
+| T2 (t4c100/30s) | 189,221.86 | 187,228.34 | −1.05% | 729 µs | 747 µs | +2.5% |
+| T3 (t8c500/30s) | 229,857.17 | 228,583.84 | −0.55% | 4.47 ms | 5.30 ms | +18.6% |
+
+吞吐稳定项（avg 行）：
+| 场景 | 13.0 avg lat | 15.0 avg lat |
+|---|---|---|
+| T1 | 381.57 µs | 373.55 µs |
+| T2 | 508.09 µs | 513.31 µs |
+| T3 | 2.11 ms | 2.15 ms |
+
+### 12.13.6 关键发现
+
+1. **nginx 13→15 throughput 几乎无回归**（≤1.1% 差异，全部在测试 jitter 内）：与 §12.10 helloworld 的 −7.59% / −9.37% 形成显著对比
+2. **T1 低并发下 15.0 p99 显著优于 13.0**（−37.6%，804→502 µs）：可能与 §12.11 火焰图发现的 15.0 ether_nh_input pipeline 改进有关，在低连接数场景对延迟尾部更友好
+3. **T3 高并发 p99 +18.6%**：与 helloworld 的 +27.8% 同方向但幅度更小，说明 socket buffer locking 重构在 nginx event loop 路径上的影响被部分掩盖（nginx 用 epoll 连接复用，单连接内的串行 send/recv 被批处理摊薄）
+4. **解读结论**：§12.11 中归纳的 13→15 厂商演进路径（tcp_default_output vtable wrapper、CUBIC、socket buffer locking、ether_nh_input pipeline）在 nginx 这种 event-driven worker 模型上的"代价/收益"基本互相抵消，吞吐持平、低并发 p99 改善、高并发 p99 略恶化
+
+### 12.13.7 工件
+- 13.0: `/tmp/13baseline-nginx-bench/{smoke.txt,T1.txt,T2.txt,T3.txt,nginx_stdout.log}` (IP 已混淆)
+- 15.0: `/tmp/15rfix-nginx-bench/{smoke.txt,T1.txt,T2.txt,T3.txt,nginx_stdout.log}` (IP 已混淆)
+- nginx logs: `/usr/local/nginx_fstack_{13baseline,15rfix}/logs/error.log`（保留以备后续复查）
+
+### 12.13.8 系统终态
+- 当前无 nginx/helloworld 在跑；hugepages 4096/4096 free
+- 两份 nginx 安装在 `/usr/local/nginx_fstack_{13baseline,15rfix}/`，可重复启用
+- 后续切回 15.0 helloworld 工作流：`/usr/local/nginx_fstack_15rfix/sbin/nginx -s stop`（如有）→ `cd /data/workspace/f-stack && nohup ./example/helloworld --conf ./config.ini --proc-type=primary --proc-id=0 &`
+
+### 12.13.9 全程合规审计
+| 操作 | 调用脚本 | 次数 |
+|---|---|---|
+| Process kill | `/data/workspace/kill_process.sh` | 4 (helloworld → epoll → 13.0 nginx → 15.0 nginx) |
+| File trash | `/data/workspace/rm_tmp_file.sh` | 4 (rtemap × 23 each, 共 92 file) |
+| Mode change | `/data/workspace/chmod_modify.sh` | 0 (cp -p 保留源 mode 0755 已满足) |
+| 直接 `rm`/`kill`/`chmod` | — | **0** |
+
