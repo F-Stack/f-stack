@@ -322,3 +322,62 @@ const struct fileops badfileops = {0};
 | 进程在 3 轮压测中无崩溃 | ✅ |
 
 至此 F-Stack on FreeBSD 15.0 runtime 链路从「init 成功」推进到「**真实跨机 wrk 高并发 7M 请求 0 timeout**」，**runtime-fix 项目（Phase 1 + 2 + 3）完整闭环**。物理机性能基线由用户后续独立测得后补充本节末。
+
+### 12.10 13.0 baseline vs 15.0 runtime-fix-done CVM 同时序对比（2026-06-03）
+
+本节回答**§12.6 既有 15.0 单边数据是否被同硬件 13.0 老基线公平对照**这一遗留问题。独立 report 见 `13.0-baseline-cvm-bench-report.md`。
+
+#### 12.10.1 测试目标与方法
+
+- **同时序 A/B**：同一 CVM 同小时（15:08-15:14）连续切换 13.0 baseline ↔ 15.0 runtime-fix-done，消除跨日网络抖动差异
+- **公平变量**：dpdk 23.11.5 复用同一份系统 librte_*（不重编 dpdk）、config.ini 完全一致（lcore_mask=10 单 lcore, idle_sleep=20, tso=0, IPv6 N/A）、Makefile 完全一致（diff exit 0）、wrk client 同实例同进程
+- **三场景沿用 §12.6**：T1 t2c10 5s warmup / T2 t4c100 30s baseline / T3 t8c500 30s high-conc
+
+#### 12.10.2 编译产物
+
+| 来源 | 路径 | binary sha256 | 大小 |
+|---|---|---|---|
+| 13.0 baseline | `/data/workspace/f-stack-13.0-baseline/example/helloworld_13baseline` | `5b6df6d3…ef53ad5` | 27,934,872 B |
+| 15.0 runtime-fix-done | `/data/workspace/f-stack/example/helloworld_15rfix` | `4e3f3c75…fb53c3b9` | 28,263,952 B |
+
+13.0 lib 编译说明：复用 `f-stack-13.0-baseline/lib/` 现有源码，遵守 DP-10 规约（产物清理走 `/data/workspace/rm_tmp_file.sh`，跳过 Makefile 内嵌 clean target；意外发现 `ff_api.symlist` 是源文件被误判为产物清掉，已从 `/data/workspace/.trash/<ts>/` 恢复后重编成功）。
+
+#### 12.10.3 同时序原始数据
+
+| 场景 | 13.0 baseline req/s | 13.0 p99 | 15.0 runtime-fix-done req/s | 15.0 p99 | Δ req/s | Δ p99 |
+|---|---:|---:|---:|---:|---:|---:|
+| T1 t2c10 5s | 24,414 | 600 us | 23,757 | 838 us | **−2.69%** | +39.7% |
+| T2 t4c100 30s | **220,691** | 811 us | **203,933** | 827 us | **−7.59%** | +2.0% |
+| T3 t8c500 30s | **239,555** | 4.21 ms | **217,100** | 5.38 ms | **−9.37%** | +27.8% |
+
+原始 wrk 输出落档：`/tmp/13baseline-bench/T{1,2,3}.txt` + `/tmp/15rfix-bench/T{1,2,3}.txt`。
+
+#### 12.10.4 与 §12.6 历史 15.0 数据交叉对比
+
+| 场景 | §12.6 历史 15.0 (06-02) | 本次同时序 15.0 (06-03) | 偏差 |
+|---|---:|---:|---:|
+| T2 t4c100 30s | 226,065 | 203,933 | **−9.79%** |
+| T3 t8c500 30s | 231,106 | 217,100 | **−6.06%** |
+
+**说明**：§12.6 的 226k/231k 与本次 15.0 同时序 204k/217k 偏差 6-10%，源于跨日网络/CPU 频率抖动；**本节同时序对比（13.0 vs 15.0 在同分钟内）才是干净 A/B**。
+
+#### 12.10.5 关键发现
+
+1. **runtime-fix-done (15.0) 相比 13.0 baseline 在同硬件同配置下吞吐回退 7-9%**（T2 −7.59%，T3 −9.37%），**高并发 p99 长尾恶化更明显（T3 p99 +27.8%）**
+2. **轻负载 T1 13.0 略优 ~2.7%**，符合"老内核更轻量"的合理预期；中高负载差距扩大说明 regression 与 SMP/锁/event loop 改动相关性高
+3. 5 个 runtime-fix 修复（UMA / atomic / rt_ifmsg / route_rtentry / kern_accept）+ 1 个防御性 panic stub 中，**P3 修复**（kern_descrip 边界下移 + `badfileops` 还原）涉及 `kern_accept` 错误路径，是高并发场景下高频走 fastpath 的关键代码段，怀疑为主要 regression 源
+4. 此前 §12.6 单跑 15.0 时**误以为 226k/231k 已是"接近 13.0 老基线"的良性数据**，本次同时序揭示实际 gap 显著
+
+#### 12.10.6 后续行动建议（不在本次范围）
+
+- **A. perf record / flamegraph 双版对比** —— 在 T3 t8c500 高并发场景下分别 perf 13.0 与 15.0 helloworld，火焰图叠图找出 hot 路径分歧
+- **B. 锁竞争分析** —— 15.0 epoch / SMR / pcpu 改动可能引入新锁/原子开销，需 `kern_accept` 与 `tcp_input` 路径 lockstat 数据
+- **C. dpdk EAL 参数对齐复测** —— 验证 mempool / mbuf / RING size 在两版 stub 下是否实际等价
+- **D. 决策点**：是否（D1）接受当前 9% gap 进入 M5 验收 / 还是（D2）开 Phase 4 性能调优 / 还是（D3）回退某个 runtime-fix commit 二分定位
+
+#### 12.10.7 系统终态
+
+- 13.0 baseline helloworld：已 kill (PID 1735251)，hugepages 23 个 rtemap 残留通过 `rm_tmp_file.sh` 清入 trash
+- 15.0 runtime-fix-done helloworld：**仍后台在跑**（PID 1738072, lcore=4, hugepages 23/4096, port0 9.134.214.176:80 监听），log: `/tmp/15rfix-bench/hello.log`
+- 双 binary 已备份保留，后续切换无需重编（cp 替换 `./example/helloworld` + 重启即可）
+- 强制规约遵守：本节全程 `kill_process.sh` × 2、`rm_tmp_file.sh` × 3（rtemap×23 + lib 产物×195 + rtemap×23），零直接 `rm`/`kill`/`chmod` 调用
