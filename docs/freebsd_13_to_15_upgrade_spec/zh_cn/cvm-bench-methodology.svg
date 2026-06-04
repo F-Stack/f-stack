@@ -231,7 +231,7 @@
 
   <rect x="345" y="1036" width="780" height="48" rx="6" fill="#ecfdf5" stroke="#059669"/>
   <text x="360" y="1054" class="lab">stdout 流回 AI AGENT 时立即过 sed，落盘前已不含真实 IP：</text>
-  <text x="360" y="1072" class="mono">x.x.x.176 → 192.168.1.1   x.x.x.67 → 192.168.1.2   x.x.x.87 → 192.168.1.3   :36000 → :22</text>
+  <text x="360" y="1072" class="mono">x.x.x.176 → 192.168.1.1   x.x.x.67 → 192.168.1.2   x.x.x.87 → 192.168.1.3   :&lt;实际ssh端口&gt; → :22</text>
 
   <!-- ===== Step 7: kill master ===== -->
   <rect x="345" y="1094" width="400" height="48" rx="6" class="box-clean"/>
