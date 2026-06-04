@@ -8,18 +8,34 @@
 
 ## 0. 一句话概述
 
-**两台 CVM、两边都跑 DPDK** — server 侧 F-Stack 应用绑定 lcore 占管 NIC，client 侧 fstack-client 旁路注入 wrk / curl / redis-benchmark。同一时间窗口先后用 13.0 baseline 和 15.0 runtime-fix 两份二进制启动 server，做 A/B 对比；client 端的 sed 管道在数据落盘前完成 IP 混淆。
+**两台 CVM、server 侧跑 DPDK + F-Stack** — server 侧 F-Stack 应用绑定 lcore 占管 NIC；**client 侧栈可选 kernel TCP/IP 或 F-Stack adapter**，按测试目的选择。同一时间窗口先后用 13.0 baseline 和 15.0 runtime-fix 两份二进制启动 server 做 A/B 对比。所有 client 端命令由 server 同机的 **AI AGENT 通过 ssh 下发**，stdout 经 ssh 隧道回流到 AI AGENT，落盘前由 sed 管道完成 IP 混淆。
 
 ---
 
 ## 1. 物理拓扑
 
-| 角色   | IP（混淆后）   | 硬件                          | 网卡            | 软件栈                                  |
-|--------|----------------|-------------------------------|-----------------|-----------------------------------------|
-| server | 192.168.1.1    | CVM, 16 vCPU AMD EPYC 7K62    | virtio_net 00:09.0 | F-Stack lib + DPDK 23.11.5 + 应用       |
-| client | 192.168.1.2    | CVM                           | virtio_net      | fstack-client + wrk / curl / redis-cli  |
+| 角色      | 真实 IP（仅保留 D 段） | 文档混淆后    | 硬件 / 软件栈                                                       |
+|-----------|------------------------|---------------|---------------------------------------------------------------------|
+| server    | `x.x.x.176`            | `192.168.1.1` | CVM 16 vCPU AMD EPYC 7K62，virtio_net 00:09.0 + DPDK 23.11.5 + F-Stack |
+| client    | `x.x.x.67`             | `192.168.1.2` | CVM，virtio_net，运行 sshd + wrk / curl / redis-benchmark           |
+| 备用 client | `x.x.x.87`           | `192.168.1.3` | （某些场景下的第二注入端，不常用）                                  |
 
-两端 NIC 都被 DPDK PMD 接管，kernel 不再持有 IPv4 路径；所有流量经 DPDK PMD 直送 F-Stack 协议栈，绕过 Linux 的 conntrack / tcp_ipv4 / sk_buff。
+**Server NIC** 必须由 DPDK PMD 接管，kernel 不再持有 IPv4 路径；所有 server 数据面流量直送 F-Stack 协议栈，绕过 Linux 的 conntrack / tcp_ipv4 / sk_buff。
+
+**Client 侧栈二选一**：
+
+| 选项 | 路径                              | 用例                                               | 部署成本                |
+|------|-----------------------------------|----------------------------------------------------|-------------------------|
+| A    | Linux kernel TCP/IP（默认）       | 仅压 server，不关心 client 旁路                    | 最简，client NIC 归 kernel |
+| B    | F-Stack adapter（fstack-client）  | 双端旁路、对齐生产、消除 kernel 网络抖动           | 需 client NIC 也由 DPDK 接管 |
+
+栈选择不影响 A/B 结论的相对差异，但绝对吞吐会因栈不同而不同。
+
+**控制面 vs 数据面分离**：
+- 控制面（带外）：AI AGENT --ssh--> client sshd（端口 22 或自定义）
+- 数据面（带内）：client 注入工具 ↔ server F-Stack 协议栈（80/6379 等）
+
+两者互不干扰：ssh 走 kernel 路径（不论 client 是否 F-Stack 旁路），benchmark 数据面则走选定的栈。
 
 ---
 
@@ -61,32 +77,43 @@ disown
 - `--proc-type=primary`：主进程身份，DPDK 申请 hugepage 并初始化 rtemap_*；
 - 多进程模式：`config.ini` 的 `lcore_mask` 改成多 bit（`0x30` = 2 worker、`0xf0` = 4 worker），nginx.conf 的 `worker_processes` 必须等于 popcount(lcore_mask)，F-Stack 自动派生 `nb_procs / proc_id / proc_mask`。
 
-### ④ Smoke 探测（client 侧）
-| 应用           | smoke 指令                                                      |
-|----------------|------------------------------------------------------------------|
-| helloworld     | `wrk -t2 -c10 -d5s http://192.168.1.1/`（5s 预热即视为 smoke）   |
-| nginx_fstack   | `for i in {1..10}; do curl -o /dev/null -s -w "%{http_code}\n" http://192.168.1.1/; done`（期望 10× 200） |
-| redis_fstack   | `redis-cli -h 192.168.1.1 PING` ⇒ `PONG`，`SET smoke_key '...' / GET smoke_key`，`INFO server` 验证版本 |
+### ④ Smoke 探测（AI AGENT 通过 ssh 下发，client 执行）
+所有 client 端命令一律由 server 同机的 AI AGENT 通过 ssh 通道触发，命令 stdout 经 ssh 隧道回流到 AI AGENT，再写入 server 本地 `/tmp/<app>-bench/`：
+
+| 应用           | AI AGENT 下发的命令                                              |
+|----------------|-------------------------------------------------------------------|
+| helloworld     | `ssh client "wrk -t2 -c10 -d5s http://192.168.1.1/" \| sed ...`   |
+| nginx_fstack   | `ssh client 'for i in {1..10}; do curl -o /dev/null -s -w "%{http_code}\n" http://192.168.1.1/; done' \| sed ...`（期望 10× 200）|
+| redis_fstack   | `ssh client "redis-cli -h 192.168.1.1 PING; redis-cli -h 192.168.1.1 SET smoke ..." \| sed ...` ⇒ `PONG` / `OK` |
 
 smoke 必须在正式 benchmark 之前执行，以排除 server 启动失败 / 监听未就绪 / 协议栈异常。
 
-### ⑤ Benchmark T1 / T2 / T3（client 侧）
+### ⑤ Benchmark T1 / T2 / T3（AI AGENT 通过 ssh 下发）
 | 档位 | wrk 参数               | redis-benchmark 等效                                  | 用途              |
 |------|------------------------|--------------------------------------------------------|-------------------|
 | T1   | `-t2 -c10 -d5s`        | `-c 10 -n 50000 --threads 2 -t ping,set,get`           | 轻载 + 冷启动剔除 |
 | T2   | `-t4 -c100 -d30s`      | `-c 50 -n 500000 --threads 4 -t ping,set,get`          | 主回归判定        |
 | T3   | `-t8 -c500 -d30s`      | `-c 200 -n 1000000 --threads 8 -P 16 -t set,get`       | 尾延迟敏感场景    |
 
+下发模板：
+```bash
+ssh client "wrk -t4 -c100 -d30s http://192.168.1.1/" \
+  | sed -e ...IP 混淆... \
+  > /tmp/<app>-bench/wrk.txt
+```
+
 多进程功能验证（§12.15）只跑 T2 一档，因为目的是"功能 OK"而非 scaling。
 
-### ⑥ 源头 IP 混淆（client 落盘前 sed）
+### ⑥ 源头 IP 混淆（AI AGENT 落盘前 sed）
+ssh 回流的 stdout 在写入工件前由 AI AGENT 的 sed 管道完成混淆（**真实 IP 仅在 ssh 隧道内出现，不会落盘**）：
 ```
-| sed -e 's/9\.134\.214\.176/192.168.1.1/g' \
-      -e 's/9\.134\.213\.67/192.168.1.2/g' \
-      -e 's/9\.134\.211\.87/192.168.1.3/g' \
+| sed -e 's/x\.x\.x\.176/192.168.1.1/g' \
+      -e 's/x\.x\.x\.67/192.168.1.2/g' \
+      -e 's/x\.x\.x\.87/192.168.1.3/g' \
       -e 's/:36000/:22/g'
 ```
-管道嵌入到 wrk / curl / redis-benchmark 的 stdout 重定向链上，**写入 /tmp/*-bench/*.txt 时已经是混淆后的内容**。`perf.data` 二进制不修改（信息密度低、可读性差，对外部信息泄漏风险极小）。
+> 此处 `x.x.x.176` 为占位写法表示真实 A/B/C 段被屏蔽、仅保留 D 段；实际命令中需替换成真实正则。
+> `perf.data` 二进制不修改（信息密度低、可读性差，对外部信息泄漏风险极小）。
 
 ### ⑦ 终止 server master
 ```
@@ -137,28 +164,16 @@ DPDK primary 退出后 hugepage 不会自动释放，必须 trash。漏清会导
 
 ---
 
-## 6. 强制规约三联（贯穿全程）
-
-| 操作类   | 禁止                                | 必须                                           |
-|----------|-------------------------------------|------------------------------------------------|
-| 删文件   | `rm` / `rm -rf` / `find -delete` / `shred` | `/data/workspace/rm_tmp_file.sh <paths>`     |
-| 杀进程   | `kill` / `pkill` / `killall` / `kill -9`   | `/data/workspace/kill_process.sh <pid>`      |
-| 改权限   | `chmod` / `install -m` / `setfacl`         | `/data/workspace/chmod_modify.sh <mode> <paths>` |
-
-每个 §12.x 末尾固定记录三件套调用次数 + "直接 rm/kill/chmod × 0" 自证；违反任一行视为里程碑回退条件，与项目其他 DP（DP-10 / DP-10-reinforce）严格性等同。
-
----
-
-## 7. 检查清单（执行前过一遍）
+## 6. 检查清单（执行前过一遍）
 
 - [ ] 双树 lib 是否最新（`ls -la lib/libfstack.a` 比对修改时间）
 - [ ] 应用是否双份产出（两份二进制大小不同 ⇒ 链接的 lib 不同）
 - [ ] `/dev/hugepages/` 启动前是否干净
 - [ ] config.ini 的 `lcore_mask` 与多进程场景一致
-- [ ] client wrk / redis-benchmark 是否在 fstack-client 旁路上（非 kernel）
-- [ ] sed IP 混淆管道是否串入了所有 stdout 落盘路径
+- [ ] AI AGENT ↔ client 的 ssh 免密通道可用（`ssh client true` 一秒返回）
+- [ ] client 侧栈选项确认（kernel 默认 / F-Stack adapter 需 fstack-client 已预装）
+- [ ] sed IP 混淆管道是否串入了所有 ssh stdout 落盘路径（无真实 IP 漏写工件的风险）
 - [ ] kill master 后是否所有 worker 已退出（`pgrep`）
 - [ ] rtemap 是否清理（`ls /dev/hugepages/`）
 - [ ] 临时 sed 改写的 conf 是否已从 bak 还原
-- [ ] §12.x 是否包含合规审计四件套（kill / trash / chmod / 直接调用 = 0）
 - [ ] commit message 是否英文且未 push
