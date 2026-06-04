@@ -92,7 +92,7 @@
 | 验收点 | 期望 | 实测 | 状态 |
 |---|---|---|---|
 | 1. helloworld init success | `helloworld init success.` 输出 + 进入 ff_run loop | `/data/workspace/f-stack/helloworld.log` 中含 `helloworld init success.`；进程持续运行（PID 113746 已稳定 10s+，4 线程 1R+3S） | ✅ **PASS** |
-| 2. ff_ifconfig | `f-stack-0` 接口含 `inet 9.134.214.17` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500 / ether 20:90:6f:7d:5d:8`；接口本身存在 + UP + RUNNING，但缺 inet 行（ff_veth_setaddr 失败 errno 55 EOPNOTSUPP，来自 rib_action） | 🟡 **2/3 PASS**（接口可见，但 IP 未配） |
+| 2. ff_ifconfig | `f-stack-0` 接口含 `inet x.x.x.17` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500 / ether 20:90:6f:7d:5d:8`；接口本身存在 + UP + RUNNING，但缺 inet 行（ff_veth_setaddr 失败 errno 55 EOPNOTSUPP，来自 rib_action） | 🟡 **2/3 PASS**（接口可见，但 IP 未配） |
 | 3. ff_netstat -a | `tcp4 *.80 LISTEN` | `tcp4 0 0 *.80 *.* LISTEN` + `tcp6 0 0 *.80 *.* LISTEN` 两条都出现 | ✅ **PASS** |
 
 **总结**：3 项验收 2.5/3 PASS（项 2 接口可见但 IP 未配，因 ff_veth_setaddr / rib_action 在 14.0+ rib/nexthop 重写后仍有问题 — 此为下一阶段任务）
@@ -167,7 +167,7 @@ ff_veth_setaddr → socreate(AF_INET) → ifioctl(SIOCAIFADDR)
 | 验收点 | 期望 | 实测 | 状态 |
 |---|---|---|---|
 | 1. helloworld init success（不退化） | `helloworld init success.` + ff_run loop | helloworld.log 含 `helloworld init success.`；进程 PID 141652 持续运行，主线程 S sleeping（健康状态）；ifa_maintain_loopback_route / ff_veth_setaddr 错误信息**消失** | ✅ **PASS** |
-| 2. ff_ifconfig 显示 inet | `f-stack-0` 含 `inet 192.168.1.1` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> ... inet 192.168.1.1 netmask 0xfffff800 broadcast 9.134.215.255`；bonus：`lo0: inet 127.0.0.1` 也正常出来 | ✅ **PASS** |
+| 2. ff_ifconfig 显示 inet | `f-stack-0` 含 `inet 192.168.1.1` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> ... inet 192.168.1.1 netmask 0xfffff800 broadcast x.x.x.255`；bonus：`lo0: inet 127.0.0.1` 也正常出来 | ✅ **PASS** |
 | 3. ff_netstat -a 显示 :80 LISTEN | `tcp4 *.80 LISTEN` | `tcp4 0 0 *.80 *.* LISTEN` + `tcp6 0 0 *.80 *.* LISTEN` 两条都出现 | ✅ **PASS** |
 
 **runtime-fix 项目总评**：3/3 严格验收 PASS — **完整闭环 ✅**
@@ -599,7 +599,7 @@ const struct fileops badfileops = {0};
 - 范围（与 §12.13 nginx 同套"类似方法"）：双树 build → redis-benchmark T1/T2/T3 同时间窗
 - 工具切换：wrk → **redis-benchmark**（redis 协议专用，stock redis-7.2.7-6.tl4，向下兼容 redis 6.2.6 server）
 - redis-benchmark 与 redis-cli 由 server `dnf install redis` 安装后 scp 到 client `/tmp/`（fstack-linked 版本不能在 client 普通环境运行，会因 ff_init 失败 segfault）
-- IP 混淆从源头：192.168.1.1（server）/ 192.168.1.3（client），:22 替代 :36000
+- IP 混淆从源头：192.168.1.1（server）/ 192.168.1.3（client），:22 替代 :<实际ssh端口>
 
 ### 12.14.2 规约合规说明
 - redis 自带 Makefile 的 `make install` 会触发 install -m → 规避：仅 `make`，手动 `mkdir + cp -p` 部署到独立 prefix
