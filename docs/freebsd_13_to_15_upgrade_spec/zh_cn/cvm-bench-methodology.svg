@@ -54,7 +54,7 @@
 
   <!-- Server box -->
   <rect x="40" y="135" width="500" height="340" rx="10" class="pill-srv"/>
-  <text x="60" y="160" class="subtitle" fill="#a35414">SERVER  x.x.x.176  (CVM, 16 vCPU, AMD EPYC 7K62)  ─ 文档中混淆为 192.168.1.1</text>
+  <text x="60" y="160" class="subtitle" fill="#a35414">SERVER  CVM, 16 vCPU, AMD EPYC 7K62  ─ 双网卡：数据面 x.x.x.176 → 192.168.1.1（DPDK） &#124; 控制面 x.x.x.87 → 192.168.1.3（kernel）</text>
 
   <!-- AI AGENT inset on server -->
   <rect x="60" y="174" width="460" height="40" rx="6" class="pill-ai"/>
@@ -128,13 +128,13 @@
 
   <!-- ssh control plane arrow (top, AI AGENT -> sshd) -->
   <path d="M520,194 C580,194 600,194 660,194" class="arrow-ssh"/>
-  <text x="540" y="186" class="lab-sm" fill="#7c3aed" font-weight="700">ssh 控制通道</text>
+  <text x="540" y="186" class="lab-sm" fill="#7c3aed" font-weight="700">ssh 控制通道  (server 控制面 x.x.x.87 → client x.x.x.67)</text>
 
   <!-- ssh return (stdout) -->
   <path d="M660,210 C600,210 580,210 520,210" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
   <text x="535" y="226" class="lab-sm" fill="#7c3aed">stdout 回流（命令结果）</text>
 
-  <text x="40" y="498" class="lab-sm">注：① server 侧 NIC 必须由 DPDK 接管（kernel 不再持有 IPv4 路径）；② client 侧栈选择不影响 A/B 结论的相对差异，但绝对吞吐会因栈不同而不同；③ AI AGENT 下发命令、收回 stdout、应用 sed 混淆、写入工件、维护文档与 git，全部在 server 同机本地完成。</text>
+  <text x="40" y="498" class="lab-sm">注：① server 数据面 NIC (x.x.x.176) 由 DPDK 接管，控制面 NIC (x.x.x.87) 仍归 kernel 用于 ssh；② client 侧栈选择不影响 A/B 结论的相对差异，但绝对吞吐会因栈不同而不同；③ AI AGENT 下发命令、收回 stdout、应用 sed 混淆、写入工件、维护文档与 git，全部在 server 同机本地完成。</text>
 
   <!-- ============ PART 2: TIMELINE / SWIMLANES ============ -->
   <text x="40" y="538" class="h2">二、流程泳道图（AI AGENT / Server / Client，自上而下）</text>
@@ -149,7 +149,7 @@
   <text x="180" y="578" text-anchor="middle" font-weight="700" fill="#fff">AI AGENT (本机, server 同机)</text>
 
   <rect x="330" y="556" width="430" height="34" rx="8" fill="#e67e22"/>
-  <text x="545" y="578" text-anchor="middle" font-weight="700" fill="#fff">SERVER x.x.x.176</text>
+  <text x="545" y="578" text-anchor="middle" font-weight="700" fill="#fff">SERVER  data x.x.x.176 &#47; ctrl x.x.x.87</text>
 
   <rect x="770" y="556" width="370" height="34" rx="8" fill="#3498db"/>
   <text x="955" y="578" text-anchor="middle" font-weight="700" fill="#fff">CLIENT x.x.x.67  (kernel 或 F-Stack adapter)</text>
@@ -267,5 +267,5 @@
   <line x1="305" y1="1268" x2="345" y2="1268" class="arrow-flow" stroke="#059669" marker-end="url(#arrowGreen)"/>
 
   <!-- ============ FOOTER ============ -->
-  <text x="40" y="1316" class="lab-sm">说明：① 全图真实 IP 仅保留 D 段（176/67/87），落盘混淆后才出现 192.168.1.x；② client 端协议栈 kernel/F-Stack 二选一不影响 A/B 流程，仅影响绝对值；③ ssh 通道为带外控制面，与 DPDK 数据面 (server↔client) 完全分离。</text>
+  <text x="40" y="1316" class="lab-sm">说明：① 全图真实 IP 仅保留 D 段：server 数据面 .176（DPDK） &#47; server 控制面 .87（ssh 出口） &#47; client .67 → 落盘混淆后分别为 192.168.1.1 &#47; 192.168.1.3 &#47; 192.168.1.2；② client 端协议栈 kernel/F-Stack 二选一不影响 A/B 流程，仅影响绝对值；③ ssh 通道为带外控制面，与 DPDK 数据面 (server↔client) 完全分离。</text>
 </svg>

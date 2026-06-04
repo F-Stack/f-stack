@@ -14,13 +14,17 @@
 
 ## 1. 物理拓扑
 
-| 角色      | 真实 IP（仅保留 D 段） | 文档混淆后    | 硬件 / 软件栈                                                       |
-|-----------|------------------------|---------------|---------------------------------------------------------------------|
-| server    | `x.x.x.176`            | `192.168.1.1` | CVM 16 vCPU AMD EPYC 7K62，virtio_net 00:09.0 + DPDK 23.11.5 + F-Stack |
-| client    | `x.x.x.67`             | `192.168.1.2` | CVM，virtio_net，运行 sshd + wrk / curl / redis-benchmark           |
-| 备用 client | `x.x.x.87`           | `192.168.1.3` | （某些场景下的第二注入端，不常用）                                  |
+| 角色          | 真实 IP（仅保留 D 段） | 文档混淆后    | 硬件 / 软件栈                                                       |
+|---------------|------------------------|---------------|---------------------------------------------------------------------|
+| server 数据面 | `x.x.x.176`            | `192.168.1.1` | server CVM 16 vCPU AMD EPYC 7K62 的弹性网卡，被 DPDK PMD 接管 → F-Stack 协议栈 |
+| server 控制面 | `x.x.x.87`             | `192.168.1.3` | server 同机第二块网卡（未被 DPDK 接管，仍归 kernel），AI AGENT 通过此 IP 与 client 进行 ssh 通信 |
+| client        | `x.x.x.67`             | `192.168.1.2` | CVM，virtio_net，运行 sshd + wrk / curl / redis-benchmark           |
 
-**Server NIC** 必须由 DPDK PMD 接管，kernel 不再持有 IPv4 路径；所有 server 数据面流量直送 F-Stack 协议栈，绕过 Linux 的 conntrack / tcp_ipv4 / sk_buff。
+**控制面 vs 数据面分离**（双 NIC + 单网卡架构）：
+- 控制面（带外）：AI AGENT (本机) ── ssh ──> server 控制面 NIC (`x.x.x.87`) ──> client (`x.x.x.67`) sshd
+- 数据面（带内）：client 注入工具 ──> server 数据面 NIC (`x.x.x.176`，DPDK PMD) ──> F-Stack 协议栈
+
+server 数据面 NIC 必须由 DPDK PMD 接管（kernel 不再持有 IPv4 路径）；server 控制面 NIC 必须保留给 kernel，否则 AI AGENT 无法 ssh 到 client。
 
 **Client 侧栈二选一**：
 
@@ -31,11 +35,7 @@
 
 栈选择不影响 A/B 结论的相对差异，但绝对吞吐会因栈不同而不同。
 
-**控制面 vs 数据面分离**：
-- 控制面（带外）：AI AGENT --ssh--> client sshd（端口 22 或自定义）
-- 数据面（带内）：client 注入工具 ↔ server F-Stack 协议栈（80/6379 等）
-
-两者互不干扰：ssh 走 kernel 路径（不论 client 是否 F-Stack 旁路），benchmark 数据面则走选定的栈。
+**两面互不干扰**：ssh 走 kernel 路径（server 端经控制面 NIC `x.x.x.87`，client 端不论是否启用 F-Stack 旁路 ssh 都走 kernel）；benchmark 数据面则走选定的栈，与 ssh 控制面物理上隔离在不同的 NIC 通道上。
 
 ---
 

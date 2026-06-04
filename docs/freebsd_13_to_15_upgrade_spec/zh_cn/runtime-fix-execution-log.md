@@ -207,7 +207,7 @@ ff_veth_setaddr → socreate(AF_INET) → ifioctl(SIOCAIFADDR)
 
 ## 12. Phase 3 (端到端联通 + 压测基线 — 含 badfileops 修复) — 2026-06-02 19:50
 
-承接 Phase 2 验收完成，进入端到端跨机验证阶段：本机 192.168.1.1 作 F-Stack server，f-stack-client (192.168.1.3) 作压测客户端，通过 ssh 远程触发 curl / wrk。
+承接 Phase 2 验收完成，进入端到端跨机验证阶段：本机 192.168.1.1（server 数据面）作 F-Stack server，f-stack-client (192.168.1.2) 作压测客户端，AI AGENT 通过 server 控制面 192.168.1.3 经 ssh 远程触发 curl / wrk。
 
 ### 12.1 触发场景与现象
 
@@ -482,7 +482,7 @@ const struct fileops badfileops = {0};
 ### 12.12.1 范围决策与方法
 - 范围：仅 15.0 单边 smoke + wrk T2 一次（T1 5s warmup 用于稳态）
 - 不做 13.0 对比、不做 perf flamegraph（用户决策 Q1=C）
-- 复用 §12.10 同一 lcore=4、端口 80、客户端 wrk binary `/tmp/wrk/wrk`、IP 混淆为 192.168.1.1（server）/ 192.168.1.3（client）
+- 复用 §12.10 同一 lcore=4、端口 80、客户端 wrk binary `/tmp/wrk/wrk`、IP 混淆为 192.168.1.1（server 数据面）/ 192.168.1.2（client）/ 192.168.1.3（server 控制面，AI AGENT ssh 出口）
 
 ### 12.12.2 启动与端口绑定
 - 二进制：`/data/workspace/f-stack/example/helloworld_epoll` (27,934,872 B)，由主树 15.0 runtime-fix-done lib 链接
@@ -599,7 +599,7 @@ const struct fileops badfileops = {0};
 - 范围（与 §12.13 nginx 同套"类似方法"）：双树 build → redis-benchmark T1/T2/T3 同时间窗
 - 工具切换：wrk → **redis-benchmark**（redis 协议专用，stock redis-7.2.7-6.tl4，向下兼容 redis 6.2.6 server）
 - redis-benchmark 与 redis-cli 由 server `dnf install redis` 安装后 scp 到 client `/tmp/`（fstack-linked 版本不能在 client 普通环境运行，会因 ff_init 失败 segfault）
-- IP 混淆从源头：192.168.1.1（server）/ 192.168.1.3（client），:22 替代 :<实际ssh端口>
+- IP 混淆从源头：192.168.1.1（server 数据面）/ 192.168.1.2（client）/ 192.168.1.3（server 控制面，AI AGENT ssh 出口），:22 替代 :<实际ssh端口>
 
 ### 12.14.2 规约合规说明
 - redis 自带 Makefile 的 `make install` 会触发 install -m → 规避：仅 `make`，手动 `mkdir + cp -p` 部署到独立 prefix
