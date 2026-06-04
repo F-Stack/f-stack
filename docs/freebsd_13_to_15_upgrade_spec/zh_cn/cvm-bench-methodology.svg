@@ -1,0 +1,278 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 1620" font-family="'Helvetica Neue', Arial, sans-serif" font-size="13">
+  <!-- ================== STYLES ================== -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#444"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f6feb"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <style>
+      .title { font-size:22px; font-weight:700; fill:#111827; }
+      .subtitle { font-size:14px; font-weight:600; fill:#374151; }
+      .h2 { font-size:16px; font-weight:700; fill:#111827; }
+      .lab { font-size:12px; fill:#374151; }
+      .lab-sm { font-size:11px; fill:#4b5563; }
+      .mono { font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size:11px; fill:#1f2937; }
+      .mono-w { font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size:11px; fill:#fff; }
+      .step { font-weight:700; fill:#fff; font-size:13px; }
+      .pill-srv { fill:#fff5e6; stroke:#e67e22; stroke-width:1.5; }
+      .pill-cli { fill:#e6f3ff; stroke:#3498db; stroke-width:1.5; }
+      .pill-op  { fill:#f3f4f6; stroke:#6b7280; stroke-width:1.5; }
+      .lane-srv { fill:#fffaf2; stroke:#e67e22; stroke-width:1.2; stroke-dasharray:4,3; }
+      .lane-cli { fill:#f5fbff; stroke:#3498db; stroke-width:1.2; stroke-dasharray:4,3; }
+      .lane-op  { fill:#fafafa; stroke:#6b7280; stroke-width:1.2; stroke-dasharray:4,3; }
+      .box-op  { fill:#6b7280; stroke:#374151; }
+      .box-srv { fill:#e67e22; stroke:#a35414; }
+      .box-cli { fill:#3498db; stroke:#1f6e9b; }
+      .box-clean{ fill:#dc2626; stroke:#7f1d1d; }
+      .box-loop{ fill:#7c3aed; stroke:#4c1d95; }
+      .box-doc { fill:#059669; stroke:#064e3b; }
+      .arrow-net { stroke:#444; stroke-width:1.6; fill:none; marker-end:url(#arrow); }
+      .arrow-flow{ stroke:#444; stroke-width:1.6; fill:none; marker-end:url(#arrow); }
+      .arrow-loop{ stroke:#7c3aed; stroke-width:1.8; fill:none; marker-end:url(#arrow); stroke-dasharray:6,4; }
+    </style>
+  </defs>
+
+  <!-- ============ HEADER ============ -->
+  <text x="40" y="38" class="title">F-Stack CVM 双机基准测试方法（client 旁路 → server F-Stack A/B）</text>
+  <text x="40" y="60" class="subtitle">适用：helloworld · helloworld_epoll · nginx_fstack · redis_fstack · 多进程功能验证</text>
+  <text x="40" y="78" class="lab-sm">来源：runtime-fix-execution-log.md §12.10 / §12.12 / §12.13 / §12.14 / §12.15 抽象统一</text>
+
+  <!-- ============ PART 1: TOPOLOGY ============ -->
+  <text x="40" y="118" class="h2">一、物理拓扑（CVM × 2，virtio_net DPDK 旁路）</text>
+
+  <!-- Server box -->
+  <rect x="40" y="135" width="500" height="320" rx="10" class="pill-srv"/>
+  <text x="60" y="160" class="subtitle" fill="#a35414">SERVER  192.168.1.1  (CVM, 16 vCPU, AMD EPYC 7K62)</text>
+
+  <!-- Server stack (bottom -> top) -->
+  <rect x="60" y="408" width="460" height="34" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="430" class="lab">NIC: virtio_net  (PCI 00:09.0)  ─ DPDK PMD 接管，kernel 不再持有</text>
+
+  <rect x="60" y="362" width="460" height="40" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="380" class="lab">DPDK 23.11.5 + hugepages</text>
+  <text x="70" y="396" class="mono">/dev/hugepages/rtemap_*  (primary 1 + secondary N-1)</text>
+
+  <rect x="60" y="296" width="460" height="60" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="314" class="lab">F-Stack lib  (双树 A/B 切换)</text>
+  <text x="70" y="332" class="mono">A: /data/workspace/f-stack/lib/libfstack.a            (15.0 runtime-fix)</text>
+  <text x="70" y="348" class="mono">B: /data/workspace/f-stack-13.0-baseline/lib/libfstack.a (13.0 baseline)</text>
+
+  <rect x="60" y="226" width="460" height="64" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="244" class="lab">F-Stack 应用（用 A 或 B 链接生成两份独立二进制）</text>
+  <text x="70" y="262" class="mono">helloworld · helloworld_epoll · nginx_fstack_{15rfix,13baseline}</text>
+  <text x="70" y="278" class="mono">redis_fstack_{15rfix,13baseline}     ── 单进程或多进程模式</text>
+
+  <rect x="60" y="180" width="460" height="40" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="198" class="lab">config.ini / f-stack.conf  (lcore_mask 决定 nb_procs)</text>
+  <text x="70" y="214" class="mono">单 lcore: 0x10  ·  2 lcore: 0x30  ·  4 lcore: 0xf0</text>
+
+  <!-- Client box -->
+  <rect x="640" y="135" width="500" height="320" rx="10" class="pill-cli"/>
+  <text x="660" y="160" class="subtitle" fill="#1f6e9b">CLIENT  192.168.1.2  (CVM, fstack-client 旁路注入)</text>
+
+  <rect x="660" y="408" width="460" height="34" rx="4" fill="#dbeefb" stroke="#3498db"/>
+  <text x="670" y="430" class="lab">NIC: virtio_net  ─ DPDK PMD 接管</text>
+
+  <rect x="660" y="362" width="460" height="40" rx="4" fill="#dbeefb" stroke="#3498db"/>
+  <text x="670" y="380" class="lab">DPDK + hugepages</text>
+  <text x="670" y="396" class="mono">fstack-client 进程持有 rtemap，syscall 旁路到 F-Stack 协议栈</text>
+
+  <rect x="660" y="296" width="460" height="60" rx="4" fill="#dbeefb" stroke="#3498db"/>
+  <text x="670" y="314" class="lab">压测/探测工具（运行在 fstack-client adapter 上）</text>
+  <text x="670" y="332" class="mono">curl  ·  wrk 4.x       (HTTP smoke + 30s benchmark)</text>
+  <text x="670" y="348" class="mono">redis-cli  ·  redis-benchmark 7.2.7 (stock, /tmp/ 永久保留)</text>
+
+  <rect x="660" y="226" width="460" height="64" rx="4" fill="#dbeefb" stroke="#3498db"/>
+  <text x="670" y="244" class="lab">三场景压测档位（同一份脚本可适配各 app）</text>
+  <text x="670" y="262" class="mono">T1  t2 c10 / 5s warmup       (轻载 + 冷启动剔除)</text>
+  <text x="670" y="278" class="mono">T2  t4 c100 / 30s            (主回归判定)  ← 多进程仅跑 T2</text>
+
+  <rect x="660" y="180" width="460" height="40" rx="4" fill="#dbeefb" stroke="#3498db"/>
+  <text x="670" y="198" class="lab">T3  t8 c500 / 30s            (尾延迟敏感场景)</text>
+  <text x="670" y="214" class="mono">redis-benchmark T3  c200 n1M --threads 8 -P 16  (pipeline)</text>
+
+  <!-- Network arrows between server and client -->
+  <line x1="540" y1="295" x2="640" y2="295" class="arrow-net"/>
+  <line x1="640" y1="320" x2="540" y2="320" class="arrow-net"/>
+  <text x="555" y="288" class="lab-sm" fill="#1f6feb">server bind 0.0.0.0:80 / 6379</text>
+  <text x="555" y="338" class="lab-sm" fill="#d97706">client wrk/redis-benchmark 主动注入</text>
+
+  <text x="40" y="478" class="lab-sm">注：两端 DPDK 共存 ⇒ kernel 网卡停用，所有 IPv4 包经 DPDK PMD 直达 F-Stack 协议栈，绕开 Linux kernel 的 conntrack / tcp_ipv4 / sk_buff 路径。</text>
+
+  <!-- ============ PART 2: TIMELINE / SWIMLANES ============ -->
+  <text x="40" y="528" class="h2">二、流程泳道图（Operator / Server / Client，自上而下）</text>
+
+  <!-- Lane backgrounds -->
+  <rect x="40"  y="546" width="280"  height="1010" rx="8" class="lane-op"/>
+  <rect x="330" y="546" width="430"  height="1010" rx="8" class="lane-srv"/>
+  <rect x="770" y="546" width="370"  height="1010" rx="8" class="lane-cli"/>
+
+  <!-- Lane headers -->
+  <rect x="40" y="546" width="280" height="34" rx="8" fill="#6b7280"/>
+  <text x="180" y="568" text-anchor="middle" font-weight="700" fill="#fff">OPERATOR (本机)</text>
+
+  <rect x="330" y="546" width="430" height="34" rx="8" fill="#e67e22"/>
+  <text x="545" y="568" text-anchor="middle" font-weight="700" fill="#fff">SERVER 192.168.1.1</text>
+
+  <rect x="770" y="546" width="370" height="34" rx="8" fill="#3498db"/>
+  <text x="955" y="568" text-anchor="middle" font-weight="700" fill="#fff">CLIENT 192.168.1.2</text>
+
+  <!-- ===== Step 1: build dual tree ===== -->
+  <rect x="55" y="600" width="250" height="58" rx="6" class="box-op"/>
+  <text x="180" y="624" text-anchor="middle" class="step">① 双树 build</text>
+  <text x="180" y="644" text-anchor="middle" class="mono-w">make -C f-stack/lib && make -C f-stack-13.0-baseline/lib</text>
+
+  <rect x="345" y="600" width="400" height="58" rx="6" fill="#fefdf6" stroke="#e67e22"/>
+  <text x="360" y="622" class="lab">产出双份静态库：</text>
+  <text x="360" y="640" class="mono">f-stack/lib/libfstack.a            (15.0 rfix)</text>
+  <text x="360" y="654" class="mono">f-stack-13.0-baseline/lib/libfstack.a (13.0 base)</text>
+
+  <!-- ===== Step 2: build apps (link two binaries) ===== -->
+  <rect x="55" y="676" width="250" height="58" rx="6" class="box-op"/>
+  <text x="180" y="700" text-anchor="middle" class="step">② 应用双份编译</text>
+  <text x="180" y="720" text-anchor="middle" class="mono-w">FF_PATH 切换 + make</text>
+
+  <rect x="345" y="676" width="400" height="58" rx="6" fill="#fefdf6" stroke="#e67e22"/>
+  <text x="360" y="694" class="lab">helloworld / helloworld_epoll / nginx / redis 产出 _15rfix + _13baseline</text>
+  <text x="360" y="712" class="mono">/usr/local/nginx_fstack_{15rfix,13baseline}/sbin/nginx</text>
+  <text x="360" y="726" class="mono">/usr/local/redis_fstack_{15rfix,13baseline}/bin/redis-server</text>
+
+  <!-- ===== Step 3: start server ===== -->
+  <rect x="345" y="752" width="400" height="64" rx="6" class="box-srv"/>
+  <text x="545" y="775" text-anchor="middle" class="step">③ Server 启动（其中一棵树）</text>
+  <text x="545" y="794" text-anchor="middle" class="mono-w">nohup ./app --conf config.ini --proc-type=primary</text>
+  <text x="545" y="810" text-anchor="middle" class="mono-w">&amp; disown   ── 后台 + 解 SIGHUP</text>
+
+  <!-- arrow op -> srv (start) -->
+  <line x1="305" y1="784" x2="345" y2="784" class="arrow-flow" stroke="#d97706" marker-end="url(#arrowOrange)"/>
+
+  <!-- ===== Step 4: server boot ready ===== -->
+  <rect x="345" y="828" width="400" height="44" rx="6" fill="#fefdf6" stroke="#e67e22"/>
+  <text x="360" y="846" class="lab">DPDK init / hugepage 申请 / port 0 up / "f-stack-0: Successed to register"</text>
+  <text x="360" y="864" class="mono">每 worker 占 1 lcore，primary proc_id=0</text>
+
+  <!-- ===== Step 5: smoke ===== -->
+  <rect x="785" y="752" width="340" height="64" rx="6" class="box-cli"/>
+  <text x="955" y="775" text-anchor="middle" class="step">④ Smoke 探测</text>
+  <text x="955" y="794" text-anchor="middle" class="mono-w">curl 10x ⇒ http_code=200 (HTTP)</text>
+  <text x="955" y="810" text-anchor="middle" class="mono-w">PING ⇒ PONG · SET/GET (Redis)</text>
+
+  <!-- bidirectional arrow client <-> server -->
+  <line x1="785" y1="784" x2="745" y2="784" class="arrow-flow" stroke="#1f6feb" marker-end="url(#arrowBlue)"/>
+  <line x1="745" y1="800" x2="785" y2="800" class="arrow-flow" stroke="#d97706" marker-end="url(#arrowOrange)"/>
+
+  <!-- ===== Step 6: bench ===== -->
+  <rect x="785" y="828" width="340" height="74" rx="6" class="box-cli"/>
+  <text x="955" y="851" text-anchor="middle" class="step">⑤ Benchmark T1/T2/T3</text>
+  <text x="955" y="870" text-anchor="middle" class="mono-w">wrk -t. -c. -d30s | sed 's/IP/192.168.1.1/g'</text>
+  <text x="955" y="886" text-anchor="middle" class="mono-w">redis-benchmark -h ... -t ... -P 16</text>
+
+  <line x1="785" y1="850" x2="745" y2="850" class="arrow-flow" stroke="#1f6feb" marker-end="url(#arrowBlue)"/>
+  <line x1="745" y1="880" x2="785" y2="880" class="arrow-flow" stroke="#d97706" marker-end="url(#arrowOrange)"/>
+
+  <!-- ===== Step 7: source-side IP redact ===== -->
+  <rect x="55" y="922" width="250" height="58" rx="6" fill="#059669" stroke="#064e3b"/>
+  <text x="180" y="946" text-anchor="middle" class="step">⑥ 源头 IP 混淆</text>
+  <text x="180" y="966" text-anchor="middle" class="mono-w">sed -i 's/9.134.../192.168../g'</text>
+
+  <rect x="345" y="922" width="780" height="58" rx="6" fill="#ecfdf5" stroke="#059669"/>
+  <text x="360" y="940" class="lab">在写入 /tmp/*-bench/{wrk.txt,curl_x10.txt,T*.txt} 前管道直接替换三段真实 IP →</text>
+  <text x="360" y="956" class="mono">9.134.214.176 → 192.168.1.1   9.134.213.67 → 192.168.1.2   9.134.211.87 → 192.168.1.3</text>
+  <text x="360" y="972" class="mono">此外 :36000 → :22 抹去内部端口；perf.data 二进制不修改（信息密度低）</text>
+
+  <line x1="305" y1="950" x2="345" y2="950" class="arrow-flow" stroke="#059669" marker-end="url(#arrowGreen)"/>
+
+  <!-- ===== Step 8: kill master ===== -->
+  <rect x="345" y="1000" width="400" height="56" rx="6" class="box-clean"/>
+  <text x="545" y="1023" text-anchor="middle" class="step">⑦ 终止 server master</text>
+  <text x="545" y="1042" text-anchor="middle" class="mono-w">/data/workspace/kill_process.sh &lt;master_pid&gt;</text>
+
+  <!-- ===== Step 9: rtemap cleanup ===== -->
+  <rect x="345" y="1066" width="400" height="56" rx="6" class="box-clean"/>
+  <text x="545" y="1089" text-anchor="middle" class="step">⑧ 清理 rtemap 残留</text>
+  <text x="545" y="1108" text-anchor="middle" class="mono-w">/data/workspace/rm_tmp_file.sh /dev/hugepages/rtemap_*</text>
+
+  <!-- arrow ⑦ -> ⑧ -->
+  <line x1="545" y1="1056" x2="545" y2="1066" class="arrow-flow"/>
+
+  <!-- arrow op->srv kill (from operator lane) -->
+  <line x1="305" y1="1028" x2="345" y2="1028" class="arrow-flow" stroke="#dc2626" marker-end="url(#arrow)"/>
+
+  <!-- ===== Step 10: switch tree (loop back) ===== -->
+  <rect x="55" y="1142" width="250" height="58" rx="6" class="box-loop"/>
+  <text x="180" y="1166" text-anchor="middle" class="step">⑨ 切换另一棵树</text>
+  <text x="180" y="1186" text-anchor="middle" class="mono-w">A → B (15rfix → 13baseline)</text>
+
+  <rect x="345" y="1142" width="400" height="58" rx="6" fill="#f5f3ff" stroke="#7c3aed"/>
+  <text x="360" y="1162" class="lab">回到 ③：用另一份二进制重启 server，重复 ④⑤⑥⑦⑧</text>
+  <text x="360" y="1180" class="mono">同时间窗口 A/B：基线漂移 (CPU 邻居/网络 jitter) 影响最小化</text>
+
+  <!-- loop arrow back to ③ -->
+  <path d="M180,1142 C180,1100 180,900 180,820" class="arrow-loop"/>
+  <text x="195" y="980" class="lab-sm" fill="#7c3aed">loop ×2 (A 树 + B 树)</text>
+
+  <!-- ===== Step 11: post-test - restore + doc + commit ===== -->
+  <rect x="55" y="1218" width="250" height="58" rx="6" class="box-doc"/>
+  <text x="180" y="1242" text-anchor="middle" class="step">⑩ 文档落盘 + 配置还原</text>
+  <text x="180" y="1262" text-anchor="middle" class="mono-w">runtime-fix-execution-log.md §12.x</text>
+
+  <rect x="345" y="1218" width="780" height="58" rx="6" fill="#ecfdf5" stroke="#059669"/>
+  <text x="360" y="1238" class="lab">把 wrk/curl/redis-benchmark 的混淆后输出贴入文档表格 + 时间线 + 关键发现 + 工件清单 + 合规审计</text>
+  <text x="360" y="1255" class="mono">还原临时 sed 修改的 *.bak_1proc → *.conf；nginx_fstack_15rfix 1-proc baseline 永久保留</text>
+  <text x="360" y="1271" class="mono">git commit (英文 message) · 不 push (per 项目规约)</text>
+
+  <line x1="305" y1="1246" x2="345" y2="1246" class="arrow-flow" stroke="#059669" marker-end="url(#arrowGreen)"/>
+
+  <!-- ===== Side panel: compliance audit ===== -->
+  <rect x="55" y="1296" width="1070" height="240" rx="8" fill="#fff" stroke="#9ca3af" stroke-dasharray="3,3"/>
+  <text x="70" y="1320" class="h2">三、贯穿全程的强制规约（DP-10 / DP-10-reinforce 三联）</text>
+
+  <rect x="70" y="1335" width="340" height="180" rx="6" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="240" y="1356" text-anchor="middle" font-weight="700" fill="#7f1d1d">删除文件</text>
+  <line x1="80" y1="1364" x2="400" y2="1364" stroke="#dc2626" stroke-width="0.5"/>
+  <text x="80" y="1382" class="lab">禁止：rm / rm -rf / find -delete / shred</text>
+  <text x="80" y="1400" class="lab">必须：</text>
+  <text x="80" y="1418" class="mono">rm_tmp_file.sh &lt;path1&gt; [path2 ...]</text>
+  <text x="80" y="1438" class="lab">触发场景：</text>
+  <text x="80" y="1456" class="lab-sm">• rtemap_* 清理（每次 kill 后）</text>
+  <text x="80" y="1472" class="lab-sm">• *.o / *.bak / 失败回滚</text>
+  <text x="80" y="1488" class="lab-sm">• /tmp/*-bench/ 临时数据淘汰</text>
+  <text x="80" y="1504" class="lab-sm">• 误操作恢复（先 trash，确需删时再调脚本）</text>
+
+  <rect x="420" y="1335" width="340" height="180" rx="6" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="590" y="1356" text-anchor="middle" font-weight="700" fill="#7f1d1d">终止进程</text>
+  <line x1="430" y1="1364" x2="750" y2="1364" stroke="#dc2626" stroke-width="0.5"/>
+  <text x="430" y="1382" class="lab">禁止：kill / pkill / killall / kill -9</text>
+  <text x="430" y="1400" class="lab">必须：</text>
+  <text x="430" y="1418" class="mono">kill_process.sh &lt;pid&gt; [pid2 ...]</text>
+  <text x="430" y="1438" class="lab">触发场景：</text>
+  <text x="430" y="1456" class="lab-sm">• helloworld / nginx master / redis-server</text>
+  <text x="430" y="1472" class="lab-sm">• gdb attach 前的子进程预清理</text>
+  <text x="430" y="1488" class="lab-sm">• 后台 nohup 任务收尾</text>
+  <text x="430" y="1504" class="lab-sm">• timeout 失败的兜底</text>
+
+  <rect x="770" y="1335" width="355" height="180" rx="6" fill="#fef2f2" stroke="#dc2626"/>
+  <text x="947" y="1356" text-anchor="middle" font-weight="700" fill="#7f1d1d">权限修改</text>
+  <line x1="780" y1="1364" x2="1115" y2="1364" stroke="#dc2626" stroke-width="0.5"/>
+  <text x="780" y="1382" class="lab">禁止：chmod / install -m / setfacl</text>
+  <text x="780" y="1400" class="lab">必须：</text>
+  <text x="780" y="1418" class="mono">chmod_modify.sh &lt;mode&gt; &lt;path&gt;...</text>
+  <text x="780" y="1438" class="lab">触发场景：</text>
+  <text x="780" y="1456" class="lab-sm">• 新建脚本加 +x</text>
+  <text x="780" y="1472" class="lab-sm">• build 产物权限对齐</text>
+  <text x="780" y="1488" class="lab-sm">• 共享 socket 0666</text>
+  <text x="780" y="1504" class="lab-sm">• 临时文件 0600</text>
+
+  <!-- ============ FOOTER ============ -->
+  <text x="40" y="1568" class="lab-sm">每个 §12.x 末尾固定记录三件套调用次数 + "直接 rm/kill/chmod × 0" 自证；违反任一行视为里程碑回退条件。</text>
+  <text x="40" y="1586" class="lab-sm">SVG 来源：runtime-fix-execution-log.md §12.10/§12.12/§12.13/§12.14/§12.15 共五次跨应用 A/B 实测的统一抽象。</text>
+  <text x="40" y="1604" class="lab-sm">渲染建议：直接在浏览器打开本 .svg；或嵌入到 Markdown：<![CDATA[ ![](cvm-bench-methodology.svg) ]]></text>
+</svg>
