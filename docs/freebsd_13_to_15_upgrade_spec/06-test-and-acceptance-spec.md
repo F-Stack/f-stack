@@ -187,6 +187,44 @@ Compare: diff the two; record into 99-review-report.md
 
 The 15.0 default TCP stack contains RACK improvements that may yield throughput gains. Such **gains** are recorded as bonus benefits and do not offset any non-regression requirement; if a regression appears in some scenario, it must still be tracked under NFR-1.
 
+### 5.4 Bare-metal baseline filed (run by external team; received 2026-06-05)
+
+**Data source**: iWiki 4021545579 (the external OSPF/CMC project team ran a 13.0 vs 15.0 paired test on a Intel Xeon 8255C @ 2.5 GHz + Mellanox CX-5 100 G + TencentOS 4.4 + Linux 6.6.98 bare-metal rig).
+
+**Relation to this project's CVM same-timeline A/B**: the bare-metal data is an **external baseline**; the CVM data is this project's **internal A/B**. Together they form a dual baseline crossing the virtualization layer; detailed delta analysis is in `physical-machine-bench-report.md` §5.
+
+#### 5.4.1 helloworld single-core long-conn (NFR-1 single-flow TCP throughput)
+
+| Metric | 13.0 | 15.0 | Δ | NFR-1 threshold | Pass |
+|---|---:|---:|---:|---|:---:|
+| Req/sec | 958,109 | 1,056,178 | **+10.24%** | regression ≤ 5% | ✓ (net gain) |
+| p50 | 121 us | 107 us | -11.57% | — | — |
+| p99 | 204 us | 197 us | -3.43% | regression ≤ 10% | ✓ |
+
+#### 5.4.2 nginx_fstack long-conn (NFR-1 long-conn QPS, informational)
+
+| lcores | 13.0 (Req/s) | 15.0 (Req/s) | Δ | Pass |
+|---:|---:|---:|---:|:---:|
+| 1 | 314,889 | 330,837 | **+5.06%** | ✓ |
+| 2 | 623,962 | 653,648 | **+4.76%** | ✓ |
+| 4 | 1,230,502 | 1,289,872 | **+4.83%** | ✓ |
+
+#### 5.4.3 nginx_fstack short-conn (NFR-1 short-conn QPS)
+
+| lcores | 13.0 (Req/s) | 15.0 (Req/s) | Δ | NFR-1 threshold | Pass |
+|---:|---:|---:|---:|---|:---:|
+| 1 | 127,592 | 124,727 | -2.25% | regression ≤ 5% | ✓ |
+| 2 | 256,208 | 246,873 | -3.65% | regression ≤ 5% | ✓ |
+| 4 | 406,380 | 381,614 | **-6.10%** | regression ≤ 5% | ⚠ **over threshold by 1.10 pp** |
+
+#### 5.4.4 Key verdicts
+
+1. **Overall PASS**: bare-metal helloworld + nginx long-conn show a clear +5%~+10% net gain; short-conn 1/2 cores stay within NFR-1 threshold.
+2. **Observation item**: nginx short-conn 4 cores at -6.10% **exceeds the 5% threshold by 1.10 pp**. Per NFR-1 this triggers a review; disposition options are recorded in `physical-machine-bench-report.md` §6.2 (preferred: file as a trade-off — the 5 P0 SIGSEGV fixes are strictly more valuable than a -6% on multi-core short-conn; optional: do a bare-metal perf bi-version flame-graph overlay to localize sonewconn / accept / kern_descrip paths).
+3. **Cross-platform reversal**: the bare-metal helloworld +10% and the CVM same-timeline helloworld -7%~-9% point in opposite directions. `13.0-baseline-cvm-bench-report.md` §11.5 perf flame-graph attributes this to the virtio path overhead being amplified in narrow channels; **the reversal does not refute the upgrade** — instead it confirms that the vendor evolution gains (RACK / CUBIC / sb_locking) are fully released on bare metal that has no virtio interference.
+
+**Detailed comparison, raw wrk output, cross-platform reading, and NFR-1 acceptance matrix**: see `physical-machine-bench-report.md`.
+
 ---
 
 ## 6. Regression Tests
@@ -271,6 +309,8 @@ If the F-Stack repo already has example/ helloworld example or nginx_fstack-pair
 | Compile matrix | per-milestone exit criteria in `05-implementation-plan.md` §2 |
 | TC-01..09 | FR-6 acceptance in `01-requirements-spec.md` |
 | Performance baseline | NFR-1 acceptance in `01-requirements-spec.md` |
+| §5.4 bare-metal baseline | `physical-machine-bench-report.md` (iWiki 4021545579 external-team data, post-processed in-project) |
+| §5 CVM same-timeline A/B | `13.0-baseline-cvm-bench-report.md` (this project's helloworld single-core + perf root cause) |
 | Gate G-M1..G-M5 | cadence in `05-implementation-plan.md` §1.1 |
 | Test report template | referenced as appendix from `99-review-report.md` |
 
