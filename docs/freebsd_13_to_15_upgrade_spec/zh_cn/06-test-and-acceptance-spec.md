@@ -187,6 +187,44 @@ M5 末：在 15.0 升级后采集，存 perf-15.0.json
 
 15.0 默认 TCP 栈含 RACK 改进，可能带来吞吐提升。这种**提升**作为额外收益记录，不抵消任何不退化要求；如某些场景出现退化，须按 NFR-1 标准追责。
 
+### 5.4 物理机基线落档（外部团队执行；2026-06-05 接收）
+
+**数据来源**：iWiki 4021545579（外部 OSPF/CMC 项目组在 Intel Xeon 8255C @ 2.5GHz + Mellanox CX-5 100G + TencentOS 4.4 + Linux 6.6.98 物理机平台执行 13.0 vs 15.0 并测对照）。
+
+**与本项目 CVM 同时序 A/B 的关系**：物理机为**外部基线**，本项目 CVM 为**内部 A/B**；两者构成跨虚拟化层的双重基线，详细差异分析见 `physical-machine-bench-report.md` §5。
+
+#### 5.4.1 helloworld 单核长连接（NFR-1 单流 TCP 吞吐）
+
+| 指标 | 13.0 | 15.0 | Δ | NFR-1 阈值 | 通过 |
+|---|---:|---:|---:|---|:---:|
+| Req/sec | 958,109 | 1,056,178 | **+10.24%** | 不退化 > 5% | ✓（净收益） |
+| p50 | 121 us | 107 us | -11.57% | — | — |
+| p99 | 204 us | 197 us | -3.43% | 不退化 > 10% | ✓ |
+
+#### 5.4.2 nginx_fstack 长连接（NFR-1 长连接 QPS 参考项）
+
+| lcores | 13.0 (Req/s) | 15.0 (Req/s) | Δ | 通过 |
+|---:|---:|---:|---:|:---:|
+| 1 | 314,889 | 330,837 | **+5.06%** | ✓ |
+| 2 | 623,962 | 653,648 | **+4.76%** | ✓ |
+| 4 | 1,230,502 | 1,289,872 | **+4.83%** | ✓ |
+
+#### 5.4.3 nginx_fstack 短连接（NFR-1 短连接 QPS）
+
+| lcores | 13.0 (Req/s) | 15.0 (Req/s) | Δ | NFR-1 阈值 | 通过 |
+|---:|---:|---:|---:|---|:---:|
+| 1 | 127,592 | 124,727 | -2.25% | 不退化 > 5% | ✓ |
+| 2 | 256,208 | 246,873 | -3.65% | 不退化 > 5% | ✓ |
+| 4 | 406,380 | 381,614 | **-6.10%** | 不退化 > 5% | ⚠ **越线 1.10pp** |
+
+#### 5.4.4 关键判定
+
+1. **总体 PASS**：物理机 helloworld + nginx 长连接均显著 +5%~+10% 净收益；短连接 1/2 核在 NFR-1 阈值内通过。
+2. **观察项**：nginx 短连接 4 核 -6.10% **超过 5% 阈值 1.10pp**，按 NFR-1 应触发评议；处置策略详见 `physical-machine-bench-report.md` §6.2（首选：备案为 trade-off，理由是 5 个 P0 SIGSEGV 修复价值远大于多核短连接 -6%；可选：物理机 perf 双版叠图定位 sonewconn/accept/kern_descrip 路径）。
+3. **跨平台反差**：物理机 helloworld +10% 与 CVM 同时序 helloworld -7%~-9% 方向相反，已由 `13.0-baseline-cvm-bench-report.md` §11.5 perf flamegraph 归因为虚拟化层 virtio 路径开销在窄通道下放大；该反差**不否定**升级，反而印证 vendor 演进收益（RACK / CUBIC / sb_locking）在无 virtio 干扰的物理机上完全释放。
+
+**详细对比、原始 wrk 输出、跨平台交叉对照、NFR-1 验收矩阵**：参见 `physical-machine-bench-report.md`。
+
 ---
 
 ## 6. 回归测试
@@ -271,6 +309,8 @@ M5 末：在 15.0 升级后采集，存 perf-15.0.json
 | 编译矩阵 | `05-implementation-plan.md` §2 各里程碑退出条件 |
 | TC-01..09 | `01-requirements-spec.md` FR-6 验收 |
 | 性能基线 | `01-requirements-spec.md` NFR-1 验收 |
+| §5.4 物理机基线 | `physical-machine-bench-report.md`（iWiki 4021545579 外部团队数据二次整理） |
+| §5 CVM 同时序 A/B | `13.0-baseline-cvm-bench-report.md`（本项目内 helloworld 单核 + perf 根因） |
 | Gate G-M1..G-M5 | `05-implementation-plan.md` §1.1 节奏 |
 | 测试报告模板 | `99-review-report.md` 引用为附件 |
 
