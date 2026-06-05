@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010 Alexander V. Chernikov <melifaro@ipfw.ru>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	 $FreeBSD$
  */
 
 #ifndef	_NETFLOW_V9_H_
@@ -143,7 +141,7 @@ struct netflow_v9_flowset_header {
 struct netflow_v9_packet_opt {
 	uint16_t	length; /* current packet length */
 	uint16_t	count; /* current records count */
-	uint16_t	mtu; /* max MTU shapshot */
+	uint16_t	mtu; /* max MTU snapshot */
 	uint16_t	flow_type; /* current flowset */
 	uint16_t	flow_header; /* offset pointing to current flow header */
 };

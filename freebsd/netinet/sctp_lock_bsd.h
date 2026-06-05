@@ -32,9 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifndef _NETINET_SCTP_LOCK_BSD_H_
 #define _NETINET_SCTP_LOCK_BSD_H_
 
@@ -105,6 +102,18 @@ __FBSDID("$FreeBSD$");
 
 #define SCTP_INP_INFO_WUNLOCK() do {					\
 	rw_wunlock(&SCTP_BASE_INFO(ipi_ep_mtx));			\
+} while (0)
+
+#define SCTP_INP_INFO_LOCK_ASSERT() do {				\
+	rw_assert(&SCTP_BASE_INFO(ipi_ep_mtx), RA_LOCKED);		\
+} while (0)
+
+#define SCTP_INP_INFO_RLOCK_ASSERT() do {				\
+	rw_assert(&SCTP_BASE_INFO(ipi_ep_mtx), RA_RLOCKED);		\
+} while (0)
+
+#define SCTP_INP_INFO_WLOCK_ASSERT() do {				\
+	rw_assert(&SCTP_BASE_INFO(ipi_ep_mtx), RA_WLOCKED);		\
 } while (0)
 
 #define SCTP_MCORE_QLOCK_INIT(cpstr) do {				\
@@ -222,12 +231,12 @@ __FBSDID("$FreeBSD$");
  * or cookie secrets we lock the INP level.
  */
 
-#define SCTP_INP_READ_INIT(_inp) do {					\
+#define SCTP_INP_READ_LOCK_INIT(_inp) do {				\
 	mtx_init(&(_inp)->inp_rdata_mtx, "sctp-read", "inpr",		\
 	         MTX_DEF | MTX_DUPOK);					\
 } while (0)
 
-#define SCTP_INP_READ_DESTROY(_inp) do {				\
+#define SCTP_INP_READ_LOCK_DESTROY(_inp) do {				\
 	mtx_destroy(&(_inp)->inp_rdata_mtx);				\
 } while (0)
 
@@ -237,6 +246,11 @@ __FBSDID("$FreeBSD$");
 
 #define SCTP_INP_READ_UNLOCK(_inp) do {					\
 	mtx_unlock(&(_inp)->inp_rdata_mtx);				\
+} while (0)
+
+#define SCTP_INP_READ_LOCK_ASSERT(_inp) do {				\
+	KASSERT(mtx_owned(&(_inp)->inp_rdata_mtx),			\
+	        ("Don't own INP read queue lock"));			\
 } while (0)
 
 #define SCTP_INP_LOCK_INIT(_inp) do {					\
@@ -324,23 +338,6 @@ __FBSDID("$FreeBSD$");
 
 #define SCTP_ASOC_CREATE_LOCK_CONTENDED(_inp)				\
 	((_inp)->inp_create_mtx.mtx_lock & MTX_CONTESTED)
-
-#define SCTP_TCB_SEND_LOCK_INIT(_tcb) do {				\
-	mtx_init(&(_tcb)->tcb_send_mtx, "sctp-send-tcb", "tcbs",	\
-	         MTX_DEF | MTX_DUPOK);					\
-} while (0)
-
-#define SCTP_TCB_SEND_LOCK_DESTROY(_tcb) do {				\
-	mtx_destroy(&(_tcb)->tcb_send_mtx);				\
-} while (0)
-
-#define SCTP_TCB_SEND_LOCK(_tcb) do {					\
-	mtx_lock(&(_tcb)->tcb_send_mtx);				\
-} while (0)
-
-#define SCTP_TCB_SEND_UNLOCK(_tcb) do {					\
-	mtx_unlock(&(_tcb)->tcb_send_mtx);				\
-} while (0)
 
 /*
  * For the majority of things (once we have found the association) we will

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017 Chelsio Communications, Inc.
  * Copyright (c) 2017 Conrad Meyer <cem@FreeBSD.org>
@@ -29,8 +29,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 
 #include <sys/param.h>
@@ -81,7 +79,7 @@ static struct pciid {
 	{ 0x15df1022, "AMD CCP-5a" },
 };
 
-static struct random_source random_ccp = {
+static const struct random_source random_ccp = {
 	.rs_ident = "AMD CCP TRNG",
 	.rs_source = RANDOM_PURE_CCP,
 	.rs_read = random_ccp_read,
@@ -101,6 +99,9 @@ ccp_populate_sglist(struct sglist *sg, struct crypto_buffer *cb)
 	case CRYPTO_BUF_MBUF:
 		error = sglist_append_mbuf(sg, cb->cb_mbuf);
 		break;
+	case CRYPTO_BUF_SINGLE_MBUF:
+		error = sglist_append_single_mbuf(sg, cb->cb_mbuf);
+		break;
 	case CRYPTO_BUF_UIO:
 		error = sglist_append_uio(sg, cb->cb_uio);
 		break;
@@ -109,7 +110,7 @@ ccp_populate_sglist(struct sglist *sg, struct crypto_buffer *cb)
 		break;
 	case CRYPTO_BUF_VMPAGE:
 		error = sglist_append_vmpages(sg, cb->cb_vm_page,
-		    cb->cb_vm_page_len, cb->cb_vm_page_offset);
+		    cb->cb_vm_page_offset, cb->cb_vm_page_len);
 		break;
 	default:
 		error = EINVAL;
@@ -231,7 +232,7 @@ static void
 ccp_init_hmac_digest(struct ccp_session *s, const char *key, int klen)
 {
 	union authctx auth_ctx;
-	struct auth_hash *axf;
+	const struct auth_hash *axf;
 	u_int i;
 
 	/*
@@ -375,11 +376,6 @@ ccp_probesession(device_t dev, const struct crypto_session_params *csp)
 	case CSP_MODE_AEAD:
 		switch (csp->csp_cipher_alg) {
 		case CRYPTO_AES_NIST_GCM_16:
-			if (csp->csp_ivlen != AES_GCM_IV_LEN)
-				return (EINVAL);
-			if (csp->csp_auth_mlen < 0 ||
-			    csp->csp_auth_mlen > AES_GMAC_HASH_LEN)
-				return (EINVAL);
 			if ((sc->hw_features & VERSION_CAP_AES) == 0)
 				return (EINVAL);
 			break;
@@ -405,7 +401,7 @@ ccp_newsession(device_t dev, crypto_session_t cses,
 {
 	struct ccp_softc *sc;
 	struct ccp_session *s;
-	struct auth_hash *auth_hash;
+	const struct auth_hash *auth_hash;
 	enum ccp_aes_mode cipher_mode;
 	unsigned auth_mode;
 	unsigned q;
@@ -638,8 +634,7 @@ static driver_t ccp_driver = {
 	sizeof(struct ccp_softc)
 };
 
-static devclass_t ccp_devclass;
-DRIVER_MODULE(ccp, pci, ccp_driver, ccp_devclass, NULL, NULL);
+DRIVER_MODULE(ccp, pci, ccp_driver, NULL, NULL);
 MODULE_VERSION(ccp, 1);
 MODULE_DEPEND(ccp, crypto, 1, 1, 1);
 MODULE_DEPEND(ccp, random_device, 1, 1, 1);
@@ -768,7 +763,7 @@ DB_SHOW_COMMAND(ccp, db_show_ccp)
 
 	unit = (unsigned)addr;
 
-	sc = devclass_get_softc(ccp_devclass, unit);
+	sc = devclass_get_softc(devclass_find("ccp"), unit);
 	if (sc == NULL) {
 		db_printf("No such device ccp%u\n", unit);
 		goto usage;

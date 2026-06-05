@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Gleb Smirnoff <glebius@FreeBSD.org>
  * All rights reserved.
@@ -26,9 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -42,6 +39,8 @@ __FBSDID("$FreeBSD$");
 
 #define IN_SUBR_COUNTER_C
 #include <sys/counter.h>
+
+static MALLOC_DEFINE(M_COUNTER_RATE, "counter_rate", "counter rate allocations");
 
 void
 counter_u64_zero(counter_u64_t c)
@@ -118,6 +117,57 @@ sysctl_handle_counter_u64_array(SYSCTL_HANDLER_ARGS)
 }
 
 /*
+ * counter(9) based rate checking.
+ */
+struct counter_rate {
+	counter_u64_t	cr_rate;	/* Events since last second */
+	volatile int	cr_lock;	/* Lock to clean the struct */
+	int		cr_ticks;	/* Ticks on last clean */
+	int		cr_over;	/* Over limit since cr_ticks? */
+	int		cr_period;	/* Allow cr_rate per cr_period seconds. */
+};
+
+struct counter_rate *
+counter_rate_alloc(int flags, int period)
+{
+	struct counter_rate *new;
+
+	new = malloc(sizeof(struct counter_rate), M_COUNTER_RATE,
+	    flags | M_ZERO);
+	if (new == NULL)
+		return (NULL);
+
+	new->cr_rate = counter_u64_alloc(flags);
+	if (new->cr_rate == NULL) {
+		free(new, M_COUNTER_RATE);
+		return (NULL);
+	}
+	new->cr_ticks = ticks;
+	new->cr_period = period;
+
+	return (new);
+}
+
+void
+counter_rate_free(struct counter_rate *rate)
+{
+	if (rate == NULL)
+		return;
+
+	counter_u64_free(rate->cr_rate);
+	free(rate, M_COUNTER_RATE);
+}
+
+uint64_t
+counter_rate_get(struct counter_rate *cr)
+{
+	if (cr->cr_ticks < (tick - (hz * cr->cr_period)))
+		return (0);
+
+	return (counter_u64_fetch(cr->cr_rate));
+}
+
+/*
  * MP-friendly version of ppsratecheck().
  *
  * Returns non-negative if we are in the rate, negative otherwise.
@@ -135,7 +185,7 @@ counter_ratecheck(struct counter_rate *cr, int64_t limit)
 	val = cr->cr_over;
 	now = ticks;
 
-	if ((u_int)(now - cr->cr_ticks) >= hz) {
+	if ((u_int)(now - cr->cr_ticks) >= (hz * cr->cr_period)) {
 		/*
 		 * Time to clear the structure, we are in the next second.
 		 * First try unlocked read, and then proceed with atomic.
@@ -146,7 +196,7 @@ counter_ratecheck(struct counter_rate *cr, int64_t limit)
 			 * Check if other thread has just went through the
 			 * reset sequence before us.
 			 */
-			if ((u_int)(now - cr->cr_ticks) >= hz) {
+			if ((u_int)(now - cr->cr_ticks) >= (hz * cr->cr_period)) {
 				val = counter_u64_fetch(cr->cr_rate);
 				counter_u64_zero(cr->cr_rate);
 				cr->cr_over = 0;

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007-2008 John Birrell <jb@FreeBSD.org>
  * All rights reserved.
@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_kdb.h"
 
 #include <sys/param.h>
@@ -61,7 +59,7 @@ systrace_probe_func_t 		systrace_probe_func;
 
 /* Return the DTrace process data size compiled in the kernel hooks. */
 size_t
-kdtrace_proc_size()
+kdtrace_proc_size(void)
 {
 
 	return (KDTRACE_PROC_SIZE);
@@ -84,7 +82,7 @@ kdtrace_proc_dtor(struct proc *p)
 
 /* Return the DTrace thread data size compiled in the kernel hooks. */
 size_t
-kdtrace_thread_size()
+kdtrace_thread_size(void)
 {
 
 	return (KDTRACE_THREAD_SIZE);

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2010 Lawrence Stewart <lstewart@freebsd.org>
  * All rights reserved.
@@ -29,8 +29,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -45,18 +43,7 @@
 #ifndef _NETINET_CC_MODULE_H_
 #define _NETINET_CC_MODULE_H_
 
-/*
- * Allows a CC algorithm to manipulate a commonly named CC variable regardless
- * of the transport protocol and associated C struct.
- * XXXLAS: Out of action until the work to support SCTP is done.
- *
-#define	CCV(ccv, what)							\
-(*(									\
-	(ccv)->type == IPPROTO_TCP ?	&(ccv)->ccvc.tcp->what :	\
-					&(ccv)->ccvc.sctp->what		\
-))
- */
-#define	CCV(ccv, what) (ccv)->ccvc.tcp->what
+#define	CCV(ccv, what) (ccv)->tp->what
 
 #define	DECLARE_CC_MODULE(ccname, ccalgo) 				\
 	static moduledata_t cc_##ccname = {				\

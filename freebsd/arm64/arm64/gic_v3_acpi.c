@@ -1,6 +1,6 @@
 /*-
  * Copyright (c) 2016 The FreeBSD Foundation
- * All rights reserved.
+ * Copyright (c) 2022 Arm Ltd
  *
  * This software was developed by Andrew Turner under
  * the sponsorship of the FreeBSD Foundation.
@@ -29,9 +29,6 @@
 
 #include "opt_acpi.h"
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/types.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -49,6 +46,11 @@ __FBSDID("$FreeBSD$");
 #include "gic_v3_reg.h"
 #include "gic_v3_var.h"
 
+#define	GICV3_PRIV_VGIC		0x80000000
+#define	GICV3_PRIV_FLAGS	0x80000000
+#define HV_MSI_SPI_START 	64
+#define HV_MSI_SPI_LAST 	0
+
 struct gic_v3_acpi_devinfo {
 	struct gic_v3_devinfo	di_gic_dinfo;
 	struct resource_list	di_rl;
@@ -57,7 +59,7 @@ struct gic_v3_acpi_devinfo {
 static device_identify_t gic_v3_acpi_identify;
 static device_probe_t gic_v3_acpi_probe;
 static device_attach_t gic_v3_acpi_attach;
-static bus_alloc_resource_t gic_v3_acpi_bus_alloc_res;
+static bus_get_resource_list_t gic_v3_acpi_get_resource_list;
 
 static void gic_v3_acpi_bus_attach(device_t);
 
@@ -68,8 +70,7 @@ static device_method_t gic_v3_acpi_methods[] = {
 	DEVMETHOD(device_attach,		gic_v3_acpi_attach),
 
 	/* Bus interface */
-	DEVMETHOD(bus_alloc_resource,		gic_v3_acpi_bus_alloc_res),
-	DEVMETHOD(bus_activate_resource,	bus_generic_activate_resource),
+	DEVMETHOD(bus_get_resource_list,	gic_v3_acpi_get_resource_list),
 
 	/* End */
 	DEVMETHOD_END
@@ -78,10 +79,8 @@ static device_method_t gic_v3_acpi_methods[] = {
 DEFINE_CLASS_1(gic, gic_v3_acpi_driver, gic_v3_acpi_methods,
     sizeof(struct gic_v3_softc), gic_v3_driver);
 
-static devclass_t gic_v3_acpi_devclass;
-
-EARLY_DRIVER_MODULE(gic_v3, acpi, gic_v3_acpi_driver, gic_v3_acpi_devclass,
-    0, 0, BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(gic_v3, acpi, gic_v3_acpi_driver, 0, 0,
+    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
 
 struct madt_table_data {
 	device_t parent;
@@ -89,6 +88,7 @@ struct madt_table_data {
 	ACPI_MADT_GENERIC_DISTRIBUTOR *dist;
 	int count;
 	bool rdist_use_gicc;
+	bool have_vgic;
 };
 
 static void
@@ -155,6 +155,8 @@ rdist_map(ACPI_SUBTABLE_HEADER *entry, void *arg)
 		BUS_SET_RESOURCE(madt_data->parent, madt_data->dev,
 		    SYS_RES_MEMORY, madt_data->count, intr->GicrBaseAddress,
 		    count);
+		if (intr->VgicInterrupt == 0)
+			madt_data->have_vgic = false;
 
 	default:
 		break;
@@ -167,6 +169,7 @@ gic_v3_acpi_identify(driver_t *driver, device_t parent)
 	struct madt_table_data madt_data;
 	ACPI_TABLE_MADT *madt;
 	vm_paddr_t physaddr;
+	uintptr_t private;
 	device_t dev;
 
 	physaddr = acpi_find_table(ACPI_SIG_MADT);
@@ -209,10 +212,11 @@ gic_v3_acpi_identify(driver_t *driver, device_t parent)
 
 	/* Add the MADT data */
 	BUS_SET_RESOURCE(parent, dev, SYS_RES_MEMORY, 0,
-	    madt_data.dist->BaseAddress, 128 * 1024);
+	    madt_data.dist->BaseAddress, GICD_SIZE);
 
 	madt_data.dev = dev;
 	madt_data.rdist_use_gicc = false;
+	madt_data.have_vgic = true;
 	acpi_walk_subtables(madt + 1, (char *)madt + madt->Header.Length,
 	    rdist_map, &madt_data);
 	if (madt_data.count == 0) {
@@ -225,7 +229,12 @@ gic_v3_acpi_identify(driver_t *driver, device_t parent)
 		    rdist_map, &madt_data);
 	}
 
-	acpi_set_private(dev, (void *)(uintptr_t)madt_data.dist->Version);
+	private = madt_data.dist->Version;
+	/* Flag that the VGIC is in use */
+	if (madt_data.have_vgic)
+		private |= GICV3_PRIV_VGIC;
+
+	acpi_set_private(dev, (void *)private);
 
 out:
 	acpi_unmap_table(madt);
@@ -235,7 +244,7 @@ static int
 gic_v3_acpi_probe(device_t dev)
 {
 
-	switch((uintptr_t)acpi_get_private(dev)) {
+	switch((uintptr_t)acpi_get_private(dev) & ~GICV3_PRIV_FLAGS) {
 	case ACPI_MADT_GIC_VERSION_V3:
 	case ACPI_MADT_GIC_VERSION_V4:
 		break;
@@ -291,6 +300,7 @@ gic_v3_acpi_count_regions(device_t dev)
 		acpi_walk_subtables(madt + 1,
 		    (char *)madt + madt->Header.Length,
 		    madt_count_gicc_redistrib, sc);
+		sc->gic_redists.single = true;
 	}
 	acpi_unmap_table(madt);
 
@@ -310,7 +320,10 @@ gic_v3_acpi_attach(device_t dev)
 	err = gic_v3_acpi_count_regions(dev);
 	if (err != 0)
 		goto count_error;
-
+	if (vm_guest == VM_GUEST_HV) {
+		sc->gic_mbi_start = HV_MSI_SPI_START;
+		sc->gic_mbi_end = HV_MSI_SPI_LAST;
+	}
 	err = gic_v3_attach(dev);
 	if (err != 0)
 		goto error;
@@ -321,12 +334,32 @@ gic_v3_acpi_attach(device_t dev)
 		err = ENXIO;
 		goto error;
 	}
+	/*
+	 * Registering for MSI with SPI range, as this is
+	 * required for Hyper-V GIC to work in ARM64.
+	 */
+	if (vm_guest == VM_GUEST_HV) {
+		err = intr_msi_register(dev, ACPI_MSI_XREF);
+		if (err) {
+			device_printf(dev, "could not register MSI\n");
+			goto error;
+		}
+	}
 
-	if (intr_pic_claim_root(dev, ACPI_INTR_XREF, arm_gic_v3_intr, sc,
-	    GIC_LAST_SGI - GIC_FIRST_SGI + 1) != 0) {
+	err = intr_pic_claim_root(dev, ACPI_INTR_XREF, arm_gic_v3_intr, sc,
+	    INTR_ROOT_IRQ);
+	if (err != 0) {
 		err = ENXIO;
 		goto error;
 	}
+
+#ifdef SMP
+	err = intr_ipi_pic_register(dev, 0);
+	if (err != 0) {
+		device_printf(dev, "could not register for IPIs\n");
+		goto error;
+	}
+#endif
 
 	/*
 	 * Try to register the ITS driver to this GIC. The GIC will act as
@@ -368,23 +401,25 @@ gic_v3_add_children(ACPI_SUBTABLE_HEADER *entry, void *arg)
 		dev = arg;
 		sc = device_get_softc(dev);
 
-		child = device_add_child(dev, "its", -1);
-		if (child == NULL)
-			return;
-
 		di = malloc(sizeof(*di), M_GIC_V3, M_WAITOK | M_ZERO);
+		err = acpi_iort_its_lookup(gict->TranslationId, &xref, &pxm);
+		if (err != 0) {
+			free(di, M_GIC_V3);
+			return;
+		}
+
+		child = device_add_child(dev, "its", DEVICE_UNIT_ANY);
+		if (child == NULL) {
+			free(di, M_GIC_V3);
+			return;
+		}
+
+		di->di_gic_dinfo.gic_domain = pxm;
+		di->di_gic_dinfo.msi_xref = xref;
 		resource_list_init(&di->di_rl);
 		resource_list_add(&di->di_rl, SYS_RES_MEMORY, 0,
 		    gict->BaseAddress, gict->BaseAddress + 128 * 1024 - 1,
 		    128 * 1024);
-		err = acpi_iort_its_lookup(gict->TranslationId, &xref, &pxm);
-		if (err == 0) {
-			di->di_gic_dinfo.gic_domain = pxm;
-			di->di_gic_dinfo.msi_xref = xref;
-		} else {
-			di->di_gic_dinfo.gic_domain = -1;
-			di->di_gic_dinfo.msi_xref = ACPI_MSI_XREF;
-		}
 		sc->gic_nchildren++;
 		device_set_ivars(child, di);
 	}
@@ -393,8 +428,13 @@ gic_v3_add_children(ACPI_SUBTABLE_HEADER *entry, void *arg)
 static void
 gic_v3_acpi_bus_attach(device_t dev)
 {
+	struct gic_v3_acpi_devinfo *di;
+	struct gic_v3_softc *sc;
 	ACPI_TABLE_MADT *madt;
+	device_t child;
 	vm_paddr_t physaddr;
+
+	sc = device_get_softc(dev);
 
 	physaddr = acpi_find_table(ACPI_SIG_MADT);
 	if (physaddr == 0)
@@ -408,37 +448,33 @@ gic_v3_acpi_bus_attach(device_t dev)
 
 	acpi_walk_subtables(madt + 1, (char *)madt + madt->Header.Length,
 	    gic_v3_add_children, dev);
+	/* Add the vgic child if needed */
+	if (((uintptr_t)acpi_get_private(dev) & GICV3_PRIV_FLAGS) != 0) {
+		child = device_add_child(dev, "vgic", DEVICE_UNIT_ANY);
+		if (child == NULL) {
+			device_printf(dev, "Could not add vgic child\n");
+		} else {
+			di = malloc(sizeof(*di), M_GIC_V3, M_WAITOK | M_ZERO);
+			resource_list_init(&di->di_rl);
+			di->di_gic_dinfo.gic_domain = -1;
+			di->di_gic_dinfo.is_vgic = 1;
+			device_set_ivars(child, di);
+			sc->gic_nchildren++;
+		}
+	}
 
 	acpi_unmap_table(madt);
 
-	bus_generic_attach(dev);
+	bus_attach_children(dev);
 }
 
-static struct resource *
-gic_v3_acpi_bus_alloc_res(device_t bus, device_t child, int type, int *rid,
-    rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
+static struct resource_list *
+gic_v3_acpi_get_resource_list(device_t bus, device_t child)
 {
 	struct gic_v3_acpi_devinfo *di;
-	struct resource_list_entry *rle;
 
-	/* We only allocate memory */
-	if (type != SYS_RES_MEMORY)
-		return (NULL);
+	di = device_get_ivars(child);
+	KASSERT(di != NULL, ("%s: No devinfo", __func__));
 
-	if (RMAN_IS_DEFAULT_RANGE(start, end)) {
-		if ((di = device_get_ivars(child)) == NULL)
-			return (NULL);
-
-		/* Find defaults for this rid */
-		rle = resource_list_find(&di->di_rl, type, *rid);
-		if (rle == NULL)
-			return (NULL);
-
-		start = rle->start;
-		end = rle->end;
-		count = rle->count;
-	}
-
-	return (bus_generic_alloc_resource(bus, child, type, rid, start, end,
-	    count, flags));
+	return (&di->di_rl);
 }

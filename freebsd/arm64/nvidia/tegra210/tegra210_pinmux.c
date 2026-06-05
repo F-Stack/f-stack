@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -26,8 +26,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * Pin multiplexer driver for Tegra SoCs.
  */
@@ -669,7 +667,6 @@ static int pinmux_configure(device_t dev, phandle_t cfgxref)
 {
 	struct pinmux_softc *sc;
 	phandle_t node, cfgnode;
-	int rv;
 
 	sc = device_get_softc(dev);
 	cfgnode = OF_node_from_xref(cfgxref);
@@ -678,7 +675,7 @@ static int pinmux_configure(device_t dev, phandle_t cfgxref)
 	for (node = OF_child(cfgnode); node != 0; node = OF_peer(node)) {
 		if (!ofw_bus_node_status_okay(node))
 			continue;
-		rv = pinmux_process_node(sc, node);
+		pinmux_process_node(sc, node);
 	}
 	return (0);
 }
@@ -751,8 +748,7 @@ static device_method_t tegra210_pinmux_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t tegra210_pinmux_devclass;
 static DEFINE_CLASS_0(pinmux, tegra210_pinmux_driver, tegra210_pinmux_methods,
     sizeof(struct pinmux_softc));
 EARLY_DRIVER_MODULE(tegra210_pinmux, simplebus, tegra210_pinmux_driver,
-    tegra210_pinmux_devclass, NULL, NULL, 71);
+    NULL, NULL, 71);

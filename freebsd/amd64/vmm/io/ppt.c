@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,12 +24,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -46,12 +41,12 @@ __FBSDID("$FreeBSD$");
 #include <dev/pci/pcireg.h>
 
 #include <machine/resource.h>
-
 #include <machine/vmm.h>
 #include <machine/vmm_dev.h>
 
+#include <dev/vmm/vmm_ktr.h>
+
 #include "vmm_lapic.h"
-#include "vmm_ktr.h"
 
 #include "iommu.h"
 #include "ppt.h"
@@ -156,10 +151,19 @@ static int
 ppt_attach(device_t dev)
 {
 	struct pptdev *ppt;
+	uint16_t cmd, cmd1;
+	int error;
 
 	ppt = device_get_softc(dev);
 
-	iommu_remove_device(iommu_host_domain(), pci_get_rid(dev));
+	cmd1 = cmd = pci_read_config(dev, PCIR_COMMAND, 2);
+	cmd &= ~(PCIM_CMD_PORTEN | PCIM_CMD_MEMEN | PCIM_CMD_BUSMASTEREN);
+	pci_write_config(dev, PCIR_COMMAND, cmd, 2);
+	error = iommu_remove_device(iommu_host_domain(), dev, pci_get_rid(dev));
+	if (error != 0) {
+		pci_write_config(dev, PCIR_COMMAND, cmd1, 2);
+		return (error);
+	}
 	num_pptdevs++;
 	TAILQ_INSERT_TAIL(&pptdev_list, ppt, next);
 	ppt->dev = dev;
@@ -174,15 +178,22 @@ static int
 ppt_detach(device_t dev)
 {
 	struct pptdev *ppt;
+	int error;
 
 	ppt = device_get_softc(dev);
 
 	if (ppt->vm != NULL)
 		return (EBUSY);
+	if (iommu_host_domain() != NULL) {
+		error = iommu_add_device(iommu_host_domain(), dev,
+		    pci_get_rid(dev));
+	} else {
+		error = 0;
+	}
+	if (error != 0)
+		return (error);
 	num_pptdevs--;
 	TAILQ_REMOVE(&pptdev_list, ppt, next);
-	pci_disable_busmaster(dev);
-	iommu_add_device(iommu_host_domain(), pci_get_rid(dev));
 
 	return (0);
 }
@@ -195,9 +206,8 @@ static device_method_t ppt_methods[] = {
 	{0, 0}
 };
 
-static devclass_t ppt_devclass;
 DEFINE_CLASS_0(ppt, ppt_driver, ppt_methods, sizeof(struct pptdev));
-DRIVER_MODULE(ppt, pci, ppt_driver, ppt_devclass, NULL, NULL);
+DRIVER_MODULE(ppt, pci, ppt_driver, NULL, NULL);
 
 static int
 ppt_find(struct vm *vm, int bus, int slot, int func, struct pptdev **pptp)
@@ -224,7 +234,7 @@ ppt_find(struct vm *vm, int bus, int slot, int func, struct pptdev **pptp)
 }
 
 static void
-ppt_unmap_mmio(struct vm *vm, struct pptdev *ppt)
+ppt_unmap_all_mmio(struct vm *vm, struct pptdev *ppt)
 {
 	int i;
 	struct pptseg *seg;
@@ -258,7 +268,7 @@ ppt_teardown_msi(struct pptdev *ppt)
 
 		if (res != NULL)
 			bus_release_resource(ppt->dev, SYS_RES_IRQ, rid, res);
-		
+
 		ppt->msi.res[i] = NULL;
 		ppt->msi.cookie[i] = NULL;
 	}
@@ -269,7 +279,7 @@ ppt_teardown_msi(struct pptdev *ppt)
 	ppt->msi.num_msgs = 0;
 }
 
-static void 
+static void
 ppt_teardown_msix_intr(struct pptdev *ppt, int idx)
 {
 	int rid;
@@ -280,25 +290,25 @@ ppt_teardown_msix_intr(struct pptdev *ppt, int idx)
 	res = ppt->msix.res[idx];
 	cookie = ppt->msix.cookie[idx];
 
-	if (cookie != NULL) 
+	if (cookie != NULL)
 		bus_teardown_intr(ppt->dev, res, cookie);
 
-	if (res != NULL) 
+	if (res != NULL)
 		bus_release_resource(ppt->dev, SYS_RES_IRQ, rid, res);
 
 	ppt->msix.res[idx] = NULL;
 	ppt->msix.cookie[idx] = NULL;
 }
 
-static void 
+static void
 ppt_teardown_msix(struct pptdev *ppt)
 {
 	int i;
 
-	if (ppt->msix.num_msgs == 0) 
+	if (ppt->msix.num_msgs == 0)
 		return;
 
-	for (i = 0; i < ppt->msix.num_msgs; i++) 
+	for (i = 0; i < ppt->msix.num_msgs; i++)
 		ppt_teardown_msix_intr(ppt, i);
 
 	free(ppt->msix.res, M_PPTMSIX);
@@ -308,14 +318,14 @@ ppt_teardown_msix(struct pptdev *ppt)
 	pci_release_msi(ppt->dev);
 
 	if (ppt->msix.msix_table_res) {
-		bus_release_resource(ppt->dev, SYS_RES_MEMORY, 
+		bus_release_resource(ppt->dev, SYS_RES_MEMORY,
 				     ppt->msix.msix_table_rid,
 				     ppt->msix.msix_table_res);
 		ppt->msix.msix_table_res = NULL;
 		ppt->msix.msix_table_rid = 0;
 	}
 	if (ppt->msix.msix_pba_res) {
-		bus_release_resource(ppt->dev, SYS_RES_MEMORY, 
+		bus_release_resource(ppt->dev, SYS_RES_MEMORY,
 				     ppt->msix.msix_pba_rid,
 				     ppt->msix.msix_pba_res);
 		ppt->msix.msix_pba_res = NULL;
@@ -380,11 +390,28 @@ ppt_pci_reset(device_t dev)
 	pci_power_reset(dev);
 }
 
+static uint16_t
+ppt_bar_enables(struct pptdev *ppt)
+{
+	struct pci_map *pm;
+	uint16_t cmd;
+
+	cmd = 0;
+	for (pm = pci_first_bar(ppt->dev); pm != NULL; pm = pci_next_bar(pm)) {
+		if (PCI_BAR_IO(pm->pm_value))
+			cmd |= PCIM_CMD_PORTEN;
+		if (PCI_BAR_MEM(pm->pm_value))
+			cmd |= PCIM_CMD_MEMEN;
+	}
+	return (cmd);
+}
+
 int
 ppt_assign_device(struct vm *vm, int bus, int slot, int func)
 {
 	struct pptdev *ppt;
 	int error;
+	uint16_t cmd;
 
 	/* Passing NULL requires the device to be unowned. */
 	error = ppt_find(NULL, bus, slot, func, &ppt);
@@ -394,8 +421,14 @@ ppt_assign_device(struct vm *vm, int bus, int slot, int func)
 	pci_save_state(ppt->dev);
 	ppt_pci_reset(ppt->dev);
 	pci_restore_state(ppt->dev);
+	error = iommu_add_device(vm_iommu_domain(vm), ppt->dev,
+	    pci_get_rid(ppt->dev));
+	if (error != 0)
+		return (error);
 	ppt->vm = vm;
-	iommu_add_device(vm_iommu_domain(vm), pci_get_rid(ppt->dev));
+	cmd = pci_read_config(ppt->dev, PCIR_COMMAND, 2);
+	cmd |= PCIM_CMD_BUSMASTEREN | ppt_bar_enables(ppt);
+	pci_write_config(ppt->dev, PCIR_COMMAND, cmd, 2);
 	return (0);
 }
 
@@ -404,20 +437,25 @@ ppt_unassign_device(struct vm *vm, int bus, int slot, int func)
 {
 	struct pptdev *ppt;
 	int error;
+	uint16_t cmd;
 
 	error = ppt_find(vm, bus, slot, func, &ppt);
 	if (error)
 		return (error);
 
+	cmd = pci_read_config(ppt->dev, PCIR_COMMAND, 2);
+	cmd &= ~(PCIM_CMD_PORTEN | PCIM_CMD_MEMEN | PCIM_CMD_BUSMASTEREN);
+	pci_write_config(ppt->dev, PCIR_COMMAND, cmd, 2);
 	pci_save_state(ppt->dev);
 	ppt_pci_reset(ppt->dev);
 	pci_restore_state(ppt->dev);
-	ppt_unmap_mmio(vm, ppt);
+	ppt_unmap_all_mmio(vm, ppt);
 	ppt_teardown_msi(ppt);
 	ppt_teardown_msix(ppt);
-	iommu_remove_device(vm_iommu_domain(vm), pci_get_rid(ppt->dev));
+	error = iommu_remove_device(vm_iommu_domain(vm), ppt->dev,
+	    pci_get_rid(ppt->dev));
 	ppt->vm = NULL;
-	return (0);
+	return (error);
 }
 
 int
@@ -440,6 +478,23 @@ ppt_unassign_all(struct vm *vm)
 	return (0);
 }
 
+static bool
+ppt_valid_bar_mapping(struct pptdev *ppt, vm_paddr_t hpa, size_t len)
+{
+	struct pci_map *pm;
+	pci_addr_t base, size;
+
+	for (pm = pci_first_bar(ppt->dev); pm != NULL; pm = pci_next_bar(pm)) {
+		if (!PCI_BAR_MEM(pm->pm_value))
+			continue;
+		base = pm->pm_value & PCIM_BAR_MEM_BASE;
+		size = (pci_addr_t)1 << pm->pm_size;
+		if (hpa >= base && hpa + len <= base + size)
+			return (true);
+	}
+	return (false);
+}
+
 int
 ppt_map_mmio(struct vm *vm, int bus, int slot, int func,
 	     vm_paddr_t gpa, size_t len, vm_paddr_t hpa)
@@ -448,9 +503,16 @@ ppt_map_mmio(struct vm *vm, int bus, int slot, int func,
 	struct pptseg *seg;
 	struct pptdev *ppt;
 
+	if (len % PAGE_SIZE != 0 || len == 0 || gpa % PAGE_SIZE != 0 ||
+	    hpa % PAGE_SIZE != 0 || gpa + len < gpa || hpa + len < hpa)
+		return (EINVAL);
+
 	error = ppt_find(vm, bus, slot, func, &ppt);
 	if (error)
 		return (error);
+
+	if (!ppt_valid_bar_mapping(ppt, hpa, len))
+		return (EINVAL);
 
 	for (i = 0; i < MAX_MMIOSEGS; i++) {
 		seg = &ppt->mmio[i];
@@ -464,6 +526,32 @@ ppt_map_mmio(struct vm *vm, int bus, int slot, int func,
 		}
 	}
 	return (ENOSPC);
+}
+
+int
+ppt_unmap_mmio(struct vm *vm, int bus, int slot, int func,
+	       vm_paddr_t gpa, size_t len)
+{
+	int i, error;
+	struct pptseg *seg;
+	struct pptdev *ppt;
+
+	error = ppt_find(vm, bus, slot, func, &ppt);
+	if (error)
+		return (error);
+
+	for (i = 0; i < MAX_MMIOSEGS; i++) {
+		seg = &ppt->mmio[i];
+		if (seg->gpa == gpa && seg->len == len) {
+			error = vm_unmap_mmio(vm, seg->gpa, seg->len);
+			if (error == 0) {
+				seg->gpa = 0;
+				seg->len = 0;
+			}
+			return (error);
+		}
+	}
+	return (ENOENT);
 }
 
 static int
@@ -495,7 +583,7 @@ pptintr(void *arg)
 }
 
 int
-ppt_setup_msi(struct vm *vm, int vcpu, int bus, int slot, int func,
+ppt_setup_msi(struct vm *vm, int bus, int slot, int func,
 	      uint64_t addr, uint64_t msg, int numvec)
 {
 	int i, rid, flags;
@@ -588,7 +676,7 @@ ppt_setup_msi(struct vm *vm, int vcpu, int bus, int slot, int func,
 }
 
 int
-ppt_setup_msix(struct vm *vm, int vcpu, int bus, int slot, int func,
+ppt_setup_msix(struct vm *vm, int bus, int slot, int func,
 	       int idx, uint64_t addr, uint64_t msg, uint32_t vector_control)
 {
 	struct pptdev *ppt;
@@ -605,10 +693,10 @@ ppt_setup_msix(struct vm *vm, int vcpu, int bus, int slot, int func,
 		return (EBUSY);
 
 	dinfo = device_get_ivars(ppt->dev);
-	if (!dinfo) 
+	if (!dinfo)
 		return (ENXIO);
 
-	/* 
+	/*
 	 * First-time configuration:
 	 * 	Allocate the MSI-X table
 	 *	Allocate the IRQ resources
@@ -661,6 +749,9 @@ ppt_setup_msix(struct vm *vm, int vcpu, int bus, int slot, int func,
 			return (error == 0 ? ENOSPC: error);
 		}
 	}
+
+	if (idx >= ppt->msix.num_msgs)
+		return (EINVAL);
 
 	if ((vector_control & PCIM_MSIX_VCTRL_MASK) == 0) {
 		/* Tear down the IRQ if it's already set up */

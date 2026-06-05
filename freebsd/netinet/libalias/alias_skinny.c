@@ -1,7 +1,7 @@
 /*-
  * alias_skinny.c
  *
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002, 2003 MarcusCom, Inc.
  * All rights reserved.
@@ -28,8 +28,6 @@
  * SUCH DAMAGE.
  *
  * Author: Joe Marcus Clarke <marcus@FreeBSD.org>
- *
- * $FreeBSD$
  */
 
 #ifdef _KERNEL
@@ -61,7 +59,6 @@ AliasHandleSkinny(struct libalias *, struct ip *, struct alias_link *);
 static int
 fingerprint(struct libalias *la, struct alias_data *ah)
 {
-
 	if (ah->dport == NULL || ah->sport == NULL || ah->lnk == NULL)
 		return (-1);
 	if (la->skinnyPort != 0 && (ntohs(*ah->sport) == la->skinnyPort ||
@@ -73,8 +70,7 @@ fingerprint(struct libalias *la, struct alias_data *ah)
 static int
 protohandler(struct libalias *la, struct ip *pip, struct alias_data *ah)
 {
-
-        AliasHandleSkinny(la, pip, ah->lnk);
+	AliasHandleSkinny(la, pip, ah->lnk);
 	return (0);
 }
 
@@ -116,7 +112,7 @@ moduledata_t alias_mod = {
        "alias_skinny", mod_handler, NULL
 };
 
-#ifdef	_KERNEL
+#ifdef _KERNEL
 DECLARE_MODULE(alias_skinny, alias_mod, SI_SUB_DRIVERS, SI_ORDER_SECOND);
 MODULE_VERSION(alias_skinny, 1);
 MODULE_DEPEND(alias_skinny, libalias, 1, 1, 1);
@@ -153,10 +149,10 @@ MODULE_DEPEND(alias_skinny, libalias, 1, 1, 1);
 /* #define LIBALIAS_DEBUG 1 */
 
 /* Message types that need translating */
-#define REG_MSG         0x00000001
-#define IP_PORT_MSG     0x00000002
-#define OPNRCVCH_ACK    0x00000022
-#define START_MEDIATX   0x0000008a
+#define REG_MSG		0x00000001
+#define IP_PORT_MSG	0x00000002
+#define OPNRCVCH_ACK	0x00000022
+#define START_MEDIATX	0x0000008a
 
 struct skinny_header {
 	u_int32_t	len;
@@ -214,11 +210,11 @@ alias_skinny_reg_msg(struct RegisterMessage *reg_msg, struct ip *pip,
 {
 	(void)direction;
 
-	reg_msg->ipAddr = (u_int32_t) GetAliasAddress(lnk).s_addr;
+	reg_msg->ipAddr = (u_int32_t)GetAliasAddress(lnk).s_addr;
 
 	tc->th_sum = 0;
 #ifdef _KERNEL
-	tc->th_x2 = 1;
+	tcp_set_flags(tc, tcp_get_flags(tc) | TH_RES1);
 #else
 	tc->th_sum = TcpChecksum(pip);
 #endif
@@ -232,7 +228,7 @@ alias_skinny_startmedia(struct StartMediaTransmission *start_media,
     struct alias_link *lnk, u_int32_t localIpAddr,
     ConvDirection direction)
 {
-	struct in_addr dst, src;
+	struct in_addr dst __unused, src __unused;
 
 	(void)pip;
 	(void)tc;
@@ -257,11 +253,11 @@ alias_skinny_port_msg(struct IpPortMessage *port_msg, struct ip *pip,
 {
 	(void)direction;
 
-	port_msg->stationIpPort = (u_int32_t) ntohs(GetAliasPort(lnk));
+	port_msg->stationIpPort = (u_int32_t)ntohs(GetAliasPort(lnk));
 
 	tc->th_sum = 0;
 #ifdef _KERNEL
-	tc->th_x2 = 1;
+	tcp_set_flags(tc, tcp_get_flags(tc) | TH_RES1);
 #else
 	tc->th_sum = TcpChecksum(pip);
 #endif
@@ -276,24 +272,22 @@ alias_skinny_opnrcvch_ack(struct libalias *la, struct OpenReceiveChannelAck *opn
 {
 	struct in_addr null_addr;
 	struct alias_link *opnrcv_lnk;
-	u_int32_t localPort;
 
 	(void)lnk;
 	(void)direction;
 
-	*localIpAddr = (u_int32_t) opnrcvch_ack->ipAddr;
-	localPort = opnrcvch_ack->port;
+	*localIpAddr = (u_int32_t)opnrcvch_ack->ipAddr;
 
 	null_addr.s_addr = INADDR_ANY;
-	opnrcv_lnk = FindUdpTcpOut(la, pip->ip_src, null_addr,
+	(void)FindUdpTcpOut(la, pip->ip_src, null_addr,
 	    htons((u_short) opnrcvch_ack->port), 0,
-	    IPPROTO_UDP, 1);
-	opnrcvch_ack->ipAddr = (u_int32_t) GetAliasAddress(opnrcv_lnk).s_addr;
-	opnrcvch_ack->port = (u_int32_t) ntohs(GetAliasPort(opnrcv_lnk));
+	    IPPROTO_UDP, 1, &opnrcv_lnk);
+	opnrcvch_ack->ipAddr = (u_int32_t)GetAliasAddress(opnrcv_lnk).s_addr;
+	opnrcvch_ack->port = (u_int32_t)ntohs(GetAliasPort(opnrcv_lnk));
 
 	tc->th_sum = 0;
 #ifdef _KERNEL
-	tc->th_x2 = 1;
+	tcp_set_flags(tc, tcp_get_flags(tc) | TH_RES1);
 #else
 	tc->th_sum = TcpChecksum(pip);
 #endif
@@ -323,11 +317,11 @@ AliasHandleSkinny(struct libalias *la, struct ip *pip, struct alias_link *lnk)
 	 * handle the scenario where the call manager is on the inside, and
 	 * the calling phone is on the global outside.
 	 */
-	if (ntohs(tc->th_dport) == la->skinnyPort) {
+	if (ntohs(tc->th_dport) == la->skinnyPort)
 		direction = ClientToServer;
-	} else if (ntohs(tc->th_sport) == la->skinnyPort) {
+	else if (ntohs(tc->th_sport) == la->skinnyPort)
 		direction = ServerToClient;
-	} else {
+	else {
 #ifdef LIBALIAS_DEBUG
 		fprintf(stderr,
 		    "PacketAlias/Skinny: Invalid port number, not a Skinny packet\n");

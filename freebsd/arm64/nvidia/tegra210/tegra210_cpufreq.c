@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -25,9 +25,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -40,8 +37,8 @@ __FBSDID("$FreeBSD$");
 #include <machine/bus.h>
 #include <machine/cpu.h>
 
-#include <dev/extres/clk/clk.h>
-#include <dev/extres/regulator/regulator.h>
+#include <dev/clk/clk.h>
+#include <dev/regulator/regulator.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
 #include <arm/nvidia/tegra_efuse.h>
@@ -251,7 +248,7 @@ static int
 tegra210_cpufreq_settings(device_t dev, struct cf_setting *sets, int *count)
 {
 	struct tegra210_cpufreq_softc *sc;
-	int i, j, max_cnt;
+	int i, j;
 
 	if (sets == NULL || count == NULL)
 		return (EINVAL);
@@ -259,7 +256,6 @@ tegra210_cpufreq_settings(device_t dev, struct cf_setting *sets, int *count)
 	sc = device_get_softc(dev);
 	memset(sets, CPUFREQ_VAL_UNKNOWN, sizeof(*sets) * (*count));
 
-	max_cnt = min(sc->nspeed_points, *count);
 	for (i = 0, j = sc->nspeed_points - 1; j >= 0; j--) {
 		if (sc->cpu_max_freq < sc->speed_points[j].freq)
 			continue;
@@ -397,9 +393,9 @@ tegra210_cpufreq_identify(driver_t *driver, device_t parent)
 
 	if (device_get_unit(parent) != 0)
 		return;
-	if (device_find_child(parent, "tegra210_cpufreq", -1) != NULL)
+	if (device_find_child(parent, "tegra210_cpufreq", DEVICE_UNIT_ANY) != NULL)
 		return;
-	if (BUS_ADD_CHILD(parent, 0, "tegra210_cpufreq", -1) == NULL)
+	if (BUS_ADD_CHILD(parent, 0, "tegra210_cpufreq", DEVICE_UNIT_ANY) == NULL)
 		device_printf(parent, "add child failed\n");
 }
 
@@ -495,8 +491,6 @@ static device_method_t tegra210_cpufreq_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t tegra210_cpufreq_devclass;
 static DEFINE_CLASS_0(tegra210_cpufreq, tegra210_cpufreq_driver,
     tegra210_cpufreq_methods, sizeof(struct tegra210_cpufreq_softc));
-DRIVER_MODULE(tegra210_cpufreq, cpu, tegra210_cpufreq_driver,
-    tegra210_cpufreq_devclass, NULL, NULL);
+DRIVER_MODULE(tegra210_cpufreq, cpu, tegra210_cpufreq_driver, NULL, NULL);

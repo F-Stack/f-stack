@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 /* Do not modify. This file is auto-generated from co-586.pl. */
 #ifdef PIC
 .text
@@ -7,6 +6,11 @@
 .align	16
 bn_mul_comba8:
 .L_bn_mul_comba8_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	movl	12(%esp),%esi
 	pushl	%edi
@@ -551,6 +555,11 @@ bn_mul_comba8:
 .align	16
 bn_mul_comba4:
 .L_bn_mul_comba4_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	movl	12(%esp),%esi
 	pushl	%edi
@@ -719,6 +728,11 @@ bn_mul_comba4:
 .align	16
 bn_sqr_comba8:
 .L_bn_sqr_comba8_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	pushl	%edi
 	pushl	%ebp
@@ -1127,6 +1141,11 @@ bn_sqr_comba8:
 .align	16
 bn_sqr_comba4:
 .L_bn_sqr_comba4_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	pushl	%edi
 	pushl	%ebp
@@ -1254,6 +1273,23 @@ bn_sqr_comba4:
 	popl	%esi
 	ret
 .size	bn_sqr_comba4,.-.L_bn_sqr_comba4_begin
+
+	.section ".note.gnu.property", "a"
+	.p2align 2
+	.long 1f - 0f
+	.long 4f - 1f
+	.long 5
+0:
+	.asciz "GNU"
+1:
+	.p2align 2
+	.long 0xc0000002
+	.long 3f - 2f
+2:
+	.long 3
+3:
+	.p2align 2
+4:
 #else
 .text
 .globl	bn_mul_comba8
@@ -1261,6 +1297,11 @@ bn_sqr_comba4:
 .align	16
 bn_mul_comba8:
 .L_bn_mul_comba8_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	movl	12(%esp),%esi
 	pushl	%edi
@@ -1805,6 +1846,11 @@ bn_mul_comba8:
 .align	16
 bn_mul_comba4:
 .L_bn_mul_comba4_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	movl	12(%esp),%esi
 	pushl	%edi
@@ -1973,6 +2019,11 @@ bn_mul_comba4:
 .align	16
 bn_sqr_comba8:
 .L_bn_sqr_comba8_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	pushl	%edi
 	pushl	%ebp
@@ -2381,6 +2432,11 @@ bn_sqr_comba8:
 .align	16
 bn_sqr_comba4:
 .L_bn_sqr_comba4_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	pushl	%edi
 	pushl	%ebp
@@ -2508,4 +2564,21 @@ bn_sqr_comba4:
 	popl	%esi
 	ret
 .size	bn_sqr_comba4,.-.L_bn_sqr_comba4_begin
+
+	.section ".note.gnu.property", "a"
+	.p2align 2
+	.long 1f - 0f
+	.long 4f - 1f
+	.long 5
+0:
+	.asciz "GNU"
+1:
+	.p2align 2
+	.long 0xc0000002
+	.long 3f - 2f
+2:
+	.long 3
+3:
+	.p2align 2
+4:
 #endif

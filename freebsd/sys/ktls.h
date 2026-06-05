@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014-2019 Netflix Inc.
  *
@@ -23,14 +23,17 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 #ifndef _SYS_KTLS_H_
 #define	_SYS_KTLS_H_
 
+#ifdef _KERNEL
+#include <sys/_null.h>
 #include <sys/refcount.h>
 #include <sys/_task.h>
+
+#include <machine/param.h>
+#endif
 
 struct tls_record_layer {
 	uint8_t  tls_type;
@@ -44,9 +47,12 @@ struct tls_record_layer {
 #define	TLS_MAX_PARAM_SIZE	1024	/* Max key/mac/iv in sockopt */
 #define	TLS_AEAD_GCM_LEN	4
 #define	TLS_1_3_GCM_IV_LEN	12
+#define	TLS_CHACHA20_IV_LEN	12
 #define	TLS_CBC_IMPLICIT_IV_LEN	16
 
 /* Type values for the record layer */
+#define	TLS_RLTYPE_ALERT	21
+#define	TLS_RLTYPE_HANDSHAKE	22
 #define	TLS_RLTYPE_APP		23
 
 /*
@@ -139,6 +145,28 @@ struct tls_get_record {
 	uint16_t tls_length;
 };
 
+#define	XKTLS_SESSION_IV_BUF_LEN	32
+struct xktls_session_onedir {
+	uint64_t gen;
+	uint64_t rsrv1[8];
+	uint32_t rsrv2[8];
+	uint8_t iv[XKTLS_SESSION_IV_BUF_LEN];
+	int	cipher_algorithm;
+	int	auth_algorithm;
+	uint16_t cipher_key_len;
+	uint16_t iv_len;
+	uint16_t auth_key_len;
+	uint16_t max_frame_len;
+	uint8_t tls_vmajor;
+	uint8_t tls_vminor;
+	uint8_t tls_hlen;
+	uint8_t tls_tlen;
+	uint8_t tls_bs;
+	uint8_t flags;
+	uint16_t drv_st_len;
+	char ifnet[16];	/* IFNAMSIZ */
+};
+
 #ifdef _KERNEL
 
 struct tls_session_params {
@@ -163,68 +191,79 @@ struct tls_session_params {
 #define	KTLS_TX		1
 #define	KTLS_RX		2
 
-#define	KTLS_API_VERSION 7
-
 struct iovec;
+struct ktls_ocf_encrypt_state;
+struct ktls_ocf_session;
 struct ktls_session;
 struct m_snd_tag;
 struct mbuf;
 struct sockbuf;
 struct socket;
-
-struct ktls_crypto_backend {
-	LIST_ENTRY(ktls_crypto_backend) next;
-	int (*try)(struct socket *so, struct ktls_session *tls, int direction);
-	int prio;
-	int api_version;
-	int use_count;
-	const char *name;
-};
+struct sockopt;
 
 struct ktls_session {
-	union {
-		int	(*sw_encrypt)(struct ktls_session *tls,
-		    const struct tls_record_layer *hdr, uint8_t *trailer,
-		    struct iovec *src, struct iovec *dst, int iovcnt,
-		    uint64_t seqno, uint8_t record_type);
-		int	(*sw_decrypt)(struct ktls_session *tls,
-		    const struct tls_record_layer *hdr, struct mbuf *m,
-		    uint64_t seqno, int *trailer_len);
-	};
-	union {
-		void *cipher;
-		struct m_snd_tag *snd_tag;
-	};
-	struct ktls_crypto_backend *be;
-	void (*free)(struct ktls_session *tls);
+	struct ktls_ocf_session *ocf_session;
+	struct m_snd_tag *snd_tag;
 	struct tls_session_params params;
 	u_int	wq_index;
 	volatile u_int refcount;
 	int mode;
 
 	struct task reset_tag_task;
-	struct inpcb *inp;
+	struct task disable_ifnet_task;
+	union {
+		struct inpcb *inp;	/* Used by transmit tasks. */
+		struct socket *so;	/* Used by receive task. */
+	};
+	struct ifnet *rx_ifp;
+	u_short rx_vlan_id;
 	bool reset_pending;
+	bool tx;
+	bool sync_dispatch;
+	bool sequential_records;
+
+	/* Only used for TLS 1.0. */
+	uint64_t next_seqno;
+	STAILQ_HEAD(, mbuf) pending_records;
+
+	/* Used to destroy any kTLS session */
+	struct task destroy_task;
+
+	uint64_t gen;
 } __aligned(CACHE_LINE_SIZE);
 
+extern unsigned int ktls_ifnet_max_rexmit_pct;
+
+typedef enum {
+	KTLS_MBUF_CRYPTO_ST_MIXED = 0,
+	KTLS_MBUF_CRYPTO_ST_ENCRYPTED = 1,
+	KTLS_MBUF_CRYPTO_ST_DECRYPTED = -1,
+} ktls_mbuf_crypto_st_t;
+
 void ktls_check_rx(struct sockbuf *sb);
-int ktls_crypto_backend_register(struct ktls_crypto_backend *be);
-int ktls_crypto_backend_deregister(struct ktls_crypto_backend *be);
+void ktls_cleanup_tls_enable(struct tls_enable *tls);
+int ktls_copyin_tls_enable(struct sockopt *sopt, struct tls_enable *tls);
+void ktls_disable_ifnet(void *arg);
 int ktls_enable_rx(struct socket *so, struct tls_enable *en);
 int ktls_enable_tx(struct socket *so, struct tls_enable *en);
+void ktls_enqueue(struct mbuf *m, struct socket *so, int page_count);
+void ktls_enqueue_to_free(struct mbuf *m);
 void ktls_destroy(struct ktls_session *tls);
 void ktls_frame(struct mbuf *m, struct ktls_session *tls, int *enqueue_cnt,
     uint8_t record_type);
-void ktls_seq(struct sockbuf *sb, struct mbuf *m);
-void ktls_enqueue(struct mbuf *m, struct socket *so, int page_count);
-void ktls_enqueue_to_free(struct mbuf *m);
-int ktls_get_rx_mode(struct socket *so);
-int ktls_set_tx_mode(struct socket *so, int mode);
-int ktls_get_tx_mode(struct socket *so);
-int ktls_output_eagain(struct inpcb *inp, struct ktls_session *tls);
+int ktls_get_rx_mode(struct socket *so, int *modep);
+int ktls_get_tx_mode(struct socket *so, int *modep);
+int ktls_get_rx_sequence(struct inpcb *inp, uint32_t *tcpseq, uint64_t *tlsseq);
+void ktls_input_ifp_mismatch(struct sockbuf *sb, struct ifnet *ifp);
+ktls_mbuf_crypto_st_t ktls_mbuf_crypto_state(struct mbuf *mb, int offset, int len);
 #ifdef RATELIMIT
 int ktls_modify_txrtlmt(struct ktls_session *tls, uint64_t max_pacing_rate);
 #endif
+int ktls_output_eagain(struct inpcb *inp, struct ktls_session *tls);
+bool ktls_pending_rx_info(struct sockbuf *sb, uint64_t *seqnop, size_t *residp);
+bool ktls_permit_empty_frames(struct ktls_session *tls);
+void ktls_seq(struct sockbuf *sb, struct mbuf *m);
+int ktls_set_tx_mode(struct socket *so, int mode);
 
 static inline struct ktls_session *
 ktls_hold(struct ktls_session *tls)
@@ -242,6 +281,11 @@ ktls_free(struct ktls_session *tls)
 	if (refcount_release(&tls->refcount))
 		ktls_destroy(tls);
 }
+
+void ktls_session_to_xktls_onedir(const struct ktls_session *ks,
+    bool export_keys, struct xktls_session_onedir *xktls_od);
+void ktls_session_copy_keys(const struct ktls_session *ktls,
+    uint8_t *data, size_t *sz);
 
 #endif /* !_KERNEL */
 #endif /* !_SYS_KTLS_H_ */

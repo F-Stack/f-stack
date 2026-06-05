@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
  * All rights reserved.
@@ -26,21 +26,19 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 
 #include <machine/vmm.h>
 #include <machine/vmm_instruction_emul.h>
 
+#include <dev/vmm/vmm_ktr.h>
+
 #include "vatpic.h"
 #include "vatpit.h"
 #include "vpmtmr.h"
 #include "vrtc.h"
 #include "vmm_ioport.h"
-#include "vmm_ktr.h"
 
 #define	MAX_IOPORTS		1280
 
@@ -100,11 +98,10 @@ inout_instruction(struct vm_exit *vmexit)
 #endif	/* KTR */
 
 static int
-emulate_inout_port(struct vm *vm, int vcpuid, struct vm_exit *vmexit,
-    bool *retu)
+emulate_inout_port(struct vcpu *vcpu, struct vm_exit *vmexit, bool *retu)
 {
 	ioport_handler_func_t handler;
-	uint32_t mask, val;
+	uint32_t mask, val = 0;
 	int error;
 
 	/*
@@ -122,7 +119,7 @@ emulate_inout_port(struct vm *vm, int vcpuid, struct vm_exit *vmexit,
 		val = vmexit->u.inout.eax & mask;
 	}
 
-	error = (*handler)(vm, vcpuid, vmexit->u.inout.in,
+	error = (*handler)(vcpu_vm(vcpu), vmexit->u.inout.in,
 	    vmexit->u.inout.port, vmexit->u.inout.bytes, &val);
 	if (error) {
 		/*
@@ -138,7 +135,7 @@ emulate_inout_port(struct vm *vm, int vcpuid, struct vm_exit *vmexit,
 	if (vmexit->u.inout.in) {
 		vmexit->u.inout.eax &= ~mask;
 		vmexit->u.inout.eax |= val & mask;
-		error = vm_set_register(vm, vcpuid, VM_REG_GUEST_RAX,
+		error = vm_set_register(vcpu, VM_REG_GUEST_RAX,
 		    vmexit->u.inout.eax);
 		KASSERT(error == 0, ("emulate_ioport: error %d setting guest "
 		    "rax register", error));
@@ -148,27 +145,67 @@ emulate_inout_port(struct vm *vm, int vcpuid, struct vm_exit *vmexit,
 }
 
 static int
-emulate_inout_str(struct vm *vm, int vcpuid, struct vm_exit *vmexit, bool *retu)
+decode_segment(struct vcpu *vcpu, enum vm_reg_name *segment)
 {
+	struct vm_guest_paging *paging;
+	struct vie vie;
+	struct vm_exit *vme;
+	int err;
+	int fault;
+
+	vme = vm_exitinfo(vcpu);
+	paging = &vme->u.inout_str.paging;
+
+	vie_init(&vie, NULL, 0);
+	err = vmm_fetch_instruction(vcpu, paging,
+	    vme->rip + vme->u.inout_str.cs_base, VIE_INST_SIZE, &vie, &fault);
+	if (err || fault)
+		return (err);
+
+	err = vmm_decode_instruction(vcpu, VIE_INVALID_GLA, paging->cpu_mode,
+	    vme->u.inout_str.cs_d, &vie);
+
+	if (err || vie.op.op_type != VIE_OP_TYPE_OUTS)
+		return (EINVAL);
+	if (vie.segment_override)
+		*segment = vie.segment_register;
+	else
+		*segment = VM_REG_GUEST_DS;
+
+	return (0);
+}
+
+static int
+emulate_inout_str(struct vcpu *vcpu, struct vm_exit *vmexit, bool *retu)
+{
+	int err;
+
 	*retu = true;
+	if (vmexit->u.inout_str.seg_name == VM_REG_LAST) {
+		err = decode_segment(vcpu, &vmexit->u.inout_str.seg_name);
+		if (err)
+			return (err);
+		return (vm_get_seg_desc(vcpu, vmexit->u.inout_str.seg_name,
+		    &vmexit->u.inout_str.seg_desc));
+	}
 	return (0);	/* Return to userspace to finish emulation */
 }
 
 int
-vm_handle_inout(struct vm *vm, int vcpuid, struct vm_exit *vmexit, bool *retu)
+vm_handle_inout(struct vcpu *vcpu, struct vm_exit *vmexit, bool *retu)
 {
-	int bytes, error;
+	int bytes __diagused, error;
 
 	bytes = vmexit->u.inout.bytes;
 	KASSERT(bytes == 1 || bytes == 2 || bytes == 4,
 	    ("vm_handle_inout: invalid operand size %d", bytes));
 
 	if (vmexit->u.inout.string)
-		error = emulate_inout_str(vm, vcpuid, vmexit, retu);
+		error = emulate_inout_str(vcpu, vmexit, retu);
 	else
-		error = emulate_inout_port(vm, vcpuid, vmexit, retu);
+		error = emulate_inout_port(vcpu, vmexit, retu);
 
-	VCPU_CTR4(vm, vcpuid, "%s%s 0x%04x: %s",
+	VCPU_CTR4(vcpu_vm(vcpu), vcpu_vcpuid(vcpu), "%s%s 0x%04x: %s",
 	    vmexit->u.inout.rep ? "rep " : "",
 	    inout_instruction(vmexit),
 	    vmexit->u.inout.port,

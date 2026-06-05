@@ -2,6 +2,11 @@
  * Copyright (c) 2003 Peter Wemm
  * All rights reserved.
  *
+ * Copyright (c) 2021 The FreeBSD Foundation
+ *
+ * Portions of this software were developed by Konstantin Belousov
+ * under sponsorship from the FreeBSD Foundation.
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
@@ -22,8 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <machine/asmacros.h>
@@ -32,27 +35,57 @@
 #include "ia32_assym.h"
 
 	.text
-	.code32
 /*
- * Signal trampoline, copied to top of user stack
- * XXX may need to be MD to match backend sendsig handoff protocol
+ * Signal trampoline, mapped as vdso into shared page, or copied to
+ * top of user stack for old binaries.
  */
 	ALIGN_TEXT
-	.globl	ia32_sigcode
-ia32_sigcode:
+	.globl	__vdso_ia32_sigcode
+__vdso_ia32_sigcode:
+	.cfi_startproc
+	.cfi_signal_frame
+	.cfi_def_cfa	%esp, 0
+#if 0
+	.cfi_offset	%gs,  IA32_SIGF_UC + IA32_UC_GS
+	.cfi_offset	%fs,  IA32_SIGF_UC + IA32_UC_FS
+	.cfi_offset	%es,  IA32_SIGF_UC + IA32_UC_ES
+	.cfi_offset	%ds,  IA32_SIGF_UC + IA32_UC_DS
+#endif
+	.cfi_offset	%edi, IA32_SIGF_UC + IA32_UC_EDI
+	.cfi_offset	%esi, IA32_SIGF_UC + IA32_UC_ESI
+	.cfi_offset	%ebp, IA32_SIGF_UC + IA32_UC_EBP
+	.cfi_offset	%ebx, IA32_SIGF_UC + IA32_UC_EBX
+	.cfi_offset	%edx, IA32_SIGF_UC + IA32_UC_EDX
+	.cfi_offset	%ecx, IA32_SIGF_UC + IA32_UC_ECX
+	.cfi_offset	%eax, IA32_SIGF_UC + IA32_UC_EAX
+	.cfi_offset	%eip, IA32_SIGF_UC + IA32_UC_EIP
+#if 0
+	.cfi_offset	%cs,  IA32_SIGF_UC + IA32_UC_CS
+	.cfi_offset	%flags, IA32_SIGF_UC + IA32_UC_EFLAGS
+#endif
+	.cfi_offset	%esp, IA32_SIGF_UC + IA32_UC_ESP
+#if 0
+	.cfi_offset	%ss,  IA32_SIGF_UC + IA32_UC_SS
+	.cfi_offset	93 /* %fs.base */, IA32_SIGF_UC + IA32_UC_FSBASE
+	.cfi_offset	94 /* %gs.base */, IA32_SIGF_UC + IA32_UC_GSBASE
+#endif
 	calll	*IA32_SIGF_HANDLER(%esp)
 	leal	IA32_SIGF_UC(%esp),%eax	/* get ucontext */
 	pushl	%eax
+	.cfi_def_cfa	%esp, 4
 	movl	$SYS_sigreturn,%eax
 	pushl	%eax			/* junk to fake return addr. */
+	.cfi_def_cfa	%esp, 8
 	int	$0x80			/* enter kernel with args */
 					/* on stack */
 1:
 	jmp	1b
+	.cfi_endproc
 
-#ifdef COMPAT_FREEBSD4
 	ALIGN_TEXT
-freebsd4_ia32_sigcode:
+	.globl	__vdso_freebsd4_ia32_sigcode
+__vdso_freebsd4_ia32_sigcode:
+#ifdef COMPAT_FREEBSD4
 	calll	*IA32_SIGF_HANDLER(%esp)
 	leal	IA32_SIGF_UC4(%esp),%eax/* get ucontext */
 	pushl	%eax
@@ -62,11 +95,14 @@ freebsd4_ia32_sigcode:
 					/* on stack */
 1:
 	jmp	1b
+#else
+	ud2
 #endif
 
-#ifdef COMPAT_43
 	ALIGN_TEXT
-ia32_osigcode:
+	.globl	__vdso_ia32_osigcode
+__vdso_ia32_osigcode:
+#ifdef COMPAT_43
 	calll	*IA32_SIGF_HANDLER(%esp)/* call signal handler */
 	leal	IA32_SIGF_SC(%esp),%eax	/* get sigcontext */
 	pushl	%eax
@@ -75,6 +111,9 @@ ia32_osigcode:
 	int	$0x80			/* enter kernel with args */
 1:
 	jmp	1b
+#else
+	ud2
+#endif
 
 /*
  * Our lcall $7,$0 handler remains in user mode (ring 3), since lcalls
@@ -90,28 +129,12 @@ ia32_osigcode:
  * vfork() and harder for other syscalls.
  */
 	ALIGN_TEXT
-lcall_tramp:
+	.globl	__vdso_lcall_tramp
+__vdso_lcall_tramp:
+#ifdef COMPAT_43
 	int	$0x80
 1:	jmp	1b
+#else
+	ud2
 #endif
-
-	ALIGN_TEXT
-esigcode:
-
-	.data
-	.globl	sz_ia32_sigcode
-sz_ia32_sigcode:
-	.long	esigcode-ia32_sigcode
-#ifdef COMPAT_FREEBSD4
-	.globl	sz_freebsd4_ia32_sigcode
-sz_freebsd4_ia32_sigcode:
-	.long	esigcode-freebsd4_ia32_sigcode
-#endif
-#ifdef COMPAT_43
-	.globl	sz_ia32_osigcode
-sz_ia32_osigcode:
-	.long	esigcode-ia32_osigcode
-	.globl	sz_lcall_tramp
-sz_lcall_tramp:
-	.long	esigcode-lcall_tramp
-#endif
+	.p2align 1

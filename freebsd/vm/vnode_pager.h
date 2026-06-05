@@ -32,9 +32,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)vnode_pager.h	8.1 (Berkeley) 6/11/93
- * $FreeBSD$
  */
 
 #ifndef	_VNODE_PAGER_
@@ -42,6 +39,9 @@
 
 #ifdef _KERNEL
 
+struct vnode;
+void vnode_pager_clean_sync(struct vnode *vp);
+void vnode_pager_clean_async(struct vnode *vp);
 int vnode_pager_generic_getpages(struct vnode *vp, vm_page_t *m,
     int count, int *rbehind, int *rahead, vop_getpages_iodone_t iodone,
     void *arg);

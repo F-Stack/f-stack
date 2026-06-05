@@ -32,9 +32,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)acct.h	8.4 (Berkeley) 1/9/95
- * $FreeBSD$
  */
 
 #ifndef _SYS_ACCT_H_
@@ -42,6 +39,8 @@
 
 #ifdef _KERNEL
 #define float uint32_t
+#else
+#include <sys/types.h>
 #endif
 
 #define AC_COMM_LEN 16

@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2009 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -30,7 +30,6 @@
  * SUCH DAMAGE.
  *
  * $Id: ubtbcmfw.c,v 1.3 2003/10/10 19:15:08 max Exp $
- * $FreeBSD$
  */
 
 #include <sys/stdint.h>
@@ -155,8 +154,6 @@ static const struct usb_config	ubtbcmfw_config[UBTBCMFW_N_TRANSFER] =
  * Module
  */
 
-static devclass_t	ubtbcmfw_devclass;
-
 static device_method_t	ubtbcmfw_methods[] =
 {
 	DEVMETHOD(device_probe, ubtbcmfw_probe),
@@ -177,7 +174,7 @@ static const STRUCT_USB_HOST_ID ubtbcmfw_devs[] = {
 	{ USB_VPI(USB_VENDOR_BROADCOM, USB_PRODUCT_BROADCOM_BCM2033, 0) },
 };
 
-DRIVER_MODULE(ubtbcmfw, uhub, ubtbcmfw_driver, ubtbcmfw_devclass, NULL, 0);
+DRIVER_MODULE(ubtbcmfw, uhub, ubtbcmfw_driver, NULL, NULL);
 MODULE_DEPEND(ubtbcmfw, usb, 1, 1, 1);
 USB_PNP_HOST_INFO(ubtbcmfw_devs);
 

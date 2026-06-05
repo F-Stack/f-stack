@@ -36,8 +36,6 @@
  * OF SUCH DAMAGE.
  *
  * Author: Julian Elischer <julian@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_socket.c,v 1.28 1999/11/01 09:24:52 julian Exp $
  */
 
@@ -240,11 +238,16 @@ ngc_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 		goto release;
 	}
 
+	if (sap->sg_len > NG_NODESIZ + offsetof(struct sockaddr_ng, sg_data)) {
+		error = EINVAL;
+		goto release;
+	}
+
 	/*
 	 * Allocate an expendable buffer for the path, chop off
 	 * the sockaddr header, and make sure it's NUL terminated.
 	 */
-	len = sap->sg_len - 2;
+	len = sap->sg_len - offsetof(struct sockaddr_ng, sg_data);
 	path = malloc(len + 1, M_NETGRAPH_PATH, M_WAITOK);
 	bcopy(sap->sg_data, path, len);
 	path[len] = '\0';
@@ -280,14 +283,17 @@ ngc_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 		struct ngm_mkpeer *const mkp = (struct ngm_mkpeer *) msg->data;
 
 		if (ng_findtype(mkp->type) == NULL) {
-#ifndef FSTACK
 			char filename[NG_TYPESIZ + 3];
 			int fileid;
+			bool loaded;
 
 			/* Not found, try to load it as a loadable module. */
 			snprintf(filename, sizeof(filename), "ng_%s",
 			    mkp->type);
 			error = kern_kldload(curthread, filename, &fileid);
+			loaded = (error == 0);
+			if (error == EEXIST)
+				error = 0;
 			if (error != 0) {
 				free(msg, M_NETGRAPH_MSG);
 				goto release;
@@ -296,15 +302,12 @@ ngc_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 			/* See if type has been loaded successfully. */
 			if (ng_findtype(mkp->type) == NULL) {
 				free(msg, M_NETGRAPH_MSG);
-				(void)kern_kldunload(curthread, fileid,
-				    LINKER_UNLOAD_NORMAL);
-				error =  ENXIO;
+				if (loaded)
+					(void)kern_kldunload(curthread, fileid,
+					    LINKER_UNLOAD_NORMAL);
+				error = ENXIO;
 				goto release;
 			}
-#else
-			error =  ENOENT;
-			goto release;
-#endif
 		}
 	}
 
@@ -427,10 +430,16 @@ ngd_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 		goto release;
 	}
 
-	if (sap == NULL)
+	if (sap == NULL) {
 		len = 0;		/* Make compiler happy. */
-	else
-		len = sap->sg_len - 2;
+	} else {
+		if (sap->sg_len > NG_NODESIZ +
+		    offsetof(struct sockaddr_ng, sg_data)) {
+			error = EINVAL;
+			goto release;
+		}
+		len = sap->sg_len - offsetof(struct sockaddr_ng, sg_data);
+	}
 
 	/*
 	 * If the user used any of these ways to not specify an address
@@ -496,11 +505,10 @@ ngd_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
  * Used for both data and control sockets
  */
 static int
-ng_getsockaddr(struct socket *so, struct sockaddr **addr)
+ng_getsockaddr(struct socket *so, struct sockaddr *sa)
 {
+	struct sockaddr_ng *sg = (struct sockaddr_ng *)sa;
 	struct ngpcb *pcbp;
-	struct sockaddr_ng *sg;
-	int sg_len;
 	int error = 0;
 
 	pcbp = sotongpcb(so);
@@ -508,9 +516,10 @@ ng_getsockaddr(struct socket *so, struct sockaddr **addr)
 		/* XXXGL: can this still happen? */
 		return (EINVAL);
 
-	sg_len = sizeof(struct sockaddr_ng) + NG_NODESIZ -
-	    sizeof(sg->sg_data);
-	sg = malloc(sg_len, M_SONAME, M_WAITOK | M_ZERO);
+	*sg = (struct sockaddr_ng ){
+		.sg_len = sizeof(struct sockaddr_ng),
+		.sg_family = AF_NETGRAPH,
+	};
 
 	mtx_lock(&pcbp->sockdata->mtx);
 	if (pcbp->sockdata->node != NULL) {
@@ -519,16 +528,12 @@ ng_getsockaddr(struct socket *so, struct sockaddr **addr)
 		if (NG_NODE_HAS_NAME(node))
 			bcopy(NG_NODE_NAME(node), sg->sg_data,
 			    strlen(NG_NODE_NAME(node)));
-		mtx_unlock(&pcbp->sockdata->mtx);
-
-		sg->sg_len = sg_len;
-		sg->sg_family = AF_NETGRAPH;
-		*addr = (struct sockaddr *)sg;
-	} else {
-		mtx_unlock(&pcbp->sockdata->mtx);
-		free(sg, M_SONAME);
+		else
+			snprintf(sg->sg_data, sizeof(sg->sg_data), "[%x]",
+			    ng_node2ID(node));
+	} else
 		error = EINVAL;
-	}
+	mtx_unlock(&pcbp->sockdata->mtx);
 
 	return (error);
 }
@@ -987,7 +992,7 @@ ngs_rcvmsg(node_p node, item_p item, hook_p lasthook)
 	/* Send it up to the socket. */
 	if (sbappendaddr_locked(&so->so_rcv, (struct sockaddr *)&addr, m,
 	    NULL) == 0) {
-		SOCKBUF_UNLOCK(&so->so_rcv);
+		soroverflow_locked(so);
 		TRAP_ERROR;
 		m_freem(m);
 		return (ENOBUFS);
@@ -1122,68 +1127,42 @@ dummy_disconnect(struct socket *so)
 {
 	return (0);
 }
+
 /*
+ * Definitions of protocols supported in the NETGRAPH domain.
  * Control and data socket type descriptors
  *
  * XXXRW: Perhaps _close should do something?
  */
-
-static struct pr_usrreqs ngc_usrreqs = {
-	.pru_abort =		NULL,
-	.pru_attach =		ngc_attach,
-	.pru_bind =		ngc_bind,
-	.pru_connect =		ngc_connect,
-	.pru_detach =		ngc_detach,
-	.pru_disconnect =	dummy_disconnect,
-	.pru_peeraddr =		NULL,
-	.pru_send =		ngc_send,
-	.pru_shutdown =		NULL,
-	.pru_sockaddr =		ng_getsockaddr,
-	.pru_close =		NULL,
-};
-
-static struct pr_usrreqs ngd_usrreqs = {
-	.pru_abort =		NULL,
-	.pru_attach =		ngd_attach,
-	.pru_bind =		NULL,
-	.pru_connect =		ngd_connect,
-	.pru_detach =		ngd_detach,
-	.pru_disconnect =	dummy_disconnect,
-	.pru_peeraddr =		NULL,
-	.pru_send =		ngd_send,
-	.pru_shutdown =		NULL,
-	.pru_sockaddr =		ng_getsockaddr,
-	.pru_close =		NULL,
-};
-
-/*
- * Definitions of protocols supported in the NETGRAPH domain.
- */
-
-extern struct domain ngdomain;		/* stop compiler warnings */
-
-static struct protosw ngsw[] = {
-{
+static struct protosw ngcontrol_protosw = {
 	.pr_type =		SOCK_DGRAM,
-	.pr_domain =		&ngdomain,
 	.pr_protocol =		NG_CONTROL,
 	.pr_flags =		PR_ATOMIC | PR_ADDR /* | PR_RIGHTS */,
-	.pr_usrreqs =		&ngc_usrreqs
-},
-{
+	.pr_attach =		ngc_attach,
+	.pr_bind =		ngc_bind,
+	.pr_connect =		ngc_connect,
+	.pr_detach =		ngc_detach,
+	.pr_disconnect =	dummy_disconnect,
+	.pr_send =		ngc_send,
+	.pr_sockaddr =		ng_getsockaddr,
+};
+static struct protosw ngdata_protosw = {
 	.pr_type =		SOCK_DGRAM,
-	.pr_domain =		&ngdomain,
 	.pr_protocol =		NG_DATA,
 	.pr_flags =		PR_ATOMIC | PR_ADDR,
-	.pr_usrreqs =		&ngd_usrreqs
-}
+	.pr_attach =		ngd_attach,
+	.pr_connect =		ngd_connect,
+	.pr_detach =		ngd_detach,
+	.pr_disconnect =	dummy_disconnect,
+	.pr_send =		ngd_send,
+	.pr_sockaddr =		ng_getsockaddr,
 };
 
-struct domain ngdomain = {
+static struct domain ngdomain = {
 	.dom_family =		AF_NETGRAPH,
 	.dom_name =		"netgraph",
-	.dom_protosw =		ngsw,
-	.dom_protoswNPROTOSW =	&ngsw[nitems(ngsw)]
+	.dom_nprotosw =		2,
+	.dom_protosw =		{ &ngcontrol_protosw, &ngdata_protosw },
 };
 
 /*
@@ -1217,7 +1196,7 @@ ngs_mod_event(module_t mod, int event, void *data)
 	return (error);
 }
 
-VNET_DOMAIN_SET(ng);
+DOMAIN_SET(ng);
 
 SYSCTL_INT(_net_graph, OID_AUTO, family, CTLFLAG_RD, SYSCTL_NULL_INT_PTR, AF_NETGRAPH, "");
 static SYSCTL_NODE(_net_graph, OID_AUTO, data, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,

@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)dirent.h	8.3 (Berkeley) 8/10/94
- * $FreeBSD$
  */
 
 #ifndef	_SYS_DIRENT_H_
@@ -65,7 +62,7 @@ typedef	__off_t		off_t;
 
 struct dirent {
 	ino_t      d_fileno;		/* file number of entry */
-	off_t      d_off;		/* directory offset of entry */
+	off_t      d_off;		/* directory offset of next entry */
 	__uint16_t d_reclen;		/* length of this record */
 	__uint8_t  d_type;		/* file type, see below */
 	__uint8_t  d_pad0;
@@ -122,11 +119,14 @@ struct freebsd11_dirent {
 #define	_GENERIC_DIRLEN(namlen)					\
 	((__offsetof(struct dirent, d_name) + (namlen) + 1 + 7) & ~7)
 #define	_GENERIC_DIRSIZ(dp)	_GENERIC_DIRLEN((dp)->d_namlen)
+#define	_GENERIC_MINDIRSIZ	_GENERIC_DIRLEN(1) /* Name must not be empty */
+#define	_GENERIC_MAXDIRSIZ	_GENERIC_DIRLEN(MAXNAMLEN)
 #endif /* __BSD_VISIBLE */
 
 #ifdef _KERNEL
 #define	GENERIC_DIRSIZ(dp)	_GENERIC_DIRSIZ(dp)
-
+#define	GENERIC_MINDIRSIZ	_GENERIC_MINDIRSIZ
+#define	GENERIC_MAXDIRSIZ	_GENERIC_MAXDIRSIZ
 /*
  * Ensure that padding bytes are zeroed and that the name is NUL-terminated.
  */

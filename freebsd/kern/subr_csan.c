@@ -30,12 +30,9 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#define	KCSAN_RUNTIME
+#define	SAN_RUNTIME
 
 #include "opt_ddb.h"
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/kernel.h>
@@ -301,6 +298,10 @@ kcsan_memmove(void *dst, const void *src, size_t len)
 	return __builtin_memmove(dst, src, len);
 }
 
+__strong_reference(kcsan_memcpy, __tsan_memcpy);
+__strong_reference(kcsan_memset, __tsan_memset);
+__strong_reference(kcsan_memmove, __tsan_memmove);
+
 char *
 kcsan_strcpy(char *dst, const char *src)
 {
@@ -350,12 +351,6 @@ kcsan_strlen(const char *str)
 	return (s - str);
 }
 
-#undef copyin
-#undef copyin_nofault
-#undef copyinstr
-#undef copyout
-#undef copyout_nofault
-
 int
 kcsan_copyin(const void *uaddr, void *kaddr, size_t len)
 {
@@ -380,7 +375,7 @@ kcsan_copyout(const void *kaddr, void *uaddr, size_t len)
 /* -------------------------------------------------------------------------- */
 
 #include <machine/atomic.h>
-#include <sys/_cscan_atomic.h>
+#include <sys/atomic_san.h>
 
 #define	_CSAN_ATOMIC_FUNC_ADD(name, type)				\
 	void kcsan_atomic_add_##name(volatile type *ptr, type val)	\
@@ -445,7 +440,7 @@ kcsan_copyout(const void *kaddr, void *uaddr, size_t len)
 	}
 
 #define	_CSAN_ATOMIC_FUNC_LOAD(name, type)				\
-	type kcsan_atomic_load_##name(volatile type *ptr)		\
+	type kcsan_atomic_load_##name(const volatile type *ptr)		\
 	{								\
 		kcsan_access((uintptr_t)ptr, sizeof(type), false, true,	\
 		    __RET_ADDR);					\
@@ -526,6 +521,9 @@ kcsan_copyout(const void *kaddr, void *uaddr, size_t len)
 		return (atomic_testandset_##name(ptr, val)); 		\
 	}
 
+_CSAN_ATOMIC_FUNC_LOAD(bool, bool)
+_CSAN_ATOMIC_FUNC_STORE(bool, bool)
+
 CSAN_ATOMIC_FUNC_ADD(8, uint8_t)
 CSAN_ATOMIC_FUNC_CLEAR(8, uint8_t)
 CSAN_ATOMIC_FUNC_CMPSET(8, uint8_t)
@@ -569,10 +567,8 @@ CSAN_ATOMIC_FUNC_SET(32, uint32_t)
 CSAN_ATOMIC_FUNC_SUBTRACT(32, uint32_t)
 CSAN_ATOMIC_FUNC_STORE(32, uint32_t)
 CSAN_ATOMIC_FUNC_SWAP(32, uint32_t)
-#if !defined(__aarch64__)
 CSAN_ATOMIC_FUNC_TESTANDCLEAR(32, uint32_t)
 CSAN_ATOMIC_FUNC_TESTANDSET(32, uint32_t)
-#endif
 
 CSAN_ATOMIC_FUNC_ADD(64, uint64_t)
 CSAN_ATOMIC_FUNC_CLEAR(64, uint64_t)
@@ -585,10 +581,8 @@ CSAN_ATOMIC_FUNC_SET(64, uint64_t)
 CSAN_ATOMIC_FUNC_SUBTRACT(64, uint64_t)
 CSAN_ATOMIC_FUNC_STORE(64, uint64_t)
 CSAN_ATOMIC_FUNC_SWAP(64, uint64_t)
-#if !defined(__aarch64__)
 CSAN_ATOMIC_FUNC_TESTANDCLEAR(64, uint64_t)
 CSAN_ATOMIC_FUNC_TESTANDSET(64, uint64_t)
-#endif
 
 CSAN_ATOMIC_FUNC_ADD(char, uint8_t)
 CSAN_ATOMIC_FUNC_CLEAR(char, uint8_t)
@@ -633,10 +627,8 @@ CSAN_ATOMIC_FUNC_SET(int, u_int)
 CSAN_ATOMIC_FUNC_SUBTRACT(int, u_int)
 CSAN_ATOMIC_FUNC_STORE(int, u_int)
 CSAN_ATOMIC_FUNC_SWAP(int, u_int)
-#if !defined(__aarch64__)
 CSAN_ATOMIC_FUNC_TESTANDCLEAR(int, u_int)
 CSAN_ATOMIC_FUNC_TESTANDSET(int, u_int)
-#endif
 
 CSAN_ATOMIC_FUNC_ADD(long, u_long)
 CSAN_ATOMIC_FUNC_CLEAR(long, u_long)
@@ -649,11 +641,9 @@ CSAN_ATOMIC_FUNC_SET(long, u_long)
 CSAN_ATOMIC_FUNC_SUBTRACT(long, u_long)
 CSAN_ATOMIC_FUNC_STORE(long, u_long)
 CSAN_ATOMIC_FUNC_SWAP(long, u_long)
-#if !defined(__aarch64__)
 CSAN_ATOMIC_FUNC_TESTANDCLEAR(long, u_long)
 CSAN_ATOMIC_FUNC_TESTANDSET(long, u_long)
 CSAN_ATOMIC_FUNC_TESTANDSET(acq_long, u_long)
-#endif
 
 CSAN_ATOMIC_FUNC_ADD(ptr, uintptr_t)
 CSAN_ATOMIC_FUNC_CLEAR(ptr, uintptr_t)
@@ -668,10 +658,8 @@ CSAN_ATOMIC_FUNC_SET(ptr, uintptr_t)
 CSAN_ATOMIC_FUNC_SUBTRACT(ptr, uintptr_t)
 CSAN_ATOMIC_FUNC_STORE(ptr, uintptr_t)
 CSAN_ATOMIC_FUNC_SWAP(ptr, uintptr_t)
-#if 0
 CSAN_ATOMIC_FUNC_TESTANDCLEAR(ptr, uintptr_t)
 CSAN_ATOMIC_FUNC_TESTANDSET(ptr, uintptr_t)
-#endif
 
 #define	CSAN_ATOMIC_FUNC_THREAD_FENCE(name)				\
 	void kcsan_atomic_thread_fence_##name(void)			\
@@ -684,11 +672,17 @@ CSAN_ATOMIC_FUNC_THREAD_FENCE(acq_rel)
 CSAN_ATOMIC_FUNC_THREAD_FENCE(rel)
 CSAN_ATOMIC_FUNC_THREAD_FENCE(seq_cst)
 
+void
+kcsan_atomic_interrupt_fence(void)
+{
+	atomic_interrupt_fence();
+}
+
 /* -------------------------------------------------------------------------- */
 
 #include <sys/bus.h>
 #include <machine/bus.h>
-#include <sys/_cscan_bus.h>
+#include <sys/bus_san.h>
 
 int
 kcsan_bus_space_map(bus_space_tag_t tag, bus_addr_t hnd, bus_size_t size,

@@ -28,15 +28,13 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ip.h	8.2 (Berkeley) 6/1/94
- * $FreeBSD$
  */
 
 #ifndef _NETINET_IP_H_
 #define	_NETINET_IP_H_
 
-#include <sys/cdefs.h>
+#include <sys/types.h>
+#include <netinet/in.h>
 
 /*
  * Definitions for internet protocol version 4.
@@ -69,7 +67,7 @@ struct ip {
 	u_char	ip_p;			/* protocol */
 	u_short	ip_sum;			/* checksum */
 	struct	in_addr ip_src,ip_dst;	/* source and dest address */
-} __packed __aligned(2);
+} __packed;
 
 #define	IP_MAXPACKET	65535		/* maximum packet size */
 
@@ -79,7 +77,7 @@ struct ip {
 #define	IPTOS_LOWDELAY		0x10
 #define	IPTOS_THROUGHPUT	0x08
 #define	IPTOS_RELIABILITY	0x04
-#define	IPTOS_MINCOST		0x02
+#define	IPTOS_MINCOST		IPTOS_DSCP_CS0
 
 /*
  * Definitions for IP precedence (also in ip_tos) (deprecated).
@@ -189,7 +187,7 @@ struct	ip_timestamp {
 			uint32_t ipt_time;	/* network format */
 		} ipt_ta[1];
 	} ipt_timestamp;
-};
+} __packed;
 
 /* Flag bits for ipt_flg. */
 #define	IPOPT_TS_TSONLY		0		/* timestamps only */
@@ -210,7 +208,6 @@ struct	ip_timestamp {
  */
 #define	MAXTTL		255		/* maximum time to live (seconds) */
 #define	IPDEFTTL	64		/* default ttl, from RFC 1340 */
-#define	IPFRAGTTL	60		/* time to live for frags, slowhz */
 #define	IPTTLDEC	1		/* subtracted when forwarding */
 #define	IP_MSS		576		/* default maximum segment size */
 

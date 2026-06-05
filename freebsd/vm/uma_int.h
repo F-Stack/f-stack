@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002-2019 Jeffrey Roberson <jeff@FreeBSD.org>
  * Copyright (c) 2004, 2005 Bosko Milekic <bmilekic@FreeBSD.org>
@@ -25,8 +25,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  *
  */
 
@@ -162,7 +160,6 @@
 #define	UMA_ZFLAG_CTORDTOR	0x01000000	/* Zone has ctor/dtor set. */
 #define	UMA_ZFLAG_LIMIT		0x02000000	/* Zone has limit set. */
 #define	UMA_ZFLAG_CACHE		0x04000000	/* uma_zcache_create()d it */
-#define	UMA_ZFLAG_RECLAIMING	0x08000000	/* Running zone_reclaim(). */
 #define	UMA_ZFLAG_BUCKET	0x10000000	/* Bucket zone. */
 #define	UMA_ZFLAG_INTERNAL	0x20000000	/* No offpage no PCPU. */
 #define	UMA_ZFLAG_TRASH		0x40000000	/* Add trash ctor/dtor. */
@@ -175,7 +172,6 @@
     "\37TRASH"				\
     "\36INTERNAL"			\
     "\35BUCKET"				\
-    "\34RECLAIMING"			\
     "\33CACHE"				\
     "\32LIMIT"				\
     "\31CTORDTOR"			\
@@ -447,7 +443,10 @@ struct uma_zone_domain {
 	long		uzd_nitems;	/* total item count */
 	long		uzd_imax;	/* maximum item count this period */
 	long		uzd_imin;	/* minimum item count this period */
+	long		uzd_bimin;	/* Minimum item count this batch. */
 	long		uzd_wss;	/* working set size estimate */
+	long		uzd_limin;	/* Longtime minimum item count. */
+	u_int		uzd_timin;	/* Time since uzd_limin == 0. */
 	smr_seq_t	uzd_seq;	/* Lowest queued seq. */
 	struct mtx	uzd_lock;	/* Lock for the domain */
 } __aligned(CACHE_LINE_SIZE);
@@ -490,7 +489,7 @@ struct uma_zone {
 	char		*uz_ctlname;	/* sysctl safe name string. */
 	int		uz_namecnt;	/* duplicate name count. */
 	uint16_t	uz_bucket_size_min; /* Min number of items in bucket */
-	uint16_t	uz_pad0;
+	uint16_t	uz_reclaimers;	/* pending reclaim operations. */
 
 	/* Offset 192, rare read-only. */
 	struct sysctl_oid *uz_oid;	/* sysctl oid pointer. */
@@ -582,6 +581,7 @@ static __inline uma_slab_t hash_sfind(struct uma_hash *hash, uint8_t *data);
 
 #define	ZONE_LOCK(z)	ZDOM_LOCK(ZDOM_GET((z), 0))
 #define	ZONE_UNLOCK(z)	ZDOM_UNLOCK(ZDOM_GET((z), 0))
+#define	ZONE_LOCKPTR(z)	(&ZDOM_GET((z), 0)->uzd_lock)
 
 #define	ZONE_CROSS_LOCK_INIT(z)					\
 	mtx_init(&(z)->uz_cross_lock, "UMA Cross", NULL, MTX_DEF)

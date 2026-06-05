@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007 Attilio Rao <attilio@freebsd.org>
  * Copyright (c) 2001 Jason Evans <jasone@freebsd.org>
@@ -41,9 +41,6 @@
 #include "opt_ddb.h"
 #include "opt_hwpmc_hooks.h"
 #include "opt_no_adaptive_sx.h"
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -225,9 +222,9 @@ owner_sx(const struct lock_object *lock, struct thread **owner)
 #endif
 
 void
-sx_sysinit(void *arg)
+sx_sysinit(const void *arg)
 {
-	struct sx_args *sargs = arg;
+	const struct sx_args *sargs = arg;
 
 	sx_init_flags(sargs->sa_sx, sargs->sa_desc, sargs->sa_flags);
 }
@@ -281,13 +278,14 @@ sx_try_slock_int(struct sx *sx LOCK_FILE_LINE_ARG_DEF)
 		return (1);
 
 	KASSERT(kdb_active != 0 || !TD_IS_IDLETHREAD(curthread),
-	    ("sx_try_slock() by idle thread %p on sx %s @ %s:%d",
-	    curthread, sx->lock_object.lo_name, file, line));
+	    ("sx_try_slock() by idle thread %p on sx %p @ %s:%d",
+	    curthread, sx, file, line));
 
 	x = sx->sx_lock;
 	for (;;) {
 		KASSERT(x != SX_LOCK_DESTROYED,
-		    ("sx_try_slock() of destroyed sx @ %s:%d", file, line));
+		    ("sx_try_slock() of destroyed sx %p @ %s:%d", sx, file,
+		    line));
 		if (!(x & SX_LOCK_SHARED))
 			break;
 		if (atomic_fcmpset_acq_ptr(&sx->sx_lock, &x, x + SX_ONE_SHARER)) {
@@ -320,10 +318,10 @@ _sx_xlock(struct sx *sx, int opts, const char *file, int line)
 
 	KASSERT(kdb_active != 0 || SCHEDULER_STOPPED() ||
 	    !TD_IS_IDLETHREAD(curthread),
-	    ("sx_xlock() by idle thread %p on sx %s @ %s:%d",
-	    curthread, sx->lock_object.lo_name, file, line));
+	    ("sx_xlock() by idle thread %p on sx %p @ %s:%d",
+	    curthread, sx, file, line));
 	KASSERT(sx->sx_lock != SX_LOCK_DESTROYED,
-	    ("sx_xlock() of destroyed sx @ %s:%d", file, line));
+	    ("sx_xlock() of destroyed sx %p @ %s:%d", sx, file, line));
 	WITNESS_CHECKORDER(&sx->lock_object, LOP_NEWORDER | LOP_EXCLUSIVE, file,
 	    line, NULL);
 	tid = (uintptr_t)curthread;
@@ -353,14 +351,14 @@ sx_try_xlock_int(struct sx *sx LOCK_FILE_LINE_ARG_DEF)
 
 	td = curthread;
 	tid = (uintptr_t)td;
-	if (SCHEDULER_STOPPED_TD(td))
+	if (SCHEDULER_STOPPED())
 		return (1);
 
 	KASSERT(kdb_active != 0 || !TD_IS_IDLETHREAD(td),
-	    ("sx_try_xlock() by idle thread %p on sx %s @ %s:%d",
-	    curthread, sx->lock_object.lo_name, file, line));
+	    ("sx_try_xlock() by idle thread %p on sx %p @ %s:%d",
+	    curthread, sx, file, line));
 	KASSERT(sx->sx_lock != SX_LOCK_DESTROYED,
-	    ("sx_try_xlock() of destroyed sx @ %s:%d", file, line));
+	    ("sx_try_xlock() of destroyed sx %p @ %s:%d", sx, file, line));
 
 	rval = 1;
 	recursed = false;
@@ -404,7 +402,7 @@ _sx_xunlock(struct sx *sx, const char *file, int line)
 {
 
 	KASSERT(sx->sx_lock != SX_LOCK_DESTROYED,
-	    ("sx_xunlock() of destroyed sx @ %s:%d", file, line));
+	    ("sx_xunlock() of destroyed sx %p @ %s:%d", sx, file, line));
 	_sx_assert(sx, SA_XLOCKED, file, line);
 	WITNESS_UNLOCK(&sx->lock_object, LOP_EXCLUSIVE, file, line);
 	LOCK_LOG_LOCK("XUNLOCK", &sx->lock_object, 0, sx->sx_recurse, file,
@@ -433,7 +431,7 @@ sx_try_upgrade_int(struct sx *sx LOCK_FILE_LINE_ARG_DEF)
 		return (1);
 
 	KASSERT(sx->sx_lock != SX_LOCK_DESTROYED,
-	    ("sx_try_upgrade() of destroyed sx @ %s:%d", file, line));
+	    ("sx_try_upgrade() of destroyed sx %p @ %s:%d", sx, file, line));
 	_sx_assert(sx, SA_SLOCKED, file, line);
 
 	/*
@@ -477,13 +475,12 @@ void
 sx_downgrade_int(struct sx *sx LOCK_FILE_LINE_ARG_DEF)
 {
 	uintptr_t x;
-	int wakeup_swapper;
 
 	if (SCHEDULER_STOPPED())
 		return;
 
 	KASSERT(sx->sx_lock != SX_LOCK_DESTROYED,
-	    ("sx_downgrade() of destroyed sx @ %s:%d", file, line));
+	    ("sx_downgrade() of destroyed sx %p @ %s:%d", sx, file, line));
 	_sx_assert(sx, SA_XLOCKED | SA_NOTRECURSED, file, line);
 #ifndef INVARIANTS
 	if (sx_recursed(sx))
@@ -519,17 +516,13 @@ sx_downgrade_int(struct sx *sx LOCK_FILE_LINE_ARG_DEF)
 	 * Preserve SX_LOCK_EXCLUSIVE_WAITERS while downgraded to a single
 	 * shared lock.  If there are any shared waiters, wake them up.
 	 */
-	wakeup_swapper = 0;
 	x = sx->sx_lock;
 	atomic_store_rel_ptr(&sx->sx_lock, SX_SHARERS_LOCK(1) |
 	    (x & SX_LOCK_EXCLUSIVE_WAITERS));
 	if (x & SX_LOCK_SHARED_WAITERS)
-		wakeup_swapper = sleepq_broadcast(&sx->lock_object, SLEEPQ_SX,
-		    0, SQ_SHARED_QUEUE);
+		sleepq_broadcast(&sx->lock_object, SLEEPQ_SX, 0,
+		    SQ_SHARED_QUEUE);
 	sleepq_release(&sx->lock_object);
-
-	if (wakeup_swapper)
-		kick_proc0();
 
 out:
 	curthread->td_sx_slocks++;
@@ -558,7 +551,7 @@ sx_drop_critical(uintptr_t x, bool *in_critical, int *extra_work)
 	}
 }
 #else
-#define sx_drop_critical(x, in_critical, extra_work) do { } while(0)
+#define sx_drop_critical(x, in_critical, extra_work) do { } while (0)
 #endif
 
 /*
@@ -590,9 +583,9 @@ _sx_xlock_hard(struct sx *sx, uintptr_t x, int opts LOCK_FILE_LINE_ARG_DEF)
 	u_int sleep_cnt = 0;
 	int64_t sleep_time = 0;
 	int64_t all_time = 0;
+	uintptr_t state = 0;
 #endif
 #if defined(KDTRACE_HOOKS) || defined(LOCK_PROFILING)
-	uintptr_t state = 0;
 	int doing_lockprof = 0;
 #endif
 	int extra_work = 0;
@@ -608,13 +601,12 @@ _sx_xlock_hard(struct sx *sx, uintptr_t x, int opts LOCK_FILE_LINE_ARG_DEF)
 		extra_work = 1;
 		doing_lockprof = 1;
 		all_time -= lockstat_nsecs(&sx->lock_object);
-		state = x;
 	}
+	state = x;
 #endif
 #ifdef LOCK_PROFILING
 	extra_work = 1;
 	doing_lockprof = 1;
-	state = x;
 #endif
 
 	if (SCHEDULER_STOPPED())
@@ -626,8 +618,8 @@ _sx_xlock_hard(struct sx *sx, uintptr_t x, int opts LOCK_FILE_LINE_ARG_DEF)
 	/* If we already hold an exclusive lock, then recurse. */
 	if (__predict_false(lv_sx_owner(x) == (struct thread *)tid)) {
 		KASSERT((sx->lock_object.lo_flags & LO_RECURSABLE) != 0,
-	    ("_sx_xlock_hard: recursed on non-recursive sx %s @ %s:%d\n",
-		    sx->lock_object.lo_name, file, line));
+	    ("_sx_xlock_hard: recursed on non-recursive sx %p @ %s:%d\n",
+		    sx, file, line));
 		sx->sx_recurse++;
 		atomic_set_ptr(&sx->sx_lock, SX_LOCK_RECURSED);
 		if (LOCK_LOG_TEST(&sx->lock_object, 0))
@@ -648,12 +640,14 @@ _sx_xlock_hard(struct sx *sx, uintptr_t x, int opts LOCK_FILE_LINE_ARG_DEF)
 #ifdef HWPMC_HOOKS
 	PMC_SOFT_CALL( , , lock, failed);
 #endif
-	lock_profile_obtain_lock_failed(&sx->lock_object, &contested,
+	lock_profile_obtain_lock_failed(&sx->lock_object, false, &contested,
 	    &waittime);
 
 #ifndef INVARIANTS
 	GIANT_SAVE(extra_work);
 #endif
+
+	THREAD_CONTENDS_ON_LOCK(&sx->lock_object);
 
 	for (;;) {
 		if (x == SX_LOCK_UNLOCKED) {
@@ -854,10 +848,17 @@ retry_sleepq:
 		sleepq_add(&sx->lock_object, NULL, sx->lock_object.lo_name,
 		    SLEEPQ_SX | ((opts & SX_INTERRUPTIBLE) ?
 		    SLEEPQ_INTERRUPTIBLE : 0), SQ_EXCLUSIVE_QUEUE);
+		/*
+		 * Hack: this can land in thread_suspend_check which will
+		 * conditionally take a mutex, tripping over an assert if a
+		 * lock we are waiting for is set.
+		 */
+		THREAD_CONTENTION_DONE(&sx->lock_object);
 		if (!(opts & SX_INTERRUPTIBLE))
 			sleepq_wait(&sx->lock_object, 0);
 		else
 			error = sleepq_wait_sig(&sx->lock_object, 0);
+		THREAD_CONTENDS_ON_LOCK(&sx->lock_object);
 #ifdef KDTRACE_HOOKS
 		sleep_time += lockstat_nsecs(&sx->lock_object);
 		sleep_cnt++;
@@ -874,6 +875,7 @@ retry_sleepq:
 			    __func__, sx);
 		x = SX_READ_VALUE(sx);
 	}
+	THREAD_CONTENTION_DONE(&sx->lock_object);
 	if (__predict_true(!extra_work))
 		return (error);
 #ifdef ADAPTIVE_SX
@@ -913,7 +915,7 @@ void
 _sx_xunlock_hard(struct sx *sx, uintptr_t x LOCK_FILE_LINE_ARG_DEF)
 {
 	uintptr_t tid, setx;
-	int queue, wakeup_swapper;
+	int queue;
 
 	if (SCHEDULER_STOPPED())
 		return;
@@ -970,14 +972,11 @@ _sx_xunlock_hard(struct sx *sx, uintptr_t x LOCK_FILE_LINE_ARG_DEF)
 		    __func__, sx, queue == SQ_SHARED_QUEUE ? "shared" :
 		    "exclusive");
 
-	wakeup_swapper = sleepq_broadcast(&sx->lock_object, SLEEPQ_SX, 0,
-	    queue);
+	sleepq_broadcast(&sx->lock_object, SLEEPQ_SX, 0, queue);
 	sleepq_release(&sx->lock_object);
-	if (wakeup_swapper)
-		kick_proc0();
 }
 
-static bool __always_inline
+static __always_inline bool
 __sx_can_read(struct thread *td, uintptr_t x, bool fp)
 {
 
@@ -989,7 +988,7 @@ __sx_can_read(struct thread *td, uintptr_t x, bool fp)
 	return (false);
 }
 
-static bool __always_inline
+static __always_inline bool
 __sx_slock_try(struct sx *sx, struct thread *td, uintptr_t *xp, bool fp
     LOCK_FILE_LINE_ARG_DEF)
 {
@@ -1035,11 +1034,9 @@ _sx_slock_hard(struct sx *sx, int opts, uintptr_t x LOCK_FILE_LINE_ARG_DEF)
 	u_int sleep_cnt = 0;
 	int64_t sleep_time = 0;
 	int64_t all_time = 0;
-#endif
-#if defined(KDTRACE_HOOKS) || defined(LOCK_PROFILING)
 	uintptr_t state = 0;
 #endif
-	int extra_work = 0;
+	int extra_work __sdt_used = 0;
 
 	td = curthread;
 
@@ -1049,12 +1046,11 @@ _sx_slock_hard(struct sx *sx, int opts, uintptr_t x LOCK_FILE_LINE_ARG_DEF)
 			goto out_lockstat;
 		extra_work = 1;
 		all_time -= lockstat_nsecs(&sx->lock_object);
-		state = x;
 	}
+	state = x;
 #endif
 #ifdef LOCK_PROFILING
 	extra_work = 1;
-	state = x;
 #endif
 
 	if (SCHEDULER_STOPPED())
@@ -1069,12 +1065,14 @@ _sx_slock_hard(struct sx *sx, int opts, uintptr_t x LOCK_FILE_LINE_ARG_DEF)
 #ifdef HWPMC_HOOKS
 	PMC_SOFT_CALL( , , lock, failed);
 #endif
-	lock_profile_obtain_lock_failed(&sx->lock_object, &contested,
+	lock_profile_obtain_lock_failed(&sx->lock_object, false, &contested,
 	    &waittime);
 
 #ifndef INVARIANTS
 	GIANT_SAVE(extra_work);
 #endif
+
+	THREAD_CONTENDS_ON_LOCK(&sx->lock_object);
 
 	/*
 	 * As with rwlocks, we don't make any attempt to try to block
@@ -1206,10 +1204,17 @@ retry_sleepq:
 		sleepq_add(&sx->lock_object, NULL, sx->lock_object.lo_name,
 		    SLEEPQ_SX | ((opts & SX_INTERRUPTIBLE) ?
 		    SLEEPQ_INTERRUPTIBLE : 0), SQ_SHARED_QUEUE);
+		/*
+		 * Hack: this can land in thread_suspend_check which will
+		 * conditionally take a mutex, tripping over an assert if a
+		 * lock we are waiting for is set.
+		 */
+		THREAD_CONTENTION_DONE(&sx->lock_object);
 		if (!(opts & SX_INTERRUPTIBLE))
 			sleepq_wait(&sx->lock_object, 0);
 		else
 			error = sleepq_wait_sig(&sx->lock_object, 0);
+		THREAD_CONTENDS_ON_LOCK(&sx->lock_object);
 #ifdef KDTRACE_HOOKS
 		sleep_time += lockstat_nsecs(&sx->lock_object);
 		sleep_cnt++;
@@ -1226,6 +1231,7 @@ retry_sleepq:
 			    __func__, sx);
 		x = SX_READ_VALUE(sx);
 	}
+	THREAD_CONTENTION_DONE(&sx->lock_object);
 #if defined(KDTRACE_HOOKS) || defined(LOCK_PROFILING)
 	if (__predict_true(!extra_work))
 		return (error);
@@ -1259,10 +1265,10 @@ _sx_slock_int(struct sx *sx, int opts LOCK_FILE_LINE_ARG_DEF)
 
 	KASSERT(kdb_active != 0 || SCHEDULER_STOPPED() ||
 	    !TD_IS_IDLETHREAD(curthread),
-	    ("sx_slock() by idle thread %p on sx %s @ %s:%d",
-	    curthread, sx->lock_object.lo_name, file, line));
+	    ("sx_slock() by idle thread %p on sx %p @ %s:%d",
+	    curthread, sx, file, line));
 	KASSERT(sx->sx_lock != SX_LOCK_DESTROYED,
-	    ("sx_slock() of destroyed sx @ %s:%d", file, line));
+	    ("sx_slock() of destroyed sx %p @ %s:%d", sx, file, line));
 	WITNESS_CHECKORDER(&sx->lock_object, LOP_NEWORDER, file, line, NULL);
 
 	error = 0;
@@ -1272,7 +1278,7 @@ _sx_slock_int(struct sx *sx, int opts LOCK_FILE_LINE_ARG_DEF)
 	    !__sx_slock_try(sx, td, &x, true LOCK_FILE_LINE_ARG)))
 		error = _sx_slock_hard(sx, opts, x LOCK_FILE_LINE_ARG);
 	else
-		lock_profile_obtain_lock_success(&sx->lock_object, 0, 0,
+		lock_profile_obtain_lock_success(&sx->lock_object, false, 0, 0,
 		    file, line);
 	if (error == 0) {
 		LOCK_LOG_LOCK("SLOCK", &sx->lock_object, 0, 0, file, line);
@@ -1289,7 +1295,7 @@ _sx_slock(struct sx *sx, int opts, const char *file, int line)
 	return (_sx_slock_int(sx, opts LOCK_FILE_LINE_ARG));
 }
 
-static bool __always_inline
+static __always_inline bool
 _sx_sunlock_try(struct sx *sx, struct thread *td, uintptr_t *xp)
 {
 
@@ -1316,7 +1322,6 @@ static void __noinline
 _sx_sunlock_hard(struct sx *sx, struct thread *td, uintptr_t x
     LOCK_FILE_LINE_ARG_DEF)
 {
-	int wakeup_swapper = 0;
 	uintptr_t setx, queue;
 
 	if (SCHEDULER_STOPPED())
@@ -1349,14 +1354,11 @@ _sx_sunlock_hard(struct sx *sx, struct thread *td, uintptr_t x
 		if (LOCK_LOG_TEST(&sx->lock_object, 0))
 			CTR2(KTR_LOCK, "%s: %p waking up all thread on"
 			    "exclusive queue", __func__, sx);
-		wakeup_swapper = sleepq_broadcast(&sx->lock_object, SLEEPQ_SX,
-		    0, queue);
+		sleepq_broadcast(&sx->lock_object, SLEEPQ_SX, 0, queue);
 		td->td_sx_slocks--;
 		break;
 	}
 	sleepq_release(&sx->lock_object);
-	if (wakeup_swapper)
-		kick_proc0();
 out_lockstat:
 	LOCKSTAT_PROFILE_RELEASE_RWLOCK(sx__release, sx, LOCKSTAT_READER);
 }
@@ -1368,7 +1370,7 @@ _sx_sunlock_int(struct sx *sx LOCK_FILE_LINE_ARG_DEF)
 	uintptr_t x;
 
 	KASSERT(sx->sx_lock != SX_LOCK_DESTROYED,
-	    ("sx_sunlock() of destroyed sx @ %s:%d", file, line));
+	    ("sx_sunlock() of destroyed sx %p  @ %s:%d", sx, file, line));
 	_sx_assert(sx, SA_SLOCKED, file, line);
 	WITNESS_UNLOCK(&sx->lock_object, 0, file, line);
 	LOCK_LOG_LOCK("SUNLOCK", &sx->lock_object, 0, 0, file, line);
@@ -1379,7 +1381,7 @@ _sx_sunlock_int(struct sx *sx LOCK_FILE_LINE_ARG_DEF)
 	    !_sx_sunlock_try(sx, td, &x)))
 		_sx_sunlock_hard(sx, td, x LOCK_FILE_LINE_ARG);
 	else
-		lock_profile_release_lock(&sx->lock_object);
+		lock_profile_release_lock(&sx->lock_object, false);
 
 	TD_LOCKS_DEC(curthread);
 }

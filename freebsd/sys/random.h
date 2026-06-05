@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000-2015, 2017 Mark R. V. Murray
  * All rights reserved.
@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_SYS_RANDOM_H_
@@ -86,28 +84,34 @@ enum random_entropy_source {
 	RANDOM_SWI,
 	RANDOM_FS_ATIME,
 	RANDOM_UMA,	/* Special!! UMA/SLAB Allocator */
-	RANDOM_ENVIRONMENTAL_END = RANDOM_UMA,
+	RANDOM_CALLOUT,
+	RANDOM_RANDOMDEV,
+	RANDOM_ENVIRONMENTAL_END = RANDOM_RANDOMDEV,
 	/* Fast hardware random-number sources from here on. */
 	RANDOM_PURE_START,
-	RANDOM_PURE_OCTEON = RANDOM_PURE_START,
-	RANDOM_PURE_SAFE,
-	RANDOM_PURE_GLXSB,
-	RANDOM_PURE_HIFN,
+	RANDOM_PURE_TPM = RANDOM_PURE_START,
 	RANDOM_PURE_RDRAND,
+	RANDOM_PURE_RDSEED,
 	RANDOM_PURE_NEHEMIAH,
 	RANDOM_PURE_RNDTEST,
 	RANDOM_PURE_VIRTIO,
 	RANDOM_PURE_BROADCOM,
 	RANDOM_PURE_CCP,
 	RANDOM_PURE_DARN,
-	RANDOM_PURE_TPM,
 	RANDOM_PURE_VMGENID,
+	RANDOM_PURE_QUALCOMM,
+	RANDOM_PURE_ARMV8,
+	RANDOM_PURE_ARM_TRNG,
+	RANDOM_PURE_SAFE,
+	RANDOM_PURE_GLXSB,
+	RANDOM_PURE_HIFN,
 	ENTROPYSOURCE
 };
 _Static_assert(ENTROPYSOURCE <= 32,
     "hardcoded assumption that values fit in a typical word-sized bitset");
 
 #define RANDOM_CACHED_BOOT_ENTROPY_MODULE	"boot_entropy_cache"
+#define RANDOM_PLATFORM_BOOT_ENTROPY_MODULE	"boot_entropy_platform"
 
 #ifndef FSTACK
 extern u_int hc_source_mask;
@@ -144,9 +148,6 @@ random_harvest_direct(const void *entropy, u_int size, enum random_entropy_sourc
 #define random_harvest_direct(a, b, c) do {} while (0)
 #endif
 
-void random_harvest_register_source(enum random_entropy_source);
-void random_harvest_deregister_source(enum random_entropy_source);
-
 #if defined(RANDOM_ENABLE_UMA)
 #define random_harvest_fast_uma(a, b, c)	random_harvest_fast(a, b, c)
 #else /* !defined(RANDOM_ENABLE_UMA) */
@@ -158,6 +159,12 @@ void random_harvest_deregister_source(enum random_entropy_source);
 #else /* !defined(RANDOM_ENABLE_ETHER) */
 #define random_harvest_queue_ether(a, b)	do {} while (0)
 #endif /* defined(RANDOM_ENABLE_ETHER) */
+
+#else /* !_KERNEL */
+
+#if defined(_FORTIFY_SOURCE) && _FORTIFY_SOURCE > 0
+#include <ssp/random.h>
+#endif
 
 #endif /* _KERNEL */
 

@@ -33,23 +33,20 @@
  * Command dispatcher.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
+#include <sys/conf.h>
+#include <sys/cons.h>
 #include <sys/eventhandler.h>
+#include <sys/kdb.h>
+#include <sys/kernel.h>
 #include <sys/linker_set.h>
 #include <sys/lock.h>
-#include <sys/kdb.h>
 #include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/reboot.h>
 #include <sys/signalvar.h>
 #include <sys/systm.h>
-#include <sys/cons.h>
-#include <sys/conf.h>
 #include <sys/watchdog.h>
-#include <sys/kernel.h>
 
 #include <ddb/ddb.h>
 #include <ddb/db_command.h>
@@ -58,6 +55,8 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/cpu.h>
 #include <machine/setjmp.h>
+
+#include <security/mac/mac_framework.h>
 
 /*
  * Exported global variables
@@ -79,85 +78,103 @@ static db_cmdfcn_t	db_stack_trace_active;
 static db_cmdfcn_t	db_stack_trace_all;
 static db_cmdfcn_t	db_watchdog;
 
-/*
- * 'show' commands
- */
+#define	DB_CMD(_name, _func, _flags)	\
+{					\
+	.name =	(_name),		\
+	.fcn =	(_func),		\
+	.flag =	(_flags),		\
+	.more = NULL,			\
+}
+#define	DB_TABLE(_name, _more)		\
+{					\
+	.name =	(_name),		\
+	.fcn =	NULL,			\
+	.more =	(_more),		\
+}
 
-static struct command db_show_active_cmds[] = {
-	{ "trace",	db_stack_trace_active,	0,	NULL },
+static struct db_command db_show_active_cmds[] = {
+	DB_CMD("trace",		db_stack_trace_active,	DB_CMD_MEMSAFE),
 };
-struct command_table db_show_active_table =
+struct db_command_table db_show_active_table =
     LIST_HEAD_INITIALIZER(db_show_active_table);
 
-static struct command db_show_all_cmds[] = {
-	{ "trace",	db_stack_trace_all,	0,	NULL },
+static struct db_command db_show_all_cmds[] = {
+	DB_CMD("trace",		db_stack_trace_all,	DB_CMD_MEMSAFE),
 };
-struct command_table db_show_all_table =
+struct db_command_table db_show_all_table =
     LIST_HEAD_INITIALIZER(db_show_all_table);
 
-static struct command db_show_cmds[] = {
-	{ "active",	0,			0,	&db_show_active_table },
-	{ "all",	0,			0,	&db_show_all_table },
-	{ "registers",	db_show_regs,		0,	NULL },
-	{ "breaks",	db_listbreak_cmd, 	0,	NULL },
-	{ "threads",	db_show_threads,	0,	NULL },
+static struct db_command db_show_cmds[] = {
+	DB_TABLE("active",	&db_show_active_table),
+	DB_TABLE("all",		&db_show_all_table),
+	DB_CMD("registers",	db_show_regs,		DB_CMD_MEMSAFE),
+	DB_CMD("breaks",	db_listbreak_cmd,	DB_CMD_MEMSAFE),
+	DB_CMD("threads",	db_show_threads,	DB_CMD_MEMSAFE),
 };
-struct command_table db_show_table = LIST_HEAD_INITIALIZER(db_show_table);
+struct db_command_table db_show_table = LIST_HEAD_INITIALIZER(db_show_table);
 
-static struct command db_cmds[] = {
-	{ "print",	db_print_cmd,		0,	NULL },
-	{ "p",		db_print_cmd,		0,	NULL },
-	{ "examine",	db_examine_cmd,		CS_SET_DOT, NULL },
-	{ "x",		db_examine_cmd,		CS_SET_DOT, NULL },
-	{ "search",	db_search_cmd,		CS_OWN|CS_SET_DOT, NULL },
-	{ "set",	db_set_cmd,		CS_OWN,	NULL },
-	{ "write",	db_write_cmd,		CS_MORE|CS_SET_DOT, NULL },
-	{ "w",		db_write_cmd,		CS_MORE|CS_SET_DOT, NULL },
-	{ "delete",	db_delete_cmd,		0,	NULL },
-	{ "d",		db_delete_cmd,		0,	NULL },
-	{ "dump",	db_dump,		0,	NULL },
-	{ "break",	db_breakpoint_cmd,	0,	NULL },
-	{ "b",		db_breakpoint_cmd,	0,	NULL },
-	{ "dwatch",	db_deletewatch_cmd,	0,	NULL },
-	{ "watch",	db_watchpoint_cmd,	CS_MORE,NULL },
-	{ "dhwatch",	db_deletehwatch_cmd,	0,      NULL },
-	{ "hwatch",	db_hwatchpoint_cmd,	0,      NULL },
-	{ "step",	db_single_step_cmd,	0,	NULL },
-	{ "s",		db_single_step_cmd,	0,	NULL },
-	{ "continue",	db_continue_cmd,	0,	NULL },
-	{ "c",		db_continue_cmd,	0,	NULL },
-	{ "until",	db_trace_until_call_cmd,0,	NULL },
-	{ "next",	db_trace_until_matching_cmd,0,	NULL },
-	{ "match",	db_trace_until_matching_cmd,0,	NULL },
-	{ "trace",	db_stack_trace,		CS_OWN,	NULL },
-	{ "t",		db_stack_trace,		CS_OWN,	NULL },
+static struct db_command db_cmds[] = {
+	DB_TABLE("show",	&db_show_table),
+	DB_CMD("print",		db_print_cmd,		0),
+	DB_CMD("p",		db_print_cmd,		0),
+	DB_CMD("examine",	db_examine_cmd,		CS_SET_DOT),
+	DB_CMD("x",		db_examine_cmd,		CS_SET_DOT),
+	DB_CMD("search",	db_search_cmd,		CS_OWN|CS_SET_DOT),
+	DB_CMD("set",		db_set_cmd,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("write",		db_write_cmd,		CS_MORE|CS_SET_DOT),
+	DB_CMD("w",		db_write_cmd,		CS_MORE|CS_SET_DOT),
+	DB_CMD("delete",	db_delete_cmd,		0),
+	DB_CMD("d",		db_delete_cmd,		0),
+	DB_CMD("dump",		db_dump,		DB_CMD_MEMSAFE),
+#ifdef HAS_HW_BREAKPOINT
+	DB_CMD("dhbreak",	db_deletehbreak_cmd,	0),
+	DB_CMD("hbreak",	db_hbreakpoint_cmd,	0),
+#endif
+	DB_CMD("break",		db_breakpoint_cmd,	0),
+	DB_CMD("b",		db_breakpoint_cmd,	0),
+	DB_CMD("dwatch",	db_deletewatch_cmd,	0),
+	DB_CMD("watch",		db_watchpoint_cmd,	CS_MORE),
+	DB_CMD("dhwatch",	db_deletehwatch_cmd,	0),
+	DB_CMD("hwatch",	db_hwatchpoint_cmd,	0),
+	DB_CMD("step",		db_single_step_cmd,	DB_CMD_MEMSAFE),
+	DB_CMD("s",		db_single_step_cmd,	DB_CMD_MEMSAFE),
+	DB_CMD("continue",	db_continue_cmd,	DB_CMD_MEMSAFE),
+	DB_CMD("c",		db_continue_cmd,	DB_CMD_MEMSAFE),
+	DB_CMD("until",		db_trace_until_call_cmd, DB_CMD_MEMSAFE),
+	DB_CMD("next",		db_trace_until_matching_cmd, DB_CMD_MEMSAFE),
+	DB_CMD("match",		db_trace_until_matching_cmd, 0),
+	DB_CMD("trace",		db_stack_trace,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("t",		db_stack_trace,		CS_OWN|DB_CMD_MEMSAFE),
 	/* XXX alias for active trace */
-	{ "acttrace",	db_stack_trace_active,	0,	NULL },
+	DB_CMD("acttrace",	db_stack_trace_active,	DB_CMD_MEMSAFE),
 	/* XXX alias for all trace */
-	{ "alltrace",	db_stack_trace_all,	0,	NULL },
-	{ "where",	db_stack_trace,		CS_OWN,	NULL },
-	{ "bt",		db_stack_trace,		CS_OWN,	NULL },
-	{ "call",	db_fncall,		CS_OWN,	NULL },
-	{ "show",	0,			0,	&db_show_table },
-	{ "ps",		db_ps,			0,	NULL },
-	{ "gdb",	db_gdb,			0,	NULL },
-	{ "halt",	db_halt,		0,	NULL },
-	{ "reboot",	db_reset,		0,	NULL },
-	{ "reset",	db_reset,		0,	NULL },
-	{ "kill",	db_kill,		CS_OWN,	NULL },
-	{ "watchdog",	db_watchdog,		CS_OWN,	NULL },
-	{ "thread",	db_set_thread,		0,	NULL },
-	{ "run",	db_run_cmd,		CS_OWN,	NULL },
-	{ "script",	db_script_cmd,		CS_OWN,	NULL },
-	{ "scripts",	db_scripts_cmd,		0,	NULL },
-	{ "unscript",	db_unscript_cmd,	CS_OWN,	NULL },
-	{ "capture",	db_capture_cmd,		CS_OWN,	NULL },
-	{ "textdump",	db_textdump_cmd,	CS_OWN, NULL },
-	{ "findstack",	db_findstack_cmd,	0,	NULL },
+	DB_CMD("alltrace",	db_stack_trace_all,	DB_CMD_MEMSAFE),
+	DB_CMD("where",		db_stack_trace,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("bt",		db_stack_trace,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("call",		db_fncall,		CS_OWN),
+	DB_CMD("ps",		db_ps,			DB_CMD_MEMSAFE),
+	DB_CMD("gdb",		db_gdb,			0),
+	DB_CMD("halt",		db_halt,		DB_CMD_MEMSAFE),
+	DB_CMD("reboot",	db_reset,		DB_CMD_MEMSAFE),
+	DB_CMD("reset",		db_reset,		DB_CMD_MEMSAFE),
+	DB_CMD("kill",		db_kill,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("watchdog",	db_watchdog,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("thread",	db_set_thread,		0),
+	DB_CMD("run",		db_run_cmd,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("script",	db_script_cmd,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("scripts",	db_scripts_cmd,		DB_CMD_MEMSAFE),
+	DB_CMD("unscript",	db_unscript_cmd,	CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("capture",	db_capture_cmd,		CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("textdump",	db_textdump_cmd,	CS_OWN|DB_CMD_MEMSAFE),
+	DB_CMD("findstack",	db_findstack_cmd,	0),
+	DB_CMD("pprint",	db_pprint_cmd,		CS_OWN),
 };
-struct command_table db_cmd_table = LIST_HEAD_INITIALIZER(db_cmd_table);
+struct db_command_table db_cmd_table = LIST_HEAD_INITIALIZER(db_cmd_table);
 
-static struct command	*db_last_command = NULL;
+#undef DB_CMD
+#undef DB_TABLE
+
+static struct db_command *db_last_command = NULL;
 
 /*
  * if 'ed' style: 'dot' is set at start of last item printed,
@@ -172,9 +189,10 @@ static bool	db_ed_style = true;
 void
 db_skip_to_eol(void)
 {
-	int	t;
+	int t;
+
 	do {
-	    t = db_read_token();
+		t = db_read_token();
 	} while (t != tEOL);
 }
 
@@ -187,13 +205,13 @@ db_skip_to_eol(void)
 #define	CMD_AMBIGUOUS	3
 #define	CMD_HELP	4
 
-static void	db_cmd_match(char *name, struct command *cmd,
-		    struct command **cmdp, int *resultp);
-static void	db_cmd_list(struct command_table *table);
-static int	db_cmd_search(char *name, struct command_table *table,
-		    struct command **cmdp);
-static void	db_command(struct command **last_cmdp,
-		    struct command_table *cmd_table, int dopager);
+static void	db_cmd_match(char *name, struct db_command *cmd,
+		    struct db_command **cmdp, int *resultp);
+static void	db_cmd_list(struct db_command_table *table);
+static int	db_cmd_search(char *name, struct db_command_table *table,
+		    struct db_command **cmdp);
+static void	db_command(struct db_command **last_cmdp,
+		    struct db_command_table *cmd_table, bool dopager);
 
 /*
  * Initialize the command lists from the static tables.
@@ -201,29 +219,34 @@ static void	db_command(struct command **last_cmdp,
 void
 db_command_init(void)
 {
-#define	N(a)	(sizeof(a) / sizeof(a[0]))
 	int i;
 
-	for (i = 0; i < N(db_cmds); i++)
+	for (i = 0; i < nitems(db_cmds); i++)
 		db_command_register(&db_cmd_table, &db_cmds[i]);
-	for (i = 0; i < N(db_show_cmds); i++)
+	for (i = 0; i < nitems(db_show_cmds); i++)
 		db_command_register(&db_show_table, &db_show_cmds[i]);
-	for (i = 0; i < N(db_show_active_cmds); i++)
+	for (i = 0; i < nitems(db_show_active_cmds); i++)
 		db_command_register(&db_show_active_table,
 		    &db_show_active_cmds[i]);
-	for (i = 0; i < N(db_show_all_cmds); i++)
+	for (i = 0; i < nitems(db_show_all_cmds); i++)
 		db_command_register(&db_show_all_table, &db_show_all_cmds[i]);
-#undef N
 }
 
 /*
  * Register a command.
  */
 void
-db_command_register(struct command_table *list, struct command *cmd)
+db_command_register(struct db_command_table *list, struct db_command *cmd)
 {
-	struct command *c, *last;
+	struct db_command *c, *last;
 
+#ifdef MAC
+	if (mac_ddb_command_register(list, cmd)) {
+		printf("%s: MAC policy refused registration of command %s\n",
+		    __func__, cmd->name);
+		return;
+	}
+#endif
 	last = NULL;
 	LIST_FOREACH(c, list, next) {
 		int n = strcmp(cmd->name, c->name);
@@ -251,9 +274,9 @@ db_command_register(struct command_table *list, struct command *cmd)
  * Remove a command previously registered with db_command_register.
  */
 void
-db_command_unregister(struct command_table *list, struct command *cmd)
+db_command_unregister(struct db_command_table *list, struct db_command *cmd)
 {
-	struct command *c;
+	struct db_command *c;
 
 	LIST_FOREACH(c, list, next) {
 		if (cmd == c) {
@@ -268,7 +291,7 @@ db_command_unregister(struct command_table *list, struct command *cmd)
  * Helper function to match a single command.
  */
 static void
-db_cmd_match(char *name, struct command *cmd, struct command **cmdp,
+db_cmd_match(char *name, struct db_command *cmd, struct db_command **cmdp,
     int *resultp)
 {
 	char *lp, *rp;
@@ -293,7 +316,7 @@ db_cmd_match(char *name, struct command *cmd, struct command **cmdp,
 			*resultp = CMD_AMBIGUOUS;
 			/* but keep looking for a full match -
 			   this lets us match single letters */
-		} else {
+		} else if (*resultp == CMD_NONE) {
 			*cmdp = cmd;
 			*resultp = CMD_FOUND;
 		}
@@ -304,10 +327,11 @@ db_cmd_match(char *name, struct command *cmd, struct command **cmdp,
  * Search for command prefix.
  */
 static int
-db_cmd_search(char *name, struct command_table *table, struct command **cmdp)
+db_cmd_search(char *name, struct db_command_table *table,
+    struct db_command **cmdp)
 {
-	struct command	*cmd;
-	int		result = CMD_NONE;
+	struct db_command *cmd;
+	int result = CMD_NONE;
 
 	LIST_FOREACH(cmd, table, next) {
 		db_cmd_match(name,cmd,cmdp,&result);
@@ -325,9 +349,9 @@ db_cmd_search(char *name, struct command_table *table, struct command **cmdp)
 }
 
 static void
-db_cmd_list(struct command_table *table)
+db_cmd_list(struct db_command_table *table)
 {
-	struct command	*cmd;
+	struct db_command *cmd;
 	int have_subcommands;
 
 	have_subcommands = 0;
@@ -351,157 +375,153 @@ db_cmd_list(struct command_table *table)
 }
 
 static void
-db_command(struct command **last_cmdp, struct command_table *cmd_table,
-    int dopager)
+db_command(struct db_command **last_cmdp, struct db_command_table *cmd_table,
+    bool dopager)
 {
-	struct command	*cmd = NULL;
-	int		t;
-	char		modif[TOK_STRING_SIZE];
-	db_expr_t	addr, count;
-	bool		have_addr = false;
-	int		result;
+	char modif[TOK_STRING_SIZE];
+	struct db_command *cmd = NULL;
+	db_expr_t addr, count;
+	int t, result;
+	bool have_addr = false;
 
 	t = db_read_token();
 	if (t == tEOL) {
-	    /* empty line repeats last command, at 'next' */
-	    cmd = *last_cmdp;
-	    addr = (db_expr_t)db_next;
-	    have_addr = false;
-	    count = 1;
-	    modif[0] = '\0';
-	}
-	else if (t == tEXCL) {
-	    db_fncall((db_expr_t)0, (bool)false, (db_expr_t)0, (char *)0);
-	    return;
-	}
-	else if (t != tIDENT) {
-	    db_printf("Unrecognized input; use \"help\" "
-	        "to list available commands\n");
-	    db_flush_lex();
-	    return;
-	}
-	else {
-	    /*
-	     * Search for command
-	     */
-	    while (cmd_table) {
-		result = db_cmd_search(db_tok_string,
-				       cmd_table,
-				       &cmd);
-		switch (result) {
-		    case CMD_NONE:
-			db_printf("No such command; use \"help\" "
-			    "to list available commands\n");
-			db_flush_lex();
-			return;
-		    case CMD_AMBIGUOUS:
-			db_printf("Ambiguous\n");
-			db_flush_lex();
-			return;
-		    case CMD_HELP:
-			if (cmd_table == &db_cmd_table) {
-			    db_printf("This is ddb(4), the kernel debugger; "
-			        "see https://man.FreeBSD.org/ddb/4 for help.\n");
-			    db_printf("Use \"bt\" for backtrace, \"dump\" for "
-			        "kernel core dump, \"reset\" to reboot.\n");
-			    db_printf("Available commands:\n");
-			}
-			db_cmd_list(cmd_table);
-			db_flush_lex();
-			return;
-		    default:
-			break;
-		}
-		if ((cmd_table = cmd->more) != NULL) {
-		    t = db_read_token();
-		    if (t != tIDENT) {
-			db_printf("Subcommand required; "
-			    "available subcommands:\n");
-			db_cmd_list(cmd_table);
-			db_flush_lex();
-			return;
-		    }
-		}
-	    }
-
-	    if ((cmd->flag & CS_OWN) == 0) {
+		/* empty line repeats last command, at 'next' */
+		cmd = *last_cmdp;
+		addr = (db_expr_t)db_next;
+		have_addr = false;
+		count = 1;
+		modif[0] = '\0';
+	} else if (t == tEXCL) {
+		db_fncall((db_expr_t)0, false, (db_expr_t)0, NULL);
+		return;
+	} else if (t != tIDENT) {
+		db_printf("Unrecognized input; use \"help\" "
+	            "to list available commands\n");
+		db_flush_lex();
+		return;
+	} else {
 		/*
-		 * Standard syntax:
-		 * command [/modifier] [addr] [,count]
+		 * Search for command
 		 */
-		t = db_read_token();
-		if (t == tSLASH) {
-		    t = db_read_token();
-		    if (t != tIDENT) {
-			db_printf("Bad modifier\n");
-			db_flush_lex();
-			return;
-		    }
-		    db_strcpy(modif, db_tok_string);
-		}
-		else {
-		    db_unread_token(t);
-		    modif[0] = '\0';
+		while (cmd_table != NULL) {
+			result = db_cmd_search(db_tok_string, cmd_table, &cmd);
+			switch (result) {
+			case CMD_NONE:
+				db_printf("No such command; use \"help\" "
+				    "to list available commands\n");
+				db_flush_lex();
+				return;
+			case CMD_AMBIGUOUS:
+				db_printf("Ambiguous\n");
+				db_flush_lex();
+				return;
+			case CMD_HELP:
+				if (cmd_table == &db_cmd_table) {
+					db_printf("This is ddb(4), the kernel debugger; "
+					    "see https://man.FreeBSD.org/ddb/4 for help.\n");
+					db_printf("Use \"bt\" for backtrace, \"dump\" for "
+					    "kernel core dump, \"reset\" to reboot.\n");
+					db_printf("Available commands:\n");
+				}
+				db_cmd_list(cmd_table);
+				db_flush_lex();
+				return;
+			case CMD_UNIQUE:
+			case CMD_FOUND:
+				break;
+			}
+			if ((cmd_table = cmd->more) != NULL) {
+				t = db_read_token();
+				if (t != tIDENT) {
+					db_printf("Subcommand required; "
+					    "available subcommands:\n");
+					db_cmd_list(cmd_table);
+					db_flush_lex();
+					return;
+				}
+			}
 		}
 
-		if (db_expression(&addr)) {
-		    db_dot = (db_addr_t) addr;
-		    db_last_addr = db_dot;
-		    have_addr = true;
+		if ((cmd->flag & CS_OWN) == 0) {
+			/*
+			 * Standard syntax:
+			 * command [/modifier] [addr] [,count]
+			 */
+			t = db_read_token();
+			if (t == tSLASH) {
+				t = db_read_token();
+				if (t != tIDENT) {
+					db_printf("Bad modifier\n");
+					db_flush_lex();
+					return;
+				}
+				db_strcpy(modif, db_tok_string);
+			} else {
+				db_unread_token(t);
+				modif[0] = '\0';
+			}
+
+			if (db_expression(&addr)) {
+				db_dot = (db_addr_t) addr;
+				db_last_addr = db_dot;
+				have_addr = true;
+			} else {
+				addr = (db_expr_t) db_dot;
+				have_addr = false;
+			}
+
+			t = db_read_token();
+			if (t == tCOMMA) {
+				if (!db_expression(&count)) {
+					db_printf("Count missing\n");
+					db_flush_lex();
+					return;
+				}
+			} else {
+				db_unread_token(t);
+				count = -1;
+			}
+
+			if ((cmd->flag & CS_MORE) == 0) {
+				db_skip_to_eol();
+			}
 		}
-		else {
-		    addr = (db_expr_t) db_dot;
-		    have_addr = false;
-		}
-		t = db_read_token();
-		if (t == tCOMMA) {
-		    if (!db_expression(&count)) {
-			db_printf("Count missing\n");
-			db_flush_lex();
-			return;
-		    }
-		}
-		else {
-		    db_unread_token(t);
-		    count = -1;
-		}
-		if ((cmd->flag & CS_MORE) == 0) {
-		    db_skip_to_eol();
-		}
-	    }
 	}
+
 	*last_cmdp = cmd;
 	if (cmd != NULL) {
-	    /*
-	     * Execute the command.
-	     */
-	    if (dopager)
-		db_enable_pager();
-	    else
-		db_disable_pager();
-	    (*cmd->fcn)(addr, have_addr, count, modif);
-	    if (dopager)
-		db_disable_pager();
+#ifdef MAC
+		if (mac_ddb_command_exec(cmd, addr, have_addr, count, modif)) {
+			db_printf("MAC prevented execution of command %s\n",
+			    cmd->name);
+			return;
+		}
+#endif
+		/*
+		 * Execute the command.
+		 */
+		if (dopager)
+			db_enable_pager();
+		else
+			db_disable_pager();
+		(*cmd->fcn)(addr, have_addr, count, modif);
+		if (dopager)
+			db_disable_pager();
 
-	    if (cmd->flag & CS_SET_DOT) {
-		/*
-		 * If command changes dot, set dot to
-		 * previous address displayed (if 'ed' style).
-		 */
-		if (db_ed_style) {
-		    db_dot = db_prev;
+		if (cmd->flag & CS_SET_DOT) {
+			/*
+			 * If command changes dot, set dot to previous address
+			 * displayed (if 'ed' style).
+			 */
+			db_dot = db_ed_style ? db_prev : db_next;
+		} else {
+			/*
+			 * If command does not change dot, set 'next' location
+			 * to be the same.
+			 */
+			db_next = db_dot;
 		}
-		else {
-		    db_dot = db_next;
-		}
-	    }
-	    else {
-		/*
-		 * If command does not change dot,
-		 * set 'next' location to be the same.
-		 */
-		db_next = db_dot;
-	    }
 	}
 }
 
@@ -509,7 +529,7 @@ db_command(struct command **last_cmdp, struct command_table *cmd_table,
  * At least one non-optional command must be implemented using
  * DB_COMMAND() so that db_cmd_set gets created.  Here is one.
  */
-DB_COMMAND(panic, db_panic)
+DB_COMMAND_FLAGS(panic, db_panic, DB_CMD_MEMSAFE)
 {
 	db_disable_pager();
 	panic("from debugger");
@@ -526,13 +546,13 @@ db_command_loop(void)
 
 	db_cmd_loop_done = 0;
 	while (!db_cmd_loop_done) {
-	    if (db_print_position() != 0)
-		db_printf("\n");
+		if (db_print_position() != 0)
+			db_printf("\n");
 
-	    db_printf("db> ");
-	    (void) db_read_line();
+		db_printf("db> ");
+		(void)db_read_line();
 
-	    db_command(&db_last_command, &db_cmd_table, /* dopager */ 1);
+		db_command(&db_last_command, &db_cmd_table, /* dopager */ true);
 	}
 }
 
@@ -550,7 +570,7 @@ db_command_script(const char *command)
 {
 	db_prev = db_next = db_dot;
 	db_inject_line(command);
-	db_command(&db_last_command, &db_cmd_table, /* dopager */ 0);
+	db_command(&db_last_command, &db_cmd_table, /* dopager */ false);
 }
 
 void
@@ -560,6 +580,7 @@ db_error(const char *s)
 	    db_printf("%s", s);
 	db_flush_lex();
 	kdb_reenter_silent();
+	panic("%s: did not reenter debugger", __func__);
 }
 
 static void
@@ -727,7 +748,7 @@ out:
 
 static void
 db_reset(db_expr_t addr, bool have_addr, db_expr_t count __unused,
-    char *modif __unused)
+    char *modif)
 {
 	int delay, loop;
 
@@ -750,6 +771,18 @@ db_reset(db_expr_t addr, bool have_addr, db_expr_t count __unused,
 			if (cncheckc() != -1)
 				return;
 		}
+	}
+
+	/*
+	 * Conditionally try the standard reboot path, so any registered
+	 * shutdown/reset handlers have a chance to run first. Some platforms
+	 * may not support the machine-dependent mechanism used by cpu_reset()
+	 * and rely on some other non-standard mechanism to perform the reset.
+	 * For example, the BCM2835 watchdog driver or gpio-poweroff driver.
+	 */
+	if (modif[0] != 's') {
+		kern_reboot(RB_NOSYNC);
+		/* NOTREACHED */
 	}
 
 	cpu_reset();
@@ -838,10 +871,7 @@ db_stack_trace(db_expr_t tid, bool hastid, db_expr_t count, char *modif)
 	else
 		pid = -1;
 	db_printf("Tracing pid %d tid %ld td %p\n", pid, (long)td->td_tid, td);
-	if (td->td_proc != NULL && (td->td_proc->p_flag & P_INMEM) == 0)
-		db_printf("--- swapped out\n");
-	else
-		db_trace_thread(td, count);
+	db_trace_thread(td, count);
 }
 
 static void
@@ -854,7 +884,7 @@ _db_stack_trace_all(bool active_only)
 	for (td = kdb_thr_first(); td != NULL; td = kdb_thr_next(td)) {
 		prev_jb = kdb_jmpbuf(jb);
 		if (setjmp(jb) == 0) {
-			if (td->td_state == TDS_RUNNING)
+			if (TD_IS_RUNNING(td))
 				db_printf("\nTracing command %s pid %d"
 				    " tid %ld td %p (CPU %d)\n",
 				    td->td_proc->p_comm, td->td_proc->p_pid,
@@ -865,10 +895,7 @@ _db_stack_trace_all(bool active_only)
 				db_printf("\nTracing command %s pid %d"
 				    " tid %ld td %p\n", td->td_proc->p_comm,
 				    td->td_proc->p_pid, (long)td->td_tid, td);
-			if (td->td_proc->p_flag & P_INMEM)
-				db_trace_thread(td, -1);
-			else
-				db_printf("--- swapped out\n");
+			db_trace_thread(td, -1);
 			if (db_pager_quit) {
 				kdb_jmpbuf(prev_jb);
 				return;

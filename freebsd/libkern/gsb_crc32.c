@@ -42,26 +42,23 @@
  * CRC32 code derived from work by Gary S. Brown.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
+#include <sys/gsb_crc32.h>
 
 #ifdef _KERNEL
 #include <sys/libkern.h>
 #include <sys/systm.h>
-#include <sys/gsb_crc32.h>
 
 #if defined(__amd64__) || defined(__i386__)
 #include <machine/md_var.h>
 #include <machine/specialreg.h>
+#include <x86/ifunc.h>
 #endif
 
 #if defined(__aarch64__)
-#include <machine/elf.h>
-#include <machine/md_var.h>
+#include <machine/armreg.h>
+#include <machine/ifunc.h>
 #endif
-#endif /* _KERNEL */
 
 const uint32_t crc32_tab[] = {
 	0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419, 0x706af48f,
@@ -127,6 +124,7 @@ const uint32_t crc32_tab[] = {
  *		return crc ^ ~0U;
  *	}
  */
+#endif /* _KERNEL */
 
 /* CRC32C routines, these use a different polynomial */
 /*****************************************************************/
@@ -216,7 +214,10 @@ static const uint32_t crc32Table[256] = {
 	0xBE2DA0A5L, 0x4C4623A6L, 0x5F16D052L, 0xAD7D5351L
 };
 
-static uint32_t
+#ifndef TESTING
+static
+#endif
+uint32_t
 singletable_crc32c(uint32_t crc, const void *buf, size_t size)
 {
 	const uint8_t *p = buf;
@@ -730,10 +731,13 @@ crc32c_sb8_64_bit(uint32_t crc,
 	return crc;
 }
 
-static uint32_t
+#ifndef TESTING
+static
+#endif
+uint32_t
 multitable_crc32c(uint32_t crc32c,
-    const unsigned char *buffer,
-    unsigned int length)
+    const void *buffer,
+    size_t length)
 {
 	uint32_t to_even_word;
 
@@ -744,31 +748,48 @@ multitable_crc32c(uint32_t crc32c,
 	return (crc32c_sb8_64_bit(crc32c, buffer, length, to_even_word));
 }
 
-uint32_t
-calculate_crc32c(uint32_t crc32c,
-    const unsigned char *buffer,
-    unsigned int length)
+static uint32_t
+table_crc32c(uint32_t crc32c, const unsigned char *buffer, unsigned int length)
 {
-#ifndef FSTACK
-#ifdef _KERNEL
-#if defined(__amd64__) || defined(__i386__)
-	if ((cpu_feature2 & CPUID2_SSE42) != 0) {
-		return (sse42_crc32c(crc32c, buffer, length));
-	} else
-#endif
-#if defined(__aarch64__)
-	if ((elf_hwcap & HWCAP_CRC32) != 0) {
-		return (armv8_crc32c(crc32c, buffer, length));
-	} else
-#endif
-#endif /* _KERNEL */
-#endif /* FSTACK */
 	if (length < 4) {
 		return (singletable_crc32c(crc32c, buffer, length));
 	} else {
 		return (multitable_crc32c(crc32c, buffer, length));
 	}
 }
+
+#if defined(_KERNEL) && defined(__aarch64__) && !defined(FSTACK)
+DEFINE_IFUNC(, uint32_t, calculate_crc32c,
+    (uint32_t crc32c, const unsigned char *buffer, unsigned int length))
+{
+	uint64_t reg;
+
+	if (get_kernel_reg(ID_AA64ISAR0_EL1, &reg)) {
+		if (ID_AA64ISAR0_CRC32_VAL(reg) >= ID_AA64ISAR0_CRC32_BASE)
+			return (armv8_crc32c);
+	}
+
+	return (table_crc32c);
+}
+#elif defined(_KERNEL) && (defined(__amd64__) || defined(__i386__)) && !defined(FSTACK)
+DEFINE_IFUNC(, uint32_t, calculate_crc32c,
+    (uint32_t crc32c, const unsigned char *buffer, unsigned int length))
+{
+	if ((cpu_feature2 & CPUID2_SSE42) != 0)
+		return (sse42_crc32c);
+
+	return (table_crc32c);
+}
+#else
+uint32_t
+calculate_crc32c(uint32_t crc32c,
+    const unsigned char *buffer,
+    unsigned int length)
+{
+	return (table_crc32c(crc32c, buffer, length));
+}
+#endif /* _KERNEL && __aarch64__ && !FSTACK */
+
 #else
 uint32_t
 calculate_crc32c(uint32_t crc32c, const unsigned char *buffer, unsigned int length)

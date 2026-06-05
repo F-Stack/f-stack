@@ -35,8 +35,6 @@
 /* ksched: Soft real time scheduling based on "rtprio". */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_posix.h"
 
 #include <sys/param.h>
@@ -186,7 +184,7 @@ ksched_setscheduler(struct ksched *ksched, struct thread *td, int policy,
 			    RTP_PRIO_REALTIME;
 			rtp_to_pri(&rtp, td);
 		} else {
-			e = EPERM;
+			e = EINVAL;
 		}
 		break;
 	case SCHED_OTHER:

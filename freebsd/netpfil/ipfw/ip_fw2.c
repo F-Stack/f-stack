@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002-2009 Luigi Rizzo, Universita` di Pisa
  *
@@ -26,8 +26,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * The FreeBSD IP packet firewall, main file
  */
@@ -64,10 +62,13 @@ __FBSDID("$FreeBSD$");
 #include <net/ethernet.h> /* for ETHERTYPE_IP */
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/route/nhop.h>
 #include <net/pfil.h>
 #include <net/vnet.h>
+#include <net/if_gif.h>
+#include <net/if_pfsync.h>
 
 #include <netpfil/pf/pf_mtag.h>
 
@@ -144,15 +145,14 @@ VNET_DEFINE(unsigned int, fw_tables_sets) = 0;	/* Don't use set-aware tables */
 /* Use 128 tables by default */
 static unsigned int default_fw_tables = IPFW_TABLES_DEFAULT;
 
-#ifndef LINEAR_SKIPTO
-static int jump_fast(struct ip_fw_chain *chain, struct ip_fw *f, int num,
-    int tablearg, int jump_backwards);
-#define	JUMP(ch, f, num, targ, back)	jump_fast(ch, f, num, targ, back)
+#ifndef IPFIREWALL_LINEAR_SKIPTO
+VNET_DEFINE(int, skipto_cache) = 0;
 #else
-static int jump_linear(struct ip_fw_chain *chain, struct ip_fw *f, int num,
-    int tablearg, int jump_backwards);
-#define	JUMP(ch, f, num, targ, back)	jump_linear(ch, f, num, targ, back)
+VNET_DEFINE(int, skipto_cache) = 1;
 #endif
+
+static uint32_t jump(struct ip_fw_chain *chain, struct ip_fw *f,
+    uint32_t num, int tablearg, bool jump_backwards);
 
 /*
  * Each rule belongs to one of 32 different sets (0..31).
@@ -197,7 +197,7 @@ SYSCTL_NODE(_net_inet_ip, OID_AUTO, fw, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Firewall");
 SYSCTL_INT(_net_inet_ip_fw, OID_AUTO, one_pass,
     CTLFLAG_VNET | CTLFLAG_RW | CTLFLAG_SECURE3, &VNET_NAME(fw_one_pass), 0,
-    "Only do a single pass through ipfw when using dummynet(4)");
+    "Only do a single pass through ipfw when using dummynet(4), ipfw_nat or other divert(4)-like interfaces");
 SYSCTL_INT(_net_inet_ip_fw, OID_AUTO, autoinc_step,
     CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(autoinc_step), 0,
     "Rule number auto-increment step");
@@ -207,6 +207,9 @@ SYSCTL_INT(_net_inet_ip_fw, OID_AUTO, verbose,
 SYSCTL_INT(_net_inet_ip_fw, OID_AUTO, verbose_limit,
     CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(verbose_limit), 0,
     "Set upper limit of matches of ipfw rules logged");
+SYSCTL_INT(_net_inet_ip_fw, OID_AUTO, skipto_cache,
+    CTLFLAG_VNET | CTLFLAG_RD, &VNET_NAME(skipto_cache), 0,
+    "Status of linear skipto cache: 1 - enabled, 0 - disabled.");
 SYSCTL_UINT(_net_inet_ip_fw, OID_AUTO, default_rule, CTLFLAG_RD,
     &dummy_def, 0,
     "The default/max possible rule number.");
@@ -609,9 +612,7 @@ ipfw_send_abort(struct mbuf *replyto, struct ipfw_flow_id *id, u_int32_t vtag,
 	}
 	chunk->chunk_length = htons(sizeof(struct sctp_chunkhdr));
 
-#ifndef FSTACK /* Not support sctp now */
 	sctp->checksum = sctp_calculate_cksum(m, hlen);
-#endif
 
 	return (m);
 }
@@ -721,12 +722,12 @@ ipfw_send_pkt(struct mbuf *replyto, struct ipfw_flow_id *id, u_int32_t seq,
 	if (flags & TH_RST) {
 		if (flags & TH_ACK) {
 			th->th_seq = htonl(ack);
-			th->th_flags = TH_RST;
+			tcp_set_flags(th, TH_RST);
 		} else {
 			if (flags & TH_SYN)
 				seq++;
 			th->th_ack = htonl(seq);
-			th->th_flags = TH_RST | TH_ACK;
+			tcp_set_flags(th, TH_RST | TH_ACK);
 		}
 	} else {
 		/*
@@ -734,7 +735,7 @@ ipfw_send_pkt(struct mbuf *replyto, struct ipfw_flow_id *id, u_int32_t seq,
 		 */
 		th->th_seq = htonl(seq);
 		th->th_ack = htonl(ack);
-		th->th_flags = TH_ACK;
+		tcp_set_flags(th, TH_ACK);
 	}
 
 	switch (id->addr_type) {
@@ -886,20 +887,21 @@ map_icmp_unreach(int code)
 }
 
 static void
-send_reject6(struct ip_fw_args *args, int code, u_int hlen, struct ip6_hdr *ip6)
+send_reject6(struct ip_fw_args *args, int code, u_int hlen,
+    const struct ip6_hdr *ip6)
 {
 	struct mbuf *m;
 
 	m = args->m;
 	if (code == ICMP6_UNREACH_RST && args->f_id.proto == IPPROTO_TCP) {
-		struct tcphdr *tcp;
-		tcp = (struct tcphdr *)((char *)ip6 + hlen);
+		const struct tcphdr * tcp;
+		tcp = (const struct tcphdr *)((const char *)ip6 + hlen);
 
-		if ((tcp->th_flags & TH_RST) == 0) {
+		if ((tcp_get_flags(tcp) & TH_RST) == 0) {
 			struct mbuf *m0;
 			m0 = ipfw_send_pkt(args->m, &(args->f_id),
 			    ntohl(tcp->th_seq), ntohl(tcp->th_ack),
-			    tcp->th_flags | TH_RST);
+			    tcp_get_flags(tcp) | TH_RST);
 			if (m0 != NULL)
 				ip6_output(m0, NULL, NULL, 0, NULL, NULL,
 				    NULL);
@@ -908,19 +910,19 @@ send_reject6(struct ip_fw_args *args, int code, u_int hlen, struct ip6_hdr *ip6)
 	} else if (code == ICMP6_UNREACH_ABORT &&
 	    args->f_id.proto == IPPROTO_SCTP) {
 		struct mbuf *m0;
-		struct sctphdr *sctp;
+		const struct sctphdr *sctp;
 		u_int32_t v_tag;
 		int reflected;
 
-		sctp = (struct sctphdr *)((char *)ip6 + hlen);
+		sctp = (const struct sctphdr *)((const char *)ip6 + hlen);
 		reflected = 1;
 		v_tag = ntohl(sctp->v_tag);
 		/* Investigate the first chunk header if available */
 		if (m->m_len >= hlen + sizeof(struct sctphdr) +
 		    sizeof(struct sctp_chunkhdr)) {
-			struct sctp_chunkhdr *chunk;
+			const struct sctp_chunkhdr *chunk;
 
-			chunk = (struct sctp_chunkhdr *)(sctp + 1);
+			chunk = (const struct sctp_chunkhdr *)(sctp + 1);
 			switch (chunk->chunk_type) {
 			case SCTP_INITIATION:
 				/*
@@ -941,9 +943,9 @@ send_reject6(struct ip_fw_args *args, int code, u_int hlen, struct ip6_hdr *ip6)
 				if ((m->m_len >= hlen + sizeof(struct sctphdr) +
 				    sizeof(struct sctp_chunkhdr) +
 				    offsetof(struct sctp_init, a_rwnd))) {
-					struct sctp_init *init;
+					const struct sctp_init *init;
 
-					init = (struct sctp_init *)(chunk + 1);
+					init = (const struct sctp_init *)(chunk + 1);
 					v_tag = ntohl(init->initiate_tag);
 					reflected = 0;
 				}
@@ -995,9 +997,9 @@ send_reject6(struct ip_fw_args *args, int code, u_int hlen, struct ip6_hdr *ip6)
  * sends a reject message, consuming the mbuf passed as an argument.
  */
 static void
-send_reject(struct ip_fw_args *args, int code, int iplen, struct ip *ip)
+send_reject(struct ip_fw_args *args, int code, uint16_t mtu, int iplen,
+    const struct ip *ip)
 {
-
 #if 0
 	/* XXX When ip is not guaranteed to be at mtod() we will
 	 * need to account for this */
@@ -1010,15 +1012,15 @@ send_reject(struct ip_fw_args *args, int code, int iplen, struct ip *ip)
 #endif
 	if (code != ICMP_REJECT_RST && code != ICMP_REJECT_ABORT) {
 		/* Send an ICMP unreach */
-		icmp_error(args->m, ICMP_UNREACH, code, 0L, 0);
+		icmp_error(args->m, ICMP_UNREACH, code, 0L, mtu);
 	} else if (code == ICMP_REJECT_RST && args->f_id.proto == IPPROTO_TCP) {
 		struct tcphdr *const tcp =
 		    L3HDR(struct tcphdr, mtod(args->m, struct ip *));
-		if ( (tcp->th_flags & TH_RST) == 0) {
+		if ( (tcp_get_flags(tcp) & TH_RST) == 0) {
 			struct mbuf *m;
 			m = ipfw_send_pkt(args->m, &(args->f_id),
 				ntohl(tcp->th_seq), ntohl(tcp->th_ack),
-				tcp->th_flags | TH_RST);
+				tcp_get_flags(tcp) | TH_RST);
 			if (m != NULL)
 				ip_output(m, NULL, NULL, 0, NULL, NULL);
 		}
@@ -1229,62 +1231,128 @@ set_match(struct ip_fw_args *args, int slot,
 	args->flags |= IPFW_ARGS_REF;
 }
 
-#ifndef LINEAR_SKIPTO
-/*
- * Helper function to enable cached rule lookups using
- * cached_id and cached_pos fields in ipfw rule.
- */
-static int
-jump_fast(struct ip_fw_chain *chain, struct ip_fw *f, int num,
-    int tablearg, int jump_backwards)
+static uint32_t
+jump_lookup_pos(struct ip_fw_chain *chain, struct ip_fw *f, uint32_t num,
+    int tablearg, bool jump_backwards)
 {
-	int f_pos;
+	int f_pos, i;
 
-	/* If possible use cached f_pos (in f->cached_pos),
-	 * whose version is written in f->cached_id
-	 * (horrible hacks to avoid changing the ABI).
+	/*
+	 * Make sure we do not jump backward.
 	 */
-	if (num != IP_FW_TARG && f->cached_id == chain->id)
-		f_pos = f->cached_pos;
+	i = IP_FW_ARG_TABLEARG(chain, num, skipto);
+	if (!jump_backwards && i <= f->rulenum)
+		i = f->rulenum + 1;
+
+	if (V_skipto_cache == 0)
+		f_pos = ipfw_find_rule(chain, i, 0);
 	else {
-		int i = IP_FW_ARG_TABLEARG(chain, num, skipto);
-		/* make sure we do not jump backward */
-		if (jump_backwards == 0 && i <= f->rulenum)
-			i = f->rulenum + 1;
-		if (chain->idxmap != NULL)
-			f_pos = chain->idxmap[i];
-		else
-			f_pos = ipfw_find_rule(chain, i, 0);
-		/* update the cache */
-		if (num != IP_FW_TARG) {
-			f->cached_id = chain->id;
-			f->cached_pos = f_pos;
-		}
+		/*
+		 * Make sure we do not do out of bounds access.
+		 */
+		if (i >= IPFW_DEFAULT_RULE)
+			i = IPFW_DEFAULT_RULE - 1;
+		f_pos = chain->idxmap[i];
 	}
 
 	return (f_pos);
 }
-#else
-/*
- * Helper function to enable real fast rule lookups.
- */
-static int
-jump_linear(struct ip_fw_chain *chain, struct ip_fw *f, int num,
-    int tablearg, int jump_backwards)
+
+static uint32_t
+jump(struct ip_fw_chain *chain, struct ip_fw *f, uint32_t num,
+    int tablearg, bool jump_backwards)
 {
 	int f_pos;
 
-	num = IP_FW_ARG_TABLEARG(chain, num, skipto);
-	/* make sure we do not jump backward */
-	if (jump_backwards == 0 && num <= f->rulenum)
-		num = f->rulenum + 1;
-	f_pos = chain->idxmap[num];
+	/* Can't use cache with IP_FW_TARG */
+	if (num == IP_FW_TARG)
+		return jump_lookup_pos(chain, f, num, tablearg, jump_backwards);
 
+	/*
+	 * If possible use cached f_pos (in f->cache.pos),
+	 * whose version is written in f->cache.id (horrible hacks
+	 * to avoid changing the ABI).
+	 *
+	 * Multiple threads can execute the same rule simultaneously,
+	 * we need to ensure that cache.pos is updated before cache.id.
+	 */
+
+#ifdef __LP64__
+	struct ip_fw_jump_cache cache;
+
+	cache.raw_value = f->cache.raw_value;
+	if (cache.id == chain->id)
+		return (cache.pos);
+
+	f_pos = jump_lookup_pos(chain, f, num, tablearg, jump_backwards);
+
+	cache.pos = f_pos;
+	cache.id = chain->id;
+	f->cache.raw_value = cache.raw_value;
+#else
+	if (f->cache.id == chain->id) {
+		/* Load pos after id */
+		atomic_thread_fence_acq();
+		return (f->cache.pos);
+	}
+
+	f_pos = jump_lookup_pos(chain, f, num, tablearg, jump_backwards);
+
+	f->cache.pos = f_pos;
+	/* Store id after pos */
+	atomic_thread_fence_rel();
+	f->cache.id = chain->id;
+#endif /* !__LP64__ */
 	return (f_pos);
 }
-#endif
 
 #define	TARG(k, f)	IP_FW_ARG_TABLEARG(chain, k, f)
+
+static inline int
+tvalue_match(struct ip_fw_chain *ch, const ipfw_insn_table *cmd,
+    uint32_t tablearg)
+{
+	uint32_t tvalue;
+
+	switch (IPFW_TVALUE_TYPE(&cmd->o)) {
+	case TVALUE_PIPE:
+		tvalue = TARG_VAL(ch, tablearg, pipe);
+		break;
+	case TVALUE_DIVERT:
+		tvalue = TARG_VAL(ch, tablearg, divert);
+		break;
+	case TVALUE_SKIPTO:
+		tvalue = TARG_VAL(ch, tablearg, skipto);
+		break;
+	case TVALUE_NETGRAPH:
+		tvalue = TARG_VAL(ch, tablearg, netgraph);
+		break;
+	case TVALUE_FIB:
+		tvalue = TARG_VAL(ch, tablearg, fib);
+		break;
+	case TVALUE_NAT:
+		tvalue = TARG_VAL(ch, tablearg, nat);
+		break;
+	case TVALUE_NH4:
+		tvalue = TARG_VAL(ch, tablearg, nh4);
+		break;
+	case TVALUE_DSCP:
+		tvalue = TARG_VAL(ch, tablearg, dscp);
+		break;
+	case TVALUE_LIMIT:
+		tvalue = TARG_VAL(ch, tablearg, limit);
+		break;
+	case TVALUE_MARK:
+		tvalue = TARG_VAL(ch, tablearg, mark);
+		break;
+	case TVALUE_TAG:
+	default:
+		tvalue = TARG_VAL(ch, tablearg, tag);
+		break;
+	}
+	return (tvalue == cmd->value);
+}
+
 /*
  * The main check routine for the firewall.
  *
@@ -1359,8 +1427,8 @@ ipfw_chk(struct ip_fw_args *args)
 #else
 	struct ucred *ucred_cache = NULL;
 #endif
+	uint32_t f_pos = 0;	/* index of current rule in the array */
 	int ucred_lookup = 0;
-	int f_pos = 0;		/* index of current rule in the array */
 	int retval = 0;
 	struct ifnet *oif, *iif;
 
@@ -1417,7 +1485,9 @@ ipfw_chk(struct ip_fw_args *args)
 
 	/* XXX ipv6 variables */
 	int is_ipv6 = 0;
+#ifdef INET6
 	uint8_t	icmp6_type = 0;
+#endif
 	uint16_t ext_hd = 0;	/* bits vector for extension header filtering */
 	/* end of ipv6 variables */
 
@@ -1426,6 +1496,9 @@ ipfw_chk(struct ip_fw_args *args)
 	int done = 0;		/* flag to exit the outer loop */
 	IPFW_RLOCK_TRACKER;
 	bool mem;
+	bool need_send_reject = false;
+	int reject_code;
+	uint16_t reject_mtu;
 
 	if ((mem = (args->flags & IPFW_ARGS_LENMASK))) {
 		if (args->flags & IPFW_ARGS_ETHER) {
@@ -1529,7 +1602,9 @@ do {								\
 			switch (proto) {
 			case IPPROTO_ICMPV6:
 				PULLUP_TO(hlen, ulp, struct icmp6_hdr);
+#ifdef INET6
 				icmp6_type = ICMP6(ulp)->icmp6_type;
+#endif
 				break;
 
 			case IPPROTO_TCP:
@@ -1537,7 +1612,7 @@ do {								\
 				dst_port = TCP(ulp)->th_dport;
 				src_port = TCP(ulp)->th_sport;
 				/* save flags for dynamic rules */
-				args->f_id._flags = TCP(ulp)->th_flags;
+				args->f_id._flags = tcp_get_flags(TCP(ulp));
 				break;
 
 			case IPPROTO_SCTP:
@@ -1683,6 +1758,16 @@ do {								\
 				PULLUP_TO(hlen, ulp, struct ip);
 				break;
 
+			case IPPROTO_ETHERIP:	/* RFC 3378 */
+				PULLUP_LEN(hlen, ulp,
+				    sizeof(struct etherip_header) +
+				    sizeof(struct ether_header));
+				break;
+
+			case IPPROTO_PFSYNC:
+				PULLUP_TO(hlen, ulp, struct pfsync_header);
+				break;
+
 			default:
 				if (V_fw_verbose)
 					printf("IPFW2: IPV6 - Unknown "
@@ -1724,7 +1809,7 @@ do {								\
 				dst_port = TCP(ulp)->th_dport;
 				src_port = TCP(ulp)->th_sport;
 				/* save flags for dynamic rules */
-				args->f_id._flags = TCP(ulp)->th_flags;
+				args->f_id._flags = tcp_get_flags(TCP(ulp));
 				break;
 
 			case IPPROTO_SCTP:
@@ -1967,7 +2052,7 @@ do {								\
 					    >> 8) | (offset != 0));
 				} else {
 					/*
-					 * Compatiblity: historically bare
+					 * Compatibility: historically bare
 					 * "frag" would match IPv6 fragments.
 					 */
 					match = (cmd->arg1 == 0x1 &&
@@ -2012,92 +2097,133 @@ do {								\
 				break;
 
 			case O_IP_DST_LOOKUP:
-			{
-				void *pkey;
-				uint32_t vidx, key;
-				uint16_t keylen;
+				if (IPFW_LOOKUP_TYPE(cmd) != LOOKUP_NONE) {
+				  void *pkey = NULL;
+				  uint32_t key, vidx;
+				  uint16_t keylen = 0; /* zero if can't match the packet */
+				  uint8_t lookup_type;
 
-				if (cmdlen > F_INSN_SIZE(ipfw_insn_u32)) {
-					/* Determine lookup key type */
-					vidx = ((ipfw_insn_u32 *)cmd)->d[1];
-					if (vidx != 4 /* uid */ &&
-					    vidx != 5 /* jail */ &&
-					    is_ipv6 == 0 && is_ipv4 == 0)
-						break;
-					/* Determine key length */
-					if (vidx == 0 /* dst-ip */ ||
-					    vidx == 1 /* src-ip */)
-						keylen = is_ipv6 ?
-						    sizeof(struct in6_addr):
-						    sizeof(in_addr_t);
-					else {
-						keylen = sizeof(key);
-						pkey = &key;
-					}
-					if (vidx == 0 /* dst-ip */)
-						pkey = is_ipv4 ? (void *)&dst_ip:
-						    (void *)&args->f_id.dst_ip6;
-					else if (vidx == 1 /* src-ip */)
-						pkey = is_ipv4 ? (void *)&src_ip:
-						    (void *)&args->f_id.src_ip6;
-					else if (vidx == 6 /* dscp */) {
-						if (is_ipv4)
-							key = ip->ip_tos >> 2;
-						else {
-							key = args->f_id.flow_id6;
-							key = (key & 0x0f) << 2 |
-							    (key & 0xf000) >> 14;
-						}
-						key &= 0x3f;
-					} else if (vidx == 2 /* dst-port */ ||
-					    vidx == 3 /* src-port */) {
-						/* Skip fragments */
-						if (offset != 0)
-							break;
-						/* Skip proto without ports */
-						if (proto != IPPROTO_TCP &&
-						    proto != IPPROTO_UDP &&
-						    proto != IPPROTO_UDPLITE &&
-						    proto != IPPROTO_SCTP)
-							break;
-						if (vidx == 2 /* dst-port */)
-							key = dst_port;
+				lookup_type = IPFW_LOOKUP_TYPE(cmd);
+
+				switch (lookup_type) {
+				case LOOKUP_DST_IP:
+				case LOOKUP_SRC_IP:
+					if (is_ipv4) {
+						keylen = sizeof(in_addr_t);
+						if (lookup_type == LOOKUP_DST_IP)
+							pkey = &dst_ip;
 						else
-							key = src_port;
-					}
-#ifndef USERSPACE
-					else if (vidx == 4 /* uid */ ||
-					    vidx == 5 /* jail */) {
-						check_uidgid(
-						    (ipfw_insn_u32 *)cmd,
-						    args, &ucred_lookup,
-#ifdef __FreeBSD__
-						    &ucred_cache);
-						if (vidx == 4 /* uid */)
-							key = ucred_cache->cr_uid;
-						else if (vidx == 5 /* jail */)
-							key = ucred_cache->cr_prison->pr_id;
-#else /* !__FreeBSD__ */
-						    (void *)&ucred_cache);
-						if (vidx == 4 /* uid */)
-							key = ucred_cache.uid;
-						else if (vidx == 5 /* jail */)
-							key = ucred_cache.xid;
-#endif /* !__FreeBSD__ */
-					}
-#endif /* !USERSPACE */
+							pkey = &src_ip;
+					} else if (is_ipv6) {
+						keylen = sizeof(struct in6_addr);
+						if (lookup_type == LOOKUP_DST_IP)
+							pkey = &args->f_id.dst_ip6;
+						else
+							pkey = &args->f_id.src_ip6;
+					} else /* only for L3 */
+						break;
+				case LOOKUP_DSCP:
+					if (is_ipv4)
+						key = ip->ip_tos >> 2;
+					else if (is_ipv6)
+						key = IPV6_DSCP(
+						    (struct ip6_hdr *)ip) >> 2;
 					else
+						break; /* only for L3 */
+
+					key &= 0x3f;
+					if (cmdlen == F_INSN_SIZE(ipfw_insn_table))
+						key &= insntod(cmd, table)->value;
+					pkey = &key;
+					keylen = sizeof(key);
+					break;
+				case LOOKUP_DST_PORT:
+				case LOOKUP_SRC_PORT:
+					/* only for L3 */
+					if (is_ipv6 == 0 && is_ipv4 == 0) {
 						break;
-					match = ipfw_lookup_table(chain,
-					    cmd->arg1, keylen, pkey, &vidx);
-					if (!match)
+					}
+					/* Skip fragments */
+					if (offset != 0) {
 						break;
-					tablearg = vidx;
+					}
+					/* Skip proto without ports */
+					if (proto != IPPROTO_TCP &&
+					    proto != IPPROTO_UDP &&
+					    proto != IPPROTO_UDPLITE &&
+					    proto != IPPROTO_SCTP)
+						break;
+					if (lookup_type == LOOKUP_DST_PORT)
+						key = dst_port;
+					else
+						key = src_port;
+					pkey = &key;
+					if (cmdlen == F_INSN_SIZE(ipfw_insn_table))
+						key &= insntod(cmd, table)->value;
+					keylen = sizeof(key);
+					break;
+				case LOOKUP_DST_MAC:
+				case LOOKUP_SRC_MAC:
+					/* only for L2 */
+					if ((args->flags & IPFW_ARGS_ETHER) == 0)
+						break;
+
+					pkey = lookup_type == LOOKUP_DST_MAC ?
+					    eh->ether_dhost : eh->ether_shost;
+					keylen = ETHER_ADDR_LEN;
+					break;
+#ifndef USERSPACE
+				case LOOKUP_UID:
+				case LOOKUP_JAIL:
+					check_uidgid(insntod(cmd, u32),
+					    args, &ucred_lookup,
+#ifdef __FreeBSD__
+					    &ucred_cache);
+					if (lookup_type == LOOKUP_UID)
+						key = ucred_cache->cr_uid;
+					else if (lookup_type == LOOKUP_JAIL)
+						key = ucred_cache->cr_prison->pr_id;
+#else /* !__FreeBSD__ */
+					    (void *)&ucred_cache);
+					if (lookup_type == LOOKUP_UID)
+						key = ucred_cache.uid;
+					else if (lookup_type == LOOKUP_JAIL)
+						key = ucred_cache.xid;
+#endif /* !__FreeBSD__ */
+					pkey = &key;
+					if (cmdlen == F_INSN_SIZE(ipfw_insn_table))
+						key &= insntod(cmd, table)->value;
+					keylen = sizeof(key);
+					break;
+#endif /* !USERSPACE */
+				case LOOKUP_MARK:
+					key = args->rule.pkt_mark;
+					if (cmdlen == F_INSN_SIZE(ipfw_insn_table))
+						key &= insntod(cmd, table)->value;
+					pkey = &key;
+					keylen = sizeof(key);
+					break;
+				case LOOKUP_RULENUM:
+					key = f->rulenum;
+					if (cmdlen == F_INSN_SIZE(ipfw_insn_table))
+						key &= insntod(cmd, table)->value;
+					pkey = &key;
+					keylen = sizeof(key);
 					break;
 				}
-				/* cmdlen =< F_INSN_SIZE(ipfw_insn_u32) */
-				/* FALLTHROUGH */
+				/* unknown key type */
+				if (keylen == 0)
+					break;
+				match = ipfw_lookup_table(chain,
+				    insntod(cmd, kidx)->kidx, keylen,
+				    pkey, &vidx);
+
+				if (match)
+					tablearg = vidx;
+				break;
 			}
+				/* LOOKUP_NONE */
+				/* FALLTHROUGH */
 			case O_IP_SRC_LOOKUP:
 			{
 				void *pkey;
@@ -2118,13 +2244,45 @@ do {								\
 						pkey = &args->f_id.src_ip6;
 				} else
 					break;
-				match = ipfw_lookup_table(chain, cmd->arg1,
+				match = ipfw_lookup_table(chain,
+				    insntod(cmd, kidx)->kidx,
 				    keylen, pkey, &vidx);
 				if (!match)
 					break;
-				if (cmdlen == F_INSN_SIZE(ipfw_insn_u32)) {
-					match = ((ipfw_insn_u32 *)cmd)->d[0] ==
-					    TARG_VAL(chain, vidx, tag);
+				if (cmdlen == F_INSN_SIZE(ipfw_insn_table)) {
+					match = tvalue_match(chain,
+					    insntod(cmd, table), vidx);
+					if (!match)
+						break;
+				}
+				tablearg = vidx;
+				break;
+			}
+
+			case O_MAC_SRC_LOOKUP:
+			case O_MAC_DST_LOOKUP:
+			{
+				void *pkey;
+				uint32_t vidx;
+				uint16_t keylen = ETHER_ADDR_LEN;
+
+				/* Need ether frame */
+				if ((args->flags & IPFW_ARGS_ETHER) == 0)
+					break;
+
+				if (cmd->opcode == O_MAC_DST_LOOKUP)
+					pkey = eh->ether_dhost;
+				else
+					pkey = eh->ether_shost;
+
+				match = ipfw_lookup_table(chain,
+				    insntod(cmd, kidx)->kidx,
+				    keylen, pkey, &vidx);
+				if (!match)
+					break;
+				if (cmdlen == F_INSN_SIZE(ipfw_insn_table)) {
+					match = tvalue_match(chain,
+					    insntod(cmd, table), vidx);
 					if (!match)
 						break;
 				}
@@ -2133,19 +2291,22 @@ do {								\
 			}
 
 			case O_IP_FLOW_LOOKUP:
-				{
-					uint32_t v = 0;
-					match = ipfw_lookup_table(chain,
-					    cmd->arg1, 0, &args->f_id, &v);
-					if (!match)
-						break;
-					if (cmdlen == F_INSN_SIZE(ipfw_insn_u32))
-						match = ((ipfw_insn_u32 *)cmd)->d[0] ==
-						    TARG_VAL(chain, v, tag);
-					if (match)
-						tablearg = v;
-				}
+			{
+				uint32_t vidx = 0;
+
+				match = ipfw_lookup_table(chain,
+				    insntod(cmd, kidx)->kidx, 0,
+				    &args->f_id, &vidx);
+				if (!match)
+					break;
+				if (cmdlen == F_INSN_SIZE(ipfw_insn_table))
+					match = tvalue_match(chain,
+					    insntod(cmd, table), vidx);
+				if (match)
+					tablearg = vidx;
 				break;
+			}
+
 			case O_IP_SRC_MASK:
 			case O_IP_DST_MASK:
 				if (is_ipv4) {
@@ -2307,11 +2468,9 @@ do {								\
 				if (is_ipv4)
 					x = ip->ip_tos >> 2;
 				else if (is_ipv6) {
-					uint8_t *v;
-					v = &((struct ip6_hdr *)ip)->ip6_vfc;
-					x = (*v & 0x0F) << 2;
-					v++;
-					x |= *v >> 6;
+					x = IPV6_DSCP(
+					    (struct ip6_hdr *)ip) >> 2;
+					x &= 0x3f;
 				} else
 					break;
 
@@ -2361,8 +2520,13 @@ do {								\
 				break;
 
 			case O_TCPFLAGS:
+				/*
+				 * Note that this is currently only set up to
+				 * match the lower 8 TCP header flag bits, not
+				 * the full compliment of all 12 flags.
+				 */
 				match = (proto == IPPROTO_TCP && offset == 0 &&
-				    flags_match(cmd, TCP(ulp)->th_flags));
+				    flags_match(cmd, tcp_get_flags(TCP(ulp))));
 				break;
 
 			case O_TCPOPTS:
@@ -2433,7 +2597,7 @@ do {								\
 				/* reject packets which have SYN only */
 				/* XXX should i also check for TH_ACK ? */
 				match = (proto == IPPROTO_TCP && offset == 0 &&
-				    (TCP(ulp)->th_flags &
+				    (tcp_get_flags(TCP(ulp)) &
 				     (TH_RST | TH_ACK | TH_SYN)) != TH_SYN);
 				break;
 
@@ -2470,7 +2634,7 @@ do {								\
 
 			case O_LOG:
 				ipfw_log(chain, f, hlen, args,
-				    offset | ip6f_mf, tablearg, ip);
+				    offset | ip6f_mf, tablearg, ip, eh);
 				match = 1;
 				break;
 
@@ -2622,9 +2786,7 @@ do {								\
 #ifndef USERSPACE	/* not supported in userspace */
 				struct inpcb *inp = args->inp;
 				struct inpcbinfo *pi;
-				
-				if (is_ipv6) /* XXX can we remove this ? */
-					break;
+				bool inp_locked = false;
 
 				if (proto == IPPROTO_TCP)
 					pi = &V_tcbinfo;
@@ -2640,27 +2802,37 @@ do {								\
 				 * certainly be inp_user_cookie?
 				 */
 
-				/* For incoming packet, lookup up the 
-				inpcb using the src/dest ip/port tuple */
-				if (inp == NULL) {
-					inp = in_pcblookup(pi, 
-						src_ip, htons(src_port),
-						dst_ip, htons(dst_port),
-						INPLOOKUP_RLOCKPCB, NULL);
-					if (inp != NULL) {
-						tablearg =
-						    inp->inp_socket->so_user_cookie;
-						if (tablearg)
-							match = 1;
-						INP_RUNLOCK(inp);
-					}
-				} else {
+				/*
+				 * For incoming packet lookup the inpcb
+				 * using the src/dest ip/port tuple.
+				 */
+				if (is_ipv4 && inp == NULL) {
+					inp = in_pcblookup(pi,
+					    src_ip, htons(src_port),
+					    dst_ip, htons(dst_port),
+					    INPLOOKUP_RLOCKPCB, NULL);
+					inp_locked = true;
+				}
+#ifdef INET6
+				if (is_ipv6 && inp == NULL) {
+					inp = in6_pcblookup(pi,
+					    &args->f_id.src_ip6,
+					    htons(src_port),
+					    &args->f_id.dst_ip6,
+					    htons(dst_port),
+					    INPLOOKUP_RLOCKPCB, NULL);
+					inp_locked = true;
+				}
+#endif /* INET6 */
+				if (inp != NULL) {
 					if (inp->inp_socket) {
 						tablearg =
 						    inp->inp_socket->so_user_cookie;
 						if (tablearg)
 							match = 1;
 					}
+					if (inp_locked)
+						INP_RUNLOCK(inp);
 				}
 #endif /* !USERSPACE */
 				break;
@@ -2695,7 +2867,20 @@ do {								\
 				}
 				break;
 			}
-				
+
+			case O_MARK: {
+				uint32_t mark;
+				if (cmd->arg1 == IP_FW_TARG)
+					mark = TARG_VAL(chain, tablearg, mark);
+				else
+					mark = insntoc(cmd, u32)->d[0];
+				match =
+				    (args->rule.pkt_mark &
+				    insntoc(cmd, u32)->d[1]) ==
+				    (mark & insntoc(cmd, u32)->d[1]);
+				break;
+			}
+
 			/*
 			 * The second set of opcodes represents 'actions',
 			 * i.e. the terminal part of a rule once the packet
@@ -2787,8 +2972,7 @@ do {								\
 					cmd = ACTION_PTR(f);
 					l = f->cmd_len - f->act_ofs;
 					cmdlen = 0;
-					match = 1;
-					break;
+					continue;
 				}
 				/*
 				 * Dynamic entry not found. If CHECK_STATE,
@@ -2844,7 +3028,8 @@ do {								\
 
 			case O_SKIPTO:
 			    IPFW_INC_RULE_COUNTER(f, pktlen);
-			    f_pos = JUMP(chain, f, cmd->arg1, tablearg, 0);
+			    f_pos = jump(chain, f,
+				insntod(cmd, u32)->d[0], tablearg, false);
 			    /*
 			     * Skip disabled rules, and re-enter
 			     * the inner loop with the correct
@@ -2878,7 +3063,7 @@ do {								\
 				 * stack pointer.
 				 */
 				struct m_tag *mtag;
-				uint16_t jmpto, *stack;
+				uint32_t jmpto, *stack;
 
 #define	IS_CALL		((cmd->len & F_NOT) == 0)
 #define	IS_RETURN	((cmd->len & F_NOT) != 0)
@@ -2894,51 +3079,83 @@ do {								\
 						break;
 					mtag = m_tag_next(m, mtag);
 				}
-				if (mtag == NULL && IS_CALL) {
-					mtag = m_tag_alloc(MTAG_IPFW_CALL, 0,
-					    IPFW_CALLSTACK_SIZE *
-					    sizeof(uint16_t), M_NOWAIT);
-					if (mtag != NULL)
-						m_tag_prepend(m, mtag);
+
+				/*
+				 * We keep ruleset id in the first element
+				 * of stack. If it doesn't match chain->id,
+				 * then we can't trust information in the
+				 * stack, since rules were changed.
+				 * We reset stack pointer to be able reuse
+				 * tag if it will be needed.
+				 */
+				if (mtag != NULL) {
+					stack = (uint32_t *)(mtag + 1);
+					if (stack[0] != chain->id) {
+						stack[0] = chain->id;
+						mtag->m_tag_id = 0;
+					}
 				}
 
 				/*
-				 * On error both `call' and `return' just
-				 * continue with next rule.
+				 * If there is no mtag or stack is empty,
+				 * `return` continues with next rule.
 				 */
 				if (IS_RETURN && (mtag == NULL ||
 				    mtag->m_tag_id == 0)) {
 					l = 0;		/* exit inner loop */
 					break;
 				}
-				if (IS_CALL && (mtag == NULL ||
-				    mtag->m_tag_id >= IPFW_CALLSTACK_SIZE)) {
-					printf("ipfw: call stack error, "
-					    "go to next rule\n");
+
+				if (mtag == NULL) {
+					MPASS(IS_CALL);
+					mtag = m_tag_alloc(MTAG_IPFW_CALL, 0,
+					    IPFW_CALLSTACK_SIZE *
+					    sizeof(uint32_t), M_NOWAIT);
+					if (mtag != NULL) {
+						m_tag_prepend(m, mtag);
+						stack = (uint32_t *)(mtag + 1);
+						stack[0] = chain->id;
+					}
+				}
+
+				if (mtag == NULL) {
+					printf("ipfw: rule %u: failed to "
+					    "allocate call stack. "
+					    "Denying packet.\n",
+					    f->rulenum);
 					l = 0;		/* exit inner loop */
+					done = 1;	/* exit outer loop */
+					retval = IP_FW_DENY; /* drop packet */
 					break;
 				}
 
-				IPFW_INC_RULE_COUNTER(f, pktlen);
-				stack = (uint16_t *)(mtag + 1);
+				if (IS_CALL && mtag->m_tag_id >=
+				    IPFW_CALLSTACK_SIZE - 1) {
+					printf("ipfw: rule %u: call stack "
+					    "overflow. Denying packet.\n",
+					    f->rulenum);
+					l = 0;		/* exit inner loop */
+					done = 1;	/* exit outer loop */
+					retval = IP_FW_DENY; /* drop packet */
+					break;
+				}
 
-				/*
-				 * The `call' action may use cached f_pos
-				 * (in f->next_rule), whose version is written
-				 * in f->next_rule.
-				 * The `return' action, however, doesn't have
-				 * fixed jump address in cmd->arg1 and can't use
-				 * cache.
-				 */
+				MPASS(stack == (uint32_t *)(mtag + 1));
+				IPFW_INC_RULE_COUNTER(f, pktlen);
+
 				if (IS_CALL) {
-					stack[mtag->m_tag_id] = f->rulenum;
-					mtag->m_tag_id++;
-			    		f_pos = JUMP(chain, f, cmd->arg1,
-					    tablearg, 1);
+					stack[++mtag->m_tag_id] = f_pos;
+					f_pos = jump(chain, f,
+					    insntod(cmd, u32)->d[0],
+					    tablearg, true);
 				} else {	/* `return' action */
-					mtag->m_tag_id--;
-					jmpto = stack[mtag->m_tag_id] + 1;
-					f_pos = ipfw_find_rule(chain, jmpto, 0);
+					jmpto = stack[mtag->m_tag_id--];
+					if (cmd->arg1 == RETURN_NEXT_RULE)
+						f_pos = jmpto + 1;
+					else /* RETURN_NEXT_RULENUM */
+						f_pos = ipfw_find_rule(chain,
+						    chain->map[
+						    jmpto]->rulenum + 1, 0);
 				}
 
 				/*
@@ -2947,11 +3164,15 @@ do {								\
 				 * f_pos, f, l and cmd.
 				 * Also clear cmdlen and skip_or
 				 */
+				MPASS(f_pos < chain->n_rules - 1);
 				for (; f_pos < chain->n_rules - 1 &&
 				    (V_set_disable &
 				    (1 << chain->map[f_pos]->set)); f_pos++)
 					;
-				/* Re-enter the inner loop at the dest rule. */
+				/*
+				 * Re-enter the inner loop at the dest
+				 * rule.
+				 */
 				f = chain->map[f_pos];
 				l = f->cmd_len;
 				cmd = f->cmd;
@@ -2974,8 +3195,16 @@ do {								\
 				     is_icmp_query(ICMP(ulp))) &&
 				    !(m->m_flags & (M_BCAST|M_MCAST)) &&
 				    !IN_MULTICAST(ntohl(dst_ip.s_addr))) {
-					send_reject(args, cmd->arg1, iplen, ip);
-					m = args->m;
+					KASSERT(!need_send_reject,
+					    ("o_reject - need_send_reject was set previously"));
+					if ((reject_code = cmd->arg1) == ICMP_UNREACH_NEEDFRAG &&
+					    cmd->len == F_INSN_SIZE(ipfw_insn_u16)) {
+						reject_mtu =
+						    ((ipfw_insn_u16 *)cmd)->ports[0];
+					} else {
+						reject_mtu = 0;
+					}
+					need_send_reject = true;
 				}
 				/* FALLTHROUGH */
 #ifdef INET6
@@ -2987,12 +3216,14 @@ do {								\
 				    !(m->m_flags & (M_BCAST|M_MCAST)) &&
 				    !IN6_IS_ADDR_MULTICAST(
 					&args->f_id.dst_ip6)) {
-					send_reject6(args,
-					    cmd->opcode == O_REJECT ?
-					    map_icmp_unreach(cmd->arg1):
-					    cmd->arg1, hlen,
-					    (struct ip6_hdr *)ip);
-					m = args->m;
+					KASSERT(!need_send_reject,
+					    ("o_unreach6 - need_send_reject was set previously"));
+					reject_code = cmd->arg1;
+					if (cmd->opcode == O_REJECT) {
+						reject_code =
+						    map_icmp_unreach(reject_code);
+					}
+					need_send_reject = true;
 				}
 				/* FALLTHROUGH */
 #endif
@@ -3110,12 +3341,13 @@ do {								\
 					ip->ip_sum = cksum_adjust(ip->ip_sum,
 					    old, *(uint16_t *)ip);
 				} else if (is_ipv6) {
-					uint8_t *v;
+					/* update cached value */
+					args->f_id.flow_id6 =
+					    ntohl(*(uint32_t *)ip) & ~0x0FC00000;
+					args->f_id.flow_id6 |= code << 22;
 
-					v = &((struct ip6_hdr *)ip)->ip6_vfc;
-					*v = (*v & 0xF0) | (code >> 2);
-					v++;
-					*v = (*v & 0x3F) | ((code & 0x03) << 6);
+					*((uint32_t *)ip) =
+					    htonl(args->f_id.flow_id6);
 				} else
 					break;
 
@@ -3197,6 +3429,18 @@ do {								\
 				done = 1;	/* exit outer loop */
 				break;
 			}
+
+			case O_SETMARK: {
+				l = 0;		/* exit inner loop */
+				args->rule.pkt_mark = (
+				    (cmd->arg1 == IP_FW_TARG) ?
+				    TARG_VAL(chain, tablearg, mark) :
+				    insntoc(cmd, u32)->d[0]);
+
+				IPFW_INC_RULE_COUNTER(f, pktlen);
+				break;
+			}
+
 			case O_EXTERNAL_ACTION:
 				l = 0; /* in any case exit inner loop */
 				retval = ipfw_run_eaction(chain, args,
@@ -3220,7 +3464,8 @@ do {								\
 				break;
 
 			default:
-				panic("-- unknown opcode %d\n", cmd->opcode);
+				panic("ipfw: rule %u: unknown opcode %d\n",
+				    f->rulenum, cmd->opcode);
 			} /* end of switch() on opcodes */
 			/*
 			 * if we get here with l=0, then match is irrelevant.
@@ -3264,6 +3509,16 @@ do {								\
 		printf("ipfw: ouch!, skip past end of rules, denying packet\n");
 	}
 	IPFW_PF_RUNLOCK(chain);
+	if (need_send_reject) {
+#ifdef INET6
+		if (is_ipv6)
+			send_reject6(args, reject_code, hlen,
+				     (struct ip6_hdr *)ip);
+		else
+#endif
+			send_reject(args, reject_code, reject_mtu,
+				    iplen, ip);
+	}
 #ifdef __FreeBSD__
 	if (ucred_cache != NULL)
 		crfree(ucred_cache);
@@ -3432,6 +3687,7 @@ vnet_ipfw_init(const void *unused)
 
 	IPFW_LOCK_INIT(chain);
 
+	ipfw_dyn_init(chain);
 	/* fill and insert the default rule */
 	rule = ipfw_alloc_rule(chain, sizeof(struct ip_fw));
 	rule->flags |= IPFW_RULE_NOOPT;
@@ -3441,14 +3697,9 @@ vnet_ipfw_init(const void *unused)
 	chain->default_rule = rule;
 	ipfw_add_protected_rule(chain, rule, 0);
 
-	ipfw_dyn_init(chain);
 	ipfw_eaction_init(chain, first);
-#ifdef LINEAR_SKIPTO
 	ipfw_init_skipto_cache(chain);
-#endif
-#ifndef FSTACK /* WITHOUT_BPF */
 	ipfw_bpf_init(first);
-#endif
 
 	/* First set up some values that are compile time options */
 	V_ipfw_vnet_ready = 1;		/* Open for business */
@@ -3504,9 +3755,7 @@ vnet_ipfw_uninit(const void *unused)
 	for (i = 0; i < chain->n_rules; i++)
 		ipfw_reap_add(chain, &reap, chain->map[i]);
 	free(chain->map, M_IPFW);
-#ifdef LINEAR_SKIPTO
 	ipfw_destroy_skipto_cache(chain);
-#endif
 	IPFW_WUNLOCK(chain);
 	IPFW_UH_WUNLOCK(chain);
 	ipfw_destroy_tables(chain, last);
@@ -3518,9 +3767,7 @@ vnet_ipfw_uninit(const void *unused)
 	IPFW_LOCK_DESTROY(chain);
 	ipfw_dyn_uninit(1);	/* free the remaining parts */
 	ipfw_destroy_counters();
-#ifndef FSTACK /* WITHOUT_BPF */
 	ipfw_bpf_uninit(last);
-#endif
 	return (0);
 }
 

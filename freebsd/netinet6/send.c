@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2010 Ana Kukec <anchie@FreeBSD.org>
  * All rights reserved.
@@ -26,9 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
@@ -46,6 +43,7 @@ __FBSDID("$FreeBSD$");
 #include <net/route.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/vnet.h>
 
 #include <netinet/in.h>
@@ -115,7 +113,9 @@ send_output(struct mbuf *m, struct ifnet *ifp, int direction)
 	struct ip6_hdr *ip6;
 	struct sockaddr_in6 dst;
 	struct icmp6_hdr *icmp6;
+	struct epoch_tracker et;
 	int icmp6len;
+	int error;
 
 	/*
 	 * Receive incoming (SeND-protected) or outgoing traffic
@@ -142,12 +142,14 @@ send_output(struct mbuf *m, struct ifnet *ifp, int direction)
 
 		ip6 = mtod(m, struct ip6_hdr *);
 		icmp6 = (struct icmp6_hdr *)(ip6 + 1);
+		error = 0;
 
 		/*
 		 * Output the packet as icmp6.c:icpm6_input() would do.
 		 * The mbuf is always consumed, so we do not have to
 		 * care about that.
 		 */
+		NET_EPOCH_ENTER(et);
 		switch (icmp6->icmp6_type) {
 		case ND_NEIGHBOR_SOLICIT:
 			nd6_ns_input(m, sizeof(struct ip6_hdr), icmp6len);
@@ -166,9 +168,11 @@ send_output(struct mbuf *m, struct ifnet *ifp, int direction)
 			break;
 		default:
 			m_freem(m);
-			return (ENOSYS);
+			error = ENOSYS;
 		}
-		return (0);
+		NET_EPOCH_EXIT(et);
+
+		return (error);
 
 	case SND_OUT:
 		if (m->m_len < sizeof(struct ip6_hdr)) {
@@ -196,7 +200,6 @@ send_output(struct mbuf *m, struct ifnet *ifp, int direction)
 		 * XXX-BZ as we added data, what about fragmenting,
 		 * if now needed?
 		 */
-		int error;
 		error = ((*ifp->if_output)(ifp, m, (struct sockaddr *)&dst,
 		    NULL));
 		if (error)
@@ -226,6 +229,14 @@ send_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *nam,
 		__func__, so, V_send_so));
 
 	sendsrc = (struct sockaddr_send *)nam;
+	if (sendsrc->send_family != AF_INET6) {
+		error = EAFNOSUPPORT;
+		goto err;
+	}
+	if (sendsrc->send_len != sizeof(*sendsrc)) {
+		error = EINVAL;
+		goto err;
+	}
 	ifp = ifnet_byindex_ref(sendsrc->send_ifidx);
 	if (ifp == NULL) {
 		error = ENETUNREACH;
@@ -237,8 +248,11 @@ send_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *nam,
 	m = NULL;
 
 err:
+	if (control != NULL)
+		m_freem(control);
 	if (m != NULL)
 		m_freem(m);
+
 	return (error);
 }
 
@@ -291,7 +305,7 @@ send_input(struct mbuf *m, struct ifnet *ifp, int direction, int msglen __unused
 	SOCKBUF_LOCK(&V_send_so->so_rcv);
 	if (sbappendaddr_locked(&V_send_so->so_rcv,
 	    (struct sockaddr *)&sendsrc, m, NULL) == 0) {
-		SOCKBUF_UNLOCK(&V_send_so->so_rcv);
+		soroverflow_locked(V_send_so);
 		/* XXX stats. */
 		m_freem(m);
 	} else {
@@ -302,16 +316,13 @@ send_input(struct mbuf *m, struct ifnet *ifp, int direction, int msglen __unused
 	return (0);
 }
 
-struct pr_usrreqs send_usrreqs = {
-	.pru_attach =		send_attach,
-	.pru_send =		send_send,
-	.pru_detach =		send_close
-};
-struct protosw send_protosw = {
+static struct protosw send_protosw = {
 	.pr_type =		SOCK_RAW,
 	.pr_flags =		PR_ATOMIC|PR_ADDR,
 	.pr_protocol =		IPPROTO_SEND,
-	.pr_usrreqs =		&send_usrreqs
+	.pr_attach =		send_attach,
+	.pr_send =		send_send,
+	.pr_detach =		send_close
 };
 
 static int
@@ -326,7 +337,7 @@ send_modevent(module_t mod, int type, void *unused)
 	case MOD_LOAD:
 		SEND_LOCK_INIT();
 
-		error = pf_proto_register(PF_INET6, &send_protosw);
+		error = protosw_register(&inet6domain, &send_protosw);
 		if (error != 0) {
 			printf("%s:%d: MOD_LOAD pf_proto_register(): %d\n",
 			   __func__, __LINE__, error);
@@ -353,7 +364,7 @@ send_modevent(module_t mod, int type, void *unused)
 		}
 		SEND_UNLOCK();
 		VNET_LIST_RUNLOCK_NOSLEEP();
-		error = pf_proto_unregister(PF_INET6, IPPROTO_SEND, SOCK_RAW);
+		error = protosw_unregister(&send_protosw);
 		if (error == 0)
 			SEND_LOCK_DESTROY();
 		send_sendso_input_hook = NULL;

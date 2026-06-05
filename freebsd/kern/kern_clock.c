@@ -32,13 +32,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)kern_clock.c	8.5 (Berkeley) 1/21/94
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_kdb.h"
 #include "opt_device_polling.h"
 #include "opt_hwpmc_hooks.h"
@@ -74,10 +70,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/limits.h>
 #include <sys/timetc.h>
 
-#ifdef GPROF
-#include <sys/gmon.h>
-#endif
-
 #ifdef HWPMC_HOOKS
 #include <sys/pmckern.h>
 PMC_SOFT_DEFINE( , , clock, hard);
@@ -89,9 +81,6 @@ PMC_SOFT_DEFINE_EX( , , clock, prof, \
 #ifdef DEVICE_POLLING
 extern void hardclock_device_poll(void);
 #endif /* DEVICE_POLLING */
-
-static void initclocks(void *dummy);
-SYSINIT(clocks, SI_SUB_CLOCKS, SI_ORDER_FIRST, initclocks, NULL);
 
 /* Spin-lock protecting profiling statistics. */
 static struct mtx time_lock;
@@ -307,13 +296,13 @@ SYSINIT(deadlkres, SI_SUB_CLOCKS, SI_ORDER_ANY, kthread_start, &deadlkres_kd);
 
 static SYSCTL_NODE(_debug, OID_AUTO, deadlkres, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Deadlock resolver");
-SYSCTL_INT(_debug_deadlkres, OID_AUTO, slptime_threshold, CTLFLAG_RW,
+SYSCTL_INT(_debug_deadlkres, OID_AUTO, slptime_threshold, CTLFLAG_RWTUN,
     &slptime_threshold, 0,
     "Number of seconds within is valid to sleep on a sleepqueue");
-SYSCTL_INT(_debug_deadlkres, OID_AUTO, blktime_threshold, CTLFLAG_RW,
+SYSCTL_INT(_debug_deadlkres, OID_AUTO, blktime_threshold, CTLFLAG_RWTUN,
     &blktime_threshold, 0,
     "Number of seconds within is valid to block on a turnstile");
-SYSCTL_INT(_debug_deadlkres, OID_AUTO, sleepfreq, CTLFLAG_RW, &sleepfreq, 0,
+SYSCTL_INT(_debug_deadlkres, OID_AUTO, sleepfreq, CTLFLAG_RWTUN, &sleepfreq, 0,
     "Number of seconds between any deadlock resolver thread run");
 #endif	/* DEADLKRES */
 
@@ -334,7 +323,7 @@ read_cpu_time(long *cp_time)
 
 #include <sys/watchdog.h>
 
-static int watchdog_ticks;
+static long watchdog_ticks;
 static int watchdog_enabled;
 static void watchdog_fire(void);
 static void watchdog_config(void *, u_int, int *);
@@ -380,20 +369,50 @@ watchdog_attach(void)
 int	stathz;
 int	profhz;
 int	profprocs;
-volatile int	ticks;
 int	psratio;
 
-DPCPU_DEFINE_STATIC(int, pcputicks);	/* Per-CPU version of ticks. */
+DPCPU_DEFINE_STATIC(long, pcputicks);	/* Per-CPU version of ticks. */
 #ifdef DEVICE_POLLING
 static int devpoll_run = 0;
 #endif
 
+static void
+ast_oweupc(struct thread *td, int tda __unused)
+{
+	if ((td->td_proc->p_flag & P_PROFIL) == 0)
+		return;
+	addupc_task(td, td->td_profil_addr, td->td_profil_ticks);
+	td->td_profil_ticks = 0;
+	td->td_pflags &= ~TDP_OWEUPC;
+}
+
+static void
+ast_alrm(struct thread *td, int tda __unused)
+{
+	struct proc *p;
+
+	p = td->td_proc;
+	PROC_LOCK(p);
+	kern_psignal(p, SIGVTALRM);
+	PROC_UNLOCK(p);
+}
+
+static void
+ast_prof(struct thread *td, int tda __unused)
+{
+	struct proc *p;
+
+	p = td->td_proc;
+	PROC_LOCK(p);
+	kern_psignal(p, SIGPROF);
+	PROC_UNLOCK(p);
+}
+
 /*
  * Initialize clock frequencies and start both clocks running.
  */
-/* ARGSUSED*/
 static void
-initclocks(void *dummy)
+initclocks(void *dummy __unused)
 {
 	int i;
 
@@ -412,6 +431,10 @@ initclocks(void *dummy)
 		profhz = i;
 	psratio = profhz / i;
 
+	ast_register(TDA_OWEUPC, ASTR_ASTF_REQUIRED, 0, ast_oweupc);
+	ast_register(TDA_ALRM, ASTR_ASTF_REQUIRED, 0, ast_alrm);
+	ast_register(TDA_PROF, ASTR_ASTF_REQUIRED, 0, ast_prof);
+
 #ifdef SW_WATCHDOG
 	/* Enable hardclock watchdog now, even if a hardware watchdog exists. */
 	watchdog_attach();
@@ -421,35 +444,33 @@ initclocks(void *dummy)
 		wdog_software_attach = watchdog_attach;
 #endif
 }
+SYSINIT(clocks, SI_SUB_CLOCKS, SI_ORDER_FIRST, initclocks, NULL);
 
 static __noinline void
 hardclock_itimer(struct thread *td, struct pstats *pstats, int cnt, int usermode)
 {
 	struct proc *p;
-	int flags;
+	int ast;
 
-	flags = 0;
+	ast = 0;
 	p = td->td_proc;
 	if (usermode &&
 	    timevalisset(&pstats->p_timer[ITIMER_VIRTUAL].it_value)) {
 		PROC_ITIMLOCK(p);
 		if (itimerdecr(&pstats->p_timer[ITIMER_VIRTUAL],
 		    tick * cnt) == 0)
-			flags |= TDF_ALRMPEND | TDF_ASTPENDING;
+			ast |= TDAI(TDA_ALRM);
 		PROC_ITIMUNLOCK(p);
 	}
 	if (timevalisset(&pstats->p_timer[ITIMER_PROF].it_value)) {
 		PROC_ITIMLOCK(p);
 		if (itimerdecr(&pstats->p_timer[ITIMER_PROF],
 		    tick * cnt) == 0)
-			flags |= TDF_PROFPEND | TDF_ASTPENDING;
+			ast |= TDAI(TDA_PROF);
 		PROC_ITIMUNLOCK(p);
 	}
-	if (flags != 0) {
-		thread_lock(td);
-		td->td_flags |= flags;
-		thread_unlock(td);
-	}
+	if (ast != 0)
+		ast_sched_mask(td, ast);
 }
 
 void
@@ -458,14 +479,14 @@ hardclock(int cnt, int usermode)
 	struct pstats *pstats;
 	struct thread *td = curthread;
 	struct proc *p = td->td_proc;
-	int *t = DPCPU_PTR(pcputicks);
-	int global, i, newticks;
+	long global, newticks, *t;
 
 	/*
 	 * Update per-CPU and possibly global ticks values.
 	 */
+	t = DPCPU_PTR(pcputicks);
 	*t += cnt;
-	global = ticks;
+	global = atomic_load_long(&ticksl);
 	do {
 		newticks = *t - global;
 		if (newticks <= 0) {
@@ -474,7 +495,7 @@ hardclock(int cnt, int usermode)
 			newticks = 0;
 			break;
 		}
-	} while (!atomic_fcmpset_int(&ticks, &global, *t));
+	} while (!atomic_fcmpset_long(&ticksl, &global, *t));
 
 	/*
 	 * Run current process's virtual and profile time, as needed.
@@ -503,8 +524,10 @@ hardclock(int cnt, int usermode)
 		}
 #endif /* DEVICE_POLLING */
 		if (watchdog_enabled > 0) {
-			i = atomic_fetchadd_int(&watchdog_ticks, -newticks);
-			if (i > 0 && i <= newticks)
+			long left;
+
+			left = atomic_fetchadd_long(&watchdog_ticks, -newticks);
+			if (left > 0 && left <= newticks)
 				watchdog_fire();
 		}
 		intr_event_handle(clk_intr_event, NULL);
@@ -518,68 +541,90 @@ hardclock(int cnt, int usermode)
 void
 hardclock_sync(int cpu)
 {
-	int *t;
-	KASSERT(!CPU_ABSENT(cpu), ("Absent CPU %d", cpu));
-	t = DPCPU_ID_PTR(cpu, pcputicks);
+	long *t;
 
-	*t = ticks;
+	KASSERT(!CPU_ABSENT(cpu), ("Absent CPU %d", cpu));
+
+	t = DPCPU_ID_PTR(cpu, pcputicks);
+	*t = ticksl;
 }
 
 /*
- * Compute number of ticks in the specified amount of time.
+ * Regular integer scaling formula without losing precision:
+ */
+#define	TIME_INT_SCALE(value, mul, div) \
+	(((value) / (div)) * (mul) + (((value) % (div)) * (mul)) / (div))
+
+/*
+ * Macro for converting seconds and microseconds into actual ticks,
+ * based on the given hz value:
+ */
+#define	TIME_TO_TICKS(sec, usec, hz) \
+	((sec) * (hz) + TIME_INT_SCALE(usec, hz, 1 << 6) / (1000000 >> 6))
+
+#define	TIME_ASSERT_VALID_HZ(hz)	\
+	_Static_assert(TIME_TO_TICKS(INT_MAX / (hz) - 1, 999999, hz) >= 0 && \
+		       TIME_TO_TICKS(INT_MAX / (hz) - 1, 999999, hz) < INT_MAX,	\
+		       "tvtohz() can overflow the regular integer type")
+
+/*
+ * Compile time assert the maximum and minimum values to fit into a
+ * regular integer when computing TIME_TO_TICKS():
+ */
+TIME_ASSERT_VALID_HZ(HZ_MAXIMUM);
+TIME_ASSERT_VALID_HZ(HZ_MINIMUM);
+
+/*
+ * The formula is mostly linear, but test some more common values just
+ * in case:
+ */
+TIME_ASSERT_VALID_HZ(1024);
+TIME_ASSERT_VALID_HZ(1000);
+TIME_ASSERT_VALID_HZ(128);
+TIME_ASSERT_VALID_HZ(100);
+
+/*
+ * Compute number of ticks representing the specified amount of time.
+ * If the specified time is negative, a value of 1 is returned. This
+ * function returns a value from 1 up to and including INT_MAX.
  */
 int
 tvtohz(struct timeval *tv)
 {
-	unsigned long ticks;
-	long sec, usec;
+	int retval;
 
 	/*
-	 * If the number of usecs in the whole seconds part of the time
-	 * difference fits in a long, then the total number of usecs will
-	 * fit in an unsigned long.  Compute the total and convert it to
-	 * ticks, rounding up and adding 1 to allow for the current tick
-	 * to expire.  Rounding also depends on unsigned long arithmetic
-	 * to avoid overflow.
-	 *
-	 * Otherwise, if the number of ticks in the whole seconds part of
-	 * the time difference fits in a long, then convert the parts to
-	 * ticks separately and add, using similar rounding methods and
-	 * overflow avoidance.  This method would work in the previous
-	 * case but it is slightly slower and assumes that hz is integral.
-	 *
-	 * Otherwise, round the time difference down to the maximum
-	 * representable value.
-	 *
-	 * If ints have 32 bits, then the maximum value for any timeout in
-	 * 10ms ticks is 248 days.
+	 * The values passed here may come from user-space and these
+	 * checks ensure "tv_usec" is within its allowed range:
 	 */
-	sec = tv->tv_sec;
-	usec = tv->tv_usec;
-	if (usec < 0) {
-		sec--;
-		usec += 1000000;
-	}
-	if (sec < 0) {
-#ifdef DIAGNOSTIC
-		if (usec > 0) {
-			sec++;
-			usec -= 1000000;
+
+	/* check for tv_usec underflow */
+	if (__predict_false(tv->tv_usec < 0)) {
+		tv->tv_sec += tv->tv_usec / 1000000;
+		tv->tv_usec = tv->tv_usec % 1000000;
+		/* convert tv_usec to a positive value */
+		if (__predict_true(tv->tv_usec < 0)) {
+			tv->tv_usec += 1000000;
+			tv->tv_sec -= 1;
 		}
-		printf("tvotohz: negative time difference %ld sec %ld usec\n",
-		       sec, usec);
-#endif
-		ticks = 1;
-	} else if (sec <= LONG_MAX / 1000000)
-		ticks = howmany(sec * 1000000 + (unsigned long)usec, tick) + 1;
-	else if (sec <= LONG_MAX / hz)
-		ticks = sec * hz
-			+ howmany((unsigned long)usec, tick) + 1;
-	else
-		ticks = LONG_MAX;
-	if (ticks > INT_MAX)
-		ticks = INT_MAX;
-	return ((int)ticks);
+	/* check for tv_usec overflow */
+	} else if (__predict_false(tv->tv_usec >= 1000000)) {
+		tv->tv_sec += tv->tv_usec / 1000000;
+		tv->tv_usec = tv->tv_usec % 1000000;
+	}
+
+	/* check for tv_sec underflow */
+	if (__predict_false(tv->tv_sec < 0))
+		return (1);
+	/* check for tv_sec overflow (including room for the tv_usec part) */
+	else if (__predict_false(tv->tv_sec >= tick_seconds_max))
+		return (INT_MAX);
+
+	/* cast to "int" to avoid platform differences */
+	retval = TIME_TO_TICKS((int)tv->tv_sec, (int)tv->tv_usec, hz);
+
+	/* add one additional tick */
+	return (retval + 1);
 }
 
 /*
@@ -724,10 +769,6 @@ void
 profclock(int cnt, int usermode, uintfptr_t pc)
 {
 	struct thread *td;
-#ifdef GPROF
-	struct gmonparam *g;
-	uintfptr_t i;
-#endif
 
 	td = curthread;
 	if (usermode) {
@@ -740,20 +781,6 @@ profclock(int cnt, int usermode, uintfptr_t pc)
 		if (td->td_proc->p_flag & P_PROFIL)
 			addupc_intr(td, pc, cnt);
 	}
-#ifdef GPROF
-	else {
-		/*
-		 * Kernel statistics are just like addupc_intr, only easier.
-		 */
-		g = &_gmonparam;
-		if (g->state == GMON_PROF_ON && pc >= g->lowpc) {
-			i = PC_TO_I(g, pc);
-			if (i < g->textsize) {
-				KCOUNT(g, i) += cnt;
-			}
-		}
-	}
-#endif
 #ifdef HWPMC_HOOKS
 	if (td->td_intr_frame != NULL)
 		PMC_SOFT_CALL_TF( , , clock, prof, td->td_intr_frame);
@@ -799,30 +826,11 @@ watchdog_config(void *unused __unused, u_int cmd, int *error)
 }
 
 /*
- * Handle a watchdog timeout by dumping interrupt information and
- * then either dropping to DDB or panicking.
+ * Handle a watchdog timeout by dropping to DDB or panicking.
  */
 static void
 watchdog_fire(void)
 {
-	int nintr;
-	uint64_t inttotal;
-	u_long *curintr;
-	char *curname;
-
-	curintr = intrcnt;
-	curname = intrnames;
-	inttotal = 0;
-	nintr = sintrcnt / sizeof(u_long);
-
-	printf("interrupt                   total\n");
-	while (--nintr >= 0) {
-		if (*curintr)
-			printf("%-12s %20lu\n", curname, *curintr);
-		curname += strlen(curname) + 1;
-		inttotal += *curintr++;
-	}
-	printf("Total        %20ju\n", (uintmax_t)inttotal);
 
 #if defined(KDB) && !defined(KDB_UNATTENDED)
 	kdb_backtrace();

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997, Stefan Esser <se@freebsd.org>
  * All rights reserved.
@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_cpu.h"
 
 #include <sys/param.h>
@@ -65,7 +63,7 @@ uint32_t
 legacy_pcib_read_config(device_t dev, u_int bus, u_int slot, u_int func,
 			u_int reg, int bytes)
 {
-	return(pci_cfgregread(bus, slot, func, reg, bytes));
+	return(pci_cfgregread(0, bus, slot, func, reg, bytes));
 }
 
 /* write configuration space register */
@@ -74,7 +72,7 @@ void
 legacy_pcib_write_config(device_t dev, u_int bus, u_int slot, u_int func,
 			 u_int reg, uint32_t data, int bytes)
 {
-	pci_cfgregwrite(bus, slot, func, reg, data, bytes);
+	pci_cfgregwrite(0, bus, slot, func, reg, data, bytes);
 }
 
 /* route interrupt */
@@ -488,11 +486,13 @@ legacy_pcib_identify(driver_t *driver, device_t parent)
 	 * Note that pci_cfgregopen() thinks we have PCI devices..
 	 */
 	if (!found) {
+#ifndef NO_LEGACY_PCIB
 		if (bootverbose)
 			printf(
 	"legacy_pcib_identify: no bridge found, adding pcib0 anyway\n");
 		child = BUS_ADD_CHILD(parent, 100, "pcib", 0);
 		legacy_set_pcibus(child, 0);
+#endif
 	}
 }
 
@@ -510,11 +510,9 @@ legacy_pcib_attach(device_t dev)
 {
 #ifdef __HAVE_PIR
 	device_t pir;
-#endif
 	int bus;
 
 	bus = pcib_get_bus(dev);
-#ifdef __HAVE_PIR
 	/*
 	 * Look for a PCI BIOS interrupt routing table as that will be
 	 * our method of routing interrupts if we have one.
@@ -525,8 +523,9 @@ legacy_pcib_attach(device_t dev)
 			device_probe_and_attach(pir);
 	}
 #endif
-	device_add_child(dev, "pci", -1);
-	return bus_generic_attach(dev);
+	device_add_child(dev, "pci", DEVICE_UNIT_ANY);
+	bus_attach_children(dev);
+	return (0);
 }
 
 int
@@ -597,37 +596,49 @@ legacy_pcib_alloc_resource(device_t dev, device_t child, int type, int *rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	if (type == PCI_RES_BUS)
 		return (pci_domain_alloc_bus(0, child, rid, start, end, count,
 		    flags));
-#endif
 	start = hostb_alloc_start(type, start, end, count);
 	return (bus_generic_alloc_resource(dev, child, type, rid, start, end,
 	    count, flags));
 }
 
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 int
-legacy_pcib_adjust_resource(device_t dev, device_t child, int type,
+legacy_pcib_adjust_resource(device_t dev, device_t child,
     struct resource *r, rman_res_t start, rman_res_t end)
 {
 
-	if (type == PCI_RES_BUS)
+	if (rman_get_type(r) == PCI_RES_BUS)
 		return (pci_domain_adjust_bus(0, child, r, start, end));
-	return (bus_generic_adjust_resource(dev, child, type, r, start, end));
+	return (bus_generic_adjust_resource(dev, child, r, start, end));
 }
 
 int
-legacy_pcib_release_resource(device_t dev, device_t child, int type, int rid,
-    struct resource *r)
+legacy_pcib_release_resource(device_t dev, device_t child, struct resource *r)
 {
 
-	if (type == PCI_RES_BUS)
-		return (pci_domain_release_bus(0, child, rid, r));
-	return (bus_generic_release_resource(dev, child, type, rid, r));
+	if (rman_get_type(r) == PCI_RES_BUS)
+		return (pci_domain_release_bus(0, child, r));
+	return (bus_generic_release_resource(dev, child, r));
 }
-#endif
+
+int
+legacy_pcib_activate_resource(device_t dev, device_t child, struct resource *r)
+{
+	if (rman_get_type(r) == PCI_RES_BUS)
+		return (pci_domain_activate_bus(0, child, r));
+	return (bus_generic_activate_resource(dev, child, r));
+}
+
+int
+legacy_pcib_deactivate_resource(device_t dev, device_t child,
+    struct resource *r)
+{
+	if (rman_get_type(r) == PCI_RES_BUS)
+		return (pci_domain_deactivate_bus(0, child, r));
+	return (bus_generic_deactivate_resource(dev, child, r));
+}
 
 static device_method_t legacy_pcib_methods[] = {
 	/* Device interface */
@@ -642,15 +653,10 @@ static device_method_t legacy_pcib_methods[] = {
 	DEVMETHOD(bus_read_ivar,	legacy_pcib_read_ivar),
 	DEVMETHOD(bus_write_ivar,	legacy_pcib_write_ivar),
 	DEVMETHOD(bus_alloc_resource,	legacy_pcib_alloc_resource),
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	DEVMETHOD(bus_adjust_resource,	legacy_pcib_adjust_resource),
 	DEVMETHOD(bus_release_resource,	legacy_pcib_release_resource),
-#else
-	DEVMETHOD(bus_adjust_resource,	bus_generic_adjust_resource),
-	DEVMETHOD(bus_release_resource,	bus_generic_release_resource),
-#endif
-	DEVMETHOD(bus_activate_resource, bus_generic_activate_resource),
-	DEVMETHOD(bus_deactivate_resource, bus_generic_deactivate_resource),
+	DEVMETHOD(bus_activate_resource, legacy_pcib_activate_resource),
+	DEVMETHOD(bus_deactivate_resource, legacy_pcib_deactivate_resource),
 	DEVMETHOD(bus_setup_intr,	bus_generic_setup_intr),
 	DEVMETHOD(bus_teardown_intr,	bus_generic_teardown_intr),
 
@@ -669,10 +675,8 @@ static device_method_t legacy_pcib_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t hostb_devclass;
-
 DEFINE_CLASS_0(pcib, legacy_pcib_driver, legacy_pcib_methods, 1);
-DRIVER_MODULE(pcib, legacy, legacy_pcib_driver, hostb_devclass, 0, 0);
+DRIVER_MODULE(pcib, legacy, legacy_pcib_driver, 0, 0);
 
 /*
  * Install placeholder to claim the resources owned by the
@@ -709,17 +713,11 @@ static device_method_t pcibus_pnp_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		pcibus_pnp_probe),
 	DEVMETHOD(device_attach,	pcibus_pnp_attach),
-	DEVMETHOD(device_detach,	bus_generic_detach),
-	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
-	DEVMETHOD(device_suspend,	bus_generic_suspend),
-	DEVMETHOD(device_resume,	bus_generic_resume),
 	{ 0, 0 }
 };
 
-static devclass_t pcibus_pnp_devclass;
-
 DEFINE_CLASS_0(pcibus_pnp, pcibus_pnp_driver, pcibus_pnp_methods, 1);
-DRIVER_MODULE(pcibus_pnp, isa, pcibus_pnp_driver, pcibus_pnp_devclass, 0, 0);
+DRIVER_MODULE(pcibus_pnp, isa, pcibus_pnp_driver, 0, 0);
 
 #ifdef __HAVE_PIR
 /*
@@ -738,11 +736,9 @@ static device_method_t pcibios_pcib_pci_methods[] = {
 	{0, 0}
 };
 
-static devclass_t pcib_devclass;
-
 DEFINE_CLASS_1(pcib, pcibios_pcib_driver, pcibios_pcib_pci_methods,
     sizeof(struct pcib_softc), pcib_driver);
-DRIVER_MODULE(pcibios_pcib, pci, pcibios_pcib_driver, pcib_devclass, 0, 0);
+DRIVER_MODULE(pcibios_pcib, pci, pcibios_pcib_driver, 0, 0);
 ISA_PNP_INFO(pcibus_pnp_ids);
 
 static int

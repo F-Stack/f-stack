@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001 Michael Shalayeff
  * All rights reserved.
@@ -44,19 +44,33 @@
 
 /*
  *	$OpenBSD: if_pfsync.h,v 1.35 2008/06/29 08:42:15 mcbride Exp $
- *	$FreeBSD$
  */
 
 #ifndef _NET_IF_PFSYNC_H_
 #define	_NET_IF_PFSYNC_H_
 
+#include <sys/types.h>
+
+#include <net/if.h>
+#include <net/pfvar.h>
+#include <netpfil/pf/pf.h>
+
 #define	PFSYNC_VERSION		5
 #define	PFSYNC_DFLTTL		255
 
+enum pfsync_msg_versions {
+	PFSYNC_MSG_VERSION_UNSPECIFIED = 0,
+	PFSYNC_MSG_VERSION_1301 = 1301,
+	PFSYNC_MSG_VERSION_1400 = 1400,
+	PFSYNC_MSG_VERSION_1500 = 1500,
+};
+
+#define PFSYNC_MSG_VERSION_DEFAULT PFSYNC_MSG_VERSION_1500
+
 #define	PFSYNC_ACT_CLR		0	/* clear all states */
-#define	PFSYNC_ACT_INS		1	/* insert state */
-#define	PFSYNC_ACT_INS_ACK	2	/* ack of insterted state */
-#define	PFSYNC_ACT_UPD		3	/* update state */
+#define	PFSYNC_ACT_INS_1301	1	/* insert state */
+#define	PFSYNC_ACT_INS_ACK	2	/* ack of inserted state */
+#define	PFSYNC_ACT_UPD_1301	3	/* update state */
 #define	PFSYNC_ACT_UPD_C	4	/* "compressed" update state */
 #define	PFSYNC_ACT_UPD_REQ	5	/* request "uncompressed" state */
 #define	PFSYNC_ACT_DEL		6	/* delete state */
@@ -66,7 +80,11 @@
 #define	PFSYNC_ACT_BUS		10	/* bulk update status */
 #define	PFSYNC_ACT_TDB		11	/* TDB replay counter update */
 #define	PFSYNC_ACT_EOF		12	/* end of frame */
-#define	PFSYNC_ACT_MAX		13
+#define PFSYNC_ACT_INS_1400	13	/* insert state */
+#define PFSYNC_ACT_UPD_1400	14	/* update state */
+#define PFSYNC_ACT_INS_1500	15	/* insert state */
+#define PFSYNC_ACT_UPD_1500	16	/* update state */
+#define	PFSYNC_ACT_MAX		17
 
 /*
  * A pfsync frame is built from a header followed by several sections which
@@ -145,8 +163,8 @@ struct pfsync_ins_ack {
 
 struct pfsync_upd_c {
 	u_int64_t			id;
-	struct pfsync_state_peer	src;
-	struct pfsync_state_peer	dst;
+	struct pf_state_peer_export	src;
+	struct pf_state_peer_export	dst;
 	u_int32_t			creatorid;
 	u_int32_t			expire;
 	u_int8_t			timeout;
@@ -236,23 +254,41 @@ struct pfsyncreq {
 	char		 pfsyncr_syncdev[IFNAMSIZ];
 	struct in_addr	 pfsyncr_syncpeer;
 	int		 pfsyncr_maxupdates;
+#define	PFSYNCF_OK		0x00000001
+#define	PFSYNCF_DEFER		0x00000002
 	int		 pfsyncr_defer;
+};
+
+struct pfsync_kstatus {
+	char		 	syncdev[IFNAMSIZ];
+	struct sockaddr_storage	syncpeer;
+	int		 	maxupdates;
+	int			version;
+	int		 	flags;
+};
+
+struct pfsyncioc_nv {
+	void            *data;
+	size_t           len;   /* The length of the nvlist data. */
+	size_t           size;  /* The total size of the data buffer. */
 };
 
 #define	SIOCSETPFSYNC   _IOW('i', 247, struct ifreq)
 #define	SIOCGETPFSYNC   _IOWR('i', 248, struct ifreq)
+#define	SIOCSETPFSYNCNV _IOW('i', 249, struct ifreq)
+#define	SIOCGETPFSYNCNV _IOWR('i', 250, struct ifreq)
 
 #ifdef _KERNEL
 
 /*
  * this shows where a pf state is with respect to the syncing.
+ * pf_kstate->sync_state
  */
 #define	PFSYNC_S_INS	0x00
 #define	PFSYNC_S_IACK	0x01
 #define	PFSYNC_S_UPD	0x02
 #define	PFSYNC_S_UPD_C	0x03
-#define	PFSYNC_S_DEL	0x04
-#define	PFSYNC_S_COUNT	0x05
+#define	PFSYNC_S_DEL_C	0x04
 
 #define	PFSYNC_S_DEFER	0xfe
 #define	PFSYNC_S_NONE	0xff

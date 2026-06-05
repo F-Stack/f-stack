@@ -32,9 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <netinet/sctp_os.h>
 #include <netinet/sctp_var.h>
 #include <netinet/sctp_sysctl.h>
@@ -53,6 +50,12 @@ __FBSDID("$FreeBSD$");
 #define SHIFT_MPTCP_MULTI_N 40
 #define SHIFT_MPTCP_MULTI_Z 16
 #define SHIFT_MPTCP_MULTI 8
+
+#ifdef KDTRACE_HOOKS
+#define __dtrace
+#else
+#define __dtrace __unused
+#endif
 
 static void
 sctp_enforce_cwnd_limit(struct sctp_association *assoc, struct sctp_nets *net)
@@ -252,7 +255,7 @@ static int
 cc_bw_same(struct sctp_tcb *stcb, struct sctp_nets *net, uint64_t nbw,
     uint64_t rtt_offset, uint64_t vtag, uint8_t inst_ind)
 {
-	uint64_t oth, probepoint;
+	uint64_t oth __dtrace, probepoint __dtrace;
 
 	probepoint = (((uint64_t)net->cwnd) << 32);
 	if (net->rtt > net->cc_mod.rtcc.lbw_rtt + rtt_offset) {
@@ -387,7 +390,7 @@ static int
 cc_bw_decrease(struct sctp_tcb *stcb, struct sctp_nets *net, uint64_t nbw, uint64_t rtt_offset,
     uint64_t vtag, uint8_t inst_ind)
 {
-	uint64_t oth, probepoint;
+	uint64_t oth __dtrace, probepoint __dtrace;
 
 	/* Bandwidth decreased. */
 	probepoint = (((uint64_t)net->cwnd) << 32);
@@ -527,7 +530,7 @@ out_decision:
 static int
 cc_bw_increase(struct sctp_tcb *stcb, struct sctp_nets *net, uint64_t nbw, uint64_t vtag)
 {
-	uint64_t oth, probepoint;
+	uint64_t oth __dtrace, probepoint __dtrace;
 
 	/*
 	 * BW increased, so update and return 0, since all actions in our
@@ -571,7 +574,7 @@ static int
 cc_bw_limit(struct sctp_tcb *stcb, struct sctp_nets *net, uint64_t nbw)
 {
 	uint64_t bw_offset, rtt_offset;
-	uint64_t probepoint, rtt, vtag;
+	uint64_t probepoint __dtrace, rtt, vtag;
 	uint64_t bytes_for_this_rtt, inst_bw;
 	uint64_t div, inst_off;
 	int bw_shift;
@@ -684,8 +687,8 @@ sctp_cwnd_update_after_sack_common(struct sctp_tcb *stcb,
     int accum_moved, int reneged_all SCTP_UNUSED, int will_exit, int use_rtcc)
 {
 	struct sctp_nets *net;
-	int old_cwnd;
-	uint32_t t_ssthresh, t_cwnd, incr;
+	int old_cwnd __dtrace;
+	uint32_t t_ssthresh, incr;
 	uint64_t t_ucwnd_sbw;
 	uint64_t t_path_mptcp;
 	uint64_t mptcp_like_alpha;
@@ -694,7 +697,6 @@ sctp_cwnd_update_after_sack_common(struct sctp_tcb *stcb,
 
 	/* MT FIXME: Don't compute this over and over again */
 	t_ssthresh = 0;
-	t_cwnd = 0;
 	t_ucwnd_sbw = 0;
 	t_path_mptcp = 0;
 	mptcp_like_alpha = 1;
@@ -704,7 +706,6 @@ sctp_cwnd_update_after_sack_common(struct sctp_tcb *stcb,
 		max_path = 0;
 		TAILQ_FOREACH(net, &stcb->asoc.nets, sctp_next) {
 			t_ssthresh += net->ssthresh;
-			t_cwnd += net->cwnd;
 			/* lastsa>>3;  we don't need to devide ... */
 			srtt = net->lastsa;
 			if (srtt > 0) {
@@ -799,7 +800,7 @@ sctp_cwnd_update_after_sack_common(struct sctp_tcb *stcb,
 					continue;
 				}
 			} else {
-				uint64_t vtag, probepoint;
+				uint64_t vtag __dtrace, probepoint __dtrace;
 
 				probepoint = (((uint64_t)net->cwnd) << 32);
 				probepoint |= ((0xa << 16) | 0);
@@ -997,7 +998,7 @@ sctp_cwnd_update_after_sack_common(struct sctp_tcb *stcb,
 static void
 sctp_cwnd_update_exit_pf_common(struct sctp_tcb *stcb, struct sctp_nets *net)
 {
-	int old_cwnd;
+	int old_cwnd __dtrace;
 
 	old_cwnd = net->cwnd;
 	net->cwnd = net->mtu;
@@ -1325,7 +1326,7 @@ sctp_cwnd_prepare_rtcc_net_for_sack(struct sctp_tcb *stcb SCTP_UNUSED,
     struct sctp_nets *net)
 {
 	if (net->cc_mod.rtcc.tls_needs_set > 0) {
-		/* We had a bw measurment going on */
+		/* We had a bw measurement going on */
 		struct timeval ltls;
 
 		SCTP_GETPTIME_TIMEVAL(&ltls);
@@ -1338,7 +1339,7 @@ static void
 sctp_cwnd_new_rtcc_transmission_begins(struct sctp_tcb *stcb,
     struct sctp_nets *net)
 {
-	uint64_t vtag, probepoint;
+	uint64_t vtag __dtrace, probepoint __dtrace;
 
 	if (net->cc_mod.rtcc.lbw) {
 		/* Clear the old bw.. we went to 0 in-flight */
@@ -1401,7 +1402,7 @@ static void
 sctp_set_rtcc_initial_cc_param(struct sctp_tcb *stcb,
     struct sctp_nets *net)
 {
-	uint64_t vtag, probepoint;
+	uint64_t vtag __dtrace, probepoint __dtrace;
 
 	sctp_set_initial_cc_param(stcb, net);
 	stcb->asoc.use_precise_time = 1;

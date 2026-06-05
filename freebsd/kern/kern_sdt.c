@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2006-2008 John Birrell <jb@FreeBSD.org>
  *
@@ -23,13 +23,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kdb.h>
+#include <sys/proc.h>
 #include <sys/sdt.h>
 
 SDT_PROVIDER_DEFINE(sdt);
@@ -47,10 +46,24 @@ volatile bool __read_frequently sdt_probes_enabled;
  * to enable it.
  */
 void
-sdt_probe_stub(uint32_t id, uintptr_t arg0, uintptr_t arg1,
-    uintptr_t arg2, uintptr_t arg3, uintptr_t arg4)
+sdt_probe_stub(uint32_t id __unused, uintptr_t arg0 __unused,
+    uintptr_t arg1 __unused, uintptr_t arg2 __unused, uintptr_t arg3 __unused,
+    uintptr_t arg4 __unused, uintptr_t arg5 __unused)
 {
-
 	printf("sdt_probe_stub: unexpectedly called\n");
 	kdb_backtrace();
+}
+
+void
+sdt_probe(uint32_t id, uintptr_t arg0, uintptr_t arg1,
+    uintptr_t arg2, uintptr_t arg3, uintptr_t arg4)
+{
+	sdt_probe_func(id, arg0, arg1, arg2, arg3, arg4, 0);
+}
+
+void
+sdt_probe6(uint32_t id, uintptr_t arg0, uintptr_t arg1,
+    uintptr_t arg2, uintptr_t arg3, uintptr_t arg4, uintptr_t arg5)
+{
+	sdt_probe_func(id, arg0, arg1, arg2, arg3, arg4, arg5);
 }

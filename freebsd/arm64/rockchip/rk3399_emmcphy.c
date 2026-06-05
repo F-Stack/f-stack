@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Ganbold Tsagaankhuu <ganbold@FreeBSD.org>
  * All rights reserved.
@@ -30,9 +30,6 @@
  * Rockchip RK3399 eMMC PHY
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -46,9 +43,9 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
-#include <dev/extres/clk/clk.h>
-#include <dev/extres/syscon/syscon.h>
-#include <dev/extres/phy/phy.h>
+#include <dev/clk/clk.h>
+#include <dev/syscon/syscon.h>
+#include <dev/phy/phy.h>
 
 #include "syscon_if.h"
 
@@ -335,7 +332,6 @@ static driver_t rk_emmcphy_driver = {
 	sizeof(struct rk_emmcphy_softc)
 };
 
-static devclass_t rk_emmcphy_devclass;
-EARLY_DRIVER_MODULE(rk_emmcphy, simplebus, rk_emmcphy_driver,
-    rk_emmcphy_devclass, 0, 0, BUS_PASS_SUPPORTDEV + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(rk_emmcphy, simplebus, rk_emmcphy_driver, 0, 0,
+    BUS_PASS_SUPPORTDEV + BUS_PASS_ORDER_MIDDLE);
 MODULE_VERSION(rk_emmcphy, 1);

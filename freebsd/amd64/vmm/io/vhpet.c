@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
  * Copyright (c) 2013 Neel Natu <neel@freebsd.org>
@@ -25,13 +25,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_bhyve_snapshot.h"
 
 #include <sys/param.h>
@@ -41,18 +37,17 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/systm.h>
 
-#include <dev/acpica/acpi_hpet.h>
-
 #include <machine/vmm.h>
 #include <machine/vmm_dev.h>
 #include <machine/vmm_snapshot.h>
+
+#include <dev/acpica/acpi_hpet.h>
+#include <dev/vmm/vmm_ktr.h>
 
 #include "vmm_lapic.h"
 #include "vatpic.h"
 #include "vioapic.h"
 #include "vhpet.h"
-
-#include "vmm_ktr.h"
 
 static MALLOC_DEFINE(M_VHPET, "vhpet", "bhyve virtual hpet");
 
@@ -236,7 +231,7 @@ vhpet_timer_interrupt(struct vhpet *vhpet, int n)
 		lapic_intr_msi(vhpet->vm, vhpet->timer[n].msireg >> 32,
 		    vhpet->timer[n].msireg & 0xffffffff);
 		return;
-	}	
+	}
 
 	pin = vhpet_timer_ioapic_pin(vhpet, n);
 	if (pin == 0) {
@@ -472,7 +467,7 @@ vhpet_timer_update_config(struct vhpet *vhpet, int n, uint64_t data,
 }
 
 int
-vhpet_mmio_write(void *vm, int vcpuid, uint64_t gpa, uint64_t val, int size,
+vhpet_mmio_write(struct vcpu *vcpu, uint64_t gpa, uint64_t val, int size,
     void *arg)
 {
 	struct vhpet *vhpet;
@@ -481,7 +476,7 @@ vhpet_mmio_write(void *vm, int vcpuid, uint64_t gpa, uint64_t val, int size,
 	sbintime_t now, *nowptr;
 	int i, offset;
 
-	vhpet = vm_hpet(vm);
+	vhpet = vm_hpet(vcpu_vm(vcpu));
 	offset = gpa - VHPET_BASE;
 
 	VHPET_LOCK(vhpet);
@@ -498,7 +493,7 @@ vhpet_mmio_write(void *vm, int vcpuid, uint64_t gpa, uint64_t val, int size,
 		if ((offset & 0x4) != 0) {
 			mask <<= 32;
 			data <<= 32;
-		} 
+		}
 		break;
 	default:
 		VM_CTR2(vhpet->vm, "hpet invalid mmio write: "
@@ -622,14 +617,14 @@ done:
 }
 
 int
-vhpet_mmio_read(void *vm, int vcpuid, uint64_t gpa, uint64_t *rval, int size,
+vhpet_mmio_read(struct vcpu *vcpu, uint64_t gpa, uint64_t *rval, int size,
     void *arg)
 {
 	int i, offset;
 	struct vhpet *vhpet;
 	uint64_t data;
 
-	vhpet = vm_hpet(vm);
+	vhpet = vm_hpet(vcpu_vm(vcpu));
 	offset = gpa - VHPET_BASE;
 
 	VHPET_LOCK(vhpet);
@@ -652,7 +647,7 @@ vhpet_mmio_read(void *vm, int vcpuid, uint64_t gpa, uint64_t *rval, int size,
 
 	if (offset == HPET_CAPABILITIES || offset == HPET_CAPABILITIES + 4) {
 		data = vhpet_capabilities();
-		goto done;	
+		goto done;
 	}
 
 	if (offset == HPET_CONFIG || offset == HPET_CONFIG + 4) {
@@ -754,6 +749,7 @@ vhpet_cleanup(struct vhpet *vhpet)
 	for (i = 0; i < VHPET_NUM_TIMERS; i++)
 		callout_drain(&vhpet->timer[i].callout);
 
+	mtx_destroy(&vhpet->mtx);
 	free(vhpet, M_VHPET);
 }
 
@@ -779,7 +775,7 @@ vhpet_snapshot(struct vhpet *vhpet, struct vm_snapshot_meta *meta)
 	/* at restore time the countbase should have the value it had when the
 	 * snapshot was created; since the value is not directly kept in
 	 * vhpet->countbase, but rather computed relative to the current system
-	 * uptime using countbase_sbt, save the value retured by vhpet_counter
+	 * uptime using countbase_sbt, save the value returned by vhpet_counter
 	 */
 	if (meta->op == VM_SNAPSHOT_SAVE)
 		countbase = vhpet_counter(vhpet, NULL);

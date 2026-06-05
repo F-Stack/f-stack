@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002 Mitsuru IWASAKI
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /******************************************************************************
@@ -85,6 +83,8 @@ void	madt_parse_interrupt_values(void *entry,
 
 extern int madt_found_sci_override;
 extern int (*apei_nmi)(void);
+
+void	acpi_set_root(vm_paddr_t addr);
 
 #endif /* _KERNEL */
 

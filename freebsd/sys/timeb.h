@@ -32,15 +32,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)timeb.h	8.2 (Berkeley) 1/21/94
- * $FreeBSD$
  */
 
 #ifndef _SYS_TIMEB_H_
 #define _SYS_TIMEB_H_
 
-#ifdef __GNUC__
+#if defined(__GNUC__) && !defined(_IN_LIBUITL)
 #warning "this file includes <sys/timeb.h> which is deprecated"
 #endif
 

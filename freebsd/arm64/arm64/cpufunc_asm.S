@@ -29,14 +29,13 @@
  *
  */
 
+#include <sys/elf_common.h>
 #include <sys/errno.h>
+
 #include <machine/asm.h>
 #include <machine/param.h>
 
 #include "assym.inc"
-
-__FBSDID("$FreeBSD$");
-
 /*
  * FIXME:
  * Need big.LITTLE awareness at some point.
@@ -55,11 +54,12 @@ __FBSDID("$FreeBSD$");
  */
 .macro cache_handle_range dcop = 0, ic = 0, icop = 0
 .if \ic == 0
-	ldr	x3, =dcache_line_size	/* Load the D cache line size */
+	adrp	x3, dcache_line_size	/* Load the D cache line size */
+	ldr	x3, [x3, :lo12:dcache_line_size]
 .else
-	ldr	x3, =idcache_line_size	/* Load the I & D cache line size */
+	adrp	x3, idcache_line_size	/* Load the I & D cache line size */
+	ldr	x3, [x3, :lo12:idcache_line_size]
 .endif
-	ldr	x3, [x3]
 	sub	x4, x3, #1		/* Get the address mask */
 	and	x2, x0, x4		/* Get the low bits of the address */
 	add	x1, x1, x2		/* Add these to the size */
@@ -106,7 +106,7 @@ ENTRY(arm64_tlb_flushID)
 END(arm64_tlb_flushID)
 
 /*
- * void arm64_dcache_wb_range(vm_offset_t, vm_size_t)
+ * void arm64_dcache_wb_range(void *, vm_size_t)
  */
 ENTRY(arm64_dcache_wb_range)
 	cache_handle_range	dcop = cvac
@@ -114,7 +114,7 @@ ENTRY(arm64_dcache_wb_range)
 END(arm64_dcache_wb_range)
 
 /*
- * void arm64_dcache_wbinv_range(vm_offset_t, vm_size_t)
+ * void arm64_dcache_wbinv_range(void *, vm_size_t)
  */
 ENTRY(arm64_dcache_wbinv_range)
 	cache_handle_range	dcop = civac
@@ -122,7 +122,7 @@ ENTRY(arm64_dcache_wbinv_range)
 END(arm64_dcache_wbinv_range)
 
 /*
- * void arm64_dcache_inv_range(vm_offset_t, vm_size_t)
+ * void arm64_dcache_inv_range(void *, vm_size_t)
  *
  * Note, we must not invalidate everything.  If the range is too big we
  * must use wb-inv of the entire cache.
@@ -133,7 +133,7 @@ ENTRY(arm64_dcache_inv_range)
 END(arm64_dcache_inv_range)
 
 /*
- * void arm64_dic_idc_icache_sync_range(vm_offset_t, vm_size_t)
+ * void arm64_dic_idc_icache_sync_range(void *, vm_size_t)
  * When the CTR_EL0.IDC bit is set cleaning to PoU becomes a dsb.
  * When the CTR_EL0.DIC bit is set icache invalidation becomes an isb.
  */
@@ -144,7 +144,19 @@ ENTRY(arm64_dic_idc_icache_sync_range)
 END(arm64_dic_idc_icache_sync_range)
 
 /*
- * void arm64_aliasing_icache_sync_range(vm_offset_t, vm_size_t)
+ * void arm64_idc_aliasing_icache_sync_range(void *, vm_size_t)
+ * When the CTR_EL0.IDC bit is set cleaning to PoU becomes a dsb.
+ */
+ENTRY(arm64_idc_aliasing_icache_sync_range)
+	dsb	ishst
+	ic	ialluis
+	dsb	ish
+	isb
+	ret
+END(arm64_idc_aliasing_icache_sync_range)
+
+/*
+ * void arm64_aliasing_icache_sync_range(void *, vm_size_t)
  */
 ENTRY(arm64_aliasing_icache_sync_range)
 	/*
@@ -160,7 +172,7 @@ ENTRY(arm64_aliasing_icache_sync_range)
 END(arm64_aliasing_icache_sync_range)
 
 /*
- * int arm64_icache_sync_range_checked(vm_offset_t, vm_size_t)
+ * int arm64_icache_sync_range_checked(void *, vm_size_t)
  */
 ENTRY(arm64_icache_sync_range_checked)
 	adr	x5, cache_maint_fault
@@ -180,3 +192,5 @@ ENTRY(cache_maint_fault)
 	mov	x0, #EFAULT
 	ret
 END(cache_maint_fault)
+
+GNU_PROPERTY_AARCH64_FEATURE_1_NOTE(GNU_PROPERTY_AARCH64_FEATURE_1_VAL)

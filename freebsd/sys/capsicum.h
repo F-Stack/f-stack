@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008-2010, 2015 Robert N. M. Watson
  * Copyright (c) 2012 FreeBSD Foundation
@@ -31,8 +31,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -41,7 +39,6 @@
 #ifndef _SYS_CAPSICUM_H_
 #define	_SYS_CAPSICUM_H_
 
-#include <sys/cdefs.h>
 #include <sys/param.h>
 
 #include <sys/caprights.h>
@@ -204,6 +201,9 @@
 /* Allows for renameat(2) (target directory descriptor). */
 #define	CAP_RENAMEAT_TARGET	(CAP_LOOKUP | 0x0000040000000000ULL)
 
+/* Allows for fchroot(2). */
+#define	CAP_FCHROOT		CAPRIGHT(0, 0x0000080000000000ULL)
+
 #define	CAP_SOCK_CLIENT \
 	(CAP_CONNECT | CAP_GETPEERNAME | CAP_GETSOCKNAME | CAP_GETSOCKOPT | \
 	 CAP_PEELOFF | CAP_RECV | CAP_SEND | CAP_SETSOCKOPT | CAP_SHUTDOWN)
@@ -213,11 +213,9 @@
 	 CAP_SETSOCKOPT | CAP_SHUTDOWN)
 
 /* All used bits for index 0. */
-#define	CAP_ALL0		CAPRIGHT(0, 0x000007FFFFFFFFFFULL)
+#define	CAP_ALL0		CAPRIGHT(0, 0x00000FFFFFFFFFFFULL)
 
 /* Available bits for index 0. */
-#define	CAP_UNUSED0_44		CAPRIGHT(0, 0x0000080000000000ULL)
-/* ... */
 #define	CAP_UNUSED0_57		CAPRIGHT(0, 0x0100000000000000ULL)
 
 /* INDEX 1 */
@@ -281,11 +279,15 @@
 
 #define	CAP_KQUEUE		(CAP_KQUEUE_EVENT | CAP_KQUEUE_CHANGE)
 
+/* Allows operations on inotify descriptors. */
+#define	CAP_INOTIFY_ADD		CAPRIGHT(1, 0x0000000000200000ULL)
+#define	CAP_INOTIFY_RM		CAPRIGHT(1, 0x0000000000400000ULL)
+
 /* All used bits for index 1. */
-#define	CAP_ALL1		CAPRIGHT(1, 0x00000000001FFFFFULL)
+#define	CAP_ALL1		CAPRIGHT(1, 0x00000000007FFFFFULL)
 
 /* Available bits for index 1. */
-#define	CAP_UNUSED1_22		CAPRIGHT(1, 0x0000000000200000ULL)
+#define	CAP_UNUSED1_22		CAPRIGHT(1, 0x0000000000800000ULL)
 /* ... */
 #define	CAP_UNUSED1_57		CAPRIGHT(1, 0x0100000000000000ULL)
 
@@ -339,6 +341,8 @@ cap_rights_t *__cap_rights_clear(cap_rights_t *rights, ...);
 	__cap_rights_is_set(__VA_ARGS__, 0ULL)
 bool __cap_rights_is_set(const cap_rights_t *rights, ...);
 
+bool cap_rights_is_empty(const cap_rights_t *rights);
+
 bool cap_rights_is_valid(const cap_rights_t *rights);
 cap_rights_t *cap_rights_merge(cap_rights_t *dst, const cap_rights_t *src);
 cap_rights_t *cap_rights_remove(cap_rights_t *dst, const cap_rights_t *src);
@@ -370,6 +374,24 @@ _Static_assert(CAP_RIGHTS_VERSION == CAP_RIGHTS_VERSION_00,
 	_r->cr_rights[CAPIDXBIT(right) - 1] |= right;			\
 	_r;								\
 })
+
+#define	_CAP_RIGHTS_WORD_INITIALIZER(i, r)				\
+	(CAPIDXBIT(r) == (i) + 1 ? (r) : 0ULL)
+
+/*
+ * Define a set of up to two rights at compile time.
+ */
+#define	CAP_RIGHTS_INITIALIZER2(r1, r2) ((struct cap_rights){		\
+	.cr_rights = {							\
+		[0] = ((uint64_t)CAP_RIGHTS_VERSION << 62) |		\
+		    _CAP_RIGHTS_WORD_INITIALIZER(0, r1) |		\
+		    _CAP_RIGHTS_WORD_INITIALIZER(0, r2),		\
+		[1] = _CAP_RIGHTS_WORD_INITIALIZER(1, r1) |		\
+		    _CAP_RIGHTS_WORD_INITIALIZER(1, r2),		\
+	},								\
+})
+#define	CAP_RIGHTS_INITIALIZER(r)					\
+	CAP_RIGHTS_INITIALIZER2(r, 0ULL)
 
 /*
  * Allow checking caps which are possibly getting modified at the same time.
@@ -419,6 +441,13 @@ __END_DECLS
 #ifdef _KERNEL
 
 #include <sys/systm.h>
+#include <sys/ktrace.h>
+
+#ifdef KTRACE
+#define CAP_TRACING(td) KTRPOINT((td), KTR_CAPFAIL)
+#else
+#define CAP_TRACING(td) 0
+#endif
 
 #define IN_CAPABILITY_MODE(td) (((td)->td_ucred->cr_flags & CRED_FLAG_CAPMODE) != 0)
 

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017,	Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_DOMAINSET_H_
@@ -43,34 +41,35 @@
 	    sizeof("::") + sizeof(__XSTRING(DOMAINSET_POLICY_MAX)) +	\
 	    sizeof(__XSTRING(MAXMEMDOM)))
 
-#define	DOMAINSET_CLR(n, p)		BIT_CLR(DOMAINSET_SETSIZE, n, p)
-#define	DOMAINSET_COPY(f, t)		BIT_COPY(DOMAINSET_SETSIZE, f, t)
-#define	DOMAINSET_ISSET(n, p)		BIT_ISSET(DOMAINSET_SETSIZE, n, p)
-#define	DOMAINSET_SET(n, p)		BIT_SET(DOMAINSET_SETSIZE, n, p)
-#define	DOMAINSET_ZERO(p) 		BIT_ZERO(DOMAINSET_SETSIZE, p)
-#define	DOMAINSET_FILL(p) 		BIT_FILL(DOMAINSET_SETSIZE, p)
-#define	DOMAINSET_SETOF(n, p)		BIT_SETOF(DOMAINSET_SETSIZE, n, p)
-#define	DOMAINSET_EMPTY(p)		BIT_EMPTY(DOMAINSET_SETSIZE, p)
-#define	DOMAINSET_ISFULLSET(p)		BIT_ISFULLSET(DOMAINSET_SETSIZE, p)
-#define	DOMAINSET_SUBSET(p, c)		BIT_SUBSET(DOMAINSET_SETSIZE, p, c)
-#define	DOMAINSET_OVERLAP(p, c)		BIT_OVERLAP(DOMAINSET_SETSIZE, p, c)
-#define	DOMAINSET_CMP(p, c)		BIT_CMP(DOMAINSET_SETSIZE, p, c)
-#define	DOMAINSET_OR(d, s)		BIT_OR(DOMAINSET_SETSIZE, d, s)
-#define	DOMAINSET_AND(d, s)		BIT_AND(DOMAINSET_SETSIZE, d, s)
-#define	DOMAINSET_ANDNOT(d, s)		BIT_ANDNOT(DOMAINSET_SETSIZE, d, s)
-#define	DOMAINSET_CLR_ATOMIC(n, p)	BIT_CLR_ATOMIC(DOMAINSET_SETSIZE, n, p)
-#define	DOMAINSET_SET_ATOMIC(n, p)	BIT_SET_ATOMIC(DOMAINSET_SETSIZE, n, p)
+#define	DOMAINSET_CLR(n, p)		__BIT_CLR(DOMAINSET_SETSIZE, n, p)
+#define	DOMAINSET_COPY(f, t)		__BIT_COPY(DOMAINSET_SETSIZE, f, t)
+#define	DOMAINSET_ISSET(n, p)		__BIT_ISSET(DOMAINSET_SETSIZE, n, p)
+#define	DOMAINSET_SET(n, p)		__BIT_SET(DOMAINSET_SETSIZE, n, p)
+#define	DOMAINSET_ZERO(p) 		__BIT_ZERO(DOMAINSET_SETSIZE, p)
+#define	DOMAINSET_FILL(p) 		__BIT_FILL(DOMAINSET_SETSIZE, p)
+#define	DOMAINSET_SETOF(n, p)		__BIT_SETOF(DOMAINSET_SETSIZE, n, p)
+#define	DOMAINSET_EMPTY(p)		__BIT_EMPTY(DOMAINSET_SETSIZE, p)
+#define	DOMAINSET_ISFULLSET(p)		__BIT_ISFULLSET(DOMAINSET_SETSIZE, p)
+#define	DOMAINSET_SUBSET(p, c)		__BIT_SUBSET(DOMAINSET_SETSIZE, p, c)
+#define	DOMAINSET_OVERLAP(p, c)		__BIT_OVERLAP(DOMAINSET_SETSIZE, p, c)
+#define	DOMAINSET_CMP(p, c)		__BIT_CMP(DOMAINSET_SETSIZE, p, c)
+#define	DOMAINSET_OR(d, s)		__BIT_OR(DOMAINSET_SETSIZE, d, s)
+#define	DOMAINSET_ORNOT(d, s)		__BIT_ORNOT(DOMAINSET_SETSIZE, d, s)
+#define	DOMAINSET_AND(d, s)		__BIT_AND(DOMAINSET_SETSIZE, d, s)
+#define	DOMAINSET_ANDNOT(d, s)		__BIT_ANDNOT(DOMAINSET_SETSIZE, d, s)
+#define	DOMAINSET_CLR_ATOMIC(n, p)	__BIT_CLR_ATOMIC(DOMAINSET_SETSIZE, n, p)
+#define	DOMAINSET_SET_ATOMIC(n, p)	__BIT_SET_ATOMIC(DOMAINSET_SETSIZE, n, p)
 #define	DOMAINSET_SET_ATOMIC_ACQ(n, p)					\
-	    BIT_SET_ATOMIC_ACQ(DOMAINSET_SETSIZE, n, p)
-#define	DOMAINSET_AND_ATOMIC(n, p)	BIT_AND_ATOMIC(DOMAINSET_SETSIZE, n, p)
-#define	DOMAINSET_OR_ATOMIC(d, s)	BIT_OR_ATOMIC(DOMAINSET_SETSIZE, d, s)
+	    __BIT_SET_ATOMIC_ACQ(DOMAINSET_SETSIZE, n, p)
+#define	DOMAINSET_AND_ATOMIC(n, p)	__BIT_AND_ATOMIC(DOMAINSET_SETSIZE, n, p)
+#define	DOMAINSET_OR_ATOMIC(d, s)	__BIT_OR_ATOMIC(DOMAINSET_SETSIZE, d, s)
 #define	DOMAINSET_COPY_STORE_REL(f, t)					\
-	    BIT_COPY_STORE_REL(DOMAINSET_SETSIZE, f, t)
-#define	DOMAINSET_FFS(p)		BIT_FFS(DOMAINSET_SETSIZE, p)
-#define	DOMAINSET_FLS(p)		BIT_FLS(DOMAINSET_SETSIZE, p)
-#define	DOMAINSET_COUNT(p)		((int)BIT_COUNT(DOMAINSET_SETSIZE, p))
-#define	DOMAINSET_FSET			BITSET_FSET(_NDOMAINSETWORDS)
-#define	DOMAINSET_T_INITIALIZER		BITSET_T_INITIALIZER
+	    __BIT_COPY_STORE_REL(DOMAINSET_SETSIZE, f, t)
+#define	DOMAINSET_FFS(p)		__BIT_FFS(DOMAINSET_SETSIZE, p)
+#define	DOMAINSET_FLS(p)		__BIT_FLS(DOMAINSET_SETSIZE, p)
+#define	DOMAINSET_COUNT(p)		((int)__BIT_COUNT(DOMAINSET_SETSIZE, p))
+#define	DOMAINSET_FSET			__BITSET_FSET(_NDOMAINSETWORDS)
+#define	DOMAINSET_T_INITIALIZER(x)	__BITSET_T_INITIALIZER(x)
 
 #define	DOMAINSET_POLICY_INVALID	0
 #define	DOMAINSET_POLICY_ROUNDROBIN	1
@@ -95,6 +94,10 @@ struct domainset {
 	domainid_t	ds_order[MAXMEMDOM];  /* nth domain table. */
 };
 
+extern struct domainset domainset_firsttouch;
+#define	DOMAINSET_FT()		(&domainset_firsttouch)
+extern struct domainset domainset_interleave;
+#define	DOMAINSET_IL()		(&domainset_interleave)
 extern struct domainset domainset_fixed[MAXMEMDOM], domainset_prefer[MAXMEMDOM];
 #define	DOMAINSET_FIXED(domain)	(&domainset_fixed[(domain)])
 #define	DOMAINSET_PREF(domain)	(&domainset_prefer[(domain)])
@@ -110,6 +113,20 @@ void domainset_zero(void);
  * returned value will not match the key pointer.
  */
 struct domainset *domainset_create(const struct domainset *);
+
+/*
+ * Remove empty domains from a given domainset.
+ * Returns 'false' if the domainset consists entirely of empty domains.
+ */
+bool domainset_empty_vm(struct domainset *domain);
+
+/*
+ * Validate and populate a domainset structure according to the specified
+ * policy and mask.
+ */
+int domainset_populate(struct domainset *domain, const domainset_t *mask, int policy,
+    size_t mask_size);
+
 #ifdef _SYS_SYSCTL_H_
 int sysctl_handle_domainset(SYSCTL_HANDLER_ARGS);
 #endif

@@ -34,12 +34,6 @@
  * SUCH DAMAGE.
  *
  * from: Utah $Hdr: fdioctl.h 1.1 90/07/09$
- *
- *	@(#)vnioctl.h	8.1 (Berkeley) 6/10/93
- *
- * From: src/sys/sys/vnioctl.h,v 1.4
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_MDIOCTL_H_
@@ -92,5 +86,6 @@ struct md_ioctl {
 #define MD_ASYNC	0x40	/* Asynchronous mode */
 #define MD_VERIFY	0x80	/* Open file with O_VERIFY (vnode only) */
 #define	MD_CACHE	0x100	/* Cache vnode data */
+#define	MD_MUSTDEALLOC	0x200	/* BIO_DELETE only if dealloc is available */
 
 #endif	/* _SYS_MDIOCTL_H_*/

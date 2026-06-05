@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998-2002,2010 Luigi Rizzo, Universita` di Pisa
  * All rights reserved
@@ -28,14 +28,10 @@
 
 /*
  * Binary heap and hash tables, used in dummynet
- *
- * $FreeBSD$
  */
 
-#include <sys/cdefs.h>
 #include <sys/param.h>
 #ifdef _KERNEL
-__FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/malloc.h>
 #include <sys/kernel.h>
@@ -178,14 +174,13 @@ heap_insert(struct dn_heap *h, uint64_t key1, void *p)
 /*
  * remove top element from heap, or obj if obj != NULL
  */
-void
+bool
 heap_extract(struct dn_heap *h, void *obj)
 {
 	int child, father, max = h->elements - 1;
 
 	if (max < 0) {
-		printf("--- %s: empty heap 0x%p\n", __FUNCTION__, h);
-		return;
+		return false;
 	}
 	if (obj == NULL)
 		father = 0; /* default: move up smallest child */
@@ -194,11 +189,14 @@ heap_extract(struct dn_heap *h, void *obj)
 			panic("%s: extract from middle not set on %p\n",
 				__FUNCTION__, h);
 		father = *((int *)((char *)obj + h->ofs));
-		if (father < 0 || father >= h->elements) {
-			panic("%s: father %d out of bound 0..%d\n",
-				__FUNCTION__, father, h->elements);
-		}
+		if (father < 0 || father >= h->elements)
+			return false;
 	}
+	/* We should make sure that the object we're trying to remove is
+	 * actually in this heap. */
+	if (obj != NULL && h->p[father].object != obj)
+		return false;
+
 	/*
 	 * below, father is the index of the empty element, which
 	 * we replace at each step with the smallest child until we
@@ -223,6 +221,8 @@ heap_extract(struct dn_heap *h, void *obj)
 		h->p[father] = h->p[max];
 		heap_insert(h, father, NULL);
 	}
+
+	return true;
 }
 
 #if 0

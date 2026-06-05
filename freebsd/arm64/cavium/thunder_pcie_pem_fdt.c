@@ -26,8 +26,6 @@
  * SUCH DAMAGE.
  */
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_platform.h"
 
 #include <sys/param.h>
@@ -87,12 +85,8 @@ static device_method_t thunder_pem_fdt_methods[] = {
 DEFINE_CLASS_1(pcib, thunder_pem_fdt_driver, thunder_pem_fdt_methods,
     sizeof(struct thunder_pem_softc), thunder_pem_driver);
 
-static devclass_t thunder_pem_fdt_devclass;
-
-DRIVER_MODULE(thunder_pem, simplebus, thunder_pem_fdt_driver,
-    thunder_pem_fdt_devclass, 0, 0);
-DRIVER_MODULE(thunder_pem, ofwbus, thunder_pem_fdt_driver,
-    thunder_pem_fdt_devclass, 0, 0);
+DRIVER_MODULE(thunder_pem, simplebus, thunder_pem_fdt_driver, 0, 0);
+DRIVER_MODULE(thunder_pem, ofwbus, thunder_pem_fdt_driver, 0, 0);
 
 static int
 thunder_pem_fdt_probe(device_t dev)

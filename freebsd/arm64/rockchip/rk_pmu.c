@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -25,9 +25,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
@@ -40,7 +37,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
-#include <dev/extres/syscon/syscon.h>
+#include <dev/syscon/syscon.h>
 #include <dev/fdt/simple_mfd.h>
 
 static struct ofw_compat_data compat_data[] = {
@@ -71,7 +68,6 @@ static device_method_t rk_pmu_methods[] = {
 DEFINE_CLASS_1(rk_pmu, rk_pmu_driver, rk_pmu_methods,
     sizeof(struct simple_mfd_softc), simple_mfd_driver);
 
-static devclass_t rk_pmu_devclass;
-EARLY_DRIVER_MODULE(rk_pmu, simplebus, rk_pmu_driver, rk_pmu_devclass,
-    0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(rk_pmu, simplebus, rk_pmu_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
 MODULE_VERSION(rk_pmu, 1);

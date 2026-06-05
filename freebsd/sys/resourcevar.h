@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)resourcevar.h	8.4 (Berkeley) 1/9/95
- * $FreeBSD$
  */
 
 #ifndef	_SYS_RESOURCEVAR_H_
@@ -82,6 +79,28 @@ struct plimit {
 	int	pl_refcnt;		/* number of references */
 };
 
+struct limbatch {
+	struct plimit *limp;
+	int count;
+};
+
+static inline void
+limbatch_prep(struct limbatch *lb)
+{
+        lb->limp = NULL;
+        lb->count = 0;
+}
+
+void    limbatch_add(struct limbatch *lb, struct thread *td);
+
+static inline void
+limbatch_process(struct limbatch *lb __unused)
+{
+
+}
+
+void    limbatch_final(struct limbatch *lb);
+
 struct racct;
 
 /*-
@@ -102,6 +121,9 @@ struct uidinfo {
 	long	ui_ptscnt;		/* (b) number of pseudo-terminals */
 	long	ui_kqcnt;		/* (b) number of kqueues */
 	long	ui_umtxcnt;		/* (b) number of shared umtxs */
+	long	ui_pipecnt;		/* (b) consumption of pipe buffers */
+	long	ui_inotifycnt;		/* (b) number of inotify descriptors */
+	long	ui_inotifywatchcnt;	/* (b) number of inotify watches */
 	uid_t	ui_uid;			/* (a) uid */
 	u_int	ui_ref;			/* (b) reference count */
 #ifdef	RACCT
@@ -123,6 +145,9 @@ int	 chgsbsize(struct uidinfo *uip, u_int *hiwat, u_int to,
 	    rlim_t maxval);
 int	 chgptscnt(struct uidinfo *uip, int diff, rlim_t maxval);
 int	 chgumtxcnt(struct uidinfo *uip, int diff, rlim_t maxval);
+int	 chgpipecnt(struct uidinfo *uip, int diff, rlim_t max);
+int	 chginotifycnt(struct uidinfo *uip, int diff, rlim_t maxval);
+int	 chginotifywatchcnt(struct uidinfo *uip, int diff, rlim_t maxval);
 int	 kern_proc_setrlimit(struct thread *td, struct proc *p, u_int which,
 	    struct rlimit *limp);
 struct plimit
@@ -136,7 +161,7 @@ rlim_t	 lim_cur(struct thread *td, int which);
 	int _which = (which);						\
 	if (__builtin_constant_p(which) && which != RLIMIT_DATA &&	\
 	    which != RLIMIT_STACK && which != RLIMIT_VMEM) {		\
-		_rlim = td->td_limit->pl_rlimit[which].rlim_cur;	\
+		_rlim = _td->td_limit->pl_rlimit[_which].rlim_cur;	\
 	} else {							\
 		_rlim = lim_cur(_td, _which);				\
 	}								\
@@ -150,6 +175,8 @@ void	 lim_free(struct plimit *limp);
 void	 lim_freen(struct plimit *limp, int n);
 struct plimit
 	*lim_hold(struct plimit *limp);
+struct plimit
+	*lim_cowsync(void);
 rlim_t	 lim_max(struct thread *td, int which);
 rlim_t	 lim_max_proc(struct proc *p, int which);
 void	 lim_rlimit(struct thread *td, int which, struct rlimit *rlp);

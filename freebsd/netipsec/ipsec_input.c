@@ -41,8 +41,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -56,19 +54,24 @@ __FBSDID("$FreeBSD$");
 #include <sys/socket.h>
 #include <sys/errno.h>
 #include <sys/hhook.h>
+#include <sys/stdarg.h>
 #include <sys/syslog.h>
 
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/if_enc.h>
+#include <net/if_private.h>
 #include <net/netisr.h>
 #include <net/vnet.h>
 
 #include <netinet/in.h>
+#include <netinet/in_pcb.h>
 #include <netinet/in_systm.h>
 #include <netinet/ip.h>
 #include <netinet/ip_var.h>
+#include <netinet/ip_icmp.h>
 #include <netinet/in_var.h>
+#include <netinet/tcp_var.h>
 
 #include <netinet/ip6.h>
 #ifdef INET6
@@ -83,20 +86,20 @@ __FBSDID("$FreeBSD$");
 #ifdef INET6
 #include <netipsec/ipsec6.h>
 #endif
+#include <netipsec/ipsec_support.h>
 #include <netipsec/ah_var.h>
 #include <netipsec/esp.h>
 #include <netipsec/esp_var.h>
 #include <netipsec/ipcomp_var.h>
+#include <netipsec/ipsec_offload.h>
 
 #include <netipsec/key.h>
 #include <netipsec/keydb.h>
 #include <netipsec/key_debug.h>
 
 #include <netipsec/xform.h>
-#include <netinet6/ip6protosw.h>
 
 #include <machine/in_cksum.h>
-#include <machine/stdarg.h>
 
 #define	IPSEC_ISTAT(proto, name)	do {	\
 	if ((proto) == IPPROTO_ESP)		\
@@ -226,8 +229,6 @@ ipsec_common_input(struct mbuf *m, int skip, int protoff, int af, int sproto)
 }
 
 #ifdef INET
-extern struct protosw inetsw[];
-
 /*
  * IPSEC_INPUT() method implementation for IPv4.
  *  0 - Permitted by inbound security policy for further processing.
@@ -237,6 +238,11 @@ extern struct protosw inetsw[];
 int
 ipsec4_input(struct mbuf *m, int offset, int proto)
 {
+	int error;
+
+	error = ipsec_accel_input(m, offset, proto);
+	if (error != ENXIO)
+		return (error);
 
 	switch (proto) {
 	case IPPROTO_AH:
@@ -251,9 +257,21 @@ ipsec4_input(struct mbuf *m, int offset, int proto)
 		 * Protocols with further headers get their IPsec treatment
 		 * within the protocol specific processing.
 		 */
-		if ((inetsw[ip_protox[proto]].pr_flags & PR_LASTHDR) == 0)
+		switch (proto) {
+		case IPPROTO_ICMP:
+		case IPPROTO_IGMP:
+		case IPPROTO_IPV4:
+		case IPPROTO_IPV6:
+		case IPPROTO_RSVP:
+		case IPPROTO_GRE:
+		case IPPROTO_MOBILE:
+		case IPPROTO_ETHERIP:
+		case IPPROTO_PIM:
+		case IPPROTO_SCTP:
+			break;
+		default:
 			return (0);
-		/* FALLTHROUGH */
+		}
 	};
 	/*
 	 * Enforce IPsec policy checking if we are seeing last header.
@@ -263,6 +281,53 @@ ipsec4_input(struct mbuf *m, int offset, int proto)
 		m_freem(m);
 		return (EACCES);
 	}
+	return (0);
+}
+
+int
+ipsec4_ctlinput(ipsec_ctlinput_param_t param)
+{
+	struct icmp *icp = param.icmp;
+	struct ip *ip = &icp->icmp_ip;
+	struct sockaddr_in icmpsrc = {
+		.sin_len = sizeof(struct sockaddr_in),
+		.sin_family = AF_INET,
+		.sin_addr = ip->ip_dst,
+	};
+	struct in_conninfo inc;
+	struct secasvar *sav;
+	uint32_t pmtu, spi;
+	uint32_t max_pmtu;
+	uint8_t proto;
+
+	pmtu = ntohs(icp->icmp_nextmtu);
+
+	if (pmtu < V_ip4_ipsec_min_pmtu)
+		return (EINVAL);
+
+	proto = ip->ip_p;
+	if (proto != IPPROTO_ESP && proto != IPPROTO_AH &&
+	    proto != IPPROTO_IPCOMP)
+		return (EINVAL);
+
+	memcpy(&spi, (caddr_t)ip + (ip->ip_hl << 2), sizeof(spi));
+	sav = key_allocsa((union sockaddr_union *)&icmpsrc, proto, spi);
+	if (sav == NULL)
+		return (ENOENT);
+
+	key_freesav(&sav);
+
+	memset(&inc, 0, sizeof(inc));
+	inc.inc_faddr = ip->ip_dst;
+
+	/* Update pmtu only if its smaller than the current one. */
+	max_pmtu = tcp_hc_getmtu(&inc);
+	if (max_pmtu == 0)
+		max_pmtu = tcp_maxmtu(&inc, NULL);
+
+	if (pmtu < max_pmtu)
+		tcp_hc_updatemtu(&inc, pmtu);
+
 	return (0);
 }
 
@@ -305,7 +370,7 @@ ipsec4_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 			    buf, sizeof(buf)), (u_long) ntohl(sav->spi)));
 			IPSEC_ISTAT(sproto, hdrops);
 			error = ENOBUFS;
-			goto bad;
+			goto bad_noepoch;
 		}
 
 		ip = mtod(m, struct ip *);
@@ -324,6 +389,11 @@ ipsec4_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 	if (sav->natt != NULL &&
 	    (prot == IPPROTO_UDP || prot == IPPROTO_TCP))
 		udp_ipsec_adjust_cksum(m, sav, prot, skip);
+
+	/*
+	 * Needed for ipsec_run_hooks and netisr_queue_src
+	 */
+	NET_EPOCH_ENTER(et);
 
 	IPSEC_INIT_CTX(&ctx, &m, NULL, sav, AF_INET, IPSEC_ENC_BEFORE);
 	if ((error = ipsec_run_hhooks(&ctx, HHOOK_TYPE_IPSEC_IN)) != 0)
@@ -424,18 +494,19 @@ ipsec4_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 	if (saidx->mode == IPSEC_MODE_TUNNEL)
 		error = ipsec_if_input(m, sav, af);
 	if (error == 0) {
-		NET_EPOCH_ENTER(et);
 		error = netisr_queue_src(isr_prot, (uintptr_t)sav->spi, m);
-		NET_EPOCH_EXIT(et);
 		if (error) {
 			IPSEC_ISTAT(sproto, qfull);
 			DPRINTF(("%s: queue full; proto %u packet dropped\n",
 			    __func__, sproto));
 		}
 	}
+	NET_EPOCH_EXIT(et);
 	key_freesav(&sav);
 	return (error);
 bad:
+	NET_EPOCH_EXIT(et);
+bad_noepoch:
 	key_freesav(&sav);
 	if (m != NULL)
 		m_freem(m);
@@ -444,6 +515,24 @@ bad:
 #endif /* INET */
 
 #ifdef INET6
+static bool
+ipsec6_lasthdr(int proto)
+{
+
+	switch (proto) {
+	case IPPROTO_IPV4:
+	case IPPROTO_IPV6:
+	case IPPROTO_GRE:
+	case IPPROTO_ICMPV6:
+	case IPPROTO_ETHERIP:
+	case IPPROTO_PIM:
+	case IPPROTO_SCTP:
+		return (true);
+	default:
+		return (false);
+	};
+}
+
 /*
  * IPSEC_INPUT() method implementation for IPv6.
  *  0 - Permitted by inbound security policy for further processing.
@@ -453,7 +542,12 @@ bad:
 int
 ipsec6_input(struct mbuf *m, int offset, int proto)
 {
+	int error;
 
+	error = ipsec_accel_input(m, offset, proto);
+	if (error != ENXIO)
+		return (error);
+		
 	switch (proto) {
 	case IPPROTO_AH:
 	case IPPROTO_ESP:
@@ -467,7 +561,7 @@ ipsec6_input(struct mbuf *m, int offset, int proto)
 		 * Protocols with further headers get their IPsec treatment
 		 * within the protocol specific processing.
 		 */
-		if ((inet6sw[ip6_protox[proto]].pr_flags & PR_LASTHDR) == 0)
+		if (!ipsec6_lasthdr(proto))
 			return (0);
 		/* FALLTHROUGH */
 	};
@@ -481,6 +575,14 @@ ipsec6_input(struct mbuf *m, int offset, int proto)
 	}
 	return (0);
 }
+
+int
+ipsec6_ctlinput(ipsec_ctlinput_param_t param)
+{
+	return (0);
+}
+
+extern ipproto_input_t	*ip6_protox[];
 
 /*
  * IPsec input callback, called by the transform callback. Takes care of
@@ -512,6 +614,8 @@ ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 		sproto == IPPROTO_IPCOMP,
 		("unexpected security protocol %u", sproto));
 
+	NET_EPOCH_ENTER(et);
+
 	/* Fix IPv6 header */
 	if (m->m_len < sizeof(struct ip6_hdr) &&
 	    (m = m_pullup(m, sizeof(struct ip6_hdr))) == NULL) {
@@ -534,6 +638,15 @@ ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 	/* Save protocol */
 	m_copydata(m, protoff, 1, &nxt8);
 	prot = nxt8;
+
+	/*
+	 * Check that we have NAT-T enabled and apply transport mode
+	 * decapsulation NAT procedure (RFC3948).
+	 * Do this before invoking into the PFIL.
+	 */
+	if (sav->natt != NULL &&
+	    (prot == IPPROTO_UDP || prot == IPPROTO_TCP))
+		udp_ipsec_adjust_cksum(m, sav, prot, skip);
 
 	/* IPv6-in-IP encapsulation */
 	if (prot == IPPROTO_IPV6 &&
@@ -623,16 +736,15 @@ ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 		if (saidx->mode == IPSEC_MODE_TUNNEL)
 			error = ipsec_if_input(m, sav, af);
 		if (error == 0) {
-			NET_EPOCH_ENTER(et);
 			error = netisr_queue_src(isr_prot,
 			    (uintptr_t)sav->spi, m);
-			NET_EPOCH_EXIT(et);
 			if (error) {
 				IPSEC_ISTAT(sproto, qfull);
 				DPRINTF(("%s: queue full; proto %u packet"
 				    " dropped\n", __func__, sproto));
 			}
 		}
+		NET_EPOCH_EXIT(et);
 		key_freesav(&sav);
 		return (error);
 	}
@@ -642,12 +754,11 @@ ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 	 */
 	nest = 0;
 	nxt = nxt8;
-	NET_EPOCH_ENTER(et);
 	while (nxt != IPPROTO_DONE) {
 		if (V_ip6_hdrnestlimit && (++nest > V_ip6_hdrnestlimit)) {
 			IP6STAT_INC(ip6s_toomanyhdr);
 			error = EINVAL;
-			goto bad_epoch;
+			goto bad;
 		}
 
 		/*
@@ -658,26 +769,24 @@ ipsec6_common_input_cb(struct mbuf *m, struct secasvar *sav, int skip,
 			IP6STAT_INC(ip6s_tooshort);
 			in6_ifstat_inc(m->m_pkthdr.rcvif, ifs6_in_truncated);
 			error = EINVAL;
-			goto bad_epoch;
+			goto bad;
 		}
 		/*
 		 * Enforce IPsec policy checking if we are seeing last header.
 		 * note that we do not visit this with protocols with pcb layer
 		 * code - like udp/tcp/raw ip.
 		 */
-		if ((inet6sw[ip6_protox[nxt]].pr_flags & PR_LASTHDR) != 0 &&
-		    ipsec6_in_reject(m, NULL)) {
+		if (ipsec6_lasthdr(nxt) && ipsec6_in_reject(m, NULL)) {
 			error = EINVAL;
-			goto bad_epoch;
+			goto bad;
 		}
-		nxt = (*inet6sw[ip6_protox[nxt]].pr_input)(&m, &skip, nxt);
+		nxt = ip6_protox[nxt](&m, &skip, nxt);
 	}
 	NET_EPOCH_EXIT(et);
 	key_freesav(&sav);
 	return (0);
-bad_epoch:
-	NET_EPOCH_EXIT(et);
 bad:
+	NET_EPOCH_EXIT(et);
 	key_freesav(&sav);
 	if (m)
 		m_freem(m);

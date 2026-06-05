@@ -1,8 +1,6 @@
-/* $FreeBSD$ */
 /* Do not modify. This file is auto-generated from armv4cpuid.pl. */
 #include "arm_arch.h"
 
-.text
 #if defined(__thumb2__) && !defined(__APPLE__)
 .syntax	unified
 .thumb
@@ -10,6 +8,8 @@
 .code	32
 #undef	__thumb2__
 #endif
+
+.text
 
 .align	5
 .globl	OPENSSL_atomic_add
@@ -269,5 +269,5 @@ atomic_add_spinlock:
 .word	0
 #endif
 
-.comm	OPENSSL_armcap_P,4,4
+
 .hidden	OPENSSL_armcap_P

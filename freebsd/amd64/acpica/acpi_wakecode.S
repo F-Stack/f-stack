@@ -25,14 +25,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <machine/asmacros.h>
-#include <machine/ppireg.h>
 #include <machine/specialreg.h>
-#include <machine/timerreg.h>
+#include <x86/ppireg.h>
+#include <x86/timerreg.h>
 
 #include "assym.inc"
 

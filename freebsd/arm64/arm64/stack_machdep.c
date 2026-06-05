@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Andrew Turner under
  * sponsorship from the FreeBSD Foundation.
@@ -27,9 +26,6 @@
  * SUCH DAMAGE.
  *
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -63,15 +59,12 @@ stack_save_td(struct stack *st, struct thread *td)
 	struct unwind_state frame;
 
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
-	KASSERT(!TD_IS_SWAPPED(td),
-	    ("stack_save_td: thread %p is swapped", td));
 
 	if (TD_IS_RUNNING(td))
 		return (EOPNOTSUPP);
 
-	frame.sp = td->td_pcb->pcb_sp;
-	frame.fp = td->td_pcb->pcb_x[29];
-	frame.pc = td->td_pcb->pcb_lr;
+	frame.fp = td->td_pcb->pcb_x[PCB_FP];
+	frame.pc = ADDR_MAKE_CANONICAL(td->td_pcb->pcb_x[PCB_LR]);
 
 	stack_capture(td, st, &frame);
 	return (0);
@@ -81,11 +74,7 @@ void
 stack_save(struct stack *st)
 {
 	struct unwind_state frame;
-	uintptr_t sp;
 
-	__asm __volatile("mov %0, sp" : "=&r" (sp));
-
-	frame.sp = sp;
 	frame.fp = (uintptr_t)__builtin_frame_address(0);
 	frame.pc = (uintptr_t)stack_save;
 

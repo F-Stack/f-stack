@@ -63,8 +63,6 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF WHISTLE COMMUNICATIONS IS ADVISED OF THE POSSIBILITY
  * OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -84,6 +82,7 @@
 #include <net/if_types.h>
 #include <net/if_var.h>
 #include <net/if_gif.h>
+#include <net/if_private.h>
 #include <net/vnet.h>
 
 #include <netgraph/ng_message.h>

@@ -46,6 +46,7 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_dl.h>
 #include <net/if_llatbl.h>
 #include <net/if_types.h>
@@ -522,8 +523,6 @@ fill_addrinfo(struct rt_msghdr *rtm, int len, u_int fibnum, struct rt_addrinfo *
     if (rt_xaddrs((caddr_t)(rtm + 1), len + (caddr_t)rtm, info))
         return (EINVAL);
 
-    if (rtm->rtm_flags & RTF_RNH_LOCKED)
-        return (EINVAL);
     info->rti_flags = rtm->rtm_flags;
     error = cleanup_xaddrs(info);
     if (error != 0)
@@ -570,6 +569,7 @@ fill_addrinfo(struct rt_msghdr *rtm, int len, u_int fibnum, struct rt_addrinfo *
          * AF_LINK sa_family type of the gateway, and the
          * rt_ifp has the IFF_LOOPBACK flag set.
          */
+#ifndef FSTACK
         if (rib_lookup_info(fibnum, gdst, NHR_REF, 0, &ginfo) == 0) {
             if (ss.ss_family == AF_LINK &&
                 ginfo.rti_ifp->if_flags & IFF_LOOPBACK) {
@@ -578,6 +578,7 @@ fill_addrinfo(struct rt_msghdr *rtm, int len, u_int fibnum, struct rt_addrinfo *
             }
             rib_free_info(&ginfo);
         }
+#endif
     }
 
     return (0);
@@ -587,6 +588,7 @@ fill_addrinfo(struct rt_msghdr *rtm, int len, u_int fibnum, struct rt_addrinfo *
  * Returns pointer to array of nexthops with weights for
  * given @nhg. Stores number of items in the array into @pnum_nhops.
  */
+#ifndef FSTACK
 struct weightened_nhop *
 nhgrp_get_nhops(struct nhgrp_object *nhg, uint32_t *pnum_nhops)
 {
@@ -599,6 +601,7 @@ nhgrp_get_nhops(struct nhgrp_object *nhg, uint32_t *pnum_nhops)
 
 	return (nhg_priv->nhg_nh_weights);
 }
+#endif
 
 static struct nhop_object *
 select_nhop(struct nhop_object *nh, const struct sockaddr *gw)
@@ -871,8 +874,11 @@ rt_getmetrics(const struct rtentry *rt, const struct nhop_object *nh,
     out->rmx_weight = rt->rt_weight;
     out->rmx_nhidx = nhop_get_idx(nh);
     /* Kernel -> userland timebase conversion. */
-    out->rmx_expire = rt->rt_expire ?
-        rt->rt_expire - time_uptime + time_second : 0;
+    {
+        uint32_t exp = nhop_get_expire(nh);
+        out->rmx_expire = exp ?
+            exp - time_uptime + time_second : 0;
+    }
 }
 
 static void
@@ -1332,6 +1338,7 @@ ff_rtioctl_old(int fibnum, void *data, unsigned *plen, unsigned maxlen)
          * AF_LINK sa_family type of the rt_gateway, and the
          * rt_ifp has the IFF_LOOPBACK flag set.
          */
+#ifndef FSTACK
         if (rib_lookup_info(fibnum, gdst, NHR_REF, 0, &ginfo) == 0) {
             if (ss.ss_family == AF_LINK &&
                 ginfo.rti_ifp->if_flags & IFF_LOOPBACK) {
@@ -1340,6 +1347,7 @@ ff_rtioctl_old(int fibnum, void *data, unsigned *plen, unsigned maxlen)
             }
             rib_free_info(&ginfo);
         }
+#endif
     }
 
     switch (rtm->rtm_type) {

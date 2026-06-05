@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Konstantin Belousov <kib@FreeBSD.org>
  * All rights reserved.
@@ -24,14 +24,17 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __i386__
+#include <i386/counter.h>
+#else /* !__i386__ */
 
 #ifndef __MACHINE_COUNTER_H__
 #define __MACHINE_COUNTER_H__
 
 #include <sys/pcpu.h>
+#include <sys/kassert.h>
 
 #define	EARLY_COUNTER	(void *)__offsetof(struct pcpu, pc_early_dummy_counter)
 
@@ -90,3 +93,5 @@ counter_u64_add(counter_u64_t c, int64_t inc)
 }
 
 #endif	/* ! __MACHINE_COUNTER_H__ */
+
+#endif /* __i386__ */

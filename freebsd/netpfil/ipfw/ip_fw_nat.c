@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Paolo Pisati
  * All rights reserved.
@@ -26,9 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/eventhandler.h>
@@ -45,6 +42,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/ip_var.h>
@@ -93,6 +91,8 @@ struct cfg_nat {
 	/* chain of redir instances */
 	LIST_HEAD(redir_chain, cfg_redir) redir_chain;  
 	char			if_name[IF_NAMESIZE];	/* interface name */
+	u_short			alias_port_lo;	/* low range for port aliasing */
+	u_short			alias_port_hi;	/* high range for port aliasing */
 };
 
 static eventhandler_tag ifaddr_event_tag;
@@ -305,6 +305,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 		args->m = NULL;
 		return (IP_FW_DENY);
 	}
+	M_ASSERTMAPPED(mcl);
 	ip = mtod(mcl, struct ip *);
 
 	/*
@@ -415,7 +416,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 		struct tcphdr 	*th;
 
 		th = (struct tcphdr *)(ip + 1);
-		if (th->th_x2)
+		if (tcp_get_flags(th) & TH_RES1)
 			ldt = 1;
 	}
 
@@ -435,7 +436,7 @@ ipfw_nat(struct ip_fw_args *args, struct cfg_nat *t, struct mbuf *m)
 			 * Maybe it was set in
 			 * libalias...
 			 */
-			th->th_x2 = 0;
+			tcp_set_flags(th, tcp_get_flags(th) & ~TH_RES1);
 			th->th_sum = cksum;
 			mcl->m_pkthdr.csum_data =
 			    offsetof(struct tcphdr, th_sum);
@@ -528,9 +529,12 @@ nat44_config(struct ip_fw_chain *chain, struct nat44_cfg_nat *ucfg)
 	ptr->ip = ucfg->ip;
 	ptr->redir_cnt = ucfg->redir_cnt;
 	ptr->mode = ucfg->mode;
+	ptr->alias_port_lo = ucfg->alias_port_lo;
+	ptr->alias_port_hi = ucfg->alias_port_hi;
 	strlcpy(ptr->if_name, ucfg->if_name, sizeof(ptr->if_name));
 	LibAliasSetMode(ptr->lib, ptr->mode, ~0);
 	LibAliasSetAddress(ptr->lib, ptr->ip);
+	LibAliasSetAliasPortRange(ptr->lib, ptr->alias_port_lo, ptr->alias_port_hi);
 
 	/*
 	 * Redir and LSNAT configuration.
@@ -658,6 +662,8 @@ export_nat_cfg(struct cfg_nat *ptr, struct nat44_cfg_nat *ucfg)
 	ucfg->ip = ptr->ip;
 	ucfg->redir_cnt = ptr->redir_cnt;
 	ucfg->mode = ptr->mode;
+	ucfg->alias_port_lo = ptr->alias_port_lo;
+	ucfg->alias_port_hi = ptr->alias_port_hi;
 	strlcpy(ucfg->if_name, ptr->if_name, sizeof(ucfg->if_name));
 }
 
@@ -875,11 +881,11 @@ nat44_get_log(struct ip_fw_chain *chain, ip_fw3_opheader *op3,
 }
 
 static struct ipfw_sopt_handler	scodes[] = {
-	{ IP_FW_NAT44_XCONFIG,	0,	HDIR_SET,	nat44_cfg },
-	{ IP_FW_NAT44_DESTROY,	0,	HDIR_SET,	nat44_destroy },
-	{ IP_FW_NAT44_XGETCONFIG,	0,	HDIR_GET,	nat44_get_cfg },
-	{ IP_FW_NAT44_LIST_NAT,	0,	HDIR_GET,	nat44_list_nat },
-	{ IP_FW_NAT44_XGETLOG,	0,	HDIR_GET,	nat44_get_log },
+    { IP_FW_NAT44_XCONFIG,	IP_FW3_OPVER, HDIR_SET,	nat44_cfg },
+    { IP_FW_NAT44_DESTROY,	IP_FW3_OPVER, HDIR_SET,	nat44_destroy },
+    { IP_FW_NAT44_XGETCONFIG,	IP_FW3_OPVER, HDIR_GET,	nat44_get_cfg },
+    { IP_FW_NAT44_LIST_NAT,	IP_FW3_OPVER, HDIR_GET,	nat44_list_nat },
+    { IP_FW_NAT44_XGETLOG,	IP_FW3_OPVER, HDIR_GET,	nat44_get_log },
 };
 
 /*
@@ -993,9 +999,11 @@ ipfw_nat_del(struct sockopt *sopt)
 {
 	struct cfg_nat *ptr;
 	struct ip_fw_chain *chain = &V_layer3_chain;
-	int i;
+	int error, i;
 
-	sooptcopyin(sopt, &i, sizeof i, sizeof i);
+	error = sooptcopyin(sopt, &i, sizeof i, sizeof i);
+	if (error != 0)
+		return (error);
 	/* XXX validate i */
 	IPFW_UH_WLOCK(chain);
 	ptr = lookup_nat(&chain->nat, i);
@@ -1098,7 +1106,7 @@ ipfw_nat_get_log(struct sockopt *sopt)
 {
 	uint8_t *data;
 	struct cfg_nat *ptr;
-	int i, size;
+	int error, i, size;
 	struct ip_fw_chain *chain;
 	IPFW_RLOCK_TRACKER;
 
@@ -1128,9 +1136,9 @@ ipfw_nat_get_log(struct sockopt *sopt)
 		i += LIBALIAS_BUF_SIZE;
 	}
 	IPFW_RUNLOCK(chain);
-	sooptcopyout(sopt, data, size);
+	error = sooptcopyout(sopt, data, size);
 	free(data, M_IPFW);
-	return(0);
+	return (error);
 }
 
 static int

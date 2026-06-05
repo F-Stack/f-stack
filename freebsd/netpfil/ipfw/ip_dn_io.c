@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010 Luigi Rizzo, Riccardo Panicucci, Universita` di Pisa
  * All rights reserved
@@ -30,8 +30,6 @@
  * Dummynet portions related to packet handling.
  */
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet6.h"
 
 #include <sys/param.h>
@@ -51,6 +49,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>	/* IFNAMSIZ, struct ifaddr, ifq head, lock.h mutex.h */
 #include <net/if_var.h>	/* NET_EPOCH_... */
+#include <net/if_private.h>
 #include <net/netisr.h>
 #include <net/vnet.h>
 
@@ -74,28 +73,11 @@ __FBSDID("$FreeBSD$");
 /*
  * We keep a private variable for the simulation time, but we could
  * probably use an existing one ("softticks" in sys/kern/kern_timeout.c)
- * instead of dn_cfg.curr_time
+ * instead of V_dn_cfg.curr_time
  */
+VNET_DEFINE(struct dn_parms, dn_cfg);
+#define V_dn_cfg VNET(dn_cfg)
 
-struct dn_parms dn_cfg;
-//VNET_DEFINE(struct dn_parms, _base_dn_cfg);
-
-static long tick_last;		/* Last tick duration (usec). */
-static long tick_delta;		/* Last vs standard tick diff (usec). */
-static long tick_delta_sum;	/* Accumulated tick difference (usec).*/
-static long tick_adjustment;	/* Tick adjustments done. */
-static long tick_lost;		/* Lost(coalesced) ticks number. */
-/* Adjusted vs non-adjusted curr_time difference (ticks). */
-static long tick_diff;
-
-static unsigned long	io_pkt;
-static unsigned long	io_pkt_fast;
-
-#ifdef NEW_AQM
-unsigned long	io_pkt_drop;
-#else
-static unsigned long	io_pkt_drop;
-#endif
 /*
  * We use a heap to store entities for which we have pending timer events.
  * The heap is checked at every tick and all entities with expired events
@@ -118,13 +100,13 @@ sysctl_hash_size(SYSCTL_HANDLER_ARGS)
 {
 	int error, value;
 
-	value = dn_cfg.hash_size;
+	value = V_dn_cfg.hash_size;
 	error = sysctl_handle_int(oidp, &value, 0, req);
 	if (error != 0 || req->newptr == NULL)
 		return (error);
 	if (value < 16 || value > 65536)
 		return (EINVAL);
-	dn_cfg.hash_size = value;
+	V_dn_cfg.hash_size = value;
 	return (0);
 }
 
@@ -135,9 +117,9 @@ sysctl_limits(SYSCTL_HANDLER_ARGS)
 	long value;
 
 	if (arg2 != 0)
-		value = dn_cfg.slot_limit;
+		value = V_dn_cfg.slot_limit;
 	else
-		value = dn_cfg.byte_limit;
+		value = V_dn_cfg.byte_limit;
 	error = sysctl_handle_long(oidp, &value, 0, req);
 
 	if (error != 0 || req->newptr == NULL)
@@ -145,11 +127,11 @@ sysctl_limits(SYSCTL_HANDLER_ARGS)
 	if (arg2 != 0) {
 		if (value < 1)
 			return (EINVAL);
-		dn_cfg.slot_limit = value;
+		V_dn_cfg.slot_limit = value;
 	} else {
 		if (value < 1500)
 			return (EINVAL);
-		dn_cfg.byte_limit = value;
+		V_dn_cfg.byte_limit = value;
 	}
 	return (0);
 }
@@ -167,9 +149,9 @@ static SYSCTL_NODE(_net_inet_ip, OID_AUTO, dummynet,
     "Dummynet");
 #endif
 
-/* wrapper to pass dn_cfg fields to SYSCTL_* */
-//#define DC(x)	(&(VNET_NAME(_base_dn_cfg).x))
-#define DC(x)	(&(dn_cfg.x))
+/* wrapper to pass V_dn_cfg fields to SYSCTL_* */
+#define DC(x)	(&(VNET_NAME(dn_cfg).x))
+
 /* parameters */
 
 SYSCTL_PROC(_net_inet_ip_dummynet, OID_AUTO, hash_size,
@@ -186,55 +168,55 @@ SYSCTL_PROC(_net_inet_ip_dummynet, OID_AUTO, pipe_byte_limit,
     0, 0, sysctl_limits, "L",
     "Upper limit in bytes for pipe queue.");
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, io_fast,
-    CTLFLAG_RW, DC(io_fast), 0, "Enable fast dummynet io.");
+    CTLFLAG_RW | CTLFLAG_VNET, DC(io_fast), 0, "Enable fast dummynet io.");
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, debug,
-    CTLFLAG_RW, DC(debug), 0, "Dummynet debug level");
+    CTLFLAG_RW | CTLFLAG_VNET, DC(debug), 0, "Dummynet debug level");
 
 /* RED parameters */
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, red_lookup_depth,
-    CTLFLAG_RD, DC(red_lookup_depth), 0, "Depth of RED lookup table");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(red_lookup_depth), 0, "Depth of RED lookup table");
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, red_avg_pkt_size,
-    CTLFLAG_RD, DC(red_avg_pkt_size), 0, "RED Medium packet size");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(red_avg_pkt_size), 0, "RED Medium packet size");
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, red_max_pkt_size,
-    CTLFLAG_RD, DC(red_max_pkt_size), 0, "RED Max packet size");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(red_max_pkt_size), 0, "RED Max packet size");
 
 /* time adjustment */
 SYSCTL_LONG(_net_inet_ip_dummynet, OID_AUTO, tick_delta,
-    CTLFLAG_RD, &tick_delta, 0, "Last vs standard tick difference (usec).");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(tick_delta), 0, "Last vs standard tick difference (usec).");
 SYSCTL_LONG(_net_inet_ip_dummynet, OID_AUTO, tick_delta_sum,
-    CTLFLAG_RD, &tick_delta_sum, 0, "Accumulated tick difference (usec).");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(tick_delta_sum), 0, "Accumulated tick difference (usec).");
 SYSCTL_LONG(_net_inet_ip_dummynet, OID_AUTO, tick_adjustment,
-    CTLFLAG_RD, &tick_adjustment, 0, "Tick adjustments done.");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(tick_adjustment), 0, "Tick adjustments done.");
 SYSCTL_LONG(_net_inet_ip_dummynet, OID_AUTO, tick_diff,
-    CTLFLAG_RD, &tick_diff, 0,
+    CTLFLAG_RD | CTLFLAG_VNET, DC(tick_diff), 0,
     "Adjusted vs non-adjusted curr_time difference (ticks).");
 SYSCTL_LONG(_net_inet_ip_dummynet, OID_AUTO, tick_lost,
-    CTLFLAG_RD, &tick_lost, 0,
+    CTLFLAG_RD | CTLFLAG_VNET, DC(tick_lost), 0,
     "Number of ticks coalesced by dummynet taskqueue.");
 
 /* Drain parameters */
 SYSCTL_UINT(_net_inet_ip_dummynet, OID_AUTO, expire,
-    CTLFLAG_RW, DC(expire), 0, "Expire empty queues/pipes");
+    CTLFLAG_RW | CTLFLAG_VNET, DC(expire), 0, "Expire empty queues/pipes");
 SYSCTL_UINT(_net_inet_ip_dummynet, OID_AUTO, expire_cycle,
-    CTLFLAG_RD, DC(expire_cycle), 0, "Expire cycle for queues/pipes");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(expire_cycle), 0, "Expire cycle for queues/pipes");
 
 /* statistics */
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, schk_count,
-    CTLFLAG_RD, DC(schk_count), 0, "Number of schedulers");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(schk_count), 0, "Number of schedulers");
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, si_count,
-    CTLFLAG_RD, DC(si_count), 0, "Number of scheduler instances");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(si_count), 0, "Number of scheduler instances");
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, fsk_count,
-    CTLFLAG_RD, DC(fsk_count), 0, "Number of flowsets");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(fsk_count), 0, "Number of flowsets");
 SYSCTL_INT(_net_inet_ip_dummynet, OID_AUTO, queue_count,
-    CTLFLAG_RD, DC(queue_count), 0, "Number of queues");
+    CTLFLAG_RD | CTLFLAG_VNET, DC(queue_count), 0, "Number of queues");
 SYSCTL_ULONG(_net_inet_ip_dummynet, OID_AUTO, io_pkt,
-    CTLFLAG_RD, &io_pkt, 0,
+    CTLFLAG_RD | CTLFLAG_VNET, DC(io_pkt), 0,
     "Number of packets passed to dummynet.");
 SYSCTL_ULONG(_net_inet_ip_dummynet, OID_AUTO, io_pkt_fast,
-    CTLFLAG_RD, &io_pkt_fast, 0,
+    CTLFLAG_RD | CTLFLAG_VNET, DC(io_pkt_fast), 0,
     "Number of packets bypassed dummynet scheduler.");
 SYSCTL_ULONG(_net_inet_ip_dummynet, OID_AUTO, io_pkt_drop,
-    CTLFLAG_RD, &io_pkt_drop, 0,
+    CTLFLAG_RD | CTLFLAG_VNET, DC(io_pkt_drop), 0,
     "Number of packets dropped by dummynet.");
 #undef DC
 SYSEND
@@ -365,7 +347,7 @@ red_drops (struct dn_queue *q, int len)
 		 * XXX check wraps...
 		 */
 		if (q->avg) {
-			u_int t = div64((dn_cfg.curr_time - q->q_time), fs->lookup_step);
+			u_int t = div64((V_dn_cfg.curr_time - q->q_time), fs->lookup_step);
 
 			q->avg = (t < fs->lookup_depth) ?
 			    SCALE_MUL(q->avg, fs->w_q_lookup[t]) : 0;
@@ -515,8 +497,30 @@ dn_enqueue(struct dn_queue *q, struct mbuf* m, int drop)
 	ni->tot_pkts++;
 	if (drop)
 		goto drop;
-	if (f->plr && random() < f->plr)
-		goto drop;
+	if (f->plr[0] || f->plr[1]) {
+		if (__predict_true(f->plr[1] == 0)) {
+			if (random() < f->plr[0])
+				goto drop;
+		} else {
+			switch (f->pl_state) {
+			case PLR_STATE_B:
+				if (random() < f->plr[3])
+					f->pl_state = PLR_STATE_G;
+				if (random() < f->plr[2])
+					goto drop;
+				break;
+			case PLR_STATE_G: /* FALLTHROUGH */
+			default:
+				if (random() < f->plr[1])
+					f->pl_state = PLR_STATE_B;
+				if (random() < f->plr[0])
+					goto drop;
+				break;
+			}
+		}
+	}
+	if (m->m_pkthdr.rcvif != NULL)
+		m_rcvif_serialize(m);
 #ifdef NEW_AQM
 	/* Call AQM enqueue function */
 	if (q->fs->aqmfp)
@@ -540,7 +544,7 @@ dn_enqueue(struct dn_queue *q, struct mbuf* m, int drop)
 	return (0);
 
 drop:
-	io_pkt_drop++;
+	V_dn_cfg.io_pkt_drop++;
 	q->ni.drops++;
 	ni->drops++;
 	FREE_PKT(m);
@@ -565,11 +569,15 @@ transmit_event(struct mq *q, struct delay_line *dline, uint64_t now)
 			break;
 		dline->mq.head = m->m_nextpkt;
 		dline->mq.count--;
-		mq_append(q, m);
+		if (m->m_pkthdr.rcvif != NULL &&
+		  __predict_false(m_rcvif_restore(m) == NULL))
+			m_freem(m);
+		else
+			mq_append(q, m);
 	}
 	if (m != NULL) {
 		dline->oid.subtype = 1; /* in heap */
-		heap_insert(&dn_cfg.evheap, pkt->output_time, dline);
+		heap_insert(&V_dn_cfg.evheap, pkt->output_time, dline);
 	}
 }
 
@@ -608,7 +616,8 @@ serve_sched(struct mq *q, struct dn_sch_inst *si, uint64_t now)
 	struct dn_schk *s = si->sched;
 	struct mbuf *m = NULL;
 	int delay_line_idle = (si->dline.mq.head == NULL);
-	int done, bw;
+	int done;
+	uint32_t bw;
 
 	if (q == NULL) {
 		q = &def_q;
@@ -632,7 +641,9 @@ serve_sched(struct mq *q, struct dn_sch_inst *si, uint64_t now)
 			(m->m_pkthdr.len * 8 + extra_bits(m, s));
 		si->credit -= len_scaled;
 		/* Move packet in the delay line */
-		dn_tag_get(m)->output_time = dn_cfg.curr_time + s->link.delay ;
+		dn_tag_get(m)->output_time = V_dn_cfg.curr_time + s->link.delay ;
+		if (m->m_pkthdr.rcvif != NULL)
+			m_rcvif_serialize(m);
 		mq_append(&si->dline.mq, m);
 	}
 
@@ -650,7 +661,7 @@ serve_sched(struct mq *q, struct dn_sch_inst *si, uint64_t now)
 		if (m)
 			dn_tag_get(m)->output_time += t;
 		si->kflags |= DN_ACTIVE;
-		heap_insert(&dn_cfg.evheap, now + t, si);
+		heap_insert(&V_dn_cfg.evheap, now + t, si);
 	}
 	if (delay_line_idle && done)
 		transmit_event(q, &si->dline, now);
@@ -667,74 +678,90 @@ dummynet_task(void *context, int pending)
 {
 	struct timeval t;
 	struct mq q = { NULL, NULL }; /* queue to accumulate results */
+	struct epoch_tracker et;
 
-	CURVNET_SET((struct vnet *)context);
+	VNET_ITERATOR_DECL(vnet_iter);
+	VNET_LIST_RLOCK();
+	NET_EPOCH_ENTER(et);
 
-	DN_BH_WLOCK();
+	VNET_FOREACH(vnet_iter) {
+		memset(&q, 0, sizeof(struct mq));
+		CURVNET_SET(vnet_iter);
 
-	/* Update number of lost(coalesced) ticks. */
-	tick_lost += pending - 1;
-
-	getmicrouptime(&t);
-	/* Last tick duration (usec). */
-	tick_last = (t.tv_sec - dn_cfg.prev_t.tv_sec) * 1000000 +
-	(t.tv_usec - dn_cfg.prev_t.tv_usec);
-	/* Last tick vs standard tick difference (usec). */
-	tick_delta = (tick_last * hz - 1000000) / hz;
-	/* Accumulated tick difference (usec). */
-	tick_delta_sum += tick_delta;
-
-	dn_cfg.prev_t = t;
-
-	/*
-	* Adjust curr_time if the accumulated tick difference is
-	* greater than the 'standard' tick. Since curr_time should
-	* be monotonically increasing, we do positive adjustments
-	* as required, and throttle curr_time in case of negative
-	* adjustment.
-	*/
-	dn_cfg.curr_time++;
-	if (tick_delta_sum - tick >= 0) {
-		int diff = tick_delta_sum / tick;
-
-		dn_cfg.curr_time += diff;
-		tick_diff += diff;
-		tick_delta_sum %= tick;
-		tick_adjustment++;
-	} else if (tick_delta_sum + tick <= 0) {
-		dn_cfg.curr_time--;
-		tick_diff--;
-		tick_delta_sum += tick;
-		tick_adjustment++;
-	}
-
-	/* serve pending events, accumulate in q */
-	for (;;) {
-		struct dn_id *p;    /* generic parameter to handler */
-
-		if (dn_cfg.evheap.elements == 0 ||
-		    DN_KEY_LT(dn_cfg.curr_time, HEAP_TOP(&dn_cfg.evheap)->key))
-			break;
-		p = HEAP_TOP(&dn_cfg.evheap)->object;
-		heap_extract(&dn_cfg.evheap, NULL);
-
-		if (p->type == DN_SCH_I) {
-			serve_sched(&q, (struct dn_sch_inst *)p, dn_cfg.curr_time);
-		} else { /* extracted a delay line */
-			transmit_event(&q, (struct delay_line *)p, dn_cfg.curr_time);
+		if (! V_dn_cfg.init_done) {
+			CURVNET_RESTORE();
+			continue;
 		}
-	}
-	if (dn_cfg.expire && ++dn_cfg.expire_cycle >= dn_cfg.expire) {
-		dn_cfg.expire_cycle = 0;
-		dn_drain_scheduler();
-		dn_drain_queue();
-	}
 
+		DN_BH_WLOCK();
+
+		/* Update number of lost(coalesced) ticks. */
+		V_dn_cfg.tick_lost += pending - 1;
+
+		getmicrouptime(&t);
+		/* Last tick duration (usec). */
+		V_dn_cfg.tick_last = (t.tv_sec - V_dn_cfg.prev_t.tv_sec) * 1000000 +
+		(t.tv_usec - V_dn_cfg.prev_t.tv_usec);
+		/* Last tick vs standard tick difference (usec). */
+		V_dn_cfg.tick_delta = (V_dn_cfg.tick_last * hz - 1000000) / hz;
+		/* Accumulated tick difference (usec). */
+		V_dn_cfg.tick_delta_sum += V_dn_cfg.tick_delta;
+
+		V_dn_cfg.prev_t = t;
+
+		/*
+		* Adjust curr_time if the accumulated tick difference is
+		* greater than the 'standard' tick. Since curr_time should
+		* be monotonically increasing, we do positive adjustments
+		* as required, and throttle curr_time in case of negative
+		* adjustment.
+		*/
+		V_dn_cfg.curr_time++;
+		if (V_dn_cfg.tick_delta_sum - tick >= 0) {
+			int diff = V_dn_cfg.tick_delta_sum / tick;
+
+			V_dn_cfg.curr_time += diff;
+			V_dn_cfg.tick_diff += diff;
+			V_dn_cfg.tick_delta_sum %= tick;
+			V_dn_cfg.tick_adjustment++;
+		} else if (V_dn_cfg.tick_delta_sum + tick <= 0) {
+			V_dn_cfg.curr_time--;
+			V_dn_cfg.tick_diff--;
+			V_dn_cfg.tick_delta_sum += tick;
+			V_dn_cfg.tick_adjustment++;
+		}
+
+		/* serve pending events, accumulate in q */
+		for (;;) {
+			struct dn_id *p;    /* generic parameter to handler */
+
+			if (V_dn_cfg.evheap.elements == 0 ||
+			    DN_KEY_LT(V_dn_cfg.curr_time, HEAP_TOP(&V_dn_cfg.evheap)->key))
+				break;
+			p = HEAP_TOP(&V_dn_cfg.evheap)->object;
+			heap_extract(&V_dn_cfg.evheap, NULL);
+			if (p->type == DN_SCH_I) {
+				serve_sched(&q, (struct dn_sch_inst *)p, V_dn_cfg.curr_time);
+			} else { /* extracted a delay line */
+				transmit_event(&q, (struct delay_line *)p, V_dn_cfg.curr_time);
+			}
+		}
+		if (V_dn_cfg.expire && ++V_dn_cfg.expire_cycle >= V_dn_cfg.expire) {
+			V_dn_cfg.expire_cycle = 0;
+			dn_drain_scheduler();
+			dn_drain_queue();
+		}
+		DN_BH_WUNLOCK();
+		if (q.head != NULL)
+			dummynet_send(q.head);
+
+		CURVNET_RESTORE();
+	}
+	NET_EPOCH_EXIT(et);
+	VNET_LIST_RUNLOCK();
+
+	/* Schedule our next run. */
 	dn_reschedule();
-	DN_BH_WUNLOCK();
-	if (q.head != NULL)
-		dummynet_send(q.head);
-	CURVNET_RESTORE();
 }
 
 /*
@@ -763,12 +790,13 @@ dummynet_send(struct mbuf *m)
 			/* extract the dummynet info, rename the tag
 			 * to carry reinject info.
 			 */
-			if (pkt->dn_dir == (DIR_OUT | PROTO_LAYER2) &&
-				pkt->ifp == NULL) {
+			ifp = ifnet_byindexgen(pkt->if_index, pkt->if_idxgen);
+			if (((pkt->dn_dir == (DIR_OUT | PROTO_LAYER2)) ||
+			    (pkt->dn_dir == (DIR_OUT | PROTO_LAYER2 | PROTO_IPV6))) &&
+				ifp == NULL) {
 				dst = DIR_DROP;
 			} else {
 				dst = pkt->dn_dir;
-				ifp = pkt->ifp;
 				tag->m_tag_cookie = MTAG_IPFW_RULE;
 				tag->m_tag_id = 0;
 			}
@@ -801,6 +829,7 @@ dummynet_send(struct mbuf *m)
 
 			break;
 
+		case DIR_IN | PROTO_LAYER2 | PROTO_IPV6:
 		case DIR_IN | PROTO_LAYER2: /* DN_TO_ETH_DEMUX: */
 			/*
 			 * The Ethernet code assumes the Ethernet header is
@@ -816,7 +845,9 @@ dummynet_send(struct mbuf *m)
 			ether_demux(m->m_pkthdr.rcvif, m);
 			break;
 
+		case DIR_OUT | PROTO_LAYER2 | PROTO_IPV6:
 		case DIR_OUT | PROTO_LAYER2: /* DN_TO_ETH_OUT: */
+			MPASS(ifp != NULL);
 			ether_output_frame(ifp, m);
 			break;
 
@@ -846,11 +877,16 @@ tag_mbuf(struct mbuf *m, int dir, struct ip_fw_args *fwa)
 	m_tag_prepend(m, mtag);		/* Attach to mbuf chain. */
 	dt = (struct dn_pkt_tag *)(mtag + 1);
 	dt->rule = fwa->rule;
-	dt->rule.info &= IPFW_ONEPASS;	/* only keep this info */
+	/* only keep this info */
+	dt->rule.info &= (IPFW_ONEPASS | IPFW_IS_DUMMYNET);
 	dt->dn_dir = dir;
-	dt->ifp = fwa->flags & IPFW_ARGS_OUT ? fwa->ifp : NULL;
-	/* dt->output tame is updated as we move through */
-	dt->output_time = dn_cfg.curr_time;
+	if (fwa->flags & IPFW_ARGS_OUT && fwa->ifp != NULL) {
+		NET_EPOCH_ASSERT();
+		dt->if_index = fwa->ifp->if_index;
+		dt->if_idxgen = fwa->ifp->if_idxgen;
+	}
+	/* dt->output_time is updated as we move through */
+	dt->output_time = V_dn_cfg.curr_time;
 	dt->iphdr_off = (dir & PROTO_LAYER2) ? ETHER_HDR_LEN : 0;
 	return 0;
 }
@@ -882,20 +918,12 @@ dummynet_io(struct mbuf **m0, struct ip_fw_args *fwa)
 	else if (fwa->flags & IPFW_ARGS_IP6)
 		dir |= PROTO_IPV6;
 	DN_BH_WLOCK();
-	io_pkt++;
+	V_dn_cfg.io_pkt++;
 	/* we could actually tag outside the lock, but who cares... */
 	if (tag_mbuf(m, dir, fwa))
 		goto dropit;
-	if (dn_cfg.busy) {
-		/* if the upper half is busy doing something expensive,
-		 * lets queue the packet and move forward
-		 */
-		mq_append(&dn_cfg.pending, m);
-		m = *m0 = NULL; /* consumed */
-		goto done; /* already active, nothing to do */
-	}
 	/* XXX locate_flowset could be optimised with a direct ref. */
-	fs = dn_ht_find(dn_cfg.fshash, fs_id, 0, NULL);
+	fs = dn_ht_find(V_dn_cfg.fshash, fs_id, 0, NULL);
 	if (fs == NULL)
 		goto dropit;	/* This queue/pipe does not exist! */
 	if (fs->sched == NULL)	/* should not happen */
@@ -918,7 +946,7 @@ dummynet_io(struct mbuf **m0, struct ip_fw_args *fwa)
 		m = *m0 = NULL;
 
 		/* dn_enqueue already increases io_pkt_drop */
-		io_pkt_drop--;
+		V_dn_cfg.io_pkt_drop--;
 
 		goto dropit;
 	}
@@ -929,34 +957,34 @@ dummynet_io(struct mbuf **m0, struct ip_fw_args *fwa)
 	}
 
 	/* compute the initial allowance */
-	if (si->idle_time < dn_cfg.curr_time) {
+	if (si->idle_time < V_dn_cfg.curr_time) {
 	    /* Do this only on the first packet on an idle pipe */
 	    struct dn_link *p = &fs->sched->link;
 
-	    si->sched_time = dn_cfg.curr_time;
-	    si->credit = dn_cfg.io_fast ? p->bandwidth : 0;
+	    si->sched_time = V_dn_cfg.curr_time;
+	    si->credit = V_dn_cfg.io_fast ? p->bandwidth : 0;
 	    if (p->burst) {
-		uint64_t burst = (dn_cfg.curr_time - si->idle_time) * p->bandwidth;
+		uint64_t burst = (V_dn_cfg.curr_time - si->idle_time) * p->bandwidth;
 		if (burst > p->burst)
 			burst = p->burst;
 		si->credit += burst;
 	    }
 	}
 	/* pass through scheduler and delay line */
-	m = serve_sched(NULL, si, dn_cfg.curr_time);
+	m = serve_sched(NULL, si, V_dn_cfg.curr_time);
 
 	/* optimization -- pass it back to ipfw for immediate send */
 	/* XXX Don't call dummynet_send() if scheduler return the packet
 	 *     just enqueued. This avoid a lock order reversal.
 	 *     
 	 */
-	if (/*dn_cfg.io_fast &&*/ m == *m0 && (dir & PROTO_LAYER2) == 0 ) {
+	if (/*V_dn_cfg.io_fast &&*/ m == *m0 && (dir & PROTO_LAYER2) == 0 ) {
 		/* fast io, rename the tag * to carry reinject info. */
 		struct m_tag *tag = m_tag_first(m);
 
 		tag->m_tag_cookie = MTAG_IPFW_RULE;
 		tag->m_tag_id = 0;
-		io_pkt_fast++;
+		V_dn_cfg.io_pkt_fast++;
 		if (m->m_nextpkt != NULL) {
 			printf("dummynet: fast io: pkt chain detected!\n");
 			m->m_nextpkt = NULL;
@@ -972,7 +1000,7 @@ done:
 	return 0;
 
 dropit:
-	io_pkt_drop++;
+	V_dn_cfg.io_pkt_drop++;
 	DN_BH_WUNLOCK();
 	if (m)
 		FREE_PKT(m);

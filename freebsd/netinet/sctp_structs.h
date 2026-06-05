@@ -32,9 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifndef _NETINET_SCTP_STRUCTS_H_
 #define _NETINET_SCTP_STRUCTS_H_
 
@@ -129,6 +126,26 @@ struct sctp_mcore_ctrl {
 };
 #endif
 
+/* This struct is here to cut out the compatiabilty
+ * pad that bulks up both the inp and stcb. The non
+ * pad portion MUST stay in complete sync with
+ * sctp_sndrcvinfo... i.e. if sinfo_xxxx is added
+ * this must be done here too.
+ */
+struct sctp_nonpad_sndrcvinfo {
+	uint16_t sinfo_stream;
+	uint16_t sinfo_ssn;
+	uint16_t sinfo_flags;
+	uint32_t sinfo_ppid;
+	uint32_t sinfo_context;
+	uint32_t sinfo_timetolive;
+	uint32_t sinfo_tsn;
+	uint32_t sinfo_cumtsn;
+	sctp_assoc_t sinfo_assoc_id;
+	uint16_t sinfo_keynumber;
+	uint16_t sinfo_keynumber_valid;
+};
+
 struct sctp_iterator {
 	TAILQ_ENTRY(sctp_iterator) sctp_nxt_itr;
 	struct vnet *vn;
@@ -159,7 +176,7 @@ TAILQ_HEAD(sctpiterators, sctp_iterator);
 struct sctp_copy_all {
 	struct sctp_inpcb *inp;	/* ep */
 	struct mbuf *m;
-	struct sctp_sndrcvinfo sndrcv;
+	struct sctp_nonpad_sndrcvinfo sndrcv;
 	ssize_t sndlen;
 	int cnt_sent;
 	int cnt_failed;
@@ -505,6 +522,7 @@ struct sctp_queued_to_read {	/* sinfo structure Pluse more */
  * the user is in the explict MSG_EOR mode
  * and wrote some data, but has not completed
  * sending.
+ * ss_next and scheduled are only used by the FCFS stream scheduler.
  */
 struct sctp_stream_queue_pending {
 	struct mbuf *data;
@@ -529,6 +547,7 @@ struct sctp_stream_queue_pending {
 	uint8_t put_last_out;
 	uint8_t discard_rest;
 	uint8_t processing;
+	bool scheduled;
 };
 
 /*
@@ -588,10 +607,13 @@ struct ss_fb {
  * This union holds all parameters per stream
  * necessary for different stream schedulers.
  */
-union scheduling_parameters {
-	struct ss_rr rr;
-	struct ss_prio prio;
-	struct ss_fb fb;
+struct scheduling_parameters {
+	union {
+		struct ss_rr rr;
+		struct ss_prio prio;
+		struct ss_fb fb;
+	}     ss;
+	bool scheduled;
 };
 
 /* States for outgoing streams */
@@ -604,7 +626,7 @@ union scheduling_parameters {
 /* This struct is used to track the traffic on outbound streams */
 struct sctp_stream_out {
 	struct sctp_streamhead outqueue;
-	union scheduling_parameters ss_params;
+	struct scheduling_parameters ss_params;
 	uint32_t chunks_on_queues;	/* send queue and sent queue */
 #if defined(SCTP_DETAILED_STR_STATS)
 	uint32_t abandoned_unsent[SCTP_PR_SCTP_MAX + 1];
@@ -670,26 +692,6 @@ struct sctp_fs_spec_log {
 	uint8_t decr;
 };
 
-/* This struct is here to cut out the compatiabilty
- * pad that bulks up both the inp and stcb. The non
- * pad portion MUST stay in complete sync with
- * sctp_sndrcvinfo... i.e. if sinfo_xxxx is added
- * this must be done here too.
- */
-struct sctp_nonpad_sndrcvinfo {
-	uint16_t sinfo_stream;
-	uint16_t sinfo_ssn;
-	uint16_t sinfo_flags;
-	uint32_t sinfo_ppid;
-	uint32_t sinfo_context;
-	uint32_t sinfo_timetolive;
-	uint32_t sinfo_tsn;
-	uint32_t sinfo_cumtsn;
-	sctp_assoc_t sinfo_assoc_id;
-	uint16_t sinfo_keynumber;
-	uint16_t sinfo_keynumber_valid;
-};
-
 /*
  * JRS - Structure to hold function pointers to the functions responsible
  * for congestion control.
@@ -729,16 +731,15 @@ struct sctp_cc_functions {
  * for stream scheduling.
  */
 struct sctp_ss_functions {
-	void (*sctp_ss_init) (struct sctp_tcb *stcb, struct sctp_association *asoc,
-	    int holds_lock);
+	void (*sctp_ss_init) (struct sctp_tcb *stcb, struct sctp_association *asoc);
 	void (*sctp_ss_clear) (struct sctp_tcb *stcb, struct sctp_association *asoc,
-	    int clear_values, int holds_lock);
+	    bool clear_values);
 	void (*sctp_ss_init_stream) (struct sctp_tcb *stcb, struct sctp_stream_out *strq, struct sctp_stream_out *with_strq);
 	void (*sctp_ss_add_to_stream) (struct sctp_tcb *stcb, struct sctp_association *asoc,
-	    struct sctp_stream_out *strq, struct sctp_stream_queue_pending *sp, int holds_lock);
-	int (*sctp_ss_is_empty) (struct sctp_tcb *stcb, struct sctp_association *asoc);
+	    struct sctp_stream_out *strq, struct sctp_stream_queue_pending *sp);
+	bool (*sctp_ss_is_empty) (struct sctp_tcb *stcb, struct sctp_association *asoc);
 	void (*sctp_ss_remove_from_stream) (struct sctp_tcb *stcb, struct sctp_association *asoc,
-	    struct sctp_stream_out *strq, struct sctp_stream_queue_pending *sp, int holds_lock);
+	    struct sctp_stream_out *strq, struct sctp_stream_queue_pending *sp);
 struct sctp_stream_out *(*sctp_ss_select_stream) (struct sctp_tcb *stcb,
 	    struct sctp_nets *net, struct sctp_association *asoc);
 	void (*sctp_ss_scheduled) (struct sctp_tcb *stcb, struct sctp_nets *net,
@@ -749,7 +750,7 @@ struct sctp_stream_out *(*sctp_ss_select_stream) (struct sctp_tcb *stcb,
 	    struct sctp_stream_out *strq, uint16_t *value);
 	int (*sctp_ss_set_value) (struct sctp_tcb *stcb, struct sctp_association *asoc,
 	    struct sctp_stream_out *strq, uint16_t value);
-	int (*sctp_ss_is_user_msgs_incomplete) (struct sctp_tcb *stcb, struct sctp_association *asoc);
+	bool (*sctp_ss_is_user_msgs_incomplete) (struct sctp_tcb *stcb, struct sctp_association *asoc);
 };
 
 /* used to save ASCONF chunks for retransmission */
@@ -955,15 +956,6 @@ struct sctp_association {
 	uint32_t fast_recovery_tsn;
 	uint32_t sat_t3_recovery_tsn;
 	uint32_t tsn_last_delivered;
-	/*
-	 * For the pd-api we should re-write this a bit more efficient. We
-	 * could have multiple sctp_queued_to_read's that we are building at
-	 * once. Now we only do this when we get ready to deliver to the
-	 * socket buffer. Note that we depend on the fact that the struct is
-	 * "stuck" on the read queue until we finish all the pd-api.
-	 */
-	struct sctp_queued_to_read *control_pdapi;
-
 	uint32_t tsn_of_pdapi_last_delivered;
 	uint32_t pdapi_ppid;
 	uint32_t context;
@@ -1180,6 +1172,10 @@ struct sctp_association {
 	uint8_t nrsack_supported;
 	uint8_t pktdrop_supported;
 	uint8_t idata_supported;
+
+	/* Zero checksum supported information */
+	uint8_t rcv_edmid;
+	uint8_t snd_edmid;
 
 	/* Did the peer make the stream config (add out) request */
 	uint8_t peer_req_out;

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Antoine Brodin
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_STACK_H_
@@ -65,7 +63,7 @@ void		 stack_ktr(u_int, const char *, int, const struct stack *,
 #define	CTRSTACK(m, st, depth) do {					\
 	if (KTR_COMPILE & (m))						\
 		stack_ktr((m), __FILE__, __LINE__, st, depth);		\
-	} while(0)
+	} while (0)
 #else
 #define	CTRSTACK(m, st, depth)
 #endif

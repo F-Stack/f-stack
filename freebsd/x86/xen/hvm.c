@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008, 2013 Citrix Systems, Inc.
  * Copyright (c) 2012 Spectra Logic Corporation
@@ -27,12 +27,10 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
+#include <sys/linker.h>
 #include <sys/malloc.h>
 #include <sys/proc.h>
 #include <sys/smp.h>
@@ -44,8 +42,12 @@ __FBSDID("$FreeBSD$");
 
 #include <dev/pci/pcivar.h>
 
+#include <machine/_inttypes.h>
 #include <machine/cpufunc.h>
 #include <machine/cpu.h>
+#include <machine/md_var.h>
+#include <machine/metadata.h>
+#include <machine/pc/bios.h>
 #include <machine/smp.h>
 
 #include <x86/apicreg.h>
@@ -58,16 +60,14 @@ __FBSDID("$FreeBSD$");
 #include <xen/hvm.h>
 #include <xen/xen_intr.h>
 
-#include <xen/interface/arch-x86/cpuid.h>
-#include <xen/interface/hvm/params.h>
-#include <xen/interface/vcpu.h>
+#include <contrib/xen/arch-x86/cpuid.h>
+#include <contrib/xen/hvm/params.h>
+#include <contrib/xen/vcpu.h>
 
 /*--------------------------- Forward Declarations ---------------------------*/
 static void xen_hvm_cpu_init(void);
 
 /*-------------------------------- Global Data -------------------------------*/
-enum xen_domain_type xen_domain_type = XEN_NATIVE;
-
 #ifdef SMP
 struct cpu_ops xen_hvm_cpu_ops = {
 	.cpu_init	= xen_hvm_cpu_init,
@@ -84,23 +84,13 @@ static MALLOC_DEFINE(M_XENHVM, "xen_hvm", "Xen HVM PV Support");
 int xen_vector_callback_enabled;
 
 /**
- * Start info flags. ATM this only used to store the initial domain flag for
- * PVHv2, and it's always empty for HVM guests.
- */
-uint32_t hvm_start_flags;
-
-/**
  * Signal whether the vector injected for the event channel upcall requires to
  * be EOI'ed on the local APIC.
  */
 bool xen_evtchn_needs_ack;
 
 /*------------------------------- Per-CPU Data -------------------------------*/
-DPCPU_DEFINE(struct vcpu_info, vcpu_local_info);
-DPCPU_DEFINE(struct vcpu_info *, vcpu_info);
-
-/*------------------ Hypervisor Access Shared Memory Regions -----------------*/
-shared_info_t *HYPERVISOR_shared_info;
+DPCPU_DECLARE(struct vcpu_info *, vcpu_info);
 
 /*------------------------------ Sysctl tunables -----------------------------*/
 int xen_disable_pv_disks = 0;
@@ -110,20 +100,9 @@ TUNABLE_INT("hw.xen.disable_pv_nics", &xen_disable_pv_nics);
 
 /*---------------------- XEN Hypervisor Probe and Setup ----------------------*/
 
-static uint32_t cpuid_base;
-
-static uint32_t
-xen_hvm_cpuid_base(void)
+void xen_emergency_print(const char *str, size_t size)
 {
-	uint32_t base, regs[4];
-
-	for (base = 0x40000000; base < 0x40010000; base += 0x100) {
-		do_cpuid(base, regs);
-		if (!memcmp("XenVMMXenVMM", &regs[1], 12)
-		    && (regs[0] - base) >= 2)
-			return (base);
-	}
-	return (0);
+	outsb(XEN_HVM_DEBUGCONS_IOPORT, str, size);
 }
 
 static void
@@ -153,7 +132,7 @@ hypervisor_version(void)
 	uint32_t regs[4];
 	int major, minor;
 
-	do_cpuid(cpuid_base + 1, regs);
+	do_cpuid(hv_base + 1, regs);
 
 	major = regs[0] >> 16;
 	minor = regs[0] & 0xffff;
@@ -163,71 +142,170 @@ hypervisor_version(void)
 }
 
 /*
- * Allocate and fill in the hypcall page.
+ * Translate linear to physical address when still running on the bootloader
+ * created page-tables.
  */
-int
-xen_hvm_init_hypercall_stubs(enum xen_hvm_init_type init_type)
+static vm_paddr_t
+early_init_vtop(void *addr)
 {
-	uint32_t regs[4];
-
-	/* Legacy PVH will get here without the cpuid leaf being set. */
-	if (cpuid_base == 0)
-		cpuid_base = xen_hvm_cpuid_base();
-	if (cpuid_base == 0)
-		return (ENXIO);
-
-	if (xen_domain() && init_type == XEN_HVM_INIT_LATE) {
-		/*
-		 * If the domain type is already set we can assume that the
-		 * hypercall page has been populated too, so just print the
-		 * version (and apply any quirks) and exit.
-		 */
-		hypervisor_version();
-		return 0;
-	}
-
-	if (init_type == XEN_HVM_INIT_LATE)
-		hypervisor_version();
 
 	/*
-	 * Find the hypercall pages.
+	 * Using a KASSERT won't print anything, as this is before console
+	 * initialization.
 	 */
-	do_cpuid(cpuid_base + 2, regs);
-	if (regs[0] != 1)
-		return (EINVAL);
+	if (__predict_false((uintptr_t)addr < KERNBASE)) {
+		xc_printf("invalid linear address: %p\n", addr);
+		halt();
+	}
 
-	wrmsr(regs[1], (init_type == XEN_HVM_INIT_EARLY)
-	    ? ((vm_paddr_t)&hypercall_page - KERNBASE)
-	    : vtophys(&hypercall_page));
+	return ((uintptr_t)addr - KERNBASE
+#ifdef __amd64__
+	    + kernphys - KERNLOAD
+#endif
+	    );
+}
 
-	return (0);
+static int
+map_shared_info(void)
+{
+	/*
+	 * TODO shared info page should be mapped in an unpopulated (IOW:
+	 * non-RAM) address.  But finding one at this point in boot is
+	 * complicated, hence re-use a RAM address for the time being.  This
+	 * sadly causes super-page shattering in the second stage translation
+	 * page tables.
+	 */
+	static union {
+		shared_info_t shared_info;
+		uint8_t raw[PAGE_SIZE];
+	} shared_page __attribute__((aligned(PAGE_SIZE)));
+	static struct xen_add_to_physmap xatp = {
+	    .domid = DOMID_SELF,
+	    .space = XENMAPSPACE_shared_info,
+	};
+	int rc;
+
+	_Static_assert(sizeof(shared_page) == PAGE_SIZE,
+	    "invalid Xen shared_info struct size");
+
+	if (xatp.gpfn == 0)
+		xatp.gpfn = atop(early_init_vtop(&shared_page.shared_info));
+
+	rc = HYPERVISOR_memory_op(XENMEM_add_to_physmap, &xatp);
+	if (rc != 0) {
+		xc_printf("cannot map shared info page: %d\n", rc);
+		HYPERVISOR_shared_info = NULL;
+	} else if (HYPERVISOR_shared_info == NULL)
+		HYPERVISOR_shared_info = &shared_page.shared_info;
+
+	return (rc);
 }
 
 static void
-xen_hvm_init_shared_info_page(void)
+fixup_console(void)
 {
-	struct xen_add_to_physmap xatp;
+	struct xen_platform_op op = {
+		.cmd = XENPF_get_dom0_console,
+	};
+	xenpf_dom0_console_t *console = &op.u.dom0_console;
+	union {
+		struct efi_fb efi;
+		struct vbe_fb vbe;
+	} *fb = NULL;
+	int size;
 
-	if (xen_pv_domain()) {
-		/*
-		 * Already setup in the PV case, shared_info is passed inside
-		 * of the start_info struct at start of day.
-		 */
+	size = HYPERVISOR_platform_op(&op);
+	if (size < 0) {
+		xc_printf("Failed to get video console info: %d\n", size);
 		return;
 	}
 
-	if (HYPERVISOR_shared_info == NULL) {
-		HYPERVISOR_shared_info = malloc(PAGE_SIZE, M_XENHVM, M_NOWAIT);
-		if (HYPERVISOR_shared_info == NULL)
-			panic("Unable to allocate Xen shared info page");
+	switch (console->video_type) {
+	case XEN_VGATYPE_VESA_LFB:
+		fb = (__typeof__ (fb))preload_search_info(preload_kmdp,
+		    MODINFO_METADATA | MODINFOMD_VBE_FB);
+
+		if (fb == NULL) {
+			xc_printf("No VBE FB in kernel metadata\n");
+			return;
+		}
+
+		_Static_assert(offsetof(struct vbe_fb, fb_bpp) ==
+		    offsetof(struct efi_fb, fb_mask_reserved) +
+		    sizeof(fb->efi.fb_mask_reserved),
+		    "Bad structure overlay\n");
+		fb->vbe.fb_bpp = console->u.vesa_lfb.bits_per_pixel;
+		/* FALLTHROUGH */
+	case XEN_VGATYPE_EFI_LFB:
+		if (fb == NULL) {
+			fb = (__typeof__ (fb))preload_search_info(preload_kmdp,
+			    MODINFO_METADATA | MODINFOMD_EFI_FB);
+			if (fb == NULL) {
+				xc_printf("No EFI FB in kernel metadata\n");
+				return;
+			}
+		}
+
+		fb->efi.fb_addr = console->u.vesa_lfb.lfb_base;
+		if (size >
+		    offsetof(xenpf_dom0_console_t, u.vesa_lfb.ext_lfb_base))
+			fb->efi.fb_addr |=
+			    (uint64_t)console->u.vesa_lfb.ext_lfb_base << 32;
+		fb->efi.fb_size = console->u.vesa_lfb.lfb_size << 16;
+		fb->efi.fb_height = console->u.vesa_lfb.height;
+		fb->efi.fb_width = console->u.vesa_lfb.width;
+		fb->efi.fb_stride = (console->u.vesa_lfb.bytes_per_line << 3) /
+		    console->u.vesa_lfb.bits_per_pixel;
+#define FBMASK(c) \
+    ((~0u << console->u.vesa_lfb.c ## _pos) & \
+    (~0u >> (32 - console->u.vesa_lfb.c ## _pos - \
+    console->u.vesa_lfb.c ## _size)))
+		fb->efi.fb_mask_red = FBMASK(red);
+		fb->efi.fb_mask_green = FBMASK(green);
+		fb->efi.fb_mask_blue = FBMASK(blue);
+		fb->efi.fb_mask_reserved = FBMASK(rsvd);
+#undef FBMASK
+		break;
+
+	default:
+		xc_printf("Video console type unsupported\n");
+		return;
+	}
+}
+
+/* Early initialization when running as a Xen guest. */
+void
+xen_early_init(void)
+{
+	uint32_t regs[4];
+	int rc;
+
+	if (hv_high < hv_base + 2) {
+		xc_printf("Invalid maximum leaves for hv_base\n");
+		vm_guest = VM_GUEST_VM;
+		return;
 	}
 
-	xatp.domid = DOMID_SELF;
-	xatp.idx = 0;
-	xatp.space = XENMAPSPACE_shared_info;
-	xatp.gpfn = vtophys(HYPERVISOR_shared_info) >> PAGE_SHIFT;
-	if (HYPERVISOR_memory_op(XENMEM_add_to_physmap, &xatp))
-		panic("HYPERVISOR_memory_op failed");
+	/* Find the hypercall pages. */
+	do_cpuid(hv_base + 2, regs);
+	if (regs[0] != 1) {
+		xc_printf("Invalid number of hypercall pages %u\n",
+		    regs[0]);
+		vm_guest = VM_GUEST_VM;
+		return;
+	}
+
+	wrmsr(regs[1], early_init_vtop(&hypercall_page));
+
+	rc = map_shared_info();
+	if (rc != 0) {
+		vm_guest = VM_GUEST_VM;
+		return;
+	}
+
+	if (xen_initial_domain())
+	    /* Fixup video console information in case Xen changed the mode. */
+	    fixup_console();
 }
 
 static int
@@ -346,42 +424,29 @@ xen_hvm_disable_emulated_devices(void)
 static void
 xen_hvm_init(enum xen_hvm_init_type init_type)
 {
-	int error;
-	int i;
+	unsigned int i;
 
-	if (init_type == XEN_HVM_INIT_CANCELLED_SUSPEND)
+	if (!xen_domain() ||
+	    init_type == XEN_HVM_INIT_CANCELLED_SUSPEND)
 		return;
 
-	error = xen_hvm_init_hypercall_stubs(init_type);
+	hypervisor_version();
 
 	switch (init_type) {
 	case XEN_HVM_INIT_LATE:
-		if (error != 0)
-			return;
-
-		/*
-		 * If xen_domain_type is not set at this point
-		 * it means we are inside a (PV)HVM guest, because
-		 * for PVH the guest type is set much earlier
-		 * (see hammer_time_xen).
-		 */
-		if (!xen_domain()) {
-			xen_domain_type = XEN_HVM_DOMAIN;
-			vm_guest = VM_GUEST_XEN;
-		}
-
 		setup_xen_features();
 #ifdef SMP
 		cpu_ops = xen_hvm_cpu_ops;
 #endif
 		break;
 	case XEN_HVM_INIT_RESUME:
-		if (error != 0)
-			panic("Unable to init Xen hypercall stubs on resume");
-
 		/* Clear stale vcpu_info. */
 		CPU_FOREACH(i)
 			DPCPU_ID_SET(i, vcpu_info, NULL);
+
+		if (map_shared_info() != 0)
+			panic("cannot map Xen shared info page");
+
 		break;
 	default:
 		panic("Unsupported HVM initialization type");
@@ -391,13 +456,6 @@ xen_hvm_init(enum xen_hvm_init_type init_type)
 	xen_evtchn_needs_ack = false;
 	xen_hvm_set_callback(NULL);
 
-	/*
-	 * On (PV)HVM domains we need to request the hypervisor to
-	 * fill the shared info page, for PVH guest the shared_info page
-	 * is passed inside the start_info struct and is already set, so this
-	 * functions are no-ops.
-	 */
-	xen_hvm_init_shared_info_page();
 	xen_hvm_disable_emulated_devices();
 } 
 
@@ -427,10 +485,8 @@ SYSINIT(xen_hvm_init, SI_SUB_HYPERVISOR, SI_ORDER_FIRST, xen_hvm_sysinit, NULL);
 static void
 xen_hvm_cpu_init(void)
 {
-	struct vcpu_register_vcpu_info info;
-	struct vcpu_info *vcpu_info;
 	uint32_t regs[4];
-	int cpu, rc;
+	int rc;
 
 	if (!xen_domain())
 		return;
@@ -448,8 +504,8 @@ xen_hvm_cpu_init(void)
 	 * Set vCPU ID. If available fetch the ID from CPUID, if not just use
 	 * the ACPI ID.
 	 */
-	KASSERT(cpuid_base != 0, ("Invalid base Xen CPUID leaf"));
-	cpuid_count(cpuid_base + 4, 0, regs);
+	KASSERT(hv_base != 0, ("Invalid base Xen CPUID leaf"));
+	cpuid_count(hv_base + 4, 0, regs);
 	KASSERT((regs[0] & XEN_HVM_CPUID_VCPU_ID_PRESENT) ||
 	    !xen_pv_domain(),
 	    ("Xen PV domain without vcpu_id in cpuid"));
@@ -470,66 +526,66 @@ xen_hvm_cpu_init(void)
 			    rc);
 	}
 
-	/*
-	 * Set the vCPU info.
-	 *
-	 * NB: the vCPU info for vCPUs < 32 can be fetched from the shared info
-	 * page, but in order to make sure the mapping code is correct always
-	 * attempt to map the vCPU info at a custom place.
-	 */
-	vcpu_info = DPCPU_PTR(vcpu_local_info);
-	cpu = PCPU_GET(vcpu_id);
-	info.mfn = vtophys(vcpu_info) >> PAGE_SHIFT;
-	info.offset = vtophys(vcpu_info) - trunc_page(vtophys(vcpu_info));
-
-	rc = HYPERVISOR_vcpu_op(VCPUOP_register_vcpu_info, cpu, &info);
-	if (rc != 0)
-		DPCPU_SET(vcpu_info, &HYPERVISOR_shared_info->vcpu_info[cpu]);
-	else
-		DPCPU_SET(vcpu_info, vcpu_info);
+	xen_setup_vcpu_info();
 }
 SYSINIT(xen_hvm_cpu_init, SI_SUB_INTR, SI_ORDER_FIRST, xen_hvm_cpu_init, NULL);
 
-/* HVM/PVH start_info accessors */
-static vm_paddr_t
-hvm_get_xenstore_mfn(void)
+bool
+xen_has_iommu_maps(void)
 {
+	uint32_t regs[4];
 
-	return (hvm_get_parameter(HVM_PARAM_STORE_PFN));
+	KASSERT(hv_base != 0, ("Invalid base Xen CPUID leaf"));
+	cpuid_count(hv_base + 4, 0, regs);
+
+	return (regs[0] & XEN_HVM_CPUID_IOMMU_MAPPINGS);
 }
 
-static evtchn_port_t
-hvm_get_xenstore_evtchn(void)
+int
+xen_arch_init_physmem(device_t dev, struct rman *mem)
 {
+	static struct bios_smap smap[128];
+	struct xen_memory_map memmap = {
+		.nr_entries = nitems(smap),
+	};
+	unsigned int i;
+	int error;
 
-	return (hvm_get_parameter(HVM_PARAM_STORE_EVTCHN));
+	set_xen_guest_handle(memmap.buffer, smap);
+	error = HYPERVISOR_memory_op(XENMEM_memory_map, &memmap);
+	if (error != 0)
+		return (0);
+
+	/*
+	 * Fill with UNUSABLE regions, as it's always fine to use those for
+	 * foreign mappings, they will never be populated.
+	 */
+	for (i = 0; i < memmap.nr_entries; i++) {
+		const vm_paddr_t max_phys = cpu_getmaxphyaddr();
+		vm_paddr_t start, end;
+
+		if (smap[i].type != SMAP_TYPE_ACPI_ERROR)
+			continue;
+
+		start = round_page(smap[i].base);
+		/* In 32bit mode we possibly need to truncate the addresses. */
+		end = MIN(trunc_page(smap[i].base + smap[i].length) - 1,
+		    max_phys);
+
+		if (start >= end)
+			continue;
+
+		if (bootverbose != 0)
+			device_printf(dev,
+			    "scratch mapping region @ [%016jx, %016jx]\n",
+			    start, end);
+
+		error = rman_manage_region(mem, start, end);
+		if (error != 0)
+			device_printf(dev,
+			    "unable to add scratch region [%016jx, %016jx]: %d\n",
+			    start, end, error);
+	}
+
+	return (0);
 }
-
-static vm_paddr_t
-hvm_get_console_mfn(void)
-{
-
-	return (hvm_get_parameter(HVM_PARAM_CONSOLE_PFN));
-}
-
-static evtchn_port_t
-hvm_get_console_evtchn(void)
-{
-
-	return (hvm_get_parameter(HVM_PARAM_CONSOLE_EVTCHN));
-}
-
-static uint32_t
-hvm_get_start_flags(void)
-{
-
-	return (hvm_start_flags);
-}
-
-struct hypervisor_info hypervisor_info = {
-	.get_xenstore_mfn		= hvm_get_xenstore_mfn,
-	.get_xenstore_evtchn		= hvm_get_xenstore_evtchn,
-	.get_console_mfn		= hvm_get_console_mfn,
-	.get_console_evtchn		= hvm_get_console_evtchn,
-	.get_start_flags		= hvm_get_start_flags,
-};

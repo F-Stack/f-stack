@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017,	Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS__DOMAINSET_H_
@@ -34,6 +32,8 @@
 #include <sys/_bitset.h>
 
 #ifdef _KERNEL
+#include <machine/param.h>
+
 #define	DOMAINSET_SETSIZE	MAXMEMDOM
 #endif
 
@@ -43,7 +43,7 @@
 #define	DOMAINSET_SETSIZE	DOMAINSET_MAXSIZE
 #endif
 
-BITSET_DEFINE(_domainset, DOMAINSET_SETSIZE);
+__BITSET_DEFINE(_domainset, DOMAINSET_SETSIZE);
 typedef struct _domainset domainset_t;
 
 /*

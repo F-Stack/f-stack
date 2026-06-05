@@ -37,12 +37,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)kern_subr.c	8.3 (Berkeley) 1/21/94
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -218,6 +213,8 @@ uiomove_faultflag(void *cp, int n, struct uio *uio, int nofault)
 	    ("uiomove: mode"));
 	KASSERT(uio->uio_segflg != UIO_USERSPACE || uio->uio_td == curthread,
 	    ("uiomove proc"));
+	KASSERT(uio->uio_resid >= 0,
+	    ("%s: uio %p resid underflow", __func__, uio));
 
 	if (uio->uio_segflg == UIO_USERSPACE) {
 		newflags = TDP_DEADLKTREAT;
@@ -236,6 +233,9 @@ uiomove_faultflag(void *cp, int n, struct uio *uio, int nofault)
 	}
 
 	while (n > 0 && uio->uio_resid) {
+		KASSERT(uio->uio_iovcnt > 0,
+		    ("%s: uio %p iovcnt underflow", __func__, uio));
+
 		iov = uio->uio_iov;
 		cnt = iov->iov_len;
 		if (cnt == 0) {
@@ -249,19 +249,27 @@ uiomove_faultflag(void *cp, int n, struct uio *uio, int nofault)
 		switch (uio->uio_segflg) {
 		case UIO_USERSPACE:
 			maybe_yield();
-			if (uio->uio_rw == UIO_READ)
+			switch (uio->uio_rw) {
+			case UIO_READ:
 				error = copyout(cp, iov->iov_base, cnt);
-			else
+				break;
+			case UIO_WRITE:
 				error = copyin(iov->iov_base, cp, cnt);
+				break;
+			}
 			if (error)
 				goto out;
 			break;
 
 		case UIO_SYSSPACE:
-			if (uio->uio_rw == UIO_READ)
+			switch (uio->uio_rw) {
+			case UIO_READ:
 				bcopy(cp, iov->iov_base, cnt);
-			else
+				break;
+			case UIO_WRITE:
 				bcopy(iov->iov_base, cp, cnt);
+				break;
+			}
 			break;
 		case UIO_NOCOPY:
 			break;
@@ -277,6 +285,37 @@ out:
 	if (save)
 		curthread_pflags_restore(save);
 	return (error);
+}
+
+/*
+ * Advance the pointer in the uio by offset.
+ */
+void
+uioadvance(struct uio *uio, size_t offset)
+{
+
+	while (offset > 0) {
+		struct iovec *iov;
+		size_t cnt;
+
+		MPASS(uio->uio_resid >= 0);
+		MPASS((size_t)uio->uio_resid >= offset);
+		MPASS(uio->uio_iovcnt > 0);
+
+		iov = uio->uio_iov;
+		if ((cnt = iov->iov_len) == 0) {
+			uio->uio_iov++;
+			uio->uio_iovcnt--;
+			continue;
+		}
+		if (cnt > offset)
+			cnt = offset;
+		iov->iov_base = (char *)iov->iov_base + cnt;
+		iov->iov_len -= cnt;
+		uio->uio_resid -= cnt;
+		uio->uio_offset += cnt;
+		offset -= cnt;
+	}
 }
 
 /*
@@ -351,7 +390,7 @@ copyiniov(const struct iovec *iovp, u_int iovcnt, struct iovec **iov, int error)
 	*iov = NULL;
 	if (iovcnt > UIO_MAXIOV)
 		return (error);
-	iovlen = iovcnt * sizeof (struct iovec);
+	iovlen = iovcnt * sizeof(struct iovec);
 	*iov = malloc(iovlen, M_IOV, M_WAITOK);
 	error = copyin(iovp, *iov, iovlen);
 	if (error) {
@@ -372,22 +411,21 @@ copyinuio(const struct iovec *iovp, u_int iovcnt, struct uio **uiop)
 	*uiop = NULL;
 	if (iovcnt > UIO_MAXIOV)
 		return (EINVAL);
-	iovlen = iovcnt * sizeof (struct iovec);
-	uio = malloc(iovlen + sizeof *uio, M_IOV, M_WAITOK);
-	iov = (struct iovec *)(uio + 1);
+	iovlen = iovcnt * sizeof(struct iovec);
+	uio = allocuio(iovcnt);
+	iov = uio->uio_iov;
 	error = copyin(iovp, iov, iovlen);
-	if (error) {
-		free(uio, M_IOV);
+	if (error != 0) {
+		freeuio(uio);
 		return (error);
 	}
-	uio->uio_iov = iov;
 	uio->uio_iovcnt = iovcnt;
 	uio->uio_segflg = UIO_USERSPACE;
 	uio->uio_offset = -1;
 	uio->uio_resid = 0;
 	for (i = 0; i < iovcnt; i++) {
 		if (iov->iov_len > IOSIZE_MAX - uio->uio_resid) {
-			free(uio, M_IOV);
+			freeuio(uio);
 			return (EINVAL);
 		}
 		uio->uio_resid += iov->iov_len;
@@ -398,15 +436,38 @@ copyinuio(const struct iovec *iovp, u_int iovcnt, struct uio **uiop)
 }
 
 struct uio *
-cloneuio(struct uio *uiop)
+allocuio(u_int iovcnt)
 {
 	struct uio *uio;
 	int iovlen;
 
-	iovlen = uiop->uio_iovcnt * sizeof (struct iovec);
-	uio = malloc(iovlen + sizeof *uio, M_IOV, M_WAITOK);
-	*uio = *uiop;
+	KASSERT(iovcnt <= UIO_MAXIOV,
+	    ("Requested %u iovecs exceed UIO_MAXIOV", iovcnt));
+	iovlen = iovcnt * sizeof(struct iovec);
+	uio = malloc(iovlen + sizeof(*uio), M_IOV, M_WAITOK);
 	uio->uio_iov = (struct iovec *)(uio + 1);
+
+	return (uio);
+}
+
+void
+freeuio(struct uio *uio)
+{
+	free(uio, M_IOV);
+}
+
+struct uio *
+cloneuio(struct uio *uiop)
+{
+	struct iovec *iov;
+	struct uio *uio;
+	int iovlen;
+
+	iovlen = uiop->uio_iovcnt * sizeof(struct iovec);
+	uio = allocuio(uiop->uio_iovcnt);
+	iov = uio->uio_iov;
+	*uio = *uiop;
+	uio->uio_iov = iov;
 	bcopy(uiop->uio_iov, uio->uio_iov, iovlen);
 	return (uio);
 }

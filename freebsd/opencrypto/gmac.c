@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2014 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by John-Mark Gurney under
  * the sponsorship of the FreeBSD Foundation and
@@ -25,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	$FreeBSD$
  *
  */
 
@@ -71,7 +68,11 @@ AES_GMAC_Reinit(void *ctx, const uint8_t *iv, u_int ivlen)
 
 	agc = ctx;
 	KASSERT(ivlen <= sizeof agc->counter, ("passed ivlen too large!"));
+	memset(agc->counter, 0, sizeof(agc->counter));
 	bcopy(iv, agc->counter, ivlen);
+	agc->counter[GMAC_BLOCK_LEN - 1] = 1;
+
+	memset(&agc->hash, 0, sizeof(agc->hash));
 }
 
 int
@@ -119,9 +120,7 @@ AES_GMAC_Final(uint8_t *digest, void *ctx)
 	uint8_t enccntr[GMAC_BLOCK_LEN];
 	struct gf128 a;
 
-	/* XXX - zero additional bytes? */
 	agc = ctx;
-	agc->counter[GMAC_BLOCK_LEN - 1] = 1;
 
 	rijndaelEncrypt(agc->keysched, agc->rounds, agc->counter, enccntr);
 	a = gf128_add(agc->hash, gf128_read(enccntr));

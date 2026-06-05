@@ -33,12 +33,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)kern_subr.c	8.3 (Berkeley) 1/21/94
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/kernel.h>
@@ -67,16 +62,22 @@ uiomove_fromphys(vm_page_t ma[], vm_offset_t offset, int n, struct uio *uio)
 	size_t cnt;
 	int error = 0;
 	int save = 0;
-	boolean_t mapped;
+	bool mapped;
 
 	KASSERT(uio->uio_rw == UIO_READ || uio->uio_rw == UIO_WRITE,
 	    ("uiomove_fromphys: mode"));
 	KASSERT(uio->uio_segflg != UIO_USERSPACE || uio->uio_td == curthread,
 	    ("uiomove_fromphys proc"));
+	KASSERT(uio->uio_resid >= 0,
+	    ("%s: uio %p resid underflow", __func__, uio));
+
 	save = td->td_pflags & TDP_DEADLKTREAT;
 	td->td_pflags |= TDP_DEADLKTREAT;
-	mapped = FALSE;
+	mapped = false;
 	while (n > 0 && uio->uio_resid) {
+		KASSERT(uio->uio_iovcnt > 0,
+		    ("%s: uio %p iovcnt underflow", __func__, uio));
+
 		iov = uio->uio_iov;
 		cnt = iov->iov_len;
 		if (cnt == 0) {
@@ -90,32 +91,40 @@ uiomove_fromphys(vm_page_t ma[], vm_offset_t offset, int n, struct uio *uio)
 		cnt = min(cnt, PAGE_SIZE - page_offset);
 		if (uio->uio_segflg != UIO_NOCOPY) {
 			mapped = pmap_map_io_transient(
-			    &ma[offset >> PAGE_SHIFT], &vaddr, 1, TRUE);
+			    &ma[offset >> PAGE_SHIFT], &vaddr, 1, true);
 			cp = (char *)vaddr + page_offset;
 		}
 		switch (uio->uio_segflg) {
 		case UIO_USERSPACE:
 			maybe_yield();
-			if (uio->uio_rw == UIO_READ)
+			switch (uio->uio_rw) {
+			case UIO_READ:
 				error = copyout(cp, iov->iov_base, cnt);
-			else
+				break;
+			case UIO_WRITE:
 				error = copyin(iov->iov_base, cp, cnt);
+				break;
+			}
 			if (error)
 				goto out;
 			break;
 		case UIO_SYSSPACE:
-			if (uio->uio_rw == UIO_READ)
+			switch (uio->uio_rw) {
+			case UIO_READ:
 				bcopy(cp, iov->iov_base, cnt);
-			else
+				break;
+			case UIO_WRITE:
 				bcopy(iov->iov_base, cp, cnt);
+				break;
+			}
 			break;
 		case UIO_NOCOPY:
 			break;
 		}
 		if (__predict_false(mapped)) {
 			pmap_unmap_io_transient(&ma[offset >> PAGE_SHIFT],
-			    &vaddr, 1, TRUE);
-			mapped = FALSE;
+			    &vaddr, 1, true);
+			mapped = false;
 		}
 		iov->iov_base = (char *)iov->iov_base + cnt;
 		iov->iov_len -= cnt;
@@ -127,7 +136,7 @@ uiomove_fromphys(vm_page_t ma[], vm_offset_t offset, int n, struct uio *uio)
 out:
 	if (__predict_false(mapped))
 		pmap_unmap_io_transient(&ma[offset >> PAGE_SHIFT], &vaddr, 1,
-		    TRUE);
+		    true);
 	if (save == 0)
 		td->td_pflags &= ~TDP_DEADLKTREAT;
 	return (error);

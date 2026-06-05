@@ -24,8 +24,6 @@
  *
  * any improvements or extensions that they make and grant Carnegie the
  * rights to redistribute these changes.
- *
- * $FreeBSD$
  */
 
 #ifndef _DDB_DB_SYM_H_
@@ -104,5 +102,7 @@ c_db_sym_t	X_db_search_symbol(db_symtab_t *symtab, db_addr_t off,
 bool		X_db_sym_numargs(db_symtab_t *, c_db_sym_t, int *, char **);
 void		X_db_symbol_values(db_symtab_t *symtab, c_db_sym_t sym,
 		    const char **namep, db_expr_t *valuep);
+
+void		db_decode_syscall(struct thread *td, u_int number);
 
 #endif /* !_DDB_DB_SYM_H_ */

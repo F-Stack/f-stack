@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010,2013 Lawrence Stewart <lstewart@freebsd.org>
  * Copyright (c) 2010 The FreeBSD Foundation
@@ -34,8 +34,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -109,14 +107,14 @@ struct hhook_head {
 /* Public KPI functions. */
 void	hhook_run_hooks(struct hhook_head *hhh, void *ctx_data, struct osd *hosd);
 
-int	hhook_add_hook(struct hhook_head *hhh, struct hookinfo *hki,
+int	hhook_add_hook(struct hhook_head *hhh, const struct hookinfo *hki,
     uint32_t flags);
 
-int	hhook_add_hook_lookup(struct hookinfo *hki, uint32_t flags);
+int	hhook_add_hook_lookup(const struct hookinfo *hki, uint32_t flags);
 
-int	hhook_remove_hook(struct hhook_head *hhh, struct hookinfo *hki);
+int	hhook_remove_hook(struct hhook_head *hhh, const struct hookinfo *hki);
 
-int	hhook_remove_hook_lookup(struct hookinfo *hki);
+int	hhook_remove_hook_lookup(const struct hookinfo *hki);
 
 int	hhook_head_register(int32_t hhook_type, int32_t hhook_id,
     struct hhook_head **hhh, uint32_t flags);

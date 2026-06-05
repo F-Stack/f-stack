@@ -30,8 +30,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_kstack_pages.h"
 
 #include <sys/param.h>
@@ -48,6 +46,8 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_map.h>
 
 #include <ddb/ddb.h>
+
+#include <machine/stack.h>
 
 #define PRINT_NONE	0
 #define PRINT_ARGS	1
@@ -173,9 +173,9 @@ db_ps_proc(struct proc *p)
 			 */
 			rflag = sflag = dflag = lflag = wflag = 0;
 			FOREACH_THREAD_IN_PROC(p, td) {
-				if (td->td_state == TDS_RUNNING ||
-				    td->td_state == TDS_RUNQ ||
-				    td->td_state == TDS_CAN_RUN)
+				if (TD_GET_STATE(td) == TDS_RUNNING ||
+				    TD_GET_STATE(td) == TDS_RUNQ ||
+				    TD_GET_STATE(td) == TDS_CAN_RUN)
 					rflag++;
 				if (TD_ON_LOCK(td))
 					lflag++;
@@ -215,8 +215,6 @@ db_ps_proc(struct proc *p)
 	state[1] = '\0';
 
 	/* Additional process state flags. */
-	if (!(p->p_flag & P_INMEM))
-		strlcat(state, "W", sizeof(state));
 	if (p->p_flag & P_TRACED)
 		strlcat(state, "X", sizeof(state));
 	if (p->p_flag & P_WEXIT && p->p_state != PRS_ZOMBIE)
@@ -267,7 +265,7 @@ dumpthread(volatile struct proc *p, volatile struct thread *td, int all)
 
 	if (all) {
 		db_printf("%6d                  ", td->td_tid);
-		switch (td->td_state) {
+		switch (TD_GET_STATE(td)) {
 		case TDS_RUNNING:
 			snprintf(state, sizeof(state), "Run");
 			break;
@@ -290,8 +288,6 @@ dumpthread(volatile struct proc *p, volatile struct thread *td, int all)
 				else
 					strlcat(state, "D", sizeof(state));
 			}
-			if (TD_IS_SWAPPED(td))
-				strlcat(state, "W", sizeof(state));
 			if (TD_AWAITING_INTR(td))
 				strlcat(state, "I", sizeof(state));
 			if (TD_IS_SUSPENDED(td))
@@ -367,7 +363,7 @@ DB_SHOW_COMMAND(thread, db_show_thread)
 	db_printf(" flags: %#x ", td->td_flags);
 	db_printf(" pflags: %#x\n", td->td_pflags);
 	db_printf(" state: ");
-	switch (td->td_state) {
+	switch (TD_GET_STATE(td)) {
 	case TDS_INACTIVE:
 		db_printf("INACTIVE\n");
 		break;
@@ -393,12 +389,6 @@ DB_SHOW_COMMAND(thread, db_show_thread)
 			db_printf("SUSPENDED");
 			comma = true;
 		}
-		if (TD_IS_SWAPPED(td)) {
-			if (comma)
-				db_printf(", ");
-			db_printf("SWAPPED");
-			comma = true;
-		}
 		if (TD_ON_LOCK(td)) {
 			if (comma)
 				db_printf(", ");
@@ -413,7 +403,7 @@ DB_SHOW_COMMAND(thread, db_show_thread)
 		db_printf("}\n");
 		break;
 	default:
-		db_printf("??? (%#x)\n", td->td_state);
+		db_printf("??? (%#x)\n", TD_GET_STATE(td));
 		break;
 	}
 	if (TD_ON_LOCK(td))
@@ -469,12 +459,11 @@ DB_SHOW_COMMAND(proc, db_show_proc)
 		db_printf("??? (%#x)\n", p->p_state);
 	}
 	if (p->p_ucred != NULL) {
-		db_printf(" uid: %d  gids: ", p->p_ucred->cr_uid);
-		for (i = 0; i < p->p_ucred->cr_ngroups; i++) {
-			db_printf("%d", p->p_ucred->cr_groups[i]);
-			if (i < (p->p_ucred->cr_ngroups - 1))
-				db_printf(", ");
-		}
+		db_printf(" uid: %d gid: %d supp gids: ",
+		    p->p_ucred->cr_uid, p->p_ucred->cr_gid);
+		for (i = 0; i < p->p_ucred->cr_ngroups; i++)
+			db_printf(i == 0 ? "%d" : ", %d",
+			    p->p_ucred->cr_groups[i]);
 		db_printf("\n");
 	}
 	if (p->p_pptr != NULL)

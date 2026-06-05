@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Oleksandr Tymoshenko <gonzo@FreeBSD.org>
  *
@@ -24,7 +24,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  * 
- * $FreeBSD$
  */
 
 #ifndef	__IMX8MQ_CCM_H__
@@ -142,6 +141,8 @@
 #define	IMX8MQ_SYS3_PLL_OUT		233
 
 #define	IMX8MQ_CLK_IPG_ROOT		236
+
+#define	IMX8MQ_CLK_TMU_ROOT		246
 
 #define	IMX8MQ_CLK_GPIO1_ROOT		259
 #define	IMX8MQ_CLK_GPIO2_ROOT		260

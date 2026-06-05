@@ -30,13 +30,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)isa.c	7.2 (Berkeley) 5/13/91
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * code to manage AT bus
  *
@@ -88,7 +84,6 @@ int
 isa_dma_init(int chan, u_int bouncebufsize, int flag)
 {
 	void *buf;
-	int contig;
 
 #ifdef DIAGNOSTIC
 	if (chan & ~VALID_DMA_MASK)
@@ -102,13 +97,11 @@ isa_dma_init(int chan, u_int bouncebufsize, int flag)
 			free(buf, M_DEVBUF);
 			buf = NULL;
 		}
-		contig = 0;
 	}
 
 	if (buf == NULL) {
 		buf = contigmalloc(bouncebufsize, M_DEVBUF, flag, 0ul, 0xfffffful,
 			   1ul, chan & 4 ? 0x20000ul : 0x10000ul);
-		contig = 1;
 	}
 
 	if (buf == NULL)
@@ -124,10 +117,7 @@ isa_dma_init(int chan, u_int bouncebufsize, int flag)
 	 * XXX: the same driver.
 	 */
 	if (dma_bouncebuf[chan] != NULL) {
-		if (contig)
-			contigfree(buf, bouncebufsize, M_DEVBUF);
-		else
-			free(buf, M_DEVBUF);
+		free(buf, M_DEVBUF);
 		mtx_unlock(&isa_dma_lock);
 		return (0);
 	}
@@ -591,10 +581,6 @@ static device_method_t atdma_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		atdma_probe),
 	DEVMETHOD(device_attach,	atdma_attach),
-	DEVMETHOD(device_detach,	bus_generic_detach),
-	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
-	DEVMETHOD(device_suspend,	bus_generic_suspend),
-	DEVMETHOD(device_resume,	bus_generic_resume),
 	{ 0, 0 }
 };
 
@@ -604,8 +590,6 @@ static driver_t atdma_driver = {
 	1,		/* no softc */
 };
 
-static devclass_t atdma_devclass;
-
-DRIVER_MODULE(atdma, isa, atdma_driver, atdma_devclass, 0, 0);
-DRIVER_MODULE(atdma, acpi, atdma_driver, atdma_devclass, 0, 0);
+DRIVER_MODULE(atdma, isa, atdma_driver, 0, 0);
+DRIVER_MODULE(atdma, acpi, atdma_driver, 0, 0);
 ISA_PNP_INFO(atdma_ids);

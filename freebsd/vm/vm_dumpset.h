@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020, Scott Phillips <scottph@freebsd.org>
  *
@@ -23,8 +23,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_SYS_DUMPSET_H_
@@ -37,8 +35,12 @@ extern struct bitset *vm_page_dump;
 extern long vm_page_dump_pages;
 extern vm_paddr_t dump_avail[PHYS_AVAIL_COUNT];
 
+/* For the common case: add/remove a page from the minidump bitset. */
+#define	dump_add_page(pa)	vm_page_dump_add(vm_page_dump, pa)
+#define	dump_drop_page(pa)	vm_page_dump_drop(vm_page_dump, pa)
+
 static inline void
-dump_add_page(vm_paddr_t pa)
+vm_page_dump_add(struct bitset *bitset, vm_paddr_t pa)
 {
 	vm_pindex_t adj;
 	int i;
@@ -48,7 +50,7 @@ dump_add_page(vm_paddr_t pa)
 		if (pa >= dump_avail[i] && pa < dump_avail[i + 1]) {
 			BIT_SET_ATOMIC(vm_page_dump_pages,
 			    (pa >> PAGE_SHIFT) - (dump_avail[i] >> PAGE_SHIFT) +
-			    adj, vm_page_dump);
+			    adj, bitset);
 			return;
 		}
 		adj += howmany(dump_avail[i + 1], PAGE_SIZE) -
@@ -57,7 +59,7 @@ dump_add_page(vm_paddr_t pa)
 }
 
 static inline void
-dump_drop_page(vm_paddr_t pa)
+vm_page_dump_drop(struct bitset *bitset, vm_paddr_t pa)
 {
 	vm_pindex_t adj;
 	int i;
@@ -67,7 +69,7 @@ dump_drop_page(vm_paddr_t pa)
 		if (pa >= dump_avail[i] && pa < dump_avail[i + 1]) {
 			BIT_CLR_ATOMIC(vm_page_dump_pages,
 			    (pa >> PAGE_SHIFT) - (dump_avail[i] >> PAGE_SHIFT) +
-			    adj, vm_page_dump);
+			    adj, bitset);
 			return;
 		}
 		adj += howmany(dump_avail[i + 1], PAGE_SIZE) -
@@ -88,12 +90,12 @@ vm_page_dump_index_to_pa(int bit)
 			    (dump_avail[i] & ~PAGE_MASK));
 		bit -= tot;
 	}
-	return ((vm_paddr_t)NULL);
+	return (0);
 }
 
-#define VM_PAGE_DUMP_FOREACH(pa)						\
-	for (vm_pindex_t __b = BIT_FFS(vm_page_dump_pages, vm_page_dump);	\
-	    (pa) = vm_page_dump_index_to_pa(__b - 1), __b != 0;			\
-	    __b = BIT_FFS_AT(vm_page_dump_pages, vm_page_dump, __b))
+#define VM_PAGE_DUMP_FOREACH(bitset, pa)				\
+	for (vm_pindex_t __b = BIT_FFS(vm_page_dump_pages, bitset);	\
+	    (pa) = vm_page_dump_index_to_pa(__b - 1), __b != 0;		\
+	    __b = BIT_FFS_AT(vm_page_dump_pages, bitset, __b))
 
 #endif	/* _SYS_DUMPSET_H_ */

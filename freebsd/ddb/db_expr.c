@@ -30,9 +30,6 @@
  *	Date:	7/90
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 
@@ -125,7 +122,7 @@ db_unary(db_expr_t *valuep)
 	    return (true);
 	}
 	if (t == tEXCL) {
-	    if(!db_unary(valuep)) {
+	    if (!db_unary(valuep)) {
 		db_printf("Expression syntax error after '%c'\n", '!');
 		db_error(NULL);
 		/* NOTREACHED  */
@@ -134,7 +131,7 @@ db_unary(db_expr_t *valuep)
 	    return (true);
 	}
 	if (t == tBIT_NOT) {
-	    if(!db_unary(valuep)) {
+	    if (!db_unary(valuep)) {
 		db_printf("Expression syntax error after '%c'\n", '~');
 		db_error(NULL);
 		/* NOTREACHED */

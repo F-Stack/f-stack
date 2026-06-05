@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -29,9 +29,6 @@
  * Rockchip PHY TYPEC
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -47,11 +44,11 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus_subr.h>
 #include <dev/ofw/ofw_subr.h>
 
-#include <dev/extres/clk/clk.h>
-#include <dev/extres/phy/phy.h>
-#include <dev/extres/phy/phy_internal.h>
-#include <dev/extres/syscon/syscon.h>
-#include <dev/extres/hwreset/hwreset.h>
+#include <dev/clk/clk.h>
+#include <dev/phy/phy.h>
+#include <dev/phy/phy_internal.h>
+#include <dev/syscon/syscon.h>
+#include <dev/hwreset/hwreset.h>
 
 #include "syscon_if.h"
 
@@ -252,7 +249,6 @@ rk_pcie_phy_enable(struct phynode *phynode, bool enable)
 }
 
 /* Phy class and methods. */
-static int rk_pcie_phy_enable(struct phynode *phynode, bool enable);
 static phynode_method_t rk_pcie_phy_phynode_methods[] = {
 	PHYNODEMETHOD(phynode_enable,		 rk_pcie_phy_enable),
 
@@ -293,6 +289,13 @@ static int
 	if (SYSCON_GET_HANDLE(sc->dev, &sc->syscon) != 0 ||
 	    sc->syscon == NULL) {
 		device_printf(dev, "cannot get syscon for device\n");
+		rv = ENXIO;
+		goto fail;
+	}
+
+	rv = clk_set_assigned(dev, ofw_bus_get_node(dev));
+	if (rv != 0 && rv != ENOENT) {
+		device_printf(dev, "clk_set_assigned failed: %d\n", rv);
 		rv = ENXIO;
 		goto fail;
 	}
@@ -358,7 +361,5 @@ static device_method_t rk_pcie_phy_methods[] = {
 DEFINE_CLASS_0(rk_pcie_phy, rk_pcie_phy_driver, rk_pcie_phy_methods,
     sizeof(struct rk_pcie_phy_softc));
 
-static devclass_t rk_pcie_phy_devclass;
-EARLY_DRIVER_MODULE(rk_pcie_phy, simplebus, rk_pcie_phy_driver,
-    rk_pcie_phy_devclass, NULL, NULL,
+EARLY_DRIVER_MODULE(rk_pcie_phy, simplebus, rk_pcie_phy_driver, NULL, NULL,
     BUS_PASS_SUPPORTDEV + BUS_PASS_ORDER_MIDDLE);

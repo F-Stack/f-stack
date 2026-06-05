@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2002 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -30,7 +30,6 @@
  * SUCH DAMAGE.
  *
  * $Id: ng_btsocket_sco.h,v 1.3 2005/10/31 18:08:52 max Exp $
- * $FreeBSD$
  */
 
 #ifndef _NETGRAPH_BTSOCKET_SCO_H_
@@ -105,26 +104,25 @@ typedef struct ng_btsocket_sco_pcb *	ng_btsocket_sco_pcb_p;
 
 #ifdef _KERNEL
 
-void ng_btsocket_sco_init       (void);
 void ng_btsocket_sco_abort      (struct socket *);
 void ng_btsocket_sco_close      (struct socket *);
-int  ng_btsocket_sco_accept     (struct socket *, struct sockaddr **);
+int  ng_btsocket_sco_accept     (struct socket *, struct sockaddr *);
 int  ng_btsocket_sco_attach     (struct socket *, int, struct thread *);
 int  ng_btsocket_sco_bind       (struct socket *, struct sockaddr *,
                                    struct thread *);
 int  ng_btsocket_sco_connect    (struct socket *, struct sockaddr *,
                                    struct thread *);
-int  ng_btsocket_sco_control    (struct socket *, u_long, caddr_t,
+int  ng_btsocket_sco_control    (struct socket *, u_long, void *,
                                    struct ifnet *, struct thread *);
 int  ng_btsocket_sco_ctloutput  (struct socket *, struct sockopt *);
 void ng_btsocket_sco_detach     (struct socket *);
 int  ng_btsocket_sco_disconnect (struct socket *);
 int  ng_btsocket_sco_listen     (struct socket *, int, struct thread *);
-int  ng_btsocket_sco_peeraddr   (struct socket *, struct sockaddr **);
+int  ng_btsocket_sco_peeraddr   (struct socket *, struct sockaddr *);
 int  ng_btsocket_sco_send       (struct socket *, int, struct mbuf *,
                                    struct sockaddr *, struct mbuf *,
                                    struct thread *);
-int  ng_btsocket_sco_sockaddr   (struct socket *, struct sockaddr **);
+int  ng_btsocket_sco_sockaddr   (struct socket *, struct sockaddr *);
 
 #endif /* _KERNEL */
 

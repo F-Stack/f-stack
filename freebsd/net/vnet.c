@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004-2009 University of Zagreb
  * Copyright (c) 2006-2009 FreeBSD Foundation
@@ -36,8 +36,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_kdb.h"
 
@@ -46,6 +44,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/jail.h>
 #include <sys/sdt.h>
+#include <sys/stdarg.h>
 #include <sys/systm.h>
 #include <sys/sysctl.h>
 #include <sys/eventhandler.h>
@@ -55,8 +54,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/socket.h>
 #include <sys/sx.h>
 #include <sys/sysctl.h>
-
-#include <machine/stdarg.h>
 
 #ifdef DDB
 #include <ddb/ddb.h>
@@ -103,7 +100,7 @@ struct sx		vnet_sxlock;
 	sx_xunlock(&vnet_sxlock);					\
 } while (0)
 
-struct vnet_list_head vnet_head;
+struct vnet_list_head vnet_head = LIST_HEAD_INITIALIZER(vnet_head);
 struct vnet *vnet0;
 
 /*
@@ -181,6 +178,11 @@ static MALLOC_DEFINE(M_VNET_DATA, "vnet_data", "VNET data");
 VNET_DEFINE_STATIC(char, modspace[VNET_MODMIN] __aligned(__alignof(void *)));
 
 /*
+ * A copy of the initial values of all virtualized global variables.
+ */
+static uintptr_t vnet_init_var;
+
+/*
  * Global lists of subsystem constructor and destructors for vnets.  They are
  * registered via VNET_SYSINIT() and VNET_SYSUNINIT().  Both lists are
  * protected by the vnet_sysinit_sxlock global lock.
@@ -206,7 +208,7 @@ struct vnet_data_free {
 static MALLOC_DEFINE(M_VNET_DATA_FREE, "vnet_data_free",
     "VNET resource accounting");
 static TAILQ_HEAD(, vnet_data_free) vnet_data_free_head =
-	    TAILQ_HEAD_INITIALIZER(vnet_data_free_head);
+    TAILQ_HEAD_INITIALIZER(vnet_data_free_head);
 static struct sx vnet_data_free_lock;
 
 SDT_PROVIDER_DEFINE(vnet);
@@ -219,6 +221,12 @@ SDT_PROBE_DEFINE2(vnet, functions, vnet_destroy, entry,
     "int", "struct vnet *");
 SDT_PROBE_DEFINE1(vnet, functions, vnet_destroy, return,
     "int");
+
+/*
+ * Run per-vnet sysinits or sysuninits during vnet creation/destruction.
+ */
+static void vnet_sysinit(void);
+static void vnet_sysuninit(void);
 
 #ifdef DDB
 static void db_show_vnet_print_vs(struct vnet_sysinit *, int);
@@ -239,7 +247,7 @@ vnet_alloc(void)
 
 	/*
 	 * Allocate storage for virtualized global variables and copy in
-	 * initial values form our 'master' copy.
+	 * initial values from our 'master' copy.
 	 */
 	vnet->vnet_data_mem = malloc(VNET_SIZE, M_VNET_DATA, M_WAITOK);
 	memcpy(vnet->vnet_data_mem, (void *)VNET_START, VNET_BYTES);
@@ -309,7 +317,6 @@ vnet_init_prelink(void *arg __unused)
 	rw_init(&vnet_rwlock, "vnet_rwlock");
 	sx_init(&vnet_sxlock, "vnet_sxlock");
 	sx_init(&vnet_sysinit_sxlock, "vnet_sysinit_sxlock");
-	LIST_INIT(&vnet_head);
 }
 SYSINIT(vnet_init_prelink, SI_SUB_VNET_PRELINK, SI_ORDER_FIRST,
     vnet_init_prelink, NULL);
@@ -352,6 +359,7 @@ vnet_data_startup(void *dummy __unused)
 	df->vnd_len = VNET_MODMIN;
 	TAILQ_INSERT_HEAD(&vnet_data_free_head, df, vnd_link);
 	sx_init(&vnet_data_free_lock, "vnet_data alloc lock");
+	vnet_init_var = (uintptr_t)malloc(VNET_BYTES, M_VNET_DATA, M_WAITOK);
 }
 SYSINIT(vnet_data, SI_SUB_KLD, SI_ORDER_FIRST, vnet_data_startup, NULL);
 
@@ -470,13 +478,40 @@ vnet_data_copy(void *start, int size)
 }
 
 /*
+ * Save a copy of the initial values of virtualized global variables.
+ */
+void
+vnet_save_init(void *start, size_t size)
+{
+	MPASS(vnet_init_var != 0);
+	MPASS(VNET_START <= (uintptr_t)start &&
+	    (uintptr_t)start + size <= VNET_STOP);
+	memcpy((void *)(vnet_init_var + ((uintptr_t)start - VNET_START)),
+	    start, size);
+}
+
+/*
+ * Restore the 'master' copies of virtualized global variables to theirs
+ * initial values.
+ */
+void
+vnet_restore_init(void *start, size_t size)
+{
+	MPASS(vnet_init_var != 0);
+	MPASS(VNET_START <= (uintptr_t)start &&
+	    (uintptr_t)start + size <= VNET_STOP);
+	memcpy(start,
+	    (void *)(vnet_init_var + ((uintptr_t)start - VNET_START)), size);
+}
+
+/*
  * Support for special SYSINIT handlers registered via VNET_SYSINIT()
  * and VNET_SYSUNINIT().
  */
 void
 vnet_register_sysinit(void *arg)
 {
-	struct vnet_sysinit *vs, *vs2;	
+	struct vnet_sysinit *vs, *vs2;
 	struct vnet *vnet;
 
 	vs = arg;
@@ -499,11 +534,13 @@ vnet_register_sysinit(void *arg)
 	 * Invoke the constructor on all the existing vnets when it is
 	 * registered.
 	 */
+	VNET_LIST_RLOCK();
 	VNET_FOREACH(vnet) {
 		CURVNET_SET_QUIET(vnet);
 		vs->func(vs->arg);
 		CURVNET_RESTORE();
 	}
+	VNET_LIST_RUNLOCK();
 	VNET_SYSINIT_WUNLOCK();
 }
 
@@ -555,6 +592,7 @@ vnet_deregister_sysuninit(void *arg)
 	 * deregistered.
 	 */
 	VNET_SYSINIT_WLOCK();
+	VNET_LIST_RLOCK();
 	VNET_FOREACH(vnet) {
 		CURVNET_SET_QUIET(vnet);
 		vs->func(vs->arg);
@@ -564,6 +602,7 @@ vnet_deregister_sysuninit(void *arg)
 	/* Remove the destructor from the global list of vnet destructors. */
 	TAILQ_REMOVE(&vnet_destructors, vs, link);
 	VNET_SYSINIT_WUNLOCK();
+	VNET_LIST_RUNLOCK();
 }
 
 /*
@@ -571,7 +610,7 @@ vnet_deregister_sysuninit(void *arg)
  * vnet construction.  The caller is responsible for ensuring the new vnet is
  * the current vnet and that the vnet_sysinit_sxlock lock is locked.
  */
-void
+static void
 vnet_sysinit(void)
 {
 	struct vnet_sysinit *vs;
@@ -589,7 +628,7 @@ vnet_sysinit(void)
  * vnet destruction.  The caller is responsible for ensuring the dying vnet
  * the current vnet and that the vnet_sysinit_sxlock lock is locked.
  */
-void
+static void
 vnet_sysuninit(void)
 {
 	struct vnet_sysinit *vs;
@@ -747,11 +786,12 @@ db_show_vnet_print_vs(struct vnet_sysinit *vs, int ddb)
 	c_db_sym_t sym;
 	db_expr_t  offset;
 
-#define xprint(...)							\
+#define xprint(...) do {						\
 	if (ddb)							\
 		db_printf(__VA_ARGS__);					\
 	else								\
-		printf(__VA_ARGS__)
+		printf(__VA_ARGS__);					\
+} while (0)
 
 	if (vs == NULL) {
 		xprint("%s: no vnet_sysinit * given\n", __func__);
@@ -769,7 +809,7 @@ db_show_vnet_print_vs(struct vnet_sysinit *vs, int ddb)
 #undef xprint
 }
 
-DB_SHOW_COMMAND(vnet_sysinit, db_show_vnet_sysinit)
+DB_SHOW_COMMAND_FLAGS(vnet_sysinit, db_show_vnet_sysinit, DB_CMD_MEMSAFE)
 {
 	struct vnet_sysinit *vs;
 
@@ -783,7 +823,7 @@ DB_SHOW_COMMAND(vnet_sysinit, db_show_vnet_sysinit)
 	}
 }
 
-DB_SHOW_COMMAND(vnet_sysuninit, db_show_vnet_sysuninit)
+DB_SHOW_COMMAND_FLAGS(vnet_sysuninit, db_show_vnet_sysuninit, DB_CMD_MEMSAFE)
 {
 	struct vnet_sysinit *vs;
 
@@ -799,7 +839,7 @@ DB_SHOW_COMMAND(vnet_sysuninit, db_show_vnet_sysuninit)
 }
 
 #ifdef VNET_DEBUG
-DB_SHOW_COMMAND(vnetrcrs, db_show_vnetrcrs)
+DB_SHOW_COMMAND_FLAGS(vnetrcrs, db_show_vnetrcrs, DB_CMD_MEMSAFE)
 {
 	struct vnet_recursion *vnr;
 

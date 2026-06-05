@@ -25,10 +25,9 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet6.h"
 #include "opt_ipstealth.h"
+#include "opt_sctp.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -39,6 +38,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/route/nhop.h>
 #include <net/pfil.h>
@@ -54,6 +54,10 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/in6_fib.h>
 #include <netinet6/ip6_var.h>
 #include <netinet6/nd6.h>
+
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+#include <netinet/sctp_crc32.h>
+#endif
 
 static int
 ip6_findroute(struct nhop_object **pnh, const struct sockaddr_in6 *dst,
@@ -108,6 +112,7 @@ ip6_tryforward(struct mbuf *m)
 	    IN6_IS_ADDR_MULTICAST(&ip6->ip6_dst) ||
 	    IN6_IS_ADDR_LINKLOCAL(&ip6->ip6_dst) ||
 	    IN6_IS_ADDR_LINKLOCAL(&ip6->ip6_src) ||
+	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_dst) ||
 	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_src) ||
 	    in6_localip(&ip6->ip6_dst))
 		return (m);
@@ -164,7 +169,7 @@ ip6_tryforward(struct mbuf *m)
 	 */
 	if (!PFIL_HOOKED_IN(V_inet6_pfil_head))
 		goto passin;
-	if (pfil_run_hooks(V_inet6_pfil_head, &m, rcvif, PFIL_IN, NULL) !=
+	if (pfil_mbuf_in(V_inet6_pfil_head, &m, rcvif, NULL) !=
 	    PFIL_PASS)
 		goto dropin;
 	/*
@@ -214,8 +219,8 @@ passin:
 	/*
 	 * Outgoing packet firewall processing.
 	 */
-	if (pfil_run_hooks(V_inet6_pfil_head, &m, nh->nh_ifp, PFIL_OUT |
-	    PFIL_FWD, NULL) != PFIL_PASS)
+	if (pfil_mbuf_out(V_inet6_pfil_head, &m, nh->nh_ifp,
+	    NULL) != PFIL_PASS)
 		goto dropout;
 
 	/*
@@ -276,6 +281,29 @@ passout:
 	{
 		ip6->ip6_hlim -= IPV6_HLIMDEC;
 	}
+
+	/*
+	 * If TCP/UDP header still needs a valid checksum and interface will not
+	 * calculate it for us, do it here.
+	 */
+	if (__predict_false(m->m_pkthdr.csum_flags & CSUM_DELAY_DATA_IPV6 &
+	    ~nh->nh_ifp->if_hwassist)) {
+		int offset = ip6_lasthdr(m, 0, IPPROTO_IPV6, NULL);
+
+		if (offset < sizeof(struct ip6_hdr) || offset > m->m_pkthdr.len)
+			goto drop;
+		in6_delayed_cksum(m, m->m_pkthdr.len - offset, offset);
+		m->m_pkthdr.csum_flags &= ~CSUM_DELAY_DATA_IPV6;
+	}
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+	if (__predict_false(m->m_pkthdr.csum_flags & CSUM_IP6_SCTP &
+	    ~nh->nh_ifp->if_hwassist)) {
+		int offset = ip6_lasthdr(m, 0, IPPROTO_IPV6, NULL);
+
+		sctp_delayed_cksum(m, offset);
+		m->m_pkthdr.csum_flags &= ~CSUM_IP6_SCTP;
+	}
+#endif
 
 	m_clrprotoflags(m);	/* Avoid confusing lower layers. */
 	IP_PROBE(send, NULL, NULL, ip6, nh->nh_ifp, NULL, ip6);

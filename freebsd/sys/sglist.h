@@ -28,8 +28,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -57,6 +55,7 @@ struct sglist {
 
 struct bio;
 struct mbuf;
+struct thread;
 struct uio;
 
 static __inline void
@@ -94,6 +93,7 @@ int	sglist_append_phys(struct sglist *sg, vm_paddr_t paddr,
 	    size_t len);
 int	sglist_append_sglist(struct sglist *sg, struct sglist *source,
 	    size_t offset, size_t length);
+int	sglist_append_single_mbuf(struct sglist *sg, struct mbuf *m);
 int	sglist_append_uio(struct sglist *sg, struct uio *uio);
 int	sglist_append_user(struct sglist *sg, void *buf, size_t len,
 	    struct thread *td);

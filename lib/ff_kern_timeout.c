@@ -56,6 +56,21 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/bus.h>
 #include <sys/callout.h>
+
+/*
+ * F-Stack: 14.0+ removed CALLOUT_LOCAL_ALLOC and CS_EXECUTING.
+ * Define as fallback so existing checks preserve behavior under user-space stub.
+ */
+#ifdef FSTACK
+#ifndef CALLOUT_LOCAL_ALLOC
+#define CALLOUT_LOCAL_ALLOC 0
+#endif
+#ifndef CS_EXECUTING
+#define CS_EXECUTING 0x0002
+#endif
+static int _ff_callout_stop_safe(struct callout *c, int flags, void (*drain)(void *));
+#endif
+
 #include <sys/file.h>
 #include <sys/interrupt.h>
 #include <sys/kernel.h>
@@ -289,7 +304,9 @@ callout_cpu_init(struct callout_cpu *cc, int cpu)
     for (i = 0; i < ncallout; i++) {
         c = &cc->cc_callout[i];
         callout_init(c, 0);
+#ifndef FSTACK
         c->c_iflags = CALLOUT_LOCAL_ALLOC;
+#endif
         SLIST_INSERT_HEAD(&cc->cc_callfree, c, c_links.sle);
     }
 }
@@ -326,8 +343,10 @@ callout_tick(void)
      * swi_sched acquires the thread lock, so we don't want to call it
      * with cc_lock held; incorrect locking order.
      */
+#ifndef FSTACK
     if (need_softclock)
         softclock(cc);
+#endif
 }
 
 static struct callout_cpu *
@@ -554,7 +573,7 @@ skip:
  * Software (low priority) clock interrupt.
  * Run periodic events from timeout queue.
  */
-void
+static __unused void
 softclock(void *arg)
 {
     struct callout *c;
@@ -788,8 +807,20 @@ callout_schedule(struct callout *c, int to_ticks)
     return callout_reset_on(c, to_ticks, c->c_func, c->c_arg, c->c_cpu);
 }
 
+#ifdef FSTACK
+/* 14.0+ public ABI: 2-arg, calls the 3-arg internal impl with NULL drain. */
+int
+_callout_stop_safe(struct callout *c, int flags)
+{
+    return _ff_callout_stop_safe(c, flags, NULL);
+}
+
+static int
+_ff_callout_stop_safe(struct callout *c, int flags, void (*drain)(void *))
+#else
 int
 _callout_stop_safe(struct callout *c, int flags, void (*drain)(void *))
+#endif
 {
     struct callout_cpu *cc, *old_cc;
     struct lock_class *class;

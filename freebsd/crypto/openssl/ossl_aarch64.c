@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 The FreeBSD Foundation
  *
@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <sys/types.h>
@@ -36,15 +34,22 @@
 #include <machine/md_var.h>
 
 #include <crypto/openssl/ossl.h>
-#include <crypto/openssl/aarch64/arm_arch.h>
+#include <crypto/openssl/ossl_cipher.h>
+#include <crypto/openssl/arm_arch.h>
 
 /*
  * Feature bits defined in arm_arch.h
  */
 unsigned int OPENSSL_armcap_P;
 
+ossl_cipher_setkey_t aes_v8_set_encrypt_key;
+ossl_cipher_setkey_t aes_v8_set_decrypt_key;
+
+ossl_cipher_setkey_t vpaes_set_encrypt_key;
+ossl_cipher_setkey_t vpaes_set_decrypt_key;
+
 void
-ossl_cpuid(void)
+ossl_cpuid(struct ossl_softc *sc)
 {
 	/* SHA features */
 	if ((elf_hwcap & HWCAP_SHA1) != 0)
@@ -59,4 +64,18 @@ ossl_cpuid(void)
 		OPENSSL_armcap_P |= ARMV8_AES;
 	if ((elf_hwcap & HWCAP_PMULL) != 0)
 		OPENSSL_armcap_P |= ARMV8_PMULL;
+
+	if ((OPENSSL_armcap_P & ARMV8_AES) == 0 &&
+	    (OPENSSL_armcap_P & ARMV7_NEON) == 0) {
+		sc->has_aes = false;
+		return;
+	}
+	sc->has_aes = true;
+	if (OPENSSL_armcap_P & ARMV8_AES) {
+		ossl_cipher_aes_cbc.set_encrypt_key = aes_v8_set_encrypt_key;
+		ossl_cipher_aes_cbc.set_decrypt_key = aes_v8_set_decrypt_key;
+	} else {
+		ossl_cipher_aes_cbc.set_encrypt_key = vpaes_set_encrypt_key;
+		ossl_cipher_aes_cbc.set_decrypt_key = vpaes_set_decrypt_key;
+	}
 }

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2018 Johannes Lundberg
  *
@@ -25,13 +25,13 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
+#include <sys/sysctl.h>
+#include <sys/tslog.h>
+
 #include <vm/vm.h>
 /* XXX: enable this once the KPI is available */
 /* #include <x86/physmem.h> */
@@ -56,28 +56,47 @@ struct pci_device_id {
  */
 vm_paddr_t intel_graphics_stolen_base = 0;
 vm_paddr_t intel_graphics_stolen_size = 0;
+SYSCTL_U64(_hw, OID_AUTO, intel_graphics_stolen_base, CTLFLAG_RD,
+    &intel_graphics_stolen_base, 0,
+    "Base address of the intel graphics stolen memory.");
+SYSCTL_U64(_hw, OID_AUTO, intel_graphics_stolen_size, CTLFLAG_RD,
+    &intel_graphics_stolen_size, 0,
+    "Size of the intel graphics stolen memory.");
 
 /*
  * Intel early quirks functions
  */
 static vm_paddr_t
-intel_stolen_base_gen3(int bus, int slot, int func)
+intel_stolen_base_gen3(int domain, int bus, int slot, int func)
 {
 	uint32_t ctrl;
 	vm_paddr_t val;
 
-	ctrl = pci_cfgregread(bus, slot, func, INTEL_BSM, 4);
+	ctrl = pci_cfgregread(domain, bus, slot, func, INTEL_BSM, 4);
 	val = ctrl & INTEL_BSM_MASK;
 	return (val);
 }
 
 static vm_paddr_t
-intel_stolen_size_gen3(int bus, int slot, int func)
+intel_stolen_base_gen11(int domain, int bus, int slot, int func)
 {
 	uint32_t ctrl;
 	vm_paddr_t val;
 
-	ctrl = pci_cfgregread(0, 0, 0, I830_GMCH_CTRL, 2);
+	ctrl = pci_cfgregread(domain, bus, slot, func, INTEL_GEN11_BSM_DW0, 4);
+	val = ctrl & INTEL_BSM_MASK;
+	val |= (uint64_t)pci_cfgregread(
+	    domain, bus, slot, func, INTEL_GEN11_BSM_DW1, 4) << 32;
+	return (val);
+}
+
+static vm_paddr_t
+intel_stolen_size_gen3(int domain, int bus, int slot, int func)
+{
+	uint32_t ctrl;
+	vm_paddr_t val;
+
+	ctrl = pci_cfgregread(0, 0, 0, 0, I830_GMCH_CTRL, 2);
 	val = ctrl & I855_GMCH_GMS_MASK;
 
 	switch (val) {
@@ -112,34 +131,34 @@ intel_stolen_size_gen3(int bus, int slot, int func)
 }
 
 static vm_paddr_t
-intel_stolen_size_gen6(int bus, int slot, int func)
+intel_stolen_size_gen6(int domain, int bus, int slot, int func)
 {
 	uint32_t ctrl;
 	vm_paddr_t val;
 
-	ctrl = pci_cfgregread(bus, slot, func, SNB_GMCH_CTRL, 2);
+	ctrl = pci_cfgregread(domain, bus, slot, func, SNB_GMCH_CTRL, 2);
 	val = (ctrl >> SNB_GMCH_GMS_SHIFT) & SNB_GMCH_GMS_MASK;
 	return (val * MiB(32));
 }
 
 static vm_paddr_t
-intel_stolen_size_gen8(int bus, int slot, int func)
+intel_stolen_size_gen8(int domain, int bus, int slot, int func)
 {
 	uint32_t ctrl;
 	vm_paddr_t val;
 
-	ctrl = pci_cfgregread(bus, slot, func, SNB_GMCH_CTRL, 2);
+	ctrl = pci_cfgregread(domain, bus, slot, func, SNB_GMCH_CTRL, 2);
 	val = (ctrl >> BDW_GMCH_GMS_SHIFT) & BDW_GMCH_GMS_MASK;
 	return (val * MiB(32));
 }
 
 static vm_paddr_t
-intel_stolen_size_chv(int bus, int slot, int func)
+intel_stolen_size_chv(int domain, int bus, int slot, int func)
 {
 	uint32_t ctrl;
 	vm_paddr_t val;
 
-	ctrl = pci_cfgregread(bus, slot, func, SNB_GMCH_CTRL, 2);
+	ctrl = pci_cfgregread(domain, bus, slot, func, SNB_GMCH_CTRL, 2);
 	val = (ctrl >> SNB_GMCH_GMS_SHIFT) & SNB_GMCH_GMS_MASK;
 
 	/*
@@ -156,12 +175,12 @@ intel_stolen_size_chv(int bus, int slot, int func)
 }
 
 static vm_paddr_t
-intel_stolen_size_gen9(int bus, int slot, int func)
+intel_stolen_size_gen9(int domain, int bus, int slot, int func)
 {
 	uint32_t ctrl;
 	vm_paddr_t val;
 
-	ctrl = pci_cfgregread(bus, slot, func, SNB_GMCH_CTRL, 2);
+	ctrl = pci_cfgregread(domain, bus, slot, func, SNB_GMCH_CTRL, 2);
 	val = (ctrl >> BDW_GMCH_GMS_SHIFT) & BDW_GMCH_GMS_MASK;
 
 	/* 0x0  to 0xEF: 32MB increments starting at 0MB */
@@ -172,8 +191,8 @@ intel_stolen_size_gen9(int bus, int slot, int func)
 }
 
 struct intel_stolen_ops {
-	vm_paddr_t (*base)(int bus, int slot, int func);
-	vm_paddr_t (*size)(int bus, int slot, int func);
+	vm_paddr_t (*base)(int domain, int bus, int slot, int func);
+	vm_paddr_t (*size)(int domain, int bus, int slot, int func);
 };
 
 static const struct intel_stolen_ops intel_stolen_ops_gen3 = {
@@ -199,6 +218,11 @@ static const struct intel_stolen_ops intel_stolen_ops_gen9 = {
 static const struct intel_stolen_ops intel_stolen_ops_chv = {
 	.base = intel_stolen_base_gen3,
 	.size = intel_stolen_size_chv,
+};
+
+static const struct intel_stolen_ops intel_stolen_ops_gen11 = {
+	.base = intel_stolen_base_gen11,
+	.size = intel_stolen_size_gen9,
 };
 
 static const struct pci_device_id intel_ids[] = {
@@ -228,6 +252,16 @@ static const struct pci_device_id intel_ids[] = {
 	INTEL_CFL_IDS(&intel_stolen_ops_gen9),
 	INTEL_GLK_IDS(&intel_stolen_ops_gen9),
 	INTEL_CNL_IDS(&intel_stolen_ops_gen9),
+	INTEL_ICL_11_IDS(&intel_stolen_ops_gen11),
+	INTEL_EHL_IDS(&intel_stolen_ops_gen11),
+	INTEL_JSL_IDS(&intel_stolen_ops_gen11),
+	INTEL_TGL_12_IDS(&intel_stolen_ops_gen11),
+	INTEL_RKL_IDS(&intel_stolen_ops_gen11),
+	INTEL_ADLS_IDS(&intel_stolen_ops_gen11),
+	INTEL_ADLP_IDS(&intel_stolen_ops_gen11),
+	INTEL_ADLN_IDS(&intel_stolen_ops_gen11),
+	INTEL_RPLS_IDS(&intel_stolen_ops_gen11),
+	INTEL_RPLP_IDS(&intel_stolen_ops_gen11),
 };
 
 /*
@@ -245,7 +279,8 @@ intel_graphics_stolen(void)
 	uint32_t vendor, device, class;
 	int i;
 
-	/* XXX: Scan bus instead of assuming 0:2:0? */
+	/* XXX: Scan bus instead of assuming 0:0:2:0? */
+	const int domain = 0;
 	const int bus = 0;
 	const int slot = 2;
 	const int func = 0;
@@ -253,15 +288,15 @@ intel_graphics_stolen(void)
 	if (pci_cfgregopen() == 0)
 		return;
 
-	vendor = pci_cfgregread(bus, slot, func, PCIR_VENDOR, 2);
+	vendor = pci_cfgregread(domain, bus, slot, func, PCIR_VENDOR, 2);
 	if (vendor != PCI_VENDOR_INTEL)
 		return;
 
-	class = pci_cfgregread(bus, slot, func, PCIR_SUBCLASS, 2);
+	class = pci_cfgregread(domain, bus, slot, func, PCIR_SUBCLASS, 2);
 	if (class != PCI_CLASS_VGA)
 		return;
 
-	device = pci_cfgregread(bus, slot, func, PCIR_DEVICE, 2);
+	device = pci_cfgregread(domain, bus, slot, func, PCIR_DEVICE, 2);
 	if (device == 0xFFFF)
 		return;
 
@@ -269,8 +304,8 @@ intel_graphics_stolen(void)
 		if (intel_ids[i].device != device)
 			continue;
 		ops = intel_ids[i].data;
-		intel_graphics_stolen_base = ops->base(bus, slot, func);
-		intel_graphics_stolen_size = ops->size(bus, slot, func);
+		intel_graphics_stolen_base = ops->base(domain, bus, slot, func);
+		intel_graphics_stolen_size = ops->size(domain, bus, slot, func);
 		break;
 	}
 
@@ -283,5 +318,7 @@ void
 pci_early_quirks(void)
 {
 
+	TSENTER();
 	intel_graphics_stolen();
+	TSEXIT();
 }

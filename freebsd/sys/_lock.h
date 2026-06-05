@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS__LOCK_H_
@@ -35,8 +33,8 @@
 
 struct lock_object {
 	const	char *lo_name;		/* Individual lock name. */
-	u_int	lo_flags;
-	u_int	lo_data;		/* General class specific data. */
+	unsigned int lo_flags;
+	unsigned int lo_data;		/* General class specific data. */
 	struct	witness *lo_witness;	/* Data for witness. */
 };
 

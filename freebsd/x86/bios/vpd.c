@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 Matthew N. Dodd <winter@jurai.net>
  * All rights reserved.
@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * VPD decoder for IBM systems (Thinkpads)
  * http://www-1.ibm.com/support/docview.wss?uid=psg1MIGR-45120
@@ -95,8 +93,6 @@ struct vpd_softc {
 #define	RES2VPD(res)	((struct vpd *)rman_get_virtual(res))
 #define	ADDR2VPD(addr)	((struct vpd *)BIOS_PADDRTOVADDR(addr))
 
-static devclass_t vpd_devclass;
-
 static void	vpd_identify	(driver_t *, device_t);
 static int	vpd_probe	(device_t);
 static int	vpd_attach	(device_t);
@@ -145,7 +141,7 @@ vpd_identify (driver_t *driver, device_t parent)
 		rid = 0;
 		length = ADDR2VPD(addr)->Length;
 
-		child = BUS_ADD_CHILD(parent, 5, "vpd", -1);
+		child = BUS_ADD_CHILD(parent, 5, "vpd", DEVICE_UNIT_ANY);
 		device_set_driver(child, driver);
 		bus_set_resource(child, SYS_RES_MEMORY, rid, addr, length);
 		device_set_desc(child, "Vital Product Data Area");
@@ -252,10 +248,7 @@ vpd_detach (device_t dev)
 }
 
 static int
-vpd_modevent (mod, what, arg)
-        module_t        mod;
-        int             what;
-        void *          arg;
+vpd_modevent (module_t mod, int what, void *arg)
 {
 	device_t *	devs;
 	int		count;
@@ -265,7 +258,7 @@ vpd_modevent (mod, what, arg)
 	case MOD_LOAD:
 		break;
 	case MOD_UNLOAD:
-		devclass_get_devices(vpd_devclass, &devs, &count);
+		devclass_get_devices(devclass_find("vpd"), &devs, &count);
 		for (i = 0; i < count; i++) {
 			device_delete_child(device_get_parent(devs[i]), devs[i]);
 		}
@@ -292,7 +285,7 @@ static driver_t vpd_driver = {
 	sizeof(struct vpd_softc),
 };
 
-DRIVER_MODULE(vpd, nexus, vpd_driver, vpd_devclass, vpd_modevent, 0);
+DRIVER_MODULE(vpd, nexus, vpd_driver, vpd_modevent, 0);
 MODULE_VERSION(vpd, 1);
 
 /*

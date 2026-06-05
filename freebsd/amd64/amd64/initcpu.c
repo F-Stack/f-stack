@@ -1,22 +1,22 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) KATO Takenori, 1997, 1998.
- * 
+ *
  * All rights reserved.  Unpublished rights reserved under the copyright
  * laws of Japan.
- * 
+ *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
- * 
+ *
  * 1. Redistributions of source code must retain the above copyright
  *    notice, this list of conditions and the following disclaimer as
  *    the first lines of this file unmodified.
  * 2. Redistributions in binary form must reproduce the above copyright
  *    notice, this list of conditions and the following disclaimer in the
  *    documentation and/or other materials provided with the distribution.
- * 
+ *
  * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
  * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
  * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
@@ -30,8 +30,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_cpu.h"
 
 #include <sys/param.h>
@@ -103,7 +101,8 @@ init_amd(void)
 	case 0x10:
 	case 0x12:
 		if ((cpu_feature2 & CPUID2_HV) == 0)
-			wrmsr(MSR_DE_CFG, rdmsr(MSR_DE_CFG) | 1);
+			wrmsr(MSR_DE_CFG, rdmsr(MSR_DE_CFG) |
+			    DE_CFG_10H_12H_STACK_POINTER_JUMP_FIX_BIT);
 		break;
 	}
 
@@ -153,7 +152,7 @@ init_amd(void)
 	    (cpu_feature2 & CPUID2_HV) == 0) {
 		/* 1021 */
 		msr = rdmsr(MSR_DE_CFG);
-		msr |= 0x2000;
+		msr |= DE_CFG_ZEN_LOAD_STALE_DATA_FIX_BIT;
 		wrmsr(MSR_DE_CFG, msr);
 
 		/* 1033 */
@@ -194,6 +193,9 @@ init_amd(void)
 			hw_lower_amd64_sharedpage = 1;
 		}
 	}
+
+	/* Zenbleed.  See the comments in 'cpu_machdep.c'. */
+	zenbleed_check_and_apply(false);
 }
 
 /*
@@ -247,6 +249,26 @@ cpu_auxmsr(void)
 	return (PCPU_GET(cpuid));
 }
 
+void
+cpu_init_small_core(void)
+{
+	u_int r[4];
+
+	if (cpu_high < 0x1a)
+		return;
+
+	cpuid_count(0x1a, 0, r);
+	if ((r[0] & CPUID_HYBRID_CORE_MASK) != CPUID_HYBRID_SMALL_CORE)
+		return;
+
+	PCPU_SET(small_core, 1);
+	if (pmap_pcid_enabled && invpcid_works &&
+	    pmap_pcid_invlpg_workaround_uena) {
+		PCPU_SET(pcid_invlpg_workaround, 1);
+		pmap_pcid_invlpg_workaround = 1;
+	}
+}
+
 /*
  * Initialize CPU control registers
  */
@@ -256,10 +278,11 @@ initializecpu(void)
 	uint64_t msr;
 	uint32_t cr4;
 
+	TSENTER();
 	cr4 = rcr4();
 	if ((cpu_feature & CPUID_XMM) && (cpu_feature & CPUID_FXSR)) {
 		cr4 |= CR4_FXSR | CR4_XMM;
-		cpu_fxsr = hw_instruction_sse = 1;
+		hw_instruction_sse = 1;
 	}
 	if (cpu_stdext_feature & CPUID_STDEXT_FSGSBASE)
 		cr4 |= CR4_FSGSBASE;
@@ -291,11 +314,20 @@ initializecpu(void)
 		if (cpu_stdext_feature & CPUID_STDEXT_SMAP)
 			cr4 |= CR4_SMAP;
 	}
+	TSENTER2("load_cr4");
 	load_cr4(cr4);
+	TSEXIT2("load_cr4");
+	/* Reload cpu ext features to reflect cr4 changes */
+	if (IS_BSP() && cold)
+		identify_cpu_ext_features();
 	if (IS_BSP() && (amd_feature & AMDID_NX) != 0) {
 		msr = rdmsr(MSR_EFER) | EFER_NXE;
 		wrmsr(MSR_EFER, msr);
 		pg_nx = PG_NX;
+	}
+	if ((amd_feature2 & AMDID2_TCE) != 0) {
+		msr = rdmsr(MSR_EFER) | EFER_TCE;
+		wrmsr(MSR_EFER, msr);
 	}
 	hw_ibrs_recalculate(false);
 	hw_ssb_recalculate(false);
@@ -314,6 +346,10 @@ initializecpu(void)
 	if ((amd_feature & AMDID_RDTSCP) != 0 ||
 	    (cpu_stdext_feature2 & CPUID_STDEXT2_RDPID) != 0)
 		wrmsr(MSR_TSC_AUX, cpu_auxmsr());
+
+	if (!IS_BSP())
+		cpu_init_small_core();
+	TSEXIT();
 }
 
 void

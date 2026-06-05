@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -25,9 +25,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -38,10 +35,10 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/bus.h>
 
-#include <dev/extres/clk/clk.h>
-#include <dev/extres/hwreset/hwreset.h>
-#include <dev/extres/phy/phy.h>
-#include <dev/extres/regulator/regulator.h>
+#include <dev/clk/clk.h>
+#include <dev/hwreset/hwreset.h>
+#include <dev/phy/phy.h>
+#include <dev/regulator/regulator.h>
 #include <dev/fdt/fdt_common.h>
 #include <dev/fdt/fdt_pinctrl.h>
 #include <dev/ofw/openfirm.h>
@@ -658,7 +655,7 @@ uphy_pex_enable(struct padctl_softc *sc, struct padctl_pad *pad)
 		goto err;
 	}
 
-	/* 5. Enable the PLL (20 µs Lock time) */
+	/* 5. Enable the PLL (20 Î¼s Lock time) */
 	reg = RD4(sc, XUSB_PADCTL_UPHY_PLL_P0_CTL1);
 	reg |= UPHY_PLL_P0_CTL1_PLL0_ENABLE;
 	WR4(sc, XUSB_PADCTL_UPHY_PLL_P0_CTL1, reg);
@@ -893,7 +890,7 @@ uphy_sata_enable(struct padctl_softc *sc, struct padctl_pad *pad, bool usb)
 		goto err;
 	}
 
-	/* 5. Enable the PLL (20 µs Lock time) */
+	/* 5. Enable the PLL (20 Î¼s Lock time) */
 	reg = RD4(sc, XUSB_PADCTL_UPHY_PLL_S0_CTL1);
 	reg |= UPHY_PLL_S0_CTL1_PLL0_ENABLE;
 	WR4(sc, XUSB_PADCTL_UPHY_PLL_S0_CTL1, reg);
@@ -1745,7 +1742,6 @@ process_port(struct padctl_softc *sc, phandle_t node)
 {
 
 	struct padctl_port *port;
-	struct padctl_pad *pad;
 	char *name;
 	int rv;
 
@@ -1792,7 +1788,6 @@ process_port(struct padctl_softc *sc, phandle_t node)
 		goto end;
 	}
 
-	pad = port->lane->pad;
 	if (port->type == PADCTL_PORT_USB3) {
 		rv = OF_getencprop(node,  "nvidia,usb2-companion",
 		   &(port->companion), sizeof(port->companion));
@@ -1956,8 +1951,7 @@ static device_method_t tegra_xusbpadctl_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t tegra_xusbpadctl_devclass;
 static DEFINE_CLASS_0(xusbpadctl, tegra_xusbpadctl_driver,
     tegra_xusbpadctl_methods, sizeof(struct padctl_softc));
 EARLY_DRIVER_MODULE(tegra_xusbpadctl, simplebus, tegra_xusbpadctl_driver,
-    tegra_xusbpadctl_devclass, NULL, NULL, 73);
+    NULL, NULL, 73);

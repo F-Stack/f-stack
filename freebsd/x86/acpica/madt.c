@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 John Baldwin <jhb@FreeBSD.org>
  *
@@ -24,9 +24,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -128,68 +125,89 @@ madt_probe_cpus(void)
 	return (0);
 }
 
+static const char *x2apic_sandy_dis[] = {
+	"LENOVO",
+	"ASUSTeK Computer Inc.",
+	"SAMSUNG ELECTRONICS CO., LTD.",
+};
+
 /*
- * Initialize the local APIC on the BSP.
+ * Automatically detect several configurations where x2APIC mode is
+ * known to cause troubles.  User can override the setting with
+ * hw.x2apic_enable tunable.
  */
-static int
-madt_setup_local(void)
+static const char *
+madt_x2apic_disable_reason(void)
 {
 	ACPI_TABLE_DMAR *dmartbl;
 	vm_paddr_t dmartbl_physaddr;
 	const char *reason;
 	char *hw_vendor;
 	u_int p[4];
+	int i;
+
+	reason = NULL;
+
+	dmartbl_physaddr = acpi_find_table(ACPI_SIG_DMAR);
+	if (dmartbl_physaddr != 0) {
+		dmartbl = acpi_map_table(dmartbl_physaddr, ACPI_SIG_DMAR);
+		if ((dmartbl->Flags & ACPI_DMAR_X2APIC_OPT_OUT) != 0)
+			reason = "by DMAR table";
+		acpi_unmap_table(dmartbl);
+		if (reason != NULL)
+			return (reason);
+	}
+
+	if (vm_guest == VM_GUEST_VMWARE) {
+		vmware_hvcall(0, VMW_HVCMD_GETVCPU_INFO,
+		    VMW_HVCMD_DEFAULT_PARAM, p);
+		if ((p[0] & VMW_VCPUINFO_VCPU_RESERVED) != 0 ||
+		    (p[0] & VMW_VCPUINFO_LEGACY_X2APIC) == 0)
+			return ("inside VMWare without intr redirection");
+	}
+
+	if (vm_guest == VM_GUEST_NO &&
+	    CPUID_TO_FAMILY(cpu_id) == 0x6 &&
+	    CPUID_TO_MODEL(cpu_id) == 0x2a) {
+		hw_vendor = kern_getenv("smbios.planar.maker");
+		/*
+		 * It seems that some SandyBridge-based notebook
+		 * BIOSes have a bug which prevents booting AP in
+		 * x2APIC mode.  Since the only way to detect mobile
+		 * CPU is to check northbridge pci id, which cannot be
+		 * done that early, disable x2APIC for all such
+		 * machines.
+		 */
+		if (hw_vendor != NULL) {
+			for (i = 0; i < nitems(x2apic_sandy_dis); i++) {
+				if (strcmp(hw_vendor, x2apic_sandy_dis[i]) ==
+				    0) {
+					reason =
+				"for a suspected SandyBridge BIOS bug";
+					break;
+				}
+			}
+			freeenv(hw_vendor);
+		}
+		if (reason != NULL)
+			return (reason);
+	}
+
+	return (NULL);
+}
+
+/*
+ * Initialize the local APIC on the BSP.
+ */
+static int
+madt_setup_local(void)
+{
+	const char *reason;
 	int user_x2apic;
 	bool bios_x2apic;
 
 	if ((cpu_feature2 & CPUID2_X2APIC) != 0) {
-		reason = NULL;
-
-		/*
-		 * Automatically detect several configurations where
-		 * x2APIC mode is known to cause troubles.  User can
-		 * override the setting with hw.x2apic_enable tunable.
-		 */
-		dmartbl_physaddr = acpi_find_table(ACPI_SIG_DMAR);
-		if (dmartbl_physaddr != 0) {
-			dmartbl = acpi_map_table(dmartbl_physaddr,
-			    ACPI_SIG_DMAR);
-			if ((dmartbl->Flags & ACPI_DMAR_X2APIC_OPT_OUT) != 0)
-				reason = "by DMAR table";
-			acpi_unmap_table(dmartbl);
-		}
-		if (vm_guest == VM_GUEST_VMWARE) {
-			vmware_hvcall(VMW_HVCMD_GETVCPU_INFO, p);
-			if ((p[0] & VMW_VCPUINFO_VCPU_RESERVED) != 0 ||
-			    (p[0] & VMW_VCPUINFO_LEGACY_X2APIC) == 0)
-				reason =
-				    "inside VMWare without intr redirection";
-		} else if (vm_guest == VM_GUEST_XEN) {
-			reason = "due to running under XEN";
-		} else if (vm_guest == VM_GUEST_NO &&
-		    CPUID_TO_FAMILY(cpu_id) == 0x6 &&
-		    CPUID_TO_MODEL(cpu_id) == 0x2a) {
-			hw_vendor = kern_getenv("smbios.planar.maker");
-			/*
-			 * It seems that some Lenovo and ASUS
-			 * SandyBridge-based notebook BIOSes have a
-			 * bug which prevents booting AP in x2APIC
-			 * mode.  Since the only way to detect mobile
-			 * CPU is to check northbridge pci id, which
-			 * cannot be done that early, disable x2APIC
-			 * for all Lenovo and ASUS SandyBridge
-			 * machines.
-			 */
-			if (hw_vendor != NULL) {
-				if (!strcmp(hw_vendor, "LENOVO") ||
-				    !strcmp(hw_vendor,
-				    "ASUSTeK Computer Inc.")) {
-					reason =
-				    "for a suspected SandyBridge BIOS bug";
-				}
-				freeenv(hw_vendor);
-			}
-		}
+		reason = madt_x2apic_disable_reason();
 		bios_x2apic = lapic_is_x2apic();
 		if (reason != NULL && bios_x2apic) {
 			if (bootverbose)
@@ -203,7 +221,7 @@ madt_setup_local(void)
 		else if (bootverbose)
 			printf("x2APIC available but disabled %s\n", reason);
 		user_x2apic = x2apic_mode;
-		TUNABLE_INT_FETCH("hw.x2apic_enable", &user_x2apic);
+		TUNABLE_INT_FETCH("hw.apic.x2apic_mode", &user_x2apic);
 		if (user_x2apic != x2apic_mode) {
 			if (bios_x2apic && !user_x2apic)
 				printf("x2APIC disabled by tunable and "
@@ -350,8 +368,8 @@ madt_add_cpu(u_int acpi_id, u_int apic_id, u_int flags)
 	 * MP code figure out which CPU is the BSP on its own.
 	 */
 	if (bootverbose)
-		printf("MADT: Found CPU APIC ID %u ACPI ID %u: %s\n",
-		    apic_id, acpi_id, flags & ACPI_MADT_ENABLED ?
+		printf("MADT: Found CPU APIC ID %d ACPI ID %u: %s\n",
+		    (int)apic_id, acpi_id, flags & ACPI_MADT_ENABLED ?
 		    "enabled" : "disabled");
 	if (!(flags & ACPI_MADT_ENABLED))
 		return;

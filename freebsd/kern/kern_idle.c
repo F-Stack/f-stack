@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 2000-2004 The FreeBSD Project. All rights reserved.
  *
@@ -24,9 +24,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -85,4 +82,7 @@ idle_setup(void *dummy)
 #ifdef SMP
 	}
 #endif
+	PROC_LOCK(p);
+	p->p_flag |= P_IDLEPROC;
+	PROC_UNLOCK(p);
 }

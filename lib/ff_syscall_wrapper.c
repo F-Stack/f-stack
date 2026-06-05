@@ -1360,10 +1360,10 @@ ff_accept(int s, struct linux_sockaddr * addr,
 {
     int rc;
     struct file *fp;
-    struct sockaddr *pf = NULL;
-    socklen_t socklen = sizeof(struct sockaddr_storage);
+    struct sockaddr_storage pfss;
+    struct sockaddr *pf = (struct sockaddr *)&pfss;
 
-    if ((rc = kern_accept(curthread, s, &pf, &socklen, &fp)))
+    if ((rc = kern_accept(curthread, s, pf, &fp)))
         goto kern_fail;
 
     rc = curthread->td_retval[0];
@@ -1375,13 +1375,9 @@ ff_accept(int s, struct linux_sockaddr * addr,
     if (addrlen)
         *addrlen = pf->sa_len;
 
-    if(pf != NULL)
-        free(pf, M_SONAME);
     return (rc);
 
 kern_fail:
-    if(pf != NULL)
-        free(pf, M_SONAME);
     ff_os_errno(rc);
     return (-1);
 }
@@ -1392,10 +1388,10 @@ ff_accept4(int s, struct linux_sockaddr * addr,
 {
     int rc;
     struct file *fp;
-    struct sockaddr *pf = NULL;
-    socklen_t socklen = sizeof(struct sockaddr_storage);
+    struct sockaddr_storage pfss;
+    struct sockaddr *pf = (struct sockaddr *)&pfss;
 
-    if ((rc = kern_accept4(curthread, s, &pf, &socklen, linux2freebsd_socket_flags(flags), &fp)))
+    if ((rc = kern_accept4(curthread, s, pf, linux2freebsd_socket_flags(flags), &fp)))
         goto kern_fail;
 
     rc = curthread->td_retval[0];
@@ -1407,13 +1403,9 @@ ff_accept4(int s, struct linux_sockaddr * addr,
     if (addrlen)
         *addrlen = pf->sa_len;
 
-    if(pf != NULL)
-        free(pf, M_SONAME);
     return (rc);
 
 kern_fail:
-    if(pf != NULL)
-        free(pf, M_SONAME);
     ff_os_errno(rc);
     return (-1);
 }
@@ -1472,21 +1464,20 @@ ff_getpeername(int s, struct linux_sockaddr * name,
     socklen_t *namelen)
 {
     int rc;
-    struct sockaddr *pf = NULL;
+    struct sockaddr_storage pfss;
+    struct sockaddr *pf = (struct sockaddr *)&pfss;
 
-    if ((rc = kern_getpeername(curthread, s, &pf, namelen)))
+    if ((rc = kern_getpeername(curthread, s, pf)))
         goto kern_fail;
 
     if (name && pf)
         freebsd2linux_sockaddr(name, pf);
+    if (namelen)
+        *namelen = pf->sa_len;
 
-    if(pf != NULL)
-        free(pf, M_SONAME);
     return (rc);
 
 kern_fail:
-    if(pf != NULL)
-        free(pf, M_SONAME);
     ff_os_errno(rc);
     return (-1);
 }
@@ -1496,21 +1487,20 @@ ff_getsockname(int s, struct linux_sockaddr *name,
     socklen_t *namelen)
 {
     int rc;
-    struct sockaddr *pf = NULL;
+    struct sockaddr_storage pfss;
+    struct sockaddr *pf = (struct sockaddr *)&pfss;
 
-    if ((rc = kern_getsockname(curthread, s, &pf, namelen)))
+    if ((rc = kern_getsockname(curthread, s, pf)))
         goto kern_fail;
 
     if (name && pf)
         freebsd2linux_sockaddr(name, pf);
+    if (namelen)
+        *namelen = pf->sa_len;
 
-    if(pf != NULL)
-        free(pf, M_SONAME);
     return (rc);
 
 kern_fail:
-    if(pf != NULL)
-        free(pf, M_SONAME);
     ff_os_errno(rc);
     return (-1);
 }

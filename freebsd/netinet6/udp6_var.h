@@ -57,9 +57,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)udp_var.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 #ifndef _NETINET6_UDP6_VAR_H_
@@ -68,10 +65,6 @@
 #ifdef _KERNEL
 SYSCTL_DECL(_net_inet6_udp6);
 
-extern struct pr_usrreqs	udp6_usrreqs;
-
-void	udp6_ctlinput(int, struct sockaddr *, void *);
-void	udplite6_ctlinput(int, struct sockaddr *, void *);
 int	udp6_input(struct mbuf **, int *, int);
 #endif
 

@@ -2,6 +2,11 @@
  * Copyright (c) 2015-2016 Svatopluk Kraus
  * Copyright (c) 2015-2016 Michal Meloun
  * All rights reserved.
+ * Copyright (c) 2015-2016 The FreeBSD Foundation
+ * Copyright (c) 2021 Jessica Clarke <jrtc27@FreeBSD.org>
+ *
+ * Portions of this software were developed by Andrew Turner under
+ * sponsorship from the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -26,8 +31,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  *	New-style Interrupt Framework
  *
@@ -42,33 +45,36 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
-#include <sys/kernel.h>
-#include <sys/lock.h>
-#include <sys/mutex.h>
-#include <sys/syslog.h>
-#include <sys/malloc.h>
-#include <sys/proc.h>
-#include <sys/queue.h>
+#include <sys/asan.h>
+#include <sys/bitstring.h>
 #include <sys/bus.h>
-#include <sys/interrupt.h>
-#include <sys/taskqueue.h>
-#include <sys/tree.h>
 #include <sys/conf.h>
 #include <sys/cpuset.h>
+#include <sys/interrupt.h>
+#include <sys/intr.h>
+#include <sys/kernel.h>
+#include <sys/lock.h>
+#include <sys/malloc.h>
+#include <sys/msan.h>
+#include <sys/mutex.h>
+#include <sys/proc.h>
+#include <sys/queue.h>
 #include <sys/rman.h>
 #include <sys/sched.h>
 #include <sys/smp.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
+#include <sys/syslog.h>
+#include <sys/taskqueue.h>
+#include <sys/tree.h>
 #include <sys/vmmeter.h>
 #ifdef HWPMC_HOOKS
 #include <sys/pmckern.h>
 #endif
 
 #include <machine/atomic.h>
-#include <machine/intr.h>
 #include <machine/cpu.h>
 #include <machine/smp.h>
-#include <machine/stdarg.h>
 
 #ifdef DDB
 #include <ddb/ddb.h>
@@ -93,14 +99,14 @@ __FBSDID("$FreeBSD$");
 MALLOC_DECLARE(M_INTRNG);
 MALLOC_DEFINE(M_INTRNG, "intr", "intr interrupt handling");
 
-/* Main interrupt handler called from assembler -> 'hidden' for C code. */
-void intr_irq_handler(struct trapframe *tf);
-
 /* Root interrupt controller stuff. */
-device_t intr_irq_root_dev;
-static intr_irq_filter_t *irq_root_filter;
-static void *irq_root_arg;
-static u_int irq_root_ipicount;
+struct intr_irq_root {
+	device_t dev;
+	intr_irq_filter_t *filter;
+	void *arg;
+};
+
+static struct intr_irq_root intr_irq_roots[INTR_ROOT_COUNT];
 
 struct intr_pic_child {
 	SLIST_ENTRY(intr_pic_child)	 pc_next;
@@ -125,15 +131,31 @@ struct intr_pic {
 	SLIST_HEAD(, intr_pic_child) pic_children;
 };
 
+#ifdef SMP
+#define INTR_IPI_NAMELEN	(MAXCOMLEN + 1)
+
+struct intr_ipi {
+	intr_ipi_handler_t	*ii_handler;
+	void			*ii_handler_arg;
+	struct intr_irqsrc	*ii_isrc;
+	char			ii_name[INTR_IPI_NAMELEN];
+	u_long			*ii_count;
+};
+
+static device_t intr_ipi_dev;
+static u_int intr_ipi_dev_priority;
+static bool intr_ipi_dev_frozen;
+#endif
+
 static struct mtx pic_list_lock;
 static SLIST_HEAD(, intr_pic) pic_list;
 
-static struct intr_pic *pic_lookup(device_t dev, intptr_t xref, int flags);
+static struct intr_pic *pic_lookup(device_t dev, intptr_t xref, u_int flags);
 
 /* Interrupt source definition. */
 static struct mtx isrc_table_lock;
 static struct intr_irqsrc **irq_sources;
-u_int irq_next_free;
+static u_int irq_next_free;
 
 #ifdef SMP
 #ifdef EARLY_AP_STARTUP
@@ -141,9 +163,11 @@ static bool irq_assign_cpu = true;
 #else
 static bool irq_assign_cpu = false;
 #endif
+
+static struct intr_ipi ipi_sources[INTR_IPI_COUNT];
 #endif
 
-int intr_nirq = NIRQ;
+u_int intr_nirq = NIRQ;
 SYSCTL_UINT(_machdep, OID_AUTO, nirq, CTLFLAG_RDTUN, &intr_nirq, 0,
     "Number of IRQs");
 
@@ -152,7 +176,8 @@ u_long *intrcnt;
 char *intrnames;
 size_t sintrcnt;
 size_t sintrnames;
-static u_int intrcnt_index;
+int nintrcnt;
+static bitstr_t *intrcnt_bitmap;
 
 static struct intr_irqsrc *intr_map_get_isrc(u_int res_id);
 static void intr_map_set_isrc(u_int res_id, struct intr_irqsrc *isrc);
@@ -166,7 +191,6 @@ static void intr_map_copy_map_data(u_int res_id, device_t *dev, intptr_t *xref,
 static void
 intr_irq_init(void *dummy __unused)
 {
-	int intrcnt_count;
 
 	SLIST_INIT(&pic_list);
 	mtx_init(&pic_list_lock, "intr pic list", NULL, MTX_DEF);
@@ -175,19 +199,23 @@ intr_irq_init(void *dummy __unused)
 
 	/*
 	 * - 2 counters for each I/O interrupt.
-	 * - MAXCPU counters for each IPI counters for SMP.
+	 * - mp_maxid + 1 counters for each IPI counters for SMP.
 	 */
-	intrcnt_count = intr_nirq * 2;
+	nintrcnt = intr_nirq * 2;
 #ifdef SMP
-	intrcnt_count += INTR_IPI_COUNT * MAXCPU;
+	nintrcnt += INTR_IPI_COUNT * (mp_maxid + 1);
 #endif
 
-	intrcnt = mallocarray(intrcnt_count, sizeof(u_long), M_INTRNG,
+	intrcnt = mallocarray(nintrcnt, sizeof(u_long), M_INTRNG,
 	    M_WAITOK | M_ZERO);
-	intrnames = mallocarray(intrcnt_count, INTRNAME_LEN, M_INTRNG,
+	intrnames = mallocarray(nintrcnt, INTRNAME_LEN, M_INTRNG,
 	    M_WAITOK | M_ZERO);
-	sintrcnt = intrcnt_count * sizeof(u_long);
-	sintrnames = intrcnt_count * INTRNAME_LEN;
+	sintrcnt = nintrcnt * sizeof(u_long);
+	sintrnames = nintrcnt * INTRNAME_LEN;
+
+	/* Allocate the bitmap tracking counter allocations. */
+	intrcnt_bitmap = bit_alloc(nintrcnt, M_INTRNG, M_WAITOK | M_ZERO);
+
 	irq_sources = mallocarray(intr_nirq, sizeof(struct intr_irqsrc*),
 	    M_INTRNG, M_WAITOK | M_ZERO);
 }
@@ -266,13 +294,17 @@ isrc_update_name(struct intr_irqsrc *isrc, const char *name)
 static void
 isrc_setup_counters(struct intr_irqsrc *isrc)
 {
-	u_int index;
+	int index;
+
+	mtx_assert(&isrc_table_lock, MA_OWNED);
 
 	/*
-	 *  XXX - it does not work well with removable controllers and
-	 *        interrupt sources !!!
+	 * Allocate two counter values, the second tracking "stray" interrupts.
 	 */
-	index = atomic_fetchadd_int(&intrcnt_index, 2);
+	bit_ffc_area(intrcnt_bitmap, nintrcnt, 2, &index);
+	if (index == -1)
+		panic("Failed to allocate 2 counters. Array exhausted?");
+	bit_nset(intrcnt_bitmap, index, index + 1);
 	isrc->isrc_index = index;
 	isrc->isrc_count = &intrcnt[index];
 	isrc_update_name(isrc, NULL);
@@ -284,47 +316,39 @@ isrc_setup_counters(struct intr_irqsrc *isrc)
 static void
 isrc_release_counters(struct intr_irqsrc *isrc)
 {
+	int idx = isrc->isrc_index;
 
-	panic("%s: not implemented", __func__);
+	mtx_assert(&isrc_table_lock, MA_OWNED);
+
+	bit_nclear(intrcnt_bitmap, idx, idx + 1);
 }
-
-#ifdef SMP
-/*
- *  Virtualization for interrupt source IPI counters setup.
- */
-u_long *
-intr_ipi_setup_counters(const char *name)
-{
-	u_int index, i;
-	char str[INTRNAME_LEN];
-
-	index = atomic_fetchadd_int(&intrcnt_index, MAXCPU);
-	for (i = 0; i < MAXCPU; i++) {
-		snprintf(str, INTRNAME_LEN, "cpu%d:%s", i, name);
-		intrcnt_setname(str, index + i);
-	}
-	return (&intrcnt[index]);
-}
-#endif
 
 /*
  *  Main interrupt dispatch handler. It's called straight
  *  from the assembler, where CPU interrupt is served.
  */
 void
-intr_irq_handler(struct trapframe *tf)
+intr_irq_handler(struct trapframe *tf, uint32_t rootnum)
 {
 	struct trapframe * oldframe;
 	struct thread * td;
+	struct intr_irq_root *root;
 
-	KASSERT(irq_root_filter != NULL, ("%s: no filter", __func__));
+	KASSERT(rootnum < INTR_ROOT_COUNT,
+	    ("%s: invalid interrupt root %d", __func__, rootnum));
+
+	root = &intr_irq_roots[rootnum];
+	KASSERT(root->filter != NULL, ("%s: no filter", __func__));
+
+	kasan_mark(tf, sizeof(*tf), sizeof(*tf), 0);
+	kmsan_mark(tf, sizeof(*tf), KMSAN_STATE_INITED);
 
 	VM_CNT_INC(v_intr);
 	critical_enter();
 	td = curthread;
 	oldframe = td->td_intr_frame;
 	td->td_intr_frame = tf;
-	irq_root_filter(irq_root_arg);
+	(root->filter)(root->arg);
 	td->td_intr_frame = oldframe;
 	critical_exit();
 #ifdef HWPMC_HOOKS
@@ -368,7 +392,8 @@ intr_isrc_dispatch(struct intr_irqsrc *isrc, struct trapframe *tf)
 
 	KASSERT(isrc != NULL, ("%s: no source", __func__));
 
-	isrc_increment_count(isrc);
+	if ((isrc->isrc_flags & INTR_ISRCF_IPI) == 0)
+		isrc_increment_count(isrc);
 
 #ifdef INTR_SOLO
 	if (isrc->isrc_filter != NULL) {
@@ -384,7 +409,8 @@ intr_isrc_dispatch(struct intr_irqsrc *isrc, struct trapframe *tf)
 			return (0);
 	}
 
-	isrc_increment_straycount(isrc);
+	if ((isrc->isrc_flags & INTR_ISRCF_IPI) == 0)
+		isrc_increment_straycount(isrc);
 	return (EINVAL);
 }
 
@@ -401,15 +427,14 @@ intr_isrc_dispatch(struct intr_irqsrc *isrc, struct trapframe *tf)
 static inline int
 isrc_alloc_irq(struct intr_irqsrc *isrc)
 {
-	u_int maxirqs, irq;
+	u_int irq;
 
 	mtx_assert(&isrc_table_lock, MA_OWNED);
 
-	maxirqs = intr_nirq;
-	if (irq_next_free >= maxirqs)
+	if (irq_next_free >= intr_nirq)
 		return (ENOSPC);
 
-	for (irq = irq_next_free; irq < maxirqs; irq++) {
+	for (irq = irq_next_free; irq < intr_nirq; irq++) {
 		if (irq_sources[irq] == NULL)
 			goto found;
 	}
@@ -418,7 +443,7 @@ isrc_alloc_irq(struct intr_irqsrc *isrc)
 			goto found;
 	}
 
-	irq_next_free = maxirqs;
+	irq_next_free = intr_nirq;
 	return (ENOSPC);
 
 found:
@@ -426,7 +451,7 @@ found:
 	irq_sources[irq] = isrc;
 
 	irq_next_free = irq + 1;
-	if (irq_next_free >= maxirqs)
+	if (irq_next_free >= intr_nirq)
 		irq_next_free = 0;
 	return (0);
 }
@@ -447,7 +472,25 @@ isrc_free_irq(struct intr_irqsrc *isrc)
 
 	irq_sources[isrc->isrc_irq] = NULL;
 	isrc->isrc_irq = INTR_IRQ_INVALID;	/* just to be safe */
+
+	/*
+	 * If we are recovering from the state irq_sources table is full,
+	 * then the following allocation should check the entire table. This
+	 * will ensure maximum separation of allocation order from release
+	 * order.
+	 */
+	if (irq_next_free >= intr_nirq)
+		irq_next_free = 0;
+
 	return (0);
+}
+
+device_t
+intr_irq_root_device(uint32_t rootnum)
+{
+	KASSERT(rootnum < INTR_ROOT_COUNT,
+	    ("%s: invalid interrupt root %d", __func__, rootnum));
+	return (intr_irq_roots[rootnum].dev);
 }
 
 /*
@@ -715,7 +758,7 @@ isrc_add_handler(struct intr_irqsrc *isrc, const char *name,
  *  Lookup interrupt controller locked.
  */
 static inline struct intr_pic *
-pic_lookup_locked(device_t dev, intptr_t xref, int flags)
+pic_lookup_locked(device_t dev, intptr_t xref, u_int flags)
 {
 	struct intr_pic *pic;
 
@@ -746,7 +789,7 @@ pic_lookup_locked(device_t dev, intptr_t xref, int flags)
  *  Lookup interrupt controller.
  */
 static struct intr_pic *
-pic_lookup(device_t dev, intptr_t xref, int flags)
+pic_lookup(device_t dev, intptr_t xref, u_int flags)
 {
 	struct intr_pic *pic;
 
@@ -760,7 +803,7 @@ pic_lookup(device_t dev, intptr_t xref, int flags)
  *  Create interrupt controller.
  */
 static struct intr_pic *
-pic_create(device_t dev, intptr_t xref, int flags)
+pic_create(device_t dev, intptr_t xref, u_int flags)
 {
 	struct intr_pic *pic;
 
@@ -789,7 +832,7 @@ pic_create(device_t dev, intptr_t xref, int flags)
  *  Destroy interrupt controller.
  */
 static void
-pic_destroy(device_t dev, intptr_t xref, int flags)
+pic_destroy(device_t dev, intptr_t xref, u_int flags)
 {
 	struct intr_pic *pic;
 
@@ -848,9 +891,10 @@ intr_pic_deregister(device_t dev, intptr_t xref)
  */
 int
 intr_pic_claim_root(device_t dev, intptr_t xref, intr_irq_filter_t *filter,
-    void *arg, u_int ipicount)
+    void *arg, uint32_t rootnum)
 {
 	struct intr_pic *pic;
+	struct intr_irq_root *root;
 
 	pic = pic_lookup(dev, xref, FLAG_PIC);
 	if (pic == NULL) {
@@ -872,15 +916,17 @@ intr_pic_claim_root(device_t dev, intptr_t xref, intr_irq_filter_t *filter,
 	 * Note that we further suppose that there is not threaded interrupt
 	 * routine (handler) on the root. See intr_irq_handler().
 	 */
-	if (intr_irq_root_dev != NULL) {
+	KASSERT(rootnum < INTR_ROOT_COUNT,
+	    ("%s: invalid interrupt root %d", __func__, rootnum));
+	root = &intr_irq_roots[rootnum];
+	if (root->dev != NULL) {
 		device_printf(dev, "another root already set\n");
 		return (EBUSY);
 	}
 
-	intr_irq_root_dev = dev;
-	irq_root_filter = filter;
-	irq_root_arg = arg;
-	irq_root_ipicount = ipicount;
+	root->dev = dev;
+	root->filter = filter;
+	root->arg = arg;
 
 	debugf("irq root set to %s\n", device_get_nameunit(dev));
 	return (0);
@@ -889,7 +935,7 @@ intr_pic_claim_root(device_t dev, intptr_t xref, intr_irq_filter_t *filter,
 /*
  * Add a handler to manage a sub range of a parents interrupts.
  */
-struct intr_pic *
+int
 intr_pic_add_handler(device_t parent, struct intr_pic *pic,
     intr_child_irq_filter_t *filter, void *arg, uintptr_t start,
     uintptr_t length)
@@ -903,7 +949,7 @@ intr_pic_add_handler(device_t parent, struct intr_pic *pic,
 	/* Find the parent PIC */
 	parent_pic = pic_lookup(parent, 0, FLAG_PIC);
 	if (parent_pic == NULL)
-		return (NULL);
+		return (ENXIO);
 
 	newchild = malloc(sizeof(*newchild), M_INTRNG, M_WAITOK | M_ZERO);
 	newchild->pc_pic = pic;
@@ -922,7 +968,7 @@ intr_pic_add_handler(device_t parent, struct intr_pic *pic,
 	SLIST_INSERT_HEAD(&parent_pic->pic_children, newchild, pc_next);
 	mtx_unlock_spin(&parent_pic->pic_child_lock);
 
-	return (pic);
+	return (0);
 }
 
 static int
@@ -1524,20 +1570,25 @@ dosoftints(void)
 void
 intr_pic_init_secondary(void)
 {
+	device_t dev;
+	uint32_t rootnum;
 
 	/*
-	 * QQQ: Only root PIC is aware of other CPUs ???
+	 * QQQ: Only root PICs are aware of other CPUs ???
 	 */
-	KASSERT(intr_irq_root_dev != NULL, ("%s: no root attached", __func__));
-
 	//mtx_lock(&isrc_table_lock);
-	PIC_INIT_SECONDARY(intr_irq_root_dev);
+	for (rootnum = 0; rootnum < INTR_ROOT_COUNT; rootnum++) {
+		dev = intr_irq_roots[rootnum].dev;
+		if (dev != NULL) {
+			PIC_INIT_SECONDARY(dev, rootnum);
+		}
+	}
 	//mtx_unlock(&isrc_table_lock);
 }
 #endif
 
 #ifdef DDB
-DB_SHOW_COMMAND(irqs, db_show_irqs)
+DB_SHOW_COMMAND_FLAGS(irqs, db_show_irqs, DB_CMD_MEMSAFE)
 {
 	u_int i, irqsum;
 	u_long num;
@@ -1576,8 +1627,8 @@ struct intr_map_entry
 
 /* XXX Convert irq_map[] to dynamicaly expandable one. */
 static struct intr_map_entry **irq_map;
-static int irq_map_count;
-static int irq_map_first_free_idx;
+static u_int irq_map_count;
+static u_int irq_map_first_free_idx;
 static struct mtx irq_map_lock;
 
 static struct intr_irqsrc *
@@ -1701,7 +1752,8 @@ intr_unmap_irq(u_int res_id)
 		panic("Attempt to unmap invalid resource id: %u\n", res_id);
 	entry = irq_map[res_id];
 	irq_map[res_id] = NULL;
-	irq_map_first_free_idx = res_id;
+	if (res_id < irq_map_first_free_idx)
+		irq_map_first_free_idx = res_id;
 	mtx_unlock(&irq_map_lock);
 	intr_free_intr_map_data(entry->map_data);
 	free(entry, M_INTRNG);
@@ -1732,3 +1784,163 @@ intr_map_init(void *dummy __unused)
 	    M_INTRNG, M_WAITOK | M_ZERO);
 }
 SYSINIT(intr_map_init, SI_SUB_INTR, SI_ORDER_FIRST, intr_map_init, NULL);
+
+#ifdef SMP
+/* Virtualization for interrupt source IPI counter increment. */
+static inline void
+intr_ipi_increment_count(u_long *counter, u_int cpu)
+{
+
+	KASSERT(cpu < mp_maxid + 1, ("%s: too big cpu %u", __func__, cpu));
+	counter[cpu]++;
+}
+
+/*
+ *  Virtualization for interrupt source IPI counters setup.
+ */
+static u_long *
+intr_ipi_setup_counters(const char *name)
+{
+	u_int index, i;
+	char str[INTRNAME_LEN];
+
+	mtx_lock(&isrc_table_lock);
+
+	/*
+	 * We should never have a problem finding mp_maxid + 1 contiguous
+	 * counters, in practice. Interrupts will be allocated sequentially
+	 * during boot, so the array should fill from low to high index. Once
+	 * reserved, the IPI counters will never be released. Similarly, we
+	 * will not need to allocate more IPIs once the system is running.
+	 */
+	bit_ffc_area(intrcnt_bitmap, nintrcnt, mp_maxid + 1, &index);
+	if (index == -1)
+		panic("Failed to allocate %d counters. Array exhausted?",
+		    mp_maxid + 1);
+	bit_nset(intrcnt_bitmap, index, index + mp_maxid);
+	for (i = 0; i < mp_maxid + 1; i++) {
+		snprintf(str, INTRNAME_LEN, "cpu%d:%s", i, name);
+		intrcnt_setname(str, index + i);
+	}
+	mtx_unlock(&isrc_table_lock);
+	return (&intrcnt[index]);
+}
+
+/*
+ *  Lookup IPI source.
+ */
+static struct intr_ipi *
+intr_ipi_lookup(u_int ipi)
+{
+
+	if (ipi >= INTR_IPI_COUNT)
+		panic("%s: no such IPI %u", __func__, ipi);
+
+	return (&ipi_sources[ipi]);
+}
+
+int
+intr_ipi_pic_register(device_t dev, u_int priority)
+{
+	if (intr_ipi_dev_frozen) {
+		device_printf(dev, "IPI device already frozen");
+		return (EBUSY);
+	}
+
+	if (intr_ipi_dev == NULL || priority > intr_ipi_dev_priority) {
+		intr_ipi_dev_priority = priority;
+		intr_ipi_dev = dev;
+	}
+
+	return (0);
+}
+
+/*
+ *  Setup IPI handler on interrupt controller.
+ *
+ *  Not SMP coherent.
+ */
+void
+intr_ipi_setup(u_int ipi, const char *name, intr_ipi_handler_t *hand,
+    void *arg)
+{
+	struct intr_irqsrc *isrc;
+	struct intr_ipi *ii;
+	int error;
+
+	if (!intr_ipi_dev_frozen) {
+		if (intr_ipi_dev == NULL)
+			panic("%s: no IPI PIC attached", __func__);
+
+		intr_ipi_dev_frozen = true;
+		device_printf(intr_ipi_dev, "using for IPIs\n");
+	}
+
+	KASSERT(hand != NULL, ("%s: ipi %u no handler", __func__, ipi));
+
+	error = PIC_IPI_SETUP(intr_ipi_dev, ipi, &isrc);
+	if (error != 0)
+		return;
+
+	isrc->isrc_handlers++;
+
+	ii = intr_ipi_lookup(ipi);
+	KASSERT(ii->ii_count == NULL, ("%s: ipi %u reused", __func__, ipi));
+
+	ii->ii_handler = hand;
+	ii->ii_handler_arg = arg;
+	ii->ii_isrc = isrc;
+	strlcpy(ii->ii_name, name, INTR_IPI_NAMELEN);
+	ii->ii_count = intr_ipi_setup_counters(name);
+
+	PIC_ENABLE_INTR(intr_ipi_dev, isrc);
+}
+
+void
+intr_ipi_send(cpuset_t cpus, u_int ipi)
+{
+	struct intr_ipi *ii;
+
+	KASSERT(intr_ipi_dev_frozen,
+	    ("%s: IPI device not yet frozen", __func__));
+
+	ii = intr_ipi_lookup(ipi);
+	if (ii->ii_count == NULL)
+		panic("%s: not setup IPI %u", __func__, ipi);
+
+	/*
+	 * XXX: Surely needed on other architectures too? Either way should be
+	 * some kind of MI hook defined in an MD header, or the responsibility
+	 * of the MD caller if not widespread.
+	 */
+#ifdef __aarch64__
+	/*
+	 * Ensure that this CPU's stores will be visible to IPI
+	 * recipients before starting to send the interrupts.
+	 */
+	dsb(ishst);
+#endif
+
+	PIC_IPI_SEND(intr_ipi_dev, ii->ii_isrc, cpus, ipi);
+}
+
+/*
+ *  interrupt controller dispatch function for IPIs. It should
+ *  be called straight from the interrupt controller, when associated
+ *  interrupt source is learned. Or from anybody who has an interrupt
+ *  source mapped.
+ */
+void
+intr_ipi_dispatch(u_int ipi)
+{
+	struct intr_ipi *ii;
+
+	ii = intr_ipi_lookup(ipi);
+	if (ii->ii_count == NULL)
+		panic("%s: not setup IPI %u", __func__, ipi);
+
+	intr_ipi_increment_count(ii->ii_count, PCPU_GET(cpuid));
+
+	ii->ii_handler(ii->ii_handler_arg);
+}
+#endif

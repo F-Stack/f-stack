@@ -20,7 +20,7 @@ PREFIX_LIB=${PREFIX}/lib
 PREFIX_INCLUDE=${PREFIX}/include
 PREFIX_BIN=${PREFIX}/bin
 F-STACK_CONF=/etc/f-stack.conf
-F-STACK_VERSION=1.25
+F-STACK_VERSION=1.26
 TGT_OS=$(shell uname)
 ifeq ($(TGT_OS),FreeBSD)
 CC=gcc
@@ -127,6 +127,14 @@ ifeq "$(GCCVERGE11)" "1"
     CFLAGS+= -Wno-error=stringop-overread
 endif
 
+GCCVERGE12 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 12)
+ifeq "$(GCCVERGE12)" "1"
+    CFLAGS+= -Wno-error=array-bounds
+    CFLAGS+= -Wno-error=cast-qual
+    CFLAGS+= -Wno-error=format
+    CFLAGS+= -Wno-error=format-extra-args
+endif
+
 GCCVERGE13 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 13)
 ifeq "$(GCCVERGE13)" "1"
     CFLAGS+= -Wno-error=dangling-pointer
@@ -191,21 +199,6 @@ ifeq (${MACHINE_CPUARCH},i386)
 MACHINE=i386
 endif
 
-#
-# Distilled from FreeBSD src/sys/conf/Makefile.mips
-#
-ifeq (${MACHINE_CPUARCH},mips)
-
-# We default to the MIPS32 ISA, if none specified in the
-# kernel configuration file.
-ARCH_FLAGS?=-march=mips32
-
-HACK_EXTRA_FLAGS=-shared
-
-CFLAGS+=${EXTRA_FLAGS} $(ARCH_FLAGS)
-HACK_EXTRA_FLAGS+=${EXTRA_FLAGS} $(ARCH_FLAGS)
-endif
-
 CFLAGS+= -DFSTACK
 
 ifdef FF_ZC_SEND
@@ -267,7 +260,8 @@ FF_SRCS+=                     \
 	ff_subr_prf.c         \
 	ff_vfs_ops.c          \
 	ff_veth.c             \
-	ff_route.c
+	ff_route.c            \
+	ff_stub_14_extra.c
 
 ifdef FF_NETGRAPH
 FF_SRCS+=                   \
@@ -405,8 +399,6 @@ NET_SRCS+=		 \
 	if_loop.c	 \
 	if_llatbl.c	 \
 	if_media.c       \
-	if_spppfr.c      \
-	if_spppsubr.c    \
 	if_vlan.c        \
 	if_vxlan.c       \
 	in_fib.c	 \
@@ -415,10 +407,10 @@ NET_SRCS+=		 \
 	netisr.c	 \
 	pfil.c		 \
 	radix.c		 \
-	raw_cb.c	 \
-	raw_usrreq.c	 \
+	ifq.c		 \
 	route.c		 \
 	route_ctl.c	 \
+	route_rtentry.c	 \
 	route_tables.c	 \
 	route_helpers.c	 \
 	route_ifaddrs.c	 \
@@ -432,7 +424,6 @@ NET_SRCS+=		 \
 ifdef FF_NETGRAPH
 NETGRAPH_SRCS +=         \
 	ng_async.c       \
-	ng_atmllc.c      \
 	ng_bridge.c      \
 	ng_car.c         \
 	ng_cisco.c       \
@@ -467,7 +458,6 @@ NETGRAPH_SRCS +=         \
 	ng_socket.c      \
 	ng_source.c      \
 	ng_split.c       \
-	ng_sppp.c        \
 	ng_tag.c         \
 	ng_tcpmss.c      \
 	ng_tee.c         \
@@ -497,7 +487,6 @@ NETINET_SRCS+=		\
 	ip_options.c	\
 	ip_output.c	\
 	raw_ip.c	\
-	tcp_debug.c	\
 	tcp_hostcache.c	\
 	tcp_input.c	\
 	tcp_lro.c	\
@@ -531,7 +520,6 @@ NETINET6_SRCS+=		\
 	in6_ifattach.c	\
 	in6_mcast.c	\
 	in6_pcb.c	\
-	in6_pcbgroup.c	\
 	in6_proto.c	\
 	in6_rmx.c	\
 	in6_src.c	\

@@ -258,10 +258,10 @@ prison_check_ip4(const struct ucred *cred, const struct in_addr *ia)
     return (0);
 }
 
-int
+bool
 prison_equal_ip4(struct prison *pr1, struct prison *pr2)
 {
-    return (1);
+    return (true);
 }
 
 #ifdef INET6
@@ -271,21 +271,21 @@ prison_check_ip6(const struct ucred *cred, const struct in6_addr *ia)
     return (0);
 }
 
-int
+bool
 prison_equal_ip6(struct prison *pr1, struct prison *pr2)
 {
-    return (1);
+    return (true);
 }
 #endif
 
 /*
  * See if a prison has the specific flag set.
  */
-int
+bool
 prison_flag(struct ucred *cred, unsigned flag)
 {
     /* This is an atomic read, so no locking is necessary. */
-    return (flag & PR_HOST);
+    return ((flag & PR_HOST) != 0);
 }
 
 int
@@ -326,19 +326,19 @@ prison_remote_ip6(struct ucred *cred, struct in6_addr *ia)
 }
 #endif
 
-int 
+bool
 prison_saddrsel_ip4(struct ucred *cred, struct in_addr *ia)
 {
     /* not jailed */
-    return (1);
+    return (true);
 }
 
 #ifdef INET6
-int 
+bool
 prison_saddrsel_ip6(struct ucred *cred, struct in6_addr *ia)
 {
     /* not jailed */
-    return (1);
+    return (true);
 }
 #endif
 
@@ -354,10 +354,10 @@ jailed(struct ucred *cred)
  * Return 1 if the passed credential is in a jail and that jail does not
  * have its own virtual network stack, otherwise 0.
  */
-int
+bool
 jailed_without_vnet(struct ucred *cred)
 {
-    return (0);
+    return (false);
 }
 
 int
@@ -811,10 +811,10 @@ lim_rlimit_proc(struct proc *p, int which, struct rlimit *rlp)
         p->p_sysent->sv_fixlimit(rlp, which);
 }
 
-int
+bool
 useracc(void *addr, int len, int rw)
 {
-    return (1);
+    return (true);
 }
 
 struct pgrp *
@@ -866,7 +866,7 @@ crget(void)
     register struct ucred *cr;
 
     cr = malloc(sizeof(*cr), M_CRED, M_WAITOK | M_ZERO);
-    refcount_init(&cr->cr_ref, 1);
+    refcount_init((volatile u_int *)&cr->cr_ref, 1);
 
     return (cr);
 }
@@ -877,7 +877,7 @@ crget(void)
 struct ucred *
 crhold(struct ucred *cr)
 {
-    refcount_acquire(&cr->cr_ref);
+    refcount_acquire((volatile u_int *)&cr->cr_ref);
     return (cr);
 }
 
@@ -887,9 +887,9 @@ crhold(struct ucred *cr)
 void
 crfree(struct ucred *cr)
 {
-    KASSERT(cr->cr_ref > 0, ("bad ucred refcount: %d", cr->cr_ref));
+    KASSERT(cr->cr_ref > 0, ("bad ucred refcount: %ld", cr->cr_ref));
     KASSERT(cr->cr_ref != 0xdeadc0de, ("dangling reference to ucred"));
-    if (refcount_release(&cr->cr_ref)) {
+    if (refcount_release((volatile u_int *)&cr->cr_ref)) {
 
         free(cr, M_CRED);
     }
@@ -1021,22 +1021,22 @@ kproc_exit(int ecode)
     panic("kproc_exit unsupported");
 }
 
-vm_offset_t
+void *
 kmem_malloc(vm_size_t bytes, int flags)
 {
     void *alloc = ff_mmap(NULL, bytes, ff_PROT_READ|ff_PROT_WRITE, ff_MAP_ANON|ff_MAP_PRIVATE, -1, 0);
     if ((flags & M_ZERO) && alloc != NULL)
         bzero(alloc, bytes);
-    return ((vm_offset_t)alloc);
+    return (alloc);
 }
 
 void
-kmem_free(vm_offset_t addr, vm_size_t size)
+kmem_free(void *addr, vm_size_t size)
 {
-    ff_munmap((void *)addr, size);
+    ff_munmap(addr, size);
 }
 
-vm_offset_t
+void *
 kmem_alloc_contig(vm_size_t size, int flags, vm_paddr_t low,
     vm_paddr_t high, u_long alignment, vm_paddr_t boundary, vm_memattr_t memattr)
 {
@@ -1194,15 +1194,15 @@ getcredhostid(struct ucred *cred, unsigned long *hostid)
 /*
  * Check if gid is a member of the group set.
  */
-int
-groupmember(gid_t gid, struct ucred *cred)
+bool
+groupmember(gid_t gid, const struct ucred *cred)
 {
     int l;
     int h;
     int m;
 
     if (cred->cr_groups[0] == gid)
-        return(1);
+        return(true);
 
     /*
      * If gid was not our primary group, perform a binary search
@@ -1214,14 +1214,14 @@ groupmember(gid_t gid, struct ucred *cred)
     while (l < h) {
         m = l + ((h - l) / 2);
         if (cred->cr_groups[m] < gid)
-            l = m + 1; 
+            l = m + 1;
         else
-            h = m; 
+            h = m;
     }
     if ((l < cred->cr_ngroups) && (cred->cr_groups[l] == gid))
-        return (1);
+        return (true);
 
-    return (0);
+    return (false);
 }
 
 int
@@ -1230,11 +1230,12 @@ vm_wait_doms(const domainset_t *wdoms, int mflags)
     return 0;
 }
 
-void
+int
 vm_domainset_iter_policy_ref_init(struct vm_domainset_iter *di,
     struct domainset_ref *dr, int *domain, int *flags)
 {
     *domain = 0;
+    return (0);
 }
 
 int
@@ -1244,7 +1245,7 @@ vm_domainset_iter_policy(struct vm_domainset_iter *di, int *domain)
     return 0;
 }
 
-vm_offset_t
+void *
 kmem_malloc_domainset(struct domainset *ds, vm_size_t size, int flags)
 {
     return (kmem_malloc(size, flags));

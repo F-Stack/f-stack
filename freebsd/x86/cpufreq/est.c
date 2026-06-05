@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 Colin Percival
  * Copyright (c) 2005 Nate Lawson
@@ -26,9 +26,6 @@
  * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE 
  * POSSIBILITY OF SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/bus.h>
@@ -897,8 +894,7 @@ static driver_t est_driver = {
 	sizeof(struct est_softc),
 };
 
-static devclass_t est_devclass;
-DRIVER_MODULE(est, cpu, est_driver, est_devclass, 0, 0);
+DRIVER_MODULE(est, cpu, est_driver, 0, 0);
 MODULE_DEPEND(est, hwpstate_intel, 1, 1, 1);
 
 static int
@@ -924,11 +920,11 @@ est_identify(driver_t *driver, device_t parent)
 	 * future.
 	 */
 	intel_hwpstate_identify(NULL, parent);
-	if (device_find_child(parent, "hwpstate_intel", -1) != NULL)
+	if (device_find_child(parent, "hwpstate_intel", DEVICE_UNIT_ANY) != NULL)
 		return;
 
 	/* Make sure we're not being doubly invoked. */
-	if (device_find_child(parent, "est", -1) != NULL)
+	if (device_find_child(parent, "est", DEVICE_UNIT_ANY) != NULL)
 		return;
 
 	/* Check that CPUID is supported and the vendor is Intel.*/
@@ -946,7 +942,7 @@ est_identify(driver_t *driver, device_t parent)
 	 * We add a child for each CPU since settings must be performed
 	 * on each CPU in the SMP case.
 	 */
-	child = BUS_ADD_CHILD(parent, 10, "est", -1);
+	child = BUS_ADD_CHILD(parent, 10, "est", device_get_unit(parent));
 	if (child == NULL)
 		device_printf(parent, "add est child failed\n");
 }
@@ -965,7 +961,8 @@ est_probe(device_t dev)
 	 * If the ACPI perf driver has attached and is not just offering
 	 * info, let it manage things.
 	 */
-	perf_dev = device_find_child(device_get_parent(dev), "acpi_perf", -1);
+	perf_dev = device_find_child(device_get_parent(dev), "acpi_perf",
+	    DEVICE_UNIT_ANY);
 	if (perf_dev && device_is_attached(perf_dev)) {
 		error = CPUFREQ_DRV_TYPE(perf_dev, &type);
 		if (error == 0 && (type & CPUFREQ_FLAG_INFO_ONLY) == 0)
@@ -1068,7 +1065,8 @@ est_acpi_info(device_t dev, freq_info **freqs, size_t *freqslen)
 	int count, error, i, j;
 	uint16_t saved_id16;
 
-	perf_dev = device_find_child(device_get_parent(dev), "acpi_perf", -1);
+	perf_dev = device_find_child(device_get_parent(dev), "acpi_perf",
+	    DEVICE_UNIT_ANY);
 	if (perf_dev == NULL || !device_is_attached(perf_dev))
 		return (ENXIO);
 

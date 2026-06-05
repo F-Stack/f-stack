@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) Peter Wemm <peter@netplex.com.au>
  * All rights reserved.
@@ -24,17 +24,16 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __i386__
+#include <i386/pcpu.h>
+#else /* !__i386__ */
 
 #ifndef _MACHINE_PCPU_H_
 #define	_MACHINE_PCPU_H_
 
-#ifndef _SYS_CDEFS_H_
-#error "sys/cdefs.h is a prerequisite for this file"
-#endif
-
+#include <machine/_pmap.h>
 #include <machine/segments.h>
 #include <machine/tss.h>
 
@@ -76,7 +75,6 @@ _Static_assert(sizeof(struct monitorbuf) == 128, "2x cache line");
 	struct system_segment_descriptor *pc_ldt;			\
 	/* Pointer to the CPU TSS descriptor */				\
 	struct system_segment_descriptor *pc_tss;			\
-	uint64_t	pc_pm_save_cnt;					\
 	u_int	pc_cmci_mask;		/* MCx banks for CMCI */	\
 	uint64_t pc_dbreg[16];		/* ddb debugging regs */	\
 	uint64_t pc_pti_stack[PC_PTI_STACK_SZ];				\
@@ -89,7 +87,7 @@ _Static_assert(sizeof(struct monitorbuf) == 128, "2x cache line");
 	uint32_t pc_ibpb_set;						\
 	void	*pc_mds_buf;						\
 	void	*pc_mds_buf64;						\
-	uint32_t pc_pad[2];						\
+	uint32_t pc_pad[4];						\
 	uint8_t	pc_mds_tmp[64];						\
 	u_int 	pc_ipi_bitmap;						\
 	struct amd64tss pc_common_tss;					\
@@ -100,7 +98,10 @@ _Static_assert(sizeof(struct monitorbuf) == 128, "2x cache line");
 	uint32_t pc_smp_tlb_gen;					\
 	u_int	pc_smp_tlb_op;						\
 	uint64_t pc_ucr3_load_mask;					\
-	char	__pad[2916]		/* pad to UMA_PCPU_ALLOC_SIZE */
+	u_int	pc_small_core;						\
+	u_int	pc_pcid_invlpg_workaround;				\
+	struct pmap_pcid pc_kpmap_store;				\
+	char	__pad[2900]		/* pad to UMA_PCPU_ALLOC_SIZE */
 
 #define	PC_DBREG_CMD_NONE	0
 #define	PC_DBREG_CMD_LOAD	1
@@ -110,8 +111,68 @@ _Static_assert(sizeof(struct monitorbuf) == 128, "2x cache line");
 #define MONITOR_STOPSTATE_RUNNING	0
 #define MONITOR_STOPSTATE_STOPPED	1
 
-#if defined(__GNUCLIKE_ASM) && defined(__GNUCLIKE___TYPEOF)
+/*
+ * Evaluates to the type of the per-cpu variable name.
+ */
+#define	__pcpu_type(name)						\
+	__typeof(((struct pcpu *)0)->name)
 
+#ifdef __SEG_GS
+#define	get_pcpu() __extension__ ({					\
+	static struct pcpu __seg_gs *__pc = 0;				\
+									\
+	__pc->pc_prvspace;						\
+})
+
+/*
+ * Evaluates to the address of the per-cpu variable name.
+ */
+#define	__PCPU_PTR(name) __extension__ ({				\
+	struct pcpu *__pc = get_pcpu();					\
+									\
+	&__pc->name;							\
+})
+
+/*
+ * Evaluates to the value of the per-cpu variable name.
+ */
+#define	__PCPU_GET(name) __extension__ ({				\
+	static struct pcpu __seg_gs *__pc = 0;				\
+									\
+	__pc->name;							\
+})
+
+/*
+ * Adds the value to the per-cpu counter name.  The implementation
+ * must be atomic with respect to interrupts.
+ */
+#define	__PCPU_ADD(name, val) do {					\
+	static struct pcpu __seg_gs *__pc = 0;				\
+	__pcpu_type(name) __val;					\
+									\
+	__val = (val);							\
+	if (sizeof(__val) == 1 || sizeof(__val) == 2 ||			\
+	    sizeof(__val) == 4 || sizeof(__val) == 8) {			\
+		__pc->name += __val;					\
+	} else								\
+		*__PCPU_PTR(name) += __val;				\
+} while (0)
+
+/*
+ * Sets the value of the per-cpu variable name to value val.
+ */
+#define	__PCPU_SET(name, val) do {					\
+	static struct pcpu __seg_gs *__pc = 0;				\
+	__pcpu_type(name) __val;					\
+									\
+	__val = (val);							\
+	if (sizeof(__val) == 1 || sizeof(__val) == 2 ||			\
+	    sizeof(__val) == 4 || sizeof(__val) == 8) {			\
+		__pc->name = __val;					\
+	} else								\
+		*__PCPU_PTR(name) = __val;				\
+} while (0)
+#else /* !__SEG_GS */
 /*
  * Evaluates to the byte offset of the per-cpu variable name.
  */
@@ -119,24 +180,10 @@ _Static_assert(sizeof(struct monitorbuf) == 128, "2x cache line");
 	__offsetof(struct pcpu, name)
 
 /*
- * Evaluates to the type of the per-cpu variable name.
- */
-#define	__pcpu_type(name)						\
-	__typeof(((struct pcpu *)0)->name)
-
-/*
  * Evaluates to the address of the per-cpu variable name.
  */
-#define	__PCPU_PTR(name) __extension__ ({				\
-	__pcpu_type(name) *__p;						\
-									\
-	__asm __volatile("movq %%gs:%1,%0; addq %2,%0"			\
-	    : "=r" (__p)						\
-	    : "m" (*(struct pcpu *)(__pcpu_offset(pc_prvspace))),	\
-	      "i" (__pcpu_offset(name)));				\
-									\
-	__p;								\
-})
+#define	__PCPU_PTR(name)						\
+	(&get_pcpu()->name)
 
 /*
  * Evaluates to the value of the per-cpu variable name.
@@ -145,14 +192,13 @@ _Static_assert(sizeof(struct monitorbuf) == 128, "2x cache line");
 	__pcpu_type(name) __res;					\
 	struct __s {							\
 		u_char	__b[MIN(sizeof(__pcpu_type(name)), 8)];		\
-	} __s;								\
+	};								\
 									\
 	if (sizeof(__res) == 1 || sizeof(__res) == 2 ||			\
 	    sizeof(__res) == 4 || sizeof(__res) == 8) {			\
-		__asm __volatile("mov %%gs:%1,%0"			\
-		    : "=r" (__s)					\
-		    : "m" (*(struct __s *)(__pcpu_offset(name))));	\
-		*(struct __s *)(void *)&__res = __s;			\
+		__asm __volatile("mov %%gs:%c1,%0"			\
+		    : "=r" (*(struct __s *)(void *)&__res)		\
+		    : "i" (__pcpu_offset(name)));			\
 	} else {							\
 		__res = *__PCPU_PTR(name);				\
 	}								\
@@ -167,80 +213,54 @@ _Static_assert(sizeof(struct monitorbuf) == 128, "2x cache line");
 	__pcpu_type(name) __val;					\
 	struct __s {							\
 		u_char	__b[MIN(sizeof(__pcpu_type(name)), 8)];		\
-	} __s;								\
+	};								\
 									\
 	__val = (val);							\
 	if (sizeof(__val) == 1 || sizeof(__val) == 2 ||			\
 	    sizeof(__val) == 4 || sizeof(__val) == 8) {			\
-		__s = *(struct __s *)(void *)&__val;			\
-		__asm __volatile("add %1,%%gs:%0"			\
-		    : "=m" (*(struct __s *)(__pcpu_offset(name)))	\
-		    : "r" (__s));					\
+		__asm __volatile("add %1,%%gs:%c0"			\
+		    :							\
+		    : "i" (__pcpu_offset(name)),			\
+		      "r" (*(struct __s *)(void *)&__val)		\
+		    : "cc", "memory");					\
 	} else								\
 		*__PCPU_PTR(name) += __val;				\
 } while (0)
 
 /*
- * Increments the value of the per-cpu counter name.  The implementation
- * must be atomic with respect to interrupts.
- */
-#define	__PCPU_INC(name) do {						\
-	CTASSERT(sizeof(__pcpu_type(name)) == 1 ||			\
-	    sizeof(__pcpu_type(name)) == 2 ||				\
-	    sizeof(__pcpu_type(name)) == 4 ||				\
-	    sizeof(__pcpu_type(name)) == 8);				\
-	if (sizeof(__pcpu_type(name)) == 1) {				\
-		__asm __volatile("incb %%gs:%0"				\
-		    : "=m" (*(__pcpu_type(name) *)(__pcpu_offset(name)))\
-		    : "m" (*(__pcpu_type(name) *)(__pcpu_offset(name))));\
-	} else if (sizeof(__pcpu_type(name)) == 2) {			\
-		__asm __volatile("incw %%gs:%0"				\
-		    : "=m" (*(__pcpu_type(name) *)(__pcpu_offset(name)))\
-		    : "m" (*(__pcpu_type(name) *)(__pcpu_offset(name))));\
-	} else if (sizeof(__pcpu_type(name)) == 4) {			\
-		__asm __volatile("incl %%gs:%0"				\
-		    : "=m" (*(__pcpu_type(name) *)(__pcpu_offset(name)))\
-		    : "m" (*(__pcpu_type(name) *)(__pcpu_offset(name))));\
-	} else if (sizeof(__pcpu_type(name)) == 8) {			\
-		__asm __volatile("incq %%gs:%0"				\
-		    : "=m" (*(__pcpu_type(name) *)(__pcpu_offset(name)))\
-		    : "m" (*(__pcpu_type(name) *)(__pcpu_offset(name))));\
-	}								\
-} while (0)
-
-/*
  * Sets the value of the per-cpu variable name to value val.
  */
-#define	__PCPU_SET(name, val) {						\
+#define	__PCPU_SET(name, val) do {					\
 	__pcpu_type(name) __val;					\
 	struct __s {							\
 		u_char	__b[MIN(sizeof(__pcpu_type(name)), 8)];		\
-	} __s;								\
+	};								\
 									\
 	__val = (val);							\
 	if (sizeof(__val) == 1 || sizeof(__val) == 2 ||			\
 	    sizeof(__val) == 4 || sizeof(__val) == 8) {			\
-		__s = *(struct __s *)(void *)&__val;			\
-		__asm __volatile("mov %1,%%gs:%0"			\
-		    : "=m" (*(struct __s *)(__pcpu_offset(name)))	\
-		    : "r" (__s));					\
+		__asm __volatile("mov %1,%%gs:%c0"			\
+		    :							\
+		    : "i" (__pcpu_offset(name)),			\
+		      "r" (*(struct __s *)(void *)&__val)		\
+		    : "memory");					\
 	} else {							\
 		*__PCPU_PTR(name) = __val;				\
 	}								\
-}
+} while (0)
 
 #define	get_pcpu() __extension__ ({					\
 	struct pcpu *__pc;						\
 									\
-	__asm __volatile("movq %%gs:%1,%0"				\
+	__asm __volatile("movq %%gs:%c1,%0"				\
 	    : "=r" (__pc)						\
-	    : "m" (*(struct pcpu *)(__pcpu_offset(pc_prvspace))));	\
+	    : "i" (__pcpu_offset(pc_prvspace)));			\
 	__pc;								\
 })
+#endif /* !__SEG_GS */
 
 #define	PCPU_GET(member)	__PCPU_GET(pc_ ## member)
 #define	PCPU_ADD(member, val)	__PCPU_ADD(pc_ ## member, val)
-#define	PCPU_INC(member)	__PCPU_INC(pc_ ## member)
 #define	PCPU_PTR(member)	__PCPU_PTR(pc_ ## member)
 #define	PCPU_SET(member, val)	__PCPU_SET(pc_ ## member, val)
 
@@ -309,12 +329,8 @@ _Static_assert(sizeof(struct monitorbuf) == 128, "2x cache line");
 	}								\
 } while (0);
 
-#else /* !__GNUCLIKE_ASM || !__GNUCLIKE___TYPEOF */
-
-#error "this file needs to be ported to your compiler"
-
-#endif /* __GNUCLIKE_ASM && __GNUCLIKE___TYPEOF */
-
 #endif /* _KERNEL */
 
 #endif /* !_MACHINE_PCPU_H_ */
+
+#endif /* __i386__ */

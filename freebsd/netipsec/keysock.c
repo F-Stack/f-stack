@@ -1,4 +1,3 @@
-/*	$FreeBSD$	*/
 /*	$KAME: keysock.c,v 1.25 2001/08/13 20:07:41 itojun Exp $	*/
 
 /*-
@@ -50,12 +49,12 @@
 #include <sys/signalvar.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
+#include <sys/stdarg.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 
 #include <net/if.h>
 #include <net/vnet.h>
-#include <net/raw_cb.h>
 
 #include <netinet/in.h>
 
@@ -65,18 +64,19 @@
 #include <netipsec/key_debug.h>
 #include <netipsec/ipsec.h>
 
-#include <machine/stdarg.h>
+static struct mtx keysock_mtx;
+MTX_SYSINIT(keysock, &keysock_mtx, "key socket pcb list", MTX_DEF);
 
-struct key_cb {
-	int key_count;
-	int any_count;
-};
-VNET_DEFINE_STATIC(struct key_cb, key_cb);
-#define	V_key_cb		VNET(key_cb)
+#define	KEYSOCK_LOCK()		mtx_lock(&keysock_mtx)
+#define	KEYSOCK_UNLOCK()	mtx_unlock(&keysock_mtx)
+
+VNET_DEFINE_STATIC(LIST_HEAD(, keycb), keycb_list) =
+    LIST_HEAD_INITIALIZER(keycb_list);
+#define	V_keycb_list		VNET(keycb_list)
 
 static struct sockaddr key_src = { 2, PF_KEY, };
 
-static int key_sendup0(struct rawcb *, struct mbuf *, int);
+static int key_sendup0(struct keycb *, struct mbuf *, int);
 
 VNET_PCPUSTAT_DEFINE(struct pfkeystat, pfkeystat);
 VNET_PCPUSTAT_SYSINIT(pfkeystat);
@@ -85,17 +85,19 @@ VNET_PCPUSTAT_SYSINIT(pfkeystat);
 VNET_PCPUSTAT_SYSUNINIT(pfkeystat);
 #endif /* VIMAGE */
 
-/*
- * key_output()
- */
-int
-key_output(struct mbuf *m, struct socket *so, ...)
+static int
+key_send(struct socket *so, int flags, struct mbuf *m,
+    struct sockaddr *nam, struct mbuf *control, struct thread *td)
 {
 	struct sadb_msg *msg;
 	int len, error = 0;
 
-	if (m == NULL)
-		panic("%s: NULL pointer was passed.\n", __func__);
+	if ((flags & PRUS_OOB) || control != NULL) {
+		m_freem(m);
+		if (control != NULL)
+			m_freem(control);
+		return (EOPNOTSUPP);
+	}
 
 	PFKEYSTAT_INC(out_total);
 	PFKEYSTAT_ADD(out_bytes, m->m_pkthdr.len);
@@ -130,18 +132,17 @@ key_output(struct mbuf *m, struct socket *so, ...)
 	error = key_parse(m, so);
 	m = NULL;
 end:
-	if (m)
+	if (m != NULL)
 		m_freem(m);
-	return error;
+	return (error);
 }
 
 /*
  * send message to the socket.
  */
 static int
-key_sendup0(struct rawcb *rp, struct mbuf *m, int promisc)
+key_sendup0(struct keycb *kp, struct mbuf *m, int promisc)
 {
-	int error;
 
 	if (promisc) {
 		struct sadb_msg *pmsg;
@@ -161,15 +162,15 @@ key_sendup0(struct rawcb *rp, struct mbuf *m, int promisc)
 		PFKEYSTAT_INC(in_msgtype[pmsg->sadb_msg_type]);
 	}
 
-	if (!sbappendaddr(&rp->rcb_socket->so_rcv, (struct sockaddr *)&key_src,
-	    m, NULL)) {
+	if (!sbappendaddr(&kp->kp_socket->so_rcv, &key_src, m, NULL)) {
 		PFKEYSTAT_INC(in_nomem);
 		m_freem(m);
-		error = ENOBUFS;
-	} else
-		error = 0;
-	sorwakeup(rp->rcb_socket);
-	return error;
+		soroverflow(kp->kp_socket);
+		return (ENOBUFS);
+	}
+
+	sorwakeup(kp->kp_socket);
+	return (0);
 }
 
 /* so can be NULL if target != KEY_SENDUP_ONE */
@@ -178,7 +179,6 @@ key_sendup_mbuf(struct socket *so, struct mbuf *m, int target)
 {
 	struct mbuf *n;
 	struct keycb *kp;
-	struct rawcb *rp;
 	int error = 0;
 
 	KASSERT(m != NULL, ("NULL mbuf pointer was passed."));
@@ -193,7 +193,7 @@ key_sendup_mbuf(struct socket *so, struct mbuf *m, int target)
 		m = m_pullup(m, sizeof(struct sadb_msg));
 		if (m == NULL) {
 			PFKEYSTAT_INC(in_nomem);
-			return ENOBUFS;
+			return (ENOBUFS);
 		}
 	}
 	if (m->m_len >= sizeof(struct sadb_msg)) {
@@ -201,41 +201,27 @@ key_sendup_mbuf(struct socket *so, struct mbuf *m, int target)
 		msg = mtod(m, struct sadb_msg *);
 		PFKEYSTAT_INC(in_msgtype[msg->sadb_msg_type]);
 	}
-	mtx_lock(&rawcb_mtx);
-	if (V_key_cb.any_count == 0) {
-		mtx_unlock(&rawcb_mtx);
-		m_freem(m);
-		return (0);
-	}
-	LIST_FOREACH(rp, &V_rawcb_list, list)
-	{
-		if (rp->rcb_proto.sp_family != PF_KEY)
-			continue;
-		if (rp->rcb_proto.sp_protocol
-		 && rp->rcb_proto.sp_protocol != PF_KEY_V2) {
-			continue;
-		}
-
+	KEYSOCK_LOCK();
+	LIST_FOREACH(kp, &V_keycb_list, kp_next) {
 		/*
 		 * If you are in promiscuous mode, and when you get broadcasted
 		 * reply, you'll get two PF_KEY messages.
 		 * (based on pf_key@inner.net message on 14 Oct 1998)
 		 */
-		kp = (struct keycb *)rp;
 		if (kp->kp_promisc) {
 			n = m_copym(m, 0, M_COPYALL, M_NOWAIT);
 			if (n != NULL)
-				key_sendup0(rp, n, 1);
+				key_sendup0(kp, n, 1);
 			else
 				PFKEYSTAT_INC(in_nomem);
 		}
 
 		/* the exact target will be processed later */
-		if (so && sotorawcb(so) == rp)
+		if (so != NULL && so->so_pcb == kp)
 			continue;
 
-		if (target == KEY_SENDUP_ONE || (
-		    target == KEY_SENDUP_REGISTERED && kp->kp_registered == 0))
+		if (target == KEY_SENDUP_ONE || (target ==
+		    KEY_SENDUP_REGISTERED && kp->kp_registered == 0))
 			continue;
 
 		/* KEY_SENDUP_ALL + KEY_SENDUP_REGISTERED */
@@ -246,36 +232,29 @@ key_sendup_mbuf(struct socket *so, struct mbuf *m, int target)
 			continue;
 		}
 
-		if (key_sendup0(rp, n, 0) == 0)
+		if (key_sendup0(kp, n, 0) == 0)
 			PFKEYSTAT_INC(in_msgtarget[target]);
 	}
 
 	if (so)	{ /* KEY_SENDUP_ONE */
-		error = key_sendup0(sotorawcb(so), m, 0);
+		error = key_sendup0(so->so_pcb, m, 0);
 		if (error == 0)
 			PFKEYSTAT_INC(in_msgtarget[KEY_SENDUP_ONE]);
 	} else {
 		error = 0;
 		m_freem(m);
 	}
-	mtx_unlock(&rawcb_mtx);
+	KEYSOCK_UNLOCK();
 	return (error);
 }
 
-/*
- * key_abort()
- * derived from net/rtsock.c:rts_abort()
- */
-static void
-key_abort(struct socket *so)
-{
-	raw_usrreqs.pru_abort(so);
-}
+static u_long key_sendspace = 8192;
+SYSCTL_ULONG(_net_key, OID_AUTO, sendspace, CTLFLAG_RW, &key_sendspace, 0,
+    "Default key socket send space");
+static u_long key_recvspace = 8192;
+SYSCTL_ULONG(_net_key, OID_AUTO, recvspace, CTLFLAG_RW, &key_recvspace, 0,
+    "Default key socket receive space");
 
-/*
- * key_attach()
- * derived from net/rtsock.c:rts_attach()
- */
 static int
 key_attach(struct socket *so, int proto, struct thread *td)
 {
@@ -286,190 +265,90 @@ key_attach(struct socket *so, int proto, struct thread *td)
 
 	if (td != NULL) {
 		error = priv_check(td, PRIV_NET_RAW);
-		if (error)
-			return error;
+		if (error != 0)
+			return (error);
 	}
 
-	/* XXX */
-	kp = malloc(sizeof *kp, M_PCB, M_WAITOK | M_ZERO); 
-	if (kp == NULL)
-		return ENOBUFS;
+	error = soreserve(so, key_sendspace, key_recvspace);
+	if (error != 0)
+		return (error);
 
-	so->so_pcb = (caddr_t)kp;
-	error = raw_attach(so, proto);
-	kp = (struct keycb *)sotorawcb(so);
-	if (error) {
-		free(kp, M_PCB);
-		so->so_pcb = (caddr_t) 0;
-		return error;
-	}
-
+	kp = malloc(sizeof(*kp), M_PCB, M_WAITOK);
+	kp->kp_socket = so;
 	kp->kp_promisc = kp->kp_registered = 0;
 
-	if (kp->kp_raw.rcb_proto.sp_protocol == PF_KEY) /* XXX: AF_KEY */
-		V_key_cb.key_count++;
-	V_key_cb.any_count++;
-	soisconnected(so);
+	so->so_pcb = kp;
 	so->so_options |= SO_USELOOPBACK;
 
-	return 0;
+	KEYSOCK_LOCK();
+	LIST_INSERT_HEAD(&V_keycb_list, kp, kp_next);
+	KEYSOCK_UNLOCK();
+	soisconnected(so);
+
+	return (0);
 }
 
-/*
- * key_bind()
- * derived from net/rtsock.c:rts_bind()
- */
-static int
-key_bind(struct socket *so, struct sockaddr *nam, struct thread *td)
-{
-  return EINVAL;
-}
-
-/*
- * key_close()
- * derived from net/rtsock.c:rts_close().
- */
 static void
 key_close(struct socket *so)
 {
 
-	raw_usrreqs.pru_close(so);
+	soisdisconnected(so);
 }
 
-/*
- * key_connect()
- * derived from net/rtsock.c:rts_connect()
- */
-static int
-key_connect(struct socket *so, struct sockaddr *nam, struct thread *td)
-{
-	return EINVAL;
-}
-
-/*
- * key_detach()
- * derived from net/rtsock.c:rts_detach()
- */
 static void
 key_detach(struct socket *so)
 {
-	struct keycb *kp = (struct keycb *)sotorawcb(so);
-
-	KASSERT(kp != NULL, ("key_detach: kp == NULL"));
-	if (kp->kp_raw.rcb_proto.sp_protocol
-	    == PF_KEY) /* XXX: AF_KEY */
-		V_key_cb.key_count--;
-	V_key_cb.any_count--;
+	struct keycb *kp = so->so_pcb;
 
 	key_freereg(so);
-	raw_usrreqs.pru_detach(so);
+	KEYSOCK_LOCK();
+	LIST_REMOVE(kp, kp_next);
+	KEYSOCK_UNLOCK();
+	free(kp, M_PCB);
+	so->so_pcb = NULL;
 }
 
-/*
- * key_disconnect()
- * derived from net/rtsock.c:key_disconnect()
- */
 static int
-key_disconnect(struct socket *so)
+key_shutdown(struct socket *so, enum shutdown_how how)
 {
-	return(raw_usrreqs.pru_disconnect(so));
+	/*
+	 * Note: key socket marks itself as connected through its lifetime.
+	 */
+	switch (how) {
+	case SHUT_RD:
+		socantrcvmore(so);
+		sbrelease(so, SO_RCV);
+		break;
+	case SHUT_RDWR:
+		socantrcvmore(so);
+		sbrelease(so, SO_RCV);
+		/* FALLTHROUGH */
+	case SHUT_WR:
+		socantsendmore(so);
+	}
+
+	return (0);
 }
 
-/*
- * key_peeraddr()
- * derived from net/rtsock.c:rts_peeraddr()
- */
-static int
-key_peeraddr(struct socket *so, struct sockaddr **nam)
-{
-	return(raw_usrreqs.pru_peeraddr(so, nam));
-}
-
-/*
- * key_send()
- * derived from net/rtsock.c:rts_send()
- */
-static int
-key_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *nam,
-	 struct mbuf *control, struct thread *td)
-{
-	return(raw_usrreqs.pru_send(so, flags, m, nam, control, td));
-}
-
-/*
- * key_shutdown()
- * derived from net/rtsock.c:rts_shutdown()
- */
-static int
-key_shutdown(struct socket *so)
-{
-	return(raw_usrreqs.pru_shutdown(so));
-}
-
-/*
- * key_sockaddr()
- * derived from net/rtsock.c:rts_sockaddr()
- */
-static int
-key_sockaddr(struct socket *so, struct sockaddr **nam)
-{
-	return(raw_usrreqs.pru_sockaddr(so, nam));
-}
-
-struct pr_usrreqs key_usrreqs = {
-	.pru_abort =		key_abort,
-	.pru_attach =		key_attach,
-	.pru_bind =		key_bind,
-	.pru_connect =		key_connect,
-	.pru_detach =		key_detach,
-	.pru_disconnect =	key_disconnect,
-	.pru_peeraddr =		key_peeraddr,
-	.pru_send =		key_send,
-	.pru_shutdown =		key_shutdown,
-	.pru_sockaddr =		key_sockaddr,
-	.pru_close =		key_close,
-};
-
-/* sysctl */
 SYSCTL_NODE(_net, PF_KEY, key, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Key Family");
 
-/*
- * Definitions of protocols supported in the KEY domain.
- */
-
-extern struct domain keydomain;
-
-struct protosw keysw[] = {
-{
+static struct protosw keysw = {
 	.pr_type =		SOCK_RAW,
-	.pr_domain =		&keydomain,
 	.pr_protocol =		PF_KEY_V2,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_output =		key_output,
-	.pr_ctlinput =		raw_ctlinput,
-	.pr_init =		raw_init,
-	.pr_usrreqs =		&key_usrreqs
-}
+	.pr_flags =		PR_ATOMIC | PR_ADDR,
+	.pr_abort =		key_close,
+	.pr_attach =		key_attach,
+	.pr_detach =		key_detach,
+	.pr_send =		key_send,
+	.pr_shutdown =		key_shutdown,
+	.pr_close =		key_close,
 };
 
-static void
-key_init0(void)
-{
-
-	bzero((caddr_t)&V_key_cb, sizeof(V_key_cb));
-	key_init();
-}
-
-struct domain keydomain = {
+static struct domain keydomain = {
 	.dom_family =		PF_KEY,
 	.dom_name =		"key",
-	.dom_init =		key_init0,
-#ifdef VIMAGE
-	.dom_destroy =		key_destroy,
-#endif
-	.dom_protosw =		keysw,
-	.dom_protoswNPROTOSW =	&keysw[nitems(keysw)]
+	.dom_nprotosw =		1,
+	.dom_protosw =		{ &keysw },
 };
-
-VNET_DOMAIN_SET(key);
+DOMAIN_SET(key);

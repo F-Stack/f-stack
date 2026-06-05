@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2018 The FreeBSD Foundation
  *
@@ -28,9 +28,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/cpuset.h>
 #include <sys/kernel.h>
@@ -38,12 +35,13 @@ __FBSDID("$FreeBSD$");
 #include <sys/malloc.h>
 #include <sys/pcpu.h>
 #include <sys/smp.h>
+#include <sys/stdarg.h>
 #include <sys/systm.h>
 
 #include <machine/atomic.h>
 #include <machine/cpufunc.h>
+#include <machine/md_var.h>
 #include <x86/specialreg.h>
-#include <machine/stdarg.h>
 #include <x86/ucode.h>
 #include <x86/x86_smp.h>
 
@@ -53,25 +51,32 @@ __FBSDID("$FreeBSD$");
 #include <vm/vm_kern.h>
 #include <vm/vm_param.h>
 
-static void	*ucode_intel_match(uint8_t *data, size_t *len);
-static int	ucode_intel_verify(struct ucode_intel_header *hdr,
+static const void	*ucode_intel_match(const uint8_t *data, size_t *len);
+static int	ucode_intel_verify(const struct ucode_intel_header *hdr,
 		    size_t resid);
+
+static const void	*ucode_amd_match(const uint8_t *data, size_t *len);
 
 static struct ucode_ops {
 	const char *vendor;
-	int (*load)(void *, bool, uint64_t *, uint64_t *);
-	void *(*match)(uint8_t *, size_t *);
+	int (*load)(const void *, ucode_load_how how, uint64_t *, uint64_t *);
+	const void *(*match)(const uint8_t *, size_t *);
 } loaders[] = {
 	{
 		.vendor = INTEL_VENDOR_ID,
 		.load = ucode_intel_load,
 		.match = ucode_intel_match,
 	},
+	{
+		.vendor = AMD_VENDOR_ID,
+		.load = ucode_amd_load,
+		.match = ucode_amd_match,
+	},
 };
 
 /* Selected microcode update data. */
-static void *early_ucode_data;
-static void *ucode_data;
+static const void *early_ucode_data;
+static const void *ucode_data;
 static struct ucode_ops *ucode_loader;
 
 /* Variables used for reporting success or failure. */
@@ -79,6 +84,7 @@ enum {
 	NO_ERROR,
 	NO_MATCH,
 	VERIFICATION_FAILED,
+	LOAD_FAILED,
 } ucode_error = NO_ERROR;
 static uint64_t ucode_nrev, ucode_orev;
 
@@ -99,6 +105,9 @@ log_msg(void *arg __unused)
 	case VERIFICATION_FAILED:
 		printf("CPU microcode: microcode verification failed\n");
 		break;
+	case LOAD_FAILED:
+		printf("CPU microcode load failed. BIOS update advised\n");
+		break;
 	default:
 		break;
 	}
@@ -106,7 +115,8 @@ log_msg(void *arg __unused)
 SYSINIT(ucode_log, SI_SUB_CPU, SI_ORDER_FIRST, log_msg, NULL);
 
 int
-ucode_intel_load(void *data, bool unsafe, uint64_t *nrevp, uint64_t *orevp)
+ucode_intel_load(const void *data, ucode_load_how how, uint64_t *nrevp,
+    uint64_t *orevp)
 {
 	uint64_t nrev, orev;
 	uint32_t cpuid[4];
@@ -118,10 +128,23 @@ ucode_intel_load(void *data, bool unsafe, uint64_t *nrevp, uint64_t *orevp)
 	 * undocumented errata applying to some Broadwell CPUs.
 	 */
 	wbinvd();
-	if (unsafe)
+	switch (how) {
+	case SAFE:
 		wrmsr_safe(MSR_BIOS_UPDT_TRIG, (uint64_t)(uintptr_t)data);
-	else
+		break;
+	case EARLY:
+#ifdef __amd64__
+		wrmsr_early_safe_start();
+		if (wrmsr_early_safe(MSR_BIOS_UPDT_TRIG,
+		    (uint64_t)(uintptr_t)data) != 0)
+			ucode_error = LOAD_FAILED;
+		wrmsr_early_safe_end();
+		break;
+#endif
+	case UNSAFE:
 		wrmsr(MSR_BIOS_UPDT_TRIG, (uint64_t)(uintptr_t)data);
+		break;
+	}
 	wrmsr(MSR_BIOS_SIGN, 0);
 
 	/*
@@ -143,9 +166,10 @@ ucode_intel_load(void *data, bool unsafe, uint64_t *nrevp, uint64_t *orevp)
 }
 
 static int
-ucode_intel_verify(struct ucode_intel_header *hdr, size_t resid)
+ucode_intel_verify(const struct ucode_intel_header *hdr, size_t resid)
 {
-	uint32_t cksum, *data, size;
+	const uint32_t *data;
+	uint32_t cksum, size;
 	int i;
 
 	if (resid < sizeof(struct ucode_intel_header))
@@ -163,7 +187,7 @@ ucode_intel_verify(struct ucode_intel_header *hdr, size_t resid)
 		return (1);
 
 	cksum = 0;
-	data = (uint32_t *)hdr;
+	data = (const uint32_t *)hdr;
 	for (i = 0; i < size / sizeof(uint32_t); i++)
 		cksum += data[i];
 	if (cksum != 0)
@@ -171,12 +195,12 @@ ucode_intel_verify(struct ucode_intel_header *hdr, size_t resid)
 	return (0);
 }
 
-static void *
-ucode_intel_match(uint8_t *data, size_t *len)
+static const void *
+ucode_intel_match(const uint8_t *data, size_t *len)
 {
-	struct ucode_intel_header *hdr;
-	struct ucode_intel_extsig_table *table;
-	struct ucode_intel_extsig *entry;
+	const struct ucode_intel_header *hdr;
+	const struct ucode_intel_extsig_table *table;
+	const struct ucode_intel_extsig *entry;
 	uint64_t platformid;
 	size_t resid;
 	uint32_t data_size, flags, regs[4], sig, total_size;
@@ -189,7 +213,7 @@ ucode_intel_match(uint8_t *data, size_t *len)
 	flags = 1 << ((platformid >> 50) & 0x7);
 
 	for (resid = *len; resid > 0; data += total_size, resid -= total_size) {
-		hdr = (struct ucode_intel_header *)data;
+		hdr = (const struct ucode_intel_header *)data;
 		if (ucode_intel_verify(hdr, resid) != 0) {
 			ucode_error = VERIFICATION_FAILED;
 			break;
@@ -203,8 +227,8 @@ ucode_intel_match(uint8_t *data, size_t *len)
 			total_size = UCODE_INTEL_DEFAULT_DATA_SIZE +
 			    sizeof(struct ucode_intel_header);
 		if (data_size > total_size + sizeof(struct ucode_intel_header))
-			table = (struct ucode_intel_extsig_table *)
-			    ((uint8_t *)(hdr + 1) + data_size);
+			table = (const struct ucode_intel_extsig_table *)
+			    ((const uint8_t *)(hdr + 1) + data_size);
 		else
 			table = NULL;
 
@@ -225,6 +249,66 @@ ucode_intel_match(uint8_t *data, size_t *len)
 		}
 	}
 	return (NULL);
+}
+
+int
+ucode_amd_load(const void *data, ucode_load_how how, uint64_t *nrevp,
+    uint64_t *orevp)
+{
+	uint64_t nrev, orev;
+	uint32_t cpuid[4];
+
+	orev = rdmsr(MSR_BIOS_SIGN);
+
+	switch (how) {
+	case SAFE:
+		wrmsr_safe(MSR_K8_UCODE_UPDATE, (uint64_t)(uintptr_t)data);
+		break;
+	case EARLY:
+#ifdef __amd64__
+		wrmsr_early_safe_start();
+		if (wrmsr_early_safe(MSR_K8_UCODE_UPDATE,
+		    (uint64_t)(uintptr_t)data) != 0)
+			ucode_error = LOAD_FAILED;
+		wrmsr_early_safe_end();
+		break;
+#endif
+	case UNSAFE:
+		wrmsr(MSR_K8_UCODE_UPDATE, (uint64_t)(uintptr_t)data);
+		break;
+	}
+
+	/*
+	 * Serialize instruction flow.
+	 */
+	do_cpuid(0, cpuid);
+
+	/*
+	 * Verify that the microcode revision changed.
+	 */
+	nrev = rdmsr(MSR_BIOS_SIGN);
+	if (nrevp != NULL)
+		*nrevp = nrev;
+	if (orevp != NULL)
+		*orevp = orev;
+	if (nrev <= orev)
+		return (EEXIST);
+	return (0);
+
+}
+
+static const void *
+ucode_amd_match(const uint8_t *data, size_t *len)
+{
+	uint32_t signature, revision;
+	uint32_t regs[4];
+
+	do_cpuid(1, regs);
+	signature = regs[0];
+	revision = rdmsr(MSR_BIOS_SIGN);
+
+	return (ucode_amd_find("loader blob", signature, &revision, data, *len,
+	    len));
 }
 
 /*
@@ -273,8 +357,8 @@ ucode_load_ap(int cpu)
 		return;
 #endif
 
-	if (ucode_data != NULL)
-		(void)ucode_loader->load(ucode_data, false, NULL, NULL);
+	if (ucode_data != NULL && ucode_error != LOAD_FAILED)
+		(void)ucode_loader->load(ucode_data, UNSAFE, NULL, NULL);
 }
 
 static void *
@@ -320,7 +404,8 @@ ucode_load_bsp(uintptr_t free)
 		uint32_t regs[4];
 		char vendor[13];
 	} cpuid;
-	uint8_t *addr, *fileaddr, *match;
+	const uint8_t *fileaddr, *match;
+	uint8_t *addr;
 	char *type;
 	uint64_t nrev, orev;
 	caddr_t file;
@@ -360,7 +445,7 @@ ucode_load_bsp(uintptr_t free)
 			memcpy_early(addr, match, len);
 			match = addr;
 
-			error = ucode_loader->load(match, false, &nrev, &orev);
+			error = ucode_loader->load(match, EARLY, &nrev, &orev);
 			if (error == 0) {
 				ucode_data = early_ucode_data = match;
 				ucode_nrev = nrev;

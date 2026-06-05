@@ -26,21 +26,27 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/efi.h>
+#else /* !__arm__ */
 
 #ifndef __ARM64_INCLUDE_EFI_H_
 #define __ARM64_INCLUDE_EFI_H_
 
+#include <sys/types.h>
+
 #define	EFIABI_ATTR
 
 #ifdef _KERNEL
+#define ARCH_MAY_USE_EFI
+
 #define	EFI_TIME_LOCK()
 #define	EFI_TIME_UNLOCK()
 #define	EFI_TIME_OWNED()
 
-#define	EFI_RT_HANDLE_FAULTS_DEFAULT	0
+#define	EFI_RT_HANDLE_FAULTS_DEFAULT	1
 #endif
 
 struct efirt_callinfo {
@@ -56,3 +62,5 @@ struct efirt_callinfo {
 };
 
 #endif /* __ARM64_INCLUDE_EFI_H_ */
+
+#endif /* !__arm__ */

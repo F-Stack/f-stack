@@ -28,8 +28,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _NETINET_PIM_H_
@@ -73,7 +71,7 @@ struct pim {
 #endif /* ! _PIM_VT  */
 	uint8_t		pim_reserved;	/* Reserved			*/
 	uint16_t	pim_cksum;	/* IP-style checksum		*/
-};
+} __packed;
 /* KAME-related name backward compatibility */
 #define pim_ver pim_vers
 #define pim_rsv pim_reserved

@@ -23,7 +23,6 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-# $FreeBSD$
 #
 
 #include <sys/linker.h>
@@ -40,7 +39,19 @@ METHOD int lookup_symbol {
     c_linker_sym_t*	symp;
 };
 
+METHOD int lookup_debug_symbol {
+    linker_file_t	file;
+    const char*		name;
+    c_linker_sym_t*	symp;
+};
+
 METHOD int symbol_values {
+    linker_file_t	file;
+    c_linker_sym_t	sym;
+    linker_symval_t*	valp;
+};
+
+METHOD int debug_symbol_values {
     linker_file_t	file;
     c_linker_sym_t	sym;
     linker_symval_t*	valp;
@@ -105,6 +116,29 @@ METHOD int ctf_get {
 };
 
 #
+# Look up a CTF type in the file's CTF section
+# and return CTF info in the linker CTF structure.
+# Return ENOENT if typename is not found, otherwise zero.
+#
+METHOD int ctf_lookup_typename {
+  linker_file_t file;
+  linker_ctf_t *lc;
+  const char *typename;
+};
+
+#
+# Lookup a symbol in the file's symbol table and the file's CTF info.
+# Return ENOENT if either the symbol or its CTF
+# data is not loaded, otherwise return zero.
+#
+METHOD int lookup_debug_symbol_ctf {
+  linker_file_t file;
+  const char *name;
+  c_linker_sym_t *sym;
+  linker_ctf_t *lc;
+};
+
+#
 # Get the symbol table, returning it in **symtab.  Return the 
 # number of symbols, otherwise zero.
 #
@@ -143,3 +177,12 @@ STATICMETHOD int link_preload {
 METHOD int link_preload_finish {
     linker_file_t	file;
 };
+
+#ifdef VIMAGE
+#
+# Propagate system tunable values to all vnets.
+#
+METHOD void propagate_vnets {
+	linker_file_t	file;
+};
+#endif

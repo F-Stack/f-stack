@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 /*	$NetBSD: sem.h,v 1.5 1994/06/29 06:45:15 cgd Exp $	*/
 
 /*
@@ -143,12 +142,12 @@ extern struct seminfo	seminfo;
  */
 void	semexit(struct proc *p);
 
+int	kern_get_sema(struct thread *td, struct semid_kernel **res,
+	    size_t *sz);
+
 #else /* !_KERNEL */
 
 __BEGIN_DECLS
-#if __BSD_VISIBLE
-int semsys(int, ...);
-#endif
 int semctl(int, int, int, ...);
 int semget(key_t, int, int);
 int semop(int, struct sembuf *, size_t);

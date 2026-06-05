@@ -25,13 +25,13 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
+#include "opt_acpi.h"
 #ifdef __i386__
 #include "opt_apic.h"
 #endif
 #include "opt_cpu.h"
 #include "opt_ddb.h"
+#include "opt_gdb.h"
 #include "opt_kstack_pages.h"
 #include "opt_pmap.h"
 #include "opt_sched.h"
@@ -40,13 +40,11 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/asan.h>
 #include <sys/bus.h>
 #include <sys/cons.h>	/* cngetc() */
 #include <sys/cpuset.h>
 #include <sys/csan.h>
-#ifdef GPROF 
-#include <sys/gmon.h>
-#endif
 #include <sys/interrupt.h>
 #include <sys/kdb.h>
 #include <sys/kernel.h>
@@ -81,10 +79,12 @@ __FBSDID("$FreeBSD$");
 #include <machine/stack.h>
 #include <x86/ucode.h>
 
-static MALLOC_DEFINE(M_CPUS, "cpus", "CPU items");
+#ifdef DEV_ACPI
+#include <contrib/dev/acpica/include/acpi.h>
+#include <dev/acpica/acpivar.h>
+#endif
 
-/* lock region used by kernel profiling */
-int	mcount_lock;
+static MALLOC_DEFINE(M_CPUS, "cpus", "CPU items");
 
 int	mp_naps;		/* # of Applications processors */
 int	boot_cpu_id = -1;	/* designated BSP */
@@ -97,7 +97,6 @@ int bootAP;
 void *bootstacks[MAXCPU];
 void *dpcpu;
 
-struct pcb stoppcbs[MAXCPU];
 struct susppcb **susppcbs;
 
 #ifdef COUNT_IPIS
@@ -154,6 +153,11 @@ SYSCTL_INT(_machdep, OID_AUTO, hyperthreading_intr_allowed, CTLFLAG_RDTUN,
 	&hyperthreading_intr_allowed, 0,
 	"Allow interrupts on HTT logical CPUs");
 
+static int	intr_apic_id_limit = -1;
+SYSCTL_INT(_machdep, OID_AUTO, intr_apic_id_limit, CTLFLAG_RDTUN,
+	&intr_apic_id_limit, 0,
+	"Maximum permitted APIC ID for interrupt delivery (-1 is unlimited)");
+
 static struct topo_node topo_root;
 
 static int pkg_id_shift;
@@ -166,13 +170,9 @@ struct cache_info {
 	int	present;
 } static caches[MAX_CACHE_LEVELS];
 
-unsigned int boot_address;
-
 static bool stop_mwait = false;
 SYSCTL_BOOL(_machdep, OID_AUTO, stop_mwait, CTLFLAG_RWTUN, &stop_mwait, 0,
     "Use MONITOR/MWAIT when stopping CPU, if available");
-
-#define MiB(v)	(v ## ULL << 20)
 
 void
 mem_range_AP_init(void)
@@ -183,15 +183,13 @@ mem_range_AP_init(void)
 }
 
 /*
- * Round up to the next power of two, if necessary, and then
- * take log2.
- * Returns -1 if argument is zero.
+ * Compute ceil(log2(x)).  Returns -1 if x is zero.
  */
 static __inline int
 mask_width(u_int x)
 {
 
-	return (fls(x << (1 - powerof2(x))) - 1);
+	return (x == 0 ? -1 : order_base_2(x));
 }
 
 /*
@@ -210,7 +208,7 @@ add_deterministic_cache(int type, int level, int share_count)
 	if (type == 2) /* ignore instruction cache */
 		return (1);
 	if (level == 0 || level > MAX_CACHE_LEVELS) {
-		printf("unexpected cache level %d\n", type);
+		printf("unexpected cache level %d\n", level);
 		return (1);
 	}
 
@@ -262,6 +260,22 @@ topo_probe_amd(void)
 	/* No multi-core capability. */
 	if ((amd_feature2 & AMDID2_CMP) == 0)
 		return;
+
+	/*
+	 * XXX Lack of an AMD IOMMU driver prevents use of APIC IDs above
+	 * xAPIC_MAX_APIC_ID.  This is a workaround so we boot and function on
+	 * AMD systems with high thread counts, albeit with reduced interrupt
+	 * performance.
+	 *
+	 * We should really set the limit to xAPIC_MAX_APIC_ID by default, and
+	 * have the IOMMU driver increase it.  That way if a driver is present
+	 * but disabled, or is otherwise not able to route the interrupts, the
+	 * system can fall back to a functional state.  That will require a more
+	 * substantial change though, including having the IOMMU initialize
+	 * earlier.
+	 */
+	if (intr_apic_id_limit == -1)
+		intr_apic_id_limit = xAPIC_MAX_APIC_ID;
 
 	/* For families 10h and newer. */
 	pkg_id_shift = (cpu_procinfo2 & AMDID_COREID_SIZE) >>
@@ -376,7 +390,7 @@ topo_probe_intel_0x4(void)
 
 /*
  * Determine topology of processing units for Intel CPUs
- * using CPUID Leaf 11, if supported.
+ * using CPUID Leaf 1Fh or 0Bh, if supported.
  * See:
  *  - Intel 64 Architecture Processor Topology Enumeration
  *  - Intel 64 and IA-32 ArchitecturesSoftware Developer’s Manual,
@@ -386,13 +400,23 @@ topo_probe_intel_0x4(void)
 static void
 topo_probe_intel_0xb(void)
 {
-	u_int p[4];
+	u_int leaf;
+	u_int p[4] = { 0 };
 	int bits;
 	int type;
 	int i;
 
-	/* Fall back if CPU leaf 11 doesn't really exist. */
-	cpuid_count(0x0b, 0, p);
+	/* Prefer leaf 1Fh (V2 Extended Topology Enumeration). */
+	if (cpu_high >= 0x1f) {
+		leaf = 0x1f;
+		cpuid_count(leaf, 0, p);
+	}
+	/* Fall back to leaf 0Bh (Extended Topology Enumeration). */
+	if (p[1] == 0) {
+		leaf = 0x0b;
+		cpuid_count(leaf, 0, p);
+	}
+	/* Fall back to leaf 04h (Deterministic Cache Parameters). */
 	if (p[1] == 0) {
 		topo_probe_intel_0x4();
 		return;
@@ -400,7 +424,7 @@ topo_probe_intel_0xb(void)
 
 	/* We only support three levels for now. */
 	for (i = 0; ; i++) {
-		cpuid_count(0x0b, i, p);
+		cpuid_count(leaf, i, p);
 
 		bits = p[0] & 0x1f;
 		type = (p[2] >> 8) & 0xff;
@@ -408,13 +432,12 @@ topo_probe_intel_0xb(void)
 		if (type == 0)
 			break;
 
-		/* TODO: check for duplicate (re-)assignment */
 		if (type == CPUID_TYPE_SMT)
 			core_id_shift = bits;
 		else if (type == CPUID_TYPE_CORE)
 			pkg_id_shift = bits;
-		else
-			printf("unknown CPU level type %d\n", type);
+		else if (bootverbose)
+			printf("Topology level type %d shift: %d\n", type, bits);
 	}
 
 	if (pkg_id_shift < core_id_shift) {
@@ -504,13 +527,16 @@ topo_probe(void)
 		int type;
 		int subtype;
 		int id_shift;
-	} topo_layers[MAX_CACHE_LEVELS + 4];
+	} topo_layers[MAX_CACHE_LEVELS + 5];
 	struct topo_node *parent;
 	struct topo_node *node;
 	int layer;
 	int nlayers;
 	int node_id;
 	int i;
+#if defined(DEV_ACPI) && MAXMEMDOM > 1
+	int d, domain;
+#endif
 
 	if (cpu_topo_probed)
 		return;
@@ -585,6 +611,31 @@ topo_probe(void)
 	topo_layers[nlayers].id_shift = 0;
 	nlayers++;
 
+#if defined(DEV_ACPI) && MAXMEMDOM > 1
+	if (vm_ndomains > 1) {
+		for (layer = 0; layer < nlayers; ++layer) {
+			for (i = 0; i <= max_apic_id; ++i) {
+				if ((i & ((1 << topo_layers[layer].id_shift) - 1)) == 0)
+					domain = -1;
+				if (!cpu_info[i].cpu_present)
+					continue;
+				d = acpi_pxm_get_cpu_locality(i);
+				if (domain >= 0 && domain != d)
+					break;
+				domain = d;
+			}
+			if (i > max_apic_id)
+				break;
+		}
+		KASSERT(layer < nlayers, ("NUMA domain smaller than PU"));
+		memmove(&topo_layers[layer+1], &topo_layers[layer],
+		    sizeof(*topo_layers) * (nlayers - layer));
+		topo_layers[layer].type = TOPO_TYPE_NODE;
+		topo_layers[layer].subtype = CG_SHARE_NONE;
+		nlayers++;
+	}
+#endif
+
 	topo_init_root(&topo_root);
 	for (i = 0; i <= max_apic_id; ++i) {
 		if (!cpu_info[i].cpu_present)
@@ -592,7 +643,12 @@ topo_probe(void)
 
 		parent = &topo_root;
 		for (layer = 0; layer < nlayers; ++layer) {
-			node_id = i >> topo_layers[layer].id_shift;
+#if defined(DEV_ACPI) && MAXMEMDOM > 1
+			if (topo_layers[layer].type == TOPO_TYPE_NODE) {
+				node_id = acpi_pxm_get_cpu_locality(i);
+			} else
+#endif
+				node_id = i >> topo_layers[layer].id_shift;
 			parent = topo_add_node_by_hwid(parent, node_id,
 			    topo_layers[layer].type,
 			    topo_layers[layer].subtype);
@@ -601,7 +657,12 @@ topo_probe(void)
 
 	parent = &topo_root;
 	for (layer = 0; layer < nlayers; ++layer) {
-		node_id = boot_cpu_id >> topo_layers[layer].id_shift;
+#if defined(DEV_ACPI) && MAXMEMDOM > 1
+		if (topo_layers[layer].type == TOPO_TYPE_NODE)
+			node_id = acpi_pxm_get_cpu_locality(boot_cpu_id);
+		else
+#endif
+			node_id = boot_cpu_id >> topo_layers[layer].id_shift;
 		node = topo_find_node_by_hwid(parent, node_id,
 		    topo_layers[layer].type,
 		    topo_layers[layer].subtype);
@@ -776,14 +837,18 @@ x86topo_add_sched_group(struct topo_node *root, struct cpu_group *cg_root)
 	int i;
 
 	KASSERT(root->type == TOPO_TYPE_SYSTEM || root->type == TOPO_TYPE_CACHE ||
-	    root->type == TOPO_TYPE_GROUP,
+	    root->type == TOPO_TYPE_NODE || root->type == TOPO_TYPE_GROUP,
 	    ("x86topo_add_sched_group: bad type: %u", root->type));
 	CPU_COPY(&root->cpuset, &cg_root->cg_mask);
 	cg_root->cg_count = root->cpu_count;
-	if (root->type == TOPO_TYPE_SYSTEM)
-		cg_root->cg_level = CG_SHARE_NONE;
-	else
+	if (root->type == TOPO_TYPE_CACHE)
 		cg_root->cg_level = root->subtype;
+	else
+		cg_root->cg_level = CG_SHARE_NONE;
+	if (root->type == TOPO_TYPE_NODE)
+		cg_root->cg_flags = CG_FLAG_NODE;
+	else
+		cg_root->cg_flags = 0;
 
 	/*
 	 * Check how many core nodes we have under the given root node.
@@ -804,7 +869,7 @@ x86topo_add_sched_group(struct topo_node *root, struct cpu_group *cg_root)
 
 	if (cg_root->cg_level != CG_SHARE_NONE &&
 	    root->cpu_count > 1 && ncores < 2)
-		cg_root->cg_flags = CG_FLAG_SMT;
+		cg_root->cg_flags |= CG_FLAG_SMT;
 
 	/*
 	 * Find out how many cache nodes we have under the given root node.
@@ -816,10 +881,37 @@ x86topo_add_sched_group(struct topo_node *root, struct cpu_group *cg_root)
 	nchildren = 0;
 	node = root;
 	while (node != NULL) {
-		if ((node->type != TOPO_TYPE_GROUP &&
-		    node->type != TOPO_TYPE_CACHE) ||
-		    (root->type != TOPO_TYPE_SYSTEM &&
-		    CPU_CMP(&node->cpuset, &root->cpuset) == 0)) {
+		/*
+		 * When some APICs are disabled by tunables, nodes can end up
+		 * with an empty cpuset. Nodes with an empty cpuset will be
+		 * translated into cpu groups with empty cpusets. smp_topo_fill
+		 * will then set cg_first and cg_last to -1. This isn't
+		 * correctly handled in all functions. E.g. when
+		 * cpu_search_lowest and cpu_search_highest loop through all
+		 * cpus, they call CPU_ISSET on cpu -1 which ends up in a
+		 * general protection fault.
+		 *
+		 * We could fix the scheduler to handle empty cpu groups
+		 * correctly. Nevertheless, empty cpu groups are causing
+		 * overhead for no value. So, it makes more sense to just don't
+		 * create them.
+		 */
+		if (CPU_EMPTY(&node->cpuset)) {
+			node = topo_next_node(root, node);
+			continue;
+		}
+		if (CPU_CMP(&node->cpuset, &root->cpuset) == 0) {
+			if (node->type == TOPO_TYPE_CACHE &&
+			    cg_root->cg_level < node->subtype)
+				cg_root->cg_level = node->subtype;
+			if (node->type == TOPO_TYPE_NODE)
+				cg_root->cg_flags |= CG_FLAG_NODE;
+			node = topo_next_node(root, node);
+			continue;
+		}
+		if (node->type != TOPO_TYPE_GROUP &&
+		    node->type != TOPO_TYPE_NODE &&
+		    node->type != TOPO_TYPE_CACHE) {
 			node = topo_next_node(root, node);
 			continue;
 		}
@@ -827,8 +919,20 @@ x86topo_add_sched_group(struct topo_node *root, struct cpu_group *cg_root)
 		node = topo_next_nonchild_node(root, node);
 	}
 
-	cg_root->cg_child = smp_topo_alloc(nchildren);
+	/*
+	 * We are not interested in nodes including only one CPU each.
+	 */
+	if (nchildren == root->cpu_count)
+		return;
+
+	/*
+	 * We are not interested in nodes without children.
+	 */
 	cg_root->cg_children = nchildren;
+	if (nchildren == 0)
+		return;
+
+	cg_root->cg_child = smp_topo_alloc(nchildren);
 
 	/*
 	 * Now find again the same cache nodes as above and recursively
@@ -838,9 +942,10 @@ x86topo_add_sched_group(struct topo_node *root, struct cpu_group *cg_root)
 	i = 0;
 	while (node != NULL) {
 		if ((node->type != TOPO_TYPE_GROUP &&
+		    node->type != TOPO_TYPE_NODE &&
 		    node->type != TOPO_TYPE_CACHE) ||
-		    (root->type != TOPO_TYPE_SYSTEM &&
-		    CPU_CMP(&node->cpuset, &root->cpuset) == 0)) {
+		    CPU_CMP(&node->cpuset, &root->cpuset) == 0 ||
+		    CPU_EMPTY(&node->cpuset)) {
 			node = topo_next_node(root, node);
 			continue;
 		}
@@ -888,10 +993,9 @@ void
 cpu_add(u_int apic_id, char boot_cpu)
 {
 
-	if (apic_id > max_apic_id) {
+	if (apic_id > max_apic_id)
 		panic("SMP: APIC ID %d too high", apic_id);
-		return;
-	}
+
 	KASSERT(cpu_info[apic_id].cpu_present == 0, ("CPU %u added twice",
 	    apic_id));
 	cpu_info[apic_id].cpu_present = 1;
@@ -929,56 +1033,6 @@ cpu_mp_probe(void)
 	 */
 	CPU_SETOF(0, &all_cpus);
 	return (mp_ncpus > 1);
-}
-
-/* Allocate memory for the AP trampoline. */
-void
-alloc_ap_trampoline(vm_paddr_t *physmap, unsigned int *physmap_idx)
-{
-	unsigned int i;
-	bool allocated;
-
-	allocated = false;
-	for (i = *physmap_idx; i <= *physmap_idx; i -= 2) {
-		/*
-		 * Find a memory region big enough and below the 1MB boundary
-		 * for the trampoline code.
-		 * NB: needs to be page aligned.
-		 */
-		if (physmap[i] >= MiB(1) ||
-		    (trunc_page(physmap[i + 1]) - round_page(physmap[i])) <
-		    round_page(bootMP_size))
-			continue;
-
-		allocated = true;
-		/*
-		 * Try to steal from the end of the region to mimic previous
-		 * behaviour, else fallback to steal from the start.
-		 */
-		if (physmap[i + 1] < MiB(1)) {
-			boot_address = trunc_page(physmap[i + 1]);
-			if ((physmap[i + 1] - boot_address) < bootMP_size)
-				boot_address -= round_page(bootMP_size);
-			physmap[i + 1] = boot_address;
-		} else {
-			boot_address = round_page(physmap[i]);
-			physmap[i] = boot_address + round_page(bootMP_size);
-		}
-		if (physmap[i] == physmap[i + 1] && *physmap_idx != 0) {
-			memmove(&physmap[i], &physmap[i + 2],
-			    sizeof(*physmap) * (*physmap_idx - i + 2));
-			*physmap_idx -= 2;
-		}
-		break;
-	}
-
-	if (!allocated) {
-		boot_address = basemem * 1024 - bootMP_size;
-		if (bootverbose)
-			printf(
-"Cannot find enough space for the boot trampoline, placing it at %#x",
-			    boot_address);
-	}
 }
 
 /*
@@ -1030,6 +1084,7 @@ init_secondary_tail(void)
 	/* Initialize curthread. */
 	KASSERT(PCPU_GET(idlethread) != NULL, ("no idle thread"));
 	PCPU_SET(curthread, PCPU_GET(idlethread));
+	schedinit_ap();
 
 	mtx_lock_spin(&ap_boot_mtx);
 
@@ -1063,11 +1118,6 @@ init_secondary_tail(void)
 	}
 
 #ifdef __amd64__
-	/*
-	 * Enable global pages TLB extension
-	 * This also implicitly flushes the TLB 
-	 */
-	load_cr4(rcr4() | CR4_PGE);
 	if (pmap_pcid_enabled)
 		load_cr4(rcr4() | CR4_PCIDE);
 	load_ds(_udatasel);
@@ -1081,19 +1131,9 @@ init_secondary_tail(void)
 	while (atomic_load_acq_int(&smp_started) == 0)
 		ia32_pause();
 
-#ifndef EARLY_AP_STARTUP
-	/* Start per-CPU event timers. */
-	cpu_initclocks_ap();
-#endif
-
 	kcsan_cpu_init(cpuid);
 
-	/*
-	 * Assert that smp_after_idle_runnable condition is reasonable.
-	 */
-	MPASS(PCPU_GET(curpcb) == NULL);
-
-	sched_throw(NULL);
+	sched_ap_entry();
 
 	panic("scheduler returned us to %s", __func__);
 	/* NOTREACHED */
@@ -1102,15 +1142,23 @@ init_secondary_tail(void)
 static void
 smp_after_idle_runnable(void *arg __unused)
 {
-	struct pcpu *pc;
 	int cpu;
 
+	if (mp_ncpus == 1)
+		return;
+
+	KASSERT(smp_started != 0, ("%s: SMP not started yet", __func__));
+
+	/*
+	 * Wait for all APs to handle an interrupt.  After that, we know that
+	 * the APs have entered the scheduler at least once, so the boot stacks
+	 * are safe to free.
+	 */
+	smp_rendezvous(smp_no_rendezvous_barrier, NULL,
+	    smp_no_rendezvous_barrier, NULL);
+
 	for (cpu = 1; cpu < mp_ncpus; cpu++) {
-		pc = pcpu_find(cpu);
-		while (atomic_load_ptr(&pc->pc_curpcb) == NULL)
-			cpu_spinwait();
-		kmem_free((vm_offset_t)bootstacks[cpu], kstack_pages *
-		    PAGE_SIZE);
+		kmem_free(bootstacks[cpu], kstack_pages * PAGE_SIZE);
 	}
 }
 SYSINIT(smp_after_idle_runnable, SI_SUB_SMP, SI_ORDER_ANY,
@@ -1135,6 +1183,8 @@ set_interrupt_apic_ids(void)
 		if (cpu_info[apic_id].cpu_bsp)
 			continue;
 		if (cpu_info[apic_id].cpu_disabled)
+			continue;
+		if (intr_apic_id_limit >= 0 && apic_id > intr_apic_id_limit)
 			continue;
 
 		/* Don't let hyperthreads service interrupts. */
@@ -1278,6 +1328,8 @@ ipi_bitmap_handler(struct trapframe frame)
 	int cpu = PCPU_GET(cpuid);
 	u_int ipi_bitmap;
 
+	kasan_mark(&frame, sizeof(frame), sizeof(frame), 0);
+
 	td = curthread;
 	ipi_bitmap = atomic_readandclear_int(&cpuid_to_pcpu[cpu]->
 	    pc_ipi_bitmap);
@@ -1339,9 +1391,7 @@ ipi_selected(cpuset_t cpus, u_int ipi)
 	if (ipi == IPI_STOP_HARD)
 		CPU_OR_ATOMIC(&ipi_stop_nmi_pending, &cpus);
 
-	while ((cpu = CPU_FFS(&cpus)) != 0) {
-		cpu--;
-		CPU_CLR(cpu, &cpus);
+	CPU_FOREACH_ISSET(cpu, &cpus) {
 		CTR3(KTR_SMP, "%s: cpu: %d ipi: %x", __func__, cpu, ipi);
 		ipi_send_cpu(cpu, ipi);
 	}
@@ -1374,6 +1424,9 @@ ipi_all_but_self(u_int ipi)
 {
 	cpuset_t other_cpus;
 	int cpu, c;
+
+	if (mp_ncpus == 1)
+		return;
 
 	/*
 	 * IPI_STOP_HARD maps to a NMI and the trap handler needs a bit
@@ -1520,7 +1573,7 @@ cpustop_handler_post(u_int cpu)
 	 */
 	invltlb_glob();
 
-#if defined(__amd64__) && defined(DDB)
+#if defined(__amd64__) && (defined(DDB) || defined(GDB))
 	amd64_db_resume_dbreg();
 #endif
 
@@ -1541,7 +1594,30 @@ cpususpend_handler(void)
 
 	mtx_assert(&smp_ipi_mtx, MA_NOTOWNED);
 
+#ifdef __amd64__
+	if (vmm_suspend_p)
+		vmm_suspend_p();
+#endif
+
 	cpu = PCPU_GET(cpuid);
+
+#ifdef XENHVM
+	/*
+	 * Some Xen guest types (PVH) expose a very minimal set of ACPI tables,
+	 * and for example have no support for SCI.  That leads to the suspend
+	 * stacks not being allocated, and hence when attempting to perform a
+	 * Xen triggered suspension FreeBSD will hit a #PF.  Avoid saving the
+	 * CPU and FPU contexts if the stacks are not allocated, as the
+	 * hypervisor will already take care of this.  Note that we could even
+	 * do this for Xen triggered suspensions on guests that have full ACPI
+	 * support, but doing so would introduce extra complexity.
+	 */
+	if (susppcbs == NULL) {
+		KASSERT(vm_guest == VM_GUEST_XEN, ("Missing suspend stack"));
+		CPU_SET_ATOMIC(cpu, &suspended_cpus);
+		CPU_SET_ATOMIC(cpu, &resuming_cpus);
+	} else
+#endif
 	if (savectx(&susppcbs[cpu]->sp_pcb)) {
 #ifdef __amd64__
 		fpususpend(susppcbs[cpu]->sp_fpususpend);
@@ -1673,7 +1749,7 @@ mp_ipi_intrcnt(void *dummy)
 		intrcnt_add(buf, &ipi_rendezvous_counts[i]);
 		snprintf(buf, sizeof(buf), "cpu%d:hardclock", i);
 		intrcnt_add(buf, &ipi_hardclock_counts[i]);
-	}		
+	}
 }
 SYSINIT(mp_ipi_intrcnt, SI_SUB_INTR, SI_ORDER_MIDDLE, mp_ipi_intrcnt, NULL);
 #endif

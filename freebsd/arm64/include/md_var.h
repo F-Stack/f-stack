@@ -27,7 +27,6 @@
  * SUCH DAMAGE.
  *
  *	from: FreeBSD: src/sys/i386/include/md_var.h,v 1.40 2001/07/12
- * $FreeBSD$
  */
 
 #ifndef	_MACHINE_MD_VAR_H_
@@ -38,12 +37,21 @@ extern char sigcode[];
 extern int szsigcode;
 extern u_long elf_hwcap;
 extern u_long elf_hwcap2;
+extern u_long elf_hwcap3;
+extern u_long elf_hwcap4;
+extern u_long linux_elf_hwcap;
+extern u_long linux_elf_hwcap2;
+extern u_long linux_elf_hwcap3;
+extern u_long linux_elf_hwcap4;
+#ifdef COMPAT_FREEBSD32
+extern u_long elf32_hwcap;
+extern u_long elf32_hwcap2;
+#endif
 
 struct dumperinfo;
+struct minidumpstate;
 
-extern int busdma_swi_pending;
-void busdma_swi(void);
-int minidumpsys(struct dumperinfo *);
+int cpu_minidumpsys(struct dumperinfo *, const struct minidumpstate *);
 void generic_bs_fault(void) __asm(__STRING(generic_bs_fault));
 void generic_bs_peek_1(void) __asm(__STRING(generic_bs_peek_1));
 void generic_bs_peek_2(void) __asm(__STRING(generic_bs_peek_2));
@@ -54,6 +62,15 @@ void generic_bs_poke_2(void) __asm(__STRING(generic_bs_poke_2));
 void generic_bs_poke_4(void) __asm(__STRING(generic_bs_poke_4));
 void generic_bs_poke_8(void) __asm(__STRING(generic_bs_poke_8));
 
-extern uint32_t initial_fpcr;
+#ifdef _MD_WANT_SWAPWORD
+/*
+ * XXX These are implemented primarily for swp/swpb emulation at the moment, and
+ * should be used sparingly with consideration -- they aren't implemented for
+ * any other platform.  If we use them anywhere else, at a minimum they need
+ * KASAN/KMSAN interceptors added.
+ */
+int	swapueword8(volatile uint8_t *base, uint8_t *val);
+int	swapueword32(volatile uint32_t *base, uint32_t *val);
+#endif
 
 #endif /* !_MACHINE_MD_VAR_H_ */

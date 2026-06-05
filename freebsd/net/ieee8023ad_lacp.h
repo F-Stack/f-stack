@@ -1,7 +1,7 @@
 /*	$NetBSD: ieee8023ad_impl.h,v 1.2 2005/12/10 23:21:39 elad Exp $	*/
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-NetBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c)2005 YAMAMOTO Takashi,
  * All rights reserved.
@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -222,6 +220,7 @@ struct lacp_port {
 #define	lp_key		lp_actor.lip_key
 #define	lp_systemid	lp_actor.lip_systemid
 	struct timeval		lp_last_lacpdu;
+	struct timeval		lp_last_lacpdu_rx;
 	int			lp_lacpdu_sent;
 	enum lacp_mux_state	lp_mux_state;
 	enum lacp_selected	lp_selected;
@@ -306,7 +305,7 @@ void		lacp_linkstate(struct lagg_port *);
 void		lacp_req(struct lagg_softc *, void *);
 void		lacp_portreq(struct lagg_port *, void *);
 
-static __inline int
+static __inline bool
 lacp_isactive(struct lagg_port *lgp)
 {
 	struct lacp_port *lp = LACP_PORT(lgp);
@@ -314,26 +313,23 @@ lacp_isactive(struct lagg_port *lgp)
 	struct lacp_aggregator *la = lp->lp_aggregator;
 
 	/* This port is joined to the active aggregator */
-	if (la != NULL && la == lsc->lsc_active_aggregator)
-		return (1);
-
-	return (0);
+	return (la != NULL && la == lsc->lsc_active_aggregator);
 }
 
-static __inline int
+static __inline bool
 lacp_iscollecting(struct lagg_port *lgp)
 {
 	struct lacp_port *lp = LACP_PORT(lgp);
 
-	return ((lp->lp_state & LACP_STATE_COLLECTING) != 0);
+	return (lp->lp_state & LACP_STATE_COLLECTING);
 }
 
-static __inline int
+static __inline bool
 lacp_isdistributing(struct lagg_port *lgp)
 {
 	struct lacp_port *lp = LACP_PORT(lgp);
 
-	return ((lp->lp_state & LACP_STATE_DISTRIBUTING) != 0);
+	return (lp->lp_state & LACP_STATE_DISTRIBUTING);
 }
 
 /* following constants don't include terminating NUL */

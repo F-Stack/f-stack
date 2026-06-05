@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Paolo Pisati <piso@FreeBSD.org>
  * All rights reserved.
@@ -27,8 +27,6 @@
  *
  */
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifdef _KERNEL
 #include <sys/libkern.h>
 #include <sys/param.h>
@@ -97,7 +95,6 @@ LibAliasAttachHandlers(struct proto_handler *p)
 int
 LibAliasDetachHandlers(struct proto_handler *p)
 {
-
 	while (p->dir != NODIR) {
 		TAILQ_REMOVE(&handler_chain, p, link);
 		p++;
@@ -123,7 +120,6 @@ find_handler(int8_t dir, int8_t proto, struct libalias *la, struct ip *ip,
 struct proto_handler *
 first_handler(void)
 {
-
 	return (TAILQ_FIRST(&handler_chain));
 }
 

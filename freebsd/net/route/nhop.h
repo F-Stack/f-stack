@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alexander V. Chernikov
  *
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -166,6 +164,7 @@ struct nhop_object {
 struct weightened_nhop {
 	struct nhop_object	*nh;
 	uint32_t		weight;
+	uint32_t		storage;
 };
 
 void nhop_free(struct nhop_object *nh);
@@ -174,12 +173,62 @@ struct sysctl_req;
 struct sockaddr_dl;
 struct rib_head;
 
+/* flags that can be set using nhop_set_rtflags() */
+#define	RT_SET_RTFLAGS_MASK     (RTF_PROTO1 | RTF_PROTO2 | RTF_PROTO3 | RTF_STATIC)
+#define	RT_CHANGE_RTFLAGS_MASK	RT_SET_RTFLAGS_MASK
+
+struct nhop_object *nhop_alloc(uint32_t fibnum, int family);
+void nhop_copy(struct nhop_object *nh, const struct nhop_object *nh_orig);
+struct nhop_object *nhop_get_nhop(struct nhop_object *nh, int *perror);
+int nhop_get_unlinked(struct nhop_object *nh);
+
+void nhop_set_direct_gw(struct nhop_object *nh, struct ifnet *ifp);
+bool nhop_set_gw(struct nhop_object *nh, const struct sockaddr *sa, bool is_gw);
+
+
+void nhop_set_mtu(struct nhop_object *nh, uint32_t mtu, bool from_user);
+void nhop_set_rtflags(struct nhop_object *nh, int rt_flags);
+void nhop_set_pxtype_flag(struct nhop_object *nh, int nh_flag);
+void nhop_set_broadcast(struct nhop_object *nh, bool is_broadcast);
+void nhop_set_blackhole(struct nhop_object *nh, int blackhole_rt_flag);
+void nhop_set_pinned(struct nhop_object *nh, bool is_pinned);
+void nhop_set_redirect(struct nhop_object *nh, bool is_redirect);
+void nhop_set_type(struct nhop_object *nh, enum nhop_type nh_type);
+void nhop_set_src(struct nhop_object *nh, struct ifaddr *ifa);
+void nhop_set_transmit_ifp(struct nhop_object *nh, struct ifnet *ifp);
+
+#define	NH_ORIGIN_UNSPEC	0 /* not set */
+#define	NH_ORIGIN_REDIRECT	1 /* kernel-originated redirect */
+#define	NH_ORIGIN_KERNEL	2 /* kernel (interface) routes */
+#define	NH_ORIGIN_BOOT		3 /* kernel-originated routes at boot */
+#define	NH_ORIGIN_STATIC	4 /* route(8) routes */
+void nhop_set_origin(struct nhop_object *nh, uint8_t origin);
+uint8_t nhop_get_origin(const struct nhop_object *nh);
+
 uint32_t nhop_get_idx(const struct nhop_object *nh);
+uint32_t nhop_get_uidx(const struct nhop_object *nh);
+void nhop_set_uidx(struct nhop_object *nh, uint32_t uidx);
 enum nhop_type nhop_get_type(const struct nhop_object *nh);
 int nhop_get_rtflags(const struct nhop_object *nh);
 struct vnet *nhop_get_vnet(const struct nhop_object *nh);
 struct nhop_object *nhop_select_func(struct nhop_object *nh, uint32_t flowid);
+int nhop_get_upper_family(const struct nhop_object *nh);
+bool nhop_set_upper_family(struct nhop_object *nh, int family);
+int nhop_get_neigh_family(const struct nhop_object *nh);
+uint32_t nhop_get_fibnum(const struct nhop_object *nh);
+void nhop_set_fibnum(struct nhop_object *nh, uint32_t fibnum);
+uint32_t nhop_get_expire(const struct nhop_object *nh);
+void nhop_set_expire(struct nhop_object *nh, uint32_t expire);
+struct rib_head *nhop_get_rh(const struct nhop_object *nh);
 
+struct nhgrp_object;
+struct nhgrp_object *nhgrp_alloc(uint32_t fibnum, int family,
+    struct weightened_nhop *wn, int num_nhops, int *perror);
+struct nhgrp_object *nhgrp_get_nhgrp(struct nhgrp_object *nhg, int *perror);
+void nhgrp_set_uidx(struct nhgrp_object *nhg, uint32_t uidx);
+uint32_t nhgrp_get_uidx(const struct nhgrp_object *nhg);
+uint8_t nhgrp_get_origin(const struct nhgrp_object *nhg);
+void nhgrp_set_origin(struct nhgrp_object *nhg, uint8_t origin);
 #endif /* _KERNEL */
 
 /* Kernel <> userland structures */

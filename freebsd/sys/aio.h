@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997 John S. Dyson.  All rights reserved.
  *
@@ -14,8 +14,6 @@
  * DISCLAIMER:  This code isn't warranted to do anything useful.  Anything
  * bad that happens because of using this software isn't the responsibility
  * of the author.  This software is distributed AS-IS.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_AIO_H_
@@ -43,13 +41,24 @@
 #define	LIO_NOP			0x0
 #define LIO_WRITE		0x1
 #define	LIO_READ		0x2
-#if defined(_KERNEL) || defined(_WANT_ALL_LIO_OPCODES)
+#if __BSD_VISIBLE
 #define	LIO_VECTORED		0x4
 #define	LIO_WRITEV		(LIO_WRITE | LIO_VECTORED)
 #define	LIO_READV		(LIO_READ | LIO_VECTORED)
+#endif
+#if defined(_KERNEL) || defined(_WANT_ALL_LIO_OPCODES)
 #define	LIO_SYNC		0x8
 #define	LIO_DSYNC		(0x10 | LIO_SYNC)
 #define	LIO_MLOCK		0x20
+#endif
+#if __BSD_VISIBLE
+#define	LIO_FOFFSET		0x40
+#endif
+
+/* aio_read2/aio_write2 flags */
+#if __BSD_VISIBLE
+#define	AIO_OP2_FOFFSET		0x00000001
+#define	AIO_OP2_VECTORED	0x00000002
 #endif
 
 /*
@@ -88,7 +97,7 @@
 struct __aiocb_private {
 	long	status;
 	long	error;
-	void	*kernelinfo;
+	void	*spare;
 };
 
 /*
@@ -129,6 +138,7 @@ struct kaiocb {
 	TAILQ_ENTRY(kaiocb) plist;	/* (a) lists of pending / done jobs */
 	TAILQ_ENTRY(kaiocb) allist;	/* (a) list of all jobs in proc */
 	int	jobflags;		/* (a) job flags */
+	int	ioflags;		/* (*) io flags */
 	int	inblock;		/* (*) input blocks */
 	int	outblock;		/* (*) output blocks */
 	int	msgsnd;			/* (*) messages sent */
@@ -149,7 +159,7 @@ struct kaiocb {
 	aio_handle_fn_t *handle_fn;	/* (c) backend handle function */
 	union {				/* Backend-specific data fields */
 		struct {		/* BIO backend */
-			int	nbio;	/* Number of remaining bios */
+			volatile u_int nbio; /* Number of remaining bios */
 			int	error;	/* Worst error of all bios */
 			long	nbytes;	/* Bytes completed so far */
 		};
@@ -271,6 +281,8 @@ int	aio_mlock(struct aiocb *);
 
 #if __BSD_VISIBLE
 ssize_t	aio_waitcomplete(struct aiocb **, struct timespec *);
+int	aio_read2(struct aiocb *, int);
+int	aio_write2(struct aiocb *, int);
 #endif
 
 int	aio_fsync(int op, struct aiocb *aiocbp);

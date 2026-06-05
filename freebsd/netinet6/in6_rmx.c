@@ -61,16 +61,12 @@
  *
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
-#include <sys/socketvar.h>
 #include <sys/mbuf.h>
 #include <sys/rwlock.h>
 #include <sys/syslog.h>
@@ -78,6 +74,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/route/route_ctl.h>
 #include <net/route/route_var.h>
@@ -93,19 +90,25 @@ __FBSDID("$FreeBSD$");
 #include <netinet/icmp6.h>
 #include <netinet6/nd6.h>
 
-#include <netinet/tcp.h>
-#include <netinet/tcp_seq.h>
-#include <netinet/tcp_timer.h>
-#include <netinet/tcp_var.h>
-
 static int
-rib6_preadd(u_int fibnum, const struct sockaddr *addr, const struct sockaddr *mask,
+rib6_set_nh_pfxflags(u_int fibnum, const struct sockaddr *addr, const struct sockaddr *mask,
     struct nhop_object *nh)
 {
-	uint16_t nh_type;
+	const struct sockaddr_in6 *mask6 = (const struct sockaddr_in6 *)mask;
 
-	/* XXX: RTF_LOCAL */
+	if (mask6 == NULL)
+		nhop_set_pxtype_flag(nh, NHF_HOST);
+	else if (IN6_IS_ADDR_UNSPECIFIED(&mask6->sin6_addr))
+		nhop_set_pxtype_flag(nh, NHF_DEFAULT);
+	else
+		nhop_set_pxtype_flag(nh, 0);
 
+	return (0);
+}
+
+static int
+rib6_augment_nh(u_int fibnum, struct nhop_object *nh)
+{
 	/*
 	 * Check route MTU:
 	 * inherit interface MTU if not set or
@@ -116,14 +119,9 @@ rib6_preadd(u_int fibnum, const struct sockaddr *addr, const struct sockaddr *ma
 	} else if (nh->nh_mtu > IN6_LINKMTU(nh->nh_ifp))
 		nh->nh_mtu = IN6_LINKMTU(nh->nh_ifp);
 
-	/* Ensure that default route nhop has special flag */
-	const struct sockaddr_in6 *mask6 = (const struct sockaddr_in6 *)mask;
-	if ((nhop_get_rtflags(nh) & RTF_HOST) == 0 && mask6 != NULL &&
-	    IN6_IS_ADDR_UNSPECIFIED(&mask6->sin6_addr))
-		nh->nh_flags |= NHF_DEFAULT;
-
 	/* Set nexthop type */
 	if (nhop_get_type(nh) == 0) {
+		uint16_t nh_type;
 		if (nh->nh_flags & NHF_GATEWAY)
 			nh_type = NH_TYPE_IPV6_ETHER_NHOP;
 		else
@@ -143,14 +141,15 @@ struct rib_head *
 in6_inithead(uint32_t fibnum)
 {
 	struct rib_head *rh;
-	struct rib_subscription *rs;
+	struct rib_subscription *rs __diagused;
 
 	rh = rt_table_init(offsetof(struct sockaddr_in6, sin6_addr) << 3,
 	    AF_INET6, fibnum);
 	if (rh == NULL)
 		return (NULL);
 
-	rh->rnh_preadd = rib6_preadd;
+	rh->rnh_set_nh_pfxflags = rib6_set_nh_pfxflags;
+	rh->rnh_augment_nh = rib6_augment_nh;
 
 	rs = rib_subscribe_internal(rh, nd6_subscription_cb, NULL,
 	    RIB_NOTIFY_IMMEDIATE, true);

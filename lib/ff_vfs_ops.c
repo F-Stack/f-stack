@@ -46,11 +46,13 @@
 
 __read_frequently smr_t vfs_smr;
 
+#ifndef FSTACK
 void
 NDFREE(struct nameidata *ndp, const u_int flags)
 {
 
 }
+#endif
 
 int
 vn_open(struct nameidata *ndp, int *flagp, int cmode, struct file *fp)

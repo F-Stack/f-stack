@@ -22,8 +22,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SHA224_H_
@@ -73,10 +71,6 @@ __BEGIN_DECLS
 #endif
 #ifndef SHA224_Data
 #define SHA224_Data		_libmd_SHA224_Data
-#endif
-
-#ifndef SHA224_version
-#define SHA224_version		_libmd_SHA224_version
 #endif
 
 void	SHA224_Init(SHA224_CTX *);

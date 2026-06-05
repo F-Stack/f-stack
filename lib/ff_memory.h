@@ -67,9 +67,7 @@ struct ff_dpdk_if_context {
 struct mbuf_table {
     uint16_t len;
     struct rte_mbuf *m_table[MAX_PKT_BURST];
-#ifdef FF_USE_PAGE_ARRAY
     void*            bsd_m_table[MAX_PKT_BURST];            // save bsd mbuf address which will be enquene into txring after NIC transmitted pkt.
-#endif
 };
 
 struct lcore_rx_queue {
@@ -92,7 +90,6 @@ struct lcore_conf {
     //char *pcap[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
 
-#ifdef FF_USE_PAGE_ARRAY
 //  mbuf_txring save mbuf which had bursted into NIC,  m_tables has same length with NIC dev's sw_ring.
 //  Then when txring.m_table[x] is reused, the packet in txring.m_table[x] had been transmited by NIC.
 //  that means the mbuf can be freed safely.
@@ -101,6 +98,7 @@ struct mbuf_txring{
     uint16_t head;        // next available element.
 };
 
+#ifdef FF_USE_PAGE_ARRAY
 void ff_init_ref_pool(int nb_mbuf, int socketid);
 int ff_mmap_init();
 int ff_if_send_onepkt(struct ff_dpdk_if_context *ctx, void *m, int total);

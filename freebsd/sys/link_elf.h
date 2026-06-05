@@ -28,8 +28,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -58,12 +56,9 @@
 
 typedef struct link_map {
 	caddr_t		l_base;			/* Base Address of library */
-#ifdef __mips__
-	caddr_t		l_xxx;			/* unused */
-#endif
 	const char	*l_name;		/* Absolute Path to Library */
 	const void	*l_ld;			/* Pointer to .dynamic in memory */
-	struct link_map	*l_next, *l_prev;	/* linked list of of mapped libs */
+	struct link_map	*l_next, *l_prev;	/* linked list of mapped libs */
 	caddr_t		l_addr;			/* Load Offset of library */
 	const char	*l_refname;		/* object we are filtering for */
 } Link_map;
@@ -98,10 +93,12 @@ struct dl_phdr_info
 __BEGIN_DECLS
 
 typedef int (*__dl_iterate_hdr_callback)(struct dl_phdr_info *, size_t, void *);
-extern int dl_iterate_phdr(__dl_iterate_hdr_callback, void *);
+int dl_iterate_phdr(__dl_iterate_hdr_callback, void *);
 int _rtld_addr_phdr(const void *, struct dl_phdr_info *);
 int _rtld_get_stack_prot(void);
 int _rtld_is_dlopened(void *);
+const char *rtld_get_var(const char *name);
+int rtld_set_var(const char *name, const char *val);
 
 #ifdef __ARM_EABI__
 void * dl_unwind_find_exidx(const void *, int *);

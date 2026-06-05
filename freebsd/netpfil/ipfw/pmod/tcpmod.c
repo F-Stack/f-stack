@@ -28,9 +28,6 @@
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/errno.h>
@@ -56,11 +53,12 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/in_cksum.h>
 
-VNET_DEFINE_STATIC(uint16_t, tcpmod_setmss_eid) = 0;
+VNET_DEFINE_STATIC(uint32_t, tcpmod_setmss_eid) = 0;
 #define	V_tcpmod_setmss_eid	VNET(tcpmod_setmss_eid)
 
 static int
-tcpmod_setmss(struct mbuf **mp, struct tcphdr *tcp, int tlen, uint16_t mss)
+tcpmod_setmss(struct mbuf **mp, struct tcphdr *tcp, int tlen, uint16_t mss,
+    int *done)
 {
 	struct mbuf *m;
 	u_char *cp;
@@ -75,8 +73,10 @@ tcpmod_setmss(struct mbuf **mp, struct tcphdr *tcp, int tlen, uint16_t mss)
 		 * TCP header with options.
 		 */
 		*mp = m = m_pullup(m, m->m_pkthdr.len);
-		if (m == NULL)
+		if (m == NULL) {
+			*done = 1;
 			return (ret);
+		}
 	}
 	/* Parse TCP options. */
 	for (tlen -= sizeof(struct tcphdr), cp = (u_char *)(tcp + 1);
@@ -117,7 +117,7 @@ tcpmod_setmss(struct mbuf **mp, struct tcphdr *tcp, int tlen, uint16_t mss)
 
 #ifdef INET6
 static int
-tcpmod_ipv6_setmss(struct mbuf **mp, uint16_t mss)
+tcpmod_ipv6_setmss(struct mbuf **mp, uint16_t mss, int *done)
 {
 	struct ip6_hdr *ip6;
 	struct ip6_hbh *hbh;
@@ -145,13 +145,13 @@ tcpmod_ipv6_setmss(struct mbuf **mp, uint16_t mss)
 	/* We must have TCP options and enough data in a packet. */
 	if (hlen <= sizeof(struct tcphdr) || hlen > plen)
 		return (IP_FW_DENY);
-	return (tcpmod_setmss(mp, tcp, hlen, mss));
+	return (tcpmod_setmss(mp, tcp, hlen, mss, done));
 }
 #endif /* INET6 */
 
 #ifdef INET
 static int
-tcpmod_ipv4_setmss(struct mbuf **mp, uint16_t mss)
+tcpmod_ipv4_setmss(struct mbuf **mp, uint16_t mss, int *done)
 {
 	struct tcphdr *tcp;
 	struct ip *ip;
@@ -165,7 +165,7 @@ tcpmod_ipv4_setmss(struct mbuf **mp, uint16_t mss)
 	/* We must have TCP options and enough data in a packet. */
 	if (hlen <= sizeof(struct tcphdr) || hlen > plen)
 		return (IP_FW_DENY);
-	return (tcpmod_setmss(mp, tcp, hlen, mss));
+	return (tcpmod_setmss(mp, tcp, hlen, mss, done));
 }
 #endif /* INET */
 
@@ -181,9 +181,9 @@ ipfw_tcpmod(struct ip_fw_chain *chain, struct ip_fw_args *args,
 
 	*done = 0; /* try next rule if not matched */
 	ret = IP_FW_DENY;
-	icmd = cmd + 1;
+	icmd = cmd + F_LEN(cmd);
 	if (cmd->opcode != O_EXTERNAL_ACTION ||
-	    cmd->arg1 != V_tcpmod_setmss_eid ||
+	    insntod(cmd, kidx)->kidx != V_tcpmod_setmss_eid ||
 	    icmd->opcode != O_EXTERNAL_DATA ||
 	    icmd->len != F_INSN_SIZE(ipfw_insn))
 		return (ret);
@@ -209,19 +209,23 @@ ipfw_tcpmod(struct ip_fw_chain *chain, struct ip_fw_args *args,
 	switch (args->f_id.addr_type) {
 #ifdef INET
 		case 4:
-			ret = tcpmod_ipv4_setmss(&args->m, htons(icmd->arg1));
+			ret = tcpmod_ipv4_setmss(&args->m, htons(icmd->arg1),
+			    done);
 			break;
 #endif
 #ifdef INET6
 		case 6:
-			ret = tcpmod_ipv6_setmss(&args->m, htons(icmd->arg1));
+			ret = tcpmod_ipv6_setmss(&args->m, htons(icmd->arg1),
+			    done);
 			break;
 #endif
 	}
 	/*
 	 * We return zero in both @ret and @done on success, and ipfw_chk()
 	 * will update rule counters. Otherwise a packet will not be matched
-	 * by rule.
+	 * by rule. We passed @done around above in case we hit a fatal error
+	 * somewhere, we'll return non-zero but signal that rule processing
+	 * cannot succeed.
 	 */
 	return (ret);
 }

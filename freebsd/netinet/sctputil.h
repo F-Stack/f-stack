@@ -32,9 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifndef _NETINET_SCTP_UTIL_H_
 #define _NETINET_SCTP_UTIL_H_
 
@@ -79,15 +76,9 @@ uint32_t sctp_select_initial_TSN(struct sctp_pcb *);
 
 uint32_t sctp_select_a_tag(struct sctp_inpcb *, uint16_t lport, uint16_t rport, int);
 
-int sctp_init_asoc(struct sctp_inpcb *, struct sctp_tcb *, uint32_t, uint32_t, uint16_t);
+int sctp_init_asoc(struct sctp_inpcb *, struct sctp_tcb *, uint32_t, uint32_t, uint32_t, uint16_t);
 
 void sctp_fill_random_store(struct sctp_pcb *);
-
-void
-sctp_notify_stream_reset_add(struct sctp_tcb *stcb, uint16_t numberin,
-    uint16_t numberout, int flag);
-void
-     sctp_notify_stream_reset_tsn(struct sctp_tcb *stcb, uint32_t sending_tsn, uint32_t recv_tsn, int flag);
 
 /*
  * NOTE: sctp_timer_start() will increment the reference count of any relevant
@@ -107,9 +98,6 @@ sctp_timer_stop(int, struct sctp_inpcb *, struct sctp_tcb *,
 
 int
     sctp_dynamic_set_primary(struct sockaddr *sa, uint32_t vrf_id);
-
-void
-     sctp_mtu_size_reset(struct sctp_inpcb *, struct sctp_association *, uint32_t);
 
 void
 sctp_wakeup_the_read_socket(struct sctp_inpcb *inp, struct sctp_tcb *stcb,
@@ -167,7 +155,7 @@ void sctp_report_all_outbound(struct sctp_tcb *, uint16_t, int);
 int sctp_expand_mapping_array(struct sctp_association *, uint32_t);
 
 void
-sctp_abort_notification(struct sctp_tcb *, uint8_t, uint16_t,
+sctp_abort_notification(struct sctp_tcb *, bool, bool, uint16_t,
     struct sctp_abort_chunk *, int);
 
 /* We abort responding to an IP packet for some reason */
@@ -181,7 +169,7 @@ sctp_abort_association(struct sctp_inpcb *, struct sctp_tcb *, struct mbuf *,
 /* We choose to abort via user input */
 void
 sctp_abort_an_association(struct sctp_inpcb *, struct sctp_tcb *,
-    struct mbuf *, int);
+    struct mbuf *, bool, int);
 
 void
 sctp_handle_ootb(struct mbuf *, int, int,
@@ -242,33 +230,9 @@ sctp_bindx_delete_address(struct sctp_inpcb *inp, struct sockaddr *sa,
 
 int sctp_local_addr_count(struct sctp_tcb *stcb);
 
-#ifdef SCTP_MBCNT_LOGGING
 void
 sctp_free_bufspace(struct sctp_tcb *, struct sctp_association *,
     struct sctp_tmit_chunk *, int);
-
-#else
-#define sctp_free_bufspace(stcb, asoc, tp1, chk_cnt)  \
-do { \
-	if (tp1->data != NULL) { \
-		atomic_subtract_int(&((asoc)->chunks_on_out_queue), chk_cnt); \
-		if ((asoc)->total_output_queue_size >= tp1->book_size) { \
-			atomic_subtract_int(&((asoc)->total_output_queue_size), tp1->book_size); \
-		} else { \
-			(asoc)->total_output_queue_size = 0; \
-		} \
-		if (stcb->sctp_socket && ((stcb->sctp_ep->sctp_flags & SCTP_PCB_FLAGS_TCPTYPE) || \
-		    (stcb->sctp_ep->sctp_flags & SCTP_PCB_FLAGS_IN_TCPPOOL))) { \
-			if (stcb->sctp_socket->so_snd.sb_cc >= tp1->book_size) { \
-				atomic_subtract_int(&((stcb)->sctp_socket->so_snd.sb_cc), tp1->book_size); \
-			} else { \
-				stcb->sctp_socket->so_snd.sb_cc = 0; \
-			} \
-		} \
-	} \
-} while (0)
-
-#endif
 
 #define sctp_free_spbufspace(stcb, asoc, sp)  \
 do { \
@@ -280,11 +244,7 @@ do { \
 		} \
 		if (stcb->sctp_socket && ((stcb->sctp_ep->sctp_flags & SCTP_PCB_FLAGS_TCPTYPE) || \
 		    (stcb->sctp_ep->sctp_flags & SCTP_PCB_FLAGS_IN_TCPPOOL))) { \
-			if (stcb->sctp_socket->so_snd.sb_cc >= sp->length) { \
-				atomic_subtract_int(&stcb->sctp_socket->so_snd.sb_cc,sp->length); \
-			} else { \
-				stcb->sctp_socket->so_snd.sb_cc = 0; \
-			} \
+			SCTP_SB_DECR(&stcb->sctp_socket->so_snd, sp->length); \
 		} \
 	} \
 } while (0)
@@ -295,7 +255,7 @@ do { \
 	if ((stcb->sctp_socket != NULL) && \
 	    ((stcb->sctp_ep->sctp_flags & SCTP_PCB_FLAGS_TCPTYPE) || \
 	     (stcb->sctp_ep->sctp_flags & SCTP_PCB_FLAGS_IN_TCPPOOL))) { \
-		atomic_add_int(&stcb->sctp_socket->so_snd.sb_cc,sz); \
+		SCTP_SB_INCR(&stcb->sctp_socket->so_snd, sz); \
 	} \
 } while (0)
 

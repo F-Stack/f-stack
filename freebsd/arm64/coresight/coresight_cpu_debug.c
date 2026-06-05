@@ -29,9 +29,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -157,8 +154,6 @@ static driver_t debug_driver = {
 	sizeof(struct debug_softc),
 };
 
-static devclass_t debug_devclass;
-
-EARLY_DRIVER_MODULE(debug, simplebus, debug_driver, debug_devclass,
-    0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_LATE);
+EARLY_DRIVER_MODULE(debug, simplebus, debug_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_LATE);
 MODULE_VERSION(debug, 1);

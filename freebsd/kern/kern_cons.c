@@ -35,13 +35,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)cons.c	7.2 (Berkeley) 5/9/91
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_syscons.h"
 
@@ -64,6 +60,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/reboot.h>
 #include <sys/sysctl.h>
 #include <sys/sbuf.h>
+#include <sys/tslog.h>
 #include <sys/tty.h>
 #include <sys/uio.h>
 #include <sys/vnode.h>
@@ -74,6 +71,18 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/cpu.h>
 #include <machine/clock.h>
+
+/*
+ * Check for 'options EARLY_PRINTF' that may have been used in old kernel
+ * config files. If you are hitting this error you should update your
+ * config to use 'options EARLY_PRINTF=<device name>', e.g. with the
+ * Arm pl011 use:
+ *
+ * options EARLY_PRINTF=pl011
+ */
+#if CHECK_EARLY_PRINTF(1)
+#error Update your config to use 'options EARLY_PRINTF=<device name>'
+#endif
 
 static MALLOC_DEFINE(M_TTYCONS, "tty console", "tty console handling");
 
@@ -94,19 +103,21 @@ int	cons_avail_mask = 0;	/* Bit mask. Each registered low level console
 				 * this bit cleared.
 				 */
 
-static int cn_mute;
+int cn_mute;
 SYSCTL_INT(_kern, OID_AUTO, consmute, CTLFLAG_RW, &cn_mute, 0,
     "State of the console muting");
 
 static char *consbuf;			/* buffer used by `consmsgbuf' */
 static struct callout conscallout;	/* callout for outputting to constty */
 struct msgbuf consmsgbuf;		/* message buffer for console tty */
-static u_char console_pausing;		/* pause after each line during probe */
+static bool console_pausing;		/* pause after each line during probe */
 static const char console_pausestr[] =
 "<pause; press any key to proceed to next line or '.' to end pause mode>";
 struct tty *constty;			/* pointer to console "window" tty */
+static struct mtx constty_mtx;		/* Mutex for constty assignment. */
+MTX_SYSINIT(constty_mtx, &constty_mtx, "constty_mtx", MTX_DEF);
 static struct mtx cnputs_mtx;		/* Mutex for cnputs(). */
-static int use_cnputs_mtx = 0;		/* != 0 if cnputs_mtx locking reqd. */
+MTX_SYSINIT(cnputs_mtx, &cnputs_mtx, "cnputs_mtx", MTX_SPIN | MTX_NOWITNESS);
 
 static void constty_timeout(void *arg);
 
@@ -127,11 +138,24 @@ kbdinit(void)
 
 }
 
+static void
+mute_console(void *data __unused)
+{
+
+	if ((boothowto & (RB_MUTEMSGS | RB_VERBOSE)) == RB_MUTEMSGS) {
+		printf("-- Muting boot messages --\n");
+		cn_mute = 1;
+	}
+}
+
+SYSINIT(mute_console, SI_SUB_COPYRIGHT, SI_ORDER_ANY, mute_console, NULL);
+
 void
 cninit(void)
 {
 	struct consdev *best_cn, *cn, **list;
 
+	TSENTER();
 	/*
 	 * Check if we should mute the console (for security reasons perhaps)
 	 * It can be changes dynamically using sysctl kern.consmute
@@ -181,7 +205,7 @@ cninit(void)
 		cnadd(best_cn);
 	}
 	if (boothowto & RB_PAUSE)
-		console_pausing = 1;
+		console_pausing = true;
 	/*
 	 * Make the best console the preferred console.
 	 */
@@ -193,12 +217,13 @@ cninit(void)
 	 */
 	early_putc = NULL;
 #endif
+	TSEXIT();
 }
 
 void
-cninit_finish()
+cninit_finish(void)
 {
-	console_pausing = 0;
+	console_pausing = false;
 } 
 
 /* add a new physical console to back the virtual console */
@@ -319,7 +344,8 @@ sysctl_kern_console(SYSCTL_HANDLER_ARGS)
 	struct cn_device *cnd;
 	struct consdev *cp, **list;
 	char *p;
-	int delete, error;
+	bool delete;
+	int error;
 	struct sbuf *sb;
 
 	sb = sbuf_new(NULL, NULL, CNDEVPATHMAX * 2, SBUF_AUTOEXTEND |
@@ -329,7 +355,7 @@ sysctl_kern_console(SYSCTL_HANDLER_ARGS)
 	sbuf_clear(sb);
 	STAILQ_FOREACH(cnd, &cn_devlist, cnd_next)
 		sbuf_printf(sb, "%s,", cnd->cnd_cn->cn_name);
-	sbuf_printf(sb, "/");
+	sbuf_putc(sb, '/');
 	SET_FOREACH(list, cons_set) {
 		cp = *list;
 		if (cp->cn_name[0] != '\0')
@@ -340,9 +366,9 @@ sysctl_kern_console(SYSCTL_HANDLER_ARGS)
 	if (error == 0 && req->newptr != NULL) {
 		p = sbuf_data(sb);
 		error = ENXIO;
-		delete = 0;
+		delete = false;
 		if (*p == '-') {
-			delete = 1;
+			delete = true;
 			p++;
 		}
 		SET_FOREACH(list, cons_set) {
@@ -370,7 +396,7 @@ SYSCTL_PROC(_kern, OID_AUTO, console,
     "Console device control");
 
 void
-cngrab()
+cngrab(void)
 {
 	struct cn_device *cnd;
 	struct consdev *cn;
@@ -383,7 +409,7 @@ cngrab()
 }
 
 void
-cnungrab()
+cnungrab(void)
 {
 	struct cn_device *cnd;
 	struct consdev *cn;
@@ -396,7 +422,7 @@ cnungrab()
 }
 
 void
-cnresume()
+cnresume(void)
 {
 	struct cn_device *cnd;
 	struct consdev *cn;
@@ -499,6 +525,9 @@ cnputc(int c)
 	struct consdev *cn;
 	const char *cp;
 
+	if (cn_mute || c == '\0')
+		return;
+
 #ifdef EARLY_PRINTF
 	if (early_putc != NULL) {
 		if (c == '\n')
@@ -508,8 +537,6 @@ cnputc(int c)
 	}
 #endif
 
-	if (cn_mute || c == '\0')
-		return;
 	STAILQ_FOREACH(cnd, &cn_devlist, cnd_next) {
 		cn = cnd->cnd_cn;
 		if (!kdb_active || !(cn->cn_flags & CN_FLAG_NODEBUG)) {
@@ -523,7 +550,7 @@ cnputc(int c)
 			cnputc(*cp);
 		cngrab();
 		if (cngetc() == '.')
-			console_pausing = 0;
+			console_pausing = false;
 		cnungrab();
 		cnputc('\r');
 		for (cp = console_pausestr; *cp != '\0'; cp++)
@@ -536,10 +563,10 @@ void
 cnputsn(const char *p, size_t n)
 {
 	size_t i;
-	int unlock_reqd = 0;
+	bool unlock_reqd = false;
 
-	if (use_cnputs_mtx) {
-	  	/*
+	if (mtx_initialized(&cnputs_mtx)) {
+		/*
 		 * NOTE: Debug prints and/or witness printouts in
 		 * console driver clients can cause the "cnputs_mtx"
 		 * mutex to recurse. Simply return if that happens.
@@ -547,7 +574,7 @@ cnputsn(const char *p, size_t n)
 		if (mtx_owned(&cnputs_mtx))
 			return;
 		mtx_lock_spin(&cnputs_mtx);
-		unlock_reqd = 1;
+		unlock_reqd = true;
 	}
 
 	for (i = 0; i < n; i++)
@@ -563,49 +590,72 @@ cnputs(const char *p)
 	cnputsn(p, strlen(p));
 }
 
-static int consmsgbuf_size = 8192;
-SYSCTL_INT(_kern, OID_AUTO, consmsgbuf_size, CTLFLAG_RW, &consmsgbuf_size, 0,
-    "Console tty buffer size");
+static unsigned int consmsgbuf_size = 65536;
+SYSCTL_UINT(_kern, OID_AUTO, consmsgbuf_size, CTLFLAG_RWTUN, &consmsgbuf_size,
+    0, "Console tty buffer size");
 
 /*
  * Redirect console output to a tty.
  */
-void
+int
 constty_set(struct tty *tp)
 {
-	int size;
+	int size = consmsgbuf_size;
+	void *buf = NULL;
 
-	KASSERT(tp != NULL, ("constty_set: NULL tp"));
+	tty_assert_locked(tp);
+	if (constty == tp)
+		return (0);
+	if (constty != NULL)
+		return (EBUSY);
+
 	if (consbuf == NULL) {
-		size = consmsgbuf_size;
-		consbuf = malloc(size, M_TTYCONS, M_WAITOK);
-		msgbuf_init(&consmsgbuf, consbuf, size);
-		callout_init(&conscallout, 0);
+		tty_unlock(tp);
+		buf = malloc(size, M_TTYCONS, M_WAITOK);
+		tty_lock(tp);
 	}
+	mtx_lock(&constty_mtx);
+	if (constty != NULL) {
+		mtx_unlock(&constty_mtx);
+		free(buf, M_TTYCONS);
+		return (EBUSY);
+	}
+	if (consbuf == NULL) {
+		consbuf = buf;
+		msgbuf_init(&consmsgbuf, buf, size);
+	} else
+		free(buf, M_TTYCONS);
 	constty = tp;
-	constty_timeout(NULL);
+	mtx_unlock(&constty_mtx);
+
+	callout_init_mtx(&conscallout, tty_getlock(tp), 0);
+	constty_timeout(tp);
+	return (0);
 }
 
 /*
  * Disable console redirection to a tty.
  */
-void
-constty_clear(void)
+int
+constty_clear(struct tty *tp)
 {
 	int c;
 
-	constty = NULL;
-	if (consbuf == NULL)
-		return;
+	tty_assert_locked(tp);
+	if (constty != tp)
+		return (ENXIO);
 	callout_stop(&conscallout);
+	mtx_lock(&constty_mtx);
+	constty = NULL;
+	mtx_unlock(&constty_mtx);
 	while ((c = msgbuf_getchar(&consmsgbuf)) != -1)
 		cnputc(c);
-	free(consbuf, M_TTYCONS);
-	consbuf = NULL;
+	/* We never free consbuf because it can still be in use. */
+	return (0);
 }
 
 /* Times per second to check for pending console tty messages. */
-static int constty_wakeups_per_second = 5;
+static int constty_wakeups_per_second = 15;
 SYSCTL_INT(_kern, OID_AUTO, constty_wakeups_per_second, CTLFLAG_RW,
     &constty_wakeups_per_second, 0,
     "Times per second to check for pending console tty messages");
@@ -613,39 +663,19 @@ SYSCTL_INT(_kern, OID_AUTO, constty_wakeups_per_second, CTLFLAG_RW,
 static void
 constty_timeout(void *arg)
 {
+	struct tty *tp = arg;
 	int c;
 
-	if (constty != NULL) {
-		tty_lock(constty);
-		while ((c = msgbuf_getchar(&consmsgbuf)) != -1) {
-			if (tty_putchar(constty, c) < 0) {
-				tty_unlock(constty);
-				constty = NULL;
-				break;
-			}
+	tty_assert_locked(tp);
+	while ((c = msgbuf_getchar(&consmsgbuf)) != -1) {
+		if (tty_putchar(tp, c) < 0) {
+			constty_clear(tp);
+			return;
 		}
-
-		if (constty != NULL)
-			tty_unlock(constty);
 	}
-	if (constty != NULL) {
-		callout_reset(&conscallout, hz / constty_wakeups_per_second,
-		    constty_timeout, NULL);
-	} else {
-		/* Deallocate the constty buffer memory. */
-		constty_clear();
-	}
+	callout_reset_sbt(&conscallout, SBT_1S / constty_wakeups_per_second,
+	    0, constty_timeout, tp, C_PREL(1));
 }
-
-static void
-cn_drvinit(void *unused)
-{
-
-	mtx_init(&cnputs_mtx, "cnputs_mtx", NULL, MTX_SPIN | MTX_NOWITNESS);
-	use_cnputs_mtx = 1;
-}
-
-SYSINIT(cndev, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, cn_drvinit, NULL);
 
 /*
  * Sysbeep(), if we have hardware for it
@@ -653,7 +683,7 @@ SYSINIT(cndev, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, cn_drvinit, NULL);
 
 #ifdef HAS_TIMER_SPKR
 
-static int beeping;
+static bool beeping;
 static struct callout beeping_timer;
 
 static void
@@ -661,11 +691,11 @@ sysbeepstop(void *chan)
 {
 
 	timer_spkr_release();
-	beeping = 0;
+	beeping = false;
 }
 
 int
-sysbeep(int pitch, int period)
+sysbeep(int pitch, sbintime_t duration)
 {
 
 	if (timer_spkr_acquire()) {
@@ -676,8 +706,9 @@ sysbeep(int pitch, int period)
 	}
 	timer_spkr_setfreq(pitch);
 	if (!beeping) {
-		beeping = period;
-		callout_reset(&beeping_timer, period, sysbeepstop, NULL);
+		beeping = true;
+		callout_reset_sbt(&beeping_timer, duration, 0, sysbeepstop,
+		    NULL, C_PREL(5));
 	}
 	return (0);
 }
@@ -696,7 +727,7 @@ SYSINIT(sysbeep, SI_SUB_SOFTINTR, SI_ORDER_ANY, sysbeep_init, NULL);
  */
 
 int
-sysbeep(int pitch __unused, int period __unused)
+sysbeep(int pitch __unused, sbintime_t duration __unused)
 {
 
 	return (ENODEV);
@@ -707,7 +738,6 @@ sysbeep(int pitch __unused, int period __unused)
 /*
  * Temporary support for sc(4) to vt(4) transition.
  */
-static unsigned vty_prefer;
 static char vty_name[16];
 SYSCTL_STRING(_kern, OID_AUTO, vty, CTLFLAG_RDTUN | CTLFLAG_NOFETCH, vty_name,
     0, "Console vty driver");
@@ -732,10 +762,6 @@ vty_enabled(unsigned vty)
 				break;
 			}
 #endif
-			if (vty_prefer != 0) {
-				vty_selected = vty_prefer;
-				break;
-			}
 #if defined(DEV_VT)
 			vty_selected = VTY_VT;
 #elif defined(DEV_SC)
@@ -749,17 +775,4 @@ vty_enabled(unsigned vty)
 			strcpy(vty_name, "sc");
 	}
 	return ((vty_selected & vty) != 0);
-}
-
-void
-vty_set_preferred(unsigned vty)
-{
-
-	vty_prefer = vty;
-#if !defined(DEV_SC)
-	vty_prefer &= ~VTY_SC;
-#endif
-#if !defined(DEV_VT)
-	vty_prefer &= ~VTY_VT;
-#endif
 }

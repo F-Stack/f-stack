@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Isilon Systems, LLC.
  * Copyright (c) 2005-2014 Sandvine Incorporated. All rights reserved.
@@ -29,8 +29,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_inet.h"
 
@@ -39,6 +37,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/endian.h>
 #include <sys/errno.h>
 #include <sys/eventhandler.h>
+#include <sys/kernel.h>
+#include <sys/lock.h>
+#include <sys/mutex.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
 
@@ -53,6 +54,8 @@ __FBSDID("$FreeBSD$");
 #include <net/if_dl.h>
 #include <net/if_types.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
+#include <net/vnet.h>
 #include <net/route.h>
 #include <net/route/nhop.h>
 
@@ -91,6 +94,10 @@ int debugnet_nretries = 10;
 SYSCTL_INT(_net_debugnet, OID_AUTO, nretries, CTLFLAG_RWTUN,
     &debugnet_nretries, 0,
     "Number of retransmit attempts before giving up");
+int debugnet_fib = RT_DEFAULT_FIB;
+SYSCTL_INT(_net_debugnet, OID_AUTO, fib, CTLFLAG_RWTUN,
+    &debugnet_fib, 0,
+    "Fib to use when sending dump");
 
 static bool g_debugnet_pcb_inuse;
 static struct debugnet_pcb g_dnet_pcb;
@@ -104,6 +111,22 @@ debugnet_get_gw_mac(const struct debugnet_pcb *pcb)
 	MPASS(g_debugnet_pcb_inuse && pcb == &g_dnet_pcb &&
 	    pcb->dp_state >= DN_STATE_HAVE_GW_MAC);
 	return (pcb->dp_gw_mac.octet);
+}
+
+const in_addr_t *
+debugnet_get_server_addr(const struct debugnet_pcb *pcb)
+{
+	MPASS(g_debugnet_pcb_inuse && pcb == &g_dnet_pcb &&
+	    pcb->dp_state >= DN_STATE_GOT_HERALD_PORT);
+	return (&pcb->dp_server);
+}
+
+const uint16_t
+debugnet_get_server_port(const struct debugnet_pcb *pcb)
+{
+	MPASS(g_debugnet_pcb_inuse && pcb == &g_dnet_pcb &&
+	    pcb->dp_state >= DN_STATE_GOT_HERALD_PORT);
+	return (pcb->dp_server_port);
 }
 
 /*
@@ -176,7 +199,7 @@ debugnet_udp_output(struct debugnet_pcb *pcb, struct mbuf *m)
 		return (ENOBUFS);
 	}
 
-	udp = mtod(m, void *);
+	udp = mtod(m, struct udphdr *);
 	udp->uh_ulen = htons(m->m_pkthdr.len);
 	/* Use this src port so that the server can connect() the socket */
 	udp->uh_sport = htons(pcb->dp_client_port);
@@ -203,7 +226,7 @@ debugnet_ack_output(struct debugnet_pcb *pcb, uint32_t seqno /* net endian */)
 	m->m_len = sizeof(*dn_ack);
 	m->m_pkthdr.len = sizeof(*dn_ack);
 	MH_ALIGN(m, sizeof(*dn_ack));
-	dn_ack = mtod(m, void *);
+	dn_ack = mtod(m, struct debugnet_ack *);
 	dn_ack->da_seqno = seqno;
 
 	return (debugnet_udp_output(pcb, m));
@@ -356,6 +379,8 @@ debugnet_handle_rx_msg(struct debugnet_pcb *pcb, struct mbuf **mb)
 {
 	const struct debugnet_msg_hdr *dnh;
 	struct mbuf *m;
+	uint32_t hdr_type;
+	uint32_t seqno;
 	int error;
 
 	m = *mb;
@@ -374,10 +399,24 @@ debugnet_handle_rx_msg(struct debugnet_pcb *pcb, struct mbuf **mb)
 			return;
 		}
 	}
-	dnh = mtod(m, const void *);
 
+	dnh = mtod(m, const struct debugnet_msg_hdr *);
 	if (ntohl(dnh->mh_len) + sizeof(*dnh) > m->m_pkthdr.len) {
 		DNETDEBUG("Dropping short packet.\n");
+		return;
+	}
+
+	hdr_type = ntohl(dnh->mh_type);
+	if (hdr_type != DEBUGNET_DATA) {
+		if (hdr_type == DEBUGNET_FINISHED) {
+			printf("Remote shut down the connection on us!\n");
+			pcb->dp_state = DN_STATE_REMOTE_CLOSED;
+			if (pcb->dp_finish_handler != NULL) {
+				pcb->dp_finish_handler();
+			}
+		} else {
+			DNETDEBUG("Got unexpected debugnet message %u\n", hdr_type);
+		}
 		return;
 	}
 
@@ -386,21 +425,20 @@ debugnet_handle_rx_msg(struct debugnet_pcb *pcb, struct mbuf **mb)
 	 * non-transient (like driver objecting to rx -> tx from the same
 	 * thread), not much else we can do.
 	 */
-	error = debugnet_ack_output(pcb, dnh->mh_seqno);
-	if (error != 0)
+	seqno = dnh->mh_seqno; /* net endian */
+	m_adj(m, sizeof(*dnh));
+	dnh = NULL;
+	error = pcb->dp_rx_handler(m);
+	if (error != 0) {
+		DNETDEBUG("RX handler was not able to accept message, error %d. "
+		    "Skipping ack.\n", error);
 		return;
-
-	if (ntohl(dnh->mh_type) == DEBUGNET_FINISHED) {
-		printf("Remote shut down the connection on us!\n");
-		pcb->dp_state = DN_STATE_REMOTE_CLOSED;
-
-		/*
-		 * Continue through to the user handler so they are signalled
-		 * not to wait for further rx.
-		 */
 	}
 
-	pcb->dp_rx_handler(pcb, mb);
+	error = debugnet_ack_output(pcb, seqno);
+	if (error != 0) {
+		DNETDEBUG("Couldn't ACK rx packet %u; %d\n", ntohl(seqno), error);
+	}
 }
 
 static void
@@ -421,7 +459,7 @@ debugnet_handle_ack(struct debugnet_pcb *pcb, struct mbuf **mb, uint16_t sport)
 			return;
 		}
 	}
-	dn_ack = mtod(m, const void *);
+	dn_ack = mtod(m, const struct debugnet_ack *);
 
 	/* Debugnet processing. */
 	/*
@@ -465,7 +503,7 @@ debugnet_handle_udp(struct debugnet_pcb *pcb, struct mbuf **mb)
 			return;
 		}
 	}
-	udp = mtod(m, const void *);
+	udp = mtod(m, const struct udphdr *);
 
 	/* We expect to receive UDP packets on the configured client port. */
 	if (ntohs(udp->uh_dport) != pcb->dp_client_port) {
@@ -515,7 +553,7 @@ debugnet_handle_udp(struct debugnet_pcb *pcb, struct mbuf **mb)
  *	m	an mbuf containing the packet received
  */
 static void
-debugnet_pkt_in(struct ifnet *ifp, struct mbuf *m)
+debugnet_input_one(struct ifnet *ifp, struct mbuf *m)
 {
 	struct ifreq ifr;
 	struct ether_header *eh;
@@ -528,13 +566,9 @@ debugnet_pkt_in(struct ifnet *ifp, struct mbuf *m)
 	}
 	if (m->m_len < ETHER_HDR_LEN) {
 		DNETDEBUG_IF(ifp,
-	    "discard frame without leading eth header (len %u pktlen %u)\n",
+	    "discard frame without leading eth header (len %d pktlen %d)\n",
 		    m->m_len, m->m_pkthdr.len);
 		goto done;
-	}
-	if ((m->m_flags & M_HASFCS) != 0) {
-		m_adj(m, -ETHER_CRC_LEN);
-		m->m_flags &= ~M_HASFCS;
 	}
 	eh = mtod(m, struct ether_header *);
 	etype = ntohs(eh->ether_type);
@@ -574,6 +608,19 @@ done:
 		m_freem(m);
 }
 
+static void
+debugnet_input(struct ifnet *ifp, struct mbuf *m)
+{
+	struct mbuf *n;
+
+	do {
+		n = m->m_nextpkt;
+		m->m_nextpkt = NULL;
+		debugnet_input_one(ifp, m);
+		m = n;
+	} while (m != NULL);
+}
+
 /*
  * Network polling primitive.
  *
@@ -597,8 +644,8 @@ debugnet_free(struct debugnet_pcb *pcb)
 {
 	struct ifnet *ifp;
 
-	MPASS(g_debugnet_pcb_inuse);
 	MPASS(pcb == &g_dnet_pcb);
+	MPASS(pcb->dp_drv_input == NULL || g_debugnet_pcb_inuse);
 
 	ifp = pcb->dp_ifp;
 	if (ifp != NULL) {
@@ -638,6 +685,7 @@ debugnet_connect(const struct debugnet_conn_params *dcp,
 		.dp_seqno = 1,
 		.dp_ifp = dcp->dc_ifp,
 		.dp_rx_handler = dcp->dc_rx_handler,
+		.dp_drv_input = NULL,
 	};
 
 	/* Switch to the debugnet mbuf zones. */
@@ -658,7 +706,7 @@ debugnet_connect(const struct debugnet_conn_params *dcp,
 		};
 
 		CURVNET_SET(vnet0);
-		nh = fib4_lookup_debugnet(RT_DEFAULT_FIB, dest_sin.sin_addr, 0,
+		nh = fib4_lookup_debugnet(debugnet_fib, dest_sin.sin_addr, 0,
 		    NHR_NONE);
 		CURVNET_RESTORE();
 
@@ -669,6 +717,7 @@ debugnet_connect(const struct debugnet_conn_params *dcp,
 			goto cleanup;
 		}
 
+		/* TODO support AF_INET6 */
 		if (nh->gw_sa.sa_family == AF_INET)
 			gw_sin = &nh->gw4_sa;
 		else {
@@ -726,13 +775,13 @@ debugnet_connect(const struct debugnet_conn_params *dcp,
 	/*
 	 * We maintain the invariant that g_debugnet_pcb_inuse is always true
 	 * while the debugnet ifp's if_input is overridden with
-	 * debugnet_pkt_in.
+	 * debugnet_input().
 	 */
 	g_debugnet_pcb_inuse = true;
 
 	/* Make the card use *our* receive callback. */
 	pcb->dp_drv_input = ifp->if_input;
-	ifp->if_input = debugnet_pkt_in;
+	ifp->if_input = debugnet_input;
 
 	printf("%s: searching for %s MAC...\n", __func__,
 	    (dcp->dc_gateway == INADDR_ANY) ? "server" : "gateway");
@@ -832,6 +881,9 @@ debugnet_any_ifnet_update(struct ifnet *ifp)
 	 * dn_init method is available.
 	 */
 	if (nmbuf == 0 || ncl == 0 || clsize == 0) {
+#ifndef INVARIANTS
+		if (bootverbose)
+#endif
 		printf("%s: Bad dn_init result from %s (ifp %p), ignoring.\n",
 		    __func__, if_name(ifp), ifp);
 		return;
@@ -1026,6 +1078,7 @@ debugnet_parse_ddb_cmd(const char *cmd, struct debugnet_ddb_config *result)
 			if (ifp == NULL) {
 				db_printf("Could not locate interface %s\n",
 				    db_tok_string);
+				error = ENOENT;
 				goto cleanup;
 			}
 		} else {

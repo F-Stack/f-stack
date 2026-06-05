@@ -1,8 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Ed Schouten under sponsorship from the
  * FreeBSD Foundation.
@@ -29,9 +28,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/cons.h>
 #include <sys/consio.h>
@@ -39,11 +35,10 @@ __FBSDID("$FreeBSD$");
 #include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mutex.h>
+#include <sys/stdarg.h>
 #include <sys/systm.h>
 #include <sys/terminal.h>
 #include <sys/tty.h>
-
-#include <machine/stdarg.h>
 
 static MALLOC_DEFINE(M_TERMINAL, "terminal", "terminal device");
 

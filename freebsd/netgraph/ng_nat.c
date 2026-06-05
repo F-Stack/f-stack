@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2005, Gleb Smirnoff <glebius@FreeBSD.org>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <sys/param.h>
@@ -54,6 +52,12 @@
 #include <netgraph/ng_parse.h>
 #include <netgraph/ng_nat.h>
 #include <netgraph/netgraph.h>
+
+#ifdef NG_SEPARATE_MALLOC
+static MALLOC_DEFINE(M_NETGRAPH_NAT, "netgraph_nat", "netgraph nat node");
+#else
+#define M_NETGRAPH_NAT M_NETGRAPH
+#endif
 
 static ng_constructor_t	ng_nat_constructor;
 static ng_rcvmsg_t	ng_nat_rcvmsg;
@@ -308,7 +312,7 @@ ng_nat_constructor(node_p node)
 	priv_p priv;
 
 	/* Initialize private descriptor. */
-	priv = malloc(sizeof(*priv), M_NETGRAPH, M_WAITOK | M_ZERO);
+	priv = malloc(sizeof(*priv), M_NETGRAPH_NAT, M_WAITOK | M_ZERO);
 
 	/* Init aliasing engine. */
 	priv->lib = LibAliasInit(NULL);
@@ -424,7 +428,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			}
 
 			if ((entry = malloc(sizeof(struct ng_nat_rdr_lst),
-			    M_NETGRAPH, M_NOWAIT | M_ZERO)) == NULL) {
+			    M_NETGRAPH_NAT, M_NOWAIT | M_ZERO)) == NULL) {
 				error = ENOMEM;
 				break;
 			}
@@ -438,7 +442,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 
 			if (entry->lnk == NULL) {
 				error = ENOMEM;
-				free(entry, M_NETGRAPH);
+				free(entry, M_NETGRAPH_NAT);
 				break;
 			}
 
@@ -483,7 +487,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			}
 
 			if ((entry = malloc(sizeof(struct ng_nat_rdr_lst),
-			    M_NETGRAPH, M_NOWAIT | M_ZERO)) == NULL) {
+			    M_NETGRAPH_NAT, M_NOWAIT | M_ZERO)) == NULL) {
 				error = ENOMEM;
 				break;
 			}
@@ -494,7 +498,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 
 			if (entry->lnk == NULL) {
 				error = ENOMEM;
-				free(entry, M_NETGRAPH);
+				free(entry, M_NETGRAPH_NAT);
 				break;
 			}
 
@@ -535,7 +539,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			}
 
 			if ((entry = malloc(sizeof(struct ng_nat_rdr_lst),
-			    M_NETGRAPH, M_NOWAIT | M_ZERO)) == NULL) {
+			    M_NETGRAPH_NAT, M_NOWAIT | M_ZERO)) == NULL) {
 				error = ENOMEM;
 				break;
 			}
@@ -547,7 +551,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 
 			if (entry->lnk == NULL) {
 				error = ENOMEM;
-				free(entry, M_NETGRAPH);
+				free(entry, M_NETGRAPH_NAT);
 				break;
 			}
 
@@ -613,7 +617,7 @@ ng_nat_rcvmsg(node_p node, item_p item, hook_p lasthook)
 			/* Delete entry from our internal list. */
 			priv->rdrcount--;
 			STAILQ_REMOVE(&priv->redirhead, entry, ng_nat_rdr_lst, entries);
-			free(entry, M_NETGRAPH);
+			free(entry, M_NETGRAPH_NAT);
 		    }
 			break;
 		case NGM_NAT_ADD_SERVER:
@@ -814,7 +818,8 @@ ng_nat_rcvdata(hook_p hook, item_p item )
 
 	if (ip->ip_v != IPVERSION)
 		goto send;		/* other IP version, let it pass */
-	if (m->m_pkthdr.len < ipofs + ntohs(ip->ip_len))
+	uint16_t ip_len = ntohs(ip->ip_len);
+	if (m->m_pkthdr.len < (ipofs + ip_len))
 		goto send;		/* packet too short (i.e. fragmented or broken) */
 
 	/*
@@ -848,50 +853,68 @@ ng_nat_rcvdata(hook_p hook, item_p item )
 
 	if (rval == PKT_ALIAS_RESPOND)
 		m->m_flags |= M_SKIP_FIREWALL;
-	m->m_pkthdr.len = m->m_len = ntohs(ip->ip_len) + ipofs;
 
-	if ((ip->ip_off & htons(IP_OFFMASK)) == 0 &&
-	    ip->ip_p == IPPROTO_TCP) {
-		struct tcphdr *th = (struct tcphdr *)((caddr_t)ip +
-		    (ip->ip_hl << 2));
+	/* Re-read just in case it has been updated */
+	ip_len = ntohs(ip->ip_len);
+	int new_m_len = ip_len + ipofs;
 
+	if (new_m_len > (m->m_len +  M_TRAILINGSPACE(m))) {
 		/*
-		 * Here is our terrible HACK.
-		 *
-		 * Sometimes LibAlias edits contents of TCP packet.
-		 * In this case it needs to recompute full TCP
-		 * checksum. However, the problem is that LibAlias
-		 * doesn't have any idea about checksum offloading
-		 * in kernel. To workaround this, we do not do
-		 * checksumming in LibAlias, but only mark the
-		 * packets in th_x2 field. If we receive a marked
-		 * packet, we calculate correct checksum for it
-		 * aware of offloading.
-		 *
-		 * Why do I do such a terrible hack instead of
-		 * recalculating checksum for each packet?
-		 * Because the previous checksum was not checked!
-		 * Recalculating checksums for EVERY packet will
-		 * hide ALL transmission errors. Yes, marked packets
-		 * still suffer from this problem. But, sigh, natd(8)
-		 * has this problem, too.
+		 * This is just a safety railguard to make sure LibAlias has not
+		 * screwed the IP packet up somehow, should probably be KASSERT()
+		 * at some point. Calling in_delayed_cksum() will parse IP packet
+		 * again and reliably panic if there is less data than the IP
+		 * header declares, there might be some other places too.
 		 */
-
-		if (th->th_x2) {
-			uint16_t ip_len = ntohs(ip->ip_len);
-
-			th->th_x2 = 0;
-			th->th_sum = in_pseudo(ip->ip_src.s_addr,
-			    ip->ip_dst.s_addr, htons(IPPROTO_TCP +
-			    ip_len - (ip->ip_hl << 2)));
-
-			if ((m->m_pkthdr.csum_flags & CSUM_TCP) == 0) {
-				m->m_pkthdr.csum_data = offsetof(struct tcphdr,
-				    th_sum);
-				in_delayed_cksum(m);
-			}
-		}
+		log(LOG_ERR, "ng_nat_rcvdata: outgoing packet corrupted, "
+		    "not enough data: expected %d, available (%d - %d)\n",
+		    ip_len, m->m_len + (int)M_TRAILINGSPACE(m), ipofs);
+		NG_FREE_ITEM(item);
+		return (ENXIO);
 	}
+
+	m->m_pkthdr.len = m->m_len = new_m_len;
+
+	if ((ip->ip_off & htons(IP_OFFMASK)) != 0 || ip->ip_p != IPPROTO_TCP)
+		goto send;
+
+	uint16_t pl_offset = ip->ip_hl << 2;
+	struct tcphdr *th = (struct tcphdr *)((caddr_t)ip + pl_offset);
+
+	/*
+	 * Here is our terrible HACK.
+	 *
+	 * Sometimes LibAlias edits contents of TCP packet.
+	 * In this case it needs to recompute full TCP
+	 * checksum. However, the problem is that LibAlias
+	 * doesn't have any idea about checksum offloading
+	 * in kernel. To workaround this, we do not do
+	 * checksumming in LibAlias, but only mark the
+	 * packets with TH_RES1 in the th_x2 field. If we
+	 * receive a marked packet, we calculate correct
+	 * checksum for it aware of offloading.
+	 *
+	 * Why do I do such a terrible hack instead of
+	 * recalculating checksum for each packet?
+	 * Because the previous checksum was not checked!
+	 * Recalculating checksums for EVERY packet will
+	 * hide ALL transmission errors. Yes, marked packets
+	 * still suffer from this problem. But, sigh, natd(8)
+	 * has this problem, too.
+	 */
+
+	if (!(tcp_get_flags(th) & TH_RES1))
+		goto send;
+
+	tcp_set_flags(th, tcp_get_flags(th) & ~TH_RES1);
+	th->th_sum = in_pseudo(ip->ip_src.s_addr, ip->ip_dst.s_addr,
+	    htons(IPPROTO_TCP + ip_len - pl_offset));
+
+	if ((m->m_pkthdr.csum_flags & CSUM_TCP) != 0)
+		goto send;
+
+	m->m_pkthdr.csum_data = offsetof(struct tcphdr, th_sum);
+	in_delayed_cksum_o(m, ipofs);
 
 send:
 	if (hook == priv->in)
@@ -914,12 +937,12 @@ ng_nat_shutdown(node_p node)
 	while (!STAILQ_EMPTY(&priv->redirhead)) {
 		struct ng_nat_rdr_lst *entry = STAILQ_FIRST(&priv->redirhead);
 		STAILQ_REMOVE_HEAD(&priv->redirhead, entries);
-		free(entry, M_NETGRAPH);
+		free(entry, M_NETGRAPH_NAT);
 	}
 
 	/* Final free. */
 	LibAliasUninit(priv->lib);
-	free(priv, M_NETGRAPH);
+	free(priv, M_NETGRAPH_NAT);
 
 	return (0);
 }
@@ -961,6 +984,10 @@ ng_nat_translate_flags(unsigned int x)
 		res |= PKT_ALIAS_PROXY_ONLY;
 	if (x & NG_NAT_REVERSE)
 		res |= PKT_ALIAS_REVERSE;
+	if (x & NG_NAT_UNREGISTERED_CGN)
+		res |= PKT_ALIAS_UNREGISTERED_CGN;
+	if (x & NG_NAT_UDP_EIM)
+		res |= PKT_ALIAS_UDP_EIM;
 
 	return (res);
 }

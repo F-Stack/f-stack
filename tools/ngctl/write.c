@@ -108,12 +108,12 @@ WriteCmd(int ac, char **av)
 	/* Send data */
 	sag->sg_len = 3 + strlen(hook);
 	sag->sg_family = AF_NETGRAPH;
-#if __GNUC__ >= 13
+#if __GNUC__ >= 12
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wstringop-overflow"
 #endif
 	strlcpy(sag->sg_data, hook, sizeof(sagbuf) - 2);
-#if __GNUC__ >= 13
+#if __GNUC__ >= 12
 #pragma GCC diagnostic pop
 #endif
 	if (sendto(dsock, buf, len,

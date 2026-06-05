@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Oleksandr Tymoshenko <gonzo@FreeBSD.org>
  *
@@ -23,18 +23,13 @@
  * OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
 
-#include <dev/extres/clk/clk.h>
+#include <dev/clk/clk.h>
 
 #include <arm64/freescale/imx/clk/imx_clk_sscg_pll.h>
 
@@ -81,9 +76,6 @@ struct imx_clk_sscg_pll_sc {
 static int
 imx_clk_sscg_pll_init(struct clknode *clk, device_t dev)
 {
-	struct imx_clk_sscg_pll_sc *sc;
-
-	sc = clknode_get_softc(clk);
 	if (clknode_get_parents_num(clk) > 1) {
 		device_printf(clknode_get_device(clk),
 		   "error: SSCG PLL does not support more than one parent yet\n");

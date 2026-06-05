@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)if_loop.c	8.2 (Berkeley) 1/9/95
- * $FreeBSD$
  */
 
 /*
@@ -53,6 +50,7 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_clone.h>
 #include <net/if_types.h>
 #include <net/netisr.h>
@@ -90,25 +88,21 @@
 				    CSUM_IP_CHECKED | CSUM_IP_VALID | \
 				    CSUM_SCTP_VALID)
 
-int		loioctl(struct ifnet *, u_long, caddr_t);
-int		looutput(struct ifnet *ifp, struct mbuf *m,
+static int	loioctl(struct ifnet *, u_long, caddr_t);
+static int	looutput(struct ifnet *ifp, struct mbuf *m,
 		    const struct sockaddr *dst, struct route *ro);
-static int	lo_clone_create(struct if_clone *, int, caddr_t);
-static void	lo_clone_destroy(struct ifnet *);
 
 VNET_DEFINE(struct ifnet *, loif);	/* Used externally */
-
-#ifdef VIMAGE
 VNET_DEFINE_STATIC(struct if_clone *, lo_cloner);
 #define	V_lo_cloner		VNET(lo_cloner)
-#endif
 
-static struct if_clone *lo_cloner;
 static const char loname[] = "lo";
 
-static void
-lo_clone_destroy(struct ifnet *ifp)
+static int
+lo_clone_destroy(struct if_clone *ifc, struct ifnet *ifp, uint32_t flags)
 {
+	if (ifp->if_dunit == 0 && (flags & IFC_F_FORCE) == 0)
+		return (EINVAL);
 
 #ifndef VIMAGE
 	/* XXX: destroying lo0 will lead to panics. */
@@ -118,18 +112,18 @@ lo_clone_destroy(struct ifnet *ifp)
 	bpfdetach(ifp);
 	if_detach(ifp);
 	if_free(ifp);
+
+	return (0);
 }
 
 static int
-lo_clone_create(struct if_clone *ifc, int unit, caddr_t params)
+lo_clone_create(struct if_clone *ifc, char *name, size_t len,
+    struct ifc_data *ifd, struct ifnet **ifpp)
 {
 	struct ifnet *ifp;
 
 	ifp = if_alloc(IFT_LOOP);
-	if (ifp == NULL)
-		return (ENOSPC);
-
-	if_initname(ifp, loname, unit);
+	if_initname(ifp, loname, ifd->unit);
 	ifp->if_mtu = LOMTU;
 	ifp->if_flags = IFF_LOOPBACK | IFF_MULTICAST;
 	ifp->if_ioctl = loioctl;
@@ -140,8 +134,7 @@ lo_clone_create(struct if_clone *ifc, int unit, caddr_t params)
 	ifp->if_hwassist = LO_CSUM_FEATURES | LO_CSUM_FEATURES6;
 	if_attach(ifp);
 	bpfattach(ifp, DLT_NULL, sizeof(u_int32_t));
-	if (V_loif == NULL)
-		V_loif = ifp;
+	*ifpp = ifp;
 
 	return (0);
 }
@@ -149,15 +142,14 @@ lo_clone_create(struct if_clone *ifc, int unit, caddr_t params)
 static void
 vnet_loif_init(const void *unused __unused)
 {
-
-#ifdef VIMAGE
-	lo_cloner = if_clone_simple(loname, lo_clone_create, lo_clone_destroy,
-	    1);
-	V_lo_cloner = lo_cloner;
-#else
-	lo_cloner = if_clone_simple(loname, lo_clone_create, lo_clone_destroy,
-	    1);
-#endif
+	struct if_clone_addreq req = {
+		.create_f = lo_clone_create,
+		.destroy_f = lo_clone_destroy,
+		.flags = IFC_F_AUTOUNIT,
+	};
+	V_lo_cloner = ifc_attach_cloner(loname, &req);
+	struct ifc_data ifd = { .unit = 0 };
+	ifc_create_ifp(loname, &ifd, &V_loif);
 }
 VNET_SYSINIT(vnet_loif_init, SI_SUB_PSEUDO, SI_ORDER_ANY,
     vnet_loif_init, NULL);
@@ -167,7 +159,7 @@ static void
 vnet_loif_uninit(const void *unused __unused)
 {
 
-	if_clone_detach(V_lo_cloner);
+	ifc_detach_cloner(V_lo_cloner);
 	V_loif = NULL;
 }
 VNET_SYSUNINIT(vnet_loif_uninit, SI_SUB_INIT_IF, SI_ORDER_SECOND,
@@ -200,7 +192,7 @@ static moduledata_t loop_mod = {
 
 DECLARE_MODULE(if_lo, loop_mod, SI_SUB_PROTO_IFATTACHDOMAIN, SI_ORDER_ANY);
 
-int
+static int
 looutput(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
     struct route *ro)
 {
@@ -235,7 +227,7 @@ looutput(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
 	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
 		bcopy(dst->sa_data, &af, sizeof(af));
 	else
-		af = dst->sa_family;
+		af = RO_GET_FAMILY(ro, dst);
 
 #if 1	/* XXX */
 	switch (af) {
@@ -369,8 +361,7 @@ if_simloop(struct ifnet *ifp, struct mbuf *m, int af, int hlen)
 /*
  * Process an ioctl request.
  */
-/* ARGSUSED */
-int
+static int
 loioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 {
 	struct ifreq *ifr = (struct ifreq *)data;

@@ -29,15 +29,13 @@
 
 /*
  * FQ_Codel Structures and helper functions
- *
- * $FreeBSD$
  */
 
 #ifndef _IP_DN_SCHED_FQ_CODEL_H
 #define _IP_DN_SCHED_FQ_CODEL_H
 
 /* list of queues */
-STAILQ_HEAD(fq_codel_list, fq_codel_flow) ;
+STAILQ_HEAD(fq_codel_list, fq_codel_flow);
 
 /* fq_codel parameters including codel */
 struct dn_sch_fq_codel_parms {
@@ -104,7 +102,7 @@ fq_update_stats(struct fq_codel_flow *q, struct fq_codel_si *si, int len,
 		si->main_q.ni.drops ++;
 		q->stats.drops ++;
 		si->_si.ni.drops ++;
-		io_pkt_drop ++;
+		V_dn_cfg.io_pkt_drop ++;
 	} 
 
 	if (!drop || (drop && len < 0)) {
@@ -138,8 +136,9 @@ fq_update_stats(struct fq_codel_flow *q, struct fq_codel_si *si, int len,
 __inline static struct mbuf *
 fq_codel_extract_head(struct fq_codel_flow *q, aqm_time_t *pkt_ts, struct fq_codel_si *si)
 {
-	struct mbuf *m = q->mq.head;
+	struct mbuf *m;
 
+next:	m = q->mq.head;
 	if (m == NULL)
 		return m;
 	q->mq.head = m->m_nextpkt;
@@ -147,7 +146,7 @@ fq_codel_extract_head(struct fq_codel_flow *q, aqm_time_t *pkt_ts, struct fq_cod
 	fq_update_stats(q, si, -m->m_pkthdr.len, 0);
 
 	if (si->main_q.ni.length == 0) /* queue is now idle */
-			si->main_q.q_time = dn_cfg.curr_time;
+			si->main_q.q_time = V_dn_cfg.curr_time;
 
 	/* extract packet timestamp*/
 	struct m_tag *mtag;
@@ -159,7 +158,11 @@ fq_codel_extract_head(struct fq_codel_flow *q, aqm_time_t *pkt_ts, struct fq_cod
 		*pkt_ts = *(aqm_time_t *)(mtag + 1);
 		m_tag_delete(m,mtag); 
 	}
-
+	if (m->m_pkthdr.rcvif != NULL &&
+	    __predict_false(m_rcvif_restore(m) == NULL)) {
+		m_freem(m);
+		goto next;
+	}
 	return m;
 }
 

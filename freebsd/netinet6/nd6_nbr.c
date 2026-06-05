@@ -32,8 +32,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -61,6 +59,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if_types.h>
 #include <net/if_dl.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/vnet.h>
 
@@ -84,9 +83,9 @@ static struct dadq *nd6_dad_find(struct ifaddr *, struct nd_opt_nonce *);
 static void nd6_dad_add(struct dadq *dp);
 static void nd6_dad_del(struct dadq *dp);
 static void nd6_dad_rele(struct dadq *);
-static void nd6_dad_starttimer(struct dadq *, int, int);
+static void nd6_dad_starttimer(struct dadq *, int);
 static void nd6_dad_stoptimer(struct dadq *);
-static void nd6_dad_timer(struct dadq *);
+static void nd6_dad_timer(void *);
 static void nd6_dad_duplicated(struct ifaddr *, struct dadq *);
 static void nd6_dad_ns_output(struct dadq *);
 static void nd6_dad_ns_input(struct ifaddr *, struct nd_opt_nonce *);
@@ -95,6 +94,9 @@ static void nd6_na_output_fib(struct ifnet *, const struct in6_addr *,
     const struct in6_addr *, u_long, int, struct sockaddr *, u_int);
 static void nd6_ns_output_fib(struct ifnet *, const struct in6_addr *,
     const struct in6_addr *, const struct in6_addr *, uint8_t *, u_int);
+
+static struct ifaddr *nd6_proxy_fill_sdl(struct ifnet *,
+    const struct in6_addr *, struct sockaddr_dl *);
 
 VNET_DEFINE_STATIC(int, dad_enhanced) = 1;
 #define	V_dad_enhanced			VNET(dad_enhanced)
@@ -107,6 +109,13 @@ SYSCTL_INT(_net_inet6_ip6, OID_AUTO, dad_enhanced, CTLFLAG_VNET | CTLFLAG_RW,
 VNET_DEFINE_STATIC(int, dad_maxtry) = 15;	/* max # of *tries* to
 						   transmit DAD packet */
 #define	V_dad_maxtry			VNET(dad_maxtry)
+
+VNET_DEFINE_STATIC(int, nd6_onlink_ns_rfc4861) = 0;
+#define	V_nd6_onlink_ns_rfc4861		VNET(nd6_onlink_ns_rfc4861)
+SYSCTL_INT(_net_inet6_icmp6, ICMPV6CTL_ND6_ONLINKNSRFC4861,
+    nd6_onlink_ns_rfc4861, CTLFLAG_VNET | CTLFLAG_RW,
+    &VNET_NAME(nd6_onlink_ns_rfc4861), 0,
+    "Accept 'on-link' ICMPv6 NS messages in compliance with RFC 4861");
 
 /*
  * Input a Neighbor Solicitation Message.
@@ -255,38 +264,12 @@ nd6_ns_input(struct mbuf *m, int off, int icmp6len)
 	/* (2) check. */
 	proxy = 0;
 	if (ifa == NULL) {
-		struct sockaddr_dl rt_gateway;
-		struct rt_addrinfo info;
-		struct sockaddr_in6 dst6;
-
-		bzero(&dst6, sizeof(dst6));
-		dst6.sin6_len = sizeof(struct sockaddr_in6);
-		dst6.sin6_family = AF_INET6;
-		dst6.sin6_addr = taddr6;
-
-		bzero(&rt_gateway, sizeof(rt_gateway));
-		rt_gateway.sdl_len = sizeof(rt_gateway);
-		bzero(&info, sizeof(info));
-		info.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&rt_gateway;
-
-		if (rib_lookup_info(ifp->if_fib, (struct sockaddr *)&dst6,
-		    0, 0, &info) == 0) {
-			if ((info.rti_flags & RTF_ANNOUNCE) != 0 &&
-			    rt_gateway.sdl_family == AF_LINK) {
-				/*
-				 * proxy NDP for single entry
-				 */
-				proxydl = *SDL(&rt_gateway);
-				ifa = (struct ifaddr *)in6ifa_ifpforlinklocal(
-				    ifp, IN6_IFF_NOTREADY|IN6_IFF_ANYCAST);
-				if (ifa)
-					proxy = 1;
-			}
-		}
+		if ((ifa = nd6_proxy_fill_sdl(ifp, &taddr6, &proxydl)) != NULL)
+			proxy = 1;
 	}
 	if (ifa == NULL) {
 		/*
-		 * We've got an NS packet, and we don't have that adddress
+		 * We've got an NS packet, and we don't have that address
 		 * assigned for us.  We MUST silently ignore it.
 		 * See RFC2461 7.2.3.
 		 */
@@ -386,6 +369,30 @@ nd6_ns_input(struct mbuf *m, int off, int icmp6len)
 	m_freem(m);
 }
 
+static struct ifaddr *
+nd6_proxy_fill_sdl(struct ifnet *ifp, const struct in6_addr *taddr6,
+    struct sockaddr_dl *sdl)
+{
+	struct ifaddr *ifa;
+	struct llentry *ln;
+
+	ifa = NULL;
+	ln = nd6_lookup(taddr6, LLE_SF(AF_INET6, 0), ifp);
+	if (ln == NULL)
+		return (ifa);
+	if ((ln->la_flags & (LLE_PUB | LLE_VALID)) == (LLE_PUB | LLE_VALID)) {
+		link_init_sdl(ifp, (struct sockaddr *)sdl, ifp->if_type);
+		sdl->sdl_alen = ifp->if_addrlen;
+		bcopy(ln->ll_addr, &sdl->sdl_data, ifp->if_addrlen);
+		LLE_RUNLOCK(ln);
+		ifa = (struct ifaddr *)in6ifa_ifpforlinklocal(ifp,
+		    IN6_IFF_NOTREADY|IN6_IFF_ANYCAST);
+	} else
+		LLE_RUNLOCK(ln);
+
+	return (ifa);
+}
+
 /*
  * Output a Neighbor Solicitation Message. Caller specifies:
  *	- ICMP6 header source IP6 address
@@ -411,7 +418,8 @@ nd6_ns_output_fib(struct ifnet *ifp, const struct in6_addr *saddr6,
 	struct ip6_moptions im6o;
 	int icmp6len;
 	int maxlen;
-	caddr_t mac;
+
+	NET_EPOCH_ASSERT();
 
 	if (IN6_IS_ADDR_MULTICAST(taddr6))
 		return;
@@ -463,6 +471,7 @@ nd6_ns_output_fib(struct ifnet *ifp, const struct in6_addr *saddr6,
 			goto bad;
 	}
 	if (nonce == NULL) {
+		char ip6buf[INET6_ADDRSTRLEN];
 		struct ifaddr *ifa = NULL;
 
 		/*
@@ -478,14 +487,9 @@ nd6_ns_output_fib(struct ifnet *ifp, const struct in6_addr *saddr6,
 		 * (saddr6), if saddr6 belongs to the outgoing interface.
 		 * Otherwise, we perform the source address selection as usual.
 		 */
-
 		if (saddr6 != NULL)
 			ifa = (struct ifaddr *)in6ifa_ifpwithaddr(ifp, saddr6);
-		if (ifa != NULL) {
-			/* ip6_src set already. */
-			ip6->ip6_src = *saddr6;
-			ifa_free(ifa);
-		} else {
+		if (ifa == NULL) {
 			int error;
 			struct in6_addr dst6, src6;
 			uint32_t scopeid;
@@ -494,7 +498,6 @@ nd6_ns_output_fib(struct ifnet *ifp, const struct in6_addr *saddr6,
 			error = in6_selectsrc_addr(fibnum, &dst6,
 			    scopeid, ifp, &src6, NULL);
 			if (error) {
-				char ip6buf[INET6_ADDRSTRLEN];
 				nd6log((LOG_DEBUG, "%s: source can't be "
 				    "determined: dst=%s, error=%d\n", __func__,
 				    ip6_sprintf(ip6buf, &dst6),
@@ -502,7 +505,32 @@ nd6_ns_output_fib(struct ifnet *ifp, const struct in6_addr *saddr6,
 				goto bad;
 			}
 			ip6->ip6_src = src6;
+		} else
+			ip6->ip6_src = *saddr6;
+
+		if (ifp->if_carp != NULL) {
+			/*
+			 * Check that selected source address belongs to
+			 * CARP addresses.
+			 */
+			if (ifa == NULL)
+				ifa = (struct ifaddr *)in6ifa_ifpwithaddr(ifp,
+				    &ip6->ip6_src);
+			/*
+			 * Do not send NS for CARP address if we are not
+			 * the CARP master.
+			 */
+			if (ifa != NULL && ifa->ifa_carp != NULL &&
+			    !(*carp_master_p)(ifa)) {
+				nd6log((LOG_DEBUG,
+				    "nd6_ns_output: NS from BACKUP CARP address %s\n",
+				    ip6_sprintf(ip6buf, &ip6->ip6_src)));
+				ifa_free(ifa);
+				goto bad;
+			}
 		}
+		if (ifa != NULL)
+			ifa_free(ifa);
 	} else {
 		/*
 		 * Source address for DAD packet must always be IPv6
@@ -532,19 +560,30 @@ nd6_ns_output_fib(struct ifnet *ifp, const struct in6_addr *saddr6,
 	 *	Multicast NS		MUST add one	add the option
 	 *	Unicast NS		SHOULD add one	add the option
 	 */
-	if (nonce == NULL && (mac = nd6_ifptomac(ifp))) {
-		int optlen = sizeof(struct nd_opt_hdr) + ifp->if_addrlen;
-		struct nd_opt_hdr *nd_opt = (struct nd_opt_hdr *)(nd_ns + 1);
-		/* 8 byte alignments... */
-		optlen = (optlen + 7) & ~7;
+	if (nonce == NULL) {
+		struct nd_opt_hdr *nd_opt;
+		char *mac;
+		int optlen;
 
-		m->m_pkthdr.len += optlen;
-		m->m_len += optlen;
-		icmp6len += optlen;
-		bzero((caddr_t)nd_opt, optlen);
-		nd_opt->nd_opt_type = ND_OPT_SOURCE_LINKADDR;
-		nd_opt->nd_opt_len = optlen >> 3;
-		bcopy(mac, (caddr_t)(nd_opt + 1), ifp->if_addrlen);
+		mac = NULL;
+		if (ifp->if_carp)
+			mac = (*carp_macmatch6_p)(ifp, m, &ip6->ip6_src);
+		if (mac == NULL)
+			mac = nd6_ifptomac(ifp);
+
+		if (mac != NULL) {
+			nd_opt = (struct nd_opt_hdr *)(nd_ns + 1);
+			optlen = sizeof(struct nd_opt_hdr) + ifp->if_addrlen;
+			/* 8 byte alignments... */
+			optlen = (optlen + 7) & ~7;
+			m->m_pkthdr.len += optlen;
+			m->m_len += optlen;
+			icmp6len += optlen;
+			bzero(nd_opt, optlen);
+			nd_opt->nd_opt_type = ND_OPT_SOURCE_LINKADDR;
+			nd_opt->nd_opt_len = optlen >> 3;
+			bcopy(mac, nd_opt + 1, ifp->if_addrlen);
+		}
 	}
 	/*
 	 * Add a Nonce option (RFC 3971) to detect looped back NS messages.
@@ -584,7 +623,7 @@ nd6_ns_output_fib(struct ifnet *ifp, const struct in6_addr *saddr6,
 	    &im6o, NULL, NULL);
 	icmp6_ifstat_inc(ifp, ifs6_out_msg);
 	icmp6_ifstat_inc(ifp, ifs6_out_neighborsolicit);
-	ICMP6STAT_INC(icp6s_outhist[ND_NEIGHBOR_SOLICIT]);
+	ICMP6STAT_INC2(icp6s_outhist, ND_NEIGHBOR_SOLICIT);
 
 	return;
 
@@ -621,7 +660,6 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 	struct mbuf *chain;
 	struct nd_neighbor_advert *nd_na;
 	struct in6_addr daddr6, taddr6;
-	struct sockaddr_in6 sin6;
 	union nd_opts ndopts;
 	u_char linkhdr[LLE_MAX_LINKHDR];
 	char ip6bufs[INET6_ADDRSTRLEN], ip6bufd[INET6_ADDRSTRLEN];
@@ -629,6 +667,7 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 	size_t linkhdrsize;
 	int flags, is_override, is_router, is_solicited;
 	int lladdr_off, lladdrlen, checklink;
+	bool flush_holdchain = false;
 
 	NET_EPOCH_ASSERT();
 
@@ -701,15 +740,20 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 		lladdrlen = ndopts.nd_opts_tgt_lladdr->nd_opt_len << 3;
 	}
 
-	/*
-	 * This effectively disables the DAD check on a non-master CARP
-	 * address.
-	 */
-	if (ifp->if_carp)
-		ifa = (*carp_iamatch6_p)(ifp, &taddr6);
-	else
-		ifa = (struct ifaddr *)in6ifa_ifpwithaddr(ifp, &taddr6);
-
+	ifa = (struct ifaddr *)in6ifa_ifpwithaddr(ifp, &taddr6);
+	if (ifa != NULL && ifa->ifa_carp != NULL) {
+		/*
+		 * Silently ignore NAs for CARP addresses if we are not
+		 * the CARP master.
+		 */
+		if (!(*carp_master_p)(ifa)) {
+			nd6log((LOG_DEBUG,
+			    "nd6_na_input: NA for BACKUP CARP address %s\n",
+			    ip6_sprintf(ip6bufs, &taddr6)));
+			ifa_free(ifa);
+			goto freeit;
+		}
+	}
 	/*
 	 * Target address matches one of my interface address.
 	 *
@@ -746,7 +790,7 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 	 * If no neighbor cache entry is found, NA SHOULD silently be
 	 * discarded.
 	 */
-	ln = nd6_lookup(&taddr6, LLE_EXCLUSIVE, ifp);
+	ln = nd6_lookup(&taddr6, LLE_SF(AF_INET6, LLE_EXCLUSIVE), ifp);
 	if (ln == NULL) {
 		goto freeit;
 	}
@@ -769,21 +813,15 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 		/*
 		 * Record link-layer address, and update the state.
 		 */
-		linkhdrsize = sizeof(linkhdr);
-		if (lltable_calc_llheader(ifp, AF_INET6, lladdr,
-		    linkhdr, &linkhdrsize, &lladdr_off) != 0)
-			return;
-
-		if (lltable_try_set_entry_addr(ifp, ln, linkhdr, linkhdrsize,
-		    lladdr_off) == 0) {
-			ln = NULL;
+		if (!nd6_try_set_entry_addr(ifp, ln, lladdr))
 			goto freeit;
-		}
-		EVENTHANDLER_INVOKE(lle_event, ln, LLENTRY_RESOLVED);
+
+		flush_holdchain = true;
 		if (is_solicited)
 			nd6_llinfo_setstate(ln, ND6_LLINFO_REACHABLE);
 		else
 			nd6_llinfo_setstate(ln, ND6_LLINFO_STALE);
+		EVENTHANDLER_INVOKE(lle_event, ln, LLENTRY_RESOLVED);
 		if ((ln->ln_router = is_router) != 0) {
 			/*
 			 * This means a router's state has changed from
@@ -849,10 +887,8 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 				    linkhdr, &linkhdrsize, &lladdr_off) != 0)
 					goto freeit;
 				if (lltable_try_set_entry_addr(ifp, ln, linkhdr,
-				    linkhdrsize, lladdr_off) == 0) {
-					ln = NULL;
+				    linkhdrsize, lladdr_off) == 0)
 					goto freeit;
-				}
 				EVENTHANDLER_INVOKE(lle_event, ln,
 				    LLENTRY_RESOLVED);
 			}
@@ -897,16 +933,16 @@ nd6_na_input(struct mbuf *m, int off, int icmp6len)
 	 *  rt->rt_flags &= ~RTF_REJECT;
 	 */
 	ln->la_asked = 0;
-	if (ln->la_hold != NULL) {
-		memset(&sin6, 0, sizeof(sin6));
-		nd6_grab_holdchain(ln, &chain, &sin6);
-	}
+	if (ln->la_hold != NULL)
+		chain = nd6_grab_holdchain(ln);
  freeit:
 	if (ln != NULL)
 		LLE_WUNLOCK(ln);
 
 	if (chain != NULL)
-		nd6_flush_holdchain(ifp, chain, &sin6);
+		nd6_flush_holdchain(ifp, ln, chain);
+	if (flush_holdchain)
+		nd6_flush_children_holdchain(ifp, ln);
 
 	if (checklink)
 		pfxlist_onlink_check();
@@ -946,6 +982,8 @@ nd6_na_output_fib(struct ifnet *ifp, const struct in6_addr *daddr6_0,
 	struct ip6_moptions im6o;
 	struct in6_addr daddr6, dst6, src6;
 	uint32_t scopeid;
+
+	NET_EPOCH_ASSERT();
 
 	int icmp6len, maxlen, error;
 	caddr_t mac = NULL;
@@ -1078,7 +1116,7 @@ nd6_na_output_fib(struct ifnet *ifp, const struct in6_addr *daddr6_0,
 	ip6_output(m, NULL, NULL, 0, &im6o, NULL, NULL);
 	icmp6_ifstat_inc(ifp, ifs6_out_msg);
 	icmp6_ifstat_inc(ifp, ifs6_out_neighboradvert);
-	ICMP6STAT_INC(icp6s_outhist[ND_NEIGHBOR_ADVERT]);
+	ICMP6STAT_INC2(icp6s_outhist, ND_NEIGHBOR_ADVERT);
 
 	return;
 
@@ -1137,26 +1175,31 @@ VNET_DEFINE_STATIC(struct rwlock, dad_rwlock);
 #define	V_dadq			VNET(dadq)
 #define	V_dad_rwlock		VNET(dad_rwlock)
 
-#define	DADQ_RLOCK()		rw_rlock(&V_dad_rwlock)	
-#define	DADQ_RUNLOCK()		rw_runlock(&V_dad_rwlock)	
-#define	DADQ_WLOCK()		rw_wlock(&V_dad_rwlock)	
-#define	DADQ_WUNLOCK()		rw_wunlock(&V_dad_rwlock)	
+#define	DADQ_LOCKPTR()		(&V_dad_rwlock)
+#define	DADQ_LOCK_INIT()	rw_init(DADQ_LOCKPTR(), "nd6 DAD queue")
+#define	DADQ_RLOCK()		rw_rlock(DADQ_LOCKPTR())
+#define	DADQ_RUNLOCK()		rw_runlock(DADQ_LOCKPTR())
+#define	DADQ_WLOCK()		rw_wlock(DADQ_LOCKPTR())
+#define	DADQ_WUNLOCK()		rw_wunlock(DADQ_LOCKPTR())
+
+#define	DADQ_LOCK_ASSERT()	rw_assert(DADQ_LOCKPTR(), RA_LOCKED);
+#define	DADQ_RLOCK_ASSERT()	rw_assert(DADQ_LOCKPTR(), RA_RLOCKED);
+#define	DADQ_WLOCK_ASSERT()	rw_assert(DADQ_LOCKPTR(), RA_WLOCKED);
 
 static void
 nd6_dad_add(struct dadq *dp)
 {
+	DADQ_WLOCK_ASSERT();
 
-	DADQ_WLOCK();
 	TAILQ_INSERT_TAIL(&V_dadq, dp, dad_list);
 	dp->dad_ondadq = true;
-	DADQ_WUNLOCK();
 }
 
 static void
 nd6_dad_del(struct dadq *dp)
 {
+	DADQ_WLOCK_ASSERT();
 
-	DADQ_WLOCK();
 	if (dp->dad_ondadq) {
 		/*
 		 * Remove dp from the dadq and release the dadq's
@@ -1164,10 +1207,8 @@ nd6_dad_del(struct dadq *dp)
 		 */
 		TAILQ_REMOVE(&V_dadq, dp, dad_list);
 		dp->dad_ondadq = false;
-		DADQ_WUNLOCK();
 		nd6_dad_rele(dp);
-	} else
-		DADQ_WUNLOCK();
+	}
 }
 
 static struct dadq *
@@ -1175,10 +1216,12 @@ nd6_dad_find(struct ifaddr *ifa, struct nd_opt_nonce *n)
 {
 	struct dadq *dp;
 
-	DADQ_RLOCK();
+	DADQ_LOCK_ASSERT();
+
 	TAILQ_FOREACH(dp, &V_dadq, dad_list) {
 		if (dp->dad_ifa != ifa)
 			continue;
+
 		/*
 		 * Skip if the nonce matches the received one.
 		 * +2 in the length is required because of type and
@@ -1187,42 +1230,35 @@ nd6_dad_find(struct ifaddr *ifa, struct nd_opt_nonce *n)
 		if (n != NULL &&
 		    n->nd_opt_nonce_len == (ND_OPT_NONCE_LEN + 2) / 8 &&
 		    memcmp(&n->nd_opt_nonce[0], &dp->dad_nonce[0],
-		        ND_OPT_NONCE_LEN) == 0) {
+		    ND_OPT_NONCE_LEN) == 0) {
 			dp->dad_ns_lcount++;
 			continue;
 		}
-		refcount_acquire(&dp->dad_refcnt);
 		break;
 	}
-	DADQ_RUNLOCK();
 
 	return (dp);
 }
 
 static void
-nd6_dad_starttimer(struct dadq *dp, int ticks, int send_ns)
+nd6_dad_starttimer(struct dadq *dp, int ticks)
 {
+	DADQ_WLOCK_ASSERT();
 
-	NET_EPOCH_ASSERT();
-
-	if (send_ns != 0)
-		nd6_dad_ns_output(dp);
-	callout_reset(&dp->dad_timer_ch, ticks,
-	    (void (*)(void *))nd6_dad_timer, (void *)dp);
+	callout_reset(&dp->dad_timer_ch, ticks, nd6_dad_timer, dp);
 }
 
 static void
 nd6_dad_stoptimer(struct dadq *dp)
 {
-
 	callout_drain(&dp->dad_timer_ch);
 }
 
 static void
 nd6_dad_rele(struct dadq *dp)
 {
-
 	if (refcount_release(&dp->dad_refcnt)) {
+		KASSERT(!dp->dad_ondadq, ("dp %p still on DAD queue", dp));
 		ifa_free(dp->dad_ifa);
 		free(dp, M_IP6NDP);
 	}
@@ -1231,8 +1267,7 @@ nd6_dad_rele(struct dadq *dp)
 void
 nd6_dad_init(void)
 {
-
-	rw_init(&V_dad_rwlock, "nd6 DAD queue");
+	DADQ_LOCK_INIT();
 	TAILQ_INIT(&V_dadq);
 }
 
@@ -1245,7 +1280,6 @@ nd6_dad_start(struct ifaddr *ifa, int delay)
 	struct in6_ifaddr *ia = (struct in6_ifaddr *)ifa;
 	struct dadq *dp;
 	char ip6buf[INET6_ADDRSTRLEN];
-	struct epoch_tracker et;
 
 	KASSERT((ia->ia6_flags & IN6_IFF_TENTATIVE) != 0,
 	    ("starting DAD on non-tentative address %p", ifa));
@@ -1267,12 +1301,13 @@ nd6_dad_start(struct ifaddr *ifa, int delay)
 	    (ND_IFINFO(ifa->ifa_ifp)->flags & ND6_IFF_IFDISABLED) != 0)
 		return;
 
+	DADQ_WLOCK();
 	if ((dp = nd6_dad_find(ifa, NULL)) != NULL) {
 		/*
 		 * DAD is already in progress.  Let the existing entry
 		 * finish it.
 		 */
-		nd6_dad_rele(dp);
+		DADQ_WUNLOCK();
 		return;
 	}
 
@@ -1284,7 +1319,8 @@ nd6_dad_start(struct ifaddr *ifa, int delay)
 			ifa->ifa_ifp ? if_name(ifa->ifa_ifp) : "???");
 		return;
 	}
-	callout_init(&dp->dad_timer_ch, 0);
+	callout_init_rw(&dp->dad_timer_ch, DADQ_LOCKPTR(),
+	    CALLOUT_RETURNUNLOCKED);
 #ifdef VIMAGE
 	dp->dad_vnet = curvnet;
 #endif
@@ -1307,9 +1343,8 @@ nd6_dad_start(struct ifaddr *ifa, int delay)
 	/* Add this to the dadq and add a reference for the dadq. */
 	refcount_init(&dp->dad_refcnt, 1);
 	nd6_dad_add(dp);
-	NET_EPOCH_ENTER(et);
-	nd6_dad_starttimer(dp, delay, 0);
-	NET_EPOCH_EXIT(et);
+	nd6_dad_starttimer(dp, delay);
+	DADQ_WUNLOCK();
 }
 
 /*
@@ -1320,29 +1355,36 @@ nd6_dad_stop(struct ifaddr *ifa)
 {
 	struct dadq *dp;
 
+	DADQ_WLOCK();
 	dp = nd6_dad_find(ifa, NULL);
-	if (!dp) {
+	if (dp == NULL) {
+		DADQ_WUNLOCK();
 		/* DAD wasn't started yet */
 		return;
 	}
 
-	nd6_dad_stoptimer(dp);
+	/*
+	 * Acquire a temporary reference so that we can safely stop the callout.
+	 */
+	(void)refcount_acquire(&dp->dad_refcnt);
 	nd6_dad_del(dp);
+	DADQ_WUNLOCK();
 
-	/* Release this function's reference, acquired by nd6_dad_find(). */
+	nd6_dad_stoptimer(dp);
 	nd6_dad_rele(dp);
 }
 
 static void
-nd6_dad_timer(struct dadq *dp)
+nd6_dad_timer(void *arg)
 {
-	CURVNET_SET(dp->dad_vnet);
+	struct dadq *dp = arg;
 	struct ifaddr *ifa = dp->dad_ifa;
 	struct ifnet *ifp = dp->dad_ifa->ifa_ifp;
 	struct in6_ifaddr *ia = (struct in6_ifaddr *)ifa;
 	char ip6buf[INET6_ADDRSTRLEN];
 	struct epoch_tracker et;
 
+	CURVNET_SET(dp->dad_vnet);
 	KASSERT(ia != NULL, ("DAD entry %p with no address", dp));
 
 	NET_EPOCH_ENTER(et);
@@ -1383,17 +1425,18 @@ nd6_dad_timer(struct dadq *dp)
 		 * We have more NS to go.  Send NS packet for DAD.
 		 */
 		nd6_dad_starttimer(dp,
-		    (long)ND_IFINFO(ifa->ifa_ifp)->retrans * hz / 1000, 1);
+		    (long)ND_IFINFO(ifa->ifa_ifp)->retrans * hz / 1000);
+		nd6_dad_ns_output(dp);
 		goto done;
 	} else {
 		/*
 		 * We have transmitted sufficient number of DAD packets.
 		 * See what we've got.
 		 */
-		if (dp->dad_ns_icount > 0 || dp->dad_na_icount > 0)
+		if (dp->dad_ns_icount > 0 || dp->dad_na_icount > 0) {
 			/* We've seen NS or NA, means DAD has failed. */
 			nd6_dad_duplicated(ifa, dp);
-		else if (V_dad_enhanced != 0 &&
+		} else if (V_dad_enhanced != 0 &&
 		    dp->dad_ns_lcount > 0 &&
 		    dp->dad_ns_lcount > dp->dad_loopbackprobe) {
 			/*
@@ -1414,8 +1457,8 @@ nd6_dad_timer(struct dadq *dp)
 			dp->dad_count =
 			    dp->dad_ns_ocount + V_nd6_mmaxtries - 1;
 			nd6_dad_starttimer(dp,
-			    (long)ND_IFINFO(ifa->ifa_ifp)->retrans * hz / 1000,
-			    1);
+			    (long)ND_IFINFO(ifa->ifa_ifp)->retrans * hz / 1000);
+			nd6_dad_ns_output(dp);
 			goto done;
 		} else {
 			/*
@@ -1441,6 +1484,7 @@ nd6_dad_timer(struct dadq *dp)
 	}
 err:
 	nd6_dad_del(dp);
+	DADQ_WUNLOCK();
 done:
 	NET_EPOCH_EXIT(et);
 	CURVNET_RESTORE();
@@ -1500,6 +1544,10 @@ nd6_dad_duplicated(struct ifaddr *ifa, struct dadq *dp)
 	}
 }
 
+/*
+ * Transmit a neighbour solicitation for the purpose of DAD.  Returns with the
+ * DAD queue unlocked.
+ */
 static void
 nd6_dad_ns_output(struct dadq *dp)
 {
@@ -1507,11 +1555,15 @@ nd6_dad_ns_output(struct dadq *dp)
 	struct ifnet *ifp = dp->dad_ifa->ifa_ifp;
 	int i;
 
+	DADQ_WLOCK_ASSERT();
+
 	dp->dad_ns_tcount++;
 	if ((ifp->if_flags & IFF_UP) == 0) {
+		DADQ_WUNLOCK();
 		return;
 	}
 	if ((ifp->if_drv_flags & IFF_DRV_RUNNING) == 0) {
+		DADQ_WUNLOCK();
 		return;
 	}
 
@@ -1528,6 +1580,7 @@ nd6_dad_ns_output(struct dadq *dp)
 		 * should work well in almost all cases.
 		 */
 	}
+	DADQ_WUNLOCK();
 	nd6_ns_output(ifp, NULL, NULL, &ia->ia_addr.sin6_addr,
 	    (uint8_t *)&dp->dad_nonce[0]);
 }
@@ -1543,12 +1596,11 @@ nd6_dad_ns_input(struct ifaddr *ifa, struct nd_opt_nonce *ndopt_nonce)
 	/* Ignore Nonce option when Enhanced DAD is disabled. */
 	if (V_dad_enhanced == 0)
 		ndopt_nonce = NULL;
+	DADQ_RLOCK();
 	dp = nd6_dad_find(ifa, ndopt_nonce);
-	if (dp == NULL)
-		return;
-
-	dp->dad_ns_icount++;
-	nd6_dad_rele(dp);
+	if (dp != NULL)
+		dp->dad_ns_icount++;
+	DADQ_RUNLOCK();
 }
 
 static void
@@ -1559,9 +1611,9 @@ nd6_dad_na_input(struct ifaddr *ifa)
 	if (ifa == NULL)
 		panic("ifa == NULL in nd6_dad_na_input");
 
+	DADQ_RLOCK();
 	dp = nd6_dad_find(ifa, NULL);
-	if (dp != NULL) {
+	if (dp != NULL)
 		dp->dad_na_icount++;
-		nd6_dad_rele(dp);
-	}
+	DADQ_RUNLOCK();
 }

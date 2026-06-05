@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 Roger Pau Monné <roger.pau@citrix.com>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef __X86_INIT_H__
@@ -37,13 +35,10 @@
  * hypervisor environment.
  */
 struct init_ops {
-	caddr_t	(*parse_preload_data)(u_int64_t);
+	void	(*parse_preload_data)(u_int64_t);
 	void	(*early_clock_source_init)(void);
 	void	(*early_delay)(int);
-	void	(*parse_memmap)(caddr_t, vm_paddr_t *, int *);
-	void	(*mp_bootaddress)(vm_paddr_t *, unsigned int *);
-	int	(*start_all_aps)(void);
-	void	(*msi_init)(void);
+	void	(*parse_memmap)(vm_paddr_t *, int *);
 };
 
 extern struct init_ops init_ops;

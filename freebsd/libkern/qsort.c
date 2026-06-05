@@ -29,14 +29,11 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/libkern.h>
 
 #ifdef I_AM_QSORT_R
-typedef int		 cmp_t(void *, const void *, const void *);
+typedef int		 cmp_t(const void *, const void *, void *);
 #else
 typedef int		 cmp_t(const void *, const void *);
 #endif
@@ -88,7 +85,7 @@ swapfunc(char *a, char *b, size_t n, int swaptype_long, int swaptype_int)
 	if ((n) > 0) swapfunc(a, b, n, swaptype_long, swaptype_int)
 
 #ifdef I_AM_QSORT_R
-#define	CMP(t, x, y) (cmp((t), (x), (y)))
+#define	CMP(t, x, y) (cmp((x), (y), (t)))
 #else
 #define	CMP(t, x, y) (cmp((x), (y)))
 #endif
@@ -107,7 +104,7 @@ __unused
 
 #ifdef I_AM_QSORT_R
 void
-qsort_r(void *a, size_t n, size_t es, void *thunk, cmp_t *cmp)
+(qsort_r)(void *a, size_t n, size_t es, cmp_t *cmp, void *thunk)
 #else
 #define	thunk NULL
 void
@@ -117,11 +114,10 @@ qsort(void *a, size_t n, size_t es, cmp_t *cmp)
 	char *pa, *pb, *pc, *pd, *pl, *pm, *pn;
 	size_t d1, d2;
 	int cmp_result;
-	int swaptype_long, swaptype_int, swap_cnt;
+	int swaptype_long, swaptype_int;
 
 loop:	SWAPINIT(long, a, es);
 	SWAPINIT(int, a, es);
-	swap_cnt = 0;
 	if (n < 7) {
 		for (pm = (char *)a + es; pm < (char *)a + n * es; pm += es)
 			for (pl = pm; 
@@ -150,7 +146,6 @@ loop:	SWAPINIT(long, a, es);
 	for (;;) {
 		while (pb <= pc && (cmp_result = CMP(thunk, pb, a)) <= 0) {
 			if (cmp_result == 0) {
-				swap_cnt = 1;
 				swap(pa, pb);
 				pa += es;
 			}
@@ -158,7 +153,6 @@ loop:	SWAPINIT(long, a, es);
 		}
 		while (pb <= pc && (cmp_result = CMP(thunk, pc, a)) >= 0) {
 			if (cmp_result == 0) {
-				swap_cnt = 1;
 				swap(pc, pd);
 				pd -= es;
 			}
@@ -167,17 +161,8 @@ loop:	SWAPINIT(long, a, es);
 		if (pb > pc)
 			break;
 		swap(pb, pc);
-		swap_cnt = 1;
 		pb += es;
 		pc -= es;
-	}
-	if (swap_cnt == 0) {  /* Switch to insertion sort */
-		for (pm = (char *)a + es; pm < (char *)a + n * es; pm += es)
-			for (pl = pm; 
-			     pl > (char *)a && CMP(thunk, pl - es, pl) > 0;
-			     pl -= es)
-				swap(pl, pl - es);
-		return;
 	}
 
 	pn = (char *)a + n * es;
@@ -192,7 +177,7 @@ loop:	SWAPINIT(long, a, es);
 		/* Recurse on left partition, then iterate on right partition */
 		if (d1 > es) {
 #ifdef I_AM_QSORT_R
-			qsort_r(a, d1 / es, es, thunk, cmp);
+			qsort_r(a, d1 / es, es, cmp, thunk);
 #else
 			qsort(a, d1 / es, es, cmp);
 #endif
@@ -208,7 +193,7 @@ loop:	SWAPINIT(long, a, es);
 		/* Recurse on right partition, then iterate on left partition */
 		if (d2 > es) {
 #ifdef I_AM_QSORT_R
-			qsort_r(pn - d2, d2 / es, es, thunk, cmp);
+			qsort_r(pn - d2, d2 / es, es, cmp, thunk);
 #else
 			qsort(pn - d2, d2 / es, es, cmp);
 #endif

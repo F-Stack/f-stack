@@ -2,19 +2,17 @@
  * System call names.
  *
  * DO NOT EDIT-- this file is automatically @generated.
- * $FreeBSD$
  */
 
 const char *linux_syscallnames[] = {
-#define	nosys	linux_nosys
 	"read",			/* 0 = read */
-	"write",			/* 1 = write */
+	"linux_write",			/* 1 = linux_write */
 	"linux_open",			/* 2 = linux_open */
 	"close",			/* 3 = close */
 	"linux_newstat",			/* 4 = linux_newstat */
 	"linux_newfstat",			/* 5 = linux_newfstat */
 	"linux_newlstat",			/* 6 = linux_newlstat */
-	"poll",			/* 7 = poll */
+	"linux_poll",			/* 7 = linux_poll */
 	"linux_lseek",			/* 8 = linux_lseek */
 	"linux_mmap2",			/* 9 = linux_mmap2 */
 	"linux_mprotect",			/* 10 = linux_mprotect */
@@ -27,7 +25,7 @@ const char *linux_syscallnames[] = {
 	"linux_pread",			/* 17 = linux_pread */
 	"linux_pwrite",			/* 18 = linux_pwrite */
 	"readv",			/* 19 = readv */
-	"writev",			/* 20 = writev */
+	"linux_writev",			/* 20 = linux_writev */
 	"linux_access",			/* 21 = linux_access */
 	"linux_pipe",			/* 22 = linux_pipe */
 	"linux_select",			/* 23 = linux_select */
@@ -72,7 +70,7 @@ const char *linux_syscallnames[] = {
 	"linux_kill",			/* 62 = linux_kill */
 	"linux_newuname",			/* 63 = linux_newuname */
 	"linux_semget",			/* 64 = linux_semget */
-	"linux_semop",			/* 65 = linux_semop */
+	"semop",			/* 65 = semop */
 	"linux_semctl",			/* 66 = linux_semctl */
 	"linux_shmdt",			/* 67 = linux_shmdt */
 	"linux_msgget",			/* 68 = linux_msgget */
@@ -435,5 +433,30 @@ const char *linux_syscallnames[] = {
 	"linux_io_uring_setup",			/* 425 = linux_io_uring_setup */
 	"linux_io_uring_enter",			/* 426 = linux_io_uring_enter */
 	"linux_io_uring_register",			/* 427 = linux_io_uring_register */
-	"#428",			/* 428 = nosys */
+	"linux_open_tree",			/* 428 = linux_open_tree */
+	"linux_move_mount",			/* 429 = linux_move_mount */
+	"linux_fsopen",			/* 430 = linux_fsopen */
+	"linux_fsconfig",			/* 431 = linux_fsconfig */
+	"linux_fsmount",			/* 432 = linux_fsmount */
+	"linux_fspick",			/* 433 = linux_fspick */
+	"linux_pidfd_open",			/* 434 = linux_pidfd_open */
+	"linux_clone3",			/* 435 = linux_clone3 */
+	"linux_close_range",			/* 436 = linux_close_range */
+	"linux_openat2",			/* 437 = linux_openat2 */
+	"linux_pidfd_getfd",			/* 438 = linux_pidfd_getfd */
+	"linux_faccessat2",			/* 439 = linux_faccessat2 */
+	"linux_process_madvise",			/* 440 = linux_process_madvise */
+	"linux_epoll_pwait2",			/* 441 = linux_epoll_pwait2 */
+	"linux_mount_setattr",			/* 442 = linux_mount_setattr */
+	"linux_quotactl_fd",			/* 443 = linux_quotactl_fd */
+	"linux_landlock_create_ruleset",			/* 444 = linux_landlock_create_ruleset */
+	"linux_landlock_add_rule",			/* 445 = linux_landlock_add_rule */
+	"linux_landlock_restrict_self",			/* 446 = linux_landlock_restrict_self */
+	"linux_memfd_secret",			/* 447 = linux_memfd_secret */
+	"linux_process_mrelease",			/* 448 = linux_process_mrelease */
+	"linux_futex_waitv",			/* 449 = linux_futex_waitv */
+	"linux_set_mempolicy_home_node",			/* 450 = linux_set_mempolicy_home_node */
+	"linux_cachestat",			/* 451 = linux_cachestat */
+	"linux_fchmodat2",			/* 452 = linux_fchmodat2 */
+	"linux_map_shadow_stack",			/* 453 = linux_map_shadow_stack */
 };
