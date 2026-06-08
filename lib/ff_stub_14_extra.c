@@ -796,4 +796,86 @@ void vm_wait_domain(int domain)
  */
 
 
+/* ============================================================
+ * M6 (FF_NETGRAPH + FF_IPFW combo) added stubs — 2026-06-08
+ *
+ * 4 symbols surfaced by example/helloworld link after enabling
+ * FF_IPFW=1 in lib/Makefile. Signatures matched against
+ * freebsd-src-releng-15.0/sys/netpfil/ipfw/ip_fw_private.h
+ * (ipfw_bpf_*) and sys/netinet/sctp_crc32.h (sctp_calculate_cksum).
+ *
+ * Background:
+ *   - ip_fw_bpf.c is intentionally NOT in NETIPFW_SRCS (M6 spec
+ *     §1.2 / §2.4); ipfw rule logging via BPF is not exercised in
+ *     user-space F-Stack.
+ *   - sctp_calculate_cksum is referenced by ip_fw2.c:615 and
+ *     uma_core.c (transitive) but SCTP is not ported in F-Stack.
+ *
+ * All four are link-only stubs; runtime invocation indicates a
+ * code path not supported in user-space and returns harmlessly
+ * (BPF taps no-op, SCTP cksum returns 0 — same as upstream when
+ * checksum offload is delegated to NIC).
+ * ============================================================ */
+
+/* No <sys/mbuf.h> — would conflict with the file's local
+ * m_rcvif_restore stub (different signature, FreeBSD 13/15 ABI).
+ * struct mbuf is only referenced by pointer here so a fwd decl
+ * suffices.  u_char / u_int / int32_t / uint32_t are already in
+ * scope via <sys/types.h> included near the top of the file.
+ */
+struct mbuf;
+
+void ipfw_bpf_init(int onoff);
+void ipfw_bpf_init(int onoff)
+{
+    (void)onoff;
+}
+
+void ipfw_bpf_uninit(int onoff);
+void ipfw_bpf_uninit(int onoff)
+{
+    (void)onoff;
+}
+
+void ipfw_bpf_tap(u_char *pkt, u_int len);
+void ipfw_bpf_tap(u_char *pkt, u_int len)
+{
+    (void)pkt;
+    (void)len;
+}
+
+uint32_t sctp_calculate_cksum(struct mbuf *m, int32_t offset);
+uint32_t sctp_calculate_cksum(struct mbuf *m, int32_t offset)
+{
+    (void)m;
+    (void)offset;
+    return (0);
+}
+
+/* M6 follow-up — second link pass surfaced 3 more symbols
+ * (prng32_bounded from ng_pipe.c; ipfw_bpf_mtap / ipfw_bpf_mtap2
+ * from ip_fw_log.c). Signatures from sys/prng.h:13 and
+ * sys/netpfil/ipfw/ip_fw_private.h:165-166. */
+
+__uint32_t prng32_bounded(__uint32_t bound);
+__uint32_t prng32_bounded(__uint32_t bound)
+{
+    return (bound > 0 ? (__uint32_t)0 : (__uint32_t)0);
+}
+
+void ipfw_bpf_mtap(struct mbuf *m);
+void ipfw_bpf_mtap(struct mbuf *m)
+{
+    (void)m;
+}
+
+void ipfw_bpf_mtap2(void *arg, u_int len, struct mbuf *m);
+void ipfw_bpf_mtap2(void *arg, u_int len, struct mbuf *m)
+{
+    (void)arg;
+    (void)len;
+    (void)m;
+}
+
+
 /* ===== End of stubs ===== */

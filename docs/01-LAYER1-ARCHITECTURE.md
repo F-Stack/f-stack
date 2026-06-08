@@ -139,6 +139,7 @@ F-Stack adopted a **complete porting** strategy:
 - Retained all network protocol code in `freebsd/netinet/` (incl. `netinet/tcp_stacks/` for RACK/BBR), `freebsd/netinet6/`, `freebsd/net/` (incl. `net/route/` FIB rework subdir)
 - Implemented user-space emulation of kernel APIs through `ff_glue.c` and the supplemental 14.0+ stub bank `ff_stub_14_extra.c`
 - Supported optional features through conditional compilation (IPv6, KNI, TCPHPTS, FF_NETGRAPH, etc.); 15.0-introduced subsystems (NETLINK protocol, KTLS) are **not** ported per DP-2 / out-of-scope
+- **Phase-2 M6 (2026-06-08)**: enabled `FF_NETGRAPH=1` + `FF_IPFW=1` by default in `lib/Makefile`; brings 41 netgraph nodes + 14 ipfw kernel objects into `libfstack.a` (now 6.5 MB, was 5.4 MB); `tools/sbin/ipfw` 25 MB user-space binary now produced (was absent when FF_IPFW=0); `ipfw add/show/delete` and `ngctl list` verified end-to-end via DPDK secondary IPC. See `docs/freebsd_13_to_15_upgrade_spec/zh_cn/phase2-M6-execution-log.md` for full evidence + 7 link-only stubs added to `lib/ff_stub_14_extra.c`
 
 ### 3.2 Ported FreeBSD Subsystems
 

@@ -40,8 +40,8 @@ endif
 #FF_FDIR=1
 #FF_FLOW_IPIP=1
 # NETGRAPH drivers ipfw
-#FF_NETGRAPH=1
-#FF_IPFW=1
+FF_NETGRAPH=1
+FF_IPFW=1
 
 #FF_USE_PAGE_ARRAY=1
 #FF_ZC_SEND=1
@@ -585,6 +585,7 @@ NETIPFW_SRCS+=             \
 	ip_fw_table_algo.c  \
 	ip_fw_table_value.c \
 	ip_fw2.c \
+	ip_fw_compat.c \
 	ip_fw_pmod.c \
 	tcpmod.c
 endif
