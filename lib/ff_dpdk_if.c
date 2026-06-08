@@ -1402,10 +1402,20 @@ ff_dpdk_init(int argc, char **argv)
 
 #ifdef FF_FLOW_ISOLATE
     // run once in primary process
+    /*
+     * M11: same NIC-rte_flow rationale as M10 create_ipip_flow.
+     * port_flow_isolate is a hardware-offload directive; on
+     * drivers without rte_flow support (virtio etc.) it returns
+     * ENOTSUP. The non-isolated path still works, so degrade.
+     */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY){
         ret = port_flow_isolate(0, 1);
-        if (ret < 0)
-            rte_exit(EXIT_FAILURE, "init_port_isolate failed\n");
+        if (ret < 0) {
+            printf("M11 [WARN] port_flow_isolate failed (ret=%d) — "
+                   "NIC lacks rte_flow isolate support; falling "
+                   "back to non-isolated mode (other queues/cores "
+                   "may receive ingress traffic).\n", ret);
+        }
     }
 #endif
 
@@ -1430,9 +1440,12 @@ ff_dpdk_init(int argc, char **argv)
     //Recommend:
     //1. init_flow should replace `set_rss_table` in `init_port_start` loop, This can set all NIC's port_id_list instead only 0 device(port_id).
     //2. using config options `tcp_port` replace magic number of 80
+    /* M11: same hardware-offload fallback as port_flow_isolate above. */
     ret = init_flow(0, 80);
     if (ret < 0) {
-        rte_exit(EXIT_FAILURE, "init_port_flow failed\n");
+        printf("M11 [WARN] init_port_flow failed (ret=%d) — NIC "
+               "lacks rte_flow rule install; tcp/80 traffic will "
+               "follow default RSS distribution.\n", ret);
     }
 #endif
 
@@ -1460,10 +1473,18 @@ ff_dpdk_init(int argc, char **argv)
 #ifdef FF_FDIR
     /*
      * Refer function header section for usage.
+     *
+     * M12: same hardware-offload rte_flow fallback rationale as
+     * M10/M11. fdir_add_tcp_flow needs NIC FDIR / rte_flow
+     * support; virtio-style drivers return ENOTSUP. Fall back
+     * to default RSS hashing instead of rte_exit.
      */
     ret = fdir_add_tcp_flow(0, 0, FF_FLOW_INGRESS, 0, 80);
-    if (ret)
-	rte_exit(EXIT_FAILURE, "fdir_add_tcp_flow failed\n");
+    if (ret) {
+        printf("M12 [WARN] fdir_add_tcp_flow failed (ret=%d) — "
+               "NIC lacks rte_flow FDIR support; tcp/80 traffic "
+               "follows default RSS hash distribution.\n", ret);
+    }
 #endif
 
     return 0;
