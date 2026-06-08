@@ -877,5 +877,23 @@ void ipfw_bpf_mtap2(void *arg, u_int len, struct mbuf *m)
     (void)m;
 }
 
+/*
+ * M13 (FF_LOOPBACK_SUPPORT) link-only stub. Declared in
+ * lib/ff_host_interface.h:92 and called from ff_dpdk_if.c:2445
+ * inside the loopback poll loop, but never had a real
+ * implementation in the F-Stack tree (M0~M12 build never had
+ * FF_LOOPBACK_SUPPORT enabled so the symbol was a dead reference).
+ *
+ * The function is intended to drive a software-interrupt-style
+ * network packet executor; in user-space F-Stack the equivalent
+ * work is done inline by ff_dpdk_if main loop, so a no-op stub is
+ * a safe fallback. Smoke testing only — full loopback semantics
+ * may require revisit if a runtime path actually relies on this.
+ */
+void ff_swi_net_excute(void);
+void ff_swi_net_excute(void)
+{
+}
+
 
 /* ===== End of stubs ===== */
