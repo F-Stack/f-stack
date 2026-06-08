@@ -1,4 +1,4 @@
-# F-Stack v1.25 Layer 2: Interface Definitions and Development Guidelines
+# F-Stack v1.26 Layer 2: Interface Definitions and Development Guidelines
 
 > **Target Audience**: Application developers, integration engineers  
 > **Key Concepts**: API interfaces, configuration system, development guidelines, best practices  

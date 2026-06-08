@@ -1,8 +1,8 @@
-# F-Stack v1.25 Layer 1 Architecture Analysis: System Overall Architecture
+# F-Stack v1.26 Layer 1 Architecture Analysis: System Overall Architecture
 
 **Document Version**: 1.0  
 **Analysis Date**: 2026-03-20  
-**Coverage**: F-Stack v1.25 + DPDK 23.11.5  
+**Coverage**: F-Stack v1.26 (FreeBSD 15.0 port, upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS) + DPDK 23.11.5  
 **Target Audience**: Architects, system designers, performance optimization engineers
 
 ---
@@ -81,10 +81,10 @@ Actual data on 10GbE link:
 /data/workspace/f-stack/
 │
 ├── lib/                                    # F-Stack core library (~21K lines of C code)
-│   ├── ff_dpdk_if.c          (2855 lines) # ⭐ Most critical: DPDK/NIC driver
-│   ├── ff_glue.c             (1466 lines) # Kernel emulation layer
-│   ├── ff_config.c           (1379 lines) # Configuration parsing
-│   ├── ff_syscall_wrapper.c  (1825 lines) # Linux↔FreeBSD adaptation
+│   ├── ff_dpdk_if.c          (2856 lines) # ⭐ Most critical: DPDK/NIC driver
+│   ├── ff_glue.c             (1468 lines) # Kernel emulation layer
+│   ├── ff_config.c           (1381 lines) # Configuration parsing
+│   ├── ff_syscall_wrapper.c  (1815 lines) # Linux↔FreeBSD adaptation
 │   ├── ff_init.c             (69 lines)   # Initialization coordination
 │   ├── ff_epoll.c            (159 lines)  # Epoll compatibility layer
 │   ├── ff_host_interface.c               # Host OS interface
@@ -92,7 +92,7 @@ Actual data on 10GbE link:
 │   ├── ff_*.h                             # API and data structure definitions
 │   └── Makefile              (765 lines)  # Build system
 │
-├── freebsd/                                # FreeBSD 13.0 kernel port
+├── freebsd/                                # FreeBSD 15.0 kernel port (upgraded from 13.0 in 2025-2026)
 │   ├── sys/
 │   │   ├── netinet/          # IPv4 protocol stack (TCP/UDP/IP/ICMP)
 │   │   ├── netinet6/         # IPv6 protocol stack
@@ -154,10 +154,10 @@ Actual data on 10GbE link:
 
 | Module | File | Lines | Responsibility | Dependencies |
 |--------|------|-------|---------------|--------------|
-| **NIC Driver Layer** | ff_dpdk_if.c | 2855 | DPDK initialization, NIC operations, core TX/RX logic | DPDK, ff_glue |
-| **Glue Layer** | ff_glue.c | 1466 | Kernel API emulation (locks, memory, interrupts) | FreeBSD sys, pthread |
-| **Configuration System** | ff_config.c | 1379 | INI file parsing, runtime parameter management | ff_ini_parser |
-| **Linux Compatibility** | ff_syscall_wrapper.c | 1825 | Socket option/errno mapping | FreeBSD API |
+| **NIC Driver Layer** | ff_dpdk_if.c | 2856 | DPDK initialization, NIC operations, core TX/RX logic | DPDK, ff_glue |
+| **Glue Layer** | ff_glue.c | 1468 | Kernel API emulation (locks, memory, interrupts; M4 8-category 14.0+ ABI fixes) | FreeBSD sys, pthread |
+| **Configuration System** | ff_config.c | 1381 | INI file parsing, runtime parameter management | ff_ini_parser |
+| **Linux Compatibility** | ff_syscall_wrapper.c | 1815 | Socket option/errno mapping (M4 sockaddr calling-convention update) | FreeBSD API |
 | **Epoll Compatibility** | ff_epoll.c | 159 | Linux epoll → FreeBSD kqueue conversion | ff_kqueue |
 | **Initialization Coordination** | ff_init.c | 69 | Startup flow orchestration | All other modules |
 | **Host Interface** | ff_host_interface.c | - | mmap/pthread/time interfaces | System libraries |
@@ -239,7 +239,7 @@ Application Layer
     └────────┬────────┘
              │
     ┌────────▼──────────────────────────────────────┐
-    │        Glue Layer (ff_glue.c 1466 lines)      │
+    │        Glue Layer (ff_glue.c 1468 lines)      │
     │ Kernel API User-Space Emulation                │
     │ ├─ Mutex/RWLock    (pthread_mutex_t)         │
     │ ├─ CondVar         (pthread_cond_t)          │
@@ -649,6 +649,7 @@ Porting to user-space cons:
 - Discovered protocol functional defects and limited performance optimization potential
 - In 2017, referenced libuinet/libplebnet, completely ported FreeBSD 11.0
 - In 2021, upgraded to FreeBSD 13.0 (supporting BBR and other algorithms)
+- In 2025-2026, completed first-stage upgrade to FreeBSD 15.0 (M0~M5 + runtime-fix + rib-fix + Phase-5b; CVM same-window A/B baseline + bare-metal physical baseline; NFR-1 PASS with one nginx_fstack 4-core short-conn `−6.10%` filed as a non-blocking trade-off observation; full evidence in `freebsd_13_to_15_upgrade_spec/`)
 
 ### 5.3 KNI (Kernel Network Interface) and virtio Design Decision
 

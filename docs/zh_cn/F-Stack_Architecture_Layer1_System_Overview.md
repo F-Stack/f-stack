@@ -1,8 +1,8 @@
-# F-Stack v1.25 第一层架构分析：系统总体架构
+# F-Stack v1.26 第一层架构分析：系统总体架构
 
 **文档版本**: 1.0  
 **分析日期**: 2026-03-20  
-**覆盖范围**: F-Stack v1.25 + DPDK 23.11.5  
+**覆盖范围**: F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）+ DPDK 23.11.5  
 **目标受众**: 架构师、系统设计师、性能优化工程师
 
 ---
@@ -79,10 +79,10 @@ F-Stack 模式 (用户态网络)
 /data/workspace/f-stack/
 │
 ├── lib/                                    # F-Stack 核心库 (~21K 行C代码)
-│   ├── ff_dpdk_if.c          (2855行)     # ⭐ 最核心：DPDK/NIC驱动
-│   ├── ff_glue.c             (1466行)     # 内核模拟层
-│   ├── ff_config.c           (1379行)     # 配置解析
-│   ├── ff_syscall_wrapper.c  (1825行)     # Linux↔FreeBSD 适配
+│   ├── ff_dpdk_if.c          (2856行)     # ⭐ 最核心：DPDK/NIC驱动
+│   ├── ff_glue.c             (1468行)     # 内核模拟层
+│   ├── ff_config.c           (1381行)     # 配置解析
+│   ├── ff_syscall_wrapper.c  (1815行)     # Linux↔FreeBSD 适配
 │   ├── ff_init.c             (69行)       # 初始化协调
 │   ├── ff_epoll.c            (159行)      # Epoll 兼容层
 │   ├── ff_host_interface.c               # 主机 OS 接口
@@ -90,7 +90,7 @@ F-Stack 模式 (用户态网络)
 │   ├── ff_*.h                             # API 和数据结构定义
 │   └── Makefile              (765行)      # 编译系统
 │
-├── freebsd/                                # FreeBSD 13.0 内核移植
+├── freebsd/                                # FreeBSD 15.0 内核移植（2025-2026 自 13.0 升级而来）
 │   ├── sys/
 │   │   ├── netinet/          # IPv4 协议栈 (TCP/UDP/IP/ICMP)
 │   │   ├── netinet6/         # IPv6 协议栈
@@ -152,10 +152,10 @@ F-Stack 模式 (用户态网络)
 
 | 模块 | 文件 | 行数 | 职责 | 依赖 |
 |-----|------|------|------|------|
-| **NIC 驱动层** | ff_dpdk_if.c | 2855 | DPDK 初始化、网卡操作、收发包核心逻辑 | DPDK、ff_glue |
-| **粘合层** | ff_glue.c | 1466 | 内核 API 模拟（锁、内存、中断） | FreeBSD sys、pthread |
-| **配置系统** | ff_config.c | 1379 | INI 文件解析、运行参数管理 | ff_ini_parser |
-| **Linux 兼容** | ff_syscall_wrapper.c | 1825 | socket 选项/errno 映射 | FreeBSD API |
+| **NIC 驱动层** | ff_dpdk_if.c | 2856 | DPDK 初始化、网卡操作、收发包核心逻辑 | DPDK、ff_glue |
+| **粘合层** | ff_glue.c | 1468 | 内核 API 模拟（锁、内存、中断；M4 完成 8 类 14.0+ ABI 修复） | FreeBSD sys、pthread |
+| **配置系统** | ff_config.c | 1381 | INI 文件解析、运行参数管理 | ff_ini_parser |
+| **Linux 兼容** | ff_syscall_wrapper.c | 1815 | socket 选项/errno 映射（M4 同步 sockaddr 调用约定） | FreeBSD API |
 | **Epoll 兼容** | ff_epoll.c | 159 | Linux epoll → FreeBSD kqueue 转换 | ff_kqueue |
 | **初始化协调** | ff_init.c | 69 | 启动流程编排 | 其他所有模块 |
 | **主机接口** | ff_host_interface.c | - | mmap/pthread/时间接口 | 系统库 |
@@ -237,7 +237,7 @@ F-Stack 模式 (用户态网络)
     └────────┬────────┘
              │
     ┌────────▼──────────────────────────────────────┐
-    │        粘合层 (ff_glue.c 1466行)              │
+    │        粘合层 (ff_glue.c 1468行)              │
     │ 内核 API 用户态模拟                             │
     │ ├─ Mutex/RWLock    (pthread_mutex_t)         │
     │ ├─ CondVar         (pthread_cond_t)          │
@@ -646,6 +646,7 @@ bash start.sh  (启动脚本)
 - 发现协议功能缺陷、性能优化空间有限
 - 2017 年参考 libuinet/libplebnet，完整移植 FreeBSD 11.0
 - 2021 年升级到 FreeBSD 13.0（支持 BBR 等算法）
+- 2025-2026 完成第一阶段升级到 FreeBSD 15.0（M0~M5 + runtime-fix + rib-fix + Phase-5b；CVM 同期 A/B 基线 + 物理机基线；NFR-1 PASS，仅 nginx_fstack 4 核短连 `−6.10%` 作为非阻塞 trade-off observation；完整证据见 `freebsd_13_to_15_upgrade_spec/`）
 
 ### 5.3 KNI (Kernel Network Interface) 和virtio的设计决策
 

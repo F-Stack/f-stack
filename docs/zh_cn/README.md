@@ -2,7 +2,7 @@
 
 ## 📚 文档概览
 
-本目录包含 F-Stack v1.25 (+ DPDK 23.11.5) 的完整三层架构知识库，用于规格驱动开发 (Spec-Driven Development) 的前置架构文档。
+本目录包含 F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级而来 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）+ DPDK 23.11.5 的完整三层架构知识库，用于规格驱动开发 (Spec-Driven Development) 的前置架构文档。
 
 ### 文档清单
 
@@ -59,10 +59,13 @@
   1. F-Stack_Architecture_Layer1_System_Overview.md (完整阅读，1 小时)
   2. F-Stack_Architecture_Layer2_Interface_Specification.md (完整阅读，1 小时)
   3. F-Stack_Architecture_Layer3_Function_Index.md (完整阅读，1.5 小时)
-  4. 精读源码:
-     - lib/ff_dpdk_if.c (2855 行)
-     - lib/ff_glue.c (1466 行)
-     - lib/ff_syscall_wrapper.c (1825 行)
+  4. 精读源码（已对当前 HEAD 校验）:
+     - lib/ff_dpdk_if.c (2856 行)
+     - lib/ff_glue.c (1468 行)
+     - lib/ff_syscall_wrapper.c (1815 行)
+     - lib/ff_ng_base.c (3887 行，netgraph 完整移植)
+     - lib/ff_route.c (1604 行，rtsock 部分移植)
+     - lib/ff_stub_14_extra.c (799 行，新增：14.0+ 中央 stub 库)
 ```
 
 ### 场景 4：我想查某个 API 函数的用法
@@ -247,10 +250,11 @@ ff_route_ctl / ff_gettimeofday / ff_log / ...
 ### 版本信息
 
 ```
-知识库版本: 1.0
-F-Stack 版本: v1.25
-DPDK 版本: 23.11.5
-生成日期: 2026-03-20
+知识库版本: 1.1（FreeBSD 13.0 → 15.0 第一阶段升级同步，2026-06-08）
+F-Stack 版本: v1.26
+FreeBSD 移植基线: 15.0（v1.25 时为 13.0）
+DPDK 版本: 23.11.5（不变 —— C-3 约束）
+生成日期: 2026-03-20（最近同步 2026-06-08）
 总行数: 约 5839 行 (以实际文件统计为准)
 ```
 
@@ -337,9 +341,10 @@ A: 三种方式：
 ### Q: 文档何时更新？
 
 A: 计划：
-- 跟踪 F-Stack 主版本更新 (v1.25 → v1.26 等)
+- 跟踪 F-Stack 主版本更新 (v1.26 → v1.27 等)
 - 补充新的优化技巧和最佳实践
 - 收集用户反馈和修正
+- 13.0 → 15.0 第一阶段升级的可追溯证据见 `freebsd_13_to_15_upgrade_spec/`（M0~M5、runtime-fix、Phase-5b、rib-fix、双基线）
 
 ## 📞 反馈与支持
 

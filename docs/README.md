@@ -2,7 +2,7 @@
 
 ## 📚 Documentation Overview
 
-This directory contains the complete three-layer architecture knowledge base for F-Stack v1.25 (+ DPDK 23.11.5), serving as pre-requisite architecture documentation for Spec-Driven Development.
+This directory contains the complete three-layer architecture knowledge base for F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS) + DPDK 23.11.5, serving as pre-requisite architecture documentation for Spec-Driven Development.
 
 ### Document List
 
@@ -59,10 +59,13 @@ Reading order:
   1. F-Stack_Architecture_Layer1_System_Overview.md (full read, 1 hour)
   2. F-Stack_Architecture_Layer2_Interface_Specification.md (full read, 1 hour)
   3. F-Stack_Architecture_Layer3_Function_Index.md (full read, 1.5 hours)
-  4. Deep-dive into source code:
-     - lib/ff_dpdk_if.c (2855 lines)
-     - lib/ff_glue.c (1466 lines)
-     - lib/ff_syscall_wrapper.c (1825 lines)
+  4. Deep-dive into source code (verified against current HEAD):
+     - lib/ff_dpdk_if.c (2856 lines)
+     - lib/ff_glue.c (1468 lines)
+     - lib/ff_syscall_wrapper.c (1815 lines)
+     - lib/ff_ng_base.c (3887 lines, full netgraph port)
+     - lib/ff_route.c (1604 lines, rtsock partial port)
+     - lib/ff_stub_14_extra.c (799 lines, NEW: 14.0+ central stub bank)
 ```
 
 ### Scenario 4: I Want to Look Up the Usage of a Specific API Function
@@ -247,10 +250,11 @@ Recommended path:
 ### Version Information
 
 ```
-Knowledge base version: 1.0
-F-Stack version: v1.25
-DPDK version: 23.11.5
-Generation date: 2026-03-20
+Knowledge base version: 1.1 (post FreeBSD 13.0 → 15.0 first-stage upgrade sync, 2026-06-08)
+F-Stack version: v1.26
+FreeBSD port base: 15.0 (was 13.0 in v1.25)
+DPDK version: 23.11.5 (unchanged — C-3 constraint)
+Generation date: 2026-03-20 (last sync 2026-06-08)
 Total lines: ~5839 lines (based on actual file count)
 ```
 
@@ -337,9 +341,10 @@ A: Three methods:
 ### Q: When will the documentation be updated?
 
 A: Plan:
-- Track F-Stack major version updates (v1.25 → v1.26, etc.)
+- Track F-Stack major version updates (v1.26 → v1.27, etc.)
 - Supplement new optimization techniques and best practices
 - Collect user feedback and corrections
+- For 13.0 → 15.0 first-stage upgrade traceability, see `freebsd_13_to_15_upgrade_spec/` (M0~M5, runtime-fix, Phase-5b, rib-fix, dual baselines)
 
 ## 📞 Feedback and Support
 

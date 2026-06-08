@@ -1,8 +1,8 @@
-# F-Stack v1.25 Layer 1: Overall Architecture and Module Boundaries
+# F-Stack v1.26 Layer 1: Overall Architecture and Module Boundaries
 
 > **Target Audience**: System architects, technical leads  
 > **Key Concepts**: Module partitioning, technology selection, data flow, process model  
-> **Generation Date**: 2026-03-20
+> **Generation Date**: 2026-03-20 (last sync: 2026-06-08, post FreeBSD 13.0 → 15.0 first-stage upgrade including M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS)
 
 ## 1. Top-Level Architecture Overview
 
@@ -33,7 +33,7 @@ NIC Hardware
 | Pillar | Component | Purpose |
 |--------|-----------|---------|
 | **Kernel Bypass** | DPDK + PMD | Bypass Linux kernel network bottleneck |
-| **Mature Protocol Stack** | FreeBSD 13.0 port | Reuse battle-tested TCP/IP implementation |
+| **Mature Protocol Stack** | FreeBSD 15.0 port (upgraded from 13.0 in 2025-2026) | Reuse battle-tested TCP/IP implementation |
 | **Multi-Core Parallelism** | Multi-process architecture + RSS | Fully utilize multi-core processing capability |
 
 ### 1.3 Key Performance Metrics
@@ -51,27 +51,37 @@ NIC Hardware
 
 ```text
 /data/workspace/f-stack/
-├── lib/                          # F-Stack core library (~21K lines of C code)
-│   ├── ff_dpdk_if.c   (2855 lines) # DPDK NIC interface layer - most critical
-│   ├── ff_glue.c      (1466 lines) # FreeBSD glue layer
-│   ├── ff_config.c    (1379 lines) # Configuration parsing
-│   ├── ff_syscall_wrapper.c     # Linux→FreeBSD system call adaptation
+├── lib/                          # F-Stack core library (~22K lines, 33 .c files; full inventory in Layer3 §lib)
+│   ├── ff_dpdk_if.c   (2856 lines) # DPDK NIC interface layer - most critical
+│   ├── ff_glue.c      (1468 lines) # FreeBSD glue layer
+│   ├── ff_config.c    (1381 lines) # Configuration parsing
+│   ├── ff_syscall_wrapper.c (1815 lines) # Linux→FreeBSD system call adaptation
 │   ├── ff_host_interface.c      # Host interface (pthread/mmap/time)
-│   ├── ff_init.c         (69 lines) # Initialization coordination
-│   ├── ff_epoll.c       (159 lines) # epoll interface conversion
+│   ├── ff_init.c         (70 lines)  # Initialization coordination
+│   ├── ff_epoll.c       (~134 lines) # epoll → kqueue conversion
 │   ├── ff_dpdk_kni.c            # Virtual NIC support (via virtio_user, no longer depends on rte_kni.ko)
-│   ├── Makefile                 # Build system
-│   └── include/                 # Header files
+│   ├── ff_route.c     (1604 lines) # Route socket / RIB hooks (rtsock partial port)
+│   ├── ff_veth.c      (1132 lines) # Virtual ethernet device (M4: full if_t accessor rewrite)
+│   ├── ff_kern_timeout.c (1266 lines) # callout subsystem (FreeBSD 13/14-compat _ff_callout_stop_safe)
+│   ├── ff_lock.c       (448 lines) # sx/mutex/lockmgr userspace impl
+│   ├── ff_ng_base.c   (3887 lines) # netgraph framework full port
+│   ├── ff_stub_14_extra.c (799 lines) # NEW: 14.0+ central stub bank + 5 runtime-fix landing point
+│   ├── ff_kern_*.c              # Kernel emulation primitives (cv/intr/synch/subr/environment)
+│   ├── ff_subr_prf.c / ff_memory.c / ff_compat.c / ...  # Other shims (≈ 13 more files)
+│   ├── Makefile                 # Build system (NET_SRCS now includes route_rtentry.c)
+│   └── include/                 # Header files (ff_api.h, ff_memory.h, ...)
 │
-├── freebsd/                      # FreeBSD 13.0 kernel code port
-│   ├── sys/
-│   │   ├── netinet/   # IPv4 protocol stack
-│   │   ├── netinet6/  # IPv6 protocol stack
-│   │   ├── net/       # Generic network interfaces
-│   │   ├── kern/      # Kernel services (malloc/locks/timers)
-│   │   └── vm/        # Virtual memory
-│   ├── amd64/         # x86 architecture-specific code
-│   └── contrib/ck/    # ConcurrencyKit dependency
+├── freebsd/                      # FreeBSD 15.0 kernel code port (upgraded from 13.0; mips/ removed at M1)
+│   ├── sys/                       # System headers
+│   ├── netinet/                   # IPv4 protocol stack (incl. tcp_stacks/ subdir: rack, bbr, ...)
+│   ├── netinet6/                  # IPv6 protocol stack
+│   ├── net/                       # Generic network interfaces (incl. route/ subdir: nhop/fib_algo/route_ctl)
+│   ├── netlink/                   # NEW (header-only): 14.0+ netlink headers, 0 .c, 0 SRCS — DP-2: no NETLINK port
+│   ├── netgraph/                  # netgraph kernel surface (paired with lib/ff_ng_base.c)
+│   ├── kern/                      # Kernel services (malloc/locks/timers)
+│   ├── vm/                        # Virtual memory
+│   ├── amd64/ arm64/ i386/ arm/   # Supported architectures (mips/ removed in 14.0+)
+│   └── contrib/ck/                # ConcurrencyKit dependency (refreshed at M3 to support CK_LIST_FOREACH_FROM)
 │
 ├── dpdk/                         # DPDK 23.11.5 (submodule)
 │   └── build/                    # Build artifacts
@@ -106,33 +116,42 @@ NIC Hardware
 
 | Module | Lines | Responsibility | Dependencies |
 |--------|-------|---------------|--------------|
-| **ff_dpdk_if.c** | 2855 | NIC driver/DPDK operations/core TX/RX logic | DPDK, ff_glue |
-| **ff_glue.c** | 1466 | FreeBSD kernel emulation/memory/locks/interrupts | FreeBSD headers, DPDK |
-| **ff_config.c** | 1379 | INI configuration file parsing | ff_ini_parser |
-| **ff_syscall_wrapper.c** | 1825 | Linux system call → FreeBSD adaptation | FreeBSD sys |
-| **ff_init.c** | 69 | Initialization flow coordination | All above modules |
-| **ff_epoll.c** | 159 | Linux epoll → FreeBSD kqueue conversion | FreeBSD kqueue |
-| **ff_host_interface.c** | -- | Host OS interface (mmap/pthread/rand) | System libraries |
-| **ff_dpdk_kni.c** | -- | Virtual NIC support (via virtio_user, no longer depends on rte_kni.ko) | DPDK virtio_user |
+| **ff_dpdk_if.c** | 2856 | NIC driver/DPDK operations/core TX/RX logic | DPDK, ff_glue |
+| **ff_glue.c** | 1468 | FreeBSD kernel emulation/memory/locks/interrupts (8-category 14.0+ ABI fixes at M4) | FreeBSD headers, DPDK |
+| **ff_config.c** | 1381 | INI configuration file parsing | ff_ini_parser |
+| **ff_syscall_wrapper.c** | 1815 | Linux system call → FreeBSD adaptation (sockaddr calling-convention update at M4) | FreeBSD sys |
+| **ff_init.c** | 70 | Initialization flow coordination | All above modules |
+| **ff_epoll.c** | ~134 | Linux epoll → FreeBSD kqueue conversion | FreeBSD kqueue |
+| **ff_host_interface.c** | ~285 | Host OS interface (mmap/pthread/rand) | System libraries |
+| **ff_dpdk_kni.c** | ~441 | Virtual NIC support (via virtio_user, no longer depends on rte_kni.ko) | DPDK virtio_user |
+| **ff_route.c** | 1604 | Route socket / RIB hooks (rtsock partial port; 5-category 14.0+ ABI fixes at M4) | FreeBSD net/route |
+| **ff_veth.c** | 1132 | Virtual ethernet device (28 if_t accessor rewrites at M4) | FreeBSD net/if |
+| **ff_kern_timeout.c** | 1266 | callout subsystem (`callout_init`, `_reset_tick_on`, `ff_timecounter`) | DPDK rte_timer |
+| **ff_ng_base.c** | 3887 | netgraph framework full port (M5: `node_p → node_cp` correction) | FreeBSD netgraph headers |
+| **ff_stub_14_extra.c** | 799 | NEW (M5 + runtime-fix): central 14.0+ stub bank (123 stubs, 661 undef resolutions) + 5 P0 SIGSEGV fixes + defensive `vm_page_alloc_noobj` panic | FreeBSD 14.0+ KBI |
 
 ## 3. FreeBSD TCP/IP Stack Porting Approach
 
 ### 3.1 Porting Strategy
 
 F-Stack adopted a **complete porting** strategy:
-- Extracted the full TCP/IP protocol stack code from FreeBSD 13.0
-- Retained all network protocol code in `freebsd/sys/netinet/`
-- Implemented user-space emulation of kernel APIs through `ff_glue.c`
-- Supported optional features through conditional compilation (IPv6, KNI, TCPHPTS, etc.)
+- Originally extracted the full TCP/IP protocol stack code from FreeBSD 13.0; **upgraded to FreeBSD 15.0 in 2025-2026** (M0~M5; full evidence in `docs/freebsd_13_to_15_upgrade_spec/`)
+- Retained all network protocol code in `freebsd/netinet/` (incl. `netinet/tcp_stacks/` for RACK/BBR), `freebsd/netinet6/`, `freebsd/net/` (incl. `net/route/` FIB rework subdir)
+- Implemented user-space emulation of kernel APIs through `ff_glue.c` and the supplemental 14.0+ stub bank `ff_stub_14_extra.c`
+- Supported optional features through conditional compilation (IPv6, KNI, TCPHPTS, FF_NETGRAPH, etc.); 15.0-introduced subsystems (NETLINK protocol, KTLS) are **not** ported per DP-2 / out-of-scope
 
 ### 3.2 Ported FreeBSD Subsystems
 
 ```text
-freebsd/sys/
+freebsd/
 ├── netinet/        # IPv4: tcp_*.c, udp_*.c, ip_*.c, if_arp.c
+│   └── tcp_stacks/ # Modular TCP stacks: rack.c (~759 KB), bbr.c (~444 KB), tailq_hash.* (-DMODNAME=tcp_rack)
 ├── netinet6/       # IPv6: ip6_*.c, tcp6_*.c
 ├── net/            # Generic network: if.c, route.c, netisr.c
-├── kern/           # Kernel services: malloc, mutex, synch, callout
+│   └── route/      # FIB rework subdir (14.0+): nhop, fib_algo, route_ctl (22 files)
+├── netlink/        # 14.0+ NETLINK headers (header-only, 0 .c) — DP-2: protocol not ported
+├── netgraph/       # netgraph kernel surface (paired with lib/ff_ng_base.c)
+├── kern/           # Kernel services: malloc, mutex, synch, callout (incl. kern_descrip.c with 5475-boundary fix)
 ├── vm/             # Virtual memory: vm_page.c (mbuf mapping)
 └── sys/            # System definitions: socket.h, mbuf.h, etc.
 ```
@@ -152,7 +171,7 @@ freebsd/sys/
 
 ### 4.1 ff_dpdk_if.c Core Responsibilities
 
-This is the most critical module (2855 lines), responsible for the entire data link:
+This is the most critical module (2856 lines), responsible for the entire data link:
 
 **Initialization Flow**:
 ```text

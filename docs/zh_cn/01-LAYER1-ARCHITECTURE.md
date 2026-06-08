@@ -1,8 +1,8 @@
-# F-Stack v1.25 第一层：总体架构与模块边界
+# F-Stack v1.26 第一层：总体架构与模块边界
 
 > **目标受众**: 系统架构师、技术负责人  
 > **关键概念**: 模块划分、技术选型、数据流、进程模型  
-> **生成日期**: 2026-03-20
+> **生成日期**: 2026-03-20（最近一次同步：2026-06-08，FreeBSD 13.0 → 15.0 第一阶段升级完成后：含 M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）
 
 ## 1. 顶层架构概览
 
@@ -33,7 +33,7 @@ NIC 驱动 (igb_uio / vfio-pci)
 | 支柱 | 组件 | 作用 |
 |-----|------|------|
 | **Kernel Bypass** | DPDK + PMD | 规避 Linux 内核网络瓶颈 |
-| **成熟协议栈** | FreeBSD 13.0 移植 | 复用久经考验的 TCP/IP 实现 |
+| **成熟协议栈** | FreeBSD 15.0 移植（2025-2026 自 13.0 升级而来） | 复用久经考验的 TCP/IP 实现 |
 | **多核并行** | 多进程架构 + RSS | 充分利用多核处理能力 |
 
 ### 1.3 关键性能指标
@@ -51,27 +51,37 @@ NIC 驱动 (igb_uio / vfio-pci)
 
 ```text
 /data/workspace/f-stack/
-├── lib/                          # F-Stack 核心库 (~21K 行 C 代码)
-│   ├── ff_dpdk_if.c   (2855行) # DPDK 网卡接口层 - 最核心
-│   ├── ff_glue.c      (1466行) # FreeBSD 粘合层
-│   ├── ff_config.c    (1379行) # 配置解析
-│   ├── ff_syscall_wrapper.c     # Linux→FreeBSD 系统调用适配
-│   ├── ff_host_interface.c      # 主机接口 (pthread/mmap/时间)
-│   ├── ff_init.c         (69行) # 初始化协调
-│   ├── ff_epoll.c       (159行) # epoll 接口转换
+├── lib/                          # F-Stack 核心库（~22K 行 C 代码，33 个 .c 文件；完整清单见 Layer3 §lib）
+│   ├── ff_dpdk_if.c   (2856行) # DPDK 网卡接口层 - 最核心
+│   ├── ff_glue.c      (1468行) # FreeBSD 粘合层
+│   ├── ff_config.c    (1381行) # 配置解析
+│   ├── ff_syscall_wrapper.c (1815行) # Linux→FreeBSD 系统调用适配
+│   ├── ff_host_interface.c      # 主机接口（pthread/mmap/时间）
+│   ├── ff_init.c         (70行) # 初始化协调
+│   ├── ff_epoll.c       (~134行) # epoll → kqueue 转换
 │   ├── ff_dpdk_kni.c            # 虚拟网卡支持（通过 virtio_user 实现，已不依赖 rte_kni.ko）
-│   ├── Makefile                 # 编译系统
-│   └── include/                 # 头文件
+│   ├── ff_route.c     (1604行) # 路由套接字 / RIB 钩子（rtsock 部分移植）
+│   ├── ff_veth.c      (1132行) # 虚拟以太网设备（M4 完成 if_t accessor 全量重写）
+│   ├── ff_kern_timeout.c (1266行) # callout 子系统（FreeBSD 13/14 兼容 _ff_callout_stop_safe）
+│   ├── ff_lock.c       (448行) # sx/mutex/lockmgr 用户态实现
+│   ├── ff_ng_base.c   (3887行) # netgraph 框架完整移植
+│   ├── ff_stub_14_extra.c (799行) # 新增：14.0+ 中央 stub 库 + 5 个 runtime-fix 落点
+│   ├── ff_kern_*.c              # 内核仿真原语（cv/intr/synch/subr/environment）
+│   ├── ff_subr_prf.c / ff_memory.c / ff_compat.c / ...  # 其它 shim（约 13 个文件）
+│   ├── Makefile                 # 编译系统（NET_SRCS 现含 route_rtentry.c）
+│   └── include/                 # 头文件（ff_api.h、ff_memory.h 等）
 │
-├── freebsd/                      # FreeBSD 13.0 内核代码移植
-│   ├── sys/
-│   │   ├── netinet/   # IPv4 协议栈
-│   │   ├── netinet6/  # IPv6 协议栈
-│   │   ├── net/       # 通用网络接口
-│   │   ├── kern/      # 内核服务 (malloc/锁/定时器)
-│   │   └── vm/        # 虚拟内存
-│   ├── amd64/         # x86 架构特定代码
-│   └── contrib/ck/    # ConcurrencyKit 依赖
+├── freebsd/                      # FreeBSD 15.0 内核代码移植（M1 已自 13.0 升级；mips/ 已删）
+│   ├── sys/                       # 系统头文件
+│   ├── netinet/                   # IPv4 协议栈（含 tcp_stacks/ 子目录：rack、bbr 等）
+│   ├── netinet6/                  # IPv6 协议栈
+│   ├── net/                       # 通用网络接口（含 route/ 子目录：nhop/fib_algo/route_ctl）
+│   ├── netlink/                   # 新增（仅头文件）：14.0+ netlink 头，0 个 .c，0 个 SRCS —— DP-2：不引入 NETLINK 协议
+│   ├── netgraph/                  # netgraph 内核侧（与 lib/ff_ng_base.c 配对）
+│   ├── kern/                      # 内核服务（malloc/锁/定时器）
+│   ├── vm/                        # 虚拟内存
+│   ├── amd64/ arm64/ i386/ arm/   # 受支持架构（mips/ 已在 14.0+ 移除）
+│   └── contrib/ck/                # ConcurrencyKit 依赖（M3 已升级以支持 CK_LIST_FOREACH_FROM）
 │
 ├── dpdk/                         # DPDK 23.11.5 (submodule)
 │   └── build/                    # 编译产物
@@ -106,33 +116,42 @@ NIC 驱动 (igb_uio / vfio-pci)
 
 | 模块 | 行数 | 职责 | 依赖 |
 |-----|------|------|------|
-| **ff_dpdk_if.c** | 2855 | NIC 驱动/DPDK 操作/收发包核心逻辑 | DPDK, ff_glue |
-| **ff_glue.c** | 1466 | FreeBSD 内核模拟/内存/锁/中断 | FreeBSD headers, DPDK |
-| **ff_config.c** | 1379 | INI 配置文件解析 | ff_ini_parser |
-| **ff_syscall_wrapper.c** | 1825 | Linux 系统调用→FreeBSD 适配 | FreeBSD sys |
-| **ff_init.c** | 69 | 初始化流程协调 | 上述所有模块 |
-| **ff_epoll.c** | 159 | Linux epoll→FreeBSD kqueue 转换 | FreeBSD kqueue |
-| **ff_host_interface.c** | -- | 主机 OS 接口 (mmap/pthread/rand) | 系统库 |
-| **ff_dpdk_kni.c** | -- | 虚拟网卡支持（通过 virtio_user 实现，已不依赖 rte_kni.ko） | DPDK virtio_user |
+| **ff_dpdk_if.c** | 2856 | NIC 驱动/DPDK 操作/收发包核心逻辑 | DPDK, ff_glue |
+| **ff_glue.c** | 1468 | FreeBSD 内核模拟/内存/锁/中断（M4 完成 8 类 14.0+ ABI 修复） | FreeBSD headers, DPDK |
+| **ff_config.c** | 1381 | INI 配置文件解析 | ff_ini_parser |
+| **ff_syscall_wrapper.c** | 1815 | Linux 系统调用→FreeBSD 适配（M4 同步 sockaddr 调用约定） | FreeBSD sys |
+| **ff_init.c** | 70 | 初始化流程协调 | 上述所有模块 |
+| **ff_epoll.c** | ~134 | Linux epoll→FreeBSD kqueue 转换 | FreeBSD kqueue |
+| **ff_host_interface.c** | ~285 | 主机 OS 接口 (mmap/pthread/rand) | 系统库 |
+| **ff_dpdk_kni.c** | ~441 | 虚拟网卡支持（通过 virtio_user 实现，已不依赖 rte_kni.ko） | DPDK virtio_user |
+| **ff_route.c** | 1604 | 路由套接字 / RIB 钩子（rtsock 部分移植；M4 完成 5 类 14.0+ ABI 修复） | FreeBSD net/route |
+| **ff_veth.c** | 1132 | 虚拟以太网设备（M4 完成 28 处 if_t accessor 重写） | FreeBSD net/if |
+| **ff_kern_timeout.c** | 1266 | callout 子系统（`callout_init`、`_reset_tick_on`、`ff_timecounter`） | DPDK rte_timer |
+| **ff_ng_base.c** | 3887 | netgraph 框架完整移植（M5：`node_p → node_cp` 修正） | FreeBSD netgraph 头文件 |
+| **ff_stub_14_extra.c** | 799 | 新增（M5 + runtime-fix）：14.0+ 中央 stub 库（123 个 stub，661 个 undef 解决） + 5 个 P0 SIGSEGV 修复 + 防御性 `vm_page_alloc_noobj` panic | FreeBSD 14.0+ KBI |
 
 ## 3. FreeBSD TCP/IP 栈移植方式
 
 ### 3.1 移植策略
 
 F-Stack 采用了**完整移植**策略：
-- 从 FreeBSD 13.0 提取完整的 TCP/IP 协议栈代码
-- 在 `freebsd/sys/netinet/` 中保留所有网络协议代码
-- 通过 `ff_glue.c` 实现内核 API 的用户态模拟
-- 通过条件编译支持可选功能 (IPv6, KNI, TCPHPTS 等)
+- 早期从 FreeBSD 13.0 提取了完整的 TCP/IP 协议栈代码；**2025-2026 已升级到 FreeBSD 15.0**（M0~M5；完整证据见 `docs/freebsd_13_to_15_upgrade_spec/`）
+- 在 `freebsd/netinet/`（含 `netinet/tcp_stacks/`，提供 RACK/BBR）、`freebsd/netinet6/`、`freebsd/net/`（含 `net/route/` FIB 重写子目录）中保留所有网络协议代码
+- 通过 `ff_glue.c` 与新增的 14.0+ stub 中央库 `ff_stub_14_extra.c` 实现内核 API 的用户态模拟
+- 通过条件编译支持可选功能（IPv6、KNI、TCPHPTS、FF_NETGRAPH 等）；15.0 引入的 NETLINK 协议、KTLS 等子系统按 DP-2 / out-of-scope 决策**不**移植
 
 ### 3.2 FreeBSD 移植的子系统
 
 ```text
-freebsd/sys/
+freebsd/
 ├── netinet/        # IPv4: tcp_*.c, udp_*.c, ip_*.c, if_arp.c
+│   └── tcp_stacks/ # 模块化 TCP stacks: rack.c (~759 KB), bbr.c (~444 KB), tailq_hash.* (-DMODNAME=tcp_rack)
 ├── netinet6/       # IPv6: ip6_*.c, tcp6_*.c
 ├── net/            # 通用网络: if.c, route.c, netisr.c
-├── kern/           # 内核服务: malloc, mutex, synch, callout
+│   └── route/      # FIB 重写子目录（14.0+）：nhop、fib_algo、route_ctl（22 文件）
+├── netlink/        # 14.0+ NETLINK 头文件（仅头文件，0 个 .c）—— DP-2：协议未移植
+├── netgraph/       # netgraph 内核侧（与 lib/ff_ng_base.c 配对）
+├── kern/           # 内核服务: malloc, mutex, synch, callout（含 kern_descrip.c 5475 边界修正）
 ├── vm/             # 虚拟内存: vm_page.c (mbuf 映射)
 └── sys/            # 系统定义: socket.h, mbuf.h 等
 ```
@@ -152,7 +171,7 @@ freebsd/sys/
 
 ### 4.1 ff_dpdk_if.c 核心职责
 
-这是最核心的模块 (2855 行)，负责整个数据链路：
+这是最核心的模块 (2856 行)，负责整个数据链路：
 
 **初始化流程**:
 ```text

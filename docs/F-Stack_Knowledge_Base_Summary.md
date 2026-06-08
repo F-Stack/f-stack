@@ -1,8 +1,8 @@
-# F-Stack v1.25 Complete Knowledge Base Summary
+# F-Stack v1.26 Complete Knowledge Base Summary
 
 **Document Version**: 1.0  
 **Generation Date**: 2026-03-20  
-**Content Scope**: F-Stack v1.25 (+ DPDK 23.11.5) Complete Three-Layer Architecture Knowledge Base  
+**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS) + DPDK 23.11.5 Complete Three-Layer Architecture Knowledge Base  
 **Document Location**: `/data/workspace/f-stack/docs/`  
 **Purpose**: Pre-requisite architecture documentation for Spec-Driven Development
 
@@ -75,7 +75,7 @@ Innovation 1: Kernel Bypass
 
 Innovation 2: FreeBSD Protocol Stack Porting
   Goal: Reuse mature 20+ year optimized TCP/IP stack
-  Method: Port FreeBSD 13.0 network stack code to user space
+  Method: Port FreeBSD 15.0 network stack code to user space (originally 13.0; upgraded in 2025-2026 with full evidence in `freebsd_13_to_15_upgrade_spec/`)
   Benefit: Feature-complete, RFC-compliant, supports modern algorithms (BBR/RACK)
 
 Innovation 3: Multi-Process Isolation + Polling
@@ -179,7 +179,7 @@ Public API Architecture
   → Six main header file details
     ├─ ff_api.h (412 lines) - Main API
     ├─ ff_epoll.h (3 functions) - Linux compatible
-    ├─ ff_config.h (2855 lines) - Configuration
+    ├─ ff_config.h (1381 lines) - Configuration
     ├─ ff_event.h - Kevent events
     ├─ ff_errno.h - Error code mapping
     └─ ff_log.h - Logging system
@@ -255,18 +255,18 @@ Core Data Structures
   → struct pollfd (poll structure)
 
 Key Source File Analyses
-  → ff_syscall_wrapper.c (1825 lines)
+  → ff_syscall_wrapper.c (1815 lines)
     ├─ Linux ↔ FreeBSD option mapping tables
     ├─ Address family mapping
     └─ Parameter conversion logic
   
-  → ff_dpdk_if.c (2855 lines)
+  → ff_dpdk_if.c (2856 lines)
     ├─ Global variables (11 key states)
     ├─ Initialization flow
     ├─ Packet processing logic
     └─ Main polling loop
   
-  → ff_glue.c (1466 lines)
+  → ff_glue.c (1468 lines)
     ├─ Kernel primitive emulation (locks/condition variables)
     ├─ Memory management emulation
     └─ Global variable emulation
@@ -616,13 +616,13 @@ Issue 4: Multi-process synchronization issues
 
 ```
 Priority 1 (Must-read):
-  └─ lib/ff_dpdk_if.c (2855 lines)    - NIC driver and main polling loop
-  └─ lib/ff_glue.c (1466 lines)       - Kernel primitive emulation
+  └─ lib/ff_dpdk_if.c (2856 lines)    - NIC driver and main polling loop
+  └─ lib/ff_glue.c (1468 lines)       - Kernel primitive emulation
   └─ lib/ff_init.c (69 lines)         - Initialization coordination
 
 Priority 2 (Recommended):
-  └─ lib/ff_syscall_wrapper.c (1825 lines) - Linux compatibility layer
-  └─ lib/ff_config.c (1379 lines)     - Configuration parsing
+  └─ lib/ff_syscall_wrapper.c (1815 lines) - Linux compatibility layer
+  └─ lib/ff_config.c (1381 lines)     - Configuration parsing
   └─ lib/ff_epoll.c (159 lines)       - Epoll compatibility
 
 Priority 3 (Deep dive):
@@ -658,10 +658,11 @@ Performance Optimization:
 ### 8.1 Version Information
 
 ```
-Knowledge base version: 1.0
-F-Stack version: v1.25
-DPDK version: 23.11.5
-Generation date: 2026-03-20
+Knowledge base version: 1.1 (post FreeBSD 13.0 → 15.0 first-stage upgrade sync, 2026-06-08)
+F-Stack version: v1.26
+FreeBSD port base: 15.0 (was 13.0 in v1.25)
+DPDK version: 23.11.5 (unchanged — C-3 constraint)
+Generation date: 2026-03-20 (last sync 2026-06-08)
 Update cycle: Per F-Stack version updates (recommended every 6-12 months)
 ```
 
@@ -719,7 +720,7 @@ If you find documentation errors or have improvement suggestions, please submit 
 
 ## 10. Summary
 
-This knowledge base provides complete architecture documentation for F-Stack v1.25, consisting of three layers:
+This knowledge base provides complete architecture documentation for F-Stack v1.26, consisting of three layers:
 
 - **Layer 1** (8200 words): System overall architecture, suitable for understanding the big picture
 - **Layer 2** (9500 words): Interface definitions and specifications, suitable for application development

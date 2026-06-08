@@ -1,6 +1,6 @@
 # F-Stack Knowledge Graph Wiki
 
-> This document was auto-extracted from the GitNexus knowledge graph + AI generated. Index time: 2026-04-09, commit: a695757.
+> Auto-extracted from the GitNexus knowledge graph (schema v1) plus manual cross-checking against current source. **Indexed: 2026-06-08T03:37:02Z, commit `208b0c4`** (`dev` branch, post FreeBSD 13.0 → 15.0 first-stage upgrade including M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS).
 
 ---
 
@@ -8,289 +8,116 @@
 
 | Metric | Data |
 |--------|------|
-| Indexed files | 25,723 |
-| Symbol nodes | 710,596 |
-| Relation edges | 1,270,994 |
-| Function clusters | 11,375 (communities) |
+| Indexed files | 2,656 |
+| Symbol nodes | 64,855 |
+| Relation edges | 113,858 |
+| Function clusters | 981 (communities) |
 | Execution flows | 300 (processes) |
-| Excluded directories | `freebsd/`, `dpdk/` (excluded from indexing only, reference relationships preserved) |
+| Embedding nodes | 0 (semantic search not enabled this round) |
+| Effective scope | F-Stack source surface only (DPDK / FreeBSD vendored trees excluded by gitnexus 1.6.5 schema) |
+| Indexer | gitnexus 1.6.5 (ladybugdb provider; FTS available, vector search disabled) |
 
-### Node Type Distribution
+> **Schema migration note**: prior wiki snapshots (commit `a695757`, indexed 2026-04-09) reported 25,723 files / 710,596 nodes under gitnexus 1.5.x, which counted vendored FreeBSD/DPDK trees in some node categories. Schema v1 now correctly restricts the graph to the F-Stack-authored surface; the dramatic count drop is **a measurement-scope correction, not a code regression**.
 
-| Type | Count | Description |
-|------|-------|-------------|
-| Macro | 311,802 | C preprocessor macro definitions |
-| Function | 159,305 | Function definitions |
-| Property | 103,447 | Struct fields/properties |
-| Struct | 74,359 | Struct definitions |
-| File | 25,723 | Source files |
-| Community | 11,375 | Function clusters |
-| Typedef | 10,634 | Type aliases |
-| Enum | 5,759 | Enumeration types |
-| Union | 3,458 | Union types |
-| Folder | 1,880 | Directories |
-| Method | 1,268 | Methods (C++ / ObjC) |
-| Section | 1,010 | Document sections |
-| Process | 300 | Execution flows |
-| Class | 255 | Classes (C++ portion) |
-| Namespace | 19 | Namespaces |
+> **Detailed node-type / named-cluster breakdown unavailable**: schema v1 `meta.json` only exposes top-level totals. Earlier per-type tables (Macro / Function / Property / …) and named-cluster tables (Net / Netinet / Tcp_stacks / …) were schema-v0 outputs produced via LLM enrichment. Regenerating them requires running `npx gitnexus wiki` with an LLM API key (not configured this round). To re-derive the equivalent taxonomy without LLM, query the underlying ladybugdb directly under `.gitnexus/lbug` or refer to the authoritative subsystem grouping in `docs/freebsd_13_to_15_upgrade_spec/02-architecture-analysis.md`.
 
 ---
 
-## 2. Core Function Clusters (Top Communities)
+## 2. F-Stack 13.0 → 15.0 Upgrade Delta Map
 
-Clusters are automatically identified by the GitNexus community detection algorithm. Higher `cohesion` indicates tighter internal coupling within the cluster.
+This index has been rebuilt **after** the first-stage 13.0 → 15.0 upgrade. The graph therefore reflects:
 
-### 2.1 Network Protocol Stack Core
+| Area | Where reflected in the graph |
+|------|------------------------------|
+| 33 `lib/*.c` files (17 newly authored / re-platformed since 13.0) | `lib/` folder & file nodes; new bank `lib/ff_stub_14_extra.c` (799 LoC, M5 + runtime-fix landing point) |
+| 14.0+ KBI/KPI deltas (`pr_usrreqs` merged into `protosw`; `if_t` opaquification; `rt_alloc` 3rd-arg signature; `rt_ifmsg` rtbridge dispatch; 8-category 14.0+ ABI deltas) | Edges between `lib/ff_glue.c`, `lib/ff_route.c`, `lib/ff_veth.c`, `lib/ff_kern_timeout.c`, `lib/ff_lock.c`, `lib/ff_syscall_wrapper.c` and the new central stub bank |
+| 5 P0 SIGSEGV runtime-fix landing points (UMA `UMA_USE_DMAP`, `smr_create %gs` barrier, `rt_ifmsg` NULL, `ff_veth_setaddr` ENOBUFS, `kern_accept` `badfileops`) plus 1 defensive `vm_page_alloc_noobj` panic | Files `freebsd/{amd64,arm64}/include/vmparam.h`, `freebsd/amd64/include/atomic.h`, `freebsd/kern/kern_descrip.c`, `lib/Makefile`, `lib/ff_stub_14_extra.c` |
+| Architecture removal: `freebsd/mips/` (synced to FreeBSD 14.0 upstream removal) | mips arch nodes are absent from the F-Stack graph; remaining `mips` strings live only in `freebsd/contrib/device-tree/` (DTS, not compiled) |
+| New header-only subsystem port: `freebsd/netlink/` (18 `.h`, 0 `.c`, 0 `SRCS`) — DP-2 "no NETLINK protocol port" | netlink folder node has zero outbound CALL edges into F-Stack libraries |
+| Routing FIB rework subdir: `freebsd/net/route/` (22 files: `nhop`, `fib_algo`, `route_ctl`) | New cluster of route_ctl nodes connected from `lib/ff_route.c` and `lib/ff_stub_14_extra.c` |
+| TCP stacks modularization (`-DMODNAME=tcp_rack -DSTACKNAME=rack`); F-Stack H-5 module rename `tcp_rack_fstack` re-applied | `freebsd/netinet/tcp_stacks/` (11 files including `rack.c` ~759 KB, `bbr.c` ~444 KB) |
 
-| Cluster | Symbol Count | Cohesion | Description |
-|---------|-------------|----------|-------------|
-| **Net** | 823 | 0.921 | Network subsystem core (TCP/IP protocol stack) |
-| **Netinet** | 245 | 0.900 | Internet protocol family (IPv4/IPv6/TCP/UDP) |
-| **Tcp_stacks** | 91 | 0.771 | TCP protocol stack implementation |
-| **Netstat** | 158 | 0.947 | Network statistics tool |
-
-### 2.2 Kernel Infrastructure
-
-| Cluster | Symbol Count | Cohesion | Description |
-|---------|-------------|----------|-------------|
-| **Sys** | 932 | 0.903 | System calls and kernel base interfaces |
-| **Kern** (comm_307) | 212 | 0.926 | Kernel core functionality |
-| **Kern** (comm_89) | 213 | 0.256 | Kernel extensions (low cohesion, many cross-module dependencies) |
-| **Kern** (comm_294) | 137 | 0.692 | Kernel auxiliary modules |
-| **Vm** | 101 | 0.679 | Virtual memory management |
-| **Amd64** | 188 | 0.490 | x86-64 architecture-specific code |
-| **Arm** | 149 | 0.973 | ARM architecture support |
-
-### 2.3 DPDK Related
-
-| Cluster | Symbol Count | Cohesion | Description |
-|---------|-------------|----------|-------------|
-| **Ethdev** | 148 | 0.759 | DPDK Ethernet device abstraction layer |
-| **Kvargs** | 115 | 0.813 | DPDK Key-Value argument parsing |
-| **Cnxk** | 686 | 0.721 | Marvell CNXK NIC driver |
-| **Mlx5** (comm_5663) | 146 | 0.689 | Mellanox ConnectX-5 driver |
-| **Mlx5** (comm_6413) | 110 | 0.443 | Mlx5 extended features |
-| **Sfc** | 224 | 0.836 | Solarflare NIC driver |
-| **I40e** | 108 | 0.556 | Intel XL710 NIC driver |
-| **Bnx2x** | 148 | 0.947 | Broadcom NetXtreme II driver |
-| **Qede** | 86 | 0.889 | QLogic NIC driver |
-| **Nvidia** | 128 | 0.613 | NVIDIA NIC support |
-
-### 2.4 File Systems
-
-| Cluster | Symbol Count | Cohesion | Description |
-|---------|-------------|----------|-------------|
-| **Zfs** (comm_9633) | 1,015 | 0.812 | ZFS file system core |
-| **Zfs** (comm_9624) | 819 | 0.762 | ZFS data management layer |
-| **Libzfs** | 256 | 0.728 | ZFS user-space library |
-| **Libzfs_input_check** | 142 | 0.673 | ZFS input validation |
-
-### 2.5 Applications and Tools
-
-| Cluster | Symbol Count | Cohesion | Description |
-|---------|-------------|----------|-------------|
-| **Test** (multiple) | 282–84 | 0.38–0.90 | Test code for various modules |
-| **Vhost** | 275 | 0.805 | Virtio/Vhost user-space network device |
-| **Hiredis** | 85 | 0.726 | Redis C client library |
-| **Lua** | 125 | 0.787 | Lua scripting engine integration |
-| **Debugger** | 194 | 0.686 | Kernel debugger (DDB) |
-| **Modules** | 131 | 0.926 | Kernel loadable module framework |
+For evidence-level traceability of each delta, see the upgrade spec series: `docs/freebsd_13_to_15_upgrade_spec/{00-overview-and-glossary, 01-requirements-spec, 02-architecture-analysis, 03-freebsd-15-changes, 04-diff-and-port-strategy, 05-implementation-plan, 06-test-and-acceptance-spec}.md`, the milestone logs `M1~M5-execution-log.md`, the `runtime-fix-execution-log.md`, the `rib-fix-plan.md`, and the dual baselines (`13.0-baseline-cvm-bench-report.md` + `physical-machine-bench-report.md`).
 
 ---
 
-## 3. High-Frequency Functions (Call Hotspots)
-
-The following are the Top 50 most-called functions, reflecting the core dependency relationships in the codebase:
-
-### 3.1 Memory Management (Highest Frequency)
-
-| Function | In-Degree | Source |
-|----------|-----------|--------|
-| `rte_free()` | 1,166 | DPDK memory deallocation |
-| `rte_zmalloc()` | 477 | DPDK zero-initialized memory allocation |
-| `rte_zmalloc_socket()` | 286 | DPDK NUMA-aware memory allocation |
-| `rte_malloc()` | 180 | DPDK general memory allocation |
-| `mlx5_free()` | 171 | Mlx5 driver memory deallocation |
-| `rte_pktmbuf_free()` | 459 | DPDK packet mbuf deallocation |
-| `rte_pktmbuf_alloc()` | 152 | DPDK mbuf allocation |
-| `rte_pktmbuf_free_seg()` | 149 | DPDK mbuf segment deallocation |
-| `rte_mempool_put()` | 152 | DPDK memory pool return |
-| `m_freem()` | 517 | FreeBSD mbuf chain deallocation |
-| `m_pullup()` | 157 | FreeBSD mbuf data alignment |
-| `m_adj()` | 142 | FreeBSD mbuf length adjustment |
-
-### 3.2 Devices and Drivers
-
-| Function | In-Degree | Source |
-|----------|-----------|--------|
-| `device_get_softc()` | 1,809 | FreeBSD driver get private data (**global #1**) |
-| `device_printf()` | 1,122 | Device log printing |
-| `device_set_desc()` | 412 | Device description setting |
-| `device_get_nameunit()` | 153 | Get device name |
-| `device_get_parent()` | 148 | Get parent device |
-| `bus_alloc_resource_any()` | 181 | Bus resource allocation |
-| `bus_release_resource()` | 179 | Bus resource release |
-| `bus_setup_intr()` | 145 | Interrupt registration |
-
-### 3.3 Synchronization Primitives
-
-| Function | In-Degree | Source |
-|----------|-----------|--------|
-| `mutex_enter()` / `mutex_exit()` | 585 / 589 | ZFS mutexes |
-| `pthread_mutex_lock()` / `unlock()` | 257 / 256 | POSIX mutexes |
-| `rte_spinlock_lock()` / `unlock()` | 190 / 198 | DPDK spinlocks |
-
-### 3.4 Error Handling and Logging
-
-| Function | In-Degree | Source |
-|----------|-----------|--------|
-| `panic()` | 1,071 | Kernel panic |
-| `rte_exit()` | 236 | DPDK fatal exit |
-| `AcpiOsPrintf()` | 312 | ACPI logging |
-| `db_printf()` | 271 | Kernel debugger output |
-| `rte_flow_error_set()` | 345 | DPDK flow rule error setting |
-| `ngx_conf_log_error()` | 201 | Nginx configuration error logging |
-
-### 3.5 Network Data Operations
-
-| Function | In-Degree | Source |
-|----------|-----------|--------|
-| `rte_ether_addr_copy()` | 167 | MAC address copy |
-| `mc_send_command()` | 213 | FSLMC bus command send |
-| `mc_encode_cmd_header()` | 213 | FSLMC command header encoding |
-| `mbox_get()` / `mbox_put()` | 210 / 210 | CNXK mailbox communication |
-| `roc_nix_to_nix_priv()` | 228 | CNXK NIX private data conversion |
-| `cnxk_eth_pmd_priv()` | 187 | CNXK Ethernet PMD private data |
-
----
-
-## 4. Key Execution Flows (Processes)
-
-Execution flows are cross-function call chains automatically detected by GitNexus. `cross_community` indicates cross-cluster calls, `intra_community` indicates intra-cluster calls.
-
-### 4.1 Data Plane Critical Paths
-
-| Execution Flow | Steps | Type | Description |
-|---------------|-------|------|-------------|
-| Main → Rte_vlog | 5-6 | cross | Application main loop → DPDK log output |
-| Cmd_send_parsed → Rte_mempool_get_ops | 9 | cross | **Longest execution flow**: command parsing → memory pool operation retrieval |
-| Cmd_send_parsed → Rte_mempool_default_cache | 6 | cross | Command parsing → memory pool cache |
-| T4_eth_xmit → RTE_MBUF_DIRECT | 5 | cross | Chelsio T4 NIC transmit → mbuf check |
-| T4_sge_alloc_rxq → RTE_MEMPOOL_HEADER_SIZE | 5 | cross | T4 receive queue allocation → memory pool header size calculation |
-| Run_regex → RTE_MBUF_* | 5-6 | cross | Regex matching engine → mbuf operation family |
-| Ice_init_hw → Ice_msec_delay | 5 | cross | Intel ICE NIC initialization → delay wait |
-
-### 4.2 Storage Paths
-
-| Execution Flow | Steps | Type | Description |
-|---------------|-------|------|-------------|
-| Dsl_dataset_promote_sync → multiple targets | 5-6 | mixed | ZFS dataset promotion (snapshot → clone) |
-| Dsl_scan_sync → Kmem_free | 5 | cross | ZFS scan sync → memory deallocation |
-| Zfs_create → KUID_TO_SUID | 5 | cross | ZFS create → UID conversion |
-| Zfs_acl_ids_create → Zfs_acl_valid_ace_type | 5 | cross | ZFS ACL create → ACE type validation |
-
-### 4.3 Architecture-Specific Paths
-
-| Execution Flow | Steps | Type | Description |
-|---------------|-------|------|-------------|
-| Pmap_enter → Pt2tab_index | 7 | cross | ARM page table mapping (second longest execution flow) |
-| X86emu_exec_one_byte → Longjmp | 6 | cross | x86 emulator → long jump |
-| Cvmx_helper_shutdown → CVMX_ADD_IO_SEG | 6 | cross | MIPS Cavium network shutdown → IO segment operation |
-
-### 4.4 Application Layer Paths
-
-| Execution Flow | Steps | Type | Description |
-|---------------|-------|------|-------------|
-| ClientCommand → ClientInstallWriteHandler | 5 | cross | Redis client command → write handler |
-| ClientCommand → ServerAssert | 5 | cross | Redis command → server assertion |
-| ZiplistTest → ZIPLIST_BYTES | 5 | intra | Redis ziplist test → byte operations |
-
----
-
-## 5. Directory Structure
+## 3. Directory Structure
 
 ```
 f-stack/
-├── lib/            # F-Stack core library (ff_api, ff_dpdk_if, ff_config, etc.)
-├── adapter/        # LD_PRELOAD adaptation layer (syscall hook, socket ops)
-├── app/            # Applications (F-Stack-modified Nginx, Redis, etc.)
-├── example/        # Example programs (helloworld, kqueue usage, etc.)
-├── tools/          # Tools (user-space ports of ifconfig, netstat, arp, route, etc.)
+├── lib/            # F-Stack core library (33 .c files; ff_stub_14_extra.c is the central 14.0+ stub bank)
+├── adapter/        # LD_PRELOAD adaptation layer (syscall hook, micro_thread bridge)
+├── app/            # Integrated applications (nginx-1.28.0/, redis-6.2.6/)
+├── example/        # Example programs (helloworld, helloworld_epoll, main_zc.c zero-copy)
+├── tools/          # User-space ports of ifconfig / netstat / arp / route
 ├── mk/             # Build system (Makefile include files)
-├── doc/            # Original documentation
-├── docs/           # Architecture documentation and LD_PRELOAD Ring IPC Spec docs
-├── dpdk/           # DPDK 23.11.5 submodule (excluded from indexing)
-└── freebsd/        # FreeBSD 13.1 kernel source (excluded from indexing)
+├── doc/            # Original upstream documentation
+├── docs/           # 3-tier architecture knowledge base + LD_PRELOAD Ring IPC spec + 13.0→15.0 upgrade spec
+├── dpdk/           # DPDK 23.11.5 submodule (excluded from gitnexus indexing)
+└── freebsd/        # FreeBSD 15.0 kernel source port (excluded from gitnexus indexing)
 ```
 
-### 5.1 Core Library Files (`lib/`)
+### 3.1 Core Library Files (`lib/`)
+
+The 33 `.c` files in `lib/` (verified by direct read) group into six roles. Selected anchors below; full inventory and verified line counts in `docs/F-Stack_Architecture_Layer3_Function_Index.md` §"lib/ file index" and `docs/freebsd_13_to_15_upgrade_spec/docs-sync-2026-06-08-update-matrix.md` §1.2.
+
+| Role | Representative files |
+|------|----------------------|
+| Public API & init | `ff_api.h`, `ff_init.c` (70 L), `ff_init_main.c` (~660+ L), `ff_freebsd_init.c` (~154 L) |
+| Configuration | `ff_config.c` (1,381 L), `ff_ini_parser.c` (3rd-party inih) |
+| DPDK adapter | `ff_dpdk_if.c` (2,856 L; `main_loop` lives here), `ff_dpdk_kni.c` (~441 L), `ff_dpdk_pcap.c` (~118 L) |
+| Linux→FreeBSD glue | `ff_glue.c` (1,468 L), `ff_syscall_wrapper.c` (1,815 L), `ff_host_interface.c` (~285 L), `ff_epoll.c` (~134 L), `ff_compat.c` (~360 L) |
+| Kernel emulation (libplebnet/libuinet derived) | `ff_kern_condvar.c`, `ff_kern_environment.c` (509 L), `ff_kern_intr.c` (108 L), `ff_kern_subr.c` (271 L), `ff_kern_synch.c` (132 L), `ff_kern_timeout.c` (1,266 L; callout subsystem), `ff_lock.c` (448 L; sx/mutex/lockmgr), `ff_log.c` (111 L), `ff_memory.c` (481 L), `ff_subr_epoch.c` (83 L; verify-only), `ff_subr_prf.c` (604 L), `ff_thread.c` (51 L), `ff_vfs_ops.c` (117 L) |
+| Networking & netgraph | `ff_route.c` (1,604 L; rtsock partial port + ff_rtioctl), `ff_veth.c` (1,132 L; if_t accessors rewrite at M4), `ff_ng_base.c` (3,887 L; full netgraph framework port), `ff_ngctl.c` (131 L) |
+| **14.0+ stub bank (NEW)** | `ff_stub_14_extra.c` (799 L) — central bank for 14.0+ ABI gaps + landing point for 5 runtime-fix patches + defensive `vm_page_alloc_noobj` `panic()` |
+
+### 3.2 Adapter Layer (`adapter/`)
+
+The `adapter/syscall/` directory builds two binaries — `libff_syscall.so` (preloaded into the user application) and a standalone `fstack` instance — that together implement the LD_PRELOAD path. Key files:
 
 | File | Responsibility |
 |------|---------------|
-| `ff_api.h` / `ff_api.c` | F-Stack public API (Socket, KQueue, Route, Log, etc.) |
-| `ff_dpdk_if.h` / `ff_dpdk_if.c` | DPDK interface layer (packet TX/RX, main_loop, device initialization) |
-| `ff_config.h` / `ff_config.c` | Configuration parsing (INI format) |
-| `ff_host_interface.h` / `ff_host_interface.c` | Host interface abstraction |
-| `ff_veth.h` / `ff_veth.c` | Virtual Ethernet device |
-| `ff_msg.h` / `ff_msg.c` | F-Stack inter-process messaging |
-| `ff_log.h` | Logging API (ff_log, ff_vlog, ff_log_reset_stream) |
-| `ff_epoll.h` / `ff_epoll.c` | Epoll compatibility layer |
-| `ff_errno.h` | Error code mapping |
-
-### 5.2 Adapter Layer (`adapter/`)
-
-The `adapter/syscall/` directory builds two binaries — `libff_syscall.so` (preloaded
-into the user application) and a standalone `fstack` instance — that together
-implement the LD_PRELOAD path. Key files:
-
-| File | Responsibility |
-|------|---------------|
-| `syscall/ff_hook_syscall.c` / `.h` | LD_PRELOAD POSIX hooks: `socket/bind/connect/accept/accept4/listen/close/read/write/send*/recv*/__read_chk/__recv_chk/__recvfrom_chk/ioctl/epoll_*/fork` etc., dispatched to ff_* via shared memory |
-| `syscall/ff_linux_syscall.c` / `ff_declare_syscalls.h` | Linux-flag to FreeBSD-flag translation (e.g. `LINUX_SOCK_CLOEXEC`, `LINUX_SOCK_NONBLOCK`) and hook declarations |
-| `syscall/ff_socket_ops.h` / `.c` | Per-socket operation context (`sc`) and the producer/consumer dispatch logic between the application and the fstack instance |
+| `syscall/ff_hook_syscall.c` / `.h` | LD_PRELOAD POSIX hooks (`socket / bind / connect / accept[4] / listen / close / read / write / send* / recv* / __read_chk / __recv_chk / __recvfrom_chk / ioctl / epoll_* / fork`), dispatched to `ff_*` via shared memory |
+| `syscall/ff_linux_syscall.c` / `ff_declare_syscalls.h` | Linux-flag → FreeBSD-flag translation (e.g. `LINUX_SOCK_CLOEXEC`, `LINUX_SOCK_NONBLOCK`) and hook declarations |
+| `syscall/ff_socket_ops.h` / `.c` | Per-socket operation context (`sc`) and producer/consumer dispatch logic |
 | `syscall/ff_sysproto.h` | Cross-boundary syscall argument struct definitions |
 | `syscall/ff_so_zone.c` | Hugepage shared-memory zone management (semaphore IPC path) |
 | `syscall/ff_event.c` / `ff_epoll.c` | Epoll adaptation (incl. polling mode) and event delivery |
 | `syscall/ff_ring_ops.c` / `.h` *(FF_USE_RING_IPC)* | Lock-free DPDK SPSC `rte_ring` IPC path; replaces the `ff_so_zone` global lock |
 | `syscall/Makefile` | Builds both `libff_syscall.so` and the `fstack` instance binary |
 
-LD_PRELOAD-mode applications run as **two separate processes**: the `fstack`
-instance (links libfstack.a + DPDK) plus the user app preloaded with
-`libff_syscall.so`. The two communicate over Hugepage shared memory — sem-based by
-default, or a lock-free DPDK SPSC ring when `FF_USE_RING_IPC=1` is set. Compile /
-runtime switches `FF_KERNEL_EVENT`, `FF_MULTI_SC` and `FF_USE_RING_IPC` further tune
-behavior; full details in `adapter/syscall/README.md` and `docs/ld_preload_ring_spec/`.
+LD_PRELOAD-mode applications run as **two separate processes**: the `fstack` instance (links `libfstack.a` + DPDK) plus the user app preloaded with `libff_syscall.so`. The two communicate over Hugepage shared memory — sem-based by default, or a lock-free DPDK SPSC ring when `FF_USE_RING_IPC=1` is set. Compile / runtime switches `FF_KERNEL_EVENT`, `FF_MULTI_SC` and `FF_USE_RING_IPC` further tune behavior; full details in `adapter/syscall/README.md` and `docs/ld_preload_ring_spec/`.
 
 ---
 
-## 6. Dependency Overview
+## 4. Dependency Overview
 
 ```
                     ┌──────────────┐
-                    │  Applications │
-                    │ (Nginx/Redis) │
+                    │ Applications │
+                    │ (Nginx 1.28, │
+                    │  Redis 6.2.6)│
                     └──────┬───────┘
                            │ ff_* API
                     ┌──────▼───────┐
                     │   lib/       │
-                    │  F-Stack Core │
+                    │  F-Stack Core│
                     └──┬───────┬───┘
                        │       │
               ┌────────▼──┐ ┌──▼────────┐
-              │  FreeBSD   │ │   DPDK     │
-              │  TCP/IP    │ │  23.11.5   │
-              │  Stack     │ │ (PMD/EAL)  │
-              └────────────┘ └────────────┘
+              │  FreeBSD  │ │   DPDK    │
+              │  15.0 TCP/│ │  23.11.5  │
+              │  IP Stack │ │ (PMD/EAL) │
+              └────────────┘ └──────────┘
 
   adapter/                    tools/
-  LD_PRELOAD Hook ──────►  ifconfig/netstat
-  (syscall redirect)       (user-space network tools)
+  LD_PRELOAD Hook ─────────►  ifconfig/netstat/arp/route
+  (syscall redirect)          (user-space network tools)
 ```
 
 ### Relation Types
 
-All relationships in the knowledge graph are of `CodeRelation` type (1,270,994 total), covering:
+All relationships in the knowledge graph are of `CodeRelation` type (113,858 total in current index), covering:
 - Function calls (CALL)
 - Type references (USES_TYPE)
 - Macro expansions (EXPANDS)
@@ -300,15 +127,15 @@ All relationships in the knowledge graph are of `CodeRelation` type (1,270,994 t
 
 ---
 
-## 7. Knowledge Graph Usage Guide
+## 5. Knowledge Graph Usage Guide
 
-### Query Tools
+### Query Tools (via the GitNexus MCP server)
 
 | Tool | Purpose | Example |
 |------|---------|---------|
 | `gitnexus_query` | Search execution flows by concept | "packet receive" |
-| `gitnexus_context` | View 360° relationships of a symbol | All callers/callees of "ff_init" |
-| `gitnexus_impact` | Pre-modification impact analysis | Impact radius of changing ff_dpdk_if.c |
+| `gitnexus_context` | View 360° relationships of a symbol | All callers/callees of `ff_init` |
+| `gitnexus_impact` | Pre-modification impact analysis | Impact radius of changing `lib/ff_dpdk_if.c` |
 | `gitnexus_detect_changes` | Pre-commit change scope check | Verify impact of staged files |
 | `gitnexus_rename` | Safe renaming | Batch rename across multiple files |
 | `gitnexus_cypher` | Custom graph queries | Advanced analysis |
@@ -316,22 +143,34 @@ All relationships in the knowledge graph are of `CodeRelation` type (1,270,994 t
 ### Updating the Index
 
 ```bash
-# Environment variables (required for TencentOS 4.4)
-export LD_LIBRARY_PATH="/opt/OpenCloudOS/gcc-toolset-14/root/usr/lib64:$LD_LIBRARY_PATH"
-export PATH="/root/.workbuddy/binaries/node/versions/20.18.0/bin:$PATH"
+# Run from the repository root
+cd /data/workspace/f-stack
 
 # Check status
-cd /data/workspace/f-stack && npx gitnexus@1.5.3 status
+npx gitnexus status
 
-# Re-index
-npx gitnexus@1.5.3 analyze
+# Re-index (incremental)
+npx gitnexus analyze
 
 # Force full rebuild
-npx gitnexus@1.5.3 analyze --force
+npx gitnexus analyze --force
+
+# Regenerate the human-readable wiki (requires LLM API key in ~/.gitnexus/config.json)
+npx gitnexus wiki --force
 ```
 
-> **Auto-update**: A Git `post-commit` hook has been configured to automatically re-index in the background after each commit.
+> **Auto-update**: a `post-commit` hook can re-run `npx gitnexus analyze` in the background after each commit; configure once in `.git/hooks/post-commit`.
+
+> **Re-indexing duration**: full rebuild on the current 2,656-file F-Stack surface takes ~11 minutes on this workspace (verified 2026-06-08).
 
 ---
 
-*Generated from GitNexus knowledge graph (710,596 nodes, 1,270,994 edges) — 2026-04-09*
+## 6. References
+
+- **Upgrade evidence**: `docs/freebsd_13_to_15_upgrade_spec/` — full Markdown record of M0~M5, runtime-fix, Phase-5b, rib-fix, plus dual baselines.
+- **3-tier architecture (this knowledge base)**: `docs/01-LAYER1-ARCHITECTURE.md` + `docs/F-Stack_Architecture_Layer1_System_Overview.md`; same for Layer 2 / Layer 3.
+- **LD_PRELOAD Ring IPC spec**: `docs/ld_preload_ring_spec/`.
+
+---
+
+*Generated from GitNexus knowledge graph (64,855 nodes, 113,858 edges) — 2026-06-08, commit `208b0c4`. Schema v1 / ladybugdb provider.*

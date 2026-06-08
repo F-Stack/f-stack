@@ -1,8 +1,8 @@
-# F-Stack v1.25 Layer 3 Architecture Analysis: Function-Level Index & Data Models
+# F-Stack v1.26 Layer 3 Architecture Analysis: Function-Level Index & Data Models
 
 **Document Version**: 1.0  
 **Analysis Date**: 2026-03-20  
-**Coverage**: F-Stack v1.25 Exported Functions, Data Structures, Thread Safety  
+**Coverage**: F-Stack v1.26 Exported Functions, Data Structures, Thread Safety (FreeBSD 15.0 port; runtime-fix landing functions catalogued)  
 **Target Audience**: Kernel Developers, Performance Analysts, Debugging Engineers
 
 ---
@@ -452,7 +452,7 @@ struct kevent {
                           //      EVFILT_WRITE: Number of writable bytes
                           //      EVFILT_TIMER: Number of triggers
     void *udata;          // [24] User-defined data pointer (callback argument)
-    __uint64_t ext[4];    // [32] FreeBSD 13 extended fields
+    __uint64_t ext[4];    // [32] FreeBSD 13/15 extended fields (KBI unchanged across upgrade; M2 verify-only)
 };
 
 // Supported filter types
@@ -740,7 +740,7 @@ ff_poll(fds, 2, -1);  // Block until events arrive
 
 ## 3. In-Depth Analysis of Three Key Source Files
 
-### 3.1 ff_syscall_wrapper.c (1825 Lines)
+### 3.1 ff_syscall_wrapper.c (1815 Lines)
 
 **Responsibility**: Linux ↔ FreeBSD system call and parameter mapping
 
@@ -804,7 +804,7 @@ int ff_setsockopt_wrapper(int s, int level, int optname,
 - **Error Code Mapping**: Linux errno → FreeBSD errno
 - **Address Family Mapping**: AF_INET6: 10 (Linux) ↔ 28 (FreeBSD)
 
-### 3.2 ff_dpdk_if.c (2855 Lines) - NIC Driver Layer
+### 3.2 ff_dpdk_if.c (2856 Lines) - NIC Driver Layer
 
 **Global Variables** (key state affecting performance):
 
@@ -938,7 +938,7 @@ static int main_loop(void *arg) {
 - **Cache affinity**: RSS ensures connections do not migrate
 - **Hardware offloading**: TSO, Checksum offload
 
-### 3.3 ff_glue.c (1466 Lines) - Kernel Emulation Layer
+### 3.3 ff_glue.c (1468 Lines) - Kernel Emulation Layer
 
 **Kernel Primitive Emulation**:
 

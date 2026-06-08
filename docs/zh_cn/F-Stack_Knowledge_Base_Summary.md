@@ -1,8 +1,8 @@
-# F-Stack v1.25 完整知识库总结
+# F-Stack v1.26 完整知识库总结
 
 **文档版本**: 1.0  
 **生成日期**: 2026-03-20  
-**内容范围**: F-Stack v1.25 (+ DPDK 23.11.5) 完整三层架构知识库  
+**内容范围**: F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）+ DPDK 23.11.5 完整三层架构知识库  
 **文档位置**: `/data/workspace/f-stack/docs/`  
 **用途**: 规格驱动开发 (Spec-Driven Development) 的前置架构文档
 
@@ -75,7 +75,7 @@ F-Stack 架构知识库
 
 创新 2: FreeBSD 协议栈移植
   目标: 复用成熟的 20+ 年优化的 TCP/IP 栈
-  方式: 将 FreeBSD 13.0 的网络栈代码移到用户态
+  方式: 将 FreeBSD 15.0 的网络栈代码移到用户态（最初为 13.0；2025-2026 升级，完整证据见 `freebsd_13_to_15_upgrade_spec/`）
   收益: 功能完整、RFC 兼容、支持现代算法 (BBR/RACK)
 
 创新 3: 多进程隔离 + 轮询
@@ -179,7 +179,7 @@ F-Stack 架构知识库
   → 六个主要头文件详解
     ├─ ff_api.h (412 行) - 主 API
     ├─ ff_epoll.h (3 函数) - Linux 兼容
-    ├─ ff_config.h (2855 行) - 配置
+    ├─ ff_config.h (1381 行) - 配置
     ├─ ff_event.h - Kevent 事件
     ├─ ff_errno.h - 错误码映射
     └─ ff_log.h - 日志系统
@@ -255,18 +255,18 @@ F-Stack 架构知识库
   → struct pollfd (poll 结构体)
 
 关键源文件分析
-  → ff_syscall_wrapper.c (1825 行)
+  → ff_syscall_wrapper.c (1815 行)
     ├─ Linux ↔ FreeBSD 选项映射表
     ├─ Address family 映射
     └─ 参数转换逻辑
   
-  → ff_dpdk_if.c (2855 行)
+  → ff_dpdk_if.c (2856 行)
     ├─ 全局变量 (11 个关键状态)
     ├─ 初始化流程
     ├─ 报文处理逻辑
     └─ 主轮询循环
   
-  → ff_glue.c (1466 行)
+  → ff_glue.c (1468 行)
     ├─ 内核原语模拟 (锁/条件变量)
     ├─ 内存管理模拟
     └─ 全局变量模拟
@@ -616,13 +616,13 @@ net.inet.tcp.functions_default=bbr    # BBR 算法 (高延迟网络), freebsd/ra
 
 ```
 优先级 1 (必读):
-  └─ lib/ff_dpdk_if.c (2855 行)    - NIC 驱动和主轮询循环
-  └─ lib/ff_glue.c (1466 行)       - 内核原语模拟
+  └─ lib/ff_dpdk_if.c (2856 行)    - NIC 驱动和主轮询循环
+  └─ lib/ff_glue.c (1468 行)       - 内核原语模拟
   └─ lib/ff_init.c (69 行)         - 初始化协调
 
 优先级 2 (推荐):
-  └─ lib/ff_syscall_wrapper.c (1825 行) - Linux 兼容层
-  └─ lib/ff_config.c (1379 行)     - 配置解析
+  └─ lib/ff_syscall_wrapper.c (1815 行) - Linux 兼容层
+  └─ lib/ff_config.c (1381 行)     - 配置解析
   └─ lib/ff_epoll.c (159 行)       - Epoll 兼容
 
 优先级 3 (深入):
@@ -658,10 +658,11 @@ F-Stack 相关:
 ### 8.1 版本信息
 
 ```
-知识库版本: 1.0
-F-Stack 版本: v1.25
-DPDK 版本: 23.11.5
-生成日期: 2026-03-20
+知识库版本: 1.1（FreeBSD 13.0 → 15.0 第一阶段升级同步，2026-06-08）
+F-Stack 版本: v1.26
+FreeBSD 移植基线: 15.0（v1.25 时为 13.0）
+DPDK 版本: 23.11.5（不变 —— C-3 约束）
+生成日期: 2026-03-20（最近同步 2026-06-08）
 更新周期: 按 F-Stack 版本更新 (建议每 6-12 个月)
 ```
 
@@ -719,7 +720,7 @@ DPDK 版本: 23.11.5
 
 ## 10. 总结
 
-本知识库为 F-Stack v1.25 的完整架构文档，包含三个层次：
+本知识库为 F-Stack v1.26 的完整架构文档，包含三个层次：
 
 - **第一层** (8200字): 系统总体架构，适合了解全貌
 - **第二层** (9500字): 接口定义和规范，适合应用开发

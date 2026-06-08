@@ -1,4 +1,4 @@
-# F-Stack v1.25 第三层：函数级索引与数据模型
+# F-Stack v1.26 第三层：函数级索引与数据模型
 
 > **目标受众**: 内核/驱动开发工程师、性能优化工程师  
 > **关键概念**: 函数索引、数据结构、系统调用适配、符号导出  
@@ -119,7 +119,7 @@ struct kevent {
     unsigned int fflags;       // 过滤器特定标志
     __int64_t data;            // 事件数据 (就绪数、超时等，固定 64 位)
     void *udata;               // 用户定义数据指针
-    __uint64_t ext[4];         // FreeBSD 13 新增扩展字段
+    __uint64_t ext[4];         // FreeBSD 13/15 扩展字段（升级前后 KBI 不变；M2 verify-only）
 };
 
 // 过滤器类型 (filter 值)
@@ -308,7 +308,7 @@ struct ff_dispatcher_context {
 
 ## 3. 三个关键源文件分析
 
-### 3.1 ff_syscall_wrapper.c (1825 行) - Linux/FreeBSD 适配
+### 3.1 ff_syscall_wrapper.c (1815 行) - Linux/FreeBSD 适配
 
 **主要职责**: 将 Linux 系统调用参数/选项转换为 FreeBSD 等价物
 
@@ -366,7 +366,7 @@ int ff_setsockopt(int s, int level, int optname,
 #define LINUX_SIOCGIFFLAGS  0x8913    // 获取网卡标志
 ```
 
-### 3.2 ff_dpdk_if.c (2855 行) - NIC 驱动层
+### 3.2 ff_dpdk_if.c (2856 行) - NIC 驱动层
 
 **文件结构**:
 
@@ -493,7 +493,7 @@ struct ff_kni_rate_limit {
 };
 ```
 
-### 3.3 ff_glue.c (1466 行) - FreeBSD 粘合层
+### 3.3 ff_glue.c (1468 行) - FreeBSD 粘合层
 
 **核心职责**: 为用户态 FreeBSD 协议栈提供内核原语
 

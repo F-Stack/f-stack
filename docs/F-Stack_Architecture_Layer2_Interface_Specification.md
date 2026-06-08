@@ -1,8 +1,8 @@
-# F-Stack v1.25 Layer 2 Architecture Analysis: Interface Definition & Specification
+# F-Stack v1.26 Layer 2 Architecture Analysis: Interface Definition & Specification
 
 **Document Version**: 1.0  
 **Analysis Date**: 2026-03-20  
-**Coverage**: F-Stack v1.25 Public API, Configuration System, Development Guidelines  
+**Coverage**: F-Stack v1.26 Public API, Configuration System, Development Guidelines (FreeBSD 15.0 port; KBI/KPI deltas captured)  
 **Target Audience**: Application Developers, System Integration Engineers, Performance Optimization Engineers
 
 ---
@@ -372,7 +372,7 @@ struct kevent {
     uint32_t fflags;       // Filter flags
     __int64_t data;        // Data (ready count/error, fixed 64-bit)
     void *udata;           // User data pointer
-    __uint64_t ext[4];     // FreeBSD 13 extended fields
+    __uint64_t ext[4];     // FreeBSD 13/15 extended fields (KBI unchanged across 13.0 → 15.0; M2 verify-only)
 };
 
 // Supported filters (values are negative!)

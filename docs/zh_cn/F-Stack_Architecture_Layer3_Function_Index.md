@@ -1,8 +1,8 @@
-# F-Stack v1.25 第三层架构分析：函数级索引与数据模型
+# F-Stack v1.26 第三层架构分析：函数级索引与数据模型
 
 **文档版本**: 1.0  
 **分析日期**: 2026-03-20  
-**覆盖范围**: F-Stack v1.25 导出函数、数据结构、线程安全性  
+**覆盖范围**: F-Stack v1.26 导出函数、数据结构、线程安全性（FreeBSD 15.0 移植；runtime-fix 落点函数已分类）  
 **目标受众**: 内核开发者、性能分析师、调试工程师
 
 ---
@@ -452,7 +452,7 @@ struct kevent {
                           //      EVFILT_WRITE: 可写字节数
                           //      EVFILT_TIMER: 触发次数
     void *udata;          // [24] 用户自定义数据指针 (回调参数)
-    __uint64_t ext[4];    // [32] FreeBSD 13 新增扩展字段
+    __uint64_t ext[4];    // [32] FreeBSD 13/15 扩展字段（升级前后 KBI 不变；M2 verify-only）
 };
 
 // 支持的过滤器类型
@@ -740,7 +740,7 @@ ff_poll(fds, 2, -1);  // 阻塞直到事件到达
 
 ## 3. 三个关键源文件深度分析
 
-### 3.1 ff_syscall_wrapper.c (1825 行)
+### 3.1 ff_syscall_wrapper.c (1815 行)
 
 **职责**：Linux ↔ FreeBSD 系统调用和参数映射
 
@@ -804,7 +804,7 @@ int ff_setsockopt_wrapper(int s, int level, int optname,
 - **Error Code 映射**：Linux errno → FreeBSD errno
 - **Address Family 映射**：AF_INET6: 10 (Linux) ↔ 28 (FreeBSD)
 
-### 3.2 ff_dpdk_if.c (2855 行) - NIC 驱动层
+### 3.2 ff_dpdk_if.c (2856 行) - NIC 驱动层
 
 **全局变量**（影响性能的关键状态）：
 
@@ -938,7 +938,7 @@ static int main_loop(void *arg) {
 - **缓存亲和性**：RSS 确保连接不迁移
 - **硬件卸载**：TSO、Checksum offload
 
-### 3.3 ff_glue.c (1466 行) - 内核模拟层
+### 3.3 ff_glue.c (1468 行) - 内核模拟层
 
 **内核原语模拟**：
 

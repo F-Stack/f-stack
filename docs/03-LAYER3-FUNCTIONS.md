@@ -1,4 +1,4 @@
-# F-Stack v1.25 Layer 3: Function-Level Index and Data Model
+# F-Stack v1.26 Layer 3: Function-Level Index and Data Model
 
 > **Target Audience**: Kernel/driver developers, performance optimization engineers  
 > **Key Concepts**: Function index, data structures, system call adaptation, symbol export  
@@ -119,7 +119,7 @@ struct kevent {
     unsigned int fflags;       // Filter-specific flags
     __int64_t data;            // Event data (ready count, timeout, etc., fixed 64-bit)
     void *udata;               // User-defined data pointer
-    __uint64_t ext[4];         // FreeBSD 13 new extension fields
+    __uint64_t ext[4];         // FreeBSD 13/15 extension fields (KBI unchanged across the upgrade; M2 verify-only)
 };
 
 // Filter types (filter values)
@@ -308,7 +308,7 @@ struct ff_dispatcher_context {
 
 ## 3. Three Key Source File Analyses
 
-### 3.1 ff_syscall_wrapper.c (1825 Lines) - Linux/FreeBSD Adaptation
+### 3.1 ff_syscall_wrapper.c (1815 Lines) - Linux/FreeBSD Adaptation
 
 **Main Responsibility**: Convert Linux system call parameters/options to FreeBSD equivalents
 
@@ -366,7 +366,7 @@ int ff_setsockopt(int s, int level, int optname,
 #define LINUX_SIOCGIFFLAGS  0x8913    // Get NIC flags
 ```
 
-### 3.2 ff_dpdk_if.c (2855 Lines) - NIC Driver Layer
+### 3.2 ff_dpdk_if.c (2856 Lines) - NIC Driver Layer
 
 **File Structure**:
 
@@ -493,7 +493,7 @@ struct ff_kni_rate_limit {
 };
 ```
 
-### 3.3 ff_glue.c (1466 Lines) - FreeBSD Glue Layer
+### 3.3 ff_glue.c (1468 Lines) - FreeBSD Glue Layer
 
 **Core Responsibility**: Provide kernel primitives for the user-space FreeBSD protocol stack
 
