@@ -431,15 +431,15 @@ sleep 5
 
 | Milestone | 优先级 | 状态 | Spec | Research | Code | Review | Gate | Bounce | Commit | Pushed |
 |---|---|---|---|---|---|---|---|---|---|---|
-| M6 NETGRAPH+IPFW | P0 | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
-| M7 PAGE_ARRAY | P1a | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
-| M8 ZC_SEND | P1b | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
-| M9 PA+ZC combo | P1c | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
-| M10 FLOW_IPIP | P1d | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
-| M11 FLOW_ISOLATE | P2a | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
-| M12 FDIR | P2b | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
-| M13 LOOPBACK | P2c | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
-| M-Final docs sync | – | NOT_STARTED | – | – | – | – | – | 0 | – | NO |
+| M6 NETGRAPH+IPFW | P0 | ✅ DONE | ✅ | ✅ | ✅ | ✅ | ✅ G1-G5/G7 PASS | 3/3 | `4139198f6` | NO |
+| M7 PAGE_ARRAY | P1a | ✅ DONE | ✅ | ✅ | ✅ | ✅ | ✅ G1-G5/G7 PASS | 0/3 | `cba3d882b` | NO |
+| M8 ZC_SEND | P1b | ✅ DONE | ✅ | ✅ | ✅ | ✅ | ✅ G1-G7 PASS（HTTP 200/438B real HTML，100/100 short-conn） | 1/3 | `add33a04a` | NO |
+| M9 PA+ZC combo | P1c | ✅ DONE | ✅ | ✅ | ✅ | ✅ | ✅ G1-G3 PASS（G4 perf observation deferred） | 0/3 | `2f4748638` | NO |
+| M10 FLOW_IPIP | P1d | ✅ DONE | ✅ | ✅ | ✅ | ✅ | ✅ G1-G3.6 PASS（ping 3/3 IPIP tunnel cross-impl） | 1/3 | `90c730496` | NO |
+| M11 FLOW_ISOLATE | P2a | ✅ DONE (smoke) | ✅ | ✅ | ✅ | ✅ | ✅ G1/G2 PASS | 0/3 | `6be5461a9` | NO |
+| M12 FDIR | P2b | ✅ DONE (smoke) | ✅ | ✅ | ✅ | ✅ | ✅ G1/G2 PASS | 0/3 | `b6bf3f094` | NO |
+| M13 LOOPBACK | P2c | ✅ DONE (smoke) | ✅ | ✅ | ✅ | ✅ | ✅ G1/G2 PASS（+1 link stub `ff_swi_net_excute`） | 0/3 | `73622c85c` | NO |
+| M-Final docs sync | – | ✅ DONE | – | – | ✅ | ✅ | ✅ status table backfilled + 4 layer1+summary docs synced + plan §10 updated | – | (this commit) | NO |
 
 **Bounce ledger（全 plan 累计）**：0  
 **Escalations**：0
