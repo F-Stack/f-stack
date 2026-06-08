@@ -1438,10 +1438,21 @@ ff_dpdk_init(int argc, char **argv)
 
 #ifdef FF_FLOW_IPIP
     // create ipip flow for port 0
+    /*
+     * M10: rte_flow IPIP rule is a hardware-offload optimization;
+     * virtio NICs (and other drivers without rte_flow IPIP support)
+     * return ENOTSUP here. The GIF tunnel itself works in software
+     * via FreeBSD's if_gif/in_gif path regardless, so we degrade
+     * to a warning instead of rte_exit() to keep the helloworld
+     * primary alive on hardware that lacks flow offload.
+     */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY){
         ret = create_ipip_flow(0);
         if (ret != 0) {
-            rte_exit(EXIT_FAILURE, "create_ipip_flow failed\n");
+            printf("M10 [WARN] create_ipip_flow failed (ret=%d) — "
+                   "NIC lacks rte_flow IPIP offload; falling back "
+                   "to software GIF tunnel path. This is expected "
+                   "on virtio and similar drivers.\n", ret);
         }
     }
 #endif

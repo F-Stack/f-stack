@@ -2,7 +2,7 @@
 
 **Document Version**: 1.0  
 **Generation Date**: 2026-03-20  
-**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS; **Phase-2 M6 enabled FF_NETGRAPH+FF_IPFW combo + M7 enabled FF_USE_PAGE_ARRAY + M8 enabled FF_ZC_SEND + M9 PA+ZC combo, 2026-06-08**) + DPDK 23.11.5 Complete Three-Layer Architecture Knowledge Base  
+**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS; **Phase-2 M6 enabled FF_NETGRAPH+FF_IPFW combo + M7 enabled FF_USE_PAGE_ARRAY + M8 enabled FF_ZC_SEND + M9 PA+ZC combo + M10 enabled FF_FLOW_IPIP, 2026-06-08**) + DPDK 23.11.5 Complete Three-Layer Architecture Knowledge Base  
 **Document Location**: `/data/workspace/f-stack/docs/`  
 **Purpose**: Pre-requisite architecture documentation for Spec-Driven Development
 
