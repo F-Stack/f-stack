@@ -140,6 +140,7 @@ F-Stack 采用了**完整移植**策略：
 - 通过 `ff_glue.c` 与新增的 14.0+ stub 中央库 `ff_stub_14_extra.c` 实现内核 API 的用户态模拟
 - 通过条件编译支持可选功能（IPv6、KNI、TCPHPTS、FF_NETGRAPH 等）；15.0 引入的 NETLINK 协议、KTLS 等子系统按 DP-2 / out-of-scope 决策**不**移植
 - **Phase-2 M6（2026-06-08）**：在 `lib/Makefile` 中默认启用 `FF_NETGRAPH=1` + `FF_IPFW=1`；引入 41 个 netgraph 节点 + 14 个 ipfw 内核对象到 `libfstack.a`（现为 6.5 MB，原 5.4 MB）；`tools/sbin/ipfw` 25 MB 用户态二进制现已产出（FF_IPFW=0 时不编译）；`ipfw add/show/delete` 与 `ngctl list` 通过 DPDK secondary IPC 端到端验证。完整证据 + `lib/ff_stub_14_extra.c` 新增 7 个 link-only stub 见 `docs/freebsd_13_to_15_upgrade_spec/zh_cn/phase2-M6-execution-log.md`
+- **Phase-2 M7（2026-06-08）**：默认启用 `FF_USE_PAGE_ARRAY=1`（P1a，单次过 / 0 打回）；将 `lib/ff_memory.c`（481 行，mmap-based page-array + mbuf reference pool）纳入 `FF_HOST_SRCS`；运行时 `ff_mmap_init` 一次性预留 256 MB（65536 × 4 KB 页）以摊销每包 4 KB alloc/free 系统调用开销。详见 `docs/freebsd_13_to_15_upgrade_spec/zh_cn/phase2-M7-execution-log.md`
 
 ### 3.2 FreeBSD 移植的子系统
 

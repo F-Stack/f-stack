@@ -140,6 +140,7 @@ F-Stack adopted a **complete porting** strategy:
 - Implemented user-space emulation of kernel APIs through `ff_glue.c` and the supplemental 14.0+ stub bank `ff_stub_14_extra.c`
 - Supported optional features through conditional compilation (IPv6, KNI, TCPHPTS, FF_NETGRAPH, etc.); 15.0-introduced subsystems (NETLINK protocol, KTLS) are **not** ported per DP-2 / out-of-scope
 - **Phase-2 M6 (2026-06-08)**: enabled `FF_NETGRAPH=1` + `FF_IPFW=1` by default in `lib/Makefile`; brings 41 netgraph nodes + 14 ipfw kernel objects into `libfstack.a` (now 6.5 MB, was 5.4 MB); `tools/sbin/ipfw` 25 MB user-space binary now produced (was absent when FF_IPFW=0); `ipfw add/show/delete` and `ngctl list` verified end-to-end via DPDK secondary IPC. See `docs/freebsd_13_to_15_upgrade_spec/zh_cn/phase2-M6-execution-log.md` for full evidence + 7 link-only stubs added to `lib/ff_stub_14_extra.c`
+- **Phase-2 M7 (2026-06-08)**: enabled `FF_USE_PAGE_ARRAY=1` (P1a, single-pass / 0 bounces); brings `lib/ff_memory.c` (481 lines, mmap-based page-array + mbuf reference pool) into `FF_HOST_SRCS`; runtime allocates 256 MB one-shot mmap (65536 × 4 KB pages) at `ff_mmap_init` to amortize per-packet 4 KB alloc/free syscalls. See `docs/freebsd_13_to_15_upgrade_spec/zh_cn/phase2-M7-execution-log.md`
 
 ### 3.2 Ported FreeBSD Subsystems
 
