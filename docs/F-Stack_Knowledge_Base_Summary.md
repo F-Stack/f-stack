@@ -2,7 +2,7 @@
 
 **Document Version**: 1.0  
 **Generation Date**: 2026-03-20  
-**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS; **Phase-2 M6 NETGRAPH+IPFW + M7 PAGE_ARRAY + M8 ZC_SEND + M9 PA+ZC + M10 FLOW_IPIP + M11 FLOW_ISOLATE + M12 FDIR + M13 LOOPBACK + Phase-5b perf baseline matrix (closes M9-F1/M10-F2, finds F-A1), 2026-06-08**) + DPDK 23.11.5 Complete Three-Layer Architecture Knowledge Base  
+**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS; **Phase-2 M6 NETGRAPH+IPFW + M7 PAGE_ARRAY + M8 ZC_SEND + M9 PA+ZC + M10 FLOW_IPIP + M11 FLOW_ISOLATE + M12 FDIR + M13 LOOPBACK + Phase-5b perf baseline matrix + F-A1 fix (PA-only now production-ready), 2026-06-08**) + DPDK 23.11.5 Complete Three-Layer Architecture Knowledge Base  
 **Document Location**: `/data/workspace/f-stack/docs/`  
 **Purpose**: Pre-requisite architecture documentation for Spec-Driven Development
 

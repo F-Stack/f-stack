@@ -6,7 +6,7 @@
 **Spec**: `phase-5b-perf-baseline-spec.md`
 **Harness**: `tools/sbin/p5b_perf_matrix.sh`
 **Raw data**: `/tmp/p5b/{C0,C7,C8,C9,C10}_{TC1,TC2,TC3}.csv`
-**Status**: ✅ COMPLETE — 1 follow-up filed (F-A1, deferred)
+**Status**: ✅ COMPLETE — F-A1 已在 follow-up commit 中 CLOSED（见 `F-A1-fix-execution-log.md`）
 
 ---
 
@@ -23,7 +23,7 @@ phase-5b 执行 5 配置 × 2-3 testcase × 3 trials = **33 数据点**，跨配
 
 | Finding | 严重度 |
 |---|---|
-| **F-A1**：`FF_USE_PAGE_ARRAY=1` 单独启用（无 ZC）时，**ICMP + HTTP 全断**（`ping 0% / curl connect timeout`）。M7 commit 当时 G3 OQ-4 降级未真测端到端。M9 (PA+ZC combo) 之所以 work，是 **ZC fast-path 绕过了 PA 的 mbuf 路径**而无意中掩盖了此 regression | **High**（影响生产 default 选择）|
+| **F-A1**：`FF_USE_PAGE_ARRAY=1` 单独启用（无 ZC）时，**ICMP + HTTP 全断**（`ping 0% / curl connect timeout`）。M7 commit 当时 G3 OQ-4 降级未真测端到端。M9 (PA+ZC combo) 之所以 work，是 **ZC fast-path 绕过了 PA 的 mbuf 路径**而无意中掩盖了此 regression | **High** ✅ **已在后续 commit CLOSED — 详见 `F-A1-fix-execution-log.md`** |
 
 ---
 
@@ -158,8 +158,8 @@ C8 TC1 比 C0 快 7.8%（0.733s vs 0.795s on n=100），可能源于 ZC fast-pat
 
 | ID | 描述 | Owner | Priority | Target |
 |---|---|---|---|---|
-| **F-A1** | RCA + fix `ff_chk_vma` 不覆盖 ARP/ICMP mbuf 数据指针，导致 PA-only 配置静默 drop | TBD | High | 下一周期或 production rollout 前 |
-| **F-A2** | C9 ARP-on-PA 是否真 work，还是依赖 client OS ARP cache。需在干净 ARP table 状态下复测 | TBD | Medium | 与 F-A1 同周期 |
+| **F-A1** | ✅ **CLOSED** — `rte_panic` → `log + drop` in `lib/ff_memory.c:ff_if_send_onepkt`，C7fix 实测 1000/1000 PASS、TC1 −7.4% perf。详见 `F-A1-fix-execution-log.md` | F-A1 Fix Leader | High | ✅ 已修复 |
+| **F-A2** | N/A — F-A1 fix 后 PA 路径 panic 通道彻底移除，C9 ARP-on-PA cache 因素不再相关 | — | — | ✅ N/A |
 | **F-A3** | wrk/iperf3 客户端配置（独立测试机或 client 端用户授权）→ 替换 curl-bench 拿真绝对吞吐 | TBD | Low | NFR re-evaluate 时 |
 | **F-A4** | 在物理机/CVM 双基线环境上重跑 p5b matrix（M5-test-report.md 推荐路径），对照 NFR-1 的 ±15% 容忍门 | TBD | Low | 与 NFR-1 重新认证时 |
 
