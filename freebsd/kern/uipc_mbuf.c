@@ -2026,7 +2026,19 @@ m_uiotombuf(struct uio *uio, int how, int len, int align, int flags)
 	 * If len is zero return the smallest empty mbuf.
 	 */
 #ifdef FSTACK_ZC_SEND
-	if (uio->uio_segflg == UIO_SYSSPACE && uio->uio_rw == UIO_WRITE) {
+	/*
+	 * M8: tighten the ZC fast-path predicate. The original 13.0
+	 * F-Stack baseline relied on (UIO_SYSSPACE && UIO_WRITE) which
+	 * matches *every* ff_write/ff_writev call (lib/ff_syscall_wrapper.c
+	 * sets uio_segflg = UIO_SYSSPACE unconditionally), causing a
+	 * GPF in m_demote when callers passed plain char buffers.
+	 *
+	 * The new contract: callers must use ff_zc_send (libfstack) which
+	 * stamps uio->uio_offset = FSTACK_ZC_MAGIC. Plain ff_write paths
+	 * now explicitly set uio_offset = 0 to opt out.
+	 */
+	if (uio->uio_segflg == UIO_SYSSPACE && uio->uio_rw == UIO_WRITE &&
+	    uio->uio_offset == FSTACK_ZC_MAGIC) {
 		m = (struct mbuf *)uio->uio_iov->iov_base;
 		uio->uio_iov->iov_base = (char *)(uio->uio_iov->iov_base) + total;
 		uio->uio_iov->iov_len = 0;

@@ -141,6 +141,7 @@ F-Stack 采用了**完整移植**策略：
 - 通过条件编译支持可选功能（IPv6、KNI、TCPHPTS、FF_NETGRAPH 等）；15.0 引入的 NETLINK 协议、KTLS 等子系统按 DP-2 / out-of-scope 决策**不**移植
 - **Phase-2 M6（2026-06-08）**：在 `lib/Makefile` 中默认启用 `FF_NETGRAPH=1` + `FF_IPFW=1`；引入 41 个 netgraph 节点 + 14 个 ipfw 内核对象到 `libfstack.a`（现为 6.5 MB，原 5.4 MB）；`tools/sbin/ipfw` 25 MB 用户态二进制现已产出（FF_IPFW=0 时不编译）；`ipfw add/show/delete` 与 `ngctl list` 通过 DPDK secondary IPC 端到端验证。完整证据 + `lib/ff_stub_14_extra.c` 新增 7 个 link-only stub 见 `docs/freebsd_13_to_15_upgrade_spec/zh_cn/phase2-M6-execution-log.md`
 - **Phase-2 M7（2026-06-08）**：默认启用 `FF_USE_PAGE_ARRAY=1`（P1a，单次过 / 0 打回）；将 `lib/ff_memory.c`（481 行，mmap-based page-array + mbuf reference pool）纳入 `FF_HOST_SRCS`；运行时 `ff_mmap_init` 一次性预留 256 MB（65536 × 4 KB 页）以摊销每包 4 KB alloc/free 系统调用开销。详见 `docs/freebsd_13_to_15_upgrade_spec/zh_cn/phase2-M7-execution-log.md`
+- **Phase-2 M8（2026-06-08）**：默认启用 `FF_ZC_SEND=1`（P1b，1 次打回）；引入 `FSTACK_ZC_MAGIC` sentinel（uio.uio_offset = 0xF8AC2C00F8AC2C00）协议 + 新公开 API `ff_zc_send`，用于区分 ZC mbuf chain 与普通 char buffer；修复 13.0 baseline 遗留 ZC fast-path bug —— 原 `m_uiotombuf` 谓词命中所有 `ff_write`/`ff_writev` 调用，在高压下会静默破坏数据或 `m_demote` GPF。共 8 文件 +85/-4，覆盖 `freebsd/sys/mbuf.h`、`freebsd/kern/uipc_mbuf.c`、`freebsd/kern/sys_generic.c`、`lib/Makefile`、`lib/ff_syscall_wrapper.c`、`lib/ff_api.h`、`lib/ff_api.symlist`、`example/Makefile` + `example/main_zc.c`。通过 ssh f-stack-client curl 端到端验证：HTTP 200 / 438 字节真实 HTML body / 100x 短连 100/100 通过。详见 `docs/freebsd_13_to_15_upgrade_spec/zh_cn/phase2-M8-execution-log.md`
 
 ### 3.2 FreeBSD 移植的子系统
 

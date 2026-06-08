@@ -29,6 +29,7 @@
 #include <sys/param.h>
 #include <sys/limits.h>
 #include <sys/uio.h>
+#include <sys/mbuf.h>           /* M8: FSTACK_ZC_MAGIC for ff_zc_send */
 #include <sys/proc.h>
 #include <sys/syscallsubr.h>
 #include <sys/module.h>
@@ -1142,6 +1143,12 @@ ff_write(int fd, const void *buf, size_t nbytes)
     auio.uio_iovcnt = 1;
     auio.uio_resid = nbytes;
     auio.uio_segflg = UIO_SYSSPACE;
+    /* M8: explicitly clear uio_offset so the FSTACK_ZC_SEND fast path
+     * in m_uiotombuf (uipc_mbuf.c:2028) does NOT mis-trigger on plain
+     * char-buffer writes. Stack-allocated auio leaves uio_offset
+     * uninitialized → previously the fast path interpreted iov_base
+     * as a mbuf pointer and m_demote crashed (GPF). */
+    auio.uio_offset = 0;
     if ((rc = kern_writev(curthread, fd, &auio)))
         goto kern_fail;
     rc = curthread->td_retval[0];
@@ -1165,6 +1172,7 @@ ff_writev(int fd, const struct iovec *iov, int iovcnt)
     auio.uio_iovcnt = iovcnt;
     auio.uio_resid = len;
     auio.uio_segflg = UIO_SYSSPACE;
+    auio.uio_offset = 0;        /* M8: see ff_write comment */
     if ((rc = kern_writev(curthread, fd, &auio)))
         goto kern_fail;
     rc = curthread->td_retval[0];
@@ -1174,6 +1182,48 @@ kern_fail:
     ff_os_errno(rc);
     return (-1);
 }
+
+#ifdef FSTACK_ZC_SEND
+/*
+ * M8: Zero-copy fast-path send entry. Caller must pass a mbuf chain
+ * obtained from ff_zc_mbuf_get + ff_zc_mbuf_write as `mb` (NOT a
+ * char buffer). The FSTACK_ZC_MAGIC sentinel in uio_offset signals
+ * m_uiotombuf (uipc_mbuf.c:2028) to interpret iov_base as a mbuf
+ * pointer and skip the regular copy loop.
+ *
+ * Without this dedicated entry the FSTACK_ZC_SEND macro would
+ * silently corrupt every ff_write/ff_writev/ff_send call (which
+ * carry plain char buffers) — see phase2-M8-execution-log.md §RCA.
+ */
+ssize_t
+ff_zc_send(int fd, const void *mb, size_t nbytes)
+{
+    struct uio auio;
+    struct iovec aiov;
+    int rc;
+
+    if (nbytes > INT_MAX) {
+        rc = EINVAL;
+        goto kern_fail;
+    }
+
+    aiov.iov_base = (void *)(uintptr_t)mb;
+    aiov.iov_len = nbytes;
+    auio.uio_iov = &aiov;
+    auio.uio_iovcnt = 1;
+    auio.uio_resid = nbytes;
+    auio.uio_segflg = UIO_SYSSPACE;
+    auio.uio_offset = FSTACK_ZC_MAGIC;
+    if ((rc = kern_writev(curthread, fd, &auio)))
+        goto kern_fail;
+    rc = curthread->td_retval[0];
+
+    return (rc);
+kern_fail:
+    ff_os_errno(rc);
+    return (-1);
+}
+#endif /* FSTACK_ZC_SEND */
 
 ssize_t
 ff_send(int s, const void *buf, size_t len, int flags)

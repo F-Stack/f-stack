@@ -20,7 +20,8 @@ TARGET="helloworld"
 all:
 	cc ${CFLAGS} -DINET6 -o ${TARGET} main.c ${LIBS}
 	cc ${CFLAGS} -o ${TARGET}_epoll main_epoll.c ${LIBS}
+	cc ${CFLAGS} -DINET6 -DFSTACK_ZC_SEND -o ${TARGET}_zc main_zc.c ${LIBS}
 
 .PHONY: clean
 clean:
-	rm -f *.o ${TARGET} ${TARGET}_epoll
+	rm -f *.o ${TARGET} ${TARGET}_epoll ${TARGET}_zc

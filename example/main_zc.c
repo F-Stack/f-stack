@@ -129,6 +129,7 @@ char html2[] =
 
 extern int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
 extern int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
+extern ssize_t ff_zc_send(int fd, const void *mb, size_t nbytes); /* M8 */
 
 char *buf_tmp;
 char html_buf[10240];
@@ -212,7 +213,11 @@ int loop(void *arg)
             for (i = 0; i < 10000; i++){
                 j++;
             }
-            ff_write(clientfd, zc_buf.bsd_mbuf, buf_len);
+            /* M8: use dedicated zero-copy send entry — see ff_api.h.
+             * Previously this was ff_write() but the ZC fast path in
+             * m_uiotombuf trusted (UIO_SYSSPACE && UIO_WRITE) which
+             * also matches non-ZC writes and crashed in m_demote. */
+            ff_zc_send(clientfd, zc_buf.bsd_mbuf, buf_len);
 #else
             memcpy(html_buf, buf_tmp, buf_len);
 

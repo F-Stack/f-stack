@@ -400,6 +400,17 @@ int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
 int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);
 
 /*
+ * M8: zero-copy send entry. Caller must pass the mbuf chain
+ * obtained from ff_zc_mbuf_get + ff_zc_mbuf_write as `mb`. The
+ * returned bytes match `nbytes` on success, -1 on error (errno set).
+ *
+ * Plain ff_write() / ff_writev() / ff_send() / ff_sendto() must NOT
+ * be used to send a zero-copy mbuf chain — they take char buffers
+ * and would copy via uiomove. Use ff_zc_send for the ZC fast-path.
+ */
+ssize_t ff_zc_send(int fd, const void *mb, size_t nbytes);
+
+/*
  * Create user thread context for LD_PRELOAD mode.
  * It saved in ff_so_context.
  */

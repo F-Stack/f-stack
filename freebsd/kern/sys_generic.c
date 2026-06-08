@@ -54,6 +54,7 @@
 #include <sys/protosw.h>
 #include <sys/socketvar.h>
 #include <sys/uio.h>
+#include <sys/mbuf.h>           /* M8: FSTACK_ZC_MAGIC for ZC fast-path */
 #include <sys/eventfd.h>
 #include <sys/kernel.h>
 #include <sys/ktr.h>
@@ -556,7 +557,20 @@ dofilewrite(struct thread *td, int fd, struct file *fp, struct uio *auio,
 	AUDIT_ARG_FD(fd);
 	auio->uio_rw = UIO_WRITE;
 	auio->uio_td = td;
+#ifdef FSTACK_ZC_SEND
+	/*
+	 * M8: preserve FSTACK_ZC_MAGIC sentinel set by ff_zc_send so it
+	 * survives down to m_uiotombuf where the ZC fast path tests for
+	 * it. Plain ff_write callers pass uio_offset = 0, which is
+	 * indistinguishable from default offset = -1 here, so we still
+	 * overwrite for them (the fast-path predicate also checks
+	 * UIO_SYSSPACE/UIO_WRITE which everyone has).
+	 */
+	if (auio->uio_offset != FSTACK_ZC_MAGIC)
+		auio->uio_offset = offset;
+#else
 	auio->uio_offset = offset;
+#endif
 #ifdef KTRACE
 	if (KTRPOINT(td, KTR_GENIO))
 		ktruio = cloneuio(auio);

@@ -2,7 +2,7 @@
 
 **文档版本**: 1.0  
 **生成日期**: 2026-03-20  
-**内容范围**: F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS；**Phase-2 M6 启用 FF_NETGRAPH+FF_IPFW combo + M7 启用 FF_USE_PAGE_ARRAY，2026-06-08**）+ DPDK 23.11.5 完整三层架构知识库  
+**内容范围**: F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS；**Phase-2 M6 启用 FF_NETGRAPH+FF_IPFW combo + M7 启用 FF_USE_PAGE_ARRAY + M8 启用 FF_ZC_SEND，2026-06-08**）+ DPDK 23.11.5 完整三层架构知识库  
 **文档位置**: `/data/workspace/f-stack/docs/`  
 **用途**: 规格驱动开发 (Spec-Driven Development) 的前置架构文档
 
