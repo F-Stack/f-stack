@@ -437,6 +437,11 @@ ff_hook_bind(int fd, const struct sockaddr *addr,
         return -1;
     }
 
+    if (addrlen > sizeof(struct sockaddr_storage)) {
+        errno = EINVAL;
+        return -1;
+    }
+
     CHECK_FD_OWNERSHIP(bind, (fd, addr, addrlen));
 
     DEFINE_REQ_ARGS(bind);
