@@ -130,10 +130,17 @@ endif
 GCCVERGE12 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 12)
 ifeq "$(GCCVERGE12)" "1"
     CFLAGS+= -Wno-error=array-bounds
-    CFLAGS+= -Wno-error=cast-qual
-    CFLAGS+= -Wno-error=format
-    CFLAGS+= -Wno-error=format-extra-args
 endif
+
+# FreeBSD's kernel printf uses %D (hex dump format) which is unknown to GCC's
+# format checker. Disable -Werror=format and -Werror=format-extra-args on every
+# GCC version so the FreeBSD-derived sources still build.
+CFLAGS+= -Wno-error=format
+CFLAGS+= -Wno-error=format-extra-args
+
+# cast-qual is triggered by FreeBSD's atomic_store_ptr macro on every supported
+# GCC version (including GCC 8), so disable -Werror=cast-qual unconditionally.
+CFLAGS+= -Wno-error=cast-qual
 
 GCCVERGE13 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 13)
 ifeq "$(GCCVERGE13)" "1"
