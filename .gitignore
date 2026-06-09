@@ -53,3 +53,14 @@ app/nginx-1.28.0/objs/
 
 # AI agent local spec backup mirrors (per unit_test_spec plan.md §6)
 .spec-backup/
+
+# Unit-test build artifacts (keep source / Makefile / fixtures tracked)
+tests/unit/*.o
+tests/unit/lib_objs/
+tests/unit/test_hello
+tests/unit/test_ff_ini_parser
+tests/unit/test_ff_log
+tests/unit/test_ff_host_interface
+tests/unit/test_ff_epoll
+tests/unit/test_ff_config
+tests/unit/common/*.o
