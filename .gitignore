@@ -45,3 +45,8 @@ adapter/syscall/helloworld_stack_thread_socket
 AGENTS.md
 CLAUDE.md
 plan.md
+
+# Nginx build artifacts (F-Stack app/nginx-1.28.0)
+app/nginx-1.28.0/Makefile
+app/nginx-1.28.0/dist/
+app/nginx-1.28.0/objs/
