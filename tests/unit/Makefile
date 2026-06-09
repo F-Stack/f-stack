@@ -49,7 +49,7 @@ ALL_TESTS     := $(SANITY_TESTS) $(P0_TESTS) $(P1_TESTS)
 COMMON_OBJS   := $(COMMON_DIR)/ff_log_stub.o $(COMMON_DIR)/rte_stub.o
 
 # Default goal
-.PHONY: all test test_p0 test_p1 test_sanity check clean coverage help
+.PHONY: all test test_p0 test_p1 test_sanity check clean coverage coverage_clean help
 all: $(ALL_TESTS)
 
 help:
@@ -60,7 +60,8 @@ help:
 	@echo "  make test_p0      - run P0 tests only"
 	@echo "  make test_p1      - run P1 tests only"
 	@echo "  make clean        - clean build artifacts (uses rm_tmp_file.sh wrapper)"
-	@echo "  make coverage     - run with gcov instrumentation (Stage-3 follow-up)"
+	@echo "  make coverage     - build with gcov + run tests + emit lcov HTML report"
+	@echo "  make coverage_clean - remove gcov/.gcda/.gcno + coverage_report/"
 
 test_sanity: $(SANITY_TESTS)
 	@for t in $(SANITY_TESTS); do \
@@ -141,10 +142,45 @@ clean:
 	@if [ -d $(LIB_OBJS_DIR) ]; then \
 	  /data/workspace/rm_tmp_file.sh "$$(realpath $(LIB_OBJS_DIR))" >/dev/null; \
 	fi
+	@$(MAKE) -s coverage_clean
 	@echo "clean done"
 
-# ----- coverage (Stage-3 follow-up, FU-U-6) -----
-coverage: CFLAGS += -fprofile-arcs -ftest-coverage
+# ----- coverage (Stage-3, FU-U-6 / G8 line>=80% branch>=70% for P0) -----
+COVERAGE_INFO := coverage.info
+COVERAGE_DIR  := coverage_report
+
+coverage: CFLAGS    += -fprofile-arcs -ftest-coverage
 coverage: LDFLAGS_BASE += -lgcov --coverage
 coverage: clean test
-	@echo "TODO: lcov / genhtml integration (Stage-3 / FU-U-6)"
+	@echo "==> Collecting coverage data via lcov..."
+	@lcov --capture --directory $(LIB_OBJS_DIR) --directory . \
+		--output-file $(COVERAGE_INFO) \
+		--rc branch_coverage=1 \
+		--ignore-errors mismatch,negative,inconsistent,empty,unused,source 2>&1 \
+		| tail -8
+	@echo "==> Stripping system / cmocka / test-harness paths from report..."
+	@lcov --remove $(COVERAGE_INFO) \
+		'/usr/*' '*/cmocka.h' \
+		'*/tests/unit/test_*.c' '*/tests/unit/common/*' \
+		--output-file $(COVERAGE_INFO).clean \
+		--rc branch_coverage=1 \
+		--ignore-errors unused,inconsistent,empty 2>&1 | tail -5
+	@mv $(COVERAGE_INFO).clean $(COVERAGE_INFO)
+	@echo "==> Generating HTML report at $(COVERAGE_DIR)/..."
+	@genhtml $(COVERAGE_INFO) --output-directory $(COVERAGE_DIR) \
+		--branch-coverage \
+		--title "F-Stack lib/ unit-test coverage" \
+		--ignore-errors source,inconsistent,corrupt 2>&1 | tail -6
+	@bash coverage_threshold.sh $(COVERAGE_INFO)
+
+coverage_clean:
+	@find . \( -name '*.gcda' -o -name '*.gcno' \) -type f -print 2>/dev/null \
+	  | while read f; do \
+	      /data/workspace/rm_tmp_file.sh "$$(realpath "$$f")" >/dev/null; \
+	    done
+	@if [ -f $(COVERAGE_INFO) ]; then \
+	  /data/workspace/rm_tmp_file.sh "$$(realpath $(COVERAGE_INFO))" >/dev/null; \
+	fi
+	@if [ -d $(COVERAGE_DIR) ]; then \
+	  /data/workspace/rm_tmp_file.sh "$$(realpath $(COVERAGE_DIR))" >/dev/null; \
+	fi

@@ -175,32 +175,190 @@ test_ff_get_current_time_advances(void **state)
 
 /* ------------------------------------------------------------------------ */
 /* TC-U-P1-HIF-08: ff_os_errno maps known ff_E* values to host E* equivs     */
+/*                                                                          */
+/* The ff_os_errno function has a 60+ case switch covering most POSIX       */
+/* errno values. This TC iterates a comprehensive table to drive coverage   */
+/* through every case + the default branch.                                 */
 /* ------------------------------------------------------------------------ */
 static void
 test_ff_os_errno_mapping(void **state)
 {
     (void)state;
-    /* Sample 5 common mappings */
-    errno = 0;
-    ff_os_errno(ff_EPERM);
-    assert_int_equal(errno, EPERM);
 
-    errno = 0;
-    ff_os_errno(ff_ENOENT);
-    assert_int_equal(errno, ENOENT);
+    /* Comprehensive (ff_input, expected_host_errno) table. Keep in sync
+     * with the switch in lib/ff_host_interface.c. Order does not matter. */
+    struct ff_errno_map { int in; int out; };
+    static const struct ff_errno_map T[] = {
+        { ff_EPERM,           EPERM           },
+        { ff_ENOENT,          ENOENT          },
+        { ff_ESRCH,           ESRCH           },
+        { ff_EINTR,           EINTR           },
+        { ff_EIO,             EIO             },
+        { ff_ENXIO,           ENXIO           },
+        { ff_E2BIG,           E2BIG           },
+        { ff_ENOEXEC,         ENOEXEC         },
+        { ff_EBADF,           EBADF           },
+        { ff_ECHILD,          ECHILD          },
+        { ff_EDEADLK,         EDEADLK         },
+        { ff_ENOMEM,          ENOMEM          },
+        { ff_EACCES,          EACCES          },
+        { ff_EFAULT,          EFAULT          },
+        { ff_ENOTBLK,         ENOTBLK         },
+        { ff_EBUSY,           EBUSY           },
+        { ff_EEXIST,          EEXIST          },
+        { ff_EXDEV,           EXDEV           },
+        { ff_ENODEV,          ENODEV          },
+        { ff_ENOTDIR,         ENOTDIR         },
+        { ff_EISDIR,          EISDIR          },
+        { ff_EINVAL,          EINVAL          },
+        { ff_ENFILE,          ENFILE          },
+        { ff_EMFILE,          EMFILE          },
+        { ff_ENOTTY,          ENOTTY          },
+        { ff_ETXTBSY,         ETXTBSY         },
+        { ff_EFBIG,           EFBIG           },
+        { ff_ENOSPC,          ENOSPC          },
+        { ff_ESPIPE,          ESPIPE          },
+        { ff_EROFS,           EROFS           },
+        { ff_EMLINK,          EMLINK          },
+        { ff_EPIPE,           EPIPE           },
+        { ff_EDOM,            EDOM            },
+        { ff_ERANGE,          ERANGE          },
+        { ff_EWOULDBLOCK,     EWOULDBLOCK     },
+        { ff_EINPROGRESS,     EINPROGRESS     },
+        { ff_EALREADY,        EALREADY        },
+        { ff_ENOTSOCK,        ENOTSOCK        },
+        { ff_EDESTADDRREQ,    EDESTADDRREQ    },
+        { ff_EMSGSIZE,        EMSGSIZE        },
+        { ff_EPROTOTYPE,      EPROTOTYPE      },
+        { ff_ENOPROTOOPT,     ENOPROTOOPT     },
+        { ff_EPROTONOSUPPORT, EPROTONOSUPPORT },
+        { ff_ESOCKTNOSUPPORT, ESOCKTNOSUPPORT },
+        { ff_ENOTSUP,         ENOTSUP         },
+        { ff_EPFNOSUPPORT,    EPFNOSUPPORT    },
+        { ff_EAFNOSUPPORT,    EAFNOSUPPORT    },
+        { ff_EADDRINUSE,      EADDRINUSE      },
+        { ff_EADDRNOTAVAIL,   EADDRNOTAVAIL   },
+        { ff_ENETDOWN,        ENETDOWN        },
+        { ff_ENETUNREACH,     ENETUNREACH     },
+        { ff_ENETRESET,       ENETRESET       },
+        { ff_ECONNABORTED,    ECONNABORTED    },
+        { ff_ECONNRESET,      ECONNRESET      },
+        { ff_ENOBUFS,         ENOBUFS         },
+        { ff_EISCONN,         EISCONN         },
+        { ff_ENOTCONN,        ENOTCONN        },
+        { ff_ESHUTDOWN,       ESHUTDOWN       },
+        { ff_ETOOMANYREFS,    ETOOMANYREFS    },
+        { ff_ETIMEDOUT,       ETIMEDOUT       },
+        { ff_ECONNREFUSED,    ECONNREFUSED    },
+        { ff_ELOOP,           ELOOP           },
+        { ff_ENAMETOOLONG,    ENAMETOOLONG    },
+        { ff_EHOSTDOWN,       EHOSTDOWN       },
+        { ff_EHOSTUNREACH,    EHOSTUNREACH    },
+        { ff_ENOTEMPTY,       ENOTEMPTY       },
+        { ff_EUSERS,          EUSERS          },
+        { ff_EDQUOT,          EDQUOT          },
+        { ff_ESTALE,          ESTALE          },
+        { ff_EREMOTE,         EREMOTE         },
+        { ff_ENOLCK,          ENOLCK          },
+        { ff_ENOSYS,          ENOSYS          },
+        { ff_EIDRM,           EIDRM           },
+        { ff_ENOMSG,          ENOMSG          },
+        { ff_EOVERFLOW,       EOVERFLOW       },
+        { ff_ECANCELED,       ECANCELED       },
+        { ff_EILSEQ,          EILSEQ          },
+        { ff_EBADMSG,         EBADMSG         },
+        { ff_EMULTIHOP,       EMULTIHOP       },
+        { ff_ENOLINK,         ENOLINK         },
+        { ff_EPROTO,          EPROTO          },
+    };
+    const size_t N = sizeof(T) / sizeof(T[0]);
 
-    errno = 0;
-    ff_os_errno(ff_EINVAL);
-    assert_int_equal(errno, EINVAL);
-
-    errno = 0;
-    ff_os_errno(ff_ENOMEM);
-    assert_int_equal(errno, ENOMEM);
+    for (size_t i = 0; i < N; i++) {
+        errno = 0;
+        ff_os_errno(T[i].in);
+        if (errno != T[i].out) {
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "ff_os_errno(%d) -> errno=%d, expected %d",
+                     T[i].in, errno, T[i].out);
+            fail_msg("%s", msg);
+        }
+    }
 
     /* default branch: arbitrary unknown code passes through */
     errno = 0;
     ff_os_errno(99999);
     assert_int_equal(errno, 99999);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-HIF-09 (extra): ff_clock_gettime_ns returns reasonable nanoseconds*/
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_clock_gettime_ns_advances(void **state)
+{
+    (void)state;
+    uint64_t a = ff_clock_gettime_ns(ff_CLOCK_MONOTONIC);
+    for (volatile int i = 0; i < 100000; i++) { /* burn cycles */ }
+    uint64_t b = ff_clock_gettime_ns(ff_CLOCK_MONOTONIC);
+    assert_true(a > 0);
+    assert_true(b >= a);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-HIF-10 (extra): ff_arc4random returns 32-bit values, not all-zero */
+/* across multiple invocations.                                              */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_arc4random_distribution(void **state)
+{
+    (void)state;
+    uint32_t prev = 0;
+    int distinct = 0;
+    for (int i = 0; i < 16; i++) {
+        uint32_t v = ff_arc4random();
+        if (v != prev) {
+            distinct++;
+        }
+        prev = v;
+    }
+    /* Statistically, near-all 16 draws should differ */
+    assert_true(distinct >= 12);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-HIF-12 (extra): ff_setenv / ff_getenv round-trip                  */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_setenv_getenv_roundtrip(void **state)
+{
+    (void)state;
+    int rv = ff_setenv("FF_UNIT_TEST_VAR", "hello-world");
+    assert_int_equal(rv, 0);
+    char *got = ff_getenv("FF_UNIT_TEST_VAR");
+    assert_non_null(got);
+    assert_string_equal(got, "hello-world");
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-HIF-13 (extra): ff_mmap + ff_munmap round-trip with sane args     */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_mmap_munmap_roundtrip(void **state)
+{
+    (void)state;
+    void *p = ff_mmap(NULL, 4096,
+                      ff_PROT_READ | ff_PROT_WRITE,
+                      ff_MAP_PRIVATE | ff_MAP_ANON,
+                      -1, 0);
+    assert_non_null(p);
+    assert_ptr_not_equal(p, ff_MAP_FAILED);
+    /* writable */
+    memset(p, 0xAB, 4096);
+    assert_int_equal(((unsigned char *)p)[0],    0xAB);
+    assert_int_equal(((unsigned char *)p)[4095], 0xAB);
+    int rv = ff_munmap(p, 4096);
+    assert_int_equal(rv, 0);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -218,6 +376,11 @@ main(void)
         cmocka_unit_test(test_ff_arc4rand_buf_filled),
         cmocka_unit_test(test_ff_get_current_time_advances),
         cmocka_unit_test(test_ff_os_errno_mapping),
+        /* Stage-3 coverage extensions (TC-U-P1-HIF-09..13) */
+        cmocka_unit_test(test_ff_clock_gettime_ns_advances),
+        cmocka_unit_test(test_ff_arc4random_distribution),
+        cmocka_unit_test(test_ff_setenv_getenv_roundtrip),
+        cmocka_unit_test(test_ff_mmap_munmap_roundtrip),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

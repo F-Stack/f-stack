@@ -45,6 +45,7 @@ adapter/syscall/helloworld_stack_thread_socket
 AGENTS.md
 CLAUDE.md
 plan.md
+docs/unit_test_spec/zh_cn/plan-*.md
 
 # Nginx build artifacts (F-Stack app/nginx-1.28.0)
 app/nginx-1.28.0/Makefile
@@ -64,3 +65,13 @@ tests/unit/test_ff_host_interface
 tests/unit/test_ff_epoll
 tests/unit/test_ff_config
 tests/unit/common/*.o
+
+# Stage-3 coverage artifacts (produced by `make coverage`)
+tests/unit/*.gcda
+tests/unit/*.gcno
+tests/unit/common/*.gcda
+tests/unit/common/*.gcno
+tests/unit/lib_objs/*.gcda
+tests/unit/lib_objs/*.gcno
+tests/unit/coverage.info
+tests/unit/coverage_report/
