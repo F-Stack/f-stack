@@ -250,11 +250,11 @@ Recommended path:
 ### Version Information
 
 ```
-Knowledge base version: 1.1 (post FreeBSD 13.0 → 15.0 first-stage upgrade sync, 2026-06-08)
+Knowledge base version: 1.2 (post FreeBSD 13.0 → 15.0 first-stage upgrade sync + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test, 2026-06-09)
 F-Stack version: v1.26
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
 DPDK version: 23.11.5 (unchanged — C-3 constraint)
-Generation date: 2026-03-20 (last sync 2026-06-08)
+Generation date: 2026-03-20 (last sync 2026-06-09)
 Total lines: ~5839 lines (based on actual file count)
 ```
 
@@ -344,7 +344,7 @@ A: Plan:
 - Track F-Stack major version updates (v1.26 → v1.27, etc.)
 - Supplement new optimization techniques and best practices
 - Collect user feedback and corrections
-- For 13.0 → 15.0 first-stage upgrade traceability, see `freebsd_13_to_15_upgrade_spec/` (M0~M5, runtime-fix, Phase-5b, rib-fix, dual baselines)
+- For 13.0 → 15.0 first-stage upgrade traceability, see `freebsd_13_to_15_upgrade_spec/` (M0~M5, runtime-fix, Phase-5b, rib-fix, dual baselines, Phase-2 M6-M13, F-A1 fix, vlan-vip-ipfw test; project-level wrap-up: `freebsd_13_to_15_upgrade_spec/zh_cn/00-project-closure.md`)
 
 ## 📞 Feedback and Support
 
