@@ -24,19 +24,11 @@
 #define UNREFERENCED_5PARAMETER(_p, _q, _r, _s, _t) \
 	do { (void)(_p); (void)(_q); (void)(_r); (void)(_s); (void)(_t); } while (0)
 
-#ifndef LINUX_MACROS
-#ifndef BIT
 #define BIT(a) (1UL << (a))
-#endif /* BIT */
-#ifndef BIT_ULL
 #define BIT_ULL(a) (1ULL << (a))
-#endif /* BIT_ULL */
-#endif /* LINUX_MACROS */
 
-#ifndef I40E_MASK
 /* I40E_MASK is a macro used on 32 bit registers */
 #define I40E_MASK(mask, shift) (mask << shift)
-#endif
 
 #define I40E_MAX_PF			16
 #define I40E_MAX_PF_VSI			64
@@ -54,7 +46,6 @@
 
 /* Max timeout in ms for the phy to respond */
 #define I40E_MAX_PHY_TIMEOUT		500
-
 /* Check whether address is multicast. */
 #define I40E_IS_MULTICAST(address) (bool)(((u8 *)(address))[0] & ((u8)0x01))
 
@@ -70,9 +61,7 @@
 struct i40e_hw;
 typedef void (*I40E_ADMINQ_CALLBACK)(struct i40e_hw *, struct i40e_aq_desc *);
 
-#ifndef ETH_ALEN
 #define ETH_ALEN	6
-#endif
 /* Data type manipulation macros. */
 #define I40E_HI_DWORD(x)	((u32)((((x) >> 16) >> 16) & 0xFFFFFFFF))
 #define I40E_LO_DWORD(x)	((u32)((x) & 0xFFFFFFFF))
@@ -458,7 +447,7 @@ enum i40e_aq_resource_access_type {
 };
 
 struct i40e_nvm_info {
-	u64 hw_semaphore_timeout; /* usec global time (GTIME resolution) */
+	u32 hw_semaphore_timeout; /* usec global time (GTIME resolution) */
 	u32 timeout;              /* [ms] */
 	u16 sr_size;              /* Shadow RAM size in words */
 	bool blank_nvm_mode;      /* is NVM empty (no FW present)*/
@@ -680,7 +669,6 @@ struct i40e_dcbx_config {
 struct i40e_hw {
 	u8 *hw_addr;
 	void *back;
-
 	/* subsystem structs */
 	struct i40e_phy_info phy;
 	struct i40e_mac_info mac;
@@ -791,7 +779,7 @@ union i40e_16byte_rx_desc {
 		__le64 hdr_addr; /* Header buffer address */
 	} read;
 	struct {
-		struct {
+		struct i40e_16b_rx_wb_qw0 {
 			struct {
 				union {
 					__le16 mirroring_status;
@@ -810,6 +798,9 @@ union i40e_16byte_rx_desc {
 			__le64 status_error_len;
 		} qword1;
 	} wb;  /* writeback */
+	struct {
+		u64 qword[2];
+	} raw;
 };
 
 union i40e_32byte_rx_desc {
@@ -1491,6 +1482,7 @@ struct i40e_hw_port_stats {
 	u64 rx_undersize;		/* ruc */
 	u64 rx_fragments;		/* rfc */
 	u64 rx_oversize;		/* roc */
+	u64 rx_err1;			/* rxerr1 */
 	u64 rx_jabber;			/* rjc */
 	u64 tx_size_64;			/* ptc64 */
 	u64 tx_size_127;		/* ptc127 */
@@ -1566,6 +1558,7 @@ struct i40e_hw_port_stats {
 #define I40E_SR_FEATURE_CONFIGURATION_PTR	0x49
 #define I40E_SR_CONFIGURATION_METADATA_PTR	0x4D
 #define I40E_SR_IMMEDIATE_VALUES_PTR		0x4E
+#define I40E_SR_5TH_FREE_PROVISION_AREA_PTR	0x50
 #define I40E_SR_PRESERVATION_RULES_PTR		0x70
 #define I40E_X722_SR_5TH_FREE_PROVISION_AREA_PTR	0x71
 #define I40E_SR_6TH_FREE_PROVISION_AREA_PTR	0x71
@@ -1922,10 +1915,18 @@ struct i40e_lldp_variables {
 #define I40E_ALT_BW_RELATIVE_MASK	0x40000000
 #define I40E_ALT_BW_VALID_MASK		0x80000000
 
+/* Alternate Ram Trace Buffer*/
+#define I40E_ALT_CANARY			0xABCDEFAB
+#define I40E_ALT_BUFF_DWORD_SIZE	0x14 /* in dwords */
+
 /* RSS Hash Table Size */
 #define I40E_PFQF_CTL_0_HASHLUTSIZE_512	0x00010000
 
 /* INPUT SET MASK for RSS, flow director, and flexible payload */
+#define I40E_X722_L3_SRC_SHIFT		49
+#define I40E_X722_L3_SRC_MASK		(0x3ULL << I40E_X722_L3_SRC_SHIFT)
+#define I40E_X722_L3_DST_SHIFT		41
+#define I40E_X722_L3_DST_MASK		(0x3ULL << I40E_X722_L3_DST_SHIFT)
 #define I40E_L3_SRC_SHIFT		47
 #define I40E_L3_SRC_MASK		(0x3ULL << I40E_L3_SRC_SHIFT)
 #define I40E_L3_V6_SRC_SHIFT		43
@@ -1940,6 +1941,8 @@ struct i40e_lldp_variables {
 #define I40E_L4_DST_MASK		(0x1ULL << I40E_L4_DST_SHIFT)
 #define I40E_VERIFY_TAG_SHIFT		31
 #define I40E_VERIFY_TAG_MASK		(0x3ULL << I40E_VERIFY_TAG_SHIFT)
+#define I40E_VLAN_SRC_SHIFT		55
+#define I40E_VLAN_SRC_MASK		(0x1ULL << I40E_VLAN_SRC_SHIFT)
 
 #define I40E_FLEX_50_SHIFT		13
 #define I40E_FLEX_50_MASK		(0x1ULL << I40E_FLEX_50_SHIFT)
@@ -1994,6 +1997,8 @@ struct i40e_metadata_segment {
 #define I40E_DDP_TRACKID_INVALID	0xFFFFFFFF
 #define I40E_DDP_TRACKID_GRP_MSK	0x00FF0000
 #define I40E_DDP_TRACKID_GRP_COMP_ALL	0xFF
+#define I40E_DDP_TRACKID_PKGTYPE_MSK	0xFF000000
+#define I40E_DDP_TRACKID_PKGTYPE_RDONLY	0
 	u32 track_id;
 	char name[I40E_DDP_NAME_SIZE];
 };

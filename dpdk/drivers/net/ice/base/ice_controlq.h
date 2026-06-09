@@ -22,9 +22,25 @@
 /* Defines that help manage the driver vs FW API checks.
  * Take a look at ice_aq_ver_check in ice_controlq.c for actual usage.
  */
-#define EXP_FW_API_VER_BRANCH		0x00
-#define EXP_FW_API_VER_MAJOR		0x01
-#define EXP_FW_API_VER_MINOR		0x05
+#define EXP_FW_API_VER_BRANCH_E830	0x00
+#define EXP_FW_API_VER_MAJOR_E830	0x01
+#define EXP_FW_API_VER_MINOR_E830	0x07
+
+#define EXP_FW_API_VER_BRANCH_E810	0x00
+#define EXP_FW_API_VER_MAJOR_E810	0x01
+#define EXP_FW_API_VER_MINOR_E810	0x05
+
+#define EXP_FW_API_VER_BRANCH_BY_MAC(hw) ((hw)->mac_type == ICE_MAC_E830 ? \
+			EXP_FW_API_VER_BRANCH_E830 : \
+			EXP_FW_API_VER_BRANCH_E810)
+
+#define EXP_FW_API_VER_MAJOR_BY_MAC(hw) ((hw)->mac_type == ICE_MAC_E830 ? \
+			EXP_FW_API_VER_MAJOR_E830 : \
+			EXP_FW_API_VER_MAJOR_E810)
+
+#define EXP_FW_API_VER_MINOR_BY_MAC(hw) ((hw)->mac_type == ICE_MAC_E830 ? \
+			EXP_FW_API_VER_MINOR_E830 : \
+			EXP_FW_API_VER_MINOR_E810)
 
 /* Different control queue types: These are mainly for SW consumption. */
 enum ice_ctl_q {
@@ -35,15 +51,13 @@ enum ice_ctl_q {
 };
 
 /* Control Queue timeout settings - max delay 1s */
-#define ICE_CTL_Q_SQ_CMD_TIMEOUT	10000 /* Count 10000 times */
-#define ICE_CTL_Q_SQ_CMD_USEC		100   /* Check every 100usec */
+#define ICE_CTL_Q_SQ_CMD_TIMEOUT	100000	/* Count 100000 times */
 #define ICE_CTL_Q_ADMIN_INIT_TIMEOUT	10    /* Count 10 times */
 #define ICE_CTL_Q_ADMIN_INIT_MSEC	100   /* Check every 100msec */
 
 struct ice_ctl_q_ring {
 	void *dma_head;			/* Virtual address to DMA head */
 	struct ice_dma_mem desc_buf;	/* descriptor ring memory */
-	void *cmd_buf;			/* command buffer memory */
 
 	union {
 		struct ice_dma_mem *sq_bi;
@@ -72,8 +86,6 @@ struct ice_ctl_q_ring {
 struct ice_sq_cd {
 	struct ice_aq_desc *wb_desc;
 };
-
-#define ICE_CTL_Q_DETAILS(R, i) (&(((struct ice_sq_cd *)((R).cmd_buf))[i]))
 
 /* rq event information */
 struct ice_rq_event_info {

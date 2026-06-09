@@ -8,6 +8,7 @@
 int
 roc_nix_tm_sq_aura_fc(struct roc_nix_sq *sq, bool enable)
 {
+	struct npa_cn20k_aq_enq_req *req_cn20k;
 	struct npa_aq_enq_req *req;
 	struct npa_aq_enq_rsp *rsp;
 	uint64_t aura_handle;
@@ -25,7 +26,12 @@ roc_nix_tm_sq_aura_fc(struct roc_nix_sq *sq, bool enable)
 	mbox = mbox_get(lf->mbox);
 	/* Set/clear sqb aura fc_ena */
 	aura_handle = sq->aura_handle;
-	req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		req = (struct npa_aq_enq_req *)req_cn20k;
+	} else {
+		req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (req == NULL)
 		goto exit;
 
@@ -51,25 +57,31 @@ roc_nix_tm_sq_aura_fc(struct roc_nix_sq *sq, bool enable)
 		goto exit;
 
 	/* Read back npa aura ctx */
-	req = mbox_alloc_msg_npa_aq_enq(mbox);
-	if (req == NULL) {
-		rc = -ENOSPC;
-		goto exit;
-	}
+	if (enable) {
+		if (roc_model_is_cn20k()) {
+			req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+			req = (struct npa_aq_enq_req *)req_cn20k;
+		} else {
+			req = mbox_alloc_msg_npa_aq_enq(mbox);
+		}
+		if (req == NULL) {
+			rc = -ENOSPC;
+			goto exit;
+		}
 
-	req->aura_id = roc_npa_aura_handle_to_aura(aura_handle);
-	req->ctype = NPA_AQ_CTYPE_AURA;
-	req->op = NPA_AQ_INSTOP_READ;
+		req->aura_id = roc_npa_aura_handle_to_aura(aura_handle);
+		req->ctype = NPA_AQ_CTYPE_AURA;
+		req->op = NPA_AQ_INSTOP_READ;
 
-	rc = mbox_process_msg(mbox, (void *)&rsp);
-	if (rc)
-		goto exit;
+		rc = mbox_process_msg(mbox, (void *)&rsp);
+		if (rc)
+			goto exit;
 
-	/* Init when enabled as there might be no triggers */
-	if (enable)
+		/* Init when enabled as there might be no triggers */
 		*(volatile uint64_t *)sq->fc = rsp->aura.count;
-	else
+	} else {
 		*(volatile uint64_t *)sq->fc = sq->aura_sqb_bufs;
+	}
 	/* Sync write barrier */
 	plt_wmb();
 	rc = 0;
@@ -494,7 +506,7 @@ roc_nix_tm_hierarchy_disable(struct roc_nix *roc_nix)
 		if (!sq)
 			continue;
 
-		rc = roc_nix_tm_sq_aura_fc(sq, false);
+		rc = roc_nix_sq_ena_dis(sq, false);
 		if (rc) {
 			plt_err("Failed to disable sqb aura fc, rc=%d", rc);
 			goto cleanup;
@@ -606,7 +618,14 @@ roc_nix_tm_hierarchy_xmit_enable(struct roc_nix *roc_nix, enum roc_nix_tm_tree t
 		sq_id = node->id;
 		sq = nix->sqs[sq_id];
 
-		rc = roc_nix_tm_sq_aura_fc(sq, true);
+		if (!sq) {
+			plt_err("nb_rxq %d nb_txq %d sq_id %d lvl %d", nix->nb_rx_queues,
+				nix->nb_tx_queues, sq_id, node->lvl);
+			roc_nix_tm_dump(roc_nix, NULL);
+			roc_nix_dump(roc_nix, NULL);
+			return NIX_ERR_TM_INVALID_NODE;
+		}
+		rc = roc_nix_sq_ena_dis(sq, true);
 		if (rc) {
 			plt_err("TM sw xon failed on SQ %u, rc=%d", node->id,
 				rc);
@@ -1282,15 +1301,19 @@ roc_nix_tm_rsrc_max(bool pf, uint16_t schq[ROC_TM_LVL_MAX])
 
 		switch (hw_lvl) {
 		case NIX_TXSCH_LVL_SMQ:
-			max = (roc_model_is_cn9k() ?
-					     NIX_CN9K_TXSCH_LVL_SMQ_MAX :
-					     NIX_TXSCH_LVL_SMQ_MAX);
+			max = (roc_model_is_cn9k() ? NIX_CN9K_TXSCH_LVL_SMQ_MAX :
+				(roc_model_is_cn10k() ? NIX_CN10K_TXSCH_LVL_SMQ_MAX :
+				 NIX_TXSCH_LVL_SMQ_MAX));
 			break;
 		case NIX_TXSCH_LVL_TL4:
-			max = NIX_TXSCH_LVL_TL4_MAX;
+			max = (roc_model_is_cn9k() ? NIX_CN9K_TXSCH_LVL_TL4_MAX :
+				(roc_model_is_cn10k() ? NIX_CN10K_TXSCH_LVL_TL4_MAX :
+							NIX_TXSCH_LVL_TL4_MAX));
 			break;
 		case NIX_TXSCH_LVL_TL3:
-			max = NIX_TXSCH_LVL_TL3_MAX;
+			max = (roc_model_is_cn9k() ? NIX_CN9K_TXSCH_LVL_TL3_MAX :
+				(roc_model_is_cn10k() ? NIX_CN10K_TXSCH_LVL_TL3_MAX :
+							NIX_TXSCH_LVL_TL3_MAX));
 			break;
 		case NIX_TXSCH_LVL_TL2:
 			max = pf ? NIX_TXSCH_LVL_TL2_MAX : 1;
@@ -1314,4 +1337,74 @@ roc_nix_tm_root_has_sp(struct roc_nix *roc_nix)
 	if (nix->tm_flags & NIX_TM_TL1_NO_SP)
 		return false;
 	return true;
+}
+
+static inline struct nix *
+pf_func_to_nix_get(uint16_t pf_func)
+{
+	struct roc_nix *roc_nix_tmp = NULL;
+	struct roc_nix_list *nix_list;
+
+	nix_list = roc_idev_nix_list_get();
+	if (nix_list == NULL)
+		return NULL;
+
+	/* Find the NIX of given pf_func */
+	TAILQ_FOREACH(roc_nix_tmp, nix_list, next) {
+		struct nix *nix = roc_nix_to_nix_priv(roc_nix_tmp);
+
+		if (nix->dev.pf_func == pf_func)
+			return nix;
+	}
+
+	return NULL;
+}
+
+int
+roc_nix_tm_egress_link_cfg_set(struct roc_nix *roc_nix, uint64_t dst_pf_func, bool enable)
+{
+	struct nix *src_nix = roc_nix_to_nix_priv(roc_nix), *dst_nix;
+	struct mbox *mbox = (&src_nix->dev)->mbox;
+	struct nix_txschq_config *req = NULL;
+	struct nix_tm_node_list *list;
+	struct nix_tm_node *node;
+	int rc = 0, k;
+
+	dst_nix = pf_func_to_nix_get(dst_pf_func);
+	if (!dst_nix)
+		return -EINVAL;
+
+	if (dst_nix == src_nix)
+		return 0;
+
+	list = nix_tm_node_list(src_nix, src_nix->tm_tree);
+	TAILQ_FOREACH(node, list, node) {
+		if (node->hw_lvl != src_nix->tm_link_cfg_lvl)
+			continue;
+
+		if (!(node->flags & NIX_TM_NODE_HWRES))
+			continue;
+
+		/* Allocating TL3 request */
+		req = mbox_alloc_msg_nix_txschq_cfg(mbox_get(mbox));
+		req->lvl = src_nix->tm_link_cfg_lvl;
+		k = 0;
+
+		/* Enable PFC/pause on the identified TL3 */
+		req->reg[k] = NIX_AF_TL3_TL2X_LINKX_CFG(node->hw_id, dst_nix->tx_link);
+		if (enable)
+			req->regval[k] |= BIT_ULL(12);
+		else
+			req->regval[k] &= ~(BIT_ULL(12));
+		req->regval_mask[k] = ~(BIT_ULL(12));
+		k++;
+
+		req->num_regs = k;
+		rc = mbox_process(mbox);
+		mbox_put(mbox);
+		if (rc)
+			goto err;
+	}
+err:
+	return rc;
 }

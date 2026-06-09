@@ -4,6 +4,7 @@
 #include <rte_malloc.h>
 #include <rte_hash.h>
 #include <rte_jhash.h>
+#include <rte_log.h>
 #include <rte_mbuf.h>
 #include <rte_cryptodev.h>
 
@@ -17,23 +18,23 @@
 #define IV_OFFSET		(sizeof(struct rte_crypto_op) + \
 				sizeof(struct rte_crypto_sym_op))
 
-#ifdef RTE_LIBRTE_VHOST_DEBUG
-#define VC_LOG_ERR(fmt, args...)				\
-	RTE_LOG(ERR, USER1, "[%s] %s() line %u: " fmt "\n",	\
-		"Vhost-Crypto",	__func__, __LINE__, ## args)
-#define VC_LOG_INFO(fmt, args...)				\
-	RTE_LOG(INFO, USER1, "[%s] %s() line %u: " fmt "\n",	\
-		"Vhost-Crypto",	__func__, __LINE__, ## args)
+RTE_LOG_REGISTER_SUFFIX(vhost_crypto_logtype, crypto, INFO);
+#define RTE_LOGTYPE_VHOST_CRYPTO	vhost_crypto_logtype
 
-#define VC_LOG_DBG(fmt, args...)				\
-	RTE_LOG(DEBUG, USER1, "[%s] %s() line %u: " fmt "\n",	\
-		"Vhost-Crypto",	__func__, __LINE__, ## args)
+#define VC_LOG_ERR(...)	\
+	RTE_LOG_LINE_PREFIX(ERR, VHOST_CRYPTO, "%s() line %u: ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
+
+#define VC_LOG_INFO(...) \
+	RTE_LOG_LINE_PREFIX(INFO, VHOST_CRYPTO, "%s() line %u: ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
+
+#ifdef RTE_LIBRTE_VHOST_DEBUG
+#define VC_LOG_DBG(...)	\
+	RTE_LOG_LINE_PREFIX(DEBUG, VHOST_CRYPTO, "%s() line %u: ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 #else
-#define VC_LOG_ERR(fmt, args...)				\
-	RTE_LOG(ERR, USER1, "[VHOST-Crypto]: " fmt "\n", ## args)
-#define VC_LOG_INFO(fmt, args...)				\
-	RTE_LOG(INFO, USER1, "[VHOST-Crypto]: " fmt "\n", ## args)
-#define VC_LOG_DBG(fmt, args...)
+#define VC_LOG_DBG(...)
 #endif
 
 #define VIRTIO_CRYPTO_FEATURES ((1ULL << VIRTIO_F_NOTIFY_ON_EMPTY) |	\
@@ -191,7 +192,7 @@ static int get_iv_len(enum rte_crypto_cipher_algorithm algo)
  * one DPDK crypto device that deals with all crypto workloads. It is declared
  * here and defined in vhost_crypto.c
  */
-struct vhost_crypto {
+struct __rte_cache_aligned vhost_crypto {
 	/** Used to lookup DPDK Cryptodev Session based on VIRTIO crypto
 	 *  session ID.
 	 */
@@ -214,7 +215,7 @@ struct vhost_crypto {
 	struct virtio_net *dev;
 
 	uint8_t option;
-} __rte_cache_aligned;
+};
 
 struct vhost_crypto_writeback_data {
 	uint8_t *src;

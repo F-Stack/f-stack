@@ -50,6 +50,9 @@ typedef uint32_t (*eth_rx_queue_count_t)(void *rxq);
 /** @internal Check the status of a Rx descriptor */
 typedef int (*eth_rx_descriptor_status_t)(void *rxq, uint16_t offset);
 
+/** @internal Get number of used descriptors on a transmit queue. */
+typedef int (*eth_tx_queue_count_t)(void *txq);
+
 /** @internal Check the status of a Tx descriptor */
 typedef int (*eth_tx_descriptor_status_t)(void *txq, uint16_t offset);
 
@@ -81,7 +84,7 @@ struct rte_ethdev_qdata {
  * On 64-bit systems contents of this structure occupy exactly two 64B lines.
  * On 32-bit systems contents of this structure fits into one 64B line.
  */
-struct rte_eth_fp_ops {
+struct __rte_cache_aligned rte_eth_fp_ops {
 
 	/**@{*/
 	/**
@@ -116,10 +119,12 @@ struct rte_eth_fp_ops {
 	eth_tx_descriptor_status_t tx_descriptor_status;
 	/** Copy used mbufs from Tx mbuf ring into Rx. */
 	eth_recycle_tx_mbufs_reuse_t recycle_tx_mbufs_reuse;
-	uintptr_t reserved2[2];
+	/** Get the number of used Tx descriptors. */
+	eth_tx_queue_count_t tx_queue_count;
+	uintptr_t reserved2[1];
 	/**@}*/
 
-} __rte_cache_aligned;
+};
 
 extern struct rte_eth_fp_ops rte_eth_fp_ops[RTE_MAX_ETHPORTS];
 

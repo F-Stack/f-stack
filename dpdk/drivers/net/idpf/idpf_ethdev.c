@@ -232,7 +232,8 @@ idpf_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 }
 
 static const uint32_t *
-idpf_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused)
+idpf_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused,
+			      size_t *no_of_elements)
 {
 	static const uint32_t ptypes[] = {
 		RTE_PTYPE_L2_ETHER,
@@ -243,9 +244,9 @@ idpf_dev_supported_ptypes_get(struct rte_eth_dev *dev __rte_unused)
 		RTE_PTYPE_L4_TCP,
 		RTE_PTYPE_L4_SCTP,
 		RTE_PTYPE_L4_ICMP,
-		RTE_PTYPE_UNKNOWN
 	};
 
+	*no_of_elements = RTE_DIM(ptypes);
 	return ptypes;
 }
 
@@ -258,8 +259,8 @@ idpf_get_mbuf_alloc_failed_stats(struct rte_eth_dev *dev)
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rxq = dev->data->rx_queues[i];
-		mbuf_alloc_failed += __atomic_load_n(&rxq->rx_stats.mbuf_alloc_failed,
-						     __ATOMIC_RELAXED);
+		mbuf_alloc_failed += rte_atomic_load_explicit(&rxq->rx_stats.mbuf_alloc_failed,
+						     rte_memory_order_relaxed);
 	}
 
 	return mbuf_alloc_failed;
@@ -307,7 +308,8 @@ idpf_reset_mbuf_alloc_failed_stats(struct rte_eth_dev *dev)
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rxq = dev->data->rx_queues[i];
-		__atomic_store_n(&rxq->rx_stats.mbuf_alloc_failed, 0, __ATOMIC_RELAXED);
+		rte_atomic_store_explicit(&rxq->rx_stats.mbuf_alloc_failed, 0,
+				rte_memory_order_relaxed);
 	}
 }
 

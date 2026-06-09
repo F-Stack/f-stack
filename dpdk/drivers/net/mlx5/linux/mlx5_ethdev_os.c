@@ -23,8 +23,8 @@
 #include <stdalign.h>
 #include <sys/un.h>
 #include <time.h>
-#include <dlfcn.h>
 
+#include <ethdev_linux_ethtool.h>
 #include <ethdev_driver.h>
 #include <bus_pci_driver.h>
 #include <rte_mbuf.h>
@@ -45,91 +45,6 @@
 #include "mlx5.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_utils.h"
-
-/* Supported speed values found in /usr/include/linux/ethtool.h */
-#ifndef HAVE_SUPPORTED_40000baseKR4_Full
-#define SUPPORTED_40000baseKR4_Full (1 << 23)
-#endif
-#ifndef HAVE_SUPPORTED_40000baseCR4_Full
-#define SUPPORTED_40000baseCR4_Full (1 << 24)
-#endif
-#ifndef HAVE_SUPPORTED_40000baseSR4_Full
-#define SUPPORTED_40000baseSR4_Full (1 << 25)
-#endif
-#ifndef HAVE_SUPPORTED_40000baseLR4_Full
-#define SUPPORTED_40000baseLR4_Full (1 << 26)
-#endif
-#ifndef HAVE_SUPPORTED_56000baseKR4_Full
-#define SUPPORTED_56000baseKR4_Full (1 << 27)
-#endif
-#ifndef HAVE_SUPPORTED_56000baseCR4_Full
-#define SUPPORTED_56000baseCR4_Full (1 << 28)
-#endif
-#ifndef HAVE_SUPPORTED_56000baseSR4_Full
-#define SUPPORTED_56000baseSR4_Full (1 << 29)
-#endif
-#ifndef HAVE_SUPPORTED_56000baseLR4_Full
-#define SUPPORTED_56000baseLR4_Full (1 << 30)
-#endif
-
-/* Add defines in case the running kernel is not the same as user headers. */
-#ifndef ETHTOOL_GLINKSETTINGS
-struct ethtool_link_settings {
-	uint32_t cmd;
-	uint32_t speed;
-	uint8_t duplex;
-	uint8_t port;
-	uint8_t phy_address;
-	uint8_t autoneg;
-	uint8_t mdio_support;
-	uint8_t eth_to_mdix;
-	uint8_t eth_tp_mdix_ctrl;
-	int8_t link_mode_masks_nwords;
-	uint32_t reserved[8];
-	uint32_t link_mode_masks[];
-};
-
-/* The kernel values can be found in /include/uapi/linux/ethtool.h */
-#define ETHTOOL_GLINKSETTINGS 0x0000004c
-#define ETHTOOL_LINK_MODE_1000baseT_Full_BIT 5
-#define ETHTOOL_LINK_MODE_Autoneg_BIT 6
-#define ETHTOOL_LINK_MODE_1000baseKX_Full_BIT 17
-#define ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT 18
-#define ETHTOOL_LINK_MODE_10000baseKR_Full_BIT 19
-#define ETHTOOL_LINK_MODE_10000baseR_FEC_BIT 20
-#define ETHTOOL_LINK_MODE_20000baseMLD2_Full_BIT 21
-#define ETHTOOL_LINK_MODE_20000baseKR2_Full_BIT 22
-#define ETHTOOL_LINK_MODE_40000baseKR4_Full_BIT 23
-#define ETHTOOL_LINK_MODE_40000baseCR4_Full_BIT 24
-#define ETHTOOL_LINK_MODE_40000baseSR4_Full_BIT 25
-#define ETHTOOL_LINK_MODE_40000baseLR4_Full_BIT 26
-#define ETHTOOL_LINK_MODE_56000baseKR4_Full_BIT 27
-#define ETHTOOL_LINK_MODE_56000baseCR4_Full_BIT 28
-#define ETHTOOL_LINK_MODE_56000baseSR4_Full_BIT 29
-#define ETHTOOL_LINK_MODE_56000baseLR4_Full_BIT 30
-#endif
-#ifndef HAVE_ETHTOOL_LINK_MODE_25G
-#define ETHTOOL_LINK_MODE_25000baseCR_Full_BIT 31
-#define ETHTOOL_LINK_MODE_25000baseKR_Full_BIT 32
-#define ETHTOOL_LINK_MODE_25000baseSR_Full_BIT 33
-#endif
-#ifndef HAVE_ETHTOOL_LINK_MODE_50G
-#define ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT 34
-#define ETHTOOL_LINK_MODE_50000baseKR2_Full_BIT 35
-#endif
-#ifndef HAVE_ETHTOOL_LINK_MODE_100G
-#define ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT 36
-#define ETHTOOL_LINK_MODE_100000baseSR4_Full_BIT 37
-#define ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT 38
-#define ETHTOOL_LINK_MODE_100000baseLR4_ER4_Full_BIT 39
-#endif
-#ifndef HAVE_ETHTOOL_LINK_MODE_200G
-#define ETHTOOL_LINK_MODE_200000baseKR4_Full_BIT 62
-#define ETHTOOL_LINK_MODE_200000baseSR4_Full_BIT 63
-#define ETHTOOL_LINK_MODE_200000baseLR4_ER4_FR4_Full_BIT 0 /* 64 - 64 */
-#define ETHTOOL_LINK_MODE_200000baseDR4_Full_BIT 1 /* 65 - 64 */
-#define ETHTOOL_LINK_MODE_200000baseCR4_Full_BIT 2 /* 66 - 64 */
-#endif
 
 /* Get interface index from SubFunction device name. */
 int
@@ -157,7 +72,7 @@ mlx5_auxiliary_get_ifindex(const char *sf_name)
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
 int
-mlx5_get_ifname(const struct rte_eth_dev *dev, char (*ifname)[MLX5_NAMESIZE])
+mlx5_get_ifname(const struct rte_eth_dev *dev, char ifname[MLX5_NAMESIZE])
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 	unsigned int ifindex;
@@ -171,12 +86,11 @@ mlx5_get_ifname(const struct rte_eth_dev *dev, char (*ifname)[MLX5_NAMESIZE])
 	ifindex = mlx5_ifindex(dev);
 	if (!ifindex) {
 		if (!priv->representor)
-			return mlx5_get_ifname_sysfs(priv->sh->ibdev_path,
-						     *ifname);
+			return mlx5_get_ifname_sysfs(priv->sh->ibdev_path, ifname);
 		rte_errno = ENXIO;
 		return -rte_errno;
 	}
-	if (if_indextoname(ifindex, &(*ifname)[0]))
+	if (if_indextoname(ifindex, ifname))
 		return 0;
 	rte_errno = errno;
 	return -rte_errno;
@@ -234,13 +148,43 @@ error:
 static int
 mlx5_ifreq(const struct rte_eth_dev *dev, int req, struct ifreq *ifr)
 {
-	char ifname[sizeof(ifr->ifr_name)];
+	char ifname[MLX5_NAMESIZE];
 	int ret;
 
-	ret = mlx5_get_ifname(dev, &ifname);
+	ret = mlx5_get_ifname(dev, ifname);
 	if (ret)
 		return -rte_errno;
 	return mlx5_ifreq_by_ifname(ifname, req, ifr);
+}
+
+/**
+ * Get device minimum and maximum allowed MTU values.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param[out] min_mtu
+ *   Minimum MTU value output buffer.
+ * @param[out] max_mtu
+ *   Maximum MTU value output buffer.
+ *
+ * @return
+ *   0 on success, a negative errno value otherwise and rte_errno is set.
+ */
+int
+mlx5_os_get_mtu_bounds(struct rte_eth_dev *dev, uint16_t *min_mtu, uint16_t *max_mtu)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	int nl_route;
+	int ret;
+
+	nl_route = mlx5_nl_init(NETLINK_ROUTE, 0);
+	if  (nl_route < 0)
+		return nl_route;
+
+	ret = mlx5_nl_get_mtu_bounds(nl_route, priv->if_index, min_mtu, max_mtu);
+
+	close(nl_route);
+	return ret;
 }
 
 /**
@@ -445,22 +389,12 @@ mlx5_link_update_unlocked_gset(struct rte_eth_dev *dev,
 		dev_link.link_speed = RTE_ETH_SPEED_NUM_UNKNOWN;
 	else
 		dev_link.link_speed = link_speed;
-	priv->link_speed_capa = 0;
-	if (edata.supported & (SUPPORTED_1000baseT_Full |
-			       SUPPORTED_1000baseKX_Full))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_1G;
-	if (edata.supported & SUPPORTED_10000baseKR_Full)
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_10G;
-	if (edata.supported & (SUPPORTED_40000baseKR4_Full |
-			       SUPPORTED_40000baseCR4_Full |
-			       SUPPORTED_40000baseSR4_Full |
-			       SUPPORTED_40000baseLR4_Full))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_40G;
 	dev_link.link_duplex = ((edata.duplex == DUPLEX_HALF) ?
 				RTE_ETH_LINK_HALF_DUPLEX : RTE_ETH_LINK_FULL_DUPLEX);
 	dev_link.link_autoneg = !(dev->data->dev_conf.link_speeds &
 			RTE_ETH_LINK_SPEED_FIXED);
 	*link = dev_link;
+	priv->link_speed_capa = rte_eth_link_speed_gset(edata.supported);
 	return 0;
 }
 
@@ -485,7 +419,6 @@ mlx5_link_update_unlocked_gs(struct rte_eth_dev *dev,
 	struct ifreq ifr;
 	struct rte_eth_link dev_link;
 	struct rte_eth_dev *master = NULL;
-	uint64_t sc;
 	int ret;
 
 	ret = mlx5_ifreq(dev, SIOCGIFFLAGS, &ifr);
@@ -547,59 +480,18 @@ mlx5_link_update_unlocked_gs(struct rte_eth_dev *dev,
 			dev->data->port_id, strerror(rte_errno));
 		return ret;
 	}
+
 	dev_link.link_speed = (ecmd->speed == UINT32_MAX) ?
 				RTE_ETH_SPEED_NUM_UNKNOWN : ecmd->speed;
-	sc = ecmd->link_mode_masks[0] |
-		((uint64_t)ecmd->link_mode_masks[1] << 32);
-	priv->link_speed_capa = 0;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_1000baseT_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_1000baseKX_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_1G;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_10000baseKX4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_10000baseKR_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_10000baseR_FEC_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_10G;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_20000baseMLD2_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_20000baseKR2_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_20G;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_40000baseKR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_40000baseCR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_40000baseSR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_40000baseLR4_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_40G;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_56000baseKR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_56000baseCR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_56000baseSR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_56000baseLR4_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_56G;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_25000baseCR_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_25000baseKR_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_25000baseSR_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_25G;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_50000baseCR2_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_50000baseKR2_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_50G;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_100000baseKR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_100000baseSR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_100000baseCR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_100000baseLR4_ER4_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_100G;
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_200000baseKR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_200000baseSR4_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_200G;
-
-	sc = ecmd->link_mode_masks[2] |
-		((uint64_t)ecmd->link_mode_masks[3] << 32);
-	if (sc & (MLX5_BITSHIFT(ETHTOOL_LINK_MODE_200000baseCR4_Full_BIT) |
-		  MLX5_BITSHIFT
-		       (ETHTOOL_LINK_MODE_200000baseLR4_ER4_FR4_Full_BIT) |
-		  MLX5_BITSHIFT(ETHTOOL_LINK_MODE_200000baseDR4_Full_BIT)))
-		priv->link_speed_capa |= RTE_ETH_LINK_SPEED_200G;
 	dev_link.link_duplex = ((ecmd->duplex == DUPLEX_HALF) ?
 				RTE_ETH_LINK_HALF_DUPLEX : RTE_ETH_LINK_FULL_DUPLEX);
 	dev_link.link_autoneg = !(dev->data->dev_conf.link_speeds &
 				  RTE_ETH_LINK_SPEED_FIXED);
 	*link = dev_link;
+
+	priv->link_speed_capa = rte_eth_link_speed_glink(ecmd->link_mode_masks,
+			ecmd->link_mode_masks_nwords);
+
 	return 0;
 }
 
@@ -619,7 +511,7 @@ int
 mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 {
 	int ret;
-	struct rte_eth_link dev_link;
+	struct rte_eth_link dev_link = { 0 };
 	time_t start_time = time(NULL);
 	int retry = MLX5_GET_LINK_STATUS_RETRY_COUNT;
 
@@ -640,6 +532,7 @@ mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 				return -rte_errno;
 			}
 		} else if (ret < 0) {
+			memset(&dev->data->dev_link, 0, sizeof(dev->data->dev_link));
 			return ret;
 		}
 	} while (wait_to_complete || retry-- > 0);
@@ -769,6 +662,47 @@ mlx5_dev_interrupt_device_fatal(struct mlx5_dev_ctx_shared *sh)
 	}
 }
 
+static bool
+mlx5_dev_nl_ifindex_verify(uint32_t if_index, struct mlx5_priv *priv)
+{
+	struct mlx5_bond_info *bond = &priv->sh->bond;
+	int i;
+
+	if (bond->n_port == 0)
+		return (if_index == priv->if_index);
+
+	if (if_index == bond->ifindex)
+		return true;
+	for (i = 0; i < bond->n_port; i++) {
+		if (i >= MLX5_BOND_MAX_PORTS)
+			return false;
+		if (if_index == bond->ports[i].ifindex)
+			return true;
+	}
+
+	return false;
+}
+
+static void
+mlx5_link_update_bond(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_bond_info *bond = &priv->sh->bond;
+	struct ifreq ifr = (struct ifreq) {
+		.ifr_flags = 0,
+	};
+	int ret;
+
+	ret = mlx5_ifreq_by_ifname(bond->ifname, SIOCGIFFLAGS, &ifr);
+	if (ret) {
+		DRV_LOG(WARNING, "ifname %s ioctl(SIOCGIFFLAGS) failed: %s",
+			bond->ifname, strerror(rte_errno));
+		return;
+	}
+	dev->data->dev_link.link_status =
+		((ifr.ifr_flags & IFF_UP) && (ifr.ifr_flags & IFF_RUNNING));
+}
+
 static void
 mlx5_dev_interrupt_nl_cb(struct nlmsghdr *hdr, void *cb_arg)
 {
@@ -791,16 +725,20 @@ mlx5_dev_interrupt_nl_cb(struct nlmsghdr *hdr, void *cb_arg)
 		    !dev->data->dev_conf.intr_conf.lsc)
 			break;
 		priv = dev->data->dev_private;
-		if (priv->if_index == if_index) {
+		if (mlx5_dev_nl_ifindex_verify(if_index, priv)) {
 			/* Block logical LSC events. */
 			uint16_t prev_status = dev->data->dev_link.link_status;
 
-			if (mlx5_link_update(dev, 0) < 0)
+			if (mlx5_link_update(dev, 0) < 0) {
 				DRV_LOG(ERR, "Failed to update link status: %s",
 					rte_strerror(rte_errno));
-			else if (prev_status != dev->data->dev_link.link_status)
-				rte_eth_dev_callback_process
-					(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
+			} else {
+				if (priv->sh->bond.n_port)
+					mlx5_link_update_bond(dev);
+				if (prev_status != dev->data->dev_link.link_status)
+					rte_eth_dev_callback_process
+						(dev, RTE_ETH_EVENT_INTR_LSC, NULL);
+			}
 			break;
 		}
 	}
@@ -919,6 +857,26 @@ mlx5_dev_interrupt_handler_devx(void *cb_arg)
 			    sizeof(struct mlx5dv_devx_async_cmd_hdr)];
 	} out;
 	uint8_t *buf = out.buf + sizeof(out.cmd_resp);
+	uint32_t events = rte_intr_active_events_flags();
+
+	if (events & (RTE_INTR_EVENT_HUP | RTE_INTR_EVENT_RDHUP | RTE_INTR_EVENT_ERR)) {
+		/*
+		 * Disconnect or Error event that cannot be cleared by reading.
+		 * Unregister callback to prevent interrupt busy-looping.
+		 */
+		DRV_LOG(WARNING, "disconnect or error event for mlx5 devx interrupt on fd %d"
+			" (events=0x%x)",
+			rte_intr_fd_get(sh->intr_handle_devx), events);
+
+		if (rte_intr_callback_unregister_pending(sh->intr_handle_devx,
+							 mlx5_dev_interrupt_handler_devx,
+							 (void *)sh, NULL) < 0) {
+			DRV_LOG(WARNING,
+				"unable to unregister mlx5 devx interrupt callback on fd %d",
+				rte_intr_fd_get(sh->intr_handle_devx));
+		}
+		return;
+	}
 
 	while (!mlx5_glue->devx_get_async_cmd_comp(sh->devx_comp,
 						   &out.cmd_resp,
@@ -1046,7 +1004,6 @@ mlx5_sysfs_check_switch_info(bool device_dir,
  * @return
  *   0 on success, a negative errno value otherwise and rte_errno is set.
  */
-static char *(*real_if_indextoname)(unsigned int, char *) = NULL;
 int
 mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 {
@@ -1067,16 +1024,7 @@ mlx5_sysfs_switch_info(unsigned int ifindex, struct mlx5_switch_info *info)
 	char c;
 	ssize_t line_size;
 
-	// for ff tools
-	if (!real_if_indextoname) {
-		real_if_indextoname = __extension__ (char *(*)(unsigned int, char *))dlsym(RTLD_NEXT, "if_indextoname");
-		if (!real_if_indextoname) {
-			rte_errno = errno;
-			return -rte_errno;
-		}
-	}
-
-	if (!real_if_indextoname(ifindex, ifname)) {
+	if (!if_indextoname(ifindex, ifname)) {
 		rte_errno = errno;
 		return -rte_errno;
 	}
@@ -1524,6 +1472,15 @@ static const struct mlx5_counter_ctrl mlx5_counters_init[] = {
 		.dev = 1,
 	},
 	{
+		.dpdk_name = "hairpin_out_of_buffer",
+		.ctr_name = "hairpin_out_of_buffer",
+		.dev = 1,
+	},
+	{
+		.dpdk_name = "dev_internal_queue_oob",
+		.ctr_name = "dev_internal_queue_oob",
+	},
+	{
 		.dpdk_name = "tx_phy_packets",
 		.ctr_name = "tx_packets_phy",
 	},
@@ -1627,6 +1584,43 @@ static const struct mlx5_counter_ctrl mlx5_counters_init[] = {
 	{
 		.dpdk_name = "tx_vport_bytes",
 		.ctr_name = "vport_tx_bytes",
+	},
+	/**
+	 * Device counters: These counters are for the
+	 * entire PCI device (NIC). These counters are
+	 * not counting on a per port/queue basis.
+	 */
+	{
+		.dpdk_name = "rx_pci_signal_integrity",
+		.ctr_name = "rx_pci_signal_integrity",
+	},
+	{
+		.dpdk_name = "tx_pci_signal_integrity",
+		.ctr_name = "tx_pci_signal_integrity",
+	},
+	{
+		.dpdk_name = "outbound_pci_buffer_overflow",
+		.ctr_name = "outbound_pci_buffer_overflow",
+	},
+	{
+		.dpdk_name = "outbound_pci_stalled_rd",
+		.ctr_name = "outbound_pci_stalled_rd",
+	},
+	{
+		.dpdk_name = "outbound_pci_stalled_wr",
+		.ctr_name = "outbound_pci_stalled_wr",
+	},
+	{
+		.dpdk_name = "outbound_pci_stalled_rd_events",
+		.ctr_name = "outbound_pci_stalled_rd_events",
+	},
+	{
+		.dpdk_name = "outbound_pci_stalled_wr_events",
+		.ctr_name = "outbound_pci_stalled_wr_events",
+	},
+	{
+		.dpdk_name = "dev_out_of_buffer",
+		.ctr_name = "dev_out_of_buffer",
 	},
 };
 
@@ -1986,10 +1980,9 @@ int mlx5_txpp_map_hca_bar(struct rte_eth_dev *dev)
 		return -ENOTSUP;
 	}
 	/* Check there is no concurrent mapping in other thread. */
-	if (!__atomic_compare_exchange_n(&ppriv->hca_bar, &expected,
-					 base, false,
-					 __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+	if (!rte_atomic_compare_exchange_strong_explicit(&ppriv->hca_bar, &expected,
+					 base,
+					 rte_memory_order_relaxed, rte_memory_order_relaxed))
 		rte_mem_unmap(base, MLX5_ST_SZ_BYTES(initial_seg));
 	return 0;
 }
-

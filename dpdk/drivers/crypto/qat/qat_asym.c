@@ -15,11 +15,18 @@
 #include "qat_pke.h"
 #include "qat_ec.h"
 
+#define ASYM_ENQ_THRESHOLD_NAME "qat_asym_enq_threshold"
 #define RSA_MODULUS_2048_BITS 2048
 
 uint8_t qat_asym_driver_id;
 
 struct qat_crypto_gen_dev_ops qat_asym_gen_dev_ops[QAT_N_GENS];
+
+
+static const char *const arguments[] = {
+	ASYM_ENQ_THRESHOLD_NAME,
+	NULL
+};
 
 /* An rte_driver is needed in the registration of both the device and the driver
  * with cryptodev.
@@ -357,7 +364,7 @@ rsa_set_pub_input(struct icp_qat_fw_pke_request *qat_req,
 	alg_bytesize = qat_function.bytesize;
 
 	if (asym_op->rsa.op_type == RTE_CRYPTO_ASYM_OP_ENCRYPT) {
-		switch (asym_op->rsa.padding.type) {
+		switch (xform->rsa.padding.type) {
 		case RTE_CRYPTO_RSA_PADDING_NONE:
 			SET_PKE_LN(asym_op->rsa.message, alg_bytesize, 0);
 			break;
@@ -369,7 +376,7 @@ rsa_set_pub_input(struct icp_qat_fw_pke_request *qat_req,
 		}
 		HEXDUMP("RSA Message", cookie->input_array[0], alg_bytesize);
 	} else {
-		switch (asym_op->rsa.padding.type) {
+		switch (xform->rsa.padding.type) {
 		case RTE_CRYPTO_RSA_PADDING_NONE:
 			SET_PKE_LN(asym_op->rsa.sign, alg_bytesize, 0);
 			break;
@@ -455,7 +462,7 @@ rsa_set_priv_input(struct icp_qat_fw_pke_request *qat_req,
 
 	if (asym_op->rsa.op_type ==
 			RTE_CRYPTO_ASYM_OP_DECRYPT) {
-		switch (asym_op->rsa.padding.type) {
+		switch (xform->rsa.padding.type) {
 		case RTE_CRYPTO_RSA_PADDING_NONE:
 			SET_PKE_LN(asym_op->rsa.cipher,	alg_bytesize, 0);
 			HEXDUMP("RSA ciphertext", cookie->input_array[0],
@@ -469,7 +476,7 @@ rsa_set_priv_input(struct icp_qat_fw_pke_request *qat_req,
 
 	} else if (asym_op->rsa.op_type ==
 			RTE_CRYPTO_ASYM_OP_SIGN) {
-		switch (asym_op->rsa.padding.type) {
+		switch (xform->rsa.padding.type) {
 		case RTE_CRYPTO_RSA_PADDING_NONE:
 			SET_PKE_LN(asym_op->rsa.message, alg_bytesize, 0);
 			HEXDUMP("RSA text to be signed", cookie->input_array[0],
@@ -509,7 +516,8 @@ rsa_set_input(struct icp_qat_fw_pke_request *qat_req,
 
 static uint8_t
 rsa_collect(struct rte_crypto_asym_op *asym_op,
-		const struct qat_asym_op_cookie *cookie)
+		const struct qat_asym_op_cookie *cookie,
+		const struct rte_crypto_asym_xform *xform)
 {
 	uint32_t alg_bytesize = cookie->alg_bytesize;
 
@@ -525,7 +533,7 @@ rsa_collect(struct rte_crypto_asym_op *asym_op,
 			HEXDUMP("RSA Encrypted data", cookie->output_array[0],
 				alg_bytesize);
 		} else {
-			switch (asym_op->rsa.padding.type) {
+			switch (xform->rsa.padding.type) {
 			case RTE_CRYPTO_RSA_PADDING_NONE:
 				rte_memcpy(asym_op->rsa.cipher.data,
 						cookie->output_array[0],
@@ -542,7 +550,7 @@ rsa_collect(struct rte_crypto_asym_op *asym_op,
 		}
 	} else {
 		if (asym_op->rsa.op_type == RTE_CRYPTO_ASYM_OP_DECRYPT) {
-			switch (asym_op->rsa.padding.type) {
+			switch (xform->rsa.padding.type) {
 			case RTE_CRYPTO_RSA_PADDING_NONE:
 				rte_memcpy(asym_op->rsa.message.data,
 					cookie->output_array[0],
@@ -793,13 +801,13 @@ ecdh_set_input(struct icp_qat_fw_pke_request *qat_req,
 	qat_func_alignsize = RTE_ALIGN_CEIL(qat_function.bytesize, 8);
 
 	if (asym_op->ecdh.ke_type == RTE_CRYPTO_ASYM_KE_PUB_KEY_GENERATE) {
-		SET_PKE_LN(asym_op->ecdh.priv_key, qat_func_alignsize, 0);
+		SET_PKE_LN(xform->ec.pkey, qat_func_alignsize, 0);
 		SET_PKE_LN_EC(curve[curve_id], x, 1);
 		SET_PKE_LN_EC(curve[curve_id], y, 2);
 	} else {
-		SET_PKE_LN(asym_op->ecdh.priv_key, qat_func_alignsize, 0);
-		SET_PKE_LN(asym_op->ecdh.pub_key.x, qat_func_alignsize, 1);
-		SET_PKE_LN(asym_op->ecdh.pub_key.y, qat_func_alignsize, 2);
+		SET_PKE_LN(xform->ec.pkey, qat_func_alignsize, 0);
+		SET_PKE_LN(xform->ec.q.x, qat_func_alignsize, 1);
+		SET_PKE_LN(xform->ec.q.y, qat_func_alignsize, 2);
 	}
 	SET_PKE_LN_EC(curve[curve_id], a, 3);
 	SET_PKE_LN_EC(curve[curve_id], b, 4);
@@ -981,7 +989,8 @@ static int
 asym_set_input(struct icp_qat_fw_pke_request *qat_req,
 		struct qat_asym_op_cookie *cookie,
 		const struct rte_crypto_asym_op *asym_op,
-		const struct rte_crypto_asym_xform *xform)
+		const struct rte_crypto_asym_xform *xform,
+		uint8_t legacy_alg)
 {
 	switch (xform->xform_type) {
 	case RTE_CRYPTO_ASYM_XFORM_MODEX:
@@ -990,7 +999,7 @@ asym_set_input(struct icp_qat_fw_pke_request *qat_req,
 		return modinv_set_input(qat_req, cookie, asym_op, xform);
 	case RTE_CRYPTO_ASYM_XFORM_RSA:{
 		if (unlikely((xform->rsa.n.length < RSA_MODULUS_2048_BITS)
-					&& (qat_legacy_capa == 0)))
+					&& (legacy_alg == 0)))
 			return RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
 		return rsa_set_input(qat_req, cookie, asym_op, xform);
 	}
@@ -1024,9 +1033,10 @@ asym_set_input(struct icp_qat_fw_pke_request *qat_req,
 }
 
 static int
-qat_asym_build_request(void *in_op, uint8_t *out_msg, void *op_cookie,
-			__rte_unused uint64_t *opaque,
-			__rte_unused enum qat_device_gen qat_dev_gen)
+qat_asym_build_request(void *in_op,
+	uint8_t *out_msg,
+	void *op_cookie,
+	struct qat_qp *qp)
 {
 	struct rte_crypto_op *op = (struct rte_crypto_op *)in_op;
 	struct rte_crypto_asym_op *asym_op = op->asym;
@@ -1060,7 +1070,8 @@ qat_asym_build_request(void *in_op, uint8_t *out_msg, void *op_cookie,
 		op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
 		goto error;
 	}
-	err = asym_set_input(qat_req, cookie, asym_op, xform);
+	err = asym_set_input(qat_req, cookie, asym_op, xform,
+		qp->qat_dev->options.legacy_alg);
 	if (err) {
 		op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
 		goto error;
@@ -1097,7 +1108,7 @@ qat_asym_collect_response(struct rte_crypto_op *op,
 	case RTE_CRYPTO_ASYM_XFORM_MODINV:
 		return modinv_collect(asym_op, cookie, xform);
 	case RTE_CRYPTO_ASYM_XFORM_RSA:
-		return rsa_collect(asym_op, cookie);
+		return rsa_collect(asym_op, cookie, xform);
 	case RTE_CRYPTO_ASYM_XFORM_ECDSA:
 		return ecdsa_collect(asym_op, cookie);
 	case RTE_CRYPTO_ASYM_XFORM_ECPM:
@@ -1386,9 +1397,11 @@ qat_asym_session_configure(struct rte_cryptodev *dev __rte_unused,
 		struct rte_crypto_asym_xform *xform,
 		struct rte_cryptodev_asym_session *session)
 {
+	struct qat_cryptodev_private *crypto_qat;
 	struct qat_asym_session *qat_session;
 	int ret = 0;
 
+	crypto_qat = dev->data->dev_private;
 	qat_session = (struct qat_asym_session *) session->sess_private_data;
 	memset(qat_session, 0, sizeof(*qat_session));
 
@@ -1402,7 +1415,7 @@ qat_asym_session_configure(struct rte_cryptodev *dev __rte_unused,
 		break;
 	case RTE_CRYPTO_ASYM_XFORM_RSA: {
 		if (unlikely((xform->rsa.n.length < RSA_MODULUS_2048_BITS)
-					&& (qat_legacy_capa == 0))) {
+				&& (crypto_qat->qat_dev->options.legacy_alg == 0))) {
 			ret = -ENOTSUP;
 			return ret;
 		}
@@ -1537,9 +1550,8 @@ qat_asym_init_op_cookie(void *op_cookie)
 	}
 }
 
-int
-qat_asym_dev_create(struct qat_pci_device *qat_pci_dev,
-		const struct qat_dev_cmd_param *qat_dev_cmd_param)
+static int
+qat_asym_dev_create(struct qat_pci_device *qat_pci_dev)
 {
 	struct qat_cryptodev_private *internals;
 	struct rte_cryptodev *cryptodev;
@@ -1554,13 +1566,19 @@ qat_asym_dev_create(struct qat_pci_device *qat_pci_dev,
 		&qat_asym_gen_dev_ops[qat_pci_dev->qat_dev_gen];
 	char name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	char capa_memz_name[RTE_CRYPTODEV_NAME_MAX_LEN];
-	int i = 0;
-	uint16_t slice_map = 0;
+	uint16_t sub_id = qat_dev_instance->pci_dev->id.subsystem_device_id;
+	const char *cmdline = NULL;
 
 	snprintf(name, RTE_CRYPTODEV_NAME_MAX_LEN, "%s_%s",
 			qat_pci_dev->name, "asym");
 	QAT_LOG(DEBUG, "Creating QAT ASYM device %s", name);
 
+	if (qat_pci_dev->qat_dev_gen == QAT_VQAT &&
+		sub_id != ADF_VQAT_ASYM_PCI_SUBSYSTEM_ID) {
+		QAT_LOG(ERR, "Device (vqat instance) %s does not support asymmetric crypto",
+				name);
+		return -EFAULT;
+	}
 	if (gen_dev_ops->cryptodev_ops == NULL) {
 		QAT_LOG(ERR, "Device %s does not support asymmetric crypto",
 				name);
@@ -1612,18 +1630,16 @@ qat_asym_dev_create(struct qat_pci_device *qat_pci_dev,
 	internals->qat_dev = qat_pci_dev;
 	internals->dev_id = cryptodev->data->dev_id;
 
-	while (1) {
-		if (qat_dev_cmd_param[i].name == NULL)
-			break;
-		if (!strcmp(qat_dev_cmd_param[i].name, ASYM_ENQ_THRESHOLD_NAME))
-			internals->min_enq_burst_threshold =
-					qat_dev_cmd_param[i].val;
-		if (!strcmp(qat_dev_cmd_param[i].name, QAT_CMD_SLICE_MAP))
-			slice_map = qat_dev_cmd_param[i].val;
-		i++;
+	cmdline = qat_dev_cmdline_get_val(qat_pci_dev,
+			ASYM_ENQ_THRESHOLD_NAME);
+	if (cmdline) {
+		internals->min_enq_burst_threshold =
+			atoi(cmdline) > MAX_QP_THRESHOLD_SIZE ?
+			MAX_QP_THRESHOLD_SIZE :
+			atoi(cmdline);
 	}
 
-	if (slice_map & ICP_ACCEL_MASK_PKE_SLICE) {
+	if (qat_pci_dev->options.slice_map & ICP_ACCEL_MASK_PKE_SLICE) {
 		QAT_LOG(ERR, "Device %s does not support PKE slice",
 				name);
 		rte_cryptodev_pmd_destroy(cryptodev);
@@ -1633,7 +1649,7 @@ qat_asym_dev_create(struct qat_pci_device *qat_pci_dev,
 	}
 
 	if (gen_dev_ops->get_capabilities(internals,
-			capa_memz_name, slice_map) < 0) {
+			capa_memz_name, qat_pci_dev->options.slice_map) < 0) {
 		QAT_LOG(ERR,
 			"Device cannot obtain capabilities, destroying PMD for %s",
 			name);
@@ -1643,31 +1659,31 @@ qat_asym_dev_create(struct qat_pci_device *qat_pci_dev,
 		return -1;
 	}
 
-	qat_pci_dev->asym_dev = internals;
+	qat_pci_dev->pmd[QAT_SERVICE_ASYMMETRIC] = internals;
 	internals->service_type = QAT_SERVICE_ASYMMETRIC;
 	QAT_LOG(DEBUG, "Created QAT ASYM device %s as cryptodev instance %d",
 			cryptodev->data->name, internals->dev_id);
 	return 0;
 }
 
-int
+static int
 qat_asym_dev_destroy(struct qat_pci_device *qat_pci_dev)
 {
 	struct rte_cryptodev *cryptodev;
+	struct qat_cryptodev_private *dev;
 
 	if (qat_pci_dev == NULL)
 		return -ENODEV;
-	if (qat_pci_dev->asym_dev == NULL)
+	dev = qat_pci_dev->pmd[QAT_SERVICE_ASYMMETRIC];
+	if (dev == NULL)
 		return 0;
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
-		rte_memzone_free(qat_pci_dev->asym_dev->capa_mz);
-
+		rte_memzone_free(dev->capa_mz);
 	/* free crypto device */
-	cryptodev = rte_cryptodev_pmd_get_dev(
-			qat_pci_dev->asym_dev->dev_id);
+	cryptodev = rte_cryptodev_pmd_get_dev(dev->dev_id);
 	rte_cryptodev_pmd_destroy(cryptodev);
 	qat_pci_devs[qat_pci_dev->qat_dev_id].asym_rte_dev.name = NULL;
-	qat_pci_dev->asym_dev = NULL;
+	qat_pci_dev->pmd[QAT_SERVICE_ASYMMETRIC] = NULL;
 
 	return 0;
 }
@@ -1676,3 +1692,11 @@ static struct cryptodev_driver qat_crypto_drv;
 RTE_PMD_REGISTER_CRYPTO_DRIVER(qat_crypto_drv,
 		cryptodev_qat_asym_driver,
 		qat_asym_driver_id);
+
+RTE_INIT(qat_asym_init)
+{
+	qat_cmdline_defines[QAT_SERVICE_ASYMMETRIC] = arguments;
+	qat_service[QAT_SERVICE_ASYMMETRIC].name = "asymmetric crypto";
+	qat_service[QAT_SERVICE_ASYMMETRIC].dev_create = qat_asym_dev_create;
+	qat_service[QAT_SERVICE_ASYMMETRIC].dev_destroy = qat_asym_dev_destroy;
+}

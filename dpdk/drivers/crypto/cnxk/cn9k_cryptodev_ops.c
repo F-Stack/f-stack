@@ -8,14 +8,7 @@
 #include <rte_ip.h>
 #include <rte_vect.h>
 
-#include "roc_cpt.h"
-#if defined(__aarch64__)
-#include "roc_io.h"
-#else
-#include "roc_io_generic.h"
-#endif
-#include "roc_sso.h"
-#include "roc_sso_dp.h"
+#include "roc_api.h"
 
 #include "cn9k_cryptodev.h"
 #include "cn9k_cryptodev_ops.h"
@@ -122,67 +115,11 @@ cn9k_cpt_inst_prep(struct cnxk_cpt_qp *qp, struct rte_crypto_op *op,
 	return ret;
 }
 
-static inline void
-cn9k_cpt_inst_submit(struct cpt_inst_s *inst, uint64_t lmtline,
-		     uint64_t io_addr)
-{
-	uint64_t lmt_status;
-
-	do {
-		/* Copy CPT command to LMTLINE */
-		roc_lmt_mov64((void *)lmtline, inst);
-
-		/*
-		 * Make sure compiler does not reorder memcpy and ldeor.
-		 * LMTST transactions are always flushed from the write
-		 * buffer immediately, a DMB is not required to push out
-		 * LMTSTs.
-		 */
-		rte_io_wmb();
-		lmt_status = roc_lmt_submit_ldeor(io_addr);
-	} while (lmt_status == 0);
-}
-
-static __plt_always_inline void
-cn9k_cpt_inst_submit_dual(struct cpt_inst_s *inst, uint64_t lmtline,
-			  uint64_t io_addr)
-{
-	uint64_t lmt_status;
-
-	do {
-		/* Copy 2 CPT inst_s to LMTLINE */
-#if defined(RTE_ARCH_ARM64)
-		uint64_t *s = (uint64_t *)inst;
-		uint64_t *d = (uint64_t *)lmtline;
-
-		vst1q_u64(&d[0], vld1q_u64(&s[0]));
-		vst1q_u64(&d[2], vld1q_u64(&s[2]));
-		vst1q_u64(&d[4], vld1q_u64(&s[4]));
-		vst1q_u64(&d[6], vld1q_u64(&s[6]));
-		vst1q_u64(&d[8], vld1q_u64(&s[8]));
-		vst1q_u64(&d[10], vld1q_u64(&s[10]));
-		vst1q_u64(&d[12], vld1q_u64(&s[12]));
-		vst1q_u64(&d[14], vld1q_u64(&s[14]));
-#else
-		roc_lmt_mov_seg((void *)lmtline, inst, 8);
-#endif
-
-		/*
-		 * Make sure compiler does not reorder memcpy and ldeor.
-		 * LMTST transactions are always flushed from the write
-		 * buffer immediately, a DMB is not required to push out
-		 * LMTSTs.
-		 */
-		rte_io_wmb();
-		lmt_status = roc_lmt_submit_ldeor(io_addr);
-	} while (lmt_status == 0);
-}
-
 static uint16_t
 cn9k_cpt_enqueue_burst(void *qptr, struct rte_crypto_op **ops, uint16_t nb_ops)
 {
 	struct cpt_inflight_req *infl_req_1, *infl_req_2;
-	struct cpt_inst_s inst[2] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct cpt_inst_s inst[2];
 	struct rte_crypto_op *op_1, *op_2;
 	uint16_t nb_allowed, count = 0;
 	struct cnxk_cpt_qp *qp = qptr;
@@ -520,7 +457,7 @@ cn9k_cpt_sec_post_process(struct rte_crypto_op *cop,
 
 	if (infl_req->op_flags & CPT_OP_FLAGS_IPSEC_DIR_INBOUND) {
 
-		hdr = (struct roc_ie_on_inb_hdr *)rte_pktmbuf_mtod(m, char *);
+		hdr = rte_pktmbuf_mtod(m, struct roc_ie_on_inb_hdr *);
 
 		if (likely(m->next == NULL)) {
 			ip = PLT_PTR_ADD(hdr, ROC_IE_ON_INB_RPTR_HDR);
@@ -765,6 +702,7 @@ struct rte_cryptodev_ops cn9k_cpt_ops = {
 	.stats_reset = NULL,
 	.queue_pair_setup = cnxk_cpt_queue_pair_setup,
 	.queue_pair_release = cnxk_cpt_queue_pair_release,
+	.queue_pair_reset = cnxk_cpt_queue_pair_reset,
 
 	/* Symmetric crypto ops */
 	.sym_session_get_size = cnxk_cpt_sym_session_get_size,

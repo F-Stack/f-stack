@@ -37,6 +37,9 @@ Features of the CNXK Ethdev PMD are:
 - Inline IPsec processing support
 - Ingress meter support
 - Queue based priority flow control support
+- Port representors
+- Represented port pattern matching and action
+- Port representor pattern matching and action
 
 Prerequisites
 -------------
@@ -73,7 +76,6 @@ for details.
       [ 2003.202721] vfio-pci 0002:02:00.0: vfio_cap_init: hiding cap 0x14@0x98
       EAL: Probe PCI driver: net_cn10k (177d:a063) device: 0002:02:00.0 (socket 0)
       PMD: RoC Model: cn10k
-      EAL: No legacy callbacks, legacy socket not created
       testpmd: create a new mbuf pool <mb_pool_0>: n=155456, size=2176, socket=0
       testpmd: preferred mempool ops selected: cn10k_mempool_ops
       Configuring Port 0 (socket 0)
@@ -428,6 +430,46 @@ Runtime Config Options
    With the above configuration, driver would poll for aging flows
    every 50 seconds.
 
+- ``Rx Inject Enable inbound inline IPsec for second pass`` (default ``0``)
+
+   Rx packet inject feature for inbound inline IPsec processing can be enabled
+   by ``rx_inj_ena`` devargs parameter.
+   This option is for OCTEON CN106-B0/CN103XX SoC family.
+
+   For example::
+
+      -a 0002:02:00.0,rx_inj_ena=1
+
+   With the above configuration, driver would enable packet inject from ARM cores
+   to crypto to process and send back in Rx path.
+
+- ``Disable custom meta aura feature`` (default ``0``)
+
+   Custom meta aura i.e 1:N meta aura is enabled for second pass traffic by default
+   when ``inl_cpt_channel`` devarg is provided.
+   The custom meta aura feature can be disabled
+   by setting devarg ``custom_meta_aura_dis`` to ``1``.
+
+   For example::
+
+      -a 0002:02:00.0,custom_meta_aura_dis=1
+
+   With the above configuration, the driver would disable custom meta aura feature
+   for the device ``0002:02:00.0``.
+
+- ``Enable custom SA for inbound inline IPsec`` (default ``0``)
+
+   Custom SA for inbound inline IPsec can be enabled
+   by specifying ``custom_inb_sa`` devargs parameter.
+   This option needs to be given to both ethdev and inline device.
+
+   For example::
+
+      -a 0002:02:00.0,custom_inb_sa=1
+
+   With the above configuration, inline inbound IPsec post-processing
+   should be done by the application.
+
 .. note::
 
    Above devarg parameters are configurable per device, user needs to pass the
@@ -613,6 +655,64 @@ Runtime Config Options for inline device
    With the above configuration, driver would poll for soft expiry events every
    1000 usec.
 
+- ``Rx Inject Enable inbound inline IPsec for second pass`` (default ``0``)
+
+   Rx packet inject feature for inbound inline IPsec processing can be enabled
+   by ``rx_inj_ena`` devargs parameter with both inline device and ethdev device.
+   This option is for OCTEON CN106-B0/CN103XX SoC family.
+
+   For example::
+
+      -a 0002:1d:00.0,rx_inj_ena=1
+
+   With the above configuration, driver would enable packet inject from ARM cores
+   to crypto to process and send back in Rx path.
+
+- ``Enable custom SA for inbound inline IPsec`` (default ``0``)
+
+   Custom SA for inbound inline IPsec can be enabled
+   by specifying ``custom_inb_sa`` devargs parameter
+   with both inline device and ethdev.
+
+   For example::
+
+      -a 0002:1d:00.0,custom_inb_sa=1
+
+   With the above configuration, inline inbound IPsec post-processing
+   should be done by the application.
+
+Port Representors
+-----------------
+
+The CNXK driver supports port representor model by adding virtual ethernet ports
+providing a logical representation in DPDK for physical function (PF)
+or SR-IOV virtual function (VF) devices for control and monitoring.
+
+Base device or parent device underneath the representor ports is an eswitch device
+which is not a cnxk ethernet device but has NIC Rx and Tx capabilities.
+Each representor port is represented by a RQ and SQ pair of this eswitch device.
+
+Implementation supports representors for both physical function and virtual function.
+
+Port representor ethdev instances can be spawned on an as needed basis
+through configuration parameters passed to the driver of the underlying
+base device using devargs ``-a <base PCI BDF>,representor=pf*vf*``
+
+.. note::
+
+   Representor ports to be created for respective representees
+   should be defined via standard representor devargs patterns
+   Eg. To create a representor for representee PF1VF0,
+   devargs to be passed is ``-a <base PCI BDF>,representor=pf01vf0``
+
+   Implementation supports creation of multiple port representors with pattern:
+   ``-a <base PCI BDF>,representor=[pf0vf[1,2],pf1vf[2-5]]``
+
+Port representor PMD supports following operations:
+
+- Get PF/VF statistics
+- Flow operations - create, validate, destroy, query, flush, dump
+
 Debugging Options
 -----------------
 
@@ -626,4 +726,8 @@ Debugging Options
    | 1 | NIX        | --log-level='pmd\.common.cnxk\.nix,8'                 |
    +---+------------+-------------------------------------------------------+
    | 2 | NPC        | --log-level='pmd\.common.cnxk\.flow,8'                |
+   +---+------------+-------------------------------------------------------+
+   | 3 | REP        | --log-level='pmd\.common.cnxk\.rep,8'                 |
+   +---+------------+-------------------------------------------------------+
+   | 4 | ESW        | --log-level='pmd\.common.cnxk\.esw,8'                 |
    +---+------------+-------------------------------------------------------+

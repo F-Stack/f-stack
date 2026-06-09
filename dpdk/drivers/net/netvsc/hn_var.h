@@ -90,12 +90,12 @@ struct hn_rx_queue {
 
 
 /* multi-packet data from host */
-struct hn_rx_bufinfo {
+struct __rte_cache_aligned hn_rx_bufinfo {
 	struct vmbus_channel *chan;
 	struct hn_rx_queue *rxq;
 	uint64_t	xactid;
 	struct rte_mbuf_ext_shared_info shinfo;
-} __rte_cache_aligned;
+};
 
 #define HN_INVALID_PORT	UINT16_MAX
 
@@ -240,9 +240,11 @@ hn_get_vf_dev(const struct hn_data *hv)
 int	hn_vf_info_get(struct hn_data *hv,
 		       struct rte_eth_dev_info *info);
 int	hn_vf_add(struct rte_eth_dev *dev, struct hn_data *hv);
+int	hn_vf_add_unlocked(struct rte_eth_dev *dev, struct hn_data *hv);
 int	hn_vf_configure_locked(struct rte_eth_dev *dev,
 			       const struct rte_eth_conf *dev_conf);
-const uint32_t *hn_vf_supported_ptypes(struct rte_eth_dev *dev);
+const uint32_t *hn_vf_supported_ptypes(struct rte_eth_dev *dev,
+				       size_t *no_of_elements);
 int	hn_vf_start(struct rte_eth_dev *dev);
 int	hn_vf_close(struct rte_eth_dev *dev);
 int	hn_vf_stop(struct rte_eth_dev *dev);

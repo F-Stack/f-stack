@@ -12,7 +12,7 @@
 #include "eal_private.h"
 
 #define US_PER_SEC 1E6
-#define CYC_PER_10MHZ 1E7
+#define CYC_PER_100KHZ 1E5
 
 void
 rte_delay_us_sleep(unsigned int us)
@@ -49,12 +49,15 @@ end:
 }
 
 uint64_t
-get_tsc_freq(void)
+get_tsc_freq(uint64_t arch_hz)
 {
 	LARGE_INTEGER t_start, t_end, elapsed_us;
 	LARGE_INTEGER frequency;
 	uint64_t tsc_hz;
 	uint64_t end, start;
+
+	if (arch_hz)
+		return arch_hz;
 
 	QueryPerformanceFrequency(&frequency);
 
@@ -81,8 +84,8 @@ get_tsc_freq(void)
 	double secs = ((double)elapsed_us.QuadPart)/US_PER_SEC;
 	tsc_hz = (uint64_t)((end - start)/secs);
 
-	/* Round up to 10Mhz. 1E7 ~ 10Mhz */
-	return RTE_ALIGN_MUL_NEAR(tsc_hz, CYC_PER_10MHZ);
+	/* Round up to 100Khz. 1E5 ~ 100Khz */
+	return RTE_ALIGN_MUL_NEAR(tsc_hz, CYC_PER_100KHZ);
 }
 
 

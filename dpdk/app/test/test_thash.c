@@ -7,6 +7,7 @@
 #include <rte_ip.h>
 #include <rte_random.h>
 #include <rte_malloc.h>
+#include <rte_byteorder.h>
 
 #include "test.h"
 
@@ -25,8 +26,8 @@ struct test_thash_v4 {
 };
 
 struct test_thash_v6 {
-	uint8_t		dst_ip[16];
-	uint8_t		src_ip[16];
+	struct rte_ipv6_addr dst_ip;
+	struct rte_ipv6_addr src_ip;
 	uint16_t	dst_port;
 	uint16_t	src_port;
 	uint32_t	hash_l3;
@@ -49,25 +50,19 @@ struct test_thash_v4 v4_tbl[] = {
 
 struct test_thash_v6 v6_tbl[] = {
 /*3ffe:2501:200:3::1*/
-{{0x3f, 0xfe, 0x25, 0x01, 0x02, 0x00, 0x00, 0x03,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,},
+{RTE_IPV6(0x3ffe, 0x2501, 0x0200, 0x0003, 0, 0, 0, 0x0001),
 /*3ffe:2501:200:1fff::7*/
-{0x3f, 0xfe, 0x25, 0x01, 0x02, 0x00, 0x1f, 0xff,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,},
+RTE_IPV6(0x3ffe, 0x2501, 0x0200, 0x1fff, 0, 0, 0, 0x0007),
 1766, 2794, 0x2cc18cd5, 0x40207d3d},
 /*ff02::1*/
-{{0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,},
+{RTE_IPV6(0xff02, 0, 0, 0, 0, 0, 0, 0x0001),
 /*3ffe:501:8::260:97ff:fe40:efab*/
-{0x3f, 0xfe, 0x05, 0x01, 0x00, 0x08, 0x00, 0x00,
-0x02, 0x60, 0x97, 0xff, 0xfe, 0x40, 0xef, 0xab,},
+RTE_IPV6(0x3ffe, 0x0501, 0x0008, 0, 0x0260, 0x97ff, 0xfe40, 0xefab),
 4739, 14230, 0x0f0c461c, 0xdde51bbf},
 /*fe80::200:f8ff:fe21:67cf*/
-{{0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-0x02, 0x00, 0xf8, 0xff, 0xfe, 0x21, 0x67, 0xcf,},
+{RTE_IPV6(0xfe80, 0, 0, 0, 0x0200, 0xf8ff, 0xfe21, 0x67cf),
 /*3ffe:1900:4545:3:200:f8ff:fe21:67cf*/
-{0x3f, 0xfe, 0x19, 0x00, 0x45, 0x45, 0x00, 0x03,
-0x02, 0x00, 0xf8, 0xff, 0xfe, 0x21, 0x67, 0xcf,},
+RTE_IPV6(0x3ffe, 0x1900, 0x4545, 0x0003, 0x0200, 0xf8ff, 0xfe21, 0x67cf),
 38024, 44251, 0x4b61e985, 0x02d1feef},
 };
 
@@ -110,7 +105,7 @@ static const uint8_t big_rss_key[] = {
 static int
 test_toeplitz_hash_calc(void)
 {
-	uint32_t i, j;
+	uint32_t i;
 	union rte_thash_tuple tuple;
 	uint32_t rss_l3, rss_l3l4;
 	uint8_t rss_key_be[RTE_DIM(default_rss_key)];
@@ -145,10 +140,8 @@ test_toeplitz_hash_calc(void)
 	}
 	for (i = 0; i < RTE_DIM(v6_tbl); i++) {
 		/*Fill ipv6 hdr*/
-		for (j = 0; j < RTE_DIM(ipv6_hdr.src_addr); j++)
-			ipv6_hdr.src_addr[j] = v6_tbl[i].src_ip[j];
-		for (j = 0; j < RTE_DIM(ipv6_hdr.dst_addr); j++)
-			ipv6_hdr.dst_addr[j] = v6_tbl[i].dst_ip[j];
+		ipv6_hdr.src_addr = v6_tbl[i].src_ip;
+		ipv6_hdr.dst_addr = v6_tbl[i].dst_ip;
 		/*Load and convert ipv6 address into tuple*/
 		rte_thash_load_v6_addrs(&ipv6_hdr, &tuple);
 		tuple.v6.sport = v6_tbl[i].src_port;
@@ -176,7 +169,7 @@ test_toeplitz_hash_calc(void)
 static int
 test_toeplitz_hash_gfni(void)
 {
-	uint32_t i, j;
+	uint32_t i;
 	union rte_thash_tuple tuple;
 	uint32_t rss_l3, rss_l3l4;
 	uint64_t rss_key_matrixes[RTE_DIM(default_rss_key)];
@@ -204,10 +197,8 @@ test_toeplitz_hash_gfni(void)
 	}
 
 	for (i = 0; i < RTE_DIM(v6_tbl); i++) {
-		for (j = 0; j < RTE_DIM(tuple.v6.src_addr); j++)
-			tuple.v6.src_addr[j] = v6_tbl[i].src_ip[j];
-		for (j = 0; j < RTE_DIM(tuple.v6.dst_addr); j++)
-			tuple.v6.dst_addr[j] = v6_tbl[i].dst_ip[j];
+		tuple.v6.src_addr = v6_tbl[i].src_ip;
+		tuple.v6.dst_addr = v6_tbl[i].dst_ip;
 		tuple.v6.sport = rte_cpu_to_be_16(v6_tbl[i].dst_port);
 		tuple.v6.dport = rte_cpu_to_be_16(v6_tbl[i].src_port);
 		rss_l3 = rte_thash_gfni(rss_key_matrixes, (uint8_t *)&tuple,
@@ -299,7 +290,7 @@ enum {
 static int
 test_toeplitz_hash_gfni_bulk(void)
 {
-	uint32_t i, j;
+	uint32_t i;
 	union rte_thash_tuple tuple[2];
 	uint8_t *tuples[2];
 	uint32_t rss[2] = { 0 };
@@ -328,10 +319,8 @@ test_toeplitz_hash_gfni_bulk(void)
 		rte_memcpy(tuples[0], &tuple[0], RTE_THASH_V4_L4_LEN * 4);
 
 		/*Load IPv6 headers and copy it into the corresponding tuple*/
-		for (j = 0; j < RTE_DIM(tuple[1].v6.src_addr); j++)
-			tuple[1].v6.src_addr[j] = v6_tbl[i].src_ip[j];
-		for (j = 0; j < RTE_DIM(tuple[1].v6.dst_addr); j++)
-			tuple[1].v6.dst_addr[j] = v6_tbl[i].dst_ip[j];
+		tuple[1].v6.src_addr = v6_tbl[i].src_ip;
+		tuple[1].v6.dst_addr = v6_tbl[i].dst_ip;
 		tuple[1].v6.sport = rte_cpu_to_be_16(v6_tbl[i].dst_port);
 		tuple[1].v6.dport = rte_cpu_to_be_16(v6_tbl[i].src_port);
 		rte_memcpy(tuples[1], &tuple[1], RTE_THASH_V6_L4_LEN * 4);
@@ -935,6 +924,112 @@ test_adjust_tuple_mult_reta(void)
 	return TEST_SUCCESS;
 }
 
+#define RETA_SZ_LOG		11
+#define RSS_KEY_SZ		40
+#define RETA_SZ			(1 << RETA_SZ_LOG)
+#define NB_HASH_ITER	RETA_SZ
+#define NB_TEST_ITER	10
+
+static inline void
+run_hash_calc_loop(uint8_t *key, union rte_thash_tuple *tuple,
+					unsigned int *rss_reta_hits)
+{
+	uint32_t rss_hash;
+	int i;
+
+	for (i = 0; i < NB_HASH_ITER; i++) {
+		/* variable part starts from the most significant bit */
+		tuple->v4.dport = (i << (sizeof(tuple->v4.dport) * CHAR_BIT -
+			RETA_SZ_LOG));
+		/*
+		 * swap sport and dport on LE arch since rte_softrss()
+		 * works with host byte order uint32_t values
+		 */
+		tuple->v4.dport = rte_cpu_to_be_16(tuple->v4.dport);
+		tuple->v4.sctp_tag = rte_be_to_cpu_32(tuple->v4.sctp_tag);
+		rss_hash = rte_softrss((uint32_t *)tuple,
+				RTE_THASH_V4_L4_LEN, key);
+		/* unroll swap, required only for sport */
+		tuple->v4.sctp_tag = rte_cpu_to_be_32(tuple->v4.sctp_tag);
+		rss_reta_hits[rss_hash & (RETA_SZ - 1)]++;
+	}
+}
+
+static int
+hash_calc_iteration(unsigned int *min_before, unsigned int *max_before,
+		unsigned int *min_after, unsigned int *max_after,
+		unsigned int *min_default, unsigned int *max_default)
+{
+	uint8_t key[RSS_KEY_SZ] = {0};
+	union rte_thash_tuple tuple;
+	unsigned int rss_reta_hits_before_adjust[RETA_SZ] = {0};
+	unsigned int rss_reta_hits_after_adjust[RETA_SZ] = {0};
+	unsigned int rss_reta_hits_default_key[RETA_SZ] = {0};
+	int i;
+
+	for (i = 0; i < RSS_KEY_SZ; i++)
+		key[i] = rte_rand();
+
+	tuple.v4.src_addr = rte_rand();
+	tuple.v4.dst_addr = rte_rand();
+	tuple.v4.sport = rte_rand();
+
+	run_hash_calc_loop(key, &tuple, rss_reta_hits_before_adjust);
+
+	int ret = rte_thash_gen_key(key, RSS_KEY_SZ, RETA_SZ_LOG,
+		offsetof(union rte_thash_tuple, v4.dport)*CHAR_BIT,
+		RETA_SZ_LOG);
+
+	if (ret) {
+		printf("Can't generate key\n");
+		return -1;
+	}
+
+	run_hash_calc_loop(key, &tuple, rss_reta_hits_after_adjust);
+
+	run_hash_calc_loop(default_rss_key, &tuple, rss_reta_hits_default_key);
+
+	for (i = 0; i < RETA_SZ; i++) {
+		*min_before = RTE_MIN(*min_before, rss_reta_hits_before_adjust[i]);
+		*max_before = RTE_MAX(*max_before, rss_reta_hits_before_adjust[i]);
+		*min_after = RTE_MIN(*min_after, rss_reta_hits_after_adjust[i]);
+		*max_after = RTE_MAX(*max_after, rss_reta_hits_after_adjust[i]);
+		*min_default = RTE_MIN(*min_default, rss_reta_hits_default_key[i]);
+		*max_default = RTE_MAX(*max_default, rss_reta_hits_default_key[i]);
+	}
+
+	return 0;
+}
+
+static int
+test_keygen(void)
+{
+	int i, ret;
+	unsigned int min_before = UINT32_MAX;
+	unsigned int min_after = UINT32_MAX;
+	unsigned int min_default = UINT32_MAX;
+	unsigned int max_before = 0;
+	unsigned int max_after = 0;
+	unsigned int max_default = 0;
+
+	for (i = 0; i < NB_TEST_ITER; i++) {
+		/* calculates the worst distribution for each key */
+		ret = hash_calc_iteration(&min_before, &max_before, &min_after,
+			&max_after, &min_default, &max_default);
+		if (ret)
+			return ret;
+	}
+
+	printf("RSS before key adjustment: min=%d, max=%d\n",
+		min_before, max_before);
+	printf("RSS after key adjustment: min=%d, max=%d\n",
+		min_after, max_after);
+	printf("RSS default key: min=%d, max=%d\n",
+		min_default, max_default);
+
+	return TEST_SUCCESS;
+}
+
 static struct unit_test_suite thash_tests = {
 	.suite_name = "thash autotest",
 	.setup = NULL,
@@ -956,6 +1051,7 @@ static struct unit_test_suite thash_tests = {
 	TEST_CASE(test_predictable_rss_multirange),
 	TEST_CASE(test_adjust_tuple),
 	TEST_CASE(test_adjust_tuple_mult_reta),
+	TEST_CASE(test_keygen),
 	TEST_CASES_END()
 	}
 };

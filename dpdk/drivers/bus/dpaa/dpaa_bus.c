@@ -4,6 +4,7 @@
  *
  */
 /* System headers */
+#include <stdalign.h>
 #include <stdio.h>
 #include <inttypes.h>
 #include <unistd.h>
@@ -42,6 +43,9 @@
 #include <fsl_qman.h>
 #include <fsl_bman.h>
 #include <netcfg.h>
+#include <fman.h>
+
+#define RTE_PRIORITY_102 102
 
 struct rte_dpaa_bus {
 	struct rte_bus bus;
@@ -56,6 +60,9 @@ struct netcfg_info *dpaa_netcfg;
 
 /* define a variable to hold the portal_key, once created.*/
 static pthread_key_t dpaa_portal_key;
+/* dpaa lcore specific  portals */
+struct dpaa_portal *dpaa_portals[RTE_MAX_LCORE] = {NULL};
+static int dpaa_bus_global_init;
 
 unsigned int dpaa_svr_family;
 
@@ -169,8 +176,10 @@ dpaa_create_device_list(void)
 	struct fm_eth_port_cfg *cfg;
 	struct fman_if *fman_intf;
 
+	rte_dpaa_bus.device_count = 0;
+
 	/* Creating Ethernet Devices */
-	for (i = 0; i < dpaa_netcfg->num_ethports; i++) {
+	for (i = 0; dpaa_netcfg && (i < dpaa_netcfg->num_ethports); i++) {
 		dev = calloc(1, sizeof(struct rte_dpaa_device));
 		if (!dev) {
 			DPAA_BUS_LOG(ERR, "Failed to allocate ETH devices");
@@ -202,16 +211,22 @@ dpaa_create_device_list(void)
 
 		/* Create device name */
 		memset(dev->name, 0, RTE_ETH_NAME_MAX_LEN);
-		sprintf(dev->name, "fm%d-mac%d", (fman_intf->fman_idx + 1),
-			fman_intf->mac_idx);
-		DPAA_BUS_LOG(INFO, "%s netdev added", dev->name);
+		if (fman_intf->mac_type == fman_offline_internal)
+			sprintf(dev->name, "fm%d-oh%d",
+				(fman_intf->fman_idx + 1), fman_intf->mac_idx);
+		else if (fman_intf->mac_type == fman_onic)
+			sprintf(dev->name, "fm%d-onic%d",
+				(fman_intf->fman_idx + 1), fman_intf->mac_idx);
+		else
+			sprintf(dev->name, "fm%d-mac%d",
+				(fman_intf->fman_idx + 1), fman_intf->mac_idx);
 		dev->device.name = dev->name;
 		dev->device.devargs = dpaa_devargs_lookup(dev);
 
 		dpaa_add_to_device_list(dev);
 	}
 
-	rte_dpaa_bus.device_count = i;
+	rte_dpaa_bus.device_count += i;
 
 	/* Unlike case of ETH, RTE_LIBRTE_DPAA_MAX_CRYPTODEV SEC devices are
 	 * constantly created only if "sec" property is found in the device
@@ -310,7 +325,7 @@ int rte_dpaa_portal_init(void *arg)
 	static const struct rte_mbuf_dynfield dpaa_seqn_dynfield_desc = {
 		.name = DPAA_SEQN_DYNFIELD_NAME,
 		.size = sizeof(dpaa_seqn_t),
-		.align = __alignof__(dpaa_seqn_t),
+		.align = alignof(dpaa_seqn_t),
 	};
 	unsigned int cpu, lcore = rte_lcore_id();
 	int ret;
@@ -328,7 +343,7 @@ int rte_dpaa_portal_init(void *arg)
 	dpaa_seqn_dynfield_offset =
 		rte_mbuf_dynfield_register(&dpaa_seqn_dynfield_desc);
 	if (dpaa_seqn_dynfield_offset < 0) {
-		DPAA_BUS_LOG(ERR, "Failed to register mbuf field for dpaa sequence number\n");
+		DPAA_BUS_LOG(ERR, "Failed to register mbuf field for dpaa sequence number");
 		return -rte_errno;
 	}
 
@@ -377,6 +392,7 @@ int rte_dpaa_portal_init(void *arg)
 
 		return ret;
 	}
+	dpaa_portals[lcore] = DPAA_PER_LCORE_PORTAL;
 
 	DPAA_BUS_LOG(DEBUG, "QMAN thread initialized");
 
@@ -434,13 +450,15 @@ dpaa_portal_finish(void *arg)
 	rte_free(dpaa_io_portal);
 	dpaa_io_portal = NULL;
 	DPAA_PER_LCORE_PORTAL = NULL;
+	dpaa_portals[rte_lcore_id()] = NULL;
+	DPAA_BUS_DEBUG("Portal cleanup done for lcore = %d", rte_lcore_id());
 }
 
 static int
 rte_dpaa_bus_parse(const char *name, void *out)
 {
 	unsigned int i, j;
-	size_t delta;
+	size_t delta, dev_delta;
 	size_t max_name_len;
 
 	/* There are two ways of passing device name, with and without
@@ -457,16 +475,30 @@ rte_dpaa_bus_parse(const char *name, void *out)
 		delta = 5;
 	}
 
+	/* dev_delta points to the dev name (mac/oh/onic). Not valid for
+	 * dpaa_sec.
+	 */
+	dev_delta = delta + sizeof("fm.-") - 1;
+
 	if (strncmp("dpaa_sec", &name[delta], 8) == 0) {
 		if (sscanf(&name[delta], "dpaa_sec-%u", &i) != 1 ||
 				i < 1 || i > 4)
 			return -EINVAL;
 		max_name_len = sizeof("dpaa_sec-.") - 1;
+	} else if (strncmp("oh", &name[dev_delta], 2) == 0) {
+		if (sscanf(&name[delta], "fm%u-oh%u", &i, &j) != 2 ||
+				i >= 2 || j >= 16)
+			return -EINVAL;
+		max_name_len = sizeof("fm.-oh..") - 1;
+	} else if (strncmp("onic", &name[dev_delta], 4) == 0) {
+		if (sscanf(&name[delta], "fm%u-onic%u", &i, &j) != 2 ||
+				i >= 2 || j >= 16)
+			return -EINVAL;
+		max_name_len = sizeof("fm.-onic..") - 1;
 	} else {
 		if (sscanf(&name[delta], "fm%u-mac%u", &i, &j) != 2 ||
 				i >= 2 || j >= 16)
 			return -EINVAL;
-
 		max_name_len = sizeof("fm.-mac..") - 1;
 	}
 
@@ -501,7 +533,7 @@ rte_dpaa_bus_scan(void)
 
 	if ((access(DPAA_DEV_PATH1, F_OK) != 0) &&
 	    (access(DPAA_DEV_PATH2, F_OK) != 0)) {
-		RTE_LOG(DEBUG, EAL, "DPAA Bus not present. Skipping.\n");
+		DPAA_BUS_LOG(DEBUG, "DPAA Bus not present. Skipping.");
 		return 0;
 	}
 
@@ -580,7 +612,7 @@ rte_dpaa_bus_dev_build(void)
 		return -EINVAL;
 	}
 
-	RTE_LOG(NOTICE, EAL, "DPAA Bus Detected\n");
+	DPAA_BUS_LOG(NOTICE, "DPAA Bus Detected");
 
 	if (!dpaa_netcfg->num_ethports) {
 		DPAA_BUS_LOG(INFO, "NO DPDK mapped net interfaces available");
@@ -588,7 +620,7 @@ rte_dpaa_bus_dev_build(void)
 	}
 
 #ifdef RTE_LIBRTE_DPAA_DEBUG_DRIVER
-	dump_netcfg(dpaa_netcfg);
+	dump_netcfg(dpaa_netcfg, stdout);
 #endif
 
 	DPAA_BUS_LOG(DEBUG, "Number of ethernet devices = %d",
@@ -675,7 +707,7 @@ rte_dpaa_bus_probe(void)
 		if (dev->device_type == FSL_DPAA_ETH) {
 			ret = rte_dpaa_setup_intr(dev->intr_handle);
 			if (ret)
-				DPAA_BUS_ERR("Error setting up interrupt.\n");
+				DPAA_BUS_ERR("Error setting up interrupt.");
 		}
 	}
 
@@ -712,6 +744,7 @@ rte_dpaa_bus_probe(void)
 			break;
 		}
 	}
+	dpaa_bus_global_init = 1;
 
 	return 0;
 }
@@ -736,13 +769,13 @@ rte_dpaa_find_device(const struct rte_device *start, rte_dev_cmp_t cmp,
 
 	while (dev != NULL) {
 		if (cmp(&dev->device, data) == 0) {
-			DPAA_BUS_DEBUG("Found dev=(%s)\n", dev->device.name);
+			DPAA_BUS_DEBUG("Found dev=(%s)", dev->device.name);
 			return &dev->device;
 		}
 		dev = TAILQ_NEXT(dev, next);
 	}
 
-	DPAA_BUS_DEBUG("Unable to find any device\n");
+	DPAA_BUS_DEBUG("Unable to find any device");
 	return NULL;
 }
 
@@ -788,14 +821,14 @@ dpaa_bus_dev_iterate(const void *start, const char *str,
 
 	/* Expectation is that device would be name=device_name */
 	if (strncmp(str, "name=", 5) != 0) {
-		DPAA_BUS_DEBUG("Invalid device string (%s)\n", str);
+		DPAA_BUS_DEBUG("Invalid device string (%s)", str);
 		return NULL;
 	}
 
 	/* Now that name=device_name format is available, split */
 	dup = strdup(str);
 	if (dup == NULL) {
-		DPAA_BUS_DEBUG("Dup string (%s) failed!\n", str);
+		DPAA_BUS_DEBUG("Dup string (%s) failed!", str);
 		return NULL;
 	}
 	dev_name = dup + strlen("name=");
@@ -819,6 +852,55 @@ dpaa_bus_dev_iterate(const void *start, const char *str,
 	return NULL;
 }
 
+static int
+dpaa_bus_cleanup(void)
+{
+	struct rte_dpaa_device *dev, *tmp_dev;
+
+	BUS_INIT_FUNC_TRACE();
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_dpaa_bus.device_list, next, tmp_dev) {
+		struct rte_dpaa_driver *drv = dev->driver;
+		int ret = 0;
+
+		if (!rte_dev_is_probed(&dev->device))
+			continue;
+		if (!drv || !drv->remove)
+			continue;
+		ret = drv->remove(dev);
+		if (ret < 0) {
+			rte_errno = errno;
+			return -1;
+		}
+		dev->driver = NULL;
+		dev->device.driver = NULL;
+	}
+	dpaa_portal_finish((void *)DPAA_PER_LCORE_PORTAL);
+	dpaa_bus_global_init = 0;
+	DPAA_BUS_DEBUG("Bus cleanup done");
+
+	return 0;
+}
+
+/* Adding destructor for double check in case non-gracefully
+ * exit.
+ */
+RTE_FINI_PRIO(dpaa_cleanup, 102)
+{
+	unsigned int lcore_id;
+
+	if (!dpaa_bus_global_init)
+		return;
+
+	/* cleanup portals in case non-graceful exit */
+	RTE_LCORE_FOREACH_WORKER(lcore_id) {
+		/* Check for non zero id */
+		dpaa_portal_finish((void *)dpaa_portals[lcore_id]);
+	}
+	dpaa_portal_finish((void *)DPAA_PER_LCORE_PORTAL);
+	dpaa_bus_global_init = 0;
+	DPAA_BUS_DEBUG("Worker thread clean up done");
+}
+
 static struct rte_dpaa_bus rte_dpaa_bus = {
 	.bus = {
 		.scan = rte_dpaa_bus_scan,
@@ -829,6 +911,7 @@ static struct rte_dpaa_bus rte_dpaa_bus = {
 		.plug = dpaa_bus_plug,
 		.unplug = dpaa_bus_unplug,
 		.dev_iterate = dpaa_bus_dev_iterate,
+		.cleanup = dpaa_bus_cleanup,
 	},
 	.device_list = TAILQ_HEAD_INITIALIZER(rte_dpaa_bus.device_list),
 	.driver_list = TAILQ_HEAD_INITIALIZER(rte_dpaa_bus.driver_list),

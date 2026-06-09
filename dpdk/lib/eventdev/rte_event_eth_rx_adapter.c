@@ -72,7 +72,7 @@ struct eth_rx_poll_entry {
 	uint16_t eth_rx_qid;
 };
 
-struct eth_rx_vector_data {
+struct __rte_cache_aligned eth_rx_vector_data {
 	TAILQ_ENTRY(eth_rx_vector_data) next;
 	uint16_t port;
 	uint16_t queue;
@@ -82,7 +82,7 @@ struct eth_rx_vector_data {
 	uint64_t vector_timeout_ticks;
 	struct rte_mempool *vector_pool;
 	struct rte_event_vector *vector_ev;
-} __rte_cache_aligned;
+};
 
 TAILQ_HEAD(eth_rx_vector_data_list, eth_rx_vector_data);
 
@@ -103,7 +103,7 @@ struct eth_event_enqueue_buffer {
 	uint16_t last_mask;
 };
 
-struct event_eth_rx_adapter {
+struct __rte_cache_aligned event_eth_rx_adapter {
 	/* RSS key */
 	uint8_t rss_key_be[RSS_KEY_SIZE];
 	/* Event device identifier */
@@ -188,7 +188,7 @@ struct event_eth_rx_adapter {
 	uint8_t rxa_started;
 	/* Adapter ID */
 	uint8_t id;
-} __rte_cache_aligned;
+};
 
 /* Per eth device */
 struct eth_device_info {
@@ -1190,7 +1190,6 @@ rxa_intr_thread(void *arg)
 static inline bool
 rxa_intr_ring_dequeue(struct event_eth_rx_adapter *rx_adapter)
 {
-	uint32_t n;
 	uint32_t nb_rx = 0;
 	int rxq_empty;
 	struct eth_event_enqueue_buffer *buf;
@@ -1259,9 +1258,9 @@ rxa_intr_ring_dequeue(struct event_eth_rx_adapter *rx_adapter)
 		if (rxa_shared_intr(dev_info, queue)) {
 			uint16_t i;
 			uint16_t nb_queues;
+			uint32_t n = 0;
 
 			nb_queues = dev_info->dev->data->nb_rx_queues;
-			n = 0;
 			for (i = dev_info->next_q_idx; i < nb_queues; i++) {
 				uint8_t enq_buffer_full;
 
@@ -1288,7 +1287,7 @@ rxa_intr_ring_dequeue(struct event_eth_rx_adapter *rx_adapter)
 						RTE_MAX_RXTX_INTR_VEC_ID - 1 :
 						0;
 		} else {
-			n = rxa_eth_rx(rx_adapter, port, queue, nb_rx,
+			uint32_t n = rxa_eth_rx(rx_adapter, port, queue, nb_rx,
 				rx_adapter->max_nb_rx,
 				&rxq_empty, buf, stats);
 			rx_adapter->qd_valid = !rxq_empty;
@@ -3650,7 +3649,8 @@ handle_rxa_get_queue_conf(const char *cmd __rte_unused,
 {
 	uint8_t rx_adapter_id;
 	uint16_t rx_queue_id;
-	int eth_dev_id, ret = -1;
+	uint16_t eth_dev_id;
+	int ret = -1;
 	char *token, *l_params;
 	struct rte_event_eth_rx_adapter_queue_conf queue_conf;
 
@@ -3722,7 +3722,8 @@ handle_rxa_get_queue_stats(const char *cmd __rte_unused,
 {
 	uint8_t rx_adapter_id;
 	uint16_t rx_queue_id;
-	int eth_dev_id, ret = -1;
+	uint16_t eth_dev_id;
+	int ret = -1;
 	char *token, *l_params;
 	struct rte_event_eth_rx_adapter_queue_stats q_stats;
 
@@ -3793,7 +3794,8 @@ handle_rxa_queue_stats_reset(const char *cmd __rte_unused,
 {
 	uint8_t rx_adapter_id;
 	uint16_t rx_queue_id;
-	int eth_dev_id, ret = -1;
+	uint16_t eth_dev_id;
+	int ret = -1;
 	char *token, *l_params;
 
 	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
@@ -3854,7 +3856,8 @@ handle_rxa_instance_get(const char *cmd __rte_unused,
 {
 	uint8_t instance_id;
 	uint16_t rx_queue_id;
-	int eth_dev_id, ret = -1;
+	uint16_t eth_dev_id;
+	int ret = -1;
 	char *token, *l_params;
 
 	if (params == NULL || strlen(params) == 0 || !isdigit(*params))

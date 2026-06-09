@@ -19,10 +19,6 @@
 #include <rte_pdcp_hdr.h>
 #include <rte_security.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* Forward declarations. */
 struct rte_pdcp_entity;
 
@@ -49,7 +45,7 @@ typedef uint16_t (*rte_pdcp_post_p_t)(const struct rte_pdcp_entity *entity,
  * A PDCP entity is associated either to the control plane or the user plane
  * depending on which radio bearer it is carrying data for.
  */
-struct rte_pdcp_entity {
+struct __rte_cache_aligned rte_pdcp_entity {
 	/** Entity specific pre-process handle. */
 	rte_pdcp_pre_p_t pre_process;
 	/** Entity specific post-process handle. */
@@ -66,7 +62,7 @@ struct rte_pdcp_entity {
 	 * hold additionally 'max_pkt_cache' number of packets.
 	 */
 	uint32_t max_pkt_cache;
-} __rte_cache_aligned;
+};
 
 /**
  * Callback function type for t-Reordering timer start, set during PDCP entity establish.
@@ -372,6 +368,10 @@ rte_pdcp_t_reordering_expiry_handle(const struct rte_pdcp_entity *entity,
  * So include in the end.
  */
 #include <rte_pdcp_group.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #ifdef __cplusplus
 }

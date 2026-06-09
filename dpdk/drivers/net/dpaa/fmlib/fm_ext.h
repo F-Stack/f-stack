@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright 2008-2012 Freescale Semiconductor Inc.
- * Copyright 2017-2020 NXP
+ * Copyright 2017-2024 NXP
  */
 
 #ifndef __FM_EXT_H
@@ -18,9 +18,8 @@
 /* #define FM_LIB_DBG */
 
 #if defined(FM_LIB_DBG)
-	#define _fml_dbg(fmt, args...) \
-	rte_log(RTE_LOG_ ## level, dpaa_logtype_pmd, "fmlib:%s(): " fmt "\n", \
-			__func__, ##args)
+#define _fml_dbg(...) \
+	RTE_LOG_LINE_PREFIX(DEBUG, DPAA_PMD, "%s: ", __func__, __VA_ARGS__)
 #else
 	#define _fml_dbg(arg...)
 #endif
@@ -28,9 +27,8 @@
 /*#define FM_IOCTL_DBG*/
 
 #if defined(FM_IOCTL_DBG)
-	#define _fm_ioctl_dbg(fmt, args...) \
-	rte_log(RTE_LOG_ ## level, dpaa_logtype_pmd, "fmioc:%s(): " fmt "\n", \
-				__func__, ##args)
+	#define _fm_ioctl_dbg(...) \
+	RTE_LOG_LINE_PREFIX(DEBUG, DPAA_PMD, "%s: ", __func__, __VA_ARGS__)
 #else
 	#define _fm_ioctl_dbg(arg...)
 #endif

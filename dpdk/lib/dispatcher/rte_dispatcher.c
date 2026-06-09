@@ -41,14 +41,15 @@ struct rte_dispatcher_finalizer {
 	void *finalize_data;
 };
 
-struct rte_dispatcher_lcore {
+struct __rte_cache_aligned rte_dispatcher_lcore {
 	uint8_t num_ports;
 	uint16_t num_handlers;
 	int32_t prio_count;
 	struct rte_dispatcher_lcore_port ports[EVD_MAX_PORTS_PER_LCORE];
 	struct rte_dispatcher_handler handlers[EVD_MAX_HANDLERS];
 	struct rte_dispatcher_stats stats;
-} __rte_cache_aligned;
+	RTE_CACHE_GUARD;
+};
 
 struct rte_dispatcher {
 	uint8_t event_dev_id;

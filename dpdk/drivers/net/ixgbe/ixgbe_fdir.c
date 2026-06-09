@@ -67,8 +67,7 @@
 
 #define IPV6_MASK_TO_ADDR(ipv6m, ipaddr) do { \
 	uint8_t ipv6_addr[16]; \
-	uint8_t i; \
-	for (i = 0; i < sizeof(ipv6_addr); i++) { \
+	for (uint8_t i = 0; i < sizeof(ipv6_addr); i++) { \
 		if ((ipv6m) & (1 << i)) \
 			ipv6_addr[i] = UINT8_MAX; \
 		else \
@@ -647,13 +646,15 @@ ixgbe_fdir_configure(struct rte_eth_dev *dev)
 		hw->mac.type != ixgbe_mac_X540 &&
 		hw->mac.type != ixgbe_mac_X550 &&
 		hw->mac.type != ixgbe_mac_X550EM_x &&
-		hw->mac.type != ixgbe_mac_X550EM_a)
+		hw->mac.type != ixgbe_mac_X550EM_a &&
+		hw->mac.type != ixgbe_mac_E610)
 		return -ENOSYS;
 
-	/* x550 supports mac-vlan and tunnel mode but other NICs not */
+	/* x550 and E610 supports mac-vlan and tunnel mode but other NICs not */
 	if (hw->mac.type != ixgbe_mac_X550 &&
 	    hw->mac.type != ixgbe_mac_X550EM_x &&
 	    hw->mac.type != ixgbe_mac_X550EM_a &&
+	    hw->mac.type != ixgbe_mac_E610 &&
 	    mode != RTE_FDIR_MODE_SIGNATURE &&
 	    mode != RTE_FDIR_MODE_PERFECT)
 		return -ENOSYS;
@@ -1130,7 +1131,7 @@ ixgbe_fdir_filter_program(struct rte_eth_dev *dev,
 		return -ENOTSUP;
 
 	/*
-	 * Sanity check for x550.
+	 * Sanity check for x550 and E610.
 	 * When adding a new filter with flow type set to IPv4,
 	 * the flow director mask should be configed before,
 	 * and the L4 protocol and ports are masked.
@@ -1138,7 +1139,8 @@ ixgbe_fdir_filter_program(struct rte_eth_dev *dev,
 	if ((!del) &&
 	    (hw->mac.type == ixgbe_mac_X550 ||
 	     hw->mac.type == ixgbe_mac_X550EM_x ||
-	     hw->mac.type == ixgbe_mac_X550EM_a) &&
+	     hw->mac.type == ixgbe_mac_X550EM_a ||
+	     hw->mac.type == ixgbe_mac_E610) &&
 	    (rule->ixgbe_fdir.formatted.flow_type ==
 	     IXGBE_ATR_FLOW_TYPE_IPV4 ||
 	     rule->ixgbe_fdir.formatted.flow_type ==
@@ -1281,7 +1283,7 @@ ixgbe_fdir_info_get(struct rte_eth_dev *dev, struct rte_eth_fdir_info *fdir_info
 	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct ixgbe_hw_fdir_info *info =
 			IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
-	uint32_t fdirctrl, max_num, i;
+	uint32_t fdirctrl, max_num;
 	uint8_t offset;
 
 	fdirctrl = IXGBE_READ_REG(hw, IXGBE_FDIRCTRL);
@@ -1316,7 +1318,7 @@ ixgbe_fdir_info_get(struct rte_eth_dev *dev, struct rte_eth_fdir_info *fdir_info
 		fdir_info->flow_types_mask[0] = 0ULL;
 	else
 		fdir_info->flow_types_mask[0] = IXGBE_FDIR_FLOW_TYPES;
-	for (i = 1; i < RTE_FLOW_MASK_ARRAY_SIZE; i++)
+	for (uint32_t i = 1; i < RTE_FLOW_MASK_ARRAY_SIZE; i++)
 		fdir_info->flow_types_mask[i] = 0ULL;
 
 	fdir_info->flex_payload_unit = sizeof(uint16_t);

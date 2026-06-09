@@ -107,6 +107,7 @@ virtqueue_dequeue_burst_rx(struct virtqueue *vq,
 	return i;
 }
 
+
 static __rte_always_inline uint8_t
 virtqueue_crypto_check_cipher_request(struct virtio_crypto_cipher_data_req *req)
 {

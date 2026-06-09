@@ -81,7 +81,7 @@ struct mlx5_eth_rxseg {
 };
 
 /* RX queue descriptor. */
-struct mlx5_rxq_data {
+struct __rte_cache_aligned mlx5_rxq_data {
 	unsigned int csum:1; /* Enable checksum offloading. */
 	unsigned int hw_timestamp:1; /* Enable HW timestamp. */
 	unsigned int rt_timestamp:1; /* Realtime timestamp format. */
@@ -153,11 +153,12 @@ struct mlx5_rxq_data {
 	uint16_t rq_win_idx_mask; /* Sliding window index wrapping mask. */
 	uint16_t rq_win_idx; /* Index of the first element in sliding window. */
 	uint32_t *rq_win_data; /* Out-of-Order completions sliding window. */
-} __rte_cache_aligned;
+};
 
 /* RX queue control descriptor. */
 struct mlx5_rxq_ctrl {
 	struct mlx5_rxq_data rxq; /* Data path structure. */
+	uint16_t mtu; /* Original MTU that the queue was allocated with. */
 	LIST_ENTRY(mlx5_rxq_ctrl) next; /* Pointer to the next element. */
 	LIST_HEAD(priv, mlx5_rxq_priv) owners; /* Owner rxq list. */
 	struct mlx5_rxq_obj *obj; /* Verbs/DevX elements. */
@@ -181,7 +182,7 @@ struct mlx5_rxq_ctrl {
 /* RX queue private data. */
 struct mlx5_rxq_priv {
 	uint16_t idx; /* Queue index. */
-	uint32_t refcnt; /* Reference counter. */
+	RTE_ATOMIC(uint32_t) refcnt; /* Reference counter. */
 	struct mlx5_rxq_ctrl *ctrl; /* Shared Rx Queue. */
 	LIST_ENTRY(mlx5_rxq_priv) owner_entry; /* Entry in shared rxq_ctrl. */
 	struct mlx5_priv *priv; /* Back pointer to private data. */
@@ -191,12 +192,6 @@ struct mlx5_rxq_priv {
 	uint32_t lwm:16;
 	uint32_t lwm_event_pending:1;
 	uint32_t lwm_devx_subscribed:1;
-};
-
-/* External RX queue descriptor. */
-struct mlx5_external_rxq {
-	uint32_t hw_id; /* Queue index in the Hardware. */
-	uint32_t refcnt; /* Reference counter. */
 };
 
 /* mlx5_rxq.c */
@@ -235,10 +230,10 @@ uint32_t mlx5_rxq_deref(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_rxq_priv *mlx5_rxq_get(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_rxq_ctrl *mlx5_rxq_ctrl_get(struct rte_eth_dev *dev, uint16_t idx);
 struct mlx5_rxq_data *mlx5_rxq_data_get(struct rte_eth_dev *dev, uint16_t idx);
-struct mlx5_external_rxq *mlx5_ext_rxq_ref(struct rte_eth_dev *dev,
+struct mlx5_external_q *mlx5_ext_rxq_ref(struct rte_eth_dev *dev,
 					   uint16_t idx);
 uint32_t mlx5_ext_rxq_deref(struct rte_eth_dev *dev, uint16_t idx);
-struct mlx5_external_rxq *mlx5_ext_rxq_get(struct rte_eth_dev *dev,
+struct mlx5_external_q *mlx5_ext_rxq_get(struct rte_eth_dev *dev,
 					   uint16_t idx);
 int mlx5_rxq_release(struct rte_eth_dev *dev, uint16_t idx);
 int mlx5_rxq_verify(struct rte_eth_dev *dev);
@@ -422,7 +417,7 @@ mprq_buf_replace(struct mlx5_rxq_data *rxq, uint16_t rq_idx)
 	struct mlx5_mprq_buf *buf = (*rxq->mprq_bufs)[rq_idx];
 	void *addr;
 
-	if (__atomic_load_n(&buf->refcnt, __ATOMIC_RELAXED) > 1) {
+	if (rte_atomic_load_explicit(&buf->refcnt, rte_memory_order_relaxed) > 1) {
 		MLX5_ASSERT(rep != NULL);
 		/* Replace MPRQ buf. */
 		(*rxq->mprq_bufs)[rq_idx] = rep;
@@ -534,9 +529,9 @@ mprq_buf_to_pkt(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt, uint32_t len,
 		void *buf_addr;
 
 		/* Increment the refcnt of the whole chunk. */
-		__atomic_fetch_add(&buf->refcnt, 1, __ATOMIC_RELAXED);
-		MLX5_ASSERT(__atomic_load_n(&buf->refcnt,
-			    __ATOMIC_RELAXED) <= strd_n + 1);
+		rte_atomic_fetch_add_explicit(&buf->refcnt, 1, rte_memory_order_relaxed);
+		MLX5_ASSERT(rte_atomic_load_explicit(&buf->refcnt,
+			    rte_memory_order_relaxed) <= strd_n + 1);
 		buf_addr = RTE_PTR_SUB(addr, RTE_PKTMBUF_HEADROOM);
 		/*
 		 * MLX5 device doesn't use iova but it is necessary in a
@@ -588,6 +583,23 @@ mprq_buf_to_pkt(struct mlx5_rxq_data *rxq, struct rte_mbuf *pkt, uint32_t len,
 }
 
 /**
+ * Check whether Shared RQ is enabled for the device.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ *
+ * @return
+ *   0 if disabled, otherwise enabled.
+ */
+static __rte_always_inline int
+mlx5_shared_rq_enabled(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	return !LIST_EMPTY(&priv->sh->shared_rxqs);
+}
+
+/**
  * Check whether Multi-Packet RQ can be enabled for the device.
  *
  * @param dev
@@ -601,6 +613,8 @@ mlx5_check_mprq_support(struct rte_eth_dev *dev)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
+	if (mlx5_shared_rq_enabled(dev))
+		return -ENOTSUP;
 	if (priv->config.mprq.enabled &&
 	    priv->rxqs_n >= priv->config.mprq.min_rxqs_num)
 		return 1;
@@ -657,23 +671,6 @@ mlx5_mprq_enabled(struct rte_eth_dev *dev)
 }
 
 /**
- * Check whether Shared RQ is enabled for the device.
- *
- * @param dev
- *   Pointer to Ethernet device.
- *
- * @return
- *   0 if disabled, otherwise enabled.
- */
-static __rte_always_inline int
-mlx5_shared_rq_enabled(struct rte_eth_dev *dev)
-{
-	struct mlx5_priv *priv = dev->data->dev_private;
-
-	return !LIST_EMPTY(&priv->sh->shared_rxqs);
-}
-
-/**
  * Check whether given RxQ is external.
  *
  * @param dev
@@ -688,12 +685,12 @@ static __rte_always_inline bool
 mlx5_is_external_rxq(struct rte_eth_dev *dev, uint16_t queue_idx)
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
-	struct mlx5_external_rxq *rxq;
+	struct mlx5_external_q *rxq;
 
 	if (!priv->ext_rxqs || queue_idx < RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN)
 		return false;
 	rxq = &priv->ext_rxqs[queue_idx - RTE_PMD_MLX5_EXTERNAL_RX_QUEUE_ID_MIN];
-	return !!__atomic_load_n(&rxq->refcnt, __ATOMIC_RELAXED);
+	return !!rte_atomic_load_explicit(&rxq->refcnt, rte_memory_order_relaxed);
 }
 
 #define LWM_COOKIE_RXQID_OFFSET 0

@@ -15,6 +15,8 @@
 #define OTX_EP_DEV(_eth_dev) \
 	((struct otx_ep_device *)(_eth_dev)->data->dev_private)
 
+#define OTX_ISM_ENABLE	"ism_enable"
+
 static const struct rte_eth_desc_lim otx_ep_rx_desc_lim = {
 	.nb_max		= OTX_EP_MAX_OQ_DESCRIPTORS,
 	.nb_min		= OTX_EP_MIN_OQ_DESCRIPTORS,
@@ -26,6 +28,41 @@ static const struct rte_eth_desc_lim otx_ep_tx_desc_lim = {
 	.nb_min		= OTX_EP_MIN_IQ_DESCRIPTORS,
 	.nb_align	= OTX_EP_TXD_ALIGN,
 };
+
+static int
+parse_flag(const char *key, const char *value, void *extra_args)
+{
+	RTE_SET_USED(key);
+
+	*(uint8_t *)extra_args = atoi(value);
+
+	return 0;
+}
+
+static int
+otx_ethdev_parse_devargs(struct rte_devargs *devargs, struct otx_ep_device *otx_epvf)
+{
+	struct rte_kvargs *kvlist;
+	uint8_t ism_enable = 0;
+
+	if (devargs == NULL)
+		goto null_devargs;
+
+	kvlist = rte_kvargs_parse(devargs->args, NULL);
+	if (kvlist == NULL)
+		goto exit;
+
+	rte_kvargs_process(kvlist, OTX_ISM_ENABLE, &parse_flag, &ism_enable);
+	rte_kvargs_free(kvlist);
+
+null_devargs:
+	otx_epvf->ism_ena = !!ism_enable;
+
+	return 0;
+
+exit:
+	return -EINVAL;
+}
 
 static void
 otx_ep_set_tx_func(struct rte_eth_dev *eth_dev)
@@ -52,10 +89,30 @@ otx_ep_set_rx_func(struct rte_eth_dev *eth_dev)
 
 	if (otx_epvf->chip_gen == OTX_EP_CN10XX) {
 		eth_dev->rx_pkt_burst = &cnxk_ep_recv_pkts;
+#ifdef RTE_ARCH_X86
+		eth_dev->rx_pkt_burst = &cnxk_ep_recv_pkts_sse;
+#ifdef CC_AVX2_SUPPORT
+		if (rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256 &&
+		    rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1)
+			eth_dev->rx_pkt_burst = &cnxk_ep_recv_pkts_avx;
+#endif
+#elif defined(RTE_ARCH_ARM64)
+		eth_dev->rx_pkt_burst = &cnxk_ep_recv_pkts_neon;
+#endif
 		if (otx_epvf->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER)
 			eth_dev->rx_pkt_burst = &cnxk_ep_recv_pkts_mseg;
 	} else if (otx_epvf->chip_gen == OTX_EP_CN9XX) {
 		eth_dev->rx_pkt_burst = &cn9k_ep_recv_pkts;
+#ifdef RTE_ARCH_X86
+		eth_dev->rx_pkt_burst = &cn9k_ep_recv_pkts_sse;
+#ifdef CC_AVX2_SUPPORT
+		if (rte_vect_get_max_simd_bitwidth() >= RTE_VECT_SIMD_256 &&
+		    rte_cpu_get_flag_enabled(RTE_CPUFLAG_AVX2) == 1)
+			eth_dev->rx_pkt_burst = &cn9k_ep_recv_pkts_avx;
+#endif
+#elif defined(RTE_ARCH_ARM64)
+		eth_dev->rx_pkt_burst = &cn9k_ep_recv_pkts_neon;
+#endif
 		if (otx_epvf->rx_offloads & RTE_ETH_RX_OFFLOAD_SCATTER)
 			eth_dev->rx_pkt_burst = &cn9k_ep_recv_pkts_mseg;
 	} else {
@@ -129,6 +186,8 @@ otx_ep_dev_mtu_set(struct rte_eth_dev *eth_dev, uint16_t mtu)
 	struct rte_eth_dev_info devinfo;
 	int32_t ret = 0;
 
+	/* Avoid what looks like a GCC optimisation bug on devinfo.max_mtu initialisation */
+	memset(&devinfo, 0, sizeof(devinfo));
 	if (otx_ep_dev_info_get(eth_dev, &devinfo)) {
 		otx_ep_err("Cannot set MTU to %u: failed to get device info", mtu);
 		return -EPERM;
@@ -177,6 +236,12 @@ otx_ep_dev_start(struct rte_eth_dev *eth_dev)
 	int ret;
 
 	otx_epvf = (struct otx_ep_device *)OTX_EP_DEV(eth_dev);
+
+	for (q = 0; q < otx_epvf->nb_rx_queues; q++) {
+		cnxk_ep_drain_rx_pkts(otx_epvf->droq[q]);
+		otx_epvf->fn_list.setup_oq_regs(otx_epvf, q);
+	}
+
 	/* Enable IQ/OQ for this device */
 	ret = otx_epvf->fn_list.enable_io_queues(otx_epvf);
 	if (ret) {
@@ -262,7 +327,6 @@ otx_ep_chip_specific_setup(struct otx_ep_device *otx_epvf)
 	case PCI_DEVID_OCTEONTX_EP_VF:
 		otx_epvf->chip_id = dev_id;
 		ret = otx_ep_vf_setup_device(otx_epvf);
-		otx_epvf->fn_list.disable_io_queues(otx_epvf);
 		break;
 	case PCI_DEVID_CN9K_EP_NET_VF:
 	case PCI_DEVID_CN98XX_EP_NET_VF:
@@ -270,9 +334,6 @@ otx_ep_chip_specific_setup(struct otx_ep_device *otx_epvf)
 	case PCI_DEVID_CNF95O_EP_NET_VF:
 		otx_epvf->chip_id = dev_id;
 		ret = otx2_ep_vf_setup_device(otx_epvf);
-		otx_epvf->fn_list.disable_io_queues(otx_epvf);
-		if (otx_ep_ism_setup(otx_epvf))
-			ret = -EINVAL;
 		break;
 	case PCI_DEVID_CN10KA_EP_NET_VF:
 	case PCI_DEVID_CN10KB_EP_NET_VF:
@@ -280,9 +341,6 @@ otx_ep_chip_specific_setup(struct otx_ep_device *otx_epvf)
 	case PCI_DEVID_CNF10KB_EP_NET_VF:
 		otx_epvf->chip_id = dev_id;
 		ret = cnxk_ep_vf_setup_device(otx_epvf);
-		otx_epvf->fn_list.disable_io_queues(otx_epvf);
-		if (otx_ep_ism_setup(otx_epvf))
-			ret = -EINVAL;
 		break;
 	default:
 		otx_ep_err("Unsupported device");
@@ -291,6 +349,11 @@ otx_ep_chip_specific_setup(struct otx_ep_device *otx_epvf)
 
 	if (!ret)
 		otx_ep_info("OTX_EP dev_id[%d]", dev_id);
+	else
+		return ret;
+
+	if (dev_id != PCI_DEVID_OCTEONTX_EP_VF)
+		ret = otx_ep_ism_setup(otx_epvf);
 
 	return ret;
 }
@@ -307,8 +370,6 @@ otx_epdev_init(struct otx_ep_device *otx_epvf)
 		otx_ep_err("Chip specific setup failed");
 		goto setup_fail;
 	}
-
-	otx_epvf->fn_list.setup_device_regs(otx_epvf);
 
 	otx_epvf->eth_dev->tx_pkt_burst = &cnxk_ep_xmit_pkts;
 	otx_epvf->eth_dev->rx_pkt_burst = &otx_ep_recv_pkts;
@@ -359,6 +420,10 @@ otx_ep_dev_configure(struct rte_eth_dev *eth_dev)
 		otx_ep_err("invalid num queues");
 		return -EINVAL;
 	}
+
+	otx_epvf->fn_list.setup_device_regs(otx_epvf);
+	otx_epvf->fn_list.disable_io_queues(otx_epvf);
+
 	otx_ep_info("OTX_EP Device is configured with num_txq %d num_rxq %d",
 		    eth_dev->data->nb_rx_queues, eth_dev->data->nb_tx_queues);
 
@@ -599,6 +664,7 @@ otx_ep_dev_close(struct rte_eth_dev *eth_dev)
 
 	otx_epvf = OTX_EP_DEV(eth_dev);
 	otx_ep_mbox_send_dev_exit(eth_dev);
+	otx_ep_mbox_uninit(eth_dev);
 	otx_epvf->fn_list.disable_io_queues(otx_epvf);
 	num_queues = otx_epvf->nb_rx_queues;
 	for (q_no = 0; q_no < num_queues; q_no++) {
@@ -668,11 +734,25 @@ otx_ep_eth_dev_uninit(struct rte_eth_dev *eth_dev)
 		return 0;
 	}
 
+	otx_ep_mbox_uninit(eth_dev);
 	eth_dev->dev_ops = NULL;
 	eth_dev->rx_pkt_burst = NULL;
 	eth_dev->tx_pkt_burst = NULL;
 
 	return 0;
+}
+
+static void
+otx_epdev_event_callback(const char *device_name, enum rte_dev_event_type type,
+			 __rte_unused void *arg)
+{
+	if (type == RTE_DEV_EVENT_REMOVE)
+		otx_ep_info("Octeon epdev: %s has been removed!", device_name);
+
+	/* Cease further execution when the device is removed; otherwise,
+	 * accessing the device may lead to errors.
+	 */
+	RTE_VERIFY(type != RTE_DEV_EVENT_REMOVE);
 }
 
 static int otx_ep_eth_dev_query_set_vf_mac(struct rte_eth_dev *eth_dev,
@@ -712,6 +792,7 @@ otx_ep_eth_dev_init(struct rte_eth_dev *eth_dev)
 	struct rte_pci_device *pdev = RTE_ETH_DEV_TO_PCI(eth_dev);
 	struct otx_ep_device *otx_epvf = OTX_EP_DEV(eth_dev);
 	struct rte_ether_addr vf_mac_addr;
+	int ret = 0;
 
 	/* Single process support */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
@@ -719,6 +800,12 @@ otx_ep_eth_dev_init(struct rte_eth_dev *eth_dev)
 		otx_ep_set_tx_func(eth_dev);
 		otx_ep_set_rx_func(eth_dev);
 		return 0;
+	}
+
+	/* Parse devargs string */
+	if (otx_ethdev_parse_devargs(eth_dev->device->devargs, otx_epvf)) {
+		otx_ep_err("Failed to parse devargs");
+		return -EINVAL;
 	}
 
 	rte_eth_copy_pci_info(eth_dev, pdev);
@@ -743,8 +830,16 @@ otx_ep_eth_dev_init(struct rte_eth_dev *eth_dev)
 	otx_epvf->hw_addr = pdev->mem_resource[0].addr;
 	otx_epvf->pdev = pdev;
 
-	if (otx_epdev_init(otx_epvf))
-		return -ENOMEM;
+	if (rte_dev_event_callback_register(pdev->name, otx_epdev_event_callback, NULL)) {
+		otx_ep_err("Failed  to register a device event callback");
+			return -EINVAL;
+	}
+
+	if (otx_epdev_init(otx_epvf)) {
+		ret = -ENOMEM;
+		goto exit;
+	}
+
 	if (otx_epvf->chip_id == PCI_DEVID_CN9K_EP_NET_VF ||
 	    otx_epvf->chip_id == PCI_DEVID_CN98XX_EP_NET_VF ||
 	    otx_epvf->chip_id == PCI_DEVID_CNF95N_EP_NET_VF ||
@@ -760,20 +855,27 @@ otx_ep_eth_dev_init(struct rte_eth_dev *eth_dev)
 		otx_ep_info("Using pkind %d.", otx_epvf->pkind);
 	} else {
 		otx_ep_err("Invalid chip id");
-		return -EINVAL;
+		ret = -EINVAL;
+		goto exit;
 	}
 
-	if (otx_ep_mbox_version_check(eth_dev))
-		return -EINVAL;
+	if (otx_ep_mbox_init(eth_dev)) {
+		ret = -EINVAL;
+		goto exit;
+	}
 
 	if (otx_ep_eth_dev_query_set_vf_mac(eth_dev,
 				(struct rte_ether_addr *)&vf_mac_addr)) {
 		otx_ep_err("set mac addr failed");
-		return -ENODEV;
+		ret = -ENODEV;
+		goto exit;
 	}
 	rte_ether_addr_copy(&vf_mac_addr, eth_dev->data->mac_addrs);
 
-	return 0;
+exit:
+	rte_dev_event_callback_unregister(pdev->name, otx_epdev_event_callback, NULL);
+
+	return ret;
 }
 
 static int
@@ -817,3 +919,5 @@ RTE_PMD_REGISTER_PCI(net_otx_ep, rte_otx_ep_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_otx_ep, pci_id_otx_ep_map);
 RTE_PMD_REGISTER_KMOD_DEP(net_otx_ep, "* igb_uio | vfio-pci");
 RTE_LOG_REGISTER_DEFAULT(otx_net_ep_logtype, NOTICE);
+RTE_PMD_REGISTER_PARAM_STRING(net_otx_ep,
+			      OTX_ISM_ENABLE "=<0|1>");

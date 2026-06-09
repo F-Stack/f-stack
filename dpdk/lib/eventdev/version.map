@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	__rte_eventdev_trace_crypto_adapter_enqueue;
@@ -147,6 +147,12 @@ EXPERIMENTAL {
 	rte_event_port_profile_unlink;
 	rte_event_port_profile_links_get;
 	__rte_eventdev_trace_port_profile_switch;
+
+	# added in 24.11
+	rte_event_port_preschedule_modify;
+	__rte_eventdev_trace_port_preschedule_modify;
+	rte_event_port_preschedule;
+	__rte_eventdev_trace_port_preschedule;
 };
 
 INTERNAL {
@@ -155,6 +161,7 @@ INTERNAL {
 	event_dev_fp_ops_reset;
 	event_dev_fp_ops_set;
 	event_dev_probing_finish;
+	rte_event_logtype;
 	rte_event_pmd_allocate;
 	rte_event_pmd_get_named_dev;
 	rte_event_pmd_is_valid_dev;

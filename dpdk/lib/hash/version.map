@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	rte_fbk_hash_create;
@@ -9,6 +9,8 @@ DPDK_24 {
 	rte_hash_add_key_with_hash;
 	rte_hash_add_key_with_hash_data;
 	rte_hash_count;
+	rte_hash_crc32_alg;
+	rte_hash_crc_set_alg;
 	rte_hash_create;
 	rte_hash_del_key;
 	rte_hash_del_key_with_hash;
@@ -43,4 +45,22 @@ DPDK_24 {
 	rte_thash_init_ctx;
 
 	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	# added in 24.07
+	rte_hash_rcu_qsbr_dq_reclaim;
+
+	# added in 24.11
+	rte_thash_gen_key;
+};
+
+INTERNAL {
+	global:
+
+	rte_thash_gfni_stub;
+	rte_thash_gfni_bulk_stub;
+	thash_get_rand_poly;
 };

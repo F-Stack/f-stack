@@ -6,8 +6,9 @@ PROJECT_NUMBER          = @VERSION@
 USE_MDFILE_AS_MAINPAGE  = @TOPDIR@/doc/api/doxy-api-index.md
 INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/drivers/bus/vdev \
+                          @TOPDIR@/drivers/common/dpaax \
+                          @TOPDIR@/drivers/crypto/cnxk \
                           @TOPDIR@/drivers/crypto/scheduler \
-                          @TOPDIR@/drivers/dma/dpaa2 \
                           @TOPDIR@/drivers/event/dlb2 \
                           @TOPDIR@/drivers/event/cnxk \
                           @TOPDIR@/drivers/mempool/cnxk \
@@ -28,6 +29,7 @@ INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/lib/eal/include \
                           @TOPDIR@/lib/eal/include/generic \
                           @TOPDIR@/lib/acl \
+                          @TOPDIR@/lib/argparse \
                           @TOPDIR@/lib/bbdev \
                           @TOPDIR@/lib/bitratestats \
                           @TOPDIR@/lib/bpf \
@@ -69,6 +71,7 @@ INPUT                   = @TOPDIR@/doc/api/doxy-api-index.md \
                           @TOPDIR@/lib/pipeline \
                           @TOPDIR@/lib/port \
                           @TOPDIR@/lib/power \
+                          @TOPDIR@/lib/ptr_compress \
                           @TOPDIR@/lib/rawdev \
                           @TOPDIR@/lib/rcu \
                           @TOPDIR@/lib/regexdev \
@@ -120,6 +123,8 @@ HTML_EXTRA_STYLESHEET   = @TOPDIR@/doc/api/custom.css
 SEARCHENGINE            = YES
 SORT_MEMBER_DOCS        = NO
 SOURCE_BROWSER          = YES
+
+ALIASES                 = "dts_api_main_page=@DTS_API_MAIN_PAGE@"
 
 EXAMPLE_PATH            = @TOPDIR@/examples
 EXAMPLE_PATTERNS        = *.c

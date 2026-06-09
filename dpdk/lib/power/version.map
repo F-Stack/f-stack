@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	rte_power_check_env_supported;
@@ -16,8 +16,6 @@ DPDK_24 {
 	rte_power_get_env;
 	rte_power_get_freq;
 	rte_power_get_uncore_freq;
-	rte_power_guest_channel_receive_msg;
-	rte_power_guest_channel_send_msg;
 	rte_power_init;
 	rte_power_pmd_mgmt_get_emptypoll_max;
 	rte_power_pmd_mgmt_get_pause_duration;
@@ -51,4 +49,23 @@ EXPERIMENTAL {
 	rte_power_set_uncore_env;
 	rte_power_uncore_freqs;
 	rte_power_unset_uncore_env;
+
+	# added in 24.11
+	rte_power_qos_get_cpu_resume_latency;
+	rte_power_qos_set_cpu_resume_latency;
+};
+
+INTERNAL {
+	global:
+
+	rte_power_register_cpufreq_ops;
+	rte_power_register_uncore_ops;
+	rte_power_logtype;
+	cpufreq_check_scaling_driver;
+	power_get_lcore_mapped_cpu_id;
+	power_set_governor;
+	open_core_sysfs_file;
+	read_core_sysfs_u32;
+	read_core_sysfs_s;
+	write_core_sysfs_s;
 };

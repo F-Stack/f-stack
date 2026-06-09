@@ -306,11 +306,11 @@ iavf_fsub_parse_pattern(const struct rte_flow_item pattern[],
 
 				if (ipv4_mask->hdr.src_addr) {
 					*input |= IAVF_INSET_IPV4_SRC;
-					input_set_byte += 2;
+					input_set_byte += 4;
 				}
 				if (ipv4_mask->hdr.dst_addr) {
 					*input |= IAVF_INSET_IPV4_DST;
-					input_set_byte += 2;
+					input_set_byte += 4;
 				}
 				if (ipv4_mask->hdr.time_to_live) {
 					*input |= IAVF_INSET_IPV4_TTL;
@@ -354,23 +354,23 @@ iavf_fsub_parse_pattern(const struct rte_flow_item pattern[],
 				}
 
 				for (j = 0; j < IAVF_IPV6_ADDR_LENGTH; j++) {
-					if (ipv6_mask->hdr.src_addr[j]) {
+					if (ipv6_mask->hdr.src_addr.a[j]) {
 						*input |= IAVF_INSET_IPV6_SRC;
 						break;
 					}
 				}
 				for (j = 0; j < IAVF_IPV6_ADDR_LENGTH; j++) {
-					if (ipv6_mask->hdr.dst_addr[j]) {
+					if (ipv6_mask->hdr.dst_addr.a[j]) {
 						*input |= IAVF_INSET_IPV6_DST;
 						break;
 					}
 				}
 
 				for (j = 0; j < IAVF_IPV6_ADDR_LENGTH; j++) {
-					if (ipv6_mask->hdr.src_addr[j])
+					if (ipv6_mask->hdr.src_addr.a[j])
 						input_set_byte++;
 
-					if (ipv6_mask->hdr.dst_addr[j])
+					if (ipv6_mask->hdr.dst_addr.a[j])
 						input_set_byte++;
 				}
 

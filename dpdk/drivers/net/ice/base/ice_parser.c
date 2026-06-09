@@ -146,7 +146,8 @@ void *ice_parser_create_table(struct ice_hw *hw, u32 sect_type,
 			if (no_offset)
 				idx++;
 			else
-				idx = hdr->offset + state.entry_idx;
+				idx = LE16_TO_CPU(hdr->offset) +
+							state.entry_idx;
 			parse_item(hw, idx,
 				   (void *)((uintptr_t)table + idx * item_size),
 				   data, item_size);
@@ -161,10 +162,10 @@ void *ice_parser_create_table(struct ice_hw *hw, u32 sect_type,
  * @hw: pointer to the hardware structure
  * @psr: output parameter for a new parser instance be created
  */
-enum ice_status ice_parser_create(struct ice_hw *hw, struct ice_parser **psr)
+int ice_parser_create(struct ice_hw *hw, struct ice_parser **psr)
 {
-	enum ice_status status;
 	struct ice_parser *p;
+	int status;
 
 	p = (struct ice_parser *)ice_malloc(hw, sizeof(struct ice_parser));
 	if (!p)
@@ -270,7 +271,7 @@ enum ice_status ice_parser_create(struct ice_hw *hw, struct ice_parser **psr)
 	}
 
 	*psr = p;
-	return ICE_SUCCESS;
+	return 0;
 err:
 	ice_parser_destroy(p);
 	return status;
@@ -309,8 +310,8 @@ void ice_parser_destroy(struct ice_parser *psr)
  * @pkt_len: packet length
  * @rslt: input/output parameter to save parser result.
  */
-enum ice_status ice_parser_run(struct ice_parser *psr, const u8 *pkt_buf,
-			       int pkt_len, struct ice_parser_result *rslt)
+int ice_parser_run(struct ice_parser *psr, const u8 *pkt_buf,
+		   int pkt_len, struct ice_parser_result *rslt)
 {
 	ice_parser_rt_reset(&psr->rt);
 	ice_parser_rt_pktbuf_set(&psr->rt, pkt_buf, pkt_len);
@@ -341,10 +342,10 @@ void ice_parser_result_dump(struct ice_hw *hw, struct ice_parser_result *rslt)
 
 static void _bst_vm_set(struct ice_parser *psr, const char *prefix, bool on)
 {
-	struct ice_bst_tcam_item *item;
 	u16 i = 0;
 
 	while (true) {
+		struct ice_bst_tcam_item *item;
 		item = ice_bst_tcam_search(psr->bst_tcam_table,
 					   psr->bst_lbl_table,
 					   prefix, &i);
@@ -367,15 +368,15 @@ void ice_parser_dvm_set(struct ice_parser *psr, bool on)
 	_bst_vm_set(psr, "BOOST_MAC_VLAN_SVM", !on);
 }
 
-static enum ice_status
+static int
 _tunnel_port_set(struct ice_parser *psr, const char *prefix, u16 udp_port,
 		 bool on)
 {
 	u8 *buf = (u8 *)&udp_port;
-	struct ice_bst_tcam_item *item;
 	u16 i = 0;
 
 	while (true) {
+		struct ice_bst_tcam_item *item;
 		item = ice_bst_tcam_search(psr->bst_tcam_table,
 					   psr->bst_lbl_table,
 					   prefix, &i);
@@ -389,7 +390,7 @@ _tunnel_port_set(struct ice_parser *psr, const char *prefix, u16 udp_port,
 			item->key[15] = (u8)(0xff - buf[0]);
 			item->key[16] = (u8)(0xff - buf[1]);
 
-			return ICE_SUCCESS;
+			return 0;
 		/* found a matched slot to delete */
 		} else if (!on && (item->key_inv[15] == buf[0] ||
 			   item->key_inv[16] == buf[1])) {
@@ -398,7 +399,7 @@ _tunnel_port_set(struct ice_parser *psr, const char *prefix, u16 udp_port,
 			item->key[15] = 0xff;
 			item->key[16] = 0xfe;
 
-			return ICE_SUCCESS;
+			return 0;
 		}
 		i++;
 	}
@@ -412,8 +413,8 @@ _tunnel_port_set(struct ice_parser *psr, const char *prefix, u16 udp_port,
  * @udp_port: vxlan tunnel port in UDP header
  * @on: true to turn on; false to turn off
  */
-enum ice_status ice_parser_vxlan_tunnel_set(struct ice_parser *psr,
-					    u16 udp_port, bool on)
+int ice_parser_vxlan_tunnel_set(struct ice_parser *psr,
+				u16 udp_port, bool on)
 {
 	return _tunnel_port_set(psr, "TNL_VXLAN", udp_port, on);
 }
@@ -424,8 +425,8 @@ enum ice_status ice_parser_vxlan_tunnel_set(struct ice_parser *psr,
  * @udp_port: geneve tunnel port in UDP header
  * @on: true to turn on; false to turn off
  */
-enum ice_status ice_parser_geneve_tunnel_set(struct ice_parser *psr,
-					     u16 udp_port, bool on)
+int ice_parser_geneve_tunnel_set(struct ice_parser *psr,
+				 u16 udp_port, bool on)
 {
 	return _tunnel_port_set(psr, "TNL_GENEVE", udp_port, on);
 }
@@ -436,8 +437,8 @@ enum ice_status ice_parser_geneve_tunnel_set(struct ice_parser *psr,
  * @udp_port: ecpri tunnel port in UDP header
  * @on: true to turn on; false to turn off
  */
-enum ice_status ice_parser_ecpri_tunnel_set(struct ice_parser *psr,
-					    u16 udp_port, bool on)
+int ice_parser_ecpri_tunnel_set(struct ice_parser *psr,
+				u16 udp_port, bool on)
 {
 	return _tunnel_port_set(psr, "TNL_UDP_ECPRI", udp_port, on);
 }
@@ -485,11 +486,11 @@ static bool _nearest_proto_id(struct ice_parser_result *rslt, u16 offset,
  * @prefix_match: match protocol stack exactly or only prefix
  * @prof: input/output parameter to save the profile
  */
-enum ice_status ice_parser_profile_init(struct ice_parser_result *rslt,
-					const u8 *pkt_buf, const u8 *msk_buf,
-					int buf_len, enum ice_block blk,
-					bool prefix_match,
-					struct ice_parser_profile *prof)
+int ice_parser_profile_init(struct ice_parser_result *rslt,
+			    const u8 *pkt_buf, const u8 *msk_buf,
+			    int buf_len, enum ice_block blk,
+			    bool prefix_match,
+			    struct ice_parser_profile *prof)
 {
 	u8 proto_id = 0xff;
 	u16 proto_off = 0;
@@ -528,7 +529,7 @@ enum ice_status ice_parser_profile_init(struct ice_parser_result *rslt,
 		prof->fv_num++;
 	}
 
-	return ICE_SUCCESS;
+	return 0;
 }
 
 /**

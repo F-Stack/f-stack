@@ -40,6 +40,9 @@
 #define DFLT_FRAME_SIZE		(1 << 11)
 #define DFLT_FRAME_COUNT	(1 << 9)
 
+static uint64_t timestamp_dynflag;
+static int timestamp_dynfield_offset = -1;
+
 struct __rte_cache_aligned pkt_rx_queue {
 	int sockfd;
 
@@ -51,6 +54,7 @@ struct __rte_cache_aligned pkt_rx_queue {
 	struct rte_mempool *mb_pool;
 	uint16_t in_port;
 	uint8_t vlan_strip;
+	uint8_t timestamp_offloading;
 
 	volatile unsigned long rx_pkts;
 	volatile unsigned long rx_bytes;
@@ -82,6 +86,7 @@ struct pmd_internals {
 	struct pkt_rx_queue *rx_queue;
 	struct pkt_tx_queue *tx_queue;
 	uint8_t vlan_strip;
+	uint8_t timestamp_offloading;
 };
 
 static const char *valid_arguments[] = {
@@ -102,14 +107,14 @@ static struct rte_eth_link pmd_link = {
 };
 
 RTE_LOG_REGISTER_DEFAULT(af_packet_logtype, NOTICE);
+#define RTE_LOGTYPE_AFPACKET af_packet_logtype
 
-#define PMD_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, af_packet_logtype, \
-		"%s(): " fmt "\n", __func__, ##args)
+#define PMD_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, AFPACKET, "%s(): ", __func__, __VA_ARGS__)
 
-#define PMD_LOG_ERRNO(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, af_packet_logtype, \
-		"%s(): " fmt ":%s\n", __func__, ##args, strerror(errno))
+#define PMD_LOG_ERRNO(level, fmt, ...) \
+	RTE_LOG_LINE(level, AFPACKET, "%s(): " fmt ":%s", __func__, \
+		## __VA_ARGS__, strerror(errno))
 
 static uint16_t
 eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
@@ -155,6 +160,16 @@ eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 
 			if (!pkt_q->vlan_strip && rte_vlan_insert(&mbuf))
 				PMD_LOG(ERR, "Failed to reinsert VLAN tag");
+		}
+
+		/* add kernel provided timestamp when offloading is enabled */
+		if (pkt_q->timestamp_offloading) {
+			/* since TPACKET_V2 timestamps are provided in nanoseconds resolution */
+			*RTE_MBUF_DYNFIELD(mbuf, timestamp_dynfield_offset,
+				rte_mbuf_timestamp_t *) =
+					(uint64_t)ppd->tp_sec * 1000000000 + ppd->tp_nsec;
+
+			mbuf->ol_flags |= timestamp_dynflag;
 		}
 
 		/* release incoming frame and advance ring buffer */
@@ -317,6 +332,16 @@ eth_dev_start(struct rte_eth_dev *dev)
 	struct pmd_internals *internals = dev->data->dev_private;
 	uint16_t i;
 
+	if (internals->timestamp_offloading) {
+		/* Register mbuf field and flag for Rx timestamp */
+		int rc = rte_mbuf_dyn_rx_timestamp_register(&timestamp_dynfield_offset,
+				&timestamp_dynflag);
+		if (rc) {
+			PMD_LOG(ERR, "Cannot register mbuf field/flag for timestamp");
+			return rc;
+		}
+	}
+
 	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 	for (i = 0; i < internals->nb_queues; i++) {
 		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
@@ -350,6 +375,7 @@ eth_dev_configure(struct rte_eth_dev *dev __rte_unused)
 	struct pmd_internals *internals = dev->data->dev_private;
 
 	internals->vlan_strip = !!(rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP);
+	internals->timestamp_offloading = !!(rxmode->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP);
 	return 0;
 }
 
@@ -366,7 +392,8 @@ eth_dev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->min_rx_bufsize = 0;
 	dev_info->tx_offload_capa = RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
 		RTE_ETH_TX_OFFLOAD_VLAN_INSERT;
-	dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+	dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP |
+		RTE_ETH_RX_OFFLOAD_TIMESTAMP;
 
 	return 0;
 }
@@ -462,7 +489,7 @@ eth_dev_close(struct rte_eth_dev *dev)
 		rte_free(internals->rx_queue[q].rd);
 		rte_free(internals->tx_queue[q].rd);
 	}
-	free(internals->if_name);
+	rte_free(internals->if_name);
 	rte_free(internals->rx_queue);
 	rte_free(internals->tx_queue);
 
@@ -472,9 +499,22 @@ eth_dev_close(struct rte_eth_dev *dev)
 }
 
 static int
-eth_link_update(struct rte_eth_dev *dev __rte_unused,
+eth_link_update(struct rte_eth_dev *dev,
                 int wait_to_complete __rte_unused)
 {
+	const struct pmd_internals *internals = dev->data->dev_private;
+	struct rte_eth_link *dev_link = &dev->data->dev_link;
+	int sockfd = internals->rx_queue[0].sockfd;
+	struct ifreq ifr = { };
+
+	if (sockfd == -1)
+		return 0;
+
+	strlcpy(ifr.ifr_name, internals->if_name, IFNAMSIZ);
+	if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) < 0)
+		return -errno;
+	dev_link->link_status = (ifr.ifr_flags & IFF_RUNNING) ?
+		RTE_ETH_LINK_UP : RTE_ETH_LINK_DOWN;
 	return 0;
 }
 
@@ -508,6 +548,7 @@ eth_rx_queue_setup(struct rte_eth_dev *dev,
 	dev->data->rx_queues[rx_queue_id] = pkt_q;
 	pkt_q->in_port = dev->data->port_id;
 	pkt_q->vlan_strip = internals->vlan_strip;
+	pkt_q->timestamp_offloading = internals->timestamp_offloading;
 
 	return 0;
 }
@@ -534,7 +575,7 @@ eth_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	int ret;
 	int s;
 	unsigned int data_size = internals->req.tp_frame_size -
-				 TPACKET2_HDRLEN;
+				 TPACKET2_HDRLEN + sizeof(struct sockaddr_ll);
 
 	if (mtu > data_size)
 		return -EINVAL;
@@ -650,7 +691,7 @@ open_packet_iface(const char *key __rte_unused,
 	int *sockfd = extra_args;
 
 	/* Open an AF_PACKET socket... */
-	*sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+	*sockfd = socket(AF_PACKET, SOCK_RAW, 0);
 	if (*sockfd == -1) {
 		PMD_LOG(ERR, "Could not open AF_PACKET socket");
 		return -1;
@@ -752,9 +793,10 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 		PMD_LOG_ERRNO(ERR, "%s: ioctl failed (SIOCGIFINDEX)", name);
 		goto free_internals;
 	}
-	(*internals)->if_name = strdup(pair->value);
+	(*internals)->if_name = rte_malloc_socket(name, ifnamelen + 1, 0, numa_node);
 	if ((*internals)->if_name == NULL)
 		goto free_internals;
+	strlcpy((*internals)->if_name, pair->value, ifnamelen + 1);
 	(*internals)->if_index = ifr.ifr_ifindex;
 
 	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) == -1) {
@@ -778,7 +820,7 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 
 	for (q = 0; q < nb_queues; q++) {
 		/* Open an AF_PACKET socket for this queue... */
-		qsockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+		qsockfd = socket(AF_PACKET, SOCK_RAW, 0);
 		if (qsockfd == -1) {
 			PMD_LOG_ERRNO(ERR,
 				"%s: could not open AF_PACKET socket",
@@ -941,7 +983,7 @@ error:
 free_internals:
 	rte_free((*internals)->rx_queue);
 	rte_free((*internals)->tx_queue);
-	free((*internals)->if_name);
+	rte_free((*internals)->if_name);
 	rte_free(*internals);
 	return -1;
 }

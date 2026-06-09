@@ -20,6 +20,7 @@ sources = files(
         'roc_cpt_debug.c',
         'roc_dev.c',
         'roc_dpi.c',
+        'roc_eswitch.c',
         'roc_hash.c',
         'roc_idev.c',
         'roc_irq.c',
@@ -70,6 +71,7 @@ sources = files(
         'roc_tim_irq.c',
         'roc_utils.c',
         'roc_ree.c',
+        'roc_rvu_lf.c',
 )
 
 # Security common code
@@ -90,8 +92,28 @@ sources += files('cnxk_telemetry_bphy.c',
                  'cnxk_telemetry_sso.c',
 )
 
+if meson.is_cross_build()
+    soc_type = meson.get_external_property('platform', '')
+else
+    soc_type = platform
+endif
+if soc_type == 'cn9k'
+    dpdk_conf.set('ROC_PLATFORM_CN9K', 1)
+elif soc_type == 'cn10k'
+    dpdk_conf.set('ROC_PLATFORM_CN10K', 1)
+elif soc_type == 'cn20k'
+    dpdk_conf.set('ROC_PLATFORM_CN20K', 1)
+endif
+
 deps += ['bus_pci', 'net', 'telemetry']
 
 require_iova_in_mbuf = false
+
+cnxk_socs = ['cn9k', 'cn10k', 'cn20k']
+
+if dpdk_conf.get('RTE_IOVA_IN_MBUF') == 1 and soc_type in cnxk_socs
+    warning('IOVA in mbuf is not needed for cnxk drivers on cnxk platforms. ' +
+            'Set the enable_iova_as_pa option to false to save mbuf space.')
+endif
 
 annotate_locks = false

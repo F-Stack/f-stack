@@ -38,8 +38,8 @@ idpf_singleq_rearm_common(struct idpf_rx_queue *rxq)
 						dma_addr0);
 			}
 		}
-		__atomic_fetch_add(&rxq->rx_stats.mbuf_alloc_failed,
-				   IDPF_RXQ_REARM_THRESH, __ATOMIC_RELAXED);
+		rte_atomic_fetch_add_explicit(&rxq->rx_stats.mbuf_alloc_failed,
+				   IDPF_RXQ_REARM_THRESH, rte_memory_order_relaxed);
 		return;
 	}
 	struct rte_mbuf *mb0, *mb1, *mb2, *mb3;
@@ -170,8 +170,8 @@ idpf_singleq_rearm(struct idpf_rx_queue *rxq)
 							 dma_addr0);
 				}
 			}
-			__atomic_fetch_add(&rxq->rx_stats.mbuf_alloc_failed,
-					   IDPF_RXQ_REARM_THRESH, __ATOMIC_RELAXED);
+			rte_atomic_fetch_add_explicit(&rxq->rx_stats.mbuf_alloc_failed,
+					   IDPF_RXQ_REARM_THRESH, rte_memory_order_relaxed);
 			return;
 		}
 	}
@@ -566,8 +566,8 @@ idpf_splitq_rearm_common(struct idpf_rx_queue *rx_bufq)
 						dma_addr0);
 			}
 		}
-	__atomic_fetch_add(&rx_bufq->rx_stats.mbuf_alloc_failed,
-			   IDPF_RXQ_REARM_THRESH, __ATOMIC_RELAXED);
+	rte_atomic_fetch_add_explicit(&rx_bufq->rx_stats.mbuf_alloc_failed,
+			   IDPF_RXQ_REARM_THRESH, rte_memory_order_relaxed);
 		return;
 	}
 
@@ -642,8 +642,8 @@ idpf_splitq_rearm(struct idpf_rx_queue *rx_bufq)
 							 dma_addr0);
 				}
 			}
-		__atomic_fetch_add(&rx_bufq->rx_stats.mbuf_alloc_failed,
-				   IDPF_RXQ_REARM_THRESH, __ATOMIC_RELAXED);
+		rte_atomic_fetch_add_explicit(&rx_bufq->rx_stats.mbuf_alloc_failed,
+				   IDPF_RXQ_REARM_THRESH, rte_memory_order_relaxed);
 			return;
 		}
 	}
@@ -1150,7 +1150,7 @@ idpf_singleq_vtx(volatile struct idpf_base_tx_desc *txdp,
 	/* if unaligned on 32-bit boundary, do one to align */
 	if (((uintptr_t)txdp & 0x1F) != 0 && nb_pkts != 0) {
 		idpf_singleq_vtx1(txdp, *pkt, flags);
-		nb_pkts--, txdp++, pkt++;
+		nb_pkts--; txdp++; pkt++;
 	}
 
 	/* do 4 at a time while possible, in bursts */
@@ -1188,7 +1188,7 @@ idpf_singleq_vtx(volatile struct idpf_base_tx_desc *txdp,
 	/* do any last ones */
 	while (nb_pkts) {
 		idpf_singleq_vtx1(txdp, *pkt, flags);
-		txdp++, pkt++, nb_pkts--;
+		txdp++; pkt++; nb_pkts--;
 	}
 }
 
@@ -1301,7 +1301,7 @@ idpf_splitq_scan_cq_ring(struct idpf_tx_queue *cq)
 
 	cq_qid = cq->tx_tail;
 
-	for (i = 0; i < IDPD_TXQ_SCAN_CQ_THRESH; i++) {
+	for (i = 0; i < IDPF_TXQ_SCAN_CQ_THRESH; i++) {
 		if (cq_qid == cq->nb_tx_desc) {
 			cq_qid = 0;
 			cq->expected_gen_id ^= 1;
@@ -1452,7 +1452,7 @@ idpf_splitq_vtx(volatile struct idpf_flex_tx_sched_desc *txdp,
 	/* if unaligned on 32-bit boundary, do one to align */
 	if (((uintptr_t)txdp & 0x1F) != 0 && nb_pkts != 0) {
 		idpf_splitq_vtx1(txdp, *pkt, flags);
-		nb_pkts--, txdp++, pkt++;
+		nb_pkts--; txdp++; pkt++;
 	}
 
 	/* do 4 at a time while possible, in bursts */
@@ -1490,7 +1490,7 @@ idpf_splitq_vtx(volatile struct idpf_flex_tx_sched_desc *txdp,
 	/* do any last ones */
 	while (nb_pkts) {
 		idpf_splitq_vtx1(txdp, *pkt, flags);
-		txdp++, pkt++, nb_pkts--;
+		txdp++; pkt++; nb_pkts--;
 	}
 }
 

@@ -33,9 +33,6 @@
 /* conversion from DPDK speed to PCAPNG */
 #define PCAPNG_MBPS_SPEED 1000000ull
 
-/* upper bound for section, stats and interface blocks (in uint32_t) */
-#define PCAPNG_BLKSIZ	(2048 / sizeof(uint32_t))
-
 /* Format of the capture file handle */
 struct rte_pcapng {
 	int  outfd;		/* output file */
@@ -144,8 +141,9 @@ pcapng_section_block(rte_pcapng_t *self,
 {
 	struct pcapng_section_header *hdr;
 	struct pcapng_option *opt;
-	uint32_t buf[PCAPNG_BLKSIZ];
+	uint32_t *buf;
 	uint32_t len;
+	ssize_t ret;
 
 	len = sizeof(*hdr);
 	if (hw)
@@ -161,8 +159,9 @@ pcapng_section_block(rte_pcapng_t *self,
 	len += pcapng_optlen(0);
 	len += sizeof(uint32_t);
 
-	if (len > sizeof(buf))
-		return -1;
+	buf = malloc(len);
+	if (buf == NULL)
+		return -ENOMEM;
 
 	hdr = (struct pcapng_section_header *)buf;
 	*hdr = (struct pcapng_section_header) {
@@ -195,7 +194,9 @@ pcapng_section_block(rte_pcapng_t *self,
 	/* clone block_length after option */
 	memcpy(opt, &hdr->block_length, sizeof(uint32_t));
 
-	return write(self->outfd, buf, len);
+	ret = write(self->outfd, buf, len);
+	free(buf);
+	return ret < 0 ? -errno : 0;
 }
 
 /* Write an interface block for a DPDK port */
@@ -212,10 +213,11 @@ rte_pcapng_add_interface(rte_pcapng_t *self, uint16_t port,
 	struct pcapng_option *opt;
 	const uint8_t tsresol = 9;	/* nanosecond resolution */
 	uint32_t len;
-	uint32_t buf[PCAPNG_BLKSIZ];
+	uint32_t *buf;
 	char ifname_buf[IF_NAMESIZE];
 	char ifhw[256];
 	uint64_t speed = 0;
+	int ret;
 
 	if (rte_eth_dev_info_get(port, &dev_info) < 0)
 		return -1;
@@ -266,8 +268,9 @@ rte_pcapng_add_interface(rte_pcapng_t *self, uint16_t port,
 	len += pcapng_optlen(0);
 	len += sizeof(uint32_t);
 
-	if (len > sizeof(buf))
-		return -1;
+	buf = malloc(len);
+	if (buf == NULL)
+		return -1; /* ENOMEM */
 
 	hdr = (struct pcapng_interface_block *)buf;
 	*hdr = (struct pcapng_interface_block) {
@@ -294,16 +297,15 @@ rte_pcapng_add_interface(rte_pcapng_t *self, uint16_t port,
 		opt = pcapng_add_option(opt, PCAPNG_IFB_HARDWARE,
 					 ifhw, strlen(ifhw));
 	if (filter) {
-		size_t len;
+		const size_t filter_len = strlen(filter) + 1;
 
-		len = strlen(filter) + 1;
 		opt->code = PCAPNG_IFB_FILTER;
-		opt->length = len;
+		opt->length = filter_len;
 		/* Encoding is that the first octet indicates string vs BPF */
 		opt->data[0] = 0;
 		memcpy(opt->data + 1, filter, strlen(filter));
 
-		opt = (struct pcapng_option *)((uint8_t *)opt + pcapng_optlen(len));
+		opt = (struct pcapng_option *)((uint8_t *)opt + pcapng_optlen(filter_len));
 	}
 
 	opt = pcapng_add_option(opt, PCAPNG_OPT_END, NULL, 0);
@@ -311,10 +313,14 @@ rte_pcapng_add_interface(rte_pcapng_t *self, uint16_t port,
 	/* clone block_length after optionsa */
 	memcpy(opt, &hdr->block_length, sizeof(uint32_t));
 
-	/* remember the file index */
-	self->port_index[port] = self->ports++;
+	ret = write(self->outfd, buf, len);
+	free(buf);
 
-	return write(self->outfd, buf, len);
+	/* remember the file index only after successful write */
+	if (ret > 0)
+		self->port_index[port] = self->ports++;
+
+	return ret;
 }
 
 /*
@@ -330,7 +336,8 @@ rte_pcapng_write_stats(rte_pcapng_t *self, uint16_t port_id,
 	uint64_t start_time = self->offset_ns;
 	uint64_t sample_time;
 	uint32_t optlen, len;
-	uint32_t buf[PCAPNG_BLKSIZ];
+	uint32_t *buf;
+	ssize_t ret;
 
 	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -EINVAL);
 
@@ -350,8 +357,9 @@ rte_pcapng_write_stats(rte_pcapng_t *self, uint16_t port_id,
 		optlen += pcapng_optlen(0);
 
 	len = sizeof(*hdr) + optlen + sizeof(uint32_t);
-	if (len > sizeof(buf))
-		return -1;
+	buf = malloc(len);
+	if (buf == NULL)
+		return -ENOMEM;
 
 	hdr = (struct pcapng_statistics *)buf;
 	opt = (struct pcapng_option *)(hdr + 1);
@@ -382,7 +390,9 @@ rte_pcapng_write_stats(rte_pcapng_t *self, uint16_t port_id,
 	/* clone block_length after option */
 	memcpy(opt, &len, sizeof(uint32_t));
 
-	return write(self->outfd, buf, len);
+	ret = write(self->outfd, buf, len);
+	free(buf);
+	return ret;
 }
 
 uint32_t
@@ -534,11 +544,26 @@ rte_pcapng_copy(uint16_t port_id, uint32_t queue,
 	if (comment)
 		optlen += pcapng_optlen(strlen(comment));
 
-	/* reserve trailing options and block length */
-	opt = (struct pcapng_option *)
-		rte_pktmbuf_append(mc, optlen + sizeof(uint32_t));
-	if (unlikely(opt == NULL))
-		goto fail;
+	/*
+	 * Try to put options at the end of this mbuf.
+	 * If not extend the mbuf by adding another segment.
+	 */
+	opt = (struct pcapng_option *)rte_pktmbuf_append(mc, optlen + sizeof(uint32_t));
+	if (unlikely(opt == NULL)) {
+		struct rte_mbuf *ml = rte_pktmbuf_alloc(mp);
+
+		if (unlikely(ml == NULL))
+			goto fail;	/* mbuf pool is empty */
+
+		if (unlikely(rte_pktmbuf_chain(mc, ml) != 0)) {
+			rte_pktmbuf_free(ml);
+			goto fail;	/* too many segments in the mbuf */
+		}
+
+		opt = (struct pcapng_option *)rte_pktmbuf_append(mc, optlen + sizeof(uint32_t));
+		if (unlikely(opt == NULL))
+			goto fail;	/* additional segment and still no space */
+	}
 
 	switch (direction) {
 	case RTE_PCAPNG_DIRECTION_IN:
@@ -685,6 +710,7 @@ rte_pcapng_fdopen(int fd,
 	rte_pcapng_t *self;
 	struct timespec ts;
 	uint64_t cycles;
+	int ret;
 
 	self = malloc(sizeof(*self));
 	if (!self) {
@@ -704,8 +730,11 @@ rte_pcapng_fdopen(int fd,
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++)
 		self->port_index[i] = UINT32_MAX;
 
-	if (pcapng_section_block(self, osname, hardware, appname, comment) < 0)
+	ret = pcapng_section_block(self, osname, hardware, appname, comment);
+	if (ret < 0) {
+		rte_errno = -ret;
 		goto fail;
+	}
 
 	return self;
 fail:
@@ -716,6 +745,8 @@ fail:
 void
 rte_pcapng_close(rte_pcapng_t *self)
 {
-	close(self->outfd);
-	free(self);
+	if (self) {
+		close(self->outfd);
+		free(self);
+	}
 }

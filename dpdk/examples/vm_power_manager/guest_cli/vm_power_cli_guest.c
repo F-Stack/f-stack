@@ -18,7 +18,8 @@
 #include <rte_lcore.h>
 #include <rte_ethdev.h>
 
-#include <rte_power.h>
+#include <rte_power_cpufreq.h>
+#include <rte_power_guest_channel.h>
 
 #include "vm_power_cli_guest.h"
 

@@ -1101,8 +1101,8 @@ ixgbe_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
  * Use 2 different table for normal packet and tunnel packet
  * to save the space.
  */
-const uint32_t
-	ptype_table[IXGBE_PACKET_TYPE_MAX] __rte_cache_aligned = {
+const alignas(RTE_CACHE_LINE_SIZE) uint32_t
+	ptype_table[IXGBE_PACKET_TYPE_MAX] = {
 	[IXGBE_PACKET_TYPE_ETHER] = RTE_PTYPE_L2_ETHER,
 	[IXGBE_PACKET_TYPE_IPV4] = RTE_PTYPE_L2_ETHER |
 		RTE_PTYPE_L3_IPV4,
@@ -1187,8 +1187,8 @@ const uint32_t
 		RTE_PTYPE_INNER_L3_IPV6_EXT | RTE_PTYPE_INNER_L4_SCTP,
 };
 
-const uint32_t
-	ptype_table_tn[IXGBE_PACKET_TYPE_TN_MAX] __rte_cache_aligned = {
+const alignas(RTE_CACHE_LINE_SIZE) uint32_t
+	ptype_table_tn[IXGBE_PACKET_TYPE_TN_MAX] = {
 	[IXGBE_PACKET_TYPE_NVGRE] = RTE_PTYPE_L2_ETHER |
 		RTE_PTYPE_L3_IPV4_EXT_UNKNOWN | RTE_PTYPE_TUNNEL_GRE |
 		RTE_PTYPE_INNER_L2_ETHER,
@@ -1429,7 +1429,7 @@ ixgbe_rxd_pkt_info_to_pkt_type(uint32_t pkt_info, uint16_t ptype_mask)
 static inline uint64_t
 ixgbe_rxd_pkt_info_to_pkt_flags(uint16_t pkt_info)
 {
-	static uint64_t ip_rss_types_map[16] __rte_cache_aligned = {
+	static alignas(RTE_CACHE_LINE_SIZE) uint64_t ip_rss_types_map[16] = {
 		0, RTE_MBUF_F_RX_RSS_HASH, RTE_MBUF_F_RX_RSS_HASH, RTE_MBUF_F_RX_RSS_HASH,
 		0, RTE_MBUF_F_RX_RSS_HASH, 0, RTE_MBUF_F_RX_RSS_HASH,
 		RTE_MBUF_F_RX_RSS_HASH, 0, 0, 0,
@@ -1831,7 +1831,7 @@ ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * Use acquire fence to ensure that status_error which includes
 		 * DD bit is loaded before loading of other descriptor words.
 		 */
-		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(rte_memory_order_acquire);
 
 		rxd = *rxdp;
 
@@ -2114,7 +2114,7 @@ next_desc:
 		 * Use acquire fence to ensure that status_error which includes
 		 * DD bit is loaded before loading of other descriptor words.
 		 */
-		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(rte_memory_order_acquire);
 
 		rxd = *rxdp;
 
@@ -2602,7 +2602,8 @@ ixgbe_get_tx_port_offloads(struct rte_eth_dev *dev)
 
 	if (hw->mac.type == ixgbe_mac_X550 ||
 	    hw->mac.type == ixgbe_mac_X550EM_x ||
-	    hw->mac.type == ixgbe_mac_X550EM_a)
+	    hw->mac.type == ixgbe_mac_X550EM_a ||
+	    hw->mac.type == ixgbe_mac_E610)
 		tx_offload_capa |= RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM;
 
 #ifdef RTE_LIB_SECURITY
@@ -2783,6 +2784,7 @@ ixgbe_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	 * Modification to set VFTDT for virtual function if vf is detected
 	 */
 	if (hw->mac.type == ixgbe_mac_82599_vf ||
+	    hw->mac.type == ixgbe_mac_E610_vf ||
 	    hw->mac.type == ixgbe_mac_X540_vf ||
 	    hw->mac.type == ixgbe_mac_X550_vf ||
 	    hw->mac.type == ixgbe_mac_X550EM_x_vf ||
@@ -3003,6 +3005,7 @@ ixgbe_is_vf(struct rte_eth_dev *dev)
 	case ixgbe_mac_X550_vf:
 	case ixgbe_mac_X550EM_x_vf:
 	case ixgbe_mac_X550EM_a_vf:
+	case ixgbe_mac_E610_vf:
 		return 1;
 	default:
 		return 0;
@@ -3057,7 +3060,8 @@ ixgbe_get_rx_port_offloads(struct rte_eth_dev *dev)
 
 	if (hw->mac.type == ixgbe_mac_X550 ||
 	    hw->mac.type == ixgbe_mac_X550EM_x ||
-	    hw->mac.type == ixgbe_mac_X550EM_a)
+	    hw->mac.type == ixgbe_mac_X550EM_a ||
+	    hw->mac.type == ixgbe_mac_E610)
 		offloads |= RTE_ETH_RX_OFFLOAD_OUTER_IPV4_CKSUM;
 
 #ifdef RTE_LIB_SECURITY
@@ -3127,7 +3131,7 @@ ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 
 	/*
 	 * The packet type in RX descriptor is different for different NICs.
-	 * Some bits are used for x550 but reserved for other NICS.
+	 * Some bits are used for x550 and E610 but reserved for other NICS.
 	 * So set different masks for different NICs.
 	 */
 	if (hw->mac.type == ixgbe_mac_X550 ||
@@ -3135,7 +3139,8 @@ ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	    hw->mac.type == ixgbe_mac_X550EM_a ||
 	    hw->mac.type == ixgbe_mac_X550_vf ||
 	    hw->mac.type == ixgbe_mac_X550EM_x_vf ||
-	    hw->mac.type == ixgbe_mac_X550EM_a_vf)
+	    hw->mac.type == ixgbe_mac_X550EM_a_vf ||
+	    hw->mac.type == ixgbe_mac_E610)
 		rxq->pkt_type_mask = IXGBE_PACKET_TYPE_MASK_X550;
 	else
 		rxq->pkt_type_mask = IXGBE_PACKET_TYPE_MASK_82599;
@@ -3169,6 +3174,7 @@ ixgbe_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	 * Modified to setup VFRDT for Virtual Function
 	 */
 	if (hw->mac.type == ixgbe_mac_82599_vf ||
+	    hw->mac.type == ixgbe_mac_E610_vf ||
 	    hw->mac.type == ixgbe_mac_X540_vf ||
 	    hw->mac.type == ixgbe_mac_X550_vf ||
 	    hw->mac.type == ixgbe_mac_X550EM_x_vf ||
@@ -3400,7 +3406,8 @@ ixgbe_dev_clear_queues(struct rte_eth_dev *dev)
 		if (hw->mac.type == ixgbe_mac_X540 ||
 		     hw->mac.type == ixgbe_mac_X550 ||
 		     hw->mac.type == ixgbe_mac_X550EM_x ||
-		     hw->mac.type == ixgbe_mac_X550EM_a)
+		     hw->mac.type == ixgbe_mac_X550EM_a ||
+		     hw->mac.type == ixgbe_mac_E610)
 			ixgbe_setup_loopback_link_x540_x550(hw, false);
 	}
 }
@@ -3655,13 +3662,14 @@ ixgbe_dev_rss_hash_conf_get(struct rte_eth_dev *dev,
 	hash_key = rss_conf->rss_key;
 	if (hash_key != NULL) {
 		/* Return RSS hash key */
-		for (i = 0; i < 10; i++) {
+		for (i = 0; i < IXGBE_HKEY_MAX_INDEX; i++) {
 			rss_key = IXGBE_READ_REG_ARRAY(hw, rssrk_reg, i);
 			hash_key[(i * 4)] = rss_key & 0x000000FF;
 			hash_key[(i * 4) + 1] = (rss_key >> 8) & 0x000000FF;
 			hash_key[(i * 4) + 2] = (rss_key >> 16) & 0x000000FF;
 			hash_key[(i * 4) + 3] = (rss_key >> 24) & 0x000000FF;
 		}
+		rss_conf->rss_key_len = IXGBE_HKEY_MAX_INDEX * sizeof(uint32_t);
 	}
 
 	if (!ixgbe_rss_enabled(hw)) { /* RSS is disabled */
@@ -5360,7 +5368,8 @@ ixgbe_check_supported_loopback_mode(struct rte_eth_dev *dev)
 		     hw->mac.type == ixgbe_mac_X540 ||
 		     hw->mac.type == ixgbe_mac_X550 ||
 		     hw->mac.type == ixgbe_mac_X550EM_x ||
-		     hw->mac.type == ixgbe_mac_X550EM_a)
+		     hw->mac.type == ixgbe_mac_X550EM_a ||
+		     hw->mac.type == ixgbe_mac_E610)
 			return 0;
 
 	return -ENOTSUP;
@@ -5850,6 +5859,7 @@ ixgbevf_dev_rx_init(struct rte_eth_dev *dev)
 	case ixgbe_mac_X550_vf:
 	case ixgbe_mac_X550EM_x_vf:
 	case ixgbe_mac_X550EM_a_vf:
+	case ixgbe_mac_E610_vf:
 		switch (dev->data->dev_conf.rxmode.mq_mode) {
 		case RTE_ETH_MQ_RX_RSS:
 		case RTE_ETH_MQ_RX_DCB_RSS:

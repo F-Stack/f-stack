@@ -128,9 +128,13 @@ i40e_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union i40e_rx_desc *rxdp)
 #ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
 	if (rte_le_to_cpu_16(rxdp->wb.qword2.ext_status) &
 		(1 << I40E_RX_DESC_EXT_STATUS_L2TAG2P_SHIFT)) {
-		mb->ol_flags |= RTE_MBUF_F_RX_QINQ_STRIPPED | RTE_MBUF_F_RX_QINQ |
-			RTE_MBUF_F_RX_VLAN_STRIPPED | RTE_MBUF_F_RX_VLAN;
-		mb->vlan_tci_outer = mb->vlan_tci;
+		if ((mb->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED) == 0) {
+			mb->ol_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
+		} else {
+			/* if two tags, move Tag1 to outer tag field */
+			mb->ol_flags |= RTE_MBUF_F_RX_QINQ_STRIPPED | RTE_MBUF_F_RX_QINQ;
+			mb->vlan_tci_outer = mb->vlan_tci;
+		}
 		mb->vlan_tci = rte_le_to_cpu_16(rxdp->wb.qword2.l2tag2_2);
 		PMD_RX_LOG(DEBUG, "Descriptor l2tag2_1: %u, l2tag2_2: %u",
 			   rte_le_to_cpu_16(rxdp->wb.qword2.l2tag2_1),
@@ -495,7 +499,7 @@ i40e_rx_scan_hw_ring(struct i40e_rx_queue *rxq)
 		}
 
 		/* This barrier is to order loads of different words in the descriptor */
-		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(rte_memory_order_acquire);
 
 		/* Compute how many status bits were set */
 		for (j = 0, nb_dd = 0; j < I40E_LOOK_AHEAD; j++) {
@@ -754,7 +758,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 * Use acquire fence to ensure that qword1 which includes DD
 		 * bit is loaded before loading of other descriptor words.
 		 */
-		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(rte_memory_order_acquire);
 
 		rxd = *rxdp;
 		nb_hold++;
@@ -876,7 +880,7 @@ i40e_recv_scattered_pkts(void *rx_queue,
 		 * Use acquire fence to ensure that qword1 which includes DD
 		 * bit is loaded before loading of other descriptor words.
 		 */
-		rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+		rte_atomic_thread_fence(rte_memory_order_acquire);
 
 		rxd = *rxdp;
 		nb_hold++;
@@ -1545,6 +1549,111 @@ i40e_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
 	return nb_tx;
 }
 
+/* Tx mbuf check */
+static uint16_t
+i40e_xmit_pkts_check(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
+{
+	struct i40e_tx_queue *txq = tx_queue;
+	uint16_t idx;
+	uint64_t ol_flags;
+	struct rte_mbuf *mb;
+	bool pkt_error = false;
+	const char *reason = NULL;
+	uint16_t good_pkts = nb_pkts;
+	struct i40e_adapter *adapter = txq->vsi->adapter;
+
+	for (idx = 0; idx < nb_pkts; idx++) {
+		mb = tx_pkts[idx];
+		ol_flags = mb->ol_flags;
+
+		if ((adapter->mbuf_check & I40E_MBUF_CHECK_F_TX_MBUF) &&
+		    (rte_mbuf_check(mb, 1, &reason) != 0)) {
+			PMD_TX_LOG(ERR, "INVALID mbuf: %s", reason);
+			pkt_error = true;
+			break;
+		}
+
+		if ((adapter->mbuf_check & I40E_MBUF_CHECK_F_TX_SIZE) &&
+		    (mb->data_len > mb->pkt_len ||
+		     mb->data_len < I40E_TX_MIN_PKT_LEN ||
+		     mb->data_len > adapter->max_pkt_len)) {
+			PMD_TX_LOG(ERR, "INVALID mbuf: data_len (%u) is out of range, reasonable range (%d - %u)",
+				mb->data_len, I40E_TX_MIN_PKT_LEN, adapter->max_pkt_len);
+			pkt_error = true;
+			break;
+		}
+
+		if (adapter->mbuf_check & I40E_MBUF_CHECK_F_TX_SEGMENT) {
+			if (!(ol_flags & RTE_MBUF_F_TX_TCP_SEG)) {
+				/**
+				 * No TSO case: nb->segs, pkt_len to not exceed
+				 * the limites.
+				 */
+				if (mb->nb_segs > I40E_TX_MAX_MTU_SEG) {
+					PMD_TX_LOG(ERR, "INVALID mbuf: nb_segs (%d) exceeds HW limit, maximum allowed value is %d",
+						mb->nb_segs, I40E_TX_MAX_MTU_SEG);
+					pkt_error = true;
+					break;
+				}
+				if (mb->pkt_len > I40E_FRAME_SIZE_MAX) {
+					PMD_TX_LOG(ERR, "INVALID mbuf: pkt_len (%d) exceeds HW limit, maximum allowed value is %d",
+						mb->nb_segs, I40E_FRAME_SIZE_MAX);
+					pkt_error = true;
+					break;
+				}
+			} else if (ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+				/** TSO case: tso_segsz, nb_segs, pkt_len not exceed
+				 * the limits.
+				 */
+				if (mb->tso_segsz < I40E_MIN_TSO_MSS ||
+				    mb->tso_segsz > I40E_MAX_TSO_MSS) {
+					/**
+					 * MSS outside the range are considered malicious
+					 */
+					PMD_TX_LOG(ERR, "INVALID mbuf: tso_segsz (%u) is out of range, reasonable range (%d - %u)",
+						mb->tso_segsz, I40E_MIN_TSO_MSS, I40E_MAX_TSO_MSS);
+					pkt_error = true;
+					break;
+				}
+				if (mb->nb_segs > ((struct i40e_tx_queue *)tx_queue)->nb_tx_desc) {
+					PMD_TX_LOG(ERR, "INVALID mbuf: nb_segs out of ring length");
+					pkt_error = true;
+					break;
+				}
+				if (mb->pkt_len > I40E_TSO_FRAME_SIZE_MAX) {
+					PMD_TX_LOG(ERR, "INVALID mbuf: pkt_len (%d) exceeds HW limit, maximum allowed value is %d",
+						mb->nb_segs, I40E_TSO_FRAME_SIZE_MAX);
+					pkt_error = true;
+					break;
+				}
+			}
+		}
+
+		if (adapter->mbuf_check & I40E_MBUF_CHECK_F_TX_OFFLOAD) {
+			if (ol_flags & I40E_TX_OFFLOAD_NOTSUP_MASK) {
+				PMD_TX_LOG(ERR, "INVALID mbuf: TX offload is not supported");
+				pkt_error = true;
+				break;
+			}
+
+			if (!rte_validate_tx_offload(mb)) {
+				PMD_TX_LOG(ERR, "INVALID mbuf: TX offload setup error");
+				pkt_error = true;
+				break;
+			}
+		}
+	}
+
+	if (pkt_error) {
+		txq->mbuf_errors++;
+		good_pkts = idx;
+		if (good_pkts == 0)
+			return 0;
+	}
+
+	return adapter->tx_pkt_burst(tx_queue, tx_pkts, good_pkts);
+}
+
 /*********************************************************************
  *
  *  TX simple prep functions
@@ -1832,7 +1941,7 @@ i40e_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 }
 
 const uint32_t *
-i40e_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+i40e_dev_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 {
 	static const uint32_t ptypes[] = {
 		/* refers to i40e_rxd_pkt_type_mapping() */
@@ -1860,7 +1969,6 @@ i40e_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_INNER_L4_SCTP,
 		RTE_PTYPE_INNER_L4_TCP,
 		RTE_PTYPE_INNER_L4_UDP,
-		RTE_PTYPE_UNKNOWN
 	};
 
 	if (dev->rx_pkt_burst == i40e_recv_pkts ||
@@ -1875,8 +1983,10 @@ i40e_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	    dev->rx_pkt_burst == i40e_recv_pkts_vec_avx512 ||
 #endif
 	    dev->rx_pkt_burst == i40e_recv_scattered_pkts_vec_avx2 ||
-	    dev->rx_pkt_burst == i40e_recv_pkts_vec_avx2)
+	    dev->rx_pkt_burst == i40e_recv_pkts_vec_avx2) {
+		*no_of_elements = RTE_DIM(ptypes);
 		return ptypes;
+	}
 	return NULL;
 }
 
@@ -3476,6 +3586,7 @@ i40e_set_tx_function(struct rte_eth_dev *dev)
 {
 	struct i40e_adapter *ad =
 		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	uint64_t mbuf_check = ad->mbuf_check;
 	int i;
 
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
@@ -3537,6 +3648,11 @@ i40e_set_tx_function(struct rte_eth_dev *dev)
 		PMD_INIT_LOG(DEBUG, "Xmit tx finally be used.");
 		dev->tx_pkt_burst = i40e_xmit_pkts;
 		dev->tx_pkt_prepare = i40e_prep_pkts;
+	}
+
+	if (mbuf_check) {
+		ad->tx_pkt_burst = dev->tx_pkt_burst;
+		dev->tx_pkt_burst = i40e_xmit_pkts_check;
 	}
 }
 

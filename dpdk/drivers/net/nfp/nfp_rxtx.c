@@ -16,28 +16,8 @@
 
 #include "nfp_ipsec.h"
 #include "nfp_logs.h"
-
-/* Maximum number of supported VLANs in parsed form packet metadata. */
-#define NFP_META_MAX_VLANS       2
-
-/* Record metadata parsed from packet */
-struct nfp_meta_parsed {
-	uint32_t port_id;         /**< Port id value */
-	uint32_t sa_idx;          /**< IPsec SA index */
-	uint32_t hash;            /**< RSS hash value */
-	uint8_t hash_type;        /**< RSS hash type */
-	uint8_t ipsec_type;       /**< IPsec type */
-	uint8_t vlan_layer;       /**< The valid number of value in @vlan[] */
-	/**
-	 * Holds information parses from NFP_NET_META_VLAN.
-	 * The inner most vlan starts at position 0
-	 */
-	struct {
-		uint8_t offload;  /**< Flag indicates whether VLAN is offloaded */
-		uint8_t tpid;     /**< Vlan TPID */
-		uint16_t tci;     /**< Vlan TCI (PCP + Priority + VID) */
-	} vlan[NFP_META_MAX_VLANS];
-};
+#include "nfp_net_meta.h"
+#include "nfp_rxtx_vec.h"
 
 /*
  * The bit format and map of nfp packet type for rxd.offload_info in Rx descriptor.
@@ -141,24 +121,27 @@ nfp_net_rx_cksum(struct nfp_net_rxq *rxq,
 		struct nfp_net_rx_desc *rxd,
 		struct rte_mbuf *mb)
 {
+	uint16_t flags;
 	struct nfp_net_hw *hw = rxq->hw;
 
 	if ((hw->super.ctrl & NFP_NET_CFG_CTRL_RXCSUM) == 0)
 		return;
 
+	flags = rte_le_to_cpu_16(rxd->rxd.flags);
+
 	/* If IPv4 and IP checksum error, fail */
-	if (unlikely((rxd->rxd.flags & PCIE_DESC_RX_IP4_CSUM) != 0 &&
-			(rxd->rxd.flags & PCIE_DESC_RX_IP4_CSUM_OK) == 0))
+	if (unlikely((flags & PCIE_DESC_RX_IP4_CSUM) != 0 &&
+			(flags & PCIE_DESC_RX_IP4_CSUM_OK) == 0))
 		mb->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 	else
 		mb->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 
 	/* If neither UDP nor TCP return */
-	if ((rxd->rxd.flags & PCIE_DESC_RX_TCP_CSUM) == 0 &&
-			(rxd->rxd.flags & PCIE_DESC_RX_UDP_CSUM) == 0)
+	if ((flags & PCIE_DESC_RX_TCP_CSUM) == 0 &&
+			(flags & PCIE_DESC_RX_UDP_CSUM) == 0)
 		return;
 
-	if (likely(rxd->rxd.flags & PCIE_DESC_RX_L4_CSUM_OK) != 0)
+	if (likely(flags & PCIE_DESC_RX_L4_CSUM_OK) != 0)
 		mb->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 	else
 		mb->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
@@ -171,7 +154,7 @@ nfp_net_rx_fill_freelist(struct nfp_net_rxq *rxq)
 	uint64_t dma_addr;
 	struct nfp_net_dp_buf *rxe = rxq->rxbufs;
 
-	PMD_RX_LOG(DEBUG, "Fill Rx Freelist for %hu descriptors",
+	PMD_RX_LOG(DEBUG, "Fill Rx Freelist for %hu descriptors.",
 			rxq->rx_count);
 
 	for (i = 0; i < rxq->rx_count; i++) {
@@ -179,17 +162,17 @@ nfp_net_rx_fill_freelist(struct nfp_net_rxq *rxq)
 		struct rte_mbuf *mbuf = rte_pktmbuf_alloc(rxq->mem_pool);
 
 		if (mbuf == NULL) {
-			PMD_DRV_LOG(ERR, "RX mbuf alloc failed queue_id=%hu",
+			PMD_DRV_LOG(ERR, "RX mbuf alloc failed queue_id=%hu.",
 				rxq->qidx);
 			return -ENOMEM;
 		}
 
-		dma_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(mbuf));
+		dma_addr = rte_mbuf_data_iova_default(mbuf);
 
 		rxd = &rxq->rxds[i];
 		rxd->fld.dd = 0;
-		rxd->fld.dma_addr_hi = (dma_addr >> 32) & 0xffff;
-		rxd->fld.dma_addr_lo = dma_addr & 0xffffffff;
+		rxd->fld.dma_addr_hi = rte_cpu_to_le_16((dma_addr >> 32) & 0xffff);
+		rxd->fld.dma_addr_lo = rte_cpu_to_le_32(dma_addr & 0xffffffff);
 
 		rxe[i].mbuf = mbuf;
 	}
@@ -198,7 +181,7 @@ nfp_net_rx_fill_freelist(struct nfp_net_rxq *rxq)
 	rte_wmb();
 
 	/* Not advertising the whole ring as the firmware gets confused if so */
-	PMD_RX_LOG(DEBUG, "Increment FL write pointer in %hu", rxq->rx_count - 1);
+	PMD_RX_LOG(DEBUG, "Increment FL write pointer in %hu.", rxq->rx_count - 1);
 
 	nfp_qcp_ptr_add(rxq->qcp_fl, NFP_QCP_WRITE_PTR, rxq->rx_count - 1);
 
@@ -252,227 +235,6 @@ nfp_net_rx_queue_count(void *rx_queue)
 	return count;
 }
 
-/* Parse the chained metadata from packet */
-static bool
-nfp_net_parse_chained_meta(uint8_t *meta_base,
-		rte_be32_t meta_header,
-		struct nfp_meta_parsed *meta)
-{
-	uint32_t meta_info;
-	uint32_t vlan_info;
-	uint8_t *meta_offset;
-
-	meta_info = rte_be_to_cpu_32(meta_header);
-	meta_offset = meta_base + 4;
-
-	for (; meta_info != 0; meta_info >>= NFP_NET_META_FIELD_SIZE, meta_offset += 4) {
-		switch (meta_info & NFP_NET_META_FIELD_MASK) {
-		case NFP_NET_META_PORTID:
-			meta->port_id = rte_be_to_cpu_32(*(rte_be32_t *)meta_offset);
-			break;
-		case NFP_NET_META_HASH:
-			/* Next field type is about the hash type */
-			meta_info >>= NFP_NET_META_FIELD_SIZE;
-			/* Hash value is in the data field */
-			meta->hash = rte_be_to_cpu_32(*(rte_be32_t *)meta_offset);
-			meta->hash_type = meta_info & NFP_NET_META_FIELD_MASK;
-			break;
-		case NFP_NET_META_VLAN:
-			vlan_info = rte_be_to_cpu_32(*(rte_be32_t *)meta_offset);
-			meta->vlan[meta->vlan_layer].offload =
-					vlan_info >> NFP_NET_META_VLAN_OFFLOAD;
-			meta->vlan[meta->vlan_layer].tci =
-					vlan_info & NFP_NET_META_VLAN_MASK;
-			meta->vlan[meta->vlan_layer].tpid = NFP_NET_META_TPID(vlan_info);
-			meta->vlan_layer++;
-			break;
-		case NFP_NET_META_IPSEC:
-			meta->sa_idx = rte_be_to_cpu_32(*(rte_be32_t *)meta_offset);
-			meta->ipsec_type = meta_info & NFP_NET_META_FIELD_MASK;
-			break;
-		default:
-			/* Unsupported metadata can be a performance issue */
-			return false;
-		}
-	}
-
-	return true;
-}
-
-/* Set mbuf hash data based on the metadata info */
-static void
-nfp_net_parse_meta_hash(const struct nfp_meta_parsed *meta,
-		struct nfp_net_rxq *rxq,
-		struct rte_mbuf *mbuf)
-{
-	struct nfp_net_hw *hw = rxq->hw;
-
-	if ((hw->super.ctrl & NFP_NET_CFG_CTRL_RSS_ANY) == 0)
-		return;
-
-	mbuf->hash.rss = meta->hash;
-	mbuf->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
-}
-
-/*
- * Parse the single metadata
- *
- * The RSS hash and hash-type are prepended to the packet data.
- * Get it from metadata area.
- */
-static inline void
-nfp_net_parse_single_meta(uint8_t *meta_base,
-		rte_be32_t meta_header,
-		struct nfp_meta_parsed *meta)
-{
-	meta->hash_type = rte_be_to_cpu_32(meta_header);
-	meta->hash = rte_be_to_cpu_32(*(rte_be32_t *)(meta_base + 4));
-}
-
-/* Set mbuf vlan_strip data based on metadata info */
-static void
-nfp_net_parse_meta_vlan(const struct nfp_meta_parsed *meta,
-		struct nfp_net_rx_desc *rxd,
-		struct nfp_net_rxq *rxq,
-		struct rte_mbuf *mb)
-{
-	uint32_t ctrl = rxq->hw->super.ctrl;
-
-	/* Skip if hardware don't support setting vlan. */
-	if ((ctrl & (NFP_NET_CFG_CTRL_RXVLAN | NFP_NET_CFG_CTRL_RXVLAN_V2)) == 0)
-		return;
-
-	/*
-	 * The firmware support two ways to send the VLAN info (with priority) :
-	 * 1. Using the metadata when NFP_NET_CFG_CTRL_RXVLAN_V2 is set,
-	 * 2. Using the descriptor when NFP_NET_CFG_CTRL_RXVLAN is set.
-	 */
-	if ((ctrl & NFP_NET_CFG_CTRL_RXVLAN_V2) != 0) {
-		if (meta->vlan_layer > 0 && meta->vlan[0].offload != 0) {
-			mb->vlan_tci = rte_cpu_to_le_32(meta->vlan[0].tci);
-			mb->ol_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
-		}
-	} else if ((ctrl & NFP_NET_CFG_CTRL_RXVLAN) != 0) {
-		if ((rxd->rxd.flags & PCIE_DESC_RX_VLAN) != 0) {
-			mb->vlan_tci = rte_cpu_to_le_32(rxd->rxd.offload_info);
-			mb->ol_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
-		}
-	}
-}
-
-/*
- * Set mbuf qinq_strip data based on metadata info
- *
- * The out VLAN tci are prepended to the packet data.
- * Extract and decode it and set the mbuf fields.
- *
- * If both RTE_MBUF_F_RX_VLAN and NFP_NET_CFG_CTRL_RXQINQ are set, the 2 VLANs
- *   have been stripped by the hardware and their TCIs are saved in
- *   mbuf->vlan_tci (inner) and mbuf->vlan_tci_outer (outer).
- * If NFP_NET_CFG_CTRL_RXQINQ is set and RTE_MBUF_F_RX_VLAN is unset, only the
- *   outer VLAN is removed from packet data, but both tci are saved in
- *   mbuf->vlan_tci (inner) and mbuf->vlan_tci_outer (outer).
- *
- * qinq set & vlan set : meta->vlan_layer>=2, meta->vlan[0].offload=1, meta->vlan[1].offload=1
- * qinq set & vlan not set: meta->vlan_layer>=2, meta->vlan[1].offload=1,meta->vlan[0].offload=0
- * qinq not set & vlan set: meta->vlan_layer=1, meta->vlan[0].offload=1
- * qinq not set & vlan not set: meta->vlan_layer=0
- */
-static void
-nfp_net_parse_meta_qinq(const struct nfp_meta_parsed *meta,
-		struct nfp_net_rxq *rxq,
-		struct rte_mbuf *mb)
-{
-	struct nfp_hw *hw = &rxq->hw->super;
-
-	if ((hw->ctrl & NFP_NET_CFG_CTRL_RXQINQ) == 0 ||
-			(hw->cap & NFP_NET_CFG_CTRL_RXQINQ) == 0)
-		return;
-
-	if (meta->vlan_layer < NFP_META_MAX_VLANS)
-		return;
-
-	if (meta->vlan[0].offload == 0)
-		mb->vlan_tci = rte_cpu_to_le_16(meta->vlan[0].tci);
-
-	mb->vlan_tci_outer = rte_cpu_to_le_16(meta->vlan[1].tci);
-	PMD_RX_LOG(DEBUG, "Received outer vlan TCI is %u inner vlan TCI is %u",
-			mb->vlan_tci_outer, mb->vlan_tci);
-	mb->ol_flags |= RTE_MBUF_F_RX_QINQ | RTE_MBUF_F_RX_QINQ_STRIPPED;
-}
-
-/*
- * Set mbuf IPsec Offload features based on metadata info.
- *
- * The IPsec Offload features is prepended to the mbuf ol_flags.
- * Extract and decode metadata info and set the mbuf ol_flags.
- */
-static void
-nfp_net_parse_meta_ipsec(struct nfp_meta_parsed *meta,
-		struct nfp_net_rxq *rxq,
-		struct rte_mbuf *mbuf)
-{
-	int offset;
-	uint32_t sa_idx;
-	struct nfp_net_hw *hw;
-	struct nfp_tx_ipsec_desc_msg *desc_md;
-
-	hw = rxq->hw;
-	sa_idx = meta->sa_idx;
-
-	if (meta->ipsec_type != NFP_NET_META_IPSEC)
-		return;
-
-	if (sa_idx >= NFP_NET_IPSEC_MAX_SA_CNT) {
-		mbuf->ol_flags |= RTE_MBUF_F_RX_SEC_OFFLOAD_FAILED;
-	} else {
-		mbuf->ol_flags |= RTE_MBUF_F_RX_SEC_OFFLOAD;
-		offset = hw->ipsec_data->pkt_dynfield_offset;
-		desc_md = RTE_MBUF_DYNFIELD(mbuf, offset, struct nfp_tx_ipsec_desc_msg *);
-		desc_md->sa_idx = sa_idx;
-		desc_md->enc = 0;
-	}
-}
-
-/* Parse the metadata from packet */
-static void
-nfp_net_parse_meta(struct nfp_net_rx_desc *rxds,
-		struct nfp_net_rxq *rxq,
-		struct nfp_net_hw *hw,
-		struct rte_mbuf *mb,
-		struct nfp_meta_parsed *meta)
-{
-	uint8_t *meta_base;
-	rte_be32_t meta_header;
-
-	if (unlikely(NFP_DESC_META_LEN(rxds) == 0))
-		return;
-
-	meta_base = rte_pktmbuf_mtod_offset(mb, uint8_t *, -NFP_DESC_META_LEN(rxds));
-	meta_header = *(rte_be32_t *)meta_base;
-
-	switch (hw->meta_format) {
-	case NFP_NET_METAFORMAT_CHAINED:
-		if (nfp_net_parse_chained_meta(meta_base, meta_header, meta)) {
-			nfp_net_parse_meta_hash(meta, rxq, mb);
-			nfp_net_parse_meta_vlan(meta, rxds, rxq, mb);
-			nfp_net_parse_meta_qinq(meta, rxq, mb);
-			nfp_net_parse_meta_ipsec(meta, rxq, mb);
-		} else {
-			PMD_RX_LOG(DEBUG, "RX chained metadata format is wrong!");
-		}
-		break;
-	case NFP_NET_METAFORMAT_SINGLE:
-		if ((rxds->rxd.flags & PCIE_DESC_RX_RSS) != 0) {
-			nfp_net_parse_single_meta(meta_base, meta_header, meta);
-			nfp_net_parse_meta_hash(meta, rxq, mb);
-		}
-		break;
-	default:
-		PMD_RX_LOG(DEBUG, "RX metadata do not exist.");
-	}
-}
-
 /**
  * Set packet type to mbuf based on parsed structure.
  *
@@ -501,7 +263,7 @@ nfp_net_set_ptype(const struct nfp_ptype_parsed *nfp_ptype,
 		mbuf_ptype |= RTE_PTYPE_L3_IPV6;
 		break;
 	default:
-		PMD_RX_LOG(DEBUG, "Unrecognized nfp outer layer 3 packet type: %u",
+		PMD_RX_LOG(DEBUG, "Unrecognized nfp outer layer 3 packet type: %u.",
 				nfp_ptype->outer_l3_ptype);
 		break;
 	}
@@ -519,7 +281,7 @@ nfp_net_set_ptype(const struct nfp_ptype_parsed *nfp_ptype,
 		mbuf_ptype |= RTE_PTYPE_TUNNEL_GENEVE | RTE_PTYPE_L4_UDP;
 		break;
 	default:
-		PMD_RX_LOG(DEBUG, "Unrecognized nfp tunnel packet type: %u",
+		PMD_RX_LOG(DEBUG, "Unrecognized nfp tunnel packet type: %u.",
 				nfp_tunnel_ptype);
 		break;
 	}
@@ -546,7 +308,7 @@ nfp_net_set_ptype(const struct nfp_ptype_parsed *nfp_ptype,
 		mbuf_ptype |= NFP_PTYPE2RTE(nfp_tunnel_ptype, L4_SCTP);
 		break;
 	default:
-		PMD_RX_LOG(DEBUG, "Unrecognized nfp layer 4 packet type: %u",
+		PMD_RX_LOG(DEBUG, "Unrecognized nfp layer 4 packet type: %u.",
 				nfp_ptype->l4_ptype);
 		break;
 	}
@@ -573,7 +335,7 @@ nfp_net_set_ptype(const struct nfp_ptype_parsed *nfp_ptype,
 		mbuf_ptype |= NFP_PTYPE2RTE(nfp_tunnel_ptype, L3_IPV6_EXT_UNKNOWN);
 		break;
 	default:
-		PMD_RX_LOG(DEBUG, "Unrecognized nfp layer 3 packet type: %u",
+		PMD_RX_LOG(DEBUG, "Unrecognized nfp layer 3 packet type: %u.",
 				nfp_ptype->l3_ptype);
 		break;
 	}
@@ -591,18 +353,19 @@ nfp_net_set_ptype(const struct nfp_ptype_parsed *nfp_ptype,
  * @param mb
  *   Mbuf to set the packet type.
  */
-static void
+void
 nfp_net_parse_ptype(struct nfp_net_rxq *rxq,
 		struct nfp_net_rx_desc *rxds,
 		struct rte_mbuf *mb)
 {
+	uint16_t rxd_ptype;
 	struct nfp_net_hw *hw = rxq->hw;
 	struct nfp_ptype_parsed nfp_ptype;
-	uint16_t rxd_ptype = rxds->rxd.offload_info;
 
-	if ((hw->super.cap_ext & NFP_NET_CFG_CTRL_PKT_TYPE) == 0)
+	if ((hw->super.ctrl_ext & NFP_NET_CFG_CTRL_PKT_TYPE) == 0)
 		return;
 
+	rxd_ptype = rte_le_to_cpu_16(rxds->rxd.offload_info);
 	if (rxd_ptype == 0 || (rxds->rxd.flags & PCIE_DESC_RX_VLAN) != 0)
 		return;
 
@@ -650,6 +413,7 @@ nfp_net_recv_pkts(void *rx_queue,
 		struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts)
 {
+	uint16_t data_len;
 	uint64_t dma_addr;
 	uint16_t avail = 0;
 	struct rte_mbuf *mb;
@@ -657,6 +421,7 @@ nfp_net_recv_pkts(void *rx_queue,
 	struct nfp_net_hw *hw;
 	struct rte_mbuf *new_mb;
 	struct nfp_net_rxq *rxq;
+	struct nfp_pf_dev *pf_dev;
 	struct nfp_net_dp_buf *rxb;
 	struct nfp_net_rx_desc *rxds;
 	uint16_t avail_multiplexed = 0;
@@ -667,16 +432,17 @@ nfp_net_recv_pkts(void *rx_queue,
 		 * DPDK just checks the queue is lower than max queues
 		 * enabled. But the queue needs to be configured.
 		 */
-		PMD_RX_LOG(ERR, "RX Bad queue");
+		PMD_RX_LOG(ERR, "RX Bad queue.");
 		return 0;
 	}
 
 	hw = rxq->hw;
+	pf_dev = rxq->hw_priv->pf_dev;
 
 	while (avail + avail_multiplexed < nb_pkts) {
 		rxb = &rxq->rxbufs[rxq->rd_p];
 		if (unlikely(rxb == NULL)) {
-			PMD_RX_LOG(ERR, "rxb does not exist!");
+			PMD_RX_LOG(ERR, "The rxb does not exist!");
 			break;
 		}
 
@@ -696,7 +462,7 @@ nfp_net_recv_pkts(void *rx_queue,
 		 */
 		new_mb = rte_pktmbuf_alloc(rxq->mem_pool);
 		if (unlikely(new_mb == NULL)) {
-			PMD_RX_LOG(DEBUG, "RX mbuf alloc failed port_id=%u queue_id=%hu",
+			PMD_RX_LOG(DEBUG, "RX mbuf alloc failed port_id=%u queue_id=%hu.",
 					rxq->port_id, rxq->qidx);
 			nfp_net_mbuf_alloc_failed(rxq);
 			break;
@@ -708,14 +474,15 @@ nfp_net_recv_pkts(void *rx_queue,
 		 */
 		mb = rxb->mbuf;
 		rxb->mbuf = new_mb;
+		data_len = rte_le_to_cpu_16(rxds->rxd.data_len);
 
-		PMD_RX_LOG(DEBUG, "Packet len: %u, mbuf_size: %u",
-				rxds->rxd.data_len, rxq->mbuf_size);
+		PMD_RX_LOG(DEBUG, "Packet len: %u, mbuf_size: %u.",
+				data_len, rxq->mbuf_size);
 
 		/* Size of this segment */
-		mb->data_len = rxds->rxd.data_len - NFP_DESC_META_LEN(rxds);
+		mb->data_len = data_len - NFP_DESC_META_LEN(rxds);
 		/* Size of the whole packet. We just support 1 segment */
-		mb->pkt_len = rxds->rxd.data_len - NFP_DESC_META_LEN(rxds);
+		mb->pkt_len = data_len - NFP_DESC_META_LEN(rxds);
 
 		if (unlikely((mb->data_len + hw->rx_offset) > rxq->mbuf_size)) {
 			/*
@@ -723,7 +490,7 @@ nfp_net_recv_pkts(void *rx_queue,
 			 * responsibility of avoiding it. But we have
 			 * to give some info about the error.
 			 */
-			PMD_RX_LOG(ERR, "mbuf overflow likely due to the RX offset.");
+			PMD_RX_LOG(ERR, "The mbuf overflow likely due to the RX offset.");
 			rte_pktmbuf_free(mb);
 			break;
 		}
@@ -739,8 +506,8 @@ nfp_net_recv_pkts(void *rx_queue,
 		mb->next = NULL;
 		mb->port = rxq->port_id;
 
-		struct nfp_meta_parsed meta = {};
-		nfp_net_parse_meta(rxds, rxq, hw, mb, &meta);
+		struct nfp_net_meta_parsed meta;
+		nfp_net_meta_parse(rxds, rxq, hw, mb, &meta);
 
 		nfp_net_parse_ptype(rxq, rxds, mb);
 
@@ -750,30 +517,32 @@ nfp_net_recv_pkts(void *rx_queue,
 		/* Now resetting and updating the descriptor */
 		rxds->vals[0] = 0;
 		rxds->vals[1] = 0;
-		dma_addr = rte_cpu_to_le_64(rte_mbuf_data_iova_default(new_mb));
+		dma_addr = rte_mbuf_data_iova_default(new_mb);
 		rxds->fld.dd = 0;
-		rxds->fld.dma_addr_hi = (dma_addr >> 32) & 0xffff;
-		rxds->fld.dma_addr_lo = dma_addr & 0xffffffff;
+		rxds->fld.dma_addr_hi = rte_cpu_to_le_16((dma_addr >> 32) & 0xffff);
+		rxds->fld.dma_addr_lo = rte_cpu_to_le_32(dma_addr & 0xffffffff);
 		nb_hold++;
 
 		rxq->rd_p++;
 		if (unlikely(rxq->rd_p == rxq->rx_count)) /* Wrapping */
 			rxq->rd_p = 0;
 
-		if (meta.port_id == 0) {
+		if (pf_dev->recv_pkt_meta_check_t(&meta)) {
 			rx_pkts[avail++] = mb;
-		} else if (nfp_flower_pf_dispatch_pkts(hw, mb, meta.port_id)) {
-			avail_multiplexed++;
 		} else {
-			rte_pktmbuf_free(mb);
-			break;
+			if (nfp_flower_pf_dispatch_pkts(rxq, mb, meta.port_id)) {
+				avail_multiplexed++;
+			} else {
+				rte_pktmbuf_free(mb);
+				break;
+			}
 		}
 	}
 
 	if (nb_hold == 0)
 		return nb_hold;
 
-	PMD_RX_LOG(DEBUG, "RX  port_id=%hu queue_id=%hu, %hu packets received",
+	PMD_RX_LOG(DEBUG, "RX  port_id=%hu queue_id=%hu, %hu packets received.",
 			rxq->port_id, rxq->qidx, avail);
 
 	nb_hold += rxq->nb_rx_hold;
@@ -784,7 +553,7 @@ nfp_net_recv_pkts(void *rx_queue,
 	 */
 	rte_wmb();
 	if (nb_hold > rxq->rx_free_thresh) {
-		PMD_RX_LOG(DEBUG, "port=%hu queue=%hu nb_hold=%hu avail=%hu",
+		PMD_RX_LOG(DEBUG, "The port=%hu queue=%hu nb_hold=%hu avail=%hu.",
 				rxq->port_id, rxq->qidx, nb_hold, avail);
 		nfp_qcp_ptr_add(rxq->qcp_fl, NFP_QCP_WRITE_PTR, nb_hold);
 		nb_hold = 0;
@@ -832,6 +601,20 @@ nfp_net_reset_rx_queue(struct nfp_net_rxq *rxq)
 	rxq->nb_rx_hold = 0;
 }
 
+static void
+nfp_rx_queue_setup_flbufsz(struct nfp_net_hw *hw,
+		struct nfp_net_rxq *rxq)
+{
+	if (!hw->flbufsz_set_flag) {
+		hw->flbufsz_set_flag = true;
+		hw->flbufsz = rxq->mbuf_size;
+		return;
+	}
+
+	if (hw->flbufsz < rxq->mbuf_size)
+		hw->flbufsz = rxq->mbuf_size;
+}
+
 int
 nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 		uint16_t queue_idx,
@@ -846,16 +629,18 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	struct nfp_net_hw *hw;
 	struct nfp_net_rxq *rxq;
 	const struct rte_memzone *tz;
+	struct nfp_net_hw_priv *hw_priv;
 
 	hw = nfp_net_get_hw(dev);
+	hw_priv = dev->process_private;
 
-	nfp_net_rx_desc_limits(hw, &min_rx_desc, &max_rx_desc);
+	nfp_net_rx_desc_limits(hw_priv, &min_rx_desc, &max_rx_desc);
 
 	/* Validating number of descriptors */
 	rx_desc_sz = nb_desc * sizeof(struct nfp_net_rx_desc);
 	if (rx_desc_sz % NFP_ALIGN_RING_DESC != 0 ||
 			nb_desc > max_rx_desc || nb_desc < min_rx_desc) {
-		PMD_DRV_LOG(ERR, "Wrong nb_desc value");
+		PMD_DRV_LOG(ERR, "Wrong nb_desc value.");
 		return -EINVAL;
 	}
 
@@ -888,7 +673,7 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->mem_pool = mp;
 	rxq->mbuf_size = rxq->mem_pool->elt_size;
 	rxq->mbuf_size -= (sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM);
-	hw->flbufsz = rxq->mbuf_size;
+	nfp_rx_queue_setup_flbufsz(hw, rxq);
 
 	rxq->rx_count = nb_desc;
 	rxq->port_id = dev->data->port_id;
@@ -903,7 +688,7 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 			sizeof(struct nfp_net_rx_desc) * max_rx_desc,
 			NFP_MEMZONE_ALIGN, socket_id);
 	if (tz == NULL) {
-		PMD_DRV_LOG(ERR, "Error allocating rx dma");
+		PMD_DRV_LOG(ERR, "Error allocating rx dma.");
 		nfp_net_rx_queue_release(dev, queue_idx);
 		dev->data->rx_queues[queue_idx] = NULL;
 		return -ENOMEM;
@@ -926,6 +711,7 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	nfp_net_reset_rx_queue(rxq);
 
 	rxq->hw = hw;
+	rxq->hw_priv = dev->process_private;
 
 	/*
 	 * Telling the HW about the physical address of the RX ring and number
@@ -935,6 +721,26 @@ nfp_net_rx_queue_setup(struct rte_eth_dev *dev,
 	nn_cfg_writeb(&hw->super, NFP_NET_CFG_RXR_SZ(queue_idx), rte_log2_u32(nb_desc));
 
 	return 0;
+}
+
+static inline uint32_t
+nfp_net_read_tx_free_qcp(struct nfp_net_txq *txq)
+{
+	/*
+	 * If TX ring pointer write back is not supported, do a PCIe read.
+	 * Otherwise read qcp value from write back dma address.
+	 */
+	if (txq->txrwb == NULL)
+		return nfp_qcp_read(txq->qcp_q, NFP_QCP_READ_PTR);
+
+	/*
+	 * In most cases the TX count is a power of two and the costly modulus
+	 * operation can be substituted with a subtraction and an AND operation.
+	 */
+	if (rte_is_power_of_2(txq->tx_count) == 1)
+		return (*txq->txrwb) & (txq->tx_count - 1);
+	else
+		return (*txq->txrwb) % txq->tx_count;
 }
 
 /**
@@ -952,15 +758,15 @@ nfp_net_tx_free_bufs(struct nfp_net_txq *txq)
 	uint32_t todo;
 	uint32_t qcp_rd_p;
 
-	PMD_TX_LOG(DEBUG, "queue %hu. Check for descriptor with a complete"
-			" status", txq->qidx);
+	PMD_TX_LOG(DEBUG, "Queue %hu. Check for descriptor with a complete"
+			" status.", txq->qidx);
 
 	/* Work out how many packets have been sent */
-	qcp_rd_p = nfp_qcp_read(txq->qcp_q, NFP_QCP_READ_PTR);
+	qcp_rd_p = nfp_net_read_tx_free_qcp(txq);
 
 	if (qcp_rd_p == txq->rd_p) {
-		PMD_TX_LOG(DEBUG, "queue %hu: It seems harrier is not sending "
-				"packets (%u, %u)", txq->qidx,
+		PMD_TX_LOG(DEBUG, "Queue %hu: It seems harrier is not sending "
+				"packets (%u, %u).", txq->qidx,
 				qcp_rd_p, txq->rd_p);
 		return 0;
 	}
@@ -970,7 +776,7 @@ nfp_net_tx_free_bufs(struct nfp_net_txq *txq)
 	else
 		todo = qcp_rd_p + txq->tx_count - txq->rd_p;
 
-	PMD_TX_LOG(DEBUG, "qcp_rd_p %u, txq->rd_p: %u, qcp->rd_p: %u",
+	PMD_TX_LOG(DEBUG, "The qcp_rd_p %u, txq->rd_p: %u, qcp->rd_p: %u.",
 			qcp_rd_p, txq->rd_p, txq->rd_p);
 
 	if (todo == 0)
@@ -1003,9 +809,13 @@ void
 nfp_net_tx_queue_release(struct rte_eth_dev *dev,
 		uint16_t queue_idx)
 {
+	struct nfp_net_hw *net_hw;
 	struct nfp_net_txq *txq = dev->data->tx_queues[queue_idx];
 
 	if (txq != NULL) {
+		net_hw = nfp_net_get_hw(dev);
+		if (net_hw->txrwb_mz != NULL)
+			nn_cfg_writeq(&net_hw->super, NFP_NET_CFG_TXR_WB_ADDR(queue_idx), 0);
 		nfp_net_tx_queue_release_mbufs(txq);
 		rte_eth_dma_zone_free(dev, "tx_ring", queue_idx);
 		rte_free(txq->txbufs);
@@ -1019,50 +829,8 @@ nfp_net_reset_tx_queue(struct nfp_net_txq *txq)
 	nfp_net_tx_queue_release_mbufs(txq);
 	txq->wr_p = 0;
 	txq->rd_p = 0;
-}
-
-void
-nfp_net_set_meta_vlan(struct nfp_net_meta_raw *meta_data,
-		struct rte_mbuf *pkt,
-		uint8_t layer)
-{
-	uint16_t tpid;
-	uint16_t vlan_tci;
-
-	tpid = RTE_ETHER_TYPE_VLAN;
-	vlan_tci = pkt->vlan_tci;
-
-	meta_data->data[layer] = rte_cpu_to_be_32(tpid << 16 | vlan_tci);
-}
-
-void
-nfp_net_set_meta_ipsec(struct nfp_net_meta_raw *meta_data,
-		struct nfp_net_txq *txq,
-		struct rte_mbuf *pkt,
-		uint8_t layer,
-		uint8_t ipsec_layer)
-{
-	int offset;
-	struct nfp_net_hw *hw;
-	struct nfp_tx_ipsec_desc_msg *desc_md;
-
-	hw = txq->hw;
-	offset = hw->ipsec_data->pkt_dynfield_offset;
-	desc_md = RTE_MBUF_DYNFIELD(pkt, offset, struct nfp_tx_ipsec_desc_msg *);
-
-	switch (ipsec_layer) {
-	case NFP_IPSEC_META_SAIDX:
-		meta_data->data[layer] = desc_md->sa_idx;
-		break;
-	case NFP_IPSEC_META_SEQLOW:
-		meta_data->data[layer] = desc_md->esn.low;
-		break;
-	case NFP_IPSEC_META_SEQHI:
-		meta_data->data[layer] = desc_md->esn.hi;
-		break;
-	default:
-		break;
-	}
+	if (txq->txrwb != NULL)
+		*txq->txrwb = 0;
 }
 
 int
@@ -1072,14 +840,62 @@ nfp_net_tx_queue_setup(struct rte_eth_dev *dev,
 		unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf)
 {
-	struct nfp_net_hw *hw;
+	struct nfp_net_hw_priv *hw_priv;
 
-	hw = nfp_net_get_hw(dev);
+	hw_priv = dev->process_private;
 
-	if (hw->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
+	if (hw_priv->pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
 		return nfp_net_nfd3_tx_queue_setup(dev, queue_idx,
 				nb_desc, socket_id, tx_conf);
 	else
 		return nfp_net_nfdk_tx_queue_setup(dev, queue_idx,
 				nb_desc, socket_id, tx_conf);
+}
+
+void
+nfp_net_rx_queue_info_get(struct rte_eth_dev *dev,
+		uint16_t queue_id,
+		struct rte_eth_rxq_info *info)
+{
+	struct rte_eth_dev_info dev_info;
+	struct nfp_net_rxq *rxq = dev->data->rx_queues[queue_id];
+
+	info->mp = rxq->mem_pool;
+	info->nb_desc = rxq->rx_count;
+
+	info->conf.rx_free_thresh = rxq->rx_free_thresh;
+
+	nfp_net_infos_get(dev, &dev_info);
+	info->conf.offloads = dev_info.rx_offload_capa &
+			dev->data->dev_conf.rxmode.offloads;
+}
+
+void
+nfp_net_tx_queue_info_get(struct rte_eth_dev *dev,
+		uint16_t queue_id,
+		struct rte_eth_txq_info *info)
+{
+	struct rte_eth_dev_info dev_info;
+	struct nfp_net_hw_priv *hw_priv = dev->process_private;
+	struct nfp_net_txq *txq = dev->data->tx_queues[queue_id];
+
+	if (hw_priv->pf_dev->ver.extend == NFP_NET_CFG_VERSION_DP_NFD3)
+		info->nb_desc = txq->tx_count / NFD3_TX_DESC_PER_PKT;
+	else
+		info->nb_desc = txq->tx_count / NFDK_TX_DESC_PER_SIMPLE_PKT;
+
+	info->conf.tx_free_thresh = txq->tx_free_thresh;
+
+	nfp_net_infos_get(dev, &dev_info);
+	info->conf.offloads = dev_info.tx_offload_capa &
+			dev->data->dev_conf.txmode.offloads;
+}
+
+void
+nfp_net_recv_pkts_set(struct rte_eth_dev *eth_dev)
+{
+	if (nfp_net_get_avx2_supported())
+		eth_dev->rx_pkt_burst = nfp_net_vec_avx2_recv_pkts;
+	else
+		eth_dev->rx_pkt_burst = nfp_net_recv_pkts;
 }

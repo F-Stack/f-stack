@@ -369,7 +369,7 @@ struct hns3_rx_queue {
 	 * The following fields are not accessed in the I/O path, so they are
 	 * placed at the end.
 	 */
-	void *io_base __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) void *io_base;
 	struct hns3_adapter *hns;
 	uint64_t rx_ring_phys_addr; /* RX ring DMA address */
 	const struct rte_memzone *mz;
@@ -543,7 +543,7 @@ struct hns3_tx_queue {
 	 * The following fields are not accessed in the I/O path, so they are
 	 * placed at the end.
 	 */
-	void *io_base __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) void *io_base;
 	struct hns3_adapter *hns;
 	uint64_t tx_ring_phys_addr; /* TX ring DMA address */
 	const struct rte_memzone *mz;
@@ -779,7 +779,8 @@ uint16_t hns3_xmit_pkts_vec_sve(void *tx_queue, struct rte_mbuf **tx_pkts,
 int hns3_tx_burst_mode_get(struct rte_eth_dev *dev,
 			   __rte_unused uint16_t queue_id,
 			   struct rte_eth_burst_mode *mode);
-const uint32_t *hns3_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+const uint32_t *hns3_dev_supported_ptypes_get(struct rte_eth_dev *dev,
+					      size_t *no_of_elements);
 void hns3_init_rx_ptype_tble(struct rte_eth_dev *dev);
 void hns3_set_rxtx_function(struct rte_eth_dev *eth_dev);
 uint32_t hns3_get_tqp_intr_reg_offset(uint16_t tqp_intr_id);
@@ -817,5 +818,6 @@ void hns3_stop_tx_datapath(struct rte_eth_dev *dev);
 void hns3_start_tx_datapath(struct rte_eth_dev *dev);
 void hns3_stop_rxtx_datapath(struct rte_eth_dev *dev);
 void hns3_start_rxtx_datapath(struct rte_eth_dev *dev);
+int hns3_get_monitor_addr(void *rx_queue, struct rte_power_monitor_cond *pmc);
 
 #endif /* HNS3_RXTX_H */

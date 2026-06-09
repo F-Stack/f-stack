@@ -148,8 +148,8 @@ rx_desc_statuserr_to_pkt_flags(uint32_t statuserr)
 static inline uint32_t
 rx_desc_pkt_info_to_pkt_type(uint32_t pkt_info)
 {
-	static const uint32_t
-		ptype_table[IGC_PACKET_TYPE_MAX] __rte_cache_aligned = {
+	static const alignas(RTE_CACHE_LINE_SIZE) uint32_t
+		ptype_table[IGC_PACKET_TYPE_MAX] = {
 		[IGC_PACKET_TYPE_IPV4] = RTE_PTYPE_L2_ETHER |
 			RTE_PTYPE_L3_IPV4,
 		[IGC_PACKET_TYPE_IPV4_EXT] = RTE_PTYPE_L2_ETHER |
@@ -1416,6 +1416,10 @@ what_advctx_update(struct igc_tx_queue *txq, uint64_t flags,
 {
 	uint32_t curr = txq->ctx_curr;
 
+	/* Launch time feature always need a new context descriptor */
+	if (flags & igc_tx_timestamp_dynflag)
+		return IGC_CTX_NUM;
+
 	/* If match with the current context */
 	if (likely(txq->ctx_cache[curr].flags == flags &&
 		txq->ctx_cache[curr].tx_offload.data ==
@@ -1621,7 +1625,8 @@ igc_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		tx_last = (uint16_t)(tx_id + tx_pkt->nb_segs - 1);
 
 		ol_flags = tx_pkt->ol_flags;
-		tx_ol_req = ol_flags & IGC_TX_OFFLOAD_MASK;
+		tx_ol_req = ol_flags & (IGC_TX_OFFLOAD_MASK |
+				igc_tx_timestamp_dynflag);
 
 		/* If a Context Descriptor need be built . */
 		if (tx_ol_req) {

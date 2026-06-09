@@ -42,7 +42,11 @@ RTE_ATOMIC(rte_mcslock_t *) p_ml_perf;
 
 static unsigned int count;
 
-static uint32_t synchro;
+#define MAX_LOOP_BASE  1000000u
+#define MAX_LOOP_MIN   10000u
+static unsigned int max_loop;
+
+static RTE_ATOMIC(uint32_t) synchro;
 
 static int
 test_mcslock_per_core(__rte_unused void *arg)
@@ -60,8 +64,6 @@ test_mcslock_per_core(__rte_unused void *arg)
 
 static uint64_t time_count[RTE_MAX_LCORE] = {0};
 
-#define MAX_LOOP 1000000
-
 static int
 load_loop_fn(void *func_param)
 {
@@ -75,10 +77,10 @@ load_loop_fn(void *func_param)
 	rte_mcslock_t ml_perf_me;
 
 	/* wait synchro */
-	rte_wait_until_equal_32(&synchro, 1, __ATOMIC_RELAXED);
+	rte_wait_until_equal_32((uint32_t *)(uintptr_t)&synchro, 1, rte_memory_order_relaxed);
 
 	begin = rte_get_timer_cycles();
-	while (lcount < MAX_LOOP) {
+	while (lcount < max_loop) {
 		if (use_lock)
 			rte_mcslock_lock(&p_ml_perf, &ml_perf_me);
 
@@ -100,14 +102,14 @@ test_mcslock_perf(void)
 	const unsigned int lcore = rte_lcore_id();
 
 	printf("\nTest with no lock on single core...\n");
-	__atomic_store_n(&synchro, 1, __ATOMIC_RELAXED);
+	rte_atomic_store_explicit(&synchro, 1, rte_memory_order_relaxed);
 	load_loop_fn(&lock);
 	printf("Core [%u] Cost Time = %"PRIu64" us\n",
 			lcore, time_count[lcore]);
 	memset(time_count, 0, sizeof(time_count));
 
 	printf("\nTest with lock on single core...\n");
-	__atomic_store_n(&synchro, 1, __ATOMIC_RELAXED);
+	rte_atomic_store_explicit(&synchro, 1, rte_memory_order_relaxed);
 	lock = 1;
 	load_loop_fn(&lock);
 	printf("Core [%u] Cost Time = %"PRIu64" us\n",
@@ -116,11 +118,11 @@ test_mcslock_perf(void)
 
 	printf("\nTest with lock on %u cores...\n", (rte_lcore_count()));
 
-	__atomic_store_n(&synchro, 0, __ATOMIC_RELAXED);
+	rte_atomic_store_explicit(&synchro, 0, rte_memory_order_relaxed);
 	rte_eal_mp_remote_launch(load_loop_fn, &lock, SKIP_MAIN);
 
 	/* start synchro and launch test on main */
-	__atomic_store_n(&synchro, 1, __ATOMIC_RELAXED);
+	rte_atomic_store_explicit(&synchro, 1, rte_memory_order_relaxed);
 	load_loop_fn(&lock);
 
 	rte_eal_mp_wait_lcore();
@@ -174,6 +176,8 @@ test_mcslock(void)
 	/* Define per core me node. */
 	rte_mcslock_t ml_me;
 	rte_mcslock_t ml_try_me;
+
+	max_loop = test_scale_iterations(MAX_LOOP_BASE, MAX_LOOP_MIN);
 
 	/*
 	 * Test mcs lock & unlock on each core

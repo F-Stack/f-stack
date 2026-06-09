@@ -652,7 +652,7 @@ submit_request_to_sso(struct ssows *ws, uintptr_t req,
 	if (!rsp_info->sched_type)
 		ssows_head_wait(ws);
 
-	rte_atomic_thread_fence(__ATOMIC_RELEASE);
+	rte_atomic_thread_fence(rte_memory_order_release);
 	ssovf_store_pair(add_work, req, ws->grps[rsp_info->queue_id]);
 }
 
@@ -708,7 +708,7 @@ otx_cpt_asym_rsa_op(struct rte_crypto_op *cop, struct cpt_request_info *req,
 		memcpy(rsa->cipher.data, req->rptr, rsa->cipher.length);
 		break;
 	case RTE_CRYPTO_ASYM_OP_DECRYPT:
-		if (rsa->padding.type == RTE_CRYPTO_RSA_PADDING_NONE)
+		if (rsa_ctx->padding.type == RTE_CRYPTO_RSA_PADDING_NONE)
 			rsa->message.length = rsa_ctx->n.length;
 		else {
 			/* Get length of decrypted output */
@@ -725,7 +725,7 @@ otx_cpt_asym_rsa_op(struct rte_crypto_op *cop, struct cpt_request_info *req,
 		memcpy(rsa->sign.data, req->rptr, rsa->sign.length);
 		break;
 	case RTE_CRYPTO_ASYM_OP_VERIFY:
-		if (rsa->padding.type == RTE_CRYPTO_RSA_PADDING_NONE)
+		if (rsa_ctx->padding.type == RTE_CRYPTO_RSA_PADDING_NONE)
 			rsa->sign.length = rsa_ctx->n.length;
 		else {
 			/* Get length of decrypted output */
@@ -896,7 +896,7 @@ otx_cpt_pkt_dequeue(void *qptr, struct rte_crypto_op **ops, uint16_t nb_ops,
 	pcount = pending_queue_level(pqueue, DEFAULT_CMD_QLEN);
 
 	/* Ensure pcount isn't read before data lands */
-	rte_atomic_thread_fence(__ATOMIC_ACQUIRE);
+	rte_atomic_thread_fence(rte_memory_order_acquire);
 
 	count = (nb_ops > pcount) ? pcount : nb_ops;
 

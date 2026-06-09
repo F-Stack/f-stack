@@ -2,6 +2,8 @@
  * Copyright(c) 2020 Intel Corporation
  */
 
+#include <stdalign.h>
+
 #include <rte_cryptodev.h>
 #include <rte_ethdev.h>
 #include <rte_security_driver.h>
@@ -508,8 +510,7 @@ iavf_ipsec_crypto_security_association_add(struct iavf_adapter *adapter,
 		*((uint32_t *)sa_cfg->dst_addr)	=
 			htonl(conf->ipsec.tunnel.ipv4.dst_ip.s_addr);
 	} else {
-		uint32_t *v6_dst_addr =
-			(uint32_t *)conf->ipsec.tunnel.ipv6.dst_addr.s6_addr;
+		uint32_t *v6_dst_addr = (uint32_t *)&conf->ipsec.tunnel.ipv6.dst_addr;
 
 		sa_cfg->virtchnl_ip_type = VIRTCHNL_IPV6;
 
@@ -1535,7 +1536,7 @@ iavf_security_init(struct iavf_adapter *adapter)
 	struct rte_mbuf_dynfield pkt_md_dynfield = {
 		.name = "iavf_ipsec_crypto_pkt_metadata",
 		.size = sizeof(struct iavf_ipsec_crypto_pkt_metadata),
-		.align = __alignof__(struct iavf_ipsec_crypto_pkt_metadata)
+		.align = alignof(struct iavf_ipsec_crypto_pkt_metadata)
 	};
 	struct virtchnl_ipsec_cap capabilities;
 	int rc;
@@ -1600,7 +1601,7 @@ iavf_ipsec_crypto_status_get(struct iavf_adapter *adapter,
 	}
 
 	response_len = sizeof(struct inline_ipsec_msg) +
-			sizeof(struct virtchnl_ipsec_cap);
+			sizeof(struct virtchnl_ipsec_status);
 	response = rte_malloc("iavf-device-status-response",
 			response_len, 0);
 	if (response == NULL) {
@@ -1736,8 +1737,8 @@ static void
 parse_ipv6_item(const struct rte_flow_item_ipv6 *item,
 		struct rte_ipv6_hdr *ipv6)
 {
-	memcpy(ipv6->src_addr, item->hdr.src_addr, 16);
-	memcpy(ipv6->dst_addr, item->hdr.dst_addr, 16);
+	ipv6->src_addr = item->hdr.src_addr;
+	ipv6->dst_addr = item->hdr.dst_addr;
 }
 
 static void
@@ -1902,7 +1903,7 @@ iavf_ipsec_flow_create(struct iavf_adapter *ad,
 			ipsec_flow->spi,
 			0,
 			0,
-			ipsec_flow->ipv6_hdr.dst_addr,
+			ipsec_flow->ipv6_hdr.dst_addr.a,
 			0,
 			ipsec_flow->is_udp,
 			ipsec_flow->udp_hdr.dst_port);

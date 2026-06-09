@@ -99,6 +99,9 @@ mana_dev_configure(struct rte_eth_dev *dev)
 		return -EINVAL;
 	}
 
+	priv->vlan_strip = !!(dev_conf->rxmode.offloads &
+			      RTE_ETH_RX_OFFLOAD_VLAN_STRIP);
+
 	priv->num_queues = dev->data->nb_rx_queues;
 
 	manadv_set_context_attr(priv->ib_ctx, MANADV_CTX_ATTR_BUF_ALLOCATORS,
@@ -279,6 +282,20 @@ mana_dev_close(struct rte_eth_dev *dev)
 	if (ret)
 		return ret;
 
+	if (priv->ib_parent_pd) {
+		int err = ibv_dealloc_pd(priv->ib_parent_pd);
+		if (err)
+			DRV_LOG(ERR, "Failed to deallocate parent PD: %d", err);
+		priv->ib_parent_pd = NULL;
+	}
+
+	if (priv->ib_pd) {
+		int err = ibv_dealloc_pd(priv->ib_pd);
+		if (err)
+			DRV_LOG(ERR, "Failed to deallocate PD: %d", err);
+		priv->ib_pd = NULL;
+	}
+
 	ret = ibv_close_device(priv->ib_ctx);
 	if (ret) {
 		ret = errno;
@@ -396,7 +413,8 @@ mana_dev_rx_queue_info(struct rte_eth_dev *dev, uint16_t queue_id,
 }
 
 static const uint32_t *
-mana_supported_ptypes(struct rte_eth_dev *dev __rte_unused)
+mana_supported_ptypes(struct rte_eth_dev *dev __rte_unused,
+		      size_t *no_of_elements)
 {
 	static const uint32_t ptypes[] = {
 		RTE_PTYPE_L2_ETHER,
@@ -405,9 +423,9 @@ mana_supported_ptypes(struct rte_eth_dev *dev __rte_unused)
 		RTE_PTYPE_L4_FRAG,
 		RTE_PTYPE_L4_TCP,
 		RTE_PTYPE_L4_UDP,
-		RTE_PTYPE_UNKNOWN
 	};
 
+	*no_of_elements = RTE_DIM(ptypes);
 	return ptypes;
 }
 
@@ -1320,8 +1338,8 @@ mana_probe_port(struct ibv_device *ibdev, struct ibv_device_attr_ex *dev_attr,
 		/* fd is no not used after mapping doorbell */
 		close(fd);
 
-		eth_dev->tx_pkt_burst = mana_tx_burst_removed;
-		eth_dev->rx_pkt_burst = mana_rx_burst_removed;
+		eth_dev->tx_pkt_burst = mana_tx_burst;
+		eth_dev->rx_pkt_burst = mana_rx_burst;
 
 		rte_eth_copy_pci_info(eth_dev, pci_dev);
 		rte_eth_dev_probing_finish(eth_dev);

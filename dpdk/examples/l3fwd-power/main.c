@@ -41,17 +41,19 @@
 #include <rte_udp.h>
 #include <rte_string_fns.h>
 #include <rte_timer.h>
-#include <rte_power.h>
+#include <rte_power_cpufreq.h>
 #include <rte_spinlock.h>
 #include <rte_metrics.h>
 #include <rte_telemetry.h>
 #include <rte_power_pmd_mgmt.h>
 #include <rte_power_uncore.h>
+#include <rte_power_qos.h>
 
 #include "perf_core.h"
 #include "main.h"
 
-#define RTE_LOGTYPE_L3FWD_POWER RTE_LOGTYPE_USER1
+RTE_LOG_REGISTER(l3fwd_power_logtype, l3fwd.power, INFO);
+#define RTE_LOGTYPE_L3FWD_POWER l3fwd_power_logtype
 
 #define MAX_PKT_BURST 32
 
@@ -211,13 +213,13 @@ enum freq_scale_hint_t
 	FREQ_HIGHEST  =       2
 };
 
-struct lcore_rx_queue {
+struct __rte_cache_aligned lcore_rx_queue {
 	uint16_t port_id;
 	uint16_t queue_id;
 	enum freq_scale_hint_t freq_up_hint;
 	uint32_t zero_rx_packet_count;
 	uint32_t idle_hint;
-} __rte_cache_aligned;
+};
 
 #define MAX_RX_QUEUE_PER_LCORE 16
 #define MAX_TX_QUEUE_PER_PORT RTE_MAX_ETHPORTS
@@ -263,6 +265,9 @@ static uint32_t max_empty_polls = 512;
 static uint32_t pause_duration = 1;
 static uint32_t scale_freq_min;
 static uint32_t scale_freq_max;
+
+static int cpu_resume_latency = -1;
+static int resume_latency_bk[RTE_MAX_LCORE];
 
 static struct rte_mempool * pktmbuf_pool[NB_SOCKETS];
 
@@ -328,8 +333,8 @@ static lookup_struct_t *ipv6_l3fwd_lookup_struct[NB_SOCKETS];
 
 #define L3FWD_HASH_ENTRIES	1024
 
-static uint16_t ipv4_l3fwd_out_if[L3FWD_HASH_ENTRIES] __rte_cache_aligned;
-static uint16_t ipv6_l3fwd_out_if[L3FWD_HASH_ENTRIES] __rte_cache_aligned;
+static alignas(RTE_CACHE_LINE_SIZE) uint16_t ipv4_l3fwd_out_if[L3FWD_HASH_ENTRIES];
+static alignas(RTE_CACHE_LINE_SIZE) uint16_t ipv6_l3fwd_out_if[L3FWD_HASH_ENTRIES];
 #endif
 
 #if (APP_LOOKUP_METHOD == APP_LOOKUP_LPM)
@@ -356,7 +361,7 @@ typedef struct rte_lpm lookup_struct_t;
 static lookup_struct_t *ipv4_l3fwd_lookup_struct[NB_SOCKETS];
 #endif
 
-struct lcore_conf {
+struct __rte_cache_aligned lcore_conf {
 	uint16_t n_rx_queue;
 	struct lcore_rx_queue rx_queue_list[MAX_RX_QUEUE_PER_LCORE];
 	uint16_t n_tx_port;
@@ -365,9 +370,9 @@ struct lcore_conf {
 	struct rte_eth_dev_tx_buffer *tx_buffer[RTE_MAX_ETHPORTS];
 	lookup_struct_t * ipv4_lookup_struct;
 	lookup_struct_t * ipv6_lookup_struct;
-} __rte_cache_aligned;
+};
 
-struct lcore_stats {
+struct __rte_cache_aligned lcore_stats {
 	/* total sleep time in ms since last frequency scaling down */
 	uint32_t sleep_time;
 	/* number of long sleep recently */
@@ -398,10 +403,10 @@ struct lcore_stats {
 	uint64_t fp_nfp[2];
 	enum busy_rate br;
 	rte_spinlock_t telemetry_lock;
-} __rte_cache_aligned;
+};
 
-static struct lcore_conf lcore_conf[RTE_MAX_LCORE] __rte_cache_aligned;
-static struct lcore_stats stats[RTE_MAX_LCORE] __rte_cache_aligned;
+static alignas(RTE_CACHE_LINE_SIZE) struct lcore_conf lcore_conf[RTE_MAX_LCORE];
+static alignas(RTE_CACHE_LINE_SIZE) struct lcore_stats stats[RTE_MAX_LCORE];
 static struct rte_timer power_timers[RTE_MAX_LCORE];
 
 static inline uint32_t power_idle_heuristic(uint32_t zero_rx_packet_count);
@@ -439,8 +444,7 @@ power_timer_cb(__rte_unused struct rte_timer *tim,
 	 * check whether need to scale down frequency a step if it sleep a lot.
 	 */
 	if (sleep_time_ratio >= SCALING_DOWN_TIME_RATIO_THRESHOLD) {
-		if (rte_power_freq_down)
-			rte_power_freq_down(lcore_id);
+		rte_power_freq_down(lcore_id);
 	}
 	else if ( (unsigned)(stats[lcore_id].nb_rx_processed /
 		stats[lcore_id].nb_iteration_looped) < MAX_PKT_BURST) {
@@ -448,8 +452,7 @@ power_timer_cb(__rte_unused struct rte_timer *tim,
 		 * scale down a step if average packet per iteration less
 		 * than expectation.
 		 */
-		if (rte_power_freq_down)
-			rte_power_freq_down(lcore_id);
+		rte_power_freq_down(lcore_id);
 	}
 
 	/**
@@ -831,9 +834,9 @@ sleep_until_rx_interrupt(int num, int lcore)
 	 * back to sleep again without log spamming. Avoid cache line sharing
 	 * to prevent threads stepping on each others' toes.
 	 */
-	static struct {
+	static alignas(RTE_CACHE_LINE_SIZE) struct {
 		bool wakeup;
-	} __rte_cache_aligned status[RTE_MAX_LCORE];
+	} status[RTE_MAX_LCORE];
 	struct rte_epoll_event event[num];
 	int n, i;
 	uint16_t port_id;
@@ -1343,11 +1346,9 @@ start_rx:
 			}
 
 			if (lcore_scaleup_hint == FREQ_HIGHEST) {
-				if (rte_power_freq_max)
-					rte_power_freq_max(lcore_id);
+				rte_power_freq_max(lcore_id);
 			} else if (lcore_scaleup_hint == FREQ_HIGHER) {
-				if (rte_power_freq_up)
-					rte_power_freq_up(lcore_id);
+				rte_power_freq_up(lcore_id);
 			}
 		} else {
 			/**
@@ -1500,6 +1501,8 @@ print_usage(const char *prgname)
 		"  -U: set min/max frequency for uncore to maximum value\n"
 		"  -i (frequency index): set min/max frequency for uncore to specified frequency index\n"
 		"  --config (port,queue,lcore): rx queues configuration\n"
+		"  --cpu-resume-latency LATENCY: set CPU resume latency to control C-state selection,"
+		" 0 : just allow to enter C0-state\n"
 		"  --high-perf-cores CORELIST: list of high performance cores\n"
 		"  --perf-config: similar as config, cores specified as indices"
 		" for bins containing high or regular performance cores\n"
@@ -1738,6 +1741,7 @@ parse_pmd_mgmt_config(const char *name)
 #define CMD_LINE_OPT_PAUSE_DURATION "pause-duration"
 #define CMD_LINE_OPT_SCALE_FREQ_MIN "scale-freq-min"
 #define CMD_LINE_OPT_SCALE_FREQ_MAX "scale-freq-max"
+#define CMD_LINE_OPT_CPU_RESUME_LATENCY "cpu-resume-latency"
 
 /* Parse the argument given in the command line of the application */
 static int
@@ -1752,6 +1756,7 @@ parse_args(int argc, char **argv)
 		{"perf-config", 1, 0, 0},
 		{"high-perf-cores", 1, 0, 0},
 		{"no-numa", 0, 0, 0},
+		{CMD_LINE_OPT_CPU_RESUME_LATENCY, 1, 0, 0},
 		{CMD_LINE_OPT_MAX_PKT_LEN, 1, 0, 0},
 		{CMD_LINE_OPT_PARSE_PTYPE, 0, 0, 0},
 		{CMD_LINE_OPT_LEGACY, 0, 0, 0},
@@ -1935,6 +1940,15 @@ parse_args(int argc, char **argv)
 				if (parse_uint(optarg, UINT32_MAX, &scale_freq_max) != 0)
 					return -1;
 				printf("Scaling frequency maximum configured\n");
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_CPU_RESUME_LATENCY,
+					sizeof(CMD_LINE_OPT_CPU_RESUME_LATENCY))) {
+				if (parse_uint(optarg, INT_MAX,
+						(uint32_t *)&cpu_resume_latency) != 0)
+					return -1;
+				printf("PM QoS configured\n");
 			}
 
 			break;
@@ -2244,7 +2258,7 @@ init_power_library(void)
 		/* init power management library */
 		ret = rte_power_init(lcore_id);
 		if (ret) {
-			RTE_LOG(ERR, POWER,
+			RTE_LOG(ERR, L3FWD_POWER,
 				"Library initialization failed on core %u\n",
 				lcore_id);
 			return ret;
@@ -2255,11 +2269,40 @@ init_power_library(void)
 				env != PM_ENV_PSTATE_CPUFREQ &&
 				env != PM_ENV_AMD_PSTATE_CPUFREQ &&
 				env != PM_ENV_CPPC_CPUFREQ) {
-			RTE_LOG(ERR, POWER,
-				"Only ACPI, PSTATE and CPPC mode are supported\n");
+			RTE_LOG(ERR, L3FWD_POWER,
+				"Only ACPI and PSTATE mode are supported\n");
 			return -1;
 		}
 	}
+
+	if (cpu_resume_latency != -1) {
+		RTE_LCORE_FOREACH(lcore_id) {
+			/* Back old CPU resume latency. */
+			ret = rte_power_qos_get_cpu_resume_latency(lcore_id);
+			if (ret < 0) {
+				RTE_LOG(ERR, L3FWD_POWER,
+					"Failed to get cpu resume latency on lcore-%u, ret=%d.\n",
+					lcore_id, ret);
+			}
+			resume_latency_bk[lcore_id] = ret;
+
+			/*
+			 * Set the cpu resume latency of the worker lcore based
+			 * on user's request. If set strict latency (0), just
+			 * allow the CPU to enter the shallowest idle state to
+			 * improve performance.
+			 */
+			ret = rte_power_qos_set_cpu_resume_latency(lcore_id,
+							cpu_resume_latency);
+			if (ret != 0) {
+				RTE_LOG(ERR, L3FWD_POWER,
+					"Failed to set cpu resume latency on lcore-%u, ret=%d.\n",
+					lcore_id, ret);
+				return ret;
+			}
+		}
+	}
+
 	return ret;
 }
 
@@ -2273,7 +2316,7 @@ deinit_power_library(void)
 		/* deinit power management library */
 		ret = rte_power_exit(lcore_id);
 		if (ret) {
-			RTE_LOG(ERR, POWER,
+			RTE_LOG(ERR, L3FWD_POWER,
 				"Library deinitialization failed on core %u\n",
 				lcore_id);
 			return ret;
@@ -2299,6 +2342,15 @@ deinit_power_library(void)
 			}
 		}
 	}
+
+	if (cpu_resume_latency != -1) {
+		RTE_LCORE_FOREACH(lcore_id) {
+			/* Restore the original value. */
+			rte_power_qos_set_cpu_resume_latency(lcore_id,
+						resume_latency_bk[lcore_id]);
+		}
+	}
+
 	return ret;
 }
 
@@ -2342,7 +2394,7 @@ update_telemetry(__rte_unused struct rte_timer *tim,
 	ret = rte_metrics_update_values(RTE_METRICS_GLOBAL, telstats_index,
 					values, RTE_DIM(values));
 	if (ret < 0)
-		RTE_LOG(WARNING, POWER, "failed to update metrics\n");
+		RTE_LOG(WARNING, L3FWD_POWER, "failed to update metrics\n");
 }
 
 static int
@@ -2391,7 +2443,7 @@ launch_timer(unsigned int lcore_id)
 				rte_get_main_lcore());
 	}
 
-	RTE_LOG(INFO, POWER, "Bring up the Timer\n");
+	RTE_LOG(INFO, L3FWD_POWER, "Bring up the Timer\n");
 
 	telemetry_setup_timer();
 
@@ -2407,7 +2459,7 @@ launch_timer(unsigned int lcore_id)
 		}
 	}
 
-	RTE_LOG(INFO, POWER, "Timer_subsystem is done\n");
+	RTE_LOG(INFO, L3FWD_POWER, "Timer_subsystem is done\n");
 
 	return 0;
 }
@@ -2858,7 +2910,7 @@ main(int argc, char **argv)
 			rte_spinlock_init(&stats[lcore_id].telemetry_lock);
 		}
 		rte_timer_init(&telemetry_timer);
-		rte_telemetry_register_cmd("/l3fwd-power/stats",
+		rte_telemetry_register_cmd("/l3fwd_power/stats",
 				handle_app_stats,
 				"Returns global power stats. Parameters: None");
 		rte_eal_mp_remote_launch(main_telemetry_loop, NULL,

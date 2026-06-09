@@ -10,9 +10,11 @@
 
 #include "cli.h"
 #include "conn.h"
+#include "commands.h"
 #include "ethdev.h"
 #include "ethdev_rx.h"
 #include "graph.h"
+#include "l2fwd.h"
 #include "l3fwd.h"
 #include "mempool.h"
 #include "neigh.h"

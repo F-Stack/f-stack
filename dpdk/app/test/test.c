@@ -11,13 +11,11 @@
 #include <ctype.h>
 #include <sys/queue.h>
 
-#ifdef RTE_LIB_CMDLINE
 #include <cmdline_rdline.h>
 #include <cmdline_parse.h>
 #include <cmdline_socket.h>
 #include <cmdline.h>
 extern cmdline_parse_ctx_t main_ctx[];
-#endif
 
 #include <rte_memory.h>
 #include <rte_eal.h>
@@ -82,6 +80,8 @@ do_recursive_call(void)
 			{ "test_memory_flags", no_action },
 			{ "test_file_prefix", no_action },
 			{ "test_no_huge_flag", no_action },
+			{ "test_panic", test_panic },
+			{ "test_exit", test_exit },
 #ifdef RTE_LIB_TIMER
 #ifndef RTE_EXEC_ENV_WINDOWS
 			{ "timer_secondary_spawn_wait", test_timer_secondary },
@@ -106,12 +106,10 @@ int last_test_result;
 int
 main(int argc, char **argv)
 {
-#ifdef RTE_LIB_CMDLINE
 	struct cmdline *cl;
 	char *tests[argc]; /* store an array of tests to run */
 	int test_count = 0;
 	int i;
-#endif
 	char *extra_args;
 	int ret;
 
@@ -183,7 +181,6 @@ main(int argc, char **argv)
 				"HPET is not enabled, using TSC as default timer\n");
 
 
-#ifdef RTE_LIB_CMDLINE
 	char *dpdk_test = getenv("DPDK_TEST");
 
 	if (dpdk_test && strlen(dpdk_test) > 0)
@@ -240,7 +237,7 @@ main(int argc, char **argv)
 				ret = last_test_result;
 
 end_of_cmd:
-			if (ret != 0)
+			if (ret != 0 && ret != TEST_SKIPPED)
 				break;
 		}
 		if (n_skip_tests > 0)
@@ -259,7 +256,6 @@ end_of_cmd:
 		cmdline_interact(cl);
 		cmdline_stdin_exit(cl);
 	}
-#endif
 	ret = 0;
 
 out:

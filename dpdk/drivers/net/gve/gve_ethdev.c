@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(C) 2022 Intel Corporation
+ * Copyright(C) 2022-2023 Intel Corporation
+ * Copyright(C) 2023 Google LLC
  */
 
 #include "gve_ethdev.h"
@@ -8,6 +9,7 @@
 #include "base/gve_osdep.h"
 #include "gve_version.h"
 #include "rte_ether.h"
+#include "gve_rss.h"
 
 static void
 gve_write_version(uint8_t *driver_version_register)
@@ -53,27 +55,22 @@ free_bufs:
 	return -ENOMEM;
 }
 
-static int
-gve_alloc_queue_page_list(struct gve_priv *priv, uint32_t id, uint32_t pages,
-			  bool is_rx)
+static struct gve_queue_page_list *
+gve_alloc_queue_page_list(const char *name, uint32_t num_pages, bool is_rx)
 {
 	struct gve_queue_page_list *qpl;
-	int err = 0;
+	const struct rte_memzone *mz;
 	uint32_t i;
 
-	if (priv->num_registered_pages + pages >
-	    priv->max_registered_pages) {
-		PMD_DRV_LOG(ERR, "Pages %" PRIu64 " > max registered pages %" PRIu64,
-			    priv->num_registered_pages + pages,
-			    priv->max_registered_pages);
-		return -EINVAL;
-	}
-	qpl = &priv->qpl[id];
+	qpl = rte_zmalloc("qpl struct",	sizeof(struct gve_queue_page_list), 0);
+	if (!qpl)
+		return NULL;
 
-	qpl->page_buses = rte_zmalloc("qpl page buses", pages * sizeof(dma_addr_t), 0);
+	qpl->page_buses = rte_zmalloc("qpl page buses",
+		num_pages * sizeof(dma_addr_t), 0);
 	if (qpl->page_buses == NULL) {
-		PMD_DRV_LOG(ERR, "Failed to alloc qpl %u page buses", id);
-		return -ENOMEM;
+		PMD_DRV_LOG(ERR, "Failed to alloc qpl page buses");
+		goto free_qpl_struct;
 	}
 
 	if (is_rx) {
@@ -81,96 +78,131 @@ gve_alloc_queue_page_list(struct gve_priv *priv, uint32_t id, uint32_t pages,
 		 * Allocate 4K size buffers using malloc
 		 */
 		qpl->qpl_bufs = rte_zmalloc("qpl bufs",
-			pages * sizeof(void *), 0);
+			num_pages * sizeof(void *), 0);
 		if (qpl->qpl_bufs == NULL) {
 			PMD_DRV_LOG(ERR, "Failed to alloc qpl bufs");
-			err = -ENOMEM;
 			goto free_qpl_page_buses;
 		}
 
-		err = gve_alloc_using_malloc(qpl->qpl_bufs, pages);
-		if (err)
+		if (gve_alloc_using_malloc(qpl->qpl_bufs, num_pages))
 			goto free_qpl_page_bufs;
 
 		/* Populate the IOVA addresses */
-		for (i = 0; i < pages; i++)
+		for (i = 0; i < num_pages; i++)
 			qpl->page_buses[i] =
 				rte_malloc_virt2iova(qpl->qpl_bufs[i]);
 	} else {
-		char z_name[RTE_MEMZONE_NAMESIZE];
-
-		snprintf(z_name, sizeof(z_name), "gve_%s_qpl%d", priv->pci_dev->device.name, id);
-
 		/* TX QPL needs to be IOVA contiguous
 		 * Allocate QPL using memzone
 		 */
-		qpl->mz = gve_alloc_using_mz(z_name, pages);
-		if (!qpl->mz) {
-			err = -ENOMEM;
+		mz = gve_alloc_using_mz(name, num_pages);
+		if (!mz)
 			goto free_qpl_page_buses;
-		}
+
+		qpl->mz = mz;
 
 		/* Populate the IOVA addresses */
-		for (i = 0; i < pages; i++)
-			qpl->page_buses[i] = qpl->mz->iova + i * PAGE_SIZE;
+		for (i = 0; i < num_pages; i++)
+			qpl->page_buses[i] = mz->iova + i * PAGE_SIZE;
 	}
 
-	qpl->id = id;
-	qpl->num_entries = pages;
-
-	priv->num_registered_pages += pages;
-
-	return 0;
+	qpl->num_entries = num_pages;
+	return qpl;
 
 free_qpl_page_bufs:
 	rte_free(qpl->qpl_bufs);
 free_qpl_page_buses:
 	rte_free(qpl->page_buses);
-	return err;
-}
-
-/*
- * Free QPL bufs in RX QPLs. Should not be used on TX QPLs.
- **/
-static void
-gve_free_qpl_bufs(struct gve_queue_page_list *qpl)
-{
-	uint32_t i;
-
-	for (i = 0; i < qpl->num_entries; i++)
-		rte_free(qpl->qpl_bufs[i]);
-
-	rte_free(qpl->qpl_bufs);
-	qpl->qpl_bufs = NULL;
+free_qpl_struct:
+	rte_free(qpl);
+	return NULL;
 }
 
 static void
-gve_free_qpls(struct gve_priv *priv)
+gve_free_queue_page_list(struct gve_queue_page_list *qpl)
 {
-	uint16_t nb_txqs = priv->max_nb_txq;
-	uint16_t nb_rxqs = priv->max_nb_rxq;
-	uint32_t i;
+	if (qpl->mz) {
+		rte_memzone_free(qpl->mz);
+		qpl->mz = NULL;
+	} else if (qpl->qpl_bufs) {
+		uint32_t i;
 
-	if (priv->queue_format != GVE_GQI_QPL_FORMAT)
-		return;
-
-	/* Free TX QPLs. */
-	for (i = 0; i < nb_txqs; i++) {
-		if (priv->qpl[i].mz) {
-			rte_memzone_free(priv->qpl[i].mz);
-			priv->qpl[i].mz = NULL;
-		}
-		rte_free(priv->qpl[i].page_buses);
+		for (i = 0; i < qpl->num_entries; i++)
+			rte_free(qpl->qpl_bufs[i]);
 	}
 
-	/* Free RX QPLs. */
-	for (; i < nb_rxqs; i++) {
-		if (priv->qpl[i].qpl_bufs)
-			gve_free_qpl_bufs(&priv->qpl[i]);
-		rte_free(priv->qpl[i].page_buses);
+	if (qpl->qpl_bufs) {
+		rte_free(qpl->qpl_bufs);
+		qpl->qpl_bufs = NULL;
 	}
 
-	rte_free(priv->qpl);
+	if (qpl->page_buses) {
+		rte_free(qpl->page_buses);
+		qpl->page_buses = NULL;
+	}
+	rte_free(qpl);
+}
+
+struct gve_queue_page_list *
+gve_setup_queue_page_list(struct gve_priv *priv, uint16_t queue_id, bool is_rx,
+	uint32_t num_pages)
+{
+	const char *queue_type_string = is_rx ? "rx" : "tx";
+	char qpl_name[RTE_MEMZONE_NAMESIZE];
+	struct gve_queue_page_list *qpl;
+	int err;
+
+	/* Allocate a new QPL. */
+	snprintf(qpl_name, sizeof(qpl_name), "gve_%s_%s_qpl%d",
+		priv->pci_dev->device.name, queue_type_string, queue_id);
+	qpl = gve_alloc_queue_page_list(qpl_name, num_pages, is_rx);
+	if (!qpl) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to alloc %s qpl for queue %hu.",
+			    queue_type_string, queue_id);
+		return NULL;
+	}
+
+	/* Assign the QPL an ID. */
+	qpl->id = queue_id;
+	if (is_rx)
+		qpl->id += priv->max_nb_txq;
+
+	/* Validate page registration limit and register QPLs. */
+	if (priv->num_registered_pages + qpl->num_entries >
+	    priv->max_registered_pages) {
+		PMD_DRV_LOG(ERR, "Pages %" PRIu64 " > max registered pages %" PRIu64,
+			    priv->num_registered_pages + qpl->num_entries,
+			    priv->max_registered_pages);
+		goto cleanup_qpl;
+	}
+	err = gve_adminq_register_page_list(priv, qpl);
+	if (err) {
+		PMD_DRV_LOG(ERR,
+			    "Failed to register %s qpl for queue %hu.",
+			    queue_type_string, queue_id);
+		goto cleanup_qpl;
+	}
+	priv->num_registered_pages += qpl->num_entries;
+	return qpl;
+
+cleanup_qpl:
+	gve_free_queue_page_list(qpl);
+	return NULL;
+}
+
+int
+gve_teardown_queue_page_list(struct gve_priv *priv,
+	struct gve_queue_page_list *qpl)
+{
+	int err = gve_adminq_unregister_page_list(priv, qpl->id);
+	if (err) {
+		PMD_DRV_LOG(CRIT, "Unable to unregister qpl %d!", qpl->id);
+		return err;
+	}
+	priv->num_registered_pages -= qpl->num_entries;
+	gve_free_queue_page_list(qpl);
+	return 0;
 }
 
 static int
@@ -178,11 +210,30 @@ gve_dev_configure(struct rte_eth_dev *dev)
 {
 	struct gve_priv *priv = dev->data->dev_private;
 
-	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
+	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG) {
 		dev->data->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
+		priv->rss_config.alg = GVE_RSS_HASH_TOEPLITZ;
+	}
 
 	if (dev->data->dev_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_TCP_LRO)
 		priv->enable_rsc = 1;
+
+	/* Reset RSS RETA in case number of queues changed. */
+	if (priv->rss_config.indir) {
+		struct gve_rss_config update_reta_config;
+		gve_init_rss_config_from_priv(priv, &update_reta_config);
+		gve_generate_rss_reta(dev, &update_reta_config);
+
+		int err = gve_adminq_configure_rss(priv, &update_reta_config);
+		if (err)
+			PMD_DRV_LOG(ERR,
+				"Could not reconfigure RSS redirection table.");
+		else
+			gve_update_priv_rss_config(priv, &update_reta_config);
+
+		gve_free_rss_config(&update_reta_config);
+		return err;
+	}
 
 	return 0;
 }
@@ -213,6 +264,79 @@ gve_link_update(struct rte_eth_dev *dev, __rte_unused int wait_to_complete)
 	}
 
 	return rte_eth_linkstatus_set(dev, &link);
+}
+
+static int
+gve_alloc_stats_report(struct gve_priv *priv,
+		uint16_t nb_tx_queues, uint16_t nb_rx_queues)
+{
+	char z_name[RTE_MEMZONE_NAMESIZE];
+	int tx_stats_cnt;
+	int rx_stats_cnt;
+
+	tx_stats_cnt = (GVE_TX_STATS_REPORT_NUM + NIC_TX_STATS_REPORT_NUM) *
+		nb_tx_queues;
+	rx_stats_cnt = (GVE_RX_STATS_REPORT_NUM + NIC_RX_STATS_REPORT_NUM) *
+		nb_rx_queues;
+	priv->stats_report_len = sizeof(struct gve_stats_report) +
+		sizeof(struct stats) * (tx_stats_cnt + rx_stats_cnt);
+
+	snprintf(z_name, sizeof(z_name), "gve_stats_report_%s",
+			priv->pci_dev->device.name);
+	priv->stats_report_mem = rte_memzone_reserve_aligned(z_name,
+			priv->stats_report_len,
+			rte_socket_id(),
+			RTE_MEMZONE_IOVA_CONTIG, PAGE_SIZE);
+
+	if (!priv->stats_report_mem)
+		return -ENOMEM;
+
+	/* offset by skipping stats written by gve. */
+	priv->stats_start_idx = (GVE_TX_STATS_REPORT_NUM * nb_tx_queues) +
+		(GVE_RX_STATS_REPORT_NUM * nb_rx_queues);
+	priv->stats_end_idx = priv->stats_start_idx +
+		(NIC_TX_STATS_REPORT_NUM * nb_tx_queues) +
+		(NIC_RX_STATS_REPORT_NUM * nb_rx_queues) - 1;
+
+	return 0;
+}
+
+static void
+gve_free_stats_report(struct rte_eth_dev *dev)
+{
+	struct gve_priv *priv = dev->data->dev_private;
+	rte_memzone_free(priv->stats_report_mem);
+	priv->stats_report_mem = NULL;
+}
+
+/* Read Rx NIC stats from shared region */
+static void
+gve_get_imissed_from_nic(struct rte_eth_dev *dev)
+{
+	struct gve_stats_report *stats_report;
+	struct gve_rx_queue *rxq;
+	struct gve_priv *priv;
+	struct stats stat;
+	int queue_id;
+	int stat_id;
+	int i;
+
+	priv = dev->data->dev_private;
+	if (!priv->stats_report_mem)
+		return;
+	stats_report = (struct gve_stats_report *)
+		priv->stats_report_mem->addr;
+	for (i = priv->stats_start_idx; i <= priv->stats_end_idx; i++) {
+		stat = stats_report->stats[i];
+		queue_id = cpu_to_be32(stat.queue_id);
+		rxq = dev->data->rx_queues[queue_id];
+		if (rxq == NULL)
+			continue;
+		stat_id = cpu_to_be32(stat.stat_name);
+		/* Update imissed. */
+		if (stat_id == RX_NO_BUFFERS_POSTED)
+			rxq->stats.imissed = cpu_to_be64(stat.value);
+	}
 }
 
 static int
@@ -259,6 +383,8 @@ gve_start_queues(struct rte_eth_dev *dev)
 		}
 	}
 
+	gve_set_device_rings_ok(priv);
+
 	return 0;
 
 err_rx:
@@ -271,12 +397,15 @@ err_tx:
 		gve_stop_tx_queues(dev);
 	else
 		gve_stop_tx_queues_dqo(dev);
+
+	gve_clear_device_rings_ok(priv);
 	return ret;
 }
 
 static int
 gve_dev_start(struct rte_eth_dev *dev)
 {
+	struct gve_priv *priv;
 	int ret;
 
 	ret = gve_start_queues(dev);
@@ -288,6 +417,26 @@ gve_dev_start(struct rte_eth_dev *dev)
 	dev->data->dev_started = 1;
 	gve_link_update(dev, 0);
 
+	priv = dev->data->dev_private;
+	/* No stats available yet for Dqo. */
+	if (gve_is_gqi(priv)) {
+		ret = gve_alloc_stats_report(priv,
+				dev->data->nb_tx_queues,
+				dev->data->nb_rx_queues);
+		if (ret != 0) {
+			PMD_DRV_LOG(ERR,
+				"Failed to allocate region for stats reporting.");
+			return ret;
+		}
+		ret = gve_adminq_report_stats(priv, priv->stats_report_len,
+				priv->stats_report_mem->iova,
+				GVE_STATS_REPORT_TIMER_PERIOD);
+		if (ret != 0) {
+			PMD_DRV_LOG(ERR, "gve_adminq_report_stats command failed.");
+			return ret;
+		}
+	}
+
 	return 0;
 }
 
@@ -295,8 +444,11 @@ static int
 gve_dev_stop(struct rte_eth_dev *dev)
 {
 	struct gve_priv *priv = dev->data->dev_private;
+
+	dev->data->dev_started = 0;
 	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
 
+	gve_clear_device_rings_ok(priv);
 	if (gve_is_gqi(priv)) {
 		gve_stop_tx_queues(dev);
 		gve_stop_rx_queues(dev);
@@ -305,23 +457,17 @@ gve_dev_stop(struct rte_eth_dev *dev)
 		gve_stop_rx_queues_dqo(dev);
 	}
 
-	dev->data->dev_started = 0;
+	if (gve_is_gqi(dev->data->dev_private))
+		gve_free_stats_report(dev);
 
 	return 0;
 }
 
-static int
-gve_dev_close(struct rte_eth_dev *dev)
+static void
+gve_free_queues(struct rte_eth_dev *dev)
 {
 	struct gve_priv *priv = dev->data->dev_private;
-	int err = 0;
 	uint16_t i;
-
-	if (dev->data->dev_started) {
-		err = gve_dev_stop(dev);
-		if (err != 0)
-			PMD_DRV_LOG(ERR, "Failed to stop dev.");
-	}
 
 	if (gve_is_gqi(priv)) {
 		for (i = 0; i < dev->data->nb_tx_queues; i++)
@@ -336,9 +482,67 @@ gve_dev_close(struct rte_eth_dev *dev)
 		for (i = 0; i < dev->data->nb_rx_queues; i++)
 			gve_rx_queue_release_dqo(dev, i);
 	}
+}
 
-	gve_free_qpls(priv);
-	rte_free(priv->adminq);
+static void
+gve_free_counter_array(struct gve_priv *priv)
+{
+	rte_memzone_free(priv->cnt_array_mz);
+	priv->cnt_array = NULL;
+}
+
+static void
+gve_free_irq_db(struct gve_priv *priv)
+{
+	rte_memzone_free(priv->irq_dbs_mz);
+	priv->irq_dbs = NULL;
+}
+
+static void
+gve_free_ptype_lut_dqo(struct gve_priv *priv)
+{
+	if (!gve_is_gqi(priv)) {
+		rte_free(priv->ptype_lut_dqo);
+		priv->ptype_lut_dqo = NULL;
+	}
+}
+
+static void
+gve_teardown_device_resources(struct gve_priv *priv)
+{
+	int err;
+
+	/* Tell device its resources are being freed */
+	if (gve_get_device_resources_ok(priv)) {
+		err = gve_adminq_deconfigure_device_resources(priv);
+		if (err)
+			PMD_DRV_LOG(ERR, "Could not deconfigure device resources: err=%d", err);
+	}
+
+	gve_free_ptype_lut_dqo(priv);
+	gve_free_counter_array(priv);
+	gve_free_irq_db(priv);
+	gve_clear_device_resources_ok(priv);
+}
+
+static int
+gve_dev_close(struct rte_eth_dev *dev)
+{
+	struct gve_priv *priv = dev->data->dev_private;
+	int err = 0;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	if (dev->data->dev_started) {
+		err = gve_dev_stop(dev);
+		if (err != 0)
+			PMD_DRV_LOG(ERR, "Failed to stop dev.");
+	}
+
+	gve_free_queues(dev);
+	gve_teardown_device_resources(priv);
+	gve_adminq_free(priv);
 
 	dev->data->mac_addrs = NULL;
 
@@ -415,7 +619,7 @@ gve_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 	dev_info->max_mtu = priv->max_mtu;
 	dev_info->min_mtu = RTE_ETHER_MIN_MTU;
 
-	dev_info->rx_offload_capa = 0;
+	dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_RSS_HASH;
 	dev_info->tx_offload_capa =
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS	|
 		RTE_ETH_TX_OFFLOAD_UDP_CKSUM	|
@@ -423,8 +627,14 @@ gve_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		RTE_ETH_TX_OFFLOAD_SCTP_CKSUM	|
 		RTE_ETH_TX_OFFLOAD_TCP_TSO;
 
-	if (priv->queue_format == GVE_DQO_RDA_FORMAT)
-		dev_info->rx_offload_capa |= RTE_ETH_RX_OFFLOAD_TCP_LRO;
+	if (!gve_is_gqi(priv)) {
+		dev_info->tx_offload_capa |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
+		dev_info->rx_offload_capa |=
+				RTE_ETH_RX_OFFLOAD_IPV4_CKSUM   |
+				RTE_ETH_RX_OFFLOAD_UDP_CKSUM	|
+				RTE_ETH_RX_OFFLOAD_TCP_CKSUM	|
+				RTE_ETH_RX_OFFLOAD_TCP_LRO;
+	}
 
 	dev_info->default_rxconf = (struct rte_eth_rxconf) {
 		.rx_free_thresh = GVE_DEFAULT_RX_FREE_THRESH,
@@ -438,19 +648,24 @@ gve_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.offloads = 0,
 	};
 
-	dev_info->default_rxportconf.ring_size = priv->rx_desc_cnt;
+	dev_info->default_rxportconf.ring_size = priv->default_rx_desc_cnt;
 	dev_info->rx_desc_lim = (struct rte_eth_desc_lim) {
-		.nb_max = gve_is_gqi(priv) ? priv->rx_desc_cnt : GVE_MAX_QUEUE_SIZE_DQO,
-		.nb_min = priv->rx_desc_cnt,
+		.nb_max = priv->max_rx_desc_cnt,
+		.nb_min = priv->min_rx_desc_cnt,
 		.nb_align = 1,
 	};
 
-	dev_info->default_txportconf.ring_size = priv->tx_desc_cnt;
+	dev_info->default_txportconf.ring_size = priv->default_tx_desc_cnt;
 	dev_info->tx_desc_lim = (struct rte_eth_desc_lim) {
-		.nb_max = gve_is_gqi(priv) ? priv->tx_desc_cnt : GVE_MAX_QUEUE_SIZE_DQO,
-		.nb_min = priv->tx_desc_cnt,
+		.nb_max = priv->max_tx_desc_cnt,
+		.nb_min = priv->min_tx_desc_cnt,
 		.nb_align = 1,
+		.nb_mtu_seg_max = GVE_TX_MAX_DATA_DESCS - 1,
 	};
+
+	dev_info->flow_type_rss_offloads = GVE_RTE_RSS_OFFLOAD_ALL;
+	dev_info->hash_key_size = GVE_RSS_HASH_KEY_SIZE;
+	dev_info->reta_size = GVE_RSS_INDIR_SIZE;
 
 	return 0;
 }
@@ -459,6 +674,8 @@ static int
 gve_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	uint16_t i;
+	if (gve_is_gqi(dev->data->dev_private))
+		gve_get_imissed_from_nic(dev);
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		struct gve_tx_queue *txq = dev->data->tx_queues[i];
@@ -479,6 +696,7 @@ gve_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 		stats->ibytes += rxq->stats.bytes;
 		stats->ierrors += rxq->stats.errors;
 		stats->rx_nombuf += rxq->stats.no_mbufs;
+		stats->imissed += rxq->stats.imissed;
 	}
 
 	return 0;
@@ -550,6 +768,7 @@ static const struct gve_xstats_name_offset rx_xstats_name_offset[] = {
 	{ "errors",                 RX_QUEUE_STATS_OFFSET(errors) },
 	{ "mbuf_alloc_errors",      RX_QUEUE_STATS_OFFSET(no_mbufs) },
 	{ "mbuf_alloc_errors_bulk", RX_QUEUE_STATS_OFFSET(no_mbufs_bulk) },
+	{ "imissed",                RX_QUEUE_STATS_OFFSET(imissed) },
 };
 
 static int
@@ -577,6 +796,9 @@ gve_xstats_get(struct rte_eth_dev *dev,
 {
 	uint16_t i, j, count = gve_xstats_count(dev);
 	const char *stats;
+
+	if (gve_is_gqi(dev->data->dev_private))
+		gve_get_imissed_from_nic(dev);
 
 	if (xstats == NULL || size < count)
 		return count;
@@ -647,6 +869,198 @@ gve_xstats_get_names(struct rte_eth_dev *dev,
 	return count;
 }
 
+
+static int
+gve_rss_hash_update(struct rte_eth_dev *dev,
+			struct rte_eth_rss_conf *rss_conf)
+{
+	struct gve_priv *priv = dev->data->dev_private;
+	struct gve_rss_config gve_rss_conf;
+	int rss_reta_size;
+	int err;
+
+	if (gve_validate_rss_hf(rss_conf->rss_hf)) {
+		PMD_DRV_LOG(ERR, "Unsupported hash function.");
+		return -EINVAL;
+	}
+
+	if (rss_conf->algorithm != RTE_ETH_HASH_FUNCTION_TOEPLITZ &&
+		rss_conf->algorithm != RTE_ETH_HASH_FUNCTION_DEFAULT) {
+		PMD_DRV_LOG(ERR, "Device only supports Toeplitz algorithm.");
+		return -EINVAL;
+	}
+
+	if (rss_conf->rss_key_len) {
+		if (rss_conf->rss_key_len != GVE_RSS_HASH_KEY_SIZE) {
+			PMD_DRV_LOG(ERR,
+				"Invalid hash key size. Only RSS hash key size "
+				"of %u supported", GVE_RSS_HASH_KEY_SIZE);
+			return -EINVAL;
+		}
+
+		if (!rss_conf->rss_key) {
+			PMD_DRV_LOG(ERR, "RSS key must be non-null.");
+			return -EINVAL;
+		}
+	} else {
+		if (!priv->rss_config.key_size) {
+			PMD_DRV_LOG(ERR, "RSS key must be initialized before "
+				"any other configuration.");
+			return -EINVAL;
+		}
+		rss_conf->rss_key_len = priv->rss_config.key_size;
+	}
+
+	rss_reta_size = priv->rss_config.indir ?
+			priv->rss_config.indir_size :
+			GVE_RSS_INDIR_SIZE;
+	err = gve_init_rss_config(&gve_rss_conf, rss_conf->rss_key_len,
+		rss_reta_size);
+	if (err)
+		return err;
+
+	gve_rss_conf.alg = GVE_RSS_HASH_TOEPLITZ;
+	err = gve_update_rss_hash_types(priv, &gve_rss_conf, rss_conf);
+	if (err)
+		goto err;
+	err = gve_update_rss_key(priv, &gve_rss_conf, rss_conf);
+	if (err)
+		goto err;
+
+	/* Set redirection table to default or preexisting. */
+	if (!priv->rss_config.indir)
+		gve_generate_rss_reta(dev, &gve_rss_conf);
+	else
+		memcpy(gve_rss_conf.indir, priv->rss_config.indir,
+			gve_rss_conf.indir_size * sizeof(*priv->rss_config.indir));
+
+	err = gve_adminq_configure_rss(priv, &gve_rss_conf);
+	if (!err)
+		gve_update_priv_rss_config(priv, &gve_rss_conf);
+
+err:
+	gve_free_rss_config(&gve_rss_conf);
+	return err;
+}
+
+static int
+gve_rss_hash_conf_get(struct rte_eth_dev *dev,
+			struct rte_eth_rss_conf *rss_conf)
+{
+	struct gve_priv *priv = dev->data->dev_private;
+
+	if (!(dev->data->dev_conf.rxmode.offloads &
+			RTE_ETH_RX_OFFLOAD_RSS_HASH)) {
+		PMD_DRV_LOG(ERR, "RSS not configured.");
+		return -ENOTSUP;
+	}
+
+
+	gve_to_rte_rss_hf(priv->rss_config.hash_types, rss_conf);
+	rss_conf->rss_key_len = priv->rss_config.key_size;
+	if (rss_conf->rss_key) {
+		if (!priv->rss_config.key) {
+			PMD_DRV_LOG(ERR, "Unable to retrieve default RSS hash key.");
+			return -ENOTSUP;
+		}
+		memcpy(rss_conf->rss_key, priv->rss_config.key,
+			rss_conf->rss_key_len * sizeof(*rss_conf->rss_key));
+	}
+
+	return 0;
+}
+
+static int
+gve_rss_reta_update(struct rte_eth_dev *dev,
+	struct rte_eth_rss_reta_entry64 *reta_conf, uint16_t reta_size)
+{
+	struct gve_priv *priv = dev->data->dev_private;
+	struct gve_rss_config gve_rss_conf;
+	int table_id;
+	int err;
+	int i;
+
+	/* RSS key must be set before the redirection table can be set. */
+	if (!priv->rss_config.key || priv->rss_config.key_size == 0) {
+		PMD_DRV_LOG(ERR, "RSS hash key msut be set before the "
+			"redirection table can be updated.");
+		return -ENOTSUP;
+	}
+
+	if (reta_size != GVE_RSS_INDIR_SIZE) {
+		PMD_DRV_LOG(ERR, "Redirection table must have %hu elements",
+			(uint16_t)GVE_RSS_INDIR_SIZE);
+		return -EINVAL;
+	}
+
+	err = gve_init_rss_config_from_priv(priv, &gve_rss_conf);
+	if (err) {
+		PMD_DRV_LOG(ERR, "Error allocating new RSS config.");
+		return err;
+	}
+
+	table_id = 0;
+	for (i = 0; i < priv->rss_config.indir_size; i++) {
+		int table_entry = i % RTE_ETH_RETA_GROUP_SIZE;
+		if (reta_conf[table_id].mask & (1ULL << table_entry))
+			gve_rss_conf.indir[i] =
+				reta_conf[table_id].reta[table_entry];
+
+		if (table_entry == RTE_ETH_RETA_GROUP_SIZE - 1)
+			table_id++;
+	}
+
+	err = gve_adminq_configure_rss(priv, &gve_rss_conf);
+	if (err)
+		PMD_DRV_LOG(ERR, "Problem configuring RSS with device.");
+	else
+		gve_update_priv_rss_config(priv, &gve_rss_conf);
+
+	gve_free_rss_config(&gve_rss_conf);
+	return err;
+}
+
+static int
+gve_rss_reta_query(struct rte_eth_dev *dev,
+	struct rte_eth_rss_reta_entry64 *reta_conf, uint16_t reta_size)
+{
+	struct gve_priv *priv = dev->data->dev_private;
+	int table_id;
+	int i;
+
+	if (!(dev->data->dev_conf.rxmode.offloads &
+		RTE_ETH_RX_OFFLOAD_RSS_HASH)) {
+		PMD_DRV_LOG(ERR, "RSS not configured.");
+		return -ENOTSUP;
+	}
+
+	/* RSS key must be set before the redirection table can be queried. */
+	if (!priv->rss_config.key) {
+		PMD_DRV_LOG(ERR, "RSS hash key must be set before the "
+			"redirection table can be initialized.");
+		return -ENOTSUP;
+	}
+
+	if (reta_size != priv->rss_config.indir_size) {
+		PMD_DRV_LOG(ERR, "RSS redirection table must have %d entries.",
+			priv->rss_config.indir_size);
+		return -EINVAL;
+	}
+
+	table_id = 0;
+	for (i = 0; i < priv->rss_config.indir_size; i++) {
+		int table_entry = i % RTE_ETH_RETA_GROUP_SIZE;
+		if (reta_conf[table_id].mask & (1ULL << table_entry))
+			reta_conf[table_id].reta[table_entry] =
+				priv->rss_config.indir[i];
+
+		if (table_entry == RTE_ETH_RETA_GROUP_SIZE - 1)
+			table_id++;
+	}
+
+	return 0;
+}
+
 static const struct eth_dev_ops gve_eth_dev_ops = {
 	.dev_configure        = gve_dev_configure,
 	.dev_start            = gve_dev_start,
@@ -667,6 +1081,10 @@ static const struct eth_dev_ops gve_eth_dev_ops = {
 	.mtu_set              = gve_dev_mtu_set,
 	.xstats_get           = gve_xstats_get,
 	.xstats_get_names     = gve_xstats_get_names,
+	.rss_hash_update      = gve_rss_hash_update,
+	.rss_hash_conf_get    = gve_rss_hash_conf_get,
+	.reta_update          = gve_rss_reta_update,
+	.reta_query           = gve_rss_reta_query,
 };
 
 static const struct eth_dev_ops gve_eth_dev_ops_dqo = {
@@ -689,37 +1107,11 @@ static const struct eth_dev_ops gve_eth_dev_ops_dqo = {
 	.mtu_set              = gve_dev_mtu_set,
 	.xstats_get           = gve_xstats_get,
 	.xstats_get_names     = gve_xstats_get_names,
+	.rss_hash_update      = gve_rss_hash_update,
+	.rss_hash_conf_get    = gve_rss_hash_conf_get,
+	.reta_update          = gve_rss_reta_update,
+	.reta_query           = gve_rss_reta_query,
 };
-
-static void
-gve_free_counter_array(struct gve_priv *priv)
-{
-	rte_memzone_free(priv->cnt_array_mz);
-	priv->cnt_array = NULL;
-}
-
-static void
-gve_free_irq_db(struct gve_priv *priv)
-{
-	rte_memzone_free(priv->irq_dbs_mz);
-	priv->irq_dbs = NULL;
-}
-
-static void
-gve_teardown_device_resources(struct gve_priv *priv)
-{
-	int err;
-
-	/* Tell device its resources are being freed */
-	if (gve_get_device_resources_ok(priv)) {
-		err = gve_adminq_deconfigure_device_resources(priv);
-		if (err)
-			PMD_DRV_LOG(ERR, "Could not deconfigure device resources: err=%d", err);
-	}
-	gve_free_counter_array(priv);
-	gve_free_irq_db(priv);
-	gve_clear_device_resources_ok(priv);
-}
 
 static int
 pci_dev_msix_vec_count(struct rte_pci_device *pdev)
@@ -775,8 +1167,27 @@ gve_setup_device_resources(struct gve_priv *priv)
 		PMD_DRV_LOG(ERR, "Could not config device resources: err=%d", err);
 		goto free_irq_dbs;
 	}
-	return 0;
+	if (!gve_is_gqi(priv)) {
+		priv->ptype_lut_dqo = rte_zmalloc("gve_ptype_lut_dqo",
+			sizeof(struct gve_ptype_lut), 0);
+		if (priv->ptype_lut_dqo == NULL) {
+			PMD_DRV_LOG(ERR, "Failed to alloc ptype lut.");
+			err = -ENOMEM;
+			goto free_irq_dbs;
+		}
+		err = gve_adminq_get_ptype_map_dqo(priv, priv->ptype_lut_dqo);
+		if (unlikely(err)) {
+			PMD_DRV_LOG(ERR, "Failed to get ptype map: err=%d", err);
+			goto free_ptype_lut;
+		}
+	}
 
+	gve_set_device_resources_ok(priv);
+
+	return 0;
+free_ptype_lut:
+	rte_free(priv->ptype_lut_dqo);
+	priv->ptype_lut_dqo = NULL;
 free_irq_dbs:
 	gve_free_irq_db(priv);
 free_cnt_array:
@@ -785,12 +1196,19 @@ free_cnt_array:
 	return err;
 }
 
+static void
+gve_set_default_ring_size_bounds(struct gve_priv *priv)
+{
+	priv->max_tx_desc_cnt = GVE_DEFAULT_MAX_RING_SIZE;
+	priv->max_rx_desc_cnt = GVE_DEFAULT_MAX_RING_SIZE;
+	priv->min_tx_desc_cnt = GVE_DEFAULT_MIN_TX_RING_SIZE;
+	priv->min_rx_desc_cnt = GVE_DEFAULT_MIN_RX_RING_SIZE;
+}
+
 static int
 gve_init_priv(struct gve_priv *priv, bool skip_describe_device)
 {
-	uint16_t pages;
 	int num_ntfy;
-	uint32_t i;
 	int err;
 
 	/* Set up the adminq */
@@ -804,6 +1222,9 @@ gve_init_priv(struct gve_priv *priv, bool skip_describe_device)
 		PMD_DRV_LOG(ERR, "Could not verify driver compatibility: err=%d", err);
 		goto free_adminq;
 	}
+
+	/* Set default descriptor counts */
+	gve_set_default_ring_size_bounds(priv);
 
 	if (skip_describe_device)
 		goto setup_device;
@@ -846,55 +1267,13 @@ gve_init_priv(struct gve_priv *priv, bool skip_describe_device)
 	PMD_DRV_LOG(INFO, "Max TX queues %d, Max RX queues %d",
 		    priv->max_nb_txq, priv->max_nb_rxq);
 
-	/* In GQI_QPL queue format:
-	 * Allocate queue page lists according to max queue number
-	 * tx qpl id should start from 0 while rx qpl id should start
-	 * from priv->max_nb_txq
-	 */
-	if (priv->queue_format == GVE_GQI_QPL_FORMAT) {
-		priv->qpl = rte_zmalloc("gve_qpl",
-					(priv->max_nb_txq + priv->max_nb_rxq) *
-					sizeof(struct gve_queue_page_list), 0);
-		if (priv->qpl == NULL) {
-			PMD_DRV_LOG(ERR, "Failed to alloc qpl.");
-			err = -ENOMEM;
-			goto free_adminq;
-		}
-
-		for (i = 0; i < priv->max_nb_txq + priv->max_nb_rxq; i++) {
-			bool is_rx;
-
-			if (i < priv->max_nb_txq) {
-				pages = priv->tx_pages_per_qpl;
-				is_rx = false;
-			} else {
-				pages = priv->rx_data_slot_cnt;
-				is_rx = true;
-			}
-			err = gve_alloc_queue_page_list(priv, i, pages, is_rx);
-			if (err != 0) {
-				PMD_DRV_LOG(ERR, "Failed to alloc qpl %u.", i);
-				goto err_qpl;
-			}
-		}
-	}
-
 setup_device:
 	err = gve_setup_device_resources(priv);
 	if (!err)
 		return 0;
-err_qpl:
-	gve_free_qpls(priv);
 free_adminq:
 	gve_adminq_free(priv);
 	return err;
-}
-
-static void
-gve_teardown_priv_resources(struct gve_priv *priv)
-{
-	gve_teardown_device_resources(priv);
-	gve_adminq_free(priv);
 }
 
 static int
@@ -907,8 +1286,18 @@ gve_dev_init(struct rte_eth_dev *eth_dev)
 	rte_be32_t *db_bar;
 	int err;
 
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
+		if (gve_is_gqi(priv)) {
+			gve_set_rx_function(eth_dev);
+			gve_set_tx_function(eth_dev);
+			eth_dev->dev_ops = &gve_eth_dev_ops;
+		} else {
+			gve_set_rx_function_dqo(eth_dev);
+			gve_set_tx_function_dqo(eth_dev);
+			eth_dev->dev_ops = &gve_eth_dev_ops_dqo;
+		}
 		return 0;
+	}
 
 	pci_dev = RTE_DEV_TO_PCI(eth_dev->device);
 
@@ -957,18 +1346,6 @@ gve_dev_init(struct rte_eth_dev *eth_dev)
 }
 
 static int
-gve_dev_uninit(struct rte_eth_dev *eth_dev)
-{
-	struct gve_priv *priv = eth_dev->data->dev_private;
-
-	gve_teardown_priv_resources(priv);
-
-	eth_dev->data->mac_addrs = NULL;
-
-	return 0;
-}
-
-static int
 gve_pci_probe(__rte_unused struct rte_pci_driver *pci_drv,
 	      struct rte_pci_device *pci_dev)
 {
@@ -978,7 +1355,7 @@ gve_pci_probe(__rte_unused struct rte_pci_driver *pci_drv,
 static int
 gve_pci_remove(struct rte_pci_device *pci_dev)
 {
-	return rte_eth_dev_pci_generic_remove(pci_dev, gve_dev_uninit);
+	return rte_eth_dev_pci_generic_remove(pci_dev, gve_dev_close);
 }
 
 static const struct rte_pci_id pci_id_gve_map[] = {

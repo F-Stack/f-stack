@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2020-2021 NXP
+ * Copyright 2020-2024 NXP
  */
 
 #include <rte_ethdev.h>
@@ -268,7 +268,7 @@ dpaa2_shaper_profile_from_id(struct dpaa2_dev_priv *priv,
 
 static int
 dpaa2_shaper_profile_add(struct rte_eth_dev *dev, uint32_t shaper_profile_id,
-			 struct rte_tm_shaper_params *params,
+			 const struct rte_tm_shaper_params *params,
 			struct rte_tm_error *error)
 {
 	struct dpaa2_dev_priv *priv = dev->data->dev_private;
@@ -359,7 +359,7 @@ static int
 dpaa2_node_check_params(struct rte_eth_dev *dev, uint32_t node_id,
 		__rte_unused uint32_t priority, uint32_t weight,
 		       uint32_t level_id,
-		       struct rte_tm_node_params *params,
+		       const struct rte_tm_node_params *params,
 		       struct rte_tm_error *error)
 {
 	if (node_id == RTE_TM_NODE_ID_NULL)
@@ -431,7 +431,7 @@ dpaa2_node_check_params(struct rte_eth_dev *dev, uint32_t node_id,
 static int
 dpaa2_node_add(struct rte_eth_dev *dev, uint32_t node_id,
 	      uint32_t parent_node_id, uint32_t priority, uint32_t weight,
-	      uint32_t level_id, struct rte_tm_node_params *params,
+	      uint32_t level_id, const struct rte_tm_node_params *params,
 	      struct rte_tm_error *error)
 {
 	struct dpaa2_dev_priv *priv = dev->data->dev_private;
@@ -499,7 +499,7 @@ dpaa2_node_add(struct rte_eth_dev *dev, uint32_t node_id,
 			node->channel_id = priv->channel_inuse;
 			priv->channel_inuse++;
 		} else {
-			printf("error no channel id available\n");
+			DPAA2_PMD_ERR("error no channel id available");
 		}
 	}
 
@@ -572,41 +572,42 @@ dpaa2_tm_configure_queue(struct rte_eth_dev *dev, struct dpaa2_tm_node *node)
 	struct fsl_mc_io *dpni = (struct fsl_mc_io *)dev->process_private;
 	struct dpaa2_dev_priv *priv = dev->data->dev_private;
 	struct dpaa2_queue *dpaa2_q;
+	uint64_t iova;
 
 	memset(&tx_flow_cfg, 0, sizeof(struct dpni_queue));
-	dpaa2_q =  (struct dpaa2_queue *)dev->data->tx_queues[node->id];
+	dpaa2_q = (struct dpaa2_queue *)dev->data->tx_queues[node->id];
 	tc_id = node->parent->tc_id;
 	node->parent->tc_id++;
 	flow_id = 0;
 
-	if (dpaa2_q == NULL) {
-		printf("Queue is not configured for node = %d\n", node->id);
-		return -1;
+	if (!dpaa2_q) {
+		DPAA2_PMD_ERR("Queue is not configured for node = %d",
+			node->id);
+		return -ENOMEM;
 	}
 
 	DPAA2_PMD_DEBUG("tc_id = %d, channel = %d", tc_id,
 			node->parent->channel_id);
 	ret = dpni_set_queue(dpni, CMD_PRI_LOW, priv->token, DPNI_QUEUE_TX,
-			     ((node->parent->channel_id << 8) | tc_id),
-			     flow_id, options, &tx_flow_cfg);
+			((node->parent->channel_id << 8) | tc_id),
+			flow_id, options, &tx_flow_cfg);
 	if (ret) {
-		printf("Error in setting the tx flow: "
-		       "channel id  = %d tc_id= %d, param = 0x%x "
-		       "flow=%d err=%d\n", node->parent->channel_id, tc_id,
-		       ((node->parent->channel_id << 8) | tc_id), flow_id,
-		       ret);
-		return -1;
+		DPAA2_PMD_ERR("Set the TC[%d].ch[%d].TX flow[%d] (err=%d)",
+			tc_id, node->parent->channel_id, flow_id,
+			ret);
+		return ret;
 	}
 
 	dpaa2_q->flow_id = flow_id;
 	dpaa2_q->tc_index = tc_id;
 
 	ret = dpni_get_queue(dpni, CMD_PRI_LOW, priv->token,
-		DPNI_QUEUE_TX, ((node->parent->channel_id << 8) | dpaa2_q->tc_index),
-		dpaa2_q->flow_id, &tx_flow_cfg, &qid);
+			DPNI_QUEUE_TX,
+			((node->parent->channel_id << 8) | dpaa2_q->tc_index),
+			dpaa2_q->flow_id, &tx_flow_cfg, &qid);
 	if (ret) {
-		printf("Error in getting LFQID err=%d", ret);
-		return -1;
+		DPAA2_PMD_ERR("Error in getting LFQID err=%d", ret);
+		return ret;
 	}
 	dpaa2_q->fqid = qid.fqid;
 
@@ -621,8 +622,13 @@ dpaa2_tm_configure_queue(struct rte_eth_dev *dev, struct dpaa2_tm_node *node)
 		 */
 		cong_notif_cfg.threshold_exit = (dpaa2_q->nb_desc * 9) / 10;
 		cong_notif_cfg.message_ctx = 0;
-		cong_notif_cfg.message_iova =
-			(size_t)DPAA2_VADDR_TO_IOVA(dpaa2_q->cscn);
+		iova = DPAA2_VADDR_TO_IOVA_AND_CHECK(dpaa2_q->cscn,
+				sizeof(struct qbman_result));
+		if (iova == RTE_BAD_IOVA) {
+			DPAA2_PMD_ERR("No IOMMU map for cscn(%p)", dpaa2_q->cscn);
+			return -ENOBUFS;
+		}
+		cong_notif_cfg.message_iova = iova;
 		cong_notif_cfg.dest_cfg.dest_type = DPNI_DEST_NONE;
 		cong_notif_cfg.notification_mode =
 					DPNI_CONG_OPT_WRITE_MEM_ON_ENTER |
@@ -636,11 +642,12 @@ dpaa2_tm_configure_queue(struct rte_eth_dev *dev, struct dpaa2_tm_node *node)
 					((node->parent->channel_id << 8) | tc_id),
 					&cong_notif_cfg);
 		if (ret) {
-			printf("Error in setting tx congestion notification: "
+			DPAA2_PMD_ERR("Error in setting tx congestion notification: "
 				"err=%d", ret);
 			return -ret;
 		}
 	}
+	dpaa2_q->tm_sw_td = true;
 
 	return 0;
 }
@@ -726,12 +733,12 @@ dpaa2_hierarchy_commit(struct rte_eth_dev *dev, int clear_on_fail,
 			tx_cr_shaper.max_burst_size =
 				node->profile->params.committed.size;
 			tx_cr_shaper.rate_limit =
-				node->profile->params.committed.rate /
-				(1024 * 1024);
+				(node->profile->params.committed.rate /
+				(1024 * 1024)) * 8;
 			tx_er_shaper.max_burst_size =
 				node->profile->params.peak.size;
 			tx_er_shaper.rate_limit =
-				node->profile->params.peak.rate / (1024 * 1024);
+				(node->profile->params.peak.rate / (1024 * 1024)) * 8;
 			/* root node */
 			if (node->parent == NULL) {
 				DPAA2_PMD_DEBUG("LNI S.rate = %u, burst =%u",

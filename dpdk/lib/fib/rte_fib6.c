@@ -10,13 +10,16 @@
 #include <rte_eal_memconfig.h>
 #include <rte_tailq.h>
 #include <rte_errno.h>
+#include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_string_fns.h>
 
+#include <rte_ip6.h>
 #include <rte_rib6.h>
 #include <rte_fib6.h>
 
 #include "trie.h"
+#include "fib_log.h"
 
 TAILQ_HEAD(rte_fib6_list, rte_tailq_entry);
 static struct rte_tailq_elem rte_fib6_tailq = {
@@ -47,7 +50,7 @@ struct rte_fib6 {
 };
 
 static void
-dummy_lookup(void *fib_p, uint8_t ips[][RTE_FIB6_IPV6_ADDR_SIZE],
+dummy_lookup(void *fib_p, const struct rte_ipv6_addr *ips,
 	uint64_t *next_hops, const unsigned int n)
 {
 	unsigned int i;
@@ -55,7 +58,7 @@ dummy_lookup(void *fib_p, uint8_t ips[][RTE_FIB6_IPV6_ADDR_SIZE],
 	struct rte_rib6_node *node;
 
 	for (i = 0; i < n; i++) {
-		node = rte_rib6_lookup(fib->rib, ips[i]);
+		node = rte_rib6_lookup(fib->rib, &ips[i]);
 		if (node != NULL)
 			rte_rib6_get_nh(node, &next_hops[i]);
 		else
@@ -64,11 +67,11 @@ dummy_lookup(void *fib_p, uint8_t ips[][RTE_FIB6_IPV6_ADDR_SIZE],
 }
 
 static int
-dummy_modify(struct rte_fib6 *fib, const uint8_t ip[RTE_FIB6_IPV6_ADDR_SIZE],
+dummy_modify(struct rte_fib6 *fib, const struct rte_ipv6_addr *ip,
 	uint8_t depth, uint64_t next_hop, int op)
 {
 	struct rte_rib6_node *node;
-	if ((fib == NULL) || (depth > RTE_FIB6_MAXDEPTH))
+	if ((fib == NULL) || (depth > RTE_IPV6_MAX_DEPTH))
 		return -EINVAL;
 
 	node = rte_rib6_lookup_exact(fib->rib, ip, depth);
@@ -116,28 +119,28 @@ init_dataplane(struct rte_fib6 *fib, __rte_unused int socket_id,
 }
 
 int
-rte_fib6_add(struct rte_fib6 *fib, const uint8_t ip[RTE_FIB6_IPV6_ADDR_SIZE],
+rte_fib6_add(struct rte_fib6 *fib, const struct rte_ipv6_addr *ip,
 	uint8_t depth, uint64_t next_hop)
 {
 	if ((fib == NULL) || (ip == NULL) || (fib->modify == NULL) ||
-			(depth > RTE_FIB6_MAXDEPTH))
+			(depth > RTE_IPV6_MAX_DEPTH))
 		return -EINVAL;
 	return fib->modify(fib, ip, depth, next_hop, RTE_FIB6_ADD);
 }
 
 int
-rte_fib6_delete(struct rte_fib6 *fib, const uint8_t ip[RTE_FIB6_IPV6_ADDR_SIZE],
+rte_fib6_delete(struct rte_fib6 *fib, const struct rte_ipv6_addr *ip,
 	uint8_t depth)
 {
 	if ((fib == NULL) || (ip == NULL) || (fib->modify == NULL) ||
-			(depth > RTE_FIB6_MAXDEPTH))
+			(depth > RTE_IPV6_MAX_DEPTH))
 		return -EINVAL;
 	return fib->modify(fib, ip, depth, 0, RTE_FIB6_DEL);
 }
 
 int
 rte_fib6_lookup_bulk(struct rte_fib6 *fib,
-	uint8_t ips[][RTE_FIB6_IPV6_ADDR_SIZE],
+	const struct rte_ipv6_addr *ips,
 	uint64_t *next_hops, int n)
 {
 	FIB6_RETURN_IF_TRUE((fib == NULL) || (ips == NULL) ||
@@ -169,8 +172,8 @@ rte_fib6_create(const char *name, int socket_id, struct rte_fib6_conf *conf)
 
 	rib = rte_rib6_create(name, socket_id, &rib_conf);
 	if (rib == NULL) {
-		RTE_LOG(ERR, LPM,
-			"Can not allocate RIB %s\n", name);
+		FIB_LOG(ERR,
+			"Can not allocate RIB %s", name);
 		return NULL;
 	}
 
@@ -194,8 +197,8 @@ rte_fib6_create(const char *name, int socket_id, struct rte_fib6_conf *conf)
 	/* allocate tailq entry */
 	te = rte_zmalloc("FIB_TAILQ_ENTRY", sizeof(*te), 0);
 	if (te == NULL) {
-		RTE_LOG(ERR, LPM,
-			"Can not allocate tailq entry for FIB %s\n", name);
+		FIB_LOG(ERR,
+			"Can not allocate tailq entry for FIB %s", name);
 		rte_errno = ENOMEM;
 		goto exit;
 	}
@@ -204,7 +207,7 @@ rte_fib6_create(const char *name, int socket_id, struct rte_fib6_conf *conf)
 	fib = rte_zmalloc_socket(mem_name,
 		sizeof(struct rte_fib6), RTE_CACHE_LINE_SIZE, socket_id);
 	if (fib == NULL) {
-		RTE_LOG(ERR, LPM, "FIB %s memory allocation failed\n", name);
+		FIB_LOG(ERR, "FIB %s memory allocation failed", name);
 		rte_errno = ENOMEM;
 		goto free_te;
 	}
@@ -215,8 +218,8 @@ rte_fib6_create(const char *name, int socket_id, struct rte_fib6_conf *conf)
 	fib->def_nh = conf->default_nh;
 	ret = init_dataplane(fib, socket_id, conf);
 	if (ret < 0) {
-		RTE_LOG(ERR, LPM,
-			"FIB dataplane struct %s memory allocation failed\n",
+		FIB_LOG(ERR,
+			"FIB dataplane struct %s memory allocation failed",
 			name);
 		rte_errno = -ret;
 		goto free_fib;

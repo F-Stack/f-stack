@@ -164,8 +164,7 @@ void qede_fdir_dealloc_resc(struct rte_eth_dev *eth_dev)
 	struct qede_arfs_entry *tmp, *tmp2;
 
 	SLIST_FOREACH_SAFE(tmp, &qdev->arfs_info.arfs_list_head, list, tmp2) {
-		if (tmp->mz)
-			rte_memzone_free(tmp->mz);
+		rte_memzone_free(tmp->mz);
 		SLIST_REMOVE(&qdev->arfs_info.arfs_list_head, tmp, qede_arfs_entry, list);
 		rte_free(tmp);
 	}
@@ -799,9 +798,9 @@ qede_flow_parse_pattern(__rte_unused struct rte_eth_dev *dev,
 
 				spec = pattern->spec;
 				memcpy(flow->entry.tuple.src_ipv6,
-				       spec->hdr.src_addr, IPV6_ADDR_LEN);
+				       &spec->hdr.src_addr, IPV6_ADDR_LEN);
 				memcpy(flow->entry.tuple.dst_ipv6,
-				       spec->hdr.dst_addr, IPV6_ADDR_LEN);
+				       &spec->hdr.dst_addr, IPV6_ADDR_LEN);
 				flow->entry.tuple.eth_proto =
 					RTE_ETHER_TYPE_IPV6;
 			}

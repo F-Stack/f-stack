@@ -77,12 +77,12 @@ static_assert(MLX5_WQE_DSEG_SIZE == MLX5_WSEG_SIZE,
 static_assert(MLX5_WQE_SIZE == 4 * MLX5_WSEG_SIZE,
 		"invalid WQE size");
 
-uint32_t mlx5_ptype_table[] __rte_cache_aligned = {
+alignas(RTE_CACHE_LINE_SIZE) uint32_t mlx5_ptype_table[] = {
 	[0xff] = RTE_PTYPE_ALL_MASK, /* Last entry for errored packet. */
 };
 
-uint8_t mlx5_cksum_table[1 << 10] __rte_cache_aligned;
-uint8_t mlx5_swp_types_table[1 << 10] __rte_cache_aligned;
+alignas(RTE_CACHE_LINE_SIZE) uint8_t mlx5_cksum_table[1 << 10];
+alignas(RTE_CACHE_LINE_SIZE) uint8_t mlx5_swp_types_table[1 << 10];
 
 uint64_t rte_net_mlx5_dynf_inline_mask;
 
@@ -431,6 +431,30 @@ mlx5_dump_debug_information(const char *fname, const char *hex_title,
 		fprintf(fd, "%s", (const char *)buf);
 	fprintf(fd, "\n\n\n");
 	fclose(fd);
+}
+
+/**
+ * Dump information to a logfile
+ *
+ * @param fd
+ *   File descriptor to logfile. File descriptor open/close is managed by caller.
+ * @param title
+ *   If not NULL this string is printed as a header to the output
+ *   and the output will be in hexadecimal view.
+ * @param buf
+ *   This is the buffer address to print out.
+ * @param len
+ *   The number of bytes to dump out.
+ */
+void
+mlx5_dump_to_file(FILE *fd, const char *title,
+			    const void *buf, unsigned int len)
+{
+	if (title)
+		rte_hexdump(fd, title, buf, len);
+	else
+		fprintf(fd, "%s", (const char *)buf);
+	fprintf(fd, "\n\n\n");
 }
 
 /**

@@ -18,6 +18,7 @@
 #include <zip_regs.h>
 
 extern int octtx_zip_logtype_driver;
+#define RTE_LOGTYPE_OCTTX_ZIP_DRIVER octtx_zip_logtype_driver
 
 /* ZIP VF Control/Status registers (CSRs): */
 /* VF_BAR0: */
@@ -76,10 +77,8 @@ extern int octtx_zip_logtype_driver;
 /**< ZIP PMD device name */
 #define COMPRESSDEV_NAME_ZIP_PMD	compress_octeontx
 
-#define ZIP_PMD_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, \
-	octtx_zip_logtype_driver, "%s(): "fmt "\n", \
-	__func__, ##args)
+#define ZIP_PMD_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, OCTTX_ZIP_DRIVER, "%s(): ", __func__, __VA_ARGS__)
 
 #define ZIP_PMD_INFO(fmt, args...) \
 	ZIP_PMD_LOG(INFO, fmt, ## args)
@@ -106,21 +105,21 @@ typedef int (*comp_func_t)(struct rte_comp_op *op, struct zipvf_qp *qp,
 			   struct zip_stream *zstrm, int num);
 
 /* Scatter gather list */
-struct zipvf_sginfo {
+struct __rte_aligned(16) zipvf_sginfo {
 	union zip_zptr_addr_s  sg_addr;
 	union zip_zptr_ctl_s   sg_ctl;
-} __rte_aligned(16);
+};
 
 /**
  * ZIP private stream structure
  */
-struct zip_stream {
+struct __rte_cache_aligned zip_stream {
 	union zip_inst_s *inst[ZIP_BURST_SIZE];
 	/* zip instruction pointer */
 	comp_func_t func;
 	/* function to process comp operation */
 	void *bufs[MAX_BUFS_PER_STREAM * ZIP_BURST_SIZE];
-} __rte_cache_aligned;
+};
 
 
 /**
@@ -140,7 +139,7 @@ struct zipvf_cmdq {
 /**
  * ZIP device queue structure
  */
-struct zipvf_qp {
+struct __rte_cache_aligned zipvf_qp {
 	struct zipvf_cmdq cmdq;
 	/* Hardware instruction queue structure */
 	struct rte_ring *processed_pkts;
@@ -158,12 +157,12 @@ struct zipvf_qp {
 	/* SGL pointers */
 	uint64_t num_sgbuf;
 	uint64_t enqed;
-} __rte_cache_aligned;
+};
 
 /**
  * ZIP VF device structure.
  */
-struct zip_vf {
+struct __rte_cache_aligned zip_vf {
 	int vfid;
 	/* vf index */
 	struct rte_pci_device *pdev;
@@ -177,7 +176,7 @@ struct zip_vf {
 	struct rte_mempool *zip_mp;
 	struct rte_mempool *sg_mp;
 	/* pointer to pools */
-} __rte_cache_aligned;
+};
 
 
 static inline int

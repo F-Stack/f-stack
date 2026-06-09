@@ -9,7 +9,7 @@
 
 #define ICE_ALIGN_RING_DESC  32
 #define ICE_MIN_RING_DESC    64
-#define ICE_MAX_RING_DESC    4096
+#define ICE_MAX_RING_DESC    (8192 - 32)
 #define ICE_DMA_MEM_ALIGN    4096
 #define ICE_RING_BASE_ALIGN  128
 
@@ -44,6 +44,25 @@
 #define ICE_RXDID_COMMS_OVS	22
 
 #define ICE_TX_MIN_PKT_LEN 17
+
+#define ICE_TX_OFFLOAD_MASK (    \
+		RTE_MBUF_F_TX_OUTER_IPV6 |	 \
+		RTE_MBUF_F_TX_OUTER_IPV4 |	 \
+		RTE_MBUF_F_TX_OUTER_IP_CKSUM |  \
+		RTE_MBUF_F_TX_VLAN |        \
+		RTE_MBUF_F_TX_IPV6 |		 \
+		RTE_MBUF_F_TX_IPV4 |		 \
+		RTE_MBUF_F_TX_IP_CKSUM |        \
+		RTE_MBUF_F_TX_L4_MASK |         \
+		RTE_MBUF_F_TX_IEEE1588_TMST |	 \
+		RTE_MBUF_F_TX_TCP_SEG |         \
+		RTE_MBUF_F_TX_QINQ |        \
+		RTE_MBUF_F_TX_TUNNEL_MASK |	 \
+		RTE_MBUF_F_TX_UDP_SEG |	 \
+		RTE_MBUF_F_TX_OUTER_UDP_CKSUM)
+
+#define ICE_TX_OFFLOAD_NOTSUP_MASK \
+		(RTE_MBUF_F_TX_OFFLOAD_MASK ^ ICE_TX_OFFLOAD_MASK)
 
 extern uint64_t ice_timestamp_dynflag;
 extern int ice_timestamp_dynfield_offset;
@@ -164,6 +183,7 @@ struct ice_tx_queue {
 	struct ice_vsi *vsi; /* the VSI this queue belongs to */
 	uint16_t tx_next_dd;
 	uint16_t tx_next_rs;
+	uint64_t mbuf_errors;
 	bool tx_deferred_start; /* don't start this queue in dev start */
 	bool q_set; /* indicate if tx queue has been configured */
 	ice_tx_release_mbufs_t tx_rel_mbufs;
@@ -271,7 +291,8 @@ int ice_tx_burst_mode_get(struct rte_eth_dev *dev, uint16_t queue_id,
 int ice_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int ice_tx_descriptor_status(void *tx_queue, uint16_t offset);
 void ice_set_default_ptype_table(struct rte_eth_dev *dev);
-const uint32_t *ice_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+const uint32_t *ice_dev_supported_ptypes_get(struct rte_eth_dev *dev,
+					     size_t *no_of_elements);
 void ice_select_rxd_to_pkt_fields_handler(struct ice_rx_queue *rxq,
 					  uint32_t rxdid);
 

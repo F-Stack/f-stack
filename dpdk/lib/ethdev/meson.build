@@ -44,8 +44,21 @@ driver_sdk_headers += files(
         'ethdev_vdev.h',
 )
 
+if is_linux
+    driver_sdk_headers += files(
+            'ethdev_linux_ethtool.h',
+    )
+    sources += files(
+            'ethdev_linux_ethtool.c',
+    )
+endif
+
 deps += ['net', 'kvargs', 'meter', 'telemetry']
 
 if is_freebsd
     annotate_locks = false
+endif
+
+if get_option('buildtype').contains('debug')
+    cflags += ['-DRTE_FLOW_DEBUG']
 endif

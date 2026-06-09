@@ -17,6 +17,10 @@
 #include <rte_common.h>
 #include <rte_stdatomic.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #ifdef __DOXYGEN__
 
 /** @name Memory Barrier
@@ -1094,7 +1098,7 @@ static inline void rte_atomic64_clear(rte_atomic64_t *v)
 /**
  * 128-bit integer structure.
  */
-typedef struct {
+typedef struct __rte_aligned(16) {
 	union {
 		uint64_t val[2];
 #ifdef RTE_ARCH_64
@@ -1103,7 +1107,7 @@ typedef struct {
 #endif
 #endif
 	};
-} __rte_aligned(16) rte_int128_t;
+} rte_int128_t;
 
 #ifdef __DOXYGEN__
 
@@ -1155,5 +1159,9 @@ rte_atomic128_cmp_exchange(rte_int128_t *dst,
 			   int failure);
 
 #endif /* __DOXYGEN__ */
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* _RTE_ATOMIC_H_ */

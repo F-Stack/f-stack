@@ -370,6 +370,16 @@ nfp_enable_bars(struct nfp_pcie_user *nfp)
 	if (nfp_bar_write(nfp, bar, barcfg_msix_general) < 0)
 		return -EIO;
 
+
+	/* Reserve BAR2.0 for expansion rom mapping */
+	if (type == RTE_PROC_PRIMARY) {
+		if (nfp->pci_dev->id.device_id == PCI_DEVICE_ID_NFP3800_PF_NIC) {
+			bar = &nfp->bar[16];
+			if (bar != NULL)
+				bar->lock = true;
+		}
+	}
+
 	return 0;
 }
 
@@ -612,7 +622,7 @@ nfp6000_area_acquire(struct nfp_cpp_area *area)
 
 	bar_num = nfp_alloc_bar(nfp, priv);
 	if (bar_num < 0) {
-		PMD_DRV_LOG(ERR, "Failed to allocate bar %d:%d:%d:%#lx: %d",
+		PMD_DRV_LOG(ERR, "Failed to allocate bar %d:%d:%d:%#lx: %d.",
 				priv->target, priv->action, priv->token,
 				priv->offset, bar_num);
 		return bar_num;
@@ -694,7 +704,7 @@ nfp6000_area_read(struct nfp_cpp_area *area,
 
 	/* Unaligned? Translate to an explicit access */
 	if (((priv->offset + offset) & (width - 1)) != 0) {
-		PMD_DRV_LOG(ERR, "aread_read unaligned!!!");
+		PMD_DRV_LOG(ERR, "The aread_read unaligned!!!");
 		return -EINVAL;
 	}
 
@@ -850,7 +860,7 @@ nfp6000_get_dsn(struct rte_pci_device *pci_dev,
 
 	pos = rte_pci_find_ext_capability(pci_dev, RTE_PCI_EXT_CAP_ID_DSN);
 	if (pos <= 0) {
-		PMD_DRV_LOG(ERR, "PCI_EXT_CAP_ID_DSN not found");
+		PMD_DRV_LOG(ERR, "PCI_EXT_CAP_ID_DSN not found.");
 		return -ENODEV;
 	}
 
@@ -858,7 +868,7 @@ nfp6000_get_dsn(struct rte_pci_device *pci_dev,
 	len = sizeof(tmp);
 
 	if (rte_pci_read_config(pci_dev, &tmp, len, pos) < 0) {
-		PMD_DRV_LOG(ERR, "nfp get device serial number failed");
+		PMD_DRV_LOG(ERR, "NFP get device serial number failed.");
 		return -ENOENT;
 	}
 
@@ -923,7 +933,7 @@ nfp6000_init(struct nfp_cpp *cpp)
 
 	ret = nfp_enable_bars(desc);
 	if (ret != 0) {
-		PMD_DRV_LOG(ERR, "Enable bars failed");
+		PMD_DRV_LOG(ERR, "Enable bars failed.");
 		return -1;
 	}
 
@@ -1008,7 +1018,7 @@ nfp_cpp_from_nfp6000_pcie(struct rte_pci_device *pci_dev,
 
 	if (NFP_CPP_INTERFACE_CHANNEL_of(interface) !=
 			NFP_CPP_INTERFACE_CHANNEL_PEROPENER) {
-		PMD_DRV_LOG(ERR, "Interface channel is not right");
+		PMD_DRV_LOG(ERR, "Interface channel is not right.");
 		free(nfp);
 		return NULL;
 	}
@@ -1016,7 +1026,7 @@ nfp_cpp_from_nfp6000_pcie(struct rte_pci_device *pci_dev,
 	/* Probe for all the common NFP devices */
 	cpp = nfp_cpp_from_device_name(pci_dev, nfp, driver_lock_needed);
 	if (cpp == NULL) {
-		PMD_DRV_LOG(ERR, "Get cpp from operation failed");
+		PMD_DRV_LOG(ERR, "Get cpp from operation failed.");
 		free(nfp);
 		return NULL;
 	}

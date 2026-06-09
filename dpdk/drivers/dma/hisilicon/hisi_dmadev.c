@@ -18,21 +18,20 @@
 #include "hisi_dmadev.h"
 
 RTE_LOG_REGISTER_DEFAULT(hisi_dma_logtype, INFO);
-#define HISI_DMA_LOG(level, fmt, args...) \
-		rte_log(RTE_LOG_ ## level, hisi_dma_logtype, \
-		"%s(): " fmt "\n", __func__, ##args)
-#define HISI_DMA_LOG_RAW(hw, level, fmt, args...) \
-		rte_log(RTE_LOG_ ## level, hisi_dma_logtype, \
-		"%s %s(): " fmt "\n", (hw)->data->dev_name, \
-		__func__, ##args)
-#define HISI_DMA_DEBUG(hw, fmt, args...) \
-		HISI_DMA_LOG_RAW(hw, DEBUG, fmt, ## args)
-#define HISI_DMA_INFO(hw, fmt, args...) \
-		HISI_DMA_LOG_RAW(hw, INFO, fmt, ## args)
-#define HISI_DMA_WARN(hw, fmt, args...) \
-		HISI_DMA_LOG_RAW(hw, WARNING, fmt, ## args)
-#define HISI_DMA_ERR(hw, fmt, args...) \
-		HISI_DMA_LOG_RAW(hw, ERR, fmt, ## args)
+#define RTE_LOGTYPE_HISI_DMA hisi_dma_logtype
+#define HISI_DMA_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, HISI_DMA, "%s(): ", __func__, __VA_ARGS__)
+#define HISI_DMA_DEV_LOG(hw, level, ...) \
+	RTE_LOG_LINE_PREFIX(level, HISI_DMA, "%s %s(): ", \
+		(hw)->data->dev_name RTE_LOG_COMMA __func__, __VA_ARGS__)
+#define HISI_DMA_DEBUG(hw, ...) \
+	HISI_DMA_DEV_LOG(hw, DEBUG, __VA_ARGS__)
+#define HISI_DMA_INFO(hw, ...) \
+	HISI_DMA_DEV_LOG(hw, INFO, __VA_ARGS__)
+#define HISI_DMA_WARN(hw, ...) \
+	HISI_DMA_DEV_LOG(hw, WARNING, __VA_ARGS__)
+#define HISI_DMA_ERR(hw, ...) \
+	HISI_DMA_DEV_LOG(hw, ERR, __VA_ARGS__)
 
 static uint32_t
 hisi_dma_queue_base(struct hisi_dma_dev *hw)
@@ -122,7 +121,7 @@ hisi_dma_update_queue_mbit(struct hisi_dma_dev *hw, uint32_t qoff,
 	hisi_dma_write_queue(hw, qoff, tmp);
 }
 
-#define hisi_dma_poll_hw_state(hw, val, cond, sleep_us, timeout_us) ({ \
+#define hisi_dma_poll_hw_state(hw, val, cond, sleep_us, timeout_us) __extension__ ({ \
 	uint32_t timeout = 0; \
 	while (timeout++ <= (timeout_us)) { \
 		(val) = hisi_dma_read_queue(hw, HISI_DMA_QUEUE_FSM_REG); \
@@ -287,8 +286,7 @@ hisi_dma_alloc_iomem(struct hisi_dma_dev *hw, uint16_t ring_size,
 static void
 hisi_dma_free_iomem(struct hisi_dma_dev *hw)
 {
-	if (hw->iomz != NULL)
-		rte_memzone_free(hw->iomz);
+	rte_memzone_free(hw->iomz);
 
 	hw->iomz = NULL;
 	hw->sqe = NULL;
@@ -378,6 +376,7 @@ hisi_dma_start(struct rte_dma_dev *dev)
 	hw->cq_head = 0;
 	hw->cqs_completed = 0;
 	hw->cqe_vld = 1;
+	hw->stop_proc = 0;
 	hw->submitted = 0;
 	hw->completed = 0;
 	hw->errors = 0;
@@ -387,12 +386,6 @@ hisi_dma_start(struct rte_dma_dev *dev)
 				  HISI_DMA_QUEUE_CTRL0_EN_B, true);
 
 	return 0;
-}
-
-static int
-hisi_dma_stop(struct rte_dma_dev *dev)
-{
-	return hisi_dma_reset_hw(dev->data->dev_private);
 }
 
 static int
@@ -454,6 +447,37 @@ hisi_dma_vchan_status(const struct rte_dma_dev *dev, uint16_t vchan,
 		*status = RTE_DMA_VCHAN_HALTED_ERROR;
 
 	return 0;
+}
+
+static int
+hisi_dma_stop(struct rte_dma_dev *dev)
+{
+#define MAX_WAIT_MSEC	10
+	struct hisi_dma_dev *hw = dev->data->dev_private;
+	enum rte_dma_vchan_status status;
+	uint32_t i;
+
+	/* Flag stop processing new requests. */
+	hw->stop_proc = 1;
+	rte_delay_ms(1);
+
+	/* Force set drop flag so that the hardware can quickly complete. */
+	for (i = 0; i <= hw->sq_depth_mask; i++)
+		hw->sqe[i].dw0 |= SQE_DROP_FLAG;
+
+	i = 0;
+	do {
+		hisi_dma_vchan_status(dev, 0, &status);
+		if (status != RTE_DMA_VCHAN_ACTIVE)
+			break;
+		rte_delay_ms(1);
+	} while (i++ < MAX_WAIT_MSEC);
+	if (status == RTE_DMA_VCHAN_ACTIVE) {
+		HISI_DMA_ERR(hw, "dev is still active!");
+		return -EBUSY;
+	}
+
+	return hisi_dma_reset_hw(dev->data->dev_private);
 }
 
 static void
@@ -550,14 +574,14 @@ hisi_dma_dump(const struct rte_dma_dev *dev, FILE *f)
 		"    revision: 0x%x queue_id: %u ring_size: %u\n"
 		"    ridx: %u cridx: %u\n"
 		"    sq_head: %u sq_tail: %u cq_sq_head: %u\n"
-		"    cq_head: %u cqs_completed: %u cqe_vld: %u\n"
+		"    cq_head: %u cqs_completed: %u cqe_vld: %u stop_proc: %u\n"
 		"    submitted: %" PRIu64 " completed: %" PRIu64 " errors: %"
 		PRIu64 " qfulls: %" PRIu64 "\n",
 		hw->revision, hw->queue_id,
 		hw->sq_depth_mask > 0 ? hw->sq_depth_mask + 1 : 0,
 		hw->ridx, hw->cridx,
 		hw->sq_head, hw->sq_tail, hw->cq_sq_head,
-		hw->cq_head, hw->cqs_completed, hw->cqe_vld,
+		hw->cq_head, hw->cqs_completed, hw->cqe_vld, hw->stop_proc,
 		hw->submitted, hw->completed, hw->errors, hw->qfulls);
 	hisi_dma_dump_queue(hw, f);
 	hisi_dma_dump_common(hw, f);
@@ -574,6 +598,9 @@ hisi_dma_copy(void *dev_private, uint16_t vchan,
 	struct hisi_dma_sqe *sqe = &hw->sqe[hw->sq_tail];
 
 	RTE_SET_USED(vchan);
+
+	if (unlikely(hw->stop_proc > 0))
+		return -EPERM;
 
 	if (((hw->sq_tail + 1) & hw->sq_depth_mask) == hw->sq_head) {
 		hw->qfulls++;

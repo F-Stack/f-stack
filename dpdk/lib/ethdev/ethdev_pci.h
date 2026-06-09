@@ -6,15 +6,15 @@
 #ifndef _RTE_ETHDEV_PCI_H_
 #define _RTE_ETHDEV_PCI_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <rte_malloc.h>
 #include <rte_pci.h>
 #include <bus_pci_driver.h>
 #include <rte_config.h>
 #include <ethdev_driver.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * Copy pci device info to the Ethernet device data.
@@ -31,7 +31,7 @@ rte_eth_copy_pci_info(struct rte_eth_dev *eth_dev,
 	struct rte_pci_device *pci_dev)
 {
 	if ((eth_dev == NULL) || (pci_dev == NULL)) {
-		RTE_ETHDEV_LOG(ERR, "NULL pointer eth_dev=%p pci_dev=%p\n",
+		RTE_ETHDEV_LOG_LINE(ERR, "NULL pointer eth_dev=%p pci_dev=%p",
 			(void *)eth_dev, (void *)pci_dev);
 		return;
 	}
@@ -110,9 +110,9 @@ rte_eth_dev_pci_allocate(struct rte_pci_device *dev, size_t private_data_size)
 					return NULL;
 				}
 				/* got memory, but not local, so issue warning */
-				RTE_ETHDEV_LOG(WARNING,
-					       "Private data for ethdev '%s' not allocated on local NUMA node %d\n",
-					       dev->device.name, dev->device.numa_node);
+				RTE_ETHDEV_LOG_LINE(WARNING,
+						"Private data for ethdev '%s' not allocated on local NUMA node %d",
+						dev->device.name, dev->device.numa_node);
 			}
 		}
 	} else {

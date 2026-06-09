@@ -17,6 +17,12 @@ roc_npa_lf_init_cb_register(roc_npa_lf_init_cb_t cb)
 	return 0;
 }
 
+uint16_t
+roc_npa_pf_func_get(void)
+{
+	return idev_npa_pffunc_get();
+}
+
 void
 roc_npa_pool_op_range_set(uint64_t aura_handle, uint64_t start_iova,
 			  uint64_t end_iova)
@@ -76,6 +82,7 @@ static int
 npa_aura_pool_init(struct mbox *m_box, uint32_t aura_id, struct npa_aura_s *aura,
 		   struct npa_pool_s *pool)
 {
+	struct npa_cn20k_aq_enq_req *aura_init_req_cn20k, *pool_init_req_cn20k;
 	struct npa_aq_enq_req *aura_init_req, *pool_init_req;
 	struct npa_aq_enq_rsp *aura_init_rsp, *pool_init_rsp;
 	struct mbox_dev *mdev = &m_box->dev[0];
@@ -83,7 +90,12 @@ npa_aura_pool_init(struct mbox *m_box, uint32_t aura_id, struct npa_aura_s *aura
 	struct mbox *mbox;
 
 	mbox = mbox_get(m_box);
-	aura_init_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		aura_init_req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		aura_init_req = (struct npa_aq_enq_req *)aura_init_req_cn20k;
+	} else {
+		aura_init_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (aura_init_req == NULL)
 		goto exit;
 	aura_init_req->aura_id = aura_id;
@@ -91,6 +103,12 @@ npa_aura_pool_init(struct mbox *m_box, uint32_t aura_id, struct npa_aura_s *aura
 	aura_init_req->op = NPA_AQ_INSTOP_INIT;
 	mbox_memcpy(&aura_init_req->aura, aura, sizeof(*aura));
 
+	if (roc_model_is_cn20k()) {
+		pool_init_req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		pool_init_req = (struct npa_aq_enq_req *)pool_init_req_cn20k;
+	} else {
+		pool_init_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	pool_init_req = mbox_alloc_msg_npa_aq_enq(mbox);
 	if (pool_init_req == NULL)
 		goto exit;
@@ -121,13 +139,19 @@ exit:
 static int
 npa_aura_init(struct mbox *m_box, uint32_t aura_id, struct npa_aura_s *aura)
 {
+	struct npa_cn20k_aq_enq_req *aura_init_req_cn20k;
 	struct npa_aq_enq_req *aura_init_req;
 	struct npa_aq_enq_rsp *aura_init_rsp;
 	struct mbox *mbox;
 	int rc = -ENOSPC;
 
 	mbox = mbox_get(m_box);
-	aura_init_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		aura_init_req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		aura_init_req = (struct npa_aq_enq_req *)aura_init_req_cn20k;
+	} else {
+		aura_init_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (aura_init_req == NULL)
 		goto exit;
 	aura_init_req->aura_id = aura_id;
@@ -151,6 +175,7 @@ exit:
 static int
 npa_aura_pool_fini(struct mbox *m_box, uint32_t aura_id, uint64_t aura_handle)
 {
+	struct npa_cn20k_aq_enq_req *aura_req_cn20k, *pool_req_cn20k;
 	struct npa_aq_enq_req *aura_req, *pool_req;
 	struct npa_aq_enq_rsp *aura_rsp, *pool_rsp;
 	struct mbox_dev *mdev = &m_box->dev[0];
@@ -168,7 +193,12 @@ npa_aura_pool_fini(struct mbox *m_box, uint32_t aura_id, uint64_t aura_handle)
 	} while (ptr);
 
 	mbox = mbox_get(m_box);
-	pool_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		pool_req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		pool_req = (struct npa_aq_enq_req *)pool_req_cn20k;
+	} else {
+		pool_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (pool_req == NULL)
 		goto exit;
 	pool_req->aura_id = aura_id;
@@ -177,7 +207,12 @@ npa_aura_pool_fini(struct mbox *m_box, uint32_t aura_id, uint64_t aura_handle)
 	pool_req->pool.ena = 0;
 	pool_req->pool_mask.ena = ~pool_req->pool_mask.ena;
 
-	aura_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		aura_req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		aura_req = (struct npa_aq_enq_req *)aura_req_cn20k;
+	} else {
+		aura_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (aura_req == NULL)
 		goto exit;
 	aura_req->aura_id = aura_id;
@@ -185,8 +220,18 @@ npa_aura_pool_fini(struct mbox *m_box, uint32_t aura_id, uint64_t aura_handle)
 	aura_req->op = NPA_AQ_INSTOP_WRITE;
 	aura_req->aura.ena = 0;
 	aura_req->aura_mask.ena = ~aura_req->aura_mask.ena;
-	aura_req->aura.bp_ena = 0;
-	aura_req->aura_mask.bp_ena = ~aura_req->aura_mask.bp_ena;
+	if (roc_model_is_cn20k()) {
+		__io struct npa_cn20k_aura_s *aura_cn20k, *aura_mask_cn20k;
+
+		/* The bit positions/width of bp_ena has changed in cn20k */
+		aura_cn20k = (__io struct npa_cn20k_aura_s *)&aura_req->aura;
+		aura_cn20k->bp_ena = 0;
+		aura_mask_cn20k = (__io struct npa_cn20k_aura_s *)&aura_req->aura_mask;
+		aura_mask_cn20k->bp_ena = ~aura_mask_cn20k->bp_ena;
+	} else {
+		aura_req->aura.bp_ena = 0;
+		aura_req->aura_mask.bp_ena = ~aura_req->aura_mask.bp_ena;
+	}
 
 	rc = mbox_process(mbox);
 	if (rc < 0)
@@ -201,6 +246,12 @@ npa_aura_pool_fini(struct mbox *m_box, uint32_t aura_id, uint64_t aura_handle)
 
 	if (aura_rsp->hdr.rc != 0 || pool_rsp->hdr.rc != 0) {
 		rc = NPA_ERR_AURA_POOL_FINI;
+		goto exit;
+	}
+
+	if (roc_model_is_cn20k()) {
+		/* In cn20k, NPA does not use NDC */
+		rc = 0;
 		goto exit;
 	}
 
@@ -226,6 +277,7 @@ exit:
 static int
 npa_aura_fini(struct mbox *m_box, uint32_t aura_id)
 {
+	struct npa_cn20k_aq_enq_req *aura_req_cn20k;
 	struct npa_aq_enq_req *aura_req;
 	struct npa_aq_enq_rsp *aura_rsp;
 	struct ndc_sync_op *ndc_req;
@@ -236,7 +288,12 @@ npa_aura_fini(struct mbox *m_box, uint32_t aura_id)
 	plt_delay_us(10);
 
 	mbox = mbox_get(m_box);
-	aura_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		aura_req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		aura_req = (struct npa_aq_enq_req *)aura_req_cn20k;
+	} else {
+		aura_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (aura_req == NULL)
 		goto exit;
 	aura_req->aura_id = aura_id;
@@ -251,6 +308,12 @@ npa_aura_fini(struct mbox *m_box, uint32_t aura_id)
 
 	if (aura_rsp->hdr.rc != 0) {
 		rc = NPA_ERR_AURA_POOL_FINI;
+		goto exit;
+	}
+
+	if (roc_model_is_cn20k()) {
+		/* In cn20k, NPA does not use NDC */
+		rc = 0;
 		goto exit;
 	}
 
@@ -335,6 +398,7 @@ exit:
 int
 roc_npa_aura_drop_set(uint64_t aura_handle, uint64_t limit, bool ena)
 {
+	struct npa_cn20k_aq_enq_req *aura_req_cn20k;
 	struct npa_aq_enq_req *aura_req;
 	struct npa_lf *lf;
 	struct mbox *mbox;
@@ -344,7 +408,12 @@ roc_npa_aura_drop_set(uint64_t aura_handle, uint64_t limit, bool ena)
 	if (lf == NULL)
 		return NPA_ERR_DEVICE_NOT_BOUNDED;
 	mbox = mbox_get(lf->mbox);
-	aura_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		aura_req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		aura_req = (struct npa_aq_enq_req *)aura_req_cn20k;
+	} else {
+		aura_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (aura_req == NULL) {
 		rc = -ENOMEM;
 		goto exit;
@@ -723,6 +792,7 @@ error:
 int
 roc_npa_aura_limit_modify(uint64_t aura_handle, uint16_t aura_limit)
 {
+	struct npa_cn20k_aq_enq_req *aura_req_cn20k;
 	struct npa_aq_enq_req *aura_req;
 	struct npa_lf *lf;
 	struct mbox *mbox;
@@ -733,7 +803,12 @@ roc_npa_aura_limit_modify(uint64_t aura_handle, uint16_t aura_limit)
 		return NPA_ERR_DEVICE_NOT_BOUNDED;
 
 	mbox = mbox_get(lf->mbox);
-	aura_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		aura_req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		aura_req = (struct npa_aq_enq_req *)aura_req_cn20k;
+	} else {
+		aura_req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (aura_req == NULL) {
 		rc = -ENOMEM;
 		goto exit;
@@ -834,12 +909,13 @@ int
 roc_npa_pool_range_update_check(uint64_t aura_handle)
 {
 	uint64_t aura_id = roc_npa_aura_handle_to_aura(aura_handle);
-	struct npa_lf *lf;
-	struct npa_aura_lim *lim;
+	struct npa_cn20k_aq_enq_req *req_cn20k;
 	__io struct npa_pool_s *pool;
 	struct npa_aq_enq_req *req;
 	struct npa_aq_enq_rsp *rsp;
+	struct npa_aura_lim *lim;
 	struct mbox *mbox;
+	struct npa_lf *lf;
 	int rc;
 
 	lf = idev_npa_obj_get();
@@ -849,7 +925,12 @@ roc_npa_pool_range_update_check(uint64_t aura_handle)
 	lim = lf->aura_lim;
 
 	mbox = mbox_get(lf->mbox);
-	req = mbox_alloc_msg_npa_aq_enq(mbox);
+	if (roc_model_is_cn20k()) {
+		req_cn20k = mbox_alloc_msg_npa_cn20k_aq_enq(mbox);
+		req = (struct npa_aq_enq_req *)req_cn20k;
+	} else {
+		req = mbox_alloc_msg_npa_aq_enq(mbox);
+	}
 	if (req == NULL) {
 		rc = -ENOSPC;
 		goto exit;
@@ -903,6 +984,7 @@ int
 roc_npa_aura_bp_configure(uint64_t aura_handle, uint16_t bpid, uint8_t bp_intf, uint8_t bp_thresh,
 			  bool enable)
 {
+	/* TODO: Add support for CN20K */
 	uint32_t aura_id = roc_npa_aura_handle_to_aura(aura_handle);
 	struct npa_lf *lf = idev_npa_obj_get();
 	struct npa_aq_enq_req *req;

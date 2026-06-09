@@ -37,6 +37,7 @@ cdata.set('OUTPUT', join_paths(dpdk_build_root, 'doc', 'api'))
 cdata.set('TOPDIR', dpdk_source_root)
 cdata.set('STRIP_FROM_PATH', ' '.join([dpdk_source_root, join_paths(dpdk_build_root, 'doc', 'api')]))
 cdata.set('WARN_AS_ERROR', 'NO')
+cdata.set('DTS_API_MAIN_PAGE', join_paths('.', 'dts', 'index.html'))
 if get_option('werror')
     cdata.set('WARN_AS_ERROR', 'YES')
 endif
@@ -97,6 +98,11 @@ doc_target_names += 'Doxygen_API(Manpage)'
 # refresh the manpage database on install
 # if DPDK manpages are installed to a staging directory, not in MANPATH, this has no effect
 mandb = find_program('mandb', required: false)
-if mandb.found() and get_option('enable_docs') and meson.version().version_compare('>=0.55.0')
+if mandb.found() and get_option('enable_docs')
     meson.add_install_script(mandb)
 endif
+
+# used by DTS to place its files into
+api_build_dir = meson.current_build_dir()
+
+subdir('dts')

@@ -16,6 +16,10 @@
 
 #include <rte_rib.h>
 
+#include "rib_log.h"
+
+RTE_LOG_REGISTER_DEFAULT(rib_logtype, INFO);
+
 TAILQ_HEAD(rte_rib_list, rte_tailq_entry);
 static struct rte_tailq_elem rte_rib_tailq = {
 	.name = "RTE_RIB",
@@ -36,7 +40,7 @@ struct rte_rib_node {
 	uint8_t		depth;
 	uint8_t		flag;
 	uint64_t	nh;
-	__extension__ uint64_t ext[];
+	uint64_t ext[];
 };
 
 struct rte_rib {
@@ -413,8 +417,8 @@ rte_rib_create(const char *name, int socket_id, const struct rte_rib_conf *conf)
 		NULL, NULL, NULL, NULL, socket_id, 0);
 
 	if (node_pool == NULL) {
-		RTE_LOG(ERR, LPM,
-			"Can not allocate mempool for RIB %s\n", name);
+		RIB_LOG(ERR,
+			"Can not allocate mempool for RIB %s", name);
 		return NULL;
 	}
 
@@ -438,8 +442,8 @@ rte_rib_create(const char *name, int socket_id, const struct rte_rib_conf *conf)
 	/* allocate tailq entry */
 	te = rte_zmalloc("RIB_TAILQ_ENTRY", sizeof(*te), 0);
 	if (unlikely(te == NULL)) {
-		RTE_LOG(ERR, LPM,
-			"Can not allocate tailq entry for RIB %s\n", name);
+		RIB_LOG(ERR,
+			"Can not allocate tailq entry for RIB %s", name);
 		rte_errno = ENOMEM;
 		goto exit;
 	}
@@ -448,7 +452,7 @@ rte_rib_create(const char *name, int socket_id, const struct rte_rib_conf *conf)
 	rib = rte_zmalloc_socket(mem_name,
 		sizeof(struct rte_rib),	RTE_CACHE_LINE_SIZE, socket_id);
 	if (unlikely(rib == NULL)) {
-		RTE_LOG(ERR, LPM, "RIB %s memory allocation failed\n", name);
+		RIB_LOG(ERR, "RIB %s memory allocation failed", name);
 		rte_errno = ENOMEM;
 		goto free_te;
 	}

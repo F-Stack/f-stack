@@ -25,7 +25,7 @@
 #define I40E_RX_MAX_DATA_BUF_SIZE	(16 * 1024 - 128)
 
 #define	I40E_MIN_RING_DESC	64
-#define	I40E_MAX_RING_DESC	4096
+#define	I40E_MAX_RING_DESC	8160
 
 #define I40E_FDIR_NUM_TX_DESC   (I40E_FDIR_PRG_PKT_CNT << 1)
 #define I40E_FDIR_NUM_RX_DESC   (I40E_FDIR_PRG_PKT_CNT << 1)
@@ -44,11 +44,6 @@
 #define I40E_RX_DESC_EXT_STATUS_FLEXBH_FLEX   0x02
 #define I40E_RX_DESC_EXT_STATUS_FLEXBL_MASK   0x03
 #define I40E_RX_DESC_EXT_STATUS_FLEXBL_FLEX   0x01
-
-#undef container_of
-#define container_of(ptr, type, member) ({ \
-		typeof(((type *)0)->member)(*__mptr) = (ptr); \
-		(type *)((char *)__mptr - offsetof(type, member)); })
 
 #define I40E_TD_CMD (I40E_TX_DESC_CMD_ICRC |\
 		     I40E_TX_DESC_CMD_EOP)
@@ -167,6 +162,8 @@ struct i40e_tx_queue {
 	uint16_t tx_next_dd;
 	uint16_t tx_next_rs;
 	bool q_set; /**< indicate if tx queue has been configured */
+	uint64_t mbuf_errors;
+
 	bool tx_deferred_start; /**< don't start this queue in dev start */
 	uint8_t dcb_tc;         /**< Traffic class of tx queue */
 	uint64_t offloads; /**< Tx offload flags of RTE_ETH_TX_OFFLOAD_* */
@@ -190,7 +187,8 @@ int i40e_dev_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int i40e_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int i40e_dev_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 int i40e_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id);
-const uint32_t *i40e_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+const uint32_t *i40e_dev_supported_ptypes_get(struct rte_eth_dev *dev,
+					      size_t *no_of_elements);
 int i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			    uint16_t queue_idx,
 			    uint16_t nb_desc,
@@ -281,7 +279,7 @@ uint16_t i40e_xmit_pkts_vec_avx512(void *tx_queue,
 static inline uint32_t
 i40e_get_default_pkt_type(uint8_t ptype)
 {
-	static const uint32_t type_table[UINT8_MAX + 1] __rte_cache_aligned = {
+	static const alignas(RTE_CACHE_LINE_SIZE) uint32_t type_table[UINT8_MAX + 1] = {
 		/* L2 types */
 		/* [0] reserved */
 		[1] = RTE_PTYPE_L2_ETHER,

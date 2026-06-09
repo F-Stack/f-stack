@@ -3,6 +3,7 @@
  */
 
 #include <sys/queue.h>
+#include <stdalign.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -88,7 +89,8 @@ static int vmxnet3_dev_info_get(struct rte_eth_dev *dev,
 static int vmxnet3_hw_ver_get(struct rte_eth_dev *dev,
 			      char *fw_version, size_t fw_size);
 static const uint32_t *
-vmxnet3_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+vmxnet3_dev_supported_ptypes_get(struct rte_eth_dev *dev,
+				 size_t *no_of_elements);
 static int vmxnet3_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu);
 static int vmxnet3_dev_vlan_filter_set(struct rte_eth_dev *dev,
 				       uint16_t vid, int on);
@@ -187,8 +189,7 @@ gpa_zone_reserve(struct rte_eth_dev *dev, uint32_t size,
 
 	mz = rte_memzone_lookup(z_name);
 	if (!reuse) {
-		if (mz)
-			rte_memzone_free(mz);
+		rte_memzone_free(mz);
 		return rte_memzone_reserve_aligned(z_name, size, socket_id,
 				RTE_MEMZONE_IOVA_CONTIG, align);
 	}
@@ -369,7 +370,7 @@ eth_vmxnet3_dev_init(struct rte_eth_dev *eth_dev)
 	static const struct rte_mbuf_dynfield vmxnet3_segs_dynfield_desc = {
 		.name = VMXNET3_SEGS_DYNFIELD_NAME,
 		.size = sizeof(vmxnet3_segs_dynfield_t),
-		.align = __alignof__(vmxnet3_segs_dynfield_t),
+		.align = alignof(vmxnet3_segs_dynfield_t),
 	};
 
 	PMD_INIT_FUNC_TRACE();
@@ -609,6 +610,13 @@ vmxnet3_dev_configure(struct rte_eth_dev *dev)
 
 	PMD_INIT_FUNC_TRACE();
 
+	/* Disabling RSS for single queue pair */
+	if (dev->data->nb_rx_queues == 1 &&
+	    dev->data->dev_conf.rxmode.mq_mode == RTE_ETH_MQ_RX_RSS) {
+		dev->data->dev_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+		PMD_INIT_LOG(ERR, "WARN: Disabling RSS for single Rx queue");
+	}
+
 	if (dev->data->dev_conf.rxmode.mq_mode & RTE_ETH_MQ_RX_RSS_FLAG)
 		dev->data->dev_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_RSS_HASH;
 
@@ -800,14 +808,15 @@ vmxnet3_dev_setup_memreg(struct rte_eth_dev *dev)
 	Vmxnet3_DriverShared *shared = hw->shared;
 	Vmxnet3_CmdInfo *cmdInfo;
 	struct rte_mempool *mp[VMXNET3_MAX_RX_QUEUES];
-	uint8_t index[VMXNET3_MAX_RX_QUEUES + VMXNET3_MAX_TX_QUEUES];
-	uint32_t num, i, j, size;
+	uint16_t index[VMXNET3_MAX_MEMREG_QUEUES];
+	uint16_t tx_index_mask;
+	uint32_t num, tx_num, i, j, size;
 
 	if (hw->memRegsPA == 0) {
 		const struct rte_memzone *mz;
 
 		size = sizeof(Vmxnet3_MemRegs) +
-			(VMXNET3_MAX_RX_QUEUES + VMXNET3_MAX_TX_QUEUES) *
+			(2 * VMXNET3_MAX_MEMREG_QUEUES) *
 			sizeof(Vmxnet3_MemoryRegion);
 
 		mz = gpa_zone_reserve(dev, size, "memRegs", rte_socket_id(), 8,
@@ -821,7 +830,9 @@ vmxnet3_dev_setup_memreg(struct rte_eth_dev *dev)
 		hw->memRegsPA = mz->iova;
 	}
 
-	num = hw->num_rx_queues;
+	num = RTE_MIN(hw->num_rx_queues, VMXNET3_MAX_MEMREG_QUEUES);
+	tx_num = RTE_MIN(hw->num_tx_queues, VMXNET3_MAX_MEMREG_QUEUES);
+	tx_index_mask = (uint16_t)((1UL << tx_num) - 1);
 
 	for (i = 0; i < num; i++) {
 		vmxnet3_rx_queue_t *rxq = dev->data->rx_queues[i];
@@ -856,13 +867,15 @@ vmxnet3_dev_setup_memreg(struct rte_eth_dev *dev)
 			(uintptr_t)STAILQ_FIRST(&mp[i]->mem_list)->iova;
 		mr->length = STAILQ_FIRST(&mp[i]->mem_list)->len <= INT32_MAX ?
 			STAILQ_FIRST(&mp[i]->mem_list)->len : INT32_MAX;
-		mr->txQueueBits = index[i];
 		mr->rxQueueBits = index[i];
+		/* tx uses same pool, but there may be fewer tx queues */
+		mr->txQueueBits = index[i] & tx_index_mask;
 
 		PMD_INIT_LOG(INFO,
 			     "index: %u startPA: %" PRIu64 " length: %u, "
-			     "rxBits: %x",
-			     j, mr->startPA, mr->length, mr->rxQueueBits);
+			     "rxBits: %x, txBits: %x",
+			     j, mr->startPA, mr->length,
+			     mr->rxQueueBits, mr->txQueueBits);
 		j++;
 	}
 	hw->memRegs->numRegs = j;
@@ -1086,8 +1099,8 @@ vmxnet3_dev_start(struct rte_eth_dev *dev)
 	}
 
 	/* Check memregs restrictions first */
-	if (dev->data->nb_rx_queues <= VMXNET3_MAX_RX_QUEUES &&
-	    dev->data->nb_tx_queues <= VMXNET3_MAX_TX_QUEUES) {
+	if (dev->data->nb_rx_queues <= VMXNET3_MAX_MEMREG_QUEUES &&
+	    dev->data->nb_tx_queues <= VMXNET3_MAX_MEMREG_QUEUES) {
 		ret = vmxnet3_dev_setup_memreg(dev);
 		if (ret == 0) {
 			VMXNET3_WRITE_BAR1_REG(hw, VMXNET3_REG_CMD,
@@ -1628,16 +1641,18 @@ vmxnet3_hw_ver_get(struct rte_eth_dev *dev,
 }
 
 static const uint32_t *
-vmxnet3_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+vmxnet3_dev_supported_ptypes_get(struct rte_eth_dev *dev,
+				 size_t *no_of_elements)
 {
 	static const uint32_t ptypes[] = {
 		RTE_PTYPE_L3_IPV4_EXT,
 		RTE_PTYPE_L3_IPV4,
-		RTE_PTYPE_UNKNOWN
 	};
 
-	if (dev->rx_pkt_burst == vmxnet3_recv_pkts)
+	if (dev->rx_pkt_burst == vmxnet3_recv_pkts) {
+		*no_of_elements = RTE_DIM(ptypes);
 		return ptypes;
+	}
 	return NULL;
 }
 
@@ -1932,7 +1947,7 @@ vmxnet3_interrupt_handler(void *param)
 	if (events == 0)
 		goto done;
 
-	RTE_LOG(DEBUG, PMD, "Reading events: 0x%X", events);
+	PMD_DRV_LOG(DEBUG, "Reading events: 0x%X", events);
 	vmxnet3_process_events(dev);
 done:
 	vmxnet3_enable_intr(hw, *eventIntrIdx);

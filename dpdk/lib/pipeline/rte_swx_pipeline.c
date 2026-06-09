@@ -340,7 +340,6 @@ port_in_build(struct rte_swx_pipeline *p)
 	uint32_t i;
 
 	CHECK(p->n_ports_in, EINVAL);
-	CHECK(rte_is_power_of_2(p->n_ports_in), EINVAL);
 
 	for (i = 0; i < p->n_ports_in; i++)
 		CHECK(port_in_find(p, i), EINVAL);
@@ -1502,10 +1501,10 @@ static int
 header_build(struct rte_swx_pipeline *p)
 {
 	struct header *h;
-	uint32_t n_bytes = 0, i;
+	uint32_t total_bytes = 0, i;
 
 	TAILQ_FOREACH(h, &p->headers, node) {
-		n_bytes += h->st->n_bits / 8;
+		total_bytes += h->st->n_bits / 8;
 	}
 
 	for (i = 0; i < RTE_SWX_PIPELINE_THREADS_MAX; i++) {
@@ -1520,10 +1519,10 @@ header_build(struct rte_swx_pipeline *p)
 					sizeof(struct header_out_runtime));
 		CHECK(t->headers_out, ENOMEM);
 
-		t->header_storage = calloc(1, n_bytes);
+		t->header_storage = calloc(1, total_bytes);
 		CHECK(t->header_storage, ENOMEM);
 
-		t->header_out_storage = calloc(1, n_bytes);
+		t->header_out_storage = calloc(1, total_bytes);
 		CHECK(t->header_out_storage, ENOMEM);
 
 		TAILQ_FOREACH(h, &p->headers, node) {
@@ -3234,8 +3233,16 @@ instr_mov_translate(struct rte_swx_pipeline *p,
 			instr->type = INSTR_MOV_DMA;
 			if (fdst->n_bits == 128 && fsrc->n_bits == 128)
 				instr->type = INSTR_MOV_128;
+
+			if (fdst->n_bits == 128 && fsrc->n_bits == 64)
+				instr->type = INSTR_MOV_128_64;
+			if (fdst->n_bits == 64 && fsrc->n_bits == 128)
+				instr->type = INSTR_MOV_64_128;
+
 			if (fdst->n_bits == 128 && fsrc->n_bits == 32)
 				instr->type = INSTR_MOV_128_32;
+			if (fdst->n_bits == 32 && fsrc->n_bits == 128)
+				instr->type = INSTR_MOV_32_128;
 		}
 
 		instr->mov.dst.struct_id = (uint8_t)dst_struct_id;
@@ -3336,6 +3343,30 @@ instr_mov_128_exec(struct rte_swx_pipeline *p)
 }
 
 static inline void
+instr_mov_128_64_exec(struct rte_swx_pipeline *p)
+{
+	struct thread *t = &p->threads[p->thread_id];
+	struct instruction *ip = t->ip;
+
+	__instr_mov_128_64_exec(p, t, ip);
+
+	/* Thread. */
+	thread_ip_inc(p);
+}
+
+static inline void
+instr_mov_64_128_exec(struct rte_swx_pipeline *p)
+{
+	struct thread *t = &p->threads[p->thread_id];
+	struct instruction *ip = t->ip;
+
+	__instr_mov_64_128_exec(p, t, ip);
+
+	/* Thread. */
+	thread_ip_inc(p);
+}
+
+static inline void
 instr_mov_128_32_exec(struct rte_swx_pipeline *p)
 {
 	struct thread *t = &p->threads[p->thread_id];
@@ -3348,12 +3379,79 @@ instr_mov_128_32_exec(struct rte_swx_pipeline *p)
 }
 
 static inline void
+instr_mov_32_128_exec(struct rte_swx_pipeline *p)
+{
+	struct thread *t = &p->threads[p->thread_id];
+	struct instruction *ip = t->ip;
+
+	__instr_mov_32_128_exec(p, t, ip);
+
+	/* Thread. */
+	thread_ip_inc(p);
+}
+
+static inline void
 instr_mov_i_exec(struct rte_swx_pipeline *p)
 {
 	struct thread *t = &p->threads[p->thread_id];
 	struct instruction *ip = t->ip;
 
 	__instr_mov_i_exec(p, t, ip);
+
+	/* Thread. */
+	thread_ip_inc(p);
+}
+
+/*
+ * movh.
+ */
+static int
+instr_movh_translate(struct rte_swx_pipeline *p,
+		     struct action *action,
+		     char **tokens,
+		     int n_tokens,
+		     struct instruction *instr,
+		     struct instruction_data *data __rte_unused)
+{
+	char *dst = tokens[1], *src = tokens[2];
+	struct field *fdst, *fsrc;
+	uint32_t dst_struct_id = 0, src_struct_id = 0;
+
+	CHECK(n_tokens == 3, EINVAL);
+
+	fdst = struct_field_parse(p, NULL, dst, &dst_struct_id);
+	CHECK(fdst, EINVAL);
+	CHECK(!fdst->var_size, EINVAL);
+
+	fsrc = struct_field_parse(p, action, src, &src_struct_id);
+	CHECK(fsrc, EINVAL);
+	CHECK(!fsrc->var_size, EINVAL);
+
+	/* MOVH_64_128, MOVH_128_64. */
+	if ((dst[0] == 'h' && fdst->n_bits == 64 && fsrc->n_bits == 128) ||
+	    (fdst->n_bits == 128 && src[0] == 'h' && fsrc->n_bits == 64)) {
+		instr->type = INSTR_MOVH;
+
+		instr->mov.dst.struct_id = (uint8_t)dst_struct_id;
+		instr->mov.dst.n_bits = fdst->n_bits;
+		instr->mov.dst.offset = fdst->offset / 8;
+
+		instr->mov.src.struct_id = (uint8_t)src_struct_id;
+		instr->mov.src.n_bits = fsrc->n_bits;
+		instr->mov.src.offset = fsrc->offset / 8;
+		return 0;
+	}
+
+	CHECK(0, EINVAL);
+}
+
+static inline void
+instr_movh_exec(struct rte_swx_pipeline *p)
+{
+	struct thread *t = &p->threads[p->thread_id];
+	struct instruction *ip = t->ip;
+
+	__instr_movh_exec(p, t, ip);
 
 	/* Thread. */
 	thread_ip_inc(p);
@@ -6427,6 +6525,14 @@ instr_translate(struct rte_swx_pipeline *p,
 					   instr,
 					   data);
 
+	if (!strcmp(tokens[tpos], "movh"))
+		return instr_movh_translate(p,
+					    action,
+					    &tokens[tpos],
+					    n_tokens - tpos,
+					    instr,
+					    data);
+
 	if (!strcmp(tokens[tpos], "add"))
 		return instr_alu_add_translate(p,
 					       action,
@@ -7460,8 +7566,13 @@ static instr_exec_t instruction_table[] = {
 	[INSTR_MOV_HH] = instr_mov_hh_exec,
 	[INSTR_MOV_DMA] = instr_mov_dma_exec,
 	[INSTR_MOV_128] = instr_mov_128_exec,
+	[INSTR_MOV_128_64] = instr_mov_128_64_exec,
+	[INSTR_MOV_64_128] = instr_mov_64_128_exec,
 	[INSTR_MOV_128_32] = instr_mov_128_32_exec,
+	[INSTR_MOV_32_128] = instr_mov_32_128_exec,
 	[INSTR_MOV_I] = instr_mov_i_exec,
+
+	[INSTR_MOVH] = instr_movh_exec,
 
 	[INSTR_DMA_HT] = instr_dma_ht_exec,
 	[INSTR_DMA_HT2] = instr_dma_ht2_exec,
@@ -11785,8 +11896,13 @@ instr_type_to_name(struct instruction *instr)
 	case INSTR_MOV_HH: return "INSTR_MOV_HH";
 	case INSTR_MOV_DMA: return "INSTR_MOV_DMA";
 	case INSTR_MOV_128: return "INSTR_MOV_128";
+	case INSTR_MOV_128_64: return "INSTR_MOV_128_64";
+	case INSTR_MOV_64_128: return "INSTR_MOV_64_128";
 	case INSTR_MOV_128_32: return "INSTR_MOV_128_32";
+	case INSTR_MOV_32_128: return "INSTR_MOV_32_128";
 	case INSTR_MOV_I: return "INSTR_MOV_I";
+
+	case INSTR_MOVH: return "INSTR_MOVH";
 
 	case INSTR_DMA_HT: return "INSTR_DMA_HT";
 	case INSTR_DMA_HT2: return "INSTR_DMA_HT2";
@@ -12179,6 +12295,34 @@ instr_mov_export(struct instruction *instr, FILE *f)
 			instr->mov.dst.n_bits,
 			instr->mov.dst.offset,
 			instr->mov.src_val);
+}
+
+static void
+instr_movh_export(struct instruction *instr, FILE *f)
+{
+	fprintf(f,
+		"\t{\n"
+		"\t\t.type = %s,\n"
+		"\t\t.mov = {\n"
+		"\t\t\t.dst = {\n"
+		"\t\t\t\t.struct_id = %u,\n"
+		"\t\t\t\t.n_bits = %u,\n"
+		"\t\t\t\t.offset = %u,\n"
+		"\t\t\t},\n"
+		"\t\t\t.src = {\n"
+		"\t\t\t\t.struct_id = %u,\n"
+		"\t\t\t\t.n_bits = %u,\n"
+		"\t\t\t\t.offset = %u,\n"
+		"\t\t\t},\n"
+		"\t\t},\n"
+		"\t},\n",
+		instr_type_to_name(instr),
+		instr->mov.dst.struct_id,
+		instr->mov.dst.n_bits,
+		instr->mov.dst.offset,
+		instr->mov.src.struct_id,
+		instr->mov.src.n_bits,
+		instr->mov.src.offset);
 }
 
 static void
@@ -12826,8 +12970,13 @@ static instruction_export_t export_table[] = {
 	[INSTR_MOV_HH] = instr_mov_export,
 	[INSTR_MOV_DMA] = instr_mov_export,
 	[INSTR_MOV_128] = instr_mov_export,
+	[INSTR_MOV_128_64] = instr_mov_export,
+	[INSTR_MOV_64_128] = instr_mov_export,
 	[INSTR_MOV_128_32] = instr_mov_export,
+	[INSTR_MOV_32_128] = instr_mov_export,
 	[INSTR_MOV_I] = instr_mov_export,
+
+	[INSTR_MOVH] = instr_movh_export,
 
 	[INSTR_DMA_HT]  = instr_dma_ht_export,
 	[INSTR_DMA_HT2] = instr_dma_ht_export,
@@ -13055,8 +13204,13 @@ instr_type_to_func(struct instruction *instr)
 	case INSTR_MOV_HH: return "__instr_mov_hh_exec";
 	case INSTR_MOV_DMA: return "__instr_mov_dma_exec";
 	case INSTR_MOV_128: return "__instr_mov_128_exec";
+	case INSTR_MOV_128_64: return "__instr_mov_128_64_exec";
+	case INSTR_MOV_64_128: return "__instr_mov_64_128_exec";
 	case INSTR_MOV_128_32: return "__instr_mov_128_32_exec";
+	case INSTR_MOV_32_128: return "__instr_mov_32_128_exec";
 	case INSTR_MOV_I: return "__instr_mov_i_exec";
+
+	case INSTR_MOVH: return "__instr_movh_exec";
 
 	case INSTR_DMA_HT: return "__instr_dma_ht_exec";
 	case INSTR_DMA_HT2: return "__instr_dma_ht2_exec";
@@ -13805,7 +13959,6 @@ instruction_group_list_create(struct rte_swx_pipeline *p)
 
 		for (i = 0; i < p->n_instructions; i++) {
 			struct instruction_data *data = &p->instruction_data[i];
-			struct instruction_group *g;
 			uint32_t j;
 
 			/* Continue when the current instruction is not a jump destination. */
@@ -14518,11 +14671,11 @@ rte_swx_pipeline_build_from_lib(struct rte_swx_pipeline **pipeline,
 
 	/* Action instructions. */
 	TAILQ_FOREACH(a, &p->actions, node) {
-		char name[RTE_SWX_NAME_SIZE * 2];
+		char action_name[RTE_SWX_NAME_SIZE * 2];
 
-		snprintf(name, sizeof(name), "action_%s_run", a->name);
+		snprintf(action_name, sizeof(action_name), "action_%s_run", a->name);
 
-		p->action_funcs[a->id] = dlsym(lib, name);
+		p->action_funcs[a->id] = dlsym(lib, action_name);
 		if (!p->action_funcs[a->id]) {
 			status = -EINVAL;
 			goto free;
@@ -14537,14 +14690,14 @@ rte_swx_pipeline_build_from_lib(struct rte_swx_pipeline **pipeline,
 	}
 
 	TAILQ_FOREACH(g, igl, node) {
-		char name[RTE_SWX_NAME_SIZE * 2];
+		char pipeline_name[RTE_SWX_NAME_SIZE * 2];
 
 		if (g->first_instr_id == g->last_instr_id)
 			continue;
 
-		snprintf(name, sizeof(name), "pipeline_func_%u", g->group_id);
+		snprintf(pipeline_name, sizeof(pipeline_name), "pipeline_func_%u", g->group_id);
 
-		g->func = dlsym(lib, name);
+		g->func = dlsym(lib, pipeline_name);
 		if (!g->func) {
 			status = -EINVAL;
 			goto free;

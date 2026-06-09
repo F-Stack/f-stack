@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	rte_kvargs_count;
@@ -8,6 +8,7 @@ DPDK_24 {
 	rte_kvargs_parse;
 	rte_kvargs_parse_delim;
 	rte_kvargs_process;
+	rte_kvargs_process_opt;
 
 	local: *;
 };

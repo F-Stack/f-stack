@@ -110,30 +110,18 @@ hn_update_packet_stats(struct hn_stats *stats, const struct rte_mbuf *m)
 	uint32_t s = m->pkt_len;
 	const struct rte_ether_addr *ea;
 
-	if (s == 64) {
-		stats->size_bins[1]++;
-	} else if (s > 64 && s < 1024) {
-		uint32_t bin;
-
-		/* count zeros, and offset into correct bin */
-		bin = (sizeof(s) * 8) - rte_clz32(s) - 5;
-		stats->size_bins[bin]++;
-	} else {
-		if (s < 64)
-			stats->size_bins[0]++;
-		else if (s < 1519)
-			stats->size_bins[6]++;
-		else
-			stats->size_bins[7]++;
-	}
+	if (s >= 1024)
+		stats->size_bins[6 + (s > 1518)]++;
+	else if (s <= 64)
+		stats->size_bins[s >> 6]++;
+	else
+		stats->size_bins[32UL - rte_clz32(s) - 5]++;
 
 	ea = rte_pktmbuf_mtod(m, const struct rte_ether_addr *);
-	if (rte_is_multicast_ether_addr(ea)) {
-		if (rte_is_broadcast_ether_addr(ea))
-			stats->broadcast++;
-		else
-			stats->multicast++;
-	}
+	RTE_BUILD_BUG_ON(offsetof(struct hn_stats, broadcast) !=
+			offsetof(struct hn_stats, multicast) + sizeof(uint64_t));
+	if (unlikely(rte_is_multicast_ether_addr(ea)))
+		(&stats->multicast)[rte_is_broadcast_ether_addr(ea)]++;
 }
 
 static inline unsigned int hn_rndis_pktlen(const struct rndis_packet_msg *pkt)
@@ -1552,20 +1540,18 @@ hn_xmit_pkts(void *ptxq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		hn_process_events(hv, txq->queue_id, 0);
 
 	/* Transmit over VF if present and up */
-	if (hv->vf_ctx.vf_vsc_switched) {
-		rte_rwlock_read_lock(&hv->vf_lock);
-		vf_dev = hn_get_vf_dev(hv);
-		if (hv->vf_ctx.vf_vsc_switched && vf_dev &&
-		    vf_dev->data->dev_started) {
-			void *sub_q = vf_dev->data->tx_queues[queue_id];
+	rte_rwlock_read_lock(&hv->vf_lock);
+	vf_dev = hn_get_vf_dev(hv);
+	if (hv->vf_ctx.vf_vsc_switched && vf_dev &&
+	    vf_dev->data->dev_started) {
+		void *sub_q = vf_dev->data->tx_queues[queue_id];
 
-			nb_tx = (*vf_dev->tx_pkt_burst)
-					(sub_q, tx_pkts, nb_pkts);
-			rte_rwlock_read_unlock(&hv->vf_lock);
-			return nb_tx;
-		}
+		nb_tx = (*vf_dev->tx_pkt_burst)
+				(sub_q, tx_pkts, nb_pkts);
 		rte_rwlock_read_unlock(&hv->vf_lock);
+		return nb_tx;
 	}
+	rte_rwlock_read_unlock(&hv->vf_lock);
 
 	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
 		struct rte_mbuf *m = tx_pkts[nb_tx];
@@ -1696,17 +1682,15 @@ hn_recv_pkts(void *prxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					   (void **)rx_pkts, nb_pkts, NULL);
 
 	/* If VF is available, check that as well */
-	if (hv->vf_ctx.vf_vsc_switched) {
-		rte_rwlock_read_lock(&hv->vf_lock);
-		vf_dev = hn_get_vf_dev(hv);
-		if (hv->vf_ctx.vf_vsc_switched && vf_dev &&
-		    vf_dev->data->dev_started)
-			nb_rcv += hn_recv_vf(vf_dev->data->port_id, rxq,
-					     rx_pkts + nb_rcv,
-					     nb_pkts - nb_rcv);
+	rte_rwlock_read_lock(&hv->vf_lock);
+	vf_dev = hn_get_vf_dev(hv);
+	if (hv->vf_ctx.vf_vsc_switched && vf_dev &&
+	    vf_dev->data->dev_started)
+		nb_rcv += hn_recv_vf(vf_dev->data->port_id, rxq,
+				     rx_pkts + nb_rcv,
+				     nb_pkts - nb_rcv);
+	rte_rwlock_read_unlock(&hv->vf_lock);
 
-		rte_rwlock_read_unlock(&hv->vf_lock);
-	}
 	return nb_rcv;
 }
 

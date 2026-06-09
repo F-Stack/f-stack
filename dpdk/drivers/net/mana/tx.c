@@ -154,6 +154,7 @@ mana_start_tx_queues(struct rte_eth_dev *dev)
 			txq->gdma_cq.count, txq->gdma_cq.size,
 			txq->gdma_cq.head);
 
+		__rte_assume(i < RTE_MAX_QUEUES_PER_PORT);
 		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 	}
 
@@ -227,9 +228,11 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		txq->gdma_sq.tail += desc->wqe_size_in_bu;
 
 		/* If TX CQE suppression is used, don't read more CQE but move
-		 * on to the next packet
+		 * on to the next packet. On error CQEs, HW generates one CQE
+		 * per WQE regardless of suppression, so always advance.
 		 */
-		if (desc->suppress_tx_cqe)
+		if (desc->suppress_tx_cqe &&
+		    oob->cqe_hdr.cqe_type == CQE_TX_OKAY)
 			continue;
 
 		i++;
@@ -254,7 +257,18 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		}
 
 		/* Fill in the oob */
-		tx_oob.short_oob.packet_format = SHORT_PACKET_FORMAT;
+		if (m_pkt->ol_flags & RTE_MBUF_F_TX_VLAN) {
+			tx_oob.short_oob.packet_format = LONG_PACKET_FORMAT;
+			tx_oob.long_oob.inject_vlan_prior_tag = 1;
+			tx_oob.long_oob.priority_code_point =
+				RTE_VLAN_TCI_PRI(m_pkt->vlan_tci);
+			tx_oob.long_oob.drop_eligible_indicator =
+				RTE_VLAN_TCI_DEI(m_pkt->vlan_tci);
+			tx_oob.long_oob.vlan_identifier =
+				RTE_VLAN_TCI_ID(m_pkt->vlan_tci);
+		} else {
+			tx_oob.short_oob.packet_format = SHORT_PACKET_FORMAT;
+		}
 		tx_oob.short_oob.tx_is_outer_ipv4 =
 			m_pkt->ol_flags & RTE_MBUF_F_TX_IPV4 ? 1 : 0;
 		tx_oob.short_oob.tx_is_outer_ipv6 =
@@ -365,7 +379,7 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		/* Create SGL for packet data buffers */
 		for (seg_idx = 0; seg_idx < m_pkt->nb_segs; seg_idx++) {
 			struct mana_mr_cache *mr =
-				mana_find_pmd_mr(&txq->mr_btree, priv, m_seg);
+				mana_alloc_pmd_mr(&txq->mr_btree, priv, m_seg);
 
 			if (!mr) {
 				DP_LOG(ERR, "failed to get MR, pkt_idx %u",
@@ -409,8 +423,12 @@ mana_tx_burst(void *dpdk_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 		work_req.sgl = sgl.gdma_sgl;
 		work_req.num_sgl_elements = m_pkt->nb_segs;
-		work_req.inline_oob_size_in_bytes =
-			sizeof(struct transmit_short_oob_v2);
+		if (tx_oob.short_oob.packet_format == SHORT_PACKET_FORMAT)
+			work_req.inline_oob_size_in_bytes =
+				sizeof(struct transmit_short_oob_v2);
+		else
+			work_req.inline_oob_size_in_bytes =
+				sizeof(struct transmit_oob_v2);
 		work_req.inline_oob_data = &tx_oob;
 		work_req.flags = 0;
 		work_req.client_data_unit = NOT_USING_CLIENT_DATA_UNIT;

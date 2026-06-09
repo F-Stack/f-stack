@@ -13,11 +13,21 @@
 #include <rte_byteorder.h>
 #include <rte_security_driver.h>
 
+#include "qat_common.h"
 #include "qat_sym.h"
 #include "qat_crypto.h"
 #include "qat_qp.h"
 
 uint8_t qat_sym_driver_id;
+
+#define SYM_ENQ_THRESHOLD_NAME "qat_sym_enq_threshold"
+#define SYM_CIPHER_CRC_ENABLE_NAME "qat_sym_cipher_crc_enable"
+
+static const char *const arguments[] = {
+	SYM_ENQ_THRESHOLD_NAME,
+	SYM_CIPHER_CRC_ENABLE_NAME,
+	NULL
+};
 
 struct qat_crypto_gen_dev_ops qat_sym_gen_dev_ops[QAT_N_GENS];
 
@@ -61,11 +71,11 @@ qat_sym_init_op_cookie(void *op_cookie)
 
 static __rte_always_inline int
 qat_sym_build_request(void *in_op, uint8_t *out_msg,
-		void *op_cookie, uint64_t *opaque, enum qat_device_gen dev_gen)
+		void *op_cookie, struct qat_qp *qp)
 {
 	struct rte_crypto_op *op = (struct rte_crypto_op *)in_op;
-	uintptr_t sess = (uintptr_t)opaque[0];
-	uintptr_t build_request_p = (uintptr_t)opaque[1];
+	uintptr_t sess = (uintptr_t)qp->opaque[0];
+	uintptr_t build_request_p = (uintptr_t)qp->opaque[1];
 	qat_sym_build_request_t build_request = (void *)build_request_p;
 	struct qat_sym_session *ctx = NULL;
 	enum rte_proc_type_t proc_type = rte_eal_process_type();
@@ -82,7 +92,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 			cdev = rte_cryptodev_pmd_get_dev(ctx->dev_id);
 			internals = cdev->data->dev_private;
 
-			if (internals->qat_dev->qat_dev_gen != dev_gen) {
+			if (internals->qat_dev->qat_dev_gen != qp->qat_dev_gen) {
 				op->status =
 					RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
 				return -EINVAL;
@@ -90,7 +100,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 
 			if (unlikely(ctx->build_request[proc_type] == NULL)) {
 				int ret =
-				qat_sym_gen_dev_ops[dev_gen].set_session(
+				qat_sym_gen_dev_ops[qp->qat_dev_gen].set_session(
 					(void *)cdev, (void *)ctx);
 				if (ret < 0) {
 					op->status =
@@ -100,8 +110,8 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 			}
 
 			build_request = ctx->build_request[proc_type];
-			opaque[0] = (uintptr_t)ctx;
-			opaque[1] = (uintptr_t)build_request;
+			qp->opaque[0] = (uintptr_t)ctx;
+			qp->opaque[1] = (uintptr_t)build_request;
 		}
 	} else if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION) {
 		ctx = SECURITY_GET_SESS_PRIV(op->sym->session);
@@ -135,7 +145,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 			cdev = rte_cryptodev_pmd_get_dev(ctx->dev_id);
 			internals = cdev->data->dev_private;
 
-			if (internals->qat_dev->qat_dev_gen != dev_gen) {
+			if (internals->qat_dev->qat_dev_gen != qp->qat_dev_gen) {
 				op->status =
 					RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
 				return -EINVAL;
@@ -143,7 +153,7 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 
 			if (unlikely(ctx->build_request[proc_type] == NULL)) {
 				int ret =
-				qat_sym_gen_dev_ops[dev_gen].set_session(
+				qat_sym_gen_dev_ops[qp->qat_dev_gen].set_session(
 					(void *)cdev, (void *)sess);
 				if (ret < 0) {
 					op->status =
@@ -154,8 +164,8 @@ qat_sym_build_request(void *in_op, uint8_t *out_msg,
 
 			sess = (uintptr_t)op->sym->session;
 			build_request = ctx->build_request[proc_type];
-			opaque[0] = sess;
-			opaque[1] = (uintptr_t)build_request;
+			qp->opaque[0] = sess;
+			qp->opaque[1] = (uintptr_t)build_request;
 		}
 	} else { /* RTE_CRYPTO_OP_SESSIONLESS */
 		op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
@@ -179,15 +189,19 @@ qat_sym_dequeue_burst(void *qp, struct rte_crypto_op **ops,
 		uint16_t nb_ops)
 {
 	return qat_dequeue_op_burst(qp, (void **)ops,
-				qat_sym_process_response, nb_ops);
+							qat_sym_process_response, nb_ops);
 }
 
-int
-qat_sym_dev_create(struct qat_pci_device *qat_pci_dev,
-		struct qat_dev_cmd_param *qat_dev_cmd_param)
+uint16_t
+qat_sym_dequeue_burst_gen_lce(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops)
 {
-	int i = 0, ret = 0;
-	uint16_t slice_map = 0;
+	return qat_dequeue_op_burst(qp, (void **)ops, qat_sym_process_response_gen_lce, nb_ops);
+}
+
+static int
+qat_sym_dev_create(struct qat_pci_device *qat_pci_dev)
+{
+	int ret = 0;
 	struct qat_device_info *qat_dev_instance =
 			&qat_pci_devs[qat_pci_dev->qat_dev_id];
 	struct rte_cryptodev_pmd_init_params init_params = {
@@ -199,13 +213,22 @@ qat_sym_dev_create(struct qat_pci_device *qat_pci_dev,
 	char capa_memz_name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	struct rte_cryptodev *cryptodev;
 	struct qat_cryptodev_private *internals;
+	enum qat_device_gen qat_dev_gen = qat_pci_dev->qat_dev_gen;
 	const struct qat_crypto_gen_dev_ops *gen_dev_ops =
 		&qat_sym_gen_dev_ops[qat_pci_dev->qat_dev_gen];
+	uint16_t sub_id = qat_dev_instance->pci_dev->id.subsystem_device_id;
+	const char *cmdline = NULL;
 
 	snprintf(name, RTE_CRYPTODEV_NAME_MAX_LEN, "%s_%s",
 			qat_pci_dev->name, "sym");
 	QAT_LOG(DEBUG, "Creating QAT SYM device %s", name);
 
+	if (qat_pci_dev->qat_dev_gen == QAT_VQAT &&
+		sub_id != ADF_VQAT_SYM_PCI_SUBSYSTEM_ID) {
+		QAT_LOG(ERR, "Device (vqat instance) %s does not support symmetric crypto",
+				name);
+		return -EFAULT;
+	}
 	if (gen_dev_ops->cryptodev_ops == NULL) {
 		QAT_LOG(ERR, "Device %s does not support symmetric crypto",
 				name);
@@ -248,7 +271,10 @@ qat_sym_dev_create(struct qat_pci_device *qat_pci_dev,
 	cryptodev->dev_ops = gen_dev_ops->cryptodev_ops;
 
 	cryptodev->enqueue_burst = qat_sym_enqueue_burst;
-	cryptodev->dequeue_burst = qat_sym_dequeue_burst;
+	if (qat_dev_gen == QAT_GEN_LCE)
+		cryptodev->dequeue_burst = qat_sym_dequeue_burst_gen_lce;
+	else
+		cryptodev->dequeue_burst = qat_sym_dequeue_burst;
 
 	cryptodev->feature_flags = gen_dev_ops->get_feature_flags(qat_pci_dev);
 
@@ -275,26 +301,23 @@ qat_sym_dev_create(struct qat_pci_device *qat_pci_dev,
 
 	internals = cryptodev->data->dev_private;
 	internals->qat_dev = qat_pci_dev;
-
 	internals->dev_id = cryptodev->data->dev_id;
 
-	while (qat_dev_cmd_param[i].name != NULL) {
-		if (!strcmp(qat_dev_cmd_param[i].name, SYM_ENQ_THRESHOLD_NAME))
-			internals->min_enq_burst_threshold =
-					qat_dev_cmd_param[i].val;
-		if (!strcmp(qat_dev_cmd_param[i].name,
-				SYM_CIPHER_CRC_ENABLE_NAME))
-			internals->cipher_crc_offload_enable =
-					qat_dev_cmd_param[i].val;
-		if (!strcmp(qat_dev_cmd_param[i].name, QAT_LEGACY_CAPA))
-			qat_legacy_capa = qat_dev_cmd_param[i].val;
-		if (!strcmp(qat_dev_cmd_param[i].name, QAT_CMD_SLICE_MAP))
-			slice_map = qat_dev_cmd_param[i].val;
-		i++;
+	cmdline = qat_dev_cmdline_get_val(qat_pci_dev,
+			SYM_ENQ_THRESHOLD_NAME);
+	if (cmdline) {
+		internals->min_enq_burst_threshold =
+			atoi(cmdline) > MAX_QP_THRESHOLD_SIZE ?
+			MAX_QP_THRESHOLD_SIZE :
+			atoi(cmdline);
 	}
+	cmdline = qat_dev_cmdline_get_val(qat_pci_dev,
+			SYM_CIPHER_CRC_ENABLE_NAME);
+	if (cmdline)
+		internals->cipher_crc_offload_enable = atoi(cmdline);
 
 	if (gen_dev_ops->get_capabilities(internals,
-			capa_memz_name, slice_map) < 0) {
+			capa_memz_name, qat_pci_dev->options.slice_map) < 0) {
 		QAT_LOG(ERR,
 			"Device cannot obtain capabilities, destroying PMD for %s",
 			name);
@@ -302,7 +325,7 @@ qat_sym_dev_create(struct qat_pci_device *qat_pci_dev,
 		goto error;
 	}
 	internals->service_type = QAT_SERVICE_SYMMETRIC;
-	qat_pci_dev->sym_dev = internals;
+	qat_pci_dev->pmd[QAT_SERVICE_SYMMETRIC] = internals;
 	QAT_LOG(DEBUG, "Created QAT SYM device %s as cryptodev instance %d",
 			cryptodev->data->name, internals->dev_id);
 
@@ -318,25 +341,27 @@ error:
 	return ret;
 }
 
-int
+static int
 qat_sym_dev_destroy(struct qat_pci_device *qat_pci_dev)
 {
 	struct rte_cryptodev *cryptodev;
+	struct qat_cryptodev_private *dev;
 
 	if (qat_pci_dev == NULL)
 		return -ENODEV;
-	if (qat_pci_dev->sym_dev == NULL)
+	dev = qat_pci_dev->pmd[QAT_SERVICE_SYMMETRIC];
+	if (dev == NULL)
 		return 0;
 	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
-		rte_memzone_free(qat_pci_dev->sym_dev->capa_mz);
+		rte_memzone_free(dev->capa_mz);
 
 	/* free crypto device */
-	cryptodev = rte_cryptodev_pmd_get_dev(qat_pci_dev->sym_dev->dev_id);
+	cryptodev = rte_cryptodev_pmd_get_dev(dev->dev_id);
 	rte_free(cryptodev->security_ctx);
 	cryptodev->security_ctx = NULL;
 	rte_cryptodev_pmd_destroy(cryptodev);
 	qat_pci_devs[qat_pci_dev->qat_dev_id].sym_rte_dev.name = NULL;
-	qat_pci_dev->sym_dev = NULL;
+	qat_pci_dev->pmd[QAT_SERVICE_SYMMETRIC] = NULL;
 
 	return 0;
 }
@@ -393,3 +418,11 @@ static struct cryptodev_driver qat_crypto_drv;
 RTE_PMD_REGISTER_CRYPTO_DRIVER(qat_crypto_drv,
 		cryptodev_qat_sym_driver,
 		qat_sym_driver_id);
+
+RTE_INIT(qat_sym_init)
+{
+	qat_cmdline_defines[QAT_SERVICE_SYMMETRIC] = arguments;
+	qat_service[QAT_SERVICE_SYMMETRIC].name = "symmetric crypto";
+	qat_service[QAT_SERVICE_SYMMETRIC].dev_create = qat_sym_dev_create;
+	qat_service[QAT_SERVICE_SYMMETRIC].dev_destroy = qat_sym_dev_destroy;
+}

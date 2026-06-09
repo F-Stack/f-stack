@@ -17,7 +17,6 @@
 #include <rte_common.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_log.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_ethdev.h>
@@ -383,7 +382,7 @@ main(int argc, char **argv)
 
 			if (port_init(portid, mbuf_pool) != 0)
 				rte_exit(EXIT_FAILURE,
-					"Cannot init port %"PRIu8 "\n",
+					"Cannot init port %"PRIu16"\n",
 					portid);
 
 			for (w = 0; w < RTE_POWER_MAX_VFS; w++) {
@@ -425,8 +424,7 @@ main(int argc, char **argv)
 
 	lcore_id = rte_get_next_lcore(-1, 1, 0);
 	if (lcore_id == RTE_MAX_LCORE) {
-		RTE_LOG(ERR, EAL, "A minimum of three cores are required to run "
-				"application\n");
+		fprintf(stderr, "A minimum of three cores are required to run application\n");
 		return 0;
 	}
 	printf("Running channel monitor on lcore id %d\n", lcore_id);
@@ -434,16 +432,15 @@ main(int argc, char **argv)
 
 	lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
 	if (lcore_id == RTE_MAX_LCORE) {
-		RTE_LOG(ERR, EAL, "A minimum of three cores are required to run "
-				"application\n");
+		fprintf(stderr, "A minimum of three cores are required to run application\n");
 		return 0;
 	}
 	if (power_manager_init() < 0) {
-		printf("Unable to initialize power manager\n");
+		fprintf(stderr, "Unable to initialize power manager\n");
 		return -1;
 	}
 	if (channel_manager_init(CHANNEL_MGR_DEFAULT_HV_PATH) < 0) {
-		printf("Unable to initialize channel manager\n");
+		fprintf(stderr, "Unable to initialize channel manager\n");
 		return -1;
 	}
 

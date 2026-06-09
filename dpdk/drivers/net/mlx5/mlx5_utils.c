@@ -203,7 +203,7 @@ mlx5_ipool_update_global_cache(struct mlx5_indexed_pool *pool, int cidx)
 	struct mlx5_indexed_cache *gc, *lc, *olc = NULL;
 
 	lc = pool->cache[cidx]->lc;
-	gc = __atomic_load_n(&pool->gc, __ATOMIC_RELAXED);
+	gc = rte_atomic_load_explicit(&pool->gc, rte_memory_order_relaxed);
 	if (gc && lc != gc) {
 		mlx5_ipool_lock(pool);
 		if (lc && !(--lc->ref_cnt))
@@ -266,8 +266,8 @@ check_again:
 		pool->cache[cidx]->len = fetch_size - 1;
 		return pool->cache[cidx]->idx[pool->cache[cidx]->len];
 	}
-	trunk_idx = lc ? __atomic_load_n(&lc->n_trunk_valid,
-			 __ATOMIC_ACQUIRE) : 0;
+	trunk_idx = lc ? rte_atomic_load_explicit(&lc->n_trunk_valid,
+			 rte_memory_order_acquire) : 0;
 	trunk_n = lc ? lc->n_trunk : 0;
 	cur_max_idx = mlx5_trunk_idx_offset_get(pool, trunk_idx);
 	/* Check if index reach maximum. */
@@ -332,11 +332,11 @@ check_again:
 		lc = p;
 		lc->ref_cnt = 1;
 		pool->cache[cidx]->lc = lc;
-		__atomic_store_n(&pool->gc, p, __ATOMIC_RELAXED);
+		rte_atomic_store_explicit(&pool->gc, p, rte_memory_order_relaxed);
 	}
 	/* Add trunk to trunks array. */
 	lc->trunks[trunk_idx] = trunk;
-	__atomic_fetch_add(&lc->n_trunk_valid, 1, __ATOMIC_RELAXED);
+	rte_atomic_fetch_add_explicit(&lc->n_trunk_valid, 1, rte_memory_order_relaxed);
 	/* Enqueue half of the index to global. */
 	ts_idx = mlx5_trunk_idx_offset_get(pool, trunk_idx) + 1;
 	fetch_size = trunk->free >> 1;
@@ -587,7 +587,7 @@ mlx5_ipool_free(struct mlx5_indexed_pool *pool, uint32_t idx)
 	uint32_t trunk_idx;
 	uint32_t entry_idx;
 
-	if (!idx)
+	if (!pool || !idx)
 		return;
 	if (pool->cfg.per_core_cache) {
 		mlx5_ipool_free_cache(pool, idx);
@@ -808,6 +808,30 @@ mlx5_ipool_get_next(struct mlx5_indexed_pool *pool, uint32_t *pos)
 		idx++;
 	}
 	return NULL;
+}
+
+int
+mlx5_ipool_resize(struct mlx5_indexed_pool *pool, uint32_t num_entries,
+	struct rte_flow_error *error)
+{
+	if (num_entries == pool->cfg.max_idx)
+		return 0;
+	else if (num_entries < pool->cfg.max_idx)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					  NULL, "cannot decrease pool size");
+	if (num_entries % pool->cfg.trunk_size)
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					  NULL, "number of entries in pool must be trunk size multiplication");
+	if (num_entries >= mlx5_trunk_idx_offset_get(pool, TRUNK_MAX_IDX + 1))
+		return rte_flow_error_set(error, EINVAL,
+					  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					  NULL, "requested number of entries exceeds pool limit");
+	mlx5_ipool_lock(pool);
+	pool->cfg.max_idx = num_entries;
+	mlx5_ipool_unlock(pool);
+	return 0;
 }
 
 void

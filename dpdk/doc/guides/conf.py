@@ -10,19 +10,18 @@ from os import environ
 from os.path import basename
 from os.path import dirname
 from os.path import join as path_join
-from sys import argv, stderr
+from sys import argv, stderr, path
 
 import configparser
 
 try:
     import sphinx_rtd_theme
-
     html_theme = "sphinx_rtd_theme"
-except:
+except ImportError:
     print('Install the sphinx ReadTheDocs theme for improved html documentation '
           'layout: https://sphinx-rtd-theme.readthedocs.io/',
           file=stderr)
-    pass
+    html_theme = "default"
 
 stop_on_error = ('-W' in argv)
 
@@ -57,6 +56,62 @@ man_pages = [("testpmd_app_ug/run_app", "testpmd",
               "dump a PMDs hardware support info", "", 1),
              ("tools/devbind", "dpdk-devbind",
               "check device status and bind/unbind them from drivers", "", 8)]
+
+# DTS API docs additional configuration
+if environ.get('DTS_DOC_BUILD'):
+    extensions = ['sphinx.ext.napoleon', 'sphinx.ext.autodoc']
+
+    # Pydantic models require autodoc_pydantic for the right formatting
+    try:
+        import sphinxcontrib.autodoc_pydantic
+        extensions.append("sphinxcontrib.autodoc_pydantic")
+    except ImportError:
+        print(
+            "The DTS API doc dependencies are missing. "
+            "The generated output won't be as intended, "
+            "and autodoc may throw unexpected warnings.",
+            file=stderr,
+        )
+
+    # Napoleon enables the Google format of Python doscstrings.
+    napoleon_numpy_docstring = False
+    napoleon_attr_annotations = True
+    napoleon_preprocess_types = True
+
+    # Autodoc pulls documentation from code.
+    autodoc_default_options = {
+        'members': True,
+        'member-order': 'bysource',
+        'show-inheritance': True,
+    }
+    autodoc_class_signature = 'separated'
+    autodoc_typehints = 'both'
+    autodoc_typehints_format = 'short'
+    autodoc_typehints_description_target = 'documented'
+
+    # DTS docstring options.
+    add_module_names = False
+    toc_object_entries = True
+    toc_object_entries_show_parents = 'hide'
+    # DTS Sidebar config.
+    if html_theme == "sphinx_rtd_theme":
+        html_theme_options = {
+            'collapse_navigation': False,
+            'navigation_depth': -1,  # unlimited depth
+        }
+
+    # Add path to DTS sources so that Sphinx can find them.
+    dpdk_root = dirname(dirname(dirname(__file__)))
+    path.append(path_join(dpdk_root, 'dts'))
+
+    # Get missing DTS dependencies. Add path to buildtools to find the get_missing_imports function.
+    path.append(path_join(dpdk_root, 'buildtools'))
+    import importlib
+    # Ignore missing imports from DTS dependencies, allowing us to build the docs without them.
+    # There's almost no difference between docs built with and without dependencies.
+    # The qualified names of imported objects are fully expanded with dependencies, such as:
+    # fabric.Connection (without) vs. fabric.connection.Connection (with)
+    autodoc_mock_imports = importlib.import_module('check-dts-requirements').get_missing_imports()
 
 
 # ####### :numref: fallback ########
@@ -422,8 +477,13 @@ def setup(app):
                             'Crypto adapter Features',
                             'Features availability for Crypto adapters',
                             'Feature')
-    table_file = dirname(__file__) + '/eventdevs/overview_timer_adptr_feature_table.txt'
+    table_file = dirname(__file__) + '/eventdevs/overview_dma_adptr_feature_table.txt'
     generate_overview_table(table_file, 5,
+                            'DMA adapter Features',
+                            'Features availability for DMA adapters',
+                            'Feature')
+    table_file = dirname(__file__) + '/eventdevs/overview_timer_adptr_feature_table.txt'
+    generate_overview_table(table_file, 6,
                             'Timer adapter Features',
                             'Features availability for Timer adapters',
                             'Feature')

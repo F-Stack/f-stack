@@ -196,6 +196,39 @@ static const struct rte_ionic_xstats_name_off rte_ionic_xstats_strings[] = {
 			tx_desc_fetch_error)},
 	{"tx_desc_data_error", offsetof(struct ionic_lif_stats,
 			tx_desc_data_error)},
+	/* Flexible firmware events */
+	{"fw_flex_event1", offsetof(struct ionic_lif_stats, flex1)},
+	{"fw_flex_event2", offsetof(struct ionic_lif_stats, flex2)},
+	{"fw_flex_event3", offsetof(struct ionic_lif_stats, flex3)},
+	{"fw_flex_event4", offsetof(struct ionic_lif_stats, flex4)},
+	{"fw_flex_event5", offsetof(struct ionic_lif_stats, flex5)},
+	{"fw_flex_event6", offsetof(struct ionic_lif_stats, flex6)},
+	{"fw_flex_event7", offsetof(struct ionic_lif_stats, flex7)},
+	{"fw_flex_event8", offsetof(struct ionic_lif_stats, flex8)},
+	{"fw_flex_event9", offsetof(struct ionic_lif_stats, flex9)},
+	{"fw_flex_event10", offsetof(struct ionic_lif_stats, flex10)},
+	{"fw_flex_event11", offsetof(struct ionic_lif_stats, flex11)},
+	{"fw_flex_event12", offsetof(struct ionic_lif_stats, flex12)},
+	{"fw_flex_event13", offsetof(struct ionic_lif_stats, flex13)},
+	{"fw_flex_event14", offsetof(struct ionic_lif_stats, flex14)},
+	{"fw_flex_event15", offsetof(struct ionic_lif_stats, flex15)},
+	{"fw_flex_event16", offsetof(struct ionic_lif_stats, flex16)},
+	{"fw_flex_event17", offsetof(struct ionic_lif_stats, flex17)},
+	{"fw_flex_event18", offsetof(struct ionic_lif_stats, flex18)},
+	{"fw_flex_event19", offsetof(struct ionic_lif_stats, flex19)},
+	{"fw_flex_event20", offsetof(struct ionic_lif_stats, flex20)},
+	{"fw_flex_event21", offsetof(struct ionic_lif_stats, flex21)},
+	{"fw_flex_event22", offsetof(struct ionic_lif_stats, flex22)},
+	{"fw_flex_event23", offsetof(struct ionic_lif_stats, flex23)},
+	{"fw_flex_event24", offsetof(struct ionic_lif_stats, flex24)},
+	{"fw_flex_event25", offsetof(struct ionic_lif_stats, flex25)},
+	{"fw_flex_event26", offsetof(struct ionic_lif_stats, flex26)},
+	{"fw_flex_event27", offsetof(struct ionic_lif_stats, flex27)},
+	{"fw_flex_event28", offsetof(struct ionic_lif_stats, flex28)},
+	{"fw_flex_event29", offsetof(struct ionic_lif_stats, flex29)},
+	{"fw_flex_event30", offsetof(struct ionic_lif_stats, flex30)},
+	{"fw_flex_event31", offsetof(struct ionic_lif_stats, flex31)},
+	{"fw_flex_event32", offsetof(struct ionic_lif_stats, flex32)},
 };
 
 #define IONIC_NB_HW_STATS RTE_DIM(rte_ionic_xstats_strings)
@@ -267,6 +300,13 @@ ionic_dev_link_update(struct rte_eth_dev *eth_dev,
 
 	IONIC_PRINT_CALL();
 
+	/*
+	 * There is no way to hook up the device interrupts in the vdev
+	 * framework. Instead, poll for updates on the adapter.
+	 */
+	if (adapter->intf && adapter->intf->poll)
+		(*adapter->intf->poll)(adapter);
+
 	/* Initialize */
 	memset(&link, 0, sizeof(link));
 
@@ -285,6 +325,9 @@ ionic_dev_link_update(struct rte_eth_dev *eth_dev,
 		link.link_status = RTE_ETH_LINK_UP;
 		link.link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 		switch (adapter->link_speed) {
+		case  1000:
+			link.link_speed = RTE_ETH_SPEED_NUM_1G;
+			break;
 		case  10000:
 			link.link_speed = RTE_ETH_SPEED_NUM_10G;
 			break;
@@ -299,6 +342,9 @@ ionic_dev_link_update(struct rte_eth_dev *eth_dev,
 			break;
 		case 100000:
 			link.link_speed = RTE_ETH_SPEED_NUM_100G;
+			break;
+		case 200000:
+			link.link_speed = RTE_ETH_SPEED_NUM_200G;
 			break;
 		default:
 			link.link_speed = RTE_ETH_SPEED_NUM_NONE;
@@ -968,13 +1014,10 @@ ionic_dev_close(struct rte_eth_dev *eth_dev)
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
-	ionic_lif_stop(lif);
-
 	IONIC_PRINT(NOTICE, "Removing device %s", eth_dev->device->name);
 	if (adapter->intf->unconfigure_intr)
 		(*adapter->intf->unconfigure_intr)(adapter);
 
-	ionic_port_reset(adapter);
 	ionic_reset(adapter);
 
 	ionic_lif_free_queues(lif);

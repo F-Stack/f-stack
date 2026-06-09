@@ -11,7 +11,7 @@ Building the DPDK and its applications requires one of the following
 environments:
 
 * LLVM 14.0.0 (or later) and Microsoft MSVC linker.
-* The MinGW-w64 toolchain (either native or cross).
+* The MinGW-w64 10.0 (or later) toolchain (either native or cross).
 * Microsoft Visual Studio 2022 (any edition).
 
   - note Microsoft Visual Studio 2022 does not currently build enough
@@ -49,10 +49,6 @@ and ensure the Windows SDK is selected.
 Option 2. MinGW-w64 Toolchain
 -----------------------------
 
-On Linux, i.e. for cross-compilation, install MinGW-w64 via a package manager.
-Version 4.0.4 for Ubuntu 16.04 cannot be used due to a
-`MinGW-w64 bug <https://sourceforge.net/p/mingw-w64/bugs/562/>`_.
-
 On Windows, obtain the latest version installer from
 `MinGW-w64 repository <https://sourceforge.net/projects/mingw-w64/files/>`_.
 Any thread model (POSIX or Win32) can be chosen, DPDK does not rely on it.
@@ -76,10 +72,7 @@ A good option to choose is the MSI installer for both meson and ninja together::
 
 	http://mesonbuild.com/Getting-meson.html#installing-meson-and-ninja-with-the-msi-installer%22
 
-Required version is Meson 0.57.
-
-Versions starting from 0.58 are unusable with LLVM toolchain
-because of a `Meson issue <https://github.com/mesonbuild/meson/issues/8981>`_.
+The minimal Meson supported version is 1.5.2.
 
 
 Install the Backend
@@ -133,10 +126,23 @@ Depending on the distribution, paths in this file may need adjustments.
 Option 3. Native Build on Windows using MSVC
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Open a 'Developer PowerShell for VS 2022' prompt from the start menu.
+Open a 'Visual Studio Developer Command Prompt'.
 The developer prompt will configure the environment
 to select the appropriate compiler, linker and SDK paths
 required to build with Visual Studio 2022.
+
+Building DPDK applications that run on 32-bit Windows is currently not supported.
+If your Visual Studio environment defaults to producing 32-bit binaries,
+you can instruct the toolset to produce 64-bit binaries using "-arch" parameter.
+For more details about the Developer Prompt options, look at the
+`Visual Studio Developer Command Prompt and Developer PowerShell
+<https://learn.microsoft.com/en-us/visualstudio/ide/reference/command-prompt-powershell?view=vs-2022>`_.
+
+.. code-block:: console
+
+    "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=amd64
+
+Compile the code from the developer prompt.
 
 .. code-block:: console
 

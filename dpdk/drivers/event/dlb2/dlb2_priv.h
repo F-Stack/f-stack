@@ -29,7 +29,8 @@
 #define DLB2_SW_CREDIT_C_QUANTA_DEFAULT 256 /* Consumer */
 #define DLB2_DEPTH_THRESH_DEFAULT 256
 #define DLB2_MIN_CQ_DEPTH_OVERRIDE 32
-#define DLB2_MAX_CQ_DEPTH_OVERRIDE 128
+#define DLB2_MAX_CQ_DEPTH_OVERRIDE 1024
+#define DLB2_MAX_CQ_DEPTH_REORDER 128
 #define DLB2_MIN_ENQ_DEPTH_OVERRIDE 32
 #define DLB2_MAX_ENQ_DEPTH_OVERRIDE 1024
 
@@ -348,7 +349,7 @@ struct dlb2_port {
 	uint32_t dequeue_depth;
 	enum rte_pmd_dlb2_token_pop_mode token_pop_mode;
 	union dlb2_port_config cfg;
-	uint32_t *credit_pool[DLB2_NUM_QUEUE_TYPES]; /* use __atomic builtins */
+	RTE_ATOMIC(uint32_t) *credit_pool[DLB2_NUM_QUEUE_TYPES];
 	union {
 		struct {
 			uint16_t cached_ldb_credits;
@@ -387,8 +388,23 @@ struct dlb2_port {
 	bool use_scalar; /* force usage of scalar code */
 	uint16_t hw_credit_quanta;
 	bool use_avx512;
-	uint32_t cq_weight;
 	bool is_producer; /* True if port is of type producer */
+	uint8_t reorder_id; /* id used for reordering events coming back into the scheduler */
+	bool reorder_en;
+	struct dlb2_reorder *order; /* For ordering enqueues */
+};
+
+struct dlb2_reorder {
+	/* a reorder buffer for events coming back in different order from dequeue
+	 * We use UINT8_MAX + 1 elements, but add on three no-ops to make movdirs easier at the end
+	 */
+	union {
+		__m128i m128;
+		struct dlb2_enqueue_qe qe;
+		uint64_t u64[2];
+	} enq_reorder[UINT8_MAX + 4];
+	/* id of the next entry in the reorder enqueue ring to send in */
+	uint8_t next_to_enqueue;
 };
 
 /* Per-process per-port mmio and memory pointers */
@@ -429,13 +445,13 @@ enum dlb2_cos {
 	DLB2_COS_NUM_VALS
 };
 
-struct dlb2_hw_dev {
+struct __rte_cache_aligned dlb2_hw_dev {
 	struct dlb2_config cfg;
 	struct dlb2_hw_resource_info info;
 	void *pf_dev; /* opaque pointer to PF PMD dev (struct dlb2_dev) */
 	uint32_t domain_id;
 	rte_spinlock_t resource_lock; /* for MP support */
-} __rte_cache_aligned;
+};
 
 /* End HW related defines and structs */
 
@@ -516,13 +532,13 @@ struct dlb2_port_stats {
 	struct dlb2_queue_stats queue[DLB2_MAX_NUM_QUEUES_ALL];
 };
 
-struct dlb2_eventdev_port {
+struct __rte_cache_aligned dlb2_eventdev_port {
 	struct dlb2_port qm_port; /* hw specific data structure */
 	struct rte_event_port_conf conf; /* user-supplied configuration */
 	uint16_t inflight_credits; /* num credits this port has right now */
 	uint16_t credit_update_quanta;
 	struct dlb2_eventdev *dlb2; /* backlink optimization */
-	struct dlb2_port_stats stats __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct dlb2_port_stats stats;
 	struct dlb2_event_queue_link link[DLB2_MAX_NUM_QIDS_PER_LDB_CQ];
 	int num_links;
 	uint32_t id; /* port id */
@@ -539,7 +555,7 @@ struct dlb2_eventdev_port {
 	uint8_t implicit_release; /* release events before dequeuing */
 	uint32_t cq_weight; /* DLB2.5 and above ldb ports only */
 	int cos_id; /*ldb port class of service */
-}  __rte_cache_aligned;
+};
 
 struct dlb2_queue {
 	uint32_t num_qid_inflights; /* User config */
@@ -586,7 +602,7 @@ struct dlb2_eventdev {
 	uint32_t xstats_count_mode_dev;
 	uint32_t xstats_count_mode_port;
 	uint32_t xstats_count;
-	uint32_t inflights; /* use __atomic builtins */
+	RTE_ATOMIC(uint32_t) inflights;
 	uint32_t new_event_limit;
 	int max_num_events_override;
 	int num_dir_credits_override;
@@ -623,15 +639,12 @@ struct dlb2_eventdev {
 		struct {
 			uint16_t max_ldb_credits;
 			uint16_t max_dir_credits;
-			/* use __atomic builtins */ /* shared hw cred */
-			uint32_t ldb_credit_pool __rte_cache_aligned;
-			/* use __atomic builtins */ /* shared hw cred */
-			uint32_t dir_credit_pool __rte_cache_aligned;
+			alignas(RTE_CACHE_LINE_SIZE) RTE_ATOMIC(uint32_t) ldb_credit_pool;
+			alignas(RTE_CACHE_LINE_SIZE) RTE_ATOMIC(uint32_t) dir_credit_pool;
 		};
 		struct {
 			uint16_t max_credits;
-			/* use __atomic builtins */ /* shared hw cred */
-			uint32_t credit_pool __rte_cache_aligned;
+			alignas(RTE_CACHE_LINE_SIZE) RTE_ATOMIC(uint32_t) credit_pool;
 		};
 	};
 	uint32_t cos_ports[DLB2_COS_NUM_VALS]; /* total ldb ports in each class */
@@ -642,10 +655,6 @@ struct dlb2_eventdev {
 /* used for collecting and passing around the dev args */
 struct dlb2_qid_depth_thresholds {
 	int val[DLB2_MAX_NUM_QUEUES_ALL];
-};
-
-struct dlb2_cq_weight {
-	int limit[DLB2_MAX_NUM_PORTS_ALL];
 };
 
 struct dlb2_port_cos {
@@ -669,7 +678,6 @@ struct dlb2_devargs {
 	bool vector_opts_enabled;
 	int max_cq_depth;
 	int max_enq_depth;
-	struct dlb2_cq_weight cq_weight;
 	struct dlb2_port_cos port_cos;
 	struct dlb2_cos_bw cos_bw;
 	const char *producer_coremask;

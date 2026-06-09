@@ -41,6 +41,31 @@
 #include "hn_nvs.h"
 #include "ndis.h"
 
+/* Spinlock for netvsc_shared_data */
+static rte_spinlock_t netvsc_shared_data_lock = RTE_SPINLOCK_INITIALIZER;
+
+static struct netvsc_shared_data {
+	RTE_ATOMIC(uint32_t) secondary_cnt;
+} *netvsc_shared_data;
+
+static const struct rte_memzone *netvsc_shared_mz;
+#define MZ_NETVSC_SHARED_DATA "netvsc_shared_data"
+
+static struct netvsc_local_data {
+	bool init_done;
+	unsigned int primary_cnt;
+	unsigned int secondary_cnt;
+} netvsc_local_data;
+
+#define NETVSC_MP_NAME "net_netvsc_mp"
+#define NETVSC_MP_REQ_TIMEOUT_SEC 5
+
+struct netvsc_mp_param {
+	enum netvsc_mp_req_type type;
+	int vf_port;
+	int result;
+};
+
 #define HN_TX_OFFLOAD_CAPS (RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | \
 			    RTE_ETH_TX_OFFLOAD_TCP_CKSUM  | \
 			    RTE_ETH_TX_OFFLOAD_UDP_CKSUM  | \
@@ -639,6 +664,9 @@ static void netvsc_hotplug_retry(void *args)
 					    d->name);
 			}
 
+			ret = hn_vf_add(dev, hv);
+			if (ret)
+				PMD_DRV_LOG(ERR, "Failed to add VF in hotplug retry: %d", ret);
 			break;
 		}
 	}
@@ -651,6 +679,7 @@ free_hotadd_ctx:
 	LIST_REMOVE(hot_ctx, list);
 	rte_spinlock_unlock(&hv->hotadd_lock);
 
+	rte_devargs_reset(d);
 	rte_free(hot_ctx);
 }
 
@@ -1010,16 +1039,22 @@ hn_dev_start(struct rte_eth_dev *dev)
 				      NDIS_PACKET_TYPE_BROADCAST |
 				      NDIS_PACKET_TYPE_ALL_MULTICAST |
 				      NDIS_PACKET_TYPE_DIRECTED);
-	if (error)
+	if (error) {
+		rte_dev_event_callback_unregister(NULL,
+						  netvsc_hotadd_callback, hv);
 		return error;
+	}
 
 	error = hn_vf_start(dev);
-	if (error)
+	if (error) {
 		hn_rndis_set_rxfilter(hv, 0);
+		rte_dev_event_callback_unregister(NULL,
+						  netvsc_hotadd_callback, hv);
+		return error;
+	}
 
 	/* Initialize Link state */
-	if (error == 0)
-		hn_dev_link_update(dev, 0);
+	hn_dev_link_update(dev, 0);
 
 	for (i = 0; i < hv->num_queues; i++) {
 		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
@@ -1066,6 +1101,7 @@ hn_dev_close(struct rte_eth_dev *dev)
 		hot_ctx = LIST_FIRST(&hv->hotadd_list);
 		rte_eal_alarm_cancel(netvsc_hotplug_retry, hot_ctx);
 		LIST_REMOVE(hot_ctx, list);
+		rte_devargs_reset(&hot_ctx->da);
 		rte_free(hot_ctx);
 	}
 	rte_spinlock_unlock(&hv->hotadd_lock);
@@ -1175,14 +1211,23 @@ hn_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	if (ret)
 		return ret;
 
+	/* Free chimney bitmap and rxbuf_info before NVS detach */
+	hn_chim_uninit(dev);
+	rte_free(hv->primary->rxbuf_info);
+	hv->primary->rxbuf_info = NULL;
+
 	/* Release channel resources */
 	hn_detach(hv);
 
 	/* Close any secondary vmbus channels */
-	for (i = 1; i < hv->num_queues; i++)
+	for (i = 1; i < hv->num_queues; i++) {
 		rte_vmbus_chan_close(hv->channels[i]);
+		hv->channels[i] = NULL;
+	}
+	hv->num_queues = 1;
 
 	/* Close primary vmbus channel */
+	rte_vmbus_chan_close(hv->channels[0]);
 	rte_free(hv->channels[0]);
 
 	/* Unmap and re-map vmbus device */
@@ -1206,16 +1251,21 @@ hn_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 		return ret;
 	}
 
+	hv->primary->chan = hv->channels[0];
 	rte_vmbus_set_latency(hv->vmbus, hv->channels[0], hv->latency);
 
 	ret = hn_reinit(dev, mtu);
-	if (!ret)
+	if (!ret) {
+		hn_chim_init(dev);
 		goto out;
+	}
 
 	/* In case of error, attempt to restore original MTU */
 	ret = hn_reinit(dev, orig_mtu);
 	if (ret)
 		PMD_DRV_LOG(ERR, "Restoring original MTU failed for netvsc");
+	else
+		hn_chim_init(dev);
 
 	ret = hn_vf_mtu_set(dev, orig_mtu);
 	if (ret)
@@ -1343,8 +1393,10 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	hv->primary = hn_rx_queue_alloc(hv, 0,
 					eth_dev->device->numa_node);
 
-	if (!hv->primary)
-		return -ENOMEM;
+	if (!hv->primary) {
+		err = -ENOMEM;
+		goto failed;
+	}
 
 	err = hn_attach(hv, RTE_ETHER_MTU);
 	if  (err)
@@ -1370,8 +1422,10 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 
 	max_chan = rte_vmbus_max_channels(vmbus);
 	PMD_INIT_LOG(DEBUG, "VMBus max channels %d", max_chan);
-	if (max_chan <= 0)
+	if (max_chan <= 0) {
+		err = max_chan ? max_chan : -ENODEV;
 		goto failed;
+	}
 
 	if (hn_rndis_query_rsscaps(hv, &rxr_cnt) != 0)
 		rxr_cnt = 1;
@@ -1379,11 +1433,12 @@ eth_hn_dev_init(struct rte_eth_dev *eth_dev)
 	hv->max_queues = RTE_MIN(rxr_cnt, (unsigned int)max_chan);
 
 	/* If VF was reported but not added, do it now */
+	rte_rwlock_write_lock(&hv->vf_lock);
 	if (hv->vf_ctx.vf_vsp_reported && !hv->vf_ctx.vf_vsc_switched) {
 		PMD_INIT_LOG(DEBUG, "Adding VF device");
-
-		err = hn_vf_add(eth_dev, hv);
+		err = hn_vf_add_unlocked(eth_dev, hv);
 	}
+	rte_rwlock_write_unlock(&hv->vf_lock);
 
 	return 0;
 
@@ -1392,6 +1447,8 @@ failed:
 
 	hn_chim_uninit(eth_dev);
 	hn_detach(hv);
+	rte_free(hv->primary);
+	rte_vmbus_chan_close(hv->channels[0]);
 	return err;
 }
 
@@ -1400,6 +1457,7 @@ eth_hn_dev_uninit(struct rte_eth_dev *eth_dev)
 {
 	struct hn_data *hv = eth_dev->data->dev_private;
 	int ret, ret_stop;
+	int i;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -1414,13 +1472,232 @@ eth_hn_dev_uninit(struct rte_eth_dev *eth_dev)
 
 	hn_detach(hv);
 	hn_chim_uninit(eth_dev);
+
+	/* Close any subchannels before closing the primary channel */
+	for (i = 1; i < HN_MAX_CHANNELS; i++) {
+		if (hv->channels[i] != NULL) {
+			rte_vmbus_chan_close(hv->channels[i]);
+			hv->channels[i] = NULL;
+		}
+	}
+
 	rte_vmbus_chan_close(hv->channels[0]);
-	rte_free(hv->primary);
 	ret = rte_eth_dev_owner_delete(hv->owner.id);
 	if (ret != 0)
 		return ret;
 
 	return ret_stop;
+}
+
+static int
+netvsc_mp_primary_handle(const struct rte_mp_msg *mp_msg __rte_unused,
+			  const void *peer __rte_unused)
+{
+	/* Stub function required for multi-process message handling registration */
+	return 0;
+}
+
+static void
+mp_init_msg(struct rte_mp_msg *msg, enum netvsc_mp_req_type type, int vf_port)
+{
+	struct netvsc_mp_param *param;
+
+	strlcpy(msg->name, NETVSC_MP_NAME, sizeof(msg->name));
+	msg->len_param = sizeof(*param);
+
+	param = (struct netvsc_mp_param *)msg->param;
+	param->type = type;
+	param->vf_port = vf_port;
+}
+
+static int netvsc_secondary_handle_device_remove(int vf_port)
+{
+	if (!rte_eth_dev_is_valid_port(vf_port)) {
+		/* VF not probed in this secondary — nothing to release */
+		PMD_DRV_LOG(DEBUG, "VF port %u not present in secondary, skipping",
+			    vf_port);
+		return 0;
+	}
+
+	PMD_DRV_LOG(DEBUG, "Secondary releasing VF port %d", vf_port);
+	return rte_eth_dev_release_port(&rte_eth_devices[vf_port]);
+}
+
+static int
+netvsc_mp_secondary_handle(const struct rte_mp_msg *mp_msg, const void *peer)
+{
+	struct rte_mp_msg mp_res = { 0 };
+	struct netvsc_mp_param *res = (struct netvsc_mp_param *)mp_res.param;
+	const struct netvsc_mp_param *param =
+		(const struct netvsc_mp_param *)mp_msg->param;
+	int ret = 0;
+
+	mp_init_msg(&mp_res, param->type, param->vf_port);
+
+	switch (param->type) {
+	case NETVSC_MP_REQ_VF_REMOVE:
+		res->result = netvsc_secondary_handle_device_remove(param->vf_port);
+		ret = rte_mp_reply(&mp_res, peer);
+		break;
+
+	default:
+		PMD_DRV_LOG(ERR, "Unknown primary MP type %u", param->type);
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
+static int netvsc_mp_init_primary(void)
+{
+	int ret;
+	ret = rte_mp_action_register(NETVSC_MP_NAME, netvsc_mp_primary_handle);
+	if (ret && rte_errno != ENOTSUP) {
+		PMD_DRV_LOG(ERR, "Failed to register primary handler %d %d",
+			ret, rte_errno);
+		return -1;
+	}
+
+	return 0;
+}
+
+static void netvsc_mp_uninit_primary(void)
+{
+	rte_mp_action_unregister(NETVSC_MP_NAME);
+}
+
+static int netvsc_mp_init_secondary(void)
+{
+	return rte_mp_action_register(NETVSC_MP_NAME, netvsc_mp_secondary_handle);
+}
+
+static void netvsc_mp_uninit_secondary(void)
+{
+	rte_mp_action_unregister(NETVSC_MP_NAME);
+}
+
+int netvsc_mp_req_vf(struct hn_data *hv, enum netvsc_mp_req_type type,
+		     int vf_port)
+{
+	struct rte_mp_msg mp_req = { 0 };
+	struct rte_mp_msg *mp_res;
+	struct rte_mp_reply mp_rep = { 0 };
+	struct netvsc_mp_param *res;
+	struct timespec ts = {.tv_sec = NETVSC_MP_REQ_TIMEOUT_SEC, .tv_nsec = 0};
+	int i, ret;
+
+	/* if secondary count is 0, return */
+	if (rte_atomic_load_explicit(&netvsc_shared_data->secondary_cnt,
+			rte_memory_order_acquire) == 0)
+		return 0;
+
+	mp_init_msg(&mp_req, type, vf_port);
+
+	ret = rte_mp_request_sync(&mp_req, &mp_rep, &ts);
+	if (ret) {
+		if (rte_errno != ENOTSUP)
+			PMD_DRV_LOG(ERR, "port %u failed to request VF remove",
+				    hv->port_id);
+		else
+			ret = 0;
+		goto exit;
+	}
+
+	if (mp_rep.nb_sent != mp_rep.nb_received) {
+		PMD_DRV_LOG(ERR, "port %u not all secondaries responded type %d",
+			    hv->port_id, type);
+		ret = -1;
+		goto exit;
+	}
+	for (i = 0; i < mp_rep.nb_received; i++) {
+		mp_res = &mp_rep.msgs[i];
+		res = (struct netvsc_mp_param *)mp_res->param;
+		if (res->result) {
+			PMD_DRV_LOG(ERR, "port %u request failed on secondary %d",
+				    hv->port_id, i);
+			ret = -1;
+			goto exit;
+		}
+	}
+
+exit:
+	free(mp_rep.msgs);
+	return ret;
+}
+
+static int netvsc_init_once(void)
+{
+	int ret = 0;
+	const struct rte_memzone *secondary_mz;
+
+	if (netvsc_local_data.init_done)
+		return 0;
+
+	switch (rte_eal_process_type()) {
+	case RTE_PROC_PRIMARY:
+		netvsc_shared_mz = rte_memzone_reserve(MZ_NETVSC_SHARED_DATA,
+				sizeof(*netvsc_shared_data), SOCKET_ID_ANY, 0);
+		if (!netvsc_shared_mz) {
+			PMD_DRV_LOG(ERR, "Cannot allocate netvsc shared data");
+			return -rte_errno;
+		}
+		netvsc_shared_data = netvsc_shared_mz->addr;
+		rte_atomic_store_explicit(&netvsc_shared_data->secondary_cnt,
+				0, rte_memory_order_release);
+
+		ret = netvsc_mp_init_primary();
+		if (ret) {
+			rte_memzone_free(netvsc_shared_mz);
+			netvsc_shared_mz = NULL;
+			netvsc_shared_data = NULL;
+			break;
+		}
+
+		PMD_DRV_LOG(DEBUG, "MP INIT PRIMARY");
+		netvsc_local_data.init_done = true;
+		break;
+
+	case RTE_PROC_SECONDARY:
+		secondary_mz = rte_memzone_lookup(MZ_NETVSC_SHARED_DATA);
+		if (!secondary_mz) {
+			PMD_DRV_LOG(ERR, "Cannot attach netvsc shared data");
+			return -rte_errno;
+		}
+		netvsc_shared_data = secondary_mz->addr;
+		ret = netvsc_mp_init_secondary();
+		if (ret) {
+			netvsc_shared_data = NULL;
+			break;
+		}
+
+		PMD_DRV_LOG(DEBUG, "MP INIT SECONDARY");
+		netvsc_local_data.init_done = true;
+		break;
+
+	default:
+		/* Impossible */
+		ret = -EPROTO;
+		break;
+	}
+
+	return ret;
+}
+
+static void netvsc_uninit_once(void)
+{
+	if (netvsc_local_data.primary_cnt ||
+	    netvsc_local_data.secondary_cnt)
+		return;
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		netvsc_mp_uninit_primary();
+		rte_memzone_free(netvsc_shared_mz);
+		netvsc_shared_mz = NULL;
+		netvsc_shared_data = NULL;
+	} else {
+		netvsc_mp_uninit_secondary();
+	}
+	netvsc_local_data.init_done = false;
 }
 
 static int eth_hn_probe(struct rte_vmbus_driver *drv __rte_unused,
@@ -1431,23 +1708,57 @@ static int eth_hn_probe(struct rte_vmbus_driver *drv __rte_unused,
 
 	PMD_INIT_FUNC_TRACE();
 
+	rte_spinlock_lock(&netvsc_shared_data_lock);
+	ret = netvsc_init_once();
+	if (!ret) {
+		if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+			netvsc_local_data.primary_cnt++;
+		} else {
+			rte_atomic_fetch_add_explicit(&netvsc_shared_data->secondary_cnt,
+						      1, rte_memory_order_release);
+			netvsc_local_data.secondary_cnt++;
+		}
+	}
+	rte_spinlock_unlock(&netvsc_shared_data_lock);
+	if (ret)
+		return ret;
+
 	ret = rte_dev_event_monitor_start();
 	if (ret) {
 		PMD_DRV_LOG(ERR, "Failed to start device event monitoring");
-		return ret;
+		goto init_once_failed;
 	}
 
 	eth_dev = eth_dev_vmbus_allocate(dev, sizeof(struct hn_data));
-	if (!eth_dev)
-		return -ENOMEM;
+	if (!eth_dev) {
+		ret = -ENOMEM;
+		goto vmbus_alloc_failed;
+	}
 
 	ret = eth_hn_dev_init(eth_dev);
-	if (ret) {
-		eth_dev_vmbus_release(eth_dev);
-		rte_dev_event_monitor_stop();
+	if (ret)
+		goto dev_init_failed;
+
+	rte_eth_dev_probing_finish(eth_dev);
+	return ret;
+
+dev_init_failed:
+	eth_dev_vmbus_release(eth_dev);
+
+vmbus_alloc_failed:
+	rte_dev_event_monitor_stop();
+
+init_once_failed:
+	rte_spinlock_lock(&netvsc_shared_data_lock);
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		netvsc_local_data.primary_cnt--;
 	} else {
-		rte_eth_dev_probing_finish(eth_dev);
+		rte_atomic_fetch_sub_explicit(&netvsc_shared_data->secondary_cnt,
+					      1, rte_memory_order_release);
+		netvsc_local_data.secondary_cnt--;
 	}
+	netvsc_uninit_once();
+	rte_spinlock_unlock(&netvsc_shared_data_lock);
 
 	return ret;
 }
@@ -1460,16 +1771,31 @@ static int eth_hn_remove(struct rte_vmbus_device *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	eth_dev = rte_eth_dev_allocated(dev->device.name);
-	if (!eth_dev)
-		return 0; /* port already released */
+	if (!eth_dev) {
+		ret = 0; /* port already released */
+		goto uninit;
+	}
 
 	ret = eth_hn_dev_uninit(eth_dev);
 	if (ret)
-		return ret;
+		goto uninit;
 
 	eth_dev_vmbus_release(eth_dev);
 	rte_dev_event_monitor_stop();
-	return 0;
+
+uninit:
+	rte_spinlock_lock(&netvsc_shared_data_lock);
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		netvsc_local_data.primary_cnt--;
+	} else {
+		rte_atomic_fetch_sub_explicit(&netvsc_shared_data->secondary_cnt,
+				1, rte_memory_order_release);
+		netvsc_local_data.secondary_cnt--;
+	}
+	netvsc_uninit_once();
+	rte_spinlock_unlock(&netvsc_shared_data_lock);
+
+	return ret;
 }
 
 /* Network device GUID */

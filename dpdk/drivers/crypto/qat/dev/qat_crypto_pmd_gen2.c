@@ -182,10 +182,8 @@ qat_sym_session_set_ext_hash_flags_gen2(struct qat_sym_session *session,
 			session->fw_req.cd_ctrl.content_desc_ctrl_lw;
 
 	/* Set the Use Extended Protocol Flags bit in LW 1 */
-	QAT_FIELD_SET(header->comn_req_flags,
-			QAT_COMN_EXT_FLAGS_USED,
-			QAT_COMN_EXT_FLAGS_BITPOS,
-			QAT_COMN_EXT_FLAGS_MASK);
+	ICP_QAT_FW_USE_EXTENDED_PROTOCOL_FLAGS_SET(
+			header->ext_flags, QAT_LA_USE_EXTENDED_PROTOCOL_FLAGS);
 
 	/* Set Hash Flags in LW 28 */
 	cd_ctrl->hash_flags |= hash_flag;
@@ -199,6 +197,7 @@ qat_sym_session_set_ext_hash_flags_gen2(struct qat_sym_session *session,
 				header->serv_specif_flags, 0);
 		break;
 	case ICP_QAT_HW_CIPHER_ALGO_ZUC_3G_128_EEA3:
+	case ICP_QAT_HW_CIPHER_ALGO_ZUC_256:
 		ICP_QAT_FW_LA_PROTO_SET(header->serv_specif_flags,
 				ICP_QAT_FW_LA_NO_PROTO);
 		ICP_QAT_FW_LA_ZUC_3G_PROTO_FLAG_SET(
@@ -291,7 +290,7 @@ qat_sym_crypto_cap_get_gen2(struct qat_cryptodev_private *internals,
 	uint32_t legacy_size = sizeof(qat_sym_crypto_legacy_caps_gen2);
 	legacy_capa_num = legacy_size/sizeof(struct rte_cryptodev_capabilities);
 
-	if (unlikely(qat_legacy_capa))
+	if (unlikely(internals->qat_dev->options.legacy_alg))
 		size = size + legacy_size;
 
 	internals->capa_mz = rte_memzone_lookup(capa_memz_name);
@@ -310,7 +309,7 @@ qat_sym_crypto_cap_get_gen2(struct qat_cryptodev_private *internals,
 				internals->capa_mz->addr;
 	struct rte_cryptodev_capabilities *capabilities;
 
-	if (unlikely(qat_legacy_capa)) {
+	if (unlikely(internals->qat_dev->options.legacy_alg)) {
 		capabilities = qat_sym_crypto_legacy_caps_gen2;
 		memcpy(addr, capabilities, legacy_size);
 		addr += legacy_capa_num;

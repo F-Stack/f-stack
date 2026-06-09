@@ -18,12 +18,21 @@
 
 /* Space for ctrl_word(8B), IV(48B), passthrough alignment(8B) */
 #define CNXK_CPT_MIN_HEADROOM_REQ 64
-#define CNXK_CPT_MIN_TAILROOM_REQ 102
+/* Tailroom required for RX-inject path.
+ * In RX-inject path, space is required for below entities:
+ * WQE header and NIX_RX_PARSE_S
+ * SG list format for 6 IOVA pointers
+ * Space for 128 byte alignment.
+ */
+#define CNXK_CPT_MIN_TAILROOM_REQ 256
+#define CNXK_CPT_MAX_SG_SEGS	  6
 
 /* Default command timeout in seconds */
 #define DEFAULT_COMMAND_TIMEOUT 4
 
 #define MOD_INC(i, l) ((i) == (l - 1) ? (i) = 0 : (i)++)
+
+#define CN10K_CPT_PKTS_PER_LOOP	  64
 
 /* Macros to form words in CPT instruction */
 #define CNXK_CPT_INST_W2(tag, tt, grp, rvu_pf_func)                            \
@@ -42,7 +51,7 @@ struct cpt_qp_meta_info {
 #define CPT_OP_FLAGS_IPSEC_DIR_INBOUND (1 << 2)
 #define CPT_OP_FLAGS_IPSEC_INB_REPLAY  (1 << 3)
 
-struct cpt_inflight_req {
+struct __rte_aligned(ROC_ALIGN) cpt_inflight_req {
 	union cpt_res_s res;
 	union {
 		void *opaque;
@@ -51,8 +60,15 @@ struct cpt_inflight_req {
 	};
 	void *mdata;
 	uint8_t op_flags;
+#ifdef CPT_INST_DEBUG_ENABLE
+	uint8_t scatter_sz;
+	uint8_t opcode_major;
+	uint8_t is_sg_ver2;
+	uint8_t *dptr;
+	uint8_t *rptr;
+#endif
 	void *qp;
-} __rte_aligned(ROC_ALIGN);
+};
 
 PLT_STATIC_ASSERT(sizeof(struct cpt_inflight_req) == ROC_CACHE_LINE_SZ);
 
@@ -95,6 +111,8 @@ struct cnxk_cpt_qp {
 	/**< Session mempool */
 };
 
+int cnxk_cpt_asym_get_mlen(void);
+
 int cnxk_cpt_dev_config(struct rte_cryptodev *dev,
 			struct rte_cryptodev_config *conf);
 
@@ -110,6 +128,9 @@ void cnxk_cpt_dev_info_get(struct rte_cryptodev *dev,
 int cnxk_cpt_queue_pair_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 			      const struct rte_cryptodev_qp_conf *conf,
 			      int socket_id __rte_unused);
+
+int cnxk_cpt_queue_pair_reset(struct rte_cryptodev *dev, uint16_t qp_id,
+			      const struct rte_cryptodev_qp_conf *conf, int socket_id);
 
 int cnxk_cpt_queue_pair_release(struct rte_cryptodev *dev, uint16_t qp_id);
 
@@ -134,6 +155,8 @@ int cnxk_ae_session_cfg(struct rte_cryptodev *dev,
 			struct rte_cryptodev_asym_session *sess);
 void cnxk_cpt_dump_on_err(struct cnxk_cpt_qp *qp);
 int cnxk_cpt_queue_pair_event_error_query(struct rte_cryptodev *dev, uint16_t qp_id);
+
+uint32_t cnxk_cpt_qp_depth_used(void *qptr);
 
 static __rte_always_inline void
 pending_queue_advance(uint64_t *index, const uint64_t mask)

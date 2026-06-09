@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <inttypes.h>
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <math.h>
@@ -30,27 +31,29 @@
 #define DATA_MZ_NAME_FORMAT "rte_event_timer_adapter_data_%d"
 
 RTE_LOG_REGISTER_SUFFIX(evtim_logtype, adapter.timer, NOTICE);
+#define RTE_LOGTYPE_EVTIM evtim_logtype
 RTE_LOG_REGISTER_SUFFIX(evtim_buffer_logtype, adapter.timer, NOTICE);
+#define RTE_LOGTYPE_EVTIM_BUF evtim_buffer_logtype
 RTE_LOG_REGISTER_SUFFIX(evtim_svc_logtype, adapter.timer.svc, NOTICE);
+#define RTE_LOGTYPE_EVTIM_SVC evtim_svc_logtype
 
 static struct rte_event_timer_adapter *adapters;
 
 static const struct event_timer_adapter_ops swtim_ops;
 
 #define EVTIM_LOG(level, logtype, ...) \
-	rte_log(RTE_LOG_ ## level, logtype, \
-		RTE_FMT("EVTIMER: %s() line %u: " RTE_FMT_HEAD(__VA_ARGS__,) \
-			"\n", __func__, __LINE__, RTE_FMT_TAIL(__VA_ARGS__,)))
+	RTE_LOG_LINE_PREFIX(level, logtype, \
+		"EVTIMER: %s() line %u: ", __func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
-#define EVTIM_LOG_ERR(...) EVTIM_LOG(ERR, evtim_logtype, __VA_ARGS__)
+#define EVTIM_LOG_ERR(...) EVTIM_LOG(ERR, EVTIM, __VA_ARGS__)
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 #define EVTIM_LOG_DBG(...) \
-	EVTIM_LOG(DEBUG, evtim_logtype, __VA_ARGS__)
+	EVTIM_LOG(DEBUG, EVTIM, __VA_ARGS__)
 #define EVTIM_BUF_LOG_DBG(...) \
-	EVTIM_LOG(DEBUG, evtim_buffer_logtype, __VA_ARGS__)
+	EVTIM_LOG(DEBUG, EVTIM_BUF, __VA_ARGS__)
 #define EVTIM_SVC_LOG_DBG(...) \
-	EVTIM_LOG(DEBUG, evtim_svc_logtype, __VA_ARGS__)
+	EVTIM_LOG(DEBUG, EVTIM_SVC, __VA_ARGS__)
 #else
 #define EVTIM_LOG_DBG(...) (void)0
 #define EVTIM_BUF_LOG_DBG(...) (void)0
@@ -509,11 +512,11 @@ rte_event_timer_remaining_ticks_get(
 
 #define EXP_TIM_BUF_SZ 128
 
-struct event_buffer {
+struct __rte_cache_aligned event_buffer {
 	size_t head;
 	size_t tail;
 	struct rte_event events[EVENT_BUFFER_SZ];
-} __rte_cache_aligned;
+};
 
 static inline bool
 event_buffer_full(struct event_buffer *bufp)
@@ -629,9 +632,9 @@ struct swtim {
 	/* Identifier of timer data instance */
 	uint32_t timer_data_id;
 	/* Track which cores have actually armed a timer */
-	struct {
+	alignas(RTE_CACHE_LINE_SIZE) struct {
 		RTE_ATOMIC(uint16_t) v;
-	} __rte_cache_aligned in_use[RTE_MAX_LCORE];
+	} in_use[RTE_MAX_LCORE];
 	/* Track which cores' timer lists should be polled */
 	RTE_ATOMIC(unsigned int) poll_lcores[RTE_MAX_LCORE];
 	/* The number of lists that should be polled */
@@ -1395,7 +1398,7 @@ handle_ta_info(const char *cmd __rte_unused, const char *params,
 
 	adapter_id = atoi(params);
 
-	if (adapter_id >= RTE_EVENT_TIMER_ADAPTER_NUM_MAX) {
+	if (adapters == NULL || adapter_id >= RTE_EVENT_TIMER_ADAPTER_NUM_MAX) {
 		EVTIM_LOG_ERR("Invalid timer adapter id %u", adapter_id);
 		return -EINVAL;
 	}
@@ -1441,7 +1444,7 @@ handle_ta_stats(const char *cmd __rte_unused, const char *params,
 
 	adapter_id = atoi(params);
 
-	if (adapter_id >= RTE_EVENT_TIMER_ADAPTER_NUM_MAX) {
+	if (adapters == NULL || adapter_id >= RTE_EVENT_TIMER_ADAPTER_NUM_MAX) {
 		EVTIM_LOG_ERR("Invalid timer adapter id %u", adapter_id);
 		return -EINVAL;
 	}

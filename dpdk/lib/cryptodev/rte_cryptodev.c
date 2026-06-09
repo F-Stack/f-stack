@@ -49,6 +49,8 @@ struct rte_crypto_fp_ops rte_crypto_fp_ops[RTE_CRYPTO_MAX_DEVS];
 /* spinlock for crypto device callbacks */
 static rte_spinlock_t rte_cryptodev_cb_lock = RTE_SPINLOCK_INITIALIZER;
 
+RTE_LOG_REGISTER_DEFAULT(rte_cryptodev_logtype, INFO);
+
 /**
  * The user application callback description.
  *
@@ -95,7 +97,8 @@ crypto_cipher_algorithm_strings[] = {
 	[RTE_CRYPTO_CIPHER_SM4_CBC]	= "sm4-cbc",
 	[RTE_CRYPTO_CIPHER_SM4_CTR]	= "sm4-ctr",
 	[RTE_CRYPTO_CIPHER_SM4_CFB]	= "sm4-cfb",
-	[RTE_CRYPTO_CIPHER_SM4_OFB]	= "sm4-ofb"
+	[RTE_CRYPTO_CIPHER_SM4_OFB]	= "sm4-ofb",
+	[RTE_CRYPTO_CIPHER_SM4_XTS]	= "sm4-xts"
 };
 
 /**
@@ -626,6 +629,22 @@ rte_cryptodev_asym_xform_capability_check_hash(
 	return ret;
 }
 
+int
+rte_cryptodev_asym_xform_capability_check_opcap(
+	const struct rte_cryptodev_asymmetric_xform_capability *capability,
+	enum rte_crypto_asym_op_type op_type, uint8_t cap)
+{
+	int ret = 0;
+
+	if (!(capability->op_types & (1 << op_type)))
+		return ret;
+
+	if (capability->op_capa[op_type] & (1 << cap))
+		ret = 1;
+
+	return ret;
+}
+
 /* spinlock for crypto device enq callbacks */
 static rte_spinlock_t rte_cryptodev_callback_lock = RTE_SPINLOCK_INITIALIZER;
 
@@ -1050,6 +1069,27 @@ rte_cryptodev_find_free_device_index(void)
 	return RTE_CRYPTO_MAX_DEVS;
 }
 
+static uint8_t
+rte_cryptodev_find_device_by_name(const char *name)
+{
+	char mz_name[RTE_MEMZONE_NAMESIZE];
+	const struct rte_memzone *mz;
+	struct rte_cryptodev_data *data;
+	uint8_t dev_id;
+
+	for (dev_id = 0; dev_id < RTE_CRYPTO_MAX_DEVS; dev_id++) {
+		snprintf(mz_name, sizeof(mz_name), "rte_cryptodev_data_%u", dev_id);
+		mz = rte_memzone_lookup(mz_name);
+		if (mz == NULL)
+			continue;
+
+		data = mz->addr;
+		if (strncmp(data->name, name, RTE_CRYPTODEV_NAME_MAX_LEN) == 0)
+			return dev_id;
+	}
+	return RTE_CRYPTO_MAX_DEVS;
+}
+
 struct rte_cryptodev *
 rte_cryptodev_pmd_allocate(const char *name, int socket_id)
 {
@@ -1062,10 +1102,18 @@ rte_cryptodev_pmd_allocate(const char *name, int socket_id)
 		return NULL;
 	}
 
-	dev_id = rte_cryptodev_find_free_device_index();
-	if (dev_id == RTE_CRYPTO_MAX_DEVS) {
-		CDEV_LOG_ERR("Reached maximum number of crypto devices");
-		return NULL;
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		dev_id = rte_cryptodev_find_device_by_name(name);
+		if (dev_id == RTE_CRYPTO_MAX_DEVS) {
+			CDEV_LOG_ERR("Device %s does not exist in primary process", name);
+			return NULL;
+		}
+	} else {
+		dev_id = rte_cryptodev_find_free_device_index();
+		if (dev_id == RTE_CRYPTO_MAX_DEVS) {
+			CDEV_LOG_ERR("Reached maximum number of crypto devices");
+			return NULL;
+		}
 	}
 
 	cryptodev = rte_cryptodev_pmd_get_dev(dev_id);
@@ -1218,6 +1266,30 @@ rte_cryptodev_queue_pairs_config(struct rte_cryptodev *dev, uint16_t nb_qpairs,
 	}
 	dev->data->nb_queue_pairs = nb_qpairs;
 	return 0;
+}
+
+int
+rte_cryptodev_queue_pair_reset(uint8_t dev_id, uint16_t queue_pair_id,
+		const struct rte_cryptodev_qp_conf *qp_conf, int socket_id)
+{
+	struct rte_cryptodev *dev;
+
+	if (!rte_cryptodev_is_valid_dev(dev_id)) {
+		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
+		return -EINVAL;
+	}
+
+	dev = &rte_crypto_devices[dev_id];
+	if (queue_pair_id >= dev->data->nb_queue_pairs) {
+		CDEV_LOG_ERR("Invalid queue_pair_id=%d", queue_pair_id);
+		return -EINVAL;
+	}
+
+	if (*dev->dev_ops->queue_pair_reset == NULL)
+		return -ENOTSUP;
+
+	rte_cryptodev_trace_queue_pair_reset(dev_id, queue_pair_id, qp_conf, socket_id);
+	return (*dev->dev_ops->queue_pair_reset)(dev, queue_pair_id, qp_conf, socket_id);
 }
 
 int
@@ -2585,7 +2657,7 @@ rte_crypto_op_init(struct rte_mempool *mempool,
 
 	__rte_crypto_op_reset(op, type);
 
-	op->phys_addr = rte_mem_virt2iova(_op_data);
+	op->phys_addr = rte_mempool_virt2iova(_op_data);
 	op->mempool = mempool;
 }
 

@@ -60,6 +60,8 @@
 #define NFP_FW_LOAD_RET_MAJOR   GENMASK_ULL(15, 8)
 #define NFP_FW_LOAD_RET_MINOR   GENMASK_ULL(23, 16)
 
+#define NFP_HWINFO_LOOKUP_SIZE  GENMASK_ULL(11, 0)
+
 enum nfp_nsp_cmd {
 	SPCODE_NOOP             = 0, /* No operation */
 	SPCODE_SOFT_RESET       = 1, /* Soft reset the NFP */
@@ -80,6 +82,7 @@ enum nfp_nsp_cmd {
 	SPCODE_VERSIONS         = 21, /* Report FW versions */
 	SPCODE_READ_SFF_EEPROM  = 22, /* Read module EEPROM */
 	SPCODE_READ_MEDIA       = 23, /* Get the supported/advertised media for a port */
+	SPCODE_DEV_ACTIVATE	= 29, /* Activate hardware for multiple pfs case */
 };
 
 static const struct {
@@ -185,7 +188,7 @@ nfp_nsp_print_extended_error(uint32_t ret_val)
 
 	for (i = 0; i < RTE_DIM(nsp_errors); i++)
 		if (ret_val == nsp_errors[i].code)
-			PMD_DRV_LOG(ERR, "err msg: %s", nsp_errors[i].msg);
+			PMD_DRV_LOG(ERR, "Err msg: %s.", nsp_errors[i].msg);
 }
 
 static int
@@ -202,12 +205,12 @@ nfp_nsp_check(struct nfp_nsp *state)
 
 	err = nfp_cpp_readq(cpp, nsp_cpp, nsp_status, &reg);
 	if (err < 0) {
-		PMD_DRV_LOG(ERR, "NSP - CPP readq failed %d", err);
+		PMD_DRV_LOG(ERR, "NSP - CPP readq failed %d.", err);
 		return err;
 	}
 
 	if (FIELD_GET(NSP_STATUS_MAGIC, reg) != NSP_MAGIC) {
-		PMD_DRV_LOG(ERR, "Cannot detect NFP Service Processor");
+		PMD_DRV_LOG(ERR, "Can not detect NFP Service Processor.");
 		return -ENODEV;
 	}
 
@@ -215,13 +218,13 @@ nfp_nsp_check(struct nfp_nsp *state)
 	state->ver.minor = FIELD_GET(NSP_STATUS_MINOR, reg);
 
 	if (state->ver.major > NSP_MAJOR || state->ver.minor < NSP_MINOR) {
-		PMD_DRV_LOG(ERR, "Unsupported ABI %hu.%hu", state->ver.major,
+		PMD_DRV_LOG(ERR, "Unsupported ABI %hu.%hu.", state->ver.major,
 				state->ver.minor);
 		return -EINVAL;
 	}
 
 	if ((reg & NSP_STATUS_BUSY) != 0) {
-		PMD_DRV_LOG(ERR, "Service processor busy!");
+		PMD_DRV_LOG(DEBUG, "Service processor busy!");
 		return -EBUSY;
 	}
 
@@ -243,12 +246,13 @@ nfp_nsp_open(struct nfp_cpp *cpp)
 
 	res = nfp_resource_acquire(cpp, NFP_RESOURCE_NSP);
 	if (res == NULL) {
-		PMD_DRV_LOG(ERR, "NSP - resource acquire failed");
+		PMD_DRV_LOG(ERR, "NSP - resource acquire failed.");
 		return NULL;
 	}
 
 	state = malloc(sizeof(*state));
 	if (state == NULL) {
+		PMD_DRV_LOG(ERR, "NSP - failed to malloc name %s", NFP_RESOURCE_NSP);
 		nfp_resource_release(res);
 		return NULL;
 	}
@@ -258,7 +262,7 @@ nfp_nsp_open(struct nfp_cpp *cpp)
 
 	err = nfp_nsp_check(state);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "NSP - check failed");
+		PMD_DRV_LOG(DEBUG, "NSP - check failed.");
 		nfp_nsp_close(state);
 		return NULL;
 	}
@@ -309,7 +313,7 @@ nfp_nsp_wait_reg(struct nfp_cpp *cpp,
 	for (;;) {
 		err = nfp_cpp_readq(cpp, nsp_cpp, addr, reg);
 		if (err < 0) {
-			PMD_DRV_LOG(ERR, "NSP - CPP readq failed");
+			PMD_DRV_LOG(ERR, "NSP - CPP readq failed.");
 			return err;
 		}
 
@@ -361,13 +365,15 @@ nfp_nsp_command_real(struct nfp_nsp *state,
 
 	err = nfp_nsp_check(state);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "Check NSP command failed");
+		PMD_DRV_LOG(ERR, "Check NSP command failed.");
 		return err;
 	}
 
 	err = nfp_cpp_writeq(cpp, nsp_cpp, nsp_buffer, arg->buf);
-	if (err < 0)
+	if (err < 0) {
+		PMD_DRV_LOG(ERR, "CPP write buffer failed. err %d", err);
 		return err;
+	}
 
 	err = nfp_cpp_writeq(cpp, nsp_cpp, nsp_command,
 			FIELD_PREP(NSP_COMMAND_OPTION, arg->option) |
@@ -375,14 +381,16 @@ nfp_nsp_command_real(struct nfp_nsp *state,
 			FIELD_PREP(NSP_COMMAND_CODE, arg->code) |
 			FIELD_PREP(NSP_COMMAND_DMA_BUF, arg->dma) |
 			FIELD_PREP(NSP_COMMAND_START, 1));
-	if (err < 0)
+	if (err < 0) {
+		PMD_DRV_LOG(ERR, "CPP write command failed. err %d", err);
 		return err;
+	}
 
 	/* Wait for NSP_COMMAND_START to go to 0 */
 	err = nfp_nsp_wait_reg(cpp, &reg, nsp_cpp, nsp_command,
 			NSP_COMMAND_START, 0);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "Error %d waiting for code %#04x to start",
+		PMD_DRV_LOG(ERR, "Error %d waiting for code %#04x to start.",
 				err, arg->code);
 		return err;
 	}
@@ -391,21 +399,23 @@ nfp_nsp_command_real(struct nfp_nsp *state,
 	err = nfp_nsp_wait_reg(cpp, &reg, nsp_cpp, nsp_status,
 			NSP_STATUS_BUSY, 0);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "Error %d waiting for code %#04x to complete",
+		PMD_DRV_LOG(ERR, "Error %d waiting for code %#04x to complete.",
 				err, arg->code);
 		return err;
 	}
 
 	err = nfp_cpp_readq(cpp, nsp_cpp, nsp_command, &ret_val);
-	if (err < 0)
+	if (err < 0) {
+		PMD_DRV_LOG(ERR, "CPP read return value failed. err %d", err);
 		return err;
+	}
 
 	ret_val = FIELD_GET(NSP_COMMAND_OPTION, ret_val);
 
 	err = FIELD_GET(NSP_STATUS_RESULT, reg);
 	if (err != 0) {
 		if (!arg->error_quiet)
-			PMD_DRV_LOG(WARNING, "Result (error) code set: %d (%d) command: %d",
+			PMD_DRV_LOG(ERR, "Result (error) code set: %d (%d) command: %d.",
 					-err, (int)ret_val, arg->code);
 
 		if (arg->error_cb != 0)
@@ -467,7 +477,7 @@ nfp_nsp_command_buf_def(struct nfp_nsp *nsp,
 
 	if (!FIELD_FIT(NSP_BUFFER_CPP, cpp_id >> 8) ||
 			!FIELD_FIT(NSP_BUFFER_ADDRESS, cpp_buf)) {
-		PMD_DRV_LOG(ERR, "Buffer out of reach %#08x %#016lx",
+		PMD_DRV_LOG(ERR, "Buffer out of reach %#08x %#016lx.",
 				cpp_id, cpp_buf);
 		return -EINVAL;
 	}
@@ -476,7 +486,9 @@ nfp_nsp_command_buf_def(struct nfp_nsp *nsp,
 			FIELD_PREP(NSP_BUFFER_ADDRESS, cpp_buf);
 	ret = nfp_nsp_command_real(nsp, &arg->arg);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "NSP command failed");
+		if (!arg->arg.error_quiet)
+			PMD_DRV_LOG(ERR, "NSP command failed.");
+
 		return ret;
 	}
 
@@ -504,7 +516,7 @@ nfp_nsp_command_buf(struct nfp_nsp *nsp,
 	struct nfp_cpp *cpp = nsp->cpp;
 
 	if (nsp->ver.minor < 13) {
-		PMD_DRV_LOG(ERR, "NSP: Code %#04x with buffer not supported ABI %hu.%hu)",
+		PMD_DRV_LOG(ERR, "NSP: Code %#04x with buffer not supported ABI %hu.%hu).",
 				arg->arg.code, nsp->ver.major, nsp->ver.minor);
 		return -EOPNOTSUPP;
 	}
@@ -519,7 +531,7 @@ nfp_nsp_command_buf(struct nfp_nsp *nsp,
 	size = FIELD_GET(NSP_DFLT_BUFFER_SIZE_MB, reg) * SZ_1M +
 			FIELD_GET(NSP_DFLT_BUFFER_SIZE_4KB, reg) * SZ_4K;
 	if (size < max_size) {
-		PMD_DRV_LOG(ERR, "NSP: default buffer too small for command %#04x (%zu < %zu)",
+		PMD_DRV_LOG(ERR, "NSP: default buffer too small for command %#04x (%zu < %zu).",
 				arg->arg.code, size, max_size);
 		return -EINVAL;
 	}
@@ -551,7 +563,7 @@ nfp_nsp_wait(struct nfp_nsp *state)
 	}
 
 	if (err != 0)
-		PMD_DRV_LOG(ERR, "NSP failed to respond %d", err);
+		PMD_DRV_LOG(ERR, "NSP failed to respond %d.", err);
 
 	return err;
 }
@@ -604,9 +616,9 @@ nfp_nsp_load_fw_extended_msg(struct nfp_nsp *state,
 		return;
 
 	if (major >= RTE_DIM(major_msg))
-		PMD_DRV_LOG(INFO, "FW loading status: %x", ret_val);
+		PMD_DRV_LOG(INFO, "FW loading status: %x.", ret_val);
 	else if (minor >= RTE_DIM(minor_msg))
-		PMD_DRV_LOG(INFO, "%s, reason code: %d", major_msg[major], minor);
+		PMD_DRV_LOG(INFO, "%s, reason code: %d.", major_msg[major], minor);
 	else
 		PMD_DRV_LOG(INFO, "%s%c %s", major_msg[major],
 				minor != 0 ? ',' : '.', minor_msg[minor]);
@@ -710,4 +722,223 @@ nfp_nsp_read_sensors(struct nfp_nsp *state,
 	};
 
 	return nfp_nsp_command_buf(state, &sensors);
+}
+
+int
+nfp_nsp_hwinfo_set(struct nfp_nsp *state,
+		const void *buf,
+		size_t size)
+{
+	struct nfp_nsp_command_buf_arg hwinfo_set = {
+		{
+			.code   = SPCODE_HWINFO_SET,
+			.option = size,
+		},
+		.in_buf  = buf,
+		.in_size = size,
+	};
+
+	return nfp_nsp_command_buf(state, &hwinfo_set);
+}
+
+int
+nfp_nsp_device_activate(struct nfp_nsp *state)
+{
+	if (nfp_nsp_get_abi_ver_minor(state) < 38)
+		return -EOPNOTSUPP;
+
+	return nfp_nsp_command(state, SPCODE_DEV_ACTIVATE);
+}
+
+int
+nfp_nsp_read_media(struct nfp_nsp *state,
+		void *buf,
+		size_t size)
+{
+	struct nfp_nsp_command_buf_arg media = {
+		{
+			.code   = SPCODE_READ_MEDIA,
+			.option = size,
+		},
+		.out_buf  = buf,
+		.out_size = size,
+	};
+
+	return nfp_nsp_command_buf(state, &media);
+}
+
+int
+nfp_nsp_load_stored_fw(struct nfp_nsp *state)
+{
+	int ret;
+	struct nfp_nsp_command_buf_arg fw_stored = {
+		{
+			.code     = SPCODE_FW_STORED,
+			.error_cb = nfp_nsp_load_fw_extended_msg,
+		},
+	};
+
+	ret = nfp_nsp_command_buf(state, &fw_stored);
+	if (ret < 0)
+		return ret;
+
+	nfp_nsp_load_fw_extended_msg(state, ret);
+
+	return 0;
+}
+
+static int
+nfp_nsp_hwinfo_lookup_real(struct nfp_nsp *state,
+		void *buf,
+		size_t size,
+		bool optional)
+{
+	struct nfp_nsp_command_buf_arg hwinfo_lookup = {
+		{
+			.code   = SPCODE_HWINFO_LOOKUP,
+			.option = size,
+			.error_quiet = optional,
+		},
+		.in_buf = buf,
+		.in_size = size,
+		.out_buf  = buf,
+		.out_size = size,
+	};
+
+	return nfp_nsp_command_buf(state, &hwinfo_lookup);
+}
+
+static int
+nfp_nsp_read_module_eeprom_real(struct nfp_nsp *state,
+		void *buf,
+		uint32_t size)
+{
+	struct nfp_nsp_command_buf_arg module_eeprom = {
+		{
+			.code   = SPCODE_READ_SFF_EEPROM,
+			.option = size,
+		},
+		.in_buf         = buf,
+		.in_size        = size,
+		.out_buf        = buf,
+		.out_size       = size,
+	};
+
+	return nfp_nsp_command_buf(state, &module_eeprom);
+}
+
+int
+nfp_nsp_read_module_eeprom(struct nfp_nsp *state,
+		int eth_index,
+		uint32_t offset,
+		void *data,
+		uint32_t len,
+		uint32_t *read_len)
+{
+	int ret;
+	int bufsz;
+	struct eeprom_buf {
+		uint8_t metalen;
+		rte_le16_t length;
+		rte_le16_t offset;
+		rte_le16_t readlen;
+		uint8_t eth_index;
+		uint8_t data[];
+	} __rte_packed * buf;
+
+	/* Buffer must be large enough and rounded to the next block size. */
+	bufsz = sizeof(*(buf)) + sizeof((buf)->data[0]) *
+			(RTE_ALIGN_CEIL(len, NSP_SFF_EEPROM_BLOCK_LEN));
+	buf = calloc(1, bufsz);
+	if (buf == NULL)
+		return -ENOMEM;
+
+	buf->metalen = offsetof(struct eeprom_buf, data) / NSP_SFF_EEPROM_BLOCK_LEN;
+	buf->length = rte_cpu_to_le_16(len);
+	buf->offset = rte_cpu_to_le_16(offset);
+	buf->eth_index = eth_index;
+
+	ret = nfp_nsp_read_module_eeprom_real(state, buf, bufsz);
+	if (ret != 0)
+		goto free_exit;
+
+	if (rte_le_to_cpu_16(buf->readlen) < len) {
+		ret = -EIO;
+		goto free_exit;
+	}
+
+	if (len != 0)
+		memcpy(data, buf->data, len);
+
+	*read_len = len;
+
+free_exit:
+	free(buf);
+	return ret;
+}
+
+int
+nfp_nsp_hwinfo_lookup(struct nfp_nsp *state,
+		void *buf,
+		uint32_t size)
+{
+	int ret;
+	uint32_t size_tmp;
+
+	if (!nfp_nsp_has_hwinfo_lookup(state)) {
+		PMD_DRV_LOG(ERR, "NSP HWinfo lookup not supported. Please update flash.");
+		return -EOPNOTSUPP;
+	}
+
+	size_tmp = RTE_MIN(size, NFP_HWINFO_LOOKUP_SIZE);
+
+	ret = nfp_nsp_hwinfo_lookup_real(state, buf, size, false);
+	if (ret != 0)
+		return ret;
+
+	if (strnlen(buf, size_tmp) == size_tmp) {
+		PMD_DRV_LOG(ERR, "NSP HWinfo value not NULL terminated.");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+int
+nfp_nsp_hwinfo_lookup_optional(struct nfp_nsp *state,
+		void *buf,
+		size_t size,
+		const char *default_val)
+{
+	int ret;
+	size_t min_size;
+
+	if (strnlen(default_val, size) == size) {
+		PMD_DRV_LOG(ERR, "NSP HWinfo default value not NULL terminated.");
+		return -EINVAL;
+	}
+
+	if (!nfp_nsp_has_hwinfo_lookup(state))
+		goto default_return;
+
+	min_size = RTE_MIN(size, NFP_HWINFO_LOOKUP_SIZE);
+	ret = nfp_nsp_hwinfo_lookup_real(state, buf, min_size, true);
+	if (ret != 0) {
+		if (ret == -ENOENT)
+			goto default_return;
+
+		PMD_DRV_LOG(ERR, "NSP HWinfo lookup failed: %d.", ret);
+		return ret;
+	}
+
+	if (strnlen(buf, min_size) == min_size) {
+		PMD_DRV_LOG(ERR, "NSP HWinfo value not NULL terminated.");
+		return -EINVAL;
+	}
+
+	return 0;
+
+default_return:
+	strlcpy(buf, default_val, size);
+	return 0;
 }

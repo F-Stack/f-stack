@@ -42,6 +42,8 @@ idpf_tx_offload_convert(uint64_t offload)
 		ol |= IDPF_TX_OFFLOAD_TCP_CKSUM;
 	if ((offload & RTE_ETH_TX_OFFLOAD_SCTP_CKSUM) != 0)
 		ol |= IDPF_TX_OFFLOAD_SCTP_CKSUM;
+	if ((offload & RTE_ETH_TX_OFFLOAD_TCP_TSO) != 0)
+		ol |= IDPF_TX_OFFLOAD_TCP_TSO;
 	if ((offload & RTE_ETH_TX_OFFLOAD_MULTI_SEGS) != 0)
 		ol |= IDPF_TX_OFFLOAD_MULTI_SEGS;
 	if ((offload & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE) != 0)
@@ -493,6 +495,7 @@ idpf_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	return 0;
 
 err_complq_setup:
+	rte_free(txq->sw_ring);
 err_sw_ring_alloc:
 	idpf_dma_zone_release(mz);
 err_mz_reserve:
@@ -595,7 +598,8 @@ idpf_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	}
 
 	/* Ready to switch the queue on */
-	err = idpf_vc_queue_switch(vport, rx_queue_id, true, true);
+	err = idpf_vc_queue_switch(vport, rx_queue_id, true, true,
+							VIRTCHNL2_QUEUE_TYPE_RX);
 	if (err != 0) {
 		PMD_DRV_LOG(ERR, "Failed to switch RX queue %u on",
 			    rx_queue_id);
@@ -646,7 +650,8 @@ idpf_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	}
 
 	/* Ready to switch the queue on */
-	err = idpf_vc_queue_switch(vport, tx_queue_id, false, true);
+	err = idpf_vc_queue_switch(vport, tx_queue_id, false, true,
+							VIRTCHNL2_QUEUE_TYPE_TX);
 	if (err != 0) {
 		PMD_DRV_LOG(ERR, "Failed to switch TX queue %u on",
 			    tx_queue_id);
@@ -669,7 +674,8 @@ idpf_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	if (rx_queue_id >= dev->data->nb_rx_queues)
 		return -EINVAL;
 
-	err = idpf_vc_queue_switch(vport, rx_queue_id, true, false);
+	err = idpf_vc_queue_switch(vport, rx_queue_id, true, false,
+							VIRTCHNL2_QUEUE_TYPE_RX);
 	if (err != 0) {
 		PMD_DRV_LOG(ERR, "Failed to switch RX queue %u off",
 			    rx_queue_id);
@@ -701,7 +707,8 @@ idpf_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	if (tx_queue_id >= dev->data->nb_tx_queues)
 		return -EINVAL;
 
-	err = idpf_vc_queue_switch(vport, tx_queue_id, false, false);
+	err = idpf_vc_queue_switch(vport, tx_queue_id, false, false,
+							VIRTCHNL2_QUEUE_TYPE_TX);
 	if (err != 0) {
 		PMD_DRV_LOG(ERR, "Failed to switch TX queue %u off",
 			    tx_queue_id);

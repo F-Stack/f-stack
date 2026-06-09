@@ -162,16 +162,16 @@ typedef struct __rte_packed {
 } memif_desc_t;
 
 #define MEMIF_CACHELINE_ALIGN_MARK(mark) \
-	RTE_MARKER mark __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) RTE_MARKER mark;
 
 typedef struct {
 	MEMIF_CACHELINE_ALIGN_MARK(cacheline0);
 	uint32_t cookie;			/**< MEMIF_COOKIE */
 	uint16_t flags;				/**< flags */
 #define MEMIF_RING_FLAG_MASK_INT 1		/**< disable interrupt mode */
-	uint16_t head;			/**< pointer to ring buffer head */
+	RTE_ATOMIC(uint16_t) head;			/**< pointer to ring buffer head */
 	MEMIF_CACHELINE_ALIGN_MARK(cacheline1);
-	uint16_t tail;			/**< pointer to ring buffer tail */
+	RTE_ATOMIC(uint16_t) tail;			/**< pointer to ring buffer tail */
 	MEMIF_CACHELINE_ALIGN_MARK(cacheline2);
 	memif_desc_t desc[0];			/**< buffer descriptors */
 } memif_ring_t;

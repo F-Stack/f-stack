@@ -497,8 +497,12 @@ txgbe_handle_devarg(__rte_unused const char *key, const char *value,
 }
 
 static void
-txgbe_parse_devargs(struct txgbe_hw *hw, struct rte_devargs *devargs)
+txgbe_parse_devargs(struct rte_eth_dev *dev)
 {
+	struct rte_eth_fdir_conf *fdir_conf = TXGBE_DEV_FDIR_CONF(dev);
+	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
+	struct rte_devargs *devargs = pci_dev->device.devargs;
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct rte_kvargs *kvlist;
 	u16 auto_neg = 1;
 	u16 poll = 0;
@@ -508,6 +512,9 @@ txgbe_parse_devargs(struct txgbe_hw *hw, struct rte_devargs *devargs)
 	u16 ffe_main = 27;
 	u16 ffe_pre = 8;
 	u16 ffe_post = 44;
+	/* FDIR args */
+	u8 pballoc = 0;
+	u8 drop_queue = 127;
 
 	if (devargs == NULL)
 		goto null;
@@ -532,6 +539,10 @@ txgbe_parse_devargs(struct txgbe_hw *hw, struct rte_devargs *devargs)
 			   &txgbe_handle_devarg, &ffe_pre);
 	rte_kvargs_process(kvlist, TXGBE_DEVARG_FFE_POST,
 			   &txgbe_handle_devarg, &ffe_post);
+	rte_kvargs_process(kvlist, TXGBE_DEVARG_FDIR_PBALLOC,
+			   &txgbe_handle_devarg, &pballoc);
+	rte_kvargs_process(kvlist, TXGBE_DEVARG_FDIR_DROP_QUEUE,
+			   &txgbe_handle_devarg, &drop_queue);
 	rte_kvargs_free(kvlist);
 
 null:
@@ -543,6 +554,9 @@ null:
 	hw->phy.ffe_main = ffe_main;
 	hw->phy.ffe_pre = ffe_pre;
 	hw->phy.ffe_post = ffe_post;
+
+	fdir_conf->pballoc = pballoc;
+	fdir_conf->drop_queue = drop_queue;
 }
 
 static int
@@ -597,22 +611,23 @@ eth_txgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 		return 0;
 	}
 
-	__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+	rte_atomic_store_explicit(&ad->link_thread_running, 0, rte_memory_order_seq_cst);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
 	hw->hw_addr = (void *)pci_dev->mem_resource[0].addr;
 
 	/* Vendor and Device ID need to be set before init of shared code */
 	hw->back = pci_dev;
+	hw->port_id = eth_dev->data->port_id;
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
 	if (pci_dev->id.subsystem_vendor_id == PCI_VENDOR_ID_WANGXUN) {
 		hw->subsystem_device_id = pci_dev->id.subsystem_device_id;
 	} else {
-		u32 ssid;
+		u32 ssid = 0;
 
-		ssid = txgbe_flash_read_dword(hw, 0xFFFDC);
-		if (ssid == 0x1) {
+		err = txgbe_flash_read_dword(hw, 0xFFFDC, &ssid);
+		if (err) {
 			PMD_INIT_LOG(ERR,
 				"Read of internal subsystem device id failed");
 			return -ENODEV;
@@ -630,7 +645,7 @@ eth_txgbe_dev_init(struct rte_eth_dev *eth_dev, void *init_params __rte_unused)
 	hw->isb_dma = TMZ_PADDR(mz);
 	hw->isb_mem = TMZ_VADDR(mz);
 
-	txgbe_parse_devargs(hw, pci_dev->device.devargs);
+	txgbe_parse_devargs(eth_dev);
 	/* Initialize the shared code (base driver) */
 	err = txgbe_init_shared_code(hw);
 	if (err != 0) {
@@ -838,6 +853,7 @@ static int txgbe_ntuple_filter_uninit(struct rte_eth_dev *eth_dev)
 	}
 	memset(filter_info->fivetuple_mask, 0,
 	       sizeof(uint32_t) * TXGBE_5TUPLE_ARRAY_SIZE);
+	filter_info->ntuple_is_full = false;
 
 	return 0;
 }
@@ -880,11 +896,13 @@ static int txgbe_l2_tn_filter_uninit(struct rte_eth_dev *eth_dev)
 
 static int txgbe_fdir_filter_init(struct rte_eth_dev *eth_dev)
 {
+	struct rte_eth_fdir_conf *fdir_conf = TXGBE_DEV_FDIR_CONF(eth_dev);
 	struct txgbe_hw_fdir_info *fdir_info = TXGBE_DEV_FDIR(eth_dev);
 	char fdir_hash_name[RTE_HASH_NAMESIZE];
+	u16 max_fdir_num = (1024 << (fdir_conf->pballoc + 1)) - 2;
 	struct rte_hash_parameters fdir_hash_params = {
 		.name = fdir_hash_name,
-		.entries = TXGBE_MAX_FDIR_FILTER_NUM,
+		.entries = max_fdir_num,
 		.key_len = sizeof(struct txgbe_atr_input),
 		.hash_func = rte_hash_crc,
 		.hash_func_init_val = 0,
@@ -901,7 +919,7 @@ static int txgbe_fdir_filter_init(struct rte_eth_dev *eth_dev)
 	}
 	fdir_info->hash_map = rte_zmalloc("txgbe",
 					  sizeof(struct txgbe_fdir_filter *) *
-					  TXGBE_MAX_FDIR_FILTER_NUM,
+					  max_fdir_num,
 					  0);
 	if (!fdir_info->hash_map) {
 		PMD_INIT_LOG(ERR,
@@ -1542,6 +1560,7 @@ txgbe_dev_configure(struct rte_eth_dev *dev)
 	 * allocation Rx preconditions we will reset it.
 	 */
 	adapter->rx_bulk_alloc_allowed = true;
+	adapter->rx_vec_allowed = true;
 
 	return 0;
 }
@@ -1937,6 +1956,7 @@ txgbe_dev_stop(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	rte_eal_alarm_cancel(txgbe_dev_detect_sfp, dev);
+	rte_eal_alarm_cancel(txgbe_tx_queue_clear_error, dev);
 	txgbe_dev_wait_setup_link_complete(dev, 0);
 
 	/* disable interrupts */
@@ -2345,6 +2365,7 @@ txgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	struct txgbe_hw_stats *hw_stats = TXGBE_DEV_STATS(dev);
 	struct txgbe_stat_mappings *stat_mappings =
 			TXGBE_DEV_STAT_MAPPINGS(dev);
+	struct txgbe_tx_queue *txq;
 	uint32_t i, j;
 
 	txgbe_read_stats_registers(hw, hw_stats);
@@ -2399,6 +2420,11 @@ txgbe_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 
 	/* Tx Errors */
 	stats->oerrors  = 0;
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+		stats->oerrors += txq->desc_error;
+	}
+
 	return 0;
 }
 
@@ -2407,6 +2433,13 @@ txgbe_dev_stats_reset(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct txgbe_hw_stats *hw_stats = TXGBE_DEV_STATS(dev);
+	struct txgbe_tx_queue *txq;
+	uint32_t i;
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+		txq->desc_error = 0;
+	}
 
 	/* HW registers are cleared on read */
 	hw->offset_loaded = 0;
@@ -2586,6 +2619,8 @@ txgbe_dev_xstats_get_(struct rte_eth_dev *dev, uint64_t *values,
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct txgbe_hw_stats *hw_stats = TXGBE_DEV_STATS(dev);
+	struct txgbe_rx_queue *rxq;
+	uint64_t rx_csum_err = 0;
 	unsigned int i, count;
 
 	txgbe_read_stats_registers(hw, hw_stats);
@@ -2598,6 +2633,13 @@ txgbe_dev_xstats_get_(struct rte_eth_dev *dev, uint64_t *values,
 		return count;
 
 	limit = min(limit, txgbe_xstats_calc_num(dev));
+
+	/* Rx Checksum Errors */
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		rxq = dev->data->rx_queues[i];
+		rx_csum_err += rxq->csum_err;
+	}
+	hw_stats->rx_l3_l4_xsum_error = rx_csum_err;
 
 	/* Extended stats from txgbe_hw_stats */
 	for (i = 0; i < limit; i++) {
@@ -2641,6 +2683,8 @@ txgbe_dev_xstats_reset(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct txgbe_hw_stats *hw_stats = TXGBE_DEV_STATS(dev);
+	struct txgbe_rx_queue *rxq;
+	int i = 0;
 
 	/* HW registers are cleared on read */
 	hw->offset_loaded = 0;
@@ -2649,6 +2693,12 @@ txgbe_dev_xstats_reset(struct rte_eth_dev *dev)
 
 	/* Reset software totals */
 	memset(hw_stats, 0, sizeof(*hw_stats));
+
+	/* Reset rxq checksum errors */
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		rxq = dev->data->rx_queues[i];
+		rxq->csum_err = 0;
+	}
 
 	return 0;
 }
@@ -2740,13 +2790,17 @@ txgbe_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 }
 
 const uint32_t *
-txgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+txgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 {
 	if (dev->rx_pkt_burst == txgbe_recv_pkts ||
+#if defined(RTE_ARCH_X86) || defined(RTE_ARCH_ARM)
+	    dev->rx_pkt_burst == txgbe_recv_pkts_vec ||
+	    dev->rx_pkt_burst == txgbe_recv_scattered_pkts_vec ||
+#endif
 	    dev->rx_pkt_burst == txgbe_recv_pkts_lro_single_alloc ||
 	    dev->rx_pkt_burst == txgbe_recv_pkts_lro_bulk_alloc ||
 	    dev->rx_pkt_burst == txgbe_recv_pkts_bulk_alloc)
-		return txgbe_get_supported_ptypes();
+		return txgbe_get_supported_ptypes(no_of_elements);
 
 	return NULL;
 }
@@ -2838,6 +2892,60 @@ txgbe_dev_setup_link_alarm_handler(void *param)
 	intr->flags &= ~TXGBE_FLAG_NEED_LINK_CONFIG;
 }
 
+static void
+txgbe_do_reset(struct rte_eth_dev *dev)
+{
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	struct txgbe_tx_queue *txq;
+	u32 i;
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txq = dev->data->tx_queues[i];
+		txq->resetting = true;
+	}
+
+	rte_delay_ms(1);
+	wr32(hw, TXGBE_RST, TXGBE_RST_LAN(hw->bus.lan_id));
+	txgbe_flush(hw);
+
+	PMD_DRV_LOG(ERR, "Please manually restart the port %d",
+		dev->data->port_id);
+}
+
+static void
+txgbe_tx_ring_recovery(struct rte_eth_dev *dev)
+{
+	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
+	u32 desc_error[4] = {0, 0, 0, 0};
+	struct txgbe_tx_queue *txq;
+	u32 i;
+
+	/* check tdm fatal error */
+	for (i = 0; i < 4; i++) {
+		desc_error[i] = rd32(hw, TXGBE_TDM_DESC_FATAL(i));
+		if (desc_error[i] != 0) {
+			PMD_DRV_LOG(ERR, "TDM fatal error reg[%d]: 0x%x", i, desc_error[i]);
+			txgbe_do_reset(dev);
+			return;
+		}
+	}
+
+	/* check tdm non-fatal error */
+	for (i = 0; i < 4; i++)
+		desc_error[i] = rd32(hw, TXGBE_TDM_DESC_NONFATAL(i));
+
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		if (desc_error[i / 32] & (1 << i % 32)) {
+			PMD_DRV_LOG(ERR, "TDM non-fatal error, reset port[%d] queue[%d]",
+				dev->data->port_id, i);
+			dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+			txq = dev->data->tx_queues[i];
+			txq->resetting = true;
+			rte_eal_alarm_set(1000, txgbe_tx_queue_clear_error, (void *)dev);
+		}
+	}
+}
+
 /*
  * If @timeout_ms was 0, it means that it will not return until link complete.
  * It returns 1 on complete, return 0 on timeout.
@@ -2849,7 +2957,7 @@ txgbe_dev_wait_setup_link_complete(struct rte_eth_dev *dev, uint32_t timeout_ms)
 	struct txgbe_adapter *ad = TXGBE_DEV_ADAPTER(dev);
 	uint32_t timeout = timeout_ms ? timeout_ms : WARNING_TIMEOUT;
 
-	while (__atomic_load_n(&ad->link_thread_running, __ATOMIC_SEQ_CST)) {
+	while (rte_atomic_load_explicit(&ad->link_thread_running, rte_memory_order_seq_cst)) {
 		msec_delay(1);
 		timeout--;
 
@@ -2874,7 +2982,7 @@ txgbe_dev_setup_link_thread_handler(void *param)
 
 	rte_thread_detach(rte_thread_self());
 	txgbe_dev_setup_link_alarm_handler(dev);
-	__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+	rte_atomic_store_explicit(&ad->link_thread_running, 0, rte_memory_order_seq_cst);
 	return 0;
 }
 
@@ -2924,7 +3032,8 @@ txgbe_dev_link_update_share(struct rte_eth_dev *dev,
 		} else if (hw->phy.media_type == txgbe_media_type_fiber &&
 				dev->data->dev_conf.intr_conf.lsc != 0) {
 			txgbe_dev_wait_setup_link_complete(dev, 0);
-			if (!__atomic_test_and_set(&ad->link_thread_running, __ATOMIC_SEQ_CST)) {
+			if (!rte_atomic_exchange_explicit(&ad->link_thread_running, 1,
+					rte_memory_order_seq_cst)) {
 				/* To avoid race condition between threads, set
 				 * the TXGBE_FLAG_NEED_LINK_CONFIG flag only
 				 * when there is no link thread running.
@@ -2934,7 +3043,8 @@ txgbe_dev_link_update_share(struct rte_eth_dev *dev,
 						"txgbe-link",
 						txgbe_dev_setup_link_thread_handler, dev) < 0) {
 					PMD_DRV_LOG(ERR, "Create link thread failed!");
-					__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+					rte_atomic_store_explicit(&ad->link_thread_running, 0,
+							rte_memory_order_seq_cst);
 				}
 			} else {
 				PMD_DRV_LOG(ERR,
@@ -3094,6 +3204,7 @@ txgbe_dev_misc_interrupt_setup(struct rte_eth_dev *dev)
 	intr->mask |= mask;
 	intr->mask_misc |= TXGBE_ICRMISC_GPIO;
 	intr->mask_misc |= TXGBE_ICRMISC_ANDONE;
+	intr->mask_misc |= TXGBE_ICRMISC_TXDESC;
 	return 0;
 }
 
@@ -3188,6 +3299,9 @@ txgbe_dev_interrupt_get_status(struct rte_eth_dev *dev,
 
 	if (eicr & TXGBE_ICRMISC_HEAT)
 		intr->flags |= TXGBE_FLAG_OVERHEAT;
+
+	if (eicr & TXGBE_ICRMISC_TXDESC)
+		intr->flags |= TXGBE_FLAG_TX_DESC_ERR;
 
 	((u32 *)hw->isb_mem)[TXGBE_ISB_MISC] = 0;
 
@@ -3306,6 +3420,11 @@ txgbe_dev_interrupt_action(struct rte_eth_dev *dev,
 	if (intr->flags & TXGBE_FLAG_OVERHEAT) {
 		txgbe_dev_overheat(dev);
 		intr->flags &= ~TXGBE_FLAG_OVERHEAT;
+	}
+
+	if (intr->flags & TXGBE_FLAG_TX_DESC_ERR) {
+		txgbe_tx_ring_recovery(dev);
+		intr->flags &= ~TXGBE_FLAG_TX_DESC_ERR;
 	}
 
 	PMD_DRV_LOG(DEBUG, "enable intr immediately");
@@ -4149,7 +4268,8 @@ txgbe_add_5tuple_filter(struct rte_eth_dev *dev,
 		}
 	}
 	if (i >= TXGBE_MAX_FTQF_FILTERS) {
-		PMD_DRV_LOG(ERR, "5tuple filters are full.");
+		PMD_DRV_LOG(INFO, "5tuple filters are full, switch to FDIR");
+		filter_info->ntuple_is_full = true;
 		return -ENOSYS;
 	}
 
@@ -4177,6 +4297,7 @@ txgbe_remove_5tuple_filter(struct rte_eth_dev *dev,
 				~(1 << (index % (sizeof(uint32_t) * NBBY)));
 	TAILQ_REMOVE(&filter_info->fivetuple_list, filter, entries);
 	rte_free(filter);
+	filter_info->ntuple_is_full = false;
 
 	wr32(hw, TXGBE_5TFDADDR(index), 0);
 	wr32(hw, TXGBE_5TFSADDR(index), 0);
@@ -5593,7 +5714,9 @@ RTE_PMD_REGISTER_PARAM_STRING(net_txgbe,
 			      TXGBE_DEVARG_FFE_SET "=<0-4>"
 			      TXGBE_DEVARG_FFE_MAIN "=<uint16>"
 			      TXGBE_DEVARG_FFE_PRE "=<uint16>"
-			      TXGBE_DEVARG_FFE_POST "=<uint16>");
+			      TXGBE_DEVARG_FFE_POST "=<uint16>"
+			      TXGBE_DEVARG_FDIR_PBALLOC "=<0|1|2>"
+			      TXGBE_DEVARG_FDIR_DROP_QUEUE "=<uint8>");
 
 RTE_LOG_REGISTER_SUFFIX(txgbe_logtype_init, init, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(txgbe_logtype_driver, driver, NOTICE);

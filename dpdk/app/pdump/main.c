@@ -106,7 +106,7 @@ struct pdump_stats {
 	uint64_t freed_pkts;
 };
 
-struct pdump_tuples {
+struct __rte_cache_aligned pdump_tuples {
 	/* cli params */
 	uint16_t port;
 	char *device_id;
@@ -133,7 +133,7 @@ struct pdump_tuples {
 
 	/* stats */
 	struct pdump_stats stats;
-} __rte_cache_aligned;
+};
 static struct pdump_tuples pdump_t[APP_ARG_TCPDUMP_MAX_TUPLES];
 
 struct parse_val {
@@ -247,7 +247,7 @@ parse_uint_value(const char *key, const char *value, void *extra_args)
 }
 
 static int
-parse_pdump(const char *optarg)
+parse_pdump(const char *arg)
 {
 	struct rte_kvargs *kvlist;
 	int ret = 0, cnt1, cnt2;
@@ -257,9 +257,9 @@ parse_pdump(const char *optarg)
 	pt = &pdump_t[num_tuples];
 
 	/* initial check for invalid arguments */
-	kvlist = rte_kvargs_parse(optarg, valid_pdump_arguments);
+	kvlist = rte_kvargs_parse(arg, valid_pdump_arguments);
 	if (kvlist == NULL) {
-		printf("--pdump=\"%s\": invalid argument passed\n", optarg);
+		printf("--pdump=\"%s\": invalid argument passed\n", arg);
 		return -1;
 	}
 
@@ -268,7 +268,7 @@ parse_pdump(const char *optarg)
 	cnt2 = rte_kvargs_count(kvlist, PDUMP_PCI_ARG);
 	if (!((cnt1 == 1 && cnt2 == 0) || (cnt1 == 0 && cnt2 == 1))) {
 		printf("--pdump=\"%s\": must have either port or "
-			"device_id argument\n", optarg);
+			"device_id argument\n", arg);
 		ret = -1;
 		goto free_kvlist;
 	} else if (cnt1 == 1) {
@@ -290,7 +290,7 @@ parse_pdump(const char *optarg)
 	/* queue parsing and validation */
 	cnt1 = rte_kvargs_count(kvlist, PDUMP_QUEUE_ARG);
 	if (cnt1 != 1) {
-		printf("--pdump=\"%s\": must have queue argument\n", optarg);
+		printf("--pdump=\"%s\": must have queue argument\n", arg);
 		ret = -1;
 		goto free_kvlist;
 	}
@@ -303,7 +303,7 @@ parse_pdump(const char *optarg)
 	cnt2 = rte_kvargs_count(kvlist, PDUMP_TX_DEV_ARG);
 	if (cnt1 == 0 && cnt2 == 0) {
 		printf("--pdump=\"%s\": must have either rx-dev or "
-			"tx-dev argument\n", optarg);
+			"tx-dev argument\n", arg);
 		ret = -1;
 		goto free_kvlist;
 	} else if (cnt1 == 1 && cnt2 == 1) {
@@ -982,9 +982,8 @@ main(int argc, char **argv)
 	int ret;
 	int i;
 
-	char n_flag[] = "-n4";
 	char mp_flag[] = "--proc-type=secondary";
-	char *argp[argc + 2];
+	char *argp[argc + 1];
 
 	/* catch ctrl-c so we can cleanup on exit */
 	sigemptyset(&action.sa_mask);
@@ -996,13 +995,12 @@ main(int argc, char **argv)
 		sigaction(SIGHUP, &action, NULL);
 
 	argp[0] = argv[0];
-	argp[1] = n_flag;
-	argp[2] = mp_flag;
+	argp[1] = mp_flag;
 
 	for (i = 1; i < argc; i++)
-		argp[i + 2] = argv[i];
+		argp[i + 1] = argv[i];
 
-	argc += 2;
+	argc += 1;
 
 	diag = rte_eal_init(argc, argp);
 	if (diag < 0)
@@ -1012,7 +1010,7 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 
 	argc -= diag;
-	argv += (diag - 2);
+	argv += (diag - 1);
 
 	/* parse app arguments */
 	if (argc > 1) {
@@ -1028,13 +1026,15 @@ main(int argc, char **argv)
 	dump_packets();
 
 	disable_primary_monitor();
-	cleanup_pdump_resources();
+
 	/* dump debug stats */
 	print_pdump_stats();
 
-	ret = rte_eal_cleanup();
-	if (ret)
-		printf("Error from rte_eal_cleanup(), %d\n", ret);
+	/* If primary has exited, do not try and communicate with it */
+	if (!rte_eal_primary_proc_alive(NULL))
+		return 0;
 
-	return 0;
+	cleanup_pdump_resources();
+
+	return rte_eal_cleanup() ? EXIT_FAILURE : 0;
 }

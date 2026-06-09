@@ -6,6 +6,7 @@
 #include "ice_fdir.h"
 
 /* These are training packet headers used to program flow director filters. */
+
 static const u8 ice_fdir_tcpv4_pkt[] = {
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x08, 0x00, 0x45, 0x00,
@@ -3502,7 +3503,7 @@ ice_fdir_get_prgm_desc(struct ice_hw *hw, struct ice_fdir_fltr *input,
  * @hw: pointer to the hardware structure
  * @cntr_id: returns counter index
  */
-enum ice_status ice_alloc_fd_res_cntr(struct ice_hw *hw, u16 *cntr_id)
+int ice_alloc_fd_res_cntr(struct ice_hw *hw, u16 *cntr_id)
 {
 	return ice_alloc_res_cntr(hw, ICE_AQC_RES_TYPE_FDIR_COUNTER_BLOCK,
 				  ICE_AQC_RES_TYPE_FLAG_DEDICATED, 1, cntr_id);
@@ -3513,7 +3514,7 @@ enum ice_status ice_alloc_fd_res_cntr(struct ice_hw *hw, u16 *cntr_id)
  * @hw: pointer to the hardware structure
  * @cntr_id: counter index to be freed
  */
-enum ice_status ice_free_fd_res_cntr(struct ice_hw *hw, u16 cntr_id)
+int ice_free_fd_res_cntr(struct ice_hw *hw, u16 cntr_id)
 {
 	return ice_free_res_cntr(hw, ICE_AQC_RES_TYPE_FDIR_COUNTER_BLOCK,
 				 ICE_AQC_RES_TYPE_FLAG_DEDICATED, 1, cntr_id);
@@ -3525,7 +3526,7 @@ enum ice_status ice_free_fd_res_cntr(struct ice_hw *hw, u16 cntr_id)
  * @cntr_id: returns counter index
  * @num_fltr: number of filter entries to be allocated
  */
-enum ice_status
+int
 ice_alloc_fd_guar_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr)
 {
 	return ice_alloc_res_cntr(hw, ICE_AQC_RES_TYPE_FDIR_GUARANTEED_ENTRIES,
@@ -3539,7 +3540,7 @@ ice_alloc_fd_guar_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr)
  * @cntr_id: counter index that needs to be freed
  * @num_fltr: number of filters to be freed
  */
-enum ice_status
+int
 ice_free_fd_guar_item(struct ice_hw *hw, u16 cntr_id, u16 num_fltr)
 {
 	return ice_free_res_cntr(hw, ICE_AQC_RES_TYPE_FDIR_GUARANTEED_ENTRIES,
@@ -3553,7 +3554,7 @@ ice_free_fd_guar_item(struct ice_hw *hw, u16 cntr_id, u16 num_fltr)
  * @cntr_id: returns counter index
  * @num_fltr: number of filter entries to be allocated
  */
-enum ice_status
+int
 ice_alloc_fd_shrd_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr)
 {
 	return ice_alloc_res_cntr(hw, ICE_AQC_RES_TYPE_FDIR_SHARED_ENTRIES,
@@ -3567,7 +3568,7 @@ ice_alloc_fd_shrd_item(struct ice_hw *hw, u16 *cntr_id, u16 num_fltr)
  * @cntr_id: counter index that needs to be freed
  * @num_fltr: number of filters to be freed
  */
-enum ice_status
+int
 ice_free_fd_shrd_item(struct ice_hw *hw, u16 cntr_id, u16 num_fltr)
 {
 	return ice_free_res_cntr(hw, ICE_AQC_RES_TYPE_FDIR_SHARED_ENTRIES,
@@ -3587,7 +3588,7 @@ int ice_get_fdir_cnt_all(struct ice_hw *hw)
 }
 
 /**
- * ice_pkt_insert_ipv6_addr - insert a be32 IPv6 address into a memory buffer.
+ * ice_pkt_insert_ipv6_addr - insert a be32 IPv6 address into a memory buffer
  * @pkt: packet buffer
  * @offset: offset into buffer
  * @addr: IPv6 address to convert and insert into pkt at offset
@@ -3602,12 +3603,12 @@ static void ice_pkt_insert_ipv6_addr(u8 *pkt, int offset, __be32 *addr)
 }
 
 /**
- * ice_pkt_insert_u6_qfi - insert a u6 value qfi into a memory buffer for gtpu
+ * ice_pkt_insert_u6_qfi - insert a u6 value QFI into a memory buffer for GTPU
  * @pkt: packet buffer
  * @offset: offset into buffer
  * @data: 8 bit value to convert and insert into pkt at offset
  *
- * This function is designed for inserting qfi (6 bits) for gtpu.
+ * This function is designed for inserting QFI (6 bits) for GTPU.
  */
 static void ice_pkt_insert_u6_qfi(u8 *pkt, int offset, u8 data)
 {
@@ -3618,7 +3619,7 @@ static void ice_pkt_insert_u6_qfi(u8 *pkt, int offset, u8 data)
 }
 
 /**
- * ice_pkt_insert_u8 - insert a u8 value into a memory buffer.
+ * ice_pkt_insert_u8 - insert a u8 value into a memory buffer
  * @pkt: packet buffer
  * @offset: offset into buffer
  * @data: 8 bit value to convert and insert into pkt at offset
@@ -3629,7 +3630,7 @@ static void ice_pkt_insert_u8(u8 *pkt, int offset, u8 data)
 }
 
 /**
- * ice_pkt_insert_u8_tc - insert a u8 value into a memory buffer for TC ipv6.
+ * ice_pkt_insert_u8_tc - insert a u8 value into a memory buffer for TC IPv6
  * @pkt: packet buffer
  * @offset: offset into buffer
  * @data: 8 bit value to convert and insert into pkt at offset
@@ -3651,7 +3652,7 @@ static void ice_pkt_insert_u8_tc(u8 *pkt, int offset, u8 data)
 }
 
 /**
- * ice_pkt_insert_u16 - insert a be16 value into a memory buffer.
+ * ice_pkt_insert_u16 - insert a be16 value into a memory buffer
  * @pkt: packet buffer
  * @offset: offset into buffer
  * @data: 16 bit value to convert and insert into pkt at offset
@@ -3662,7 +3663,7 @@ static void ice_pkt_insert_u16(u8 *pkt, int offset, __be16 data)
 }
 
 /**
- * ice_pkt_insert_u32 - insert a be32 value into a memory buffer.
+ * ice_pkt_insert_u32 - insert a be32 value into a memory buffer
  * @pkt: packet buffer
  * @offset: offset into buffer
  * @data: 32 bit value to convert and insert into pkt at offset
@@ -3673,7 +3674,7 @@ static void ice_pkt_insert_u32(u8 *pkt, int offset, __be32 data)
 }
 
 /**
- * ice_pkt_insert_mac_addr - insert a MAC addr into a memory buffer.
+ * ice_pkt_insert_mac_addr - insert a MAC addr into a memory buffer
  * @pkt: packet buffer
  * @addr: MAC address to convert and insert into pkt at offset
  */
@@ -3690,7 +3691,7 @@ static void ice_pkt_insert_mac_addr(u8 *pkt, u8 *addr)
  *
  * returns an open tunnel port specified for this flow type
  */
-static enum ice_status
+static int
 ice_fdir_get_open_tunnel_port(struct ice_hw *hw, enum ice_fltr_ptype flow,
 			      u16 *port)
 {
@@ -3706,7 +3707,7 @@ ice_fdir_get_open_tunnel_port(struct ice_hw *hw, enum ice_fltr_ptype flow,
 			return ICE_ERR_DOES_NOT_EXIST;
 	}
 
-	return ICE_SUCCESS;
+	return 0;
 }
 
 /**
@@ -3822,7 +3823,7 @@ ice_fdir_gen_l2tpv2_pkt(u8 *pkt, struct ice_fdir_l2tpv2 *l2tpv2_data,
  * @frag: generate a fragment packet
  * @tun: true implies generate a tunnel packet
  */
-enum ice_status
+int
 ice_fdir_get_gen_prgm_pkt(struct ice_hw *hw, struct ice_fdir_fltr *input,
 			  u8 *pkt, bool frag, bool tun)
 {
@@ -4101,7 +4102,8 @@ ice_fdir_get_gen_prgm_pkt(struct ice_hw *hw, struct ice_fdir_fltr *input,
 		ice_pkt_insert_u8(loc, ICE_IPV4_TOS_OFFSET, input->ip.v4.tos);
 		ice_pkt_insert_u8(loc, ICE_IPV4_TTL_OFFSET, input->ip.v4.ttl);
 		ice_pkt_insert_mac_addr(loc, input->ext_data.dst_mac);
-		ice_pkt_insert_mac_addr(loc + ETH_ALEN, input->ext_data.src_mac);
+		ice_pkt_insert_mac_addr(loc + ETH_ALEN,
+					input->ext_data.src_mac);
 		break;
 	case ICE_FLTR_PTYPE_NONF_IPV4_SCTP:
 		ice_pkt_insert_u32(loc, ICE_IPV4_DST_ADDR_OFFSET,
@@ -4223,6 +4225,8 @@ ice_fdir_get_gen_prgm_pkt(struct ice_hw *hw, struct ice_fdir_fltr *input,
 				   input->ip.v4.dst_ip);
 		ice_pkt_insert_u8(loc, ICE_IPV4_TOS_OFFSET, input->ip.v4.tos);
 		ice_pkt_insert_u8(loc, ICE_IPV4_TTL_OFFSET, input->ip.v4.ttl);
+		ice_pkt_insert_u8(loc, ICE_IPV4_PROTO_OFFSET,
+				  input->ip.v4.proto);
 		ice_pkt_insert_mac_addr(loc, input->ext_data.dst_mac);
 		ice_pkt_insert_mac_addr(loc + ETH_ALEN,
 					input->ext_data.src_mac);
@@ -4801,7 +4805,7 @@ ice_fdir_get_gen_prgm_pkt(struct ice_hw *hw, struct ice_fdir_fltr *input,
 	if (input->flex_fltr)
 		ice_pkt_insert_u16(loc, input->flex_offset, input->flex_word);
 
-	return ICE_SUCCESS;
+	return 0;
 }
 
 /**
@@ -4810,7 +4814,7 @@ ice_fdir_get_gen_prgm_pkt(struct ice_hw *hw, struct ice_fdir_fltr *input,
  * @pkt: pointer to return filter packet
  * @frag: generate a fragment packet
  */
-enum ice_status
+int
 ice_fdir_get_prgm_pkt(struct ice_fdir_fltr *input, u8 *pkt, bool frag)
 {
 	return ice_fdir_get_gen_prgm_pkt(NULL, input, pkt, frag, false);
@@ -4995,7 +4999,7 @@ bool ice_fdir_is_dup_fltr(struct ice_hw *hw, struct ice_fdir_fltr *input)
  *
  * Clears FD table entries for a PF by issuing admin command (direct, 0x0B06)
  */
-enum ice_status ice_clear_pf_fd_table(struct ice_hw *hw)
+int ice_clear_pf_fd_table(struct ice_hw *hw)
 {
 	struct ice_aqc_clear_fd_table *cmd;
 	struct ice_aq_desc desc;

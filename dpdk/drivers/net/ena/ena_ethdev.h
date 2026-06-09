@@ -44,6 +44,9 @@
 #define ENA_MONITORED_TX_QUEUES		3
 #define ENA_DEFAULT_MISSING_COMP	256U
 
+#define ENA_MAX_CONTROL_PATH_POLL_INTERVAL_MSEC 1000U
+#define ENA_MIN_CONTROL_PATH_POLL_INTERVAL_MSEC 500U
+
 /* While processing submitted and completed descriptors (rx and tx path
  * respectively) in a loop it is desired to:
  *  - perform batch submissions while populating submission queue
@@ -84,6 +87,14 @@ enum ena_ring_type {
 	ENA_RING_TYPE_RX = 1,
 	ENA_RING_TYPE_TX = 2,
 };
+
+typedef enum ena_llq_policy_t {
+	ENA_LLQ_POLICY_DISABLED    = 0, /* Host queues */
+	ENA_LLQ_POLICY_RECOMMENDED = 1, /* Device recommendation */
+	ENA_LLQ_POLICY_NORMAL      = 2, /* 128B long LLQ entry */
+	ENA_LLQ_POLICY_LARGE       = 3, /* 256B long LLQ entry */
+	ENA_LLQ_POLICY_LAST,
+} ena_llq_policy;
 
 struct ena_tx_buffer {
 	struct rte_mbuf *mbuf;
@@ -130,9 +141,11 @@ struct ena_stats_rx {
 	u64 mbuf_alloc_fail;
 	u64 bad_desc_num;
 	u64 bad_req_id;
+	u64 bad_desc;
+	u64 unknown_error;
 };
 
-struct ena_ring {
+struct __rte_cache_aligned ena_ring {
 	u16 next_to_use;
 	u16 next_to_clean;
 	uint64_t last_cleanup_ticks;
@@ -165,8 +178,7 @@ struct ena_ring {
 		uint16_t rx_free_thresh;
 	};
 
-	struct ena_com_rx_buf_info ena_bufs[ENA_PKT_MAX_BUFS]
-						__rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct ena_com_rx_buf_info ena_bufs[ENA_PKT_MAX_BUFS];
 
 	struct rte_mempool *mb_pool;
 	unsigned int port_id;
@@ -191,7 +203,7 @@ struct ena_ring {
 	unsigned int numa_socket_id;
 
 	uint32_t missing_tx_completion_threshold;
-} __rte_cache_aligned;
+};
 
 enum ena_adapter_state {
 	ENA_ADAPTER_STATE_FREE    = 0,
@@ -219,7 +231,6 @@ struct ena_stats_dev {
 	 * As a workaround it is being published as an extended statistic.
 	 */
 	u64 tx_drops;
-	u64 rx_overruns;
 };
 
 struct ena_stats_metrics {
@@ -279,15 +290,15 @@ struct ena_adapter {
 	/* OS defined structs */
 	struct rte_eth_dev_data *edev_data;
 
-	struct ena_com_dev ena_dev __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct ena_com_dev ena_dev;
 
 	/* TX */
-	struct ena_ring tx_ring[ENA_MAX_NUM_QUEUES] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct ena_ring tx_ring[ENA_MAX_NUM_QUEUES];
 	u32 max_tx_ring_size;
 	u16 max_tx_sgl_size;
 
 	/* RX */
-	struct ena_ring rx_ring[ENA_MAX_NUM_QUEUES] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct ena_ring rx_ring[ENA_MAX_NUM_QUEUES];
 	u32 max_rx_ring_size;
 	u16 max_rx_sgl_size;
 
@@ -329,9 +340,7 @@ struct ena_adapter {
 	uint32_t active_aenq_groups;
 
 	bool trigger_reset;
-
-	bool enable_llq;
-	bool use_large_llq_hdr;
+	ena_llq_policy llq_header_policy;
 
 	uint32_t last_tx_comp_qid;
 	uint64_t missing_tx_completion_to;
@@ -340,13 +349,16 @@ struct ena_adapter {
 
 	uint64_t memzone_cnt;
 
+	/* Time (in microseconds) of the control path queues monitoring interval */
+	uint64_t control_path_poll_interval;
+
 	/*
 	 * Helper variables for holding the information about the supported
 	 * metrics.
 	 */
-	uint64_t metrics_stats[ENA_MAX_CUSTOMER_METRICS] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint64_t metrics_stats[ENA_MAX_CUSTOMER_METRICS];
 	uint16_t metrics_num;
-	struct ena_stats_srd srd_stats __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct ena_stats_srd srd_stats;
 };
 
 int ena_mp_indirect_table_set(struct ena_adapter *adapter);

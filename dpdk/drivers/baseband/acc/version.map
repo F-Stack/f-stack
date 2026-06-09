@@ -1,9 +1,10 @@
-DPDK_24 {
+DPDK_25 {
 	local: *;
 };
 
 EXPERIMENTAL {
 	global:
 
+	# added in 22.11
 	rte_acc_configure;
 };

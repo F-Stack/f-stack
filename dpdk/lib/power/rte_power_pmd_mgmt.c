@@ -5,6 +5,7 @@
 #include <stdlib.h>
 
 #include <rte_lcore.h>
+#include <rte_lcore_var.h>
 #include <rte_cycles.h>
 #include <rte_cpuflags.h>
 #include <rte_malloc.h>
@@ -55,7 +56,7 @@ struct queue_list_entry {
 	const struct rte_eth_rxtx_callback *cb;
 };
 
-struct pmd_core_cfg {
+struct __rte_cache_aligned pmd_core_cfg {
 	TAILQ_HEAD(queue_list_head, queue_list_entry) head;
 	/**< List of queues associated with this lcore */
 	size_t n_queues;
@@ -68,8 +69,24 @@ struct pmd_core_cfg {
 	/**< Number of queues ready to enter power optimized state */
 	uint64_t sleep_target;
 	/**< Prevent a queue from triggering sleep multiple times */
-} __rte_cache_aligned;
-static struct pmd_core_cfg lcore_cfgs[RTE_MAX_LCORE];
+};
+static RTE_LCORE_VAR_HANDLE(struct pmd_core_cfg, lcore_cfgs);
+
+static void
+init_lcore_cfgs(void)
+{
+	struct pmd_core_cfg *lcore_cfg;
+	unsigned int lcore_id;
+
+	if (lcore_cfgs != NULL)
+		return;
+
+	RTE_LCORE_VAR_ALLOC(lcore_cfgs);
+
+	/* initialize all tailqs */
+	RTE_LCORE_VAR_FOREACH(lcore_id, lcore_cfg, lcore_cfgs)
+		TAILQ_INIT(&lcore_cfg->head);
+}
 
 static inline bool
 queue_equal(const union queue *l, const union queue *r)
@@ -146,7 +163,7 @@ get_monitor_addresses(struct pmd_core_cfg *cfg,
 
 		/* attempted out of bounds access */
 		if (i >= len) {
-			RTE_LOG(ERR, POWER, "Too many queues being monitored\n");
+			POWER_LOG(ERR, "Too many queues being monitored");
 			return -1;
 		}
 
@@ -252,12 +269,11 @@ clb_multiwait(uint16_t port_id __rte_unused, uint16_t qidx __rte_unused,
 		struct rte_mbuf **pkts __rte_unused, uint16_t nb_rx,
 		uint16_t max_pkts __rte_unused, void *arg)
 {
-	const unsigned int lcore = rte_lcore_id();
 	struct queue_list_entry *queue_conf = arg;
 	struct pmd_core_cfg *lcore_conf;
 	const bool empty = nb_rx == 0;
 
-	lcore_conf = &lcore_cfgs[lcore];
+	lcore_conf = RTE_LCORE_VAR(lcore_cfgs);
 
 	/* early exit */
 	if (likely(!empty))
@@ -317,13 +333,12 @@ clb_pause(uint16_t port_id __rte_unused, uint16_t qidx __rte_unused,
 		struct rte_mbuf **pkts __rte_unused, uint16_t nb_rx,
 		uint16_t max_pkts __rte_unused, void *arg)
 {
-	const unsigned int lcore = rte_lcore_id();
 	struct queue_list_entry *queue_conf = arg;
 	struct pmd_core_cfg *lcore_conf;
 	const bool empty = nb_rx == 0;
-	uint32_t pause_duration = rte_power_pmd_mgmt_get_pause_duration();
+	const uint32_t duration = rte_power_pmd_mgmt_get_pause_duration();
 
-	lcore_conf = &lcore_cfgs[lcore];
+	lcore_conf = RTE_LCORE_VAR(lcore_cfgs);
 
 	if (likely(!empty))
 		/* early exit */
@@ -341,11 +356,11 @@ clb_pause(uint16_t port_id __rte_unused, uint16_t qidx __rte_unused,
 		if (global_data.intrinsics_support.power_pause) {
 			const uint64_t cur = rte_rdtsc();
 			const uint64_t wait_tsc =
-					cur + global_data.tsc_per_us * pause_duration;
+				cur + global_data.tsc_per_us * duration;
 			rte_power_pause(wait_tsc);
 		} else {
 			uint64_t i;
-			for (i = 0; i < global_data.pause_per_us * pause_duration; i++)
+			for (i = 0; i < global_data.pause_per_us * duration; i++)
 				rte_pause();
 		}
 	}
@@ -358,9 +373,8 @@ clb_scale_freq(uint16_t port_id __rte_unused, uint16_t qidx __rte_unused,
 		struct rte_mbuf **pkts __rte_unused, uint16_t nb_rx,
 		uint16_t max_pkts __rte_unused, void *arg)
 {
-	const unsigned int lcore = rte_lcore_id();
 	const bool empty = nb_rx == 0;
-	struct pmd_core_cfg *lcore_conf = &lcore_cfgs[lcore];
+	struct pmd_core_cfg *lcore_conf = RTE_LCORE_VAR(lcore_cfgs);
 	struct queue_list_entry *queue_conf = arg;
 
 	if (likely(!empty)) {
@@ -424,7 +438,7 @@ check_scale(unsigned int lcore)
 			!rte_power_check_env_supported(PM_ENV_PSTATE_CPUFREQ) &&
 			!rte_power_check_env_supported(PM_ENV_AMD_PSTATE_CPUFREQ) &&
 			!rte_power_check_env_supported(PM_ENV_CPPC_CPUFREQ)) {
-		RTE_LOG(DEBUG, POWER, "Only ACPI, PSTATE, AMD-PSTATE, or CPPC modes are supported\n");
+		POWER_LOG(DEBUG, "Only ACPI, PSTATE, AMD-PSTATE, or CPPC modes are supported");
 		return -ENOTSUP;
 	}
 	/* ensure we could initialize the power library */
@@ -435,7 +449,7 @@ check_scale(unsigned int lcore)
 	env = rte_power_get_env();
 	if (env != PM_ENV_ACPI_CPUFREQ && env != PM_ENV_PSTATE_CPUFREQ &&
 			env != PM_ENV_AMD_PSTATE_CPUFREQ && env != PM_ENV_CPPC_CPUFREQ) {
-		RTE_LOG(DEBUG, POWER, "Unable to initialize ACPI, PSTATE, AMD-PSTATE, or CPPC modes\n");
+		POWER_LOG(DEBUG, "Unable to initialize ACPI, PSTATE, AMD-PSTATE, or CPPC modes");
 		return -ENOTSUP;
 	}
 
@@ -451,7 +465,7 @@ check_monitor(struct pmd_core_cfg *cfg, const union queue *qdata)
 
 	/* check if rte_power_monitor is supported */
 	if (!global_data.intrinsics_support.power_monitor) {
-		RTE_LOG(DEBUG, POWER, "Monitoring intrinsics are not supported\n");
+		POWER_LOG(DEBUG, "Monitoring intrinsics are not supported");
 		return -ENOTSUP;
 	}
 	/* check if multi-monitor is supported */
@@ -460,14 +474,14 @@ check_monitor(struct pmd_core_cfg *cfg, const union queue *qdata)
 
 	/* if we're adding a new queue, do we support multiple queues? */
 	if (cfg->n_queues > 0 && !multimonitor_supported) {
-		RTE_LOG(DEBUG, POWER, "Monitoring multiple queues is not supported\n");
+		POWER_LOG(DEBUG, "Monitoring multiple queues is not supported");
 		return -ENOTSUP;
 	}
 
 	/* check if the device supports the necessary PMD API */
 	if (rte_eth_get_monitor_addr(qdata->portid, qdata->qid,
 			&dummy) == -ENOTSUP) {
-		RTE_LOG(DEBUG, POWER, "The device does not support rte_eth_get_monitor_addr\n");
+		POWER_LOG(DEBUG, "The device does not support rte_eth_get_monitor_addr");
 		return -ENOTSUP;
 	}
 
@@ -519,7 +533,8 @@ rte_power_ethdev_pmgmt_queue_enable(unsigned int lcore_id, uint16_t port_id,
 		goto end;
 	}
 
-	lcore_cfg = &lcore_cfgs[lcore_id];
+	init_lcore_cfgs();
+	lcore_cfg = RTE_LCORE_VAR_LCORE(lcore_id, lcore_cfgs);
 
 	/* check if other queues are stopped as well */
 	ret = cfg_queues_stopped(lcore_cfg);
@@ -567,14 +582,14 @@ rte_power_ethdev_pmgmt_queue_enable(unsigned int lcore_id, uint16_t port_id,
 		clb = clb_pause;
 		break;
 	default:
-		RTE_LOG(DEBUG, POWER, "Invalid power management type\n");
+		POWER_LOG(DEBUG, "Invalid power management type");
 		ret = -EINVAL;
 		goto end;
 	}
 	/* add this queue to the list */
 	ret = queue_list_add(lcore_cfg, &qdata);
 	if (ret < 0) {
-		RTE_LOG(DEBUG, POWER, "Failed to add queue to list: %s\n",
+		POWER_LOG(DEBUG, "Failed to add queue to list: %s",
 				strerror(-ret));
 		goto end;
 	}
@@ -620,7 +635,9 @@ rte_power_ethdev_pmgmt_queue_disable(unsigned int lcore_id,
 	}
 
 	/* no need to check queue id as wrong queue id would not be enabled */
-	lcore_cfg = &lcore_cfgs[lcore_id];
+
+	init_lcore_cfgs();
+	lcore_cfg = RTE_LCORE_VAR_LCORE(lcore_id, lcore_cfgs);
 
 	/* check if other queues are stopped as well */
 	ret = cfg_queues_stopped(lcore_cfg);
@@ -665,7 +682,7 @@ rte_power_ethdev_pmgmt_queue_disable(unsigned int lcore_id,
 	 * ports before calling any of these API's, so we can assume that the
 	 * callbacks can be freed. we're intentionally casting away const-ness.
 	 */
-	rte_free((void *)queue_cfg->cb);
+	rte_free((void *)(uintptr_t)queue_cfg->cb);
 	free(queue_cfg);
 
 	return 0;
@@ -687,7 +704,7 @@ int
 rte_power_pmd_mgmt_set_pause_duration(unsigned int duration)
 {
 	if (duration == 0) {
-		RTE_LOG(ERR, POWER, "Pause duration must be greater than 0, value unchanged\n");
+		POWER_LOG(ERR, "Pause duration must be greater than 0, value unchanged");
 		return -EINVAL;
 	}
 	pause_duration = duration;
@@ -705,12 +722,12 @@ int
 rte_power_pmd_mgmt_set_scaling_freq_min(unsigned int lcore, unsigned int min)
 {
 	if (lcore >= RTE_MAX_LCORE) {
-		RTE_LOG(ERR, POWER, "Invalid lcore ID: %u\n", lcore);
+		POWER_LOG(ERR, "Invalid lcore ID: %u", lcore);
 		return -EINVAL;
 	}
 
 	if (min > scale_freq_max[lcore]) {
-		RTE_LOG(ERR, POWER, "Invalid min frequency: Cannot be greater than max frequency\n");
+		POWER_LOG(ERR, "Invalid min frequency: Cannot be greater than max frequency");
 		return -EINVAL;
 	}
 	scale_freq_min[lcore] = min;
@@ -722,7 +739,7 @@ int
 rte_power_pmd_mgmt_set_scaling_freq_max(unsigned int lcore, unsigned int max)
 {
 	if (lcore >= RTE_MAX_LCORE) {
-		RTE_LOG(ERR, POWER, "Invalid lcore ID: %u\n", lcore);
+		POWER_LOG(ERR, "Invalid lcore ID: %u", lcore);
 		return -EINVAL;
 	}
 
@@ -730,7 +747,7 @@ rte_power_pmd_mgmt_set_scaling_freq_max(unsigned int lcore, unsigned int max)
 	if (max == 0)
 		max = UINT32_MAX;
 	if (max < scale_freq_min[lcore]) {
-		RTE_LOG(ERR, POWER, "Invalid max frequency: Cannot be less than min frequency\n");
+		POWER_LOG(ERR, "Invalid max frequency: Cannot be less than min frequency");
 		return -EINVAL;
 	}
 
@@ -743,12 +760,12 @@ int
 rte_power_pmd_mgmt_get_scaling_freq_min(unsigned int lcore)
 {
 	if (lcore >= RTE_MAX_LCORE) {
-		RTE_LOG(ERR, POWER, "Invalid lcore ID: %u\n", lcore);
+		POWER_LOG(ERR, "Invalid lcore ID: %u", lcore);
 		return -EINVAL;
 	}
 
 	if (scale_freq_max[lcore] == 0)
-		RTE_LOG(DEBUG, POWER, "Scaling freq min config not set. Using sysfs min freq.\n");
+		POWER_LOG(DEBUG, "Scaling freq min config not set. Using sysfs min freq.");
 
 	return scale_freq_min[lcore];
 }
@@ -757,12 +774,12 @@ int
 rte_power_pmd_mgmt_get_scaling_freq_max(unsigned int lcore)
 {
 	if (lcore >= RTE_MAX_LCORE) {
-		RTE_LOG(ERR, POWER, "Invalid lcore ID: %u\n", lcore);
+		POWER_LOG(ERR, "Invalid lcore ID: %u", lcore);
 		return -EINVAL;
 	}
 
 	if (scale_freq_max[lcore] == UINT32_MAX) {
-		RTE_LOG(DEBUG, POWER, "Scaling freq max config not set. Using sysfs max freq.\n");
+		POWER_LOG(DEBUG, "Scaling freq max config not set. Using sysfs max freq.");
 		return 0;
 	}
 
@@ -770,21 +787,14 @@ rte_power_pmd_mgmt_get_scaling_freq_max(unsigned int lcore)
 }
 
 RTE_INIT(rte_power_ethdev_pmgmt_init) {
-	size_t i;
-	int j;
-
-	/* initialize all tailqs */
-	for (i = 0; i < RTE_DIM(lcore_cfgs); i++) {
-		struct pmd_core_cfg *cfg = &lcore_cfgs[i];
-		TAILQ_INIT(&cfg->head);
-	}
+	int i;
 
 	/* initialize config defaults */
 	emptypoll_max = 512;
 	pause_duration = 1;
 	/* scaling defaults out of range to ensure not used unless set by user or app */
-	for (j = 0; j < RTE_MAX_LCORE; j++) {
-		scale_freq_min[j] = 0;
-		scale_freq_max[j] = UINT32_MAX;
+	for (i = 0; i < RTE_MAX_LCORE; i++) {
+		scale_freq_min[i] = 0;
+		scale_freq_max[i] = UINT32_MAX;
 	}
 }

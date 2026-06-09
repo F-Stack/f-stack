@@ -48,6 +48,7 @@
 #define ETH_I40E_SUPPORT_MULTI_DRIVER	"support-multi-driver"
 #define ETH_I40E_QUEUE_NUM_PER_VF_ARG	"queue-num-per-vf"
 #define ETH_I40E_VF_MSG_CFG		"vf_msg_cfg"
+#define ETH_I40E_MBUF_CHECK_ARG       "mbuf_check"
 
 #define I40E_CLEAR_PXE_WAIT_MS     200
 #define I40E_VSI_TSR_QINQ_STRIP		0x4010
@@ -405,6 +406,10 @@ static void i40e_ethertype_filter_restore(struct i40e_pf *pf);
 static void i40e_tunnel_filter_restore(struct i40e_pf *pf);
 static void i40e_filter_restore(struct i40e_pf *pf);
 static void i40e_notify_all_vfs_link_status(struct rte_eth_dev *dev);
+static int i40e_fec_get_capability(struct rte_eth_dev *dev,
+	struct rte_eth_fec_capa *speed_fec_capa, unsigned int num);
+static int i40e_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa);
+static int i40e_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa);
 
 static const char *const valid_keys[] = {
 	ETH_I40E_FLOATING_VEB_ARG,
@@ -412,6 +417,7 @@ static const char *const valid_keys[] = {
 	ETH_I40E_SUPPORT_MULTI_DRIVER,
 	ETH_I40E_QUEUE_NUM_PER_VF_ARG,
 	ETH_I40E_VF_MSG_CFG,
+	ETH_I40E_MBUF_CHECK_ARG,
 	NULL};
 
 static const struct rte_pci_id pci_id_i40e_map[] = {
@@ -428,7 +434,6 @@ static const struct rte_pci_id pci_id_i40e_map[] = {
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_10G_BASE_T4) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_25G_B) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_25G_SFP28) },
-	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_X722_A0) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_KX_X722) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_QSFP_X722) },
 	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_SFP_X722) },
@@ -519,6 +524,9 @@ static const struct eth_dev_ops i40e_eth_dev_ops = {
 	.tm_ops_get                   = i40e_tm_ops_get,
 	.tx_done_cleanup              = i40e_tx_done_cleanup,
 	.get_monitor_addr             = i40e_get_monitor_addr,
+	.fec_get_capability           = i40e_fec_get_capability,
+	.fec_get                      = i40e_fec_get,
+	.fec_set                      = i40e_fec_set,
 };
 
 /* store statistics names and its offset in stats structure */
@@ -534,8 +542,11 @@ static const struct rte_i40e_xstats_name_off rte_i40e_stats_strings[] = {
 	{"rx_dropped_packets", offsetof(struct i40e_eth_stats, rx_discards)},
 	{"rx_unknown_protocol_packets", offsetof(struct i40e_eth_stats,
 		rx_unknown_protocol)},
-	{"rx_size_error_packets", offsetof(struct i40e_pf, rx_err1) -
-				  offsetof(struct i40e_pf, stats)},
+	/*
+	 * all other offsets are against i40e_eth_stats which is first member
+	 * in i40e_hw_port_stats, so these offsets are interchangeable
+	 */
+	{"rx_size_error_packets", offsetof(struct i40e_hw_port_stats, rx_err1)},
 	{"tx_unicast_packets", offsetof(struct i40e_eth_stats, tx_unicast)},
 	{"tx_multicast_packets", offsetof(struct i40e_eth_stats, tx_multicast)},
 	{"tx_broadcast_packets", offsetof(struct i40e_eth_stats, tx_broadcast)},
@@ -544,6 +555,12 @@ static const struct rte_i40e_xstats_name_off rte_i40e_stats_strings[] = {
 
 #define I40E_NB_ETH_XSTATS (sizeof(rte_i40e_stats_strings) / \
 		sizeof(rte_i40e_stats_strings[0]))
+
+static const struct rte_i40e_xstats_name_off i40e_mbuf_strings[] = {
+	{"tx_mbuf_error_packets", offsetof(struct i40e_mbuf_stats, tx_pkt_errors)},
+};
+
+#define I40E_NB_MBUF_XSTATS (sizeof(i40e_mbuf_strings) / sizeof(i40e_mbuf_strings[0]))
 
 static const struct rte_i40e_xstats_name_off rte_i40e_hw_port_strings[] = {
 	{"tx_link_down_dropped", offsetof(struct i40e_hw_port_stats,
@@ -646,8 +663,8 @@ eth_i40e_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 	if (pci_dev->device.devargs) {
 		retval = rte_eth_devargs_parse(pci_dev->device.devargs->args,
-				&eth_da);
-		if (retval)
+				&eth_da, 1);
+		if (retval < 0)
 			return retval;
 	}
 
@@ -706,7 +723,7 @@ static int eth_i40e_pci_remove(struct rte_pci_device *pci_dev)
 	if (!ethdev)
 		return 0;
 
-	if (ethdev->data->dev_flags & RTE_ETH_DEV_REPRESENTOR)
+	if (rte_eth_dev_is_repr(ethdev))
 		return rte_eth_dev_pci_generic_remove(pci_dev,
 					i40e_vf_representor_uninit);
 	else
@@ -1374,6 +1391,94 @@ read_vf_msg_config(__rte_unused const char *key,
 }
 
 static int
+read_mbuf_check_config(__rte_unused const char *key, const char *value, void *args)
+{
+	char *cur;
+	char *tmp;
+	int str_len;
+	int valid_len;
+
+	int ret = 0;
+	uint64_t *mc_flags = args;
+	char *str2 = strdup(value);
+	if (str2 == NULL)
+		return -1;
+
+	str_len = strlen(str2);
+	if (str_len == 0) {
+		ret = -1;
+		goto err_end;
+	}
+
+	/* Try stripping the outer square brackets of the parameter string. */
+	str_len = strlen(str2);
+	if (str2[0] == '[' && str2[str_len - 1] == ']') {
+		if (str_len < 3) {
+			ret = -1;
+			goto err_end;
+		}
+		valid_len = str_len - 2;
+		memmove(str2, str2 + 1, valid_len);
+		memset(str2 + valid_len, '\0', 2);
+	}
+
+	cur = strtok_r(str2, ",", &tmp);
+	while (cur != NULL) {
+		if (!strcmp(cur, "mbuf"))
+			*mc_flags |= I40E_MBUF_CHECK_F_TX_MBUF;
+		else if (!strcmp(cur, "size"))
+			*mc_flags |= I40E_MBUF_CHECK_F_TX_SIZE;
+		else if (!strcmp(cur, "segment"))
+			*mc_flags |= I40E_MBUF_CHECK_F_TX_SEGMENT;
+		else if (!strcmp(cur, "offload"))
+			*mc_flags |= I40E_MBUF_CHECK_F_TX_OFFLOAD;
+		else
+			PMD_DRV_LOG(ERR, "Unsupported diagnostic type: %s", cur);
+		cur = strtok_r(NULL, ",", &tmp);
+	}
+
+err_end:
+	free(str2);
+	return ret;
+}
+
+static int
+i40e_parse_mbuf_check(struct rte_eth_dev *dev)
+{
+	struct i40e_adapter *ad =
+		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct rte_kvargs *kvlist;
+	int kvargs_count;
+	int ret = 0;
+
+	if (!dev->device->devargs)
+		return ret;
+
+	kvlist = rte_kvargs_parse(dev->device->devargs->args, valid_keys);
+	if (!kvlist)
+		return -EINVAL;
+
+	kvargs_count = rte_kvargs_count(kvlist, ETH_I40E_MBUF_CHECK_ARG);
+	if (!kvargs_count)
+		goto free_end;
+
+	if (kvargs_count > 1) {
+		PMD_DRV_LOG(ERR, "More than one argument \"%s\"!",
+				ETH_I40E_MBUF_CHECK_ARG);
+		ret = -EINVAL;
+		goto free_end;
+	}
+
+	if (rte_kvargs_process(kvlist, ETH_I40E_MBUF_CHECK_ARG,
+			read_mbuf_check_config, &ad->mbuf_check) < 0)
+		ret = -EINVAL;
+
+free_end:
+	rte_kvargs_free(kvlist);
+	return ret;
+}
+
+static int
 i40e_parse_vf_msg_config(struct rte_eth_dev *dev,
 		struct i40e_vf_msg_cfg *msg_cfg)
 {
@@ -1485,6 +1590,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	}
 
 	i40e_parse_vf_msg_config(dev, &pf->vf_msg_cfg);
+	i40e_parse_mbuf_check(dev);
 	/* Check if need to support multi-driver */
 	i40e_support_multi_driver(dev);
 
@@ -1514,8 +1620,7 @@ eth_i40e_dev_init(struct rte_eth_dev *dev, void *init_params __rte_unused)
 	}
 	/* Firmware of SFP x722 does not support 802.1ad frames ability */
 	if (hw->device_id == I40E_DEV_ID_SFP_X722 ||
-		hw->device_id == I40E_DEV_ID_SFP_I_X722 ||
-		hw->device_id == I40E_DEV_ID_10G_BASE_T_X722)
+		hw->device_id == I40E_DEV_ID_SFP_I_X722)
 		hw->flags &= ~I40E_HW_FLAG_802_1AD_CAPABLE;
 
 	PMD_INIT_LOG(INFO, "FW %d.%d API %d.%d NVM %02d.%02d.%02d eetrack %04x",
@@ -2322,6 +2427,8 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	struct i40e_vsi *main_vsi = pf->main_vsi;
+	struct i40e_adapter *ad =
+		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	int ret, i;
 	struct rte_pci_device *pci_dev = RTE_ETH_DEV_TO_PCI(dev);
 	struct rte_intr_handle *intr_handle = pci_dev->intr_handle;
@@ -2481,6 +2588,7 @@ i40e_dev_start(struct rte_eth_dev *dev)
 	max_frame_size = dev->data->mtu ?
 		dev->data->mtu + I40E_ETH_OVERHEAD :
 		I40E_FRAME_SIZE_MAX;
+	ad->max_pkt_len = max_frame_size;
 
 	/* Set the max frame size to HW*/
 	i40e_aq_set_mac_config(hw, max_frame_size, TRUE, false, 0, NULL);
@@ -3177,10 +3285,10 @@ i40e_read_stats_registers(struct i40e_pf *pf, struct i40e_hw *hw)
 			    pf->offset_loaded,
 			    &os->eth.rx_unknown_protocol,
 			    &ns->eth.rx_unknown_protocol);
-	i40e_stat_update_48(hw, I40E_GL_RXERR1_H(hw->pf_id + I40E_MAX_VF),
-			    I40E_GL_RXERR1_L(hw->pf_id + I40E_MAX_VF),
-			    pf->offset_loaded, &pf->rx_err1_offset,
-			    &pf->rx_err1);
+	i40e_stat_update_48(hw, I40E_GL_RXERR1H(hw->pf_id + I40E_MAX_VF),
+			    I40E_GL_RXERR1L(hw->pf_id + I40E_MAX_VF),
+			    pf->offset_loaded, &os->rx_err1,
+			    &ns->rx_err1);
 	i40e_stat_update_48_in_64(hw, I40E_GLPRT_GOTCH(hw->port),
 				  I40E_GLPRT_GOTCL(hw->port),
 				  pf->offset_loaded, &os->eth.tx_bytes,
@@ -3381,7 +3489,7 @@ i40e_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 			pf->main_vsi->eth_stats.rx_multicast +
 			pf->main_vsi->eth_stats.rx_broadcast -
 			pf->main_vsi->eth_stats.rx_discards -
-			pf->rx_err1;
+			ns->rx_err1;
 	stats->opackets = ns->eth.tx_unicast +
 			ns->eth.tx_multicast +
 			ns->eth.tx_broadcast;
@@ -3396,7 +3504,7 @@ i40e_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	stats->ierrors  = ns->crc_errors +
 			ns->rx_length_errors + ns->rx_undersize +
 			ns->rx_oversize + ns->rx_fragments + ns->rx_jabber +
-			pf->rx_err1;
+			ns->rx_err1;
 
 	if (pf->vfs) {
 		for (i = 0; i < pf->vf_num; i++) {
@@ -3500,13 +3608,16 @@ i40e_dev_stats_reset(struct rte_eth_dev *dev)
 	/* read the stats, reading current register values into offset */
 	i40e_read_stats_registers(pf, hw);
 
+	memset(&pf->mbuf_stats, 0, sizeof(struct i40e_mbuf_stats));
+
 	return 0;
 }
 
 static uint32_t
 i40e_xstats_calc_num(void)
 {
-	return I40E_NB_ETH_XSTATS + I40E_NB_HW_PORT_XSTATS +
+	return I40E_NB_ETH_XSTATS + I40E_NB_MBUF_XSTATS +
+		I40E_NB_HW_PORT_XSTATS +
 		(I40E_NB_RXQ_PRIO_XSTATS * 8) +
 		(I40E_NB_TXQ_PRIO_XSTATS * 8);
 }
@@ -3527,6 +3638,14 @@ static int i40e_dev_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
 	for (i = 0; i < I40E_NB_ETH_XSTATS; i++) {
 		strlcpy(xstats_names[count].name,
 			rte_i40e_stats_strings[i].name,
+			sizeof(xstats_names[count].name));
+		count++;
+	}
+
+	/* Get stats from i40e_mbuf_stats struct */
+	for (i = 0; i < I40E_NB_MBUF_XSTATS; i++) {
+		strlcpy(xstats_names[count].name,
+			i40e_mbuf_strings[i].name,
 			sizeof(xstats_names[count].name));
 		count++;
 	}
@@ -3561,12 +3680,28 @@ static int i40e_dev_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
 	return count;
 }
 
+static void
+i40e_dev_update_mbuf_stats(struct rte_eth_dev *ethdev,
+		struct i40e_mbuf_stats *mbuf_stats)
+{
+	uint16_t idx;
+	struct i40e_tx_queue *txq;
+
+	for (idx = 0; idx < ethdev->data->nb_tx_queues; idx++) {
+		txq = ethdev->data->tx_queues[idx];
+		mbuf_stats->tx_pkt_errors += txq->mbuf_errors;
+	}
+}
+
 static int
 i40e_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 		    unsigned n)
 {
 	struct i40e_pf *pf = I40E_DEV_PRIVATE_TO_PF(dev->data->dev_private);
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct i40e_adapter *adapter =
+		I40E_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
+	struct i40e_mbuf_stats mbuf_stats = {0};
 	unsigned i, count, prio;
 	struct i40e_hw_port_stats *hw_stats = &pf->stats;
 
@@ -3581,10 +3716,21 @@ i40e_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 
 	count = 0;
 
+	if (adapter->mbuf_check)
+		i40e_dev_update_mbuf_stats(dev, &mbuf_stats);
+
 	/* Get stats from i40e_eth_stats struct */
 	for (i = 0; i < I40E_NB_ETH_XSTATS; i++) {
 		xstats[count].value = *(uint64_t *)(((char *)&hw_stats->eth) +
 			rte_i40e_stats_strings[i].offset);
+		xstats[count].id = count;
+		count++;
+	}
+
+	/* Get stats from i40e_mbuf_stats struct */
+	for (i = 0; i < I40E_NB_MBUF_XSTATS; i++) {
+		xstats[count].value = *(uint64_t *)((char *)&mbuf_stats +
+			i40e_mbuf_strings[i].offset);
 		xstats[count].id = count;
 		count++;
 	}
@@ -4003,6 +4149,16 @@ i40e_vlan_offload_set(struct rte_eth_dev *dev, int mask)
 			i40e_vsi_config_vlan_stripping(vsi, TRUE);
 		else
 			i40e_vsi_config_vlan_stripping(vsi, FALSE);
+
+		/* When VLAN strip is enabled/disabled
+		 * after enabling outer VLAN stripping,
+		 * outer VLAN stripping gets disabled
+		 * as the register gets overridden by
+		 * VLAN's strip vsi param update.
+		 * Hence, re-enable outer VLAN stripping.
+		 */
+		if (rxmode->offloads & RTE_ETH_RX_OFFLOAD_QINQ_STRIP)
+			i40e_vsi_config_outer_vlan_stripping(vsi, TRUE);
 	}
 
 	if (mask & RTE_ETH_VLAN_EXTEND_MASK) {
@@ -4552,7 +4708,7 @@ i40e_allocate_dma_mem_d(__rte_unused struct i40e_hw *hw,
 			u64 size,
 			u32 alignment)
 {
-	static uint64_t i40e_dma_memzone_id;
+	static RTE_ATOMIC(uint64_t) i40e_dma_memzone_id;
 	const struct rte_memzone *mz = NULL;
 	char z_name[RTE_MEMZONE_NAMESIZE];
 
@@ -4560,7 +4716,7 @@ i40e_allocate_dma_mem_d(__rte_unused struct i40e_hw *hw,
 		return I40E_ERR_PARAM;
 
 	snprintf(z_name, sizeof(z_name), "i40e_dma_%" PRIu64,
-		__atomic_fetch_add(&i40e_dma_memzone_id, 1, __ATOMIC_RELAXED));
+		rte_atomic_fetch_add_explicit(&i40e_dma_memzone_id, 1, rte_memory_order_relaxed));
 	mz = rte_memzone_reserve_bounded(z_name, size, SOCKET_ID_ANY,
 			RTE_MEMZONE_IOVA_CONTIG, alignment, RTE_PGSIZE_2M);
 	if (!mz)
@@ -4951,16 +5107,14 @@ i40e_res_pool_destroy(struct i40e_res_pool_info *pool)
 	if (pool == NULL)
 		return;
 
-	for (entry = LIST_FIRST(&pool->alloc_list);
-			entry && (next_entry = LIST_NEXT(entry, next), 1);
-			entry = next_entry) {
+	for (entry = LIST_FIRST(&pool->alloc_list); entry; entry = next_entry) {
+		next_entry = LIST_NEXT(entry, next);
 		LIST_REMOVE(entry, next);
 		rte_free(entry);
 	}
 
-	for (entry = LIST_FIRST(&pool->free_list);
-			entry && (next_entry = LIST_NEXT(entry, next), 1);
-			entry = next_entry) {
+	for (entry = LIST_FIRST(&pool->free_list); entry; entry = next_entry) {
+		next_entry = LIST_NEXT(entry, next);
 		LIST_REMOVE(entry, next);
 		rte_free(entry);
 	}
@@ -6262,8 +6416,6 @@ i40e_pf_setup(struct i40e_pf *pf)
 	memset(&pf->stats_offset, 0, sizeof(struct i40e_hw_port_stats));
 	memset(&pf->internal_stats, 0, sizeof(struct i40e_eth_stats));
 	memset(&pf->internal_stats_offset, 0, sizeof(struct i40e_eth_stats));
-	pf->rx_err1 = 0;
-	pf->rx_err1_offset = 0;
 
 	ret = i40e_pf_get_switch_config(pf);
 	if (ret != I40E_SUCCESS) {
@@ -7122,9 +7274,7 @@ i40e_remove_macvlan_filters(struct i40e_vsi *vsi,
 
 		if (ret != I40E_SUCCESS) {
 			/* Do not report as an error when firmware returns ENOENT */
-			if (aq_status == I40E_AQ_RC_ENOENT) {
-				ret = I40E_SUCCESS;
-			} else {
+			if (aq_status != I40E_AQ_RC_ENOENT) {
 				PMD_DRV_LOG(ERR, "Failed to remove macvlan filter");
 				goto DONE;
 			}
@@ -10413,6 +10563,9 @@ i40e_timesync_enable(struct rte_eth_dev *dev)
 	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 	uint32_t tsync_ctl_l;
 	uint32_t tsync_ctl_h;
+	struct timespec ts;
+
+	memset(&ts, 0, sizeof(struct timespec));
 
 	/* Stop the timesync system time. */
 	I40E_WRITE_REG(hw, I40E_PRTTSYN_INC_L, 0x0);
@@ -10441,6 +10594,9 @@ i40e_timesync_enable(struct rte_eth_dev *dev)
 
 	I40E_WRITE_REG(hw, I40E_PRTTSYN_CTL0, tsync_ctl_l);
 	I40E_WRITE_REG(hw, I40E_PRTTSYN_CTL1, tsync_ctl_h);
+
+	/* i40e uses zero-based timestamping so only adjust timecounter */
+	i40e_timesync_write_time(dev, &ts);
 
 	return 0;
 }
@@ -12160,6 +12316,238 @@ i40e_cloud_filter_qinq_create(struct i40e_pf *pf)
 			    filter_replace.new_filter_type);
 
 	return ret;
+}
+
+static int
+i40e_fec_get_capability(struct rte_eth_dev *dev,
+	struct rte_eth_fec_capa *speed_fec_capa, __rte_unused unsigned int num)
+{
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+
+	if (hw->mac.type == I40E_MAC_X722 &&
+	    !(hw->flags & I40E_HW_FLAG_X722_FEC_REQUEST_CAPABLE)) {
+		PMD_DRV_LOG(ERR, "Setting FEC encoding not supported by"
+			 " firmware. Please update the NVM image.");
+		return -ENOTSUP;
+	}
+
+	if (hw->device_id == I40E_DEV_ID_25G_SFP28 ||
+	    hw->device_id == I40E_DEV_ID_25G_B) {
+		if (speed_fec_capa) {
+			speed_fec_capa->speed = RTE_ETH_SPEED_NUM_25G;
+			speed_fec_capa->capa = RTE_ETH_FEC_MODE_CAPA_MASK(NOFEC) |
+					     RTE_ETH_FEC_MODE_CAPA_MASK(BASER) |
+					     RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) |
+					     RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+		}
+
+		/* since HW only supports 25G */
+		return 1;
+	} else if (hw->device_id == I40E_DEV_ID_KX_X722) {
+		if (speed_fec_capa) {
+			speed_fec_capa->speed = RTE_ETH_SPEED_NUM_25G;
+			speed_fec_capa->capa = RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) |
+					     RTE_ETH_FEC_MODE_CAPA_MASK(RS);
+		}
+		return 1;
+	}
+
+	return -ENOTSUP;
+}
+
+static int
+i40e_fec_get(struct rte_eth_dev *dev, uint32_t *fec_capa)
+{
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct i40e_aq_get_phy_abilities_resp abilities = {0};
+	struct i40e_link_status link_status = {0};
+	uint8_t current_fec_mode = 0, fec_config = 0;
+	bool link_up, enable_lse;
+	int ret = 0;
+
+	enable_lse = dev->data->dev_conf.intr_conf.lsc ? true : false;
+	/* Get link info */
+	ret = i40e_aq_get_link_info(hw, enable_lse, &link_status, NULL);
+	if (ret != I40E_SUCCESS) {
+		PMD_DRV_LOG(ERR, "Failed to get link information: %d",
+				ret);
+		return -ENOTSUP;
+	}
+
+	link_up = link_status.link_info & I40E_AQ_LINK_UP;
+
+	ret = i40e_aq_get_phy_capabilities(hw, false, false, &abilities,
+						  NULL);
+	if (ret) {
+		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d",
+				ret);
+		return -ENOTSUP;
+	}
+
+	/**
+	 * If link is down and AUTO is enabled, AUTO is returned,
+	 * otherwise, configured FEC mode is returned.
+	 * If link is up, current FEC mode is returned.
+	 */
+	fec_config = abilities.fec_cfg_curr_mod_ext_info
+					& I40E_AQ_PHY_FEC_CONFIG_MASK;
+	current_fec_mode = link_status.fec_info;
+
+	if (link_up) {
+		switch (current_fec_mode) {
+		case I40E_AQ_CONFIG_FEC_KR_ENA:
+			*fec_capa = RTE_ETH_FEC_MODE_TO_CAPA(RTE_ETH_FEC_BASER);
+			break;
+		case I40E_AQ_CONFIG_FEC_RS_ENA:
+			*fec_capa = RTE_ETH_FEC_MODE_TO_CAPA(RTE_ETH_FEC_RS);
+			break;
+		case 0:
+			*fec_capa = RTE_ETH_FEC_MODE_TO_CAPA(RTE_ETH_FEC_NOFEC);
+			break;
+		default:
+			return -EINVAL;
+		}
+		return 0;
+	}
+
+	if (fec_config & I40E_AQ_ENABLE_FEC_AUTO) {
+		*fec_capa = RTE_ETH_FEC_MODE_TO_CAPA(RTE_ETH_FEC_AUTO);
+		return 0;
+	}
+
+	uint32_t temp_fec_capa = 0;
+	if (fec_config & I40E_AQ_ENABLE_FEC_KR)
+		temp_fec_capa |= RTE_ETH_FEC_MODE_TO_CAPA(RTE_ETH_FEC_BASER);
+	if (fec_config & I40E_AQ_ENABLE_FEC_RS)
+		temp_fec_capa |= RTE_ETH_FEC_MODE_TO_CAPA(RTE_ETH_FEC_RS);
+	if (temp_fec_capa == 0)
+		temp_fec_capa = RTE_ETH_FEC_MODE_TO_CAPA(RTE_ETH_FEC_NOFEC);
+
+	*fec_capa = temp_fec_capa;
+	return 0;
+}
+
+static int
+i40e_fec_set(struct rte_eth_dev *dev, uint32_t fec_capa)
+{
+	struct i40e_hw *hw = I40E_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct i40e_aq_get_phy_abilities_resp abilities = {0};
+	struct i40e_aq_set_phy_config config = {0};
+	enum i40e_status_code status;
+	uint8_t req_fec = 0, fec_auto = 0, fec_kr = 0, fec_rs = 0;
+
+	if (hw->device_id != I40E_DEV_ID_25G_SFP28 &&
+	    hw->device_id != I40E_DEV_ID_25G_B &&
+	    hw->device_id != I40E_DEV_ID_KX_X722) {
+		return -ENOTSUP;
+	}
+
+	if (hw->mac.type == I40E_MAC_X722 &&
+	    !(hw->flags & I40E_HW_FLAG_X722_FEC_REQUEST_CAPABLE)) {
+		PMD_DRV_LOG(ERR, "Setting FEC encoding not supported by"
+			 " firmware. Please update the NVM image.");
+		return -ENOTSUP;
+	}
+
+	/**
+	 * Copy the current user PHY configuration. The current user PHY
+	 * configuration is initialized during probe from PHY capabilities
+	 * software mode, and updated on set PHY configuration.
+	 */
+	if (fec_capa & ~(RTE_ETH_FEC_MODE_CAPA_MASK(AUTO) |
+		RTE_ETH_FEC_MODE_CAPA_MASK(BASER) | RTE_ETH_FEC_MODE_CAPA_MASK(RS)))
+		return -EINVAL;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(AUTO))
+		fec_auto = 1;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(BASER))
+		fec_kr = 1;
+
+	if (fec_capa & RTE_ETH_FEC_MODE_CAPA_MASK(RS))
+		fec_rs = 1;
+
+	if (fec_auto) {
+		if (hw->mac.type == I40E_MAC_X722) {
+			PMD_DRV_LOG(ERR, "X722 Unsupported FEC mode: AUTO");
+			return -EINVAL;
+		}
+		if (fec_kr || fec_rs) {
+			if (fec_kr)
+				req_fec = I40E_AQ_SET_FEC_ABILITY_KR |
+							I40E_AQ_SET_FEC_REQUEST_KR;
+			if (fec_rs) {
+				if (hw->mac.type == I40E_MAC_X722) {
+					PMD_DRV_LOG(ERR, "X722 Unsupported FEC mode: RS");
+					return -EINVAL;
+				}
+				req_fec |= I40E_AQ_SET_FEC_ABILITY_RS |
+							I40E_AQ_SET_FEC_REQUEST_RS;
+			}
+		} else {
+			if (hw->mac.type == I40E_MAC_X722) {
+				req_fec = I40E_AQ_SET_FEC_ABILITY_KR |
+						  I40E_AQ_SET_FEC_REQUEST_KR;
+			} else {
+				req_fec = I40E_AQ_SET_FEC_ABILITY_KR |
+						  I40E_AQ_SET_FEC_REQUEST_KR |
+						  I40E_AQ_SET_FEC_ABILITY_RS |
+						  I40E_AQ_SET_FEC_REQUEST_RS;
+			}
+		}
+	} else {
+		if (fec_kr ^ fec_rs) {
+			if (fec_kr) {
+				req_fec = I40E_AQ_SET_FEC_ABILITY_KR |
+							I40E_AQ_SET_FEC_REQUEST_KR;
+			} else {
+				if (hw->mac.type == I40E_MAC_X722) {
+					PMD_DRV_LOG(ERR, "X722 Unsupported FEC mode: RS");
+					return -EINVAL;
+				}
+				req_fec = I40E_AQ_SET_FEC_ABILITY_RS |
+							I40E_AQ_SET_FEC_REQUEST_RS;
+			}
+		} else {
+			return -EINVAL;
+		}
+	}
+
+	/* Get the current phy config */
+	status = i40e_aq_get_phy_capabilities(hw, false, false, &abilities,
+					      NULL);
+	if (status) {
+		PMD_DRV_LOG(ERR, "Failed to get PHY capabilities: %d",
+				status);
+		return -ENOTSUP;
+	}
+
+	if (abilities.fec_cfg_curr_mod_ext_info != req_fec) {
+		config.phy_type = abilities.phy_type;
+		config.abilities = abilities.abilities |
+				   I40E_AQ_PHY_ENABLE_ATOMIC_LINK;
+		config.phy_type_ext = abilities.phy_type_ext;
+		config.link_speed = abilities.link_speed;
+		config.eee_capability = abilities.eee_capability;
+		config.eeer = abilities.eeer_val;
+		config.low_power_ctrl = abilities.d3_lpan;
+		config.fec_config = req_fec & I40E_AQ_PHY_FEC_CONFIG_MASK;
+		status = i40e_aq_set_phy_config(hw, &config, NULL);
+		if (status) {
+			PMD_DRV_LOG(ERR, "Failed to set PHY capabilities: %d",
+			status);
+			return -ENOTSUP;
+		}
+	}
+
+	status = i40e_update_link_info(hw);
+	if (status) {
+		PMD_DRV_LOG(ERR, "Failed to set PHY capabilities: %d",
+			status);
+		return -ENOTSUP;
+	}
+
+	return 0;
 }
 
 RTE_LOG_REGISTER_SUFFIX(i40e_logtype_init, init, NOTICE);

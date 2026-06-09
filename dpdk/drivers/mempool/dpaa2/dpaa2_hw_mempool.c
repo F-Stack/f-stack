@@ -23,7 +23,7 @@
 #include <dev_driver.h>
 #include "rte_dpaa2_mempool.h"
 
-#include "fslmc_vfio.h"
+#include <bus_fslmc_driver.h>
 #include <fslmc_logs.h>
 #include <mc/fsl_dpbp.h>
 #include <portal/dpaa2_hw_pvt.h>
@@ -44,6 +44,8 @@ rte_hw_mbuf_create_pool(struct rte_mempool *mp)
 	struct dpaa2_bp_info *bp_info;
 	struct dpbp_attr dpbp_attr;
 	uint32_t bpid;
+	unsigned int lcore_id;
+	struct rte_mempool_cache *cache;
 	int ret;
 
 	avail_dpbp = dpaa2_alloc_dpbp_dev();
@@ -132,6 +134,19 @@ rte_hw_mbuf_create_pool(struct rte_mempool *mp)
 	DPAA2_MEMPOOL_DEBUG("BP List created for bpid =%d", dpbp_attr.bpid);
 
 	h_bp_list = bp_list;
+	/* Update per core mempool cache threshold to optimal value which is
+	 * number of buffers that can be released to HW buffer pool in
+	 * a single API call.
+	 */
+	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
+		cache = &mp->local_cache[lcore_id];
+		DPAA2_MEMPOOL_DEBUG("lCore %d: cache->flushthresh %d -> %d",
+			lcore_id, cache->flushthresh,
+			(uint32_t)(cache->size + DPAA2_MBUF_MAX_ACQ_REL));
+		if (cache->flushthresh)
+			cache->flushthresh = cache->size + DPAA2_MBUF_MAX_ACQ_REL;
+	}
+
 	return 0;
 err3:
 	rte_free(bp_info);
@@ -293,7 +308,7 @@ rte_dpaa2_mbuf_pool_bpid(struct rte_mempool *mp)
 
 	bp_info = mempool_to_bpinfo(mp);
 	if (!(bp_info->bp_list)) {
-		RTE_LOG(ERR, PMD, "DPAA2 buffer pool not configured\n");
+		DPAA2_MEMPOOL_ERR("DPAA2 buffer pool not configured");
 		return -ENOMEM;
 	}
 
@@ -307,7 +322,7 @@ rte_dpaa2_mbuf_from_buf_addr(struct rte_mempool *mp, void *buf_addr)
 
 	bp_info = mempool_to_bpinfo(mp);
 	if (!(bp_info->bp_list)) {
-		RTE_LOG(ERR, PMD, "DPAA2 buffer pool not configured\n");
+		DPAA2_MEMPOOL_ERR("DPAA2 buffer pool not configured");
 		return NULL;
 	}
 

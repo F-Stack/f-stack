@@ -53,6 +53,31 @@ print_usage () {
 check_forbidden_additions() { # <patch>
 	res=0
 
+	# refrain from new calls to RTE_LOG in libraries
+	awk -v FOLDERS="lib" \
+		-v EXPRESSIONS="RTE_LOG\\\(" \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Prefer RTE_LOG_LINE' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# refrain from new calls to RTE_LOG in drivers (but leave some leeway for base drivers)
+	awk -v FOLDERS="drivers" \
+		-v SKIP_FILES='osdep.h$' \
+		-v EXPRESSIONS="RTE_LOG\\\( RTE_LOG_DP\\\( rte_log\\\(" \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Prefer RTE_LOG_LINE/RTE_LOG_DP_LINE' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# no output on stdout or stderr
+	awk -v FOLDERS="lib drivers" \
+		-v EXPRESSIONS="\\\<printf\\\> \\\<fprintf\\\(stdout, \\\<fprintf\\\(stderr," \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Writing to stdout or stderr' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
 	# refrain from new additions of rte_panic() and rte_exit()
 	# multiple folders and expressions are separated by spaces
 	awk -v FOLDERS="lib drivers" \
@@ -64,6 +89,7 @@ check_forbidden_additions() { # <patch>
 
 	# refrain from using compiler attribute without defining a common macro
 	awk -v FOLDERS="lib drivers app examples" \
+		-v SKIP_FILES='lib/eal/include/rte_common.h' \
 		-v EXPRESSIONS="__attribute__" \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using compiler attribute directly' \
@@ -135,11 +161,28 @@ check_forbidden_additions() { # <patch>
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
-	# forbid use of non abstracted bit count operations
+	# forbid use of __alignof__
 	awk -v FOLDERS="lib drivers app examples" \
-		-v EXPRESSIONS='\\<__builtin_(clz|clzll|ctz|ctzll|popcount|popcountll)\\>' \
+		-v EXPRESSIONS='\\<__alignof__\\>' \
 		-v RET_ON_FAIL=1 \
-		-v MESSAGE='Using __builtin helpers for bit count operations' \
+		-v MESSAGE='Using __alignof__, prefer C11 alignof' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# forbid use of __typeof__
+	awk -v FOLDERS="lib drivers app examples" \
+		-v EXPRESSIONS='\\<__typeof__\\>' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using __typeof__, prefer typeof' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# forbid use of compiler __builtin_*
+	awk -v FOLDERS="lib drivers app examples" \
+		-v SKIP_FILES='lib/eal/ drivers/.*/base/ drivers/.*osdep.h$' \
+		-v EXPRESSIONS='\\<__builtin_' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Using __builtin helpers, prefer EAL macros' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -148,6 +191,14 @@ check_forbidden_additions() { # <patch>
 		-v EXPRESSIONS='include.*linux/pci_regs\\.h' \
 		-v RET_ON_FAIL=1 \
 		-v MESSAGE='Using linux/pci_regs.h, prefer rte_pci.h' \
+		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
+		"$1" || res=1
+
+	# forbid use of variadic argument pack extension in macros
+	awk -v FOLDERS="lib drivers app examples" \
+		-v EXPRESSIONS='#[[:space:]]*define.*[^(,[:space:]]\\.\\.\\.[[:space:]]*)' \
+		-v RET_ON_FAIL=1 \
+		-v MESSAGE='Do not use variadic argument pack in macros' \
 		-f $(dirname $(readlink -f $0))/check-forbidden-tokens.awk \
 		"$1" || res=1
 
@@ -296,6 +347,21 @@ check_internal_tags() { # <patch>
 	return $res
 }
 
+check_aligned_attributes() { # <patch>
+	res=0
+
+	for token in __rte_aligned __rte_cache_aligned __rte_cache_min_aligned; do
+		if [ $(grep -E '^\+.*\<'$token'\>' "$1" | \
+				grep -vE '\<(struct|union)[[:space:]]*'$token'\>' | \
+				wc -l) != 0 ]; then
+			echo "Please use $token only for struct or union types alignment."
+			res=1
+		fi
+	done
+
+	return $res
+}
+
 check_release_notes() { # <patch>
 	rel_notes_prefix=doc/guides/rel_notes/release_
 	IFS=. read year month release < VERSION
@@ -399,6 +465,14 @@ check () { # <patch-file> <commit>
 
 	! $verbose || printf '\nChecking __rte_internal tags:\n'
 	report=$(check_internal_tags "$tmpinput")
+	if [ $? -ne 0 ] ; then
+		$headline_printed || print_headline "$subject"
+		printf '%s\n' "$report"
+		ret=1
+	fi
+
+	! $verbose || printf '\nChecking alignment attributes:\n'
+	report=$(check_aligned_attributes "$tmpinput")
 	if [ $? -ne 0 ] ; then
 		$headline_printed || print_headline "$subject"
 		printf '%s\n' "$report"

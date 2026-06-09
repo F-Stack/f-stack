@@ -36,7 +36,7 @@ nix_rx_offload_flags(struct rte_eth_dev *eth_dev)
 	if (!dev->ptype_disable)
 		flags |= NIX_RX_OFFLOAD_PTYPE_F;
 
-	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)
+	if (dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY && !dev->nix.custom_inb_sa)
 		flags |= NIX_RX_OFFLOAD_SECURITY_F;
 
 	return flags;
@@ -613,6 +613,10 @@ cn10k_nix_dev_start(struct rte_eth_dev *eth_dev)
 	if (dev->rx_offload_flags & NIX_RX_OFFLOAD_SECURITY_F)
 		cn10k_nix_rx_queue_meta_aura_update(eth_dev);
 
+	/* Set flags for Rx Inject feature */
+	if (roc_idev_nix_rx_inject_get(nix->port_id))
+		dev->rx_offload_flags |= NIX_RX_SEC_REASSEMBLY_F;
+
 	cn10k_eth_set_tx_function(eth_dev);
 	cn10k_eth_set_rx_function(eth_dev);
 	return 0;
@@ -674,6 +678,72 @@ cn10k_nix_reassembly_conf_set(struct rte_eth_dev *eth_dev,
 	}
 
 	return rc;
+}
+
+static int
+cn10k_nix_rx_avail_get(struct cn10k_eth_rxq *rxq)
+{
+	uint32_t qmask = rxq->qmask;
+	uint64_t reg, head, tail;
+	int available;
+
+	/* Use LDADDA version to avoid reorder */
+	reg = roc_atomic64_add_sync(rxq->wdata, rxq->cq_status);
+	/* CQ_OP_STATUS operation error */
+	if (reg & BIT_ULL(NIX_CQ_OP_STAT_OP_ERR) ||
+	    reg & BIT_ULL(NIX_CQ_OP_STAT_CQ_ERR))
+		return 0;
+	tail = reg & 0xFFFFF;
+	head = (reg >> 20) & 0xFFFFF;
+	if (tail < head)
+		available = tail - head + qmask + 1;
+	else
+		available = tail - head;
+
+	return available;
+}
+
+static int
+cn10k_rx_descriptor_dump(const struct rte_eth_dev *eth_dev, uint16_t qid,
+			 uint16_t offset, uint16_t num, FILE *file)
+{
+	struct cn10k_eth_rxq *rxq = eth_dev->data->rx_queues[qid];
+	const uint64_t data_off = rxq->data_off;
+	const uint32_t qmask = rxq->qmask;
+	const uintptr_t desc = rxq->desc;
+	struct cpt_parse_hdr_s *cpth;
+	uint32_t head = rxq->head;
+	struct nix_cqe_hdr_s *cq;
+	uint16_t count = 0;
+	int available_pkts;
+	uint64_t cq_w1;
+
+	available_pkts = cn10k_nix_rx_avail_get(rxq);
+
+	if ((offset + num - 1) >= available_pkts) {
+		plt_err("Invalid BD num=%u", num);
+		return -EINVAL;
+	}
+
+	while (count < num) {
+		cq = (struct nix_cqe_hdr_s *)(desc + CQE_SZ(head) +
+					      count + offset);
+		cq_w1 = *((const uint64_t *)cq + 1);
+		if (cq_w1 & BIT(11)) {
+			rte_iova_t buff = *((rte_iova_t *)((uint64_t *)cq + 9));
+			struct rte_mbuf *mbuf =
+				(struct rte_mbuf *)(buff - data_off);
+			cpth = (struct cpt_parse_hdr_s *)
+				((uintptr_t)mbuf + (uint16_t)data_off);
+			roc_cpt_parse_hdr_dump(file, cpth);
+		} else {
+			roc_nix_cqe_dump(file, cq);
+		}
+
+		count++;
+		head &= qmask;
+	}
+	return 0;
 }
 
 static int
@@ -814,6 +884,7 @@ nix_eth_dev_ops_override(void)
 			cn10k_nix_reassembly_capability_get;
 	cnxk_eth_dev_ops.ip_reassembly_conf_get = cn10k_nix_reassembly_conf_get;
 	cnxk_eth_dev_ops.ip_reassembly_conf_set = cn10k_nix_reassembly_conf_set;
+	cnxk_eth_dev_ops.eth_rx_descriptor_dump = cn10k_rx_descriptor_dump;
 }
 
 /* Update platform specific tm ops */
@@ -916,6 +987,9 @@ static const struct rte_pci_id cn10k_pci_nix_map[] = {
 	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN10KB, PCI_DEVID_CNXK_RVU_PF),
 	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CNF10KB, PCI_DEVID_CNXK_RVU_PF),
 	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN10KA, PCI_DEVID_CNXK_RVU_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN10KA, PCI_DEVID_CNXK_RVU_ESWITCH_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN10KB, PCI_DEVID_CNXK_RVU_ESWITCH_VF),
+	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CNF10KA, PCI_DEVID_CNXK_RVU_ESWITCH_VF),
 	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN10KAS, PCI_DEVID_CNXK_RVU_VF),
 	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CNF10KA, PCI_DEVID_CNXK_RVU_VF),
 	CNXK_PCI_ID(PCI_SUBSYSTEM_DEVID_CN10KB, PCI_DEVID_CNXK_RVU_VF),

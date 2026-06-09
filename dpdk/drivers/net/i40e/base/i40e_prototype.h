@@ -33,11 +33,12 @@ void i40e_adminq_init_ring_data(struct i40e_hw *hw);
 enum i40e_status_code i40e_clean_arq_element(struct i40e_hw *hw,
 					     struct i40e_arq_event_info *e,
 					     u16 *events_pending);
-enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
-				struct i40e_aq_desc *desc,
-				void *buff, /* can be NULL */
-				u16  buff_size,
-				struct i40e_asq_cmd_details *cmd_details);
+enum i40e_status_code
+i40e_asq_send_command(struct i40e_hw *hw,
+		      struct i40e_aq_desc *desc,
+		      void *buff, /* can be NULL */
+		      u16  buff_size,
+		      struct i40e_asq_cmd_details *cmd_details);
 enum i40e_status_code
 i40e_asq_send_command_v2(struct i40e_hw *hw,
 			 struct i40e_aq_desc *desc,
@@ -45,9 +46,6 @@ i40e_asq_send_command_v2(struct i40e_hw *hw,
 			 u16  buff_size,
 			 struct i40e_asq_cmd_details *cmd_details,
 			 enum i40e_admin_queue_err *aq_status);
-#ifdef VF_DRIVER
-bool i40e_asq_done(struct i40e_hw *hw);
-#endif
 
 /* debug function for adminq */
 void i40e_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask,
@@ -70,9 +68,8 @@ enum i40e_status_code i40e_aq_set_rss_key(struct i40e_hw *hw,
 const char *i40e_aq_str(struct i40e_hw *hw, enum i40e_admin_queue_err aq_err);
 const char *i40e_stat_str(struct i40e_hw *hw, enum i40e_status_code stat_err);
 
-#ifdef PF_DRIVER
-
 u32 i40e_led_get(struct i40e_hw *hw);
+bool i40e_led_get_blink(struct i40e_hw *hw);
 void i40e_led_set(struct i40e_hw *hw, u32 mode, bool blink);
 enum i40e_status_code i40e_led_set_phy(struct i40e_hw *hw, bool on,
 				       u16 led_addr, u32 mode);
@@ -236,7 +233,7 @@ enum i40e_status_code i40e_aq_set_switch_config(struct i40e_hw *hw,
 enum i40e_status_code i40e_aq_request_resource(struct i40e_hw *hw,
 				enum i40e_aq_resources_ids resource,
 				enum i40e_aq_resource_access_type access,
-				u8 sdp_number, u64 *timeout,
+				u8 sdp_number, u32 *timeout,
 				struct i40e_asq_cmd_details *cmd_details);
 enum i40e_status_code i40e_aq_release_resource(struct i40e_hw *hw,
 				enum i40e_aq_resources_ids resource,
@@ -275,10 +272,9 @@ enum i40e_status_code i40e_aq_update_nvm(struct i40e_hw *hw, u8 module_pointer,
 enum i40e_status_code i40e_aq_rearrange_nvm(struct i40e_hw *hw,
 				u8 rearrange_nvm,
 				struct i40e_asq_cmd_details *cmd_details);
-enum i40e_status_code
-i40e_aq_nvm_update_in_process(struct i40e_hw *hw,
-			      bool update_flow_state,
-			      struct i40e_asq_cmd_details *cmd_details);
+enum i40e_status_code i40e_aq_nvm_update_in_process(struct i40e_hw *hw,
+				bool update_flow_state,
+				struct i40e_asq_cmd_details *cmd_details);
 enum i40e_status_code i40e_aq_get_lldp_mib(struct i40e_hw *hw, u8 bridge_type,
 				u8 mib_type, void *buff, u16 buff_size,
 				u16 *local_len, u16 *remote_len,
@@ -468,9 +464,14 @@ enum i40e_aq_link_speed i40e_get_link_speed(struct i40e_hw *hw);
 enum i40e_status_code i40e_init_nvm(struct i40e_hw *hw);
 enum i40e_status_code i40e_acquire_nvm(struct i40e_hw *hw,
 				      enum i40e_aq_resource_access_type access);
+enum i40e_status_code i40e_acquire_nvm_ex(struct i40e_hw *hw,
+				       enum i40e_aq_resource_access_type access,
+					   u32 custom_timeout);
 void i40e_release_nvm(struct i40e_hw *hw);
 enum i40e_status_code i40e_read_nvm_word(struct i40e_hw *hw, u16 offset,
 					 u16 *data);
+enum i40e_status_code i40e_read_nvm_word_ex(struct i40e_hw *hw, u16 offset,
+					 u16 *data, u32 custom_timeout);
 enum i40e_status_code
 i40e_read_nvm_module_data(struct i40e_hw *hw, u8 module_ptr, u16 module_offset,
 			  u16 data_offset, u16 words_data_size, u16 *data_ptr);
@@ -498,7 +499,6 @@ void i40e_nvmupd_check_wait_event(struct i40e_hw *hw, u16 opcode,
 				  struct i40e_aq_desc *desc);
 void i40e_nvmupd_clear_wait_state(struct i40e_hw *hw);
 void i40e_set_pci_config_data(struct i40e_hw *hw, u16 link_status);
-#endif /* PF_DRIVER */
 enum i40e_status_code i40e_enable_eee(struct i40e_hw *hw, bool enable);
 
 enum i40e_status_code i40e_set_mac_type(struct i40e_hw *hw);
@@ -510,7 +510,6 @@ STATIC INLINE struct i40e_rx_ptype_decoded decode_rx_desc_ptype(u8 ptype)
 	return i40e_ptype_lookup[ptype];
 }
 
-#ifdef PF_DRIVER
 /**
  * i40e_virtchnl_link_speed - Convert AdminQ link_speed to virtchnl definition
  * @link_speed: the speed to convert
@@ -545,7 +544,6 @@ i40e_virtchnl_link_speed(enum i40e_aq_link_speed link_speed)
 		return VIRTCHNL_LINK_SPEED_UNKNOWN;
 	}
 }
-#endif /* PF_DRIVER */
 
 /* i40e_common for VF drivers*/
 void i40e_vf_parse_hw_config(struct i40e_hw *hw,

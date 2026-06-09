@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	__rte_panic;
@@ -23,6 +23,7 @@ DPDK_24 {
 	rte_class_unregister;
 	rte_cpu_get_flag_enabled;
 	rte_cpu_get_flag_name;
+	rte_cpu_get_intrinsics_support; # WINDOWS_NO_EXPORT
 	rte_cpu_is_supported; # WINDOWS_NO_EXPORT
 	rte_cycles_vmware_tsc_map; # WINDOWS_NO_EXPORT
 	rte_delay_us;
@@ -164,6 +165,7 @@ DPDK_24 {
 	rte_lcore_iterate;
 	rte_lcore_to_cpu_id;
 	rte_lcore_to_socket_id;
+	rte_lcore_register_usage_cb;
 	rte_malloc;
 	rte_malloc_dump_heaps;
 	rte_malloc_dump_stats;
@@ -223,6 +225,8 @@ DPDK_24 {
 	rte_memzone_dump;
 	rte_memzone_free;
 	rte_memzone_lookup;
+	rte_memzone_max_get;
+	rte_memzone_max_set;
 	rte_memzone_reserve;
 	rte_memzone_reserve_aligned;
 	rte_memzone_reserve_bounded;
@@ -384,15 +388,16 @@ EXPERIMENTAL {
 
 	# added in 20.11
 	__rte_eal_trace_generic_size_t; # WINDOWS_NO_EXPORT
-	rte_cpu_get_intrinsics_support; # WINDOWS_NO_EXPORT
 
 	# added in 23.03
-	rte_lcore_register_usage_cb;
 	__rte_eal_trace_generic_blob;
 
-	# added in 23.07
-	rte_memzone_max_get;
-	rte_memzone_max_set;
+	# added in 24.03
+	rte_vfio_get_device_info; # WINDOWS_NO_EXPORT
+
+	# added in 24.11
+	rte_bitset_to_str;
+	rte_lcore_var_alloc;
 };
 
 INTERNAL {
@@ -403,6 +408,7 @@ INTERNAL {
 	rte_eal_get_baseaddr;
 	rte_eal_parse_coremask;
 	rte_firmware_read;
+	rte_intr_active_events_flags;
 	rte_intr_allow_others;
 	rte_intr_cap_multiple;
 	rte_intr_dev_fd_get;

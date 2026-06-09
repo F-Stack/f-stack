@@ -13,6 +13,8 @@
 #include <rte_log.h>
 #include <rte_thread.h>
 
+#include "eal_private.h"
+
 struct eal_tls_key {
 	pthread_key_t thread_index;
 };
@@ -55,7 +57,7 @@ thread_map_priority_to_os_value(enum rte_thread_priority eal_pri, int *os_pri,
 		*os_pri = sched_get_priority_max(SCHED_RR);
 		break;
 	default:
-		RTE_LOG(DEBUG, EAL, "The requested priority value is invalid.\n");
+		EAL_LOG(DEBUG, "The requested priority value is invalid.");
 		return EINVAL;
 	}
 
@@ -81,7 +83,7 @@ thread_map_os_priority_to_eal_priority(int policy, int os_pri,
 		}
 		break;
 	default:
-		RTE_LOG(DEBUG, EAL, "The OS priority value does not map to an EAL-defined priority.\n");
+		EAL_LOG(DEBUG, "The OS priority value does not map to an EAL-defined priority.");
 		return EINVAL;
 	}
 
@@ -100,7 +102,7 @@ thread_start_wrapper(void *arg)
 	if (ctx->thread_attr != NULL && CPU_COUNT(&ctx->thread_attr->cpuset) > 0) {
 		ret = rte_thread_set_affinity_by_id(rte_thread_self(), &ctx->thread_attr->cpuset);
 		if (ret != 0)
-			RTE_LOG(DEBUG, EAL, "rte_thread_set_affinity_by_id failed\n");
+			EAL_LOG(DEBUG, "rte_thread_set_affinity_by_id failed");
 	}
 
 	pthread_mutex_lock(&ctx->wrapper_mutex);
@@ -142,7 +144,7 @@ rte_thread_create(rte_thread_t *thread_id,
 	if (thread_attr != NULL) {
 		ret = pthread_attr_init(&attr);
 		if (ret != 0) {
-			RTE_LOG(DEBUG, EAL, "pthread_attr_init failed\n");
+			EAL_LOG(DEBUG, "pthread_attr_init failed");
 			goto cleanup;
 		}
 
@@ -153,7 +155,7 @@ rte_thread_create(rte_thread_t *thread_id,
 			ret = pthread_attr_setaffinity_np(attrp, sizeof(thread_attr->cpuset),
 				&thread_attr->cpuset);
 			if (ret != 0) {
-				RTE_LOG(DEBUG, EAL, "pthread_attr_setaffinity_np failed\n");
+				EAL_LOG(DEBUG, "pthread_attr_setaffinity_np failed");
 				goto cleanup;
 			}
 		}
@@ -165,7 +167,7 @@ rte_thread_create(rte_thread_t *thread_id,
 		ret = pthread_attr_setinheritsched(attrp,
 				PTHREAD_EXPLICIT_SCHED);
 		if (ret != 0) {
-			RTE_LOG(DEBUG, EAL, "pthread_attr_setinheritsched failed\n");
+			EAL_LOG(DEBUG, "pthread_attr_setinheritsched failed");
 			goto cleanup;
 		}
 
@@ -181,13 +183,13 @@ rte_thread_create(rte_thread_t *thread_id,
 
 		ret = pthread_attr_setschedpolicy(attrp, policy);
 		if (ret != 0) {
-			RTE_LOG(DEBUG, EAL, "pthread_attr_setschedpolicy failed\n");
+			EAL_LOG(DEBUG, "pthread_attr_setschedpolicy failed");
 			goto cleanup;
 		}
 
 		ret = pthread_attr_setschedparam(attrp, &param);
 		if (ret != 0) {
-			RTE_LOG(DEBUG, EAL, "pthread_attr_setschedparam failed\n");
+			EAL_LOG(DEBUG, "pthread_attr_setschedparam failed");
 			goto cleanup;
 		}
 	}
@@ -196,14 +198,14 @@ rte_thread_create(rte_thread_t *thread_id,
 	ret = pthread_create((pthread_t *)&thread_id->opaque_id, attrp,
 		(void *)(void *)thread_func, args);
 	if (ret != 0) {
-		RTE_LOG(DEBUG, EAL, "pthread_create failed\n");
+		EAL_LOG(DEBUG, "pthread_create failed");
 		goto cleanup;
 	}
 #else /* !RTE_EAL_PTHREAD_ATTR_SETAFFINITY_NP */
 	ret = pthread_create((pthread_t *)&thread_id->opaque_id, attrp,
 		thread_start_wrapper, &ctx);
 	if (ret != 0) {
-		RTE_LOG(DEBUG, EAL, "pthread_create failed\n");
+		EAL_LOG(DEBUG, "pthread_create failed");
 		goto cleanup;
 	}
 
@@ -236,7 +238,7 @@ rte_thread_join(rte_thread_t thread_id, uint32_t *value_ptr)
 
 	ret = pthread_join((pthread_t)thread_id.opaque_id, pres);
 	if (ret != 0) {
-		RTE_LOG(DEBUG, EAL, "pthread_join failed\n");
+		EAL_LOG(DEBUG, "pthread_join failed");
 		return ret;
 	}
 
@@ -281,7 +283,7 @@ rte_thread_get_priority(rte_thread_t thread_id,
 	ret = pthread_getschedparam((pthread_t)thread_id.opaque_id, &policy,
 		&param);
 	if (ret != 0) {
-		RTE_LOG(DEBUG, EAL, "pthread_getschedparam failed\n");
+		EAL_LOG(DEBUG, "pthread_getschedparam failed");
 		goto cleanup;
 	}
 
@@ -320,13 +322,13 @@ rte_thread_key_create(rte_thread_key *key, void (*destructor)(void *))
 
 	*key = malloc(sizeof(**key));
 	if ((*key) == NULL) {
-		RTE_LOG(DEBUG, EAL, "Cannot allocate TLS key.\n");
+		EAL_LOG(DEBUG, "Cannot allocate TLS key.");
 		rte_errno = ENOMEM;
 		return -1;
 	}
 	err = pthread_key_create(&((*key)->thread_index), destructor);
 	if (err) {
-		RTE_LOG(DEBUG, EAL, "pthread_key_create failed: %s\n",
+		EAL_LOG(DEBUG, "pthread_key_create failed: %s",
 			strerror(err));
 		free(*key);
 		rte_errno = ENOEXEC;
@@ -341,13 +343,13 @@ rte_thread_key_delete(rte_thread_key key)
 	int err;
 
 	if (!key) {
-		RTE_LOG(DEBUG, EAL, "Invalid TLS key.\n");
+		EAL_LOG(DEBUG, "Invalid TLS key.");
 		rte_errno = EINVAL;
 		return -1;
 	}
 	err = pthread_key_delete(key->thread_index);
 	if (err) {
-		RTE_LOG(DEBUG, EAL, "pthread_key_delete failed: %s\n",
+		EAL_LOG(DEBUG, "pthread_key_delete failed: %s",
 			strerror(err));
 		free(key);
 		rte_errno = ENOEXEC;
@@ -363,13 +365,13 @@ rte_thread_value_set(rte_thread_key key, const void *value)
 	int err;
 
 	if (!key) {
-		RTE_LOG(DEBUG, EAL, "Invalid TLS key.\n");
+		EAL_LOG(DEBUG, "Invalid TLS key.");
 		rte_errno = EINVAL;
 		return -1;
 	}
 	err = pthread_setspecific(key->thread_index, value);
 	if (err) {
-		RTE_LOG(DEBUG, EAL, "pthread_setspecific failed: %s\n",
+		EAL_LOG(DEBUG, "pthread_setspecific failed: %s",
 			strerror(err));
 		rte_errno = ENOEXEC;
 		return -1;
@@ -381,7 +383,7 @@ void *
 rte_thread_value_get(rte_thread_key key)
 {
 	if (!key) {
-		RTE_LOG(DEBUG, EAL, "Invalid TLS key.\n");
+		EAL_LOG(DEBUG, "Invalid TLS key.");
 		rte_errno = EINVAL;
 		return NULL;
 	}

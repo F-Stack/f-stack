@@ -10,6 +10,8 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <math.h>
+
+#include <rte_bitops.h>
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_log.h>
@@ -20,6 +22,7 @@
 #include <rte_flow.h>
 #include <rte_bitmap.h>
 #include <ethdev_driver.h>
+
 #include "cpfl_rules.h"
 #include "cpfl_logs.h"
 #include "cpfl_ethdev.h"
@@ -53,7 +56,7 @@ struct cpfl_rule_info_meta {
 	uint32_t pr_num;			/* number of pattern rules */
 	uint32_t mr_num;			/* number of modification rules */
 	uint32_t rule_num;			/* number of all rules */
-	struct cpfl_rule_info rules[0];
+	struct cpfl_rule_info rules[];
 };
 
 static uint32_t cpfl_fxp_mod_idx_alloc(struct cpfl_adapter_ext *ad);
@@ -383,8 +386,6 @@ cpfl_fxp_parse_action(struct cpfl_itf *itf,
 	}
 
 	if (mr_action) {
-		uint32_t i;
-
 		for (i = 0; i < rim->mr_num; i++)
 			if (cpfl_parse_mod_content(itf->adapter, rinfo,
 						   &rim->rules[rim->pr_num + i],
@@ -603,7 +604,7 @@ cpfl_fxp_mod_idx_alloc(struct cpfl_adapter_ext *ad)
 	if (!rte_bitmap_scan(ad->mod_bm, &pos, &slab))
 		return CPFL_MAX_MOD_CONTENT_INDEX;
 
-	pos += __builtin_ffsll(slab) - 1;
+	pos += rte_bsf64(slab);
 	rte_bitmap_clear(ad->mod_bm, pos);
 
 	return pos;

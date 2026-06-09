@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	rte_eth_add_first_rx_callback;
@@ -207,7 +207,6 @@ EXPERIMENTAL {
 	rte_flow_dev_dump;
 
 	# added in 20.05
-	__rte_ethdev_trace_rx_burst;
 	__rte_ethdev_trace_tx_burst;
 	rte_flow_get_aged_flows;
 
@@ -316,6 +315,28 @@ EXPERIMENTAL {
 	rte_eth_recycle_rx_queue_info_get;
 	rte_flow_group_set_miss_actions;
 	rte_flow_calc_table_hash;
+
+	# added in 24.03
+	__rte_eth_trace_tx_queue_count;
+	rte_eth_find_rss_algo;
+	rte_flow_async_update_resized;
+	rte_flow_calc_encap_hash;
+	rte_flow_template_table_resizable;
+	rte_flow_template_table_resize;
+	rte_flow_template_table_resize_complete;
+
+	# added in 24.11
+	__rte_ethdev_trace_rx_burst_empty;
+	__rte_ethdev_trace_rx_burst_nonempty;
+	__rte_eth_trace_call_rx_callbacks_empty;
+	__rte_eth_trace_call_rx_callbacks_nonempty;
+	rte_eth_dev_get_reg_info_ext;
+	rte_eth_speed_lanes_get;
+	rte_eth_speed_lanes_get_capability;
+	rte_eth_speed_lanes_set;
+	rte_eth_timesync_adjust_freq;
+	rte_flow_async_create_by_index_with_pattern;
+	rte_tm_node_query;
 };
 
 INTERNAL {
@@ -341,8 +362,13 @@ INTERNAL {
 	rte_eth_hairpin_queue_peer_unbind;
 	rte_eth_hairpin_queue_peer_update;
 	rte_eth_ip_reassembly_dynfield_register;
+	rte_eth_link_speed_ethtool; # WINDOWS_NO_EXPORT
+	rte_eth_link_speed_glink; # WINDOWS_NO_EXPORT
+	rte_eth_link_speed_gset; # WINDOWS_NO_EXPORT
 	rte_eth_pkt_burst_dummy;
 	rte_eth_representor_id_get;
 	rte_eth_switch_domain_alloc;
 	rte_eth_switch_domain_free;
+	rte_flow_fp_default_ops;
+	rte_eth_get_restore_flags;
 };

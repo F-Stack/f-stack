@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <sys/queue.h>
 
+#include <rte_cpuflags.h>
 #include <rte_string_fns.h>
 #include <rte_log.h>
 #include <rte_eal_memconfig.h>
@@ -24,9 +25,15 @@
 
 #include "rte_efd.h"
 #if defined(RTE_ARCH_X86)
+#include "rte_efd_x86.h"
 #elif defined(RTE_ARCH_ARM64)
 #include "rte_efd_arm64.h"
 #endif
+
+RTE_LOG_REGISTER_DEFAULT(efd_logtype, INFO);
+#define RTE_LOGTYPE_EFD	efd_logtype
+#define EFD_LOG(level, ...) \
+	RTE_LOG_LINE(level, EFD, "" __VA_ARGS__)
 
 #define EFD_KEY(key_idx, table) (table->keys + ((key_idx) * table->key_len))
 /** Hash function used to determine chunk_id and bin_id for a group */
@@ -206,7 +213,7 @@ struct efd_offline_chunk_rules {
 struct efd_online_group_entry {
 	efd_hashfunc_t hash_idx[RTE_EFD_VALUE_NUM_BITS];
 	efd_lookuptbl_t lookup_table[RTE_EFD_VALUE_NUM_BITS];
-} __rte_packed;
+};
 
 /**
  * A single chunk record, containing EFD_TARGET_CHUNK_NUM_RULES rules.
@@ -222,7 +229,7 @@ struct efd_online_chunk {
 
 	struct efd_online_group_entry groups[EFD_CHUNK_NUM_GROUPS];
 	/**< Array of all the groups in the chunk. */
-} __rte_packed;
+};
 
 /**
  * EFD table structure
@@ -508,13 +515,13 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	efd_list = RTE_TAILQ_CAST(rte_efd_tailq.head, rte_efd_list);
 
 	if (online_cpu_socket_bitmask == 0) {
-		RTE_LOG(ERR, EFD, "At least one CPU socket must be enabled "
-				"in the bitmask\n");
+		EFD_LOG(ERR, "At least one CPU socket must be enabled "
+				"in the bitmask");
 		return NULL;
 	}
 
 	if (max_num_rules == 0) {
-		RTE_LOG(ERR, EFD, "Max num rules must be higher than 0\n");
+		EFD_LOG(ERR, "Max num rules must be higher than 0");
 		return NULL;
 	}
 
@@ -553,7 +560,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 
 	te = rte_zmalloc("EFD_TAILQ_ENTRY", sizeof(*te), 0);
 	if (te == NULL) {
-		RTE_LOG(ERR, EFD, "tailq entry allocation failed\n");
+		EFD_LOG(ERR, "tailq entry allocation failed");
 		goto error_unlock_exit;
 	}
 
@@ -563,15 +570,15 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
 	if (table == NULL) {
-		RTE_LOG(ERR, EFD, "Allocating EFD table management structure"
-				" on socket %u failed\n",
+		EFD_LOG(ERR, "Allocating EFD table management structure"
+				" on socket %u failed",
 				offline_cpu_socket);
 		goto error_unlock_exit;
 	}
 
 
-	RTE_LOG(DEBUG, EFD, "Allocated EFD table management structure "
-			"on socket %u\n", offline_cpu_socket);
+	EFD_LOG(DEBUG, "Allocated EFD table management structure "
+			"on socket %u", offline_cpu_socket);
 
 	table->max_num_rules = num_chunks * EFD_TARGET_CHUNK_MAX_NUM_RULES;
 	table->num_rules = 0;
@@ -585,16 +592,16 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
 	if (key_array == NULL) {
-		RTE_LOG(ERR, EFD, "Allocating key array"
-				" on socket %u failed\n",
+		EFD_LOG(ERR, "Allocating key array"
+				" on socket %u failed",
 				offline_cpu_socket);
 		goto error_unlock_exit;
 	}
 	table->keys = key_array;
 	strlcpy(table->name, name, sizeof(table->name));
 
-	RTE_LOG(DEBUG, EFD, "Creating an EFD table with %u chunks,"
-			" which potentially supports %u entries\n",
+	EFD_LOG(DEBUG, "Creating an EFD table with %u chunks,"
+			" which potentially supports %u entries",
 			num_chunks, table->max_num_rules);
 
 	/* Make sure all the allocatable table pointers are NULL initially */
@@ -622,15 +629,15 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 				RTE_CACHE_LINE_SIZE,
 				socket_id);
 			if (table->chunks[socket_id] == NULL) {
-				RTE_LOG(ERR, EFD,
+				EFD_LOG(ERR,
 						"Allocating EFD online table on "
-						"socket %u failed\n",
+						"socket %u failed",
 						socket_id);
 				goto error_unlock_exit;
 			}
-			RTE_LOG(DEBUG, EFD,
+			EFD_LOG(DEBUG,
 					"Allocated EFD online table of size "
-					"%"PRIu64" bytes (%.2f MB) on socket %u\n",
+					"%"PRIu64" bytes (%.2f MB) on socket %u",
 					online_table_size,
 					(float) online_table_size /
 						(1024.0F * 1024.0F),
@@ -674,14 +681,14 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 			RTE_CACHE_LINE_SIZE,
 			offline_cpu_socket);
 	if (table->offline_chunks == NULL) {
-		RTE_LOG(ERR, EFD, "Allocating EFD offline table on socket %u "
-				"failed\n", offline_cpu_socket);
+		EFD_LOG(ERR, "Allocating EFD offline table on socket %u "
+				"failed", offline_cpu_socket);
 		goto error_unlock_exit;
 	}
 
-	RTE_LOG(DEBUG, EFD,
+	EFD_LOG(DEBUG,
 			"Allocated EFD offline table of size %"PRIu64" bytes "
-			" (%.2f MB) on socket %u\n", offline_table_size,
+			" (%.2f MB) on socket %u", offline_table_size,
 			(float) offline_table_size / (1024.0F * 1024.0F),
 			offline_cpu_socket);
 
@@ -694,7 +701,7 @@ rte_efd_create(const char *name, uint32_t max_num_rules, uint32_t key_len,
 	r = rte_ring_create(ring_name, rte_align32pow2(table->max_num_rules),
 			offline_cpu_socket, 0);
 	if (r == NULL) {
-		RTE_LOG(ERR, EFD, "memory allocation failed\n");
+		EFD_LOG(ERR, "memory allocation failed");
 		rte_efd_free(table);
 		return NULL;
 	}
@@ -1014,9 +1021,9 @@ efd_compute_update(struct rte_efd_table * const table,
 	if (found == 0) {
 		/* Key does not exist. Insert the rule into the bin/group */
 		if (unlikely(current_group->num_rules >= EFD_MAX_GROUP_NUM_RULES)) {
-			RTE_LOG(ERR, EFD,
+			EFD_LOG(ERR,
 					"Fatal: No room remaining for insert into "
-					"chunk %u group %u bin %u\n",
+					"chunk %u group %u bin %u",
 					*chunk_id,
 					current_group_id, *bin_id);
 			return RTE_EFD_UPDATE_FAILED;
@@ -1024,9 +1031,9 @@ efd_compute_update(struct rte_efd_table * const table,
 
 		if (unlikely(current_group->num_rules ==
 				(EFD_MAX_GROUP_NUM_RULES - 1))) {
-			RTE_LOG(INFO, EFD, "Warn: Insert into last "
+			EFD_LOG(INFO, "Warn: Insert into last "
 					"available slot in chunk %u "
-					"group %u bin %u\n", *chunk_id,
+					"group %u bin %u", *chunk_id,
 					current_group_id, *bin_id);
 			status = RTE_EFD_UPDATE_WARN_GROUP_FULL;
 		}
@@ -1113,10 +1120,10 @@ efd_compute_update(struct rte_efd_table * const table,
 		if (current_group != new_group &&
 				new_group->num_rules + bin_size >
 					EFD_MAX_GROUP_NUM_RULES) {
-			RTE_LOG(DEBUG, EFD,
+			EFD_LOG(DEBUG,
 					"Unable to move_groups to dest group "
 					"containing %u entries."
-					"bin_size:%u choice:%02x\n",
+					"bin_size:%u choice:%02x",
 					new_group->num_rules, bin_size,
 					choice - 1);
 			goto next_choice;
@@ -1131,9 +1138,9 @@ efd_compute_update(struct rte_efd_table * const table,
 		if (!ret)
 			return status;
 
-		RTE_LOG(DEBUG, EFD,
+		EFD_LOG(DEBUG,
 				"Failed to find perfect hash for group "
-				"containing %u entries. bin_size:%u choice:%02x\n",
+				"containing %u entries. bin_size:%u choice:%02x",
 				new_group->num_rules, bin_size, choice - 1);
 		/* Restore groups modified to their previous state */
 		revert_groups(current_group, new_group, bin_size);
@@ -1267,7 +1274,7 @@ efd_lookup_internal(const struct efd_online_group_entry * const group,
 
 	switch (lookup_fn) {
 
-#if defined(RTE_ARCH_X86) && defined(CC_SUPPORT_AVX2)
+#if defined(RTE_ARCH_X86)
 	case EFD_LOOKUP_AVX2:
 		return efd_lookup_internal_avx2(group->hash_idx,
 					group->lookup_table,

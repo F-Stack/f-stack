@@ -375,12 +375,17 @@ ice_fdir_init_filter_list(struct ice_pf *pf)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[pf->dev_data->port_id];
 	struct ice_fdir_info *fdir_info = &pf->fdir;
+	struct ice_hw *hw = &pf->adapter->hw;
 	char fdir_hash_name[RTE_HASH_NAMESIZE];
+	const uint32_t max_fd_filter_entries =
+			hw->func_caps.fd_fltr_guar + hw->func_caps.fd_fltr_best_effort;
+	/* dimension hash table as max filters + 12.5% to ensure a little headroom */
+	const uint32_t hash_table_entries = max_fd_filter_entries + (max_fd_filter_entries >> 3);
 	int ret;
 
 	struct rte_hash_parameters fdir_hash_params = {
 		.name = fdir_hash_name,
-		.entries = ICE_MAX_FDIR_FILTER_NUM,
+		.entries = hash_table_entries,
 		.key_len = sizeof(struct ice_fdir_fltr_pattern),
 		.hash_func = rte_hash_crc,
 		.hash_func_init_val = 0,
@@ -398,7 +403,7 @@ ice_fdir_init_filter_list(struct ice_pf *pf)
 	}
 	fdir_info->hash_map = rte_zmalloc("ice_fdir_hash_map",
 					  sizeof(*fdir_info->hash_map) *
-					  ICE_MAX_FDIR_FILTER_NUM,
+					  hash_table_entries,
 					  0);
 	if (!fdir_info->hash_map) {
 		PMD_INIT_LOG(ERR,
@@ -1307,7 +1312,7 @@ ice_fdir_create_filter(struct ice_adapter *ad,
 	if (filter->parser_ena) {
 		struct ice_hw *hw = ICE_PF_TO_HW(pf);
 
-		int id = ice_find_first_bit(filter->prof->ptypes, UINT16_MAX);
+		int id = ice_find_first_bit(filter->prof.ptypes, UINT16_MAX);
 		int ptg = hw->blk[ICE_BLK_FD].xlt1.t[id];
 		u16 ctrl_vsi = pf->fdir.fdir_vsi->idx;
 		u16 main_vsi = pf->main_vsi->idx;
@@ -1317,11 +1322,11 @@ ice_fdir_create_filter(struct ice_adapter *ad,
 		if (pi->fdir_actived_cnt != 0) {
 			for (i = 0; i < ICE_MAX_FV_WORDS; i++)
 				if (pi->prof.fv[i].proto_id !=
-				    filter->prof->fv[i].proto_id ||
+				    filter->prof.fv[i].proto_id ||
 				    pi->prof.fv[i].offset !=
-				    filter->prof->fv[i].offset ||
+				    filter->prof.fv[i].offset ||
 				    pi->prof.fv[i].msk !=
-				    filter->prof->fv[i].msk)
+				    filter->prof.fv[i].msk)
 					break;
 			if (i == ICE_MAX_FV_WORDS) {
 				fv_found = true;
@@ -1331,7 +1336,7 @@ ice_fdir_create_filter(struct ice_adapter *ad,
 
 		if (!fv_found) {
 			ret = ice_flow_set_hw_prof(hw, main_vsi, ctrl_vsi,
-						   filter->prof, ICE_BLK_FD);
+						   &filter->prof, ICE_BLK_FD);
 			if (ret)
 				goto error;
 		}
@@ -1341,12 +1346,12 @@ ice_fdir_create_filter(struct ice_adapter *ad,
 			goto error;
 
 		if (!fv_found) {
-			for (i = 0; i < filter->prof->fv_num; i++) {
+			for (i = 0; i < filter->prof.fv_num; i++) {
 				pi->prof.fv[i].proto_id =
-					filter->prof->fv[i].proto_id;
+					filter->prof.fv[i].proto_id;
 				pi->prof.fv[i].offset =
-					filter->prof->fv[i].offset;
-				pi->prof.fv[i].msk = filter->prof->fv[i].msk;
+					filter->prof.fv[i].offset;
+				pi->prof.fv[i].msk = filter->prof.fv[i].msk;
 			}
 			pi->fdir_actived_cnt = 1;
 		}
@@ -1444,7 +1449,6 @@ free_entry:
 	return -rte_errno;
 
 error:
-	rte_free(filter->prof);
 	rte_free(filter->pkt_buf);
 	return -rte_errno;
 }
@@ -1466,7 +1470,7 @@ ice_fdir_destroy_filter(struct ice_adapter *ad,
 	if (filter->parser_ena) {
 		struct ice_hw *hw = ICE_PF_TO_HW(pf);
 
-		int id = ice_find_first_bit(filter->prof->ptypes, UINT16_MAX);
+		int id = ice_find_first_bit(filter->prof.ptypes, UINT16_MAX);
 		int ptg = hw->blk[ICE_BLK_FD].xlt1.t[id];
 		u16 ctrl_vsi = pf->fdir.fdir_vsi->idx;
 		u16 main_vsi = pf->main_vsi->idx;
@@ -1494,7 +1498,6 @@ ice_fdir_destroy_filter(struct ice_adapter *ad,
 
 		flow->rule = NULL;
 
-		rte_free(filter->prof);
 		rte_free(filter->pkt_buf);
 		rte_free(filter);
 
@@ -1860,7 +1863,7 @@ ice_fdir_parse_pattern(__rte_unused struct ice_adapter *ad,
 			uint16_t tmp_val = 0;
 			uint16_t pkt_len = 0;
 			uint8_t tmp = 0;
-			int i, j;
+			int i, j, ret_val;
 
 			pkt_len = strlen((char *)(uintptr_t)raw_spec->pattern);
 			if (strlen((char *)(uintptr_t)raw_mask->pattern) !=
@@ -1915,24 +1918,22 @@ ice_fdir_parse_pattern(__rte_unused struct ice_adapter *ad,
 
 			pkt_len /= 2;
 
-			if (ice_parser_run(ad->psr, tmp_spec, pkt_len, &rslt))
-				return -rte_errno;
-
-			if (!tmp_mask)
-				return -rte_errno;
-
-			filter->prof = (struct ice_parser_profile *)
-				ice_malloc(&ad->hw, sizeof(*filter->prof));
-			if (!filter->prof)
-				return -ENOMEM;
+			if (ice_parser_run(ad->psr, tmp_spec, pkt_len, &rslt)) {
+				ret_val = -rte_errno;
+				goto raw_error;
+			}
 
 			if (ice_parser_profile_init(&rslt, tmp_spec, tmp_mask,
-				pkt_len, ICE_BLK_FD, true, filter->prof))
-				return -rte_errno;
+				pkt_len, ICE_BLK_FD, true, &filter->prof)) {
+				ret_val = -rte_errno;
+				goto raw_error;
+			}
 
-			u8 *pkt_buf = (u8 *)ice_malloc(&ad->hw, pkt_len + 1);
-			if (!pkt_buf)
-				return -ENOMEM;
+			u8 *pkt_buf = (u8 *)rte_zmalloc("raw pkt buf", pkt_len + 1, 0);
+			if (!pkt_buf) {
+				ret_val = -ENOMEM;
+				goto raw_error;
+			}
 			rte_memcpy(pkt_buf, tmp_spec, pkt_len);
 			filter->pkt_buf = pkt_buf;
 
@@ -1943,6 +1944,11 @@ ice_fdir_parse_pattern(__rte_unused struct ice_adapter *ad,
 			rte_free(tmp_spec);
 			rte_free(tmp_mask);
 			break;
+
+raw_error:
+			rte_free(tmp_spec);
+			rte_free(tmp_mask);
+			return ret_val;
 		}
 
 		case RTE_FLOW_ITEM_TYPE_ETH:
@@ -2092,11 +2098,11 @@ ice_fdir_parse_pattern(__rte_unused struct ice_adapter *ad,
 				return -rte_errno;
 			}
 
-			if (!memcmp(ipv6_mask->hdr.src_addr, ipv6_addr_mask,
-				    RTE_DIM(ipv6_mask->hdr.src_addr)))
+			if (!memcmp(&ipv6_mask->hdr.src_addr, ipv6_addr_mask,
+				    sizeof(ipv6_mask->hdr.src_addr)))
 				*input_set |= ICE_INSET_IPV6_SRC;
-			if (!memcmp(ipv6_mask->hdr.dst_addr, ipv6_addr_mask,
-				    RTE_DIM(ipv6_mask->hdr.dst_addr)))
+			if (!memcmp(&ipv6_mask->hdr.dst_addr, ipv6_addr_mask,
+				    sizeof(ipv6_mask->hdr.dst_addr)))
 				*input_set |= ICE_INSET_IPV6_DST;
 
 			if ((ipv6_mask->hdr.vtc_flow &
@@ -2108,8 +2114,8 @@ ice_fdir_parse_pattern(__rte_unused struct ice_adapter *ad,
 			if (ipv6_mask->hdr.hop_limits == UINT8_MAX)
 				*input_set |= ICE_INSET_IPV6_HOP_LIMIT;
 
-			rte_memcpy(&p_v6->dst_ip, ipv6_spec->hdr.dst_addr, 16);
-			rte_memcpy(&p_v6->src_ip, ipv6_spec->hdr.src_addr, 16);
+			rte_memcpy(&p_v6->dst_ip, &ipv6_spec->hdr.dst_addr, 16);
+			rte_memcpy(&p_v6->src_ip, &ipv6_spec->hdr.src_addr, 16);
 			vtc_flow_cpu = rte_be_to_cpu_32(ipv6_spec->hdr.vtc_flow);
 			p_v6->tc = (uint8_t)(vtc_flow_cpu >> ICE_FDIR_IPV6_TC_OFFSET);
 			p_v6->proto = ipv6_spec->hdr.proto;
@@ -2477,13 +2483,16 @@ ice_fdir_parse(struct ice_adapter *ad,
 	if (ret)
 		goto error;
 
-	if (meta)
+	/* if meta is NULL we're validating so the flow won't be stored */
+	if (meta) {
 		*meta = filter;
+	} else if (filter->pkt_buf != NULL) {
+		rte_free(filter->pkt_buf);
+	}
 
 	rte_free(item);
 	return ret;
 error:
-	rte_free(filter->prof);
 	rte_free(filter->pkt_buf);
 	rte_free(item);
 	return ret;

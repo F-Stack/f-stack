@@ -224,7 +224,9 @@ rte_hash_max_key_id(const struct rte_hash *h);
  * Thread safety can be enabled by setting flag during
  * table creation.
  * If the key exists already in the table, this API updates its value
- * with 'data' passed in this API. It is the responsibility of
+ * with 'data' passed in this API. If RCU is configured with a
+ * free_key_data_func callback, the old data is automatically
+ * deferred-freed via RCU. Otherwise, it is the responsibility of
  * the application to manage any memory associated with the old value.
  * The readers might still be using the old value even after this API
  * has returned.
@@ -251,7 +253,9 @@ rte_hash_add_key_data(const struct rte_hash *h, const void *key, void *data);
  * Thread safety can be enabled by setting flag during
  * table creation.
  * If the key exists already in the table, this API updates its value
- * with 'data' passed in this API. It is the responsibility of
+ * with 'data' passed in this API. If RCU is configured with a
+ * free_key_data_func callback, the old data is automatically
+ * deferred-freed via RCU. Otherwise, it is the responsibility of
  * the application to manage any memory associated with the old value.
  * The readers might still be using the old value even after this API
  * has returned.
@@ -673,6 +677,30 @@ rte_hash_iterate(const struct rte_hash *h, const void **key, void **data, uint32
  *   - ENOMEM - memory allocation failure
  */
 int rte_hash_rcu_qsbr_add(struct rte_hash *h, struct rte_hash_rcu_config *cfg);
+
+/**
+ * Reclaim resources from the defer queue.
+ * This API reclaim the resources from the defer queue if rcu is enabled.
+ *
+ * @param h
+ *   The hash object to reclaim resources.
+ * @param freed
+ *   Number of resources that were freed.
+ * @param pending
+ *   Number of resources pending on the defer queue.
+ *   This number might not be accurate if multi-thread safety is configured.
+ * @param available
+ *   Number of resources that can be added to the defer queue.
+ *   This number might not be accurate if multi-thread safety is configured.
+ * @return
+ *   On success - 0
+ *   On error - 1 with error code set in rte_errno.
+ *   Possible rte_errno codes are:
+ *   - EINVAL - invalid pointer
+ */
+__rte_experimental
+int rte_hash_rcu_qsbr_dq_reclaim(struct rte_hash *h, unsigned int *freed,
+		unsigned int *pending, unsigned int *available);
 
 #ifdef __cplusplus
 }

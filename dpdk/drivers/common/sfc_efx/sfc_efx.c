@@ -15,16 +15,13 @@
 #include "sfc_efx_log.h"
 #include "sfc_efx.h"
 
-uint32_t sfc_efx_logtype;
+int sfc_efx_logtype;
 
 static int
 sfc_efx_kvarg_dev_class_handler(__rte_unused const char *key,
 				const char *class_str, void *opaque)
 {
 	enum sfc_efx_dev_class *dev_class = opaque;
-
-	if (class_str == NULL)
-		return *dev_class;
 
 	if (strcmp(class_str, "vdpa") == 0) {
 		*dev_class = SFC_EFX_DEV_CLASS_VDPA;
@@ -117,11 +114,4 @@ sfc_efx_family(struct rte_pci_device *pci_dev,
 	return rc;
 }
 
-RTE_INIT(sfc_efx_register_logtype)
-{
-	int ret;
-
-	ret = rte_log_register_type_and_pick_level("pmd.common.sfc_efx",
-						   RTE_LOG_NOTICE);
-	sfc_efx_logtype = (ret < 0) ? RTE_LOGTYPE_PMD : ret;
-}
+RTE_LOG_REGISTER_DEFAULT(sfc_efx_logtype, NOTICE);

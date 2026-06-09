@@ -86,7 +86,7 @@ mlx5_flex_alloc(struct mlx5_priv *priv)
 			MLX5_ASSERT(!item->refcnt);
 			MLX5_ASSERT(!item->devx_fp);
 			item->devx_fp = NULL;
-			__atomic_store_n(&item->refcnt, 0, __ATOMIC_RELEASE);
+			rte_atomic_store_explicit(&item->refcnt, 0, rte_memory_order_release);
 			priv->flex_item_map |= 1u << idx;
 		}
 	}
@@ -107,7 +107,7 @@ mlx5_flex_free(struct mlx5_priv *priv, struct mlx5_flex_item *item)
 		MLX5_ASSERT(!item->refcnt);
 		MLX5_ASSERT(!item->devx_fp);
 		item->devx_fp = NULL;
-		__atomic_store_n(&item->refcnt, 0, __ATOMIC_RELEASE);
+		rte_atomic_store_explicit(&item->refcnt, 0, rte_memory_order_release);
 		priv->flex_item_map &= ~(1u << idx);
 		rte_spinlock_unlock(&priv->flex_item_sl);
 	}
@@ -405,7 +405,7 @@ mlx5_flex_acquire_index(struct rte_eth_dev *dev,
 		return ret;
 	}
 	if (acquire)
-		__atomic_fetch_add(&flex->refcnt, 1, __ATOMIC_RELEASE);
+		rte_atomic_fetch_add_explicit(&flex->refcnt, 1, rte_memory_order_release);
 	return ret;
 }
 
@@ -440,7 +440,7 @@ mlx5_flex_release_index(struct rte_eth_dev *dev,
 		rte_errno = -EINVAL;
 		return -EINVAL;
 	}
-	__atomic_fetch_sub(&flex->refcnt, 1, __ATOMIC_RELEASE);
+	rte_atomic_fetch_sub_explicit(&flex->refcnt, 1, rte_memory_order_release);
 	return 0;
 }
 
@@ -458,7 +458,7 @@ mlx5_flex_release_index(struct rte_eth_dev *dev,
  *    6     b00000011  0x03
  *    7     b00000001  0x01
  */
-static uint8_t
+uint8_t
 mlx5_flex_hdr_len_mask(uint8_t shift,
 		       const struct mlx5_hca_flex_attr *attr)
 {
@@ -482,6 +482,7 @@ mlx5_flex_translate_length(struct mlx5_hca_flex_attr *attr,
 		return rte_flow_error_set
 			(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
 			 "not byte aligned header length field");
+	node->header_length_field_offset_mode = !attr->header_length_field_mode_wa;
 	switch (field->field_mode) {
 	case FIELD_MODE_DUMMY:
 		return rte_flow_error_set
@@ -554,7 +555,7 @@ mlx5_flex_translate_length(struct mlx5_hca_flex_attr *attr,
 				 "mask and shift combination not supported (OFFSET)");
 		msb++;
 		offset += field->field_size - msb;
-		if (msb < attr->header_length_mask_width) {
+		if (attr->header_length_field_mode_wa && msb < attr->header_length_mask_width) {
 			if (attr->header_length_mask_width - msb > offset)
 				return rte_flow_error_set
 					(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, NULL,
@@ -1149,6 +1150,8 @@ mlx5_flex_arc_type(enum rte_flow_item_type type, int in)
 		return MLX5_GRAPH_ARC_NODE_GENEVE;
 	case RTE_FLOW_ITEM_TYPE_VXLAN_GPE:
 		return MLX5_GRAPH_ARC_NODE_VXLAN_GPE;
+	case RTE_FLOW_ITEM_TYPE_ESP:
+		return MLX5_GRAPH_ARC_NODE_IPSEC_ESP;
 	default:
 		return -EINVAL;
 	}
@@ -1184,6 +1187,22 @@ mlx5_flex_arc_in_udp(const struct rte_flow_item *item,
 			 "invalid eth item mask");
 	}
 	return rte_be_to_cpu_16(spec->hdr.dst_port);
+}
+
+static int
+mlx5_flex_arc_in_ipv4(const struct rte_flow_item *item,
+		      struct rte_flow_error *error)
+{
+	const struct rte_flow_item_ipv4 *spec = item->spec;
+	const struct rte_flow_item_ipv4 *mask = item->mask;
+	struct rte_flow_item_ipv4 ip = { .hdr.next_proto_id = 0xff };
+
+	if (memcmp(mask, &ip, sizeof(struct rte_flow_item_ipv4))) {
+		return rte_flow_error_set
+			(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, item,
+			 "invalid ipv4 item mask, full mask is desired");
+	}
+	return spec->hdr.next_proto_id;
 }
 
 static int
@@ -1247,6 +1266,9 @@ mlx5_flex_translate_arc_in(struct mlx5_hca_flex_attr *attr,
 			break;
 		case RTE_FLOW_ITEM_TYPE_UDP:
 			ret = mlx5_flex_arc_in_udp(rte_item, error);
+			break;
+		case RTE_FLOW_ITEM_TYPE_IPV4:
+			ret = mlx5_flex_arc_in_ipv4(rte_item, error);
 			break;
 		case RTE_FLOW_ITEM_TYPE_IPV6:
 			ret = mlx5_flex_arc_in_ipv6(rte_item, error);
@@ -1375,7 +1397,7 @@ flow_dv_item_create(struct rte_eth_dev *dev,
 	}
 	flex->devx_fp = container_of(ent, struct mlx5_flex_parser_devx, entry);
 	/* Mark initialized flex item valid. */
-	__atomic_fetch_add(&flex->refcnt, 1, __ATOMIC_RELEASE);
+	rte_atomic_fetch_add_explicit(&flex->refcnt, 1, rte_memory_order_release);
 	return (struct rte_flow_item_flex_handle *)flex;
 
 error:
@@ -1416,8 +1438,8 @@ flow_dv_item_release(struct rte_eth_dev *dev,
 					  RTE_FLOW_ERROR_TYPE_ITEM, NULL,
 					  "invalid flex item handle value");
 	}
-	if (!__atomic_compare_exchange_n(&flex->refcnt, &old_refcnt, 0, 0,
-					 __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) {
+	if (!rte_atomic_compare_exchange_strong_explicit(&flex->refcnt, &old_refcnt, 0,
+					 rte_memory_order_acquire, rte_memory_order_relaxed)) {
 		rte_spinlock_unlock(&priv->flex_item_sl);
 		return rte_flow_error_set(error, EBUSY,
 					  RTE_FLOW_ERROR_TYPE_ITEM, NULL,

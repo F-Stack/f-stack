@@ -2,6 +2,7 @@
  * Copyright(c) 2017 Intel Corporation
  */
 
+#include <stdalign.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/queue.h>
@@ -187,7 +188,7 @@ rte_distributor_return_pkt(struct rte_distributor *d,
 	}
 
 	/* Sync with distributor to acquire retptrs */
-	__atomic_thread_fence(rte_memory_order_acquire);
+	rte_atomic_thread_fence(rte_memory_order_acquire);
 	for (i = 0; i < RTE_DIST_BURST_SIZE; i++)
 		/* Switch off the return bit first */
 		buf->retptr64[i] = 0;
@@ -447,7 +448,7 @@ rte_distributor_process(struct rte_distributor *d,
 	struct rte_mbuf *next_mb = NULL;
 	int64_t next_value = 0;
 	uint16_t new_tag = 0;
-	uint16_t flows[RTE_DIST_BURST_SIZE] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint16_t flows[RTE_DIST_BURST_SIZE];
 	unsigned int i, j, w, wid, matching_required;
 
 	if (d->alg_type == RTE_DIST_ALG_SINGLE) {
@@ -477,7 +478,7 @@ rte_distributor_process(struct rte_distributor *d,
 		return 0;
 
 	while (next_idx < num_mbufs) {
-		uint16_t matches[RTE_DIST_BURST_SIZE] __rte_aligned(128);
+		alignas(128) uint16_t matches[RTE_DIST_BURST_SIZE];
 		unsigned int pkts;
 
 		if ((num_mbufs - next_idx) < RTE_DIST_BURST_SIZE)

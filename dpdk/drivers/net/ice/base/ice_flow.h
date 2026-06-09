@@ -7,6 +7,7 @@
 
 #include "ice_flex_type.h"
 #include "ice_acl.h"
+#include "ice_parser.h"
 
 #define ICE_IPV4_MAKE_PREFIX_MASK(prefix) ((u32)(~0) << (32 - (prefix)))
 #define ICE_FLOW_PROF_ID_INVAL		0xfffffffffffffffful
@@ -370,14 +371,14 @@ enum ice_flow_avf_hdr_field {
 enum ice_rss_cfg_hdr_type {
 	ICE_RSS_OUTER_HEADERS, /* take outer headers as inputset. */
 	ICE_RSS_INNER_HEADERS, /* take inner headers as inputset. */
-	/* take inner headers as inputset for packet with outer ipv4. */
+	/* take inner headers as inputset for packet with outer IPv4. */
 	ICE_RSS_INNER_HEADERS_W_OUTER_IPV4,
-	/* take inner headers as inputset for packet with outer ipv6. */
+	/* take inner headers as inputset for packet with outer IPv6. */
 	ICE_RSS_INNER_HEADERS_W_OUTER_IPV6,
 	/* take outer headers first then inner headers as inputset */
-	/* take inner as inputset for GTPoGRE with outer ipv4 + gre. */
+	/* take inner as inputset for GTPoGRE with outer IPv4 + GRE. */
 	ICE_RSS_INNER_HEADERS_W_OUTER_IPV4_GRE,
-	/* take inner as inputset for GTPoGRE with outer ipv6 + gre. */
+	/* take inner as inputset for GTPoGRE with outer IPv6 + GRE. */
 	ICE_RSS_INNER_HEADERS_W_OUTER_IPV6_GRE,
 	ICE_RSS_ANY_HEADERS
 };
@@ -452,8 +453,10 @@ struct ice_flow_seg_fld_raw {
 
 struct ice_flow_seg_info {
 	u32 hdrs;	/* Bitmask indicating protocol headers present */
-	u64 match;	/* Bitmask indicating header fields to be matched */
-	u64 range;	/* Bitmask indicating header fields matched as ranges */
+	/* Bitmask indicating header fields to be matched */
+	ice_declare_bitmap(match, ICE_FLOW_FIELD_IDX_MAX);
+	/* Bitmask indicating header fields matched as ranges */
+	ice_declare_bitmap(range, ICE_FLOW_FIELD_IDX_MAX);
 
 	struct ice_flow_fld_info fields[ICE_FLOW_FIELD_IDX_MAX];
 
@@ -482,7 +485,7 @@ struct ice_flow_entry {
 	u8 acts_cnt;
 };
 
-#define ICE_FLOW_ENTRY_HNDL(e)	((intptr_t)e)
+#define ICE_FLOW_ENTRY_HNDL(e)	((u64)e)
 #define ICE_FLOW_ENTRY_PTR(h)	((struct ice_flow_entry *)(h))
 
 struct ice_flow_prof {
@@ -562,34 +565,33 @@ struct ice_flow_action {
 u64
 ice_flow_find_prof(struct ice_hw *hw, enum ice_block blk, enum ice_flow_dir dir,
 		   struct ice_flow_seg_info *segs, u8 segs_cnt);
-enum ice_status
+int
 ice_flow_add_prof(struct ice_hw *hw, enum ice_block blk, enum ice_flow_dir dir,
 		  u64 prof_id, struct ice_flow_seg_info *segs, u8 segs_cnt,
 		  struct ice_flow_action *acts, u8 acts_cnt,
 		  struct ice_flow_prof **prof);
-enum ice_status
+int
 ice_flow_rem_prof(struct ice_hw *hw, enum ice_block blk, u64 prof_id);
-enum ice_status
+int
 ice_flow_assoc_prof(struct ice_hw *hw, enum ice_block blk,
 		    struct ice_flow_prof *prof, u16 vsi_handle);
-enum ice_status
-ice_flow_assoc_vsig_vsi(struct ice_hw *hw, enum ice_block blk, u16 vsi_handle,
-			u16 vsig);
-enum ice_status
+int
 ice_flow_set_hw_prof(struct ice_hw *hw, u16 dest_vsi_handle,
 		     u16 fdir_vsi_handle, struct ice_parser_profile *prof,
 		     enum ice_block blk);
-enum ice_status
+int
+ice_flow_assoc_vsig_vsi(struct ice_hw *hw, enum ice_block blk, u16 vsi_handle,
+			u16 vsig);
+int
 ice_flow_get_hw_prof(struct ice_hw *hw, enum ice_block blk, u64 prof_id,
 		     u8 *hw_prof);
-
 u64 ice_flow_find_entry(struct ice_hw *hw, enum ice_block blk, u64 entry_id);
-enum ice_status
+int
 ice_flow_add_entry(struct ice_hw *hw, enum ice_block blk, u64 prof_id,
 		   u64 entry_id, u16 vsi, enum ice_flow_priority prio,
 		   void *data, struct ice_flow_action *acts, u8 acts_cnt,
 		   u64 *entry_h);
-enum ice_status
+int
 ice_flow_rem_entry(struct ice_hw *hw, enum ice_block blk, u64 entry_h);
 void
 ice_flow_set_fld(struct ice_flow_seg_info *seg, enum ice_flow_field fld,
@@ -600,17 +602,17 @@ ice_flow_set_fld_prefix(struct ice_flow_seg_info *seg, enum ice_flow_field fld,
 void
 ice_flow_add_fld_raw(struct ice_flow_seg_info *seg, u16 off, u8 len,
 		     u16 val_loc, u16 mask_loc);
-enum ice_status ice_flow_rem_vsi_prof(struct ice_hw *hw, enum ice_block blk,
-				      u16 vsi_handle, u64 prof_id);
+int ice_flow_rem_vsi_prof(struct ice_hw *hw, enum ice_block blk,
+			  u16 vsi_handle, u64 prof_id);
 void ice_rem_vsi_rss_list(struct ice_hw *hw, u16 vsi_handle);
-enum ice_status ice_replay_rss_cfg(struct ice_hw *hw, u16 vsi_handle);
-enum ice_status
+int ice_replay_rss_cfg(struct ice_hw *hw, u16 vsi_handle);
+int
 ice_add_avf_rss_cfg(struct ice_hw *hw, u16 vsi_handle, u64 hashed_flds);
-enum ice_status ice_rem_vsi_rss_cfg(struct ice_hw *hw, u16 vsi_handle);
-enum ice_status
+int ice_rem_vsi_rss_cfg(struct ice_hw *hw, u16 vsi_handle);
+int
 ice_add_rss_cfg(struct ice_hw *hw, u16 vsi_handle,
 		const struct ice_rss_hash_cfg *cfg);
-enum ice_status
+int
 ice_rem_rss_cfg(struct ice_hw *hw, u16 vsi_handle,
 		const struct ice_rss_hash_cfg *cfg);
 void ice_rss_update_raw_symm(struct ice_hw *hw,

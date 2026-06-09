@@ -2,160 +2,7 @@
  * Copyright(C) 2023 Marvell.
  */
 
-#include "otx_ep_common.h"
-#include "otx2_ep_vf.h"
-#include "otx_ep_rxtx.h"
-
-static inline int
-cnxk_ep_rx_refill_mbuf(struct otx_ep_droq *droq, uint32_t count)
-{
-	struct otx_ep_droq_desc *desc_ring = droq->desc_ring;
-	struct rte_mbuf **recv_buf_list = droq->recv_buf_list;
-	uint32_t refill_idx = droq->refill_idx;
-	struct rte_mbuf *buf;
-	uint32_t i;
-	int rc;
-
-	rc = rte_pktmbuf_alloc_bulk(droq->mpool, &recv_buf_list[refill_idx], count);
-	if (unlikely(rc)) {
-		droq->stats.rx_alloc_failure++;
-		return rc;
-	}
-
-	for (i = 0; i < count; i++) {
-		buf = recv_buf_list[refill_idx];
-		desc_ring[refill_idx].buffer_ptr = rte_mbuf_data_iova_default(buf);
-		refill_idx++;
-	}
-
-	droq->refill_idx = otx_ep_incr_index(droq->refill_idx, count, droq->nb_desc);
-	droq->refill_count -= count;
-
-	return 0;
-}
-
-static inline void
-cnxk_ep_rx_refill(struct otx_ep_droq *droq)
-{
-	uint32_t desc_refilled = 0, count;
-	uint32_t nb_desc = droq->nb_desc;
-	uint32_t refill_idx = droq->refill_idx;
-	int rc;
-
-	if (unlikely(droq->read_idx == refill_idx))
-		return;
-
-	if (refill_idx < droq->read_idx) {
-		count = droq->read_idx - refill_idx;
-		rc = cnxk_ep_rx_refill_mbuf(droq, count);
-		if (unlikely(rc)) {
-			droq->stats.rx_alloc_failure++;
-			return;
-		}
-		desc_refilled = count;
-	} else {
-		count = nb_desc - refill_idx;
-		rc = cnxk_ep_rx_refill_mbuf(droq, count);
-		if (unlikely(rc)) {
-			droq->stats.rx_alloc_failure++;
-			return;
-		}
-
-		desc_refilled = count;
-		count = droq->read_idx;
-		rc = cnxk_ep_rx_refill_mbuf(droq, count);
-		if (unlikely(rc)) {
-			droq->stats.rx_alloc_failure++;
-			return;
-		}
-		desc_refilled += count;
-	}
-
-	/* Flush the droq descriptor data to memory to be sure
-	 * that when we update the credits the data in memory is
-	 * accurate.
-	 */
-	rte_io_wmb();
-	rte_write32(desc_refilled, droq->pkts_credit_reg);
-}
-
-static inline uint32_t
-cnxk_ep_check_rx_pkts(struct otx_ep_droq *droq)
-{
-	uint32_t new_pkts;
-	uint32_t val;
-
-	/* Batch subtractions from the HW counter to reduce PCIe traffic
-	 * This adds an extra local variable, but almost halves the
-	 * number of PCIe writes.
-	 */
-	val = __atomic_load_n(droq->pkts_sent_ism, __ATOMIC_RELAXED);
-	new_pkts = val - droq->pkts_sent_ism_prev;
-	droq->pkts_sent_ism_prev = val;
-
-	if (val > (uint32_t)(1 << 31)) {
-		/* Only subtract the packet count in the HW counter
-		 * when count above halfway to saturation.
-		 */
-		rte_write64((uint64_t)val, droq->pkts_sent_reg);
-		rte_mb();
-
-		rte_write64(OTX2_SDP_REQUEST_ISM, droq->pkts_sent_reg);
-		while (__atomic_load_n(droq->pkts_sent_ism, __ATOMIC_RELAXED) >= val) {
-			rte_write64(OTX2_SDP_REQUEST_ISM, droq->pkts_sent_reg);
-			rte_mb();
-		}
-
-		droq->pkts_sent_ism_prev = 0;
-	}
-	rte_write64(OTX2_SDP_REQUEST_ISM, droq->pkts_sent_reg);
-	droq->pkts_pending += new_pkts;
-
-	return new_pkts;
-}
-
-static inline int16_t __rte_hot
-cnxk_ep_rx_pkts_to_process(struct otx_ep_droq *droq, uint16_t nb_pkts)
-{
-	if (droq->pkts_pending < nb_pkts)
-		cnxk_ep_check_rx_pkts(droq);
-
-	return RTE_MIN(nb_pkts, droq->pkts_pending);
-}
-
-static __rte_always_inline void
-cnxk_ep_process_pkts_scalar(struct rte_mbuf **rx_pkts, struct otx_ep_droq *droq, uint16_t new_pkts)
-{
-	struct rte_mbuf **recv_buf_list = droq->recv_buf_list;
-	uint32_t bytes_rsvd = 0, read_idx = droq->read_idx;
-	uint16_t port_id = droq->otx_ep_dev->port_id;
-	uint16_t nb_desc = droq->nb_desc;
-	uint16_t pkts;
-
-	for (pkts = 0; pkts < new_pkts; pkts++) {
-		struct otx_ep_droq_info *info;
-		struct rte_mbuf *mbuf;
-		uint16_t pkt_len;
-
-		mbuf = recv_buf_list[read_idx];
-		info = rte_pktmbuf_mtod(mbuf, struct otx_ep_droq_info *);
-		read_idx = otx_ep_incr_index(read_idx, 1, nb_desc);
-		pkt_len = rte_bswap16(info->length >> 48);
-		mbuf->data_off += OTX_EP_INFO_SIZE;
-		mbuf->pkt_len = pkt_len;
-		mbuf->data_len = pkt_len;
-		mbuf->port = port_id;
-		rx_pkts[pkts] = mbuf;
-		bytes_rsvd += pkt_len;
-	}
-	droq->read_idx = read_idx;
-
-	droq->refill_count += new_pkts;
-	droq->pkts_pending -= new_pkts;
-	/* Stats */
-	droq->stats.pkts_received += new_pkts;
-	droq->stats.bytes_received += bytes_rsvd;
-}
+#include "cnxk_ep_rx.h"
 
 static __rte_always_inline void
 cnxk_ep_process_pkts_scalar_mseg(struct rte_mbuf **rx_pkts, struct otx_ep_droq *droq,
@@ -163,7 +10,6 @@ cnxk_ep_process_pkts_scalar_mseg(struct rte_mbuf **rx_pkts, struct otx_ep_droq *
 {
 	struct rte_mbuf **recv_buf_list = droq->recv_buf_list;
 	uint32_t total_pkt_len, bytes_rsvd = 0;
-	uint16_t port_id = droq->otx_ep_dev->port_id;
 	uint16_t nb_desc = droq->nb_desc;
 	uint16_t pkts;
 
@@ -175,7 +21,7 @@ cnxk_ep_process_pkts_scalar_mseg(struct rte_mbuf **rx_pkts, struct otx_ep_droq *
 		uint32_t pkt_len = 0;
 
 		mbuf = recv_buf_list[droq->read_idx];
-		info = rte_pktmbuf_mtod(mbuf, struct otx_ep_droq_info *);
+		info = cnxk_pktmbuf_mtod(mbuf, struct otx_ep_droq_info *);
 
 		total_pkt_len = rte_bswap16(info->length >> 48) + OTX_EP_INFO_SIZE;
 
@@ -190,7 +36,7 @@ cnxk_ep_process_pkts_scalar_mseg(struct rte_mbuf **rx_pkts, struct otx_ep_droq *
 			if (!pkt_len) {
 				/* Note the first seg */
 				first_buf = mbuf;
-				mbuf->data_off += OTX_EP_INFO_SIZE;
+				*(uint64_t *)&mbuf->rearm_data = droq->rearm_data;
 				mbuf->pkt_len = cpy_len - OTX_EP_INFO_SIZE;
 				mbuf->data_len = cpy_len - OTX_EP_INFO_SIZE;
 			} else {
@@ -210,12 +56,10 @@ cnxk_ep_process_pkts_scalar_mseg(struct rte_mbuf **rx_pkts, struct otx_ep_droq *
 			droq->refill_count++;
 		}
 		mbuf = first_buf;
-		mbuf->port = port_id;
 		rx_pkts[pkts] = mbuf;
 		bytes_rsvd += pkt_len;
 	}
 
-	droq->refill_count += new_pkts;
 	droq->pkts_pending -= pkts;
 	/* Stats */
 	droq->stats.pkts_received += pkts;
@@ -229,11 +73,11 @@ cnxk_ep_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	uint16_t new_pkts;
 
 	new_pkts = cnxk_ep_rx_pkts_to_process(droq, nb_pkts);
-	cnxk_ep_process_pkts_scalar(rx_pkts, droq, new_pkts);
-
 	/* Refill RX buffers */
 	if (droq->refill_count >= DROQ_REFILL_THRESHOLD)
 		cnxk_ep_rx_refill(droq);
+
+	cnxk_ep_process_pkts_scalar(rx_pkts, droq, new_pkts);
 
 	return new_pkts;
 }
@@ -306,4 +150,44 @@ cn9k_ep_recv_pkts_mseg(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pk
 	}
 
 	return new_pkts;
+}
+
+void
+cnxk_ep_drain_rx_pkts(void *rx_queue)
+{
+	struct otx_ep_droq *droq = (struct otx_ep_droq *)rx_queue;
+	struct rte_mbuf *rx_pkt, *next_seg, *seg;
+	uint16_t i, j, nb_pkts;
+
+	if (droq->read_idx == 0 && droq->pkts_pending == 0 && droq->refill_count)
+		return;
+
+	/* Check for pending packets */
+	nb_pkts = cnxk_ep_rx_pkts_to_process(droq, droq->nb_desc);
+
+	/* Drain the pending packets */
+	for (i = 0; i < nb_pkts; i++) {
+		rx_pkt = NULL;
+		cnxk_ep_process_pkts_scalar_mseg(&rx_pkt, droq, 1);
+		if (rx_pkt) {
+			seg = rx_pkt->next;
+			for (j = 1; j < rx_pkt->nb_segs; j++) {
+				next_seg = seg->next;
+				rte_mempool_put(droq->mpool, seg);
+				seg = next_seg;
+			}
+			rx_pkt->nb_segs = 1;
+			rte_mempool_put(droq->mpool, rx_pkt);
+		}
+	}
+
+	cnxk_ep_rx_refill(droq);
+
+	/* Reset the indexes */
+	droq->read_idx  = 0;
+	droq->write_idx = 0;
+	droq->refill_idx = 0;
+	droq->refill_count = 0;
+	droq->last_pkt_count = 0;
+	droq->pkts_pending = 0;
 }

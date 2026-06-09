@@ -463,7 +463,7 @@ exit:
 
 int
 cpt_lfs_alloc(struct dev *dev, uint8_t eng_grpmsk, uint8_t blkaddr, bool inl_dev_sso,
-	      bool ctx_ilen_valid, uint8_t ctx_ilen)
+	      bool ctx_ilen_valid, uint8_t ctx_ilen, bool rxc_ena, uint16_t rx_inject_qp)
 {
 	struct cpt_lf_alloc_req_msg *req;
 	struct mbox *mbox = mbox_get(dev->mbox);
@@ -489,6 +489,10 @@ cpt_lfs_alloc(struct dev *dev, uint8_t eng_grpmsk, uint8_t blkaddr, bool inl_dev
 	req->blkaddr = blkaddr;
 	req->ctx_ilen_valid = ctx_ilen_valid;
 	req->ctx_ilen = ctx_ilen;
+	if (rxc_ena) {
+		req->rxc_ena = 1;
+		req->rxc_ena_lf_id = rx_inject_qp;
+	}
 
 	rc = mbox_process(mbox);
 exit:
@@ -586,7 +590,7 @@ cpt_iq_init(struct roc_cpt_lf *lf)
 }
 
 int
-roc_cpt_dev_configure(struct roc_cpt *roc_cpt, int nb_lf)
+roc_cpt_dev_configure(struct roc_cpt *roc_cpt, int nb_lf, bool rxc_ena, uint16_t rx_inject_qp)
 {
 	struct cpt *cpt = roc_cpt_to_cpt_priv(roc_cpt);
 	uint8_t blkaddr[ROC_CPT_MAX_BLKS];
@@ -630,7 +634,8 @@ roc_cpt_dev_configure(struct roc_cpt *roc_cpt, int nb_lf)
 		ctx_ilen = (PLT_ALIGN(ROC_OT_IPSEC_SA_SZ_MAX, ROC_ALIGN) / 128) - 1;
 	}
 
-	rc = cpt_lfs_alloc(&cpt->dev, eng_grpmsk, blkaddr[blknum], false, ctx_ilen_valid, ctx_ilen);
+	rc = cpt_lfs_alloc(&cpt->dev, eng_grpmsk, blkaddr[blknum], false, ctx_ilen_valid, ctx_ilen,
+			   rxc_ena, rx_inject_qp);
 	if (rc)
 		goto lfs_detach;
 
@@ -821,7 +826,7 @@ roc_cpt_lf_ctx_flush(struct roc_cpt_lf *lf, void *cptr, bool inval)
 
 	if (err.s.flush_st_flt) {
 		plt_err("CTX flush could not complete due to store fault");
-		abort();
+		return -EFAULT;
 	}
 
 	return 0;
@@ -946,6 +951,20 @@ cpt_lf_fini(struct roc_cpt_lf *lf)
 	/* Free memory */
 	plt_free(lf->iq_vaddr);
 	lf->iq_vaddr = NULL;
+}
+
+void
+roc_cpt_lf_reset(struct roc_cpt_lf *lf)
+{
+	if (lf == NULL)
+		return;
+
+	cpt_lf_misc_intr_enb_dis(lf, false);
+	cpt_lf_done_intr_enb_dis(lf, false);
+	roc_cpt_iq_disable(lf);
+	roc_cpt_iq_reset(lf);
+	cpt_lf_misc_intr_enb_dis(lf, true);
+	cpt_lf_done_intr_enb_dis(lf, true);
 }
 
 void
@@ -1135,8 +1154,8 @@ roc_cpt_iq_enable(struct roc_cpt_lf *lf)
 }
 
 int
-roc_cpt_lmtline_init(struct roc_cpt *roc_cpt, struct roc_cpt_lmtline *lmtline,
-		     int lf_id)
+roc_cpt_lmtline_init(struct roc_cpt *roc_cpt, struct roc_cpt_lmtline *lmtline, int lf_id,
+		     bool is_dual)
 {
 	struct roc_cpt_lf *lf;
 
@@ -1145,12 +1164,19 @@ roc_cpt_lmtline_init(struct roc_cpt *roc_cpt, struct roc_cpt_lmtline *lmtline,
 		return -ENOTSUP;
 
 	lmtline->io_addr = lf->io_addr;
-	if (roc_model_is_cn10k())
-		lmtline->io_addr |= ROC_CN10K_CPT_INST_DW_M1 << 4;
+	lmtline->fc_thresh = lf->nb_desc - CPT_LF_FC_MIN_THRESHOLD;
+
+	if (roc_model_is_cn10k()) {
+		if (is_dual) {
+			lmtline->io_addr |= ROC_CN10K_TWO_CPT_INST_DW_M1 << 4;
+			lmtline->fc_thresh = lf->nb_desc -  2 * CPT_LF_FC_MIN_THRESHOLD;
+		} else {
+			lmtline->io_addr |= ROC_CN10K_CPT_INST_DW_M1 << 4;
+		}
+	}
 
 	lmtline->fc_addr = lf->fc_addr;
 	lmtline->lmt_base = lf->lmt_base;
-	lmtline->fc_thresh = lf->nb_desc - CPT_LF_FC_MIN_THRESHOLD;
 
 	return 0;
 }
@@ -1166,6 +1192,11 @@ roc_cpt_ctx_write(struct roc_cpt_lf *lf, void *sa_dptr, void *sa_cptr,
 	uint16_t lmt_id;
 	uint64_t *dptr;
 	int i;
+
+	if (!plt_is_aligned(sa_cptr, 128)) {
+		plt_err("Context pointer should be 128B aligned");
+		return -EINVAL;
+	}
 
 	/* Use this lcore's LMT line as no one else is using it */
 	ROC_LMT_BASE_ID_GET(lmt_base, lmt_id);

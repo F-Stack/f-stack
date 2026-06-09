@@ -12,7 +12,6 @@
 #include <rte_metrics.h>
 #include <rte_memzone.h>
 #include <rte_lcore.h>
-#include <rte_stdatomic.h>
 
 #include "rte_latencystats.h"
 
@@ -26,8 +25,10 @@ latencystat_cycles_per_ns(void)
 	return rte_get_timer_hz() / NS_PER_SEC;
 }
 
-/* Macros for printing using RTE_LOG */
-#define RTE_LOGTYPE_LATENCY_STATS RTE_LOGTYPE_USER1
+RTE_LOG_REGISTER_DEFAULT(latencystat_logtype, INFO);
+#define RTE_LOGTYPE_LATENCY_STATS latencystat_logtype
+#define LATENCY_STATS_LOG(level, ...) \
+	RTE_LOG_LINE(level, LATENCY_STATS, "" __VA_ARGS__)
 
 static uint64_t timestamp_dynflag;
 static int timestamp_dynfield_offset = -1;
@@ -39,20 +40,11 @@ timestamp_dynfield(struct rte_mbuf *mbuf)
 			timestamp_dynfield_offset, rte_mbuf_timestamp_t *);
 }
 
-/* Compare two 64 bit timer counter but deal with wraparound correctly. */
-static inline bool tsc_after(uint64_t t0, uint64_t t1)
-{
-	return (int64_t)(t1 - t0) < 0;
-}
-
-#define tsc_before(a, b) tsc_after(b, a)
-
 static const char *MZ_RTE_LATENCY_STATS = "rte_latencystats";
 static int latency_stats_index;
-
-static rte_spinlock_t sample_lock = RTE_SPINLOCK_INITIALIZER;
 static uint64_t samp_intvl;
-static RTE_ATOMIC(uint64_t) next_tsc;
+static uint64_t timer_tsc;
+static uint64_t prev_tsc;
 
 struct rte_latency_stats {
 	float min_latency; /**< Minimum latency in nano seconds */
@@ -105,7 +97,7 @@ rte_latencystats_update(void)
 					latency_stats_index,
 					values, NUM_LATENCY_STATS);
 	if (ret < 0)
-		RTE_LOG(INFO, LATENCY_STATS, "Failed to push the stats\n");
+		LATENCY_STATS_LOG(INFO, "Failed to push the stats");
 
 	return ret;
 }
@@ -134,29 +126,25 @@ add_time_stamps(uint16_t pid __rte_unused,
 		void *user_cb __rte_unused)
 {
 	unsigned int i;
-	uint64_t now = rte_rdtsc();
+	uint64_t diff_tsc, now;
 
-	/* Check without locking */
-	if (likely(tsc_before(now, rte_atomic_load_explicit(&next_tsc,
-							    rte_memory_order_relaxed))))
-		return nb_pkts;
+	/*
+	 * For every sample interval,
+	 * time stamp is marked on one received packet.
+	 */
+	now = rte_rdtsc();
+	for (i = 0; i < nb_pkts; i++) {
+		diff_tsc = now - prev_tsc;
+		timer_tsc += diff_tsc;
 
-	/* Try and get sample, skip if sample is being done by other core. */
-	if (likely(rte_spinlock_trylock(&sample_lock))) {
-		for (i = 0; i < nb_pkts; i++) {
-			struct rte_mbuf *m = pkts[i];
-
-			/* skip if already timestamped */
-			if (unlikely(m->ol_flags & timestamp_dynflag))
-				continue;
-
-			m->ol_flags |= timestamp_dynflag;
-			*timestamp_dynfield(m) = now;
-			rte_atomic_store_explicit(&next_tsc, now + samp_intvl,
-						  rte_memory_order_relaxed);
-			break;
+		if ((pkts[i]->ol_flags & timestamp_dynflag) == 0
+				&& (timer_tsc >= samp_intvl)) {
+			*timestamp_dynfield(pkts[i]) = now;
+			pkts[i]->ol_flags |= timestamp_dynflag;
+			timer_tsc = 0;
 		}
-		rte_spinlock_unlock(&sample_lock);
+		prev_tsc = now;
+		now = rte_rdtsc();
 	}
 
 	return nb_pkts;
@@ -169,9 +157,9 @@ calc_latency(uint16_t pid __rte_unused,
 		uint16_t nb_pkts,
 		void *_ __rte_unused)
 {
-	unsigned int i, cnt = 0;
+	unsigned int i;
 	uint64_t now;
-	float latency[nb_pkts];
+	float latency;
 	static float prev_latency;
 	/*
 	 * Alpha represents degree of weighting decrease in EWMA,
@@ -181,13 +169,14 @@ calc_latency(uint16_t pid __rte_unused,
 	const float alpha = 0.2f;
 
 	now = rte_rdtsc();
-	for (i = 0; i < nb_pkts; i++) {
-		if (pkts[i]->ol_flags & timestamp_dynflag)
-			latency[cnt++] = now - *timestamp_dynfield(pkts[i]);
-	}
 
 	rte_spinlock_lock(&glob_stats->lock);
-	for (i = 0; i < cnt; i++) {
+	for (i = 0; i < nb_pkts; i++) {
+		if (!(pkts[i]->ol_flags & timestamp_dynflag))
+			continue;
+
+		latency = now - *timestamp_dynfield(pkts[i]);
+
 		/*
 		 * The jitter is calculated as statistical mean of interpacket
 		 * delay variation. The "jitter estimate" is computed by taking
@@ -199,22 +188,22 @@ calc_latency(uint16_t pid __rte_unused,
 		 * Reference: Calculated as per RFC 5481, sec 4.1,
 		 * RFC 3393 sec 4.5, RFC 1889 sec.
 		 */
-		glob_stats->jitter +=  (fabsf(prev_latency - latency[i])
+		glob_stats->jitter +=  (fabsf(prev_latency - latency)
 					- glob_stats->jitter)/16;
 		if (glob_stats->min_latency == 0)
-			glob_stats->min_latency = latency[i];
-		else if (latency[i] < glob_stats->min_latency)
-			glob_stats->min_latency = latency[i];
-		else if (latency[i] > glob_stats->max_latency)
-			glob_stats->max_latency = latency[i];
+			glob_stats->min_latency = latency;
+		else if (latency < glob_stats->min_latency)
+			glob_stats->min_latency = latency;
+		else if (latency > glob_stats->max_latency)
+			glob_stats->max_latency = latency;
 		/*
 		 * The average latency is measured using exponential moving
 		 * average, i.e. using EWMA
 		 * https://en.wikipedia.org/wiki/Moving_average
 		 */
 		glob_stats->avg_latency +=
-			alpha * (latency[i] - glob_stats->avg_latency);
-		prev_latency = latency[i];
+			alpha * (latency - glob_stats->avg_latency);
+		prev_latency = latency;
 	}
 	rte_spinlock_unlock(&glob_stats->lock);
 
@@ -241,7 +230,7 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	mz = rte_memzone_reserve(MZ_RTE_LATENCY_STATS, sizeof(*glob_stats),
 					rte_socket_id(), flags);
 	if (mz == NULL) {
-		RTE_LOG(ERR, LATENCY_STATS, "Cannot reserve memory: %s:%d\n",
+		LATENCY_STATS_LOG(ERR, "Cannot reserve memory: %s:%d",
 			__func__, __LINE__);
 		return -ENOMEM;
 	}
@@ -249,7 +238,6 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	glob_stats = mz->addr;
 	rte_spinlock_init(&glob_stats->lock);
 	samp_intvl = app_samp_intvl * latencystat_cycles_per_ns();
-	next_tsc = rte_rdtsc();
 
 	/** Register latency stats with stats library */
 	for (i = 0; i < NUM_LATENCY_STATS; i++)
@@ -258,8 +246,8 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	latency_stats_index = rte_metrics_reg_names(ptr_strings,
 							NUM_LATENCY_STATS);
 	if (latency_stats_index < 0) {
-		RTE_LOG(DEBUG, LATENCY_STATS,
-			"Failed to register latency stats names\n");
+		LATENCY_STATS_LOG(DEBUG,
+			"Failed to register latency stats names");
 		return -1;
 	}
 
@@ -267,8 +255,8 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 	ret = rte_mbuf_dyn_rx_timestamp_register(&timestamp_dynfield_offset,
 			&timestamp_dynflag);
 	if (ret != 0) {
-		RTE_LOG(ERR, LATENCY_STATS,
-			"Cannot register mbuf field/flag for timestamp\n");
+		LATENCY_STATS_LOG(ERR,
+			"Cannot register mbuf field/flag for timestamp");
 		return -rte_errno;
 	}
 
@@ -278,8 +266,8 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 
 		ret = rte_eth_dev_info_get(pid, &dev_info);
 		if (ret != 0) {
-			RTE_LOG(INFO, LATENCY_STATS,
-				"Error during getting device (port %u) info: %s\n",
+			LATENCY_STATS_LOG(INFO,
+				"Error during getting device (port %u) info: %s",
 				pid, strerror(-ret));
 
 			continue;
@@ -290,18 +278,18 @@ rte_latencystats_init(uint64_t app_samp_intvl,
 			cbs->cb = rte_eth_add_first_rx_callback(pid, qid,
 					add_time_stamps, user_cb);
 			if (!cbs->cb)
-				RTE_LOG(INFO, LATENCY_STATS, "Failed to "
+				LATENCY_STATS_LOG(INFO, "Failed to "
 					"register Rx callback for pid=%d, "
-					"qid=%d\n", pid, qid);
+					"qid=%d", pid, qid);
 		}
 		for (qid = 0; qid < dev_info.nb_tx_queues; qid++) {
 			cbs = &tx_cbs[pid][qid];
 			cbs->cb =  rte_eth_add_tx_callback(pid, qid,
 					calc_latency, user_cb);
 			if (!cbs->cb)
-				RTE_LOG(INFO, LATENCY_STATS, "Failed to "
+				LATENCY_STATS_LOG(INFO, "Failed to "
 					"register Tx callback for pid=%d, "
-					"qid=%d\n", pid, qid);
+					"qid=%d", pid, qid);
 		}
 	}
 	return 0;
@@ -322,8 +310,8 @@ rte_latencystats_uninit(void)
 
 		ret = rte_eth_dev_info_get(pid, &dev_info);
 		if (ret != 0) {
-			RTE_LOG(INFO, LATENCY_STATS,
-				"Error during getting device (port %u) info: %s\n",
+			LATENCY_STATS_LOG(INFO,
+				"Error during getting device (port %u) info: %s",
 				pid, strerror(-ret));
 
 			continue;
@@ -333,24 +321,23 @@ rte_latencystats_uninit(void)
 			cbs = &rx_cbs[pid][qid];
 			ret = rte_eth_remove_rx_callback(pid, qid, cbs->cb);
 			if (ret)
-				RTE_LOG(INFO, LATENCY_STATS, "failed to "
+				LATENCY_STATS_LOG(INFO, "failed to "
 					"remove Rx callback for pid=%d, "
-					"qid=%d\n", pid, qid);
+					"qid=%d", pid, qid);
 		}
 		for (qid = 0; qid < dev_info.nb_tx_queues; qid++) {
 			cbs = &tx_cbs[pid][qid];
 			ret = rte_eth_remove_tx_callback(pid, qid, cbs->cb);
 			if (ret)
-				RTE_LOG(INFO, LATENCY_STATS, "failed to "
+				LATENCY_STATS_LOG(INFO, "failed to "
 					"remove Tx callback for pid=%d, "
-					"qid=%d\n", pid, qid);
+					"qid=%d", pid, qid);
 		}
 	}
 
 	/* free up the memzone */
 	mz = rte_memzone_lookup(MZ_RTE_LATENCY_STATS);
-	if (mz)
-		rte_memzone_free(mz);
+	rte_memzone_free(mz);
 
 	return 0;
 }
@@ -380,8 +367,8 @@ rte_latencystats_get(struct rte_metric_value *values, uint16_t size)
 		const struct rte_memzone *mz;
 		mz = rte_memzone_lookup(MZ_RTE_LATENCY_STATS);
 		if (mz == NULL) {
-			RTE_LOG(ERR, LATENCY_STATS,
-				"Latency stats memzone not found\n");
+			LATENCY_STATS_LOG(ERR,
+				"Latency stats memzone not found");
 			return -ENOMEM;
 		}
 		glob_stats =  mz->addr;

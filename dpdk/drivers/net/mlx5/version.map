@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	local: *;
 };
 
@@ -17,4 +17,12 @@ EXPERIMENTAL {
 	rte_pmd_mlx5_external_sq_enable;
 	# added in 23.03
 	rte_pmd_mlx5_flow_engine_set_mode;
+	# added in 24.03
+	rte_pmd_mlx5_create_geneve_tlv_parser;
+	rte_pmd_mlx5_destroy_geneve_tlv_parser;
+	# added in 24.07
+	rte_pmd_mlx5_external_tx_queue_id_map;
+	rte_pmd_mlx5_external_tx_queue_id_unmap;
+	rte_pmd_mlx5_txq_dump_contexts;
+	rte_pmd_mlx5_rxq_dump_contexts;
 };

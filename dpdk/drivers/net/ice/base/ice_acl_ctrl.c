@@ -74,7 +74,7 @@ ice_acl_scen_assign_entry_idx(struct ice_acl_scen *scen,
  *
  * To mark an entry available in scenario
  */
-static enum ice_status
+static int
 ice_acl_scen_free_entry_idx(struct ice_acl_scen *scen, u16 idx)
 {
 	if (idx >= scen->num_entry)
@@ -83,7 +83,7 @@ ice_acl_scen_free_entry_idx(struct ice_acl_scen *scen, u16 idx)
 	if (!ice_test_and_clear_bit(idx, scen->entry_bitmap))
 		return ICE_ERR_DOES_NOT_EXIST;
 
-	return ICE_SUCCESS;
+	return 0;
 }
 
 /**
@@ -141,12 +141,12 @@ static u16 ice_acl_tbl_calc_end_idx(u16 start, u16 num_entries, u16 width)
  *
  * Initialize the ACL table by invalidating TCAM entries and action pairs.
  */
-static enum ice_status ice_acl_init_tbl(struct ice_hw *hw)
+static int ice_acl_init_tbl(struct ice_hw *hw)
 {
 	struct ice_aqc_actpair act_buf;
 	struct ice_aqc_acl_data buf;
-	enum ice_status status = ICE_SUCCESS;
 	struct ice_acl_tbl *tbl;
+	int status = 0;
 	u8 tcam_idx, i;
 	u16 idx;
 
@@ -303,14 +303,14 @@ static void ice_acl_divide_act_mems_to_tcams(struct ice_acl_tbl *tbl)
  * values for the size of the table, but this will need to grow as more flow
  * entries are added by the user level.
  */
-enum ice_status
+int
 ice_acl_create_tbl(struct ice_hw *hw, struct ice_acl_tbl_params *params)
 {
 	u16 width, depth, first_e, last_e, i;
 	struct ice_aqc_acl_generic *resp_buf;
 	struct ice_acl_alloc_tbl tbl_alloc;
 	struct ice_acl_tbl *tbl;
-	enum ice_status status;
+	int status;
 
 	if (hw->acl_tbl)
 		return ICE_ERR_ALREADY_EXISTS;
@@ -423,7 +423,7 @@ out:
  * @hw: pointer to the hardware structure
  * @req: info of partition being allocated
  */
-static enum ice_status
+static int
 ice_acl_alloc_partition(struct ice_hw *hw, struct ice_acl_scen *req)
 {
 	u16 start = 0, cnt = 0, off = 0;
@@ -494,7 +494,7 @@ ice_acl_alloc_partition(struct ice_hw *hw, struct ice_acl_scen *req)
 			 * is available.
 			 */
 			p = dir > 0 ? i : ICE_AQC_MAX_TCAM_ALLOC_UNITS - i - 1;
-			for (w = row; w < row + width && avail; w++) {
+			for (w = row; w < (u16)(row + width) && avail; w++) {
 				u16 b;
 
 				b = (w * ICE_AQC_MAX_TCAM_ALLOC_UNITS) + p;
@@ -547,7 +547,7 @@ ice_acl_alloc_partition(struct ice_hw *hw, struct ice_acl_scen *req)
 		}
 	} while (!done);
 
-	return cnt >= r_entries ? ICE_SUCCESS : ICE_ERR_MAX_LIMIT;
+	return cnt >= r_entries ? 0 : ICE_ERR_MAX_LIMIT;
 }
 
 /**
@@ -644,7 +644,7 @@ ice_acl_set_scen_chnk_msk(struct ice_aqc_acl_scen *scen_buf,
 		 * For each TCAM, there will be (ICE_AQC_ACL_TCAM_DEPTH
 		 * / ICE_ACL_ENTRY_ALLOC_UNIT) or 8 chunks.
 		 */
-		for (i = tcam_idx; i < tcam_idx + num_cscd; i++)
+		for (i = tcam_idx; i < (u16)(tcam_idx + num_cscd); i++)
 			scen_buf->tcam_cfg[i].chnk_msk |= BIT(chnk_offst);
 
 		chnk_offst = (chnk_offst + 1) % ICE_AQC_MAX_TCAM_ALLOC_UNITS;
@@ -737,14 +737,14 @@ ice_acl_commit_partition(struct ice_hw *hw, struct ice_acl_scen *scen,
  * @num_entries: number of entries to be allocated for the scenario
  * @scen_id: holds returned scenario ID if successful
  */
-enum ice_status
+int
 ice_acl_create_scen(struct ice_hw *hw, u16 match_width, u16 num_entries,
 		    u16 *scen_id)
 {
 	u8 cascade_cnt, first_tcam, last_tcam, i, k;
 	struct ice_aqc_acl_scen scen_buf;
 	struct ice_acl_scen *scen;
-	enum ice_status status;
+	int status;
 
 	if (!hw->acl_tbl)
 		return ICE_ERR_DOES_NOT_EXIST;
@@ -799,7 +799,7 @@ ice_acl_create_scen(struct ice_hw *hw, u16 match_width, u16 num_entries,
 			ICE_AQC_ACL_ALLOC_SCE_START_CMP;
 
 		/* cascade TCAMs up to the width of the scenario */
-		for (i = k; i < cascade_cnt + k; i++) {
+		for (i = k; i < (u8)(cascade_cnt + k); i++) {
 			ice_acl_fill_tcam_select(&scen_buf, scen, i, i - k);
 			ice_acl_assign_act_mem_for_scen(hw->acl_tbl, scen,
 							&scen_buf,
@@ -845,11 +845,11 @@ out:
  * @hw: pointer to the HW struct
  * @scen_id: ID of the remove scenario
  */
-static enum ice_status ice_acl_destroy_scen(struct ice_hw *hw, u16 scen_id)
+static int ice_acl_destroy_scen(struct ice_hw *hw, u16 scen_id)
 {
 	struct ice_acl_scen *scen, *tmp_scen;
 	struct ice_flow_prof *p, *tmp;
-	enum ice_status status;
+	int status;
 
 	if (!hw->acl_tbl)
 		return ICE_ERR_DOES_NOT_EXIST;
@@ -882,19 +882,19 @@ static enum ice_status ice_acl_destroy_scen(struct ice_hw *hw, u16 scen_id)
 			ice_free(hw, scen);
 		}
 
-	return ICE_SUCCESS;
+	return 0;
 }
 
 /**
  * ice_acl_destroy_tbl - Destroy a previously created LEM table for ACL
  * @hw: pointer to the HW struct
  */
-enum ice_status ice_acl_destroy_tbl(struct ice_hw *hw)
+int ice_acl_destroy_tbl(struct ice_hw *hw)
 {
 	struct ice_acl_scen *pos_scen, *tmp_scen;
 	struct ice_aqc_acl_generic resp_buf;
 	struct ice_aqc_acl_scen buf;
-	enum ice_status status;
+	int status;
 	u8 i;
 
 	if (!hw->acl_tbl)
@@ -947,7 +947,7 @@ enum ice_status ice_acl_destroy_tbl(struct ice_hw *hw)
 	ice_free(hw, hw->acl_tbl);
 	hw->acl_tbl = NULL;
 
-	return ICE_SUCCESS;
+	return 0;
 }
 
 /**
@@ -966,7 +966,7 @@ enum ice_status ice_acl_destroy_tbl(struct ice_hw *hw)
  * The "keys" and "inverts" buffers must be of the size which is the same as
  * the scenario's width
  */
-enum ice_status
+int
 ice_acl_add_entry(struct ice_hw *hw, struct ice_acl_scen *scen,
 		  enum ice_acl_entry_prio prio, u8 *keys, u8 *inverts,
 		  struct ice_acl_act_entry *acts, u8 acts_cnt, u16 *entry_idx)
@@ -974,7 +974,7 @@ ice_acl_add_entry(struct ice_hw *hw, struct ice_acl_scen *scen,
 	struct ice_aqc_acl_data buf;
 	u8 entry_tcam, offset;
 	u16 i, num_cscd, idx;
-	enum ice_status status = ICE_SUCCESS;
+	int status = 0;
 
 	if (!scen)
 		return ICE_ERR_DOES_NOT_EXIST;
@@ -1043,14 +1043,14 @@ out:
  *
  * Program a scenario's action memory
  */
-enum ice_status
+int
 ice_acl_prog_act(struct ice_hw *hw, struct ice_acl_scen *scen,
 		 struct ice_acl_act_entry *acts, u8 acts_cnt,
 		 u16 entry_idx)
 {
 	u16 idx, entry_tcam, num_cscd, i, actx_idx = 0;
 	struct ice_aqc_actpair act_buf;
-	enum ice_status status = ICE_SUCCESS;
+	int status = 0;
 
 	if (entry_idx >= scen->num_entry)
 		return ICE_ERR_MAX_LIMIT;
@@ -1105,13 +1105,13 @@ ice_acl_prog_act(struct ice_hw *hw, struct ice_acl_scen *scen,
  * @scen: scenario to remove the entry from
  * @entry_idx: the scenario-relative index of the flow entry being removed
  */
-enum ice_status
+int
 ice_acl_rem_entry(struct ice_hw *hw, struct ice_acl_scen *scen, u16 entry_idx)
 {
 	struct ice_aqc_actpair act_buf;
 	struct ice_aqc_acl_data buf;
-	enum ice_status status = ICE_SUCCESS;
 	u16 num_cscd, idx, i;
+	int status = 0;
 	u8 entry_tcam;
 
 	if (!scen)

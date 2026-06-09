@@ -25,17 +25,26 @@ RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_stop,
 RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_close,
 	lib.ethdev.close)
 
-RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_rx_burst,
-	lib.ethdev.rx.burst)
+RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_rx_burst_empty,
+	lib.ethdev.rx.burst.empty)
+
+RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_rx_burst_nonempty,
+	lib.ethdev.rx.burst.nonempty)
 
 RTE_TRACE_POINT_REGISTER(rte_ethdev_trace_tx_burst,
 	lib.ethdev.tx.burst)
 
-RTE_TRACE_POINT_REGISTER(rte_eth_trace_call_rx_callbacks,
-	lib.ethdev.call_rx_callbacks)
+RTE_TRACE_POINT_REGISTER(rte_eth_trace_call_rx_callbacks_empty,
+	lib.ethdev.call_rx_callbacks.empty)
+
+RTE_TRACE_POINT_REGISTER(rte_eth_trace_call_rx_callbacks_nonempty,
+	lib.ethdev.call_rx_callbacks.nonempty)
 
 RTE_TRACE_POINT_REGISTER(rte_eth_trace_call_tx_callbacks,
 	lib.ethdev.call_tx_callbacks)
+
+RTE_TRACE_POINT_REGISTER(rte_eth_trace_tx_queue_count,
+	lib.ethdev.tx_queue_count)
 
 RTE_TRACE_POINT_REGISTER(rte_eth_trace_iterator_init,
 	lib.ethdev.iterator_init)
@@ -406,6 +415,9 @@ RTE_TRACE_POINT_REGISTER(rte_eth_trace_timesync_read_tx_timestamp,
 RTE_TRACE_POINT_REGISTER(rte_eth_trace_timesync_adjust_time,
 	lib.ethdev.timesync_adjust_time)
 
+RTE_TRACE_POINT_REGISTER(rte_eth_trace_timesync_adjust_freq,
+	lib.ethdev.timesync_adjust_freq)
+
 RTE_TRACE_POINT_REGISTER(rte_eth_trace_timesync_read_time,
 	lib.ethdev.timesync_read_time)
 
@@ -580,6 +592,12 @@ RTE_TRACE_POINT_REGISTER(rte_flow_trace_template_table_destroy,
 RTE_TRACE_POINT_REGISTER(rte_flow_trace_async_create,
 	lib.ethdev.flow.async_create)
 
+RTE_TRACE_POINT_REGISTER(rte_flow_trace_async_create_by_index,
+	lib.ethdev.flow.async_create_by_index)
+
+RTE_TRACE_POINT_REGISTER(rte_flow_trace_async_create_by_index_with_pattern,
+	lib.ethdev.flow.async_create_by_index_with_pattern)
+
 RTE_TRACE_POINT_REGISTER(rte_flow_trace_async_destroy,
 	lib.ethdev.flow.async_destroy)
 
@@ -691,6 +709,9 @@ RTE_TRACE_POINT_REGISTER(rte_tm_trace_mark_vlan_dei,
 RTE_TRACE_POINT_REGISTER(rte_tm_trace_node_add,
 	lib.ethdev.tm.node_add)
 
+RTE_TRACE_POINT_REGISTER(rte_tm_trace_node_query,
+	lib.ethdev.tm.node_query)
+
 RTE_TRACE_POINT_REGISTER(rte_tm_trace_node_capabilities_get,
 	lib.ethdev.tm.node_capabilities_get)
 
@@ -774,3 +795,12 @@ RTE_TRACE_POINT_REGISTER(rte_flow_trace_async_action_list_handle_destroy,
 
 RTE_TRACE_POINT_REGISTER(rte_flow_trace_async_action_list_handle_query_update,
 			 lib.ethdev.flow.async_action_list_handle_query_update)
+
+RTE_TRACE_POINT_REGISTER(rte_flow_trace_template_table_resize,
+			 lib.ethdev.flow.template_table_resize)
+
+RTE_TRACE_POINT_REGISTER(rte_flow_trace_async_update_resized,
+			 lib.ethdev.flow.async_update_resized)
+
+RTE_TRACE_POINT_REGISTER(rte_flow_trace_table_resize_complete,
+			 lib.ethdev.flow.table_resize_complete)

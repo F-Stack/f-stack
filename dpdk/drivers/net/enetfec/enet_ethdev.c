@@ -1,11 +1,12 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2020-2021 NXP
+ * Copyright 2020-2021,2023-2024 NXP
  */
 
 #include <inttypes.h>
 
 #include <ethdev_vdev.h>
 #include <ethdev_driver.h>
+#include <rte_bitops.h>
 #include <rte_io.h>
 
 #include "enet_pmd_logs.h"
@@ -171,8 +172,10 @@ enet_free_buffers(struct rte_eth_dev *dev)
 		bdp = rxq->bd.base;
 		for (i = 0; i < rxq->bd.ring_size; i++) {
 			mbuf = rxq->rx_mbuf[i];
-			rxq->rx_mbuf[i] = NULL;
-			rte_pktmbuf_free(mbuf);
+			if (mbuf) {
+				rxq->rx_mbuf[i] = NULL;
+				rte_pktmbuf_free(mbuf);
+			}
 			bdp = enet_get_nextdesc(bdp, &rxq->bd);
 		}
 	}
@@ -349,7 +352,7 @@ enet_free_queue(struct rte_eth_dev *dev)
 	for (i = 0; i < dev->data->nb_rx_queues; i++)
 		rte_free(fep->rx_queues[i]);
 	for (i = 0; i < dev->data->nb_tx_queues; i++)
-		rte_free(fep->rx_queues[i]);
+		rte_free(fep->tx_queues[i]);
 }
 
 static const unsigned short offset_des_active_rxq[] = {
@@ -374,7 +377,18 @@ enetfec_tx_queue_setup(struct rte_eth_dev *dev,
 	unsigned int size;
 	unsigned int dsize = fep->bufdesc_ex ? sizeof(struct bufdesc_ex) :
 		sizeof(struct bufdesc);
-	unsigned int dsize_log2 = fls64(dsize);
+	unsigned int dsize_log2 = rte_fls_u64(dsize) - 1;
+
+	if (queue_idx > 0) {
+		ENETFEC_PMD_ERR("Multi queue not supported");
+		return -EINVAL;
+	}
+
+	/* Tx deferred start is not supported */
+	if (tx_conf->tx_deferred_start) {
+		ENETFEC_PMD_ERR("Tx deferred start not supported");
+		return -EINVAL;
+	}
 
 	/* Tx deferred start is not supported */
 	if (tx_conf->tx_deferred_start) {
@@ -389,7 +403,7 @@ enetfec_tx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
-	if (nb_desc > MAX_TX_BD_RING_SIZE) {
+	if (nb_desc != MAX_TX_BD_RING_SIZE) {
 		nb_desc = MAX_TX_BD_RING_SIZE;
 		ENETFEC_PMD_WARN("modified the nb_desc to MAX_TX_BD_RING_SIZE");
 	}
@@ -452,7 +466,7 @@ enetfec_rx_queue_setup(struct rte_eth_dev *dev,
 	unsigned int size;
 	unsigned int dsize = fep->bufdesc_ex ? sizeof(struct bufdesc_ex) :
 			sizeof(struct bufdesc);
-	unsigned int dsize_log2 = fls64(dsize);
+	unsigned int dsize_log2 = rte_fls_u64(dsize) - 1;
 
 	/* Rx deferred start is not supported */
 	if (rx_conf->rx_deferred_start) {
@@ -473,7 +487,7 @@ enetfec_rx_queue_setup(struct rte_eth_dev *dev,
 		return -ENOMEM;
 	}
 
-	if (nb_rx_desc > MAX_RX_BD_RING_SIZE) {
+	if (nb_rx_desc != MAX_RX_BD_RING_SIZE) {
 		nb_rx_desc = MAX_RX_BD_RING_SIZE;
 		ENETFEC_PMD_WARN("modified the nb_desc to MAX_RX_BD_RING_SIZE");
 	}
@@ -553,7 +567,7 @@ err_alloc:
 		}
 	}
 	rte_free(rxq);
-	return errno;
+	return -ENOMEM;
 }
 
 static const struct eth_dev_ops enetfec_ops = {

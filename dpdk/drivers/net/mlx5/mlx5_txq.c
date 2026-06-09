@@ -27,6 +27,7 @@
 #include "mlx5_tx.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_autoconf.h"
+#include "mlx5_devx.h"
 #include "rte_pmd_mlx5.h"
 #include "mlx5_flow.h"
 
@@ -64,7 +65,7 @@ txq_free_elts(struct mlx5_txq_ctrl *txq_ctrl)
 	const uint16_t elts_m = elts_n - 1;
 	uint16_t elts_head = txq_ctrl->txq.elts_head;
 	uint16_t elts_tail = txq_ctrl->txq.elts_tail;
-	struct rte_mbuf *(*elts)[elts_n] = &txq_ctrl->txq.elts;
+	struct rte_mbuf *(*elts)[] = &txq_ctrl->txq.elts;
 
 	DRV_LOG(DEBUG, "port %u Tx queue %u freeing WRs",
 		PORT_ID(txq_ctrl->priv), txq_ctrl->txq.idx);
@@ -1117,7 +1118,7 @@ mlx5_txq_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 		rte_errno = ENOMEM;
 		goto error;
 	}
-	__atomic_fetch_add(&tmpl->refcnt, 1, __ATOMIC_RELAXED);
+	rte_atomic_fetch_add_explicit(&tmpl->refcnt, 1, rte_memory_order_relaxed);
 	tmpl->is_hairpin = false;
 	LIST_INSERT_HEAD(&priv->txqsctrl, tmpl, next);
 	return tmpl;
@@ -1162,7 +1163,7 @@ mlx5_txq_hairpin_new(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	tmpl->txq.idx = idx;
 	tmpl->hairpin_conf = *hairpin_conf;
 	tmpl->is_hairpin = true;
-	__atomic_fetch_add(&tmpl->refcnt, 1, __ATOMIC_RELAXED);
+	rte_atomic_fetch_add_explicit(&tmpl->refcnt, 1, rte_memory_order_relaxed);
 	LIST_INSERT_HEAD(&priv->txqsctrl, tmpl, next);
 	return tmpl;
 }
@@ -1187,9 +1188,60 @@ mlx5_txq_get(struct rte_eth_dev *dev, uint16_t idx)
 
 	if (txq_data) {
 		ctrl = container_of(txq_data, struct mlx5_txq_ctrl, txq);
-		__atomic_fetch_add(&ctrl->refcnt, 1, __ATOMIC_RELAXED);
+		rte_atomic_fetch_add_explicit(&ctrl->refcnt, 1, rte_memory_order_relaxed);
 	}
 	return ctrl;
+}
+
+/**
+ * Get an external Tx queue.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ * @param idx
+ *   External Tx queue index.
+ *
+ * @return
+ *   A pointer to the queue if it exists, NULL otherwise.
+ */
+struct mlx5_external_q *
+mlx5_ext_txq_get(struct rte_eth_dev *dev, uint16_t idx)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	return mlx5_is_external_txq(dev, idx) ?
+		&priv->ext_txqs[idx - MLX5_EXTERNAL_TX_QUEUE_ID_MIN] : NULL;
+}
+
+/**
+ * Verify the external Tx Queue list is empty.
+ *
+ * @param dev
+ *   Pointer to Ethernet device.
+ *
+ * @return
+ *   The number of object not released.
+ */
+int
+mlx5_ext_txq_verify(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	uint32_t i;
+	int ret = 0;
+
+	if (priv->ext_txqs == NULL)
+		return 0;
+
+	for (i = MLX5_EXTERNAL_TX_QUEUE_ID_MIN; i <= UINT16_MAX ; ++i) {
+		struct mlx5_external_q *txq = mlx5_ext_txq_get(dev, i);
+
+		if (txq == NULL || txq->refcnt < 2)
+			continue;
+		DRV_LOG(DEBUG, "Port %u external TxQ %u still referenced.",
+			dev->data->port_id, i);
+		++ret;
+	}
+	return ret;
 }
 
 /**
@@ -1212,7 +1264,7 @@ mlx5_txq_release(struct rte_eth_dev *dev, uint16_t idx)
 	if (priv->txqs == NULL || (*priv->txqs)[idx] == NULL)
 		return 0;
 	txq_ctrl = container_of((*priv->txqs)[idx], struct mlx5_txq_ctrl, txq);
-	if (__atomic_fetch_sub(&txq_ctrl->refcnt, 1, __ATOMIC_RELAXED) - 1 > 1)
+	if (rte_atomic_fetch_sub_explicit(&txq_ctrl->refcnt, 1, rte_memory_order_relaxed) - 1 > 1)
 		return 1;
 	if (txq_ctrl->obj) {
 		priv->obj_ops.txq_obj_release(txq_ctrl->obj);
@@ -1228,7 +1280,7 @@ mlx5_txq_release(struct rte_eth_dev *dev, uint16_t idx)
 		txq_free_elts(txq_ctrl);
 		dev->data->tx_queue_state[idx] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
-	if (!__atomic_load_n(&txq_ctrl->refcnt, __ATOMIC_RELAXED)) {
+	if (!rte_atomic_load_explicit(&txq_ctrl->refcnt, rte_memory_order_relaxed)) {
 		if (!txq_ctrl->is_hairpin)
 			mlx5_mr_btree_free(&txq_ctrl->txq.mr_ctrl.cache_bh);
 		LIST_REMOVE(txq_ctrl, next);
@@ -1258,7 +1310,7 @@ mlx5_txq_releasable(struct rte_eth_dev *dev, uint16_t idx)
 	if (!(*priv->txqs)[idx])
 		return -1;
 	txq = container_of((*priv->txqs)[idx], struct mlx5_txq_ctrl, txq);
-	return (__atomic_load_n(&txq->refcnt, __ATOMIC_RELAXED) == 1);
+	return (rte_atomic_load_explicit(&txq->refcnt, rte_memory_order_relaxed) == 1);
 }
 
 /**
@@ -1330,6 +1382,14 @@ rte_pmd_mlx5_external_sq_enable(uint16_t port_id, uint32_t sq_num)
 
 		if (priv->sh->config.repr_matching &&
 		    mlx5_flow_hw_tx_repr_matching_flow(dev, sq_num, true)) {
+			if (sq_miss_created)
+				mlx5_flow_hw_esw_destroy_sq_miss_flow(dev, sq_num);
+			return -rte_errno;
+		}
+
+		if (!priv->sh->config.repr_matching &&
+		    priv->sh->config.dv_xmeta_en == MLX5_XMETA_MODE_META32_HWS &&
+		    mlx5_flow_hw_create_tx_default_mreg_copy_flow(dev, sq_num, true)) {
 			if (sq_miss_created)
 				mlx5_flow_hw_esw_destroy_sq_miss_flow(dev, sq_num);
 			return -rte_errno;
@@ -1430,5 +1490,105 @@ int mlx5_map_aggr_tx_affinity(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 	DRV_LOG(DEBUG, "port %u configuring queue %u for aggregated affinity %u",
 		dev->data->port_id, tx_queue_id, affinity);
 	txq_ctrl->txq.tx_aggr_affinity = affinity;
+	return 0;
+}
+
+/**
+ * Validate given external TxQ rte_flow index, and get pointer to concurrent
+ * external TxQ object to map/unmap.
+ *
+ * @param[in] port_id
+ *   The port identifier of the Ethernet device.
+ * @param[in] dpdk_idx
+ *   Tx Queue index in rte_flow.
+ *
+ * @return
+ *   Pointer to concurrent external TxQ on success,
+ *   NULL otherwise and rte_errno is set.
+ */
+static struct mlx5_external_q *
+mlx5_external_tx_queue_get_validate(uint16_t port_id, uint16_t dpdk_idx)
+{
+	struct rte_eth_dev *dev;
+	struct mlx5_priv *priv;
+	int ret;
+
+	if (dpdk_idx < MLX5_EXTERNAL_TX_QUEUE_ID_MIN) {
+		DRV_LOG(ERR, "Queue index %u should be in range: [%u, %u].",
+			dpdk_idx, MLX5_EXTERNAL_TX_QUEUE_ID_MIN, UINT16_MAX);
+		rte_errno = EINVAL;
+		return NULL;
+	}
+	ret = mlx5_devx_extq_port_validate(port_id);
+	if (unlikely(ret))
+		return NULL;
+	dev = &rte_eth_devices[port_id];
+	priv = dev->data->dev_private;
+	/*
+	 * When user configures remote PD and CTX and device creates TxQ by
+	 * DevX, external TxQs array is allocated.
+	 */
+	MLX5_ASSERT(priv->ext_txqs != NULL);
+	return &priv->ext_txqs[dpdk_idx - MLX5_EXTERNAL_TX_QUEUE_ID_MIN];
+}
+
+int
+rte_pmd_mlx5_external_tx_queue_id_map(uint16_t port_id, uint16_t dpdk_idx,
+				      uint32_t hw_idx)
+{
+	struct mlx5_external_q *ext_txq;
+	uint32_t unmapped = 0;
+
+	ext_txq = mlx5_external_tx_queue_get_validate(port_id, dpdk_idx);
+	if (ext_txq == NULL)
+		return -rte_errno;
+	if (!rte_atomic_compare_exchange_strong_explicit(&ext_txq->refcnt, &unmapped, 1,
+					 rte_memory_order_relaxed, rte_memory_order_relaxed)) {
+		if (ext_txq->hw_id != hw_idx) {
+			DRV_LOG(ERR, "Port %u external TxQ index %u "
+				"is already mapped to HW index (requesting is "
+				"%u, existing is %u).",
+				port_id, dpdk_idx, hw_idx, ext_txq->hw_id);
+			rte_errno = EEXIST;
+			return -rte_errno;
+		}
+		DRV_LOG(WARNING, "Port %u external TxQ index %u "
+			"is already mapped to the requested HW index (%u)",
+			port_id, dpdk_idx, hw_idx);
+
+	} else {
+		ext_txq->hw_id = hw_idx;
+		DRV_LOG(DEBUG, "Port %u external TxQ index %u "
+			"is successfully mapped to the requested HW index (%u)",
+			port_id, dpdk_idx, hw_idx);
+	}
+	return 0;
+}
+
+int
+rte_pmd_mlx5_external_tx_queue_id_unmap(uint16_t port_id, uint16_t dpdk_idx)
+{
+	struct mlx5_external_q *ext_txq;
+	uint32_t mapped = 1;
+
+	ext_txq = mlx5_external_tx_queue_get_validate(port_id, dpdk_idx);
+	if (ext_txq == NULL)
+		return -rte_errno;
+	if (ext_txq->refcnt > 1) {
+		DRV_LOG(ERR, "Port %u external TxQ index %u still referenced.",
+			port_id, dpdk_idx);
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	if (!rte_atomic_compare_exchange_strong_explicit(&ext_txq->refcnt, &mapped, 0,
+					 rte_memory_order_relaxed, rte_memory_order_relaxed)) {
+		DRV_LOG(ERR, "Port %u external TxQ index %u doesn't exist.",
+			port_id, dpdk_idx);
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
+	DRV_LOG(DEBUG,
+		"Port %u external TxQ index %u is successfully unmapped.",
+		port_id, dpdk_idx);
 	return 0;
 }

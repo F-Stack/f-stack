@@ -14,10 +14,6 @@
  * asymmetric crypto operations.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <string.h>
 #include <stdint.h>
 
@@ -49,6 +45,10 @@ rte_crypto_asym_op_strings[];
  * and if the flag is not set, shared secret will be padded to the left with
  * zeros to the size of the underlying algorithm (default)
  */
+#define RTE_CRYPTO_ASYM_FLAG_PUB_KEY_COMPRESSED		RTE_BIT32(2)
+/**<
+ * Flag to denote public key will be returned in compressed form
+ */
 
 /**
  * List of elliptic curves. This enum aligns with
@@ -65,7 +65,20 @@ enum rte_crypto_curve_id {
 	RTE_CRYPTO_EC_GROUP_SECP256R1 = 23,
 	RTE_CRYPTO_EC_GROUP_SECP384R1 = 24,
 	RTE_CRYPTO_EC_GROUP_SECP521R1 = 25,
+	RTE_CRYPTO_EC_GROUP_ED25519   = 29,
+	RTE_CRYPTO_EC_GROUP_ED448     = 30,
 	RTE_CRYPTO_EC_GROUP_SM2       = 41,
+};
+
+/**
+ * List of Edwards curve instances as per RFC 8032 (Section 5).
+ */
+enum rte_crypto_edward_instance {
+	RTE_CRYPTO_EDCURVE_25519,
+	RTE_CRYPTO_EDCURVE_25519CTX,
+	RTE_CRYPTO_EDCURVE_25519PH,
+	RTE_CRYPTO_EDCURVE_448,
+	RTE_CRYPTO_EDCURVE_448PH
 };
 
 /**
@@ -119,8 +132,10 @@ enum rte_crypto_asym_xform_type {
 	 * Performs Encrypt, Decrypt, Sign and Verify.
 	 * Refer to rte_crypto_asym_op_type.
 	 */
-	RTE_CRYPTO_ASYM_XFORM_TYPE_LIST_END
-	/**< End of list */
+	RTE_CRYPTO_ASYM_XFORM_EDDSA,
+	/**< Edwards Curve Digital Signature Algorithm
+	 * Perform Signature Generation and Verification.
+	 */
 };
 
 /**
@@ -168,7 +183,6 @@ enum rte_crypto_rsa_padding_type {
 	/**< RSA PKCS#1 OAEP padding scheme */
 	RTE_CRYPTO_RSA_PADDING_PSS,
 	/**< RSA PKCS#1 PSS padding scheme */
-	RTE_CRYPTO_RSA_PADDING_TYPE_LIST_END
 };
 
 /**
@@ -306,12 +320,15 @@ struct rte_crypto_rsa_xform {
 
 	enum rte_crypto_rsa_priv_key_type key_type;
 
-	union {
+	struct {
 		rte_crypto_uint d;
 		/**< the RSA private exponent */
 		struct rte_crypto_rsa_priv_key_qt qt;
 		/**< qt - Private key in quintuple format */
 	};
+
+	struct rte_crypto_rsa_padding padding;
+	/**< RSA padding information */
 };
 
 /**
@@ -447,9 +464,6 @@ struct rte_crypto_rsa_op_param {
 	 * This could be validated and overwritten by the PMD
 	 * with the signature length.
 	 */
-
-	struct rte_crypto_rsa_padding padding;
-	/**< RSA padding information */
 };
 
 /**
@@ -586,6 +600,31 @@ struct rte_crypto_ecdsa_op_param {
 };
 
 /**
+ * EdDSA operation params
+ */
+struct rte_crypto_eddsa_op_param {
+	enum rte_crypto_asym_op_type op_type;
+	/**< Signature generation or verification */
+
+	rte_crypto_param message;
+	/**< Input message digest to be signed or verified */
+
+	rte_crypto_param context;
+	/**< Context value for the sign op.
+	 *   Must not be empty for Ed25519ctx instance.
+	 */
+
+	enum rte_crypto_edward_instance instance;
+	/**< Type of Edwards curve. */
+
+	rte_crypto_uint sign;
+	/**< Edward curve signature
+	 *     output : for signature generation
+	 *     input  : for signature verification
+	 */
+};
+
+/**
  * Structure for EC point multiplication operation param
  */
 struct rte_crypto_ecpm_op_param {
@@ -600,37 +639,13 @@ struct rte_crypto_ecpm_op_param {
 };
 
 /**
- * Asymmetric crypto transform data
- *
- * Structure describing asym xforms.
+ * SM2 operation capabilities
  */
-struct rte_crypto_asym_xform {
-	struct rte_crypto_asym_xform *next;
-	/**< Pointer to next xform to set up xform chain.*/
-	enum rte_crypto_asym_xform_type xform_type;
-	/**< Asymmetric crypto transform */
-
-	union {
-		struct rte_crypto_rsa_xform rsa;
-		/**< RSA xform parameters */
-
-		struct rte_crypto_modex_xform modex;
-		/**< Modular Exponentiation xform parameters */
-
-		struct rte_crypto_modinv_xform modinv;
-		/**< Modular Multiplicative Inverse xform parameters */
-
-		struct rte_crypto_dh_xform dh;
-		/**< DH xform parameters */
-
-		struct rte_crypto_dsa_xform dsa;
-		/**< DSA xform parameters */
-
-		struct rte_crypto_ec_xform ec;
-		/**< EC xform parameters, used by elliptic curve based
-		 * operations.
-		 */
-	};
+enum rte_crypto_sm2_op_capa {
+	RTE_CRYPTO_SM2_RNG,
+	/**< Random number generator supported in SM2 ops. */
+	RTE_CRYPTO_SM2_PH,
+	/**< Prehash message before crypto op. */
 };
 
 /**
@@ -698,6 +713,40 @@ struct rte_crypto_sm2_op_param {
 };
 
 /**
+ * Asymmetric crypto transform data
+ *
+ * Structure describing asym xforms.
+ */
+struct rte_crypto_asym_xform {
+	struct rte_crypto_asym_xform *next;
+	/**< Pointer to next xform to set up xform chain.*/
+	enum rte_crypto_asym_xform_type xform_type;
+	/**< Asymmetric crypto transform */
+
+	union {
+		struct rte_crypto_rsa_xform rsa;
+		/**< RSA xform parameters */
+
+		struct rte_crypto_modex_xform modex;
+		/**< Modular Exponentiation xform parameters */
+
+		struct rte_crypto_modinv_xform modinv;
+		/**< Modular Multiplicative Inverse xform parameters */
+
+		struct rte_crypto_dh_xform dh;
+		/**< DH xform parameters */
+
+		struct rte_crypto_dsa_xform dsa;
+		/**< DSA xform parameters */
+
+		struct rte_crypto_ec_xform ec;
+		/**< EC xform parameters, used by elliptic curve based
+		 * operations.
+		 */
+	};
+};
+
+/**
  * Asymmetric Cryptographic Operation.
  *
  * Structure describing asymmetric crypto operation params.
@@ -720,6 +769,7 @@ struct rte_crypto_asym_op {
 		struct rte_crypto_ecdsa_op_param ecdsa;
 		struct rte_crypto_ecpm_op_param ecpm;
 		struct rte_crypto_sm2_op_param sm2;
+		struct rte_crypto_eddsa_op_param eddsa;
 	};
 	uint16_t flags;
 	/**<
@@ -727,9 +777,5 @@ struct rte_crypto_asym_op {
 	 * Please refer to the RTE_CRYPTO_ASYM_FLAG_*.
 	 */
 };
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* _RTE_CRYPTO_ASYM_H_ */

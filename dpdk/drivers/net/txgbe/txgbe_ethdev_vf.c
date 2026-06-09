@@ -206,7 +206,7 @@ eth_txgbevf_dev_init(struct rte_eth_dev *eth_dev)
 		return 0;
 	}
 
-	__atomic_clear(&ad->link_thread_running, __ATOMIC_SEQ_CST);
+	rte_atomic_store_explicit(&ad->link_thread_running, 0, rte_memory_order_seq_cst);
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
 
 	hw->device_id = pci_dev->id.device_id;
@@ -605,6 +605,7 @@ txgbevf_dev_configure(struct rte_eth_dev *dev)
 	 * allocation or vector Rx preconditions we will reset it.
 	 */
 	adapter->rx_bulk_alloc_allowed = true;
+	adapter->rx_vec_allowed = true;
 
 	return 0;
 }

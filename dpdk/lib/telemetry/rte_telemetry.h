@@ -5,13 +5,13 @@
 #ifndef _RTE_TELEMETRY_H_
 #define _RTE_TELEMETRY_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 #include <rte_compat.h>
 #include <rte_common.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /** Maximum length for string used in object. */
 #define RTE_TEL_MAX_STRING_LEN 128
@@ -337,15 +337,28 @@ typedef int (*telemetry_cb)(const char *cmd, const char *params,
 		struct rte_tel_data *info);
 
 /**
- * Used for handling data received over a telemetry socket.
+ * This telemetry callback is used when registering a telemetry command with
+ * rte_telemetry_register_cmd_arg().
  *
- * @param sock_id
- * ID for the socket to be used by the handler.
+ * It handles getting and formatting information to be returned to telemetry
+ * when requested.
+ *
+ * @param cmd
+ *   The cmd that was requested by the client.
+ * @param params
+ *   Contains data required by the callback function.
+ * @param arg
+ *   The opaque value that was passed to rte_telemetry_register_cmd_arg().
+ * @param info
+ *   The information to be returned to the caller.
  *
  * @return
- * Void.
+ *   Length of buffer used on success.
+ * @return
+ *   Negative integer on error.
  */
-typedef void * (*handler)(void *sock_id);
+typedef int (*telemetry_arg_cb)(const char *cmd, const char *params, void *arg,
+		struct rte_tel_data *info);
 
 /**
  * Used when registering a command and callback function with telemetry.
@@ -367,6 +380,28 @@ typedef void * (*handler)(void *sock_id);
 int
 rte_telemetry_register_cmd(const char *cmd, telemetry_cb fn, const char *help);
 
+/**
+ * Used when registering a command and callback function with telemetry.
+ *
+ * @param cmd
+ *   The command to register with telemetry.
+ * @param fn
+ *   Callback function to be called when the command is requested.
+ * @param arg
+ *   An opaque value that will be passed to the callback function.
+ * @param help
+ *   Help text for the command.
+ *
+ * @return
+ *   0 on success.
+ * @return
+ *   -EINVAL for invalid parameters failure.
+ * @return
+ *   -ENOMEM for mem allocation failure.
+ */
+__rte_experimental
+int
+rte_telemetry_register_cmd_arg(const char *cmd, telemetry_arg_cb fn, void *arg, const char *help);
 
 /**
  * Get a pointer to a container with memory allocated. The container is to be

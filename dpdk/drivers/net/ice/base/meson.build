@@ -27,10 +27,11 @@ sources = [
         'ice_xlt_kb.c',
         'ice_parser_rt.c',
         'ice_ddp.c',
+        'ice_fwlog.c',
+        'ice_vf_mbx.c',
 ]
 
 error_cflags = [
-        '-Wno-unused-value',
         '-Wno-unused-but-set-variable',
         '-Wno-unused-variable',
         '-Wno-unused-parameter',

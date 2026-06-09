@@ -21,10 +21,12 @@ struct mana_shared_data {
 #define MANA_MAX_MAC_ADDR 1
 
 #define MANA_DEV_RX_OFFLOAD_SUPPORT ( \
+		RTE_ETH_RX_OFFLOAD_VLAN_STRIP | \
 		RTE_ETH_RX_OFFLOAD_CHECKSUM | \
 		RTE_ETH_RX_OFFLOAD_RSS_HASH)
 
 #define MANA_DEV_TX_OFFLOAD_SUPPORT ( \
+		RTE_ETH_TX_OFFLOAD_VLAN_INSERT | \
 		RTE_ETH_TX_OFFLOAD_MULTI_SEGS | \
 		RTE_ETH_TX_OFFLOAD_IPV4_CKSUM | \
 		RTE_ETH_TX_OFFLOAD_TCP_CKSUM | \
@@ -345,6 +347,8 @@ struct mana_priv {
 	/* IB device port */
 	uint8_t dev_port;
 
+	uint8_t vlan_strip;
+
 	struct ibv_context *ib_ctx;
 	struct ibv_pd *ib_pd;
 	struct ibv_pd *ib_parent_pd;
@@ -460,18 +464,18 @@ struct mana_rxq {
 };
 
 extern int mana_logtype_driver;
+#define RTE_LOGTYPE_MANA_DRIVER mana_logtype_driver
 extern int mana_logtype_init;
+#define RTE_LOGTYPE_MANA_INIT mana_logtype_init
 
-#define DRV_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, mana_logtype_driver, "%s(): " fmt "\n", \
-		__func__, ## args)
+#define DRV_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, MANA_DRIVER, "%s(): ", __func__, __VA_ARGS__)
 
-#define DP_LOG(level, fmt, args...) \
-	RTE_LOG_DP(level, PMD, fmt "\n", ## args)
+#define DP_LOG(level, ...) \
+	RTE_LOG_DP_LINE(level, MANA_DRIVER, __VA_ARGS__)
 
-#define PMD_INIT_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, mana_logtype_init, "%s(): " fmt "\n",\
-		__func__, ## args)
+#define PMD_INIT_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, MANA_INIT, "%s(): ", __func__, __VA_ARGS__)
 
 #define PMD_INIT_FUNC_TRACE() PMD_INIT_LOG(DEBUG, " >>")
 
@@ -511,9 +515,9 @@ int mana_start_tx_queues(struct rte_eth_dev *dev);
 int mana_stop_rx_queues(struct rte_eth_dev *dev);
 int mana_stop_tx_queues(struct rte_eth_dev *dev);
 
-struct mana_mr_cache *mana_find_pmd_mr(struct mana_mr_btree *local_tree,
-				       struct mana_priv *priv,
-				       struct rte_mbuf *mbuf);
+struct mana_mr_cache *mana_alloc_pmd_mr(struct mana_mr_btree *local_tree,
+					struct mana_priv *priv,
+					struct rte_mbuf *mbuf);
 int mana_new_pmd_mr(struct mana_mr_btree *local_tree, struct mana_priv *priv,
 		    struct rte_mempool *pool);
 void mana_remove_all_mr(struct mana_priv *priv);

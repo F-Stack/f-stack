@@ -53,12 +53,14 @@ Network Interface Controller Drivers
     nfb
     nfp
     ngbe
+    ntnic
     null
     octeon_ep
     octeontx
     pcap_ring
     pfe
     qede
+    r8169
     sfc_efx
     softnic
     tap
@@ -68,3 +70,4 @@ Network Interface Controller Drivers
     vhost
     virtio
     vmxnet3
+    zxdh

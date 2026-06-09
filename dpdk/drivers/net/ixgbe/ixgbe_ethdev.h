@@ -359,6 +359,8 @@ struct ixgbe_l2_tn_info {
 
 struct rte_flow {
 	enum rte_filter_type filter_type;
+	/* security flows are not rte_filter_type */
+	bool is_security;
 	void *rule;
 };
 
@@ -511,7 +513,7 @@ struct ixgbe_adapter {
 	 */
 	uint8_t pflink_fullchk;
 	uint8_t mac_ctrl_frame_fwd;
-	bool link_thread_running;
+	RTE_ATOMIC(bool) link_thread_running;
 	rte_thread_t link_thread_tid;
 };
 

@@ -39,6 +39,7 @@
 #include "mlx5dr_debug.h"
 #include "mlx5dr_pat_arg.h"
 #include "mlx5dr_crc32.h"
+#include "mlx5dr_bwc.h"
 
 #define W_SIZE		2
 #define DW_SIZE		4
@@ -50,6 +51,12 @@
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+#endif
+
+#ifdef RTE_MALLOC_ASAN
+#define MLX5DR_ASAN_ALIGN alignas(64)
+#else
+#define MLX5DR_ASAN_ALIGN
 #endif
 
 #ifdef RTE_LIBRTE_MLX5_DEBUG

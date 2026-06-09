@@ -74,6 +74,100 @@ gve_tx_clean_dqo(struct gve_tx_queue *txq)
 	txq->complq_tail = next;
 }
 
+static inline void
+gve_tx_clean_descs_dqo(struct gve_tx_queue *txq, uint16_t nb_descs) {
+	while (--nb_descs)
+		gve_tx_clean_dqo(txq);
+}
+
+/* GVE expects at most 10 data descriptors per mtu-sized segment. Beyond this,
+ * the hardware will assume the driver is malicious and stop transmitting
+ * packets altogether. Validate that a packet can be sent to avoid sending
+ * posting descriptors for an invalid packet.
+ */
+static inline bool
+gve_tx_validate_descs(struct rte_mbuf *tx_pkt, uint16_t nb_descs, bool is_tso)
+{
+	if (!is_tso)
+		return nb_descs <= GVE_TX_MAX_DATA_DESCS;
+
+	int tso_segsz = tx_pkt->tso_segsz;
+	int num_descs, seg_offset, mbuf_len;
+	int headlen = tx_pkt->l2_len + tx_pkt->l3_len + tx_pkt->l4_len;
+
+	/* Headers will be split into their own buffer. */
+	num_descs = 1;
+	seg_offset = 0;
+	mbuf_len = tx_pkt->data_len - headlen;
+
+	while (tx_pkt) {
+		if (!mbuf_len)
+			goto next_mbuf;
+
+		int seg_remain = tso_segsz - seg_offset;
+		if (num_descs == GVE_TX_MAX_DATA_DESCS && seg_remain)
+			return false;
+
+		if (seg_remain < mbuf_len) {
+			seg_offset = mbuf_len % tso_segsz;
+			/* The MSS is bound from above by 9728B, so a
+			 * single TSO segment in the middle of an mbuf
+			 * will be part of at most two descriptors, and
+			 * is not at risk of defying this limitation.
+			 * Thus, such segments are ignored.
+			 */
+			int mbuf_remain = tx_pkt->data_len % GVE_TX_MAX_BUF_SIZE_DQO;
+
+			/* For each TSO segment, HW will prepend
+			 * headers. The remaining bytes of this mbuf
+			 * will be the start of the payload of the next
+			 * TSO segment. In addition, if the final
+			 * segment in this mbuf is divided between two
+			 * descriptors, both must be counted.
+			 */
+			num_descs = 1 + !!(seg_offset) +
+				(mbuf_remain < seg_offset && mbuf_remain);
+		} else {
+			seg_offset += mbuf_len;
+			num_descs++;
+		}
+
+next_mbuf:
+		tx_pkt = tx_pkt->next;
+		if (tx_pkt)
+			mbuf_len = tx_pkt->data_len;
+	}
+
+
+	return true;
+}
+
+static uint16_t
+gve_tx_pkt_nb_data_descs(struct rte_mbuf *tx_pkt)
+{
+	int nb_descs = 0;
+
+	while (tx_pkt) {
+		nb_descs += (GVE_TX_MAX_BUF_SIZE_DQO - 1 + tx_pkt->data_len) /
+			GVE_TX_MAX_BUF_SIZE_DQO;
+		tx_pkt = tx_pkt->next;
+	}
+	return nb_descs;
+}
+
+static inline void
+gve_tx_fill_seg_desc_dqo(volatile union gve_tx_desc_dqo *desc, struct rte_mbuf *tx_pkt)
+{
+	uint32_t hlen = tx_pkt->l2_len + tx_pkt->l3_len + tx_pkt->l4_len;
+
+	desc->tso_ctx = (struct gve_tx_tso_context_desc_dqo) {};
+	desc->tso_ctx.cmd_dtype.dtype = GVE_TX_TSO_CTX_DESC_DTYPE_DQO;
+	desc->tso_ctx.cmd_dtype.tso = 1;
+	desc->tso_ctx.mss = (uint16_t)tx_pkt->tso_segsz;
+	desc->tso_ctx.tso_total_len = tx_pkt->pkt_len - hlen;
+	desc->tso_ctx.header_len = (uint8_t)hlen;
+}
+
 uint16_t
 gve_tx_burst_dqo(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 {
@@ -83,14 +177,15 @@ gve_tx_burst_dqo(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct rte_mbuf **sw_ring;
 	struct rte_mbuf *tx_pkt;
 	uint16_t mask, sw_mask;
-	uint16_t nb_to_clean;
+	uint16_t first_sw_id;
+	const char *reason;
 	uint16_t nb_tx = 0;
 	uint64_t ol_flags;
-	uint16_t nb_used;
+	uint16_t nb_descs;
 	uint16_t tx_id;
 	uint16_t sw_id;
 	uint64_t bytes;
-	uint16_t first_sw_id;
+	uint8_t tso;
 	uint8_t csum;
 
 	sw_ring = txq->sw_ring;
@@ -105,49 +200,90 @@ gve_tx_burst_dqo(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
 		tx_pkt = tx_pkts[nb_tx];
 
-		if (txq->nb_free <= txq->free_thresh) {
-			nb_to_clean = DQO_TX_MULTIPLIER * txq->rs_thresh;
-			while (nb_to_clean--)
-				gve_tx_clean_dqo(txq);
+		if (txq->nb_free <= txq->free_thresh)
+			gve_tx_clean_descs_dqo(txq, DQO_TX_MULTIPLIER *
+					       txq->rs_thresh);
+
+
+		if (rte_mbuf_check(tx_pkt, true, &reason)) {
+			PMD_DRV_LOG(DEBUG, "Invalid mbuf: %s", reason);
+			break;
 		}
 
-		if (txq->nb_free < tx_pkt->nb_segs)
-			break;
-
 		ol_flags = tx_pkt->ol_flags;
-		nb_used = tx_pkt->nb_segs;
 		first_sw_id = sw_id;
 
+		tso = !!(ol_flags & RTE_MBUF_F_TX_TCP_SEG);
 		csum = !!(ol_flags & GVE_TX_CKSUM_OFFLOAD_MASK_DQO);
+
+		nb_descs = gve_tx_pkt_nb_data_descs(tx_pkt);
+		nb_descs += tso;
+
+		/* Clean if there aren't enough descriptors to send the packet. */
+		if (unlikely(txq->nb_free < nb_descs)) {
+			int nb_to_clean = RTE_MAX(DQO_TX_MULTIPLIER * txq->rs_thresh,
+						  nb_descs);
+
+			gve_tx_clean_descs_dqo(txq, nb_to_clean);
+			if (txq->nb_free < nb_descs)
+				break;
+		}
+
+		/* Drop packet if it doesn't adhere to hardware limits. */
+		if (!gve_tx_validate_descs(tx_pkt, nb_descs, tso)) {
+			txq->stats.too_many_descs++;
+			break;
+		}
+
+		if (tso) {
+			txd = &txr[tx_id];
+			gve_tx_fill_seg_desc_dqo(txd, tx_pkt);
+			tx_id = (tx_id + 1) & mask;
+		}
 
 		do {
 			if (sw_ring[sw_id] != NULL)
 				PMD_DRV_LOG(DEBUG, "Overwriting an entry in sw_ring");
 
+			/* Skip writing descriptor if mbuf has no data. */
+			if (!tx_pkt->data_len)
+				goto finish_mbuf;
+
 			txd = &txr[tx_id];
 			sw_ring[sw_id] = tx_pkt;
 
-			/* fill Tx descriptor */
-			txd->pkt.buf_addr = rte_cpu_to_le_64(rte_mbuf_data_iova(tx_pkt));
-			txd->pkt.dtype = GVE_TX_PKT_DESC_DTYPE_DQO;
-			txd->pkt.compl_tag = rte_cpu_to_le_16(first_sw_id);
-			txd->pkt.buf_size = RTE_MIN(tx_pkt->data_len, GVE_TX_MAX_BUF_SIZE_DQO);
-			txd->pkt.end_of_packet = 0;
-			txd->pkt.checksum_offload_enable = csum;
+			/* fill Tx descriptors */
+			int mbuf_offset = 0;
+			while (mbuf_offset < tx_pkt->data_len) {
+				uint64_t buf_addr = rte_mbuf_data_iova(tx_pkt) +
+					mbuf_offset;
 
-			/* size of desc_ring and sw_ring could be different */
-			tx_id = (tx_id + 1) & mask;
+				txd = &txr[tx_id];
+				txd->pkt = (struct gve_tx_pkt_desc_dqo) {};
+				txd->pkt.buf_addr = rte_cpu_to_le_64(buf_addr);
+				txd->pkt.compl_tag = rte_cpu_to_le_16(first_sw_id);
+				txd->pkt.dtype = GVE_TX_PKT_DESC_DTYPE_DQO;
+				txd->pkt.buf_size = RTE_MIN(tx_pkt->data_len - mbuf_offset,
+							    GVE_TX_MAX_BUF_SIZE_DQO);
+				txd->pkt.end_of_packet = 0;
+				txd->pkt.checksum_offload_enable = csum;
+
+				mbuf_offset += txd->pkt.buf_size;
+				tx_id = (tx_id + 1) & mask;
+			}
+
+finish_mbuf:
 			sw_id = (sw_id + 1) & sw_mask;
-
 			bytes += tx_pkt->data_len;
 			tx_pkt = tx_pkt->next;
 		} while (tx_pkt);
 
-		/* fill the last descriptor with End of Packet (EOP) bit */
+		/* fill the last written descriptor with End of Packet (EOP) bit */
+		txd = &txr[(tx_id - 1) & mask];
 		txd->pkt.end_of_packet = 1;
 
-		txq->nb_free -= nb_used;
-		txq->nb_used += nb_used;
+		txq->nb_free -= nb_descs;
+		txq->nb_used += nb_descs;
 	}
 
 	/* update the tail pointer if any packets were processed */
@@ -395,7 +531,9 @@ gve_tx_queue_start_dqo(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	txq->qtx_head =
 		&hw->cnt_array[rte_be_to_cpu_32(txq->qres->counter_index)];
 
-	rte_write32(rte_cpu_to_be_32(GVE_IRQ_MASK), txq->ntfy_addr);
+	rte_write32(rte_cpu_to_le_32(GVE_NO_INT_MODE_DQO |
+				     GVE_ITR_NO_UPDATE_DQO),
+		    txq->ntfy_addr);
 
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
 

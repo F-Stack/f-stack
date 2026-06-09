@@ -82,6 +82,8 @@ sources += files(
         'dev/qat_dev_gen2.c',
         'dev/qat_dev_gen3.c',
         'dev/qat_dev_gen4.c',
+        'dev/qat_dev_gen5.c',
+        'dev/qat_dev_gen_lce.c',
 )
 includes += include_directories(
         'qat_adf',
@@ -95,6 +97,7 @@ if qat_compress
             'dev/qat_comp_pmd_gen2.c',
             'dev/qat_comp_pmd_gen3.c',
             'dev/qat_comp_pmd_gen4.c',
+            'dev/qat_comp_pmd_gen5.c',
         ]
         sources += files(join_paths(qat_compress_relpath, f))
     endforeach
@@ -108,6 +111,8 @@ if qat_crypto
             'dev/qat_crypto_pmd_gen2.c',
             'dev/qat_crypto_pmd_gen3.c',
             'dev/qat_crypto_pmd_gen4.c',
+            'dev/qat_crypto_pmd_gen5.c',
+            'dev/qat_crypto_pmd_gen_lce.c',
         ]
         sources += files(join_paths(qat_crypto_relpath, f))
     endforeach

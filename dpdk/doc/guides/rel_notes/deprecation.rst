@@ -61,6 +61,15 @@ Deprecation Notices
   us extending existing enum/define.
   One solution can be using a fixed size array instead of ``.*MAX.*`` value.
 
+* net, ethdev: The flow item ``RTE_FLOW_ITEM_TYPE_VXLAN_GPE``
+  is replaced with ``RTE_FLOW_ITEM_TYPE_VXLAN``.
+  The struct ``rte_flow_item_vxlan_gpe`` and its mask ``rte_flow_item_vxlan_gpe_mask``
+  are replaced with ``rte_flow_item_vxlan`` and ``rte_flow_item_vxlan_mask``.
+  The flow item ``RTE_FLOW_ITEM_TYPE_VXLAN_GPE``,
+  the structs ``rte_flow_item_vxlan_gpe``, ``rte_flow_item_vxlan_gpe_mask``,
+  and the header struct ``rte_vxlan_gpe_hdr`` with the macro ``RTE_ETHER_VXLAN_GPE_HLEN``
+  will be removed in DPDK 25.11.
+
 * ethdev: The flow API matching pattern structures, ``struct rte_flow_item_*``,
   should start with relevant protocol header structure from lib/net/.
   The individual protocol header fields and the protocol header struct
@@ -114,19 +123,6 @@ Deprecation Notices
   superseded by the generic ``RTE_FLOW_ACTION_TYPE_MODIFY_FIELD``.
   The legacy actions should be removed
   once ``MODIFY_FIELD`` alternative is implemented in drivers.
-
-* cryptodev: The function ``rte_cryptodev_cb_fn`` will be updated
-  to have another parameter ``qp_id`` to return the queue pair ID
-  which got error interrupt to the application,
-  so that application can reset that particular queue pair.
-
-* eventdev: The single-event (non-burst) enqueue and dequeue operations,
-  used by static inline burst enqueue and dequeue functions in ``rte_eventdev.h``,
-  will be removed in DPDK 23.11.
-  This simplification includes changing the layout and potentially also
-  the size of the public ``rte_event_fp_ops`` struct, breaking the ABI.
-  Since these functions are not called directly by the application,
-  the API remains unaffected.
 
 * pipeline: The pipeline library legacy API (functions rte_pipeline_*)
   will be deprecated and subsequently removed in DPDK 24.11 release.

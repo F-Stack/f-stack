@@ -1,8 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2017 Intel Corporation
  */
-#include <string.h>
+
+#include <stdalign.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <rte_common.h>
 #include <rte_malloc.h>
@@ -10,6 +12,8 @@
 
 #include "rte_table_hash.h"
 #include "rte_lru.h"
+
+#include "table_log.h"
 
 #define KEY_SIZE						8
 
@@ -77,7 +81,7 @@ struct rte_table_hash {
 	uint32_t *stack;
 
 	/* Lookup table */
-	uint8_t memory[0] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint8_t memory[];
 };
 
 static int
@@ -101,32 +105,32 @@ check_params_create(struct rte_table_hash_params *params)
 {
 	/* name */
 	if (params->name == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: name invalid value\n", __func__);
+		TABLE_LOG(ERR, "%s: name invalid value", __func__);
 		return -EINVAL;
 	}
 
 	/* key_size */
 	if (params->key_size != KEY_SIZE) {
-		RTE_LOG(ERR, TABLE, "%s: key_size invalid value\n", __func__);
+		TABLE_LOG(ERR, "%s: key_size invalid value", __func__);
 		return -EINVAL;
 	}
 
 	/* n_keys */
 	if (params->n_keys == 0) {
-		RTE_LOG(ERR, TABLE, "%s: n_keys is zero\n", __func__);
+		TABLE_LOG(ERR, "%s: n_keys is zero", __func__);
 		return -EINVAL;
 	}
 
 	/* n_buckets */
 	if ((params->n_buckets == 0) ||
 		(!rte_is_power_of_2(params->n_buckets))) {
-		RTE_LOG(ERR, TABLE, "%s: n_buckets invalid value\n", __func__);
+		TABLE_LOG(ERR, "%s: n_buckets invalid value", __func__);
 		return -EINVAL;
 	}
 
 	/* f_hash */
 	if (params->f_hash == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: f_hash function pointer is NULL\n",
+		TABLE_LOG(ERR, "%s: f_hash function pointer is NULL",
 			__func__);
 		return -EINVAL;
 	}
@@ -173,8 +177,8 @@ rte_table_hash_create_key8_lru(void *params, int socket_id, uint32_t entry_size)
 	total_size = sizeof(struct rte_table_hash) + n_buckets * bucket_size;
 
 	if (total_size > SIZE_MAX) {
-		RTE_LOG(ERR, TABLE, "%s: Cannot allocate %" PRIu64 " bytes"
-			" for hash table %s\n",
+		TABLE_LOG(ERR, "%s: Cannot allocate %" PRIu64 " bytes"
+			" for hash table %s",
 			__func__, total_size, p->name);
 		return NULL;
 	}
@@ -184,14 +188,14 @@ rte_table_hash_create_key8_lru(void *params, int socket_id, uint32_t entry_size)
 		RTE_CACHE_LINE_SIZE,
 		socket_id);
 	if (f == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: Cannot allocate %" PRIu64 " bytes"
-			" for hash table %s\n",
+		TABLE_LOG(ERR, "%s: Cannot allocate %" PRIu64 " bytes"
+			" for hash table %s",
 			__func__, total_size, p->name);
 		return NULL;
 	}
 
-	RTE_LOG(INFO, TABLE, "%s: Hash table %s memory footprint "
-		"is %" PRIu64 " bytes\n",
+	TABLE_LOG(INFO, "%s: Hash table %s memory footprint "
+		"is %" PRIu64 " bytes",
 		__func__, p->name, total_size);
 
 	/* Memory initialization */
@@ -226,7 +230,7 @@ rte_table_hash_free_key8_lru(void *table)
 
 	/* Check input parameters */
 	if (f == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: table parameter is NULL\n", __func__);
+		TABLE_LOG(ERR, "%s: table parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
@@ -377,8 +381,8 @@ rte_table_hash_create_key8_ext(void *params, int socket_id, uint32_t entry_size)
 		(p->n_buckets + n_buckets_ext) * bucket_size + stack_size;
 
 	if (total_size > SIZE_MAX) {
-		RTE_LOG(ERR, TABLE, "%s: Cannot allocate %" PRIu64 " bytes "
-			"for hash table %s\n",
+		TABLE_LOG(ERR, "%s: Cannot allocate %" PRIu64 " bytes "
+			"for hash table %s",
 			__func__, total_size, p->name);
 		return NULL;
 	}
@@ -388,14 +392,14 @@ rte_table_hash_create_key8_ext(void *params, int socket_id, uint32_t entry_size)
 		RTE_CACHE_LINE_SIZE,
 		socket_id);
 	if (f == NULL) {
-		RTE_LOG(ERR, TABLE,
+		TABLE_LOG(ERR,
 			"%s: Cannot allocate %" PRIu64 " bytes "
-			"for hash table %s\n",
+			"for hash table %s",
 			__func__, total_size, p->name);
 		return NULL;
 	}
-	RTE_LOG(INFO, TABLE, "%s: Hash table %s memory footprint "
-		"is %" PRIu64 " bytes\n",
+	TABLE_LOG(INFO, "%s: Hash table %s memory footprint "
+		"is %" PRIu64 " bytes",
 		__func__, p->name, total_size);
 
 	/* Memory initialization */
@@ -430,7 +434,7 @@ rte_table_hash_free_key8_ext(void *table)
 
 	/* Check input parameters */
 	if (f == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: table parameter is NULL\n", __func__);
+		TABLE_LOG(ERR, "%s: table parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
@@ -1096,12 +1100,10 @@ grind_next_buckets:
 		uint64_t buckets_mask_next = 0;
 
 		for ( ; buckets_mask; ) {
-			uint64_t pkt_mask;
 			uint32_t pkt_index;
 
 			pkt_index = rte_ctz64(buckets_mask);
-			pkt_mask = 1LLU << pkt_index;
-			buckets_mask &= ~pkt_mask;
+			buckets_mask &= ~(1LLU << pkt_index);
 
 			lookup_grinder(pkt_index, buckets, keys, pkts_mask_out,
 				entries, buckets_mask_next, f);

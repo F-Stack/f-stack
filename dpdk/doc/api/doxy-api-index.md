@@ -49,6 +49,7 @@ The public API headers are grouped by topics:
   [iavf](@ref rte_pmd_iavf.h),
   [bnxt](@ref rte_pmd_bnxt.h),
   [cnxk](@ref rte_pmd_cnxk.h),
+  [cnxk_crypto](@ref rte_pmd_cnxk_crypto.h),
   [cnxk_eventdev](@ref rte_pmd_cnxk_eventdev.h),
   [cnxk_mempool](@ref rte_pmd_cnxk_mempool.h),
   [dpaa](@ref rte_pmd_dpaa.h),
@@ -56,12 +57,14 @@ The public API headers are grouped by topics:
   [mlx5](@ref rte_pmd_mlx5.h),
   [dpaa2_mempool](@ref rte_dpaa2_mempool.h),
   [dpaa2_cmdif](@ref rte_pmd_dpaa2_cmdif.h),
-  [dpaa2_qdma](@ref rte_pmd_dpaa2_qdma.h),
+  [dpaax_qdma](@ref rte_pmd_dpaax_qdma.h),
   [crypto_scheduler](@ref rte_cryptodev_scheduler.h),
   [dlb2](@ref rte_pmd_dlb2.h),
   [ifpga](@ref rte_pmd_ifpga.h)
 
 - **memory**:
+  [per-lcore](@ref rte_per_lcore.h),
+  [lcore variables](@ref rte_lcore_var.h),
   [memseg](@ref rte_memory.h),
   [memzone](@ref rte_memzone.h),
   [mempool](@ref rte_mempool.h),
@@ -98,10 +101,9 @@ The public API headers are grouped by topics:
   [interrupts](@ref rte_interrupts.h),
   [launch](@ref rte_launch.h),
   [lcore](@ref rte_lcore.h),
-  [per-lcore](@ref rte_per_lcore.h),
   [service cores](@ref rte_service.h),
   [keepalive](@ref rte_keepalive.h),
-  [power/freq](@ref rte_power.h),
+  [power/freq](@ref rte_power_cpufreq.h),
   [power/uncore](@ref rte_power_uncore.h),
   [PMD power](@ref rte_power_pmd_mgmt.h)
 
@@ -116,7 +118,8 @@ The public API headers are grouped by topics:
   [IPsec group](@ref rte_ipsec_group.h),
   [IPsec SA](@ref rte_ipsec_sa.h),
   [IPsec SAD](@ref rte_ipsec_sad.h),
-  [IP](@ref rte_ip.h),
+  [IPv4](@ref rte_ip4.h),
+  [IPv6](@ref rte_ip6.h),
   [frag/reass](@ref rte_ip_frag.h),
   [UDP](@ref rte_udp.h),
   [SCTP](@ref rte_sctp.h),
@@ -173,6 +176,7 @@ The public API headers are grouped by topics:
   [ring](@ref rte_ring.h),
   [stack](@ref rte_stack.h),
   [tailq](@ref rte_tailq.h),
+  [bitset](@ref rte_bitset.h),
   [bitmap](@ref rte_bitmap.h)
 
 - **packet framework**:
@@ -219,8 +223,11 @@ The public API headers are grouped by topics:
   [bitops](@ref rte_bitops.h),
   [approx fraction](@ref rte_approx.h),
   [random](@ref rte_random.h),
+  [checksum](@ref rte_cksum.h),
   [config file](@ref rte_cfgfile.h),
   [key/value args](@ref rte_kvargs.h),
+  [argument parsing](@ref rte_argparse.h),
+  [ptr_compress](@ref rte_ptr_compress.h),
   [string](@ref rte_string_fns.h),
   [thread](@ref rte_thread.h)
 
@@ -242,3 +249,6 @@ The public API headers are grouped by topics:
   [experimental APIs](@ref rte_compat.h),
   [ABI versioning](@ref rte_function_versioning.h),
   [version](@ref rte_version.h)
+
+- **tests**:
+  [**DTS**](@dts_api_main_page)

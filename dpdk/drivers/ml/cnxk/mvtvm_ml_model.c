@@ -50,7 +50,7 @@ mvtvm_ml_model_type_get(struct rte_ml_model_params *params)
 	/* Check if all objects are available */
 	for (i = 0; i < ML_MVTVM_MODEL_OBJECT_MAX; i++) {
 		if (!object_found[i]) {
-			plt_err("Object %s not found in archive!\n", mvtvm_object_list[i]);
+			plt_err("Object %s not found in archive!", mvtvm_object_list[i]);
 			return ML_CNXK_MODEL_TYPE_INVALID;
 		}
 	}
@@ -100,7 +100,7 @@ mvtvm_ml_model_blob_parse(struct rte_ml_model_params *params, struct mvtvm_ml_mo
 	/* Check if all objects are parsed */
 	for (i = 0; i < ML_MVTVM_MODEL_OBJECT_MAX; i++) {
 		if (!object_found[i]) {
-			plt_err("Object %s not found in archive!\n", mvtvm_object_list[i]);
+			plt_err("Object %s not found in archive!", mvtvm_object_list[i]);
 			goto error;
 		}
 	}
@@ -150,6 +150,8 @@ mvtvm_ml_io_type_map(DLDataType dltype)
 			return RTE_ML_IO_TYPE_INT16;
 		else if (dltype.bits == 32)
 			return RTE_ML_IO_TYPE_INT32;
+		else if (dltype.bits == 64)
+			return RTE_ML_IO_TYPE_INT64;
 		break;
 	case kDLUInt:
 		if (dltype.bits == 8)
@@ -158,6 +160,8 @@ mvtvm_ml_io_type_map(DLDataType dltype)
 			return RTE_ML_IO_TYPE_UINT16;
 		else if (dltype.bits == 32)
 			return RTE_ML_IO_TYPE_UINT32;
+		else if (dltype.bits == 64)
+			return RTE_ML_IO_TYPE_UINT64;
 		break;
 	case kDLFloat:
 		if (dltype.bits == 8)
@@ -330,6 +334,8 @@ mvtvm_ml_model_info_set(struct cnxk_ml_dev *cnxk_mldev, struct cnxk_ml_model *mo
 		input[i].nb_elements = model->mvtvm.info.input[i].nb_elements;
 		input[i].size = model->mvtvm.info.input[i].nb_elements *
 				rte_ml_io_type_size_get(model->mvtvm.info.input[i].qtype);
+		input[i].scale = model->mvtvm.info.input[i].scale;
+		input[i].zero_point = 0;
 	}
 
 	/* Set output info */
@@ -341,6 +347,8 @@ mvtvm_ml_model_info_set(struct cnxk_ml_dev *cnxk_mldev, struct cnxk_ml_model *mo
 		output[i].nb_elements = model->mvtvm.info.output[i].nb_elements;
 		output[i].size = model->mvtvm.info.output[i].nb_elements *
 				 rte_ml_io_type_size_get(model->mvtvm.info.output[i].qtype);
+		input[i].scale = model->mvtvm.info.output[i].scale;
+		input[i].zero_point = 0;
 	}
 
 	return;

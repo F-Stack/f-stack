@@ -298,17 +298,12 @@ route4_pkt(struct rte_mbuf *pkt, struct rt_ctx *rt_ctx)
 static inline uint16_t
 route6_pkt(struct rte_mbuf *pkt, struct rt_ctx *rt_ctx)
 {
-	uint8_t dst_ip[16];
-	uint8_t *ip6_dst;
-	uint16_t offset;
+	struct rte_ipv6_hdr *ip;
 	uint32_t hop;
 	int ret;
 
-	offset = RTE_ETHER_HDR_LEN + offsetof(struct ip6_hdr, ip6_dst);
-	ip6_dst = rte_pktmbuf_mtod_offset(pkt, uint8_t *, offset);
-	memcpy(&dst_ip[0], ip6_dst, 16);
-
-	ret = rte_lpm6_lookup((struct rte_lpm6 *)rt_ctx, dst_ip, &hop);
+	ip = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv6_hdr *, RTE_ETHER_HDR_LEN);
+	ret = rte_lpm6_lookup((struct rte_lpm6 *)rt_ctx, &ip->dst_addr, &hop);
 
 	if (ret == 0) {
 		/* We have a hit */
@@ -963,7 +958,18 @@ static void
 ipsec_event_vector_free(struct rte_event *ev)
 {
 	struct rte_event_vector *vec = ev->vec;
-	rte_pktmbuf_free_bulk(vec->mbufs + vec->elem_offset, vec->nb_elem);
+
+	if (ev->event_type == RTE_EVENT_TYPE_CRYPTODEV_VECTOR) {
+		struct rte_crypto_op *cop;
+		int i;
+
+		for (i = 0; i < vec->nb_elem; i++) {
+			cop = vec->ptrs[i];
+			rte_pktmbuf_free(cop->sym->m_src);
+		}
+	} else {
+		rte_pktmbuf_free_bulk(vec->mbufs + vec->elem_offset, vec->nb_elem);
+	}
 	rte_mempool_put(rte_mempool_from_obj(vec), vec);
 }
 

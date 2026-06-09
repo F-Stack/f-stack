@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2023 Intel Corporation
+ * Copyright(c) 2001-2024 Intel Corporation
  */
 
 #ifndef _IDPF_OSDEP_H_
@@ -24,6 +24,8 @@
 #include <rte_random.h>
 #include <rte_io.h>
 #include <rte_compat.h>
+
+#include "../idpf_common_logs.h"
 
 #define INLINE inline
 #define STATIC static
@@ -108,16 +110,14 @@ typedef struct idpf_lock idpf_lock;
 #define FIELD_SIZEOF(t, f) (sizeof(((t *)0)->(f)))
 #define MAKEMASK(m, s) ((m) << (s))
 
-extern int idpf_common_logger;
-
-#define DEBUGOUT(S)		rte_log(RTE_LOG_DEBUG, idpf_common_logger, S)
-#define DEBUGOUT2(S, A...)	rte_log(RTE_LOG_DEBUG, idpf_common_logger, S, ##A)
+#define DEBUGOUT(S, ...)	RTE_LOG(DEBUG, IDPF_COMMON, S, ## __VA_ARGS__)
+#define DEBUGOUT2(S, ...)	DEBUGOUT(S, ## __VA_ARGS__)
 #define DEBUGFUNC(F)		DEBUGOUT(F "\n")
 
 #define idpf_debug(h, m, s, ...)					\
 	do {								\
 		if (((m) & (h)->debug_mask))				\
-			PMD_DRV_LOG_RAW(DEBUG, "idpf %02x.%x " s,       \
+			DEBUGOUT("idpf %02x.%x " s "\n",		\
 					(h)->bus.device, (h)->bus.func,	\
 					##__VA_ARGS__);			\
 	} while (0)
@@ -358,5 +358,75 @@ idpf_hweight32(u32 num)
 	LIST_FOREACH(pos, head, list)
 
 #endif
+
+enum idpf_mac_type {
+	IDPF_MAC_UNKNOWN = 0,
+	IDPF_MAC_PF,
+	IDPF_MAC_VF,
+	IDPF_MAC_GENERIC
+};
+
+#define ETH_ALEN 6
+
+struct idpf_mac_info {
+	enum idpf_mac_type type;
+	u8 addr[ETH_ALEN];
+	u8 perm_addr[ETH_ALEN];
+};
+
+#define IDPF_AQ_LINK_UP 0x1
+
+/* PCI bus types */
+enum idpf_bus_type {
+	idpf_bus_type_unknown = 0,
+	idpf_bus_type_pci,
+	idpf_bus_type_pcix,
+	idpf_bus_type_pci_express,
+	idpf_bus_type_reserved
+};
+
+/* PCI bus speeds */
+enum idpf_bus_speed {
+	idpf_bus_speed_unknown	= 0,
+	idpf_bus_speed_33	= 33,
+	idpf_bus_speed_66	= 66,
+	idpf_bus_speed_100	= 100,
+	idpf_bus_speed_120	= 120,
+	idpf_bus_speed_133	= 133,
+	idpf_bus_speed_2500	= 2500,
+	idpf_bus_speed_5000	= 5000,
+	idpf_bus_speed_8000	= 8000,
+	idpf_bus_speed_reserved
+};
+
+/* PCI bus widths */
+enum idpf_bus_width {
+	idpf_bus_width_unknown	= 0,
+	idpf_bus_width_pcie_x1	= 1,
+	idpf_bus_width_pcie_x2	= 2,
+	idpf_bus_width_pcie_x4	= 4,
+	idpf_bus_width_pcie_x8	= 8,
+	idpf_bus_width_32	= 32,
+	idpf_bus_width_64	= 64,
+	idpf_bus_width_reserved
+};
+
+/* Bus parameters */
+struct idpf_bus_info {
+	enum idpf_bus_speed speed;
+	enum idpf_bus_width width;
+	enum idpf_bus_type type;
+
+	u16 func;
+	u16 device;
+	u16 lan_id;
+	u16 bus_id;
+};
+
+/* Function specific capabilities */
+struct idpf_hw_func_caps {
+	u32 num_alloc_vfs;
+	u32 vf_base_id;
+};
 
 #endif /* _IDPF_OSDEP_H_ */

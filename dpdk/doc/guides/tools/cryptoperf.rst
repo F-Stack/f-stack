@@ -7,7 +7,7 @@ dpdk-test-crypto-perf Application
 The ``dpdk-test-crypto-perf`` tool is a Data Plane Development Kit (DPDK)
 utility that allows measuring performance parameters of PMDs available in the
 crypto tree. There are available two measurement types: throughput and latency.
-User can use multiply cores to run tests on but only
+User can use multiple cores to run tests on but only
 one type of crypto PMD can be measured during single application
 execution. Cipher parameters, type of device, type of operation and
 chain mode have to be specified in the command line as application
@@ -175,12 +175,24 @@ The following are the application command-line options:
            pdcp
            docsis
            modex
+           ecdsa_p256r1
+           eddsa_25519
+           sm2
+           ipsec
+           tls-record
 
         For GCM/CCM algorithms you should use aead flag.
 
 * ``--sessionless``
 
         Enable session-less crypto operations mode.
+
+* ``--shared-session``
+
+        Enable sharing sessions between all queue pairs on a single crypto PMD.
+        This can be useful for benchmarking this setup,
+        or finding and debugging concurrency errors
+        that can occur while using sessions on multiple lcores simultaneously.
 
 * ``--out-of-place``
 
@@ -339,6 +351,21 @@ The following are the application command-line options:
 
         Set modex length for asymmetric crypto perf test.
         Supported lengths are 60, 128, 255, 448. Default length is 128.
+
+* ``--asym-op <sign/verify/encrypt/decrypt>``
+
+        Set Asymmetric crypto operation mode.
+        To be used with SM2 asymmetric crypto ops.
+        Default is ``sign``.
+
+* ``--tls-version <TLS1.2/TLS1.3/DTLS1.2>``
+
+        Set TLS/DTLS protocol version for perf test (default is TLS1.2).
+
+* ``--low-prio-qp-mask <mask>``
+
+        Set low priority for queue pairs set in the hexadecimal mask.
+        This is an optional parameter, if not set all queue pairs will be on same high priority.
 
 Test Vector File
 ~~~~~~~~~~~~~~~~

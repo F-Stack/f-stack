@@ -2,6 +2,7 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include <stdalign.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,37 +82,26 @@ vq_ring_free_chain(struct virtqueue *vq, uint16_t desc_idx)
 }
 
 void
-virtio_update_packet_stats(struct virtnet_stats *stats, struct rte_mbuf *mbuf)
+virtio_update_packet_stats(struct virtnet_stats *const stats,
+		const struct rte_mbuf *const mbuf)
 {
 	uint32_t s = mbuf->pkt_len;
-	struct rte_ether_addr *ea;
+	const struct rte_ether_addr *const ea =
+			rte_pktmbuf_mtod(mbuf, const struct rte_ether_addr *);
 
 	stats->bytes += s;
 
-	if (s == 64) {
-		stats->size_bins[1]++;
-	} else if (s > 64 && s < 1024) {
-		uint32_t bin;
+	if (s >= 1024)
+		stats->size_bins[6 + (s > 1518)]++;
+	else if (s <= 64)
+		stats->size_bins[s >> 6]++;
+	else
+		stats->size_bins[32UL - rte_clz32(s) - 5]++;
 
-		/* count zeros, and offset into correct bin */
-		bin = (sizeof(s) * 8) - rte_clz32(s) - 5;
-		stats->size_bins[bin]++;
-	} else {
-		if (s < 64)
-			stats->size_bins[0]++;
-		else if (s < 1519)
-			stats->size_bins[6]++;
-		else
-			stats->size_bins[7]++;
-	}
-
-	ea = rte_pktmbuf_mtod(mbuf, struct rte_ether_addr *);
-	if (rte_is_multicast_ether_addr(ea)) {
-		if (rte_is_broadcast_ether_addr(ea))
-			stats->broadcast++;
-		else
-			stats->multicast++;
-	}
+	RTE_BUILD_BUG_ON(offsetof(struct virtnet_stats, broadcast) !=
+			offsetof(struct virtnet_stats, multicast) + sizeof(uint64_t));
+	if (unlikely(rte_is_multicast_ether_addr(ea)))
+		(&stats->multicast)[rte_is_broadcast_ether_addr(ea)]++;
 }
 
 static inline void
@@ -1797,7 +1787,7 @@ virtio_xmit_pkts_packed(void *tx_queue, struct rte_mbuf **tx_pkts,
 		    txm->nb_segs == 1 &&
 		    rte_pktmbuf_headroom(txm) >= hdr_size &&
 		    rte_is_aligned(rte_pktmbuf_mtod(txm, char *),
-			   __alignof__(struct virtio_net_hdr_mrg_rxbuf)))
+			   alignof(struct virtio_net_hdr_mrg_rxbuf)))
 			can_push = 1;
 		else if (virtio_with_feature(hw, VIRTIO_RING_F_INDIRECT_DESC) &&
 			 txm->nb_segs < VIRTIO_MAX_TX_INDIRECT)
@@ -1878,7 +1868,7 @@ virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		    txm->nb_segs == 1 &&
 		    rte_pktmbuf_headroom(txm) >= hdr_size &&
 		    rte_is_aligned(rte_pktmbuf_mtod(txm, char *),
-				   __alignof__(struct virtio_net_hdr_mrg_rxbuf)))
+				   alignof(struct virtio_net_hdr_mrg_rxbuf)))
 			can_push = 1;
 		else if (virtio_with_feature(hw, VIRTIO_RING_F_INDIRECT_DESC) &&
 			 txm->nb_segs < VIRTIO_MAX_TX_INDIRECT)
@@ -1980,7 +1970,7 @@ virtio_xmit_pkts_inorder(void *tx_queue,
 		     txm->nb_segs == 1 &&
 		     rte_pktmbuf_headroom(txm) >= hdr_size &&
 		     rte_is_aligned(rte_pktmbuf_mtod(txm, char *),
-				__alignof__(struct virtio_net_hdr_mrg_rxbuf))) {
+				alignof(struct virtio_net_hdr_mrg_rxbuf))) {
 			inorder_pkts[nb_inorder_pkts] = txm;
 			nb_inorder_pkts++;
 

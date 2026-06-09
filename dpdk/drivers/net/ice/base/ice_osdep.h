@@ -149,7 +149,7 @@ writeq(uint64_t value, volatile void *addr)
 #define ice_debug(h, m, s, ...)					\
 do {								\
 	if (((m) & (h)->debug_mask))				\
-		PMD_DRV_LOG_RAW(DEBUG, "ice %02x.%x " s,	\
+		RTE_LOG(DEBUG, ICE_DRIVER, "ice %02x.%x " s,	\
 			(h)->bus.device, (h)->bus.func,		\
 					##__VA_ARGS__);		\
 } while (0)
@@ -235,7 +235,7 @@ static inline void *
 ice_alloc_dma_mem(__rte_unused struct ice_hw *hw,
 		  struct ice_dma_mem *mem, u64 size)
 {
-	static uint64_t ice_dma_memzone_id;
+	static RTE_ATOMIC(uint64_t) ice_dma_memzone_id;
 	const struct rte_memzone *mz = NULL;
 	char z_name[RTE_MEMZONE_NAMESIZE];
 
@@ -243,7 +243,7 @@ ice_alloc_dma_mem(__rte_unused struct ice_hw *hw,
 		return NULL;
 
 	snprintf(z_name, sizeof(z_name), "ice_dma_%" PRIu64,
-		__atomic_fetch_add(&ice_dma_memzone_id, 1, __ATOMIC_RELAXED));
+		rte_atomic_fetch_add_explicit(&ice_dma_memzone_id, 1, rte_memory_order_relaxed));
 	mz = rte_memzone_reserve_bounded(z_name, size, SOCKET_ID_ANY, 0,
 					 0, RTE_PGSIZE_2M);
 	if (!mz)

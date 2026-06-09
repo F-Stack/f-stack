@@ -5,10 +5,6 @@
 #ifndef _RTE_EVENTDEV_PMD_H_
 #define _RTE_EVENTDEV_PMD_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /** @file
  * RTE Event PMD APIs
  *
@@ -31,17 +27,22 @@ extern "C" {
 #include "event_timer_adapter_pmd.h"
 #include "rte_eventdev.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+extern int rte_event_logtype;
+#define RTE_LOGTYPE_EVENTDEV rte_event_logtype
+
 /* Logging Macros */
 #define RTE_EDEV_LOG_ERR(...) \
-	RTE_LOG(ERR, EVENTDEV, \
-		RTE_FMT("%s() line %u: " RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
-			__func__, __LINE__, RTE_FMT_TAIL(__VA_ARGS__,)))
+	RTE_LOG_LINE_PREFIX(ERR, EVENTDEV, \
+		"%s() line %u: ", __func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
 #ifdef RTE_LIBRTE_EVENTDEV_DEBUG
 #define RTE_EDEV_LOG_DEBUG(...) \
-	RTE_LOG(DEBUG, EVENTDEV, \
-		RTE_FMT("%s() line %u: " RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
-			__func__, __LINE__, RTE_FMT_TAIL(__VA_ARGS__,)))
+	RTE_LOG_LINE_PREFIX(DEBUG, EVENTDEV, \
+		"%s() line %u: ", __func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 #else
 #define RTE_EDEV_LOG_DEBUG(...) (void)0
 #endif
@@ -104,7 +105,7 @@ struct rte_eventdev_global {
  * This structure is safe to place in shared memory to be common among
  * different processes in a multi-process configuration.
  */
-struct rte_eventdev_data {
+struct __rte_cache_aligned rte_eventdev_data {
 	int socket_id;
 	/**< Socket ID where memory is allocated */
 	uint8_t dev_id;
@@ -143,10 +144,10 @@ struct rte_eventdev_data {
 
 	uint64_t reserved_64s[4]; /**< Reserved for future fields */
 	void *reserved_ptrs[4];	  /**< Reserved for future fields */
-} __rte_cache_aligned;
+};
 
 /** @internal The data structure associated with each event device. */
-struct rte_eventdev {
+struct __rte_cache_aligned rte_eventdev {
 	struct rte_eventdev_data *data;
 	/**< Pointer to device data */
 	struct eventdev_ops *dev_ops;
@@ -157,16 +158,12 @@ struct rte_eventdev {
 	uint8_t attached : 1;
 	/**< Flag indicating the device is attached */
 
-	event_enqueue_t enqueue;
-	/**< Pointer to PMD enqueue function. */
 	event_enqueue_burst_t enqueue_burst;
 	/**< Pointer to PMD enqueue burst function. */
 	event_enqueue_burst_t enqueue_new_burst;
 	/**< Pointer to PMD enqueue burst function(op new variant) */
 	event_enqueue_burst_t enqueue_forward_burst;
 	/**< Pointer to PMD enqueue burst function(op forward variant) */
-	event_dequeue_t dequeue;
-	/**< Pointer to PMD dequeue function. */
 	event_dequeue_burst_t dequeue_burst;
 	/**< Pointer to PMD dequeue burst function. */
 	event_maintain_t maintain;
@@ -183,10 +180,14 @@ struct rte_eventdev {
 	/**< Pointer to PMD DMA adapter enqueue function. */
 	event_profile_switch_t profile_switch;
 	/**< Pointer to PMD Event switch profile function. */
+	event_preschedule_modify_t preschedule_modify;
+	/**< Pointer to PMD Event port pre-schedule type modify function.  */
+	event_preschedule_t preschedule;
+	/**< Pointer to PMD Event port pre-schedule function. */
 
 	uint64_t reserved_64s[3]; /**< Reserved for future fields */
 	void *reserved_ptrs[3];	  /**< Reserved for future fields */
-} __rte_cache_aligned;
+};
 
 extern struct rte_eventdev *rte_eventdevs;
 /** @internal The pool of rte_eventdev structures. */

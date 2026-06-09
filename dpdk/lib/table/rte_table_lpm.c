@@ -2,8 +2,9 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
-#include <string.h>
+#include <stdalign.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <rte_common.h>
 #include <rte_malloc.h>
@@ -12,6 +13,8 @@
 #include <rte_lpm.h>
 
 #include "rte_table_lpm.h"
+
+#include "table_log.h"
 
 #ifndef RTE_TABLE_LPM_MAX_NEXT_HOPS
 #define RTE_TABLE_LPM_MAX_NEXT_HOPS                        65536
@@ -45,7 +48,7 @@ struct rte_table_lpm {
 
 	/* Next Hop Table (NHT) */
 	uint32_t nht_users[RTE_TABLE_LPM_MAX_NEXT_HOPS];
-	uint8_t nht[0] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint8_t nht[];
 };
 
 static void *
@@ -59,29 +62,29 @@ rte_table_lpm_create(void *params, int socket_id, uint32_t entry_size)
 
 	/* Check input parameters */
 	if (p == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: NULL input parameters\n", __func__);
+		TABLE_LOG(ERR, "%s: NULL input parameters", __func__);
 		return NULL;
 	}
 	if (p->n_rules == 0) {
-		RTE_LOG(ERR, TABLE, "%s: Invalid n_rules\n", __func__);
+		TABLE_LOG(ERR, "%s: Invalid n_rules", __func__);
 		return NULL;
 	}
 	if (p->number_tbl8s == 0) {
-		RTE_LOG(ERR, TABLE, "%s: Invalid number_tbl8s\n", __func__);
+		TABLE_LOG(ERR, "%s: Invalid number_tbl8s", __func__);
 		return NULL;
 	}
 	if (p->entry_unique_size == 0) {
-		RTE_LOG(ERR, TABLE, "%s: Invalid entry_unique_size\n",
+		TABLE_LOG(ERR, "%s: Invalid entry_unique_size",
 			__func__);
 		return NULL;
 	}
 	if (p->entry_unique_size > entry_size) {
-		RTE_LOG(ERR, TABLE, "%s: Invalid entry_unique_size\n",
+		TABLE_LOG(ERR, "%s: Invalid entry_unique_size",
 			__func__);
 		return NULL;
 	}
 	if (p->name == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: Table name is NULL\n",
+		TABLE_LOG(ERR, "%s: Table name is NULL",
 			__func__);
 		return NULL;
 	}
@@ -93,8 +96,8 @@ rte_table_lpm_create(void *params, int socket_id, uint32_t entry_size)
 	lpm = rte_zmalloc_socket("TABLE", total_size, RTE_CACHE_LINE_SIZE,
 		socket_id);
 	if (lpm == NULL) {
-		RTE_LOG(ERR, TABLE,
-			"%s: Cannot allocate %u bytes for LPM table\n",
+		TABLE_LOG(ERR,
+			"%s: Cannot allocate %u bytes for LPM table",
 			__func__, total_size);
 		return NULL;
 	}
@@ -107,7 +110,7 @@ rte_table_lpm_create(void *params, int socket_id, uint32_t entry_size)
 
 	if (lpm->lpm == NULL) {
 		rte_free(lpm);
-		RTE_LOG(ERR, TABLE, "Unable to create low-level LPM table\n");
+		TABLE_LOG(ERR, "Unable to create low-level LPM table");
 		return NULL;
 	}
 
@@ -127,7 +130,7 @@ rte_table_lpm_free(void *table)
 
 	/* Check input parameters */
 	if (lpm == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: table parameter is NULL\n", __func__);
+		TABLE_LOG(ERR, "%s: table parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
@@ -187,21 +190,21 @@ rte_table_lpm_entry_add(
 
 	/* Check input parameters */
 	if (lpm == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: table parameter is NULL\n", __func__);
+		TABLE_LOG(ERR, "%s: table parameter is NULL", __func__);
 		return -EINVAL;
 	}
 	if (ip_prefix == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: ip_prefix parameter is NULL\n",
+		TABLE_LOG(ERR, "%s: ip_prefix parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 	if (entry == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: entry parameter is NULL\n", __func__);
+		TABLE_LOG(ERR, "%s: entry parameter is NULL", __func__);
 		return -EINVAL;
 	}
 
 	if ((ip_prefix->depth == 0) || (ip_prefix->depth > 32)) {
-		RTE_LOG(ERR, TABLE, "%s: invalid depth (%d)\n",
+		TABLE_LOG(ERR, "%s: invalid depth (%d)",
 			__func__, ip_prefix->depth);
 		return -EINVAL;
 	}
@@ -216,7 +219,7 @@ rte_table_lpm_entry_add(
 		uint8_t *nht_entry;
 
 		if (nht_find_free(lpm, &nht_pos) == 0) {
-			RTE_LOG(ERR, TABLE, "%s: NHT full\n", __func__);
+			TABLE_LOG(ERR, "%s: NHT full", __func__);
 			return -1;
 		}
 
@@ -226,7 +229,7 @@ rte_table_lpm_entry_add(
 
 	/* Add rule to low level LPM table */
 	if (rte_lpm_add(lpm->lpm, ip_prefix->ip, ip_prefix->depth, nht_pos) < 0) {
-		RTE_LOG(ERR, TABLE, "%s: LPM rule add failed\n", __func__);
+		TABLE_LOG(ERR, "%s: LPM rule add failed", __func__);
 		return -1;
 	}
 
@@ -253,16 +256,16 @@ rte_table_lpm_entry_delete(
 
 	/* Check input parameters */
 	if (lpm == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: table parameter is NULL\n", __func__);
+		TABLE_LOG(ERR, "%s: table parameter is NULL", __func__);
 		return -EINVAL;
 	}
 	if (ip_prefix == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: ip_prefix parameter is NULL\n",
+		TABLE_LOG(ERR, "%s: ip_prefix parameter is NULL",
 			__func__);
 		return -EINVAL;
 	}
 	if ((ip_prefix->depth == 0) || (ip_prefix->depth > 32)) {
-		RTE_LOG(ERR, TABLE, "%s: invalid depth (%d)\n", __func__,
+		TABLE_LOG(ERR, "%s: invalid depth (%d)", __func__,
 			ip_prefix->depth);
 		return -EINVAL;
 	}
@@ -271,7 +274,7 @@ rte_table_lpm_entry_delete(
 	status = rte_lpm_is_rule_present(lpm->lpm, ip_prefix->ip,
 		ip_prefix->depth, &nht_pos);
 	if (status < 0) {
-		RTE_LOG(ERR, TABLE, "%s: LPM algorithmic error\n", __func__);
+		TABLE_LOG(ERR, "%s: LPM algorithmic error", __func__);
 		return -1;
 	}
 	if (status == 0) {
@@ -282,7 +285,7 @@ rte_table_lpm_entry_delete(
 	/* Delete rule from the low-level LPM table */
 	status = rte_lpm_delete(lpm->lpm, ip_prefix->ip, ip_prefix->depth);
 	if (status) {
-		RTE_LOG(ERR, TABLE, "%s: LPM rule delete failed\n", __func__);
+		TABLE_LOG(ERR, "%s: LPM rule delete failed", __func__);
 		return -1;
 	}
 

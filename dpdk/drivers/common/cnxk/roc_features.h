@@ -83,4 +83,23 @@ roc_feature_nix_has_inl_ipsec(void)
 {
 	return !roc_model_is_cnf10kb();
 }
+
+static inline bool
+roc_feature_nix_has_rx_inject(void)
+{
+	return (roc_model_is_cn10ka_b0() || roc_model_is_cn10kb());
+}
+
+static inline bool
+roc_feature_nix_has_second_pass_drop(void)
+{
+	return 0;
+}
+
+static inline bool
+roc_feature_dpi_has_priority(void)
+{
+	return roc_model_is_cn10k();
+}
+
 #endif

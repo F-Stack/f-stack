@@ -68,6 +68,39 @@ enum mlx5dr_action_stc_reparse {
 	MLX5DR_ACTION_STC_REPARSE_OFF,
 };
 
+ /* 2' comp to 20, to get -20 in add operation */
+#define MLX5DR_ACTION_NAT64_DEC_20 0xffffffec
+
+enum {
+	MLX5DR_ACTION_NAT64_MAX_MODIFY_ACTIONS = 20,
+	MLX5DR_ACTION_NAT64_ADD_20 = 20,
+	MLX5DR_ACTION_NAT64_HEADER_MINUS_ONE = 9,
+	MLX5DR_ACTION_NAT64_IPV6_HEADER = 10,
+	MLX5DR_ACTION_NAT64_IPV4_HEADER = 5,
+	MLX5DR_ACTION_NAT64_IPV6_VER = 0x60000000,
+	MLX5DR_ACTION_NAT64_IPV4_VER = 0x45000000,
+	MLX5DR_ACTION_NAT64_TTL_DEFAULT_VAL = 64,
+	MLX5DR_ACTION_NAT64_ECN_SIZE = 2,
+};
+
+/* 3 stages for the nat64 action */
+enum mlx5dr_action_nat64_stages {
+	MLX5DR_ACTION_NAT64_STAGE_COPY = 0,
+	MLX5DR_ACTION_NAT64_STAGE_REPLACE = 1,
+	MLX5DR_ACTION_NAT64_STAGE_COPY_PROTOCOL = 2,
+	MLX5DR_ACTION_NAT64_STAGE_COPYBACK = 3,
+	/* Number of MH in NAT64 */
+	MLX5DR_ACTION_NAT64_STAGES = 4,
+};
+
+/* Registers for keeping data from stage to stage */
+enum {
+	MLX5DR_ACTION_NAT64_REG_CONTROL = 0,
+	MLX5DR_ACTION_NAT64_REG_SRC_IP = 1,
+	MLX5DR_ACTION_NAT64_REG_DST_IP = 2,
+	MLX5DR_ACTION_NAT64_REG_MAX = 3,
+};
+
 struct mlx5dr_action_default_stc {
 	struct mlx5dr_pool_chunk nop_ctr;
 	struct mlx5dr_pool_chunk nop_dw5;
@@ -109,6 +142,7 @@ struct mlx5dr_actions_wqe_setter {
 	uint8_t idx_double;
 	uint8_t idx_ctr;
 	uint8_t idx_hit;
+	uint8_t stage_idx;
 	uint8_t flags;
 	uint8_t extra_data;
 };
@@ -119,6 +153,9 @@ struct mlx5dr_action_template {
 	uint8_t num_of_action_stes;
 	uint8_t num_actions;
 	uint8_t only_term;
+	/* indicates rule might require dependent wqe */
+	bool need_dep_write;
+	uint32_t flags;
 };
 
 struct mlx5dr_action {
@@ -148,6 +185,7 @@ struct mlx5dr_action {
 					uint8_t offset;
 					bool encap;
 					uint8_t require_reparse;
+					bool push_esp;
 				} reformat;
 				struct {
 					struct mlx5dr_action
@@ -182,6 +220,12 @@ struct mlx5dr_action {
 					uint8_t num_of_words;
 					bool decap;
 				} remove_header;
+				struct {
+					struct mlx5dr_action *stages[MLX5DR_ACTION_NAT64_STAGES];
+				} nat64;
+				struct {
+					struct mlx5dr_matcher *matcher;
+				} jump_to_matcher;
 			};
 		};
 
@@ -217,6 +261,13 @@ int mlx5dr_action_alloc_single_stc(struct mlx5dr_context *ctx,
 void mlx5dr_action_free_single_stc(struct mlx5dr_context *ctx,
 				   uint32_t table_type,
 				   struct mlx5dr_pool_chunk *stc);
+struct mlx5dr_action *
+mlx5dr_action_create_modify_header_reparse(struct mlx5dr_context *ctx,
+					   uint8_t num_of_patterns,
+					   struct mlx5dr_action_mh_pattern *patterns,
+					   uint32_t log_bulk_size,
+					   uint32_t flags, uint32_t reparse);
+
 
 static inline void
 mlx5dr_action_setter_default_single(struct mlx5dr_actions_apply_data *apply,

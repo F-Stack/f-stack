@@ -12,6 +12,7 @@
 
 #include <dev_driver.h>
 #include <rte_lcore.h>
+#include <rte_log.h>
 #include <rte_memory.h>
 
 #include "eal_internal_cfg.h"
@@ -92,6 +93,13 @@ int rte_eal_memzone_init(void);
  *   0 on success, negative on error
  */
 int rte_eal_cpu_init(void);
+
+/**
+ * Check for architecture supported MMU.
+ *
+ * This function is private to EAL.
+ */
+bool eal_mmu_supported(void);
 
 /**
  * Create memseg lists
@@ -366,7 +374,7 @@ void set_tsc_freq(void);
  *
  * This function is private to the EAL.
  */
-uint64_t get_tsc_freq(void);
+uint64_t get_tsc_freq(uint64_t arch_hz);
 
 /**
  * Get TSC frequency if the architecture supports.
@@ -527,28 +535,6 @@ int local_dev_remove(struct rte_device *dev);
  *	 1 no bus can handler the sigbus
  */
 int rte_bus_sigbus_handler(const void *failure_addr);
-
-/**
- * @internal
- * Register the sigbus handler.
- *
- * @return
- *   - On success, zero.
- *   - On failure, a negative value.
- */
-int
-dev_sigbus_handler_register(void);
-
-/**
- * @internal
- * Unregister the sigbus handler.
- *
- * @return
- *   - On success, zero.
- *   - On failure, a negative value.
- */
-int
-dev_sigbus_handler_unregister(void);
 
 /**
  * Get OS-specific EAL mapping base address.
@@ -717,6 +703,12 @@ rte_usage_hook_t
 eal_get_application_usage_hook(void);
 
 /**
+ * Initialise random subsystem.
+ */
+void
+eal_rand_init(void);
+
+/**
  * Instruct primary process that a secondary process wants to attach.
  */
 bool __rte_mp_enable(void);
@@ -746,5 +738,8 @@ int eal_asprintf(char **buffer, const char *format, ...);
 #define asprintf(buffer, format, ...) \
 		eal_asprintf(buffer, format, ##__VA_ARGS__)
 #endif
+
+#define EAL_LOG(level, ...) \
+	RTE_LOG_LINE(level, EAL, "" __VA_ARGS__)
 
 #endif /* _EAL_PRIVATE_H_ */

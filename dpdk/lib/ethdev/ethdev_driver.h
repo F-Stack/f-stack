@@ -5,10 +5,6 @@
 #ifndef _RTE_ETHDEV_DRIVER_H_
 #define _RTE_ETHDEV_DRIVER_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /**
  * @file
  *
@@ -23,6 +19,10 @@ extern "C" {
 #include <dev_driver.h>
 #include <rte_compat.h>
 #include <rte_ethdev.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * @internal
@@ -48,7 +48,7 @@ struct rte_eth_rxtx_callback {
  * memory. This split allows the function pointer and driver data to be per-
  * process, while the actual configuration data for the device is shared.
  */
-struct rte_eth_dev {
+struct __rte_cache_aligned rte_eth_dev {
 	eth_rx_burst_t rx_pkt_burst; /**< Pointer to PMD receive function */
 	eth_tx_burst_t tx_pkt_burst; /**< Pointer to PMD transmit function */
 
@@ -58,6 +58,8 @@ struct rte_eth_dev {
 	eth_rx_queue_count_t rx_queue_count;
 	/** Check the status of a Rx descriptor */
 	eth_rx_descriptor_status_t rx_descriptor_status;
+	/** Get the number of used Tx descriptors */
+	eth_tx_queue_count_t tx_queue_count;
 	/** Check the status of a Tx descriptor */
 	eth_tx_descriptor_status_t tx_descriptor_status;
 	/** Pointer to PMD transmit mbufs reuse function */
@@ -71,6 +73,8 @@ struct rte_eth_dev {
 	struct rte_eth_dev_data *data;
 	void *process_private; /**< Pointer to per-process device data */
 	const struct eth_dev_ops *dev_ops; /**< Functions exported by PMD */
+	/** Fast path flow API functions exported by PMD */
+	const struct rte_flow_fp_ops *flow_fp_ops;
 	struct rte_device *device; /**< Backing device */
 	struct rte_intr_handle *intr_handle; /**< Device interrupt handle */
 
@@ -89,7 +93,7 @@ struct rte_eth_dev {
 
 	enum rte_eth_dev_state state; /**< Flag indicating the port state */
 	void *security_ctx; /**< Context for security ops */
-} __rte_cache_aligned;
+};
 
 struct rte_eth_dev_sriov;
 struct rte_eth_dev_owner;
@@ -100,7 +104,7 @@ struct rte_eth_dev_owner;
  * device. This structure is safe to place in shared memory to be common
  * among different processes in a multi-process configuration.
  */
-struct rte_eth_dev_data {
+struct __rte_cache_aligned rte_eth_dev_data {
 	char name[RTE_ETH_NAME_MAX_LEN]; /**< Unique identifier name */
 
 	void **rx_queues; /**< Array of pointers to Rx queues */
@@ -186,7 +190,7 @@ struct rte_eth_dev_data {
 	uint16_t backer_port_id;
 
 	pthread_mutex_t flow_ops_mutex; /**< rte_flow ops mutex */
-} __rte_cache_aligned;
+};
 
 /**
  * @internal
@@ -335,6 +339,93 @@ typedef int (*eth_allmulticast_disable_t)(struct rte_eth_dev *dev);
 typedef int (*eth_link_update_t)(struct rte_eth_dev *dev,
 				int wait_to_complete);
 
+/**
+ * @internal
+ * Get number of current active lanes
+ *
+ * @param dev
+ *   ethdev handle of port.
+ * @param speed_lanes
+ *   Number of active lanes that the link has trained up. This information
+ *   is displayed for Autonegotiated or Fixed speed trained link.
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, get speed_lanes data success.
+ * @retval -ENOTSUP
+ *   Operation is not supported.
+ * @retval -EIO
+ *   Device is removed.
+ */
+typedef int (*eth_speed_lanes_get_t)(struct rte_eth_dev *dev, uint32_t *speed_lanes);
+
+/**
+ * @internal
+ * Set speed lanes supported by the NIC. This configuration is applicable only when
+ * fix speed is already configured and or will be configured. This api requires the
+ * port be stopped, since driver has to re-configure PHY with fixed speed and lanes.
+ * If no lanes are configured prior or after "port config X speed Y duplex Z", the
+ * driver will choose the default lane for that speed to bring up the link.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ * @param speed_lanes
+ *   Non-negative number of lanes
+ *
+ * @return
+ *   Negative errno value on error, 0 on success.
+ *
+ * @retval 0
+ *   Success, set lanes success.
+ * @retval -ENOTSUP
+ *   Operation is not supported.
+ * @retval -EINVAL
+ *   Unsupported number of lanes for fixed speed requested.
+ * @retval -EIO
+ *   Device is removed.
+ */
+typedef int (*eth_speed_lanes_set_t)(struct rte_eth_dev *dev, uint32_t speed_lanes);
+
+/**
+ * @internal
+ * Get supported link speed lanes capability. The driver returns number of lanes
+ * supported per speed in the form of lanes capability bitmap per speed.
+ *
+ * @param speed_lanes_capa
+ *   A pointer to num of rte_eth_speed_lanes_capa struct array which carries the
+ *   bit map of lanes supported per speed. The number of supported speeds is the
+ *   size of this speed_lanes_capa table. In link up condition, only active supported
+ *   speeds lanes bitmap information will be displayed. In link down condition, all
+ *   the supported speeds and its supported lanes bitmap would be fetched and displayed.
+ *
+ *   This api is overloaded to fetch the size of the speed_lanes_capa array if
+ *   testpmd calls the driver with speed_lanes_capa = NULL and num = 0
+ *
+ * @param num
+ *   Number of elements in a speed_speed_lanes_capa array. This num is equal to the
+ *   number of supported speeds by the controller. This value will vary in link up
+ *   and link down condition. num is updated by the driver if speed_lanes_capa is NULL.
+ *
+ * @return
+ *   Negative errno value on error, positive value on success.
+ *
+ * @retval positive value
+ *   A non-negative value lower or equal to num: success. The return value
+ *   is the number of entries filled in the speed lanes array.
+ *   A non-negative value higher than num: error, the given speed lanes capa array
+ *   is too small. The return value corresponds to the num that should
+ *   be given to succeed. The entries in the speed lanes capa array are not valid
+ *   and shall not be used by the caller.
+ * @retval -ENOTSUP
+ *   Operation is not supported.
+ * @retval -EINVAL
+ *   *num* or *speed_lanes_capa* invalid.
+ */
+typedef int (*eth_speed_lanes_get_capability_t)(struct rte_eth_dev *dev,
+						struct rte_eth_speed_lanes_capa *speed_lanes_capa,
+						unsigned int num);
+
 /** @internal Get global I/O statistics of an Ethernet device. */
 typedef int (*eth_stats_get_t)(struct rte_eth_dev *dev,
 				struct rte_eth_stats *igb_stats);
@@ -447,8 +538,22 @@ typedef int (*eth_queue_stats_mapping_set_t)(struct rte_eth_dev *dev,
 typedef int (*eth_dev_infos_get_t)(struct rte_eth_dev *dev,
 				   struct rte_eth_dev_info *dev_info);
 
-/** @internal Get supported ptypes of an Ethernet device. */
-typedef const uint32_t *(*eth_dev_supported_ptypes_get_t)(struct rte_eth_dev *dev);
+/**
+ * @internal
+ * Function used to get supported ptypes of an Ethernet device.
+ *
+ * @param dev
+ *   ethdev handle of port.
+ *
+ * @param no_of_elements
+ *   number of ptypes elements. Must be initialized to 0.
+ *
+ * @retval
+ *   Success, array of ptypes elements and valid no_of_elements > 0.
+ *   Failures, NULL.
+ */
+typedef const uint32_t *(*eth_dev_supported_ptypes_get_t)(struct rte_eth_dev *dev,
+							  size_t *no_of_elements);
 
 /**
  * @internal
@@ -645,6 +750,9 @@ typedef int (*eth_timesync_read_tx_timestamp_t)(struct rte_eth_dev *dev,
 
 /** @internal Function used to adjust the device clock. */
 typedef int (*eth_timesync_adjust_time)(struct rte_eth_dev *dev, int64_t);
+
+/** @internal Function used to adjust the clock frequency. */
+typedef int (*eth_timesync_adjust_freq)(struct rte_eth_dev *dev, int64_t);
 
 /** @internal Function used to get time from the device clock. */
 typedef int (*eth_timesync_read_time)(struct rte_eth_dev *dev,
@@ -1079,7 +1187,8 @@ typedef int (*eth_ip_reassembly_conf_set_t)(struct rte_eth_dev *dev,
  * @return
  *   An array pointer to store supported protocol headers.
  */
-typedef const uint32_t *(*eth_buffer_split_supported_hdr_ptypes_get_t)(struct rte_eth_dev *dev);
+typedef const uint32_t *(*eth_buffer_split_supported_hdr_ptypes_get_t)(struct rte_eth_dev *dev,
+								       size_t *no_of_elements);
 
 /**
  * @internal
@@ -1217,6 +1326,48 @@ typedef int (*eth_map_aggr_tx_affinity_t)(struct rte_eth_dev *dev, uint16_t tx_q
 					  uint8_t affinity);
 
 /**
+ * @internal
+ * Defines types of operations which can be executed by the application.
+ */
+enum rte_eth_dev_operation {
+	RTE_ETH_START,
+};
+
+/**@{@name Restore flags
+ * Flags returned by get_restore_flags() callback.
+ * They indicate to ethdev layer which configuration is required to be restored.
+ */
+/** If set, ethdev layer will forcefully restore default and any other added MAC addresses. */
+#define RTE_ETH_RESTORE_MAC_ADDR RTE_BIT64(0)
+/** If set, ethdev layer will forcefully restore current promiscuous mode setting. */
+#define RTE_ETH_RESTORE_PROMISC  RTE_BIT64(1)
+/** If set, ethdev layer will forcefully restore current all multicast mode setting. */
+#define RTE_ETH_RESTORE_ALLMULTI RTE_BIT64(2)
+/**@}*/
+
+/** All configuration which can be restored by ethdev layer. */
+#define RTE_ETH_RESTORE_ALL (RTE_ETH_RESTORE_MAC_ADDR | \
+			     RTE_ETH_RESTORE_PROMISC | \
+			     RTE_ETH_RESTORE_ALLMULTI)
+
+/**
+ * @internal
+ * Fetch from the driver what kind of configuration must be restored by ethdev layer,
+ * after certain operations are performed by the application (such as rte_eth_dev_start()).
+ *
+ * @param dev
+ *   Port (ethdev) handle.
+ * @param op
+ *   Type of operation executed by the application.
+ *
+ * @return
+ *   ORed restore flags indicating which configuration should be restored by ethdev.
+ *   0 if no restore is required by the driver.
+ */
+typedef uint64_t (*eth_get_restore_flags_t)(struct rte_eth_dev *dev,
+					    enum rte_eth_dev_operation op);
+
+/**
  * @internal A structure containing the functions exported by an Ethernet driver.
  */
 struct eth_dev_ops {
@@ -1228,6 +1379,10 @@ struct eth_dev_ops {
 	eth_dev_close_t            dev_close;     /**< Close device */
 	eth_dev_reset_t		   dev_reset;	  /**< Reset device */
 	eth_link_update_t          link_update;   /**< Get device link state */
+	eth_speed_lanes_get_t	   speed_lanes_get;	  /**< Get link speed active lanes */
+	eth_speed_lanes_set_t      speed_lanes_set;	  /**< Set link speeds supported lanes */
+	/** Get link speed lanes capability */
+	eth_speed_lanes_get_capability_t speed_lanes_get_capa;
 	/** Check if the device was physically removed */
 	eth_is_removed_t           is_removed;
 
@@ -1359,6 +1514,8 @@ struct eth_dev_ops {
 	eth_timesync_read_tx_timestamp_t timesync_read_tx_timestamp;
 	/** Adjust the device clock */
 	eth_timesync_adjust_time   timesync_adjust_time;
+	/** Adjust the clock frequency */
+	eth_timesync_adjust_freq   timesync_adjust_freq;
 	/** Get the device clock time */
 	eth_timesync_read_time     timesync_read_time;
 	/** Set the device clock time */
@@ -1455,6 +1612,9 @@ struct eth_dev_ops {
 	eth_count_aggr_ports_t count_aggr_ports;
 	/** Map a Tx queue with an aggregated port of the DPDK port */
 	eth_map_aggr_tx_affinity_t map_aggr_tx_affinity;
+
+	/** Get configuration which ethdev should restore */
+	eth_get_restore_flags_t get_restore_flags;
 };
 
 /**
@@ -1789,19 +1949,39 @@ rte_eth_representor_id_get(uint16_t port_id,
 			   uint16_t *repr_id);
 
 /**
+ * @internal
+ * Check if the ethdev is a representor port.
+ *
+ * @param dev
+ *  Pointer to struct rte_eth_dev.
+ *
+ * @return
+ *  false the ethdev is not a representor port.
+ *  true  the ethdev is a representor port.
+ */
+static inline bool
+rte_eth_dev_is_repr(const struct rte_eth_dev *dev)
+{
+	return ((dev->data->dev_flags & RTE_ETH_DEV_REPRESENTOR) != 0);
+}
+
+/**
  * PMD helper function to parse ethdev arguments
  *
  * @param devargs
  *  device arguments
  * @param eth_devargs
- *  parsed ethdev specific arguments.
+ *  contiguous memory populated with parsed ethdev specific arguments.
+ * @param nb_da
+ *  size of eth_devargs array passed
  *
  * @return
- *   Negative errno value on error, 0 on success.
+ *   Negative errno value on error, no of devargs parsed on success.
  */
 __rte_internal
 int
-rte_eth_devargs_parse(const char *devargs, struct rte_eth_devargs *eth_devargs);
+rte_eth_devargs_parse(const char *devargs, struct rte_eth_devargs *eth_devargs,
+		      unsigned int nb_da);
 
 
 typedef int (*ethdev_init_t)(struct rte_eth_dev *ethdev, void *init_params);
@@ -2091,6 +2271,27 @@ struct rte_eth_fdir_conf {
 	/** Flex payload configuration. */
 	struct rte_eth_fdir_flex_conf flex_conf;
 };
+
+/**
+ * @internal
+ * Fetch from the driver what kind of configuration must be restored by ethdev layer,
+ * using get_restore_flags() callback.
+ *
+ * If callback is not defined, it is assumed that all supported configuration must be restored.
+ *
+ * @param dev
+ *   Port (ethdev) handle.
+ * @param op
+ *   Type of operation executed by the application.
+ *
+ * @return
+ *   ORed restore flags indicating which configuration should be restored by ethdev.
+ *   0 if no restore is required by the driver.
+ */
+__rte_internal
+uint64_t
+rte_eth_get_restore_flags(struct rte_eth_dev *dev,
+			  enum rte_eth_dev_operation op);
 
 #ifdef __cplusplus
 }

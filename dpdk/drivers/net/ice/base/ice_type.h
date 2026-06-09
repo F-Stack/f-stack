@@ -43,6 +43,24 @@ static inline int ice_ilog2(u64 n)
 	return -1;
 }
 
+/**
+ * ice_fls - find the most significant bit set in a u64
+ * @n: u64 value to scan for a bit
+ *
+ * Returns: 0 if no bits found, otherwise the index of the highest bit that was
+ * set, like ice_fls(0x20) == 6. This means this is returning a *1 based*
+ * count, and that the maximum largest value returned is 64!
+ */
+static inline unsigned int ice_fls(u64 n)
+{
+	int ret;
+
+	ret = ice_ilog2(n);
+
+	/* add one to turn to the ilog2 value into a 1 based index */
+	return ret >= 0 ? ret + 1 : 0;
+}
+
 static inline bool ice_is_tc_ena(ice_bitmap_t bitmap, u8 tc)
 {
 	return ice_is_bit_set(&bitmap, tc);
@@ -98,6 +116,8 @@ static inline u32 ice_round_to_num(u32 N, u32 R)
 #define ICE_LO_DWORD(x)		((u32)((x) & 0xFFFFFFFF))
 #define ICE_HI_WORD(x)		((u16)(((x) >> 16) & 0xFFFF))
 #define ICE_LO_WORD(x)		((u16)((x) & 0xFFFF))
+#define ICE_HI_BYTE(x)		((u8)(((x) >> 8) & 0xFF))
+#define ICE_LO_BYTE(x)		((u8)((x) & 0xFF))
 
 /* debug masks - set these bits in hw->debug_mask to control output */
 #define ICE_DBG_TRACE		BIT_ULL(0) /* for function-trace only */
@@ -204,6 +224,7 @@ enum ice_set_fc_aq_failures {
 enum ice_mac_type {
 	ICE_MAC_UNKNOWN = 0,
 	ICE_MAC_E810,
+	ICE_MAC_E830,
 	ICE_MAC_GENERIC,
 	ICE_MAC_GENERIC_3K,
 	ICE_MAC_GENERIC_3K_E825,
@@ -211,7 +232,8 @@ enum ice_mac_type {
 
 /* Media Types */
 enum ice_media_type {
-	ICE_MEDIA_UNKNOWN = 0,
+	ICE_MEDIA_NONE = 0,
+	ICE_MEDIA_UNKNOWN,
 	ICE_MEDIA_FIBER,
 	ICE_MEDIA_BASET,
 	ICE_MEDIA_BACKPLANE,
@@ -219,11 +241,103 @@ enum ice_media_type {
 	ICE_MEDIA_AUI,
 };
 
+#define ICE_MEDIA_BASET_PHY_TYPE_LOW_M	(ICE_PHY_TYPE_LOW_100BASE_TX | \
+					 ICE_PHY_TYPE_LOW_1000BASE_T | \
+					 ICE_PHY_TYPE_LOW_2500BASE_T | \
+					 ICE_PHY_TYPE_LOW_5GBASE_T | \
+					 ICE_PHY_TYPE_LOW_10GBASE_T | \
+					 ICE_PHY_TYPE_LOW_25GBASE_T)
+
+#define ICE_MEDIA_C2M_PHY_TYPE_LOW_M	(ICE_PHY_TYPE_LOW_10G_SFI_AOC_ACC | \
+					 ICE_PHY_TYPE_LOW_25G_AUI_AOC_ACC | \
+					 ICE_PHY_TYPE_LOW_40G_XLAUI_AOC_ACC | \
+					 ICE_PHY_TYPE_LOW_50G_LAUI2_AOC_ACC | \
+					 ICE_PHY_TYPE_LOW_50G_AUI2_AOC_ACC | \
+					 ICE_PHY_TYPE_LOW_50G_AUI1_AOC_ACC | \
+					 ICE_PHY_TYPE_LOW_100G_CAUI4_AOC_ACC | \
+					 ICE_PHY_TYPE_LOW_100G_AUI4_AOC_ACC)
+
+#define ICE_MEDIA_C2M_PHY_TYPE_HIGH_M (ICE_PHY_TYPE_HIGH_100G_CAUI2_AOC_ACC | \
+				       ICE_PHY_TYPE_HIGH_100G_AUI2_AOC_ACC | \
+				       ICE_PHY_TYPE_HIGH_200G_AUI4_AOC_ACC | \
+				       ICE_PHY_TYPE_HIGH_200G_AUI8_AOC_ACC)
+
+#define ICE_MEDIA_OPT_PHY_TYPE_LOW_M	(ICE_PHY_TYPE_LOW_1000BASE_SX | \
+					 ICE_PHY_TYPE_LOW_1000BASE_LX | \
+					 ICE_PHY_TYPE_LOW_10GBASE_SR | \
+					 ICE_PHY_TYPE_LOW_10GBASE_LR | \
+					 ICE_PHY_TYPE_LOW_25GBASE_SR | \
+					 ICE_PHY_TYPE_LOW_25GBASE_LR | \
+					 ICE_PHY_TYPE_LOW_40GBASE_SR4 | \
+					 ICE_PHY_TYPE_LOW_40GBASE_LR4 | \
+					 ICE_PHY_TYPE_LOW_50GBASE_SR2 | \
+					 ICE_PHY_TYPE_LOW_50GBASE_LR2 | \
+					 ICE_PHY_TYPE_LOW_50GBASE_SR | \
+					 ICE_PHY_TYPE_LOW_50GBASE_LR | \
+					 ICE_PHY_TYPE_LOW_100GBASE_SR4 | \
+					 ICE_PHY_TYPE_LOW_100GBASE_LR4 | \
+					 ICE_PHY_TYPE_LOW_100GBASE_SR2 | \
+					 ICE_PHY_TYPE_LOW_50GBASE_FR | \
+					 ICE_PHY_TYPE_LOW_100GBASE_DR)
+
+#define ICE_MEDIA_OPT_PHY_TYPE_HIGH_M	(ICE_PHY_TYPE_HIGH_200G_SR4 | \
+					 ICE_PHY_TYPE_HIGH_200G_LR4 | \
+					 ICE_PHY_TYPE_HIGH_200G_FR4 | \
+					 ICE_PHY_TYPE_HIGH_200G_DR4 | \
+					 ICE_PHY_TYPE_HIGH_400GBASE_FR8)
+
+#define ICE_MEDIA_BP_PHY_TYPE_LOW_M	(ICE_PHY_TYPE_LOW_1000BASE_KX | \
+					 ICE_PHY_TYPE_LOW_2500BASE_KX | \
+					 ICE_PHY_TYPE_LOW_5GBASE_KR | \
+					 ICE_PHY_TYPE_LOW_10GBASE_KR_CR1 | \
+					 ICE_PHY_TYPE_LOW_25GBASE_KR | \
+					 ICE_PHY_TYPE_LOW_25GBASE_KR_S | \
+					 ICE_PHY_TYPE_LOW_25GBASE_KR1 | \
+					 ICE_PHY_TYPE_LOW_40GBASE_KR4 | \
+					 ICE_PHY_TYPE_LOW_50GBASE_KR2 | \
+					 ICE_PHY_TYPE_LOW_50GBASE_KR_PAM4 | \
+					 ICE_PHY_TYPE_LOW_100GBASE_KR4 | \
+					 ICE_PHY_TYPE_LOW_100GBASE_KR_PAM4)
+
+#define ICE_MEDIA_BP_PHY_TYPE_HIGH_M	(ICE_PHY_TYPE_HIGH_100GBASE_KR2_PAM4 | \
+					 ICE_PHY_TYPE_HIGH_200G_KR4_PAM4)
+
+#define ICE_MEDIA_DAC_PHY_TYPE_LOW_M	(ICE_PHY_TYPE_LOW_10G_SFI_DA | \
+					 ICE_PHY_TYPE_LOW_25GBASE_CR | \
+					 ICE_PHY_TYPE_LOW_25GBASE_CR_S | \
+					 ICE_PHY_TYPE_LOW_25GBASE_CR1 | \
+					 ICE_PHY_TYPE_LOW_40GBASE_CR4 | \
+					 ICE_PHY_TYPE_LOW_50GBASE_CR2 | \
+					 ICE_PHY_TYPE_LOW_100GBASE_CR4 | \
+					 ICE_PHY_TYPE_LOW_100GBASE_CR_PAM4 | \
+					 ICE_PHY_TYPE_LOW_50GBASE_CP | \
+					 ICE_PHY_TYPE_LOW_100GBASE_CP2)
+
+#define ICE_MEDIA_DAC_PHY_TYPE_HIGH_M	ICE_PHY_TYPE_HIGH_200G_CR4_PAM4
+
+#define ICE_MEDIA_C2C_PHY_TYPE_LOW_M	(ICE_PHY_TYPE_LOW_100M_SGMII | \
+					 ICE_PHY_TYPE_LOW_1G_SGMII | \
+					 ICE_PHY_TYPE_LOW_2500BASE_X | \
+					 ICE_PHY_TYPE_LOW_10G_SFI_C2C | \
+					 ICE_PHY_TYPE_LOW_25G_AUI_C2C | \
+					 ICE_PHY_TYPE_LOW_40G_XLAUI | \
+					 ICE_PHY_TYPE_LOW_50G_LAUI2 | \
+					 ICE_PHY_TYPE_LOW_50G_AUI2 | \
+					 ICE_PHY_TYPE_LOW_50G_AUI1 | \
+					 ICE_PHY_TYPE_LOW_100G_CAUI4 | \
+					 ICE_PHY_TYPE_LOW_100G_AUI4)
+
+#define ICE_MEDIA_C2C_PHY_TYPE_HIGH_M	(ICE_PHY_TYPE_HIGH_100G_CAUI2 | \
+					 ICE_PHY_TYPE_HIGH_100G_AUI2 | \
+					 ICE_PHY_TYPE_HIGH_200G_AUI4 | \
+					 ICE_PHY_TYPE_HIGH_200G_AUI8)
+
 /* Software VSI types. */
 enum ice_vsi_type {
 	ICE_VSI_PF = 0,
 	ICE_VSI_CTRL = 3,	/* equates to ICE_VSI_PF with 1 queue pair */
 	ICE_VSI_LB = 6,
+	ICE_VSI_ADI = 8,
 };
 
 struct ice_link_status {
@@ -602,9 +716,11 @@ struct ice_hw_common_caps {
 	bool sec_rev_disabled;
 	bool update_disabled;
 	bool nvm_unified_update;
+	bool netlist_auth;
 #define ICE_NVM_MGMT_SEC_REV_DISABLED		BIT(0)
 #define ICE_NVM_MGMT_UPDATE_DISABLED		BIT(1)
 #define ICE_NVM_MGMT_UNIFIED_UPD_SUPPORT	BIT(3)
+#define ICE_NVM_MGMT_NETLIST_AUTH_SUPPORT	BIT(5)
 	/* PCIe reset avoidance */
 	bool pcie_reset_avoidance; /* false: not supported, true: supported */
 	/* Post update reset restriction */
@@ -622,7 +738,12 @@ struct ice_hw_common_caps {
 #define ICE_EXT_TOPO_DEV_IMG_LOAD_EN	BIT(0)
 	bool ext_topo_dev_img_prog_en[ICE_EXT_TOPO_DEV_IMG_COUNT];
 #define ICE_EXT_TOPO_DEV_IMG_PROG_EN	BIT(1)
+	bool ext_topo_dev_img_ver_schema[ICE_EXT_TOPO_DEV_IMG_COUNT];
+#define ICE_EXT_TOPO_DEV_IMG_VER_SCHEMA	BIT(2)
 	bool tx_sched_topo_comp_mode_en;
+	/* Support for OROM update in Recovery Mode */
+	bool orom_recovery_update;
+	bool next_cluster_id_support;
 };
 
 /* IEEE 1588 TIME_SYNC specific info */
@@ -632,6 +753,7 @@ struct ice_hw_common_caps {
 #define ICE_TS_TMR_ENA_M		BIT(2)
 #define ICE_TS_TMR_IDX_OWND_S		4
 #define ICE_TS_TMR_IDX_OWND_M		BIT(4)
+#define ICE_TS_GPIO_1PPS_ASSOC		BIT(12)
 #define ICE_TS_CLK_FREQ_S		16
 #define ICE_TS_CLK_FREQ_M		MAKEMASK(0x7, ICE_TS_CLK_FREQ_S)
 #define ICE_TS_CLK_SRC_S		20
@@ -648,7 +770,9 @@ enum ice_time_ref_freq {
 	ICE_TIME_REF_FREQ_156_250	= 4,
 	ICE_TIME_REF_FREQ_245_760	= 5,
 
-	NUM_ICE_TIME_REF_FREQ
+	NUM_ICE_TIME_REF_FREQ,
+
+	ICE_TIME_REF_FREQ_INVALID	= -1,
 };
 
 /* Clock source specification */
@@ -668,6 +792,7 @@ struct ice_ts_func_info {
 	u8 tmr_index_owned : 1;
 	u8 src_tmr_owned : 1;
 	u8 tmr_ena : 1;
+	u8 gpio_1pps : 1;
 };
 
 /* Device specific definitions */
@@ -680,6 +805,7 @@ struct ice_ts_func_info {
 #define ICE_TS_TMR0_ENA_M		BIT(25)
 #define ICE_TS_TMR1_ENA_M		BIT(26)
 #define ICE_TS_LL_TX_TS_READ_M		BIT(28)
+#define ICE_TS_LL_TX_TS_INT_READ_M	BIT(29)
 
 struct ice_ts_dev_info {
 	/* Device specific info */
@@ -692,6 +818,7 @@ struct ice_ts_dev_info {
 	u8 tmr0_ena : 1;
 	u8 tmr1_ena : 1;
 	u8 ts_ll_read : 1;
+	u8 ts_ll_int_read : 1;
 };
 
 #define ICE_NAC_TOPO_PRIMARY_M	BIT(0)
@@ -720,6 +847,9 @@ struct ice_hw_dev_caps {
 	struct ice_ts_dev_info ts_dev_info;
 	u32 num_funcs;
 	struct ice_nac_topology nac_topo;
+	/* bitmap of supported sensors */
+	u32 supported_sensors;
+#define ICE_SENSOR_SUPPORT_E810_INT_TEMP	BIT(0)
 };
 
 /* Information about MAC such as address, etc... */
@@ -744,7 +874,8 @@ enum ice_pcie_bus_speed {
 	ice_pcie_speed_2_5GT	= 0x14,
 	ice_pcie_speed_5_0GT	= 0x15,
 	ice_pcie_speed_8_0GT	= 0x16,
-	ice_pcie_speed_16_0GT	= 0x17
+	ice_pcie_speed_16_0GT	= 0x17,
+	ice_pcie_speed_32_0GT	= 0x18,
 };
 
 /* PCI bus widths */
@@ -807,6 +938,14 @@ struct ice_nvm_info {
 	u8 minor;
 };
 
+/* Minimum Security Revision information */
+struct ice_minsrev_info {
+	u32 nvm;
+	u32 orom;
+	u8 nvm_valid : 1;
+	u8 orom_valid : 1;
+};
+
 /* Enumeration of possible flash banks for the NVM, OROM, and Netlist modules
  * of the flash image.
  */
@@ -843,7 +982,7 @@ struct ice_flash_info {
 	struct ice_orom_info orom;	/* Option ROM version info */
 	struct ice_nvm_info nvm;	/* NVM version information */
 	struct ice_bank_info banks;	/* Flash Bank information */
-	u16 sr_words;			/* Shadow RAM size in words */
+	u32 sr_words;			/* Shadow RAM size in words */
 	u32 flash_size;			/* Size of available flash in bytes */
 	u8 blank_nvm_mode;		/* is NVM empty (no FW present) */
 };
@@ -891,9 +1030,9 @@ struct ice_sched_node {
 	struct ice_aqc_txsched_elem_data info;
 	u32 agg_id;			/* aggregator group ID */
 	u16 vsi_handle;
+	u16 num_children;
 	u8 in_use;			/* suspended or in use */
 	u8 tx_sched_layer;		/* Logical Layer (1-9) */
-	u8 num_children;
 	u8 tc_num;
 	u8 owner;
 #define ICE_SCHED_NODE_OWNER_LAN	0
@@ -956,6 +1095,8 @@ enum ice_rl_type {
 #define ICE_TXSCHED_GET_RL_MULTIPLIER(p) LE16_TO_CPU((p)->info.rl_multiply)
 #define ICE_TXSCHED_GET_RL_WAKEUP_MV(p) LE16_TO_CPU((p)->info.wake_up_calc)
 #define ICE_TXSCHED_GET_RL_ENCODE(p) LE16_TO_CPU((p)->info.rl_encode)
+
+#define ICE_MAX_PORT_PER_PCI_DEV	8
 
 /* The following tree example shows the naming conventions followed under
  * ice_port_info struct for default scheduler tree topology.
@@ -1103,6 +1244,7 @@ struct ice_port_info {
 	u16 sw_id;			/* Initial switch ID belongs to port */
 	u16 pf_vf_num;
 	u8 port_state;
+	u8 loopback_mode;
 #define ICE_SCHED_PORT_STATE_INIT	0x0
 #define ICE_SCHED_PORT_STATE_READY	0x1
 	u8 lport;
@@ -1117,6 +1259,8 @@ struct ice_port_info {
 	struct ice_bw_type_info tc_node_bw_t_info[ICE_MAX_TRAFFIC_CLASS];
 	struct ice_qos_cfg qos_cfg;
 	u8 is_vf:1;
+	u8 is_custom_tx_enabled:1;
+	u8 has_tc:1;
 };
 
 struct ice_switch_info {
@@ -1128,11 +1272,18 @@ struct ice_switch_info {
 	ice_declare_bitmap(prof_res_bm[ICE_MAX_NUM_PROFILES], ICE_MAX_FV_WORDS);
 };
 
-/* PHY configuration */
-enum ice_phy_cfg {
-	ICE_PHY_E810 = 1,
+/* PHY model */
+enum ice_phy_model {
+	ICE_PHY_UNSUP = -1,
+	ICE_PHY_E810  = 1,
 	ICE_PHY_E822,
 	ICE_PHY_ETH56G,
+	ICE_PHY_E830,
+};
+
+enum ice_eth56g_mode {
+	ICE_ETH56G_MODE_0,
+	ICE_ETH56G_MODE_1,
 };
 
 /* Port hardware description */
@@ -1151,6 +1302,7 @@ struct ice_hw {
 	enum ice_mac_type mac_type;
 
 	u16 fd_ctr_base;	/* FD counter base index */
+	u16 fw_vsi_num;
 	/* pci info */
 	u16 device_id;
 	u16 vendor_id;
@@ -1159,7 +1311,18 @@ struct ice_hw {
 	u8 revision_id;
 
 	u8 pf_id;		/* device profile info */
-	enum ice_phy_cfg phy_cfg;
+	enum ice_phy_model phy_model;
+	u8 phy_ports;
+	u8 max_phy_port;
+#define ICE_PHYS_PER_CPLX_E824S	1
+#define ICE_PORTS_PER_PHY_E824S	8
+
+#define ICE_PHYS_PER_CPLX_C825X	2
+#define ICE_PORTS_PER_PHY_C825X	4
+
+#define MAX_PHYS_PER_ICE	2
+	u8 num_phys;
+	u8 phy_addr[MAX_PHYS_PER_ICE];		/* PHY address */
 	u8 logical_pf_id;
 
 	u16 max_burst_size;	/* driver sets this value */
@@ -1193,7 +1356,6 @@ struct ice_hw {
 			      void *buf, u16 buf_size);
 	void *aq_send_cmd_param;
 	u8 dcf_enabled;		/* Device Config Function */
-
 	u8 api_branch;		/* API branch version */
 	u8 api_maj_ver;		/* API major version */
 	u8 api_min_ver;		/* API minor version */
@@ -1242,7 +1404,6 @@ struct ice_hw {
 	u32 pkg_seg_id;
 	u32 pkg_sign_type;
 	u32 active_track_id;
-	u8 pkg_has_signing_seg:1;
 	u8 active_pkg_name[ICE_PKG_NAME_SIZE];
 	u8 active_pkg_in_nvm;
 
@@ -1266,6 +1427,7 @@ struct ice_hw {
 	/* tunneling info */
 	struct ice_lock tnl_lock;
 	struct ice_tunnel_table tnl;
+
 	/* dvm boost update information */
 	struct ice_dvm_table dvm_upd;
 
@@ -1295,6 +1457,8 @@ struct ice_hw {
 	ice_declare_bitmap(hw_ptype, ICE_FLOW_PTYPE_MAX);
 	u8 dvm_ena;
 	u16 io_expander_handle;
+
+	bool skip_clear_pf;
 };
 
 /* Statistics collected by each port, VSI, VEB, and S-channel */
@@ -1377,6 +1541,7 @@ enum ice_sw_fwd_act_type {
 	ICE_FWD_TO_QGRP,
 	ICE_SET_MARK,
 	ICE_DROP_PACKET,
+	ICE_LG_ACTION,
 	ICE_INVAL_ACT
 };
 
@@ -1546,16 +1711,28 @@ struct ice_aq_get_set_rss_lut_params {
 /* AQ API version for report default configuration */
 #define ICE_FW_API_REPORT_DFLT_CFG_MAJ		1
 #define ICE_FW_API_REPORT_DFLT_CFG_MIN		7
-
 #define ICE_FW_API_REPORT_DFLT_CFG_PATCH	3
+
+/* FW branch number for hardware families */
+#define ICE_FW_VER_BRANCH_E82X			0
+#define ICE_FW_VER_BRANCH_E810			1
 
 /* FW version for FEC disable in Auto FEC mode */
 #define ICE_FW_FEC_DIS_AUTO_BRANCH		1
 #define ICE_FW_FEC_DIS_AUTO_MAJ			7
 #define ICE_FW_FEC_DIS_AUTO_MIN			0
 #define ICE_FW_FEC_DIS_AUTO_PATCH		5
+#define ICE_FW_FEC_DIS_AUTO_MAJ_E82X		7
+#define ICE_FW_FEC_DIS_AUTO_MIN_E82X		1
+#define ICE_FW_FEC_DIS_AUTO_PATCH_E82X		2
 
 /* AQ API version for FW auto drop reports */
 #define ICE_FW_API_AUTO_DROP_MAJ		1
 #define ICE_FW_API_AUTO_DROP_MIN		4
+
+static inline bool
+ice_is_nac_dual(struct ice_hw *hw)
+{
+	return !!(hw->dev_caps.nac_topo.mode & ICE_NAC_TOPO_DUAL_M);
+}
 #endif /* _ICE_TYPE_H_ */

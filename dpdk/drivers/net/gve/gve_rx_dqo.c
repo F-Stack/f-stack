@@ -6,6 +6,7 @@
 
 #include "gve_ethdev.h"
 #include "base/gve_adminq.h"
+#include "rte_mbuf_ptype.h"
 
 static inline void
 gve_rx_refill_dqo(struct gve_rx_queue *rxq)
@@ -43,6 +44,65 @@ gve_rx_refill_dqo(struct gve_rx_queue *rxq)
 	rte_write32(next_avail, rxq->qrx_tail);
 
 	rxq->bufq_tail = next_avail;
+}
+
+static inline void
+gve_parse_csum_ol_flags(struct rte_mbuf *rx_mbuf,
+	volatile struct gve_rx_compl_desc_dqo *rx_desc)
+{
+	if (!rx_desc->l3_l4_processed)
+		return;
+
+	if (rx_mbuf->packet_type & RTE_PTYPE_L3_IPV4) {
+		if (rx_desc->csum_ip_err)
+			rx_mbuf->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
+		else
+			rx_mbuf->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
+	}
+
+	if (rx_desc->csum_l4_err) {
+		rx_mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
+		return;
+	}
+	if (rx_mbuf->packet_type & RTE_PTYPE_L4_MASK)
+		rx_mbuf->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
+}
+
+static inline void
+gve_rx_set_mbuf_ptype(struct gve_priv *priv, struct rte_mbuf *rx_mbuf,
+		      volatile struct gve_rx_compl_desc_dqo *rx_desc)
+{
+	struct gve_ptype ptype =
+		priv->ptype_lut_dqo->ptypes[rx_desc->packet_type];
+	rx_mbuf->packet_type = 0;
+
+	switch (ptype.l3_type) {
+	case GVE_L3_TYPE_IPV4:
+		rx_mbuf->packet_type |= RTE_PTYPE_L3_IPV4;
+		break;
+	case GVE_L3_TYPE_IPV6:
+		rx_mbuf->packet_type |= RTE_PTYPE_L3_IPV6;
+		break;
+	default:
+		break;
+	}
+
+	switch (ptype.l4_type) {
+	case GVE_L4_TYPE_TCP:
+		rx_mbuf->packet_type |= RTE_PTYPE_L4_TCP;
+		break;
+	case GVE_L4_TYPE_UDP:
+		rx_mbuf->packet_type |= RTE_PTYPE_L4_UDP;
+		break;
+	case GVE_L4_TYPE_ICMP:
+		rx_mbuf->packet_type |= RTE_PTYPE_L4_ICMP;
+		break;
+	case GVE_L4_TYPE_SCTP:
+		rx_mbuf->packet_type |= RTE_PTYPE_L4_SCTP;
+		break;
+	default:
+		break;
+	}
 }
 
 uint16_t
@@ -96,9 +156,9 @@ gve_rx_burst_dqo(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxm->pkt_len = pkt_len;
 		rxm->data_len = pkt_len;
 		rxm->port = rxq->port_id;
-		rxm->ol_flags = 0;
-
-		rxm->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
+		gve_rx_set_mbuf_ptype(rxq->hw, rxm, rx_desc);
+		rxm->ol_flags = RTE_MBUF_F_RX_RSS_HASH;
+		gve_parse_csum_ol_flags(rxm, rx_desc);
 		rxm->hash.rss = rte_le_to_cpu_32(rx_desc->hash);
 
 		rx_pkts[nb_rx++] = rxm;
@@ -316,13 +376,12 @@ gve_rxq_mbufs_alloc_dqo(struct gve_rx_queue *rxq)
 		rxq->stats.no_mbufs_bulk++;
 		for (i = 0; i < rx_mask; i++) {
 			nmb = rte_pktmbuf_alloc(rxq->mpool);
-			if (!nmb)
-				break;
+			if (!nmb) {
+				rxq->stats.no_mbufs++;
+				gve_release_rxq_mbufs_dqo(rxq);
+				return -ENOMEM;
+			}
 			rxq->sw_ring[i] = nmb;
-		}
-		if (i < rxq->nb_rx_desc - 1) {
-			rxq->stats.no_mbufs += rx_mask - i;
-			return -ENOMEM;
 		}
 	}
 
@@ -355,7 +414,9 @@ gve_rx_queue_start_dqo(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 
 	rxq->qrx_tail = &hw->db_bar2[rte_be_to_cpu_32(rxq->qres->db_index)];
 
-	rte_write32(rte_cpu_to_be_32(GVE_IRQ_MASK), rxq->ntfy_addr);
+	rte_write32(rte_cpu_to_le_32(GVE_NO_INT_MODE_DQO |
+				     GVE_ITR_NO_UPDATE_DQO),
+		    rxq->ntfy_addr);
 
 	ret = gve_rxq_mbufs_alloc_dqo(rxq);
 	if (ret != 0) {

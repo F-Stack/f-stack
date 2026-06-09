@@ -5,9 +5,9 @@ Log Library
 ===========
 
 The DPDK Log library provides the logging functionality for other DPDK libraries and drivers.
-By default, in a Linux application, logs are sent to syslog and also to the console.
-On FreeBSD and Windows applications, logs are sent only to the console.
-However, the log function can be overridden by the user to use a different logging mechanism.
+By default, logs are sent only to standard error output of the process.
+The syslog EAL option can be used to redirect to the stystem logger on Linux and FreeBSD.
+In addition, the log can be redirected to a different stdio file stream.
 
 Log Levels
 ----------
@@ -59,6 +59,7 @@ For example::
 
 Within an application, the same result can be got using the ``rte_log_set_level_pattern()`` or ``rte_log_set_level_regex()`` APIs.
 
+
 Using Logging APIs to Generate Log Messages
 -------------------------------------------
 
@@ -82,16 +83,14 @@ They do this by:
 * Using the log-level definitions given in ``rte_log.h`` to allow short textual names to be used in
   place of the numeric log levels.
 
-The following code is taken from ``rte_dmadev.c`` and shows the log registration,
+The following code is taken from ``rte_cfgfile.c`` and shows the log registration,
 and subsequent definition of a shortcut logging macro.
 It can be used as a template for any new components using DPDK logging.
 
-.. code:: C
-
-	RTE_LOG_REGISTER_DEFAULT(rte_dma_logtype, INFO);
-	#define RTE_DMA_LOG(level, ...) \
-		rte_log(RTE_LOG_ ## level, rte_dma_logtype, RTE_FMT("dma: " \
-			RTE_FMT_HEAD(__VA_ARGS__,) "\n", RTE_FMT_TAIL(__VA_ARGS__,)))
+.. literalinclude:: ../../../lib/cfgfile/rte_cfgfile.c
+   :language: c
+   :start-after: Setting up dynamic logging 8<
+   :end-before: >8 End of setting up dynamic logging
 
 .. note::
 
@@ -104,10 +103,62 @@ It can be used as a template for any new components using DPDK logging.
 	and the logtype should be defined as an "extern int" in a common header file.
 	Any component-specific logging macro should similarly be defined in that header.
 
-Throughout the dmadev library, all logging calls are therefore of the form:
+Throughout the cfgfile library, all logging calls are therefore of the form:
 
 .. code:: C
 
-	RTE_DMA_LOG(ERR, "Name can't be NULL");
+	CFG_LOG(ERR, "missing cfgfile parameters");
 
-	RTE_DMA_LOG(WARNING, "Device %d already started", dev_id);
+	CFG_LOG(ERR, "invalid comment characters %c",
+	       params->comment_character);
+
+Log timestamp
+~~~~~~~~~~~~~
+
+An optional timestamp can be added before each message by adding the ``--log-timestamp`` option.
+For example::
+
+	/path/to/app --log-level=lib.*:debug --log-timestamp
+
+Multiple alternative timestamp formats are available:
+
+.. csv-table:: Log time stamp format
+   :header: "Format", "Description", "Example"
+   :widths: 6, 30, 32
+
+   "ctime", "Unix ctime", "``[Wed Mar 20 07:26:12 2024]``"
+   "delta", "Offset since last", "``[<    3.162373>]``"
+   "reltime", "Seconds since last or time if minute changed", "``[  +3.001791]`` or ``[Mar20 07:26:12]``"
+   "iso", "ISO-8601", "``[2024-03-20T07:26:12−07:00]``"
+
+To prefix all console messages with ISO format time the syntax is::
+
+	/path/to/app --log-timestamp=iso
+
+.. note::
+
+   Timestamp option has no effect if using syslog
+   because the ``syslog()`` service already does timestamping internally.
+
+
+Color output
+~~~~~~~~~~~~
+
+The log library will highlight important messages.
+This is controlled by the ``--log-color`` option.
+The optional argument describes when color is enabled:
+
+:never: Do not enable color. This is the default behavior.
+
+:auto: Enable color only when printing to a terminal.
+       This is the same as ``--log-color`` with no argument.
+
+:always: Always print color.
+
+For example to enable color in logs if using terminal::
+
+	/path/to/app --log-color
+
+.. note::
+
+   Color output is never used for syslog or systemd journal logging.

@@ -30,7 +30,7 @@ test_power_caps(void)
 }
 
 #else
-#include <rte_power.h>
+#include <rte_power_cpufreq.h>
 
 #define TEST_POWER_LCORE_ID      2U
 #define TEST_POWER_LCORE_INVALID ((unsigned)RTE_MAX_LCORE)
@@ -531,58 +531,6 @@ test_power_cpufreq(void)
 			(env != PM_ENV_CPPC_CPUFREQ) &&
 			(env != PM_ENV_AMD_PSTATE_CPUFREQ)) {
 		printf("Unexpectedly got an environment other than ACPI/PSTATE\n");
-		goto fail_all;
-	}
-
-	/* verify that function pointers are not NULL */
-	if (rte_power_freqs == NULL) {
-		printf("rte_power_freqs should not be NULL, environment has not been "
-				"initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_get_freq == NULL) {
-		printf("rte_power_get_freq should not be NULL, environment has not "
-				"been initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_set_freq == NULL) {
-		printf("rte_power_set_freq should not be NULL, environment has not "
-				"been initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_freq_up == NULL) {
-		printf("rte_power_freq_up should not be NULL, environment has not "
-				"been initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_freq_down == NULL) {
-		printf("rte_power_freq_down should not be NULL, environment has not "
-				"been initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_freq_max == NULL) {
-		printf("rte_power_freq_max should not be NULL, environment has not "
-				"been initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_freq_min == NULL) {
-		printf("rte_power_freq_min should not be NULL, environment has not "
-				"been initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_turbo_status == NULL) {
-		printf("rte_power_turbo_status should not be NULL, environment has not "
-				"been initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_freq_enable_turbo == NULL) {
-		printf("rte_power_freq_enable_turbo should not be NULL, environment has not "
-				"been initialised\n");
-		goto fail_all;
-	}
-	if (rte_power_freq_disable_turbo == NULL) {
-		printf("rte_power_freq_disable_turbo should not be NULL, environment has not "
-				"been initialised\n");
 		goto fail_all;
 	}
 

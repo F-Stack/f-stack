@@ -15,25 +15,45 @@
 /* TODO: this is a workaround to ensure that Tx complq is enough */
 #define DQO_TX_MULTIPLIER 4
 
-#define GVE_DEFAULT_RX_FREE_THRESH   64
-#define GVE_DEFAULT_TX_FREE_THRESH   32
-#define GVE_DEFAULT_TX_RS_THRESH     32
-#define GVE_TX_MAX_FREE_SZ          512
+#define GVE_DEFAULT_MAX_RING_SIZE	1024
+#define GVE_DEFAULT_MIN_RX_RING_SIZE	512
+#define GVE_DEFAULT_MIN_TX_RING_SIZE	256
 
-#define GVE_RX_BUF_ALIGN_DQO        128
-#define GVE_RX_MIN_BUF_SIZE_DQO    1024
-#define GVE_RX_MAX_BUF_SIZE_DQO    ((16 * 1024) - GVE_RX_BUF_ALIGN_DQO)
-#define GVE_MAX_QUEUE_SIZE_DQO     4096
+#define GVE_DEFAULT_RX_FREE_THRESH	64
+#define GVE_DEFAULT_TX_FREE_THRESH	32
+#define GVE_DEFAULT_TX_RS_THRESH	32
+#define GVE_TX_MAX_FREE_SZ		512
 
-#define GVE_RX_BUF_ALIGN_GQI       2048
-#define GVE_RX_MIN_BUF_SIZE_GQI    2048
-#define GVE_RX_MAX_BUF_SIZE_GQI    4096
+#define GVE_RX_BUF_ALIGN_DQO		128
+#define GVE_RX_MIN_BUF_SIZE_DQO		1024
+#define GVE_RX_MAX_BUF_SIZE_DQO		((16 * 1024) - GVE_RX_BUF_ALIGN_DQO)
+#define GVE_MAX_QUEUE_SIZE_DQO		4096
+
+#define GVE_RX_BUF_ALIGN_GQI		2048
+#define GVE_RX_MIN_BUF_SIZE_GQI		2048
+#define GVE_RX_MAX_BUF_SIZE_GQI		4096
+
+#define GVE_RSS_HASH_KEY_SIZE 40
+#define GVE_RSS_INDIR_SIZE 128
 
 #define GVE_TX_CKSUM_OFFLOAD_MASK (		\
 		RTE_MBUF_F_TX_L4_MASK  |	\
 		RTE_MBUF_F_TX_TCP_SEG)
 
-#define GVE_TX_CKSUM_OFFLOAD_MASK_DQO (GVE_TX_CKSUM_OFFLOAD_MASK | RTE_MBUF_F_TX_IP_CKSUM)
+#define GVE_TX_CKSUM_OFFLOAD_MASK_DQO (		\
+		GVE_TX_CKSUM_OFFLOAD_MASK |	\
+		RTE_MBUF_F_TX_IP_CKSUM)
+
+#define GVE_RTE_RSS_OFFLOAD_ALL (	\
+	RTE_ETH_RSS_IPV4 |		\
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP |	\
+	RTE_ETH_RSS_IPV6 |		\
+	RTE_ETH_RSS_IPV6_EX |		\
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP |	\
+	RTE_ETH_RSS_IPV6_TCP_EX |	\
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP |	\
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP |	\
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 /* A list of pages registered with the device during setup and used by a queue
  * as buffers
@@ -82,6 +102,7 @@ struct gve_tx_stats {
 	uint64_t packets;
 	uint64_t bytes;
 	uint64_t errors;
+	uint64_t too_many_descs;
 };
 
 struct gve_rx_stats {
@@ -90,6 +111,7 @@ struct gve_rx_stats {
 	uint64_t errors;
 	uint64_t no_mbufs;
 	uint64_t no_mbufs_bulk;
+	uint64_t imissed;
 };
 
 struct gve_xstats_name_offset {
@@ -220,10 +242,18 @@ struct gve_priv {
 	const struct rte_memzone *cnt_array_mz;
 
 	uint16_t num_event_counters;
-	uint16_t tx_desc_cnt; /* txq size */
-	uint16_t rx_desc_cnt; /* rxq size */
-	uint16_t tx_pages_per_qpl; /* tx buffer length */
-	uint16_t rx_data_slot_cnt; /* rx buffer length */
+
+	/* TX ring size default and limits. */
+	uint16_t default_tx_desc_cnt;
+	uint16_t max_tx_desc_cnt;
+	uint16_t min_tx_desc_cnt;
+
+	/* RX ring size default and limits. */
+	uint16_t default_rx_desc_cnt;
+	uint16_t max_rx_desc_cnt;
+	uint16_t min_rx_desc_cnt;
+
+	uint16_t tx_pages_per_qpl;
 
 	/* Only valid for DQO_RDA queue format */
 	uint16_t tx_compq_size; /* tx completion queue size */
@@ -260,6 +290,7 @@ struct gve_priv {
 	uint32_t adminq_destroy_tx_queue_cnt;
 	uint32_t adminq_destroy_rx_queue_cnt;
 	uint32_t adminq_dcfg_device_resources_cnt;
+	uint32_t adminq_cfg_rss_cnt;
 	uint32_t adminq_set_driver_parameter_cnt;
 	uint32_t adminq_report_stats_cnt;
 	uint32_t adminq_report_link_speed_cnt;
@@ -273,10 +304,16 @@ struct gve_priv {
 	uint16_t max_mtu;
 	struct rte_ether_addr dev_addr; /* mac address */
 
-	struct gve_queue_page_list *qpl;
-
 	struct gve_tx_queue **txqs;
 	struct gve_rx_queue **rxqs;
+
+	uint32_t stats_report_len;
+	const struct rte_memzone *stats_report_mem;
+	uint16_t stats_start_idx; /* start index of array of stats written by NIC */
+	uint16_t stats_end_idx; /* end index of array of stats written by NIC */
+
+	struct gve_rss_config rss_config;
+	struct gve_ptype_lut *ptype_lut_dqo;
 };
 
 static inline bool
@@ -392,6 +429,13 @@ gve_set_rx_function(struct rte_eth_dev *dev);
 
 void
 gve_set_tx_function(struct rte_eth_dev *dev);
+
+struct gve_queue_page_list *
+gve_setup_queue_page_list(struct gve_priv *priv, uint16_t queue_id, bool is_rx,
+	uint32_t num_pages);
+int
+gve_teardown_queue_page_list(struct gve_priv *priv,
+	struct gve_queue_page_list *qpl);
 
 /* Below functions are used for DQO */
 

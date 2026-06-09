@@ -29,10 +29,10 @@ struct rte_cfgfile {
 
 /* Setting up dynamic logging 8< */
 RTE_LOG_REGISTER_DEFAULT(cfgfile_logtype, INFO);
+#define RTE_LOGTYPE_CFGFILE cfgfile_logtype
 
-#define CFG_LOG(level, fmt, args...)					\
-	rte_log(RTE_LOG_ ## level, cfgfile_logtype, "%s(): " fmt "\n",	\
-		__func__, ## args)
+#define CFG_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, CFGFILE, "%s(): ", __func__, __VA_ARGS__)
 /* >8 End of setting up dynamic logging */
 
 /** when we resize a file structure, how many extra entries

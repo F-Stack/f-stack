@@ -5,6 +5,7 @@
 #include "test.h"
 
 #include <string.h>
+#include <stdalign.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -539,6 +540,26 @@ test_pktmbuf_copy(struct rte_mempool *pktmbuf_pool,
 		GOTO_FAIL("copy with offset, invalid data\n");
 
 	rte_pktmbuf_free(copy2);
+
+	/* test offset copy at the end */
+	copy2 = rte_pktmbuf_copy(copy, pktmbuf_pool,
+				 2 * sizeof(uint32_t), UINT32_MAX);
+	if (copy2 == NULL)
+		GOTO_FAIL("cannot copy at the end of the copy\n");
+
+	if (rte_pktmbuf_pkt_len(copy2) != 0)
+		GOTO_FAIL("copy at the end, length incorrect\n");
+
+	if (rte_pktmbuf_data_len(copy2) != 0)
+		GOTO_FAIL("copy at the end, data length incorrect\n");
+
+	rte_pktmbuf_free(copy2);
+
+	/* test offset copy past the end */
+	copy2 = rte_pktmbuf_copy(copy, pktmbuf_pool,
+				 2 * sizeof(uint32_t) + 1, UINT32_MAX);
+	if (copy2 != NULL)
+		GOTO_FAIL("can copy past the end of the copy\n");
 
 	/* test truncation copy */
 	copy2 = rte_pktmbuf_copy(copy, pktmbuf_pool,
@@ -2016,13 +2037,13 @@ test_pktmbuf_read_from_offset(struct rte_mempool *pktmbuf_pool)
 	/* read length greater than mbuf data_len */
 	if (rte_pktmbuf_read(m, hdr_len, rte_pktmbuf_data_len(m) + 1,
 				NULL) != NULL)
-		GOTO_FAIL("%s: Requested len is larger than mbuf data len!\n",
+		GOTO_FAIL("%s: Requested offset + len is larger than mbuf data len!\n",
 				__func__);
 
 	/* read length greater than mbuf pkt_len */
 	if (rte_pktmbuf_read(m, hdr_len, rte_pktmbuf_pkt_len(m) + 1,
 				NULL) != NULL)
-		GOTO_FAIL("%s: Requested len is larger than mbuf pkt len!\n",
+		GOTO_FAIL("%s: Requested offset + len is larger than mbuf pkt len!\n",
 				__func__);
 
 	/* read data of zero len from valid offset */
@@ -2044,21 +2065,21 @@ test_pktmbuf_read_from_offset(struct rte_mempool *pktmbuf_pool)
 
 	/* read data of max length from valid offset */
 	data_copy = rte_pktmbuf_read(m, hdr_len, UINT_MAX, NULL);
-	if (data_copy == NULL)
-		GOTO_FAIL("%s: Error in reading packet data!\n", __func__);
-	/* check if the received address is the beginning of data segment */
-	if (data_copy != data)
-		GOTO_FAIL("%s: Corrupted data address!\n", __func__);
+	if (data_copy != NULL)
+		GOTO_FAIL("%s: Requested offset + max len is larger than mbuf pkt len!\n",
+				__func__);
 
 	/* try to read from mbuf with max size offset */
 	data_copy = rte_pktmbuf_read(m, UINT_MAX, 0, NULL);
 	if (data_copy != NULL)
-		GOTO_FAIL("%s: Error in reading packet data!\n", __func__);
+		GOTO_FAIL("%s: Requested max offset is larger than mbuf pkt len!\n",
+				__func__);
 
 	/* try to read from mbuf with max size offset and len */
 	data_copy = rte_pktmbuf_read(m, UINT_MAX, UINT_MAX, NULL);
 	if (data_copy != NULL)
-		GOTO_FAIL("%s: Error in reading packet data!\n", __func__);
+		GOTO_FAIL("%s: Requested max offset + max len is larger than mbuf pkt len!\n",
+				__func__);
 
 	rte_pktmbuf_dump(stdout, m, rte_pktmbuf_pkt_len(m));
 
@@ -2531,19 +2552,19 @@ test_mbuf_dyn(struct rte_mempool *pktmbuf_pool)
 	const struct rte_mbuf_dynfield dynfield = {
 		.name = "test-dynfield",
 		.size = sizeof(uint8_t),
-		.align = __alignof__(uint8_t),
+		.align = alignof(uint8_t),
 		.flags = 0,
 	};
 	const struct rte_mbuf_dynfield dynfield2 = {
 		.name = "test-dynfield2",
 		.size = sizeof(uint16_t),
-		.align = __alignof__(uint16_t),
+		.align = alignof(uint16_t),
 		.flags = 0,
 	};
 	const struct rte_mbuf_dynfield dynfield3 = {
 		.name = "test-dynfield3",
 		.size = sizeof(uint8_t),
-		.align = __alignof__(uint8_t),
+		.align = alignof(uint8_t),
 		.flags = 0,
 	};
 	const struct rte_mbuf_dynfield dynfield_fail_big = {
@@ -2561,7 +2582,7 @@ test_mbuf_dyn(struct rte_mempool *pktmbuf_pool)
 	const struct rte_mbuf_dynfield dynfield_fail_flag = {
 		.name = "test-dynfield",
 		.size = sizeof(uint8_t),
-		.align = __alignof__(uint8_t),
+		.align = alignof(uint8_t),
 		.flags = 1,
 	};
 	const struct rte_mbuf_dynflag dynflag_fail_flag = {

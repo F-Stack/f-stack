@@ -91,6 +91,7 @@ enum index {
 	VALIDATE,
 	CREATE,
 	DESTROY,
+	UPDATE,
 	FLUSH,
 	DUMP,
 	QUERY,
@@ -133,6 +134,7 @@ enum index {
 	/* Queue arguments. */
 	QUEUE_CREATE,
 	QUEUE_DESTROY,
+	QUEUE_FLOW_UPDATE_RESIZED,
 	QUEUE_UPDATE,
 	QUEUE_AGED,
 	QUEUE_INDIRECT_ACTION,
@@ -190,8 +192,12 @@ enum index {
 	/* Table arguments. */
 	TABLE_CREATE,
 	TABLE_DESTROY,
+	TABLE_RESIZE,
+	TABLE_RESIZE_COMPLETE,
 	TABLE_CREATE_ID,
 	TABLE_DESTROY_ID,
+	TABLE_RESIZE_ID,
+	TABLE_RESIZE_RULES_NUMBER,
 	TABLE_INSERTION_TYPE,
 	TABLE_INSERTION_TYPE_NAME,
 	TABLE_HASH_FUNC,
@@ -203,6 +209,7 @@ enum index {
 	TABLE_TRANSFER,
 	TABLE_TRANSFER_WIRE_ORIG,
 	TABLE_TRANSFER_VPORT_ORIG,
+	TABLE_RESIZABLE,
 	TABLE_RULES_NUMBER,
 	TABLE_PATTERN_TEMPLATE,
 	TABLE_ACTIONS_TEMPLATE,
@@ -218,6 +225,10 @@ enum index {
 	HASH_CALC_TABLE,
 	HASH_CALC_PATTERN_INDEX,
 	HASH_CALC_PATTERN,
+	HASH_CALC_ENCAP,
+	HASH_CALC_DEST,
+	ENCAP_HASH_FIELD_SRC_PORT,
+	ENCAP_HASH_FIELD_GRE_FLOW_ID,
 
 	/* Tunnel arguments. */
 	TUNNEL_CREATE,
@@ -249,6 +260,7 @@ enum index {
 	VC_TUNNEL_SET,
 	VC_TUNNEL_MATCH,
 	VC_USER_ID,
+	VC_IS_USER_ID,
 
 	/* Dump arguments */
 	DUMP_ALL,
@@ -369,6 +381,20 @@ enum index {
 	ITEM_SCTP_CKSUM,
 	ITEM_VXLAN,
 	ITEM_VXLAN_VNI,
+	ITEM_VXLAN_FLAG_G,
+	ITEM_VXLAN_FLAG_VER,
+	ITEM_VXLAN_FLAG_I,
+	ITEM_VXLAN_FLAG_P,
+	ITEM_VXLAN_FLAG_B,
+	ITEM_VXLAN_FLAG_O,
+	ITEM_VXLAN_FLAG_D,
+	ITEM_VXLAN_FLAG_A,
+	ITEM_VXLAN_GBP_ID,
+	/* Used for "struct rte_vxlan_hdr", GPE Next protocol */
+	ITEM_VXLAN_GPE_PROTO,
+	ITEM_VXLAN_FIRST_RSVD,
+	ITEM_VXLAN_SECND_RSVD,
+	ITEM_VXLAN_THIRD_RSVD,
 	ITEM_VXLAN_LAST_RSVD,
 	ITEM_E_TAG,
 	ITEM_E_TAG_GRP_ECID_B,
@@ -399,7 +425,11 @@ enum index {
 	ITEM_GENEVE_OPTLEN,
 	ITEM_VXLAN_GPE,
 	ITEM_VXLAN_GPE_VNI,
-	ITEM_VXLAN_GPE_PROTO,
+	/* Used for "struct rte_vxlan_gpe_hdr", deprecated, prefer ITEM_VXLAN_GPE_PROTO */
+	ITEM_VXLAN_GPE_PROTO_IN_DEPRECATED_VXLAN_GPE_HDR,
+	ITEM_VXLAN_GPE_FLAGS,
+	ITEM_VXLAN_GPE_RSVD0,
+	ITEM_VXLAN_GPE_RSVD1,
 	ITEM_ARP_ETH_IPV4,
 	ITEM_ARP_ETH_IPV4_SHA,
 	ITEM_ARP_ETH_IPV4_SPA,
@@ -432,6 +462,8 @@ enum index {
 	ITEM_ICMP6_ND_OPT_TLA_ETH_TLA,
 	ITEM_META,
 	ITEM_META_DATA,
+	ITEM_RANDOM,
+	ITEM_RANDOM_VALUE,
 	ITEM_GRE_KEY,
 	ITEM_GRE_KEY_VALUE,
 	ITEM_GRE_OPTION,
@@ -542,6 +574,28 @@ enum index {
 	ITEM_PTYPE,
 	ITEM_PTYPE_VALUE,
 	ITEM_NSH,
+	ITEM_COMPARE,
+	ITEM_COMPARE_OP,
+	ITEM_COMPARE_OP_VALUE,
+	ITEM_COMPARE_FIELD_A_TYPE,
+	ITEM_COMPARE_FIELD_A_TYPE_VALUE,
+	ITEM_COMPARE_FIELD_A_LEVEL,
+	ITEM_COMPARE_FIELD_A_LEVEL_VALUE,
+	ITEM_COMPARE_FIELD_A_TAG_INDEX,
+	ITEM_COMPARE_FIELD_A_TYPE_ID,
+	ITEM_COMPARE_FIELD_A_CLASS_ID,
+	ITEM_COMPARE_FIELD_A_OFFSET,
+	ITEM_COMPARE_FIELD_B_TYPE,
+	ITEM_COMPARE_FIELD_B_TYPE_VALUE,
+	ITEM_COMPARE_FIELD_B_LEVEL,
+	ITEM_COMPARE_FIELD_B_LEVEL_VALUE,
+	ITEM_COMPARE_FIELD_B_TAG_INDEX,
+	ITEM_COMPARE_FIELD_B_TYPE_ID,
+	ITEM_COMPARE_FIELD_B_CLASS_ID,
+	ITEM_COMPARE_FIELD_B_OFFSET,
+	ITEM_COMPARE_FIELD_B_VALUE,
+	ITEM_COMPARE_FIELD_B_POINTER,
+	ITEM_COMPARE_FIELD_WIDTH,
 
 	/* Validate/create actions. */
 	ACTIONS,
@@ -646,6 +700,7 @@ enum index {
 	ACTION_DEC_TCP_ACK_VALUE,
 	ACTION_RAW_ENCAP,
 	ACTION_RAW_DECAP,
+	ACTION_RAW_ENCAP_SIZE,
 	ACTION_RAW_ENCAP_INDEX,
 	ACTION_RAW_ENCAP_INDEX_VALUE,
 	ACTION_RAW_DECAP_INDEX,
@@ -727,6 +782,11 @@ enum index {
 	ACTION_IPV6_EXT_PUSH,
 	ACTION_IPV6_EXT_PUSH_INDEX,
 	ACTION_IPV6_EXT_PUSH_INDEX_VALUE,
+	ACTION_NAT64,
+	ACTION_NAT64_MODE,
+	ACTION_JUMP_TO_TABLE_INDEX,
+	ACTION_JUMP_TO_TABLE_INDEX_TABLE,
+	ACTION_JUMP_TO_TABLE_INDEX_INDEX,
 };
 
 /** Maximum size for pattern in struct rte_flow_item_raw. */
@@ -739,13 +799,17 @@ enum index {
 #define ITEM_RAW_SIZE \
 	(sizeof(struct rte_flow_item_raw) + ITEM_RAW_PATTERN_SIZE)
 
-/** Maximum size for external pattern in struct rte_flow_action_modify_data. */
-#define ACTION_MODIFY_PATTERN_SIZE 32
+static const char *const compare_ops[] = {
+	"eq", "ne", "lt", "le", "gt", "ge", NULL
+};
+
+/** Maximum size for external pattern in struct rte_flow_field_data. */
+#define FLOW_FIELD_PATTERN_SIZE 32
 
 /** Storage size for struct rte_flow_action_modify_field including pattern. */
 #define ACTION_MODIFY_SIZE \
 	(sizeof(struct rte_flow_action_modify_field) + \
-	ACTION_MODIFY_PATTERN_SIZE)
+	FLOW_FIELD_PATTERN_SIZE)
 
 /** Maximum number of queue indices in struct rte_flow_action_rss. */
 #define ACTION_RSS_QUEUE_NUM 128
@@ -833,20 +897,18 @@ struct vxlan_encap_conf vxlan_encap_conf = {
 	.select_ipv4 = 1,
 	.select_vlan = 0,
 	.select_tos_ttl = 0,
-	.vni = "\x00\x00\x00",
+	.vni = { 0x00, 0x00, 0x00 },
 	.udp_src = 0,
 	.udp_dst = RTE_BE16(RTE_VXLAN_DEFAULT_PORT),
 	.ipv4_src = RTE_IPV4(127, 0, 0, 1),
 	.ipv4_dst = RTE_IPV4(255, 255, 255, 255),
-	.ipv6_src = "\x00\x00\x00\x00\x00\x00\x00\x00"
-		"\x00\x00\x00\x00\x00\x00\x00\x01",
-	.ipv6_dst = "\x00\x00\x00\x00\x00\x00\x00\x00"
-		"\x00\x00\x00\x00\x00\x00\x11\x11",
+	.ipv6_src = RTE_IPV6_ADDR_LOOPBACK,
+	.ipv6_dst = RTE_IPV6(0, 0, 0, 0, 0, 0, 0, 0x1111),
 	.vlan_tci = 0,
 	.ip_tos = 0,
 	.ip_ttl = 255,
-	.eth_src = "\x00\x00\x00\x00\x00\x00",
-	.eth_dst = "\xff\xff\xff\xff\xff\xff",
+	.eth_src = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	.eth_dst = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 };
 
 /** Maximum number of items in struct rte_flow_action_vxlan_encap. */
@@ -869,16 +931,14 @@ struct action_vxlan_encap_data {
 struct nvgre_encap_conf nvgre_encap_conf = {
 	.select_ipv4 = 1,
 	.select_vlan = 0,
-	.tni = "\x00\x00\x00",
+	.tni = { 0x00, 0x00, 0x00 },
 	.ipv4_src = RTE_IPV4(127, 0, 0, 1),
 	.ipv4_dst = RTE_IPV4(255, 255, 255, 255),
-	.ipv6_src = "\x00\x00\x00\x00\x00\x00\x00\x00"
-		"\x00\x00\x00\x00\x00\x00\x00\x01",
-	.ipv6_dst = "\x00\x00\x00\x00\x00\x00\x00\x00"
-		"\x00\x00\x00\x00\x00\x00\x11\x11",
+	.ipv6_src = RTE_IPV6_ADDR_LOOPBACK,
+	.ipv6_dst = RTE_IPV6(0, 0, 0, 0, 0, 0, 0, 0x1111),
 	.vlan_tci = 0,
-	.eth_src = "\x00\x00\x00\x00\x00\x00",
-	.eth_dst = "\xff\xff\xff\xff\xff\xff",
+	.eth_src = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
+	.eth_dst = { 0xff, 0xff, 0xff, 0xff, 0xff, 0xff },
 };
 
 /** Maximum number of items in struct rte_flow_action_nvgre_encap. */
@@ -939,7 +999,7 @@ static const char *const modify_field_ops[] = {
 	"set", "add", "sub", NULL
 };
 
-static const char *const modify_field_ids[] = {
+static const char *const flow_field_ids[] = {
 	"start", "mac_dst", "mac_src",
 	"vlan_type", "vlan_id", "mac_type",
 	"ipv4_dscp", "ipv4_ttl", "ipv4_src", "ipv4_dst",
@@ -955,6 +1015,11 @@ static const char *const modify_field_ids[] = {
 	"hash_result",
 	"geneve_opt_type", "geneve_opt_class", "geneve_opt_data", "mpls",
 	"tcp_data_off", "ipv4_ihl", "ipv4_total_len", "ipv6_payload_len",
+	"ipv4_proto",
+	"ipv6_flow_label", "ipv6_traffic_class",
+	"esp_spi", "esp_seq_num", "esp_proto",
+	"random",
+	"vxlan_last_rsvd",
 	NULL
 };
 
@@ -963,7 +1028,7 @@ static const char *const meter_colors[] = {
 };
 
 static const char *const table_insertion_types[] = {
-	"pattern", "index", NULL
+	"pattern", "index", "index_with_pattern", NULL
 };
 
 static const char *const table_hash_funcs[] = {
@@ -1185,6 +1250,8 @@ struct buffer {
 			uint32_t pattern_n;
 			uint32_t actions_n;
 			uint8_t *data;
+			enum rte_flow_encap_hash_field field;
+			uint8_t encap_hash;
 		} vc; /**< Validate/create arguments. */
 		struct {
 			uint64_t *rule;
@@ -1321,6 +1388,8 @@ static const enum index next_group_attr[] = {
 static const enum index next_table_subcmd[] = {
 	TABLE_CREATE,
 	TABLE_DESTROY,
+	TABLE_RESIZE,
+	TABLE_RESIZE_COMPLETE,
 	ZERO,
 };
 
@@ -1335,6 +1404,7 @@ static const enum index next_table_attr[] = {
 	TABLE_TRANSFER,
 	TABLE_TRANSFER_WIRE_ORIG,
 	TABLE_TRANSFER_VPORT_ORIG,
+	TABLE_RESIZABLE,
 	TABLE_RULES_NUMBER,
 	TABLE_PATTERN_TEMPLATE,
 	TABLE_ACTIONS_TEMPLATE,
@@ -1351,6 +1421,7 @@ static const enum index next_table_destroy_attr[] = {
 static const enum index next_queue_subcmd[] = {
 	QUEUE_CREATE,
 	QUEUE_DESTROY,
+	QUEUE_FLOW_UPDATE_RESIZED,
 	QUEUE_UPDATE,
 	QUEUE_AGED,
 	QUEUE_INDIRECT_ACTION,
@@ -1511,6 +1582,12 @@ static const enum index next_async_insert_subcmd[] = {
 	ZERO,
 };
 
+static const enum index next_async_pattern_subcmd[] = {
+	QUEUE_PATTERN_TEMPLATE,
+	QUEUE_ACTIONS_TEMPLATE,
+	ZERO,
+};
+
 static const enum index item_param[] = {
 	ITEM_PARAM_IS,
 	ITEM_PARAM_SPEC,
@@ -1560,6 +1637,7 @@ static const enum index next_item[] = {
 	ITEM_ICMP6_ND_OPT_SLA_ETH,
 	ITEM_ICMP6_ND_OPT_TLA_ETH,
 	ITEM_META,
+	ITEM_RANDOM,
 	ITEM_GRE_KEY,
 	ITEM_GRE_OPTION,
 	ITEM_GTP_PSC,
@@ -1588,6 +1666,7 @@ static const enum index next_item[] = {
 	ITEM_IB_BTH,
 	ITEM_PTYPE,
 	ITEM_NSH,
+	ITEM_COMPARE,
 	END_SET,
 	ZERO,
 };
@@ -1718,6 +1797,19 @@ static const enum index item_sctp[] = {
 
 static const enum index item_vxlan[] = {
 	ITEM_VXLAN_VNI,
+	ITEM_VXLAN_FLAG_G,
+	ITEM_VXLAN_FLAG_VER,
+	ITEM_VXLAN_FLAG_I,
+	ITEM_VXLAN_FLAG_P,
+	ITEM_VXLAN_FLAG_B,
+	ITEM_VXLAN_FLAG_O,
+	ITEM_VXLAN_FLAG_D,
+	ITEM_VXLAN_FLAG_A,
+	ITEM_VXLAN_GBP_ID,
+	ITEM_VXLAN_GPE_PROTO,
+	ITEM_VXLAN_FIRST_RSVD,
+	ITEM_VXLAN_SECND_RSVD,
+	ITEM_VXLAN_THIRD_RSVD,
 	ITEM_VXLAN_LAST_RSVD,
 	ITEM_NEXT,
 	ZERO,
@@ -1786,7 +1878,10 @@ static const enum index item_geneve[] = {
 
 static const enum index item_vxlan_gpe[] = {
 	ITEM_VXLAN_GPE_VNI,
-	ITEM_VXLAN_GPE_PROTO,
+	ITEM_VXLAN_GPE_PROTO_IN_DEPRECATED_VXLAN_GPE_HDR,
+	ITEM_VXLAN_GPE_FLAGS,
+	ITEM_VXLAN_GPE_RSVD0,
+	ITEM_VXLAN_GPE_RSVD1,
 	ITEM_NEXT,
 	ZERO,
 };
@@ -1867,6 +1962,12 @@ static const enum index item_icmp6_nd_opt_tla_eth[] = {
 
 static const enum index item_meta[] = {
 	ITEM_META_DATA,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index item_random[] = {
+	ITEM_RANDOM_VALUE,
 	ITEM_NEXT,
 	ZERO,
 };
@@ -2119,6 +2220,38 @@ static const enum index item_nsh[] = {
 	ZERO,
 };
 
+static const enum index item_compare_field[] = {
+	ITEM_COMPARE_OP,
+	ITEM_COMPARE_FIELD_A_TYPE,
+	ITEM_COMPARE_FIELD_B_TYPE,
+	ITEM_NEXT,
+	ZERO,
+};
+
+static const enum index compare_field_a[] = {
+	ITEM_COMPARE_FIELD_A_TYPE,
+	ITEM_COMPARE_FIELD_A_LEVEL,
+	ITEM_COMPARE_FIELD_A_TAG_INDEX,
+	ITEM_COMPARE_FIELD_A_TYPE_ID,
+	ITEM_COMPARE_FIELD_A_CLASS_ID,
+	ITEM_COMPARE_FIELD_A_OFFSET,
+	ITEM_COMPARE_FIELD_B_TYPE,
+	ZERO,
+};
+
+static const enum index compare_field_b[] = {
+	ITEM_COMPARE_FIELD_B_TYPE,
+	ITEM_COMPARE_FIELD_B_LEVEL,
+	ITEM_COMPARE_FIELD_B_TAG_INDEX,
+	ITEM_COMPARE_FIELD_B_TYPE_ID,
+	ITEM_COMPARE_FIELD_B_CLASS_ID,
+	ITEM_COMPARE_FIELD_B_OFFSET,
+	ITEM_COMPARE_FIELD_B_VALUE,
+	ITEM_COMPARE_FIELD_B_POINTER,
+	ITEM_COMPARE_FIELD_WIDTH,
+	ZERO,
+};
+
 static const enum index next_action[] = {
 	ACTION_END,
 	ACTION_VOID,
@@ -2191,6 +2324,8 @@ static const enum index next_action[] = {
 	ACTION_QUOTA_QU,
 	ACTION_IPV6_EXT_REMOVE,
 	ACTION_IPV6_EXT_PUSH,
+	ACTION_NAT64,
+	ACTION_JUMP_TO_TABLE_INDEX,
 	ZERO,
 };
 
@@ -2387,6 +2522,7 @@ static const enum index action_dec_tcp_ack[] = {
 };
 
 static const enum index action_raw_encap[] = {
+	ACTION_RAW_ENCAP_SIZE,
 	ACTION_RAW_ENCAP_INDEX,
 	ACTION_NEXT,
 	ZERO,
@@ -2528,6 +2664,31 @@ static const enum index action_port_representor[] = {
 
 static const enum index action_represented_port[] = {
 	ACTION_REPRESENTED_PORT_ETHDEV_PORT_ID,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index action_nat64[] = {
+	ACTION_NAT64_MODE,
+	ACTION_NEXT,
+	ZERO,
+};
+
+static const enum index next_hash_subcmd[] = {
+	HASH_CALC_TABLE,
+	HASH_CALC_ENCAP,
+	ZERO,
+};
+
+static const enum index next_hash_encap_dest_subcmd[] = {
+	ENCAP_HASH_FIELD_SRC_PORT,
+	ENCAP_HASH_FIELD_GRE_FLOW_ID,
+	ZERO,
+};
+
+static const enum index action_jump_to_table_index[] = {
+	ACTION_JUMP_TO_TABLE_INDEX_TABLE,
+	ACTION_JUMP_TO_TABLE_INDEX_INDEX,
 	ACTION_NEXT,
 	ZERO,
 };
@@ -2861,6 +3022,24 @@ comp_quota_update_name(struct context *ctx, const struct token *token,
 static int
 comp_qu_mode_name(struct context *ctx, const struct token *token,
 		  unsigned int ent, char *buf, unsigned int size);
+static int
+comp_set_compare_field_id(struct context *ctx, const struct token *token,
+			  unsigned int ent, char *buf, unsigned int size);
+static int
+comp_set_compare_op(struct context *ctx, const struct token *token,
+		    unsigned int ent, char *buf, unsigned int size);
+static int
+parse_vc_compare_op(struct context *ctx, const struct token *token,
+			 const char *str, unsigned int len, void *buf,
+			 unsigned int size);
+static int
+parse_vc_compare_field_id(struct context *ctx, const struct token *token,
+			  const char *str, unsigned int len, void *buf,
+			  unsigned int size);
+static int
+parse_vc_compare_field_level(struct context *ctx, const struct token *token,
+			     const char *str, unsigned int len, void *buf,
+			     unsigned int size);
 
 struct indlst_conf {
 	uint32_t id;
@@ -3072,6 +3251,7 @@ static const struct token token_list[] = {
 			      VALIDATE,
 			      CREATE,
 			      DESTROY,
+			      UPDATE,
 			      FLUSH,
 			      DUMP,
 			      LIST,
@@ -3342,6 +3522,19 @@ static const struct token token_list[] = {
 		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
 		.call = parse_table_destroy,
 	},
+	[TABLE_RESIZE] = {
+		.name = "resize",
+		.help = "resize template table",
+		.next = NEXT(NEXT_ENTRY(TABLE_RESIZE_ID)),
+		.call = parse_table
+	},
+	[TABLE_RESIZE_COMPLETE] = {
+		.name = "resize_complete",
+		.help = "complete table resize",
+		.next = NEXT(NEXT_ENTRY(TABLE_DESTROY_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
+		.call = parse_table_destroy,
+	},
 	/* Table  arguments. */
 	[TABLE_CREATE_ID] = {
 		.name = "table_id",
@@ -3352,12 +3545,28 @@ static const struct token token_list[] = {
 	},
 	[TABLE_DESTROY_ID] = {
 		.name = "table",
-		.help = "specify table id to destroy",
+		.help = "table id",
 		.next = NEXT(next_table_destroy_attr,
 			     NEXT_ENTRY(COMMON_TABLE_ID)),
 		.args = ARGS(ARGS_ENTRY_PTR(struct buffer,
 					    args.table_destroy.table_id)),
 		.call = parse_table_destroy,
+	},
+	[TABLE_RESIZE_ID] = {
+		.name = "table_resize_id",
+		.help = "table resize id",
+		.next = NEXT(NEXT_ENTRY(TABLE_RESIZE_RULES_NUMBER),
+			     NEXT_ENTRY(COMMON_TABLE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, args.table.id)),
+		.call = parse_table
+	},
+	[TABLE_RESIZE_RULES_NUMBER] = {
+		.name = "table_resize_rules_num",
+		.help = "table resize rules number",
+		.next = NEXT(NEXT_ENTRY(END), NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct buffer,
+					args.table.attr.nb_flows)),
+		.call = parse_table
 	},
 	[TABLE_INSERTION_TYPE] = {
 		.name = "insertion_type",
@@ -3428,6 +3637,12 @@ static const struct token token_list[] = {
 	[TABLE_TRANSFER_VPORT_ORIG] = {
 		.name = "vport_orig",
 		.help = "affect rule direction to transfer",
+		.next = NEXT(next_table_attr),
+		.call = parse_table,
+	},
+	[TABLE_RESIZABLE] = {
+		.name = "resizable",
+		.help = "set resizable attribute",
 		.next = NEXT(next_table_attr),
 		.call = parse_table,
 	},
@@ -3523,6 +3738,14 @@ static const struct token token_list[] = {
 		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
 		.call = parse_qo_destroy,
 	},
+	[QUEUE_FLOW_UPDATE_RESIZED] = {
+		.name = "update_resized",
+		.help = "update a flow after table resize",
+		.next = NEXT(NEXT_ENTRY(QUEUE_DESTROY_ID),
+			     NEXT_ENTRY(COMMON_QUEUE_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, queue)),
+		.call = parse_qo_destroy,
+	},
 	[QUEUE_UPDATE] = {
 		.name = "update",
 		.help = "update a flow rule",
@@ -3576,7 +3799,7 @@ static const struct token token_list[] = {
 	[QUEUE_RULE_ID] = {
 		.name = "rule_index",
 		.help = "specify flow rule index",
-		.next = NEXT(NEXT_ENTRY(QUEUE_ACTIONS_TEMPLATE),
+		.next = NEXT(next_async_pattern_subcmd,
 			     NEXT_ENTRY(COMMON_UNSIGNED)),
 		.args = ARGS(ARGS_ENTRY(struct buffer,
 					args.vc.rule_id)),
@@ -3771,7 +3994,7 @@ static const struct token token_list[] = {
 	[HASH] = {
 		.name = "hash",
 		.help = "calculate hash for a given pattern in a given template table",
-		.next = NEXT(NEXT_ENTRY(HASH_CALC_TABLE), NEXT_ENTRY(COMMON_PORT_ID)),
+		.next = NEXT(next_hash_subcmd, NEXT_ENTRY(COMMON_PORT_ID)),
 		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
 		.call = parse_hash,
 	},
@@ -3785,6 +4008,12 @@ static const struct token token_list[] = {
 					args.vc.table_id)),
 		.call = parse_hash,
 	},
+	[HASH_CALC_ENCAP] = {
+		.name = "encap",
+		.help = "calculates encap hash",
+		.next = NEXT(next_hash_encap_dest_subcmd),
+		.call = parse_hash,
+	},
 	[HASH_CALC_PATTERN_INDEX] = {
 		.name = "pattern_template",
 		.help = "specify pattern template id",
@@ -3792,6 +4021,18 @@ static const struct token token_list[] = {
 			     NEXT_ENTRY(COMMON_UNSIGNED)),
 		.args = ARGS(ARGS_ENTRY(struct buffer,
 					args.vc.pat_templ_id)),
+		.call = parse_hash,
+	},
+	[ENCAP_HASH_FIELD_SRC_PORT] = {
+		.name = "hash_field_sport",
+		.help = "the encap hash field is src port",
+		.next = NEXT(NEXT_ENTRY(ITEM_PATTERN)),
+		.call = parse_hash,
+	},
+	[ENCAP_HASH_FIELD_GRE_FLOW_ID] = {
+		.name = "hash_field_flow_id",
+		.help = "the encap hash field is NVGRE flow id",
+		.next = NEXT(NEXT_ENTRY(ITEM_PATTERN)),
 		.call = parse_hash,
 	},
 	/* Top-level command. */
@@ -3875,6 +4116,17 @@ static const struct token token_list[] = {
 			     NEXT_ENTRY(COMMON_PORT_ID)),
 		.args = ARGS(ARGS_ENTRY(struct buffer, port)),
 		.call = parse_destroy,
+	},
+	[UPDATE] = {
+		.name = "update",
+		.help = "update a flow rule with new actions",
+		.next = NEXT(NEXT_ENTRY(VC_IS_USER_ID, END),
+			     NEXT_ENTRY(ACTIONS),
+			     NEXT_ENTRY(COMMON_RULE_ID),
+			     NEXT_ENTRY(COMMON_PORT_ID)),
+		.args = ARGS(ARGS_ENTRY(struct buffer, args.vc.rule_id),
+			     ARGS_ENTRY(struct buffer, port)),
+		.call = parse_vc,
 	},
 	[FLUSH] = {
 		.name = "flush",
@@ -4111,6 +4363,11 @@ static const struct token token_list[] = {
 		.help = "specify a user id to create",
 		.next = NEXT(next_vc_attr, NEXT_ENTRY(COMMON_UNSIGNED)),
 		.args = ARGS(ARGS_ENTRY(struct buffer, args.vc.user_id)),
+		.call = parse_vc,
+	},
+	[VC_IS_USER_ID] = {
+		.name = "user_id",
+		.help = "rule identifier is user-id",
 		.call = parse_vc,
 	},
 	/* Validate/create pattern. */
@@ -4684,13 +4941,117 @@ static const struct token token_list[] = {
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan, hdr.vni)),
 	},
-	[ITEM_VXLAN_LAST_RSVD] = {
-		.name = "last_rsvd",
-		.help = "VXLAN last reserved bits",
+	[ITEM_VXLAN_FLAG_G] = {
+		.name = "flag_g",
+		.help = "VXLAN GBP bit",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_item_vxlan,
+					   hdr.flag_g, 1)),
+	},
+	[ITEM_VXLAN_FLAG_VER] = {
+		.name = "flag_ver",
+		.help = "VXLAN GPE version",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_item_vxlan,
+					   hdr.flag_ver, 2)),
+	},
+	[ITEM_VXLAN_FLAG_I] = {
+		.name = "flag_i",
+		.help = "VXLAN Instance bit",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_item_vxlan,
+					   hdr.flag_i, 1)),
+	},
+	[ITEM_VXLAN_FLAG_P] = {
+		.name = "flag_p",
+		.help = "VXLAN GPE Next Protocol bit",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_item_vxlan,
+					   hdr.flag_p, 1)),
+	},
+	[ITEM_VXLAN_FLAG_B] = {
+		.name = "flag_b",
+		.help = "VXLAN GPE Ingress-Replicated BUM",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_item_vxlan,
+					   hdr.flag_b, 1)),
+	},
+	[ITEM_VXLAN_FLAG_O] = {
+		.name = "flag_o",
+		.help = "VXLAN GPE OAM Packet bit",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_item_vxlan,
+					   hdr.flag_o, 1)),
+	},
+	[ITEM_VXLAN_FLAG_D] = {
+		.name = "flag_d",
+		.help = "VXLAN GBP Don't Learn bit",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_item_vxlan,
+					   hdr.flag_d, 1)),
+	},
+	[ITEM_VXLAN_FLAG_A] = {
+		.name = "flag_a",
+		.help = "VXLAN GBP Applied bit",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_BF(struct rte_flow_item_vxlan,
+					   hdr.flag_a, 1)),
+	},
+	[ITEM_VXLAN_GBP_ID] = {
+		.name = "group_policy_id",
+		.help = "VXLAN GBP ID",
 		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan,
-					     hdr.rsvd1)),
+					     hdr.policy_id)),
+	},
+	[ITEM_VXLAN_GPE_PROTO] = {
+		.name = "protocol",
+		.help = "VXLAN GPE next protocol",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan,
+					     hdr.proto)),
+	},
+	[ITEM_VXLAN_FIRST_RSVD] = {
+		.name = "first_rsvd",
+		.help = "VXLAN rsvd0 first byte",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan,
+					     hdr.rsvd0[0])),
+	},
+	[ITEM_VXLAN_SECND_RSVD] = {
+		.name = "second_rsvd",
+		.help = "VXLAN rsvd0 second byte",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan,
+					     hdr.rsvd0[1])),
+	},
+	[ITEM_VXLAN_THIRD_RSVD] = {
+		.name = "third_rsvd",
+		.help = "VXLAN rsvd0 third byte",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan,
+					     hdr.rsvd0[2])),
+	},
+	[ITEM_VXLAN_LAST_RSVD] = {
+		.name = "last_rsvd",
+		.help = "VXLAN last reserved byte",
+		.next = NEXT(item_vxlan, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan,
+					     hdr.last_rsvd)),
 	},
 	[ITEM_E_TAG] = {
 		.name = "e_tag",
@@ -4917,13 +5278,37 @@ static const struct token token_list[] = {
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan_gpe,
 					     hdr.vni)),
 	},
-	[ITEM_VXLAN_GPE_PROTO] = {
+	[ITEM_VXLAN_GPE_PROTO_IN_DEPRECATED_VXLAN_GPE_HDR] = {
 		.name = "protocol",
 		.help = "VXLAN-GPE next protocol",
 		.next = NEXT(item_vxlan_gpe, NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan_gpe,
 					     protocol)),
+	},
+	[ITEM_VXLAN_GPE_FLAGS] = {
+		.name = "flags",
+		.help = "VXLAN-GPE flags",
+		.next = NEXT(item_vxlan_gpe, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan_gpe,
+					     flags)),
+	},
+	[ITEM_VXLAN_GPE_RSVD0] = {
+		.name = "rsvd0",
+		.help = "VXLAN-GPE rsvd0",
+		.next = NEXT(item_vxlan_gpe, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan_gpe,
+					     rsvd0)),
+	},
+	[ITEM_VXLAN_GPE_RSVD1] = {
+		.name = "rsvd1",
+		.help = "VXLAN-GPE rsvd1",
+		.next = NEXT(item_vxlan_gpe, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vxlan_gpe,
+					     rsvd1)),
 	},
 	[ITEM_ARP_ETH_IPV4] = {
 		.name = "arp_eth_ipv4",
@@ -5183,6 +5568,21 @@ static const struct token token_list[] = {
 			     item_param),
 		.args = ARGS(ARGS_ENTRY_MASK(struct rte_flow_item_meta,
 					     data, "\xff\xff\xff\xff")),
+	},
+	[ITEM_RANDOM] = {
+		.name = "random",
+		.help = "match random value",
+		.priv = PRIV_ITEM(RANDOM, sizeof(struct rte_flow_item_random)),
+		.next = NEXT(item_random),
+		.call = parse_vc,
+	},
+	[ITEM_RANDOM_VALUE] = {
+		.name = "value",
+		.help = "random value",
+		.next = NEXT(item_random, NEXT_ENTRY(COMMON_UNSIGNED),
+			     item_param),
+		.args = ARGS(ARGS_ENTRY_MASK(struct rte_flow_item_random,
+					     value, "\xff\xff\xff\xff")),
 	},
 	[ITEM_GRE_KEY] = {
 		.name = "gre_key",
@@ -5974,6 +6374,174 @@ static const struct token token_list[] = {
 		.next = NEXT(item_nsh),
 		.call = parse_vc,
 	},
+	[ITEM_COMPARE] = {
+		.name = "compare",
+		.help = "match with the comparison result",
+		.priv = PRIV_ITEM(COMPARE, sizeof(struct rte_flow_item_compare)),
+		.next = NEXT(NEXT_ENTRY(ITEM_COMPARE_OP)),
+		.call = parse_vc,
+	},
+	[ITEM_COMPARE_OP] = {
+		.name = "op",
+		.help = "operation type",
+		.next = NEXT(item_compare_field,
+			NEXT_ENTRY(ITEM_COMPARE_OP_VALUE), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare, operation)),
+	},
+	[ITEM_COMPARE_OP_VALUE] = {
+		.name = "{operation}",
+		.help = "operation type value",
+		.call = parse_vc_compare_op,
+		.comp = comp_set_compare_op,
+	},
+	[ITEM_COMPARE_FIELD_A_TYPE] = {
+		.name = "a_type",
+		.help = "compared field type",
+		.next = NEXT(compare_field_a,
+			NEXT_ENTRY(ITEM_COMPARE_FIELD_A_TYPE_VALUE), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare, a.field)),
+	},
+	[ITEM_COMPARE_FIELD_A_TYPE_VALUE] = {
+		.name = "{a_type}",
+		.help = "compared field type value",
+		.call = parse_vc_compare_field_id,
+		.comp = comp_set_compare_field_id,
+	},
+	[ITEM_COMPARE_FIELD_A_LEVEL] = {
+		.name = "a_level",
+		.help = "compared field level",
+		.next = NEXT(compare_field_a,
+			     NEXT_ENTRY(ITEM_COMPARE_FIELD_A_LEVEL_VALUE), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare, a.level)),
+	},
+	[ITEM_COMPARE_FIELD_A_LEVEL_VALUE] = {
+		.name = "{a_level}",
+		.help = "compared field level value",
+		.call = parse_vc_compare_field_level,
+		.comp = comp_none,
+	},
+	[ITEM_COMPARE_FIELD_A_TAG_INDEX] = {
+		.name = "a_tag_index",
+		.help = "compared field tag array",
+		.next = NEXT(compare_field_a,
+			     NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					a.tag_index)),
+	},
+	[ITEM_COMPARE_FIELD_A_TYPE_ID] = {
+		.name = "a_type_id",
+		.help = "compared field type ID",
+		.next = NEXT(compare_field_a,
+			     NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					a.type)),
+	},
+	[ITEM_COMPARE_FIELD_A_CLASS_ID] = {
+		.name = "a_class",
+		.help = "compared field class ID",
+		.next = NEXT(compare_field_a,
+			     NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_compare,
+					     a.class_id)),
+	},
+	[ITEM_COMPARE_FIELD_A_OFFSET] = {
+		.name = "a_offset",
+		.help = "compared field bit offset",
+		.next = NEXT(compare_field_a,
+			     NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					a.offset)),
+	},
+	[ITEM_COMPARE_FIELD_B_TYPE] = {
+		.name = "b_type",
+		.help = "comparator field type",
+		.next = NEXT(compare_field_b,
+			NEXT_ENTRY(ITEM_COMPARE_FIELD_B_TYPE_VALUE), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					b.field)),
+	},
+	[ITEM_COMPARE_FIELD_B_TYPE_VALUE] = {
+		.name = "{b_type}",
+		.help = "comparator field type value",
+		.call = parse_vc_compare_field_id,
+		.comp = comp_set_compare_field_id,
+	},
+	[ITEM_COMPARE_FIELD_B_LEVEL] = {
+		.name = "b_level",
+		.help = "comparator field level",
+		.next = NEXT(compare_field_b,
+			     NEXT_ENTRY(ITEM_COMPARE_FIELD_B_LEVEL_VALUE), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					b.level)),
+	},
+	[ITEM_COMPARE_FIELD_B_LEVEL_VALUE] = {
+		.name = "{b_level}",
+		.help = "comparator field level value",
+		.call = parse_vc_compare_field_level,
+		.comp = comp_none,
+	},
+	[ITEM_COMPARE_FIELD_B_TAG_INDEX] = {
+		.name = "b_tag_index",
+		.help = "comparator field tag array",
+		.next = NEXT(compare_field_b,
+			     NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					b.tag_index)),
+	},
+	[ITEM_COMPARE_FIELD_B_TYPE_ID] = {
+		.name = "b_type_id",
+		.help = "comparator field type ID",
+		.next = NEXT(compare_field_b,
+			     NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					b.type)),
+	},
+	[ITEM_COMPARE_FIELD_B_CLASS_ID] = {
+		.name = "b_class",
+		.help = "comparator field class ID",
+		.next = NEXT(compare_field_b,
+			     NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_compare,
+					     b.class_id)),
+	},
+	[ITEM_COMPARE_FIELD_B_OFFSET] = {
+		.name = "b_offset",
+		.help = "comparator field bit offset",
+		.next = NEXT(compare_field_b,
+			     NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					b.offset)),
+	},
+	[ITEM_COMPARE_FIELD_B_VALUE] = {
+		.name = "b_value",
+		.help = "comparator immediate value",
+		.next = NEXT(compare_field_b,
+			     NEXT_ENTRY(COMMON_HEX), item_param),
+		.args = ARGS(ARGS_ENTRY_ARB(0, 0),
+			     ARGS_ENTRY_ARB(0, 0),
+			     ARGS_ENTRY(struct rte_flow_item_compare,
+					b.value)),
+	},
+	[ITEM_COMPARE_FIELD_B_POINTER] = {
+		.name = "b_ptr",
+		.help = "pointer to comparator immediate value",
+		.next = NEXT(compare_field_b,
+			     NEXT_ENTRY(COMMON_HEX), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					b.pvalue),
+			     ARGS_ENTRY_ARB(0, 0),
+			     ARGS_ENTRY_ARB
+				(sizeof(struct rte_flow_item_compare),
+				 FLOW_FIELD_PATTERN_SIZE)),
+	},
+	[ITEM_COMPARE_FIELD_WIDTH] = {
+		.name = "width",
+		.help = "number of bits to compare",
+		.next = NEXT(item_compare_field,
+			NEXT_ENTRY(COMMON_UNSIGNED), item_param),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_item_compare,
+					width)),
+	},
 
 	/* Validate/create actions. */
 	[ACTIONS] = {
@@ -6754,6 +7322,14 @@ static const struct token token_list[] = {
 		.next = NEXT(action_raw_encap),
 		.call = parse_vc_action_raw_encap,
 	},
+	[ACTION_RAW_ENCAP_SIZE] = {
+		.name = "size",
+		.help = "raw encap size",
+		.next = NEXT(NEXT_ENTRY(ACTION_NEXT),
+			     NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_raw_encap, size)),
+		.call = parse_vc_conf,
+	},
 	[ACTION_RAW_ENCAP_INDEX] = {
 		.name = "index",
 		.help = "the index of raw_encap_confs",
@@ -6953,7 +7529,7 @@ static const struct token token_list[] = {
 			     ARGS_ENTRY_ARB(0, 0),
 			     ARGS_ENTRY_ARB
 				(sizeof(struct rte_flow_action_modify_field),
-				 ACTION_MODIFY_PATTERN_SIZE)),
+				 FLOW_FIELD_PATTERN_SIZE)),
 		.call = parse_vc_conf,
 	},
 	[ACTION_MODIFY_FIELD_WIDTH] = {
@@ -7014,6 +7590,43 @@ static const struct token token_list[] = {
 		.call = parse_vc_action_ipv6_ext_push_index,
 		.comp = comp_set_ipv6_ext_index,
 	},
+	[ACTION_NAT64] = {
+		.name = "nat64",
+		.help = "NAT64 IP headers translation",
+		.priv = PRIV_ACTION(NAT64, sizeof(struct rte_flow_action_nat64)),
+		.next = NEXT(action_nat64),
+		.call = parse_vc,
+	},
+	[ACTION_NAT64_MODE] = {
+		.name = "type",
+		.help = "NAT64 translation type",
+		.next = NEXT(action_nat64, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_nat64, type)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_JUMP_TO_TABLE_INDEX] = {
+		.name = "jump_to_table_index",
+		.help = "Jump to table index",
+		.priv = PRIV_ACTION(JUMP_TO_TABLE_INDEX,
+				    sizeof(struct rte_flow_action_jump_to_table_index)),
+		.next = NEXT(action_jump_to_table_index),
+		.call = parse_vc,
+	},
+	[ACTION_JUMP_TO_TABLE_INDEX_TABLE] = {
+		.name = "table",
+		.help = "table to redirect traffic to",
+		.next = NEXT(action_jump_to_table_index, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_jump_to_table_index, table)),
+		.call = parse_vc_conf,
+	},
+	[ACTION_JUMP_TO_TABLE_INDEX_INDEX] = {
+		.name = "index",
+		.help = "rule index to redirect traffic to",
+		.next = NEXT(action_jump_to_table_index, NEXT_ENTRY(COMMON_UNSIGNED)),
+		.args = ARGS(ARGS_ENTRY(struct rte_flow_action_jump_to_table_index, index)),
+		.call = parse_vc_conf,
+	},
+
 	/* Top level command. */
 	[SET] = {
 		.name = "set",
@@ -7676,7 +8289,8 @@ parse_prefix(struct context *ctx, const struct token *token,
 	     void *buf, unsigned int size)
 {
 	const struct arg *arg = pop_args(ctx);
-	static const uint8_t conv[] = "\x00\x80\xc0\xe0\xf0\xf8\xfc\xfe\xff";
+	static const uint8_t conv[] = { 0x00, 0x80, 0xc0, 0xe0, 0xf0,
+					0xf8, 0xfc, 0xfe, 0xff };
 	char *end;
 	uintmax_t u;
 	unsigned int bytes;
@@ -8052,8 +8666,13 @@ parse_vc(struct context *ctx, const struct token *token,
 	if (!out->command) {
 		if (ctx->curr != VALIDATE && ctx->curr != CREATE &&
 		    ctx->curr != PATTERN_TEMPLATE_CREATE &&
-		    ctx->curr != ACTIONS_TEMPLATE_CREATE)
+		    ctx->curr != ACTIONS_TEMPLATE_CREATE &&
+		    ctx->curr != UPDATE)
 			return -1;
+		if (ctx->curr == UPDATE)
+			out->args.vc.pattern =
+				(void *)RTE_ALIGN_CEIL((uintptr_t)(out + 1),
+						       sizeof(double));
 		if (sizeof(*out) > size)
 			return -1;
 		out->command = ctx->curr;
@@ -8124,6 +8743,9 @@ parse_vc(struct context *ctx, const struct token *token,
 					       sizeof(double));
 		ctx->object = out->args.vc.actions;
 		ctx->objmask = NULL;
+		return len;
+	case VC_IS_USER_ID:
+		out->args.vc.user_id = true;
 		return len;
 	default:
 		if (!token->priv)
@@ -8395,6 +9017,122 @@ parse_vc_item_l2tpv2_type(struct context *ctx, const struct token *token,
 	item = &out->args.vc.pattern[out->args.vc.pattern_n - 1];
 	item->spec = l2tpv2;
 	item->mask = l2tpv2_mask;
+	return len;
+}
+
+/** Parse operation for compare match item. */
+static int
+parse_vc_compare_op(struct context *ctx, const struct token *token,
+			 const char *str, unsigned int len, void *buf,
+			 unsigned int size)
+{
+	struct rte_flow_item_compare *compare_item;
+	unsigned int i;
+
+	(void)token;
+	(void)buf;
+	(void)size;
+	if (ctx->curr != ITEM_COMPARE_OP_VALUE)
+		return -1;
+	for (i = 0; compare_ops[i]; ++i)
+		if (!strcmp_partial(compare_ops[i], str, len))
+			break;
+	if (!compare_ops[i])
+		return -1;
+	if (!ctx->object)
+		return len;
+	compare_item = ctx->object;
+	compare_item->operation = (enum rte_flow_item_compare_op)i;
+	return len;
+}
+
+/** Parse id for compare match item. */
+static int
+parse_vc_compare_field_id(struct context *ctx, const struct token *token,
+			  const char *str, unsigned int len, void *buf,
+			  unsigned int size)
+{
+	struct rte_flow_item_compare *compare_item;
+	unsigned int i;
+
+	(void)token;
+	(void)buf;
+	(void)size;
+	if (ctx->curr != ITEM_COMPARE_FIELD_A_TYPE_VALUE &&
+		ctx->curr != ITEM_COMPARE_FIELD_B_TYPE_VALUE)
+		return -1;
+	for (i = 0; flow_field_ids[i]; ++i)
+		if (!strcmp_partial(flow_field_ids[i], str, len))
+			break;
+	if (!flow_field_ids[i])
+		return -1;
+	if (!ctx->object)
+		return len;
+	compare_item = ctx->object;
+	if (ctx->curr == ITEM_COMPARE_FIELD_A_TYPE_VALUE)
+		compare_item->a.field = (enum rte_flow_field_id)i;
+	else
+		compare_item->b.field = (enum rte_flow_field_id)i;
+	return len;
+}
+
+/** Parse level for compare match item. */
+static int
+parse_vc_compare_field_level(struct context *ctx, const struct token *token,
+			     const char *str, unsigned int len, void *buf,
+			     unsigned int size)
+{
+	struct rte_flow_item_compare *compare_item;
+	struct flex_item *fp = NULL;
+	uint32_t val;
+	struct buffer *out = buf;
+	char *end;
+
+	(void)token;
+	(void)size;
+	if (ctx->curr != ITEM_COMPARE_FIELD_A_LEVEL_VALUE &&
+		ctx->curr != ITEM_COMPARE_FIELD_B_LEVEL_VALUE)
+		return -1;
+	if (!ctx->object)
+		return len;
+	compare_item = ctx->object;
+	errno = 0;
+	val = strtoumax(str, &end, 0);
+	if (errno || (size_t)(end - str) != len)
+		return -1;
+	/* No need to validate action template mask value */
+	if (out->args.vc.masks) {
+		if (ctx->curr == ITEM_COMPARE_FIELD_A_LEVEL_VALUE)
+			compare_item->a.level = val;
+		else
+			compare_item->b.level = val;
+		return len;
+	}
+	if ((ctx->curr == ITEM_COMPARE_FIELD_A_LEVEL_VALUE &&
+		compare_item->a.field == RTE_FLOW_FIELD_FLEX_ITEM) ||
+		(ctx->curr == ITEM_COMPARE_FIELD_B_LEVEL_VALUE &&
+		compare_item->b.field == RTE_FLOW_FIELD_FLEX_ITEM)) {
+		if (val >= FLEX_MAX_PARSERS_NUM) {
+			printf("Bad flex item handle\n");
+			return -1;
+		}
+		fp = flex_items[ctx->port][val];
+		if (!fp) {
+			printf("Bad flex item handle\n");
+			return -1;
+		}
+	}
+	if (ctx->curr == ITEM_COMPARE_FIELD_A_LEVEL_VALUE) {
+		if (compare_item->a.field != RTE_FLOW_FIELD_FLEX_ITEM)
+			compare_item->a.level = val;
+		else
+			compare_item->a.flex_handle = fp->flex_handle;
+	} else if (ctx->curr == ITEM_COMPARE_FIELD_B_LEVEL_VALUE) {
+		if (compare_item->b.field != RTE_FLOW_FIELD_FLEX_ITEM)
+			compare_item->b.level = val;
+		else
+			compare_item->b.flex_handle = fp->flex_handle;
+	}
 	return len;
 }
 
@@ -9451,8 +10189,6 @@ parse_vc_action_raw_encap(struct context *ctx, const struct token *token,
 			  unsigned int size)
 {
 	struct buffer *out = buf;
-	struct rte_flow_action *action;
-	struct action_raw_encap_data *action_raw_encap_data = NULL;
 	int ret;
 
 	ret = parse_vc(ctx, token, str, len, buf, size);
@@ -9463,16 +10199,9 @@ parse_vc_action_raw_encap(struct context *ctx, const struct token *token,
 		return ret;
 	if (!out->args.vc.actions_n)
 		return -1;
-	action = &out->args.vc.actions[out->args.vc.actions_n - 1];
 	/* Point to selected object. */
 	ctx->object = out->args.vc.data;
 	ctx->objmask = NULL;
-	/* Copy the headers to the buffer. */
-	action_raw_encap_data = ctx->object;
-	action_raw_encap_data->conf.data = raw_encap_confs[0].data;
-	action_raw_encap_data->conf.preserve = NULL;
-	action_raw_encap_data->conf.size = raw_encap_confs[0].size;
-	action->conf = &action_raw_encap_data->conf;
 	return ret;
 }
 
@@ -9767,10 +10496,10 @@ parse_vc_modify_field_id(struct context *ctx, const struct token *token,
 	if (ctx->curr != ACTION_MODIFY_FIELD_DST_TYPE_VALUE &&
 		ctx->curr != ACTION_MODIFY_FIELD_SRC_TYPE_VALUE)
 		return -1;
-	for (i = 0; modify_field_ids[i]; ++i)
-		if (!strcmp_partial(modify_field_ids[i], str, len))
+	for (i = 0; flow_field_ids[i]; ++i)
+		if (!strcmp_partial(flow_field_ids[i], str, len))
 			break;
-	if (!modify_field_ids[i])
+	if (!flow_field_ids[i])
 		return -1;
 	if (!ctx->object)
 		return len;
@@ -10328,6 +11057,7 @@ parse_table(struct context *ctx, const struct token *token,
 	}
 	switch (ctx->curr) {
 	case TABLE_CREATE:
+	case TABLE_RESIZE:
 		out->command = ctx->curr;
 		ctx->objdata = 0;
 		ctx->object = out;
@@ -10372,17 +11102,24 @@ parse_table(struct context *ctx, const struct token *token,
 	case TABLE_TRANSFER_WIRE_ORIG:
 		if (!out->args.table.attr.flow_attr.transfer)
 			return -1;
-		out->args.table.attr.specialize = RTE_FLOW_TABLE_SPECIALIZE_TRANSFER_WIRE_ORIG;
+		out->args.table.attr.specialize |= RTE_FLOW_TABLE_SPECIALIZE_TRANSFER_WIRE_ORIG;
 		return len;
 	case TABLE_TRANSFER_VPORT_ORIG:
 		if (!out->args.table.attr.flow_attr.transfer)
 			return -1;
-		out->args.table.attr.specialize = RTE_FLOW_TABLE_SPECIALIZE_TRANSFER_VPORT_ORIG;
+		out->args.table.attr.specialize |= RTE_FLOW_TABLE_SPECIALIZE_TRANSFER_VPORT_ORIG;
+		return len;
+	case TABLE_RESIZABLE:
+		out->args.table.attr.specialize |=
+			RTE_FLOW_TABLE_SPECIALIZE_RESIZABLE;
 		return len;
 	case TABLE_RULES_NUMBER:
 		ctx->objdata = 0;
 		ctx->object = out;
 		ctx->objmask = NULL;
+		return len;
+	case TABLE_RESIZE_ID:
+	case TABLE_RESIZE_RULES_NUMBER:
 		return len;
 	default:
 		return -1;
@@ -10405,7 +11142,8 @@ parse_table_destroy(struct context *ctx, const struct token *token,
 	if (!out)
 		return len;
 	if (!out->command || out->command == TABLE) {
-		if (ctx->curr != TABLE_DESTROY)
+		if (ctx->curr != TABLE_DESTROY &&
+		    ctx->curr != TABLE_RESIZE_COMPLETE)
 			return -1;
 		if (sizeof(*out) > size)
 			return -1;
@@ -10507,7 +11245,8 @@ parse_qo_destroy(struct context *ctx, const struct token *token,
 	if (!out)
 		return len;
 	if (!out->command || out->command == QUEUE) {
-		if (ctx->curr != QUEUE_DESTROY)
+		if (ctx->curr != QUEUE_DESTROY &&
+		    ctx->curr != QUEUE_FLOW_UPDATE_RESIZED)
 			return -1;
 		if (sizeof(*out) > size)
 			return -1;
@@ -10629,6 +11368,15 @@ parse_hash(struct context *ctx, const struct token *token,
 					       sizeof(double));
 		ctx->object = out->args.vc.pattern;
 		ctx->objmask = NULL;
+		return len;
+	case HASH_CALC_ENCAP:
+		out->args.vc.encap_hash = 1;
+		return len;
+	case ENCAP_HASH_FIELD_SRC_PORT:
+		out->args.vc.field = RTE_FLOW_ENCAP_HASH_FIELD_SRC_PORT;
+		return len;
+	case ENCAP_HASH_FIELD_GRE_FLOW_ID:
+		out->args.vc.field = RTE_FLOW_ENCAP_HASH_FIELD_NVGRE_FLOW_ID;
 		return len;
 	default:
 		return -1;
@@ -11167,7 +11915,7 @@ parse_ipv6_addr(struct context *ctx, const struct token *token,
 {
 	const struct arg *arg = pop_args(ctx);
 	char str2[len + 1];
-	struct in6_addr tmp;
+	struct rte_ipv6_addr tmp;
 	int ret;
 
 	(void)token;
@@ -11885,6 +12633,39 @@ comp_rule_id(struct context *ctx, const struct token *token,
 	return i;
 }
 
+/** Complete operation for compare match item. */
+static int
+comp_set_compare_op(struct context *ctx, const struct token *token,
+		    unsigned int ent, char *buf, unsigned int size)
+{
+	RTE_SET_USED(ctx);
+	RTE_SET_USED(token);
+	if (!buf)
+		return RTE_DIM(compare_ops);
+	if (ent < RTE_DIM(compare_ops) - 1)
+		return strlcpy(buf, compare_ops[ent], size);
+	return -1;
+}
+
+/** Complete field id for compare match item. */
+static int
+comp_set_compare_field_id(struct context *ctx, const struct token *token,
+			  unsigned int ent, char *buf, unsigned int size)
+{
+	const char *name;
+
+	RTE_SET_USED(token);
+	if (!buf)
+		return RTE_DIM(flow_field_ids);
+	if (ent >= RTE_DIM(flow_field_ids) - 1)
+		return -1;
+	name = flow_field_ids[ent];
+	if (ctx->curr == ITEM_COMPARE_FIELD_B_TYPE ||
+	    (strcmp(name, "pointer") && strcmp(name, "value")))
+		return strlcpy(buf, name, size);
+	return -1;
+}
+
 /** Complete type field for RSS action. */
 static int
 comp_vc_action_rss_type(struct context *ctx, const struct token *token,
@@ -11998,10 +12779,10 @@ comp_set_modify_field_id(struct context *ctx, const struct token *token,
 
 	RTE_SET_USED(token);
 	if (!buf)
-		return RTE_DIM(modify_field_ids);
-	if (ent >= RTE_DIM(modify_field_ids) - 1)
+		return RTE_DIM(flow_field_ids);
+	if (ent >= RTE_DIM(flow_field_ids) - 1)
 		return -1;
-	name = modify_field_ids[ent];
+	name = flow_field_ids[ent];
 	if (ctx->curr == ACTION_MODIFY_FIELD_SRC_TYPE ||
 	    (strcmp(name, "pointer") && strcmp(name, "value")))
 		return strlcpy(buf, name, size);
@@ -12564,9 +13345,17 @@ cmd_flow_parsed(const struct buffer *in)
 					in->args.table_destroy.table_id_n,
 					in->args.table_destroy.table_id);
 		break;
+	case TABLE_RESIZE_COMPLETE:
+		port_flow_template_table_resize_complete
+			(in->port, in->args.table_destroy.table_id[0]);
+		break;
 	case GROUP_SET_MISS_ACTIONS:
 		port_queue_group_set_miss_actions(in->port, &in->args.vc.attr,
 						  in->args.vc.actions);
+		break;
+	case TABLE_RESIZE:
+		port_flow_template_table_resize(in->port, in->args.table.id,
+						in->args.table.attr.nb_flows);
 		break;
 	case QUEUE_CREATE:
 		port_queue_flow_create(in->port, in->queue, in->postpone,
@@ -12578,6 +13367,11 @@ cmd_flow_parsed(const struct buffer *in)
 		port_queue_flow_destroy(in->port, in->queue, in->postpone,
 					in->args.destroy.rule_n,
 					in->args.destroy.rule);
+		break;
+	case QUEUE_FLOW_UPDATE_RESIZED:
+		port_queue_flow_update_resized(in->port, in->queue,
+					       in->postpone,
+					       in->args.destroy.rule[0]);
 		break;
 	case QUEUE_UPDATE:
 		port_queue_flow_update(in->port, in->queue, in->postpone,
@@ -12591,9 +13385,13 @@ cmd_flow_parsed(const struct buffer *in)
 		port_queue_flow_pull(in->port, in->queue);
 		break;
 	case HASH:
-		port_flow_hash_calc(in->port, in->args.vc.table_id,
-				    in->args.vc.pat_templ_id,
-				    in->args.vc.pattern);
+		if (!in->args.vc.encap_hash)
+			port_flow_hash_calc(in->port, in->args.vc.table_id,
+					    in->args.vc.pat_templ_id,
+					    in->args.vc.pattern);
+		else
+			port_flow_hash_calc_encap(in->port, in->args.vc.field,
+						  in->args.vc.pattern);
 		break;
 	case QUEUE_AGED:
 		port_queue_flow_aged(in->port, in->queue,
@@ -12683,6 +13481,10 @@ cmd_flow_parsed(const struct buffer *in)
 		port_flow_destroy(in->port, in->args.destroy.rule_n,
 				  in->args.destroy.rule,
 				  in->args.destroy.is_user_id);
+		break;
+	case UPDATE:
+		port_flow_update(in->port, in->args.vc.rule_id,
+				 in->args.vc.actions, in->args.vc.user_id);
 		break;
 	case FLUSH:
 		port_flow_flush(in->port);
@@ -12791,7 +13593,8 @@ update_fields(uint8_t *buf, struct rte_flow_item *item, uint16_t next_proto)
 		break;
 	case RTE_FLOW_ITEM_TYPE_VXLAN:
 		vxlan = (struct rte_vxlan_hdr *)buf;
-		vxlan->vx_flags = 0x08;
+		if (!vxlan->flags)
+			vxlan->flags = 0x08;
 		break;
 	case RTE_FLOW_ITEM_TYPE_VXLAN_GPE:
 		gpe = (struct rte_vxlan_gpe_hdr *)buf;
@@ -12878,6 +13681,9 @@ flow_item_default_mask(const struct rte_flow_item *item)
 		break;
 	case RTE_FLOW_ITEM_TYPE_META:
 		mask = &rte_flow_item_meta_mask;
+		break;
+	case RTE_FLOW_ITEM_TYPE_RANDOM:
+		mask = &rte_flow_item_random_mask;
 		break;
 	case RTE_FLOW_ITEM_TYPE_FUZZY:
 		mask = &rte_flow_item_fuzzy_mask;
@@ -13166,7 +13972,7 @@ cmd_set_raw_parsed(const struct buffer *in)
 	data_tail = data + ACTION_RAW_ENCAP_MAX_DATA;
 	for (i = n - 1 ; i >= 0; --i) {
 		const struct rte_flow_item_gtp *gtp;
-		const struct rte_flow_item_geneve_opt *opt;
+		const struct rte_flow_item_geneve_opt *geneve_opt;
 		struct rte_flow_item_ipv6_routing_ext *ext;
 
 		item = in->args.vc.pattern + i;
@@ -13238,16 +14044,16 @@ cmd_set_raw_parsed(const struct buffer *in)
 			size = sizeof(struct rte_geneve_hdr);
 			break;
 		case RTE_FLOW_ITEM_TYPE_GENEVE_OPT:
-			opt = (const struct rte_flow_item_geneve_opt *)
+			geneve_opt = (const struct rte_flow_item_geneve_opt *)
 								item->spec;
 			size = offsetof(struct rte_flow_item_geneve_opt,
 					option_len) + sizeof(uint8_t);
-			if (opt->option_len && opt->data) {
-				*total_size += opt->option_len *
+			if (geneve_opt->option_len && geneve_opt->data) {
+				*total_size += geneve_opt->option_len *
 					       sizeof(uint32_t);
 				rte_memcpy(data_tail - (*total_size),
-					   opt->data,
-					   opt->option_len * sizeof(uint32_t));
+					   geneve_opt->data,
+					   geneve_opt->option_len * sizeof(uint32_t));
 			}
 			break;
 		case RTE_FLOW_ITEM_TYPE_L2TPV3OIP:
@@ -13297,7 +14103,7 @@ cmd_set_raw_parsed(const struct buffer *in)
 				goto error;
 			} else {
 				const struct rte_flow_item_gtp_psc
-					*opt = item->spec;
+					*gtp_opt = item->spec;
 				struct rte_gtp_psc_generic_hdr *hdr;
 				size_t hdr_size = RTE_ALIGN(sizeof(*hdr),
 							 sizeof(int32_t));
@@ -13305,7 +14111,7 @@ cmd_set_raw_parsed(const struct buffer *in)
 				*total_size += hdr_size;
 				hdr = (typeof(hdr))(data_tail - (*total_size));
 				memset(hdr, 0, hdr_size);
-				*hdr = opt->hdr;
+				*hdr = gtp_opt->hdr;
 				hdr->ext_hdr_len = 1;
 				gtp_psc = i;
 				size = 0;
@@ -13327,25 +14133,25 @@ cmd_set_raw_parsed(const struct buffer *in)
 			size = 0;
 			if (item->spec) {
 				const struct rte_flow_item_gre_opt
-					*opt = item->spec;
-				if (opt->checksum_rsvd.checksum) {
+					*gre_opt = item->spec;
+				if (gre_opt->checksum_rsvd.checksum) {
 					*total_size +=
-						sizeof(opt->checksum_rsvd);
+						sizeof(gre_opt->checksum_rsvd);
 					rte_memcpy(data_tail - (*total_size),
-						   &opt->checksum_rsvd,
-						   sizeof(opt->checksum_rsvd));
+						   &gre_opt->checksum_rsvd,
+						   sizeof(gre_opt->checksum_rsvd));
 				}
-				if (opt->key.key) {
-					*total_size += sizeof(opt->key.key);
+				if (gre_opt->key.key) {
+					*total_size += sizeof(gre_opt->key.key);
 					rte_memcpy(data_tail - (*total_size),
-						   &opt->key.key,
-						   sizeof(opt->key.key));
+						   &gre_opt->key.key,
+						   sizeof(gre_opt->key.key));
 				}
-				if (opt->sequence.sequence) {
-					*total_size += sizeof(opt->sequence.sequence);
+				if (gre_opt->sequence.sequence) {
+					*total_size += sizeof(gre_opt->sequence.sequence);
 					rte_memcpy(data_tail - (*total_size),
-						   &opt->sequence.sequence,
-						   sizeof(opt->sequence.sequence));
+						   &gre_opt->sequence.sequence,
+						   sizeof(gre_opt->sequence.sequence));
 				}
 			}
 			proto = 0x2F;

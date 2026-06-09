@@ -54,10 +54,6 @@
 #ifndef _RTE_MEMBER_H_
 #define _RTE_MEMBER_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 #include <stdbool.h>
 #include <inttypes.h>
@@ -100,14 +96,9 @@ typedef uint16_t member_set_t;
 #define MEMBER_HASH_FUNC       rte_jhash
 #endif
 
-extern int librte_member_logtype;
-
-#define RTE_MEMBER_LOG(level, ...) \
-	rte_log(RTE_LOG_ ## level, \
-		librte_member_logtype, \
-		RTE_FMT("%s(): " RTE_FMT_HEAD(__VA_ARGS__,), \
-			__func__, \
-			RTE_FMT_TAIL(__VA_ARGS__,)))
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /** @internal setsummary structure. */
 struct rte_member_setsum;
@@ -148,7 +139,7 @@ typedef void (*sketch_delete_fn_t)(const struct rte_member_setsum *ss,
 				   const void *key);
 
 /** @internal setsummary structure. */
-struct rte_member_setsum {
+struct __rte_cache_aligned rte_member_setsum {
 	enum rte_member_setsum_type type; /* Type of the set summary. */
 	uint32_t key_len;		/* Length of key. */
 	uint32_t prim_hash_seed;	/* Primary hash function seed. */
@@ -194,14 +185,14 @@ struct rte_member_setsum {
 #ifdef RTE_ARCH_X86
 	bool use_avx512;
 #endif
-} __rte_cache_aligned;
+};
 
 /**
  * Parameters used when create the set summary table. Currently user can
  * specify two types of setsummary: HT based and vBF. For HT based, user can
  * specify cache or non-cache mode. Here is a table to describe some differences
  */
-struct rte_member_parameters {
+struct __rte_cache_aligned rte_member_parameters {
 	const char *name;			/**< Name of the hash. */
 
 	/**
@@ -335,7 +326,7 @@ struct rte_member_parameters {
 	uint32_t extra_flag;
 
 	int socket_id;			/**< NUMA Socket ID for memory. */
-} __rte_cache_aligned;
+};
 
 /**
  * Find an existing set-summary and return a pointer to it.

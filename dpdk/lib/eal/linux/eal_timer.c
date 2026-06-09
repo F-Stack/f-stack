@@ -5,9 +5,9 @@
 
 #include <stdio.h>
 #include <stdint.h>
+#include <inttypes.h>
 #ifdef RTE_LIBEAL_USE_HPET
 #include <fcntl.h>
-#include <inttypes.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
@@ -139,24 +139,20 @@ rte_eal_hpet_init(int make_default)
 		eal_get_internal_configuration();
 
 	if (internal_conf->no_hpet) {
-		RTE_LOG(NOTICE, EAL, "HPET is disabled\n");
+		EAL_LOG(NOTICE, "HPET is disabled");
 		return -1;
 	}
 
 	fd = open(DEV_HPET, O_RDONLY);
 	if (fd < 0) {
-		RTE_LOG(ERR, EAL, "ERROR: Cannot open "DEV_HPET": %s!\n",
+		EAL_LOG(ERR, "ERROR: Cannot open "DEV_HPET": %s!",
 			strerror(errno));
 		internal_conf->no_hpet = 1;
 		return -1;
 	}
 	eal_hpet = mmap(NULL, 1024, PROT_READ, MAP_SHARED, fd, 0);
 	if (eal_hpet == MAP_FAILED) {
-		RTE_LOG(ERR, EAL, "ERROR: Cannot mmap "DEV_HPET"!\n"
-				"Please enable CONFIG_HPET_MMAP in your kernel configuration "
-				"to allow HPET support.\n"
-				"To run without using HPET, unset RTE_LIBEAL_USE_HPET "
-				"in your build configuration or use '--no-hpet' EAL flag.\n");
+		EAL_LOG(ERR, "ERROR: Cannot mmap "DEV_HPET"!");
 		close(fd);
 		internal_conf->no_hpet = 1;
 		return -1;
@@ -170,7 +166,7 @@ rte_eal_hpet_init(int make_default)
 	eal_hpet_resolution_hz = (1000ULL*1000ULL*1000ULL*1000ULL*1000ULL) /
 		(uint64_t)eal_hpet_resolution_fs;
 
-	RTE_LOG(INFO, EAL, "HPET frequency is ~%"PRIu64" kHz\n",
+	EAL_LOG(INFO, "HPET frequency is ~%"PRIu64" kHz",
 			eal_hpet_resolution_hz/1000);
 
 	eal_hpet_msb = (eal_hpet->counter_l >> 30);
@@ -180,7 +176,7 @@ rte_eal_hpet_init(int make_default)
 	ret = rte_thread_create_internal_control(&msb_inc_thread_id, "hpet-msb",
 			hpet_msb_inc, NULL);
 	if (ret != 0) {
-		RTE_LOG(ERR, EAL, "ERROR: Cannot create HPET timer thread!\n");
+		EAL_LOG(ERR, "ERROR: Cannot create HPET timer thread!");
 		internal_conf->no_hpet = 1;
 		return -1;
 	}
@@ -191,17 +187,53 @@ rte_eal_hpet_init(int make_default)
 }
 #endif
 
+/* Check if the kernel deems the arch provided TSC frequency trustworthy. */
+
+static bool
+is_tsc_known_freq(void)
+{
+	bool ret = true; /* Assume tsc_known_freq */
+
+#if defined(RTE_ARCH_X86)
+	char line[2048];
+	FILE *stream;
+
+	stream = fopen("/proc/cpuinfo", "r");
+	if (!stream) {
+		EAL_LOG(WARNING, "Unable to open /proc/cpuinfo");
+		return ret;
+	}
+
+	while (fgets(line, sizeof(line), stream)) {
+		if (strncmp(line, "flags", 5) != 0)
+			continue;
+
+		if (!strstr(line, "tsc_known_freq"))
+			ret = false;
+
+		break;
+	}
+
+	fclose(stream);
+#endif
+
+	return ret;
+}
+
 uint64_t
-get_tsc_freq(void)
+get_tsc_freq(uint64_t arch_hz)
 {
 #ifdef CLOCK_MONOTONIC_RAW
 #define NS_PER_SEC 1E9
-#define CYC_PER_10MHZ 1E7
+#define CYC_PER_100KHZ 1E5
 
 	struct timespec sleeptime = {.tv_nsec = NS_PER_SEC / 10 }; /* 1/10 second */
 
 	struct timespec t_start, t_end;
 	uint64_t tsc_hz;
+
+	if (arch_hz && is_tsc_known_freq())
+		return arch_hz;
 
 	if (clock_gettime(CLOCK_MONOTONIC_RAW, &t_start) == 0) {
 		uint64_t ns, end, start = rte_rdtsc();
@@ -213,11 +245,22 @@ get_tsc_freq(void)
 
 		double secs = (double)ns/NS_PER_SEC;
 		tsc_hz = (uint64_t)((end - start)/secs);
-		/* Round up to 10Mhz. 1E7 ~ 10Mhz */
-		return RTE_ALIGN_MUL_NEAR(tsc_hz, CYC_PER_10MHZ);
+
+		if (arch_hz) {
+			/* Make sure we're within 1% for sanity check */
+			if (RTE_MAX(arch_hz, tsc_hz) - RTE_MIN(arch_hz, tsc_hz) > arch_hz / 100)
+				return arch_hz;
+
+			EAL_LOG(DEBUG,
+				"Refined arch frequency %"PRIu64" to measured frequency %"PRIu64,
+				arch_hz, tsc_hz);
+		}
+
+		/* Round up to 100Khz. 1E5 ~ 100Khz */
+		return RTE_ALIGN_MUL_NEAR(tsc_hz, CYC_PER_100KHZ);
 	}
 #endif
-	return 0;
+	return arch_hz;
 }
 
 int

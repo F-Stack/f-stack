@@ -28,7 +28,7 @@ virtio_net_ctrl_pop(struct virtio_net *dev, struct vhost_virtqueue *cvq,
 		struct virtio_net_ctrl_elem *ctrl_elem)
 	__rte_shared_locks_required(&cvq->iotlb_lock)
 {
-	uint16_t avail_idx, desc_idx, n_descs = 0;
+	uint16_t avail_idx, desc_idx, n_descs = 0, nr_descs, cnt = 0;
 	uint64_t desc_len, desc_addr, desc_iova, data_len = 0;
 	uint8_t *ctrl_req;
 	struct vring_desc *descs;
@@ -36,13 +36,13 @@ virtio_net_ctrl_pop(struct virtio_net *dev, struct vhost_virtqueue *cvq,
 	avail_idx = rte_atomic_load_explicit((unsigned short __rte_atomic *)&cvq->avail->idx,
 		rte_memory_order_acquire);
 	if (avail_idx == cvq->last_avail_idx) {
-		VHOST_LOG_CONFIG(dev->ifname, DEBUG, "Control queue empty\n");
+		VHOST_CONFIG_LOG(dev->ifname, DEBUG, "Control queue empty");
 		return 0;
 	}
 
 	desc_idx = cvq->avail->ring[cvq->last_avail_idx & (cvq->size - 1)];
 	if (desc_idx >= cvq->size) {
-		VHOST_LOG_CONFIG(dev->ifname, ERR, "Out of range desc index, dropping\n");
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Out of range desc index, dropping");
 		goto err;
 	}
 
@@ -55,16 +55,23 @@ virtio_net_ctrl_pop(struct virtio_net *dev, struct vhost_virtqueue *cvq,
 		descs = (struct vring_desc *)(uintptr_t)vhost_iova_to_vva(dev, cvq,
 					desc_iova, &desc_len, VHOST_ACCESS_RO);
 		if (!descs || desc_len != cvq->desc[desc_idx].len) {
-			VHOST_LOG_CONFIG(dev->ifname, ERR, "Failed to map ctrl indirect descs\n");
+			VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to map ctrl indirect descs");
 			goto err;
 		}
 
+		nr_descs = desc_len / sizeof(struct vring_desc);
 		desc_idx = 0;
 	} else {
 		descs = cvq->desc;
+		nr_descs = cvq->size;
 	}
 
 	while (1) {
+		if (unlikely(desc_idx >= nr_descs || cnt++ >= nr_descs)) {
+			VHOST_CONFIG_LOG(dev->ifname, ERR, "Invalid ctrl descriptor chain");
+			goto err;
+		}
+
 		desc_len = descs[desc_idx].len;
 		desc_iova = descs[desc_idx].addr;
 
@@ -72,28 +79,28 @@ virtio_net_ctrl_pop(struct virtio_net *dev, struct vhost_virtqueue *cvq,
 
 		if (descs[desc_idx].flags & VRING_DESC_F_WRITE) {
 			if (ctrl_elem->desc_ack) {
-				VHOST_LOG_CONFIG(dev->ifname, ERR,
-						"Unexpected ctrl chain layout\n");
+				VHOST_CONFIG_LOG(dev->ifname, ERR,
+						"Unexpected ctrl chain layout");
 				goto err;
 			}
 
 			if (desc_len != sizeof(uint8_t)) {
-				VHOST_LOG_CONFIG(dev->ifname, ERR,
-						"Invalid ack size for ctrl req, dropping\n");
+				VHOST_CONFIG_LOG(dev->ifname, ERR,
+						"Invalid ack size for ctrl req, dropping");
 				goto err;
 			}
 
 			ctrl_elem->desc_ack = (uint8_t *)(uintptr_t)vhost_iova_to_vva(dev, cvq,
 					desc_iova, &desc_len, VHOST_ACCESS_WO);
 			if (!ctrl_elem->desc_ack || desc_len != sizeof(uint8_t)) {
-				VHOST_LOG_CONFIG(dev->ifname, ERR,
-						"Failed to map ctrl ack descriptor\n");
+				VHOST_CONFIG_LOG(dev->ifname, ERR,
+						"Failed to map ctrl ack descriptor");
 				goto err;
 			}
 		} else {
 			if (ctrl_elem->desc_ack) {
-				VHOST_LOG_CONFIG(dev->ifname, ERR,
-						"Unexpected ctrl chain layout\n");
+				VHOST_CONFIG_LOG(dev->ifname, ERR,
+						"Unexpected ctrl chain layout");
 				goto err;
 			}
 
@@ -114,18 +121,18 @@ virtio_net_ctrl_pop(struct virtio_net *dev, struct vhost_virtqueue *cvq,
 		ctrl_elem->n_descs = n_descs;
 
 	if (!ctrl_elem->desc_ack) {
-		VHOST_LOG_CONFIG(dev->ifname, ERR, "Missing ctrl ack descriptor\n");
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Missing ctrl ack descriptor");
 		goto err;
 	}
 
 	if (data_len < sizeof(ctrl_elem->ctrl_req->class) + sizeof(ctrl_elem->ctrl_req->command)) {
-		VHOST_LOG_CONFIG(dev->ifname, ERR, "Invalid control header size\n");
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Invalid control header size");
 		goto err;
 	}
 
 	ctrl_elem->ctrl_req = malloc(data_len);
 	if (!ctrl_elem->ctrl_req) {
-		VHOST_LOG_CONFIG(dev->ifname, ERR, "Failed to alloc ctrl request\n");
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to alloc ctrl request");
 		goto err;
 	}
 
@@ -138,22 +145,33 @@ virtio_net_ctrl_pop(struct virtio_net *dev, struct vhost_virtqueue *cvq,
 		descs = (struct vring_desc *)(uintptr_t)vhost_iova_to_vva(dev, cvq,
 					desc_iova, &desc_len, VHOST_ACCESS_RO);
 		if (!descs || desc_len != cvq->desc[desc_idx].len) {
-			VHOST_LOG_CONFIG(dev->ifname, ERR, "Failed to map ctrl indirect descs\n");
+			VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to map ctrl indirect descs");
 			goto free_err;
 		}
 
+		nr_descs = desc_len / sizeof(struct vring_desc);
 		desc_idx = 0;
 	} else {
 		descs = cvq->desc;
+		nr_descs = cvq->size;
 	}
 
-	while (!(descs[desc_idx].flags & VRING_DESC_F_WRITE)) {
+	cnt = 0;
+	while (1) {
+		if (unlikely(desc_idx >= nr_descs || cnt++ >= nr_descs)) {
+			VHOST_CONFIG_LOG(dev->ifname, ERR, "Invalid ctrl descriptor chain");
+			goto free_err;
+		}
+
+		if (descs[desc_idx].flags & VRING_DESC_F_WRITE)
+			break;
+
 		desc_len = descs[desc_idx].len;
 		desc_iova = descs[desc_idx].addr;
 
 		desc_addr = vhost_iova_to_vva(dev, cvq, desc_iova, &desc_len, VHOST_ACCESS_RO);
 		if (!desc_addr || desc_len < descs[desc_idx].len) {
-			VHOST_LOG_CONFIG(dev->ifname, ERR, "Failed to map ctrl descriptor\n");
+			VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to map ctrl descriptor");
 			goto free_err;
 		}
 
@@ -167,6 +185,7 @@ virtio_net_ctrl_pop(struct virtio_net *dev, struct vhost_virtqueue *cvq,
 	}
 
 	cvq->last_avail_idx++;
+	vhost_virtqueue_reconnect_log_split(cvq);
 
 	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))
 		vhost_avail_event(cvq) = cvq->last_avail_idx;
@@ -177,6 +196,7 @@ free_err:
 	free(ctrl_elem->ctrl_req);
 err:
 	cvq->last_avail_idx++;
+	vhost_virtqueue_reconnect_log_split(cvq);
 
 	if (dev->features & (1ULL << VIRTIO_RING_F_EVENT_IDX))
 		vhost_avail_event(cvq) = cvq->last_avail_idx;
@@ -195,7 +215,7 @@ virtio_net_ctrl_handle_req(struct virtio_net *dev, struct virtio_net_ctrl *ctrl_
 		uint32_t i;
 
 		queue_pairs = *(uint16_t *)(uintptr_t)ctrl_req->command_data;
-		VHOST_LOG_CONFIG(dev->ifname, INFO, "Ctrl req: MQ %u queue pairs\n", queue_pairs);
+		VHOST_CONFIG_LOG(dev->ifname, INFO, "Ctrl req: MQ %u queue pairs", queue_pairs);
 		ret = VIRTIO_NET_OK;
 
 		for (i = 0; i < dev->nr_vring; i++) {
@@ -247,12 +267,12 @@ virtio_net_ctrl_handle(struct virtio_net *dev)
 	int ret = 0;
 
 	if (dev->features & (1ULL << VIRTIO_F_RING_PACKED)) {
-		VHOST_LOG_CONFIG(dev->ifname, ERR, "Packed ring not supported yet\n");
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "Packed ring not supported yet");
 		return -1;
 	}
 
 	if (!dev->cvq) {
-		VHOST_LOG_CONFIG(dev->ifname, ERR, "missing control queue\n");
+		VHOST_CONFIG_LOG(dev->ifname, ERR, "missing control queue");
 		return -1;
 	}
 

@@ -48,6 +48,7 @@
  * 1 Eventdev can have N Eventqueue
  */
 RTE_LOG_REGISTER_DEFAULT(dpaa_logtype_eventdev, NOTICE);
+#define RTE_LOGTYPE_DPAA_EVENTDEV dpaa_logtype_eventdev
 
 #define DISABLE_INTR_MODE "disable_intr"
 
@@ -110,12 +111,6 @@ dpaa_event_enqueue_burst(void *port, const struct rte_event ev[],
 	}
 
 	return nb_events;
-}
-
-static uint16_t
-dpaa_event_enqueue(void *port, const struct rte_event *ev)
-{
-	return dpaa_event_enqueue_burst(port, ev, 1);
 }
 
 static void drain_4_bytes(int fd, fd_set *fdset)
@@ -233,12 +228,6 @@ dpaa_event_dequeue_burst(void *port, struct rte_event ev[],
 }
 
 static uint16_t
-dpaa_event_dequeue(void *port, struct rte_event *ev, uint64_t timeout_ticks)
-{
-	return dpaa_event_dequeue_burst(port, ev, 1, timeout_ticks);
-}
-
-static uint16_t
 dpaa_event_dequeue_burst_intr(void *port, struct rte_event ev[],
 			      uint16_t nb_events, uint64_t timeout_ticks)
 {
@@ -310,14 +299,6 @@ dpaa_event_dequeue_burst_intr(void *port, struct rte_event ev[],
 	return num_frames;
 }
 
-static uint16_t
-dpaa_event_dequeue_intr(void *port,
-			struct rte_event *ev,
-			uint64_t timeout_ticks)
-{
-	return dpaa_event_dequeue_burst_intr(port, ev, 1, timeout_ticks);
-}
-
 static void
 dpaa_event_dev_info_get(struct rte_eventdev *dev,
 			struct rte_event_dev_info *dev_info)
@@ -353,6 +334,8 @@ dpaa_event_dev_info_get(struct rte_eventdev *dev,
 	dev_info->max_num_events =
 		DPAA_EVENT_MAX_NUM_EVENTS;
 	dev_info->event_dev_cap =
+		RTE_EVENT_DEV_CAP_ATOMIC |
+		RTE_EVENT_DEV_CAP_PARALLEL |
 		RTE_EVENT_DEV_CAP_DISTRIBUTED_SCHED |
 		RTE_EVENT_DEV_CAP_BURST_MODE |
 		RTE_EVENT_DEV_CAP_MULTIPLE_QUEUE_PORT |
@@ -384,13 +367,13 @@ dpaa_event_dev_configure(const struct rte_eventdev *dev)
 			  sizeof(uint32_t) * priv->nb_event_queues,
 			  RTE_CACHE_LINE_SIZE);
 	if (ch_id == NULL) {
-		DPAA_EVENTDEV_ERR("Fail to allocate memory for dpaa channels\n");
+		DPAA_EVENTDEV_ERR("Fail to allocate memory for dpaa channels");
 		return -ENOMEM;
 	}
 	/* Create requested event queues within the given event device */
 	ret = qman_alloc_pool_range(ch_id, priv->nb_event_queues, 1, 0);
 	if (ret < 0) {
-		DPAA_EVENTDEV_ERR("qman_alloc_pool_range %u, err =%d\n",
+		DPAA_EVENTDEV_ERR("qman_alloc_pool_range %u, err =%d",
 				 priv->nb_event_queues, ret);
 		rte_free(ch_id);
 		return ret;
@@ -653,7 +636,7 @@ dpaa_event_eth_rx_adapter_queue_add(
 						     queue_conf);
 			if (ret) {
 				DPAA_EVENTDEV_ERR(
-					"Event Queue attach failed:%d\n", ret);
+					"Event Queue attach failed:%d", ret);
 				goto detach_configured_queues;
 			}
 		}
@@ -662,7 +645,7 @@ dpaa_event_eth_rx_adapter_queue_add(
 
 	ret = dpaa_eth_eventq_attach(eth_dev, rx_queue_id, ch_id, queue_conf);
 	if (ret)
-		DPAA_EVENTDEV_ERR("dpaa_eth_eventq_attach failed:%d\n", ret);
+		DPAA_EVENTDEV_ERR("dpaa_eth_eventq_attach failed:%d", ret);
 	return ret;
 
 detach_configured_queues:
@@ -689,7 +672,7 @@ dpaa_event_eth_rx_adapter_queue_del(const struct rte_eventdev *dev,
 			ret = dpaa_eth_eventq_detach(eth_dev, i);
 			if (ret)
 				DPAA_EVENTDEV_ERR(
-					"Event Queue detach failed:%d\n", ret);
+					"Event Queue detach failed:%d", ret);
 		}
 
 		return 0;
@@ -697,7 +680,7 @@ dpaa_event_eth_rx_adapter_queue_del(const struct rte_eventdev *dev,
 
 	ret = dpaa_eth_eventq_detach(eth_dev, rx_queue_id);
 	if (ret)
-		DPAA_EVENTDEV_ERR("dpaa_eth_eventq_detach failed:%d\n", ret);
+		DPAA_EVENTDEV_ERR("dpaa_eth_eventq_detach failed:%d", ret);
 	return ret;
 }
 
@@ -760,7 +743,7 @@ dpaa_eventdev_crypto_queue_add_all(const struct rte_eventdev *dev,
 		ret = dpaa_sec_eventq_attach(cryptodev, i,
 				ch_id, ev);
 		if (ret) {
-			DPAA_EVENTDEV_ERR("dpaa_sec_eventq_attach failed: ret %d\n",
+			DPAA_EVENTDEV_ERR("dpaa_sec_eventq_attach failed: ret %d",
 				    ret);
 			goto fail;
 		}
@@ -794,7 +777,7 @@ dpaa_eventdev_crypto_queue_add(const struct rte_eventdev *dev,
 			ch_id, &conf->ev);
 	if (ret) {
 		DPAA_EVENTDEV_ERR(
-			"dpaa_sec_eventq_attach failed: ret: %d\n", ret);
+			"dpaa_sec_eventq_attach failed: ret: %d", ret);
 		return ret;
 	}
 	return 0;
@@ -814,7 +797,7 @@ dpaa_eventdev_crypto_queue_del_all(const struct rte_eventdev *dev,
 		ret = dpaa_sec_eventq_detach(cdev, i);
 		if (ret) {
 			DPAA_EVENTDEV_ERR(
-				"dpaa_sec_eventq_detach failed:ret %d\n", ret);
+				"dpaa_sec_eventq_detach failed:ret %d", ret);
 			return ret;
 		}
 	}
@@ -837,7 +820,7 @@ dpaa_eventdev_crypto_queue_del(const struct rte_eventdev *dev,
 	ret = dpaa_sec_eventq_detach(cryptodev, rx_queue_id);
 	if (ret) {
 		DPAA_EVENTDEV_ERR(
-			"dpaa_sec_eventq_detach failed: ret: %d\n", ret);
+			"dpaa_sec_eventq_detach failed: ret: %d", ret);
 		return ret;
 	}
 
@@ -1009,23 +992,20 @@ dpaa_event_dev_create(const char *name, const char *params, struct rte_vdev_devi
 	priv = eventdev->data->dev_private;
 
 	eventdev->dev_ops       = &dpaa_eventdev_ops;
-	eventdev->enqueue       = dpaa_event_enqueue;
 	eventdev->enqueue_burst = dpaa_event_enqueue_burst;
 
-	if (dpaa_event_check_flags(params)) {
-		eventdev->dequeue	= dpaa_event_dequeue;
+	if (dpaa_event_check_flags(params))
 		eventdev->dequeue_burst = dpaa_event_dequeue_burst;
-	} else {
+	else {
 		priv->intr_mode = 1;
 		eventdev->dev_ops->timeout_ticks =
 				dpaa_event_dequeue_timeout_ticks_intr;
-		eventdev->dequeue	= dpaa_event_dequeue_intr;
 		eventdev->dequeue_burst = dpaa_event_dequeue_burst_intr;
 	}
 	eventdev->txa_enqueue = dpaa_eventdev_txa_enqueue;
 	eventdev->txa_enqueue_same_dest	= dpaa_eventdev_txa_enqueue_same_dest;
 
-	RTE_LOG(INFO, PMD, "%s eventdev added", name);
+	DPAA_EVENTDEV_INFO("%s eventdev added", name);
 
 	/* For secondary processes, the primary has done all the work */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
