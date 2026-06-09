@@ -1,0 +1,9 @@
+config=24-nginx-single
+tc=TC2
+n=1000
+trials=3
+median_s=7.210308882
+min_s=7.150634569
+max_s=7.218081455
+jitter_s=0.067
+csv=/tmp/p5b/24-nginx-single_TC2.csv

@@ -83,7 +83,7 @@ NIC 驱动 (igb_uio / vfio-pci)
 │   ├── amd64/ arm64/ i386/ arm/   # 受支持架构（mips/ 已在 14.0+ 移除）
 │   └── contrib/ck/                # ConcurrencyKit 依赖（M3 已升级以支持 CK_LIST_FOREACH_FROM）
 │
-├── dpdk/                         # DPDK 23.11.5 (submodule)
+├── dpdk/                         # DPDK 24.11.6 LTS (submodule; 2026-06-09 自 23.11.5 升级)
 │   └── build/                    # 编译产物
 │
 ├── app/                          # 应用集成

@@ -83,7 +83,7 @@ NIC Hardware
 │   ├── amd64/ arm64/ i386/ arm/   # Supported architectures (mips/ removed in 14.0+)
 │   └── contrib/ck/                # ConcurrencyKit dependency (refreshed at M3 to support CK_LIST_FOREACH_FROM)
 │
-├── dpdk/                         # DPDK 23.11.5 (submodule)
+├── dpdk/                         # DPDK 24.11.6 LTS (submodule; upgraded 2026-06-09 from 23.11.5)
 │   └── build/                    # Build artifacts
 │
 ├── app/                          # Application integration

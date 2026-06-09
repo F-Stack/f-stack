@@ -1,0 +1,9 @@
+config=23-baseline
+tc=TC1
+n=100
+trials=3
+median_s=.730526620
+min_s=.720842958
+max_s=.731231745
+jitter_s=0.010
+csv=/tmp/p5b/23-baseline_TC1.csv

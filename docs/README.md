@@ -2,7 +2,7 @@
 
 ## 📚 Documentation Overview
 
-This directory contains the complete three-layer architecture knowledge base for F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS) + DPDK 23.11.5, serving as pre-requisite architecture documentation for Spec-Driven Development.
+This directory contains the complete three-layer architecture knowledge base for F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS) + DPDK 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 — see `freebsd_13_to_15_upgrade_spec/zh_cn/00-project-closure.md` and `dpdk_23_24_upgrade_spec/zh_cn/`), serving as pre-requisite architecture documentation for Spec-Driven Development.
 
 ### Document List
 
@@ -253,7 +253,7 @@ Recommended path:
 Knowledge base version: 1.2 (post FreeBSD 13.0 → 15.0 first-stage upgrade sync + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test, 2026-06-09)
 F-Stack version: v1.26
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
-DPDK version: 23.11.5 (unchanged — C-3 constraint)
+DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 via tree replace + 4 patches re-applied; see dpdk_23_24_upgrade_spec/zh_cn/)
 Generation date: 2026-03-20 (last sync 2026-06-09)
 Total lines: ~5839 lines (based on actual file count)
 ```
@@ -291,7 +291,7 @@ Total lines: ~5839 lines (based on actual file count)
 /data/workspace/f-stack/
 ├── lib/               # Core library (~21K lines)
 ├── freebsd/           # FreeBSD protocol stack port
-├── dpdk/              # DPDK 23.11.5 dependency
+├── dpdk/              # DPDK 24.11.6 LTS dependency (upgraded 2026-06-09)
 ├── adapter/           # Middleware adapters: micro_thread + syscall (builds libff_syscall.so for LD_PRELOAD)
 ├── example/           # Application examples (main.c recommended)
 ├── app/               # Nginx/Redis integration
