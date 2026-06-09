@@ -50,3 +50,6 @@ plan.md
 app/nginx-1.28.0/Makefile
 app/nginx-1.28.0/dist/
 app/nginx-1.28.0/objs/
+
+# AI agent local spec backup mirrors (per unit_test_spec plan.md §6)
+.spec-backup/
