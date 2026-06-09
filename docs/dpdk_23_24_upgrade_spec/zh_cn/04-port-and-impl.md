@@ -115,12 +115,13 @@ meson setup build 2>&1 | tee /tmp/m2_meson_setup.log
 ninja -C build -j$(nproc) 2>&1 | tee /tmp/m2_dpdk_24_build.log
 echo "errors: $(grep -ic 'error:' /tmp/m2_dpdk_24_build.log)"
 
-# Step 5: 备份 patch（待 M3 用）
+# Step 5: 备份 patch（待 M3 用，**4 个**）
 mkdir -p /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches
 cd /data/workspace/f-stack
-git format-patch -1 5f3768c63 -o /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/
-git format-patch -1 62f1c34df -o /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/
-git format-patch -1 92718178b -o /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/
+git format-patch -1 29c7d5835 -o /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/   # 0001 (新增, 由 user 2026-06-09 14:50 反馈后补识别)
+git format-patch -1 5f3768c63 -o /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/   # 0002
+git format-patch -1 62f1c34df -o /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/   # 0003
+git format-patch -1 92718178b -o /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/   # 0004
 
 # Step 6: stage + commit (replace: 类型)
 cd /data/workspace/f-stack
@@ -128,9 +129,11 @@ git add dpdk/
 git -c user.email=harness@local -c user.name="dpdk-replace-leader" commit -m "replace: bump F-Stack embedded DPDK from 23.11.5 to 24.11.6 LTS (tree replace)
 
 Pristine integration of upstream DPDK 24.11.6 LTS into f-stack/dpdk/. F-Stack
-local patches (5f3768c63 + 62f1c34df + 92718178b) are NOT in this commit;
-they will be re-applied in the immediately-following 'port:' commit per
-plan.md §4.4.
+local patches (29c7d5835 + 5f3768c63 + 62f1c34df + 92718178b) are NOT in
+this commit; they will be re-applied in the immediately-following 'port:'
+commit per plan.md §4.4 (single merged 'port:' commit per DP-A8). Patch list
+updated 3 -> 4 after user 2026-06-09 14:50 KNI feedback uncovered patch-scout's
+missed identification of 29c7d5835.
 
 Versions:
   upstream: VERSION=24.11.6, ABI_VERSION=25.0
@@ -152,7 +155,7 @@ Local commit only; no push."
 | M2-AC1 | `dpdk/VERSION + ABI_VERSION` | `24.11.6 + 25.0` |
 | M2-AC2 | `meson setup build` exit | 0 |
 | M2-AC3 | `ninja -C build` 编译 | exit=0 / 0 errors |
-| M2-AC4 | 3 patch 已落档 | `ls /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/*.patch` 应 3 个 |
+| M2-AC4 | 4 patch 已落档 | `ls /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/*.patch` 应 4 个 |
 | M2-AC5 | git commit 落地 | `git log -1 --format='%h %s'` 显示 `replace:` commit |
 
 ### 3.4 风险
@@ -160,18 +163,35 @@ Local commit only; no push."
 | ID | 风险 | mitigation |
 |---|---|---|
 | M2-R1 | meson setup build 因工具链版本不足失败 | 升级 meson / ninja / gcc（按 02 §3.8 实测后调整）|
-| M2-R2 | KNI 在 24.11.6 已删除导致 lib/Makefile FF_KNI=1 build 失败 | DP-B2 在 M2 启动前实测核实；如已删则按 R-D2 调整 FF_KNI |
+| M2-R2 | ~~KNI 在 24.11.6 已删除导致 lib/Makefile FF_KNI=1 build 失败~~ | **已闭环（user 2026-06-09 14:50 反馈）**：F-Stack 的 FF_KNI 是 ring + virtio_user 自实现，与 DPDK librte_kni 无关；FF_KNI=1 在 24.11.6 上仍正常 build / 链接（详 02 §3.6）|
 | M2-R3 | meson_options.txt 中 enable_kmods 默认为 false，导致 igb_uio 不被编译（24.11 vs 23.11 默认值差异） | 阶段二实测；如默认变为 false，M3 patch 重打时同步修改 meson_options.txt |
 
 ---
 
-## 4. M3 — 3 patch 重打
+## 4. M3 — 4 patch 重打（**user 2026-06-09 14:50 反馈后修订：3→4**）
 
 ### 4.1 目的
 
-把 F-Stack 历史 3 patch 应用到 24.11.6 树上，产生第二个 `port:` commit（合并形态，详 plan §4.4）。
+把 F-Stack 历史 4 patch 应用到 24.11.6 树上，产生第二个 `port:` commit（合并形态，详 plan §4.4）。**第 4 个 patch（`29c7d5835`）是 patch-scout 第一次报告漏识别**，由 user 提示 KNI 真相后实测补全（详 02 §2.4）。
 
 ### 4.2 重打顺序与策略（按 commit 时间正序）
+
+#### Step 4.2.0 重打 29c7d5835（Remove redundant dpdk files）— **新增**
+
+```bash
+cd /data/workspace/f-stack
+git apply --check /data/workspace/dpdk-stable-24.11.6/f-stack-lib/patches/0001-Remove-redundant-dpdk-files.patch
+```
+
+预期结果：
+- 大部分 hunk 自动 N/A（24.11.6 上游已无 KNI / 旧版 igb_uio）
+- 部分 hunk apply OK（liquidio / acc200 / nfp / idpf / flow_classify / server_node_efd / Windows EAL log 等 redundant — 24.11.6 上游可能仍存在）
+- 少量 hunk fail（24.11.6 内部 redundant 文件改名/移位）→ coder 视情况调整：(a) 跳过该 hunk（上游已主动删）(b) 调整路径
+
+→ **关键**：本 patch 重打的目的是**保持 F-Stack 一贯 lean dpdk/ 镜像策略**；KNI / igb_uio 部分自动跳过。**user 关键意图**（2026-06-09 14:50 提示）：
+- ✅ 保留 `FF_KNI=1`（F-Stack 自实现的 ring + virtio_user KNI 路径，与 DPDK librte_kni 无关）
+- ✅ 移除 dpdk/ 中的 KNI 内核模块代码（自然实现 — 24.11.6 上游本就无 + 29c7d5835 重打保持）
+- ✅ dpdk/ 仅保留 igb_uio 一个内核模块（由 5f3768c63 重打恢复，详 §4.2.1）
 
 #### Step 4.2.1 重打 5f3768c63（igb_uio + freebsd rte_os.h）
 
@@ -233,48 +253,61 @@ diff <(git show 5f3768c63 -- 'dpdk/**' | grep '^[+-]' | grep -v '^[+-]\{3\}') \
 cd /data/workspace/f-stack
 # stage 所有改动（dpdk/kernel/linux/ 整子树 + dpdk/lib/timer/ + dpdk/lib/eal/{linux,freebsd}/ + lib/ff_dpdk_if.c）
 git add dpdk/ lib/ff_dpdk_if.c
-git -c user.email=harness@local -c user.name="dpdk-port-leader" commit -m "port: re-apply F-Stack local DPDK patches onto 24.11.6 (igb_uio + rte_timer + eal secondary cleanup)
+git -c user.email=harness@local -c user.name="dpdk-port-leader" commit -m "port: re-apply F-Stack local DPDK patches onto 24.11.6 (4 patches: redundant cleanup + igb_uio + rte_timer + eal secondary)
 
-Re-applies 3 historical F-Stack patches that landed on top of DPDK 23.11.5 to
+Re-applies 4 historical F-Stack patches that landed on top of DPDK 23.11.5 to
 the freshly-replaced upstream 24.11.6 tree per plan.md §4.4 (single-commit
-merge, NOT 3 separate commits, per user 2026-06-09 14:36 directive).
+merge per user 2026-06-09 14:36 directive). Patch list updated 3 -> 4 after
+user 2026-06-09 14:50 KNI feedback uncovered patch-scout's missed identification
+of 29c7d5835.
 
 Patches re-applied (chronological):
 
+  29c7d5835 (2025-01-10) Remove redundant dpdk files (310 files, -43195)
+    Strategy: keep F-Stack's lean dpdk/ mirror; KNI / igb_uio parts
+    auto-N/A in 24.11.6 (upstream already lacks them); other redundant
+    drivers (liquidio / acc200 / nfp / idpf / flow_classify /
+    server_node_efd / Windows EAL log / etc.) re-applied where 24.11.6
+    upstream still ships them.
+    Net result on 24.11.6 tree: dpdk/ contains only the F-Stack-needed
+    libs and drivers, and 'kernel/' contains only igb_uio after step 5f3768c63.
+
   5f3768c63 (2025-10-31) Sync DPDK's modifies
     - dpdk/kernel/linux/igb_uio/{igb_uio.c, compat.h, Kbuild, Makefile, meson.build}
-    - dpdk/kernel/linux/meson.build
-    - dpdk/kernel/meson.build
+    - dpdk/kernel/linux/meson.build (re-introduced)
+    - dpdk/kernel/meson.build (point to linux/)
     - dpdk/lib/eal/freebsd/include/rte_os.h
     Reason: DPDK upstream removed igb_uio in 21.05; F-Stack maintains its
-    own igb_uio (Copyright 2010-2017 Intel) ported from <=20.11. FreeBSD
-    13.1+ CPU_AND/CPU_OR 3-arg adaptation is F-Stack-specific.
+    own (Copyright 2010-2017 Intel) ported from <=20.11. FreeBSD 13.1+
+    CPU_AND/CPU_OR 3-arg adaptation is F-Stack-specific.
 
   62f1c34df (2026-01-16) Fix infinite loop when restarting DPDK secondary process
     - dpdk/lib/timer/rte_timer.c (+13: rte_timer_meta_init() body)
     - dpdk/lib/timer/rte_timer.h (+8: declaration)
-    - lib/ff_dpdk_if.c:910 (+1: rte_timer_meta_init() call after rte_timer_subsystem_init())
-    Reason: lib/timer in 24.11.6 has 0 logical changes (only __rte_cache_aligned
-    macro position adjustment, ABI offset preserved). Patch trivially applies.
+    - lib/ff_dpdk_if.c:910 (+1: rte_timer_meta_init() call)
+    Reason: lib/timer in 24.11.6 has 0 logical changes (only macro position
+    adjustment, ABI offset preserved). Patch trivially applies.
 
   92718178b (2026-03-18) dpdk/eal: fix secondary process calling eal_bus_cleanup()
     - dpdk/lib/eal/linux/eal.c (+12 / -1: PRIMARY guard around eal_bus_cleanup())
-    Reason: 24.11.6 stable's rte_eal_cleanup() still unconditionally calls
-    eal_bus_cleanup() (verified by dpdk-24-analyzer Q3.b). The real upstream
-    fix is in DPDK 25.07 commit 4bc53f8f0d64, NOT backported to 24.11.6.
-    Patch rebased to fit 24.11.6's new call order (rte_service_finalize() +
-    eal_lcore_var_cleanup() additions).
+    Reason: 24.11.6 stable still unconditionally calls eal_bus_cleanup() in
+    rte_eal_cleanup(). Real upstream fix in DPDK 25.07 commit 4bc53f8f0d64,
+    NOT backported to 24.11.6. Patch rebased to fit 24.11.6 new call order.
+
+KNI clarification (per user 2026-06-09 14:50 feedback):
+  F-Stack's 'KNI' (lib/ff_dpdk_kni.c) is a ring + virtio_user user-space
+  exception path with ZERO dependency on DPDK librte_kni. lib/Makefile:34
+  comment 'No DPDK KNI support on FreeBSD' + 'Enable KNI, via virtio only,
+  no longer support rte_kni.ko' makes this explicit. FF_KNI=1 retained.
+  No DPDK lib/kni or kernel/linux/kni in upgraded dpdk/ (already deleted
+  in 29c7d5835, also absent in 24.11.6 upstream). Only kernel module
+  remaining in dpdk/kernel/linux/ is igb_uio (per 5f3768c63).
 
 Equivalence check passed: each patch's semantic delta vs the original commit
 matches except for context-line offsets caused by upstream's neighboring
 changes.
 
 Build verified: dpdk/build/ + lib/libfstack.a + example/* all compile clean.
-
-If any patch's re-application required semantic adjustment for 24.11 ABI
-(per plan.md §4.4 'rejected merge'), it would have been split out as a
-separate 'fix:' commit; in this run all 3 patches re-apply cleanly with
-only context-line rebase, so all 3 are merged here.
 
 Local commit only; no push."
 ```
@@ -283,18 +316,22 @@ Local commit only; no push."
 
 | AC | 内容 | PASS 条件 |
 |---|---|---|
-| M3-AC1 | 3 patch apply 成功 | 各 `git apply` exit=0 |
-| M3-AC2 | 等价性自检 | 3 patch diff vs 历史 commit 仅上下文差异 |
+| M3-AC1 | 4 patch apply 成功（含部分 N/A）| 各 `git apply` exit=0；29c7d5835 KNI/igb_uio 部分 trivially N/A 不算 fail |
+| M3-AC2 | 等价性自检 | 4 patch diff vs 历史 commit 仅上下文差异 |
 | M3-AC3 | dpdk/build 编译 | exit=0 / 0 errors |
-| M3-AC4 | git commit 落地 | `git log -1` 显示 `port:` commit |
+| M3-AC4 | KNI 子树验证 | `ls dpdk/lib/kni/ dpdk/kernel/linux/kni/` 应均返回 No such file or directory |
+| M3-AC5 | igb_uio 子树验证 | `ls dpdk/kernel/linux/igb_uio/` 应含 igb_uio.c + compat.h + Kbuild + Makefile + meson.build |
+| M3-AC6 | git commit 落地 | `git log -1` 显示 `port:` commit |
 
 ### 4.4 风险
 
 | ID | 风险 | mitigation |
 |---|---|---|
 | M3-R1 | 92718178b 因 24.11.6 调用顺序变化 hunk fail | coder 手动 rebase，配合 24 新增的 `rte_service_finalize()` / `eal_lcore_var_cleanup()` |
-| M3-R2 | 5f3768c63 中 freebsd rte_os.h 在 24.11 上游已含等效 hunk | 跳过该 hunk（`git apply --3way` 自动 merge），等价性自检不应 fail |
-| M3-R3 | igb_uio 因 kernel 6.x 兼容性需要新增 compat | 阶段二编译期发现，单独追加 `fix:` commit（按 plan §4.4 例外条款） |
+| M3-R2 | 29c7d5835 中 KNI / 旧 igb_uio / 多个 redundant driver 在 24.11.6 上游本就无 | `git apply --3way` 自动跳过 N/A hunk；等价性自检容许此情况 |
+| M3-R3 | 24.11.6 中部分 redundant files 命名 / 位置已变 | 部分 hunk fail；coder 视情况：(a) 跳过该 hunk（上游已主动删）(b) 调整路径（上游改名）|
+| M3-R4 | 5f3768c63 中 freebsd rte_os.h 在 24.11 上游已含等效 hunk | 跳过该 hunk（`git apply --3way` 自动 merge），等价性自检不应 fail |
+| M3-R5 | igb_uio 因 kernel 6.x 兼容性需要新增 compat | 阶段二编译期发现，单独追加 `fix:` commit（按 plan §4.4 例外条款）|
 
 ---
 
@@ -454,7 +491,7 @@ Local commit only; no push."
 | # | 类型 | 内容 | 来源 |
 |---|---|---|---|
 | 1 | `replace:` | 整树替换 23.11.5 → 24.11.6 | M2 |
-| 2 | `port:` | 3 patch 重打合并（合并形态，per plan §4.4 + DP-A8） | M3 |
+| 2 | `port:` | 4 patch 重打合并（合并形态，per plan §4.4 + DP-A8；patch 数量 3→4 由 user 2026-06-09 14:50 KNI 反馈后修订） | M3 |
 | 3 (可选) | `fix:` | F-Stack 胶水层因 24.11 ABI 调整必须的源码修改（如 `#include <rte_ip4.h>`）；如 M4 无源码修改则跳过 | M4 |
 | 4 | `docs(M-Final):` | 顶层 doc sync + execution-log + 备份 | M6 |
 

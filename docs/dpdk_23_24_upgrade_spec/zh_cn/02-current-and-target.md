@@ -18,9 +18,9 @@
 
 ---
 
-## 2. F-Stack 当前对 DPDK 23.11.5 的本地修改清单（patch-scout 实测）
+## 2. F-Stack 当前对 DPDK 23.11.5 的本地修改清单（patch-scout 实测 + 2026-06-09 14:50 user 反馈修正）
 
-经 `diff -rq /data/workspace/dpdk-stable-23.11.5 /data/workspace/f-stack/dpdk/` 实测确认：F-Stack 在 `dpdk/` 内的所有改动 = 已识别的 3 个 commit 完全覆盖（**差集空集**，无遗漏）。
+经 `diff -rq /data/workspace/dpdk-stable-23.11.5 /data/workspace/f-stack/dpdk/` + `git log --diff-filter=D` 实测确认：F-Stack 在 `dpdk/` 内的所有改动 = **4 个 commit** 完全覆盖（patch-scout 第一次报告漏识别 `29c7d5835`，因 `diff -rq | head -25` 截断未捕获 redundant files 删除清单；本节由 user 提示后实测补全）。
 
 ### 2.1 5f3768c63 — Sync DPDK's modifies (2025-10-31)
 
@@ -111,9 +111,49 @@ rte_mp_channel_cleanup() → rte_eal_alarm_cleanup() → ...
 
 → **结论**：必须在 24.11.6 树上 rebase 重打 `92718178b`（保留 PRIMARY 守护逻辑，配合 24.11.6 新增的 `rte_service_finalize()` / `eal_lcore_var_cleanup()` 调用顺序）。
 
-### 2.4 F-Stack 不引用的 DPDK 新 lib
+### 2.4 29c7d5835 — Remove redundant dpdk files (2025-01-10) **[user 反馈后补识别]**
 
-`lib/argparse/` + `lib/ptr_compress/` 在 F-Stack 0 引用（实测 grep `rte_argparse|rte_ptr_compress|argparse\.h|ptr_compress\.h` 在 `f-stack/lib/` 与 `f-stack/example/` 下均 0 命中）。**升级零成本**。
+#### 涉及文件（**310 文件 / 43195 行删除**）
+
+`git show 29c7d5835 --stat` 实测；以下按类别归纳：
+
+| 类别 | 删除路径 | 数量 |
+|---|---|---|
+| **DPDK KNI 子系统**（user 关键关注点） | `dpdk/lib/kni/{meson.build, rte_kni.c, rte_kni.h, rte_kni_common.h, rte_kni_fifo.h, version.map}` + `dpdk/kernel/linux/kni/{Kbuild, compat.h, kni_dev.h, kni_fifo.h, kni_misc.c, kni_net.c, meson.build}` + `dpdk/drivers/net/kni/{meson.build, rte_eth_kni.c}` + `dpdk/lib/port/rte_port_kni.{c,h}` + `dpdk/examples/ip_pipeline/kni.{c,h,cli}` + `dpdk/app/test/test_kni.c` | ~17 文件 |
+| **DPDK igb_uio 子系统**（旧版）| `dpdk/kernel/linux/igb_uio/{Kbuild, Makefile, compat.h, igb_uio.c, meson.build}` + `dpdk/kernel/linux/meson.build` | 6 文件 |
+| 冗余驱动 acc200 / liquidio / nfp / idpf / ark / bnxt / cnxk / tap-bpf 等 | `dpdk/drivers/{baseband,net,regex}/...` | ~50 文件 |
+| 冗余 lib | `dpdk/lib/{flow_classify, eal trace, cryptodev_trace, mempool_trace, ethdev_trace, power_empty_poll, power_intel_uncore}/...` | ~30 文件 |
+| 冗余 examples | `dpdk/examples/{flow_classify, server_node_efd, ip_pipeline kni, multi_process hotplug_mp commands.h, bond main.h}` | ~20 文件 |
+| 冗余 docs / dts / buildtools | `dpdk/doc/guides/{nics/{kni,liquidio}.rst, prog_guide/{kernel_nic_interface,flow_classify_lib}.rst, bbdevs/acc200.rst, sample_app_ug/flow_classify.rst}` + `dpdk/dts/...` + `dpdk/buildtools/binutils-avx512-check.py` + `dpdk/devtools/...` | ~20 文件 |
+| 其他冗余 (Windows EAL log / fnmatch / ...) | 详见 `git show 29c7d5835` | 余 |
+
+> **注意 igb_uio 时间线悖论**：`29c7d5835`（2025-01-10）删除了**旧版** igb_uio（5 文件 / -874 行）；半年后 `5f3768c63`（2025-10-31）又重新添加**新版** igb_uio（含 kernel 6.x 兼容 + RHEL kernel < 3.18 fallback）以支持 FreeBSD 15.0 升级期的新主机内核。两版不同步、目的不同。
+
+#### 24.11.6 上游状态
+
+| 维度 | 状态 |
+|---|---|
+| 24.11.6 是否仍含 lib/kni / kernel/linux/kni | **0 个**（DPDK 22.11 deprecated → 23.11 lib/ 移除 → 24.11 完全清理）|
+| 24.11.6 是否仍含 drivers/net/kni | 待 patch 重打时实测 |
+| 24.11.6 是否仍含 liquidio / acc200 等其他冗余 | 大概率仍存在（DPDK upstream 不主动 prune）|
+
+→ **结论**：必须在 24.11.6 树上重打 `29c7d5835` 中**仍然适用**的删除清单。其中：
+1. **KNI 类**：24.11.6 上游已无（**29c7d5835 KNI 部分自动 N/A，无需操作**），但需在 patch commit 中显式记录"上游已对齐 F-Stack 的 KNI 删除"
+2. **igb_uio 类**：24.11.6 上游本就无 igb_uio（21.05 移除）→ **29c7d5835 此部分自动 N/A**，由 5f3768c63 正向重打恢复 F-Stack 自带新版
+3. **其他 redundant**：24.11.6 上游可能仍有 liquidio/acc200/idpf/nfp/flow_classify/server_node_efd 等 — 需精确实测后**继续删除**（保留 F-Stack 一贯 lean dpdk/ 镜像策略）
+
+### 2.5 4 个 patch 总览
+
+| # | commit | 类型 | 24.11.6 上游对齐情况 | 是否需重打 |
+|---|---|---|---|---|
+| 1 | `5f3768c63` | ADD（igb_uio 子树 + freebsd rte_os.h）| upstream 无 igb_uio | **必须重打** |
+| 2 | `62f1c34df` | ADD（rte_timer_meta_init）| lib/timer 24 上游 0 行变化 | **必须重打** |
+| 3 | `92718178b` | MODIFY（eal.c PRIMARY 守护）| 24.11.6 仍无条件调用 eal_bus_cleanup | **必须重打**（rebase 配合新调用顺序）|
+| 4 | `29c7d5835` | DELETE（310 文件冗余清理）| 部分自动 N/A（KNI / igb_uio 上游已无），其余 redundant 仍需删除 | **必须重打**（仅删除 24.11.6 中仍存在的 redundant） |
+
+### 2.6 F-Stack 不引用的 DPDK 新 lib
+
+`lib/argparse/` + `lib/ptr_compress/` 在 F-Stack 0 引用（实测 grep `rte_argparse|rte_ptr_compress|argparse\.h|ptr_compress\.h` 在 `f-stack/lib/` 与 `f-stack/example/` 下均 0 命中）。**升级零成本**。但按 §2.4 一贯 lean 策略，可考虑通过 29c7d5835 等价删除清单**也删除这两个新 lib**（待 user/leader 在 M3 启动前决策；保守保留 = 不删除，激进 = 也删）。
 
 ---
 
@@ -191,18 +231,37 @@ rte_mp_channel_cleanup() → rte_eal_alarm_cleanup() → ...
 
 ABI 偏移 / 字段偏移 / 总大小 **完全不变**（attribute 应用方式调整不影响 layout）。F-Stack `rte_timer_meta_init()` patch trivially apply。
 
-### 3.6 KNI 子系统状态（**实测闭环 DP-B2，2026-06-09 14:40**）
+### 3.6 KNI 子系统真相（**user 反馈后修正，2026-06-09 14:50**）
 
-| 维度 | 23.11.5 | 24.11.6 | 影响 |
+**关键事实链**（实测一一确认）：
+
+1. **F-Stack 的 "KNI" 是 ring + virtio_user 自实现，与 DPDK librte_kni 无关**
+   - `lib/Makefile:33-34` 注释明确："**No DPDK KNI support on FreeBSD**" + "**Enable KNI, via viritio only, no longer support rte_kni.ko**"
+   - `lib/ff_dpdk_kni.c` 对 `rte_kni` 的 grep 命中数 = **0**
+   - 实现使用 `struct rte_ring **kni_rp;`（line 89）+ `rte_ring_dequeue_burst(kni_rp[port_id], ...)`（line 142）
+   - libfstack.a `nm` 不含任何 `rte_kni*` 符号
+
+2. **F-Stack 早在 commit `29c7d5835` 已主动从 dpdk/ 删除 KNI 全部子树**（详 §2.4）
+   - upstream 23.11.5：实测 `find /data/workspace/dpdk-stable-23.11.5 -name 'kni*' -o -name 'rte_kni*'` 0 命中（DPDK 23.11 lib/ 已无 KNI；驱动 drivers/net/kni 残留 — 已被 29c7d5835 删除）
+   - F-Stack 当前 `f-stack/dpdk/lib/kni/` + `dpdk/kernel/linux/kni/` 不存在（被 29c7d5835 删）
+   - 24.11.6 upstream：`lib/kni/` + `kernel/linux/kni/` 完全不存在（已实测）
+
+3. **`FF_KNI=1` 必须保留**（见 lib/Makefile:36）— F-Stack 自实现的 KNI 路径继续生效；与 DPDK 上游 KNI 子系统**完全无关**
+
+| 维度 | 23.11.5 (现状) | 24.11.6 (升级目标) | 升级影响 |
 |---|---|---|---|
-| `lib/kni/` 是否存在 | ✅ 存在 | ❌ **不存在**（实测 `ls dpdk-stable-24.11.6/lib/kni/` → No such file or directory）| KNI 用户态 lib 已被上游移除 |
-| `kernel/linux/kni/` 是否存在 | ✅ 存在 | ❌ **不存在** | KNI 内核模块已被上游移除 |
-| F-Stack `lib/Makefile` FF_KNI 当前默认值 | =1（默认开启）| → **必须调整** | M2/M4 启动前必须改 FF_KNI=0；如 F-Stack 自带 KNI 兼容层（待 patch-scout 复查 `f-stack/dpdk/kernel/linux/kni/` 是否在 23.11.5 镜像里），可考虑保留 KNI 子树 |
+| `f-stack/dpdk/lib/kni/` 存在 | ❌（被 29c7d5835 删）| ❌（24.11.6 上游本就无 + 29c7d5835 重打后保持删除）| 0 |
+| `f-stack/dpdk/kernel/linux/kni/` 存在 | ❌（被 29c7d5835 删）| ❌（同上）| 0 |
+| `f-stack/dpdk/kernel/linux/igb_uio/` 存在 | ✅（5f3768c63 添加）| ✅（5f3768c63 重打恢复）| 0 — 仅 igb_uio 一个内核模块 |
+| `lib/Makefile FF_KNI=1` | ✅ 默认开启 | ✅ **保留** | F-Stack ring + virtio_user KNI 路径继续工作 |
+| F-Stack `lib/ff_dpdk_kni.c` 链接 | 不依赖 librte_kni | 不依赖 | 0 |
 
-→ **结论**：**KNI 在 24.11.6 上游已完全移除**。R-D2 等级从 P2 升至 **P1**。M4 必须显式处理：
-1. **方案 A**（推荐）：修改 `lib/Makefile` 把 `FF_KNI=1` 改为 `FF_KNI=0`，禁用 F-Stack 的 KNI 路径
-2. **方案 B**（保留兼容）：F-Stack 把 23.11.5 的 `lib/kni/` 与 `kernel/linux/kni/` 整子树备份到 `dpdk/kernel/linux/kni/` 与 `dpdk/lib/kni/`（与现有自带 igb_uio 同款），保持 FF_KNI=1
-3. **决定**：阶段二实测后由 leader / coder 决策；保守倾向方案 A（KNI 已 deprecated 4 年），但若 F-Stack 现网部署强依赖 KNI 则方案 B
+→ **结论**：**KNI 在升级中是 0 风险事项**（与 user 提示完全一致）：
+- ✅ **保留 `FF_KNI=1`**（F-Stack 自实现的 ring-based KNI 路径继续工作）
+- ✅ **dpdk/ 仅保留 igb_uio 一个内核模块**（5f3768c63 重打）；dpdk/lib/kni / dpdk/kernel/linux/kni 自然不进入升级后的 dpdk/（24.11.6 上游本就无 + 29c7d5835 等价 patch 重打保持）
+- ❌ **不需要**：A 方案 (FF_KNI=0) 错误；B 方案 (备份 KNI 子树) 错误
+
+**R-D2 等级**：从此前误判的"P1 阻塞"**降级为 N/A**（不存在风险）。Must-Fix-1 KNI 决策 → **取消**。
 
 ### 3.7 lib/net `rte_ip.h` 重构陷阱（**实测闭环 R-D11，2026-06-09 14:40**）
 

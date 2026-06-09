@@ -90,7 +90,7 @@
 | ID | 风险 | 检测 | 缓解 | Owner |
 |---|---|---|---|---|
 | **R-D1** | rte_eth_dev_info_get / rte_flow_create / rte_eth_rx_queue_setup 等 24.11 ABI break | 编译期 unresolved reference / signature mismatch | diff-comparator 已实测：F-Stack 调用的所有 rte_* API 在 24.11.6 仍存在且位置相同（**0 改名 / 0 废弃**），仅行级签名变化由阶段二修复 | coder |
-| **R-D2** | KNI 子系统在 24.11 完全移除（DPDK 22.11+ 已 deprecated）| 24.11.6 `lib/kni/` + `kernel/linux/kni/` 是否存在 + release_24_11.rst 关于 KNI 删除时间表 | 02-current-and-target.md §3.6 实测核实；如已移除则 lib/Makefile FF_KNI 默认值需调整 | dpdk-24-analyzer |
+| **R-D2** | ~~KNI 子系统在 24.11 完全移除（DPDK 22.11+ 已 deprecated）~~ → **N/A**（user 2026-06-09 14:50 反馈后闭环） | F-Stack 的 FF_KNI 是 ring + virtio_user 自实现（lib/Makefile:34 注释 + ff_dpdk_kni.c 0 rte_kni 引用），与 DPDK librte_kni 无关；upstream 23.11.5 / 24.11.6 / F-Stack 当前 dpdk/ 三方 lib/kni 均不存在 | **风险消除** — `FF_KNI=1` 维持，dpdk/ 仅含 igb_uio 一个内核模块（详 02 §3.6） | leader |
 | **R-D3** | igb_uio 在 24.11 上游已移除 | 实测 `ls dpdk-stable-24.11.6/kernel/linux/igb_uio/` | 不影响升级 — F-Stack 自带 igb_uio (Copyright 2010-2017 Intel)，整树替换后 `dpdk/kernel/linux/` 子树由 5f3768c63 重打恢复 | patch-scout 已确认 |
 | **R-D4** | secondary process eal_bus_cleanup 行为变化 | 24.11.6 `lib/eal/linux/eal.c` 的 `rte_eal_cleanup` 内 `eal_bus_cleanup()` 是否仍无条件调用 | dpdk-24-analyzer 已实测：**仍无条件调用**，stable 未合 25.07 真正 fix → `92718178b` patch **必须 rebase 重打** | coder |
 | **R-D5** | priv_timer.is_running 在 lib/timer 24.11 上游零变化但 cache_align 宏迁移可能影响 ABI 偏移 | diff-comparator 已实测：lib/timer 文件大小完全一致（27.46/27.61 KB）；仅 `__rte_cache_aligned` 宏位置调整（`struct __rte_cache_aligned priv_timer { ... }` 替代 `struct priv_timer { ... } __rte_cache_aligned;`）；ABI 偏移**不变** | 阶段二编译验证通过即可（无需源码改动）| coder |
@@ -117,7 +117,7 @@
 | DP | 决策内容 | 实测结论 | 闭环依据 |
 |---|---|---|---|
 | **DP-B1** | `92718178b` patch 是否已被 24.11.6 上游合入 | **未合入** — 24.11.6 stable 内 `eal_bus_cleanup()` 仍是无条件调用；上游真正 fix 在 DPDK 25.07 commit `4bc53f8f0d64` | dpdk-24-analyzer Q3.b |
-| **DP-B2** | 24.11.6 KNI 子系统状态 | 待 02-current-and-target.md §3.6 最终核实（如仍存在，FF_KNI=1 维持现状）| dpdk-24-analyzer Q6 |
+| **DP-B2** | 24.11.6 KNI 子系统状态 | **N/A** — KNI 真相：F-Stack 早在 `29c7d5835` 已主动从 dpdk/ 删除 KNI；F-Stack ff_dpdk_kni.c 是 ring + virtio_user 自实现不依赖 librte_kni；24.11.6 上游本就无 KNI lib/kernel module；FF_KNI=1 维持 | user 2026-06-09 14:50 反馈 + 02 §3.6 实测 |
 | **DP-B3** | igb_uio 在 24.11.6 上游状态 | 上游已无 igb_uio（21.05 移除）；F-Stack 自带版本由 `5f3768c63` 重打恢复 | patch-scout Q4.1 + dpdk-24-analyzer Q7 |
 | **DP-B4** | argparse / ptr_compress 是否需启用 | **不启用** — F-Stack 0 引用 | diff-comparator Q5 |
 | **DP-B5** | meson / gcc 最低版本 | 02 §3.8 实测填充 | dpdk-24-analyzer Q8 |

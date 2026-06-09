@@ -72,13 +72,14 @@ F-Stack 是把 FreeBSD 内核协议栈剥离出来跑在 DPDK 用户态的工程
 
 ## 5. F-Stack 当前 DPDK 修改清单（实测）
 
-### 5.1 3 个历史 patch 完整覆盖
+### 5.1 4 个历史 patch 完整覆盖（**user 2026-06-09 14:50 反馈后修订：3→4**）
 
-经 dpdk-23-patch-scout 实测：F-Stack 在 `dpdk/` 内的本地修改 = 3 个 commit 完全覆盖（差集空集，无遗漏）。
+经 dpdk-23-patch-scout 实测 + user 反馈补识别：F-Stack 在 `dpdk/` 内的本地修改 = 4 个 commit 完全覆盖（patch-scout 第一次报告漏识别 `29c7d5835`，因 `diff -rq | head -25` 截断未捕获 redundant files 删除清单）。
 
 | commit | 时间 | 内容分类 | 文件 | 升级时是否需迁移 |
 |---|---|---|---|---|
-| `5f3768c63` | 2025-10-31 | igb_uio 内核模块 + FreeBSD 13.1+ 适配 | `dpdk/kernel/linux/{igb_uio/{igb_uio.c, compat.h, Kbuild, Makefile, meson.build}, meson.build}` + `dpdk/lib/eal/freebsd/include/rte_os.h` | **必须重打** — 24.11.6 上游不会自带 igb_uio（DPDK 在 ≥21.05 已移除），且 FreeBSD 13.1+ CPU_AND/CPU_OR 适配是 F-Stack 独有 |
+| `29c7d5835` | 2025-01-10 | **Remove redundant dpdk files**（user 反馈后补识别）| 310 文件 / -43195 行（KNI / 旧 igb_uio / liquidio / acc200 / nfp / idpf / flow_classify / Windows EAL log / 等冗余清理）| **必须重打** — 24.11.6 中 KNI / 旧 igb_uio 自动 N/A（上游已无），其他 redundant 按需删除以保持 lean dpdk/ 镜像 |
+| `5f3768c63` | 2025-10-31 | igb_uio 内核模块 + FreeBSD 13.1+ 适配 | `dpdk/kernel/linux/{igb_uio/{igb_uio.c, compat.h, Kbuild, Makefile, meson.build}, meson.build}` + `dpdk/lib/eal/freebsd/include/rte_os.h` | **必须重打** — 24.11.6 上游无 igb_uio（DPDK 21.05 移除），且 FreeBSD 13.1+ CPU_AND/CPU_OR 适配是 F-Stack 独有 |
 | `62f1c34df` | 2026-01-16 | secondary 进程 restart 死循环 fix | `dpdk/lib/timer/rte_timer.c` + `rte_timer.h`（新增 `rte_timer_meta_init()`）+ `f-stack/lib/ff_dpdk_if.c:910`（调用点）| **必须重打** — lib/timer 在 24.11.6 上游零行变化；F-Stack 独有需求 |
 | `92718178b` | 2026-03-18 | secondary 进程调用 eal_bus_cleanup() 守护 | `dpdk/lib/eal/linux/eal.c`（rte_eal_cleanup 内 `eal_bus_cleanup()` 调用前加 `if (rte_eal_process_type() == RTE_PROC_PRIMARY)` 守护）| **必须重打** — 24.11.6 stable 未含等效 fix；上游真正 fix 在 25.07 commit `4bc53f8f0d64`，未 backport 到 24.11.6 |
 
