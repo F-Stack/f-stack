@@ -1321,7 +1321,13 @@ rte_eal_cleanup(void)
 		rte_memseg_walk(mark_freeable, NULL);
 
 	rte_service_finalize();
-	eal_bus_cleanup();
+	/* F-Stack 92718178b: only primary should reset shared PCI device state;
+	 * secondary processes exiting must NOT call eal_bus_cleanup() to avoid
+	 * GPF or NIC reset visible to the still-alive primary.
+	 * Real upstream fix in DPDK 25.07 commit 4bc53f8f0d64 (NOT in 24.11.6).
+	 */
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		eal_bus_cleanup();
 #ifdef VFIO_PRESENT
 	vfio_mp_sync_cleanup();
 #endif
