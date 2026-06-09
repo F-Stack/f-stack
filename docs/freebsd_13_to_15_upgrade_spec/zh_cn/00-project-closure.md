@@ -1,7 +1,7 @@
 # F-Stack FreeBSD 13.0 → 15.0 升级项目 — 项目级收尾文档（Project Closure）
 
 - **文档语言**：中文（首版，与 spec 系列其余文档保持一致）
-- **English version**：`../README_EN.md`（项目级一页式英文 brief，spec 目录的详细中文 markdown 集合不再单独翻译，顶层三层架构 `docs/01-LAYER1-ARCHITECTURE.md` / `02-LAYER2-INTERFACES.md` / `03-LAYER3-FUNCTIONS.md` 已含完整英文版）
+- **English version**：完整英文兄弟版 `../00-project-closure.md`（与本文 1:1 对照）+ 项目级一页式英文 brief `../README_EN.md`（顶层三层架构 `docs/01-LAYER1-ARCHITECTURE.md` / `02-LAYER2-INTERFACES.md` / `03-LAYER3-FUNCTIONS.md` 也已含完整英文版）
 - **状态**：✅ **CLOSED — 暂时告一段落（2026-06-09）**
 - **签字人**：项目级 leader（主对话）
 - **整体打回次数**：所有阶段累计 0~3 次，从未触发 escalation 暂停
