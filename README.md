@@ -49,7 +49,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # Compile DPDK
     cd dpdk/
     # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
-    meson -Denable_kmods=true build
+    meson setup -Denable_kmods=true build
     ninja -C build
     ninja -C build install
 

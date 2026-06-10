@@ -17,7 +17,7 @@ F-Stack is an open source high-performance network framework based on DPDK, port
 ```bash
 # 1. 编译 DPDK
 cd /data/workspace/f-stack/dpdk
-meson -Denable_kmods=true build
+meson setup -Denable_kmods=true build
 ninja -C build
 ninja -C build install
 

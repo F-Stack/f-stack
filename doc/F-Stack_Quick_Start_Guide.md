@@ -23,7 +23,7 @@ Read DPDK Quick Started Guide or run the command below
 
 	cd /data/f-stack/dpdk
     # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
-	meson -Denable_kmods=true build
+	meson setup -Denable_kmods=true build
 	ninja -C build
 	ninja -C build install
 

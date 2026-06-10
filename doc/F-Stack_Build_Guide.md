@@ -17,7 +17,7 @@ $ git clone https://github.com/F-Stack/f-stack.git /data/f-stack
 # compile dpdk
 $ cd /data/f-stack/dpdk
 # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
-$ meson -Denable_kmods=true build
+$ meson setup -Denable_kmods=true build
 $ ninja -C build
 $ ninja -C build install
 
