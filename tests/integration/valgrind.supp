@@ -1,0 +1,27 @@
+## CMocka 1.1.7+ false-positive: when group_setup runs ff_dpdk_init, EAL
+## init pollutes the lcore TLS path; cmocka_run_group_tests reports a stale
+## "still reachable" block from a global initialisation chain that we cannot
+## reach to free without a reverse-init path (FU-CB-DPDKIF-NULLGUARD).
+##
+## We DO NOT suppress definite leaks here -- only "still reachable" or
+## "indirectly lost" coming from EAL init. The integration-test scope
+## intentionally accepts EAL globals living until process exit.
+
+# Suppress EAL init-time still-reachable / indirect blocks from rte_eal_init
+{
+   eal_init_still_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable,indirect
+   ...
+   fun:rte_eal_init
+}
+
+# Suppress librdkafka-style global registration chains under DPDK PMDs
+{
+   pmd_init_still_reachable
+   Memcheck:Leak
+   match-leak-kinds: reachable,indirect
+   ...
+   fun:rte_eal_init
+   fun:ff_dpdk_init
+}
