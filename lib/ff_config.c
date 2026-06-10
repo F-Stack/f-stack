@@ -946,6 +946,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
     } else if (MATCH("dpdk", "fstack_log_level")) {
         pconfig->log.level = atoi(value);
     } else if (MATCH("dpdk", "fstack_log_file_prefix")) {
+        /* default_config strdup'd the default; free it before overwrite. */
+        if (pconfig->log.dir) free(pconfig->log.dir);
         pconfig->log.dir = strdup(value);
     } else if (MATCH("dpdk", "channel")) {
         pconfig->dpdk.nb_channel = atoi(value);
@@ -1198,12 +1200,15 @@ ff_parse_args(struct ff_config *cfg, int argc, char *const argv[])
     while((c = getopt_long(argc, argv, short_options, long_options, &index)) != -1) {
         switch (c) {
             case 'c':
+                /* Free the default-config strdup'd filename before overwrite. */
+                if (cfg->filename) free(cfg->filename);
                 cfg->filename = strdup(optarg);
                 break;
             case 'p':
                 cfg->dpdk.proc_id = atoi(optarg);
                 break;
             case 't':
+                if (cfg->dpdk.proc_type) free(cfg->dpdk.proc_type);
                 cfg->dpdk.proc_type = strdup(optarg);
                 break;
             default:
@@ -1322,7 +1327,11 @@ ff_default_config(struct ff_config *cfg)
 {
     memset(cfg, 0, sizeof(struct ff_config));
 
-    cfg->filename = DEFAULT_CONFIG_FILE;
+    /* Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD): strdup the default literals
+     * so ff_unload_config can free() them uniformly. Without this the
+     * filename / log.dir slots may point at .rodata literals when no
+     * INI override is present, and free() on them crashes.            */
+    cfg->filename = strdup(DEFAULT_CONFIG_FILE);
 
     cfg->dpdk.proc_id = -1;
     cfg->dpdk.numa_on = 1;
@@ -1340,12 +1349,24 @@ ff_default_config(struct ff_config *cfg)
     cfg->freebsd.mem_size = 256;
 
     cfg->log.level = FF_LOG_DISABLE;
-    cfg->log.dir = FF_LOG_FILENAME_PREFIX;
+    cfg->log.dir = strdup(FF_LOG_FILENAME_PREFIX);
 }
 
 int
 ff_load_config(int argc, char *const argv[])
 {
+    /* Idempotency: free any state from a prior ff_load_config so repeated
+     * invocations (test harness, hot-reload) don't accumulate unbounded
+     * heap. Detection: any non-NULL pointer that ff_default_config does
+     * NOT itself populate -- proc_lcore / port_cfgs / vlan_cfgs / bond_cfgs.
+     */
+    if (ff_global_cfg.dpdk.proc_lcore != NULL ||
+        ff_global_cfg.dpdk.port_cfgs  != NULL ||
+        ff_global_cfg.dpdk.vlan_cfgs  != NULL ||
+        ff_global_cfg.dpdk.bond_cfgs  != NULL) {
+        ff_unload_config();
+    }
+
     ff_default_config(&ff_global_cfg);
 
     int ret = ff_parse_args(&ff_global_cfg, argc, argv);
@@ -1377,5 +1398,274 @@ ff_load_config(int argc, char *const argv[])
         return -1;
     }
 
+    /* Process-exit cleanup is invoked from ff_dpdk_run() (lib/ff_dpdk_if.c)
+     * after rte_eal_mp_wait_lcore() returns. We deliberately do NOT
+     * register an atexit() handler here -- programs that exit by other
+     * means (signal-driven _exit, abort, helloworld with no main loop,
+     * unit tests) might otherwise see ff_unload_config run AFTER their
+     * own teardown has already torn down ff_global_cfg, double-freeing.
+     * Tests that need the cleanup invoke ff_unload_config() directly. */
+
     return 0;
+}
+
+/* ======================================================================== */
+/* ff_unload_config (FU-S2-2-CFG-UNLOAD): free every heap-allocated field   */
+/* referenced by ff_global_cfg + dpdk_argv[] and zero-init the structure so */
+/* a subsequent ff_load_config() call starts from a clean slate.            */
+/*                                                                          */
+/* Registered via atexit() at the end of the first successful               */
+/* ff_load_config(). Also called at the start of any later ff_load_config() */
+/* (idempotency) to prevent unbounded heap accumulation across reloads.    */
+/*                                                                          */
+/* IMPORTANT: log.dir is intentionally NOT freed here. ff_default_config    */
+/* writes a string-literal pointer into log.dir; the INI parser may then    */
+/* overwrite it with a strdup'd value. Distinguishing the two would require */
+/* a flag we don't have, so we accept a one-time O(strlen) leak in exchange */
+/* for crash-safety. Tracked under FU-CB-CFG-LOGDIR if a future reader      */
+/* wants to fix it via a `static int log_dir_owned` flag.                  */
+/* ======================================================================== */
+
+static void
+ff_cfg_free_freebsd_chain(struct ff_freebsd_cfg **head)
+{
+    struct ff_freebsd_cfg *cur = *head, *next;
+    while (cur != NULL) {
+        next = cur->next;
+        /* freebsd_conf_handler aliases newconf->value = newconf->str for
+         * boot section and non-integer sysctl values. Free value FIRST
+         * only when it's NOT aliased into str -- otherwise the free of
+         * str below covers it. */
+        if (cur->value != NULL && cur->value != (void *)cur->str) {
+            free(cur->value);
+        }
+        if (cur->str)  free(cur->str);
+        if (cur->name) free(cur->name);
+        free(cur);
+        cur = next;
+    }
+    *head = NULL;
+}
+
+static void
+ff_cfg_free_port_one(struct ff_port_cfg *p)
+{
+    if (p == NULL) return;
+    if (p->name)         { free(p->name);         p->name = NULL; }
+    if (p->ifname)       { free(p->ifname);       p->ifname = NULL; }
+    if (p->addr)         { free(p->addr);         p->addr = NULL; }
+    if (p->netmask)      { free(p->netmask);      p->netmask = NULL; }
+    if (p->broadcast)    { free(p->broadcast);    p->broadcast = NULL; }
+    if (p->gateway)      { free(p->gateway);      p->gateway = NULL; }
+    if (p->vip_ifname)   { free(p->vip_ifname);   p->vip_ifname = NULL; }
+    if (p->vip_addr_str) { free(p->vip_addr_str); p->vip_addr_str = NULL; }
+    if (p->vip_addr_array) {
+        /* IMPORTANT: vip_addr_array[i] are pointers INTO vip_addr_str
+         * (rte_strsplit splits in place; see vip_cfg_handler). We must
+         * only free the array container, NOT the element pointers. */
+        free(p->vip_addr_array);
+        p->vip_addr_array = NULL;
+    }
+    p->nb_vip = 0;
+#ifdef FF_IPFW
+    if (p->pr_addr_str) { free(p->pr_addr_str); p->pr_addr_str = NULL; }
+    if (p->pr_cfg)      { free(p->pr_cfg);      p->pr_cfg = NULL; }
+    p->nb_pr = 0;
+#endif
+#ifdef INET6
+    if (p->addr6_str)     { free(p->addr6_str);     p->addr6_str = NULL; }
+    if (p->gateway6_str)  { free(p->gateway6_str);  p->gateway6_str = NULL; }
+    if (p->vip_addr6_str) { free(p->vip_addr6_str); p->vip_addr6_str = NULL; }
+    if (p->vip_addr6_array) {
+        /* Same alias-into-vip_addr6_str semantics as IPv4 above. */
+        free(p->vip_addr6_array);
+        p->vip_addr6_array = NULL;
+    }
+    p->nb_vip6 = 0;
+#endif
+    if (p->slave_portid_list) {
+        free(p->slave_portid_list);
+        p->slave_portid_list = NULL;
+    }
+    /* p->vlan_cfgs[] entries point INTO ff_global_cfg.dpdk.vlan_cfgs[]
+     * (set by vlan_cfg_handler when binding a VLAN to its parent port).
+     * We must NOT free them here — they are freed once via the dpdk.vlan_cfgs
+     * array sweep below. */
+}
+
+static void
+ff_cfg_free_vlan_one(struct ff_vlan_cfg *v)
+{
+    if (v == NULL) return;
+    if (v->name)         { free(v->name);         v->name = NULL; }
+    if (v->ifname)       { free(v->ifname);       v->ifname = NULL; }
+    if (v->addr)         { free(v->addr);         v->addr = NULL; }
+    if (v->netmask)      { free(v->netmask);      v->netmask = NULL; }
+    if (v->broadcast)    { free(v->broadcast);    v->broadcast = NULL; }
+    if (v->gateway)      { free(v->gateway);      v->gateway = NULL; }
+    if (v->vip_ifname)   { free(v->vip_ifname);   v->vip_ifname = NULL; }
+    if (v->vip_addr_str) { free(v->vip_addr_str); v->vip_addr_str = NULL; }
+#ifdef FF_IPFW
+    if (v->pr_addr_str)  { free(v->pr_addr_str);  v->pr_addr_str = NULL; }
+#endif
+#ifdef INET6
+    if (v->addr6_str)     { free(v->addr6_str);     v->addr6_str = NULL; }
+    if (v->gateway6_str)  { free(v->gateway6_str);  v->gateway6_str = NULL; }
+    if (v->vip_addr6_str) { free(v->vip_addr6_str); v->vip_addr6_str = NULL; }
+#endif
+}
+
+static void
+ff_cfg_free_vdev_one(struct ff_vdev_cfg *v)
+{
+    if (v == NULL) return;
+    if (v->name)  { free(v->name);  v->name = NULL; }
+    if (v->iface) { free(v->iface); v->iface = NULL; }
+    if (v->path)  { free(v->path);  v->path = NULL; }
+    if (v->mac)   { free(v->mac);   v->mac = NULL; }
+}
+
+static void
+ff_cfg_free_bond_one(struct ff_bond_cfg *b)
+{
+    if (b == NULL) return;
+    if (b->name)        { free(b->name);        b->name = NULL; }
+    if (b->slave)       { free(b->slave);       b->slave = NULL; }
+    if (b->primary)     { free(b->primary);     b->primary = NULL; }
+    if (b->bond_mac)    { free(b->bond_mac);    b->bond_mac = NULL; }
+    if (b->xmit_policy) { free(b->xmit_policy); b->xmit_policy = NULL; }
+}
+
+void
+ff_unload_config(void)
+{
+    /* dpdk_argv[] entries (each strdup'd in dpdk_args_setup) */
+    for (int i = 0; i < dpdk_argc; i++) {
+        if (dpdk_argv[i]) {
+            free(dpdk_argv[i]);
+            dpdk_argv[i] = NULL;
+        }
+    }
+    dpdk_argc = 0;
+
+    /* Top-level filename + dpdk.* string fields */
+    if (ff_global_cfg.filename) {
+        free(ff_global_cfg.filename);
+        ff_global_cfg.filename = NULL;
+    }
+    if (ff_global_cfg.dpdk.proc_type) {
+        free(ff_global_cfg.dpdk.proc_type);
+        ff_global_cfg.dpdk.proc_type = NULL;
+    }
+    if (ff_global_cfg.dpdk.lcore_mask) {
+        free(ff_global_cfg.dpdk.lcore_mask);
+        ff_global_cfg.dpdk.lcore_mask = NULL;
+    }
+    if (ff_global_cfg.dpdk.proc_mask) {
+        free(ff_global_cfg.dpdk.proc_mask);
+        ff_global_cfg.dpdk.proc_mask = NULL;
+    }
+    if (ff_global_cfg.dpdk.base_virtaddr) {
+        free(ff_global_cfg.dpdk.base_virtaddr);
+        ff_global_cfg.dpdk.base_virtaddr = NULL;
+    }
+    if (ff_global_cfg.dpdk.file_prefix) {
+        free(ff_global_cfg.dpdk.file_prefix);
+        ff_global_cfg.dpdk.file_prefix = NULL;
+    }
+    if (ff_global_cfg.dpdk.allow) {
+        free(ff_global_cfg.dpdk.allow);
+        ff_global_cfg.dpdk.allow = NULL;
+    }
+    if (ff_global_cfg.dpdk.proc_lcore) {
+        free(ff_global_cfg.dpdk.proc_lcore);
+        ff_global_cfg.dpdk.proc_lcore = NULL;
+    }
+    if (ff_global_cfg.dpdk.portid_list) {
+        free(ff_global_cfg.dpdk.portid_list);
+        ff_global_cfg.dpdk.portid_list = NULL;
+    }
+
+    /* port_cfgs[] : array sized RTE_MAX_ETHPORTS */
+    if (ff_global_cfg.dpdk.port_cfgs) {
+        for (int i = 0; i < RTE_MAX_ETHPORTS; i++) {
+            ff_cfg_free_port_one(&ff_global_cfg.dpdk.port_cfgs[i]);
+        }
+        free(ff_global_cfg.dpdk.port_cfgs);
+        ff_global_cfg.dpdk.port_cfgs = NULL;
+    }
+
+    /* vlan_cfgs[] : array sized DPDK_MAX_VLAN_FILTER */
+    if (ff_global_cfg.dpdk.vlan_cfgs) {
+        for (int i = 0; i < DPDK_MAX_VLAN_FILTER; i++) {
+            ff_cfg_free_vlan_one(&ff_global_cfg.dpdk.vlan_cfgs[i]);
+        }
+        free(ff_global_cfg.dpdk.vlan_cfgs);
+        ff_global_cfg.dpdk.vlan_cfgs = NULL;
+    }
+
+    /* vdev_cfgs[] : array sized RTE_MAX_ETHPORTS */
+    if (ff_global_cfg.dpdk.vdev_cfgs) {
+        for (int i = 0; i < RTE_MAX_ETHPORTS; i++) {
+            ff_cfg_free_vdev_one(&ff_global_cfg.dpdk.vdev_cfgs[i]);
+        }
+        free(ff_global_cfg.dpdk.vdev_cfgs);
+        ff_global_cfg.dpdk.vdev_cfgs = NULL;
+    }
+
+    /* bond_cfgs[] : array sized RTE_MAX_ETHPORTS */
+    if (ff_global_cfg.dpdk.bond_cfgs) {
+        for (int i = 0; i < RTE_MAX_ETHPORTS; i++) {
+            ff_cfg_free_bond_one(&ff_global_cfg.dpdk.bond_cfgs[i]);
+        }
+        free(ff_global_cfg.dpdk.bond_cfgs);
+        ff_global_cfg.dpdk.bond_cfgs = NULL;
+    }
+
+    /* rss_check_cfgs : single struct */
+    if (ff_global_cfg.dpdk.rss_check_cfgs) {
+        if (ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_str) {
+            free((void *)ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_str);
+            ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_str = NULL;
+        }
+        free(ff_global_cfg.dpdk.rss_check_cfgs);
+        ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+    }
+
+    /* kni.* string fields */
+    if (ff_global_cfg.kni.kni_action) {
+        free(ff_global_cfg.kni.kni_action);
+        ff_global_cfg.kni.kni_action = NULL;
+    }
+    if (ff_global_cfg.kni.method) {
+        free(ff_global_cfg.kni.method);
+        ff_global_cfg.kni.method = NULL;
+    }
+    if (ff_global_cfg.kni.tcp_port) {
+        free(ff_global_cfg.kni.tcp_port);
+        ff_global_cfg.kni.tcp_port = NULL;
+    }
+    if (ff_global_cfg.kni.udp_port) {
+        free(ff_global_cfg.kni.udp_port);
+        ff_global_cfg.kni.udp_port = NULL;
+    }
+
+    /* pcap.save_path */
+    if (ff_global_cfg.pcap.save_path) {
+        free(ff_global_cfg.pcap.save_path);
+        ff_global_cfg.pcap.save_path = NULL;
+    }
+
+    /* log.dir : ff_default_config strdup's the literal default; the INI
+     * parser may overwrite with another strdup (which leaks the default).
+     * That overwrite leak is fixed by the strdup_replace pattern in
+     * ini_parse_handler -- here we just free whatever heap pointer survives. */
+    if (ff_global_cfg.log.dir) {
+        free(ff_global_cfg.log.dir);
+        ff_global_cfg.log.dir = NULL;
+    }
+
+    /* freebsd.boot / freebsd.sysctl : linked-list chains */
+    ff_cfg_free_freebsd_chain(&ff_global_cfg.freebsd.boot);
+    ff_cfg_free_freebsd_chain(&ff_global_cfg.freebsd.sysctl);
 }

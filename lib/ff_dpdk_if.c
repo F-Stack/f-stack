@@ -2508,7 +2508,11 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
     stop_clock();
     rte_free(lr);
 
-    /* FIXME: Cleanup ff_config, freebsd etc. */
+    /* FU-S2-2-CFG-UNLOAD: free ff_global_cfg before EAL cleanup so any
+     * cfg.* allocations made via DPDK helpers (none today, but defensive)
+     * are released while the EAL is still up. Mirrors the comment block
+     * that previously read "FIXME: Cleanup ff_config, freebsd etc." */
+    ff_unload_config();
     rte_eal_cleanup();
     ff_log_close();
 }

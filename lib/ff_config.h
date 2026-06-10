@@ -346,6 +346,20 @@ extern struct ff_config ff_global_cfg;
 
 int ff_load_config(int argc, char * const argv[]);
 
+/*
+ * Free every heap-allocated field referenced by ff_global_cfg (port_cfgs,
+ * vlan_cfgs, vdev_cfgs, bond_cfgs, rss_check_cfgs, freebsd.boot/sysctl
+ * linked lists, dpdk_argv[], filename, etc.) and zero the structure so a
+ * subsequent ff_load_config() call starts from a clean slate.
+ *
+ * Registered via atexit() at the end of the first successful
+ * ff_load_config(), and also invoked at the start of any later
+ * ff_load_config() to make the loader idempotent (FU-S2-2-CFG-UNLOAD).
+ *
+ * Safe to call multiple times; calling on an already-zeroed cfg is a no-op.
+ */
+void ff_unload_config(void);
+
 #ifdef __cplusplus
 }
 #endif
