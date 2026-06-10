@@ -177,7 +177,7 @@ test_ff_log: test_ff_log.o $(LIB_OBJS_DIR)/ff_log.o $(COMMON_OBJS)
 # P1 #1 ff_host_interface (uses RAND_bytes from libcrypto; ff_log linked locally
 # via stub in the test file since we don't pull in lib/ff_log.c here)
 test_ff_host_interface: test_ff_host_interface.o $(LIB_OBJS_DIR)/ff_host_interface.o $(COMMON_OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -lcrypto
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=exit -Wl,--wrap=abort -lcrypto
 
 # P1 #2 ff_epoll
 test_ff_epoll: test_ff_epoll.o $(LIB_OBJS_DIR)/ff_epoll.o $(COMMON_OBJS)
@@ -191,7 +191,7 @@ test_ff_config: test_ff_config.o $(LIB_OBJS_DIR)/ff_config.o $(LIB_OBJS_DIR)/ff_
 # P2 #1 ff_thread (links real pthread + ff_host_interface for ff_malloc/free;
 # the test file ships its own `__thread struct thread *pcurthread` storage)
 test_ff_thread: test_ff_thread.o $(LIB_OBJS_DIR)/ff_thread.o $(LIB_OBJS_DIR)/ff_host_interface.o $(COMMON_OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -lpthread -lcrypto
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=ff_malloc -lpthread -lcrypto
 
 # P2 #2 ff_init (4 init step stubs in test file; exit() wrapped so failure
 # paths surface as cmocka assertion failures rather than process death)

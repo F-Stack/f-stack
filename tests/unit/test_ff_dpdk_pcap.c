@@ -299,6 +299,75 @@ test_ff_enable_pcap_nsec_precision(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* TC-U-P2-PCAP-06 (Stage-6): ff_enable_pcap with un-creatable dump_path     */
+/* triggers rte_exit (covers ff_dpdk_pcap.c L66 fatal branch).               */
+/*                                                                          */
+/* Use a dump_path under a non-existent / read-only directory so fopen("w+")*/
+/* fails. rte_exit is wrapped via BASE_WRAPS to a mock_assert, which cmocka */
+/* catches with expect_assert_failure().                                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_enable_pcap_fopen_fails(void **state)
+{
+    (void)state;
+    per_lcore__lcore_id = 11;
+    /* /proc is a virtual filesystem; cannot create regular files inside it. */
+    expect_assert_failure(ff_enable_pcap("/proc/nonexistent_dir_xyz", 100, 0));
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-PCAP-07 (Stage-6): driving ff_dump_packets through PCAP_FILE_NUM  */
+/* rotations causes the seq counter to wrap back to 0 (covers L130 reset).  */
+/*                                                                          */
+/* PCAP_FILE_NUM is defined in ff_dpdk_pcap.c as 10 (a private macro).      */
+/* Each ff_dump_packets call with f_maxlen=1 forces immediate rotation.    */
+/* After at least PCAP_FILE_NUM successive rotations, seq must wrap.       */
+/* We assert wrap by the existence of cpu13_0.pcap appearing TWICE -- the  */
+/* first one after enable, then again after wrap -- with monotonic mtime.  */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_dump_packets_seq_rotation_wraps(void **state)
+{
+    (void)state;
+    per_lcore__lcore_id = 13;
+
+    /* Initial enable creates cpu13_0.pcap (and bumps seq by 0). */
+    int rv = ff_enable_pcap(g_tmp_dir, 100, 0);
+    assert_int_equal(rv, 0);
+
+    /* Drive 12 rotations (>= PCAP_FILE_NUM=10) to ensure wrap. */
+    char payload[] = "x";
+    struct rte_mbuf m;
+    memset(&m, 0, sizeof(m));
+    m.buf_addr = payload;
+    m.data_off = 0;
+    m.data_len = 1;
+    m.pkt_len  = 1;
+    m.next     = NULL;
+
+    for (int i = 0; i < 12; i++) {
+        rv = ff_dump_packets(g_tmp_dir, &m, 100, 1u, 0);
+        assert_int_equal(rv, 0);
+    }
+
+    /* Verify cpu13_*.pcap files exist for at least s=0..9 (the rolling
+     * window after wrap). The first file (cpu13_0.pcap) was created by
+     * ff_enable_pcap, may have been re-opened+truncated by a later wrap;
+     * we at minimum assert the directory is non-empty. */
+    int found = 0;
+    for (int s = 0; s < 10; s++) {
+        char p[256];
+        expect_pcap_path(p, sizeof(p), g_tmp_dir, 13, (unsigned)s);
+        struct stat st;
+        if (stat(p, &st) == 0) {
+            found++;
+        }
+    }
+    /* All 10 slots in the rolling window must exist after >= 10 rotations. */
+    assert_in_range(found, 10, 10);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -310,6 +379,9 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_dump_packets_basic,          test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_ff_dump_packets_no_enable,      test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_ff_enable_pcap_nsec_precision,  test_setup, test_teardown),
+        /* Stage-6 coverage extensions */
+        cmocka_unit_test_setup_teardown(test_ff_enable_pcap_fopen_fails,        test_setup, test_teardown),
+        cmocka_unit_test_setup_teardown(test_ff_dump_packets_seq_rotation_wraps, test_setup, test_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

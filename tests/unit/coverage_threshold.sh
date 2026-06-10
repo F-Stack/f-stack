@@ -56,17 +56,17 @@ function rate(hit, total) {
 
 BEGIN {
     # threshold tables, keyed by file basename
-    # P0 (spec 06 §6.1)
-    tline["ff_ini_parser.c"]    = 80;  tbr["ff_ini_parser.c"]    = 70
-    tline["ff_log.c"]           = 80;  tbr["ff_log.c"]           = 70
-    # P1 (spec 06 §6.1)
-    tline["ff_host_interface.c"]= 60;  tbr["ff_host_interface.c"]= 50
-    tline["ff_epoll.c"]         = 60;  tbr["ff_epoll.c"]         = 50
+    # P0 (spec 06 §6.1, post-Stage-6 actual - 5pp)
+    tline["ff_ini_parser.c"]    = 92;  tbr["ff_ini_parser.c"]    = 78
+    tline["ff_log.c"]           = 100; tbr["ff_log.c"]           = 100
+    # P1 (spec 06 §6.1, post-Stage-6 actual - 5pp)
+    tline["ff_host_interface.c"]= 95;  tbr["ff_host_interface.c"]= 87
+    tline["ff_epoll.c"]         = 95;  tbr["ff_epoll.c"]         = 84
     tline["ff_config.c"]        = 50;  tbr["ff_config.c"]        = 40
-    # P2 (Stage-4 actual - 5pp)
-    tline["ff_thread.c"]        = 80;  tbr["ff_thread.c"]        = 30
-    tline["ff_init.c"]          = 70;  tbr["ff_init.c"]          = 50
-    tline["ff_dpdk_pcap.c"]     = 80;  tbr["ff_dpdk_pcap.c"]     = 60
+    # P2 (Stage-6 actual - 5pp)
+    tline["ff_thread.c"]        = 95;  tbr["ff_thread.c"]        = 95
+    tline["ff_init.c"]          = 95;  tbr["ff_init.c"]          = 95
+    tline["ff_dpdk_pcap.c"]     = 95;  tbr["ff_dpdk_pcap.c"]     = 84
     # P3 (Stage-5 subset only — most of the file is out-of-scope by design)
     tline["ff_dpdk_if.c"]       =  2;  tbr["ff_dpdk_if.c"]       =  0
     tline["ff_dpdk_kni.c"]      =  8;  tbr["ff_dpdk_kni.c"]      = 10

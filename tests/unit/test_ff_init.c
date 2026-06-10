@@ -216,6 +216,53 @@ test_ff_run_and_stop_forward(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* TC-U-P2-INIT-05 (Stage-6): ff_freebsd_init failure -> exit(1)             */
+/* before ff_dpdk_if_up. Covers ff_init.c L46-47 exit branch.                */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_init_fail_freebsd_init(void **state)
+{
+    (void)state;
+    will_return(ff_load_config,  0);
+    will_return(ff_dpdk_init,    0);
+    will_return(ff_freebsd_init, -1);
+
+    char *argv[] = { (char *)"f-stack" };
+    expect_assert_failure(ff_init(1, argv));
+
+    assert_int_equal(g_load_config_calls,  1);
+    assert_int_equal(g_dpdk_init_calls,    1);
+    assert_int_equal(g_freebsd_init_calls, 1);
+    assert_int_equal(g_if_up_calls,        0);
+    assert_int_equal(g_exit_called,        1);
+    assert_int_equal(g_last_exit_code,     1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-INIT-06 (Stage-6): ff_dpdk_if_up failure -> exit(1).              */
+/* Covers ff_init.c L50-51 final exit branch (the last init step).          */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_init_fail_dpdk_if_up(void **state)
+{
+    (void)state;
+    will_return(ff_load_config,  0);
+    will_return(ff_dpdk_init,    0);
+    will_return(ff_freebsd_init, 0);
+    will_return(ff_dpdk_if_up,   -1);
+
+    char *argv[] = { (char *)"f-stack" };
+    expect_assert_failure(ff_init(1, argv));
+
+    assert_int_equal(g_load_config_calls,  1);
+    assert_int_equal(g_dpdk_init_calls,    1);
+    assert_int_equal(g_freebsd_init_calls, 1);
+    assert_int_equal(g_if_up_calls,        1);
+    assert_int_equal(g_exit_called,        1);
+    assert_int_equal(g_last_exit_code,     1);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -226,6 +273,9 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_init_fail_load_config,  test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_init_fail_dpdk_init,    test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_run_and_stop_forward,   test_setup, NULL),
+        /* Stage-6 coverage extensions */
+        cmocka_unit_test_setup_teardown(test_ff_init_fail_freebsd_init, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_init_fail_dpdk_if_up,   test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -233,6 +233,36 @@ test_ini_parse_stream_no_section(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* TC-U-P0-INI-19 (Stage-6): section line missing closing ']' returns first  */
+/* error line number; covers ff_ini_parser.c L133-135 (else-if !error path). */
+/* ------------------------------------------------------------------------ */
+static void
+test_ini_parse_stream_section_no_close_bracket(void **state)
+{
+    capture_ctx_t *ctx = *state;
+    /* line 1 = "[s1"  (no closing ']' -> error on line 1)
+     * line 2 = "k=v"  (would be inside the broken section if we parsed it,
+     *                   but inih's STOP_ON_FIRST_ERROR breaks the loop). */
+    int rv = parse_buf("[s1\nk=v\n", capture_handler, ctx);
+
+    assert_int_equal(rv, 1);
+    assert_int_equal(ctx->count, 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P0-INI-20 (Stage-6): trailing key without final newline still parses */
+/* (whitespace-only tail handling).                                         */
+/* ------------------------------------------------------------------------ */
+static void
+test_ini_parse_stream_no_trailing_newline(void **state)
+{
+    capture_ctx_t *ctx = *state;
+    int rv = parse_buf("[s1]\nk=v", capture_handler, ctx);
+    assert_int_equal(rv, 0);
+    assert_int_equal(ctx->count, 1);
+}
+
+/* ------------------------------------------------------------------------ */
 /* TC-U-P0-INI-08: invalid syntax (no = or :) returns first-error lineno    */
 /* ------------------------------------------------------------------------ */
 static void
@@ -482,6 +512,9 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ini_parse_stream_long_key_name,         test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_ini_parse_stream_user_data_passed,      test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_ini_parse_stream_zero_byte_input,       test_setup, test_teardown),
+        /* Stage-6 coverage extensions */
+        cmocka_unit_test_setup_teardown(test_ini_parse_stream_section_no_close_bracket, test_setup, test_teardown),
+        cmocka_unit_test_setup_teardown(test_ini_parse_stream_no_trailing_newline,   test_setup, test_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

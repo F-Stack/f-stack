@@ -259,6 +259,159 @@ test_ff_epoll_wait_invalid_args(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* TC-U-P1-EPL-08 (Stage-6): ff_epoll_ctl with NULL event for non-DEL ops   */
+/* returns -1 / EINVAL (covers L46-47).                                     */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_epoll_ctl_null_event_non_del(void **state)
+{
+    (void)state;
+    errno = 0;
+    int rv = ff_epoll_ctl(42, EPOLL_CTL_ADD, 7, NULL);
+    assert_int_equal(rv, -1);
+    assert_int_equal(errno, EINVAL);
+    assert_int_equal(g_kev_cap.call_count, 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-EPL-09 (Stage-6): ff_epoll_ctl with invalid op returns -1/EINVAL */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_epoll_ctl_invalid_op(void **state)
+{
+    (void)state;
+    struct epoll_event ev = { .events = EPOLLIN };
+    errno = 0;
+    int rv = ff_epoll_ctl(42, /*invalid op*/ 99, 7, &ev);
+    assert_int_equal(rv, -1);
+    assert_int_equal(errno, EINVAL);
+    assert_int_equal(g_kev_cap.call_count, 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-EPL-10 (Stage-6): EPOLLET flag yields EV_CLEAR (covers L75-76).  */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_epoll_ctl_epollet_sets_ev_clear(void **state)
+{
+    (void)state;
+    struct epoll_event ev = { .events = EPOLLIN | EPOLLET };
+    int rv = ff_epoll_ctl(42, EPOLL_CTL_ADD, 7, &ev);
+    assert_int_equal(rv, 0);
+    assert_true((g_kev_cap.captured[0].flags & EV_CLEAR) != 0);
+    assert_true((g_kev_cap.captured[1].flags & EV_CLEAR) != 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-EPL-11 (Stage-6): EPOLLONESHOT yields EV_ONESHOT (covers L79-80).*/
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_epoll_ctl_epolloneshot_sets_ev_oneshot(void **state)
+{
+    (void)state;
+    struct epoll_event ev = { .events = EPOLLIN | EPOLLONESHOT };
+    int rv = ff_epoll_ctl(42, EPOLL_CTL_ADD, 7, &ev);
+    assert_int_equal(rv, 0);
+    assert_true((g_kev_cap.captured[0].flags & EV_ONESHOT) != 0);
+    assert_true((g_kev_cap.captured[1].flags & EV_ONESHOT) != 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-EPL-12 (Stage-6): EVFILT_WRITE without EOF -> EPOLLOUT only.     */
+/* Covers L116-117 (write filter -> EPOLLOUT).                              */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_epoll_wait_write_filter_to_epollout(void **state)
+{
+    (void)state;
+    struct epoll_event events[2] = {0};
+    g_synth_kev.ident  = 88;
+    g_synth_kev.filter = EVFILT_WRITE;
+    g_synth_kev.flags  = 0;
+    g_synth_kev.fflags = 0;
+    g_synth_kev.data   = 0;
+    g_synth_kev.udata  = NULL;
+    g_synth_count = 1;
+
+    int n = ff_epoll_wait(42, events, 2, 0);
+    assert_int_equal(n, 1);
+    assert_true((events[0].events & EPOLLOUT) != 0);
+    assert_true((events[0].events & EPOLLERR) == 0);
+    assert_int_equal(events[0].data.fd, 88);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-EPL-13 (Stage-6): EV_ERROR flag -> EPOLLERR (covers L120-121).   */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_epoll_wait_ev_error_to_epollerr(void **state)
+{
+    (void)state;
+    struct epoll_event events[2] = {0};
+    g_synth_kev.ident  = 77;
+    g_synth_kev.filter = EVFILT_READ;
+    g_synth_kev.flags  = EV_ERROR;
+    g_synth_kev.data   = 1;
+    g_synth_kev.udata  = NULL;
+    g_synth_count = 1;
+
+    int n = ff_epoll_wait(42, events, 2, 0);
+    assert_int_equal(n, 1);
+    assert_true((events[0].events & EPOLLERR) != 0);
+    assert_int_equal(events[0].data.fd, 77);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-EPL-14 (Stage-6): EV_EOF on EVFILT_READ -> EPOLLHUP+EPOLLIN      */
+/* (covers L124-125, L131-132).                                             */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_epoll_wait_ev_eof_read_to_hup_in(void **state)
+{
+    (void)state;
+    struct epoll_event events[2] = {0};
+    g_synth_kev.ident  = 66;
+    g_synth_kev.filter = EVFILT_READ;
+    g_synth_kev.flags  = EV_EOF;
+    g_synth_kev.fflags = 0;
+    g_synth_kev.data   = 0;          /* data=0 + EV_EOF -> NO EPOLLIN via top branch */
+    g_synth_kev.udata  = NULL;
+    g_synth_count = 1;
+
+    int n = ff_epoll_wait(42, events, 2, 0);
+    assert_int_equal(n, 1);
+    assert_true((events[0].events & EPOLLHUP) != 0);
+    /* The EV_EOF + EVFILT_READ branch (L131-132) re-asserts EPOLLIN. */
+    assert_true((events[0].events & EPOLLIN)  != 0);
+    assert_int_equal(events[0].data.fd, 66);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-EPL-15 (Stage-6): EV_EOF + non-zero fflags -> additional EPOLLERR*/
+/* and EVFILT_WRITE branch -> EPOLLERR (covers L127-128, L133-134).        */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_epoll_wait_ev_eof_write_with_fflags(void **state)
+{
+    (void)state;
+    struct epoll_event events[2] = {0};
+    g_synth_kev.ident  = 55;
+    g_synth_kev.filter = EVFILT_WRITE;
+    g_synth_kev.flags  = EV_EOF;
+    g_synth_kev.fflags = ECONNRESET;     /* any non-zero -> EPOLLERR */
+    g_synth_kev.data   = 0;
+    g_synth_kev.udata  = (void *)(intptr_t)0xDEAD;   /* udata != NULL -> ptr path */
+    g_synth_count = 1;
+
+    int n = ff_epoll_wait(42, events, 2, 0);
+    assert_int_equal(n, 1);
+    assert_true((events[0].events & EPOLLHUP) != 0);
+    assert_true((events[0].events & EPOLLERR) != 0);
+    /* udata path: data.ptr is set instead of data.fd */
+    assert_ptr_equal(events[0].data.ptr, (void *)(intptr_t)0xDEAD);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -272,6 +425,15 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_event_translation, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_zero_timeout,      test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_invalid_args,      test_setup, NULL),
+        /* Stage-6 coverage extensions (TC-U-P1-EPL-08..15) */
+        cmocka_unit_test_setup_teardown(test_ff_epoll_ctl_null_event_non_del,    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_ctl_invalid_op,            test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_ctl_epollet_sets_ev_clear, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_ctl_epolloneshot_sets_ev_oneshot, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_write_filter_to_epollout,    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_ev_error_to_epollerr,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_ev_eof_read_to_hup_in,       test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_ev_eof_write_with_fflags,    test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

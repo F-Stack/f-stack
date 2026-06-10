@@ -154,6 +154,46 @@ test_ff_pthread_join_retval(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* TC-U-P2-THR-04 (Stage-6): ff_pthread_create returns -ff_ENOMEM when the   */
+/* internal ff_malloc fails. Covers ff_thread.c L37-39 (errno=ENOMEM /       */
+/* return -ff_ENOMEM). Uses --wrap=ff_malloc to force a NULL return.         */
+/* ------------------------------------------------------------------------ */
+#include "ff_errno.h"           /* ff_ENOMEM */
+
+extern void *__real_ff_malloc(size_t size);
+static int g_force_malloc_null;
+void *
+__wrap_ff_malloc(size_t size)
+{
+    if (g_force_malloc_null) {
+        return NULL;
+    }
+    return __real_ff_malloc(size);
+}
+
+static void
+test_ff_pthread_create_malloc_failure(void **state)
+{
+    (void)state;
+    pcurthread = NULL;
+
+    g_force_malloc_null = 1;
+    pthread_t tid;
+    int saved_errno = errno;
+    errno = 0;
+    int rv = ff_pthread_create(&tid, NULL, trivial_thread_routine,
+                               (void *)(intptr_t)0xCAFE);
+    int observed_errno = errno;
+    g_force_malloc_null = 0;
+    errno = saved_errno;
+
+    assert_int_equal(rv, -ff_ENOMEM);
+    assert_int_equal(observed_errno, ENOMEM);
+    /* The pthread was never spawned, so the routine flag stays 0. */
+    assert_int_equal(g_routine_invoked, 0);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -163,6 +203,8 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_pthread_create_basic,    test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_pthread_create_arg_passed, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_pthread_join_retval,     test_setup, NULL),
+        /* Stage-6 coverage extension */
+        cmocka_unit_test_setup_teardown(test_ff_pthread_create_malloc_failure, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

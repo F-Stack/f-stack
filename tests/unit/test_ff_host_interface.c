@@ -362,6 +362,91 @@ test_ff_mmap_munmap_roundtrip(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Stage-6 wraps for exit / abort (used by mmap-failure / panic TCs).       */
+/* ------------------------------------------------------------------------ */
+void
+__wrap_exit(int code)
+{
+    (void)code;
+    mock_assert(0, "exit", __FILE__, __LINE__);
+    /* unreachable */
+    while (1) {}
+}
+
+void
+__wrap_abort(void)
+{
+    mock_assert(0, "abort", __FILE__, __LINE__);
+    /* unreachable */
+    while (1) {}
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-HIF-14 (Stage-6): ff_mmap with conflicting MAP_SHARED+MAP_PRIVATE */
+/* flags makes the underlying mmap(2) fail (EINVAL), which triggers the     */
+/* fatal exit branch in ff_host_interface.c L80-82.                         */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_mmap_failure_exits(void **state)
+{
+    (void)state;
+    /* MAP_SHARED + MAP_PRIVATE both set is invalid per mmap(2). */
+    expect_assert_failure(
+        ff_mmap(NULL, 4096, ff_PROT_READ | ff_PROT_WRITE,
+                ff_MAP_SHARED | ff_MAP_PRIVATE | ff_MAP_ANON,
+                -1, 0));
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-HIF-15 (Stage-6): ff_realloc with size=0 returns the original    */
+/* pointer untouched (covers ff_host_interface.c L121-126 size-0 branch).   */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_realloc_zero_size_returns_p(void **state)
+{
+    (void)state;
+    int sentinel = 0xCAFE;
+    void *p = &sentinel;
+    void *rv = ff_realloc(p, 0);
+    assert_ptr_equal(rv, p);          /* untouched per F-Stack semantics */
+    assert_int_equal(sentinel, 0xCAFE);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-HIF-16 (Stage-6): panic() variadic eventually aborts; covers     */
+/* ff_host_interface.c L142-150 (panic body: va_start/vprintf/va_end/abort).*/
+/*                                                                          */
+/* panic() is __noreturn__, calls vprintf to stdout then abort(); we wrap   */
+/* abort() to mock_assert which cmocka catches via expect_assert_failure.  */
+/* ------------------------------------------------------------------------ */
+extern void panic(const char *fmt, ...) __attribute__((__noreturn__));
+
+static void
+test_panic_aborts(void **state)
+{
+    (void)state;
+    expect_assert_failure(panic("intentional panic %d %s", 42, "stage6"));
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-HIF-17 (Stage-6): ff_clock_gettime with ff_CLOCK_REALTIME maps   */
+/* to host CLOCK_REALTIME (covers L161-163 case branch).                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_clock_gettime_realtime(void **state)
+{
+    (void)state;
+    int64_t sec = 0;
+    long    nsec = -1;
+    ff_clock_gettime(ff_CLOCK_REALTIME, &sec, &nsec);
+    /* CLOCK_REALTIME on Linux returns wall-clock seconds since epoch;
+     * any sane system clock is well past 2020-01-01 = 1577836800. */
+    assert_true(sec > 1577836800);
+    /* nsec must have been written (at minimum >= 0 after the syscall). */
+    assert_true(nsec >= 0);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -381,6 +466,11 @@ main(void)
         cmocka_unit_test(test_ff_arc4random_distribution),
         cmocka_unit_test(test_ff_setenv_getenv_roundtrip),
         cmocka_unit_test(test_ff_mmap_munmap_roundtrip),
+        /* Stage-6 coverage extensions (TC-U-P1-HIF-14..17) */
+        cmocka_unit_test(test_ff_mmap_failure_exits),
+        cmocka_unit_test(test_ff_realloc_zero_size_returns_p),
+        cmocka_unit_test(test_panic_aborts),
+        cmocka_unit_test(test_ff_clock_gettime_realtime),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
