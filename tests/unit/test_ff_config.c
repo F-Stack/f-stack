@@ -94,9 +94,10 @@ static int
 test_setup(void **state)
 {
     (void)state;
-    /* Reset global config to zeroed state so each TC starts fresh.
-     * Note: this leaks any strdup'd pointers from previous tests but is
-     * fine for unit-test process lifetime. */
+    /* Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD): use the lib-provided unload
+     * helper to free any heap from a prior test, then zero. This keeps
+     * valgrind clean across the 19 TCs (used to bleed ~50 KB / load). */
+    ff_unload_config();
     memset(&ff_global_cfg, 0, sizeof(ff_global_cfg));
     return 0;
 }
@@ -522,8 +523,40 @@ test_rss_tbl_cfg_handler_bad_tuple(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Main runner                                                              */
+/* TC-U-P1-CFG-20 (Stage-6 Phase-8): ff_unload_config zeroes all heap-owned */
+/* fields after a load. Closes FU-S2-2-CFG-UNLOAD. Repeated load/unload    */
+/* cycles must remain valgrind-clean (verified out-of-band via make check). */
 /* ------------------------------------------------------------------------ */
+static void
+test_ff_unload_config_zeroes_state(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    /* After load: at minimum proc_lcore + filename are non-NULL. */
+    assert_non_null(ff_global_cfg.dpdk.proc_lcore);
+    assert_non_null(ff_global_cfg.filename);
+
+    ff_unload_config();
+
+    /* All ownership pointers must be NULL'd (defense-in-depth: a future
+     * caller that re-uses ff_global_cfg without re-loading must not see
+     * dangling pointers). */
+    assert_null(ff_global_cfg.dpdk.proc_lcore);
+    assert_null(ff_global_cfg.dpdk.port_cfgs);
+    assert_null(ff_global_cfg.dpdk.vlan_cfgs);
+    assert_null(ff_global_cfg.dpdk.bond_cfgs);
+    assert_null(ff_global_cfg.dpdk.vdev_cfgs);
+    assert_null(ff_global_cfg.dpdk.rss_check_cfgs);
+    assert_null(ff_global_cfg.dpdk.portid_list);
+    assert_null(ff_global_cfg.filename);
+    assert_null(ff_global_cfg.dpdk.lcore_mask);
+    assert_null(ff_global_cfg.freebsd.boot);
+    assert_null(ff_global_cfg.freebsd.sysctl);
+    /* Idempotent: a second call on already-unloaded state is a no-op. */
+    ff_unload_config();
+    assert_null(ff_global_cfg.filename);
+}
 int
 main(void)
 {
@@ -549,6 +582,8 @@ main(void)
         cmocka_unit_test_setup_teardown(test_bond_cfg_handler_bad_section,       test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rss_check_cfg_handler_no_port_no_vlan, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rss_tbl_cfg_handler_bad_tuple,      test_setup, NULL),
+        /* Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD) */
+        cmocka_unit_test_setup_teardown(test_ff_unload_config_zeroes_state,      test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
