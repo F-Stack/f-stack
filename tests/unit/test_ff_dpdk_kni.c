@@ -298,6 +298,107 @@ test_ff_kni_enqueue_filter_classification(void **state)
     }
 }
 
+/* ======================================================================== */
+/* Stage-6 Phase-4 coverage extensions: ff_kni_proto_filter + ff_kni_init   */
+/* ======================================================================== */
+
+#include <rte_ip.h>
+#include <rte_tcp.h>
+#include <rte_udp.h>
+#include <rte_ether.h>
+#include <netinet/in.h>           /* IPPROTO_TCP / IPPROTO_UDP / IPPROTO_IPIP */
+
+/* TC-U-P3-KNI-05: ff_kni_proto_filter on too-short IPv4 -> FILTER_UNKNOWN */
+static void
+test_ff_kni_proto_filter_ipv4_short(void **state)
+{
+    (void)state;
+    uint8_t too_short[10] = {0};
+    enum FilterReturn rv = ff_kni_proto_filter(too_short, 10, RTE_ETHER_TYPE_IPV4);
+    assert_int_equal(rv, FILTER_UNKNOWN);
+}
+
+/* TC-U-P3-KNI-06: ff_kni_proto_filter on non-IP frame -> FILTER_UNKNOWN */
+static void
+test_ff_kni_proto_filter_non_ip_frame(void **state)
+{
+    (void)state;
+    uint8_t arp_payload[28] = {0};
+    enum FilterReturn rv = ff_kni_proto_filter(arp_payload, sizeof(arp_payload),
+                                               RTE_ETHER_TYPE_ARP);
+    assert_int_equal(rv, FILTER_UNKNOWN);
+}
+
+/* TC-U-P3-KNI-07: IPv4+TCP without enable_kni -> FILTER_UNKNOWN (break path) */
+static void
+test_ff_kni_proto_filter_ipv4_tcp_kni_disabled(void **state)
+{
+    (void)state;
+    uint8_t pkt[64] = {0};
+    pkt[0] = 0x45;                    /* version=4, IHL=5 */
+    pkt[9] = IPPROTO_TCP;             /* next_proto_id */
+    enum FilterReturn rv = ff_kni_proto_filter(pkt, sizeof(pkt), RTE_ETHER_TYPE_IPV4);
+    assert_int_equal(rv, FILTER_UNKNOWN);
+}
+
+/* TC-U-P3-KNI-08: IPv4+UDP without enable_kni -> FILTER_UNKNOWN */
+static void
+test_ff_kni_proto_filter_ipv4_udp_kni_disabled(void **state)
+{
+    (void)state;
+    uint8_t pkt[64] = {0};
+    pkt[0] = 0x45;
+    pkt[9] = IPPROTO_UDP;
+    enum FilterReturn rv = ff_kni_proto_filter(pkt, sizeof(pkt), RTE_ETHER_TYPE_IPV4);
+    assert_int_equal(rv, FILTER_UNKNOWN);
+}
+
+/* TC-U-P3-KNI-09: IPv4 IHL beyond buffer -> FILTER_UNKNOWN */
+static void
+test_ff_kni_proto_filter_ipv4_oversized_ihl(void **state)
+{
+    (void)state;
+    uint8_t pkt[24] = {0};
+    pkt[0] = 0x4F;                    /* IHL = 15 -> 60 bytes > len */
+    pkt[9] = IPPROTO_TCP;
+    enum FilterReturn rv = ff_kni_proto_filter(pkt, sizeof(pkt), RTE_ETHER_TYPE_IPV4);
+    assert_int_equal(rv, FILTER_UNKNOWN);
+}
+
+/* TC-U-P3-KNI-10: IPIP (IPv4-in-IPv4) recursion with too-short inner */
+static void
+test_ff_kni_proto_filter_ipv4_ipip_recurse(void **state)
+{
+    (void)state;
+    uint8_t pkt[24] = {0};            /* outer 20 + only 4 inner */
+    pkt[0] = 0x45;
+    pkt[9] = IPPROTO_IPIP;
+    enum FilterReturn rv = ff_kni_proto_filter(pkt, sizeof(pkt), RTE_ETHER_TYPE_IPV4);
+    assert_int_equal(rv, FILTER_UNKNOWN);
+}
+
+/* TC-U-P3-KNI-11: ff_kni_init builds bitmaps from "80,443,8000-8002" / "53" */
+static void
+test_ff_kni_init_tcp_udp_port_bitmaps(void **state)
+{
+    (void)state;
+    SKIP_IF_NO_EAL();
+    /* ff_kni_init re-allocates kni_rp/kni_stat via rte_zmalloc; group_setup
+     * had used plain calloc(). Save the original pointers, run ff_kni_init,
+     * then restore so group_teardown can free() the calloc'd arrays. */
+    struct rte_ring **saved_kni_rp   = kni_rp;
+    struct kni_interface_stats **saved_kni_stat = kni_stat;
+    /* Range form (8000-8002) + comma list exercises both kni_set_bitmap
+     * branches. nb_ports=1 keeps the alloc small. */
+    ff_kni_init(/*nb_ports*/1, /*tcp*/"80,443,8000-8002", /*udp*/"53,5060");
+    /* Free the rte_zmalloc'd arrays we just produced (best effort) and
+     * restore the originals so group_teardown's free() is happy. */
+    rte_free(kni_rp);
+    rte_free(kni_stat);
+    kni_rp   = saved_kni_rp;
+    kni_stat = saved_kni_stat;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
@@ -309,6 +410,14 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_kni_enqueue_console_ratelimit_over,  test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_kni_enqueue_general_ratelimit_over,  test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_kni_enqueue_filter_classification,   test_setup, NULL),
+        /* Stage-6 Phase-4 coverage extensions */
+        cmocka_unit_test_setup_teardown(test_ff_kni_proto_filter_ipv4_short,         test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_kni_proto_filter_non_ip_frame,       test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_kni_proto_filter_ipv4_tcp_kni_disabled, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_kni_proto_filter_ipv4_udp_kni_disabled, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_kni_proto_filter_ipv4_oversized_ihl, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_kni_proto_filter_ipv4_ipip_recurse,  test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_kni_init_tcp_udp_port_bitmaps,       test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

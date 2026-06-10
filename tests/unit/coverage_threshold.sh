@@ -69,7 +69,7 @@ BEGIN {
     tline["ff_dpdk_pcap.c"]     = 95;  tbr["ff_dpdk_pcap.c"]     = 84
     # P3 (Stage-5 subset only — most of the file is out-of-scope by design)
     tline["ff_dpdk_if.c"]       =  2;  tbr["ff_dpdk_if.c"]       =  0
-    tline["ff_dpdk_kni.c"]      =  8;  tbr["ff_dpdk_kni.c"]      = 10
+    tline["ff_dpdk_kni.c"]      = 40;  tbr["ff_dpdk_kni.c"]      = 35
 
     pass = 0; fail = 0; total_files = 0
 }
