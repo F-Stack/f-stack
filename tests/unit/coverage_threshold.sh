@@ -62,17 +62,17 @@ BEGIN {
     # informational comments that drive the chosen thresholds; if a future
     # change bumps any actual upward, raise the threshold accordingly.
     #
-    # P0 (spec 06 §6.1)
-    tline["ff_ini_parser.c"]    = 92;  tbr["ff_ini_parser.c"]    = 78   # actual: line=97.3%  branch=83.8%
+    # P0 (spec 06 §6.1; Stage-7 ratcheted up post 70-stage7 plan)
+    tline["ff_ini_parser.c"]    = 92;  tbr["ff_ini_parser.c"]    = 84   # actual: line=98.7%  branch=89.7%  (Stage-7)
     tline["ff_log.c"]           = 100; tbr["ff_log.c"]           = 100  # actual: line=100%   branch=100%   (capped)
-    # P1 (spec 06 §6.1)
-    tline["ff_host_interface.c"]= 95;  tbr["ff_host_interface.c"]= 87   # actual: line=100%   branch=92.5%
-    tline["ff_epoll.c"]         = 95;  tbr["ff_epoll.c"]         = 84   # actual: line=100%   branch=89.1%
-    tline["ff_config.c"]        = 70;  tbr["ff_config.c"]        = 65   # actual: line=79.2%  branch=75.2%  (post FU-S2-2-CFG-UNLOAD)
+    # P1 (spec 06 §6.1; Stage-7 ratcheted)
+    tline["ff_host_interface.c"]= 95;  tbr["ff_host_interface.c"]= 93   # actual: line=100%   branch=98.1%  (Stage-7)
+    tline["ff_epoll.c"]         = 95;  tbr["ff_epoll.c"]         = 92   # actual: line=100%   branch=97.8%  (Stage-7)
+    tline["ff_config.c"]        = 78;  tbr["ff_config.c"]        = 73   # actual: line=83.5%  branch=78.5%  (Stage-7 vlan-OOB + free-before-strdup)
     # P2
     tline["ff_thread.c"]        = 95;  tbr["ff_thread.c"]        = 95   # actual: line=100%   branch=100%
     tline["ff_init.c"]          = 95;  tbr["ff_init.c"]          = 95   # actual: line=100%   branch=100%
-    tline["ff_dpdk_pcap.c"]     = 95;  tbr["ff_dpdk_pcap.c"]     = 84   # actual: line=100%   branch=88.9%
+    tline["ff_dpdk_pcap.c"]     = 95;  tbr["ff_dpdk_pcap.c"]     = 89   # actual: line=100%   branch=94.4%  (Stage-7; L118 br=3 unreachable upper-bound)
     # P3 (subset by design — most of these files need a real DPDK ethdev runtime)
     # Integration suite at tests/integration/ pushes ff_dpdk_if.c to ~30.5%
     # line via real EAL --vdev=net_null0; the unit number below is the
