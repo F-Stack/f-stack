@@ -345,6 +345,128 @@ test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap(void **state)
     ff_regist_pcblddr_fun(NULL);
 }
 
+/* ======================================================================== */
+/* Stage-6 Phase-5 coverage extensions: ff_rss_tbl_* + register_if          */
+/* ======================================================================== */
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-11 (Stage-6): ff_rss_tbl_set_portrange returns -1 when    */
+/* rss_check_cfgs is NULL (covers the early-return guard L2722).            */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_set_portrange_no_cfg(void **state)
+{
+    (void)state;
+    /* Ensure clean state. */
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+    int rv = ff_rss_tbl_set_portrange(1024, 2048);
+    assert_int_equal(rv, -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-12 (Stage-6): ff_rss_tbl_set_portrange returns -1 when    */
+/* rss_check_cfgs.enable == 0 (same guard L2722-2724).                     */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_set_portrange_disabled(void **state)
+{
+    (void)state;
+    struct ff_rss_check_cfg dummy = { .enable = 0 };
+    ff_global_cfg.dpdk.rss_check_cfgs = &dummy;
+    int rv = ff_rss_tbl_set_portrange(1024, 2048);
+    assert_int_equal(rv, -1);
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-13 (Stage-6): ff_rss_tbl_set_portrange with first > last */
+/* returns -1 (covers the inverted-range guard).                           */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_set_portrange_inverted_range(void **state)
+{
+    (void)state;
+    struct ff_rss_check_cfg dummy = { .enable = 1 };
+    ff_global_cfg.dpdk.rss_check_cfgs = &dummy;
+    int rv = ff_rss_tbl_set_portrange(/*first*/2048, /*last*/1024);
+    assert_int_equal(rv, -1);
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-14 (Stage-6): ff_rss_tbl_get_portrange returns -1 when   */
+/* rss_check_cfgs is NULL (early-return guard L2782-2784).                 */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_no_cfg(void **state)
+{
+    (void)state;
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+    uint16_t first = 0, last = 0;
+    uint16_t *portrange = NULL;
+    int rv = ff_rss_tbl_get_portrange(0x01020304, 0x05060708, htons(80),
+                                      &first, &last, &portrange);
+    assert_int_equal(rv, -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-15 (Stage-6): ff_rss_tbl_get_portrange returns -1 when   */
+/* rss_check_cfgs.enable == 0.                                             */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_disabled(void **state)
+{
+    (void)state;
+    struct ff_rss_check_cfg dummy = { .enable = 0 };
+    ff_global_cfg.dpdk.rss_check_cfgs = &dummy;
+    uint16_t first = 0, last = 0;
+    uint16_t *portrange = NULL;
+    int rv = ff_rss_tbl_get_portrange(0x01020304, 0x05060708, htons(80),
+                                      &first, &last, &portrange);
+    assert_int_equal(rv, -1);
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-16 (Stage-6): ff_rss_tbl_get_portrange smoke — verify it  */
+/* doesn't crash when called with an arbitrary 4-tuple against the global  */
+/* table (initial state). Acceptable return values: 0 (found), 1 (found-   */
+/* with-portrange), or -1 (not found). Any of these covers the lookup loop.*/
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_smoke(void **state)
+{
+    (void)state;
+    struct ff_rss_check_cfg dummy = { .enable = 1 };
+    ff_global_cfg.dpdk.rss_check_cfgs = &dummy;
+    uint16_t first = 0, last = 0;
+    uint16_t *portrange = NULL;
+    int rv = ff_rss_tbl_get_portrange(0xDEADBEEF, 0xCAFEBABE, htons(80),
+                                      &first, &last, &portrange);
+    /* Just verify the function ran without crashing. The return value
+     * depends on the global ff_rss_tbl state which we don't control here. */
+    (void)rv;
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-17 (Stage-6): ff_dpdk_register_if happy path: allocates  */
+/* and returns a non-NULL ff_dpdk_if_context (covers the malloc + memset   */
+/* path in L182-L196).                                                     */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_dpdk_register_if_returns_ctx(void **state)
+{
+    (void)state;
+    struct ff_port_cfg pcfg = { .port_id = 0 };
+    int dummy_softc = 0xCAFE;
+    int dummy_ifp = 0xBEEF;
+    void *ctx = ff_dpdk_register_if(&dummy_softc, &dummy_ifp, &pcfg);
+    assert_non_null(ctx);
+    /* Round-trip via ff_dpdk_deregister_if (already tested) to free. */
+    ff_dpdk_deregister_if((struct ff_dpdk_if_context *)ctx);
+}
+
 /* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
@@ -363,6 +485,14 @@ main(void)
         cmocka_unit_test(test_ff_in_pcbladdr_no_callback),
         cmocka_unit_test(test_ff_in_pcbladdr_af_inet_dispatches),
         cmocka_unit_test(test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap),
+        /* Stage-6 Phase-5 coverage extensions */
+        cmocka_unit_test(test_ff_rss_tbl_set_portrange_no_cfg),
+        cmocka_unit_test(test_ff_rss_tbl_set_portrange_disabled),
+        cmocka_unit_test(test_ff_rss_tbl_set_portrange_inverted_range),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_no_cfg),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_disabled),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_smoke),
+        cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
