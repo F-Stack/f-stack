@@ -297,8 +297,7 @@ test_ff_get_traffic_post_init(void **state)
 
 /* ------------------------------------------------------------------------ */
 /* TC-INT-DPDKIF-06: ff_dpdk_if_send with valid ctx + 0-byte payload         */
-/* (NULL ctx is not tested -- ff_dpdk_if_send dereferences ctx->port_id      */
-/* unconditionally and would segfault. Tracked as FU-CB-DPDKIF-NULLGUARD.)   */
+/* (NULL ctx is exercised separately in TC-INT-DPDKIF-08 below.)             */
 /* ------------------------------------------------------------------------ */
 static void
 test_ff_dpdk_if_send_zero_total(void **state)
@@ -319,6 +318,21 @@ test_ff_dpdk_if_send_zero_total(void **state)
     assert_true(rv == 0 || rv == -1);
 
     ff_dpdk_deregister_if(ctx);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-INT-DPDKIF-08 (Stage-6 Phase-9 / FU-CB-DPDKIF-NULLGUARD):              */
+/* ff_dpdk_if_send(NULL, ...) must not crash. With the lib NULL guard in    */
+/* place this returns -1 immediately. Pre-guard, this would segfault on    */
+/* the very first ctx->port_id deref.                                       */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_dpdk_if_send_null_ctx_no_crash(void **state)
+{
+    (void)state;
+    SKIP_IF_NO_INIT();
+    int rv = ff_dpdk_if_send(NULL, NULL, 0);
+    assert_int_equal(rv, -1);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -346,6 +360,7 @@ main(void)
         cmocka_unit_test(test_ff_get_tsc_ns_monotonic),
         cmocka_unit_test(test_ff_get_traffic_post_init),
         cmocka_unit_test(test_ff_dpdk_if_send_zero_total),
+        cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_no_crash),
         cmocka_unit_test(test_eal_process_type_primary),
     };
     return cmocka_run_group_tests(tests, group_setup, group_teardown);

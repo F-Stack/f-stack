@@ -473,8 +473,32 @@ test_ff_dpdk_register_if_returns_ctx(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Main runner                                                              */
+/* TC-U-P3-DPDKIF-18 (Stage-6 Phase-9 / FU-CB-DPDKIF-NULLGUARD):             */
+/* ff_dpdk_if_send(NULL, ...) must not crash; lib's NULL ctx guard returns  */
+/* -1 and frees the caller's mbuf (if any) instead of dereferencing.        */
 /* ------------------------------------------------------------------------ */
+extern int ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m, int total);
+
+static void
+test_ff_dpdk_if_send_null_ctx_safe(void **state)
+{
+    (void)state;
+    /* Both args NULL: the guard returns -1 without touching m. */
+    int rv = ff_dpdk_if_send(NULL, NULL, 0);
+    assert_int_equal(rv, -1);
+}
+
+static void
+test_ff_dpdk_if_send_null_ctx_with_mbuf(void **state)
+{
+    (void)state;
+    /* Non-NULL m: the guard must call ff_mbuf_free(m) before returning -1.
+     * Our local stub ff_mbuf_free is a no-op, so we just verify the call
+     * doesn't crash and the return is -1. */
+    int dummy_mbuf = 0xCAFE;
+    int rv = ff_dpdk_if_send(NULL, &dummy_mbuf, 100);
+    assert_int_equal(rv, -1);
+}
 int
 main(void)
 {
@@ -498,6 +522,9 @@ main(void)
         cmocka_unit_test(test_ff_rss_tbl_get_portrange_disabled),
         cmocka_unit_test(test_ff_rss_tbl_get_portrange_smoke),
         cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
+        /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
+        cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),
+        cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_with_mbuf),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
