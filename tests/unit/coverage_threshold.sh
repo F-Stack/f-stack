@@ -56,20 +56,29 @@ function rate(hit, total) {
 
 BEGIN {
     # threshold tables, keyed by file basename
-    # P0 (spec 06 §6.1, post-Stage-6 actual - 5pp)
-    tline["ff_ini_parser.c"]    = 92;  tbr["ff_ini_parser.c"]    = 78
-    tline["ff_log.c"]           = 100; tbr["ff_log.c"]           = 100
-    # P1 (spec 06 §6.1, post-Stage-6 actual - 5pp)
-    tline["ff_host_interface.c"]= 95;  tbr["ff_host_interface.c"]= 87
-    tline["ff_epoll.c"]         = 95;  tbr["ff_epoll.c"]         = 84
-    tline["ff_config.c"]        = 70;  tbr["ff_config.c"]        = 65
-    # P2 (Stage-6 actual - 5pp)
-    tline["ff_thread.c"]        = 95;  tbr["ff_thread.c"]        = 95
-    tline["ff_init.c"]          = 95;  tbr["ff_init.c"]          = 95
-    tline["ff_dpdk_pcap.c"]     = 95;  tbr["ff_dpdk_pcap.c"]     = 84
-    # P3 (Stage-5 subset only — most of the file is out-of-scope by design)
-    tline["ff_dpdk_if.c"]       =  4;  tbr["ff_dpdk_if.c"]       =  2
-    tline["ff_dpdk_kni.c"]      = 40;  tbr["ff_dpdk_kni.c"]      = 35
+    # Format: line_threshold; branch_threshold (post-Stage-6 actual - 5pp)
+    # "actual" columns reflect the 2026-06-10 measured values after the
+    # full Stage-6 coverage-boost project (Phases 1-9). They are the
+    # informational comments that drive the chosen thresholds; if a future
+    # change bumps any actual upward, raise the threshold accordingly.
+    #
+    # P0 (spec 06 §6.1)
+    tline["ff_ini_parser.c"]    = 92;  tbr["ff_ini_parser.c"]    = 78   # actual: line=97.3%  branch=83.8%
+    tline["ff_log.c"]           = 100; tbr["ff_log.c"]           = 100  # actual: line=100%   branch=100%   (capped)
+    # P1 (spec 06 §6.1)
+    tline["ff_host_interface.c"]= 95;  tbr["ff_host_interface.c"]= 87   # actual: line=100%   branch=92.5%
+    tline["ff_epoll.c"]         = 95;  tbr["ff_epoll.c"]         = 84   # actual: line=100%   branch=89.1%
+    tline["ff_config.c"]        = 70;  tbr["ff_config.c"]        = 65   # actual: line=79.2%  branch=75.2%  (post FU-S2-2-CFG-UNLOAD)
+    # P2
+    tline["ff_thread.c"]        = 95;  tbr["ff_thread.c"]        = 95   # actual: line=100%   branch=100%
+    tline["ff_init.c"]          = 95;  tbr["ff_init.c"]          = 95   # actual: line=100%   branch=100%
+    tline["ff_dpdk_pcap.c"]     = 95;  tbr["ff_dpdk_pcap.c"]     = 84   # actual: line=100%   branch=88.9%
+    # P3 (subset by design — most of these files need a real DPDK ethdev runtime)
+    # Integration suite at tests/integration/ pushes ff_dpdk_if.c to ~30.5%
+    # line via real EAL --vdev=net_null0; the unit number below is the
+    # sub-set reachable in pure-mock unit scope.
+    tline["ff_dpdk_if.c"]       =  4;  tbr["ff_dpdk_if.c"]       =  2   # actual (unit-only): line=5.7%   branch=3.6%   (merged: line=30.5% branch=22.1%)
+    tline["ff_dpdk_kni.c"]      = 40;  tbr["ff_dpdk_kni.c"]      = 35   # actual: line=47.2%  branch=40.9%
 
     pass = 0; fail = 0; total_files = 0
 }
