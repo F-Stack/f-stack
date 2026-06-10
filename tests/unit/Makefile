@@ -13,6 +13,8 @@ CC            ?= gcc
 PKG_CFG       ?= pkg-config
 CMOCKA_CFLAGS := $(shell $(PKG_CFG) --cflags cmocka)
 CMOCKA_LIBS   := $(shell $(PKG_CFG) --libs cmocka)
+DPDK_CFLAGS   := $(shell $(PKG_CFG) --cflags libdpdk 2>/dev/null)
+DPDK_LIBS     := $(shell $(PKG_CFG) --libs libdpdk 2>/dev/null)
 
 # Versions guard (R-U-3 mitigation)
 CMOCKA_VER    := $(shell $(PKG_CFG) --modversion cmocka 2>/dev/null)
@@ -43,7 +45,8 @@ WRAP_FF_LOG   := -Wl,--wrap=rte_openlog_stream \
 SANITY_TESTS  := test_hello
 P0_TESTS      := test_ff_ini_parser test_ff_log
 P1_TESTS      := test_ff_host_interface test_ff_epoll test_ff_config
-ALL_TESTS     := $(SANITY_TESTS) $(P0_TESTS) $(P1_TESTS)
+P2_TESTS      := test_ff_thread test_ff_init test_ff_dpdk_pcap test_ff_dpdk_if
+ALL_TESTS     := $(SANITY_TESTS) $(P0_TESTS) $(P1_TESTS) $(P2_TESTS)
 
 # Common stub objects
 COMMON_OBJS   := $(COMMON_DIR)/ff_log_stub.o $(COMMON_DIR)/rte_stub.o
@@ -63,24 +66,33 @@ help:
 	@echo "  make coverage     - build with gcov + run tests + emit lcov HTML report"
 	@echo "  make coverage_clean - remove gcov/.gcda/.gcno + coverage_report/"
 
+# Runtime LD path for DPDK shared libs (test_ff_dpdk_if depends on them)
+DPDK_RUNPATH  := /usr/local/lib64
+RUN_ENV       := LD_LIBRARY_PATH=$(DPDK_RUNPATH):$$LD_LIBRARY_PATH
+
 test_sanity: $(SANITY_TESTS)
 	@for t in $(SANITY_TESTS); do \
-	  echo "==> running $$t"; ./$$t || exit 1; \
+	  echo "==> running $$t"; $(RUN_ENV) ./$$t || exit 1; \
 	done
 
 test_p0: $(P0_TESTS)
 	@for t in $(P0_TESTS); do \
-	  echo "==> running $$t"; ./$$t || exit 1; \
+	  echo "==> running $$t"; $(RUN_ENV) ./$$t || exit 1; \
 	done
 
 test_p1: $(P1_TESTS)
 	@for t in $(P1_TESTS); do \
-	  echo "==> running $$t"; ./$$t || exit 1; \
+	  echo "==> running $$t"; $(RUN_ENV) ./$$t || exit 1; \
+	done
+
+test_p2: $(P2_TESTS)
+	@for t in $(P2_TESTS); do \
+	  echo "==> running $$t"; $(RUN_ENV) ./$$t || exit 1; \
 	done
 
 test: all
 	@for t in $(ALL_TESTS); do \
-	  echo "==> running $$t"; ./$$t || exit 1; \
+	  echo "==> running $$t"; $(RUN_ENV) ./$$t || exit 1; \
 	done
 	@echo "ALL TESTS PASS ($(words $(ALL_TESTS)) binaries)"
 
@@ -92,7 +104,7 @@ $(LIB_OBJS_DIR):
 	@mkdir -p $@
 
 $(LIB_OBJS_DIR)/%.o: $(LIB_DIR)/%.c | $(LIB_OBJS_DIR)
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DPDK_CFLAGS) -c $< -o $@
 
 # ----- common stubs -----
 $(COMMON_DIR)/%.o: $(COMMON_DIR)/%.c
@@ -128,6 +140,31 @@ test_ff_epoll: test_ff_epoll.o $(LIB_OBJS_DIR)/ff_epoll.o $(COMMON_OBJS)
 # ff_global_cfg so we DO NOT link common/ff_log_stub.o here, only rte_stub.o)
 test_ff_config: test_ff_config.o $(LIB_OBJS_DIR)/ff_config.o $(LIB_OBJS_DIR)/ff_ini_parser.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS)
+
+# P2 #1 ff_thread (links real pthread + ff_host_interface for ff_malloc/free;
+# the test file ships its own `__thread struct thread *pcurthread` storage)
+test_ff_thread: test_ff_thread.o $(LIB_OBJS_DIR)/ff_thread.o $(LIB_OBJS_DIR)/ff_host_interface.o $(COMMON_OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -lpthread -lcrypto
+
+# P2 #2 ff_init (4 init step stubs in test file; exit() wrapped so failure
+# paths surface as cmocka assertion failures rather than process death)
+WRAP_FF_INIT  := -Wl,--wrap=exit
+test_ff_init: test_ff_init.o $(LIB_OBJS_DIR)/ff_init.o
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(WRAP_FF_INIT)
+
+# P2 #3 ff_dpdk_pcap (rte_lcore_id is inline, intercepted via TLS variable
+# definition in the test file; rte_exit covered by BASE_WRAPS)
+test_ff_dpdk_pcap: test_ff_dpdk_pcap.o $(LIB_OBJS_DIR)/ff_dpdk_pcap.o $(COMMON_DIR)/rte_stub.o
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -lpthread
+
+# P2 #4 ff_dpdk_if (trivial 7-function subset; rte_get_tsc_hz wrapped;
+# many dpdk/ff_* refs stubbed in the test file. We DO link the real DPDK
+# shared libraries to resolve the bulk of rte_eth_*/rte_timer_*/etc. that
+# ff_dpdk_if.o references but our 7 tests never invoke. -lrte_net_bond
+# pulls in the bond PMD which is not in the default libdpdk umbrella.)
+WRAP_FF_DPDKIF := -Wl,--wrap=rte_get_tsc_hz
+test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(COMMON_DIR)/rte_stub.o
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(WRAP_FF_DPDKIF) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
 
 # ----- clean (NFR-U-7: must use workspace wrapper, no direct rm) -----
 clean:

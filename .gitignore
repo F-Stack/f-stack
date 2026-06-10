@@ -75,3 +75,7 @@ tests/unit/lib_objs/*.gcda
 tests/unit/lib_objs/*.gcno
 tests/unit/coverage.info
 tests/unit/coverage_report/
+tests/unit/test_ff_thread
+tests/unit/test_ff_init
+tests/unit/test_ff_dpdk_pcap
+tests/unit/test_ff_dpdk_if
