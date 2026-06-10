@@ -62,7 +62,7 @@ BEGIN {
     # P1 (spec 06 §6.1, post-Stage-6 actual - 5pp)
     tline["ff_host_interface.c"]= 95;  tbr["ff_host_interface.c"]= 87
     tline["ff_epoll.c"]         = 95;  tbr["ff_epoll.c"]         = 84
-    tline["ff_config.c"]        = 50;  tbr["ff_config.c"]        = 40
+    tline["ff_config.c"]        = 70;  tbr["ff_config.c"]        = 65
     # P2 (Stage-6 actual - 5pp)
     tline["ff_thread.c"]        = 95;  tbr["ff_thread.c"]        = 95
     tline["ff_init.c"]          = 95;  tbr["ff_init.c"]          = 95
