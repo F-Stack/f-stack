@@ -177,6 +177,8 @@ int ini_parse_stream(ini_reader reader, void* stream, ini_handler handler,
 /* See documentation in header file. */
 int ini_parse_file(FILE* file, ini_handler handler, void* user)
 {
+    if (file == NULL)
+        return -1;
     return ini_parse_stream((ini_reader)fgets, file, handler, user);
 }
 

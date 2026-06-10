@@ -304,23 +304,22 @@ test_ini_parse_file_normal(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
-/* TC-U-P0-INI-12: ini_parse_file with NULL FILE* — SKIP                    */
+/* TC-U-P0-INI-12: ini_parse_file(NULL, ...) -> -1 (defensive NULL guard)   */
 /*                                                                          */
-/* Empirically verified during Stage-2 implementation that calling          */
-/*   ini_parse_file(NULL, ...)                                              */
-/* on glibc 2.x triggers SIGSEGV inside fgets(_, _, NULL). This is a real   */
-/* robustness gap in lib/ff_ini_parser.c — fixing it requires guarding the  */
-/* file pointer or wrapping fgets, which is out-of-scope for the unit-test  */
-/* phase (DP-U-11 forbids editing lib source).                              */
-/*                                                                          */
-/* Filed as FU-S2-NULLFILE for follow-up; this TC is preserved as `skip()`  */
-/* so that future commits adding the NULL-guard automatically re-enable it. */
+/* lib/ff_ini_parser.c gained an explicit NULL FILE* check at the entry of  */
+/* ini_parse_file (commit FU-S2-NULLFILE), aligning the failure semantics   */
+/* with ini_parse(filename) returning -1 on fopen failure. The TC verifies  */
+/* the function:                                                            */
+/*   (a) returns -1 (never crashes / SIGSEGVs)                              */
+/*   (b) does not invoke the handler (zero records captured)                */
 /* ------------------------------------------------------------------------ */
 static void
 test_ini_parse_file_null(void **state)
 {
-    (void)state;
-    skip();   /* FU-S2-NULLFILE: lib/ff_ini_parser.c lacks NULL FILE* guard */
+    capture_ctx_t *ctx = *state;
+    int rv = ini_parse_file(NULL, capture_handler, ctx);
+    assert_int_equal(rv, -1);
+    assert_int_equal(ctx->count, 0);
 }
 
 /* ------------------------------------------------------------------------ */
