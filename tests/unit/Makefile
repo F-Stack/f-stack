@@ -197,7 +197,7 @@ clean:
 	@$(MAKE) -s coverage_clean
 	@echo "clean done"
 
-# ----- coverage (Stage-3, FU-U-6 / G8 line>=80% branch>=70% for P0) -----
+# ----- coverage (Stage-3 + Stage-5, FU-U-6 / G8 thresholds for 10 files) -----
 COVERAGE_INFO := coverage.info
 COVERAGE_DIR  := coverage_report
 

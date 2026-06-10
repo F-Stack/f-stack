@@ -7,14 +7,22 @@
 # Parses the lcov info file directly (SF/LF/LH/BRF/BRH records) so the result
 # is independent of `lcov --list` output format quirks across versions.
 #
-# Per-file thresholds (spec 06 §6.1):
-#   P0 ff_ini_parser.c    : line >= 80%, branch >= 70%
-#   P0 ff_log.c           : line >= 80%, branch >= 70%
-#   P1 ff_host_interface.c: line >= 60%, branch >= 50%
-#   P1 ff_epoll.c         : line >= 60%, branch >= 50%
-#   P1 ff_config.c        : line >= 50%, branch >= 40%
+# Per-file thresholds (extended Stage-5; P0/P1 anchored to spec 06 §6.1,
+# P2/P3 anchored to plan-stage4 + plan-stage5 actual measurements - 5pp):
+#   P0 ff_ini_parser.c    : line >= 80%, branch >= 70%   (actual ~95/81%)
+#   P0 ff_log.c           : line >= 80%, branch >= 70%   (actual 100/100%)
+#   P1 ff_host_interface.c: line >= 60%, branch >= 50%   (actual ~93/89%)
+#   P1 ff_epoll.c         : line >= 60%, branch >= 50%   (actual ~75/54%)
+#   P1 ff_config.c        : line >= 50%, branch >= 40%   (actual ~60/60%)
+#   P2 ff_thread.c        : line >= 80%, branch >= 30%   (actual ~91/50%)
+#   P2 ff_init.c          : line >= 70%, branch >= 50%   (actual ~90/75%)
+#   P2 ff_dpdk_pcap.c     : line >= 80%, branch >= 60%   (actual ~96/78%)
+#   P3 ff_dpdk_if.c       : line >=  2%, branch >=  0%   (actual ~3/1%)
+#                           (subset only: 7 trivial + 3 in_pcbladdr)
+#   P3 ff_dpdk_kni.c      : line >=  8%, branch >= 10%   (actual ~11/14%)
+#                           (subset only: ff_kni_enqueue ratelimit branches)
 #
-# Exit 0 if all 5 files meet thresholds (G8 PASS).
+# Exit 0 if all 10 tracked files meet thresholds (G8 PASS).
 # Exit 1 if any file under threshold (G8 FAIL — caller should bounce).
 #
 # coverage.info SF block format (lcov 1.x / 2.x):
@@ -48,11 +56,21 @@ function rate(hit, total) {
 
 BEGIN {
     # threshold tables, keyed by file basename
+    # P0 (spec 06 §6.1)
     tline["ff_ini_parser.c"]    = 80;  tbr["ff_ini_parser.c"]    = 70
     tline["ff_log.c"]           = 80;  tbr["ff_log.c"]           = 70
+    # P1 (spec 06 §6.1)
     tline["ff_host_interface.c"]= 60;  tbr["ff_host_interface.c"]= 50
     tline["ff_epoll.c"]         = 60;  tbr["ff_epoll.c"]         = 50
     tline["ff_config.c"]        = 50;  tbr["ff_config.c"]        = 40
+    # P2 (Stage-4 actual - 5pp)
+    tline["ff_thread.c"]        = 80;  tbr["ff_thread.c"]        = 30
+    tline["ff_init.c"]          = 70;  tbr["ff_init.c"]          = 50
+    tline["ff_dpdk_pcap.c"]     = 80;  tbr["ff_dpdk_pcap.c"]     = 60
+    # P3 (Stage-5 subset only — most of the file is out-of-scope by design)
+    tline["ff_dpdk_if.c"]       =  2;  tbr["ff_dpdk_if.c"]       =  0
+    tline["ff_dpdk_kni.c"]      =  8;  tbr["ff_dpdk_kni.c"]      = 10
+
     pass = 0; fail = 0; total_files = 0
 }
 

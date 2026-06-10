@@ -103,7 +103,7 @@ run_coverage_full() {
         | grep -E "lines|functions|branches" \
         | sed 's/^/   /'
 
-    banner "3/4  Per-file thresholds (spec 06 §6.1, P0/P1 only)"
+    banner "3/4  Per-file thresholds (10 files: P0 + P1 + P2 + P3 subset)"
     bash ./coverage_threshold.sh coverage.info 2>&1 \
         | grep -E "PASS|FAIL|threshold|G8" \
         | sed 's/^/   /'
