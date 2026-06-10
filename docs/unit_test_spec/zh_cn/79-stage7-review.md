@@ -126,3 +126,46 @@ Phase 9 review+mirror  : 0
 ```
 
 EOF
+
+---
+
+## §9 Stage-7+ Follow-up: FU-S7-KNI-ENABLE
+
+**触发**：Stage-7 验收时 ff_dpdk_kni 52 missing branches 多在 `#ifdef FF_KNI` 内或被 dead-code 剥离，未达预期。
+
+**实施**：
+1. **Makefile per-target 覆盖**：`$(LIB_OBJS_DIR)/ff_dpdk_kni.o: KNI_EXTRA_CFLAGS := -DFF_KNI`，仅对 kni.o 启用 FF_KNI（避免污染其他 lib obj）。
+2. **stub 补 enable_kni**：`int enable_kni = 0;`（lib/ff_dpdk_if.c 提供，未链接 → 在 test 文件本地 stub）。
+3. **新 7 TCs**（test_ff_dpdk_kni.c）：
+   - TC-S7-KNI-12 ipv4_ospf_returns_ospf：`case IPPROTO_OSPFIGP: return FILTER_OSPF`（FF_KNI-only case）
+   - TC-S7-KNI-13/14 tcp/udp_kni_enabled_short：覆盖 protocol_filter_tcp/udp 的 `len < hdr` 真分支（L209/221）
+   - TC-S7-KNI-15 tcp_kni_enabled_match_returns_kni：覆盖 protocol_filter_l4 的 `if(get_bitmap()) return FILTER_KNI`（L199）+ `if (!enable_kni)` 假分支（L342）
+   - TC-S7-KNI-16 tcp_kni_enabled_miss_returns_unknown：覆盖 L199 假分支
+   - TC-S7-KNI-17 udp_kni_enabled_match_returns_kni：覆盖 L350 假分支
+   - TC-S7-KNI-18 init_null_port_lists：覆盖 kni_set_bitmap `if(!p) return;` 早返（L114）
+
+**结果**：
+
+| 指标 | Stage-7 末 | Stage-7+ 末 | Δ |
+|---|---|---|---|
+| ff_dpdk_kni.c **line** | 27.5% | **59.9%** | **+32.4pp** |
+| ff_dpdk_kni.c **branch** | 40.9% | **51.6%** | **+10.7pp** |
+| ff_dpdk_kni.c branch denom | 88 | 93 | +5（FF_KNI 新启 case+if）|
+| ff_dpdk_kni.c branch hit  | 36 | 48 | +12 |
+| **Project merged branch** | 59.92% | **60.51%** | **+0.59pp** |
+| Project merged line | 60.4% | **62.9%** | +2.5pp |
+| ff_dpdk_kni TC count | 11 | **18** | +7 |
+| valgrind | 11/11 PASS | **11/11 PASS** | 同 |
+
+**G8 ratchet**：`ff_dpdk_kni.c` line 40→55、branch 35→47（actual −5pp 安全边界）。
+
+**剩余 missing**（仍未覆盖，需更复杂手段）：
+- L142/148/149/161/163：kni_process_tx 的 ratelimit + tx_dropped 分支 — 需要构造完整 rte_eth_devices[port_id] PMD ops（极复杂，建议 Stage-8 用 LD_PRELOAD wrap 或起 KNI 真整合套件）
+- L181/183/185：kni_process_rx 同上
+- L426/435/466/476/480/486：ff_kni_alloc 的 process_type / virtio_user / ring_create 内部分支 — 需 rte_eal_hotplug_add 真 vdev 注册
+
+**FU-S8-KNI-PROCESS**（继任 follow-up，留 Stage-8）：
+- 选项 A：在 unit 里加 `--wrap=rte_eth_tx_burst` / `--wrap=rte_eth_rx_burst` 的 mock，仿造一个最小的 burst 计数器，覆盖 L161/163/181/183/185（约 +6 branches 可达）
+- 选项 B：起 `tests/integration/test_ff_kni_integration.c`，在真 DPDK + virtio_user 环境下跑 ff_kni_alloc 全路径（Stage-8 D2 集成扩容）
+
+EOF

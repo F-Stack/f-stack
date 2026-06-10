@@ -150,8 +150,14 @@ check: all
 $(LIB_OBJS_DIR):
 	@mkdir -p $@
 
+# Per-target extra CFLAGS for selected lib objects.
+# FU-S7-KNI-ENABLE (Stage-7 follow-up): build ff_dpdk_kni.o with -DFF_KNI so
+# that the test suite can exercise the OSPF case and the (!enable_kni)
+# protocol_filter guard branches (otherwise dead code in the unit build).
+$(LIB_OBJS_DIR)/ff_dpdk_kni.o: KNI_EXTRA_CFLAGS := -DFF_KNI
+
 $(LIB_OBJS_DIR)/%.o: $(LIB_DIR)/%.c | $(LIB_OBJS_DIR)
-	$(CC) $(CFLAGS) $(DPDK_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DPDK_CFLAGS) $(KNI_EXTRA_CFLAGS) -c $< -o $@
 
 # ----- common stubs -----
 $(COMMON_DIR)/%.o: $(COMMON_DIR)/%.c

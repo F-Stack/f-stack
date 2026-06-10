@@ -78,7 +78,7 @@ BEGIN {
     # line via real EAL --vdev=net_null0; the unit number below is the
     # sub-set reachable in pure-mock unit scope.
     tline["ff_dpdk_if.c"]       =  4;  tbr["ff_dpdk_if.c"]       =  2   # actual (unit-only): line=5.7%   branch=3.6%   (merged: line=30.5% branch=22.1%)
-    tline["ff_dpdk_kni.c"]      = 40;  tbr["ff_dpdk_kni.c"]      = 35   # actual: line=47.2%  branch=40.9%
+    tline["ff_dpdk_kni.c"]      = 55;  tbr["ff_dpdk_kni.c"]      = 47   # actual: line=59.9%  branch=51.6%  (Stage-7+ FU-S7-KNI-ENABLE)
 
     pass = 0; fail = 0; total_files = 0
 }
