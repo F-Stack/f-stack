@@ -368,6 +368,42 @@ test_ff_dump_packets_seq_rotation_wraps(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Stage-7 Phase-5 (FU-S7-PCAP-*): branch-coverage boost                   */
+/* TC-S7-PCAP-01: ff_dump_packets writes a packet but does NOT rotate     */
+/* when g_flen is still under f_maxlen (covers BRDA L127 br=1, the false  */
+/* leg of `if (g_flen >= f_maxlen)`). Verifies the file is still open    */
+/* (subsequent dump appends to the same file).                            */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_dump_packets_no_rotate_when_under_max(void **state)
+{
+    (void)state;
+    per_lcore__lcore_id = 9;
+
+    int rv = ff_enable_pcap(g_tmp_dir, 1500, 0);
+    assert_int_equal(rv, 0);
+
+    char payload[] = "small";
+    struct rte_mbuf m;
+    memset(&m, 0, sizeof(m));
+    m.buf_addr = payload;
+    m.data_off = 0;
+    m.data_len = (uint16_t)(sizeof(payload) - 1);
+    m.pkt_len  = m.data_len;
+    m.next     = NULL;
+
+    /* f_maxlen huge -> g_flen will stay below; the if-branch's false leg  */
+    /* is taken (no rotation). The branch is exercised purely by the call  */
+    /* returning 0 without rolling the file. We do not assert on on-disk  */
+    /* state because the __thread `seq` carries over from earlier TCs and */
+    /* the test_teardown wipes g_tmp_dir between tests anyway.           */
+    rv = ff_dump_packets(g_tmp_dir, &m, 1500, 1u << 30, 0);
+    assert_int_equal(rv, 0);
+    rv = ff_dump_packets(g_tmp_dir, &m, 1500, 1u << 30, 0);
+    assert_int_equal(rv, 0);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -382,6 +418,8 @@ main(void)
         /* Stage-6 coverage extensions */
         cmocka_unit_test_setup_teardown(test_ff_enable_pcap_fopen_fails,        test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_ff_dump_packets_seq_rotation_wraps, test_setup, test_teardown),
+        /* Stage-7 Phase-5 branch-coverage boost (FU-S7-PCAP-*) */
+        cmocka_unit_test_setup_teardown(test_ff_dump_packets_no_rotate_when_under_max, test_setup, test_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -412,6 +412,112 @@ test_ff_epoll_wait_ev_eof_write_with_fflags(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Stage-7 Phase-5 (FU-S7-EPOLL-*): branch-coverage boost                  */
+/* ------------------------------------------------------------------------ */
+
+/* TC-S7-EPOLL-01: EPOLL_CTL_ADD with EPOLLOUT-only events leaves the     */
+/* read kevent in EV_DISABLE state (covers BRDA L89 br=1, the false leg  */
+/* of `if (event->events & EPOLLIN)`).                                    */
+static void
+test_ff_epoll_ctl_add_writeonly_only_epollout(void **state)
+{
+    (void)state;
+    int epfd = ff_epoll_create(1);
+    struct epoll_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.events  = EPOLLOUT;          /* deliberately NOT EPOLLIN */
+    ev.data.fd = 7;
+
+    int rc = ff_epoll_ctl(epfd, EPOLL_CTL_ADD, 7, &ev);
+    assert_int_equal(rc, 0);
+    assert_int_equal(g_kev_cap.last_nchanges, 2);
+    /* read kevent: EV_DISABLE is preserved (EPOLLIN absent) */
+    assert_true((g_kev_cap.captured[0].flags & EV_DISABLE) != 0);
+    /* write kevent: EV_ENABLE is set (EPOLLOUT present) */
+    assert_true((g_kev_cap.captured[1].flags & EV_ENABLE) != 0);
+}
+
+/* TC-S7-EPOLL-02: a synthesized kevent with an unknown filter (e.g.     */
+/* EVFILT_TIMER) translates to events=0 -- covers BRDA L116 br=1.        */
+static void
+test_ff_epoll_wait_unknown_filter_yields_zero_events(void **state)
+{
+    (void)state;
+    g_synth_kev.ident  = 33;
+    g_synth_kev.filter = EVFILT_TIMER;       /* not READ, not WRITE */
+    g_synth_kev.flags  = 0;
+    g_synth_kev.data   = 1;
+    g_synth_kev.udata  = NULL;
+    g_synth_count = 1;
+
+    struct epoll_event events[1];
+    int n = ff_epoll_wait(42, events, 1, 0);
+    assert_int_equal(n, 1);
+    assert_int_equal(events[0].events, 0);   /* no EPOLL* bits set */
+}
+
+/* TC-S7-EPOLL-03: EV_EOF with an unknown filter still yields EPOLLHUP   */
+/* (without EPOLLERR or EPOLLIN/OUT) -- covers BRDA L133 br=1.           */
+static void
+test_ff_epoll_wait_eof_unknown_filter_only_hup(void **state)
+{
+    (void)state;
+    g_synth_kev.ident  = 44;
+    g_synth_kev.filter = EVFILT_TIMER;       /* unknown */
+    g_synth_kev.flags  = EV_EOF;
+    g_synth_kev.fflags = 0;
+    g_synth_kev.data   = 0;
+    g_synth_kev.udata  = NULL;
+    g_synth_count = 1;
+
+    struct epoll_event events[1];
+    int n = ff_epoll_wait(42, events, 1, 0);
+    assert_int_equal(n, 1);
+    /* EPOLLHUP set, EPOLLERR/IN/OUT not set */
+    assert_true(events[0].events & EPOLLHUP);
+    assert_false(events[0].events & EPOLLIN);
+    assert_false(events[0].events & EPOLLOUT);
+}
+
+/* TC-S7-EPOLL-04: events!=NULL but maxevents=0 still rejects with -1    */
+/* / errno=EINVAL (covers BRDA L152 br=2, the maxevents<1 leg with       */
+/* events being valid).                                                 */
+static void
+test_ff_epoll_wait_zero_maxevents_returns_einval(void **state)
+{
+    (void)state;
+    struct epoll_event events[1];
+    errno = 0;
+    int n = ff_epoll_wait(42, events, /*maxevents*/ 0, 0);
+    assert_int_equal(n, -1);
+    assert_int_equal(errno, EINVAL);
+}
+
+/* TC-S7-EPOLL-05: EVFILT_READ with data=0 and EV_EOF set still produces  */
+/* EPOLLIN via the EV_EOF branch (covers BRDA L113 br=2 partial leg).    */
+static void
+test_ff_epoll_wait_evfilt_read_eof_data_zero_yields_in_hup(void **state)
+{
+    (void)state;
+    g_synth_kev.ident  = 55;
+    g_synth_kev.filter = EVFILT_READ;
+    g_synth_kev.flags  = EV_EOF;       /* EOF set, data=0 */
+    g_synth_kev.data   = 0;
+    g_synth_kev.fflags = 0;
+    g_synth_kev.udata  = NULL;
+    g_synth_count = 1;
+
+    struct epoll_event events[1];
+    int n = ff_epoll_wait(42, events, 1, 0);
+    assert_int_equal(n, 1);
+    /* The L113 branch (data=0 && !EV_EOF) is FALSE (because EV_EOF=1) so   */
+    /* the first block sets nothing; the EV_EOF block then sets EPOLLHUP   */
+    /* and (filter==READ) sets EPOLLIN.                                    */
+    assert_true(events[0].events & EPOLLHUP);
+    assert_true(events[0].events & EPOLLIN);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -434,6 +540,12 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_ev_error_to_epollerr,        test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_ev_eof_read_to_hup_in,       test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_ev_eof_write_with_fflags,    test_setup, NULL),
+        /* Stage-7 Phase-5 branch-coverage boost (FU-S7-EPOLL-*) */
+        cmocka_unit_test_setup_teardown(test_ff_epoll_ctl_add_writeonly_only_epollout,           test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_unknown_filter_yields_zero_events,    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_eof_unknown_filter_only_hup,          test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_zero_maxevents_returns_einval,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_evfilt_read_eof_data_zero_yields_in_hup, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
