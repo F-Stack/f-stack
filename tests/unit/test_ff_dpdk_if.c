@@ -247,6 +247,105 @@ test_ff_get_tsc_ns_basic(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-08: ff_in_pcbladdr returns 0 when no callback registered  */
+/* ------------------------------------------------------------------------ */
+#include <netinet/in.h>           /* AF_INET */
+
+static void
+test_ff_in_pcbladdr_no_callback(void **state)
+{
+    (void)state;
+    /* Reset to NULL via the public setter */
+    ff_regist_pcblddr_fun(NULL);
+
+    int rv = ff_in_pcbladdr(AF_INET, NULL, 0, NULL);
+    assert_int_equal(rv, 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-09: AF_INET dispatches to callback with family=AF_INET    */
+/* ------------------------------------------------------------------------ */
+static struct {
+    int   invoked;
+    uint16_t family_seen;
+    void *faddr_seen;
+    uint16_t fport_seen;
+    void *laddr_seen;
+    int   ret_value;
+} g_pcblddr_capture;
+
+static int
+capturing_pcblddr(uint16_t family, void *faddr, uint16_t fport, void *laddr)
+{
+    g_pcblddr_capture.invoked++;
+    g_pcblddr_capture.family_seen = family;
+    g_pcblddr_capture.faddr_seen  = faddr;
+    g_pcblddr_capture.fport_seen  = fport;
+    g_pcblddr_capture.laddr_seen  = laddr;
+    return g_pcblddr_capture.ret_value;
+}
+
+static void
+test_ff_in_pcbladdr_af_inet_dispatches(void **state)
+{
+    (void)state;
+    memset(&g_pcblddr_capture, 0, sizeof(g_pcblddr_capture));
+    g_pcblddr_capture.ret_value = 7;          /* arbitrary marker */
+    ff_regist_pcblddr_fun(capturing_pcblddr);
+
+    int faddr = 0x12345678;
+    int laddr = 0x9ABCDEF0;
+    int rv = ff_in_pcbladdr(AF_INET, &faddr, 53, &laddr);
+
+    assert_int_equal(rv, 7);                  /* return value transparently */
+    assert_int_equal(g_pcblddr_capture.invoked, 1);
+    assert_int_equal((int)g_pcblddr_capture.family_seen, AF_INET);
+    assert_ptr_equal(g_pcblddr_capture.faddr_seen, &faddr);
+    assert_int_equal((int)g_pcblddr_capture.fport_seen, 53);
+    assert_ptr_equal(g_pcblddr_capture.laddr_seen, &laddr);
+
+    ff_regist_pcblddr_fun(NULL);              /* clean up */
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-10: AF_INET6_FREEBSD (28) is remapped to AF_INET6_LINUX   */
+/* (10) before dispatching; unknown family returns the host EADDRNOTAVAIL.  */
+/*                                                                          */
+/* IMPORTANT (DP-U-12 "代码为准"): ff_in_pcbladdr's else-branch returns the */
+/* POSIX errno macro `EADDRNOTAVAIL` (defined in <errno.h>, value=99 on    */
+/* Linux), NOT F-Stack's `ff_EADDRNOTAVAIL` (49). The spec/plan referenced  */
+/* the latter incorrectly; tests below use the actual Linux errno value.   */
+/* ------------------------------------------------------------------------ */
+#define AF_INET6_FREEBSD_VAL    28      /* per ff_api.h L50 */
+#define AF_INET6_LINUX_VAL      10      /* per ff_api.h L48 */
+
+#include <errno.h>                      /* host EADDRNOTAVAIL */
+
+static void
+test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap(void **state)
+{
+    (void)state;
+    memset(&g_pcblddr_capture, 0, sizeof(g_pcblddr_capture));
+    g_pcblddr_capture.ret_value = 0;
+    ff_regist_pcblddr_fun(capturing_pcblddr);
+
+    int rv = ff_in_pcbladdr(AF_INET6_FREEBSD_VAL, NULL, 0, NULL);
+    assert_int_equal(rv, 0);
+    assert_int_equal(g_pcblddr_capture.invoked, 1);
+    /* Family must be remapped to AF_INET6_LINUX before reaching callback */
+    assert_int_equal((int)g_pcblddr_capture.family_seen, AF_INET6_LINUX_VAL);
+
+    /* Reset capture and try unknown family -> EADDRNOTAVAIL (host=99 on Linux),
+     * callback NOT called */
+    memset(&g_pcblddr_capture, 0, sizeof(g_pcblddr_capture));
+    rv = ff_in_pcbladdr(99 /* unknown */, NULL, 0, NULL);
+    assert_int_equal(rv, EADDRNOTAVAIL);    /* POSIX, =99 on Linux */
+    assert_int_equal(g_pcblddr_capture.invoked, 0);
+
+    ff_regist_pcblddr_fun(NULL);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -260,6 +359,10 @@ main(void)
         cmocka_unit_test(test_ff_regist_packet_dispatcher_smoke),
         cmocka_unit_test(test_ff_regist_packet_dispatcher_context_smoke),
         cmocka_unit_test(test_ff_get_tsc_ns_basic),
+        /* Stage-5 FU-S4-DPDK-IF-FULL: ff_in_pcbladdr branches */
+        cmocka_unit_test(test_ff_in_pcbladdr_no_callback),
+        cmocka_unit_test(test_ff_in_pcbladdr_af_inet_dispatches),
+        cmocka_unit_test(test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

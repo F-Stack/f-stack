@@ -24,9 +24,12 @@ $(error CMocka >= 1.1.7 required, found '$(CMOCKA_VER)')
 endif
 
 # Host-only build flags (R-U-2 / NFR-U-4)
+# DPDK_CFLAGS includes -march=native -mssse3 etc. needed because rte_memcpy
+# and other inline DPDK helpers expand into ISA-specific intrinsics.
 CFLAGS        := -O0 -g3 -Wall -Wextra -Wno-unused-parameter \
                  -I$(LIB_DIR) -I$(COMMON_DIR) \
                  $(CMOCKA_CFLAGS) \
+                 $(DPDK_CFLAGS) \
                  -DFF_UNIT_TEST=1
 
 # Fatal-function wraps applied globally (spec 04 §8.1):
@@ -46,7 +49,8 @@ SANITY_TESTS  := test_hello
 P0_TESTS      := test_ff_ini_parser test_ff_log
 P1_TESTS      := test_ff_host_interface test_ff_epoll test_ff_config
 P2_TESTS      := test_ff_thread test_ff_init test_ff_dpdk_pcap test_ff_dpdk_if
-ALL_TESTS     := $(SANITY_TESTS) $(P0_TESTS) $(P1_TESTS) $(P2_TESTS)
+P3_TESTS      := test_ff_dpdk_kni
+ALL_TESTS     := $(SANITY_TESTS) $(P0_TESTS) $(P1_TESTS) $(P2_TESTS) $(P3_TESTS)
 
 # Common stub objects
 COMMON_OBJS   := $(COMMON_DIR)/ff_log_stub.o $(COMMON_DIR)/rte_stub.o
@@ -87,6 +91,11 @@ test_p1: $(P1_TESTS)
 
 test_p2: $(P2_TESTS)
 	@for t in $(P2_TESTS); do \
+	  echo "==> running $$t"; $(RUN_ENV) ./$$t || exit 1; \
+	done
+
+test_p3: $(P3_TESTS)
+	@for t in $(P3_TESTS); do \
 	  echo "==> running $$t"; $(RUN_ENV) ./$$t || exit 1; \
 	done
 
@@ -165,6 +174,12 @@ test_ff_dpdk_pcap: test_ff_dpdk_pcap.o $(LIB_OBJS_DIR)/ff_dpdk_pcap.o $(COMMON_D
 WRAP_FF_DPDKIF := -Wl,--wrap=rte_get_tsc_hz
 test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(WRAP_FF_DPDKIF) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
+
+# P3 #1 ff_dpdk_kni (FU-S4-KNI subset: ff_kni_enqueue ratelimit branches;
+# requires real DPDK EAL --no-huge for mempool + ring; if EAL init fails
+# at runtime, all 4 TC are marked skip().)
+test_ff_dpdk_kni: test_ff_dpdk_kni.o $(LIB_OBJS_DIR)/ff_dpdk_kni.o $(COMMON_DIR)/rte_stub.o
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
 
 # ----- clean (NFR-U-7: must use workspace wrapper, no direct rm) -----
 clean:

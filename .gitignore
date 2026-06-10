@@ -79,3 +79,4 @@ tests/unit/test_ff_thread
 tests/unit/test_ff_init
 tests/unit/test_ff_dpdk_pcap
 tests/unit/test_ff_dpdk_if
+tests/unit/test_ff_dpdk_kni
