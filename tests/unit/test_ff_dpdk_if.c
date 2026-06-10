@@ -117,6 +117,11 @@ void ff_hardclock(void) { }
 int  ff_enable_pcap(const char *p, uint16_t s, uint8_t t)
 { (void)p;(void)s;(void)t; return 0; }
 
+/* ff_unload_config: defined in ff_config.c (we do NOT link it here);
+ * referenced from ff_dpdk_run's exit cleanup path which our 7 TCs never
+ * invoke. */
+void ff_unload_config(void) { }
+
 /* rte_timer_meta_init: F-Stack-specific patch added during DPDK 23->24
  * upgrade; not present in stock librte_timer.so. Provide a no-op stub. */
 void rte_timer_meta_init(void) { }
