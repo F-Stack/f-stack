@@ -447,8 +447,99 @@ test_ff_clock_gettime_realtime(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
-/* Main runner                                                              */
+/* Stage-7 Phase-6 (FU-S7-HIF-*): branch-coverage boost                     */
 /* ------------------------------------------------------------------------ */
+
+/* TC-S7-HIF-01: ff_mmap with PROT_WRITE only (no PROT_READ) covers the    */
+/* false leg of `(prot & ff_PROT_READ) == ff_PROT_READ` (BRDA L70 br=1).   */
+static void
+test_ff_mmap_prot_writeonly(void **state)
+{
+    (void)state;
+    void *p = ff_mmap(NULL, 4096, ff_PROT_WRITE,
+                      ff_MAP_PRIVATE | ff_MAP_ANON, -1, 0);
+    assert_ptr_not_equal(p, ff_MAP_FAILED);
+    int rv = ff_munmap(p, 4096);
+    assert_int_equal(rv, 0);
+}
+
+/* TC-S7-HIF-02: ff_mmap with PROT_READ only (no PROT_WRITE) covers       */
+/* BRDA L71 br=1 (false leg of PROT_WRITE bit test).                      */
+static void
+test_ff_mmap_prot_readonly(void **state)
+{
+    (void)state;
+    void *p = ff_mmap(NULL, 4096, ff_PROT_READ,
+                      ff_MAP_PRIVATE | ff_MAP_ANON, -1, 0);
+    assert_ptr_not_equal(p, ff_MAP_FAILED);
+    /* Read a byte; PROT_READ-only anon mapping is zero-filled. */
+    volatile unsigned char b = ((volatile unsigned char *)p)[0];
+    assert_int_equal(b, 0);
+    int rv = ff_munmap(p, 4096);
+    assert_int_equal(rv, 0);
+}
+
+/* TC-S7-HIF-03: ff_mmap with MAP_SHARED|MAP_ANON (no MAP_PRIVATE) covers */
+/* BRDA L75 br=1 (false leg of MAP_PRIVATE bit test).                     */
+static void
+test_ff_mmap_map_shared_anon(void **state)
+{
+    (void)state;
+    void *p = ff_mmap(NULL, 4096, ff_PROT_READ | ff_PROT_WRITE,
+                      ff_MAP_SHARED | ff_MAP_ANON, -1, 0);
+    assert_ptr_not_equal(p, ff_MAP_FAILED);
+    int rv = ff_munmap(p, 4096);
+    assert_int_equal(rv, 0);
+}
+
+/* TC-S7-HIF-04: ff_mmap file-backed (MAP_PRIVATE without MAP_ANON)       */
+/* covers BRDA L76 br=1 (false leg of MAP_ANON bit test).                 */
+static void
+test_ff_mmap_file_backed_no_anon(void **state)
+{
+    (void)state;
+    char tmpl[] = "/tmp/ff_hif_mmap_XXXXXX";
+    int fd = mkstemp(tmpl);
+    assert_true(fd >= 0);
+    int t = ftruncate(fd, 4096);
+    assert_int_equal(t, 0);
+    void *p = ff_mmap(NULL, 4096, ff_PROT_READ | ff_PROT_WRITE,
+                      ff_MAP_PRIVATE, fd, 0);
+    assert_ptr_not_equal(p, ff_MAP_FAILED);
+    int rv = ff_munmap(p, 4096);
+    assert_int_equal(rv, 0);
+    close(fd);
+    /* clean up via wrapper script */
+    char cmd[256];
+    snprintf(cmd, sizeof(cmd),
+             "/data/workspace/rm_tmp_file.sh %s >/dev/null 2>&1", tmpl);
+    int s = system(cmd); (void)s;
+}
+
+/* TC-S7-HIF-05: ff_get_current_time(NULL, &nsec) covers BRDA L196 br=1   */
+/* (sec==NULL false branch of the first guard). Must not crash.          */
+static void
+test_ff_get_current_time_null_sec(void **state)
+{
+    (void)state;
+    long ns = -1;
+    ff_update_current_ts();
+    ff_get_current_time(NULL, &ns);
+    assert_true(ns >= 0);
+}
+
+/* TC-S7-HIF-06: ff_get_current_time(&sec, NULL) covers BRDA L200 br=1   */
+/* (nsec==NULL false branch of the second guard). Must not crash.       */
+static void
+test_ff_get_current_time_null_nsec(void **state)
+{
+    (void)state;
+    time_t s = 0;
+    ff_update_current_ts();
+    ff_get_current_time(&s, NULL);
+    assert_true(s > 1577836800);
+}
+
 int
 main(void)
 {
@@ -471,6 +562,13 @@ main(void)
         cmocka_unit_test(test_ff_realloc_zero_size_returns_p),
         cmocka_unit_test(test_panic_aborts),
         cmocka_unit_test(test_ff_clock_gettime_realtime),
+        /* Stage-7 Phase-6 branch-coverage boost (FU-S7-HIF-*) */
+        cmocka_unit_test(test_ff_mmap_prot_writeonly),
+        cmocka_unit_test(test_ff_mmap_prot_readonly),
+        cmocka_unit_test(test_ff_mmap_map_shared_anon),
+        cmocka_unit_test(test_ff_mmap_file_backed_no_anon),
+        cmocka_unit_test(test_ff_get_current_time_null_sec),
+        cmocka_unit_test(test_ff_get_current_time_null_nsec),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
