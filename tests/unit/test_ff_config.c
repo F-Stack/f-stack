@@ -557,6 +557,188 @@ test_ff_unload_config_zeroes_state(void **state)
     ff_unload_config();
     assert_null(ff_global_cfg.filename);
 }
+/* ======================================================================== */
+/* Stage-7 Phase-3 (FU-S7-CFG-*): branch-coverage boost for ff_config.c     */
+/* ======================================================================== */
+
+/* TC-S7-CFG-01: parse_lcore_mask accepts uppercase "0X" prefix.            */
+static void
+test_parse_lcore_mask_uppercase_0X_succeeds(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_lcore_uppercase.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 2);
+}
+
+/* TC-S7-CFG-02: vlan_cfg_handler returns 1 (skip) when vlanid is not in   */
+/* the configured vlan_filter list (FU-S7-CFG-VLAN-OOB regression guard). */
+static void
+test_vlan_cfg_handler_id_not_in_filter_returns_one(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_vlan_id_not_in_filter.ini"));
+    /* Load itself succeeds (rv=0); the handler simply ignores the orphan
+     * [vlan99] section so vlan_cfgs[0] (slot for vlan_filter[0]=10) stays
+     * un-named. */
+    assert_int_equal(rv, 0);
+    assert_non_null(ff_global_cfg.dpdk.vlan_cfgs);
+    /* slot 0 was allocated but no [vlanN] matched filter[0]=10, so name is NULL */
+    assert_null(ff_global_cfg.dpdk.vlan_cfgs[0].name);
+}
+
+/* TC-S7-CFG-03: vlan_cfg_handler returns 0 on malformed section name.     */
+static void
+test_vlan_cfg_handler_bad_section_returns_zero(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_vlan_bad_section.ini"));
+    /* sscanf failure inside vlan_cfg_handler aborts ff_load_config (rv=-1) */
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S7-CFG-04: vdev_cfg_handler returns 0 when [dpdk] is missing nb_vdev.*/
+static void
+test_vdev_cfg_handler_no_nb_vdev_returns_zero(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_vdev_no_nb_vdev.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S7-CFG-05: full vdev section populates iface/path/mac/queues/cq.    */
+static void
+test_ff_load_config_vdev_full(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_vdev.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_vdev, 1);
+    assert_non_null(ff_global_cfg.dpdk.vdev_cfgs);
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].iface, "eth0");
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].path, "/var/run/usvhost");
+    assert_int_equal(ff_global_cfg.dpdk.vdev_cfgs[0].nb_queues, 2);
+    assert_int_equal(ff_global_cfg.dpdk.vdev_cfgs[0].queue_size, 512);
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].mac, "00:11:22:33:44:55");
+    assert_int_equal(ff_global_cfg.dpdk.vdev_cfgs[0].nb_cq, 1);
+}
+
+/* TC-S7-CFG-06: full bond section populates mode/slave/primary/etc.     */
+static void
+test_ff_load_config_bond_full(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_bond.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_bond, 1);
+    assert_non_null(ff_global_cfg.dpdk.bond_cfgs);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].mode, 4);
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].slave, "0,1");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].primary, "0");
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].socket_id, 0);
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].bond_mac, "AA:BB:CC:DD:EE:FF");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].xmit_policy, "l34");
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].lsc_poll_period_ms, 100);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].up_delay, 100);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].down_delay, 200);
+}
+
+/* TC-S7-CFG-07: port_cfg_handler returns 0 on malformed [portXX] name.   */
+static void
+test_port_cfg_handler_bad_section_returns_zero(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_port_bad_section.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S7-CFG-08: port_cfg_handler returns 1 (skip) when portid > max.    */
+static void
+test_port_cfg_handler_id_over_max_returns_one(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_port_id_over_max.ini"));
+    /* Load succeeds; [port200] section is silently ignored. */
+    assert_int_equal(rv, 0);
+    /* Only port0 should have a name */
+    assert_non_null(ff_global_cfg.dpdk.port_cfgs);
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].name, "port0");
+}
+
+/* TC-S7-CFG-09: repeated keys (addr=A then addr=B) must not leak the     */
+/* old strdup'd value (FU-S7-CFG-FREE-BEFORE-STRDUP regression guard).   */
+/* valgrind verification is performed out-of-band by `make check`.       */
+static void
+test_ff_load_config_repeat_keys_no_leak(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_repeat_keys.ini"));
+    assert_int_equal(rv, 0);
+    /* Last value of each repeated key wins. */
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].addr,    "192.168.1.30");
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].netmask, "255.255.0.0");
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].gateway, "192.168.1.254");
+}
+
+/* TC-S7-CFG-10: freebsd.boot section accepts multiple integer + string   */
+/* entries forming a chain visible via cfg.freebsd.boot list.            */
+static void
+test_ff_load_config_freebsd_boot_multi_entries(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_freebsd_boot.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.freebsd.hz, 200);
+    /* Walk the boot/sysctl chains; at least 1 entry should be present. */
+    int nboot = 0;
+    for (struct ff_freebsd_cfg *p = ff_global_cfg.freebsd.boot; p; p = p->next) {
+        nboot++;
+    }
+    int nsysctl = 0;
+    for (struct ff_freebsd_cfg *p = ff_global_cfg.freebsd.sysctl; p; p = p->next) {
+        nsysctl++;
+    }
+    /* boot has panicstr (string-typed), sysctl has 5 entries above. */
+    assert_true(nboot >= 1);
+    assert_int_equal(nsysctl, 5);
+}
+
+/* TC-S7-CFG-11: INET6 directives are silently ignored when the build does */
+/* not define INET6 (load still succeeds). The fixture also exercises the  */
+/* free-before-strdup path on broadcast/if_name/addr6/gateway6 indirectly. */
+static void
+test_ff_load_config_inet6_fixture_ignored(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_inet6.ini"));
+    assert_int_equal(rv, 0);
+    /* INET4 portions still parse correctly. */
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].addr,    "192.168.1.10");
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].netmask, "255.255.255.0");
+}
+
+/* TC-S7-CFG-12: argv override for -t (proc_type) and -p (proc_id).      */
+static void
+test_ff_load_config_argv_t_override(void **state)
+{
+    (void)state;
+    /* Build argv: f-stack -c <fixture> -t secondary -p 0 */
+    char prog[]  = "f-stack";
+    char dashc[] = "-c";
+    char dasht[] = "-t";
+    char dashp[] = "-p";
+    char path[]  = FIXTURE_PATH("valid_minimal.ini");
+    char tval[]  = "secondary";
+    char pval[]  = "0";
+    char *argv[] = { prog, dashc, path, dasht, tval, dashp, pval, NULL };
+    extern int optind;
+    optind = 1;
+    int rv = ff_load_config(7, argv);
+    assert_int_equal(rv, 0);
+    assert_string_equal(ff_global_cfg.dpdk.proc_type, "secondary");
+    assert_int_equal(ff_global_cfg.dpdk.proc_id, 0);
+}
+
 int
 main(void)
 {
@@ -584,6 +766,19 @@ main(void)
         cmocka_unit_test_setup_teardown(test_rss_tbl_cfg_handler_bad_tuple,      test_setup, NULL),
         /* Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD) */
         cmocka_unit_test_setup_teardown(test_ff_unload_config_zeroes_state,      test_setup, NULL),
+        /* Stage-7 Phase-3 branch-coverage boost (FU-S7-CFG-*) */
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_uppercase_0X_succeeds, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfg_handler_id_not_in_filter_returns_one, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfg_handler_bad_section_returns_zero, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vdev_cfg_handler_no_nb_vdev_returns_zero, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_vdev_full, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_bond_full, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_port_cfg_handler_bad_section_returns_zero, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_port_cfg_handler_id_over_max_returns_one, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_repeat_keys_no_leak, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_freebsd_boot_multi_entries, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_inet6_fixture_ignored, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_argv_t_override, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

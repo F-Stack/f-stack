@@ -587,14 +587,19 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
     }
 
     if (strcmp(name, "if_name") == 0) {
+        if (cur->ifname) free(cur->ifname);
         cur->ifname = strdup(value);
     } else if (strcmp(name, "addr") == 0) {
+        if (cur->addr) free(cur->addr);
         cur->addr = strdup(value);
     } else if (strcmp(name, "netmask") == 0) {
+        if (cur->netmask) free(cur->netmask);
         cur->netmask = strdup(value);
     } else if (strcmp(name, "broadcast") == 0) {
+        if (cur->broadcast) free(cur->broadcast);
         cur->broadcast = strdup(value);
     } else if (strcmp(name, "gateway") == 0) {
+        if (cur->gateway) free(cur->gateway);
         cur->gateway = strdup(value);
     } else if (strcmp(name, "lcore_list") == 0) {
         return parse_port_lcore_list(cur, value);
@@ -606,6 +611,7 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
             return vip_cfg_handler(cur, NULL);
         }
     } else if (strcmp(name, "vip_ifname") == 0) {
+        if (cur->vip_ifname) free(cur->vip_ifname);
         cur->vip_ifname = strdup(value);
     }
 
@@ -620,10 +626,12 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
 
 #ifdef INET6
     else if (0 == strcmp(name, "addr6")) {
+        if (cur->addr6_str) free(cur->addr6_str);
         cur->addr6_str = strdup(value);
     } else if (0 == strcmp(name, "prefix_len")) {
         cur->prefix_len = atoi(value);
     } else if (0 == strcmp(name, "gateway6")) {
+        if (cur->gateway6_str) free(cur->gateway6_str);
         cur->gateway6_str = strdup(value);
     } else if (strcmp(name, "vip_addr6") == 0) {
         cur->vip_addr6_str = strdup(value);
@@ -669,11 +677,13 @@ vlan_cfg_handler(struct ff_config *cfg, const char *section,
         if (vlanid == cfg->dpdk.vlan_filter_id[vlan_index]) {
             break;
         }
-
-        if (vlan_index >= cfg->dpdk.nb_vlan_filter) {
-            fprintf(stderr, "vlan_cfg_handler section[%s] mot match vlan filter, ignore it\n", section);
-            return 1;
-        }
+    }
+    /* Stage-7 (FU-S7-CFG-VLAN-OOB): the original "not match" check lived
+     * inside the for body and was unreachable; without this guard we
+     * would fall through and write past vlan_cfgs[nb_vlan_filter]. */
+    if (vlan_index >= cfg->dpdk.nb_vlan_filter) {
+        fprintf(stderr, "vlan_cfg_handler section[%s] not match vlan_filter, ignore\n", section);
+        return 1;
     }
 
     struct ff_vlan_cfg *cur = &cfg->dpdk.vlan_cfgs[vlan_index];
@@ -698,12 +708,16 @@ vlan_cfg_handler(struct ff_config *cfg, const char *section,
         pc->vlan_cfgs[pc->nb_vlan] = cur;
         pc->nb_vlan++;
     } else if (strcmp(name, "addr") == 0) {
+        if (cur->addr) free(cur->addr);
         cur->addr = strdup(value);
     } else if (strcmp(name, "netmask") == 0) {
+        if (cur->netmask) free(cur->netmask);
         cur->netmask = strdup(value);
     } else if (strcmp(name, "broadcast") == 0) {
+        if (cur->broadcast) free(cur->broadcast);
         cur->broadcast = strdup(value);
     } else if (strcmp(name, "gateway") == 0) {
+        if (cur->gateway) free(cur->gateway);
         cur->gateway = strdup(value);
     } else if (strcmp(name, "vip_addr") == 0) {
         cur->vip_addr_str = strdup(value);
@@ -725,10 +739,12 @@ vlan_cfg_handler(struct ff_config *cfg, const char *section,
 
 #ifdef INET6
     else if (0 == strcmp(name, "addr6")) {
+        if (cur->addr6_str) free(cur->addr6_str);
         cur->addr6_str = strdup(value);
     } else if (0 == strcmp(name, "prefix_len")) {
         cur->prefix_len = atoi(value);
     } else if (0 == strcmp(name, "gateway6")) {
+        if (cur->gateway6_str) free(cur->gateway6_str);
         cur->gateway6_str = strdup(value);
     } else if (strcmp(name, "vip_addr6") == 0) {
         cur->vip_addr6_str = strdup(value);
@@ -781,14 +797,17 @@ vdev_cfg_handler(struct ff_config *cfg, const char *section,
     }
 
     if (strcmp(name, "iface") == 0) {
+        if (cur->iface) free(cur->iface);
         cur->iface = strdup(value);
     } else if (strcmp(name, "path") == 0) {
+        if (cur->path) free(cur->path);
         cur->path = strdup(value);
     } else if (strcmp(name, "queues") == 0) {
         cur->nb_queues = atoi(value);
     } else if (strcmp(name, "queue_size") == 0) {
         cur->queue_size = atoi(value);
     } else if (strcmp(name, "mac") == 0) {
+        if (cur->mac) free(cur->mac);
         cur->mac = strdup(value);
     } else if (strcmp(name, "cq") == 0) {
         cur->nb_cq = atoi(value);
@@ -837,14 +856,18 @@ bond_cfg_handler(struct ff_config *cfg, const char *section,
     if (strcmp(name, "mode") == 0) {
         cur->mode = atoi(value);
     } else if (strcmp(name, "slave") == 0) {
+        if (cur->slave) free(cur->slave);
         cur->slave = strdup(value);
     } else if (strcmp(name, "primary") == 0) {
+        if (cur->primary) free(cur->primary);
         cur->primary = strdup(value);
     } else if (strcmp(name, "socket_id") == 0) {
         cur->socket_id = atoi(value);
     } else if (strcmp(name, "mac") == 0) {
+        if (cur->bond_mac) free(cur->bond_mac);
         cur->bond_mac = strdup(value);
     } else if (strcmp(name, "xmit_policy") == 0) {
+        if (cur->xmit_policy) free(cur->xmit_policy);
         cur->xmit_policy = strdup(value);
     } else if (strcmp(name, "lsc_poll_period_ms") == 0) {
         cur->lsc_poll_period_ms = atoi(value);
