@@ -488,6 +488,75 @@ test_ini_parse_stream_zero_byte_input(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Stage-7 Phase-4 (FU-S7-INI-*): branch-coverage boost                     */
+/* ------------------------------------------------------------------------ */
+
+/* TC-S7-INI-01: multi-line value continuation -- a line starting with     */
+/* whitespace inside an existing key context appends to the previous value */
+/* (covers BRDA L118 br=4 + L121 br=0..3, INI_ALLOW_MULTILINE path).      */
+static void
+test_ini_parse_stream_multiline_value_continuation(void **state)
+{
+    capture_ctx_t *ctx = *state;
+    /* "key=line1\n  line2\n  line3\n" — each indented line is appended. */
+    int rv = parse_buf("[s]\nkey=line1\n  line2\n  line3\n", capture_handler, ctx);
+    assert_int_equal(rv, 0);
+    /* Three handler calls: initial + 2 continuations (inih semantics). */
+    assert_int_equal(ctx->count, 3);
+    assert_string_equal(ctx->recs[0].name,  "key");
+    assert_string_equal(ctx->recs[0].value, "line1");
+    assert_string_equal(ctx->recs[1].name,  "key");
+    assert_string_equal(ctx->recs[1].value, "line2");
+    assert_string_equal(ctx->recs[2].name,  "key");
+    assert_string_equal(ctx->recs[2].value, "line3");
+}
+
+/* TC-S7-INI-02: ':' separator is accepted as alternative to '='.         */
+/* Covers BRDA L141 br=2 (the `*end == ':'` leg).                         */
+static void
+test_ini_parse_stream_colon_separator(void **state)
+{
+    capture_ctx_t *ctx = *state;
+    int rv = parse_buf("[s]\nkey:colon_value\n", capture_handler, ctx);
+    assert_int_equal(rv, 0);
+    assert_int_equal(ctx->count, 1);
+    assert_string_equal(ctx->recs[0].name,  "key");
+    assert_string_equal(ctx->recs[0].value, "colon_value");
+}
+
+/* TC-S7-INI-03: line without '=' or ':' triggers the no-separator error  */
+/* path (covers BRDA L155/158 reachable subset).                          */
+static void
+test_ini_parse_stream_bare_line_no_separator(void **state)
+{
+    capture_ctx_t *ctx = *state;
+    int rv = parse_buf("[s]\nbare_line_no_eq\n", capture_handler, ctx);
+    /* rv = lineno of the offending line (=2). */
+    assert_int_equal(rv, 2);
+    assert_int_equal(ctx->count, 0);
+}
+
+/* TC-S7-INI-04: BOM byte 1 (0xEF) but byte 2 is NOT 0xBB -- not treated  */
+/* as a BOM; the line is parsed verbatim. Covers BRDA L106 br=1.          */
+static void
+test_ini_parse_stream_partial_bom_not_recognized(void **state)
+{
+    capture_ctx_t *ctx = *state;
+    /* 0xEF + non-0xBB ('A') causes BOM check to fail at byte 2;        */
+    /* the line is then parsed normally (no handler call since the      */
+    /* leading bytes form an invalid name without a separator).        */
+    char input[] = { (char)0xEF, 'A', 'C', '\n', '[', 's', ']', '\n', 'k', '=', 'v', '\n', 0 };
+    int rv = parse_buf(input, capture_handler, ctx);
+    /* Line 1 is malformed but lineno-based error returns 1; the parse  */
+    /* still records line 3's k=v if STOP_ON_FIRST_ERROR were 0; here   */
+    /* it stops at line 1. */
+    assert_int_equal(rv, 1);
+    /* No handler call yet (error on line 1 stopped further parsing). */
+    assert_int_equal(ctx->count, 0);
+}
+
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -515,6 +584,11 @@ main(void)
         /* Stage-6 coverage extensions */
         cmocka_unit_test_setup_teardown(test_ini_parse_stream_section_no_close_bracket, test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_ini_parse_stream_no_trailing_newline,   test_setup, test_teardown),
+        /* Stage-7 Phase-4 branch-coverage boost (FU-S7-INI-*) */
+        cmocka_unit_test_setup_teardown(test_ini_parse_stream_multiline_value_continuation, test_setup, test_teardown),
+        cmocka_unit_test_setup_teardown(test_ini_parse_stream_colon_separator,         test_setup, test_teardown),
+        cmocka_unit_test_setup_teardown(test_ini_parse_stream_bare_line_no_separator,  test_setup, test_teardown),
+        cmocka_unit_test_setup_teardown(test_ini_parse_stream_partial_bom_not_recognized, test_setup, test_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
