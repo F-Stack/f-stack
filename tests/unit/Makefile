@@ -56,7 +56,7 @@ ALL_TESTS     := $(SANITY_TESTS) $(P0_TESTS) $(P1_TESTS) $(P2_TESTS) $(P3_TESTS)
 COMMON_OBJS   := $(COMMON_DIR)/ff_log_stub.o $(COMMON_DIR)/rte_stub.o
 
 # Default goal
-.PHONY: all test test_p0 test_p1 test_sanity check clean coverage coverage_clean help
+.PHONY: all test test_p0 test_p1 test_p2 test_p3 test_sanity check clean coverage coverage_clean help
 all: $(ALL_TESTS)
 
 help:
@@ -66,6 +66,9 @@ help:
 	@echo "  make test_sanity  - run hello-world sanity test"
 	@echo "  make test_p0      - run P0 tests only"
 	@echo "  make test_p1      - run P1 tests only"
+	@echo "  make test_p2      - run P2 tests only"
+	@echo "  make test_p3      - run P3 tests only"
+	@echo "  make check        - run all tests under valgrind memcheck (FU-S2-1)"
 	@echo "  make clean        - clean build artifacts (uses rm_tmp_file.sh wrapper)"
 	@echo "  make coverage     - build with gcov + run tests + emit lcov HTML report"
 	@echo "  make coverage_clean - remove gcov/.gcda/.gcno + coverage_report/"
@@ -105,8 +108,43 @@ test: all
 	done
 	@echo "ALL TESTS PASS ($(words $(ALL_TESTS)) binaries)"
 
-check: test
-	@echo "TODO: integrate valgrind --tool=memcheck per test (FU-S2-1)"
+# ----- check (FU-S2-1: valgrind memcheck per binary) ---------------------
+# Runs every test binary under valgrind --tool=memcheck. Definite leaks
+# fail the build (--errors-for-leak-kinds=definite + --error-exitcode=99).
+# Long-lived F-Stack config-cache leaks (lib/ff_config.c) are filtered
+# via valgrind.supp; see that file for the FU-S2-2-CFG-UNLOAD follow-up.
+VALGRIND      ?= valgrind
+VALGRIND_SUPP := valgrind.supp
+VALGRIND_OPTS := --tool=memcheck \
+                 --leak-check=full \
+                 --errors-for-leak-kinds=definite \
+                 --error-exitcode=99 \
+                 --suppressions=$(VALGRIND_SUPP) \
+                 --quiet
+
+check: all
+	@if ! command -v $(VALGRIND) >/dev/null 2>&1; then \
+	  echo "ERROR: $(VALGRIND) not installed; please 'dnf install -y valgrind'"; \
+	  exit 1; \
+	fi
+	@pass=0; fail=0; failed=""; \
+	for t in $(ALL_TESTS); do \
+	  printf "==> valgrind %-30s ... " "$$t"; \
+	  if $(RUN_ENV) $(VALGRIND) $(VALGRIND_OPTS) ./$$t >/dev/null 2>/tmp/vg_$$t.$$$$.log; then \
+	    echo "OK"; pass=$$((pass+1)); \
+	    /data/workspace/rm_tmp_file.sh /tmp/vg_$$t.$$$$.log >/dev/null 2>&1; \
+	  else \
+	    echo "FAIL (see /tmp/vg_$$t.$$$$.log)"; \
+	    fail=$$((fail+1)); failed="$$failed $$t"; \
+	  fi; \
+	done; \
+	echo ""; \
+	echo "=== valgrind summary: $$pass pass / $$fail fail ($(words $(ALL_TESTS)) total) ==="; \
+	if [ $$fail -gt 0 ]; then \
+	  echo "Failed binaries:$$failed"; \
+	  exit 1; \
+	fi
+	@echo "ALL VALGRIND CHECKS PASS"
 
 # ----- lib/*.c → lib_objs/*.o (independent of lib/Makefile, NFR-U-6) -----
 $(LIB_OBJS_DIR):
