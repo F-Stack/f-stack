@@ -43,7 +43,7 @@ BASE_WRAPS    := -Wl,--wrap=rte_exit -Wl,--wrap=rte_panic
 LDFLAGS_BASE  := $(CMOCKA_LIBS)
 
 # Tests list
-ALL_TESTS     := test_ff_dpdk_if_integration
+ALL_TESTS     := test_ff_dpdk_if_integration test_ff_kni_integration
 
 # Common stub objects
 COMMON_OBJS   := $(COMMON_DIR)/rte_stub.o
@@ -109,7 +109,11 @@ $(LIB_OBJS_DIR):
 	@mkdir -p $@
 
 $(LIB_OBJS_DIR)/%.o: $(LIB_DIR)/%.c | $(LIB_OBJS_DIR)
-	$(CC) $(CFLAGS) $(DPDK_CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DPDK_CFLAGS) $(KNI_EXTRA_CFLAGS) -c $< -o $@
+
+# FU-S9-KNI-PROCESS-INTEG: ff_dpdk_kni.o built -DFF_KNI to match tests/unit
+# (keeps the gcov branch layout consistent when run_full_coverage merges).
+$(LIB_OBJS_DIR)/ff_dpdk_kni.o: KNI_EXTRA_CFLAGS := -DFF_KNI
 
 # ----- common stubs -----
 $(COMMON_DIR)/%.o: $(COMMON_DIR)/%.c
@@ -133,6 +137,20 @@ INT_LIB_OBJS := \
 test_ff_dpdk_if_integration: test_ff_dpdk_if_integration.o $(INT_LIB_OBJS) $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \
 	    $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=$(DPDK_RUNPATH) \
+	    -lpthread -lcrypto -ldl -lm
+
+# FU-S9-KNI-PROCESS-INTEG: drives kni_process_tx/rx via a net_ring port whose
+# rx/tx rings we own (inject packets into rx, fill tx to force drop legs).
+KNI_LIB_OBJS := \
+    $(LIB_OBJS_DIR)/ff_dpdk_kni.o \
+    $(LIB_OBJS_DIR)/ff_config.o \
+    $(LIB_OBJS_DIR)/ff_ini_parser.o \
+    $(LIB_OBJS_DIR)/ff_log.o \
+    $(LIB_OBJS_DIR)/ff_host_interface.o
+
+test_ff_kni_integration: test_ff_kni_integration.o $(KNI_LIB_OBJS) $(COMMON_OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \
+	    $(DPDK_LIBS) -lrte_net_ring -lrte_net_bond -Wl,-rpath=$(DPDK_RUNPATH) \
 	    -lpthread -lcrypto -ldl -lm
 
 # ----- clean (NFR-U-7: must use workspace wrapper, no direct rm) -----
