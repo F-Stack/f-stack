@@ -1528,6 +1528,14 @@ ff_cfg_free_vlan_one(struct ff_vlan_cfg *v)
     if (v->gateway)      { free(v->gateway);      v->gateway = NULL; }
     if (v->vip_ifname)   { free(v->vip_ifname);   v->vip_ifname = NULL; }
     if (v->vip_addr_str) { free(v->vip_addr_str); v->vip_addr_str = NULL; }
+    if (v->vip_addr_array) {
+        /* FU-S8-CFG-VLAN-VIP-LEAK: mirror ff_cfg_free_port_one — the
+         * element pointers alias INTO vip_addr_str (rte_strsplit in place),
+         * so free only the calloc'd container, not the elements. */
+        free(v->vip_addr_array);
+        v->vip_addr_array = NULL;
+    }
+    v->nb_vip = 0;
 #ifdef FF_IPFW
     if (v->pr_addr_str)  { free(v->pr_addr_str);  v->pr_addr_str = NULL; }
 #endif

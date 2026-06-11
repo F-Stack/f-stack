@@ -739,6 +739,187 @@ test_ff_load_config_argv_t_override(void **state)
     assert_int_equal(ff_global_cfg.dpdk.proc_id, 0);
 }
 
+/* ======================================================================== */
+/* Stage-8 Phase-2 (FU-S8-CFG-ARGV-FIXTURES): branch boost, no wrap         */
+/* ======================================================================== */
+
+/* TC-S8-CFG-01: lcore_mask with leading/trailing blanks + multi-bit mask
+ * "0x5" (bits 0,2 set; bit 1 clear) -> covers parse_lcore_mask blank-strip
+ * (L96/L103) and the (1<<j)&val false leg (L121). */
+static void
+test_parse_lcore_mask_blank_and_multibit(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_lcore_blank_multibit.ini"));
+    assert_int_equal(rv, 0);
+    /* 0x5 = bits 0 and 2 -> 2 procs (lcore 0 and lcore 2). */
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 2);
+}
+
+/* TC-S8-CFG-02: all-blank lcore_mask -> parse_lcore_mask hits i==0 and
+ * returns 0 (handler error), so ff_load_config returns -1. (L106). */
+static void
+test_parse_lcore_mask_all_blank_returns_error(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_lcore_all_blank.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-03: mid-string non-hex char ("0x1Z") -> isxdigit==0 leg
+ * (L113) -> parse_lcore_mask returns 0 -> load fails. */
+static void
+test_parse_lcore_mask_mid_nonhex_returns_error(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_lcore_midhex.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-04: vlan section carrying vip_addr drives vip_cfg_handler down
+ * its cur_vlan_cfg branch (L390/L417) and the cur->vip_addr_str guard
+ * (L724). portid=0 also exercises the vlan portid binding path. */
+static void
+test_ff_load_config_vlan_vip_addr(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_vlan_vip.ini"));
+    assert_int_equal(rv, 0);
+    assert_non_null(ff_global_cfg.dpdk.vlan_cfgs);
+    /* vlan10 is filter index 0; it must have parsed a vip_addr_str. */
+    assert_non_null(ff_global_cfg.dpdk.vlan_cfgs[0].vip_addr_str);
+    assert_int_equal(ff_global_cfg.dpdk.vlan_cfgs[0].nb_vip, 3);
+}
+
+/* TC-S8-CFG-05: vlan portid greater than max_portid -> vlan_cfg_handler
+ * returns 1 (skip) via the L702 true leg; load still succeeds. */
+static void
+test_vlan_cfg_handler_portid_over_max_skips(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_vlan_portid_overmax.ini"));
+    assert_int_equal(rv, 0);
+}
+
+/* Helper: load a fixture with explicit -t <proc_type> -p <proc_id>. */
+static int
+load_with_proc(const char *fixture_path, const char *proc_type, const char *proc_id)
+{
+    char prog[]  = "f-stack";
+    char dashc[] = "-c";
+    char dasht[] = "-t";
+    char dashp[] = "-p";
+    char path[256]; snprintf(path, sizeof(path), "%s", fixture_path);
+    char tval[32];  snprintf(tval, sizeof(tval), "%s", proc_type);
+    char pval[32];  snprintf(pval, sizeof(pval), "%s", proc_id);
+    char *argv[] = { prog, dashc, path, dasht, tval, dashp, pval, NULL };
+    extern int optind;
+    optind = 1;
+    return ff_load_config(7, argv);
+}
+
+/* TC-S8-CFG-06: proc_id == count-1 (in range) with multi-bit mask exercises
+ * the proc_id==count match path (L131) and proc_mask synthesis. */
+static void
+test_parse_lcore_mask_proc_id_in_range(void **state)
+{
+    (void)state;
+    /* lcore_mask=0x3 -> 2 procs; proc_id=1 is valid (last). */
+    int rv = load_with_proc(FIXTURE_PATH("valid_lcore_blank_multibit.ini"),
+                            "primary", "1");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.proc_id, 1);
+    assert_non_null(ff_global_cfg.dpdk.proc_mask);
+}
+
+/* TC-S8-CFG-07: proc_id >= count -> parse_lcore_mask returns 0 (L135),
+ * so ff_load_config fails. (0x5 -> 2 procs; proc_id=5 is out of range.) */
+static void
+test_parse_lcore_mask_proc_id_over_count_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("valid_lcore_blank_multibit.ini"),
+                            "primary", "5");
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-08: kni.method=reject is accepted by ff_check_config (L1271
+ * reject leg of the strcasecmp pair). */
+static void
+test_ff_check_config_kni_method_reject_ok(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_kni_method_reject.ini"));
+    assert_int_equal(rv, 0);
+    assert_string_equal(ff_global_cfg.kni.method, "reject");
+}
+
+/* TC-S8-CFG-09: kni.method=<garbage> fails ff_check_config (both
+ * strcasecmp != 0 -> return -1). */
+static void
+test_ff_check_config_kni_method_invalid_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_kni_method_bad.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-10: kni enabled + proc_type=primary + primary lcore present in
+ * the port lcore_list -> ff_check_config passes (L1331/1332 found=1 leg). */
+static void
+test_ff_check_config_kni_primary_lcore_present_ok(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("valid_kni_primary_lcore_ok.ini"),
+                            "primary", "0");
+    assert_int_equal(rv, 0);
+}
+
+/* TC-S8-CFG-11: kni enabled + proc_type=primary + primary lcore MISSING
+ * from the port lcore_list -> ff_check_config returns -1 (L1336 !found). */
+static void
+test_ff_check_config_kni_primary_lcore_missing_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("invalid_kni_primary_lcore_missing.ini"),
+                            "primary", "0");
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-12: dpdk base_virtaddr/file_prefix/allow + full vdev (cq) +
+ * full bond (down_delay) exercise the extra MATCH("dpdk",..) key legs
+ * (L984/986/988), vdev cq (L812), bond down_delay (L876), and the
+ * dpdk_args_setup allow strtok_r loop (L1113). */
+static void
+test_ff_load_config_dpdk_extra_keys(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_extra_keys.ini"));
+    assert_int_equal(rv, 0);
+    assert_string_equal(ff_global_cfg.dpdk.base_virtaddr, "0x200000000");
+    assert_string_equal(ff_global_cfg.dpdk.file_prefix,   "mytest");
+    assert_int_equal(ff_global_cfg.dpdk.nb_vdev, 1);
+    assert_int_equal(ff_global_cfg.dpdk.vdev_cfgs[0].nb_cq, 1);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].down_delay, 300);
+}
+
+/* TC-S8-CFG-13: repeated iface/path/mac (vdev) and slave/primary/mac/
+ * xmit_policy (bond) keys exercise the free-before-strdup true legs
+ * (L810/859/862/867/870). Last value wins; valgrind verifies no leak. */
+static void
+test_ff_load_config_bond_vdev_repeat_keys_no_leak(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_bond_vdev_repeat.ini"));
+    assert_int_equal(rv, 0);
+    /* Last value of each repeated key wins. */
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].iface, "net_pcap_b");
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].path,  "/tmp/b");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].slave,       "eth0,eth1");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].primary,     "eth1");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].xmit_policy, "l34");
+}
+
 int
 main(void)
 {
@@ -779,6 +960,20 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_load_config_freebsd_boot_multi_entries, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_inet6_fixture_ignored, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_argv_t_override, test_setup, NULL),
+        /* Stage-8 Phase-2 branch boost (FU-S8-CFG-ARGV-FIXTURES) */
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_blank_and_multibit,      test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_all_blank_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_mid_nonhex_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_vlan_vip_addr,             test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfg_handler_portid_over_max_skips,   test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_proc_id_in_range,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_proc_id_over_count_fails, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_check_config_kni_method_reject_ok,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_check_config_kni_method_invalid_fails, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_check_config_kni_primary_lcore_present_ok,  test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_check_config_kni_primary_lcore_missing_fails, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_dpdk_extra_keys,            test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_bond_vdev_repeat_keys_no_leak, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
