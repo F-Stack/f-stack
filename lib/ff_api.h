@@ -394,10 +394,45 @@ int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
 int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
 
 /*
- * Read data to the mbuf chain in 'sturct ff_zc_mbuf'.
- * not implemented now.
+ * Read data out of the mbuf chain in 'struct ff_zc_mbuf' into the caller's
+ * buffer, advancing the internal cursor (zm->bsd_mbuf_off / zm->off).
+ *
+ * NOTE: `data` is an OUT buffer (the chain is copied INTO it); the previous
+ * 'const char *' signature was a not-implemented placeholder.
+ *
+ * @return bytes read this call (>0), 0 when the chain is exhausted, -1 error.
  */
-int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, char *data, int len);
+
+#ifdef FSTACK_ZC_RECV
+/*
+ * FSTACK_ZC_RECV: zero-copy receive entry. Retrieves the socket-buffer mbuf
+ * chain directly (data still points into the underlying DPDK mbuf), avoiding
+ * the soreceive->uiomove copy. On success zm->bsd_mbuf holds the chain head,
+ * zm->len the byte count, and the cursor is reset for ff_zc_mbuf_read /
+ * ff_zc_mbuf_segment traversal.
+ *
+ * The caller OWNS the returned chain and MUST release it via
+ * ff_zc_recv_free() once done — otherwise the backing DPDK mbufs leak.
+ *
+ * @return bytes received (>0), 0 on peer close, -1 on error (errno set).
+ */
+ssize_t ff_zc_recv(int fd, struct ff_zc_mbuf *zm, size_t nbytes);
+
+/*
+ * Zero-copy traversal: return the current segment's data pointer + length
+ * (pointing into the mbuf, no copy) and advance the cursor.
+ * @return seg bytes (>0), 0 when exhausted, -1 error.
+ */
+int ff_zc_mbuf_segment(struct ff_zc_mbuf *zm, void **seg_data, int *seg_len);
+
+/*
+ * Release a chain obtained from ff_zc_recv (m_freem the whole chain, which
+ * returns each backing DPDK mbuf segment). Idempotent; zeroes zm. Must be
+ * called exactly once per successful ff_zc_recv.
+ */
+void ff_zc_recv_free(struct ff_zc_mbuf *zm);
+#endif /* FSTACK_ZC_RECV */
 
 /*
  * M8: zero-copy send entry. Caller must pass the mbuf chain

@@ -212,6 +212,10 @@ ifdef FF_ZC_SEND
 CFLAGS+= -DFSTACK_ZC_SEND
 endif
 
+ifdef FF_ZC_RECV
+CFLAGS+= -DFSTACK_ZC_RECV
+endif
+
 # add for LVS tcp option toa, disabled by default
 # CFLAGS+= -DLVS_TCPOPT_TOA
 

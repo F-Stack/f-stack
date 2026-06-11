@@ -1046,6 +1046,68 @@ out:
 	return (error);
 }
 
+#ifdef FSTACK_ZC_RECV
+/*
+ * FSTACK_ZC_RECV: zero-copy receive.
+ *
+ * A compact sibling of kern_recvit that passes a non-NULL mbuf out-parameter
+ * (mp0) into soreceive(). Per the FreeBSD soreceive(9) contract, when mp0 is
+ * non-NULL the socket-buffer mbuf chain is handed back to the caller without
+ * a uiomove copy (only uio_resid is consulted). The caller (ff_zc_recv) owns
+ * the returned chain and must release it via m_freem()/ff_zc_recv_free().
+ *
+ * No address/control-message handling here: ZC receive targets the bulk data
+ * fast path. Boundaries that cannot be zero-copied (split mbuf, MSG_PEEK,
+ * OOB, TLS, UDP) are handled inside soreceive by falling back to a copy
+ * (m_copym) or by the dgram path; the returned chain stays correct either way.
+ */
+int
+kern_zc_recvit(struct thread *td, int s, struct uio *uio, struct mbuf **mp0)
+{
+	struct file *fp;
+	struct socket *so;
+	struct mbuf *zc_chain = NULL;
+	ssize_t len;
+	int error, flags = 0;
+
+	if (mp0 == NULL)
+		return (EINVAL);
+	*mp0 = NULL;
+
+	AUDIT_ARG_FD(s);
+	error = getsock(td, s, &cap_recv_rights, &fp);
+	if (error != 0)
+		return (error);
+	so = fp->f_data;
+
+#ifdef MAC
+	error = mac_socket_check_receive(td->td_ucred, so);
+	if (error != 0) {
+		fdrop(fp, td);
+		return (error);
+	}
+#endif
+
+	len = uio->uio_resid;
+	error = soreceive(so, NULL, uio, &zc_chain, NULL, &flags);
+	if (error != 0) {
+		if (uio->uio_resid != len && (error == ERESTART ||
+		    error == EINTR || error == EWOULDBLOCK))
+			error = 0;
+	}
+	if (error == 0) {
+		td->td_retval[0] = len - uio->uio_resid;
+		*mp0 = zc_chain;
+	} else if (zc_chain != NULL) {
+		/* error after some mbufs were detached: free them */
+		m_freem(zc_chain);
+	}
+
+	fdrop(fp, td);
+	return (error);
+}
+#endif /* FSTACK_ZC_RECV */
+
 static int
 recvit(struct thread *td, int s, struct msghdr *mp, void *namelenp)
 {

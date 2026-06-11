@@ -1225,6 +1225,58 @@ kern_fail:
 }
 #endif /* FSTACK_ZC_SEND */
 
+#ifdef FSTACK_ZC_RECV
+/*
+ * FSTACK_ZC_RECV: zero-copy receive entry. Builds a uio carrying only the
+ * requested byte budget (uio_resid) and calls kern_zc_recvit, which passes a
+ * non-NULL mbuf out-parameter into soreceive so the socket-buffer mbuf chain
+ * is handed back without a uiomove copy. On success zm->bsd_mbuf holds the
+ * chain head; the caller must release it via ff_zc_recv_free().
+ *
+ * `zm` must be a valid 'struct ff_zc_mbuf *'. Do NOT pass a char buffer.
+ */
+ssize_t
+ff_zc_recv(int fd, struct ff_zc_mbuf *zm, size_t nbytes)
+{
+    struct uio auio;
+    struct iovec aiov;
+    struct mbuf *chain = NULL;
+    int rc;
+
+    if (zm == NULL || nbytes == 0 || nbytes > INT_MAX) {
+        rc = EINVAL;
+        goto kern_fail;
+    }
+
+    /* uio is only consulted for uio_resid when mp0 is non-NULL (soreceive(9));
+     * iov_base is unused on the ZC path but set for completeness. */
+    aiov.iov_base = NULL;
+    aiov.iov_len = nbytes;
+    auio.uio_iov = &aiov;
+    auio.uio_iovcnt = 1;
+    auio.uio_resid = nbytes;
+    auio.uio_segflg = UIO_SYSSPACE;
+    auio.uio_rw = UIO_READ;
+    auio.uio_td = curthread;
+    auio.uio_offset = 0;
+
+    if ((rc = kern_zc_recvit(curthread, fd, &auio, &chain)))
+        goto kern_fail;
+
+    rc = curthread->td_retval[0];
+
+    zm->bsd_mbuf = chain;
+    zm->bsd_mbuf_off = chain;
+    zm->off = 0;
+    zm->len = rc;
+
+    return (rc);
+kern_fail:
+    ff_os_errno(rc);
+    return (-1);
+}
+#endif /* FSTACK_ZC_RECV */
+
 ssize_t
 ff_send(int s, const void *buf, size_t len, int flags)
 {

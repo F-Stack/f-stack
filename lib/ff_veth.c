@@ -356,11 +356,82 @@ ff_zc_mbuf_write(struct ff_zc_mbuf *zm, const char *data, int len)
 }
 
 int
-ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len)
+ff_zc_mbuf_read(struct ff_zc_mbuf *zm, char *data, int len)
 {
-    // DOTO: Support read zero copy
-    return 0;
+    struct mbuf *mb;
+    int progress = 0, length, moff;
+
+    if (zm == NULL || data == NULL || len <= 0) {
+        return -1;
+    }
+
+    /* For RECV, bsd_mbuf_off is the current mbuf cursor and `off` is the
+     * already-consumed offset WITHIN that mbuf. Copy out up to `len` bytes,
+     * spanning mbufs as needed. */
+    mb = (struct mbuf *)zm->bsd_mbuf_off;
+    moff = zm->off;
+    while (mb != NULL && progress < len) {
+        length = min(mb->m_len - moff, len - progress);
+        bcopy(mtod(mb, char *) + moff, data + progress, length);
+        progress += length;
+        moff += length;
+        if (moff >= mb->m_len) {
+            mb = mb->m_next;
+            moff = 0;
+        }
+    }
+    zm->bsd_mbuf_off = mb;
+    zm->off = moff;
+
+    return progress;
 }
+
+#ifdef FSTACK_ZC_RECV
+/*
+ * FSTACK_ZC_RECV: return the current segment's data pointer + length without
+ * copying (pointer aliases into the underlying DPDK mbuf), then advance the
+ * cursor to the next mbuf. Valid until ff_zc_recv_free() is called.
+ */
+int
+ff_zc_mbuf_segment(struct ff_zc_mbuf *zm, void **seg_data, int *seg_len)
+{
+    struct mbuf *mb;
+
+    if (zm == NULL || seg_data == NULL || seg_len == NULL) {
+        return -1;
+    }
+
+    mb = (struct mbuf *)zm->bsd_mbuf_off;
+    if (mb == NULL) {
+        return 0;   /* chain exhausted */
+    }
+
+    *seg_data = mtod(mb, void *);
+    *seg_len = mb->m_len;
+    zm->bsd_mbuf_off = mb->m_next;
+    zm->off = 0;
+
+    return mb->m_len;
+}
+
+/*
+ * FSTACK_ZC_RECV: release the whole chain obtained from ff_zc_recv. m_freem
+ * walks m_next and frees each mbuf; ext-mbuf segments trigger ff_mbuf_ext_free
+ * which returns the backing DPDK mbuf seg (see docs/zc_read_spec). Idempotent.
+ */
+void
+ff_zc_recv_free(struct ff_zc_mbuf *zm)
+{
+    if (zm == NULL || zm->bsd_mbuf == NULL) {
+        return;
+    }
+    m_freem((struct mbuf *)zm->bsd_mbuf);
+    zm->bsd_mbuf = NULL;
+    zm->bsd_mbuf_off = NULL;
+    zm->off = 0;
+    zm->len = 0;
+}
+#endif /* FSTACK_ZC_RECV */
 
 void *
 ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
