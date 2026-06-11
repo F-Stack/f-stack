@@ -183,7 +183,7 @@ test_ff_log: test_ff_log.o $(LIB_OBJS_DIR)/ff_log.o $(COMMON_OBJS)
 # P1 #1 ff_host_interface (uses RAND_bytes from libcrypto; ff_log linked locally
 # via stub in the test file since we don't pull in lib/ff_log.c here)
 test_ff_host_interface: test_ff_host_interface.o $(LIB_OBJS_DIR)/ff_host_interface.o $(COMMON_OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=exit -Wl,--wrap=abort -lcrypto
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=exit -Wl,--wrap=abort -Wl,--wrap=clock_gettime -Wl,--wrap=__assert_fail -lcrypto
 
 # P1 #2 ff_epoll
 test_ff_epoll: test_ff_epoll.o $(LIB_OBJS_DIR)/ff_epoll.o $(COMMON_OBJS)

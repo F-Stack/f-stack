@@ -118,7 +118,9 @@ int ini_parse_stream(ini_reader reader, void* stream, ini_handler handler,
         else if (*prev_name && *start && start > line) {
             /* Non-blank line with leading whitespace, treat as continuation
                of previous name's value (as per Python configparser). */
-            if (!handler(user, section, prev_name, start) && !error)
+            /* FU-S9-INI-DEAD: `&& !error` false leg unreachable under
+             * INI_STOP_ON_FIRST_ERROR=1 (loop breaks at L164 on first error). */
+            if (!handler(user, section, prev_name, start) && !error) /* LCOV_EXCL_BR_LINE */
                 error = lineno;
         }
 #endif
@@ -130,7 +132,7 @@ int ini_parse_stream(ini_reader reader, void* stream, ini_handler handler,
                 strncpy0(section, start + 1, sizeof(section));
                 *prev_name = '\0';
             }
-            else if (!error) {
+            else if (!error) { /* LCOV_EXCL_BR_LINE: FU-S9-INI-DEAD (STOP_ON_FIRST_ERROR=1) */
                 /* No ']' found on section line */
                 error = lineno;
             }
@@ -152,10 +154,12 @@ int ini_parse_stream(ini_reader reader, void* stream, ini_handler handler,
 
                 /* Valid name[=:]value pair found, call handler */
                 strncpy0(prev_name, name, sizeof(prev_name));
-                if (!handler(user, section, name, value) && !error)
+                /* FU-S9-INI-DEAD: `&& !error` false leg unreachable under
+                 * INI_STOP_ON_FIRST_ERROR=1. */
+                if (!handler(user, section, name, value) && !error) /* LCOV_EXCL_BR_LINE */
                     error = lineno;
             }
-            else if (!error) {
+            else if (!error) { /* LCOV_EXCL_BR_LINE: FU-S9-INI-DEAD (STOP_ON_FIRST_ERROR=1) */
                 /* No '=' or ':' found on name[=:]value line */
                 error = lineno;
             }

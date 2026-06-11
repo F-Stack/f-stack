@@ -32,6 +32,40 @@
 #include "ff_errno.h"
 
 /* ------------------------------------------------------------------------ */
+/* FU-S9-HIF-ASSERT-WRAP: cover the assert(0==rv) FALSE legs after          */
+/* clock_gettime in ff_clock_gettime (L176) and ff_update_current_ts (L209).*/
+/*                                                                          */
+/* --wrap=clock_gettime forces a failure (rv=-1) when armed; the lib's      */
+/* glibc assert() then expands to __assert_fail (a real, wrappable symbol). */
+/* --wrap=__assert_fail longjmp's back to the TC so the abort is observed   */
+/* instead of crashing the harness.                                         */
+/* ------------------------------------------------------------------------ */
+extern int __real_clock_gettime(clockid_t clk, struct timespec *tp);
+static int g_clock_fail = 0;
+
+int
+__wrap_clock_gettime(clockid_t clk, struct timespec *tp)
+{
+    if (g_clock_fail) {
+        errno = EINVAL;
+        return -1;                 /* force assert(0==rv) to fail */
+    }
+    return __real_clock_gettime(clk, tp);
+}
+
+static jmp_buf  g_assert_jmp;
+static int      g_assert_fired = 0;
+
+void
+__wrap___assert_fail(const char *assertion, const char *file,
+                     unsigned int line, const char *function)
+{
+    (void)assertion; (void)file; (void)line; (void)function;
+    g_assert_fired = 1;
+    longjmp(g_assert_jmp, 1);       /* unwind back to the TC */
+}
+
+/* ------------------------------------------------------------------------ */
 /* Local ff_log stub (linker dependency only — body unused in tests)        */
 /* ------------------------------------------------------------------------ */
 int
@@ -540,6 +574,44 @@ test_ff_get_current_time_null_nsec(void **state)
     assert_true(s > 1577836800);
 }
 
+/* TC-S9-HIF-01 (FU-S9-HIF-ASSERT-WRAP): clock_gettime failing inside
+ * ff_clock_gettime trips assert(0==rv) -> __assert_fail -> longjmp.
+ * Covers the L176 assert FALSE leg. */
+static void
+test_ff_clock_gettime_assert_fail_on_clock_error(void **state)
+{
+    (void)state;
+    g_assert_fired = 0;
+    g_clock_fail = 1;
+    int64_t sec = 0; long nsec = 0;
+    if (setjmp(g_assert_jmp) == 0) {
+        ff_clock_gettime(ff_CLOCK_MONOTONIC, &sec, &nsec);
+        /* must not reach here: the assert should have fired */
+        g_clock_fail = 0;
+        fail_msg("ff_clock_gettime did not assert on clock_gettime failure");
+    }
+    g_clock_fail = 0;
+    assert_int_equal(g_assert_fired, 1);
+}
+
+/* TC-S9-HIF-02 (FU-S9-HIF-ASSERT-WRAP): clock_gettime failing inside
+ * ff_update_current_ts trips assert(rv==0) -> __assert_fail -> longjmp.
+ * Covers the L209 assert FALSE leg. */
+static void
+test_ff_update_current_ts_assert_fail_on_clock_error(void **state)
+{
+    (void)state;
+    g_assert_fired = 0;
+    g_clock_fail = 1;
+    if (setjmp(g_assert_jmp) == 0) {
+        ff_update_current_ts();
+        g_clock_fail = 0;
+        fail_msg("ff_update_current_ts did not assert on clock_gettime failure");
+    }
+    g_clock_fail = 0;
+    assert_int_equal(g_assert_fired, 1);
+}
+
 int
 main(void)
 {
@@ -569,6 +641,9 @@ main(void)
         cmocka_unit_test(test_ff_mmap_file_backed_no_anon),
         cmocka_unit_test(test_ff_get_current_time_null_sec),
         cmocka_unit_test(test_ff_get_current_time_null_nsec),
+        /* Stage-9 (FU-S9-HIF-ASSERT-WRAP) clock assert-fail legs */
+        cmocka_unit_test(test_ff_clock_gettime_assert_fail_on_clock_error),
+        cmocka_unit_test(test_ff_update_current_ts_assert_fail_on_clock_error),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
