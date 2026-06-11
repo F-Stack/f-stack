@@ -63,10 +63,10 @@ BEGIN {
     # change bumps any actual upward, raise the threshold accordingly.
     #
     # P0 (spec 06 §6.1; Stage-7 ratcheted up post 70-stage7 plan)
-    tline["ff_ini_parser.c"]    = 92;  tbr["ff_ini_parser.c"]    = 86   # actual: line=98.7%  branch=91.2%  (Stage-8: BOM L107)
+    tline["ff_ini_parser.c"]    = 92;  tbr["ff_ini_parser.c"]    = 95   # actual: line=98.7%  branch=100%  (Stage-9: dead legs EXCL)
     tline["ff_log.c"]           = 100; tbr["ff_log.c"]           = 100  # actual: line=100%   branch=100%   (capped)
     # P1 (spec 06 §6.1; Stage-7 ratcheted)
-    tline["ff_host_interface.c"]= 95;  tbr["ff_host_interface.c"]= 93   # actual: line=100%   branch=98.1%  (Stage-7)
+    tline["ff_host_interface.c"]= 95;  tbr["ff_host_interface.c"]= 98   # actual: line=100%   branch=100%  (Stage-9: clock assert wrap)
     tline["ff_epoll.c"]         = 95;  tbr["ff_epoll.c"]         = 95   # actual: line=100%   branch=100%   (Stage-8: L113 idx2)
     tline["ff_config.c"]        = 85;  tbr["ff_config.c"]        = 80   # actual: line=89.9%  branch=85.4%  (Stage-8 argv/fixtures + OOM wrap)
     # P2
