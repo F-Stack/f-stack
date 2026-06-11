@@ -61,6 +61,9 @@ ff_zc_mbuf_get
 ff_zc_mbuf_write
 ff_zc_mbuf_read
 ff_zc_send
+ff_zc_recv
+ff_zc_mbuf_segment
+ff_zc_recv_free
 ff_get_traffic
 ff_pthread_create
 ff_pthread_join

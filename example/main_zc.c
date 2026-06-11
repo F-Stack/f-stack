@@ -130,6 +130,11 @@ char html2[] =
 extern int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
 extern int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
 extern ssize_t ff_zc_send(int fd, const void *mb, size_t nbytes); /* M8 */
+#ifdef FSTACK_ZC_RECV
+extern ssize_t ff_zc_recv(int fd, struct ff_zc_mbuf *zm, size_t nbytes);
+extern int ff_zc_mbuf_segment(struct ff_zc_mbuf *zm, void **seg_data, int *seg_len);
+extern void ff_zc_recv_free(struct ff_zc_mbuf *zm);
+#endif
 
 char *buf_tmp;
 char html_buf[10240];
@@ -180,7 +185,26 @@ int loop(void *arg)
             } while (available);
         } else if (event.filter == EVFILT_READ) {
             char buf[256];
+#ifdef FSTACK_ZC_RECV
+            /* M2: zero-copy receive path. Pull the request as an mbuf chain
+             * (data aliases the underlying DPDK mbuf), traverse it zero-copy,
+             * then release. Functionally equivalent to ff_read here since the
+             * echo server replies with a fixed page. */
+            struct ff_zc_mbuf zc_rbuf;
+            ssize_t readlen = ff_zc_recv(clientfd, &zc_rbuf, sizeof(buf));
+            if (readlen > 0) {
+                void *seg = NULL;
+                int slen = 0, ntotal = 0;
+                while (ff_zc_mbuf_segment(&zc_rbuf, &seg, &slen) > 0) {
+                    ntotal += slen;   /* zero-copy access to request bytes */
+                }
+                ff_zc_recv_free(&zc_rbuf);   /* mandatory release */
+                (void)ntotal;
+            }
+#else
             size_t readlen = ff_read(clientfd, buf, sizeof(buf));
+#endif
+            (void)readlen;
 #ifdef FSTACK_ZC_SEND
             int ret = ff_zc_mbuf_get(&zc_buf, buf_len);
             if (ret < 0) {
