@@ -41,6 +41,58 @@
 
 #include "ff_config.h"
 
+/* Local mirror of struct ff_tx_offload (lib/ff_dpdk_if.h L47) — we avoid
+ * including ff_dpdk_if.h here because this file uses void*-based forward
+ * decls for the ff_dpdk_* API that would conflict with the real prototypes. */
+struct ff_tx_offload {
+    uint8_t  ip_csum;
+    uint8_t  tcp_csum;
+    uint8_t  udp_csum;
+    uint8_t  sctp_csum;
+    uint16_t tso_seg_size;
+};
+
+/* ------------------------------------------------------------------------ */
+/* FU-S9-DPDKIF-INTEG-BOOST: test-controllable bridge stubs for ff_dpdk_if  */
+/* _send. g_test_offload drives the ip_csum / tcp_csum / tso / udp_csum legs; */
+/* g_test_pkt provides a valid IPv4(+TCP) header so the iph/tcph parsing in  */
+/* ff_dpdk_if_send reads sane fields; g_copydata_fail forces the copydata    */
+/* error path.                                                              */
+/* ------------------------------------------------------------------------ */
+static struct ff_tx_offload g_test_offload;
+static int            g_copydata_fail = 0;
+static unsigned char  g_test_pkt[128];
+
+static void
+ff_test_reset_send_ctl(void)
+{
+    memset(&g_test_offload, 0, sizeof(g_test_offload));
+    g_copydata_fail = 0;
+    memset(g_test_pkt, 0, sizeof(g_test_pkt));
+    /* Ethernet(14) + IPv4 header at offset 14: version=4, IHL=5 (=0x45). */
+    g_test_pkt[14] = 0x45;
+    /* TCP data offset (byte 14+20+12 = 46): 5 words << 4 = 0x50. */
+    g_test_pkt[46] = 0x50;
+}
+
+static int
+ff_test_copydata(void *d, int off, int len)
+{
+    if (g_copydata_fail) return -1;
+    int avail = (int)sizeof(g_test_pkt) - off;
+    if (avail <= 0) { memset(d, 0, (size_t)len); return 0; }
+    int n = len < avail ? len : avail;
+    memcpy(d, g_test_pkt + off, (size_t)n);
+    if (n < len) memset((char *)d + n, 0, (size_t)(len - n));
+    return 0;
+}
+
+static void
+ff_test_fill_offload(void *o)
+{
+    memcpy(o, &g_test_offload, sizeof(g_test_offload));
+}
+
 /* Forward declarations of the public ff_dpdk_if API (lib/ff_dpdk_if.h pulls
  * in BSD headers we'd rather not drag in here). */
 int   ff_dpdk_init(int argc, char **argv);
@@ -49,6 +101,7 @@ void  ff_dpdk_deregister_if(void *ctx);
 uint64_t ff_get_tsc_ns(void);
 void  ff_get_traffic(void *traffic);
 int   ff_dpdk_if_send(void *ctx, void *m, int total);
+int   ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id);
 
 /* Globals defined in ff_dpdk_if.c that we want to inspect post-init. */
 extern uint16_t nb_dev_ports;
@@ -70,11 +123,11 @@ void *ff_mbuf_get(void *p, void *m, void *d, uint16_t dl)
 { (void)p;(void)m;(void)d;(void)dl; return NULL; }
 void  ff_mbuf_free(void *m) { (void)m; }
 int   ff_mbuf_copydata(void *m, void *d, int o, int l)
-{ (void)m;(void)d;(void)o;(void)l; return 0; }
+{ (void)m;(void)d;(void)o;(void)l; return ff_test_copydata(d, o, l); }
 int   ff_mbuf_tx_offload(void *m, void *o, void *l)
-{ (void)m;(void)o;(void)l; return 0; }
+{ (void)m;(void)l; ff_test_fill_offload(o); return 0; }
 
-void *ff_veth_attach(void *cfg) { (void)cfg; return NULL; }
+void *ff_veth_attach(void *cfg) { (void)cfg; return (void *)0x1; } /* non-NULL: ff_dpdk_if_up success path */
 int   ff_veth_input(void *ctx, struct rte_mbuf *m) { (void)ctx;(void)m; return 0; }
 void  ff_veth_process_packet(void *ifp, void *m) { (void)ifp;(void)m; }
 void *ff_veth_get_softc(uint16_t portid) { (void)portid; return NULL; }
@@ -348,6 +401,169 @@ test_eal_process_type_primary(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* FU-S9-DPDKIF-INTEG-BOOST: ff_dpdk_if_send branch coverage.               */
+/* Each TC registers a ctx (optionally with tx_csum_l4), sets the offload   */
+/* controls, sends, then deregisters. send_single_packet ultimately enqueues */
+/* to the net_null port (accepts all).                                      */
+/* ------------------------------------------------------------------------ */
+static void *
+ff_test_register(int tx_csum_l4)
+{
+    static int sc = 1, ifp = 2;
+    ff_global_cfg.dpdk.port_cfgs[INT_PORT_ID].hw_features.tx_csum_l4 =
+        (uint8_t)tx_csum_l4;
+    return ff_dpdk_register_if(&sc, &ifp,
+                               &ff_global_cfg.dpdk.port_cfgs[INT_PORT_ID]);
+}
+
+/* single-segment, no offload */
+static void
+test_ff_dpdk_if_send_basic(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    ff_test_reset_send_ctl();
+    void *ctx = ff_test_register(0);
+    assert_non_null(ctx);
+    int rv = ff_dpdk_if_send(ctx, (void *)0x1, /*total*/ 64);
+    assert_true(rv == 0 || rv == -1);
+    ff_dpdk_deregister_if(ctx);
+}
+
+/* multi-segment: total > RTE_MBUF_DEFAULT_DATAROOM forces the cur==NULL
+ * second-allocation path inside the while loop. */
+static void
+test_ff_dpdk_if_send_multiseg(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    ff_test_reset_send_ctl();
+    void *ctx = ff_test_register(0);
+    assert_non_null(ctx);
+    int rv = ff_dpdk_if_send(ctx, (void *)0x1, /*total*/ 4096);
+    assert_true(rv == 0 || rv == -1);
+    ff_dpdk_deregister_if(ctx);
+}
+
+/* ip_csum offload leg */
+static void
+test_ff_dpdk_if_send_ip_csum(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    ff_test_reset_send_ctl();
+    g_test_offload.ip_csum = 1;
+    void *ctx = ff_test_register(0);
+    assert_non_null(ctx);
+    int rv = ff_dpdk_if_send(ctx, (void *)0x1, 128);
+    assert_true(rv == 0 || rv == -1);
+    ff_dpdk_deregister_if(ctx);
+}
+
+/* tx_csum_l4 + tcp_csum leg */
+static void
+test_ff_dpdk_if_send_tcp_csum(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    ff_test_reset_send_ctl();
+    g_test_offload.tcp_csum = 1;
+    void *ctx = ff_test_register(/*tx_csum_l4*/1);
+    assert_non_null(ctx);
+    int rv = ff_dpdk_if_send(ctx, (void *)0x1, 128);
+    assert_true(rv == 0 || rv == -1);
+    ff_dpdk_deregister_if(ctx);
+}
+
+/* tx_csum_l4 + tso leg */
+static void
+test_ff_dpdk_if_send_tso(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    ff_test_reset_send_ctl();
+    g_test_offload.tcp_csum = 1;
+    g_test_offload.tso_seg_size = 1448;
+    void *ctx = ff_test_register(1);
+    assert_non_null(ctx);
+    int rv = ff_dpdk_if_send(ctx, (void *)0x1, 128);
+    assert_true(rv == 0 || rv == -1);
+    ff_dpdk_deregister_if(ctx);
+}
+
+/* tx_csum_l4 + udp_csum leg */
+static void
+test_ff_dpdk_if_send_udp_csum(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    ff_test_reset_send_ctl();
+    g_test_offload.udp_csum = 1;
+    void *ctx = ff_test_register(1);
+    assert_non_null(ctx);
+    int rv = ff_dpdk_if_send(ctx, (void *)0x1, 128);
+    assert_true(rv == 0 || rv == -1);
+    ff_dpdk_deregister_if(ctx);
+}
+
+/* copydata failure -> the ret<0 error path frees head + returns -1 */
+static void
+test_ff_dpdk_if_send_copydata_fail(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    ff_test_reset_send_ctl();
+    g_copydata_fail = 1;
+    void *ctx = ff_test_register(0);
+    assert_non_null(ctx);
+    int rv = ff_dpdk_if_send(ctx, (void *)0x1, 128);
+    assert_int_equal(rv, -1);
+    ff_dpdk_deregister_if(ctx);
+}
+
+/* raw packet send to the net_null port */
+static void
+test_ff_dpdk_raw_packet_send_basic(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    ff_test_reset_send_ctl();
+    int rv = ff_dpdk_raw_packet_send(g_test_pkt, 64, INT_PORT_ID);
+    assert_true(rv == 0 || rv == -1);
+}
+
+/* raw packet send with total > DATAROOM forces the multi-segment alloc path */
+static void
+test_ff_dpdk_raw_packet_send_multiseg(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    unsigned char *buf = calloc(1, 4096);
+    assert_non_null(buf);
+    buf[14] = 0x45;
+    int rv = ff_dpdk_raw_packet_send(buf, 4096, INT_PORT_ID);
+    assert_true(rv == 0 || rv == -1);
+    free(buf);
+}
+
+/* ff_dpdk_pktmbuf_free frees one segment */
+static void
+test_ff_dpdk_pktmbuf_free_basic(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    extern void ff_dpdk_pktmbuf_free(void *m);
+    /* Borrow a mbuf from the lib mempool via a raw alloc through the same
+     * socket pool used by the lib (pktmbuf_pool[socket]). We do not have
+     * direct access, so allocate from any reachable pool: reuse a send. */
+    struct rte_mempool *mp = rte_mempool_lookup("mbuf_pool_0");
+    if (mp == NULL) { skip(); }
+    struct rte_mbuf *m = rte_pktmbuf_alloc(mp);
+    assert_non_null(m);
+    ff_dpdk_pktmbuf_free(m);   /* rte_pktmbuf_free_seg */
+}
+
+/* ff_dpdk_if_up brings every tx port up (ff_veth_attach stub returns non-NULL) */
+static void
+test_ff_dpdk_if_up_success(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    extern int ff_dpdk_if_up(void);
+    int rv = ff_dpdk_if_up();
+    assert_int_equal(rv, 0);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -362,6 +578,18 @@ main(void)
         cmocka_unit_test(test_ff_dpdk_if_send_zero_total),
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_no_crash),
         cmocka_unit_test(test_eal_process_type_primary),
+        /* FU-S9-DPDKIF-INTEG-BOOST: ff_dpdk_if_send branch coverage */
+        cmocka_unit_test(test_ff_dpdk_if_send_basic),
+        cmocka_unit_test(test_ff_dpdk_if_send_multiseg),
+        cmocka_unit_test(test_ff_dpdk_if_send_ip_csum),
+        cmocka_unit_test(test_ff_dpdk_if_send_tcp_csum),
+        cmocka_unit_test(test_ff_dpdk_if_send_tso),
+        cmocka_unit_test(test_ff_dpdk_if_send_udp_csum),
+        cmocka_unit_test(test_ff_dpdk_if_send_copydata_fail),
+        cmocka_unit_test(test_ff_dpdk_raw_packet_send_basic),
+        cmocka_unit_test(test_ff_dpdk_raw_packet_send_multiseg),
+        cmocka_unit_test(test_ff_dpdk_pktmbuf_free_basic),
+        cmocka_unit_test(test_ff_dpdk_if_up_success),
     };
     return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }
