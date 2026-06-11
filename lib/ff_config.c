@@ -967,7 +967,7 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->log.level = atoi(value);
     } else if (MATCH("dpdk", "fstack_log_file_prefix")) {
         /* default_config strdup'd the default; free it before overwrite. */
-        if (pconfig->log.dir) free(pconfig->log.dir);
+        if (pconfig->log.dir) free((void *)pconfig->log.dir);
         pconfig->log.dir = strdup(value);
     } else if (MATCH("dpdk", "channel")) {
         pconfig->dpdk.nb_channel = atoi(value);
@@ -1673,7 +1673,7 @@ ff_unload_config(void)
      * That overwrite leak is fixed by the strdup_replace pattern in
      * ini_parse_handler -- here we just free whatever heap pointer survives. */
     if (ff_global_cfg.log.dir) {
-        free(ff_global_cfg.log.dir);
+        free((void *)ff_global_cfg.log.dir);
         ff_global_cfg.log.dir = NULL;
     }
 
