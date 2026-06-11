@@ -127,7 +127,11 @@ int   ff_mbuf_copydata(void *m, void *d, int o, int l)
 int   ff_mbuf_tx_offload(void *m, void *o, void *l)
 { (void)m;(void)l; ff_test_fill_offload(o); return 0; }
 
-void *ff_veth_attach(void *cfg) { (void)cfg; return (void *)0x1; } /* non-NULL: ff_dpdk_if_up success path */
+/* Return a zeroed ff_dpdk_if_context-sized buffer so main_loop's
+ * ctx = veth_ctx[port] is valid: ff_veth_input reads ctx->hw_features.rx_csum
+ * (=0) then ff_mbuf_gethdr (stub) returns NULL -> safe early return. */
+static unsigned char g_veth_ctx_buf[512];
+void *ff_veth_attach(void *cfg) { (void)cfg; memset(g_veth_ctx_buf, 0, sizeof(g_veth_ctx_buf)); return g_veth_ctx_buf; }
 int   ff_veth_input(void *ctx, struct rte_mbuf *m) { (void)ctx;(void)m; return 0; }
 void  ff_veth_process_packet(void *ifp, void *m) { (void)ifp;(void)m; }
 void *ff_veth_get_softc(uint16_t portid) { (void)portid; return NULL; }
@@ -563,6 +567,49 @@ test_ff_dpdk_if_up_success(void **state)
     assert_int_equal(rv, 0);
 }
 
+/* The loop callback stops the run after exactly one main_loop iteration. */
+static int
+ff_test_oneshot_loop(void *arg)
+{
+    (void)arg;
+    extern void ff_dpdk_stop(void);
+    ff_dpdk_stop();          /* sets stop_loop=1 -> next top-of-loop breaks */
+    return 0;
+}
+
+/* ------------------------------------------------------------------------ */
+/* MUST RUN LAST: ff_dpdk_run drives main_loop for one full iteration        */
+/* (process_dispatch_ring + rte_eth_rx_burst + process_msg_ring + the TX     */
+/* drain + top_status accounting + the user-loop callback). It then calls    */
+/* ff_unload_config + rte_eal_cleanup, so no EAL-dependent test may follow.  */
+/* ------------------------------------------------------------------------ */
+static void
+test_main_loop_one_iteration_then_stop(void **state)
+{
+    (void)state; SKIP_IF_NO_INIT();
+    extern void ff_dpdk_run(int (*loop)(void *), void *arg);
+
+    /* lcore_conf.port_cfgs is a pointer ALIAS of ff_global_cfg.dpdk.port_cfgs
+     * (set during init_lcore_conf), so main_loop keeps working after we
+     * detach these from ff_global_cfg. Detaching prevents ff_dpdk_run's
+     * internal ff_unload_config from free()ing our hand-built (non
+     * ff_load_config) arrays, which is incompatible with its teardown. */
+    void *saved_pl  = ff_global_cfg.dpdk.proc_lcore;
+    void *saved_pll = ff_global_cfg.dpdk.portid_list;
+    void *saved_pc  = ff_global_cfg.dpdk.port_cfgs;
+    ff_global_cfg.dpdk.proc_lcore  = NULL;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs   = NULL;
+
+    ff_dpdk_run(ff_test_oneshot_loop, NULL);   /* one full main_loop iteration */
+
+    /* EAL is now torn down by ff_dpdk_run; free our saved arrays ourselves. */
+    free(saved_pl);
+    free(saved_pll);
+    free(saved_pc);
+    g_init_ok = 0;
+}
+
 /* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
@@ -590,6 +637,8 @@ main(void)
         cmocka_unit_test(test_ff_dpdk_raw_packet_send_multiseg),
         cmocka_unit_test(test_ff_dpdk_pktmbuf_free_basic),
         cmocka_unit_test(test_ff_dpdk_if_up_success),
+        /* MUST be last: tears down EAL via ff_dpdk_run -> rte_eal_cleanup */
+        cmocka_unit_test(test_main_loop_one_iteration_then_stop),
     };
     return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }
