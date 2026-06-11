@@ -555,6 +555,21 @@ test_ini_parse_stream_partial_bom_not_recognized(void **state)
     assert_int_equal(ctx->count, 0);
 }
 
+/* TC-S8-INI-01 (FU-S8-INI-DEAD): bytes 0xEF 0xBB <not 0xBF> match the
+ * first two BOM bytes but fail the third -> covers the L107 (start[2]
+ * == 0xBF) FALSE leg. The 3 bytes are then parsed as a malformed line. */
+static void
+test_ini_parse_stream_bom_third_byte_mismatch(void **state)
+{
+    capture_ctx_t *ctx = *state;
+    /* 0xEF 0xBB 'X' -> byte0/1 match BOM, byte2 != 0xBF -> not a BOM. */
+    char input[] = { (char)0xEF, (char)0xBB, 'X', '\n',
+                     '[', 's', ']', '\n', 'k', '=', 'v', '\n', 0 };
+    int rv = parse_buf(input, capture_handler, ctx);
+    /* Line 1 (the 3 stray bytes) has no separator -> error on line 1. */
+    assert_int_equal(rv, 1);
+    assert_int_equal(ctx->count, 0);
+}
 
 /* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
@@ -589,6 +604,7 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ini_parse_stream_colon_separator,         test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_ini_parse_stream_bare_line_no_separator,  test_setup, test_teardown),
         cmocka_unit_test_setup_teardown(test_ini_parse_stream_partial_bom_not_recognized, test_setup, test_teardown),
+        cmocka_unit_test_setup_teardown(test_ini_parse_stream_bom_third_byte_mismatch,    test_setup, test_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
