@@ -191,8 +191,10 @@ test_ff_epoll: test_ff_epoll.o $(LIB_OBJS_DIR)/ff_epoll.o $(COMMON_OBJS)
 
 # P1 #3 ff_config (links ff_ini_parser too; ff_config.o defines its own
 # ff_global_cfg so we DO NOT link common/ff_log_stub.o here, only rte_stub.o)
+# FU-S8-CFG-OOM: --wrap=calloc lets TCs force allocation failures to cover
+# the `if (X == NULL)` OOM error legs in parse_lcore_mask / port / vlan.
 test_ff_config: test_ff_config.o $(LIB_OBJS_DIR)/ff_config.o $(LIB_OBJS_DIR)/ff_ini_parser.o $(COMMON_DIR)/rte_stub.o
-	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS)
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=calloc
 
 # P2 #1 ff_thread (links real pthread + ff_host_interface for ff_malloc/free;
 # the test file ships its own `__thread struct thread *pcurthread` storage)

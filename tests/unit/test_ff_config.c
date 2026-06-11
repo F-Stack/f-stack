@@ -38,6 +38,28 @@
 #include "ff_log.h"           /* for ff_log declaration only */
 
 /* ------------------------------------------------------------------------ */
+/* FU-S8-CFG-OOM: calloc wrapper (linked via -Wl,--wrap=calloc).            */
+/* Passes through to __real_calloc unless armed; when g_calloc_fail_after is */
+/* >0 it counts down and returns NULL on the target call. This lets a TC    */
+/* force a single allocation failure (the Nth calloc after arming) to cover */
+/* the `if (X == NULL)` OOM error legs without disturbing cmocka, which     */
+/* does its own allocations only while the wrapper is disarmed (==0).       */
+/* ------------------------------------------------------------------------ */
+extern void *__real_calloc(size_t nmemb, size_t size);
+static int g_calloc_fail_after = 0;   /* 0 = disarmed; N = fail the Nth call */
+
+void *
+__wrap_calloc(size_t nmemb, size_t size)
+{
+    if (g_calloc_fail_after > 0) {
+        if (--g_calloc_fail_after == 0) {
+            return NULL;              /* simulate OOM on this call */
+        }
+    }
+    return __real_calloc(nmemb, size);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Local stubs to satisfy linker (ff_config.c indirectly references these)  */
 /* ------------------------------------------------------------------------ */
 
@@ -920,6 +942,68 @@ test_ff_load_config_bond_vdev_repeat_keys_no_leak(void **state)
     assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].xmit_policy, "l34");
 }
 
+/* TC-S8-CFG-14 (FU-S8-CFG-OOM): the FIRST calloc during load is the
+ * proc_lcore array in parse_lcore_mask (L85). Forcing it NULL exercises
+ * the L86 OOM error leg -> parse_lcore_mask returns 0 -> load fails. */
+static void
+test_parse_lcore_mask_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 1;     /* fail the 1st calloc (proc_lcore) */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    g_calloc_fail_after = 0;     /* disarm */
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-15 (FU-S8-CFG-OOM): the SECOND calloc is the port_cfgs array
+ * (L551, alloc_port_cfgs). Forcing it NULL exercises that OOM leg. The
+ * proc_lcore calloc (1st) succeeds; the port_cfgs calloc (2nd) fails. */
+static void
+test_alloc_port_cfgs_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 2;     /* fail the 2nd calloc (port_cfgs) */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    g_calloc_fail_after = 0;
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-16 (FU-S8-CFG-OOM): with [dpdk]->[port0]->[vlanN] section order
+ * the 3rd calloc is vlan_cfgs (L661). Forcing it NULL covers that OOM leg. */
+static void
+test_vlan_cfgs_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 3;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dual_vlan.ini"));
+    g_calloc_fail_after = 0;
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-17 (FU-S8-CFG-OOM): [dpdk]->[port0]->[vdev0]; 3rd calloc is
+ * vdev_cfgs (L772). Forcing it NULL covers that OOM leg. */
+static void
+test_vdev_cfgs_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 3;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_vdev.ini"));
+    g_calloc_fail_after = 0;
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-18 (FU-S8-CFG-OOM): [dpdk]->[port0]->[bond0]; 3rd calloc is
+ * bond_cfgs (L829). Forcing it NULL covers that OOM leg. */
+static void
+test_bond_cfgs_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 3;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_bond.ini"));
+    g_calloc_fail_after = 0;
+    assert_int_equal(rv, -1);
+}
+
 int
 main(void)
 {
@@ -974,6 +1058,11 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_check_config_kni_primary_lcore_missing_fails, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_dpdk_extra_keys,            test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_bond_vdev_repeat_keys_no_leak, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_calloc_oom_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_alloc_port_cfgs_calloc_oom_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfgs_calloc_oom_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vdev_cfgs_calloc_oom_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_bond_cfgs_calloc_oom_returns_error, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
