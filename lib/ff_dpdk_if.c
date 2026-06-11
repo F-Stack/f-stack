@@ -2134,10 +2134,6 @@ int
 ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     int total)
 {
-    /* FU-CB-DPDKIF-NULLGUARD: defend against NULL ctx callers. The
-     * function dereferences ctx->port_id / ctx->hw_features in both the
-     * FF_USE_PAGE_ARRAY and the default mempool paths; a NULL ctx would
-     * SIGSEGV. Treat it as a tx-drop and free any caller-supplied mbuf. */
     if (unlikely(ctx == NULL)) {
         ff_traffic.tx_dropped++;
         if (m != NULL) {

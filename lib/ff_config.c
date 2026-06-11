@@ -678,9 +678,6 @@ vlan_cfg_handler(struct ff_config *cfg, const char *section,
             break;
         }
     }
-    /* Stage-7 (FU-S7-CFG-VLAN-OOB): the original "not match" check lived
-     * inside the for body and was unreachable; without this guard we
-     * would fall through and write past vlan_cfgs[nb_vlan_filter]. */
     if (vlan_index >= cfg->dpdk.nb_vlan_filter) {
         fprintf(stderr, "vlan_cfg_handler section[%s] not match vlan_filter, ignore\n", section);
         return 1;
@@ -1350,10 +1347,7 @@ ff_default_config(struct ff_config *cfg)
 {
     memset(cfg, 0, sizeof(struct ff_config));
 
-    /* Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD): strdup the default literals
-     * so ff_unload_config can free() them uniformly. Without this the
-     * filename / log.dir slots may point at .rodata literals when no
-     * INI override is present, and free() on them crashes.            */
+    /* Sstrdup the default literalsso ff_unload_config can free() them uniformly.*/
     cfg->filename = strdup(DEFAULT_CONFIG_FILE);
 
     cfg->dpdk.proc_id = -1;
@@ -1379,9 +1373,7 @@ int
 ff_load_config(int argc, char *const argv[])
 {
     /* Idempotency: free any state from a prior ff_load_config so repeated
-     * invocations (test harness, hot-reload) don't accumulate unbounded
-     * heap. Detection: any non-NULL pointer that ff_default_config does
-     * NOT itself populate -- proc_lcore / port_cfgs / vlan_cfgs / bond_cfgs.
+     * invocations (test harness, hot-reload) don't accumulate unbounded heap.
      */
     if (ff_global_cfg.dpdk.proc_lcore != NULL ||
         ff_global_cfg.dpdk.port_cfgs  != NULL ||
@@ -1420,14 +1412,6 @@ ff_load_config(int argc, char *const argv[])
     if (dpdk_args_setup(&ff_global_cfg) <= 0) {
         return -1;
     }
-
-    /* Process-exit cleanup is invoked from ff_dpdk_run() (lib/ff_dpdk_if.c)
-     * after rte_eal_mp_wait_lcore() returns. We deliberately do NOT
-     * register an atexit() handler here -- programs that exit by other
-     * means (signal-driven _exit, abort, helloworld with no main loop,
-     * unit tests) might otherwise see ff_unload_config run AFTER their
-     * own teardown has already torn down ff_global_cfg, double-freeing.
-     * Tests that need the cleanup invoke ff_unload_config() directly. */
 
     return 0;
 }
@@ -1529,9 +1513,6 @@ ff_cfg_free_vlan_one(struct ff_vlan_cfg *v)
     if (v->vip_ifname)   { free(v->vip_ifname);   v->vip_ifname = NULL; }
     if (v->vip_addr_str) { free(v->vip_addr_str); v->vip_addr_str = NULL; }
     if (v->vip_addr_array) {
-        /* FU-S8-CFG-VLAN-VIP-LEAK: mirror ff_cfg_free_port_one — the
-         * element pointers alias INTO vip_addr_str (rte_strsplit in place),
-         * so free only the calloc'd container, not the elements. */
         free(v->vip_addr_array);
         v->vip_addr_array = NULL;
     }
