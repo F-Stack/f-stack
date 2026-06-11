@@ -115,7 +115,11 @@ ff_dump_packets(const char* dump_path, struct rte_mbuf* pkt, uint16_t snap_len, 
     fwrite(hdr, sizeof(struct pcap_pkthdr), 1, g_pcap_fp);
     g_flen += sizeof(struct pcap_pkthdr);
 
-    while(pkt != NULL && out_len <= snap_len) {
+    /* FU-S8-PCAP-DEAD: the `out_len <= snap_len` false leg is unreachable —
+     * wr_len is clamped to (snap_len - out_len), so out_len can never exceed
+     * snap_len; the loop only ever exits via `pkt != NULL`. Exclude the
+     * provably-dead branch from coverage. */
+    while(pkt != NULL && out_len <= snap_len) { /* LCOV_EXCL_BR_LINE */
         wr_len = snap_len - out_len;
         wr_len = wr_len > pkt->data_len ? pkt->data_len : wr_len ;
         fwrite(rte_pktmbuf_mtod(pkt, char*), wr_len, 1, g_pcap_fp);

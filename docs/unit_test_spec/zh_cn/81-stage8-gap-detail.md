@@ -21,9 +21,11 @@
 | K1 enqueue | L513/521×4/522/529 | 满环 ret<0 + process_type | OPEN |
 | K2 init-oom | L383/394/402/410 | --wrap=rte_zmalloc (Phase 3) | OPEN |
 | K3 init-flow | L121/334/379 | 造数据 | OPEN |
-| K4 process-tx | L142/148/149/161/163 | --wrap=rte_eth_tx_burst (Phase 4) | OPEN |
-| K5 process-rx | L181/183/185 | --wrap=rte_eth_rx_burst (Phase 4) | OPEN |
-| K6 alloc | L426/435/466/476/480/486 | integ/全mock (Phase 7) | OPEN |
+| K4 process-tx | L142/148/149/161/163 | --wrap=rte_eth_tx_burst (Phase 4) | **DEFER-S9**（见下）|
+| K5 process-rx | L181/183/185 | --wrap=rte_eth_rx_burst (Phase 4) | **DEFER-S9** |
+| K6 alloc | L426/435/466/476/480/486 | integ/全mock (Phase 7) | **DEFER-S9** |
+
+> **Phase 4 实测结论（交叉验证 /usr/local/include）**：`rte_eth_tx_burst`（rte_ethdev.h:6395）、`rte_eth_rx_burst`、`rte_ring_dequeue_burst`（rte_ring.h:811）均为 `static inline`。`--wrap` 仅对链接期符号有效，对已内联进 `ff_dpdk_kni.o` 的函数无效。故 K4/K5/K6 的 `--wrap` 主方案**不可行**，需真 PMD（net_null/net_ring vdev）+ rte_eal_hotplug_add 的整合套件。按 plan §6 决策降级为 **FU-S9-KNI-PROCESS-INTEG**（Stage-9）。
 
 ## C. 小文件
 

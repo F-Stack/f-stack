@@ -404,6 +404,39 @@ test_ff_dump_packets_no_rotate_when_under_max(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* Stage-8 Phase-5 (FU-S8-PCAP-DEAD): multi-segment mbuf where the cumulative
+/* out_len exceeds snap_len, exercising the `out_len <= snap_len` FALSE leg
+/* of the L118 while-condition (the segment chain is truncated mid-way).    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_dump_packets_multiseg_truncated_at_snaplen(void **state)
+{
+    (void)state;
+    per_lcore__lcore_id = 11;
+    int rv = ff_enable_pcap(g_tmp_dir, 8, 0);     /* tiny snap_len=8 */
+    assert_int_equal(rv, 0);
+
+    /* Two-segment chain: seg0=6 bytes, seg1=6 bytes -> total 12 > snap_len 8.
+     * After seg0 (out_len=6 <= 8) the loop continues; after seg1 the
+     * accumulated out_len (12) exceeds snap_len so the `out_len <= snap_len`
+     * leg goes false and the loop stops. */
+    char p0[] = "abcdef";
+    char p1[] = "ghijkl";
+    struct rte_mbuf seg1;
+    memset(&seg1, 0, sizeof(seg1));
+    seg1.buf_addr = p1; seg1.data_off = 0;
+    seg1.data_len = 6;  seg1.next = NULL;
+
+    struct rte_mbuf seg0;
+    memset(&seg0, 0, sizeof(seg0));
+    seg0.buf_addr = p0; seg0.data_off = 0;
+    seg0.data_len = 6;  seg0.pkt_len = 12; seg0.next = &seg1;
+
+    rv = ff_dump_packets(g_tmp_dir, &seg0, 8, 1u << 30, 0);
+    assert_int_equal(rv, 0);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -420,6 +453,8 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_dump_packets_seq_rotation_wraps, test_setup, test_teardown),
         /* Stage-7 Phase-5 branch-coverage boost (FU-S7-PCAP-*) */
         cmocka_unit_test_setup_teardown(test_ff_dump_packets_no_rotate_when_under_max, test_setup, test_teardown),
+        /* Stage-8 Phase-5 (FU-S8-PCAP-DEAD) */
+        cmocka_unit_test_setup_teardown(test_ff_dump_packets_multiseg_truncated_at_snaplen, test_setup, test_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -517,6 +517,28 @@ test_ff_epoll_wait_evfilt_read_eof_data_zero_yields_in_hup(void **state)
     assert_true(events[0].events & EPOLLIN);
 }
 
+/* TC-S8-EPOLL-01 (FU-S8-EPOLL-DEAD): EVFILT_READ with data==0 and NO EV_EOF
+ * takes the `!(kev->flags & EV_EOF)` TRUE leg (branch idx 2 of L113) via the
+ * `kev->data` FALSE short-circuit path, still setting EPOLLIN. */
+static void
+test_ff_epoll_wait_evfilt_read_data_zero_no_eof_yields_in(void **state)
+{
+    (void)state;
+    g_synth_kev.ident  = 66;
+    g_synth_kev.filter = EVFILT_READ;
+    g_synth_kev.flags  = 0;        /* no EV_EOF -> !(flags&EV_EOF) is true */
+    g_synth_kev.data   = 0;        /* zero -> evaluate the EV_EOF term */
+    g_synth_kev.fflags = 0;
+    g_synth_kev.udata  = NULL;
+    g_synth_count = 1;
+
+    struct epoll_event events[1];
+    int n = ff_epoll_wait(42, events, 1, 0);
+    assert_int_equal(n, 1);
+    assert_true(events[0].events & EPOLLIN);
+    assert_false(events[0].events & EPOLLHUP);
+}
+
 /* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
@@ -546,6 +568,8 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_eof_unknown_filter_only_hup,          test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_zero_maxevents_returns_einval,        test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_epoll_wait_evfilt_read_eof_data_zero_yields_in_hup, test_setup, NULL),
+        /* Stage-8 Phase-5 (FU-S8-EPOLL-DEAD) */
+        cmocka_unit_test_setup_teardown(test_ff_epoll_wait_evfilt_read_data_zero_no_eof_yields_in, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
