@@ -13,7 +13,10 @@
 ## Acceptance（执行后填实测）
 | Gate | 目标 | actual | 状态 |
 |---|---|---|---|
-| G-S8-1 ff_config branch | ≥88% | - | - |
-| G-S8-2 ff_dpdk_kni branch | ≥70% | - | - |
-| G-S8-3 project merged branch | ≥68% | - | - |
-| G-S8-5 valgrind | 0 leak | - | - |
+| G-S8-1 ff_config branch | ≥88% | 85.4% | ⚠ MISS（剩余 1br/TC OOM/dataflow）|
+| G-S8-2 ff_dpdk_kni branch | ≥70% | 51.6% | ✗ MISS（inline-wrap 不可行→S9）|
+| G-S8-3 project merged branch | ≥68% | 63.7% | ✗ MISS（ff_dpdk_if 结构性受限）|
+| G-S8-4 pcap/epoll 收尾 | 100% | 100%/100% | ✅ PASS |
+| G-S8-5 valgrind | 0 leak | 12/12 0 leak | ✅ PASS |
+
+详见 89-stage8-review.md。
