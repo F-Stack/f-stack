@@ -49,7 +49,7 @@ SANITY_TESTS  := test_hello
 P0_TESTS      := test_ff_ini_parser test_ff_log
 P1_TESTS      := test_ff_host_interface test_ff_epoll test_ff_config
 P2_TESTS      := test_ff_thread test_ff_init test_ff_dpdk_pcap test_ff_dpdk_if
-P3_TESTS      := test_ff_dpdk_kni
+P3_TESTS      := test_ff_dpdk_kni test_ff_zc_send
 ALL_TESTS     := $(SANITY_TESTS) $(P0_TESTS) $(P1_TESTS) $(P2_TESTS) $(P3_TESTS)
 
 # Common stub objects
@@ -226,6 +226,12 @@ test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(COMMON_DIR)/rt
 # at runtime, all 4 TC are marked skip().)
 test_ff_dpdk_kni: test_ff_dpdk_kni.o $(LIB_OBJS_DIR)/ff_dpdk_kni.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
+
+# P3 #2 ff_zc_send (FSTACK_ZC_SEND user-space logic; algorithm-conformance
+# test with a self-contained mbuf shim, no lib/rte deps — the real TUs
+# (ff_veth.c/ff_syscall_wrapper.c) cannot be host-compiled, see test header).
+test_ff_zc_send: test_ff_zc_send.o
+	$(CC) -o $@ $^ $(LDFLAGS_BASE)
 
 # ----- clean (NFR-U-7: must use workspace wrapper, no direct rm) -----
 clean:
