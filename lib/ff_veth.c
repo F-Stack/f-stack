@@ -417,7 +417,7 @@ ff_zc_mbuf_segment(struct ff_zc_mbuf *zm, void **seg_data, int *seg_len)
 /*
  * FSTACK_ZC_RECV: release the whole chain obtained from ff_zc_recv. m_freem
  * walks m_next and frees each mbuf; ext-mbuf segments trigger ff_mbuf_ext_free
- * which returns the backing DPDK mbuf seg (see docs/zc_read_spec). Idempotent.
+ * which returns the backing DPDK mbuf seg (see docs/zc_stack_user_spec). Idempotent.
  */
 void
 ff_zc_recv_free(struct ff_zc_mbuf *zm)

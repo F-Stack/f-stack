@@ -3,7 +3,7 @@
 > 状态：PLAN-READY → （待执行）BUILDING → FINISHED
 > 范围：**仅可行性调研 + 方案设计 + 文档产出**，本期不写实现代码
 > 对标基线：已落地的 FSTACK_ZC_SEND（M8）
-> 文档语言：**仅中文**（docs/zc_read_spec/zh_cn/），英文版待人工审计后再议
+> 文档语言：**仅中文**（docs/zc_stack_user_spec/zh_cn/），英文版待人工审计后再议
 > 方法：harness 工程 + spec 驱动 + agent team（leader + 子 agent）
 > 防漂移铁律：所有结论以**实测代码为准**，文档/外网仅作启发，不一致处以代码为准；严禁未执行即给结论
 
@@ -97,7 +97,7 @@ f-stack 已支持零拷贝**写入**（FSTACK_ZC_SEND / M8）：APP 通过 `ff_z
 
 ---
 
-## §6 文档清单（docs/zc_read_spec/zh_cn/，仅中文）
+## §6 文档清单（docs/zc_stack_user_spec/zh_cn/，仅中文）
 
 - `00-plan.md` —— 本规划
 - `01-zcsend-baseline.md` —— ZC-SEND 对标基线全链路

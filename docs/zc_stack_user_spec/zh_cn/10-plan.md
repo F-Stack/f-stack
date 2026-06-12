@@ -1,9 +1,9 @@
 # FSTACK_ZC_RECV 零拷贝收包 实现级 Spec — Plan
 
 > 状态：PLAN-READY →（执行）BUILDING → FINISHED
-> 前置：可行性调研已通过（docs/zc_read_spec/zh_cn/00-09，结论"可行"，commit 875532e35）
+> 前置：可行性调研已通过（docs/zc_stack_user_spec/zh_cn/00-09，结论"可行"，commit 875532e35）
 > 本阶段范围：产出**实现级规格文档**（spec），指导后续编码；**本阶段仍不写实现代码**
-> 文档语言：仅中文（docs/zc_read_spec/zh_cn/）
+> 文档语言：仅中文（docs/zc_stack_user_spec/zh_cn/）
 > 方法：harness 工程 + spec 驱动 + agent team（leader + 架构探测/文档编写/spec 审核门禁子 agent）
 > 铁律：所有规格条目以**实测代码为准**，外网/文档仅启发；不一致以代码为准；严禁未执行即给结论
 
@@ -25,7 +25,7 @@
 
 （其余实测见 01-05，本 plan 不重复。）
 
-## §3 Spec 文档清单（docs/zc_read_spec/zh_cn/，新增 10-19 系列）
+## §3 Spec 文档清单（docs/zc_stack_user_spec/zh_cn/，新增 10-19 系列）
 | 文档 | 内容 | 负责子 agent |
 |---|---|---|
 | `10-spec-overview.md` | 范围/术语/目标/与可行性结论衔接/编译开关 FSTACK_ZC_RECV | leader |
