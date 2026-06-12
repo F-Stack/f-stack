@@ -435,9 +435,12 @@ void ff_zc_recv_free(struct ff_zc_mbuf *zm);
 #endif /* FSTACK_ZC_RECV */
 
 /*
- * M8: zero-copy send entry. Caller must pass the mbuf chain
- * obtained from ff_zc_mbuf_get + ff_zc_mbuf_write as `mb`. The
- * returned bytes match `nbytes` on success, -1 on error (errno set).
+ * Zero-copy send entry. Caller must pass the mbuf chain obtained from
+ * ff_zc_mbuf_get + ff_zc_mbuf_write as `mb`. Returns the sent byte
+ * count on success, -1 on error (errno set). Internally calls
+ * kern_zc_sendit -> sosend(uio=NULL, top=chain), the FreeBSD-native
+ * zero-copy send path. On success the kernel adopts the chain; on
+ * error the kernel frees it. Reuse requires another ff_zc_mbuf_get.
  *
  * Plain ff_write() / ff_writev() / ff_send() / ff_sendto() must NOT
  * be used to send a zero-copy mbuf chain — they take char buffers

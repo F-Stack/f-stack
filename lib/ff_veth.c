@@ -306,11 +306,14 @@ ff_mbuf_ext_free(struct mbuf *m)
 int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len) {
     struct mbuf *mb;
 
-    if (m == NULL) {
+    if (m == NULL || len < 0) {
         return -1;
     }
 
-    mb = m_getm2(NULL, max(len, 1), M_WAITOK, MT_DATA, 0);
+    /* M_PKTHDR is required so the chain head carries an m_pkthdr.
+     * sosend takes resid from top->m_pkthdr.len when uio == NULL;
+     * ff_zc_mbuf_write maintains pkthdr.len incrementally. */
+    mb = m_getm2(NULL, max(len, 1), M_WAITOK, MT_DATA, M_PKTHDR);
     if (mb == NULL) {
         return -1;
     }
@@ -325,12 +328,16 @@ int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len) {
 int
 ff_zc_mbuf_write(struct ff_zc_mbuf *zm, const char *data, int len)
 {
-    int ret, length, progress = 0;
-    struct mbuf *m, *mb;
+    int length, progress = 0;
+    struct mbuf *m, *mb, *head;
 
-    if (zm == NULL) {
+    if (zm == NULL || data == NULL || len < 0) {
         return -1;
     }
+    if (len == 0) {
+        return 0;
+    }
+    head = (struct mbuf *)zm->bsd_mbuf;
     m = (struct mbuf *)zm->bsd_mbuf_off;
 
     if (zm->off + len > zm->len) {
@@ -339,20 +346,25 @@ ff_zc_mbuf_write(struct ff_zc_mbuf *zm, const char *data, int len)
 
     for (mb = m; mb != NULL; mb = mb->m_next) {
         length = min(M_TRAILINGSPACE(mb), len - progress);
-        bcopy(data + progress, mtod(mb, char *) + mb->m_len, length);
-
-        mb->m_len += length;
-        progress += length;
+        if (length > 0) {
+            bcopy(data + progress, mtod(mb, char *) + mb->m_len, length);
+            mb->m_len += length;
+            progress += length;
+        }
         if (len == progress) {
             break;
         }
-        //if (flags & M_PKTHDR)
-        //    m->m_pkthdr.len += length;
     }
-    zm->off += len;
+
+    /* Maintain pkthdr.len on the chain head only (mbuf(9): only the
+     * leading mbuf carries pkthdr). sosend reads this as resid when
+     * uio == NULL. */
+    head->m_pkthdr.len += progress;
+
+    zm->off += progress;
     zm->bsd_mbuf_off = mb;
 
-    return len;
+    return progress;
 }
 
 int

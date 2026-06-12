@@ -1108,6 +1108,76 @@ kern_zc_recvit(struct thread *td, int s, struct uio *uio, struct mbuf **mp0)
 }
 #endif /* FSTACK_ZC_RECV */
 
+#ifdef FSTACK_ZC_SEND
+/*
+ * FSTACK_ZC_SEND: zero-copy send.
+ *
+ * A compact sibling of kern_sendit that calls sosend() directly with a
+ * non-NULL `top` mbuf chain and uio == NULL. Per the FreeBSD sosend(9)
+ * contract, when uio is NULL sosend takes resid from top->m_pkthdr.len
+ * and skips the m_uiotombuf copy. No address (sendto) / control (SCM)
+ * handling here: ZC send targets the bulk data fast path. Caller MUST
+ * pass a M_PKTHDR-headed chain with pkthdr.len == sum-of-segments
+ * (see lib/ff_veth.c ff_zc_mbuf_get/write).
+ *
+ * Ownership: on success sosend adopts `top`. On error before sosend
+ * (validation/getsock/MAC) kern_zc_sendit frees `top`; once sosend is
+ * entered the protosw layer frees top on its own error paths, so we do
+ * not double-free (see 35-mbuf-lifecycle-spec INV-3).
+ */
+int
+kern_zc_sendit(struct thread *td, int s, struct mbuf *top, int flags)
+{
+	struct file *fp;
+	struct socket *so;
+	ssize_t len;
+	int error;
+
+	if (top == NULL || (top->m_flags & M_PKTHDR) == 0) {
+		if (top != NULL)
+			m_freem(top);
+		return (EINVAL);
+	}
+	len = top->m_pkthdr.len;
+	if (len < 0) {
+		m_freem(top);
+		return (EINVAL);
+	}
+
+	AUDIT_ARG_FD(s);
+	error = getsock(td, s, &cap_send_rights, &fp);
+	if (error != 0) {
+		m_freem(top);
+		return (error);
+	}
+	so = fp->f_data;
+
+#ifdef MAC
+	error = mac_socket_check_send(td->td_ucred, so);
+	if (error != 0) {
+		m_freem(top);
+		fdrop(fp, td);
+		return (error);
+	}
+#endif
+
+	error = sosend(so, NULL, NULL, top, NULL, flags, td);
+	/* top adopted by sosend on success; freed by protosw on error. */
+
+	if (error == 0) {
+		td->td_retval[0] = len;
+	} else if (error == EPIPE && (so->so_options & SO_NOSIGPIPE) == 0 &&
+	    (flags & MSG_NOSIGNAL) == 0) {
+		PROC_LOCK(td->td_proc);
+		tdsignal(td, SIGPIPE);
+		PROC_UNLOCK(td->td_proc);
+	}
+
+	fdrop(fp, td);
+	return (error);
+}
+#endif /* FSTACK_ZC_SEND */
+
 static int
 recvit(struct thread *td, int s, struct msghdr *mp, void *namelenp)
 {

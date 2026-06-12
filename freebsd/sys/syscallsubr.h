@@ -308,6 +308,14 @@ int	kern_recvit(struct thread *td, int s, struct msghdr *mp,
 int	kern_zc_recvit(struct thread *td, int s, struct uio *uio,
 	    struct mbuf **mp0);
 #endif
+#ifdef FSTACK_ZC_SEND
+/* FSTACK_ZC_SEND: zero-copy send variant — hands a pre-built mbuf chain
+ * (top) directly to sosend(uio=NULL, top=chain), avoiding the m_uiotombuf
+ * copy. Caller relinquishes top ownership on success; on error
+ * kern_zc_sendit frees top via m_freem (see 35-mbuf-lifecycle-spec). */
+int	kern_zc_sendit(struct thread *td, int s, struct mbuf *top,
+	    int flags);
+#endif
 int	kern_renameat(struct thread *td, int oldfd, const char *old, int newfd,
 	    const char *new, enum uio_seg pathseg);
 int	kern_frmdirat(struct thread *td, int dfd, const char *path, int fd,

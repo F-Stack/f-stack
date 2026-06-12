@@ -1853,20 +1853,5 @@ mbuf_has_tls_session(struct mbuf *m)
 	return (false);
 }
 
-#ifdef FSTACK_ZC_SEND
-/*
- * M8: sentinel placed in uio->uio_offset by ff_zc_send to opt-in to
- * the FSTACK_ZC_SEND fast path in m_uiotombuf (uipc_mbuf.c). Plain
- * ff_write/ff_writev callers leave uio_offset = 0 and therefore
- * never trigger the fast path, avoiding mis-interpretation of plain
- * char buffers as mbuf pointers (which previously crashed in
- * m_demote with rbx="HTTP/1.1...", see phase2-M8 RCA).
- *
- * Value chosen as a 64-bit non-zero pattern unlikely to collide
- * with any legitimate file offset, and recognizable in coredumps.
- */
-#define FSTACK_ZC_MAGIC ((off_t)0xF8AC2C00F8AC2C00LL)
-#endif
-
 #endif /* _KERNEL */
 #endif /* !_SYS_MBUF_H_ */
