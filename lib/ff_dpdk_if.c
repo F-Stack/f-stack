@@ -150,6 +150,7 @@ static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_ETHPORTS];
 static struct ff_top_args ff_top_status;
 static struct ff_traffic_args ff_traffic;
 extern void ff_hardclock(void);
+extern void ff_tcp_hpts_softclock(void);
 
 struct ff_rss_tbl_dip_type {
     uint32_t daddr;
@@ -2448,6 +2449,14 @@ main_loop(void *arg)
         }
 
         process_msg_ring(qconf->proc_id, pkts_burst);
+
+        /*
+         * Drive the HPTS soft-timer each loop pass so RACK/BBR paced
+         * output actually fires (f-stack has no userret to call it, and
+         * the hpts swi thread is a no-op). Idle-safe: a no-op unless
+         * there is pacing work pending.
+         */
+        ff_tcp_hpts_softclock();
 #ifdef FF_LOOPBACK_SUPPORT
         ff_swi_net_excute();
 #endif

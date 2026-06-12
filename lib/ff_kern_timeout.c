@@ -1244,6 +1244,36 @@ ff_hardclock(void)
 #endif /* DEVICE_POLLING */
 }
 
+/*
+ * FSTACK: drive the HPTS pacing wheel from the f-stack run-to-completion
+ * loop so RACK/BBR paced output actually fires.
+ *
+ * Stock FreeBSD services the wheel from (a) the hpts swi thread, woken by
+ * swi_sched(), and (b) tcp_hpts_softclock() called out of userret(). In
+ * f-stack swi_sched()/intr_event are no-ops (lib/ff_kern_intr.c) and there
+ * is no userret, so neither path runs -> paced segments are queued on the
+ * wheel but never sent, and BBR stalls mid-transfer on large files.
+ *
+ * We deliberately bypass the tcp_hpts_softclock() *macro* gate
+ * (hpts_that_need_softclock > 0): that counter is only raised when a
+ * single hpts holds more than conn_cnt_thresh connections
+ * (tcp_hpts.c ~L1731), so for the common few-connection case it stays 0
+ * and the wheel would never be run. Instead we invoke the run function
+ * directly via the tcp_hpts_softclock function pointer (set to
+ * __tcp_run_hpts at init). It is cheap when idle: __tcp_run_hpts early-
+ * outs on p_hpts_active / HPTS_TRYLOCK and only emits segments whose
+ * pacing slot is already due.
+ */
+#undef tcp_hpts_softclock
+void ff_tcp_hpts_softclock(void);
+
+void
+ff_tcp_hpts_softclock(void)
+{
+    if (tcp_hpts_softclock != NULL)
+        tcp_hpts_softclock();
+}
+
 static unsigned int
 ff_tc_get_timecount(struct timecounter *tc)
 {
