@@ -1024,6 +1024,12 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->kni.tcp_port = strdup(value);
     } else if (MATCH("kni", "udp_port")) {
         pconfig->kni.udp_port= strdup(value);
+    } else if (MATCH("stack", "default_stack")) {
+        /* Global default stack for this process when a socket carries no
+         * explicit SOCK_KERNEL/SOCK_FSTACK marker. "kernel" => host kernel
+         * stack; anything else (incl. "fstack") => F-Stack (default). */
+        pconfig->stack.default_to_kernel =
+            (strcasecmp(value, "kernel") == 0) ? 1 : 0;
     } else if (strcmp(section, "freebsd.boot") == 0) {
         if (strcmp(name, "hz") == 0) {
             pconfig->freebsd.hz = atoi(value);
@@ -1355,6 +1361,9 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
 
+    /* default stack: F-Stack (0). memset already zeroes it; set explicitly. */
+    cfg->stack.default_to_kernel = 0;
+
     /* KNI ratelimit default disabled */
     //cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;
     //cfg->kni.general_packets_ratelimit = KNI_RATELIMT_GENERAL;
@@ -1367,6 +1376,12 @@ ff_default_config(struct ff_config *cfg)
 
     cfg->log.level = FF_LOG_DISABLE;
     cfg->log.dir = strdup(FF_LOG_FILENAME_PREFIX);
+}
+
+int
+ff_default_stack_is_kernel(void)
+{
+    return ff_global_cfg.stack.default_to_kernel;
 }
 
 int

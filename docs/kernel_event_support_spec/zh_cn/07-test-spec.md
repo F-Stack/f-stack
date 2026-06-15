@@ -5,7 +5,8 @@
 > **日期**：2026-06-15
 > **状态**：编写中
 > **作用域**：本特性（单 API+标记选栈/config 默认开关/客户端选栈/双模式）的单元/集成/性能基线测试方案与门禁标准。
-> **对齐**：F-Stack 既有测试体系 `tests/unit`（Unity，*.c + *.ini）、`tests/integration`、覆盖率 `tests/run_full_coverage.sh`（lcov，`tests/full_coverage_report/`）。
+> **对齐**：F-Stack 既有测试体系 `tests/unit`（**cmocka**，*.c + *.ini）、`tests/integration`、覆盖率 `tests/run_full_coverage.sh`（lcov，`tests/full_coverage_report/`）。
+> **注**：spec 早期稿写作 Unity，实际仓库 `tests/unit` 采用 **cmocka**（经 `c-unittest-expert` 方法学映射）；以实际仓库为准，本文统一为 cmocka。
 
 ---
 
@@ -13,13 +14,13 @@
 
 | 层级 | 目录 | 框架/方式 | 覆盖目标 |
 |---|---|---|---|
-| 单元测试 | `tests/unit/`（新增选栈用例） | Unity（对齐既有 `*.c`+`*.ini`） | 标记选栈/归属判定/config 解析/事件合并 |
+| 单元测试 | `tests/unit/`（新增选栈用例） | cmocka（对齐既有 `*.c`+`*.ini`） | 标记选栈/归属判定/config 解析/事件合并 |
 | 集成测试 | `tests/integration/` | 端到端进程 + 本机工具 | 服务端本机直访、客户端连本机/外部、双栈并存 |
 | 性能基线 | `tests/`（性能脚本） | 压测 + 对比 | 默认/开启选栈的回归对比 |
 
 ---
 
-## 2. 单元测试用例（Unity）
+## 2. 单元测试用例（cmocka）
 
 | 编号 | 用例 | 断言 | 对应需求 |
 |---|---|---|---|
@@ -36,7 +37,7 @@
 | UT-11 | `close` 内核侧 fd | 两栈资源联动释放、无泄漏（对照 `:1874-1883`） | FR-8 |
 | UT-12 | 编译开关关闭 / 默认 F-Stack | 行为等价纯 F-Stack，零开销 | NFR-1/FR-9 |
 
-> 用例落地参照 `tests/unit/` 既有 `*.c`+`*.ini` 组织；可按需引用 `[skill:c-unittest-expert]`（Unity）规范。
+> 用例落地参照 `tests/unit/` 既有 `*.c`+`*.ini`（cmocka）组织；可按需引用 `[skill:c-unittest-expert]`（cmocka）规范。
 
 ---
 

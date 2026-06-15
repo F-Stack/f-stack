@@ -91,5 +91,14 @@ int ff_rss_tbl_get_portrange(uint32_t saddr, uint32_t daddr, uint16_t sport,
 
 void ff_swi_net_excute(void);
 
+/*
+ * Host kernel-stack helpers for connection-level stack selection.
+ *   ff_host_socket(): create a socket on the host Linux kernel stack.
+ *   ff_default_stack_is_kernel(): returns non-zero when config.ini
+ *       [stack] default_stack == kernel for this process.
+ */
+int ff_host_socket(int domain, int type, int protocol);
+int ff_default_stack_is_kernel(void);
+
 #endif
 

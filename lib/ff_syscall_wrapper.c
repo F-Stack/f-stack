@@ -914,6 +914,22 @@ ff_socket(int domain, int type, int protocol)
 {
     int rc;
     struct socket_args sa;
+
+    /*
+     * Stack selection (M3/M4): route this socket to the host Linux kernel
+     * stack when it carries an explicit SOCK_KERNEL marker (without
+     * SOCK_FSTACK), or when no marker is set and the process default stack is
+     * "kernel" (config.ini [stack] default_stack=kernel). The returned fd is a
+     * host kernel fd; in native ff_api mode it must be used with host syscalls
+     * (bind/listen/connect/epoll/...), not ff_*, since native mode has no
+     * per-fd ownership routing (see docs/kernel_event_support_spec/zh_cn).
+     * The default / SOCK_FSTACK path below stays unchanged (no regression).
+     */
+    if (!(type & SOCK_FSTACK) &&
+        ((type & SOCK_KERNEL) || ff_default_stack_is_kernel())) {
+        return ff_host_socket(domain, type & ~SOCK_KERNEL, protocol);
+    }
+
     sa.domain = domain == LINUX_AF_INET6 ? AF_INET6 : domain;
     sa.type = linux2freebsd_socket_flags(type);
     sa.protocol = protocol;

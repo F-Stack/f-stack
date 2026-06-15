@@ -78,6 +78,26 @@ int ff_ioctl(int fd, unsigned long request, ...);
  *
  *  See also `example/main.c`
  */
+/*
+ * Stack-selection markers (OR into the `type` argument of socket()/ff_socket()).
+ * Standardized from the syscall adapter (adapter/syscall/ff_adapter.h) so any
+ * F-Stack application can choose, per socket, which stack a fd belongs to:
+ *   - default (no marker)               : F-Stack user-space stack
+ *   - SOCK_FSTACK                        : force F-Stack stack (explicit default)
+ *   - SOCK_KERNEL (and not SOCK_FSTACK)  : host Linux kernel stack, so local
+ *                                          ping/curl can reach it and the app
+ *                                          can connect() to local/external
+ *                                          kernel-stack services.
+ * Priority: per-socket marker > config.ini [stack] default_stack > F-Stack.
+ * Values MUST match adapter/syscall/ff_adapter.h.
+ */
+#ifndef SOCK_FSTACK
+#define SOCK_FSTACK 0x01000000
+#endif
+#ifndef SOCK_KERNEL
+#define SOCK_KERNEL 0x02000000
+#endif
+
 int ff_socket(int domain, int type, int protocol);
 
 int ff_setsockopt(int s, int level, int optname, const void *optval,

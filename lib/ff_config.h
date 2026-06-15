@@ -319,6 +319,13 @@ struct ff_config {
     } kni;
 
     struct {
+        /* default stack for sockets without an explicit SOCK_KERNEL/SOCK_FSTACK
+         * marker on socket() type: 0 = F-Stack (default), 1 = host kernel stack.
+         * Per-socket marker always overrides this default. */
+        int default_to_kernel;
+    } stack;
+
+    struct {
         int level;
         const char *dir;
         void *f; /* FILE * */

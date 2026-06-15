@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
@@ -233,6 +234,12 @@ int ff_setenv(const char *name, const char *value)
 char *ff_getenv(const char *name)
 {
     return getenv(name);
+}
+
+int
+ff_host_socket(int domain, int type, int protocol)
+{
+    return socket(domain, type, protocol);
 }
 
 void ff_os_errno(int error)
