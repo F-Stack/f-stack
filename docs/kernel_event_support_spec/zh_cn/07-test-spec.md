@@ -1,71 +1,76 @@
-# 测试方案：单元 / 集成 / 性能基线（07-test-spec.md）
+# 07 测试与性能基线规格
 
 > **文档编号**：SPEC-KE-07
-> **版本**：v0.1 草稿
+> **版本**：v2（全量重做）
 > **日期**：2026-06-15
 > **状态**：编写中
-> **作用域**：本地 socket/fd/event 访问 lib 的测试设计与门禁标准
-> **现有测试体系**：`tests/unit/`（Unity 风格 `.c` + `.ini`）、`tests/integration/`、`tests/run_full_coverage.sh`、`tests/full_coverage_report/`
+> **作用域**：连接级选栈增强 lib 的单元/集成/性能基线测试方案与门禁标准。
+> **对齐**：F-Stack 既有测试体系 `tests/unit`（Unity，*.c + *.ini）、`tests/integration`、覆盖率 `tests/run_full_coverage.sh`（lcov，`tests/full_coverage_report/`）。
 
 ---
 
-## 1. 测试分层与对齐
+## 1. 测试分层
 
-| 层次 | 位置（建议） | 框架/方式 | 对齐现状 |
+| 层级 | 目录 | 框架/方式 | 覆盖目标 |
 |---|---|---|---|
-| 单元测试 | `tests/unit/` | Unity（与现有一致） | 既有 14 个 `.c` + 35 个 `.ini` |
-| 集成测试 | `tests/integration/` | 脚本 + 真实 F-Stack 实例 | 既有目录 |
-| 性能基线 | 独立基线脚本 + 报告 | pktgen/iperf/ping/curl 计量 | 参照 `ld_preload_ring_spec` 性能分析范式 |
-| 覆盖率 | `tests/run_full_coverage.sh` | lcov → `full_coverage_report/` | 复用 |
+| 单元测试 | `tests/unit/`（新增 `ff_local` 用例） | Unity（对齐既有 `*.c`+`*.ini`） | 选栈/归属判定/事件合并逻辑 |
+| 集成测试 | `tests/integration/` | 端到端进程 + 本机工具 | 本机 ping/curl 直访、双栈并存 |
+| 性能基线 | `tests/`（性能脚本） | 压测 + 对比 | 关闭/开启本能力的回归对比 |
 
-## 2. 单元测试（UT）
+---
 
-聚焦**纯函数/可隔离逻辑**，mock DPDK/内核依赖：
+## 2. 单元测试用例（Unity）
 
-| 用例 | 验证点 | 锚点 |
-|---|---|---|
-| UT-1 端口位图 set/get | tcp/udp 端口位图置位与查询正确 | `ff_dpdk_kni.c:59-69`（`set_bit/get_bit`、`*_port_bitmap`） |
-| UT-2 method→kni_accept 映射 | `accept`→1、`reject`→0 | `ff_dpdk_if.c:547-551` |
-| UT-3 action 字符串→枚举 | `get_kni_action` 解析 | `ff_dpdk_if.c:552` + `ff_msg.h:118-123` |
-| UT-4 `handle_knictl_msg` 状态机 | SET 各 action 切换、GET 回读 | `ff_dpdk_if.c:1960-1977` |
-| UT-5 `ff_local_*` 参数校验 | 非法 proto/越界端口/空指针 | `05-interface-design.md §2` |
-| UT-6 secondary 行为 | 连接级/创建口接口在 secondary 返回不支持 | `ff_dpdk_if.c:609-611` |
+| 编号 | 用例 | 断言 | 对应需求 |
+|---|---|---|---|
+| UT-1 | `ff_local_socket(belong_to_host=1)` | 返回内核栈 fd，`ff_local_fd_owner==FF_OWNER_HOST` | FR-1/FR-5 |
+| UT-2 | `ff_local_socket(belong_to_host=0)` | 走 F-Stack，归属 `FF_OWNER_FSTACK` | FR-3/FR-5 |
+| UT-3 | `ff_local_epoll_wait(maxevents=1)` | 返回 `-EINVAL`（对照 `ff_hook_syscall.c:2212-2218`） | 边界 |
+| UT-4 | epoll 同时注册内核 fd 与 F-Stack fd | 两类事件均被返回且不丢失 | FR-4 |
+| UT-5 | `close` 内核侧 fd | 两栈资源联动释放、无泄漏（对照 `:1874-1883`） | FR-6 |
+| UT-6 | `FF_LOCAL_STACK` 未定义编译 | `ff_local_*` 退化、行为等价纯 F-Stack | NFR-1/FR-7 |
+| UT-7 | 内核/F-Stack 地址端口冲突 | 返回 `-EADDRINUSE`，不静默 | 边界 |
 
-**门禁**：UT 全通过；新增代码行覆盖率 ≥ 既有基线（由 `run_full_coverage.sh` 出报告）。
+> 用例落地参照 `tests/unit/` 既有 `*.c`+`*.ini` 组织；可按需引用 `[skill:c-unittest-expert]`（Unity）规范。
 
-## 3. 集成测试（IT）
+---
 
-需真实 DPDK + virtio-user 环境（`/dev/vhost-net`、hugepage、特权）：
+## 3. 集成测试用例
 
-| 用例 | 步骤 | 期望 |
-|---|---|---|
-| IT-1 本机 ping | 启用 `[kni] enable=1,method=reject`，本机 `ping <nic_ip>` | 通（ICMP 经 virtio-user 入内核） |
-| IT-2 本机 curl | 对未列入业务端口的服务 `curl` | 成功 |
-| IT-3 业务端口仍走 fstack | `method=reject` 下业务端口流量不进内核 | fstack 正常处理、KNI 计数 0 |
-| IT-4 运行时切换 | `ff_local_set_action(ALL_TO_KNI/ALL_TO_FF/DEFAULT)` | 分流行为即时改变（`ff_dpdk_if.c:1792-1801`） |
-| IT-5 端口热更新 | `ff_local_rule_set` 增删端口 | 新规则生效 |
-| IT-6 依赖缺失 | 卸载 `vhost_net`/无权限 | `ff_local_init` 明确报错、业务不受影响 |
-| IT-7（M4）双栈事件 | `ff_local_epoll_*` 同时收内核 fd 与 fstack 事件 | 事件正确合并（参照 `ff_hook_syscall.c:2324-2399`） |
+| 编号 | 场景 | 步骤 | 通过标准 | 对应需求 |
+|---|---|---|---|---|
+| IT-1 | 本机 curl 直访内核栈监听 | 启动示例（内核栈侧监听）→ 本机 `curl 127.0.0.1:port` / `curl <host_ip>` | HTTP 200 | FR-1 |
+| IT-2 | 本机 ping | `ping <host_ip>` | 有回包 | FR-2 |
+| IT-3 | 双栈并存 | 同进程内 F-Stack 业务监听 + 内核栈管理监听 | 业务走 DPDK NIC、管理走内核，互不干扰 | FR-3/FR-4 |
+| IT-4 | 长稳/泄漏 | 大量短连接反复开关 | fd 数稳定、无泄漏（`ff_local_get_stats`） | FR-6 |
 
-**门禁**：IT-1~IT-6 全通过；IT-7 在 M4 启用时通过。
+> 进程清理用 `/data/workspace/kill_process.sh`，临时文件用 `/data/workspace/rm_tmp_file.sh`。
 
-## 4. 性能基线（PERF）
+---
 
-| 指标 | 方法 | 门禁 |
-|---|---|---|
-| PERF-1 业务快路径回归 | KNI 关闭 vs 开启（`ALL_TO_FF`）对比 pps/吞吐/时延 | 关闭时**零回归**；开启 `ALL_TO_FF` 回归 ≤ 既有 KNI 基线 |
-| PERF-2 分流检查开销 | `method=reject` 下业务流量 pps | 在限速默认关闭时开销可量化、可接受 |
-| PERF-3 内核侧吞吐 | virtio-user 路径 ping 时延 / curl 吞吐 | 满足管理面可用性（非高性能目标） |
-| PERF-4 限速生效 | 配置 `console_packets_ratelimit`/`general_packets_ratelimit`/`kernel_packets_ratelimit` | 实测速率不超阈值（`config.ini:265-267`） |
+## 4. 性能基线
 
-**采集**：记录环境（CPU/网卡/DPDK 版本 23.11.5 或 24.11.6/内核）、方法、原始数据与图表，留档（参照 `ld_preload_ring_spec` 的离线分析文档范式）。
+| 编号 | 指标 | 方法 | 门禁 |
+|---|---|---|---|
+| PERF-1 | F-Stack 业务路径回归 | `FF_LOCAL_STACK` 关闭 vs 基线 | 吞吐/时延偏差 ≤ 噪声阈值（NFR-2） |
+| PERF-2 | 开启本能力业务路径回归 | 仅内核侧监听空载，压测 F-Stack 业务 | 业务快路径无显著回归 |
+| PERF-3 | 事件合并延迟 | 测内核事件取用节流（对照 `ff_hook_syscall.c:2333-2336`）对延迟影响 | 延迟在可接受区间 |
+| PERF-4 | 内核侧管理面吞吐 | 本机 curl 并发 | 满足管理面预期（非高速路径） |
 
-## 5. 交叉验证要求
-- 所有"期望经内核"的用例须以 `tcpdump -i vethX` 或内核计数器实测确认，不臆测。
-- KNI 计数（`kni_interface_stats`，`ff_dpdk_kni.c:72-87`）作为分流正确性的客观证据。
+---
 
-## 6. 测试门禁汇总（进入 M5 验收的标准）
-1. UT 全绿 + 覆盖率不降；
-2. IT-1~IT-6 全绿（M4 时含 IT-7）；
-3. PERF-1 零回归为**硬门禁**；
-4. 所有结果有实测留痕（命令、输出、计数器/抓包）。
+## 5. 覆盖率与门禁标准
+
+- 复用 `tests/run_full_coverage.sh`（lcov）统计 `ff_local.{h,c}` 覆盖率。
+- **门禁标准**：
+  1. UT 全通过、新增代码行覆盖率达既有项目标准。
+  2. IT-1~IT-4 全通过（本机 ping/curl 实测直访成功）。
+  3. PERF-1/PERF-2 业务快路径无回归。
+  4. 关闭开关时与纯 F-Stack 行为/性能一致（NFR-1/2）。
+- 任一项失败 → 按 plan 的 bounce 规约打回上一里程碑修复（同一步骤 ≤3 次，超限转人工）。
+
+---
+
+## 6. 交叉验证要求
+- 所有测试需**实际执行取证**（日志/抓包/覆盖率报告），禁止臆测。
+- 测试断言中引用的代码行号与实际代码一致，冲突以代码为准。

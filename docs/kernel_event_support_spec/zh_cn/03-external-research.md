@@ -1,85 +1,64 @@
-# 外部方案调研：DPDK 程序的"流量回内核"架构（03-external-research.md）
+# 03 外部方案调研：DPDK/用户态栈应用的"本机直访 / 内核栈共存"方案
 
 > **文档编号**：SPEC-KE-03
-> **版本**：v0.1 草稿
+> **版本**：v2（全量重做）
 > **日期**：2026-06-15
 > **状态**：编写中
-> **作用域**：业界 DPDK 程序实现"本机/异常流量回内核协议栈"的主流架构调研，附**可访问 URL**
-> **调研方法**：联网检索 + 与 F-Stack 实际代码（见 `02-current-state-analysis.md`）交叉印证
+> **作用域**：调研其他 DPDK / 用户态协议栈程序如何让"本机仍可访问服务"或"用户态栈与内核栈共存/选栈"，提炼可借鉴点与局限。所有条目附**可访问 URL**。
+> **范围提示**：本文聚焦"**连接/线程级选栈 + 双栈事件**"思路；KNI/virtio-user 等"报文回灌"方案仅作边界澄清，不作为本特性方案。
 
 ---
 
-## 0. 背景：什么是 exception path
+## 1. 问题背景
 
-DPDK 旁路内核做高速转发，但**部分"异常"包**（发给本机的控制/管理报文、ICMP/ping、ssh、ARP/OSPF 等）不需要转发，需交回内核协议栈处理——把这类包从 DPDK 送回内核的路径，业界称为 **exception path（异常路径）**。这正是"DPDK 接管网卡后本机仍可 ping/curl"所依赖的能力。主流实现有 4 类：**TAP/TUN、KNI、virtio-user + vhost-net、AF_XDP/af_packet 旁路**。
+DPDK 接管网卡后，内核不再看到该网卡的流量，本机 `ping`/`curl`/`ssh` 无法访问运行在用户态栈上的服务。业界两类思路：
 
-参考综述：
-- DPDK 官方 How-to：《Virtio_user as Exception Path》— https://doc.dpdk.org/guides/howto/virtio_user_as_exception_path.html （**F-Stack 代码 `lib/ff_dpdk_kni.c:450-452` 注释直接引用此文档**）
-- 《把报文再扔回内核，DPDK 这样做》（TAP/TUN、KNI、virtio-user 三法对比）— https://blog.csdn.net/lingshengxiyou/article/details/128025223
-- 《DPDK 程序 exception path 的实现方案》— https://blog.51cto.com/u_15911260/5934813
-- 《DPDK Exception path 方案：Virtio-user》— https://gy23333.github.io/2025/04/25/DPDK-Exception-path-%E6%96%B9%E6%A1%88%EF%BC%9AVirtio-user/
+- **思路 A（报文回灌，本特性不采用）**：把用户态未消费的报文经 KNI / virtio-user / TAP 回灌内核，让内核栈"看到"网卡——解决的是"裸报文回内核"。
+- **思路 B（连接级选栈，本特性采用）**：应用**主动**在内核栈侧也创建/监听 socket，按连接/线程/监听粒度选择走用户态栈还是内核栈，并在同一事件循环中统一处理——解决的是"应用服务在内核侧也可被访问"。
 
----
-
-## 1. 四类主流方案对比
-
-| 方案 | 原理 | 优点 | 缺点 | 内核侧呈现 |
-|---|---|---|---|---|
-| **TAP/TUN** | DPDK 通过 `net_tap` PMD 或直接 open `/dev/net/tun` 创建 tap 设备，包以 syscall read/write 在用户态↔内核间搬运 | 实现简单、依赖少 | 每包一次 syscall，性能低；二层 tap/三层 tun 语义不同 | 一个 `tapX` 网卡 |
-| **KNI（旧）** | `rte_kni` 内核模块 + 用户态 `rte_kni` 库，零拷贝 FIFO 在 DPDK 与内核间传包 | 性能较 tap 好、内核见到真实网卡 | **内核模块非 upstream、维护差**，DPDK **23.11 已移除 KNI 库与驱动** | 一个 `vEthX` 网卡 |
-| **virtio-user + vhost-net** | DPDK 侧建 `virtio_user` vdev，后端接内核 `vhost-net`（`/dev/vhost-net`），自动生成内核 `veth`/tap 口 | 纯 upstream、无自研内核模块、性能优于 tap、是 KNI 的官方替代 | 需 `vhost-net` 模块、配置略复杂 | 一个 `vethX`/tap 口 |
-| **AF_XDP / af_packet** | 用 XDP/af_packet socket 在内核 fast path 旁挂，部分场景做 slowpath | 内核原生、无额外设备 | 与"DPDK 完全接管网卡"模型不完全契合 | socket 级 |
-
-**关键时间线（影响选型）**：
-- DPDK 23.03 起 KNI 默认禁用（需从 `disable_libs` 移除才编译）— https://doc.dpdk.org/guides-23.03/prog_guide/kernel_nic_interface.html
-- KNI 在 **DPDK 23.11 被移除**；社区推荐迁移到 **virtio-user / af_packet** — DPDK deprecation 说明：https://github.com/napatech/dpdk/blob/master/doc/guides/rel_notes/deprecation.rst ；NXP 社区《An alternative to DPDK KNI》：https://community.nxp.com/t5/Layerscape/An-alternative-to-DPDK-KNI/m-p/1950037
-- 本工作区 DPDK 版本为 **23.11.5 / 24.11.6**（均已无 KNI），故 **virtio-user 是唯一可行的 exception path**——这与 F-Stack 实际代码已迁移到 virtio-user（`02` 文档机制 C / 差异 D1）完全吻合。
+F-Stack 自身的 nginx `kernel_network_stack` 与 `adapter/syscall` 的 `FF_KERNEL_EVENT` 都属于**思路 B**，本特性即把它们抽象为通用 lib。
 
 ---
 
-## 2. virtio-user as exception path（重点，F-Stack 现采用）
+## 2. 外部方案逐项调研
 
-DPDK 官方方案（https://doc.dpdk.org/guides/howto/virtio_user_as_exception_path.html ）：
-- DPDK 应用创建 `virtio_user` vdev（`--vdev=virtio_user0,path=/dev/vhost-net,queues=...,iface=tapX,mac=...`），后端为内核 `vhost-net`。
-- 内核侧自动出现一个 `tap/veth` 网卡；DPDK 把要交内核的包 `tx_burst` 到 virtio_user 口，内核协议栈即可收到；反向同理。
-- F-Stack 实现一致：`lib/ff_dpdk_kni.c:458-466` 用 `rte_eal_hotplug_add("vdev","virtio_user%u","path=/dev/vhost-net,...,iface=veth%d,...")`，并以 `kni_process_tx/rx`（`:136-184`）做双向 burst。
+### 2.1 openEuler gazelle（强参考：线程级选栈 + 内核栈共存）
+- **URL（官方用户指南）**：https://docs.openeuler.org/zh/docs/24.03_LTS_SP2/server/network/gazelle/gazelle_user_guide.html
+- **URL（源码 gitee）**：https://gitee.com/openeuler/gazelle ；GitHub 镜像：https://github.com/gitee2github/gazelle
+- **可借鉴点**：
+  - **线程级选栈**：`GAZELLE_THREAD_NAME` 环境变量——**仅指定名字的线程走用户态 LwIP 栈，其余线程走内核栈**（默认绑定进程内所有线程）。这是"粒度化选栈、双栈共存"的直接范例，与本特性"连接级选栈"同源。
+  - **影子 fd（`listen_shadow`）**：单 listen 线程、多协议栈线程时用影子 fd 监听——对本特性"一个监听在多栈/多线程间分发"有参考价值。
+  - **POSIX 接管**：LD_PRELOAD（`liblstack.so`）+ `GAZELLE_BIND_PROCNAME`，应用无需改码——与机制 B 的 LD_PRELOAD 范式一致。
+  - **系统前提**：`rp_filter=1` 是"流量确实走用户态"的关键 sysctl，否则可能仍走内核——提示本特性需文档化选栈的系统前提。
+- **局限/边界**：
+  - gazelle 的 **`kni_switch`（rte_kni）与 ltran 模式在 24.03 LTS SP2 已"功能衰退、不再支持"**——再次印证**不应以 KNI 为方案基座**。
+  - ARP/ICMP/IPv4/UDP/TCP 由 LwIP 用户态栈处理，最多 1500 TCP 连接（`tcp_conn_count`）。
 
-补充资料：
-- 《DPDK-22.11.2 Virtio_user as Exception Path》— https://jishuzhan.net/article/1712020078922305537
-- 《DPDK 之 Virtio-user 介绍》（知乎）— https://zhuanlan.zhihu.com/p/10680616770
-- 《DPDK virtio-user 介绍及使用》— http://blog.chinaunix.net/uid-28541347-id-5856225.html
-- 《告别 KNI？用 DPDK Virtio-user + vfio-pci 构建用户态到内核协议栈高性能通道》— https://wenku.csdn.net/column/n49dtiv2333
+### 2.2 F-Stack 官方（本特性的母体）
+- **URL（GitHub）**：https://github.com/F-Stack/f-stack
+- **URL（官网）**：http://f-stack.org/
+- **URL（DeepWiki，DPDK 集成）**：https://deepwiki.com/F-Stack/f-stack/2.2-dpdk-integration
+- **URL（腾讯云：F-Stack 常用配置参数，含 [kni] 段）**：https://cloud.tencent.com/developer/article/1976948
+- **可借鉴点**：F-Stack 提供 Posix API（Socket/Epoll/Kqueue），移植 FreeBSD 栈；nginx 适配层已内置 `kernel_network_stack`（连接级选栈）、syscall 适配层已内置 `FF_KERNEL_EVENT`（双栈 epoll）。本特性是把这两处"应用内嵌实现"提炼为**通用 lib**。
 
-**对本特性可借鉴点**：F-Stack 已落地此路径，本特性 lib 应直接复用 `ff_kni_*` 数据面，无需重造 exception path。
+### 2.3 mTCP / 其他用户态栈
+- **URL（mTCP）**：https://github.com/mtcp-stack/mtcp
+- **可借鉴点**：mTCP 同样提供独立的 epoll 接口（`mtcp_epoll_*`），应用需显式选择 mTCP socket 还是内核 socket——印证"双 API/双 fd 命名空间"是用户态栈的通用范式，本特性需在接口层处理"fd 归属判定"。
 
----
-
-## 3. F-Stack 自身 KNI 文档（官方配置与语义）
-
-- 腾讯云《F-Stack KNI 配置注意事项》— https://cloud.tencent.com/developer/article/1005182 ；https://cloud.tencent.com/developer/news/11042
-  - 要点：KNI 默认关闭（开启会对所有收包做转发策略检查，影响性能）；`config.ini` 配置 `enable`、`method`、`tcp_port`/`udp_port`；适用于"网卡全部被 F-Stack 接管"或"单网卡"场景需本机访问时。
-  - 与实际代码印证：`config.ini:250-267`、`lib/ff_dpdk_if.c:1779-1801` 的 reject/accept 分流逻辑一致。
-
----
-
-## 4. 同类用户态协议栈的双栈/分流参考（架构借鉴）
-
-### 4.1 openEuler Gazelle（lstack + ltran）
-- 文档：https://docs.openeuler.org/zh/docs/23.09/docs/Gazelle/Gazelle.html ；仓库：https://github.com/openeuler-mirror/gazelle ；使用指南：https://github.com/gitee2github/gazelle/blob/master/doc/Gazelle%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md
-- 架构：基于 DPDK + 轻量级 LwIP 用户态栈，通过 `LD_PRELOAD`（lstack）接管 POSIX 接口；提供 ko 提供"虚拟网口"与网卡绑定能力；亦面临 KNI 移除问题（Gazelle 的 DPDK 23.11 适配 PR 移除了 kni_switch 相关函数：https://gitee.com/openeuler/gazelle/pulls/624 ）。
-- **可借鉴点**：`LD_PRELOAD` 统一 POSIX 接口 + 配置项分流（哪些走用户态栈），与本特性"统一 lib 接口"目标接近；其 DPDK 23.11 去 KNI 的工程经验可直接参考。
-
-### 4.2 DPVS（爱奇艺 LB）
-- KNI 弃用跟踪 issue：https://github.com/iqiyi/dpvs/issues/892 （DPVS 同样需在 23.11 后迁移 KNI 替代方案）。
-- **可借鉴点**：作为大规模生产 DPDK 程序，其 KNI→替代方案迁移决策可作旁证。
+### 2.4 DPDK 官方文档（边界澄清，非本特性方案）
+- **URL（DPDK KNI，已弃用/移除）**：https://doc.dpdk.org/guides/prog_guide/kernel_nic_interface.html
+- **URL（virtio_user 作为 exception path）**：https://doc.dpdk.org/guides/howto/virtio_user_as_exception_path.html
+- **说明**：这些是"报文回灌内核"（思路 A），**与本特性无关**；列出仅为澄清"为什么不选 KNI"：`rte_kni` 已在 DPDK 23.11 移除，且它解决的是裸报文旁路，而非"应用在内核侧暴露服务"。
 
 ---
 
-## 5. 对本特性的结论与选型倾向（详见 04 架构设计）
+## 3. 调研结论（对本特性的指导）
 
-1. **数据面**：直接复用 F-Stack 已有的 **virtio-user exception path（机制 C）**，不重造轮子；KNI 已被 DPDK 23.11 移除，virtio-user 是唯一正确路径。
-2. **分流策略**：以 `config.ini [kni] method/tcp_port/udp_port` + 运行时 `FF_KNICTL`（`ALL_TO_KNI/ALL_TO_FF/DEFAULT`）为基础，向上抽象统一开关。
-3. **编程接口**：借鉴机制 A（per-连接选栈 1-bit 标志 + 双事件后端）与机制 B（`fstack_kernel_fd_map` fd 映射 + 事件合并），为本特性 lib 提供"本地 socket/fd/event"统一 API，使非 nginx 应用也能透明使用本机内核栈。
-4. **风险**：依赖内核 `vhost-net`/`veth`、需 hugepage/特权；性能受 KNI 转发策略检查影响（官方提示默认关闭）。
+1. **方向正确性**：业界主流（gazelle 线程级选栈、mTCP 双 API、F-Stack 自身两处实现）都走"**连接/线程级选栈 + 双栈事件**"路线；KNI 在 DPDK 与 gazelle 均已衰退/移除——**本特性聚焦连接级选栈是正确选择**。
+2. **可借鉴范式**：
+   - 选栈粒度可下沉到连接/监听/线程（gazelle 线程级、nginx 连接级 `belong_to_host`）。
+   - 双栈需要统一事件循环 + fd 归属判定（F-Stack `is_fstack_fd` / `fstack_kernel_fd_map`、mTCP 双 epoll）。
+   - 需明确系统前提（如 gazelle 的 `rp_filter=1`）与连接上限等约束。
+3. **本特性独特价值**：把 F-Stack 现有的"nginx 内嵌选栈 + syscall 内嵌双栈 epoll"抽象为**应用无关的通用 lib**，降低任意 F-Stack 应用获得"本机直访"能力的门槛。
 
-> 所有 URL 于 2026-06-15 检索可访问；引用的版本时间线（KNI 23.03 默认禁用、23.11 移除）与本工作区 DPDK 23.11.5/24.11.6 自洽。
+> 交叉验证说明：本文外部信息均标注来源 URL；与 F-Stack 实际代码冲突时以代码为准（见 `02-current-state-analysis.md`）。

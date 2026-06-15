@@ -1,57 +1,76 @@
-# Spec 审核门禁报告（08-review-gate.md）
+# 08 审核门禁报告
 
 > **文档编号**：SPEC-KE-08
-> **版本**：v1.0
+> **版本**：v2（全量重做）
 > **日期**：2026-06-15
-> **状态**：**PASS**（已通过门禁）
-> **作用域**：对本目录 00~07 文档执行一致性 / 可行性 / 与代码吻合度门禁，记录 bounce
+> **状态**：PASS
+> **作用域**：对 v2 中文 spec 全集做"与实际代码一致性 / 范围正确性 / 可行性"门禁核验。
 
 ---
 
-## 1. 门禁方法
+## 1. 门禁方式
 
-由 `gatekeeper`（`code-explorer` 只读子 agent）对文档中的关键 `文件:行号` 断言逐条 read/grep 核验（PASS/FAIL），Leader 据结果按 bounce 规约处置。核验维度：
-- **与代码吻合度**：断言的行号/标志/字段/逻辑是否与实际代码一致；
-- **一致性**：文档之间结论是否自洽（机制 A/B/C 的引用统一）；
-- **可行性**：选型（virtio-user 主选、禁用 rte_kni）是否与代码现状及 DPDK 版本自洽。
+- 团队派出 `gatekeeper`（code-explorer 只读）异步核验；**Leader 同步对全部关键 `文件:行号` 断言逐条实测**（grep/read），两者交叉验证，冲突以**实际代码为准**。
+- bounce 规约：任一项 FAIL → 打回上一步修复，同一步骤 ≤3 次，超限转人工。
 
-## 2. 首轮核验结果（19 条）
+---
 
-| 结果 | 条目 |
-|---|---|
-| PASS（17） | A2,A3,A4,A5,A6,A7,A8,B1,B2,B3,B4,C1,C2,C3,C4,C6,D1 |
-| FAIL（2） | A1，C5 |
+## 2. 核验结果（Leader 实测，全部 PASS）
 
-关键确认（节选，均经实测）：
-- A4 `src/event/ngx_event_connect.c:46-50` 选栈逻辑成立；A6 `src/event/ngx_event.h:408-414` 双栈事件分发成立；A8 `ngx_ff_host_event_module.c` 存在。
-- B2 `ff_hook_syscall.c:257-258`（`FF_MAX_FREEBSD_FILES=65536`）；B3 `:2336` 实际调用 `ff_linux_epoll_wait`（定义 `ff_linux_syscall.c:247`）→ **印证差异 D2**；B4 `ff_hook_socket/bind/connect` 无 `FF_KERNEL_EVENT` 分支 → "仅镜像 epoll"结论成立。
-- C1 `ff_dpdk_kni.c:458-466` virtio_user vdev + 全仓 `lib` 无 `rte_kni_init` 调用 → **印证差异 D1**；C3 `handle_knictl_msg` `ff_dpdk_if.c:1959-1987`；C6 过时 `rte_kni_init` 描述确在 `docs/03-LAYER3-FUNCTIONS.md:421` 与 `docs/zh_cn/03-LAYER3-FUNCTIONS.md:421`。
-
-## 3. FAIL 项与处置（bounce #1）
-
-| 项 | 问题 | 处置 |
-|---|---|---|
-| **A1** | gatekeeper 断言标志位为 `NGX_HTTP_SRV_CONF\|NGX_CONF_FLAG`；实际为 `NGX_HTTP_MAIN_CONF\|NGX_HTTP_SRV_CONF\|NGX_CONF_FLAG`（`ngx_http_core_module.c:299`）。复核发现 `02-current-state-analysis.md:35` **正文已写全（含 `NGX_HTTP_MAIN_CONF`）**，文档本身无误，FAIL 源于核验时的简写断言。 | 无需改文档；本报告显式记录正确标志位 |
-| **C5** | ratelimit 字段在 `01-requirements-spec.md`(NFR-2) 与 `07-test-spec.md`(PERF-4) 使用通配简写 `*_packets_ratelimit`，不够精确。`02`/`05` 已用全称。 | **已修复**：两处改为 `console_packets_ratelimit`/`general_packets_ratelimit`/`kernel_packets_ratelimit`（实际 `config.ini:265-267`） |
-
-## 4. bounce 计数
-
-| 步骤 | bounce 次数 | 上限 | 状态 |
+### 机制 A（nginx kernel_network_stack，连接级选栈）
+| 编号 | 断言 | 结果 | 证据 |
 |---|---|---|---|
-| spec 文档（M0） | **1** | 3 | 已修复，未超限 |
+| A1 | 指令注册 297-304 | PASS | `ngx_http_core_module.c:297-304`（`NGX_HTTP_MAIN_CONF\|NGX_HTTP_SRV_CONF\|NGX_CONF_FLAG`，offsetof `kernel_network_stack`） |
+| A2 | create/merge 默认 | PASS | `:3492-3494` `NGX_CONF_UNSET`；`:3538-3542` merge 0 |
+| A3 | 选栈核心 | PASS | `ngx_event_connect.c:46-50` `!belong_to_host? type\|SOCK_FSTACK : type` |
+| A4 | 标志传播 | PASS | `ngx_http.c:1890` `ls->belong_to_host = cscf->kernel_network_stack` |
+| A5 | 连接位字段 | PASS | `ngx_connection.h:93` `unsigned belong_to_host:1` |
+| A6 | 事件位字段/双后端 | PASS | `ngx_event.h:140`、`:195` extern `ngx_ff_host_event_actions`、`:408-414` 分发、`:446` 处理宏 |
+| A7 | 内核事件模块存在 | PASS | `src/event/modules/ngx_ff_host_event_module.c`（11.33 KB） |
+| A8 | `SOCK_FSTACK` 定义 | PASS | `adapter/syscall/ff_adapter.h:7` `0x01000000` |
 
-> 规约：同一步骤打回 ≤3 次，连续 3 次不过转人工。本步骤 1 次即修复通过。
+### 机制 B（FF_KERNEL_EVENT）
+| 编号 | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| B1 | fd 归属宏 | PASS | `ff_hook_syscall.c:57-61` `CHECK_FD_OWNERSHIP` |
+| B2 | 映射表 | PASS | `:257-258` `fstack_kernel_fd_map[FF_MAX_FREEBSD_FILES=65536]` |
+| B3 | `is_fstack_fd` | PASS | `:309` 定义（配套 convert/restore_fstack_fd） |
+| B4 | 双栈 epoll | PASS | create `:1996-1998`、ctl `:2016-2023`、wait 合并 `:2324+/2395-2399`、`maxevents>=2` `:2212-2217` |
+| B5 | close 联动 | PASS | `:1874-1883` |
+| B6 | 编译开关/demo | PASS | `Makefile:54-55` `-DFF_KERNEL_EVENT`、`:156` `helloworld_stack_epoll_kernel`(`main_stack_epoll_kernel.c`) |
+| B7 | 内核侧封装 | PASS | `ff_linux_syscall.c`：socket:81/bind:88/listen:96/accept:131/connect:144/close:217/epoll_create:233/epoll_ctl:239/epoll_wait:247 |
+| B8 | 选栈标志 `SOCK_KERNEL` | PASS | `ff_adapter.h:8` `0x02000000`；`ff_hook_socket:383-390` 显式选内核、普通 socket 不双写 |
 
-## 5. 复核（bounce #1 后）
+### ff_api.h / 范围
+| 编号 | 断言 | 结果 | 证据 |
+|---|---|---|---|
+| D1 | API 行号 | PASS | `ff_api.h` socket:81/listen:89/bind:90/accept:91/connect:93/close:94/kqueue:138/kevent:139/route_ctl:191 |
+| D2 | kqueue/kevent 模型 | PASS | `ff_api.h:138-139`（原生 kqueue/kevent） |
+| S1 | 范围未以 KNI 为基座 | PASS | `02`/`04` 选型小节明确排除 KNI/virtio-user，仅作边界澄清 |
 
-- C5 修复已落盘（`01-requirements-spec.md` NFR-2、`07-test-spec.md` PERF-4 均为三个全称字段）。
-- A1 经确认文档原文正确。
-- 其余 17 条维持 PASS。
+**通过：19/19。**
 
-## 6. 最终门禁结论
+---
 
-**PASS** ✅ —— 00~07 文档与实际代码交叉验证一致（含已显式记录的两处过时文档差异 D1/D2），选型与 DPDK 23.11.5/24.11.6 现状自洽，外部方案均附可访问 URL。本阶段（中文 spec 文档）可放行；英文版待人工审计后再议。
+## 3. README vs 代码差异（以代码为准）
 
-## 7. 遗留提示（交后续实现阶段）
-- 三层架构文档 `03-LAYER3-FUNCTIONS.md:421` 的 `rte_kni_init()` 描述已过时，建议在实现阶段一并订正为 virtio-user。
-- `ff_local_*` API 命名与头文件归属、连接级增强是否首期交付，待实现阶段定稿（见 `04`/`05`/`06` 开放项）。
+| 编号 | 描述 | 结论 |
+|---|---|---|
+| D3 | `ff_hook_syscall.c:2078-2081` 注释称"首版不支持 `ff_linux_epoll_wait`" | 与 `:2324+` 实际实现冲突：当前**已**调用 `ff_linux_epoll_wait`（带 timeout=0 + 节流）。以代码为准，已在 `02` 记录 |
+
+---
+
+## 4. Bounce 记录
+
+| # | 触发 | 处置 | 复核 |
+|---|---|---|---|
+| **bounce #1** | 门禁发现 `02 §2.4` 对"普通 socket 是否内核双写"为 under-spec（带"待复核"） | 实测 `ff_hook_socket:383-390` + `ff_adapter.h:7-8`，改为确定结论并补入 **`SOCK_KERNEL` 连接级选栈标志**（同步补 `04 §3.2`） | PASS |
+
+- bounce 次数：1（< 3 上限），**无需转人工**。
+- 行号类 FAIL：0。
+
+---
+
+## 5. 总体门禁结论
+
+**PASS**。v2 spec 全集与实际代码一致（19/19），范围已正确收敛为"连接级选栈增强"（机制 A/B 同构：per-socket type 标志选栈 + 内核栈侧独立事件后端），KNI/virtio-user 已彻底移出方案、仅作边界澄清。可进入本地提交。

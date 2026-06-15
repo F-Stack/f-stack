@@ -1,101 +1,122 @@
-# 接口设计（05-interface-design.md）
+# 05 接口设计：libff_local 对外契约
 
 > **文档编号**：SPEC-KE-05
-> **版本**：v0.1 草稿
+> **版本**：v2（全量重做）
 > **日期**：2026-06-15
 > **状态**：编写中
-> **作用域**：本地 socket/fd/event 访问 lib 的对外 API、编译开关、数据结构、生命周期
-> **依据**：`lib/ff_api.h`、`lib/ff_msg.h`、`lib/ff_dpdk_if.c`、`config.ini`（以代码为准）
+> **作用域**：本特性 lib 的对外 API、编译开关、数据结构、兼容矩阵与错误处理。
+> **依据**：`02`（`ff_api.h` 基线、机制 A/B 范式）、`04`（架构）。具体行号以代码为准，实现阶段以 gatekeeper 复核为准。
 
 ---
 
-## 1. 现有可复用接口基线（实测）
+## 1. 接口基线（复用，不重造）
 
-### 1.1 F-Stack 应用 socket/event API（`lib/ff_api.h`）
-- socket 族：`ff_socket`（`:81`）、`ff_bind`（`:90`）、`ff_listen`（`:89`）、`ff_accept`/`ff_accept4`（`:91-92`）、`ff_connect`（`:93`）、`ff_close`（`:94`）、`ff_ioctl`（`:70`）、`ff_sendto`/`ff_recvfrom`（`:124,129`）。
-- 事件族：`ff_kqueue`（`:138`）、`ff_kevent`（`:139`）、`ff_kevent_do_each`（`:141`）。
-- 路由：`ff_route_ctl`（`:191`，`FF_ROUTE_ADD/DEL/CHANGE`，`:176-191`）。
+| 类别 | 复用接口 | 来源 |
+|---|---|---|
+| F-Stack socket | `ff_socket/ff_bind/ff_listen/ff_accept/ff_connect/ff_close` | `lib/ff_api.h:81,89,90,91,93,94` |
+| F-Stack 事件 | `ff_kqueue/ff_kevent` | `lib/ff_api.h:138,139` |
+| 内核 socket/事件 | 原生 `socket/bind/listen/accept/connect/close/epoll_*` | glibc |
 
-### 1.2 KNI 运行时控制（`lib/ff_msg.h` + `lib/ff_dpdk_if.c`）
-- 消息族：`FF_KNICTL`（`ff_msg.h:47`）、`FF_KNICTL_CMD_GET/SET`（`:112-116`）、`FF_KNICTL_ACTION_DEFAULT/ALL_TO_KNI/ALL_TO_FF`（`:118-123`）、`struct ff_knictl_args{int kni_cmd; int kni_action;}`（`:125-127`）。
-- 处理器：`handle_knictl_msg`（`ff_dpdk_if.c:1960-1977`，`FF_KNICTL_CMD_SET` 下切换 `knictl_action`）。
-- 策略初始化：`init_kni` 读取 `ff_global_cfg.kni.method`→`kni_accept`、`ff_global_cfg.kni.kni_action`→`knictl_action`（`:547-552`）。
+lib 在其上提供"选栈 + 归属判定 + 事件合并"薄封装。
 
-### 1.3 配置（`config.ini [kni]`，`:250-267`）
-`enable`、`method`(reject/accept)、`tcp_port`、`udp_port`、`console_packets_ratelimit`、`general_packets_ratelimit`、`kernel_packets_ratelimit`。
+---
 
-## 2. 新增统一接口（暂名 `libff_local` / `ff_local.h`）
+## 2. 新增 API 契约（命名暂定 `ff_local_*`）
 
-> 命名与归属为草案，最终在实现阶段定稿（见 04 文档待决问题）。以下为**接口契约设计**，本阶段不实现。
-
-### 2.1 生命周期 / 初始化
+### 2.1 初始化/销毁
 ```c
-/* 初始化本地访问能力（在 ff_init 之后调用；内部确保 virtio-user exception path 就绪） */
-int ff_local_init(const struct ff_local_cfg *cfg);
-
-/* 反初始化 */
+/* 初始化连接级选栈子系统；need FF_LOCAL_STACK 编译开关 */
+int  ff_local_init(const struct ff_local_cfg *cfg);
 void ff_local_cleanup(void);
 ```
-`struct ff_local_cfg`：是否启用、默认 action、端口规则、限速值——字段语义对齐 `config.ini [kni]`，避免双份语义。
 
-### 2.2 分流策略控制（封装 FF_KNICTL）
+### 2.2 选栈式 socket 创建（借鉴机制 A）
 ```c
-enum ff_local_action {                 /* 1:1 映射 FF_KNICTL_ACTION_* */
-    FF_LOCAL_DEFAULT, FF_LOCAL_ALL_TO_KERNEL, FF_LOCAL_ALL_TO_FF
-};
-int  ff_local_set_action(enum ff_local_action act);   /* 运行时切换，内部走 FF_KNICTL_CMD_SET */
-int  ff_local_get_action(enum ff_local_action *out);  /* 走 FF_KNICTL_CMD_GET */
+/* belong_to_host=1 → 内核栈普通 socket（本机可直访）
+   belong_to_host=0 → F-Stack（等价 SOCK_FSTACK 语义） */
+int ff_local_socket(int domain, int type, int protocol, int belong_to_host);
+int ff_local_listen_on_host(int domain, int type,
+                            const struct sockaddr *addr, socklen_t alen,
+                            int backlog);   /* 便捷：在内核栈侧监听 */
+```
+> 对照机制 A `ngx_event_connect.c:46-50` 的 `type|SOCK_FSTACK` vs 普通 `socket`。
 
-/* 端口/协议级规则（对齐 method + tcp_port/udp_port 位图） */
-int  ff_local_rule_set(int proto /*IPPROTO_TCP/UDP*/, const uint16_t *ports, size_t n, int to_kernel);
+### 2.3 fd 归属判定（借鉴机制 B `is_fstack_fd`）
+```c
+int ff_local_fd_owner(int fd);   /* 返回 FF_OWNER_HOST / FF_OWNER_FSTACK */
 ```
 
-### 2.3 本地 socket/fd/event（连接级，借鉴机制 A/B，后续里程碑）
+### 2.4 统一事件接口（借鉴机制 B 双栈合并）
 ```c
-/* 显式创建"走内核栈"的本地 socket（不带 fstack 标志，类比 ngx_socket 无 SOCK_FSTACK） */
-int ff_local_socket(int domain, int type, int protocol);
-
-/* 统一事件等待：同一循环同时等待内核 fd 与（可选）fstack 事件并合并，
-   借鉴 ff_hook_syscall.c:2324-2399 的 epoll 合并范式 */
-int ff_local_epoll_create(int size);
+int ff_local_epoll_create(int size);     /* 内部同时建内核 epoll，做映射 */
 int ff_local_epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev);
-int ff_local_epoll_wait(int epfd, struct epoll_event *evs, int maxevents, int timeout);
+/* maxevents 必须 >=2（对照 ff_hook_syscall.c:2212-2218）；
+   内部先取内核事件(timeout=0,可节流) 再合并 F-Stack 事件 */
+int ff_local_epoll_wait(int epfd, struct epoll_event *events,
+                        int maxevents, int timeout);
 ```
 
-### 2.4 状态/统计查询（封装 kni_interface_stats）
+### 2.5 统计/可观测（NFR-4）
 ```c
-struct ff_local_stats { uint64_t rx_packets, rx_dropped, tx_packets, tx_dropped; };
-int ff_local_get_stats(uint16_t port_id, struct ff_local_stats *out);  /* 对齐 ff_dpdk_kni.c:72-87 */
+struct ff_local_stats { uint64_t host_fds, fstack_fds, host_events, fstack_events; };
+int ff_local_get_stats(struct ff_local_stats *out);
 ```
 
-## 3. 编译开关
+---
 
-| 宏 | 含义 | 现状对齐 |
+## 3. 编译开关与依赖
+
+| 开关 | 作用 | 范式来源 |
 |---|---|---|
-| `FF_KNI` | 启用 KNI/virtio-user 数据面 | 既有（`lib/ff_dpdk_if.c:608` 等 `#ifdef FF_KNI`） |
-| `FF_LOCAL`（新增草案） | 编译 `libff_local` 统一接口层 | 新增，依赖 `FF_KNI` |
-| `FF_KERNEL_EVENT` | LD_PRELOAD 层 epoll 内核镜像 | 既有（`adapter/syscall/Makefile:54-56`），连接级增强可参考 |
+| `FF_LOCAL_STACK`（暂名） | 编译期开/关本能力；关闭则所有 `ff_local_*` 退化/不参与，零开销 | 机制 B `Makefile -DFF_KERNEL_EVENT` |
 
-> 不新增任何内核模块编译；virtio-user 为纯用户态 vdev + 内核 `vhost-net`。
+- 依赖：F-Stack `lib`（`ff_api.h`）、Linux glibc epoll；**不依赖 KNI/virtio-user**。
+- `lib/Makefile` 增加条件编译单元 `ff_local.c`（实现阶段）。
 
-## 4. 数据结构与映射
+---
 
-- 复用 `struct kni_interface_stats`（`ff_dpdk_kni.c:72-87`）做统计。
-- 复用 `kni_rp`（`rte_ring**`，`ff_dpdk_kni.c:89`）与 `kni_stat`（`:90`）。
-- 连接级增强若启用：引入 `local_fd_map`（类比 `fstack_kernel_fd_map`，`ff_hook_syscall.c:255-258`）。
+## 4. 关键数据结构（设计草案）
 
-## 5. 与既有语义的兼容矩阵
+```c
+enum ff_local_owner { FF_OWNER_FSTACK = 0, FF_OWNER_HOST = 1 };
 
-| 既有入口 | 本特性处理 |
-|---|---|
-| `config.ini [kni] enable/method/ports` | `ff_local_init` 读取同一配置，**不引入冲突的第二份配置** |
-| `FF_KNICTL` IPC | `ff_local_set_action/get_action` 作为其友好封装，底层不变 |
-| `ff_socket(SOCK_FSTACK)` 语义 | 不改；`ff_local_socket` 为"显式内核"对偶 |
+struct ff_local_cfg {
+    int   default_belong_to_host;   /* 缺省选栈 */
+    int   host_event_throttle;      /* 内核事件取用节流（对照机制B每N次） */
+};
+
+/* 统一 epoll fd → 内核 epoll fd 映射（类比 fstack_kernel_fd_map） */
+/* 容量参照 FF_MAX_FREEBSD_FILES=65536（ff_hook_syscall.c:257-258） */
+```
+
+---
+
+## 5. 兼容矩阵
+
+| 维度 | 取值 | 说明 |
+|---|---|---|
+| DPDK | 23.11.5 / 24.11.6 | 本工作区版本，**不依赖已移除的 rte_kni** |
+| 事件模型 | epoll（对外） / kqueue（F-Stack 内部） | 接口层抹平 |
+| 关闭态 | `FF_LOCAL_STACK` 未定义 | 行为等价纯 F-Stack（NFR-1） |
+| 协议 | TCP/UDP/ICMP（内核侧由内核栈处理） | ping 经内核栈 |
+
+---
 
 ## 6. 错误处理约定
-- `vhost-net` 不可用 / 权限不足 / hugepage 不足：`ff_local_init` 返回明确错误码并日志（对齐 `ff_log` `FF_LOGTYPE_FSTACK_LIB`，见 `ff_dpdk_if.c:1967`）。
-- secondary 进程调用连接级/virtio_user 创建类接口：返回不支持（仅 primary 创建口，`ff_dpdk_if.c:609-611`）。
 
-## 7. 开放项
-- API 是否并入 `ff_api.h` 还是独立 `ff_local.h`。
-- `ff_local_epoll_*` 是否首期交付（取决于连接级增强里程碑，见 `06-milestones.md`）。
+| 场景 | 行为 |
+|---|---|
+| `maxevents < 2` | 返回 `-EINVAL`（对照机制 B 约束 `:2212-2218`） |
+| 内核侧 socket 创建失败 | 返回原生 `errno`，不静默回退到 F-Stack |
+| 内核/F-Stack 地址端口冲突 | 返回 `-EADDRINUSE`，显式报错 |
+| 关闭 fd | 联动释放两栈资源（对照 `ff_hook_syscall.c:1874-1883`），避免泄漏（FR-6） |
+| 未 `ff_local_init` 即调用 | 返回 `-EPERM` |
+
+---
+
+## 7. 待决问题
+- API 是否并入 `ff_api.h` 还是独立 `ff_local.h`（命名空间与发布节奏）。
+- 是否提供 LD_PRELOAD 透明接管层（复用机制 B 的 hook 范式）以零改码接入。
+- 事件接口是否同时提供 kqueue 风格（贴合 F-Stack 原生）。
+
+> 本文 API 为设计契约草案，命名/签名在实现里程碑（`06`）确认；所有引用行号以代码为准。
