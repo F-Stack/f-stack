@@ -1,10 +1,10 @@
 # 06 里程碑与编码工作清单
 
 > **文档编号**：SPEC-KE-06
-> **版本**：v2（全量重做）
+> **版本**：v3（范式修正重做）
 > **日期**：2026-06-15
 > **状态**：编写中
-> **作用域**：连接级选栈增强 lib 的实施路线图（后续实现阶段，非本阶段交付）。
+> **作用域**：本特性实施路线图（后续实现阶段，非本阶段交付）。本阶段仅 spec。
 
 ---
 
@@ -13,65 +13,75 @@
 | 里程碑 | 名称 | 目标 | 依赖 | 主要验收 |
 |---|---|---|---|---|
 | **M0** | spec 文档（**本阶段**） | 中文 spec 全集过门禁 | — | `08-review-gate.md` 全 PASS |
-| **M1** | 内核栈侧监听（最小可用） | `ff_local_socket`/`ff_local_listen_on_host` 让本机 `curl` 通 | M0 | FR-1、FR-2 |
-| **M2** | 双栈统一事件循环 | `ff_local_epoll_*` 单循环服务两栈 | M1 | FR-4、FR-5 |
-| **M3** | 选栈与资源联动 | 监听/连接级 `belong_to_host` + close 联动 | M2 | FR-3、FR-6 |
-| **M4** | 统一 lib 形态 | 独立 `libff_local`（`FF_LOCAL_STACK` 开关）+ 头文件 + 示例 | M3 | FR-7、可独立链接 |
-| **M5** | 测试与性能基线 | 单测/集成/性能基线达标 | M1-M4 | `07-test-spec.md` 门禁 |
+| **M1** | 标记标准化 + 服务端内核栈监听 | 标准化 `SOCK_KERNEL`/`SOCK_FSTACK`，hook 模式带标记监听让本机 `curl`/`ping` 通 | M0 | FR-1/FR-2 |
+| **M2** | 客户端选栈 connect | hook 模式经内核栈 `connect` 本机/外部内核服务 | M1 | FR-3/FR-4 |
+| **M3** | config.ini 全局默认开关 | 新增 `[stack] default_stack`，进程默认栈 + 标记覆盖 | M1 | FR-5/NFR-6 |
+| **M4** | 原生 `ff_api` 模式标记识别 | `ff_socket` 识别 `SOCK_KERNEL`，双模式对齐 | M1-M3 | FR-6 |
+| **M5** | 双栈统一事件 + 资源联动 | 单循环服务两栈、close 联动、可观测 | M1-M4 | FR-7/FR-8/NFR-4 |
+| **M6** | 测试与性能基线 | 单测/集成/性能基线达标 | M1-M5 | `07-test-spec.md` 门禁 |
 
-> 注：M1 即满足"本机直访 F-Stack 服务"的核心诉求（连接级选栈，**不涉及 KNI**）。
+> 注：M1+M2 即满足"本机直访 F-Stack 主机服务"与"F-Stack 应用作客户端连本机/外部内核服务"两大核心诉求，**不涉及 KNI、不新增 API**。
 
 ---
 
-## 1. M1 内核栈侧监听（最小可用）
+## 1. M1 标记标准化 + 服务端内核栈监听
 
 **编码工作清单**：
-1. 新增 `lib/ff_local.{h,c}` 骨架，定义 `ff_local_socket(domain,type,proto,belong_to_host)`：`belong_to_host=1` 走原生 `socket`，`=0` 走 `ff_socket`（对照机制 A `app/nginx-1.28.0/src/event/ngx_event_connect.c:46-50`）。
-2. 实现 `ff_local_listen_on_host`：在内核栈侧 `bind+listen`，使本机 `curl`/`ssh` 可达。
+1. 将 `SOCK_KERNEL`/`SOCK_FSTACK`（`adapter/syscall/ff_adapter.h:7-8`）提升为**对外可依赖约定**（对外头文件暴露 + 文档化语义/优先级，对照 `ff_hook_socket:387-390`）。
+2. 复核/固化 hook 模式选栈：`socket(type|SOCK_KERNEL)` → `ff_linux_socket`；`bind/listen/accept` 经 `CHECK_FD_OWNERSHIP:57-61` 自动落内核栈。
 3. 验证 ICMP：内核栈侧地址 `ping` 通（内核原生处理）。
-4. `lib/Makefile` 增加 `FF_LOCAL_STACK` 条件编译单元。
 
-**验收**：本机 `curl <host_ip:port>` 成功、`ping <host_ip>` 通；F-Stack 业务无回归。
+**验收**：`curl <内核栈监听 IP:port>` 成功、`ping <内核栈 IP>` 通；默认/F-Stack 业务无回归。
 
-## 2. M2 双栈统一事件循环
-
-**编码工作清单**：
-1. 实现 `ff_local_epoll_create`：内部同时建内核 epoll，维护"统一 epoll fd → 内核 epoll fd"映射（类比 `adapter/syscall/ff_hook_syscall.c:257-258` `fstack_kernel_fd_map`）。
-2. 实现 `ff_local_epoll_ctl`：按 fd 归属路由（对照 `ff_hook_syscall.c:2016-2023`）。
-3. 实现 `ff_local_epoll_wait`：先取内核事件（`timeout=0`，可节流，对照 `:2329-2338`）再合并 F-Stack 事件；强制 `maxevents>=2`（对照 `:2212-2218`）。
-4. F-Stack 侧事件用 `ff_kqueue`/`ff_kevent`（`lib/ff_api.h:138,139`）适配为 epoll 风格。
-
-**验收**：单事件循环同时正确收发内核 fd 与 F-Stack fd 事件。
-
-## 3. M3 选栈与资源联动
+## 2. M2 客户端选栈 connect（新增核心）
 
 **编码工作清单**：
-1. 实现 `ff_local_fd_owner`（归属判定，借鉴 `is_fstack_fd` `ff_hook_syscall.c:309`）。
-2. `read/write/close` 按归属自动分流；`close` 联动释放两栈 fd（对照 `:1874-1883`），杜绝泄漏。
-3. 监听/连接级 `belong_to_host` 语义与缺省策略（`ff_local_cfg.default_belong_to_host`）。
+1. 复核/固化 `ff_hook_connect:858` 按 fd 归属路由：内核 fd → `ff_linux_connect:144`。
+2. 文档化并验证客户端用法：`socket(SOCK_KERNEL) + connect(127.0.0.1 / 本机内核栈 IP)` 与 `connect(<外部内核栈服务>)`。
+3. 覆盖 TCP/UDP 客户端；确认 `send/recv/close` 按归属自动分流。
 
-**验收**：两栈 fd 混用无错；无 fd 泄漏（FR-6）。
+**验收**：本机起 server（内核栈），F-Stack client `connect` 通（FR-3）；连外部内核栈服务 `connect` 通（FR-4）。
 
-## 4. M4 统一 lib 形态
+## 3. M3 config.ini 全局默认开关
 
 **编码工作清单**：
-1. 固化 `libff_local`（独立编译/链接单元，`FF_LOCAL_STACK` 默认关闭→零开销，对照机制 B `Makefile -DFF_KERNEL_EVENT`）。
-2. 整理对外头文件（`lib/ff_local.h` 或并入 `ff_api.h`，见 `05` 待决）。
-3. 示例程序（参照 `adapter/syscall/helloworld_stack*` 与 `tests/` 风格）：一个进程内同时跑 F-Stack 业务监听 + 内核栈管理监听。
-4.（可选）LD_PRELOAD 透明接管层调研，复用机制 B 的 hook 范式。
+1. `lib/ff_config.h:253` `struct ff_config` 新增 `struct { int default_to_kernel; } stack;`。
+2. `lib/ff_config.c:956` `ini_parse_handler` 增 `MATCH("stack","default_stack")` 分支（仿 `MATCH("kni","enable")` :1011），解析 `fstack|kernel`。
+3. 默认值（`:1358+`）`default_to_kernel=0`；如有字符串字段在 `:1647+` 释放（本项为 int，无需）。
+4. 胶水层：app 未带标记时按 `ff_global_cfg.stack.default_to_kernel` 注入等价 `SOCK_KERNEL`（保证 app 标记优先）。
+5. config.ini 增 `[stack] default_stack=fstack` 示例段。
 
-**验收**：独立链接 `libff_local`，示例跑通；关闭开关时纯 F-Stack 行为零回归。
+**验收**：改 config 默认栈生效；app 标记覆盖生效；多进程用不同 config 文件得不同默认栈（NFR-6）。
 
-## 5. M5 测试与性能基线
+## 4. M4 原生 `ff_api` 模式标记识别
+
+**编码工作清单**：
+1. 在 `lib/ff_syscall_wrapper.c:912` `ff_socket` 入口仿 `ff_hook_socket:387-390` 增 `SOCK_KERNEL` 识别分支（`02 §5`/D4：现状恒建 F-Stack socket）。
+2. 保证 `linux2freebsd_socket_flags:668` 路径对默认/`SOCK_FSTACK` 行为不变（零开销）。
+3. 原生模式客户端/服务端选栈与 hook 模式语义对齐。
+
+**验收**：原生模式可用标记选栈；默认路径逐字节无回归（FR-6/NFR-1）。
+
+## 5. M5 双栈统一事件 + 资源联动
+
+**编码工作清单**：
+1. 复用 `fstack_kernel_fd_map:257-258` + epoll 双栈：create 镜像（`:1996-1998`）、ctl 路由（`:2016-2023`）、wait 合并（`:2324+`，`timeout=0`+节流）、`maxevents>=2`（`:2212-2218`）。
+2. `close` 联动释放两栈 fd（`:1874-1883`）；`is_fstack_fd:309` 归属判定。
+3. 可观测：两栈 fd 数/事件数统计（`ff_stack_get_stats` 草案，`05 §6`）。
+
+**验收**：单事件循环正确收发两栈事件；无 fd 泄漏（FR-7/FR-8/NFR-4）。
+
+## 6. M6 测试与性能基线
 见 `07-test-spec.md`。
 
 ---
 
-## 6. 风险与回退
-- 事件合并引入延迟：用机制 B 的"节流取内核事件"（`ff_hook_syscall.c:2333-2336`）控制。
-- 事件模型差异（kqueue vs epoll）：在 lib 接口层抹平，单元测试覆盖。
+## 7. 风险与回退
+- 原生模式标记识别改动触及 `ff_socket` 热路径：用条件分支前置 + 默认零开销分支，单测覆盖（M4）。
+- config 默认注入与 app 标记优先级混淆：用例 UT 明确覆盖（`07`）。
+- 事件合并延迟：用机制 B 的"节流取内核事件"（`:2324+`）控制。
 - **严禁引入 KNI/`rte_kni`**（DPDK 23.11 已移除）作为回退路径。
-- 改动集中在新增 `ff_local.{h,c}`，避免触碰报文快路径热点。
+- 改动集中在标记约定/`ff_config`/`ff_socket` 入口/客户端文档化，避免触碰报文快路径热点。
 
-## 7. 与工作区脚本规约
+## 8. 与工作区脚本规约
 实现阶段清理临时文件用 `/data/workspace/rm_tmp_file.sh`、停进程用 `/data/workspace/kill_process.sh`、改权限用 `/data/workspace/chmod_modify.sh`；`make install` 类（非直接 chmod）命令可执行。
