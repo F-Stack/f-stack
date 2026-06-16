@@ -1,48 +1,50 @@
-> **⚠️ SUPERSEDED (2026-06-16): this English set (00-10) describes the OLD v3
-> paradigm, which was wrong — it routed `ff_socket(SOCK_KERNEL)` to a raw host
-> socket that bypassed the F-Stack user-space stack entirely. The authoritative
-> spec is now the v4 "F-Stack + kernel-stack COEXISTENCE" rework under
-> `zh_cn/` (app runs ON F-Stack; business uses the F-Stack stack; per-fd
-> `SOCK_KERNEL` additionally uses the host kernel stack; both coexist in one
-> event loop). This English set is pending re-translation to v4. Until then,
-> follow `zh_cn/`.**
-
-# 00 Overview: F-Stack Connection-Level Stack Selection Enhancement (Single API + Markers + config default switch)
+# 00 Overview: F-Stack User-Space Stack + Local Kernel Stack COEXISTENCE (per-fd marker selection + unified events)
 
 > **Document ID**: SPEC-KE-00
-> **Version**: v3 (paradigm-correction rework)
-> **Date**: 2026-06-15
+> **Version**: v4 (coexistence-paradigm rework)
+> **Date**: 2026-06-16
 > **Status**: Drafting
-> **Scope**: Navigation, terminology, and scope statement for the Chinese spec in this directory
+> **Scope**: Navigation, terminology, and scope statement for the spec in this directory
 
 ---
 
+## 0. v4 Rework Background (must read)
+
+The v3 implementation routed `ff_socket(SOCK_KERNEL)` to `ff_host_socket()` → a raw host `socket()`, **completely bypassing the F-Stack user-space FreeBSD stack**, and the example was purely kernel-based — effectively running a kernel stack alone inside an F-Stack process and abandoning F-Stack. **This was a fundamental mistake.**
+
+**The correct v4 paradigm**: within **one F-Stack application process**, business connections use the **F-Stack user-space stack (DPDK + FreeBSD)**, while fds carrying the `SOCK_KERNEL` marker use the **host Linux kernel stack**, and the two **coexist in a single event loop**. This is exactly what F-Stack's two existing implementations do:
+- the `FF_KERNEL_EVENT` compile mode of `adapter/syscall` (hook/LD_PRELOAD);
+- nginx's `kernel_network_stack` config switch.
+
+This feature = **solidify that coexistence capability as the primary baseline (hook mode)** + **add unified-event coexistence to the native `ff_api` mode**, rather than building a side path that bypasses F-Stack.
+
 ## 1. One-Sentence Goal
 
-**Standardize F-Stack's existing "single API + `SOCK_KERNEL`/`SOCK_FSTACK` marker-based stack selection + glue-layer auto-adaptation" capability**, and add **one global default-stack switch** in config.ini; so that any F-Stack application can, **without switching to multiple API sets**, route certain fds to the host kernel stack (local `ping`/`curl` can directly reach their services, and the application as a client can also `connect` to local/external kernel-stack services via the kernel stack), while the remaining fds go to the F-Stack fast path.
+Let an F-Stack application, **while running its business fast path on the F-Stack user-space stack**, route some sockets/listens/connects to the host kernel stack on a per-fd basis (so local `ping`/`curl`/`ssh` can directly reach its kernel-stack services, and the app as a client can `connect` via the kernel stack to local/external kernel services), with both stacks' fds sent/received in the **same epoll/event loop** — **F-Stack is always present and is never replaced by a side path**.
 
 ## 2. Scope Statement (Important)
 
-- **This feature = connection-level stack-selection enhancement**, where stack selection = **app marker (per-fd) + config.ini global default switch (per-process)**, with the glue layer adapting automatically.
-- **Directly reuse the baseline**: the `SOCK_KERNEL`/`SOCK_FSTACK` marker-based stack selection of the `adapter/syscall` hook mode (`ff_hook_socket`/`ff_hook_connect`) + `FF_KERNEL_EVENT` dual-stack events.
-- **Bidirectional coverage**: server side (kernel-stack listener directly accessible from local host) + **client side (`connect` to local/external kernel-stack services via the kernel stack, newly added)**.
-- **Dual-mode coverage**: hook mode (already supported, directly reused) + native `ff_api` mode (add `ff_socket` marker recognition).
+- **This feature = dual-stack coexistence**: F-Stack user-space stack (business, default) + host kernel stack (per-fd `SOCK_KERNEL`), in the same process and event loop.
+- **Selection method**: per-fd `SOCK_KERNEL`/`SOCK_FSTACK` markers (default F-Stack); one **coexistence-capability switch** in config.ini (whether to enable kernel-stack coexistence, without changing the default per-fd F-Stack semantics).
+- **Hook mode (primary baseline, already supported)**: directly reuse `FF_KERNEL_EVENT` — `ff_hook_socket` marker-based selection + `fstack_kernel_fd_map` dual-stack epoll merge; this round solidifies it and provides a correct coexistence demo.
+- **Native `ff_api` mode (new design)**: `ff_epoll_*` is currently a pure kqueue wrapper with no kernel-fd awareness; this round adds, inside lib, an fd-ownership table + a kernel-epoll mirror + an `ff_epoll_wait` merge of kqueue⊕epoll, so natively-linked applications can also coexist over both stacks in one process.
 - **Explicitly excluded**:
-  - Do **not** create a new `ff_local_*` dual API / mTCP-like dual namespace (the v2 approach is deprecated).
-  - Do **not** do gazelle-style thread-level stack selection (the multi-process model relies on different config files).
-  - Do **not** do config port/address lists (only one global default switch).
-  - Do **not** adopt KNI/`rte_kni`/virtio-user/TAP/AF_XDP packet reinjection (boundary clarification only).
+  - Do **not** create a side socket that bypasses F-Stack (the v3 `ff_host_socket` approach is deprecated).
+  - Do **not** add an anti-F-Stack "whole-process default-to-kernel" global switch (the v3 `default_stack=kernel` is deprecated).
+  - Do **not** create a new `ff_local_*` dual API / mTCP-like dual namespace.
+  - Do **not** do gazelle-style thread-level selection (the F-Stack multi-process model relies on different config files).
+  - Do **not** adopt KNI/`rte_kni`/virtio-user packet reinjection (boundary clarification only).
 
 ## 3. Reading Path
 
 | Order | Document | Purpose |
 |---|---|---|
-| 1 | `plan.md` | Plan, team, gate, paradigm correction |
-| 2 | `01-requirements-spec.md` | Requirements and goals/non-goals |
-| 3 | `02-current-state-analysis.md` | Code current state of single API+markers / client / config / native mode (code is authoritative) |
+| 1 | `plan.md` | Plan, team, gate, rework paradigm |
+| 2 | `01-requirements-spec.md` | Requirements and goals/non-goals (coexistence) |
+| 3 | `02-current-state-analysis.md` | Current state of hook FF_KERNEL_EVENT / nginx kernel_network_stack / native event layer (code is authoritative) |
 | 4 | `03-external-research.md` | External solution research (with URLs) |
-| 5 | `04-architecture-design.md` | Marker+config stack-selection architecture and bidirectional data flow |
-| 6 | `05-interface-design.md` | Marker/config contracts and dual-mode adaptation |
+| 5 | `04-architecture-design.md` | Coexistence architecture, dual-stack unified events, bidirectional data flow |
+| 6 | `05-interface-design.md` | Marker/config contracts, hook and native dual-mode adaptation |
 | 7 | `06-milestones.md` | Milestones and coding work list |
 | 8 | `07-test-spec.md` | Test and performance-baseline plan |
 | 9 | `08-review-gate.md` | Review gate conclusion |
@@ -51,16 +53,18 @@
 
 | Term | Meaning |
 |---|---|
-| F-Stack stack | DPDK PMD + user-space FreeBSD protocol stack (business fast path) |
-| Kernel stack | Host Linux kernel network protocol stack (local/management/client connecting to local or external kernel-stack services) |
-| Stack-selection marker | `SOCK_KERNEL`(0x02000000)/`SOCK_FSTACK`(0x01000000) on socket `type`, per-fd stack selection |
-| Global default-stack switch | A switch in config.ini that decides the default stack of this process (`[stack] default_stack`) |
-| Glue auto-adaptation | The marker/config at creation time determines fd ownership, and subsequent syscalls are automatically routed via `is_fstack_fd`/`CHECK_FD_OWNERSHIP` |
-| Hook mode | LD_PRELOAD takes over the POSIX API (`ff_hook_*`); marker-based stack selection already supported |
-| Native mode | The application directly calls `ff_*` (`ff_api.h`); currently `ff_socket` does not recognize the markers (needs enhancement) |
+| F-Stack stack | DPDK PMD + user-space FreeBSD protocol stack (business fast path, **default stack**) |
+| Kernel stack | Host Linux kernel network protocol stack (local/management/client connecting to local or external kernel services) |
+| Coexistence | F-Stack fds and kernel fds present **in the same process and the same event loop**, each using its own stack |
+| Stack-selection marker | `SOCK_KERNEL`(0x02000000)/`SOCK_FSTACK`(0x01000000) on socket `type`, per-fd |
+| Coexistence-capability switch | A config.ini switch for whether to enable kernel-stack coexistence (does not change the default per-fd F-Stack semantics) |
+| fd ownership | The marker at creation fixes whether the fd belongs to F-Stack or the kernel; subsequent syscalls/events route by ownership (`is_fstack_fd`/`CHECK_FD_OWNERSHIP`) |
+| Unified events | External epoll style, internally merging F-Stack kqueue events + kernel epoll events |
+| Hook mode | LD_PRELOAD takes over the POSIX API (`ff_hook_*`) + `FF_KERNEL_EVENT`; coexistence already supported |
+| Native mode | The app directly calls `ff_*` (`ff_api.h`) + the `ff_run` main loop; this round adds unified-event coexistence |
 
 ## 5. Sources
 
-- F-Stack actual code (`adapter/syscall/`, `lib/`, `app/nginx-1.28.0/`) — **highest priority; on conflict, code is authoritative**.
-- F-Stack three-tier architecture docs and knowledge graph (`docs/`).
+- F-Stack actual code (`adapter/syscall/`, `app/nginx-1.28.0/`, `lib/`) — **highest priority; on conflict, code is authoritative**.
+- F-Stack three-tier architecture docs and knowledge graph (`docs/`), `adapter/syscall/README.md`.
 - Public external materials (GitHub/technical blogs, etc.), all with accessible URLs in `03`.

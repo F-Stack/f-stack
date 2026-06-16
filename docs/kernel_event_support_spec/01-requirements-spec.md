@@ -1,8 +1,8 @@
-# 01 Requirements Spec: F-Stack Connection-Level Stack Selection Enhancement (Single API + Markers + config default switch)
+# 01 Requirements Spec: F-Stack User-Space Stack + Local Kernel Stack COEXISTENCE
 
 > **Document ID**: SPEC-KE-01
-> **Version**: v3 (paradigm-correction rework)
-> **Date**: 2026-06-15
+> **Version**: v4 (coexistence-paradigm rework)
+> **Date**: 2026-06-16
 > **Status**: Drafting
 > **Scope**: Define the problem domain, goals/non-goals, functional and non-functional requirements, and success criteria of this feature.
 
@@ -10,55 +10,61 @@
 
 ## 1. Problem Domain
 
-After F-Stack takes over the NIC via DPDK, the NIC traffic bypasses the Linux kernel protocol stack, resulting in:
+After F-Stack takes over the NIC via DPDK, that NIC's traffic bypasses the Linux kernel protocol stack. An F-Stack application wants, **while continuing to run its business on the F-Stack user-space stack**, to also:
 
-1. **Server direction**: Local tools (`ping`/`curl`/`ssh`) cannot access services running on the F-Stack user-space stack.
-2. **Client direction**: When an F-Stack application acts as a client, it cannot use the kernel stack to `connect` to local services (`127.0.0.1`/the host kernel-stack IP) or external kernel-stack services.
+1. **Server direction**: route some listening sockets to the host kernel stack so that local `ping`/`curl`/`ssh` can reach them (e.g., management plane / health checks / local debugging).
+2. **Client direction**: as a client, `connect` via the kernel stack to local services (`127.0.0.1`/host kernel-stack IP) or external kernel-stack services.
+3. **Unified events**: handle business (F-Stack) and kernel-stack fds in the **same event loop**, without splitting into two processes / two loops.
 
-F-Stack's `adapter/syscall` (hook/LD_PRELOAD mode) **has already implemented "single POSIX API + `SOCK_KERNEL`/`SOCK_FSTACK` markers + glue auto-adaptation"** stack selection (see `02`), but:
-- The marker semantics are **embedded** in the syscall adaptation layer and have not been standardized into "a stack-selection convention that any F-Stack application can rely on";
-- There is **no config.ini-level "global default-stack switch"** (one can only set the marker per socket in the application);
-- **Client connecting to local/external kernel-stack services** has not been systematically documented;
-- The `ff_socket` of the **native `ff_api` mode** currently **does not recognize** the stack-selection markers (`02 §5`, always creates an F-Stack socket).
+**Key**: this must be **coexistence** — the F-Stack user-space stack always carries the business fast path, and the kernel stack is merely an **additional** side channel selected per fd; it is **never** a replacement/bypass of F-Stack (the v3 mistake).
 
-This feature is: **standardize the existing "single API + marker-based stack selection" convention + add the config.ini global default switch + cover the client direction + add marker recognition in native mode**, so any F-Stack application can select the stack on demand without switching to multiple API sets.
+F-Stack already has two coexistence implementations to reuse/reference (see `02`):
+- **hook mode `FF_KERNEL_EVENT`** (`adapter/syscall`): `socket(type|SOCK_KERNEL)` uses the kernel stack, the rest use F-Stack, epoll handles both stacks and maintains an F-Stack-fd↔kernel-fd mapping — **coexistence is fully implemented**.
+- **nginx `kernel_network_stack`** (`app/nginx-1.28.0`): a per-server switch sets `belong_to_host`, and dual event backends (kqueue + Linux epoll) coexist in the same worker.
+
+But:
+- the hook mode's coexistence capability is **not documented/solidified**, and there is no correct "same-process dual-stack" demo (the v3 demo was pure-kernel and wrong);
+- the **native `ff_api` mode**'s `ff_epoll_*` is a pure kqueue wrapper (`ff_epoll.c`) with **no kernel-fd awareness**, so natively-linked applications cannot coexist;
+- config.ini lacks a **coexistence-capability switch** (and the v3 `default_stack=kernel` is an anti-F-Stack mistake that must be dropped).
+
+This feature is: **solidify hook-mode coexistence as the primary baseline + add native-mode unified-event coexistence + add a config coexistence-capability switch + provide a correct same-process dual-stack demo and tests**.
 
 ---
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals (In Scope)
-- **G1 (Marker standardization)**: Use the existing `SOCK_KERNEL`/`SOCK_FSTACK` (`ff_adapter.h:7-8`) as the **only stack-selection markers**, standardized into a convention usable by any F-Stack application; **do not create a new `ff_local_*` dual API, do not create a new `belong_to_host` parameter**.
-- **G2 (config.ini global default switch)**: Add **one global default-stack switch** in config.ini (modeled after the `[kni]` paradigm) that decides whether this process defaults to F-Stack or the kernel stack; **priority: app marker > config default**.
-- **G3 (Server-side stack selection)**: The application can route a listening socket to the kernel stack, and local `ping`/`curl`/`ssh` can directly access its service.
-- **G4 (Client-side stack selection, newly added)**: As a client, the application can `connect` via the kernel stack to local loopback / host kernel-stack IP services **and external kernel-stack services** (carrier point `ff_hook_connect:858`).
-- **G5 (Dual-mode coverage)**: The stack-selection markers and client capability cover both **hook mode** (full reuse) and **native `ff_api` mode** (add `ff_socket` marker recognition, `02 §5`).
-- **G6 (Unified events)**: A single event loop serves both kernel-stack fds and F-Stack fds (reuse the `fstack_kernel_fd_map` dual-stack merge).
-- **G7 (Low-intrusion / default zero-overhead)**: The compile switch is off by default; when no marker is set / default F-Stack, the behavior is identical to the original F-Stack.
+- **G1 (Coexistence semantics standardization)**: use `SOCK_KERNEL`/`SOCK_FSTACK` (`ff_adapter.h:7-8`) as the per-fd selection markers (default F-Stack); standardize them into a coexistence convention usable by any F-Stack application. **Do not create a side API, do not create a `belong_to_host` parameter-style interface**.
+- **G2 (Hook-mode solidification)**: use `FF_KERNEL_EVENT` as the coexistence primary baseline; re-verify and solidify `ff_hook_socket` marker selection + `fstack_kernel_fd_map` dual-stack epoll merge + close linkage, and provide a correct "same-process F-Stack business + SOCK_KERNEL kernel" coexistence demo.
+- **G3 (Native-mode unified-event coexistence, new design)**: inside lib, add an fd-ownership table + a kernel-epoll mirror + an `ff_epoll_wait` merge of kqueue⊕epoll, so native `ff_*` applications can also coexist over both stacks in one process; `ff_socket(SOCK_KERNEL)` creates a **managed kernel fd** (via `ff_host_interface` host socket, but registered for ownership and integrated into unified events), and subsequent `ff_bind/ff_listen/ff_accept/ff_connect/ff_close/ff_epoll_ctl` route by ownership.
+- **G4 (config coexistence-capability switch)**: add **one switch** in config.ini controlling whether kernel-stack coexistence is enabled (runtime equivalent of `FF_KERNEL_EVENT`'s enable semantics), **keeping the default per-fd F-Stack unchanged**; **no "whole-process default-to-kernel" option**.
+- **G5 (Server-side coexistence)**: F-Stack business listeners keep using the user-space stack; listeners with `SOCK_KERNEL` use the kernel stack, locally reachable by `ping`/`curl`.
+- **G6 (Client-side coexistence)**: business clients use F-Stack; clients with `SOCK_KERNEL` `connect` via the kernel stack to local/external kernel services.
+- **G7 (Default zero-overhead / zero regression)**: when coexistence is not enabled or no marker is set, the behavior is **byte-for-byte identical** to the original F-Stack; the F-Stack business fast path is unaffected.
 
 ### 2.2 Non-Goals (Out of Scope)
-- **N1**: Do **not** create a new `ff_local_*` dual API / mTCP-like dual namespace (the v2 approach is deprecated).
-- **N2**: Do **not** do gazelle-style **thread-level stack selection** (the F-Stack multi-process model distinguishes by different config files, see `02 §4`).
-- **N3**: Do **not** do config.ini port/address rule lists (only "one global default switch").
-- **N4**: Do **not** adopt KNI/`rte_kni`/virtio-user/TAP/AF_XDP packet reinjection.
-- **N5**: This phase does **not** write implementation code, does **not** modify f-stack source; only produce the Chinese spec; **do not generate English documents**.
-- **N6**: Do not implement automatic socket migration / transparent proxying between the kernel stack and F-Stack (ownership is determined at creation time).
+- **N1**: Do **not** create a side socket that bypasses F-Stack (v3 `ff_host_socket` deprecated); a kernel fd must be "managed + integrated into unified events".
+- **N2**: Do **not** add a "whole-process default-to-kernel" switch (v3 `default_stack=kernel` deprecated, anti-F-Stack).
+- **N3**: Do **not** create a new `ff_local_*` dual API / mTCP-like dual namespace.
+- **N4**: Do **not** do gazelle-style thread-level selection (multi-process relies on different config files).
+- **N5**: Do **not** adopt KNI/`rte_kni`/virtio-user packet reinjection.
+- **N6**: Do not implement automatic socket migration / transparent proxying between the kernel stack and F-Stack (ownership is fixed at creation).
 
 ---
 
 ## 3. Functional Requirements (FR)
 
-| ID | Requirement | Acceptance points | Code basis |
+| ID | Requirement | Acceptance points | Code basis/reference |
 |---|---|---|---|
-| FR-1 | **Marker stack selection (server)**: a listening socket with `SOCK_KERNEL` goes to the kernel stack, and local `curl`/`ssh` can access it | Local access to the kernel-stack listener succeeds | `ff_hook_socket:387-390` |
-| FR-2 | Local `ping` (ICMP) can reach the kernel-stack-side address | ping succeeds | Kernel stack natively handles ICMP |
-| FR-3 | **Marker stack selection (client, newly added)**: an F-Stack application `connect`s to local loopback / host IP services via the kernel stack | Local server + F-Stack client connect succeeds | `ff_hook_connect:858` + `is_fstack_fd:309` |
-| FR-4 | **Client connects to external kernel-stack services (newly added)**: an F-Stack application as a client selects the stack to access external kernel-stack services | Connect to external kernel service succeeds | `ff_hook_connect:858` → `ff_linux_connect:144` |
-| FR-5 | **config.ini global default switch**: the default stack of this process (F-Stack/kernel) is configurable, and the app marker can override it | Default stack takes effect; marker override takes effect | `ff_config.c:1011`/`ff_config.h:310-319` paradigm |
-| FR-6 | **Dual-mode coverage**: hook mode directly reuses markers; native `ff_api` mode adds `ff_socket` marker recognition | Both modes can do marker-based stack selection | `02 §2` (hook) / `02 §5` (native difference) |
-| FR-7 | Unified event loop: a single loop receives both F-Stack and kernel-stack events | Both stacks' events are delivered correctly | `ff_hook_syscall.c:2324+` |
-| FR-8 | fd ownership determination + resource linkage: split by ownership; on close/exception both stacks' fds are released consistently | Correct behavior, no fd leak | `is_fstack_fd:309`, close linkage `:1874-1883` |
-| FR-9 | Compile switch: this capability can be enabled/disabled at compile time, zero-overhead when off by default | When off, behavior is identical to the original F-Stack | `Makefile -DFF_KERNEL_EVENT` paradigm |
+| FR-1 | **F-Stack business unaffected**: default/`SOCK_FSTACK` sockets still use the F-Stack user-space stack | Business listen/connect sends/receives normally via the DPDK NIC | `ff_hook_socket:406`/`ff_socket` default path |
+| FR-2 | **Server-side kernel coexistence**: a listener with `SOCK_KERNEL` uses the kernel stack, locally reachable by `curl`/`ssh` | Within one process, F-Stack business listen + kernel listen coexist; local access to the kernel listen succeeds | `ff_hook_socket:387-390` |
+| FR-3 | Local `ping` (ICMP) can reach the kernel-stack-side address | ping succeeds | Kernel stack natively handles ICMP |
+| FR-4 | **Client-side kernel coexistence**: the F-Stack app `connect`s via the kernel stack to local loopback / host IP services | local server + this app's client connect succeeds (while its business connections still use F-Stack) | `ff_hook_connect:858` + `is_fstack_fd:309` |
+| FR-5 | **Client connects to external kernel services**: `connect` via the kernel stack to an external kernel-stack service | connect succeeds | `ff_hook_connect:858`→`ff_linux_connect:144` |
+| FR-6 | **Unified event loop**: a single epoll receives both F-Stack and kernel-stack events | Both stacks' events are delivered, not lost | hook: `fstack_kernel_fd_map:257-258`+merge `:2324+`; native: new design this round |
+| FR-7 | **Dual-mode coverage**: hook mode (FF_KERNEL_EVENT solidified) + native `ff_api` mode (unified-event coexistence added) | Both modes can do same-process dual-stack coexistence | `02 §2` (hook) / `02 §4` (native new design) |
+| FR-8 | **fd ownership + resource linkage**: split by ownership; on close/exception both stacks' fds are released consistently, no leak | Correct behavior, no fd leak | hook `is_fstack_fd:309`+close linkage `:1874-1883`; native added this round |
+| FR-9 | **config coexistence-capability switch**: kernel-stack coexistence can be enabled/disabled, default per-fd F-Stack unchanged | Switch takes effect; when off, equivalent to pure F-Stack | mimic `[kni]`: `ff_config.c:1011`/`ff_config.h:310-319` |
 
 ---
 
@@ -66,33 +72,31 @@ This feature is: **standardize the existing "single API + marker-based stack sel
 
 | ID | Requirement |
 |---|---|
-| NFR-1 | **Default zero-overhead**: when not enabled / default F-Stack, no extra branches/memory overhead is introduced |
-| NFR-2 | **No regression on the business fast path**: F-Stack fast-path performance is unaffected (baseline in `07`) |
-| NFR-3 | **Portable**: compatible with this workspace's DPDK 23.11.5 / 24.11.6 and the ported FreeBSD stack |
-| NFR-4 | **Observable**: provide basic statistics such as the number of fds and events per stack |
-| NFR-5 | **Stable/low-intrusion interface**: reuse the existing single API + markers, no multiple API sets introduced; semantics align with POSIX/`ff_api.h` |
-| NFR-6 | **Multi-process consistency**: each process sets the default stack independently via its own config.ini, without affecting others (`ff_config.filename:254`) |
+| NFR-1 | **Default zero-overhead / zero regression**: when coexistence is not enabled or on the default/`SOCK_FSTACK` path, behavior is byte-for-byte identical to the original F-Stack |
+| NFR-2 | **No regression on the business fast path**: the F-Stack user-space stack's fast-path performance is unaffected by coexistence (baseline in `07`) |
+| NFR-3 | **F-Stack always present**: the kernel stack is only an additional side path; under no circumstances may it replace/bypass the F-Stack business plane |
+| NFR-4 | **Portable**: compatible with DPDK 23.11.5 / 24.11.6 and the ported FreeBSD stack |
+| NFR-5 | **Observable**: provide basic statistics such as per-stack fd and event counts |
+| NFR-6 | **Multi-process consistency**: each process sets the coexistence switch independently via its own config.ini, without affecting others (`ff_config.filename:254`) |
 
 ---
 
 ## 5. Boundary and Exception Scenarios
 
-- The priority when both `SOCK_KERNEL` and `SOCK_FSTACK` are set (it is measured that `ff_hook_socket:387` requires `SOCK_KERNEL && !SOCK_FSTACK` to go to the kernel; this must be explicit in the interface contract).
-- When the app marker conflicts with the config default: **the app marker takes priority**.
+- The priority when both `SOCK_KERNEL` and `SOCK_FSTACK` are set (it is measured that `ff_hook_socket:387` requires `SOCK_KERNEL && !SOCK_FSTACK` to go to the kernel, otherwise F-Stack); the interface contract must state "`SOCK_FSTACK` takes priority".
+- The behavior convention for a request carrying `SOCK_KERNEL` when the coexistence switch is off (degrade to F-Stack or raise an explicit error; must be made clear).
 - When the kernel-stack-side address/port conflicts with the F-Stack side, raise an error instead of silently failing.
-- Handling when `maxevents` is too small (the mechanism requires `>=2`, `:2212-2218`).
-- The behavior convention when, on client `connect`, the fd ownership does not match the destination address's stack (e.g., a kernel fd connecting to an address only reachable via F-Stack).
-- The compatibility before and after the native-mode `ff_socket` marker recognition enhancement (`02 §5`).
-- When this capability is disabled (compile time), all paths degrade to pure F-Stack behavior.
-- Detection and prompting when system prerequisites are missing (referring to gazelle's `rp_filter`, etc.).
+- Hook-mode `maxevents` too small (the mechanism requires `>=2`, `:2212-2218`).
+- The behavior convention when, on client `connect`, the fd ownership does not match the destination address's stack.
+- Compatibility before and after the native-mode unified-event coexistence enhancement (`02 §4`).
+- The prerequisite that F-Stack `kern.maxfiles` ≤ 65536 (hook-mode fd mapping constraint, README note 1).
 
 ---
 
 ## 6. Success Criteria
 
-1. After DPDK takes over the NIC, with a kernel-stack listener carrying `SOCK_KERNEL`: local `ping <kernel-stack IP>` succeeds and `curl <kernel-stack service>` succeeds (FR-1/FR-2).
-2. As a client, an F-Stack application can `connect` via the kernel stack to local services (127.0.0.1/host IP) and external kernel-stack services, both successfully (FR-3/FR-4).
-3. The config.ini global default-stack switch takes effect, and the app marker can override it (FR-5); multiple processes use different config files to get different default stacks (NFR-6).
-4. Both the hook and native modes can do marker-based stack selection (FR-6); a single event loop serves both stacks correctly (FR-7/FR-8).
-5. When this capability is disabled / default F-Stack, business performance and functionality have **zero regression** (NFR-1/NFR-2).
-6. The full spec passes the `08-review-gate.md` gate.
+1. Within **one F-Stack application process**: F-Stack business listen/connect works normally via the DPDK NIC (FR-1), **while** a kernel listener with `SOCK_KERNEL` is reached by local `curl`/`ping` successfully (FR-2/FR-3) — proving F-Stack is not bypassed and the two stacks truly coexist.
+2. As a client, the app `connect`s via the kernel stack to local/external kernel services successfully (FR-4/FR-5), while its business clients still use F-Stack.
+3. A single epoll correctly sends/receives both stacks' events (FR-6/FR-8); both hook and native modes coexist (FR-7).
+4. The config coexistence switch takes effect; when off/default, business functionality and performance have **zero regression** (FR-9/NFR-1/NFR-2/NFR-3).
+5. The full spec passes the `08-review-gate.md` gate.

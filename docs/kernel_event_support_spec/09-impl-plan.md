@@ -1,18 +1,19 @@
-# 09 Implementation Plan: Local socket/fd/event Support (M1-M6)
+# 09 Implementation Plan: F-Stack + Kernel Stack Coexistence (R0-R5)
 
 > **Document ID**: SPEC-KE-09 (implementation-phase plan)
-> **Date**: 2026-06-15
+> **Version**: v4 (coexistence-paradigm rework)
+> **Date**: 2026-06-16
 > **Status**: In progress
-> **Basis**: the v3 spec in this directory (00-08); line numbers are subject to the actual code, gatekeeper re-verified.
+> **Basis**: the v4 spec in this directory (00-08); line numbers are subject to the actual code, gatekeeper re-verified.
 
 ---
 
-## 0. Scope and Gate (user-confirmed)
+## 0. Scope and Gate
 
-- **Do all of M1-M6**: marker standardization / server-side kernel-stack listen / client connect selection / config.ini global default switch / native `ff_socket` marker recognition / dual-stack events + observability / tests and performance baseline.
-- **Hard gate (unconditionally all green)**: compilation passes + cmocka unit tests all green + coverage G8 met.
-- **Target gate**: best-effort to actually set up the DPDK runtime and run integration (curl/ping/client connect) and the performance baseline; when a real NIC/hugepages are truly unavailable, skip with **measured failure evidence (command + output)**.
-- **NFR-1 zero regression**: the default/`SOCK_FSTACK` path is byte-for-byte identical to before the change.
+- **Do all of R0-R5**: revert wrong code → spec rewrite → hook coexistence solidification + demo → native unified-event coexistence → tests/performance → gate + commit.
+- **Hard gate (unconditionally all green)**: compilation passes + cmocka unit tests all green + coverage met + **F-Stack business fast-path zero regression (NFR-1/NFR-2)**.
+- **Coexistence iron rule (NFR-3)**: at every phase the F-Stack user-space stack always carries the business and is never bypassed by the kernel stack; violating it bounces.
+- **Target gate**: best-effort to actually set up the DPDK runtime and run the same-process dual-stack integration; when a real NIC is unavailable, the business plane is skipped with measured evidence and the kernel side is still measured on loopback.
 
 ---
 
@@ -20,14 +21,16 @@
 
 | Agent | Role | Responsibility |
 |---|---|---|
-| **Leader** | orchestration+authoring+arbitration | global orchestration, coding, gate arbitration, commit, bounce counting |
-| **build** | compilation (read-only evidence + actual build) | compile lib / libff_syscall.so / tests, report errors |
-| **unit-test** | unit-test authoring | cmocka cases (`test_ff_config` extension + native `ff_socket` marker cases) |
-| **review** | code review (read-only) | minimal diff/zero regression/style/convention verification |
-| **test** | integration/performance | example + end-to-end + performance baseline actual run or skip+evidence |
-| **gatekeeper** | gate (read-only) | per-assertion + gate-item verification, FAIL bounce |
+| **Leader** | orchestration+authoring+arbitration | orchestration, coding, gate arbitration, commit, bounce counting |
+| **arch-probe** | architecture probe (read-only) | measure hook FF_KERNEL_EVENT / nginx / native event layer |
+| **spec-writer** | spec rewrite | v4 Chinese & English docs |
+| **build** | compilation (actual build) | lib / libff_syscall.so / tests |
+| **unit-test** | unit tests | cmocka coexistence cases |
+| **review** | review (read-only) | minimal diff/zero regression/coexistence iron rule/conventions |
+| **test** | integration/performance | same-process dual-stack end-to-end + no regression on the F-Stack fast path |
+| **gatekeeper** | gate (read-only) | per-assertion + gate-item verification |
 
-**Gate rollback**: any phase failing bounces back to the previous step; **≤3 bounces for the same step**, escalate to **manual when exceeded**; bounces are recorded in `08`.
+**Gate rollback**: any phase failing bounces back to the previous step; ≤3 bounces for the same step, escalate to manual when exceeded; bounces recorded in `08`.
 
 ---
 
@@ -35,35 +38,33 @@
 
 | Milestone | File | Change |
 |---|---|---|
-| M3 | `lib/ff_config.h:253` | `struct ff_config` adds `struct { int default_to_kernel; } stack;` (mimicking the kni section :310-319) |
-| M3 | `lib/ff_config.c:956` `ini_parse_handler` | add `MATCH("stack","default_stack")` parsing `fstack`/`kernel`; `ff_default_config:1346` memset 0→default fstack holds automatically; add validation if necessary |
-| M3 | `config.ini` (project root) | add a `[stack] default_stack=fstack` example section |
-| M1 | external header (`lib/ff_api.h:63+` or new `ff_stack_select.h`) | expose the `SOCK_KERNEL`/`SOCK_FSTACK` selection convention + semantics/priority comments |
-| M4 | `lib/ff_syscall_wrapper.c:912` `ff_socket` | add a `SOCK_KERNEL && !SOCK_FSTACK` recognition branch at the entry (equivalent kernel-socket path); default/`SOCK_FSTACK` goes the original `linux2freebsd_socket_flags:668`→`sys_socket` byte-for-byte zero-overhead |
-| M5/M1/M2 | `adapter/syscall/ff_hook_syscall.c` | re-verify and solidify selection (`:387-390`)/connect (`:858`)/dual-stack events (`:2324+`); the glue layer injects the default per `ff_global_cfg.stack.default_to_kernel`; observability `ff_stack_get_stats` |
-| M6 | `tests/unit/test_ff_config.c` + `Makefile` | `[stack]` parse/default/priority cmocka cases; add native `ff_socket` marker cases into the P group |
-| M6 | `example/`, `tests/integration/` | dual-stack example + end-to-end (curl/ping/client-connect/config default/multi-process) |
-| docs | `07-test-spec.md` | Unity→cmocka correction |
+| R0 | `lib/ff_syscall_wrapper.c`, `lib/ff_host_interface.{c,h}` | revert the ff_host_socket side path (**done 0748eff94**) |
+| R2 | `adapter/syscall/` (Makefile FF_KERNEL_EVENT), new demo | build libff_syscall.so; a correct same-process dual-stack demo (modeled after `main_stack_epoll_kernel.c`), replacing the v3 pure-kernel helloworld_stacksel |
+| R3 | `lib/ff_config.{c,h}` | change the v3 `stack.default_to_kernel`/`default_stack` to `stack.kernel_coexist` (`MATCH("stack","kernel_coexist")`, default 0) + accessor |
+| R3 | `lib/ff_host_interface.{c,h}` | add the managed kernel-side bridge (host socket/bind/listen/accept/connect/close/epoll_*) for lib to create managed kernel fds |
+| R3 | `lib/ff_syscall_wrapper.c` `ff_socket` and ff_bind/listen/accept/connect/close | when coexistence enabled, SOCK_KERNEL→managed kernel fd+register ownership; route by ownership; default/`SOCK_FSTACK` zero regression |
+| R3 | `lib/ff_epoll.c` | `ff_epoll_create` also creates a kernel epoll; `ff_epoll_ctl` splits; `ff_epoll_wait` merges kqueue⊕epoll; close linkage |
+| R3 | `config.ini` | `[stack] kernel_coexist=0` example section (replacing the v3 default_stack) |
+| R4 | `tests/unit/`, `tests/integration/` | cmocka coexistence cases + same-process dual-stack integration |
+| docs | `docs/kernel_event_support_spec/` (Chinese & English 00-10) | v4 coexistence paradigm |
 
 ---
 
 ## 3. Key Design Decisions
-
-- **Reuse first**: hook-mode selection is already implemented; this round mainly does "re-verify and solidify + standardize + complete".
-- **Marker priority**: `stack = app_marker ?? config_default ?? F-Stack`, consistent with `ff_hook_socket:387` (`SOCK_KERNEL && !SOCK_FSTACK`).
-- **M4 boundary (faithfully recorded)**: this round implements the `SOCK_KERNEL` recognition branch at the `ff_socket` entry; in native mode, the full-chain ownership routing of subsequent `ff_bind/ff_listen/...` for the kernel fd is a larger change, explicitly marked per the spec as a boundary/follow-up item to avoid misleading.
-- **Reachability layering**: M3/M4 go through cmocka unit tests (host compilation, no DPDK runtime needed); M1/M2/M5 end-to-end go through integration (DPDK runtime, prefer `vdev`+`--no-huge` to avoid a physical NIC/hugepages).
+- **Reuse first**: hook coexistence is implemented; R2 mainly re-verifies/solidifies + a correct demo.
+- **Native coexistence core**: managed kernel fd (**not a raw bypass**; lib registers ownership and integrates it into unified events) + `ff_epoll_wait` merge; the default path is byte-for-byte zero regression.
+- **fd-space distinction**: mimic the nginx `ngx_max_sockets` offset or the hook encoded offset; fixed in the implementation phase.
+- **Reachability layering**: config/fd-ownership/event-merge go through cmocka unit tests (host compilation, no DPDK runtime); same-process dual-stack end-to-end goes through integration (DPDK runtime, prefer vdev+--no-huge to avoid a physical NIC).
 
 ---
 
-## 4. Execution Steps (corresponding to the plan to-dos)
-1. prep-plan-team (this document + team creation).
-2. impl-config-marker: M3+M1 (config/marker/header) + compile.
-3. impl-native-hook: M4 + M5/M1/M2 hook solidification + compile lib and libff_syscall.so.
-4. unit-tests: cmocka unit tests all green + G8.
-5. integration-perf: example + integration/performance actual run or skip+evidence.
-6. gate-review: gate verification, FAIL bounce (≤3 escalate to manual), update 07/08.
-7. commit-cleanup: short English commit + cleanup.
+## 4. Execution Steps
+1. R0 revert (done).
+2. R1 spec rewrite (Chinese & English done).
+3. R2 hook coexistence solidification + demo + build.
+4. R3 native unified-event coexistence + config change + build.
+5. R4 unit/integration/performance.
+6. R5 gate + English spec + commit.
 
 ## 5. Workspace Script Conventions
 Delete files via `/data/workspace/rm_tmp_file.sh`; stop processes via `/data/workspace/kill_process.sh`; change permissions via `/data/workspace/chmod_modify.sh`; `make install`-type (non-direct chmod) commands may be executed.

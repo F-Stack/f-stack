@@ -1,8 +1,23 @@
-# 10 Performance-Baseline Report: Kernel-Access Path (ff_socket(SOCK_KERNEL)) wrk Self-Stress Baseline
+# 10 Performance-Baseline Report (v3, SUPERSEDED)
 
-> **Document ID**: SPEC-KE-10
+> **⚠️ SUPERSEDED (v4, 2026-06-16)**: this report is based on the v3 **wrong
+> implementation** — `ff_socket(SOCK_KERNEL)` → `ff_host_socket` → a raw host
+> socket that **never ran the F-Stack user-space stack** (both A/B variants were
+> pure kernel stack). That methodology did not measure "F-Stack + kernel-stack
+> coexistence" at all; the conclusions are invalid and the whole report is
+> superseded.
+> The v4 performance baseline instead **proves that kernel-stack coexistence
+> does not slow the F-Stack business fast path** (PERF-1/PERF-2, see
+> `07-test-spec.md`), to be re-produced in R4 by comparing the F-Stack business
+> under coexistence on/off; this document is kept for historical record only.
+
+---
+
+# 10 Performance-Baseline Report: Kernel-Access Path (ff_socket(SOCK_KERNEL)) wrk Self-Stress Baseline (v3 historical record)
+
+> **Document ID**: SPEC-KE-10 (v3 historical record)
 > **Date**: 2026-06-16
-> **Status**: COMPLETE
+> **Status**: SUPERSEDED (see the notice above)
 > **Scope**: On the **local host loopback**, use wrk to establish a performance baseline for the "local socket/fd/event access" feature (the `ff_socket(SOCK_KERNEL)` kernel-stack path), and use a same-source native `libc socket()` version for an A/B comparison to derive the overhead Δ%, with the existing CVM data in `freebsd_13_to_15_upgrade_spec/` as a background reference.
 > **Evidence iron rule**: all numbers come from actual wrk runs (raw output `/tmp/keperf/{A,B}_T{1,2,3}_trial{1,2,3}.txt`); fabrication is forbidden.
 

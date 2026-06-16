@@ -1,12 +1,11 @@
 # 07 Test and Performance-Baseline Spec
 
 > **Document ID**: SPEC-KE-07
-> **Version**: v3 (paradigm-correction rework)
-> **Date**: 2026-06-15
+> **Version**: v4 (coexistence-paradigm rework)
+> **Date**: 2026-06-16
 > **Status**: Drafting
-> **Scope**: The unit/integration/performance-baseline test plan and gate standard for this feature (single API+marker-based selection / config default switch / client-side selection / dual mode).
-> **Alignment**: F-Stack's existing test system `tests/unit` (**cmocka**, *.c + *.ini), `tests/integration`, coverage `tests/run_full_coverage.sh` (lcov, `tests/full_coverage_report/`).
-> **Note**: an early draft of the spec wrote Unity, but the actual repo `tests/unit` uses **cmocka** (mapped via the `c-unittest-expert` methodology); the actual repo is authoritative, and this document is unified to cmocka.
+> **Scope**: The unit/integration/performance-baseline test plan and gate standard for this feature (dual-stack coexistence: hook FF_KERNEL_EVENT + native unified events + config coexistence switch + client coexistence).
+> **Alignment**: `tests/unit` (**cmocka**, *.c + *.ini), `tests/integration`, coverage `tests/run_full_coverage.sh` (lcov).
 
 ---
 
@@ -14,9 +13,9 @@
 
 | Level | Directory | Framework/method | Coverage target |
 |---|---|---|---|
-| Unit test | `tests/unit/` (new selection cases) | cmocka (aligned with existing `*.c`+`*.ini`) | marker selection / ownership determination / config parsing / event merging |
-| Integration test | `tests/integration/` | end-to-end process + local tools | server-side local direct access, client connecting to local/external, dual-stack coexistence |
-| Performance baseline | `tests/` (performance scripts) | stress test + comparison | regression comparison of default / enabled-selection |
+| Unit test | `tests/unit/` | cmocka | config coexistence-switch parsing, fd ownership, native managed kernel fd, event-merge boundaries, zero regression |
+| Integration test | `tests/integration/` or demo | end-to-end process + local tools | **same-process dual-stack coexistence**: F-Stack business + kernel listen reached locally + client connecting to local/external |
+| Performance baseline | `tests/` | stress test + comparison | coexistence on/off has no regression on the **F-Stack business fast path** |
 
 ---
 
@@ -24,35 +23,35 @@
 
 | ID | Case | Assertion | Mapped requirement |
 |---|---|---|---|
-| UT-1 | `socket(SOCK_STREAM\|SOCK_KERNEL)` (hook) | Returns a kernel fd, `is_fstack_fd==false` | FR-1/FR-6 |
-| UT-2 | `socket(SOCK_STREAM)` default | Goes to F-Stack, `is_fstack_fd==true` | FR-6 |
-| UT-3 | `type` has both `SOCK_KERNEL\|SOCK_FSTACK` set | Goes to F-Stack per priority (`ff_hook_socket:387` condition not satisfied) | boundary/`05 §8` |
-| UT-4 | config `default_stack=kernel` + no marker | Defaults to the kernel stack | FR-5 |
-| UT-5 | config `default_stack=kernel` + with `SOCK_FSTACK` | App marker overrides, goes to F-Stack | FR-5/priority |
-| UT-6 | `ini_parse_handler` parses `[stack] default_stack` | Correctly fills `ff_config.stack.default_to_kernel` | FR-5 |
-| UT-7 | native `ff_socket(SOCK_KERNEL)` (after enhancement) | Goes to the kernel stack (before enhancement, records always-F-Stack, `02 §5`/D4) | FR-6 |
-| UT-8 | client `connect` fd-ownership routing | kernel fd → `ff_linux_connect`; F-Stack fd → F-Stack | FR-3/FR-4 |
-| UT-9 | `epoll_wait(maxevents=1)` | Returns `-EINVAL` (per `:2212-2218`) | boundary |
-| UT-10 | epoll registering both a kernel fd and an F-Stack fd | Both event types are returned without loss | FR-7 |
-| UT-11 | `close` a kernel-side fd | Both stacks' resources are linked-released, no leak (per `:1874-1883`) | FR-8 |
-| UT-12 | compile switch off / default F-Stack | Behavior equivalent to pure F-Stack, zero-overhead | NFR-1/FR-9 |
+| UT-1 | `ini_parse_handler` parses `[stack] kernel_coexist=1/0` | Correctly fills `ff_config.stack.kernel_coexist` | FR-9 |
+| UT-2 | `[stack]` absent | Coexistence disabled (0) by default (pure F-Stack) | FR-9/NFR-1 |
+| UT-3 | native `ff_socket` default/`SOCK_FSTACK` | Goes to F-Stack (byte-for-byte zero regression, path unchanged) | FR-1/NFR-1 |
+| UT-4 | native `ff_socket(SOCK_KERNEL)` (coexistence enabled) | Creates a managed kernel fd and registers ownership (`is_kernel_fd==true`) | FR-7 |
+| UT-5 | native `ff_socket(SOCK_KERNEL)` (coexistence disabled) | Errors or degrades per convention (no silent bypass of F-Stack) | boundary/`05 §8` |
+| UT-6 | fd ownership determination | Managed kernel fds and F-Stack fds correctly distinguished | FR-8 |
+| UT-7 | native `ff_epoll_ctl` split | kernel fd→host epoll; F-Stack fd→kqueue | FR-6 |
+| UT-8 | native `ff_epoll_wait` merge | Both stacks' events returned, not lost | FR-6 |
+| UT-9 | `type` both `SOCK_KERNEL\|SOCK_FSTACK` | Goes to F-Stack per priority | boundary |
+| UT-10 | `ff_close` a managed kernel fd | Linked release, ownership entry cleared, no leak | FR-8 |
+| UT-11 | hook-mode `maxevents=1` | Return `-EINVAL` (`:2212-2218`) | boundary |
+| UT-12 | coexistence off / default | Behavior equivalent to pure F-Stack | NFR-1/NFR-3 |
 
-> Cases land by following the existing `*.c`+`*.ini` (cmocka) organization in `tests/unit/`; the `[skill:c-unittest-expert]` (cmocka) spec may be referenced as needed.
+> Cases land by following the existing `*.c`+`*.ini` (cmocka) organization in `tests/unit/`.
 
 ---
 
-## 3. Integration-Test Cases
+## 3. Integration-Test Cases (same-process dual-stack coexistence is the core)
 
 | ID | Scenario | Steps | Pass criteria | Mapped requirement |
 |---|---|---|---|---|
-| IT-1 | Server-side local curl direct access | Start the example (`SOCK_KERNEL` kernel-stack listen) → local `curl 127.0.0.1:port` / `curl <host_ip>` | HTTP 200 | FR-1 |
-| IT-2 | Local ping | `ping <host_ip>` | Has replies | FR-2 |
-| IT-3 | **Client connects to a local service** | Start a server locally (kernel stack) → F-Stack app (`SOCK_KERNEL`) `connect 127.0.0.1`/host IP | Connection established, send/recv normal | FR-3 |
-| IT-4 | **Client connects to an external kernel service** | F-Stack app (`SOCK_KERNEL`) `connect <external kernel-stack service>` | Connection established, send/recv normal | FR-4 |
-| IT-5 | config default stack | Change config `default_stack=kernel` and restart → sockets without a marker go to the kernel | Default stack takes effect; marker can override | FR-5 |
-| IT-6 | Multi-process differentiation | Two processes use different configs (fstack/kernel default) | Each default stack takes effect independently | NFR-6 |
-| IT-7 | Dual-stack coexistence | Within the same process, F-Stack business listen + kernel-stack management listen | Business via DPDK NIC, management via kernel, without interference | FR-6/FR-7 |
-| IT-8 | Long-run/leak | A large number of short connections repeatedly opened/closed (including the client) | fd count stable, no leak | FR-8 |
+| IT-1 | **Same-process dual-stack** | Start the demo: within one process, an F-Stack business listen (default) + a `SOCK_KERNEL` kernel listen | Both listeners established; F-Stack business via the NIC, kernel listen via the kernel | FR-1/FR-2/FR-6 |
+| IT-2 | Server-side local direct access to the kernel listen | local `curl 127.0.0.1:<kport>` / `curl <host_ip:kport>` | HTTP 200 (while the business listen is also present) | FR-2 |
+| IT-3 | Local ping | `ping <host_ip>` | Has replies | FR-3 |
+| IT-4 | Client connects to a local service | the demo's `SOCK_KERNEL` client `connect 127.0.0.1`/host IP | Connection established, send/recv normal; the business client still uses F-Stack | FR-4 |
+| IT-5 | Client connects to an external kernel service | `SOCK_KERNEL` client `connect <external kernel service>` | Connection established, send/recv normal | FR-5 |
+| IT-6 | config coexistence switch | `kernel_coexist=0` and restart → `SOCK_KERNEL` does not bypass per convention | When off, pure F-Stack | FR-9/NFR-1 |
+| IT-7 | Multi-process differentiation | Two processes with different configs (coexistence on/off) | Each takes effect independently | NFR-6 |
+| IT-8 | Long-run/leak | A large number of short connections repeatedly opened/closed (both stacks) | fd count stable, no leak | FR-8 |
 
 > Process cleanup uses `/data/workspace/kill_process.sh`, temporary files use `/data/workspace/rm_tmp_file.sh`, permission changes use `/data/workspace/chmod_modify.sh`.
 
@@ -62,27 +61,28 @@
 
 | ID | Metric | Method | Gate |
 |---|---|---|---|
-| PERF-1 | F-Stack business-path regression | selection off/default F-Stack vs baseline | throughput/latency deviation ≤ noise threshold (NFR-2) |
-| PERF-2 | enabled-selection business-path regression | idle kernel-side listen, stress-test the F-Stack business | no significant regression on the business fast path |
-| PERF-3 | native `ff_socket` enhancement overhead | the impact of the marker recognition branch on the default path | zero/negligible overhead on the default path (NFR-1) |
-| PERF-4 | event-merging latency | the latency impact of throttled kernel-event fetching (`:2324+`) | latency within an acceptable range |
-| PERF-5 | kernel-side management-plane/client throughput | local curl concurrency / client connect stress test | meets management-plane expectations (not the fast path) |
+| PERF-1 | **F-Stack business fast-path regression** | coexistence off vs coexistence on but stressing only the F-Stack business | throughput/latency deviation ≤ noise threshold (NFR-2) |
+| PERF-2 | default-path zero overhead | the impact of the coexistence branch on the default/`SOCK_FSTACK` path | zero/negligible (NFR-1) |
+| PERF-3 | kernel-side side-path throughput | local curl concurrency on the kernel listen / client connect | meets management-plane expectations (not the fast path) |
+| PERF-4 | event-merge latency | the latency impact of throttled kernel-event fetching | acceptable range |
+
+> **Note**: the v3 "pure-kernel loopback bench" methodology is deprecated (it never ran F-Stack at all). The v4 performance core is **proving coexistence does not slow the F-Stack business fast path**.
 
 ---
 
 ## 5. Coverage and Gate Standard
 
-- Reuse `tests/run_full_coverage.sh` (lcov) to measure the coverage of this feature's changes (the new section in `ff_config.{c,h}`, the `ff_socket` marker branch, the `ff_hook_*` selection path).
+- Reuse `tests/unit/run_coverage.sh`/`tests/run_full_coverage.sh` (lcov) to measure the coverage of this feature's changes.
 - **Gate standard**:
-  1. All UTs pass; the line coverage of new code reaches the existing project standard.
-  2. IT-1~IT-8 all pass (server-side local direct access + client connecting to local/external + config default + multi-process measured successfully).
-  3. PERF-1/PERF-2/PERF-3 show no regression on the business fast path and the default path.
-  4. When off/default F-Stack, behavior/performance is consistent with pure F-Stack (NFR-1/2).
-- Any item failing → bounce back to the previous milestone for repair per the plan's bounce convention (≤3 times for the same step, escalate to manual when exceeded).
+  1. All UTs pass; the line coverage of new code reaches the existing standard.
+  2. IT-1 (same-process dual-stack) + IT-2~IT-5 (direct access/ping/client) measured successfully (when a real NIC is unavailable, the F-Stack business plane is skipped with measured evidence; the kernel side must be measured on loopback).
+  3. PERF-1/PERF-2 show no regression on the F-Stack business fast path and the default path.
+  4. When coexistence is off/default, behavior/performance is consistent with pure F-Stack (NFR-1/NFR-3).
+- Any item failing → bounce back to the previous milestone (≤3 times for the same step, escalate to manual when exceeded).
 
 ---
 
 ## 6. Cross-Validation Requirements
-- All tests must **actually be executed for evidence** (logs/packet captures/coverage reports); speculation is forbidden.
-- The code line numbers referenced in test assertions must match the actual code; on conflict, code is authoritative.
+- All tests must actually be executed for evidence (logs/captures/coverage); speculation is forbidden.
+- It must be measured that the **F-Stack business plane stays present and is not bypassed under coexistence** (NFR-3).
 - Client cases must measure that `connect` reaches via the kernel stack (confirm by packet capture that it goes through the kernel rather than the DPDK NIC).
