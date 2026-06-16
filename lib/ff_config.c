@@ -1025,10 +1025,6 @@ ini_parse_handler(void* user, const char* section, const char* name,
     } else if (MATCH("kni", "udp_port")) {
         pconfig->kni.udp_port= strdup(value);
     } else if (MATCH("stack", "kernel_coexist")) {
-        /* Kernel-stack coexistence switch: "1"/"on"/"true"/"yes" enable it,
-         * anything else (incl. "0"/"off") keeps it disabled. When enabled, a
-         * socket created with SOCK_KERNEL additionally uses the host kernel
-         * stack alongside F-Stack; default per-fd semantics stay F-Stack. */
         pconfig->stack.kernel_coexist =
             (strcasecmp(value, "1") == 0 || strcasecmp(value, "on") == 0 ||
              strcasecmp(value, "true") == 0 || strcasecmp(value, "yes") == 0)
@@ -1364,8 +1360,6 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
 
-    /* kernel-stack coexistence disabled by default (pure F-Stack).
-     * memset already zeroes it; set explicitly for clarity. */
     cfg->stack.kernel_coexist = 0;
 
     /* KNI ratelimit default disabled */

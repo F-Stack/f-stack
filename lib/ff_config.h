@@ -319,14 +319,6 @@ struct ff_config {
     } kni;
 
     struct {
-        /* Kernel-stack coexistence capability switch (per process):
-         *   0 = disabled (default): pure F-Stack, every socket uses the
-         *       F-Stack user-space stack.
-         *   1 = enabled: a socket created with an explicit SOCK_KERNEL marker
-         *       (and without SOCK_FSTACK) additionally uses the host Linux
-         *       kernel stack, coexisting with F-Stack in the same process.
-         * The default per-fd semantics stay F-Stack; this switch never makes
-         * the whole process default to the kernel stack. */
         int kernel_coexist;
     } stack;
 
@@ -362,18 +354,6 @@ int ff_load_config(int argc, char * const argv[]);
  * (config.ini [stack] kernel_coexist=1). */
 int ff_kernel_coexist_enabled(void);
 
-/*
- * Free every heap-allocated field referenced by ff_global_cfg (port_cfgs,
- * vlan_cfgs, vdev_cfgs, bond_cfgs, rss_check_cfgs, freebsd.boot/sysctl
- * linked lists, dpdk_argv[], filename, etc.) and zero the structure so a
- * subsequent ff_load_config() call starts from a clean slate.
- *
- * Registered via atexit() at the end of the first successful
- * ff_load_config(), and also invoked at the start of any later
- * ff_load_config() to make the loader idempotent (FU-S2-2-CFG-UNLOAD).
- *
- * Safe to call multiple times; calling on an already-zeroed cfg is a no-op.
- */
 void ff_unload_config(void);
 
 #ifdef __cplusplus
