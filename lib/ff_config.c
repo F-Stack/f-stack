@@ -1024,12 +1024,15 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->kni.tcp_port = strdup(value);
     } else if (MATCH("kni", "udp_port")) {
         pconfig->kni.udp_port= strdup(value);
-    } else if (MATCH("stack", "default_stack")) {
-        /* Global default stack for this process when a socket carries no
-         * explicit SOCK_KERNEL/SOCK_FSTACK marker. "kernel" => host kernel
-         * stack; anything else (incl. "fstack") => F-Stack (default). */
-        pconfig->stack.default_to_kernel =
-            (strcasecmp(value, "kernel") == 0) ? 1 : 0;
+    } else if (MATCH("stack", "kernel_coexist")) {
+        /* Kernel-stack coexistence switch: "1"/"on"/"true"/"yes" enable it,
+         * anything else (incl. "0"/"off") keeps it disabled. When enabled, a
+         * socket created with SOCK_KERNEL additionally uses the host kernel
+         * stack alongside F-Stack; default per-fd semantics stay F-Stack. */
+        pconfig->stack.kernel_coexist =
+            (strcasecmp(value, "1") == 0 || strcasecmp(value, "on") == 0 ||
+             strcasecmp(value, "true") == 0 || strcasecmp(value, "yes") == 0)
+            ? 1 : 0;
     } else if (strcmp(section, "freebsd.boot") == 0) {
         if (strcmp(name, "hz") == 0) {
             pconfig->freebsd.hz = atoi(value);
@@ -1361,8 +1364,9 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
 
-    /* default stack: F-Stack (0). memset already zeroes it; set explicitly. */
-    cfg->stack.default_to_kernel = 0;
+    /* kernel-stack coexistence disabled by default (pure F-Stack).
+     * memset already zeroes it; set explicitly for clarity. */
+    cfg->stack.kernel_coexist = 0;
 
     /* KNI ratelimit default disabled */
     //cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;
@@ -1379,9 +1383,9 @@ ff_default_config(struct ff_config *cfg)
 }
 
 int
-ff_default_stack_is_kernel(void)
+ff_kernel_coexist_enabled(void)
 {
-    return ff_global_cfg.stack.default_to_kernel;
+    return ff_global_cfg.stack.kernel_coexist;
 }
 
 int

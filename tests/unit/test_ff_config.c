@@ -1005,51 +1005,51 @@ test_bond_cfgs_calloc_oom_returns_error(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
-/* M3 (kernel_event_support): [stack] default_stack parsing                  */
+/* kernel_event_support (coexistence): [stack] kernel_coexist parsing        */
 /* ------------------------------------------------------------------------ */
-extern int ff_default_stack_is_kernel(void);
+extern int ff_kernel_coexist_enabled(void);
 
-/* default_stack=kernel -> stack.default_to_kernel == 1 + accessor agrees */
+/* kernel_coexist=1 -> stack.kernel_coexist == 1 + accessor agrees */
 static void
-test_ff_load_config_stack_default_kernel(void **state)
+test_ff_load_config_stack_coexist_enabled(void **state)
 {
     (void)state;
     int rv = load_with_fixture(FIXTURE_PATH("valid_stack_kernel.ini"));
     (void)rv;
-    assert_int_equal(ff_global_cfg.stack.default_to_kernel, 1);
-    assert_int_equal(ff_default_stack_is_kernel(), 1);
+    assert_int_equal(ff_global_cfg.stack.kernel_coexist, 1);
+    assert_int_equal(ff_kernel_coexist_enabled(), 1);
 }
 
-/* [stack] absent -> default stays F-Stack (0); accessor returns 0 */
+/* [stack] absent -> coexistence disabled (0); accessor returns 0 */
 static void
-test_ff_load_config_stack_absent_defaults_fstack(void **state)
+test_ff_load_config_stack_absent_defaults_disabled(void **state)
 {
     (void)state;
     int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
     (void)rv;
-    assert_int_equal(ff_global_cfg.stack.default_to_kernel, 0);
-    assert_int_equal(ff_default_stack_is_kernel(), 0);
+    assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
+    assert_int_equal(ff_kernel_coexist_enabled(), 0);
 }
 
-/* default_stack with an unrecognized value -> falls back to F-Stack (0) */
+/* kernel_coexist with an unrecognized value -> falls back to disabled (0) */
 static void
-test_ff_load_config_stack_garbage_defaults_fstack(void **state)
+test_ff_load_config_stack_garbage_defaults_disabled(void **state)
 {
     (void)state;
     int rv = load_with_fixture(FIXTURE_PATH("valid_stack_garbage.ini"));
     (void)rv;
-    assert_int_equal(ff_global_cfg.stack.default_to_kernel, 0);
-    assert_int_equal(ff_default_stack_is_kernel(), 0);
+    assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
+    assert_int_equal(ff_kernel_coexist_enabled(), 0);
 }
 
-/* explicit default_stack=fstack -> 0 (verified via valid_all_sections.ini) */
+/* explicit kernel_coexist=0 -> 0 (verified via valid_all_sections.ini) */
 static void
-test_ff_load_config_stack_default_fstack_explicit(void **state)
+test_ff_load_config_stack_coexist_disabled_explicit(void **state)
 {
     (void)state;
     int rv = load_with_fixture(FIXTURE_PATH("valid_all_sections.ini"));
     (void)rv;
-    assert_int_equal(ff_global_cfg.stack.default_to_kernel, 0);
+    assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
 }
 
 int
@@ -1111,11 +1111,11 @@ main(void)
         cmocka_unit_test_setup_teardown(test_vlan_cfgs_calloc_oom_returns_error, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_vdev_cfgs_calloc_oom_returns_error, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_bond_cfgs_calloc_oom_returns_error, test_setup, NULL),
-        /* M3 kernel_event_support: [stack] default_stack */
-        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_default_kernel,        test_setup, NULL),
-        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_absent_defaults_fstack, test_setup, NULL),
-        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_garbage_defaults_fstack, test_setup, NULL),
-        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_default_fstack_explicit, test_setup, NULL),
+        /* kernel_event_support: [stack] kernel_coexist */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_absent_defaults_disabled, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_garbage_defaults_disabled, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_disabled_explicit, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

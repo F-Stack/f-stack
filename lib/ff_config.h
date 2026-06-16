@@ -319,10 +319,15 @@ struct ff_config {
     } kni;
 
     struct {
-        /* default stack for sockets without an explicit SOCK_KERNEL/SOCK_FSTACK
-         * marker on socket() type: 0 = F-Stack (default), 1 = host kernel stack.
-         * Per-socket marker always overrides this default. */
-        int default_to_kernel;
+        /* Kernel-stack coexistence capability switch (per process):
+         *   0 = disabled (default): pure F-Stack, every socket uses the
+         *       F-Stack user-space stack.
+         *   1 = enabled: a socket created with an explicit SOCK_KERNEL marker
+         *       (and without SOCK_FSTACK) additionally uses the host Linux
+         *       kernel stack, coexisting with F-Stack in the same process.
+         * The default per-fd semantics stay F-Stack; this switch never makes
+         * the whole process default to the kernel stack. */
+        int kernel_coexist;
     } stack;
 
     struct {
@@ -352,6 +357,10 @@ struct ff_config {
 extern struct ff_config ff_global_cfg;
 
 int ff_load_config(int argc, char * const argv[]);
+
+/* Returns non-zero when kernel-stack coexistence is enabled for this process
+ * (config.ini [stack] kernel_coexist=1). */
+int ff_kernel_coexist_enabled(void);
 
 /*
  * Free every heap-allocated field referenced by ff_global_cfg (port_cfgs,
