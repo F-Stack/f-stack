@@ -914,6 +914,21 @@ ff_socket(int domain, int type, int protocol)
 {
     int rc;
     struct socket_args sa;
+
+    /*
+     * Kernel-stack coexistence (NFR-3: F-Stack stays the default). When
+     * coexistence is enabled and the caller explicitly marks this socket
+     * SOCK_KERNEL (without SOCK_FSTACK), create it on the host kernel stack
+     * and return a managed kernel fd. The default / SOCK_FSTACK path below is
+     * byte-for-byte unchanged (NFR-1 zero regression).
+     */
+    if ((type & SOCK_KERNEL) && !(type & SOCK_FSTACK) &&
+        ff_kernel_coexist_enabled()) {
+        int kfd = ff_host_socket(domain,
+            type & ~(SOCK_KERNEL | SOCK_FSTACK), protocol);
+        return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);
+    }
+
     sa.domain = domain == LINUX_AF_INET6 ? AF_INET6 : domain;
     sa.type = linux2freebsd_socket_flags(type);
     sa.protocol = protocol;
@@ -931,6 +946,11 @@ ff_getsockopt(int s, int level, int optname, void *optval,
     socklen_t *optlen)
 {
     int rc;
+
+    if (ff_is_kernel_fd(s))
+        return ff_host_getsockopt(ff_kernel_fd_real(s), level, optname,
+            optval, optlen);
+
     if (level == LINUX_SOL_SOCKET)
         level = SOL_SOCKET;
 
@@ -973,6 +993,10 @@ ff_setsockopt(int s, int level, int optname, const void *optval,
     socklen_t optlen)
 {
     int rc;
+
+    if (ff_is_kernel_fd(s))
+        return ff_host_setsockopt(ff_kernel_fd_real(s), level, optname,
+            optval, optlen);
 
     if (level == LINUX_SOL_SOCKET)
         level = SOL_SOCKET;
@@ -1064,6 +1088,9 @@ ff_close(int fd)
 {
     int rc;
 
+    if (ff_is_kernel_fd(fd))
+        return ff_host_close(ff_kernel_fd_real(fd));
+
     if ((rc = kern_close(curthread, fd)))
         goto kern_fail;
 
@@ -1079,6 +1106,9 @@ ff_read(int fd, void *buf, size_t nbytes)
     struct uio auio;
     struct iovec aiov;
     int rc;
+
+    if (ff_is_kernel_fd(fd))
+        return ff_host_read(ff_kernel_fd_real(fd), buf, nbytes);
 
     if (nbytes > INT_MAX) {
         rc = EINVAL;
@@ -1131,6 +1161,9 @@ ff_write(int fd, const void *buf, size_t nbytes)
     struct uio auio;
     struct iovec aiov;
     int rc;
+
+    if (ff_is_kernel_fd(fd))
+        return ff_host_write(ff_kernel_fd_real(fd), buf, nbytes);
 
     if (nbytes > INT_MAX) {
         rc = EINVAL;
@@ -1279,6 +1312,12 @@ ff_sendto(int s, const void *buf, size_t len, int flags,
     struct iovec aiov;
     int rc;
 
+    if (ff_is_kernel_fd(s)) {
+        return to ? ff_host_sendto(ff_kernel_fd_real(s), buf, len, flags,
+                                   to, tolen)
+                  : ff_host_send(ff_kernel_fd_real(s), buf, len, flags);
+    }
+
     struct sockaddr_storage bsdaddr;
     struct sockaddr *pf = (struct sockaddr *)&bsdaddr;
 
@@ -1364,6 +1403,10 @@ ff_recvfrom(int s, void *buf, size_t len, int flags,
     int rc;
     struct sockaddr_storage bsdaddr;
 
+    if (ff_is_kernel_fd(s))
+        return ff_host_recvfrom(ff_kernel_fd_real(s), buf, len, flags,
+            from, fromlen);
+
     if (fromlen != NULL)
         msg.msg_namelen = *fromlen;
     else
@@ -1433,6 +1476,9 @@ ff_fcntl(int fd, int cmd, ...)
     argp = va_arg(ap, uintptr_t);
     va_end(ap);
 
+    if (ff_is_kernel_fd(fd))
+        return ff_host_fcntl(ff_kernel_fd_real(fd), cmd, (int)argp);
+
     cmd = linux2freebsd_fcntl(cmd, &argp);
 
     if ((rc = kern_fcntl(curthread, fd, cmd, argp)))
@@ -1452,6 +1498,11 @@ ff_accept(int s, struct linux_sockaddr * addr,
     struct file *fp;
     struct sockaddr_storage pfss;
     struct sockaddr *pf = (struct sockaddr *)&pfss;
+
+    if (ff_is_kernel_fd(s)) {
+        int kfd = ff_host_accept(ff_kernel_fd_real(s), addr, addrlen);
+        return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);
+    }
 
     if ((rc = kern_accept(curthread, s, pf, &fp)))
         goto kern_fail;
@@ -1481,6 +1532,11 @@ ff_accept4(int s, struct linux_sockaddr * addr,
     struct sockaddr_storage pfss;
     struct sockaddr *pf = (struct sockaddr *)&pfss;
 
+    if (ff_is_kernel_fd(s)) {
+        int kfd = ff_host_accept4(ff_kernel_fd_real(s), addr, addrlen, flags);
+        return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);
+    }
+
     if ((rc = kern_accept4(curthread, s, pf, linux2freebsd_socket_flags(flags), &fp)))
         goto kern_fail;
 
@@ -1504,6 +1560,10 @@ int
 ff_listen(int s, int backlog)
 {
     int rc;
+
+    if (ff_is_kernel_fd(s))
+        return ff_host_listen(ff_kernel_fd_real(s), backlog);
+
     struct listen_args la = {
         .s = s,
         .backlog = backlog,
@@ -1522,6 +1582,10 @@ ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen)
 {
     int rc;
     struct sockaddr_storage bsdaddr;
+
+    if (ff_is_kernel_fd(s))
+        return ff_host_bind(ff_kernel_fd_real(s), addr, addrlen);
+
     linux2freebsd_sockaddr(addr, addrlen, (struct sockaddr *)&bsdaddr);
 
     if ((rc = kern_bindat(curthread, AT_FDCWD, s, (struct sockaddr *)&bsdaddr)))
@@ -1538,6 +1602,10 @@ ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen)
 {
     int rc;
     struct sockaddr_storage bsdaddr;
+
+    if (ff_is_kernel_fd(s))
+        return ff_host_connect(ff_kernel_fd_real(s), name, namelen);
+
     linux2freebsd_sockaddr(name, namelen, (struct sockaddr *)&bsdaddr);
 
     if ((rc = kern_connectat(curthread, AT_FDCWD, s, (struct sockaddr *)&bsdaddr)))

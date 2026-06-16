@@ -91,5 +91,74 @@ int ff_rss_tbl_get_portrange(uint32_t saddr, uint32_t daddr, uint16_t sport,
 
 void ff_swi_net_excute(void);
 
+/*
+ * Kernel-stack coexistence (native ff_api mode).
+ *
+ * A native F-Stack application runs ON F-Stack (ff_init/ff_run); business
+ * sockets use the F-Stack user-space stack. When coexistence is enabled
+ * (config.ini [stack] kernel_coexist=1), a socket created with SOCK_KERNEL
+ * additionally uses the host Linux kernel stack, coexisting in the same
+ * process / event loop.
+ *
+ * FD-space separation (zero regression): F-Stack fds keep their raw FreeBSD
+ * values (unchanged). A managed kernel fd is returned to the application as
+ * (host_fd + FF_KERNEL_FD_BASE). FF_KERNEL_FD_BASE is far above the maximum
+ * FreeBSD fd (kern.maxfiles is required to be <= 65536, see adapter README),
+ * and host fds are bounded by RLIMIT_NOFILE, so the two ranges never collide.
+ * The ff_* entry points detect a managed kernel fd via ff_is_kernel_fd() and
+ * route it to the host bridge below; the default / SOCK_FSTACK path is left
+ * byte-for-byte unchanged.
+ */
+#define FF_KERNEL_FD_BASE 0x40000000
+
+static inline int ff_is_kernel_fd(int fd)
+{
+    return fd >= FF_KERNEL_FD_BASE;
+}
+
+static inline int ff_kernel_fd_encode(int host_fd)
+{
+    return host_fd + FF_KERNEL_FD_BASE;
+}
+
+static inline int ff_kernel_fd_real(int fd)
+{
+    return fd - FF_KERNEL_FD_BASE;
+}
+
+/* Defined in ff_config.c: non-zero when [stack] kernel_coexist=1. */
+int ff_kernel_coexist_enabled(void);
+
+/*
+ * Host kernel-stack bridge (implemented in ff_host_interface.c, host
+ * namespace). These operate on RAW host fds. sockaddr / epoll_event are
+ * passed as void* to avoid struct-layout clashes between the FreeBSD and host
+ * namespaces; struct linux_sockaddr already matches the host sockaddr layout.
+ * On failure they return -1 with the host errno set.
+ */
+int ff_host_socket(int domain, int type, int protocol);
+int ff_host_bind(int fd, const void *addr, unsigned int addrlen);
+int ff_host_listen(int fd, int backlog);
+int ff_host_accept(int fd, void *addr, unsigned int *addrlen);
+int ff_host_connect(int fd, const void *addr, unsigned int addrlen);
+int ff_host_close(int fd);
+ssize_t ff_host_read(int fd, void *buf, size_t nbytes);
+ssize_t ff_host_write(int fd, const void *buf, size_t nbytes);
+ssize_t ff_host_recv(int fd, void *buf, size_t len, int flags);
+ssize_t ff_host_send(int fd, const void *buf, size_t len, int flags);
+ssize_t ff_host_sendto(int fd, const void *buf, size_t len, int flags,
+    const void *to, unsigned int tolen);
+ssize_t ff_host_recvfrom(int fd, void *buf, size_t len, int flags,
+    void *from, unsigned int *fromlen);
+int ff_host_accept4(int fd, void *addr, unsigned int *addrlen, int flags);
+int ff_host_setsockopt(int fd, int level, int optname,
+    const void *optval, unsigned int optlen);
+int ff_host_getsockopt(int fd, int level, int optname,
+    void *optval, unsigned int *optlen);
+int ff_host_fcntl(int fd, int cmd, int arg);
+int ff_host_epoll_create1(int flags);
+int ff_host_epoll_ctl(int epfd, int op, int fd, void *event);
+int ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout);
+
 #endif
 

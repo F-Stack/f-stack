@@ -26,6 +26,10 @@
  * Derived in part from libuinet's uinet_host_interface.c.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   /* for accept4(2) / epoll_create1(2) */
+#endif
+
 #include <assert.h>
 #include <errno.h>
 #include <string.h>
@@ -35,6 +39,10 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <sys/epoll.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
@@ -233,6 +241,129 @@ int ff_setenv(const char *name, const char *value)
 char *ff_getenv(const char *name)
 {
     return getenv(name);
+}
+
+/*
+ * Host kernel-stack bridge for native-mode coexistence. Operate on RAW host
+ * fds; sockaddr / epoll_event arrive as void* (linux_sockaddr layout matches
+ * the host sockaddr). The host libc sets errno on failure.
+ */
+int
+ff_host_socket(int domain, int type, int protocol)
+{
+    return socket(domain, type, protocol);
+}
+
+int
+ff_host_bind(int fd, const void *addr, socklen_t addrlen)
+{
+    return bind(fd, (const struct sockaddr *)addr, addrlen);
+}
+
+int
+ff_host_listen(int fd, int backlog)
+{
+    return listen(fd, backlog);
+}
+
+int
+ff_host_accept(int fd, void *addr, socklen_t *addrlen)
+{
+    return accept(fd, (struct sockaddr *)addr, addrlen);
+}
+
+int
+ff_host_connect(int fd, const void *addr, socklen_t addrlen)
+{
+    return connect(fd, (const struct sockaddr *)addr, addrlen);
+}
+
+int
+ff_host_close(int fd)
+{
+    return close(fd);
+}
+
+ssize_t
+ff_host_read(int fd, void *buf, size_t nbytes)
+{
+    return read(fd, buf, nbytes);
+}
+
+ssize_t
+ff_host_write(int fd, const void *buf, size_t nbytes)
+{
+    return write(fd, buf, nbytes);
+}
+
+ssize_t
+ff_host_recv(int fd, void *buf, size_t len, int flags)
+{
+    return recv(fd, buf, len, flags);
+}
+
+ssize_t
+ff_host_send(int fd, const void *buf, size_t len, int flags)
+{
+    return send(fd, buf, len, flags);
+}
+
+ssize_t
+ff_host_sendto(int fd, const void *buf, size_t len, int flags,
+    const void *to, socklen_t tolen)
+{
+    return sendto(fd, buf, len, flags, (const struct sockaddr *)to, tolen);
+}
+
+ssize_t
+ff_host_recvfrom(int fd, void *buf, size_t len, int flags,
+    void *from, socklen_t *fromlen)
+{
+    return recvfrom(fd, buf, len, flags, (struct sockaddr *)from, fromlen);
+}
+
+int
+ff_host_accept4(int fd, void *addr, socklen_t *addrlen, int flags)
+{
+    return accept4(fd, (struct sockaddr *)addr, addrlen, flags);
+}
+
+int
+ff_host_setsockopt(int fd, int level, int optname,
+    const void *optval, socklen_t optlen)
+{
+    return setsockopt(fd, level, optname, optval, optlen);
+}
+
+int
+ff_host_getsockopt(int fd, int level, int optname,
+    void *optval, socklen_t *optlen)
+{
+    return getsockopt(fd, level, optname, optval, optlen);
+}
+
+int
+ff_host_fcntl(int fd, int cmd, int arg)
+{
+    return fcntl(fd, cmd, arg);
+}
+
+int
+ff_host_epoll_create1(int flags)
+{
+    return epoll_create1(flags);
+}
+
+int
+ff_host_epoll_ctl(int epfd, int op, int fd, void *event)
+{
+    return epoll_ctl(epfd, op, fd, (struct epoll_event *)event);
+}
+
+int
+ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout)
+{
+    return epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout);
 }
 
 void ff_os_errno(int error)
