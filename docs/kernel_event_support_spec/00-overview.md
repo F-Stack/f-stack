@@ -1,3 +1,12 @@
+> **⚠️ SUPERSEDED (2026-06-16): this English set (00-10) describes the OLD v3
+> paradigm, which was wrong — it routed `ff_socket(SOCK_KERNEL)` to a raw host
+> socket that bypassed the F-Stack user-space stack entirely. The authoritative
+> spec is now the v4 "F-Stack + kernel-stack COEXISTENCE" rework under
+> `zh_cn/` (app runs ON F-Stack; business uses the F-Stack stack; per-fd
+> `SOCK_KERNEL` additionally uses the host kernel stack; both coexist in one
+> event loop). This English set is pending re-translation to v4. Until then,
+> follow `zh_cn/`.**
+
 # 00 Overview: F-Stack Connection-Level Stack Selection Enhancement (Single API + Markers + config default switch)
 
 > **Document ID**: SPEC-KE-00
