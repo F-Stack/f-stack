@@ -350,10 +350,6 @@ extern struct ff_config ff_global_cfg;
 
 int ff_load_config(int argc, char * const argv[]);
 
-/* Returns non-zero when kernel-stack coexistence is enabled for this process
- * (config.ini [stack] kernel_coexist=1). */
-int ff_kernel_coexist_enabled(void);
-
 void ff_unload_config(void);
 
 #ifdef __cplusplus

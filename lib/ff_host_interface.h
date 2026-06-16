@@ -126,9 +126,6 @@ static inline int ff_kernel_fd_real(int fd)
     return fd - FF_KERNEL_FD_BASE;
 }
 
-/* Defined in ff_config.c: non-zero when [stack] kernel_coexist=1. */
-int ff_kernel_coexist_enabled(void);
-
 /*
  * Host kernel-stack bridge (implemented in ff_host_interface.c, host
  * namespace). These operate on RAW host fds. sockaddr / epoll_event are

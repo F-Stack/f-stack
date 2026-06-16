@@ -1007,9 +1007,7 @@ test_bond_cfgs_calloc_oom_returns_error(void **state)
 /* ------------------------------------------------------------------------ */
 /* kernel_event_support (coexistence): [stack] kernel_coexist parsing        */
 /* ------------------------------------------------------------------------ */
-extern int ff_kernel_coexist_enabled(void);
-
-/* kernel_coexist=1 -> stack.kernel_coexist == 1 + accessor agrees */
+/* kernel_coexist=1 -> stack.kernel_coexist == 1 */
 static void
 test_ff_load_config_stack_coexist_enabled(void **state)
 {
@@ -1017,10 +1015,9 @@ test_ff_load_config_stack_coexist_enabled(void **state)
     int rv = load_with_fixture(FIXTURE_PATH("valid_stack_kernel.ini"));
     (void)rv;
     assert_int_equal(ff_global_cfg.stack.kernel_coexist, 1);
-    assert_int_equal(ff_kernel_coexist_enabled(), 1);
 }
 
-/* [stack] absent -> coexistence disabled (0); accessor returns 0 */
+/* [stack] absent -> coexistence disabled (0) */
 static void
 test_ff_load_config_stack_absent_defaults_disabled(void **state)
 {
@@ -1028,7 +1025,6 @@ test_ff_load_config_stack_absent_defaults_disabled(void **state)
     int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
     (void)rv;
     assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
-    assert_int_equal(ff_kernel_coexist_enabled(), 0);
 }
 
 /* kernel_coexist with an unrecognized value -> falls back to disabled (0) */
@@ -1039,7 +1035,6 @@ test_ff_load_config_stack_garbage_defaults_disabled(void **state)
     int rv = load_with_fixture(FIXTURE_PATH("valid_stack_garbage.ini"));
     (void)rv;
     assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
-    assert_int_equal(ff_kernel_coexist_enabled(), 0);
 }
 
 /* explicit kernel_coexist=0 -> 0 (verified via valid_all_sections.ini) */

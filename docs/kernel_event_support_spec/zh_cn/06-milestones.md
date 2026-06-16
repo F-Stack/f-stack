@@ -38,7 +38,7 @@
 
 ## 3. R3 原生 ff_api 统一事件共存（新设计，核心改造）
 **编码工作清单**：
-1. `lib/ff_config.{c,h}`：将 v3 `stack.default_to_kernel`/`default_stack` 改为 `stack.kernel_coexist`（`MATCH("stack","kernel_coexist")`，默认 0）；同步更新 `test_ff_config` 用例与 fixtures、`config.ini` 示例段、访问器（如 `ff_kernel_coexist_enabled()`）。
+1. `lib/ff_config.{c,h}`：将 v3 `stack.default_to_kernel`/`default_stack` 改为 `stack.kernel_coexist`（`MATCH("stack","kernel_coexist")`，默认 0）；同步更新 `test_ff_config` 用例与 fixtures、`config.ini` 示例段；调用方直接读 `ff_global_cfg.stack.kernel_coexist`，不引入访问器。
 2. `lib/ff_host_interface.{c,h}`：新增**受管内核侧桥**（宿主 `socket/bind/listen/accept/connect/close/epoll_create1/epoll_ctl/epoll_wait`），供 lib 调用建受管内核 fd（**非裸绕过**，由 lib 登记归属）。
 3. lib 内 fd 归属机制：归属表/编码偏移区分受管内核 fd 与 F-Stack fd；`ff_socket(SOCK_KERNEL)`（启用共存时）建受管内核 fd 并登记；默认/`SOCK_FSTACK` 走原 `sys_socket`（逐字节零回归）。
 4. `ff_bind/ff_listen/ff_accept/ff_connect/ff_close`：入口按归属路由（内核 fd → 受管宿主桥；F-Stack fd → 原路径）。

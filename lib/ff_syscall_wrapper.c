@@ -61,6 +61,7 @@
 
 #include "ff_api.h"
 #include "ff_host_interface.h"
+#include "ff_config.h"
 
 /* setsockopt/getsockopt define start */
 
@@ -923,7 +924,7 @@ ff_socket(int domain, int type, int protocol)
      * byte-for-byte unchanged (NFR-1 zero regression).
      */
     if ((type & SOCK_KERNEL) && !(type & SOCK_FSTACK) &&
-        ff_kernel_coexist_enabled()) {
+        ff_global_cfg.stack.kernel_coexist) {
         int kfd = ff_host_socket(domain,
             type & ~(SOCK_KERNEL | SOCK_FSTACK), protocol);
         return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);

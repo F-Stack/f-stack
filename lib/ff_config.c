@@ -1377,12 +1377,6 @@ ff_default_config(struct ff_config *cfg)
 }
 
 int
-ff_kernel_coexist_enabled(void)
-{
-    return ff_global_cfg.stack.kernel_coexist;
-}
-
-int
 ff_load_config(int argc, char *const argv[])
 {
     /* Idempotency: free any state from a prior ff_load_config so repeated

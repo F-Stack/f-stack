@@ -40,7 +40,7 @@
 ### I.1 Code-Change Verification (all PASS)
 | ID | Assertion | Result | Evidence |
 |---|---|---|---|
-| I1 | config coexistence switch (R3.1) | PASS | `ff_config.h` `struct{int kernel_coexist;}stack;`; `ff_config.c` `MATCH("stack","kernel_coexist")`(1/on/true/yes→1), default 0, `ff_kernel_coexist_enabled()` |
+| I1 | config coexistence switch (R3.1) | PASS | `ff_config.h` `struct{int kernel_coexist;}stack;`; `ff_config.c` `MATCH("stack","kernel_coexist")`(1/on/true/yes→1), default 0; callers read `ff_global_cfg.stack.kernel_coexist` directly |
 | I2 | FD-space scheme (no collision) | PASS | `ff_host_interface.h` `FF_KERNEL_FD_BASE 0x40000000`, `ff_is_kernel_fd/encode/real` (above FreeBSD fd ≤65536, host fds bounded by RLIMIT) |
 | I3 | host bridge (managed kernel fd, not a raw bypass) | PASS | `ff_host_interface.c` `ff_host_socket/bind/listen/accept/accept4/connect/close/read/write/recv/send/sendto/recvfrom/setsockopt/getsockopt/fcntl/epoll_create1/ctl/wait`; `_GNU_SOURCE` for accept4/epoll_create1 |
 | I4 | socket-side ownership routing (R3.2/3.3) | PASS | `ff_syscall_wrapper.c` `ff_socket`(SOCK_KERNEL+coexist→managed kernel fd) and close/read/write/sendto/recvfrom/accept/accept4/listen/bind/connect/setsockopt/getsockopt/fcntl entries route by `ff_is_kernel_fd` |

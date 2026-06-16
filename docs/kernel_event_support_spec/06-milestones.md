@@ -37,7 +37,7 @@
 
 ## 3. R3 Native ff_api Unified-Event Coexistence (new design, core change)
 **Coding work list**:
-1. `lib/ff_config.{c,h}`: change the v3 `stack.default_to_kernel`/`default_stack` to `stack.kernel_coexist` (`MATCH("stack","kernel_coexist")`, default 0); sync the `test_ff_config` cases and fixtures, the `config.ini` example section, and the accessor (e.g., `ff_kernel_coexist_enabled()`).
+1. `lib/ff_config.{c,h}`: change the v3 `stack.default_to_kernel`/`default_stack` to `stack.kernel_coexist` (`MATCH("stack","kernel_coexist")`, default 0); sync the `test_ff_config` cases and fixtures, the `config.ini` example section; callers read `ff_global_cfg.stack.kernel_coexist` directly (no accessor).
 2. `lib/ff_host_interface.{c,h}`: add a **managed kernel-side bridge** (host `socket/bind/listen/accept/connect/close/epoll_create1/epoll_ctl/epoll_wait`) for lib to create managed kernel fds (**not a raw bypass**; lib registers ownership).
 3. lib-internal fd-ownership mechanism: an ownership table / encoded offset distinguishes managed kernel fds from F-Stack fds; `ff_socket(SOCK_KERNEL)` (when coexistence enabled) creates a managed kernel fd and registers it; default/`SOCK_FSTACK` go the original `sys_socket` (byte-for-byte zero regression).
 4. `ff_bind/ff_listen/ff_accept/ff_connect/ff_close`: route by ownership at the entry (kernel fd → managed host bridge; F-Stack fd → original path).
