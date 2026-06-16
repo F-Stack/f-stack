@@ -1,8 +1,13 @@
-# 10 性能基线报告：内核访问路径（ff_socket(SOCK_KERNEL)）wrk 自压基线
+# 10 性能基线报告（v3，已作废 / SUPERSEDED）
 
-> **文档编号**：SPEC-KE-10
+> **⚠️ 作废声明（v4，2026-06-16）**：本报告基于 v3 的**错误实现**——`ff_socket(SOCK_KERNEL)`→`ff_host_socket`→纯宿主 socket，**全程未跑 F-Stack 用户态栈**（A/B 两版本都是纯内核栈）。该口径根本没有测量「F-Stack + 内核栈共存」，结论无效，**整篇作废**。
+> v4 性能基线改为：**证明内核栈共存不拖累 F-Stack 业务快路径**（PERF-1/PERF-2，见 `07-test-spec.md`），在 R4 阶段以「共存开/关对 F-Stack 业务压测对比」重新产出；本文仅作历史留档。
+
+---
+
+> **文档编号**：SPEC-KE-10（v3 历史留档）
 > **日期**：2026-06-16
-> **状态**：COMPLETE
+> **状态**：SUPERSEDED（已作废，见上方声明）
 > **作用域**：在**本机 loopback** 用 wrk 对"本地 socket/fd/event 访问"特性（`ff_socket(SOCK_KERNEL)` 内核栈路径）做性能基线，并以同源原生 `libc socket()` 版本做 A/B 对压求开销 Δ%，以 `freebsd_13_to_15_upgrade_spec/` 既有 CVM 数据作背景对照。
 > **实证铁律**：所有数字来自实际 wrk 运行（原始输出 `/tmp/keperf/{A,B}_T{1,2,3}_trial{1,2,3}.txt`），禁止臆造。
 

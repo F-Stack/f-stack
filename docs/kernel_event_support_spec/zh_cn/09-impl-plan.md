@@ -1,18 +1,19 @@
-# 09 实现版 Plan：本地 socket/fd/event 支持（M1-M6）
+# 09 实现版 Plan：F-Stack + 内核栈共存（R0-R5）
 
 > **文档编号**：SPEC-KE-09（实现阶段计划）
-> **日期**：2026-06-15
+> **版本**：v4（共存范式返工重写）
+> **日期**：2026-06-16
 > **状态**：执行中
-> **依据**：本目录 v3 spec（00-08）；行号以实际代码为准，gatekeeper 复核。
+> **依据**：本目录 v4 spec（00-08）；行号以实际代码为准，gatekeeper 复核。
 
 ---
 
-## 0. 范围与门禁（用户确认）
+## 0. 范围与门禁
 
-- **M1-M6 全做**：标记标准化 / 服务端内核栈监听 / 客户端 connect 选栈 / config.ini 全局默认开关 / 原生 `ff_socket` 标记识别 / 双栈事件+可观测 / 测试与性能基线。
-- **硬门禁（无条件全绿）**：编译通过 + cmocka 单测全绿 + 覆盖率 G8 达标。
-- **目标门禁**：尽力实搭 DPDK 运行时实跑集成（curl/ping/客户端 connect）与性能基线；确不具备真实 NIC/大页时按 skip 并附**实测失败证据（命令+输出）**。
-- **NFR-1 零回归**：默认/`SOCK_FSTACK` 路径与改造前逐字节一致。
+- **R0-R5 全做**：回退错误 → spec 重写 → hook 共存固化+demo → 原生统一事件共存 → 测试/性能 → 门禁+提交。
+- **硬门禁（无条件全绿）**：编译通过 + cmocka 单测全绿 + 覆盖率达标 + **F-Stack 业务快路径零回归（NFR-1/NFR-2）**。
+- **共存铁律（NFR-3）**：任何阶段 F-Stack 用户态栈始终承担业务、绝不被内核栈旁路；违反即打回。
+- **目标门禁**：尽力实搭 DPDK 运行时实跑同进程双栈集成；不具备真实 NIC 时业务面 skip+实测证据，内核侧 loopback 必测。
 
 ---
 
@@ -20,14 +21,16 @@
 
 | Agent | 角色 | 职责 |
 |---|---|---|
-| **Leader** | 统筹+执笔+裁决 | 全局编排、改码、门禁裁决、commit、bounce 计数 |
-| **build** | 编译（只读取证+实跑构建） | 编译 lib / libff_syscall.so / tests，报告错误 |
-| **unit-test** | 单测编写 | cmocka 用例（`test_ff_config` 扩展 + 原生 `ff_socket` 标记用例） |
-| **review** | 代码评审（只读） | 最小 diff/零回归/风格/规约核验 |
-| **test** | 集成/性能 | 示例 + 端到端 + 性能基线实跑或 skip+证据 |
-| **gatekeeper** | 门禁（只读） | 逐条断言 + 门禁条目核验，FAIL 打回 |
+| **Leader** | 统筹+执笔+裁决 | 编排、改码、门禁裁决、commit、bounce 计数 |
+| **arch-probe** | 架构探测（只读） | 实测 hook FF_KERNEL_EVENT / nginx / 原生事件层 |
+| **spec-writer** | spec 重写 | v4 中英文文档 |
+| **build** | 编译（实跑） | lib / libff_syscall.so / tests |
+| **unit-test** | 单测 | cmocka 共存用例 |
+| **review** | 评审（只读） | 最小 diff/零回归/共存铁律/规约 |
+| **test** | 集成/性能 | 同进程双栈端到端 + F-Stack 快路径无回归 |
+| **gatekeeper** | 门禁（只读） | 逐条断言 + 门禁条目 |
 
-**门禁回退**：任一阶段失败打回上一步；**同一步骤 bounce ≤3 次**，超限**停止转人工**；bounce 记入 `08`。
+**门禁回退**：任一阶段失败打回上一步；同一步骤 bounce≤3 次，超限停止转人工；bounce 记入 `08`。
 
 ---
 
@@ -35,35 +38,33 @@
 
 | 里程碑 | 文件 | 改动 |
 |---|---|---|
-| M3 | `lib/ff_config.h:253` | `struct ff_config` 增 `struct { int default_to_kernel; } stack;`（仿 kni 段 :310-319） |
-| M3 | `lib/ff_config.c:956` `ini_parse_handler` | 增 `MATCH("stack","default_stack")` 解析 `fstack`/`kernel`；`ff_default_config:1346` memset 0→默认 fstack 自动成立；必要时加校验 |
-| M3 | `config.ini`（项目根） | 增 `[stack] default_stack=fstack` 示例段 |
-| M1 | 对外头文件（`lib/ff_api.h:63+` 或新增 `ff_stack_select.h`） | 暴露 `SOCK_KERNEL`/`SOCK_FSTACK` 选栈约定 + 语义/优先级注释 |
-| M4 | `lib/ff_syscall_wrapper.c:912` `ff_socket` | 入口加 `SOCK_KERNEL && !SOCK_FSTACK` 识别分支（内核 socket 等价路径）；默认/`SOCK_FSTACK` 走原 `linux2freebsd_socket_flags:668`→`sys_socket` 逐字节零开销 |
-| M5/M1/M2 | `adapter/syscall/ff_hook_syscall.c` | 复核固化选栈（`:387-390`）/connect（`:858`）/双栈事件（`:2324+`）；胶水层按 `ff_global_cfg.stack.default_to_kernel` 注入默认；可观测 `ff_stack_get_stats` |
-| M6 | `tests/unit/test_ff_config.c` + `Makefile` | `[stack]` 解析/默认/优先级 cmocka 用例；新增原生 `ff_socket` 标记用例并入 P 分组 |
-| M6 | `example/`、`tests/integration/` | 双栈示例 + 端到端（curl/ping/client-connect/config 默认/多进程） |
-| 文档 | `07-test-spec.md` | Unity→cmocka 校正 |
+| R0 | `lib/ff_syscall_wrapper.c`、`lib/ff_host_interface.{c,h}` | 回退 ff_host_socket 旁路（**已完成 0748eff94**） |
+| R2 | `adapter/syscall/`（Makefile FF_KERNEL_EVENT）、新 demo | 编译 libff_syscall.so；正确同进程双栈 demo（对照 `main_stack_epoll_kernel.c`），替换 v3 纯内核 helloworld_stacksel |
+| R3 | `lib/ff_config.{c,h}` | `stack.default_to_kernel`/`default_stack` → `stack.kernel_coexist`（`MATCH("stack","kernel_coexist")`，默认 0）+ 访问器 |
+| R3 | `lib/ff_host_interface.{c,h}` | 新增受管内核侧桥（宿主 socket/bind/listen/accept/connect/close/epoll_*），供 lib 建受管内核 fd |
+| R3 | `lib/ff_syscall_wrapper.c` `ff_socket` 及 ff_bind/listen/accept/connect/close | 共存启用时 SOCK_KERNEL→受管内核 fd+登记归属；按归属路由；默认/`SOCK_FSTACK` 零回归 |
+| R3 | `lib/ff_epoll.c` | `ff_epoll_create` 兼建内核 epoll；`ff_epoll_ctl` 分流；`ff_epoll_wait` 合并 kqueue⊕epoll；close 联动 |
+| R3 | `config.ini` | `[stack] kernel_coexist=0` 示例段（替换 v3 default_stack） |
+| R4 | `tests/unit/`、`tests/integration/` | cmocka 共存用例 + 同进程双栈集成 |
+| 文档 | `docs/kernel_event_support_spec/`（中英文 00-10） | v4 共存范式（已重写中文核心；英文 R5 同步） |
 
 ---
 
 ## 3. 关键设计决策
-
-- **复用优先**：hook 模式选栈已实现，本轮以"复核固化 + 标准化 + 补齐"为主。
-- **标记优先级**：`选栈 = app标记 ?? config默认 ?? F-Stack`，与 `ff_hook_socket:387`（`SOCK_KERNEL && !SOCK_FSTACK`）一致。
-- **M4 边界（如实记录）**：本轮在 `ff_socket` 入口实现 `SOCK_KERNEL` 识别分支；原生模式下后续 `ff_bind/ff_listen/...` 的内核 fd 全链路归属路由属更大改造，按 spec 作为边界/后续项明确标注，避免误导。
-- **可达性分层**：M3/M4 走 cmocka 单测（host 编译、无需 DPDK 运行时）；M1/M2/M5 端到端走集成（DPDK 运行时，优先 `vdev`+`--no-huge` 规避物理 NIC/大页）。
+- **复用优先**：hook 共存已实现，R2 以复核固化 + 正确 demo 为主。
+- **原生共存核心**：受管内核 fd（**非裸绕过**，lib 登记归属并纳入统一事件）+ `ff_epoll_wait` 合并；默认路径逐字节零回归。
+- **fd 空间区分**：仿 nginx `ngx_max_sockets` 偏移或 hook 编码偏移，实现阶段定。
+- **可达性分层**：config/fd 归属/事件合并走 cmocka 单测（host 编译）；同进程双栈端到端走集成（DPDK 运行时，优先 vdev+--no-huge 规避物理 NIC）。
 
 ---
 
-## 4. 执行步骤（对应 plan 待办）
-1. prep-plan-team（本文 + 建团）。
-2. impl-config-marker：M3+M1（config/marker/header）+ 编译。
-3. impl-native-hook：M4 + M5/M1/M2 hook 固化 + 编译 lib 与 libff_syscall.so。
-4. unit-tests：cmocka 单测全绿 + G8。
-5. integration-perf：示例 + 集成/性能实跑或 skip+证据。
-6. gate-review：门禁核验，FAIL 打回（≤3 转人工），更新 07/08。
-7. commit-cleanup：英文简短 commit + 清理。
+## 4. 执行步骤
+1. R0 回退（已完成）。
+2. R1 spec 重写（中文核心已完成，英文 R5 同步）。
+3. R2 hook 共存固化 + demo + 编译。
+4. R3 原生统一事件共存 + config 改造 + 编译。
+5. R4 单测/集成/性能。
+6. R5 门禁 + 英文 spec + 提交。
 
 ## 5. 工作区脚本规约
 删文件 `/data/workspace/rm_tmp_file.sh`；停进程 `/data/workspace/kill_process.sh`；改权限 `/data/workspace/chmod_modify.sh`；`make install` 类（非直接 chmod）可执行。

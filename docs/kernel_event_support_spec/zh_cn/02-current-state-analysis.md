@@ -1,28 +1,28 @@
-# 02 现状分析：F-Stack 现有"单 API + 标记选栈"机制（以代码为准）
+# 02 现状分析：F-Stack 现有「双栈共存」机制（以代码为准）
 
 > **文档编号**：SPEC-KE-02
-> **版本**：v3（范式修正重做）
-> **日期**：2026-06-15
+> **版本**：v4（共存范式返工重写）
+> **日期**：2026-06-16
 > **状态**：编写中
-> **作用域**：实测 F-Stack 中"用标记/配置让某 fd 走宿主机内核栈"的现有机制，作为 v3 lib 的**直接复用基线**（而非另造双 API）。覆盖：选栈标记、hook 模式单 API 选栈、客户端 connect 路径、config.ini 解析、原生 ff_api 模式差异、双栈事件合并。
-> **铁律**：所有断言带 `相对路径:行号`（相对 `/data/workspace/f-stack/`）；与文档/README/注释冲突以**实际代码为准**并显式标注。
+> **作用域**：实测 F-Stack 中「同一进程内 F-Stack 用户态栈 + 宿主内核栈共存」的现有机制，作为 v4 的**直接复用基线（hook 模式）+ 参考（nginx）+ 新设计落点（原生模式）**。覆盖：选栈标记、hook FF_KERNEL_EVENT 共存、nginx kernel_network_stack 共存、原生事件层缺口、v3 错误回退核对。
+> **铁律**：所有断言带 `相对路径:行号`（相对 `/data/workspace/f-stack/`）；与文档/注释冲突以**实际代码为准**并显式标注。
 
 ---
 
-## 0. v3 现状定位
+## 0. v4 现状定位
 
-| 现状能力 | 位置 | 形态 | v3 中的角色 |
+| 现状能力 | 位置 | 形态 | v4 角色 |
 |---|---|---|---|
-| **单 API + `SOCK_KERNEL`/`SOCK_FSTACK` 标记选栈** | `adapter/syscall/`（hook 模式） | POSIX 单 API + type 标记 + 胶水自动适配 | **直接复用并标准化**（v3 核心范式） |
-| **双栈 fd/event 合并** | `adapter/syscall/`（`FF_KERNEL_EVENT`） | `fstack_kernel_fd_map` + 双栈 epoll | **复用**（统一事件） |
-| 连接级选栈（nginx） | `app/nginx-1.28.0/` | `belong_to_host` 1-bit + 双事件后端 | **同构旁证**（证明范式可行） |
-| 原生 `ff_socket` 选栈 | `lib/`（原生模式） | 不识别选栈标记，恒建 F-Stack socket | **差异点**：原生模式需补标准化（见 §5） |
+| **hook 模式 FF_KERNEL_EVENT 双栈共存** | `adapter/syscall/`（LD_PRELOAD） | 标记选栈 + `fstack_kernel_fd_map` 双栈 epoll 合并 | **直接复用并固化为主基线** |
+| **nginx kernel_network_stack 双栈共存** | `app/nginx-1.28.0/` | per-listen `belong_to_host` + 双事件后端（kqueue+epoll） | **参考实现（同构证明共存可行）** |
+| 原生 `ff_api` 事件层 | `lib/ff_epoll.c` | 纯 kqueue 封装，无内核 fd 感知 | **缺口**：原生共存需新设计（见 §4） |
+| 选栈标记 | `adapter/syscall/ff_adapter.h:7-8` | `SOCK_FSTACK`/`SOCK_KERNEL` type 高位 | **复用为 per-fd 共存标记** |
 
-> KNI（`lib/ff_dpdk_kni.c` + `config.ini [kni]`）是**另一套独立的"报文回灌内核"机制**，**不属于本特性**（见 `00`/`03`），本文不展开。
+> KNI（`lib/ff_dpdk_kni.c` + `config.ini [kni]`）是另一套独立「报文回灌」机制，**不属于本特性**（见 `00`/`03`）。
 
 ---
 
-## 1. 选栈标记（v3 核心，已实测）
+## 1. 选栈标记（已实测）
 
 `adapter/syscall/ff_adapter.h:5-8`：
 ```c
@@ -31,107 +31,92 @@
 #define SOCK_FSTACK 0x01000000
 #define SOCK_KERNEL 0x02000000
 ```
-- `SOCK_FSTACK`/`SOCK_KERNEL` 是 F-Stack 适配层在标准 `socket()` 的 `type` 参数高位上附加的**选栈标记**（不与 glibc 的 `SOCK_*` 真值冲突）。
-- **这正是 v3 要标准化的"特定标记"**：应用无需调用多套 API，只需在 `type` 上按需置标记即可选栈；不置标记则按默认（hook 模式默认 F-Stack，详见 §2）。
+- 叠加在标准 `socket()` 的 `type` 高位，不与 glibc `SOCK_*` 真值冲突。
+- 默认（不置标记）走 F-Stack；带 `SOCK_KERNEL`（且无 `SOCK_FSTACK`）走内核栈。`lib/ff_api.h` 已 `#ifndef` 暴露这两个宏（v3 遗留，正确，保留）。
 
 ---
 
-## 2. hook 模式：单 API + 标记选栈（v3 首要复用基线）
+## 2. hook 模式 FF_KERNEL_EVENT：双栈共存主基线（已实测）
 
-### 2.1 领域判定
-`adapter/syscall/ff_hook_syscall.c:360` `fstack_territory(domain, type, protocol)`：先剥离 `SOCK_CLOEXEC/SOCK_NONBLOCK/SOCK_FSTACK/SOCK_KERNEL`（:363-366），仅当 `domain∈{AF_INET,AF_INET6}` 且 `type∈{SOCK_STREAM,SOCK_DGRAM}` 才属 F-Stack 领域（:368-373），否则返回 0（→ 内核栈）。
+> README（`adapter/syscall/README.md:169-186`）原文："This mode can support both F-Stack and the system kernel's socket interface at the same time." 启用：`Makefile` 或 `export FF_KERNEL_EVENT=1`。demo=`main_stack_epoll_kernel.c`。
 
-### 2.2 选栈核心（`ff_hook_socket`）
-`ff_hook_syscall.c:380` `ff_hook_socket(domain, type, protocol)`：
-```c
-if (unlikely(fstack_territory(domain, type, protocol) == 0))     /* :383 非 fstack 领域 → 内核 */
-    return ff_linux_socket(domain, type, protocol);
-if (unlikely(type & SOCK_KERNEL) && !(type & SOCK_FSTACK)) {     /* :387 显式选内核 */
-    type &= ~SOCK_KERNEL;                                        /* :388 清标记 */
-    return ff_linux_socket(domain, type, protocol);             /* :389 → 内核栈 */
-}
-...
-type &= ~SOCK_FSTACK;                                            /* :406 清标记后建 F-Stack socket */
-```
-- 注释 `:376-378`："APP need set type |= SOCK_FSTACK"。
-- **结论**：默认走 F-Stack；带 `SOCK_KERNEL`（且无 `SOCK_FSTACK`）→ 走内核栈。**单一 `socket()` 入口 + 标记**即完成选栈，胶水层自动适配——v3 直接复用此范式。
-
-### 2.3 epoll 同范式
-`ff_hook_syscall.c:1981` `ff_hook_epoll_create`：`(fdsize & SOCK_KERNEL) && !(fdsize & SOCK_FSTACK)` → `ff_linux_epoll_create`（:1982-1983），同样以标记选内核侧 epoll。
-
-### 2.4 后续操作按 fd 归属自动路由
-- fd 归属宏：`ff_hook_syscall.c:57-61` `CHECK_FD_OWNERSHIP(name, args)`：`if (!is_fstack_fd(fd)) return ff_linux_##name args;`——**非 F-Stack fd 直接转内核 `ff_linux_*`**。
-- 归属判定：`ff_hook_syscall.c:309` `is_fstack_fd(int sockfd)`（F-Stack fd 经编码偏移区分；配套 `convert_fstack_fd`/`restore_fstack_fd`）。
-- `bind/listen/accept/connect/recv/send/close` 等 hook 函数均通过 `CHECK_FD_OWNERSHIP` 在入口按归属分流：socket 创建时的标记**一次决定**该 fd 后续所有操作走哪栈。
-
----
-
-## 3. 客户端 connect 选栈路径（v3 新增能力，已实测）
-
-`adapter/syscall/ff_hook_syscall.c:847-886` `ff_hook_connect(fd, addr, addrlen)`：
-```c
-CHECK_FD_OWNERSHIP(connect, (fd, addr, addrlen));   /* :858 非 fstack fd → ff_linux_connect */
-...
-SYSCALL(FF_SO_CONNECT, args);                        /* :881 否则走 F-Stack connect */
-```
-- **关键事实**：`connect` **纯按 fd 归属路由**，不看目的地址。即：
-  - 若该 socket 创建时带 `SOCK_KERNEL`（或在"默认内核栈"配置下创建）→ 是内核 fd → `connect` 走 `ff_linux_connect`（`ff_linux_syscall.c:144`）→ **可连本机 `127.0.0.1`/本机内核栈 IP 及任意外部内核栈服务**。
-  - 若是 F-Stack fd → `connect` 走 F-Stack 栈（经 DPDK 网卡）。
-- **v3 客户端用法（据代码推导，可行）**：F-Stack 应用作客户端要连内核栈服务（本机或外部），只需让该 socket 走内核栈（hook 模式：`socket(AF_INET, SOCK_STREAM|SOCK_KERNEL, 0)`；或在 config.ini 默认内核栈进程中直接 `socket(...)`），随后 `connect()` 即自动走内核栈。**与服务端选栈是同一套标记机制的两个方向**。
-
----
-
-## 4. config.ini 解析层（v3 全局默认开关落点，已实测）
-
-- 解析入口：`lib/ff_config.c:956` `ini_parse_handler(user, section, name, value)`；匹配宏 `:963` `#define MATCH(s,n) strcmp(section,s)==0 && strcmp(name,n)==0`。
-- 现有分节范式（可仿照）：`[dpdk]` 段 `:964-1010`、**`[kni]` 段 `:1011-1026`**（如 `MATCH("kni","enable") → pconfig->kni.enable=atoi(value)` :1011-1012）。
-- 配置校验：`:1261+`（如 kni.method 合法性 :1266-1281）；默认值设置：`:1358+`；字符串字段释放：`:1647+`。
-- 配置结构：`lib/ff_config.h:253` `struct ff_config`，含匿名嵌套段 `dpdk`（:255-308）、**`kni`（:310-319）**、`log`（:321-325）、`freebsd`（:327-334）、`pcap`（:336-342）；`extern struct ff_config ff_global_cfg;`（:345）。
-- **v3 落点**：新增"全局默认栈开关"应仿 `[kni]` 范式——在 `struct ff_config` 增一个嵌套段（如 `stack`，含 `int default_to_kernel;`）+ 在 `ini_parse_handler` 增 `MATCH("stack","default_stack")` 分支 + 默认值。
-- **多进程模型佐证**：F-Stack 每进程一个实例、各持自己的 config.ini（`struct ff_config.filename` :254；`ff_load_config` 声明 `ff_config.h:347`）。故"不同进程走不同默认栈"靠**不同 config 文件**实现，**无需线程级选栈**。
-
----
-
-## 5. 原生 ff_api 模式的标记差异（重要，已实测，以代码为准）
-
-- 原生入口：`lib/ff_syscall_wrapper.c:912-926` `ff_socket(domain, type, protocol)`：
-```c
-sa.type = linux2freebsd_socket_flags(type);   /* :918 */
-... sys_socket(curthread, &sa);                /* :920 直接进 FreeBSD 栈 */
-```
-- `linux2freebsd_socket_flags`（`:668-` ）**只处理 `LINUX_SOCK_NONBLOCK`/`LINUX_SOCK_CLOEXEC`**（:671-677），**不识别 `SOCK_FSTACK`/`SOCK_KERNEL`**。
-- **结论（以代码为准）**：**原生 `ff_socket` 恒建 F-Stack socket，不做标记选栈**。即"单 API + 标记选栈 + 胶水自动适配"**目前仅在 hook 模式成立**；原生模式下选内核栈现状需应用自行调用 libc `socket()`。
-- **v3 设计含义**：要让原生模式也"单 API + 标记选栈"，需在原生 glue 层做**标准化补强**（仿 `ff_hook_socket:387-390`，在 `ff_socket` 入口识别 `SOCK_KERNEL` → 转 libc `socket`/`ff_linux_socket` 等价路径），属实现阶段工作（见 `05`/`06`）；本阶段如实记录此差异，作为 v3 的设计点而非既成事实。
-
----
-
-## 6. 双栈事件合并（沿用并复核，已实测）
-
+### 2.1 标记选栈（应用 on F-Stack，业务默认走 F-Stack）
 `adapter/syscall/ff_hook_syscall.c`：
-- 映射表：`:257-258` `int fstack_kernel_fd_map[FF_MAX_FREEBSD_FILES];`（`FF_MAX_FREEBSD_FILES=65536`）。
-- create 镜像内核 epoll：`:1996-1998`（`fstack_kernel_fd_map[ret]`）。
-- ctl 路由非 fstack fd：`:2016-2023`。
-- wait 合并（先取内核事件 `timeout=0` + 节流，再合并 F-Stack 事件）：`:2324+`；`maxevents>=2` 约束 `:2212-2218`。
-- close 联动：`:1874-1883`。
-- 内核侧封装：`adapter/syscall/ff_linux_syscall.c` socket:81/bind:88/listen:96/accept:131/connect:144/close:217/epoll_create:233/epoll_ctl:239/epoll_wait:247。
+- `fstack_territory(domain,type,protocol)` `:360`：剥离 `SOCK_CLOEXEC/NONBLOCK/FSTACK/KERNEL`（:363-366），仅 `AF_INET/INET6`+`SOCK_STREAM/DGRAM` 属 F-Stack 领域。
+- `ff_hook_socket` `:380`：
+  ```c
+  if (fstack_territory(...)==0) return ff_linux_socket(...);        /* :383-385 非领域 → 内核 */
+  if ((type & SOCK_KERNEL) && !(type & SOCK_FSTACK)) {             /* :387 显式内核 */
+      type &= ~SOCK_KERNEL; return ff_linux_socket(...);          /* :388-390 → 内核栈 */
+  }
+  ... type &= ~SOCK_FSTACK;                                        /* :406 默认 → F-Stack 业务栈 */
+  ```
+  注释 `:376-378`："APP need set type |= SOCK_FSTACK"。**默认业务走 F-Stack，per-fd `SOCK_KERNEL` 走内核——二者在同一进程共存。**
+
+### 2.2 fd 归属与后续路由
+- `CHECK_FD_OWNERSHIP(name,args)` `:57-61`：`if(!is_fstack_fd(fd)) return ff_linux_##name args;`——非 F-Stack fd 转内核。
+- `is_fstack_fd(sockfd)` `:309`：F-Stack fd 经编码偏移区分（配 `convert_fstack_fd`/`restore_fstack_fd`）。
+- `bind/listen/accept/connect/recv/send/close` 入口均经 `CHECK_FD_OWNERSHIP` 按归属分流；客户端 `ff_hook_connect` `:847-886`（`:858` CHECK_FD_OWNERSHIP、`:881` `SYSCALL(FF_SO_CONNECT)`）纯按 fd 归属路由。
+
+### 2.3 双栈统一事件（FF_KERNEL_EVENT 核心）
+- 映射表 `:257-258` `int fstack_kernel_fd_map[FF_MAX_FREEBSD_FILES];`（`=65536`）。
+- `ff_hook_epoll_create` `:1981`：按 `SOCK_KERNEL` 选内核 epoll（`:1982-1983`），并镜像内核 epoll fd（`:1996-1998` `fstack_kernel_fd_map[ret]`）。
+- ctl 路由非 fstack fd `:2016-2023`；wait 合并（先 `timeout=0` 取内核事件+节流，再合并 F-Stack 事件）`:2324+`（`:2333-2336`）；`maxevents>=2` `:2212-2218`。
+- close 联动释放两栈 fd `:1874-1883`。
+- 内核侧封装 `adapter/syscall/ff_linux_syscall.c`（dlsym 宿主 libc）：socket:81/bind:88/listen:96/accept:131/connect:144/close:217/epoll_create:233/epoll_ctl:239/epoll_wait:247。
+
+> **结论**：hook 模式已是「应用 on F-Stack + per-fd 标记选栈 + 双栈 epoll 合并」的完整共存实现，**v4 固化为主基线**，并补正确的同进程双栈 demo（v3 demo 是纯内核、错误）。
 
 ---
 
-## 7. 交叉验证差异清单（文档/README/注释 vs 代码）
+## 3. nginx kernel_network_stack：双栈共存参考（已实测）
+
+- 指令 `src/http/ngx_http_core_module.c:298-303`（`NGX_HAVE_FSTACK`，`ngx_conf_set_flag_slot` → `offsetof(ngx_http_core_srv_conf_t, kernel_network_stack)`）；字段 `ngx_http_core_module.h:206` `ngx_flag_t kernel_network_stack;`；merge 默认 `0`（`:3540-3541`，注释 `:3539` "By default, we set up a server on fstack"）。stream/mail 同有实现。
+- 落归属：`src/http/ngx_http.c:1890` `ls->belong_to_host = cscf->kernel_network_stack;`（stream `ngx_stream.c:1049`）。
+- socket 按归属加/不加 `SOCK_FSTACK`：`ngx_ff_skip_listening_socket()` `src/core/ngx_connection.c:22-49`（worker 非内核监听 `*type |= SOCK_FSTACK` `:46`）。
+- **双事件后端共存**：F-Stack=kqueue 主后端 `ngx_event_actions`；内核=独立 Linux epoll 后端 `ngx_ff_host_event_actions`（`src/event/modules/ngx_ff_host_event_module.c:441`）；`ngx_add_event/ngx_del_event` 按 `ev->belong_to_host` 分流（`src/event/ngx_event.h:408-424`）；事件循环同时跑两栈（`src/event/ngx_event.c:258-280`：先 `ngx_process_events`(kqueue) 再 `ngx_ff_process_host_events`(epoll)）。
+- fd 区分：`convert/restore_fstack_fd` + `is_fstack_fd`（fd≥`ngx_max_sockets`，`src/event/modules/ngx_ff_module.c:147-167`）。
+- 归属传播：listen→event `ngx_event.c:889`；accept 继承 `ngx_event_accept.c:236`；connect 按 fd 判定 `ngx_connection.c:1310` `is_fstack_fd(s)?0:1`。
+
+> **结论**：nginx 进程整体 on F-Stack（worker 跑 DPDK+FreeBSD 栈），per-server `kernel_network_stack on` 让该 server 走内核栈，双事件后端在同一 worker 共存——与 v4「共存」范式完全同构，作为参考。
+
+---
+
+## 4. 原生 ff_api 模式的事件层缺口（v4 新设计落点，已实测）
+
+- `lib/ff_epoll.c`：`ff_epoll_create(size)` `:25-28` = `return ff_kqueue();`；`ff_epoll_ctl` `:31-104` → `ff_kevent`；`ff_epoll_wait` `:148-158` → `ff_kevent_do_each`。**纯 F-Stack kqueue 封装，零内核 fd 感知**。
+- 原生入口 `lib/ff_syscall_wrapper.c:912 ff_socket` → `linux2freebsd_socket_flags(type)` `:668-677`（仅 NONBLOCK/CLOEXEC，**不识别 SOCK_KERNEL/SOCK_FSTACK**）→ `sys_socket` 必进 FreeBSD 栈。
+- 原生应用跑 `ff_run(loop,arg)`（`ff_api.h:59`）DPDK 主循环；事件用 `ff_kqueue/ff_kevent`（`ff_api.h:158-159`）或 `ff_epoll_*`。
+- **缺口结论**：原生模式当前**无法共存**——没有 fd 归属表、内核 epoll 镜像、事件合并；`ff_socket` 恒建 F-Stack socket。要让原生应用一进程双栈共存，v4 需在 lib 内**仿 hook/nginx 新建**：(a) fd 归属登记；(b) `ff_socket(SOCK_KERNEL)` 经 `ff_host_interface` 建**受管内核 fd**（登记归属，**非 v3 的裸绕过**）；(c) `ff_bind/ff_listen/ff_accept/ff_connect/ff_close/ff_epoll_ctl` 按归属路由到宿主 syscall；(d) `ff_epoll_wait` 合并 kqueue⊕内核 epoll。默认/`SOCK_FSTACK` 路径逐字节零回归。详见 `04`/`05`/`06`。
+
+---
+
+## 5. v3 错误回退核对（已回退，commit 0748eff94）
+
+| 项 | v3 错误 | v4 处置 |
+|---|---|---|
+| `lib/ff_syscall_wrapper.c` ff_socket | `SOCK_KERNEL→ff_host_socket` 裸宿主 socket（绕开 F-Stack） | **已回退**为干净 F-Stack 路径 |
+| `lib/ff_host_interface.{c,h}` | `ff_host_socket`=裸 `socket()`、`ff_default_stack_is_kernel` 声明 | **已回退** |
+| `example/helloworld_stacksel/` | 全程纯内核 socket、无 F-Stack 业务 | 待 R2/R3 重写为**同进程双栈共存** demo |
+| `lib/ff_config.{c,h}` `[stack] default_stack` | 整进程默认内核（反 F-Stack） | 待 R3 改为**共存能力开关**（不改默认 per-fd F-Stack） |
+| `10-perf-baseline-report` | 基于纯内核 bench | 作废/重写为共存对 F-Stack 快路径无回归 |
+
+---
+
+## 6. 交叉验证差异清单（文档/注释 vs 代码）
 
 | 编号 | 出处 | 代码出处 | 实际结论 |
 |---|---|---|---|
-| D1 | 用户表述"两种已有模式都支持本地 socket 访问" | `ff_hook_socket:387-390`、`ff_hook_connect:858` | 属实（hook 模式靠标记选栈，含客户端 connect） |
-| D2 | v2 spec 误以"新造 `ff_local_*` 双 API"为方案 | hook 层本就是单 API + 标记 | v2 方向错误，v3 改为复用现有单 API + 标记 |
-| D3 | `ff_hook_syscall.c` 注释称"首版不支持 `ff_linux_epoll_wait`" | `:2324+` 实际已调用 | 以代码为准：已调用（带节流） |
-| D4 | 直觉认为"原生 `ff_socket` 也识别 `SOCK_KERNEL`" | `ff_socket:918` + `linux2freebsd_socket_flags:668-677` | **不识别**：原生模式恒建 F-Stack socket，选内核栈需标准化补强（§5） |
+| D1 | v3 误把「ff_socket→纯内核 socket」当方案 | hook/nginx 均为「应用 on F-Stack + 内核 fd 共存」 | v3 方向错误；v4 改为共存，F-Stack 始终在位 |
+| D2 | 注释「首版不支持 ff_linux_epoll_wait」 | `:2324+` 实际已调用（带节流） | 以代码为准：已调用 |
+| D3 | 原生 `ff_socket` 识别 SOCK_KERNEL？ | `:918`+`linux2freebsd_socket_flags:668-677` | 不识别，恒建 F-Stack socket；原生共存需 §4 新设计 |
 
 ---
 
-## 8. 用于撰写 04/05/06 的要点清单
+## 7. 用于撰写 04/05/06 的要点清单
 
-- **选栈标记标准化**：以 `SOCK_KERNEL`/`SOCK_FSTACK`（`ff_adapter.h:7-8`）为唯一选栈标记，hook 模式直接复用（`ff_hook_socket:387-390`），原生模式补识别分支。
-- **config.ini 全局默认开关**：仿 `[kni]`（`ff_config.c:1011`/`ff_config.h:310-319`）新增 `[stack] default_stack` + `struct ff_config.stack` 字段；优先级 **app 标记 > config 默认**。
-- **客户端选栈**：socket 创建时标记/配置定栈，`connect`（`ff_hook_connect:858`）按 fd 归属自动走内核/F-Stack，覆盖连本机回环/本机 IP/外部内核服务。
-- **fd 归属与事件**：`is_fstack_fd:309` + `CHECK_FD_OWNERSHIP:57-61` 自动分流；双栈事件用 `fstack_kernel_fd_map` 合并（§6）。
-- **双模式覆盖**：hook 模式（完整成立）+ 原生模式（需 §5 标准化补强）。
+- **主基线=hook FF_KERNEL_EVENT**：复用标记选栈（`ff_hook_socket:387-390`）+ 双栈 epoll 合并（`fstack_kernel_fd_map:257-258`/`:2324+`）+ close 联动（`:1874-1883`），固化并补正确 demo。
+- **参考=nginx kernel_network_stack**：per-listen 开关 + 双事件后端（kqueue+epoll）同 worker 共存。
+- **新设计=原生统一事件共存**：lib 内 fd 归属 + 受管内核 fd（`ff_host_interface` 宿主 socket，非裸绕过）+ `ff_epoll_wait` 合并 kqueue⊕epoll；默认/`SOCK_FSTACK` 零回归。
+- **config**：仿 `[kni]` 增**共存能力开关**（启用/禁用内核栈共存），删除整进程默认内核语义。
+- **共存铁律**：F-Stack 用户态栈始终承担业务，内核栈仅附加旁路（NFR-3）。

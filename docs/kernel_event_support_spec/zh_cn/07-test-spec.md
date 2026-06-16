@@ -1,12 +1,11 @@
 # 07 测试与性能基线规格
 
 > **文档编号**：SPEC-KE-07
-> **版本**：v3（范式修正重做）
-> **日期**：2026-06-15
+> **版本**：v4（共存范式返工重写）
+> **日期**：2026-06-16
 > **状态**：编写中
-> **作用域**：本特性（单 API+标记选栈/config 默认开关/客户端选栈/双模式）的单元/集成/性能基线测试方案与门禁标准。
-> **对齐**：F-Stack 既有测试体系 `tests/unit`（**cmocka**，*.c + *.ini）、`tests/integration`、覆盖率 `tests/run_full_coverage.sh`（lcov，`tests/full_coverage_report/`）。
-> **注**：spec 早期稿写作 Unity，实际仓库 `tests/unit` 采用 **cmocka**（经 `c-unittest-expert` 方法学映射）；以实际仓库为准，本文统一为 cmocka。
+> **作用域**：本特性（双栈共存：hook FF_KERNEL_EVENT + 原生统一事件 + config 共存开关 + 客户端共存）的单元/集成/性能基线测试方案与门禁标准。
+> **对齐**：`tests/unit`（**cmocka**，*.c + *.ini）、`tests/integration`、覆盖率 `tests/run_full_coverage.sh`（lcov）。
 
 ---
 
@@ -14,9 +13,9 @@
 
 | 层级 | 目录 | 框架/方式 | 覆盖目标 |
 |---|---|---|---|
-| 单元测试 | `tests/unit/`（新增选栈用例） | cmocka（对齐既有 `*.c`+`*.ini`） | 标记选栈/归属判定/config 解析/事件合并 |
-| 集成测试 | `tests/integration/` | 端到端进程 + 本机工具 | 服务端本机直访、客户端连本机/外部、双栈并存 |
-| 性能基线 | `tests/`（性能脚本） | 压测 + 对比 | 默认/开启选栈的回归对比 |
+| 单元测试 | `tests/unit/` | cmocka | config 共存开关解析、fd 归属、原生受管内核 fd、事件合并边界、零回归 |
+| 集成测试 | `tests/integration/` 或 demo | 端到端进程 + 本机工具 | **同进程双栈共存**：F-Stack 业务 + 内核监听被本机直访 + 客户端连本机/外部 |
+| 性能基线 | `tests/` | 压测 + 对比 | 共存开/关对 **F-Stack 业务快路径** 无回归 |
 
 ---
 
@@ -24,37 +23,37 @@
 
 | 编号 | 用例 | 断言 | 对应需求 |
 |---|---|---|---|
-| UT-1 | `socket(SOCK_STREAM\|SOCK_KERNEL)`（hook） | 返回内核 fd，`is_fstack_fd==false` | FR-1/FR-6 |
-| UT-2 | `socket(SOCK_STREAM)` 默认 | 走 F-Stack，`is_fstack_fd==true` | FR-6 |
-| UT-3 | `type` 同置 `SOCK_KERNEL\|SOCK_FSTACK` | 按优先级走 F-Stack（`ff_hook_socket:387` 条件不成立） | 边界/`05 §8` |
-| UT-4 | config `default_stack=kernel` + 不带标记 | 默认走内核栈 | FR-5 |
-| UT-5 | config `default_stack=kernel` + 带 `SOCK_FSTACK` | app 标记覆盖，走 F-Stack | FR-5/优先级 |
-| UT-6 | `ini_parse_handler` 解析 `[stack] default_stack` | 正确填充 `ff_config.stack.default_to_kernel` | FR-5 |
-| UT-7 | 原生 `ff_socket(SOCK_KERNEL)`（补强后） | 走内核栈（补强前记录恒 F-Stack，`02 §5`/D4） | FR-6 |
-| UT-8 | 客户端 `connect` fd 归属路由 | 内核 fd → `ff_linux_connect`；F-Stack fd → F-Stack | FR-3/FR-4 |
-| UT-9 | `epoll_wait(maxevents=1)` | 返回 `-EINVAL`（对照 `:2212-2218`） | 边界 |
-| UT-10 | epoll 同时注册内核 fd 与 F-Stack fd | 两类事件均返回不丢失 | FR-7 |
-| UT-11 | `close` 内核侧 fd | 两栈资源联动释放、无泄漏（对照 `:1874-1883`） | FR-8 |
-| UT-12 | 编译开关关闭 / 默认 F-Stack | 行为等价纯 F-Stack，零开销 | NFR-1/FR-9 |
+| UT-1 | `ini_parse_handler` 解析 `[stack] kernel_coexist=1/0` | 正确填充 `ff_config.stack.kernel_coexist` | FR-9 |
+| UT-2 | config 缺 `[stack]` | 默认 `kernel_coexist=0`（纯 F-Stack） | FR-9/NFR-1 |
+| UT-3 | 原生 `ff_socket` 默认/`SOCK_FSTACK` | 走 F-Stack（逐字节零回归，路径不变） | FR-1/NFR-1 |
+| UT-4 | 原生 `ff_socket(SOCK_KERNEL)`（共存启用） | 建受管内核 fd 并登记归属（`is_*_kernel_fd==true`） | FR-7 |
+| UT-5 | 原生 `ff_socket(SOCK_KERNEL)`（共存禁用） | 按约定报错或退化（不静默旁路 F-Stack） | 边界/`05 §8` |
+| UT-6 | fd 归属判定 | 受管内核 fd 与 F-Stack fd 正确区分 | FR-8 |
+| UT-7 | 原生 `ff_epoll_ctl` 分流 | 内核 fd→宿主 epoll；F-Stack fd→kqueue | FR-6 |
+| UT-8 | 原生 `ff_epoll_wait` 合并 | 同时返回两栈事件、不丢失 | FR-6 |
+| UT-9 | `type` 同置 `SOCK_KERNEL\|SOCK_FSTACK` | 按优先级走 F-Stack | 边界 |
+| UT-10 | `ff_close` 受管内核 fd | 联动释放、清归属表、无泄漏 | FR-8 |
+| UT-11 | hook 模式 `maxevents=1` | 返回 `-EINVAL`（`:2212-2218`） | 边界 |
+| UT-12 | 共存关闭 / 默认 | 行为等价纯 F-Stack | NFR-1/NFR-3 |
 
-> 用例落地参照 `tests/unit/` 既有 `*.c`+`*.ini`（cmocka）组织；可按需引用 `[skill:c-unittest-expert]`（cmocka）规范。
+> 落地参照 `tests/unit/` 既有 `*.c`+`*.ini`（cmocka）组织。
 
 ---
 
-## 3. 集成测试用例
+## 3. 集成测试用例（同进程双栈共存为核心）
 
 | 编号 | 场景 | 步骤 | 通过标准 | 对应需求 |
 |---|---|---|---|---|
-| IT-1 | 服务端本机 curl 直访 | 启动示例（`SOCK_KERNEL` 内核栈监听）→ 本机 `curl 127.0.0.1:port` / `curl <host_ip>` | HTTP 200 | FR-1 |
-| IT-2 | 本机 ping | `ping <host_ip>` | 有回包 | FR-2 |
-| IT-3 | **客户端连本机服务** | 本机起 server（内核栈）→ F-Stack app（`SOCK_KERNEL`）`connect 127.0.0.1`/本机 IP | 连接建立、收发正常 | FR-3 |
-| IT-4 | **客户端连外部内核服务** | F-Stack app（`SOCK_KERNEL`）`connect <外部内核栈服务>` | 连接建立、收发正常 | FR-4 |
-| IT-5 | config 默认栈 | 改 config `default_stack=kernel` 重启 → 不带标记的 socket 走内核 | 默认栈生效；标记可覆盖 | FR-5 |
-| IT-6 | 多进程差异化 | 两进程用不同 config（fstack/kernel 默认） | 各自默认栈独立生效 | NFR-6 |
-| IT-7 | 双栈并存 | 同进程内 F-Stack 业务监听 + 内核栈管理监听 | 业务走 DPDK NIC、管理走内核，互不干扰 | FR-6/FR-7 |
-| IT-8 | 长稳/泄漏 | 大量短连接反复开关（含客户端） | fd 数稳定、无泄漏 | FR-8 |
+| IT-1 | **同进程双栈并存** | 启动 demo：同一进程内 F-Stack 业务监听（默认）+ `SOCK_KERNEL` 内核监听 | 两监听均建立；F-Stack 业务经 NIC、内核监听经内核 | FR-1/FR-2/FR-6 |
+| IT-2 | 服务端本机直访内核监听 | 本机 `curl 127.0.0.1:<kport>` / `curl <host_ip:kport>` | HTTP 200（同时业务监听仍在位） | FR-2 |
+| IT-3 | 本机 ping | `ping <host_ip>` | 有回包 | FR-3 |
+| IT-4 | 客户端连本机服务 | demo 内 `SOCK_KERNEL` 客户端 `connect 127.0.0.1`/本机 IP | 连接建立、收发正常；业务客户端仍走 F-Stack | FR-4 |
+| IT-5 | 客户端连外部内核服务 | `SOCK_KERNEL` 客户端 `connect <外部内核服务>` | 连接建立、收发正常 | FR-5 |
+| IT-6 | config 共存开关 | `kernel_coexist=0` 重启 → `SOCK_KERNEL` 按约定不旁路 | 关闭时纯 F-Stack | FR-9/NFR-1 |
+| IT-7 | 多进程差异化 | 两进程不同 config（共存开/关） | 各自独立生效 | NFR-6 |
+| IT-8 | 长稳/泄漏 | 大量短连接反复开关（含两栈） | fd 数稳定、无泄漏 | FR-8 |
 
-> 进程清理用 `/data/workspace/kill_process.sh`，临时文件用 `/data/workspace/rm_tmp_file.sh`，权限调整用 `/data/workspace/chmod_modify.sh`。
+> 进程清理用 `/data/workspace/kill_process.sh`，临时文件用 `/data/workspace/rm_tmp_file.sh`，权限用 `/data/workspace/chmod_modify.sh`。
 
 ---
 
@@ -62,27 +61,28 @@
 
 | 编号 | 指标 | 方法 | 门禁 |
 |---|---|---|---|
-| PERF-1 | F-Stack 业务路径回归 | 关闭选栈/默认 F-Stack vs 基线 | 吞吐/时延偏差 ≤ 噪声阈值（NFR-2） |
-| PERF-2 | 开启选栈业务路径回归 | 内核侧监听空载，压测 F-Stack 业务 | 业务快路径无显著回归 |
-| PERF-3 | 原生 `ff_socket` 补强开销 | 标记识别分支对默认路径的影响 | 默认路径零/可忽略开销（NFR-1） |
-| PERF-4 | 事件合并延迟 | 内核事件取用节流（`:2324+`）对延迟影响 | 延迟在可接受区间 |
-| PERF-5 | 内核侧管理面/客户端吞吐 | 本机 curl 并发 / 客户端 connect 压测 | 满足管理面预期（非高速路径） |
+| PERF-1 | **F-Stack 业务快路径回归** | 共存关闭 vs 共存启用但只压 F-Stack 业务 | 吞吐/时延偏差 ≤ 噪声阈值（NFR-2） |
+| PERF-2 | 默认路径零开销 | 共存分支对默认/`SOCK_FSTACK` 路径影响 | 零/可忽略（NFR-1） |
+| PERF-3 | 内核侧旁路吞吐 | 本机 curl 并发内核监听 / 客户端 connect | 满足管理面预期（非高速路径） |
+| PERF-4 | 事件合并延迟 | 内核事件节流对延迟影响 | 可接受区间 |
+
+> **注**：v3 的「纯内核 loopback bench」口径已作废（它根本没跑 F-Stack）。v4 性能核心是**证明共存不拖累 F-Stack 业务快路径**。
 
 ---
 
 ## 5. 覆盖率与门禁标准
 
-- 复用 `tests/run_full_coverage.sh`（lcov）统计本特性改动（`ff_config.{c,h}` 新增段、`ff_socket` 标记分支、`ff_hook_*` 选栈路径）覆盖率。
+- 复用 `tests/unit/run_coverage.sh`/`tests/run_full_coverage.sh`（lcov）统计本特性改动覆盖率。
 - **门禁标准**：
-  1. UT 全通过、新增代码行覆盖率达既有项目标准。
-  2. IT-1~IT-8 全通过（服务端本机直访 + 客户端连本机/外部 + config 默认 + 多进程 实测成功）。
-  3. PERF-1/PERF-2/PERF-3 业务快路径与默认路径无回归。
-  4. 关闭/默认 F-Stack 时与纯 F-Stack 行为/性能一致（NFR-1/2）。
-- 任一项失败 → 按 plan 的 bounce 规约打回上一里程碑修复（同一步骤 ≤3 次，超限转人工）。
+  1. UT 全通过、新增代码行覆盖率达既有标准。
+  2. IT-1（同进程双栈并存）+ IT-2~IT-5（直访/ping/客户端）实测成功（环境不具备真实 NIC 时，F-Stack 业务面 skip+实测证据，内核侧 loopback 必测）。
+  3. PERF-1/PERF-2 F-Stack 业务快路径与默认路径无回归。
+  4. 共存关闭/默认时与纯 F-Stack 行为/性能一致（NFR-1/NFR-3）。
+- 任一项失败 → bounce 打回上一里程碑（同步骤≤3 次，超限转人工）。
 
 ---
 
 ## 6. 交叉验证要求
-- 所有测试需**实际执行取证**（日志/抓包/覆盖率报告），禁止臆测。
-- 测试断言中引用的代码行号与实际代码一致，冲突以代码为准。
+- 所有测试实际执行取证（日志/抓包/覆盖率），禁止臆测。
+- **必须实测证明 F-Stack 业务面在共存下仍在位、未被旁路**（NFR-3）。
 - 客户端用例须实测 `connect` 经内核栈到达（抓包确认走内核而非 DPDK 网卡）。

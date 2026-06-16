@@ -1,8 +1,8 @@
-# 01 需求规格：F-Stack 连接级选栈增强（单 API + 标记 + config 默认开关）
+# 01 需求规格：F-Stack 用户态栈 + 本地内核栈「共存」访问
 
 > **文档编号**：SPEC-KE-01
-> **版本**：v3（范式修正重做）
-> **日期**：2026-06-15
+> **版本**：v4（共存范式返工重写）
+> **日期**：2026-06-16
 > **状态**：编写中
 > **作用域**：定义本特性的问题域、目标/非目标、功能与非功能需求、成功标准。
 
@@ -10,55 +10,61 @@
 
 ## 1. 问题域
 
-F-Stack 通过 DPDK 接管网卡后，该网卡流量绕过 Linux 内核协议栈，导致：
+F-Stack 通过 DPDK 接管网卡后，该网卡流量绕过 Linux 内核协议栈。一个 F-Stack 应用希望**在继续用 F-Stack 用户态栈跑业务的同时**，还能：
 
-1. **服务端方向**：本机工具（`ping`/`curl`/`ssh`）无法访问运行在 F-Stack 用户态栈上的服务。
-2. **客户端方向**：F-Stack 应用作客户端时，无法用内核栈去 `connect` 本机服务（`127.0.0.1`/本机内核栈 IP）或外部内核栈服务。
+1. **服务端方向**：让某些监听 socket 走宿主内核栈，使本机 `ping`/`curl`/`ssh` 可直访（如管理面/健康检查/本机调试）。
+2. **客户端方向**：作客户端经内核栈 `connect` 本机服务（`127.0.0.1`/本机内核栈 IP）或外部内核栈服务。
+3. **统一事件**：业务（F-Stack）与内核栈 fd 在**同一事件循环**中统一处理，不必拆成两个进程/两套循环。
 
-F-Stack 的 `adapter/syscall`（hook/LD_PRELOAD 模式）**已实现"单 POSIX API + `SOCK_KERNEL`/`SOCK_FSTACK` 标记 + 胶水自动适配"**的选栈能力（见 `02`），但：
-- 该标记语义**内嵌**在 syscall 适配层，未被标准化为"任意 F-Stack 应用可依赖的选栈约定"；
-- **缺少 config.ini 级别的"全局默认栈开关"**（只能靠应用逐 socket 设标记）；
-- **客户端连本机/外部内核栈服务**未被系统化文档化；
-- **原生 `ff_api` 模式**的 `ff_socket` 现状**不识别**选栈标记（`02 §5`，恒建 F-Stack socket）。
+**关键**：这必须是**共存**——F-Stack 用户态栈始终承担业务高速路径，内核栈只是按 fd 粒度**附加**的旁路通道；**绝不是**用内核栈替代/旁路掉 F-Stack（v3 的错误）。
 
-本特性即：**标准化现有"单 API + 标记选栈"约定 + 补齐 config.ini 全局默认开关 + 覆盖客户端方向 + 在原生模式补齐标记识别**，使任意 F-Stack 应用无需改用多套 API 即可按需选栈。
+F-Stack 已有两个共存实现可直接复用/借鉴（见 `02`）：
+- **hook 模式 `FF_KERNEL_EVENT`**（`adapter/syscall`）：`socket(type|SOCK_KERNEL)` 走内核栈，其余走 F-Stack，epoll 同时处理两栈并建立 F-Stack fd↔内核 fd 映射——**共存已完整实现**。
+- **nginx `kernel_network_stack`**（`app/nginx-1.28.0`）：per-server 开关置 `belong_to_host`，双事件后端（kqueue + Linux epoll）在同一 worker 共存。
+
+但：
+- hook 模式的共存能力**未被文档化固化**，也缺正确的「同进程双栈」demo（v3 的 demo 是纯内核、错误的）；
+- **原生 `ff_api` 模式**的 `ff_epoll_*` 是纯 kqueue 封装（`ff_epoll.c`），**无内核 fd 感知**，原生链接的应用无法共存；
+- config.ini 缺一个**共存能力开关**（且 v3 引入的 `default_stack=kernel` 是反 F-Stack 的错误语义，须废弃）。
+
+本特性即：**固化 hook 模式共存为主基线 + 补齐原生模式统一事件共存 + 加 config 共存能力开关 + 提供正确的同进程双栈 demo 与测试**。
 
 ---
 
 ## 2. 目标与非目标
 
 ### 2.1 目标（In Scope）
-- **G1（标记标准化）**：以现有 `SOCK_KERNEL`/`SOCK_FSTACK`（`ff_adapter.h:7-8`）为**唯一选栈标记**，标准化为可被任意 F-Stack 应用使用的约定；**不新造 `ff_local_*` 双 API、不新造 `belong_to_host` 参数**。
-- **G2（config.ini 全局默认开关）**：在 config.ini 新增**一个全局默认栈开关**（仿 `[kni]` 范式），决定本进程默认走 F-Stack 还是内核栈；**优先级：app 标记 > config 默认**。
-- **G3（服务端选栈）**：应用可让某监听 socket 走内核栈，本机 `ping`/`curl`/`ssh` 直访其服务。
-- **G4（客户端选栈，新增）**：应用作客户端可经内核栈 `connect` 访问本机回环/本机内核栈 IP 服务**及外部内核栈服务**（承载点 `ff_hook_connect:858`）。
-- **G5（双模式覆盖）**：选栈标记与客户端能力同时覆盖 **hook 模式**（完整复用）与**原生 `ff_api` 模式**（补齐 `ff_socket` 标记识别，`02 §5`）。
-- **G6（统一事件）**：单事件循环同时服务内核栈 fd 与 F-Stack fd（复用 `fstack_kernel_fd_map` 双栈合并）。
-- **G7（低侵入/默认零开销）**：编译开关默认关闭；不设标记/默认 F-Stack 时行为与原 F-Stack 一致。
+- **G1（共存语义标准化）**：以 `SOCK_KERNEL`/`SOCK_FSTACK`（`ff_adapter.h:7-8`）为 per-fd 选栈标记（默认 F-Stack）；标准化为任意 F-Stack 应用可依赖的共存约定。**不新造旁路 API、不新造 `belong_to_host` 参数式接口**。
+- **G2（hook 模式固化）**：以 `FF_KERNEL_EVENT` 为共存主基线，复核固化 `ff_hook_socket` 标记选栈 + `fstack_kernel_fd_map` 双栈 epoll 合并 + close 联动，并提供正确的「同进程 F-Stack 业务 + SOCK_KERNEL 内核」共存 demo。
+- **G3（原生模式统一事件共存，新设计）**：在 lib 内补 fd 归属表 + 内核 epoll 镜像 + `ff_epoll_wait` 合并 kqueue⊕epoll，使原生 `ff_*` 应用也能一进程双栈共存；`ff_socket(SOCK_KERNEL)` 建**受管内核 fd**（经 `ff_host_interface` 宿主 socket，但登记归属并纳入统一事件），后续 `ff_bind/ff_listen/ff_accept/ff_connect/ff_close/ff_epoll_ctl` 按归属路由。
+- **G4（config 共存能力开关）**：config.ini 增**一个开关**控制是否启用内核栈共存（运行期等价 `FF_KERNEL_EVENT` 的启用语义），**默认 per-fd F-Stack 不变**；**不提供「整进程默认内核」选项**。
+- **G5（服务端共存）**：F-Stack 业务监听照常走用户态栈；带 `SOCK_KERNEL` 的监听走内核栈，本机 `ping`/`curl` 直访。
+- **G6（客户端共存）**：业务客户端走 F-Stack；带 `SOCK_KERNEL` 的客户端经内核栈 `connect` 本机/外部内核服务。
+- **G7（默认零开销/零回归）**：未启用共存或未标记时，行为与原 F-Stack **逐字节一致**；F-Stack 业务快路径性能不受影响。
 
 ### 2.2 非目标（Out of Scope）
-- **N1**：**不**新造 `ff_local_*` 双 API / 类 mTCP 双命名空间（v2 做法作废）。
-- **N2**：**不**做 gazelle 式**线程级选栈**（F-Stack 多进程模型靠不同 config 文件区分，见 `02 §4`）。
-- **N3**：**不**做 config.ini 端口/地址规则名单（仅"一个全局默认开关"）。
-- **N4**：**不**采用 KNI/`rte_kni`/virtio-user/TAP/AF_XDP 报文回灌。
-- **N5**：本阶段**不写实现代码、不改 f-stack 源码**，仅产出中文 spec；**不生成英文文档**。
-- **N6**：不实现内核栈与 F-Stack 间 socket 自动迁移/透明代理（归属在创建时确定）。
+- **N1**：**不**新造绕开 F-Stack 的旁路 socket（v3 `ff_host_socket` 作废）；内核 fd 必须是「受管 + 纳入统一事件」的。
+- **N2**：**不**设「整进程默认走内核栈」开关（v3 `default_stack=kernel` 作废，反 F-Stack）。
+- **N3**：**不**新造 `ff_local_*` 双 API / 类 mTCP 双命名空间。
+- **N4**：**不**做 gazelle 式线程级选栈（多进程靠不同 config 文件）。
+- **N5**：**不**采用 KNI/`rte_kni`/virtio-user 报文回灌。
+- **N6**：不实现内核栈与 F-Stack 间 socket 自动迁移/透明代理（归属创建时确定）。
 
 ---
 
 ## 3. 功能需求（FR）
 
-| 编号 | 需求 | 验收要点 | 代码依据 |
+| 编号 | 需求 | 验收要点 | 代码依据/参考 |
 |---|---|---|---|
-| FR-1 | **标记选栈（服务端）**：带 `SOCK_KERNEL` 的监听 socket 走内核栈，本机 `curl`/`ssh` 可访问 | 本机访问内核栈监听成功 | `ff_hook_socket:387-390` |
-| FR-2 | 本机 `ping`（ICMP）对内核栈侧地址可达 | ping 通 | 内核栈原生处理 ICMP |
-| FR-3 | **标记选栈（客户端，新增）**：F-Stack 应用经内核栈 `connect` 本机回环/本机 IP 服务 | 本机 server + F-Stack client connect 通 | `ff_hook_connect:858` + `is_fstack_fd:309` |
-| FR-4 | **客户端连外部内核栈服务（新增）**：F-Stack 应用作客户端选栈访问外部内核栈服务 | 连外部内核服务成功 | `ff_hook_connect:858` → `ff_linux_connect:144` |
-| FR-5 | **config.ini 全局默认开关**：可配置本进程默认栈（F-Stack/内核），app 标记可覆盖 | 默认栈生效、标记覆盖生效 | `ff_config.c:1011`/`ff_config.h:310-319` 范式 |
-| FR-6 | **双模式覆盖**：hook 模式直接复用标记；原生 `ff_api` 模式补齐 `ff_socket` 标记识别 | 两模式均可标记选栈 | `02 §2`（hook）/`02 §5`（原生差异） |
-| FR-7 | 统一事件循环：单循环同时收 F-Stack 与内核栈事件 | 两栈事件均正确投递 | `ff_hook_syscall.c:2324+` |
-| FR-8 | fd 归属判定 + 资源联动：按归属分流，关闭/异常时两栈 fd 一致释放 | 行为正确、无 fd 泄漏 | `is_fstack_fd:309`、close 联动 `:1874-1883` |
-| FR-9 | 编译开关：本能力可编译期开/关，默认关闭零开销 | 关闭时与原 F-Stack 行为一致 | `Makefile -DFF_KERNEL_EVENT` 范式 |
+| FR-1 | **F-Stack 业务不受影响**：默认/`SOCK_FSTACK` 的 socket 仍走 F-Stack 用户态栈 | 业务监听/连接经 DPDK NIC 正常收发 | `ff_hook_socket:406`/`ff_socket` 默认路径 |
+| FR-2 | **服务端内核栈共存**：带 `SOCK_KERNEL` 的监听走内核栈，本机 `curl`/`ssh` 可访问 | 同进程内 F-Stack 业务监听 + 内核监听并存，本机访问内核监听成功 | `ff_hook_socket:387-390` |
+| FR-3 | 本机 `ping`（ICMP）对内核栈侧地址可达 | ping 通 | 内核栈原生处理 ICMP |
+| FR-4 | **客户端内核栈共存**：F-Stack 应用经内核栈 `connect` 本机回环/本机 IP 服务 | 本机 server + 该应用 client connect 通（同时其业务连接仍走 F-Stack） | `ff_hook_connect:858` + `is_fstack_fd:309` |
+| FR-5 | **客户端连外部内核服务**：经内核栈 `connect` 外部内核栈服务 | 连外部内核服务成功 | `ff_hook_connect:858`→`ff_linux_connect:144` |
+| FR-6 | **统一事件循环**：单 epoll 同时收 F-Stack 与内核栈事件 | 两栈事件均正确投递、不丢失 | hook：`fstack_kernel_fd_map:257-258`+合并 `:2324+`；原生：本轮新设计 |
+| FR-7 | **双模式覆盖**：hook 模式（FF_KERNEL_EVENT 固化）+ 原生 `ff_api` 模式（统一事件共存补齐） | 两模式均可同进程双栈共存 | `02 §2`（hook）/`02 §4`（原生新设计） |
+| FR-8 | **fd 归属 + 资源联动**：按归属分流，close/异常时两栈 fd 一致释放，无泄漏 | 行为正确、无 fd 泄漏 | hook `is_fstack_fd:309`+close 联动 `:1874-1883`；原生本轮补 |
+| FR-9 | **config 共存能力开关**：可启用/禁用内核栈共存，默认 per-fd F-Stack 不变 | 开关生效；关闭时等价纯 F-Stack | 仿 `[kni]`：`ff_config.c:1011`/`ff_config.h:310-319` |
 
 ---
 
@@ -66,33 +72,31 @@ F-Stack 的 `adapter/syscall`（hook/LD_PRELOAD 模式）**已实现"单 POSIX A
 
 | 编号 | 需求 |
 |---|---|
-| NFR-1 | **默认零开销**：未开启/默认 F-Stack 时不引入额外分支/内存开销 |
-| NFR-2 | **业务快路径无回归**：F-Stack 高速路径性能不受影响（基线见 `07`） |
-| NFR-3 | **可移植**：兼容本工作区 DPDK 23.11.5 / 24.11.6 与移植后的 FreeBSD 栈 |
-| NFR-4 | **可观测**：提供两栈 fd 数、事件数等基本统计 |
-| NFR-5 | **接口稳定/低侵入**：复用现有单 API + 标记，不引入多套 API；语义贴合 POSIX/`ff_api.h` |
-| NFR-6 | **多进程一致**：每进程经各自 config.ini 独立设默认栈，互不影响（`ff_config.filename:254`） |
+| NFR-1 | **默认零开销/零回归**：未启用共存或默认/`SOCK_FSTACK` 路径与原 F-Stack 逐字节一致 |
+| NFR-2 | **业务快路径无回归**：F-Stack 用户态栈高速路径性能不受共存影响（基线见 `07`） |
+| NFR-3 | **F-Stack 始终在位**：内核栈仅为附加旁路，任何场景下不得替代/旁路 F-Stack 业务面 |
+| NFR-4 | **可移植**：兼容 DPDK 23.11.5 / 24.11.6 与移植后的 FreeBSD 栈 |
+| NFR-5 | **可观测**：提供两栈 fd 数/事件数等基本统计 |
+| NFR-6 | **多进程一致**：每进程经各自 config.ini 独立设共存开关，互不影响（`ff_config.filename:254`） |
 
 ---
 
 ## 5. 边界与异常场景
 
-- `SOCK_KERNEL` 与 `SOCK_FSTACK` 同时置位时的优先级（实测 `ff_hook_socket:387` 要求 `SOCK_KERNEL && !SOCK_FSTACK` 才走内核，需在接口契约明确）。
-- app 标记与 config 默认冲突时：**app 标记优先**。
+- `SOCK_KERNEL` 与 `SOCK_FSTACK` 同时置位的优先级（实测 `ff_hook_socket:387` 要求 `SOCK_KERNEL && !SOCK_FSTACK` 才走内核，否则 F-Stack）；接口契约须明确「`SOCK_FSTACK` 优先」。
+- 共存开关关闭时，带 `SOCK_KERNEL` 的请求行为约定（退化为 F-Stack 或显式报错，需明确）。
 - 内核栈侧地址/端口与 F-Stack 侧冲突时报错而非静默。
-- `maxevents` 过小（机制要求 `>=2`，`:2212-2218`）时的处理。
-- 客户端 `connect` 时 fd 归属与目的地址栈不匹配（如内核 fd 连 F-Stack 才可达的地址）时的行为约定。
-- 原生模式 `ff_socket` 标记识别补齐前后的兼容性（`02 §5`）。
-- 本能力关闭（编译期）时所有路径退化为纯 F-Stack 行为。
-- 系统前提缺失（参考 gazelle `rp_filter` 等）时的检测与提示。
+- hook 模式 `maxevents` 过小（机制要求 `>=2`，`:2212-2218`）。
+- 客户端 `connect` 时 fd 归属与目的地址栈不匹配的行为约定。
+- 原生模式统一事件共存补齐前后的兼容性（`02 §4`）。
+- F-Stack `kern.maxfiles` ≤ 65536 的前提（hook 模式 fd 映射约束，README 注 1）。
 
 ---
 
 ## 6. 成功标准
 
-1. DPDK 接管网卡后，带 `SOCK_KERNEL` 的内核栈监听：本机 `ping <内核栈IP>` 通、`curl <内核栈服务>` 成功（FR-1/FR-2）。
-2. F-Stack 应用作客户端：经内核栈 `connect` 本机服务（127.0.0.1/本机 IP）与外部内核栈服务均成功（FR-3/FR-4）。
-3. config.ini 全局默认栈开关生效，且 app 标记可覆盖（FR-5）；多进程用不同 config 文件得到不同默认栈（NFR-6）。
-4. hook 与原生两模式均可标记选栈（FR-6）；单事件循环正确服务两栈（FR-7/FR-8）。
-5. 本能力关闭/默认 F-Stack 时，业务性能与功能**零回归**（NFR-1/NFR-2）。
-6. spec 全集过 `08-review-gate.md` 门禁。
+1. **同一个 F-Stack 应用进程**内：F-Stack 业务监听/连接经 DPDK NIC 正常（FR-1），**同时**带 `SOCK_KERNEL` 的内核监听被本机 `curl`/`ping` 访问成功（FR-2/FR-3）——证明 F-Stack 未被旁路、双栈真正共存。
+2. 该应用作客户端经内核栈 `connect` 本机/外部内核服务成功（FR-4/FR-5），同时其业务客户端仍走 F-Stack。
+3. 单 epoll 同时正确收发两栈事件（FR-6/FR-8）；hook 与原生两模式均共存（FR-7）。
+4. config 共存开关生效；关闭/默认时业务功能与性能**零回归**（FR-9/NFR-1/NFR-2/NFR-3）。
+5. spec 全集过 `08-review-gate.md` 门禁。
