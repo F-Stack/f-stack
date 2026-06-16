@@ -30,6 +30,19 @@
 #include "ff_epoll.h"
 #include "ff_event.h"
 
+/*
+ * ff_epoll.c references the kernel-stack coexistence host bridge
+ * (ff_host_epoll_create1/ctl/wait) for managed kernel fds. This unit test
+ * exercises only the F-Stack kqueue path (no kernel fds are ever registered),
+ * so those bridge functions are never invoked at runtime; provide no-op stubs
+ * to satisfy the linker.
+ */
+int ff_host_epoll_create1(int flags) { (void)flags; return -1; }
+int ff_host_epoll_ctl(int epfd, int op, int fd, void *event)
+{ (void)epfd; (void)op; (void)fd; (void)event; return -1; }
+int ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout)
+{ (void)epfd; (void)events; (void)maxevents; (void)timeout; return -1; }
+
 /* ------------------------------------------------------------------------ */
 /* Capture buffer for kevent stubs                                          */
 /* ------------------------------------------------------------------------ */

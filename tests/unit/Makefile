@@ -185,7 +185,9 @@ test_ff_log: test_ff_log.o $(LIB_OBJS_DIR)/ff_log.o $(COMMON_OBJS)
 test_ff_host_interface: test_ff_host_interface.o $(LIB_OBJS_DIR)/ff_host_interface.o $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=exit -Wl,--wrap=abort -Wl,--wrap=clock_gettime -Wl,--wrap=__assert_fail -lcrypto
 
-# P1 #2 ff_epoll
+# P1 #2 ff_epoll (ff_epoll.c references the kernel-coexistence host bridge
+# symbols ff_host_epoll_*; this unit test exercises only the kqueue path and
+# provides no-op stubs for them in test_ff_epoll.c)
 test_ff_epoll: test_ff_epoll.o $(LIB_OBJS_DIR)/ff_epoll.o $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS)
 
