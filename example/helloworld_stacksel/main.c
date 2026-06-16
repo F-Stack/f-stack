@@ -16,6 +16,11 @@
  *   (no args)            self-test: in-process kernel-stack server+client
  *   server <port>        one-shot HTTP/1.1 server on the kernel stack
  *   client <ip> <port>   connect to a kernel-stack service and print reply
+ *   bench <port>         single-thread epoll keep-alive HTTP server (wrk target)
+ *
+ * A/B build switch (perf baseline):
+ *   USE_FF_KERNEL=1 (default)  ksock() -> ff_socket(SOCK_KERNEL)  [feature path A]
+ *   USE_FF_KERNEL=0            ksock() -> libc socket()           [pure-kernel ref B]
  */
 
 #include <stdio.h>
@@ -23,21 +28,34 @@
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/epoll.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
 #include "ff_api.h"   /* ff_socket + SOCK_KERNEL / SOCK_FSTACK markers */
 
+#ifndef USE_FF_KERNEL
+#define USE_FF_KERNEL 1
+#endif
+
 static int
 ksock(void)
 {
-    /* Single API + marker: this socket belongs to the host kernel stack. */
+#if USE_FF_KERNEL
+    /* A (feature path): connection-level stack selection via marker. */
     int fd = ff_socket(AF_INET, SOCK_STREAM | SOCK_KERNEL, 0);
     if (fd < 0)
         perror("ff_socket(SOCK_KERNEL)");
+#else
+    /* B (pure-kernel reference): raw libc kernel socket. */
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0)
+        perror("socket()");
+#endif
     return fd;
 }
 
@@ -211,6 +229,109 @@ do_selftest(void)
     return 1;
 }
 
+static int
+set_nonblock(int fd)
+{
+    int fl = fcntl(fd, F_GETFL, 0);
+    return (fl < 0) ? -1 : fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+}
+
+/*
+ * Single-threaded epoll keep-alive HTTP server (mode "bench <port>") — the wrk
+ * performance-baseline target. One thread, one epoll loop multiplexing the
+ * listen fd and all accepted keep-alive connections (same single-loop
+ * event-driven model as the F-Stack helloworld_epoll baseline). All fds come
+ * from ksock(): SOCK_KERNEL host fds (A) or raw libc fds (B); the rest of the
+ * path (bind/listen/accept/epoll/recv/send) is identical, so the A/B delta
+ * isolates only the per-connection ff_socket->ff_host_socket indirection.
+ */
+static int
+do_bench(int port)
+{
+    static const char resp[] =
+        "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n"
+        "Connection: keep-alive\r\n\r\nhello-stacksel\n";
+    const size_t resp_len = sizeof(resp) - 1;
+
+    int sfd = ksock();
+    if (sfd < 0)
+        return 1;
+    int on = 1;
+    setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = htons((unsigned short)port);
+    if (bind(sfd, (struct sockaddr *)&sa, sizeof(sa)) < 0) {
+        perror("bind");
+        return 1;
+    }
+    if (listen(sfd, 1024) < 0) {
+        perror("listen");
+        return 1;
+    }
+    set_nonblock(sfd);
+
+    int ep = epoll_create1(0);
+    if (ep < 0) {
+        perror("epoll_create1");
+        return 1;
+    }
+    struct epoll_event ev, evs[1024];
+    ev.events = EPOLLIN;
+    ev.data.fd = sfd;
+    epoll_ctl(ep, EPOLL_CTL_ADD, sfd, &ev);
+
+    printf("[bench] %s keep-alive server on 127.0.0.1:%d (single-thread epoll)\n",
+           (USE_FF_KERNEL ? "ff_socket(SOCK_KERNEL)" : "libc socket()"), port);
+    fflush(stdout);
+
+    for (;;) {
+        int n = epoll_wait(ep, evs, 1024, -1);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            perror("epoll_wait");
+            break;
+        }
+        for (int i = 0; i < n; i++) {
+            int fd = evs[i].data.fd;
+            if (fd == sfd) {
+                for (;;) {
+                    int cfd = accept(sfd, NULL, NULL);
+                    if (cfd < 0)
+                        break;  /* EAGAIN: backlog drained */
+                    set_nonblock(cfd);
+                    ev.events = EPOLLIN;
+                    ev.data.fd = cfd;
+                    epoll_ctl(ep, EPOLL_CTL_ADD, cfd, &ev);
+                }
+            } else {
+                char buf[2048];
+                ssize_t r = recv(fd, buf, sizeof(buf), 0);
+                if (r > 0) {
+                    ssize_t off = 0;
+                    while (off < (ssize_t)resp_len) {
+                        ssize_t w = send(fd, resp + off, resp_len - off, 0);
+                        if (w <= 0)
+                            break;
+                        off += w;
+                    }
+                } else if (r == 0 ||
+                           (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+                    epoll_ctl(ep, EPOLL_CTL_DEL, fd, NULL);
+                    close(fd);
+                }
+            }
+        }
+    }
+    close(ep);
+    close(sfd);
+    return 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -220,5 +341,7 @@ main(int argc, char **argv)
         return do_server(atoi(argv[2]), /*oneshot*/atoi(argv[3])) == 0 ? 0 : 1;
     if (argc >= 4 && strcmp(argv[1], "client") == 0)
         return do_client(argv[2], atoi(argv[3])) == 0 ? 0 : 1;
+    if (argc >= 3 && strcmp(argv[1], "bench") == 0)
+        return do_bench(atoi(argv[2]));
     return do_selftest();
 }
