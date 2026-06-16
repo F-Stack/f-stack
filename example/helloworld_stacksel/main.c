@@ -15,6 +15,9 @@
  *                    kernel-fd path (ff_socket/bind/listen/accept/connect/
  *                    send/recv/close) and needs NO DPDK/EAL runtime, so it can
  *                    run anywhere.
+ *   bench <port>     kernel-stack HTTP keep-alive server returning a fixed
+ *                    preset body, driven by host epoll (ff_host_epoll_*), for
+ *                    the PERF-3 kernel-side throughput baseline. Also EAL-free.
  *
  * Full coexistence (F-Stack business listener + SOCK_KERNEL kernel listener +
  * merged ff_epoll) additionally requires ff_init()/ff_run() and a working DPDK
@@ -32,9 +35,13 @@
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/epoll.h>
+#include <stdint.h>
 
 #include "ff_api.h"      /* ff_socket + SOCK_KERNEL / SOCK_FSTACK markers */
 #include "ff_config.h"   /* ff_global_cfg: enable coexistence without ff_init */
+#include "ff_host_interface.h" /* ff_host_epoll_* + managed kernel-fd encode/real */
 
 #define KPORT 18399
 
@@ -160,10 +167,119 @@ do_selftest(void)
     return 1;
 }
 
+/* Preset HTTP/1.1 keep-alive response, fixed 15-byte body. */
+static char http_resp[] =
+"HTTP/1.1 200 OK\r\n"
+"Server: F-Stack-kernel-coexist\r\n"
+"Content-Type: text/plain\r\n"
+"Content-Length: 15\r\n"
+"Connection: keep-alive\r\n"
+"\r\n"
+"kernel-coexist\n";
+
+static int
+set_nonblock(int fd)
+{
+    int fl = ff_fcntl(fd, F_GETFL, 0);
+    if (fl < 0)
+        return -1;
+    return ff_fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+}
+
+/* PERF-3 kernel-side bench: SOCK_KERNEL listener + host-epoll event loop,
+ * HTTP keep-alive returning the preset body. No ff_init / EAL. */
+static int
+do_bench(int port)
+{
+    struct sockaddr_in sa;
+    struct epoll_event ev, evs[512];
+    int on = 1;
+    int lfd, epfd, rlfd, i;
+
+    ff_global_cfg.stack.kernel_coexist = 1;
+
+    lfd = ksock();
+    if (lfd < 0)
+        return 1;
+    ff_setsockopt(lfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_ANY);
+    sa.sin_port = htons((unsigned short)port);
+    if (ff_bind(lfd, (struct linux_sockaddr *)&sa, sizeof(sa)) < 0) {
+        perror("ff_bind");
+        ff_close(lfd);
+        return 1;
+    }
+    if (ff_listen(lfd, 1024) < 0) {
+        perror("ff_listen");
+        ff_close(lfd);
+        return 1;
+    }
+    set_nonblock(lfd);
+
+    epfd = ff_host_epoll_create1(0);
+    if (epfd < 0) {
+        perror("ff_host_epoll_create1");
+        ff_close(lfd);
+        return 1;
+    }
+    rlfd = ff_kernel_fd_real(lfd);
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.fd = rlfd;
+    ff_host_epoll_ctl(epfd, EPOLL_CTL_ADD, rlfd, &ev);
+
+    printf("COEXIST BENCH: kernel-stack HTTP keep-alive server on 0.0.0.0:%d\n", port);
+    fflush(stdout);
+
+    for (;;) {
+        int n = ff_host_epoll_wait(epfd, evs, 512, -1);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            perror("ff_host_epoll_wait");
+            break;
+        }
+        for (i = 0; i < n; i++) {
+            int rfd = evs[i].data.fd;
+            if (rfd == rlfd) {
+                for (;;) {
+                    int c = ff_accept(lfd, NULL, NULL);
+                    if (c < 0)
+                        break;
+                    set_nonblock(c);
+                    memset(&ev, 0, sizeof(ev));
+                    ev.events = EPOLLIN;
+                    ev.data.fd = ff_kernel_fd_real(c);
+                    ff_host_epoll_ctl(epfd, EPOLL_CTL_ADD, ev.data.fd, &ev);
+                }
+            } else if (evs[i].events & (EPOLLHUP | EPOLLERR)) {
+                ff_host_epoll_ctl(epfd, EPOLL_CTL_DEL, rfd, NULL);
+                ff_close(ff_kernel_fd_encode(rfd));
+            } else {
+                char buf[2048];
+                int cfd = ff_kernel_fd_encode(rfd);
+                ssize_t r = ff_recv(cfd, buf, sizeof(buf), 0);
+                if (r > 0) {
+                    ff_send(cfd, http_resp, sizeof(http_resp) - 1, 0);
+                } else if (r == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+                    ff_host_epoll_ctl(epfd, EPOLL_CTL_DEL, rfd, NULL);
+                    ff_close(cfd);
+                }
+            }
+        }
+    }
+
+    ff_close(lfd);
+    return 0;
+}
+
 int
 main(int argc, char **argv)
 {
-    (void)argc;
-    (void)argv;
+    if (argc >= 3 && strcmp(argv[1], "bench") == 0)
+        return do_bench(atoi(argv[2]));
     return do_selftest();
 }

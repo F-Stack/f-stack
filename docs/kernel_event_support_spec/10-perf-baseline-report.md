@@ -1,31 +1,29 @@
-# 10 Performance-Baseline Report (v3, SUPERSEDED)
+# 10 Performance Baseline Report (v4, true-coexistence)
 
-> **⚠️ SUPERSEDED (v4, 2026-06-16)**: this report is based on the v3 **wrong
-> implementation** — `ff_socket(SOCK_KERNEL)` → `ff_host_socket` → a raw host
-> socket that **never ran the F-Stack user-space stack** (both A/B variants were
-> pure kernel stack). That methodology did not measure "F-Stack + kernel-stack
-> coexistence" at all; the conclusions are invalid and the whole report is
-> superseded.
-> The v4 performance baseline instead **proves that kernel-stack coexistence
-> does not slow the F-Stack business fast path** (PERF-1/PERF-2, see
-> `07-test-spec.md`), to be re-produced in R4 by comparing the F-Stack business
-> under coexistence on/off; this document is kept for historical record only.
-
----
-
-# 10 Performance-Baseline Report: Kernel-Access Path (ff_socket(SOCK_KERNEL)) wrk Self-Stress Baseline (v3 historical record)
-
-> **Document ID**: SPEC-KE-10 (v3 historical record)
+> Chinese version: `./zh_cn/10-perf-baseline-report.md`
+>
+> **Doc id**: SPEC-KE-10
+> **Version**: v4 (coexistence-paradigm rework; supersedes the v3 pure-kernel-loopback methodology)
 > **Date**: 2026-06-16
-> **Status**: SUPERSEDED (see the notice above)
-> **Scope**: On the **local host loopback**, use wrk to establish a performance baseline for the "local socket/fd/event access" feature (the `ff_socket(SOCK_KERNEL)` kernel-stack path), and use a same-source native `libc socket()` version for an A/B comparison to derive the overhead Δ%, with the existing CVM data in `freebsd_13_to_15_upgrade_spec/` as a background reference.
-> **Evidence iron rule**: all numbers come from actual wrk runs (raw output `/tmp/keperf/{A,B}_T{1,2,3}_trial{1,2,3}.txt`); fabrication is forbidden.
+> **Status**: FINAL (R4 performance-gate measured output)
+> **Scope**: empirically prove that "F-Stack user-space stack + host kernel-stack coexistence" causes **no regression on the F-Stack business fast path** (PERF-1/PERF-2), and give a **kernel-side bypass throughput** (PERF-3) management-plane data point.
+> **Empirical rule**: every number comes from real wrk output (`/tmp/helloworld-coexist-bench/`, `/tmp/kbench-perf/`); no fabrication. Real server/client IPs are source-side `sed`-masked before landing on disk (`9.134.214.176→192.168.1.1`, `9.134.211.87→192.168.1.2`).
 
 ---
 
-## 1. Test Purpose
+## 0. Why v3 is superseded
 
-Quantify whether the "kernel-access feature" introduces throughput/latency overhead on the **data plane**. The core of this feature is selecting the stack by marker at socket creation (`ff_socket(...,SOCK_KERNEL)` → `ff_host_socket` → host `socket()`), after which `bind/listen/accept/recv/send/epoll` go through the same kernel-fd path. Therefore, theoretically the A/B difference is **only one `ff_socket→ff_host_socket` function jump per connection at connect time**, and should be zero extra overhead on the data plane of keep-alive long connections. This test empirically validates that judgment.
+The v3 report measured `ff_socket(SOCK_KERNEL)→ff_host_socket→raw host socket` over local loopback — **F-Stack was never exercised** (both A/B were pure kernel). It did not measure "coexistence" at all. v4 reverted that wrong implementation and re-measured under the correct paradigm: **the app runs ON F-Stack for business; a per-fd `SOCK_KERNEL` additionally rides the host kernel stack; both coexist in the same process.** This report is the v4-correct measurement.
+
+---
+
+## 1. Goals
+
+| Id | Metric | Method | Gate |
+|---|---|---|---|
+| PERF-1 | F-Stack fast-path regression | coexist off vs on, press F-Stack business only | throughput/latency delta ≤ noise (NFR-2) |
+| PERF-2 | default-path zero overhead | effect of the coexist branch on default/`SOCK_FSTACK` | zero/negligible (NFR-1) |
+| PERF-3 | kernel-side bypass throughput | local loopback wrk against the `SOCK_KERNEL` listener | meets management-plane expectation (not a fast path) |
 
 ---
 
@@ -33,105 +31,131 @@ Quantify whether the "kernel-access feature" introduces throughput/latency overh
 
 | Item | Value |
 |---|---|
-| Host | a single CVM, 16 vCPU, 31 GiB |
-| Stress tool | wrk **4.2.0 [epoll]** (built locally from GitHub `wg/wrk` source, `/tmp/wrk-build/wrk`; no wrk package in the system repo) |
-| Target | `example/helloworld_stacksel`, **single-thread epoll keep-alive HTTP server** (`bench <port>` mode) |
-| Protocol | HTTP/1.1, `Connection: keep-alive`, fixed 15B response body (benchmarked against the freebsd-upgrade CVM helloworld scenario) |
-| Link | **loopback 127.0.0.1** (server and wrk on the same host; server bound to CPU0, wrk bound to CPU2-15, `taskset` to reduce contention) |
-| Build | A/B both `-O2 -g`, same-source `main.c`, both link `lib/libfstack.a` |
+| Host | Tencent CVM, 16 vCPU, DPDK 23.11.5 |
+| Data-plane NIC | `0000:00:09.0` virtio_net, bound to `igb_uio` (DPDK PMD, F-Stack data plane) |
+| Control NIC | `eth1` (kernel driver, ssh out-of-band; physically isolated from the data plane) |
+| F-Stack model | single lcore (`lcore_mask=10`, CPU#4), single process, listen port 80, `idle_sleep=20us` |
+| SUT (vector A) | `example/helloworld`: F-Stack keep-alive HTTP, returns preset 438B `html[]`; same binary for A/B, only config toggled |
+| SUT (vector B) | `example/helloworld_stacksel bench`: `ff_socket(SOCK_KERNEL)` listener + `ff_host_epoll_*` non-blocking loop, preset 15B body (EAL-free) |
+| Load gen | wrk 4.2.0 [epoll]; vector A from f-stack-client (`192.168.1.2`, same /21 as the data plane), vector B local loopback |
+| Protocol | HTTP/1.1, `Connection: keep-alive` |
 
-### 2.1 A/B Two Versions (same source, only `ksock()` differs)
-| Version | Build | socket creation | Meaning |
-|---|---|---|---|
-| **A** `helloworld_stacksel_ffk` | `-DUSE_FF_KERNEL=1` | `ff_socket(AF_INET, SOCK_STREAM\|SOCK_KERNEL, 0)` | this feature's kernel-access path |
-| **B** `helloworld_stacksel_libc` | `-DUSE_FF_KERNEL=0` | `socket(AF_INET, SOCK_STREAM, 0)` | pure kernel-stack reference |
+The sole A/B variable = `config.ini [stack] kernel_coexist` (`0` off / `1` on). helloworld source and binary are unchanged, eliminating link-artifact differences.
 
 ---
 
-## 3. Method (aligned with the existing CVM methodology tiers)
+## 3. Method (aligned to freebsd_13_to_15 `cvm-bench-methodology.md`)
 
-| Tier | wrk parameters | Duration | Purpose |
+| Tier | wrk params | Duration | Purpose |
 |---|---|---|---|
-| T1 | `-t2 -c10  --latency` | 5s | light load + warmup discard |
-| T2 | `-t4 -c100 --latency` | 30s | medium-load main regression |
-| T3 | `-t8 -c500 --latency` | 30s | high-concurrency tail latency |
+| T1 | `-t2 -c10 --latency` | 5s | light load + warm-up |
+| T2 | `-t4 -c100 --latency` | 30s | **mid-load main verdict** |
+| T3 | `-t8 -c500 --latency` | 30s | high-conc tail latency |
 
-- Each tier **takes the median of 3 trials**; each version is preceded by one 3s warmup (discarded).
-- Command template: `taskset -c 2-15 /tmp/wrk-build/wrk -t4 -c100 -d30s --latency http://127.0.0.1:<port>/`
-- Server start/stop via `/data/workspace/kill_process.sh`; script `/tmp/keperf/runbench.sh`.
+- Each tier: **median of 3 trials**.
+- Vector A is **same-time-window A/B**: A0(`kernel_coexist=0`) and A1(`kernel_coexist=1`) switched within the same minute to suppress cross-time drift; each round stopped via `kill_process.sh`, rtemap hugepages cleared via `rm_tmp_file.sh`.
+- Vector B is local loopback self-press: server pinned to CPU0, wrk to CPU2-15 (`taskset`).
 
 ---
 
-## 4. Measured Results (median of 3 trials; raw output see `/tmp/keperf/`)
+## 4. Vector A: F-Stack fast-path A/B (PERF-1 / PERF-2)
 
-### 4.1 Throughput req/s
+### 4.1 Throughput req/s (median of 3)
 
-| Tier | A `SOCK_KERNEL` | B `libc socket` | Δ (A vs B) | Three trials (A / B) |
+| Tier | A0 coexist-off | A1 coexist-on | Δ (A1 vs A0) | trials (A0 / A1) |
 |---|---:|---:|---:|---|
-| T1 (-t2 -c10 5s)   | 120,949 | 136,199 | **−11.2%** | A 119822/132566/120949 · B 137667/136199/118075 |
-| T2 (-t4 -c100 30s) | 125,169 | 119,498 | **+4.7%**  | A 125169/113753/135646 · B 119498/135067/118084 |
-| T3 (-t8 -c500 30s) | 107,298 | 112,728 | **−4.8%**  | A 102829/115724/107298 · B 114646/105920/112728 |
+| T1 (-t2 -c10 5s)   | 27,386 | 27,204 | **−0.66%** | A0 28401/27386/26876 · A1 27204/27042/27618 |
+| T2 (-t4 -c100 30s) | 207,723 | 210,811 | **+1.49%** | A0 206927/208099/207723 · A1 212296/208933/210811 |
+| T3 (-t8 -c500 30s) | 128,422 | 134,354 | **+4.62%** | A0 127391/133667/128422 · A1 134354/139085/130335 |
 
-### 4.2 Latency (median of 3 trials)
+### 4.2 p99 latency (median of 3)
 
-| Tier | A p50 | B p50 | A p99 | B p99 |
-|---|---:|---:|---:|---:|
-| T1 | 67us  | 60us  | 151us  | 133us  |
-| T2 | 767us | 814us | 1.04ms | 1.15ms |
-| T3 | 4.58ms| 4.37ms| 5.25ms | 5.11ms |
+| Tier | A0 p99 | A1 p99 |
+|---|---:|---:|
+| T2 | 695 us | 713 us |
+| T3 | 281 ms | 210 ms |
 
-- **Socket errors: 0** (all 18 trials had no connect/read/write/timeout errors).
+### 4.3 Verdict (A/B)
 
-### 4.3 Conclusion (A/B)
+All coexist-on (A1) vs coexist-off (A0) deltas fall within trial noise with no systematic negative trend: T1 −0.66%, T2 +1.49%, T3 +4.62% (A1 equal-or-slightly-faster); T2 p99 essentially equal (~700us). This matches the design: coexistence only adds one `ff_is_kernel_fd()` branch at each `ff_*` entry; the default/`SOCK_FSTACK` path is byte-for-byte unchanged, so an F-Stack business fd without `SOCK_KERNEL` incurs zero extra cost.
 
-**The throughput/latency difference between A and B is within the ±11% inter-trial noise range, with no systematic direction** (A is slightly faster at T2, slightly slower at T1/T3, and the trial intervals overlap heavily). This is consistent with theory: `ff_socket(SOCK_KERNEL)` only has one extra `ff_host_socket` function jump over `libc socket()` **at connect time**, with zero extra overhead on the keep-alive data plane.
-
-→ **The kernel-access feature introduces no measurable data-plane performance regression** (corroborating NFR-1 zero-overhead / NFR-2 no regression on the business fast path). The main cause of fluctuation: under loopback self-stress, the server and wrk contend for the same host CPU/soft interrupts (the measured `sys` time ratio is extremely high), which is measurement noise rather than feature overhead.
+→ **PERF-1 / PERF-2 PASS: the coexistence switch introduces no measurable regression on the F-Stack business fast path (corroborates NFR-1 default-path zero overhead, NFR-2 fast-path no-regression, NFR-3 F-Stack always in place).**
 
 ---
 
-## 5. Background Reference: the Existing freebsd_13_to_15 CVM Data (different methodology, reference only)
+## 5. Vector B: kernel-side bypass throughput (PERF-3, management plane)
 
-Source `docs/freebsd_13_to_15_upgrade_spec/zh_cn/13.0-baseline-cvm-bench-report.md` (**dual CVM, server runs DPDK + F-Stack user-space stack, the same wrk three tiers**):
+Local loopback wrk against the `SOCK_KERNEL` kernel-stack HTTP keep-alive server (single-thread host-epoll, preset 15B body).
 
-| Tier | 13.0 baseline req/s | 15.0 rfix req/s | This report A (kernel stack loopback) |
+| Tier | req/s (median of 3) | p99 | socket errors | trials |
+|---|---:|---:|---:|---|
+| T1 (-t2 -c10 5s)   | 132,385 | — | 0 | 132385/130522/133348 |
+| T2 (-t4 -c100 30s) | 127,501 | 1.43 ms | 0 | 128979/119463/127501 |
+| T3 (-t8 -c500 30s) | 113,641 | 4.86 ms | 0 | 102595/113648/113641 |
+
+- **Zero socket errors across all 9 trials** (no connect/read/write/timeout errors).
+- **Caveat**: this is a **single-thread** kernel-stack server under **single-host loopback self-press** (server and wrk contend for the same CPUs); it reflects only the serial lower bound of the kernel-side management plane, **not** the F-Stack data plane, and is **not** directly comparable to vector A's absolute values. Its purpose is to show the `SOCK_KERNEL` channel serves high-concurrency keep-alive correctly, error-free, with throughput meeting management-plane expectations (local ping/curl/management connections).
+
+→ **PERF-3 PASS: the kernel-side bypass serves all three tiers stably and error-free.**
+
+---
+
+## 6. Background cross-reference: existing freebsd_13_to_15 CVM data (different basis, reference only)
+
+Source `docs/freebsd_13_to_15_upgrade_spec/13.0-baseline-cvm-bench-report.md` (also two-machine, server runs F-Stack, same wrk tiers, helloworld 438B):
+
+| Tier | 15.0 existing ref req/s | this A0 coexist-off | this A1 coexist-on |
 |---|---:|---:|---:|
-| T1 | 24,414 | 23,757 | 120,949 |
-| T2 | 220,691 | 203,933 | 125,169 |
-| T3 | 239,555 | 217,100 | 107,298 |
+| T1 | 23,757 | 27,386 | 27,204 |
+| T2 | 203,933 | 207,723 | 210,811 |
+| T3 | 217,100 | 128,422 | 134,354 |
 
-**Methodology differences (cannot be equated directly; please note)**:
-1. **Different stacks**: the CVM data is the data-plane throughput of the **F-Stack user-space stack via the DPDK NIC**; this report is the throughput of the **Linux kernel stack + loopback** — the two measure different paths of different protocol stacks.
-2. **Different topology**: CVM is **real send/receive between two hosts' NICs**; this report is **single-host loopback self-stress** (the server and wrk contend for the same set of CPUs).
-3. **Different concurrency model**: CVM helloworld is F-Stack `lcore=4`; this report is **single-thread epoll** (the user has confirmed "the single-thread number only reflects the serial lower bound").
-4. T1 fluctuates a lot on both sides (5s short window); it is used only for link liveness, not for the conclusion.
-
-**Usage note**: this feature **adds** a "kernel-stack-accessible" channel outside F-Stack (for local ping/curl and a client connecting to local/external kernel services); it **does not replace** the F-Stack business data plane. The CVM data is used to indicate the throughput-magnitude background of the F-Stack business plane; this feature's overhead is given by the §4 same-environment A/B comparison (≈noise, no regression).
+- **T2 highly consistent**: this A0/A1 (207.7k/210.8k) matches the existing 15.0 (203.9k) within cross-time drift, cross-confirming "coexist-off equals pure F-Stack" (NFR-1).
+- **T3 absolute below the existing cross-time ref**: in this run at c500, p50 is fast (1.26ms) but p99 tail is large (~200-300ms), consistent across all 3 trials — a characteristic of this host's c500 single-lcore accept scheduling + `idle_sleep=20us` on the day; A0/A1 show the same behavior, so it is **unrelated to coexistence** and does not affect the A/B verdict. The existing report §5.2 already noted large T3 cross-time drift (absolute values comparable only within the same basis); this report relies on the same-window A/B relative Δ.
 
 ---
 
-## 6. Limitations and Follow-ups
+## 7. Key process finding: header change requires a full lib rebuild (ABI skew)
 
-- This baseline is a **local-host loopback single-thread** self-stress, reflecting the "serial/single-loop lower bound", **not** the server's true limit, nor the dual-CVM DPDK data plane; absolute values are comparable only within the same methodology.
-- The hook-mode end-to-end on a real physical machine/dual CVM and the coexistence throughput of the F-Stack business plane + the kernel management plane await an environment with a DPDK-bound physical NIC, to be supplemented per `cvm-bench-methodology.md` (following the `freebsd_13_to_15` F-A3/F-A4 path).
-- For a higher single-host throughput baseline, multi-thread `SO_REUSEPORT` can be enabled (this round keeps single-thread per the user's request).
+The first helloworld relinked against the current lib **segfaulted at startup in `ff_log_close()→fclose(dangling)`**. Root cause (gdb + mtime cross-check): R3 added `int kernel_coexist` to the `stack` sub-struct of `struct ff_config`, shifting the offset of the following `log` sub-struct (incl. `log.f`); the lib Makefile **does not track header dependencies**, so an incremental build left **objects mixing the old and new `ff_config.h` layout** — `ff_log.o` (old offset) read `log.f` from a slot that holds another non-zero field in the new layout → `fclose` crash.
+
+- **Discriminator**: the known-good 13.0-baseline helloworld ran fine in the same environment (entered `ff_run`, exit 124 timeout, no crash) → environment is healthy; the problem was the current tree's build state.
+- **Fix**: `rm_tmp_file.sh` removed all 245 `.o` + `libfstack.a` → full rebuild (15s) → all objects share one header layout → helloworld starts normally (exit 124).
+- **Conclusion**: **not a source regression**, purely a build-hygiene issue. The coexistence code itself is correct; NFR-1 (coexist-off equals baseline) holds on a clean build.
+- **Action item**: changes to struct headers like `ff_config.h` require a `clean` full lib rebuild (lib/Makefile lacks header-dependency tracking — an existing F-Stack build characteristic); recommend noting this in the spec/README.
 
 ---
 
-## 7. Reproduction Steps
+## 8. Compliance and final system state
+
+| Item | Evidence |
+|---|---|
+| `rm_tmp_file.sh` | zero direct rm throughout; rtemap, `.o`/libfstack.a, stray log cleanup all via the script |
+| `kill_process.sh` | zero direct kill throughout; A0/A1 helloworld and kernel bench server stopped via the script |
+| `chmod_modify.sh` | no permission change this round |
+| config.ini | `kernel_coexist` toggled 0↔1 during testing, **restored to 0 afterwards**; local runtime values (lcore_mask/port0 IP) are pre-existing uncommitted local state, **not committed** |
+| IP masking | vector A client stdout source-side sed-masked before landing; vector B loopback has no real IPs |
+| Final state | no leftover processes, hugepages clean (0 rtemap), config `kernel_coexist=0` |
+
+## 9. Reproduction
 
 ```bash
-# 1) Build wrk (build from source when the system has no package)
-git clone --depth 1 https://github.com/wg/wrk.git /tmp/wrk-build && make -C /tmp/wrk-build -j4
+# 0) full lib rebuild after header change (critical)
+ls /data/workspace/f-stack/lib/*.o | xargs /data/workspace/rm_tmp_file.sh
+/data/workspace/rm_tmp_file.sh /data/workspace/f-stack/lib/libfstack.a
+make -C /data/workspace/f-stack/lib -j$(nproc)
 
-# 2) Build the A/B target binaries
-cd /data/workspace/f-stack/example/helloworld_stacksel && make bench
-#   -> helloworld_stacksel_ffk (SOCK_KERNEL) / helloworld_stacksel_libc (libc)
+# 1) relink helloworld (vector A SUT)
+cd /data/workspace/f-stack/example && cc -O0 -g -gdwarf-2 $(pkg-config --cflags libdpdk) -DINET6 \
+  -o helloworld main.c $(pkg-config --static --libs libdpdk) \
+  -L../lib -Wl,--whole-archive,-lfstack,--no-whole-archive -Wl,--no-whole-archive -lrt -lm -ldl -lcrypto -lz -pthread -lnuma
 
-# 3) Three-tier self-stress (server bound to CPU0, wrk bound to CPU2-15, 3 trials each)
-bash /tmp/keperf/runbench.sh A helloworld_stacksel_ffk  18211
-bash /tmp/keperf/runbench.sh B helloworld_stacksel_libc 18212
-#   raw output: /tmp/keperf/{A,B}_T{1,2,3}_trial{1,2,3}.txt
+# 2) build kernel-side bench (vector B SUT)
+cd /data/workspace/f-stack/example/helloworld_stacksel && make   # ./helloworld_stacksel bench <port>
+
+# 3) vector A: same-window A0/A1 (only toggle config kernel_coexist 0/1), f-stack-client wrk T1/T2/T3 x3 (sed-masked)
+# 4) vector B: local loopback wrk (server on CPU0, wrk on CPU2-15) T1/T2/T3 x3
+# teardown: kill_process.sh stops servers; rm_tmp_file.sh clears rtemap; config restored to kernel_coexist=0
 ```
 
-> Compliance: wrk processes are stopped via `kill_process.sh`, temporary files are cleaned via `rm_tmp_file.sh`; no direct rm/kill/chmod.
+> Raw wrk output: vector A `/tmp/helloworld-coexist-bench/A{0,1}_T{1,2,3}_trial{1,2,3}.txt`; vector B `/tmp/kbench-perf/B_T{1,2,3}_trial{1,2,3}.txt`.

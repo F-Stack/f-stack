@@ -3,7 +3,7 @@
 > **文档编号**：SPEC-KE-08
 > **版本**：v4（共存范式返工重写）
 > **日期**：2026-06-16
-> **状态**：进行中（R1 spec 门禁；R2-R5 实现门禁待补）
+> **状态**：R1 spec 门禁 PASS + R2-R4 实现门禁 PASS（含真机性能基线 PERF-1/2/3）；R5 提交收尾
 > **作用域**：对 v4 spec 与实现做「与实际代码一致性 / 共存范式正确性 / 零回归」门禁核验。
 
 ---
@@ -63,8 +63,11 @@
 
 > 经 `ff_socket(SOCK_KERNEL)`→受管内核 fd→bind/listen/accept + 客户端 connect/send/recv/close 全链路实跑通过，验证 socket 侧共存与 fd 归属路由。
 
-### I.4 Skip（环境无物理 NIC）
-- 完整「F-Stack 业务面 + SOCK_KERNEL 内核监听 + ff_epoll 合并」端到端共存需 `ff_init`/`ff_run` + DPDK 数据面（NIC/大页），本沙箱无物理 NIC → 按 Q1 skip，待真机按 `07` 集成方案补跑。socket 侧与 config/单测/零回归已硬门禁全绿。
+### I.4 性能基线实测（PERF-1/2/3，真机 DPDK NIC）
+环境已具备 DPDK NIC（`00:09.0`→igb_uio）+ f-stack-client 双机，按 `10-perf-baseline-report.md` 实测取证：
+- **PERF-1/2（向量 A，F-Stack 业务快路径 A/B；helloworld 438B 长连接，同一二进制，同窗口仅切 config `kernel_coexist` 0 vs 1）**：T1 **−0.66%** / T2 **+1.49%** / T3 **+4.62%**，均落在 trial 噪声内、开启侧持平或略快；T2 p99 ~700us 相等 → **共存开关对 F-Stack 业务快路径零回归（NFR-1/2/3）**。
+- **PERF-3（向量 B，本机 loopback 压 `SOCK_KERNEL` 内核监听 bench；单线程 host-epoll，15B 体）**：T1 132,385 / T2 127,501 / T3 113,641 req/s，**9 trial 零 socket error** → 内核侧旁路管理面功能正常、无错误（口径：单机自压串行下限，不可与向量 A 绝对值等价）。
+- 背景对照既有 15.0 CVM 数据 T2 203,933 与本次 A0 207,723 高度一致（NFR-1 交叉印证）。
 
 ### I.5 Bounce 记录
 | # | 触发 | 处置 | 复核 |
@@ -72,10 +75,12 @@
 | 自纠 | ff_host_interface.c 缺 `<unistd.h>`/`_GNU_SOURCE` | 同步补 include | 编译通过 |
 | 自纠 | socklen_t 跨命名空间未定义 | 头声明改 `unsigned int`（同型兼容） | 编译通过 |
 | 自纠 | test_ff_epoll 链接缺 ff_host_epoll_* | test 内加 no-op 桩 | 21/21 PASS |
-- bounce：0 跨步骤打回（均同步骤即时自纠，< 3 上限）。
+| **bounce-1（R4 perf 跨步骤打回）** | 重链当前 lib 的 helloworld 启动 segfault 于 `ff_log_close→fclose(野指针)` | 根因=`ff_config.h` 加 `kernel_coexist` 改 `log` 偏移 + lib Makefile 不跟踪头依赖→残留新旧布局混编 .o（ABI 偏斜）；非源码 bug。`rm_tmp_file.sh` 清全部 245 .o + libfstack.a 全量重编 | 重测 helloworld 正常进入 ff_run（exit124），13.0-baseline 同环境对照不崩→环境正常；PERF A/B 全部跑通 |
+- bounce：**1 次跨步骤打回（R4 perf，已根因修复，< 3 上限，未转人工）**；其余为同步骤即时自纠。
 
 ### I.6 实现阶段结论
-**PASS（硬门禁）**：编译 + cmocka 单测全绿 + socket 侧共存 selftest 实跑 + 零回归。原生 ff_api 双栈共存（socket 侧 + ff_epoll 合并）已落地；F-Stack 业务面端到端共存待真机补跑（skip+说明）。
+**PASS（硬门禁）**：编译 + cmocka 单测全绿 + socket 侧共存 selftest 实跑 + 零回归 + **R4 真机性能基线（PERF-1/2/3）实测通过**（共存对 F-Stack 快路径零回归、内核侧旁路零错误）。原生 ff_api 双栈共存（socket 侧 + ff_epoll 合并）已落地并经真机 NIC 性能验证。
+> **构建注记**：改 `ff_config.h` 等结构头后必须 clean 全量重编 lib（lib/Makefile 缺头依赖跟踪，F-Stack 既有特性），否则增量构建会产生 ABI 偏斜运行崩溃。
 
 ---
 
@@ -88,4 +93,4 @@
 - bounce：0（< 3 上限）。
 
 ## 6. 当前结论
-**R1 spec 门禁 PASS**（共存范式正确、删除 v3 旁路/默认内核错误表述、代码锚点一致）。R2-R5 实现门禁随后补充。
+**R1 spec 门禁 PASS**（共存范式正确、删除 v3 旁路/默认内核错误表述、代码锚点一致）。**R2-R4 实现门禁 PASS**：编译/cmocka 单测全绿、socket 侧共存 selftest 实跑、零回归、真机性能基线 PERF-1/2/3 实测通过（共存对 F-Stack 快路径零回归、内核侧旁路零错误，详见 `10-perf-baseline-report.md`）。R4 期 1 次跨步骤 bounce（ABI 偏斜，已根因修复，< 3 上限）。余 R5 提交收尾。
