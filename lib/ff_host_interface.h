@@ -167,6 +167,11 @@ int ff_host_fcntl(int fd, int cmd, int arg);
 int ff_host_epoll_create1(int flags);
 int ff_host_epoll_ctl(int epfd, int op, int fd, void *event);
 int ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout);
+ssize_t ff_host_sendmsg(int fd, const void *msg, int flags);
+ssize_t ff_host_recvmsg(int fd, void *msg, int flags);
+int ff_host_shutdown(int fd, int how);
+int ff_host_getpeername(int fd, void *addr, unsigned int *addrlen);
+int ff_host_getsockname(int fd, void *addr, unsigned int *addrlen);
 #endif /* FF_KERNEL_COEXIST */
 
 #endif

@@ -613,6 +613,11 @@ test_ff_update_current_ts_assert_fail_on_clock_error(void **state)
 }
 
 #ifdef FF_KERNEL_COEXIST
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 /* Kernel-stack coexistence fd-space: a managed kernel fd is encoded as
  * (host_fd + FF_KERNEL_FD_BASE) and must never collide with FreeBSD fds
  * (< FF_KERNEL_FD_BASE). Verify the ff_is_kernel_fd/encode/real helpers. */
@@ -651,6 +656,68 @@ test_ff_native_fd_map(void **state)
     ff_native_map_set(-1, 5);
     ff_native_map_set(1 << 30, 5);
 }
+
+/*
+ * R8 host bridges: ff_host_sendmsg/recvmsg/getpeername/getsockname/shutdown.
+ * Drive them over a real loopback AF_INET TCP pair (no mock) so the bridge's
+ * direct host-libc passthrough is exercised end to end.
+ */
+static void
+test_ff_host_msg_name_shutdown_bridges(void **state)
+{
+    (void)state;
+    int ln = socket(AF_INET, SOCK_STREAM, 0);
+    assert_true(ln >= 0);
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = 0;
+    assert_int_equal(bind(ln, (struct sockaddr *)&sa, sizeof(sa)), 0);
+    assert_int_equal(listen(ln, 1), 0);
+
+    socklen_t slen = sizeof(sa);
+    assert_int_equal(getsockname(ln, (struct sockaddr *)&sa, &slen), 0);
+
+    int cli = socket(AF_INET, SOCK_STREAM, 0);
+    assert_true(cli >= 0);
+    assert_int_equal(connect(cli, (struct sockaddr *)&sa, sizeof(sa)), 0);
+    int srv = accept(ln, NULL, NULL);
+    assert_true(srv >= 0);
+
+    struct sockaddr_in pn;
+    socklen_t pnlen = sizeof(pn);
+    assert_int_equal(ff_host_getsockname(cli, &pn, &pnlen), 0);
+    assert_int_equal(pn.sin_addr.s_addr, htonl(INADDR_LOOPBACK));
+
+    pnlen = sizeof(pn);
+    assert_int_equal(ff_host_getpeername(cli, &pn, &pnlen), 0);
+    assert_int_equal(pn.sin_port, sa.sin_port);
+
+    char wbuf[] = "ping";
+    struct iovec wio = { wbuf, sizeof(wbuf) };
+    struct msghdr wmsg;
+    memset(&wmsg, 0, sizeof(wmsg));
+    wmsg.msg_iov = &wio;
+    wmsg.msg_iovlen = 1;
+    assert_int_equal(ff_host_sendmsg(cli, &wmsg, 0), (ssize_t)sizeof(wbuf));
+
+    char rbuf[16] = {0};
+    struct iovec rio = { rbuf, sizeof(rbuf) };
+    struct msghdr rmsg;
+    memset(&rmsg, 0, sizeof(rmsg));
+    rmsg.msg_iov = &rio;
+    rmsg.msg_iovlen = 1;
+    assert_int_equal(ff_host_recvmsg(srv, &rmsg, 0), (ssize_t)sizeof(wbuf));
+    assert_string_equal(rbuf, "ping");
+
+    assert_int_equal(ff_host_shutdown(cli, SHUT_WR), 0);
+    assert_int_equal(ff_host_recvmsg(srv, &rmsg, 0), 0);
+
+    ff_host_close(srv);
+    ff_host_close(cli);
+    ff_host_close(ln);
+}
 #endif /* FF_KERNEL_COEXIST */
 
 int
@@ -688,6 +755,7 @@ main(void)
 #ifdef FF_KERNEL_COEXIST
         cmocka_unit_test(test_ff_kernel_fd_encode_roundtrip),
         cmocka_unit_test(test_ff_native_fd_map),
+        cmocka_unit_test(test_ff_host_msg_name_shutdown_bridges),
 #endif /* FF_KERNEL_COEXIST */
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -1397,6 +1397,11 @@ ff_sendmsg(int s, const struct msghdr *msg, int flags)
     struct msghdr freebsd_msg;
     struct cmsghdr *freebsd_cmsg = NULL;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_sendmsg(ff_kernel_fd_real(s), msg, flags);
+#endif /* FF_KERNEL_COEXIST */
+
     freebsd_msg.msg_name = &freebsd_sa;
     if ((__DECONST(struct linux_msghdr *, msg))->msg_control) {
         freebsd_cmsg = malloc((__DECONST(struct linux_msghdr *, msg))->msg_controllen, NULL, 0);
@@ -1489,6 +1494,11 @@ ff_recvmsg(int s, struct msghdr *msg, int flags)
 {
     int rc, ret;
     struct msghdr freebsd_msg;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_recvmsg(ff_kernel_fd_real(s), msg, flags);
+#endif /* FF_KERNEL_COEXIST */
 
     ret = linux2freebsd_msghdr((struct linux_msghdr *)msg, &freebsd_msg, 0);
     if (ret < 0) {
@@ -1738,6 +1748,11 @@ ff_getpeername(int s, struct linux_sockaddr * name,
     struct sockaddr_storage pfss;
     struct sockaddr *pf = (struct sockaddr *)&pfss;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_getpeername(ff_kernel_fd_real(s), name, namelen);
+#endif /* FF_KERNEL_COEXIST */
+
     if ((rc = kern_getpeername(curthread, s, pf)))
         goto kern_fail;
 
@@ -1761,6 +1776,11 @@ ff_getsockname(int s, struct linux_sockaddr *name,
     struct sockaddr_storage pfss;
     struct sockaddr *pf = (struct sockaddr *)&pfss;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_getsockname(ff_kernel_fd_real(s), name, namelen);
+#endif /* FF_KERNEL_COEXIST */
+
     if ((rc = kern_getsockname(curthread, s, pf)))
         goto kern_fail;
 
@@ -1781,12 +1801,25 @@ ff_shutdown(int s, int how)
 {
     int rc;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_shutdown(ff_kernel_fd_real(s), how);
+#endif /* FF_KERNEL_COEXIST */
+
     struct shutdown_args sa = {
         .s = s,
         .how = how,
     };
     if ((rc = sys_shutdown(curthread, &sa)))
         goto kern_fail;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0)
+            ff_host_shutdown(hfd, how);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     return (rc);
 kern_fail:

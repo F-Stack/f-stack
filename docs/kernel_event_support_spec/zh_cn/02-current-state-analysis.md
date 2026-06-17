@@ -129,7 +129,7 @@
 | D5 | `ff_stack_stats`/`ff_stack_get_stats` **未实现**，标注待定 |
 | D6 | fd 区分=`FF_KERNEL_FD_BASE` 偏移 + `ff_epoll_pairs` 配对；v6 增 `ff_native_fd_map` 双栈映射（仍非 enum/归属表） |
 | D7 | 原生 v5 共存已落地（编译宏已包裹）；v6 在其上改默认语义为双栈 |
-| D8 | 路由仅 13 入口；`readv/writev/getpeername/getsockname/shutdown/ioctl/sendmsg/recvmsg` 等未加路由（已知限制）；v6 双栈 fd 对这些接口默认仅 F-Stack 驱动 |
+| D8 | R8 补齐 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核路由（前 4 单栈热路由，shutdown 内核路由+双栈双驱动）；剩 `readv/writev/ioctl` 仍未加路由（已知限制），v6 双栈 fd 对其默认仅 F-Stack 驱动 |
 | **D9（v6）** | `ff_native_fd_map`/默认双建/双驱动**尚未实现**（§5.2 grep=0）——文档区分「v5 已实测」与「v6 待实现」，不当既成 |
 
 ---

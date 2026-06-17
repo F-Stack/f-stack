@@ -113,7 +113,7 @@
   4. PERF-1/2/4 无回归。
   5. config 关/`SOCK_FSTACK`/宏关时与纯 F-Stack 一致（NFR-1/NFR-3）。
   6. **connect 契约确认**：`05 §6` 草案经用户确认后 UT-14/IT-9 方可定稿判 PASS。
-  7. D8 路由覆盖限制 + 双栈 fd 未路由接口仅 F-Stack 驱动须文档/用例明示。
+  7. R8 新增 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核 fd 路由须单测覆盖；剩余 `readv/writev/ioctl` 仍为 D8 已知限制（双栈 fd 仅 F-Stack 驱动），须文档/用例明示。
 - 任一项失败 → bounce 打回上一里程碑（同步骤≤3 次，超限转人工）。
 
 ---

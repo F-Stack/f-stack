@@ -399,6 +399,36 @@ ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout)
 {
     return epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout);
 }
+
+ssize_t
+ff_host_sendmsg(int fd, const void *msg, int flags)
+{
+    return sendmsg(fd, (const struct msghdr *)msg, flags);
+}
+
+ssize_t
+ff_host_recvmsg(int fd, void *msg, int flags)
+{
+    return recvmsg(fd, (struct msghdr *)msg, flags);
+}
+
+int
+ff_host_shutdown(int fd, int how)
+{
+    return shutdown(fd, how);
+}
+
+int
+ff_host_getpeername(int fd, void *addr, socklen_t *addrlen)
+{
+    return getpeername(fd, (struct sockaddr *)addr, addrlen);
+}
+
+int
+ff_host_getsockname(int fd, void *addr, socklen_t *addrlen)
+{
+    return getsockname(fd, (struct sockaddr *)addr, addrlen);
+}
 #endif /* FF_KERNEL_COEXIST */
 
 void ff_os_errno(int error)

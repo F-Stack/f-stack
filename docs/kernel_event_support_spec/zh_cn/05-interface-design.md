@@ -190,7 +190,8 @@ ff_connect(s, name, namelen)   s 为双栈 fd (ff_native_map_get(s)>0)
 | `ff_epoll_wait maxevents<1` | `-EINVAL`（`ff_epoll.c:221`） |
 | 内核/F-Stack 地址端口冲突 | 返回原生 errno（双栈某栈 bind 失败按部分失败契约处理） |
 | close 双栈 fd | 两栈 close + `ff_native_map_clear`；kqueue fd 清 `ff_epoll_pairs`（避免内核 fd 泄漏，FR-7） |
-| 双栈 fd 调用未路由接口 | `ff_readv/writev/getpeername/getsockname/shutdown/ioctl/sendmsg/recvmsg` 默认**仅 F-Stack 驱动**（D8 延伸已知限制） |
+| 内核 fd 调用 `sendmsg/recvmsg/getpeername/getsockname/shutdown` | R8 已加内核路由：前 4 内核 fd 走 `ff_host_*` 单栈；`shutdown` 内核 fd 走 host，双栈 map fd 两侧双驱动半关闭（仿 `ff_close`） |
+| 双栈 fd 调用未路由接口 | `ff_readv/writev/ioctl` 默认**仅 F-Stack 驱动**（D8 延伸已知限制） |
 
 ---
 

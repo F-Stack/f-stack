@@ -32,6 +32,7 @@
 #include <errno.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -82,8 +83,31 @@ run_client(int port)
         ff_close(c);
         return 1;
     }
-    if (ff_send(c, "ping", 4, 0) != 4) {
-        perror("ff_send");
+
+    /* R8: exercise getpeername/getsockname on the kernel fd. */
+    struct sockaddr_in pn;
+    socklen_t pnlen = sizeof(pn);
+    if (ff_getpeername(c, (struct linux_sockaddr *)&pn, &pnlen) < 0 ||
+        ntohs(pn.sin_port) != (unsigned short)port) {
+        fprintf(stderr, "client: ff_getpeername mismatch\n");
+        ff_close(c);
+        return 1;
+    }
+    pnlen = sizeof(pn);
+    if (ff_getsockname(c, (struct linux_sockaddr *)&pn, &pnlen) < 0) {
+        perror("ff_getsockname");
+        ff_close(c);
+        return 1;
+    }
+
+    /* R8: send via ff_sendmsg. */
+    struct iovec io = { (void *)"ping", 4 };
+    struct msghdr mh;
+    memset(&mh, 0, sizeof(mh));
+    mh.msg_iov = &io;
+    mh.msg_iovlen = 1;
+    if (ff_sendmsg(c, &mh, 0) != 4) {
+        perror("ff_sendmsg");
         ff_close(c);
         return 1;
     }
@@ -105,9 +129,29 @@ run_server_once(int lfd)
         perror("ff_accept");
         return 1;
     }
-    ssize_t n = ff_recv(c, buf, sizeof(buf), 0);
+
+    /* R8: getpeername/getsockname on the accepted kernel fd. */
+    struct sockaddr_in pn;
+    socklen_t pnlen = sizeof(pn);
+    if (ff_getpeername(c, (struct linux_sockaddr *)&pn, &pnlen) < 0 ||
+        ff_getsockname(c, (struct linux_sockaddr *)&pn, &pnlen) < 0) {
+        perror("ff_get*name");
+        ff_close(c);
+        return 1;
+    }
+
+    /* R8: receive via ff_recvmsg. */
+    struct iovec io = { buf, sizeof(buf) };
+    struct msghdr mh;
+    memset(&mh, 0, sizeof(mh));
+    mh.msg_iov = &io;
+    mh.msg_iovlen = 1;
+    ssize_t n = ff_recvmsg(c, &mh, 0);
     if (n == 4 && memcmp(buf, "ping", 4) == 0)
         ff_send(c, "pong", 4, 0);
+
+    /* R8: half-close the write side via ff_shutdown. */
+    ff_shutdown(c, SHUT_WR);
     ff_close(c);
     return (n == 4) ? 0 : 1;
 }
