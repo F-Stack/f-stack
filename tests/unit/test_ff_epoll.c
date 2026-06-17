@@ -43,6 +43,8 @@ int ff_host_epoll_ctl(int epfd, int op, int fd, void *event)
 { (void)epfd; (void)op; (void)fd; (void)event; return -1; }
 int ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout)
 { (void)epfd; (void)events; (void)maxevents; (void)timeout; return -1; }
+int ff_host_close(int fd) { (void)fd; return 0; }
+int ff_native_map_get(int fstack_fd) { (void)fstack_fd; return 0; }
 #endif /* FF_KERNEL_COEXIST */
 
 /* ------------------------------------------------------------------------ */

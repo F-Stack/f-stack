@@ -67,6 +67,25 @@ ff_epoll_host_ep(int kq, int create)
     pthread_mutex_unlock(&ff_epoll_pairs_lock);
     return (ep > 0) ? ep : -1;
 }
+
+/* Close and release the host epoll paired with kqueue fd kq (called from
+ * ff_close). No-op when there is no pair. */
+void
+ff_epoll_close_pair(int kq)
+{
+    int i;
+
+    pthread_mutex_lock(&ff_epoll_pairs_lock);
+    for (i = 0; i < FF_EPOLL_COEXIST_MAX; i++) {
+        if (ff_epoll_pairs[i].host_ep > 0 && ff_epoll_pairs[i].kq == kq) {
+            ff_host_close(ff_epoll_pairs[i].host_ep);
+            ff_epoll_pairs[i].host_ep = 0;
+            ff_epoll_pairs[i].kq = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&ff_epoll_pairs_lock);
+}
 #endif /* FF_KERNEL_COEXIST */
 
 
@@ -111,6 +130,20 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
             return -1;
         }
         return ff_host_epoll_ctl(host_ep, op, ff_kernel_fd_real(fd), event);
+    }
+
+    /*
+     * Dual-stack fd: also (un)register the paired host kernel fd on the host
+     * epoll, then fall through to register on the F-Stack kqueue below.
+     */
+    {
+        int hfd = ff_native_map_get(fd);
+        if (hfd > 0) {
+            int host_ep = ff_epoll_host_ep(epfd,
+                op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD);
+            if (host_ep > 0)
+                ff_host_epoll_ctl(host_ep, op, hfd, event);
+        }
     }
 #endif /* FF_KERNEL_COEXIST */
 

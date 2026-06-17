@@ -1,12 +1,20 @@
-# 09 Implementation Plan: F-Stack + Kernel Stack Coexistence (R0-R5)
+# 09 Implementation Plan: F-Stack + Kernel Stack Automatic Dual-Stack Coexistence (R0-R7)
 
 > **Document ID**: SPEC-KE-09 (implementation-phase plan)
-> **Version**: v5 (compile-macro gating)
+> **Version**: v6 (native automatic dual-stack coexistence paradigm)
 > **Date**: 2026-06-17
-> **Status**: In progress (R0-R5 done; R6 compile-macro gating pending)
-> **Basis**: the v5 spec in this directory (00-08); line numbers are subject to the actual code, gatekeeper re-verified.
+> **Status**: In progress (R0-R6 done; **R7 v6 auto dual-stack to-be-implemented**)
+> **Basis**: the v6 spec in this directory (00-08); line numbers are subject to the actual code, gatekeeper re-verified. v6 changes are to-be-implemented design.
+> **Authoritative full text**: `zh_cn/09-impl-plan.md`.
 
-> **v5 sync (key points; see `zh_cn/09-impl-plan.md` for full detail)**: **R6 landing steps** — (1) Makefile macro block (commented off `lib/Makefile:57-60`, dual CFLAGS `:174-177`, already in place); (2) wrap the 7 files per `02 §4bis.2` with `#ifdef FF_KERNEL_COEXIST` (`ff_api.h:81-99`, `ff_host_interface.h:94-158`, `ff_host_interface.c:29-31/42-45/246-367`, `ff_config.h:321-323`, `ff_config.c:1027-1031/1363`, `ff_epoll.c:25-68/97-111/210-241`, `ff_syscall_wrapper.c:64/919-931/13 entry routes`), keeping each `ff_*` default path outside the `#ifdef`; (3) fix the stale `default_stack` comment at `ff_api.h:91`; (4) dual-build `nm` zero-regression verification. `ff_api.symlist` unchanged; clean full rebuild after header changes (ABI skew).
+> **v6 sync (key points; see `zh_cn/09-impl-plan.md` for full detail)**: **R7 per-file rework** (under `#ifdef FF_KERNEL_COEXIST`, runtime `kernel_coexist=0` short-circuit, `SOCK_FSTACK`/macro-off byte-for-byte zero regression):
+> - (1) `ff_host_interface.h`: declare `ff_native_map_get/set/clear` (NO struct-header change).
+> - (2) `ff_host_interface.c`: `static int ff_native_fd_map[FF_MAX_FREEBSD_FILES]`(=65536, lock-free) + accessors (bounds-checked).
+> - (3) `ff_syscall_wrapper.c`: `ff_socket:915-947` default dual-build (`sys_socket`(s)+`ff_host_socket`(h)+`ff_native_map_set(s,h)`, return s; markers single-stack); `ff_bind:1607-1627` (`kern_bindat` then `ff_host_bind(map[s], raw linux addr)`); `ff_listen:1584-1605` (`sys_listen` then `ff_host_listen(map[s])`); `ff_close:1095-1112` (`kern_close` then `ff_host_close(map[fd])`+`ff_native_map_clear`); `ff_accept/accept4:1514-1582` single-stack ownership; `ff_setsockopt:999`/`ff_fcntl:1495` sync both; `ff_connect:1629-1649` §connect draft (pending user confirmation). recv/send/read/write/recvfrom/sendto unchanged (single-stack by `ff_is_kernel_fd`, NO map lookup).
+> - (4) `ff_epoll.c`: `ff_epoll_ctl:99-115` dual-register a dual-stack listen (kqueue + `ff_host_epoll_ctl(host_ep, op, map[fd], event)`, pass `event.data`); `ff_epoll_wait:214-252` merge (existing skeleton); `ff_close` clear `ff_epoll_pairs` for kqueue fd.
+> - (5) `lib/Makefile`: already in place (`:174-177` dual CFLAGS); no change.
+> - (6) demo: default dual-stack `listen(80)` demo for real-machine IT-1/2/3.
+> Then R7 tests (cmocka dual-mode + real-machine dual-stack + perf) and gate (`08 §4` V1-V12; MT-1/3 incl. `ff_native_fd_map`); English spec sync; English short commit; config local values NOT committed; clean full rebuild after any header change (ABI skew).
 
 ---
 

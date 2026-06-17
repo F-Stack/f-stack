@@ -1,12 +1,13 @@
-# 10 Performance Baseline Report (v4, true-coexistence)
+# 10 Performance Baseline Report (true-coexistence)
 
-> Chinese version: `./zh_cn/10-perf-baseline-report.md`
+> Chinese version: `./zh_cn/10-perf-baseline-report.md` (authoritative full text).
 >
 > **Doc id**: SPEC-KE-10
-> **Version**: v5 (compile-macro gating; retains the v4 true-coexistence methodology; supersedes the v3 pure-kernel-loopback methodology)
+> **Version**: v6 (native automatic dual-stack paradigm; retains the v4/v5 true-coexistence methodology; supersedes the v3 pure-kernel-loopback methodology)
 > **Date**: 2026-06-17
-> **Status**: FINAL (R4 performance-gate measured output). **v5 note**: this baseline was measured with coexistence code **compiled in** (equivalent to `FF_KERNEL_COEXIST` on), toggling only the runtime `kernel_coexist` 0/1 — still valid. The macro-off (coexistence not compiled) zero-regression is verified by the `nm` symbol comparison MT-1 in `07 §1bis`; **no performance retest needed** (macro off = same binary as upstream F-Stack).
-> **Scope**: empirically prove that "F-Stack user-space stack + host kernel-stack coexistence" causes **no regression on the F-Stack business fast path** (PERF-1/PERF-2), and give a **kernel-side bypass throughput** (PERF-3) management-plane data point.
+> **Status**: §4/§5 are v5 R4 real-machine FINAL (per-fd either/or methodology, toggling only runtime `kernel_coexist` 0/1). **v6 automatic dual-stack methodology (PERF-1/2/4) pending R7 measurement.**
+> **v6 note**: v5 measured per-fd either/or (default builds F-Stack only) → PERF-1/2 zero regression. v6 automatic dual-stack introduces **default dual-build/dual-drive**, so RE-MEASURE: (1) F-Stack business fast path still no regression under default dual-stack (PERF-1/2); (2) single-stack connection hot path does NOT consult `ff_native_fd_map` (PERF-4, see `07` UT-17). R6 macro-off (incl. v6 `ff_native_fd_map` not compiled) zero-regression is still verified by `07 §1bis` MT-1 `nm` symbol comparison; macro off = same binary as upstream, no perf retest.
+> **Scope**: empirically prove coexistence causes **no regression on the F-Stack business fast path** (PERF-1/2/**4**), and give a **kernel-side bypass throughput** (PERF-3) management-plane data point.
 > **Empirical rule**: every number comes from real wrk output (`/tmp/helloworld-coexist-bench/`, `/tmp/kbench-perf/`); no fabrication. Real server/client IPs are source-side `sed`-masked before landing on disk (`9.134.214.176→192.168.1.1`, `9.134.211.87→192.168.1.2`).
 
 ---

@@ -249,6 +249,35 @@ char *ff_getenv(const char *name)
 
 #ifdef FF_KERNEL_COEXIST
 /*
+ * Native dual-stack fd map (single-threaded per F-Stack instance, like the
+ * adapter's fstack_kernel_fd_map): F-Stack fd -> paired host kernel fd, 0=none.
+ */
+#define FF_MAX_FREEBSD_FILES 65536
+static int ff_native_fd_map[FF_MAX_FREEBSD_FILES];
+
+int
+ff_native_map_get(int fstack_fd)
+{
+    if (fstack_fd < 0 || fstack_fd >= FF_MAX_FREEBSD_FILES)
+        return 0;
+    return ff_native_fd_map[fstack_fd];
+}
+
+void
+ff_native_map_set(int fstack_fd, int host_fd)
+{
+    if (fstack_fd >= 0 && fstack_fd < FF_MAX_FREEBSD_FILES)
+        ff_native_fd_map[fstack_fd] = host_fd;
+}
+
+void
+ff_native_map_clear(int fstack_fd)
+{
+    if (fstack_fd >= 0 && fstack_fd < FF_MAX_FREEBSD_FILES)
+        ff_native_fd_map[fstack_fd] = 0;
+}
+
+/*
  * Host kernel-stack bridge for native-mode coexistence. Operate on RAW host
  * fds; sockaddr / epoll_event arrive as void* (linux_sockaddr layout matches
  * the host sockaddr). The host libc sets errno on failure.

@@ -1,12 +1,15 @@
 # 08 Review Gate Report
 
 > **Document ID**: SPEC-KE-08
-> **Version**: v5 (compile-macro gating)
+> **Version**: v6 (native automatic dual-stack coexistence paradigm)
 > **Date**: 2026-06-17
-> **Status**: v4 R1 spec + R2-R4 implementation gate PASS (incl. real-hardware perf baseline PERF-1/2/3); v5 adds R6 compile-macro gating gate (pending measurement)
-> **Scope**: Gate verification of the v5 spec and implementation for "consistency with the actual code (incl. D1-D8 fixes) / coexistence-paradigm correctness / compile-macro gating completeness / zero regression".
+> **Status**: R0-R6 (v5, ba148589d) gate PASS; **v6 R7 auto dual-stack gate: pending measurement**
+> **Authoritative full text**: `zh_cn/08-review-gate.md`.
 
-> **v5 sync (key points; see `zh_cn/08-review-gate.md` for full detail)**: new gate items — M1 wrapping completeness (7 files), M2 dual-side CFLAGS, M3 `symlist` unchanged, M4 macro-off symbol zero-regression (MT-1), M5 macro-on functional, M6 opt-in visibility, M7 `ff_api.h:91` comment fix; plus D1-D8 code-doc consistency checklist (all fixed in spec, R6 code wrapping + comment fix pending).
+> **v6 sync (key points; see `zh_cn/08-review-gate.md` for full detail)**:
+> - **R0-R6 PASS (v5)**: coexistence paradigm correct, compile-macro gating complete, macro-off `nm` coexistence symbols=0, macro-on=39, real-machine perf PERF-1/2/3 PASS, D1-D8 consistent. M1-M7 PASS.
+> - **R7 spec gate (v6)**: spec upgraded to native automatic dual-stack (default dual-build/dual-drive + `ff_native_fd_map` + dual-stack unified events + accept single-stack ownership + connect draft); line numbers code-authoritative; explicitly distinguishes "v5 measured" vs "v6 to-be-implemented" (D9).
+> - **R7 implementation gate V1-V12 PENDING MEASUREMENT**: V1 map landed, V2 socket dual-build, V3 bind/listen dual-drive, V4 accept ownership, V5 close dual-drive+clear, V6 epoll dual-register+merge, V7 one-listen-many-uses real-machine (F-Stack 9.134.214.176:80 + kernel 127.0.0.1:80, `ff_netstat`+`ss` each see 80), V8 hot path no map lookup, V9 macro-off no `ff_native_fd_map` symbols / macro-on present, V10 **connect contract PENDING USER CONFIRMATION**, V11 partial-build-failure contract, V12 NFR-1/3 zero regression + F-Stack always present.
 
 ---
 

@@ -128,6 +128,16 @@ static inline int ff_kernel_fd_real(int fd)
 }
 
 /*
+ * Native dual-stack fd map: a coexistence (dual-stack) fd keeps its F-Stack fd
+ * value; the paired host kernel fd is stored here, indexed by the F-Stack fd
+ * (0 = no kernel side). Maintained by the ff_* entry points.
+ */
+int  ff_native_map_get(int fstack_fd);
+void ff_native_map_set(int fstack_fd, int host_fd);
+void ff_native_map_clear(int fstack_fd);
+void ff_epoll_close_pair(int kq);   /* close host epoll paired with a kqueue (ff_epoll.c) */
+
+/*
  * Host kernel-stack bridge (implemented in ff_host_interface.c, host
  * namespace). These operate on RAW host fds. sockaddr / epoll_event are
  * passed as void* to avoid struct-layout clashes between the FreeBSD and host

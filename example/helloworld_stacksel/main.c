@@ -42,6 +42,7 @@
 #include "ff_api.h"      /* ff_socket + SOCK_KERNEL / SOCK_FSTACK markers */
 #include "ff_config.h"   /* ff_global_cfg: enable coexistence without ff_init */
 #include "ff_host_interface.h" /* ff_host_epoll_* + managed kernel-fd encode/real */
+#include "ff_epoll.h"    /* ff_epoll_* for the dualstack (ff_init/ff_run) demo */
 
 #define KPORT 18399
 
@@ -276,10 +277,104 @@ do_bench(int port)
     return 0;
 }
 
+/*
+ * Dualstack demo (needs ff_init + a working DPDK data plane). A single plain
+ * listen socket (no marker) is, with [stack] kernel_coexist=1 and the lib built
+ * with FF_KERNEL_COEXIST, served on BOTH the F-Stack user-space stack (via the
+ * DPDK NIC) and the host Linux kernel stack (reachable via 127.0.0.1) from the
+ * same ff_epoll loop. Port comes from $FF_DUALSTACK_PORT.
+ */
+static int g_dual_lfd;
+static int g_dual_epfd;
+
+static int
+dual_loop(void *arg)
+{
+    struct epoll_event evs[512];
+    int n, i;
+
+    (void)arg;
+    n = ff_epoll_wait(g_dual_epfd, evs, 512, 0);
+    for (i = 0; i < n; i++) {
+        if (evs[i].data.fd == g_dual_lfd) {
+            for (;;) {
+                int c = ff_accept(g_dual_lfd, NULL, NULL);
+                struct epoll_event ce;
+                if (c < 0)
+                    break;
+                set_nonblock(c);
+                memset(&ce, 0, sizeof(ce));
+                ce.events = EPOLLIN;
+                ce.data.fd = c;
+                ff_epoll_ctl(g_dual_epfd, EPOLL_CTL_ADD, c, &ce);
+            }
+        } else {
+            int cfd = evs[i].data.fd;
+            char buf[2048];
+            ssize_t r = ff_recv(cfd, buf, sizeof(buf), 0);
+            if (r > 0) {
+                ff_send(cfd, http_resp, sizeof(http_resp) - 1, 0);
+            } else if (r == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+                ff_epoll_ctl(g_dual_epfd, EPOLL_CTL_DEL, cfd, NULL);
+                ff_close(cfd);
+            }
+        }
+    }
+    return 0;
+}
+
+static int
+do_dualstack(int argc, char **argv, int port)
+{
+    struct sockaddr_in sa;
+    struct epoll_event ev;
+    int on = 1;
+
+    ff_init(argc, argv);
+
+    g_dual_lfd = ff_socket(AF_INET, SOCK_STREAM, 0);   /* no marker -> dual stack */
+    if (g_dual_lfd < 0) {
+        perror("ff_socket");
+        return 1;
+    }
+    ff_setsockopt(g_dual_lfd, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on));
+    set_nonblock(g_dual_lfd);
+
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_ANY);
+    sa.sin_port = htons((unsigned short)port);
+    if (ff_bind(g_dual_lfd, (struct linux_sockaddr *)&sa, sizeof(sa)) < 0) {
+        perror("ff_bind");
+        return 1;
+    }
+    if (ff_listen(g_dual_lfd, 1024) < 0) {
+        perror("ff_listen");
+        return 1;
+    }
+
+    g_dual_epfd = ff_epoll_create(1);
+    memset(&ev, 0, sizeof(ev));
+    ev.events = EPOLLIN;
+    ev.data.fd = g_dual_lfd;
+    ff_epoll_ctl(g_dual_epfd, EPOLL_CTL_ADD, g_dual_lfd, &ev);
+
+    printf("COEXIST DUALSTACK: single listen on :%d served by F-Stack + kernel\n", port);
+    fflush(stdout);
+
+    ff_run(dual_loop, NULL);
+    return 0;
+}
+
 int
 main(int argc, char **argv)
 {
+    char *p;
+
     if (argc >= 3 && strcmp(argv[1], "bench") == 0)
         return do_bench(atoi(argv[2]));
+    p = getenv("FF_DUALSTACK_PORT");
+    if (p != NULL)
+        return do_dualstack(argc, argv, atoi(p));
     return do_selftest();
 }

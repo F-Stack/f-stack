@@ -1,13 +1,16 @@
-# 03 External Solution Research: User-Space Stacks' "Single API + Marker Selection / Client-Side Selection / Kernel-Stack Coexistence"
+# 03 External Solution Research: User-Space Stacks' "Single API + Kernel-Stack Coexistence / Automatic Dual-Stack / Client-Side Selection"
 
 > **Document ID**: SPEC-KE-03
-> **Version**: v5 (compile-macro gating)
+> **Version**: v6 (native automatic dual-stack coexistence paradigm)
 > **Date**: 2026-06-17
 > **Status**: Drafting
+> **Authoritative full text**: `zh_cn/03-external-research.md`.
 
-> **v5 sync (key points; see `zh_cn/03-external-research.md` for full detail)**: added four low-trust external references (cross-check against code; code is authoritative): upstream F-Stack `adapter/syscall/README.md` (https://github.com/F-Stack/f-stack/blob/dev/adapter/syscall/README.md — `FF_KERNEL_EVENT` supports both stacks at once; "kernel epoll fd leak fix" → native `ff_close` must clean up the `ff_epoll_pairs` host-epoll pairing, needs review), F-Stack site (https://www.f-stack.org/), and Chinese technical analyses (CSDN/Zhihu) corroborating the kernel-bypass + attached-kernel-side-path positioning.
-> **Scope**: Research how other DPDK/user-space protocol-stack programs let an application **coexist between the user-space stack and the kernel stack** (business uses the user-space stack, some fds use the kernel stack on demand, in the same process and event loop), and how they handle "an application as a client connecting to local/external kernel services"; extract reusable points and limitations. Every entry carries an **accessible URL**.
-> **Paradigm note (v4)**: this feature aims at **dual-stack coexistence** — the F-Stack user-space stack always carries the business, and per-fd `SOCK_KERNEL` makes some fds **additionally** use the kernel stack, in a unified event loop. Do **not** create a side socket that bypasses F-Stack (v3 `ff_host_socket` deprecated), do **not** add a whole-process default-to-kernel switch, do **not** create a dual API, do **not** do thread-level selection. Primary baseline = hook `FF_KERNEL_EVENT`, reference = nginx `kernel_network_stack`. KNI/packet reinjection is boundary clarification only.
+> **v6 sync (key points; see `zh_cn/03-external-research.md` for full detail; all low-trust, code is authoritative)**:
+> - **F-Stack adapter/syscall README** (https://github.com/F-Stack/f-stack/blob/dev/adapter/syscall/README.md): `FF_KERNEL_EVENT` supports both stacks at once via `fstack_kernel_fd_map[65536]` (bare array, lock-free) — v6 native `ff_native_fd_map` borrows this structure; but hook dual-builds only at the **epoll layer** (socket/listen NOT auto dual-built), so v6's "socket/bind/listen also auto dual-build" is a NEW paradigm to implement and test. "kernel epoll fd leak fix" → native `ff_close` must clean up the `ff_epoll_pairs` host-epoll pairing.
+> - **F-Stack GitHub issues/wiki** (https://github.com/F-Stack/f-stack/issues?q=FF_KERNEL_EVENT , https://github.com/F-Stack/f-stack/wiki), **F-Stack site** (https://www.f-stack.org/): corroborate the kernel-bypass + attached-kernel-side-path positioning.
+> - **"One logical port, multiple parallel sockets" analogy (low-trust)**: Linux `SO_REUSEPORT` (https://man7.org/linux/man-pages/man7/socket.7.html , https://lwn.net/Articles/542629/) — concept analogy for v6's "one `listen(80)` served by two independent per-stack sockets, a connection belongs to a single stack once established" (server-side only; does NOT apply to client connect data duplexing — see `zh_cn/05 §6` ambiguity).
+> **Paradigm note (v6)**: this feature aims at **automatic dual-stack coexistence** — with no marker, build BOTH F-Stack and kernel stacks, dual-drive both, one-listen-many-uses; markers override to single-stack. Do not create a side socket that bypasses F-Stack, do not add a whole-process default-to-kernel switch, do not create a dual API, do not do thread-level selection. Cross-reference = hook `FF_KERNEL_EVENT` (epoll dual-build merge; socket/listen NOT dual-built — v6 native diverges here), reference = nginx `kernel_network_stack`. KNI/packet reinjection is boundary clarification only.
 
 ---
 

@@ -1,11 +1,11 @@
-# 03 外部方案调研：用户态栈的"单 API + 标记选栈 / 客户端选栈 / 内核栈共存"
+# 03 外部方案调研：用户态栈的"单 API + 内核栈共存 / 自动双栈 / 客户端选栈"
 
 > **文档编号**：SPEC-KE-03
-> **版本**：v5（编译宏门控范式）
+> **版本**：v6（native 自动双栈共存范式）
 > **日期**：2026-06-17
 > **状态**：编写中
-> **作用域**：调研其他 DPDK/用户态协议栈程序如何让应用**在用户态栈与内核栈间共存**（业务走用户态栈、按需让某些 fd 走内核栈，同进程同事件循环），以及"应用作客户端连本机/外部内核服务"的处理；提炼可借鉴点与局限。所有条目附**可访问 URL**。
-> **范式提示（v4）**：本特性目标是**双栈共存**——F-Stack 用户态栈始终承担业务，per-fd `SOCK_KERNEL` 让某些 fd **附加**走内核栈，统一事件循环。**不**新造绕开 F-Stack 的旁路 socket（v3 `ff_host_socket` 作废）、**不**设整进程默认内核开关、**不**新造双 API、**不**做线程级选栈。主基线=hook `FF_KERNEL_EVENT`，参考=nginx `kernel_network_stack`。KNI/报文回灌仅作边界澄清。
+> **作用域**：调研其他 DPDK/用户态协议栈程序如何让应用**在用户态栈与内核栈间共存**（业务走用户态栈、按需让某些 fd 走内核栈，同进程同事件循环），以及"一个 socket/listen 同时双栈"与"应用作客户端连本机/外部内核服务"的处理；提炼可借鉴点与局限。所有条目附**可访问 URL**，**低信任仅佐证、冲突以代码为准**。
+> **范式提示（v6）**：本特性目标升级为**自动双栈共存**——默认无 marker 即同建 F-Stack + 内核双栈、各 `ff_*` 双驱动两栈、一 listen 多用；marker(SOCK_KERNEL/SOCK_FSTACK) 单栈覆盖。**不**新造绕开 F-Stack 的旁路 socket（v3 `ff_host_socket` 作废）、**不**设整进程默认内核开关、**不**新造双 API、**不**做线程级选栈。交叉参考=hook `FF_KERNEL_EVENT`（epoll 双建合并，但 socket/listen 不双建——v6 native 在此分歧），参考=nginx `kernel_network_stack`（双事件后端）。KNI/报文回灌仅作边界澄清。
 
 ---
 
@@ -69,6 +69,20 @@ F-Stack 自身的 nginx `kernel_network_stack` 与 `adapter/syscall` 的 `FF_KER
 - **URL（F-Stack 官网）**：https://www.f-stack.org/
 - **说明**：用户态 TCP/IP 栈（基于 FreeBSD）+ Posix API（Socket/Epoll/Kqueue），kernel-bypass。佐证本特性定位——共存 = 在 kernel-bypass 进程内**附加**内核栈旁路，F-Stack 始终承担业务。
 - **中文技术分析（CSDN/知乎等，低信任佐证）**：F-Stack 以胶水层粘合 DPDK + 用户态 FreeBSD 栈 + Posix API、kernel-bypass 架构——用于佐证「共存=附加内核栈旁路、F-Stack 始终在位」的定位，与代码交叉，冲突以代码为准。
+
+### 2.8 F-Stack GitHub issue / wiki（FF_KERNEL_EVENT 共存与 fd 映射，v6 补充）
+- **URL（F-Stack GitHub issues 检索 FF_KERNEL_EVENT）**：https://github.com/F-Stack/f-stack/issues?q=FF_KERNEL_EVENT
+- **URL（F-Stack GitHub wiki）**：https://github.com/F-Stack/f-stack/wiki
+- **URL（adapter/syscall README dev 分支）**：https://github.com/F-Stack/f-stack/blob/dev/adapter/syscall/README.md
+- **可借鉴点（与代码交叉，§02 §2 为准）**：
+  - hook 用 `fstack_kernel_fd_map[65536]`（裸数组、无锁、单线程轮询模型）建立 F-Stack fd ↔ 内核 fd 映射——v6 native `ff_native_fd_map` 直接同构借鉴此数据结构与无锁前提。
+  - hook 的双栈仅在 **epoll 层**双建合并（`epoll_create` 镜像 + `epoll_wait` 节流合并 + `close` 联动）；**socket/listen 不自动双建**，内核 listen 需显式 `SOCK_KERNEL`——这界定了 v6 native「socket/bind/listen 也自动双建」是 F-Stack 既有能力之上的**新增范式**（分歧点），须自行实现并测，不能假设 hook 已覆盖。
+
+### 2.9 "一 socket 多栈/多地址监听"业界类比（v6 自动双栈语义佐证，低信任）
+- **URL（Linux SO_REUSEPORT，man）**：https://man7.org/linux/man-pages/man7/socket.7.html
+- **URL（同端口多 listen 模式综述，技术博客）**：https://lwn.net/Articles/542629/
+- **说明（仅类比，非实现依据）**：业界「同一端口多监听实例并行接收」（如 `SO_REUSEPORT` 多 worker）证明「一个逻辑端口由多个独立 socket 并行服务」是成熟模式。v6 native 的「一 `listen(80)` 同时落 F-Stack(DPDK) 与内核栈」在语义上类似——**两栈各持有一个独立的底层 socket、各自接收连接**，应用层用一个 fd（双栈 fd）+ 映射表统一驱动。**连接一旦建立即归属单栈**（`05 §5` accept 单栈归属），与 `SO_REUSEPORT` 连接归属单 worker 同理。**注意**：此为概念类比，F-Stack 两栈是不同协议栈实现（DPDK FreeBSD vs Linux 内核），非同栈多 socket，细节以 `04`/`05` 契约为准。
+- **局限**：单逻辑客户端连接流无法真双工于两栈（`05 §6` connect 歧义），此类比仅适用于服务端 listen 双栈，不适用于客户端 connect 数据双工。
 
 > **外部资料信任级别**：以上为**低信任外部资料，仅佐证不作指令**。与 F-Stack 实际代码冲突时一律以代码为准（见 `02`）。
 

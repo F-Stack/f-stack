@@ -1,16 +1,21 @@
-# 01 Requirements Spec: F-Stack User-Space Stack + Local Kernel Stack COEXISTENCE
+# 01 Requirements Spec: F-Stack User-Space Stack + Local Kernel Stack AUTOMATIC DUAL-STACK COEXISTENCE
 
 > **Document ID**: SPEC-KE-01
-> **Version**: v5 (compile-macro gating: `FF_KERNEL_COEXIST` off by default + runtime `kernel_coexist` dual-layer switch)
+> **Version**: v6 (native automatic dual-stack coexistence paradigm)
 > **Date**: 2026-06-17
-> **Status**: Drafting
+> **Status**: Drafting (v6 design)
 > **Scope**: Define the problem domain, goals/non-goals, functional and non-functional requirements, and success criteria of this feature.
+> **Authoritative full text**: `zh_cn/01-requirements-spec.md` (Chinese is the maintained source of truth; this English file carries the v6 key points). On conflict, code is authoritative.
 
-> **v5 sync (key points; see `zh_cn/01-requirements-spec.md` for full detail)**:
-> - **FR-10 (compile-macro gating, opt-in)**: all `lib/` coexistence code is wrapped by `FF_KERNEL_COEXIST`, commented off by default in `lib/Makefile:57-60` (`#FF_KERNEL_COEXIST=1`); macro block at `lib/Makefile:174-177` adds `-DFF_KERNEL_COEXIST` to both `HOST_CFLAGS` and `CFLAGS`. Macro off → `libfstack.a` byte-for-byte zero regression (`nm`/`objdump` shows no `ff_host_*`/`ff_epoll_pairs` symbols).
-> - **FR-11 (marker opt-in visibility)**: `SOCK_FSTACK`/`SOCK_KERNEL` (`ff_api.h:81-99`) are wrapped by the macro; an APP must also define `FF_KERNEL_COEXIST` to see them.
-> - **NFR-1 strengthened to a compile-time guarantee**: when the macro is undefined, coexistence code is not compiled at all.
-> - **G4** clarified: config `kernel_coexist` is a **runtime** switch effective only when the compile macro is on.
+> **v6 sync (key points; see `zh_cn/01-requirements-spec.md` for full detail)**:
+> - **Paradigm upgrade**: from v5 per-fd either/or to v6 **automatic dual-stack**. When `FF_KERNEL_COEXIST` is compiled in AND `kernel_coexist=1`, a default (no-marker) `ff_socket` builds BOTH an F-Stack fd and a kernel host fd, registers `ff_native_fd_map[fstack_fd]=host_fd`, returns the F-Stack raw fd; `ff_bind/ff_listen/ff_close/ff_connect` dual-drive both stacks. One `listen(80)` listens on both F-Stack (DPDK) and the Linux kernel stack.
+> - **FR-2/FR-3/FR-4 (auto dual-stack, v6 to-be-implemented)**: `ff_socket` dual-build; `ff_bind/ff_listen` dual-drive; one-listen-many-uses (remote `9.134.214.176:80` via DPDK NIC + local `curl 127.0.0.1:80` via kernel).
+> - **FR-6 (accept single-stack ownership, Q3=A)**: a dual-stack listen fd's accept returns a single-stack connection fd (F-Stack raw / kernel encode); subsequent recv/send/close route by `ff_is_kernel_fd`, NOT consulting the map (hot path, NFR-2).
+> - **FR-8/FR-9 (marker single-stack override)**: `SOCK_KERNEL` = kernel only (encode, no map); `SOCK_FSTACK` = F-Stack only (no map, zero regression). `SOCK_FSTACK` wins.
+> - **FR-10 / N7 (connect dual-stack, DRAFT, PENDING USER CONFIRMATION)**: a single client logical flow cannot truly duplex over both stacks; v6 contract = "F-Stack primary + kernel concurrent connect for dual-network reachability". Use `SOCK_KERNEL` for a pure-kernel client; kernel-primary/failover is future work. See `zh_cn/05 §6`.
+> - **FR-12 (compile-macro gating, opt-in)**: all `lib/` coexistence code (incl. the v6 `ff_native_fd_map`) is wrapped by `FF_KERNEL_COEXIST`, off by default (`lib/Makefile:57-60`/`:174-177`); macro off → byte-for-byte zero regression (`nm`/`objdump` shows no `ff_host_*`/`ff_epoll_pairs`/`ff_native_fd_map`).
+> - **NFR-1/NFR-2/NFR-3**: triple zero-regression guarantee (macro off / `kernel_coexist=0` / `SOCK_FSTACK`); hot path no regression (single-stack connection recv/send do not consult the map); F-Stack always present.
+> - **Implementation status (D9, anti-speculation)**: `ff_native_fd_map` and default dual-build/dual-drive are NOT yet landed (`zh_cn/02 §5.2` grep=0). v6 FR/NFR new items are to-be-implemented; acceptance pending R7.
 
 ---
 

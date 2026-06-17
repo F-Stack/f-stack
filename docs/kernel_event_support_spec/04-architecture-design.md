@@ -1,12 +1,22 @@
-# 04 Architecture Design: F-Stack + Kernel Stack COEXISTENCE + per-fd marker selection + unified events
+# 04 Architecture Design: Automatic Dual-Stack Coexistence + fd tri-state routing + dual-drive data flow + dual-stack unified events
 
 > **Document ID**: SPEC-KE-04
-> **Version**: v5 (compile-macro gating)
+> **Version**: v6 (native automatic dual-stack coexistence paradigm)
 > **Date**: 2026-06-17
-> **Status**: Drafting
+> **Status**: Drafting (v6 design)
+> **Authoritative full text**: `zh_cn/04-architecture-design.md`. On conflict, code is authoritative.
 
-> **v5 sync (key points; see `zh_cn/04-architecture-design.md` for full detail)**: dual-layer switch — compile macro `FF_KERNEL_COEXIST` gates compile-time (off by default → coexistence code not compiled → byte-for-byte zero regression), config `[stack] kernel_coexist` gates runtime (effective only when the macro is on). `SOCK_*` markers are opt-in (APP must define the macro). Native coexistence is **already implemented** (not "new design"): fd discrimination via `FF_KERNEL_FD_BASE` encode offset + `ff_epoll_pairs[64]` pairing table (NOT enum/ownership-table, D6). Routing covers 13 entries only; `ff_readv/writev/send/recv/getpeername/getsockname/shutdown/ioctl/sendmsg/recvmsg` not covered (D8 known limitation).
-> **Scope**: The coexistence architecture, the selection model, dual-stack unified events, the client/server bidirectional data flow, and both hook and native modes.
+> **v6 sync (key points; see `zh_cn/04-architecture-design.md` for full detail)**:
+> - **Dual-layer switch**: compile macro `FF_KERNEL_COEXIST` (off by default → not compiled → zero regression) + runtime `kernel_coexist`.
+> - **fd tri-state routing**: `ff_is_kernel_fd(fd)`(≥`FF_KERNEL_FD_BASE`=0x40000000) = kernel only (v5 `ff_host_*` path); else F-Stack path, and if `ff_native_map_get(fd)>0` also dual-drive host_fd (dual-stack); else single-stack F-Stack (zero regression).
+> - **Dual-build/dual-drive data flow (v6)**: `ff_socket` default → `sys_socket`(s) + `ff_host_socket`(h) + `ff_native_map_set(s,h)`, return s; `ff_bind`/`ff_listen` drive both stacks; `ff_close` closes both + `ff_native_map_clear` + clears `ff_epoll_pairs`.
+> - **native map (v6, to-be-implemented)**: `ff_native_fd_map[FF_MAX_FREEBSD_FILES]`(=65536), lock-free (single-threaded poll model), modeled on adapter `fstack_kernel_fd_map` (`ff_hook_syscall.c:258`); orthogonal to `ff_epoll_pairs[64]` (kq↔host_ep).
+> - **accept single-stack ownership (Q3=A)**: dual-stack listen → try `kern_accept` (non-blocking); on success return F-Stack raw conn fd; on EAGAIN try `ff_host_accept(map[s])` → encode; only EAGAIN when both EAGAIN. Connection fds are single-stack.
+> - **§connect dual-stack DRAFT (Q2=B, PENDING USER CONFIRMATION)**: semantic ambiguity (a single logical flow cannot duplex over both stacks); F-Stack primary + kernel concurrent connect for dual-network reachability. Use `SOCK_KERNEL` for pure-kernel client; kernel-primary/failover is future.
+> - **native vs hook**: isomorphic (map / epoll merge / close linkage); divergent (socket/bind/listen/connect auto dual-build — v6 only; hook does NOT dual-build socket/listen).
+> - **Hot path no regression (NFR-2)**: single-stack connection recv/send do a single `ff_is_kernel_fd` check, NOT consulting the map.
+> - **Implementation status (D9)**: v6 dual-build/dual-drive/`ff_native_fd_map` NOT yet landed (`zh_cn/02 §5.2`).
+> **Scope**: dual-layer switch, automatic dual-stack model, fd tri-state routing, `ff_native_fd_map`, dual-drive data flow, dual-stack unified events, accept ownership, connect contract.
 > **Basis**: `02` (code current state), `03` (external solutions); on conflict, code is authoritative.
 
 ---

@@ -1,12 +1,18 @@
 # 07 Test and Performance-Baseline Spec
 
 > **Document ID**: SPEC-KE-07
-> **Version**: v5 (compile-macro gating)
+> **Version**: v6 (native automatic dual-stack coexistence paradigm)
 > **Date**: 2026-06-17
-> **Status**: Drafting
-> **Scope**: The unit/integration/performance-baseline/compile-macro-zero-regression test plan and gate standard for this feature (compile-macro `FF_KERNEL_COEXIST` gating + dual-stack coexistence: hook FF_KERNEL_EVENT + native unified events + config runtime switch + client coexistence).
+> **Status**: Drafting (R0-R6 measured; R7 v6 cases pending)
+> **Authoritative full text**: `zh_cn/07-test-spec.md`.
+> **Scope**: compile-macro zero-regression + automatic dual-stack (default dual-build/dual-drive + `ff_native_fd_map` + accept ownership + event merge + connect dual-stack + real-machine dual-stack) unit/integration/perf test plan and gate.
 
-> **v5 sync (key points; see `zh_cn/07-test-spec.md` for full detail)**: new **compile-macro zero-regression layer (MT-1~MT-5)** — macro off `make` + `nm`/`objdump` shows no coexistence symbols and matches upstream `libfstack.a` (FR-10/NFR-1); macro-off TU referencing `SOCK_KERNEL` fails to compile (opt-in, FR-11); macro on `make FF_KERNEL_COEXIST=1` → symbols appear, functional (MT-3); dual CFLAGS check (MT-4); `ff_api.symlist` unchanged (MT-5). cmocka coexistence cases (UT-3~UT-10) are conditional on the macro being on. D8 routing limitation must be documented (managed kernel fd must not call the 10 un-routed entries).
+> **v6 sync (key points; see `zh_cn/07-test-spec.md` for full detail)**:
+> - **MT-1~MT-5 (compile-macro zero-regression)**: macro off `nm`/`objdump` shows NO coexistence symbols incl. v6 `ff_native_fd_map`/`ff_native_map_*`; macro on → symbols appear; `symlist` unchanged.
+> - **New v6 cmocka cases (macro-on)**: UT-4 `ff_native_map_set/get/clear`; UT-5 `ff_socket` default dual-build (returns F-Stack fd, `map[fd]==host`); UT-8 `ff_bind/ff_listen` dual-drive (mock counts); UT-9 accept single-stack ownership; UT-10 `ff_close` dual-drive + `ff_native_map_clear`; UT-12 dual-stack listen dual-register; UT-14 connect dual-stack (pending contract); UT-17 hot path does NOT consult the map (mock count=0); UT-18 partial-build-failure.
+> - **Real-machine dual-stack (Q4=B)**: DPDK-exclusive NIC (≠eth1); one default `listen(80)` demo. IT-1 `ff_netstat`+`ss` each see 80; IT-2 remote `curl 9.134.214.176:80` (F-Stack side, via DPDK NIC); IT-3 local `curl 127.0.0.1:80` (kernel side); IT-5 unified events both stacks. config local test values not committed.
+> - **PERF-4 (v6)**: single-stack connection recv/send hot path no extra cost (no map lookup, NFR-2).
+> - **Gate**: connect (UT-14/IT-9) finalized only after **user confirms the §6 contract**.
 > **Alignment**: `tests/unit` (**cmocka**, *.c + *.ini), `tests/integration`, coverage `tests/run_full_coverage.sh` (lcov).
 
 ---

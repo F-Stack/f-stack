@@ -1,20 +1,22 @@
-# 05 Interface Design: Marker Selection + config coexistence switch + hook/native dual-mode contracts
+# 05 Interface Design: Automatic Dual-Stack Contracts + marker semantics + config + connect draft + exception matrix
 
 > **Document ID**: SPEC-KE-05
-> **Version**: v5 (compile-macro gating)
+> **Version**: v6 (native automatic dual-stack coexistence paradigm)
 > **Date**: 2026-06-17
-> **Status**: Drafting
+> **Status**: Drafting (v6 design)
+> **Authoritative full text**: `zh_cn/05-interface-design.md`. On conflict, code is authoritative.
 
-> **v5 sync (key points; see `zh_cn/05-interface-design.md` for full detail)**:
-> - **Compile-macro / opt-in contract**: `FF_KERNEL_COEXIST` off by default in `lib/Makefile:57-60`; macro block `:174-177`. `SOCK_FSTACK/SOCK_KERNEL` (`ff_api.h:81-99`) wrapped → APP must define the macro to see them.
-> - **D2 fix**: config parse is at `ff_config.c:1027-1031`, default `:1363` (NOT `:956`/`MATCH("kni","enable"):1011`); struct at `ff_config.h:321-323`.
-> - **D3 fix**: code has no `default_stack`; priority chain = `per-socket marker > config kernel_coexist enabled > F-Stack`; the `ff_api.h:91` "default_stack" comment is stale.
-> - **D4**: bridge declarations use `unsigned int` (`ff_host_interface.h:136-158`), implementations use `socklen_t` (`.c:246-367`) — equivalent/compilable on Linux.
-> - **D5**: `struct ff_stack_stats` / `ff_stack_get_stats` are **NOT implemented** (design intent only, do not treat as fact).
-> - **D6**: data structures are `FF_KERNEL_FD_BASE` encode offset (`ff_host_interface.h:112-127`) + `ff_epoll_pairs[64]` (`ff_epoll.c:36-37`), NOT `enum ff_stack_owner`/ownership table.
-> **Scope**: Stack-selection marker convention, the config coexistence-capability switch, server/client usage, hook and native dual-mode adaptation, data structures, and error handling.
-> **Core principle**: **do not create a side API, do not create a socket that bypasses F-Stack**; reuse the single API (the hook POSIX suite + the native `ff_*` suite), selecting the stack by per-fd markers + a config coexistence switch, with F-Stack always present.
-> **Basis**: `02` (code current state), `04` (architecture). Line numbers are subject to the code; the gatekeeper's re-verification is authoritative in the implementation phase.
+> **v6 sync (key points; see `zh_cn/05-interface-design.md` for full detail)**:
+> - **Marker semantics (v6 = single-stack override of default dual-stack)**: no marker → dual-stack (build F-Stack + kernel, return F-Stack raw fd, `map[fstack]=host`); `SOCK_KERNEL` (and not `SOCK_FSTACK`) → kernel only (encode, no map); `SOCK_FSTACK` → F-Stack only (no map). `SOCK_FSTACK` wins (`ff_socket:929`). Priority: marker > auto dual-stack (kernel_coexist on) > F-Stack.
+> - **Per-`ff_*` dual-drive contracts (v6)**: `ff_socket:915-947` (default dual-build), `ff_bind:1607-1627` (`kern_bindat` then `ff_host_bind(map[s], raw linux addr)`), `ff_listen:1584-1605` (`sys_listen` then `ff_host_listen(map[s],backlog)`), `ff_close:1095-1112` (`kern_close` then `ff_host_close(map[fd])`+`ff_native_map_clear`), `ff_setsockopt:999`/`ff_fcntl:1495` (sync both stacks). recv/send/read/write/recvfrom/sendto are single-stack-only by `ff_is_kernel_fd` (hot path, NOT consulting the map, NFR-2).
+> - **`ff_native_fd_map` accessors (v6 to-be-implemented)**: `ff_native_map_get/set/clear`; `static int ff_native_fd_map[FF_MAX_FREEBSD_FILES]`(=65536) in `ff_host_interface.c`, lock-free.
+> - **§accept (Q3=A)**: dual-stack listen `ff_accept` → `kern_accept` first; on success return F-Stack raw conn fd; EAGAIN → `ff_host_accept(map[s])` → encode; both EAGAIN → EAGAIN. Listen socket must be non-blocking.
+> - **§connect (Q2=B, DRAFT, PENDING USER CONFIRMATION)**: dual-stack `ff_connect` connects on both stacks (`kern_connectat` + `ff_host_connect(map[s])`), returns F-Stack-primary (EINPROGRESS); data path F-Stack-primary, kernel concurrent for dual-network reachability; close tears down both. Exception matrix in `zh_cn/05 §6bis`. Use `SOCK_KERNEL` for pure-kernel client; kernel-primary/failover future.
+> - **Partial-build failure**: F-Stack ok but `ff_host_socket` fails → contract (degrade to F-Stack-only / rollback, no leak) to be finalized at R7.
+> - **D2-D6** retained from v5 (config parse `ff_config.c:1027-1031`/`:1363`; no `default_stack`; bridge `unsigned int` vs `socklen_t`; stats NOT implemented; `FF_KERNEL_FD_BASE` offset + `ff_epoll_pairs[64]`).
+> **Scope**: marker semantics, per-`ff_*` dual-stack/dual-drive contracts, `ff_native_fd_map` accessors, config switch, connect draft, exception matrix.
+> **Core principle**: **do not create a side API**; reuse the single native `ff_*` API, default dual-stack + marker single-stack override + runtime config switch, F-Stack always present.
+> **Basis**: `02` (code), `04` (architecture). Line numbers subject to the code; v6 new contracts are to-be-implemented (D9).
 
 ---
 

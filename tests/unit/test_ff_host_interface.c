@@ -632,6 +632,25 @@ test_ff_kernel_fd_encode_roundtrip(void **state)
         assert_int_equal(ff_kernel_fd_real(enc), host_fds[i]);
     }
 }
+
+/* Native dual-stack fd map: set/get/clear and out-of-range safety. */
+static void
+test_ff_native_fd_map(void **state)
+{
+    (void)state;
+    assert_int_equal(ff_native_map_get(7), 0);
+    ff_native_map_set(7, 42);
+    assert_int_equal(ff_native_map_get(7), 42);
+    ff_native_map_set(7, 99);
+    assert_int_equal(ff_native_map_get(7), 99);
+    ff_native_map_clear(7);
+    assert_int_equal(ff_native_map_get(7), 0);
+    /* out-of-range indices are safe no-ops returning 0 */
+    assert_int_equal(ff_native_map_get(-1), 0);
+    assert_int_equal(ff_native_map_get(1 << 30), 0);
+    ff_native_map_set(-1, 5);
+    ff_native_map_set(1 << 30, 5);
+}
 #endif /* FF_KERNEL_COEXIST */
 
 int
@@ -668,6 +687,7 @@ main(void)
         cmocka_unit_test(test_ff_update_current_ts_assert_fail_on_clock_error),
 #ifdef FF_KERNEL_COEXIST
         cmocka_unit_test(test_ff_kernel_fd_encode_roundtrip),
+        cmocka_unit_test(test_ff_native_fd_map),
 #endif /* FF_KERNEL_COEXIST */
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

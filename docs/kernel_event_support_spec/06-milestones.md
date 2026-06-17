@@ -1,12 +1,12 @@
 # 06 Milestones and Coding Work List
 
 > **Document ID**: SPEC-KE-06
-> **Version**: v5 (compile-macro gating)
+> **Version**: v6 (native automatic dual-stack coexistence paradigm)
 > **Date**: 2026-06-17
-> **Status**: Drafting
-> **Scope**: The rework + compile-macro-gating implementation roadmap of this feature.
+> **Status**: Drafting (R0-R6 done; R7 v6 auto dual-stack to-be-implemented)
+> **Authoritative full text**: `zh_cn/06-milestones.md`.
 
-> **v5 sync (key points; see `zh_cn/06-milestones.md` for full detail)**: new milestone **R6 compile-macro gating** — wrap the already-landed coexistence code with `#ifdef FF_KERNEL_COEXIST` (the 7 wrapping points in `02 §4bis.2`) + Makefile macro block (commented off by default, dual CFLAGS, already in place at `lib/Makefile:174-177`) + macro-on/off dual-build `nm` zero-regression verification (macro off → no `ff_host_*`/`ff_epoll_pairs` symbols; macro on → functional).
+> **v6 sync (key points; see `zh_cn/06-milestones.md` for full detail)**: R0-R6 done (revert / spec / hook solidify / native per-fd coexistence / tests+perf / compile-macro gating, ba148589d). New milestone **R7 native automatic dual-stack (v6)**: (a) add `ff_native_fd_map` + `ff_native_map_get/set/clear` (lock-free, modeled on adapter); (b) refactor `ff_socket` to default dual-build (marker single-stack override); (c) dual-drive `ff_bind/listen/close/connect/accept/setsockopt/fcntl`; (d) `ff_epoll_ctl/wait` register a dual-stack listen once on each stack + merge; (e) dual-mode cmocka (map / dual-build / accept ownership / event merge / connect dual-stack / zero-regression) + real-machine dual-stack (F-Stack 9.134.214.176:80 + kernel 127.0.0.1:80); (f) gate. All v6 code under `#ifdef FF_KERNEL_COEXIST`, macro-off zero regression (incl. no `ff_native_fd_map` symbols).
 
 ---
 

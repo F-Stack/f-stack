@@ -920,18 +920,22 @@ ff_socket(int domain, int type, int protocol)
 
 #ifdef FF_KERNEL_COEXIST
     /*
-     * Kernel-stack coexistence (NFR-3: F-Stack stays the default). When
-     * coexistence is enabled and the caller explicitly marks this socket
-     * SOCK_KERNEL (without SOCK_FSTACK), create it on the host kernel stack
-     * and return a managed kernel fd. The default / SOCK_FSTACK path below is
-     * byte-for-byte unchanged (NFR-1 zero regression).
+     * Kernel-stack coexistence. With coexistence enabled: SOCK_KERNEL (without
+     * SOCK_FSTACK) -> kernel stack only; SOCK_FSTACK -> F-Stack only; no marker
+     * (default) -> dual stack (an F-Stack socket plus a paired host kernel
+     * socket kept in the native fd map). Off / macro-off keeps the original
+     * F-Stack path byte-for-byte.
      */
-    if ((type & SOCK_KERNEL) && !(type & SOCK_FSTACK) &&
-        ff_global_cfg.stack.kernel_coexist) {
-        int kfd = ff_host_socket(domain,
-            type & ~(SOCK_KERNEL | SOCK_FSTACK), protocol);
-        return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);
+    int want_dual = 0;
+    if (ff_global_cfg.stack.kernel_coexist) {
+        if ((type & SOCK_KERNEL) && !(type & SOCK_FSTACK)) {
+            int kfd = ff_host_socket(domain,
+                type & ~(SOCK_KERNEL | SOCK_FSTACK), protocol);
+            return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);
+        }
+        want_dual = !(type & SOCK_FSTACK);
     }
+    type &= ~(SOCK_KERNEL | SOCK_FSTACK);
 #endif /* FF_KERNEL_COEXIST */
 
     sa.domain = domain == LINUX_AF_INET6 ? AF_INET6 : domain;
@@ -940,6 +944,13 @@ ff_socket(int domain, int type, int protocol)
     if ((rc = sys_socket(curthread, &sa)))
         goto kern_fail;
 
+#ifdef FF_KERNEL_COEXIST
+    if (want_dual) {
+        int hfd = ff_host_socket(domain, type, protocol);
+        if (hfd >= 0)
+            ff_native_map_set(curthread->td_retval[0], hfd);
+    }
+#endif /* FF_KERNEL_COEXIST */
     return curthread->td_retval[0];
 kern_fail:
     ff_os_errno(rc);
@@ -1005,6 +1016,11 @@ ff_setsockopt(int s, int level, int optname, const void *optval,
     if (ff_is_kernel_fd(s))
         return ff_host_setsockopt(ff_kernel_fd_real(s), level, optname,
             optval, optlen);
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0)
+            ff_host_setsockopt(hfd, level, optname, optval, optlen);
+    }
 #endif /* FF_KERNEL_COEXIST */
 
     if (level == LINUX_SOL_SOCKET)
@@ -1104,6 +1120,17 @@ ff_close(int fd)
 
     if ((rc = kern_close(curthread, fd)))
         goto kern_fail;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(fd);
+        if (hfd > 0) {
+            ff_host_close(hfd);
+            ff_native_map_clear(fd);
+        }
+        ff_epoll_close_pair(fd);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     return (rc);
 kern_fail:
@@ -1498,6 +1525,11 @@ ff_fcntl(int fd, int cmd, ...)
 #ifdef FF_KERNEL_COEXIST
     if (ff_is_kernel_fd(fd))
         return ff_host_fcntl(ff_kernel_fd_real(fd), cmd, (int)argp);
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(fd);
+        if (hfd > 0)
+            ff_host_fcntl(hfd, cmd, (int)argp);
+    }
 #endif /* FF_KERNEL_COEXIST */
 
     cmd = linux2freebsd_fcntl(cmd, &argp);
@@ -1527,8 +1559,20 @@ ff_accept(int s, struct linux_sockaddr * addr,
     }
 #endif /* FF_KERNEL_COEXIST */
 
-    if ((rc = kern_accept(curthread, s, pf, &fp)))
+    if ((rc = kern_accept(curthread, s, pf, &fp))) {
+#ifdef FF_KERNEL_COEXIST
+        if ((rc == EAGAIN || rc == EWOULDBLOCK) &&
+            ff_global_cfg.stack.kernel_coexist) {
+            int hfd = ff_native_map_get(s);
+            if (hfd > 0) {
+                int kfd = ff_host_accept(hfd, addr, addrlen);
+                if (kfd >= 0)
+                    return ff_kernel_fd_encode(kfd);
+            }
+        }
+#endif /* FF_KERNEL_COEXIST */
         goto kern_fail;
+    }
 
     rc = curthread->td_retval[0];
     fdrop(fp, curthread);
@@ -1562,8 +1606,20 @@ ff_accept4(int s, struct linux_sockaddr * addr,
     }
 #endif /* FF_KERNEL_COEXIST */
 
-    if ((rc = kern_accept4(curthread, s, pf, linux2freebsd_socket_flags(flags), &fp)))
+    if ((rc = kern_accept4(curthread, s, pf, linux2freebsd_socket_flags(flags), &fp))) {
+#ifdef FF_KERNEL_COEXIST
+        if ((rc == EAGAIN || rc == EWOULDBLOCK) &&
+            ff_global_cfg.stack.kernel_coexist) {
+            int hfd = ff_native_map_get(s);
+            if (hfd > 0) {
+                int kfd = ff_host_accept4(hfd, addr, addrlen, flags);
+                if (kfd >= 0)
+                    return ff_kernel_fd_encode(kfd);
+            }
+        }
+#endif /* FF_KERNEL_COEXIST */
         goto kern_fail;
+    }
 
     rc = curthread->td_retval[0];
     fdrop(fp, curthread);
@@ -1598,6 +1654,14 @@ ff_listen(int s, int backlog)
     if ((rc = sys_listen(curthread, &la)))
         goto kern_fail;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0 && ff_host_listen(hfd, backlog) < 0)
+            return -1;
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     return (rc);
 kern_fail:
     ff_os_errno(rc);
@@ -1620,6 +1684,14 @@ ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen)
     if ((rc = kern_bindat(curthread, AT_FDCWD, s, (struct sockaddr *)&bsdaddr)))
         goto kern_fail;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0 && ff_host_bind(hfd, addr, addrlen) < 0)
+            return -1;
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     return (rc);
 kern_fail:
     ff_os_errno(rc);
@@ -1638,6 +1710,16 @@ ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen)
 #endif /* FF_KERNEL_COEXIST */
 
     linux2freebsd_sockaddr(name, namelen, (struct sockaddr *)&bsdaddr);
+
+#ifdef FF_KERNEL_COEXIST
+    /* Dual-stack: best-effort concurrent connect on the kernel side; the
+     * F-Stack result below is authoritative for the return value. */
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0)
+            ff_host_connect(hfd, name, namelen);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     if ((rc = kern_connectat(curthread, AT_FDCWD, s, (struct sockaddr *)&bsdaddr)))
         goto kern_fail;
