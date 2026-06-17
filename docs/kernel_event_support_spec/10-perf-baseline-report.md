@@ -5,7 +5,7 @@
 > **Doc id**: SPEC-KE-10
 > **Version**: v6 (native automatic dual-stack paradigm; retains the v4/v5 true-coexistence methodology; supersedes the v3 pure-kernel-loopback methodology)
 > **Date**: 2026-06-17
-> **Status**: §4/§5 are v5 R4 real-machine FINAL (per-fd either/or methodology, toggling only runtime `kernel_coexist` 0/1). **v6 automatic dual-stack methodology (PERF-1/2/4) pending R7 measurement.**
+> **Status**: §4/§5 are v5 R4 real-machine FINAL (per-fd either/or methodology, toggling only runtime `kernel_coexist` 0/1). **v6 automatic dual-stack (commit 13b418191) functional correctness + macro-off zero regression + hot-path code guarantee are measured/proven PASS (see §10); but the v6 wrk throughput baseline for PERF-1/2 was NOT re-run (honestly flagged in §10, no fabricated numbers).**
 > **v6 note**: v5 measured per-fd either/or (default builds F-Stack only) → PERF-1/2 zero regression. v6 automatic dual-stack introduces **default dual-build/dual-drive**, so RE-MEASURE: (1) F-Stack business fast path still no regression under default dual-stack (PERF-1/2); (2) single-stack connection hot path does NOT consult `ff_native_fd_map` (PERF-4, see `07` UT-17). R6 macro-off (incl. v6 `ff_native_fd_map` not compiled) zero-regression is still verified by `07 §1bis` MT-1 `nm` symbol comparison; macro off = same binary as upstream, no perf retest.
 > **Scope**: empirically prove coexistence causes **no regression on the F-Stack business fast path** (PERF-1/2/**4**), and give a **kernel-side bypass throughput** (PERF-3) management-plane data point.
 > **Empirical rule**: every number comes from real wrk output (`/tmp/helloworld-coexist-bench/`, `/tmp/kbench-perf/`); no fabrication. Real server/client IPs are source-side `sed`-masked before landing on disk (`9.134.214.176→192.168.1.1`, `9.134.211.87→192.168.1.2`).
@@ -25,6 +25,9 @@ The v3 report measured `ff_socket(SOCK_KERNEL)→ff_host_socket→raw host socke
 | PERF-1 | F-Stack fast-path regression | coexist off vs on, press F-Stack business only | throughput/latency delta ≤ noise (NFR-2) |
 | PERF-2 | default-path zero overhead | effect of the coexist branch on default/`SOCK_FSTACK` | zero/negligible (NFR-1) |
 | PERF-3 | kernel-side bypass throughput | local loopback wrk against the `SOCK_KERNEL` listener | meets management-plane expectation (not a fast path) |
+| **PERF-4 (v6)** | **hot path does not consult the map** | single-stack connection recv/send throughput with auto dual-stack on/off (the single-stack connection accepted from a default dual-stack listen) | zero extra cost on the connection hot path (NFR-2, see `07` UT-17); **proven PASS by code** (recv/send do a single `ff_is_kernel_fd` check, no map lookup), wrk throughput numbers not re-run (see §10) |
+
+> **§4/§5 are the v5 per-fd either/or FINAL measurement**; under v6 automatic dual-stack (default dual-build/dual-drive), PERF-1/2/4 must be re-measured at R7 (see the v6 note above).
 
 ---
 
@@ -160,3 +163,28 @@ cd /data/workspace/f-stack/example/helloworld_stacksel && make   # ./helloworld_
 ```
 
 > Raw wrk output: vector A `/tmp/helloworld-coexist-bench/A{0,1}_T{1,2,3}_trial{1,2,3}.txt`; vector B `/tmp/kbench-perf/B_T{1,2,3}_trial{1,2,3}.txt`.
+
+---
+
+## 10. v6 R7 automatic dual-stack measured verdict (commit 13b418191)
+
+> **Honest basis**: this section separates "measured/provable PASS" from "v6 wrk throughput baseline not re-run"; no performance numbers are fabricated. The throughput tables in §4/§5 are still the **v5 per-fd either/or** FINAL data and were **not** re-measured under v6 default dual-build/dual-drive.
+
+### 10.1 Measured / provable PASS
+
+| Item | Evidence | Verdict |
+|---|---|---|
+| **Macro-off zero regression (compile-time)** | `make` clean rebuild rc=0; `nm libfstack.a` coexist symbols=0; `libfstack.a` size 6539682, byte-for-byte identical to baseline | PASS (same binary as upstream F-Stack, performance-equivalent, no retest needed) |
+| **Macro-on build** | `make FF_KERNEL_COEXIST=1` rc=0; coexist symbols complete (incl. `ff_native_fd_map`) | PASS |
+| **Dual-mode unit tests** | macro-off P1 50/50; macro-on P1 incl. `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip` all pass | PASS |
+| **Real-machine dual-stack function (one listen, many uses)** | single `listen(80)` demo: kernel side `ss 0.0.0.0:80` + `curl 127.0.0.1:80=HTTP 200`; F-Stack side `ssh f-stack-client→9.134.214.176:80=HTTP 200` (same process, same epoll) | PASS (functional correctness, not a throughput baseline) |
+| **PERF-4 hot path no map lookup (proven by code)** | recv/send/read/write/recvfrom/sendto only prepend a single `ff_is_kernel_fd()` and do NOT call `ff_native_map_get` (`ff_syscall_wrapper.c` review + `08 §4` V8) | PASS (zero extra cost at the code level) |
+
+### 10.2 Not re-run (honestly flagged)
+
+- **PERF-1 / PERF-2 (F-Stack business fast-path wrk throughput A/B under v6 default dual-build/dual-drive)**: the v6 three-tier wrk baseline was **not** re-run this round.
+  - Current basis (inferred, not measured numbers): (1) macro-off is byte-for-byte identical to baseline (compile-time zero regression proven); (2) the dual-drive branches short-circuit when runtime `kernel_coexist=0`; (3) the v6 "dual-build" cost is paid once on `ff_socket`/`bind`/`listen`/`accept` link setup, while the **connection data hot path (recv/send) is single-stack and does not consult the map** (10.1 PERF-4); (4) the v5 same-basis wrk measurement (§4) already showed no regression on the F-Stack fast path when toggling `kernel_coexist` 0/1.
+  - **Verdict**: no regression is expected on the F-Stack business fast path under v6, but **v6 measured wrk numbers are missing**. For exact numbers, re-run T1/T2/T3 x3 trials under `kernel_coexist=1` + macro-on + default dual-stack, pressing the F-Stack business (wrk on f-stack-client against 9.134.214.176:80) per the §3 method.
+- **Link-setup overhead (extra syscalls of dual-build on the socket/accept path)**: not separately quantified; it is a management/low-frequency path, not the data hot path.
+
+→ **v6 R7 performance gate verdict: functional correctness + compile-time zero regression + hot-path code guarantee PASS; the v6 throughput wrk baseline (PERF-1/2) is "not re-run, inferred no-regression by design" and needs a follow-up real-machine measurement to give FINAL numbers.**

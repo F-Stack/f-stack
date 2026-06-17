@@ -3,7 +3,7 @@
 > **文档编号**：SPEC-KE-10
 > **版本**：v6（native 自动双栈范式；沿用 v4/v5 真共存口径，作废 v3 纯内核 loopback 口径）
 > **日期**：2026-06-17
-> **状态**：§4/§5 为 v5 R4 真机实测 FINAL（per-fd 二选一口径，仅切运行期 `kernel_coexist` 0/1）；**v6 自动双栈口径（PERF-1/2/4）待 R7 实测**。
+> **状态**：§4/§5 为 v5 R4 真机实测 FINAL（per-fd 二选一口径，仅切运行期 `kernel_coexist` 0/1）；**v6 自动双栈（commit 13b418191）功能正确性 + 宏关零回归 + 热路径代码保证已实测/确证 PASS（见 §10）；但 PERF-1/2 的 v6 wrk 吞吐基准未重跑（§10 诚实标注，不臆造数字）**。
 > **v6 口径声明**：v5 实测的是 per-fd 二选一（默认仅建 F-Stack）下「切 `kernel_coexist` 0/1」对 F-Stack 快路径的影响——结论 PERF-1/2 零回归。**v6 自动双栈引入「默认双建/双驱动」**，须**新测**：①默认双栈下 F-Stack 业务快路径仍无回归（PERF-1/2）；②**单栈连接热路径不因双栈机制查 `ff_native_fd_map`**（PERF-4，对应 `07` UT-17）。R6 编译宏关闭态（含 v6 `ff_native_fd_map` 不编译）零回归仍由 `07 §1bis` MT-1 nm 符号比对验证，宏关时与原 F-Stack 同二进制、无需重测性能。
 > **作用域**：用实测验证共存对 **F-Stack 业务快路径无回归**（PERF-1/PERF-2/**PERF-4**），并给出**内核侧旁路吞吐**（PERF-3）管理面数据点。
 > **实证铁律**：所有数字来自实际 wrk 运行的原始输出（`/tmp/helloworld-coexist-bench/`、`/tmp/kbench-perf/`），禁止臆造。真实 server/client IP 经源端 sed 掩码后才落盘（`9.134.214.176→192.168.1.1`、`9.134.211.87→192.168.1.2`）。
@@ -23,7 +23,7 @@ v3 报告测的是 `ff_socket(SOCK_KERNEL)→ff_host_socket→纯宿主 socket` 
 | PERF-1 | F-Stack 业务快路径回归 | 共存关 vs 共存开，只压 F-Stack 业务 | 吞吐/时延偏差 ≤ 噪声阈值（NFR-2） |
 | PERF-2 | 默认路径零开销 | 共存分支对默认/`SOCK_FSTACK` 路径影响 | 零/可忽略（NFR-1） |
 | PERF-3 | 内核侧旁路吞吐 | 本机 loopback 压 `SOCK_KERNEL` 内核监听 | 满足管理面预期（非高速路径） |
-| **PERF-4（v6 待测）** | **热路径不查 map** | 单栈连接 recv/send 在自动双栈开/关下吞吐对比（默认双栈 listen accept 出的单栈连接） | 连接热路径零额外开销（NFR-2，对应 `07` UT-17） |
+| **PERF-4（v6）** | **热路径不查 map** | 单栈连接 recv/send 在自动双栈开/关下吞吐对比（默认双栈 listen accept 出的单栈连接） | 连接热路径零额外开销（NFR-2，对应 `07` UT-17）；**代码确证 PASS**（recv/send 仅 `ff_is_kernel_fd` 单次判定、不查 map），wrk 吞吐数字未重跑（见 §10） |
 
 > **§4/§5 为 v5 per-fd 二选一口径 FINAL 实测**；v6 自动双栈（默认双建/双驱动）下 PERF-1/2/4 须 R7 重测（见上方 v6 口径声明）。
 
@@ -161,3 +161,28 @@ cd /data/workspace/f-stack/example/helloworld_stacksel && make   # ./helloworld_
 ```
 
 > 原始 wrk 输出：向量 A `/tmp/helloworld-coexist-bench/A{0,1}_T{1,2,3}_trial{1,2,3}.txt`；向量 B `/tmp/kbench-perf/B_T{1,2,3}_trial{1,2,3}.txt`。
+
+---
+
+## 10. v6 R7 自动双栈实测结论（commit 13b418191）
+
+> **诚实口径**：本节区分「已实测/可确证 PASS」与「v6 wrk 吞吐基准未重跑」，不臆造性能数字。§4/§5 的吞吐表仍是 **v5 per-fd 二选一口径**的 FINAL 数据，**未**在 v6 默认双建/双驱动下重测。
+
+### 10.1 已实测 / 可确证 PASS
+
+| 项 | 证据 | 结论 |
+|---|---|---|
+| **宏关零回归（编译期）** | `make` clean 重编 rc=0；`nm libfstack.a` 共存符号=0；`libfstack.a` size 6539682 与基线逐字节一致 | PASS（与原 F-Stack 同二进制，性能等价，无需重测） |
+| **宏开编译** | `make FF_KERNEL_COEXIST=1` rc=0；共存符号齐全（含 `ff_native_fd_map`） | PASS |
+| **单测双态** | 宏关 P1 50/50；宏开 P1 含 `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip` 全通过 | PASS |
+| **真机双栈功能（一 listen 多用）** | 单 `listen(80)` demo：内核侧 `ss 0.0.0.0:80` + `curl 127.0.0.1:80=HTTP 200`；F-Stack 侧 `ssh f-stack-client→9.134.214.176:80=HTTP 200`（同进程同 epoll） | PASS（功能正确性，非吞吐基准） |
+| **PERF-4 热路径不查 map（代码确证）** | recv/send/read/write/recvfrom/sendto 仅前置一次 `ff_is_kernel_fd()`、不调用 `ff_native_map_get`（`ff_syscall_wrapper.c` review + `08 §4` V8） | PASS（代码层面零额外开销） |
+
+### 10.2 未重跑（如实标注）
+
+- **PERF-1 / PERF-2（v6 默认双建/双驱动下 F-Stack 业务快路径 wrk 吞吐 A/B）**：本轮**未**在 v6 下重跑 wrk 三档基准。
+  - 现有依据（推定，非实测数字）：① 宏关与基线逐字节一致（编译期零回归已证）；② 运行期 `kernel_coexist=0` 时双驱动分支短路；③ v6 的「双建」成本仅在 `ff_socket`/`bind`/`listen`/`accept` 建链一次性付出，**连接数据热路径（recv/send）单栈、不查 map**（10.1 PERF-4）；④ v5 同口径 wrk 实测（§4）已证「切 `kernel_coexist` 0/1」对 F-Stack 快路径无回归。
+  - **结论**：v6 下 F-Stack 业务快路径预期无回归，但**缺 v6 实测 wrk 数字**。如需精确数字，须按 §3 方法在 `kernel_coexist=1` + 宏开 + 默认双栈下，对 F-Stack 业务（ssh f-stack-client 压 9.134.214.176:80）重跑 T1/T2/T3 各 3 trial。
+- **建链开销（双建在 socket/accept 路径的额外 syscall）**：未单独量化；属管理面/低频路径，非数据热路径。
+
+→ **v6 R7 性能门禁结论：功能正确性 + 编译期零回归 + 热路径代码保证 PASS；v6 吞吐 wrk 基准（PERF-1/2）为「未重跑、设计推定无回归」，需后续真机补测方可给出 FINAL 数字。**

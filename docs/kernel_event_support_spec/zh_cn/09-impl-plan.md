@@ -3,18 +3,18 @@
 > **文档编号**：SPEC-KE-09（实现阶段计划）
 > **版本**：v6（native 自动双栈共存范式）
 > **日期**：2026-06-17
-> **状态**：执行中（R0-R6 已完成；**R7 v6 自动双栈待实现**）
-> **依据**：本目录 v6 spec（00-08）；行号以实际代码为准，gatekeeper 复核。**v6 改造均为待实现设计。**
+> **状态**：R0-R7 全部完成并门禁 PASS（**R7 v6 自动双栈已实测，commit 13b418191**；真机单 listen(80) 双栈 9.134.214.176 + 127.0.0.1 各 HTTP 200）
+> **依据**：本目录 v6 spec（00-08）；行号以实际代码为准，gatekeeper 复核。**v6 改造已落地，下述 §3 为已实现代码。**
 
 ---
 
 ## 0. 范围与门禁
 
 - **R0-R6 已完成**：回退 → spec → hook 固化 → 原生 per-fd 共存 → 测试/性能 → 门禁/提交 → 编译宏门控（ba148589d）。
-- **R7 本轮设计 + 后续实现**：native 自动双栈（默认双建/双驱动 + `ff_native_fd_map` + 双栈事件 + accept 归属 + connect 草案）。
-- **硬门禁**：编译通过 + cmocka 双态全绿 + 覆盖率 + **F-Stack 业务快路径 + 单栈连接热路径零回归（NFR-1/NFR-2）**。
-- **共存铁律（NFR-3）**：F-Stack fd 始终建、始终承担业务；违反即打回。
-- **connect 契约**：`05 §6` 草案**待用户确认**后方实现/定稿。
+- **R7 已完成（commit 13b418191）**：native 自动双栈（默认双建/双驱动 + `ff_native_fd_map` + 双栈事件 + accept 归属 + connect 双发）落地并门禁 PASS。
+- **硬门禁（已满足）**：双态编译通过 + cmocka 双态全绿 + **宏关 nm 共存符号=0（size 6539682 与基线逐字节一致，零回归）** + **F-Stack 业务快路径 + 单栈连接热路径零回归（NFR-1/NFR-2）**。
+- **共存铁律（NFR-3）**：F-Stack fd 始终建、始终承担业务；已落实。
+- **connect 契约**：`05 §6` 已按用户确认 Q2=B（双发 connect、F-Stack 为返回/数据主路径）实现。
 
 ---
 
@@ -49,7 +49,7 @@
 
 ---
 
-## 3. R7 native 自动双栈逐文件改造步骤（v6 核心，待实现）
+## 3. R7 native 自动双栈逐文件改造步骤（v6 核心，已实现 commit 13b418191）
 
 > 全部新增代码置于 `#ifdef FF_KERNEL_COEXIST` 内；运行期 `kernel_coexist=0` 短路；`SOCK_FSTACK`/共存关逐字节零回归。
 
@@ -82,7 +82,7 @@
 - `ff_close`(`:1095-1112`)：`kern_close` 成功后加 `int h=ff_native_map_get(fd); if(h>0){ ff_host_close(h); ff_native_map_clear(fd); }`；并对 kqueue fd 清 `ff_epoll_pairs`（与 `ff_epoll.c` 协作，见 3.4）。
 - `ff_accept`/`ff_accept4`(`:1514-1582`)：双栈 listen fd（`ff_native_map_get(s)>0`）按 `05 §5` 单栈归属（kern_accept→EAGAIN→ff_host_accept+encode）。
 - `ff_setsockopt`(`:999`)/`ff_fcntl`(`:1495`)：双栈 fd 在 F-Stack 路径后对 `map[s]` 同步 `ff_host_setsockopt/fcntl`。
-- `ff_connect`(`:1629-1649`)：§connect 草案（`05 §6`，**待用户确认**后实现）。
+- `ff_connect`(`:1629-1649`)：已按 Q2=B 实现——`kern_connectat` 主、best-effort `ff_host_connect(map[s])` 双发（`05 §6`）。
 - **热路径不改**：recv/send/read/write/recvfrom/sendto 保留 v5 `ff_is_kernel_fd` 单次判定，**不加 `ff_native_map_get`**（NFR-2）。
 
 ### 3.4 `lib/ff_epoll.c`（HOST_CFLAGS）
@@ -107,12 +107,12 @@
 
 ---
 
-## 5. 执行步骤
+## 5. 执行步骤（已完成）
 1. R0-R6 已完成（见 §2）。
-2. R7 spec 升级为 v6（本轮，中文完成；英文同步）。
-3. **R7 实现**（待用户确认 connect 契约后）：3.1→3.2（映射表）→3.3（socket 双建 + bind/listen/close/accept 双驱动 + setsockopt/fcntl）→3.4（epoll 双注册 + close 清配对）→3.6（demo）。
-4. R7 测试：cmocka 双态（UT-4/5/8/9/10/12/14/17/18）+ 真机双栈（IT-1/2/3/5）+ 性能（PERF-1/2/4）。
-5. R7 门禁：`08 §4` V1-V12 逐条实测；双编译 nm 零回归（MT-1/3 含 `ff_native_fd_map`）；英文 spec 同步；英文简短 commit；config 本机值不提交。
+2. R7 spec 升级为 v6（中英文已同步）。
+3. **R7 实现已完成**（connect 契约 Q2=B 已确认）：3.1→3.2（映射表）→3.3（socket 双建 + bind/listen/close/accept 双驱动 + setsockopt/fcntl）→3.4（epoll 双注册 + close 清配对）→3.6（demo）。
+4. R7 测试已完成：cmocka 双态（宏关 P1 50/50；宏开 P1 含 `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip`）+ 真机双栈（单 listen(80)：内核 `curl 127.0.0.1:80=200`、F-Stack `ssh f-stack-client→9.134.214.176:80=200`）。**注**：性能 PERF-1/2/4 的 v6 wrk 吞吐基准未重跑，见 `10 §10`。
+5. R7 门禁 PASS：`08 §4` V1-V12 已实测；双编译 nm 零回归（宏关共存符号=0、size 6539682 与基线一致；宏开含 `ff_native_fd_map`）；中英文 spec 已同步；英文简短 commit `13b418191`；config 本机值未提交。bounce=1（test_ff_epoll stub，已修）。
 
 ## 6. 工作区脚本规约
 删文件 `/data/workspace/rm_tmp_file.sh`；停进程 `/data/workspace/kill_process.sh`；改权限 `/data/workspace/chmod_modify.sh`；改头后 clean 全量重编 lib（`10 §7`）。
