@@ -32,6 +32,13 @@ CFLAGS        := -O0 -g3 -Wall -Wextra -Wno-unused-parameter \
                  $(DPDK_CFLAGS) \
                  -DFF_UNIT_TEST=1
 
+# Kernel-stack coexistence is compile-gated in lib/ by FF_KERNEL_COEXIST
+# (default off). Build the suite with FF_KERNEL_COEXIST=1 to compile and run
+# the coexistence test cases against the macro-enabled lib objects.
+ifdef FF_KERNEL_COEXIST
+CFLAGS        += -DFF_KERNEL_COEXIST
+endif
+
 # Fatal-function wraps applied globally (spec 04 §8.1):
 # rte_exit / rte_panic redirect to mock_assert via common/rte_stub.c.
 BASE_WRAPS    := -Wl,--wrap=rte_exit -Wl,--wrap=rte_panic

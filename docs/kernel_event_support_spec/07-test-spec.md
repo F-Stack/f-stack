@@ -1,10 +1,12 @@
 # 07 Test and Performance-Baseline Spec
 
 > **Document ID**: SPEC-KE-07
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
+> **Version**: v5 (compile-macro gating)
+> **Date**: 2026-06-17
 > **Status**: Drafting
-> **Scope**: The unit/integration/performance-baseline test plan and gate standard for this feature (dual-stack coexistence: hook FF_KERNEL_EVENT + native unified events + config coexistence switch + client coexistence).
+> **Scope**: The unit/integration/performance-baseline/compile-macro-zero-regression test plan and gate standard for this feature (compile-macro `FF_KERNEL_COEXIST` gating + dual-stack coexistence: hook FF_KERNEL_EVENT + native unified events + config runtime switch + client coexistence).
+
+> **v5 sync (key points; see `zh_cn/07-test-spec.md` for full detail)**: new **compile-macro zero-regression layer (MT-1~MT-5)** — macro off `make` + `nm`/`objdump` shows no coexistence symbols and matches upstream `libfstack.a` (FR-10/NFR-1); macro-off TU referencing `SOCK_KERNEL` fails to compile (opt-in, FR-11); macro on `make FF_KERNEL_COEXIST=1` → symbols appear, functional (MT-3); dual CFLAGS check (MT-4); `ff_api.symlist` unchanged (MT-5). cmocka coexistence cases (UT-3~UT-10) are conditional on the macro being on. D8 routing limitation must be documented (managed kernel fd must not call the 10 un-routed entries).
 > **Alignment**: `tests/unit` (**cmocka**, *.c + *.ini), `tests/integration`, coverage `tests/run_full_coverage.sh` (lcov).
 
 ---

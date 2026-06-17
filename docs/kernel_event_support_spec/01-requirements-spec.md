@@ -1,10 +1,16 @@
 # 01 Requirements Spec: F-Stack User-Space Stack + Local Kernel Stack COEXISTENCE
 
 > **Document ID**: SPEC-KE-01
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
+> **Version**: v5 (compile-macro gating: `FF_KERNEL_COEXIST` off by default + runtime `kernel_coexist` dual-layer switch)
+> **Date**: 2026-06-17
 > **Status**: Drafting
 > **Scope**: Define the problem domain, goals/non-goals, functional and non-functional requirements, and success criteria of this feature.
+
+> **v5 sync (key points; see `zh_cn/01-requirements-spec.md` for full detail)**:
+> - **FR-10 (compile-macro gating, opt-in)**: all `lib/` coexistence code is wrapped by `FF_KERNEL_COEXIST`, commented off by default in `lib/Makefile:57-60` (`#FF_KERNEL_COEXIST=1`); macro block at `lib/Makefile:174-177` adds `-DFF_KERNEL_COEXIST` to both `HOST_CFLAGS` and `CFLAGS`. Macro off → `libfstack.a` byte-for-byte zero regression (`nm`/`objdump` shows no `ff_host_*`/`ff_epoll_pairs` symbols).
+> - **FR-11 (marker opt-in visibility)**: `SOCK_FSTACK`/`SOCK_KERNEL` (`ff_api.h:81-99`) are wrapped by the macro; an APP must also define `FF_KERNEL_COEXIST` to see them.
+> - **NFR-1 strengthened to a compile-time guarantee**: when the macro is undefined, coexistence code is not compiled at all.
+> - **G4** clarified: config `kernel_coexist` is a **runtime** switch effective only when the compile macro is on.
 
 ---
 

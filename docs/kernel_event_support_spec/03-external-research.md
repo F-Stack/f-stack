@@ -1,9 +1,11 @@
 # 03 External Solution Research: User-Space Stacks' "Single API + Marker Selection / Client-Side Selection / Kernel-Stack Coexistence"
 
 > **Document ID**: SPEC-KE-03
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
+> **Version**: v5 (compile-macro gating)
+> **Date**: 2026-06-17
 > **Status**: Drafting
+
+> **v5 sync (key points; see `zh_cn/03-external-research.md` for full detail)**: added four low-trust external references (cross-check against code; code is authoritative): upstream F-Stack `adapter/syscall/README.md` (https://github.com/F-Stack/f-stack/blob/dev/adapter/syscall/README.md — `FF_KERNEL_EVENT` supports both stacks at once; "kernel epoll fd leak fix" → native `ff_close` must clean up the `ff_epoll_pairs` host-epoll pairing, needs review), F-Stack site (https://www.f-stack.org/), and Chinese technical analyses (CSDN/Zhihu) corroborating the kernel-bypass + attached-kernel-side-path positioning.
 > **Scope**: Research how other DPDK/user-space protocol-stack programs let an application **coexist between the user-space stack and the kernel stack** (business uses the user-space stack, some fds use the kernel stack on demand, in the same process and event loop), and how they handle "an application as a client connecting to local/external kernel services"; extract reusable points and limitations. Every entry carries an **accessible URL**.
 > **Paradigm note (v4)**: this feature aims at **dual-stack coexistence** — the F-Stack user-space stack always carries the business, and per-fd `SOCK_KERNEL` makes some fds **additionally** use the kernel stack, in a unified event loop. Do **not** create a side socket that bypasses F-Stack (v3 `ff_host_socket` deprecated), do **not** add a whole-process default-to-kernel switch, do **not** create a dual API, do **not** do thread-level selection. Primary baseline = hook `FF_KERNEL_EVENT`, reference = nginx `kernel_network_stack`. KNI/packet reinjection is boundary clarification only.
 

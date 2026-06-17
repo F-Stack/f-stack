@@ -1,15 +1,20 @@
 # 02 Current-State Analysis: F-Stack's Existing "Dual-Stack Coexistence" Mechanism (code is authoritative)
 
 > **Document ID**: SPEC-KE-02
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
+> **Version**: v5 (compile-macro gating)
+> **Date**: 2026-06-17
 > **Status**: Drafting
-> **Scope**: Empirically measure the existing mechanism in F-Stack for "F-Stack user-space stack + host kernel stack coexisting within one process", to serve as the v4 **direct reuse baseline (hook mode) + reference (nginx) + new-design landing point (native mode)**. Covers: stack-selection markers, hook FF_KERNEL_EVENT coexistence, nginx kernel_network_stack coexistence, the native event-layer gap, and the v3-mistake revert check.
+> **Scope**: Empirically measure F-Stack's existing coexistence mechanism **and the now-landed native coexistence code**, as the v5 reuse baseline (hook) + reference (nginx) + existing native implementation to be gated by the compile macro. Covers: markers, hook FF_KERNEL_EVENT, nginx kernel_network_stack, **native mode current state (implemented, currently unconditionally compiled)**, the compile-macro gating state and 7-file wrapping points, and the v3-mistake revert check.
 > **Iron rule**: every assertion carries `relative-path:line` (relative to `/data/workspace/f-stack/`); on conflict with docs/comments, **code is authoritative** and explicitly noted.
+
+> **v5 sync (key points; see `zh_cn/02-current-state-analysis.md` for full detail with measured line numbers)**:
+> - **D7 fix**: v4 called the native event layer a "gap (pure kqueue, no kernel-fd awareness)". **Code shows the gap is already filled** — `lib/` already implements native coexistence: managed kernel fd = host fd + `FF_KERNEL_FD_BASE` 0x40000000 (`ff_host_interface.h:112-127`), 18 `ff_host_*` bridges (`.h:136-158` / `.c:246-367`), `ff_socket` kernel branch (`ff_syscall_wrapper.c:919-931`), 13 `ff_*` entry routes, `ff_epoll_pairs[64]` merge (`ff_epoll.c:36-37`, ctl `:97-111`, wait `:210-241`), config `kernel_coexist` (`ff_config.h:321-323` / `ff_config.c:1027-1031`,`:1363`).
+> - **Compile-macro state**: `lib/Makefile:57-60` (commented off) + `:174-177` (`ifdef`, dual CFLAGS) already exist, but the source `.c/.h` have **no `#ifdef FF_KERNEL_COEXIST` wrapping yet** — coexistence code is still unconditionally compiled. v5 R6 adds the source wrapping (7 files).
+> - **D1-D8** code-doc inconsistencies fixed in §6 (D2 config parse line `:1027-1031` not `:956`; D3 no `default_stack`, `ff_api.h:91` comment stale; D4 header `unsigned int` vs impl `socklen_t`; D5 `ff_stack_get_stats` NOT implemented; D6 encode-offset + `ff_epoll_pairs`, not enum/ownership-table; D8 routing covers 13 entries, NOT `ff_readv/writev/send/recv/getpeername/getsockname/shutdown/ioctl/sendmsg/recvmsg`).
 
 ---
 
-## 0. v4 Current-State Positioning
+## 0. v5 Current-State Positioning
 
 | Existing capability | Location | Form | Role in v4 |
 |---|---|---|---|

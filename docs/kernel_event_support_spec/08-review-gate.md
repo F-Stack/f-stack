@@ -1,10 +1,12 @@
 # 08 Review Gate Report
 
 > **Document ID**: SPEC-KE-08
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
-> **Status**: R1 spec gate PASS + R2-R4 implementation gate PASS (incl. real-hardware perf baseline PERF-1/2/3); R5 commit wrap-up
-> **Scope**: Gate verification of the v4 spec and implementation for "consistency with the actual code / coexistence-paradigm correctness / zero regression".
+> **Version**: v5 (compile-macro gating)
+> **Date**: 2026-06-17
+> **Status**: v4 R1 spec + R2-R4 implementation gate PASS (incl. real-hardware perf baseline PERF-1/2/3); v5 adds R6 compile-macro gating gate (pending measurement)
+> **Scope**: Gate verification of the v5 spec and implementation for "consistency with the actual code (incl. D1-D8 fixes) / coexistence-paradigm correctness / compile-macro gating completeness / zero regression".
+
+> **v5 sync (key points; see `zh_cn/08-review-gate.md` for full detail)**: new gate items — M1 wrapping completeness (7 files), M2 dual-side CFLAGS, M3 `symlist` unchanged, M4 macro-off symbol zero-regression (MT-1), M5 macro-on functional, M6 opt-in visibility, M7 `ff_api.h:91` comment fix; plus D1-D8 code-doc consistency checklist (all fixed in spec, R6 code wrapping + comment fix pending).
 
 ---
 

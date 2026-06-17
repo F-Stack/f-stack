@@ -1,10 +1,10 @@
 # 08 审核门禁报告
 
 > **文档编号**：SPEC-KE-08
-> **版本**：v4（共存范式返工重写）
-> **日期**：2026-06-16
-> **状态**：R1 spec 门禁 PASS + R2-R4 实现门禁 PASS（含真机性能基线 PERF-1/2/3）；R5 提交收尾
-> **作用域**：对 v4 spec 与实现做「与实际代码一致性 / 共存范式正确性 / 零回归」门禁核验。
+> **版本**：v5（编译宏门控范式）
+> **日期**：2026-06-17
+> **状态**：v4 R1 spec + R2-R4 实现门禁 PASS（含真机性能基线 PERF-1/2/3）；v5 新增 R6 编译宏门控门禁（待实测）
+> **作用域**：对 v5 spec 与实现做「与实际代码一致性（含 D1-D8 修正）/ 共存范式正确性 / 编译宏门控完整性 / 零回归」门禁核验。
 
 ---
 
@@ -20,7 +20,7 @@
 | P2 | 范式=应用 on F-Stack + per-fd `SOCK_KERNEL` 附加内核旁路 + 统一事件共存 | 00 §1/01 §1/04 §1 |
 | P3 | hook FF_KERNEL_EVENT 为主基线（共存已实现） | 02 §2、`README.md:169-186`、`ff_hook_socket:387-390`/`fstack_kernel_fd_map:257-258` |
 | P4 | nginx kernel_network_stack 为同构参考 | 02 §3、`ngx_http_core_module.c:298-303`/双后端 `ngx_ff_host_event_module.c:441` |
-| P5 | 原生模式共存为新设计（事件层缺口如实记录） | 02 §4、`ff_epoll.c:25-28/103/157`（纯 kqueue 封装） |
+| P5 | 原生模式共存**已实现**（D7：缺口已填补），v5 加编译宏门控如实记录 | 02 §4、`ff_epoll.c:36-37/97-111/210-241`（`ff_epoll_pairs` 合并）、`ff_syscall_wrapper.c:919-931` |
 | P6 | config 改为共存能力开关（删整进程默认内核） | 05 §3、06 R3 |
 | P7 | 共存铁律 NFR-3（F-Stack 始终在位）贯穿 | 01 §4、04 §1、06 §6 |
 
@@ -84,13 +84,46 @@
 
 ---
 
+## 4bis. R6 编译宏门控门禁（v5，已实测）
+
+| 编号 | 门禁项 | 验证方式 | 状态 |
+|---|---|---|---|
+| M1 | **包裹完整性** | 7 文件包裹点全部加 `#ifdef FF_KERNEL_COEXIST`；`grep -B1 'if (ff_is_kernel_fd'` 证 13 路由块均有 `#ifdef` 前导；包裹边界不破坏非共存代码 | PASS |
+| M2 | **双侧 CFLAGS** | `lib/Makefile` ifdef 块同时给 `HOST_CFLAGS`+`CFLAGS` 加 `-DFF_KERNEL_COEXIST`；顶部注释开关 `#FF_KERNEL_COEXIST=1` 默认关 | PASS |
+| M3 | **symlist 不变** | `ff_api.symlist` 未改（桥为库内调用、inline 无导出） | PASS |
+| M4 | **宏关零回归（MT-1）** | `make`（默认，clean 重编）rc=0；`nm libfstack.a` 共存符号数=0（无 `ff_host_*`/`ff_epoll_pairs`/`ff_epoll_host_ep`），核心 API 完整 | PASS |
+| M5 | **宏开功能可用（MT-3）** | `make FF_KERNEL_COEXIST=1` rc=0；`nm` 共存符号=39（`ff_host_socket/epoll_wait/connect` 等出现） | PASS |
+| M6 | **opt-in 可见性（MT-2）** | `SOCK_KERNEL`/`SOCK_FSTACK` 宏在 `ff_api.h` 内被 `#ifdef FF_KERNEL_COEXIST` 包裹（diff 复核）；宏关时消费方不可见 | PASS |
+| M7 | `ff_api.h` 注释 "default_stack" 残留已改为 `kernel_coexist`（D3） | git diff 复核 | PASS |
+
+> 单测双态：宏关 `make test_p1` 50/50（共存用例排除，零回归）；宏开 `make FF_KERNEL_COEXIST=1 test_p1` 54/54（含 4 共存解析用例 + 新增 `test_ff_kernel_fd_encode_roundtrip` fd 编码用例）。P0/`ff_thread`/`ff_init` 双态通过。`test_ff_dpdk_if` 链接失败为预存 harness 缺口（`ff_tcp_hpts_softclock` 未提供，与本特性无关）。DPDK 运行时同进程双栈集成需独占网卡/hugepage，本轮有据 skip。
+
+## 4ter. D1-D8 代码-文档一致性核验（v5）
+
+| 编号 | 修正项 | 代码证据 | 状态 |
+|---|---|---|---|
+| D1 | 删 v3「ff_socket→纯内核旁路」「整进程默认内核」 | `02 §5` 已回退 0748eff94 | PASS |
+| D2 | config 解析行号 `:956`→`:1027-1031`、默认 `:1363` | `ff_config.c:1027-1031`/`:1363` | PASS |
+| D3 | 优先级链去 `default_stack`，改「marker > kernel_coexist > F-Stack」；`ff_api.h` 注释残留已改码修正 | `ff_api.h` 注释已为 `kernel_coexist` | PASS |
+| D4 | 桥声明 `unsigned int` vs 实现 `socklen_t`（等价可编译）如实记录 | `ff_host_interface.h:136-158` vs `.c:246-367` | PASS |
+| D5 | `ff_stack_stats`/`ff_stack_get_stats` **未实现**，标注待定 | 代码无该符号 | PASS |
+| D6 | fd 区分=`FF_KERNEL_FD_BASE` 偏移+`ff_epoll_pairs`，非 enum/归属表 | `ff_host_interface.h:112-127`/`ff_epoll.c:36-37` | PASS |
+| D7 | 原生缺口已填补，改「已实现+本轮加编译宏门控」 | `02 §4` | PASS |
+| D8 | 路由仅 13 入口；`readv/writev/send/recv/getpeername/getsockname/shutdown/ioctl/sendmsg/recvmsg` 未覆盖（已知限制） | `ff_syscall_wrapper.c` grep | PASS |
+
+---
+
 ## 5. Bounce 记录
 
 | # | 触发 | 处置 | 复核 |
 |---|---|---|---|
 | — | R1 spec 重写按共存范式一致，未触发 FAIL | — | — |
+| — | v5 spec（编译宏门控 + D1-D8 修正）重写按代码实测一致，未触发 FAIL | — | — |
+| 1 | R6 宏关编译失败：`ff_getsockopt` 路由块漏包裹（`ff_is_kernel_fd` 隐式声明） | 补 `#ifdef FF_KERNEL_COEXIST` 包裹该块，并 `grep -B1` 复核全部 13 块均已包裹 | 重编 PASS |
 
-- bounce：0（< 3 上限）。
+- bounce：1（< 3 上限），已修复闭环。
 
 ## 6. 当前结论
-**R1 spec 门禁 PASS**（共存范式正确、删除 v3 旁路/默认内核错误表述、代码锚点一致）。**R2-R4 实现门禁 PASS**：编译/cmocka 单测全绿、socket 侧共存 selftest 实跑、零回归、真机性能基线 PERF-1/2/3 实测通过（共存对 F-Stack 快路径零回归、内核侧旁路零错误，详见 `10-perf-baseline-report.md`）。R4 期 1 次跨步骤 bounce（ABI 偏斜，已根因修复，< 3 上限）。余 R5 提交收尾。
+**v4 R1 spec 门禁 PASS**（共存范式正确、删除 v3 旁路/默认内核错误表述、代码锚点一致）。**v4 R2-R4 实现门禁 PASS**：编译/cmocka 单测全绿、socket 侧共存 selftest 实跑、零回归、真机性能基线 PERF-1/2/3 实测通过（详见 `10-perf-baseline-report.md`）。
+
+**v5 spec 门禁（编译宏门控 + D1-D8 修正）**：spec 已按代码实测（行号坐实）改写完毕——范式升级为「编译宏 `FF_KERNEL_COEXIST` 默认关闭 + 运行期 `kernel_coexist` 双层开关」，D1-D8 不一致已在文档修正（见 §4ter）。**R6 编译宏门控实现门禁 PASS（已实测）**：7 文件 `#ifdef FF_KERNEL_COEXIST` 包裹 + `lib/Makefile` 双侧默认关；宏关编译 rc=0 且 `nm` 共存符号=0（零回归），宏开编译 rc=0 且共存符号=39；单测双态通过（宏关 P1 50/50、宏开 P1 54/54）；`ff_api.h` 注释 `default_stack` 已改码修正（M1-M7 全 PASS，见 §4bis）。bounce=1（getsockopt 漏包裹，已修复）。

@@ -318,9 +318,11 @@ struct ff_config {
         char *udp_port;
     } kni;
 
+#ifdef FF_KERNEL_COEXIST
     struct {
         int kernel_coexist;
     } stack;
+#endif /* FF_KERNEL_COEXIST */
 
     struct {
         int level;

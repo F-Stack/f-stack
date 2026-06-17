@@ -1,9 +1,11 @@
 # 04 Architecture Design: F-Stack + Kernel Stack COEXISTENCE + per-fd marker selection + unified events
 
 > **Document ID**: SPEC-KE-04
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
+> **Version**: v5 (compile-macro gating)
+> **Date**: 2026-06-17
 > **Status**: Drafting
+
+> **v5 sync (key points; see `zh_cn/04-architecture-design.md` for full detail)**: dual-layer switch — compile macro `FF_KERNEL_COEXIST` gates compile-time (off by default → coexistence code not compiled → byte-for-byte zero regression), config `[stack] kernel_coexist` gates runtime (effective only when the macro is on). `SOCK_*` markers are opt-in (APP must define the macro). Native coexistence is **already implemented** (not "new design"): fd discrimination via `FF_KERNEL_FD_BASE` encode offset + `ff_epoll_pairs[64]` pairing table (NOT enum/ownership-table, D6). Routing covers 13 entries only; `ff_readv/writev/send/recv/getpeername/getsockname/shutdown/ioctl/sendmsg/recvmsg` not covered (D8 known limitation).
 > **Scope**: The coexistence architecture, the selection model, dual-stack unified events, the client/server bidirectional data flow, and both hook and native modes.
 > **Basis**: `02` (code current state), `03` (external solutions); on conflict, code is authoritative.
 

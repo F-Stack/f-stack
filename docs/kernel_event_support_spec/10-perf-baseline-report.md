@@ -3,9 +3,9 @@
 > Chinese version: `./zh_cn/10-perf-baseline-report.md`
 >
 > **Doc id**: SPEC-KE-10
-> **Version**: v4 (coexistence-paradigm rework; supersedes the v3 pure-kernel-loopback methodology)
-> **Date**: 2026-06-16
-> **Status**: FINAL (R4 performance-gate measured output)
+> **Version**: v5 (compile-macro gating; retains the v4 true-coexistence methodology; supersedes the v3 pure-kernel-loopback methodology)
+> **Date**: 2026-06-17
+> **Status**: FINAL (R4 performance-gate measured output). **v5 note**: this baseline was measured with coexistence code **compiled in** (equivalent to `FF_KERNEL_COEXIST` on), toggling only the runtime `kernel_coexist` 0/1 — still valid. The macro-off (coexistence not compiled) zero-regression is verified by the `nm` symbol comparison MT-1 in `07 §1bis`; **no performance retest needed** (macro off = same binary as upstream F-Stack).
 > **Scope**: empirically prove that "F-Stack user-space stack + host kernel-stack coexistence" causes **no regression on the F-Stack business fast path** (PERF-1/PERF-2), and give a **kernel-side bypass throughput** (PERF-3) management-plane data point.
 > **Empirical rule**: every number comes from real wrk output (`/tmp/helloworld-coexist-bench/`, `/tmp/kbench-perf/`); no fabrication. Real server/client IPs are source-side `sed`-masked before landing on disk (`9.134.214.176→192.168.1.1`, `9.134.211.87→192.168.1.2`).
 

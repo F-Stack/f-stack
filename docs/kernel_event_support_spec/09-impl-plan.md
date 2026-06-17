@@ -1,10 +1,12 @@
 # 09 Implementation Plan: F-Stack + Kernel Stack Coexistence (R0-R5)
 
 > **Document ID**: SPEC-KE-09 (implementation-phase plan)
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
-> **Status**: In progress
-> **Basis**: the v4 spec in this directory (00-08); line numbers are subject to the actual code, gatekeeper re-verified.
+> **Version**: v5 (compile-macro gating)
+> **Date**: 2026-06-17
+> **Status**: In progress (R0-R5 done; R6 compile-macro gating pending)
+> **Basis**: the v5 spec in this directory (00-08); line numbers are subject to the actual code, gatekeeper re-verified.
+
+> **v5 sync (key points; see `zh_cn/09-impl-plan.md` for full detail)**: **R6 landing steps** — (1) Makefile macro block (commented off `lib/Makefile:57-60`, dual CFLAGS `:174-177`, already in place); (2) wrap the 7 files per `02 §4bis.2` with `#ifdef FF_KERNEL_COEXIST` (`ff_api.h:81-99`, `ff_host_interface.h:94-158`, `ff_host_interface.c:29-31/42-45/246-367`, `ff_config.h:321-323`, `ff_config.c:1027-1031/1363`, `ff_epoll.c:25-68/97-111/210-241`, `ff_syscall_wrapper.c:64/919-931/13 entry routes`), keeping each `ff_*` default path outside the `#ifdef`; (3) fix the stale `default_stack` comment at `ff_api.h:91`; (4) dual-build `nm` zero-regression verification. `ff_api.symlist` unchanged; clean full rebuild after header changes (ABI skew).
 
 ---
 

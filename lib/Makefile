@@ -54,6 +54,11 @@ FF_EXTRA_TCP_STACKS=1
 # TCP/UDP loopback.
 FF_LOOPBACK_SUPPORT=1
 
+# Kernel-stack coexistence: per-fd SOCK_KERNEL sockets additionally use the host
+# Linux kernel stack (local socket/fd/event access) alongside F-Stack. Disabled
+# by default; build with FF_KERNEL_COEXIST=1 (or uncomment below) to compile it.
+#FF_KERNEL_COEXIST=1
+
 include ${TOPDIR}/mk/kern.pre.mk
 
 ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
@@ -164,6 +169,11 @@ endif
 ifdef FF_LOOPBACK_SUPPORT
 HOST_CFLAGS+= -DFF_LOOPBACK_SUPPORT
 CFLAGS+= -DFF_LOOPBACK_SUPPORT
+endif
+
+ifdef FF_KERNEL_COEXIST
+HOST_CFLAGS+= -DFF_KERNEL_COEXIST
+CFLAGS+= -DFF_KERNEL_COEXIST
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<

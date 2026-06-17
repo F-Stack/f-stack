@@ -91,6 +91,7 @@ int ff_rss_tbl_get_portrange(uint32_t saddr, uint32_t daddr, uint16_t sport,
 
 void ff_swi_net_excute(void);
 
+#ifdef FF_KERNEL_COEXIST
 /*
  * Kernel-stack coexistence (native ff_api mode).
  *
@@ -156,6 +157,7 @@ int ff_host_fcntl(int fd, int cmd, int arg);
 int ff_host_epoll_create1(int flags);
 int ff_host_epoll_ctl(int epfd, int op, int fd, void *event);
 int ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout);
+#endif /* FF_KERNEL_COEXIST */
 
 #endif
 

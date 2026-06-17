@@ -612,6 +612,28 @@ test_ff_update_current_ts_assert_fail_on_clock_error(void **state)
     assert_int_equal(g_assert_fired, 1);
 }
 
+#ifdef FF_KERNEL_COEXIST
+/* Kernel-stack coexistence fd-space: a managed kernel fd is encoded as
+ * (host_fd + FF_KERNEL_FD_BASE) and must never collide with FreeBSD fds
+ * (< FF_KERNEL_FD_BASE). Verify the ff_is_kernel_fd/encode/real helpers. */
+static void
+test_ff_kernel_fd_encode_roundtrip(void **state)
+{
+    (void)state;
+    assert_false(ff_is_kernel_fd(0));
+    assert_false(ff_is_kernel_fd(1024));
+    assert_false(ff_is_kernel_fd(FF_KERNEL_FD_BASE - 1));
+    assert_true(ff_is_kernel_fd(FF_KERNEL_FD_BASE));
+
+    int host_fds[] = {0, 3, 1024, 65535};
+    for (size_t i = 0; i < sizeof(host_fds) / sizeof(host_fds[0]); i++) {
+        int enc = ff_kernel_fd_encode(host_fds[i]);
+        assert_true(ff_is_kernel_fd(enc));
+        assert_int_equal(ff_kernel_fd_real(enc), host_fds[i]);
+    }
+}
+#endif /* FF_KERNEL_COEXIST */
+
 int
 main(void)
 {
@@ -644,6 +666,9 @@ main(void)
         /* Stage-9 (FU-S9-HIF-ASSERT-WRAP) clock assert-fail legs */
         cmocka_unit_test(test_ff_clock_gettime_assert_fail_on_clock_error),
         cmocka_unit_test(test_ff_update_current_ts_assert_fail_on_clock_error),
+#ifdef FF_KERNEL_COEXIST
+        cmocka_unit_test(test_ff_kernel_fd_encode_roundtrip),
+#endif /* FF_KERNEL_COEXIST */
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

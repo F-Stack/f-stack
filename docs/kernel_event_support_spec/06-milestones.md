@@ -1,10 +1,12 @@
 # 06 Milestones and Coding Work List
 
 > **Document ID**: SPEC-KE-06
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
+> **Version**: v5 (compile-macro gating)
+> **Date**: 2026-06-17
 > **Status**: Drafting
-> **Scope**: The rework implementation roadmap of this feature.
+> **Scope**: The rework + compile-macro-gating implementation roadmap of this feature.
+
+> **v5 sync (key points; see `zh_cn/06-milestones.md` for full detail)**: new milestone **R6 compile-macro gating** — wrap the already-landed coexistence code with `#ifdef FF_KERNEL_COEXIST` (the 7 wrapping points in `02 §4bis.2`) + Makefile macro block (commented off by default, dual CFLAGS, already in place at `lib/Makefile:174-177`) + macro-on/off dual-build `nm` zero-regression verification (macro off → no `ff_host_*`/`ff_epoll_pairs` symbols; macro on → functional).
 
 ---
 

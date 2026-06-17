@@ -78,6 +78,7 @@ int ff_ioctl(int fd, unsigned long request, ...);
  *
  *  See also `example/main.c`
  */
+#ifdef FF_KERNEL_COEXIST
 /*
  * Stack-selection markers (OR into the `type` argument of socket()/ff_socket()).
  * Standardized from the syscall adapter (adapter/syscall/ff_adapter.h) so any
@@ -88,7 +89,7 @@ int ff_ioctl(int fd, unsigned long request, ...);
  *                                          ping/curl can reach it and the app
  *                                          can connect() to local/external
  *                                          kernel-stack services.
- * Priority: per-socket marker > config.ini [stack] default_stack > F-Stack.
+ * Priority: per-socket marker > config.ini [stack] kernel_coexist > F-Stack.
  * Values MUST match adapter/syscall/ff_adapter.h.
  */
 #ifndef SOCK_FSTACK
@@ -97,6 +98,7 @@ int ff_ioctl(int fd, unsigned long request, ...);
 #ifndef SOCK_KERNEL
 #define SOCK_KERNEL 0x02000000
 #endif
+#endif /* FF_KERNEL_COEXIST */
 
 int ff_socket(int domain, int type, int protocol);
 

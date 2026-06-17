@@ -1,9 +1,17 @@
 # 05 Interface Design: Marker Selection + config coexistence switch + hook/native dual-mode contracts
 
 > **Document ID**: SPEC-KE-05
-> **Version**: v4 (coexistence-paradigm rework)
-> **Date**: 2026-06-16
+> **Version**: v5 (compile-macro gating)
+> **Date**: 2026-06-17
 > **Status**: Drafting
+
+> **v5 sync (key points; see `zh_cn/05-interface-design.md` for full detail)**:
+> - **Compile-macro / opt-in contract**: `FF_KERNEL_COEXIST` off by default in `lib/Makefile:57-60`; macro block `:174-177`. `SOCK_FSTACK/SOCK_KERNEL` (`ff_api.h:81-99`) wrapped → APP must define the macro to see them.
+> - **D2 fix**: config parse is at `ff_config.c:1027-1031`, default `:1363` (NOT `:956`/`MATCH("kni","enable"):1011`); struct at `ff_config.h:321-323`.
+> - **D3 fix**: code has no `default_stack`; priority chain = `per-socket marker > config kernel_coexist enabled > F-Stack`; the `ff_api.h:91` "default_stack" comment is stale.
+> - **D4**: bridge declarations use `unsigned int` (`ff_host_interface.h:136-158`), implementations use `socklen_t` (`.c:246-367`) — equivalent/compilable on Linux.
+> - **D5**: `struct ff_stack_stats` / `ff_stack_get_stats` are **NOT implemented** (design intent only, do not treat as fact).
+> - **D6**: data structures are `FF_KERNEL_FD_BASE` encode offset (`ff_host_interface.h:112-127`) + `ff_epoll_pairs[64]` (`ff_epoll.c:36-37`), NOT `enum ff_stack_owner`/ownership table.
 > **Scope**: Stack-selection marker convention, the config coexistence-capability switch, server/client usage, hook and native dual-mode adaptation, data structures, and error handling.
 > **Core principle**: **do not create a side API, do not create a socket that bypasses F-Stack**; reuse the single API (the hook POSIX suite + the native `ff_*` suite), selecting the stack by per-fd markers + a config coexistence switch, with F-Stack always present.
 > **Basis**: `02` (code current state), `04` (architecture). Line numbers are subject to the code; the gatekeeper's re-verification is authoritative in the implementation phase.

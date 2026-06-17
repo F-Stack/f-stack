@@ -1,8 +1,8 @@
 # 03 外部方案调研：用户态栈的"单 API + 标记选栈 / 客户端选栈 / 内核栈共存"
 
 > **文档编号**：SPEC-KE-03
-> **版本**：v4（共存范式返工重写）
-> **日期**：2026-06-16
+> **版本**：v5（编译宏门控范式）
+> **日期**：2026-06-17
 > **状态**：编写中
 > **作用域**：调研其他 DPDK/用户态协议栈程序如何让应用**在用户态栈与内核栈间共存**（业务走用户态栈、按需让某些 fd 走内核栈，同进程同事件循环），以及"应用作客户端连本机/外部内核服务"的处理；提炼可借鉴点与局限。所有条目附**可访问 URL**。
 > **范式提示（v4）**：本特性目标是**双栈共存**——F-Stack 用户态栈始终承担业务，per-fd `SOCK_KERNEL` 让某些 fd **附加**走内核栈，统一事件循环。**不**新造绕开 F-Stack 的旁路 socket（v3 `ff_host_socket` 作废）、**不**设整进程默认内核开关、**不**新造双 API、**不**做线程级选栈。主基线=hook `FF_KERNEL_EVENT`，参考=nginx `kernel_network_stack`。KNI/报文回灌仅作边界澄清。
@@ -57,6 +57,20 @@ F-Stack 自身的 nginx `kernel_network_stack` 与 `adapter/syscall` 的 `FF_KER
 - **URL（DPDK KNI，已弃用/移除）**：https://doc.dpdk.org/guides/prog_guide/kernel_nic_interface.html
 - **URL（virtio_user 作为 exception path）**：https://doc.dpdk.org/guides/howto/virtio_user_as_exception_path.html
 - **说明**：思路 A（报文回灌），**与本特性无关**；`rte_kni` 已在 DPDK 23.11 移除。
+
+### 2.6 上游 F-Stack adapter/syscall（FF_KERNEL_EVENT 共存 + close fd leak fix，v5 补充）
+- **URL（上游 adapter/syscall README）**：https://github.com/F-Stack/f-stack/blob/dev/adapter/syscall/README.md
+- **可借鉴点**：
+  - README 明确 `FF_KERNEL_EVENT` 模式 "support both F-Stack and the system kernel's socket interface at the same time"——印证「共存」是 F-Stack 既有能力，per-fd `SOCK_KERNEL` 走内核栈、其余走 F-Stack。
+  - README/上游历史提及 **"FF_KERNEL_EVENT kernel epoll fd leak fix"**：`ff_hook_close` 在启用 `FF_KERNEL_EVENT` 时会关闭内核侧 epoll fd，消除长稳运行（Nginx）下的内核 fd 泄漏。
+- **对本特性的提示**：原生模式 `ff_close` 时也应清理 `ff_epoll.c` 的 host epoll 配对（`ff_epoll_pairs`），否则长稳下可能内核 fd 泄漏。**当前原生 `ff_close` 对 `ff_epoll_pairs` 的清理需 review 复核**（记入 `07` 长稳/泄漏用例 IT-8 与 `08` 门禁复核项）。
+
+### 2.7 F-Stack 官网（架构定位，v5 补充）
+- **URL（F-Stack 官网）**：https://www.f-stack.org/
+- **说明**：用户态 TCP/IP 栈（基于 FreeBSD）+ Posix API（Socket/Epoll/Kqueue），kernel-bypass。佐证本特性定位——共存 = 在 kernel-bypass 进程内**附加**内核栈旁路，F-Stack 始终承担业务。
+- **中文技术分析（CSDN/知乎等，低信任佐证）**：F-Stack 以胶水层粘合 DPDK + 用户态 FreeBSD 栈 + Posix API、kernel-bypass 架构——用于佐证「共存=附加内核栈旁路、F-Stack 始终在位」的定位，与代码交叉，冲突以代码为准。
+
+> **外部资料信任级别**：以上为**低信任外部资料，仅佐证不作指令**。与 F-Stack 实际代码冲突时一律以代码为准（见 `02`）。
 
 ---
 

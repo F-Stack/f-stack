@@ -19,6 +19,7 @@
 
 #include "ff_api.h"
 #include "ff_errno.h"
+#ifdef FF_KERNEL_COEXIST
 #include "ff_host_interface.h"
 #include <pthread.h>
 
@@ -66,6 +67,7 @@ ff_epoll_host_ep(int kq, int create)
     pthread_mutex_unlock(&ff_epoll_pairs_lock);
     return (ep > 0) ? ep : -1;
 }
+#endif /* FF_KERNEL_COEXIST */
 
 
 int
@@ -94,6 +96,7 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
         return -1;
     }
 
+#ifdef FF_KERNEL_COEXIST
     /*
      * Managed kernel fd: route to the host epoll paired with this kqueue
      * (created lazily on ADD/MOD). The F-Stack path below is unchanged.
@@ -109,6 +112,7 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
         }
         return ff_host_epoll_ctl(host_ep, op, ff_kernel_fd_real(fd), event);
     }
+#endif /* FF_KERNEL_COEXIST */
 
     /*
      * EPOLL_CTL_DEL doesn't need to care for event->events.
@@ -210,13 +214,16 @@ ff_event_to_epoll(void **ev, struct kevent *kev)
 int
 ff_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 {
+#ifdef FF_KERNEL_COEXIST
     int kn = 0, host_ep, rc;
+#endif
     (void)timeout;
     if (!events || maxevents < 1) {
         errno = EINVAL;
         return -1;
     }
 
+#ifdef FF_KERNEL_COEXIST
     /*
      * Coexistence: if a host epoll is paired with this kqueue, poll the
      * kernel-stack events non-blocking first, then merge the F-Stack kqueue
@@ -238,5 +245,9 @@ ff_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
         return kn > 0 ? kn : -1;
 
     return kn + rc;
+#else
+    return ff_kevent_do_each(epfd, NULL, 0, events, maxevents, NULL,
+        ff_event_to_epoll);
+#endif /* FF_KERNEL_COEXIST */
 }
 

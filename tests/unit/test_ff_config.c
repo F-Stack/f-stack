@@ -1004,6 +1004,7 @@ test_bond_cfgs_calloc_oom_returns_error(void **state)
     assert_int_equal(rv, -1);
 }
 
+#ifdef FF_KERNEL_COEXIST
 /* ------------------------------------------------------------------------ */
 /* kernel_event_support (coexistence): [stack] kernel_coexist parsing        */
 /* ------------------------------------------------------------------------ */
@@ -1046,6 +1047,7 @@ test_ff_load_config_stack_coexist_disabled_explicit(void **state)
     (void)rv;
     assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
 }
+#endif /* FF_KERNEL_COEXIST */
 
 int
 main(void)
@@ -1106,11 +1108,13 @@ main(void)
         cmocka_unit_test_setup_teardown(test_vlan_cfgs_calloc_oom_returns_error, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_vdev_cfgs_calloc_oom_returns_error, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_bond_cfgs_calloc_oom_returns_error, test_setup, NULL),
+#ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_absent_defaults_disabled, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_garbage_defaults_disabled, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_disabled_explicit, test_setup, NULL),
+#endif /* FF_KERNEL_COEXIST */
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -26,9 +26,11 @@
  * Derived in part from libuinet's uinet_host_interface.c.
  */
 
+#ifdef FF_KERNEL_COEXIST
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE   /* for accept4(2) / epoll_create1(2) */
 #endif
+#endif /* FF_KERNEL_COEXIST */
 
 #include <assert.h>
 #include <errno.h>
@@ -39,10 +41,12 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#ifdef FF_KERNEL_COEXIST
 #include <sys/socket.h>
 #include <sys/epoll.h>
 #include <fcntl.h>
 #include <unistd.h>
+#endif /* FF_KERNEL_COEXIST */
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
@@ -243,6 +247,7 @@ char *ff_getenv(const char *name)
     return getenv(name);
 }
 
+#ifdef FF_KERNEL_COEXIST
 /*
  * Host kernel-stack bridge for native-mode coexistence. Operate on RAW host
  * fds; sockaddr / epoll_event arrive as void* (linux_sockaddr layout matches
@@ -365,6 +370,7 @@ ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout)
 {
     return epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout);
 }
+#endif /* FF_KERNEL_COEXIST */
 
 void ff_os_errno(int error)
 {

@@ -1024,11 +1024,13 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->kni.tcp_port = strdup(value);
     } else if (MATCH("kni", "udp_port")) {
         pconfig->kni.udp_port= strdup(value);
+#ifdef FF_KERNEL_COEXIST
     } else if (MATCH("stack", "kernel_coexist")) {
         pconfig->stack.kernel_coexist =
             (strcasecmp(value, "1") == 0 || strcasecmp(value, "on") == 0 ||
              strcasecmp(value, "true") == 0 || strcasecmp(value, "yes") == 0)
             ? 1 : 0;
+#endif /* FF_KERNEL_COEXIST */
     } else if (strcmp(section, "freebsd.boot") == 0) {
         if (strcmp(name, "hz") == 0) {
             pconfig->freebsd.hz = atoi(value);
@@ -1360,7 +1362,9 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
 
+#ifdef FF_KERNEL_COEXIST
     cfg->stack.kernel_coexist = 0;
+#endif /* FF_KERNEL_COEXIST */
 
     /* KNI ratelimit default disabled */
     //cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;

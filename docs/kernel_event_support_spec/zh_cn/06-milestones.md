@@ -1,10 +1,10 @@
 # 06 里程碑与编码工作清单
 
 > **文档编号**：SPEC-KE-06
-> **版本**：v4（共存范式返工重写）
-> **日期**：2026-06-16
+> **版本**：v5（编译宏门控范式）
+> **日期**：2026-06-17
 > **状态**：编写中
-> **作用域**：本特性返工实施路线图。
+> **作用域**：本特性返工 + 编译宏门控实施路线图。
 
 ---
 
@@ -18,6 +18,7 @@
 | **R3** | 原生 ff_api 统一事件共存 | lib 内 fd 归属 + 受管内核 fd + `ff_epoll_wait` 合并；config 共存开关 | R1 | FR-7/FR-9/NFR-1/NFR-3 |
 | **R4** | 测试与性能基线 | 单测/集成（同进程双栈）/性能（F-Stack 快路径无回归） | R2,R3 | `07-test-spec.md` 门禁 |
 | **R5** | 门禁 + 提交 | gatekeeper 核验 + 英文 spec 同步 + 英文简短 commit | R1-R4 | 全门禁 PASS |
+| **R6** | **编译宏门控（v5 新增）** | 给已落地共存代码加 `FF_KERNEL_COEXIST` 包裹（默认关）+ 双侧 CFLAGS + 宏开/关双编译 nm 零回归验证 | R3 | 见下 §6bis |
 
 > **共存铁律**：所有里程碑必须保证 F-Stack 用户态栈始终承担业务、绝不被旁路（NFR-3）。
 
@@ -36,11 +37,11 @@
 3. 提供**正确的同进程双栈 demo**（对照 `main_stack_epoll_kernel.c`）：同一进程内既有 F-Stack 业务监听（默认 socket）又有 `SOCK_KERNEL` 内核监听，同一 epoll 收两栈事件；替换/废弃 v3 纯内核 `helloworld_stacksel`。
 **验收**：demo 跑通——本机 `curl` 内核监听成功、F-Stack 业务监听经 NIC 正常；两栈事件同 epoll 投递（FR-1/FR-2/FR-6）。需 DPDK 运行时；不具备真实 NIC 时业务面按 skip+实测证据，内核侧 loopback 仍实测。
 
-## 3. R3 原生 ff_api 统一事件共存（新设计，核心改造）
+## 3. R3 原生 ff_api 统一事件共存（已实现；v5 由 R6 加编译宏门控）
 **编码工作清单**：
 1. `lib/ff_config.{c,h}`：将 v3 `stack.default_to_kernel`/`default_stack` 改为 `stack.kernel_coexist`（`MATCH("stack","kernel_coexist")`，默认 0）；同步更新 `test_ff_config` 用例与 fixtures、`config.ini` 示例段；调用方直接读 `ff_global_cfg.stack.kernel_coexist`，不引入访问器。
 2. `lib/ff_host_interface.{c,h}`：新增**受管内核侧桥**（宿主 `socket/bind/listen/accept/connect/close/epoll_create1/epoll_ctl/epoll_wait`），供 lib 调用建受管内核 fd（**非裸绕过**，由 lib 登记归属）。
-3. lib 内 fd 归属机制：归属表/编码偏移区分受管内核 fd 与 F-Stack fd；`ff_socket(SOCK_KERNEL)`（启用共存时）建受管内核 fd 并登记；默认/`SOCK_FSTACK` 走原 `sys_socket`（逐字节零回归）。
+3. lib 内 fd 区分机制（实现用 `FF_KERNEL_FD_BASE` 编码偏移 + `ff_is_kernel_fd` 阈值，非归属表）区分受管内核 fd 与 F-Stack fd；`ff_socket(SOCK_KERNEL)`（启用共存时）建受管内核 fd；默认/`SOCK_FSTACK` 走原 `sys_socket`（逐字节零回归）。
 4. `ff_bind/ff_listen/ff_accept/ff_connect/ff_close`：入口按归属路由（内核 fd → 受管宿主桥；F-Stack fd → 原路径）。
 5. `lib/ff_epoll.c`：`ff_epoll_create` 兼建内核 epoll；`ff_epoll_ctl` 按归属分流；`ff_epoll_wait` 合并内核 epoll 事件（`timeout=0`+节流）+ `ff_kevent_do_each` F-Stack 事件；`ff_close` 联动。
 6. 可观测：`ff_stack_get_stats` 草案。
@@ -50,7 +51,19 @@
 见 `07-test-spec.md`。要点：cmocka 单测（共存开关解析、fd 归属、受管内核 fd、事件合并边界、零回归）；集成（**同进程双栈**：F-Stack 业务 + 本机 curl/ping 内核监听 + 客户端 connect）；性能（共存开/关对 F-Stack 快路径无回归）；覆盖率达标。
 
 ## 5. R5 门禁 + 提交
-- gatekeeper 只读核验全部断言/门禁条目；英文 spec（00-10）同步重写为 v4；英文简短 commit；不 push。
+- gatekeeper 只读核验全部断言/门禁条目；英文 spec（00-10）同步重写为 v5；英文简短 commit；不 push。
+
+## 5bis. R6 编译宏门控（v5 核心，编码工作清单）
+**前置现状（实测）**：`lib/Makefile:57-60` 已有 `#FF_KERNEL_COEXIST=1`（默认注释关）+ `:174-177` `ifdef` 双侧 CFLAGS；但**源码 `.c/.h` 尚无任何 `#ifdef FF_KERNEL_COEXIST` 包裹**（`02 §4bis.1`）。
+1. **Makefile**：确认 `:57-60` 默认注释关 + `:174-177` 同时给 `HOST_CFLAGS`+`CFLAGS` 加 `-DFF_KERNEL_COEXIST`（已就位，仿 `FF_LOOPBACK_SUPPORT/FF_IPFW`）。
+2. **逐文件 `#ifdef FF_KERNEL_COEXIST` 包裹**（按 `02 §4bis.2` 7 文件包裹点）：
+   - `ff_api.h:81-99`（保留内层 `#ifndef`）；`ff_host_interface.h:94-158`；`ff_host_interface.c:29-31`+`:42-45`+`:246-367`；`ff_config.h:321-323`；`ff_config.c:1027-1031`+`:1363`；`ff_epoll.c:25-68`+`:97-111`+`:210-241`；`ff_syscall_wrapper.c:64`+`:919-931`+各入口路由块。
+   - 注意包裹边界不破坏各文件的非共存代码（如 `ff_socket` 的默认路径、`ff_*` 入口的原逻辑须保留在 `#ifdef` 之外）。
+3. **顺带修正 `ff_api.h:91` 注释**残留的 "default_stack" 字样（D3）。
+**验收（双编译 nm 零回归）**：
+- **宏关闭编译**：`cd lib && make`（默认，全量重编，注意头改动 ABI 偏斜须 clean）→ `nm libfstack.a` / `objdump` **无** `ff_host_socket`/`ff_host_*`/`ff_epoll_pairs`/`ff_epoll_host_ep` 等共存符号；与改造前 `libfstack.a` 逐字节/符号集一致（FR-10/NFR-1）。
+- **宏打开编译**：`make FF_KERNEL_COEXIST=1` → 共存符号出现、功能可用（对照 `07` 功能测试）。
+- cmocka 单测在两种编译下均须处理（宏关时共存相关用例 skip 或条件编译，见 `07`）。
 
 ---
 

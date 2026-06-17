@@ -37,11 +37,13 @@
  * so those bridge functions are never invoked at runtime; provide no-op stubs
  * to satisfy the linker.
  */
+#ifdef FF_KERNEL_COEXIST
 int ff_host_epoll_create1(int flags) { (void)flags; return -1; }
 int ff_host_epoll_ctl(int epfd, int op, int fd, void *event)
 { (void)epfd; (void)op; (void)fd; (void)event; return -1; }
 int ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout)
 { (void)epfd; (void)events; (void)maxevents; (void)timeout; return -1; }
+#endif /* FF_KERNEL_COEXIST */
 
 /* ------------------------------------------------------------------------ */
 /* Capture buffer for kevent stubs                                          */

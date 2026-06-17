@@ -1,24 +1,26 @@
 # 02 现状分析：F-Stack 现有「双栈共存」机制（以代码为准）
 
 > **文档编号**：SPEC-KE-02
-> **版本**：v4（共存范式返工重写）
-> **日期**：2026-06-16
+> **版本**：v5（编译宏门控范式）
+> **日期**：2026-06-17
 > **状态**：编写中
-> **作用域**：实测 F-Stack 中「同一进程内 F-Stack 用户态栈 + 宿主内核栈共存」的现有机制，作为 v4 的**直接复用基线（hook 模式）+ 参考（nginx）+ 新设计落点（原生模式）**。覆盖：选栈标记、hook FF_KERNEL_EVENT 共存、nginx kernel_network_stack 共存、原生事件层缺口、v3 错误回退核对。
+> **作用域**：实测 F-Stack 中「同一进程内 F-Stack 用户态栈 + 宿主内核栈共存」的现有机制与**当前已落地的原生共存代码**，作为 v5 的**直接复用基线（hook 模式）+ 参考（nginx）+ 待加编译宏门控的现有原生实现**。覆盖：选栈标记、hook FF_KERNEL_EVENT 共存、nginx kernel_network_stack 共存、**原生模式共存现状（已实现、当前无条件编译）**、编译宏门控现状与 7 文件包裹点、v3 错误回退核对。
 > **铁律**：所有断言带 `相对路径:行号`（相对 `/data/workspace/f-stack/`）；与文档/注释冲突以**实际代码为准**并显式标注。
 
 ---
 
-## 0. v4 现状定位
+## 0. v5 现状定位
 
-| 现状能力 | 位置 | 形态 | v4 角色 |
+| 现状能力 | 位置 | 形态 | v5 角色 |
 |---|---|---|---|
 | **hook 模式 FF_KERNEL_EVENT 双栈共存** | `adapter/syscall/`（LD_PRELOAD） | 标记选栈 + `fstack_kernel_fd_map` 双栈 epoll 合并 | **直接复用并固化为主基线** |
 | **nginx kernel_network_stack 双栈共存** | `app/nginx-1.28.0/` | per-listen `belong_to_host` + 双事件后端（kqueue+epoll） | **参考实现（同构证明共存可行）** |
-| 原生 `ff_api` 事件层 | `lib/ff_epoll.c` | 纯 kqueue 封装，无内核 fd 感知 | **缺口**：原生共存需新设计（见 §4） |
-| 选栈标记 | `adapter/syscall/ff_adapter.h:7-8` | `SOCK_FSTACK`/`SOCK_KERNEL` type 高位 | **复用为 per-fd 共存标记** |
+| **原生 `ff_api` 双栈共存（已落地）** | `lib/`（`ff_socket`/`ff_epoll.c`/`ff_host_interface`/`ff_config`） | 受管内核 fd（`FF_KERNEL_FD_BASE` 偏移）+ `ff_epoll_pairs` 配对合并 + 各 `ff_*` 入口路由 | **已实现，当前无条件编译；v5 加 `FF_KERNEL_COEXIST` 门控（默认关）** |
+| 选栈标记 | `adapter/syscall/ff_adapter.h:7-8`、`lib/ff_api.h:94-99` | `SOCK_FSTACK`/`SOCK_KERNEL` type 高位 | **复用为 per-fd 共存标记，v5 由 `FF_KERNEL_COEXIST` 包裹（opt-in）** |
 
 > KNI（`lib/ff_dpdk_kni.c` + `config.ini [kni]`）是另一套独立「报文回灌」机制，**不属于本特性**（见 `00`/`03`）。
+
+> **关键现状修正（对照 v4 描述）**：v4 spec 把原生 `ff_api` 事件层描述为「纯 kqueue 封装、无内核 fd 感知」的**缺口**。**实测代码该缺口已被填补**——`lib/` 中已有完整的原生共存实现（见 §4）。v5 的核心工作不是「新设计」，而是给这些**已存在但当前无条件编译**的代码**加上 `FF_KERNEL_COEXIST` 编译宏门控（默认关闭）**，使不开启共存的部署逐字节零回归。
 
 ---
 
@@ -82,12 +84,60 @@
 
 ---
 
-## 4. 原生 ff_api 模式的事件层缺口（v4 新设计落点，已实测）
+## 4. 原生 ff_api 模式共存实现现状（已落地，实测；v5 待加编译宏门控）
 
-- `lib/ff_epoll.c`：`ff_epoll_create(size)` `:25-28` = `return ff_kqueue();`；`ff_epoll_ctl` `:31-104` → `ff_kevent`；`ff_epoll_wait` `:148-158` → `ff_kevent_do_each`。**纯 F-Stack kqueue 封装，零内核 fd 感知**。
-- 原生入口 `lib/ff_syscall_wrapper.c:912 ff_socket` → `linux2freebsd_socket_flags(type)` `:668-677`（仅 NONBLOCK/CLOEXEC，**不识别 SOCK_KERNEL/SOCK_FSTACK**）→ `sys_socket` 必进 FreeBSD 栈。
-- 原生应用跑 `ff_run(loop,arg)`（`ff_api.h:59`）DPDK 主循环；事件用 `ff_kqueue/ff_kevent`（`ff_api.h:158-159`）或 `ff_epoll_*`。
-- **缺口结论**：原生模式当前**无法共存**——没有 fd 归属表、内核 epoll 镜像、事件合并；`ff_socket` 恒建 F-Stack socket。要让原生应用一进程双栈共存，v4 需在 lib 内**仿 hook/nginx 新建**：(a) fd 归属登记；(b) `ff_socket(SOCK_KERNEL)` 经 `ff_host_interface` 建**受管内核 fd**（登记归属，**非 v3 的裸绕过**）；(c) `ff_bind/ff_listen/ff_accept/ff_connect/ff_close/ff_epoll_ctl` 按归属路由到宿主 syscall；(d) `ff_epoll_wait` 合并 kqueue⊕内核 epoll。默认/`SOCK_FSTACK` 路径逐字节零回归。详见 `04`/`05`/`06`。
+> **D7 修正**：v4 称原生模式「无法共存 / `ff_socket` 恒建 F-Stack socket / `ff_epoll.c` 纯 kqueue」——**该缺口已被代码填补**。以下为实测的已落地实现，**当前全部无条件编译**，v5 需用 `#ifdef FF_KERNEL_COEXIST` 包裹。
+
+### 4.1 fd 空间区分（受管内核 fd，非裸绕过）
+- `lib/ff_host_interface.h:112` `#define FF_KERNEL_FD_BASE 0x40000000`；`:114-127` 三个 `static inline`：`ff_is_kernel_fd(fd)=fd>=BASE`、`ff_kernel_fd_encode(host_fd)=host_fd+BASE`、`ff_kernel_fd_real(fd)=fd-BASE`。受管内核 fd 对应用呈现为 `host_fd+BASE`，远高于 FreeBSD fd 上限（`kern.maxfiles`≤65536），与 F-Stack fd 区间不冲突。
+
+### 4.2 受管内核侧桥（宿主 socket 族封装）
+- `lib/ff_host_interface.h:136-158`：18 个 `ff_host_*` 桥声明（`socket/bind/listen/accept/connect/close/read/write/recv/send/sendto/recvfrom/accept4/setsockopt/getsockopt/fcntl/epoll_create1/epoll_ctl/epoll_wait`）。声明用 `unsigned int`（见 §6 D4）。
+- `lib/ff_host_interface.c:246-367`：上述 18 个桥的实现（直接调宿主 libc 同名函数）；实现签名用 `socklen_t`。配套 `:29-31` `#ifndef _GNU_SOURCE`（为 `accept4`/`epoll_create1`）、`:42-45` 新增 `<sys/socket.h>/<sys/epoll.h>/<fcntl.h>/<unistd.h>`。
+
+### 4.3 socket 创建与归属路由
+- `lib/ff_syscall_wrapper.c:913-943 ff_socket`：`:926-931` 当 `(type & SOCK_KERNEL) && !(type & SOCK_FSTACK) && ff_global_cfg.stack.kernel_coexist` → `ff_host_socket(...)` 建宿主 socket 并 `ff_kernel_fd_encode` 返回受管内核 fd；否则 `:933-939` 原 `linux2freebsd_socket_flags`+`sys_socket` 路径**逐字节未改**。
+- 各入口前置 `ff_is_kernel_fd` 路由块（实测行号）：`ff_getsockopt:951-953`、`ff_setsockopt:998-1000`、`ff_close:1092-1093`、`ff_read:1111-1112`、`ff_write:1166-1167`、`ff_sendto:1316-1320`、`ff_recvfrom:1407-1409`、`ff_fcntl:1480-1481`、`ff_accept:1503-1506`、`ff_accept4:1536-1539`、`ff_listen:1565-1566`、`ff_bind:1587-1588`、`ff_connect:1607-1608`。命中即转对应 `ff_host_*` 桥（`ff_kernel_fd_real(fd)`）。
+- `lib/ff_syscall_wrapper.c:64` `#include "ff_config.h"`（为读 `ff_global_cfg.stack.kernel_coexist`）。
+
+### 4.4 统一事件合并
+- `lib/ff_epoll.c:36-37` `#define FF_EPOLL_COEXIST_MAX 64` + `static struct { int kq; int host_ep; } ff_epoll_pairs[64];`；`:38` 互斥锁；`:42-68` `ff_epoll_host_ep(kq,create)` 惰性建并查 kqueue↔宿主 epoll 配对。
+- `ff_epoll_create:71-75` 仍 `return ff_kqueue();`（不变）。
+- `ff_epoll_ctl:97-111`：`ff_is_kernel_fd(fd)` 命中 → 惰性取/建配对 host epoll → `ff_host_epoll_ctl`；否则走原 kqueue 路径（不变）。
+- `ff_epoll_wait:210-241`：`:226` 若有配对 host epoll，`:228` 先 `ff_host_epoll_wait(timeout=0)` 取内核事件，`:235-236` 再 `ff_kevent_do_each` 取 F-Stack 事件合并；无内核 fd 时退化原 kqueue-only 行为（零回归）。
+
+### 4.5 config 运行期开关
+- `lib/ff_config.h:321-323` `struct { int kernel_coexist; } stack;`。
+- `lib/ff_config.c:1027-1031` `MATCH("stack","kernel_coexist")` 解析（`1/on/true/yes`→1）；`:1363` 默认 `cfg->stack.kernel_coexist = 0`。
+
+### 4.6 选栈标记宏（lib 侧）
+- `lib/ff_api.h:81-99`：`SOCK_FSTACK 0x01000000`/`SOCK_KERNEL 0x02000000`，内层 `#ifndef` 双保护（`:94-99`）。注：`:91` 注释残留 "default_stack" 字样属过时（见 §6 D3）。
+
+> **现状结论**：原生模式共存**已实现并可运行**（见 `08`/`10` 实测）。当前问题是**全部无条件编译**——即使不用共存也链接进 `ff_host_*`/`ff_epoll_pairs` 等代码，无法对原 F-Stack 保证逐字节零回归。v5 的工作即用 `#ifdef FF_KERNEL_COEXIST` 包裹这些代码（默认关）。
+
+---
+
+## 4bis. 编译宏 `FF_KERNEL_COEXIST` 门控现状与 7 文件包裹点
+
+### 4bis.1 Makefile 现状（实测）
+- `lib/Makefile:57-60`：已有注释说明 + `#FF_KERNEL_COEXIST=1`（**默认注释关闭**）。
+- `lib/Makefile:174-177`：`ifdef FF_KERNEL_COEXIST` / `HOST_CFLAGS+= -DFF_KERNEL_COEXIST` / `CFLAGS+= -DFF_KERNEL_COEXIST` / `endif`（仿 `FF_LOOPBACK_SUPPORT:169-172` / `FF_IPFW:113-116`，已是双侧 CFLAGS）。
+- **当前差距**：Makefile 的宏基础设施已就位（默认关），但**源码 `.c/.h` 尚无任何 `#ifdef FF_KERNEL_COEXIST` 包裹**（`grep FF_KERNEL_COEXIST lib/` 仅命中 Makefile）——故当前即便宏关闭，共存代码仍被编译。v5 须补齐源码包裹。
+
+### 4bis.2 待包裹 7 文件（编译单元归属）
+
+| # | 文件 | 待包裹点（实测行号） | 编译单元 |
+|---|---|---|---|
+| 1 | `lib/ff_api.h` | `:81-99` `SOCK_FSTACK`/`SOCK_KERNEL` 宏块（保留内层 `#ifndef`） | 两侧头 |
+| 2 | `lib/ff_host_interface.h` | `:94-158` `FF_KERNEL_FD_BASE`+3 inline+18 `ff_host_*` 声明 | 两侧头 |
+| 3 | `lib/ff_host_interface.c` | `:29-31`(`_GNU_SOURCE`)+`:42-45`(新增 include)+`:246-367`(18 桥实现) | HOST_CFLAGS |
+| 4 | `lib/ff_config.h` | `:321-323` `struct{int kernel_coexist;}stack;` | HOST_CFLAGS |
+| 5 | `lib/ff_config.c` | `:1027-1031`(解析)+`:1363`(默认赋值) | HOST_CFLAGS |
+| 6 | `lib/ff_epoll.c` | `:25-68`(注释+`FF_EPOLL_COEXIST_MAX`+`ff_epoll_pairs`+lock+`ff_epoll_host_ep`)+`:97-111`(`ff_epoll_ctl` 分支)+`:210-241`(`ff_epoll_wait` 合并) | HOST_CFLAGS |
+| 7 | `lib/ff_syscall_wrapper.c` | `:64`(`#include "ff_config.h"`)+`:919-931`(`ff_socket` 分支)+各入口路由块（见 §4.3 行号） | CFLAGS |
+
+- 三头被两侧包含；`ff_host_interface.c`/`ff_config.c`/`ff_epoll.c` 属 HOST_CFLAGS，`ff_syscall_wrapper.c` 属 CFLAGS——故 Makefile 须同时给 `HOST_CFLAGS` 与 `CFLAGS` 加 `-DFF_KERNEL_COEXIST`（已满足 `:174-177`）。
+- `ff_api.symlist` **无需改动**（桥函数仅库内调用，`static inline` 无导出符号）。
 
 ---
 
@@ -103,20 +153,26 @@
 
 ---
 
-## 6. 交叉验证差异清单（文档/注释 vs 代码）
+## 6. 交叉验证差异清单（文档/注释 vs 代码，以代码为准）
 
-| 编号 | 出处 | 代码出处 | 实际结论 |
+| 编号 | 出处（文档/注释声称） | 代码实测 | 实际结论 |
 |---|---|---|---|
-| D1 | v3 误把「ff_socket→纯内核 socket」当方案 | hook/nginx 均为「应用 on F-Stack + 内核 fd 共存」 | v3 方向错误；v4 改为共存，F-Stack 始终在位 |
-| D2 | 注释「首版不支持 ff_linux_epoll_wait」 | `:2324+` 实际已调用（带节流） | 以代码为准：已调用 |
-| D3 | 原生 `ff_socket` 识别 SOCK_KERNEL？ | `:918`+`linux2freebsd_socket_flags:668-677` | 不识别，恒建 F-Stack socket；原生共存需 §4 新设计 |
+| D1 | v3 误把「ff_socket→纯内核 socket」当方案 | hook/nginx 均为「应用 on F-Stack + 内核 fd 共存」 | v3 方向错误；已改为共存，F-Stack 始终在位 |
+| D2 | v4 `05 §3.1` 称解析在 `ff_config.c:956`、仿 `MATCH("kni","enable"):1011` | 解析块实际在 `ff_config.c:1027-1031` | **行号修正**：解析在 `:1027-1031`，默认赋值 `:1363` |
+| D3 | `ff_api.h:91` 注释「优先级…> config.ini [stack] default_stack > F-Stack」；v4 多处提 `default_stack` | 代码无 `default_stack` 配置项（仅 `kernel_coexist`），`ff_api.h:91` 注释残留属过时 | 优先级链改为「per-socket marker > config `kernel_coexist` 启用 > F-Stack」 |
+| D4 | — | `ff_host_interface.h` 声明用 `unsigned int`，`ff_host_interface.c` 实现用 `socklen_t` | Linux 下二者等价可编译；如实记录此签名差异 |
+| D5 | v4 `05 §6` 设计 `struct ff_stack_stats`/`ff_stack_get_stats` | 代码**未实现** | 标注「未实现/待定」，不得当既成事实 |
+| D6 | v4 `05 §5` 设计 `enum ff_stack_owner`/「归属表」 | 实际为 `FF_KERNEL_FD_BASE` 阈值编码偏移 + `ff_epoll.c ff_epoll_pairs[64]` 配对表 | **非** enum/归属表；按实现描述 fd 区分与配对 |
+| D7 | v4 `02 §4` 称原生「无法共存 / `ff_socket` 恒建 F-Stack socket / `ff_epoll.c` 纯 kqueue」 | 缺口**已被代码填补**（见 §4） | 改为「已实现，本轮新增编译宏门控」 |
+| D8 | — | 路由仅覆盖 13 个入口（见 §4.3）；`ff_readv/ff_writev/ff_send/ff_recv/ff_getpeername/ff_getsockname/ff_shutdown/ff_ioctl/ff_sendmsg/ff_recvmsg` **未加** `ff_is_kernel_fd` 路由 | 路由覆盖不完整，须在「已知限制」如实列出 |
 
 ---
 
-## 7. 用于撰写 04/05/06 的要点清单
+## 7. 用于撰写 04/05/06/09 的要点清单
 
 - **主基线=hook FF_KERNEL_EVENT**：复用标记选栈（`ff_hook_socket:387-390`）+ 双栈 epoll 合并（`fstack_kernel_fd_map:257-258`/`:2324+`）+ close 联动（`:1874-1883`），固化并补正确 demo。
 - **参考=nginx kernel_network_stack**：per-listen 开关 + 双事件后端（kqueue+epoll）同 worker 共存。
-- **新设计=原生统一事件共存**：lib 内 fd 归属 + 受管内核 fd（`ff_host_interface` 宿主 socket，非裸绕过）+ `ff_epoll_wait` 合并 kqueue⊕epoll；默认/`SOCK_FSTACK` 零回归。
-- **config**：仿 `[kni]` 增**共存能力开关**（启用/禁用内核栈共存），删除整进程默认内核语义。
+- **原生统一事件共存（已落地）**：lib 内 fd 区分（`FF_KERNEL_FD_BASE` 偏移）+ 受管内核 fd（`ff_host_*` 桥，非裸绕过）+ `ff_epoll.c ff_epoll_pairs` 合并 kqueue⊕epoll；默认/`SOCK_FSTACK` 零回归。
+- **编译宏门控（v5 核心）**：`FF_KERNEL_COEXIST` 包裹 §4bis.2 的 7 文件；`lib/Makefile` 默认注释关；宏关闭 → 共存代码不编译、`libfstack.a` 与原 F-Stack 逐字节零回归。
+- **config**：仿 `[kni]` 增**运行期共存开关** `kernel_coexist`（`:1027-1031`/`:1363`），无整进程默认内核语义。
 - **共存铁律**：F-Stack 用户态栈始终承担业务，内核栈仅附加旁路（NFR-3）。
