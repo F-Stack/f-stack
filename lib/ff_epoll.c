@@ -21,7 +21,6 @@
 #include "ff_errno.h"
 #ifdef FF_KERNEL_COEXIST
 #include "ff_host_interface.h"
-#include <pthread.h>
 
 /*
  * Kernel-stack coexistence for native epoll (FR-6: unified event loop).
@@ -36,7 +35,6 @@
  */
 #define FF_EPOLL_COEXIST_MAX 64
 static struct { int kq; int host_ep; } ff_epoll_pairs[FF_EPOLL_COEXIST_MAX];
-static pthread_mutex_t ff_epoll_pairs_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Return the host epoll fd paired with kqueue fd kq; create it lazily when
  * 'create' is non-zero. Returns -1 if none (and create==0) or on failure. */
@@ -45,14 +43,10 @@ ff_epoll_host_ep(int kq, int create)
 {
     int i, slot = -1, ep = -1;
 
-    pthread_mutex_lock(&ff_epoll_pairs_lock);
     for (i = 0; i < FF_EPOLL_COEXIST_MAX; i++) {
         if (ff_epoll_pairs[i].host_ep > 0) {
-            if (ff_epoll_pairs[i].kq == kq) {
-                ep = ff_epoll_pairs[i].host_ep;
-                pthread_mutex_unlock(&ff_epoll_pairs_lock);
-                return ep;
-            }
+            if (ff_epoll_pairs[i].kq == kq)
+                return ff_epoll_pairs[i].host_ep;
         } else if (slot < 0) {
             slot = i;
         }
@@ -64,7 +58,6 @@ ff_epoll_host_ep(int kq, int create)
             ff_epoll_pairs[slot].host_ep = ep;
         }
     }
-    pthread_mutex_unlock(&ff_epoll_pairs_lock);
     return (ep > 0) ? ep : -1;
 }
 
@@ -75,7 +68,6 @@ ff_epoll_close_pair(int kq)
 {
     int i;
 
-    pthread_mutex_lock(&ff_epoll_pairs_lock);
     for (i = 0; i < FF_EPOLL_COEXIST_MAX; i++) {
         if (ff_epoll_pairs[i].host_ep > 0 && ff_epoll_pairs[i].kq == kq) {
             ff_host_close(ff_epoll_pairs[i].host_ep);
@@ -84,7 +76,6 @@ ff_epoll_close_pair(int kq)
             break;
         }
     }
-    pthread_mutex_unlock(&ff_epoll_pairs_lock);
 }
 #endif /* FF_KERNEL_COEXIST */
 
