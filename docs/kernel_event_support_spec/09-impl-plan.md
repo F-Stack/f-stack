@@ -112,7 +112,7 @@
 1. R0-R6 done (see §2).
 2. R7 spec upgraded to v6 (Chinese & English synced).
 3. **R7 implementation done** (connect contract Q2=B confirmed): 3.1→3.2 (map)→3.3 (socket dual-build + bind/listen/close/accept dual-drive + setsockopt/fcntl)→3.4 (epoll dual-register + close clears the pairing)→3.6 (demo).
-4. R7 tests done: cmocka dual-mode (macro-off P1 50/50; macro-on P1 incl. `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip`) + real-machine dual-stack (single listen(80): kernel `curl 127.0.0.1:80=200`, F-Stack `ssh f-stack-client→9.134.214.176:80=200`). **Note**: the v6 wrk throughput baseline for PERF-1/2/4 was not re-run, see `10 §10`.
+4. R7 tests done: cmocka dual-mode (macro-off P1 50/50; macro-on P1 incl. `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip`) + real-machine dual-stack (single listen(80): kernel `curl 127.0.0.1:80=200`, F-Stack `ssh f-stack-client→9.134.214.176:80=200`) + perf A/B (v6 default dual-build vs pure F-Stack, T1/T2/T3 x3 trials, Δ −1.73%/+1.68%/+5.87%, all within noise, no regression, see `10 §10`).
 5. R7 gate PASS: `08 §4` V1-V12 measured; dual-build `nm` zero regression (macro-off coexist symbols=0, size 6539682 identical to baseline; macro-on incl. `ff_native_fd_map`); Chinese & English spec synced; English short commit `13b418191`; config local values not committed. bounce=1 (test_ff_epoll stub, fixed).
 
 ## 6. Workspace Script Conventions

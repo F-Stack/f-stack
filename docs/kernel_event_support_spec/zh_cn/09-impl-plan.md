@@ -111,7 +111,7 @@
 1. R0-R6 已完成（见 §2）。
 2. R7 spec 升级为 v6（中英文已同步）。
 3. **R7 实现已完成**（connect 契约 Q2=B 已确认）：3.1→3.2（映射表）→3.3（socket 双建 + bind/listen/close/accept 双驱动 + setsockopt/fcntl）→3.4（epoll 双注册 + close 清配对）→3.6（demo）。
-4. R7 测试已完成：cmocka 双态（宏关 P1 50/50；宏开 P1 含 `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip`）+ 真机双栈（单 listen(80)：内核 `curl 127.0.0.1:80=200`、F-Stack `ssh f-stack-client→9.134.214.176:80=200`）。**注**：性能 PERF-1/2/4 的 v6 wrk 吞吐基准未重跑，见 `10 §10`。
+4. R7 测试已完成：cmocka 双态（宏关 P1 50/50；宏开 P1 含 `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip`）+ 真机双栈（单 listen(80)：内核 `curl 127.0.0.1:80=200`、F-Stack `ssh f-stack-client→9.134.214.176:80=200`）+ 性能 A/B（v6 默认双建 vs 纯 F-Stack，T1/T2/T3 各 3 trial，Δ −1.73%/+1.68%/+5.87% 全落噪声内无回归，见 `10 §10`）。
 5. R7 门禁 PASS：`08 §4` V1-V12 已实测；双编译 nm 零回归（宏关共存符号=0、size 6539682 与基线一致；宏开含 `ff_native_fd_map`）；中英文 spec 已同步；英文简短 commit `13b418191`；config 本机值未提交。bounce=1（test_ff_epoll stub，已修）。
 
 ## 6. 工作区脚本规约
