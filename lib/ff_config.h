@@ -231,8 +231,11 @@ struct ff_bond_cfg {
 struct ff_rss_tbl_cfg {
     uint16_t port_id;
     uint16_t sport;
-    uint32_t daddr; /* local */
-    uint32_t saddr; /* remote */
+    uint32_t daddr; /* local, v4 */
+    uint32_t saddr; /* remote, v4 */
+    uint8_t family;       /* AF_INET (default) or AF_INET6 */
+    uint8_t daddr6[16];   /* local, v6 */
+    uint8_t saddr6[16];   /* remote, v6 */
 };
 
 struct ff_rss_check_cfg {

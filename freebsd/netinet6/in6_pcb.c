@@ -114,6 +114,10 @@
 #include <netinet6/in6_fib.h>
 #include <netinet6/scope6_var.h>
 
+#ifdef FSTACK
+#include "ff_host_interface.h"
+#endif
+
 SYSCTL_DECL(_net_inet6);
 SYSCTL_DECL(_net_inet6_ip6);
 VNET_DEFINE_STATIC(int, connect_in6addr_wild) = 1;
@@ -411,7 +415,15 @@ in6_pcbladdr(struct inpcb *inp, struct sockaddr_in6 *sin6,
 	if ((error = prison_remote_ip6(inp->inp_cred, &sin6->sin6_addr)) != 0)
 		return (error);
 
+#ifdef FSTACK
+	in6a = in6addr_any;
+	if (sas_required)
+		ff_in_pcbladdr(AF_INET6, &sin6->sin6_addr,
+		    sin6->sin6_port, &in6a);
+	if (sas_required && IN6_IS_ADDR_UNSPECIFIED(&in6a)) {
+#else
 	if (sas_required) {
+#endif
 		error = in6_selectsrc_socket(sin6, inp->in6p_outputopts,
 		    inp, inp->inp_cred, scope_ambiguous, &in6a, NULL);
 		if (error)
@@ -505,7 +517,11 @@ in6_pcbconnect(struct inpcb *inp, struct sockaddr_in6 *sin6, struct ucred *cred,
 			error = in_pcb_lport_dest(inp,
 			    (struct sockaddr *) &laddr6, &inp->inp_lport,
 			    (struct sockaddr *) sin6, sin6->sin6_port, cred,
+#ifdef FSTACK
+			    INPLOOKUP_WILDCARD | INPLOOKUP_LPORT_RSS_CHECK);
+#else
 			    INPLOOKUP_WILDCARD);
+#endif
 			if (error)
 				return (error);
 		}

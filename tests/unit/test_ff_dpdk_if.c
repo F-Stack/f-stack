@@ -552,6 +552,27 @@ test_expected_rss_check(uint32_t saddr, uint32_t daddr, uint16_t sport,
     return ((hash & (uint16_t)(reta_size - 1)) % nb_queues) == queueid;
 }
 
+/* Independent replica of ff_rss_check6()'s verdict for v6 (ff_dpdk_if.c:3117).
+ * data layout = saddr6(16)|daddr6(16)|sport(2)|dport(2) = 36B, host byte order,
+ * same toeplitz/key/reta口径 as v4. */
+static int
+test_expected_rss_check6(const uint8_t saddr6[16], const uint8_t daddr6[16],
+                         uint16_t sport, uint16_t dport, uint16_t nb_queues,
+                         uint16_t reta_size, uint16_t queueid)
+{
+    uint8_t data[16 + 16 + sizeof(sport) + sizeof(dport)];
+    unsigned dl = 0;
+    uint32_t hash;
+    if (nb_queues <= 1)
+        return 1;
+    memcpy(&data[dl], saddr6, 16); dl += 16;
+    memcpy(&data[dl], daddr6, 16); dl += 16;
+    memcpy(&data[dl], &sport, sizeof(sport)); dl += sizeof(sport);
+    memcpy(&data[dl], &dport, sizeof(dport)); dl += sizeof(dport);
+    hash = test_toeplitz(sizeof(test_rsskey_40), test_rsskey_40, dl, data);
+    return ((hash & (uint16_t)(reta_size - 1)) % nb_queues) == queueid;
+}
+
 /* Build a single-rule RSS config and (re)initialise the static ff_rss_tbl.
  * Returns 0 on success. Sets the controlled lcore_conf queue layout. */
 #define TEST_RSS_PORT     0
@@ -941,6 +962,279 @@ test_ff_rss_thash_equivalence_hitrate(void **state)
     assert_int_equal(fok512, EQUIV_N);
 }
 
+/* ======================================================================== */
+/* R-C (req 0.2) IPv6 RSS: ff_rss_check6 / ff_rss_tbl6_* / ff_rss_adjust_   */
+/* sport6. Spec: 07-测试规格.md §1.2 TC-U-RSS-02 ; 04 §2 ; 05 §2-3.          */
+/* Signatures confirmed against ff_host_interface.h:96-104 and the impl in   */
+/* ff_dpdk_if.c:3117/3149/3261/3318/3366. v6 data/tuple = saddr6(16)|        */
+/* daddr6(16)|sport(2)|dport(2) = 36B host-order; helper offset = 256 bits   */
+/* (sport @ byte 32). Same toeplitz/key/reta口径 as v4.                       */
+/* ======================================================================== */
+
+/* Two fixed, distinct v6 addresses for the deterministic v6 unit cases. */
+static const uint8_t test_saddr6[16] = {
+    0x20,0x01,0x0d,0xb8,0,0,0,0, 0,0,0,0,0,0,0,0x01
+};
+static const uint8_t test_daddr6[16] = {
+    0x20,0x01,0x0d,0xb8,0,0,0,0, 0,0,0,0,0,0,0,0x02
+};
+
+/* Build a single v6-rule RSS config and (re)init the static ff_rss_tbl6. */
+static int
+test_rss6_build_table(const uint8_t saddr6[16], const uint8_t daddr6[16],
+                      uint16_t sport)
+{
+    memset(&g_rss_cfg, 0, sizeof(g_rss_cfg));
+    g_rss_cfg.enable = 1;
+    g_rss_cfg.nb_rss_tbl = 1;
+    g_rss_cfg.rss_tbl_cfgs[0].port_id = TEST_RSS_PORT;
+    g_rss_cfg.rss_tbl_cfgs[0].family  = AF_INET6;
+    memcpy(g_rss_cfg.rss_tbl_cfgs[0].saddr6, saddr6, 16);
+    memcpy(g_rss_cfg.rss_tbl_cfgs[0].daddr6, daddr6, 16);
+    g_rss_cfg.rss_tbl_cfgs[0].sport = sport;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf.tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+
+    return ff_rss_tbl6_init();
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-02-01: ff_rss_check6 lands on the owning queue and agrees with   */
+/* an independent equivalent v6 Toeplitz (hit correctness + self-consistency)*/
+/* rss_reta_size[] is static BSS=0 (confirmed R-A) => mask 0xFFFF, same as   */
+/* the v4 cases (07 §0.4 degrade路径同款).                                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_check6_landing(void **state)
+{
+    (void)state;
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf.tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+
+    /* Probe several dports; for each, the lib verdict must equal the replica
+     * (mask 0xFFFF here), and whenever it lands it must land on our queue. */
+    int landed = 0;
+    for (uint16_t j = 0; j < 64; j++) {
+        uint16_t dport = htons((uint16_t)(2000 + j));
+        int lib = ff_rss_check6(sc, test_saddr6, test_daddr6, htons(1000), dport);
+        int exp = test_expected_rss_check6(test_saddr6, test_daddr6,
+                                           htons(1000), dport,
+                                           TEST_RSS_NBQ, TEST_RSS_RETA, TEST_RSS_QID);
+        assert_int_equal(lib, exp);          /* v6 hit correctness */
+        if (lib) {
+            landed++;
+            /* zero false positive: replica must independently agree it lands. */
+            assert_int_equal(exp, 1);
+        }
+    }
+    assert_true(landed > 0);                  /* some dport lands on our queue */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-02-02: ff_rss_check6 single-queue returns 1 (RG-3 for v6).       */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_check6_single_queue(void **state)
+{
+    (void)state;
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
+    assert_int_equal(ff_rss_check6(sc, test_saddr6, test_daddr6,
+                                   htons(1000), htons(80)), 1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-02-03: v6 static table init + get_portrange hit / miss.          */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl6_set_get(void **state)
+{
+    (void)state;
+    assert_int_equal(test_rss6_build_table(test_saddr6, test_daddr6,
+                                           htons(1000)), 0);
+
+    /* Hit: same v6 3-tuple used to build the table. */
+    uint16_t first = 0, last = 0;
+    uint16_t *pr = NULL;
+    int rv = ff_rss_tbl6_get_portrange(test_saddr6, test_daddr6, htons(1000),
+                                       &first, &last, &pr);
+    assert_int_equal(rv, 0);                  /* hit => 0 (ff_dpdk_if.c:3349) */
+    assert_non_null(pr);
+    assert_true(first >= 1);
+    assert_true(last >= first);
+
+    /* Each port in [first,last] must self-consistently re-check to 1 (lands). */
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    int checked = 0;
+    for (uint16_t k = first; k <= last && checked < 128; k++, checked++) {
+        assert_int_equal(ff_rss_check6(sc, test_saddr6, test_daddr6,
+                                       htons(1000), htons(pr[k])), 1);
+        if (k == last) break;
+    }
+    assert_true(checked > 0);
+
+    /* Miss: a different saddr6 (flip last byte) => -ENOENT. */
+    uint8_t other_saddr6[16];
+    memcpy(other_saddr6, test_saddr6, 16);
+    other_saddr6[15] = 0xEE;
+    uint16_t f2 = 0, l2 = 0; uint16_t *pr2 = NULL;
+    int rv2 = ff_rss_tbl6_get_portrange(other_saddr6, test_daddr6, htons(1000),
+                                        &f2, &l2, &pr2);
+    assert_int_equal(rv2, -ENOENT);
+    assert_null(pr2);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-02-04: ff_rss_adjust_sport6 NULL/out guards + degrade fallback.   */
+/* In the unit env rss_reta_size[] is static BSS=0 so ff_rss_thash_ctx_init   */
+/* leaves the v6 ctx unready (reta<2) => adjust_sport6 returns -1 (soft scan).*/
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_adjust_sport6_guard(void **state)
+{
+    (void)state;
+    uint16_t out = 0;
+    assert_int_equal(ff_rss_adjust_sport6(NULL, test_saddr6, test_daddr6,
+                                          htons(80), &out), -1);
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                          htons(80), NULL), -1);
+
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);   /* v6 ctx degrades (reta=0) */
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    out = 0xFFFF;
+    assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                          htons(80), &out), -1);
+}
+
+/* ======================================================================== */
+/* TC-U-RSS-02-EQUIV: v6 toeplitz vs rte_thash(softrss_be) equivalence —      */
+/* go/no-go data for wiring 0.2 v6 into the kernel. Replicates ff_rss_adjust_ */
+/* sport6's full loop with the real DPDK rte_thash API (tuple_len=36,         */
+/* sport@byte32, helper len=16bit @offset=256bit), re-verifying with the v6   */
+/* soft Toeplitz (test_expected_rss_check6). Reports adjust success rate,     */
+/* per-candidate equivalence, and full-loop final landing rate.              */
+/* ======================================================================== */
+static void
+run_equiv6_for_reta(const char *ctx_name, uint16_t reta_size,
+                    int *adj_ok, int *single_hit, int *final_ok,
+                    double *avg_tries)
+{
+    struct rte_thash_ctx *ctx;
+    struct rte_thash_subtuple_helper *h;
+    int i, ok = 0, hit = 0, fok = 0;
+    long tries_total = 0;
+    const uint16_t nbq = EQUIV_NBQ, qid = EQUIV_QID;
+    const uint32_t span = (reta_size + nbq - 1) / nbq;
+
+    ctx = rte_thash_init_ctx(ctx_name, sizeof(test_rsskey_40),
+                             equiv_log2(reta_size), (uint8_t *)test_rsskey_40, 0);
+    assert_non_null(ctx);
+    /* v6 helper: len 16 bits @ offset 256 bits (mirror lib FF_RSS_THASH_V6). */
+    assert_int_equal(rte_thash_add_helper(ctx, "sport6", 16, 256), 0);
+    h = rte_thash_get_helper(ctx, "sport6");
+    assert_non_null(h);
+
+    srandom(0xBADC0DE ^ reta_size);   /* deterministic, reproducible */
+    for (i = 0; i < EQUIV_N; i++) {
+        uint8_t saddr6[16], daddr6[16];
+        for (int b = 0; b < 16; b++) { saddr6[b] = random() & 0xff; daddr6[b] = random() & 0xff; }
+        uint16_t dport = htons((uint16_t)(1024 + (random() % 60000)));
+        uint32_t desired = qid + ((uint32_t)random() % span) * nbq;
+        int found = 0, first_cand = 1;
+        uint32_t tr;
+        if (desired >= reta_size) desired = qid;
+
+        for (tr = 0; tr < span; tr++) {
+            uint16_t sport = 0;
+            uint8_t tuple[36];
+            if (desired >= reta_size) desired = qid;
+            memset(tuple, 0, sizeof(tuple));
+            memcpy(&tuple[0], saddr6, 16);
+            memcpy(&tuple[16], daddr6, 16);
+            memcpy(&tuple[32], &sport, 2);    /* sport seed 0 @ byte 32 */
+            memcpy(&tuple[34], &dport, 2);    /* dport @ byte 34        */
+            tries_total++;
+
+            if (rte_thash_adjust_tuple(ctx, h, tuple, sizeof(tuple),
+                                       desired & (reta_size - 1), 16,
+                                       NULL, NULL) == 0) {
+                if (first_cand) ok++;
+                memcpy(&sport, &tuple[32], 2);
+                int landed = test_expected_rss_check6(saddr6, daddr6, sport, dport,
+                                                      nbq, reta_size, qid);
+                if (first_cand && landed) hit++;
+                if (landed) {
+                    /* zero false positive: independent recompute must agree. */
+                    uint8_t d[36];
+                    unsigned dl = 0;
+                    memcpy(&d[dl], saddr6, 16); dl += 16;
+                    memcpy(&d[dl], daddr6, 16); dl += 16;
+                    memcpy(&d[dl], &sport, 2); dl += 2;
+                    memcpy(&d[dl], &dport, 2); dl += 2;
+                    uint32_t hh = test_toeplitz(sizeof(test_rsskey_40),
+                                                test_rsskey_40, dl, d);
+                    assert_int_equal(((hh & (reta_size - 1)) % nbq), qid);
+                    found = 1;
+                    break;
+                }
+            }
+            first_cand = 0;
+            desired += nbq;
+        }
+        if (found) fok++;
+    }
+
+    rte_thash_free_ctx(ctx);
+    *adj_ok = ok;
+    *single_hit = hit;
+    *final_ok = fok;
+    *avg_tries = (double)tries_total / EQUIV_N;
+}
+
+static void
+test_ff_rss_thash6_equivalence_hitrate(void **state)
+{
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("\n[R-C 0.2 EQUIV6] DPDK EAL init failed in unit env; skipping.\n");
+        skip();
+        return;
+    }
+
+    int adj128 = 0, sh128 = 0, fok128 = 0, adj512 = 0, sh512 = 0, fok512 = 0;
+    double avg128 = 0, avg512 = 0;
+    run_equiv6_for_reta("ff_equiv6_128", 128, &adj128, &sh128, &fok128, &avg128);
+    run_equiv6_for_reta("ff_equiv6_512", 512, &adj512, &sh512, &fok512, &avg512);
+
+    printf("\n[R-C 0.2 EQUIV6] N=%d nbq=%d qid=%d key=40B v6-tuple=36B sport@256bit\n",
+           EQUIV_N, EQUIV_NBQ, EQUIV_QID);
+    printf("[R-C 0.2 EQUIV6] reta=128: adjust_tuple_ok=%d/%d (%.1f%%), "
+           "1st-candidate toeplitz_equiv=%d/%d (%.1f%%), "
+           "FULL-LOOP final landing=%d/%d (%.1f%%), avg adjust calls/conn=%.2f (span=%d)\n",
+           adj128, EQUIV_N, 100.0 * adj128 / EQUIV_N,
+           sh128, EQUIV_N, 100.0 * sh128 / EQUIV_N,
+           fok128, EQUIV_N, 100.0 * fok128 / EQUIV_N, avg128, (128 + EQUIV_NBQ - 1) / EQUIV_NBQ);
+    printf("[R-C 0.2 EQUIV6] reta=512: adjust_tuple_ok=%d/%d (%.1f%%), "
+           "1st-candidate toeplitz_equiv=%d/%d (%.1f%%), "
+           "FULL-LOOP final landing=%d/%d (%.1f%%), avg adjust calls/conn=%.2f (span=%d)\n",
+           adj512, EQUIV_N, 100.0 * adj512 / EQUIV_N,
+           sh512, EQUIV_N, 100.0 * sh512 / EQUIV_N,
+           fok512, EQUIV_N, 100.0 * fok512 / EQUIV_N, avg512, (512 + EQUIV_NBQ - 1) / EQUIV_NBQ);
+
+    assert_true(adj128 > 0);
+    assert_true(adj512 > 0);
+    assert_int_equal(fok128, EQUIV_N);   /* v6 full loop lands 100% (zero tolerance) */
+    assert_int_equal(fok512, EQUIV_N);
+}
+
 /* ------------------------------------------------------------------------ */
 /* TC-U-P3-DPDKIF-17 (Stage-6): ff_dpdk_register_if happy path: allocates  */
 /* and returns a non-NULL ff_dpdk_if_context (covers the malloc + memset   */
@@ -1017,6 +1311,12 @@ main(void)
         cmocka_unit_test(test_ff_rss_adjust_sport_degraded),
         cmocka_unit_test(test_ff_rss_adjust_sport_single_queue),
         cmocka_unit_test(test_ff_rss_thash_equivalence_hitrate),
+        /* R-C (req 0.2): v6 check6 / tbl6 / adjust_sport6 + v6 equivalence */
+        cmocka_unit_test(test_ff_rss_check6_landing),
+        cmocka_unit_test(test_ff_rss_check6_single_queue),
+        cmocka_unit_test(test_ff_rss_tbl6_set_get),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_guard),
+        cmocka_unit_test(test_ff_rss_thash6_equivalence_hitrate),
         cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
         /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),

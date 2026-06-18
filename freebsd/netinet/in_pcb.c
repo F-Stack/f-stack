@@ -782,6 +782,10 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 	struct ifnet *ifp = NULL;
 	uint16_t rss_sel;
 	int rss_fast;
+#ifdef INET6
+	u_short rss6_first, rss6_last, *rss6_portrange;
+	static int rss_tbl6_init = 0;
+#endif
 
 	lookupflags &= ~INPLOOKUP_LPORT_RSS_CHECK;
 #endif
@@ -848,6 +852,62 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 	dorandom = (V_ipport_randomized && first != last) ? 1 : 0;
 
 	if (rss_check_flag) {
+#ifdef INET6
+	if (lsa->sa_family == AF_INET6) {
+		/* 0.2 v6 RSS: parallel to v4, uses v6 table/check/adjust. */
+		if (rss_tbl6_init == 0) {
+			rss_ret = ff_rss_tbl6_set_portrange(first, last);
+			rss_tbl6_init = (rss_ret < 0) ? -1 : 1;
+		}
+
+		if (rss_tbl6_init == 1) {
+			rss_ret = ff_rss_tbl6_get_portrange(faddr6->s6_addr,
+			    laddr6->s6_addr, fport, &rss6_first, &rss6_last,
+			    &rss6_portrange);
+			if (rss_ret < 0) {
+				if (rss_ret != -ENOENT)
+					rss_tbl6_init = -1;
+			} else {
+				rss_match = 1;
+				count = rss6_last - rss6_first + 1;
+				if (dorandom)
+					rss6_portrange[0] = rss6_first +
+					    (arc4random() % count);
+			}
+		}
+
+		if (!rss_match) {
+			lsa->sa_len = sizeof(struct sockaddr_in6);
+			ifa = ifa_ifwithnet(lsa, 0, RT_ALL_FIBS);
+			if (ifa == NULL) {
+				fsa->sa_len = sizeof(struct sockaddr_in6);
+				ifa = ifa_ifwithnet(fsa, 0, RT_ALL_FIBS);
+				if (ifa == NULL)
+					return (EADDRNOTAVAIL);
+			}
+			ifp = ifa->ifa_ifp;
+
+			if (!(ifp->if_softc == NULL &&
+			    (ifp->if_flags & IFF_LOOPBACK))) {
+				for (rss_fast = 0; rss_fast < 8; rss_fast++) {
+					if (ff_rss_adjust_sport6(ifp->if_softc,
+					    faddr6->s6_addr, laddr6->s6_addr,
+					    fport, &rss_sel) != 0)
+						break;
+					lport = htons(rss_sel);
+					if (in6_pcblookup_local(pcbinfo,
+					    &inp->in6p_laddr, lport, RT_ALL_FIBS,
+					    lookupflags, cred) == NULL) {
+						*lastport = rss_sel;
+						*lportp = lport;
+						return (0);
+					}
+				}
+			}
+		}
+	} else
+#endif
+	{
 		if (rss_tbl_init == 0) {
 			rss_ret = ff_rss_tbl_set_portrange(first, last);
 			rss_tbl_init = (rss_ret < 0) ? -1 : 1;
@@ -909,6 +969,7 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 			}
 		}
 	}
+	}
 
 	if (!rss_check_flag || !rss_match) {
 		if (dorandom)
@@ -926,6 +987,15 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 		if (count-- < 0)	/* completely used? */
 			return (EADDRNOTAVAIL);
 #ifdef FSTACK
+#ifdef INET6
+		if (rss_check_flag && rss_match && lsa->sa_family == AF_INET6) {
+			rss6_portrange[0]++;
+			if (rss6_portrange[0] < rss6_first ||
+			    rss6_portrange[0] > rss6_last)
+				rss6_portrange[0] = rss6_first;
+			*lastport = rss6_portrange[rss6_portrange[0]];
+		} else
+#endif
 		if (rss_check_flag && rss_match) {
 			rss_portrange[0]++;
 			if (rss_portrange[0] < rss_first ||
@@ -975,6 +1045,22 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 					tmpinp = in_pcblookup_local(pcbinfo,
 					    laddr, lport, RT_ALL_FIBS,
 					    lookupflags, cred);
+#endif
+#ifdef FSTACK
+				if (rss_check_flag && !rss_match &&
+				    tmpinp == NULL && laddr6 != NULL &&
+				    faddr6 != NULL) {
+					/* LOOPBACK does not support RSS. */
+					if (ifp->if_softc == NULL &&
+					    (ifp->if_flags & IFF_LOOPBACK))
+						break;
+					if (ff_rss_check6(ifp->if_softc,
+					    faddr6->s6_addr, laddr6->s6_addr,
+					    fport, lport))
+						break;
+					/* not local queue: keep searching */
+					tmpinp++;
+				}
 #endif
 			}
 #endif
