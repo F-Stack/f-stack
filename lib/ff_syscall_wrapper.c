@@ -1122,6 +1122,7 @@ ff_close(int fd)
         goto kern_fail;
 
 #ifdef FF_KERNEL_COEXIST
+    /* Try to close the socket fd or epoll fd respectively */
     if (ff_global_cfg.stack.kernel_coexist) {
         int hfd = ff_native_map_get(fd);
         if (hfd > 0) {
@@ -1571,6 +1572,11 @@ ff_accept(int s, struct linux_sockaddr * addr,
 
     if ((rc = kern_accept(curthread, s, pf, &fp))) {
 #ifdef FF_KERNEL_COEXIST
+        /*
+         * Here, we first attempt to accept the socket fd from the f-stack every time. If none is available,
+         * we will then attempt to accept the socket fd from the kernel. This is different from LD_PRELOAD,
+         * which obtains different fds by calling socket twice, but we cannot distinguish between them here?待定，开epoll是否可以区分
+         */
         if ((rc == EAGAIN || rc == EWOULDBLOCK) &&
             ff_global_cfg.stack.kernel_coexist) {
             int hfd = ff_native_map_get(s);
