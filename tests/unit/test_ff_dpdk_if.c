@@ -44,6 +44,8 @@
 extern struct lcore_conf lcore_conf;
 
 #include <rte_launch.h>           /* enum rte_rmt_call_main_t */
+#include <rte_eal.h>              /* rte_eal_init (R-B 0.3 thash needs EAL) */
+#include <rte_thash.h>            /* rte_thash_* (R-B 0.3 hit-rate quantification) */
 
 /* ------------------------------------------------------------------------ */
 /* Wrap rte_get_tsc_hz (real DPDK function; wrappable via -Wl,--wrap)        */
@@ -693,6 +695,252 @@ test_ff_rss_tbl_get_portrange_miss(void **state)
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;
 }
 
+/* ======================================================================== */
+/* R-B (req 0.3) rte_thash dynamic reverse-calc tests                        */
+/* Spec: 07-测试规格.md §1.3 TC-U-RSS-03 ; 04 §3.3 ; 05 §3                    */
+/* Under test (lib/ff_dpdk_if.c, R-B): ff_rss_thash_ctx_init(),             */
+/* ff_rss_adjust_sport() (declared in ff_host_interface.h, non-static).     */
+/* ======================================================================== */
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-03-NULL: ff_rss_adjust_sport defends NULL softc / out_sport.     */
+/* (ff_dpdk_if.c:2987 guard returns -1 before any deref.)                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_adjust_sport_null(void **state)
+{
+    (void)state;
+    uint16_t out = 0;
+    /* NULL softc -> -1 (guard hits before ff_veth_softc_to_hostc deref) */
+    assert_int_equal(ff_rss_adjust_sport(NULL, 0x01020304, 0x05060708,
+                                         htons(80), &out), -1);
+    /* NULL out_sport with a valid softc -> -1 */
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), NULL), -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-03-DEGRADE: in the unit env rss_reta_size[] is static BSS=0      */
+/* (confirmed in R-A), so ff_rss_thash_ctx_init() marks every port unready   */
+/* (reta_size<2 -> continue, ready stays 0; ff_dpdk_if.c:2930-2933). A       */
+/* subsequent ff_rss_adjust_sport() must therefore return -1 (fall back to   */
+/* soft scan). Validates init degradation + adjust readiness guard           */
+/* (ff_dpdk_if.c:2991).                                                      */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_adjust_sport_degraded(void **state)
+{
+    (void)state;
+    /* init: with reta_size=0 everywhere it returns 0 but leaves all ports
+     * unready (no exception, graceful degrade). */
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ; /* multi-queue */
+    uint16_t out = 0xFFFF;
+    int rv = ff_rss_adjust_sport(sc, 0x01020304, 0x05060708, htons(80), &out);
+    assert_int_equal(rv, -1);          /* unready -> fall back */
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-03-SINGLEQ: with nb_queue_list[port]==1 ff_rss_adjust_sport      */
+/* returns -1. NOTE the readiness guard (L2991) precedes the single-queue    */
+/* guard (L2995); in this unit env (reta=0 => unready) the -1 is produced by */
+/* the readiness guard. Either way the dynamic path correctly declines and   */
+/* the caller falls back to the native/soft path (RG-3 alignment).           */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_adjust_sport_single_queue(void **state)
+{
+    (void)state;
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
+    uint16_t out = 0xFFFF;
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), &out), -1);
+}
+
+/* ======================================================================== */
+/* TC-U-RSS-03-EQUIV: toeplitz vs rte_thash(softrss_be) equivalence —        */
+/* the core go/no-go data for wiring 0.3 into in_pcb.                         */
+/*                                                                           */
+/* Because the lib's rss_reta_size[] is static BSS=0 (ctx cannot be built    */
+/* in-unit), we replicate the lib's 0.3 reverse-calc path here with the real */
+/* DPDK rte_thash API and a chosen reta_size, then re-verify each adjusted   */
+/* sport with the SAME soft Toeplitz the lib uses (test_toeplitz, byte-for-  */
+/* byte identical to ff_dpdk_if.c:2548). Tuple layout & byte order mirror    */
+/* ff_rss_adjust_sport (ff_dpdk_if.c:3015-3025): host-order                  */
+/* saddr|daddr|sport|dport, sport@byte8, dport@byte10, tuple_len=12,         */
+/* helper len=16 bits @offset=64 bits, attempts=16.                          */
+/* Reports adjust_tuple success rate AND toeplitz re-check hit rate; asserts */
+/* self-consistency (no false positives) but leaves the rate as data for the */
+/* leader's go/no-go decision (07 §1.3 — rate is reported, no hard threshold).*/
+/* ======================================================================== */
+#define EQUIV_N        200
+#define EQUIV_NBQ      4
+#define EQUIV_QID      1
+
+static int
+equiv_log2(uint16_t v)
+{
+    int l = 0;
+    while ((v >>= 1) != 0) l++;
+    return l;
+}
+
+/* rte_thash_init_ctx() needs the DPDK EAL memory subsystem (rte_zmalloc /
+ * tailq). The unit process never calls rte_eal_init, so we bring up a minimal
+ * EAL (--no-huge -m 64 --no-pci) once for this test; if it fails (no perms /
+ * environment), the test skips rather than crashing. */
+static int
+equiv_eal_init_once(void)
+{
+    static int done = 0;     /* 0=untried, 1=ok, -1=failed */
+    if (done != 0)
+        return done;
+    char *argv[] = {
+        (char *)"test_ff_dpdk_if", (char *)"--no-huge", (char *)"-m",
+        (char *)"64", (char *)"--no-pci", (char *)"-c", (char *)"0x1",
+        (char *)"--log-level", (char *)"lib.eal:error", NULL
+    };
+    int argc = (int)(sizeof(argv) / sizeof(argv[0])) - 1;
+    done = (rte_eal_init(argc, argv) < 0) ? -1 : 1;
+    return done;
+}
+
+/* Replicate ff_rss_adjust_sport's FULL loop (ff_dpdk_if.c:3006-3034) with the
+ * real DPDK rte_thash API: iterate ceil(R/Q) desired candidates, the first
+ * whose reverse-calc'd sport also passes the lib's soft Toeplitz (ff_rss_check
+ * equivalent) wins. Reports both the per-candidate equivalence rate and the
+ * full-loop final success rate (the number that matters for in_pcb wiring).
+ *   *adj_ok    -> per-candidate adjust_tuple successes (== N here)
+ *   *single_hit-> per-candidate toeplitz re-check hits (equivalence rate)
+ *   *final_ok  -> full-loop final successes (a landing sport was found)
+ *   *avg_tries -> avg adjust_tuple calls per connection
+ * ctx_name must be unique per reta to avoid an rte_thash name clash. */
+static void
+run_equiv_for_reta(const char *ctx_name, uint16_t reta_size,
+                   int *adj_ok, int *single_hit, int *final_ok,
+                   double *avg_tries)
+{
+    struct rte_thash_ctx *ctx;
+    struct rte_thash_subtuple_helper *h;
+    int i, ok = 0, hit = 0, fok = 0;
+    long tries_total = 0;
+    const uint16_t nbq = EQUIV_NBQ, qid = EQUIV_QID;
+    const uint32_t span = (reta_size + nbq - 1) / nbq;
+
+    ctx = rte_thash_init_ctx(ctx_name, sizeof(test_rsskey_40),
+                             equiv_log2(reta_size), (uint8_t *)test_rsskey_40, 0);
+    /* key_len is in BYTES (lib passes rsskey_len=40); reta_sz is log2. */
+    assert_non_null(ctx);
+    /* helper len/offset are in BITS (mirror lib: 16 @ 64; len >= reta_sz). */
+    assert_int_equal(rte_thash_add_helper(ctx, "sport", 16, 64), 0);
+    h = rte_thash_get_helper(ctx, "sport");
+    assert_non_null(h);
+
+    srandom(0xC0FFEE ^ reta_size);   /* deterministic, reproducible numbers */
+    for (i = 0; i < EQUIV_N; i++) {
+        uint32_t saddr = ((uint32_t)random() << 1) ^ (uint32_t)random();
+        uint32_t daddr = ((uint32_t)random() << 1) ^ (uint32_t)random();
+        uint16_t dport = htons((uint16_t)(1024 + (random() % 60000)));
+        uint32_t desired = qid + ((uint32_t)random() % span) * nbq;
+        int found = 0, first_cand = 1;
+        uint32_t tr;
+        if (desired >= reta_size) desired = qid;
+
+        for (tr = 0; tr < span; tr++) {
+            uint16_t sport = 0;
+            uint8_t tuple[12];
+            if (desired >= reta_size) desired = qid;
+            memset(tuple, 0, sizeof(tuple));
+            memcpy(&tuple[0], &saddr, 4);
+            memcpy(&tuple[4], &daddr, 4);
+            memcpy(&tuple[8], &sport, 2);     /* sport seed 0 @ byte 8 */
+            memcpy(&tuple[10], &dport, 2);    /* dport @ byte 10        */
+            tries_total++;
+
+            if (rte_thash_adjust_tuple(ctx, h, tuple, sizeof(tuple),
+                                       desired & (reta_size - 1), 16,
+                                       NULL, NULL) == 0) {
+                if (first_cand) ok++;        /* per-candidate adjust success */
+                memcpy(&sport, &tuple[8], 2);
+                /* Re-verify with the lib's soft Toeplitz (host-order tuple,
+                 * same as ff_rss_check). */
+                int landed = test_expected_rss_check(saddr, daddr, sport, dport,
+                                                     nbq, reta_size, qid);
+                if (first_cand && landed) hit++;  /* per-candidate equivalence */
+                if (landed) {
+                    /* zero false positives: self-consistency must hold. */
+                    uint8_t d[12];
+                    unsigned dl = 0;
+                    memcpy(&d[dl], &saddr, 4); dl += 4;
+                    memcpy(&d[dl], &daddr, 4); dl += 4;
+                    memcpy(&d[dl], &sport, 2); dl += 2;
+                    memcpy(&d[dl], &dport, 2); dl += 2;
+                    uint32_t hh = test_toeplitz(sizeof(test_rsskey_40),
+                                                test_rsskey_40, dl, d);
+                    assert_int_equal(((hh & (reta_size - 1)) % nbq), qid);
+                    found = 1;
+                    break;                    /* full-loop: first landing wins */
+                }
+            }
+            first_cand = 0;
+            desired += nbq;
+        }
+        if (found) fok++;
+    }
+
+    rte_thash_free_ctx(ctx);
+    *adj_ok = ok;
+    *single_hit = hit;
+    *final_ok = fok;
+    *avg_tries = (double)tries_total / EQUIV_N;
+}
+
+static void
+test_ff_rss_thash_equivalence_hitrate(void **state)
+{
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("\n[R-B 0.3 EQUIV] DPDK EAL init failed in unit env; skipping "
+               "thash equivalence quantification.\n");
+        skip();
+        return;
+    }
+
+    int adj128 = 0, sh128 = 0, fok128 = 0, adj512 = 0, sh512 = 0, fok512 = 0;
+    double avg128 = 0, avg512 = 0;
+    run_equiv_for_reta("ff_equiv_128", 128, &adj128, &sh128, &fok128, &avg128);
+    run_equiv_for_reta("ff_equiv_512", 512, &adj512, &sh512, &fok512, &avg512);
+
+    printf("\n[R-B 0.3 EQUIV] N=%d nbq=%d qid=%d key=40B(default_rsskey)\n",
+           EQUIV_N, EQUIV_NBQ, EQUIV_QID);
+    printf("[R-B 0.3 EQUIV] reta=128: adjust_tuple_ok=%d/%d (%.1f%%), "
+           "1st-candidate toeplitz_equiv=%d/%d (%.1f%%), "
+           "FULL-LOOP final landing=%d/%d (%.1f%%), avg adjust calls/conn=%.2f (span=%d)\n",
+           adj128, EQUIV_N, 100.0 * adj128 / EQUIV_N,
+           sh128, EQUIV_N, 100.0 * sh128 / EQUIV_N,
+           fok128, EQUIV_N, 100.0 * fok128 / EQUIV_N, avg128, (128 + EQUIV_NBQ - 1) / EQUIV_NBQ);
+    printf("[R-B 0.3 EQUIV] reta=512: adjust_tuple_ok=%d/%d (%.1f%%), "
+           "1st-candidate toeplitz_equiv=%d/%d (%.1f%%), "
+           "FULL-LOOP final landing=%d/%d (%.1f%%), avg adjust calls/conn=%.2f (span=%d)\n",
+           adj512, EQUIV_N, 100.0 * adj512 / EQUIV_N,
+           sh512, EQUIV_N, 100.0 * sh512 / EQUIV_N,
+           fok512, EQUIV_N, 100.0 * fok512 / EQUIV_N, avg512, (512 + EQUIV_NBQ - 1) / EQUIV_NBQ);
+
+    /* Rates are DATA for the leader's go/no-go (07 §1.3, no hard threshold).
+     * Hard quality gate: the full reverse-calc loop must reliably land on the
+     * target queue (this is what ff_rss_adjust_sport guarantees via its forced
+     * ff_rss_check re-verify); zero false positives is asserted inline above. */
+    assert_true(adj128 > 0);
+    assert_true(adj512 > 0);
+    assert_int_equal(fok128, EQUIV_N);   /* full loop lands 100% (zero tolerance) */
+    assert_int_equal(fok512, EQUIV_N);
+}
+
 /* ------------------------------------------------------------------------ */
 /* TC-U-P3-DPDKIF-17 (Stage-6): ff_dpdk_register_if happy path: allocates  */
 /* and returns a non-NULL ff_dpdk_if_context (covers the malloc + memset   */
@@ -764,6 +1012,11 @@ main(void)
         cmocka_unit_test(test_ff_rss_tbl_get_portrange_hit),
         cmocka_unit_test(test_ff_rss_tbl_get_portrange_rotation),
         cmocka_unit_test(test_ff_rss_tbl_get_portrange_miss),
+        /* R-B (req 0.3): thash adjust_sport guards + degrade + equivalence */
+        cmocka_unit_test(test_ff_rss_adjust_sport_null),
+        cmocka_unit_test(test_ff_rss_adjust_sport_degraded),
+        cmocka_unit_test(test_ff_rss_adjust_sport_single_queue),
+        cmocka_unit_test(test_ff_rss_thash_equivalence_hitrate),
         cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
         /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),

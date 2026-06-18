@@ -780,6 +780,8 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 	int rss_ret, rss_match = 0, dorandom;
 	struct ifaddr *ifa = NULL;
 	struct ifnet *ifp = NULL;
+	uint16_t rss_sel;
+	int rss_fast;
 
 	lookupflags &= ~INPLOOKUP_LPORT_RSS_CHECK;
 #endif
@@ -879,6 +881,32 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 					return (EADDRNOTAVAIL);
 			}
 			ifp = ifa->ifa_ifp;
+
+			/*
+			 * 0.3 fast path: reverse-calc a local-queue source
+			 * port instead of scanning every port. LOOPBACK has no
+			 * RSS, so skip and let the scan loop handle it. On any
+			 * miss/occupied/unavailable, fall through to the R-A
+			 * soft scan below.
+			 */
+			if (!(ifp->if_softc == NULL &&
+			    (ifp->if_flags & IFF_LOOPBACK)) &&
+			    lsa->sa_family == AF_INET) {
+				for (rss_fast = 0; rss_fast < 8; rss_fast++) {
+					if (ff_rss_adjust_sport(ifp->if_softc,
+					    faddr.s_addr, laddr.s_addr, fport,
+					    &rss_sel) != 0)
+						break;
+					lport = htons(rss_sel);
+					if (in_pcblookup_local(pcbinfo, laddr,
+					    lport, RT_ALL_FIBS, lookupflags,
+					    cred) == NULL) {
+						*lastport = rss_sel;
+						*lportp = lport;
+						return (0);
+					}
+				}
+			}
 		}
 	}
 

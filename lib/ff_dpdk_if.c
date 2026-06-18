@@ -132,6 +132,17 @@ static dispatch_func_context_t packet_dispatcher_with_context;
 
 static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 
+/* 0.3: per-port rte_thash ctx for dynamic sport reverse-calc.
+ * Built once at init; -1 means disabled (fall back to soft scan). */
+static struct rte_thash_ctx *rss_thash_ctx[RTE_MAX_ETHPORTS];
+static struct rte_thash_subtuple_helper *rss_thash_sport_h[RTE_MAX_ETHPORTS];
+static int rss_thash_ready[RTE_MAX_ETHPORTS];
+/* IPv4 tuple: saddr(4)|daddr(4)|sport(2)|dport(2); sport at byte 8 = bit 64. */
+#define FF_RSS_THASH_V4_TUPLE_LEN   12
+#define FF_RSS_THASH_V4_SPORT_OFF   64
+#define FF_RSS_THASH_SPORT_HELPER_LEN   16
+#define FF_RSS_THASH_ADJUST_ATTEMPTS    16
+
 #define BOND_DRIVER_NAME    "net_bonding"
 
 static inline int send_single_packet(struct rte_mbuf *m, uint8_t port);
@@ -1433,6 +1444,7 @@ ff_dpdk_init(int argc, char **argv)
         } else {
             ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "ff_rss_tbl_init successed\n");
         }
+        ff_rss_thash_ctx_init();
     }
 
     init_clock();
@@ -2883,6 +2895,145 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     hash = toeplitz_hash(rsskey_len, rsskey, datalen, data);
 
     return ((hash & (reta_size - 1)) % nb_queues) == queueid;
+}
+
+static int
+ff_rss_reta_log2(uint16_t reta_size)
+{
+    int log2 = 0;
+
+    while ((reta_size >>= 1) != 0)
+        log2++;
+
+    return log2;
+}
+
+/*
+ * 0.3: build per-port thash ctx once at init so the dynamic path can
+ * reverse-calc a source port via rte_thash_adjust_tuple. Any failure marks
+ * the port unready and the dynamic path falls back to soft scan.
+ */
+int
+ff_rss_thash_ctx_init(void)
+{
+    uint16_t port_id;
+
+    if (rsskey == NULL || rsskey_len == 0)
+        return -1;
+
+    for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++) {
+        char name[64];
+        uint16_t reta_size = rss_reta_size[port_id];
+        uint32_t reta_log2;
+        struct rte_thash_ctx *ctx;
+
+        rss_thash_ready[port_id] = 0;
+
+        if (reta_size < 2)
+            continue;
+
+        reta_log2 = ff_rss_reta_log2(reta_size);
+
+        snprintf(name, sizeof(name), "ff_rss_thash_%u", port_id);
+        ctx = rte_thash_init_ctx(name, rsskey_len, reta_log2, rsskey, 0);
+        if (ctx == NULL) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                "rte_thash_init_ctx failed for port %u, dynamic rss path falls back to soft scan\n",
+                port_id);
+            continue;
+        }
+
+        if (rte_thash_add_helper(ctx, "sport",
+                FF_RSS_THASH_SPORT_HELPER_LEN,
+                FF_RSS_THASH_V4_SPORT_OFF) != 0) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                "rte_thash_add_helper failed for port %u\n", port_id);
+            rte_thash_free_ctx(ctx);
+            continue;
+        }
+
+        rss_thash_sport_h[port_id] = rte_thash_get_helper(ctx, "sport");
+        if (rss_thash_sport_h[port_id] == NULL) {
+            rte_thash_free_ctx(ctx);
+            continue;
+        }
+
+        rss_thash_ctx[port_id] = ctx;
+        rss_thash_ready[port_id] = 1;
+    }
+
+    return 0;
+}
+
+/*
+ * 0.3: reverse-calc a host-order source port whose RSS hash lands on the
+ * caller's local queue. tuple layout mirrors ff_rss_check's hash input
+ * (saddr|daddr|sport|dport, host byte order). The result is always re-verified
+ * by ff_rss_check (zero tolerance for wrong queue); on any failure returns <0
+ * and the caller must fall back to the soft per-port scan.
+ */
+int
+ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
+    uint16_t dport, uint16_t *out_sport)
+{
+    struct lcore_conf *qconf = &lcore_conf;
+    struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
+    uint16_t port_id, nb_queues, reta_size, queueid;
+    uint32_t desired;
+    uint8_t tuple[FF_RSS_THASH_V4_TUPLE_LEN];
+    uint16_t sport;
+    int tries;
+
+    if (softc == NULL || out_sport == NULL)
+        return -1;
+
+    port_id = ctx->port_id;
+    if (!rss_thash_ready[port_id] || rss_thash_ctx[port_id] == NULL)
+        return -1;
+
+    nb_queues = qconf->nb_queue_list[port_id];
+    if (nb_queues <= 1)
+        return -1;
+
+    reta_size = rss_reta_size[port_id];
+    queueid = qconf->tx_queue_id[port_id];
+
+    /*
+     * desired_value picked from D(q) = { v in [0, reta_size) | v % Q == q }
+     * so (hash & (reta_size-1)) % nb_queues == queueid holds. Rotate the
+     * starting candidate to spread reta entries.
+     */
+    desired = queueid + (arc4random() % ((reta_size + nb_queues - 1) / nb_queues)) * nb_queues;
+    if (desired >= reta_size)
+        desired = queueid;
+
+    sport = 0;
+    for (tries = 0; tries < (int)((reta_size + nb_queues - 1) / nb_queues); tries++) {
+        if (desired >= reta_size)
+            desired = queueid;
+
+        memset(tuple, 0, sizeof(tuple));
+        bcopy(&saddr, &tuple[0], sizeof(saddr));
+        bcopy(&daddr, &tuple[4], sizeof(daddr));
+        bcopy(&sport, &tuple[8], sizeof(sport));
+        bcopy(&dport, &tuple[10], sizeof(dport));
+
+        if (rte_thash_adjust_tuple(rss_thash_ctx[port_id],
+                rss_thash_sport_h[port_id], tuple, sizeof(tuple),
+                desired & (reta_size - 1), FF_RSS_THASH_ADJUST_ATTEMPTS,
+                NULL, NULL) == 0) {
+            bcopy(&tuple[8], &sport, sizeof(sport));
+            /* zero tolerance: confirm with the same soft hash. */
+            if (ff_rss_check(softc, saddr, daddr, sport, dport)) {
+                *out_sport = sport;
+                return 0;
+            }
+        }
+
+        desired += nb_queues;
+    }
+
+    return -1;
 }
 
 void
