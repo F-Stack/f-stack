@@ -2892,6 +2892,30 @@ ff_rss_tbl_get_portrange(uint32_t saddr, uint32_t daddr, uint16_t sport,
 }
 
 int
+ff_rss_self_queue_info(uint16_t *proc_id, uint16_t *queueid,
+    uint16_t *nb_queues, uint16_t *reta_size)
+{
+    struct lcore_conf *qconf = &lcore_conf;
+    uint16_t port_id;
+
+    if (qconf->nb_tx_port == 0)
+        return -1;
+
+    port_id = qconf->tx_port_id[0];
+
+    if (proc_id)
+        *proc_id = (uint16_t)qconf->proc_id;
+    if (queueid)
+        *queueid = qconf->tx_queue_id[port_id];
+    if (nb_queues)
+        *nb_queues = qconf->nb_queue_list[port_id];
+    if (reta_size)
+        *reta_size = rss_reta_size[port_id];
+
+    return 0;
+}
+
+int
 ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t sport, uint16_t dport)
 {

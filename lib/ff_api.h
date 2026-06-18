@@ -121,6 +121,10 @@ int ff_getpeername(int s, struct linux_sockaddr *name,
 int ff_getsockname(int s, struct linux_sockaddr *name,
     socklen_t *namelen);
 
+/* Read-only: this process's RSS queue info (for self-check tools). */
+int ff_rss_self_queue_info(uint16_t *proc_id, uint16_t *queueid,
+    uint16_t *nb_queues, uint16_t *reta_size);
+
 ssize_t ff_read(int d, void *buf, size_t nbytes);
 ssize_t ff_readv(int fd, const struct iovec *iov, int iovcnt);
 

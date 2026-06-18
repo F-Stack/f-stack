@@ -28,6 +28,7 @@ ff_bind
 ff_connect
 ff_getpeername
 ff_getsockname
+ff_rss_self_queue_info
 ff_shutdown
 ff_sysctl 
 ff_kqueue
