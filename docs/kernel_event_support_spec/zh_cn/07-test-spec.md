@@ -30,7 +30,7 @@
 | MT-4 | 双侧 CFLAGS 一致 | `HOST_CFLAGS`+`CFLAGS` 均含 `-DFF_KERNEL_COEXIST` | 两侧编译单元（host 侧 `ff_host_interface/ff_config/ff_epoll` + `ff_syscall_wrapper`）均编译进共存 |
 | MT-5 | symlist 不变 | 对比宏开/关 `ff_api.symlist` | 无需改动（访问器/桥库内调用、inline 无导出） |
 
-> **构建注记**：改 `ff_config.h` 等结构头须 clean 全量重编（lib/Makefile 不跟踪头依赖，ABI 偏斜，`10 §7`）。v6 加 `ff_native_fd_map` 于 `ff_host_interface.c`（**不改结构头**），但 MT-1/MT-3 仍各自 clean 重编以确保符号比对干净。**R9** 的 `ff_kqueue/ff_kevent` 共存改动在 `ff_syscall_wrapper.c`（复用 `ff_epoll_*` 已有 host 符号，不新增 host 桥），MT-1 宏关须确认 `ff_kqueue/ff_kevent` 无 `ff_host_epoll_*` 引用、size 与基线对齐。
+> **构建注记**：改 `ff_config.h` 等结构头须 clean 全量重编（lib/Makefile 不跟踪头依赖，ABI 偏斜，`10 §7`）。v6 加 `ff_native_fd_map` 于 `ff_host_interface.c`（**不改结构头**），但 MT-1/MT-3 仍各自 clean 重编以确保符号比对干净。**R9** 的 `ff_kqueue/ff_kevent` 共存改动在 `ff_syscall_wrapper.c`（复用 `ff_epoll_*` 已有 host 符号，不新增 host 桥），MT-1 宏关须确认 `ff_kqueue/ff_kevent` 无 `ff_host_epoll_*` 引用、size 与基线对齐。**R10** 新增 5 个 host 桥 `ff_host_readv/writev/ioctl/dup/dup2`（`ff_host_interface.c`，声明 `.h:178-184`），桥总数由 18 增至 23；MT-1 宏关须确认 `ff_readv/writev/ioctl/dup/dup2/select/poll` 无对应 `ff_host_*` 引用、无新增 host 桥符号、size 与基线对齐（impl 已验证宏关逐字节零回归）。
 
 ---
 
@@ -61,8 +61,13 @@
 | **UT-21** | **kqueue fd close 清配对（R9）** | `ff_close(kq)` → `ff_epoll_close_pair`/清 `ff_epoll_pairs`+关 host_ep（无内核 fd 泄漏） | FR-7 | **R9 待实测** |
 | **UT-22** | **IPv6 host socket V6ONLY 共存（R9）** | `ff_socket(AF_INET6)` 双建 → host IPv6 socket `IPV6_V6ONLY==1`（getsockopt 验证或 mock setsockopt 计数）；host IPv6 `[::]:80` 与 host IPv4 `0.0.0.0:80` 同端口 bind 均成功（真实 loopback） | FR-3 | **R9 待实测** |
 | **UT-23** | **kqueue 共存宏关零回归（R9）** | `FF_KERNEL_COEXIST` 关 → `ff_kqueue/ff_kevent` 仅原 F-Stack 路径，无 `ff_host_epoll_*` 调用 | NFR-1 | **R9 待实测** |
+| **UT-24** | **`ff_host_readv`/`ff_host_writev`（R10）** | 真实 socketpair/pipe 多段 iov 读写，校验返回字节数与内容正确 | FR-readv/writev | **R10 待实测** |
+| **UT-25** | **`ff_readv`/`ff_writev` 内核 fd 路由（R10）** | encode 内核 fd 经 `ff_readv/writev` 命中 `ff_host_readv/writev(real)`（mock 计数或真实 host fd 验证）；非内核 fd 仍走 `kern_readv/writev` | D12 | **R10 待实测** |
+| **UT-26** | **`ff_host_ioctl` + `ff_ioctl` 内核 fd 路由（R10）** | 真实 socket `FIONBIO`/`FIONREAD` 经 `ff_host_ioctl` 生效；encode 内核 fd 经 `ff_ioctl` 用**原始 Linux request** 命中 `ff_host_ioctl`（不经 `linux2freebsd_ioctl`，mock 计数） | D13 | **R10 待实测** |
+| **UT-27** | **`ff_dup`/`ff_dup2`（R10）** | `ff_host_dup` 后两 fd 同源可读写；`ff_dup` 内核 fd 返回 encode；`ff_dup2` 两端内核 fd→encode、**混栈拒绝 errno=EINVAL** | D14 | **R10 待实测** |
+| **UT-28** | **R10 共存宏关零回归** | `FF_KERNEL_COEXIST` 关 → `ff_readv/writev/ioctl/dup/dup2/select/poll` 仅原 F-Stack 路径，无 `ff_host_readv/writev/ioctl/dup/dup2` 调用、无新符号 | NFR-1 | **R10 待实测（impl 已验宏关零回归）** |
 
-> **编译宏条件**：UT-4/5/8/9/10/12/14/17/18 与 **R9 UT-19~23** 共存相关用例仅在 `FF_KERNEL_COEXIST` 开启时有效；宏关编译时条件编译排除或 skip。`tests/unit/` Makefile/用例须加宏门控。既有 `test_ff_epoll` 曾因链接缺 `ff_host_epoll_*` 加 no-op 桩——v6/R9 须复核此桩在双态一致，并为 `ff_native_map_*`/kqueue 共存路径提供 mock/桩。
+> **编译宏条件**：UT-4/5/8/9/10/12/14/17/18、**R9 UT-19~23** 与 **R10 UT-24~28** 共存相关用例仅在 `FF_KERNEL_COEXIST` 开启时有效；宏关编译时条件编译排除或 skip。`tests/unit/` Makefile/用例须加宏门控。既有 `test_ff_epoll` 曾因链接缺 `ff_host_epoll_*` 加 no-op 桩——v6/R9/R10 须复核此桩在双态一致，并为 `ff_native_map_*`/kqueue 共存/`ff_host_readv/writev/ioctl/dup` 路径提供 mock/桩。`ff_select` 因 `FD_SETSIZE` 硬限制不实现共存，无对应 UT（仅文档限制）；`ff_poll` 用例视实现与否增减。
 
 ---
 
@@ -82,6 +87,8 @@
 | IT-10 | 长稳/泄漏 | 大量短连接反复开关（含两栈 accept） | fd 数稳定、`ff_native_fd_map`/`ff_epoll_pairs` 无泄漏 | FR-7 |
 | **IT-11** | **kqueue 模型内核侧可达（R9，P2 验收）** | plain helloworld（`ff_kqueue`+`ff_kevent`，`example/main.c` 模型），coexist=1，本机 `curl http://127.0.0.1:80` | HTTP 200 size=438（修复前实测 000）；同进程 F-Stack 侧 `ssh f-stack-client→9.134.214.176:80=200` 不回归 | FR-5/FR-6 |
 | **IT-12** | **INET6-on 双建启动（R9，P1 验收）** | `-DINET6` 构建 helloworld，coexist=1 启动 | 进程成功启动（v4+v6 listen 均建立，`ff_bind` 无 errno=98）；`ss`/`ff_netstat` 见 v4+v6 监听；抓包确认内核侧 200 | FR-3 |
+| **IT-13** | **内核 fd readv/writev/ioctl 真机（R10）** | INET6-off helloworld，coexist=1，对受管内核 fd（127.0.0.1 连接）做 readv/writev/ioctl | readv/writev 字节正确、ioctl（如 `FIONBIO`）生效；内核侧 `curl 127.0.0.1:80=200` | D12/D13 |
+| **IT-14** | **R10 零回归** | coexist=1 helloworld 同进程 F-Stack 侧 `ssh f-stack-client→9.134.214.176:80` | HTTP 200 不回归（readv/writev/ioctl/dup 改动不影响 F-Stack 业务面） | NFR-1/NFR-3 |
 
 > 进程清理 `/data/workspace/kill_process.sh`，临时文件 `/data/workspace/rm_tmp_file.sh`，权限 `/data/workspace/chmod_modify.sh`。
 
@@ -120,8 +127,9 @@
   4. PERF-1/2/4 无回归。
   5. config 关/`SOCK_FSTACK`/宏关时与纯 F-Stack 一致（NFR-1/NFR-3）。
   6. **connect 契约确认**：`05 §6` 草案经用户确认后 UT-14/IT-9 方可定稿判 PASS。
-  7. R8 新增 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核 fd 路由须单测覆盖；剩余 `readv/writev/ioctl` 仍为 D8 已知限制（双栈 fd 仅 F-Stack 驱动），须文档/用例明示。
+  7. R8 新增 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核 fd 路由须单测覆盖；`readv/writev/ioctl` 由 **R10** 补齐内核 fd 路由（D12-D13，见第 9 项）。
   8. **R9**：UT-19~23（kqueue changelist 注册/eventlist 合成/close 清配对/IPv6 V6ONLY/宏关零回归）全通过；**IT-11（kqueue 模型内核侧 `curl 127.0.0.1:80=200`）+ IT-12（INET6-on 双建成功启动、抓包内核侧 200）真机实测成功**，F-Stack 侧 9.134.214.176:80=200 不回归。`ff_kevent` 内核 fd 仅 `EVFILT_READ/WRITE`（非 READ/WRITE filter 不经 host epoll）为 R9 已知限制，须文档/用例明示。
+  9. **R10**：UT-24~28（`ff_host_readv/writev/ioctl/dup/dup2` host 桥 + `ff_readv/writev/ioctl/dup/dup2` 内核 fd 路由 + 宏关零回归）全通过；**IT-13（内核 fd readv/writev/ioctl 真机正确、内核侧 200）+ IT-14（F-Stack 侧 200 不回归）实测成功**。已确定（impl 实测）：`ff_select` 因 encode 内核 fd≫`FD_SETSIZE`(1024) 为**硬限制**、`ff_poll` 因合并复杂度**保守不实现**，两者均降级文档限制；`ff_dup2` 混栈拒绝 **errno=EINVAL**；`ioctl` 双栈 fd 同驱动**暂未实现**（仅 encode 内核 fd 路由）——均须文档/用例明示。
 - 任一项失败 → bounce 打回上一里程碑（同步骤≤3 次，超限转人工）。
 
 ---

@@ -118,7 +118,7 @@
 
 ---
 
-## 6. 交叉验证差异清单（沿用 v5 D1-D8，以代码为准）
+## 6. 交叉验证差异清单（v5 D1-D8 + v6 D9 + R9 D10-D11 + R10 D12-D15，以代码为准）
 
 | 编号 | 实际结论 |
 |---|---|
@@ -133,6 +133,10 @@
 | **D9（v6）** | `ff_native_fd_map`/默认双建/双驱动**尚未实现**（§5.2 grep=0）——文档区分「v5 已实测」与「v6 待实现」，不当既成 |
 | **D10（R9）** | **R7 双栈事件仅覆盖 `ff_epoll_*`**：`ff_kqueue`/`ff_kevent`/`ff_kevent_do_each` **无 FF_KERNEL_COEXIST 路由/双注册**（grep 实测仅 `ff_epoll.c` 命中宏，`ff_syscall_wrapper.c` 的 `ff_kqueue/ff_kevent` 无共存分支）。直接用 `ff_kqueue`+`ff_kevent`（如 `example/main.c`）的应用**感知不到内核侧连接**——实测内核侧 `curl 127.0.0.1:80=000`（握手完成、GET 被内核 TCP `ack 73`，但应用永不被唤醒去 accept），F-Stack 侧 `9.134.214.176:80=200`。R9 待补 |
 | **D11（R9）** | **IPv6 双建端口冲突**：`-DINET6` 下默认 `ff_socket(AF_INET6)` 双建，host IPv6 socket `ff_bind([::]:80)` 因本机 `net.ipv6.bindv6only=0`（实测）连带占用 IPv4，与同进程 host IPv4 `0.0.0.0:80` 冲突——**实测 `ff_bind failed, sockfd6:1026, errno:98 EADDRINUSE`**，进程退出无法启动。host IPv6 socket 未设 `IPV6_V6ONLY=1`。R9 待补 |
+| **D12（R10）** | **`ff_readv`/`ff_writev` 无内核 fd 路由**：`ff_syscall_wrapper.c` 的 `ff_readv`(L1179)/`ff_writev`(L1236) 仅走 `kern_readv`/`kern_writev`，**无 `FF_KERNEL_COEXIST` 内核 fd 分支**（对照 `ff_read`/`ff_write` 已有路由）——对 encode 内核 fd 调用会误走 F-Stack（D8 子项的具体化）。R10 仿 `ff_read`/`ff_write` 补齐（新增 host 桥 `ff_host_readv/writev`）。**R10 待实现**，行号以实现为准 |
+| **D13（R10）** | **`ff_ioctl` 无内核 fd 路由**：`ff_ioctl`(L1067) 经 `linux2freebsd_ioctl`→`kern_ioctl`，**无内核 fd 分支**。ioctl request 经 `_IO/_IOR/_IOW(type,nr,size)` 编码，Linux 与 FreeBSD 数值**不同源**（外网交叉验证），故内核 host fd 须用**原始 Linux request**直传 `ff_host_ioctl`（不经 `linux2freebsd_ioctl` 翻译）。**R10 已实现**：内核 fd 分支（在 va_arg 取 argp 后、`linux2freebsd_ioctl` 之前 return `ff_host_ioctl(real, request, argp)`）；**双栈 fd 同驱动暂未实现**（仅 encode 内核 fd 路由，保守最小必要，双栈 fd 仍走 `linux2freebsd_ioctl`→`kern_ioctl`，后续如需可仿 `ff_fcntl` 扩展） |
+| **D14（R10）** | **`ff_dup`/`ff_dup2` 无内核 fd 路由**：`ff_dup`(L2130)/`ff_dup2`(L2156) 仅走 `sys_dup`/`sys_dup2`。**R10 已实现**：`ff_dup` 内核 fd→`ff_host_dup(real)` 返回新 encode fd（n<0 返回 -1）；`ff_dup2` 两端均内核 fd→`ff_host_dup2(real,real)` 返回 encode，**混栈（一端内核一端 F-Stack）明确拒绝 errno=EINVAL**（两 fd 各自有效但语义不成立），两端均 F-Stack 走原 `sys_dup2` 不变 |
+| **D15（R10）** | **`ff_select`/`ff_poll` 无内核 fd 路由**：`ff_select`(L1879)/`ff_poll`(L1903) 仅走 `kern_select`/`kern_poll`。**R10：两者均不实现共存，降级为文档限制（仅加注释，逻辑不变）**。`ff_select`：encode 内核 fd（≥`0x40000000`）**远超 `FD_SETSIZE`(1024)**，无法装入 `fd_set`——**硬限制**（外网交叉验证）。`ff_poll`：`pollfd.fd` 虽可容 encode fd，但 `kern_poll` 直接操作 FreeBSD pollfd，混合纯内核 fd 子集需拆分数组/索引映射/合并 revents/超时合并，复杂度与回归风险高，**保守降级文档限制**。均建议内核 fd 用 `ff_epoll_*`/`ff_kqueue`（R9 已支持 host epoll 桥）多路复用 |
 
 ---
 
@@ -151,6 +155,38 @@
 - 结论：host 侧 IPv6 socket 须设 `IPV6_V6ONLY=1` 只处理 IPv6、与 host IPv4 同端口共存（外网交叉验证：bindv6only=0 时 `::` 通配连带 IPv4，标准解法即 `IPV6_V6ONLY=1`，多篇技术资料一致）。
 
 > **R9 缺口结论**：R7 共存对 `ff_epoll_*` 完整，但 `ff_kqueue/ff_kevent`（P2）与 host IPv6 socket V6ONLY（P1）两项**待 R9 实现**——不当既成，区分「R7 已实测」与「R9 待实现」。
+
+---
+
+## 7bis. R10 现状缺口（readv/writev/ioctl 未路由 + dup/dup2/select/poll 评估，实测）
+
+> R8 补齐 `sendmsg/recvmsg/getpeername/getsockname/shutdown`，但 `readv/writev/ioctl` 仍列「D8 已知限制」未加路由（`02 §6 D8`/`05 §7`）。R10 收口 `ff_syscall_wrapper.c` 全部 42 个 `ff_*` 入口中剩余的 fd 类残余入口（实测分类见 §7bis.1），把 readv/writev/ioctl 由「已知限制」改为「已支持（R10）」，并对额外发现的 dup/dup2/select/poll 给出实现或文档限制。**全部以代码为准、`#ifdef FF_KERNEL_COEXIST` 门控、宏关零回归**；行号占位以实现期实测为准。
+
+### 7bis.1 残余入口实测分类（`ff_syscall_wrapper.c`）
+
+| 入口 | 改动后行号 | 现状（R10 前） | R10 处置（已实现） |
+|---|---|---|---|
+| `ff_readv` | L1189 | 仅 `kern_readv`，无内核 fd 路由 | 内核 fd→`ff_host_readv(real, iov, iovcnt)`（仿 `ff_read`） |
+| `ff_writev` | L1251 | 仅 `kern_writev`，无内核 fd 路由 | 内核 fd→`ff_host_writev(real, iov, iovcnt)`（仿 `ff_write`） |
+| `ff_ioctl` | L1067 | `linux2freebsd_ioctl`→`kern_ioctl`，无内核 fd 路由 | 内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`（va_arg 取 argp 后、翻译之前）；**双栈 fd 同驱动暂未实现**（仅 encode 内核 fd 路由） |
+| `ff_dup` | L2130 | `sys_dup`，无内核 fd 路由 | 内核 fd→`ff_host_dup(real)`+encode（n<0 返回 -1） |
+| `ff_dup2` | L2156 | `sys_dup2`，无内核 fd 路由 | 两端内核 fd→`ff_host_dup2`+encode；**混栈拒绝 errno=EINVAL**；两端 F-Stack 走原 `sys_dup2` |
+| `ff_select` | L1879 | `kern_select`，无内核 fd 路由 | **不实现（硬限制）**：encode 内核 fd(≥0x40000000)≫`FD_SETSIZE`(1024) 无法装入 `fd_set`（仅加注释） |
+| `ff_poll` | L1903 | `kern_poll`，无内核 fd 路由 | **不实现（文档限制）**：拆分/索引映射/合并复杂度高，保守降级（仅加注释） |
+
+> 其余非 fd / F-Stack 专属语义入口（`ff_zc_send/zc_recv`/`ff_sysctl`/`ff_gettimeofday`/`ff_route_ctl`）不纳入（N/A）。
+
+### 7bis.2 新增 host 桥（R10，仿 `ff_host_read/write`，声明 `ff_host_interface.h:178-184`）
+
+- `ssize_t ff_host_readv(int fd, const void *iov, int iovcnt)` → libc `readv`（`iov` cast `const struct iovec*`）
+- `ssize_t ff_host_writev(int fd, const void *iov, int iovcnt)` → libc `writev`
+- `int ff_host_ioctl(int fd, unsigned long request, void *argp)` → libc `ioctl`（host 命名空间，原始 Linux request）
+- `int ff_host_dup(int fd)` → libc `dup`
+- `int ff_host_dup2(int oldfd, int newfd)` → libc `dup2`
+
+> 实现在 `ff_host_interface.c`（coexist include 块新增 `sys/uio.h`、`sys/ioctl.h`）；`struct iovec` 在 FreeBSD/host 同 ABI（`void* + size_t`），沿用 `sendmsg/recvmsg` 的 `void*` 透传经验规避命名空间冲突。
+
+> **R10 缺口结论**：readv/writev/ioctl/dup/dup2 路由已落地（impl 编译通过、宏关零回归已验证）；select/poll 经评估保守降级为文档限制。区分「R10 前未路由（实测 grep）」与「R10 已实现」，未当既成。
 
 ---
 

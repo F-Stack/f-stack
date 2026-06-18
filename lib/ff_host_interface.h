@@ -176,6 +176,11 @@ ssize_t ff_host_recvmsg(int fd, void *msg, int flags);
 int ff_host_shutdown(int fd, int how);
 int ff_host_getpeername(int fd, void *addr, unsigned int *addrlen);
 int ff_host_getsockname(int fd, void *addr, unsigned int *addrlen);
+ssize_t ff_host_readv(int fd, const void *iov, int iovcnt);
+ssize_t ff_host_writev(int fd, const void *iov, int iovcnt);
+int ff_host_ioctl(int fd, unsigned long request, void *argp);
+int ff_host_dup(int fd);
+int ff_host_dup2(int oldfd, int newfd);
 #endif /* FF_KERNEL_COEXIST */
 
 #endif

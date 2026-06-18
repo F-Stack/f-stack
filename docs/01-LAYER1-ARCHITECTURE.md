@@ -55,8 +55,8 @@ NIC Hardware
 │   ├── ff_dpdk_if.c   (2907 lines) # DPDK NIC interface layer - most critical
 │   ├── ff_glue.c      (1467 lines) # FreeBSD glue layer
 │   ├── ff_config.c    (1694 lines) # Configuration parsing
-│   ├── ff_syscall_wrapper.c (2212 lines) # Linux→FreeBSD system call adaptation (+ R9 kqueue coexist + IPV6_V6ONLY)
-│   ├── ff_host_interface.c (583 lines) # Host interface (pthread/mmap/time) + FF_KERNEL_COEXIST bridges (27 ff_host_*)
+│   ├── ff_syscall_wrapper.c (2265 lines) # Linux→FreeBSD system call adaptation (+ R9 kqueue coexist + IPV6_V6ONLY + R10 readv/writev/ioctl/dup/dup2 kernel-fd routing)
+│   ├── ff_host_interface.c (617 lines) # Host interface (pthread/mmap/time) + FF_KERNEL_COEXIST bridges (32 ff_host_*)
 │   ├── ff_init.c         (70 lines)  # Initialization coordination
 │   ├── ff_epoll.c       (289 lines) # epoll → kqueue conversion (unified F-Stack + kernel)
 │   ├── ff_dpdk_kni.c            # Virtual NIC support (via virtio_user, no longer depends on rte_kni.ko)
@@ -119,10 +119,10 @@ NIC Hardware
 | **ff_dpdk_if.c** | 2907 | NIC driver/DPDK operations/core TX/RX logic | DPDK, ff_glue |
 | **ff_glue.c** | 1467 | FreeBSD kernel emulation/memory/locks/interrupts (8-category 14.0+ ABI fixes at M4) | FreeBSD headers, DPDK |
 | **ff_config.c** | 1694 | INI configuration file parsing | ff_ini_parser |
-| **ff_syscall_wrapper.c** | 2212 | Linux system call → FreeBSD adaptation (sockaddr update at M4; FF_KERNEL_COEXIST routing; R9 kqueue coexist + IPV6_V6ONLY) | FreeBSD sys |
+| **ff_syscall_wrapper.c** | 2265 | Linux system call → FreeBSD adaptation (sockaddr update at M4; FF_KERNEL_COEXIST routing; R9 kqueue coexist + IPV6_V6ONLY; R10 readv/writev/ioctl/dup/dup2 kernel-fd routing) | FreeBSD sys |
 | **ff_init.c** | 70 | Initialization flow coordination | All above modules |
 | **ff_epoll.c** | 289 | Linux epoll → FreeBSD kqueue conversion (unified F-Stack + kernel; ff_epoll_host_ep shared with kqueue path) | FreeBSD kqueue |
-| **ff_host_interface.c** | 583 | Host OS interface (mmap/pthread/rand) + FF_KERNEL_COEXIST host-stack bridges (27 ff_host_*) | System libraries |
+| **ff_host_interface.c** | 617 | Host OS interface (mmap/pthread/rand) + FF_KERNEL_COEXIST host-stack bridges (32 ff_host_*) | System libraries |
 | **ff_dpdk_kni.c** | ~441 | Virtual NIC support (via virtio_user, no longer depends on rte_kni.ko) | DPDK virtio_user |
 | **ff_route.c** | 1604 | Route socket / RIB hooks (rtsock partial port; 5-category 14.0+ ABI fixes at M4) | FreeBSD net/route |
 | **ff_veth.c** | 1132 | Virtual ethernet device (28 if_t accessor rewrites at M4) | FreeBSD net/if |
@@ -312,7 +312,8 @@ An optional mode (compile-time macro `FF_KERNEL_COEXIST` + runtime `config.ini [
 - A kernel-stack fd is returned as `host_fd + 0x40000000` (`FF_KERNEL_FD_BASE`), which never collides with FreeBSD fds (`< 65536`); entries route such fds to thin `ff_host_*` host-libc bridges.
 - The F-Stack ↔ host fd pairing is held in `ff_native_fd_map`; `ff_epoll_*` lazily pairs a host `epoll` per kqueue for unified event delivery. A dual-built `AF_INET6` socket gets `IPV6_V6ONLY=1` on its host counterpart (`ff_host_set_v6only`, R9) so v4+v6 coexist on the same port (fixes the prior `-DINET6` `errno=98` startup failure).
 - **R9** extends unified events to the native `ff_kqueue`/`ff_kevent` interface (shared `ff_epoll_host_ep`): `ff_kevent` registers a kernel/dual-stack fd's `EVFILT_READ/WRITE` into the kqueue-paired host epoll and synthesizes `struct kevent` (`ident`=app-side fd) from a non-blocking host-epoll poll before merging F-Stack events — a pure-kqueue app (`example/main.c`) now reaches the kernel-side listener (`curl 127.0.0.1:80`=200, was 000).
-- When the macro is off the library is byte-for-byte identical to the pure-F-Stack build. Known limitations: `ff_readv`/`ff_writev`/`ff_ioctl` are not yet kernel-routed; kernel fds via kqueue support `EVFILT_READ/WRITE` only. See `docs/kernel_event_support_spec/`.
+- **R10** completes residual-entry kernel-fd routing: `ff_readv`/`ff_writev` kernel fd via `ff_host_readv/writev` (mimic read/write); `ff_ioctl` kernel fd uses the **raw Linux request** straight to `ff_host_ioctl` (dual-stack fd same-driver NOT implemented, only the encode kernel fd routed); `ff_dup`→`ff_host_dup`+encode, `ff_dup2` both-kernel→`ff_host_dup2`+encode / cross-stack rejected `errno=EINVAL`.
+- When the macro is off the library is byte-for-byte identical to the pure-F-Stack build. Known limitations: kernel fds via kqueue support `EVFILT_READ/WRITE` only; `ff_select` (encode kernel fd ≫ `FD_SETSIZE` hard limit) and `ff_poll` (conservatively not implemented) do not support kernel-fd coexistence — use `ff_epoll_*`/`ff_kqueue` for kernel-fd multiplexing. See `docs/kernel_event_support_spec/`.
 
 ## 7. Technology Selection Analysis
 

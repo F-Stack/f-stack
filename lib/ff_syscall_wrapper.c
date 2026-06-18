@@ -1069,8 +1069,18 @@ ff_ioctl(int fd, unsigned long request, ...)
     int rc;
     va_list ap;
     caddr_t argp;
+    long req;
 
-    long req = linux2freebsd_ioctl(request);
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd)) {
+        va_start(ap, request);
+        argp = va_arg(ap, caddr_t);
+        va_end(ap);
+        return ff_host_ioctl(ff_kernel_fd_real(fd), request, argp);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
+    req = linux2freebsd_ioctl(request);
     if (req < 0) {
         rc = EINVAL;
         goto kern_fail;
@@ -1181,6 +1191,11 @@ ff_readv(int fd, const struct iovec *iov, int iovcnt)
     struct uio auio;
     int rc, len, i;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd))
+        return ff_host_readv(ff_kernel_fd_real(fd), iov, iovcnt);
+#endif /* FF_KERNEL_COEXIST */
+
     len = 0;
     for (i = 0; i < iovcnt; i++)
         len += iov[i].iov_len;
@@ -1237,6 +1252,11 @@ ff_writev(int fd, const struct iovec *iov, int iovcnt)
 {
     struct uio auio;
     int i, rc, len;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd))
+        return ff_host_writev(ff_kernel_fd_real(fd), iov, iovcnt);
+#endif /* FF_KERNEL_COEXIST */
 
     len = 0;
     for (i = 0; i < iovcnt; i++)
@@ -1862,6 +1882,11 @@ ff_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 {
     int rc;
 
+    /*
+     * FF_KERNEL_COEXIST limitation: encoded kernel fds (>= FF_KERNEL_FD_BASE,
+     * 0x40000000) far exceed FD_SETSIZE and cannot fit in an fd_set, so select
+     * cannot multiplex coexist kernel fds. Use epoll/kqueue for those instead.
+     */
     rc = kern_select(curthread, nfds, readfds, writefds, exceptfds, timeout, 64);
     if (rc)
         goto kern_fail;
@@ -1879,6 +1904,12 @@ ff_poll(struct pollfd fds[], nfds_t nfds, int timeout)
 {
     int rc;
     struct timespec ts;
+    /*
+     * FF_KERNEL_COEXIST limitation: kern_poll only polls F-Stack fds. Encoded
+     * kernel fds are not routed here (mixing host-poll subsets with kern_poll
+     * and merging revents is high-risk); use epoll/kqueue for coexist kernel
+     * fds instead.
+     */
     ts.tv_sec = 0;
     ts.tv_nsec = 0;
     if ((rc = kern_poll(curthread, fds, nfds, &ts, NULL)))
@@ -2099,6 +2130,14 @@ int
 ff_dup(int oldfd)
 {
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(oldfd)) {
+        int n = ff_host_dup(ff_kernel_fd_real(oldfd));
+        return n < 0 ? -1 : ff_kernel_fd_encode(n);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     struct dup_args da = {
         .fd = oldfd,
     };
@@ -2117,6 +2156,20 @@ int
 ff_dup2(int oldfd, int newfd)
 {
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    /* Cross-stack dup2 (one kernel fd, one F-Stack fd) has no coherent
+     * semantics: the two fd spaces are disjoint and managed separately. */
+    if (ff_is_kernel_fd(oldfd) != ff_is_kernel_fd(newfd)) {
+        ff_os_errno(EINVAL);
+        return (-1);
+    }
+    if (ff_is_kernel_fd(oldfd) && ff_is_kernel_fd(newfd)) {
+        int n = ff_host_dup2(ff_kernel_fd_real(oldfd), ff_kernel_fd_real(newfd));
+        return n < 0 ? -1 : ff_kernel_fd_encode(n);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     struct dup2_args da = {
         .from = oldfd,
         .to = newfd

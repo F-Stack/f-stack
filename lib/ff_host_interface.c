@@ -44,6 +44,8 @@
 #ifdef FF_KERNEL_COEXIST
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <sys/uio.h>
+#include <sys/ioctl.h>
 #include <netinet/in.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -483,6 +485,38 @@ int
 ff_host_getsockname(int fd, void *addr, socklen_t *addrlen)
 {
     return getsockname(fd, (struct sockaddr *)addr, addrlen);
+}
+
+/* iov is a host 'struct iovec *' passed as void* (same ABI as FreeBSD). */
+ssize_t
+ff_host_readv(int fd, const void *iov, int iovcnt)
+{
+    return readv(fd, (const struct iovec *)iov, iovcnt);
+}
+
+ssize_t
+ff_host_writev(int fd, const void *iov, int iovcnt)
+{
+    return writev(fd, (const struct iovec *)iov, iovcnt);
+}
+
+/* request is the raw Linux ioctl request (host namespace, not translated). */
+int
+ff_host_ioctl(int fd, unsigned long request, void *argp)
+{
+    return ioctl(fd, request, argp);
+}
+
+int
+ff_host_dup(int fd)
+{
+    return dup(fd);
+}
+
+int
+ff_host_dup2(int oldfd, int newfd)
+{
+    return dup2(oldfd, newfd);
 }
 #endif /* FF_KERNEL_COEXIST */
 

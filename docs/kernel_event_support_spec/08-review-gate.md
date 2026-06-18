@@ -14,8 +14,14 @@
 > **R9 sync (kqueue coexistence + IPv6 V6ONLY; spec gate PASS, implementation pending impl; see `zh_cn/08-review-gate.md §4bis`)**:
 > - **Gap (measured, R9-P1/P2)**: `ff_kqueue/ff_kevent/ff_kevent_do_each` have NO coexistence routing (only `ff_epoll.c` hits the macro) — kqueue-model kernel-side `curl 127.0.0.1:80=000` (handshake done, GET TCP-ACKed `ack 73`, app never woken), F-Stack side 200 (D10). `-DINET6` dual-build `ff_bind errno=98 EADDRINUSE` (host IPv6 lacks `IPV6_V6ONLY=1`, bindv6only=0) → start failure (D11).
 > - **Solution (R9-P3/P4)**: (P2) `ff_kqueue/ff_kevent` symmetrically mimic `ff_epoll` (reuse `ff_epoll_pairs`/`ff_epoll_host_ep`, changelist→`ff_host_epoll_ctl`, eventlist synthesize `struct kevent`, close clears pairing); (P1) host IPv6 `setsockopt(IPV6_V6ONLY,1)`, placement measured.
-> - **Contracts/limits (R9-P5/P6)**: app-fd restore (`epoll_event.data`↔`kevent.ident`), filter map (READ↔IN/WRITE↔OUT/EOF↔HUP|ERR); `ff_kevent` kernel fd `EVFILT_READ/WRITE`-only; `readv/writev/ioctl` keep D8 limit.
+> - **Contracts/limits (R9-P5/P6)**: app-fd restore (`epoll_event.data`↔`kevent.ident`), filter map (READ↔IN/WRITE↔OUT/EOF↔HUP|ERR); `ff_kevent` kernel fd `EVFILT_READ/WRITE`-only; `readv/writev/ioctl` keep D8 limit in R9 (collected by R10).
 > - **Gating/status (R9-P7/P8/P9)**: all `#ifdef FF_KERNEL_COEXIST`, macro-off zero regression; implementation status faithfully marked **to-be-implemented**; tests UT-19~23 + IT-11 (kernel 200) / IT-12 (INET6-on start). Implementation gate (real-machine kernel 200 / INET6-on start / macro-off nm zero regression) to be filled by gatekeeper after impl lands.
+
+> **R10 sync (residual-entry coexistence completion — readv/writev/ioctl + dup/dup2 + select/poll; spec gate PASS, impl landed/compiles, real-machine pending; see `zh_cn/08-review-gate.md §4ter`)**:
+> - **Gap (measured, R10-P1/P2)**: `ff_readv:1189`/`ff_writev:1251`/`ff_ioctl:1067` had NO `FF_KERNEL_COEXIST` kernel-fd routing (read/write do; were D8 limit, D12-D13); `ff_dup:2130`/`ff_dup2:2156`/`ff_select:1879`/`ff_poll:1903` also lacked it (D14-D15).
+> - **Solution (R10-P3/P4/P5)**: readv/writev → `ff_host_readv/writev(real,...)` (mimic read/write, single-stack); ioctl → `ff_host_ioctl(real, raw Linux request)` (not via `linux2freebsd_ioctl`; **dual-stack fd same-driver NOT implemented**, only encode kernel fd routed); `ff_dup`→`ff_host_dup`+encode, `ff_dup2` both-kernel→encode / **cross-stack rejected errno=EINVAL**.
+> - **Limits (R10-P6)**: `ff_select`/`ff_poll` both NOT implemented, downgraded to documented limits (select = `FD_SETSIZE` hard limit; poll = merge complexity), comment only — use `ff_epoll_*`/`ff_kqueue` (R9).
+> - **Bridges/gating/status (R10-P7/P8/P9)**: 5 new host bridges `ff_host_readv/writev/ioctl/dup/dup2` (`ff_host_interface.h:178-184`, 18→23); all `#ifdef FF_KERNEL_COEXIST`, macro-off byte-for-byte zero regression verified by impl; tests UT-24~28 + IT-13/IT-14. Implementation gate (real-machine kernel-fd readv/writev/ioctl correct + kernel 200 / F-Stack 200 no regression / macro-off nm zero regression) to be filled by gatekeeper.
 
 ---
 

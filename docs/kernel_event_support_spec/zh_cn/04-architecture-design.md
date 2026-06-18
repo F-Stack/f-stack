@@ -271,6 +271,56 @@ ff_socket(AF_INET6, ...)  默认双栈
 
 ---
 
+## 8ter. R10：补齐 readv/writev/ioctl 内核 fd 路由 + dup/dup2/select/poll 处置
+
+> R8 补齐 5 函数内核路由后，`readv/writev/ioctl` 仍列 D8 已知限制（`02 §6`）；R10 收口这三者并处置额外发现的 `dup/dup2/select/poll`。全程 `#ifdef FF_KERNEL_COEXIST`、运行期 `kernel_coexist=0` 短路、宏关逐字节零回归（impl 已落地编译通过、宏关零回归已验证）。
+
+### 8ter.1 readv / writev 内核 fd 路由（仿 read/write）
+
+```
+ff_readv(fd, iov, iovcnt)                                      [#ifdef FF_KERNEL_COEXIST]
+  └─ ff_is_kernel_fd(fd) ? ─► ff_host_readv(ff_kernel_fd_real(fd), iov, iovcnt)   [单栈内核]
+  └─ 否 ─► kern_readv（F-Stack 原路径，逐字节不变）
+ff_writev(fd, iov, iovcnt) 对称：ff_is_kernel_fd → ff_host_writev(real, ...)
+```
+
+- 仅 encode 内核 fd 路由 host；连接 fd 单栈（与 read/write 一致，热路径只一次 `ff_is_kernel_fd`，不查 map，NFR-2）。
+- `iov` 以 `void*` 透传到 host TU 再 cast 为 `struct iovec*`（沿用 sendmsg/recvmsg）。
+
+### 8ter.2 ioctl 内核 fd 路由（原始 Linux request 直传）
+
+```
+ff_ioctl(fd, request, ...)                                     [#ifdef FF_KERNEL_COEXIST]
+  └─ ff_is_kernel_fd(fd) ? ─► ff_host_ioctl(real, request, argp)  [原始 Linux request，不经 linux2freebsd_ioctl]
+  └─ 否 ─► linux2freebsd_ioctl(request) → kern_ioctl（F-Stack 原路径）
+```
+
+- **关键**：ioctl request 经 `_IO/_IOR/_IOW(type,nr,size)` 编码，Linux 与 FreeBSD 数值不同源（`03` 外网交叉验证）——内核 host fd 须用**原始 Linux request**，**不得**经 `linux2freebsd_ioctl` 翻译（翻译后是 FreeBSD 数值，host libc 不识别）。内核 fd 分支在 `va_arg` 取 `argp` 后、`linux2freebsd_ioctl` 之前 return。
+- **双栈 fd 同驱动暂未实现**（R10 保守，仿 `06 §risk R-1`）：仅对 encode 内核 fd 路由 host，双栈 fd 仍走原 `linux2freebsd_ioctl`→`kern_ioctl` 不变；后续如需对常用控制 ioctl（`FIONBIO`/`FIONREAD`）同驱动可仿 `ff_fcntl` 扩展。
+
+### 8ter.3 dup / dup2（额外发现）
+
+```
+ff_dup(oldfd)
+  └─ ff_is_kernel_fd(oldfd) ? ─► n=ff_host_dup(real(oldfd)); return n<0?-1:ff_kernel_fd_encode(n)
+ff_dup2(oldfd, newfd)
+  ├─ 两端均内核 fd ─► ff_host_dup2(real(old), real(new))，返回 encode
+  ├─ 一端内核一端 F-Stack（混栈）─► 语义不成立，明确拒绝 errno=EINVAL
+  └─ 两端均 F-Stack ─► sys_dup2（原路径不变）
+```
+
+- dup2 混栈不臆造语义（`06 §risk R-2`），errno=EINVAL（两 fd 各自有效但语义不成立，比 EBADF 更贴切，已实测）。
+
+### 8ter.4 select / poll（额外发现，均不实现，降级文档限制）
+
+> R10 经评估两者均**不实现共存**，仅在源码加注释、逻辑不变（保守，避免 bounce）。
+
+- `ff_select`(L1879)：encode 内核 fd ≥ `0x40000000` ≫ `FD_SETSIZE`(1024)，标准 `fd_set` 无法容纳——**硬限制**（外网交叉验证）。
+- `ff_poll`(L1903)：`pollfd.fd` 虽可容 encode fd，但 `kern_poll` 直接操作 FreeBSD pollfd，混合纯内核 fd 子集需拆分数组/索引映射/合并 revents/超时合并，复杂度与回归风险高——**保守降级文档限制**。
+- 均建议内核 fd 用 `ff_epoll_*`/`ff_kqueue`（R9 已支持 host epoll 桥）多路复用。
+
+---
+
 ## 9. 内核-用户态栈共存矩阵
 
 | 维度 | F-Stack 用户态栈（业务，始终在位） | 内核栈（并行附加栈） |
@@ -311,6 +361,6 @@ ff_socket(AF_INET6, ...)  默认双栈
 ## 12. 待决问题（交 05/06/09 细化）
 - §connect 双栈数据路径契约（语义歧义，**待用户最终确认**）。
 - 双建部分失败的回滚/降级契约（F-Stack 成功但 `ff_host_socket` 失败）。
-- 双栈 fd 对未路由接口（`readv/writev/sendmsg/...`）的行为（默认仅 F-Stack 驱动，D8 已知限制延伸）。
+- 双栈 fd 对未路由接口的行为：`readv/writev/ioctl/dup` 由 R10 补齐内核 fd 路由（§8ter，D8 子项收口为 D12-D14）；`select` 因 `FD_SETSIZE` 为硬限制（D15）、`poll` 取舍以实现为准。
 - `ff_close` 对 `ff_epoll_pairs` 清理完整性（fd leak 复核）。
 - 可观测统计（`ff_stack_get_stats`）当前未实现（D5）。

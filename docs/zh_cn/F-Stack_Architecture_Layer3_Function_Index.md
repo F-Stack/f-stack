@@ -437,12 +437,14 @@ const char * ff_strerror(int errnum)
 // === 内核栈共存（仅在以 FF_KERNEL_COEXIST 构建时存在）===
 // 逐 socket 选栈标记 (ff_api.h)：SOCK_FSTACK 0x01000000 / SOCK_KERNEL 0x02000000
 // 内部机制 (lib/ff_host_interface.{c,h})：
-//   27 个 ff_host_* 宿主 libc 桥：ff_host_socket/bind/listen/accept/accept4/
+//   32 个 ff_host_* 宿主 libc 桥：ff_host_socket/bind/listen/accept/accept4/
 //     connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/
 //     shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/
 //     epoll_create1/epoll_ctl/epoll_wait
 //     + R9：ff_host_set_v6only（对宿主 IPv6 socket setsockopt IPV6_V6ONLY=1）、
 //           ff_host_kqueue_ctl / ff_host_kqueue_poll（kqueue<->宿主 epoll 桥）
+//     + R10：ff_host_readv / ff_host_writev / ff_host_ioctl（原始 Linux request）/
+//           ff_host_dup / ff_host_dup2
 //   ff_native_map_get/set/clear     - F-Stack fd <-> 宿主 fd 配对表（65536 项）
 //   ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real（inline；FF_KERNEL_FD_BASE=0x40000000）
 // R9 kqueue 共存 (lib/ff_syscall_wrapper.c)：ff_kqueue/ff_kevent 对称仿 epoll —— 每个
@@ -756,7 +758,7 @@ ff_poll(fds, 2, -1);  // 阻塞直到事件到达
 
 ## 3. 三个关键源文件深度分析
 
-### 3.1 ff_syscall_wrapper.c (2212 行)
+### 3.1 ff_syscall_wrapper.c (2265 行)
 
 **职责**：Linux ↔ FreeBSD 系统调用和参数映射
 
@@ -1007,10 +1009,10 @@ struct prison *prison0;           // 全局命名空间
 
 两个文件承载可选的共存机制（仅 `FF_KERNEL_COEXIST=1` 时编译）：
 
-**`ff_host_interface.c`（583 行）/ `ff_host_interface.h`（182 行）**
+**`ff_host_interface.c`（617 行）/ `ff_host_interface.h`（187 行）**
 - `FF_KERNEL_FD_BASE = 0x40000000` 与三个 inline 助手 `ff_is_kernel_fd / ff_kernel_fd_encode / ff_kernel_fd_real`（`.h` L113-128）。受管内核 fd = `host_fd + 0x40000000`，与 FreeBSD fd（`kern.maxfiles <= 65536`）永不冲突。
 - `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear`（`.c` L257-278）：F-Stack fd ↔ 宿主 fd 配对表（每实例单线程）。
-- **27 个 `ff_host_*` 桥**（`.c` L287-483）：对宿主 libc 的薄透传（`socket/bind/listen/accept/accept4/connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/epoll_create1/epoll_ctl/epoll_wait`）。**R9 新增 3 个**：`ff_host_set_v6only`（L297 —— 对宿主 IPv6 socket `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)`，使其与同端口宿主 IPv4 socket 共存）、`ff_host_kqueue_ctl`（L422）、`ff_host_kqueue_poll`（L441），服务 kqueue↔宿主 epoll 共存路径。
+- **32 个 `ff_host_*` 桥**：对宿主 libc 的薄透传（`socket/bind/listen/accept/accept4/connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/epoll_create1/epoll_ctl/epoll_wait`）。**R9 新增 3 个**：`ff_host_set_v6only`（对宿主 IPv6 socket `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)`，使其与同端口宿主 IPv4 socket 共存）、`ff_host_kqueue_ctl`、`ff_host_kqueue_poll`（服务 kqueue↔宿主 epoll 共存路径）。**R10 新增 5 个**：`ff_host_readv`、`ff_host_writev`、`ff_host_ioctl`（用原始 Linux request 直传宿主 libc）、`ff_host_dup`、`ff_host_dup2`。
 
 **`ff_epoll.c`（289 行）- F-Stack + 内核统一 epoll**
 - `ff_epoll_pairs[64]{kq, host_ep}`：为每个 kqueue 惰性配对一个宿主 `epoll` fd。
@@ -1021,7 +1023,9 @@ struct prison *prison0;           // 全局命名空间
 
 **R9：`ff_syscall_wrapper.c` 中的统一 kqueue/kevent 共存** —— `ff_kqueue`（L1895）与 `ff_kevent`（L2050）现对称仿 epoll 路径。`ff_kevent` 经 `ff_kevent_host_change`（L2006）分流 changelist：ident 为受管内核 fd（`ff_is_kernel_fd`）或双栈 fd（`ff_native_map_get>0`）的 `EVFILT_READ/WRITE` 经 `ff_host_kqueue_ctl` 注册进 kqueue 配对的宿主 epoll（内核-only 变更不下发 F-Stack kqueue；双栈 fd 仍下发）；eventlist 经 `ff_kevent_host_wait`（L2034）—— `ff_host_kqueue_poll(timeout=0)` 合成 `struct kevent`（`ident`=应用面 fd、`filter`=READ/WRITE、`EV_EOF`↔`EPOLLHUP|ERR`）—— 再合并 `ff_kevent_do_each` F-Stack 事件。修复 `example/main.c` kqueue 模型：内核侧 `curl 127.0.0.1:80` 返回 **200 size=438**（修复前 000）。已知限制：内核 fd 经 kqueue 仅支持 `EVFILT_READ/WRITE`。
 
-**`ff_syscall_wrapper.c` 中的入口路由**（§3.1）：每个内核感知的 `ff_*` 入口通过 `ff_is_kernel_fd()` 识别受管内核 fd 并转发到对应 `ff_host_*` 桥；双建 socket 还会驱动经 `ff_native_map_get()` 查得的配对宿主 fd。`AF_INET6` 双建时 `ff_socket` 调 `ff_host_set_v6only(hfd)`（L952），使 `-DINET6` 构建以 v4+v6 同端口干净启动（修复此前宿主 IPv6 `errno=98 EADDRINUSE`）。未路由（已知限制）：`ff_readv` / `ff_writev` / `ff_ioctl`。
+**`ff_syscall_wrapper.c` 中的入口路由**（§3.1）：每个内核感知的 `ff_*` 入口通过 `ff_is_kernel_fd()` 识别受管内核 fd 并转发到对应 `ff_host_*` 桥；双建 socket 还会驱动经 `ff_native_map_get()` 查得的配对宿主 fd。`AF_INET6` 双建时 `ff_socket` 调 `ff_host_set_v6only(hfd)`（L952），使 `-DINET6` 构建以 v4+v6 同端口干净启动（修复此前宿主 IPv6 `errno=98 EADDRINUSE`）。
+
+**R10：残余入口共存** —— `ff_ioctl`（L1067，内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`，不经 `linux2freebsd_ioctl`；双栈 fd 同驱动暂未实现）、`ff_readv`（L1189）/`ff_writev`（L1251，内核 fd→`ff_host_readv/writev`，仿 read/write，连接 fd 单栈热路径）、`ff_dup`（L2130，内核 fd→`ff_host_dup`+encode）、`ff_dup2`（L2156，两端内核 fd→`ff_host_dup2`+encode；混栈拒绝 `errno=EINVAL`）。已知限制：`ff_select`（encode 内核 fd 超 `FD_SETSIZE` 硬限制）/`ff_poll`（保守未实现）不支持内核 fd 共存 —— 改用 `ff_epoll_*`/`ff_kqueue`。
 
 ---
 

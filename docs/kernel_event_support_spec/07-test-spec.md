@@ -19,6 +19,12 @@
 > - **Real-machine (R9)**: IT-11 kqueue-model helloworld (coexist=1) kernel `curl 127.0.0.1:80=200 size=438` (was 000) + F-Stack `9.134.214.176:80=200` no regression; IT-12 `-DINET6` helloworld (coexist=1) starts successfully (v4+v6 listen, no errno=98), packet capture confirms kernel-side 200.
 > - **Gate (R9)**: UT-19~23 pass + IT-11 + IT-12 measured; macro-off nm zero regression for `ff_kqueue/ff_kevent`; `ff_kevent` kernel fd `EVFILT_READ/WRITE`-only is a documented known limit.
 >
+> **R10 sync (key points; see `zh_cn/07-test-spec.md` for full detail)**:
+> - **New R10 cmocka cases (macro-on)**: UT-24 `ff_host_readv/writev` (real socketpair/pipe iov, bytes/content correct); UT-25 `ff_readv/writev` kernel-fd route → `ff_host_readv/writev(real)` (mock count or real host fd); UT-26 `ff_host_ioctl`+`ff_ioctl` kernel-fd route with **raw Linux request** (not via `linux2freebsd_ioctl`), `FIONBIO/FIONREAD` effective; UT-27 `ff_dup` kernel fd → encode, `ff_dup2` both-kernel → encode / **cross-stack rejected errno=EINVAL**; UT-28 macro-off `ff_readv/writev/ioctl/dup/dup2/select/poll` zero regression (no `ff_host_readv/writev/ioctl/dup/dup2`, no new symbols, host-bridge count 18→23).
+> - **Real-machine (R10)**: IT-13 kernel-fd readv/writev/ioctl correct on managed kernel fd (127.0.0.1), kernel `curl 127.0.0.1:80=200`; IT-14 F-Stack side `9.134.214.176:80=200` no regression.
+> - **Confirmed (impl measured)**: `ff_select` `FD_SETSIZE` hard limit + `ff_poll` conservative non-implementation → both documented limits (no UT, comment only); `ff_dup2` cross-stack errno=EINVAL; `ioctl` dual-stack fd same-driver NOT implemented (only encode kernel fd routed). impl verified macro-off byte-for-byte zero regression.
+> - **Gate (R10)**: UT-24~28 pass + IT-13 + IT-14 measured; macro-off nm zero regression for the residual entries; select/poll documented limits and the ioctl/dup2 decisions documented.
+>
 > **Alignment**: `tests/unit` (**cmocka**, *.c + *.ini), `tests/integration`, coverage `tests/run_full_coverage.sh` (lcov).
 
 ---

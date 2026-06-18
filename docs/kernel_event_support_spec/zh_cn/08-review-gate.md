@@ -98,14 +98,37 @@
 
 ---
 
-## 5. D1-D11 代码-文档一致性核验
+## 4ter. R10 残余入口共存补齐 spec 门禁（本轮设计；实现待 impl 落地）
+
+| 编号 | 断言 | 证据/状态 |
+|---|---|---|
+| R10-P1 | 现状缺口如实记录：`ff_readv`(L1179)/`ff_writev`(L1236)/`ff_ioctl`(L1067) 无 `FF_KERNEL_COEXIST` 内核 fd 路由（read/write 有），此前列 D8 已知限制 | `02 §7bis.1`/D12-D13 |
+| R10-P2 | 额外发现如实记录：`ff_dup`(L2099)/`ff_dup2`(L2117)/`ff_select`(L1859)/`ff_poll`(L1878) 亦无共存路由 | `02 §7bis.1`/D14-D15 |
+| R10-P3 | readv/writev 方案仿 `ff_read/write`：`ff_is_kernel_fd`→`ff_host_readv/writev(real)`，连接 fd 单栈热路径不查 map | `04 §8ter.1`/`05 §3quater`/`06 §6ter.2` |
+| R10-P4 | ioctl 方案：内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`（不经 `linux2freebsd_ioctl`，request 编码 Linux/FreeBSD 不同源，`03` 交叉验证）；**双栈 fd 同驱动暂未实现**（仅 encode 内核 fd 路由，保守最小必要，后续如需可仿 `ff_fcntl` 扩展，已实测） | `04 §8ter.2`/`05 §3quater`/`06 §6ter.3` |
+| R10-P5 | dup/dup2 方案：dup 内核 fd→`ff_host_dup`+encode；dup2 两端内核 fd→`ff_host_dup2`+encode，**混栈明确拒绝 errno=EINVAL**（两 fd 各自有效但语义不成立，已实测），不臆造语义 | `04 §8ter.3`/`05 §3quater`/`06 §6ter.4` |
+| R10-P6 | **select/poll 均不实现，降级文档限制**（仅加注释，逻辑不变，已实测）：`ff_select` encode 内核 fd≫`FD_SETSIZE`(1024) 无法装入 `fd_set`（硬限制）；`ff_poll` 混合纯内核 fd 子集需拆分数组/索引映射/合并 revents，复杂度与回归风险高，保守降级；均建议内核 fd 用 epoll/kqueue（R9 已支持 host epoll 桥） | `04 §8ter.4`/`05 §3quater §7`/`06 §6ter.5` |
+| R10-P7 | 新增 host 桥 `ff_host_readv/writev/ioctl/dup` 仿 `ff_host_read/write`，`iov` 以 `void*` 透传规避命名空间冲突 | `02 §7bis.2`/`06 §6ter.1` |
+| R10-P8 | 全程 `#ifdef FF_KERNEL_COEXIST` 门控，宏关 `ff_readv/writev/ioctl/dup/dup2/select/poll` 零回归、无新符号 | `04 §8ter`/`06 §6ter.6`/`07 §1bis`/UT-28 |
+| R10-P9 | 实现状态：impl 已落地编译通过（宏关逐字节零回归已验证），实际行号 `ff_ioctl:1067`/`ff_readv:1189`/`ff_writev:1251`/`ff_select:1879`(注释)/`ff_poll:1903`(注释)/`ff_dup:2130`/`ff_dup2:2156`，host 桥声明 `ff_host_interface.h:178-184`；测试点 UT-24~28 + IT-13/14 对齐（真机实测待 tester 填表） | `02 §7bis`/`05 §3quater`/`07 §2/§3/§5` |
+
+> **R10 spec 门禁结论**：spec 已补 R10（readv/writev/ioctl 内核 fd 路由仿 `read/write` + dup/dup2 + select/poll 文档限制 + 新增 5 host 桥 `ff_host_readv/writev/ioctl/dup/dup2`），把 readv/writev/ioctl 由「D8 已知限制」改为「R10 已支持」，select/poll 限制已澄清。impl 实测取舍已对齐：**ioctl 双栈 fd 同驱动暂未实现（仅 encode 内核 fd 路由）**、**dup2 混栈拒绝 errno=EINVAL**、**select/poll 均不实现降级文档限制**。代码已落地编译通过、宏关零回归已验证；真机门禁（内核侧 readv/writev/ioctl 正确 + 内核侧 200 / F-Stack 侧 200 不回归）待 tester 填表。
+
+---
+
+## 5. D1-D15 代码-文档一致性核验
 
 | 编号 | 修正项 | 状态 |
 |---|---|---|
 | D1-D8 | 沿用 v5（已 PASS，见 `02 §6`） | PASS |
+| D8（R10 收口） | `readv/writev/ioctl` 由 D8「未路由」收口为 R10 已支持（内核 fd 路由）；D8 剩余项随 R10 落地 | PASS（已收口） |
 | **D9（v6）** | `ff_native_fd_map`/默认双建/双驱动**尚未实现**（`02 §5.2` grep=0），文档区分 v5 已实测 / v6 待实现 | PASS（如实标注） |
 | **D10（R9）** | `ff_kqueue/ff_kevent/ff_kevent_do_each` **无共存路由**（仅 `ff_epoll.c` 命中宏），kqueue 模型内核侧 `curl=000`（实测）——文档标注「R9 待实现」 | PASS（如实标注） |
 | **D11（R9）** | host IPv6 socket 未设 `IPV6_V6ONLY=1`，`-DINET6` 双建 `ff_bind errno=98`（实测）——文档标注「R9 待实现」 | PASS（如实标注） |
+| **D12（R10）** | `ff_readv`/`ff_writev` 无 `FF_KERNEL_COEXIST` 内核 fd 路由（read/write 有）——文档标注「R10 待实现」（仿 read/write） | PASS（如实标注） |
+| **D13（R10）** | `ff_ioctl` 无内核 fd 路由（经 `linux2freebsd_ioctl`→`kern_ioctl`）——文档标注「R10 待实现」（内核 fd 用原始 Linux request） | PASS（如实标注） |
+| **D14（R10）** | `ff_dup`/`ff_dup2` 无共存路由——文档标注「R10 待实现/混栈拒绝，取舍以实现为准」 | PASS（如实标注） |
+| **D15（R10）** | `ff_select`/`ff_poll` 无共存路由；select 因 encode 内核 fd≫`FD_SETSIZE`(1024) 标注**硬限制**，poll 取舍以实现为准 | PASS（如实标注） |
 
 ---
 

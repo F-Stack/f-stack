@@ -62,11 +62,11 @@ Reading order:
   4. Deep-dive into source code (verified against current HEAD):
      - lib/ff_dpdk_if.c (2907 lines)
      - lib/ff_glue.c (1467 lines)
-     - lib/ff_syscall_wrapper.c (2212 lines)
+     - lib/ff_syscall_wrapper.c (2265 lines)
      - lib/ff_ng_base.c (3887 lines, full netgraph port)
      - lib/ff_route.c (1604 lines, rtsock partial port)
      - lib/ff_stub_14_extra.c (799 lines, NEW: 14.0+ central stub bank)
-     - lib/ff_host_interface.c (583 lines, 27 ff_host_*) / ff_epoll.c (289 lines) / ff_syscall_wrapper.c (2212 lines, NEW: FF_KERNEL_COEXIST coexistence + R9 kqueue/kevent coexistence + IPv6 IPV6_V6ONLY)
+     - lib/ff_host_interface.c (617 lines, 32 ff_host_*) / ff_epoll.c (289 lines) / ff_syscall_wrapper.c (2265 lines, NEW: FF_KERNEL_COEXIST coexistence + R9 kqueue/kevent coexistence + IPv6 IPV6_V6ONLY + R10 readv/writev/ioctl/dup/dup2 kernel-fd routing)
 ```
 
 ### Scenario 4: I Want to Look Up the Usage of a Specific API Function
@@ -251,11 +251,11 @@ Recommended path:
 ### Version Information
 
 ```
-Knowledge base version: 1.4 (adds R9: ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY, 2026-06-18; on top of 1.3 FF_KERNEL_COEXIST kernel-stack coexistence sync + 1.2 FreeBSD 13.0 → 15.0 first-stage + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test)
+Knowledge base version: 1.5 (adds R10: ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY + 1.3 FF_KERNEL_COEXIST kernel-stack coexistence + 1.2 FreeBSD 13.0 → 15.0 first-stage + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test)
 F-Stack version: v1.26 (branch feature/1.26)
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
 DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 via tree replace + 4 patches re-applied; see dpdk_23_24_upgrade_spec/zh_cn/)
-New feature reflected: FF_KERNEL_COEXIST automatic dual-stack coexistence (default off; commits ba148589d → 55a84f313) + R9 kqueue/kevent coexistence + IPv6 IPV6_V6ONLY (kqueue-model kernel-side curl 127.0.0.1:80 = 200; -DINET6 v4+v6 same-port startup fixed). See docs/kernel_event_support_spec/ (incl. plan-r9-kqueue-coexist-ipv6.md).
+New feature reflected: FF_KERNEL_COEXIST automatic dual-stack coexistence (default off; commits ba148589d → 55a84f313) + R9 kqueue/kevent coexistence + IPv6 IPV6_V6ONLY (kqueue-model kernel-side curl 127.0.0.1:80 = 200; -DINET6 v4+v6 same-port startup fixed) + R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing (ff_ioctl uses raw Linux request; ff_dup2 cross-stack rejected EINVAL; select/poll are documented limits, use epoll/kqueue). See docs/kernel_event_support_spec/ (incl. plan-r9-kqueue-coexist-ipv6.md, plan-r10-readv-writev-ioctl-coexist.md).
 Generation date: 2026-03-20 (last sync 2026-06-18)
 Total lines: ~5839 lines (based on actual file count)
 ```

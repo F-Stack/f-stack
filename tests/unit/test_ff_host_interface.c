@@ -894,6 +894,131 @@ test_ff_host_kqueue_ctl_add_idempotent(void **state)
     ff_host_close(ln);
     ff_host_close(epfd);
 }
+
+#include <sys/ioctl.h>
+#include <fcntl.h>
+
+/*
+ * R10 P: ff_host_readv / ff_host_writev over a real socketpair. Scatter-write
+ * three iov segments and gather-read them back into two segments; verify the
+ * total byte count and the reassembled payload match exactly (passthrough to
+ * host readv/writev preserves order and length).
+ */
+static void
+test_ff_host_readv_writev(void **state)
+{
+    (void)state;
+    int sp[2];
+    assert_int_equal(socketpair(AF_UNIX, SOCK_STREAM, 0, sp), 0);
+
+    char s0[] = "alpha";    /* 5 */
+    char s1[] = "-beta-";   /* 6 */
+    char s2[] = "gamma!";   /* 6 */
+    struct iovec wiov[3] = {
+        { s0, 5 }, { s1, 6 }, { s2, 6 },
+    };
+    ssize_t total = 5 + 6 + 6;
+    assert_int_equal(ff_host_writev(sp[0], wiov, 3), total);
+
+    char rb0[8] = {0};
+    char rb1[16] = {0};
+    struct iovec riov[2] = {
+        { rb0, 8 }, { rb1, sizeof(rb1) },
+    };
+    assert_int_equal(ff_host_readv(sp[1], riov, 2), total);
+
+    char joined[32] = {0};
+    memcpy(joined, rb0, 8);
+    memcpy(joined + 8, rb1, (size_t)(total - 8));
+    assert_memory_equal(joined, "alpha-beta-gamma!", (size_t)total);
+
+    ff_host_close(sp[0]);
+    ff_host_close(sp[1]);
+}
+
+/*
+ * R10 P: ff_host_ioctl with FIONBIO sets non-blocking on a real socket; confirm
+ * via fcntl(F_GETFL) that O_NONBLOCK is now set, then clear it and re-check.
+ */
+static void
+test_ff_host_ioctl_fionbio(void **state)
+{
+    (void)state;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    assert_true(fd >= 0);
+
+    int on = 1;
+    assert_int_equal(ff_host_ioctl(fd, FIONBIO, &on), 0);
+    int fl = fcntl(fd, F_GETFL, 0);
+    assert_true(fl >= 0);
+    assert_true((fl & O_NONBLOCK) != 0);
+
+    int off = 0;
+    assert_int_equal(ff_host_ioctl(fd, FIONBIO, &off), 0);
+    fl = fcntl(fd, F_GETFL, 0);
+    assert_true(fl >= 0);
+    assert_int_equal(fl & O_NONBLOCK, 0);
+
+    ff_host_close(fd);
+}
+
+/*
+ * R10 P: ff_host_dup duplicates one end of a socketpair. Writing through the
+ * duplicated fd is observed on the peer (same underlying object). Closing the
+ * dup leaves the original fd fully usable.
+ */
+static void
+test_ff_host_dup(void **state)
+{
+    (void)state;
+    int sp[2];
+    assert_int_equal(socketpair(AF_UNIX, SOCK_STREAM, 0, sp), 0);
+
+    int dupfd = ff_host_dup(sp[0]);
+    assert_true(dupfd >= 0);
+    assert_int_not_equal(dupfd, sp[0]);
+
+    assert_int_equal(write(dupfd, "x", 1), 1);
+    char c = 0;
+    assert_int_equal(read(sp[1], &c, 1), 1);
+    assert_int_equal(c, 'x');
+
+    ff_host_close(dupfd);
+    /* original still usable after the dup is closed */
+    assert_int_equal(write(sp[0], "y", 1), 1);
+    assert_int_equal(read(sp[1], &c, 1), 1);
+    assert_int_equal(c, 'y');
+
+    ff_host_close(sp[0]);
+    ff_host_close(sp[1]);
+}
+
+/*
+ * R10 P (optional): ff_host_dup2 duplicates onto a chosen target fd. After the
+ * dup2 the target refers to the same socket; a write on it reaches the peer.
+ */
+static void
+test_ff_host_dup2(void **state)
+{
+    (void)state;
+    int sp[2];
+    assert_int_equal(socketpair(AF_UNIX, SOCK_STREAM, 0, sp), 0);
+
+    /* a spare fd to be the dup2 target */
+    int spare = dup(sp[0]);
+    assert_true(spare >= 0);
+
+    assert_int_equal(ff_host_dup2(sp[0], spare), spare);
+
+    assert_int_equal(write(spare, "z", 1), 1);
+    char c = 0;
+    assert_int_equal(read(sp[1], &c, 1), 1);
+    assert_int_equal(c, 'z');
+
+    ff_host_close(spare);
+    ff_host_close(sp[0]);
+    ff_host_close(sp[1]);
+}
 #endif /* FF_KERNEL_COEXIST */
 
 int
@@ -936,6 +1061,11 @@ main(void)
         cmocka_unit_test(test_ff_host_set_v6only),
         cmocka_unit_test(test_ff_host_kqueue_ctl_poll),
         cmocka_unit_test(test_ff_host_kqueue_ctl_add_idempotent),
+        /* R10 coexistence: readv/writev + ioctl(FIONBIO) + dup/dup2 bridges */
+        cmocka_unit_test(test_ff_host_readv_writev),
+        cmocka_unit_test(test_ff_host_ioctl_fionbio),
+        cmocka_unit_test(test_ff_host_dup),
+        cmocka_unit_test(test_ff_host_dup2),
 #endif /* FF_KERNEL_COEXIST */
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

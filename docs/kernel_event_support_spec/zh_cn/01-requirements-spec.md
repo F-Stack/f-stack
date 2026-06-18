@@ -93,7 +93,7 @@ F-Stack 通过 DPDK 接管网卡后，该网卡流量绕过 Linux 内核协议�
 - **connect 数据双工歧义（N7/待确认）**：默认双栈 connect 同时向两栈发起，单逻辑流不能真双工——见 `05 §connect` 契约草案，**待用户最终确认**。
 - **映射表容量**：`ff_native_fd_map[65536]`；F-Stack `kern.maxfiles`≤65536 前提（与 adapter 同）。三类返回 fd 空间不冲突（fstack<65536≪0x40000000；host 受 RLIMIT_NOFILE）。
 - **close fd leak（参考上游）**：上游「`FF_KERNEL_EVENT` kernel epoll fd leak fix」——双栈 close 须清 host 侧 fd 与 `ff_epoll_pairs` 配对。
-- **路由覆盖限制（沿用 v5 D8）**：`ff_readv/ff_writev/ff_getpeername/ff_getsockname/ff_shutdown/ff_ioctl/ff_sendmsg/ff_recvmsg` 等未加 fd 路由；对单栈内核 fd 调用会误走 F-Stack（已知限制）。v6 双栈 fd 的这些接口行为亦须明确（默认仅 F-Stack 驱动）。
+- **路由覆盖（v5 D8 → R8/R10 收口）**：`getpeername/getsockname/shutdown/sendmsg/recvmsg` 已由 **R8** 补内核 fd 路由；`readv/writev/ioctl/dup/dup2` 已由 **R10** 补内核 fd 路由（D12-D14，见 `02 §7bis`）。`select/poll`（D15）因 `FD_SETSIZE` 硬限制/合并复杂度，R10 不实现共存（文档限制，内核 fd 改用 epoll/kqueue 多路复用）。
 
 ---
 
