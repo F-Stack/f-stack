@@ -15,7 +15,7 @@ F-Stack exports **80+ public symbols**, divided into the following major categor
 
 ```
 ┌─────────────────────────────────────────────────┐
-│      F-Stack Public API (ff_api.h 412 lines)    │
+│      F-Stack Public API (ff_api.h 491 lines)    │
 ├─────────────────────────────────────────────────┤
 │ 1. Lifecycle Management (3)                      │
 │    ff_init / ff_run / ff_stop_run               │
@@ -62,7 +62,7 @@ F-Stack exports **80+ public symbols**, divided into the following major categor
 
 ### 1.2 Detailed Description of Six Major Header Files
 
-#### **ff_api.h (416 Lines) - Main API**
+#### **ff_api.h (491 Lines) - Main API**
 
 **Initialization & Startup**:
 ```c
@@ -558,6 +558,11 @@ method=reject
 tcp_port=80,443
 udp_port=53
 
+[stack]
+kernel_coexist = 0           # Kernel-stack coexistence (only when built with
+                             # FF_KERNEL_COEXIST=1). 0=off (pure F-Stack, default),
+                             # 1=on (SOCK_KERNEL sockets also use the host kernel stack)
+
 [freebsd.boot]
 hz = 100                     # Clock frequency (Hz)
 fd_reserve = 1204
@@ -606,6 +611,31 @@ ff_load_config(argc, argv)
   └─ 6. Generate DPDK parameter array
         (passed to rte_eal_init)
 ```
+
+### 3.4 Kernel-Stack Coexistence Interface (`FF_KERNEL_COEXIST`, optional)
+
+When the library is built with `make FF_KERNEL_COEXIST=1` and `config.ini [stack] kernel_coexist=1`, the application can place individual sockets on the host Linux kernel stack while everything else keeps using the F-Stack fast path — all from the same process and event loop. The contract is intentionally small and additive (no existing signature changes):
+
+**Per-socket stack markers** (defined in `ff_api.h`, only under `FF_KERNEL_COEXIST`):
+
+```c
+#define SOCK_FSTACK 0x01000000   // force the F-Stack user-space stack
+#define SOCK_KERNEL 0x02000000   // force the host Linux kernel stack
+
+int fk = ff_socket(AF_INET, SOCK_STREAM | SOCK_KERNEL, 0);  // kernel-stack socket
+int ff = ff_socket(AF_INET, SOCK_STREAM | SOCK_FSTACK, 0);  // F-Stack socket
+int du = ff_socket(AF_INET, SOCK_STREAM, 0);                // dual-created (default)
+```
+
+| `type` flag | Behaviour when `kernel_coexist=1` | Returned fd |
+|-------------|-----------------------------------|-------------|
+| `SOCK_KERNEL` (no `SOCK_FSTACK`) | host kernel socket only | managed kernel fd = `host_fd + 0x40000000` |
+| `SOCK_FSTACK` | F-Stack socket only | F-Stack fd |
+| neither (default) | **dual-created**: F-Stack + paired host socket | F-Stack fd (host fd kept in `ff_native_fd_map`) |
+
+Priority: per-socket marker > `config.ini [stack] kernel_coexist` > F-Stack. When the macro is not compiled in, the markers are undefined and `ff_socket` behaves exactly as before.
+
+**Transparent routing.** All standard `ff_*` calls accept a managed kernel fd transparently: `ff_bind/listen/connect/accept[4]/close/read/write/recv*/send*/sendmsg/recvmsg/getpeername/getsockname/shutdown/setsockopt/getsockopt/fcntl`, and `ff_epoll_ctl/wait`. Internally each kernel fd is forwarded to a thin `ff_host_*` host-libc bridge (`lib/ff_host_interface.c`). **Not yet routed (known limitation):** `ff_readv` / `ff_writev` / `ff_ioctl` — use `ff_read` / `ff_write` for kernel/dual-stack fds. Full design and tests: `docs/kernel_event_support_spec/`.
 
 ---
 

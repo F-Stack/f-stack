@@ -433,6 +433,17 @@ int ff_arp_del(const char *ip)
 const char * ff_strerror(int errnum)
     // Error number → error message string
     // Thread safety: Yes
+
+// === Kernel-stack coexistence (only when built with FF_KERNEL_COEXIST) ===
+// Per-socket stack markers (ff_api.h): SOCK_FSTACK 0x01000000 / SOCK_KERNEL 0x02000000
+// Internal machinery (lib/ff_host_interface.{c,h}):
+//   24 ff_host_* host-libc bridges: ff_host_socket/bind/listen/accept/accept4/
+//     connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/
+//     shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/
+//     epoll_create1/epoll_ctl/epoll_wait
+//   ff_native_map_get/set/clear     - F-Stack fd <-> host fd pairing table (65536 entries)
+//   ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real (inline; FF_KERNEL_FD_BASE=0x40000000)
+// Compiled out entirely when FF_KERNEL_COEXIST is undefined.
 ```
 
 ---
@@ -740,7 +751,7 @@ ff_poll(fds, 2, -1);  // Block until events arrive
 
 ## 3. In-Depth Analysis of Three Key Source Files
 
-### 3.1 ff_syscall_wrapper.c (1815 Lines)
+### 3.1 ff_syscall_wrapper.c (2125 Lines)
 
 **Responsibility**: Linux ↔ FreeBSD system call and parameter mapping
 
@@ -804,7 +815,7 @@ int ff_setsockopt_wrapper(int s, int level, int optname,
 - **Error Code Mapping**: Linux errno → FreeBSD errno
 - **Address Family Mapping**: AF_INET6: 10 (Linux) ↔ 28 (FreeBSD)
 
-### 3.2 ff_dpdk_if.c (2856 Lines) - NIC Driver Layer
+### 3.2 ff_dpdk_if.c (2907 Lines) - NIC Driver Layer
 
 **Global Variables** (key state affecting performance):
 
@@ -938,7 +949,7 @@ static int main_loop(void *arg) {
 - **Cache affinity**: RSS ensures connections do not migrate
 - **Hardware offloading**: TSO, Checksum offload
 
-### 3.3 ff_glue.c (1468 Lines) - Kernel Emulation Layer
+### 3.3 ff_glue.c (1467 Lines) - Kernel Emulation Layer
 
 **Kernel Primitive Emulation**:
 
@@ -986,6 +997,23 @@ struct prison *prison0;           // Global namespace
 - **No VFS support**: Limited file operations
 - **Simplified IPC**: Inter-process communication via DPDK Ring
 - **Soft interrupt emulation**: Handled via taskqueue
+
+### 3.4 Kernel-Stack Coexistence Source Files (`FF_KERNEL_COEXIST`, optional)
+
+Two files carry the optional coexistence machinery (compiled only with `FF_KERNEL_COEXIST=1`):
+
+**`ff_host_interface.c` (528 Lines) / `ff_host_interface.h` (178 Lines)**
+- `FF_KERNEL_FD_BASE = 0x40000000` and three inline helpers `ff_is_kernel_fd / ff_kernel_fd_encode / ff_kernel_fd_real` (`.h` L113-128). A managed kernel fd = `host_fd + 0x40000000`, which never collides with FreeBSD fds (`kern.maxfiles <= 65536`).
+- `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear` (`.c` L255-278): the F-Stack fd ↔ host fd pairing table (single-threaded per instance).
+- **24 `ff_host_*` bridges** (`.c` L285-431): thin passthroughs to host libc (`socket/bind/listen/accept/accept4/connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/epoll_create1/epoll_ctl/epoll_wait`).
+
+**`ff_epoll.c` (277 Lines) - unified F-Stack + kernel epoll**
+- `ff_epoll_pairs[64]{kq, host_ep}`: lazily pairs one host `epoll` fd per kqueue.
+- `ff_epoll_ctl`: routes a managed kernel fd to the host epoll, or dual-registers a dual-stack fd on both the host epoll and the kqueue.
+- `ff_epoll_wait`: first non-blocking poll of the host epoll, then merge kqueue events into the same `events[]` array.
+- `ff_epoll_pairs_lock` was removed — F-Stack runs single-threaded per instance (commit `3e71f4699`).
+
+**Entry routing in `ff_syscall_wrapper.c`** (§3.1): each kernel-aware `ff_*` entry detects a managed kernel fd via `ff_is_kernel_fd()` and forwards to the matching `ff_host_*` bridge; dual-created sockets additionally drive the paired host fd looked up via `ff_native_map_get()`. Not routed (known limitation): `ff_readv` / `ff_writev` / `ff_ioctl`.
 
 ---
 

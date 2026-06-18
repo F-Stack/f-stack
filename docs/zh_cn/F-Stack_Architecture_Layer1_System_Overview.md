@@ -2,7 +2,7 @@
 
 **文档版本**: 1.0  
 **分析日期**: 2026-03-20  
-**覆盖范围**: F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）+ DPDK 23.11.5  
+**覆盖范围**: F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）+ DPDK 24.11.6 LTS（2026-06-09 自 23.11.5 升级）+ FF_KERNEL_COEXIST 内核栈共存（默认关）  
 **目标受众**: 架构师、系统设计师、性能优化工程师
 
 ---
@@ -79,13 +79,13 @@ F-Stack 模式 (用户态网络)
 /data/workspace/f-stack/
 │
 ├── lib/                                    # F-Stack 核心库 (~21K 行C代码)
-│   ├── ff_dpdk_if.c          (2856行)     # ⭐ 最核心：DPDK/NIC驱动
-│   ├── ff_glue.c             (1468行)     # 内核模拟层
-│   ├── ff_config.c           (1381行)     # 配置解析
-│   ├── ff_syscall_wrapper.c  (1815行)     # Linux↔FreeBSD 适配
+│   ├── ff_dpdk_if.c          (2907行)     # ⭐ 最核心：DPDK/NIC驱动
+│   ├── ff_glue.c             (1467行)     # 内核模拟层
+│   ├── ff_config.c           (1694行)     # 配置解析
+│   ├── ff_syscall_wrapper.c  (2125行)     # Linux↔FreeBSD 适配
 │   ├── ff_init.c             (69行)       # 初始化协调
-│   ├── ff_epoll.c            (159行)      # Epoll 兼容层
-│   ├── ff_host_interface.c               # 主机 OS 接口
+│   ├── ff_epoll.c            (277行)      # Epoll 兼容（F-Stack+内核统一）
+│   ├── ff_host_interface.c   (528行)      # 主机 OS 接口 + FF_KERNEL_COEXIST 桥
 │   ├── ff_dpdk_kni.c                      # 虚拟网卡支持
 │   ├── ff_*.h                             # API 和数据结构定义
 │   └── Makefile              (765行)      # 编译系统
@@ -100,7 +100,7 @@ F-Stack 模式 (用户态网络)
 │   ├── amd64/                # x86 架构代码
 │   └── contrib/ck/           # ConcurrencyKit 原子操作
 │
-├── dpdk/                                   # DPDK 23.11.5 依赖 (submodule)
+├── dpdk/                                   # DPDK 24.11.6 LTS 依赖 (submodule)
 │   ├── lib/
 │   │   ├── eal/              # 环境抽象层
 │   │   ├── ethdev/           # 网卡通用接口
@@ -152,11 +152,11 @@ F-Stack 模式 (用户态网络)
 
 | 模块 | 文件 | 行数 | 职责 | 依赖 |
 |-----|------|------|------|------|
-| **NIC 驱动层** | ff_dpdk_if.c | 2856 | DPDK 初始化、网卡操作、收发包核心逻辑 | DPDK、ff_glue |
-| **粘合层** | ff_glue.c | 1468 | 内核 API 模拟（锁、内存、中断；M4 完成 8 类 14.0+ ABI 修复） | FreeBSD sys、pthread |
-| **配置系统** | ff_config.c | 1381 | INI 文件解析、运行参数管理 | ff_ini_parser |
-| **Linux 兼容** | ff_syscall_wrapper.c | 1815 | socket 选项/errno 映射（M4 同步 sockaddr 调用约定） | FreeBSD API |
-| **Epoll 兼容** | ff_epoll.c | 159 | Linux epoll → FreeBSD kqueue 转换 | ff_kqueue |
+| **NIC 驱动层** | ff_dpdk_if.c | 2907 | DPDK 初始化、网卡操作、收发包核心逻辑 | DPDK、ff_glue |
+| **粘合层** | ff_glue.c | 1467 | 内核 API 模拟（锁、内存、中断；M4 完成 8 类 14.0+ ABI 修复） | FreeBSD sys、pthread |
+| **配置系统** | ff_config.c | 1694 | INI 文件解析、运行参数管理 | ff_ini_parser |
+| **Linux 兼容** | ff_syscall_wrapper.c | 2125 | socket 选项/errno 映射（M4 同步 sockaddr；FF_KERNEL_COEXIST 路由） | FreeBSD API |
+| **Epoll 兼容** | ff_epoll.c | 277 | Linux epoll → FreeBSD kqueue（F-Stack + 内核统一 epoll） | ff_kqueue |
 | **初始化协调** | ff_init.c | 69 | 启动流程编排 | 其他所有模块 |
 | **主机接口** | ff_host_interface.c | - | mmap/pthread/时间接口 | 系统库 |
 | **虚拟网卡** | ff_dpdk_kni.c | - | 内核虚拟网卡支持 | DPDK KNI |
@@ -237,7 +237,7 @@ F-Stack 模式 (用户态网络)
     └────────┬────────┘
              │
     ┌────────▼──────────────────────────────────────┐
-    │        粘合层 (ff_glue.c 1468行)              │
+    │        粘合层 (ff_glue.c 1467行)              │
     │ 内核 API 用户态模拟                             │
     │ ├─ Mutex/RWLock    (pthread_mutex_t)         │
     │ ├─ CondVar         (pthread_cond_t)          │
@@ -420,6 +420,22 @@ static int main_loop(void *arg) {
 - **定时驱动**：依靠 CPU TSC 计数器维护时钟
 - **批处理**：每次处理 MAX_PKT_BURST 个报文
 - **用户可控**：应用通过回调函数 loop_func 处理业务逻辑
+
+### 3.4 内核栈共存模式（`FF_KERNEL_COEXIST`，可选，默认关）
+
+默认情况下每个 socket 都纯粹运行在 F-Stack 用户态栈上。可选的 **内核栈共存** 模式让单个进程、单个 `ff_epoll_wait` 循环同时通过 **F-Stack 栈**（经 DPDK 网卡的高性能路径）与 **宿主 Linux 内核栈**（经 loopback / 管理网卡）对外服务。这样本机 `ping`/`curl` 可访问 F-Stack 监听端口，应用也可 `connect()` 到本机或外部的内核栈服务，且不放弃 F-Stack 快路径。
+
+**两级门控（关闭时零回归）：**
+- 编译期宏 `FF_KERNEL_COEXIST`（以 `make FF_KERNEL_COEXIST=1` 构建；默认不定义）。未定义时整个特性被编译剔除，产物与纯 F-Stack 库逐字节一致。
+- 运行期开关 `config.ini [stack] kernel_coexist=0|1`（默认 `0`）。即使编译进库，未显式开启前也保持关闭。
+
+**工作原理：**
+- **逐 socket 选栈。** `ff_socket()` 识别按位 OR 进 `type` 的两个标记：`SOCK_FSTACK` 强制 F-Stack 栈，`SOCK_KERNEL` 强制宿主内核栈。无标记（且共存开启）时则 **双建** —— 一个 F-Stack socket 加一个配对的宿主内核 socket。优先级：per-socket 标记 > config `kernel_coexist` > F-Stack。
+- **受管内核 fd 空间。** 内核栈 fd 以 `host_fd + FF_KERNEL_FD_BASE`（`0x40000000`）形式交给应用，远高于最大 FreeBSD fd（`kern.maxfiles <= 65536`），两段 fd 区间永不冲突。F-Stack 入口识别此类 fd 并转发给薄宿主 libc 桥；默认 F-Stack 路径保持不变。
+- **双栈 fd 配对。** 双建 socket 的 F-Stack fd ↔ 宿主 fd 配对记录在 `ff_native_fd_map`，使控制/数据操作在需要处同时驱动两栈（如 `bind`/`listen` 双侧、`shutdown`/`close` 双侧）。
+- **统一事件循环。** `ff_epoll_*` 为每个 kqueue 惰性配对一个宿主 `epoll` fd，使内核 fd 与 F-Stack 事件都从应用已有的单个 `ff_epoll_wait()` 投递出来。
+
+**已知限制（本版本）：** `ff_readv` / `ff_writev` / `ff_ioctl` 尚未路由到内核栈 —— 双栈 fd 请使用 `ff_read` / `ff_write`。完整设计、测试与 review-gate 记录见 `docs/kernel_event_support_spec/`（+ `zh_cn/`）。
 
 ---
 

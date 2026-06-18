@@ -433,6 +433,17 @@ int ff_arp_del(const char *ip)
 const char * ff_strerror(int errnum)
     // 错误号 → 错误消息字符串
     // 线程安全: 是
+
+// === 内核栈共存（仅在以 FF_KERNEL_COEXIST 构建时存在）===
+// 逐 socket 选栈标记 (ff_api.h)：SOCK_FSTACK 0x01000000 / SOCK_KERNEL 0x02000000
+// 内部机制 (lib/ff_host_interface.{c,h})：
+//   24 个 ff_host_* 宿主 libc 桥：ff_host_socket/bind/listen/accept/accept4/
+//     connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/
+//     shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/
+//     epoll_create1/epoll_ctl/epoll_wait
+//   ff_native_map_get/set/clear     - F-Stack fd <-> 宿主 fd 配对表（65536 项）
+//   ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real（inline；FF_KERNEL_FD_BASE=0x40000000）
+// FF_KERNEL_COEXIST 未定义时整体被编译剔除。
 ```
 
 ---
@@ -740,7 +751,7 @@ ff_poll(fds, 2, -1);  // 阻塞直到事件到达
 
 ## 3. 三个关键源文件深度分析
 
-### 3.1 ff_syscall_wrapper.c (1815 行)
+### 3.1 ff_syscall_wrapper.c (2125 行)
 
 **职责**：Linux ↔ FreeBSD 系统调用和参数映射
 
@@ -804,7 +815,7 @@ int ff_setsockopt_wrapper(int s, int level, int optname,
 - **Error Code 映射**：Linux errno → FreeBSD errno
 - **Address Family 映射**：AF_INET6: 10 (Linux) ↔ 28 (FreeBSD)
 
-### 3.2 ff_dpdk_if.c (2856 行) - NIC 驱动层
+### 3.2 ff_dpdk_if.c (2907 行) - NIC 驱动层
 
 **全局变量**（影响性能的关键状态）：
 
@@ -938,7 +949,7 @@ static int main_loop(void *arg) {
 - **缓存亲和性**：RSS 确保连接不迁移
 - **硬件卸载**：TSO、Checksum offload
 
-### 3.3 ff_glue.c (1468 行) - 内核模拟层
+### 3.3 ff_glue.c (1467 行) - 内核模拟层
 
 **内核原语模拟**：
 
@@ -986,6 +997,23 @@ struct prison *prison0;           // 全局命名空间
 - **无 VFS 支持**：文件操作有限
 - **简化 IPC**：进程通信通过 DPDK Ring
 - **软中断模拟**：通过 taskqueue 处理
+
+### 3.4 内核栈共存源文件（`FF_KERNEL_COEXIST`，可选）
+
+两个文件承载可选的共存机制（仅 `FF_KERNEL_COEXIST=1` 时编译）：
+
+**`ff_host_interface.c`（528 行）/ `ff_host_interface.h`（178 行）**
+- `FF_KERNEL_FD_BASE = 0x40000000` 与三个 inline 助手 `ff_is_kernel_fd / ff_kernel_fd_encode / ff_kernel_fd_real`（`.h` L113-128）。受管内核 fd = `host_fd + 0x40000000`，与 FreeBSD fd（`kern.maxfiles <= 65536`）永不冲突。
+- `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear`（`.c` L255-278）：F-Stack fd ↔ 宿主 fd 配对表（每实例单线程）。
+- **24 个 `ff_host_*` 桥**（`.c` L285-431）：对宿主 libc 的薄透传（`socket/bind/listen/accept/accept4/connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/epoll_create1/epoll_ctl/epoll_wait`）。
+
+**`ff_epoll.c`（277 行）- F-Stack + 内核统一 epoll**
+- `ff_epoll_pairs[64]{kq, host_ep}`：为每个 kqueue 惰性配对一个宿主 `epoll` fd。
+- `ff_epoll_ctl`：把受管内核 fd 路由到宿主 epoll，或对双栈 fd 在宿主 epoll 与 kqueue 上双注册。
+- `ff_epoll_wait`：先非阻塞轮询宿主 epoll，再把 kqueue 事件合并进同一 `events[]` 数组。
+- `ff_epoll_pairs_lock` 已移除 —— F-Stack 每实例单线程运行（commit `3e71f4699`）。
+
+**`ff_syscall_wrapper.c` 中的入口路由**（§3.1）：每个内核感知的 `ff_*` 入口通过 `ff_is_kernel_fd()` 识别受管内核 fd 并转发到对应 `ff_host_*` 桥；双建 socket 还会驱动经 `ff_native_map_get()` 查得的配对宿主 fd。未路由（已知限制）：`ff_readv` / `ff_writev` / `ff_ioctl`。
 
 ---
 

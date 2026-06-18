@@ -52,10 +52,10 @@ NIC 驱动 (igb_uio / vfio-pci)
 ```text
 /data/workspace/f-stack/
 ├── lib/                          # F-Stack 核心库（~22K 行 C 代码，33 个 .c 文件；完整清单见 Layer3 §lib）
-│   ├── ff_dpdk_if.c   (2856行) # DPDK 网卡接口层 - 最核心
-│   ├── ff_glue.c      (1468行) # FreeBSD 粘合层
-│   ├── ff_config.c    (1381行) # 配置解析
-│   ├── ff_syscall_wrapper.c (1815行) # Linux→FreeBSD 系统调用适配
+│   ├── ff_dpdk_if.c   (2907行) # DPDK 网卡接口层 - 最核心
+│   ├── ff_glue.c      (1467行) # FreeBSD 粘合层
+│   ├── ff_config.c    (1694行) # 配置解析
+│   ├── ff_syscall_wrapper.c (2125行) # Linux→FreeBSD 系统调用适配
 │   ├── ff_host_interface.c      # 主机接口（pthread/mmap/时间）
 │   ├── ff_init.c         (70行) # 初始化协调
 │   ├── ff_epoll.c       (~134行) # epoll → kqueue 转换
@@ -116,10 +116,10 @@ NIC 驱动 (igb_uio / vfio-pci)
 
 | 模块 | 行数 | 职责 | 依赖 |
 |-----|------|------|------|
-| **ff_dpdk_if.c** | 2856 | NIC 驱动/DPDK 操作/收发包核心逻辑 | DPDK, ff_glue |
-| **ff_glue.c** | 1468 | FreeBSD 内核模拟/内存/锁/中断（M4 完成 8 类 14.0+ ABI 修复） | FreeBSD headers, DPDK |
-| **ff_config.c** | 1381 | INI 配置文件解析 | ff_ini_parser |
-| **ff_syscall_wrapper.c** | 1815 | Linux 系统调用→FreeBSD 适配（M4 同步 sockaddr 调用约定） | FreeBSD sys |
+| **ff_dpdk_if.c** | 2907 | NIC 驱动/DPDK 操作/收发包核心逻辑 | DPDK, ff_glue |
+| **ff_glue.c** | 1467 | FreeBSD 内核模拟/内存/锁/中断（M4 完成 8 类 14.0+ ABI 修复） | FreeBSD headers, DPDK |
+| **ff_config.c** | 1694 | INI 配置文件解析 | ff_ini_parser |
+| **ff_syscall_wrapper.c** | 2125 | Linux 系统调用→FreeBSD 适配（M4 同步 sockaddr；FF_KERNEL_COEXIST 路由） | FreeBSD sys |
 | **ff_init.c** | 70 | 初始化流程协调 | 上述所有模块 |
 | **ff_epoll.c** | ~134 | Linux epoll→FreeBSD kqueue 转换 | FreeBSD kqueue |
 | **ff_host_interface.c** | ~285 | 主机 OS 接口 (mmap/pthread/rand) | 系统库 |
@@ -180,7 +180,7 @@ freebsd/
 
 ### 4.1 ff_dpdk_if.c 核心职责
 
-这是最核心的模块 (2856 行)，负责整个数据链路：
+这是最核心的模块 (2907 行)，负责整个数据链路：
 
 **初始化流程**:
 ```text
@@ -303,6 +303,15 @@ Worker-N (CPU-N)  ┘
 
 **优势**: 故障隔离、灵活扩展  
 **劣势**: 进程间同步复杂
+
+### 6.3 内核栈共存（`FF_KERNEL_COEXIST`，可选，默认关）
+
+可选模式（编译期宏 `FF_KERNEL_COEXIST` + 运行期 `config.ini [stack] kernel_coexist`，二者均默认关）让单进程从 **同一个 `ff_epoll_wait` 循环** 同时通过 **F-Stack 栈** 与 **宿主 Linux 内核栈** 对外服务：
+
+- `ff_socket()` 通过 `SOCK_FSTACK` / `SOCK_KERNEL` 标记选栈；无标记时 **双建** 一个 F-Stack socket 加一个配对宿主 socket。
+- 内核栈 fd 以 `host_fd + 0x40000000`（`FF_KERNEL_FD_BASE`）返回，与 FreeBSD fd（`< 65536`）永不冲突；入口将此类 fd 路由到薄 `ff_host_*` 宿主 libc 桥。
+- F-Stack ↔ 宿主 fd 配对存于 `ff_native_fd_map`；`ff_epoll_*` 为每个 kqueue 惰性配对一个宿主 `epoll` 实现统一事件投递。
+- 宏关闭时库与纯 F-Stack 构建逐字节一致。已知限制：`ff_readv`/`ff_writev`/`ff_ioctl` 尚未内核路由。详见 `docs/kernel_event_support_spec/`。
 
 ## 7. 技术选型分析
 

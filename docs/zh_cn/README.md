@@ -2,7 +2,7 @@
 
 ## 📚 文档概览
 
-本目录包含 F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级而来 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）+ DPDK 23.11.5 的完整三层架构知识库，用于规格驱动开发 (Spec-Driven Development) 的前置架构文档。
+本目录包含 F-Stack v1.26（FreeBSD 15.0 移植；2025-2026 自 13.0 升级而来 —— M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）+ DPDK 24.11.6 LTS（2026-06-09 自 23.11.5 LTS 升级）的完整三层架构知识库，用于规格驱动开发 (Spec-Driven Development) 的前置架构文档。
 
 ### 文档清单
 
@@ -60,12 +60,13 @@
   2. F-Stack_Architecture_Layer2_Interface_Specification.md (完整阅读，1 小时)
   3. F-Stack_Architecture_Layer3_Function_Index.md (完整阅读，1.5 小时)
   4. 精读源码（已对当前 HEAD 校验）:
-     - lib/ff_dpdk_if.c (2856 行)
-     - lib/ff_glue.c (1468 行)
-     - lib/ff_syscall_wrapper.c (1815 行)
+     - lib/ff_dpdk_if.c (2907 行)
+     - lib/ff_glue.c (1467 行)
+     - lib/ff_syscall_wrapper.c (2125 行)
      - lib/ff_ng_base.c (3887 行，netgraph 完整移植)
      - lib/ff_route.c (1604 行，rtsock 部分移植)
      - lib/ff_stub_14_extra.c (799 行，新增：14.0+ 中央 stub 库)
+     - lib/ff_host_interface.c (528 行) / ff_epoll.c (277 行，新增：FF_KERNEL_COEXIST 内核栈共存)
 ```
 
 ### 场景 4：我想查某个 API 函数的用法
@@ -250,11 +251,12 @@ ff_route_ctl / ff_gettimeofday / ff_log / ...
 ### 版本信息
 
 ```
-知识库版本: 1.1（FreeBSD 13.0 → 15.0 第一阶段升级同步，2026-06-08）
-F-Stack 版本: v1.26
+知识库版本: 1.3（新增 FF_KERNEL_COEXIST 内核栈共存同步，2026-06-18；基于 1.2 的 FreeBSD 13.0 → 15.0 第一阶段 + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw 测试）
+F-Stack 版本: v1.26（分支 feature/1.26）
 FreeBSD 移植基线: 15.0（v1.25 时为 13.0）
-DPDK 版本: 23.11.5（不变 —— C-3 约束）
-生成日期: 2026-03-20（最近同步 2026-06-08）
+DPDK 版本: 24.11.6 LTS（2026-06-09 由 23.11.5 LTS 升级；详见 dpdk_23_24_upgrade_spec/zh_cn/）
+反映的新特性: FF_KERNEL_COEXIST 自动双栈共存（默认关；commits ba148589d → 55a84f313）。详见 docs/kernel_event_support_spec/。
+生成日期: 2026-03-20（最近同步 2026-06-18）
 总行数: 约 5839 行 (以实际文件统计为准)
 ```
 
@@ -291,7 +293,7 @@ DPDK 版本: 23.11.5（不变 —— C-3 约束）
 /data/workspace/f-stack/
 ├── lib/               # 核心库 (~21K 行)
 ├── freebsd/           # FreeBSD 协议栈移植
-├── dpdk/              # DPDK 23.11.5 依赖
+├── dpdk/              # DPDK 24.11.6 LTS 依赖
 ├── adapter/           # 中间适配器：micro_thread + syscall（构建 libff_syscall.so 供 LD_PRELOAD 使用）
 ├── example/           # 应用示例 (main.c 推荐)
 ├── app/               # Nginx/Redis 集成

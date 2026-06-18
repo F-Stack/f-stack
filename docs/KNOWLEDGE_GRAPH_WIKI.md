@@ -41,6 +41,26 @@ For evidence-level traceability of each delta, see the upgrade spec series: `doc
 
 ---
 
+## 2A. Post-index code delta: `FF_KERNEL_COEXIST` kernel-stack coexistence
+
+> **Manual addendum (not yet re-indexed)**: the graph above was indexed at commit `208b0c4` (2026-06-08). The `feature/1.26` branch has since landed the **`FF_KERNEL_COEXIST` automatic dual-stack coexistence** feature (commits `ba148589d` → `55a84f313`). The surface below is documented manually against current source until the next `npx gitnexus analyze`.
+
+The feature lets a single process serve a listener over both the F-Stack user-space stack (via the DPDK NIC) and the host Linux kernel stack (via loopback / the management NIC) from one `ff_epoll_wait` loop. It is **off by default** (compile-time macro + runtime `kernel_coexist` switch), and when off the default / `SOCK_FSTACK` path is byte-for-byte unchanged.
+
+| Area | Where in source |
+|------|-----------------|
+| Build & runtime gating (default OFF) | `lib/Makefile` L174-177 injects `-DFF_KERNEL_COEXIST` into both `CFLAGS` and `HOST_CFLAGS`; runtime `config.ini [stack] kernel_coexist=0` default (`ff_config.c` L1027-1033 parse / L1366 default; `ff_config.h` L321-325 `stack` struct) |
+| Managed kernel-fd space | `lib/ff_host_interface.h` L113-128: `FF_KERNEL_FD_BASE 0x40000000` + inline `ff_is_kernel_fd / ff_kernel_fd_encode / ff_kernel_fd_real`; a managed kernel fd = `host_fd + 0x40000000`, which never collides with FreeBSD fds (`kern.maxfiles <= 65536`) |
+| Dual-stack fd map | `lib/ff_host_interface.c` L255-278: `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear` (single-threaded per F-Stack instance) |
+| 24 host-stack bridges | `lib/ff_host_interface.c` L285-431 (`ff_host_socket` … `ff_host_getsockname`), declared `lib/ff_host_interface.h` L147-174 — each a thin passthrough to host libc |
+| Per-socket stack markers | `lib/ff_api.h` L95-100: `SOCK_FSTACK 0x01000000`, `SOCK_KERNEL 0x02000000`; priority: per-socket marker > config `kernel_coexist` > F-Stack |
+| Entry routing | `lib/ff_syscall_wrapper.c`: `ff_socket` dual-create (L915-958); kernel-fd hot-routes + dual-stack map dual-drive across `socket/bind/listen/connect/accept[4]/close/read/write/recv*/send*/sendmsg/recvmsg/getpeername/getsockname/shutdown/setsockopt/getsockopt/fcntl`. **Not routed (known limitation): `ff_readv` / `ff_writev` / `ff_ioctl`** |
+| Unified epoll | `lib/ff_epoll.c` (277 L): `ff_epoll_pairs[64]{kq, host_ep}` lazily pairs one host epoll fd per kqueue; `ff_epoll_ctl` routes kernel fds to the host epoll / dual-registers dual-stack fds; `ff_epoll_wait` polls the host epoll (non-blocking) then merges kqueue events. `ff_epoll_pairs_lock` removed — single-threaded model (commit `3e71f4699`) |
+
+Traceability: `docs/kernel_event_support_spec/` and `docs/kernel_event_support_spec/zh_cn/` (00-10), including the R8 review-gate logs.
+
+---
+
 ## 3. Directory Structure
 
 ```
@@ -53,7 +73,7 @@ f-stack/
 ├── mk/             # Build system (Makefile include files)
 ├── doc/            # Original upstream documentation
 ├── docs/           # 3-tier architecture knowledge base + LD_PRELOAD Ring IPC spec + 13.0→15.0 upgrade spec
-├── dpdk/           # DPDK 23.11.5 submodule (excluded from gitnexus indexing)
+├── dpdk/           # DPDK 24.11.6 LTS submodule (upgraded from 23.11.5 on 2026-06-09; excluded from gitnexus indexing)
 └── freebsd/        # FreeBSD 15.0 kernel source port (excluded from gitnexus indexing)
 ```
 
@@ -64,9 +84,9 @@ The 33 `.c` files in `lib/` (verified by direct read) group into six roles. Sele
 | Role | Representative files |
 |------|----------------------|
 | Public API & init | `ff_api.h`, `ff_init.c` (70 L), `ff_init_main.c` (~660+ L), `ff_freebsd_init.c` (~154 L) |
-| Configuration | `ff_config.c` (1,381 L), `ff_ini_parser.c` (3rd-party inih) |
-| DPDK adapter | `ff_dpdk_if.c` (2,856 L; `main_loop` lives here), `ff_dpdk_kni.c` (~441 L), `ff_dpdk_pcap.c` (~118 L) |
-| Linux→FreeBSD glue | `ff_glue.c` (1,468 L), `ff_syscall_wrapper.c` (1,815 L), `ff_host_interface.c` (~285 L), `ff_epoll.c` (~134 L), `ff_compat.c` (~360 L) |
+| Configuration | `ff_config.c` (1,694 L; incl. `[stack] kernel_coexist` parse), `ff_ini_parser.c` (3rd-party inih) |
+| DPDK adapter | `ff_dpdk_if.c` (2,907 L; `main_loop` lives here), `ff_dpdk_kni.c` (~441 L), `ff_dpdk_pcap.c` (~118 L) |
+| Linux→FreeBSD glue | `ff_glue.c` (1,467 L), `ff_syscall_wrapper.c` (2,125 L; incl. `FF_KERNEL_COEXIST` entry routing), `ff_host_interface.c` (528 L; 24 `ff_host_*` host-stack bridges + `ff_native_fd_map`), `ff_epoll.c` (277 L; unified F-Stack + kernel epoll), `ff_compat.c` (~360 L) |
 | Kernel emulation (libplebnet/libuinet derived) | `ff_kern_condvar.c`, `ff_kern_environment.c` (509 L), `ff_kern_intr.c` (108 L), `ff_kern_subr.c` (271 L), `ff_kern_synch.c` (132 L), `ff_kern_timeout.c` (1,266 L; callout subsystem), `ff_lock.c` (448 L; sx/mutex/lockmgr), `ff_log.c` (111 L), `ff_memory.c` (481 L), `ff_subr_epoch.c` (83 L; verify-only), `ff_subr_prf.c` (604 L), `ff_thread.c` (51 L), `ff_vfs_ops.c` (117 L) |
 | Networking & netgraph | `ff_route.c` (1,604 L; rtsock partial port + ff_rtioctl), `ff_veth.c` (1,132 L; if_t accessors rewrite at M4), `ff_ng_base.c` (3,887 L; full netgraph framework port), `ff_ngctl.c` (131 L) |
 | **14.0+ stub bank (NEW)** | `ff_stub_14_extra.c` (799 L) — central bank for 14.0+ ABI gaps + landing point for 5 runtime-fix patches + defensive `vm_page_alloc_noobj` `panic()` |
@@ -106,7 +126,7 @@ LD_PRELOAD-mode applications run as **two separate processes**: the `fstack` ins
                        │       │
               ┌────────▼──┐ ┌──▼────────┐
               │  FreeBSD  │ │   DPDK    │
-              │  15.0 TCP/│ │  23.11.5  │
+              │  15.0 TCP/│ │ 24.11.6   │
               │  IP Stack │ │ (PMD/EAL) │
               └────────────┘ └──────────┘
 

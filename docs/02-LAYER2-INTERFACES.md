@@ -176,6 +176,18 @@ inet_aton("255.255.255.0", &cfg->host.netmask);
 ff_init(argc, argv);
 ```
 
+### 2.3 Kernel-Stack Coexistence (`FF_KERNEL_COEXIST`, optional, default off)
+
+Built with `make FF_KERNEL_COEXIST=1` and enabled via `config.ini [stack] kernel_coexist=1`, the app can place selected sockets on the host Linux kernel stack while the rest stay on F-Stack, all from one event loop:
+
+```c
+int fk = ff_socket(AF_INET, SOCK_STREAM | SOCK_KERNEL, 0); // host kernel stack
+int ff = ff_socket(AF_INET, SOCK_STREAM | SOCK_FSTACK, 0); // F-Stack stack
+int du = ff_socket(AF_INET, SOCK_STREAM, 0);               // dual-created (default)
+```
+
+A kernel-stack fd is returned as `host_fd + 0x40000000` and is accepted transparently by all `ff_*` calls (forwarded to `ff_host_*` bridges), including `ff_epoll_*`. Off by default → byte-for-byte identical build. Known limitation: `ff_readv` / `ff_writev` / `ff_ioctl` are not yet kernel-routed. See `docs/kernel_event_support_spec/`.
+
 ## 3. Application Development Guidelines
 
 ### 3.1 Three Event Modes

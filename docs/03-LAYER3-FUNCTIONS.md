@@ -308,7 +308,7 @@ struct ff_dispatcher_context {
 
 ## 3. Three Key Source File Analyses
 
-### 3.1 ff_syscall_wrapper.c (1815 Lines) - Linux/FreeBSD Adaptation
+### 3.1 ff_syscall_wrapper.c (2125 Lines) - Linux/FreeBSD Adaptation
 
 **Main Responsibility**: Convert Linux system call parameters/options to FreeBSD equivalents
 
@@ -366,7 +366,7 @@ int ff_setsockopt(int s, int level, int optname,
 #define LINUX_SIOCGIFFLAGS  0x8913    // Get NIC flags
 ```
 
-### 3.2 ff_dpdk_if.c (2856 Lines) - NIC Driver Layer
+### 3.2 ff_dpdk_if.c (2907 Lines) - NIC Driver Layer
 
 **File Structure**:
 
@@ -493,7 +493,7 @@ struct ff_kni_rate_limit {
 };
 ```
 
-### 3.3 ff_glue.c (1468 Lines) - FreeBSD Glue Layer
+### 3.3 ff_glue.c (1467 Lines) - FreeBSD Glue Layer
 
 **Core Responsibility**: Provide kernel primitives for the user-space FreeBSD protocol stack
 
@@ -561,6 +561,13 @@ struct vmspace vmspace0;                   // Virtual memory space
 struct prison prison0;                     // Namespace
 ```
 
+### 3.4 Kernel-Stack Coexistence Files (`FF_KERNEL_COEXIST`, optional)
+
+Compiled only with `FF_KERNEL_COEXIST=1`:
+- **`ff_host_interface.c` (528 L) / `.h` (178 L)**: `FF_KERNEL_FD_BASE=0x40000000` + inline `ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real`; `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear`; **24 `ff_host_*` host-libc bridges**.
+- **`ff_epoll.c` (277 L)**: `ff_epoll_pairs[64]` lazily pairs a host `epoll` per kqueue; `ff_epoll_wait` polls host epoll (non-blocking) then merges kqueue events (single-threaded, no lock).
+- **`ff_syscall_wrapper.c`**: `ff_socket` dual-create + per-entry kernel-fd routing. Not routed: `ff_readv`/`ff_writev`/`ff_ioctl`.
+
 ## 4. Key Header File Overview
 
 | Header | Lines | Purpose |
@@ -569,7 +576,7 @@ struct prison prison0;                     // Namespace
 | `ff_config.h` | ~100 | Configuration structure definitions |
 | `ff_event.h` | ~150 | kevent structures and macros |
 | `ff_errno.h` | ~100 | 96 errno mappings |
-| `ff_host_interface.h` | ~80 | OS abstraction layer (pthread/mmap) |
+| `ff_host_interface.h` | 178 | OS abstraction layer (pthread/mmap) + `FF_KERNEL_COEXIST` kernel-fd helpers & 24 `ff_host_*` bridge decls |
 | `ff_dpdk_if.h` | ~50 | DPDK initialization interface |
 | `ff_veth.h` | ~100 | Virtual Ethernet and mbuf operations |
 | `ff_log.h` | ~50 | Log levels and macros |

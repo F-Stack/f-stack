@@ -255,18 +255,18 @@ F-Stack 架构知识库
   → struct pollfd (poll 结构体)
 
 关键源文件分析
-  → ff_syscall_wrapper.c (1815 行)
+  → ff_syscall_wrapper.c (2125 行)
     ├─ Linux ↔ FreeBSD 选项映射表
     ├─ Address family 映射
     └─ 参数转换逻辑
   
-  → ff_dpdk_if.c (2856 行)
+  → ff_dpdk_if.c (2907 行)
     ├─ 全局变量 (11 个关键状态)
     ├─ 初始化流程
     ├─ 报文处理逻辑
     └─ 主轮询循环
   
-  → ff_glue.c (1468 行)
+  → ff_glue.c (1467 行)
     ├─ 内核原语模拟 (锁/条件变量)
     ├─ 内存管理模拟
     └─ 全局变量模拟
@@ -616,14 +616,15 @@ net.inet.tcp.functions_default=bbr    # BBR 算法 (高延迟网络), freebsd/ra
 
 ```
 优先级 1 (必读):
-  └─ lib/ff_dpdk_if.c (2856 行)    - NIC 驱动和主轮询循环
-  └─ lib/ff_glue.c (1468 行)       - 内核原语模拟
+  └─ lib/ff_dpdk_if.c (2907 行)    - NIC 驱动和主轮询循环
+  └─ lib/ff_glue.c (1467 行)       - 内核原语模拟
   └─ lib/ff_init.c (69 行)         - 初始化协调
 
 优先级 2 (推荐):
-  └─ lib/ff_syscall_wrapper.c (1815 行) - Linux 兼容层
-  └─ lib/ff_config.c (1381 行)     - 配置解析
-  └─ lib/ff_epoll.c (159 行)       - Epoll 兼容
+  └─ lib/ff_syscall_wrapper.c (2125 行) - Linux 兼容层 + FF_KERNEL_COEXIST 路由
+  └─ lib/ff_config.c (1694 行)     - 配置解析
+  └─ lib/ff_epoll.c (277 行)       - Epoll 兼容（F-Stack + 内核统一）
+  └─ lib/ff_host_interface.c (528 行) - FF_KERNEL_COEXIST 宿主栈桥（可选）
 
 优先级 3 (深入):
   └─ example/main.c (222 行)       - Kqueue 应用示例
@@ -636,7 +637,7 @@ net.inet.tcp.functions_default=bbr    # BBR 算法 (高延迟网络), freebsd/ra
 ```
 DPDK 相关:
   □ DPDK 官方文档: https://doc.dpdk.org
-  □ DPDK 代码: /data/workspace/f-stack/dpdk (23.11.5)
+  □ DPDK 代码: /data/workspace/f-stack/dpdk (24.11.6 LTS)
 
 FreeBSD 相关:
   □ FreeBSD TCP/IP 源码: /data/workspace/f-stack/freebsd/
@@ -658,11 +659,11 @@ F-Stack 相关:
 ### 8.1 版本信息
 
 ```
-知识库版本: 1.1（FreeBSD 13.0 → 15.0 第一阶段升级同步，2026-06-08）
-F-Stack 版本: v1.26
+知识库版本: 1.3（新增 FF_KERNEL_COEXIST 内核栈共存同步，2026-06-18）
+F-Stack 版本: v1.26（分支 feature/1.26）
 FreeBSD 移植基线: 15.0（v1.25 时为 13.0）
-DPDK 版本: 23.11.5（不变 —— C-3 约束）
-生成日期: 2026-03-20（最近同步 2026-06-08）
+DPDK 版本: 24.11.6 LTS（2026-06-09 自 23.11.5 LTS 升级）
+生成日期: 2026-03-20（最近同步 2026-06-18）
 更新周期: 按 F-Stack 版本更新 (建议每 6-12 个月)
 ```
 

@@ -176,6 +176,18 @@ inet_aton("255.255.255.0", &cfg->host.netmask);
 ff_init(argc, argv);
 ```
 
+### 2.3 内核栈共存（`FF_KERNEL_COEXIST`，可选，默认关）
+
+以 `make FF_KERNEL_COEXIST=1` 构建并通过 `config.ini [stack] kernel_coexist=1` 开启后，应用可把个别 socket 放到宿主 Linux 内核栈，其余照常留在 F-Stack，全部在同一事件循环内：
+
+```c
+int fk = ff_socket(AF_INET, SOCK_STREAM | SOCK_KERNEL, 0); // 宿主内核栈
+int ff = ff_socket(AF_INET, SOCK_STREAM | SOCK_FSTACK, 0); // F-Stack 栈
+int du = ff_socket(AF_INET, SOCK_STREAM, 0);               // 双建（默认）
+```
+
+内核栈 fd 以 `host_fd + 0x40000000` 返回，并被所有 `ff_*` 调用透明接受（转发到 `ff_host_*` 桥），含 `ff_epoll_*`。默认关闭 → 构建逐字节一致。已知限制：`ff_readv` / `ff_writev` / `ff_ioctl` 尚未内核路由。详见 `docs/kernel_event_support_spec/`。
+
 ## 3. 应用开发规范
 
 ### 3.1 三种事件模式

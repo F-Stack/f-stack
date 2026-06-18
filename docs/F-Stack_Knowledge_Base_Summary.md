@@ -255,18 +255,18 @@ Core Data Structures
   → struct pollfd (poll structure)
 
 Key Source File Analyses
-  → ff_syscall_wrapper.c (1815 lines)
+  → ff_syscall_wrapper.c (2125 lines)
     ├─ Linux ↔ FreeBSD option mapping tables
     ├─ Address family mapping
     └─ Parameter conversion logic
   
-  → ff_dpdk_if.c (2856 lines)
+  → ff_dpdk_if.c (2907 lines)
     ├─ Global variables (11 key states)
     ├─ Initialization flow
     ├─ Packet processing logic
     └─ Main polling loop
   
-  → ff_glue.c (1468 lines)
+  → ff_glue.c (1467 lines)
     ├─ Kernel primitive emulation (locks/condition variables)
     ├─ Memory management emulation
     └─ Global variable emulation
@@ -616,14 +616,15 @@ Issue 4: Multi-process synchronization issues
 
 ```
 Priority 1 (Must-read):
-  └─ lib/ff_dpdk_if.c (2856 lines)    - NIC driver and main polling loop
-  └─ lib/ff_glue.c (1468 lines)       - Kernel primitive emulation
+  └─ lib/ff_dpdk_if.c (2907 lines)    - NIC driver and main polling loop
+  └─ lib/ff_glue.c (1467 lines)       - Kernel primitive emulation
   └─ lib/ff_init.c (69 lines)         - Initialization coordination
 
 Priority 2 (Recommended):
-  └─ lib/ff_syscall_wrapper.c (1815 lines) - Linux compatibility layer
-  └─ lib/ff_config.c (1381 lines)     - Configuration parsing
-  └─ lib/ff_epoll.c (159 lines)       - Epoll compatibility
+  └─ lib/ff_syscall_wrapper.c (2125 lines) - Linux compatibility layer + FF_KERNEL_COEXIST routing
+  └─ lib/ff_config.c (1694 lines)     - Configuration parsing
+  └─ lib/ff_epoll.c (277 lines)       - Epoll compatibility (unified F-Stack + kernel)
+  └─ lib/ff_host_interface.c (528 lines) - FF_KERNEL_COEXIST host-stack bridges (optional)
 
 Priority 3 (Deep dive):
   └─ example/main.c (222 lines)       - Kqueue application example
@@ -636,7 +637,7 @@ Priority 3 (Deep dive):
 ```
 DPDK Related:
   □ DPDK Official Documentation: https://doc.dpdk.org
-  □ DPDK Code: /data/workspace/f-stack/dpdk (23.11.5)
+  □ DPDK Code: /data/workspace/f-stack/dpdk (24.11.6 LTS)
 
 FreeBSD Related:
   □ FreeBSD TCP/IP Source: /data/workspace/f-stack/freebsd/
@@ -658,11 +659,11 @@ Performance Optimization:
 ### 8.1 Version Information
 
 ```
-Knowledge base version: 1.1 (post FreeBSD 13.0 → 15.0 first-stage upgrade sync, 2026-06-08)
-F-Stack version: v1.26
+Knowledge base version: 1.3 (adds FF_KERNEL_COEXIST kernel-stack coexistence sync, 2026-06-18)
+F-Stack version: v1.26 (branch feature/1.26)
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
-DPDK version: 23.11.5 (unchanged — C-3 constraint)
-Generation date: 2026-03-20 (last sync 2026-06-08)
+DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09)
+Generation date: 2026-03-20 (last sync 2026-06-18)
 Update cycle: Per F-Stack version updates (recommended every 6-12 months)
 ```
 

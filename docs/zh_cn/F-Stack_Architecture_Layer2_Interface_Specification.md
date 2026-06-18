@@ -15,7 +15,7 @@ F-Stack 导出 **80+ 个公开符号**，分为以下几大类：
 
 ```
 ┌─────────────────────────────────────────────────┐
-│      F-Stack 公开 API (ff_api.h 412行)         │
+│      F-Stack 公开 API (ff_api.h 491行)         │
 ├─────────────────────────────────────────────────┤
 │ 1. 生命周期管理 (3 个)                          │
 │    ff_init / ff_run / ff_stop_run               │
@@ -62,7 +62,7 @@ F-Stack 导出 **80+ 个公开符号**，分为以下几大类：
 
 ### 1.2 六个主要头文件详解
 
-#### **ff_api.h (416 行) - 主 API**
+#### **ff_api.h (491 行) - 主 API**
 
 **初始化与启动**：
 ```c
@@ -642,6 +642,10 @@ udp_port=53
 #general_packets_ratelimit=0
 #kernel_packets_ratelimit=0
 
+[stack]
+kernel_coexist = 0           # 内核栈共存（仅在 FF_KERNEL_COEXIST=1 构建时生效）。
+                             # 0=关（纯 F-Stack，默认），1=开（SOCK_KERNEL socket 同时走宿主内核栈）
+
 [freebsd.boot]
 # FreeBSD 启动时配置
 hz = 100                     # 时钟频率 (Hz)
@@ -698,6 +702,31 @@ ff_load_config(argc, argv)
   └─ 6. 生成 DPDK 参数数组
         (传给 rte_eal_init)
 ```
+
+### 3.4 内核栈共存接口（`FF_KERNEL_COEXIST`，可选）
+
+当库以 `make FF_KERNEL_COEXIST=1` 构建且 `config.ini [stack] kernel_coexist=1` 时，应用可把个别 socket 放到宿主 Linux 内核栈上，其余照常走 F-Stack 快路径 —— 全部在同一进程、同一事件循环内完成。该契约刻意保持小而增量（不改任何既有签名）：
+
+**逐 socket 选栈标记**（定义在 `ff_api.h`，仅 `FF_KERNEL_COEXIST` 下）：
+
+```c
+#define SOCK_FSTACK 0x01000000   // 强制 F-Stack 用户态栈
+#define SOCK_KERNEL 0x02000000   // 强制宿主 Linux 内核栈
+
+int fk = ff_socket(AF_INET, SOCK_STREAM | SOCK_KERNEL, 0);  // 内核栈 socket
+int ff = ff_socket(AF_INET, SOCK_STREAM | SOCK_FSTACK, 0);  // F-Stack socket
+int du = ff_socket(AF_INET, SOCK_STREAM, 0);                // 双建（默认）
+```
+
+| `type` 标记 | `kernel_coexist=1` 时行为 | 返回 fd |
+|-------------|---------------------------|---------|
+| `SOCK_KERNEL`（无 `SOCK_FSTACK`） | 仅建宿主内核 socket | 受管内核 fd = `host_fd + 0x40000000` |
+| `SOCK_FSTACK` | 仅建 F-Stack socket | F-Stack fd |
+| 均无（默认） | **双建**：F-Stack + 配对宿主 socket | F-Stack fd（宿主 fd 存于 `ff_native_fd_map`） |
+
+优先级：per-socket 标记 > `config.ini [stack] kernel_coexist` > F-Stack。未编译该宏时标记未定义，`ff_socket` 行为与此前完全一致。
+
+**透明路由。** 所有标准 `ff_*` 调用都透明接受受管内核 fd：`ff_bind/listen/connect/accept[4]/close/read/write/recv*/send*/sendmsg/recvmsg/getpeername/getsockname/shutdown/setsockopt/getsockopt/fcntl`，以及 `ff_epoll_ctl/wait`。内部每个内核 fd 转发给薄 `ff_host_*` 宿主 libc 桥（`lib/ff_host_interface.c`）。**尚未路由（已知限制）：** `ff_readv` / `ff_writev` / `ff_ioctl` —— 内核/双栈 fd 请用 `ff_read` / `ff_write`。完整设计与测试见 `docs/kernel_event_support_spec/`。
 
 ---
 

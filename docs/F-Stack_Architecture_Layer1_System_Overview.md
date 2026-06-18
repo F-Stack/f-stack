@@ -2,7 +2,7 @@
 
 **Document Version**: 1.0  
 **Analysis Date**: 2026-03-20  
-**Coverage**: F-Stack v1.26 (FreeBSD 15.0 port, upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS) + DPDK 23.11.5  
+**Coverage**: F-Stack v1.26 (FreeBSD 15.0 port, upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS) + DPDK 24.11.6 LTS (upgraded from 23.11.5 on 2026-06-09) + FF_KERNEL_COEXIST kernel-stack coexistence (default off)  
 **Target Audience**: Architects, system designers, performance optimization engineers
 
 ---
@@ -81,13 +81,13 @@ Actual data on 10GbE link:
 /data/workspace/f-stack/
 │
 ├── lib/                                    # F-Stack core library (~21K lines of C code)
-│   ├── ff_dpdk_if.c          (2856 lines) # ⭐ Most critical: DPDK/NIC driver
-│   ├── ff_glue.c             (1468 lines) # Kernel emulation layer
-│   ├── ff_config.c           (1381 lines) # Configuration parsing
-│   ├── ff_syscall_wrapper.c  (1815 lines) # Linux↔FreeBSD adaptation
+│   ├── ff_dpdk_if.c          (2907 lines) # ⭐ Most critical: DPDK/NIC driver
+│   ├── ff_glue.c             (1467 lines) # Kernel emulation layer
+│   ├── ff_config.c           (1694 lines) # Configuration parsing
+│   ├── ff_syscall_wrapper.c  (2125 lines) # Linux↔FreeBSD adaptation
 │   ├── ff_init.c             (69 lines)   # Initialization coordination
-│   ├── ff_epoll.c            (159 lines)  # Epoll compatibility layer
-│   ├── ff_host_interface.c               # Host OS interface
+│   ├── ff_epoll.c            (277 lines)  # Epoll compat (unified F-Stack+kernel)
+│   ├── ff_host_interface.c   (528 lines)  # Host OS iface + FF_KERNEL_COEXIST bridges
 │   ├── ff_dpdk_kni.c                      # Virtual NIC support
 │   ├── ff_*.h                             # API and data structure definitions
 │   └── Makefile              (765 lines)  # Build system
@@ -102,7 +102,7 @@ Actual data on 10GbE link:
 │   ├── amd64/                # x86 architecture code
 │   └── contrib/ck/           # ConcurrencyKit atomic operations
 │
-├── dpdk/                                   # DPDK 23.11.5 dependency (submodule)
+├── dpdk/                                   # DPDK 24.11.6 LTS dependency (submodule)
 │   ├── lib/
 │   │   ├── eal/              # Environment Abstraction Layer
 │   │   ├── ethdev/           # NIC generic interface
@@ -154,11 +154,11 @@ Actual data on 10GbE link:
 
 | Module | File | Lines | Responsibility | Dependencies |
 |--------|------|-------|---------------|--------------|
-| **NIC Driver Layer** | ff_dpdk_if.c | 2856 | DPDK initialization, NIC operations, core TX/RX logic | DPDK, ff_glue |
-| **Glue Layer** | ff_glue.c | 1468 | Kernel API emulation (locks, memory, interrupts; M4 8-category 14.0+ ABI fixes) | FreeBSD sys, pthread |
-| **Configuration System** | ff_config.c | 1381 | INI file parsing, runtime parameter management | ff_ini_parser |
-| **Linux Compatibility** | ff_syscall_wrapper.c | 1815 | Socket option/errno mapping (M4 sockaddr calling-convention update) | FreeBSD API |
-| **Epoll Compatibility** | ff_epoll.c | 159 | Linux epoll → FreeBSD kqueue conversion | ff_kqueue |
+| **NIC Driver Layer** | ff_dpdk_if.c | 2907 | DPDK initialization, NIC operations, core TX/RX logic | DPDK, ff_glue |
+| **Glue Layer** | ff_glue.c | 1467 | Kernel API emulation (locks, memory, interrupts; M4 8-category 14.0+ ABI fixes) | FreeBSD sys, pthread |
+| **Configuration System** | ff_config.c | 1694 | INI file parsing, runtime parameter management | ff_ini_parser |
+| **Linux Compatibility** | ff_syscall_wrapper.c | 2125 | Socket option/errno mapping (M4 sockaddr update; FF_KERNEL_COEXIST routing) | FreeBSD API |
+| **Epoll Compatibility** | ff_epoll.c | 277 | Linux epoll → FreeBSD kqueue (unified F-Stack + kernel epoll) | ff_kqueue |
 | **Initialization Coordination** | ff_init.c | 69 | Startup flow orchestration | All other modules |
 | **Host Interface** | ff_host_interface.c | - | mmap/pthread/time interfaces | System libraries |
 | **Virtual NIC** | ff_dpdk_kni.c | - | Kernel virtual NIC support | DPDK KNI |
@@ -239,7 +239,7 @@ Application Layer
     └────────┬────────┘
              │
     ┌────────▼──────────────────────────────────────┐
-    │        Glue Layer (ff_glue.c 1468 lines)      │
+    │        Glue Layer (ff_glue.c 1467 lines)      │
     │ Kernel API User-Space Emulation                │
     │ ├─ Mutex/RWLock    (pthread_mutex_t)         │
     │ ├─ CondVar         (pthread_cond_t)          │
@@ -422,6 +422,22 @@ static int main_loop(void *arg) {
 - **Timer-driven**: Relies on CPU TSC counter for clock maintenance
 - **Batch processing**: Process MAX_PKT_BURST packets per iteration
 - **User-controllable**: Application handles business logic via loop_func callback
+
+### 3.4 Kernel-Stack Coexistence Mode (`FF_KERNEL_COEXIST`, optional, default off)
+
+By default every socket lives purely in the F-Stack user-space stack. The optional **kernel-stack coexistence** mode lets one process — and one `ff_epoll_wait` loop — serve traffic over **both** the F-Stack stack (high-performance path via the DPDK NIC) **and** the host Linux kernel stack (via loopback / the management NIC) at the same time. This lets a local `ping`/`curl` reach an F-Stack listener and lets the application `connect()` to local or external kernel-stack services, without giving up the F-Stack fast path.
+
+**Two-level gate (zero regression when off):**
+- Compile-time macro `FF_KERNEL_COEXIST` (built with `make FF_KERNEL_COEXIST=1`; default not defined). When undefined, the whole feature compiles out and the build is byte-for-byte identical to the pure-F-Stack library.
+- Runtime switch `config.ini [stack] kernel_coexist=0|1` (default `0`). Even when compiled in, the feature stays off until explicitly enabled.
+
+**How it works:**
+- **Per-socket stack selection.** `ff_socket()` honours two flags OR-ed into `type`: `SOCK_FSTACK` forces the F-Stack stack, `SOCK_KERNEL` forces the host kernel stack. With no flag (and coexistence enabled) the socket is **dual-created** — an F-Stack socket plus a paired host-kernel socket. Priority: per-socket marker > config `kernel_coexist` > F-Stack.
+- **Managed kernel-fd space.** A kernel-stack fd is handed to the application as `host_fd + FF_KERNEL_FD_BASE` (`0x40000000`), far above the maximum FreeBSD fd (`kern.maxfiles <= 65536`), so the two fd ranges never collide. F-Stack entry points recognise such an fd and route it to a thin host-libc bridge; the default F-Stack path is left untouched.
+- **Dual-stack fd pairing.** For a dual-created socket the F-Stack fd ↔ host fd pairing is tracked in `ff_native_fd_map`, so control/data operations drive both stacks where it matters (e.g. `bind`/`listen` on both, `shutdown`/`close` on both).
+- **Unified event loop.** `ff_epoll_*` lazily pairs one host `epoll` fd per kqueue, so kernel-fd and F-Stack events are delivered from the single `ff_epoll_wait()` the application already runs.
+
+**Known limitations (this release):** `ff_readv` / `ff_writev` / `ff_ioctl` are not yet routed to the kernel stack — use `ff_read` / `ff_write` for dual-stack fds. Full design, test, and review-gate record: `docs/kernel_event_support_spec/` (+ `zh_cn/`).
 
 ---
 

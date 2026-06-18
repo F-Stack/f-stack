@@ -52,10 +52,10 @@ NIC Hardware
 ```text
 /data/workspace/f-stack/
 ├── lib/                          # F-Stack core library (~22K lines, 33 .c files; full inventory in Layer3 §lib)
-│   ├── ff_dpdk_if.c   (2856 lines) # DPDK NIC interface layer - most critical
-│   ├── ff_glue.c      (1468 lines) # FreeBSD glue layer
-│   ├── ff_config.c    (1381 lines) # Configuration parsing
-│   ├── ff_syscall_wrapper.c (1815 lines) # Linux→FreeBSD system call adaptation
+│   ├── ff_dpdk_if.c   (2907 lines) # DPDK NIC interface layer - most critical
+│   ├── ff_glue.c      (1467 lines) # FreeBSD glue layer
+│   ├── ff_config.c    (1694 lines) # Configuration parsing
+│   ├── ff_syscall_wrapper.c (2125 lines) # Linux→FreeBSD system call adaptation
 │   ├── ff_host_interface.c      # Host interface (pthread/mmap/time)
 │   ├── ff_init.c         (70 lines)  # Initialization coordination
 │   ├── ff_epoll.c       (~134 lines) # epoll → kqueue conversion
@@ -116,10 +116,10 @@ NIC Hardware
 
 | Module | Lines | Responsibility | Dependencies |
 |--------|-------|---------------|--------------|
-| **ff_dpdk_if.c** | 2856 | NIC driver/DPDK operations/core TX/RX logic | DPDK, ff_glue |
-| **ff_glue.c** | 1468 | FreeBSD kernel emulation/memory/locks/interrupts (8-category 14.0+ ABI fixes at M4) | FreeBSD headers, DPDK |
-| **ff_config.c** | 1381 | INI configuration file parsing | ff_ini_parser |
-| **ff_syscall_wrapper.c** | 1815 | Linux system call → FreeBSD adaptation (sockaddr calling-convention update at M4) | FreeBSD sys |
+| **ff_dpdk_if.c** | 2907 | NIC driver/DPDK operations/core TX/RX logic | DPDK, ff_glue |
+| **ff_glue.c** | 1467 | FreeBSD kernel emulation/memory/locks/interrupts (8-category 14.0+ ABI fixes at M4) | FreeBSD headers, DPDK |
+| **ff_config.c** | 1694 | INI configuration file parsing | ff_ini_parser |
+| **ff_syscall_wrapper.c** | 2125 | Linux system call → FreeBSD adaptation (sockaddr update at M4; FF_KERNEL_COEXIST routing) | FreeBSD sys |
 | **ff_init.c** | 70 | Initialization flow coordination | All above modules |
 | **ff_epoll.c** | ~134 | Linux epoll → FreeBSD kqueue conversion | FreeBSD kqueue |
 | **ff_host_interface.c** | ~285 | Host OS interface (mmap/pthread/rand) | System libraries |
@@ -180,7 +180,7 @@ freebsd/
 
 ### 4.1 ff_dpdk_if.c Core Responsibilities
 
-This is the most critical module (2856 lines), responsible for the entire data link:
+This is the most critical module (2907 lines), responsible for the entire data link:
 
 **Initialization Flow**:
 ```text
@@ -303,6 +303,15 @@ Shared Resources:
 
 **Advantages**: Fault isolation, flexible scaling  
 **Disadvantages**: Complex inter-process synchronization
+
+### 6.3 Kernel-Stack Coexistence (`FF_KERNEL_COEXIST`, optional, default off)
+
+An optional mode (compile-time macro `FF_KERNEL_COEXIST` + runtime `config.ini [stack] kernel_coexist`, both default off) lets one process serve traffic over **both** the F-Stack stack and the host Linux kernel stack from the **same `ff_epoll_wait` loop**:
+
+- `ff_socket()` selects the stack via `SOCK_FSTACK` / `SOCK_KERNEL` flags; with no flag it **dual-creates** an F-Stack socket plus a paired host socket.
+- A kernel-stack fd is returned as `host_fd + 0x40000000` (`FF_KERNEL_FD_BASE`), which never collides with FreeBSD fds (`< 65536`); entries route such fds to thin `ff_host_*` host-libc bridges.
+- The F-Stack ↔ host fd pairing is held in `ff_native_fd_map`; `ff_epoll_*` lazily pairs a host `epoll` per kqueue for unified event delivery.
+- When the macro is off the library is byte-for-byte identical to the pure-F-Stack build. Known limitation: `ff_readv`/`ff_writev`/`ff_ioctl` are not yet kernel-routed. See `docs/kernel_event_support_spec/`.
 
 ## 7. Technology Selection Analysis
 
