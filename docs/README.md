@@ -62,11 +62,11 @@ Reading order:
   4. Deep-dive into source code (verified against current HEAD):
      - lib/ff_dpdk_if.c (2907 lines)
      - lib/ff_glue.c (1467 lines)
-     - lib/ff_syscall_wrapper.c (2125 lines)
+     - lib/ff_syscall_wrapper.c (2212 lines)
      - lib/ff_ng_base.c (3887 lines, full netgraph port)
      - lib/ff_route.c (1604 lines, rtsock partial port)
      - lib/ff_stub_14_extra.c (799 lines, NEW: 14.0+ central stub bank)
-     - lib/ff_host_interface.c (528 lines) / ff_epoll.c (277 lines, NEW: FF_KERNEL_COEXIST kernel-stack coexistence)
+     - lib/ff_host_interface.c (583 lines, 27 ff_host_*) / ff_epoll.c (289 lines) / ff_syscall_wrapper.c (2212 lines, NEW: FF_KERNEL_COEXIST coexistence + R9 kqueue/kevent coexistence + IPv6 IPV6_V6ONLY)
 ```
 
 ### Scenario 4: I Want to Look Up the Usage of a Specific API Function
@@ -251,11 +251,11 @@ Recommended path:
 ### Version Information
 
 ```
-Knowledge base version: 1.3 (adds FF_KERNEL_COEXIST kernel-stack coexistence sync, 2026-06-18; on top of 1.2 FreeBSD 13.0 → 15.0 first-stage + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test)
+Knowledge base version: 1.4 (adds R9: ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY, 2026-06-18; on top of 1.3 FF_KERNEL_COEXIST kernel-stack coexistence sync + 1.2 FreeBSD 13.0 → 15.0 first-stage + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test)
 F-Stack version: v1.26 (branch feature/1.26)
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
 DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 via tree replace + 4 patches re-applied; see dpdk_23_24_upgrade_spec/zh_cn/)
-New feature reflected: FF_KERNEL_COEXIST automatic dual-stack coexistence (default off; commits ba148589d → 55a84f313). See docs/kernel_event_support_spec/.
+New feature reflected: FF_KERNEL_COEXIST automatic dual-stack coexistence (default off; commits ba148589d → 55a84f313) + R9 kqueue/kevent coexistence + IPv6 IPV6_V6ONLY (kqueue-model kernel-side curl 127.0.0.1:80 = 200; -DINET6 v4+v6 same-port startup fixed). See docs/kernel_event_support_spec/ (incl. plan-r9-kqueue-coexist-ipv6.md).
 Generation date: 2026-03-20 (last sync 2026-06-18)
 Total lines: ~5839 lines (based on actual file count)
 ```

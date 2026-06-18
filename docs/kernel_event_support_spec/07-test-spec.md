@@ -13,6 +13,12 @@
 > - **Real-machine dual-stack (Q4=B)**: DPDK-exclusive NIC (≠eth1); one default `listen(80)` demo. IT-1 `ff_netstat`+`ss` each see 80; IT-2 remote `curl 9.134.214.176:80` (F-Stack side, via DPDK NIC); IT-3 local `curl 127.0.0.1:80` (kernel side); IT-5 unified events both stacks. config local test values not committed.
 > - **PERF-4 (v6)**: single-stack connection recv/send hot path no extra cost (no map lookup, NFR-2).
 > - **Gate**: connect (UT-14/IT-9) finalized only after **user confirms the §6 contract**.
+>
+> **R9 sync (key points; see `zh_cn/07-test-spec.md` for full detail)**:
+> - **New v6/R9 cmocka cases (macro-on)**: UT-19 `ff_kevent` changelist registers kernel/dual-stack fd → `ff_host_epoll_ctl(ADD, map[fd], EPOLLIN)` (mock count, `data`=app fd); UT-20 `ff_kevent` eventlist synthesizes a kernel-ready `struct kevent` (`ident` restored, `filter=EVFILT_READ`, `EPOLLHUP`→`EV_EOF`) merged with `ff_kevent_do_each`, no loss; UT-21 kqueue-fd close clears `ff_epoll_pairs`+host_ep (no leak); UT-22 `ff_socket(AF_INET6)` dual-build → host IPv6 `IPV6_V6ONLY==1`, host `[::]:80`+`0.0.0.0:80` both bind OK (real loopback); UT-23 macro-off `ff_kqueue/ff_kevent` zero regression (no `ff_host_epoll_*`).
+> - **Real-machine (R9)**: IT-11 kqueue-model helloworld (coexist=1) kernel `curl 127.0.0.1:80=200 size=438` (was 000) + F-Stack `9.134.214.176:80=200` no regression; IT-12 `-DINET6` helloworld (coexist=1) starts successfully (v4+v6 listen, no errno=98), packet capture confirms kernel-side 200.
+> - **Gate (R9)**: UT-19~23 pass + IT-11 + IT-12 measured; macro-off nm zero regression for `ff_kqueue/ff_kevent`; `ff_kevent` kernel fd `EVFILT_READ/WRITE`-only is a documented known limit.
+>
 > **Alignment**: `tests/unit` (**cmocka**, *.c + *.ini), `tests/integration`, coverage `tests/run_full_coverage.sh` (lcov).
 
 ---

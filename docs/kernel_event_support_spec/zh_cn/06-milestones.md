@@ -19,7 +19,9 @@
 | R4 | 测试与性能基线 | 单测/集成/真机性能 | 已完成 |
 | R5 | 门禁 + 提交 | gatekeeper + 英文 spec | 已完成 |
 | R6 | 编译宏门控（v5） | `FF_KERNEL_COEXIST` 包裹 7 文件 + 双编译 nm 零回归 | 已完成（ba148589d） |
-| **R7** | **native 自动双栈（v6）** | 默认双建/双驱动 + `ff_native_fd_map` + 双栈事件 + accept 归属 + connect 草案 | **本轮设计；待实现** |
+| **R7** | **native 自动双栈（v6）** | 默认双建/双驱动 + `ff_native_fd_map` + 双栈事件 + accept 归属 + connect 草案 | 已完成（门禁 PASS） |
+| R8 | 内核路由补齐 | `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核 fd 路由（D8） | 已完成 |
+| **R9** | **kqueue 共存 + IPv6 V6ONLY** | `ff_kqueue/ff_kevent/ff_kevent_do_each` 共存（仿 `ff_epoll`，P2）+ host IPv6 socket `IPV6_V6ONLY=1`（P1） | **本轮设计；待实现** |
 
 > **共存铁律**：所有里程碑保证 F-Stack 用户态栈始终承担业务、绝不被旁路（NFR-3）。
 
@@ -72,11 +74,39 @@
 
 ---
 
+## 6bis. R9 kqueue 共存 + IPv6 V6ONLY（编码工作清单）
+
+> **前置现状（实测，`02 §7`）**：R7 双栈事件仅覆盖 `ff_epoll_*`；`ff_kqueue/ff_kevent/ff_kevent_do_each` 无共存路由（grep 仅 `ff_epoll.c` 命中宏）；`example/main.c` kqueue 模型内核侧 `curl 127.0.0.1:80=000`。`-DINET6` 双建因 host IPv6 V6ONLY 缺失 `ff_bind errno=98` 启动失败。
+
+### 6bis.1 `ff_kqueue/ff_kevent` 共存（P2，核心）
+- `ff_syscall_wrapper.c::ff_kqueue`（`#ifdef FF_KERNEL_COEXIST`）：coexist 开时返回 F-Stack kqueue fd，首次 `ff_kevent` 惰性配对 host epoll（复用 `ff_epoll.c` 的 `ff_epoll_host_ep(kq,create)`/`ff_epoll_pairs`）。
+- `ff_syscall_wrapper.c::ff_kevent`（`#ifdef FF_KERNEL_COEXIST`）：
+  - **changelist**：对 ident 为内核 fd（`ff_is_kernel_fd`）或双栈 fd（`ff_native_map_get>0`）的 EV_ADD/EV_DELETE → `ff_host_epoll_ctl`（`EVFILT_READ↔EPOLLIN`/`EVFILT_WRITE↔EPOLLOUT`，`epoll_event.data`=应用面 fd）；内核-only 变更不下发 F-Stack kqueue。
+  - **eventlist**：先 `ff_host_epoll_wait(host_ep, timeout=0)` 合成 `struct kevent`（`ident`=app fd 还原、`filter`=READ/WRITE、`EV_EOF`=EPOLLHUP/ERR），再 `ff_kevent_do_each` 填 F-Stack 事件，合并计数。
+- `ff_close` 对 kqueue fd 清 `ff_epoll_pairs`+关 host_ep（复用 `ff_epoll_close_pair`，R7 已含）；复核 kqueue 与 epoll 共享 `ff_epoll_pairs` 时各自 kq 独立配对，不混用。
+- **落点/行号执行期以代码实测为准**（禁臆测）。
+
+### 6bis.2 IPv6 双建 V6ONLY（P1）
+- `ff_socket` 双建 host IPv6 socket 后、或 `ff_host_socket` 内：对 `domain==AF_INET6/LINUX_AF_INET6` 的 host socket `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)`（落点执行期实测择优）。
+- best-effort：V6ONLY 从根消除 v4/v6 同端口冲突；host bind 失败保持可诊断（`05 §7`）。
+
+### 6bis.3 编译宏门控
+- 6bis.1/6bis.2 全部新增代码置于 `#ifdef FF_KERNEL_COEXIST` 内；宏关时 `ff_kqueue/ff_kevent` 逐字节零回归、无新符号（`07 §1bis` nm 比对）。
+
+### 6bis.4 验收
+- plain helloworld（kqueue，coexist=1）内核侧 `curl 127.0.0.1:80=200 size=438`，且 F-Stack 侧 `ssh f-stack-client→9.134.214.176:80=200` 不回归（FR-5/FR-6）。
+- `-DINET6` helloworld（coexist=1）成功启动（v4+v6 listen 均建立），抓包确认内核侧 200。
+- 宏关/coexist=0/`SOCK_FSTACK` 逐字节零回归（NFR-1）；F-Stack 始终在位（NFR-3）。详见 `07`/`08`。
+
+---
+
 ## 7. 风险与回退
 - `ff_socket`/`ff_bind`/`ff_listen` 触及创建路径：默认双栈分支条件前置（marker 单栈 + coexist 开），单测覆盖零回归。
 - 改 `ff_host_interface.c`（加 `ff_native_fd_map`）不改结构头，避免 ABI 偏斜；若改头须 clean 全量重编（`10 §7`）。
 - **共存铁律**：任何阶段若 F-Stack fd 未建/被旁路 → 立即打回（违 NFR-3）。
 - **connect 歧义**：§connect 草案未经用户确认前不得当定稿；门禁列「connect 契约确认」项。
+- **R9 kqueue 与 epoll 共享 `ff_epoll_pairs`**：须确认同一 kq 不被 epoll 与 kevent 两种语义混用（`ff_epoll_create` 返回独立 kqueue，风险低，仍须 review）；`FF_EPOLL_COEXIST_MAX` 容量在多 kq 场景须评估是否够用。
+- **R9 IPV6_V6ONLY 落点**：须实测（`ff_host_socket` 通用 vs `ff_socket` 双建处），避免影响纯内核 `SOCK_KERNEL` IPv6。
 - 严禁引入 KNI/`rte_kni`。
 
 ## 8. 工作区脚本规约

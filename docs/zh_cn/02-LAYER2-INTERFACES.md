@@ -186,7 +186,7 @@ int ff = ff_socket(AF_INET, SOCK_STREAM | SOCK_FSTACK, 0); // F-Stack 栈
 int du = ff_socket(AF_INET, SOCK_STREAM, 0);               // 双建（默认）
 ```
 
-内核栈 fd 以 `host_fd + 0x40000000` 返回，并被所有 `ff_*` 调用透明接受（转发到 `ff_host_*` 桥），含 `ff_epoll_*`。默认关闭 → 构建逐字节一致。已知限制：`ff_readv` / `ff_writev` / `ff_ioctl` 尚未内核路由。详见 `docs/kernel_event_support_spec/`。
+内核栈 fd 以 `host_fd + 0x40000000` 返回，并被所有 `ff_*` 调用透明接受（转发到 `ff_host_*` 桥），含 `ff_epoll_*`，以及 —— 自 **R9** 起 —— `ff_kqueue`/`ff_kevent`：每个 kqueue 惰性配对一个宿主 epoll（共享 `ff_epoll_host_ep`），`ff_kevent` 把内核/双栈 fd 的 `EVFILT_READ/WRITE` 注册其中，等待时非阻塞轮询宿主 epoll 合成 `struct kevent`（`ident`=应用面 fd）再合并 F-Stack 事件 —— 使纯 kqueue 应用（`example/main.c`）能感知内核侧 listener（`curl 127.0.0.1:80`=200）。双建 `AF_INET6` socket 的宿主对应 socket 被设 `IPV6_V6ONLY=1`，使 `-DINET6` 构建以 v4+v6 同端口启动。默认关闭 → 构建逐字节一致。已知限制：`ff_readv` / `ff_writev` / `ff_ioctl` 尚未内核路由；内核 fd 经 kqueue 仅支持 `EVFILT_READ/WRITE`。详见 `docs/kernel_event_support_spec/`。
 
 ## 3. 应用开发规范
 

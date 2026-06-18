@@ -218,6 +218,59 @@ ff_connect(s, name)  s 为双栈 fd (map[s]>0)
 
 ---
 
+## 8bis. R9：`ff_kqueue/ff_kevent` 共存 + IPv6 V6ONLY
+
+> R7 双栈事件仅覆盖 `ff_epoll_*`；直接用 `ff_kqueue/ff_kevent` 的应用（如 `example/main.c` 的 kqueue 模型）感知不到内核侧连接（`02 §7.1` 实测内核侧 `curl=000`）。R9 对称仿 `ff_epoll` 范式补齐 kqueue 共存，并修 IPv6 双建端口冲突（`02 §7.2`）。
+
+### 8bis.1 kqueue 共存（P2，复用 `ff_epoll_pairs` 基础设施）
+对称仿 `ff_epoll.c` 的 `ff_epoll_pairs[kq→host_ep]` 惰性配对机制（外网已证 F-Stack epoll 即基于 kqueue 封装，可复用同一表）：
+
+```
+ff_kqueue()                                                    [#ifdef FF_KERNEL_COEXIST]
+  └─ kq = 原 ff_kqueue 路径（F-Stack kqueue fd）
+  ► host epoll 惰性建（首次 ff_kevent 配对，复用 ff_epoll_host_ep(kq,create)）
+
+ff_kevent(kq, changelist, nchanges, eventlist, nevents, timeout)
+  ┌─ 处理 changelist（注册/反注册）：对每个 changelist[i]
+  │    ident 为内核 fd(ff_is_kernel_fd) 或双栈 fd(ff_native_map_get>0)？
+  │      EV_ADD  ─► host fd(real / map[ident]) 按 filter 映射
+  │                  EVFILT_READ→EPOLLIN / EVFILT_WRITE→EPOLLOUT
+  │                  ff_host_epoll_ctl(host_ep, ADD, host_fd, {events, data=应用面 fd})
+  │      EV_DELETE─► ff_host_epoll_ctl(host_ep, DEL, host_fd)
+  │      内核-only 变更 ─► 不下发 F-Stack kqueue
+  └─ 等待（eventlist）：
+       1) ff_host_epoll_wait(host_ep, evbuf, n, timeout=0)  非阻塞取内核就绪
+            合成 struct kevent：ident=epoll_event.data（还原应用面 fd）
+                                filter=EPOLLIN→EVFILT_READ / EPOLLOUT→EVFILT_WRITE
+                                EV_EOF 映射 EPOLLHUP|EPOLLERR
+       2) ff_kevent_do_each(kq, eventlist+已填, nevents-已填)  取 F-Stack 就绪
+       3) 合并计数返回
+```
+
+- **app fd 还原**：注册进 host epoll 时用 `epoll_event.data` 存「应用面 fd」（双栈用 F-Stack 原始 fd、内核-only 用 encode fd）；等待时直接还原为 `kevent.ident`，使 demo 的 `clientfd==sockfd` 与 `EVFILT_READ` 分支照常 `ff_accept`/read/write（这些入口 R7 已 coexist 路由到 `ff_host_*`）。
+- **关闭**：复用/对齐 `ff_epoll_close_pair`（`ff_close` 已调用），kq 关闭释放配对 host epoll（避免内核 fd 泄漏）。
+- **与 `ff_epoll_*` 正交**：`ff_epoll_create` 返回独立 kqueue（`ff_epoll.c:73-77`），同一 kq 不会被 epoll 与 kevent 两种语义混用；两者共享同一 `ff_epoll_pairs` 表但各自 kq 独立配对。
+- 全程 `#ifdef FF_KERNEL_COEXIST` 门控，宏关时 `ff_kqueue/ff_kevent` 逐字节零回归（仅原 F-Stack 路径）。
+
+### 8bis.2 IPv6 双建 V6ONLY（P1）
+对 host 侧 IPv6 socket 设 `IPV6_V6ONLY=1`，使其只处理 IPv6、与 host IPv4 同端口共存：
+
+```
+ff_socket(AF_INET6, ...)  默认双栈
+  ├─ sys_socket()                       ─► F-Stack fd s
+  └─ ff_host_socket(AF_INET6, ...)      ─► host fd h
+       └─ setsockopt(h, IPPROTO_IPV6, IPV6_V6ONLY, 1)   [coexist + AF_INET6]
+     ff_native_map_set(s, h)
+  ► host IPv6 socket 只绑 [::]:80（不连带 IPv4），与 host IPv4 0.0.0.0:80 共存
+```
+
+- **落点候选（执行阶段以代码实测择优，禁臆测）**：优先在 `ff_socket` 双建 host IPv6 socket 后、或 `ff_host_socket` 内对 `domain==AF_INET6/LINUX_AF_INET6` 的 host socket `setsockopt(IPV6_V6ONLY,1)`。
+- **best-effort 评估**：优先用 V6ONLY 从根上消除冲突；保持 host bind 失败仍可诊断（不无条件吞错），是否让 host bind 失败「非致命」由 R9 实现期按代码实测定（仿 `ff_connect` best-effort）。
+- 不影响纯内核 `SOCK_KERNEL` IPv6（V6ONLY 仅作用于 host socket，与 marker 语义正交）。
+- 验收：`-DINET6` helloworld 在 coexist=1 下成功启动（v4+v6 listen 均建立），不回归 coexist=0 / 纯 F-Stack。
+
+---
+
 ## 9. 内核-用户态栈共存矩阵
 
 | 维度 | F-Stack 用户态栈（业务，始终在位） | 内核栈（并行附加栈） |

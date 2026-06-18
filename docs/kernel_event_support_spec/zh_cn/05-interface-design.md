@@ -98,6 +98,23 @@ int fonly = ff_socket(AF_INET, SOCK_STREAM | SOCK_FSTACK, 0);   /* 仅 F-Stack�
 
 ---
 
+## 3ter. R9：`ff_kqueue/ff_kevent` 共存契约 + IPv6 V6ONLY
+
+> R7 双栈事件仅覆盖 `ff_epoll_*`；R9 对称补 `ff_kqueue/ff_kevent` 共存（复用 `ff_epoll_pairs`）与 host IPv6 socket `IPV6_V6ONLY=1`。全程 `#ifdef FF_KERNEL_COEXIST`，运行期 `kernel_coexist=0` 短路，宏关零回归。
+
+| 接口 | 实测落点 | 单栈内核(R7 等) | F-Stack 路径 | R9 共存（新增） |
+|---|---|---|---|---|
+| `ff_kqueue` | `ff_syscall_wrapper.c` | — | 原 kqueue fd | coexist 开：返回 F-Stack kqueue fd；首次 `ff_kevent` 惰性配对 host epoll（复用 `ff_epoll_host_ep`） |
+| `ff_kevent`（changelist） | `ff_syscall_wrapper.c` | — | `ff_kevent_do_each` 下发 F-Stack kqueue | ident 为内核 fd/双栈 fd 的 EV_ADD/EV_DELETE → `ff_host_epoll_ctl`（`EVFILT_READ↔EPOLLIN`/`EVFILT_WRITE↔EPOLLOUT`，`data`=应用面 fd）；内核-only 变更不下发 F-Stack kqueue |
+| `ff_kevent`（eventlist） | `ff_syscall_wrapper.c` | — | `ff_kevent_do_each` 取 F-Stack 就绪 | 先 `ff_host_epoll_wait(timeout=0)` 取内核就绪→合成 `struct kevent`（`ident`=app fd 还原、`filter`=READ/WRITE、`EV_EOF`=EPOLLHUP/ERR），再 `ff_kevent_do_each` 合并计数 |
+| `ff_socket(AF_INET6)` host 侧 | `ff_socket`/`ff_host_socket` | — | — | host IPv6 socket `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)`，只处理 IPv6、与 host IPv4 同端口共存 |
+
+- **app fd 还原契约**：注册进 host epoll 时 `epoll_event.data` 存「应用面 fd」（双栈=F-Stack 原始 fd、内核-only=encode fd）；等待时还原为 `kevent.ident`，应用对同一 ident 的 `EVFILT_READ` 分支照常 `ff_accept`/read/write（R7 已 coexist 路由）。
+- **close 联动**：kqueue fd `ff_close` 清 `ff_epoll_pairs` + 关 host_ep（复用 `ff_epoll_close_pair`，§3 `ff_close` 已含）。
+- **IPV6_V6ONLY best-effort**：优先从根消除 v4/v6 同端口冲突；host bind 失败仍可诊断，是否「非致命」由 R9 实现期按代码实测定（仿 `ff_connect`）。仅作用于 host socket，不影响 `SOCK_KERNEL` IPv6 与 F-Stack 路径。
+
+---
+
 ## 3bis. `ff_native_fd_map` 访问器契约（v6 待实现）
 
 ```c
@@ -191,7 +208,9 @@ ff_connect(s, name, namelen)   s 为双栈 fd (ff_native_map_get(s)>0)
 | 内核/F-Stack 地址端口冲突 | 返回原生 errno（双栈某栈 bind 失败按部分失败契约处理） |
 | close 双栈 fd | 两栈 close + `ff_native_map_clear`；kqueue fd 清 `ff_epoll_pairs`（避免内核 fd 泄漏，FR-7） |
 | 内核 fd 调用 `sendmsg/recvmsg/getpeername/getsockname/shutdown` | R8 已加内核路由：前 4 内核 fd 走 `ff_host_*` 单栈；`shutdown` 内核 fd 走 host，双栈 map fd 两侧双驱动半关闭（仿 `ff_close`） |
-| 双栈 fd 调用未路由接口 | `ff_readv/writev/ioctl` 默认**仅 F-Stack 驱动**（D8 延伸已知限制） |
+| 双栈 fd 调用未路由接口 | `ff_readv/writev/ioctl` 默认**仅 F-Stack 驱动**（D8 延伸已知限制；R9 不在本轮扩展，维持已知限制） |
+| **R9：`ff_kevent` 内核 fd 仅支持 `EVFILT_READ/WRITE`** | 内核侧经 host epoll，仅 `EPOLLIN/EPOLLOUT` 语义；`EVFILT_TIMER/SIGNAL/PROC/VNODE` 等非 READ/WRITE filter 对内核 fd **不经 host epoll 共存**（已知限制，仍走 F-Stack kqueue 原语义）；`EV_EOF` 映射 `EPOLLHUP\|EPOLLERR` |
+| **R9：IPv6 双建 V6ONLY 失败** | host IPv6 socket `setsockopt(IPV6_V6ONLY,1)` 失败时按部分失败契约（记日志，不静默；不影响 F-Stack v6 listen） |
 
 ---
 

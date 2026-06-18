@@ -37,8 +37,10 @@
 static struct { int kq; int host_ep; } ff_epoll_pairs[FF_EPOLL_COEXIST_MAX];
 
 /* Return the host epoll fd paired with kqueue fd kq; create it lazily when
- * 'create' is non-zero. Returns -1 if none (and create==0) or on failure. */
-static int
+ * 'create' is non-zero. Returns -1 if none (and create==0) or on failure.
+ * Shared with ff_kevent (ff_syscall_wrapper.c) so both event APIs use one
+ * host epoll per kqueue. */
+int
 ff_epoll_host_ep(int kq, int create)
 {
     int i, slot = -1, ep = -1;
@@ -145,7 +147,12 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
         EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
         EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
 
+#ifdef FF_KERNEL_COEXIST
+        /* Host (un)registration handled above; bypass coexist-aware ff_kevent. */
+        return ff_kevent_do_each(epfd, kev, changes, NULL, 0, NULL, NULL);
+#else
         return ff_kevent(epfd, kev, changes, NULL, 0, NULL);
+#endif
     }
 
     /*
@@ -191,7 +198,12 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
     EV_SET(&kev[0], fd, EVFILT_READ, read_flags, 0, 0, event->data.ptr);
     EV_SET(&kev[1], fd, EVFILT_WRITE, write_flags, 0, 0, event->data.ptr);
 
+#ifdef FF_KERNEL_COEXIST
+    /* Host (un)registration handled above; bypass coexist-aware ff_kevent. */
+    return ff_kevent_do_each(epfd, kev, changes, NULL, 0, NULL, NULL);
+#else
     return ff_kevent(epfd, kev, changes, NULL, 0, NULL);
+#endif
 }
 
 static void

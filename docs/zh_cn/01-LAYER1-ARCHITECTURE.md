@@ -55,10 +55,10 @@ NIC 驱动 (igb_uio / vfio-pci)
 │   ├── ff_dpdk_if.c   (2907行) # DPDK 网卡接口层 - 最核心
 │   ├── ff_glue.c      (1467行) # FreeBSD 粘合层
 │   ├── ff_config.c    (1694行) # 配置解析
-│   ├── ff_syscall_wrapper.c (2125行) # Linux→FreeBSD 系统调用适配
-│   ├── ff_host_interface.c      # 主机接口（pthread/mmap/时间）
+│   ├── ff_syscall_wrapper.c (2212行) # Linux→FreeBSD 系统调用适配（+ R9 kqueue 共存 + IPV6_V6ONLY）
+│   ├── ff_host_interface.c (583行) # 主机接口（pthread/mmap/时间）+ FF_KERNEL_COEXIST 桥（27 个 ff_host_*）
 │   ├── ff_init.c         (70行) # 初始化协调
-│   ├── ff_epoll.c       (~134行) # epoll → kqueue 转换
+│   ├── ff_epoll.c       (289行) # epoll → kqueue 转换（F-Stack + 内核统一）
 │   ├── ff_dpdk_kni.c            # 虚拟网卡支持（通过 virtio_user 实现，已不依赖 rte_kni.ko）
 │   ├── ff_route.c     (1604行) # 路由套接字 / RIB 钩子（rtsock 部分移植）
 │   ├── ff_veth.c      (1132行) # 虚拟以太网设备（M4 完成 if_t accessor 全量重写）
@@ -119,10 +119,10 @@ NIC 驱动 (igb_uio / vfio-pci)
 | **ff_dpdk_if.c** | 2907 | NIC 驱动/DPDK 操作/收发包核心逻辑 | DPDK, ff_glue |
 | **ff_glue.c** | 1467 | FreeBSD 内核模拟/内存/锁/中断（M4 完成 8 类 14.0+ ABI 修复） | FreeBSD headers, DPDK |
 | **ff_config.c** | 1694 | INI 配置文件解析 | ff_ini_parser |
-| **ff_syscall_wrapper.c** | 2125 | Linux 系统调用→FreeBSD 适配（M4 同步 sockaddr；FF_KERNEL_COEXIST 路由） | FreeBSD sys |
+| **ff_syscall_wrapper.c** | 2212 | Linux 系统调用→FreeBSD 适配（M4 同步 sockaddr；FF_KERNEL_COEXIST 路由；R9 kqueue 共存 + IPV6_V6ONLY） | FreeBSD sys |
 | **ff_init.c** | 70 | 初始化流程协调 | 上述所有模块 |
-| **ff_epoll.c** | ~134 | Linux epoll→FreeBSD kqueue 转换 | FreeBSD kqueue |
-| **ff_host_interface.c** | ~285 | 主机 OS 接口 (mmap/pthread/rand) | 系统库 |
+| **ff_epoll.c** | 289 | Linux epoll→FreeBSD kqueue 转换（F-Stack + 内核统一；ff_epoll_host_ep 与 kqueue 路径共享） | FreeBSD kqueue |
+| **ff_host_interface.c** | 583 | 主机 OS 接口 (mmap/pthread/rand) + FF_KERNEL_COEXIST 宿主栈桥（27 个 ff_host_*） | 系统库 |
 | **ff_dpdk_kni.c** | ~441 | 虚拟网卡支持（通过 virtio_user 实现，已不依赖 rte_kni.ko） | DPDK virtio_user |
 | **ff_route.c** | 1604 | 路由套接字 / RIB 钩子（rtsock 部分移植；M4 完成 5 类 14.0+ ABI 修复） | FreeBSD net/route |
 | **ff_veth.c** | 1132 | 虚拟以太网设备（M4 完成 28 处 if_t accessor 重写） | FreeBSD net/if |
@@ -310,8 +310,9 @@ Worker-N (CPU-N)  ┘
 
 - `ff_socket()` 通过 `SOCK_FSTACK` / `SOCK_KERNEL` 标记选栈；无标记时 **双建** 一个 F-Stack socket 加一个配对宿主 socket。
 - 内核栈 fd 以 `host_fd + 0x40000000`（`FF_KERNEL_FD_BASE`）返回，与 FreeBSD fd（`< 65536`）永不冲突；入口将此类 fd 路由到薄 `ff_host_*` 宿主 libc 桥。
-- F-Stack ↔ 宿主 fd 配对存于 `ff_native_fd_map`；`ff_epoll_*` 为每个 kqueue 惰性配对一个宿主 `epoll` 实现统一事件投递。
-- 宏关闭时库与纯 F-Stack 构建逐字节一致。已知限制：`ff_readv`/`ff_writev`/`ff_ioctl` 尚未内核路由。详见 `docs/kernel_event_support_spec/`。
+- F-Stack ↔ 宿主 fd 配对存于 `ff_native_fd_map`；`ff_epoll_*` 为每个 kqueue 惰性配对一个宿主 `epoll` 实现统一事件投递。双建 `AF_INET6` socket 的宿主对应 socket 被设 `IPV6_V6ONLY=1`（`ff_host_set_v6only`，R9），使 v4+v6 同端口共存（修复此前 `-DINET6` `errno=98` 启动失败）。
+- **R9** 将统一事件扩展到原生 `ff_kqueue`/`ff_kevent`（共享 `ff_epoll_host_ep`）：`ff_kevent` 把内核/双栈 fd 的 `EVFILT_READ/WRITE` 注册进 kqueue 配对的宿主 epoll，等待时非阻塞轮询合成 `struct kevent`（`ident`=应用面 fd）再合并 F-Stack 事件 —— 纯 kqueue 应用（`example/main.c`）现可感知内核侧 listener（`curl 127.0.0.1:80`=200，修复前 000）。
+- 宏关闭时库与纯 F-Stack 构建逐字节一致。已知限制：`ff_readv`/`ff_writev`/`ff_ioctl` 尚未内核路由；内核 fd 经 kqueue 仅支持 `EVFILT_READ/WRITE`。详见 `docs/kernel_event_support_spec/`。
 
 ## 7. 技术选型分析
 

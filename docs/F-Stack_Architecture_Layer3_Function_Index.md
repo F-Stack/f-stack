@@ -437,12 +437,18 @@ const char * ff_strerror(int errnum)
 // === Kernel-stack coexistence (only when built with FF_KERNEL_COEXIST) ===
 // Per-socket stack markers (ff_api.h): SOCK_FSTACK 0x01000000 / SOCK_KERNEL 0x02000000
 // Internal machinery (lib/ff_host_interface.{c,h}):
-//   24 ff_host_* host-libc bridges: ff_host_socket/bind/listen/accept/accept4/
+//   27 ff_host_* host-libc bridges: ff_host_socket/bind/listen/accept/accept4/
 //     connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/
 //     shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/
 //     epoll_create1/epoll_ctl/epoll_wait
+//     + R9: ff_host_set_v6only (setsockopt IPV6_V6ONLY=1 on host IPv6 socket),
+//           ff_host_kqueue_ctl / ff_host_kqueue_poll (kqueue<->host-epoll bridge)
 //   ff_native_map_get/set/clear     - F-Stack fd <-> host fd pairing table (65536 entries)
 //   ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real (inline; FF_KERNEL_FD_BASE=0x40000000)
+// R9 kqueue coexistence (lib/ff_syscall_wrapper.c): ff_kqueue/ff_kevent mirror the epoll
+//   path - lazily pair a host epoll per kqueue (shared ff_epoll_host_ep), register
+//   kernel/dual-stack-fd EVFILT_READ/WRITE into it, synthesize struct kevent from the
+//   host epoll then merge ff_kevent_do_each F-Stack events. Kernel fds: READ/WRITE only.
 // Compiled out entirely when FF_KERNEL_COEXIST is undefined.
 ```
 
@@ -751,7 +757,7 @@ ff_poll(fds, 2, -1);  // Block until events arrive
 
 ## 3. In-Depth Analysis of Three Key Source Files
 
-### 3.1 ff_syscall_wrapper.c (2125 Lines)
+### 3.1 ff_syscall_wrapper.c (2212 Lines)
 
 **Responsibility**: Linux ↔ FreeBSD system call and parameter mapping
 
@@ -1002,18 +1008,21 @@ struct prison *prison0;           // Global namespace
 
 Two files carry the optional coexistence machinery (compiled only with `FF_KERNEL_COEXIST=1`):
 
-**`ff_host_interface.c` (528 Lines) / `ff_host_interface.h` (178 Lines)**
+**`ff_host_interface.c` (583 Lines) / `ff_host_interface.h` (182 Lines)**
 - `FF_KERNEL_FD_BASE = 0x40000000` and three inline helpers `ff_is_kernel_fd / ff_kernel_fd_encode / ff_kernel_fd_real` (`.h` L113-128). A managed kernel fd = `host_fd + 0x40000000`, which never collides with FreeBSD fds (`kern.maxfiles <= 65536`).
-- `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear` (`.c` L255-278): the F-Stack fd ↔ host fd pairing table (single-threaded per instance).
-- **24 `ff_host_*` bridges** (`.c` L285-431): thin passthroughs to host libc (`socket/bind/listen/accept/accept4/connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/epoll_create1/epoll_ctl/epoll_wait`).
+- `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear` (`.c` L257-278): the F-Stack fd ↔ host fd pairing table (single-threaded per instance).
+- **27 `ff_host_*` bridges** (`.c` L287-483): thin passthroughs to host libc (`socket/bind/listen/accept/accept4/connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/epoll_create1/epoll_ctl/epoll_wait`). **R9 added 3**: `ff_host_set_v6only` (L297 — `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)` on a host IPv6 socket so it coexists with the same-port host IPv4 socket), `ff_host_kqueue_ctl` (L422) and `ff_host_kqueue_poll` (L441) servicing the kqueue↔host-epoll coexistence path.
 
-**`ff_epoll.c` (277 Lines) - unified F-Stack + kernel epoll**
+**`ff_epoll.c` (289 Lines) - unified F-Stack + kernel epoll**
 - `ff_epoll_pairs[64]{kq, host_ep}`: lazily pairs one host `epoll` fd per kqueue.
 - `ff_epoll_ctl`: routes a managed kernel fd to the host epoll, or dual-registers a dual-stack fd on both the host epoll and the kqueue.
 - `ff_epoll_wait`: first non-blocking poll of the host epoll, then merge kqueue events into the same `events[]` array.
 - `ff_epoll_pairs_lock` was removed — F-Stack runs single-threaded per instance (commit `3e71f4699`).
+- **R9**: `ff_epoll_host_ep(kq, create)` promoted from `static` to a shared symbol (declared `ff_host_interface.h` L139) so the kqueue coexistence path reuses the same `ff_epoll_pairs` pairing table.
 
-**Entry routing in `ff_syscall_wrapper.c`** (§3.1): each kernel-aware `ff_*` entry detects a managed kernel fd via `ff_is_kernel_fd()` and forwards to the matching `ff_host_*` bridge; dual-created sockets additionally drive the paired host fd looked up via `ff_native_map_get()`. Not routed (known limitation): `ff_readv` / `ff_writev` / `ff_ioctl`.
+**R9: unified kqueue/kevent coexistence in `ff_syscall_wrapper.c`** — `ff_kqueue` (L1895) and `ff_kevent` (L2050) now mirror the epoll path. `ff_kevent` splits the changelist via `ff_kevent_host_change` (L2006): entries whose `ident` is a managed kernel fd (`ff_is_kernel_fd`) or a dual-stack fd (`ff_native_map_get>0`) have their `EVFILT_READ/WRITE` registered into the kqueue-paired host epoll through `ff_host_kqueue_ctl` (kernel-only changes are NOT forwarded to the F-Stack kqueue; dual-stack fds are still forwarded). The eventlist is filled by `ff_kevent_host_wait` (L2034) — `ff_host_kqueue_poll(timeout=0)` then synthesizes `struct kevent` (`ident`=app-side fd, `filter`=READ/WRITE, `EV_EOF`↔`EPOLLHUP|ERR`) — merged with `ff_kevent_do_each` F-Stack events. This fixes the `example/main.c` kqueue model so the kernel-side `curl 127.0.0.1:80` returns **200 size=438** (was 000). Known limitation: kernel fds via kqueue support `EVFILT_READ/WRITE` only.
+
+**Entry routing in `ff_syscall_wrapper.c`** (§3.1): each kernel-aware `ff_*` entry detects a managed kernel fd via `ff_is_kernel_fd()` and forwards to the matching `ff_host_*` bridge; dual-created sockets additionally drive the paired host fd looked up via `ff_native_map_get()`. On `AF_INET6` dual-build, `ff_socket` calls `ff_host_set_v6only(hfd)` (L952) so the `-DINET6` build starts cleanly with v4+v6 on the same port (fixes the prior host-IPv6 `errno=98 EADDRINUSE`). Not routed (known limitation): `ff_readv` / `ff_writev` / `ff_ioctl`.
 
 ---
 

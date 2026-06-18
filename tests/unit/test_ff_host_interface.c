@@ -718,6 +718,182 @@ test_ff_host_msg_name_shutdown_bridges(void **state)
     ff_host_close(cli);
     ff_host_close(ln);
 }
+
+/*
+ * R9 P1: ff_host_set_v6only forces IPV6_V6ONLY=1 on a host AF_INET6 socket,
+ * enabling a dual-stack pair to share the same port with an AF_INET socket
+ * (even when the host net.ipv6.bindv6only sysctl is 0).
+ */
+static void
+test_ff_host_set_v6only(void **state)
+{
+    (void)state;
+    int s6 = socket(AF_INET6, SOCK_STREAM, 0);
+    assert_true(s6 >= 0);
+
+    assert_int_equal(ff_host_set_v6only(s6), 0);
+
+    int v6only = 0;
+    socklen_t olen = sizeof(v6only);
+    assert_int_equal(getsockopt(s6, IPPROTO_IPV6, IPV6_V6ONLY,
+                                &v6only, &olen), 0);
+    assert_int_equal(v6only, 1);
+
+    /* bind the v6-only socket to [::]:0 and learn the ephemeral port */
+    struct sockaddr_in6 sa6;
+    memset(&sa6, 0, sizeof(sa6));
+    sa6.sin6_family = AF_INET6;
+    sa6.sin6_addr = in6addr_any;
+    sa6.sin6_port = 0;
+    assert_int_equal(bind(s6, (struct sockaddr *)&sa6, sizeof(sa6)), 0);
+    socklen_t s6len = sizeof(sa6);
+    assert_int_equal(getsockname(s6, (struct sockaddr *)&sa6, &s6len), 0);
+    uint16_t port = sa6.sin6_port;
+
+    /* An AF_INET socket may now bind 0.0.0.0:<same-port> without EADDRINUSE,
+     * proving v6-only frees the IPv4 namespace for the dual-stack pair. */
+    int s4 = socket(AF_INET, SOCK_STREAM, 0);
+    assert_true(s4 >= 0);
+    struct sockaddr_in sa4;
+    memset(&sa4, 0, sizeof(sa4));
+    sa4.sin_family = AF_INET;
+    sa4.sin_addr.s_addr = htonl(INADDR_ANY);
+    sa4.sin_port = port;
+    if (bind(s4, (struct sockaddr *)&sa4, sizeof(sa4)) != 0) {
+        char m[96];
+        snprintf(m, sizeof(m),
+                 "AF_INET bind of shared port failed: errno=%d (%s)",
+                 errno, strerror(errno));
+        fail_msg("%s", m);
+    }
+
+    ff_host_close(s4);
+    ff_host_close(s6);
+}
+
+/*
+ * R9 P2: ff_host_kqueue_ctl registers a host fd into the host epoll paired
+ * with a kqueue; ff_host_kqueue_poll drains it as (app_fd, is_write, is_eof)
+ * triples. Drive it with a real loopback TCP listener: register listen_fd with
+ * a synthetic app_fd, connect a client, and confirm the readable event carries
+ * the registered app_fd with is_write=0. Then DEL and confirm de-registration.
+ */
+static void
+test_ff_host_kqueue_ctl_poll(void **state)
+{
+    (void)state;
+    int epfd = ff_host_epoll_create1(0);
+    assert_true(epfd >= 0);
+
+    int ln = socket(AF_INET, SOCK_STREAM, 0);
+    assert_true(ln >= 0);
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = 0;
+    assert_int_equal(bind(ln, (struct sockaddr *)&sa, sizeof(sa)), 0);
+    assert_int_equal(listen(ln, 1), 0);
+    socklen_t slen = sizeof(sa);
+    assert_int_equal(getsockname(ln, (struct sockaddr *)&sa, &slen), 0);
+
+    const int app_fd = 0x40000123;   /* synthetic kernel-namespace app fd */
+
+    /* poll with nothing pending -> 0 events */
+    int triples[3 * 8];
+    assert_int_equal(ff_host_kqueue_poll(epfd, triples, 8), 0);
+
+    /* register listen fd for read readiness, carrying app_fd in data.fd */
+    ff_host_kqueue_ctl(epfd, 0, ln, app_fd, 0);
+
+    int cli = socket(AF_INET, SOCK_STREAM, 0);
+    assert_true(cli >= 0);
+    assert_int_equal(connect(cli, (struct sockaddr *)&sa, sizeof(sa)), 0);
+
+    /* the listener becomes readable; retry briefly for delivery */
+    int n = 0;
+    for (int tries = 0; tries < 50 && n == 0; tries++) {
+        n = ff_host_kqueue_poll(epfd, triples, 8);
+        if (n == 0) {
+            struct timespec slp = {0, 2 * 1000 * 1000};
+            nanosleep(&slp, NULL);
+        }
+    }
+    assert_int_equal(n, 1);
+    assert_int_equal(triples[0], app_fd);   /* app_fd round-trips via data.fd */
+    assert_int_equal(triples[1], 0);        /* is_write=0 (registered EPOLLIN) */
+
+    /* de-register; subsequent poll must report nothing for this fd */
+    int srv = accept(ln, NULL, NULL);       /* drain backlog so it's not re-fired */
+    assert_true(srv >= 0);
+    ff_host_kqueue_ctl(epfd, 1, ln, app_fd, 0);
+    assert_int_equal(ff_host_kqueue_poll(epfd, triples, 8), 0);
+
+    ff_host_close(srv);
+    ff_host_close(cli);
+    ff_host_close(ln);
+    ff_host_close(epfd);
+}
+
+/*
+ * R9 P2 (optional): ff_host_kqueue_ctl is idempotent on a repeated ADD of the
+ * same fd. The first ADD succeeds; a second ADD returns EEXIST inside the
+ * helper and silently falls back to EPOLL_CTL_MOD. The fd must still be
+ * pollable exactly once afterward (no error, no duplicate registration).
+ */
+static void
+test_ff_host_kqueue_ctl_add_idempotent(void **state)
+{
+    (void)state;
+    int epfd = ff_host_epoll_create1(0);
+    assert_true(epfd >= 0);
+
+    int ln = socket(AF_INET, SOCK_STREAM, 0);
+    assert_true(ln >= 0);
+    struct sockaddr_in sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sin_family = AF_INET;
+    sa.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    sa.sin_port = 0;
+    assert_int_equal(bind(ln, (struct sockaddr *)&sa, sizeof(sa)), 0);
+    assert_int_equal(listen(ln, 1), 0);
+    socklen_t slen = sizeof(sa);
+    assert_int_equal(getsockname(ln, (struct sockaddr *)&sa, &slen), 0);
+
+    const int app_fd1 = 0x40000777;
+    const int app_fd2 = 0x40000888;   /* second ADD re-maps app_fd via MOD */
+
+    ff_host_kqueue_ctl(epfd, 0, ln, app_fd1, 0);
+    /* repeat ADD on same hfd -> EEXIST -> MOD fallback (no error surfaced) */
+    ff_host_kqueue_ctl(epfd, 0, ln, app_fd2, 0);
+
+    int cli = socket(AF_INET, SOCK_STREAM, 0);
+    assert_true(cli >= 0);
+    assert_int_equal(connect(cli, (struct sockaddr *)&sa, sizeof(sa)), 0);
+
+    int triples[3 * 8];
+    int n = 0;
+    for (int tries = 0; tries < 50 && n == 0; tries++) {
+        n = ff_host_kqueue_poll(epfd, triples, 8);
+        if (n == 0) {
+            struct timespec slp = {0, 2 * 1000 * 1000};
+            nanosleep(&slp, NULL);
+        }
+    }
+    /* exactly one registration: the MOD-updated app_fd2 is reported once */
+    assert_int_equal(n, 1);
+    assert_int_equal(triples[0], app_fd2);
+    assert_int_equal(triples[1], 0);
+
+    int srv = accept(ln, NULL, NULL);
+    assert_true(srv >= 0);
+    ff_host_kqueue_ctl(epfd, 1, ln, app_fd2, 0);
+
+    ff_host_close(srv);
+    ff_host_close(cli);
+    ff_host_close(ln);
+    ff_host_close(epfd);
+}
 #endif /* FF_KERNEL_COEXIST */
 
 int
@@ -756,6 +932,10 @@ main(void)
         cmocka_unit_test(test_ff_kernel_fd_encode_roundtrip),
         cmocka_unit_test(test_ff_native_fd_map),
         cmocka_unit_test(test_ff_host_msg_name_shutdown_bridges),
+        /* R9 P1/P2 coexistence: v6only + host-epoll kqueue ctl/poll */
+        cmocka_unit_test(test_ff_host_set_v6only),
+        cmocka_unit_test(test_ff_host_kqueue_ctl_poll),
+        cmocka_unit_test(test_ff_host_kqueue_ctl_add_idempotent),
 #endif /* FF_KERNEL_COEXIST */
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

@@ -110,7 +110,20 @@ ff_kevent_do_each(int kq, const struct kevent *changelist, int nchanges,
                   const struct timespec *timeout,
                   void (*do_each)(void **, struct kevent *))
 {
-    (void)kq; (void)changelist; (void)nchanges; (void)timeout;
+    (void)timeout;
+    /* Under FF_KERNEL_COEXIST, ff_epoll_ctl routes its F-Stack-side kevent
+     * registration through ff_kevent_do_each (changelist + nchanges, no
+     * do_each callback) rather than ff_kevent. Capture those changes here so
+     * the ctl-path TCs work regardless of which entry point the lib uses. */
+    if (nchanges > 0 && changelist) {
+        g_kev_cap.call_count++;
+        g_kev_cap.last_kq = kq;
+        g_kev_cap.last_nchanges = nchanges;
+        int c = nchanges < MAX_CAPTURED_KEV ? nchanges : MAX_CAPTURED_KEV;
+        for (int i = 0; i < c; i++) {
+            g_kev_cap.captured[i] = changelist[i];
+        }
+    }
     if (g_synth_count <= 0 || nevents <= 0 || !eventlist || !do_each) {
         return 0;
     }

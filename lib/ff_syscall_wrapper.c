@@ -947,8 +947,11 @@ ff_socket(int domain, int type, int protocol)
 #ifdef FF_KERNEL_COEXIST
     if (want_dual) {
         int hfd = ff_host_socket(domain, type, protocol);
-        if (hfd >= 0)
+        if (hfd >= 0) {
+            if (domain == LINUX_AF_INET6)
+                ff_host_set_v6only(hfd);
             ff_native_map_set(curthread->td_retval[0], hfd);
+        }
     }
 #endif /* FF_KERNEL_COEXIST */
     return curthread->td_retval[0];
@@ -1988,10 +1991,94 @@ kern_fail:
     return (-1);
 }
 
+#ifdef FF_KERNEL_COEXIST
+/*
+ * Coexistence for the native kqueue API (mirrors ff_epoll.c). changelist
+ * entries whose ident is a managed kernel fd or a dual-stack fd are
+ * (un)registered on the host epoll paired with this kqueue; the host epoll
+ * stores the application-facing fd in data.fd. Kernel-only changes are not
+ * forwarded to the F-Stack kqueue (it does not know that fd). On wait, the
+ * host epoll is polled non-blocking and ready events are translated back into
+ * struct kevent before the F-Stack events are appended. With no kernel fd
+ * registered the path degrades to the original ff_kevent_do_each behaviour.
+ */
+static int
+ff_kevent_host_change(int kq, const struct kevent *kev)
+{
+    int hfd, app_fd, del;
+
+    if (ff_is_kernel_fd((int)kev->ident)) {
+        hfd = ff_kernel_fd_real((int)kev->ident);
+        app_fd = (int)kev->ident;
+    } else if ((hfd = ff_native_map_get((int)kev->ident)) > 0) {
+        app_fd = (int)kev->ident;
+    } else {
+        return 0;
+    }
+
+    if (kev->flags & EV_DELETE)
+        del = 1;
+    else if (kev->flags & (EV_ADD | EV_ENABLE))
+        del = 0;
+    else
+        return 1;
+
+    int host_ep = ff_epoll_host_ep(kq, !del);
+    if (host_ep > 0)
+        ff_host_kqueue_ctl(host_ep, del, hfd, app_fd,
+            kev->filter == EVFILT_WRITE);
+    return 1;
+}
+
+static int
+ff_kevent_host_wait(int host_ep, struct kevent *eventlist, int nevents)
+{
+    int triples[3 * nevents];
+    int n, i;
+
+    n = ff_host_kqueue_poll(host_ep, triples, nevents);
+    for (i = 0; i < n; i++) {
+        short filter = triples[3 * i + 1] ? EVFILT_WRITE : EVFILT_READ;
+        u_short flags = triples[3 * i + 2] ? EV_EOF : 0;
+        EV_SET(&eventlist[i], triples[3 * i], filter, flags, 0, 1, NULL);
+    }
+    return n;
+}
+#endif /* FF_KERNEL_COEXIST */
+
 int
 ff_kevent(int kq, const struct kevent *changelist, int nchanges,
     struct kevent *eventlist, int nevents, const struct timespec *timeout)
 {
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        struct kevent fbsd_changes[nchanges > 0 ? nchanges : 1];
+        int fbsd_n = 0, i, kn = 0, host_ep;
+
+        for (i = 0; i < nchanges; i++) {
+            int handled = ff_kevent_host_change(kq, &changelist[i]);
+            /* dual-stack fds also live on the F-Stack kqueue; kernel-only do not */
+            if (!handled || ff_native_map_get((int)changelist[i].ident) > 0)
+                fbsd_changes[fbsd_n++] = changelist[i];
+        }
+
+        if (eventlist != NULL && nevents > 0) {
+            host_ep = ff_epoll_host_ep(kq, 0);
+            if (host_ep > 0) {
+                kn = ff_kevent_host_wait(host_ep, eventlist, nevents);
+                if (kn >= nevents)
+                    return kn;
+            }
+        }
+
+        int rc = ff_kevent_do_each(kq, fbsd_n > 0 ? fbsd_changes : NULL,
+            fbsd_n, eventlist ? eventlist + kn : NULL,
+            eventlist ? nevents - kn : 0, timeout, NULL);
+        if (rc < 0)
+            return kn > 0 ? kn : -1;
+        return kn + rc;
+    }
+#endif /* FF_KERNEL_COEXIST */
     return ff_kevent_do_each(kq, changelist, nchanges, eventlist, nevents, timeout, NULL);
 }
 

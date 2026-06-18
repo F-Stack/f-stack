@@ -14,6 +14,12 @@
 > - **§connect (Q2=B, DRAFT, PENDING USER CONFIRMATION)**: dual-stack `ff_connect` connects on both stacks (`kern_connectat` + `ff_host_connect(map[s])`), returns F-Stack-primary (EINPROGRESS); data path F-Stack-primary, kernel concurrent for dual-network reachability; close tears down both. Exception matrix in `zh_cn/05 §6bis`. Use `SOCK_KERNEL` for pure-kernel client; kernel-primary/failover future.
 > - **Partial-build failure**: F-Stack ok but `ff_host_socket` fails → contract (degrade to F-Stack-only / rollback, no leak) to be finalized at R7.
 > - **D2-D6** retained from v5 (config parse `ff_config.c:1027-1031`/`:1363`; no `default_stack`; bridge `unsigned int` vs `socklen_t`; stats NOT implemented; `FF_KERNEL_FD_BASE` offset + `ff_epoll_pairs[64]`).
+>
+> **R9 sync (key points; see `zh_cn/05-interface-design.md §3ter` for full detail)**:
+> - **`ff_kqueue/ff_kevent` coexistence contract**: `ff_kqueue` (coexist on) returns the F-Stack kqueue fd; first `ff_kevent` lazily pairs a host epoll (reuse `ff_epoll_host_ep`). `ff_kevent` changelist — ident being kernel/dual-stack fd, EV_ADD/EV_DELETE → `ff_host_epoll_ctl` (`EVFILT_READ↔EPOLLIN`/`EVFILT_WRITE↔EPOLLOUT`, `data`=app-side fd); kernel-only changes not sent to F-Stack kqueue. eventlist — first `ff_host_epoll_wait(timeout=0)` → synthesize `struct kevent` (`ident` restored from app fd, `filter`=READ/WRITE, `EV_EOF`↔`EPOLLHUP|ERR`), then `ff_kevent_do_each`, merge counts. kqueue-fd `ff_close` clears `ff_epoll_pairs` + closes host_ep.
+> - **IPv6 V6ONLY contract**: host IPv6 socket `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)` → IPv6-only, coexists with host IPv4 on the same port. best-effort; host bind failures stay diagnosable; only affects the host socket (not `SOCK_KERNEL` IPv6 / F-Stack path).
+> - **Known limits (R9)**: `ff_kevent` kernel fd supports only `EVFILT_READ/WRITE` (kernel side via host epoll = `EPOLLIN/EPOLLOUT`); non-READ/WRITE filters on kernel fds do NOT coexist via host epoll (stay F-Stack kqueue). `ff_readv/writev/ioctl` keep the D8 known limitation (not extended in R9).
+>
 > **Scope**: marker semantics, per-`ff_*` dual-stack/dual-drive contracts, `ff_native_fd_map` accessors, config switch, connect draft, exception matrix.
 > **Core principle**: **do not create a side API**; reuse the single native `ff_*` API, default dual-stack + marker single-stack override + runtime config switch, F-Stack always present.
 > **Basis**: `02` (code), `04` (architecture). Line numbers subject to the code; v6 new contracts are to-be-implemented (D9).

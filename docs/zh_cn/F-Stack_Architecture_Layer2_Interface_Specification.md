@@ -728,6 +728,8 @@ int du = ff_socket(AF_INET, SOCK_STREAM, 0);                // 双建（默认�
 
 **透明路由。** 所有标准 `ff_*` 调用都透明接受受管内核 fd：`ff_bind/listen/connect/accept[4]/close/read/write/recv*/send*/sendmsg/recvmsg/getpeername/getsockname/shutdown/setsockopt/getsockopt/fcntl`，以及 `ff_epoll_ctl/wait`。内部每个内核 fd 转发给薄 `ff_host_*` 宿主 libc 桥（`lib/ff_host_interface.c`）。**尚未路由（已知限制）：** `ff_readv` / `ff_writev` / `ff_ioctl` —— 内核/双栈 fd 请用 `ff_read` / `ff_write`。完整设计与测试见 `docs/kernel_event_support_spec/`。
 
+**R9 —— kqueue/kevent 共存 + IPv6。** 统一事件支持现已覆盖原生 `ff_kqueue` / `ff_kevent` 接口（此前仅 `ff_epoll_*`）：每个 kqueue 惰性配对一个宿主 epoll（共享 `ff_epoll_host_ep`，复用 `ff_epoll_pairs` 表）。`ff_kevent` 把内核/双栈 fd 的 `EVFILT_READ/WRITE` 注册进该宿主 epoll（内核-only 变更不下发 F-Stack kqueue），等待时先非阻塞轮询宿主 epoll 合成 `struct kevent`（`ident`=应用面 fd、`EV_EOF`↔`EPOLLHUP|ERR`）再合并 F-Stack kqueue 事件 —— 使纯 kqueue 应用（如 `example/main.c`）能感知内核侧 listener，实测 `curl 127.0.0.1:80`=200 size=438。内核 fd 经 kqueue 仅支持 `EVFILT_READ/WRITE`。IPv6 侧：双建 `AF_INET6` socket 的宿主对应 socket 被设 `IPV6_V6ONLY=1`（`ff_host_set_v6only`），使 `-DINET6` 构建以 v4+v6 同端口干净启动（修复此前宿主 IPv6 `errno=98 EADDRINUSE`）。
+
 ---
 
 ## 4. 多进程和多线程接口

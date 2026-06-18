@@ -255,7 +255,7 @@ F-Stack 架构知识库
   → struct pollfd (poll 结构体)
 
 关键源文件分析
-  → ff_syscall_wrapper.c (2125 行)
+  → ff_syscall_wrapper.c (2212 行)
     ├─ Linux ↔ FreeBSD 选项映射表
     ├─ Address family 映射
     └─ 参数转换逻辑
@@ -621,10 +621,10 @@ net.inet.tcp.functions_default=bbr    # BBR 算法 (高延迟网络), freebsd/ra
   └─ lib/ff_init.c (69 行)         - 初始化协调
 
 优先级 2 (推荐):
-  └─ lib/ff_syscall_wrapper.c (2125 行) - Linux 兼容层 + FF_KERNEL_COEXIST 路由
+  └─ lib/ff_syscall_wrapper.c (2212 行) - Linux 兼容层 + FF_KERNEL_COEXIST 路由（+ R9 kqueue 共存 + IPV6_V6ONLY）
   └─ lib/ff_config.c (1694 行)     - 配置解析
-  └─ lib/ff_epoll.c (277 行)       - Epoll 兼容（F-Stack + 内核统一）
-  └─ lib/ff_host_interface.c (528 行) - FF_KERNEL_COEXIST 宿主栈桥（可选）
+  └─ lib/ff_epoll.c (289 行)       - Epoll 兼容（F-Stack + 内核统一；ff_epoll_host_ep 与 kqueue 路径共享）
+  └─ lib/ff_host_interface.c (583 行) - FF_KERNEL_COEXIST 宿主栈桥（27 个 ff_host_*，可选）
 
 优先级 3 (深入):
   └─ example/main.c (222 行)       - Kqueue 应用示例
@@ -659,7 +659,7 @@ F-Stack 相关:
 ### 8.1 版本信息
 
 ```
-知识库版本: 1.3（新增 FF_KERNEL_COEXIST 内核栈共存同步，2026-06-18）
+知识库版本: 1.4（新增 R9：ff_kqueue/ff_kevent 共存 + IPv6 IPV6_V6ONLY，2026-06-18；基于 1.3 FF_KERNEL_COEXIST 内核栈共存同步）
 F-Stack 版本: v1.26（分支 feature/1.26）
 FreeBSD 移植基线: 15.0（v1.25 时为 13.0）
 DPDK 版本: 24.11.6 LTS（2026-06-09 自 23.11.5 LTS 升级）

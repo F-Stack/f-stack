@@ -308,7 +308,7 @@ struct ff_dispatcher_context {
 
 ## 3. Three Key Source File Analyses
 
-### 3.1 ff_syscall_wrapper.c (2125 Lines) - Linux/FreeBSD Adaptation
+### 3.1 ff_syscall_wrapper.c (2212 Lines) - Linux/FreeBSD Adaptation
 
 **Main Responsibility**: Convert Linux system call parameters/options to FreeBSD equivalents
 
@@ -564,8 +564,10 @@ struct prison prison0;                     // Namespace
 ### 3.4 Kernel-Stack Coexistence Files (`FF_KERNEL_COEXIST`, optional)
 
 Compiled only with `FF_KERNEL_COEXIST=1`:
-- **`ff_host_interface.c` (528 L) / `.h` (178 L)**: `FF_KERNEL_FD_BASE=0x40000000` + inline `ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real`; `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear`; **24 `ff_host_*` host-libc bridges**.
-- **`ff_epoll.c` (277 L)**: `ff_epoll_pairs[64]` lazily pairs a host `epoll` per kqueue; `ff_epoll_wait` polls host epoll (non-blocking) then merges kqueue events (single-threaded, no lock).
+- **`ff_host_interface.c` (583 L) / `.h` (182 L)**: `FF_KERNEL_FD_BASE=0x40000000` + inline `ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real`; `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear`; **27 `ff_host_*` host-libc bridges** (R9 added `ff_host_set_v6only`, `ff_host_kqueue_ctl`, `ff_host_kqueue_poll`).
+- **`ff_epoll.c` (289 L)**: `ff_epoll_pairs[64]` lazily pairs a host `epoll` per kqueue; `ff_epoll_wait` polls host epoll (non-blocking) then merges kqueue events (single-threaded, no lock). `ff_epoll_host_ep` is shared (promoted from `static`) so the R9 kqueue path reuses the same pairing table.
+- **R9 kqueue/kevent coexistence (`ff_syscall_wrapper.c`)**: `ff_kqueue`/`ff_kevent` mirror the epoll path — register a kernel/dual-stack fd's `EVFILT_READ/WRITE` into the kqueue-paired host epoll (`ff_host_kqueue_ctl`), synthesize `struct kevent` from a non-blocking `ff_host_kqueue_poll` (`ident`=app-side fd, `EV_EOF`↔`EPOLLHUP|ERR`), then merge `ff_kevent_do_each` F-Stack events. Fixes the `example/main.c` kqueue model (kernel-side `curl 127.0.0.1:80`=200, was 000). Kernel fds: `EVFILT_READ/WRITE` only.
+- **R9 IPv6**: a dual-built `AF_INET6` socket gets `IPV6_V6ONLY=1` on its host counterpart (`ff_host_set_v6only`), so a `-DINET6` build starts with v4+v6 on the same port (fixes the prior `errno=98 EADDRINUSE`).
 - **`ff_syscall_wrapper.c`**: `ff_socket` dual-create + per-entry kernel-fd routing. Not routed: `ff_readv`/`ff_writev`/`ff_ioctl`.
 
 ## 4. Key Header File Overview
@@ -576,7 +578,7 @@ Compiled only with `FF_KERNEL_COEXIST=1`:
 | `ff_config.h` | ~100 | Configuration structure definitions |
 | `ff_event.h` | ~150 | kevent structures and macros |
 | `ff_errno.h` | ~100 | 96 errno mappings |
-| `ff_host_interface.h` | 178 | OS abstraction layer (pthread/mmap) + `FF_KERNEL_COEXIST` kernel-fd helpers & 24 `ff_host_*` bridge decls |
+| `ff_host_interface.h` | 182 | OS abstraction layer (pthread/mmap) + `FF_KERNEL_COEXIST` kernel-fd helpers & 27 `ff_host_*` bridge decls (incl. R9 set_v6only/kqueue_ctl/kqueue_poll) |
 | `ff_dpdk_if.h` | ~50 | DPDK initialization interface |
 | `ff_veth.h` | ~100 | Virtual Ethernet and mbuf operations |
 | `ff_log.h` | ~50 | Log levels and macros |

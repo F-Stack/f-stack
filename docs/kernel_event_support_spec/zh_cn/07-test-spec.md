@@ -30,7 +30,7 @@
 | MT-4 | 双侧 CFLAGS 一致 | `HOST_CFLAGS`+`CFLAGS` 均含 `-DFF_KERNEL_COEXIST` | 两侧编译单元（host 侧 `ff_host_interface/ff_config/ff_epoll` + `ff_syscall_wrapper`）均编译进共存 |
 | MT-5 | symlist 不变 | 对比宏开/关 `ff_api.symlist` | 无需改动（访问器/桥库内调用、inline 无导出） |
 
-> **构建注记**：改 `ff_config.h` 等结构头须 clean 全量重编（lib/Makefile 不跟踪头依赖，ABI 偏斜，`10 §7`）。v6 加 `ff_native_fd_map` 于 `ff_host_interface.c`（**不改结构头**），但 MT-1/MT-3 仍各自 clean 重编以确保符号比对干净。
+> **构建注记**：改 `ff_config.h` 等结构头须 clean 全量重编（lib/Makefile 不跟踪头依赖，ABI 偏斜，`10 §7`）。v6 加 `ff_native_fd_map` 于 `ff_host_interface.c`（**不改结构头**），但 MT-1/MT-3 仍各自 clean 重编以确保符号比对干净。**R9** 的 `ff_kqueue/ff_kevent` 共存改动在 `ff_syscall_wrapper.c`（复用 `ff_epoll_*` 已有 host 符号，不新增 host 桥），MT-1 宏关须确认 `ff_kqueue/ff_kevent` 无 `ff_host_epoll_*` 引用、size 与基线对齐。
 
 ---
 
@@ -56,8 +56,13 @@
 | UT-16 | `ff_epoll_wait maxevents<1` | `-EINVAL`（`ff_epoll.c:221`） | 边界 | v5 已实测 |
 | UT-17 | 热路径不查 map | 单栈连接 fd recv/send 只走 `ff_is_kernel_fd`（不调 `ff_native_map_get`，mock 计数=0） | NFR-2 | **R7 待实测** |
 | **UT-18** | **双建部分失败（v6）** | `ff_host_socket` mock 失败 → 按 `05 §7` 契约（降级仅 F-Stack 或回滚），不泄漏 host fd | 边界 | **R7 待实测** |
+| **UT-19** | **`ff_kevent` changelist 内核/双栈 fd 注册（R9）** | 双栈 listen fd `EV_ADD(EVFILT_READ)` → `ff_host_epoll_ctl(host_ep, ADD, map[fd], EPOLLIN)` 调用一次（mock 计数），`data`=应用面 fd；`EV_DELETE`→DEL | FR-5 | **R9 待实测** |
+| **UT-20** | **`ff_kevent` eventlist 合成内核就绪（R9）** | mock host epoll 返回就绪 → 合成 `struct kevent`（`ident`=app fd 还原、`filter=EVFILT_READ`），与 `ff_kevent_do_each` F-Stack 事件合并、不丢、计数正确；`EPOLLHUP`→`EV_EOF` | FR-5 | **R9 待实测** |
+| **UT-21** | **kqueue fd close 清配对（R9）** | `ff_close(kq)` → `ff_epoll_close_pair`/清 `ff_epoll_pairs`+关 host_ep（无内核 fd 泄漏） | FR-7 | **R9 待实测** |
+| **UT-22** | **IPv6 host socket V6ONLY 共存（R9）** | `ff_socket(AF_INET6)` 双建 → host IPv6 socket `IPV6_V6ONLY==1`（getsockopt 验证或 mock setsockopt 计数）；host IPv6 `[::]:80` 与 host IPv4 `0.0.0.0:80` 同端口 bind 均成功（真实 loopback） | FR-3 | **R9 待实测** |
+| **UT-23** | **kqueue 共存宏关零回归（R9）** | `FF_KERNEL_COEXIST` 关 → `ff_kqueue/ff_kevent` 仅原 F-Stack 路径，无 `ff_host_epoll_*` 调用 | NFR-1 | **R9 待实测** |
 
-> **编译宏条件**：UT-4/5/8/9/10/12/14/17/18 共存相关用例仅在 `FF_KERNEL_COEXIST` 开启时有效；宏关编译时条件编译排除或 skip。`tests/unit/` Makefile/用例须加宏门控。既有 `test_ff_epoll` 曾因链接缺 `ff_host_epoll_*` 加 no-op 桩——v6 须复核此桩在双态一致，并为 `ff_native_map_*` 提供 mock/桩。
+> **编译宏条件**：UT-4/5/8/9/10/12/14/17/18 与 **R9 UT-19~23** 共存相关用例仅在 `FF_KERNEL_COEXIST` 开启时有效；宏关编译时条件编译排除或 skip。`tests/unit/` Makefile/用例须加宏门控。既有 `test_ff_epoll` 曾因链接缺 `ff_host_epoll_*` 加 no-op 桩——v6/R9 须复核此桩在双态一致，并为 `ff_native_map_*`/kqueue 共存路径提供 mock/桩。
 
 ---
 
@@ -75,6 +80,8 @@
 | IT-8 | config 开关 | `kernel_coexist=0` 重启 | 仅 F-Stack 监听、`ss` 无 80 | FR-11/NFR-1 |
 | **IT-9** | **客户端双栈 connect** | 默认 fd `connect`（契约确认后）/ `SOCK_KERNEL` connect 127.0.0.1 | 按 `05 §6` 契约连通 | FR-10 |
 | IT-10 | 长稳/泄漏 | 大量短连接反复开关（含两栈 accept） | fd 数稳定、`ff_native_fd_map`/`ff_epoll_pairs` 无泄漏 | FR-7 |
+| **IT-11** | **kqueue 模型内核侧可达（R9，P2 验收）** | plain helloworld（`ff_kqueue`+`ff_kevent`，`example/main.c` 模型），coexist=1，本机 `curl http://127.0.0.1:80` | HTTP 200 size=438（修复前实测 000）；同进程 F-Stack 侧 `ssh f-stack-client→9.134.214.176:80=200` 不回归 | FR-5/FR-6 |
+| **IT-12** | **INET6-on 双建启动（R9，P1 验收）** | `-DINET6` 构建 helloworld，coexist=1 启动 | 进程成功启动（v4+v6 listen 均建立，`ff_bind` 无 errno=98）；`ss`/`ff_netstat` 见 v4+v6 监听；抓包确认内核侧 200 | FR-3 |
 
 > 进程清理 `/data/workspace/kill_process.sh`，临时文件 `/data/workspace/rm_tmp_file.sh`，权限 `/data/workspace/chmod_modify.sh`。
 
@@ -114,6 +121,7 @@
   5. config 关/`SOCK_FSTACK`/宏关时与纯 F-Stack 一致（NFR-1/NFR-3）。
   6. **connect 契约确认**：`05 §6` 草案经用户确认后 UT-14/IT-9 方可定稿判 PASS。
   7. R8 新增 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核 fd 路由须单测覆盖；剩余 `readv/writev/ioctl` 仍为 D8 已知限制（双栈 fd 仅 F-Stack 驱动），须文档/用例明示。
+  8. **R9**：UT-19~23（kqueue changelist 注册/eventlist 合成/close 清配对/IPv6 V6ONLY/宏关零回归）全通过；**IT-11（kqueue 模型内核侧 `curl 127.0.0.1:80=200`）+ IT-12（INET6-on 双建成功启动、抓包内核侧 200）真机实测成功**，F-Stack 侧 9.134.214.176:80=200 不回归。`ff_kevent` 内核 fd 仅 `EVFILT_READ/WRITE`（非 READ/WRITE filter 不经 host epoll）为 R9 已知限制，须文档/用例明示。
 - 任一项失败 → bounce 打回上一里程碑（同步骤≤3 次，超限转人工）。
 
 ---

@@ -308,7 +308,7 @@ struct ff_dispatcher_context {
 
 ## 3. 三个关键源文件分析
 
-### 3.1 ff_syscall_wrapper.c (2125 行) - Linux/FreeBSD 适配
+### 3.1 ff_syscall_wrapper.c (2212 行) - Linux/FreeBSD 适配
 
 **主要职责**: 将 Linux 系统调用参数/选项转换为 FreeBSD 等价物
 
@@ -564,8 +564,10 @@ struct prison prison0;                     // 命名空间
 ### 3.4 内核栈共存文件（`FF_KERNEL_COEXIST`，可选）
 
 仅 `FF_KERNEL_COEXIST=1` 时编译：
-- **`ff_host_interface.c`（528 行）/ `.h`（178 行）**：`FF_KERNEL_FD_BASE=0x40000000` + inline `ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real`；`ff_native_fd_map[65536]` + `ff_native_map_get/set/clear`；**24 个 `ff_host_*` 宿主 libc 桥**。
-- **`ff_epoll.c`（277 行）**：`ff_epoll_pairs[64]` 为每个 kqueue 惰性配对宿主 `epoll`；`ff_epoll_wait` 先非阻塞轮询宿主 epoll 再合并 kqueue 事件（单线程，无锁）。
+- **`ff_host_interface.c`（583 行）/ `.h`（182 行）**：`FF_KERNEL_FD_BASE=0x40000000` + inline `ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real`；`ff_native_fd_map[65536]` + `ff_native_map_get/set/clear`；**27 个 `ff_host_*` 宿主 libc 桥**（R9 新增 `ff_host_set_v6only`、`ff_host_kqueue_ctl`、`ff_host_kqueue_poll`）。
+- **`ff_epoll.c`（289 行）**：`ff_epoll_pairs[64]` 为每个 kqueue 惰性配对宿主 `epoll`；`ff_epoll_wait` 先非阻塞轮询宿主 epoll 再合并 kqueue 事件（单线程，无锁）。`ff_epoll_host_ep` 共享（由 `static` 提升），供 R9 kqueue 路径复用同一配对表。
+- **R9 kqueue/kevent 共存（`ff_syscall_wrapper.c`）**：`ff_kqueue`/`ff_kevent` 对称仿 epoll —— 把内核/双栈 fd 的 `EVFILT_READ/WRITE` 经 `ff_host_kqueue_ctl` 注册进 kqueue 配对的宿主 epoll，经非阻塞 `ff_host_kqueue_poll` 合成 `struct kevent`（`ident`=应用面 fd、`EV_EOF`↔`EPOLLHUP|ERR`），再合并 `ff_kevent_do_each` F-Stack 事件。修复 `example/main.c` kqueue 模型（内核侧 `curl 127.0.0.1:80`=200，修复前 000）。内核 fd 仅支持 `EVFILT_READ/WRITE`。
+- **R9 IPv6**：双建 `AF_INET6` socket 的宿主对应 socket 被设 `IPV6_V6ONLY=1`（`ff_host_set_v6only`），使 `-DINET6` 构建以 v4+v6 同端口启动（修复此前 `errno=98 EADDRINUSE`）。
 - **`ff_syscall_wrapper.c`**：`ff_socket` 双建 + 逐入口内核 fd 路由。未路由：`ff_readv`/`ff_writev`/`ff_ioctl`。
 
 ## 4. 关键头文件总览
@@ -576,7 +578,7 @@ struct prison prison0;                     // 命名空间
 | `ff_config.h` | ~100 | 配置结构体定义 |
 | `ff_event.h` | ~150 | kevent 结构和宏 |
 | `ff_errno.h` | ~100 | 96 个 errno 映射 |
-| `ff_host_interface.h` | 178 | OS 抽象层 (pthread/mmap) + `FF_KERNEL_COEXIST` 内核 fd 助手与 24 个 `ff_host_*` 桥声明 |
+| `ff_host_interface.h` | 182 | OS 抽象层 (pthread/mmap) + `FF_KERNEL_COEXIST` 内核 fd 助手与 27 个 `ff_host_*` 桥声明（含 R9 set_v6only/kqueue_ctl/kqueue_poll） |
 | `ff_dpdk_if.h` | ~50 | DPDK 初始化接口 |
 | `ff_veth.h` | ~100 | 虚拟以太网和 mbuf 操作 |
 | `ff_log.h` | ~50 | 日志级别和宏 |

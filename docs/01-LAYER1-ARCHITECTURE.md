@@ -55,10 +55,10 @@ NIC Hardware
 │   ├── ff_dpdk_if.c   (2907 lines) # DPDK NIC interface layer - most critical
 │   ├── ff_glue.c      (1467 lines) # FreeBSD glue layer
 │   ├── ff_config.c    (1694 lines) # Configuration parsing
-│   ├── ff_syscall_wrapper.c (2125 lines) # Linux→FreeBSD system call adaptation
-│   ├── ff_host_interface.c      # Host interface (pthread/mmap/time)
+│   ├── ff_syscall_wrapper.c (2212 lines) # Linux→FreeBSD system call adaptation (+ R9 kqueue coexist + IPV6_V6ONLY)
+│   ├── ff_host_interface.c (583 lines) # Host interface (pthread/mmap/time) + FF_KERNEL_COEXIST bridges (27 ff_host_*)
 │   ├── ff_init.c         (70 lines)  # Initialization coordination
-│   ├── ff_epoll.c       (~134 lines) # epoll → kqueue conversion
+│   ├── ff_epoll.c       (289 lines) # epoll → kqueue conversion (unified F-Stack + kernel)
 │   ├── ff_dpdk_kni.c            # Virtual NIC support (via virtio_user, no longer depends on rte_kni.ko)
 │   ├── ff_route.c     (1604 lines) # Route socket / RIB hooks (rtsock partial port)
 │   ├── ff_veth.c      (1132 lines) # Virtual ethernet device (M4: full if_t accessor rewrite)
@@ -119,10 +119,10 @@ NIC Hardware
 | **ff_dpdk_if.c** | 2907 | NIC driver/DPDK operations/core TX/RX logic | DPDK, ff_glue |
 | **ff_glue.c** | 1467 | FreeBSD kernel emulation/memory/locks/interrupts (8-category 14.0+ ABI fixes at M4) | FreeBSD headers, DPDK |
 | **ff_config.c** | 1694 | INI configuration file parsing | ff_ini_parser |
-| **ff_syscall_wrapper.c** | 2125 | Linux system call → FreeBSD adaptation (sockaddr update at M4; FF_KERNEL_COEXIST routing) | FreeBSD sys |
+| **ff_syscall_wrapper.c** | 2212 | Linux system call → FreeBSD adaptation (sockaddr update at M4; FF_KERNEL_COEXIST routing; R9 kqueue coexist + IPV6_V6ONLY) | FreeBSD sys |
 | **ff_init.c** | 70 | Initialization flow coordination | All above modules |
-| **ff_epoll.c** | ~134 | Linux epoll → FreeBSD kqueue conversion | FreeBSD kqueue |
-| **ff_host_interface.c** | ~285 | Host OS interface (mmap/pthread/rand) | System libraries |
+| **ff_epoll.c** | 289 | Linux epoll → FreeBSD kqueue conversion (unified F-Stack + kernel; ff_epoll_host_ep shared with kqueue path) | FreeBSD kqueue |
+| **ff_host_interface.c** | 583 | Host OS interface (mmap/pthread/rand) + FF_KERNEL_COEXIST host-stack bridges (27 ff_host_*) | System libraries |
 | **ff_dpdk_kni.c** | ~441 | Virtual NIC support (via virtio_user, no longer depends on rte_kni.ko) | DPDK virtio_user |
 | **ff_route.c** | 1604 | Route socket / RIB hooks (rtsock partial port; 5-category 14.0+ ABI fixes at M4) | FreeBSD net/route |
 | **ff_veth.c** | 1132 | Virtual ethernet device (28 if_t accessor rewrites at M4) | FreeBSD net/if |
@@ -310,8 +310,9 @@ An optional mode (compile-time macro `FF_KERNEL_COEXIST` + runtime `config.ini [
 
 - `ff_socket()` selects the stack via `SOCK_FSTACK` / `SOCK_KERNEL` flags; with no flag it **dual-creates** an F-Stack socket plus a paired host socket.
 - A kernel-stack fd is returned as `host_fd + 0x40000000` (`FF_KERNEL_FD_BASE`), which never collides with FreeBSD fds (`< 65536`); entries route such fds to thin `ff_host_*` host-libc bridges.
-- The F-Stack ↔ host fd pairing is held in `ff_native_fd_map`; `ff_epoll_*` lazily pairs a host `epoll` per kqueue for unified event delivery.
-- When the macro is off the library is byte-for-byte identical to the pure-F-Stack build. Known limitation: `ff_readv`/`ff_writev`/`ff_ioctl` are not yet kernel-routed. See `docs/kernel_event_support_spec/`.
+- The F-Stack ↔ host fd pairing is held in `ff_native_fd_map`; `ff_epoll_*` lazily pairs a host `epoll` per kqueue for unified event delivery. A dual-built `AF_INET6` socket gets `IPV6_V6ONLY=1` on its host counterpart (`ff_host_set_v6only`, R9) so v4+v6 coexist on the same port (fixes the prior `-DINET6` `errno=98` startup failure).
+- **R9** extends unified events to the native `ff_kqueue`/`ff_kevent` interface (shared `ff_epoll_host_ep`): `ff_kevent` registers a kernel/dual-stack fd's `EVFILT_READ/WRITE` into the kqueue-paired host epoll and synthesizes `struct kevent` (`ident`=app-side fd) from a non-blocking host-epoll poll before merging F-Stack events — a pure-kqueue app (`example/main.c`) now reaches the kernel-side listener (`curl 127.0.0.1:80`=200, was 000).
+- When the macro is off the library is byte-for-byte identical to the pure-F-Stack build. Known limitations: `ff_readv`/`ff_writev`/`ff_ioctl` are not yet kernel-routed; kernel fds via kqueue support `EVFILT_READ/WRITE` only. See `docs/kernel_event_support_spec/`.
 
 ## 7. Technology Selection Analysis
 

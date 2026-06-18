@@ -637,6 +637,8 @@ Priority: per-socket marker > `config.ini [stack] kernel_coexist` > F-Stack. Whe
 
 **Transparent routing.** All standard `ff_*` calls accept a managed kernel fd transparently: `ff_bind/listen/connect/accept[4]/close/read/write/recv*/send*/sendmsg/recvmsg/getpeername/getsockname/shutdown/setsockopt/getsockopt/fcntl`, and `ff_epoll_ctl/wait`. Internally each kernel fd is forwarded to a thin `ff_host_*` host-libc bridge (`lib/ff_host_interface.c`). **Not yet routed (known limitation):** `ff_readv` / `ff_writev` / `ff_ioctl` — use `ff_read` / `ff_write` for kernel/dual-stack fds. Full design and tests: `docs/kernel_event_support_spec/`.
 
+**R9 — kqueue/kevent coexistence + IPv6.** The unified-event support now also covers the native `ff_kqueue` / `ff_kevent` interface (previously only `ff_epoll_*`): each kqueue lazily pairs one host epoll (shared `ff_epoll_host_ep`, reusing the `ff_epoll_pairs` table). `ff_kevent` registers a kernel/dual-stack fd's `EVFILT_READ/WRITE` into that host epoll (kernel-only changes are not forwarded to the F-Stack kqueue), and on wait it synthesizes `struct kevent` (`ident`=the app-side fd, `EV_EOF`↔`EPOLLHUP|ERR`) from a non-blocking host-epoll poll before merging F-Stack kqueue events. This makes a pure-kqueue application (e.g. `example/main.c`) reach the kernel-side listener — measured `curl 127.0.0.1:80` = 200 size=438. Kernel fds via kqueue support `EVFILT_READ/WRITE` only. On the IPv6 side, a dual-built `AF_INET6` socket has its host counterpart set to `IPV6_V6ONLY=1` (`ff_host_set_v6only`) so a `-DINET6` build starts cleanly with v4+v6 on the same port (fixes the prior host-IPv6 `errno=98 EADDRINUSE`).
+
 ---
 
 ## 4. Multi-Process and Multi-Thread Interfaces

@@ -10,6 +10,12 @@
 > - **R0-R6 PASS (v5)**: coexistence paradigm correct, compile-macro gating complete, macro-off `nm` coexistence symbols=0, macro-on=39, real-machine perf PERF-1/2/3 PASS, D1-D8 consistent. M1-M7 PASS.
 > - **R7 spec gate (v6)**: spec upgraded to native automatic dual-stack (default dual-build/dual-drive + `ff_native_fd_map` + dual-stack unified events + accept single-stack ownership + connect draft); line numbers code-authoritative; explicitly distinguishes "v5 measured" vs "v6 to-be-implemented" (D9).
 > - **R7 implementation gate V1-V12 PENDING MEASUREMENT**: V1 map landed, V2 socket dual-build, V3 bind/listen dual-drive, V4 accept ownership, V5 close dual-drive+clear, V6 epoll dual-register+merge, V7 one-listen-many-uses real-machine (F-Stack 9.134.214.176:80 + kernel 127.0.0.1:80, `ff_netstat`+`ss` each see 80), V8 hot path no map lookup, V9 macro-off no `ff_native_fd_map` symbols / macro-on present, V10 **connect contract PENDING USER CONFIRMATION**, V11 partial-build-failure contract, V12 NFR-1/3 zero regression + F-Stack always present.
+>
+> **R9 sync (kqueue coexistence + IPv6 V6ONLY; spec gate PASS, implementation pending impl; see `zh_cn/08-review-gate.md §4bis`)**:
+> - **Gap (measured, R9-P1/P2)**: `ff_kqueue/ff_kevent/ff_kevent_do_each` have NO coexistence routing (only `ff_epoll.c` hits the macro) — kqueue-model kernel-side `curl 127.0.0.1:80=000` (handshake done, GET TCP-ACKed `ack 73`, app never woken), F-Stack side 200 (D10). `-DINET6` dual-build `ff_bind errno=98 EADDRINUSE` (host IPv6 lacks `IPV6_V6ONLY=1`, bindv6only=0) → start failure (D11).
+> - **Solution (R9-P3/P4)**: (P2) `ff_kqueue/ff_kevent` symmetrically mimic `ff_epoll` (reuse `ff_epoll_pairs`/`ff_epoll_host_ep`, changelist→`ff_host_epoll_ctl`, eventlist synthesize `struct kevent`, close clears pairing); (P1) host IPv6 `setsockopt(IPV6_V6ONLY,1)`, placement measured.
+> - **Contracts/limits (R9-P5/P6)**: app-fd restore (`epoll_event.data`↔`kevent.ident`), filter map (READ↔IN/WRITE↔OUT/EOF↔HUP|ERR); `ff_kevent` kernel fd `EVFILT_READ/WRITE`-only; `readv/writev/ioctl` keep D8 limit.
+> - **Gating/status (R9-P7/P8/P9)**: all `#ifdef FF_KERNEL_COEXIST`, macro-off zero regression; implementation status faithfully marked **to-be-implemented**; tests UT-19~23 + IT-11 (kernel 200) / IT-12 (INET6-on start). Implementation gate (real-machine kernel 200 / INET6-on start / macro-off nm zero regression) to be filled by gatekeeper after impl lands.
 
 ---
 

@@ -186,7 +186,7 @@ int ff = ff_socket(AF_INET, SOCK_STREAM | SOCK_FSTACK, 0); // F-Stack stack
 int du = ff_socket(AF_INET, SOCK_STREAM, 0);               // dual-created (default)
 ```
 
-A kernel-stack fd is returned as `host_fd + 0x40000000` and is accepted transparently by all `ff_*` calls (forwarded to `ff_host_*` bridges), including `ff_epoll_*`. Off by default → byte-for-byte identical build. Known limitation: `ff_readv` / `ff_writev` / `ff_ioctl` are not yet kernel-routed. See `docs/kernel_event_support_spec/`.
+A kernel-stack fd is returned as `host_fd + 0x40000000` and is accepted transparently by all `ff_*` calls (forwarded to `ff_host_*` bridges), including `ff_epoll_*` and — since **R9** — `ff_kqueue`/`ff_kevent`: each kqueue lazily pairs one host epoll (shared `ff_epoll_host_ep`), `ff_kevent` registers a kernel/dual-stack fd's `EVFILT_READ/WRITE` there and synthesizes `struct kevent` (`ident`=app-side fd) from a non-blocking host-epoll poll before merging F-Stack events — so a pure-kqueue app (`example/main.c`) reaches the kernel-side listener (`curl 127.0.0.1:80`=200). A dual-built `AF_INET6` socket gets `IPV6_V6ONLY=1` on its host counterpart so a `-DINET6` build starts with v4+v6 on the same port. Off by default → byte-for-byte identical build. Known limitations: `ff_readv` / `ff_writev` / `ff_ioctl` are not yet kernel-routed; kernel fds via kqueue support `EVFILT_READ/WRITE` only. See `docs/kernel_event_support_spec/`.
 
 ## 3. Application Development Guidelines
 

@@ -255,7 +255,7 @@ Core Data Structures
   → struct pollfd (poll structure)
 
 Key Source File Analyses
-  → ff_syscall_wrapper.c (2125 lines)
+  → ff_syscall_wrapper.c (2212 lines)
     ├─ Linux ↔ FreeBSD option mapping tables
     ├─ Address family mapping
     └─ Parameter conversion logic
@@ -621,10 +621,10 @@ Priority 1 (Must-read):
   └─ lib/ff_init.c (69 lines)         - Initialization coordination
 
 Priority 2 (Recommended):
-  └─ lib/ff_syscall_wrapper.c (2125 lines) - Linux compatibility layer + FF_KERNEL_COEXIST routing
+  └─ lib/ff_syscall_wrapper.c (2212 lines) - Linux compatibility layer + FF_KERNEL_COEXIST routing (+ R9 kqueue coexist + IPV6_V6ONLY)
   └─ lib/ff_config.c (1694 lines)     - Configuration parsing
-  └─ lib/ff_epoll.c (277 lines)       - Epoll compatibility (unified F-Stack + kernel)
-  └─ lib/ff_host_interface.c (528 lines) - FF_KERNEL_COEXIST host-stack bridges (optional)
+  └─ lib/ff_epoll.c (289 lines)       - Epoll compatibility (unified F-Stack + kernel; ff_epoll_host_ep shared with kqueue path)
+  └─ lib/ff_host_interface.c (583 lines) - FF_KERNEL_COEXIST host-stack bridges (27 ff_host_*, optional)
 
 Priority 3 (Deep dive):
   └─ example/main.c (222 lines)       - Kqueue application example
@@ -659,7 +659,7 @@ Performance Optimization:
 ### 8.1 Version Information
 
 ```
-Knowledge base version: 1.3 (adds FF_KERNEL_COEXIST kernel-stack coexistence sync, 2026-06-18)
+Knowledge base version: 1.4 (adds R9: ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY, 2026-06-18; on top of 1.3 FF_KERNEL_COEXIST kernel-stack coexistence sync)
 F-Stack version: v1.26 (branch feature/1.26)
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
 DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09)

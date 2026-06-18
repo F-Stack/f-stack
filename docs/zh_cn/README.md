@@ -62,11 +62,11 @@
   4. 精读源码（已对当前 HEAD 校验）:
      - lib/ff_dpdk_if.c (2907 行)
      - lib/ff_glue.c (1467 行)
-     - lib/ff_syscall_wrapper.c (2125 行)
+     - lib/ff_syscall_wrapper.c (2212 行，新增：FF_KERNEL_COEXIST 共存 + R9 kqueue/kevent 共存 + IPv6 IPV6_V6ONLY)
      - lib/ff_ng_base.c (3887 行，netgraph 完整移植)
      - lib/ff_route.c (1604 行，rtsock 部分移植)
      - lib/ff_stub_14_extra.c (799 行，新增：14.0+ 中央 stub 库)
-     - lib/ff_host_interface.c (528 行) / ff_epoll.c (277 行，新增：FF_KERNEL_COEXIST 内核栈共存)
+     - lib/ff_host_interface.c (583 行，27 个 ff_host_*) / ff_epoll.c (289 行，FF_KERNEL_COEXIST 内核栈共存)
 ```
 
 ### 场景 4：我想查某个 API 函数的用法
@@ -251,11 +251,11 @@ ff_route_ctl / ff_gettimeofday / ff_log / ...
 ### 版本信息
 
 ```
-知识库版本: 1.3（新增 FF_KERNEL_COEXIST 内核栈共存同步，2026-06-18；基于 1.2 的 FreeBSD 13.0 → 15.0 第一阶段 + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw 测试）
+知识库版本: 1.4（新增 R9：ff_kqueue/ff_kevent 共存 + IPv6 IPV6_V6ONLY，2026-06-18；基于 1.3 FF_KERNEL_COEXIST 内核栈共存同步 + 1.2 的 FreeBSD 13.0 → 15.0 第一阶段 + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw 测试）
 F-Stack 版本: v1.26（分支 feature/1.26）
 FreeBSD 移植基线: 15.0（v1.25 时为 13.0）
 DPDK 版本: 24.11.6 LTS（2026-06-09 由 23.11.5 LTS 升级；详见 dpdk_23_24_upgrade_spec/zh_cn/）
-反映的新特性: FF_KERNEL_COEXIST 自动双栈共存（默认关；commits ba148589d → 55a84f313）。详见 docs/kernel_event_support_spec/。
+反映的新特性: FF_KERNEL_COEXIST 自动双栈共存（默认关；commits ba148589d → 55a84f313）+ R9 kqueue/kevent 共存 + IPv6 IPV6_V6ONLY（kqueue 模型内核侧 curl 127.0.0.1:80=200；-DINET6 v4+v6 同端口启动修复）。详见 docs/kernel_event_support_spec/（含 plan-r9-kqueue-coexist-ipv6.md）。
 生成日期: 2026-03-20（最近同步 2026-06-18）
 总行数: 约 5839 行 (以实际文件统计为准)
 ```

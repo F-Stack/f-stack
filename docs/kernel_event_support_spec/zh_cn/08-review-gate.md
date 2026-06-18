@@ -3,7 +3,7 @@
 > **文档编号**：SPEC-KE-08
 > **版本**：v6（native 自动双栈共存范式）
 > **日期**：2026-06-17
-> **状态**：R0-R6 门禁 PASS（v5，commit ba148589d）；**v6 R7 自动双栈门禁 PASS（已实测，含真机双栈 9.134.214.176 + 127.0.0.1）**
+> **状态**：R0-R6 门禁 PASS（v5，commit ba148589d）；**v6 R7 自动双栈门禁 PASS（已实测，含真机双栈 9.134.214.176 + 127.0.0.1）**；**R9 kqueue 共存 + IPv6 V6ONLY spec 门禁 PASS（本轮设计，实现待 impl 落地）**
 > **作用域**：v6 spec 与实现的「与代码一致性 / 自动双栈范式正确性 / 编译宏门控完整性 / 零回归 / connect 契约确认」门禁。
 
 ---
@@ -80,12 +80,32 @@
 
 ---
 
-## 5. D1-D9 代码-文档一致性核验
+## 4bis. R9 kqueue 共存 + IPv6 V6ONLY spec 门禁（本轮设计；实现待 impl 落地）
+
+| 编号 | 断言 | 证据/状态 |
+|---|---|---|
+| R9-P1 | 现状缺口如实记录：`ff_kqueue/ff_kevent/ff_kevent_do_each` 无共存路由（grep 仅 `ff_epoll.c` 命中）；kqueue 模型内核侧 `curl=000`、F-Stack 侧 200（实测） | `02 §7.1`/D10 |
+| R9-P2 | IPv6 双建冲突如实记录：host IPv6 V6ONLY 缺失 → `ff_bind errno=98 EADDRINUSE`，`-DINET6` coexist=1 启动失败（实测） | `02 §7.2`/D11 |
+| R9-P3 | kqueue 共存方案对称仿 `ff_epoll`：复用 `ff_epoll_pairs`/`ff_epoll_host_ep` 配对 + changelist 注册 + eventlist 合成 + close 清配对 | `04 §8bis.1`/`05 §3ter`/`06 §6bis.1` |
+| R9-P4 | IPV6_V6ONLY 方案：host IPv6 socket `setsockopt(IPV6_V6ONLY,1)`，落点执行期实测择优，best-effort | `04 §8bis.2`/`05 §3ter`/`06 §6bis.2` |
+| R9-P5 | app fd 还原契约（`epoll_event.data`↔`kevent.ident`）、filter 映射（READ↔IN/WRITE↔OUT/EOF↔HUP\|ERR）明确 | `04 §8bis.1`/`05 §3ter` |
+| R9-P6 | 已知限制如实标注：`ff_kevent` 内核 fd 仅 `EVFILT_READ/WRITE`；`readv/writev/ioctl` 维持 D8 限制 | `05 §7` |
+| R9-P7 | 全程 `#ifdef FF_KERNEL_COEXIST` 门控，宏关 `ff_kqueue/ff_kevent` 零回归 | `04 §8bis`/`06 §6bis.3`/`07 §1bis` |
+| R9-P8 | 实现状态如实区分：R9 kqueue 共存/V6ONLY **待实现**（grep `ff_kqueue` 无共存分支），不当既成 | `02 §7`/各文档「R9 待实现」标注 |
+| R9-P9 | 测试点对齐：UT-19~23 + IT-11（内核侧 200）/IT-12（INET6-on 启动）+ 零回归门禁 | `07 §2/§3/§5` |
+
+> **R9 spec 门禁结论**：spec 已按对称仿 `ff_epoll` 范式补 R9（kqueue/kevent 共存 + IPv6 V6ONLY），现状缺口与方案均带实测证据（内核侧 000、errno=98），实现明确标注「待 impl 落地」，未当既成。实现门禁（V13-V… 真机内核侧 200 / INET6-on 启动 / 宏关零回归）待 impl 完成后由 gatekeeper 填表。
+
+---
+
+## 5. D1-D11 代码-文档一致性核验
 
 | 编号 | 修正项 | 状态 |
 |---|---|---|
 | D1-D8 | 沿用 v5（已 PASS，见 `02 §6`） | PASS |
 | **D9（v6）** | `ff_native_fd_map`/默认双建/双驱动**尚未实现**（`02 §5.2` grep=0），文档区分 v5 已实测 / v6 待实现 | PASS（如实标注） |
+| **D10（R9）** | `ff_kqueue/ff_kevent/ff_kevent_do_each` **无共存路由**（仅 `ff_epoll.c` 命中宏），kqueue 模型内核侧 `curl=000`（实测）——文档标注「R9 待实现」 | PASS（如实标注） |
+| **D11（R9）** | host IPv6 socket 未设 `IPV6_V6ONLY=1`，`-DINET6` 双建 `ff_bind errno=98`（实测）——文档标注「R9 待实现」 | PASS（如实标注） |
 
 ---
 
@@ -106,3 +126,5 @@
 **R0-R6（v5）门禁 PASS**（commit ba148589d）：共存范式正确、编译宏门控完整、宏关零回归（nm 共存符号=0）、宏开可用（=39）、真机性能 PERF-1/2/3 通过、D1-D8 一致。
 
 **v6 R7 门禁 PASS（已实测）**：native 自动双栈落地——`ff_native_fd_map` + `ff_socket` 默认双建 + `ff_bind/ff_listen/ff_close/ff_connect` 双驱动 + `ff_epoll_ctl` 双注册/`ff_epoll_wait` 合并 + accept 单栈归属，全部 `#ifdef FF_KERNEL_COEXIST` 门控。宏关编译 rc=0 且 nm 共存符号=0（size 6539682 与基线逐字节一致，零回归）；宏开 rc=0；单测双态 PASS（宏关 P1 50/50，宏开 P1 含 `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip`）；**真机单 `listen(80)` 同进程被 F-Stack 侧（ssh f-stack-client → 9.134.214.176:80 = HTTP 200）与内核侧（curl 127.0.0.1:80 = HTTP 200）同时服务**，V1-V12 全 PASS（V10 connect 按 Q2=B 草案实现、数据路径 F-Stack 主，已文档化）。bounce=1（test_ff_epoll stub，已修）。
+
+**R9 spec 门禁 PASS（本轮设计，实现待 impl 落地）**：R7 双栈事件仅覆盖 `ff_epoll_*`，R9 补两处缺口——(P2) `ff_kqueue/ff_kevent/ff_kevent_do_each` 对称仿 `ff_epoll` 共存（复用 `ff_epoll_pairs` 配对 + changelist→`ff_host_epoll_ctl` 注册 + eventlist 合成 `struct kevent` + close 清配对），修 kqueue 模型内核侧 `curl 127.0.0.1:80=000` → 目标 200；(P1) host IPv6 socket `IPV6_V6ONLY=1`，修 `-DINET6` 双建 `ff_bind errno=98 EADDRINUSE` 启动失败。现状缺口与方案均带实测证据（内核侧 000 抓包 `ack 73`、errno=98、F-Stack 侧 200），全程 `#ifdef FF_KERNEL_COEXIST` 门控、宏关零回归；R9-P1~P9 spec 断言齐备，实现状态如实标注「待 impl 落地」。实现门禁（真机内核侧 200 / INET6-on 启动 / 宏关 nm 零回归）待 impl 完成后填表（§4bis）。

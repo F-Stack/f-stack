@@ -131,10 +131,30 @@
 | D7 | 原生 v5 共存已落地（编译宏已包裹）；v6 在其上改默认语义为双栈 |
 | D8 | R8 补齐 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核路由（前 4 单栈热路由，shutdown 内核路由+双栈双驱动）；剩 `readv/writev/ioctl` 仍未加路由（已知限制），v6 双栈 fd 对其默认仅 F-Stack 驱动 |
 | **D9（v6）** | `ff_native_fd_map`/默认双建/双驱动**尚未实现**（§5.2 grep=0）——文档区分「v5 已实测」与「v6 待实现」，不当既成 |
+| **D10（R9）** | **R7 双栈事件仅覆盖 `ff_epoll_*`**：`ff_kqueue`/`ff_kevent`/`ff_kevent_do_each` **无 FF_KERNEL_COEXIST 路由/双注册**（grep 实测仅 `ff_epoll.c` 命中宏，`ff_syscall_wrapper.c` 的 `ff_kqueue/ff_kevent` 无共存分支）。直接用 `ff_kqueue`+`ff_kevent`（如 `example/main.c`）的应用**感知不到内核侧连接**——实测内核侧 `curl 127.0.0.1:80=000`（握手完成、GET 被内核 TCP `ack 73`，但应用永不被唤醒去 accept），F-Stack 侧 `9.134.214.176:80=200`。R9 待补 |
+| **D11（R9）** | **IPv6 双建端口冲突**：`-DINET6` 下默认 `ff_socket(AF_INET6)` 双建，host IPv6 socket `ff_bind([::]:80)` 因本机 `net.ipv6.bindv6only=0`（实测）连带占用 IPv4，与同进程 host IPv4 `0.0.0.0:80` 冲突——**实测 `ff_bind failed, sockfd6:1026, errno:98 EADDRINUSE`**，进程退出无法启动。host IPv6 socket 未设 `IPV6_V6ONLY=1`。R9 待补 |
 
 ---
 
-## 7. 用于撰写 04/05/06/09 的要点清单
+## 7. R9 现状缺口（kqueue/kevent 未共存 + IPv6 双建冲突，实测）
+
+> R7 已落地默认双建/双驱动 + `ff_epoll_*` 双栈合并并 PASS（`08 §4`）。R9 锁定其两处剩余缺口，均经代码 + 抓包 + errno 三重交叉验证（不臆测）。
+
+### 7.1 P2：`ff_kqueue/ff_kevent` 系列未支持共存（核心缺口）
+- `lib/ff_syscall_wrapper.c` 的 `ff_kqueue`/`ff_kevent`/`ff_kevent_do_each` **完全无 FF_KERNEL_COEXIST 路由**——仅 `ff_epoll.c` 经 `ff_epoll_pairs[kq→host_ep]` 做了配对+双注册+合并。`example/main.c` 用 `ff_kqueue()`+`EV_SET(sockfd,EVFILT_READ)`+`ff_kevent(kq,...)`，**只把 F-Stack listen fd 注册进 F-Stack kqueue**，双栈 listen 的内核侧 host fd 从未进入任何事件后端。
+- **实测链路**：内核 TCP 完成握手、GET 入内核缓冲并被 TCP 层 ACK（抓包 `ack 73` 吻合），但应用永不被唤醒去 `ff_accept` 内核 listen fd → 永不 read/write → 无 200。内核侧 `curl 127.0.0.1:80=http_code 000`（6s 超时）；同进程 F-Stack 侧 client 压 `9.134.214.176=http_code 200 size=438`。
+- 结论：**双栈 listen 的内核侧事件无法被 kqueue 模型应用感知**——`ff_kqueue/ff_kevent` 须对称仿 `ff_epoll` 做共存（外网已证 F-Stack epoll 即基于 kqueue 封装，可复用同一 `ff_epoll_pairs` 基础设施）。
+
+### 7.2 P1：IPv6 双建端口冲突（启动失败）
+- `lib/ff_syscall_wrapper.c::ff_bind`：F-Stack bind 成功后调 `ff_host_bind(map[s])`，失败即 `return -1`。
+- 本机 `net.ipv6.bindv6only=0`（实测）→ host IPv6 socket 绑 `[::]:80` 连带占用 IPv4 → 与同进程 host IPv4 `0.0.0.0:80`（v4/v6 默认双建各自产生的 host socket）冲突。**实测 errno=98 EADDRINUSE**，`-DINET6` helloworld 在 coexist=1 下无法启动。
+- 结论：host 侧 IPv6 socket 须设 `IPV6_V6ONLY=1` 只处理 IPv6、与 host IPv4 同端口共存（外网交叉验证：bindv6only=0 时 `::` 通配连带 IPv4，标准解法即 `IPV6_V6ONLY=1`，多篇技术资料一致）。
+
+> **R9 缺口结论**：R7 共存对 `ff_epoll_*` 完整，但 `ff_kqueue/ff_kevent`（P2）与 host IPv6 socket V6ONLY（P1）两项**待 R9 实现**——不当既成，区分「R7 已实测」与「R9 待实现」。
+
+---
+
+## 8. 用于撰写 04/05/06/09 的要点清单
 
 - **改造起点=原生 v5 per-fd 二选一**（已落地 + 编译宏已包裹）。
 - **v6 核心改动**：(a) 新增 `ff_native_fd_map` + 访问器（仿 hook `fstack_kernel_fd_map`）；(b) `ff_socket` 默认双建（marker 单栈覆盖）；(c) `ff_bind/listen/close/connect/accept/setsockopt/fcntl` 双驱动；(d) `ff_epoll_ctl/wait` 双栈 listen 两栈各注册 + 合并。

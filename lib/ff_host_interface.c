@@ -44,6 +44,7 @@
 #ifdef FF_KERNEL_COEXIST
 #include <sys/socket.h>
 #include <sys/epoll.h>
+#include <netinet/in.h>
 #include <fcntl.h>
 #include <unistd.h>
 #endif /* FF_KERNEL_COEXIST */
@@ -288,6 +289,17 @@ ff_host_socket(int domain, int type, int protocol)
     return socket(domain, type, protocol);
 }
 
+/*
+ * Force a host AF_INET6 socket to v6-only so a dual-stack pair can share a
+ * port with the paired host AF_INET socket (host net.ipv6.bindv6only may be 0).
+ */
+int
+ff_host_set_v6only(int fd)
+{
+    int on = 1;
+    return setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
+}
+
 int
 ff_host_bind(int fd, const void *addr, socklen_t addrlen)
 {
@@ -398,6 +410,49 @@ int
 ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout)
 {
     return epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout);
+}
+
+/*
+ * Host-epoll helpers for the native kqueue coexistence path (ff_kevent). The
+ * struct epoll_event stays inside this host-namespace TU; ff_kevent passes
+ * plain ints (app_fd kept in data.fd) to avoid pulling the host epoll layout
+ * into the FreeBSD-namespace syscall wrapper.
+ */
+void
+ff_host_kqueue_ctl(int epfd, int del, int hfd, int app_fd, int want_write)
+{
+    struct epoll_event ev;
+
+    ev.events = want_write ? EPOLLOUT : EPOLLIN;
+    ev.data.fd = app_fd;
+    if (del) {
+        epoll_ctl(epfd, EPOLL_CTL_DEL, hfd, &ev);
+    } else if (epoll_ctl(epfd, EPOLL_CTL_ADD, hfd, &ev) < 0 &&
+        errno == EEXIST) {
+        epoll_ctl(epfd, EPOLL_CTL_MOD, hfd, &ev);
+    }
+}
+
+/*
+ * Poll the host epoll non-blocking and emit (app_fd, is_write, is_eof) triples
+ * so ff_kevent can rebuild struct kevent entries. Returns the event count.
+ */
+int
+ff_host_kqueue_poll(int epfd, int *triples, int maxevents)
+{
+    struct epoll_event evs[maxevents];
+    int n, i;
+
+    n = epoll_wait(epfd, evs, maxevents, 0);
+    if (n <= 0)
+        return 0;
+
+    for (i = 0; i < n; i++) {
+        triples[3 * i] = evs[i].data.fd;
+        triples[3 * i + 1] = (evs[i].events & EPOLLOUT) ? 1 : 0;
+        triples[3 * i + 2] = (evs[i].events & (EPOLLHUP | EPOLLERR)) ? 1 : 0;
+    }
+    return n;
 }
 
 ssize_t
