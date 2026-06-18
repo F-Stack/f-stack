@@ -113,7 +113,7 @@
 
 ### 6ter.3 ioctl 路由（D13，主，中风险）
 - `ff_ioctl`：在 `va_arg` 取 `argp` 后、`linux2freebsd_ioctl` 翻译**之前**插入 `if (ff_is_kernel_fd(fd)) return ff_host_ioctl(real, request, argp);`（**原始 Linux request，不翻译**）。
-- **双栈 fd 同驱动暂未实现**（保守最小必要）：仅对 encode 内核 fd 路由，双栈 fd 仍走 `linux2freebsd_ioctl`→`kern_ioctl`，后续如需对常用控制 ioctl（`FIONBIO`/`FIONREAD`）同驱动可仿 `ff_fcntl` 扩展。
+- **双栈 fd 同驱动 R10.1 已实现**（仿 `ff_fcntl`）：F-Stack 成功后对 `FIONBIO`/`FIOASYNC` 用原始 Linux request 同步配对 host fd；`FIONREAD` 等 query 类不同驱动以免覆盖 argp。
 
 ### 6ter.4 dup / dup2（D14，额外发现）
 - `ff_dup`：内核 fd→`ff_host_dup(real)`+`ff_kernel_fd_encode`（n<0 返回 -1）。

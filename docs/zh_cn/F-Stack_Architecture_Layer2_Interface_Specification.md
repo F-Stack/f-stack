@@ -730,7 +730,7 @@ int du = ff_socket(AF_INET, SOCK_STREAM, 0);                // 双建（默认�
 
 **R9 —— kqueue/kevent 共存 + IPv6。** 统一事件支持现已覆盖原生 `ff_kqueue` / `ff_kevent` 接口（此前仅 `ff_epoll_*`）：每个 kqueue 惰性配对一个宿主 epoll（共享 `ff_epoll_host_ep`，复用 `ff_epoll_pairs` 表）。`ff_kevent` 把内核/双栈 fd 的 `EVFILT_READ/WRITE` 注册进该宿主 epoll（内核-only 变更不下发 F-Stack kqueue），等待时先非阻塞轮询宿主 epoll 合成 `struct kevent`（`ident`=应用面 fd、`EV_EOF`↔`EPOLLHUP|ERR`）再合并 F-Stack kqueue 事件 —— 使纯 kqueue 应用（如 `example/main.c`）能感知内核侧 listener，实测 `curl 127.0.0.1:80`=200 size=438。内核 fd 经 kqueue 仅支持 `EVFILT_READ/WRITE`。IPv6 侧：双建 `AF_INET6` socket 的宿主对应 socket 被设 `IPV6_V6ONLY=1`（`ff_host_set_v6only`），使 `-DINET6` 构建以 v4+v6 同端口干净启动（修复此前宿主 IPv6 `errno=98 EADDRINUSE`）。
 
-**R10 —— 残余入口共存。** `ff_readv`/`ff_writev`（内核 fd→`ff_host_readv/writev`，仿 read/write，连接 fd 单栈热路径）、`ff_ioctl`（内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`，不经 `linux2freebsd_ioctl`；双栈 fd 同驱动暂未实现，仅 encode 内核 fd 路由）、`ff_dup`（内核 fd→`ff_host_dup`+encode）、`ff_dup2`（两端内核 fd→`ff_host_dup2`+encode；混栈拒绝 `errno=EINVAL`）。新增 5 个宿主桥 `ff_host_readv/writev/ioctl/dup/dup2`。已知限制：`ff_select`（encode 内核 fd 超 `FD_SETSIZE` 硬限制）/`ff_poll`（保守未实现）不支持内核 fd 共存 —— 改用 `ff_epoll_*`/`ff_kqueue`。
+**R10 —— 残余入口共存。** `ff_readv`/`ff_writev`（内核 fd→`ff_host_readv/writev`，仿 read/write，连接 fd 单栈热路径）、`ff_ioctl`（内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`，不经 `linux2freebsd_ioctl`；双栈 fd 同驱动自 R10.1 起支持 `FIONBIO`/`FIOASYNC`（F-Stack 成功后用原始 Linux request 同步配对 host fd；`FIONREAD` 等 query 类不同驱动以免覆盖 argp））、`ff_dup`（内核 fd→`ff_host_dup`+encode）、`ff_dup2`（两端内核 fd→`ff_host_dup2`+encode；混栈拒绝 `errno=EINVAL`）。新增 5 个宿主桥 `ff_host_readv/writev/ioctl/dup/dup2`。已知限制：`ff_select`（encode 内核 fd 超 `FD_SETSIZE` 硬限制）/`ff_poll`（保守未实现）不支持内核 fd 共存 —— 改用 `ff_epoll_*`/`ff_kqueue`。
 
 ---
 

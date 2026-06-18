@@ -1093,6 +1093,20 @@ ff_ioctl(int fd, unsigned long request, ...)
     if ((rc = kern_ioctl(curthread, fd, req, argp)))
         goto kern_fail;
 
+#ifdef FF_KERNEL_COEXIST
+    /* Sync set-direction ioctls (FIONBIO/FIOASYNC) to the paired host fd so a
+     * dual-stack fd keeps the same I/O mode on both stacks. Query ioctls are
+     * not forwarded: they write back into argp and the F-Stack value above is
+     * authoritative for the application fd. Host side uses the raw Linux
+     * request (host namespace, untranslated). */
+    if (ff_global_cfg.stack.kernel_coexist &&
+        (request == LINUX_FIONBIO || request == LINUX_FIOASYNC)) {
+        int hfd = ff_native_map_get(fd);
+        if (hfd > 0)
+            ff_host_ioctl(hfd, request, argp);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     return (rc);
 
 kern_fail:

@@ -312,7 +312,7 @@ Worker-N (CPU-N)  ┘
 - 内核栈 fd 以 `host_fd + 0x40000000`（`FF_KERNEL_FD_BASE`）返回，与 FreeBSD fd（`< 65536`）永不冲突；入口将此类 fd 路由到薄 `ff_host_*` 宿主 libc 桥。
 - F-Stack ↔ 宿主 fd 配对存于 `ff_native_fd_map`；`ff_epoll_*` 为每个 kqueue 惰性配对一个宿主 `epoll` 实现统一事件投递。双建 `AF_INET6` socket 的宿主对应 socket 被设 `IPV6_V6ONLY=1`（`ff_host_set_v6only`，R9），使 v4+v6 同端口共存（修复此前 `-DINET6` `errno=98` 启动失败）。
 - **R9** 将统一事件扩展到原生 `ff_kqueue`/`ff_kevent`（共享 `ff_epoll_host_ep`）：`ff_kevent` 把内核/双栈 fd 的 `EVFILT_READ/WRITE` 注册进 kqueue 配对的宿主 epoll，等待时非阻塞轮询合成 `struct kevent`（`ident`=应用面 fd）再合并 F-Stack 事件 —— 纯 kqueue 应用（`example/main.c`）现可感知内核侧 listener（`curl 127.0.0.1:80`=200，修复前 000）。
-- **R10** 补齐残余入口内核 fd 路由：`ff_readv`/`ff_writev` 内核 fd 经 `ff_host_readv/writev`（仿 read/write）；`ff_ioctl` 内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`（双栈 fd 同驱动暂未实现）；`ff_dup`→`ff_host_dup`+encode，`ff_dup2` 两端内核 fd→`ff_host_dup2`+encode、混栈拒绝 `errno=EINVAL`。
+- **R10** 补齐残余入口内核 fd 路由：`ff_readv`/`ff_writev` 内核 fd 经 `ff_host_readv/writev`（仿 read/write）；`ff_ioctl` 内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`（双栈 fd 同驱动自 R10.1 起支持 `FIONBIO`/`FIOASYNC`）；`ff_dup`→`ff_host_dup`+encode，`ff_dup2` 两端内核 fd→`ff_host_dup2`+encode、混栈拒绝 `errno=EINVAL`。
 - 宏关闭时库与纯 F-Stack 构建逐字节一致。已知限制：内核 fd 经 kqueue 仅支持 `EVFILT_READ/WRITE`；`ff_select`（encode 内核 fd 超 `FD_SETSIZE` 硬限制）与 `ff_poll`（保守未实现）不支持内核 fd 共存 —— 改用 `ff_epoll_*`/`ff_kqueue` 多路复用。详见 `docs/kernel_event_support_spec/`。
 
 ## 7. 技术选型分析

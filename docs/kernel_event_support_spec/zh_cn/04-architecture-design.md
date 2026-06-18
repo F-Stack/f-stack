@@ -296,7 +296,7 @@ ff_ioctl(fd, request, ...)                                     [#ifdef FF_KERNEL
 ```
 
 - **关键**：ioctl request 经 `_IO/_IOR/_IOW(type,nr,size)` 编码，Linux 与 FreeBSD 数值不同源（`03` 外网交叉验证）——内核 host fd 须用**原始 Linux request**，**不得**经 `linux2freebsd_ioctl` 翻译（翻译后是 FreeBSD 数值，host libc 不识别）。内核 fd 分支在 `va_arg` 取 `argp` 后、`linux2freebsd_ioctl` 之前 return。
-- **双栈 fd 同驱动暂未实现**（R10 保守，仿 `06 §risk R-1`）：仅对 encode 内核 fd 路由 host，双栈 fd 仍走原 `linux2freebsd_ioctl`→`kern_ioctl` 不变；后续如需对常用控制 ioctl（`FIONBIO`/`FIONREAD`）同驱动可仿 `ff_fcntl` 扩展。
+- **双栈 fd 同驱动 R10.1 已实现**（仿 `ff_fcntl`）：F-Stack 成功后对 set 类 `FIONBIO`/`FIOASYNC` 用原始 Linux request 同步配对 host fd；`FIONREAD` 等 query 类不同驱动以免覆盖 argp。
 
 ### 8ter.3 dup / dup2（额外发现）
 

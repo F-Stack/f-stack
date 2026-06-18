@@ -1025,7 +1025,7 @@ struct prison *prison0;           // 全局命名空间
 
 **`ff_syscall_wrapper.c` 中的入口路由**（§3.1）：每个内核感知的 `ff_*` 入口通过 `ff_is_kernel_fd()` 识别受管内核 fd 并转发到对应 `ff_host_*` 桥；双建 socket 还会驱动经 `ff_native_map_get()` 查得的配对宿主 fd。`AF_INET6` 双建时 `ff_socket` 调 `ff_host_set_v6only(hfd)`（L952），使 `-DINET6` 构建以 v4+v6 同端口干净启动（修复此前宿主 IPv6 `errno=98 EADDRINUSE`）。
 
-**R10：残余入口共存** —— `ff_ioctl`（L1067，内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`，不经 `linux2freebsd_ioctl`；双栈 fd 同驱动暂未实现）、`ff_readv`（L1189）/`ff_writev`（L1251，内核 fd→`ff_host_readv/writev`，仿 read/write，连接 fd 单栈热路径）、`ff_dup`（L2130，内核 fd→`ff_host_dup`+encode）、`ff_dup2`（L2156，两端内核 fd→`ff_host_dup2`+encode；混栈拒绝 `errno=EINVAL`）。已知限制：`ff_select`（encode 内核 fd 超 `FD_SETSIZE` 硬限制）/`ff_poll`（保守未实现）不支持内核 fd 共存 —— 改用 `ff_epoll_*`/`ff_kqueue`。
+**R10：残余入口共存** —— `ff_ioctl`（L1067，内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`，不经 `linux2freebsd_ioctl`；双栈 fd 同驱动自 R10.1 起支持 `FIONBIO`/`FIOASYNC`）、`ff_readv`（L1189）/`ff_writev`（L1251，内核 fd→`ff_host_readv/writev`，仿 read/write，连接 fd 单栈热路径）、`ff_dup`（L2130，内核 fd→`ff_host_dup`+encode）、`ff_dup2`（L2156，两端内核 fd→`ff_host_dup2`+encode；混栈拒绝 `errno=EINVAL`）。已知限制：`ff_select`（encode 内核 fd 超 `FD_SETSIZE` 硬限制）/`ff_poll`（保守未实现）不支持内核 fd 共存 —— 改用 `ff_epoll_*`/`ff_kqueue`。
 
 ---
 

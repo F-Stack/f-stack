@@ -123,13 +123,13 @@ int fonly = ff_socket(AF_INET, SOCK_STREAM | SOCK_FSTACK, 0);   /* 仅 F-Stack�
 |---|---|---|---|---|
 | `ff_readv` | L1189 | `ff_host_readv(real, iov, iovcnt)` | `kern_readv` | **不双驱动**（连接 fd 单栈，热路径 NFR-2，仿 `ff_read`） |
 | `ff_writev` | L1251 | `ff_host_writev(real, iov, iovcnt)` | `kern_writev` | **不双驱动**（仿 `ff_write`） |
-| `ff_ioctl` | L1067 | `ff_host_ioctl(real, 原始 Linux request, argp)`（不经 `linux2freebsd_ioctl`） | `linux2freebsd_ioctl`→`kern_ioctl` | **暂未实现**（仅 encode 内核 fd 路由；后续如需仿 `ff_fcntl` 扩展） |
+| `ff_ioctl` | L1067 | `ff_host_ioctl(real, 原始 Linux request, argp)`（不经 `linux2freebsd_ioctl`） | `linux2freebsd_ioctl`→`kern_ioctl` | **R10.1 已实现**（`FIONBIO`/`FIOASYNC` 同步配对 host fd，仿 `ff_fcntl`；`FIONREAD` 等 query 类不同驱动） |
 | `ff_dup` | L2130 | 内核 fd→`ff_host_dup(real)`+`ff_kernel_fd_encode`（n<0 返回 -1） | `sys_dup` | — |
 | `ff_dup2` | L2156 | 两端内核 fd→`ff_host_dup2`+encode；混栈→拒绝 errno=EINVAL | `sys_dup2` | — |
 | `ff_select` | L1879 | **不实现（硬限制，仅注释）**：encode fd≫`FD_SETSIZE`(1024) | `kern_select` | — |
 | `ff_poll` | L1903 | **不实现（文档限制，仅注释）**：合并复杂度/回归风险高 | `kern_poll` | — |
 
-- **ioctl request 契约**：内核 host fd 必须用**原始 Linux request**（`_IO/_IOR/_IOW(type,nr,size)` 编码在 Linux/FreeBSD 不同源，`03` 交叉验证），`ff_host_ioctl` 直传 host libc；F-Stack 路径仍 `linux2freebsd_ioctl` 翻译。`va_arg` 取 `argp` 方式与现有一致。**双栈 fd 同驱动暂未实现**（保守最小必要，避免回归）。
+- **ioctl request 契约**：内核 host fd 必须用**原始 Linux request**（`_IO/_IOR/_IOW(type,nr,size)` 编码在 Linux/FreeBSD 不同源，`03` 交叉验证），`ff_host_ioctl` 直传 host libc；F-Stack 路径仍 `linux2freebsd_ioctl` 翻译。`va_arg` 取 `argp` 方式与现有一致。**双栈 fd 同驱动 R10.1 已实现**（`FIONBIO`/`FIOASYNC` 同步配对 host fd，仿 `ff_fcntl`；`FIONREAD` 等 query 类不同驱动以免覆盖 argp）。
 - **dup2 混栈拒绝**：一端内核 fd 一端 F-Stack fd 的 dup2 语义不成立，明确拒绝置 **errno=EINVAL**（两 fd 各自有效但语义不成立，比 EBADF 贴切，已实测），不臆造。
 - **select 硬限制**：encode 内核 fd（≥`0x40000000`）远超 `fd_set` 的 `FD_SETSIZE`(1024) 索引上限，无法放入 `fd_set`——`ff_select` 对内核 fd **不支持共存**（仅加注释）；推荐内核 fd 用 `ff_epoll_*`/`ff_kqueue`（R9 已共存）多路复用。
 - **poll 文档限制**：`pollfd.fd` 虽可容 encode fd，但 `kern_poll` 直接操作 FreeBSD pollfd，混合纯内核 fd 子集需拆分数组/索引映射/合并 revents/超时合并，复杂度与回归风险高——R10 **保守不实现**（仅加注释），建议改用 `ff_epoll_*`/`ff_kqueue`。
@@ -229,7 +229,7 @@ ff_connect(s, name, namelen)   s 为双栈 fd (ff_native_map_get(s)>0)
 | 内核/F-Stack 地址端口冲突 | 返回原生 errno（双栈某栈 bind 失败按部分失败契约处理） |
 | close 双栈 fd | 两栈 close + `ff_native_map_clear`；kqueue fd 清 `ff_epoll_pairs`（避免内核 fd 泄漏，FR-7） |
 | 内核 fd 调用 `sendmsg/recvmsg/getpeername/getsockname/shutdown` | R8 已加内核路由：前 4 内核 fd 走 `ff_host_*` 单栈；`shutdown` 内核 fd 走 host，双栈 map fd 两侧双驱动半关闭（仿 `ff_close`） |
-| 内核 fd 调用 `readv/writev/ioctl/dup/dup2` | **R10 已加内核路由**：`readv/writev` 内核 fd 走 `ff_host_readv/writev(real)`（仿 read/write 单栈）；`ioctl` 内核 fd 走 `ff_host_ioctl(real, 原始 Linux request)`（双栈 fd 同驱动暂未实现）；`dup` 内核 fd→`ff_host_dup`+encode；`dup2` 两端内核 fd→`ff_host_dup2`+encode，**混栈拒绝 errno=EINVAL**。详见 §3quater |
+| 内核 fd 调用 `readv/writev/ioctl/dup/dup2` | **R10 已加内核路由**：`readv/writev` 内核 fd 走 `ff_host_readv/writev(real)`（仿 read/write 单栈）；`ioctl` 内核 fd 走 `ff_host_ioctl(real, 原始 Linux request)`（双栈 fd 同驱动 R10.1 已支持 `FIONBIO`/`FIOASYNC`）；`dup` 内核 fd→`ff_host_dup`+encode；`dup2` 两端内核 fd→`ff_host_dup2`+encode，**混栈拒绝 errno=EINVAL**。详见 §3quater |
 | 内核 fd 调用 `select`/`poll`（D15） | **均不支持共存**：`select` encode 内核 fd≫`FD_SETSIZE`(1024) 无法装入 `fd_set`（硬限制）；`poll` 合并复杂度/回归风险高，R10 保守不实现（文档限制）。推荐内核 fd 用 `ff_epoll_*`/`ff_kqueue`（R9 已共存） |
 | **R9：`ff_kevent` 内核 fd 仅支持 `EVFILT_READ/WRITE`** | 内核侧经 host epoll，仅 `EPOLLIN/EPOLLOUT` 语义；`EVFILT_TIMER/SIGNAL/PROC/VNODE` 等非 READ/WRITE filter 对内核 fd **不经 host epoll 共存**（已知限制，仍走 F-Stack kqueue 原语义）；`EV_EOF` 映射 `EPOLLHUP\|EPOLLERR` |
 | **R9：IPv6 双建 V6ONLY 失败** | host IPv6 socket `setsockopt(IPV6_V6ONLY,1)` 失败时按部分失败契约（记日志，不静默；不影响 F-Stack v6 listen） |

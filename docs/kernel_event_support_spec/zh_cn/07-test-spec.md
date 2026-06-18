@@ -129,7 +129,7 @@
   6. **connect 契约确认**：`05 §6` 草案经用户确认后 UT-14/IT-9 方可定稿判 PASS。
   7. R8 新增 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核 fd 路由须单测覆盖；`readv/writev/ioctl` 由 **R10** 补齐内核 fd 路由（D12-D13，见第 9 项）。
   8. **R9**：UT-19~23（kqueue changelist 注册/eventlist 合成/close 清配对/IPv6 V6ONLY/宏关零回归）全通过；**IT-11（kqueue 模型内核侧 `curl 127.0.0.1:80=200`）+ IT-12（INET6-on 双建成功启动、抓包内核侧 200）真机实测成功**，F-Stack 侧 9.134.214.176:80=200 不回归。`ff_kevent` 内核 fd 仅 `EVFILT_READ/WRITE`（非 READ/WRITE filter 不经 host epoll）为 R9 已知限制，须文档/用例明示。
-  9. **R10**：UT-24~28（`ff_host_readv/writev/ioctl/dup/dup2` host 桥 + `ff_readv/writev/ioctl/dup/dup2` 内核 fd 路由 + 宏关零回归）全通过；**IT-13（内核 fd readv/writev/ioctl 真机正确、内核侧 200）+ IT-14（F-Stack 侧 200 不回归）实测成功**。已确定（impl 实测）：`ff_select` 因 encode 内核 fd≫`FD_SETSIZE`(1024) 为**硬限制**、`ff_poll` 因合并复杂度**保守不实现**，两者均降级文档限制；`ff_dup2` 混栈拒绝 **errno=EINVAL**；`ioctl` 双栈 fd 同驱动**暂未实现**（仅 encode 内核 fd 路由）——均须文档/用例明示。
+  9. **R10**：UT-24~28（`ff_host_readv/writev/ioctl/dup/dup2` host 桥 + `ff_readv/writev/ioctl/dup/dup2` 内核 fd 路由 + 宏关零回归）全通过；**IT-13（内核 fd readv/writev/ioctl 真机正确、内核侧 200）+ IT-14（F-Stack 侧 200 不回归）实测成功**。已确定（impl 实测）：`ff_select` 因 encode 内核 fd≫`FD_SETSIZE`(1024) 为**硬限制**、`ff_poll` 因合并复杂度**保守不实现**，两者均降级文档限制；`ff_dup2` 混栈拒绝 **errno=EINVAL**；`ioctl` 双栈 fd 同驱动 **R10.1 已实现**（`FIONBIO`/`FIOASYNC` 同步配对 host fd）——均须文档/用例明示。
 - 任一项失败 → bounce 打回上一里程碑（同步骤≤3 次，超限转人工）。
 
 ---
