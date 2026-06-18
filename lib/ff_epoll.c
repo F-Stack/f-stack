@@ -33,7 +33,7 @@
  * both stacks. When no kernel fd is registered, behaviour is unchanged
  * (zero regression).
  */
-#define FF_EPOLL_COEXIST_MAX 64
+#define FF_EPOLL_COEXIST_MAX 4
 static struct { int kq; int host_ep; } ff_epoll_pairs[FF_EPOLL_COEXIST_MAX];
 
 /* Return the host epoll fd paired with kqueue fd kq; create it lazily when
