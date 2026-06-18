@@ -107,6 +107,10 @@
 
 #include <security/mac/mac_framework.h>
 
+#ifdef FSTACK
+#include "ff_host_interface.h"
+#endif
+
 #define	INPCBLBGROUP_SIZMIN	8
 #define	INPCBLBGROUP_SIZMAX	256
 
@@ -768,6 +772,17 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 #ifdef INET6
 	struct in6_addr *laddr6, *faddr6;
 #endif
+#ifdef FSTACK
+	u_short rss_first, rss_last, *rss_portrange;
+	/* 0:not init, 1:init successed, -1:init failed */
+	static int rss_tbl_init = 0;
+	int rss_check_flag = lookupflags & INPLOOKUP_LPORT_RSS_CHECK;
+	int rss_ret, rss_match = 0, dorandom;
+	struct ifaddr *ifa = NULL;
+	struct ifnet *ifp = NULL;
+
+	lookupflags &= ~INPLOOKUP_LPORT_RSS_CHECK;
+#endif
 
 	pcbinfo = inp->inp_pcbinfo;
 
@@ -827,20 +842,85 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 
 	tmpinp = NULL;
 
+#ifdef FSTACK
+	dorandom = (V_ipport_randomized && first != last) ? 1 : 0;
+
+	if (rss_check_flag) {
+		if (rss_tbl_init == 0) {
+			rss_ret = ff_rss_tbl_set_portrange(first, last);
+			rss_tbl_init = (rss_ret < 0) ? -1 : 1;
+		}
+
+		if (rss_tbl_init == 1) {
+			rss_ret = ff_rss_tbl_get_portrange(faddr.s_addr,
+			    laddr.s_addr, fport, &rss_first, &rss_last,
+			    &rss_portrange);
+			if (rss_ret < 0) {
+				if (rss_ret != -ENOENT)
+					rss_tbl_init = -1;
+			} else {
+				/* rss_portrange[0] holds last-selected idx. */
+				rss_match = 1;
+				count = rss_last - rss_first + 1;
+				if (dorandom)
+					rss_portrange[0] = rss_first +
+					    (arc4random() % count);
+			}
+		}
+
+		if (!rss_match) {
+			/* Locate egress ifp for per-queue ff_rss_check(). */
+			lsa->sa_len = sizeof(struct sockaddr_in);
+			ifa = ifa_ifwithnet(lsa, 0, RT_ALL_FIBS);
+			if (ifa == NULL) {
+				fsa->sa_len = sizeof(struct sockaddr_in);
+				ifa = ifa_ifwithnet(fsa, 0, RT_ALL_FIBS);
+				if (ifa == NULL)
+					return (EADDRNOTAVAIL);
+			}
+			ifp = ifa->ifa_ifp;
+		}
+	}
+
+	if (!rss_check_flag || !rss_match) {
+		if (dorandom)
+			*lastport = first + (arc4random() % (last - first));
+		count = last - first;
+	}
+#else
 	if (V_ipport_randomized)
 		*lastport = first + (arc4random() % (last - first));
 
 	count = last - first;
+#endif
 
 	do {
 		if (count-- < 0)	/* completely used? */
 			return (EADDRNOTAVAIL);
+#ifdef FSTACK
+		if (rss_check_flag && rss_match) {
+			rss_portrange[0]++;
+			if (rss_portrange[0] < rss_first ||
+			    rss_portrange[0] > rss_last)
+				rss_portrange[0] = rss_first;
+			*lastport = rss_portrange[rss_portrange[0]];
+		} else {
+			++*lastport;
+			if (*lastport < first || *lastport > last)
+				*lastport = first;
+		}
+#else
 		++*lastport;
 		if (*lastport < first || *lastport > last)
 			*lastport = first;
+#endif
 		lport = htons(*lastport);
 
+#ifdef FSTACK
+		if (!rss_check_flag && fsa != NULL) {
+#else
 		if (fsa != NULL) {
+#endif
 #ifdef INET
 			if (lsa->sa_family == AF_INET) {
 				tmpinp = in_pcblookup_hash_locked(pcbinfo,
@@ -874,8 +954,25 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 			else
 #endif
 #ifdef INET
+			{
 				tmpinp = in_pcblookup_local(pcbinfo, laddr,
 				    lport, RT_ALL_FIBS, lookupflags, cred);
+#ifdef FSTACK
+				if (rss_check_flag && !rss_match &&
+				    tmpinp == NULL) {
+					/* LOOPBACK does not support RSS. */
+					if (ifp->if_softc == NULL &&
+					    (ifp->if_flags & IFF_LOOPBACK))
+						break;
+					if (ff_rss_check(ifp->if_softc,
+					    faddr.s_addr, laddr.s_addr,
+					    fport, lport))
+						break;
+					/* not local queue: keep searching */
+					tmpinp++;
+				}
+#endif
+			}
 #endif
 		}
 	} while (tmpinp != NULL);
@@ -1126,9 +1223,16 @@ in_pcbconnect(struct inpcb *inp, struct sockaddr_in *sin, struct ucred *cred)
 		faddr = sin->sin_addr;
 
 	if (in_nullhost(inp->inp_laddr)) {
-		error = in_pcbladdr(inp, &faddr, &laddr, cred);
-		if (error)
-			return (error);
+#ifdef FSTACK
+		laddr.s_addr = INADDR_ANY;
+		ff_in_pcbladdr(AF_INET, &faddr, sin->sin_port, &laddr);
+		if (laddr.s_addr == INADDR_ANY)
+#endif
+		{
+			error = in_pcbladdr(inp, &faddr, &laddr, cred);
+			if (error)
+				return (error);
+		}
 	} else
 		laddr = inp->inp_laddr;
 
@@ -1144,7 +1248,11 @@ in_pcbconnect(struct inpcb *inp, struct sockaddr_in *sin, struct ucred *cred)
 
 		error = in_pcb_lport_dest(inp, (struct sockaddr *)&lsin,
 		    &lport, (struct sockaddr *)&fsin, sin->sin_port, cred,
+#ifdef FSTACK
+		    INPLOOKUP_WILDCARD | INPLOOKUP_LPORT_RSS_CHECK);
+#else
 		    INPLOOKUP_WILDCARD);
+#endif
 		if (error)
 			return (error);
 	} else if (in_pcblookup_hash_locked(inp->inp_pcbinfo, faddr,

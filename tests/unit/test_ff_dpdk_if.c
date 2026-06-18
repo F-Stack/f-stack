@@ -34,8 +34,14 @@
 
 #include "ff_api.h"
 #include "ff_msg.h"               /* struct ff_traffic_args */
+#include "ff_config.h"            /* MAX_PKT_BURST / ff_hw_features (needed by ff_memory.h) */
 #include "ff_dpdk_if.h"
+#include "ff_memory.h"            /* struct ff_dpdk_if_context / lcore_conf (RSS 0.1 tests) */
 #include "ff_host_interface.h"    /* ff_get_tsc_ns declaration */
+
+/* lcore_conf is an extern global in ff_dpdk_if.c (not declared in headers);
+ * mirror ff_memory.c:71 so the RSS 0.1 tests can set the queue layout. */
+extern struct lcore_conf lcore_conf;
 
 #include <rte_launch.h>           /* enum rte_rmt_call_main_t */
 
@@ -96,9 +102,21 @@ int   ff_mbuf_tx_offload(void *m, void *o, void *l)
 void *ff_veth_attach(void *cfg) { (void)cfg; return NULL; }
 int   ff_veth_input(void *ctx, struct rte_mbuf *m) { (void)ctx;(void)m; return 0; }
 void  ff_veth_process_packet(void *ifp, void *m) { (void)ifp;(void)m; }
-void *ff_veth_get_softc(uint16_t portid) { (void)portid; return NULL; }
+/* ff_veth_get_softc / ff_veth_softc_to_hostc model (ff_veth.c:1132/1139):
+ *   ff_veth_get_softc(host_ctx)  -> softc whose ->host_ctx == host_ctx
+ *   ff_veth_softc_to_hostc(softc)-> softc->host_ctx
+ * ff_rss_tbl_init() calls ff_veth_get_softc(&ctx) (ctx is its local with
+ * port_id=rule.port_id) then ff_rss_check(sc,...) which dereferences
+ * ff_veth_softc_to_hostc(sc)->port_id. The original stubs returned NULL,
+ * which (a) makes init bail at L2610 and (b) NULL-derefs in ff_rss_check.
+ * We model the real pass-through with a 1-slot store so the RSS 0.1 tests
+ * can drive init/check; the prior 7+ TCs never reach these paths. */
+static void *g_veth_host_ctx = NULL;    /* last host_ctx handed to get_softc */
+static int   g_veth_softc_sentinel;     /* non-NULL opaque "softc" */
+void *ff_veth_get_softc(void *host_ctx)
+{ g_veth_host_ctx = host_ctx; return &g_veth_softc_sentinel; }
 void  ff_veth_free_softc(void *sc) { (void)sc; }
-void *ff_veth_softc_to_hostc(void *sc) { (void)sc; return NULL; }
+void *ff_veth_softc_to_hostc(void *sc) { (void)sc; return g_veth_host_ctx; }
 
 int   ff_sysctl(const int *n, unsigned nl, void *o, size_t *ol, const void *i, size_t il)
 { (void)n;(void)nl;(void)o;(void)ol;(void)i;(void)il; return 0; }
@@ -112,6 +130,12 @@ int   ff_rtioctl(int f, void *d, unsigned int *l, unsigned int al)
  * (we don't link ff_host_interface.o here): */
 void ff_update_current_ts(void) { }
 void ff_hardclock(void) { }
+
+/* ff_tcp_hpts_softclock: defined in ff_kern_timeout.c (kernel-side, not
+ * host-compilable here). main_loop() (ff_dpdk_if.c:2459) references it; none
+ * of our tests reach main_loop, so a no-op stub satisfies the linker.
+ * Signature per lib/ff_kern_timeout.c:1271 (void)->(void). */
+void ff_tcp_hpts_softclock(void) { }
 
 /* ff_enable_pcap: defined in ff_dpdk_pcap.c (we do NOT link it here) */
 int  ff_enable_pcap(const char *p, uint16_t s, uint8_t t)
@@ -454,6 +478,221 @@ test_ff_rss_tbl_get_portrange_smoke(void **state)
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;
 }
 
+/* ======================================================================== */
+/* R-A (req 0.1) RSS portrange hit/rotation/miss tests                       */
+/* Spec: docs/ff_rss_check_opt_spec/zh_cn/07-测试规格.md §1.1                */
+/*       TC-U-RSS-01-01 / 01-02 / 01-03                                      */
+/*                                                                           */
+/* mock strategy (07 §0.2/§0.3):                                             */
+/*  - ff_veth_get_softc / ff_veth_softc_to_hostc are pass-through (above),   */
+/*    so ff_rss_tbl_init()'s local ctx (port_id=rule.port_id) is recovered   */
+/*    by ff_rss_check(); tests set lcore_conf.nb_queue_list/tx_queue_id.     */
+/*  - toeplitz_hash / rsskey / rss_reta_size / ff_rss_tbl are all static and */
+/*    NOT directly observable. Per 07 §0.4 we replicate an equivalent        */
+/*    Toeplitz on the test side using the same 40-byte default key; the lib  */
+/*    leaves rss_reta_size[port] at its BSS default 0, so the mask used by   */
+/*    ff_rss_check is (reta_size-1) == 0xFFFF. We assert ff_rss_check agrees  */
+/*    with the independently-computed expectation (hit correctness) AND that */
+/*    every port in the returned range self-consistently re-checks to 1      */
+/*    (07 §1.1 degraded self-consistency assertion).                         */
+/* ======================================================================== */
+
+/* Mellanox default RSS key — copy of lib/ff_dpdk_if.c:92 default_rsskey_40bytes
+ * (static in the lib; replicated here so the test computes the SAME hash). */
+static const uint8_t test_rsskey_40[40] = {
+    0xd1, 0x81, 0xc6, 0x2c, 0xf7, 0xf4, 0xdb, 0x5b,
+    0x19, 0x83, 0xa2, 0xfc, 0x94, 0x3e, 0x1a, 0xdb,
+    0xd9, 0x38, 0x9e, 0x6b, 0xd1, 0x03, 0x9c, 0x2c,
+    0xa7, 0x44, 0x99, 0xad, 0x59, 0x3d, 0x56, 0xd9,
+    0xf3, 0x25, 0x3c, 0x06, 0x2a, 0xdc, 0x1f, 0xfc
+};
+
+/* Equivalent Toeplitz hash — byte-for-byte aligned with the lib's static
+ * toeplitz_hash (ff_dpdk_if.c:2548-2568). */
+static uint32_t
+test_toeplitz(unsigned keylen, const uint8_t *key,
+              unsigned datalen, const uint8_t *data)
+{
+    uint32_t hash = 0, v;
+    unsigned i, b;
+    v = ((uint32_t)key[0] << 24) + ((uint32_t)key[1] << 16) +
+        ((uint32_t)key[2] << 8) + key[3];
+    for (i = 0; i < datalen; i++) {
+        for (b = 0; b < 8; b++) {
+            if (data[i] & (1 << (7 - b)))
+                hash ^= v;
+            v <<= 1;
+            if ((i + 4) < keylen && (key[i + 4] & (1 << (7 - b))))
+                v |= 1;
+        }
+    }
+    return hash;
+}
+
+/* Independent replica of ff_rss_check()'s verdict for v4 (ff_dpdk_if.c:2851).
+ * data layout = saddr(4)|daddr(4)|sport(2)|dport(2) (network-order values as
+ * stored, matching the lib's bcopy of the raw 32/16-bit quantities). */
+static int
+test_expected_rss_check(uint32_t saddr, uint32_t daddr, uint16_t sport,
+                        uint16_t dport, uint16_t nb_queues,
+                        uint16_t reta_size, uint16_t queueid)
+{
+    uint8_t data[sizeof(saddr) + sizeof(daddr) + sizeof(sport) + sizeof(dport)];
+    unsigned dl = 0;
+    uint32_t hash;
+    if (nb_queues <= 1)
+        return 1;
+    memcpy(&data[dl], &saddr, sizeof(saddr)); dl += sizeof(saddr);
+    memcpy(&data[dl], &daddr, sizeof(daddr)); dl += sizeof(daddr);
+    memcpy(&data[dl], &sport, sizeof(sport)); dl += sizeof(sport);
+    memcpy(&data[dl], &dport, sizeof(dport)); dl += sizeof(dport);
+    hash = test_toeplitz(sizeof(test_rsskey_40), test_rsskey_40, dl, data);
+    return ((hash & (uint16_t)(reta_size - 1)) % nb_queues) == queueid;
+}
+
+/* Build a single-rule RSS config and (re)initialise the static ff_rss_tbl.
+ * Returns 0 on success. Sets the controlled lcore_conf queue layout. */
+#define TEST_RSS_PORT     0
+#define TEST_RSS_NBQ      4          /* multi-queue so ff_rss_check is active */
+#define TEST_RSS_QID      1          /* this "process" owns tx queue 1        */
+#define TEST_RSS_RETA     0          /* rss_reta_size[] BSS default => mask 0xFFFF */
+
+static struct ff_rss_check_cfg g_rss_cfg;
+static struct ff_dpdk_if_context g_test_ctx;
+
+static int
+test_rss_build_table(uint32_t saddr, uint32_t daddr, uint16_t sport)
+{
+    memset(&g_rss_cfg, 0, sizeof(g_rss_cfg));
+    g_rss_cfg.enable = 1;
+    g_rss_cfg.nb_rss_tbl = 1;
+    g_rss_cfg.rss_tbl_cfgs[0].port_id = TEST_RSS_PORT;
+    g_rss_cfg.rss_tbl_cfgs[0].saddr = saddr;
+    g_rss_cfg.rss_tbl_cfgs[0].daddr = daddr;
+    g_rss_cfg.rss_tbl_cfgs[0].sport = sport;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf.tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+
+    return ff_rss_tbl_init();
+}
+
+/* Re-arm the pass-through host_ctx so a direct ff_rss_check() call from the
+ * test recovers a ctx with the desired port_id. */
+static void *
+test_rss_softc(uint16_t port_id)
+{
+    g_test_ctx.port_id = port_id;
+    return ff_veth_get_softc(&g_test_ctx);   /* stores &g_test_ctx, returns sentinel */
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-01-01: get_portrange hits and the returned port set lands on the */
+/* owning queue (hit correctness + self-consistency).                        */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_hit(void **state)
+{
+    (void)state;
+    const uint32_t saddr = 0x01020304, daddr = 0x05060708;
+    const uint16_t sport = htons(1000);
+
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport), 0);
+
+    uint16_t first = 0, last = 0;
+    uint16_t *pr = NULL;
+    int rv = ff_rss_tbl_get_portrange(saddr, daddr, sport, &first, &last, &pr);
+
+    assert_int_equal(rv, 0);                 /* hit => 0 (ff_dpdk_if.c:2827) */
+    assert_non_null(pr);
+    assert_true(first >= 1);                  /* idx 0 is the "last selected" slot */
+    assert_true(last >= first);
+
+    /* Every port in [first,last] must land on our queue. Cross-check the lib's
+     * ff_rss_check against the independent replica, and assert self-consistency
+     * (lib returns 1). Sample to bound runtime over a potentially large set. */
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    int checked = 0;
+    for (uint16_t k = first; k <= last && checked < 256; k++, checked++) {
+        uint16_t dport = pr[k];
+        uint16_t dport_n = htons(dport);
+        int lib = ff_rss_check(sc, saddr, daddr, sport, dport_n);
+        int exp = test_expected_rss_check(saddr, daddr, sport, dport_n,
+                                          TEST_RSS_NBQ, TEST_RSS_RETA, TEST_RSS_QID);
+        assert_int_equal(lib, exp);           /* hit correctness (07 §0.4) */
+        assert_int_equal(lib, 1);             /* self-consistency: lands on queue */
+        if (k == last) break;                 /* avoid uint16_t wrap when last==0xFFFF */
+    }
+    assert_true(checked > 0);                 /* non-empty port set */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-01-02: get_portrange port rotation semantics.                    */
+/* F4 (07 §6.3): ff_rss_tbl_get_portrange does NOT self-increment dport[0];  */
+/* it only returns first_idx/last_idx + &dport[0]. The caller advances the   */
+/* "last selected" index (dport[0]). We assert the lib is stable (returns    */
+/* the same range across calls) and that the caller can walk distinct ports  */
+/* across [first_idx,last_idx], each landing on the queue.                   */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_rotation(void **state)
+{
+    (void)state;
+    const uint32_t saddr = 0x0A0B0C0D, daddr = 0x11121314;
+    const uint16_t sport = htons(2000);
+
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport), 0);
+
+    uint16_t f1 = 0, l1 = 0, f2 = 0, l2 = 0;
+    uint16_t *pr1 = NULL, *pr2 = NULL;
+    assert_int_equal(ff_rss_tbl_get_portrange(saddr, daddr, sport, &f1, &l1, &pr1), 0);
+    assert_int_equal(ff_rss_tbl_get_portrange(saddr, daddr, sport, &f2, &l2, &pr2), 0);
+
+    /* Stable: consecutive lookups return the same idx range + buffer. */
+    assert_int_equal(f1, f2);
+    assert_int_equal(l1, l2);
+    assert_ptr_equal(pr1, pr2);
+
+    /* Caller-side rotation: walking the index window yields distinct ports,
+     * each of which (per build口径) lands on the owning queue. */
+    assert_true(l1 > f1);                     /* >1 candidate so rotation matters */
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    uint16_t p_first = pr1[f1];
+    uint16_t p_next  = pr1[f1 + 1];
+    assert_int_not_equal(p_first, p_next);    /* rotation visits a different port */
+    assert_int_equal(ff_rss_check(sc, saddr, daddr, sport, htons(p_first)), 1);
+    assert_int_equal(ff_rss_check(sc, saddr, daddr, sport, htons(p_next)), 1);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-01-03: get_portrange miss returns -ENOENT.                       */
+/* (ff_dpdk_if.c:2812/2820/2835/2844 all return -ENOENT on miss.)            */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_miss(void **state)
+{
+    (void)state;
+    const uint32_t saddr = 0x21222324, daddr = 0x31323334;
+    const uint16_t sport = htons(3000);
+
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport), 0);
+
+    /* Query a 3-tuple NOT in the table (different saddr). */
+    uint16_t first = 0, last = 0;
+    uint16_t *pr = NULL;
+    int rv = ff_rss_tbl_get_portrange(0x41424344 /*other saddr*/, daddr, sport,
+                                      &first, &last, &pr);
+    assert_int_equal(rv, -ENOENT);
+    assert_null(pr);                          /* not filled on miss */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
 /* ------------------------------------------------------------------------ */
 /* TC-U-P3-DPDKIF-17 (Stage-6): ff_dpdk_register_if happy path: allocates  */
 /* and returns a non-NULL ff_dpdk_if_context (covers the malloc + memset   */
@@ -521,6 +760,10 @@ main(void)
         cmocka_unit_test(test_ff_rss_tbl_get_portrange_no_cfg),
         cmocka_unit_test(test_ff_rss_tbl_get_portrange_disabled),
         cmocka_unit_test(test_ff_rss_tbl_get_portrange_smoke),
+        /* R-A (req 0.1): portrange hit / rotation / miss (TC-U-RSS-01-01..03) */
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_hit),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_rotation),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_miss),
         cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
         /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),
