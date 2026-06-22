@@ -352,12 +352,14 @@ in6_pcbbind(struct inpcb *inp, struct sockaddr_in6 *sin6, int flags,
 	if ((flags & INPBIND_FIB) != 0)
 		inp->inp_flags |= INP_BOUNDFIB;
 	if (lport == 0) {
+#ifndef FSTACK
 		if ((error = in6_pcbsetport(&inp->in6p_laddr, inp, cred)) != 0) {
 			/* Undo an address bind that may have occurred. */
 			inp->inp_flags &= ~INP_BOUNDFIB;
 			inp->in6p_laddr = in6addr_any;
 			return (error);
 		}
+#endif
 	} else {
 		inp->inp_lport = lport;
 		if (in_pcbinshash(inp) != 0) {
@@ -512,7 +514,11 @@ in6_pcbconnect(struct inpcb *inp, struct sockaddr_in6 *sin6, struct ucred *cred,
 	    &laddr6.sin6_addr : &inp->in6p_laddr, inp->inp_lport, 0,
 	    M_NODOM, RT_ALL_FIBS) != NULL)
 		return (EADDRINUSE);
+#ifdef FSTACK
+	if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr) || inp->inp_lport == 0) {
+#else
 	if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr)) {
+#endif
 		if (inp->inp_lport == 0) {
 			error = in_pcb_lport_dest(inp,
 			    (struct sockaddr *) &laddr6, &inp->inp_lport,
@@ -525,7 +531,8 @@ in6_pcbconnect(struct inpcb *inp, struct sockaddr_in6 *sin6, struct ucred *cred,
 			if (error)
 				return (error);
 		}
-		inp->in6p_laddr = laddr6.sin6_addr;
+		if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr))
+			inp->in6p_laddr = laddr6.sin6_addr;
 	}
 	inp->in6p_faddr = sin6->sin6_addr;
 	inp->inp_fport = sin6->sin6_port;
