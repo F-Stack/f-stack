@@ -3,9 +3,11 @@
 > English version: ../04-diff-and-port-strategy.md
 
 > 系列文档：`/data/workspace/f-stack/docs/freebsd_13_to_15_upgrade_spec/zh_cn/`
-> 文档版本：v0.1（2026-05-26）
+> 文档版本：v0.1（2026-05-26）；§11 于 2026-06-22 增补
 > 数据来源：**Sub-Agent A + B + C 三路调研交叉** + 02 / 03 文档汇总
 > 本文档是整个 Spec 系列**最核心的可执行产物**，后续 AI 代理可直接据此拾取 port 任务
+>
+> **2026-06 补充**：新增 **§11「13.0 FSTACK 定制未移植 15.0 gap 扫描清单」**，登记 13.0 baseline 有 `FSTACK` 标记而当前 15.0 缺失/未移植/不适用的改动（供用户决策，非实施）。
 
 ---
 
@@ -566,3 +568,110 @@ Makefile 行 197-207 的 `ifeq (${MACHINE_CPUARCH},mips)` 块只设置 `ARCH_FLA
 | §7 风险策略对照 | `99-review-report.md` 风险覆盖度审查 |
 
 > 下一步：`05-implementation-plan.md` 把 57 个 T-* 任务拆到 M1-M5，给出资源、时序、回滚方案。
+
+---
+
+## 11. 13.0 FSTACK 定制未移植 15.0 gap 扫描清单（2026-06 补充）
+
+> 本节是「**供用户决策的 gap 扫描登记**」，不是实施方案。目的：把 13.0 baseline 上带 `FSTACK` 标记、而当前 15.0 工作树缺失/未移植/不适用的定制改动逐条登记、定性、给决策建议。
+> 本节不重复 §3-§6 的 port 任务方法论；其中 #1/#2（IP_BIND/RSS bind-then-connect）的**详细方案不在本 spec 重复**，指向独立 spec `docs/ff_rss_check_opt_spec/zh_cn/` 的 **R-E**（见该系列 `01-需求规格.md` §0.5 R-E）。
+
+### 11.1 扫描方法与数据口径
+
+- **方法**：对两侧 `freebsd/` 子树分别 `git grep -l FSTACK`（含 `#ifdef FSTACK` / `#ifndef FSTACK` / `#ifdef FF_*` 等定制标记）得到「带 FSTACK 标记文件集合」，做集合 diff；再对差异文件做内容级（函数/hunk 级）人工比对。
+- **对比基线**：
+  - 13.0 baseline = `/data/workspace/f-stack-13.0-baseline/freebsd/`（**46 个** FSTACK 标记文件）
+  - 当前 15.0 = `/data/workspace/f-stack/freebsd/`（**41 个** FSTACK 标记文件）
+- **扫描时间**：2026-06-22。
+- **证据口径**：每条结论给 `文件:行号`；不确定项标「待确认」；复核与 arch-probe 初稿不一致处在 §11.6 单列。
+- **本节范围铁律**：只做 gap 登记 + 决策建议，**不改任何 `lib/freebsd` 代码、不提交代码**。
+
+### 11.2 文件集合差异（FSTACK 标记文件）
+
+> 文件名相对各自 `freebsd/` 根。
+
+**A. baseline 有 / 当前无 FSTACK 标记（8 个）**
+
+| # | 文件 | 备注 |
+|---|---|---|
+| 1 | `netgraph/ng_socket.c` | 当前文件存在，但 FSTACK 屏蔽未移植（见 gap #6） |
+| 2 | `net/if_spppsubr.c` | 15.0 仍有该文件但 FSTACK hunk 未移植；log() 屏蔽（见 gap #9） |
+| 3 | `netinet6/in6_mcast.c` | mcast 大结构分配未移植（见 gap #4） |
+| 4 | `netinet/in_mcast.c` | mcast 大结构分配未移植（见 gap #3） |
+| 5 | `netinet/tcp_usrreq.c` | require_unique_port 屏蔽，15.0 已无该路径（见 gap #5） |
+| 6 | `netpfil/ipfw/ip_fw2.c` | 已用 stub 等价移植（见 gap #7） |
+| 7 | `netpfil/ipfw/ip_fw_log.c` | 已用 stub 等价移植（见 gap #8） |
+| 8 | `sys/namei.h` | 15.0 NDFREE 宏重构，不适用（见 gap #10） |
+
+**B. 当前有 / baseline 无 FSTACK 标记（3 个）**
+
+| # | 文件 | 性质 |
+|---|---|---|
+| 1 | `netinet6/in6_pcb.c` | **15.0 新增定制**：已含 RSS `INPLOOKUP_LPORT_RSS_CHECK`，但 bind-then-connect 未闭合（= gap #2） |
+| 2 | `arm64/vmparam.h` | 15.0 新增适配，**非 gap**；如需可后续补查（待确认是否纯架构跟随） |
+| 3 | `sys/syscallsubr.h` | 15.0 新增适配，**非 gap**；如需可后续补查 |
+
+### 11.3 gap 清单主表（10 项）
+
+> 行号已逐项 `read_file`/`grep` 复核（2026-06-22）；与 arch-probe 初稿不一致处见 §11.6。
+> 简记：`B:` = `f-stack-13.0-baseline/freebsd/`；`C:` = `f-stack/freebsd/`（当前 15.0 工作树）。
+
+| # | 文件:函数 | 13.0 定制语义 | 15.0 现状 | 必要性 | 风险 | 决策建议 |
+|---|---|---|---|---|---|---|
+| 1 | `netinet/in_pcb.c`（IP_BIND v4） | RSS 端口范围 / lport 检查 / IP_BIND_ADDRESS_NO_PORT 相关 hunk1/hunk2 | **未移植**：`C:netinet/in_pcb.c` grep `IP_BIND_ADDRESS_NO_PORT` / `INPLOOKUP_LPORT_RSS_CHECK` = **0 命中**；hunk3 等价能力 15.0 connect 重构已含 | **高** | bind(addr,0)-then-connect 绕过 RSS 选端口，连接 RSS 落核错配 | **优先决策**；详细方案见 `ff_rss_check_opt_spec` **R-E**，本表只登记 |
+| 2 | `netinet6/in6_pcb.c`（IP_BIND v6） | 13.0 无此能力 | **部分**：RSS 框架已具备（`C:netinet6/in6_pcb.c:521` `INPLOOKUP_LPORT_RSS_CHECK`），但 bind 阶段 `in6_pcbbind` 提前分配端口（`C:...:354` `if (lport==0) in6_pcbsetport(...)`），导致 connect 期 RSS 条件（`C:...:515-516` `IN6_IS_ADDR_UNSPECIFIED && inp_lport==0`）被破，**bind-then-connect 未闭合** | **中-高** | 同 #1 的 v6 版本 | 建议**随 R-E 同步**决策；方案见 `ff_rss_check_opt_spec` R-E |
+| 3 | `netinet/in_mcast.c::imf_get_source` | FSTACK 用 `malloc(sizeof(struct ip_msource))` 替代 `in_msource`（`B:netinet/in_mcast.c:763-767` `#ifdef FSTACK`），意在按大结构分配防 RB 树越界 | **不适用/上游设计正确**：15.0 两棵 `ip_msource_tree` 严格分层——socket 层 `imf->imf_sources` 节点全按小结构 `in_msource` 分配（`C:netinet/in_mcast.c:749/780`）且遍历时只 cast `in_msource` 读 `imsl_st`（`C:...:829/856/872/888/1026`）；in-kernel 层 `inm->inm_srcs` 节点按大结构 `ip_msource` 分配（`C:...:698/942`），`ims_get_mode(inm,ims,1)`（`C:...:2907`）的 `ims` 来自 `RB_FOREACH(...,&inm->inm_srcs)`（`C:...:2901`） | **低** | **无越界**：socket 层小节点从不被 `ims_get_mode` 访问 `ims_st`，字段与结构一一匹配（详见 §11.5/§11.6 leader 实证裁决） | 归类 (c)，**无需移植**（13.0 FSTACK 大结构分配为旧代码历史 workaround，15.0 上游已无此必要） |
+| 4 | `netinet6/in6_mcast.c`（v6 版） | 同 #3 的 v6 版，FSTACK 用 `ip6_msource` 大小（`B:netinet6/in6_mcast.c:765/796` 区域 `#ifdef FSTACK`） | **不适用/上游设计正确**：同 #3，v6 两树同样严格分层（socket 层 `in6_msource` / in-kernel 层 `ip6_msource`），字段与结构匹配 | **低** | **无越界**（同 #3 v6 版） | 归类 (c)，**无需移植**（同 #3） |
+| 5 | `netinet/tcp_usrreq.c::tcp_connect` | `#ifndef FSTACK` 跳过 `tcp_require_unique_port → in_pcbbind`（`B:netinet/tcp_usrreq.c:1602-1607`；sysctl 定义 `B:...:153`） | **不适用/天然等价**：`C:freebsd/` 全树 grep `require_unique_port` = **0 命中**，该 sysctl 路径 15.0 已不存在；15.0 行为天然等价于 baseline FSTACK 屏蔽后行为 | **低** | 无（路径不存在） | 归类 (c)，**无需移植** |
+| 6 | `netgraph/ng_socket.c`（NGM_MKPEER） | `#ifndef FSTACK` 跳过 `kern_kldload`（动态加载 ng 模块）（`B:netgraph/ng_socket.c:290`） | **未移植**：`C:netgraph/ng_socket.c:293` 直接调 `kern_kldload`，无 `#ifndef FSTACK` | **中** | 用户态 f-stack 无 kldload，运行到 NGM_MKPEER 该路径可能失败；非默认路径，仅 `FF_NETGRAPH` 开启且动态建节点时触发 | 建议补 `#ifndef FSTACK`（仅 `FF_NETGRAPH` 用户需要） |
+| 7 | `netpfil/ipfw/ip_fw2.c` | `#ifndef FSTACK` 跳过 `sctp_calculate_cksum`、`ipfw_bpf_init/uninit`（`B:netpfil/ipfw/ip_fw2.c:615/3702/3770`） | **已等价移植**：改「编译排除」为「link-only stub」——`C:lib/ff_stub_14_extra.c:828-853`（`ipfw_bpf_init` 828 / `ipfw_bpf_uninit` 834 / `ipfw_bpf_tap` 840 / `sctp_calculate_cksum` 847，均 no-op，M5/M6） | — | 已处理（行为等价：符号存在但 no-op） | 归类 (b)，**无需额外动作**；仅留档 |
+| 8 | `netpfil/ipfw/ip_fw_log.c` | `#ifndef FSTACK` 跳过 `ipfw_bpf_tap/mtap/mtap2`（`B:netpfil/ipfw/ip_fw_log.c:103/106` 区域） | **已等价移植**：`C:lib/ff_stub_14_extra.c` 提供 stub——`ipfw_bpf_mtap` 866 / `ipfw_bpf_mtap2` 872 / `ipfw_bpf_tap` 840；另补 `prng32_bounded` 860（M6 第二次链接 surfaced） | — | 已处理 | 归类 (b)，**无需额外动作**；仅留档 |
+| 9 | `net/if_spppsubr.c::sppp_print_bytes` | `#ifndef FSTACK` 跳过 `log()` | **不适用（文件不存在）**：当前 `f-stack/freebsd/` 全树搜 `if_spppsubr*` = **0 命中**，文件**不存在**（FreeBSD 15.0 已移除 sppp 源）。§2.8 `NET_SRCS` 文本列表中的 `if_spppsubr.c` 为残留条目，不代表实体文件存在 | — | 无（文件不存在，无可移植对象） | 归类 (c)，**无需移植**。**详见 §11.6 leader 实证裁决** |
+| 10 | `sys/namei.h`（NDFREE 宏） | `#ifndef FSTACK` 屏蔽旧 `NDFREE()` 宏（`B:sys/namei.h:277` 区域） | **不适用/已重构**：15.0 已删旧 `NDFREE` 宏，改为 `NDFREE_IOCTLCAPS`（`C:sys/namei.h:290`）/ `NDFREE_PNBUF`（`C:sys/namei.h:297`）。旧宏不存在则旧 FSTACK 屏蔽自然失效 | **低** | 取决于调用方是否已全改用新宏（见 §11.5 待确认） | 归类 (c)；**待确认**调用方已迁移后即可忽略 |
+
+### 11.4 三分类归纳
+
+- **(a) 确认未移植且应移植**：
+  - **#1** IP_BIND v4（**高**，已有 `ff_rss_check_opt_spec` R-E 方案）
+  - **#2** IP_BIND v6 / bind-then-connect（**中-高**，随 R-E 同步）
+  - **#6** `ng_socket.c` kldload 屏蔽（**中**，仅 `FF_NETGRAPH` 用户）
+- **(b) 已用 15.0 等价方式移植（仅留档，无需动作）**：
+  - **#7 / #8** ipfw → `lib/ff_stub_14_extra.c` link-only stub
+  - **#1 的 hunk3** → 15.0 connect 重构已含 `RSS_CHECK` 等价能力
+- **(c) 13.0 特有但 15.0 不适用 / 天然等价**：
+  - **#3 / #4** mcast 源过滤节点分配（15.0 两树严格分层、字段与结构匹配，**不越界**，上游设计正确，见 §11.5/§11.6）
+  - **#5** `tcp_require_unique_port`（15.0 已无该路径）
+  - **#9** `if_spppsubr.c`（文件 15.0 不存在，无可移植对象，见 §11.6）
+  - **#10** `namei.h` NDFREE 宏（15.0 重构为新宏）
+
+### 11.5 待人工确认 / 卡点
+
+| 项 | 待确认内容 | 复核进展（2026-06-22） |
+|---|---|---|
+| #3/#4 RB 树字段访问 | 15.0 RB 树代码是否实际访问 `ims_st`/`ims_stp` 字段，从而坐实小结构分配越界 | **已实证：不越界（leader 裁决）**。15.0 两棵 `ip_msource_tree` 严格分层：socket 层 `imf->imf_sources` 节点按小结构 `in_msource` 分配（`C:netinet/in_mcast.c:749/780`），遍历时全部 `lims=(struct in_msource *)ims` 仅访问 `imsl_st`（`C:...:829/856/872/888/1026`），**从不访问 `ims_st`**；唯一访问 `ims_st` 的 `ims_get_mode`（`C:in_var.h:346-356`）其 `ims` 来自 `inm->inm_srcs`（大结构树，`C:in_mcast.c:2901→2907`），`ims_merge`（`C:...:965/1034`）第一参 `nims` 同来自 `inm_srcs`、第二参 `lims` 为小结构仅读 `imsl_st`。字段与结构一一匹配，**无越界**。结论：#3/#4 归 (c)，13.0 FSTACK 大结构分配为旧代码历史 workaround，15.0 无此必要 |
+| #5 require_unique_port 全仓搜 | 15.0 是否别处仍有 `require_unique_port` 逻辑 | **已确认**：`C:freebsd/` 全树 grep = **0 命中**，路径确不存在，#5 归 (c) 成立 |
+| #6 ng_socket 是否补屏蔽 | 是否需为 `kern_kldload` 补 `#ifndef FSTACK` | **未决（留用户决策）**：仅 `FF_NETGRAPH` + 动态建节点路径触发；建议补但优先级中 |
+| #10 NDFREE 调用方 | 15.0 链接进 libff 的源是否已全部改用 `NDFREE_IOCTLCAPS`/`NDFREE_PNBUF`，无残留旧 `NDFREE()` 调用 | **未决（待人工确认）**：需对 `KERN_SRCS`/VFS 相关源 grep 旧 `NDFREE(` 调用残留 |
+| B 表 #2/#3 新增文件 | `arm64/vmparam.h`、`sys/syscallsubr.h` 是否纯架构/接口跟随，确非 gap | **未深入**：标「15.0 新增定制，非 gap，如需可后续补查」 |
+
+### 11.6 复核中发现的与 arch-probe 初稿不一致处
+
+1. **gap #9 `if_spppsubr.c` 最终归 (c)「文件不存在」（leader 实证裁决）**：spec-writer-gap 初稿一度改为「文件仍存在且列于 `NET_SRCS`」，但 leader 复核 `search_file if_spppsubr*` 于 `f-stack/freebsd/` = **0 命中**，文件**确不存在**（FreeBSD 15.0 已移除 sppp 源）；§2.8 `NET_SRCS` 文本中的条目为残留列表项，不代表实体存在。最终裁决：arch-probe 正确，#9 归 (c)「文件不存在/无可移植对象」。
+2. **gap #3/#4 mcast「越界」判断撤销（leader 实证裁决）**：spec-writer-gap 初稿一度判「越界已坐实、应升 P1」，leader 复核代码确认：socket 层 `imf->imf_sources` 小节点（`in_msource`）遍历时只读 `imsl_st`、**从不访问 `ims_st`**；唯一访问 `ims_st` 的 `ims_get_mode`（`C:in_mcast.c:2907`）其 `ims` 来自大结构树 `inm->inm_srcs`（`C:...:2901`），`ims_merge` 第一参亦来自 `inm_srcs`（`C:...:1034`）。两树严格分层、字段与结构一一匹配，**不越界**。最终裁决：撤销越界判断，#3/#4 归 (c)（13.0 FSTACK 大结构分配为旧代码历史 workaround）。
+3. **gap #3 `in_var.h` 结构体行号**：arch-probe 给 `L183`(ip_msource)/`L196`(in_msource) 对应的是**当前 `f-stack/freebsd/netinet/in_var.h`**（`ip_msource` 183 / `in_msource` 196），在 **baseline** `f-stack-13.0-baseline/freebsd/netinet/in_var.h` 中则为 `196`/`209`（头部 FSTACK include 造成偏移）。本表已按「当前 15.0 文件」与「baseline 文件」分别标注。
+4. **gap #6 `ng_socket.c` `kern_kldload` 行号**：baseline 为 `B:netgraph/ng_socket.c:290`；当前 15.0 为 `C:netgraph/ng_socket.c:293`。arch-probe 的 L293 指当前文件，正确。
+5. **gap #5 `tcp_usrreq.c` 行号**：baseline `V_tcp_require_unique_port` 定义 **L153** ✓、`#ifndef FSTACK` 跳过块 **L1602** ✓，与 arch-probe 一致。
+6. **gap #7/#8 `ff_stub_14_extra.c` 落点细化**：arch-probe 给「L828-853」为大致区间；逐函数落点为 `ipfw_bpf_init`828 / `ipfw_bpf_uninit`834 / `ipfw_bpf_tap`840 / `sctp_calculate_cksum`847 / `prng32_bounded`860 / `ipfw_bpf_mtap`866 / `ipfw_bpf_mtap2`872。
+7. **gap #10 `namei.h` 行号**：当前 15.0 `NDFREE_IOCTLCAPS` **L290** ✓、`NDFREE_PNBUF` **L297** ✓，与 arch-probe 一致。
+
+### 11.7 决策建议小结
+
+| 优先级 | gap | 建议动作 |
+|---|---|---|
+| **P0（优先决策）** | #1 v4 IP_BIND | 已有 `ff_rss_check_opt_spec` R-E 完整方案，建议优先排期实施 |
+| **P0-1（随 #1 同步）** | #2 v6 IP_BIND | 复用 R-E，与 #1 同批决策 |
+| **P2** | #6 ng_socket kldload | 仅 `FF_NETGRAPH` 用户需要；建议补 `#ifndef FSTACK` |
+| **留档（无需动作）** | #7 / #8 | 已用 stub 等价移植，仅留档 |
+| **可忽略 / 不适用** | #3 / #4 / #5 / #9 / #10 | 15.0 不适用或天然等价：#3/#4 两树分层**不越界**、#5 路径已移除、#9 文件不存在；#10 待确认调用方已迁移新宏 |
+
+> **本节产物衔接**：#1/#2 → `docs/ff_rss_check_opt_spec/zh_cn/`（R-E）；#3/#4/#6 若决策实施，按本文档 §6「5 步法」拾取，纳入 `05-implementation-plan.md` 后续里程碑（建议归 M3 网络栈 / M4 边缘子系统）。

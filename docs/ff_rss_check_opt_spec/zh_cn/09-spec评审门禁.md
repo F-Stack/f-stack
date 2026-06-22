@@ -136,7 +136,27 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
 
 **B3 结论：PASS**。0.3 落队列映射推导经门禁独立复算正确；`% nb_queues` 被显式处理（这是 03§3.4 风险点 1 的命门，spec 已正确解决）；强制软算复核 + attempts 回退 + init 降级构成三重兜底，与 `ff_rss_check` 落队列式精确对齐。
 
-**B 类总结：B1/B2/B3 全部 PASS，三项需求闭环成立。**
+### B4. 0.5 bind-then-connect 落点实证与 R-E 范围
+
+> 核心断言：bind(addr,0) 后 connect 绕过 RSS 的丢失点（v4 hunk1/hunk2、v6 in6_pcbbind）属实；15.0 connect 期 RSS 路径已具备（hunk3 等价），R-E 只需补 bind 门控；v4 必做 + v6 建议同步。
+
+| 断言点 | 实测证据（文件:行号） | 结论 |
+|--------|----------------------|------|
+| v4 hunk1 丢失点：`in_pcbbind` 入 hash 块无 FSTACK 守卫 | `f-stack/.../in_pcb.c:739-748` `if (__predict_false((error = in_pcbinshash(inp)) != 0)) { MPASS(SO_REUSEPORT_LB); ... }` 无 `#ifdef FSTACK if(inp_lport!=0)` | **PASS** |
+| v4 hunk2 丢失点：`in_pcbbind_setup` lport==0 分配端口无 #ifndef FSTACK | `f-stack/.../in_pcb.c:1273-1279` `if (*lportp!=0) lport=*lportp; if (lport==0) { in_pcb_lport(... lookupflags); }` 无 `#ifndef FSTACK` | **PASS** |
+| v4 hunk3 已等价具备（无需改） | `f-stack/.../in_pcb.c:1313` `anonport=(inp->inp_lport==0)`；`:1363-1366` `in_pcb_lport_dest(... INPLOOKUP_WILDCARD\|INPLOOKUP_LPORT_RSS_CHECK)`（FSTACK 守卫 L1365-1366） | **PASS** |
+| v4 故障链成立 | bind 占端口 → inp_lport≠0 → connect L1313 anonport=false → L1377 else 绕过 RSS（L1363-1366） | **PASS**（逻辑链经代码核实） |
+| v6 in6_pcbbind 提前分配端口 | `f-stack/.../in6_pcb.c:354` `if (lport==0) { in6_pcbsetport(...); }`；`:361-369` else 入 `in_pcbinshash` | **PASS** |
+| v6 connect RSS 分支已具备但条件被 bind 破坏 | `f-stack/.../in6_pcb.c:515-516` `if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr)) { if (inp->inp_lport==0) {`；`:521` `INPLOOKUP_WILDCARD\|INPLOOKUP_LPORT_RSS_CHECK` | **PASS** |
+| v6 故障链成立 | bind(v6,0) → in6p_laddr 非 unspec + inp_lport≠0 → connect L515 两条件均破 → 绕过 RSS | **PASS** |
+| v6 13.0 baseline 无 FSTACK（v6 为全新增） | 02 §3.2 已实证 13.0/15.0 `in6_pcb.c` grep FSTACK/ff_rss=0（v6 RSS 13.0 本就无） | **PASS** |
+| 不破坏 R-A~R-D | 0.5 复用 R-A connect 期 RSS 路径（不改 connect）、不改用户态接口、门控仅 lport==0 分支（05 §2.5） | **PASS** |
+| bind 指定端口零回归 | 门控仅 `lport==0`（hunk1 `if(inp_lport!=0)` / hunk2 `if(lport==0)`），bind(addr,N) 不受影响（04 §3-ter.6 / AC-05-4） | **PASS** |
+| v6 connect L515 条件联动标待确认（不阻塞） | 04 §3-ter.4 给路径 A/B/C 三方案，倾向路径 B（放宽 L515 为 inp_lport==0），标编码期实证（不影响 v4 方案成立，v6 为建议同步） | **PASS**（待确认合理，不阻塞） |
+
+**B4 结论：PASS**。0.5 v4 丢失点（hunk1 L739-748 / hunk2 L1275-1279）与 hunk3 已等价具备（L1313/L1363-1366）、v6 未闭合点（in6_pcbbind L354/L361-369 + connect L515-516）均经代码实证；R-E 范围（v4 必做 hunk1+hunk2 + v6 建议同步 in6_pcbbind 门控 + L515 条件联动待确认）落点真实、故障链成立、bind 指定端口零回归、不破坏 R-A~R-D。v6 的 connect L515 条件联动为编码期实证项，不影响 v4 方案成立性。
+
+**B 类总结：B1/B2/B3/B4 全部 PASS，五项需求（0.1~0.5）闭环成立。**
 
 ---
 
@@ -206,8 +226,16 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
 | F16 | 性能打点宏（`FF_RSS_PERF_PROBE`）命名与落位（仅 perf 构建启用） | 08§2.1/§6.1 | **R-B**（性能基线期） | 否（工程项） |
 | F17 | wiki 量级值（软算 300+/连接、静态表 100~250、多进程 35%+）以本机真机实测校准 | 03§5.1、08§0/§6.3 | **R-B**（真机基线） | 否（预期参照，非硬门槛） |
 | F18 | reta_size 与 nb_queues 真机实际取值（决定 D(q) 候选数与反算难度） | 08§3/§6.6 | **R-B**（真机记录） | 否（环境记录项） |
+| F19 | 0.5 v4 hunk1 在 15.0 `in_pcbbind` L739-748（含 in_pcbinshash 失败回滚）的精确门控适配（lport==0 整块跳过、lport≠0 维持回滚） | 01§3-ter.8、02§6-ter.2、04§3-ter.6、06 R-E | **R-E** | 否（落点精确化，丢失点已核实存在） |
+| F20 | 0.5 hunk2 后 `in_pcbbind_setup` 回写 lport=0 对 `in_pcbbind` L746-747 INP_ANONPORT 与 bind 返回语义影响 | 01§3-ter.8、04§3-ter.6 | **R-E** | 否（编码期复核） |
+| F21 | 0.5 v6 connect `in6_pcbconnect` L515 进入 RSS 分支条件是否需放宽（in6p_laddr unspec && inp_lport==0 → inp_lport==0），路径 B | 01§3-ter.8、02§6-ter.3、04§3-ter.4、06 R-E.1(E5) | **R-E** | 否（v6 建议同步，v4 必做不依赖；路径 A/B/C 已给方案） |
+| F22 | 0.5 REUSEPORT_LB（L740 MPASS）场景 bind(addr,0) 延迟分配行为 | 01§3-ter.7 AC-05-6、04§3-ter.6、07 RG-12 | **R-E** | 否（兼容性核实） |
+| F23 | 0.5 是否需 per-socket `IP_BIND_ADDRESS_NO_PORT` setsockopt vs 隐式生效 | 01§3-ter.8、03§5.4/§6.5 | **R-E**（产品/编码决策） | 否（倾向沿用上游隐式语义） |
+| F24 | 0.5 上游 commit `cb9b4d462` 是否已合入本仓库 13.0 baseline（决定 v4 是漏移植回迁 or 相对 baseline 新增） | 02§6-ter.4、03§6.4、06 R-E.1(E6) | **R-E**（起步 grep） | 否（不影响 15.0 落点，仅定性描述） |
+| F25 | 0.5 R-E 内核 in_pcb/in6_pcb 单测载体（FreeBSD 内核单测框架/自备桩）；现有 lib cmocka 不覆盖内核 in_pcb | 07§1.5-ter/§6.10 | **R-E** | 否（测试工程项，已给集成/真机降级） |
+| F26 | 0.5 最小 bind-then-connect 客户端载体 + 移植前后对照基线构造 | 07§2.6/§6.11、08§5-ter/§6.7 | **R-E** | 否（测试载体选择） |
 
-**待确认总表条数：18 条（去重后）。** 全部为编码期核实/调优/硬件确认项，**无一项影响 spec 阶段方案成立性**。
+**待确认总表条数：26 条（去重后；本轮 R-E 新增 F19~F26 共 8 条）。** 全部为编码期核实/调优/硬件确认/测试工程项，**无一项影响 spec 阶段方案成立性**。
 
 ---
 
@@ -217,24 +245,27 @@ ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
 
 | 类别 | 子断言 | PASS | FAIL |
 |------|--------|------|------|
-| A 与代码一致性 | A1/A2/A3/A4 | 4 | 0 |
-| B 三项需求闭环 | B1/B2/B3 | 3 | 0 |
+| A 与代码一致性 | A1/A2/A3/A4（A2 增 0.5 bind/connect 落点核实，见 B4 表） | 4 | 0 |
+| B 需求闭环 | B1/B2/B3/B4（B4 = 0.5 bind-then-connect） | 4 | 0 |
 | C 测试闭环 | C（5 子项） | 5 | 0 |
 | D 文档自洽 | D（4 子项，含 00 缺失=建议补） | 4 | 0 |
 | E 既有文档不冲突 | E（3 抽查） | 3 | 0 |
-| **合计** | **19 个主断言/子项** | **19** | **0** |
+| **合计** | **20 个主断言/子项** | **20** | **0** |
 
-- **FAIL 项：0**。无任一断言因 spec 与代码不一致而判 FAIL，无需打回任何里程碑（M1/M2/M3/M4）。
-- **编码期待确认项：18 条**（全部记入 F 表，无一影响方案成立性）。
-- **建议（非阻塞）**：补 `00-总览索引.md`（D 类）。
+> 说明：本轮 R-E（需求 0.5）增补新增 B4（0.5 闭环断言，11 个落点行号全部经代码实证 PASS），合计主断言由 19 增至 20，FAIL 仍为 0。0.5 的 v4 丢失点 / hunk3 已具备 / v6 未闭合点全部回代码核实（`in_pcb.c:739-748/1273-1279/1313/1363-1366`、`in6_pcb.c:354/361-369/515-521`），无 FAIL。
+
+- **FAIL 项：0**。无任一断言因 spec 与代码不一致而判 FAIL，无需打回任何里程碑。
+- **编码期待确认项：26 条**（全部记入 F 表，无一影响方案成立性；本轮 R-E 新增 F19~F26）。
+- **建议（非阻塞）**：补 `00-总览索引.md`（D 类，已在本轮随 R-E 增补一并补齐 0.5/R-E 导航行）。
 
 ### 结论
 
 **spec 阶段门禁：有条件 PASS（CONDITIONAL PASS）。**
 
-- 「有条件」仅指存在 18 条**编码期**待确认项（属正常的实现期核实/调优项，按 F 表在 R-A/R-B/R-C 起步时先 grep/读码核实再动手，结论回写 spec，不臆测），**不存在任何阻断 spec 定稿的 FAIL**。
-- 全部代码一致性断言（A）、三项需求闭环（B，含 0.3 落队列映射经门禁独立推导复核正确）、测试闭环（C）、文档自洽（D）、既有文档不冲突（E）均 PASS。
-- spec 三项方案（0.1 回迁 / 0.2 IPv6 新增 / 0.3 thash 动态优化）落点真实、推导正确、IPv4 零回归约束闭合、正确性零容忍由软算复核守护——**方案成立，spec 可定稿，准予进入后续编码阶段（R-A→R-B→R-C）**。
+- 「有条件」仅指存在 26 条**编码期**待确认项（属正常的实现期核实/调优项，按 F 表在 R-A/R-B/R-C/R-D/R-E 起步时先 grep/读码核实再动手，结论回写 spec，不臆测），**不存在任何阻断 spec 定稿的 FAIL**。
+- 全部代码一致性断言（A）、需求闭环（B，含 0.3 落队列映射经门禁独立推导复核正确、0.5 bind-then-connect 落点经代码实证）、测试闭环（C）、文档自洽（D）、既有文档不冲突（E）均 PASS。
+- spec 五项方案（0.1 回迁 / 0.2 IPv6 新增 / 0.3 thash 动态优化 / 0.4 recheck 运行时开关 / 0.5 IP_BIND_ADDRESS_NO_PORT bind-then-connect RSS 移植）落点真实、推导正确、IPv4 零回归约束闭合、正确性零容忍由软算复核守护——**方案成立，spec 可定稿，准予进入后续编码阶段（R-A→R-B→R-C→R-D→R-E）**。
+- 0.5（R-E）增补要点：v4 必做 hunk1（`in_pcb.c:739-748` 入 hash 门控）+ hunk2（L1275-1279 端口分配门控），connect 期 hunk3 已等价具备（L1313/L1363-1366）无需改；v6 建议同步（`in6_pcbbind` L354/L361-369 门控 + connect L515 条件联动待编码实证）。全部丢失点/已具备点经代码实证 PASS。
 
 ### bounce 记录
 
