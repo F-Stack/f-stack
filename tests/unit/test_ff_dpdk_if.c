@@ -56,6 +56,34 @@ __wrap_rte_get_tsc_hz(void)
     return mock_type(uint64_t);
 }
 
+/* R-D (req 0.4): wrap ff_rss_check / ff_rss_check6 to count invocations.
+ * The wrappers transparently forward to __real_* so existing R-A/R-B/R-C
+ * tests that call ff_rss_check{,6} directly keep their semantics. */
+extern int __real_ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
+                               uint16_t sport, uint16_t dport);
+extern int __real_ff_rss_check6(void *softc, const uint8_t *saddr6,
+                                const uint8_t *daddr6, uint16_t sport,
+                                uint16_t dport);
+
+static uint64_t g_ff_rss_check_calls;
+static uint64_t g_ff_rss_check6_calls;
+
+int
+__wrap_ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
+                    uint16_t sport, uint16_t dport)
+{
+    g_ff_rss_check_calls++;
+    return __real_ff_rss_check(softc, saddr, daddr, sport, dport);
+}
+
+int
+__wrap_ff_rss_check6(void *softc, const uint8_t *saddr6, const uint8_t *daddr6,
+                     uint16_t sport, uint16_t dport)
+{
+    g_ff_rss_check6_calls++;
+    return __real_ff_rss_check6(softc, saddr6, daddr6, sport, dport);
+}
+
 /* ------------------------------------------------------------------------ */
 /* Stubs for ff_* / rte_* / kernel symbols referenced by ff_dpdk_if.o that  */
 /* are NOT exercised by the 7 tests. We provide just enough no-op bodies to */
@@ -588,6 +616,7 @@ test_rss_build_table(uint32_t saddr, uint32_t daddr, uint16_t sport)
 {
     memset(&g_rss_cfg, 0, sizeof(g_rss_cfg));
     g_rss_cfg.enable = 1;
+    g_rss_cfg.recheck = 1;   /* R-D 04-06: default recheck=1 to keep R-B/R-C hard assertions */
     g_rss_cfg.nb_rss_tbl = 1;
     g_rss_cfg.rss_tbl_cfgs[0].port_id = TEST_RSS_PORT;
     g_rss_cfg.rss_tbl_cfgs[0].saddr = saddr;
@@ -986,6 +1015,7 @@ test_rss6_build_table(const uint8_t saddr6[16], const uint8_t daddr6[16],
 {
     memset(&g_rss_cfg, 0, sizeof(g_rss_cfg));
     g_rss_cfg.enable = 1;
+    g_rss_cfg.recheck = 1;   /* R-D 04-06: default recheck=1 to keep R-B/R-C hard assertions */
     g_rss_cfg.nb_rss_tbl = 1;
     g_rss_cfg.rss_tbl_cfgs[0].port_id = TEST_RSS_PORT;
     g_rss_cfg.rss_tbl_cfgs[0].family  = AF_INET6;
@@ -1235,6 +1265,208 @@ test_ff_rss_thash6_equivalence_hitrate(void **state)
     assert_int_equal(fok512, EQUIV_N);
 }
 
+/* ======================================================================== */
+/* R-D (req 0.4) recheck runtime gate: TC-U-RSS-04-01 .. 04-05               */
+/* Spec: 07-测试规格.md §1.4 ; 04 §3-bis ; 05 §3-bis ; 06 R-D.                */
+/* In the unit env rss_reta_size[]=0 -> ctx unready -> ff_rss_adjust_sport   */
+/* returns -1 at the readiness guard (ff_dpdk_if.c:3068) before reaching the */
+/* recheck branch. Per spec 04-01 note, the recheck=0/1 cases here assert    */
+/* (a) adjust returns -1 (ctx-unready degrade) and (b) wrap counter is 0    */
+/* (recheck branch never reached). The wrap interceptor itself is exercised */
+/* by direct ff_rss_check{,6} calls (existing R-A/R-B/R-C cases) so a       */
+/* sanity check confirms the wrap chain is wired correctly.                  */
+/* ======================================================================== */
+
+#define RD_RECHECK_N 100
+
+static void
+test_ff_rss_adjust_sport_recheck_off(void **state)   /* TC-U-RSS-04-01 */
+{
+    (void)state;
+    const uint32_t saddr = 0x01020304, daddr = 0x05060708;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport_seed), 0);
+    g_rss_cfg.recheck = 0;   /* R-D 0.4: disable runtime recheck */
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);   /* unit-env ctx unready */
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    g_ff_rss_check_calls = 0;
+
+    for (int i = 0; i < RD_RECHECK_N; i++) {
+        uint16_t out = 0xFFFF;
+        int rv = ff_rss_adjust_sport(sc, saddr, daddr,
+                                     htons((uint16_t)(1024 + i)), &out);
+        assert_int_equal(rv, -1);   /* ctx-unready degrade */
+    }
+    /* recheck=0 path never reaches L3105; counter must stay 0 */
+    assert_int_equal(g_ff_rss_check_calls, 0);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+static void
+test_ff_rss_adjust_sport_recheck_on(void **state)    /* TC-U-RSS-04-02 */
+{
+    (void)state;
+    const uint32_t saddr = 0x01020304, daddr = 0x05060708;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport_seed), 0);
+    g_rss_cfg.recheck = 1;
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    g_ff_rss_check_calls = 0;
+
+    for (int i = 0; i < RD_RECHECK_N; i++) {
+        uint16_t out = 0xFFFF;
+        int rv = ff_rss_adjust_sport(sc, saddr, daddr,
+                                     htons((uint16_t)(1024 + i)), &out);
+        assert_int_equal(rv, -1);   /* ctx-unready degrade */
+    }
+    /* ctx-unready blocks the main loop; counter remains 0 here. The
+     * "recheck=1 -> ff_rss_check is forced" semantic is covered by the
+     * R-B equivalence test (full-loop landing=100%) under the default
+     * recheck=1 from test_rss_build_table. Direct call below sanity-checks
+     * that the wrap interceptor is actually wired. */
+    assert_int_equal(g_ff_rss_check_calls, 0);
+
+    uint64_t before = g_ff_rss_check_calls;
+    (void)ff_rss_check(sc, saddr, daddr, sport_seed, htons(80));
+    assert_true(g_ff_rss_check_calls > before);   /* wrap chain alive */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+static void
+test_ff_rss_adjust_sport6_recheck_off(void **state)  /* TC-U-RSS-04-03 */
+{
+    (void)state;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss6_build_table(test_saddr6, test_daddr6,
+                                           sport_seed), 0);
+    g_rss_cfg.recheck = 0;
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    g_ff_rss_check6_calls = 0;
+
+    for (int i = 0; i < RD_RECHECK_N; i++) {
+        uint16_t out = 0xFFFF;
+        int rv = ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                      htons((uint16_t)(1024 + i)), &out);
+        assert_int_equal(rv, -1);
+    }
+    assert_int_equal(g_ff_rss_check6_calls, 0);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+static void
+test_ff_rss_adjust_sport6_recheck_on(void **state)   /* TC-U-RSS-04-04 */
+{
+    (void)state;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss6_build_table(test_saddr6, test_daddr6,
+                                           sport_seed), 0);
+    g_rss_cfg.recheck = 1;
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    g_ff_rss_check6_calls = 0;
+
+    for (int i = 0; i < RD_RECHECK_N; i++) {
+        uint16_t out = 0xFFFF;
+        int rv = ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                      htons((uint16_t)(1024 + i)), &out);
+        assert_int_equal(rv, -1);
+    }
+    assert_int_equal(g_ff_rss_check6_calls, 0);
+
+    uint64_t before = g_ff_rss_check6_calls;
+    (void)ff_rss_check6(sc, test_saddr6, test_daddr6, sport_seed, htons(80));
+    assert_true(g_ff_rss_check6_calls > before);   /* v6 wrap chain alive */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+#include <time.h>
+
+#ifndef FF_RSS_RECHECK_MICROBENCH_N
+#define FF_RSS_RECHECK_MICROBENCH_N 10000
+#endif
+
+static uint64_t
+rd_now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static void
+test_ff_rss_adjust_microbench(void **state)          /* TC-U-RSS-04-05 */
+{
+    (void)state;
+    const uint32_t saddr = 0x01020304, daddr_base = 0x05060708;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss_build_table(saddr, daddr_base, sport_seed), 0);
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+
+    /* Pre-flight: confirm ctx readiness state. In unit env reta=0 -> unready
+     * -> both off/on take the same early-return path; per spec 07 §1.4 note,
+     * print "skipped: thash ctx not ready" and PASS (real data via spec 08). */
+    uint16_t out_probe = 0;
+    int probe = ff_rss_adjust_sport(sc, saddr, daddr_base, htons(1024), &out_probe);
+    if (probe < 0) {
+        printf("\n[R-D 0.4 MICROBENCH] thash ctx not ready in unit env "
+               "(rss_reta_size[]=0); skipping microbench. Real off-vs-on "
+               "timing covered by spec 08 (example/rss_ct.c).\n");
+        ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+        skip();
+        return;
+    }
+
+    const int N = FF_RSS_RECHECK_MICROBENCH_N;
+    uint64_t t_off, t_on;
+    uint16_t out;
+
+    g_rss_cfg.recheck = 0;
+    t_off = rd_now_ns();
+    for (int i = 0; i < N; i++) {
+        out = 0;
+        (void)ff_rss_adjust_sport(sc, saddr, daddr_base + (i & 0xFFFF),
+                                  htons((uint16_t)(1024 + (i & 0x3FFF))),
+                                  &out);
+    }
+    t_off = rd_now_ns() - t_off;
+
+    g_rss_cfg.recheck = 1;
+    t_on = rd_now_ns();
+    for (int i = 0; i < N; i++) {
+        out = 0;
+        (void)ff_rss_adjust_sport(sc, saddr, daddr_base + (i & 0xFFFF),
+                                  htons((uint16_t)(1024 + (i & 0x3FFF))),
+                                  &out);
+    }
+    t_on = rd_now_ns() - t_on;
+
+    printf("\n[R-D 0.4 MICROBENCH] N=%d v4 recheck off=%lu ns (%.1f ns/call), "
+           "on=%lu ns (%.1f ns/call), on/off=%.2fx\n",
+           N, (unsigned long)t_off, (double)t_off / N,
+           (unsigned long)t_on, (double)t_on / N,
+           t_off > 0 ? (double)t_on / (double)t_off : 0.0);
+    assert_true(t_off < t_on);   /* recheck=0 strictly faster */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
 /* ------------------------------------------------------------------------ */
 /* TC-U-P3-DPDKIF-17 (Stage-6): ff_dpdk_register_if happy path: allocates  */
 /* and returns a non-NULL ff_dpdk_if_context (covers the malloc + memset   */
@@ -1317,6 +1549,12 @@ main(void)
         cmocka_unit_test(test_ff_rss_tbl6_set_get),
         cmocka_unit_test(test_ff_rss_adjust_sport6_guard),
         cmocka_unit_test(test_ff_rss_thash6_equivalence_hitrate),
+        /* R-D (req 0.4): recheck runtime gate v4/v6 + microbench */
+        cmocka_unit_test(test_ff_rss_adjust_sport_recheck_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport_recheck_on),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_recheck_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_recheck_on),
+        cmocka_unit_test(test_ff_rss_adjust_microbench),
         cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
         /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),

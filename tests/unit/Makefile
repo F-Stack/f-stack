@@ -226,7 +226,9 @@ test_ff_dpdk_pcap: test_ff_dpdk_pcap.o $(LIB_OBJS_DIR)/ff_dpdk_pcap.o $(COMMON_D
 # shared libraries to resolve the bulk of rte_eth_*/rte_timer_*/etc. that
 # ff_dpdk_if.o references but our 7 tests never invoke. -lrte_net_bond
 # pulls in the bond PMD which is not in the default libdpdk umbrella.)
-WRAP_FF_DPDKIF := -Wl,--wrap=rte_get_tsc_hz
+WRAP_FF_DPDKIF := -Wl,--wrap=rte_get_tsc_hz \
+                  -Wl,--wrap=ff_rss_check \
+                  -Wl,--wrap=ff_rss_check6
 test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(WRAP_FF_DPDKIF) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
 

@@ -3099,9 +3099,10 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
                 rss_thash_sport_h[port_id], tuple, sizeof(tuple),
                 desired & (reta_size - 1), FF_RSS_THASH_ADJUST_ATTEMPTS,
                 NULL, NULL) == 0) {
+            int recheck = (ff_global_cfg.dpdk.rss_check_cfgs &&
+                ff_global_cfg.dpdk.rss_check_cfgs->recheck);
             bcopy(&tuple[8], &sport, sizeof(sport));
-            /* zero tolerance: confirm with the same soft hash. */
-            if (ff_rss_check(softc, saddr, daddr, sport, dport)) {
+            if (!recheck || ff_rss_check(softc, saddr, daddr, sport, dport)) {
                 *out_sport = sport;
                 return 0;
             }
@@ -3432,8 +3433,10 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
                 rss_thash6_sport_h[port_id], tuple, sizeof(tuple),
                 desired & (reta_size - 1), FF_RSS_THASH_ADJUST_ATTEMPTS,
                 NULL, NULL) == 0) {
+            int recheck = (ff_global_cfg.dpdk.rss_check_cfgs &&
+                ff_global_cfg.dpdk.rss_check_cfgs->recheck);
             bcopy(&tuple[32], &sport, sizeof(sport));
-            if (ff_rss_check6(softc, saddr6, daddr6, sport, dport)) {
+            if (!recheck || ff_rss_check6(softc, saddr6, daddr6, sport, dport)) {
                 *out_sport = sport;
                 return 0;
             }

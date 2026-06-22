@@ -221,7 +221,7 @@ struct ff_rss_tbl_type {
 int ff_rss_tbl_init(void);
 ```
 
-> **RSS 选端口优化（详见 `ff_rss_check_opt_spec`）**：connect 侧 RSS 源端口选择已扩展三项优化——（0.1）IPv4 内核侧 portrange 钩子回迁 FreeBSD 15.0（`freebsd/netinet/in_pcb.c`）；（0.3）动态快路径，用 `rte_thash_adjust_tuple` 反算源端口并强制软算复核兜底（`ff_rss_thash_ctx_init` / `ff_rss_adjust_sport`）；（0.2）IPv6 独立路径（`ff_rss_check6` / `ff_rss_tbl6_init` / `ff_rss_tbl6_set/get_portrange` / `ff_rss_adjust_sport6`），不改 IPv4 结构与签名。另有只读接口 `ff_rss_self_queue_info()` 暴露本进程 queueid / nb_queues / reta_size。实现与验证：`docs/ff_rss_check_opt_spec/zh_cn/`。
+> **RSS 选端口优化（详见 `ff_rss_check_opt_spec`）**：connect 侧 RSS 源端口选择已扩展三项优化——（0.1）IPv4 内核侧 portrange 钩子回迁 FreeBSD 15.0（`freebsd/netinet/in_pcb.c`）；（0.3）动态快路径，用 `rte_thash_adjust_tuple` 反算源端口并强制软算复核兜底（`ff_rss_thash_ctx_init` / `ff_rss_adjust_sport`）；（0.2）IPv6 独立路径（`ff_rss_check6` / `ff_rss_tbl6_init` / `ff_rss_tbl6_set/get_portrange` / `ff_rss_adjust_sport6`），不改 IPv4 结构与签名。另有只读接口 `ff_rss_self_queue_info()` 暴露本进程 queueid / nb_queues / reta_size。实现与验证：`docs/ff_rss_check_opt_spec/zh_cn/`。R-D（2026-06，spec 10 §R-D）：`ff_rss_adjust_sport` / `ff_rss_adjust_sport6` 的二次软算复核改为运行时门控（`config.ini [rss_check] recheck=0`/`=1`），默认关闭以兑现 ~100 ns/call 性能收益；`recheck=1` 仅供 debug 复核。
 
 ### 2.5 ff_msg_ring 结构 (进程间通信)
 

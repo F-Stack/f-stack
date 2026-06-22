@@ -240,6 +240,7 @@ struct ff_rss_tbl_cfg {
 
 struct ff_rss_check_cfg {
     int enable;
+    int recheck;
     int nb_rss_tbl;
     char *rss_tbl_str;
     struct ff_rss_tbl_cfg rss_tbl_cfgs[FF_RSS_TBL_MAX_ENTRIES];

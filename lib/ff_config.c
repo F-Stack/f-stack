@@ -950,6 +950,8 @@ rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
 
     if (strcmp(name, "enable") == 0) {
         cur->enable = atoi(value);
+    } else if (strcmp(name, "recheck") == 0) {
+        cur->recheck = atoi(value);
     } else if (strcmp(name, "rss_tbl") == 0) {
         cur->rss_tbl_str = strdup(value);
         if (cur->rss_tbl_str) {
