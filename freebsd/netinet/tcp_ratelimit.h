@@ -105,7 +105,7 @@ struct tcpcb;
 					 * shows up in your sysctl tree
 					 * this can be big.
 					 */
-uint64_t inline
+static uint64_t inline
 tcp_hw_highest_rate(const struct tcp_hwrate_limit_table *rle)
 {
 	return (rle->ptbl->rs_rlt[rle->ptbl->rs_highest_valid].rate);
