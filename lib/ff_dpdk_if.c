@@ -3080,7 +3080,7 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
      * so (hash & (reta_size-1)) % nb_queues == queueid holds. Rotate the
      * starting candidate to spread reta entries.
      */
-    desired = queueid + (arc4random() % ((reta_size + nb_queues - 1) / nb_queues)) * nb_queues;
+    desired = queueid + (ff_arc4random() % ((reta_size + nb_queues - 1) / nb_queues)) * nb_queues;
     if (desired >= reta_size)
         desired = queueid;
 
@@ -3414,7 +3414,7 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
     reta_size = rss_reta_size[port_id];
     queueid = qconf->tx_queue_id[port_id];
 
-    desired = queueid + (arc4random() % ((reta_size + nb_queues - 1) / nb_queues)) * nb_queues;
+    desired = queueid + (ff_arc4random() % ((reta_size + nb_queues - 1) / nb_queues)) * nb_queues;
     if (desired >= reta_size)
         desired = queueid;
 
