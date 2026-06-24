@@ -180,6 +180,9 @@ void ff_unload_config(void) { }
  * upgrade; not present in stock librte_timer.so. Provide a no-op stub. */
 void rte_timer_meta_init(void) { }
 
+/* ff_arc4random: stub (real impl in ff_host_interface.c, not linked here). */
+uint32_t ff_arc4random(void) { return 0; }
+
 /* --- rte_* stubs: NOT needed since we now link the real DPDK shared libs --
  * The remaining unresolved DPDK functions are pulled in from -lrte_eal et al.
  * via pkg-config libdpdk LIBS in the Makefile.                            */
@@ -1467,6 +1470,62 @@ test_ff_rss_adjust_microbench(void **state)          /* TC-U-RSS-04-05 */
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;
 }
 
+/* ===== R-F: key_sync switch + ctx_init route② fallback ===== */
+
+/* TC-U-RSS-RF-01: key_sync=0 -> ff_rss_adjust_sport returns -1 (soft scan). */
+static void
+test_ff_rss_adjust_sport_key_sync_off(void **state)
+{
+    (void)state;
+    g_rss_cfg.recheck = 0;
+    g_rss_cfg.key_sync = 0;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    uint16_t out = 0xFFFF;
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), &out), -1);
+
+    g_rss_cfg.key_sync = 1; /* restore default for subsequent tests */
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* TC-U-RSS-RF-02: same as RF-01 for the v6 path. */
+static void
+test_ff_rss_adjust_sport6_key_sync_off(void **state)
+{
+    (void)state;
+    g_rss_cfg.recheck = 0;
+    g_rss_cfg.key_sync = 0;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    uint8_t saddr6[16] = { 0x20,0x01 }, daddr6[16] = { 0x20,0x02 };
+    uint16_t out = 0xFFFF;
+    assert_int_equal(ff_rss_adjust_sport6(sc, saddr6, daddr6,
+                                          htons(80), &out), -1);
+
+    g_rss_cfg.key_sync = 1;
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* TC-U-RSS-RF-03: key_sync=0 -> ff_rss_thash_ctx_init early-returns 0. */
+static void
+test_ff_rss_thash_ctx_init_key_sync_off(void **state)
+{
+    (void)state;
+    g_rss_cfg.key_sync = 0;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    int rv = ff_rss_thash_ctx_init();
+    assert_int_equal(rv, 0);
+
+    g_rss_cfg.key_sync = 1;
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
 /* ------------------------------------------------------------------------ */
 /* TC-U-P3-DPDKIF-17 (Stage-6): ff_dpdk_register_if happy path: allocates  */
 /* and returns a non-NULL ff_dpdk_if_context (covers the malloc + memset   */
@@ -1555,6 +1614,10 @@ main(void)
         cmocka_unit_test(test_ff_rss_adjust_sport6_recheck_off),
         cmocka_unit_test(test_ff_rss_adjust_sport6_recheck_on),
         cmocka_unit_test(test_ff_rss_adjust_microbench),
+        /* R-F (req 0.1/0.2): key_sync runtime switch + ctx_init early-out */
+        cmocka_unit_test(test_ff_rss_adjust_sport_key_sync_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_key_sync_off),
+        cmocka_unit_test(test_ff_rss_thash_ctx_init_key_sync_off),
         cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
         /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),

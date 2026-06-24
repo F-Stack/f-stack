@@ -137,9 +137,19 @@ static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 static struct rte_thash_ctx *rss_thash_ctx[RTE_MAX_ETHPORTS];
 static struct rte_thash_subtuple_helper *rss_thash_sport_h[RTE_MAX_ETHPORTS];
 static int rss_thash_ready[RTE_MAX_ETHPORTS];
-/* IPv4 tuple: saddr(4)|daddr(4)|sport(2)|dport(2); sport at byte 8 = bit 64. */
+/*
+ * IPv4 tuple layout used for RSS hashing: srcIP(4)|dstIP(4)|srcPort(2)|dstPort(2).
+ *
+ * We reverse-calc the LOCAL port so that the REPLY (inbound SYN-ACK) lands on
+ * the local queue. The NIC hashes the reply as:
+ *     (srcIP=remote, dstIP=local, srcPort=80(remote), dstPort=localPort)
+ * so the local port we solve for sits in the dstPort field at byte 10 = bit 80.
+ * Therefore the sport helper offset is 80 (NOT 64): adjust_tuple must rewrite
+ * the bits of the dstPort field. (Toeplitz is asymmetric, so optimizing the
+ * outbound sport field at byte 8 made the reply land on the WRONG queue.)
+ */
 #define FF_RSS_THASH_V4_TUPLE_LEN   12
-#define FF_RSS_THASH_V4_SPORT_OFF   64
+#define FF_RSS_THASH_V4_SPORT_OFF   80
 #define FF_RSS_THASH_SPORT_HELPER_LEN   16
 #define FF_RSS_THASH_ADJUST_ATTEMPTS    16
 
@@ -154,6 +164,7 @@ static int rss_thash6_ready[RTE_MAX_ETHPORTS];
 #define BOND_DRIVER_NAME    "net_bonding"
 
 static inline int send_single_packet(struct rte_mbuf *m, uint8_t port);
+int ff_rss_thash_build_key(uint16_t port_id, uint16_t reta_size);
 
 struct ff_msg_ring {
     char ring_name[FF_MSG_NUM][RTE_RING_NAMESIZE];
@@ -739,6 +750,11 @@ init_port_start(void)
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Use symmetric Receive-side Scaling(RSS) key\n");
                         rsskey = symmetric_rsskey;
                     }
+                    /* R-F: build KEY_FINAL and replace global rsskey BEFORE
+                     * dev_configure, so the NIC programs KEY_FINAL at setup
+                     * (the only path that works on mlx5). nb_queues>1 only. */
+                    if (nb_queues > 1)
+                        ff_rss_thash_build_key(port_id, dev_info.reta_size);
                     port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
                     port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
                     port_conf.rx_adv_conf.rss_conf.rss_hf &= dev_info.flow_type_rss_offloads;
@@ -2964,79 +2980,255 @@ ff_rss_reta_log2(uint16_t reta_size)
     return log2;
 }
 
+/* R-F diag: hex-dump an rss key for primary/secondary cross-check. */
+static void
+ff_rss_diag_dump_key(const char *tag, uint16_t port_id,
+    const uint8_t *key, int len)
+{
+    char buf[160];
+    int n = 0, i;
+
+    for (i = 0; i < len && n < (int)sizeof(buf) - 3; i++)
+        n += snprintf(buf + n, sizeof(buf) - n, "%02x", key[i]);
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+        "[R-F DIAG] %s proc=%s port=%u keylen=%d key=%s\n",
+        tag,
+        rte_eal_process_type() == RTE_PROC_PRIMARY ? "primary" : "secondary",
+        port_id, len, buf);
+}
+
+/* R-F: tracks whether a port already owns the single global rsskey
+ * (single-port semantics; multi-port needs a per-port key, design §6.6). */
+static int ff_rss_key_built;
+
 /*
- * 0.3: build per-port thash ctx once at init so the dynamic path can
- * reverse-calc a source port via rte_thash_adjust_tuple. Any failure marks
- * the port unready and the dynamic path falls back to soft scan.
+ * R-F: build the rte_thash ctx and KEY_FINAL for one port, then publish
+ * KEY_FINAL to the global rsskey *before* rte_eth_dev_configure runs, so the
+ * NIC programs KEY_FINAL into its RSS hash (TIR for mlx5) at queue-setup time.
+ * This is the only reliable path on mlx5: rte_eth_dev_rss_hash_update only
+ * touches the PMD software copy without rebuilding the TIR, so a post-start
+ * key update never takes effect on the wire (readback shows the new key but
+ * traffic still hashes with the original one).
+ *
+ * primary builds v4+v6 ctx (v6 seeded by the v4-rewritten key); secondary
+ * reuses the primary ctx via find_existing. Both publish KEY_FINAL to their
+ * own global rsskey so adjust_tuple / ff_rss_check / NIC stay aligned.
+ * Must be called inside init_port_start's RSS block, before
+ * port_conf.rx_adv_conf.rss_conf.rss_key is assigned.
+ */
+int
+ff_rss_thash_build_key(uint16_t port_id, uint16_t reta_size)
+{
+    char name[64];
+    int is_primary = (rte_eal_process_type() == RTE_PROC_PRIMARY);
+    struct ff_rss_check_cfg *rcc = ff_global_cfg.dpdk.rss_check_cfgs;
+    int key_sync = (rcc != NULL) ? rcc->key_sync : 1;
+    uint8_t * const orig_rsskey = rsskey;
+    const int orig_rsskey_len = rsskey_len;
+    uint32_t reta_log2;
+    struct rte_thash_ctx *ctx_v4 = NULL, *ctx_v6 = NULL;
+    const uint8_t *key_v4 = NULL, *key_final = NULL;
+    uint8_t key_v4_buf[64];
+
+    rss_thash_ready[port_id] = 0;
+    rss_thash6_ready[port_id] = 0;
+    rss_reta_size[port_id] = reta_size;
+
+    if (!key_sync || orig_rsskey == NULL || orig_rsskey_len == 0)
+        return 0;
+    if (reta_size < 2 || ff_rss_key_built)
+        return 0;
+    if ((size_t)orig_rsskey_len > sizeof(key_v4_buf))
+        return 0;
+
+    reta_log2 = ff_rss_reta_log2(reta_size);
+
+    /* ---- v4 ctx ---- */
+    snprintf(name, sizeof(name), "ff_rss_thash_%u", port_id);
+    if (is_primary) {
+        ctx_v4 = rte_thash_init_ctx(name, orig_rsskey_len, reta_log2,
+            orig_rsskey, 0);
+        if (ctx_v4 == NULL) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                "rte_thash_init_ctx(v4) failed for port %u, soft scan fallback\n",
+                port_id);
+            return 0;
+        }
+        if (rte_thash_add_helper(ctx_v4, "sport",
+                FF_RSS_THASH_SPORT_HELPER_LEN,
+                FF_RSS_THASH_V4_SPORT_OFF) != 0) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                "rte_thash_add_helper(v4) failed for port %u\n", port_id);
+            rte_thash_free_ctx(ctx_v4);
+            return 0;
+        }
+    } else {
+        ctx_v4 = rte_thash_find_existing(name);
+        if (ctx_v4 == NULL) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                "rte_thash_find_existing(v4) failed for port %u (secondary)\n",
+                port_id);
+            return 0;
+        }
+    }
+
+    rss_thash_sport_h[port_id] = rte_thash_get_helper(ctx_v4, "sport");
+    if (rss_thash_sport_h[port_id] == NULL) {
+        if (is_primary)
+            rte_thash_free_ctx(ctx_v4);
+        return 0;
+    }
+
+    /* v4-rewritten key; v6 ctx is seeded from it (serial construction). */
+    key_v4 = rte_thash_get_key(ctx_v4);
+    if (key_v4 == NULL) {
+        if (is_primary)
+            rte_thash_free_ctx(ctx_v4);
+        return 0;
+    }
+    memcpy(key_v4_buf, key_v4, orig_rsskey_len);
+
+    rss_thash_ctx[port_id] = ctx_v4;
+    rss_thash_ready[port_id] = 1;
+
+    /* v6 ctx seeded by the v4-rewritten key. */
+    snprintf(name, sizeof(name), "ff_rss_thash6_%u", port_id);
+    if (is_primary) {
+        ctx_v6 = rte_thash_init_ctx(name, orig_rsskey_len, reta_log2,
+            key_v4_buf, 0);
+        if (ctx_v6 == NULL)
+            goto publish;
+        if (rte_thash_add_helper(ctx_v6, "sport",
+                FF_RSS_THASH_SPORT_HELPER_LEN,
+                FF_RSS_THASH_V6_SPORT_OFF) != 0) {
+            rte_thash_free_ctx(ctx_v6);
+            ctx_v6 = NULL;
+            goto publish;
+        }
+    } else {
+        ctx_v6 = rte_thash_find_existing(name);
+        if (ctx_v6 == NULL)
+            goto publish;
+    }
+
+    rss_thash6_sport_h[port_id] = rte_thash_get_helper(ctx_v6, "sport");
+    if (rss_thash6_sport_h[port_id] == NULL) {
+        if (is_primary)
+            rte_thash_free_ctx(ctx_v6);
+        ctx_v6 = NULL;
+        goto publish;
+    }
+
+    key_final = rte_thash_get_key(ctx_v6);
+    if (key_final == NULL) {
+        if (is_primary)
+            rte_thash_free_ctx(ctx_v6);
+        ctx_v6 = NULL;
+        goto publish;
+    }
+
+    rss_thash6_ctx[port_id] = ctx_v6;
+    rss_thash6_ready[port_id] = 1;
+
+publish:
+    {
+        const uint8_t *pub_key = (rss_thash6_ready[port_id]
+            ? key_final : key_v4_buf);
+        uint8_t *new_rsskey = rte_malloc("ff_rsskey_synced",
+            orig_rsskey_len, 0);
+
+        if (new_rsskey == NULL) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                "rte_malloc(rsskey) failed for port %u, route② fallback\n",
+                port_id);
+            rss_thash_ready[port_id] = 0;
+            rss_thash6_ready[port_id] = 0;
+            return 0;
+        }
+        memcpy(new_rsskey, pub_key, orig_rsskey_len);
+
+        /* R-F diag: dump the published key + ctx keys (primary vs secondary
+         * cross-check). NIC readback now happens via the caller's existing
+         * dev_configure path, no post-start rss_hash_update is used. */
+        ff_rss_diag_dump_key("rsskey-published", port_id,
+            new_rsskey, orig_rsskey_len);
+        if (rss_thash_ctx[port_id] != NULL)
+            ff_rss_diag_dump_key("ctx_v4-key", port_id,
+                rte_thash_get_key(rss_thash_ctx[port_id]), orig_rsskey_len);
+        if (rss_thash6_ready[port_id] && rss_thash6_ctx[port_id] != NULL)
+            ff_rss_diag_dump_key("ctx_v6-key", port_id,
+                rte_thash_get_key(rss_thash6_ctx[port_id]), orig_rsskey_len);
+
+        /* Publish KEY_FINAL so the caller's dev_configure programs it into
+         * the NIC, and ff_rss_check uses it too. orig_rsskey is static. */
+        rsskey = new_rsskey;
+        rsskey_len = orig_rsskey_len;
+        ff_rss_key_built = 1;
+        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+            "ff_rss_thash_build_key: port %u key built (v6_ready=%d, proc=%s)\n",
+            port_id, rss_thash6_ready[port_id],
+            is_primary ? "primary" : "secondary");
+    }
+
+    return 0;
+}
+
+/*
+ * R-F: post-start RETA diagnostic (primary only). The NIC RSS key is already
+ * programmed by dev_configure (see ff_rss_thash_build_key), so here we only
+ * read back the key/RETA for cross-checking against the captured queue.
  */
 int
 ff_rss_thash_ctx_init(void)
 {
     uint16_t port_id;
 
-    if (rsskey == NULL || rsskey_len == 0)
-        return -1;
+    if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+        return 0;
 
     for (port_id = 0; port_id < RTE_MAX_ETHPORTS; port_id++) {
-        char name[64];
-        uint16_t reta_size = rss_reta_size[port_id];
-        uint32_t reta_log2;
-        struct rte_thash_ctx *ctx;
+        struct rte_eth_rss_conf rb;
+        uint8_t rb_key[64];
+        uint16_t rsz = rss_reta_size[port_id];
+        uint16_t nbq = lcore_conf.nb_queue_list[port_id];
 
-        rss_thash_ready[port_id] = 0;
-
-        if (reta_size < 2)
+        if (!rss_thash_ready[port_id])
             continue;
 
-        reta_log2 = ff_rss_reta_log2(reta_size);
+        memset(&rb, 0, sizeof(rb));
+        rb.rss_key = rb_key;
+        rb.rss_key_len = sizeof(rb_key);
+        if (rte_eth_dev_rss_hash_conf_get(port_id, &rb) == 0)
+            ff_rss_diag_dump_key("NIC-readback", port_id,
+                rb_key, (int)rb.rss_key_len);
 
-        snprintf(name, sizeof(name), "ff_rss_thash_%u", port_id);
-        ctx = rte_thash_init_ctx(name, rsskey_len, reta_log2, rsskey, 0);
-        if (ctx == NULL) {
-            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-                "rte_thash_init_ctx failed for port %u, dynamic rss path falls back to soft scan\n",
-                port_id);
-            continue;
+        if (rsz >= 1 && nbq > 0) {
+            int ngrp = (rsz + RTE_ETH_RETA_GROUP_SIZE - 1) /
+                RTE_ETH_RETA_GROUP_SIZE;
+            struct rte_eth_rss_reta_entry64 rc[ngrp];
+            int g;
+
+            memset(rc, 0, sizeof(rc));
+            for (g = 0; g < ngrp; g++)
+                rc[g].mask = ~0ULL;
+            if (rte_eth_dev_rss_reta_query(port_id, rc, rsz) == 0) {
+                int mismatch = 0, idx;
+                for (idx = 0; idx < rsz; idx++) {
+                    uint16_t v = rc[idx / RTE_ETH_RETA_GROUP_SIZE]
+                        .reta[idx % RTE_ETH_RETA_GROUP_SIZE];
+                    if (v != (idx % nbq))
+                        mismatch++;
+                }
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+                    "[R-F DIAG] RETA port=%u size=%u nbq=%u "
+                    "mismatch_vs_idx%%nbq=%d (0=assumption holds)\n",
+                    port_id, rsz, nbq, mismatch);
+            } else {
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                    "[R-F DIAG] reta_query(port %u) failed/unavailable\n",
+                    port_id);
+            }
         }
-
-        if (rte_thash_add_helper(ctx, "sport",
-                FF_RSS_THASH_SPORT_HELPER_LEN,
-                FF_RSS_THASH_V4_SPORT_OFF) != 0) {
-            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-                "rte_thash_add_helper failed for port %u\n", port_id);
-            rte_thash_free_ctx(ctx);
-            continue;
-        }
-
-        rss_thash_sport_h[port_id] = rte_thash_get_helper(ctx, "sport");
-        if (rss_thash_sport_h[port_id] == NULL) {
-            rte_thash_free_ctx(ctx);
-            continue;
-        }
-
-        rss_thash_ctx[port_id] = ctx;
-        rss_thash_ready[port_id] = 1;
-
-        /* 0.2: parallel v6 ctx (sport at bit 256). Failure only disables
-         * the v6 dynamic path for this port; v4 stays ready. */
-        rss_thash6_ready[port_id] = 0;
-        snprintf(name, sizeof(name), "ff_rss_thash6_%u", port_id);
-        ctx = rte_thash_init_ctx(name, rsskey_len, reta_log2, rsskey, 0);
-        if (ctx == NULL)
-            continue;
-        if (rte_thash_add_helper(ctx, "sport",
-                FF_RSS_THASH_SPORT_HELPER_LEN,
-                FF_RSS_THASH_V6_SPORT_OFF) != 0) {
-            rte_thash_free_ctx(ctx);
-            continue;
-        }
-        rss_thash6_sport_h[port_id] = rte_thash_get_helper(ctx, "sport");
-        if (rss_thash6_sport_h[port_id] == NULL) {
-            rte_thash_free_ctx(ctx);
-            continue;
-        }
-        rss_thash6_ctx[port_id] = ctx;
-        rss_thash6_ready[port_id] = 1;
     }
 
     return 0;
@@ -3051,7 +3243,7 @@ ff_rss_thash_ctx_init(void)
  */
 int
 ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
-    uint16_t dport, uint16_t *out_sport)
+    uint16_t dport, uint16_t *out_sport, uint16_t first, uint16_t last)
 {
     struct lcore_conf *qconf = &lcore_conf;
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
@@ -3059,13 +3251,18 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
     uint32_t desired;
     uint8_t tuple[FF_RSS_THASH_V4_TUPLE_LEN];
     uint16_t sport;
-    int tries;
+    uint16_t base, block, nblocks;
+    int tries, reta_log2;
 
     if (softc == NULL || out_sport == NULL)
         return -1;
 
     port_id = ctx->port_id;
     if (!rss_thash_ready[port_id] || rss_thash_ctx[port_id] == NULL)
+        return -1;
+    /* R-F: route② switch — soft-scan fallback when key_sync disabled. */
+    if (ff_global_cfg.dpdk.rss_check_cfgs &&
+            !ff_global_cfg.dpdk.rss_check_cfgs->key_sync)
         return -1;
 
     nb_queues = qconf->nb_queue_list[port_id];
@@ -3076,6 +3273,38 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
     queueid = qconf->tx_queue_id[port_id];
 
     /*
+     * rte_thash_adjust_tuple only rewrites the LOW reta_log2 bits of the
+     * sport field (bit range [tuple_offset+tuple_len-reta_log2,
+     * tuple_offset+tuple_len-1], see rte_thash.c). For the v4 sport helper
+     * (tuple_offset=64, tuple_len=16) with reta_size=512 (reta_log2=9) it
+     * controls the low 9 bits of the network-order sport, i.e. values
+     * [0, reta_size). The HIGH bits are kept from the sport seed we provide.
+     *
+     * The previous code seeded sport=0, so the result was always in
+     * [0, reta_size) (e.g. <512) -> reserved/well-known ports that are NOT
+     * valid ephemeral ports -> connections failed even though the soft
+     * recheck said the queue matched. Fix: seed sport with a reta_size-aligned
+     * BASE inside the ephemeral range [first,last]; adjust then fills the low
+     * reta_log2 bits, so the final port stays within [base, base+reta_size-1]
+     * which lies inside [first,last] and still lands on the local queue.
+     */
+    reta_log2 = ff_rss_reta_log2(reta_size);
+
+    if (first > last)
+        return -1;
+    /* Align the search window to reta_size blocks within [first,last]. */
+    base = (uint16_t)(((uint32_t)first + reta_size - 1) & ~((uint32_t)reta_size - 1));
+    if (base < first || (uint32_t)base + reta_size - 1 > last)
+        return -1;                 /* range too small / unaligned -> soft scan */
+    nblocks = (uint16_t)((last - base + 1) / reta_size);
+    if (nblocks == 0)
+        return -1;
+    /* pick a random reta_size-aligned base block inside the ephemeral range */
+    block = (uint16_t)(ff_arc4random() % nblocks);
+    base = (uint16_t)(base + block * reta_size);
+    (void)reta_log2;
+
+    /*
      * desired_value picked from D(q) = { v in [0, reta_size) | v % Q == q }
      * so (hash & (reta_size-1)) % nb_queues == queueid holds. Rotate the
      * starting candidate to spread reta entries.
@@ -3084,16 +3313,30 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
     if (desired >= reta_size)
         desired = queueid;
 
-    sport = 0;
     for (tries = 0; tries < (int)((reta_size + nb_queues - 1) / nb_queues); tries++) {
+        uint16_t host_lport;
+
         if (desired >= reta_size)
             desired = queueid;
 
+        /* Re-seed every iteration: high bits = aligned ephemeral base,
+         * low reta_log2 bits = 0 (adjust_tuple fills them). Network order. */
+        sport = htons(base);
+
+        /*
+         * Build the tuple in the REPLY (inbound) field order, because what we
+         * really need is the REPLY (SYN-ACK) to land on the local queue. The
+         * NIC hashes the reply as:
+         *     srcIP = remote (saddr), dstIP = local (daddr),
+         *     srcPort = 80 (dport),   dstPort = localPort  (what we solve for)
+         * So the local port sits in the dstPort field at byte 10, which is
+         * exactly where the v4 sport helper now points (offset = 80 bits).
+         */
         memset(tuple, 0, sizeof(tuple));
-        bcopy(&saddr, &tuple[0], sizeof(saddr));
-        bcopy(&daddr, &tuple[4], sizeof(daddr));
-        bcopy(&sport, &tuple[8], sizeof(sport));
-        bcopy(&dport, &tuple[10], sizeof(dport));
+        bcopy(&saddr, &tuple[0], sizeof(saddr));   /* remote IP  */
+        bcopy(&daddr, &tuple[4], sizeof(daddr));   /* local  IP  */
+        bcopy(&dport, &tuple[8], sizeof(dport));   /* remote port (80) */
+        bcopy(&sport, &tuple[10], sizeof(sport));  /* local port seed -> solved */
 
         if (rte_thash_adjust_tuple(rss_thash_ctx[port_id],
                 rss_thash_sport_h[port_id], tuple, sizeof(tuple),
@@ -3101,9 +3344,56 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
                 NULL, NULL) == 0) {
             int recheck = (ff_global_cfg.dpdk.rss_check_cfgs &&
                 ff_global_cfg.dpdk.rss_check_cfgs->recheck);
-            bcopy(&tuple[8], &sport, sizeof(sport));
-            if (!recheck || ff_rss_check(softc, saddr, daddr, sport, dport)) {
-                *out_sport = sport;
+            /* tuple[10..11] now holds the solved network-order local port. */
+            bcopy(&tuple[10], &sport, sizeof(sport));
+            host_lport = ntohs(sport);
+
+            /* Guard: the adjusted port MUST stay inside the ephemeral range
+             * [first,last]. With a reta_size-aligned base it always should,
+             * but verify defensively (e.g. odd reta/range corner cases). */
+            if (host_lport < first || host_lport > last) {
+                desired += nb_queues;
+                continue;
+            }
+
+            /*
+             * Re-verify with the REPLY field order (this is the hash the NIC
+             * applies to the inbound SYN-ACK). recheck calls ff_rss_check with
+             * the reply tuple: (remote, local, srcPort=80, dstPort=localPort).
+             */
+            if (!recheck ||
+                ff_rss_check(softc, saddr, daddr, dport, sport)) {
+                /* R-F diag: rev_queue is the REPLY's landing queue and MUST now
+                 * equal qid. (fwd_* is the outbound direction, informational.) */
+                uint8_t rd[12];
+                bcopy(&saddr, &rd[0], 4);   /* remote IP            */
+                bcopy(&daddr, &rd[4], 4);   /* local  IP            */
+                bcopy(&dport, &rd[8], 2);   /* 80 (reply src port)  */
+                bcopy(&sport, &rd[10], 2);  /* localPort (reply dst)*/
+                uint32_t rh = toeplitz_hash(rsskey_len, rsskey, sizeof(rd), rd);
+
+                uint8_t fd[12];
+                bcopy(&saddr, &fd[0], 4);
+                bcopy(&daddr, &fd[4], 4);
+                bcopy(&sport, &fd[8], 2);   /* outbound src = localPort */
+                bcopy(&dport, &fd[10], 2);  /* outbound dst = 80        */
+                uint32_t fh = toeplitz_hash(rsskey_len, rsskey, sizeof(fd), fd);
+
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+                    "[R-F DIAG] adjust_sport ok proc=%s port=%u qid=%u nbq=%u "
+                    "saddr=0x%08x daddr=0x%08x dport=%u lport=%u base=%u "
+                    "rev_reta=%u rev_queue=%u fwd_reta=%u fwd_queue=%u "
+                    "(rev_queue==qid expected now)\n",
+                    rte_eal_process_type() == RTE_PROC_PRIMARY
+                        ? "primary" : "secondary",
+                    port_id, queueid, nb_queues,
+                    ntohl(saddr), ntohl(daddr), ntohs(dport), host_lport, base,
+                    rh & (reta_size - 1),
+                    (rh & (reta_size - 1)) % nb_queues,
+                    fh & (reta_size - 1),
+                    (fh & (reta_size - 1)) % nb_queues);
+                /* Return HOST-order local port; caller does htons() itself. */
+                *out_sport = host_lport;
                 return 0;
             }
         }
@@ -3405,6 +3695,10 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
 
     port_id = ctx->port_id;
     if (!rss_thash6_ready[port_id] || rss_thash6_ctx[port_id] == NULL)
+        return -1;
+    /* R-F: route② switch — soft-scan fallback when key_sync disabled. */
+    if (ff_global_cfg.dpdk.rss_check_cfgs &&
+            !ff_global_cfg.dpdk.rss_check_cfgs->key_sync)
         return -1;
 
     nb_queues = qconf->nb_queue_list[port_id];

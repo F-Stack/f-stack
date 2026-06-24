@@ -943,6 +943,7 @@ rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
             fprintf(stderr, "rss_check_cfg_handler malloc failed\n");
             return 0;
         }
+        rcc->key_sync = 1;   /* default on; "key_sync=" may override */
         cfg->dpdk.rss_check_cfgs = rcc;
     }
 
@@ -952,6 +953,8 @@ rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
         cur->enable = atoi(value);
     } else if (strcmp(name, "recheck") == 0) {
         cur->recheck = atoi(value);
+    } else if (strcmp(name, "key_sync") == 0) {
+        cur->key_sync = atoi(value);
     } else if (strcmp(name, "rss_tbl") == 0) {
         cur->rss_tbl_str = strdup(value);
         if (cur->rss_tbl_str) {

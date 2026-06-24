@@ -961,7 +961,7 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 				for (rss_fast = 0; rss_fast < 8; rss_fast++) {
 					if (ff_rss_adjust_sport(ifp->if_softc,
 					    faddr.s_addr, laddr.s_addr, fport,
-					    &rss_sel) != 0)
+					    &rss_sel, first, last) != 0)
 						break;
 					lport = htons(rss_sel);
 					if (in_pcblookup_local(pcbinfo, laddr,

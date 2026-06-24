@@ -91,7 +91,7 @@ int ff_rss_tbl_get_portrange(uint32_t saddr, uint32_t daddr, uint16_t sport,
 
 int ff_rss_thash_ctx_init(void);
 int ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
-    uint16_t dport, uint16_t *out_sport);
+    uint16_t dport, uint16_t *out_sport, uint16_t first, uint16_t last);
 
 int ff_rss_check6(void *softc, const uint8_t *saddr6,
     const uint8_t *daddr6, uint16_t sport, uint16_t dport);
