@@ -752,8 +752,11 @@ init_port_start(void)
                     }
                     /* R-F: build KEY_FINAL and replace global rsskey BEFORE
                      * dev_configure, so the NIC programs KEY_FINAL at setup
-                     * (the only path that works on mlx5). nb_queues>1 only. */
-                    if (nb_queues > 1)
+                     * (the only path that works on mlx5). nb_queues>1 only,
+                     * gated by thash_adjust (decoupled from rss_check.enable). */
+                    if (nb_queues > 1 &&
+                            (ff_global_cfg.dpdk.rss_check_cfgs == NULL ||
+                             ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust))
                         ff_rss_thash_build_key(port_id, dev_info.reta_size);
                     port_conf.rx_adv_conf.rss_conf.rss_key = rsskey;
                     port_conf.rx_adv_conf.rss_conf.rss_key_len = rsskey_len;
@@ -1489,8 +1492,11 @@ ff_dpdk_init(int argc, char **argv)
             ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "ff_rss_tbl_init successed\n");
         }
         ff_rss_tbl6_init();
-        ff_rss_thash_ctx_init();
     }
+    /* thash diag readback gated by thash_adjust (decoupled from rss_check.enable). */
+    if (ff_global_cfg.dpdk.rss_check_cfgs == NULL ||
+            ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust)
+        ff_rss_thash_ctx_init();
 
     init_clock();
 #ifdef FF_FLOW_ISOLATE
@@ -3022,7 +3028,7 @@ ff_rss_thash_build_key(uint16_t port_id, uint16_t reta_size)
     char name[64];
     int is_primary = (rte_eal_process_type() == RTE_PROC_PRIMARY);
     struct ff_rss_check_cfg *rcc = ff_global_cfg.dpdk.rss_check_cfgs;
-    int key_sync = (rcc != NULL) ? rcc->key_sync : 1;
+    int thash_adjust = (rcc != NULL) ? rcc->thash_adjust : 1;
     uint8_t * const orig_rsskey = rsskey;
     const int orig_rsskey_len = rsskey_len;
     uint32_t reta_log2;
@@ -3034,7 +3040,7 @@ ff_rss_thash_build_key(uint16_t port_id, uint16_t reta_size)
     rss_thash6_ready[port_id] = 0;
     rss_reta_size[port_id] = reta_size;
 
-    if (!key_sync || orig_rsskey == NULL || orig_rsskey_len == 0)
+    if (!thash_adjust || orig_rsskey == NULL || orig_rsskey_len == 0)
         return 0;
     if (reta_size < 2 || ff_rss_key_built)
         return 0;
@@ -3260,9 +3266,9 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
     port_id = ctx->port_id;
     if (!rss_thash_ready[port_id] || rss_thash_ctx[port_id] == NULL)
         return -1;
-    /* R-F: route② switch — soft-scan fallback when key_sync disabled. */
+    /* R-F: route② switch — soft-scan fallback when thash_adjust disabled. */
     if (ff_global_cfg.dpdk.rss_check_cfgs &&
-            !ff_global_cfg.dpdk.rss_check_cfgs->key_sync)
+            !ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust)
         return -1;
 
     nb_queues = qconf->nb_queue_list[port_id];
@@ -3696,9 +3702,9 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
     port_id = ctx->port_id;
     if (!rss_thash6_ready[port_id] || rss_thash6_ctx[port_id] == NULL)
         return -1;
-    /* R-F: route② switch — soft-scan fallback when key_sync disabled. */
+    /* R-F: route② switch — soft-scan fallback when thash_adjust disabled. */
     if (ff_global_cfg.dpdk.rss_check_cfgs &&
-            !ff_global_cfg.dpdk.rss_check_cfgs->key_sync)
+            !ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust)
         return -1;
 
     nb_queues = qconf->nb_queue_list[port_id];

@@ -610,6 +610,8 @@ test_expected_rss_check6(const uint8_t saddr6[16], const uint8_t daddr6[16],
 #define TEST_RSS_NBQ      4          /* multi-queue so ff_rss_check is active */
 #define TEST_RSS_QID      1          /* this "process" owns tx queue 1        */
 #define TEST_RSS_RETA     0          /* rss_reta_size[] BSS default => mask 0xFFFF */
+#define TEST_RSS_FIRST   10000      /* FreeBSD default ipport_firstauto */
+#define TEST_RSS_LAST    65535      /* FreeBSD default ipport_lastauto   */
 
 static struct ff_rss_check_cfg g_rss_cfg;
 static struct ff_dpdk_if_context g_test_ctx;
@@ -766,11 +768,13 @@ test_ff_rss_adjust_sport_null(void **state)
     uint16_t out = 0;
     /* NULL softc -> -1 (guard hits before ff_veth_softc_to_hostc deref) */
     assert_int_equal(ff_rss_adjust_sport(NULL, 0x01020304, 0x05060708,
-                                         htons(80), &out), -1);
+                                         htons(80), &out,
+                                         TEST_RSS_FIRST, TEST_RSS_LAST), -1);
     /* NULL out_sport with a valid softc -> -1 */
     void *sc = test_rss_softc(TEST_RSS_PORT);
     assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
-                                         htons(80), NULL), -1);
+                                         htons(80), NULL,
+                                         TEST_RSS_FIRST, TEST_RSS_LAST), -1);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -792,7 +796,9 @@ test_ff_rss_adjust_sport_degraded(void **state)
     void *sc = test_rss_softc(TEST_RSS_PORT);
     lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ; /* multi-queue */
     uint16_t out = 0xFFFF;
-    int rv = ff_rss_adjust_sport(sc, 0x01020304, 0x05060708, htons(80), &out);
+    int rv = ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                 htons(80), &out,
+                                 TEST_RSS_FIRST, TEST_RSS_LAST);
     assert_int_equal(rv, -1);          /* unready -> fall back */
 }
 
@@ -812,7 +818,8 @@ test_ff_rss_adjust_sport_single_queue(void **state)
     lcore_conf.nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
     uint16_t out = 0xFFFF;
     assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
-                                         htons(80), &out), -1);
+                                         htons(80), &out,
+                                         TEST_RSS_FIRST, TEST_RSS_LAST), -1);
 }
 
 /* ======================================================================== */
@@ -1299,7 +1306,8 @@ test_ff_rss_adjust_sport_recheck_off(void **state)   /* TC-U-RSS-04-01 */
     for (int i = 0; i < RD_RECHECK_N; i++) {
         uint16_t out = 0xFFFF;
         int rv = ff_rss_adjust_sport(sc, saddr, daddr,
-                                     htons((uint16_t)(1024 + i)), &out);
+                                     htons((uint16_t)(1024 + i)), &out,
+                                     TEST_RSS_FIRST, TEST_RSS_LAST);
         assert_int_equal(rv, -1);   /* ctx-unready degrade */
     }
     /* recheck=0 path never reaches L3105; counter must stay 0 */
@@ -1325,7 +1333,8 @@ test_ff_rss_adjust_sport_recheck_on(void **state)    /* TC-U-RSS-04-02 */
     for (int i = 0; i < RD_RECHECK_N; i++) {
         uint16_t out = 0xFFFF;
         int rv = ff_rss_adjust_sport(sc, saddr, daddr,
-                                     htons((uint16_t)(1024 + i)), &out);
+                                     htons((uint16_t)(1024 + i)), &out,
+                                     TEST_RSS_FIRST, TEST_RSS_LAST);
         assert_int_equal(rv, -1);   /* ctx-unready degrade */
     }
     /* ctx-unready blocks the main loop; counter remains 0 here. The
@@ -1426,7 +1435,8 @@ test_ff_rss_adjust_microbench(void **state)          /* TC-U-RSS-04-05 */
      * -> both off/on take the same early-return path; per spec 07 §1.4 note,
      * print "skipped: thash ctx not ready" and PASS (real data via spec 08). */
     uint16_t out_probe = 0;
-    int probe = ff_rss_adjust_sport(sc, saddr, daddr_base, htons(1024), &out_probe);
+    int probe = ff_rss_adjust_sport(sc, saddr, daddr_base, htons(1024), &out_probe,
+                                   TEST_RSS_FIRST, TEST_RSS_LAST);
     if (probe < 0) {
         printf("\n[R-D 0.4 MICROBENCH] thash ctx not ready in unit env "
                "(rss_reta_size[]=0); skipping microbench. Real off-vs-on "
@@ -1446,7 +1456,8 @@ test_ff_rss_adjust_microbench(void **state)          /* TC-U-RSS-04-05 */
         out = 0;
         (void)ff_rss_adjust_sport(sc, saddr, daddr_base + (i & 0xFFFF),
                                   htons((uint16_t)(1024 + (i & 0x3FFF))),
-                                  &out);
+                                  &out,
+                                  TEST_RSS_FIRST, TEST_RSS_LAST);
     }
     t_off = rd_now_ns() - t_off;
 
@@ -1456,7 +1467,8 @@ test_ff_rss_adjust_microbench(void **state)          /* TC-U-RSS-04-05 */
         out = 0;
         (void)ff_rss_adjust_sport(sc, saddr, daddr_base + (i & 0xFFFF),
                                   htons((uint16_t)(1024 + (i & 0x3FFF))),
-                                  &out);
+                                  &out,
+                                  TEST_RSS_FIRST, TEST_RSS_LAST);
     }
     t_on = rd_now_ns() - t_on;
 
@@ -1470,34 +1482,35 @@ test_ff_rss_adjust_microbench(void **state)          /* TC-U-RSS-04-05 */
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;
 }
 
-/* ===== R-F: key_sync switch + ctx_init route② fallback ===== */
+/* ===== R-F: thash_adjust switch + ctx_init route② fallback ===== */
 
-/* TC-U-RSS-RF-01: key_sync=0 -> ff_rss_adjust_sport returns -1 (soft scan). */
+/* TC-U-RSS-RF-01: thash_adjust=0 -> ff_rss_adjust_sport returns -1 (soft scan). */
 static void
-test_ff_rss_adjust_sport_key_sync_off(void **state)
+test_ff_rss_adjust_sport_thash_adjust_off(void **state)
 {
     (void)state;
     g_rss_cfg.recheck = 0;
-    g_rss_cfg.key_sync = 0;
+    g_rss_cfg.thash_adjust = 0;
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
     lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     uint16_t out = 0xFFFF;
     assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
-                                         htons(80), &out), -1);
+                                         htons(80), &out,
+                                         TEST_RSS_FIRST, TEST_RSS_LAST), -1);
 
-    g_rss_cfg.key_sync = 1; /* restore default for subsequent tests */
+    g_rss_cfg.thash_adjust = 1; /* restore default for subsequent tests */
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;
 }
 
 /* TC-U-RSS-RF-02: same as RF-01 for the v6 path. */
 static void
-test_ff_rss_adjust_sport6_key_sync_off(void **state)
+test_ff_rss_adjust_sport6_thash_adjust_off(void **state)
 {
     (void)state;
     g_rss_cfg.recheck = 0;
-    g_rss_cfg.key_sync = 0;
+    g_rss_cfg.thash_adjust = 0;
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
@@ -1507,22 +1520,22 @@ test_ff_rss_adjust_sport6_key_sync_off(void **state)
     assert_int_equal(ff_rss_adjust_sport6(sc, saddr6, daddr6,
                                           htons(80), &out), -1);
 
-    g_rss_cfg.key_sync = 1;
+    g_rss_cfg.thash_adjust = 1;
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;
 }
 
-/* TC-U-RSS-RF-03: key_sync=0 -> ff_rss_thash_ctx_init early-returns 0. */
+/* TC-U-RSS-RF-03: thash_adjust=0 -> ff_rss_thash_ctx_init early-returns 0. */
 static void
-test_ff_rss_thash_ctx_init_key_sync_off(void **state)
+test_ff_rss_thash_ctx_init_thash_adjust_off(void **state)
 {
     (void)state;
-    g_rss_cfg.key_sync = 0;
+    g_rss_cfg.thash_adjust = 0;
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
     int rv = ff_rss_thash_ctx_init();
     assert_int_equal(rv, 0);
 
-    g_rss_cfg.key_sync = 1;
+    g_rss_cfg.thash_adjust = 1;
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;
 }
 
@@ -1614,10 +1627,10 @@ main(void)
         cmocka_unit_test(test_ff_rss_adjust_sport6_recheck_off),
         cmocka_unit_test(test_ff_rss_adjust_sport6_recheck_on),
         cmocka_unit_test(test_ff_rss_adjust_microbench),
-        /* R-F (req 0.1/0.2): key_sync runtime switch + ctx_init early-out */
-        cmocka_unit_test(test_ff_rss_adjust_sport_key_sync_off),
-        cmocka_unit_test(test_ff_rss_adjust_sport6_key_sync_off),
-        cmocka_unit_test(test_ff_rss_thash_ctx_init_key_sync_off),
+        /* R-F (req 0.1/0.2): thash_adjust runtime switch + ctx_init early-out */
+        cmocka_unit_test(test_ff_rss_adjust_sport_thash_adjust_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_thash_adjust_off),
+        cmocka_unit_test(test_ff_rss_thash_ctx_init_thash_adjust_off),
         cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
         /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),

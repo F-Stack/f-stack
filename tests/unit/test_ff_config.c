@@ -422,8 +422,8 @@ test_ff_load_config_dpdk_full(void **state)
     /* rss_check + rss_tbl: 2 entries (port 0 + port 1) */
     assert_non_null(ff_global_cfg.dpdk.rss_check_cfgs);
     assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->enable, 1);
-    /* R-F: key_sync defaults to 1 when omitted. */
-    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->key_sync, 1);
+    /* R-F: thash_adjust defaults to 1 when omitted. */
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust, 1);
     assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->nb_rss_tbl, 2);
     /* port0 entry: port_id=0, sport=80 (htons applied internally) */
     assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_cfgs[0].port_id, 0);
@@ -546,16 +546,16 @@ test_rss_tbl_cfg_handler_bad_tuple(void **state)
     }
 }
 
-/* TC-U-P1-CFG-RF-01: explicit key_sync=0 is parsed correctly. */
+/* TC-U-P1-CFG-RF-01: explicit thash_adjust=0 is parsed correctly. */
 static void
-test_rss_check_key_sync_off_parses(void **state)
+test_rss_check_thash_adjust_off_parses(void **state)
 {
     (void)state;
-    int rv = load_with_fixture(FIXTURE_PATH("valid_rss_check_key_sync_off.ini"));
+    int rv = load_with_fixture(FIXTURE_PATH("valid_rss_check_thash_adjust_off.ini"));
     assert_int_equal(rv, 0);
     assert_non_null(ff_global_cfg.dpdk.rss_check_cfgs);
-    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->enable,    1);
-    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->key_sync,  0);
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->enable,        1);
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust,  0);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -1088,8 +1088,8 @@ main(void)
         cmocka_unit_test_setup_teardown(test_bond_cfg_handler_bad_section,       test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rss_check_cfg_handler_no_port_no_vlan, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rss_tbl_cfg_handler_bad_tuple,      test_setup, NULL),
-        /* R-F (req 0.1/0.2): key_sync runtime switch parsing */
-        cmocka_unit_test_setup_teardown(test_rss_check_key_sync_off_parses,      test_setup, NULL),
+        /* R-F (req 0.1/0.2): thash_adjust runtime switch parsing */
+        cmocka_unit_test_setup_teardown(test_rss_check_thash_adjust_off_parses,  test_setup, NULL),
         /* Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD) */
         cmocka_unit_test_setup_teardown(test_ff_unload_config_zeroes_state,      test_setup, NULL),
         /* Stage-7 Phase-3 branch-coverage boost (FU-S7-CFG-*) */
