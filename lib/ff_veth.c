@@ -55,6 +55,7 @@
 #include <netinet/in.h>
 #include <netinet/in_var.h>
 #include <netinet6/nd6.h>
+#include <netinet6/scope6_var.h>
 #ifdef FF_IPFW
 #include <netinet/ip_fw.h>
 #endif
@@ -843,6 +844,11 @@ ff_veth_set_gateway6(struct ff_veth_softc *sc, uint32_t fib_num)
 
     gw.sin6_addr = sc->gateway6;
     //dst.sin6_addr = nm.sin6_addr = 0;
+
+    /* Link-local gateway needs the outgoing interface zone to be resolvable. */
+    if (IN6_IS_ADDR_LINKLOCAL(&gw.sin6_addr)) {
+        in6_setscope(&gw.sin6_addr, sc->ifp, NULL);
+    }
 
     info.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&gw;
     info.rti_info[RTAX_DST] = (struct sockaddr *)&dst;
