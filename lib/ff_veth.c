@@ -978,6 +978,10 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
 #endif
 
 #ifdef INET6
+        /* Skip IPv6 DAD on DPDK-backed veth: no L2 peer answers NS in
+         * userland, so DAD would leave addrs IN6_IFF_TENTATIVE forever and
+         * FreeBSD 15 ip6_input silently drops unicast to NOTREADY addrs. */
+        ND_IFINFO(ifp)->flags |= ND6_IFF_NO_DAD;
         // Set IPv6
         if (cfg->addr6_str) {
             ret = ff_veth_setaddr6(sc, NULL);
