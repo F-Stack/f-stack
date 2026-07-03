@@ -1545,6 +1545,60 @@ test_ff_rss_thash_ctx_init_thash_adjust_off(void **state)
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;
 }
 
+/* TC-U-RSS-RF-04: ff_rss_adjust_sport first/last range params.
+ * Inverted (first>last) and sub-reta-block ranges must decline (return -1)
+ * so the caller falls back to the soft scan. In the unit env reta_size[]=0
+ * leaves the ctx unready, so the readiness guard also produces -1; either
+ * way the contract "declines -> caller falls back" holds. The aligned-base
+ * range logic itself is exercised with a live rte_thash ctx in the R-B/R-C
+ * equivalence tests. */
+static void
+test_ff_rss_adjust_sport_range_params(void **state)
+{
+    (void)state;
+    g_rss_cfg.recheck = 0;
+    g_rss_cfg.thash_adjust = 1;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    uint16_t out = 0xFFFF;
+
+    /* inverted range */
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), &out,
+                                         /*first*/60000, /*last*/1024), -1);
+    /* range too small to hold one reta block */
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), &out,
+                                         /*first*/1024, /*last*/1025), -1);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* TC-U-RSS-RF-05: same range-param contract for the v6 path. */
+static void
+test_ff_rss_adjust_sport6_range_params(void **state)
+{
+    (void)state;
+    g_rss_cfg.recheck = 0;
+    g_rss_cfg.thash_adjust = 1;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    uint16_t out = 0xFFFF;
+
+    assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                          htons(80), &out,
+                                          /*first*/60000, /*last*/1024), -1);
+    assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                          htons(80), &out,
+                                          /*first*/1024, /*last*/1025), -1);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
 /* ------------------------------------------------------------------------ */
 /* TC-U-P3-DPDKIF-17 (Stage-6): ff_dpdk_register_if happy path: allocates  */
 /* and returns a non-NULL ff_dpdk_if_context (covers the malloc + memset   */
@@ -1637,6 +1691,8 @@ main(void)
         cmocka_unit_test(test_ff_rss_adjust_sport_thash_adjust_off),
         cmocka_unit_test(test_ff_rss_adjust_sport6_thash_adjust_off),
         cmocka_unit_test(test_ff_rss_thash_ctx_init_thash_adjust_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport_range_params),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_range_params),
         cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
         /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),
