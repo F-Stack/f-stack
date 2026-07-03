@@ -132,7 +132,7 @@ static dispatch_func_context_t packet_dispatcher_with_context;
 
 static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 
-/* 0.3: per-port rte_thash ctx for dynamic sport reverse-calc.
+/* per-port rte_thash ctx for dynamic sport reverse-calc.
  * Built once at init; -1 means disabled (fall back to soft scan). */
 static struct rte_thash_ctx *rss_thash_ctx[RTE_MAX_ETHPORTS];
 static struct rte_thash_subtuple_helper *rss_thash_sport_h[RTE_MAX_ETHPORTS];
@@ -153,7 +153,7 @@ static int rss_thash_ready[RTE_MAX_ETHPORTS];
 #define FF_RSS_THASH_SPORT_HELPER_LEN   16
 #define FF_RSS_THASH_ADJUST_ATTEMPTS    16
 
-/* 0.2 IPv6 thash ctx (scheme A, parallel to v4).
+/* IPv6 thash ctx (scheme A, parallel to v4).
  * v6 tuple: saddr6(16)|daddr6(16)|sport(2)|dport(2); sport at byte 32 = bit 256. */
 static struct rte_thash_ctx *rss_thash6_ctx[RTE_MAX_ETHPORTS];
 static struct rte_thash_subtuple_helper *rss_thash6_sport_h[RTE_MAX_ETHPORTS];
@@ -202,7 +202,7 @@ struct ff_rss_tbl_type {
 } __rte_cache_aligned;
 static struct ff_rss_tbl_type ff_rss_tbl[FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES];
 
-/* 0.2 IPv6 (scheme A): v6-dedicated table/functions, parallel to v4.
+/* IPv6 (scheme A): v6-dedicated table/functions, parallel to v4.
  * 16-byte addresses; everything else mirrors the v4 layout. v4 path untouched. */
 struct ff_rss_tbl6_dip_type {
     uint8_t daddr6[16];
@@ -751,7 +751,7 @@ init_port_start(void)
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Use symmetric Receive-side Scaling(RSS) key\n");
                         rsskey = symmetric_rsskey;
                     }
-                    /* R-F: build KEY_FINAL and replace global rsskey BEFORE
+                    /* Build KEY_FINAL and replace global rsskey BEFORE
                      * dev_configure, so the NIC programs KEY_FINAL at setup
                      * (the only path that works on mlx5). nb_queues>1 only,
                      * gated by thash_adjust (decoupled from rss_check.enable). */
@@ -1204,7 +1204,6 @@ create_ipip_flow(uint16_t port_id) {
     struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
     int nb_queues = pconf->nb_lcores;
     uint16_t queue[RTE_MAX_QUEUES_PER_PORT];
-    // 1. Queue configuration check
     if (nb_queues > RTE_MAX_QUEUES_PER_PORT) {
         rte_exit(EXIT_FAILURE, "Queue count exceeds limit (%d > %d)\n",
                 nb_queues, RTE_MAX_QUEUES_PER_PORT);
@@ -1212,14 +1211,12 @@ create_ipip_flow(uint16_t port_id) {
     for (int i = 0; i < nb_queues; i++)
         queue[i] = i;
 
-    // 2. Get device info and check return value
     struct rte_eth_dev_info dev_info;
     int ret = rte_eth_dev_info_get(port_id, &dev_info);
     if (ret != 0) {
         rte_exit(EXIT_FAILURE, "Error during getting device (port %u) info: %s\n",
                 port_id, strerror(-ret));
     }
-    // 3. RSS config - key: set inner hash
     struct rte_flow_action_rss rss = {
         .func = RTE_ETH_HASH_FUNCTION_DEFAULT,
         .level = 2,  // inner encapsulation layer RSS - hash based on inner protocol
@@ -1229,14 +1226,13 @@ create_ipip_flow(uint16_t port_id) {
         .queue_num = nb_queues,
         .queue = queue,
     };
-    // 4. Hardware capability check and fallback handling
     if (!(dev_info.flow_type_rss_offloads & RTE_ETH_RSS_NONFRAG_IPV4_TCP)) {
-        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "I'm three,Warning: inner TCP RSS is not supported, falling back to outer RSS.\n");
+        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "Warning: inner TCP RSS is not supported, falling back to outer RSS.\n");
         rss.level = 0;  // fallback to outer RSS
         rss.types = RTE_ETH_FLOW_IPV4;  // update to outer protocol type
     }
 
-    // 5. Outer IPv4 matches IPIP protocol
+    /* Outer IPv4 matches only the IPIP protocol. */
     struct rte_flow_item_ipv4 outer_ipv4_spec = {
         .hdr = {
             .next_proto_id = IPPROTO_IPIP
@@ -1248,7 +1244,7 @@ create_ipip_flow(uint16_t port_id) {
         }
     };
 
-    // 6. Pattern chain definition - match inner TCP to enable inner RSS
+    /* Pattern chain: match inner TCP so RSS hashes on the inner layer. */
     struct rte_flow_item pattern[] = {
         // Outer Ethernet header (wildcard)
         {
@@ -1279,7 +1275,6 @@ create_ipip_flow(uint16_t port_id) {
         }
     };
 
-    // 7. Action configuration
     struct rte_flow_action action[] = {
         {
             .type = RTE_FLOW_ACTION_TYPE_RSS,
@@ -1290,7 +1285,6 @@ create_ipip_flow(uint16_t port_id) {
         }
     };
 
-    // 8. Validate and create flow rule
     struct rte_flow_error error;
     struct rte_flow *flow = NULL;
 
@@ -1461,20 +1455,18 @@ ff_dpdk_init(int argc, char **argv)
 #endif
 
 #ifdef FF_FLOW_ISOLATE
-    // run once in primary process
     /*
-     * M11: same NIC-rte_flow rationale as M10 create_ipip_flow.
-     * port_flow_isolate is a hardware-offload directive; on
-     * drivers without rte_flow support (virtio etc.) it returns
-     * ENOTSUP. The non-isolated path still works, so degrade.
+     * port_flow_isolate is a hardware-offload directive; drivers without
+     * rte_flow support (virtio etc.) return ENOTSUP. The non-isolated path
+     * still works, so degrade to a warning instead of failing.
      */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY){
         ret = port_flow_isolate(0, 1);
         if (ret < 0) {
-            printf("M11 [WARN] port_flow_isolate failed (ret=%d) — "
-                   "NIC lacks rte_flow isolate support; falling "
-                   "back to non-isolated mode (other queues/cores "
-                   "may receive ingress traffic).\n", ret);
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                   "port_flow_isolate failed (ret=%d) — NIC lacks rte_flow "
+                   "isolate support; falling back to non-isolated mode "
+                   "(other queues/cores may receive ingress traffic).\n", ret);
         }
     }
 #endif
@@ -1501,54 +1493,49 @@ ff_dpdk_init(int argc, char **argv)
 
     init_clock();
 #ifdef FF_FLOW_ISOLATE
-    //Only give a example usage: port_id=0, tcp_port= 80.
-    //Recommend:
-    //1. init_flow should replace `set_rss_table` in `init_port_start` loop, This can set all NIC's port_id_list instead only 0 device(port_id).
-    //2. using config options `tcp_port` replace magic number of 80
-    /* M11: same hardware-offload fallback as port_flow_isolate above. */
+    /*
+     * Example usage only: port_id=0, tcp_port=80. A full implementation
+     * would iterate all NIC port_ids and take tcp_port from config instead
+     * of the magic 80. Same hardware-offload fallback as port_flow_isolate.
+     */
     ret = init_flow(0, 80);
     if (ret < 0) {
-        printf("M11 [WARN] init_port_flow failed (ret=%d) — NIC "
-               "lacks rte_flow rule install; tcp/80 traffic will "
-               "follow default RSS distribution.\n", ret);
+        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+               "init_flow failed (ret=%d) — NIC lacks rte_flow rule install; "
+               "tcp/80 traffic will follow default RSS distribution.\n", ret);
     }
 #endif
 
 #ifdef FF_FLOW_IPIP
-    // create ipip flow for port 0
     /*
-     * M10: rte_flow IPIP rule is a hardware-offload optimization;
-     * virtio NICs (and other drivers without rte_flow IPIP support)
-     * return ENOTSUP here. The GIF tunnel itself works in software
-     * via FreeBSD's if_gif/in_gif path regardless, so we degrade
-     * to a warning instead of rte_exit() to keep the helloworld
-     * primary alive on hardware that lacks flow offload.
+     * The rte_flow IPIP rule is a hardware-offload optimization; drivers
+     * without rte_flow IPIP support (virtio etc.) return ENOTSUP. The GIF
+     * tunnel still works in software via FreeBSD's if_gif/in_gif path, so
+     * degrade to a warning instead of rte_exit().
      */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY){
         ret = create_ipip_flow(0);
         if (ret != 0) {
-            printf("M10 [WARN] create_ipip_flow failed (ret=%d) — "
-                   "NIC lacks rte_flow IPIP offload; falling back "
-                   "to software GIF tunnel path. This is expected "
-                   "on virtio and similar drivers.\n", ret);
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                   "create_ipip_flow failed (ret=%d) — NIC lacks rte_flow "
+                   "IPIP offload; falling back to software GIF tunnel path "
+                   "(expected on virtio and similar drivers).\n", ret);
         }
     }
 #endif
 
 #ifdef FF_FDIR
     /*
-     * Refer function header section for usage.
-     *
-     * M12: same hardware-offload rte_flow fallback rationale as
-     * M10/M11. fdir_add_tcp_flow needs NIC FDIR / rte_flow
-     * support; virtio-style drivers return ENOTSUP. Fall back
-     * to default RSS hashing instead of rte_exit.
+     * Refer to the function header for usage. fdir_add_tcp_flow needs NIC
+     * FDIR / rte_flow support; virtio-style drivers return ENOTSUP, so fall
+     * back to default RSS hashing instead of rte_exit.
      */
     ret = fdir_add_tcp_flow(0, 0, FF_FLOW_INGRESS, 0, 80);
     if (ret) {
-        printf("M12 [WARN] fdir_add_tcp_flow failed (ret=%d) — "
-               "NIC lacks rte_flow FDIR support; tcp/80 traffic "
-               "follows default RSS hash distribution.\n", ret);
+        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+               "fdir_add_tcp_flow failed (ret=%d) — NIC lacks rte_flow FDIR "
+               "support; tcp/80 traffic follows default RSS hash "
+               "distribution.\n", ret);
     }
 #endif
 
@@ -2987,7 +2974,8 @@ ff_rss_reta_log2(uint16_t reta_size)
     return log2;
 }
 
-/* R-F diag: hex-dump an rss key for primary/secondary cross-check. */
+#ifdef FF_RSS_DIAG
+/* Hex-dump an rss key for primary/secondary cross-check. */
 static void
 ff_rss_diag_dump_key(const char *tag, uint16_t port_id,
     const uint8_t *key, int len)
@@ -2998,18 +2986,19 @@ ff_rss_diag_dump_key(const char *tag, uint16_t port_id,
     for (i = 0; i < len && n < (int)sizeof(buf) - 3; i++)
         n += snprintf(buf + n, sizeof(buf) - n, "%02x", key[i]);
     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
-        "[R-F DIAG] %s proc=%s port=%u keylen=%d key=%s\n",
+        "%s proc=%s port=%u keylen=%d key=%s\n",
         tag,
         rte_eal_process_type() == RTE_PROC_PRIMARY ? "primary" : "secondary",
         port_id, len, buf);
 }
+#endif
 
-/* R-F: tracks whether a port already owns the single global rsskey
- * (single-port semantics; multi-port needs a per-port key, design §6.6). */
+/* Tracks whether a port already owns the single global rsskey
+ * (single-port semantics; multi-port needs a per-port key). */
 static int ff_rss_key_built;
 
 /*
- * R-F: build the rte_thash ctx and KEY_FINAL for one port, then publish
+ * Build the rte_thash ctx and KEY_FINAL for one port, then publish
  * KEY_FINAL to the global rsskey *before* rte_eth_dev_configure runs, so the
  * NIC programs KEY_FINAL into its RSS hash (TIR for mlx5) at queue-setup time.
  * This is the only reliable path on mlx5: rte_eth_dev_rss_hash_update only
@@ -3154,9 +3143,7 @@ publish:
         }
         memcpy(new_rsskey, pub_key, orig_rsskey_len);
 
-        /* R-F diag: dump the published key + ctx keys (primary vs secondary
-         * cross-check). NIC readback now happens via the caller's existing
-         * dev_configure path, no post-start rss_hash_update is used. */
+#ifdef FF_RSS_DIAG
         ff_rss_diag_dump_key("rsskey-published", port_id,
             new_rsskey, orig_rsskey_len);
         if (rss_thash_ctx[port_id] != NULL)
@@ -3165,6 +3152,7 @@ publish:
         if (rss_thash6_ready[port_id] && rss_thash6_ctx[port_id] != NULL)
             ff_rss_diag_dump_key("ctx_v6-key", port_id,
                 rte_thash_get_key(rss_thash6_ctx[port_id]), orig_rsskey_len);
+#endif
 
         /* Publish KEY_FINAL so the caller's dev_configure programs it into
          * the NIC, and ff_rss_check uses it too. orig_rsskey is static. */
@@ -3181,13 +3169,14 @@ publish:
 }
 
 /*
- * R-F: post-start RETA diagnostic (primary only). The NIC RSS key is already
- * programmed by dev_configure (see ff_rss_thash_build_key), so here we only
- * read back the key/RETA for cross-checking against the captured queue.
+ * Post-start RETA diagnostic (primary only). The NIC RSS key is already
+ * programmed by dev_configure (see ff_rss_thash_build_key); this only reads
+ * back the key/RETA for cross-checking. Compiled out unless FF_RSS_DIAG.
  */
 int
 ff_rss_thash_ctx_init(void)
 {
+#ifdef FF_RSS_DIAG
     uint16_t port_id;
 
     if (rte_eal_process_type() != RTE_PROC_PRIMARY)
@@ -3227,22 +3216,23 @@ ff_rss_thash_ctx_init(void)
                         mismatch++;
                 }
                 ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
-                    "[R-F DIAG] RETA port=%u size=%u nbq=%u "
+                    "RETA port=%u size=%u nbq=%u "
                     "mismatch_vs_idx%%nbq=%d (0=assumption holds)\n",
                     port_id, rsz, nbq, mismatch);
             } else {
                 ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-                    "[R-F DIAG] reta_query(port %u) failed/unavailable\n",
+                    "reta_query(port %u) failed/unavailable\n",
                     port_id);
             }
         }
     }
+#endif
 
     return 0;
 }
 
 /*
- * 0.3: reverse-calc a host-order source port whose RSS hash lands on the
+ * Reverse-calc a host-order source port whose RSS hash lands on the
  * caller's local queue. tuple layout mirrors ff_rss_check's hash input
  * (saddr|daddr|sport|dport, host byte order). The result is always re-verified
  * by ff_rss_check (zero tolerance for wrong queue); on any failure returns <0
@@ -3267,7 +3257,7 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
     port_id = ctx->port_id;
     if (!rss_thash_ready[port_id] || rss_thash_ctx[port_id] == NULL)
         return -1;
-    /* R-F: route② switch — soft-scan fallback when thash_adjust disabled. */
+    /* Soft-scan fallback when thash_adjust is disabled. */
     if (ff_global_cfg.dpdk.rss_check_cfgs &&
             !ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust)
         return -1;
@@ -3283,7 +3273,8 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
      * rte_thash_adjust_tuple only rewrites the LOW reta_log2 bits of the
      * sport field (bit range [tuple_offset+tuple_len-reta_log2,
      * tuple_offset+tuple_len-1], see rte_thash.c). For the v4 sport helper
-     * (tuple_offset=64, tuple_len=16) with reta_size=512 (reta_log2=9) it
+     * (tuple_offset=80=FF_RSS_THASH_V4_SPORT_OFF, tuple_len=16) with
+     * reta_size=512 (reta_log2=9) it
      * controls the low 9 bits of the network-order sport, i.e. values
      * [0, reta_size). The HIGH bits are kept from the sport seed we provide.
      *
@@ -3370,8 +3361,9 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
              */
             if (!recheck ||
                 ff_rss_check(softc, saddr, daddr, dport, sport)) {
-                /* R-F diag: rev_queue is the REPLY's landing queue and MUST now
-                 * equal qid. (fwd_* is the outbound direction, informational.) */
+#ifdef FF_RSS_DIAG
+                /* rev_queue is the REPLY's landing queue and MUST equal qid;
+                 * fwd_* is the outbound direction (informational). */
                 uint8_t rd[12];
                 bcopy(&saddr, &rd[0], 4);   /* remote IP            */
                 bcopy(&daddr, &rd[4], 4);   /* local  IP            */
@@ -3387,10 +3379,9 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
                 uint32_t fh = toeplitz_hash(rsskey_len, rsskey, sizeof(fd), fd);
 
                 ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
-                    "[R-F DIAG] adjust_sport ok proc=%s port=%u qid=%u nbq=%u "
+                    "adjust_sport ok proc=%s port=%u qid=%u nbq=%u "
                     "saddr=0x%08x daddr=0x%08x dport=%u lport=%u base=%u "
-                    "rev_reta=%u rev_queue=%u fwd_reta=%u fwd_queue=%u "
-                    "(rev_queue==qid expected now)\n",
+                    "rev_reta=%u rev_queue=%u fwd_reta=%u fwd_queue=%u\n",
                     rte_eal_process_type() == RTE_PROC_PRIMARY
                         ? "primary" : "secondary",
                     port_id, queueid, nb_queues,
@@ -3399,6 +3390,7 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
                     (rh & (reta_size - 1)) % nb_queues,
                     fh & (reta_size - 1),
                     (fh & (reta_size - 1)) % nb_queues);
+#endif
                 /* Return HOST-order local port; caller does htons() itself. */
                 *out_sport = host_lport;
                 return 0;
@@ -3411,7 +3403,7 @@ ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
     return -1;
 }
 
-/* ===== 0.2 IPv6 RSS (scheme A: v6-dedicated, v4 path untouched) ===== */
+/* ===== IPv6 RSS (scheme A: v6-dedicated, v4 path untouched) ===== */
 
 static inline int
 ff_in6_is_any(const uint8_t addr6[16])
@@ -3705,7 +3697,7 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
     port_id = ctx->port_id;
     if (!rss_thash6_ready[port_id] || rss_thash6_ctx[port_id] == NULL)
         return -1;
-    /* R-F: route② switch — soft-scan fallback when thash_adjust disabled. */
+    /* Soft-scan fallback when thash_adjust is disabled. */
     if (ff_global_cfg.dpdk.rss_check_cfgs &&
             !ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust)
         return -1;
