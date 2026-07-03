@@ -159,7 +159,8 @@ static struct rte_thash_ctx *rss_thash6_ctx[RTE_MAX_ETHPORTS];
 static struct rte_thash_subtuple_helper *rss_thash6_sport_h[RTE_MAX_ETHPORTS];
 static int rss_thash6_ready[RTE_MAX_ETHPORTS];
 #define FF_RSS_THASH_V6_TUPLE_LEN   36
-#define FF_RSS_THASH_V6_SPORT_OFF   256
+/* reply dstPort field = byte 34 = bit 272 (symmetric to v4's 80). */
+#define FF_RSS_THASH_V6_SPORT_OFF   272
 
 #define BOND_DRIVER_NAME    "net_bonding"
 
@@ -3686,7 +3687,8 @@ ff_rss_tbl6_get_portrange(const uint8_t *saddr6, const uint8_t *daddr6,
 
 int
 ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
-    const uint8_t *daddr6, uint16_t dport, uint16_t *out_sport)
+    const uint8_t *daddr6, uint16_t dport, uint16_t *out_sport,
+    uint16_t first, uint16_t last)
 {
     struct lcore_conf *qconf = &lcore_conf;
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
@@ -3694,7 +3696,8 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
     uint32_t desired;
     uint8_t tuple[FF_RSS_THASH_V6_TUPLE_LEN];
     uint16_t sport;
-    int tries;
+    uint16_t base, block, nblocks;
+    int tries, reta_log2;
 
     if (softc == NULL || out_sport == NULL)
         return -1;
@@ -3714,20 +3717,37 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
     reta_size = rss_reta_size[port_id];
     queueid = qconf->tx_queue_id[port_id];
 
+    /* Align search window to reta_size blocks inside [first,last] so the
+     * adjusted low bits keep the result a valid ephemeral port (see v4). */
+    reta_log2 = ff_rss_reta_log2(reta_size);
+    if (first > last)
+        return -1;
+    base = (uint16_t)(((uint32_t)first + reta_size - 1) & ~((uint32_t)reta_size - 1));
+    if (base < first || (uint32_t)base + reta_size - 1 > last)
+        return -1;
+    nblocks = (uint16_t)((last - base + 1) / reta_size);
+    if (nblocks == 0)
+        return -1;
+    block = (uint16_t)(ff_arc4random() % nblocks);
+    base = (uint16_t)(base + block * reta_size);
+    (void)reta_log2;
+
     desired = queueid + (ff_arc4random() % ((reta_size + nb_queues - 1) / nb_queues)) * nb_queues;
     if (desired >= reta_size)
         desired = queueid;
 
-    sport = 0;
     for (tries = 0; tries < (int)((reta_size + nb_queues - 1) / nb_queues); tries++) {
         if (desired >= reta_size)
             desired = queueid;
 
+        sport = htons(base);
+
+        /* Reply (SYN-ACK) field order: local port is the reply dstPort. */
         memset(tuple, 0, sizeof(tuple));
-        bcopy(saddr6, &tuple[0], 16);
-        bcopy(daddr6, &tuple[16], 16);
-        bcopy(&sport, &tuple[32], sizeof(sport));
-        bcopy(&dport, &tuple[34], sizeof(dport));
+        bcopy(saddr6, &tuple[0], 16);   /* remote IP */
+        bcopy(daddr6, &tuple[16], 16);  /* local  IP */
+        bcopy(&dport, &tuple[32], sizeof(dport));  /* remote port (80) */
+        bcopy(&sport, &tuple[34], sizeof(sport));  /* local port seed -> solved */
 
         if (rte_thash_adjust_tuple(rss_thash6_ctx[port_id],
                 rss_thash6_sport_h[port_id], tuple, sizeof(tuple),
@@ -3735,9 +3755,17 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
                 NULL, NULL) == 0) {
             int recheck = (ff_global_cfg.dpdk.rss_check_cfgs &&
                 ff_global_cfg.dpdk.rss_check_cfgs->recheck);
-            bcopy(&tuple[32], &sport, sizeof(sport));
-            if (!recheck || ff_rss_check6(softc, saddr6, daddr6, sport, dport)) {
-                *out_sport = sport;
+            uint16_t host_lport;
+
+            bcopy(&tuple[34], &sport, sizeof(sport));
+            host_lport = ntohs(sport);
+            if (host_lport < first || host_lport > last) {
+                desired += nb_queues;
+                continue;
+            }
+            if (!recheck ||
+                ff_rss_check6(softc, saddr6, daddr6, dport, sport)) {
+                *out_sport = host_lport;
                 return 0;
             }
         }

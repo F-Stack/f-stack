@@ -101,7 +101,8 @@ int ff_rss_tbl6_get_portrange(const uint8_t *saddr6, const uint8_t *daddr6,
     uint16_t sport, uint16_t *rss_first, uint16_t *rss_last,
     uint16_t **rss_portrange);
 int ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
-    const uint8_t *daddr6, uint16_t dport, uint16_t *out_sport);
+    const uint8_t *daddr6, uint16_t dport, uint16_t *out_sport,
+    uint16_t first, uint16_t last);
 
 void ff_swi_net_excute(void);
 

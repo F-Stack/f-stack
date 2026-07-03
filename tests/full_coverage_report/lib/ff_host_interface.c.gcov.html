@@ -1,0 +1,433 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+
+<html lang="en">
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <title>LCOV - F-Stack lib/ unit+integration full coverage - lib/ff_host_interface.c</title>
+  <link rel="stylesheet" type="text/css" href="../gcov.css">
+</head>
+
+<body>
+
+          <table width="100%" border=0 cellspacing=0 cellpadding=0>
+            <tr><td class="title">LCOV - code coverage report</td></tr>
+            <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+
+            <tr>
+              <td width="100%">
+                <table cellpadding=1 border=0 width="100%">
+          <tr>
+            <td width="10%" class="headerItem">Current view:</td>
+            <td width="10%" class="headerValue"><a href="../index.html">top level</a> - <a href="index.html">lib</a> - ff_host_interface.c<span style="font-size: 80%;"> (source / <a href="ff_host_interface.c.func-c.html">functions</a>)</span></td>
+            <td width="5%"></td>
+            <td width="5%"></td>
+            <td width="5%" class="headerCovTableHead">Coverage</td>
+            <td width="5%" class="headerCovTableHead" title="Covered + Uncovered code">Total</td>
+            <td width="5%" class="headerCovTableHead" title="Exercised code only">Hit</td>
+          </tr>
+          <tr>
+            <td class="headerItem">Test:</td>
+            <td class="headerValue">F-Stack lib/ unit+integration full coverage</td>
+            <td></td>
+            <td class="headerItem">Lines:</td>
+            <td class="headerCovTableEntryHi">100.0&nbsp;%</td>
+            <td class="headerCovTableEntry">152</td>
+            <td class="headerCovTableEntry">152</td>
+          </tr>
+          <tr>
+            <td class="headerItem">Test Date:</td>
+            <td class="headerValue">2026-06-11 12:56:48</td>
+            <td></td>
+            <td class="headerItem">Functions:</td>
+            <td class="headerCovTableEntryHi">100.0&nbsp;%</td>
+            <td class="headerCovTableEntry">16</td>
+            <td class="headerCovTableEntry">16</td>
+          </tr>
+          <tr>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td class="headerItem">Branches:</td>
+            <td class="headerCovTableEntryHi">100.0&nbsp;%</td>
+            <td class="headerCovTableEntry">106</td>
+            <td class="headerCovTableEntry">106</td>
+          </tr>
+                  <tr><td><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+                </table>
+              </td>
+            </tr>
+
+            <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+          </table>
+
+          <table cellpadding=0 cellspacing=0 border=0>
+            <tr>
+              <td><br></td>
+            </tr>
+            <tr>
+              <td>
+<pre class="sourceHeading">             Branch data     Line data    Source code</pre>
+<pre class="source">
+<span id="L1"><span class="lineNum">       1</span>                 :             : /*</span>
+<span id="L2"><span class="lineNum">       2</span>                 :             :  * Copyright (c) 2013 Patrick Kelsey. All rights reserved.</span>
+<span id="L3"><span class="lineNum">       3</span>                 :             :  * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.</span>
+<span id="L4"><span class="lineNum">       4</span>                 :             :  * All rights reserved.</span>
+<span id="L5"><span class="lineNum">       5</span>                 :             :  *</span>
+<span id="L6"><span class="lineNum">       6</span>                 :             :  * Redistribution and use in source and binary forms, with or without</span>
+<span id="L7"><span class="lineNum">       7</span>                 :             :  * modification, are permitted provided that the following conditions are met:</span>
+<span id="L8"><span class="lineNum">       8</span>                 :             :  *</span>
+<span id="L9"><span class="lineNum">       9</span>                 :             :  * 1. Redistributions of source code must retain the above copyright notice, this</span>
+<span id="L10"><span class="lineNum">      10</span>                 :             :  *   list of conditions and the following disclaimer.</span>
+<span id="L11"><span class="lineNum">      11</span>                 :             :  * 2. Redistributions in binary form must reproduce the above copyright notice,</span>
+<span id="L12"><span class="lineNum">      12</span>                 :             :  *   this list of conditions and the following disclaimer in the documentation</span>
+<span id="L13"><span class="lineNum">      13</span>                 :             :  *   and/or other materials provided with the distribution.</span>
+<span id="L14"><span class="lineNum">      14</span>                 :             :  *</span>
+<span id="L15"><span class="lineNum">      15</span>                 :             :  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS &quot;AS IS&quot; AND</span>
+<span id="L16"><span class="lineNum">      16</span>                 :             :  * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED</span>
+<span id="L17"><span class="lineNum">      17</span>                 :             :  * WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE</span>
+<span id="L18"><span class="lineNum">      18</span>                 :             :  * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR</span>
+<span id="L19"><span class="lineNum">      19</span>                 :             :  * ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES</span>
+<span id="L20"><span class="lineNum">      20</span>                 :             :  * (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;</span>
+<span id="L21"><span class="lineNum">      21</span>                 :             :  * LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND</span>
+<span id="L22"><span class="lineNum">      22</span>                 :             :  * ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT</span>
+<span id="L23"><span class="lineNum">      23</span>                 :             :  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS</span>
+<span id="L24"><span class="lineNum">      24</span>                 :             :  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.</span>
+<span id="L25"><span class="lineNum">      25</span>                 :             :  *</span>
+<span id="L26"><span class="lineNum">      26</span>                 :             :  * Derived in part from libuinet's uinet_host_interface.c.</span>
+<span id="L27"><span class="lineNum">      27</span>                 :             :  */</span>
+<span id="L28"><span class="lineNum">      28</span>                 :             : </span>
+<span id="L29"><span class="lineNum">      29</span>                 :             : #include &lt;assert.h&gt;</span>
+<span id="L30"><span class="lineNum">      30</span>                 :             : #include &lt;errno.h&gt;</span>
+<span id="L31"><span class="lineNum">      31</span>                 :             : #include &lt;string.h&gt;</span>
+<span id="L32"><span class="lineNum">      32</span>                 :             : #include &lt;stdarg.h&gt;</span>
+<span id="L33"><span class="lineNum">      33</span>                 :             : #include &lt;stdint.h&gt;</span>
+<span id="L34"><span class="lineNum">      34</span>                 :             : #include &lt;stdio.h&gt;</span>
+<span id="L35"><span class="lineNum">      35</span>                 :             : #include &lt;stdlib.h&gt;</span>
+<span id="L36"><span class="lineNum">      36</span>                 :             : #include &lt;sys/mman.h&gt;</span>
+<span id="L37"><span class="lineNum">      37</span>                 :             : #include &lt;sys/stat.h&gt;</span>
+<span id="L38"><span class="lineNum">      38</span>                 :             : #include &lt;pthread.h&gt;</span>
+<span id="L39"><span class="lineNum">      39</span>                 :             : #include &lt;sched.h&gt;</span>
+<span id="L40"><span class="lineNum">      40</span>                 :             : #include &lt;time.h&gt;</span>
+<span id="L41"><span class="lineNum">      41</span>                 :             : </span>
+<span id="L42"><span class="lineNum">      42</span>                 :             : #include &lt;openssl/rand.h&gt;</span>
+<span id="L43"><span class="lineNum">      43</span>                 :             : #include &lt;rte_malloc.h&gt;</span>
+<span id="L44"><span class="lineNum">      44</span>                 :             : </span>
+<span id="L45"><span class="lineNum">      45</span>                 :             : #include &quot;ff_host_interface.h&quot;</span>
+<span id="L46"><span class="lineNum">      46</span>                 :             : #include &quot;ff_errno.h&quot;</span>
+<span id="L47"><span class="lineNum">      47</span>                 :             : #include &quot;ff_log.h&quot;</span>
+<span id="L48"><span class="lineNum">      48</span>                 :             : </span>
+<span id="L49"><span class="lineNum">      49</span>                 :             : static struct timespec current_ts;</span>
+<span id="L50"><span class="lineNum">      50</span>                 :             : extern void* ff_mem_get_page();</span>
+<span id="L51"><span class="lineNum">      51</span>                 :             : extern int ff_mem_free_addr(void* p);</span>
+<span id="L52"><span class="lineNum">      52</span>                 :             : </span>
+<span id="L53"><span class="lineNum">      53</span>                 :             : void *</span>
+<span id="L54"><span class="lineNum">      54</span>                 :<span class="tlaGNC tlaBgGNC">          12 : ff_mmap(void *addr, uint64_t len, int prot, int flags, int fd, uint64_t offset)</span></span>
+<span id="L55"><span class="lineNum">      55</span>                 :             : {</span>
+<span id="L56"><span class="lineNum">      56</span>                 :             :     //return rte_malloc(&quot;&quot;, len, 4096);</span>
+<span id="L57"><span class="lineNum">      57</span>                 :             :     int host_prot;</span>
+<span id="L58"><span class="lineNum">      58</span>                 :             :     int host_flags;</span>
+<span id="L59"><span class="lineNum">      59</span>                 :             : </span>
+<span id="L60"><span class="lineNum">      60</span>                 :             : #ifdef FF_USE_PAGE_ARRAY</span>
+<span id="L61"><span class="lineNum">      61</span>                 :             :         if( len == 4096 ){</span>
+<span id="L62"><span class="lineNum">      62</span>                 :             :             return ff_mem_get_page();</span>
+<span id="L63"><span class="lineNum">      63</span>                 :             :         }</span>
+<span id="L64"><span class="lineNum">      64</span>                 :             :         else</span>
+<span id="L65"><span class="lineNum">      65</span>                 :             : #endif</span>
+<span id="L66"><span class="lineNum">      66</span>                 :             :         {</span>
+<span id="L67"><span class="lineNum">      67</span>                 :             : </span>
+<span id="L68"><span class="lineNum">      68</span>                 :             :     assert(ff_PROT_NONE == PROT_NONE);</span>
+<span id="L69"><span class="lineNum">      69</span>                 :<span class="tlaGNC">          12 :     host_prot = 0;</span></span>
+<span id="L70"><span class="lineNum">      70</span>         [<span class="tlaGBC" title="Branch 0 was taken 10 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">          12 :     if ((prot &amp; ff_PROT_READ) == ff_PROT_READ)   host_prot |= PROT_READ;</span></span>
+<span id="L71"><span class="lineNum">      71</span>         [<span class="tlaGBC" title="Branch 0 was taken 10 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">          12 :     if ((prot &amp; ff_PROT_WRITE) == ff_PROT_WRITE) host_prot |= PROT_WRITE;</span></span>
+<span id="L72"><span class="lineNum">      72</span>                 :             : </span>
+<span id="L73"><span class="lineNum">      73</span>                 :<span class="tlaGNC">          12 :     host_flags = 0;</span></span>
+<span id="L74"><span class="lineNum">      74</span>         [<span class="tlaGBC" title="Branch 0 was taken 4 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 8 times"> + </span>]:<span class="tlaGNC">          12 :     if ((flags &amp; ff_MAP_SHARED) == ff_MAP_SHARED)   host_flags |= MAP_SHARED;</span></span>
+<span id="L75"><span class="lineNum">      75</span>         [<span class="tlaGBC" title="Branch 0 was taken 10 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">          12 :     if ((flags &amp; ff_MAP_PRIVATE) == ff_MAP_PRIVATE) host_flags |= MAP_PRIVATE;</span></span>
+<span id="L76"><span class="lineNum">      76</span>         [<span class="tlaGBC" title="Branch 0 was taken 10 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">          12 :     if ((flags &amp; ff_MAP_ANON) == ff_MAP_ANON)       host_flags |= MAP_ANON;</span></span>
+<span id="L77"><span class="lineNum">      77</span>                 :             : </span>
+<span id="L78"><span class="lineNum">      78</span>                 :<span class="tlaGNC">          12 :     void *ret = (mmap(addr, len, host_prot, host_flags, fd, offset));</span></span>
+<span id="L79"><span class="lineNum">      79</span>                 :             : </span>
+<span id="L80"><span class="lineNum">      80</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 10 times"> + </span>]:<span class="tlaGNC">          12 :     if (ret == MAP_FAILED) {</span></span>
+<span id="L81"><span class="lineNum">      81</span>                 :<span class="tlaGNC">           2 :         ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, &quot;fst mmap failed:%s\n&quot;, strerror(errno));</span></span>
+<span id="L82"><span class="lineNum">      82</span>                 :<span class="tlaGNC">           2 :         exit(1);</span></span>
+<span id="L83"><span class="lineNum">      83</span>                 :             :     }</span>
+<span id="L84"><span class="lineNum">      84</span>                 :<span class="tlaGNC">          10 :     return ret;</span></span>
+<span id="L85"><span class="lineNum">      85</span>                 :             :     }</span>
+<span id="L86"><span class="lineNum">      86</span>                 :             : }</span>
+<span id="L87"><span class="lineNum">      87</span>                 :             : </span>
+<span id="L88"><span class="lineNum">      88</span>                 :             : int</span>
+<span id="L89"><span class="lineNum">      89</span>                 :<span class="tlaGNC">          10 : ff_munmap(void *addr, uint64_t len)</span></span>
+<span id="L90"><span class="lineNum">      90</span>                 :             : {</span>
+<span id="L91"><span class="lineNum">      91</span>                 :             : #ifdef FF_USE_PAGE_ARRAY</span>
+<span id="L92"><span class="lineNum">      92</span>                 :             :         if ( len == 4096 ){</span>
+<span id="L93"><span class="lineNum">      93</span>                 :             :             return ff_mem_free_addr(addr);</span>
+<span id="L94"><span class="lineNum">      94</span>                 :             :         }</span>
+<span id="L95"><span class="lineNum">      95</span>                 :             : #endif</span>
+<span id="L96"><span class="lineNum">      96</span>                 :             :     //rte_free(addr);</span>
+<span id="L97"><span class="lineNum">      97</span>                 :             :     //return 0;</span>
+<span id="L98"><span class="lineNum">      98</span>                 :<span class="tlaGNC">          10 :     return (munmap(addr, len));</span></span>
+<span id="L99"><span class="lineNum">      99</span>                 :             : }</span>
+<span id="L100"><span class="lineNum">     100</span>                 :             : </span>
+<span id="L101"><span class="lineNum">     101</span>                 :             : </span>
+<span id="L102"><span class="lineNum">     102</span>                 :             : void *</span>
+<span id="L103"><span class="lineNum">     103</span>                 :<span class="tlaGNC">          10 : ff_malloc(uint64_t size)</span></span>
+<span id="L104"><span class="lineNum">     104</span>                 :             : {</span>
+<span id="L105"><span class="lineNum">     105</span>                 :             :     //return rte_malloc(&quot;&quot;, size, 0);</span>
+<span id="L106"><span class="lineNum">     106</span>                 :<span class="tlaGNC">          10 :     return (malloc(size));</span></span>
+<span id="L107"><span class="lineNum">     107</span>                 :             : }</span>
+<span id="L108"><span class="lineNum">     108</span>                 :             : </span>
+<span id="L109"><span class="lineNum">     109</span>                 :             : </span>
+<span id="L110"><span class="lineNum">     110</span>                 :             : void *</span>
+<span id="L111"><span class="lineNum">     111</span>                 :<span class="tlaGNC">           2 : ff_calloc(uint64_t number, uint64_t size)</span></span>
+<span id="L112"><span class="lineNum">     112</span>                 :             : {</span>
+<span id="L113"><span class="lineNum">     113</span>                 :             :     //return rte_calloc(&quot;&quot;, number, size, 0);</span>
+<span id="L114"><span class="lineNum">     114</span>                 :<span class="tlaGNC">           2 :     return (calloc(number, size));</span></span>
+<span id="L115"><span class="lineNum">     115</span>                 :             : }</span>
+<span id="L116"><span class="lineNum">     116</span>                 :             : </span>
+<span id="L117"><span class="lineNum">     117</span>                 :             : </span>
+<span id="L118"><span class="lineNum">     118</span>                 :             : void *</span>
+<span id="L119"><span class="lineNum">     119</span>                 :<span class="tlaGNC">           4 : ff_realloc(void *p, uint64_t size)</span></span>
+<span id="L120"><span class="lineNum">     120</span>                 :             : {</span>
+<span id="L121"><span class="lineNum">     121</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">           4 :     if (size) {</span></span>
+<span id="L122"><span class="lineNum">     122</span>                 :             :         //return rte_realloc(p, size, 0);</span>
+<span id="L123"><span class="lineNum">     123</span>                 :<span class="tlaGNC">           2 :         return (realloc(p, size));</span></span>
+<span id="L124"><span class="lineNum">     124</span>                 :             :     }</span>
+<span id="L125"><span class="lineNum">     125</span>                 :             : </span>
+<span id="L126"><span class="lineNum">     126</span>                 :<span class="tlaGNC">           2 :     return (p);</span></span>
+<span id="L127"><span class="lineNum">     127</span>                 :             : }</span>
+<span id="L128"><span class="lineNum">     128</span>                 :             : </span>
+<span id="L129"><span class="lineNum">     129</span>                 :             : </span>
+<span id="L130"><span class="lineNum">     130</span>                 :             : void</span>
+<span id="L131"><span class="lineNum">     131</span>                 :<span class="tlaGNC">          14 : ff_free(void *p)</span></span>
+<span id="L132"><span class="lineNum">     132</span>                 :             : {</span>
+<span id="L133"><span class="lineNum">     133</span>                 :             :     //rte_free(p);</span>
+<span id="L134"><span class="lineNum">     134</span>                 :<span class="tlaGNC">          14 :     free(p);</span></span>
+<span id="L135"><span class="lineNum">     135</span>                 :<span class="tlaGNC">          14 : }</span></span>
+<span id="L136"><span class="lineNum">     136</span>                 :             : </span>
+<span id="L137"><span class="lineNum">     137</span>                 :             : void panic(const char *, ...) __attribute__((__noreturn__));</span>
+<span id="L138"><span class="lineNum">     138</span>                 :             : </span>
+<span id="L139"><span class="lineNum">     139</span>                 :             : const char *panicstr = NULL;</span>
+<span id="L140"><span class="lineNum">     140</span>                 :             : </span>
+<span id="L141"><span class="lineNum">     141</span>                 :             : void</span>
+<span id="L142"><span class="lineNum">     142</span>                 :<span class="tlaGNC">           2 : panic(const char *fmt, ...)</span></span>
+<span id="L143"><span class="lineNum">     143</span>                 :             : {</span>
+<span id="L144"><span class="lineNum">     144</span>                 :             :     va_list ap;</span>
+<span id="L145"><span class="lineNum">     145</span>                 :             : </span>
+<span id="L146"><span class="lineNum">     146</span>                 :<span class="tlaGNC">           2 :     va_start(ap, fmt);</span></span>
+<span id="L147"><span class="lineNum">     147</span>                 :<span class="tlaGNC">           2 :     vprintf(fmt, ap);</span></span>
+<span id="L148"><span class="lineNum">     148</span>                 :<span class="tlaGNC">           2 :     va_end(ap);</span></span>
+<span id="L149"><span class="lineNum">     149</span>                 :             : </span>
+<span id="L150"><span class="lineNum">     150</span>                 :<span class="tlaGNC">           2 :     abort();</span></span>
+<span id="L151"><span class="lineNum">     151</span>                 :             : }</span>
+<span id="L152"><span class="lineNum">     152</span>                 :             : </span>
+<span id="L153"><span class="lineNum">     153</span>                 :             : void</span>
+<span id="L154"><span class="lineNum">     154</span>                 :<span class="tlaGNC">          12 : ff_clock_gettime(int id, int64_t *sec, long *nsec)</span></span>
+<span id="L155"><span class="lineNum">     155</span>                 :             : {</span>
+<span id="L156"><span class="lineNum">     156</span>                 :             :     struct timespec ts;</span>
+<span id="L157"><span class="lineNum">     157</span>                 :             :     int host_id;</span>
+<span id="L158"><span class="lineNum">     158</span>                 :             :     int rv;</span>
+<span id="L159"><span class="lineNum">     159</span>                 :             : </span>
+<span id="L160"><span class="lineNum">     160</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 10 times"> + </span>]:<span class="tlaGNC">          12 :     switch (id) {</span></span>
+<span id="L161"><span class="lineNum">     161</span>                 :<span class="tlaGNC">           2 :     case ff_CLOCK_REALTIME:</span></span>
+<span id="L162"><span class="lineNum">     162</span>                 :<span class="tlaGNC">           2 :         host_id = CLOCK_REALTIME;</span></span>
+<span id="L163"><span class="lineNum">     163</span>                 :<span class="tlaGNC">           2 :         break;</span></span>
+<span id="L164"><span class="lineNum">     164</span>                 :             : #ifdef CLOCK_MONOTONIC_FAST</span>
+<span id="L165"><span class="lineNum">     165</span>                 :             :     case ff_CLOCK_MONOTONIC_FAST:</span>
+<span id="L166"><span class="lineNum">     166</span>                 :             :         host_id = CLOCK_MONOTONIC_FAST;</span>
+<span id="L167"><span class="lineNum">     167</span>                 :             :         break;</span>
+<span id="L168"><span class="lineNum">     168</span>                 :             : #endif</span>
+<span id="L169"><span class="lineNum">     169</span>                 :<span class="tlaGNC">          10 :     case ff_CLOCK_MONOTONIC:</span></span>
+<span id="L170"><span class="lineNum">     170</span>                 :             :     default:</span>
+<span id="L171"><span class="lineNum">     171</span>                 :<span class="tlaGNC">          10 :         host_id = CLOCK_MONOTONIC;</span></span>
+<span id="L172"><span class="lineNum">     172</span>                 :<span class="tlaGNC">          10 :         break;</span></span>
+<span id="L173"><span class="lineNum">     173</span>                 :             :     }</span>
+<span id="L174"><span class="lineNum">     174</span>                 :             : </span>
+<span id="L175"><span class="lineNum">     175</span>                 :<span class="tlaGNC">          12 :     rv = clock_gettime(host_id, &amp;ts);</span></span>
+<span id="L176"><span class="lineNum">     176</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 10 times"> + </span>]:<span class="tlaGNC">          12 :     assert(0 == rv);</span></span>
+<span id="L177"><span class="lineNum">     177</span>                 :             : </span>
+<span id="L178"><span class="lineNum">     178</span>                 :<span class="tlaGNC">          10 :     *sec = (int64_t)ts.tv_sec;</span></span>
+<span id="L179"><span class="lineNum">     179</span>                 :<span class="tlaGNC">          10 :     *nsec = (long)ts.tv_nsec;</span></span>
+<span id="L180"><span class="lineNum">     180</span>                 :<span class="tlaGNC">          10 : }</span></span>
+<span id="L181"><span class="lineNum">     181</span>                 :             : </span>
+<span id="L182"><span class="lineNum">     182</span>                 :             : uint64_t</span>
+<span id="L183"><span class="lineNum">     183</span>                 :<span class="tlaGNC">           4 : ff_clock_gettime_ns(int id)</span></span>
+<span id="L184"><span class="lineNum">     184</span>                 :             : {</span>
+<span id="L185"><span class="lineNum">     185</span>                 :             :     int64_t sec;</span>
+<span id="L186"><span class="lineNum">     186</span>                 :             :     long nsec;</span>
+<span id="L187"><span class="lineNum">     187</span>                 :             : </span>
+<span id="L188"><span class="lineNum">     188</span>                 :<span class="tlaGNC">           4 :     ff_clock_gettime(id, &amp;sec, &amp;nsec);</span></span>
+<span id="L189"><span class="lineNum">     189</span>                 :             : </span>
+<span id="L190"><span class="lineNum">     190</span>                 :<span class="tlaGNC">           4 :     return ((uint64_t)sec * ff_NSEC_PER_SEC + nsec);</span></span>
+<span id="L191"><span class="lineNum">     191</span>                 :             : }</span>
+<span id="L192"><span class="lineNum">     192</span>                 :             : </span>
+<span id="L193"><span class="lineNum">     193</span>                 :             : void</span>
+<span id="L194"><span class="lineNum">     194</span>                 :<span class="tlaGNC">           8 : ff_get_current_time(time_t *sec, long *nsec)</span></span>
+<span id="L195"><span class="lineNum">     195</span>                 :             : {</span>
+<span id="L196"><span class="lineNum">     196</span>         [<span class="tlaGBC" title="Branch 0 was taken 6 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">           8 :     if (sec) {</span></span>
+<span id="L197"><span class="lineNum">     197</span>                 :<span class="tlaGNC">           6 :         *sec = current_ts.tv_sec;</span></span>
+<span id="L198"><span class="lineNum">     198</span>                 :             :     }</span>
+<span id="L199"><span class="lineNum">     199</span>                 :             : </span>
+<span id="L200"><span class="lineNum">     200</span>         [<span class="tlaGBC" title="Branch 0 was taken 6 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">           8 :     if (nsec) {</span></span>
+<span id="L201"><span class="lineNum">     201</span>                 :<span class="tlaGNC">           6 :         *nsec = current_ts.tv_nsec;</span></span>
+<span id="L202"><span class="lineNum">     202</span>                 :             :     }</span>
+<span id="L203"><span class="lineNum">     203</span>                 :<span class="tlaGNC">           8 : }</span></span>
+<span id="L204"><span class="lineNum">     204</span>                 :             : </span>
+<span id="L205"><span class="lineNum">     205</span>                 :             : void</span>
+<span id="L206"><span class="lineNum">     206</span>                 :<span class="tlaGNC">          12 : ff_update_current_ts()</span></span>
+<span id="L207"><span class="lineNum">     207</span>                 :             : {</span>
+<span id="L208"><span class="lineNum">     208</span>                 :<span class="tlaGNC">          12 :     int rv = clock_gettime(CLOCK_REALTIME, &amp;current_ts);</span></span>
+<span id="L209"><span class="lineNum">     209</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 10 times"> + </span>]:<span class="tlaGNC">          12 :     assert(rv == 0);</span></span>
+<span id="L210"><span class="lineNum">     210</span>                 :<span class="tlaGNC">          10 : }</span></span>
+<span id="L211"><span class="lineNum">     211</span>                 :             : </span>
+<span id="L212"><span class="lineNum">     212</span>                 :             : void</span>
+<span id="L213"><span class="lineNum">     213</span>                 :<span class="tlaGNC">          34 : ff_arc4rand(void *ptr, unsigned int len, int reseed)</span></span>
+<span id="L214"><span class="lineNum">     214</span>                 :             : {</span>
+<span id="L215"><span class="lineNum">     215</span>                 :             :     (void)reseed;</span>
+<span id="L216"><span class="lineNum">     216</span>                 :             : </span>
+<span id="L217"><span class="lineNum">     217</span>                 :<span class="tlaGNC">          34 :     RAND_bytes(ptr, len);</span></span>
+<span id="L218"><span class="lineNum">     218</span>                 :<span class="tlaGNC">          34 : }</span></span>
+<span id="L219"><span class="lineNum">     219</span>                 :             : </span>
+<span id="L220"><span class="lineNum">     220</span>                 :             : uint32_t</span>
+<span id="L221"><span class="lineNum">     221</span>                 :<span class="tlaGNC">          32 : ff_arc4random(void)</span></span>
+<span id="L222"><span class="lineNum">     222</span>                 :             : {</span>
+<span id="L223"><span class="lineNum">     223</span>                 :             :     uint32_t ret;</span>
+<span id="L224"><span class="lineNum">     224</span>                 :<span class="tlaGNC">          32 :     ff_arc4rand(&amp;ret, sizeof ret, 0);</span></span>
+<span id="L225"><span class="lineNum">     225</span>                 :<span class="tlaGNC">          32 :     return ret;</span></span>
+<span id="L226"><span class="lineNum">     226</span>                 :             : }</span>
+<span id="L227"><span class="lineNum">     227</span>                 :             : </span>
+<span id="L228"><span class="lineNum">     228</span>                 :<span class="tlaGNC">           2 : int ff_setenv(const char *name, const char *value)</span></span>
+<span id="L229"><span class="lineNum">     229</span>                 :             : {</span>
+<span id="L230"><span class="lineNum">     230</span>                 :<span class="tlaGNC">           2 :     return setenv(name, value, 1);</span></span>
+<span id="L231"><span class="lineNum">     231</span>                 :             : }</span>
+<span id="L232"><span class="lineNum">     232</span>                 :             : </span>
+<span id="L233"><span class="lineNum">     233</span>                 :<span class="tlaGNC">           2 : char *ff_getenv(const char *name)</span></span>
+<span id="L234"><span class="lineNum">     234</span>                 :             : {</span>
+<span id="L235"><span class="lineNum">     235</span>                 :<span class="tlaGNC">           2 :     return getenv(name);</span></span>
+<span id="L236"><span class="lineNum">     236</span>                 :             : }</span>
+<span id="L237"><span class="lineNum">     237</span>                 :             : </span>
+<span id="L238"><span class="lineNum">     238</span>                 :<span class="tlaGNC">         164 : void ff_os_errno(int error)</span></span>
+<span id="L239"><span class="lineNum">     239</span>                 :             : {</span>
+<span id="L240"><span class="lineNum">     240</span>   [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 2 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 3 was taken 2 times"> + </span> :<span class="tlaGNC">         164 :     switch (error) {</span></span>
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 4 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 5 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 6 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 7 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 8 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 9 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 10 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 11 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 12 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 13 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 14 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 15 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 16 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 17 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 18 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 19 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 20 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 21 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 22 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 23 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 24 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 25 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 26 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 27 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 28 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 29 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 30 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 31 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 32 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 33 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 34 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 35 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 36 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 37 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 38 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 39 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 40 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 41 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 42 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 43 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 44 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 45 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 46 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 47 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 48 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 49 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 50 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 51 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 52 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 53 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 54 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 55 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 56 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 57 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 58 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 59 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 60 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 61 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 62 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 63 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 64 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 65 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 66 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 67 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 68 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 69 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 70 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 71 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 72 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 73 was taken 2 times"> + </span> 
+<span class="lineNum">        </span> <span class="tlaGBC" title="Branch 74 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 75 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 76 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 77 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 78 was taken 2 times"> + </span> 
+<span class="lineNum">        </span>       <span class="tlaGBC" title="Branch 79 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 80 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 81 was taken 2 times"> + </span>]
+<span id="L241"><span class="lineNum">     241</span>                 :<span class="tlaGNC">           2 :         case ff_EPERM:       errno = EPERM; break;</span></span>
+<span id="L242"><span class="lineNum">     242</span>                 :<span class="tlaGNC">           2 :         case ff_ENOENT:      errno = ENOENT; break;</span></span>
+<span id="L243"><span class="lineNum">     243</span>                 :<span class="tlaGNC">           2 :         case ff_ESRCH:       errno = ESRCH; break;</span></span>
+<span id="L244"><span class="lineNum">     244</span>                 :<span class="tlaGNC">           2 :         case ff_EINTR:       errno = EINTR; break;</span></span>
+<span id="L245"><span class="lineNum">     245</span>                 :<span class="tlaGNC">           2 :         case ff_EIO:         errno = EIO; break;</span></span>
+<span id="L246"><span class="lineNum">     246</span>                 :<span class="tlaGNC">           2 :         case ff_ENXIO:       errno = ENXIO; break;</span></span>
+<span id="L247"><span class="lineNum">     247</span>                 :<span class="tlaGNC">           2 :         case ff_E2BIG:       errno = E2BIG; break;</span></span>
+<span id="L248"><span class="lineNum">     248</span>                 :<span class="tlaGNC">           2 :         case ff_ENOEXEC:     errno = ENOEXEC; break;</span></span>
+<span id="L249"><span class="lineNum">     249</span>                 :<span class="tlaGNC">           2 :         case ff_EBADF:       errno = EBADF; break;</span></span>
+<span id="L250"><span class="lineNum">     250</span>                 :<span class="tlaGNC">           2 :         case ff_ECHILD:      errno = ECHILD; break;</span></span>
+<span id="L251"><span class="lineNum">     251</span>                 :<span class="tlaGNC">           2 :         case ff_EDEADLK:     errno = EDEADLK; break;</span></span>
+<span id="L252"><span class="lineNum">     252</span>                 :<span class="tlaGNC">           2 :         case ff_ENOMEM:      errno = ENOMEM; break;</span></span>
+<span id="L253"><span class="lineNum">     253</span>                 :<span class="tlaGNC">           2 :         case ff_EACCES:      errno = EACCES; break;</span></span>
+<span id="L254"><span class="lineNum">     254</span>                 :<span class="tlaGNC">           2 :         case ff_EFAULT:      errno = EFAULT; break;</span></span>
+<span id="L255"><span class="lineNum">     255</span>                 :<span class="tlaGNC">           2 :         case ff_ENOTBLK:     errno = ENOTBLK; break;</span></span>
+<span id="L256"><span class="lineNum">     256</span>                 :<span class="tlaGNC">           2 :         case ff_EBUSY:       errno = EBUSY; break;</span></span>
+<span id="L257"><span class="lineNum">     257</span>                 :<span class="tlaGNC">           2 :         case ff_EEXIST:      errno = EEXIST; break;</span></span>
+<span id="L258"><span class="lineNum">     258</span>                 :<span class="tlaGNC">           2 :         case ff_EXDEV:       errno = EXDEV; break;</span></span>
+<span id="L259"><span class="lineNum">     259</span>                 :<span class="tlaGNC">           2 :         case ff_ENODEV:      errno = ENODEV; break;</span></span>
+<span id="L260"><span class="lineNum">     260</span>                 :<span class="tlaGNC">           2 :         case ff_ENOTDIR:     errno = ENOTDIR; break;</span></span>
+<span id="L261"><span class="lineNum">     261</span>                 :<span class="tlaGNC">           2 :         case ff_EISDIR:      errno = EISDIR; break;</span></span>
+<span id="L262"><span class="lineNum">     262</span>                 :<span class="tlaGNC">           2 :         case ff_EINVAL:      errno = EINVAL; break;</span></span>
+<span id="L263"><span class="lineNum">     263</span>                 :<span class="tlaGNC">           2 :         case ff_ENFILE:      errno = ENFILE; break;</span></span>
+<span id="L264"><span class="lineNum">     264</span>                 :<span class="tlaGNC">           2 :         case ff_EMFILE:      errno = EMFILE; break;</span></span>
+<span id="L265"><span class="lineNum">     265</span>                 :<span class="tlaGNC">           2 :         case ff_ENOTTY:      errno = ENOTTY; break;</span></span>
+<span id="L266"><span class="lineNum">     266</span>                 :<span class="tlaGNC">           2 :         case ff_ETXTBSY:     errno = ETXTBSY; break;</span></span>
+<span id="L267"><span class="lineNum">     267</span>                 :<span class="tlaGNC">           2 :         case ff_EFBIG:       errno = EFBIG; break;</span></span>
+<span id="L268"><span class="lineNum">     268</span>                 :<span class="tlaGNC">           2 :         case ff_ENOSPC:      errno = ENOSPC; break;</span></span>
+<span id="L269"><span class="lineNum">     269</span>                 :<span class="tlaGNC">           2 :         case ff_ESPIPE:      errno = ESPIPE; break;</span></span>
+<span id="L270"><span class="lineNum">     270</span>                 :<span class="tlaGNC">           2 :         case ff_EROFS:       errno = EROFS; break;</span></span>
+<span id="L271"><span class="lineNum">     271</span>                 :<span class="tlaGNC">           2 :         case ff_EMLINK:      errno = EMLINK; break;</span></span>
+<span id="L272"><span class="lineNum">     272</span>                 :<span class="tlaGNC">           2 :         case ff_EPIPE:       errno = EPIPE; break;</span></span>
+<span id="L273"><span class="lineNum">     273</span>                 :<span class="tlaGNC">           2 :         case ff_EDOM:        errno = EDOM; break;</span></span>
+<span id="L274"><span class="lineNum">     274</span>                 :<span class="tlaGNC">           2 :         case ff_ERANGE:      errno = ERANGE; break;</span></span>
+<span id="L275"><span class="lineNum">     275</span>                 :             : </span>
+<span id="L276"><span class="lineNum">     276</span>                 :             :         /* case ff_EAGAIN:       same as EWOULDBLOCK */</span>
+<span id="L277"><span class="lineNum">     277</span>                 :<span class="tlaGNC">           2 :         case ff_EWOULDBLOCK:     errno = EWOULDBLOCK; break;</span></span>
+<span id="L278"><span class="lineNum">     278</span>                 :             : </span>
+<span id="L279"><span class="lineNum">     279</span>                 :<span class="tlaGNC">           2 :         case ff_EINPROGRESS:     errno = EINPROGRESS; break;</span></span>
+<span id="L280"><span class="lineNum">     280</span>                 :<span class="tlaGNC">           2 :         case ff_EALREADY:        errno = EALREADY; break;</span></span>
+<span id="L281"><span class="lineNum">     281</span>                 :<span class="tlaGNC">           2 :         case ff_ENOTSOCK:        errno = ENOTSOCK; break;</span></span>
+<span id="L282"><span class="lineNum">     282</span>                 :<span class="tlaGNC">           2 :         case ff_EDESTADDRREQ:    errno = EDESTADDRREQ; break;</span></span>
+<span id="L283"><span class="lineNum">     283</span>                 :<span class="tlaGNC">           2 :         case ff_EMSGSIZE:        errno = EMSGSIZE; break;</span></span>
+<span id="L284"><span class="lineNum">     284</span>                 :<span class="tlaGNC">           2 :         case ff_EPROTOTYPE:      errno = EPROTOTYPE; break;</span></span>
+<span id="L285"><span class="lineNum">     285</span>                 :<span class="tlaGNC">           2 :         case ff_ENOPROTOOPT:     errno = ENOPROTOOPT; break;</span></span>
+<span id="L286"><span class="lineNum">     286</span>                 :<span class="tlaGNC">           2 :         case ff_EPROTONOSUPPORT: errno = EPROTONOSUPPORT; break;</span></span>
+<span id="L287"><span class="lineNum">     287</span>                 :<span class="tlaGNC">           2 :         case ff_ESOCKTNOSUPPORT: errno = ESOCKTNOSUPPORT; break;</span></span>
+<span id="L288"><span class="lineNum">     288</span>                 :             : </span>
+<span id="L289"><span class="lineNum">     289</span>                 :             :         /* case ff_EOPNOTSUPP:   same as ENOTSUP */</span>
+<span id="L290"><span class="lineNum">     290</span>                 :<span class="tlaGNC">           2 :         case ff_ENOTSUP:         errno = ENOTSUP; break;</span></span>
+<span id="L291"><span class="lineNum">     291</span>                 :             : </span>
+<span id="L292"><span class="lineNum">     292</span>                 :<span class="tlaGNC">           2 :         case ff_EPFNOSUPPORT:    errno = EPFNOSUPPORT; break;</span></span>
+<span id="L293"><span class="lineNum">     293</span>                 :<span class="tlaGNC">           2 :         case ff_EAFNOSUPPORT:    errno = EAFNOSUPPORT; break;</span></span>
+<span id="L294"><span class="lineNum">     294</span>                 :<span class="tlaGNC">           2 :         case ff_EADDRINUSE:      errno = EADDRINUSE; break;</span></span>
+<span id="L295"><span class="lineNum">     295</span>                 :<span class="tlaGNC">           2 :         case ff_EADDRNOTAVAIL:   errno = EADDRNOTAVAIL; break;</span></span>
+<span id="L296"><span class="lineNum">     296</span>                 :<span class="tlaGNC">           2 :         case ff_ENETDOWN:        errno = ENETDOWN; break;</span></span>
+<span id="L297"><span class="lineNum">     297</span>                 :<span class="tlaGNC">           2 :         case ff_ENETUNREACH:     errno = ENETUNREACH; break;</span></span>
+<span id="L298"><span class="lineNum">     298</span>                 :<span class="tlaGNC">           2 :         case ff_ENETRESET:       errno = ENETRESET; break;</span></span>
+<span id="L299"><span class="lineNum">     299</span>                 :<span class="tlaGNC">           2 :         case ff_ECONNABORTED:    errno = ECONNABORTED; break;</span></span>
+<span id="L300"><span class="lineNum">     300</span>                 :<span class="tlaGNC">           2 :         case ff_ECONNRESET:      errno = ECONNRESET; break;</span></span>
+<span id="L301"><span class="lineNum">     301</span>                 :<span class="tlaGNC">           2 :         case ff_ENOBUFS:         errno = ENOBUFS; break;</span></span>
+<span id="L302"><span class="lineNum">     302</span>                 :<span class="tlaGNC">           2 :         case ff_EISCONN:         errno = EISCONN; break;</span></span>
+<span id="L303"><span class="lineNum">     303</span>                 :<span class="tlaGNC">           2 :         case ff_ENOTCONN:        errno = ENOTCONN; break;</span></span>
+<span id="L304"><span class="lineNum">     304</span>                 :<span class="tlaGNC">           2 :         case ff_ESHUTDOWN:       errno = ESHUTDOWN; break;</span></span>
+<span id="L305"><span class="lineNum">     305</span>                 :<span class="tlaGNC">           2 :         case ff_ETOOMANYREFS:    errno = ETOOMANYREFS; break;</span></span>
+<span id="L306"><span class="lineNum">     306</span>                 :<span class="tlaGNC">           2 :         case ff_ETIMEDOUT:       errno = ETIMEDOUT; break;</span></span>
+<span id="L307"><span class="lineNum">     307</span>                 :<span class="tlaGNC">           2 :         case ff_ECONNREFUSED:    errno = ECONNREFUSED; break;</span></span>
+<span id="L308"><span class="lineNum">     308</span>                 :<span class="tlaGNC">           2 :         case ff_ELOOP:           errno = ELOOP; break;</span></span>
+<span id="L309"><span class="lineNum">     309</span>                 :<span class="tlaGNC">           2 :         case ff_ENAMETOOLONG:    errno = ENAMETOOLONG; break;</span></span>
+<span id="L310"><span class="lineNum">     310</span>                 :<span class="tlaGNC">           2 :         case ff_EHOSTDOWN:       errno = EHOSTDOWN; break;</span></span>
+<span id="L311"><span class="lineNum">     311</span>                 :<span class="tlaGNC">           2 :         case ff_EHOSTUNREACH:    errno = EHOSTUNREACH; break;</span></span>
+<span id="L312"><span class="lineNum">     312</span>                 :<span class="tlaGNC">           2 :         case ff_ENOTEMPTY:       errno = ENOTEMPTY; break;</span></span>
+<span id="L313"><span class="lineNum">     313</span>                 :<span class="tlaGNC">           2 :         case ff_EUSERS:      errno = EUSERS; break;</span></span>
+<span id="L314"><span class="lineNum">     314</span>                 :<span class="tlaGNC">           2 :         case ff_EDQUOT:      errno = EDQUOT; break;</span></span>
+<span id="L315"><span class="lineNum">     315</span>                 :<span class="tlaGNC">           2 :         case ff_ESTALE:      errno = ESTALE; break;</span></span>
+<span id="L316"><span class="lineNum">     316</span>                 :<span class="tlaGNC">           2 :         case ff_EREMOTE:     errno = EREMOTE; break;</span></span>
+<span id="L317"><span class="lineNum">     317</span>                 :<span class="tlaGNC">           2 :         case ff_ENOLCK:      errno = ENOLCK; break;</span></span>
+<span id="L318"><span class="lineNum">     318</span>                 :<span class="tlaGNC">           2 :         case ff_ENOSYS:      errno = ENOSYS; break;</span></span>
+<span id="L319"><span class="lineNum">     319</span>                 :<span class="tlaGNC">           2 :         case ff_EIDRM:       errno = EIDRM; break;</span></span>
+<span id="L320"><span class="lineNum">     320</span>                 :<span class="tlaGNC">           2 :         case ff_ENOMSG:      errno = ENOMSG; break;</span></span>
+<span id="L321"><span class="lineNum">     321</span>                 :<span class="tlaGNC">           2 :         case ff_EOVERFLOW:   errno = EOVERFLOW; break;</span></span>
+<span id="L322"><span class="lineNum">     322</span>                 :<span class="tlaGNC">           2 :         case ff_ECANCELED:   errno = ECANCELED; break;</span></span>
+<span id="L323"><span class="lineNum">     323</span>                 :<span class="tlaGNC">           2 :         case ff_EILSEQ:      errno = EILSEQ; break;</span></span>
+<span id="L324"><span class="lineNum">     324</span>                 :<span class="tlaGNC">           2 :         case ff_EBADMSG:     errno = EBADMSG; break;</span></span>
+<span id="L325"><span class="lineNum">     325</span>                 :<span class="tlaGNC">           2 :         case ff_EMULTIHOP:   errno = EMULTIHOP; break;</span></span>
+<span id="L326"><span class="lineNum">     326</span>                 :<span class="tlaGNC">           2 :         case ff_ENOLINK:     errno = ENOLINK; break;</span></span>
+<span id="L327"><span class="lineNum">     327</span>                 :<span class="tlaGNC">           2 :         case ff_EPROTO:      errno = EPROTO; break;</span></span>
+<span id="L328"><span class="lineNum">     328</span>                 :<span class="tlaGNC">           2 :         default:              errno = error; break;</span></span>
+<span id="L329"><span class="lineNum">     329</span>                 :             :     }</span>
+<span id="L330"><span class="lineNum">     330</span>                 :             : </span>
+<span id="L331"><span class="lineNum">     331</span>                 :<span class="tlaGNC">         164 : }</span></span>
+<span id="L332"><span class="lineNum">     332</span>                 :             : </span>
+        </pre>
+              </td>
+            </tr>
+          </table>
+          <br>
+
+          <table width="100%" border=0 cellspacing=0 cellpadding=0>
+            <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+            <tr><td class="versionInfo">Generated by: <a href="https://github.com//linux-test-project/lcov" target="_parent">LCOV version 2.0-1</a></td></tr>
+          </table>
+          <br>
+
+</body>
+</html>

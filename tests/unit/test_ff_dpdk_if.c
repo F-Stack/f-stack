@@ -1142,16 +1142,19 @@ test_ff_rss_adjust_sport6_guard(void **state)
     (void)state;
     uint16_t out = 0;
     assert_int_equal(ff_rss_adjust_sport6(NULL, test_saddr6, test_daddr6,
-                                          htons(80), &out), -1);
+                                          htons(80), &out,
+                                          TEST_RSS_FIRST, TEST_RSS_LAST), -1);
     void *sc = test_rss_softc(TEST_RSS_PORT);
     assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
-                                          htons(80), NULL), -1);
+                                          htons(80), NULL,
+                                          TEST_RSS_FIRST, TEST_RSS_LAST), -1);
 
     assert_int_equal(ff_rss_thash_ctx_init(), 0);   /* v6 ctx degrades (reta=0) */
     lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     out = 0xFFFF;
     assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
-                                          htons(80), &out), -1);
+                                          htons(80), &out,
+                                          TEST_RSS_FIRST, TEST_RSS_LAST), -1);
 }
 
 /* ======================================================================== */
@@ -1368,7 +1371,8 @@ test_ff_rss_adjust_sport6_recheck_off(void **state)  /* TC-U-RSS-04-03 */
     for (int i = 0; i < RD_RECHECK_N; i++) {
         uint16_t out = 0xFFFF;
         int rv = ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
-                                      htons((uint16_t)(1024 + i)), &out);
+                                      htons((uint16_t)(1024 + i)), &out,
+                                      TEST_RSS_FIRST, TEST_RSS_LAST);
         assert_int_equal(rv, -1);
     }
     assert_int_equal(g_ff_rss_check6_calls, 0);
@@ -1393,7 +1397,8 @@ test_ff_rss_adjust_sport6_recheck_on(void **state)   /* TC-U-RSS-04-04 */
     for (int i = 0; i < RD_RECHECK_N; i++) {
         uint16_t out = 0xFFFF;
         int rv = ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
-                                      htons((uint16_t)(1024 + i)), &out);
+                                      htons((uint16_t)(1024 + i)), &out,
+                                      TEST_RSS_FIRST, TEST_RSS_LAST);
         assert_int_equal(rv, -1);
     }
     assert_int_equal(g_ff_rss_check6_calls, 0);
@@ -1518,7 +1523,8 @@ test_ff_rss_adjust_sport6_thash_adjust_off(void **state)
     uint8_t saddr6[16] = { 0x20,0x01 }, daddr6[16] = { 0x20,0x02 };
     uint16_t out = 0xFFFF;
     assert_int_equal(ff_rss_adjust_sport6(sc, saddr6, daddr6,
-                                          htons(80), &out), -1);
+                                          htons(80), &out,
+                                          TEST_RSS_FIRST, TEST_RSS_LAST), -1);
 
     g_rss_cfg.thash_adjust = 1;
     ff_global_cfg.dpdk.rss_check_cfgs = NULL;

@@ -1,0 +1,245 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+
+<html lang="en">
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <title>LCOV - F-Stack lib/ unit+integration full coverage - lib/ff_epoll.c</title>
+  <link rel="stylesheet" type="text/css" href="../gcov.css">
+</head>
+
+<body>
+
+          <table width="100%" border=0 cellspacing=0 cellpadding=0>
+            <tr><td class="title">LCOV - code coverage report</td></tr>
+            <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+
+            <tr>
+              <td width="100%">
+                <table cellpadding=1 border=0 width="100%">
+          <tr>
+            <td width="10%" class="headerItem">Current view:</td>
+            <td width="10%" class="headerValue"><a href="../index.html">top level</a> - <a href="index.html">lib</a> - ff_epoll.c<span style="font-size: 80%;"> (source / <a href="ff_epoll.c.func-c.html">functions</a>)</span></td>
+            <td width="5%"></td>
+            <td width="5%"></td>
+            <td width="5%" class="headerCovTableHead">Coverage</td>
+            <td width="5%" class="headerCovTableHead" title="Covered + Uncovered code">Total</td>
+            <td width="5%" class="headerCovTableHead" title="Exercised code only">Hit</td>
+          </tr>
+          <tr>
+            <td class="headerItem">Test:</td>
+            <td class="headerValue">F-Stack lib/ unit+integration full coverage</td>
+            <td></td>
+            <td class="headerItem">Lines:</td>
+            <td class="headerCovTableEntryHi">100.0&nbsp;%</td>
+            <td class="headerCovTableEntry">61</td>
+            <td class="headerCovTableEntry">61</td>
+          </tr>
+          <tr>
+            <td class="headerItem">Test Date:</td>
+            <td class="headerValue">2026-06-11 12:56:48</td>
+            <td></td>
+            <td class="headerItem">Functions:</td>
+            <td class="headerCovTableEntryHi">100.0&nbsp;%</td>
+            <td class="headerCovTableEntry">4</td>
+            <td class="headerCovTableEntry">4</td>
+          </tr>
+          <tr>
+            <td></td>
+            <td></td>
+            <td></td>
+            <td class="headerItem">Branches:</td>
+            <td class="headerCovTableEntryHi">100.0&nbsp;%</td>
+            <td class="headerCovTableEntry">46</td>
+            <td class="headerCovTableEntry">46</td>
+          </tr>
+                  <tr><td><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+                </table>
+              </td>
+            </tr>
+
+            <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+          </table>
+
+          <table cellpadding=0 cellspacing=0 border=0>
+            <tr>
+              <td><br></td>
+            </tr>
+            <tr>
+              <td>
+<pre class="sourceHeading">             Branch data     Line data    Source code</pre>
+<pre class="source">
+<span id="L1"><span class="lineNum">       1</span>                 :             : #include &lt;stdio.h&gt;</span>
+<span id="L2"><span class="lineNum">       2</span>                 :             : #include &lt;stdint.h&gt;</span>
+<span id="L3"><span class="lineNum">       3</span>                 :             : #include &lt;string.h&gt;</span>
+<span id="L4"><span class="lineNum">       4</span>                 :             : #include &lt;stdlib.h&gt;</span>
+<span id="L5"><span class="lineNum">       5</span>                 :             : #include &lt;stdarg.h&gt;</span>
+<span id="L6"><span class="lineNum">       6</span>                 :             : #include &lt;sched.h&gt;</span>
+<span id="L7"><span class="lineNum">       7</span>                 :             : #include &lt;fcntl.h&gt;</span>
+<span id="L8"><span class="lineNum">       8</span>                 :             : #include &lt;errno.h&gt;</span>
+<span id="L9"><span class="lineNum">       9</span>                 :             : #include &lt;assert.h&gt;</span>
+<span id="L10"><span class="lineNum">      10</span>                 :             : #include &lt;unistd.h&gt;</span>
+<span id="L11"><span class="lineNum">      11</span>                 :             : #include &lt;netinet/in.h&gt;</span>
+<span id="L12"><span class="lineNum">      12</span>                 :             : #include &lt;sys/types.h&gt;</span>
+<span id="L13"><span class="lineNum">      13</span>                 :             : #include &lt;sys/socket.h&gt;</span>
+<span id="L14"><span class="lineNum">      14</span>                 :             : #include &lt;sys/time.h&gt;</span>
+<span id="L15"><span class="lineNum">      15</span>                 :             : #include &lt;sys/select.h&gt;</span>
+<span id="L16"><span class="lineNum">      16</span>                 :             : #include &lt;sys/syscall.h&gt;</span>
+<span id="L17"><span class="lineNum">      17</span>                 :             : #include &lt;arpa/inet.h&gt;</span>
+<span id="L18"><span class="lineNum">      18</span>                 :             : #include &lt;sys/epoll.h&gt;</span>
+<span id="L19"><span class="lineNum">      19</span>                 :             : </span>
+<span id="L20"><span class="lineNum">      20</span>                 :             : #include &quot;ff_api.h&quot;</span>
+<span id="L21"><span class="lineNum">      21</span>                 :             : #include &quot;ff_errno.h&quot;</span>
+<span id="L22"><span class="lineNum">      22</span>                 :             : </span>
+<span id="L23"><span class="lineNum">      23</span>                 :             : </span>
+<span id="L24"><span class="lineNum">      24</span>                 :             : int</span>
+<span id="L25"><span class="lineNum">      25</span>                 :<span class="tlaGNC tlaBgGNC">           6 : ff_epoll_create(int size __attribute__((__unused__)))</span></span>
+<span id="L26"><span class="lineNum">      26</span>                 :             : {</span>
+<span id="L27"><span class="lineNum">      27</span>                 :<span class="tlaGNC">           6 :     return ff_kqueue();</span></span>
+<span id="L28"><span class="lineNum">      28</span>                 :             : }</span>
+<span id="L29"><span class="lineNum">      29</span>                 :             : </span>
+<span id="L30"><span class="lineNum">      30</span>                 :             : int</span>
+<span id="L31"><span class="lineNum">      31</span>                 :<span class="tlaGNC">          16 : ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)</span></span>
+<span id="L32"><span class="lineNum">      32</span>                 :<span class="tlaGNC">          16 : {</span></span>
+<span id="L33"><span class="lineNum">      33</span>                 :             :     /*</span>
+<span id="L34"><span class="lineNum">      34</span>                 :             :      * Since kqueue uses EVFILT_READ and EVFILT_WRITE filters to</span>
+<span id="L35"><span class="lineNum">      35</span>                 :             :      * handle read/write events, so we need two kevents.</span>
+<span id="L36"><span class="lineNum">      36</span>                 :             :      */</span>
+<span id="L37"><span class="lineNum">      37</span>                 :<span class="tlaGNC">          16 :     const int changes = 2;</span></span>
+<span id="L38"><span class="lineNum">      38</span>                 :<span class="tlaGNC">          16 :     struct kevent kev[changes];</span></span>
+<span id="L39"><span class="lineNum">      39</span>                 :<span class="tlaGNC">          16 :     int flags = 0;</span></span>
+<span id="L40"><span class="lineNum">      40</span>                 :             :     int read_flags, write_flags;</span>
+<span id="L41"><span class="lineNum">      41</span>                 :             : </span>
+<span id="L42"><span class="lineNum">      42</span>   [<span class="tlaGBC" title="Branch 0 was taken 4 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 12 times"> + </span><span class="tlaGBC" title="Branch 2 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 3 was taken 2 times"> + </span> :<span class="tlaGNC">          16 :     if ((!event &amp;&amp; op != EPOLL_CTL_DEL) ||</span></span>
+<span class="lineNum">        </span>          <span class="tlaGBC" title="Branch 4 was taken 6 times"> + </span><span class="tlaGBC" title="Branch 5 was taken 8 times"> + </span>]
+<span id="L43"><span class="lineNum">      43</span>         [<span class="tlaGBC" title="Branch 0 was taken 4 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">           6 :         (op != EPOLL_CTL_ADD &amp;&amp;</span></span>
+<span id="L44"><span class="lineNum">      44</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">           4 :          op != EPOLL_CTL_MOD &amp;&amp;</span></span>
+<span id="L45"><span class="lineNum">      45</span>                 :             :          op != EPOLL_CTL_DEL)) {</span>
+<span id="L46"><span class="lineNum">      46</span>                 :<span class="tlaGNC">           4 :         errno = EINVAL;</span></span>
+<span id="L47"><span class="lineNum">      47</span>                 :<span class="tlaGNC">           4 :         return -1;</span></span>
+<span id="L48"><span class="lineNum">      48</span>                 :             :     }</span>
+<span id="L49"><span class="lineNum">      49</span>                 :             : </span>
+<span id="L50"><span class="lineNum">      50</span>                 :             :     /*</span>
+<span id="L51"><span class="lineNum">      51</span>                 :             :      * EPOLL_CTL_DEL doesn't need to care for event-&gt;events.</span>
+<span id="L52"><span class="lineNum">      52</span>                 :             :      */</span>
+<span id="L53"><span class="lineNum">      53</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 10 times"> + </span>]:<span class="tlaGNC">          12 :     if (op == EPOLL_CTL_DEL) {</span></span>
+<span id="L54"><span class="lineNum">      54</span>                 :<span class="tlaGNC">           2 :         EV_SET(&amp;kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);</span></span>
+<span id="L55"><span class="lineNum">      55</span>                 :<span class="tlaGNC">           2 :         EV_SET(&amp;kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);</span></span>
+<span id="L56"><span class="lineNum">      56</span>                 :             : </span>
+<span id="L57"><span class="lineNum">      57</span>                 :<span class="tlaGNC">           2 :         return ff_kevent(epfd, kev, changes, NULL, 0, NULL);</span></span>
+<span id="L58"><span class="lineNum">      58</span>                 :             :     }</span>
+<span id="L59"><span class="lineNum">      59</span>                 :             : </span>
+<span id="L60"><span class="lineNum">      60</span>                 :             :     /*</span>
+<span id="L61"><span class="lineNum">      61</span>                 :             :      * FIXME:</span>
+<span id="L62"><span class="lineNum">      62</span>                 :             :      *</span>
+<span id="L63"><span class="lineNum">      63</span>                 :             :      * Kqueue doesn't have edge-triggered mode that exactly</span>
+<span id="L64"><span class="lineNum">      64</span>                 :             :      * same with epoll, the most similar way is setting EV_CLEAR</span>
+<span id="L65"><span class="lineNum">      65</span>                 :             :      * or EV_DISPATCH flag, but there are still some differences.</span>
+<span id="L66"><span class="lineNum">      66</span>                 :             :      *</span>
+<span id="L67"><span class="lineNum">      67</span>                 :             :      * EV_CLEAR:after the event is retrieved by the user,</span>
+<span id="L68"><span class="lineNum">      68</span>                 :             :      *    its state is reset.</span>
+<span id="L69"><span class="lineNum">      69</span>                 :             :      * EV_DISPATCH: disable the event source immediately</span>
+<span id="L70"><span class="lineNum">      70</span>                 :             :      *    after delivery of an event.</span>
+<span id="L71"><span class="lineNum">      71</span>                 :             :      *</span>
+<span id="L72"><span class="lineNum">      72</span>                 :             :      * Here we use EV_CLEAR temporarily.</span>
+<span id="L73"><span class="lineNum">      73</span>                 :             :      *</span>
+<span id="L74"><span class="lineNum">      74</span>                 :             :      */</span>
+<span id="L75"><span class="lineNum">      75</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 8 times"> + </span>]:<span class="tlaGNC">          10 :     if (event-&gt;events &amp; EPOLLET) {</span></span>
+<span id="L76"><span class="lineNum">      76</span>                 :<span class="tlaGNC">           2 :         flags |= EV_CLEAR;</span></span>
+<span id="L77"><span class="lineNum">      77</span>                 :             :     }</span>
+<span id="L78"><span class="lineNum">      78</span>                 :             : </span>
+<span id="L79"><span class="lineNum">      79</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 8 times"> + </span>]:<span class="tlaGNC">          10 :     if (event-&gt;events &amp; EPOLLONESHOT) {</span></span>
+<span id="L80"><span class="lineNum">      80</span>                 :<span class="tlaGNC">           2 :         flags |= EV_ONESHOT;</span></span>
+<span id="L81"><span class="lineNum">      81</span>                 :             :     }</span>
+<span id="L82"><span class="lineNum">      82</span>                 :             : </span>
+<span id="L83"><span class="lineNum">      83</span>         [<span class="tlaGBC" title="Branch 0 was taken 8 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">          10 :     if (op == EPOLL_CTL_ADD) {</span></span>
+<span id="L84"><span class="lineNum">      84</span>                 :<span class="tlaGNC">           8 :         flags |= EV_ADD;</span></span>
+<span id="L85"><span class="lineNum">      85</span>                 :             :     }</span>
+<span id="L86"><span class="lineNum">      86</span>                 :             : </span>
+<span id="L87"><span class="lineNum">      87</span>                 :<span class="tlaGNC">          10 :     read_flags = write_flags = flags | EV_DISABLE;</span></span>
+<span id="L88"><span class="lineNum">      88</span>                 :             : </span>
+<span id="L89"><span class="lineNum">      89</span>         [<span class="tlaGBC" title="Branch 0 was taken 8 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">          10 :     if (event-&gt;events &amp; EPOLLIN) {</span></span>
+<span id="L90"><span class="lineNum">      90</span>                 :<span class="tlaGNC">           8 :         read_flags &amp;= ~EV_DISABLE;</span></span>
+<span id="L91"><span class="lineNum">      91</span>                 :<span class="tlaGNC">           8 :         read_flags |= EV_ENABLE;</span></span>
+<span id="L92"><span class="lineNum">      92</span>                 :             :     }</span>
+<span id="L93"><span class="lineNum">      93</span>                 :             : </span>
+<span id="L94"><span class="lineNum">      94</span>         [<span class="tlaGBC" title="Branch 0 was taken 4 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 6 times"> + </span>]:<span class="tlaGNC">          10 :     if (event-&gt;events &amp; EPOLLOUT) {</span></span>
+<span id="L95"><span class="lineNum">      95</span>                 :<span class="tlaGNC">           4 :         write_flags &amp;= ~EV_DISABLE;</span></span>
+<span id="L96"><span class="lineNum">      96</span>                 :<span class="tlaGNC">           4 :         write_flags |= EV_ENABLE;</span></span>
+<span id="L97"><span class="lineNum">      97</span>                 :             :     }</span>
+<span id="L98"><span class="lineNum">      98</span>                 :             : </span>
+<span id="L99"><span class="lineNum">      99</span>                 :             :     // Fix #124: set user data</span>
+<span id="L100"><span class="lineNum">     100</span>                 :<span class="tlaGNC">          10 :     EV_SET(&amp;kev[0], fd, EVFILT_READ, read_flags, 0, 0, event-&gt;data.ptr);</span></span>
+<span id="L101"><span class="lineNum">     101</span>                 :<span class="tlaGNC">          10 :     EV_SET(&amp;kev[1], fd, EVFILT_WRITE, write_flags, 0, 0, event-&gt;data.ptr);</span></span>
+<span id="L102"><span class="lineNum">     102</span>                 :             : </span>
+<span id="L103"><span class="lineNum">     103</span>                 :<span class="tlaGNC">          10 :     return ff_kevent(epfd, kev, changes, NULL, 0, NULL);</span></span>
+<span id="L104"><span class="lineNum">     104</span>                 :             : }</span>
+<span id="L105"><span class="lineNum">     105</span>                 :             : </span>
+<span id="L106"><span class="lineNum">     106</span>                 :             : static void</span>
+<span id="L107"><span class="lineNum">     107</span>                 :<span class="tlaGNC">          18 : ff_event_to_epoll(void **ev, struct kevent *kev)</span></span>
+<span id="L108"><span class="lineNum">     108</span>                 :             : {</span>
+<span id="L109"><span class="lineNum">     109</span>                 :<span class="tlaGNC">          18 :     unsigned int event_one = 0;</span></span>
+<span id="L110"><span class="lineNum">     110</span>                 :<span class="tlaGNC">          18 :     struct epoll_event **ppev = (struct epoll_event **)ev;</span></span>
+<span id="L111"><span class="lineNum">     111</span>                 :             : </span>
+<span id="L112"><span class="lineNum">     112</span>         [<span class="tlaGBC" title="Branch 0 was taken 10 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 8 times"> + </span>]:<span class="tlaGNC">          18 :     if (kev-&gt;filter == EVFILT_READ) {</span></span>
+<span id="L113"><span class="lineNum">     113</span>   [<span class="tlaGBC" title="Branch 0 was taken 6 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 4 times"> + </span><span class="tlaGBC" title="Branch 2 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 3 was taken 4 times"> + </span>]:<span class="tlaGNC">          10 :         if (kev-&gt;data || !(kev-&gt;flags &amp; EV_EOF)) {</span></span>
+<span id="L114"><span class="lineNum">     114</span>                 :<span class="tlaGNC">           6 :             event_one |= EPOLLIN;</span></span>
+<span id="L115"><span class="lineNum">     115</span>                 :             :         }</span>
+<span id="L116"><span class="lineNum">     116</span>         [<span class="tlaGBC" title="Branch 0 was taken 4 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 4 times"> + </span>]:<span class="tlaGNC">           8 :     } else if (kev-&gt;filter == EVFILT_WRITE) {</span></span>
+<span id="L117"><span class="lineNum">     117</span>                 :<span class="tlaGNC">           4 :         event_one |= EPOLLOUT;</span></span>
+<span id="L118"><span class="lineNum">     118</span>                 :             :     }</span>
+<span id="L119"><span class="lineNum">     119</span>                 :             : </span>
+<span id="L120"><span class="lineNum">     120</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 16 times"> + </span>]:<span class="tlaGNC">          18 :     if (kev-&gt;flags &amp; EV_ERROR) {</span></span>
+<span id="L121"><span class="lineNum">     121</span>                 :<span class="tlaGNC">           2 :         event_one |= EPOLLERR;</span></span>
+<span id="L122"><span class="lineNum">     122</span>                 :             :     }</span>
+<span id="L123"><span class="lineNum">     123</span>                 :             : </span>
+<span id="L124"><span class="lineNum">     124</span>         [<span class="tlaGBC" title="Branch 0 was taken 8 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 10 times"> + </span>]:<span class="tlaGNC">          18 :     if (kev-&gt;flags &amp; EV_EOF) {</span></span>
+<span id="L125"><span class="lineNum">     125</span>                 :<span class="tlaGNC">           8 :         event_one |= EPOLLHUP;</span></span>
+<span id="L126"><span class="lineNum">     126</span>                 :             : </span>
+<span id="L127"><span class="lineNum">     127</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 6 times"> + </span>]:<span class="tlaGNC">           8 :         if (kev-&gt;fflags) {</span></span>
+<span id="L128"><span class="lineNum">     128</span>                 :<span class="tlaGNC">           2 :             event_one |= EPOLLERR;</span></span>
+<span id="L129"><span class="lineNum">     129</span>                 :             :         }</span>
+<span id="L130"><span class="lineNum">     130</span>                 :             : </span>
+<span id="L131"><span class="lineNum">     131</span>         [<span class="tlaGBC" title="Branch 0 was taken 4 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 4 times"> + </span>]:<span class="tlaGNC">           8 :         if (kev-&gt;filter == EVFILT_READ) {</span></span>
+<span id="L132"><span class="lineNum">     132</span>                 :<span class="tlaGNC">           4 :             event_one |= EPOLLIN;</span></span>
+<span id="L133"><span class="lineNum">     133</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 2 times"> + </span>]:<span class="tlaGNC">           4 :         } else if (kev-&gt;filter == EVFILT_WRITE) {</span></span>
+<span id="L134"><span class="lineNum">     134</span>                 :<span class="tlaGNC">           2 :             event_one |= EPOLLERR;</span></span>
+<span id="L135"><span class="lineNum">     135</span>                 :             :         }</span>
+<span id="L136"><span class="lineNum">     136</span>                 :             :     }</span>
+<span id="L137"><span class="lineNum">     137</span>                 :             : </span>
+<span id="L138"><span class="lineNum">     138</span>                 :<span class="tlaGNC">          18 :     (*ppev)-&gt;events   = event_one;</span></span>
+<span id="L139"><span class="lineNum">     139</span>                 :             :     // Fix #124: get user data</span>
+<span id="L140"><span class="lineNum">     140</span>         [<span class="tlaGBC" title="Branch 0 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 16 times"> + </span>]:<span class="tlaGNC">          18 :     if (kev-&gt;udata != NULL)</span></span>
+<span id="L141"><span class="lineNum">     141</span>                 :<span class="tlaGNC">           2 :         (*ppev)-&gt;data.ptr  = kev-&gt;udata;</span></span>
+<span id="L142"><span class="lineNum">     142</span>                 :             :     else</span>
+<span id="L143"><span class="lineNum">     143</span>                 :<span class="tlaGNC">          16 :         (*ppev)-&gt;data.fd = kev-&gt;ident;</span></span>
+<span id="L144"><span class="lineNum">     144</span>                 :<span class="tlaGNC">          18 :     (*ppev)++;</span></span>
+<span id="L145"><span class="lineNum">     145</span>                 :<span class="tlaGNC">          18 : }</span></span>
+<span id="L146"><span class="lineNum">     146</span>                 :             : </span>
+<span id="L147"><span class="lineNum">     147</span>                 :             : int</span>
+<span id="L148"><span class="lineNum">     148</span>                 :<span class="tlaGNC">          26 : ff_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)</span></span>
+<span id="L149"><span class="lineNum">     149</span>                 :             : {</span>
+<span id="L150"><span class="lineNum">     150</span>                 :             :     int i, ret;</span>
+<span id="L151"><span class="lineNum">     151</span>                 :             :     (void)timeout;</span>
+<span id="L152"><span class="lineNum">     152</span>   [<span class="tlaGBC" title="Branch 0 was taken 22 times"> + </span><span class="tlaGBC" title="Branch 1 was taken 4 times"> + </span><span class="tlaGBC" title="Branch 2 was taken 2 times"> + </span><span class="tlaGBC" title="Branch 3 was taken 20 times"> + </span>]:<span class="tlaGNC">          26 :     if (!events || maxevents &lt; 1) {</span></span>
+<span id="L153"><span class="lineNum">     153</span>                 :<span class="tlaGNC">           6 :         errno = EINVAL;</span></span>
+<span id="L154"><span class="lineNum">     154</span>                 :<span class="tlaGNC">           6 :         return -1;</span></span>
+<span id="L155"><span class="lineNum">     155</span>                 :             :     }</span>
+<span id="L156"><span class="lineNum">     156</span>                 :             : </span>
+<span id="L157"><span class="lineNum">     157</span>                 :<span class="tlaGNC">          20 :     return ff_kevent_do_each(epfd, NULL, 0, events, maxevents, NULL, ff_event_to_epoll);</span></span>
+<span id="L158"><span class="lineNum">     158</span>                 :             : }</span>
+<span id="L159"><span class="lineNum">     159</span>                 :             : </span>
+        </pre>
+              </td>
+            </tr>
+          </table>
+          <br>
+
+          <table width="100%" border=0 cellspacing=0 cellpadding=0>
+            <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+            <tr><td class="versionInfo">Generated by: <a href="https://github.com//linux-test-project/lcov" target="_parent">LCOV version 2.0-1</a></td></tr>
+          </table>
+          <br>
+
+</body>
+</html>

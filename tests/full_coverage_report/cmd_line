@@ -1,0 +1,1 @@
+genhtml /data/workspace/f-stack/tests/full_coverage.info --output-directory /data/workspace/f-stack/tests/full_coverage_report --branch-coverage --title 'F-Stack lib/ unit+integration full coverage' --ignore-errors source,inconsistent,corrupt
