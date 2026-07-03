@@ -444,7 +444,8 @@ Since `toeplitz_hash`/`rsskey` are static, the "expected queue" for hit-correctn
 - Preconditions: `9.134.214.176` side / `f-stack-client` has a v6 address; NIC `flow_type_rss_offloads` includes v6 fields (04 §2.4, confirmed on real machine).
 - Steps: v6 multi-queue connect.
 - Assertion: v6 source ports land in the local queue; IPv4 simultaneously regresses normally.
-- 【Pending confirmation: whether the real-machine NIC supports v6 RSS offload; if not supported, v6 RSS falls into a single queue (L705 narrowing), this item is marked as unmet condition and recorded (not a bug, a hardware capability limitation).】
+- 【Real-machine NIC v6 RSS offload: confirmed supported on a physical machine with v6 RSS capability; when unsupported (e.g. local virtio) v6 falls into a single queue (L705 narrowing), a hardware capability limitation, not a bug.】
+- **Execution conclusion (2026-07): PASS.** v6 multi-queue connect verified end-to-end: v6 source ports land in the local queue with IPv4 zero regression (see 10 §4-bis). The IPv6 server scenario (helloworld v6 listen + client `curl -6`) was also verified on this machine's runtime (see `freebsd_13_to_15_upgrade_spec/ipv6-tentative-fix-execution-log.md`).
 
 ### 3.5-bis RT-RSS-05: DPDK-side Bind-then-connect Lands on Local Core (0.5 v4)
 
@@ -462,7 +463,8 @@ Since `toeplitz_hash`/`rsskey` are static, the "expected queue" for hit-correctn
 - Steps: bind(v6_vip,0)+connect6 multiple times.
 - Assertion: v6 source ports land in the local queue (verified via `ff_rss_check6` or packet capture); v4 bind-then-connect simultaneously continues working normally (v4/v6 coexist without interference).
 - Kernel-stack comparison: `127.0.0.1`/lo bind(0)+connect via the kernel stack works normally (does not go through RSS, comparison verifying that the 0.5 change did not break the kernel stack's local path).
-- 【Pending confirmation: the effective path of v6 connect's kernel integration L515 coordination scheme (04 §3-ter.4); real-machine NIC v6 RSS offload capability (same as RT-RSS-04); if unsupported, v6 falls to a single queue and is recorded as unmet condition (hardware limitation).】
+- 【v6 connect kernel integration path (04 §3-ter.4) and real-machine NIC v6 RSS offload capability: the effective path and hardware support were confirmed on a physical machine.】
+- **Execution conclusion (2026-07): PASS.** v6 bind-then-connect multiple times: source ports land in the local queue (`ff_rss_check6`/packet capture); v4 bind-then-connect coexists normally; `127.0.0.1`/lo kernel-stack bind(0)+connect comparison is normal (kernel-stack local path not broken). The reverse-proxy scenario (nginx `--with-ff_module` + F-Stack side v6 VIP listen, proxy to upstream) was also verified end-to-end on a physical machine (see 10 §4-bis / §6-ter.3).
 
 ### 3.5 Real-machine Execution and Cleanup Constraints
 
@@ -504,6 +506,7 @@ Since `toeplitz_hash`/`rsskey` are static, the "expected queue" for hit-correctn
 | **0.5** | inp_lport==0 after bind(addr,0), connect enters RSS_CHECK branch and lands in local queue, bind(addr,N) zero regression, v6 sync, reverts to native on disable-FSTACK/single-queue | 05-01~05-05 | IT-RSS-06 | RT-RSS-05/06 | RG-10/11/12 |
 
 - Coverage completeness: every acceptance criterion in 01 for each requirement has ≥1 corresponding test case; the zero-tolerance item (0.3 never selecting the wrong queue) has triple-layer protection via unit test + real machine + mandatory soft-compute re-verification; 0.5, since it changes the kernel in_pcb (not directly covered by lib cmocka unit tests), has its queue-landing correctness primarily verified via integration (IT-RSS-06) + real machine (RT-RSS-05/06), with the unit-test layer only verifying inp_lport state after bind (pending kernel test carrier, §1.5-ter).
+- **IPv6 functional-test execution conclusion (2026-07): all passed.** IPv6 server (this machine's runtime: helloworld v6 listen + client `curl -6`), client (physical-machine v6 connect / RSS reverse path RT-RSS-04/06), and reverse proxy (physical-machine nginx `--with-ff_module` + v6 VIP) functional tests are all completed and passed (evidence and conclusions in 10 §4-bis / §6-bis.8 / §6-ter.3 and `freebsd_13_to_15_upgrade_spec/ipv6-tentative-fix-execution-log.md`).
 
 ---
 

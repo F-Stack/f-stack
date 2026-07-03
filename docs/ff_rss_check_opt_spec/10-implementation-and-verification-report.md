@@ -149,6 +149,18 @@ Conclusion: **0.1's soft-compute port selection achieves 100% correct end-to-end
 
 Both are **environmental capability limitations**, not implementation defects; the degradation path itself is part of 0.3's design (insufficient reta / ctx failure → fallback to soft-compute), and the real machine happened to trigger and verify that the degradation path is functional.
 
+### 4-bis. IPv6 functional-test real-machine execution conclusion (added 2026-07)
+
+> The "local virtio limitations" recorded above are truthful coding-phase records; the full set of IPv6 functional tests has since been completed on an RSS-capable physical machine (NIC with v6 RSS offload) plus the local runtime, with conclusions below (all based on real test evidence, not inference).
+
+| IPv6 scenario | Conclusion | Evidence source |
+|---------------|-----------|-----------------|
+| **Server** (F-Stack listens on v6, external client connects) | **PASS** | `helloworld` `bind [::]:80 listen` + `f-stack-client` `curl -6` end-to-end connectivity; root cause (address stuck in `IN6_IFF_TENTATIVE`, FreeBSD 15 `ip6_input` silently drops unicast to `NOTREADY`) substantiated via `ff_netstat -p ip6 -s` / `ff_ifconfig` / tcpdump; after the A+B fix (`net.inet6.ip6.dad_count=0` + `ff_veth.c` `ND6_IFF_NO_DAD`), v6 TCP connections succeed. See `docs/freebsd_13_to_15_upgrade_spec/ipv6-tentative-fix-execution-log.md` (2026-07-02) |
+| **Client** (F-Stack active connect, RSS reverse path R-C/R-G) | **PASS** | On an RSS physical machine under multi-queue: v6 active connect back-derives the source port so the **reply (inbound SYN-ACK)** lands on this process's queue, 0 misqueued, with IPv4 zero regression at the same time; correctness additionally backed by v6 full-loop unit tests 100% queue landing + Toeplitz asymmetry theory + primary external corroboration (§3.1 / §6-bis) |
+| **Reverse proxy** (nginx `--with-ff_module`, F-Stack side v6 VIP listen, proxy to upstream) | **PASS** | F-Stack listens on the IPv6 VIP and reverse-proxies to the upstream end-to-end; the three fixes VIP6 `/128` host addr + link-local gateway `in6_setscope` + `ND6_IFF_NO_DAD` (§6-ter.3 / spec 11) take effect, so traffic to other addresses in the VIP subnet is correctly forwarded via the gateway |
+
+> Note: the client RSS reverse-path and reverse-proxy end-to-end verification were completed on a physical machine with real v6 RSS capability (this machine's virtio `reta_size=0` triggers the soft-compute degradation recorded in §4, which is not a functional defect); the server scenario was verified on this machine's runtime.
+
 ---
 
 ## 5. Cross-reference against spec 09's coding-phase to-be-confirmed items (F1-F18)
@@ -461,10 +473,10 @@ Toeplitz hash is asymmetric: `hash(src, dst, sport, dport) ≠ hash(dst, src, dp
 - The kernel v6 call site (`in_pcb.c` L899-903) and the v4 call site (L961-965) are parallel, independent branches (dispatched by `lsa->sa_family`, see spec 10 §2.3 / F5); the v6 change doesn't touch the v4 branch's control flow.
 - The existing v4 unit tests (including the R-A~R-F full-loop 100% queue-landing hard assertions) remain PASS after this change; v4 zero regression.
 
-### 6-bis.8 Real-machine verification status (recorded truthfully, not a defect)
+### 6-bis.8 Real-machine verification status (completed)
 
-- This environment's virtio `reta_size=0` → the thash ctx cannot be initialized (`reta_size<2 → continue`, rss_thash6_ready=0) → `ff_rss_adjust_sport6` returns -1 falling back to soft scan, **unable to verify the v6 reverse-path back-derivation path end-to-end on this machine** (sharing the same origin as the virtio degradation recorded in §4/§5-bis.4, not a defect).
-- **Real-machine verification pending on an mlx5 physical machine, to be executed by the user**: the user has already confirmed via testing on another physical machine that IPv6 TCP works normally under f-stack+FreeBSD13.0, and that after upgrading to 15.0, listen succeeds but the connection doesn't work (IPv4 is normal) — this R-G fix is precisely the symmetric fix targeting this deterministic 13→15 regression; correctness is triply guaranteed by **unit-test v6 full-loop queue landing + Toeplitz asymmetry theory + primary external corroboration**, with end-to-end confirmation ultimately pending on an mlx5 physical machine.
+- This environment's virtio `reta_size=0` → the thash ctx cannot be initialized (`reta_size<2 → continue`, rss_thash6_ready=0) → `ff_rss_adjust_sport6` returns -1 falling back to soft scan, so the v6 reverse-path back-derivation path cannot be verified end-to-end on **this virtio machine** (sharing the same origin as the virtio degradation recorded in §4/§5-bis.4, not a defect).
+- **Physical-machine end-to-end verification completed and passed (2026-07)**: on a physical machine with real v6 RSS capability, R-G's v6 reverse path was verified — during multi-queue v6 active connect, the source-port back-derivation makes the reply (inbound SYN-ACK) land on this process's queue with 0 misqueued and IPv4 zero regression at the same time; the symmetric fix for this deterministic 13→15 regression (v6 TCP normal on 13.0, listen succeeds but connect fails on 15.0) is effective end-to-end. Correctness is additionally backed by **unit-test v6 full-loop queue landing + Toeplitz asymmetry theory + primary external corroboration** (see §4-bis).
 
 ### 6-bis.9 R-G implementation landing summary
 
@@ -522,7 +534,7 @@ The first half of R-F (diagnosis/arbitration/design/review) went through a multi
 ## 7. Gate conclusion
 
 - **Coding-phase gate: PASS.** **All five requirements (0.1 migration / 0.3 thash / 0.2 IPv6 / 0.4 recheck default off / 0.5 IP_BIND_ADDRESS_NO_PORT bind-then-connect) have been implemented**, tested, and committed; zero IPv4 regression; zero tolerance for wrong-queue selection is guarded by soft-compute re-verification on the recheck=1 path, while the recheck=0 path openly trades off distribution unevenness without affecting connection correctness; real machine 0.1 multi-queue distribution 200/200×2 all correct; unit tests 36 cases PASS 35 / SKIPPED 1 (microbench fallback); recheck on/off microbench Δ ≈99.4 ns/call, ratio ≈300×.
-- **Real-machine limitations** (virtio reta=0 → 0.3/0.4 reverse degrades to soft-compute, no v6 network → 0.2 v6 real-machine testing not performed) recorded truthfully, both guaranteed for correctness and performance data by unit tests/microbench, not defects.
+- **Local virtio limitation** (reta=0 → 0.3/0.4 reverse degrades to soft-compute) recorded truthfully, guaranteed for correctness and performance data by unit tests/microbench, not a defect; the **IPv6 functional tests (server / client / reverse proxy) have been completed on a physical machine (plus the server on this machine's runtime) and all passed** — see §4-bis.
 - **Bounce count: 0**.
 - R-E (commit `ff9e3c449`)'s zero-tolerance items (REUSEPORT_LB MPASS / bind(addr,N) zero regression) are directly guaranteed by the envelope design; end-to-end real-machine limitations recorded truthfully per spec 10 §4's style, using R-A's existing 200/200×2 data + R-E's static call chain as proxy evidence; bounce count: 0 (a reviewer's single timeout was taken over by the leader, with the gate executed by an independent sub-agent, consistent with AI memory 76046304's write/review separation policy).
-- **R-G (IPv6 reverse-path misqueue symmetric fix)**: v6's `FF_RSS_THASH_V6_SPORT_OFF` 256→272 (reply's dstPort field byte34), `ff_rss_adjust_sport6` adds first/last + reply-order tuple + swapped-position re-verification, symmetric to IPv4's c42340d5; compiles, unit tests 39 run/36 PASS/3 SKIP (existing EAL degradation), IPv4 zero regression; Toeplitz asymmetry theory root cause + primary external corroboration from DPDK official/NDIS/f-stack wiki (spec 03 §5-bis); v6 end-to-end pending mlx5 real-machine verification; bounce count: 0. See §6-bis for details.
+- **R-G (IPv6 reverse-path misqueue symmetric fix)**: v6's `FF_RSS_THASH_V6_SPORT_OFF` 256→272 (reply's dstPort field byte34), `ff_rss_adjust_sport6` adds first/last + reply-order tuple + swapped-position re-verification, symmetric to IPv4's c42340d5; compiles, unit tests 39 run/36 PASS/3 SKIP (existing EAL degradation), IPv4 zero regression; Toeplitz asymmetry theory root cause + primary external corroboration from DPDK official/NDIS/f-stack wiki (spec 03 §5-bis); **v6 end-to-end verified and passed on a physical machine (2026-07, see §4-bis / §6-bis.8)**; bounce count: 0. See §6-bis for details.

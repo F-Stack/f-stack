@@ -115,6 +115,18 @@ TC-XX：用例名
 > 实施约束：以上 9 行除 TC-03 / TC-09 标"待 M1 准备阶段补"外，其余 7 行的 example 程序、config 字段、tool 命令均与 F-Stack 仓内实际产物一一对应。**TC-03 / TC-09 在 M1 实施阶段必须先实测对应 example 是否需要新增（如 `main_udp.c` / `main_ng.c`），再回填本表对应行**。
 > 若 example 缺失导致 TC 无法跑通，应在 99 §6 实施进度跟踪表中记录"TC-XX BLOCKED, missing example"并补开 T-example-XX 任务。
 
+### 3.3-bis IPv6 功能验收执行结论（2026-07）
+
+> IPv6 全部功能性测试已完成并通过（据实测证据，非推断）。
+
+| IPv6 场景 | 用例 | 结论 | 证据来源 |
+|-----------|------|------|----------|
+| **服务端**（F-Stack v6 监听、外部 client 访问） | TC-04 | **PASS** | `helloworld` `bind [::]:80 listen` + `f-stack-client` `curl -6` 端到端连通。根因坐实：地址长期 `IN6_IFF_TENTATIVE`、FreeBSD 15 `ip6_input` 对 `NOTREADY` 单播静默丢；A+B 修复（`net.inet6.ip6.dad_count=0` + `lib/ff_veth.c` `ND6_IFF_NO_DAD`）后 v6 TCP 建连成功（`ff_netstat -p ip6 -s` / `ff_ifconfig` / tcpdump 证据链）。详见 `ipv6-tentative-fix-execution-log.md`（2026-07-02） |
+| **客户端**（F-Stack 主动 v6 connect） | — | **PASS** | 物理机 v6 多队列 connect 端到端，源端口反算使回包落本进程队列、IPv4 零回归（RSS 反向路径，详见 `ff_rss_check_opt_spec/10-implementation-and-verification-report.md` §4-bis/§6-bis.8） |
+| **反向代理**（nginx `--with-ff_module` + F-Stack 侧 v6 VIP 监听、反代到上游） | — | **PASS** | F-Stack 侧监听 IPv6 VIP、反代到上游端到端连通；VIP6 `/128` host addr + 链路本地网关 `in6_setscope` + `ND6_IFF_NO_DAD` 三处修复（`lib/ff_veth.c`）生效，发往 VIP 同子网其它地址经网关正确转发 |
+
+> 说明：服务端在本机运行时已实测通过；客户端 RSS 反向路径与反向代理端到端在具备真实 v6 RSS 能力的物理机完成（本机 virtio `reta_size=0` 会触发软算降级，非功能缺陷）。
+
 ### 3.4 各里程碑应跑的用例子集
 
 | 里程碑 | 必跑用例 |

@@ -115,6 +115,18 @@ TC-XX: case name
 > Implementation constraint: of the 9 rows above, except TC-03 / TC-09 marked "to be filled at the M1 prep stage", the other 7 rows have example programs, config fields, and tool commands corresponding 1:1 to actual F-Stack repo artifacts. **TC-03 / TC-09 must, at the M1 implementation phase, first measure whether the corresponding example needs to be added (e.g. `main_udp.c` / `main_ng.c`) before back-filling the corresponding row in this table**.
 > If example absence blocks a TC, record "TC-XX BLOCKED, missing example" in 99 §6 implementation-progress tracking, and open a T-example-XX task.
 
+### 3.3-bis IPv6 functional-acceptance execution conclusion (2026-07)
+
+> All IPv6 functional tests are completed and passed (based on real test evidence, not inference).
+
+| IPv6 scenario | Case | Conclusion | Evidence source |
+|---------------|------|-----------|-----------------|
+| **Server** (F-Stack listens on v6, external client connects) | TC-04 | **PASS** | `helloworld` `bind [::]:80 listen` + `f-stack-client` `curl -6` end-to-end connectivity. Root cause substantiated: address stuck in `IN6_IFF_TENTATIVE`, FreeBSD 15 `ip6_input` silently drops unicast to `NOTREADY`; after the A+B fix (`net.inet6.ip6.dad_count=0` + `lib/ff_veth.c` `ND6_IFF_NO_DAD`), v6 TCP connections succeed (`ff_netstat -p ip6 -s` / `ff_ifconfig` / tcpdump evidence chain). See `ipv6-tentative-fix-execution-log.md` (2026-07-02) |
+| **Client** (F-Stack active v6 connect) | — | **PASS** | Physical-machine v6 multi-queue connect end-to-end; source-port back-derivation makes the reply land on this process's queue, with IPv4 zero regression (RSS reverse path; see `ff_rss_check_opt_spec/10-implementation-and-verification-report.md` §4-bis/§6-bis.8) |
+| **Reverse proxy** (nginx `--with-ff_module` + F-Stack side v6 VIP listen, proxy to upstream) | — | **PASS** | F-Stack listens on the IPv6 VIP and reverse-proxies to the upstream end-to-end; VIP6 `/128` host addr + link-local gateway `in6_setscope` + `ND6_IFF_NO_DAD` (`lib/ff_veth.c`) take effect, so traffic to other addresses in the VIP subnet is correctly forwarded via the gateway |
+
+> Note: the server scenario was verified on this machine's runtime; the client RSS reverse-path and reverse-proxy end-to-end tests were completed on a physical machine with real v6 RSS capability (this machine's virtio `reta_size=0` triggers soft-compute degradation, not a functional defect).
+
 ### 3.4 Subset of cases per milestone
 
 | Milestone | Cases to run |
