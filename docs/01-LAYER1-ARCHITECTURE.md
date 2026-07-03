@@ -371,6 +371,8 @@ F-Stack fully leverages modern NIC hardware capabilities:
 
 - **Hardware RSS**: Based on 5-tuple (src-ip, dst-ip, src-port, dst-port, proto)
 - **Benefits**: Same connection always routed to the same RX queue → avoids TCP reordering
+- **Connect-side RSS affinity (reverse-proxy path)**: On outbound connect, F-Stack reverse-computes an ephemeral source port so the **inbound reply (SYN-ACK)** lands on the local RX queue. The runtime NIC RSS key (KEY_FINAL) is built and published **before** `dev_configure` by `ff_rss_thash_build_key()`, and `ff_rss_adjust_sport[6]()` solves the port within the kernel's ephemeral range `[first,last]` via `rte_thash_adjust_tuple` (reply field order). Gated by `[rss_check] thash_adjust` (default on, decoupled from `rss_check.enable`); diagnostics gated by compile macro `FF_RSS_DIAG` (default off, no dataplane impact). Details: `docs/ff_rss_check_opt_spec/zh_cn/`.
+- **IPv6 reverse-proxy address fix (FreeBSD 15, `lib/ff_veth.c`)**: VIP6 configured as a /128 host address (no on-link prefix route), link-local gateway scoped via `in6_setscope`, and DAD skipped (`ND6_IFF_NO_DAD`) because FreeBSD 15 `ip6_input` drops unicast to `NOTREADY`/`TENTATIVE` addresses and user-space has no timer to complete DAD.
 
 ## Summary
 

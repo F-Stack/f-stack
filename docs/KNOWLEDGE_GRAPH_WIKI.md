@@ -63,6 +63,29 @@ Traceability: `docs/kernel_event_support_spec/` and `docs/kernel_event_support_s
 
 ---
 
+## 2B. Post-index code delta: RSS thash reverse path (R-F) + IPv6 reverse-proxy address fix
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-07). Covers the RSS connect-side reverse-computation fix (`ff_rss_check_opt_spec` R-F) and the IPv6 reverse-proxy VIP/gateway/DAD fix (`ff_rss_check_opt_spec/zh_cn/11-*`). Re-index with `npx gitnexus analyze` to fold into the graph.
+
+The feature makes the **inbound reply (SYN-ACK)** of an outbound connect land on the local RX queue, and fixes IPv6 reverse-proxy VIP reachability on FreeBSD 15. Reverse computation + NIC RSS key sync are gated by `[rss_check] thash_adjust` (default on, **decoupled from `rss_check.enable`**); diagnostics are gated by the compile macro `FF_RSS_DIAG` (default off, no dataplane impact).
+
+| Symbol / Area | Where in source |
+|---------------|-----------------|
+| `ff_rss_adjust_sport` (**signature +`first,last`**) | `lib/ff_dpdk_if.c:3252` `int ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr, uint16_t dport, uint16_t *out_sport, uint16_t first, uint16_t last)` — aligns candidate to a reta_size-aligned block inside `[first,last]` (L3297-3308), builds the tuple in **reply field order** (remote/local/dport=80/localPort), calls `rte_thash_adjust_tuple`, then a defensive `[first,last]` range guard (L3352). Caller `freebsd/netinet/in_pcb.c` L962-964 passes `first,last`. |
+| `ff_rss_adjust_sport6` (**signature +`first,last`**) | `lib/ff_dpdk_if.c:3689` `int ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6, const uint8_t *daddr6, uint16_t dport, uint16_t *out_sport, uint16_t first, uint16_t last)`. Caller `in_pcb.c` L899-901. v6 addrs are `const uint8_t *` (not `struct in6_addr *`). |
+| `recheck` re-verify (reply order) | On adjust success: `if (!recheck \|\| ff_rss_check(softc, saddr, daddr, dport, sport))` (`ff_dpdk_if.c:3362-3363`) — note `dport`/`sport` are the **reply** src/dst. `recheck` from `[rss_check] recheck` (default 0). |
+| `ff_rss_thash_build_key(port_id, reta_size)` | `lib/ff_dpdk_if.c:3027`, declared L168. Built **before** `dev_configure` (`init_port_start` L758-761 calls it when `nb_queues>1 && thash_adjust`), constructs v4 ctx (`rte_thash_add_helper "sport"` at `FF_RSS_THASH_V4_SPORT_OFF=80`, L152) + v6 ctx seeded from v4-rewritten key (`FF_RSS_THASH_V6_SPORT_OFF=272`, L163; helper len `FF_RSS_THASH_SPORT_HELPER_LEN=16`, L153), then publishes KEY_FINAL into the global `rsskey` (L3159+). |
+| `ff_rss_thash_ctx_init(void)` | `lib/ff_dpdk_if.c:3189` (primary only). Post-start diagnostic read-back of NIC key/RETA for cross-check; gated by `thash_adjust` at `ff_dpdk_if.c:1491-1493`. |
+| `thash_adjust` switch | `lib/ff_config.c`: default set `rcc->thash_adjust = 1` (L946), parsed `thash_adjust=` (L956-957). Gates `build_key` (`ff_dpdk_if.c:757-760`), `ctx_init` (L1491-1493), and the route② soft-scan fallback guard in `adjust_sport[6]` (L3262-3264 / L3701-3703). NULL cfg ⇒ treated as 1. |
+| `FF_RSS_DIAG` gating | `ff_rss_diag_dump_key` (`ff_dpdk_if.c:2990`) and its call sites (e.g. L3148-3157 in `build_key`, NIC-readback in `ctx_init`) wrapped in `#ifdef FF_RSS_DIAG`, **default off**. |
+| IPv6 VIP6 /128 host addr | `lib/ff_veth.c:861` `ff_veth_setvaddr6`: `memset(&ifr6.ifra_prefixmask.sin6_addr, 0xff, 16)` (L879-880) — /128, avoids on-link prefix route so same-subnet traffic goes via the gateway. |
+| IPv6 link-local gateway scope | `lib/ff_veth.c:829` `ff_veth_set_gateway6`: `if (IN6_IS_ADDR_LINKLOCAL(&gw.sin6_addr)) in6_setscope(&gw.sin6_addr, sc->ifp, NULL)` (L849-850) — completes the zone id for a `fe80::/10` gateway. |
+| IPv6 skip DAD | `lib/ff_veth.c:908` `ff_veth_setup_interface`: `ND_IFINFO(ifp)->flags \|= ND6_IFF_NO_DAD` (L980) — user-space has no timer to complete DAD, and FreeBSD 15 `ip6_input` silently drops unicast to `NOTREADY`/`TENTATIVE` addresses. |
+
+Traceability: `docs/ff_rss_check_opt_spec/zh_cn/` (00-11), esp. `05-接口设计.md` (signatures), `11-IPv6反代VIP-onlink修复.md` (v6 address fix), and `10-实施与验证报告.md`.
+
+---
+
 ## 3. Directory Structure
 
 ```

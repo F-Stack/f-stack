@@ -550,6 +550,8 @@ Effect:
 ✓ Completely avoids TCP reordering and cache pollution
 ```
 
+**Connect-side reverse path + IPv6 reverse-proxy fix (2026-07, R-F/R-G).** For outbound connect, F-Stack reverse-computes the ephemeral source port so the **inbound reply (SYN-ACK)** lands on the initiating process's RX queue: the NIC RSS KEY_FINAL is built/published before `dev_configure` (`ff_rss_thash_build_key`), and `ff_rss_adjust_sport[6]` solves the port within the kernel's ephemeral range `[first,last]` using reply field order (`rte_thash_adjust_tuple`). Root cause of the earlier ~22-27% mis-queue was **inconsistent keys across adjust/soft-check/NIC** (LFSR key rewrite in `rte_thash_add_helper`), not byte order — fixed by publishing the unified KEY_FINAL to the NIC. Gated by `[rss_check] thash_adjust` (default on); diagnostics gated by compile macro `FF_RSS_DIAG` (default off). Separately, IPv6 reverse-proxy VIP addressing on FreeBSD 15 is fixed in `lib/ff_veth.c` (VIP6 /128 host addr, link-local gateway `in6_setscope`, `ND6_IFF_NO_DAD` because `ip6_input` drops unicast to NOTREADY/TENTATIVE). Details: `docs/ff_rss_check_opt_spec/zh_cn/`.
+
 ### 4.4 Initialization Flow
 
 ```

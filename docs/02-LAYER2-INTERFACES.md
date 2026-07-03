@@ -466,7 +466,7 @@ FF_TCPHPTS=1 make
 | `ff_write()` returns -1 | Send queue full | Retry later, or increase memory pool |
 | Segmentation fault | Cross-lcore socket operation | Ensure each socket operates within a single lcore |
 | Connection dropped | Network issue or timeout | Check RST/FIN flags, reconnect |
-| Uneven RSS flow distribution | NIC not supported or misconfigured | Check `ff_rss_tbl_init()` logs |
+| Uneven RSS flow distribution | NIC not supported or misconfigured; or thash reverse path disabled | Check `ff_rss_tbl_init()` logs; ensure `[rss_check] thash_adjust=1` so connect-side reverse computation aligns the NIC RSS key (KEY_FINAL) and the reply lands on the local queue — see `docs/ff_rss_check_opt_spec/zh_cn/` (R-F/R-G) |
 
 ## 8. Best Practices
 
