@@ -874,14 +874,10 @@ ff_veth_setvaddr6(struct ff_veth_softc *sc, struct ff_port_cfg *cfg, const char 
     ifr6.ifra_addr.sin6_len = sizeof ifr6.ifra_addr;
     ifr6.ifra_addr.sin6_family = AF_INET6;
 
+    /* VIP as /128 host addr: avoid installing an on-link prefix route,
+     * so traffic to other addrs in the VIP subnet goes via the gateway. */
     ifr6.ifra_prefixmask.sin6_len = sizeof ifr6.ifra_prefixmask;
-    memset(&ifr6.ifra_prefixmask.sin6_addr, 0xff, sc->prefix_length / 8);
-    uint8_t mask_size_mod = sc->prefix_length % 8;
-    if (mask_size_mod)
-    {
-        ifr6.ifra_prefixmask.sin6_addr.__u6_addr.__u6_addr8[sc->prefix_length / 8] = \
-            ((1 << mask_size_mod) - 1) << (8 - mask_size_mod);
-    }
+    memset(&ifr6.ifra_prefixmask.sin6_addr, 0xff, 16);
 
     ifr6.ifra_lifetime.ia6t_pltime = ifr6.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
 
