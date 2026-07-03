@@ -1199,8 +1199,8 @@ bash start.sh -c config.ini -b ./app
 
 > 与 `01/02/03-LAYER*` 文档同步；权威细节见 `docs/ff_rss_check_opt_spec/zh_cn/`。
 
-- **`ff_rss_adjust_sport` / `ff_rss_adjust_sport6` 签名新增 `uint16_t first, uint16_t last`**（临时端口范围，`freebsd/netinet/in_pcb.c` 传入）：反算把候选端口对齐到 `[first,last]` 内的 reta_size 对齐块，解出端口后校验落在 `[first,last]`；tuple 采用 reply（inbound SYN-ACK）字段序确保回程落本队列（`lib/ff_dpdk_if.c:3252` / `:3689`）。
-- **NIC RSS KEY_FINAL 构建/发布**：`ff_rss_thash_build_key(port_id, reta_size)`（`ff_dpdk_if.c:3027`）在 `dev_configure` **之前**构建 v4/v6 thash ctx 并发布全局 `rsskey`（v4 sport offset=80、v6=272、helper len=16）；`ff_rss_thash_ctx_init(void)`（`:3189`，primary）启动后读回 NIC key/RETA 诊断核对。
+- **`ff_rss_adjust_sport` / `ff_rss_adjust_sport6` 签名新增 `uint16_t first, uint16_t last`**（临时端口范围，`freebsd/netinet/in_pcb.c` 传入）：反算把候选端口对齐到 `[first,last]` 内的 reta_size 对齐块，解出端口后校验落在 `[first,last]`；tuple 采用 reply（inbound SYN-ACK）字段序确保回程落本队列（`lib/ff_dpdk_if.c:3242` / `:3681`）。
+- **NIC RSS KEY_FINAL 构建/发布**：`ff_rss_thash_build_key(port_id, reta_size)`（`ff_dpdk_if.c:3016`）在 `dev_configure` **之前**构建 v4/v6 thash ctx 并发布全局 `rsskey`（v4 sport offset=80、v6=272、helper len=16）；`ff_rss_thash_ctx_init(void)`（`:3177`，primary）启动后读回 NIC key/RETA 诊断核对。
 - **`[rss_check] thash_adjust` 开关**（默认 1，与 `rss_check.enable` 解耦）：门控 build_key / ctx_init / adjust_sport 的路线②软扫描回退。诊断 dump（`ff_rss_diag_dump_key`）由编译宏 **`FF_RSS_DIAG` 门控，默认关闭，不影响数据面**。
 - **IPv6 反代地址修复（`lib/ff_veth.c`）**：VIP6 作为 /128 host addr（prefixmask 全 `0xff`，避免 on-link 前缀路由）、链路本地网关 `in6_setscope` 补 zone、`ND6_IFF_NO_DAD` 跳过 DAD（FreeBSD 15 `ip6_input` 丢 NOTREADY/TENTATIVE 单播）。
 
