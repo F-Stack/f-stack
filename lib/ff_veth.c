@@ -275,15 +275,17 @@ ff_mbuf_tx_offload(void *m, struct ff_tx_offload *offload)
         offload->ip_csum = 1;
     }
 
-    if (mb->m_pkthdr.csum_flags & CSUM_TCP) {
+    /* csum_flags carries protocol-specific bits (v4/v6 are distinct),
+     * but ff_tx_offload is protocol-agnostic; map both to one flag. */
+    if (mb->m_pkthdr.csum_flags & (CSUM_TCP | CSUM_TCP_IPV6)) {
         offload->tcp_csum = 1;
     }
 
-    if (mb->m_pkthdr.csum_flags & CSUM_UDP) {
+    if (mb->m_pkthdr.csum_flags & (CSUM_UDP | CSUM_UDP_IPV6)) {
         offload->udp_csum = 1;
     }
 
-    if (mb->m_pkthdr.csum_flags & CSUM_SCTP) {
+    if (mb->m_pkthdr.csum_flags & (CSUM_SCTP | CSUM_SCTP_IPV6)) {
         offload->sctp_csum = 1;
     }
 
