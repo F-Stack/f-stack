@@ -1,5 +1,3 @@
-#include <errno.h>
-
 #include <rte_memcpy.h>
 #include <rte_spinlock.h>
 #ifdef FF_USE_RING_IPC
