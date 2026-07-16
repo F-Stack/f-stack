@@ -410,6 +410,27 @@ Since this environment (virtio reta_size=0, local `rss_check enable=0`, no v6 ne
 - **Real-machine limitations**: rss_check enable=0 / virtio reta=0 / no v6 NIC / no ssh harness — all four recorded truthfully (consistent with spec 10 §4's style), with the static call chain + R-A's existing data serving as proxy evidence.
 - **Bounce count**: 0; a reviewer sub-agent timed out once with no response (>5min), triggering the leader to take over the review (executed per AI memory 76046304's policy: the leader did not personally write the code — v4/v6 coding was done by impl-coder; after the leader took over the review, the subsequent gate was executed by an independent gatekeeper, not constituting "self-writing and self-reviewing").
 
+### 6.9 R-E setsockopt-layer patch: IP_BIND_ADDRESS_NO_PORT option wiring (2026-07)
+
+> R-E (§6) fixed the FreeBSD kernel-side bind gate in `in_pcb.c`/`in6_pcb.c` (so that `bind(addr,0)` does not grab a port and defers to connect for RSS-aware port selection). However, before nginx actually triggers that path it first calls `setsockopt(IPPROTO_IP, IP_BIND_ADDRESS_NO_PORT)`, and this setsockopt option was **not wired up** in the F-Stack lib translation layer, causing v6 sockets to get EINVAL and v4 sockets to be silently misrouted to set INP_BINDANY. This section records that setsockopt-layer patch.
+
+**Root cause (substantiated by code)**:
+- Numeric collision: Linux `IP_BIND_ADDRESS_NO_PORT = 24` (`/usr/include/linux/in.h`) == FreeBSD `IP_BINDANY = 24` (`freebsd/netinet/in.h:462`).
+- `lib/ff_syscall_wrapper.c`'s `ip_opt_convert()` had no `LINUX_IP_BIND_ADDRESS_NO_PORT` branch; `default: return optname` passed 24 through unchanged → `kern_setsockopt(IPPROTO_IP, 24)` was treated by FreeBSD as `IP_BINDANY`.
+- v4 path: `ip_ctloutput` (`ip_output.c:1092`) L1174 `case IP_BINDANY` matched → `priv_check` + `OPTSET(INP_BINDANY)` → **silently mis-set INP_BINDANY** (transparent-proxy side effect, no error reported).
+- v6 path: `ip6_ctloutput` (`ip6_output.c:1573`) L1605 `if (level != IPPROTO_IPV6)` → `error = EINVAL` (L1606) → the source of nginx's `setsockopt(IP_BIND_ADDRESS_NO_PORT) failed, ignored (22: Invalid argument)`.
+
+**Fix (commit `a2537e143`, `lib/ff_syscall_wrapper.c`, +17/-0)**:
+- Added `#define LINUX_IP_BIND_ADDRESS_NO_PORT 24`.
+- `ff_setsockopt`: intercepts `IPPROTO_IP + LINUX_IP_BIND_ADDRESS_NO_PORT` before the `linux2freebsd_opt` call and returns success no-op (FreeBSD `bind(port=0)` already defers port allocation to connect; F-Stack RSS `ff_rss_adjust_sport/6` back-derives the source port at connect, so there is no need to pass it into the kernel).
+- `ff_getsockopt`: same interception, returns optval=1 (symmetric with set).
+- Covers v4/v6: nginx calls setsockopt at the IPPROTO_IP level for both v4 and v6 sockets, so the IPPROTO_IP interception naturally covers both.
+
+**Verification**:
+- Compilation: `ff_syscall_wrapper.o` compiles cleanly under `-Werror` (exit=0).
+- Integration test limited: the local DPDK virtio PCI devices are occupied by the kernel, so nginx_fstack could not be started for a DPDK-path end-to-end test; fix correctness is guaranteed by static code substantiation (numeric collision + interception point + FreeBSD bind(0) deferred-port semantics) plus successful compilation.
+- v4/v6 consistency: the interception point is at `level == IPPROTO_IP`, through which both v4 and v6 sockets pass; v6 EINVAL is eliminated and v4 no longer mis-sets INP_BINDANY.
+
 ---
 
 ## 6-bis. R-G (IPv6 reverse-path misqueue symmetric fix)

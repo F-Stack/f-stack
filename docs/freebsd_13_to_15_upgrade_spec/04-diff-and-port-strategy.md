@@ -359,7 +359,7 @@ The `ifeq (${MACHINE_CPUARCH},mips)` block at Makefile lines 197-207 only sets `
 | `tcp_var.h` | H-8 (tcpcb field tweaks) | **RACK fields added to tcpcb (R-004)** | **T-netinet-04 [P0]**: redo field trim |
 | `tcp_stacks/rack.c` | H-5 (module name → fstack) | RACK heavily updated | T-netinet-05: redo H-5 |
 | `tcp_stacks/bbr.c` | H-5 (module name → fstack) | minor | T-netinet-06: redo H-5 |
-| `in_pcb.c` | H-4 (RSS port range / lport check / ladddr derivation) | **inpcb SMR (R-012)** | **T-netinet-07 [P0]**: redo H-4; adapt SMR |
+| `in_pcb.c` | H-4 (RSS port range / lport check / ladddr derivation) | **inpcb SMR (R-012)** | **T-netinet-07 [P0]**: redo H-4; adapt SMR. Note: R-E (IP_BIND_ADDRESS_NO_PORT bind-then-connect, commit `ff9e3c449`) and the setsockopt-layer wiring (commit `a2537e143`, intercepting `LINUX_IP_BIND_ADDRESS_NO_PORT(24)` vs FreeBSD `IP_BINDANY(24)` collision) are already done — see `ff_rss_check_opt_spec` R-E §6/§6.9 |
 | `tcp_usrreq.c` | (no substantive adaptation) | **pr_usrreqs merged into protosw (R-011)** | T-netinet-08: assess whether redo is needed (depends on whether it still needs modification after the protosw rewrite) |
 | `udp_usrreq.c` | (no substantive adaptation) | **pr_usrreqs merged into protosw (R-011)** | T-netinet-09: same |
 | `raw_ip.c` | (no substantive adaptation) | **pr_usrreqs merged into protosw (R-011)** | T-netinet-10: same |
