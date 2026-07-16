@@ -86,6 +86,14 @@ Traceability: `docs/ff_rss_check_opt_spec/zh_cn/` (00-11), esp. `05-接口设计
 
 ---
 
+## 2C. Post-index code delta: IP_BIND_ADDRESS_NO_PORT setsockopt wiring (R-E setsockopt layer)
+
+- **Symbol**: `LINUX_IP_BIND_ADDRESS_NO_PORT` (=24), `ff_setsockopt`, `ff_getsockopt`
+- **File**: `lib/ff_syscall_wrapper.c` (commit `a2537e143`, +17/-0)
+- **Root cause**: Linux `IP_BIND_ADDRESS_NO_PORT` (24) collides numerically with FreeBSD `IP_BINDANY` (24, `freebsd/netinet/in.h:462`); `ip_opt_convert` had no branch for it, so `default: return optname` passed 24 through → v6 sockets got EINVAL from `ip6_ctloutput` (level != IPPROTO_IPV6), v4 sockets were silently misrouted to set INP_BINDANY.
+- **Fix**: intercept `IPPROTO_IP + LINUX_IP_BIND_ADDRESS_NO_PORT` in `ff_setsockopt`/`ff_getsockopt` before `linux2freebsd_opt`, return success no-op. FreeBSD already defers ephemeral port selection to connect; F-Stack RSS reverse path (`ff_rss_adjust_sport/6`) picks the source port at connect. Covers both v4 and v6 (nginx calls setsockopt at IPPROTO_IP level for both).
+- **Complements R-E (§6 of ff_rss 10)**: R-E fixed the kernel-side bind gate (`in_pcb.c`/`in6_pcb.c`); this patch fixes the setsockopt option wiring so nginx can actually request the delayed-port behavior without EINVAL.
+
 ## 3. Directory Structure
 
 ```

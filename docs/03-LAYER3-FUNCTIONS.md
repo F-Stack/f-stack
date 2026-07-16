@@ -362,6 +362,8 @@ int ff_setsockopt(int s, int level, int optname,
 }
 ```
 
+> **IP_BIND_ADDRESS_NO_PORT (commit `a2537e143`)**: Linux `IP_BIND_ADDRESS_NO_PORT` (=24) collides with FreeBSD `IP_BINDANY` (=24). `ff_setsockopt`/`ff_getsockopt` intercept `IPPROTO_IP + LINUX_IP_BIND_ADDRESS_NO_PORT` before `linux2freebsd_opt` and return success no-op (FreeBSD defers ephemeral port selection to connect; F-Stack RSS `ff_rss_adjust_sport/6` picks the source port then). Covers v4/v6 — nginx calls setsockopt at IPPROTO_IP level for both.
+
 **Supported ioctl Commands**:
 
 ```c
