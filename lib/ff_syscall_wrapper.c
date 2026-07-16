@@ -97,6 +97,7 @@
 #define LINUX_IP_RECVTOS    13
 #define LINUX_IP_TRANSPARENT    19
 #define LINUX_IP_MINTTL     21
+#define LINUX_IP_BIND_ADDRESS_NO_PORT  24
 
 #define LINUX_IP_MULTICAST_IF       32
 #define LINUX_IP_MULTICAST_TTL      33
@@ -975,6 +976,14 @@ ff_getsockopt(int s, int level, int optname, void *optval,
     if (level == LINUX_SOL_SOCKET)
         level = SOL_SOCKET;
 
+    if (level == IPPROTO_IP && optname == LINUX_IP_BIND_ADDRESS_NO_PORT) {
+        if (optlen && *optlen >= sizeof(int)) {
+            *(int *)optval = 1;
+            *optlen = sizeof(int);
+        }
+        return (0);
+    }
+
     optname = linux2freebsd_opt(level, optname);
     if (optname < 0) {
         rc = EINVAL;
@@ -1028,6 +1037,14 @@ ff_setsockopt(int s, int level, int optname, const void *optval,
 
     if (level == LINUX_SOL_SOCKET)
         level = SOL_SOCKET;
+
+    /* Linux IP_BIND_ADDRESS_NO_PORT (=24) collides with FreeBSD IP_BINDANY
+     * (=24); intercept it before linux2freebsd_opt misroutes it.  FreeBSD
+     * already defers ephemeral port selection to connect, and the F-Stack
+     * RSS reverse path (ff_rss_adjust_sport/6) picks the source port then,
+     * so this is a successful no-op for both v4 and v6 sockets. */
+    if (level == IPPROTO_IP && optname == LINUX_IP_BIND_ADDRESS_NO_PORT)
+        return (0);
 
     optname = linux2freebsd_opt(level, optname);
     if (optname < 0) {
