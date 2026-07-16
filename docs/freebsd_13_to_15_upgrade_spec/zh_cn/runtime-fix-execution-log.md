@@ -120,7 +120,7 @@
 
 1. ~~🟡 `ff_veth_setaddr failed` — rib_action(RTM_ADD) 返 errno 55 EOPNOTSUPP（14.0+ rib/nexthop 重写后 fstack lib stub 未对齐）~~ → **✅ Phase 2 已修复**（详见 §11；errno 55 实为 ENOBUFS 非 EOPNOTSUPP — 此处原记录有误读，Phase 2 已纠正）
 2. ~~🟡 `ifa_maintain_loopback_route: insertion failed: 55` — 同根因~~ → **✅ Phase 2 已修复**
-3. 🟡 `kernel_sysctlbyname failed: net.inet.tcp.hpts.skip_swi=1, error:2` — sysctl 节点未注册（非致命；不影响 ff_ifconfig/ff_netstat 验收）
+3. ~~🟡 `kernel_sysctlbyname failed: net.inet.tcp.hpts.skip_swi=1, error:2` — sysctl 节点未注册（非致命；不影响 ff_ifconfig/ff_netstat 验收）~~ → **✅ 已修复（2026-07）**：该 sysctl 连同 `net.inet.ip.portrange.randomtime`、`net.inet.tcp.maxtcptw` 三个节点在 FreeBSD 15.0 已移除（`tcp_hpts.c` 删除 `skip_swi`、`in_pcb.c` 删除 `randomtime` 保留 `randomized`、`tcp_timewait.c` 删除 `maxtcptw` 且 tcp_timewait 机制整体瘦身），13.0 baseline 均有对应 `SYSCTL_INT/PROC`。config.ini 已注释掉这三行（加 `# removed in FreeBSD 15.0` 说明），消除启动报错；功能无影响（功能本身已不存在）。
 
 ## 11. Phase 2 (rib/rtentry IP 配置修复) — 2026-06-01 20:52
 
