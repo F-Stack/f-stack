@@ -4,7 +4,7 @@ This document mainly [Translated](https://lovelyping.com/?p=267) by ChatGPT.
 
 
 
-The long-awaited `LD_PRELOAD` function module (later replaced by `libff_syscall.so`) has been submitted to the [adapter/sysctall](https://github.com/F-Stack/f-stack/tree/dev/adapter/syscall) directory in the F-Stack dev branch, which supports code hooking for system kernel socket-related interfaces, reducing the threshold for existing applications to port to F-Stack. The following will provide specific introductions, including the architecture related to `libff_syscall.so`, some of the considerations involved, the supported modes, and how to use it.
+The long-awaited `LD_PRELOAD` function module (later replaced by `libff_syscall.so`) has been submitted to the [adapter/syscall](https://github.com/F-Stack/f-stack/tree/dev/adapter/syscall) directory in the F-Stack dev branch, which supports code hooking for system kernel socket-related interfaces, reducing the threshold for existing applications to port to F-Stack. The following will provide specific introductions, including the architecture related to `libff_syscall.so`, some of the considerations involved, the supported modes, and how to use it.
 
 Overall conclusion:
 
@@ -59,10 +59,10 @@ export FF_PATH=/data/f-stack
 export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
 ```
 
-Compile directly in the `adapter/sysctall` directory to obtain the relevant functional components of `libff_syscall.so`:
+Compile directly in the `adapter/syscall` directory to obtain the relevant functional components of `libff_syscall.so`:
 
 ```
-cd /data/f-stack/adapter/sysctall
+cd /data/f-stack/adapter/syscall
 make clean;make all
 
 ls -lrt
@@ -145,7 +145,7 @@ The performance of this usage method is slightly better than using the system's 
 
 ### RTC (run to completion) mode within threads (processes)
 
-This mode needs to set additional compilation parameters to enable it, and `libff_syscall.so` can be compiled after enabling `FF_THREAD_SOCKET` in `adapter/sysctall/Makefile` or executing the following shell command.
+This mode needs to set additional compilation parameters to enable it, and `libff_syscall.so` can be compiled after enabling `FF_THREAD_SOCKET` in `adapter/syscall/Makefile` or executing the following shell command.
 
 ```
 export FF_THREAD_SOCKET=1
@@ -168,7 +168,7 @@ Other same as the default PIPELINE mode, you can refer to the DEMO program `hell
 
 ### FF_KERNEL_EVENT Mode
 
-This mode can support both F-Stack and the system kernel's socket interface at the same time. It needs to set additional compilation parameters to enable it, and `FF_KERNEL_EVENT` can be enabled in `adapter/sysctall/Makefile` or executing the following shell command.
+This mode can support both F-Stack and the system kernel's socket interface at the same time. It needs to set additional compilation parameters to enable it, and `FF_KERNEL_EVENT` can be enabled in `adapter/syscall/Makefile` or executing the following shell command.
 
 ```
 export FF_KERNEL_EVENT=1
@@ -187,7 +187,7 @@ In this mode, the `epoll` related interface will call the system kernel's relate
 
 ### FF_MULTI_SC Mode
 
-This mode is set for special settings such as Nginx using the kernel's `SO_REUSEPORT` and running worker processes with `fork`. It needs to set additional compilation parameters to enable it, and `FF_MULTI_SC` can be enabled in `adapter/sysctall/Makefile` or executing the following shell command.
+This mode is set for special settings such as Nginx using the kernel's `SO_REUSEPORT` and running worker processes with `fork`. It needs to set additional compilation parameters to enable it, and `FF_MULTI_SC` can be enabled in `adapter/syscall/Makefile` or executing the following shell command.
 
 ```
 export FF_MULTI_SC=1
@@ -212,7 +212,7 @@ Both `FF_THREAD_SOCKET` and `FF_MULTI_SC` modes need to be enabled for compilati
 export FF_PATH=/data/f-stack
 export PKG_CONFIG_PATH=/usr/lib64/pkgconfig:/usr/local/lib64/pkgconfig:/usr/lib/pkgconfig
 
-cd /data/f-stack/adapter/sysctall
+cd /data/f-stack/adapter/syscall
 export FF_KERNEL_EVENT=1
 export FF_MULTI_SC=1
 make clean;make all
@@ -323,7 +323,7 @@ Kernel: 5.4.119-1-tlinux4-0009.1 #1 SMP Sun Jan 23 22:20:03 CST 2022 x86_64 x86_
 
 ### Compilation Parameters
 
-This section provides an overall introduction to various compilation options. All parameters can be enabled in `adapter/sysctall/Makefile` or set environment variables through shell commands to enable.
+This section provides an overall introduction to various compilation options. All parameters can be enabled in `adapter/syscall/Makefile` or set environment variables through shell commands to enable.
 
 #### DEBUG
 
