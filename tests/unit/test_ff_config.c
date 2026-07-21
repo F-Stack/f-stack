@@ -1063,6 +1063,96 @@ test_ff_load_config_stack_coexist_disabled_explicit(void **state)
 }
 #endif /* FF_KERNEL_COEXIST */
 
+/* ------------------------------------------------------------------------ */
+/* MTU configuration tests (UT-CFG-01..07)                                   */
+/* ------------------------------------------------------------------------ */
+
+/* UT-CFG-01: legacy fixture without MTU keys -> defaults populated */
+static void
+test_mtu_defaults_legacy(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.mtu_enable, 0);
+    assert_int_equal(ff_global_cfg.dpdk.max_mtu, 9000);
+    assert_int_equal(ff_global_cfg.dpdk.mbuf_mode, FF_MBUF_MODE_LARGE);
+    if (ff_global_cfg.dpdk.port_cfgs) {
+        assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].mtu, 1500);
+    }
+}
+
+/* UT-CFG-02: mtu_enable=1, large, 9000 */
+static void
+test_mtu_large_9000(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_mtu_large_9000.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.mtu_enable, 1);
+    assert_int_equal(ff_global_cfg.dpdk.max_mtu, 9000);
+    assert_int_equal(ff_global_cfg.dpdk.mbuf_mode, FF_MBUF_MODE_LARGE);
+    if (ff_global_cfg.dpdk.port_cfgs) {
+        assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].mtu, 9000);
+    }
+}
+
+/* UT-CFG-03: scatter mode */
+static void
+test_mtu_scatter_mode(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_mtu_scatter.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.mtu_enable, 1);
+    assert_int_equal(ff_global_cfg.dpdk.mbuf_mode, FF_MBUF_MODE_SCATTER);
+}
+
+/* UT-CFG-04: invalid mbuf_mode -> parse failure */
+static void
+test_mtu_invalid_mode_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_bad_mode.ini"));
+    assert_int_not_equal(rv, 0);
+}
+
+/* UT-CFG-05: max_mtu non-numeric -> parse failure */
+static void
+test_mtu_max_mtu_non_numeric_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_max_mtu_bad.ini"));
+    assert_int_not_equal(rv, 0);
+}
+
+/* UT-CFG-06: port.mtu > max_mtu -> check failure */
+static void
+test_mtu_port_over_max_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_port_over_max.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* UT-CFG-07: mtu_enable=0, port.mtu>1500 -> check failure */
+static void
+test_mtu_disabled_port_over_1500_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_disabled_port_over_1500.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* UT-CFG-08: large mode max_mtu=65535 -> data_room overflow -> check failure */
+static void
+test_mtu_large_65535_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_large_65535.ini"));
+    assert_int_equal(rv, -1);
+}
+
 int
 main(void)
 {
@@ -1124,6 +1214,15 @@ main(void)
         cmocka_unit_test_setup_teardown(test_vlan_cfgs_calloc_oom_returns_error, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_vdev_cfgs_calloc_oom_returns_error, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_bond_cfgs_calloc_oom_returns_error, test_setup, NULL),
+        /* MTU configuration tests (UT-CFG-01..07) */
+        cmocka_unit_test_setup_teardown(test_mtu_defaults_legacy,                    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_large_9000,                         test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_scatter_mode,                       test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_invalid_mode_fails,                 test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_max_mtu_non_numeric_fails,          test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_port_over_max_fails,                test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_disabled_port_over_1500_fails,      test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_large_65535_fails,                  test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),
