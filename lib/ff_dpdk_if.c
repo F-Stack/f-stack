@@ -243,6 +243,9 @@ ff_dpdk_register_if(void *sc, void *ifp, struct ff_port_cfg *cfg)
     ctx->ifp = ifp;
     ctx->port_id = cfg->port_id;
     ctx->hw_features = cfg->hw_features;
+    ctx->mtu = cfg->mtu;
+    ctx->max_mtu = ff_global_cfg.dpdk.max_mtu;
+    ctx->mbuf_mode = ff_global_cfg.dpdk.mbuf_mode;
 
     return ctx;
 }
@@ -383,6 +386,19 @@ init_lcore_conf(void)
 }
 
 static int
+ff_mtu_data_room_size(uint16_t max_mtu, uint16_t *out)
+{
+    size_t frame = (size_t)max_mtu + RTE_ETHER_HDR_LEN +
+        2 * RTE_VLAN_HLEN + RTE_ETHER_CRC_LEN;
+    size_t room = RTE_PKTMBUF_HEADROOM + frame;
+    room = RTE_ALIGN_CEIL(room, RTE_CACHE_LINE_SIZE);
+    if (room > UINT16_MAX)
+        return -ERANGE;
+    *out = (uint16_t)room;
+    return 0;
+}
+
+static int
 init_mem_pool(void)
 {
     uint8_t nb_ports = ff_global_cfg.dpdk.nb_ports;
@@ -424,10 +440,24 @@ init_mem_pool(void)
 
         if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
             snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
+            uint16_t data_room = RTE_MBUF_DEFAULT_BUF_SIZE;
+            if (ff_global_cfg.dpdk.mtu_enable &&
+                ff_global_cfg.dpdk.mbuf_mode == FF_MBUF_MODE_LARGE) {
+                uint16_t room;
+                int dr = ff_mtu_data_room_size(
+                    ff_global_cfg.dpdk.max_mtu, &room);
+                if (dr == 0) {
+                    data_room = room;
+                } else {
+                    rte_exit(EXIT_FAILURE,
+                        "large mode max_mtu %u data_room overflow\n",
+                        ff_global_cfg.dpdk.max_mtu);
+                }
+            }
             pktmbuf_pool[socketid] =
                 rte_pktmbuf_pool_create(s, nb_mbuf,
                     MEMPOOL_CACHE_SIZE, 0,
-                    RTE_MBUF_DEFAULT_BUF_SIZE, socketid);
+                    data_room, socketid);
         } else {
             snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
             pktmbuf_pool[socketid] = rte_mempool_lookup(s);
@@ -849,6 +879,32 @@ init_port_start(void)
                 }
             }
 
+            if (ff_global_cfg.dpdk.mtu_enable) {
+                uint16_t req_mtu = pconf ? pconf->mtu : 1500;
+                if (req_mtu < dev_info.min_mtu ||
+                    req_mtu > dev_info.max_mtu) {
+                    rte_exit(EXIT_FAILURE,
+                        "port %u mtu %u out of PMD range [%u, %u]\n",
+                        port_id, req_mtu,
+                        dev_info.min_mtu, dev_info.max_mtu);
+                }
+                port_conf.rxmode.mtu = req_mtu;
+                if (ff_global_cfg.dpdk.mbuf_mode == FF_MBUF_MODE_SCATTER) {
+                    if (!(dev_info.rx_offload_capa &
+                          RTE_ETH_RX_OFFLOAD_SCATTER) ||
+                        !(dev_info.tx_offload_capa &
+                          RTE_ETH_TX_OFFLOAD_MULTI_SEGS)) {
+                        rte_exit(EXIT_FAILURE,
+                            "port %u scatter mode requires RX_SCATTER and TX_MULTI_SEGS\n",
+                            port_id);
+                    }
+                    port_conf.rxmode.offloads |=
+                        RTE_ETH_RX_OFFLOAD_SCATTER;
+                    port_conf.txmode.offloads |=
+                        RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
+                }
+            }
+
             if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
                 continue;
             }
@@ -913,6 +969,27 @@ init_port_start(void)
                     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u, %s's slave port[%u]\n", port_id,
                             ff_global_cfg.dpdk.bond_cfgs->name, slaves[x]);
                 }
+            }
+
+            if (ff_global_cfg.dpdk.mtu_enable) {
+                uint16_t req_mtu = pconf ? pconf->mtu : 1500;
+                ret = rte_eth_dev_set_mtu(port_id, req_mtu);
+                if (ret != 0) {
+                    rte_exit(EXIT_FAILURE,
+                        "port %u set_mtu(%u) failed: %s\n",
+                        port_id, req_mtu, strerror(-ret));
+                }
+                uint16_t actual_mtu;
+                ret = rte_eth_dev_get_mtu(port_id, &actual_mtu);
+                if (ret != 0 || actual_mtu != req_mtu) {
+                    rte_exit(EXIT_FAILURE,
+                        "port %u mtu mismatch: requested %u got %u\n",
+                        port_id, req_mtu, actual_mtu);
+                }
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+                    "port %u mtu=%u mode=%d\n",
+                    port_id, actual_mtu,
+                    ff_global_cfg.dpdk.mbuf_mode);
             }
 
             ret = rte_eth_dev_start(port_id);
@@ -2236,7 +2313,8 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 
         prev = cur;
         void *data = rte_pktmbuf_mtod(cur, void*);
-        int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
+        int cap = rte_pktmbuf_tailroom(cur);
+        int len = total > cap ? cap : total;
         int ret = ff_mbuf_copydata(m, data, off, len);
         if (ret < 0) {
             ff_traffic.tx_dropped += head->nb_segs;
@@ -2358,7 +2436,8 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
 
         prev = cur;
         void *cur_data = rte_pktmbuf_mtod(cur, void*);
-        int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
+        int cap = rte_pktmbuf_tailroom(cur);
+        int len = total > cap ? cap : total;
         memcpy(cur_data, data + off, len);
 
         cur->data_len = len;

@@ -36,6 +36,15 @@ struct loop_routine {
     void *arg;
 };
 
+struct ff_mtu_capability {
+    uint16_t min_mtu;
+    uint16_t max_mtu;
+    uint32_t max_rx_pktlen;
+    uint32_t max_rx_bufsize;
+    bool rx_scatter;
+    bool tx_multi_segs;
+};
+
 int ff_dpdk_init(int argc, char **argv);
 int ff_dpdk_if_up(void);
 void ff_dpdk_run(loop_func_t loop, void *arg);
