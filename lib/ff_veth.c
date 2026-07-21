@@ -251,10 +251,9 @@ ff_veth_ioctl(if_t ifp, u_long cmd, caddr_t data)
             error = ff_dpdk_if_set_mtu(sc->host_ctx, new_mtu);
             if (error == 0)
                 if_setmtu(ifp, new_mtu);
-        } else {
-            error = ether_ioctl(ifp, cmd, data);
+            break;
         }
-        break;
+        /* fall through */
     default:
         error = ether_ioctl(ifp, cmd, data);
         break;
