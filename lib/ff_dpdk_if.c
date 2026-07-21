@@ -275,9 +275,30 @@ ff_dpdk_if_set_mtu(struct ff_dpdk_if_context *ctx, uint16_t mtu)
 {
     if (rte_eal_process_type() != RTE_PROC_PRIMARY)
         return 0;
+
+    uint16_t old_mtu = ctx->mtu;
     int ret = rte_eth_dev_set_mtu(ctx->port_id, mtu);
-    if (ret != 0)
+    if (ret == -EBUSY) {
+        /* PMD requires port stopped; stop/set/get/start with rollback */
+        rte_eth_dev_stop(ctx->port_id);
+        ret = rte_eth_dev_set_mtu(ctx->port_id, mtu);
+        if (ret != 0) {
+            rte_eth_dev_set_mtu(ctx->port_id, old_mtu);
+            rte_eth_dev_start(ctx->port_id);
+            return ff_dpdk_errno_to_bsd(ret);
+        }
+        uint16_t actual;
+        if (rte_eth_dev_get_mtu(ctx->port_id, &actual) != 0 ||
+            actual != mtu) {
+            rte_eth_dev_set_mtu(ctx->port_id, old_mtu);
+            rte_eth_dev_start(ctx->port_id);
+            return EIO;
+        }
+        rte_eth_dev_start(ctx->port_id);
+    } else if (ret != 0) {
         return ff_dpdk_errno_to_bsd(ret);
+    }
+
     ctx->mtu = mtu;
     return 0;
 }
