@@ -249,8 +249,10 @@ ff_veth_ioctl(if_t ifp, u_long cmd, caddr_t data)
             struct ifreq *ifr = (struct ifreq *)data;
             uint16_t new_mtu = (uint16_t)ifr->ifr_mtu;
             error = ff_dpdk_if_set_mtu(sc->host_ctx, new_mtu);
-            if (error == 0)
+            if (error == 0) {
                 if_setmtu(ifp, new_mtu);
+                if_notifymtu(ifp);
+            }
             break;
         }
         /* fall through */
@@ -965,6 +967,7 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
         uint16_t init_mtu;
         if (ff_dpdk_if_get_mtu(sc->host_ctx, &init_mtu) == 0) {
             if_setmtu(sc->ifp, init_mtu);
+            if_notifymtu(sc->ifp);
         }
     }
 
