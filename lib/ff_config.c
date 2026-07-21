@@ -568,7 +568,7 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
             pconf->nb_lcores = ff_global_cfg.dpdk.nb_procs;
             memcpy(pconf->lcore_list, ff_global_cfg.dpdk.proc_lcore,
                    pconf->nb_lcores*sizeof(uint16_t));
-            pconf->mtu = 1500;
+            pconf->mtu = FF_MTU_DEFAULT;
         }
         cfg->dpdk.port_cfgs = pc;
     }
@@ -1068,7 +1068,7 @@ ini_parse_handler(void* user, const char* section, const char* name,
     } else if (MATCH("dpdk", "mtu_enable")) {
         pconfig->dpdk.mtu_enable = atoi(value);
     } else if (MATCH("dpdk", "max_mtu")) {
-        return ff_parse_u16(value, 1500, UINT16_MAX,
+        return ff_parse_u16(value, FF_MTU_DEFAULT, UINT16_MAX,
             &pconfig->dpdk.max_mtu);
     } else if (MATCH("dpdk", "mbuf_mode")) {
         return ff_parse_mbuf_mode(value, &pconfig->dpdk.mbuf_mode);
@@ -1411,7 +1411,7 @@ ff_check_config(struct ff_config *cfg)
     }
 
     if (cfg->dpdk.mtu_enable) {
-        if (cfg->dpdk.max_mtu < 1500) {
+        if (cfg->dpdk.max_mtu < FF_MTU_DEFAULT) {
             fprintf(stderr, "max_mtu must be >= 1500\n");
             return -1;
         }
@@ -1429,7 +1429,7 @@ ff_check_config(struct ff_config *cfg)
         for (i = 0; i < cfg->dpdk.nb_ports; i++) {
             uint16_t portid = cfg->dpdk.portid_list[i];
             struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[portid];
-            if (pc->mtu < 68 || pc->mtu > cfg->dpdk.max_mtu) {
+            if (pc->mtu < FF_MTU_MIN || pc->mtu > cfg->dpdk.max_mtu) {
                 fprintf(stderr,
                     "port%d mtu %u out of range [68, %u]\n",
                     portid, pc->mtu, cfg->dpdk.max_mtu);
@@ -1452,7 +1452,7 @@ ff_check_config(struct ff_config *cfg)
         for (i = 0; i < cfg->dpdk.nb_ports; i++) {
             uint16_t portid = cfg->dpdk.portid_list[i];
             struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[portid];
-            if (pc->mtu > 1500) {
+            if (pc->mtu > FF_MTU_DEFAULT) {
                 fprintf(stderr,
                     "port%d mtu %u > 1500 requires mtu_enable=1\n",
                     portid, pc->mtu);
@@ -1478,7 +1478,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
 
     cfg->dpdk.mtu_enable = 0;
-    cfg->dpdk.max_mtu = 9000;
+    cfg->dpdk.max_mtu = FF_MTU_JUMBO_DEFAULT;
     cfg->dpdk.mbuf_mode = FF_MBUF_MODE_LARGE;
 
 #ifdef FF_KERNEL_COEXIST

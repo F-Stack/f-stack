@@ -1075,10 +1075,10 @@ test_mtu_defaults_legacy(void **state)
     int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
     (void)rv;
     assert_int_equal(ff_global_cfg.dpdk.mtu_enable, 0);
-    assert_int_equal(ff_global_cfg.dpdk.max_mtu, 9000);
+    assert_int_equal(ff_global_cfg.dpdk.max_mtu, FF_MTU_JUMBO_DEFAULT);
     assert_int_equal(ff_global_cfg.dpdk.mbuf_mode, FF_MBUF_MODE_LARGE);
     if (ff_global_cfg.dpdk.port_cfgs) {
-        assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].mtu, 1500);
+        assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].mtu, FF_MTU_DEFAULT);
     }
 }
 
@@ -1090,10 +1090,10 @@ test_mtu_large_9000(void **state)
     int rv = load_with_fixture(FIXTURE_PATH("valid_mtu_large_9000.ini"));
     (void)rv;
     assert_int_equal(ff_global_cfg.dpdk.mtu_enable, 1);
-    assert_int_equal(ff_global_cfg.dpdk.max_mtu, 9000);
+    assert_int_equal(ff_global_cfg.dpdk.max_mtu, FF_MTU_JUMBO_DEFAULT);
     assert_int_equal(ff_global_cfg.dpdk.mbuf_mode, FF_MBUF_MODE_LARGE);
     if (ff_global_cfg.dpdk.port_cfgs) {
-        assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].mtu, 9000);
+        assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].mtu, FF_MTU_JUMBO_DEFAULT);
     }
 }
 

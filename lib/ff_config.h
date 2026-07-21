@@ -55,6 +55,10 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 
+#define FF_MTU_MIN           68    /* minimum MTU (IPv4) */
+#define FF_MTU_DEFAULT       1500  /* default Ethernet MTU */
+#define FF_MTU_JUMBO_DEFAULT 9000  /* default jumbo MTU */
+
 #define VIP_MAX_NUM 64
 
 /* ff_rss_check table args */

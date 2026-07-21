@@ -1044,7 +1044,7 @@ init_port_start(void)
             }
 
             if (ff_global_cfg.dpdk.mtu_enable) {
-                uint16_t req_mtu = pconf ? pconf->mtu : 1500;
+                uint16_t req_mtu = pconf ? pconf->mtu : FF_MTU_DEFAULT;
                 ret = rte_eth_dev_set_mtu(port_id, req_mtu);
                 if (ret != 0) {
                     rte_exit(EXIT_FAILURE,
