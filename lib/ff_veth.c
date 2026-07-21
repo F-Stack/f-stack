@@ -244,6 +244,17 @@ ff_veth_ioctl(if_t ifp, u_long cmd, caddr_t data)
         } else if (if_getdrvflags(ifp) & IFF_DRV_RUNNING)
             ff_veth_stop(sc);
         break;
+    case SIOCSIFMTU:
+        if (ff_global_cfg.dpdk.mtu_enable) {
+            struct ifreq *ifr = (struct ifreq *)data;
+            uint16_t new_mtu = (uint16_t)ifr->ifr_mtu;
+            error = ff_dpdk_if_set_mtu(sc->host_ctx, new_mtu);
+            if (error == 0)
+                if_setmtu(ifp, new_mtu);
+        } else {
+            error = ether_ioctl(ifp, cmd, data);
+        }
+        break;
     default:
         error = ether_ioctl(ifp, cmd, data);
         break;
@@ -949,6 +960,13 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
         return -1;
     } else {
         printf("%s: Successed to register dpdk interface\n", sc->host_ifname);
+    }
+
+    if (ff_global_cfg.dpdk.mtu_enable && sc->host_ctx) {
+        uint16_t init_mtu;
+        if (ff_dpdk_if_get_mtu(sc->host_ctx, &init_mtu) == 0) {
+            if_setmtu(sc->ifp, init_mtu);
+        }
     }
 
     /* if vlan_flag is true, all port's addrs/vips will not to set, just create the iface */

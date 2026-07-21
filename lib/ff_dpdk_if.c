@@ -250,6 +250,57 @@ ff_dpdk_register_if(void *sc, void *ifp, struct ff_port_cfg *cfg)
     return ctx;
 }
 
+static int
+ff_dpdk_errno_to_bsd(int rte_errno)
+{
+    switch (rte_errno) {
+    case 0:        return 0;
+    case -ENOTSUP: return EOPNOTSUPP;
+    case -EINVAL:  return EINVAL;
+    case -EBUSY:   return EBUSY;
+    case -EIO:     return EIO;
+    default:       return EIO;
+    }
+}
+
+int
+ff_dpdk_if_get_mtu(struct ff_dpdk_if_context *ctx, uint16_t *mtu)
+{
+    int ret = rte_eth_dev_get_mtu(ctx->port_id, mtu);
+    return ff_dpdk_errno_to_bsd(ret);
+}
+
+int
+ff_dpdk_if_set_mtu(struct ff_dpdk_if_context *ctx, uint16_t mtu)
+{
+    if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+        return 0;
+    int ret = rte_eth_dev_set_mtu(ctx->port_id, mtu);
+    if (ret != 0)
+        return ff_dpdk_errno_to_bsd(ret);
+    ctx->mtu = mtu;
+    return 0;
+}
+
+int
+ff_dpdk_if_get_mtu_capability(struct ff_dpdk_if_context *ctx,
+    struct ff_mtu_capability *cap)
+{
+    struct rte_eth_dev_info dev_info;
+    int ret = rte_eth_dev_info_get(ctx->port_id, &dev_info);
+    if (ret != 0)
+        return ff_dpdk_errno_to_bsd(ret);
+    cap->min_mtu = dev_info.min_mtu;
+    cap->max_mtu = dev_info.max_mtu;
+    cap->max_rx_pktlen = dev_info.max_rx_pktlen;
+    cap->max_rx_bufsize = dev_info.max_rx_bufsize;
+    cap->rx_scatter = !!(dev_info.rx_offload_capa &
+        RTE_ETH_RX_OFFLOAD_SCATTER);
+    cap->tx_multi_segs = !!(dev_info.tx_offload_capa &
+        RTE_ETH_TX_OFFLOAD_MULTI_SEGS);
+    return 0;
+}
+
 void
 ff_dpdk_deregister_if(struct ff_dpdk_if_context *ctx)
 {

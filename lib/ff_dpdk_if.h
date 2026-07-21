@@ -36,6 +36,8 @@ struct loop_routine {
     void *arg;
 };
 
+struct ff_dpdk_if_context;
+
 struct ff_mtu_capability {
     uint16_t min_mtu;
     uint16_t max_mtu;
@@ -44,6 +46,11 @@ struct ff_mtu_capability {
     bool rx_scatter;
     bool tx_multi_segs;
 };
+
+int ff_dpdk_if_get_mtu(struct ff_dpdk_if_context *ctx, uint16_t *mtu);
+int ff_dpdk_if_set_mtu(struct ff_dpdk_if_context *ctx, uint16_t mtu);
+int ff_dpdk_if_get_mtu_capability(struct ff_dpdk_if_context *ctx,
+    struct ff_mtu_capability *cap);
 
 int ff_dpdk_init(int argc, char **argv);
 int ff_dpdk_if_up(void);
