@@ -1443,11 +1443,6 @@ ff_check_config(struct ff_config *cfg)
             return -1;
         }
 #endif
-        if (cfg->kni.enable) {
-            fprintf(stderr,
-                "mtu_enable=1 is incompatible with kni.enable=1\n");
-            return -1;
-        }
     } else {
         for (i = 0; i < cfg->dpdk.nb_ports; i++) {
             uint16_t portid = cfg->dpdk.portid_list[i];
