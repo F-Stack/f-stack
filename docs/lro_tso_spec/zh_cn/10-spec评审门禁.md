@@ -194,3 +194,54 @@
 | CSUM_TSO 宏位关系 | `freebsd/sys/mbuf.h:670`（CSUM_IP6_TSO）/`:735`（CSUM_TSO 复合） |
 | config.ini | `f-stack/config.ini:22` |
 | 编译列表 | `f-stack/lib/Makefile:513`（tcp_lro.c）/`:572`（tcp_hpts.c） |
+
+---
+
+## 八、软件 LRO / 软件 TSO / 软硬对接门禁 checklist（第二轮补充）
+
+> 针对 `11-软件LRO方案.md`、`12-软件TSO与分段方案.md`、`13-软硬offload对接方案.md` 三份新文档 + 02/03/06/07/08/09 增补的评审断言。逐项 PASS/FAIL，附实测 file:line；本轮为**文档门禁**（spec 阶段，不含代码实现）。
+
+### 8.1 软件 LRO 断言
+
+| # | 断言 | 复核锚点 |
+| --- | --- | --- |
+| S1 | 软件 LRO 当前 0 调用点（未接通）结论正确 | lib/*.c 搜 tcp_lro_* = 0 |
+| S2 | tcp_lro API 签名/行号准确 | tcp_lro.c:167/173/491/1426/1199/1448；tcp_lro.h:161-181/215-222 |
+| S3 | tcp_lro.c:1261 NULL 裸调风险坐实准确 | tcp_lro.c:1261；ff_stub_14_extra.c:627 |
+| S4 | 经典模式规避 1261 的路径论证正确（tcp_lro_rx 不含裸调） | tcp_lro.c:1426/1108-1122 |
+| S5 | 接入点 ff_veth_input 定位准确 | ff_dpdk_if.c:1707/1720 |
+| S6 | iflib 范式引用准确（未编译进 f-stack） | iflib.c:462/3000/3029/6035；Makefile 搜 iflib=0 |
+
+### 8.2 软件 TSO 断言
+
+| # | 断言 | 复核锚点 |
+| --- | --- | --- |
+| S7 | 软件 TSO=协议栈 MSS 分段逻辑链完整正确 | tcp_output.c:558；tcp_input.c:3973；tcp_subr.c:3657/3699；ff_veth.c:955 |
+| S8 | 软件 TSO 无需开发结论正确（发端无缺口） | ff_veth.c:305-307（CSUM_TSO 门控） |
+| S9 | rte_gso 定位准确（可选、本轮不引入） | dpdk lib/gso rte_gso.h:120 |
+
+### 8.3 软硬对接断言
+
+| # | 断言 | 复核锚点 |
+| --- | --- | --- |
+| S10 | 唯一实质缺口=收端软件 LRO 未接入结论正确 | 13 文档 §0/§9 |
+| S11 | 开关语义方案 A（单 lro 自动选优）论证合理 | 13 文档 §2 |
+| S12 | 软硬 LRO 互斥真值表正确（rx_lro & sw_lro==0 恒成立） | 13 文档 §4.2 |
+| S13 | IFCAP_LRO 条件需扩展 rx_lro\|\|sw_lro 结论正确 | ff_veth.c:945-947 |
+| S14 | sw_lro 纳入 ff_hw_features 决策合理 | ff_config.h:112-118；13 文档 §3.3 |
+| S15 | 零回归论证正确（lro=0/tso=0 新增分支不可达） | 13 文档 §5 |
+
+### 8.4 交叉验证与代码为准
+
+| # | 断言 | 说明 |
+| --- | --- | --- |
+| S16 | 外网结论与代码一致（软件 TSO=分段、rte_gro/gso 定位、iflib 范式） | 03 文档 §4.6 交叉表 |
+| S17 | 现有代码已超前于旧文档（IFCAP_LRO/if_hw_tsomax/lro=0 已存在）已如实校准 | design-writer 发现；02/13 已标注以最新代码为准 |
+| S18 | rte_gro 取结果 API 更正为 rte_gro_timeout_flush（非 get_pkt） | 03 文档 §4.3 |
+
+### 8.5 文档门禁总结论
+
+- **文档完整性**：11/12/13 新增 + 02/03/06/07/08/09/00/10 增补，覆盖软件 LRO/软件 TSO/软硬对接三方面。
+- **代码为准**：所有断言附 file:line，与代码交叉验证；现有代码超前旧文档处已校准。
+- **诚实边界**：软件 LRO 聚合正确性/CPU 收益/1261 规避有效性/sw_lro 字段归属等均标注待运行时/编码坐实。
+- **bounce≤3**：文档门禁失败打回对应文档修复，超 3 次转人工。
