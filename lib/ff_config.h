@@ -293,6 +293,7 @@ struct ff_config {
         int nb_bond;
         int numa_on;
         int tso;
+        int lro;                 /* TCP large receive offload switch, 0=off */
         int tx_csum_offoad_skip;
         int vlan_strip;
         int nb_vlan_filter;

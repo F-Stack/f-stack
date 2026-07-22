@@ -888,14 +888,22 @@ init_port_start(void)
                 /* Enable HW CRC stripping */
                 port_conf.rxmode.offloads &= ~RTE_ETH_RX_OFFLOAD_KEEP_CRC;
 
-                /* FIXME: Enable TCP LRO ?*/
-                #if 0
-                if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
-                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is supported\n");
-                    port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_TCP_LRO;
-                    pconf->hw_features.rx_lro = 1;
+                if (ff_global_cfg.dpdk.lro) {
+                    if (dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_TCP_LRO) {
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is supported\n");
+                        port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TCP_LRO;
+                        pconf->hw_features.rx_lro = 1;
+                        if (dev_info.max_lro_pkt_size > 0) {
+                            port_conf.rxmode.max_lro_pkt_size = dev_info.max_lro_pkt_size;
+                        } else {
+                            port_conf.rxmode.max_lro_pkt_size = dev_info.max_rx_pktlen;
+                        }
+                    } else {
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is not supported\n");
+                    }
+                } else {
+                    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is disabled\n");
                 }
-                #endif
 
                 /* Set Rx checksum checking */
                 if ((dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) &&
@@ -929,6 +937,10 @@ init_port_start(void)
                 }
 
                 if (ff_global_cfg.dpdk.tso) {
+                    if (ff_global_cfg.dpdk.tx_csum_offoad_skip) {
+                        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                            "TSO enabled but tx_csum_offoad_skip=1, TSO may not work\n");
+                    }
                     if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_TSO) {
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TSO is supported\n");
                         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_TCP_TSO;
@@ -2455,11 +2467,25 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         if (offload.tso_seg_size) {
             struct rte_tcp_hdr *tcph;
             int tcph_len;
-            tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
-            tcph_len = (tcph->data_off & 0xf0) >> 2;
-            tcph->cksum = rte_ipv4_phdr_cksum(iph, RTE_MBUF_F_TX_TCP_SEG);
+
+            if (iph->version == 4) {
+                tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
+                tcph_len = (tcph->data_off & 0xf0) >> 2;
+                head->ol_flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
+                tcph->cksum = rte_ipv4_phdr_cksum(iph, RTE_MBUF_F_TX_TCP_SEG);
+                head->l3_len = iph_len;
+            } else {
+                struct rte_ipv6_hdr *ip6h = (struct rte_ipv6_hdr *)iph;
+                int ip6_len = sizeof(struct rte_ipv6_hdr);
+                tcph = (struct rte_tcp_hdr *)((char *)ip6h + ip6_len);
+                tcph_len = (tcph->data_off & 0xf0) >> 2;
+                head->ol_flags |= RTE_MBUF_F_TX_IPV6;
+                tcph->cksum = rte_ipv6_phdr_cksum(ip6h, RTE_MBUF_F_TX_TCP_SEG);
+                head->l3_len = ip6_len;
+            }
 
             head->ol_flags |= RTE_MBUF_F_TX_TCP_SEG;
+            head->l2_len = RTE_ETHER_HDR_LEN;
             head->l4_len = tcph_len;
             head->tso_segsz = offload.tso_seg_size;
         }

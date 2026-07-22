@@ -54,6 +54,7 @@
 
 #include <netinet/in.h>
 #include <netinet/in_var.h>
+#include <netinet/ip.h>
 #include <netinet6/nd6.h>
 #include <netinet6/scope6_var.h>
 #ifdef FF_IPFW
@@ -941,6 +942,9 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     if (cfg->hw_features.rx_csum) {
         if_setcapabilitiesbit(ifp, IFCAP_RXCSUM, 0);
     }
+    if (cfg->hw_features.rx_lro) {
+        if_setcapabilitiesbit(ifp, IFCAP_LRO, 0);
+    }
     if (cfg->hw_features.tx_csum_ip) {
         if_setcapabilitiesbit(ifp, IFCAP_TXCSUM, 0);
         if_sethwassistbits(ifp, CSUM_IP, 0);
@@ -951,6 +955,9 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     if (cfg->hw_features.tx_tso) {
         if_setcapabilitiesbit(ifp, IFCAP_TSO, 0);
         if_sethwassistbits(ifp, CSUM_TSO, 0);
+        if_sethwtsomax(ifp, IP_MAXPACKET);
+        if_sethwtsomaxsegcount(ifp, 35);
+        if_sethwtsomaxsegsize(ifp, 2048);
     }
 
     if_setcapenable(ifp, if_getcapabilities(ifp));
