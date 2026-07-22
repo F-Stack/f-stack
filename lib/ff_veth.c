@@ -543,7 +543,8 @@ ff_lro_rx(void *lro, void *m)
 void
 ff_lro_flush(void *lro)
 {
-    tcp_lro_flush_inactive(lro, NULL);
+    struct timeval tv = {0, 0};
+    tcp_lro_flush_inactive(lro, &tv);
 }
 
 void
