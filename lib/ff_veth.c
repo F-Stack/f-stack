@@ -61,6 +61,8 @@
 #include <netinet/ip_fw.h>
 #endif
 
+#include <netinet/tcp_lro.h>
+
 #include <machine/atomic.h>
 
 #include "ff_veth.h"
@@ -508,6 +510,42 @@ ff_mbuf_get(void *p, void *m, void *data, uint16_t len)
     return (void *)mb;
 }
 
+void *
+ff_lro_init(void *ifp)
+{
+    struct lro_ctrl *lc = malloc(sizeof(struct lro_ctrl),
+        M_DEVBUF, M_WAITOK | M_ZERO);
+    if (lc == NULL)
+        return NULL;
+    if (tcp_lro_init(lc) != 0) {
+        free(lc, M_DEVBUF);
+        return NULL;
+    }
+    lc->ifp = ifp;
+    return lc;
+}
+
+void
+ff_lro_free(void *lro)
+{
+    if (lro != NULL) {
+        tcp_lro_free(lro);
+        free(lro, M_DEVBUF);
+    }
+}
+
+int
+ff_lro_rx(void *lro, void *m)
+{
+    return tcp_lro_rx(lro, m, 0);
+}
+
+void
+ff_lro_flush(void *lro)
+{
+    tcp_lro_flush_inactive(lro, NULL);
+}
+
 void
 ff_veth_process_packet(void *arg, void *m)
 {
@@ -942,7 +980,7 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     if (cfg->hw_features.rx_csum) {
         if_setcapabilitiesbit(ifp, IFCAP_RXCSUM, 0);
     }
-    if (cfg->hw_features.rx_lro) {
+    if (cfg->hw_features.rx_lro || cfg->hw_features.sw_lro) {
         if_setcapabilitiesbit(ifp, IFCAP_LRO, 0);
     }
     if (cfg->hw_features.tx_csum_ip) {

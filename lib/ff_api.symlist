@@ -37,6 +37,10 @@ ff_kevent_do_each
 ff_veth_attach
 ff_veth_detach
 ff_veth_process_packet
+ff_lro_init
+ff_lro_free
+ff_lro_rx
+ff_lro_flush
 ff_veth_softc_to_hostc
 ff_mbuf_gethdr
 ff_mbuf_get

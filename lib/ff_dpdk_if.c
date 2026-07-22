@@ -247,6 +247,14 @@ ff_dpdk_register_if(void *sc, void *ifp, struct ff_port_cfg *cfg)
     ctx->max_mtu = ff_global_cfg.dpdk.max_mtu;
     ctx->mbuf_mode = ff_global_cfg.dpdk.mbuf_mode;
 
+    if (ctx->hw_features.sw_lro) {
+        ctx->lro = ff_lro_init(ctx->ifp);
+        if (ctx->lro == NULL) {
+            free(ctx);
+            return NULL;
+        }
+    }
+
     return ctx;
 }
 
@@ -325,6 +333,7 @@ ff_dpdk_if_get_mtu_capability(struct ff_dpdk_if_context *ctx,
 void
 ff_dpdk_deregister_if(struct ff_dpdk_if_context *ctx)
 {
+    ff_lro_free(ctx->lro);
     free(ctx);
 }
 
@@ -899,7 +908,8 @@ init_port_start(void)
                             port_conf.rxmode.max_lro_pkt_size = dev_info.max_rx_pktlen;
                         }
                     } else {
-                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is not supported\n");
+                        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is not supported, fallback to software\n");
+                        pconf->hw_features.sw_lro = 1;
                     }
                 } else {
                     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "LRO is disabled\n");
@@ -1704,7 +1714,7 @@ ff_dpdk_init(int argc, char **argv)
 }
 
 static void
-ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
+ff_veth_input(struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
 {
     uint8_t rx_csum = ctx->hw_features.rx_csum;
     if (rx_csum) {
@@ -1748,6 +1758,11 @@ ff_veth_input(const struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
         }
         pn = pn->next;
         prev = mb;
+    }
+
+    if (ctx->lro != NULL) {
+        if (ff_lro_rx(ctx->lro, hdr) == 0)
+            return;
     }
 
     ff_veth_process_packet(ctx->ifp, hdr);
@@ -1885,7 +1900,7 @@ ff_add_vlan_tag(struct rte_mbuf * rtem)
 
 static inline void
 process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
-    uint16_t count, const struct ff_dpdk_if_context *ctx, int pkts_from_ring)
+    uint16_t count, struct ff_dpdk_if_context *ctx, int pkts_from_ring)
 {
     struct lcore_conf *qconf = &lcore_conf;
     uint16_t nb_queues = qconf->nb_queue_list[port_id];
@@ -2027,7 +2042,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 
 static inline int
 process_dispatch_ring(uint16_t port_id, uint16_t queue_id,
-    struct rte_mbuf **pkts_burst, const struct ff_dpdk_if_context *ctx)
+    struct rte_mbuf **pkts_burst, struct ff_dpdk_if_context *ctx)
 {
     /* read packet from ring buf and to process */
     uint16_t nb_rb;
@@ -2652,8 +2667,11 @@ main_loop(void *arg)
 
             nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
                 MAX_PKT_BURST);
-            if (nb_rx == 0)
+            if (nb_rx == 0) {
+                if (ctx->lro != NULL)
+                    ff_lro_flush(ctx->lro);
                 continue;
+            }
 
             idle = 0;
 
@@ -2674,6 +2692,8 @@ main_loop(void *arg)
             for (; j < nb_rx; j++) {
                 process_packets(port_id, queue_id, &pkts_burst[j], 1, ctx, 0);
             }
+            if (ctx->lro != NULL)
+                ff_lro_flush(ctx->lro);
         }
 
         process_msg_ring(qconf->proc_id, pkts_burst);
