@@ -370,6 +370,7 @@ test_ff_load_config_all_sections(void **state)
     assert_int_equal(ff_global_cfg.dpdk.nb_channel,  4);
     assert_int_equal(ff_global_cfg.dpdk.memory,      128);
     assert_int_equal(ff_global_cfg.dpdk.tso,         0);
+    assert_int_equal(ff_global_cfg.dpdk.lro,         0);
     assert_int_equal(ff_global_cfg.dpdk.symmetric_rss, 1);
     assert_int_equal(ff_global_cfg.dpdk.idle_sleep, 20);
     /* kni section parsed */
