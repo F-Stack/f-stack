@@ -1206,6 +1206,37 @@ test_ff_load_config_thread_mode_secondary_conflict(void **state)
     assert_int_equal(rv, -1);
 }
 
+/* ======================================================================== */
+/* CM4 (native-mt): ECN config switch (freebsd.tcp_ecn, [freebsd.boot] key)  */
+/* Spec: native_mt_spec/zh_cn. Parse @ff_config.c:1111, default 0 @:1519.    */
+/* Runtime maps tcp_ecn -> V_tcp_do_ecn (0=off / 1=passive) in              */
+/* ff_freebsd_init.c; that runtime effect is out of unit-test scope.        */
+/* ======================================================================== */
+
+/* TC-CM4-01: no tcp_ecn key -> defaults to 0 (zero-regression). */
+static void
+test_ff_load_config_tcp_ecn_default_off(void **state)
+{
+    (void)state;
+    /* valid_minimal.ini has [freebsd.boot] but NO tcp_ecn key. */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.freebsd.tcp_ecn, 0);
+}
+
+/* TC-CM4-02: explicit tcp_ecn=1 in [freebsd.boot] -> parsed as 1. */
+static void
+test_ff_load_config_tcp_ecn_enabled(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_tcp_ecn.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.freebsd.tcp_ecn, 1);
+    /* New key must not disturb sibling [freebsd.boot] parsing. */
+    assert_int_equal(ff_global_cfg.freebsd.hz, 100);
+    assert_int_equal(ff_global_cfg.freebsd.mem_size, 256);
+}
+
 int
 main(void)
 {
@@ -1280,6 +1311,9 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_enabled,        test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_default_off,     test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_secondary_conflict, test_setup, NULL),
+        /* CM4 (native-mt) ECN config switch (freebsd.tcp_ecn) */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_tcp_ecn_default_off, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_tcp_ecn_enabled,     test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),

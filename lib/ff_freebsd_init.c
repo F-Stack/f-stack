@@ -52,7 +52,11 @@
 #include <net/if.h>
 #include <net/if_var.h>
 #include <net/if_private.h>
+#include <net/vnet.h>
 #include <netinet/in_var.h>
+#include <netinet/in_pcb.h>
+#include <netinet/tcp.h>
+#include <netinet/tcp_var.h>
 
 int lo_set_defaultaddr(void);
 
@@ -178,6 +182,22 @@ ff_freebsd_init(void)
 
     mutex_init();
     mi_startup();
+
+    /*
+     * CM4 PoC: vnet_init_done clears curvnet at boot end (FreeBSD design).
+     * Under VIMAGE all V_* go through curvnet, so pin the main thread to
+     * vnet0 for the whole thread_mode=0 single-thread path (sysctl loop,
+     * lo_set_defaultaddr, ff_run/main_loop). Per-thread td_vnet is CM5.
+     */
+    curthread->td_vnet = vnet0;
+
+    /*
+     * ECN switch (default off for zero-regression vs CM0-3). Real tcp_ecn.c
+     * defaults V_tcp_do_ecn=2 (passive ECN); apply the config value here,
+     * after td_vnet=vnet0 so V_* resolves. 0=off, 1=passive(=2).
+     */
+    V_tcp_do_ecn = ff_global_cfg.freebsd.tcp_ecn ? 2 : 0;
+
     sx_init(&proctree_lock, "proctree");
     ff_fdused_range(ff_global_cfg.freebsd.fd_reserve);
 

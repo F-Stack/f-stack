@@ -282,7 +282,8 @@ FF_SRCS+=                     \
 	ff_vfs_ops.c          \
 	ff_veth.c             \
 	ff_route.c            \
-	ff_stub_14_extra.c
+	ff_stub_14_extra.c    \
+	ff_vimage_glue.c
 
 ifdef FF_NETGRAPH
 FF_SRCS+=                   \
@@ -440,7 +441,8 @@ NET_SRCS+=		 \
 	nhop.c		 \
 	nhop_ctl.c	 \
 	rtsock.c         \
-	slcompress.c
+	slcompress.c	 \
+	vnet.c
 
 ifdef FF_NETGRAPH
 NETGRAPH_SRCS +=         \
@@ -520,6 +522,7 @@ NETINET_SRCS+=		\
 	tcp_timer.c	\
 	tcp_timewait.c	\
 	tcp_usrreq.c	\
+	tcp_ecn.c	\
 	udp_usrreq.c	\
 	cc.c		\
 	cc_newreno.c    \

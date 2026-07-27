@@ -359,6 +359,7 @@ struct ff_config {
         int hz;
         int fd_reserve;
         int mem_size;
+        int tcp_ecn;    /* 0=disable ECN (default, zero-regression); 1=passive ECN (upstream default 2) */
     } freebsd;
 
     struct {
