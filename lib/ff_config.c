@@ -1032,6 +1032,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.memory = atoi(value);
     } else if (MATCH("dpdk", "no_huge")) {
         pconfig->dpdk.no_huge = atoi(value);
+    } else if (MATCH("dpdk", "thread_mode")) {
+        pconfig->dpdk.thread_mode = atoi(value);
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
@@ -1455,6 +1457,27 @@ ff_check_config(struct ff_config *cfg)
                     portid, pc->mtu);
                 return -1;
             }
+        }
+    }
+
+    if (cfg->dpdk.thread_mode) {
+        /* Single-process multi-thread: force primary, derive nb_threads,
+         * collapse to one process, and expose all lcores to EAL via a
+         * full-bit proc_mask. Done after per-port lcore checks so those
+         * still validate against the original nb_procs=bit-count set. */
+        if (cfg->dpdk.proc_type && strcmp(cfg->dpdk.proc_type, "secondary") == 0) {
+            fprintf(stderr, "thread_mode=1 is incompatible with proc_type secondary\n");
+            return -1;
+        }
+        if (cfg->dpdk.proc_type) free(cfg->dpdk.proc_type);
+        cfg->dpdk.proc_type = strdup("primary");
+
+        cfg->dpdk.nb_threads = cfg->dpdk.nb_procs;
+        cfg->dpdk.nb_procs = 1;
+        cfg->dpdk.proc_id = 0;
+        if (cfg->dpdk.lcore_mask) {
+            if (cfg->dpdk.proc_mask) free(cfg->dpdk.proc_mask);
+            cfg->dpdk.proc_mask = strdup(cfg->dpdk.lcore_mask);
         }
     }
 

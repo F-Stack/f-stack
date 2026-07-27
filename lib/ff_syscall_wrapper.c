@@ -222,8 +222,8 @@
 
 /* msghdr define start */
 
-static /*__thread*/ struct iovec msg_iov_tmp[UIO_MAXIOV];
-static /*__thread*/ size_t msg_iovlen_tmp;
+static __thread struct iovec msg_iov_tmp[UIO_MAXIOV];
+static __thread size_t msg_iovlen_tmp;
 
 struct linux_msghdr {
     void *msg_name;             /* Address to send to/receive from.  */

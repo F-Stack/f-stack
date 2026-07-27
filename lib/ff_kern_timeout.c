@@ -177,7 +177,10 @@ struct callout_cpu {
 #define cc_exec_next(cc)             cc->cc_next
 #define cc_exec_cancel(cc, dir)      cc->cc_exec_entity[dir].cc_cancel
 #define cc_exec_waiting(cc, dir)     cc->cc_exec_entity[dir].cc_waiting
-struct callout_cpu cc_cpu;
+/* Per-thread callout_cpu: each stack instance drives its own callwheel.
+ * CC_CPU/CC_SELF ignore the cpu arg (cpuid is always 0, MAXCPU=1) and
+ * return the calling thread's own instance. */
+__thread struct callout_cpu cc_cpu;
 #define CC_CPU(cpu)    &cc_cpu
 #define CC_SELF()      &cc_cpu
 #define CC_LOCK(cc)           mtx_lock_spin(&(cc)->cc_lock)
@@ -186,6 +189,7 @@ struct callout_cpu cc_cpu;
 
 static int timeout_cpu;
 
+void ff_callout_thread_init(void);
 static void callout_cpu_init(struct callout_cpu *cc, int cpu);
 static void softclock_call_cc(struct callout *c, struct callout_cpu *cc,
 #ifdef CALLOUT_PROFILING
@@ -233,21 +237,34 @@ cc_cce_migrating(struct callout_cpu *cc, int direct)
 }
 
 /*
- * Kernel low level callwheel initialization
- * called on cpu0 during kernel startup.
+ * Per-thread callwheel bootstrap for the calling thread's own cc_cpu.
+ * PRECONDITION: the global size pass (callwheelsize/callwheelmask, set in
+ * callout_callwheel_init) must run before this, because the wheel malloc
+ * below depends on callwheelsize.
+ * CM3: main thread calls it once via the SYSINIT below (behaviour
+ * unchanged). Worker per-thread invocation is wired in CM5.
  */
-static void
-callout_callwheel_init(void *dummy)
+void
+ff_callout_thread_init(void)
 {
     struct callout_cpu *cc;
 
+    memset(CC_SELF(), 0, sizeof(cc_cpu));
+
+    timeout_cpu = PCPU_GET(cpuid);
+    cc = CC_CPU(timeout_cpu);
+    cc->cc_callout = malloc(ncallout * sizeof(struct callout),
+        M_CALLOUT, M_WAITOK);
+    callout_cpu_init(cc, timeout_cpu);
+}
+
+static void
+callout_callwheel_init(void *dummy)
+{
     /*
-     * Calculate the size of the callout wheel and the preallocated
-     * timeout() structures.
-     * XXX: Clip callout to result of previous function of maxusers
-     * maximum 384.  This is still huge, but acceptable.
+     * Global size pass (once): compute callwheel size/mask and fetch
+     * tunables. callwheelsize/callwheelmask stay global read-only.
      */
-    memset(CC_CPU(0), 0, sizeof(cc_cpu));
     ncallout = imin(16 + maxproc + maxfiles, 18508);
     TUNABLE_INT_FETCH("kern.ncallout", &ncallout);
 
@@ -264,17 +281,8 @@ callout_callwheel_init(void *dummy)
     TUNABLE_INT_FETCH("kern.pin_default_swi", &pin_default_swi);
     TUNABLE_INT_FETCH("kern.pin_pcpu_swi", &pin_pcpu_swi);
 
-    /*
-     * Only cpu0 handles timeout(9) and receives a preallocation.
-     *
-     * XXX: Once all timeout(9) consumers are converted this can
-     * be removed.
-     */
-    timeout_cpu = PCPU_GET(cpuid);
-    cc = CC_CPU(timeout_cpu);
-    cc->cc_callout = malloc(ncallout * sizeof(struct callout),
-        M_CALLOUT, M_WAITOK);
-    callout_cpu_init(cc, timeout_cpu);
+    /* Build this (main) thread's own callwheel. */
+    ff_callout_thread_init();
 }
 SYSINIT(callwheel_init, SI_SUB_CPU, SI_ORDER_ANY, callout_callwheel_init, NULL);
 

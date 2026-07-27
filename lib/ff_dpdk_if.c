@@ -84,9 +84,11 @@ static unsigned pkt_tx_delay;
 static int timestamp_dynfield_offset = -1;
 static uint64_t timestamp_dynflag_mask;
 static uint64_t usr_cb_tsc;
-static int stop_loop;
+/* thread mode: ff_dpdk_stop only stops the calling thread's own loop;
+ * cross-thread broadcast-stop semantics deferred to CM7/runtime. */
+static __thread int stop_loop;
 
-static struct rte_timer freebsd_clock;
+static __thread struct rte_timer freebsd_clock;
 
 // Mellanox Linux's driver key
 static uint8_t default_rsskey_40bytes[40] = {
@@ -120,7 +122,7 @@ static uint8_t symmetric_rsskey[52] = {
 static int rsskey_len = sizeof(default_rsskey_40bytes);
 static uint8_t *rsskey = default_rsskey_40bytes;
 
-struct lcore_conf lcore_conf;
+struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 
 struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
@@ -411,17 +413,17 @@ init_lcore_conf(void)
                  ff_global_cfg.dpdk.max_portid);
     }
 
-    lcore_conf.port_cfgs = ff_global_cfg.dpdk.port_cfgs;
-    lcore_conf.proc_id = ff_global_cfg.dpdk.proc_id;
+    ff_cur_lcore_conf()->port_cfgs = ff_global_cfg.dpdk.port_cfgs;
+    ff_cur_lcore_conf()->proc_id = ff_global_cfg.dpdk.proc_id;
 
     uint16_t socket_id = 0;
     if (numa_on) {
         socket_id = rte_lcore_to_socket_id(rte_lcore_id());
     }
 
-    lcore_conf.socket_id = socket_id;
+    ff_cur_lcore_conf()->socket_id = socket_id;
 
-    uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[lcore_conf.proc_id];
+    uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[ff_cur_lcore_conf()->proc_id];
     if (!rte_lcore_is_enabled(lcore_id)) {
         rte_exit(EXIT_FAILURE, "lcore %u unavailable\n", lcore_id);
     }
@@ -442,24 +444,24 @@ init_lcore_conf(void)
             continue;
         }
         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
-        uint16_t nb_rx_queue = lcore_conf.nb_rx_queue;
-        lcore_conf.rx_queue_list[nb_rx_queue].port_id = port_id;
-        lcore_conf.rx_queue_list[nb_rx_queue].queue_id = queueid;
-        lcore_conf.nb_rx_queue++;
+        uint16_t nb_rx_queue = ff_cur_lcore_conf()->nb_rx_queue;
+        ff_cur_lcore_conf()->rx_queue_list[nb_rx_queue].port_id = port_id;
+        ff_cur_lcore_conf()->rx_queue_list[nb_rx_queue].queue_id = queueid;
+        ff_cur_lcore_conf()->nb_rx_queue++;
 
-        lcore_conf.tx_queue_id[port_id] = queueid;
-        lcore_conf.tx_port_id[lcore_conf.nb_tx_port] = port_id;
-        lcore_conf.nb_tx_port++;
+        ff_cur_lcore_conf()->tx_queue_id[port_id] = queueid;
+        ff_cur_lcore_conf()->tx_port_id[ff_cur_lcore_conf()->nb_tx_port] = port_id;
+        ff_cur_lcore_conf()->nb_tx_port++;
 
         /* Enable pcap dump */
         if (ff_global_cfg.pcap.enable) {
             ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.timestamp_precision);
         }
 
-        lcore_conf.nb_queue_list[port_id] = pconf->nb_lcores;
+        ff_cur_lcore_conf()->nb_queue_list[port_id] = pconf->nb_lcores;
     }
 
-    if (lcore_conf.nb_rx_queue == 0) {
+    if (ff_cur_lcore_conf()->nb_rx_queue == 0) {
         rte_exit(EXIT_FAILURE, "lcore %u has nothing to do\n", lcore_id);
     }
 
@@ -485,7 +487,7 @@ init_mem_pool(void)
     uint8_t nb_ports = ff_global_cfg.dpdk.nb_ports;
     uint32_t nb_lcores = ff_global_cfg.dpdk.nb_procs;
     uint32_t nb_tx_queue = nb_lcores;
-    uint32_t nb_rx_queue = lcore_conf.nb_rx_queue * nb_lcores;
+    uint32_t nb_rx_queue = ff_cur_lcore_conf()->nb_rx_queue * nb_lcores;
     uint16_t max_portid = ff_global_cfg.dpdk.max_portid;
 
     unsigned nb_mbuf = RTE_ALIGN_CEIL (
@@ -592,7 +594,7 @@ init_dispatch_ring(void)
     char name_buf[RTE_RING_NAMESIZE];
     int queueid;
 
-    unsigned socketid = lcore_conf.socket_id;
+    unsigned socketid = ff_cur_lcore_conf()->socket_id;
 
     /* Create ring according to ports actually being used. */
     int nb_ports = ff_global_cfg.dpdk.nb_ports;
@@ -647,7 +649,7 @@ init_msg_ring(void)
 {
     uint16_t i, j;
     uint16_t nb_procs = ff_global_cfg.dpdk.nb_procs;
-    unsigned socketid = lcore_conf.socket_id;
+    unsigned socketid = ff_cur_lcore_conf()->socket_id;
 
     /* Create message buffer pool */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
@@ -716,7 +718,7 @@ init_kni(void)
     ff_kni_init(nb_ports, ff_global_cfg.kni.tcp_port,
         ff_global_cfg.kni.udp_port);
 
-    unsigned socket_id = lcore_conf.socket_id;
+    unsigned socket_id = ff_cur_lcore_conf()->socket_id;
     struct rte_mempool *mbuf_pool = pktmbuf_pool[socket_id];
 
     nb_ports = ff_global_cfg.dpdk.nb_ports;
@@ -1018,7 +1020,7 @@ init_port_start(void)
             uint16_t q;
             for (q = 0; q < nb_queues; q++) {
                 if (numa_on) {
-                    uint16_t lcore_id = lcore_conf.port_cfgs[u_port_id].lcore_list[q];
+                    uint16_t lcore_id = ff_cur_lcore_conf()->port_cfgs[u_port_id].lcore_list[q];
                     socketid = rte_lcore_to_socket_id(lcore_id);
                 }
                 mbuf_pool = pktmbuf_pool[socketid];
@@ -1902,7 +1904,7 @@ static inline void
 process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
     uint16_t count, struct ff_dpdk_if_context *ctx, int pkts_from_ring)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     uint16_t nb_queues = qconf->nb_queue_list[port_id];
 
     uint16_t i;
@@ -2343,7 +2345,7 @@ send_single_packet(struct rte_mbuf *m, uint8_t port)
     uint16_t len;
     struct lcore_conf *qconf;
 
-    qconf = &lcore_conf;
+    qconf = ff_cur_lcore_conf();
     len = qconf->tx_mbufs[port].len;
     qconf->tx_mbufs[port].m_table[len] = m;
     len++;
@@ -2370,7 +2372,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         return -1;
     }
 #ifdef FF_USE_PAGE_ARRAY
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     int    len = 0;
 
     len = ff_if_send_onepkt(ctx, m,total);
@@ -2381,7 +2383,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     qconf->tx_mbufs[ctx->port_id].len = len;
     return 0;
 #endif
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
+    struct rte_mempool *mbuf_pool = pktmbuf_pool[ff_cur_lcore_conf()->socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
         ff_traffic.tx_dropped++;
@@ -2520,7 +2522,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 int
 ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
 {
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
+    struct rte_mempool *mbuf_pool = pktmbuf_pool[ff_cur_lcore_conf()->socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
         ff_traffic.tx_dropped++;
@@ -2582,7 +2584,7 @@ main_loop(void *arg)
     prev_tsc = 0;
     usch_tsc = 0;
 
-    qconf = &lcore_conf;
+    qconf = ff_cur_lcore_conf();
 
     while (1) {
 
@@ -2746,7 +2748,7 @@ main_loop(void *arg)
 int
 ff_dpdk_if_up(void) {
     int i;
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     for (i = 0; i < qconf->nb_tx_port; i++) {
         uint16_t port_id = qconf->tx_port_id[i];
 
@@ -3102,7 +3104,7 @@ int
 ff_rss_self_queue_info(uint16_t *proc_id, uint16_t *queueid,
     uint16_t *nb_queues, uint16_t *reta_size)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     uint16_t port_id;
 
     if (qconf->nb_tx_port == 0)
@@ -3126,7 +3128,7 @@ int
 ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t sport, uint16_t dport)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t nb_queues = qconf->nb_queue_list[ctx->port_id];
 
@@ -3383,7 +3385,7 @@ ff_rss_thash_ctx_init(void)
         struct rte_eth_rss_conf rb;
         uint8_t rb_key[64];
         uint16_t rsz = rss_reta_size[port_id];
-        uint16_t nbq = lcore_conf.nb_queue_list[port_id];
+        uint16_t nbq = ff_cur_lcore_conf()->nb_queue_list[port_id];
 
         if (!rss_thash_ready[port_id])
             continue;
@@ -3439,7 +3441,7 @@ int
 ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t dport, uint16_t *out_sport, uint16_t first, uint16_t last)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t port_id, nb_queues, reta_size, queueid;
     uint32_t desired;
@@ -3629,7 +3631,7 @@ int
 ff_rss_check6(void *softc, const uint8_t *saddr6, const uint8_t *daddr6,
     uint16_t sport, uint16_t dport)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t nb_queues = qconf->nb_queue_list[ctx->port_id];
 
@@ -3879,7 +3881,7 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
     const uint8_t *daddr6, uint16_t dport, uint16_t *out_sport,
     uint16_t first, uint16_t last)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t port_id, nb_queues, reta_size, queueid;
     uint32_t desired;

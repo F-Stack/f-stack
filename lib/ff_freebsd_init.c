@@ -65,8 +65,10 @@ extern void uma_startup2(void);
 
 extern void ff_init_thread0(void);
 
+void ff_pcpu_thread_init(void);
+
 struct sx proctree_lock;
-struct pcpu *pcpup;
+__thread struct pcpu *pcpup;
 struct uma_page_head *uma_page_slab_hash;
 int uma_page_mask;
 extern cpuset_t all_cpus;
@@ -74,6 +76,16 @@ extern cpuset_t all_cpus;
 long physmem;
 
 extern void uma_startup1(vm_offset_t);
+
+/* Per-thread pcpu bootstrap. CM3: main thread calls it once (behaviour
+ * unchanged). Worker per-thread invocation is wired in CM5. */
+void
+ff_pcpu_thread_init(void)
+{
+    pcpup = malloc(sizeof(struct pcpu), M_DEVBUF, M_ZERO);
+    pcpu_init(pcpup, 0, sizeof(struct pcpu));
+    PCPU_SET(prvspace, pcpup);
+}
 
 int lo_set_defaultaddr(void)
 {
@@ -149,9 +161,7 @@ ff_freebsd_init(void)
 
     physmem = ff_global_cfg.freebsd.physmem;
 
-    pcpup = malloc(sizeof(struct pcpu), M_DEVBUF, M_ZERO);
-    pcpu_init(pcpup, 0, sizeof(struct pcpu));
-    PCPU_SET(prvspace, pcpup);
+    ff_pcpu_thread_init();
     CPU_SET(0, &all_cpus);
 
     ff_init_thread0();

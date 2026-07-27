@@ -39,9 +39,11 @@
 #include "ff_memory.h"            /* struct ff_dpdk_if_context / lcore_conf (RSS 0.1 tests) */
 #include "ff_host_interface.h"    /* ff_get_tsc_ns declaration */
 
-/* lcore_conf is an extern global in ff_dpdk_if.c (not declared in headers);
- * mirror ff_memory.c:71 so the RSS 0.1 tests can set the queue layout. */
-extern struct lcore_conf lcore_conf;
+/* lcore_conf is an extern global array in ff_dpdk_if.c (CM2: per-lcore
+ * array lcore_conf[RTE_MAX_LCORE], declared in ff_memory.h which is already
+ * included above). The RSS 0.1 tests drive thread_mode=0 semantics, where
+ * ff_lcore_conf_idx() is fixed 0, so they set the queue layout on
+ * lcore_conf[0] (the same element the lib code accesses). */
 
 #include <rte_launch.h>           /* enum rte_rmt_call_main_t */
 #include <rte_eal.h>              /* rte_eal_init (R-B 0.3 thash needs EAL) */
@@ -519,7 +521,7 @@ test_ff_rss_tbl_get_portrange_smoke(void **state)
 /* mock strategy (07 §0.2/§0.3):                                             */
 /*  - ff_veth_get_softc / ff_veth_softc_to_hostc are pass-through (above),   */
 /*    so ff_rss_tbl_init()'s local ctx (port_id=rule.port_id) is recovered   */
-/*    by ff_rss_check(); tests set lcore_conf.nb_queue_list/tx_queue_id.     */
+/*    by ff_rss_check(); tests set lcore_conf[0].nb_queue_list/tx_queue_id.  */
 /*  - toeplitz_hash / rsskey / rss_reta_size / ff_rss_tbl are all static and */
 /*    NOT directly observable. Per 07 §0.4 we replicate an equivalent        */
 /*    Toeplitz on the test side using the same 40-byte default key; the lib  */
@@ -629,8 +631,8 @@ test_rss_build_table(uint32_t saddr, uint32_t daddr, uint16_t sport)
     g_rss_cfg.rss_tbl_cfgs[0].sport = sport;
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
-    lcore_conf.tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
 
     return ff_rss_tbl_init();
 }
@@ -794,7 +796,7 @@ test_ff_rss_adjust_sport_degraded(void **state)
     assert_int_equal(ff_rss_thash_ctx_init(), 0);
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ; /* multi-queue */
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ; /* multi-queue */
     uint16_t out = 0xFFFF;
     int rv = ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
                                  htons(80), &out,
@@ -815,7 +817,7 @@ test_ff_rss_adjust_sport_single_queue(void **state)
     (void)state;
     assert_int_equal(ff_rss_thash_ctx_init(), 0);
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
     uint16_t out = 0xFFFF;
     assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
                                          htons(80), &out,
@@ -1034,8 +1036,8 @@ test_rss6_build_table(const uint8_t saddr6[16], const uint8_t daddr6[16],
     g_rss_cfg.rss_tbl_cfgs[0].sport = sport;
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
-    lcore_conf.tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
 
     return ff_rss_tbl6_init();
 }
@@ -1051,8 +1053,8 @@ test_ff_rss_check6_landing(void **state)
 {
     (void)state;
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
-    lcore_conf.tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
 
     /* Probe several dports; for each, the lib verdict must equal the replica
      * (mask 0xFFFF here), and whenever it lands it must land on our queue. */
@@ -1083,7 +1085,7 @@ test_ff_rss_check6_single_queue(void **state)
 {
     (void)state;
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
     assert_int_equal(ff_rss_check6(sc, test_saddr6, test_daddr6,
                                    htons(1000), htons(80)), 1);
 }
@@ -1150,7 +1152,7 @@ test_ff_rss_adjust_sport6_guard(void **state)
                                           TEST_RSS_FIRST, TEST_RSS_LAST), -1);
 
     assert_int_equal(ff_rss_thash_ctx_init(), 0);   /* v6 ctx degrades (reta=0) */
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     out = 0xFFFF;
     assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
                                           htons(80), &out,
@@ -1303,7 +1305,7 @@ test_ff_rss_adjust_sport_recheck_off(void **state)   /* TC-U-RSS-04-01 */
     assert_int_equal(ff_rss_thash_ctx_init(), 0);   /* unit-env ctx unready */
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     g_ff_rss_check_calls = 0;
 
     for (int i = 0; i < RD_RECHECK_N; i++) {
@@ -1330,7 +1332,7 @@ test_ff_rss_adjust_sport_recheck_on(void **state)    /* TC-U-RSS-04-02 */
     assert_int_equal(ff_rss_thash_ctx_init(), 0);
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     g_ff_rss_check_calls = 0;
 
     for (int i = 0; i < RD_RECHECK_N; i++) {
@@ -1365,7 +1367,7 @@ test_ff_rss_adjust_sport6_recheck_off(void **state)  /* TC-U-RSS-04-03 */
     assert_int_equal(ff_rss_thash_ctx_init(), 0);
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     g_ff_rss_check6_calls = 0;
 
     for (int i = 0; i < RD_RECHECK_N; i++) {
@@ -1391,7 +1393,7 @@ test_ff_rss_adjust_sport6_recheck_on(void **state)   /* TC-U-RSS-04-04 */
     assert_int_equal(ff_rss_thash_ctx_init(), 0);
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     g_ff_rss_check6_calls = 0;
 
     for (int i = 0; i < RD_RECHECK_N; i++) {
@@ -1434,7 +1436,7 @@ test_ff_rss_adjust_microbench(void **state)          /* TC-U-RSS-04-05 */
     assert_int_equal(ff_rss_thash_ctx_init(), 0);
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
 
     /* Pre-flight: confirm ctx readiness state. In unit env reta=0 -> unready
      * -> both off/on take the same early-return path; per spec 07 §1.4 note,
@@ -1499,7 +1501,7 @@ test_ff_rss_adjust_sport_thash_adjust_off(void **state)
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     uint16_t out = 0xFFFF;
     assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
                                          htons(80), &out,
@@ -1519,7 +1521,7 @@ test_ff_rss_adjust_sport6_thash_adjust_off(void **state)
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     uint8_t saddr6[16] = { 0x20,0x01 }, daddr6[16] = { 0x20,0x02 };
     uint16_t out = 0xFFFF;
     assert_int_equal(ff_rss_adjust_sport6(sc, saddr6, daddr6,
@@ -1561,7 +1563,7 @@ test_ff_rss_adjust_sport_range_params(void **state)
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     uint16_t out = 0xFFFF;
 
     /* inverted range */
@@ -1586,7 +1588,7 @@ test_ff_rss_adjust_sport6_range_params(void **state)
     ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
 
     void *sc = test_rss_softc(TEST_RSS_PORT);
-    lcore_conf.nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
     uint16_t out = 0xFFFF;
 
     assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
