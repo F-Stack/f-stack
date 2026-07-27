@@ -32,6 +32,7 @@
 #include <sys/systm.h>
 #include <sys/proc.h>
 #include <sys/lock.h>
+#include <sys/mutex.h>
 #include <sys/sx.h>
 #include <sys/vmmeter.h>
 #include <sys/cpuset.h>
@@ -71,6 +72,7 @@ extern void ff_init_thread0(void);
 
 void ff_pcpu_thread_init(void);
 extern void ff_callout_thread_init(void);
+extern void *ff_adapt_user_thread_add(void *parent);
 void ff_stack_thread_init(void);
 
 /* Per-thread guard: main thread completes its per-thread init inside
@@ -99,16 +101,16 @@ ff_pcpu_thread_init(void)
 }
 
 /*
- * Per-thread stack-instance init. CM5-A: main thread is already initialized
- * inside ff_freebsd_init (ff_stack_inited set there), so it skips here and
- * thread_mode=0 stays byte-equivalent to CM4. The body below is the
- * CM5-B multi-thread worker path (each worker builds its own pcpu/vnet/
- * callout); at stage A it is compiled but never executed (no real workers
- * are launched) and is not runtime-verified yet.
+ * Per-thread stack-instance init. thread_mode=0 main thread is already
+ * initialized inside ff_freebsd_init (ff_stack_inited set there) and skips
+ * here, so single-thread stays byte-equivalent to CM5-A. The body below is
+ * the CM5-B worker path: each worker builds its own pcpu / thread_i (with an
+ * independent proc_i) / vnet_i / callout, giving per-thread stack isolation.
  */
 void
 ff_stack_thread_init(void)
 {
+    struct thread *td_i;
     struct vnet *v;
 
     if (ff_stack_inited)
@@ -116,12 +118,31 @@ ff_stack_thread_init(void)
     ff_stack_inited = 1;
 
     ff_pcpu_thread_init();
-    ff_init_thread0();          /* TODO(CM5-B): thread0_i per-thread (workers must not share one thread0) */
+
+    /*
+     * Temporarily point curthread at the global thread0 so Giant/malloc have
+     * a valid thread context, then build this worker's own (proc_i, thread_i)
+     * via the existing ff_adapt_user_thread_add path (uses thread0 only as a
+     * read-only template; ff_adapt_user_proc_add is GIANT_REQUIRED).
+     */
+    ff_init_thread0();
+    mtx_lock(&Giant);
+    td_i = ff_adapt_user_thread_add(&thread0);
+    mtx_unlock(&Giant);
+    if (td_i != NULL)
+        pcurthread = td_i;
+
+    /*
+     * Build this worker's callwheel BEFORE vnet_alloc: vnet_alloc runs the
+     * vnet's VNET_SYSINIT (syncache_init -> callout_reset), which touches
+     * cc_cpu. This mirrors the main thread order where callwheel_init
+     * (SI_SUB_CPU) precedes vnet0 (SI_SUB_VNET). Needs pcpu (cpuid) and
+     * curthread already set, satisfied above.
+     */
+    ff_callout_thread_init();
 
     v = vnet_alloc();           /* also runs this vnet's VNET_SYSINIT */
     curthread->td_vnet = v;     /* vnet_alloc restores curvnet on return, so bind explicitly */
-
-    ff_callout_thread_init();
 }
 
 int lo_set_defaultaddr(void)
