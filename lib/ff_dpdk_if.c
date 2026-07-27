@@ -184,6 +184,7 @@ static struct ff_top_args ff_top_status;
 static struct ff_traffic_args ff_traffic;
 extern void ff_hardclock(void);
 extern void ff_tcp_hpts_softclock(void);
+extern void ff_stack_thread_init(void);
 
 struct ff_rss_tbl_dip_type {
     uint32_t daddr;
@@ -2585,6 +2586,11 @@ main_loop(void *arg)
     usch_tsc = 0;
 
     qconf = ff_cur_lcore_conf();
+
+    /* CM5-A: per-thread stack init. thread_mode=0 main thread is already
+     * initialized (ff_freebsd_init) and skips here (zero regression);
+     * thread_mode=1 workers (CM5-B, not launched at stage A) init here. */
+    ff_stack_thread_init();
 
     while (1) {
 
