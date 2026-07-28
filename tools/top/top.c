@@ -5,7 +5,7 @@ void
 usage(void)
 {
     printf("Usage:\n");
-    printf("  top [-p <f-stack proc_id>] [-P <max proc_id>] "
+    printf("  top [-p <f-stack proc_id|thread_id>] [-P <max proc_id|thread_id>] "
         "[-d <secs>] [-n <num>]\n");
 }
 

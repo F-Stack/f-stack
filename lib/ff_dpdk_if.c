@@ -415,7 +415,13 @@ init_lcore_conf(void)
     }
 
     ff_cur_lcore_conf()->port_cfgs = ff_global_cfg.dpdk.port_cfgs;
-    ff_cur_lcore_conf()->proc_id = ff_global_cfg.dpdk.proc_id;
+    if (ff_global_cfg.dpdk.thread_mode) {
+        int ti;
+        for (ti = 0; ti < ff_global_cfg.dpdk.nb_threads; ti++)
+            lcore_conf[ff_global_cfg.dpdk.proc_lcore[ti]].proc_id = ti;
+    } else {
+        ff_cur_lcore_conf()->proc_id = ff_global_cfg.dpdk.proc_id;
+    }
 
     uint16_t socket_id = 0;
     if (numa_on) {
@@ -649,13 +655,15 @@ static int
 init_msg_ring(void)
 {
     uint16_t i, j;
-    uint16_t nb_procs = ff_global_cfg.dpdk.nb_procs;
+    uint16_t nb_rings = ff_global_cfg.dpdk.thread_mode
+        ? ff_global_cfg.dpdk.nb_threads
+        : ff_global_cfg.dpdk.nb_procs;
     unsigned socketid = ff_cur_lcore_conf()->socket_id;
 
     /* Create message buffer pool */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         message_pool = rte_mempool_create(FF_MSG_POOL,
-           MSG_RING_SIZE * 2 * nb_procs,
+           MSG_RING_SIZE * 2 * nb_rings,
            MAX_MSG_BUF_SIZE, MSG_RING_SIZE / 2, 0,
            NULL, NULL, ff_msg_init, NULL,
            socketid, 0);
@@ -667,7 +675,7 @@ init_msg_ring(void)
         rte_panic("Create msg mempool failed\n");
     }
 
-    for(i = 0; i < nb_procs; ++i) {
+    for(i = 0; i < nb_rings; ++i) {
         snprintf(msg_ring[i].ring_name[0], RTE_RING_NAMESIZE,
             "%s%u", FF_MSG_RING_IN, i);
         msg_ring[i].ring[0] = create_ring(msg_ring[i].ring_name[0],
@@ -771,7 +779,7 @@ init_port_start(void)
 
     total_nb_ports = nb_ports;
 #ifdef FF_KNI
-    if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+    if (enable_kni && ff_kni_is_owner_thread()) {
             total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */
     }
 #endif
@@ -2007,7 +2015,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             }
 
 #ifdef FF_KNI
-            if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            if (enable_kni && ff_kni_is_owner_thread()) {
                 mbuf_pool = pktmbuf_pool[qconf->socket_id];
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
@@ -2018,7 +2026,8 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 #endif
             ff_veth_input(ctx, rtem);
 #ifdef FF_KNI
-        } else if (enable_kni) {
+        } else if (enable_kni &&
+                   (!ff_global_cfg.dpdk.thread_mode || ff_kni_is_owner_thread())) {
             if (knictl_action == FF_KNICTL_ACTION_ALL_TO_KNI){
                 ff_add_vlan_tag(rtem);
                 ff_kni_enqueue(filter, port_id, rtem);
@@ -2666,7 +2675,7 @@ main_loop(void *arg)
             ctx = veth_ctx[port_id];
 
 #ifdef FF_KNI
-            if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            if (enable_kni && ff_kni_is_owner_thread()) {
                 ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
             }
 #endif

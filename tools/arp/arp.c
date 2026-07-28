@@ -745,13 +745,13 @@ usage(void)
 	    "       arp -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
 	    "       arp -f filename");
 #else
-	    "usage: arp -p <f-stack proc_id> [-n] [-i interface] hostname",
-	    "       arp -p <f-stack proc_id> [-n] [-i interface] -a",
-	    "       arp -p <f-stack proc_id> -d hostname [pub]",
-	    "       arp -p <f-stack proc_id> -d [-i interface] -a",
-	    "       arp -p <f-stack proc_id> -s hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
-	    "       arp -p <f-stack proc_id> -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
-	    "       arp -p <f-stack proc_id> -f filename");
+	    "usage: arp -p <f-stack proc_id|thread_id> [-n] [-i interface] hostname",
+	    "       arp -p <f-stack proc_id|thread_id> [-n] [-i interface] -a",
+	    "       arp -p <f-stack proc_id|thread_id> -d hostname [pub]",
+	    "       arp -p <f-stack proc_id|thread_id> -d [-i interface] -a",
+	    "       arp -p <f-stack proc_id|thread_id> -s hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
+	    "       arp -p <f-stack proc_id|thread_id> -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
+	    "       arp -p <f-stack proc_id|thread_id> -f filename");
 #endif
 #ifdef FSTACK
 	ff_ipc_exit();

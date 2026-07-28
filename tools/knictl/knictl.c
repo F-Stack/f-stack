@@ -6,7 +6,7 @@ void
 usage(void)
 {
     printf("Usage:\n");
-    printf("  knictl [-p <f-stack proc_id>] [-P <max proc_id>] "
+    printf("  knictl [-p <f-stack proc_id|thread_id>] [-P <max proc_id|thread_id>] "
         "[-a alltokni/alltoff/default][-n]\n    use `-a` to set kni action\n    use `-n` to show \n");
 }
 
