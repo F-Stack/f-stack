@@ -486,11 +486,6 @@ init_lcore_conf(void)
         ff_cur_lcore_conf()->tx_port_id[ff_cur_lcore_conf()->nb_tx_port] = port_id;
         ff_cur_lcore_conf()->nb_tx_port++;
 
-        /* Enable pcap dump */
-        if (ff_global_cfg.pcap.enable) {
-            ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.timestamp_precision);
-        }
-
         ff_cur_lcore_conf()->nb_queue_list[port_id] = pconf->nb_lcores;
     }
 
@@ -2627,6 +2622,12 @@ main_loop(void *arg)
      * initialized (ff_freebsd_init) and skips here (zero regression);
      * thread_mode=1 workers init here. */
     ff_stack_thread_init();
+
+    /* g_pcap_fp is __thread: each lcore thread must init its own.
+     * Moved from init_lcore_conf to fix worker TLS NULL + multi-port leak. */
+    if (ff_global_cfg.pcap.enable) {
+        ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.timestamp_precision);
+    }
 
     while (1) {
 
