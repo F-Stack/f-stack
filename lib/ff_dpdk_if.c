@@ -2598,8 +2598,13 @@ main_loop(void *arg)
 
     /* CM5-A: per-thread stack init. thread_mode=0 main thread is already
      * initialized (ff_freebsd_init) and skips here (zero regression);
-     * thread_mode=1 workers (CM5-B, not launched at stage A) init here. */
+     * thread_mode=1 workers init here. Lcores without RX queues (e.g.
+     * non-owner threads in a 1-queue config) return after init to avoid
+     * interfering with the owner thread's main loop. */
     ff_stack_thread_init();
+
+    if (ff_global_cfg.dpdk.thread_mode && qconf->nb_rx_queue == 0)
+        return 0;
 
     while (1) {
 
