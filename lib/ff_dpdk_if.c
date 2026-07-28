@@ -414,14 +414,40 @@ init_lcore_conf(void)
                  ff_global_cfg.dpdk.max_portid);
     }
 
-    ff_cur_lcore_conf()->port_cfgs = ff_global_cfg.dpdk.port_cfgs;
     if (ff_global_cfg.dpdk.thread_mode) {
         int ti;
-        for (ti = 0; ti < ff_global_cfg.dpdk.nb_threads; ti++)
-            lcore_conf[ff_global_cfg.dpdk.proc_lcore[ti]].proc_id = ti;
-    } else {
-        ff_cur_lcore_conf()->proc_id = ff_global_cfg.dpdk.proc_id;
+        for (ti = 0; ti < ff_global_cfg.dpdk.nb_threads; ti++) {
+            uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[ti];
+            struct lcore_conf *lc = &lcore_conf[lcore_id];
+            lc->port_cfgs = ff_global_cfg.dpdk.port_cfgs;
+            lc->proc_id = ti;
+            lc->socket_id = numa_on ? rte_lcore_to_socket_id(lcore_id) : 0;
+            if (!rte_lcore_is_enabled(lcore_id))
+                rte_exit(EXIT_FAILURE, "lcore %u unavailable\n", lcore_id);
+            int j;
+            for (j = 0; j < ff_global_cfg.dpdk.nb_ports; ++j) {
+                uint16_t port_id = ff_global_cfg.dpdk.portid_list[j];
+                struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+                int queueid = -1, i;
+                for (i = 0; i < pconf->nb_lcores; i++)
+                    if (pconf->lcore_list[i] == lcore_id) queueid = i;
+                if (queueid < 0) continue;
+                lc->rx_queue_list[lc->nb_rx_queue].port_id = port_id;
+                lc->rx_queue_list[lc->nb_rx_queue].queue_id = queueid;
+                lc->nb_rx_queue++;
+                lc->tx_queue_id[port_id] = queueid;
+                lc->tx_port_id[lc->nb_tx_port] = port_id;
+                lc->nb_tx_port++;
+                lc->nb_queue_list[port_id] = pconf->nb_lcores;
+            }
+            if (lc->nb_rx_queue == 0)
+                rte_exit(EXIT_FAILURE, "lcore %u has nothing to do\n", lcore_id);
+        }
+        return 0;
     }
+
+    ff_cur_lcore_conf()->port_cfgs = ff_global_cfg.dpdk.port_cfgs;
+    ff_cur_lcore_conf()->proc_id = ff_global_cfg.dpdk.proc_id;
 
     uint16_t socket_id = 0;
     if (numa_on) {
@@ -492,7 +518,8 @@ static int
 init_mem_pool(void)
 {
     uint8_t nb_ports = ff_global_cfg.dpdk.nb_ports;
-    uint32_t nb_lcores = ff_global_cfg.dpdk.nb_procs;
+    uint32_t nb_lcores = ff_global_cfg.dpdk.thread_mode
+        ? ff_global_cfg.dpdk.nb_threads : ff_global_cfg.dpdk.nb_procs;
     uint32_t nb_tx_queue = nb_lcores;
     uint32_t nb_rx_queue = ff_cur_lcore_conf()->nb_rx_queue * nb_lcores;
     uint16_t max_portid = ff_global_cfg.dpdk.max_portid;
@@ -2598,13 +2625,8 @@ main_loop(void *arg)
 
     /* CM5-A: per-thread stack init. thread_mode=0 main thread is already
      * initialized (ff_freebsd_init) and skips here (zero regression);
-     * thread_mode=1 workers init here. Lcores without RX queues (e.g.
-     * non-owner threads in a 1-queue config) return after init to avoid
-     * interfering with the owner thread's main loop. */
+     * thread_mode=1 workers init here. */
     ff_stack_thread_init();
-
-    if (ff_global_cfg.dpdk.thread_mode && qconf->nb_rx_queue == 0)
-        return 0;
 
     while (1) {
 
