@@ -2048,8 +2048,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 #endif
             ff_veth_input(ctx, rtem);
 #ifdef FF_KNI
-        } else if (enable_kni &&
-                   (!ff_global_cfg.dpdk.thread_mode || ff_kni_is_owner_thread())) {
+        } else if (enable_kni) {
             if (knictl_action == FF_KNICTL_ACTION_ALL_TO_KNI){
                 ff_add_vlan_tag(rtem);
                 ff_kni_enqueue(filter, port_id, rtem);
