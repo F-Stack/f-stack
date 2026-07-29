@@ -103,7 +103,7 @@ ff_adapt_user_thread_add(void *parent)
         parent_td = &thread0;
     }
 
-    struct thread *td = malloc(sizeof(struct proc), M_TEMP, M_ZERO);
+    struct thread *td = malloc(sizeof(struct thread), M_TEMP, M_ZERO);
     if (td == NULL) {
         goto fail;
     }

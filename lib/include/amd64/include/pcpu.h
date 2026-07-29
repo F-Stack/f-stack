@@ -37,6 +37,9 @@
 #undef PCPU_INC
 #undef PCPU_PTR
 #undef PCPU_SET
+#undef zpcpu_offset_cpu
+#undef zpcpu_base_to_offset
+#undef zpcpu_offset_to_base
 
 extern __thread struct thread *pcurthread;
 extern __thread struct pcpu *pcpup;

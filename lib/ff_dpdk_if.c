@@ -184,7 +184,7 @@ static struct ff_top_args ff_top_status;
 static struct ff_traffic_args ff_traffic;
 extern void ff_hardclock(void);
 extern void ff_tcp_hpts_softclock(void);
-extern void ff_stack_thread_init(void);
+extern void ff_stack_thread_init(int cpuid);
 
 struct ff_rss_tbl_dip_type {
     uint32_t daddr;
@@ -2620,7 +2620,7 @@ main_loop(void *arg)
     /* CM5-A: per-thread stack init. thread_mode=0 main thread is already
      * initialized (ff_freebsd_init) and skips here (zero regression);
      * thread_mode=1 workers init here. */
-    ff_stack_thread_init();
+    ff_stack_thread_init(rte_lcore_id());
 
     /* g_pcap_fp is __thread: each lcore thread must init its own.
      * Moved from init_lcore_conf to fix worker TLS NULL + multi-port leak. */

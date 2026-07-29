@@ -70,10 +70,10 @@ extern void uma_startup2(void);
 
 extern void ff_init_thread0(void);
 
-void ff_pcpu_thread_init(void);
+void ff_pcpu_thread_init(int cpuid);
 extern void ff_callout_thread_init(void);
 extern void *ff_adapt_user_thread_add(void *parent);
-void ff_stack_thread_init(void);
+void ff_stack_thread_init(int cpuid);
 
 /* Per-thread guard: main thread completes its per-thread init inside
  * ff_freebsd_init (CM4 path), so ff_stack_thread_init skips it (zero
@@ -93,10 +93,10 @@ extern void uma_startup1(vm_offset_t);
 /* Per-thread pcpu bootstrap. CM3: main thread calls it once (behaviour
  * unchanged). Worker per-thread invocation is wired in CM5. */
 void
-ff_pcpu_thread_init(void)
+ff_pcpu_thread_init(int cpuid)
 {
     pcpup = malloc(sizeof(struct pcpu), M_DEVBUF, M_ZERO);
-    pcpu_init(pcpup, 0, sizeof(struct pcpu));
+    pcpu_init(pcpup, cpuid, sizeof(struct pcpu));
     PCPU_SET(prvspace, pcpup);
 }
 
@@ -108,16 +108,15 @@ ff_pcpu_thread_init(void)
  * independent proc_i) / vnet_i / callout, giving per-thread stack isolation.
  */
 void
-ff_stack_thread_init(void)
+ff_stack_thread_init(int cpuid)
 {
     struct thread *td_i;
-    struct vnet *v;
 
     if (ff_stack_inited)
         return;
     ff_stack_inited = 1;
 
-    ff_pcpu_thread_init();
+    ff_pcpu_thread_init(cpuid);
 
     /*
      * Temporarily point curthread at the global thread0 so Giant/malloc have
@@ -141,8 +140,7 @@ ff_stack_thread_init(void)
      */
     ff_callout_thread_init();
 
-    v = vnet_alloc();           /* also runs this vnet's VNET_SYSINIT */
-    curthread->td_vnet = v;     /* vnet_alloc restores curvnet on return, so bind explicitly */
+    curthread->td_vnet = vnet0;
 }
 
 int lo_set_defaultaddr(void)
@@ -219,7 +217,7 @@ ff_freebsd_init(void)
 
     physmem = ff_global_cfg.freebsd.physmem;
 
-    ff_pcpu_thread_init();
+    ff_pcpu_thread_init(0);
     CPU_SET(0, &all_cpus);
 
     ff_init_thread0();

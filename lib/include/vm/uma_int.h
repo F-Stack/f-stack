@@ -42,8 +42,14 @@
 
 #undef UMA_MD_SMALL_ALLOC
 
-#define critical_enter() do {} while(0)
-#define critical_exit()  do {} while(0)
+extern volatile int uma_crit_lock;
+#define critical_enter() do { \
+    while (__sync_lock_test_and_set(&uma_crit_lock, 1)) \
+        ; \
+} while(0)
+#define critical_exit()  do { \
+    __sync_lock_release(&uma_crit_lock); \
+} while(0)
 
 #define sleepq_lock(w) do {} while(0)
 #define sleepq_release(w) do {} while(0)
