@@ -1487,6 +1487,9 @@ ff_sendmsg(int s, const struct msghdr *msg, int flags)
 
     return (rc);
 kern_fail:
+    if (freebsd_cmsg) {
+        free(freebsd_cmsg, NULL);
+    }
     ff_os_errno(rc);
     return (-1);
 }
