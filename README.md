@@ -131,9 +131,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
 
 #### Redis
 
-    cd app/redis-6.2.6/deps/jemalloc
-    ./autogen.sh 
-    cd ../..
+    cd app/redis-6.2.6
     make
     make install
 
