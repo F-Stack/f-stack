@@ -4,6 +4,7 @@
 > **版本**：v1（阶段性，未完成）
 > **日期**：2026-07-29
 > **状态**：3 层根因已识别；启动 crash 已修复（自旋锁保护 UMA per-CPU cache）；wrk 压测 crash 因 rmlock 全局锁方向偏离 per-vnet 隔离设计而回退，转 per-vnet 隔离方向继续深挖。
+> **后续进展**：per-vnet 隔离已实现并消除 crash；2 线程性能塌陷的根因（worker 时钟缺口）已定位修复，最终瓶颈定位为 virtio PMD 无 RSS 支持。详见 [15-worker时钟缺口修复与virtio-RSS限制.md](15-worker时钟缺口修复与virtio-RSS限制.md)。
 > **实证铁律**：所有 crash 位置、寄存器值、backtrace 均来自 gdb 实际运行输出，禁止臆造。
 
 ---

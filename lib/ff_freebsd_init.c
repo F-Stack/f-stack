@@ -111,6 +111,8 @@ void
 ff_stack_thread_init(int cpuid)
 {
     struct thread *td_i;
+    struct vnet *v;
+    static volatile int init_lock = 0;
 
     if (ff_stack_inited)
         return;
@@ -125,9 +127,9 @@ ff_stack_thread_init(int cpuid)
      * read-only template; ff_adapt_user_proc_add is GIANT_REQUIRED).
      */
     ff_init_thread0();
-    mtx_lock(&Giant);
+    while (__sync_lock_test_and_set(&init_lock, 1))
+        ;
     td_i = ff_adapt_user_thread_add(&thread0);
-    mtx_unlock(&Giant);
     if (td_i != NULL)
         pcurthread = td_i;
 
@@ -140,7 +142,10 @@ ff_stack_thread_init(int cpuid)
      */
     ff_callout_thread_init();
 
-    curthread->td_vnet = vnet0;
+    v = vnet_alloc();
+    curthread->td_vnet = v;
+    lo_set_defaultaddr();
+    __sync_lock_release(&init_lock);
 }
 
 int lo_set_defaultaddr(void)

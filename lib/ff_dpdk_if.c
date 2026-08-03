@@ -55,6 +55,7 @@
 #include <rte_eth_bond.h>
 #include <rte_eth_bond_8023ad.h>
 #include <rte_mbuf_dyn.h>
+#include <rte_spinlock.h>
 
 #include "ff_dpdk_if.h"
 #include "ff_dpdk_pcap.h"
@@ -178,13 +179,16 @@ struct ff_msg_ring {
 
 static struct ff_msg_ring msg_ring[RTE_MAX_LCORE];
 static struct rte_mempool *message_pool;
-static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_ETHPORTS];
+static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_LCORE][RTE_MAX_ETHPORTS];
 
 static struct ff_top_args ff_top_status;
 static struct ff_traffic_args ff_traffic;
 extern void ff_hardclock(void);
+extern void ff_hardclock_worker(void);
 extern void ff_tcp_hpts_softclock(void);
 extern void ff_stack_thread_init(int cpuid);
+
+static rte_spinlock_t ifp_create_lock = RTE_SPINLOCK_INITIALIZER;
 
 struct ff_rss_tbl_dip_type {
     uint32_t daddr;
@@ -231,6 +235,12 @@ ff_hardclock_job(__rte_unused struct rte_timer *timer,
     __rte_unused void *arg) {
     ff_hardclock();
     ff_update_current_ts();
+}
+
+static void
+ff_hardclock_worker_job(__rte_unused struct rte_timer *timer,
+    __rte_unused void *arg) {
+    ff_hardclock_worker();
 }
 
 struct ff_dpdk_if_context *
@@ -1185,12 +1195,26 @@ init_clock(void)
     return 0;
 }
 
+/* Register this worker's own freebsd_clock (a __thread rte_timer) on its own
+ * lcore, so main_loop's rte_timer_manage() can drive its per-thread callwheel.
+ * The DPDK timer subsystem is already initialized by the main thread. */
+static void
+init_clock_worker(void)
+{
+    uint64_t hz = rte_get_timer_hz();
+    uint64_t intrs = US_PER_S / ff_global_cfg.freebsd.hz;
+    uint64_t tsc = (hz + US_PER_S - 1) / US_PER_S * intrs;
+
+    rte_timer_init(&freebsd_clock);
+    rte_timer_reset(&freebsd_clock, tsc, PERIODICAL,
+        rte_lcore_id(), &ff_hardclock_worker_job, NULL);
+}
+
 static int
 stop_clock(void) {
     rte_timer_stop_sync(&freebsd_clock);
     return 0;
 }
-
 #if defined(FF_FLOW_ISOLATE) || defined(FF_FDIR)
 /** Print a message out of a flow error. */
 static int
@@ -2622,6 +2646,23 @@ main_loop(void *arg)
      * thread_mode=1 workers init here. */
     ff_stack_thread_init(rte_lcore_id());
 
+    if (ff_global_cfg.dpdk.thread_mode) {
+        unsigned lcore = rte_lcore_id();
+        if (freebsd_clock.expire == 0)
+            init_clock_worker();
+        for (i = 0; i < qconf->nb_tx_port; i++) {
+            port_id = qconf->tx_port_id[i];
+            if (veth_ctx[lcore][port_id] == NULL) {
+                struct ff_port_cfg *pconf = &qconf->port_cfgs[port_id];
+                rte_spinlock_lock(&ifp_create_lock);
+                veth_ctx[lcore][port_id] = ff_veth_attach(pconf);
+                rte_spinlock_unlock(&ifp_create_lock);
+                if (veth_ctx[lcore][port_id] == NULL)
+                    rte_exit(EXIT_FAILURE, "worker ff_veth_attach failed");
+            }
+        }
+    }
+
     /* g_pcap_fp is __thread: each lcore thread must init its own.
      * Moved from init_lcore_conf to fix worker TLS NULL + multi-port leak. */
     if (ff_global_cfg.pcap.enable) {
@@ -2699,7 +2740,7 @@ main_loop(void *arg)
         for (i = 0; i < qconf->nb_rx_queue; ++i) {
             port_id = qconf->rx_queue_list[i].port_id;
             queue_id = qconf->rx_queue_list[i].queue_id;
-            ctx = veth_ctx[port_id];
+            ctx = veth_ctx[rte_lcore_id()][port_id];
 
 #ifdef FF_KNI
             if (enable_kni && ff_kni_is_owner_thread()) {
@@ -2795,8 +2836,8 @@ ff_dpdk_if_up(void) {
         uint16_t port_id = qconf->tx_port_id[i];
 
         struct ff_port_cfg *pconf = &qconf->port_cfgs[port_id];
-        veth_ctx[port_id] = ff_veth_attach(pconf);
-        if (veth_ctx[port_id] == NULL) {
+        veth_ctx[rte_lcore_id()][port_id] = ff_veth_attach(pconf);
+        if (veth_ctx[rte_lcore_id()][port_id] == NULL) {
             rte_exit(EXIT_FAILURE, "ff_veth_attach failed");
         }
     }

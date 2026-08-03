@@ -1238,6 +1238,7 @@ SYSCTL_PROC(_kern, OID_AUTO, callout_stat,
 
 #ifdef FSTACK
 void ff_hardclock(void);
+void ff_hardclock_worker(void);
 
 void
 ff_hardclock(void)
@@ -1250,6 +1251,18 @@ ff_hardclock(void)
 #ifdef DEVICE_POLLING
     hardclock_device_poll();    /* this is very short and quick */
 #endif /* DEVICE_POLLING */
+}
+
+/*
+ * Worker-thread clock: only advances this thread's own callwheel (cc_cpu is
+ * __thread). Global `ticks` and the timecounter stay owned by the main thread,
+ * otherwise N threads ticking them would make the shared time base run N times
+ * too fast and break every ticks-based timeout.
+ */
+void
+ff_hardclock_worker(void)
+{
+    callout_tick();
 }
 
 /*
