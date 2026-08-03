@@ -38,6 +38,7 @@
 #include <sys/cpuset.h>
 #include <sys/sysctl.h>
 #include <sys/filedesc.h>
+#include <sys/jail.h>
 
 #include <vm/uma.h>
 #include <vm/uma_int.h>
@@ -90,14 +91,73 @@ long physmem;
 
 extern void uma_startup1(vm_offset_t);
 
-/* Per-thread pcpu bootstrap. CM3: main thread calls it once (behaviour
- * unchanged). Worker per-thread invocation is wired in CM5. */
+/*
+ * Per-thread pcpu bootstrap. CM3: main thread calls it once (behaviour
+ * unchanged). Worker per-thread invocation is wired in CM5.
+ *
+ * cpuid must stay 0: this build is non-SMP (MAXCPU == 1), so cpuid_to_pcpu[]
+ * and every UMA_ZONE_PCPU/SMR allocation is sized for a single cpu. A nonzero
+ * pc_cpuid would make zpcpu_get() index past those allocations. Isolation
+ * comes from each thread owning its own pcpu via the __thread pcpup.
+ */
 void
 ff_pcpu_thread_init(int cpuid)
 {
     pcpup = malloc(sizeof(struct pcpu), M_DEVBUF, M_ZERO);
-    pcpu_init(pcpup, cpuid, sizeof(struct pcpu));
+    pcpu_init(pcpup, 0, sizeof(struct pcpu));
     PCPU_SET(prvspace, pcpup);
+}
+
+/*
+ * Sockets and ifioctl derive their vnet from the cred's prison
+ * (CRED_TO_VNET), not from curvnet. Sharing the global prison0 would pin every
+ * worker socket and SIOCAIFADDR to vnet0, so each worker gets an isolated
+ * prison pointing at its own vnet. Deliberately not linked into allprison or
+ * prison0's children.
+ */
+static void
+ff_worker_prison_init(struct thread *td, struct vnet *v)
+{
+    struct prison *pr;
+
+    pr = malloc(sizeof(struct prison), M_DEVBUF, M_ZERO | M_WAITOK);
+    if (pr == NULL)
+        return;
+
+    pr->pr_id = -1;
+    pr->pr_parent = pr;
+    pr->pr_ref = 1;
+    pr->pr_uref = 1;
+    pr->pr_state = PRISON_STATE_ALIVE;
+    pr->pr_flags = prison0.pr_flags | PR_HOST | PR_VNET;
+    pr->pr_allow = prison0.pr_allow;
+    pr->pr_securelevel = prison0.pr_securelevel;
+    pr->pr_childmax = prison0.pr_childmax;
+    pr->pr_enforce_statfs = prison0.pr_enforce_statfs;
+    pr->pr_devfs_rsnum = prison0.pr_devfs_rsnum;
+    pr->pr_osreldate = prison0.pr_osreldate;
+    pr->pr_hostid = prison0.pr_hostid;
+    pr->pr_cpuset = prison0.pr_cpuset;
+    pr->pr_root = prison0.pr_root;
+    strlcpy(pr->pr_name, prison0.pr_name, sizeof(pr->pr_name));
+    strlcpy(pr->pr_path, prison0.pr_path, sizeof(pr->pr_path));
+    strlcpy(pr->pr_hostname, prison0.pr_hostname, sizeof(pr->pr_hostname));
+    strlcpy(pr->pr_domainname, prison0.pr_domainname,
+        sizeof(pr->pr_domainname));
+    strlcpy(pr->pr_hostuuid, prison0.pr_hostuuid, sizeof(pr->pr_hostuuid));
+    strlcpy(pr->pr_osrelease, prison0.pr_osrelease,
+        sizeof(pr->pr_osrelease));
+    LIST_INIT(&pr->pr_children);
+    LIST_INIT(&pr->pr_proclist);
+    LIST_INIT(&pr->pr_descs);
+    mtx_init(&pr->pr_mtx, "jail mutex", NULL, MTX_DEF);
+
+    pr->pr_vnet = v;
+
+    if (td->td_proc != NULL && td->td_proc->p_ucred != NULL)
+        td->td_proc->p_ucred->cr_prison = pr;
+    if (td->td_ucred != NULL)
+        td->td_ucred->cr_prison = pr;
 }
 
 /*
@@ -118,6 +178,12 @@ ff_stack_thread_init(int cpuid)
         return;
     ff_stack_inited = 1;
 
+    /*
+     * pcpu_init() touches the global cpuid_to_pcpu[] and cpuhead, so keep it
+     * inside the init lock together with the rest of the worker bring-up.
+     */
+    while (__sync_lock_test_and_set(&init_lock, 1))
+        ;
     ff_pcpu_thread_init(cpuid);
 
     /*
@@ -127,8 +193,6 @@ ff_stack_thread_init(int cpuid)
      * read-only template; ff_adapt_user_proc_add is GIANT_REQUIRED).
      */
     ff_init_thread0();
-    while (__sync_lock_test_and_set(&init_lock, 1))
-        ;
     td_i = ff_adapt_user_thread_add(&thread0);
     if (td_i != NULL)
         pcurthread = td_i;
@@ -144,6 +208,10 @@ ff_stack_thread_init(int cpuid)
 
     v = vnet_alloc();
     curthread->td_vnet = v;
+    /* Must precede lo_set_defaultaddr(): it socreate()s, whose vnet comes
+     * from the cred's prison. */
+    if (td_i != NULL)
+        ff_worker_prison_init(td_i, v);
     lo_set_defaultaddr();
     __sync_lock_release(&init_lock);
 }

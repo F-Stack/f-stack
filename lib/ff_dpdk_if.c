@@ -544,8 +544,10 @@ init_mem_pool(void)
     unsigned socketid = 0;
     uint16_t i, lcore_id;
     char s[64];
+    uint16_t nb_pools = ff_global_cfg.dpdk.thread_mode
+        ? ff_global_cfg.dpdk.nb_threads : ff_global_cfg.dpdk.nb_procs;
 
-    for (i = 0; i < ff_global_cfg.dpdk.nb_procs; i++) {
+    for (i = 0; i < nb_pools; i++) {
         lcore_id = ff_global_cfg.dpdk.proc_lcore[i];
         if (numa_on) {
             socketid = rte_lcore_to_socket_id(lcore_id);
