@@ -78,5 +78,6 @@ int ff_dpdk_if_send(struct ff_dpdk_if_context* ctx, void *buf, int total);
 
 void ff_dpdk_pktmbuf_free(void *m);
 
+int ff_cur_proc_id(void);
 
 #endif /* ifndef _FSTACK_DPDK_IF_H */

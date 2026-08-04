@@ -36,6 +36,7 @@
 #include <sys/sx.h>
 #include <sys/vmmeter.h>
 #include <sys/cpuset.h>
+#include <sys/smp.h>
 #include <sys/sysctl.h>
 #include <sys/filedesc.h>
 #include <sys/jail.h>
@@ -69,6 +70,9 @@ extern void mi_startup(void);
 extern void uma_startup(void *, int);
 extern void uma_startup2(void);
 
+/* Dense stack-instance index of the calling thread, from lcore_conf[]. */
+extern int ff_cur_proc_id(void);
+
 extern void ff_init_thread0(void);
 
 void ff_pcpu_thread_init(int cpuid);
@@ -92,19 +96,19 @@ long physmem;
 extern void uma_startup1(vm_offset_t);
 
 /*
- * Per-thread pcpu bootstrap. CM3: main thread calls it once (behaviour
- * unchanged). Worker per-thread invocation is wired in CM5.
- *
- * cpuid must stay 0: this build is non-SMP (MAXCPU == 1), so cpuid_to_pcpu[]
- * and every UMA_ZONE_PCPU/SMR allocation is sized for a single cpu. A nonzero
- * pc_cpuid would make zpcpu_get() index past those allocations. Isolation
- * comes from each thread owning its own pcpu via the __thread pcpup.
+ * Dense per-thread cpuid keeps each thread's UMA/SMR per-cpu slots disjoint.
+ * The bound check is needed because subr_pcpu.c's KASSERT is compiled out
+ * (no INVARIANTS), so a bad cpuid would silently overrun cpuid_to_pcpu[].
  */
 void
 ff_pcpu_thread_init(int cpuid)
 {
+    if (cpuid < 0 || (u_int)cpuid > mp_maxid)
+        panic("ff_pcpu_thread_init: cpuid %d out of range [0, %u]\n",
+            cpuid, mp_maxid);
+
     pcpup = malloc(sizeof(struct pcpu), M_DEVBUF, M_ZERO);
-    pcpu_init(pcpup, 0, sizeof(struct pcpu));
+    pcpu_init(pcpup, cpuid, sizeof(struct pcpu));
     PCPU_SET(prvspace, pcpup);
 }
 
@@ -270,6 +274,7 @@ ff_freebsd_init(void)
     char tmpbuf[32] = {0};
     void *bootmem;
     int error;
+    int nb_cpus, i;
 
     snprintf(tmpbuf, sizeof(tmpbuf), "%u", ff_global_cfg.freebsd.hz);
     error = kern_setenv("kern.hz", tmpbuf);
@@ -290,20 +295,43 @@ ff_freebsd_init(void)
 
     physmem = ff_global_cfg.freebsd.physmem;
 
-    ff_pcpu_thread_init(0);
-    CPU_SET(0, &all_cpus);
+    nb_cpus = ff_global_cfg.dpdk.thread_mode ?
+        ff_global_cfg.dpdk.nb_threads : 1;
+    if (nb_cpus < 1)
+        nb_cpus = 1;
+    if (nb_cpus > MAXCPU)
+        panic("nb_threads %d exceeds MAXCPU %d\n", nb_cpus, MAXCPU);
+
+    /*
+     * mp_ncpus/mp_maxid/all_cpus must be final before uma_startup1(): UMA
+     * sizes each zone by mp_maxid there once and for all, and CPU_FOREACH
+     * consumers (ip_fw_dynamic.c) size their arrays by mp_ncpus.
+     */
+    mp_ncpus = nb_cpus;
+    mp_maxid = nb_cpus - 1;
+    for (i = 0; i < nb_cpus; i++)
+        CPU_SET(i, &all_cpus);
+
+    /* Main thread is itself an EAL lcore worker (CALL_MAIN), so it takes its
+     * own dense slot; thread_mode=0 has one stack per process -> slot 0. */
+    ff_pcpu_thread_init(ff_global_cfg.dpdk.thread_mode ? ff_cur_proc_id() : 0);
 
     ff_init_thread0();
+
+    /*
+     * Must precede uma_startup1(): once mp_maxid > 0 the zone-of-zones grows
+     * past the single-page slab threshold, which sets UMA_ZFLAG_VTOSLAB and
+     * makes keg_alloc_slab() call vsetzoneslab() during uma_startup1().
+     */
+    num_hash_buckets = 8192;
+    uma_page_slab_hash = (struct uma_page_head *)kmem_malloc(sizeof(struct uma_page)*num_hash_buckets, M_ZERO);
+    uma_page_mask = num_hash_buckets - 1;
 
     boot_pages = 16;
     bootmem = (void *)kmem_malloc(boot_pages*PAGE_SIZE, M_ZERO);
     //uma_startup(bootmem, boot_pages);
     uma_startup1((vm_offset_t)bootmem);
     uma_startup2();
-
-    num_hash_buckets = 8192;
-    uma_page_slab_hash = (struct uma_page_head *)kmem_malloc(sizeof(struct uma_page)*num_hash_buckets, M_ZERO);
-    uma_page_mask = num_hash_buckets - 1;
 
     mutex_init();
     mi_startup();

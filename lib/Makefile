@@ -218,6 +218,10 @@ endif
 
 CFLAGS+= -DFSTACK
 
+# SMP makes MAXCPU 1024 so UMA/SMR per-cpu storage is sized for all stack
+# threads; without it MAXCPU is 1 and every thread shares slot 0.
+CFLAGS+= -DSMP
+
 ifdef FF_ZC_SEND
 CFLAGS+= -DFSTACK_ZC_SEND
 endif

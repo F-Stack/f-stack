@@ -409,6 +409,12 @@ check_all_ports_link_status(void)
     }
 }
 
+int
+ff_cur_proc_id(void)
+{
+    return ff_cur_lcore_conf()->proc_id;
+}
+
 static int
 init_lcore_conf(void)
 {
@@ -2646,7 +2652,7 @@ main_loop(void *arg)
     /* CM5-A: per-thread stack init. thread_mode=0 main thread is already
      * initialized (ff_freebsd_init) and skips here (zero regression);
      * thread_mode=1 workers init here. */
-    ff_stack_thread_init(rte_lcore_id());
+    ff_stack_thread_init(ff_global_cfg.dpdk.thread_mode ? qconf->proc_id : 0);
 
     if (ff_global_cfg.dpdk.thread_mode) {
         unsigned lcore = rte_lcore_id();

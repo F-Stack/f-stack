@@ -31,7 +31,7 @@
 #include_next <sys/pcpu.h>
 #undef curcpu
 
-#define curcpu    0
+#define curcpu    PCPU_GET(cpuid)
 #ifndef curthread
 #define curthread __curthread
 #endif

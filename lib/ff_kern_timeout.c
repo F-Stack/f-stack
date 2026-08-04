@@ -178,8 +178,8 @@ struct callout_cpu {
 #define cc_exec_cancel(cc, dir)      cc->cc_exec_entity[dir].cc_cancel
 #define cc_exec_waiting(cc, dir)     cc->cc_exec_entity[dir].cc_waiting
 /* Per-thread callout_cpu: each stack instance drives its own callwheel.
- * CC_CPU/CC_SELF ignore the cpu arg (cpuid is always 0, MAXCPU=1) and
- * return the calling thread's own instance. */
+ * CC_CPU/CC_SELF ignore the cpu arg and return the calling thread's own
+ * instance, so c_cpu is only a record of which thread armed the callout. */
 __thread struct callout_cpu cc_cpu;
 #define CC_CPU(cpu)    &cc_cpu
 #define CC_SELF()      &cc_cpu
@@ -187,7 +187,7 @@ __thread struct callout_cpu cc_cpu;
 #define CC_UNLOCK(cc)         mtx_unlock_spin(&(cc)->cc_lock)
 #define CC_LOCK_ASSERT(cc)    mtx_assert(&(cc)->cc_lock, MA_OWNED)
 
-static int timeout_cpu;
+static __thread int timeout_cpu;
 
 void ff_callout_thread_init(void);
 static void callout_cpu_init(struct callout_cpu *cc, int cpu);
