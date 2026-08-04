@@ -1728,4 +1728,95 @@ thread_siblings: cpu1→"0-1"   cpu2→"2-3"   cpu3→"2-3"   cpu4→"4-5"
 
 >诚实边界：本节推论**由拓扑事实推导得出，尚未实测**。写入时点早于验证，故此处即为**预注册**——若 Z8 数据不支持，本节将被标注证伪而**不删除**（沿用本轮对被证伪归因的处理惯例）。
 
+## Z8. Z7.3 验证被中止（如实记录：预注册推论最终未获验证）
+
+### Z8.1 中止事实
+
+tester 已按 ABA 设计（`0xe` → `0x16` → `0xe`）启动 A1 块，**但未取得任何吞吐数据即中止**，原因有二，两者同时发生：
+
+1. **`team-lead` 下达收尾指令**：「请不要再启动新的测试或修改」。**该指令优先于 tester 的自主验证计划，立即执行。**
+2. **A1 块启动本身已失败**，日志末行：
+   ```
+   nohup: failed to run command '/data/workspace/f-stack/example/helloworld': Permission denied
+   ```
+   `pgrep -x helloworld` 为空，进程未起。
+
+### Z8.2 启动失败的根因（已查明，且本身是一条有价值的观测）
+
+```
+tester 查得example/helloworld  mtime = 17:09:19   （启动尝试发生于 17:0x）
+而 tester 开测前记录的 mtime  = 16:42:44
+排除项：执行位正常（-rwxr-xr-x，test -x 通过）、uid=0、挂载点无 noexec/ro
+```
+
+→ **tester 的`exec` 撞上了 `team-lead` 正在进行的 clean build 重新链接同一路径**（`example/helloworld` 正被 `ld` 覆写，mtime 因此变为 17:09:19）。这是**第三部分 `ETXTBSY` 事件的镜像形态**：上次是「`res-build` 的 `cp` 撞上 tester 运行中的二进制」，本次是「tester 的 `exec` 撞上 leader 的 `ld` 写入」。
+
+**由此得到一条流程结论（建议纳入规范）**：tester 与 `res-build` 之间建立的**显式互斥握手是有效的**——本轮两次撞车**都不是发生在握手双方之间**，而是发生在**握手协议未覆盖的第三方（leader 的 build 动作）**。→ **`example/helloworld` 这类"唯一被测产物"路径的互斥，必须覆盖全队所有会写它的角色（含 leader 的 build），而不只是测试执行方之间。**
+
+### Z8.3 Z7.3 的最终证据地位（不删除，转为遗留项）
+
+**Z7.3 的 SMT 兄弟核争用推论：预注册，未验证，既未证实也未证伪。**
+
+- 它**不影响任何已定案结论**：DoD-5 的百分比均为**同 `lcore_mask` 同窗对照**，SMT 拓扑在 A/B 两侧完全相同，在差值中被抵消。
+- 它**仅关系到**两件已明确标注为未坐实的事：3 线程档离群值（`143,232`、`205,xxx`）的根因、以及 4 线程档为何对环境漂移最敏感。
+- **留给后续的验证方法（成本约 10 分钟）**：`lcore_mask=0xe`（cpu1,2,3；cpu2/cpu3 为同物理核 SMT 兄弟）vs `lcore_mask=0x16`（cpu1,2,4；三个独立物理核）**同窗 ABA 对照**，其余配置一律不动。若 `0x16` 侧离群消失且吞吐显著抬升 → 坐实为 SMT 拓扑效应、与 M17 代码无关。
+
+> 按本轮惯例保留该预注册推论而不删除：**它是一条"有拓扑事实支撑但未经实测"的假设**，读者应据此对待，不得当作结论引用。
+
+### Z8.4 tester 本次中止留下的痕迹（如实申报）
+
+| 痕迹 | 说明 |
+|---|---|
+| `config.ini` 的 `lcore_mask` 曾被改为 `e` | **已归位为 `6`**，实测确认：`lcore_mask=6` / `thread_mode=1` / `idle_sleep=20`；`git diff --cached` 为空，**全程未 `git add`** |
+| `example/helloworld.log` 追加了 A1 块启动尝试的输出 | 含 EAL 初始化行与末行 `nohup: ... Permission denied`。**边界说明**：tester 首条命令因 `&&` 链整体被 `&` 置入后台，`LOGOFF` 字节偏移未能回显，故**无法精确界定本次新增的起始字节**，此处不做"本次新增行"的断言 |
+| 未产生任何吞吐数据 | 故**无新数据进入任何 DoD 判定**，全部既有结论不受影响 |
+| 未修改任何源码、未重编、未覆盖二进制 | `example/helloworld` md5 前后一致（见 Z8.5） |
+
+## Z9. 最终收尾核验（tester 独立执行，只读）
+
+### Z9.1 `md5` 的第三次独立复现 —— 本轮最强的一条可复现性证据
+
+同一 md5 已在**三个互不相同的构造路径**下被复现：
+
+| # | 时点 | 构造方式 | md5 | 字节数 |
+|---|---|---|---|---|
+| 1 | 16:22:55 | 摘探针后重编（tester #9 的被测物） | `df05d2cd078d631ad2d8ee7caba8d387` | 30392632 |
+| 2 | 16:42:44 | 修掉 1 行并排空行后重编 | **同上** | 30392632 |
+| 3 | **17:09:19** | **`team-lead` 完整 clean build** | **同上** | 30392632 |
+
+→ 该二进制**对空白改动免疫、且 clean build 可完整复现**。**tester 的 #9 收尾回归所测的对象，与最终入库产物在三条独立路径下均为逐字节同一物**。（第3 行由 tester 独立 `md5sum` 复核，非采信 leader 转述。）
+
+### Z9.2 仓库终态（tester 复核）
+
+```
+git log --oneline -3
+  06396b501  Add spec 17 for the SMP-aware pcpu/SMR work ...
+  57b612d16  Drop the global uma_crit_lock spinlock ...
+  c7996a94f  Make the f-stack kernel view SMP-aware for native-mt ...
+git status --short lib/ freebsd/→  空（干净）
+git diff --cached --stat           →  空（无暂存）
+```
+
+### Z9.3 进程与产物
+
+```
+pgrep -a helloworld  →  no helloworld running
+pgrep -a wrk         →  no wrk running
+example/helloworld_g1_prelock / helloworld_g2_nolock  →  已由 leader 清理（.trash）
+/data/workspace/m17_judge_baseline/  →  【仍存在】6 个文件
+```
+
+**关于 `m17_judge_baseline/` 仍存在：这符合 tester 与 `res-build` 的共同建议**（等 `reviewer` 逐行diff 复核完成后再清），其中 `m17_ffinit_before.c`（14073 字节）是摘除动作的 **before 侧唯一现成原文**。**由于摘探针的执行者身份始终未查明，该目录是「只删不改」这一判断的独立取证物，tester 建议在 `reviewer`/`reviewer2` 的复核记录归档后再由 leader 发令清理。** tester 不自行清理。
+
+### Z9.4 第五部分规约合规
+
+- Z7~Z9 除「`config.ini` 的 `lcore_mask` 改动+ 归位」与「一次失败的启动尝试」外，**全部为只读命令**。
+- 命令串中**未出现** `rm`/`kill`/`pkill`/`killall`/`chmod`（本部分未产生需要终止的进程，故未调用 `kill_process.sh`；未删除任何文件，故未调用 `rm_tmp_file.sh`）。
+- **未修改** `lib/`/`freebsd/`/`example/` 下任何源码；**未重编、未覆盖任何二进制**。
+- 收到 leader 收尾指令后**立即停止**验证计划，仅完成「已有材料落盘」与「本地配置归位」两项收尾动作。
+
+---
+
+**tester 交付完结。全文五部分，所有数字均来自实际执行输出；被证伪的自有归因（i-cache 对齐）与未获验证的自有预注册推论（SMT 兄弟核争用）均如实保留、不删除、不上调其证据地位。**
+
 
