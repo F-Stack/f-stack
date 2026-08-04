@@ -42,14 +42,13 @@
 
 #undef UMA_MD_SMALL_ALLOC
 
-extern volatile int uma_crit_lock;
-#define critical_enter() do { \
-    while (__sync_lock_test_and_set(&uma_crit_lock, 1)) \
-        ; \
-} while(0)
-#define critical_exit()  do { \
-    __sync_lock_release(&uma_crit_lock); \
-} while(0)
+/*
+ * curcpu is per-thread here (sys/pcpu.h), not per-CPU, so preemption cannot
+ * change which uz_cpu[] slot this thread uses and no other thread uses it;
+ * the dense pcpu slot is the whole protection (spec 17 §2.4).
+ */
+#define critical_enter() do {} while(0)
+#define critical_exit()  do {} while(0)
 
 #define sleepq_lock(w) do {} while(0)
 #define sleepq_release(w) do {} while(0)
