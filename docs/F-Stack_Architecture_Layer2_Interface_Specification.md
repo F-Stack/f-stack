@@ -806,6 +806,12 @@ int ret = ff_pthread_create(&thread, NULL, thread_func, arg);
 // ✗ Cannot create new threads after ff_run()
 ```
 
+**Native Multi-Thread Mode (`thread_mode=1`, v1.26+)**:
+
+Since v1.26, F-Stack supports `thread_mode=1` in `config.ini` for single-process multi-thread operation. Each worker thread gets its own dense pcpu slot with per-thread `curcpu`, UMA/SMR per-CPU cache slot, and callout callwheel. The `uma_crit_lock` global spinlock that previously serialized UMA access has been removed (slot isolation is the sole protection). See `docs/native_mt_spec/` for the full design and runtime test data.
+
+> **Note**: `ff_pthread_create()`-created application threads do **not** get a pcpu slot (they have `pcpup == NULL`). Calling any `ff_*` stack API from such threads is unsupported and will crash (fail-fast by design). Only threads created via the `ff_stack_thread_init()` path (i.e., `main_loop` workers in `thread_mode=1`) have valid pcpu slots.
+
 **Example - Multi-Threaded Application**:
 
 ```c

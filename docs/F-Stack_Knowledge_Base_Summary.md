@@ -2,7 +2,8 @@
 
 **Document Version**: 1.0  
 **Generation Date**: 2026-03-20  
-**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS; **Phase-2 M6 NETGRAPH+IPFW + M7 PAGE_ARRAY + M8 ZC_SEND + M9 PA+ZC + M10 FLOW_IPIP + M11 FLOW_ISOLATE + M12 FDIR + M13 LOOPBACK + Phase-5b perf baseline matrix + F-A1 fix (PA-only now production-ready), 2026-06-08**) + DPDK 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 — tree replace + 4 patches re-applied; helloworld + nginx single/multi-worker + ipfw + vlan smoke all PASS) Complete Three-Layer Architecture Knowledge Base  
+**Last Updated**: 2026-08-05 (adds native-mt SMP-aware pcpu/SMR slot isolation + global lock removal, MTU/jumbo-frame configuration support)  
+**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS; **Phase-2 M6 NETGRAPH+IPFW + M7 PAGE_ARRAY + M8 ZC_SEND + M9 PA+ZC + M10 FLOW_IPIP + M11 FLOW_ISOLATE + M12 FDIR + M13 LOOPBACK + Phase-5b perf baseline matrix + F-A1 fix (PA-only now production-ready), 2026-06-08**) + DPDK 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 — tree replace + 4 patches re-applied; helloworld + nginx single/multi-worker + ipfw + vlan smoke all PASS) + **native-mt SMP-aware pcpu/SMR slot isolation** (2026-08, commits `c7996a94f` G1 + `57b612d16` G2; spec: `docs/native_mt_spec/`) + **MTU/jumbo-frame configuration support** (2026-07; spec: `docs/mtu_change_spec/`) Complete Three-Layer Architecture Knowledge Base  
 **Document Location**: `/data/workspace/f-stack/docs/`  
 **Purpose**: Pre-requisite architecture documentation for Spec-Driven Development
 

@@ -94,6 +94,49 @@ Traceability: `docs/ff_rss_check_opt_spec/zh_cn/` (00-11), esp. `05-接口设计
 - **Fix**: intercept `IPPROTO_IP + LINUX_IP_BIND_ADDRESS_NO_PORT` in `ff_setsockopt`/`ff_getsockopt` before `linux2freebsd_opt`, return success no-op. FreeBSD already defers ephemeral port selection to connect; F-Stack RSS reverse path (`ff_rss_adjust_sport/6`) picks the source port at connect. Covers both v4 and v6 (nginx calls setsockopt at IPPROTO_IP level for both).
 - **Complements R-E (§6 of ff_rss 10)**: R-E fixed the kernel-side bind gate (`in_pcb.c`/`in6_pcb.c`); this patch fixes the setsockopt option wiring so nginx can actually request the delayed-port behavior without EINVAL.
 
+---
+
+## 2D. Post-index code delta: MTU/jumbo-frame configuration support
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-07). Covers the MTU change feature set (`mtu_change_spec/`): jumbo-frame enablement, KNI/MTU mutual-exclusion removal, IPv6 `nd_ifinfo.maxmtu` sync, and SIOCSIFMTU ioctl dedup. Re-index with `npx gitnexus analyze` to fold into the graph.
+
+The feature allows runtime MTU changes on DPDK-backed veth interfaces, including jumbo frames up to the NIC's hardware limit. The KNI/MTU mutual exclusion that previously blocked `mtu_enable` when KNI was enabled has been removed; IPv6 `nd_ifinfo.maxmtu` is now synced via `if_notifymtu` so IPv6 path MTU discovery tracks the configured MTU.
+
+| Area | Where in source |
+|------|-----------------|
+| MTU capability query | `lib/ff_dpdk_if.c`: `ff_mtu_capability()` queries `rte_eth_dev_info` for `max_mtu`/`min_mtu`; uses `uint8_t` (not `bool`) for the jumbo-capable flag (commit `4c30d118f` clean-build fix). Magic numbers replaced with named macros `FF_MTU_DEFAULT`, `FF_MTU_JUMBO_THRESHOLD` etc. (commit `0f8f6991e`). |
+| SIOCSIFMTU ioctl handler | `lib/ff_veth.c`: dedup'd via fall-through so v4 and v6 share one code path (commit `332abf997`); validates against `if_getmtu` + hw capability, calls `rte_eth_dev_set_mtu` for DPDK-backed NICs. |
+| KNI/MTU mutex removal | `lib/ff_dpdk_if.c` / `lib/ff_config.c`: removed the `mtu_enable`/`kni.enable` mutual-exclusion check (commit `989f1d2da`); both can now be enabled simultaneously. |
+| IPv6 nd_ifinfo maxmtu sync | `lib/ff_veth.c`: `if_notifymtu` called on MTU change to propagate to `nd_ifinfo.maxmtu` (commit `0f25ac495`), ensuring IPv6 path MTU discovery and neighbor discovery use the updated MTU. |
+| config.ini `[portN]` | New per-port `mtu` configuration item (default 1500); parsed in `ff_config.c`. |
+| IPv6 fragmentation | `freebsd/netinet6/`: IPv6 fragment reassembly respects the updated `maxmtu` (FreeBSD 15.0 `ip6_input` path). |
+
+Traceability: `docs/mtu_change_spec/` (00-09, zh_cn/), esp. `06-solution-and-conclusion.md` (jumbo validation complete), `09-implementation-and-code-change-design.md`. Key commits: `0f8f6991e`, `332abf997`, `4c30d118f`, `989f1d2da`, `0f25ac495`, `1336077d0`.
+
+---
+
+## 2E. Post-index code delta: native-mt SMP-aware pcpu/SMR slot isolation + global lock removal
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-08). Covers the `native_mt_spec/` spec 17 work: making the FreeBSD kernel view SMP-aware for `thread_mode=1`, giving each stack thread a dense pcpu slot with per-thread `curcpu`, and removing the `uma_crit_lock` global spinlock that was serializing the UMA per-CPU cache fast path. Re-index with `npx gitnexus analyze` to fold into the graph.
+
+Before this change, all stack threads shared pcpu slot 0 (because `ff_pcpu_thread_init` ignored its `cpuid` parameter, `mp_ncpus=1`, `mp_maxid=0`, `MAXCPU=1`, and `curcpu` was hardcoded to 0). This caused SMR read-side sequence numbers to be overwritten across threads, creating a UAF window. A global spinlock `uma_crit_lock` was introduced as a band-aid to serialize UMA per-CPU cache access, but it was a dataplane bottleneck. This work (G1+G2) makes each thread own a distinct dense pcpu slot and removes the lock.
+
+| Area | Where in source |
+|------|-----------------|
+| `-DSMP` build flag | `lib/Makefile:221-223`: `CFLAGS+= -DSMP` — activates `MAXCPU=1024`, `UMA_ZONE_PCPU` not stripped, per-cpu `M_ZERO` full-slot zeroing, `smp_topo()` call site in `tcp_hpts.c`. |
+| `smp_topo()` stub | `lib/ff_glue.c:171-177`: returns `NULL` (safe: `tcp_hpts.c:1890 if (cpu_top == NULL) grp_cnt = 1`; `grps[]` never `malloc`'d). |
+| Triple `mp_ncpus`/`mp_maxid`/`all_cpus` | `lib/ff_freebsd_init.c:314-317`: `nb_cpus = thread_mode ? nb_threads : 1; mp_ncpus = nb_cpus; mp_maxid = nb_cpus - 1; for (i...) CPU_SET(i, &all_cpus);` — set **before** `uma_startup1()` (`:331`) and `mi_startup()` (`:339`); never modified after. |
+| `uma_page_slab_hash` advance | `lib/ff_freebsd_init.c:379-387`: moved hash init **before** `uma_startup1()` — when `mp_maxid ≥ 2`, zone-of-zones item size exceeds 1 page → `UMA_ZFLAG_VTOSLAB` set → `keg_alloc_slab()` calls `vsetzoneslab()` during `uma_startup1()` → NULL deref crash without this fix. |
+| `ff_pcpu_thread_init(cpuid)` uses parameter | `lib/ff_freebsd_init.c:106-112`: now `pcpu_init(pcpup, cpuid, ...)` (was hardcoded `0`); upper-bound `panic` if `cpuid > mp_maxid` (because `subr_pcpu.c:88 KASSERT` is compiled out without `INVARIANTS`). |
+| Dense pcpu id for main/worker | `lib/ff_freebsd_init.c:317`: `ff_pcpu_thread_init(thread_mode ? ff_cur_proc_id() : 0)`; `lib/ff_dpdk_if.c:2652`: `ff_stack_thread_init(thread_mode ? qconf->proc_id : 0)`. `ff_cur_proc_id()` = `ff_cur_lcore_conf()->proc_id` (dense `[0, nb_threads-1]`). |
+| `curcpu` per-thread | `lib/include/sys/pcpu.h:34`: `#define curcpu PCPU_GET(cpuid)` = `pcpup->pc_cpuid` (was `0`); `#undef curcpu` retained to avoid redefinition with upstream `freebsd/sys/pcpu.h:218`. |
+| `timeout_cpu` per-thread | `lib/ff_kern_timeout.c:190`: `static __thread int timeout_cpu` (was `static int`); `CC_CPU(cpu)` ignores arg and returns calling thread's own `__thread cc_cpu`. |
+| `pause_wchan` bootstrap fallback | `lib/ff_kern_synch.c:105`: `&pause_wchan[pcpup != NULL ? curcpu : 0]` — reachable from `malloc()` OOM retry before pcpu is built. |
+| `uma_crit_lock` removal (G2) | `lib/include/vm/uma_int.h:44-50`: `critical_enter/exit` → `do {} while(0)` + 3-line comment; `lib/ff_glue.c`: deleted `volatile int uma_crit_lock;` definition. Safe because `curcpu` is per-thread (preemption/migration doesn't change slot), and SMR read-side `critical_enter` was already a no-op in non-UMA TUs. |
+| `thread_mode=0` zero regression | All paths gated by `thread_mode ?` ternary; `mp_ncpus=1`, `mp_maxid=0`, `all_cpus={0}`, `curcpu=0`, `ff_pcpu_thread_init(0)` — value-identical to pre-change (4 known non-equivalent differences: `UMA_ZONE_PCPU` no longer stripped, CK `lock` prefix restored, `MAXCPU`-sized BSS growth, `curcpu` memory load). |
+
+Traceability: `docs/native_mt_spec/zh_cn/` (00-17 + `_m17_*` + `plan-17-*`), esp. `17-SMP-aware-pcpu视图与去全局锁.md` (main spec), `_m17_F_runtime.md` (runtime test report), `_m17_gate_code_g1.md`/`_m17_gate_code_g2.md` (gate reviews). English translation in `docs/native_mt_spec/` root. Key commits: `c7996a94f` (G1), `57b612d16` (G2).
+
 ## 3. Directory Structure
 
 ```

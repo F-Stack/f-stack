@@ -1206,6 +1206,35 @@ bash start.sh -c config.ini -b ./app
 
 ---
 
+## Recent Code Delta (2026-07~08, MTU jumbo-frame support + native-mt SMP-aware pcpu/SMR slot isolation)
+
+> 与 `01/02/03-LAYER*` 文档同步；权威细节见 `docs/mtu_change_spec/` 和 `docs/native_mt_spec/`。
+
+### MTU / jumbo-frame configuration support
+
+- **MTU capability query**：`lib/ff_dpdk_if.c` `ff_mtu_capability()` 查询 `rte_eth_dev_info` 的 `max_mtu`/`min_mtu`；jumbo-capable 标志用 `uint8_t`（非 `bool`，因 `-nostdinc` 下 `stdbool.h` 不可用）。魔数替换为命名宏 `FF_MTU_DEFAULT` / `FF_MTU_JUMBO_THRESHOLD` 等。
+- **SIOCSIFMTU ioctl 去重**：`lib/ff_veth.c` 通过 fall-through 使 v4/v6 共用一条 MTU 设置路径；校验硬件能力后调 `rte_eth_dev_set_mtu`。
+- **KNI/MTU 互斥解除**：`mtu_enable` 与 `kni.enable` 的互斥检查已移除（commit `989f1d2da`），二者可同时启用。
+- **IPv6 nd_ifinfo maxmtu 同步**：`lib/ff_veth.c` 在 MTU 变更时调 `if_notifymtu` 传播到 `nd_ifinfo.maxmtu`（commit `0f25ac495`），使 IPv6 路径 MTU 发现与邻居发现跟踪配置的 MTU。
+- **config.ini `[portN]`**：新增每端口 `mtu` 配置项（默认 1500）。
+- Traceability: `docs/mtu_change_spec/` (00-09, zh_cn/). Key commits: `0f8f6991e`, `332abf997`, `4c30d118f`, `989f1d2da`, `0f25ac495`.
+
+### native-mt SMP-aware pcpu/SMR slot isolation + global lock removal
+
+- **`-DSMP` 构建标志**（`lib/Makefile:221-223`）：激活 `MAXCPU=1024`、`UMA_ZONE_PCPU` 不再被剥离、per-cpu `M_ZERO` 全槽清零、`tcp_hpts.c` 的 `smp_topo()` 调用点。
+- **三元组 `mp_ncpus`/`mp_maxid`/`all_cpus`**（`lib/ff_freebsd_init.c:314-317`）：`thread_mode ? nb_threads : 1`，在 `uma_startup1()` 和 `mi_startup()` 之前设置且此后不变。
+- **`uma_page_slab_hash` 提前初始化**（`lib/ff_freebsd_init.c:379-387`）：移到 `uma_startup1()` 之前，修复 `mp_maxid ≥ 2` 时 zone-of-zones 多页导致的启动崩溃。
+- **`ff_pcpu_thread_init(cpuid)` 恢复使用形参**（`lib/ff_freebsd_init.c:106-112`）：`pcpu_init(pcpup, cpuid, ...)`（原为硬编码 `0`）；新增 `cpuid > mp_maxid` 的 `panic` 上界检查（因 `subr_pcpu.c:88 KASSERT` 在无 `INVARIANTS` 时被编译掉）。
+- **稠密 pcpu id**：主线程 `ff_pcpu_thread_init(thread_mode ? ff_cur_proc_id() : 0)`；worker `ff_stack_thread_init(thread_mode ? qconf->proc_id : 0)`；`ff_cur_proc_id()` = `ff_cur_lcore_conf()->proc_id`（稠密 `[0, nb_threads-1]`）。
+- **`curcpu` per-thread 化**（`lib/include/sys/pcpu.h:34`）：`#define curcpu PCPU_GET(cpuid)` = `pcpup->pc_cpuid`（原为字面量 `0`）；保留 `#undef curcpu` 避免与上游重定义。
+- **`timeout_cpu` 改 `__thread`**（`lib/ff_kern_timeout.c:190`）：`static __thread int timeout_cpu`（原为 `static int`，全局被每线程写）。
+- **`pause_wchan` 引导窗口兜底**（`lib/ff_kern_synch.c:105`）：`&pause_wchan[pcpup != NULL ? curcpu : 0]`——`malloc()` OOM 重试在 pcpu 建立前可达。
+- **`uma_crit_lock` 全局锁移除**（G2，commit `57b612d16`）：`lib/include/vm/uma_int.h:44-50` 的 `critical_enter/exit` 改为 `do {} while(0)` 空操作 + 3 行注释；`lib/ff_glue.c` 删除 `volatile int uma_crit_lock;` 定义。安全前提：`curcpu` 已绑线程（抢占/迁核不改变槽位归属），SMR 读侧的 `critical_enter` 在非 UMA TU 中本就是空操作。
+- **`thread_mode=0` 零回归**：所有路径由 `thread_mode ?` 三元运算门控；逻辑值等价（`mp_ncpus=1`/`mp_maxid=0`/`all_cpus={0}`/`curcpu=0`），4 项非等价差异已记录（`UMA_ZONE_PCPU` 不再剥离、CK `lock` 前缀恢复、`MAXCPU` BSS 增长、`curcpu` 内存载入）。
+- Traceability: `docs/native_mt_spec/zh_cn/` (00-17 + `_m17_*`), English in `docs/native_mt_spec/` root. Key commits: `c7996a94f` (G1), `57b612d16` (G2).
+
+---
+
 **Related Documents**:
 - [Layer 1: System Architecture Overview](./F-Stack_Architecture_Layer1_System_Overview.md)
 - [Layer 2: Interface Definition and Specification](./F-Stack_Architecture_Layer2_Interface_Specification.md)

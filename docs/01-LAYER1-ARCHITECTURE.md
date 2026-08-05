@@ -304,6 +304,10 @@ Shared Resources:
 **Advantages**: Fault isolation, flexible scaling  
 **Disadvantages**: Complex inter-process synchronization
 
+### 6.2.1 Native Multi-Thread Mode (`thread_mode=1`, v1.26+)
+
+An alternative to multi-process: each worker thread runs its own FreeBSD stack instance (`vnet_i`, `thread0_i`) within one process. The kernel view is SMP-aware (`-DSMP`): each thread gets a dense pcpu slot `[0, nb_threads-1]` with per-thread `curcpu`, disjoint UMA/SMR per-CPU cache slots, and its own callout callwheel. The `uma_crit_lock` global spinlock has been removed (slot isolation is the sole protection). `thread_mode=0` preserves the original single-thread/multi-process behavior with zero regression. See `docs/native_mt_spec/`.
+
 ### 6.3 Kernel-Stack Coexistence (`FF_KERNEL_COEXIST`, optional, default off)
 
 An optional mode (compile-time macro `FF_KERNEL_COEXIST` + runtime `config.ini [stack] kernel_coexist`, both default off) lets one process serve traffic over **both** the F-Stack stack and the host Linux kernel stack from the **same `ff_epoll_wait` loop**:
