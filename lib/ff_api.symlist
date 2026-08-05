@@ -1,4 +1,5 @@
 ff_hardclock
+ff_hardclock_worker
 ff_tcp_hpts_softclock
 ff_freebsd_init
 ff_socket
@@ -89,3 +90,4 @@ ff_log_set_level
 ff_log
 ff_vlog
 ff_log_close
+ff_stack_thread_init

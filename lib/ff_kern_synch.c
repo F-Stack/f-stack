@@ -102,7 +102,9 @@ msleep_spin_sbt(const void * _Nonnull chan, struct mtx *mtx, const char *wmesg,
 int
 pause_sbt(const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags)
 {
-    return (_sleep(&pause_wchan[curcpu], NULL, 0, wmesg, sbt, pr, flags));
+    /* Reachable from malloc()'s OOM retry before this thread has a pcpu. */
+    return (_sleep(&pause_wchan[pcpup != NULL ? curcpu : 0], NULL, 0, wmesg,
+        sbt, pr, flags));
 }
 
 void

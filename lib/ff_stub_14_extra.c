@@ -572,57 +572,11 @@ int sendfile_wait_generic(struct sendfile_sync *sfs, int *err)
     return (0);
 }
 
-int tcp_do_ecn = 2;
-
-void tcp_ecn_input_parallel_syn(struct tcpcb *tp, uint16_t thflags, int iptos);
-void tcp_ecn_input_parallel_syn(struct tcpcb *tp, uint16_t thflags, int iptos)
-{
-    
-}
-
-int tcp_ecn_input_segment(struct tcpcb *tp, uint16_t thflags, int tlen, int pkts_acked, int iptos);
-int tcp_ecn_input_segment(struct tcpcb *tp, uint16_t thflags, int tlen, int pkts_acked, int iptos)
-{
-    return (0);
-}
-
-void tcp_ecn_input_syn_sent(struct tcpcb *tp, uint16_t thflags, int iptos);
-void tcp_ecn_input_syn_sent(struct tcpcb *tp, uint16_t thflags, int iptos)
-{
-    
-}
-
-int tcp_ecn_maxretries = 1;
-
-int tcp_ecn_output_established(struct tcpcb *tp, uint16_t *thflags, int len, bool rxmit);
-int tcp_ecn_output_established(struct tcpcb *tp, uint16_t *thflags, int len, bool rxmit)
-{
-    return (0);
-}
-
-uint16_t tcp_ecn_output_syn_sent(struct tcpcb *tp);
-uint16_t tcp_ecn_output_syn_sent(struct tcpcb *tp)
-{
-    return (0);
-}
-
-void tcp_ecn_syncache_add(struct syncache *sc, int iptos, uint16_t thflags);
-void tcp_ecn_syncache_add(struct syncache *sc, int iptos, uint16_t thflags)
-{
-    
-}
-
-uint16_t tcp_ecn_syncache_respond(uint16_t thflags, struct syncache *sc);
-uint16_t tcp_ecn_syncache_respond(uint16_t thflags, struct syncache *sc)
-{
-    return (thflags);
-}
-
-void tcp_ecn_syncache_socket(struct tcpcb *tp, struct syncache *sc);
-void tcp_ecn_syncache_socket(struct tcpcb *tp, struct syncache *sc)
-{
-    
-}
+/*
+ * ECN stubs (tcp_do_ecn/tcp_ecn_maxretries + 8 tcp_ecn_* no-ops) removed:
+ * under VIMAGE V_tcp_do_ecn needs the real VNET_DEFINE segment symbols,
+ * provided by the now-compiled freebsd/netinet/tcp_ecn.c.
+ */
 
 void (*tcp_hpts_softclock)(void) = NULL;
 

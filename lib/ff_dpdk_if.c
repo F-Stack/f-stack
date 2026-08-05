@@ -55,6 +55,7 @@
 #include <rte_eth_bond.h>
 #include <rte_eth_bond_8023ad.h>
 #include <rte_mbuf_dyn.h>
+#include <rte_spinlock.h>
 
 #include "ff_dpdk_if.h"
 #include "ff_dpdk_pcap.h"
@@ -84,9 +85,11 @@ static unsigned pkt_tx_delay;
 static int timestamp_dynfield_offset = -1;
 static uint64_t timestamp_dynflag_mask;
 static uint64_t usr_cb_tsc;
-static int stop_loop;
+/* thread mode: ff_dpdk_stop only stops the calling thread's own loop;
+ * cross-thread broadcast-stop semantics deferred to CM7/runtime. */
+static __thread int stop_loop;
 
-static struct rte_timer freebsd_clock;
+static __thread struct rte_timer freebsd_clock;
 
 // Mellanox Linux's driver key
 static uint8_t default_rsskey_40bytes[40] = {
@@ -120,7 +123,7 @@ static uint8_t symmetric_rsskey[52] = {
 static int rsskey_len = sizeof(default_rsskey_40bytes);
 static uint8_t *rsskey = default_rsskey_40bytes;
 
-struct lcore_conf lcore_conf;
+struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 
 struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
 
@@ -176,12 +179,16 @@ struct ff_msg_ring {
 
 static struct ff_msg_ring msg_ring[RTE_MAX_LCORE];
 static struct rte_mempool *message_pool;
-static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_ETHPORTS];
+static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_LCORE][RTE_MAX_ETHPORTS];
 
 static struct ff_top_args ff_top_status;
 static struct ff_traffic_args ff_traffic;
 extern void ff_hardclock(void);
+extern void ff_hardclock_worker(void);
 extern void ff_tcp_hpts_softclock(void);
+extern void ff_stack_thread_init(int cpuid);
+
+static rte_spinlock_t ifp_create_lock = RTE_SPINLOCK_INITIALIZER;
 
 struct ff_rss_tbl_dip_type {
     uint32_t daddr;
@@ -228,6 +235,12 @@ ff_hardclock_job(__rte_unused struct rte_timer *timer,
     __rte_unused void *arg) {
     ff_hardclock();
     ff_update_current_ts();
+}
+
+static void
+ff_hardclock_worker_job(__rte_unused struct rte_timer *timer,
+    __rte_unused void *arg) {
+    ff_hardclock_worker();
 }
 
 struct ff_dpdk_if_context *
@@ -396,6 +409,12 @@ check_all_ports_link_status(void)
     }
 }
 
+int
+ff_cur_proc_id(void)
+{
+    return ff_cur_lcore_conf()->proc_id;
+}
+
 static int
 init_lcore_conf(void)
 {
@@ -411,17 +430,49 @@ init_lcore_conf(void)
                  ff_global_cfg.dpdk.max_portid);
     }
 
-    lcore_conf.port_cfgs = ff_global_cfg.dpdk.port_cfgs;
-    lcore_conf.proc_id = ff_global_cfg.dpdk.proc_id;
+    if (ff_global_cfg.dpdk.thread_mode) {
+        int ti;
+        for (ti = 0; ti < ff_global_cfg.dpdk.nb_threads; ti++) {
+            uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[ti];
+            struct lcore_conf *lc = &lcore_conf[lcore_id];
+            lc->port_cfgs = ff_global_cfg.dpdk.port_cfgs;
+            lc->proc_id = ti;
+            lc->socket_id = numa_on ? rte_lcore_to_socket_id(lcore_id) : 0;
+            if (!rte_lcore_is_enabled(lcore_id))
+                rte_exit(EXIT_FAILURE, "lcore %u unavailable\n", lcore_id);
+            int j;
+            for (j = 0; j < ff_global_cfg.dpdk.nb_ports; ++j) {
+                uint16_t port_id = ff_global_cfg.dpdk.portid_list[j];
+                struct ff_port_cfg *pconf = &ff_global_cfg.dpdk.port_cfgs[port_id];
+                int queueid = -1, i;
+                for (i = 0; i < pconf->nb_lcores; i++)
+                    if (pconf->lcore_list[i] == lcore_id) queueid = i;
+                if (queueid < 0) continue;
+                lc->rx_queue_list[lc->nb_rx_queue].port_id = port_id;
+                lc->rx_queue_list[lc->nb_rx_queue].queue_id = queueid;
+                lc->nb_rx_queue++;
+                lc->tx_queue_id[port_id] = queueid;
+                lc->tx_port_id[lc->nb_tx_port] = port_id;
+                lc->nb_tx_port++;
+                lc->nb_queue_list[port_id] = pconf->nb_lcores;
+            }
+            if (lc->nb_rx_queue == 0)
+                rte_exit(EXIT_FAILURE, "lcore %u has nothing to do\n", lcore_id);
+        }
+        return 0;
+    }
+
+    ff_cur_lcore_conf()->port_cfgs = ff_global_cfg.dpdk.port_cfgs;
+    ff_cur_lcore_conf()->proc_id = ff_global_cfg.dpdk.proc_id;
 
     uint16_t socket_id = 0;
     if (numa_on) {
         socket_id = rte_lcore_to_socket_id(rte_lcore_id());
     }
 
-    lcore_conf.socket_id = socket_id;
+    ff_cur_lcore_conf()->socket_id = socket_id;
 
-    uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[lcore_conf.proc_id];
+    uint16_t lcore_id = ff_global_cfg.dpdk.proc_lcore[ff_cur_lcore_conf()->proc_id];
     if (!rte_lcore_is_enabled(lcore_id)) {
         rte_exit(EXIT_FAILURE, "lcore %u unavailable\n", lcore_id);
     }
@@ -442,24 +493,19 @@ init_lcore_conf(void)
             continue;
         }
         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "lcore: %u, port: %u, queue: %u\n", lcore_id, port_id, queueid);
-        uint16_t nb_rx_queue = lcore_conf.nb_rx_queue;
-        lcore_conf.rx_queue_list[nb_rx_queue].port_id = port_id;
-        lcore_conf.rx_queue_list[nb_rx_queue].queue_id = queueid;
-        lcore_conf.nb_rx_queue++;
+        uint16_t nb_rx_queue = ff_cur_lcore_conf()->nb_rx_queue;
+        ff_cur_lcore_conf()->rx_queue_list[nb_rx_queue].port_id = port_id;
+        ff_cur_lcore_conf()->rx_queue_list[nb_rx_queue].queue_id = queueid;
+        ff_cur_lcore_conf()->nb_rx_queue++;
 
-        lcore_conf.tx_queue_id[port_id] = queueid;
-        lcore_conf.tx_port_id[lcore_conf.nb_tx_port] = port_id;
-        lcore_conf.nb_tx_port++;
+        ff_cur_lcore_conf()->tx_queue_id[port_id] = queueid;
+        ff_cur_lcore_conf()->tx_port_id[ff_cur_lcore_conf()->nb_tx_port] = port_id;
+        ff_cur_lcore_conf()->nb_tx_port++;
 
-        /* Enable pcap dump */
-        if (ff_global_cfg.pcap.enable) {
-            ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.timestamp_precision);
-        }
-
-        lcore_conf.nb_queue_list[port_id] = pconf->nb_lcores;
+        ff_cur_lcore_conf()->nb_queue_list[port_id] = pconf->nb_lcores;
     }
 
-    if (lcore_conf.nb_rx_queue == 0) {
+    if (ff_cur_lcore_conf()->nb_rx_queue == 0) {
         rte_exit(EXIT_FAILURE, "lcore %u has nothing to do\n", lcore_id);
     }
 
@@ -483,9 +529,10 @@ static int
 init_mem_pool(void)
 {
     uint8_t nb_ports = ff_global_cfg.dpdk.nb_ports;
-    uint32_t nb_lcores = ff_global_cfg.dpdk.nb_procs;
+    uint32_t nb_lcores = ff_global_cfg.dpdk.thread_mode
+        ? ff_global_cfg.dpdk.nb_threads : ff_global_cfg.dpdk.nb_procs;
     uint32_t nb_tx_queue = nb_lcores;
-    uint32_t nb_rx_queue = lcore_conf.nb_rx_queue * nb_lcores;
+    uint32_t nb_rx_queue = ff_cur_lcore_conf()->nb_rx_queue * nb_lcores;
     uint16_t max_portid = ff_global_cfg.dpdk.max_portid;
 
     unsigned nb_mbuf = RTE_ALIGN_CEIL (
@@ -503,8 +550,10 @@ init_mem_pool(void)
     unsigned socketid = 0;
     uint16_t i, lcore_id;
     char s[64];
+    uint16_t nb_pools = ff_global_cfg.dpdk.thread_mode
+        ? ff_global_cfg.dpdk.nb_threads : ff_global_cfg.dpdk.nb_procs;
 
-    for (i = 0; i < ff_global_cfg.dpdk.nb_procs; i++) {
+    for (i = 0; i < nb_pools; i++) {
         lcore_id = ff_global_cfg.dpdk.proc_lcore[i];
         if (numa_on) {
             socketid = rte_lcore_to_socket_id(lcore_id);
@@ -592,7 +641,7 @@ init_dispatch_ring(void)
     char name_buf[RTE_RING_NAMESIZE];
     int queueid;
 
-    unsigned socketid = lcore_conf.socket_id;
+    unsigned socketid = ff_cur_lcore_conf()->socket_id;
 
     /* Create ring according to ports actually being used. */
     int nb_ports = ff_global_cfg.dpdk.nb_ports;
@@ -646,13 +695,15 @@ static int
 init_msg_ring(void)
 {
     uint16_t i, j;
-    uint16_t nb_procs = ff_global_cfg.dpdk.nb_procs;
-    unsigned socketid = lcore_conf.socket_id;
+    uint16_t nb_rings = ff_global_cfg.dpdk.thread_mode
+        ? ff_global_cfg.dpdk.nb_threads
+        : ff_global_cfg.dpdk.nb_procs;
+    unsigned socketid = ff_cur_lcore_conf()->socket_id;
 
     /* Create message buffer pool */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         message_pool = rte_mempool_create(FF_MSG_POOL,
-           MSG_RING_SIZE * 2 * nb_procs,
+           MSG_RING_SIZE * 2 * nb_rings,
            MAX_MSG_BUF_SIZE, MSG_RING_SIZE / 2, 0,
            NULL, NULL, ff_msg_init, NULL,
            socketid, 0);
@@ -664,7 +715,7 @@ init_msg_ring(void)
         rte_panic("Create msg mempool failed\n");
     }
 
-    for(i = 0; i < nb_procs; ++i) {
+    for(i = 0; i < nb_rings; ++i) {
         snprintf(msg_ring[i].ring_name[0], RTE_RING_NAMESIZE,
             "%s%u", FF_MSG_RING_IN, i);
         msg_ring[i].ring[0] = create_ring(msg_ring[i].ring_name[0],
@@ -716,7 +767,7 @@ init_kni(void)
     ff_kni_init(nb_ports, ff_global_cfg.kni.tcp_port,
         ff_global_cfg.kni.udp_port);
 
-    unsigned socket_id = lcore_conf.socket_id;
+    unsigned socket_id = ff_cur_lcore_conf()->socket_id;
     struct rte_mempool *mbuf_pool = pktmbuf_pool[socket_id];
 
     nb_ports = ff_global_cfg.dpdk.nb_ports;
@@ -768,7 +819,7 @@ init_port_start(void)
 
     total_nb_ports = nb_ports;
 #ifdef FF_KNI
-    if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+    if (enable_kni && ff_kni_is_owner_thread()) {
             total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */
     }
 #endif
@@ -1018,7 +1069,7 @@ init_port_start(void)
             uint16_t q;
             for (q = 0; q < nb_queues; q++) {
                 if (numa_on) {
-                    uint16_t lcore_id = lcore_conf.port_cfgs[u_port_id].lcore_list[q];
+                    uint16_t lcore_id = ff_cur_lcore_conf()->port_cfgs[u_port_id].lcore_list[q];
                     socketid = rte_lcore_to_socket_id(lcore_id);
                 }
                 mbuf_pool = pktmbuf_pool[socketid];
@@ -1152,12 +1203,26 @@ init_clock(void)
     return 0;
 }
 
+/* Register this worker's own freebsd_clock (a __thread rte_timer) on its own
+ * lcore, so main_loop's rte_timer_manage() can drive its per-thread callwheel.
+ * The DPDK timer subsystem is already initialized by the main thread. */
+static void
+init_clock_worker(void)
+{
+    uint64_t hz = rte_get_timer_hz();
+    uint64_t intrs = US_PER_S / ff_global_cfg.freebsd.hz;
+    uint64_t tsc = (hz + US_PER_S - 1) / US_PER_S * intrs;
+
+    rte_timer_init(&freebsd_clock);
+    rte_timer_reset(&freebsd_clock, tsc, PERIODICAL,
+        rte_lcore_id(), &ff_hardclock_worker_job, NULL);
+}
+
 static int
 stop_clock(void) {
     rte_timer_stop_sync(&freebsd_clock);
     return 0;
 }
-
 #if defined(FF_FLOW_ISOLATE) || defined(FF_FDIR)
 /** Print a message out of a flow error. */
 static int
@@ -1902,7 +1967,7 @@ static inline void
 process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
     uint16_t count, struct ff_dpdk_if_context *ctx, int pkts_from_ring)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     uint16_t nb_queues = qconf->nb_queue_list[port_id];
 
     uint16_t i;
@@ -2004,7 +2069,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             }
 
 #ifdef FF_KNI
-            if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            if (enable_kni && ff_kni_is_owner_thread()) {
                 mbuf_pool = pktmbuf_pool[qconf->socket_id];
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
@@ -2343,7 +2408,7 @@ send_single_packet(struct rte_mbuf *m, uint8_t port)
     uint16_t len;
     struct lcore_conf *qconf;
 
-    qconf = &lcore_conf;
+    qconf = ff_cur_lcore_conf();
     len = qconf->tx_mbufs[port].len;
     qconf->tx_mbufs[port].m_table[len] = m;
     len++;
@@ -2370,7 +2435,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         return -1;
     }
 #ifdef FF_USE_PAGE_ARRAY
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     int    len = 0;
 
     len = ff_if_send_onepkt(ctx, m,total);
@@ -2381,7 +2446,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     qconf->tx_mbufs[ctx->port_id].len = len;
     return 0;
 #endif
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
+    struct rte_mempool *mbuf_pool = pktmbuf_pool[ff_cur_lcore_conf()->socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
         ff_traffic.tx_dropped++;
@@ -2520,7 +2585,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 int
 ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
 {
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
+    struct rte_mempool *mbuf_pool = pktmbuf_pool[ff_cur_lcore_conf()->socket_id];
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
         ff_traffic.tx_dropped++;
@@ -2582,7 +2647,35 @@ main_loop(void *arg)
     prev_tsc = 0;
     usch_tsc = 0;
 
-    qconf = &lcore_conf;
+    qconf = ff_cur_lcore_conf();
+
+    /* CM5-A: per-thread stack init. thread_mode=0 main thread is already
+     * initialized (ff_freebsd_init) and skips here (zero regression);
+     * thread_mode=1 workers init here. */
+    ff_stack_thread_init(ff_global_cfg.dpdk.thread_mode ? qconf->proc_id : 0);
+
+    if (ff_global_cfg.dpdk.thread_mode) {
+        unsigned lcore = rte_lcore_id();
+        if (freebsd_clock.expire == 0)
+            init_clock_worker();
+        for (i = 0; i < qconf->nb_tx_port; i++) {
+            port_id = qconf->tx_port_id[i];
+            if (veth_ctx[lcore][port_id] == NULL) {
+                struct ff_port_cfg *pconf = &qconf->port_cfgs[port_id];
+                rte_spinlock_lock(&ifp_create_lock);
+                veth_ctx[lcore][port_id] = ff_veth_attach(pconf);
+                rte_spinlock_unlock(&ifp_create_lock);
+                if (veth_ctx[lcore][port_id] == NULL)
+                    rte_exit(EXIT_FAILURE, "worker ff_veth_attach failed");
+            }
+        }
+    }
+
+    /* g_pcap_fp is __thread: each lcore thread must init its own.
+     * Moved from init_lcore_conf to fix worker TLS NULL + multi-port leak. */
+    if (ff_global_cfg.pcap.enable) {
+        ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.timestamp_precision);
+    }
 
     while (1) {
 
@@ -2655,10 +2748,10 @@ main_loop(void *arg)
         for (i = 0; i < qconf->nb_rx_queue; ++i) {
             port_id = qconf->rx_queue_list[i].port_id;
             queue_id = qconf->rx_queue_list[i].queue_id;
-            ctx = veth_ctx[port_id];
+            ctx = veth_ctx[rte_lcore_id()][port_id];
 
 #ifdef FF_KNI
-            if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            if (enable_kni && ff_kni_is_owner_thread()) {
                 ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
             }
 #endif
@@ -2746,13 +2839,13 @@ main_loop(void *arg)
 int
 ff_dpdk_if_up(void) {
     int i;
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     for (i = 0; i < qconf->nb_tx_port; i++) {
         uint16_t port_id = qconf->tx_port_id[i];
 
         struct ff_port_cfg *pconf = &qconf->port_cfgs[port_id];
-        veth_ctx[port_id] = ff_veth_attach(pconf);
-        if (veth_ctx[port_id] == NULL) {
+        veth_ctx[rte_lcore_id()][port_id] = ff_veth_attach(pconf);
+        if (veth_ctx[rte_lcore_id()][port_id] == NULL) {
             rte_exit(EXIT_FAILURE, "ff_veth_attach failed");
         }
     }
@@ -3102,7 +3195,7 @@ int
 ff_rss_self_queue_info(uint16_t *proc_id, uint16_t *queueid,
     uint16_t *nb_queues, uint16_t *reta_size)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     uint16_t port_id;
 
     if (qconf->nb_tx_port == 0)
@@ -3126,7 +3219,7 @@ int
 ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t sport, uint16_t dport)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t nb_queues = qconf->nb_queue_list[ctx->port_id];
 
@@ -3383,7 +3476,7 @@ ff_rss_thash_ctx_init(void)
         struct rte_eth_rss_conf rb;
         uint8_t rb_key[64];
         uint16_t rsz = rss_reta_size[port_id];
-        uint16_t nbq = lcore_conf.nb_queue_list[port_id];
+        uint16_t nbq = ff_cur_lcore_conf()->nb_queue_list[port_id];
 
         if (!rss_thash_ready[port_id])
             continue;
@@ -3439,7 +3532,7 @@ int
 ff_rss_adjust_sport(void *softc, uint32_t saddr, uint32_t daddr,
     uint16_t dport, uint16_t *out_sport, uint16_t first, uint16_t last)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t port_id, nb_queues, reta_size, queueid;
     uint32_t desired;
@@ -3629,7 +3722,7 @@ int
 ff_rss_check6(void *softc, const uint8_t *saddr6, const uint8_t *daddr6,
     uint16_t sport, uint16_t dport)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t nb_queues = qconf->nb_queue_list[ctx->port_id];
 
@@ -3879,7 +3972,7 @@ ff_rss_adjust_sport6(void *softc, const uint8_t *saddr6,
     const uint8_t *daddr6, uint16_t dport, uint16_t *out_sport,
     uint16_t first, uint16_t last)
 {
-    struct lcore_conf *qconf = &lcore_conf;
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
     uint16_t port_id, nb_queues, reta_size, queueid;
     uint32_t desired;

@@ -190,7 +190,7 @@ usage(const char *cp)
 #ifndef FSTACK
 	errx(EX_USAGE, "usage: route [-46dnqtv] command [[modifiers] args]");
 #else
-	errx(EX_USAGE, "usage: route -p <f-stack proc_id> [-46dnqtv] command [[modifiers] args]");
+	errx(EX_USAGE, "usage: route -p <f-stack proc_id|thread_id> [-46dnqtv] command [[modifiers] args]");
 #endif
 	/* NOTREACHED */
 }

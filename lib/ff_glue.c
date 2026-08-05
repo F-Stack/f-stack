@@ -168,6 +168,13 @@ int smp_topology = 0;    /* Which topology we're using. */
 SYSCTL_INT(_kern_smp, OID_AUTO, topology, CTLFLAG_RDTUN, &smp_topology, 0,
     "Topology override setting; 0 is default provided by hardware.");
 
+/* No CPU topology in userspace; callers must handle NULL (tcp_hpts.c:1890). */
+struct cpu_group *
+smp_topo(void)
+{
+    return (NULL);
+}
+
 u_int vn_lock_pair_pause_max = 1; // ff_global_cfg.freebsd.hz / 100;
 SYSCTL_UINT(_debug, OID_AUTO, vn_lock_pair_pause_max, CTLFLAG_RW,
     &vn_lock_pair_pause_max, 0,

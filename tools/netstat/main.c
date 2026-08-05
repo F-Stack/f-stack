@@ -1009,18 +1009,18 @@ usage(void)
 "       netstat -gs [-46s] [-f address_family] [-M core] [-N system]",
 "       netstat -Q");
 #else
-"usage: netstat -t <f-stack proc_id> [-46AaLnRSTWx] [-f protocol_family | -p protocol]",
-"       netstat -t <f-stack proc_id> -i | -I interface [-46abdhnW] [-f address_family]",
-"       netstat -t <f-stack proc_id> -w wait [-I interface] [-46d] [-q howmany]",
-"       netstat -t <f-stack proc_id> -s [-46sz] [-f protocol_family | -p protocol]",
-"       netstat -t <f-stack proc_id> -i | -I interface -s [-46s]\n"
+"usage: netstat -t <f-stack proc_id|thread_id> [-46AaLnRSTWx] [-f protocol_family | -p protocol]",
+"       netstat -t <f-stack proc_id|thread_id> -i | -I interface [-46abdhnW] [-f address_family]",
+"       netstat -t <f-stack proc_id|thread_id> -w wait [-I interface] [-46d] [-q howmany]",
+"       netstat -t <f-stack proc_id|thread_id> -s [-46sz] [-f protocol_family | -p protocol]",
+"       netstat -t <f-stack proc_id|thread_id> -i | -I interface -s [-46s]\n"
 "               [-f protocol_family | -p protocol]",
-"       netstat -t <f-stack proc_id> -B [-z] [-I interface]",
-"       netstat -t <f-stack proc_id> -r [-46AnW] [-F fibnum] [-f address_family]",
-"       netstat -t <f-stack proc_id> -rs [-s]",
-"       netstat -t <f-stack proc_id> -g [-46W] [-f address_family]",
-"       netstat -t <f-stack proc_id> -gs [-46s] [-f address_family]",
-"       netstat -t <f-stack proc_id> -Q");
+"       netstat -t <f-stack proc_id|thread_id> -B [-z] [-I interface]",
+"       netstat -t <f-stack proc_id|thread_id> -r [-46AnW] [-F fibnum] [-f address_family]",
+"       netstat -t <f-stack proc_id|thread_id> -rs [-s]",
+"       netstat -t <f-stack proc_id|thread_id> -g [-46W] [-f address_family]",
+"       netstat -t <f-stack proc_id|thread_id> -gs [-46s] [-f address_family]",
+"       netstat -t <f-stack proc_id|thread_id> -Q");
 
 #endif
 	xo_finish();

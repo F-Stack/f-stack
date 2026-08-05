@@ -77,7 +77,7 @@ uma_zone_t namei_zone;
 extern unsigned int rand_r(unsigned int *seed);
 extern int ff_adapt_user_proc_add(struct thread *parent_td, struct thread *td);
 extern int ff_adapt_user_proc_exit(struct thread *td);
-unsigned int seed = 0;
+__thread unsigned int seed = 0;
 
 #define M_ZERO        0x0100        /* bzero the allocation */
 
@@ -103,7 +103,7 @@ ff_adapt_user_thread_add(void *parent)
         parent_td = &thread0;
     }
 
-    struct thread *td = malloc(sizeof(struct proc), M_TEMP, M_ZERO);
+    struct thread *td = malloc(sizeof(struct thread), M_TEMP, M_ZERO);
     if (td == NULL) {
         goto fail;
     }

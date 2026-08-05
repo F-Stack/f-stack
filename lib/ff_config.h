@@ -289,6 +289,8 @@ struct ff_config {
         int no_huge;
         int nb_procs;
         int proc_id;
+        int thread_mode;    /* 0=multi-process (default); 1=single-process multi-thread multi-stack */
+        int nb_threads;     /* thread mode: number of threads = lcore_mask set-bit count */
         int promiscuous;
         int nb_vdev;
         int nb_bond;
@@ -357,6 +359,7 @@ struct ff_config {
         int hz;
         int fd_reserve;
         int mem_size;
+        int tcp_ecn;    /* 0=disable ECN (default, zero-regression); 1=passive ECN (upstream default 2) */
     } freebsd;
 
     struct {

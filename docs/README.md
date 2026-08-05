@@ -251,7 +251,7 @@ Recommended path:
 ### Version Information
 
 ```
-Knowledge base version: 1.5 (adds R10: ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY + 1.3 FF_KERNEL_COEXIST kernel-stack coexistence + 1.2 FreeBSD 13.0 → 15.0 first-stage + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test)
+Knowledge base version: 1.6 (adds native-mt SMP-aware pcpu/SMR slot isolation + global uma_crit_lock removal, 2026-08-05, commits c7996a94f+57b612d16, spec: docs/native_mt_spec/; and MTU/jumbo-frame configuration support, 2026-07, spec: docs/mtu_change_spec/; on top of 1.5 R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY + 1.3 FF_KERNEL_COEXIST kernel-stack coexistence + 1.2 FreeBSD 13.0 → 15.0 first-stage + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test)
 F-Stack version: v1.26 (branch feature/1.26)
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
 DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 via tree replace + 4 patches re-applied; see dpdk_23_24_upgrade_spec/zh_cn/)

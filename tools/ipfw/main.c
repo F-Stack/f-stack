@@ -48,7 +48,7 @@ help(void)
 #ifndef FSTACK
 "\tipfw [-abcdefhnNqStTv] <command>\n\n"
 #else
-"\tipfw -P <f-stack proc_id> [-abcdefhnNqStTv] <command>\n\n"
+"\tipfw -P <f-stack proc_id|thread_id> [-abcdefhnNqStTv] <command>\n\n"
 #endif
 "where <command> is one of the following:\n\n"
 "add [num] [set N] [prob x] RULE-BODY\n"

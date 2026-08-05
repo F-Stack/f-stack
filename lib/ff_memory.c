@@ -68,7 +68,7 @@
 #define    round_page(x)        (((x) + PAGE_MASK) & ~PAGE_MASK)
 
 extern struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
-extern struct lcore_conf lcore_conf;
+extern struct lcore_conf lcore_conf[RTE_MAX_LCORE];
 
 //struct ff_tx_offload;
 
@@ -392,7 +392,7 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
 // create rte_buf refer to data which is transmit from bsd stack by EXT_CLUSTER.
 static inline struct rte_mbuf*     ff_extcl_to_rte(void *m )
 {
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[lcore_conf.socket_id];
+    struct rte_mempool *mbuf_pool = pktmbuf_pool[ff_cur_lcore_conf()->socket_id];
     struct rte_mbuf *src_mbuf = NULL;
     struct rte_mbuf *p_head = NULL;
 
@@ -411,7 +411,7 @@ static inline struct rte_mbuf*     ff_extcl_to_rte(void *m )
 //  create rte_mbuf refer to data in bsd mbuf.
 static inline struct rte_mbuf*     ff_bsd_to_rte(void *m, int total)
 {
-    struct rte_mempool *mbuf_pool = ff_ref_pool[lcore_conf.socket_id];
+    struct rte_mempool *mbuf_pool = ff_ref_pool[ff_cur_lcore_conf()->socket_id];
     struct rte_mbuf *p_head = NULL;
     struct rte_mbuf *cur = NULL, *prev = NULL, *tmp=NULL;
     void    *data = NULL;
@@ -507,7 +507,7 @@ int ff_if_send_onepkt(struct ff_dpdk_if_context *ctx, void *m, int total)
     }
 
     ff_offload_set(ctx, m, head);
-    qconf = &lcore_conf;
+    qconf = ff_cur_lcore_conf();
     len = qconf->tx_mbufs[ctx->port_id].len;
     qconf->tx_mbufs[ctx->port_id].m_table[len] = head;
     qconf->tx_mbufs[ctx->port_id].bsd_m_table[len] = m;

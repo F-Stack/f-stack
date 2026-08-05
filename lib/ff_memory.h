@@ -94,6 +94,22 @@ struct lcore_conf {
     //char *pcap[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
 
+extern struct lcore_conf lcore_conf[RTE_MAX_LCORE];
+
+/* Index of the current thread's stack instance in lcore_conf[].
+ * thread_mode=0 (multi-process, one lcore per process): fixed 0, so init and
+ * all access points hit the same element -> byte-equivalent to the old single
+ * instance, independent of rte_lcore_id() validity at any call site.
+ * thread_mode=1: per-thread via rte_lcore_id(). */
+static inline unsigned
+ff_lcore_conf_idx(void)
+{
+    return ff_global_cfg.dpdk.thread_mode ? rte_lcore_id() : 0;
+}
+
+/* Current stack-instance accessor. See ff_lcore_conf_idx() for indexing. */
+#define ff_cur_lcore_conf() (&lcore_conf[ff_lcore_conf_idx()])
+
 //  mbuf_txring save mbuf which had bursted into NIC,  m_tables has same length with NIC dev's sw_ring.
 //  Then when txring.m_table[x] is reused, the packet in txring.m_table[x] had been transmited by NIC.
 //  that means the mbuf can be freed safely.

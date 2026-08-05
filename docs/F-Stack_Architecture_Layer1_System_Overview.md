@@ -475,6 +475,17 @@ Core features:
 ✓ One process crash does not affect other processes
 ```
 
+#### Native Multi-Thread Mode (`thread_mode=1`, v1.26+)
+
+Since v1.26, F-Stack supports an optional **single-process multi-thread** mode (`thread_mode=1` in `config.ini`), where each worker thread runs its own FreeBSD stack instance (independent `vnet_i`, `thread0_i`) within one process. This complements the multi-process model for use cases where shared address space is needed.
+
+Key design points (spec: `docs/native_mt_spec/`):
+- **SMP-aware kernel view** (`-DSMP`, `lib/Makefile:221`): `MAXCPU=1024`, `UMA_ZONE_PCPU` preserved, each thread gets a dense pcpu slot `[0, nb_threads-1]` with per-thread `curcpu` (`lib/include/sys/pcpu.h:34`).
+- **Per-thread UMA/SMR slot isolation**: `mp_ncpus`/`mp_maxid`/`all_cpus` set from `nb_threads` before `uma_startup1()`; each thread exclusively owns its `uz_cpu[curcpu]` and SMR `c_seq` slot.
+- **Global `uma_crit_lock` removed** (commit `57b612d16`): the band-aid spinlock that serialized UMA per-CPU cache access is now a no-op, since slot isolation is the sole protection.
+- **Per-thread callwheel** (`ff_kern_timeout.c:190` `static __thread int timeout_cpu`).
+- **`thread_mode=0` zero regression**: all paths gated by `thread_mode ?` ternary; values identical to pre-change.
+
 ### 4.2 Multi-Process Deployment Model
 
 ```

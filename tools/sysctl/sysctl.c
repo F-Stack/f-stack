@@ -250,8 +250,8 @@ usage(void)
 	    "       sysctl [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
 #else
         (void)fprintf(stderr, "%s\n%s\n",
-            "usage: sysctl -p <f-stack proc_id> [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
-            "       sysctl -p <f-stack proc_id> [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
+            "usage: sysctl -p <f-stack proc_id|thread_id> [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
+            "       sysctl -p <f-stack proc_id|thread_id> [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
         ff_ipc_exit();
 #endif
 	exit(1);

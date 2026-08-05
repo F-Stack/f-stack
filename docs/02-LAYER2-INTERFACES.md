@@ -410,6 +410,10 @@ void worker_main(int worker_id) {
 - Registering new callbacks after ff_run()
 - Cross-lcore socket operations
 
+### 5.1.1 Native Multi-Thread Mode (`thread_mode=1`, v1.26+)
+
+In `thread_mode=1`, each worker thread gets its own dense pcpu slot with per-thread `curcpu`, disjoint UMA/SMR per-CPU cache slots, and its own callout callwheel (`timeout_cpu` is `__thread`). The `uma_crit_lock` global spinlock has been removed (slot isolation is the sole protection). `ff_pthread_create()`-created application threads do **not** get a pcpu slot and must not call `ff_*` stack APIs (fail-fast by design). See `docs/native_mt_spec/`.
+
 ### 5.2 DPDK Atomic Operations
 
 ```c

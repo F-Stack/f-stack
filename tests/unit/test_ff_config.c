@@ -1154,6 +1154,89 @@ test_mtu_large_65535_fails(void **state)
     assert_int_equal(rv, -1);
 }
 
+/* ======================================================================== */
+/* CM1 (native-mt): thread_mode config switch                               */
+/* Spec: native_mt_spec/zh_cn. thread_mode解析@ff_config.c:1035 +           */
+/* ff_check_config thread块@:1463 (force primary / derive nb_threads /      */
+/* nb_procs=1 / proc_mask=lcore_mask全bit).                                 */
+/* ======================================================================== */
+
+/* TC-CM1-01: thread_mode=1 collapses to single process, derives threads. */
+static void
+test_ff_load_config_thread_mode_enabled(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_thread_mode.ini"));
+    assert_int_equal(rv, 0);
+    /* thread_mode flag parsed from [dpdk] thread_mode=1. */
+    assert_int_equal(ff_global_cfg.dpdk.thread_mode, 1);
+    /* nb_threads = original bit-count of lcore_mask (0xf -> 4). */
+    assert_int_equal(ff_global_cfg.dpdk.nb_threads, 4);
+    /* Collapsed to a single process. */
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 1);
+    /* proc_type forced to primary. */
+    assert_non_null(ff_global_cfg.dpdk.proc_type);
+    assert_string_equal(ff_global_cfg.dpdk.proc_type, "primary");
+    /* proc_mask overwritten with the full lcore_mask ("0xf"). */
+    assert_non_null(ff_global_cfg.dpdk.proc_mask);
+    assert_string_equal(ff_global_cfg.dpdk.proc_mask, "0xf");
+}
+
+/* TC-CM1-02: no thread_mode key -> defaults off, multi-process semantics. */
+static void
+test_ff_load_config_thread_mode_default_off(void **state)
+{
+    (void)state;
+    /* valid_dpdk_full.ini has lcore_mask=0xF and NO thread_mode key. */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.thread_mode, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_threads, 0);
+    /* Multi-process semantics unchanged: nb_procs == lcore_mask bit count. */
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 4);
+}
+
+/* TC-CM1-03: thread_mode=1 with proc_type=secondary is rejected (-1). */
+static void
+test_ff_load_config_thread_mode_secondary_conflict(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("valid_thread_mode.ini"),
+                            "secondary", "0");
+    assert_int_equal(rv, -1);
+}
+
+/* ======================================================================== */
+/* CM4 (native-mt): ECN config switch (freebsd.tcp_ecn, [freebsd.boot] key)  */
+/* Spec: native_mt_spec/zh_cn. Parse @ff_config.c:1111, default 0 @:1519.    */
+/* Runtime maps tcp_ecn -> V_tcp_do_ecn (0=off / 1=passive) in              */
+/* ff_freebsd_init.c; that runtime effect is out of unit-test scope.        */
+/* ======================================================================== */
+
+/* TC-CM4-01: no tcp_ecn key -> defaults to 0 (zero-regression). */
+static void
+test_ff_load_config_tcp_ecn_default_off(void **state)
+{
+    (void)state;
+    /* valid_minimal.ini has [freebsd.boot] but NO tcp_ecn key. */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.freebsd.tcp_ecn, 0);
+}
+
+/* TC-CM4-02: explicit tcp_ecn=1 in [freebsd.boot] -> parsed as 1. */
+static void
+test_ff_load_config_tcp_ecn_enabled(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_tcp_ecn.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.freebsd.tcp_ecn, 1);
+    /* New key must not disturb sibling [freebsd.boot] parsing. */
+    assert_int_equal(ff_global_cfg.freebsd.hz, 100);
+    assert_int_equal(ff_global_cfg.freebsd.mem_size, 256);
+}
+
 int
 main(void)
 {
@@ -1224,6 +1307,13 @@ main(void)
         cmocka_unit_test_setup_teardown(test_mtu_port_over_max_fails,                test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_mtu_disabled_port_over_1500_fails,      test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_mtu_large_65535_fails,                  test_setup, NULL),
+        /* CM1 (native-mt) thread_mode config switch */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_enabled,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_default_off,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_secondary_conflict, test_setup, NULL),
+        /* CM4 (native-mt) ECN config switch (freebsd.tcp_ecn) */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_tcp_ecn_default_off, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_tcp_ecn_enabled,     test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),

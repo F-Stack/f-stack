@@ -722,7 +722,7 @@ Usage(const char *msg)
 #ifndef FSTACK
 		"usage: ngctl [-d] [-f file] [-n name] [command ...]\n");
 #else
-		"usage: ngctl -p <f-stack proc_id>  [-d] [-f file] [-n name] [command ...]\n");
+		"usage: ngctl -p <f-stack proc_id|thread_id>  [-d] [-f file] [-n name] [command ...]\n");
 
 	ff_ipc_exit();
 #endif

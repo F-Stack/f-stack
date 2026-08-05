@@ -71,5 +71,7 @@ enum FilterReturn ff_kni_proto_filter(const void *data, uint16_t len, uint16_t e
 
 int ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt);
 
+int ff_kni_is_owner_thread(void);
+
 
 #endif /* ifndef _FSTACK_DPDK_KNI_H */
