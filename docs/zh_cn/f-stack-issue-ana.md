@@ -908,8 +908,8 @@
 涉及issue：#481、#515、#543、#549、#555、#556、#560、#564、#568、#629、#631、#647、#670、#671、#696、#747、#768、#781、#789
 
 - **#481** 🟢open Padding bytes not removed from the ethernet frame
-  - 结论：【以最晚回复为准，2026-07-17】官方最终确认：这是一个真实存在的bug。DPDK PMD驱动不会从小于64字节的帧中剥离以太网填充字节。F-Stack的ff_mbuf_gethdr()直接使用DPDK的pkt_len/data_len设置m->m_pkthdr.len和m->m_len，这包含了填充字节。FreeBSD的ip_input虽有填充裁剪逻辑(m->m_pkthdr.len >……
-  - 修复/方案信息：待修复：需在ff_mbuf_gethdr()或ff_veth_input()中根据IP头ip_len字段校正mbuf长度以剥离以太网填充字节。截至本次分析仍为open状态，未见修复commit。
+  - 结论：【2026-08-06 本地实测】在 F-Stack 1.26 + FreeBSD 15.0 + DPDK 24.11.6 环境上不复现。TCP 和 UDP 小数据包（1/2/6 字节，触发 5/4/17/16/12 字节以太网填充）测试均通过：服务器精确收到发送的数据，无填充字节残留。根因：FreeBSD 15.0 的 ip_input.c:556-562 有填充裁剪逻辑（m->m_pkthdr.len > ip_len 时裁剪到 ip_len），在 F-Stack 默认配置下（ipforwarding=0、无防火墙、lro=0）确实执行（经 code-explorer 子 agent 深度验证）。M_FASTFWD_OURS 快速路径在默认配置下不触发，不会跳过裁剪。issue 报告于 2020 年（旧版 FreeBSD 11.0 基础），当前版本已不复现。
+  - 修复/方案信息：无需修复。当前版本 ip_input 的填充裁剪逻辑正确工作。详细分析见 docs/issue_481/zh_cn/。
 - **#515** ⚪closed F-Stack still sends ARP broadcast when the static ARP record exist for the destination
   - 结论：用户自行定位：问题根源与ARP无关，是自己配置了lcore_mask=f(4核)运行4个nginx worker但客户端源IP/MAC假设与多进程RSS分发机制冲突所致，非ARP静态记录不生效的bug；用户随后成功用移植的mTCP版apache bench对F-Stack Nginx做负载测试达到6.4Gbps(10G网卡直通VM，非SR-IOV)。
   - 修复/方案信息：该现象非静态ARP记录bug，根因与多进程/RSS分发相关(4进程lcore_mask=f场景下)，用户已自行定位并解决，未见通用性修复措施。
