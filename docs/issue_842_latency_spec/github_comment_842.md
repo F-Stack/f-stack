@@ -85,7 +85,7 @@ This is expected FreeBSD TCP stack behavior (not an F-Stack-specific bug); the L
 
 ## Additional Finding
 
-During testing we observed that F-Stack's `ff_epoll` does not reliably deliver `EPOLLOUT` on connect completion (the kqueue `EVFILT_WRITE` → `EPOLLOUT` translation is unstable). This is a pre-existing `ff_epoll` implementation issue, not the root cause of #842, but it affects client-side development. Using the kqueue native API (`ff_kqueue`/`ff_kevent`) avoids this. We plan to address it in a future fix.
+During testing, we verified that F-Stack's `ff_epoll` correctly translates kqueue `EVFILT_WRITE` events to `EPOLLOUT` on connect completion. The `ff_event_to_epoll()` conversion function and `ff_epoll_ctl()` ADD/MOD logic are working as designed. An earlier observation of `EPOLLIN` being returned instead of `EPOLLOUT` was traced to a test program that simultaneously registered both `ff_epoll` and a native `kqueue` on the same socket (dual registration causing kqueue knote interference); this is not a real-world usage pattern and does not indicate an `ff_epoll` defect.
 
 ---
 

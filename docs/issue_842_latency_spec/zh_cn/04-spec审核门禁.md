@@ -18,7 +18,7 @@
 | 检查项 | 状态 | 说明 |
 | --- | --- | --- |
 | delayed_ack 根因分析 | ✅ | 40ms ACK 延迟 + 窗口更新阻止，代码 file:line 证据 |
-| ff_epoll EPOLLOUT 缺陷 | ✅ | kqueue 转换不稳定，改用 kqueue 原生 API |
+| ff_epoll EPOLLOUT 分析 | ✅ | 转换逻辑正确，初始观察的问题源于双重注册（ff_epoll+kqueue 同一 socket） |
 | TX drain 机制 | ✅ | pkt_tx_delay 影响 GET 延迟，非根因 |
 | 接收路径分析 | ✅ | ff_recv→kern_recvit→soreceive 路径正常 |
 
@@ -40,7 +40,7 @@
 
 - F-Stack 优化配置下（delayed_ack=0, idle_sleep=0, pkt_tx_delay=0）TCP 接收性能与内核持平（差距 3.2%）
 - delayed_ack=1 是导致连接失败的关键配置，通过设置 `net.inet.tcp.delayed_ack=0` 解决
-- ff_epoll EPOLLOUT 转换缺陷是既有问题（非 issue #842 根因），建议后续修复
+- ff_epoll EPOLLOUT 转换逻辑经验证正确，无需修复
 - 本轮无需修改 lib 代码
 
 ### 5. 文档更新
