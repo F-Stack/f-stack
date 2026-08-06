@@ -34,6 +34,11 @@ else
 	@echo "[M10 skip] libfstack.a built without FF_ZC_SEND — skipping ${TARGET}_zc"
 endif
 
+# Issue #842 echo clients (always -O2 for fair comparison)
+echo_clients:
+	cc -O2 -g -o echo_client_kernel echo_client_kernel.c -lrt -lm
+	cc -O2 -g $(shell $(PKGCONF) --cflags libdpdk) -DINET6 -o echo_client_fstack echo_client_fstack.c ${LIBS}
+
 .PHONY: clean
 clean:
-	rm -f *.o ${TARGET} ${TARGET}_epoll ${TARGET}_zc
+	rm -f *.o ${TARGET} ${TARGET}_epoll ${TARGET}_zc echo_client_kernel echo_client_fstack

@@ -691,8 +691,8 @@
   - 结论：【2026-07-31回复】官方最终确认：延迟递增是pkt_tx_delay配置所致，默认pkt_tx_delay=100微秒批量发送以提升吞吐，但长运行低吞吐连接(如WebSocket)会导致延迟累积。修复：config.ini设pkt_tx_delay=0立即发送；确保接收侧及时调用epoll/ff_read避免缓冲延迟；另可调整idle_sleep=0(减少轮询延迟)和net.inet.tc……
   - 修复/方案信息：修复：config.ini设pkt_tx_delay=0(立即发送)+idle_sleep=0+net.inet.tcp.delayed_ack=0(降低延迟)。相关：#811。
 - **#842** 🟢open Extremely Bad Latency on TCP Connection for receiving Data
-  - 结论：官方结论(open未关闭)：官方确认已收到详细报告，将进一步仔细测试排查，issue暂时保持open状态。
-  - 修复/方案信息：issue仍open，官方承诺进一步测试排查，尚无最终结论。
+  - 结论：【2026-08-06 本地实测】在 F-Stack 1.26 + FreeBSD 15.0 + DPDK 23.11.5 环境上，使用与 issue 作者相同的优化配置（idle_sleep=0, pkt_tx_delay=0, delayed_ack=0, recvspace=1677721, -O2 编译），F-Stack TCP 客户端接收 100 万条消息（3.8GB）中位耗时 9.587s，与 Linux 内核 9.286s 持平（差距仅 3.2%），**issue 描述的 3.75 倍差距在本环境不复现**。参数隔离测试确认 delayed_ack=1 是导致连接失败的关键配置（ACK 延迟 40ms + 窗口更新被阻止 → 接收窗口耗尽 → RST），设置 delayed_ack=0 即可解决。recvspace=8192 不影响性能。附带发现 ff_epoll 对 connect 完成的 EPOLLOUT 事件通知不稳定（kqueue 转换缺陷），改用 kqueue 原生 API 可避免。详见 `docs/issue_842_latency_spec/zh_cn/`。
+  - 修复/方案信息：配置修复：config.ini 设 idle_sleep=0、pkt_tx_delay=0、net.inet.tcp.delayed_ack=0。无需修改 lib 代码。ff_epoll EPOLLOUT 缺陷建议后续修复。相关：#540、#659、#664、#811。
 - **#1032** ⚪closed 关于f-stack在bbr上的一个bug
   - 结论：【2026-03-27回复】官方最终确认：已确认bug并提交修复PR#1058。根因是bbr_get_target_cwnd和bbr_get_a_state_target两处调用bbr_get_raw_target_cwnd时都传错了bw和gain的顺序，导致bw(uint64_t)被截断为uint32_t当作gain乘数使用，而小的gain值被当作bandwidth使用，导致拥塞窗口严重被低估。……
   - 修复/方案信息：已修复：PR#1058。根因是bbr_get_raw_target_cwnd()调用时bw/gain参数顺序颠倒(上游FreeBSD bug，影响13.0-15.0所有版本)，导致BBR拥塞窗口严重低估影响性能。
