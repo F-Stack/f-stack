@@ -1232,6 +1232,7 @@ bash start.sh -c config.ini -b ./app
 - **`uma_crit_lock` 全局锁移除**（G2，commit `57b612d16`）：`lib/include/vm/uma_int.h:44-50` 的 `critical_enter/exit` 改为 `do {} while(0)` 空操作 + 3 行注释；`lib/ff_glue.c` 删除 `volatile int uma_crit_lock;` 定义。安全前提：`curcpu` 已绑线程（抢占/迁核不改变槽位归属），SMR 读侧的 `critical_enter` 在非 UMA TU 中本就是空操作。
 - **`thread_mode=0` 零回归**：所有路径由 `thread_mode ?` 三元运算门控；逻辑值等价（`mp_ncpus=1`/`mp_maxid=0`/`all_cpus={0}`/`curcpu=0`），4 项非等价差异已记录（`UMA_ZONE_PCPU` 不再剥离、CK `lock` 前缀恢复、`MAXCPU` BSS 增长、`curcpu` 内存载入）。
 - Traceability: `docs/native_mt_spec/zh_cn/` (00-17 + `_m17_*`), English in `docs/native_mt_spec/` root. Key commits: `c7996a94f` (G1), `57b612d16` (G2).
+- **物理机人工校验（2026-08-06）**：功能验证 PASS、性能测试 PASS。残留风险如实记录（本轮不修）：ipfw/netisr DPCPU 槽位别名、counter(9) 统计竞争、tcp_hpts 实例数 1→N callout 归属错配（R6）、net.isr.dispatch 须保持 direct、ff_subr_prf.c 全局无锁行缓冲、ff_pthread_create 线程不支持 ff_*。**新增残留风险 §6.23**：多次 wrk 压测偶发进程 crash（非必现，需多次复现抓栈定位）。详见 spec 17 §6.23 + `_m17_F_runtime.md` 第六部分。
 
 ---
 

@@ -137,6 +137,8 @@ Before this change, all stack threads shared pcpu slot 0 (because `ff_pcpu_threa
 
 Traceability: `docs/native_mt_spec/zh_cn/` (00-17 + `_m17_*` + `plan-17-*`), esp. `17-SMP-aware-pcpu视图与去全局锁.md` (main spec), `_m17_F_runtime.md` (runtime test report), `_m17_gate_code_g1.md`/`_m17_gate_code_g2.md` (gate reviews). English translation in `docs/native_mt_spec/` root. Key commits: `c7996a94f` (G1), `57b612d16` (G2).
 
+**Physical-machine verification (2026-08-06)**: functionality and performance both PASS on physical hardware. Residual risks honestly recorded (not fixed this round): ipfw/netisr DPCPU slot aliasing (needs separate DPCPU project), counter(9) statistics contention, tcp_hpts instance 1→N callout ownership mismatch (R6), net.isr.dispatch must stay `direct`, ff_subr_prf.c global lockless line buffer, ff_pthread_create threads unsupported for ff_* calls. **New residual risk §6.23**: intermittent process crash under repeated wrk stress (non-deterministic, requires multiple runs to reproduce → capture crash stack → root-cause). See spec 17 §6.23 and `_m17_F_runtime.md` Part 6.
+
 ## 3. Directory Structure
 
 ```
