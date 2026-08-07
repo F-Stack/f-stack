@@ -2207,8 +2207,8 @@
   - 结论：【2026-07-22回复】官方最终确认已在dev分支实现，即将包含在下个release中：启用巨帧需在config.ini设置`[dpdk]mtu_enable=1`+`max_mtu=9000`，及`[port0]mtu=9000`；也可运行时用`ff_ifconfig f-stack-0 mtu 9000`修改。mbuf池会根据max_mtu自动配置足够的data room size，pri……
   - 修复/方案信息：已实现(dev分支)：config.ini设置`mtu_enable=1`+`max_mtu=9000`(dpdk段)及`mtu=9000`(port段)，或运行时`ff_ifconfig f-stack-0 mtu 9000`。注意：与kernel_coexist模式不兼容。
 - **#795** 🟢open Specifying devargs parameter?
-  - 结论：官方结论：config.ini支持部分DPDK EAL参数(如allow白名单、file_prefix、nb_vdev虚拟设备)，在lib/ff_config.c中转换为EAL参数。暂不支持任意--device devargs直接传递，计划未来版本支持(见#265)。当前如需自定义devargs可修改lib/ff_config.c添加配置项并追加到dpdk_argv[]。
-  - 修复/方案信息：暂不支持任意devargs，需修改lib/ff_config.c手动添加。相关：#265(计划功能)。
+  - 结论：【2026-08-07 本地实测+修复】实现了通用 DPDK EAL 启动参数透传：新增 `extra_eal_args` 配置项（config.ini [dpdk] 段），空格分隔多个 EAL 参数，原样追加到 `rte_eal_init()` argv 末尾。覆盖 issue #795 的 devargs 需求（`--allow=<bdf>,scalar_enable=1`）及其他任意 EAL 参数（`--log-level`、`-d`、`--iova-mode` 等）。同时提升 `DPDK_CONFIG_NUM` 16→32 容纳用户参数。在物理机+DPDK（virtio NIC）环境测试 T1-T3（默认/--log-level/--allow devargs）均通过：EAL argv 透传成功，TCP 连接正常。注意：`--device` 非 DPDK EAL 标准参数，devargs 正确格式是 `--allow=<bdf>,<devargs>`。
+  - 修复/方案信息：新增 `extra_eal_args` 配置项（通用 EAL 参数透传）。修改文件：ff_config.h/ff_config.c/config.ini。详细分析见 docs/issue_795/zh_cn/。
 - **#851** ⚪closed Using two gateways in Network Interface
   - 结论：官方结论：可通过以下两种方式实现：1)VLAN接口(推荐)——在同一物理端口配置VLAN，每个VLAN拥有独立IP/网关/路由表(FIB)：config.ini设vlan_strip=1+vlan_filter=100,101，并配置[vlan100]/[vlan101]段各自的addr/netmask/gateway，每个VLAN自动使用独立FIB，不同VLAN流量可用不同网关。2)vip_ad……
   - 修复/方案信息：方案1(推荐)：VLAN接口，config.ini设vlan_filter+[vlanN]段各自网关(独立FIB)。方案2：vip_addr+ff_ipfw setfib策略路由(仅支持/32)。相关：#771。

@@ -1043,6 +1043,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.file_prefix = strdup(value);
     } else if (MATCH("dpdk", "allow")) {
         pconfig->dpdk.allow = strdup(value);
+    } else if (MATCH("dpdk", "extra_eal_args")) {
+        pconfig->dpdk.extra_eal_args = strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "nb_vdev")) {
@@ -1280,6 +1282,19 @@ dpdk_args_setup(struct ff_config *cfg)
                     strcat(temp, temp2);
                 }
                 dpdk_argv[n++] = strdup(temp);
+        }
+    }
+
+    if (cfg->dpdk.extra_eal_args) {
+        char* token;
+        char* rest = cfg->dpdk.extra_eal_args;
+
+        while ((token = strtok_r(rest, " ", &rest))) {
+            if (n >= DPDK_CONFIG_NUM) {
+                printf("extra_eal_args exceed DPDK_CONFIG_NUM, truncated\n");
+                break;
+            }
+            dpdk_argv[n++] = strdup(token);
         }
     }
 
@@ -1745,6 +1760,10 @@ ff_unload_config(void)
     if (ff_global_cfg.dpdk.allow) {
         free(ff_global_cfg.dpdk.allow);
         ff_global_cfg.dpdk.allow = NULL;
+    }
+    if (ff_global_cfg.dpdk.extra_eal_args) {
+        free(ff_global_cfg.dpdk.extra_eal_args);
+        ff_global_cfg.dpdk.extra_eal_args = NULL;
     }
     if (ff_global_cfg.dpdk.proc_lcore) {
         free(ff_global_cfg.dpdk.proc_lcore);
