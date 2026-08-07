@@ -787,6 +787,10 @@ struct kq_timer_cb_data {
 static void
 kqtimer_sched_callout(struct kq_timer_cb_data *kc)
 {
+#ifndef FSTACK
+	callout_reset_sbt_on(&kc->c, kc->next, 0, filt_timerexpire, kc->kn,
+	    kc->cpuid, C_ABSOLUTE);
+#else
 	/* F-Stack callout is tick-based; the sbt macro ignores C_ABSOLUTE,
 	 * so convert the absolute fire time to relative ticks here. */
 	sbintime_t now = sbinuptime();
@@ -794,6 +798,7 @@ kqtimer_sched_callout(struct kq_timer_cb_data *kc)
 
 	callout_reset_tick_on(&kc->c, to_ticks, filt_timerexpire, kc->kn,
 	    kc->cpuid, 0);
+#endif
 }
 
 void
