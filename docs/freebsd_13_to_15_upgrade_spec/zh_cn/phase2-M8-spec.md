@@ -18,7 +18,7 @@
 | 扩展 `example/Makefile` | 新增 `helloworld_zc` target，编译 main_zc.c |
 | 编译通过 | `lib && make all` exit=0；`example && make` 产出 helloworld + helloworld_epoll + **helloworld_zc** |
 | 主程序冒烟 | helloworld_zc 起栈 ≥10s 不崩 |
-| 客户端联动测试 | 从 `f-stack-client` (9.134.211.87) curl/wrk → server (9.134.214.176:80)，至少完成 1 次完整 HTTP 200 响应 |
+| 客户端联动测试 | 从 `f-stack-client` (<CLIENT_IP>) curl/wrk → server (<DPDK_NIC_IP>:80)，至少完成 1 次完整 HTTP 200 响应 |
 | 简单性能观察 | 短连 100 次 + 长连 30s，对比 helloworld vs helloworld_zc（同条件） |
 | 文档同步 + commit | 局部 docs；本地 commit；不 push |
 
@@ -55,8 +55,8 @@ ZC 实现**独立于** FF_USE_PAGE_ARRAY，无 ifdef 交叉依赖。
 
 | 角色 | 主机 | IP | OS |
 |---|---|---|---|
-| server (本机) | 当前 | 9.134.214.176 | Linux + DPDK + f-stack | 
-| client | f-stack-client (ssh hostname) | 9.134.211.87 | Linux 6.6 TencentOS |
+| server (本机) | 当前 | <DPDK_NIC_IP> | Linux + DPDK + f-stack | 
+| client | f-stack-client (ssh hostname) | <CLIENT_IP> | Linux 6.6 TencentOS |
 
 ### 2.4 example/Makefile 现状
 
@@ -115,15 +115,15 @@ all:
 ### G3 — 客户端联动 HTTP 测试（OQ-1 default：用户提供 client）
 | AC | 命令（在 server 侧编排） | 通过 |
 |---|---|---|
-| G3.1 | server 启动 helloworld_zc primary（监听 [port0] addr 9.134.214.176:80） | bind 成功，log 显示 listen |
-| G3.2 | `ssh f-stack-client 'curl -sS -o /dev/null -w "%{http_code} %{size_download}\n" --connect-timeout 5 http://9.134.214.176/'` | HTTP 200 + body size > 0 |
-| G3.3 | `ssh f-stack-client 'for i in $(seq 1 100); do curl -sS -o /dev/null --connect-timeout 5 http://9.134.214.176/; done; echo done'` 100 次短连 | 100 次成功，无 timeout/connection refused |
+| G3.1 | server 启动 helloworld_zc primary（监听 [port0] addr <DPDK_NIC_IP>:80） | bind 成功，log 显示 listen |
+| G3.2 | `ssh f-stack-client 'curl -sS -o /dev/null -w "%{http_code} %{size_download}\n" --connect-timeout 5 http://<DPDK_NIC_IP>/'` | HTTP 200 + body size > 0 |
+| G3.3 | `ssh f-stack-client 'for i in $(seq 1 100); do curl -sS -o /dev/null --connect-timeout 5 http://<DPDK_NIC_IP>/; done; echo done'` 100 次短连 | 100 次成功，无 timeout/connection refused |
 
 ### G4 — 简单性能观察（OQ-2 降级许可）
 | AC | 方法 |
 |---|---|
 | G4.1 | 短连：客户端 `time { for i in $(seq 1 1000); do curl ...; done; }`（helloworld vs helloworld_zc）| 记录 wall time，对比 ZC vs 默认 |
-| G4.2 | 长连：客户端 `wrk -t1 -c10 -d10s http://9.134.214.176/`（如 wrk 可用），否则 ab，最不济 curl loop | 记录 rps |
+| G4.2 | 长连：客户端 `wrk -t1 -c10 -d10s http://<DPDK_NIC_IP>/`（如 wrk 可用），否则 ab，最不济 curl loop | 记录 rps |
 
 ### G5 — 文档同步（局部）
 - docs/01-LAYER1 + zh_cn 镜像：M8 注脚
@@ -142,7 +142,7 @@ all:
 | **R-M8-1** | `m_getm2` 在 14.0+ 是否签名变更 | grep `freebsd-src-releng-15.0/sys/sys/mbuf.h` 确认；目前 lib 已编译 OK 推断兼容 |
 | **R-M8-2** | f-stack-client → server 路由不通（不同 VPC 子网） | 实测 ssh ok 但跨 ARP/路由层不一定通；G3.2 实测 + 必要时调 ARP |
 | **R-M8-3** | DPDK runtime 残留（M7 SIGTERM 干净退出但残文件可能） | 启动前 rm_tmp_file.sh 清 /var/run/dpdk/rte/* |
-| **R-M8-4** | port[0].addr 配置不匹配 9.134.214.176（用户机器 IP） | 实测 config.ini 已设 9.134.214.176（user runtime） |
+| **R-M8-4** | port[0].addr 配置不匹配 <DPDK_NIC_IP>（用户机器 IP） | 实测 config.ini 已设 <DPDK_NIC_IP>（user runtime） |
 | **R-M8-5** | helloworld_zc bind 80 端口需 root + ARP gratuitous | sudo + helloworld_zc 自带 dpdk_if 应自动发 ARP |
 
 ---

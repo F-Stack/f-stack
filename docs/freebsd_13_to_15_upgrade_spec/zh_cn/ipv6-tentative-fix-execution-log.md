@@ -19,14 +19,14 @@ f-stack 用户态 IPv6 全局单播地址启动后长期停留在 `IN6_IFF_TENTA
 
 ### 2.1 环境基线
 
-- 主机：DPDK 网卡 PCI `0000:00:05.0`（virtio），f-stack `f-stack-0` 接口，addr6 = `2402:4e00:1900:1:6:5522:de6a:7d84`
+- 主机：DPDK 网卡 PCI `0000:00:05.0`（virtio），f-stack `f-stack-0` 接口，addr6 = `<DPDK_NIC_IPV6>`
 - helloworld：`example/main.c` `AF_INET6 bind [::]:80 listen`，config `[kni] enable=1 method=reject tcp_port=80,443 udp_port=53`
-- client：`f-stack-client`（`2402:4e00:1900:1:6:5522:c9a0:741c`）ssh 直连
+- client：`f-stack-client`（`<CLIENT_IPV6>`）ssh 直连
 
 ### 2.2 症状复现
 
 修复前，从 client 侧：
-- v4 ping 9.134.214.176：`0.4ms 通`
+- v4 ping <DPDK_NIC_IP>：`0.4ms 通`
 - v6 ping de6a:7d84：`0.37ms 通`（RTT 表象）
 - v6 tcp curl `http://[de6a:7d84]:80/`：`Timeout after 3s`
 - python `connect_ex((...,80,0,0))`：`ret=11`（EAGAIN，即握手无回应）
@@ -58,7 +58,7 @@ if (ia != NULL) {
 ```
 f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500
     inet6 fe80::2290:6fff:fe7d:5d08 prefixlen 64 tentative scopeid 0x2
-    inet6 2402:4e00:1900:1:6:5522:de6a:7d84 prefixlen 128 tentative autoconf   <-- TENTATIVE
+    inet6 <DPDK_NIC_IPV6> prefixlen 128 tentative autoconf   <-- TENTATIVE
 ```
 
 ### 2.5 ping 通表象的真正来源（tcpdump 抓包）
@@ -135,7 +135,7 @@ client 复测 v6 tcp 80 → curl 立即拿到完整 F-Stack helloworld HTML（Co
 ```
 f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST>
     inet6 fe80::2290:6fff:fe7d:5d08 prefixlen 64 scopeid 0x2       (NO tentative)
-    inet6 2402:4e00:1900:1:6:5522:de6a:7d84 prefixlen 128 autoconf  (NO tentative)
+    inet6 <DPDK_NIC_IPV6> prefixlen 128 autoconf  (NO tentative)
 ```
 
 - `ff_netstat -t 0 -an`：`tcp6 *.80 LISTEN` OK
@@ -206,8 +206,8 @@ CVM（virtio）环境用 A+B 修复后 IPv6 TCP 已通。切到 **mlx5 ConnectX 
 `ff_netstat -an`（primary=helloworld 正常收发；注：secondary 的 ff_netstat 报 `mlx5 can not attach / Cannot allocate memory` 是 secondary 进程 attach 网卡失败的正常现象，不影响 primary）：
 
 ```
-tcp6  0  0  2402:4e00:1840::.80   2402:4e00:2e80:1.29159   SYN_RCVD
-tcp6  0  0  2402:4e00:1840::.80   2402:4e00:2e80:1.29155   SYN_RCVD
+tcp6  0  0  <VIP_IPV6_PREFIX>.80   <CLIENT_IPV6_PREFIX>.29159   SYN_RCVD
+tcp6  0  0  <VIP_IPV6_PREFIX>.80   <CLIENT_IPV6_PREFIX>.29155   SYN_RCVD
 ... (多条不同源端口 SYN_RCVD)
 tcp4  0  0  1.13.76.19.80         11.19.149.140.6101       LAST_ACK
 tcp6  0  0  *.80                  *.*                      LISTEN

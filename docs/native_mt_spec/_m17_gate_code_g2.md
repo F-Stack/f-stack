@@ -425,7 +425,7 @@ I evaluated two "don't modify workspace" alternatives, **both inferior**:
 ## 14.7 Review item 5: Files not to enter commit (I fully enumerated)
 
 **A. Tracked but absolutely must not enter (1)**
-- **`config.ini`** (` M`, 14 insertions / 12 deletions): contains local test values `lcore_mask=6` / `thread_mode=1` / `idle_sleep=20` / `addr=9.134.214.176` etc. **Absolutely must not enter** (AI memory 44404940).
+- **`config.ini`** (` M`, 14 insertions / 12 deletions): contains local test values `lcore_mask=6` / `thread_mode=1` / `idle_sleep=20` / `addr=<DPDK_NIC_IP>` etc. **Absolutely must not enter** (AI memory 44404940).
 
 **B. Untracked temp artifacts —— all must not enter**
 - **Binaries (5, note: these `.gitignore` don't cover!)**: `example/helloworld_g1_prelock`, `example/helloworld_g2_nolock`, `example/helloworld_zc_base`, `example/helloworld_zc_recv`, `example/helloworld_stacksel/helloworld_stacksel`

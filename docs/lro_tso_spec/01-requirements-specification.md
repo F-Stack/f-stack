@@ -81,7 +81,7 @@ Complete the enhancement points without breaking existing IPv4 TSO:
 
 - DPDK version is **24.11.6** (`/data/workspace/dpdk-stable-24.11.6/`); offload macro names are authoritative per that version's `lib/ethdev/rte_ethdev.h`.
 - FreeBSD kernel stack is the 15.0 version ported to `f-stack/freebsd/`.
-- Network test environment: DPDK dedicated NIC IP `9.134.214.176` (testing must be initiated from the `ssh f-stack-client` side); kernel stack testing via `127.0.0.1` on `lo` (not tested this round; recorded for subsequent milestones).
+- Network test environment: DPDK dedicated NIC IP `<DPDK_NIC_IP>` (testing must be initiated from the `ssh f-stack-client` side); kernel stack testing via `127.0.0.1` on `lo` (not tested this round; recorded for subsequent milestones).
 
 ---
 

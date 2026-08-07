@@ -182,7 +182,7 @@ But for F-Stack's typical scenarios (protocol stack termination type, with socke
 2. If rte_gso is introduced in the future, its two-part mbuf and egress driver `MULTI_SEGS` compatibility in F-Stack transmit path.
 3. Whether protocol stack per-segment transmission CPU overhead constitutes a throughput bottleneck (determines whether rte_gso is worth introducing).
 
-> All the above are runtime/subsequent milestone validation items, not tested this round. Test environment: DPDK dedicated NIC IP `9.134.214.176` (`ssh f-stack-client` side initiates), kernel stack testing via `127.0.0.1` on `lo`.
+> All the above are runtime/subsequent milestone validation items, not tested this round. Test environment: DPDK dedicated NIC IP `<DPDK_NIC_IP>` (`ssh f-stack-client` side initiates), kernel stack testing via `127.0.0.1` on `lo`.
 
 ---
 

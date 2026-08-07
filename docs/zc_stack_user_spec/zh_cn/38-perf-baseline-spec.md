@@ -10,7 +10,7 @@
 ```
 [client: f-stack-client (8 核 CVM)]   ssh   [server: 本机 (单核 lcore4 + DPDK NIC)]
    /tmp/wrk/wrk -t* -c* -d30s        ───▶   helloworld_zc (HTTP echo, port 80)
-        9.134.214.176                       data-plane: vfio-pci 0000:00:09.0
+        <DPDK_NIC_IP>                       data-plane: vfio-pci 0000:00:09.0
                                             control-plane: eth1 SSH
 ```
 
@@ -24,9 +24,9 @@
 
 | 档 | 命令 | 用途 |
 |---|---|---|
-| T1 | `wrk -t2 -c10 -d5s --latency http://9.134.214.176/` | 低并发 smoke，建立基线 |
-| T2 | `wrk -t4 -c100 -d30s --latency http://9.134.214.176/` | 中等并发，主对比档 |
-| T3 | `wrk -t8 -c500 -d30s --latency http://9.134.214.176/` | 高并发，饱和或超饱和 |
+| T1 | `wrk -t2 -c10 -d5s --latency http://<DPDK_NIC_IP>/` | 低并发 smoke，建立基线 |
+| T2 | `wrk -t4 -c100 -d30s --latency http://<DPDK_NIC_IP>/` | 中等并发，主对比档 |
+| T3 | `wrk -t8 -c500 -d30s --latency http://<DPDK_NIC_IP>/` | 高并发，饱和或超饱和 |
 
 ### §2.2 三对比组
 
@@ -113,7 +113,7 @@ wrk.body = string.rep("x", 4096)
 wrk.headers["Content-Type"] = "application/octet-stream"
 ```
 
-启动：`/tmp/wrk/wrk -t4 -c100 -d30s -s /tmp/perf_4k.lua --latency http://9.134.214.176/`
+启动：`/tmp/wrk/wrk -t4 -c100 -d30s -s /tmp/perf_4k.lua --latency http://<DPDK_NIC_IP>/`
 
 > spec 中提供的 lua 脚本片段不属于"shell 命令"；实施期编辑该 lua 文件不触及 rm/kill/chmod 规约。
 
@@ -124,7 +124,7 @@ wrk.headers["Content-Type"] = "application/octet-stream"
 ### §7.1 wrk 输出解析
 
 ```
-Running 30s test @ http://9.134.214.176/
+Running 30s test @ http://<DPDK_NIC_IP>/
   4 threads and 100 connections
   Latency Distribution
      50%   1.10ms

@@ -42,7 +42,7 @@
 
 ### 2.3 关键修复
 
-启动前实测 `f-stack/config.ini` 被 git checkout 重置为默认 `192.168.1.2`（应是 production `9.134.214.176`）。从 user maintained `/data/workspace/config.ini` 复制覆盖修复（per user 2026-06-09 15:34 反馈）。
+启动前实测 `f-stack/config.ini` 被 git checkout 重置为默认 `192.168.1.2`（应是 production `<DPDK_NIC_IP>`）。从 user maintained `/data/workspace/config.ini` 复制覆盖修复（per user 2026-06-09 15:34 反馈）。
 
 ---
 

@@ -76,7 +76,7 @@
 | 编号 | 场景 | 步骤 | 通过标准 | 对应 |
 |---|---|---|---|---|
 | **IT-1** | **自动双栈 listen** | demo 默认 `ff_socket`+`bind(80)`+`listen`（无 marker），coexist=1 | `ff_netstat`(F-Stack) 见 80 监听 **且** `ss -tlnp`(内核) 见 80 监听 | FR-2/FR-3/FR-4 |
-| **IT-2** | **F-Stack 侧远端访问** | ssh 到 f-stack-client 机 `curl http://9.134.214.176:80` | HTTP 200（经 DPDK NIC） | FR-4/NFR-3 |
+| **IT-2** | **F-Stack 侧远端访问** | ssh 到 f-stack-client 机 `curl http://<DPDK_NIC_IP>:80` | HTTP 200（经 DPDK NIC） | FR-4/NFR-3 |
 | **IT-3** | **内核侧本机访问** | 本机 `curl http://127.0.0.1:80` | HTTP 200（经内核栈，同一进程同一 listen） | FR-4 |
 | IT-4 | 本机 ping | `ping <host_ip>` | 有回包 | FR-4 |
 | **IT-5** | **统一事件双栈** | 同 epoll 同时收 F-Stack 侧 + 内核侧连接事件 | 两栈连接均被 accept 处理、不丢 | FR-5/FR-6 |
@@ -85,10 +85,10 @@
 | IT-8 | config 开关 | `kernel_coexist=0` 重启 | 仅 F-Stack 监听、`ss` 无 80 | FR-11/NFR-1 |
 | **IT-9** | **客户端双栈 connect** | 默认 fd `connect`（契约确认后）/ `SOCK_KERNEL` connect 127.0.0.1 | 按 `05 §6` 契约连通 | FR-10 |
 | IT-10 | 长稳/泄漏 | 大量短连接反复开关（含两栈 accept） | fd 数稳定、`ff_native_fd_map`/`ff_epoll_pairs` 无泄漏 | FR-7 |
-| **IT-11** | **kqueue 模型内核侧可达（R9，P2 验收）** | plain helloworld（`ff_kqueue`+`ff_kevent`，`example/main.c` 模型），coexist=1，本机 `curl http://127.0.0.1:80` | HTTP 200 size=438（修复前实测 000）；同进程 F-Stack 侧 `ssh f-stack-client→9.134.214.176:80=200` 不回归 | FR-5/FR-6 |
+| **IT-11** | **kqueue 模型内核侧可达（R9，P2 验收）** | plain helloworld（`ff_kqueue`+`ff_kevent`，`example/main.c` 模型），coexist=1，本机 `curl http://127.0.0.1:80` | HTTP 200 size=438（修复前实测 000）；同进程 F-Stack 侧 `ssh f-stack-client→<DPDK_NIC_IP>:80=200` 不回归 | FR-5/FR-6 |
 | **IT-12** | **INET6-on 双建启动（R9，P1 验收）** | `-DINET6` 构建 helloworld，coexist=1 启动 | 进程成功启动（v4+v6 listen 均建立，`ff_bind` 无 errno=98）；`ss`/`ff_netstat` 见 v4+v6 监听；抓包确认内核侧 200 | FR-3 |
 | **IT-13** | **内核 fd readv/writev/ioctl 真机（R10）** | INET6-off helloworld，coexist=1，对受管内核 fd（127.0.0.1 连接）做 readv/writev/ioctl | readv/writev 字节正确、ioctl（如 `FIONBIO`）生效；内核侧 `curl 127.0.0.1:80=200` | D12/D13 |
-| **IT-14** | **R10 零回归** | coexist=1 helloworld 同进程 F-Stack 侧 `ssh f-stack-client→9.134.214.176:80` | HTTP 200 不回归（readv/writev/ioctl/dup 改动不影响 F-Stack 业务面） | NFR-1/NFR-3 |
+| **IT-14** | **R10 零回归** | coexist=1 helloworld 同进程 F-Stack 侧 `ssh f-stack-client→<DPDK_NIC_IP>:80` | HTTP 200 不回归（readv/writev/ioctl/dup 改动不影响 F-Stack 业务面） | NFR-1/NFR-3 |
 
 > 进程清理 `/data/workspace/kill_process.sh`，临时文件 `/data/workspace/rm_tmp_file.sh`，权限 `/data/workspace/chmod_modify.sh`。
 
@@ -96,11 +96,11 @@
 
 - **双网卡隔离**：DPDK 独占网卡（≠eth1，已在 config.ini 配置）；eth1 内核驱动供 ssh 旁路。
 - **单 listen(80) demo**：改造 `example/helloworld_stacksel` 或新建（默认双栈 `ff_socket`/`bind(80)`/`listen`）。
-- **F-Stack 侧验证**：ssh 到 f-stack-client 机器（与 DPDK 网卡同 /21 直连），`curl http://9.134.214.176:80` → 经 DPDK NIC 命中 F-Stack 侧。
+- **F-Stack 侧验证**：ssh 到 f-stack-client 机器（与 DPDK 网卡同 /21 直连），`curl http://<DPDK_NIC_IP>:80` → 经 DPDK NIC 命中 F-Stack 侧。
 - **内核侧验证**：被测机本机 `curl http://127.0.0.1:80` → 经内核栈命中内核侧 listen。
 - **双向确认**：`ff_netstat`（F-Stack）+ `ss -tlnp`（内核）各见一个 80 监听 → 证明一 listen 双栈。
 - **config 不提交**：本地 `lcore_mask`/port IP/`idle_sleep` 等本机值测后回滚，提交仅 `[stack]` 特性改动。
-- IP 掩码：client stdout 经源端 sed 掩码后落盘（`9.134.214.176→192.168.1.1` 等）。
+- IP 掩码：client stdout 经源端 sed 掩码后落盘（`<DPDK_NIC_IP>→192.168.1.1` 等）。
 
 ---
 
@@ -128,7 +128,7 @@
   5. config 关/`SOCK_FSTACK`/宏关时与纯 F-Stack 一致（NFR-1/NFR-3）。
   6. **connect 契约确认**：`05 §6` 草案经用户确认后 UT-14/IT-9 方可定稿判 PASS。
   7. R8 新增 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核 fd 路由须单测覆盖；`readv/writev/ioctl` 由 **R10** 补齐内核 fd 路由（D12-D13，见第 9 项）。
-  8. **R9**：UT-19~23（kqueue changelist 注册/eventlist 合成/close 清配对/IPv6 V6ONLY/宏关零回归）全通过；**IT-11（kqueue 模型内核侧 `curl 127.0.0.1:80=200`）+ IT-12（INET6-on 双建成功启动、抓包内核侧 200）真机实测成功**，F-Stack 侧 9.134.214.176:80=200 不回归。`ff_kevent` 内核 fd 仅 `EVFILT_READ/WRITE`（非 READ/WRITE filter 不经 host epoll）为 R9 已知限制，须文档/用例明示。
+  8. **R9**：UT-19~23（kqueue changelist 注册/eventlist 合成/close 清配对/IPv6 V6ONLY/宏关零回归）全通过；**IT-11（kqueue 模型内核侧 `curl 127.0.0.1:80=200`）+ IT-12（INET6-on 双建成功启动、抓包内核侧 200）真机实测成功**，F-Stack 侧 <DPDK_NIC_IP>:80=200 不回归。`ff_kevent` 内核 fd 仅 `EVFILT_READ/WRITE`（非 READ/WRITE filter 不经 host epoll）为 R9 已知限制，须文档/用例明示。
   9. **R10**：UT-24~28（`ff_host_readv/writev/ioctl/dup/dup2` host 桥 + `ff_readv/writev/ioctl/dup/dup2` 内核 fd 路由 + 宏关零回归）全通过；**IT-13（内核 fd readv/writev/ioctl 真机正确、内核侧 200）+ IT-14（F-Stack 侧 200 不回归）实测成功**。已确定（impl 实测）：`ff_select` 因 encode 内核 fd≫`FD_SETSIZE`(1024) 为**硬限制**、`ff_poll` 因合并复杂度**保守不实现**，两者均降级文档限制；`ff_dup2` 混栈拒绝 **errno=EINVAL**；`ioctl` 双栈 fd 同驱动 **R10.1 已实现**（`FIONBIO`/`FIOASYNC` 同步配对 host fd）——均须文档/用例明示。
 - 任一项失败 → bounce 打回上一里程碑（同步骤≤3 次，超限转人工）。
 

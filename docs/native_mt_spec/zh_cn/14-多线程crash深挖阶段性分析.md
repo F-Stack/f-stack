@@ -79,7 +79,7 @@
 
 - 调研 FreeBSD VIMAGE 中 `ifp` 与 vnet 的绑定机制（`if_attach` / `if_vmove`）。
 - 设计 per-worker vnet 的 `ifp` 注册或 `curvnet` 切换方案。
-- 实施后重新做 2/4 线程 wrk 压测验证（`ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"`）。
+- 实施后重新做 2/4 线程 wrk 压测验证（`ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"`）。
 
 ---
 

@@ -42,7 +42,7 @@
 | `vip_addr` | 192.169.0.3;192.169.0.4 | 192.169.1.3;192.169.1.4 |
 | `ipfw_pr` | 192.169.0.0 255.255.255.0 | 192.169.1.0 255.255.255.0 |
 
-字段值参考 `f-stack-13.0-baseline/config.ini:151-194` 注释模板（已 verified 与当前仓库 `f-stack/config.ini` 同位置注释 diff=0），**不与 production 9.134.214.0/21 网段冲突**。
+字段值参考 `f-stack-13.0-baseline/config.ini:151-194` 注释模板（已 verified 与当前仓库 `f-stack/config.ini` 同位置注释 diff=0），**不与 production <NETWORK_PREFIX>/21 网段冲突**。
 
 `vlan_filter=1,2` 必须出现在所有 `[vlanN]` 之前（line 647 nb_vlan_filter==0 早返回保护）。
 
@@ -108,7 +108,7 @@
 
 | ID | 风险 | 影响 | 缓解 |
 |---|---|---|---|
-| R-V1 | `nb_vlan!=0` 时 [portN] 跳过 → 9.134.214.176 SSH 失联 | server 失联导致测试中断 | 用独立 config 文件 + 显式 `-c` 参数；测试期间 SSH 仍走 host kernel eth1 而非 DPDK 接管的 NIC（host 与 DPDK 共用 PCI 接管时段需短暂窗口） |
+| R-V1 | `nb_vlan!=0` 时 [portN] 跳过 → <DPDK_NIC_IP> SSH 失联 | server 失联导致测试中断 | 用独立 config 文件 + 显式 `-c` 参数；测试期间 SSH 仍走 host kernel eth1 而非 DPDK 接管的 NIC（host 与 DPDK 共用 PCI 接管时段需短暂窗口） |
 | R-V2 | DPDK rx vlan filter 未下推 | 端到端时 RX 收不到 tagged 帧 | 本期不在 scope（F-V3 follow-up） |
 | R-V3 | virtio-net vlan offload 受限 | 同 R-V2 | 同上 |
 | R-V4 | `vlan_strip=1` × `nb_vlan!=0` 交互 | tag 被 HW 剥离后 vlan iface 收不到包 | 本期不在 scope（F-V4） |

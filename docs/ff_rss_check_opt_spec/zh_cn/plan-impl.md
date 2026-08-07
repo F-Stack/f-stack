@@ -5,7 +5,7 @@
 > 基线 commit：`e5389cb52`（feature/1.26）。
 > spec 依据：`docs/ff_rss_check_opt_spec/zh_cn/` 00-09（落点见 06/05，事实见 02，门禁断言见 09）。
 > 强制规约：实际执行不臆测、代码为准、交叉验证；rm/kill/chmod 走 `/data/workspace/{rm_tmp_file,kill_process,chmod_modify}.sh`（make install 类可）；lib 注释精简；commit 英文 1-3 句；config.ini 本地测试值不提交（提交前 git diff 复核）；门禁失败打回上一步（单步 bounce≤3，超则停转人工，除非实在无法实现否则不留遗留项）；子 agent 全部完成前 leader 严禁退出、主动轮询等待。
-> 测试环境：DPDK 网卡 `9.134.214.176`（经 ssh f-stack-client 测）；内核栈 `127.0.0.1`。当前 helloworld 未运行、symmetric_rss=0、kernel_coexist=0。
+> 测试环境：DPDK 网卡 `<DPDK_NIC_IP>`（经 ssh f-stack-client 测）；内核栈 `127.0.0.1`。当前 helloworld 未运行、symmetric_rss=0、kernel_coexist=0。
 
 ## 0. 实现里程碑（严格按 spec 06 的 R-A→R-B→R-C 顺序，有依赖）
 
@@ -21,7 +21,7 @@
 3. **编译**（开/关 FSTACK 双编译，0 error；宏关零回归）
 4. **单测**（cmocka，含正确性 + 回归）
 5. **review**（leader 独立读码复核，不依赖子 agent 单方结论）
-6. **真机/集成测试**（leader 统筹：9.134.214.176 + 127.0.0.1）
+6. **真机/集成测试**（leader 统筹：<DPDK_NIC_IP> + 127.0.0.1）
 7. **里程碑门禁**（spec 06 的 R-?.4 门禁项逐条 PASS）→ PASS 才提交 + 进下一里程碑
 
 ## 1. 各里程碑待确认项（起步先核实，对应 spec 09 F 表）
@@ -43,7 +43,7 @@
 - **impl**：各里程碑编码（in_pcb.c/in6_pcb.c/in_pcb.h、ff_dpdk_if.c、ff_config.{c,h}），双编译零回归自检。
 - **tester**：cmocka 单测编写 + 双态运行（按 spec 07 用例 TC-U-RSS-*）。
 - **reviewer**（可选，或由 leader 兼任）：代码 review 门禁。
-> 真机/集成测试（9.134.214.176 / 127.0.0.1、起停 helloworld）由 leader 亲自统筹（kill 走脚本）。
+> 真机/集成测试（<DPDK_NIC_IP> / 127.0.0.1、起停 helloworld）由 leader 亲自统筹（kill 走脚本）。
 
 ## 4. 提交策略
 

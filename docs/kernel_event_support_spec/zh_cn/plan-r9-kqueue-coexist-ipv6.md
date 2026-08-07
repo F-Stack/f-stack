@@ -10,7 +10,7 @@
 `config.ini [stack] kernel_coexist=1`、lib 以 `FF_KERNEL_COEXIST=1` 构建后，运行 `example/main.c` 编译的 helloworld，人工测试发现：
 
 - **P1（IPv6 双建启动失败）**：`-DINET6` 构建时，`ff_bind(sockfd6, [::]:80)` 失败导致进程退出、无法启动。
-- **P2（内核侧无数据返回）**：关闭 INET6 重编后，DPDK 网卡侧（client 压 `9.134.214.176`）正常；本机 `curl 127.0.0.1:80` TCP 可建立但无数据返回（无 HTTP 200）。
+- **P2（内核侧无数据返回）**：关闭 INET6 重编后，DPDK 网卡侧（client 压 `<DPDK_NIC_IP>`）正常；本机 `curl 127.0.0.1:80` TCP 可建立但无数据返回（无 HTTP 200）。
 
 ## 2. 根因（已实证锁定，代码 + 抓包 + errno 交叉验证）
 
@@ -25,7 +25,7 @@
 - `EV_SET(sockfd, EVFILT_READ)` + `ff_kevent(kq,...)` **只把 F-Stack listen fd 注册进 F-Stack kqueue**。
 - `lib/ff_syscall_wrapper.c` 中 `ff_kqueue`/`ff_kevent`/`ff_kevent_do_each` **完全没有 FF_KERNEL_COEXIST 路由/双注册**（仅 `ff_epoll.c` 有）。
 - 故内核侧（127.0.0.1）连接：内核 TCP 完成握手、GET 入内核缓冲并被 TCP 层 ACK（抓包 `ack 73` 实测吻合），但应用永不被唤醒去 `ff_accept` 该内核 listen fd → 永不 read/write → 无 200。
-- **实测**：内核侧 `curl 127.0.0.1:80` = `http_code=000`（6s 超时）；F-Stack 侧 client 压 `9.134.214.176` = `http_code=200 size=438`。
+- **实测**：内核侧 `curl 127.0.0.1:80` = `http_code=000`（6s 超时）；F-Stack 侧 client 压 `<DPDK_NIC_IP>` = `http_code=200 size=438`。
 - 结论：`ff_kqueue/ff_kevent` 系列未支持双栈共存（与人工判断一致）。
 
 ## 3. 修复方案（以代码为准，对称仿照已有 ff_epoll 共存范式）
@@ -43,7 +43,7 @@
 - **app fd 还原**：注册进 host epoll 时用 `epoll_event.data` 存"应用面 fd"，等待时直接还原为 `kevent.ident`，使 demo 的 `clientfd==sockfd` 与 `EVFILT_READ` 分支照常 accept/read/write（这些入口已 coexist 路由到 `ff_host_*`）。
 - **关闭**：复用/对齐 `ff_epoll_close_pair`（`ff_close` 已调用），确保 kq 关闭释放配对 host epoll。
 - 全程 `#ifdef FF_KERNEL_COEXIST` 门控，宏关逐字节零回归。
-- 验收：plain helloworld（kqueue，coexist=1）内核侧 `curl 127.0.0.1:80=200 size=438`，且 F-Stack 侧 `9.134.214.176:80=200` 不回归。
+- 验收：plain helloworld（kqueue，coexist=1）内核侧 `curl 127.0.0.1:80=200 size=438`，且 F-Stack 侧 `<DPDK_NIC_IP>:80=200` 不回归。
 
 ## 4. Agent Team 与里程碑（门禁失败打回上一步，单步 bounce≤3，超则停转人工）
 
@@ -55,7 +55,7 @@ team：`fstack-kqueue-coexist-r9`。leader 统筹；子 agent：spec-writer / im
 - **M3 编译零回归**：宏开/宏关双编译 `-Werror`；宏关 nm 无新符号且 `libfstack.a` size 对齐基线（逐字节零回归）。失败打回 M2。
 - **M4 单测**：cmocka 在 `tests/unit` 增 kqueue 共存 + IPv6 V6ONLY 用例（宏门控，真实 loopback），跑双态 test_p1。失败打回 M2。
 - **M5 真机验证**：停/重编/重启 helloworld（kill 走脚本）：
-  - INET6-off coexist=1：内核侧 `curl 127.0.0.1:80=200 size=438` + F-Stack 侧 client `9.134.214.176:80=200` 不回归。
+  - INET6-off coexist=1：内核侧 `curl 127.0.0.1:80=200 size=438` + F-Stack 侧 client `<DPDK_NIC_IP>:80=200` 不回归。
   - INET6-on coexist=1：进程成功启动（v4+v6 listen），抓包确认内核侧 200。
   - config 测后回滚 `kernel_coexist`/本机值，不入库。失败打回 M2。
 - **M6 文档**：spec-writer 同步 `docs/`（英文）+ `docs/zh_cn/`（中文）三层架构文档与知识图谱（Layer1-3 + KNOWLEDGE_GRAPH_WIKI + Summary/README）：补 kqueue/kevent 共存与 IPv6 V6ONLY，更新行数/版本。门禁：中英一致、无残留旧值、围栏闭合。
@@ -63,7 +63,7 @@ team：`fstack-kqueue-coexist-r9`。leader 统筹；子 agent：spec-writer / im
 
 ## 5. 测试方案
 - 单测（cmocka，宏门控，真实 loopback）：kqueue EV_ADD 内核/双栈 fd → host epoll 注册；ff_kevent 合成内核就绪事件；IPv6 host socket V6ONLY 后与 IPv4 同端口共存 bind 成功。
-- 真机（实测，不臆测）：见 M5。本机内核栈测 `127.0.0.1`（lo）；DPDK 网卡 `9.134.214.176` 经 `ssh f-stack-client` 测。
+- 真机（实测，不臆测）：见 M5。本机内核栈测 `127.0.0.1`（lo）；DPDK 网卡 `<DPDK_NIC_IP>` 经 `ssh f-stack-client` 测。
 - 零回归：宏关双编译逐字节；coexist=0 行为不变。
 
 ## 6. 交付文档清单

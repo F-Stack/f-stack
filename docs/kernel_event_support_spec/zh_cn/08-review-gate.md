@@ -3,7 +3,7 @@
 > **文档编号**：SPEC-KE-08
 > **版本**：v6（native 自动双栈共存范式）
 > **日期**：2026-06-17
-> **状态**：R0-R6 门禁 PASS（v5，commit ba148589d）；**v6 R7 自动双栈门禁 PASS（已实测，含真机双栈 9.134.214.176 + 127.0.0.1）**；**R9 kqueue 共存 + IPv6 V6ONLY spec 门禁 PASS（本轮设计，实现待 impl 落地）**
+> **状态**：R0-R6 门禁 PASS（v5，commit ba148589d）；**v6 R7 自动双栈门禁 PASS（已实测，含真机双栈 <DPDK_NIC_IP> + 127.0.0.1）**；**R9 kqueue 共存 + IPv6 V6ONLY spec 门禁 PASS（本轮设计，实现待 impl 落地）**
 > **作用域**：v6 spec 与实现的「与代码一致性 / 自动双栈范式正确性 / 编译宏门控完整性 / 零回归 / connect 契约确认」门禁。
 
 ---
@@ -69,7 +69,7 @@
 | V4 | accept 单栈归属 | `ff_accept/accept4` 先 kern_accept、EAGAIN 再 `ff_host_accept`，返回单栈 fd | PASS |
 | V5 | `ff_close` 双驱动 + `ff_native_map_clear` + 清 `ff_epoll_pairs` | `ff_close` 联动 + `ff_epoll_close_pair` | PASS |
 | V6 | 双栈 listen `ff_epoll_ctl` 双注册 + `ff_epoll_wait` 合并 | `ff_epoll.c` dual block + 真机内核侧事件可达 | PASS |
-| V7 | **一 listen 多用真机双向** | demo 单 `listen(80)`：内核 `ss 0.0.0.0:80` + `curl 127.0.0.1:80=200`；F-Stack `ssh f-stack-client→9.134.214.176:80=200`（同进程同 epoll） | PASS |
+| V7 | **一 listen 多用真机双向** | demo 单 `listen(80)`：内核 `ss 0.0.0.0:80` + `curl 127.0.0.1:80=200`；F-Stack `ssh f-stack-client→<DPDK_NIC_IP>:80=200`（同进程同 epoll） | PASS |
 | V8 | 热路径不查 map（连接 fd 单栈） | recv/send/read/write 仅 `ff_is_kernel_fd` 判定，不查 map | PASS |
 | V9 | 宏关 nm 无 `ff_native_map_*`/`ff_host_*`（MT-1）；宏开出现（MT-3） | 宏关共存符号=0（size 6539682 与基线一致）；宏开齐全 | PASS |
 | V10 | §connect 双栈（Q2=B）：双发 connect，F-Stack 为返回/数据主路径 | `ff_connect` best-effort `ff_host_connect(map[s])` + kern_connectat 主；契约见 `05 §6` | PASS（按 Q2=B 草案；数据路径 F-Stack 主，已文档化） |
@@ -148,6 +148,6 @@
 
 **R0-R6（v5）门禁 PASS**（commit ba148589d）：共存范式正确、编译宏门控完整、宏关零回归（nm 共存符号=0）、宏开可用（=39）、真机性能 PERF-1/2/3 通过、D1-D8 一致。
 
-**v6 R7 门禁 PASS（已实测）**：native 自动双栈落地——`ff_native_fd_map` + `ff_socket` 默认双建 + `ff_bind/ff_listen/ff_close/ff_connect` 双驱动 + `ff_epoll_ctl` 双注册/`ff_epoll_wait` 合并 + accept 单栈归属，全部 `#ifdef FF_KERNEL_COEXIST` 门控。宏关编译 rc=0 且 nm 共存符号=0（size 6539682 与基线逐字节一致，零回归）；宏开 rc=0；单测双态 PASS（宏关 P1 50/50，宏开 P1 含 `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip`）；**真机单 `listen(80)` 同进程被 F-Stack 侧（ssh f-stack-client → 9.134.214.176:80 = HTTP 200）与内核侧（curl 127.0.0.1:80 = HTTP 200）同时服务**，V1-V12 全 PASS（V10 connect 按 Q2=B 草案实现、数据路径 F-Stack 主，已文档化）。bounce=1（test_ff_epoll stub，已修）。
+**v6 R7 门禁 PASS（已实测）**：native 自动双栈落地——`ff_native_fd_map` + `ff_socket` 默认双建 + `ff_bind/ff_listen/ff_close/ff_connect` 双驱动 + `ff_epoll_ctl` 双注册/`ff_epoll_wait` 合并 + accept 单栈归属，全部 `#ifdef FF_KERNEL_COEXIST` 门控。宏关编译 rc=0 且 nm 共存符号=0（size 6539682 与基线逐字节一致，零回归）；宏开 rc=0；单测双态 PASS（宏关 P1 50/50，宏开 P1 含 `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip`）；**真机单 `listen(80)` 同进程被 F-Stack 侧（ssh f-stack-client → <DPDK_NIC_IP>:80 = HTTP 200）与内核侧（curl 127.0.0.1:80 = HTTP 200）同时服务**，V1-V12 全 PASS（V10 connect 按 Q2=B 草案实现、数据路径 F-Stack 主，已文档化）。bounce=1（test_ff_epoll stub，已修）。
 
 **R9 spec 门禁 PASS（本轮设计，实现待 impl 落地）**：R7 双栈事件仅覆盖 `ff_epoll_*`，R9 补两处缺口——(P2) `ff_kqueue/ff_kevent/ff_kevent_do_each` 对称仿 `ff_epoll` 共存（复用 `ff_epoll_pairs` 配对 + changelist→`ff_host_epoll_ctl` 注册 + eventlist 合成 `struct kevent` + close 清配对），修 kqueue 模型内核侧 `curl 127.0.0.1:80=000` → 目标 200；(P1) host IPv6 socket `IPV6_V6ONLY=1`，修 `-DINET6` 双建 `ff_bind errno=98 EADDRINUSE` 启动失败。现状缺口与方案均带实测证据（内核侧 000 抓包 `ack 73`、errno=98、F-Stack 侧 200），全程 `#ifdef FF_KERNEL_COEXIST` 门控、宏关零回归；R9-P1~P9 spec 断言齐备，实现状态如实标注「待 impl 落地」。实现门禁（真机内核侧 200 / INET6-on 启动 / 宏关 nm 零回归）待 impl 完成后填表（§4bis）。

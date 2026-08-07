@@ -87,9 +87,9 @@
 
 ---
 
-## 4. Real-machine Steps (`9.134.214.176` via `f-stack-client`)
+## 4. Real-machine Steps (`<DPDK_NIC_IP>` via `f-stack-client`)
 
-> Environment: DPDK-dedicated NIC `9.134.214.176` (DPDK side); kernel stack `127.0.0.1` (functional regression only, not counted in RSS performance). dpdk 24.11.6.
+> Environment: DPDK-dedicated NIC `<DPDK_NIC_IP>` (DPDK side); kernel stack `127.0.0.1` (functional regression only, not counted in RSS performance). dpdk 24.11.6.
 
 ### 4.1 Steps
 
@@ -157,7 +157,7 @@
 #### (a) Real-machine Path (`example/rss_ct.c` + multi-queue+thash-available environment)
 
 - **Prerequisite**: NIC supports multi-queue + reta_size > 0 + thash ctx init succeeds.
-- **Currently known limitation**: the `9.134.214.176` real-machine helloworld uses a virtio NIC, reta_size=0 → the reverse path is unreachable (thash ctx init guard directly returns -1) → **cannot directly run D3-off vs D3-on real-machine data**. spec 10's R-D section must clearly state this limitation and use microbench data as a fallback.
+- **Currently known limitation**: the `<DPDK_NIC_IP>` real-machine helloworld uses a virtio NIC, reta_size=0 → the reverse path is unreachable (thash ctx init guard directly returns -1) → **cannot directly run D3-off vs D3-on real-machine data**. spec 10's R-D section must clearly state this limitation and use microbench data as a fallback.
 - Steps (executable if a NIC with reta>0 support becomes available in the future):
   1. Set config.ini `[rss_check] enable=1 + recheck=1`, start multi-process helloworld (or rss_ct).
   2. On the `f-stack-client` side, use wrk / a self-built connect load test, recording RB-6 + RB-7.
@@ -229,7 +229,7 @@
 | **PE-4** | bind does not prematurely occupy a port, port reuse works normally (RE-3, no abnormal exhaustion) | RE-3 real machine | 01 §3-ter.1 (port-exhaustion mitigation) |
 
 - **Hard gate**: PE-1 (hit-rate alignment, correctness). PE-2/PE-3/PE-4 are auxiliary items.
-- **Real-machine limitation**: same as R-B/R-D — if the `9.134.214.176` virtio NIC has reta=0 and cannot reach the thash path, bind-then-connect can still verify "connect enters the RSS branch + static-table/soft-compute path lands in the local queue" (not dependent on thash); the hit-rate baseline is collected via the static-table/soft-compute path, and thash-path data is handled per the §5-bis.3 limitation explanation.
+- **Real-machine limitation**: same as R-B/R-D — if the `<DPDK_NIC_IP>` virtio NIC has reta=0 and cannot reach the thash path, bind-then-connect can still verify "connect enters the RSS branch + static-table/soft-compute path lands in the local queue" (not dependent on thash); the hit-rate baseline is collected via the static-table/soft-compute path, and thash-path data is handled per the §5-bis.3 limitation explanation.
 
 ### 5-ter.4 Data Backfill Location
 

@@ -10,8 +10,8 @@
 
 ### 0.1 运行环境（实测）
 - nginx_fstack 用 `/usr/local/nginx_fstack/conf/f-stack.conf`：`hz=1000000`（✓ 符合 BBR 要求）、`net.inet.tcp.functions_default=bbr`（**这是"开启 BBR"**）、`net.inet.tcp.hpts.skip_swi=1`、`net.inet.tcp.hpts.minsleep=250`、`net.inet.tcp.cc.algorithm=cubic`。
-- 下载对象 `/usr/local/nginx_fstack/html/database.db` = **151904256 字节（≈145MB 大文件）**；nginx 监听 `9.134.214.176:80`。
-- 本机经 eth1 可达 9.134.214.176（同 helloworld 验证路径）。
+- 下载对象 `/usr/local/nginx_fstack/html/database.db` = **151904256 字节（≈145MB 大文件）**；nginx 监听 `<DPDK_NIC_IP>:80`。
+- 本机经 eth1 可达 <DPDK_NIC_IP>（同 helloworld 验证路径）。
 
 ### 0.2 根因证据链（实测交叉验证，多源一致）
 1. **f-stack swi 全是 no-op 桩**：`lib/ff_kern_intr.c` 的 `swi_add`/`swi_sched`/`swi_remove` 空实现、`intr_event_bind` 返回 EOPNOTSUPP。
@@ -48,7 +48,7 @@
 
 | 步 | 内容 | 门禁 |
 |---|---|---|
-| S1 复现 | 本机 curl 145MB×N 到 9.134.214.176，记录 hang 发生（基线）| 观测到 hang/超时 ≥1 次 |
+| S1 复现 | 本机 curl 145MB×N 到 <DPDK_NIC_IP>，记录 hang 发生（基线）| 观测到 hang/超时 ≥1 次 |
 | S2 改码 | ff_kern_timeout.c 加封装 + ff_dpdk_if.c extern+调用 | 编译通过 |
 | S3 建库 | 重建 libfstack.a（FF_ZC 开关保持 nginx 构建一致；走 rm_tmp_file.sh 清理，不用 make clean）| -Werror clean；改动文件零新增告警 |
 | S4 建 nginx | 重建 nginx_fstack 链接新 libfstack.a（定位其构建路径）| 链接成功 |

@@ -111,7 +111,7 @@ Bounce count **1/3** (plan §6 budget); **no escalation**.
 
 | Item | Result |
 |---|---|
-| G3.2 single curl `--http0.9 -sS http://9.134.214.176/` | HTTP 200 / Content-Length 438 / body = real HTML |
+| G3.2 single curl `--http0.9 -sS http://<DPDK_NIC_IP>/` | HTTP 200 / Content-Length 438 / body = real HTML |
 | body verification | hexdump first 80 bytes = `<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<title>Welcome to F-Stack!</title>\r\n<style>...` ✓ |
 | G3.3 100× short-conn | ok=100 fail=0 ✓ |
 | baseline non-ZC (helloworld) 100× short-conn | ok=100 fail=0 ✓ (M8 fix incidentally cured this regression) |

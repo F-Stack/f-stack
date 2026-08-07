@@ -108,7 +108,7 @@ Under `docs/lro_tso_spec/zh_cn/`, **modify existing** + **add new**:
 - Actual execution no speculation, code as authority, cross-verification inconsistencies resolved per code
 - rm→rm_tmp_file.sh, kill→kill_process.sh, chmod→chmod_modify.sh (make install class executable)
 - lib minimal comments (this round doesn't change lib); commit message English 1-3 sentences; config.ini local test values not committed
-- Local dual NICs: DPDK dedicated NIC IP 9.134.214.176 (ssh f-stack-client test), kernel stack test 127.0.0.1 lo
+- Local dual NICs: DPDK dedicated NIC IP <DPDK_NIC_IP> (ssh f-stack-client test), kernel stack test 127.0.0.1 lo
 - Leader strictly prohibited from exiting early before all sub-agents complete, must poll wait
 
 ---

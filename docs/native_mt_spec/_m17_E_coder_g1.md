@@ -686,7 +686,7 @@ The same run's `f-stack-0.log` also has `Successed to register dpdk interface` a
 
 → **Conclusion: ignore it; it does not affect `tester`'s phases 2/4.**
 
-**⚠️ Serious warning (must relay to `tester`)**: **absolutely do not** bind `0000:00:05.0` to DPDK (`igb_uio`/`vfio-pci`). It is the **kernel-side Active `eth1`**, likely carrying this machine's management/SSH channel; binding it would immediately lose connectivity. The NIC the DPDK side should use is `0000:00:09.0` (already bound to `igb_uio`), corresponding to `config.ini`'s `9.134.214.176`.
+**⚠️ Serious warning (must relay to `tester`)**: **absolutely do not** bind `0000:00:05.0` to DPDK (`igb_uio`/`vfio-pci`). It is the **kernel-side Active `eth1`**, likely carrying this machine's management/SSH channel; binding it would immediately lose connectivity. The NIC the DPDK side should use is `0000:00:09.0` (already bound to `igb_uio`), corresponding to `config.ini`'s `<DPDK_NIC_IP>`.
 
 **（Optional) eliminate the warning**: add `allow=0000:00:09.0` to `config.ini`'s `[dpdk]` section, so EAL only probes the DPDK NIC.
 > But this is a **local test value, strictly forbidden from committing** (same class as `lcore_mask`/`idle_sleep`/`[port0]` local IPs). If `tester` adopts it, roll it back before committing.

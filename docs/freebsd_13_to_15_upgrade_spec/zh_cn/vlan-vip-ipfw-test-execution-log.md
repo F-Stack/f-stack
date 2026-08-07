@@ -152,7 +152,7 @@ spec 原本将 TC-V4 标为 **best-effort, not fatal**（预期 secondary `ipfw 
 | `fib_num = vlan_idx` | code (`ff_veth.c:949`) ↔ runtime ipfw show (rule 10 setfib 0, rule 20 setfib 1) | ✅ 完全吻合 |
 | ipfw_pr CIDR 翻译 | spec (`192.169.0.0 255.255.255.0` → `/24`) ↔ runtime show (`from 192.169.0.0/24`) | ✅ 完全吻合 |
 | `dpdk.vlan_filter` 必须先于 `[vlanN]` | spec (line 647 nb_vlan_filter==0 早返回) ↔ test config 顺序（line 31 vlan_filter / line 159 [vlan1]） | ✅ 通过 |
-| `[portN]` 全部 skip 当 nb_vlan>0 | spec (`ff_veth.c:868 nb_vlan==0` 分支不走) ↔ runtime (port0 9.134.214.176 未注册任何 IP) | ✅ 一致 |
+| `[portN]` 全部 skip 当 nb_vlan>0 | spec (`ff_veth.c:868 nb_vlan==0` 分支不走) ↔ runtime (port0 <DPDK_NIC_IP> 未注册任何 IP) | ✅ 一致 |
 | 13.0 ↔ 15.0 vlan_cfg_handler diff | code (`diff lib/ff_config.c 630-750` 0 hits) | ✅ 0 退化 |
 | 13.0 ↔ 15.0 ff_veth nb_vlan branch | code (`diff lib/ff_veth.c 850-1000` 仅 ifp 抽象 API 差异) | ✅ 无功能退化 |
 
@@ -162,7 +162,7 @@ spec 原本将 TC-V4 标为 **best-effort, not fatal**（预期 secondary `ipfw 
 
 | 现象 | 来源行 | 是否阻塞 | 备注 |
 |---|---|---|---|
-| `eth_virtio_pci_init(): Failed to init PCI device` (port 0000:00:05.0) | DPDK probe | ❌ 不阻塞 | 9.134.214.176 SSH transport NIC，被 DPDK probe 但 host eth1 占用，正常跳过 |
+| `eth_virtio_pci_init(): Failed to init PCI device` (port 0000:00:05.0) | DPDK probe | ❌ 不阻塞 | <DPDK_NIC_IP> SSH transport NIC，被 DPDK probe 但 host eth1 占用，正常跳过 |
 | `link_elf_lookup_symbol: missing symbol hash table` × 2 | kld linker | ❌ 不阻塞 | Phase-2 已知良性，kld 在 PA mode 的 fallback |
 | `kernel_sysctlbyname failed: ... error:2` × 3 | startup | ❌ 不阻塞 | Phase-2 已知良性（部分 sysctl 节点未 register 到 ff_sysctl tree） |
 | `: No addr6 config found.` × 2（ifname 部分丢失） | post-vlan-clone | ❌ 不阻塞 | 字符串 buffer 复用问题；不影响 vlan 功能；提交为 F-V3 follow-up |
@@ -175,7 +175,7 @@ spec 原本将 TC-V4 标为 **best-effort, not fatal**（预期 secondary `ipfw 
 | ID | 标题 | 优先级 | 描述 |
 |---|---|---|---|
 | F-V1 | vlan vip 本机 loopback ping 验证 | P3 | 在 vlan iface 上自 ping vip，确认 fib lookup setfib 生效；需 ff_loopback patch 支持 vlan iface |
-| F-V2 | client 端 802.1Q 联通完整 e2e | P3 | 在 client (9.134.211.87) 上配 vlan iface 同 192.169.0/1.0 段，curl/ping vip 端到端验证 HTTP 200 |
+| F-V2 | client 端 802.1Q 联通完整 e2e | P3 | 在 client (<CLIENT_IP>) 上配 vlan iface 同 192.169.0/1.0 段，curl/ping vip 端到端验证 HTTP 200 |
 | F-V3 | `: No addr6 config found.` ifname buffer bug | P4 | 调查 vlan post-init log 中 ifname 字符串丢失原因，可能 `vlan_if_name[]` 被复用 |
 | F-V4 | `vlan_filter_id[]` HW filter 下推 | P3 | 当前 `lib/ff_dpdk_if.c` 0 reader，未调用 `rte_eth_dev_set_vlan_filter()`；端到端 e2e 需补此调用 |
 | F-V5 | G1 reproducibility CI | P4 | 在 CI runner 加 `timeout 600s` 跑 G1 full lib + example clean rebuild |

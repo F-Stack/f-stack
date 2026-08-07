@@ -898,7 +898,7 @@ lib/ff_freebsd_init.c:387       uma_startup1((vm_offset_t)bootmem);
 
 ## 7. 验证方案（对齐 DoD-1 ~ DoD-8）
 
-> 本节写到「M5 `tester` 可直接执行」的粒度。运行环境沿用 plan §5：本机双网卡，DPDK 独占网卡 IP `9.134.214.176`（压测须 `ssh f-stack-client` 后用 `/data/wrk/wrk` 打该 IP），内核栈用 `127.0.0.1`；被测程序 `example/helloworld`，配置 `config.ini`。
+> 本节写到「M5 `tester` 可直接执行」的粒度。运行环境沿用 plan §5：本机双网卡，DPDK 独占网卡 IP `<DPDK_NIC_IP>`（压测须 `ssh f-stack-client` 后用 `/data/wrk/wrk` 打该 IP），内核栈用 `127.0.0.1`；被测程序 `example/helloworld`，配置 `config.ini`。
 > 沿用踩坑经验：必须 `setsid nohup ... < /dev/null &` 完全脱离；secondary 进程用绝对路径；读日志先记旧行数再 `tail -n +N`；core dump 被禁用，抓崩溃用 `setsid gdb -q -x <cmdfile>` 在负载下捕获。
 
 ### 7.1 DoD-1：per-cpu 槽位真正隔离（**最重要，判定式必须可机械执行**）

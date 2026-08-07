@@ -108,7 +108,7 @@
 - 实际执行不臆测、代码为准、交叉验证不一致以代码为准
 - rm→rm_tmp_file.sh、kill→kill_process.sh、chmod→chmod_modify.sh（make install 类可执行）
 - lib 最小注释（本轮不改 lib）；commit message 英文 1-3 句；config.ini 本地测试值不入库
-- 本机双网卡：DPDK 独占网卡 IP 9.134.214.176（ssh f-stack-client 测），内核栈测 127.0.0.1 的 lo
+- 本机双网卡：DPDK 独占网卡 IP <DPDK_NIC_IP>（ssh f-stack-client 测），内核栈测 127.0.0.1 的 lo
 - 子 agent 全部完成前 leader 严禁提前退出，必须轮询等待
 
 ---

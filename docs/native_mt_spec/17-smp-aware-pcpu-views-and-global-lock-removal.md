@@ -782,12 +782,12 @@ lib/ff_freebsd_init.c:387       uma_startup1((vm_offset_t)bootmem);
 
 ### 7.2 Functional Matrix (V3)
 
-- `thread_mode=1` × 1/2/4 threads × multiple rounds `wrk -t5 -c100 -d10s` (via `ssh f-stack-client` hitting `9.134.214.176`); every round no socket error, no crash, throughput grows with thread count.
+- `thread_mode=1` × 1/2/4 threads × multiple rounds `wrk -t5 -c100 -d10s` (via `ssh f-stack-client` hitting `<DPDK_NIC_IP>`); every round no socket error, no crash, throughput grows with thread count.
 - `thread_mode=0` 1 process / 2 processes comparison (zero regression).
 
 ### 7.3 Soak (V4)
 
-`ssh f-stack-client "/data/wrk/wrk -t8 -c400 -d60s http://9.134.214.176:80/"` — compare with the previous round's 497,043 req/s; zero errors, process alive, throughput not lower than the baseline.
+`ssh f-stack-client "/data/wrk/wrk -t8 -c400 -d60s http://<DPDK_NIC_IP>:80/"` — compare with the previous round's 497,043 req/s; zero errors, process alive, throughput not lower than the baseline.
 
 ### 7.4 Additional Measurements (this round's specific items)
 

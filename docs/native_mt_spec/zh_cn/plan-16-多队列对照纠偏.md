@@ -79,7 +79,7 @@
 统一压测命令（用户指定，不得改动）：
 
 ```
-ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"
 ```
 
 统一前置：每次启动前用 `pgrep` 确认无残留 helloworld 进程；有则用 `/data/workspace/kill_process.sh` 清理（**严禁** `kill`/`pkill`/`killall`）。

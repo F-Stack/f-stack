@@ -34,7 +34,7 @@
 - Unit test (`tests/unit/test_ff_dpdk_if.c`): existing set/get_portrange cases (L361-455) must still pass (regression).
 - Integration: with `rss_check` enabled (config.ini) + multi-queue (multi-process), the source port selected by connect must pass independent `ff_rss_check` re-verification and land in the local queue.
 - Regression: compiles successfully with FSTACK disabled; when `rss_check` enable=0 / single queue → falls back to native port selection (unchanged behavior).
-- Real machine: `9.134.214.176` (DPDK NIC) multi-process connect verifies landing on the correct queue; `127.0.0.1` (kernel stack) LOOPBACK works normally.
+- Real machine: `<DPDK_NIC_IP>` (DPDK NIC) multi-process connect verifies landing on the correct queue; `127.0.0.1` (kernel stack) LOOPBACK works normally.
 
 ### R-A.3 Risks and Rollback
 - Risk: mistakenly modifying a const inpcb, lookup signature misalignment, flag not cleared polluting downstream.
@@ -62,7 +62,7 @@
 ### R-B.2 Test Points
 - Unit test: new `ff_rss_adjust_sport` test case — the reversed-computed sport must return 1 (lands in local queue) via `ff_rss_check`; cover combinations of different (nb_queues, reta_size, queueid) (including `reta%nb_queues!=0`) per the mapping in 04 §3.3; when attempts are exhausted, return <0 with the caller falling back correctly.
 - Integration: under multi-queue, both the thash path and the soft-compute path result in port selection landing in the local queue (consistency).
-- Performance: for the miss-on-static-table scenario, compare time cost of thash reverse computation vs. per-port soft-compute scan (M4/M5 performance spec scope, real machine `9.134.214.176`).
+- Performance: for the miss-on-static-table scenario, compare time cost of thash reverse computation vs. per-port soft-compute scan (M4/M5 performance spec scope, real machine `<DPDK_NIC_IP>`).
 - Regression: when ctx init fails, degrade to pure soft-compute (equivalent to R-A), functionality unchanged.
 
 ### R-B.3 Risks and Rollback
@@ -99,7 +99,7 @@
 - Unit test: `ff_rss_check6` queue-landing determination; v6 static table set/get_portrange smoke + hit correctness; v6 thash reverse-computation re-verification.
 - Integration: v6 multi-queue connect port selection lands in the local queue; v6 config (including `:` addresses) parses correctly.
 - Regression: **zero regression in pure IPv4 path functionality/performance** (v4 struct/interfaces untouched, regression assertions are the focus); pure v4 config.ini parsing unchanged.
-- Real machine: `9.134.214.176` (if a v6 address is available) v6 connect lands in the local queue; confirm NIC v6 RSS offload capability.
+- Real machine: `<DPDK_NIC_IP>` (if a v6 address is available) v6 connect lands in the local queue; confirm NIC v6 RSS offload capability.
 
 ### R-C.3 Risks and Rollback
 - IPv4 regression: Scheme A does not touch v4 struct/interfaces (04 §2.2), guarded by regression assertions.
@@ -139,7 +139,7 @@
   - TC-U-RSS-04-03 v6 recheck=0 + TC-U-RSS-04-04 v6 recheck=1: symmetric to v4.
   - TC-U-RSS-04-05 microbench: N=10000 calls to `ff_rss_adjust_sport`, cumulative time measured with `clock_gettime(CLOCK_MONOTONIC)`; assert recheck=0 vs recheck=1 comparison (off strictly < on, report ratio).
 - **Integration**: (reuse R-B/R-C's IT-RSS-03/05), add recheck on/off comparison scope (08 corresponding section).
-- **Real machine**: `9.134.214.176` (if virtio reta=0 can't reach the thash path, run microbench only as fallback, record limitation in spec 10); `example/rss_ct.c` runs recheck=0 vs recheck=1 comparison benchmark.
+- **Real machine**: `<DPDK_NIC_IP>` (if virtio reta=0 can't reach the thash path, run microbench only as fallback, record limitation in spec 10); `example/rss_ct.c` runs recheck=0 vs recheck=1 comparison benchmark.
 - **Regression**:
   - Existing hitrate/equivalence cases must explicitly set `g_rss_cfg.recheck = 1` and all PASS (IPv4/IPv6 zero regression).
   - Compiles successfully with FSTACK disabled (same as R-A/R-B/R-C; 0.4 is a userspace change, zero kernel-side changes).
@@ -190,7 +190,7 @@
 
 - Unit test: verify `inp_lport==0` after `bind(addr,0)`; verify connect enters the RSS_CHECK branch (anonport=true); zero regression for `bind(addr,N)` (see 07 §1.6 TC-U-RSS-05-*).
 - Integration: bind-then-connect port lands in the local queue (IT-RSS-06).
-- Real machine: `9.134.214.176` DPDK NIC bind vip (configured on f-stack-x nic) + connect, verify return packets land on the local worker; kernel-stack `127.0.0.1` for comparison (RT-RSS-05/06).
+- Real machine: `<DPDK_NIC_IP>` DPDK NIC bind vip (configured on f-stack-x nic) + connect, verify return packets land on the local worker; kernel-stack `127.0.0.1` for comparison (RT-RSS-05/06).
 - v6: bind(v6_addr,0)+connect6 lands in the local queue (following v6 path verification, TC-U-RSS-05-04/05).
 - Regression: compiles successfully with FSTACK disabled; `bind(addr,N)` behavior unchanged; REUSEPORT_LB bind(addr,0) is correct; single-queue/enable=0 connect RSS branch automatically degrades.
 

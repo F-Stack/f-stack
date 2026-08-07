@@ -182,7 +182,7 @@ leader 的手工加回/再删法**在结果上正确**，但有两点可避免�
 
 | 文件 | 状态 | 实测污染项 | 处置 |
 |---|---|---|---|
-| `config.ini` | ` M` | `lcore_mask` `1`→**`6`**；`#thread_mode=0`→**`thread_mode=1`**；`idle_sleep` `0`→**`20`**；`#fstack_log_level=0`→**`fstack_log_level=7`**、`#fstack_log_file_prefix`→**取消注释**；`[port0]` `addr` `192.168.1.2`→**`9.134.214.176`**（另留一行 `#addr=9.134.213.67`）、`netmask`→`255.255.248.0`、`broadcast`→`9.134.215.255`、`gateway`→`9.134.208.1`；`#addr6/#prefix_len/#gateway6`→**取消注释并填本机 `2402:4e00:…` / `prefix_len=128` / `fe80::feee:…`**（另留 `#gateway6=::1`） | **绝不 `git add`**。全部 8 处均为本地双网卡测试环境值，**无一处与 M17 特性相关**（M17 不含任何 config 项新增）。按强制规约（AI memory 44404940）必须保持不入库。 |
+| `config.ini` | ` M` | `lcore_mask` `1`→**`6`**；`#thread_mode=0`→**`thread_mode=1`**；`idle_sleep` `0`→**`20`**；`#fstack_log_level=0`→**`fstack_log_level=7`**、`#fstack_log_file_prefix`→**取消注释**；`[port0]` `addr` `192.168.1.2`→**`<DPDK_NIC_IP>`**（另留一行 `#addr=<KERNEL_NIC_IP>`）、`netmask`→`255.255.248.0`、`broadcast`→`<BROADCAST_IP>`、`gateway`→`<GATEWAY_IP>`；`#addr6/#prefix_len/#gateway6`→**取消注释并填本机 `2402:4e00:…` / `prefix_len=128` / `fe80::feee:…`**（另留 `#gateway6=::1`） | **绝不 `git add`**。全部 8 处均为本地双网卡测试环境值，**无一处与 M17 特性相关**（M17 不含任何 config 项新增）。按强制规约（AI memory 44404940）必须保持不入库。 |
 
 **判定：`config.ini` 逐项核实完毕 —— 100% 为本地运行环境残留，零特性相关改动，确认绝不入库。** 提交后应保持 ` M` 状态。
 

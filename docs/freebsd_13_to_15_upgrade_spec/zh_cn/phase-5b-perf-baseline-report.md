@@ -70,8 +70,8 @@ phase-5b 的价值 = **跨配置同协议 delta 与 functional pass-rate**，不
 ### 3.1 F-A1（NEW，**HIGH**）— PA-only configuration 网络全断
 
 **症状**：
-- `ping 9.134.214.176`：0/3 received, 100% packet loss
-- `curl http://9.134.214.176/`：connect timeout 5.002 s（HTTP=000）
+- `ping <DPDK_NIC_IP>`：0/3 received, 100% packet loss
+- `curl http://<DPDK_NIC_IP>/`：connect timeout 5.002 s（HTTP=000）
 - helloworld primary process：ALIVE，log 正常 init（`f-stack-0: Successed to register dpdk interface`）
 
 **RCA（基于 `lib/ff_dpdk_if.c` + `lib/ff_memory.c` 静态分析）**：

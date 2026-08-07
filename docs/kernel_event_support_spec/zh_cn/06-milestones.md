@@ -95,7 +95,7 @@
 - 6bis.1/6bis.2 全部新增代码置于 `#ifdef FF_KERNEL_COEXIST` 内；宏关时 `ff_kqueue/ff_kevent` 逐字节零回归、无新符号（`07 §1bis` nm 比对）。
 
 ### 6bis.4 验收
-- plain helloworld（kqueue，coexist=1）内核侧 `curl 127.0.0.1:80=200 size=438`，且 F-Stack 侧 `ssh f-stack-client→9.134.214.176:80=200` 不回归（FR-5/FR-6）。
+- plain helloworld（kqueue，coexist=1）内核侧 `curl 127.0.0.1:80=200 size=438`，且 F-Stack 侧 `ssh f-stack-client→<DPDK_NIC_IP>:80=200` 不回归（FR-5/FR-6）。
 - `-DINET6` helloworld（coexist=1）成功启动（v4+v6 listen 均建立），抓包确认内核侧 200。
 - 宏关/coexist=0/`SOCK_FSTACK` 逐字节零回归（NFR-1）；F-Stack 始终在位（NFR-3）。详见 `07`/`08`。
 

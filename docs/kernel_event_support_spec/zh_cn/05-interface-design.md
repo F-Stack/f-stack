@@ -62,7 +62,7 @@ int s = ff_socket(AF_INET, SOCK_STREAM, 0);          /* 双栈：建 F-Stack fd 
 ff_bind(s, &addr80, sizeof(addr80));                  /* 双驱动：两栈各 bind 80 */
 ff_listen(s, backlog);                                /* 双驱动：两栈各 listen */
 ff_epoll_ctl(ep, EPOLL_CTL_ADD, s, &ev);              /* 双注册：kqueue + 内核 epoll，透传 ev.data */
-/* 远端 curl 9.134.214.176:80（F-Stack 侧）+ 本机 curl 127.0.0.1:80（内核侧）皆可达 */
+/* 远端 curl <DPDK_NIC_IP>:80（F-Stack 侧）+ 本机 curl 127.0.0.1:80（内核侧）皆可达 */
 
 /* 需要单栈时用 marker 覆盖 */
 int konly = ff_socket(AF_INET, SOCK_STREAM | SOCK_KERNEL, 0);   /* 仅内核 */

@@ -79,7 +79,7 @@ After per-vnet isolation is correctly implemented, each worker accesses only the
 
 - Research the binding mechanism between `ifp` and vnet in FreeBSD VIMAGE (`if_attach` / `if_vmove`).
 - Design a per-worker-vnet `ifp` registration or `curvnet` switching solution.
-- After implementation, re-run the 2/4-thread wrk load test (`ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"`).
+- After implementation, re-run the 2/4-thread wrk load test (`ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"`).
 
 ---
 

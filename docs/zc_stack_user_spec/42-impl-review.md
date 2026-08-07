@@ -81,7 +81,7 @@ Measurement shows `gcc -fsyntax-only ff_veth.c` fails on `sys/ctype.h`, and `ff_
 
 ## §6 M3 Functional E2E (real binary, strongest verification)
 
-Environment: this server VM (DPDK NIC 0000:00:09.0 virtio/igb_uio already bound, hugepage 4096×2M, config addr 9.134.214.176 / lcore4) —— same machine as ZC-recv M2.
+Environment: this server VM (DPDK NIC 0000:00:09.0 virtio/igb_uio already bound, hugepage 4096×2M, config addr <DPDK_NIC_IP> / lcore4) —— same machine as ZC-recv M2.
 
 - helloworld_zc (FF_ZC_SEND) startup: DPDK Port 0 Link Up, f-stack registered the interface MAC 20:90:6f:7d:5d:08.
 - The local machine can reach the data-plane IP via eth1 routing, curl×5: **all http=200 size=438**, the response content is the F-Stack welcome page, consistent across 5 times.
@@ -93,7 +93,7 @@ Environment: this server VM (DPDK NIC 0000:00:09.0 virtio/igb_uio already bound,
 ## §7 M4 Performance/Stability
 
 - **Stability stress test** (1000 sequential requests via local curl): **ok=1000 bad=0**, the server survived, no panic/segfault/abort (verifies the issue #712 "crash on heavy sending" concern —— the new path is stable).
-- **Precise A/B performance baseline (wrk T1/T2/T3, Δ≤±3%)**: **deferred**. Reason (faithful): this machine has no wrk; and a rigorous baseline needs the same remote client VM as M2 (9.134.211.87), as single-machine wrk on this host contends for the same core with the server and is not comparable. **No fabricating performance data**; awaiting the user's re-measurement in a dual-machine environment per 38-perf-baseline-spec.
+- **Precise A/B performance baseline (wrk T1/T2/T3, Δ≤±3%)**: **deferred**. Reason (faithful): this machine has no wrk; and a rigorous baseline needs the same remote client VM as M2 (<CLIENT_IP>), as single-machine wrk on this host contends for the same core with the server and is not comparable. **No fabricating performance data**; awaiting the user's re-measurement in a dual-machine environment per 38-perf-baseline-spec.
 
 ---
 

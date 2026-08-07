@@ -10,7 +10,7 @@
 ```
 [client: f-stack-client (8-core CVM)]   ssh   [server: this machine (single-core lcore4 + DPDK NIC)]
    /tmp/wrk/wrk -t* -c* -d30s        ───▶   helloworld_zc (HTTP echo, port 80)
-        9.134.214.176                       data-plane: vfio-pci 0000:00:09.0
+        <DPDK_NIC_IP>                       data-plane: vfio-pci 0000:00:09.0
                                             control-plane: eth1 SSH
 ```
 
@@ -24,9 +24,9 @@ Reference methodology: `docs/freebsd_13_to_15_upgrade_spec/zh_cn/cvm-bench-metho
 
 | Tier | command | purpose |
 |---|---|---|
-| T1 | `wrk -t2 -c10 -d5s --latency http://9.134.214.176/` | low-concurrency smoke, establish baseline |
-| T2 | `wrk -t4 -c100 -d30s --latency http://9.134.214.176/` | medium concurrency, primary comparison tier |
-| T3 | `wrk -t8 -c500 -d30s --latency http://9.134.214.176/` | high concurrency, saturated or oversaturated |
+| T1 | `wrk -t2 -c10 -d5s --latency http://<DPDK_NIC_IP>/` | low-concurrency smoke, establish baseline |
+| T2 | `wrk -t4 -c100 -d30s --latency http://<DPDK_NIC_IP>/` | medium concurrency, primary comparison tier |
+| T3 | `wrk -t8 -c500 -d30s --latency http://<DPDK_NIC_IP>/` | high concurrency, saturated or oversaturated |
 
 ### §2.2 Three Comparison Groups
 
@@ -113,7 +113,7 @@ wrk.body = string.rep("x", 4096)
 wrk.headers["Content-Type"] = "application/octet-stream"
 ```
 
-Start: `/tmp/wrk/wrk -t4 -c100 -d30s -s /tmp/perf_4k.lua --latency http://9.134.214.176/`
+Start: `/tmp/wrk/wrk -t4 -c100 -d30s -s /tmp/perf_4k.lua --latency http://<DPDK_NIC_IP>/`
 
 > The lua script snippet provided in the spec is not a "shell command"; editing this lua file during the implementation phase does not touch the rm/kill/chmod regulations.
 
@@ -124,7 +124,7 @@ Start: `/tmp/wrk/wrk -t4 -c100 -d30s -s /tmp/perf_4k.lua --latency http://9.134.
 ### §7.1 wrk Output Parsing
 
 ```
-Running 30s test @ http://9.134.214.176/
+Running 30s test @ http://<DPDK_NIC_IP>/
   4 threads and 100 connections
   Latency Distribution
      50%   1.10ms

@@ -261,7 +261,7 @@ Three candidate strategies (recommendation details in document 13):
 6. Ordering correctness of interleaving aggregation and non-aggregation flows under single-threaded classic mode.
 7. Correctness of each lcore independent aggregation under multi-process primary/secondary.
 
-> All the above are runtime/subsequent milestone validation items, not tested this round. Test environment: DPDK dedicated NIC IP `9.134.214.176` (`ssh f-stack-client` side initiates), kernel stack testing via `127.0.0.1` on `lo`.
+> All the above are runtime/subsequent milestone validation items, not tested this round. Test environment: DPDK dedicated NIC IP `<DPDK_NIC_IP>` (`ssh f-stack-client` side initiates), kernel stack testing via `127.0.0.1` on `lo`.
 
 ---
 

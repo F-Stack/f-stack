@@ -5,7 +5,7 @@
 > Baseline commit: `e5389cb52` (feature/1.26).
 > Spec basis: `docs/ff_rss_check_opt_spec/zh_cn/` 00-09 (landing points in 06/05, facts in 02, gate assertions in 09).
 > Mandatory rules: no speculation during actual execution, code takes precedence, cross-verification; rm/kill/chmod go through `/data/workspace/{rm_tmp_file,kill_process,chmod_modify}.sh` (make install-type operations are fine); lib comments kept minimal; commit messages in English, 1-3 sentences; config.ini local test values not committed (review git diff before committing); on gate failure, bounce back to the previous step (per-step bounce≤3, otherwise stop and escalate to manual decision — no leftover unresolved items unless truly infeasible); leader must not exit before all sub-agents have finished, and must actively poll and wait.
-> Test environment: DPDK NIC `9.134.214.176` (tested via ssh f-stack-client); kernel stack `127.0.0.1`. Currently helloworld is not running, symmetric_rss=0, kernel_coexist=0.
+> Test environment: DPDK NIC `<DPDK_NIC_IP>` (tested via ssh f-stack-client); kernel stack `127.0.0.1`. Currently helloworld is not running, symmetric_rss=0, kernel_coexist=0.
 
 ## 0. Implementation milestones (strictly following spec 06's R-A→R-B→R-C order, with dependencies)
 
@@ -21,7 +21,7 @@ Sub-phases within each milestone (each must pass its gate before proceeding to t
 3. **Compilation** (compile with FSTACK on and off, 0 errors; zero regression with the macro off)
 4. **Unit testing** (cmocka, including correctness + regression)
 5. **Review** (leader independently reads the code for review, does not rely solely on a sub-agent's own conclusion)
-6. **Real-machine/integration testing** (leader coordinates: 9.134.214.176 + 127.0.0.1)
+6. **Real-machine/integration testing** (leader coordinates: <DPDK_NIC_IP> + 127.0.0.1)
 7. **Milestone gate** (spec 06's R-?.4 gate items all PASS one by one) → PASS before committing + proceeding to the next milestone
 
 ## 1. To-be-confirmed items per milestone (verify at startup, corresponding to spec 09's table F)
@@ -43,7 +43,7 @@ Sub-phases within each milestone (each must pass its gate before proceeding to t
 - **impl**: coding for each milestone (in_pcb.c/in6_pcb.c/in_pcb.h, ff_dpdk_if.c, ff_config.{c,h}), self-checks for zero regression in both compile modes.
 - **tester**: writes cmocka unit tests + runs in both modes (per spec 07's TC-U-RSS-* test cases).
 - **reviewer** (optional, or the leader may take this role): code review gate.
-> Real-machine/integration testing (9.134.214.176 / 127.0.0.1, starting/stopping helloworld) is personally coordinated by the leader (kill goes through the script).
+> Real-machine/integration testing (<DPDK_NIC_IP> / 127.0.0.1, starting/stopping helloworld) is personally coordinated by the leader (kill goes through the script).
 
 ## 4. Commit strategy
 

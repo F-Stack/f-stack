@@ -302,7 +302,7 @@ $ git diff --stat
 - UMA cache 槽距 = `0x80` = **128** ✓（= `sizeof(struct uma_cache)`），两槽**互不相同** ✓
 - `dense_idx == pc_cpuid == curcpu` 三者一致 ✓
 - `[M17-PROBE-ZONE] name=pcpu_zone_8 uk_ppera=2 / name=pcpu_zone_64 uk_ppera=2`，`mp_maxid=1` → **`uk_ppera == mp_maxid + 1`** ✓（槽位落在已分配范围内）
-- 10s wrk（`f-stack-client` 上 `/data/wrk/wrk -t2 -c100 -d10s http://9.134.214.176/`）：**219,241.92 req/s**，`2194165 requests / 0 error`，压测后日志零新增异常。
+- 10s wrk（`f-stack-client` 上 `/data/wrk/wrk -t2 -c100 -d10s http://<DPDK_NIC_IP>/`）：**219,241.92 req/s**，`2194165 requests / 0 error`，压测后日志零新增异常。
 
 ### 4.3 4 线程档（去锁后）
 

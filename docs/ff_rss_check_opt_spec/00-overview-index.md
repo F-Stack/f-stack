@@ -23,7 +23,7 @@
 | `05-interface-design.md` | M3 | lib API changes (v4 signature unchanged + new v6/thash functions), kernel hook contract, config v6 parsing, IPv4 zero-regression matrix |
 | `06-milestones-and-worklist.md` | M3 | Coding milestones R-A (0.1 back-port) → R-B (0.3 thash) → R-C (0.2 IPv6), with per-item file/function change table, test points, risk rollback, bounce gate |
 | `07-test-specification.md` | M4 | 14 unit + 5 integration + 4 real-machine + 9 zero-regression criteria + acceptance matrix; mock strategy |
-| `08-performance-baseline-plan.md` | M4 | Comparison methodology across static-table/software-computation/thash paths, TSC instrumentation, QPS, real-machine (9.134.214.176) procedure, pass criteria |
+| `08-performance-baseline-plan.md` | M4 | Comparison methodology across static-table/software-computation/thash paths, TSC instrumentation, QPS, real-machine (<DPDK_NIC_IP>) procedure, pass criteria |
 | `09-spec-review-gate.md` | M5 | 19 assertions checked one by one PASS/FAIL (verified against code) + a master table of 18 pending-confirmation items + CONDITIONAL PASS conclusion |
 | `10-implementation-and-verification-report.md` | Coding | Commit/function:line for all three landed items, design highlights, 31 unit-test cases + real-machine 200×2 results, real-machine limitations, F1-F18 fulfillment mapping, coding-gate PASS |
 

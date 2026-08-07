@@ -3,7 +3,7 @@
 > Scope: M4 test specification (unit / integration / real-machine + zero-regression criteria + acceptance matrix). This phase **only writes the test specification, not the test code**.
 > Principle: test points must correspond to **actual functions / landing points (file:line number)**, not speculation; items that are uncontrollable at runtime / to be determined during coding are marked "pending confirmation".
 > Basis: 01 requirements, 02 current state, 04 design, 05 interface design, 06 milestones; existing unit tests `tests/unit/test_ff_dpdk_if.c` (cmocka).
-> Test environment (plan §Test Environment): local machine with dual NICs, DPDK-dedicated NIC IP `9.134.214.176` (tested via ssh `f-stack-client`); kernel stack tested via `127.0.0.1`.
+> Test environment (plan §Test Environment): local machine with dual NICs, DPDK-dedicated NIC IP `<DPDK_NIC_IP>` (tested via ssh `f-stack-client`); kernel stack tested via `127.0.0.1`.
 > Mandatory conventions: test code deletion / process cleanup / permission changes must all go through `/data/workspace/{rm_tmp_file,kill_process,chmod_modify}.sh`; local test values in config.ini must not be committed.
 
 ---
@@ -413,13 +413,13 @@ Since `toeplitz_hash`/`rsskey` are static, the "expected queue" for hit-correctn
 
 ## 3. Real-machine Test Specification
 
-> Environment (plan §Test Environment): DPDK-dedicated NIC IP `9.134.214.176` (DPDK side, reachable via ssh `f-stack-client`); kernel stack tested via `127.0.0.1`.
+> Environment (plan §Test Environment): DPDK-dedicated NIC IP `<DPDK_NIC_IP>` (DPDK side, reachable via ssh `f-stack-client`); kernel stack tested via `127.0.0.1`.
 > DPDK: 24.11.6 (dpdk-stable-24.11.6).
 > Mandatory conventions: real-machine process cleanup goes through `/data/workspace/kill_process.sh`; temporary artifact deletion goes through `rm_tmp_file.sh`; local values such as config.ini's local IP/lcore_mask **must not be committed**.
 
 ### 3.1 RT-RSS-01: DPDK-side IPv4 Multi-queue Source Port Distribution Lands on Local Core (0.1)
 
-- Topology: F-Stack under test (DPDK NIC `9.134.214.176`, multi-queue/multi-process); `f-stack-client` as the peer.
+- Topology: F-Stack under test (DPDK NIC `<DPDK_NIC_IP>`, multi-queue/multi-process); `f-stack-client` as the peer.
 - Steps:
   1. Configure multi-queue (multi-lcore) in config.ini + enable `rss_check` v4 rules; record the environment (dpdk 24.11.6, NIC model, queue count, reta_size, nb_queues, whether the key is symmetric).
   2. The tested end initiates a large number of active connects to `f-stack-client`.
@@ -435,13 +435,13 @@ Since `toeplitz_hash`/`rsskey` are static, the "expected queue" for hit-correctn
 
 ### 3.3 RT-RSS-03: Thash Dynamic Path Real-machine Test (0.3)
 
-- Steps: under `9.134.214.176` multi-queue, construct connections that miss the static table (dynamic branch), enable thash reverse-computation.
+- Steps: under `<DPDK_NIC_IP>` multi-queue, construct connections that miss the static table (dynamic branch), enable thash reverse-computation.
 - Assertion: the dynamic path's selected ports have a 100% correct queue-landing rate (0 soft-compute re-verification failures); performance comparison per 08.
 - Rollback verification: temporarily force ctx init to fail (or set attempts=extremely small) and observe that functionality remains normal after degrading to soft-compute.
 
 ### 3.4 RT-RSS-04: IPv6 Real-machine Test (0.2)
 
-- Preconditions: `9.134.214.176` side / `f-stack-client` has a v6 address; NIC `flow_type_rss_offloads` includes v6 fields (04 §2.4, confirmed on real machine).
+- Preconditions: `<DPDK_NIC_IP>` side / `f-stack-client` has a v6 address; NIC `flow_type_rss_offloads` includes v6 fields (04 §2.4, confirmed on real machine).
 - Steps: v6 multi-queue connect.
 - Assertion: v6 source ports land in the local queue; IPv4 simultaneously regresses normally.
 - 【Real-machine NIC v6 RSS offload: confirmed supported on a physical machine with v6 RSS capability; when unsupported (e.g. local virtio) v6 falls into a single queue (L705 narrowing), a hardware capability limitation, not a bug.】
@@ -449,7 +449,7 @@ Since `toeplitz_hash`/`rsskey` are static, the "expected queue" for hit-correctn
 
 ### 3.5-bis RT-RSS-05: DPDK-side Bind-then-connect Lands on Local Core (0.5 v4)
 
-- Topology: F-Stack under test (DPDK NIC `9.134.214.176`, multi-queue/multi-process, vip configured on `f-stack-x` NIC); `f-stack-client` as the peer.
+- Topology: F-Stack under test (DPDK NIC `<DPDK_NIC_IP>`, multi-queue/multi-process, vip configured on `f-stack-x` NIC); `f-stack-client` as the peer.
 - Steps:
   1. Configure multi-queue in config.ini + enable `rss_check` v4 rules; vip serves as the local addr (DPDK NIC).
   2. The tested end uses a minimal client: for each connection, `bind(vip, 0)` → `connect(f-stack-client)`, initiating a large number of active connections.
@@ -459,7 +459,7 @@ Since `toeplitz_hash`/`rsskey` are static, the "expected queue" for hit-correctn
 
 ### 3.6 RT-RSS-06: Bind-then-connect v6 + Kernel-stack Comparison (0.5 v6)
 
-- Preconditions: `9.134.214.176` side/`f-stack-client` has a v6 address; NIC `flow_type_rss_offloads` includes v6 fields (04 §2.4 confirmed on real machine); v6 vip configured on the DPDK NIC.
+- Preconditions: `<DPDK_NIC_IP>` side/`f-stack-client` has a v6 address; NIC `flow_type_rss_offloads` includes v6 fields (04 §2.4 confirmed on real machine); v6 vip configured on the DPDK NIC.
 - Steps: bind(v6_vip,0)+connect6 multiple times.
 - Assertion: v6 source ports land in the local queue (verified via `ff_rss_check6` or packet capture); v4 bind-then-connect simultaneously continues working normally (v4/v6 coexist without interference).
 - Kernel-stack comparison: `127.0.0.1`/lo bind(0)+connect via the kernel stack works normally (does not go through RSS, comparison verifying that the 0.5 change did not break the kernel stack's local path).

@@ -49,7 +49,7 @@ Requirement source: the multi-process model is inconvenient in some deployment s
 | A4 | Clearly distinguishes application-side multi-threading vs stack-side multi-threaded run model; issue #430 correctly positioned |
 | A5 | Multi-process zero-regression argument closed-loop; opt-in switch off by default |
 | A6 | Honestly mark items that static analysis cannot conclude and require runtime validation; no speculation |
-| A7 (subsequent coding phase) | With thread_mode switch off, multi-process behavior byte-identical; with it on, N threads each start an independent stack instance and send/receive normally (lo 127.0.0.1 kernel-stack comparison + DPDK NIC 9.134.214.176 tested via f-stack-client) |
+| A7 (subsequent coding phase) | With thread_mode switch off, multi-process behavior byte-identical; with it on, N threads each start an independent stack instance and send/receive normally (lo 127.0.0.1 kernel-stack comparison + DPDK NIC <DPDK_NIC_IP> tested via f-stack-client) |
 
 ## 6. Constraints
 

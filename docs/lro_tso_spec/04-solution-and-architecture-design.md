@@ -299,4 +299,4 @@ if (mb->m_pkthdr.csum_flags & (CSUM_TSO | CSUM_IP6_TSO)) {
 6. Macro bit relationship between `CSUM_IP6_TSO` and `CSUM_TSO` in FreeBSD 15.0 port (2.6, verify during coding).
 7. Per-queue behavior of LRO aggregation under multi-process primary/secondary (1.7).
 
-> All the above are runtime/subsequent milestone validation items; no testing this round. Test environment: DPDK dedicated NIC IP `9.134.214.176` (`ssh f-stack-client` side initiates); kernel stack testing via `127.0.0.1` on `lo`.
+> All the above are runtime/subsequent milestone validation items; no testing this round. Test environment: DPDK dedicated NIC IP `<DPDK_NIC_IP>` (`ssh f-stack-client` side initiates); kernel stack testing via `127.0.0.1` on `lo`.

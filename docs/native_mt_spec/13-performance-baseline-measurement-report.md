@@ -29,7 +29,7 @@
 | F-Stack config | `lcore_mask=10/30`, `thread_mode=0/1`, `idle_sleep=20`, `hz=100` |
 | End under test | `example/helloworld`: 438B keep-alive HTTP (after commit d3b3e321f per-thread change) |
 | Load generator | wrk 4.0.2 [epoll] (f-stack-client) |
-| Load command | `ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://9.134.214.176:80/"` |
+| Load command | `ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://<DPDK_NIC_IP>:80/"` |
 
 ---
 
@@ -188,9 +188,9 @@ find /run/dpdk/rte/ -type f | xargs /data/workspace/rm_tmp_file.sh
 cd /data/workspace/f-stack/example
 nohup ./helloworld -c ../config.ini > /tmp/hw.log 2>&1 &
 sleep 15  # wait for init to complete
-ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://<DPDK_NIC_IP>:80/"
 sleep 30  # TIME_WAIT recycle
-ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://<DPDK_NIC_IP>:80/"
 
 # 2) thread_mode=0 comparison (lcore_mask=10)
 # config.ini: lcore_mask=10, #thread_mode=0
@@ -198,9 +198,9 @@ ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://9.134.214.176:80/"
 find /run/dpdk/rte/ -type f | xargs /data/workspace/rm_tmp_file.sh
 nohup ./helloworld -c ../config.ini > /tmp/hw.log 2>&1 &
 sleep 15
-ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://<DPDK_NIC_IP>:80/"
 sleep 30
-ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t2 -c100 -d10s http://<DPDK_NIC_IP>:80/"
 
 # Cleanup
 /data/workspace/kill_process.sh $(pgrep helloworld)

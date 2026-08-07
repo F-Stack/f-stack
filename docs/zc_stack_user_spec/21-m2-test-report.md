@@ -1,6 +1,6 @@
 # 21 · M2 Test Execution Report (ZC-RECV)
 
-> Executed: 2026-06-11. Two machines: server=this host (VM-213-67, data-plane DPDK NIC 9.134.214.176 / MAC 20:90:6f:7d:5d:08, confirmed by actual cloud metadata measurement); client=f-stack-client (VM-211-87, 9.134.211.87, wrk 4.2.0 @ /tmp/wrk/wrk).
+> Executed: 2026-06-11. Two machines: server=this host (VM-213-67, data-plane DPDK NIC <DPDK_NIC_IP> / MAC 20:90:6f:7d:5d:08, confirmed by actual cloud metadata measurement); client=f-stack-client (VM-211-87, <CLIENT_IP>, wrk 4.2.0 @ /tmp/wrk/wrk).
 > Iron rule: only record actual execution results, do not fabricate data.
 
 ## 1. Root Cause and Fix (Critical)

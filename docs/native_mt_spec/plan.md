@@ -84,7 +84,7 @@ Demonstrate and design f-stack's **in-library native support for "single-process
 - **Execution based on facts, not speculation; code is the source of truth**; cross-validation conflicts are resolved in favor of code; all code references carry file:line.
 - Deletion goes through `/data/workspace/rm_tmp_file.sh`; kill goes through `/data/workspace/kill_process.sh`; chmod goes through `/data/workspace/chmod_modify.sh`.
 - lib minimal comments; commit message in English 1-3 sentences; config.ini local test values not committed; run `make clean` before compiling after code changes (not applicable to this pure research round).
-- This machine has dual NICs: DPDK-exclusive NIC IP `9.134.214.176` requires `ssh f-stack-client` to test; kernel stack is tested against `127.0.0.1` lo.
+- This machine has dual NICs: DPDK-exclusive NIC IP `<DPDK_NIC_IP>` requires `ssh f-stack-client` to test; kernel stack is tested against `127.0.0.1` lo.
 - **Writer/reviewer separation**: writer ≠ reviewer ≠ leader (leader only writes pure-summary content, reviewed by an independent gatekeeper).
 - Leader polls and waits + out-of-band probing first + timeout detection + exception fallback; leader must not exit early before all subagents finish.
 - Gate failure bounces back to the previous step for rework; bounce≤3 per step, otherwise escalate to human decision.

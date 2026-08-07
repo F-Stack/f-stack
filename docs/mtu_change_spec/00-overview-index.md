@@ -1,7 +1,7 @@
 # F-Stack MTU Modification After DPDK NIC Takeover — Investigation Overview
 
 > Conclusion-first document. All conclusions are cross-validated against **actual code** (`lib/` + `freebsd/`) + **runtime testing** + **external authoritative sources**; conflicts resolved in favor of code and runtime results.
-> Investigation target: `/data/workspace/f-stack/`, DPDK 24.11.6, runtime environment is the local DPDK-exclusive NIC (virtio, `0000:00:09.0`, IP `9.134.214.176`).
+> Investigation target: `/data/workspace/f-stack/`, DPDK 24.11.6, runtime environment is the local DPDK-exclusive NIC (virtio, `0000:00:09.0`, IP `<DPDK_NIC_IP>`).
 
 ## One-Line Conclusion
 

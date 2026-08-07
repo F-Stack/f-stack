@@ -179,7 +179,7 @@ leader's manual add-back/re-delete method is **result-correct**, but has two avo
 
 | File | Status | Measured pollution items | Handling |
 |---|---|---|---|
-| `config.ini` | ` M` | `lcore_mask` `1`→**`6`**; `#thread_mode=0`→**`thread_mode=1`**; `idle_sleep` `0`→**`20`**; `#fstack_log_level=0`→**`fstack_log_level=7`**、`#fstack_log_file_prefix`→**uncommented**; `[port0]` `addr` `192.168.1.2`→**`9.134.214.176`** (plus `#addr=9.134.213.67`), `netmask`→`255.255.248.0`, `broadcast`→`9.134.215.255`, `gateway`→`9.134.208.1`; `#addr6/#prefix_len/#gateway6`→**uncommented with local `2402:4e00:…` / `prefix_len=128` / `fe80::feee:…`** (plus `#gateway6=::1`) | **Never `git add`**. All 8 items are local dual-NIC test env values, **none M17-feature-related** (M17 has no config additions). Per mandatory convention (AI memory 44404940) must keep out of commit. |
+| `config.ini` | ` M` | `lcore_mask` `1`→**`6`**; `#thread_mode=0`→**`thread_mode=1`**; `idle_sleep` `0`→**`20`**; `#fstack_log_level=0`→**`fstack_log_level=7`**、`#fstack_log_file_prefix`→**uncommented**; `[port0]` `addr` `192.168.1.2`→**`<DPDK_NIC_IP>`** (plus `#addr=<KERNEL_NIC_IP>`), `netmask`→`255.255.248.0`, `broadcast`→`<BROADCAST_IP>`, `gateway`→`<GATEWAY_IP>`; `#addr6/#prefix_len/#gateway6`→**uncommented with local `2402:4e00:…` / `prefix_len=128` / `fe80::feee:…`** (plus `#gateway6=::1`) | **Never `git add`**. All 8 items are local dual-NIC test env values, **none M17-feature-related** (M17 has no config additions). Per mandatory convention (AI memory 44404940) must keep out of commit. |
 
 **Verdict: `config.ini` item-by-item verified —— 100% local env residual, zero feature-related changes, confirmed never enter commit.** Post-commit should remain ` M`.
 

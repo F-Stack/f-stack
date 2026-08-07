@@ -20,7 +20,7 @@
 | Extend `example/Makefile` | add a `helloworld_zc` target that compiles main_zc.c |
 | Build clean | `lib && make all` exit=0; `example && make` produces helloworld + helloworld_epoll + **helloworld_zc** |
 | Primary smoke | helloworld_zc alive ≥10 s without crash |
-| Client-side test | from `f-stack-client` (9.134.211.87) curl/wrk → server (9.134.214.176:80), at least one full HTTP 200 response |
+| Client-side test | from `f-stack-client` (<CLIENT_IP>) curl/wrk → server (<DPDK_NIC_IP>:80), at least one full HTTP 200 response |
 | Simple perf observation | 100× short conn + 30 s long conn, helloworld vs helloworld_zc under the same conditions |
 | Doc sync + commit | partial docs; local commit; no push |
 
@@ -57,8 +57,8 @@ ZC implementation is **independent** of FF_USE_PAGE_ARRAY; no ifdef cross-depend
 
 | Role | Host | IP | OS |
 |---|---|---|---|
-| server (this box) | current | 9.134.214.176 | Linux + DPDK + f-stack |
-| client | f-stack-client (ssh hostname) | 9.134.211.87 | Linux 6.6 TencentOS |
+| server (this box) | current | <DPDK_NIC_IP> | Linux + DPDK + f-stack |
+| client | f-stack-client (ssh hostname) | <CLIENT_IP> | Linux 6.6 TencentOS |
 
 ### 2.4 example/Makefile current state
 
@@ -117,15 +117,15 @@ all:
 ### G3 — client-side HTTP test (OQ-1 default: client provided by user)
 | AC | Command (server-side orchestrated) | Pass |
 |---|---|---|
-| G3.1 | server starts helloworld_zc primary (listens on [port0] addr 9.134.214.176:80) | bind succeeds, log shows listen |
-| G3.2 | `ssh f-stack-client 'curl -sS -o /dev/null -w "%{http_code} %{size_download}\n" --connect-timeout 5 http://9.134.214.176/'` | HTTP 200 + body size > 0 |
-| G3.3 | `ssh f-stack-client 'for i in $(seq 1 100); do curl -sS -o /dev/null --connect-timeout 5 http://9.134.214.176/; done; echo done'` 100× short conn | 100× success, no timeout / connection refused |
+| G3.1 | server starts helloworld_zc primary (listens on [port0] addr <DPDK_NIC_IP>:80) | bind succeeds, log shows listen |
+| G3.2 | `ssh f-stack-client 'curl -sS -o /dev/null -w "%{http_code} %{size_download}\n" --connect-timeout 5 http://<DPDK_NIC_IP>/'` | HTTP 200 + body size > 0 |
+| G3.3 | `ssh f-stack-client 'for i in $(seq 1 100); do curl -sS -o /dev/null --connect-timeout 5 http://<DPDK_NIC_IP>/; done; echo done'` 100× short conn | 100× success, no timeout / connection refused |
 
 ### G4 — simple perf observation (OQ-2 downgrade-allowed)
 | AC | Method |
 |---|---|
 | G4.1 | short conn: client `time { for i in $(seq 1 1000); do curl ...; done; }` (helloworld vs helloworld_zc) | record wall time, compare ZC vs default |
-| G4.2 | long conn: client `wrk -t1 -c10 -d10s http://9.134.214.176/` (if wrk available); else ab; else curl loop | record rps |
+| G4.2 | long conn: client `wrk -t1 -c10 -d10s http://<DPDK_NIC_IP>/` (if wrk available); else ab; else curl loop | record rps |
 
 ### G5 — doc sync (partial)
 - docs/01-LAYER1 + zh_cn mirror: M8 footnote
@@ -144,7 +144,7 @@ all:
 | **R-M8-1** | `m_getm2` signature changed in 14.0+ | grep `freebsd-src-releng-15.0/sys/sys/mbuf.h`; current lib already builds OK suggests compat |
 | **R-M8-2** | f-stack-client → server routing fails (different VPC subnet) | ssh works empirically but cross-ARP/route is uncertain; G3.2 measures it, fix ARP if needed |
 | **R-M8-3** | DPDK runtime residue (M7 SIGTERM was clean but stale files possible) | pre-launch `rm_tmp_file.sh` cleans `/var/run/dpdk/rte/*` |
-| **R-M8-4** | port[0].addr config doesn't match 9.134.214.176 (user box IP) | measured: config.ini set to 9.134.214.176 (user runtime) |
+| **R-M8-4** | port[0].addr config doesn't match <DPDK_NIC_IP> (user box IP) | measured: config.ini set to <DPDK_NIC_IP> (user runtime) |
 | **R-M8-5** | helloworld_zc binding port 80 needs root + gratuitous ARP | sudo + helloworld_zc's own dpdk_if should auto-emit ARP |
 
 ---

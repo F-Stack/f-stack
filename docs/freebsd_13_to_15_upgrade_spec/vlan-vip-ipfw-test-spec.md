@@ -44,7 +44,7 @@
 | `vip_addr` | 192.169.0.3;192.169.0.4 | 192.169.1.3;192.169.1.4 |
 | `ipfw_pr` | 192.169.0.0 255.255.255.0 | 192.169.1.0 255.255.255.0 |
 
-Field values are taken from the comment template at `f-stack-13.0-baseline/config.ini:151-194` (verified to be byte-identical to the comment block at the same position in the current `f-stack/config.ini`); they **do not collide with the production 9.134.214.0/21 subnet**.
+Field values are taken from the comment template at `f-stack-13.0-baseline/config.ini:151-194` (verified to be byte-identical to the comment block at the same position in the current `f-stack/config.ini`); they **do not collide with the production <NETWORK_PREFIX>/21 subnet**.
 
 `vlan_filter=1,2` must appear before any `[vlanN]` section (line 647 has the `nb_vlan_filter==0` early-return guard).
 
@@ -110,7 +110,7 @@ Field values are taken from the comment template at `f-stack-13.0-baseline/confi
 
 | ID | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R-V1 | When `nb_vlan!=0`, `[portN]` is skipped → 9.134.214.176 SSH dies | server unreachable, test halts | use a dedicated config + explicit `-c`; SSH stays on host kernel eth1 during the test rather than the DPDK-claimed NIC (host and DPDK share the PCI takeover window briefly) |
+| R-V1 | When `nb_vlan!=0`, `[portN]` is skipped → <DPDK_NIC_IP> SSH dies | server unreachable, test halts | use a dedicated config + explicit `-c`; SSH stays on host kernel eth1 during the test rather than the DPDK-claimed NIC (host and DPDK share the PCI takeover window briefly) |
 | R-V2 | DPDK rx vlan filter not pushed down | for e2e, RX cannot receive tagged frames | not in scope this iteration (F-V3 follow-up) |
 | R-V3 | virtio-net vlan offload limits | same as R-V2 | same |
 | R-V4 | `vlan_strip=1` × `nb_vlan!=0` interaction | after HW strips the tag, the vlan iface might miss packets | not in scope this iteration (F-V4) |

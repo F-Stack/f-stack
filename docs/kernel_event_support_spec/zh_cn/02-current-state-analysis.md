@@ -131,7 +131,7 @@
 | D7 | 原生 v5 共存已落地（编译宏已包裹）；v6 在其上改默认语义为双栈 |
 | D8 | R8 补齐 `sendmsg/recvmsg/getpeername/getsockname/shutdown` 内核路由（前 4 单栈热路由，shutdown 内核路由+双栈双驱动）；剩 `readv/writev/ioctl` 仍未加路由（已知限制），v6 双栈 fd 对其默认仅 F-Stack 驱动 |
 | **D9（v6）** | `ff_native_fd_map`/默认双建/双驱动**尚未实现**（§5.2 grep=0）——文档区分「v5 已实测」与「v6 待实现」，不当既成 |
-| **D10（R9）** | **R7 双栈事件仅覆盖 `ff_epoll_*`**：`ff_kqueue`/`ff_kevent`/`ff_kevent_do_each` **无 FF_KERNEL_COEXIST 路由/双注册**（grep 实测仅 `ff_epoll.c` 命中宏，`ff_syscall_wrapper.c` 的 `ff_kqueue/ff_kevent` 无共存分支）。直接用 `ff_kqueue`+`ff_kevent`（如 `example/main.c`）的应用**感知不到内核侧连接**——实测内核侧 `curl 127.0.0.1:80=000`（握手完成、GET 被内核 TCP `ack 73`，但应用永不被唤醒去 accept），F-Stack 侧 `9.134.214.176:80=200`。R9 待补 |
+| **D10（R9）** | **R7 双栈事件仅覆盖 `ff_epoll_*`**：`ff_kqueue`/`ff_kevent`/`ff_kevent_do_each` **无 FF_KERNEL_COEXIST 路由/双注册**（grep 实测仅 `ff_epoll.c` 命中宏，`ff_syscall_wrapper.c` 的 `ff_kqueue/ff_kevent` 无共存分支）。直接用 `ff_kqueue`+`ff_kevent`（如 `example/main.c`）的应用**感知不到内核侧连接**——实测内核侧 `curl 127.0.0.1:80=000`（握手完成、GET 被内核 TCP `ack 73`，但应用永不被唤醒去 accept），F-Stack 侧 `<DPDK_NIC_IP>:80=200`。R9 待补 |
 | **D11（R9）** | **IPv6 双建端口冲突**：`-DINET6` 下默认 `ff_socket(AF_INET6)` 双建，host IPv6 socket `ff_bind([::]:80)` 因本机 `net.ipv6.bindv6only=0`（实测）连带占用 IPv4，与同进程 host IPv4 `0.0.0.0:80` 冲突——**实测 `ff_bind failed, sockfd6:1026, errno:98 EADDRINUSE`**，进程退出无法启动。host IPv6 socket 未设 `IPV6_V6ONLY=1`。R9 待补 |
 | **D12（R10）** | **`ff_readv`/`ff_writev` 无内核 fd 路由**：`ff_syscall_wrapper.c` 的 `ff_readv`(L1179)/`ff_writev`(L1236) 仅走 `kern_readv`/`kern_writev`，**无 `FF_KERNEL_COEXIST` 内核 fd 分支**（对照 `ff_read`/`ff_write` 已有路由）——对 encode 内核 fd 调用会误走 F-Stack（D8 子项的具体化）。R10 仿 `ff_read`/`ff_write` 补齐（新增 host 桥 `ff_host_readv/writev`）。**R10 待实现**，行号以实现为准 |
 | **D13（R10）** | **`ff_ioctl` 无内核 fd 路由**：`ff_ioctl`(L1067) 经 `linux2freebsd_ioctl`→`kern_ioctl`，**无内核 fd 分支**。ioctl request 经 `_IO/_IOR/_IOW(type,nr,size)` 编码，Linux 与 FreeBSD 数值**不同源**（外网交叉验证），故内核 host fd 须用**原始 Linux request**直传 `ff_host_ioctl`（不经 `linux2freebsd_ioctl` 翻译）。**R10 已实现**：内核 fd 分支（在 va_arg 取 argp 后、`linux2freebsd_ioctl` 之前 return `ff_host_ioctl(real, request, argp)`）；**双栈 fd 同驱动 R10.1 已实现**（`FIONBIO`/`FIOASYNC` 同步配对 host fd，仿 `ff_fcntl`；`FIONREAD` 等 query 类不同驱动以免覆盖 argp） |
@@ -146,7 +146,7 @@
 
 ### 7.1 P2：`ff_kqueue/ff_kevent` 系列未支持共存（核心缺口）
 - `lib/ff_syscall_wrapper.c` 的 `ff_kqueue`/`ff_kevent`/`ff_kevent_do_each` **完全无 FF_KERNEL_COEXIST 路由**——仅 `ff_epoll.c` 经 `ff_epoll_pairs[kq→host_ep]` 做了配对+双注册+合并。`example/main.c` 用 `ff_kqueue()`+`EV_SET(sockfd,EVFILT_READ)`+`ff_kevent(kq,...)`，**只把 F-Stack listen fd 注册进 F-Stack kqueue**，双栈 listen 的内核侧 host fd 从未进入任何事件后端。
-- **实测链路**：内核 TCP 完成握手、GET 入内核缓冲并被 TCP 层 ACK（抓包 `ack 73` 吻合），但应用永不被唤醒去 `ff_accept` 内核 listen fd → 永不 read/write → 无 200。内核侧 `curl 127.0.0.1:80=http_code 000`（6s 超时）；同进程 F-Stack 侧 client 压 `9.134.214.176=http_code 200 size=438`。
+- **实测链路**：内核 TCP 完成握手、GET 入内核缓冲并被 TCP 层 ACK（抓包 `ack 73` 吻合），但应用永不被唤醒去 `ff_accept` 内核 listen fd → 永不 read/write → 无 200。内核侧 `curl 127.0.0.1:80=http_code 000`（6s 超时）；同进程 F-Stack 侧 client 压 `<DPDK_NIC_IP>=http_code 200 size=438`。
 - 结论：**双栈 listen 的内核侧事件无法被 kqueue 模型应用感知**——`ff_kqueue/ff_kevent` 须对称仿 `ff_epoll` 做共存（外网已证 F-Stack epoll 即基于 kqueue 封装，可复用同一 `ff_epoll_pairs` 基础设施）。
 
 ### 7.2 P1：IPv6 双建端口冲突（启动失败）

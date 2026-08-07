@@ -211,7 +211,7 @@ int __wrap_rte_vlog(uint32_t level, uint32_t logtype, const char *fmt, va_list a
 | **TC-U-P1-CFG-08** | `test_ff_load_config_empty_ini` | ff_load_config | 空 ini → 返回错误 |
 | **TC-U-P1-CFG-09** | `test_vlan_cfg_handler_isolated`（白盒）| `#include "ff_config.c"` | 直接调 vlan_cfg_handler，验证 ff_vlan_cfg 字段 |
 | **TC-U-P1-CFG-10** | `test_ipfw_pr_cfg_handler_isolated`（白盒）| 同上 | ipfw_pr_cfg_handler 解析 fib + cidr |
-| **TC-U-P1-CFG-11** | `test_port_cfg_handler_addr_parse` | 同上 | port_cfg_handler addr=9.134.214.176/21 解析 |
+| **TC-U-P1-CFG-11** | `test_port_cfg_handler_addr_parse` | 同上 | port_cfg_handler addr=<DPDK_NIC_IP>/21 解析 |
 
 **TC-U-P1-CFG 总数：11** ✓
 

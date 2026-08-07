@@ -81,7 +81,7 @@ kern_zc_sendit 关键语义（实测对照 33-spec §2.2）：入参校验失败
 
 ## §6 M3 功能 E2E（真实二进制，最强验证）
 
-环境：本 server VM（DPDK NIC 0000:00:09.0 virtio/igb_uio 已绑定，hugepage 4096×2M，config addr 9.134.214.176 / lcore4）——与 ZC-recv M2 同机。
+环境：本 server VM（DPDK NIC 0000:00:09.0 virtio/igb_uio 已绑定，hugepage 4096×2M，config addr <DPDK_NIC_IP> / lcore4）——与 ZC-recv M2 同机。
 
 - helloworld_zc（FF_ZC_SEND）启动：DPDK Port 0 Link Up，f-stack 注册接口 MAC 20:90:6f:7d:5d:08。
 - 本机经 eth1 路由可达 data-plane IP，curl×5：**全部 http=200 size=438**，应答内容为 F-Stack 欢迎页，5 次一致。
@@ -93,7 +93,7 @@ kern_zc_sendit 关键语义（实测对照 33-spec §2.2）：入参校验失败
 ## §7 M4 性能/稳定性
 
 - **稳定性压测**（本机 curl 1000 次顺序请求）：**ok=1000 bad=0**，server 存活，无 panic/segfault/abort（验证 issue #712「大量发包崩溃」关切——新路径稳定）。
-- **精确 A/B 性能基线（wrk T1/T2/T3，Δ≤±3%）**：**deferred**。理由（如实）：本机无 wrk；且严谨基线需 M2 同款远程 client VM（9.134.211.87），本机单机 wrk 与 server 抢占同核不可比。**禁止臆造性能数据**；待用户在双机环境按 38-perf-baseline-spec 复测。
+- **精确 A/B 性能基线（wrk T1/T2/T3，Δ≤±3%）**：**deferred**。理由（如实）：本机无 wrk；且严谨基线需 M2 同款远程 client VM（<CLIENT_IP>），本机单机 wrk 与 server 抢占同核不可比。**禁止臆造性能数据**；待用户在双机环境按 38-perf-baseline-spec 复测。
 
 ---
 

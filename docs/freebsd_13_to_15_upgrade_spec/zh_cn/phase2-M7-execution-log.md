@@ -75,7 +75,7 @@ f-stack-0: Successed to register dpdk interface
 | G3 降级 | primary 42s 持续运行 + page-array TX/RX 路径活跃（log 显示 dpdk interface registered 后正常 polling）+ 无任何 crash signal | ✅ |
 | 间接确认 | `ff_mmap_init mmap 65536 pages, 256 MB` 显式打印——证实 `ff_init_ref_pool` + `ff_mmap_init` 这两个 page-array 关键 API 正确链接并执行 | ✅ |
 
-> 不进行 curl/HTTP 端到端测试的原因：本工作区为 CVM virtio NIC + 现有 `[port0] addr=9.134.214.176/22`（用户配置），监听 80 端口测试需另起 helloworld_epoll 并配 ARP 路由，超出 P1a 单选项启用范围；spec G3.3 已许可此降级。
+> 不进行 curl/HTTP 端到端测试的原因：本工作区为 CVM virtio NIC + 现有 `[port0] addr=<DPDK_NIC_IP>/22`（用户配置），监听 80 端口测试需另起 helloworld_epoll 并配 ARP 路由，超出 P1a 单选项启用范围；spec G3.3 已许可此降级。
 
 ### G4 — 性能基线（OQ-2 降级路径）
 

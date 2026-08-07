@@ -100,7 +100,7 @@ bounce 路径：
 
 | ID | 风险 | 影响 | 处置 |
 |---|---|---|---|
-| R-V1 | `nb_vlan!=0` 时 [portN] 段全跳过 → port0 9.134.214.176 SSH 中断 | server 失联 | 用 **独立 config 文件** + 显式 `-c` 参数；测试期间 host kernel eth1 仍承担 SSH，DPDK 接管期间提示已知影响 |
+| R-V1 | `nb_vlan!=0` 时 [portN] 段全跳过 → port0 <DPDK_NIC_IP> SSH 中断 | server 失联 | 用 **独立 config 文件** + 显式 `-c` 参数；测试期间 host kernel eth1 仍承担 SSH，DPDK 接管期间提示已知影响 |
 | R-V2 | `lib/ff_dpdk_if.c` 未调 `rte_eth_dev_set_vlan_filter()` | HW vlan filter 不工作；端到端流量需此函数 | 本期范围 D 不依赖 HW filter；记 F-V3 follow-up |
 | R-V3 | virtio-net vlan offload 能力受限 | 端到端时可能需 promisc 加 soft filter | 本期不验证；记 F-V2 follow-up |
 | R-V4 | `vlan_strip=1` 与 `nb_vlan!=0` 收包逻辑潜在冲突 | tag 被剥离后 vlan iface 收不到包 | 本期不验证；记 F-V4 follow-up |

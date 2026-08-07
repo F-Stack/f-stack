@@ -259,7 +259,7 @@ Commit `c42340d5` first discovered and fixed a similar bug on the IPv4 side: whe
 
 ## 6. Items Pending Confirmation (from Cross-Referencing External Sources with Code)
 
-1. 【Pending confirmation】The S1 performance data is at the upstream wiki's figures; this project must use actual measurements on the `9.134.214.176` physical machine as authoritative (the definitive figures will be set in the M4 performance baseline spec).
+1. 【Pending confirmation】The S1 performance data is at the upstream wiki's figures; this project must use actual measurements on the `<DPDK_NIC_IP>` physical machine as authoritative (the definitive figures will be set in the M4 performance baseline spec).
 2. 【Pending confirmation】0.3's `adjust_tuple` hit rate and reasonable `attempts` under the asymmetric `default_rsskey_40bytes`; leaning toward: first evaluate enabling `symmetric_rss` (already supported by the repository) to improve the robustness of the reverse-computation, and retain the soft `ff_rss_check` as a fallback verification/rollback (see 04 §0.3).
 3. 【Pending confirmation】The DPDK documentation does not clarify the combined semantics of reta_sz and `% nb_queues`; this project must derive the mapping itself (see 04 §0.3), and use the soft `ff_rss_check` as an independent recheck for the correctness criterion.
 4. 【Pending confirmation】Whether upstream commit `cb9b4d462` for 0.5 has already been merged into this repository's 13.0 baseline branch (which determines whether the v4 part is "a back-port that was missed" or "a new addition relative to the 13.0 baseline"), to be verified via grep during the coding phase (02 §6-ter.4).

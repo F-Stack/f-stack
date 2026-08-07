@@ -49,7 +49,7 @@ Three-source evidence (code / runtime test / official issues) fully consistent; 
 ### Suggested Validation After Modification
 
 - Unit/build: `lib/` rebuild (`-Werror`), `tools/` rebuild pass.
-- Runtime: `tools/sbin/ifconfig ... mtu 9000` succeeds, `rte_eth_dev_get_mtu` returns 9000; verify jumbo send/receive via `ping -s 8972 -M do 9.134.214.176` from ssh f-stack-client (unfragmented large packets); `curl` large file throughput comparison.
+- Runtime: `tools/sbin/ifconfig ... mtu 9000` succeeds, `rte_eth_dev_get_mtu` returns 9000; verify jumbo send/receive via `ping -s 8972 -M do <DPDK_NIC_IP>` from ssh f-stack-client (unfragmented large packets); `curl` large file throughput comparison.
 
 ## III. Effort and Priority Assessment (If Approved)
 

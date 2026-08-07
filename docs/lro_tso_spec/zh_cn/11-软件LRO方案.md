@@ -261,7 +261,7 @@ ff_veth_process_packet(ctx->ifp, hdr);
 6. 单线程经典模式下聚合流与非聚合流交织的保序正确性。
 7. 多进程 primary/secondary 各 lcore 独立聚合的正确性。
 
-> 以上均为运行时/后续里程碑验证项，本轮 spec 不实测。测试环境：DPDK 独占网卡 IP `9.134.214.176`（`ssh f-stack-client` 侧发起），内核栈测试走 `127.0.0.1` 的 `lo`。
+> 以上均为运行时/后续里程碑验证项，本轮 spec 不实测。测试环境：DPDK 独占网卡 IP `<DPDK_NIC_IP>`（`ssh f-stack-client` 侧发起），内核栈测试走 `127.0.0.1` 的 `lo`。
 
 ---
 

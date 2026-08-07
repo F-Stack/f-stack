@@ -94,12 +94,12 @@ done
 
 ```bash
 # 在 server 端（DPDK primary 运行中）
-ssh f-stack-client 'curl -sS -o /dev/null -w "%{http_code} %{size_download}\n" --connect-timeout 5 http://9.134.214.176/'
+ssh f-stack-client 'curl -sS -o /dev/null -w "%{http_code} %{size_download}\n" --connect-timeout 5 http://<DPDK_NIC_IP>/'
 # 期望: 200 <body_size>
 
 # 100x 短连
 ssh f-stack-client 'OK=0; for i in $(seq 1 100); do
-    CODE=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 http://9.134.214.176/)
+    CODE=$(curl -sS -o /dev/null -w "%{http_code}" --connect-timeout 5 --max-time 10 http://<DPDK_NIC_IP>/)
     [ "$CODE" = 200 ] && OK=$((OK+1))
 done; echo $OK/100'
 # 期望: 100/100
@@ -117,7 +117,7 @@ done; echo $OK/100'
 ### 4.1 方法学（复用 phase-5b）
 
 - harness：`tools/sbin/p5b_perf_matrix.sh`
-- 客户端：`f-stack-client (9.134.211.87)`
+- 客户端：`f-stack-client (<CLIENT_IP>)`
 - 单 trial：N 次串行 curl from f-stack-client
 - 每配置跑 3 trials，取 median + max-min jitter
 - ssh round-trip ~ 6 ms 是物理上限（与 phase-5b 一致；本测试不追求绝对吞吐）
@@ -198,7 +198,7 @@ NGINX_PID=$(ps -ef | grep 'nginx_fstack\|nginx -p' | grep -v grep | grep -v work
 
 如 client 有 wrk 工具：
 ```bash
-ssh f-stack-client 'wrk -t1 -c10 -d30s http://9.134.214.176/ 2>&1' | tail -10
+ssh f-stack-client 'wrk -t1 -c10 -d30s http://<DPDK_NIC_IP>/ 2>&1' | tail -10
 ```
 否则降级为 100/1000 短连 curl loop（同 TC-B）。
 
@@ -251,7 +251,7 @@ WORKER_PID=$(ps -ef | grep 'nginx: worker' | grep -v grep | awk '{print $2}' | h
 # Step 3: 检查 master 是否仍 alive，是否仍能响应 curl
 sleep 5
 [ -d /proc/$NGINX_MASTER_PID ] && echo "Master alive after worker exit ✓"
-ssh f-stack-client 'curl -sS http://9.134.214.176/ -w "%{http_code}\n" -o /dev/null'
+ssh f-stack-client 'curl -sS http://<DPDK_NIC_IP>/ -w "%{http_code}\n" -o /dev/null'
 # 期望 200
 ```
 
@@ -290,7 +290,7 @@ ps -ef | grep 'nginx: worker' | grep -v grep
 ### 8.1 测试方法
 
 ```bash
-ssh f-stack-client 'wrk -t1 -c20 -d10s http://9.134.214.176/ 2>&1' | tail -10
+ssh f-stack-client 'wrk -t1 -c20 -d10s http://<DPDK_NIC_IP>/ 2>&1' | tail -10
 ```
 
 ### 8.2 G3 验收（仅功能）

@@ -9,7 +9,7 @@
 
 > **v6 sync (key points; see `zh_cn/01-requirements-spec.md` for full detail)**:
 > - **Paradigm upgrade**: from v5 per-fd either/or to v6 **automatic dual-stack**. When `FF_KERNEL_COEXIST` is compiled in AND `kernel_coexist=1`, a default (no-marker) `ff_socket` builds BOTH an F-Stack fd and a kernel host fd, registers `ff_native_fd_map[fstack_fd]=host_fd`, returns the F-Stack raw fd; `ff_bind/ff_listen/ff_close/ff_connect` dual-drive both stacks. One `listen(80)` listens on both F-Stack (DPDK) and the Linux kernel stack.
-> - **FR-2/FR-3/FR-4 (auto dual-stack, v6 to-be-implemented)**: `ff_socket` dual-build; `ff_bind/ff_listen` dual-drive; one-listen-many-uses (remote `9.134.214.176:80` via DPDK NIC + local `curl 127.0.0.1:80` via kernel).
+> - **FR-2/FR-3/FR-4 (auto dual-stack, v6 to-be-implemented)**: `ff_socket` dual-build; `ff_bind/ff_listen` dual-drive; one-listen-many-uses (remote `<DPDK_NIC_IP>:80` via DPDK NIC + local `curl 127.0.0.1:80` via kernel).
 > - **FR-6 (accept single-stack ownership, Q3=A)**: a dual-stack listen fd's accept returns a single-stack connection fd (F-Stack raw / kernel encode); subsequent recv/send/close route by `ff_is_kernel_fd`, NOT consulting the map (hot path, NFR-2).
 > - **FR-8/FR-9 (marker single-stack override)**: `SOCK_KERNEL` = kernel only (encode, no map); `SOCK_FSTACK` = F-Stack only (no map, zero regression). `SOCK_FSTACK` wins.
 > - **FR-10 / N7 (connect dual-stack, DRAFT, PENDING USER CONFIRMATION)**: a single client logical flow cannot truly duplex over both stacks; v6 contract = "F-Stack primary + kernel concurrent connect for dual-network reachability". Use `SOCK_KERNEL` for a pure-kernel client; kernel-primary/failover is future work. See `zh_cn/05 §6`.

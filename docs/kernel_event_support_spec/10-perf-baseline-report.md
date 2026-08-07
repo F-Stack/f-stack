@@ -8,7 +8,7 @@
 > **Status**: §4/§5 are v5 R4 real-machine FINAL (per-fd either/or methodology, toggling only runtime `kernel_coexist` 0/1). **v6 automatic dual-stack (commit 13b418191) functional correctness + macro-off zero regression + PERF-1/2/4 F-Stack fast-path A/B are all real-machine measured PASS (see §10).**
 > **v6 note**: v5 measured per-fd either/or (default builds F-Stack only) → PERF-1/2 zero regression. v6 automatic dual-stack introduces **default dual-build/dual-drive**, so RE-MEASURE: (1) F-Stack business fast path still no regression under default dual-stack (PERF-1/2); (2) single-stack connection hot path does NOT consult `ff_native_fd_map` (PERF-4, see `07` UT-17). R6 macro-off (incl. v6 `ff_native_fd_map` not compiled) zero-regression is still verified by `07 §1bis` MT-1 `nm` symbol comparison; macro off = same binary as upstream, no perf retest.
 > **Scope**: empirically prove coexistence causes **no regression on the F-Stack business fast path** (PERF-1/2/**4**), and give a **kernel-side bypass throughput** (PERF-3) management-plane data point.
-> **Empirical rule**: every number comes from real wrk output (`/tmp/helloworld-coexist-bench/`, `/tmp/kbench-perf/`); no fabrication. Real server/client IPs are source-side `sed`-masked before landing on disk (`9.134.214.176→192.168.1.1`, `9.134.211.87→192.168.1.2`).
+> **Empirical rule**: every number comes from real wrk output (`/tmp/helloworld-coexist-bench/`, `/tmp/kbench-perf/`); no fabrication. Real server/client IPs are source-side `sed`-masked before landing on disk (`<DPDK_NIC_IP>→192.168.1.1`, `<CLIENT_IP>→192.168.1.2`).
 
 ---
 
@@ -168,7 +168,7 @@ cd /data/workspace/f-stack/example/helloworld_stacksel && make   # ./helloworld_
 
 ## 10. v6 R7 automatic dual-stack measured verdict (commit 13b418191)
 
-> This section is the measured verdict for v6 native automatic dual-stack. The vector A A/B throughput in §10.2 is a **v6 default dual-build/dual-drive** real-machine measurement (helloworld, IPv4-only, linked against the macro-on lib, toggling only config `kernel_coexist` 0/1; client wrk 4.2.0 against the DPDK NIC 9.134.214.176:80). §4/§5 remain the v5 per-fd either/or FINAL, kept as a historical reference.
+> This section is the measured verdict for v6 native automatic dual-stack. The vector A A/B throughput in §10.2 is a **v6 default dual-build/dual-drive** real-machine measurement (helloworld, IPv4-only, linked against the macro-on lib, toggling only config `kernel_coexist` 0/1; client wrk 4.2.0 against the DPDK NIC <DPDK_NIC_IP>:80). §4/§5 remain the v5 per-fd either/or FINAL, kept as a historical reference.
 
 ### 10.1 Measured / proven items
 
@@ -177,13 +177,13 @@ cd /data/workspace/f-stack/example/helloworld_stacksel && make   # ./helloworld_
 | Macro-off zero regression (compile-time) | `nm libfstack.a` coexist symbols=0; size 6539682 byte-for-byte identical to baseline | PASS (same binary as upstream F-Stack) |
 | Macro-on build | `make FF_KERNEL_COEXIST=1` rc=0; coexist symbols complete (incl. `ff_native_fd_map`) | PASS |
 | Dual-mode unit tests | macro-off P1 50/50; macro-on P1 incl. `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip` | PASS |
-| Real-machine dual-stack function (one listen, many uses) | single `listen(80)`: kernel `curl 127.0.0.1:80=200`; F-Stack `ssh→9.134.214.176:80=200` | PASS |
+| Real-machine dual-stack function (one listen, many uses) | single `listen(80)`: kernel `curl 127.0.0.1:80=200`; F-Stack `ssh→<DPDK_NIC_IP>:80=200` | PASS |
 | PERF-1/2 F-Stack fast-path no regression | §10.2 vector A A/B real-machine measurement | PASS |
 | PERF-4 hot path no map lookup | recv/send do a single `ff_is_kernel_fd` check, no map lookup (code) + §10.2 keep-alive throughput A1≈A0 (measured) | PASS |
 
 ### 10.2 Vector A: v6 default dual-build vs F-Stack business fast path A/B (PERF-1/2, real-machine)
 
-> Same helloworld (IPv4-only, linked against the macro-on lib), toggling only `config.ini [stack] kernel_coexist`: A0=0 (pure F-Stack) / A1=1 (v6 default dual-build/dual-drive). Client (f-stack-client, masked 192.168.1.2) wrk 4.2.0 against the DPDK NIC 9.134.214.176:80 (masked 192.168.1.1); median of 3 trials per tier; environment/method per §2/§3 (single lcore `lcore_mask=10`, `idle_sleep=20`, keep-alive).
+> Same helloworld (IPv4-only, linked against the macro-on lib), toggling only `config.ini [stack] kernel_coexist`: A0=0 (pure F-Stack) / A1=1 (v6 default dual-build/dual-drive). Client (f-stack-client, masked 192.168.1.2) wrk 4.2.0 against the DPDK NIC <DPDK_NIC_IP>:80 (masked 192.168.1.1); median of 3 trials per tier; environment/method per §2/§3 (single lcore `lcore_mask=10`, `idle_sleep=20`, keep-alive).
 
 Throughput req/s (median of 3):
 

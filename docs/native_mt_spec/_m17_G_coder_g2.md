@@ -266,7 +266,7 @@ Process alive 106s, `nlwp=5`, no crash, no panic.
 - UMA cache slot distance = `0x80` = **128** ✓ (= `sizeof(struct uma_cache)`), two slots **distinct** ✓
 - `dense_idx == pc_cpuid == curcpu` three consistent ✓
 - `[M17-PROBE-ZONE] name=pcpu_zone_8 uk_ppera=2 / name=pcpu_zone_64 uk_ppera=2`, `mp_maxid=1` → **`uk_ppera == mp_maxid + 1`** ✓
-- 10s wrk (`f-stack-client`上 `/data/wrk/wrk -t2 -c100 -d10s http://9.134.214.176/`): **219,241.92 req/s**, `2194165 requests / 0 error`, post-stress log zero new anomalies.
+- 10s wrk (`f-stack-client`上 `/data/wrk/wrk -t2 -c100 -d10s http://<DPDK_NIC_IP>/`): **219,241.92 req/s**, `2194165 requests / 0 error`, post-stress log zero new anomalies.
 
 ### 4.3 4-thread档 (post-lock)
 

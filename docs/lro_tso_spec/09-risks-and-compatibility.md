@@ -193,7 +193,7 @@
 
 1. **R-TSO-05 verified during this document's writing**: `freebsd/sys/mbuf.h:735 CSUM_TSO=(CSUM_IP_TSO|CSUM_IP6_TSO)`, `:670 CSUM_IP6_TSO=0x1000`. Conclusion: `ff_veth.c:304` current can already recognize IPv6 TSO segments; the extension proposed in `04`/`05` is redundant. This is a prior resolution of a "pending verification item" in the spec, correcting direction to "this change can be omitted", and has been backfilled into the risk table.
 2. Other LRO/virtio, `max_lro_pkt_size` matching, tsomax precise values, multi-process per-queue, IPv6 extension headers etc. are all **runtime/subsequent milestone validation items**, not tested this round (aligned with `04-solution-and-architecture-design.md` IV, `07-test-and-acceptance-specification.md` section V HB-1..HB-7, `08-performance-baseline-plan.md` VI).
-3. Test environment: DPDK dedicated NIC IP `9.134.214.176` (`ssh f-stack-client` side initiates), kernel stack testing via `127.0.0.1` on `lo`.
+3. Test environment: DPDK dedicated NIC IP `<DPDK_NIC_IP>` (`ssh f-stack-client` side initiates), kernel stack testing via `127.0.0.1` on `lo`.
 
 ---
 

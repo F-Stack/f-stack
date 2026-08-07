@@ -154,7 +154,7 @@ The 4 non-strict hits are all grep-regex literals / comments / echo strings (not
 | `fib_num = vlan_idx` | code (`ff_veth.c:949`) ↔ runtime ipfw show (rule 10 setfib 0, rule 20 setfib 1) | ✅ exact match |
 | `ipfw_pr` CIDR translation | spec (`192.169.0.0 255.255.255.0` → `/24`) ↔ runtime show (`from 192.169.0.0/24`) | ✅ exact match |
 | `dpdk.vlan_filter` precedes `[vlanN]` | spec (line 647 `nb_vlan_filter==0` early return) ↔ test config order (line 31 vlan_filter / line 159 [vlan1]) | ✅ pass |
-| `[portN]` fully skipped when `nb_vlan>0` | spec (`ff_veth.c:868 nb_vlan==0` branch not entered) ↔ runtime (port0 9.134.214.176 not registered with any IP) | ✅ consistent |
+| `[portN]` fully skipped when `nb_vlan>0` | spec (`ff_veth.c:868 nb_vlan==0` branch not entered) ↔ runtime (port0 <DPDK_NIC_IP> not registered with any IP) | ✅ consistent |
 | 13.0 ↔ 15.0 `vlan_cfg_handler` diff | code (`diff lib/ff_config.c 630-750` 0 hits) | ✅ no regression |
 | 13.0 ↔ 15.0 ff_veth `nb_vlan` branch | code (`diff lib/ff_veth.c 850-1000` only ifp abstraction API delta) | ✅ no functional regression |
 
@@ -164,7 +164,7 @@ The 4 non-strict hits are all grep-regex literals / comments / echo strings (not
 
 | Artifact | Source | Blocker? | Note |
 |---|---|---|---|
-| `eth_virtio_pci_init(): Failed to init PCI device` (port 0000:00:05.0) | DPDK probe | ❌ no | the SSH transport NIC (9.134.214.176), probed by DPDK but already owned by host eth1; correctly skipped |
+| `eth_virtio_pci_init(): Failed to init PCI device` (port 0000:00:05.0) | DPDK probe | ❌ no | the SSH transport NIC (<DPDK_NIC_IP>), probed by DPDK but already owned by host eth1; correctly skipped |
 | `link_elf_lookup_symbol: missing symbol hash table` × 2 | kld linker | ❌ no | known benign since Phase-2; kld fallback in PA mode |
 | `kernel_sysctlbyname failed: ... error:2` × 3 | startup | ❌ no | known benign since Phase-2; some sysctl nodes are not registered into the ff_sysctl tree |
 | `: No addr6 config found.` × 2 (truncated ifname) | post-vlan-clone | ❌ no | string-buffer reuse issue; does not affect vlan functionality; filed as F-V3 follow-up |
@@ -177,7 +177,7 @@ The 4 non-strict hits are all grep-regex literals / comments / echo strings (not
 | ID | Title | Priority | Description |
 |---|---|---|---|
 | F-V1 | Local loopback ping vlan vip | P3 | Self-ping the vip on the vlan iface; confirm fib lookup and `setfib` actually take effect; needs an `ff_loopback` patch for vlan iface |
-| F-V2 | Full client-side 802.1Q e2e | P3 | On the client (9.134.211.87), bring up vlan ifaces in the same 192.169.0/1.0 subnet and curl/ping the vip end-to-end for HTTP 200 |
+| F-V2 | Full client-side 802.1Q e2e | P3 | On the client (<CLIENT_IP>), bring up vlan ifaces in the same 192.169.0/1.0 subnet and curl/ping the vip end-to-end for HTTP 200 |
 | F-V3 | `: No addr6 config found.` ifname buffer bug | P4 | Investigate the truncated ifname in the post-init log; possibly `vlan_if_name[]` reuse |
 | F-V4 | `vlan_filter_id[]` HW filter pushdown | P3 | Currently no readers in `lib/ff_dpdk_if.c`; `rte_eth_dev_set_vlan_filter()` is never called; e2e needs this |
 | F-V5 | G1 reproducibility CI | P4 | In a dedicated CI runner, run the full lib + example clean rebuild with `timeout 600s` |

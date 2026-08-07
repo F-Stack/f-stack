@@ -12,7 +12,7 @@
 
 F-Stack 通过 DPDK 接管网卡后，该网卡流量绕过 Linux 内核协议栈。一个 F-Stack 应用希望**在用 F-Stack 跑业务的同时**：
 
-1. **服务端方向**：同一个 `listen(80)` 既经 DPDK 网卡对外服务（F-Stack 侧，如 `9.134.214.176:80`），又能被本机 `curl 127.0.0.1:80`/`ping`/`ssh` 直访（内核栈侧）——**无需为每个用途分别开 socket、无需 marker**。
+1. **服务端方向**：同一个 `listen(80)` 既经 DPDK 网卡对外服务（F-Stack 侧，如 `<DPDK_NIC_IP>:80`），又能被本机 `curl 127.0.0.1:80`/`ping`/`ssh` 直访（内核栈侧）——**无需为每个用途分别开 socket、无需 marker**。
 2. **客户端方向**：作客户端连本机/外部内核服务。
 3. **统一事件**：两栈 fd 在**同一事件循环**统一处理。
 
@@ -58,7 +58,7 @@ F-Stack 通过 DPDK 接管网卡后，该网卡流量绕过 Linux 内核协议�
 | FR-1 | **零回归默认（marker/开关粒度）**：宏关 / `kernel_coexist=0` / `SOCK_FSTACK` → 纯 F-Stack | 经 DPDK NIC 正常收发，逐字节零回归 | v5 已实测；v6 须维持 |
 | FR-2 | **自动双栈 socket（v6）**：默认无 marker 同建 F-Stack+内核双 fd，返回 F-Stack 原始 fd，登记 `map[fstack]=host` | `ff_socket` 双建成功、map 项正确、返回原始 fd | v6 待实现（`ff_syscall_wrapper.c:915-947` 重构） |
 | FR-3 | **双驱动 bind/listen（v6）**：双栈 fd `ff_bind/ff_listen` 同时落 F-Stack 与内核栈 | 一 `listen(80)`：`ff_netstat` 与 `ss` 各见 80 | v6 待实现（`:1607-1627`/`:1584-1605`） |
-| FR-4 | **一 listen 多用（v6）**：F-Stack 侧（DPDK NIC）+ 内核侧（`127.0.0.1`/本机 IP）同时可访问同一端口 | 远端 `curl 9.134.214.176:80` + 本机 `curl 127.0.0.1:80` 皆 200 | v6 待实现，真机验证 |
+| FR-4 | **一 listen 多用（v6）**：F-Stack 侧（DPDK NIC）+ 内核侧（`127.0.0.1`/本机 IP）同时可访问同一端口 | 远端 `curl <DPDK_NIC_IP>:80` + 本机 `curl 127.0.0.1:80` 皆 200 | v6 待实现，真机验证 |
 | FR-5 | **统一事件双栈（v6）**：双栈 listen fd 在 kqueue + 内核 epoll 各注册一次，`ff_epoll_wait` 合并 | 两栈连接事件均投递、不丢、`event.data` 透传 | `ff_epoll.c` 现有合并骨架 + v6 双注册 |
 | FR-6 | **accept 单栈归属（v6）**：双栈 listen fd accept 返回单栈连接 fd（F-Stack 原始 / 内核 encode） | 连接 fd 单栈，后续 recv/send/close 正确路由 | v6 待实现（`:1514-1582`） |
 | FR-7 | **双驱动 close（v6）**：双栈 fd `ff_close` 关两栈 + `ff_native_map_clear` + 清 `ff_epoll_pairs` | 无 fd 泄漏（两栈一致释放） | v6 待实现（`:1095-1112`） |
@@ -100,7 +100,7 @@ F-Stack 通过 DPDK 接管网卡后，该网卡流量绕过 Linux 内核协议�
 ## 6. 成功标准
 
 1. **宏关 / `kernel_coexist=0` / `SOCK_FSTACK`**：`libfstack.a` 与原 F-Stack `nm`/`objdump` 无共存符号差异、逐字节零回归（FR-1/FR-12/NFR-1）。
-2. **自动双栈（v6）**：默认 `listen(80)` 同时在 F-Stack(DPDK NIC) 与内核栈监听——远端经 `9.134.214.176:80`、本机 `curl 127.0.0.1:80` 皆成功，`ff_netstat` 与 `ss` 各见 80（FR-2/FR-3/FR-4/NFR-3）。
+2. **自动双栈（v6）**：默认 `listen(80)` 同时在 F-Stack(DPDK NIC) 与内核栈监听——远端经 `<DPDK_NIC_IP>:80`、本机 `curl 127.0.0.1:80` 皆成功，`ff_netstat` 与 `ss` 各见 80（FR-2/FR-3/FR-4/NFR-3）。
 3. **统一事件 + accept 归属（v6）**：单 epoll 同时收两栈连接事件，accept 返回的单栈连接 fd 正确收发与 close（FR-5/FR-6/FR-7）。
 4. **marker 单栈覆盖**：`SOCK_KERNEL`/`SOCK_FSTACK` 各按单栈语义工作（FR-8/FR-9）。
 5. **热路径无回归**：F-Stack 业务快路径与单栈连接热路径性能零回归（NFR-2）。

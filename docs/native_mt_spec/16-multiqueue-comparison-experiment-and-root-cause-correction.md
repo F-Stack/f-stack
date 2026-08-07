@@ -36,7 +36,7 @@ Bonus fix R3: `init_mem_pool()` loop upper bound `nb_procs` → thread_mode-awar
 
 ## 2. Decisive Comparison Experiments (All Actually Executed)
 
-Unified load command: `ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"`
+Unified load command: `ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"`
 
 ### 2.1 Before Fix: Exposing Doc 15's Experiment-Design Defect
 
@@ -88,7 +88,7 @@ Both queues work at full load under 2 processes, proving the host side indeed di
 ### 2.5 Long Soak (stress validation for the residual SMR risk)
 
 ```
-ssh f-stack-client "/data/wrk/wrk -t8 -c400 -d60s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t8 -c400 -d60s http://<DPDK_NIC_IP>:80/"
   29834366 requests in 1.00m, 18.03GB read
   Requests/sec: 497043.57
 ```
@@ -317,8 +317,8 @@ cd /data/workspace/f-stack/lib && make clean && make -j8
 cd ../example && make clean && make -j8
 setsid nohup ./helloworld --conf ../config.ini > /tmp/run.log 2>&1 < /dev/null &
 # warm up with one curl first (refresh client-side ARP), then load test
-ssh f-stack-client "curl -s -o /dev/null http://9.134.214.176/"
-ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"
+ssh f-stack-client "curl -s -o /dev/null http://<DPDK_NIC_IP>/"
+ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"
 
 # 2-process comparison (E2/E5-c)
 # config.ini: thread_mode=0, lcore_mask=6

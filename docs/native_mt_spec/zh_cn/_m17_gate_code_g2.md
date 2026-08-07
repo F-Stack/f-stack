@@ -478,7 +478,7 @@ commit-2 只触及两处：`ff_glue.c` 的 `:146`（1 行删除）与 `uma_int.h
 ## 14.7 审核项 5：不应进入提交的文件（我完整枚举）
 
 **A. 已跟踪但绝不可入库（1 个）**
-- **`config.ini`**（` M`，14 insertions / 12 deletions）：含本机测试值 `lcore_mask=6` / `thread_mode=1` / `idle_sleep=20` / `addr=9.134.214.176` 等。**绝不入库**（AI memory 44404940）。
+- **`config.ini`**（` M`，14 insertions / 12 deletions）：含本机测试值 `lcore_mask=6` / `thread_mode=1` / `idle_sleep=20` / `addr=<DPDK_NIC_IP>` 等。**绝不入库**（AI memory 44404940）。
 
 **B. 未跟踪的临时产物 —— 全部不可入库**
 - **二进制（5 个，注意：这些 `.gitignore` 覆盖不到！）**：`example/helloworld_g1_prelock`、`example/helloworld_g2_nolock`、`example/helloworld_zc_base`、`example/helloworld_zc_recv`、`example/helloworld_stacksel/helloworld_stacksel`

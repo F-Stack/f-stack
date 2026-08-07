@@ -33,7 +33,7 @@ CM3 + CM5 ──> CM6 (unit/integration/performance baseline testing)
 - **Work items**:
   1. Record current lib/ related file git baseline commit as rollback anchor.
   2. Confirm clean build baseline passes (`make clean` → `make`), record build artifact baseline.
-  3. Confirm test environment: DPDK dedicated NIC IP `9.134.214.176` (`ssh f-stack-client` side initiates testing), kernel stack test via `127.0.0.1` on `lo`.
+  3. Confirm test environment: DPDK dedicated NIC IP `<DPDK_NIC_IP>` (`ssh f-stack-client` side initiates testing), kernel stack test via `127.0.0.1` on `lo`.
   4. Runtime read `dev_info` to confirm local PMD (virtio) actual advertised values for `rx_offload_capa`/`tx_offload_capa`/`max_lro_pkt_size` (backfill 04-solution-and-architecture-design.md honest boundary checklist).
 - **DoD**: Baseline commit recorded, clean build passes, `dev_info` offload capability table documented.
 - **Gate**: clean build PASS.

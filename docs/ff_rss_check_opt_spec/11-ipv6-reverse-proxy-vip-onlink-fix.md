@@ -23,18 +23,18 @@ Capture file: `/data/workspace/ipv6_proxy.pcap` (captured on-site on the mlx5 ph
 
 | Role | Address |
 |------|------|
-| Reverse-proxy server VIP | `2402:4e00:1840::17` |
-| Upstream backend | `2402:4e00:1840::18` |
-| Client | `2402:4e00:1701:c000::1` |
+| Reverse-proxy server VIP | `<VIP_IPV6>` |
+| Upstream backend | `<BACKEND_IPV6>` |
+| Client | `<CLIENT_IPV6>` |
 
 Key `f-stack.conf` settings:
 
 | Item | Value | Subnet |
 |----|----|------|
-| `addr6` (primary address) | `2402:4e00:2e80:1030::b` | primary subnet `2e80:1030` |
+| `addr6` (primary address) | `<DPDK_NIC_IPV6>` | primary subnet `2e80:1030` |
 | `prefix_len` | `64` | — |
-| `gateway6` | `2402:4e00:2e80:1030::1` | primary subnet `2e80:1030` |
-| `vip_addr6` | `2402:4e00:1840::17` | VIP subnet `1840` (**different subnet** from the primary address) |
+| `gateway6` | `<GATEWAY_IPV6>` | primary subnet `2e80:1030` |
+| `vip_addr6` | `<VIP_IPV6>` | VIP subnet `1840` (**different subnet** from the primary address) |
 | `vip_prefix_len` | `64` | — |
 
 Key pcap observations:

@@ -20,7 +20,7 @@
 
 | Item | Specification | Basis |
 | --- | --- | --- |
-| f-stack side | DPDK dedicated NIC IP `9.134.214.176`, virtio PMD | 01-requirements-specification.md 3.3, 06-milestones-and-work-breakdown.md CM0 |
+| f-stack side | DPDK dedicated NIC IP `<DPDK_NIC_IP>`, virtio PMD | 01-requirements-specification.md 3.3, 06-milestones-and-work-breakdown.md CM0 |
 | Traffic initiator/peer | `ssh f-stack-client` initiated from peer machine (rx/tx direction per use case) | 01-requirements-specification.md 3.3 |
 | Kernel stack baseline | `127.0.0.1` on `lo` (same-machine kernel stack baseline, for cross-reference, not primary criterion) | 01-requirements-specification.md 3.3 |
 | lcore binding | Fixed `lcore_mask` (local test value, not committed to config.ini; consistent across rounds) | config.ini local value convention |
@@ -52,7 +52,7 @@
 
 | Case | Config | Workload | Main Observations | Interpretation |
 | --- | --- | --- | --- | --- |
-| PB-LRO-01 | `lro=0` (baseline) | High-throughput TCP receive (`f-stack-client` → `9.134.214.176`, large file/long-flow iperf3) | Throughput, receive core CPU, rx pps, average segment size (=MTU) | Baseline |
+| PB-LRO-01 | `lro=0` (baseline) | High-throughput TCP receive (`f-stack-client` → `<DPDK_NIC_IP>`, large file/long-flow iperf3) | Throughput, receive core CPU, rx pps, average segment size (=MTU) | Baseline |
 | PB-LRO-02 | `lro=1` | Same | Same, compare CPU/pps/segment size | When LRO effective, rx pps should decrease, average segment size > MTU, per-byte CPU decrease; **if virtio unsupported, no difference from PB-LRO-01 (honest record)** |
 | PB-LRO-03 | `lro=1` IPv6 | IPv6 high-throughput receive | Same | Same as PB-LRO-02, v6 listed separately |
 

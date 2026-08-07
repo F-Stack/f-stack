@@ -20,7 +20,7 @@
 | **FR-D-2** | 重打 3 个 F-Stack 历史 patch（`5f3768c63` + `62f1c34df` + `92718178b`）后，`dpdk/build/` 仍 0 errors；patch 等价性自检（diff 与原 commit 相比仅有上下文行差异）| TC-G1.5 |
 | **FR-D-3** | F-Stack 的 `lib/libfstack.a` 与 `example/{helloworld, helloworld_zc, helloworld_epoll}` 全编译通过（0 errors，warnings 不超过 freebsd-15 baseline 57 + 5 = 62）| TC-G2 |
 | **FR-D-4** | `helloworld` primary 在 24.11.6 上起栈成功（含 `f-stack-0: Successed to register dpdk interface` 等关键 init log），存活 ≥12 秒无崩溃 | TC-A.G2 |
-| **FR-D-5** | client → server (`9.134.214.176`) 单次 curl 返回 HTTP 200 + 真实 HTML body | TC-A.G3.1 |
+| **FR-D-5** | client → server (`<DPDK_NIC_IP>`) 单次 curl 返回 HTTP 200 + 真实 HTML body | TC-A.G3.1 |
 | **FR-D-6** | client → server 100 次短连：100/100 PASS | TC-A.G3.2 |
 | **FR-D-7** | nginx (`app/nginx-1.28.0/`) 单进程模式起栈 + curl 静态页 HTTP 200 + 100 短连 100/100 | TC-C.G3 |
 | **FR-D-8** | nginx 多进程模式（`worker_processes 4`）起栈：1 master + 4 worker 全部 alive；客户端 curl + wrk 至少完成 1 次成功 HTTP 200 响应 | TC-E.G3 |
@@ -144,7 +144,7 @@
 | 4 | upstream 24.11.6 源就位 | `ls /data/workspace/dpdk-stable-24.11.6/lib/argparse/` 应存在 |
 | 5 | 3 个历史 commit 可读（`5f3768c63 + 62f1c34df + 92718178b`）| `git --no-pager show <hash>` 验证 |
 | 6 | rm/kill/chmod wrapper 脚本可用 | `ls -l /data/workspace/{rm_tmp_file,kill_process,chmod_modify}.sh` |
-| 7 | f-stack-client (9.134.211.87) 可 ssh 通 | 测试时验证 |
+| 7 | f-stack-client (<CLIENT_IP>) 可 ssh 通 | 测试时验证 |
 
 ---
 

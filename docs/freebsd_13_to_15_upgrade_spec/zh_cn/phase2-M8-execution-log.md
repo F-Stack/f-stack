@@ -109,7 +109,7 @@ helloworld_zc 起栈正常但单次 curl 即触发 GPF（IP `0x10facb6` = `m_dem
 
 | 子项 | 结果 |
 |---|---|
-| G3.2 单次 curl `--http0.9 -sS http://9.134.214.176/` | HTTP 200 / Content-Length 438 / body = 真 HTML |
+| G3.2 单次 curl `--http0.9 -sS http://<DPDK_NIC_IP>/` | HTTP 200 / Content-Length 438 / body = 真 HTML |
 | body 验证 | hexdump 前 80 字节 = `<!DOCTYPE html>\r\n<html>\r\n<head>\r\n<title>Welcome to F-Stack!</title>\r\n<style>...` ✓ |
 | G3.3 100x 短连压测 | ok=100 fail=0 ✓ |
 | baseline non-ZC（helloworld）100x 压测 | ok=100 fail=0 ✓（M8 修复同时治好该回归） |

@@ -72,8 +72,8 @@ What Phase-5b is actually for = **same-protocol cross-config delta and functiona
 ### 3.1 F-A1 (NEW, **HIGH**) — PA-only configuration breaks the network
 
 **Symptoms**:
-- `ping 9.134.214.176`: 0/3 received, 100% packet loss
-- `curl http://9.134.214.176/`: connect timeout 5.002 s (HTTP=000)
+- `ping <DPDK_NIC_IP>`: 0/3 received, 100% packet loss
+- `curl http://<DPDK_NIC_IP>/`: connect timeout 5.002 s (HTTP=000)
 - helloworld primary process: ALIVE, log shows normal init (`f-stack-0: Successed to register dpdk interface`)
 
 **RCA (static reading of `lib/ff_dpdk_if.c` + `lib/ff_memory.c`)**:

@@ -182,7 +182,7 @@ NIC 无硬件 TSO
 2. 若未来引入 rte_gso，其在 F-Stack 发包路径的 two-part mbuf 与出口驱动 `MULTI_SEGS` 兼容性。
 3. 协议栈逐段发送的 CPU 开销是否构成吞吐瓶颈（决定 rte_gso 是否值得引入）。
 
-> 以上均为运行时/后续里程碑验证项，本轮 spec 不实测。测试环境：DPDK 独占网卡 IP `9.134.214.176`（`ssh f-stack-client` 侧发起），内核栈测试走 `127.0.0.1` 的 `lo`。
+> 以上均为运行时/后续里程碑验证项，本轮 spec 不实测。测试环境：DPDK 独占网卡 IP `<DPDK_NIC_IP>`（`ssh f-stack-client` 侧发起），内核栈测试走 `127.0.0.1` 的 `lo`。
 
 ---
 

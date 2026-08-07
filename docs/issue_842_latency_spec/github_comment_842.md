@@ -15,9 +15,9 @@ While this client-side bulk-receive pattern is not F-Stack's primary use case (F
 
 | Role | Host | IP | NIC |
 | --- | --- | --- | --- |
-| Python echo server (sender) | f-stack-client | 9.134.211.87 | eth1 |
-| F-Stack client (receiver) | local | 9.134.214.176 | DPDK NIC (igb_uio) |
-| Kernel client (receiver) | local | 9.134.213.67 | eth1 (virtio-pci) |
+| Python echo server (sender) | f-stack-client | <CLIENT_IP> | eth1 |
+| F-Stack client (receiver) | local | <DPDK_NIC_IP> | DPDK NIC (igb_uio) |
+| Kernel client (receiver) | local | <KERNEL_NIC_IP> | eth1 (virtio-pci) |
 
 - **F-Stack 1.26** + FreeBSD 15.0 + DPDK 24.11.6 LTS
 - Python server sends 1,000,000 timestamp messages (`str(time.time_ns()) * 200`, ~3800 bytes each, ~3.8 GB total)

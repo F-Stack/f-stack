@@ -1,6 +1,6 @@
 # 21 · M2 测试执行报告（ZC-RECV）
 
-> 执行：2026-06-11。双机：server=本机（VM-213-67，data-plane DPDK NIC 9.134.214.176 / MAC 20:90:6f:7d:5d:08，云 metadata 实测确认）；client=f-stack-client（VM-211-87，9.134.211.87，wrk 4.2.0 @ /tmp/wrk/wrk）。
+> 执行：2026-06-11。双机：server=本机（VM-213-67，data-plane DPDK NIC <DPDK_NIC_IP> / MAC 20:90:6f:7d:5d:08，云 metadata 实测确认）；client=f-stack-client（VM-211-87，<CLIENT_IP>，wrk 4.2.0 @ /tmp/wrk/wrk）。
 > 铁律：仅记录实际执行结果，不臆造数据。
 
 ## 1. 根因与修复（关键）

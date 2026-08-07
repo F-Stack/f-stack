@@ -2,7 +2,7 @@
 
 > 本文所有数据均为**实际执行**产出，命令与原始输出逐字摘录。凡未能实测者，明确写「无法验证 + 原因 + 原始报错」，**无任何估算或复制历史数字**。
 > 历史基线（`plan-17` §5.1）仅作**对比参照**，与本轮实测数据分列，绝不混用。
-> 测试机：本机（DPDK 独占网卡 IP `9.134.214.176`）；压测客户端：`f-stack-client`（hostname `VM-211-87-tencentos`，`/data/wrk/wrk`）。
+> 测试机：本机（DPDK 独占网卡 IP `<DPDK_NIC_IP>`）；压测客户端：`f-stack-client`（hostname `VM-211-87-tencentos`，`/data/wrk/wrk`）。
 
 ---
 
@@ -113,7 +113,7 @@ lib/ff_freebsd_init.c:404:    ff_probe_slots(PCPU_GET(cpuid));
 | `[dpdk] lcore_mask` | `6` |
 | `[dpdk] thread_mode` | `1` |
 | `[dpdk] idle_sleep` | `20` |
-| `[port0] addr` | `9.134.214.176` |
+| `[port0] addr` | `<DPDK_NIC_IP>` |
 
 其余键未改动。恢复以文件编辑方式进行（**不用 `git checkout`**），且**全程不 `git add` / 不 `git commit`**。
 
@@ -193,7 +193,7 @@ ipfw2 (+ipv6) initialized, divert loadable, nat loadable, default to accept, log
 Timecounter "ff_clock" frequency 100 Hz quality 1
 TCP_ratelimit: Is now initialized
 [M17-PROBE-SLOT] dense_idx=0 smr_c_seq=0x7fe538f8ec80 uma_cache=0x7fe538f83e00
-f-stack-0: Addr6: 2402:4e00:1900:1:6:5522:de6a:7d84
+f-stack-0: Addr6: <DPDK_NIC_IPV6>
 f-stack-0: Gateway6: fe80::feee:ffff:feff:ffff
 f-stack-0: Ethernet address: 20:90:6f:7d:5d:08
 f-stack-0: Successed to register dpdk interface
@@ -204,9 +204,9 @@ f-stack-0: Successed to register dpdk interface
 预热 + 3 轮压测：
 
 ```bash
-ssh f-stack-client "curl -s -o /dev/null -w 'curl_http_code=%{http_code}\n' http://9.134.214.176/"
+ssh f-stack-client "curl -s -o /dev/null -w 'curl_http_code=%{http_code}\n' http://<DPDK_NIC_IP>/"
 → curl_http_code=200
-ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"   # ×3
+ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"   # ×3
 ```
 
 原始输出：
@@ -571,13 +571,13 @@ G1 之前 `mp_maxid` **恒为 0**（`lib/ff_glue.c:145` BSS 零值，无人赋�
 soak 前记录日志旧行数：`f-stack-0.log = 1061`、`helloworld.log = 440`。
 
 ```bash
-ssh f-stack-client "/data/wrk/wrk -t8 -c400 -d60s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t8 -c400 -d60s http://<DPDK_NIC_IP>:80/"
 ```
 
 原始输出（逐字）：
 
 ```
-Running 1m test @ http://9.134.214.176:80/
+Running 1m test @ http://<DPDK_NIC_IP>:80/
   8 threads and 400 connections
   Thread Stats   Avg      Stdev     Max   +/- Stdev
     Latency   728.52us    4.96ms 209.46ms   99.78%
@@ -615,7 +615,7 @@ root  988684  988676 63 14:16?  00:02:02 /data/workspace/f-stack/example/hellowo
 
 ### 5.1 基线口径（G2 去锁后必须用同一口径复测）
 
-- 同机（本机 DPDK 独占网卡 `9.134.214.176`）、同客户端（`f-stack-client` / `/data/wrk/wrk`）、同 `config.ini`（仅改 `lcore_mask`/`thread_mode`，`idle_sleep=20` 等其余键全程不动）。
+- 同机（本机 DPDK 独占网卡 `<DPDK_NIC_IP>`）、同客户端（`f-stack-client` / `/data/wrk/wrk`）、同 `config.ini`（仅改 `lcore_mask`/`thread_mode`，`idle_sleep=20` 等其余键全程不动）。
 - 短压：`wrk -t5 -c100 -d10s`，**≥3 轮取中位数**；soak：`wrk -t8 -c400 -d60s` 单轮。
 - 每轮压测前先 `curl` 预热一次刷新 client 侧 ARP（本轮全部返回 `curl_http_code=200`）。
 - 被测二进制 md5 **`88b8cf93e0b8d3765e76b3c26c6a8f3b`**（G1 三轮改动 + DoD-1 探针；**`lib/include/vm/uma_int.h:45-52` 的 `uma_crit_lock` 仍在**）。
@@ -662,7 +662,7 @@ root  988684  988676 63 14:16?  00:02:02 /data/workspace/f-stack/example/hellowo
 
 - 全程**未出现** `rm`/`kill`/`pkill`/`killall`/`chmod` 任何命令字符串（含 ssh 远端命令）；停进程一律 `/data/workspace/kill_process.sh <pid>`，共 5 次，输出均已摘录。
 - **未修改** `lib/`、`freebsd/`、`example/` 下任何源码（代码问题已回报leader 转 `coder`）。
-- `config.ini` 仅改 `lcore_mask`/`thread_mode` 两个本地测试值，**全程未 `git add`、未 `git commit`**；测试结束后用文件编辑恢复到阶段 0 登记的起始状态（`lcore_mask=6`、`thread_mode=1`、`idle_sleep=20`、`addr=9.134.214.176`），**未使用 `git checkout`**。
+- `config.ini` 仅改 `lcore_mask`/`thread_mode` 两个本地测试值，**全程未 `git add`、未 `git commit`**；测试结束后用文件编辑恢复到阶段 0 登记的起始状态（`lcore_mask=6`、`thread_mode=1`、`idle_sleep=20`、`addr=<DPDK_NIC_IP>`），**未使用 `git checkout`**。
 - 所有 req/s、请求数、探针地址、栈帧均来自实际执行输出，**无估算、无复制历史数字**；历史基线仅作对照且单列。
 
 ###合规核验：`config.ini` 恢复实证（测试结束时实际执行）
@@ -672,7 +672,7 @@ $ grep -n "^lcore_mask\|^thread_mode\|^idle_sleep\|^addr=" /data/workspace/f-sta
 3:lcore_mask=6
 8:thread_mode=1
 46:idle_sleep=20
-147:addr=9.134.214.176
+147:addr=<DPDK_NIC_IP>
 ```
 
 与 §0.4 登记的阶段0 起始状态**逐键一致**，恢复完成（用文件编辑，未用 `git checkout`）。
@@ -738,10 +738,10 @@ sleep 16 && ps -ef | grep helloworld | grep -v grep
 # 4) 抓探针：主线程在 f-stack-0.log、worker 在 helloworld.log（两个都要看）
 grep "M17-PROBE" f-stack-0.log | tail -N; grep "M17-PROBE" helloworld.log | tail -N
 # 5) 预热 + 3 轮压测
-ssh f-stack-client "curl -s -o /dev/null -w 'curl_http_code=%{http_code}\n' http://9.134.214.176/"
-ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"   # ×3
+ssh f-stack-client "curl -s -o /dev/null -w 'curl_http_code=%{http_code}\n' http://<DPDK_NIC_IP>/"
+ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"   # ×3
 # 6) B2 追加 soak
-ssh f-stack-client "/data/wrk/wrk -t8 -c400 -d60s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t8 -c400 -d60s http://<DPDK_NIC_IP>:80/"
 # 7) 收尾核验：进程存活、日志新增行数、panic/assert 扫描
 ps -ef | grep helloworld | grep -v grep ; wc -l helloworld.log f-stack-0.log
 # 8) 停进程（唯一允许方式）
@@ -956,7 +956,7 @@ $ git --no-pager diff --stat lib/
 
 ## R2. 阶段 2'：吞吐矩阵（`thread_mode=1`）
 
-每档 `ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"`，压测前 `curl` 预热（**全部返回 `curl=200`**）。
+每档 `ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"`，压测前 `curl` 预热（**全部返回 `curl=200`**）。
 
 ### R2.1 1 线程（`lcore_mask=2`）
 
@@ -1091,7 +1091,7 @@ soak 后：进程 `1029870` 存活（CPU 时间 02:26）；日志行数 **583 / 
 
 ## R5. 阶段 5'：**G2 去锁前最终基线表**（DoD-5 对照组）
 
-口径：同机（`9.134.214.176`）、同客户端（`f-stack-client` `/data/wrk/wrk`）、短压 `-t5 -c100 -d10s` ≥3 轮取**中位数**、soak `-t8 -c400 -d60s` 单轮；压测前 `curl` 预热；`config.ini` 仅改 `lcore_mask`/`thread_mode`。
+口径：同机（`<DPDK_NIC_IP>`）、同客户端（`f-stack-client` `/data/wrk/wrk`）、短压 `-t5 -c100 -d10s` ≥3 轮取**中位数**、soak `-t8 -c400 -d60s` 单轮；压测前 `curl` 预热；`config.ini` 仅改 `lcore_mask`/`thread_mode`。
 被测二进制：`example/helloworld` md5 **`751a8153d3b200229cff99b3fa7650b0`**（**`uma_crit_lock` 仍在 = 去锁前**）。
 
 | 场景 | 各轮 req/s | **中位数（G2 对比基准）** | socket err | 崩溃 | 日志新增 |
@@ -1132,7 +1132,7 @@ soak 后：进程 `1029870` 存活（CPU 时间 02:26）；日志行数 **583 / 
 
 - 全程**未出现** `rm`/`kill`/`pkill`/`killall`/`chmod` 任何命令字符串（含 ssh 远端命令）；停进程一律 `/data/workspace/kill_process.sh <具体 PID>`（复测共 6 次，**按 `coder` §7.6 的建议一律传 PID 而非进程名**，避免误伤他人进程），输出均已摘录。
 - **未修改** `lib/`、`freebsd/`、`example/` 下任何源码。
-- `config.ini` 仅改 `lcore_mask`/`thread_mode`，测毕已恢复到起始状态并实测核验：`lcore_mask=6`、`thread_mode=1`、`idle_sleep=20`、`addr=9.134.214.176`（未用 `git checkout`）；**全程未 `git add`、未 `git commit`**。
+- `config.ini` 仅改 `lcore_mask`/`thread_mode`，测毕已恢复到起始状态并实测核验：`lcore_mask=6`、`thread_mode=1`、`idle_sleep=20`、`addr=<DPDK_NIC_IP>`（未用 `git checkout`）；**全程未 `git add`、未 `git commit`**。
 - 无残留 `helloworld`/`gdb` 进程（已`ps` 核验）。
 - 所有数字来自实际执行输出，无估算、无复制历史数字；离群值与未坐实项均如实标注。
 
@@ -1391,7 +1391,7 @@ X1.2 的 3 线程档抓到一行**被拼接破坏的探针输出**：
 - 全程**未出现** `rm`/`kill`/`pkill`/`killall`/`chmod`任何命令字符串（含 ssh 远端命令）；停进程一律 `/data/workspace/kill_process.sh <具体 PID>`（第三部分共 12 次，**全部传 PID 而非进程名**），输出均已核对。
 - **未修改** `lib/`、`freebsd/`、`example/` 下任何源码；**未改动** `res-build` 的 `config.m17_g2_*.ini`，他亦未改我的 `config.ini`。
 - 与 `res-build` 就网卡独占做了显式握手（同一 PCI 设备只能被一个 primary 接管）：他请求约 2 分钟自测窗口，我确认无残留进程后回复放行，其自测完成并释放后我才开始交叉复测 —— **两边未发生抢占，无数据作废**。
-- `config.ini` 仅改 `lcore_mask`/`thread_mode`，测毕已恢复并实测核验：`lcore_mask=6`、`thread_mode=1`、`idle_sleep=20`、`addr=9.134.214.176`（未用 `git checkout`）；**全程未 `git add` / 未 `git commit`**。
+- `config.ini` 仅改 `lcore_mask`/`thread_mode`，测毕已恢复并实测核验：`lcore_mask=6`、`thread_mode=1`、`idle_sleep=20`、`addr=<DPDK_NIC_IP>`（未用 `git checkout`）；**全程未 `git add` / 未 `git commit`**。
 - 收尾核验：无残留 `helloworld`/`wrk` 进程；两个副本 md5 与 `uma_crit_lock` 符号计数在复测前后一致（`g1_prelock` 1 / `g2_nolock` 0）。
 - 临时产物：`example/helloworld_g1_prelock`、`example/helloworld_g2_nolock`（`res-build` 已记入 DoD-8 清理清单，走 `/data/workspace/rm_tmp_file.sh`）、`/tmp/m17ab_off.txt`、`/tmp/m17_gdb_4thread.{cmd,log}`。**建议在 M7 前保留两个副本**，以便对 DoD-5 结论做任何复核。
 - 所有数字来自实际执行输出，无估算、无复制历史数字；离群值、噪声边界与未坐实项均如实标注。
@@ -1566,7 +1566,7 @@ vs 第三部分 236,484.61 → **−2.96%**，略超 ±2%，但与本轮实测�
 - 全程**未出现** `rm`/`kill`/`pkill`/`killall`/`chmod` 任何命令字符串（含 ssh 远端命令）；停进程一律 `/data/workspace/kill_process.sh <具体 PID>`（第四部分 9 次，全部传 PID）。
 - **未修改** `lib/`、`freebsd/`、`example/` 下任何源码；**未创建/未覆盖任何二进制副本**；三个二进制 md5 在本部分前后一致。
 - 与 `res-build` 执行了**显式互斥握手**：tester 在开跑前宣告占用 `example/helloworld`，`res-build` 确认「不写该路径、不碰两个副本，等 tester 回报释放」，故本部分全程无并发写入风险（此前曾发生 `cp`撞 `ETXTBSY` 的事件，见第三部分 §X6 与本部分背景）。
-- `config.ini` 仅改 `lcore_mask`/`thread_mode`，测毕已恢复并实测核验：`lcore_mask=6`、`thread_mode=1`、`idle_sleep=20`、`addr=9.134.214.176`；**全程未 `git add` / 未 `git commit`**。
+- `config.ini` 仅改 `lcore_mask`/`thread_mode`，测毕已恢复并实测核验：`lcore_mask=6`、`thread_mode=1`、`idle_sleep=20`、`addr=<DPDK_NIC_IP>`；**全程未 `git add` / 未 `git commit`**。
 - 判据 before 侧位于 **`/data/workspace/m17_judge_baseline/`**（仓库外，`IN_REPO=no` 已机械确认，不影响 `git status`）；收尾时 `#11` 复验仍 **8/8 OK**。
 - 收尾核验：无残留 `helloworld`/`wrk` 进程。
 - 所有数字均来自实际执行输出；离群值、环境漂移、被证伪的自有归因均如实记录。
@@ -1664,7 +1664,7 @@ git diff config.ini            →  仅 lcore_mask=6 / thread_mode=1 / idle_slee
 | `dpdk.thread_mode` | `#thread_mode=0`（注释态） | **`1`**（tm=0 档时改回 `0`） | 是（即被测变量本身） |
 | `dpdk.idle_sleep` | **`0`** | **`20`** | **是（本条为唯一非受控的吞吐相关偏离）** |
 | `dpdk.fstack_log_level` | 注释态（0） | `7` | 轻微（探针输出量，A/B 两侧同配置） |
-| `port0.addr` / `netmask` / `broadcast` / `gateway` | `192.168.1.x` | 本机 `9.134.214.176/21` | 否|
+| `port0.addr` / `netmask` / `broadcast` / `gateway` | `192.168.1.x` | 本机 `<DPDK_NIC_IP>/21` | 否|
 | `port0.addr6` / `prefix_len` / `gateway6` | 注释态 | 本机 IPv6 | 否 |
 
 **关键补强（tester 独立核查得出，`res-build` 的建议未覆盖此点）**：`git diff config.ini` 的偏离集合**仅上述 6 组**，这意味着 **`[freebsd.boot]` 与 `[freebsd.sysctl]` 下全部性能敏感项均等于仓库默认值**，包括：
@@ -1694,7 +1694,7 @@ net.inet.tcp.hpts.minsleep=250   net.inet.tcp.hpts.maxsleep=51200
 | DPDK | **`pkg-config --modversion libdpdk` = `24.11.6`**（非 23.11.5） |
 | 压测客户端 | `ssh f-stack-client`，`/data/wrk/wrk` = **`wrk 4.0.2 [epoll]`** |
 | 客户端 CPU / 内核 | **AMD EPYC 9754 128-Core，容器内可见仅 8 vCPU**；`6.6.119-49.20.tl4.x86_64` |
-| 压测参数 | 短测 `-t5 -c100 -d10s`；长测/soak `-t8 -c400 -d60s`；URL `http://9.134.214.176:80/` |
+| 压测参数 | 短测 `-t5 -c100 -d10s`；长测/soak `-t8 -c400 -d60s`；URL `http://<DPDK_NIC_IP>:80/` |
 
 **tester 就此提出一条比 `idle_sleep` 更重的可复现性前提**：**客户端仅 8 vCPU，而长测使用 `wrk -t8`** —— wrk 线程数与客户端可用核数**恰好相等**，客户端处于满载边缘。含义有二：
 

@@ -155,7 +155,7 @@ Repo root `/data/workspace/f-stack`, HEAD = `ff09a17b2`; reference trees `/data/
 
 ## 5. Runtime Validation Environment (Verified Usable)
 
-- This machine has dual NICs; the DPDK-exclusive NIC IP `9.134.214.176`; load testing must `ssh f-stack-client` then hit that IP with `/data/wrk/wrk`; kernel-stack testing uses `127.0.0.1`.
+- This machine has dual NICs; the DPDK-exclusive NIC IP `<DPDK_NIC_IP>`; load testing must `ssh f-stack-client` then hit that IP with `/data/wrk/wrk`; kernel-stack testing uses `127.0.0.1`.
 - Test program `/data/workspace/f-stack/example/helloworld`, config `/data/workspace/f-stack/config.ini`.
 - Pitfalls hit last round (carried over):
   - a process launched by `(nohup ... &)` in a subshell gets reaped; must `setsid nohup ... < /dev/null &` for full detachment;

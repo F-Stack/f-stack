@@ -88,7 +88,7 @@ graph TD
     EV --> F
     EV --> K
     K -.本机 curl/ping/ssh 127.0.0.1.-> A1
-    F -.DPDK NIC 远端访问 9.134.214.176.-> A1
+    F -.DPDK NIC 远端访问 <DPDK_NIC_IP>.-> A1
 ```
 
 - **默认 A1→F 与 A1→K 同时建**（双栈）；A2 仅 K；A3 仅 F。
@@ -326,7 +326,7 @@ ff_dup2(oldfd, newfd)
 | 维度 | F-Stack 用户态栈（业务，始终在位） | 内核栈（并行附加栈） |
 |---|---|---|
 | 载体 | DPDK PMD + FreeBSD 栈 | Linux 内核协议栈 |
-| 流量 | 业务高速路径（DPDK NIC，如 9.134.214.176） | 本机/管理/客户端（127.0.0.1/本机 IP/外部内核服务） |
+| 流量 | 业务高速路径（DPDK NIC，如 <DPDK_NIC_IP>） | 本机/管理/客户端（127.0.0.1/本机 IP/外部内核服务） |
 | 默认 socket | **建**（双栈） | **建**（双栈，v6） |
 | 选栈触发 | 默认 / `SOCK_FSTACK` | 默认（双栈）/ `SOCK_KERNEL`（仅内核） |
 | 事件 | `ff_kqueue`/`ff_kevent` | host `epoll` |

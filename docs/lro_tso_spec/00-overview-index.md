@@ -45,7 +45,7 @@
 - `04-solution-and-architecture-design.md` — LRO hardware offload complete design + TSO enhancement plan (including data path/protocol stack integration)
 - `05-interface-and-config-design.md` — config.ini/ff_config/ff_api/hw_features change design
 - `06-milestones-and-work-breakdown.md` — Subsequent coding work breakdown
-- `07-test-and-acceptance-specification.md` — Unit/integration/real-machine tests (LRO aggregation, TSO segmentation, IPv4/IPv6, 9.134.214.176)
+- `07-test-and-acceptance-specification.md` — Unit/integration/real-machine tests (LRO aggregation, TSO segmentation, IPv4/IPv6, <DPDK_NIC_IP>)
 - `08-performance-baseline-plan.md` — LRO/TSO on/off comparison throughput/CPU/latency baseline methodology
 - `09-risks-and-compatibility.md` — LRO receive semantic changes, combinations with jumbo/scatter/RSS, TSO enhancement risks
 - `10-spec-review-gate.md` — Item-by-item assertion checklist (consistent with code, LRO/TSO closed loop, no omissions)

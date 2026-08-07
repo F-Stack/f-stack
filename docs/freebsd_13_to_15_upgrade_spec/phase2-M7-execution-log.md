@@ -77,7 +77,7 @@ Per spec §4.G3.3 + plan §8 OQ-4 default-allowed, this milestone's G3 takes the
 | G3 downgrade | primary ran 42 s straight + page-array TX/RX path active (log shows polling normally after dpdk interface registered) + no crash signals | ✅ |
 | Indirect confirmation | the explicit `ff_mmap_init mmap 65536 pages, 256 MB` print proves `ff_init_ref_pool` + `ff_mmap_init` (the two key page-array APIs) linked and ran correctly | ✅ |
 
-> Why no curl/HTTP end-to-end: this workspace is a CVM virtio NIC + the existing `[port0] addr=9.134.214.176/22` (user config); to listen on port 80 we'd need a separate `helloworld_epoll` plus ARP routing — outside the P1a single-flag-enable scope. Spec G3.3 explicitly permits this downgrade.
+> Why no curl/HTTP end-to-end: this workspace is a CVM virtio NIC + the existing `[port0] addr=<DPDK_NIC_IP>/22` (user config); to listen on port 80 we'd need a separate `helloworld_epoll` plus ARP routing — outside the P1a single-flag-enable scope. Spec G3.3 explicitly permits this downgrade.
 
 ### G4 — perf baseline (OQ-2 downgrade)
 

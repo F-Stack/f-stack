@@ -102,7 +102,7 @@ When G1~G4 all PASS: state → done, triggers the `local-commit` step.
 
 | ID | Risk | Impact | Mitigation |
 |---|---|---|---|
-| R-V1 | When `nb_vlan!=0`, the `[portN]` section is fully skipped → port0 9.134.214.176 SSH cuts | server unreachable | use a **dedicated config file** + explicit `-c` flag; SSH still rides host kernel eth1 during the test, the DPDK takeover window is announced and known to be temporary |
+| R-V1 | When `nb_vlan!=0`, the `[portN]` section is fully skipped → port0 <DPDK_NIC_IP> SSH cuts | server unreachable | use a **dedicated config file** + explicit `-c` flag; SSH still rides host kernel eth1 during the test, the DPDK takeover window is announced and known to be temporary |
 | R-V2 | `lib/ff_dpdk_if.c` does not call `rte_eth_dev_set_vlan_filter()` | HW vlan filter inactive; e2e traffic needs this call | scope D doesn't depend on the HW filter; recorded as F-V3 follow-up |
 | R-V3 | virtio-net vlan offload capability is limited | for end-to-end tests one may need promisc + soft filter | not validated this iteration; recorded as F-V2 follow-up |
 | R-V4 | Possible conflict between `vlan_strip=1` and the `nb_vlan!=0` rx path | tags stripped → vlan iface cannot receive packets | not validated this iteration; recorded as F-V4 follow-up |

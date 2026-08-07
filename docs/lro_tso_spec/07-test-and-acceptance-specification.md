@@ -126,7 +126,7 @@
 
 ## IV. Integration Test Matrix (Runtime, CM6)
 
-> Environment: DPDK dedicated NIC IP `9.134.214.176` (transmit/receive testing must `ssh f-stack-client` from peer); kernel stack control via `127.0.0.1` on `lo` (01-requirements-specification.md 3.3, 06-milestones-and-work-breakdown.md CM0). Tools: `iperf3`, `netstat -sp {ip,ip6,tcp}`, `tcpdump`/packet capture, DPDK `rte_eth_xstats`.
+> Environment: DPDK dedicated NIC IP `<DPDK_NIC_IP>` (transmit/receive testing must `ssh f-stack-client` from peer); kernel stack control via `127.0.0.1` on `lo` (01-requirements-specification.md 3.3, 06-milestones-and-work-breakdown.md CM0). Tools: `iperf3`, `netstat -sp {ip,ip6,tcp}`, `tcpdump`/packet capture, DPDK `rte_eth_xstats`.
 
 ### 4.1 Static Startup Matrix (LRO×TSO Four Combinations)
 
@@ -143,7 +143,7 @@
 
 | Case | Steps | Expected | Basis |
 | --- | --- | --- | --- |
-| IT-LRO-10 high-throughput receive (lro=1) | `ssh f-stack-client` sends large TCP to `9.134.214.176` (`iperf3 -c 9.134.214.176`, or large file download making f-stack the receiver) | Receive normal no drops/no anomalies; `netstat` received bytes correct; packet capture/xstats observe whether merged large segments appear (`RTE_MBUF_F_RX_LRO` or receive count < packet count) | 04-solution-and-architecture-design.md 1.6 data flow, 02-current-status-and-gap-analysis.md 1.5 |
+| IT-LRO-10 high-throughput receive (lro=1) | `ssh f-stack-client` sends large TCP to `<DPDK_NIC_IP>` (`iperf3 -c <DPDK_NIC_IP>`, or large file download making f-stack the receiver) | Receive normal no drops/no anomalies; `netstat` received bytes correct; packet capture/xstats observe whether merged large segments appear (`RTE_MBUF_F_RX_LRO` or receive count < packet count) | 04-solution-and-architecture-design.md 1.6 data flow, 02-current-status-and-gap-analysis.md 1.5 |
 | IT-LRO-11 lro=0 control | Same but `lro=0` | Receive correct; as throughput/CPU baseline control (performance see 08-performance-baseline-plan.md) | Zero regression control |
 | IT-LRO-12 IPv6 receive | Send high-throughput TCP to f-stack IPv6 address (`iperf3 -6`) | Receive correct; LRO同样 effective for v6 or gracefully not effective | IPv4/IPv6 separately covered |
 
@@ -258,7 +258,7 @@
 ### 8.2 Integration Tests (Runtime, Local virtio Testable Items)
 
 - **IT-SWLRO-10 Software LRO fallback enablement** ✅ (local+physical machine 2026-07-23 tested): Local virtio / physical machine NIC both don't support hardware LRO, `lro=1` startup, assert log shows "LRO is not supported, fallback to software" (`13-software-hardware-offload-integration.md` 2.2), `IFCAP_LRO` declaration effective. PASS.
-- **IT-SWLRO-11 Software LRO aggregated receive** ✅ (physical machine 2026-07-23 tested): `ssh f-stack-client` sends TCP high-throughput to `9.134.214.176`, software LRO fallback path receives normally, no crash (1261 NULL avoidance effective). Aggregation rate precise statistics (`lro_queued/lro_flushed`) pending iperf high-throughput tool supplement. PASS (no crash + receive correct).
+- **IT-SWLRO-11 Software LRO aggregated receive** ✅ (physical machine 2026-07-23 tested): `ssh f-stack-client` sends TCP high-throughput to `<DPDK_NIC_IP>`, software LRO fallback path receives normally, no crash (1261 NULL avoidance effective). Aggregation rate precise statistics (`lro_queued/lro_flushed`) pending iperf high-throughput tool supplement. PASS (no crash + receive correct).
 - **IT-SWLRO-12 No-crash verification** ✅ (physical machine 2026-07-23 tested): Continuous high-throughput stress under software LRO enabled, confirm no `tcp_hpts_softclock` NULL dereference crash (verifies Option A classic mode avoidance effective). PASS.
 - **IT-SWLRO-13 Software/hardware mutual exclusion** ❌ (pending, not verified): Requires hardware LRO-capable physical NIC. The physical machine NIC used for this test also doesn't support hardware LRO (virtio class); `rx_lro=1` hardware branch has no runtime evidence to date. **Pending replacement with a physical NIC supporting `RTE_ETH_RX_OFFLOAD_TCP_LRO` (ixgbe/i40e/mlx5/ice etc.) for verification**.
 

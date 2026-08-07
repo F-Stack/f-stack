@@ -58,8 +58,8 @@ cd /data/workspace/f-stack/example && /data/workspace/rm_tmp_file.sh ./helloworl
 /data/workspace/rm_tmp_file.sh /var/run/dpdk/rte/{config,fbarray_*,hugepage_info}
 sudo ./helloworld_zc -c ../config.ini --proc-type=primary --proc-id=0 &
 sleep 12 && [ -d /proc/$PID ] && echo ALIVE
-ssh f-stack-client 'curl -sS -o /dev/null -w "%{http_code}\n" http://9.134.214.176/'
-ssh f-stack-client 'OK=0; for i in $(seq 1 100); do CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://9.134.214.176/); [ "$CODE" = 200 ] && OK=$((OK+1)); done; echo $OK/100'
+ssh f-stack-client 'curl -sS -o /dev/null -w "%{http_code}\n" http://<DPDK_NIC_IP>/'
+ssh f-stack-client 'OK=0; for i in $(seq 1 100); do CODE=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 5 http://<DPDK_NIC_IP>/); [ "$CODE" = 200 ] && OK=$((OK+1)); done; echo $OK/100'
 /data/workspace/kill_process.sh $PID
 ```
 

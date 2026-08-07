@@ -84,8 +84,8 @@ EAL: Error - exiting with code: 1
 | G3.1 | `tools/sbin/ifconfig gif0 create` | exit=0 ✓ |
 | G3.2 | `tools/sbin/ifconfig gif0` | `gif0: flags=8010<POINTOPOINT,MULTICAST> mtu 1280 / groups: gif` ✓ |
 | G3.3 | `tools/sbin/ifconfig` (list all) | `lo0` + `f-stack-0` + `gif0` 三接口可见 ✓ |
-| G3.4 | `ifconfig gif0 tunnel 9.134.214.176 9.134.211.87` + `ifconfig gif0 inet 10.10.10.1 10.10.10.2 netmask 0xffffffff` | `tunnel inet 9.134.214.176 --> 9.134.211.87 / inet 10.10.10.1 --> 10.10.10.2` flags=`UP,POINTOPOINT,RUNNING,MULTICAST` ✓ |
-| G3.5 | client: `ip tunnel add gif0 mode ipip remote 9.134.214.176 local 9.134.211.87` + addr + link up | `gif0@NONE: link/ipip 9.134.211.87 peer 9.134.214.176 inet 10.10.10.2 peer 10.10.10.1/32` ✓ |
+| G3.4 | `ifconfig gif0 tunnel <DPDK_NIC_IP> <CLIENT_IP>` + `ifconfig gif0 inet 10.10.10.1 10.10.10.2 netmask 0xffffffff` | `tunnel inet <DPDK_NIC_IP> --> <CLIENT_IP> / inet 10.10.10.1 --> 10.10.10.2` flags=`UP,POINTOPOINT,RUNNING,MULTICAST` ✓ |
+| G3.5 | client: `ip tunnel add gif0 mode ipip remote <DPDK_NIC_IP> local <CLIENT_IP>` + addr + link up | `gif0@NONE: link/ipip <CLIENT_IP> peer <DPDK_NIC_IP> inet 10.10.10.2 peer 10.10.10.1/32` ✓ |
 | **G3.6** | **`ping -c 3 -W 2 10.10.10.1`** | **3/3 received, 0% loss, RTT 0.288/0.436/0.649 ms ✓** |
 
 ### G4 — 性能（observation only，OQ-2 默认许可降级）

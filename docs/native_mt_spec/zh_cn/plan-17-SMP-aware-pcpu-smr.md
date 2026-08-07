@@ -155,7 +155,7 @@
 
 ## 5. 运行时验证环境（已验证可用）
 
-- 本机双网卡；DPDK 独占网卡 IP `9.134.214.176`，压测须 `ssh f-stack-client` 后用 `/data/wrk/wrk` 打该 IP；内核栈测试用 `127.0.0.1`。
+- 本机双网卡；DPDK 独占网卡 IP `<DPDK_NIC_IP>`，压测须 `ssh f-stack-client` 后用 `/data/wrk/wrk` 打该 IP；内核栈测试用 `127.0.0.1`。
 - 被测程序 `/data/workspace/f-stack/example/helloworld`，配置 `/data/workspace/f-stack/config.ini`。
 - 上一轮踩过的坑（沿用）：
   - `(nohup ... &)` 子 shell 启动的进程会被回收，必须 `setsid nohup ... < /dev/null &` 完全脱离；

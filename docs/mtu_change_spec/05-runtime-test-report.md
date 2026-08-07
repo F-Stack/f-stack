@@ -5,7 +5,7 @@
 ## 1. Test Environment
 
 - **Process under test**: running nginx_fstack (primary, `lcore_mask=10`, DPDK device `0000:00:09.0`, bound to `igb_uio`).
-- **DPDK NIC**: virtio, `f-stack-0`, IP `9.134.214.176`.
+- **DPDK NIC**: virtio, `f-stack-0`, IP `<DPDK_NIC_IP>`.
 - **Test tool**: `tools/sbin/ifconfig`, attaching to primary as a DPDK secondary process.
 - **Invocation**: `FF_CONFIG=/usr/local/nginx_fstack/conf/f-stack.conf tools/sbin/ifconfig -p 0 f-stack-0 [mtu <N>]`
   - The tool uses `-p <proc_id>` to select primary; `FF_CONFIG` specifies the same EAL config as primary.
@@ -17,9 +17,9 @@
 ```
 $ ... ifconfig -p 0 f-stack-0
 f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> metric 0 mtu 1500
-	inet 9.134.214.176 netmask 0xfffff800 broadcast 9.134.215.255
+	inet <DPDK_NIC_IP> netmask 0xfffff800 broadcast <BROADCAST_IP>
 	inet6 fe80::2290:6fff:fe7d:5d08 prefixlen 64 scopeid 0x2
-	inet6 2402:4e00:1900:1:6:5522:de6a:7d84 prefixlen 128 autoconf
+	inet6 <DPDK_NIC_IPV6> prefixlen 128 autoconf
 ```
 - Default **mtu 1500** (corroborates `ether_ifattach` initializing `if_mtu=ETHERMTU`).
 

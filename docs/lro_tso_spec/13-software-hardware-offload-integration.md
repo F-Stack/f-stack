@@ -307,7 +307,7 @@ When `dpdk.tso=0` (default, `config.ini:22`) (doc 12 / `05` doc section 8):
 5. Whether `ff_veth.c:958-960` current tsomax values (`IP_MAXPACKET`/`35`/`2048`) match target PMD.
 6. Under default all-off (`tso=0`/`lro=0`), receive/transmit function and performance byte-for-byte/metric-for-metric identical to pre-change (zero regression dynamic verification).
 
-> All the above are runtime/subsequent milestone validation items, not tested this round. Test environment: DPDK dedicated NIC IP `9.134.214.176` (`ssh f-stack-client` side initiates), kernel stack testing via `127.0.0.1` on `lo`.
+> All the above are runtime/subsequent milestone validation items, not tested this round. Test environment: DPDK dedicated NIC IP `<DPDK_NIC_IP>` (`ssh f-stack-client` side initiates), kernel stack testing via `127.0.0.1` on `lo`.
 
 ---
 

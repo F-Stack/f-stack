@@ -6,7 +6,7 @@
 > **状态**：§4/§5 为 v5 R4 真机实测 FINAL（per-fd 二选一口径，仅切运行期 `kernel_coexist` 0/1）；**v6 自动双栈（commit 13b418191）功能正确性 + 宏关零回归 + PERF-1/2/4 F-Stack 快路径 A/B 均已真机实测 PASS（见 §10）**。
 > **v6 口径声明**：v5 实测的是 per-fd 二选一（默认仅建 F-Stack）下「切 `kernel_coexist` 0/1」对 F-Stack 快路径的影响——结论 PERF-1/2 零回归。**v6 自动双栈引入「默认双建/双驱动」**，须**新测**：①默认双栈下 F-Stack 业务快路径仍无回归（PERF-1/2）；②**单栈连接热路径不因双栈机制查 `ff_native_fd_map`**（PERF-4，对应 `07` UT-17）。R6 编译宏关闭态（含 v6 `ff_native_fd_map` 不编译）零回归仍由 `07 §1bis` MT-1 nm 符号比对验证，宏关时与原 F-Stack 同二进制、无需重测性能。
 > **作用域**：用实测验证共存对 **F-Stack 业务快路径无回归**（PERF-1/PERF-2/**PERF-4**），并给出**内核侧旁路吞吐**（PERF-3）管理面数据点。
-> **实证铁律**：所有数字来自实际 wrk 运行的原始输出（`/tmp/helloworld-coexist-bench/`、`/tmp/kbench-perf/`），禁止臆造。真实 server/client IP 经源端 sed 掩码后才落盘（`9.134.214.176→192.168.1.1`、`9.134.211.87→192.168.1.2`）。
+> **实证铁律**：所有数字来自实际 wrk 运行的原始输出（`/tmp/helloworld-coexist-bench/`、`/tmp/kbench-perf/`），禁止臆造。真实 server/client IP 经源端 sed 掩码后才落盘（`<DPDK_NIC_IP>→192.168.1.1`、`<CLIENT_IP>→192.168.1.2`）。
 
 ---
 
@@ -166,7 +166,7 @@ cd /data/workspace/f-stack/example/helloworld_stacksel && make   # ./helloworld_
 
 ## 10. v6 R7 自动双栈实测结论（commit 13b418191）
 
-> 本节为 v6 native 自动双栈的实测结论。§10.2 的 vector A A/B 吞吐为 **v6 默认双建/双驱动口径**真机实测（helloworld 纯 IPv4、链宏开 lib，仅切 config `kernel_coexist` 0/1，client wrk 4.2.0 压 DPDK 网卡 9.134.214.176:80）。§4/§5 仍为 v5 per-fd 二选一口径 FINAL，保留作历史对照。
+> 本节为 v6 native 自动双栈的实测结论。§10.2 的 vector A A/B 吞吐为 **v6 默认双建/双驱动口径**真机实测（helloworld 纯 IPv4、链宏开 lib，仅切 config `kernel_coexist` 0/1，client wrk 4.2.0 压 DPDK 网卡 <DPDK_NIC_IP>:80）。§4/§5 仍为 v5 per-fd 二选一口径 FINAL，保留作历史对照。
 
 ### 10.1 实测 / 确证项
 
@@ -175,13 +175,13 @@ cd /data/workspace/f-stack/example/helloworld_stacksel && make   # ./helloworld_
 | 宏关零回归（编译期） | `nm libfstack.a` 共存符号=0；size 6539682 与基线逐字节一致 | PASS（与原 F-Stack 同二进制） |
 | 宏开编译 | `make FF_KERNEL_COEXIST=1` rc=0；共存符号齐全（含 `ff_native_fd_map`） | PASS |
 | 单测双态 | 宏关 P1 50/50；宏开 P1 含 `test_ff_native_fd_map`/`test_ff_kernel_fd_encode_roundtrip` | PASS |
-| 真机双栈功能（一 listen 多用） | 单 `listen(80)`：内核 `curl 127.0.0.1:80=200`；F-Stack `ssh→9.134.214.176:80=200` | PASS |
+| 真机双栈功能（一 listen 多用） | 单 `listen(80)`：内核 `curl 127.0.0.1:80=200`；F-Stack `ssh→<DPDK_NIC_IP>:80=200` | PASS |
 | PERF-1/2 F-Stack 快路径无回归 | §10.2 vector A A/B 真机实测 | PASS |
 | PERF-4 热路径不查 map | recv/send 仅 `ff_is_kernel_fd` 单次判定不查 map（代码）+ §10.2 keep-alive 长连接吞吐 A1≈A0（实测佐证） | PASS |
 
 ### 10.2 vector A：v6 默认双建对 F-Stack 业务快路径 A/B（PERF-1/2，真机实测）
 
-> 同一 helloworld（纯 IPv4、链宏开 lib），仅切 `config.ini [stack] kernel_coexist`：A0=0（纯 F-Stack）/ A1=1（v6 默认双建/双驱动）。client（f-stack-client，掩码 192.168.1.2）wrk 4.2.0 压 DPDK 网卡 9.134.214.176:80（掩码 192.168.1.1）；每档 3 trial 取 median；环境/方法同 §2/§3（单 lcore `lcore_mask=10`、`idle_sleep=20`、keep-alive）。
+> 同一 helloworld（纯 IPv4、链宏开 lib），仅切 `config.ini [stack] kernel_coexist`：A0=0（纯 F-Stack）/ A1=1（v6 默认双建/双驱动）。client（f-stack-client，掩码 192.168.1.2）wrk 4.2.0 压 DPDK 网卡 <DPDK_NIC_IP>:80（掩码 192.168.1.1）；每档 3 trial 取 median；环境/方法同 §2/§3（单 lcore `lcore_mask=10`、`idle_sleep=20`、keep-alive）。
 
 吞吐 req/s（median of 3）：
 

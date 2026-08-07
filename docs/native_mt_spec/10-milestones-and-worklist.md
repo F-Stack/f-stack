@@ -56,7 +56,7 @@
 2. Toolchain prefers C1 (keep external tool processes attaching, see `08`).
 
 ### CM7 Integration + Regression + Baseline (medium risk)
-1. End-to-end: lo 127.0.0.1 kernel-stack comparison + DPDK NIC 9.134.214.176 tested via f-stack-client (see `11`).
+1. End-to-end: lo 127.0.0.1 kernel-stack comparison + DPDK NIC <DPDK_NIC_IP> tested via f-stack-client (see `11`).
 2. Full multi-process zero-regression regression (thread_mode=0).
 3. Performance baseline: thread mode vs multi-process (see `11`).
 

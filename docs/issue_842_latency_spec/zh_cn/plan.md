@@ -41,9 +41,9 @@ Issue 作者**已使用优化配置**（idle_sleep=0, pkt_tx_delay=0, delayed_ac
 
 | 角色 | 机器 | IP | 网卡 |
 | --- | --- | --- | --- |
-| Python echo server | f-stack-client | 9.134.211.87 | eth1 |
-| F-Stack client | 本机 | 9.134.214.176 | DPDK NIC (port0) |
-| Kernel client | 本机 | 9.134.214.176 | eth1 (内核栈) |
+| Python echo server | f-stack-client | <CLIENT_IP> | eth1 |
+| F-Stack client | 本机 | <DPDK_NIC_IP> | DPDK NIC (port0) |
+| Kernel client | 本机 | <DPDK_NIC_IP> | eth1 (内核栈) |
 | Kernel client (lo) | 本机 | 127.0.0.1 | lo |
 
 ### 2.2 软件版本

@@ -79,7 +79,7 @@ Use **measurement** to decide the above dichotomy, and when judged "code defect"
 Unified load command (user-specified, must not change):
 
 ```
-ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://9.134.214.176:80/"
+ssh f-stack-client "/data/wrk/wrk -t5 -c100 -d10s http://<DPDK_NIC_IP>:80/"
 ```
 
 Unified prerequisite: before each startup, `pgrep` to confirm no residual helloworld processes; if present, clean via `/data/workspace/kill_process.sh` (**`kill`/`pkill`/`killall` strictly forbidden**).

@@ -16,7 +16,7 @@
 - VNET isolation validation: different threads bind different IPs/routes, mutually invisible (`V_in_ifaddrhead`/`V_rt_tables` isolation).
 
 ### 1.3 End-to-End (this machine's dual-NIC constraint)
-- **DPDK NIC** (exclusive, IP 9.134.214.176): requires `ssh f-stack-client` to originate traffic from the peer to test thread-mode N-thread send/receive and RSS flow splitting.
+- **DPDK NIC** (exclusive, IP <DPDK_NIC_IP>): requires `ssh f-stack-client` to originate traffic from the peer to test thread-mode N-thread send/receive and RSS flow splitting.
 - **Kernel-stack comparison**: `127.0.0.1` lo goes through the kernel stack as the comparison baseline.
 
 ### 1.4 Multi-Process Zero Regression (one-vote veto)

@@ -685,7 +685,7 @@ PCI_BUS: Requested device 0000:00:05.0 cannot be used
 
 → **结论：可以忽略，不影响 `tester` 的阶段 2/4。**
 
-**⚠️ 严重警告（务必转达 `tester`）**：**绝对不要**把 `0000:00:05.0` 绑定到 DPDK（`igb_uio`/`vfio-pci`）。它是**内核侧 Active 的 `eth1`**，很可能承载本机管理/SSH 通道；一旦绑定会立即失去连通性。DPDK 侧该用的网卡是 `0000:00:09.0`（已绑 `igb_uio`），对应 `config.ini` 的 `9.134.214.176`。
+**⚠️ 严重警告（务必转达 `tester`）**：**绝对不要**把 `0000:00:05.0` 绑定到 DPDK（`igb_uio`/`vfio-pci`）。它是**内核侧 Active 的 `eth1`**，很可能承载本机管理/SSH 通道；一旦绑定会立即失去连通性。DPDK 侧该用的网卡是 `0000:00:09.0`（已绑 `igb_uio`），对应 `config.ini` 的 `<DPDK_NIC_IP>`。
 
 **（可选）消除该告警**：在 `config.ini` 的 `[dpdk]` 段加 `allow=0000:00:09.0`，让 EAL 只探测DPDK 网卡。
 > 但这属**本地测试值，严禁入库**（与 `lcore_mask`/`idle_sleep`/`[port0]` 本机 IP 同类）。若`tester` 采用，请在提交前回滚。

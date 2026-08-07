@@ -219,7 +219,7 @@ int __wrap_rte_vlog(uint32_t level, uint32_t logtype, const char *fmt, va_list a
 | **TC-U-P1-CFG-08** | `test_ff_load_config_empty_ini` | ff_load_config | empty ini → returns error |
 | **TC-U-P1-CFG-09** | `test_vlan_cfg_handler_isolated` (white-box) | `#include "ff_config.c"` | Directly calls vlan_cfg_handler, verifies ff_vlan_cfg fields |
 | **TC-U-P1-CFG-10** | `test_ipfw_pr_cfg_handler_isolated` (white-box) | same as above | ipfw_pr_cfg_handler parses fib + cidr |
-| **TC-U-P1-CFG-11** | `test_port_cfg_handler_addr_parse` | same as above | port_cfg_handler parses addr=9.134.214.176/21 |
+| **TC-U-P1-CFG-11** | `test_port_cfg_handler_addr_parse` | same as above | port_cfg_handler parses addr=<DPDK_NIC_IP>/21 |
 
 **TC-U-P1-CFG total: 11** ✓
 

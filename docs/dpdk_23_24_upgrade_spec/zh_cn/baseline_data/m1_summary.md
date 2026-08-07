@@ -31,10 +31,10 @@ build log 落档：`/tmp/m1_dpdk_23_build.log` + `/tmp/m1_lib_build.log` + `/tmp
 
 | 维度 | 值 |
 |---|---|
-| Server | 9.134.214.176 (CVM, virtio-net `0000:00:09.0`) |
-| Client | f-stack-client (9.134.211.87) |
+| Server | <DPDK_NIC_IP> (CVM, virtio-net `0000:00:09.0`) |
+| Client | f-stack-client (<CLIENT_IP>) |
 | Helloworld config | `/data/workspace/f-stack/config.ini`（与 production 同；从 `/data/workspace/config.ini` 复制覆盖以修复 git checkout 重置）|
-| 关键 config | `lcore_mask=10` / `idle_sleep=20` / `addr=9.134.214.176` |
+| 关键 config | `lcore_mask=10` / `idle_sleep=20` / `addr=<DPDK_NIC_IP>` |
 | Harness | `tools/sbin/p5b_perf_matrix.sh`（phase-5b methodology） |
 | ssh round-trip | ~ 6 ms（物理上限；性能数字仅作跨配置 delta 用） |
 
@@ -53,8 +53,8 @@ f-stack-0: Successed to register dpdk interface
 
 | 测试 | 结果 |
 |---|---|
-| `ssh f-stack-client ping -c 3 -W 2 9.134.214.176` | **3/3 received, 0% loss, RTT 0.301-0.459 ms** |
-| `ssh f-stack-client curl http://9.134.214.176/ -w '%{http_code} %{time_total}'` | **HTTP=200 / time=0.93 ms** |
+| `ssh f-stack-client ping -c 3 -W 2 <DPDK_NIC_IP>` | **3/3 received, 0% loss, RTT 0.301-0.459 ms** |
+| `ssh f-stack-client curl http://<DPDK_NIC_IP>/ -w '%{http_code} %{time_total}'` | **HTTP=200 / time=0.93 ms** |
 
 ### 2.4 TC1 — 100 短连 × 3 trials
 
