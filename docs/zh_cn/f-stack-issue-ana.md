@@ -2096,6 +2096,7 @@
 - **#1078** 🟢open primary稳定性控制
   - 结论：官方结论(open未关闭)：将primary拆分为轻量级仅做基础设施的进程是有效方向，但因DPDK多进程设计(primary天然管理共享内存/NIC初始化/资源分配)需要重大架构改动。当前可行的实用替代方案：1)减少primary的业务工作量(分配更少lcore给包处理)降低崩溃风险；2)用不同DPDK实例(--file-prefix)隔离独立服务组；3)实现外部watchdog对primary做……
   - 修复/方案信息：架构改进方向已认可但需较大改动(长期item，issue保持open)。当前workaround：减少primary业务负载/--file-prefix隔离服务组/外部watchdog自动重启。相关：#804。
+  - 本轮专项调研(2026-08)：结论**有条件可行且推荐采纳**，与上面"需重大架构改动"的判断不同。PoC实测仅需**3行代码+1项配置**(解除`lib/ff_dpdk_if.c:508-510`的`nb_rx_queue==0`时`rte_exit`、修正`:535`的mbuf池公式对本进程队列数的依赖，配`[port0] lcore_list`摘掉primary的lcore)，杀掉瘦身primary后已建连接12/12零中断、新建连接12/12、性能无回归。根本原因：队列数与queueid由该port的`lcore_list`长度与下标决定(`:836`、`:487-491`)，与`proc_id`解耦，摘掉primary后队列数/queueid/RSS reta一致收缩，孤儿队列自然消失。边界：primary只能常驻不能退出(DPDK的IPC服务端/扩堆代理/中断均只在primary)、瘦身不省CPU(仍空转占满一核)、控制面降级态需择机全组重启、KNI场景与非igb_uio驱动待验证。完整调研见 `docs/issue_1078/zh_cn/`(00~10共11篇)。另注：上面"官方结论"字样存疑——据调研启动阶段对issue页面的实抓，该issue为Open且未见评论与关联PR(本轮未联网复核)，故"官方结论"很可能是早期整理时的推断而非维护者原话。
 
 ### 协议扩展需求（9 个）
 

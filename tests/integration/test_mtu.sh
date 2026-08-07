@@ -7,7 +7,7 @@ set -e
 
 BINARY="${1:-./helloworld}"
 CONFIG="${2:-/data/workspace/f-stack/config.ini}"
-TARGET_IP="${3:-9.134.214.176}"
+TARGET_IP="${3:-192.168.1.2}"
 FSTACK_CLIENT="f-stack-client"
 
 echo "=== f-stack MTU Integration Test ==="
