@@ -196,6 +196,7 @@ static void softclock_call_cc(struct callout *c, struct callout_cpu *cc,
     int *mpcalls, int *lockcalls, int *gcalls,
 #endif
     int direct);
+static void softclock(void *arg);
 
 static MALLOC_DEFINE(M_CALLOUT, "callout", "Callout datastructures");
 
@@ -351,10 +352,8 @@ callout_tick(void)
      * swi_sched acquires the thread lock, so we don't want to call it
      * with cc_lock held; incorrect locking order.
      */
-#ifndef FSTACK
     if (need_softclock)
         softclock(cc);
-#endif
 }
 
 static struct callout_cpu *
@@ -581,7 +580,7 @@ skip:
  * Software (low priority) clock interrupt.
  * Run periodic events from timeout queue.
  */
-static __unused void
+static void
 softclock(void *arg)
 {
     struct callout *c;

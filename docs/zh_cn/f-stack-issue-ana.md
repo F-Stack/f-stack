@@ -516,8 +516,8 @@
   - 结论：【以最晚回复为准，2019-11-18】官方结论：CVE-2018-6925影响本地用户且CVE-2018-1715只影响FreeBSD [12.0,12.5)版本范围，而F-Stack基于FreeBSD 11.0，不受该CVE影响，因此当前不需要更新修复。
   - 修复/方案信息：不受影响，无需修复（F-Stack基于FreeBSD 11.0，CVE-2018-1715只影响12.0-12.5）。
 - **#331** 🟢open kqueue timer not usable
-  - 结论：【以最晚回复为准，2026-03-23，issue仍为open状态】官方分析：定时器精度与config.ini的hz参数相关(默认100，即每tick 10ms)，可提高hz值(如设为1000获得约1ms精度)改善精度但会增加CPU占用；官方最初提到#701中报告了类似问题但未完全合并修复；随后官方更新说明#701和#702本应修复此问题但相关修复commit在当前分支中缺失，需进一步调查，iss……
-  - 修复/方案信息：临时workaround：提高config.ini的`hz`参数值(如hz=1000)改善精度，但会增加CPU占用；相关修复见#701/#702但目前分支缺失，尚待官方进一步排查落地。
+  - 结论：【2026-08-07 本地实测+修复】确认 bug 至今未修，根因为双重 bug：(1)kern_event.c kqtimer_sched_callout 传绝对 sbintime 给 F-Stack 宏 callout_reset_sbt_on，该宏忽略 C_ABSOLUTE，把绝对 sbt 转绝对 ticks，callout_cc_add 又当相对 ticks（c->c_time=ticks+绝对ticks）→ 双重计算，延迟随系统 uptime 增长；(2)ff_kern_timeout.c callout_tick 中 softclock(cc) 在 #ifndef FSTACK 内为死代码，普通 callout 轮从不被驱动，EVFILT_TIMER callout 永不触发。维护者称"#701/#702 应已修但 commit 缺失"——实际 commit(e592cbbfe/a816e8963)都在 HEAD 中但都不是 timer 精度代码修复（前者只改 config.ini hz 推荐，后者修 PCB 泄漏）。TCP 定时器因 callout_when 是空 stub 保持相对 sbt + 由 HPTS 轮驱动，不受影响。
+  - 修复/方案信息：已修复（两部分）：(1)kern_event.c kqtimer_sched_callout 改用 sbinuptime() 同尺度算相对 ticks 直传 callout_reset_tick_on；(2)ff_kern_timeout.c callout_tick 移除 #ifndef FSTACK guard 使 softclock(cc) 被调用驱动普通 callout 轮 + 添加前向声明。测试 T1-T4（精度/周期重设/TCP回归/默认）全 PASS。详细分析见 docs/issue_331/zh_cn/。
 - **#351** ⚪closed too quick to add fd to the epoll fd will make the event miss（重复于 #331）
   - 结论：用户最终自行确认该问题出现在其特定测试服务器环境下(压测时特有现象)，怀疑与hz参数导致的定时器精度问题(#331)相关，未给出官方最终修复结论。
   - 修复/方案信息：可尝试提高config.ini的`hz`参数值以缓解，详见#331相关分析。
@@ -1010,11 +1010,11 @@
   - 结论：维护者回复：将稍后调试该问题，可能是运行一段时间后内存耗尽。未见后续跟进结论。
   - 修复/方案信息：相关：#702(rack/bbr栈下PCB内存泄漏问题，可能是相关根因)。
 - **#701** ⚪closed F-stack kernel failing to track time properly
-  - 结论：用户自行定位并提供临时hack方案：F-Stack将BSD callout改造为接受'ticks'参数而非bintime，用户修改kern_event.c使所有值为绝对值(而非相对于sbinuptime())以符合该假设，初步解决触发间隔偏差问题，建议官方基于此完善正式修复。维护者表示会检查，未见后续正式修复确认。
-  - 修复/方案信息：临时workaround：修改kern_event.c中的定时器计算逻辑，使其使用绝对值而非相对于sbinuptime()的值，以匹配F-Stack callout对'ticks'参数的假设。未见官方正式修复确认。相关：#702。
+  - 结论：【2026-08-07 本地代码坐实+修复】用户自行定位的根因正确：F-Stack 把 BSD callout 改造成 tick-based（ff_kern_timeout.c 旧轮 + 空 stub callout_when + 宏化 callout_reset_sbt_on 忽略 C_ABSOLUTE），而 kern_event.c（15.0）手动算绝对 sbintime 传 C_ABSOLUTE，导致 c->c_time=ticks+绝对ticks 双重计算。用户 hack（改绝对值）方向正确但本地已用更完整方案修复（sbinuptime 同尺度算相对 ticks + 驱动 softclock）。维护者称会检查但未见正式修复，相关 commit(e592cbbfe)只改 config.ini hz 推荐非代码修复。
+  - 修复/方案信息：已修复（见 #331）：kern_event.c kqtimer_sched_callout 改传相对 ticks + ff_kern_timeout.c callout_tick 驱动 softclock。相关：#331、#702。
 - **#702** ⚪closed F-stack rack and BBR both causes PCB memory leak
-  - 结论：【2023-01-05回复,以最晚回复为准】维护者最终确认：现在bbr和rack可以正确调用hpts_timeout_dir()携带timer并释放到uma zone(pcbinfo->ipi_zone)。但HPTS的timer仍有其他问题会后续调整(见#701)，且当前uma zone释放后不会归还给OS也会后续调整。2025年另一用户确认该修复有效。
-  - 修复/方案信息：已部分修复：bbr/rack现能正确调用hpts_timeout_dir()释放PCB到uma zone避免主要内存泄漏。遗留问题：HPTS timer相关问题(见#701)、uma zone释放后不归还OS，均待后续调整。
+  - 结论：【2023-01-05回复,以最晚回复为准】维护者最终确认：现在bbr和rack可以正确调用hpts_timeout_dir()携带timer并释放到uma zone(pcbinfo->ipi_zone)。但HPTS的timer仍有其他问题会后续调整(见#701)，且当前uma zone释放后不会归还给OS也会后续调整。2025年另一用户确认该修复有效。【2026-08-07 补充】#701 的 timer 精度问题已在本地修复（见 #331）。
+  - 修复/方案信息：已部分修复：bbr/rack现能正确调用hpts_timeout_dir()释放PCB到uma zone避免主要内存泄漏。#701 timer 精度问题已本地修复（见 #331）。遗留问题：uma zone释放后不归还OS，待后续调整。
 - **#724** ⚪closed Segmentation fault in registering events in kevent
   - 结论：【2026-07-31回复】官方最终确认已通过PR #746(2023-03-13合并)修复，该PR解决了vtoslab()可能返回错误slab指针的bug，导致knote_free()在频繁kqueue事件注册/注销场景(短连接工作负载常见)下访问无效内存。修复已包含在当前代码库(freebsd/vm/uma_core.c)中，请使用包含PR #746或更新的版本。
   - 修复/方案信息：已修复：PR #746(2023-03-13合并)修复vtoslab()返回错误slab指针导致knote_free()访问无效内存的问题，已包含在freebsd/vm/uma_core.c当前代码库中。
