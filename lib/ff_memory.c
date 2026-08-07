@@ -316,7 +316,7 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
     ff_mbuf_tx_offload(m, &offload);
     data = rte_pktmbuf_mtod(head, void*);
 
-    if (offload.ip_csum) {
+    if (ctx->hw_features.tx_csum_ip && offload.ip_csum) {
         /* ipv6 not supported yet */
         struct rte_ipv4_hdr *iph;
         int iph_len;
@@ -362,7 +362,10 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
             if (iph->version == 4) {
                 tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
                 tcph_len = (tcph->data_off & 0xf0) >> 2;
-                head->ol_flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
+                head->ol_flags |= RTE_MBUF_F_TX_IPV4;
+                if (ctx->hw_features.tx_csum_ip) {
+                    head->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
+                }
                 tcph->cksum = rte_ipv4_phdr_cksum(iph, RTE_MBUF_F_TX_TCP_SEG);
                 head->l3_len = iph_len;
             } else {

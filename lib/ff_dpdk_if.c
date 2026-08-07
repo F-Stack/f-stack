@@ -980,25 +980,33 @@ init_port_start(void)
                     port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_TIMESTAMP;
                 }
 
-                if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
+                if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0 &&
+                    ff_global_cfg.dpdk.tx_csum_ip_skip == 0) {
                     if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_IPV4_CKSUM)) {
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX ip checksum offload supported\n");
                         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_IPV4_CKSUM;
                         pconf->hw_features.tx_csum_ip = 1;
                     }
+                }
 
+                if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0 &&
+                    ff_global_cfg.dpdk.tx_csum_l4_skip == 0) {
                     if ((dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_UDP_CKSUM) &&
                         (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_TCP_CKSUM)) {
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX TCP&UDP checksum offload supported\n");
                         port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_UDP_CKSUM | RTE_ETH_TX_OFFLOAD_TCP_CKSUM;
                         pconf->hw_features.tx_csum_l4 = 1;
                     }
-                } else {
+                }
+
+                if (ff_global_cfg.dpdk.tx_csum_offoad_skip) {
                     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX checksum offoad is disabled\n");
                 }
 
                 if (ff_global_cfg.dpdk.tso) {
-                    if (ff_global_cfg.dpdk.tx_csum_offoad_skip) {
+                    if (ff_global_cfg.dpdk.tx_csum_offoad_skip ||
+                        ff_global_cfg.dpdk.tx_csum_ip_skip ||
+                        ff_global_cfg.dpdk.tx_csum_l4_skip) {
                         ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
                             "TSO enabled but tx_csum_offoad_skip=1, TSO may not work\n");
                     }
@@ -2499,7 +2507,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 
     void *data = rte_pktmbuf_mtod(head, void*);
 
-    if (offload.ip_csum) {
+    if (ctx->hw_features.tx_csum_ip && offload.ip_csum) {
         /* ipv6 not supported yet */
         struct rte_ipv4_hdr *iph;
         int iph_len;
@@ -2551,7 +2559,10 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
             if (iph->version == 4) {
                 tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
                 tcph_len = (tcph->data_off & 0xf0) >> 2;
-                head->ol_flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM;
+                head->ol_flags |= RTE_MBUF_F_TX_IPV4;
+                if (ctx->hw_features.tx_csum_ip) {
+                    head->ol_flags |= RTE_MBUF_F_TX_IP_CKSUM;
+                }
                 tcph->cksum = rte_ipv4_phdr_cksum(iph, RTE_MBUF_F_TX_TCP_SEG);
                 head->l3_len = iph_len;
             } else {

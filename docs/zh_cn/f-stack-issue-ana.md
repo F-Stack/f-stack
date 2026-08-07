@@ -316,8 +316,8 @@
   - 结论：【2026-07-24回复】官方最终确认：该问题已在新版本DPDK中解决。提出issue时ixgbe VF驱动未正确暴露RSS offload能力(flow_type_rss_offloads)，导致请求/响应包被非对称地分发到不同队列/lcore。当前F-Stack版本(基于DPDK 24.11.6 LTS)：ixgbevf_dev_info_get现已正确设置flow_type_rss_off……
   - 修复/方案信息：当前DPDK版本(24.11.6 LTS)ixgbe VF的RSS已修复正常工作；可配合F-Stack的`symmetric_rss=1`配置确保请求响应同队列。virtio场景需host(QEMU)侧启用virtio-net RSS支持，否则多进程模式仍有此问题。
 - **#520** 🟢open Disable TX ip checksum offload in VMware ESXi 5.5.0 Update 2
-  - 结论：【以最晚回复为准，2026-07-24】官方最终确认：当前的临时解决方法是在config.ini的[dpdk]段设置tx_csum_offoad_skip=1，这会禁用所有TX checksum offload(IP+TCP/UDP)，可解决VMware等虚拟化环境下网卡宣称支持TX checksum offload但实际不计算checksum的问题。用户建议的更细粒度控制(只禁用IP层check……
-  - 修复/方案信息：临时方案：config.ini设置`tx_csum_offoad_skip=1`(会同时禁用IP和TCP/UDP层checksum offload)。更细粒度的仅禁用IP层checksum offload方案尚未实现(社区贡献可参考lib/ff_dpdk_if.c及hw_features.tx_csum_ip/tx_csum_l4字段)，issue保持open。相关根因见#317。
+  - 结论：【2026-08-07 本地实测+修复】实现了用户建议的细粒度 TX checksum offload 控制：新增 `tx_csum_ip_skip` 和 `tx_csum_l4_skip` 配置项（config.ini [dpdk] 段），可独立禁用 IP 层或 L4 层 TX checksum offload，向后兼容 `tx_csum_offoad_skip`。同时修复了 TX 路径中 IP checksum offload 缺少 `hw_features.tx_csum_ip` 守卫的问题（ff_dpdk_if.c:2502 / ff_memory.c:319）。在物理机+DPDK（virtio NIC）环境测试 T1-T3（默认/skip=1/ip_skip=1）均通过：TCP 连接正常，IP/TCP checksum 全部正确。本环境 virtio NIC 不支持 TX checksum offload，FreeBSD 软件计算所有 checksum。VMware 场景需用户在实际环境验证 `tx_csum_ip_skip=1` 效果。
+  - 修复/方案信息：新增 `tx_csum_ip_skip=1`（只禁用 IP 层）和 `tx_csum_l4_skip=1`（只禁用 L4 层）配置项。修改文件：ff_config.h/ff_config.c/ff_dpdk_if.c/ff_memory.c/config.ini。详细分析见 docs/issue_520/zh_cn/。
 - **#522** ⚪closed Unable to locate Ethernet devices
   - 结论：【2026-07-24回复】官方最终确认：这是已知问题，链接libdpdk.a时缺少-Wl,--whole-archive参数导致链接器剔除了它认为'未使用'的PMD驱动符号，使DPDK运行时找不到任何网卡驱动。修复方法：Makefile中改为`LIBS+= -L${FF_DPDK}/lib -Wl,--whole-archive,-ldpdk,--no-whole-archive`。已发布详细排……
   - 修复/方案信息：Makefile链接需用`-Wl,--whole-archive,-ldpdk,--no-whole-archive`代替直接`-ldpdk`，避免链接器剔除PMD驱动符号。参考Wiki:No-probed-ethernet-devices-Troubleshooting-Guide。
