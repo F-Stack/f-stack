@@ -154,6 +154,7 @@ example:
 	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll main_stack_epoll.c ${LIBS}
 	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll_thread_socket main_stack_epoll_thread_socket.c ${LIBS}
 	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_epoll_kernel main_stack_epoll_kernel.c ${LIBS}
+	cc ${CFLAGS} -I ${FF_PATH}/adapter/syscall -o helloworld_stack_udp main_stack_udp.c ${LIBS}
 
 ${FSTACK_OBJS}: %.o: %.c
 	${CC} -c $(CFLAGS) ${PROF} $<

@@ -2158,8 +2158,8 @@
   - 结论：官方结论：提议的功能技术上合理且完全可行。FreeBSD侧SO_TIMESTAMP→recvmsg()→SCM_TIMESTAMP路径已在F-Stack自带FreeBSD栈中完整实现(freebsd/sys/mbuf.h的struct pkthdr含rcv_tstmp字段及M_TSTMP/M_TSTMP_HPREC标志，mbuf_tstmp2timespec()已实现，ip_savecontrol……
   - 修复/方案信息：方案可行：添加ff_mbuf_set_timestamp()(参照ff_mbuf_set_vlan_info()模式)+启用RTE_ETH_RX_OFFLOAD_TIMESTAMP+在ff_veth_input()检测RTE_MBUF_F_RX_IEEE1588_TMST时调用。注意DPDK23.11+需用rte_mbuf_dyn.h动态字段访问(非pkt->timestamp直接访问)。用户将提……
 - **#1063** 🟢open adapter/syscall
-  - 结论：官方结论：目前adapter/syscall下没有专门的UDP示例，现有示例(main_stack_epoll.c/main_stack_epoll_thread_socket.c)聚焦TCP/epoll模式。UDP用法通过adapter/syscall遵循标准POSIX语义——可正常用socket(AF_INET,SOCK_DGRAM,0)+bind()+sendto()/recvfrom()，……
-  - 修复/方案信息：当前UDP可通过标准POSIX语义(socket/bind/sendto/recvfrom)在LD_PRELOAD模式下透明使用，无需专门适配。官方计划未来添加专门示例(issue open)。
+  - 结论：官方结论：目前adapter/syscall下没有专门的UDP示例，现有示例(main_stack_epoll.c/main_stack_epoll_thread_socket.c)聚焦TCP/epoll模式。UDP用法通过adapter/syscall遵循标准POSIX语义——可正常用socket(AF_INET,SOCK_DGRAM,0)+bind()+sendto()/recvfrom()，fstack_territory()已明确接受SOCK_DGRAM类型，recvfrom/sendto/recvmsg/sendmsg/epoll系列hook均已完整实现(ff_hook_syscall.c)。
+  - 修复/方案信息：【已本地实现】新增adapter/syscall/main_stack_udp.c——UDP echo server示例，参照main_stack_epoll.c风格，使用socket(SOCK_DGRAM)+bind(:9000)+epoll+recvfrom/sendto，LD_PRELOAD模式。Makefile example target已添加构建规则。编译通过(make clean && make all, -Wall -Werror)，内核栈回显测试通过(127.0.0.1:9000)。详见docs/issue_1063/zh_cn/。上游issue仍open。
 
 ### 工具链/调试功能需求（8 个）
 
