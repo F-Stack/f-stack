@@ -789,8 +789,8 @@
   - 结论：用户自行定位并解决：需要用ifconfig(ff_ifconfig)创建VLAN子接口才能启用VLAN trunk支持，此前未创建对应VLAN接口是问题根源，与#478的VLAN子接口命名规范相关。
   - 修复/方案信息：需先用ff_ifconfig创建VLAN子接口(格式`<父接口>.<vlanid>`)才能正常处理VLAN包，参见#478。
 - **#535** 🟢open Crash on multiple IPFW rules
-  - 结论：【2026-07-24回复】官方最终确认根因：lib/ff_msg.h中IPC消息缓冲区大小MAX_MSG_BUF_SIZE仅10240字节(10KB)。当IPFW规则总数据超过此限制时，ff_ipfw工具在tools/ipfw/compat.c:60处(len > msg->buf_len)返回EINVAL，导致操作静默失败或引发EAL内存分配错误。400+条规则时getsockopt(IP_F……
-  - 修复/方案信息：根因：lib/ff_msg.h的MAX_MSG_BUF_SIZE仅10KB，规则量大时getsockopt(IP_FW3)超出限制导致tools/ipfw/compat.c:60返回EINVAL。修复方向：增大MAX_MSG_BUF_SIZE或改为动态缓冲区分配，尚未修复，issue保持open。
+  - 结论：【2026-07-24回复】官方最终确认根因：lib/ff_msg.h中IPC消息缓冲区大小MAX_MSG_BUF_SIZE仅10240字节(10KB)。当IPFW规则总数据超过此限制时，ff_ipfw工具在tools/ipfw/compat.c:60处(len > msg->buf_len)返回EINVAL，导致操作静默失败或引发EAL内存分配错误。400+条规则时getsockopt(IP_FW3)超出限制。实测breaking point为252条用户规则(含2条默认=254总，每条约39.8字节)。13.0 baseline同样存在此问题，非升级回归。
+  - 修复/方案信息：【2026-08-07本地已修复】参照tools/compat/sysctl.c已有的动态缓冲区模式，将tools/ipfw/compat.c的EINVAL静态失败替换为rte_malloc动态缓冲区分配(+11行-3行)。当规则数据超buf_len时rte_malloc分配更大缓冲区，保存original_buf备份，ff_ipc_msg_free和主进程enqueue失败路径均已支持original_buf恢复。修复后252/500/1000条规则list均正常。1核TCP性能零回归(T2=193k req/s vs基线193k)。详见docs/issue_535/zh_cn/。
 - **#572** ⚪closed Q: Why net.inet.udp.maxdgram is not supported by config.ini, and cannot be changed by ff_sysctl?
   - 结论：用户确认修复：需在lib/ff_config.c中为net.inet.udp.maxdgram添加与kern.ipc.maxsockbuf类似的特殊处理(用long而非int存储值)，修改后config.ini设置生效。
   - 修复/方案信息：lib/ff_config.c的sysctl配置解析中，`net.inet.udp.maxdgram`需和`kern.ipc.maxsockbuf`一样特殊处理为long类型(8字节)而非默认int(4字节)，否则config.ini设置不生效。
