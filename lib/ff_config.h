@@ -294,6 +294,7 @@ struct ff_config {
         int proc_id;
         int thread_mode;    /* 0=multi-process (default); 1=single-process multi-thread multi-stack */
         int nb_threads;     /* thread mode: number of threads = lcore_mask set-bit count */
+        int primary_slim;   /* 0=off (default); 1=primary holds no rx/tx queue */
         int promiscuous;
         int nb_vdev;
         int nb_bond;
@@ -310,6 +311,7 @@ struct ff_config {
 
         /* sleep x microseconds when no pkts incomming */
         unsigned idle_sleep;
+        unsigned primary_slim_idle_sleep;
 
         /* TX burst queue drain nodelay dalay time */
         unsigned pkt_tx_delay;
@@ -339,6 +341,7 @@ struct ff_config {
         int console_packets_ratelimit;
         int general_packets_ratelimit;
         int kernel_packets_ratelimit;
+        int owner_proc_id;
         char *kni_action;
         char *method;
         char *tcp_port;

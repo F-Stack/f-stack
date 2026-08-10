@@ -73,5 +73,7 @@ int ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *
 
 int ff_kni_is_owner_thread(void);
 
+int ff_kni_is_runtime_owner(void);
+
 
 #endif /* ifndef _FSTACK_DPDK_KNI_H */

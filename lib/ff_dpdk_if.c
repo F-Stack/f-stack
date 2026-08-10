@@ -456,6 +456,7 @@ init_lcore_conf(void)
                 lc->nb_tx_port++;
                 lc->nb_queue_list[port_id] = pconf->nb_lcores;
             }
+            /* primary_slim is incompatible with thread_mode (V4 check) */
             if (lc->nb_rx_queue == 0)
                 rte_exit(EXIT_FAILURE, "lcore %u has nothing to do\n", lcore_id);
         }
@@ -506,6 +507,11 @@ init_lcore_conf(void)
     }
 
     if (ff_cur_lcore_conf()->nb_rx_queue == 0) {
+        if (ff_global_cfg.dpdk.primary_slim &&
+            rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            fprintf(stderr, "primary_slim: primary holds no rx/tx queue, running control-plane only\n");
+            return 0;
+        }
         rte_exit(EXIT_FAILURE, "lcore %u has nothing to do\n", lcore_id);
     }
 
@@ -532,7 +538,14 @@ init_mem_pool(void)
     uint32_t nb_lcores = ff_global_cfg.dpdk.thread_mode
         ? ff_global_cfg.dpdk.nb_threads : ff_global_cfg.dpdk.nb_procs;
     uint32_t nb_tx_queue = nb_lcores;
-    uint32_t nb_rx_queue = ff_cur_lcore_conf()->nb_rx_queue * nb_lcores;
+    uint32_t nb_rx_queue = 0;
+    {
+        int pi;
+        for (pi = 0; pi < nb_ports; pi++) {
+            uint16_t pid = ff_global_cfg.dpdk.portid_list[pi];
+            nb_rx_queue += ff_global_cfg.dpdk.port_cfgs[pid].nb_lcores;
+        }
+    }
     uint16_t max_portid = ff_global_cfg.dpdk.max_portid;
 
     unsigned nb_mbuf = RTE_ALIGN_CEIL (
@@ -819,7 +832,7 @@ init_port_start(void)
 
     total_nb_ports = nb_ports;
 #ifdef FF_KNI
-    if (enable_kni && ff_kni_is_owner_thread()) {
+    if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
             total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */
     }
 #endif
@@ -2077,7 +2090,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
             }
 
 #ifdef FF_KNI
-            if (enable_kni && ff_kni_is_owner_thread()) {
+            if (enable_kni && ff_kni_is_runtime_owner()) {
                 mbuf_pool = pktmbuf_pool[qconf->socket_id];
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
@@ -2762,7 +2775,7 @@ main_loop(void *arg)
             ctx = veth_ctx[rte_lcore_id()][port_id];
 
 #ifdef FF_KNI
-            if (enable_kni && ff_kni_is_owner_thread()) {
+            if (enable_kni && ff_kni_is_runtime_owner()) {
                 ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
             }
 #endif
@@ -2820,11 +2833,18 @@ main_loop(void *arg)
         }
 
         idle_sleep_tsc = rte_rdtsc();
-        if (likely(idle && idle_sleep)) {
-            rte_delay_us_sleep(idle_sleep);
-            end_tsc = rte_rdtsc();
-        } else {
-            end_tsc = idle_sleep_tsc;
+        {
+            unsigned effective_sleep = idle_sleep;
+            if (ff_global_cfg.dpdk.primary_slim &&
+                rte_eal_process_type() == RTE_PROC_PRIMARY) {
+                effective_sleep = ff_global_cfg.dpdk.primary_slim_idle_sleep;
+            }
+            if (likely(idle && effective_sleep)) {
+                rte_delay_us_sleep(effective_sleep);
+                end_tsc = rte_rdtsc();
+            } else {
+                end_tsc = idle_sleep_tsc;
+            }
         }
 
         usr_tsc = usr_cb_tsc;
@@ -2851,6 +2871,11 @@ int
 ff_dpdk_if_up(void) {
     int i;
     struct lcore_conf *qconf = ff_cur_lcore_conf();
+    if (ff_global_cfg.dpdk.primary_slim &&
+        rte_eal_process_type() == RTE_PROC_PRIMARY &&
+        qconf->nb_tx_port == 0) {
+        fprintf(stderr, "slim primary has no f-stack network interface; use -p <data-plane proc id> for interface/route commands\n");
+    }
     for (i = 0; i < qconf->nb_tx_port; i++) {
         uint16_t port_id = qconf->tx_port_id[i];
 
@@ -2880,13 +2905,20 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
      * cfg.* allocations made via DPDK helpers (none today, but defensive)
      * are released while the EAL is still up. Mirrors the comment block
      * that previously read "FIXME: Cleanup ff_config, freebsd etc." */
-    ff_unload_config();
-    rte_eal_cleanup();
+    if (!(ff_global_cfg.dpdk.primary_slim &&
+          rte_eal_process_type() == RTE_PROC_PRIMARY)) {
+        ff_unload_config();
+        rte_eal_cleanup();
+    }
     ff_log_close();
 }
 
 void
 ff_dpdk_stop(void) {
+    if (ff_global_cfg.dpdk.primary_slim &&
+        rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        fprintf(stderr, "WARNING: slim primary stopping - control plane degraded, need planned full restart\n");
+    }
     stop_loop = 1;
 }
 

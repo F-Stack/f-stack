@@ -97,6 +97,14 @@ ff_kni_is_owner_thread(void)
     return rte_eal_process_type() == RTE_PROC_PRIMARY;
 }
 
+int
+ff_kni_is_runtime_owner(void)
+{
+    if (ff_global_cfg.dpdk.thread_mode)
+        return rte_lcore_id() == ff_global_cfg.dpdk.proc_lcore[0];
+    return ff_global_cfg.dpdk.proc_id == ff_global_cfg.kni.owner_proc_id;
+}
+
 struct kni_ratelimit kni_rate_limt = {0, 0, 0};
 
 static void
@@ -431,7 +439,7 @@ void
 ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
     unsigned ring_queue_size)
 {
-    if (ff_kni_is_owner_thread()) {
+    if (ff_kni_is_owner_thread() || ff_kni_is_runtime_owner()) {
         struct rte_ether_addr addr = {{0}};
         int ret;
 
@@ -471,7 +479,8 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
             port_name, port_args);
 
         /* add the vdev for virtio_user */
-        if (rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
+        if (ff_kni_is_owner_thread() &&
+            rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
             rte_exit(EXIT_FAILURE, "ff_kni_alloc cannot create virtio user paired port for port %u\n", port_id);
         }
 

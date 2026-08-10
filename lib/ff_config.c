@@ -1034,6 +1034,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.no_huge = atoi(value);
     } else if (MATCH("dpdk", "thread_mode")) {
         pconfig->dpdk.thread_mode = atoi(value);
+    } else if (MATCH("dpdk", "primary_slim")) {
+        pconfig->dpdk.primary_slim = atoi(value);
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
@@ -1071,6 +1073,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return parse_vlan_filter_list(pconfig, value);
     } else if (MATCH("dpdk", "idle_sleep")) {
         pconfig->dpdk.idle_sleep = atoi(value);
+    } else if (MATCH("dpdk", "primary_slim_idle_sleep")) {
+        pconfig->dpdk.primary_slim_idle_sleep = atoi(value);
     } else if (MATCH("dpdk", "pkt_tx_delay")) {
         pconfig->dpdk.pkt_tx_delay = atoi(value);
     } else if (MATCH("dpdk", "symmetric_rss")) {
@@ -1084,6 +1088,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         return ff_parse_mbuf_mode(value, &pconfig->dpdk.mbuf_mode);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
+    } else if (MATCH("kni", "owner_proc_id")) {
+        pconfig->kni.owner_proc_id= atoi(value);
     } else if (MATCH("kni", "console_packets_ratelimit")) {
         pconfig->kni.console_packets_ratelimit= atoi(value);
     } else if (MATCH("kni", "general_packets_ratelimit")) {
@@ -1412,6 +1418,28 @@ ff_check_config(struct ff_config *cfg)
                 return -1;
             }
         }
+        if (cfg->dpdk.primary_slim &&
+            strcmp(cfg->dpdk.proc_type, "primary") == 0) {
+            uint16_t prim_lcore = cfg->dpdk.proc_lcore[cfg->dpdk.proc_id];
+            int j, found = 0;
+            for (j = 0; j < pc->nb_lcores; j++) {
+                if (pc->lcore_list[j] == prim_lcore) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (found) {
+                fprintf(stderr,
+                    "primary_slim=1 but primary lcore %d is still in port %d's lcore_list\n",
+                    prim_lcore, pc->port_id);
+                return -1;
+            }
+        }
+        if (cfg->dpdk.primary_slim && cfg->kni.enable) {
+            fprintf(stderr,
+                "primary_slim=1 is incompatible with kni.enable=1 (see issue #1078 M3)\n");
+            return -1;
+        }
         /*
          * only primary process process KNI, so if KNI enabled,
          * primary lcore must stay in every enabled ports' lcore_list
@@ -1481,6 +1509,22 @@ ff_check_config(struct ff_config *cfg)
         }
     }
 
+    if (cfg->dpdk.primary_slim && cfg->dpdk.thread_mode) {
+        fprintf(stderr, "primary_slim=1 is incompatible with thread_mode=1\n");
+        return -1;
+    }
+    if (cfg->dpdk.primary_slim && cfg->dpdk.nb_procs < 2) {
+        fprintf(stderr, "primary_slim=1 requires nb_procs >= 2\n");
+        return -1;
+    }
+    if (cfg->dpdk.primary_slim) {
+        fprintf(stderr, "primary_slim=1: proc_id=%d proc_type=%s nb_procs=%d\n",
+            cfg->dpdk.proc_id, cfg->dpdk.proc_type, cfg->dpdk.nb_procs);
+        if (cfg->dpdk.nb_procs < 3) {
+            fprintf(stderr, "WARNING: primary_slim with only 1 secondary may cause RSS reta edge effects\n");
+        }
+    }
+
     if (cfg->dpdk.thread_mode) {
         /* Single-process multi-thread: force primary, derive nb_threads,
          * collapse to one process, and expose all lcores to EAL via a
@@ -1517,6 +1561,8 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.numa_on = 1;
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
+    cfg->dpdk.primary_slim = 0;
+    cfg->dpdk.primary_slim_idle_sleep = 1000;
 
     cfg->dpdk.mtu_enable = 0;
     cfg->dpdk.max_mtu = FF_MTU_JUMBO_DEFAULT;
