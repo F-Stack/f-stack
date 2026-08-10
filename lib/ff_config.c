@@ -1086,6 +1086,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
             &pconfig->dpdk.max_mtu);
     } else if (MATCH("dpdk", "mbuf_mode")) {
         return ff_parse_mbuf_mode(value, &pconfig->dpdk.mbuf_mode);
+    } else if (MATCH("dpdk", "mbuf_low_watermark")) {
+        pconfig->dpdk.mbuf_low_watermark = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
     } else if (MATCH("kni", "owner_proc_id")) {
@@ -1579,6 +1581,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.mtu_enable = 0;
     cfg->dpdk.max_mtu = FF_MTU_JUMBO_DEFAULT;
     cfg->dpdk.mbuf_mode = FF_MBUF_MODE_LARGE;
+    cfg->dpdk.mbuf_low_watermark = 0;
 
 #ifdef FF_KERNEL_COEXIST
     cfg->stack.kernel_coexist = 0;

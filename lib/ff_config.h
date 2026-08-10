@@ -334,6 +334,7 @@ struct ff_config {
         int mtu_enable;
         uint16_t max_mtu;
         enum ff_mbuf_mode mbuf_mode;
+        unsigned mbuf_low_watermark;
     } dpdk;
 
     struct {

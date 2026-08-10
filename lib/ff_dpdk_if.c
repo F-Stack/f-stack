@@ -2020,6 +2020,54 @@ ff_add_vlan_tag(struct rte_mbuf * rtem)
     }
 }
 
+static inline int
+is_tcp_syn(const void *data, uint16_t len)
+{
+    if(len < RTE_ETHER_HDR_LEN)
+        return 0;
+
+    const struct rte_ether_hdr *hdr = (const struct rte_ether_hdr *)data;
+    uint16_t ether_type = rte_be_to_cpu_16(hdr->ether_type);
+    data += RTE_ETHER_HDR_LEN;
+    len -= RTE_ETHER_HDR_LEN;
+
+    if (ether_type == RTE_ETHER_TYPE_VLAN) {
+        if (len < sizeof(struct rte_vlan_hdr))
+            return 0;
+        const struct rte_vlan_hdr *vlanhdr = (struct rte_vlan_hdr *)data;
+        ether_type = rte_be_to_cpu_16(vlanhdr->eth_proto);
+        data += sizeof(struct rte_vlan_hdr);
+        len -= sizeof(struct rte_vlan_hdr);
+    }
+
+    const struct rte_tcp_hdr *tcph;
+    if (ether_type == RTE_ETHER_TYPE_IPV4) {
+        if (len < sizeof(struct rte_ipv4_hdr))
+            return 0;
+        const struct rte_ipv4_hdr *iph = (const struct rte_ipv4_hdr *)data;
+        if (iph->next_proto_id != IPPROTO_TCP)
+            return 0;
+        uint8_t ihl = (iph->version_ihl & 0x0f) << 2;
+        if (ihl < sizeof(struct rte_ipv4_hdr) ||
+            len < ihl + sizeof(struct rte_tcp_hdr))
+            return 0;
+        tcph = (const struct rte_tcp_hdr *)((const char *)data + ihl);
+    } else if (ether_type == RTE_ETHER_TYPE_IPV6) {
+        if (len < sizeof(struct rte_ipv6_hdr) + sizeof(struct rte_tcp_hdr))
+            return 0;
+        const struct rte_ipv6_hdr *iph = (const struct rte_ipv6_hdr *)data;
+        if (iph->proto != IPPROTO_TCP)
+            return 0;
+        tcph = (const struct rte_tcp_hdr *)
+            ((const char *)data + sizeof(struct rte_ipv6_hdr));
+    } else {
+        return 0;
+    }
+
+    return (tcph->tcp_flags & (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG)) ==
+        RTE_TCP_SYN_FLAG;
+}
+
 static inline void
 process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
     uint16_t count, struct ff_dpdk_if_context *ctx, int pkts_from_ring)
@@ -2039,6 +2087,15 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 
         void *data = rte_pktmbuf_mtod(rtem, void*);
         uint16_t len = rte_pktmbuf_data_len(rtem);
+
+        if (!pkts_from_ring && ff_global_cfg.dpdk.mbuf_low_watermark > 0 &&
+            rte_mempool_avail_count(pktmbuf_pool[qconf->socket_id]) <
+                ff_global_cfg.dpdk.mbuf_low_watermark &&
+            is_tcp_syn(data, len)) {
+            ff_traffic.rx_dropped += rtem->nb_segs;
+            rte_pktmbuf_free(rtem);
+            continue;
+        }
 
         if (!pkts_from_ring) {
             ff_traffic.rx_packets += rtem->nb_segs;
