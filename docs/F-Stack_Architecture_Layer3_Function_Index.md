@@ -1236,6 +1236,36 @@ bash start.sh -c config.ini -b ./app
 
 ---
 
+## Recent Code Delta (2026-08, mbuf water-level backpressure + primary_slim switch)
+
+> 与 `01/02/03-LAYER*` 文档同步；权威细节见 `docs/issue_1076/zh_cn/` 和 `docs/issue_1078/zh_cn/`。
+
+### mbuf water-level backpressure (issue #1076)
+
+- **`is_tcp_syn()` 辅助函数**（`lib/ff_dpdk_if.c:2024`）：解析 Ethernet/VLAN/IPv4/IPv6/TCP 头以识别 TCP SYN 包。
+- **水位检查**（`lib/ff_dpdk_if.c:2091-2094`）：`process_packets()` 入口调用 `rte_mempool_avail_count()` 检查 RX mbuf 池可用量；低于 `mbuf_low_watermark` 阈值时丢弃 TCP SYN 包（不回 SYN-ACK），保护已建连接的 mbuf 供给。非 SYN 包和非 TCP 包不受影响。
+- **`mbuf_low_watermark` 配置**（`lib/ff_config.h:337`、`lib/ff_config.c:1089-1090`）：`[dpdk]` 段新增项，类型 `unsigned`，默认 0（禁用，零回归）。
+- 4 个 FreeBSD 原生 CC 限制机制（maxsockets / ipfw limit / somaxconn / syncache）代码级确认完整可用，但作用于 socket 层，无法在 `maxsockets` 过大时阻止 mbuf 先耗尽。水位背压是互补的安全网。
+- Traceability: `docs/issue_1076/zh_cn/` (00-07). Key commits: `7112dc2bc`, `12ebe973b`.
+
+### primary_slim control-plane-only switch (issue #1078)
+
+- **`primary_slim` 配置**（`lib/ff_config.h:297`、`lib/ff_config.c:1037-1038`）：`[dpdk]` 段新增项，默认 0（禁用）。开启后 primary 只跑控制面（NIC init / KNI init / IPC server / 扩堆代理），不跑 RX 数据面。
+- **`primary_slim_idle_sleep` 配置**（`lib/ff_config.h:314`、`lib/ff_config.c:1076-1077`）：默认 1000 µs。slim primary 空闲时 `rte_pause()` 睡眠时长。
+- **`ff_is_slim_primary()` API**（`lib/ff_api.h:130` 声明、`lib/ff_dpdk_if.c:442-444` 实现）：返回当前进程是否为 slim primary。
+- **V2~V6 校验链**（`lib/ff_config.c:1423-1538`）：`primary_slim=1` 须多进程、`proc_type=primary`、lcore_list 不与 secondary 重叠、数据面 lcore 全覆盖、idle_sleep 合理性。
+- **队列数收缩**：`nb_queues` 来源于 port 的 `lcore_list` 长度（`ff_dpdk_if.c:696,881`），`queueid` 是 lcore 在 `lcore_list` 中的下标（`:479-481,518-523`），与 `proc_id` 解耦→摘掉 primary lcore 后队列数/RSS reta 一致收缩。
+- **DPDK 硬约束**：primary 是 IPC 唯一服务端、secondary 扩堆须 primary 代理、中断只在 primary 触发→primary 只能常驻不能退出。
+- **rte_exit 门控**（`lib/ff_dpdk_if.c:542`）：slim primary 中抑制 `rte_exit()`，避免控制面错误中止整个 DPDK 会话。
+- **MTU EPERM 门控（C17）**（`lib/ff_dpdk_if.c:320`）：`primary_slim=1` 时 secondary 进程设置 MTU 返回 `EPERM`（仅 primary 可设 MTU）。
+- **eal_cleanup 跳过**（`lib/ff_dpdk_if.c:3004-3008`）：slim primary 跳过 `rte_eal_cleanup()`，避免释放 secondary 仍依赖的共享资源。
+- **`nb_dev_ports` 共享 memzone**（`lib/ff_dpdk_if.c:79,82-99`）：设备端口数存入共享 memzone，secondary 可读无需重新探测。
+- **ff_dpdk_stop 门控**（`lib/ff_dpdk_if.c:3014`）：slim primary 打印停止警告而非执行完整停止逻辑。
+- **KNI runtime owner（K4）**（`lib/ff_dpdk_kni.c:101` `ff_kni_is_runtime_owner()`、`:395,442`）：放宽 KNI mutex 检查，secondary 可作运行时 KNI owner，`owner_proc_id` 检查替代硬编码 primary 检查。
+- Traceability: `docs/issue_1078/zh_cn/` (00-11 + plan + plan_impl). Key commits: `1c28aaa2d` (M1), `f7961b083` (M2-M4), `09417c0f9` (config).
+
+---
+
 **Related Documents**:
 - [Layer 1: System Architecture Overview](./F-Stack_Architecture_Layer1_System_Overview.md)
 - [Layer 2: Interface Definition and Specification](./F-Stack_Architecture_Layer2_Interface_Specification.md)

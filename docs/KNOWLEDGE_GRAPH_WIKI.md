@@ -139,6 +139,63 @@ Traceability: `docs/native_mt_spec/zh_cn/` (00-17 + `_m17_*` + `plan-17-*`), esp
 
 **Physical-machine verification (2026-08-06)**: functionality and performance both PASS on physical hardware. Residual risks honestly recorded (not fixed this round): ipfw/netisr DPCPU slot aliasing (needs separate DPCPU project), counter(9) statistics contention, tcp_hpts instance 1→N callout ownership mismatch (R6), net.isr.dispatch must stay `direct`, ff_subr_prf.c global lockless line buffer, ff_pthread_create threads unsupported for ff_* calls. **New residual risk §6.23**: intermittent process crash under repeated wrk stress (non-deterministic, requires multiple runs to reproduce → capture crash stack → root-cause). See spec 17 §6.23 and `_m17_F_runtime.md` Part 6.
 
+## 2F. Post-index code delta: mbuf water-level backpressure (issue #1076)
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-08). Covers the mbuf pool exhaustion protection added in issue #1076 (commits `7112dc2bc`, `12ebe973b`). When `maxsockets` is set very high (e.g. 1M) but the mbuf pool is small (~8K–32K), mbufs exhaust before sockets, causing the stack to become unresponsive. This feature drops TCP SYN packets at the `process_packets()` entry when available mbufs fall below a configurable watermark. Re-index with `npx gitnexus analyze` to fold into the graph.
+
+Four FreeBSD native connection-count (CC) limiting mechanisms were confirmed fully functional at code level: `maxsockets` (`in_pcb.c`), `ipfw limit` rules, `somaxconn` listen queue cap, and `syncache` SYN-cache limit. However, these operate at the socket layer and cannot prevent mbuf exhaustion when `maxsockets` is oversized relative to the mbuf pool. The implemented Plan B adds an mbuf-availability check earlier in the receive path.
+
+| Area | Where in source |
+|------|-----------------|
+| `is_tcp_syn()` helper | `lib/ff_dpdk_if.c:2024` — parses Ethernet/VLAN/IPv4/IPv6/TCP headers to identify a TCP SYN packet. Used only by the water-level check. |
+| Water-level check in `process_packets()` | `lib/ff_dpdk_if.c:2091-2094` — calls `rte_mempool_avail_count()` on the RX mbuf pool; if below `mbuf_low_watermark`, drops TCP SYN packets (no SYN-ACK sent) to preserve mbufs for existing connections. Non-SYN and non-TCP packets are not affected. |
+| `mbuf_low_watermark` config | `lib/ff_config.h:337` (struct field), `lib/ff_config.c:1089-1090` (`MATCH("dpdk","mbuf_low_watermark")`), `:1578-1584` (default 0 = disabled). Type: `unsigned`. Zero-regression when 0. |
+| `config.ini` documentation | `config.ini`: `[dpdk] mbuf_low_watermark` with inline comment explaining default 0 (disabled). |
+
+Traceability: `docs/issue_1076/zh_cn/` (00-07 + `issue_1076_reply_en.md`). Key commits: `7112dc2bc` (is_tcp_syn + water-level check), `12ebe973b` (config + helloworld validation). Verification: clean build PASS, helloworld startup normal; high-CPS physical stress pending.
+
+---
+
+## 2G. Post-index code delta: primary_slim control-plane-only switch (issue #1078)
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-08). Covers the `primary_slim` feature (commits `1c28aaa2d` M1 + `f7961b083` M2–M4 + `09417c0f9` config). When enabled, the primary process runs only the control plane (NIC init, KNI init, IPC server, heap-expansion proxy) and does not run the data-plane RX loop. PoC validated: 12/12 existing connections survive primary kill, 12/12 new connections succeed, QPS unchanged. Re-index with `npx gitnexus analyze` to fold into the graph.
+
+Key code insight: queue count `nb_queues` derives from the port's `lcore_list` length (`ff_dpdk_if.c:696,881`), and `queueid` is the lcore's index within `lcore_list` (`:479-481,518-523`), decoupled from `proc_id`. Removing the primary's lcore from `lcore_list` shrinks queue count / queueid / RSS reta consistently — orphan queues naturally disappear. DPDK hard constraints: the primary is the sole IPC server, secondary heap expansion must be proxied by the primary, and all interrupts fire only on the primary — so the primary must stay resident but can be idle.
+
+| Area | Where in source |
+|------|-----------------|
+| `primary_slim` config | `lib/ff_config.h:297` (struct field), `lib/ff_config.c:1037-1038` (`MATCH`), `:1578-1584` (default 0 = disabled). |
+| `primary_slim_idle_sleep` config | `lib/ff_config.h:314` (struct field), `lib/ff_config.c:1076-1077` (`MATCH`), `:1578-1584` (default 1000 µs). Controls `rte_pause()` sleep duration when primary is idle. |
+| `ff_is_slim_primary()` API | `lib/ff_api.h:130` (declaration), `lib/ff_dpdk_if.c:442-444` (implementation). Returns `true` when this process is primary and `primary_slim=1`. |
+| V2–V6 validation chain | `lib/ff_config.c:1423-1538` — validates: (V2) `primary_slim=1` requires `nb_procs > 1`; (V3) requires `proc_type=primary`; (V4) primary's `lcore_list` must not overlap any secondary's; (V5) all data-plane lcores covered by secondaries; (V6) `idle_sleep`/`primary_slim_idle_sleep` sanity. |
+| `rte_exit` gate | `lib/ff_dpdk_if.c:542` — suppresses `rte_exit()` in slim primary. |
+| MTU EPERM gate (C17) | `lib/ff_dpdk_if.c:320` — when `primary_slim=1`, MTU changes on secondary processes return `EPERM`. |
+| idle_sleep in slim primary | `lib/ff_dpdk_if.c:2934-2936` — primary uses `rte_delay_us_sleep()` with `primary_slim_idle_sleep`. |
+| `eal_cleanup` skip | `lib/ff_dpdk_if.c:3004-3008` — `rte_eal_cleanup()` skipped in slim primary to avoid releasing shared resources. |
+| `nb_dev_ports` shared memzone | `lib/ff_dpdk_if.c:79,82-99` — device port count stored in shared memzone for secondary visibility. |
+| `ff_dpdk_stop` gate | `lib/ff_dpdk_if.c:3014` — slim primary prints a stop warning instead of full stop logic. |
+| RSS nbq fix (C19) | `lib/ff_dpdk_if.c` — RSS reta size recomputed based on slimmed queue count. |
+| `ff_kni_process` out of RX loop (C26) | `lib/ff_dpdk_if.c` — KNI processing removed from primary's per-burst RX loop. |
+| KNI runtime owner | `lib/ff_dpdk_kni.c:101` (`ff_kni_is_runtime_owner()`), `:395,442` — relaxed KNI mutex check: a secondary process can be the runtime KNI owner (K4). |
+| ifp ownership warning | `lib/ff_dpdk_if.c` — emits a warning if a data-plane interface pointer is accessed in slim primary. |
+
+Traceability: `docs/issue_1078/zh_cn/` (00-11 + plan + plan_impl + 2 PoC patches + 1 py probe script). Key commits: `1c28aaa2d` (M1), `f7961b083` (M2–M4), `09417c0f9` (config). Verification: `primary_slim=0` zero-regression; `primary_slim=1` primary CPU 0.8%, 26 probe rounds zero interruption, 0 failed requests; KNI K4 code + physical verification.
+
+---
+
+## 2H. Post-index code delta: issue #1063 (UDP echo adapter example + IPv6 SAV investigation)
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-08). Covers two outputs of issue #1063: (1) a new UDP echo server example in the LD_PRELOAD adapter, and (2) investigation findings for the IPv6 TCP connectivity regression after the FreeBSD 13.0 → 15.0 upgrade. Re-index with `npx gitnexus analyze` to fold into the graph.
+
+| Area | Where in source |
+|------|-----------------|
+| UDP echo server example | `adapter/syscall/main_stack_udp.c` — LD_PRELOAD-mode UDP echo server, added to the `example` Makefile target. Useful for testing kernel-stack UDP path with `FF_KERNEL_COEXIST`. |
+| IPv6 SAV investigation | `freebsd/netinet6/ip6_input.c:170` (`VNET_DEFINE_STATIC(bool, ip6_sav) = true`), `:821-826` — FreeBSD 15.0 introduces Source Address Validation (SAV), enabled by default. When `ip6_sav=1` and the source IPv6 address matches a local `in6_ifaddr` entry (checked via `in6_localip_fib()`), inbound packets are silently dropped (`IP6STAT_INC(ip6s_badscope); goto bad;`). Absent in FreeBSD 13.0 (confirmed by full-tree search). Primary candidate for the IPv6 TCP regression (listen succeeds, SYN dropped, IPv4 unaffected, NIC-independent), pending runtime verification. |
+
+Traceability: `docs/issue_1063/zh_cn/` (00-03). Key commits: `b295b9300` (UDP echo example), `2215dc4f2` (investigation docs). Note: IPv6 SAV is a FreeBSD 15.0 upstream change; the fix path is either `sysctl net.inet6.ip6.source_address_validation=0` or investigating why `in6_localip_fib()` misidentifies remote client sources as local in the f-stack user-space `in6_ifaddr` table.
+
+---
+
 ## 3. Directory Structure
 
 ```

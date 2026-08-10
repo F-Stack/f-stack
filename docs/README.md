@@ -251,12 +251,12 @@ Recommended path:
 ### Version Information
 
 ```
-Knowledge base version: 1.6 (adds native-mt SMP-aware pcpu/SMR slot isolation + global uma_crit_lock removal, 2026-08-05, commits c7996a94f+57b612d16, spec: docs/native_mt_spec/; and MTU/jumbo-frame configuration support, 2026-07, spec: docs/mtu_change_spec/; on top of 1.5 R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY + 1.3 FF_KERNEL_COEXIST kernel-stack coexistence + 1.2 FreeBSD 13.0 → 15.0 first-stage + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test)
+Knowledge base version: 1.7 (adds issue #1076 mbuf water-level backpressure + issue #1078 primary_slim control-plane-only switch, 2026-08-10, commits 7112dc2bc+1c28aaa2d+f7961b083; on top of 1.6 native-mt SMP-aware pcpu/SMR slot isolation + global uma_crit_lock removal + MTU/jumbo-frame support, 2026-08-05, commits c7996a94f+57b612d16, spec: docs/native_mt_spec/; on top of 1.5 R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY + 1.3 FF_KERNEL_COEXIST kernel-stack coexistence + 1.2 FreeBSD 13.0 → 15.0 first-stage + Phase-2 M6-M13 + Phase-5b + F-A1 fix + vlan-vip-ipfw test)
 F-Stack version: v1.26 (branch feature/1.26)
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
 DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 via tree replace + 4 patches re-applied; see dpdk_23_24_upgrade_spec/zh_cn/)
 New feature reflected: FF_KERNEL_COEXIST automatic dual-stack coexistence (default off; commits ba148589d → 55a84f313) + R9 kqueue/kevent coexistence + IPv6 IPV6_V6ONLY (kqueue-model kernel-side curl 127.0.0.1:80 = 200; -DINET6 v4+v6 same-port startup fixed) + R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing (ff_ioctl uses raw Linux request; ff_dup2 cross-stack rejected EINVAL; select/poll are documented limits, use epoll/kqueue). See docs/kernel_event_support_spec/ (incl. plan-r9-kqueue-coexist-ipv6.md, plan-r10-readv-writev-ioctl-coexist.md).
-Generation date: 2026-03-20 (last sync 2026-06-18)
+Generation date: 2026-03-20 (last sync 2026-08-10)
 Total lines: ~5839 lines (based on actual file count)
 ```
 

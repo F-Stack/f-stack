@@ -2,8 +2,8 @@
 
 **Document Version**: 1.0  
 **Generation Date**: 2026-03-20  
-**Last Updated**: 2026-08-05 (adds native-mt SMP-aware pcpu/SMR slot isolation + global lock removal, MTU/jumbo-frame configuration support)  
-**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS; **Phase-2 M6 NETGRAPH+IPFW + M7 PAGE_ARRAY + M8 ZC_SEND + M9 PA+ZC + M10 FLOW_IPIP + M11 FLOW_ISOLATE + M12 FDIR + M13 LOOPBACK + Phase-5b perf baseline matrix + F-A1 fix (PA-only now production-ready), 2026-06-08**) + DPDK 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 — tree replace + 4 patches re-applied; helloworld + nginx single/multi-worker + ipfw + vlan smoke all PASS) + **native-mt SMP-aware pcpu/SMR slot isolation** (2026-08, commits `c7996a94f` G1 + `57b612d16` G2; spec: `docs/native_mt_spec/`) + **MTU/jumbo-frame configuration support** (2026-07; spec: `docs/mtu_change_spec/`) Complete Three-Layer Architecture Knowledge Base  
+**Last Updated**: 2026-08-10 (adds mbuf water-level backpressure + primary_slim control-plane-only switch; on top of native-mt SMP-aware pcpu/SMR slot isolation + global lock removal, MTU/jumbo-frame configuration support)  
+**Content Scope**: F-Stack v1.26 (FreeBSD 15.0 port; upgraded from 13.0 in 2025-2026 — M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS; **Phase-2 M6 NETGRAPH+IPFW + M7 PAGE_ARRAY + M8 ZC_SEND + M9 PA+ZC + M10 FLOW_IPIP + M11 FLOW_ISOLATE + M12 FDIR + M13 LOOPBACK + Phase-5b perf baseline matrix + F-A1 fix (PA-only now production-ready), 2026-06-08**) + DPDK 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09 — tree replace + 4 patches re-applied; helloworld + nginx single/multi-worker + ipfw + vlan smoke all PASS) + **native-mt SMP-aware pcpu/SMR slot isolation** (2026-08, commits `c7996a94f` G1 + `57b612d16` G2; spec: `docs/native_mt_spec/`) + **MTU/jumbo-frame configuration support** (2026-07; spec: `docs/mtu_change_spec/`) + **mbuf water-level backpressure** (2026-08, commit `7112dc2bc`; spec: `docs/issue_1076/zh_cn/`) + **primary_slim control-plane-only switch** (2026-08, commits `1c28aaa2d`+`f7961b083`; spec: `docs/issue_1078/zh_cn/`) Complete Three-Layer Architecture Knowledge Base  
 **Document Location**: `/data/workspace/f-stack/docs/`  
 **Purpose**: Pre-requisite architecture documentation for Spec-Driven Development
 
@@ -489,6 +489,9 @@ lcore_mask = 0x0f           # Use cores 0-3
 tso = 1                     # Enable TCP segmentation offload
 symmetric_rss = 1           # RSS symmetry
 pkt_tx_delay = 0            # Send immediately (no buffering)
+mbuf_low_watermark = 0      # mbuf water-level threshold (0=disabled; issue #1076)
+primary_slim = 0            # Primary runs control-plane only (0=disabled; issue #1078)
+primary_slim_idle_sleep = 1000  # Sleep (us) when primary_slim=1 (default 1000)
 
 [port0]
 addr = 10.0.0.1
@@ -660,11 +663,11 @@ Performance Optimization:
 ### 8.1 Version Information
 
 ```
-Knowledge base version: 1.5 (adds R10: ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY sync)
+Knowledge base version: 1.7 (adds issue #1076 mbuf water-level backpressure + issue #1078 primary_slim control-plane-only switch, 2026-08-10; on top of 1.6 native-mt SMP-aware pcpu/SMR slot isolation + global uma_crit_lock removal + MTU/jumbo-frame support; on top of 1.5 R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY sync)
 F-Stack version: v1.26 (branch feature/1.26)
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
 DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09)
-Generation date: 2026-03-20 (last sync 2026-06-18)
+Generation date: 2026-03-20 (last sync 2026-08-10)
 Update cycle: Per F-Stack version updates (recommended every 6-12 months)
 ```
 

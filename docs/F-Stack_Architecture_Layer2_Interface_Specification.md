@@ -526,6 +526,9 @@ symmetric_rss = 0             # Bidirectional RSS symmetry
 idle_sleep = 0                # Idle sleep (microseconds)
 pkt_tx_delay = 100            # Packet TX delay (set 0 for immediate send)
 enable_kni = 1                # Enable virtual NIC
+mbuf_low_watermark = 0        # mbuf water-level threshold (0=disabled; issue #1076)
+primary_slim = 0              # Primary runs control-plane only (0=disabled; issue #1078)
+primary_slim_idle_sleep = 1000  # Sleep (us) when primary_slim=1 (default 1000)
 
 [port0]
 addr = 10.0.0.1
@@ -642,6 +645,48 @@ Priority: per-socket marker > `config.ini [stack] kernel_coexist` > F-Stack. Whe
 **R10 — residual-entry coexistence.** `ff_readv`/`ff_writev` (kernel fd → `ff_host_readv/writev`, mimic read/write, connection fds single-stack hot path), `ff_ioctl` (kernel fd uses the **raw Linux request** straight to `ff_host_ioctl`, NOT via `linux2freebsd_ioctl`; dual-stack fd same-driver since R10.1 syncs `FIONBIO`/`FIOASYNC` to the paired host fd (query ioctls like `FIONREAD` not forwarded, to avoid clobbering argp)), `ff_dup` (kernel fd → `ff_host_dup`+encode), `ff_dup2` (both-kernel → `ff_host_dup2`+encode; cross-stack rejected `errno=EINVAL`). Adds 5 host bridges `ff_host_readv/writev/ioctl/dup/dup2`. Known limitation: `ff_select` (encode kernel fd ≫ `FD_SETSIZE` hard limit) / `ff_poll` (conservatively not implemented) do not support kernel-fd coexistence — use `ff_epoll_*`/`ff_kqueue`.
 
 **R-F/R-G — RSS connect-side reverse path + IPv6 reverse-proxy fix (internal, no public API change).** The internal RSS source-port reverse-computation helpers `ff_rss_adjust_sport` / `ff_rss_adjust_sport6` gained two range parameters `uint16_t first, uint16_t last` (ephemeral range from `freebsd/netinet/in_pcb.c`), and now build the tuple in **reply (inbound SYN-ACK) field order** so the reply lands on the local RX queue; the NIC RSS KEY_FINAL is built and published before `dev_configure` by `ff_rss_thash_build_key`. Gated by `[rss_check] thash_adjust` (default on, decoupled from `rss_check.enable`); diagnostics gated by compile macro `FF_RSS_DIAG` (default off). No public `ff_*` socket API signature changes. Separately, `lib/ff_veth.c` fixes IPv6 reverse-proxy addressing on FreeBSD 15 (VIP6 as /128 host addr, link-local gateway `in6_setscope`, `ND6_IFF_NO_DAD` to skip DAD since `ip6_input` drops unicast to NOTREADY/TENTATIVE). Details: `docs/ff_rss_check_opt_spec/zh_cn/`.
+
+---
+
+### 3.5 mbuf Water-Level Backpressure (issue #1076)
+
+When `maxsockets` is configured very high (e.g. 1,048,576) but the DPDK mbuf pool is relatively small (~8K–32K entries), mbufs can exhaust before sockets under a SYN flood or high connection rate, causing the entire stack to become unresponsive — no mbufs left to receive even ACK/FIN packets for existing connections.
+
+**Configuration** (`config.ini [dpdk]`):
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `mbuf_low_watermark` | unsigned | 0 (disabled) | When > 0, TCP SYN packets are dropped at `process_packets()` entry if `rte_mempool_avail_count() < mbuf_low_watermark`. Non-SYN TCP and non-TCP packets are not affected. Set to ~10-20% of mbuf pool size. |
+
+**Implementation**: `is_tcp_syn()` (`lib/ff_dpdk_if.c`) parses Ethernet/VLAN/IPv4/IPv6/TCP headers to identify SYN packets. The water-level check in `process_packets()` calls `rte_mempool_avail_count()` before processing; below the threshold, SYN packets are silently dropped (no SYN-ACK), preserving mbufs for established connections.
+
+Four FreeBSD native CC limiting mechanisms (maxsockets, ipfw limit rules, somaxconn, syncache) were confirmed functional at code level, but they operate at the socket layer and cannot prevent mbuf exhaustion when `maxsockets` is oversized. The water-level backpressure is a complementary safety net.
+
+See `docs/issue_1076/zh_cn/` for full analysis.
+
+### 3.6 Primary-Slim Control-Plane-Only Switch (issue #1078)
+
+When running multi-process F-Stack (`nb_procs > 1`), the primary process can be configured to run only the control plane (NIC initialization, KNI init, IPC server, heap-expansion proxy) and skip the data-plane RX loop, offloading all packet processing to secondary processes.
+
+**Configuration** (`config.ini [dpdk]`):
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `primary_slim` | int | 0 (disabled) | When 1, the primary runs control-plane only; no RX queues are assigned. Queue count derives from `lcore_list` length, so removing the primary's lcore shrinks queues/RSS reta consistently. |
+| `primary_slim_idle_sleep` | unsigned | 1000 (µs) | `rte_pause()` sleep duration when the slim primary has no work. |
+
+**DPDK hard constraints** (primary must stay resident even when slim):
+- The primary is the sole IPC server (secondaries connect via DPDK multi-process IPC).
+- Secondary heap expansion (`rte_malloc_heap_memory_add`) must be proxied by the primary.
+- All interrupt callbacks fire only on the primary.
+
+**New API**: `ff_is_slim_primary()` (`lib/ff_api.h`) — returns `true` when this process is the primary and `primary_slim=1`.
+
+**Validation chain** (V2–V6 in `ff_config.c`): validates `primary_slim=1` requires multi-process, `proc_type=primary`, no `lcore_list` overlap with secondaries, all data-plane lcores covered by secondaries, and idle_sleep sanity.
+
+**KNI runtime owner** (K4): a secondary process can be the runtime KNI owner when the primary is slim. `ff_kni_is_runtime_owner()` (`lib/ff_dpdk_kni.c`) replaces the hard-coded primary check with an `owner_proc_id`-based check.
+
+See `docs/issue_1078/zh_cn/` for full spec and verification.
 
 ---
 
