@@ -4,22 +4,26 @@
 > 修订记录（同日追加）：据 leader E10 实测（primary 不可原地重新拉起）A4 已闭环（详见 `03` §7.3）；本文据 T4 补充 K3 与"primary 必须常驻"的协同点，并明确 **KNI 入向报文由各 secondary 在自有 rx 队列收取后经 `kni_rp` ring 交给 primary**（K3 不需要 primary 持有物理口 rx 队列），同时**新发现**广播/多播分支 `lib/ff_dpdk_if.c:2080` 的 owner 门禁在 slim 下会导致广播包永不入KNI，必须一并修正。
 > 修订记录：2026-08-07（第三次）据门禁审核修正广播/多播 KNI 门禁行号 2081 → 2080。同批复核并修正另两处 off-by-one：`pkts_from_ring` 判定在 `:2055`（原写 `2056`）、其块范围 `2055-2077`（原写 `2056-2078`）；单播分支起点在 `:2091`（原写 `2092-2109`，起点少算一行）。
 > 修订记录：2026-08-07（第四次）据门禁报告 R1/R4 复核 04 内残留的 2081→2080、2056-2078→2055-2077（复核结果：第三次修订已全部生效、正文零残留，仅本修订记录中作为叙述保留旧值），去除对 01 的硬编码行数引用，并在 §2.3 改动清单表格上方补充"以代码文本匹配为准、行号仅作辅助定位"的实现者提示。
+> 修订记录：2026-08-10（第五次）据用户对第一轮 K3 的三个质疑 Q1/Q2/Q3（详见 `11-KNI深化调研与实验报告.md`）及 E4a 决定性实验结果修订：(1) 据 Q1 删除 K3 风险表中"推荐多消费者消除单点"的过度设计（`kni_rp` 已是 `RING_F_SC_DEQ` 单消费者，保持不动）；(2) 据 Q2 删除"按 `nb_lcores` 折算 ratelimit 默认值"的过度设计（`kernel_packets_ratelimit` 在 `kni_process_tx` 中只有 owner 执行，天然单点限速）；(3) 据 Q3 及 E4a 实验结果（secondary 通过 `VDEV_SCAN_REQ` 成功发现并 probe primary 创建的 virtio_user 口、可访问共享 KNI ring）新增 K4 方案（secondary 作运行时 KNI owner），并据 `11` §3.8 的关键发现——`kni_process_rx` 的 L190 `rte_eth_tx_burst(port_id, queue_id, ...)` 中 `queue_id` 来自 owner 自己的 rx 队列，owner 若为 secondary 可直接用自己的 tx 队列发出、**不需要新增 `kni_tx_ring`**——将 K4 列为首选，K3-corrected（= K3 + Q1/Q2 纠正）降为退备方案。
 
 > 对象：`/data/workspace/f-stack`（DPDK 24.11.6）。**本轮只读不改**：未修改代码、未编译、未提交。
-> 行号标注规则：`引自 02` = 沿用 `02-架构代码探测与阻塞点清单.md` 的坐实结论；`已复核` = 本文档作者用`read_file` 重新读过该行。
+> 行号标注规则：`引自 02` = 沿用 `02-架构代码探测与阻塞点清单.md` 的坐实结论；`已复核` = 本文档作者用`read_file` 重新读过该行；`引自 11` = 沿用 `11-KNI深化调研与实验报告.md` 的坐实结论（含 E4a 实测数据）。
 
 ## 摘要
 
-primary-slim（见 `03`的 S1）后 primary 不再持有 rx/tx 队列，而 KNI 的轮询函数 `ff_kni_process()` 恰好嵌套在 rx 队列循环内 ⇒ KNI 静默失效。本文给出 KNI 的完整归属依赖图（区分「必须 primary」与「可迁移」）、三条候选路径 K1/K2/K3 的逐条评估、仅 primary 生效的 6 项控制面操作的归属与时序重排、`msg_ring`/tools 的归属裁决，以及 `nb_dev_ports` 语义修正方案。
+primary-slim（见 `03`的 S1）后 primary 不再持有 rx/tx 队列，而 KNI 的轮询函数 `ff_kni_process()` 恰好嵌套在 rx 队列循环内 ⇒ KNI 静默失效。本文给出 KNI 的完整归属依赖图（区分「必须 primary」与「可迁移」）、四条候选路径 K1/K2/K3-corrected/K4 的逐条评估、仅 primary 生效的 6 项控制面操作的归属与时序重排、`msg_ring`/tools 的归属裁决，以及 `nb_dev_ports` 语义修正方案。
+
+据 `11` 的 Q1/Q2/Q3 代码坐实及 E4a 决定性实验（2026-08-10 实测，secondary 成功通过 `VDEV_SCAN_REQ` 发现并 probe primary 创建的 virtio_user 口、可访问共享 KNI ring），**K4（secondary 作运行时 KNI owner）为首选方案**，K3-corrected（K3 + Q1/Q2 纠正）为退备方案。
 
 ## 关键结论
 
 1. **KNI 里真正"必须 primary"的只有两件事**：virtio_user 口的 `rte_eal_hotplug_add()`（`lib/ff_dpdk_kni.c:474`，已复核）与该口的 `dev_configure`/`dev_start`（经 `lib/ff_dpdk_if.c:1061-1063` 的门禁，引自 02）。`kni_stat` 分配、`kni_ring_%u` 消费、virtio_user 的 rx/tx burst **都不要求 primary 身份**。
 2. **K2 的关键卡点已查证：`rte_eal_hotplug_add()` 在 secondary 中是"可调用但会转交primary"**——`rte_dev_probe()` 在非primary 分支直接 `eal_dev_hotplug_request_to_primary()`（`dpdk-stable-24.11.6/lib/eal/common/eal_common_dev.c:244-259`，已复核），primary 侧由 `handle_secondary_request` → `local_dev_probe()` 真正attach 并反向同步给所有 secondary（`hotplug_mp.c:101-112`、`442-455`，已复核）。**所以 K2 不被 DPDK 封死，但它并不减少对 primary 的依赖**（仍需 primary 存活，且 `01` §1.2.1 已确认 primary 是 IPC 唯一服务端），却要额外承担 N2 的 `nb_dev_ports` 语义漂移变成真 bug、`total_nb_ports` 条件失效、以及 secondary 对 vdev 口可见性依赖 `VDEV_SCAN_REQ`（`01` §1.2.4）三项代价 ⇒ **推荐度最低**。
-3. **推荐 K3 为 primary-slim 下的首选**：primary 继续独占 virtio_user 口的收发（它是该口的 configure/start 者，队列 0 无人竞争，**不需要物理口队列**），唯一需要借道的是「内核 → 物理口」方向的 `rte_eth_tx_burst(port_id, queue_id, ...)`（`lib/ff_dpdk_kni.c:190`，已复核），改为经新增ring 交给某secondary 用其自有tx 队列发出。**与"primary 必须常驻"天然协同**：据 `03` 的 E2e/E10 修订，primary-slim 下 primary 本就必须常驻（既是 IPC 服务端/扩堆代理/中断承担者，也是 uio refcnt 的贡献者之一），因此把 KNI owner 继续留在 primary **不引入任何新的存活性依赖**——KNI 的可用期恰好等于 primary 的存活期，与控制面其他能力同生共死，语义一致、无需额外的owner failover 设计。
-4. **KNI 入向报文（物理口 → 内核）不需要 primary 持有物理口 rx 队列**（T4 明确答案）：该方向由**各 secondary 在自己的 rx 队列上收包后 `ff_kni_enqueue()` 入共享 ring `kni_rp[port_id]`**，primary 只从 ring dequeue 后写 virtio_user 口 queue 0。单播分支本就无 owner 门禁（`lib/ff_dpdk_if.c:2091-2109`，已复核）。**但本文新发现一处必改点**：广播/多播分支有 owner 门禁（`lib/ff_dpdk_if.c:2080`的 `if (enable_kni && ff_kni_is_owner_thread())`，已复核），slim primary 永不收包 ⇒ 该分支一次都不执行 ⇒ **ARP 请求、DHCP、IPv6 NS/RA/MLD、OSPF hello 等广播/多播报文永远不会进内核**，KNI 管理面半瘸。改法见 §2.3 第5 点。
-5. **`msg_ring`裁决：primary 精简循环继续消费 `msg_ring[0]`，tools 默认 `proc_id=0` 保持不变**（向后兼容优先）；不采用"把 tools 默认指向第一个收包进程"的方案。
-6. **`nb_dev_ports` 修正裁决**：由 primary 在 hotplug **之前**把 `rte_eth_dev_count_avail()` 快照发布到共享 memzone，secondary lookup 读取；不采用"改成只统计配置里的物理口"（会破坏 virtio_user 口 id 基址语义）。
+3. **推荐 K4 为首选**（据 `11` Q3 + E4a 实测）：将 `ff_kni_is_owner_thread()` 拆分为"init owner"（= primary，执行 hotplug/kni_stat 分配/kni_rp 创建/total_nb_ports*=2/dev_configure/dev_start）与"runtime owner"（= 指定 secondary，执行 `ff_kni_process()`/广播多播克隆入队）。**E4a 已实测验证**：secondary 通过 `VDEV_SCAN_REQ` 成功发现 primary 创建的 virtio_user0 口（`VDEV_BUS: receive vdev, virtio_user0` + `Received 1 vdevs`）、独立 probe 该口（`Search driver to probe device virtio_user0`）、成功访问共享 KNI ring（`create kni ring success`）。据 `11` §3.8 的关键发现——`kni_process_rx` 的 L190 `rte_eth_tx_burst(port_id, queue_id, ...)` 中 `queue_id` 来自 owner 自己的 rx 队列——**K4 的 owner secondary 直接用自己的 tx 队列发出，不需要新增 `kni_tx_ring`**。K4 的核心优势：不需要新增 ring（少一跳延迟、少一个 ring 管理）、KNI owner 崩溃只影响 KNI 不影响控制面、恢复只需重启该 secondary（可原地重启，`03` E2e 已证）。
+4. **K3-corrected 为退备方案**（K3 + Q1/Q2 纠正）：primary 继续独占 virtio_user 口的收发（它是该口的 configure/start 者，队列 0 无人竞争，**不需要物理口队列**），「内核 → 物理口」方向经新增 `kni_tx_ring`（单生产者 primary → 单消费者一个 secondary，`RING_F_SP_SC`）交给某 secondary 用其自有 tx 队列发出。**与"primary 必须常驻"天然协同**：据 `03` 的 E2e/E10 修订，primary-slim 下 primary 本就必须常驻，把 KNI owner 继续留在 primary 不引入新的存活性依赖。据 Q1 纠正：`kni_rp` 已是 `RING_F_SC_DEQ` 单消费者，保持不动，**不需要改为多消费者**；据 Q2 纠正：`kernel_packets_ratelimit` 在 `kni_process_tx` 中只有 owner 执行，**天然单点限速，不需要按 `nb_lcores` 折算默认值**。
+5. **KNI 入向报文（物理口 → 内核）不需要 primary 持有物理口 rx 队列**（T4 明确答案）：该方向由**各 secondary 在自己的 rx 队列上收包后 `ff_kni_enqueue()` 入共享 ring `kni_rp[port_id]`**，owner（K4=指定 secondary / K3-corrected=primary）从 ring dequeue 后写 virtio_user 口 queue 0。单播分支本就无 owner 门禁（`lib/ff_dpdk_if.c:2091-2109`，已复核）。**但必改一处**：广播/多播分支有 owner 门禁（`lib/ff_dpdk_if.c:2080`的 `if (enable_kni && ff_kni_is_owner_thread())`，已复核），slim primary 永不收包 ⇒ 该分支一次都不执行 ⇒ **ARP 请求、DHCP、IPv6 NS/RA/MLD、OSPF hello 等广播/多播报文永远不会进内核**，KNI 管理面半瘸。改法见 §2.3 第5 点（K3-corrected）与 §2.4 第6 点（K4）。
+6. **`msg_ring`裁决：primary 精简循环继续消费 `msg_ring[0]`，tools 默认 `proc_id=0` 保持不变**（向后兼容优先）；不采用"把 tools 默认指向第一个收包进程"的方案。
+7. **`nb_dev_ports` 修正裁决**：由 primary 在 hotplug **之前**把 `rte_eth_dev_count_avail()` 快照发布到共享 memzone，secondary lookup 读取；不采用"改成只统计配置里的物理口"（会破坏 virtio_user 口 id 基址语义）。**K4 前置必做**（owner secondary 需要 `nb_dev_ports` 算 `kni_stat[port_id]->port_id`），K3-corrected 可延后（`nb_dev_ports` 只在 primary 侧使用）。
 
 ---
 
@@ -87,7 +91,9 @@ main_loop: for (i < qconf->nb_rx_queue) { ... }      lib/ff_dpdk_if.c:2759-2801 
          ├─ rte_eth_rx_burst(kni_stat[port_id]->port_id, 0, ...)      187  ← virtio_user 口
          │  └─ ◆只需 virtio_user 口的 queue 0
          └─ rte_eth_tx_burst(port_id, queue_id, ...)                  190  → 物理口
-            └─ ★★这是 KNI 唯一真正需要"物理口 tx 队列"的地方（K3 的改造点）
+            └─ ★★queue_id 来自 owner 自己的 rx 队列（引自 11 §3.8）
+               ├─ K3-corrected 改造点：改为 enqueue `kni_tx_ring`，由指定 secondary 消费
+               └─ K4 改造点：owner=secondary 时直接用自己的 tx 队列发出，不需要 ring
 
 【控制面：knictl】
 tools（--proc-type=secondary，ff_proc_id 默认 0）
@@ -197,9 +203,11 @@ tools（--proc-type=secondary，ff_proc_id 默认 0）
 
 ---
 
-### 2.3 K3：primary 保留 KNI 但不碰物理口队列，「内核 → 物理口」方向经 ring 借道 secondary
+### 2.3 K3-corrected：primary 保留 KNI 但不碰物理口队列，「内核 → 物理口」方向经 ring 借道 secondary（退备方案）
 
-**做法（本文推荐）**：
+> K3-corrected = 原 K3 + Q1/Q2 纠正。据 `11` Q1：`kni_rp` 已是 `RING_F_SC_DEQ` 单消费者，保持不动，不需要改为多消费者。据 `11` Q2：`kernel_packets_ratelimit` 在 `kni_process_tx` 中只有 owner 执行，天然单点限速，不需要按 `nb_lcores` 折算默认值。E4a 已通过 K4 实测（§2.4），K4 为首选，本方案降为退备。
+
+**做法（退备方案）**：
 
 1. **保留 KNI owner = primary**（`ff_kni_is_owner_thread()` 不改，`lib/ff_dpdk_kni.c:92-98`）。
 2. **`ff_kni_process()` 从 rx 队列循环移到循环之外**（`lib/ff_dpdk_if.c:2764-2768` → 移到 `2803` 的 `process_msg_ring()` 附近），改为按 port 遍历而不是按 (port, queue) 遍历，并去掉 `queue_id` 参数依赖。这样 slim primary（`nb_rx_queue == 0`）也会每轮驱动一次 KNI。
@@ -208,13 +216,14 @@ tools（--proc-type=secondary，ff_proc_id 默认 0）
 5. **入向方向（物理口 → 内核）：明确由各 secondary 收取，primary 不需要物理口 rx 队列**（T4 要求讲清的点）。链路为「secondary 在自有 rx 队列 `rte_eth_rx_burst` 收到包 → `process_packets()` 判定该包应给内核 → `ff_kni_enqueue()` 入**共享** ring `kni_rp[port_id]`（`lib/ff_dpdk_kni.c:529-532`，已复核）→ primary 的 `kni_process_tx()` 从该 ring dequeue（`150`）→ `rte_eth_tx_burst(kni_stat[port_id]->port_id, 0, ...)` 写 virtio_user 口（`167`）→ 内核 veth」。因此 **K3 既不需要 primary 的物理口 tx 队列（第3 点），也不需要 primary 的物理口 rx 队列**——primary 只碰 virtio_user 口。
    **但必须同时修一处（本文新发现）**：广播/多播分支的 owner 门禁 `if (enable_kni && ff_kni_is_owner_thread())`（`lib/ff_dpdk_if.c:2080`，已复核）在 slim 下**永不成立**（primary 不进`process_packets()`），会导致 ARP 请求、DHCP、IPv6 NS/RA/MLD、OSPF hello 等**广播/多播报文完全不进内核**，KNI 只剩单播可用。改法：把该条件改为 `if (enable_kni && !pkts_from_ring)`。理由：广播包由收到它的进程通过 `dispatch_ring` 克隆给其余队列（`lib/ff_dpdk_if.c:2055-2077`，已复核，仅在 `!pkts_from_ring` 时执行），因此"`!pkts_from_ring`"精确等价于"我是从线上收到该包的那个进程"⇒ 恰好产生**一份** KNI 副本（与现状"只有 owner 入队一份"的份数语义一致），且不依赖任何进程身份。**若错误地改成仅 `enable_kni`，则 N 个进程各入一份 ⇒ 内核收到 N 份重复广播包**，务必避免。
 
-**为什么这是最干净的**：
+**为什么这是最干净的（退备方案视角）**：
 
 - primary **完全不接触物理口的任何队列**（tx 与 rx 都不需要，见改造点3 与 5）⇒ 与 `03` 的 S1 严格一致，B1/B3/B4 的收缩逻辑与"无孤儿队列"结论全部保持；
 - **与"primary 必须常驻"天然协同**（据 `03` 的 E2e/E10 修订新增）：S1 下primary 本就必须常驻（IPC 服务端 / 扩堆代理 / 中断承担者，且是 uio refcnt 贡献者之一），把 KNI owner 留在 primary **不引入任何新的存活性依赖**——KNI 能力的可用期恰好与控制面其他能力同生共死，无需为 KNI 单独设计 owner failover；而 K2 把 owner 迁到 secondary 反而制造了"控制面能力分散在两个进程"的新故障组合。
 - KNI 的管理面（内核旁路：SSH/ARP/ICMP/路由协议等）**双向都通**；
 - KNI 的关键控制包路径仍集中在 primary（与现状一致，行为可预期），不产生 K2 那样的 secondary 性能不对称（新增的只是一个 ring 消费，成本与既有 `dispatch_ring`（`lib/ff_dpdk_if.c:664-668`，已复核）同量级）；
 - 复用既有的 `create_ring()`（`lib/ff_dpdk_if.c:615-635`，已复核，primary create / secondary lookup 已封装好）与 `process_dispatch_ring()` 的消费模式，无新机制。
+- **相对 K4 的劣势**：需要新增 `kni_tx_ring`（多一跳延迟、多一个 ring 管理）；KNI 与 primary 绑定（primary 崩溃 = KNI 断且不可原地恢复，`03` E10 已证，必须等计划内全组重启）。
 
 **代码改动清单**：
 
@@ -222,7 +231,7 @@ tools（--proc-type=secondary，ff_proc_id 默认 0）
 
 | 位置 | 改法 | 估计量 |
 |---|---|---|
-| `lib/ff_dpdk_if.c:638-679` `init_dispatch_ring()` 旁 | 新增 `init_kni_tx_ring()`：per-port 建 `kni_tx_ring_p%d`（用 `create_ring()`，`RING_F_SC_DEQ`），在 `ff_dpdk_init()` 的 `1686` 之后调用 | ~30 行 |
+| `lib/ff_dpdk_if.c:638-679` `init_dispatch_ring()` 旁 | 新增 `init_kni_tx_ring()`：per-port 建 `kni_tx_ring_p%d`（用 `create_ring()`，`RING_F_SP_SC`：单生产者 primary → 单消费者一个 secondary），在 `ff_dpdk_init()` 的 `1686` 之后调用 | ~30 行 |
 | `lib/ff_dpdk_kni.c:181-202` `kni_process_rx()` | `190` 的 `rte_eth_tx_burst(port_id, queue_id, ...)` 改为 `rte_ring_enqueue_burst(kni_tx_ring[port_id], ...)`；入 ring 失败按现有 `191-197` 的丢弃/统计逻辑处理 | ~15 行 |
 | `lib/ff_dpdk_kni.c:501-507` `ff_kni_process()` | 去掉 `queue_id` 参数依赖（tx 侧本就`__rte_unused`，见 `145`，已复核；rx 侧改造后也不再需要） | ~5 行 |
 | `lib/ff_dpdk_if.c:2764-2768` |调用点移出 rx 循环，改为「若 `enable_kni &&ff_kni_is_owner_thread()`，按 `cfg.dpdk.nb_ports` 遍历调用一次」 | ~12 行 |
@@ -231,25 +240,113 @@ tools（--proc-type=secondary，ff_proc_id 默认 0）
 | `lib/ff_config.c:1419-1435` | KNI 校验改为：`primary_slim=1` 时**不再要求** primary 在 `lcore_list` 中，但要求至少有一个 secondary（即 `nb_lcores >= 1`）来承担 `kni_tx_ring` 消费与入向收包 | ~8 行 |
 | `lib/ff_dpdk_if.c:535` mbuf 公式 | 视 ring 深度决定是否把 `kni_tx_ring` 计入（现有公式已含 `P*KNI_MBUF_MAX + P*KNI_QUEUE_SIZE`，`543-546`，已复核，可复用其预算） | ~2 行 |
 
-**可行性结论**：**有条件可行，推荐作为 primary-slim 下的 KNI 方案**。前置条件：(i) virtio_user 口必须仍被 primary configure/start —— 由于 owner 仍是 primary，`821-825` 的 `total_nb_ports *= 2` 条件天然满足，**不需要改**（这是 K3 相对 K2 的又一优势）；(ii) `nb_dev_ports` 语义仍只在 primary 侧使用 ⇒ **N2 不被激活，可延后修**（相对 K2 的又一优势）。
+**可行性结论**：**有条件可行，作为退备方案**。前置条件：(i) virtio_user 口必须仍被 primary configure/start —— 由于 owner 仍是 primary，`821-825` 的 `total_nb_ports *= 2` 条件天然满足，**不需要改**（这是 K3-corrected 相对 K2 的优势，也是相对 K4 的优势——K4 必须改该条件）；(ii) `nb_dev_ports` 语义仍只在 primary 侧使用 ⇒ **N2 不被激活，可延后修**（相对 K2/K4 的优势——K4 前置必做 N2 修正）。
 
 **与 B2 配置校验的冲突程度**：**低**。B2 的校验目的是"保证 primary 有队列以便驱动 `ff_kni_process()`"；K3 让 `ff_kni_process()` 不再需要队列，因此该校验的**前提消失**，改为"至少一个 secondary"即可。
 
 **风险**：
 - 新增一跳 ring ⇒ 内核 → 网卡方向多一次 enqueue/dequeue，延迟增加（管理面流量，可接受），且 ring 满时会丢包（需按现有 `kni_stat[port_id]->tx_dropped` 统计口径记账）。
-- 消费者选择逻辑需明确且稳定：若选中的 secondary 崩溃，KNI 的 rx 方向会中断（缓解：让**所有** secondary 都尝试 dequeue 同一个 ring —— 但那样必须去掉 `RING_F_SC_DEQ` 单消费者标志，改为多消费者 ring，代价是稍慢；**推荐后者**，因为它顺便消除了单点）。
+- 消费者选择逻辑需明确且稳定：若选中的 secondary 崩溃，KNI 的 rx 方向会中断。`kni_tx_ring` 采用 `RING_F_SP_SC`（单生产者 primary → 单消费者一个 secondary），与 `kni_rp` 的 `RING_F_SC_DEQ` 单消费者设计一致（引自 11 §1.4 Q1 纠正：`kni_rp` 的单消费者是正确且充分的，不需要改为多消费者）。
 - KNI 轮询频率从"每 rx 队列一次"变为"每轮一次"，在多队列场景下频率下降（对管理面无实质影响，但需在 `08` 的用例里覆盖 KNI 吞吐）。
-- **广播/多播入队门禁改造的副作用（伴随 2.3 第 5 点）**：`ff_kni_enqueue()` 的 ratelimit 计数 `kni_rate_limt` 是**进程内全局**（`lib/ff_dpdk_kni.c:100`，已复核，每轮在 `lib/ff_dpdk_if.c:2701-2727` 复位）。门禁从"只有 owner 入队"改为"从线上收到该包的进程入队"后，入队者从 1 个进程变为 N 个进程，**聚合限速阈值实际放大约 N 倍**（每进程各算一份配额）。缓解：把 `[kni] console_packets_ratelimit`/`general_packets_ratelimit` 的配置语义在文档中明确为"每进程"，或按`nb_lcores` 折算默认值。需`08` 用例验证内核侧不被压垮。
+- **广播/多播入队门禁改造的副作用（伴随 2.3 第 5 点）**：`ff_kni_enqueue()` 的 ratelimit 计数 `kni_rate_limt` 是**进程内全局**（`lib/ff_dpdk_kni.c:100`，已复核，每轮在 `lib/ff_dpdk_if.c:2701-2727` 复位）。门禁从"只有 owner 入队"改为"从线上收到该包的进程入队"后，入队者从 1 个进程变为 N 个进程，`console/general_packets_ratelimit` 是每进程配额（引自 11 §2.5 Q2 纠正），N 个进程各自一份 ⇒ **聚合限速放大约 N 倍**。但这不是 ratelimit 代码本身的问题，`kernel_packets_ratelimit` 在 `kni_process_tx` 中只有 owner 执行，**天然单点限速，不需要按 `nb_lcores` 折算默认值**（引自 11 §2.5 Q2 纠正）。`console/general_packets_ratelimit` 的聚合放大通过调整配置值即可，需 `08` 用例验证内核侧不被压垮。
 
-**推荐度**：**高（首选）**。
+**推荐度**：**中（退备方案，K4 为首选）**。K3-corrected 改动更小、风险更低，但接受 KNI 与 primary 绑定的代价（primary 崩溃 = KNI 断且不可原地恢复，`03` E10 已证）。K4 vs K3-corrected 的选择判据见 §2.5。
 
-### 2.4 三路径对比小结
+### 2.4 K4：secondary 作运行时 KNI owner（首选方案）
 
-| 路径 | primary 是否碰物理口队列 | 是否消除孤儿队列 | 是否需修 N2 | 是否需改 `total_nb_ports` 条件 | 改动点数（估） | 推荐度 |
-|---|---|---|---|---|---|---|
-| **K1** 保留最小队列 | **是**（1 对队列） | ⚠️ 部分 | 否 | 否 | 3~4 | 中（KNI 必开时的兜底） |
-| **K2** owner 迁 secondary | 否（primary 完全不碰） | ✅ 是 | **是（前置必做）** | **是（否则 KNI 全废）** | 9+ | **低（不推荐）** |
-| **K3** primary 留 KNI + ring 借道 | 否（**rx/tx 都不碰**，只碰 virtio_user 口） | ✅ 是 | 否（可延后） | 否 | 7~8（含广播/多播门禁 1 处） | **高（首选）** |
+> K4 据 `11` Q3 + E4a 决定性实验（2026-08-10 实测）确立。E4a 已验证 secondary 通过 `VDEV_SCAN_REQ` 成功发现 primary 创建的 virtio_user 口、独立 probe 该口、成功访问共享 KNI ring。据 `11` §3.8 的关键发现——`kni_process_rx` 的 L190 `rte_eth_tx_burst(port_id, queue_id, ...)` 中 `queue_id` 来自 owner 自己的 rx 队列——**K4 的 owner secondary 直接用自己的 tx 队列发出，不需要新增 `kni_tx_ring`**。
+
+**核心思路**：将 `ff_kni_is_owner_thread()` 拆分为两个概念：
+- **init owner**（= primary）：执行 hotplug、`kni_stat` 分配、`kni_rp` 创建、`total_nb_ports *= 2`、`dev_configure`/`dev_start`
+- **runtime owner**（= 指定 secondary）：执行 `ff_kni_process()`、广播/多播克隆入队
+
+**K4 数据流**：
+
+| 方向 | 谁做 | 路径 | 是否需新 ring |
+| --- | --- | --- | --- |
+| 物理口→内核 | 各 secondary 收包 → `ff_kni_enqueue()` → `kni_rp`（共享，`RING_F_SC_DEQ`） → runtime owner dequeue → `rte_eth_tx_burst(virtio_user_port, 0, ...)` | 否 |
+| 内核→物理口 | runtime owner `rte_eth_rx_burst(virtio_user_port, 0, ...)` → `rte_eth_tx_burst(physical_port, own_queue_id, ...)` | **否！用自己的 tx 队列** |
+
+**关键代码依据**（引自 11 §3.8）：`kni_process_rx()` 的 L190 `rte_eth_tx_burst(port_id, queue_id, ...)` 中，`port_id` 是物理口、`queue_id` 来自 `qconf->rx_queue_list[i].queue_id`（`lib/ff_dpdk_if.c:2761`，已复核），即**该进程自己的物理口 rx 队列 id**。若 owner 是 secondary，它用自己的 tx 队列发出——**不需要借道 ring（K3-corrected 的 `kni_tx_ring`）**。这是 K4 相对 K3-corrected 的核心优势。
+
+**E4a 实测验证**（引自 11 §E4a 决定性结论）：
+
+| 验证项 | 结果 | 证据 |
+| --- | --- | --- |
+| Primary 创建 virtio_user 口 | ✅ 成功 | `Port 1 MAC:20:90:6F:7D:5D:08` |
+| Secondary 通过 `VDEV_SCAN_REQ` 发现 virtio_user 口 | ✅ 成功 | `VDEV_BUS: receive vdev, virtio_user0` + `Received 1 vdevs` |
+| Secondary 独立 probe virtio_user 口 | ✅ 成功 | `VDEV_BUS: Search driver to probe device virtio_user0` |
+| Secondary 访问共享 KNI ring | ✅ 成功 | `create kni ring success` |
+| Secondary 完成完整初始化 | ✅ 成功 | `Successed to register dpdk interface` |
+
+结合代码分析（引自 11 §3.7）：
+- Secondary 通过 `rte_eth_dev_attach_secondary(name)` 绑定到 primary 创建的 ethdev（`virtio_user_ethdev.c:525-547`，已复核）
+- `eth_virtio_dev_init` → `set_rxtx_funcs` 设置 rx/tx burst 函数指针（`virtio_ethdev.c:1951-1953`，已复核）
+- `virtio_user_secondary_eth_dev_ops` 提供 secondary 专用 dev_ops（`virtio_ethdev.c:657-666`，已复核，不含 configure/start）
+- **Secondary 可以对 virtio_user 口做 `rte_eth_rx_burst`/`rte_eth_tx_burst`**
+
+**K4 需解决的问题（全部有代码依据，引自 11 §3.2-§3.5）**：
+
+1. **N2 修正（前置必做）**：`nb_dev_ports` 在 secondary 侧"不正确"是源码自承的（`lib/ff_dpdk_if.c:79` 的注释 `/* primary is correct, secondary is not correct, but no impact now*/`，已复核）。owner secondary 需要 `nb_dev_ports` 算 `kni_stat[port_id]->port_id = port_idx + nb_dev_ports`（`lib/ff_dpdk_kni.c:478`，已复核），必须先按 §5 的方案修正（primary 发布到共享 memzone，secondary lookup 读取）。
+2. **`total_nb_ports *= 2` 条件修正**：当前条件是 `enable_kni && ff_kni_is_owner_thread()`（`lib/ff_dpdk_if.c:821-825`，已复核）。owner 迁到 secondary 后，**primary 的 `total_nb_ports` 不再翻倍 ⇒ primary 不会对 virtio_user 口做 `dev_configure`/`dev_start`（`1061-1148`）⇒ 该口永远处于未启动状态 ⇒ owner secondary 的 `rte_eth_tx_burst(kni_stat[]->port_id, 0, ...)` 全失败**。必须把该条件改为仅 `enable_kni`（在 primary 上恒真）。
+3. **`ff_kni_is_owner_thread()` 改造**：`lib/ff_dpdk_kni.c:92-98`（已复核），改为 `ff_cur_proc_id() == cfg.kni.owner_proc_id`。
+4. **secondary 在 `ff_kni_alloc()` 中也分配 `kni_stat[port_id]`**：`lib/ff_dpdk_kni.c:434-479`（已复核）当前只有 owner（primary）分配。owner secondary 也需要分配自己的 `kni_stat[port_id]` 并设 `port_id = port_idx + nb_dev_ports`（前提：N2 已修正）。
+5. **`ff_kni_process()` 调用移出 rx 循环**：`lib/ff_dpdk_if.c:2764-2768`（已复核），避免 KNI 轮询频率与队列数耦合（K3-corrected 也需要）。
+6. **广播/多播门禁改为 `!pkts_from_ring`**：`lib/ff_dpdk_if.c:2080`（已复核），与 K3-corrected 相同（详见 §2.3 第 5 点的改法与理由）。
+7. **B2 校验调整**：`lib/ff_config.c:1419-1435`（已复核），校验对象从 primary lcore 改为 `proc_lcore[cfg->kni.owner_proc_id]`。
+
+**代码改动清单**：
+
+> 给实现者的定位提示：下表行号仅作辅助定位，**以代码文本匹配为准**。仓库后续提交会使行号漂移，改动前请先 grep 确认。
+
+| 位置 | 改法 | 估计量 |
+|---|---|---|
+| `lib/ff_config.h:337-346`（kni 结构，已复核） | 新增 `int owner_proc_id;` | ~1 行 |
+| `lib/ff_config.c:1085-1086`（`MATCH("kni","enable")` 旁，已复核） | 新增 `MATCH("kni","owner_proc_id")` 解析 | ~2 行 |
+| `lib/ff_dpdk_kni.c:92-98`（已复核） | owner 判定改为 `ff_cur_proc_id() == cfg.kni.owner_proc_id` | ~3 行 |
+| `lib/ff_dpdk_if.c:821-825`（已复核） | 条件改为仅 `enable_kni`（否则 primary 不配置 virtio_user 口） | ~2 行 |
+| `lib/ff_dpdk_kni.c:434-479`（已复核） | owner secondary 也分配 `kni_stat[port_id]` 并设 `port_id`（前提：N2 已修正） | ~15 行 |
+| `lib/ff_dpdk_if.c:79`、`421-423`、`758`、`844`；`lib/ff_dpdk_kni.c:478` | N2 修正（前置必做，见 §5） | ~15 行 |
+| `lib/ff_dpdk_if.c:2764-2768`（已复核） | `ff_kni_process()` 调用移出 rx 循环，改为按 `cfg.dpdk.nb_ports` 遍历调用一次 | ~12 行 |
+| `lib/ff_dpdk_if.c:2080`（已复核） | 广播/多播 → KNI 的门禁从 `enable_kni && ff_kni_is_owner_thread()` 改为 `enable_kni && !pkts_from_ring` | ~2 行 |
+| `lib/ff_config.c:1419-1435`（已复核） | 校验对象从 primary lcore 改为 `proc_lcore[cfg->kni.owner_proc_id]` | ~8 行 |
+
+**可行性结论**：**可行，首选方案**。E4a 已实测验证 secondary 能发现、probe virtio_user 口并访问共享 KNI ring。代码分析（引自 11 §3.7）确认 secondary 可对 virtio_user 口做 rx/tx burst。前置条件：(i) N2 修正（primary 发布 `nb_dev_ports` 到共享 memzone）；(ii) `total_nb_ports *= 2` 条件改为仅 `enable_kni`；(iii) primary 在线（vdev 可见性依赖，见风险）。
+
+**与 B2 配置校验的冲突程度**：**中**。需重写 `1419-1435` 的校验对象（从 primary lcore 改为 `proc_lcore[cfg->kni.owner_proc_id]`），但方向明确。
+
+**风险**：
+- **vdev 可见性依赖 primary 在线**（引自 11 §3.6）：secondary 通过 IPC 向 primary 索取 vdev 列表（`vdev.c:482-503`，已复核）。owner secondary 重启时需要 primary 在线才能重新发现 virtio_user 口。primary 退出后新起的 secondary 无法发现 virtio_user 口。**但已 probe 且已 start 的口不依赖 primary 在线做 rx/tx burst**（引自 11 §3.7，需 E4b 实测确认）。
+- **owner secondary 崩溃后 KNI 中断**：K4 的 KNI 能力绑定在指定 secondary 上，该 secondary 崩溃则 KNI 中断。**但恢复只需重启该 secondary**（可原地重启，`03` E2e 已证），不需要等计划内全组重启（相对 K3-corrected 的优势——K3-corrected 下 primary 崩溃 = KNI 断且不可原地恢复，`03` E10 已证）。
+- **改动面较大**：需 N2 修正 + `total_nb_ports` 条件修正 + owner 判定改造 + secondary `kni_stat` 分配，共 8~10 处改动（相对 K3-corrected 的 7~8 处）。
+- **广播/多播入队门禁改造的副作用**：与 K3-corrected 相同（见 §2.3 风险段），`console/general_packets_ratelimit` 是每进程配额，N 个进程各自一份 ⇒ 聚合限速放大约 N 倍。`kernel_packets_ratelimit` 在 `kni_process_tx` 中只有 owner 执行，天然单点限速（引自 11 §2.5 Q2 纠正）。
+
+**推荐度**：**高（首选）**。E4a 已通过，K4 在架构上更干净（不需要新 ring、故障隔离更好、恢复只需重启 secondary）。
+
+---
+
+### 2.5 四路径对比小结
+
+| 路径 | primary 是否碰物理口队列 | 是否消除孤儿队列 | 是否需修 N2 | 是否需改 `total_nb_ports` 条件 | 是否需新 ring | 改动点数（估） | 推荐度 |
+|---|---|---|---|---|---|---|---|
+| **K1** 保留最小队列 | **是**（1 对队列） | ⚠️ 部分 | 否 | 否 | 否 | 3~4 | 中（KNI 必开时的兜底） |
+| **K2** owner 迁 secondary | 否（primary 完全不碰） | ✅ 是 | **是（前置必做）** | **是（否则 KNI 全废）** | 否 | 9+ | **低（不推荐）** |
+| **K3-corrected** primary 留 KNI + ring 借道 | 否（**rx/tx 都不碰**，只碰 virtio_user 口） | ✅ 是 | 否（可延后） | 否 | **是**（`kni_tx_ring`，`RING_F_SP_SC`） | 7~8（含广播/多播门禁 1 处） | **中（退备）** |
+| **K4** secondary 作 runtime owner | 否（primary 只做 init，不碰任何队列） | ✅ 是 | **是（前置必做）** | **是**（改为仅 `enable_kni`） | **否** | 8~10（含 N2 修正） | **高（首选，E4a 已通过）** |
+
+**K4 vs K3-corrected 选择判据**：
+
+| 判据 | K4 | K3-corrected |
+|---|---|---|
+| E4a 实测 | ✅ 已通过 | 不依赖（primary 自己用 virtio_user 口） |
+| 是否需新增 ring | 否 | 是（`kni_tx_ring`，多一跳延迟） |
+| KNI owner 崩溃影响 | 只影响 KNI，数据面与控制面不受影响 | primary 崩溃 = KNI 断 + 控制面全断（IPC/扩堆/中断同失） |
+| KNI 恢复 | 重启该 secondary 即可（可原地重启） | 必须等计划内全组重启（primary 不可原地拉回，E10 已证） |
+| 前置依赖 | N2 修正 + `total_nb_ports` 条件修正 | 无（N2 可延后、`total_nb_ports` 天然满足） |
+| 改动量 | 8~10 处 | 7~8 处 |
+| vdev 可见性依赖 | 依赖 primary 在线（secondary 重启时） | 无（primary 自己创建并使用） |
+
+**裁决：K4 为首选**（E4a 已通过）。K3-corrected 为退备方案（若 K4 的前置依赖 N2 修正或 `total_nb_ports` 条件修正遇到不可逾越的障碍，可回退到 K3-corrected）。
 
 ---
 
@@ -313,7 +410,7 @@ tools（--proc-type=secondary，ff_proc_id 默认 0）
 | ipip flow | primary | `init_port_start()` 后 | 不丢 | 不改 |
 | RSS thash 诊断 | primary | `init_port_start()` 后 | 诊断会丢（除非改 `3490`） | `3490` 1 行 |
 | `init_flow` / `fdir` | 现状：所有进程；建议：primary | `init_port_start()` 后 | 不丢（但有越权与重复告警） | 各 2 行门禁 |
-| KNI 收发 | 见第二节 K3：primary（virtio_user 口双向）+ 各 secondary（物理口**入向**收包并入 `kni_rp` ring）+ 指定/任意 secondary（物理口**出向** tx） | 运行期每轮 | 不丢（K3，含广播/多播门禁修正）／完全丢（不做任何改造） | 见2.3 |
+| KNI 收发 | 见第二节 **K4（首选）**：init owner=primary（hotplug/dev_configure/dev_start）+ runtime owner=指定 secondary（virtio_user 口双向收发 + 用自己 tx 队列发出）+ 各 secondary（物理口**入向**收包并入 `kni_rp` ring）。退备 K3-corrected：primary（virtio_user 口双向）+ 各 secondary（物理口**入向**收包并入 `kni_rp` ring）+ 指定 secondary（经 `kni_tx_ring` 消费物理口**出向** tx） | 运行期每轮 | 不丢（K4 或 K3-corrected，含广播/多播门禁修正）／完全丢（不做任何改造） | 见 §2.4（K4）/ §2.3（K3-corrected） |
 
 ---
 
@@ -388,7 +485,7 @@ if (nb_dev_ports == 0) {
 
 **影响面判断**：
 - **当前无功能变化**（两处使用点都在 primary 分支内，`nb_dev_ports` 本来就正确）；
-- **前置价值**：K2 路线（owner 迁 secondary）**必须**先做本修正，否则 `478` 会算错；K3 路线可延后做（`03` 5.2 的步骤 8 已把它排在 KNI 改造之前）。
+- **前置价值**：K2 路线（owner 迁 secondary）**必须**先做本修正，否则 `478` 会算错；**K4 路线同样必须先做本修正**（owner secondary 需要 `nb_dev_ports` 算 `kni_stat[port_id]->port_id`，引自 11 §3.5）；K3-corrected 路线可延后做（`03` 5.2 的步骤 8 已把它排在 KNI 改造之前）。
 
 ### 5.4 N8 的可读性问题（O 级，可与 5.3 一并做）
 
@@ -404,24 +501,26 @@ if (nb_dev_ports == 0) {
 > **`01-外网调研与交叉验证.md` 的状态**：本文档开始写作时为空，定稿前再次读取已完成（内容以 `01` 现行版本为准，本文不写死其行数以免随修订漂移）。已据其内容修正本文 §3.2（LSC 回调归属，见该节勘误留档），并在下表复核 D/E/F 三处假设（与 `03` 第七节的 A/B/C 并列）。
 >
 > **`01` 中与本文直接相关的硬约束**：
-> - **所有中断只在 primary 内触发**（`01` §1.2.5，`multi_proc_support.rst:174-177`）⇒ 已用于修正 §3.2；同时也是 K3 优于 K2 的一条额外理由（KNI owner 留在 primary，与"中断只在 primary"的归属一致）。
-> - **primary 是 IPC 唯一服务端**（`01` §1.2.1，`eal_common_proc.c:750-751`）⇒ 印证 K2 的核心批评：把 hotplug 调用点挪到 secondary 并不解除对 primary 的依赖。
-> - **vdev bus 的 secondary scan 需向 primary 索取设备清单**（`01` §1.2.4，`drivers/bus/vdev/vdev.c:388-503`）⇒ KNI 的 virtio_user口属vdev bus，secondary 侧对该口的可见性依赖 primary 在线；这是假设 D 的风险来源。
-> - **`01` §1.4.1 第2 项另给出一条对 KNI 的重要判断**：`VDEV_SCAN_REQ` 失败只影响 secondary 能否看到 primary 创建的 **virtio_user（KNI）** 口，而该口不属于 secondary 的收包路径 ⇒ 佐证 K3 的设计（virtio_user 口只由 primary 使用，secondary 无需看见它）。
+> - **所有中断只在 primary 内触发**（`01` §1.2.5，`multi_proc_support.rst:174-177`）⇒ 已用于修正 §3.2；K3-corrected 下 KNI owner 留在 primary，与"中断只在 primary"的归属一致。K4 下 KNI owner 是 secondary，但 KNI 不依赖中断（轮询模式），不受此约束影响。
+> - **primary 是 IPC 唯一服务端**（`01` §1.2.1，`eal_common_proc.c:750-751`）⇒ 印证 K2 的核心批评：把 hotplug 调用点挪到 secondary 并不解除对 primary 的依赖。K4 保留 init owner=primary（hotplug 仍由 primary 执行），不违反此约束。
+> - **vdev bus 的 secondary scan 需向 primary 索取设备清单**（`01` §1.2.4，`drivers/bus/vdev/vdev.c:388-503`）⇒ KNI 的 virtio_user 口属 vdev bus，secondary 侧对该口的可见性依赖 primary 在线。**E4a 已实测验证**（引自 11 E4a）：secondary 通过 `VDEV_SCAN_REQ` 成功发现 virtio_user0 口。这是假设 D 的风险来源，E4a 已坐实其成立。
+> - **`01` §1.4.1 第2 项的判断需修正**：原判断"该口不属于 secondary 的收包路径 ⇒ 佐证 K3 的设计（virtio_user 口只由 primary 使用，secondary 无需看见它）"在 K3-corrected 下成立，但在 **K4 下不成立**——K4 的 runtime owner secondary 需要看到并使用 virtio_user 口。E4a 已证明 secondary 能通过 `VDEV_SCAN_REQ` 看到 primary 创建的 virtio_user 口（前提：primary 在线）。
 
 | 编号 | 假设 | 复核结果 | 若结论相反 |
 |---|---|---|---|
-| **假设 D** | **secondary 可以对 primary 已`dev_configure`+`dev_start` 的 virtio_user 口做 `rte_eth_rx_burst`/`tx_burst`**（**K2 的前提；K3 不依赖此项**，因为 virtio_user 侧仍由 primary 收发） | **风险升高，倾向不成立**。`01` §1.2.4 与 §1.4.1 第 2 项指出 secondary 对 vdev（virtio_user）口的可见性依赖 `VDEV_SCAN_REQ` 向 primary 索取清单；虽然 primary 在线时该请求会成功，但这使 K2 的 KNI 路径**额外**依赖 vdev bus 的 mp 交互（而物理口的 PCI 路径本地化、无此依赖，`01` §1.4.1 第 3 项）。**为K2 增加一条否决理由** | K2 彻底不可行（**K3 不受影响**，进一步支持 K3 为首选） |
-| **假设 E** | **`rte_memzone_reserve`/`rte_memzone_lookup` 是发布 `nb_dev_ports` 快照的合规手段**（5.2 候选丙） | **仍未决**。`01` 未涉及 memzone 的多进程语义；f-stack 已大量使用 primary-create/secondary-lookup 模式（`02` B8 的 6 类对象），memzone 是 DPDK 标准共享手段，但未查证 24.11.6 是否有额外要求。**注意**：`01` §1.2.2 指出 secondary 无法自行扩堆 ⇒ memzone **必须由 primary 创建**（本方案正是如此），secondary 只 lookup，符合约束 | 改用其他发布渠道（例如共享 struct，或让 secondary 通过 `rte_eth_dev_get_name_by_port()` 逐口识别 virtio_user 自行推导） |
-| **假设 F** | **primary 只做 virtio_user 口收发、完全不碰物理口队列，DPDK 层面无阻碍**（K3 的核心前提） | **仍未决（但风险较低）**。`01` §1.2 枚举的 primary 独占能力中没有任何一条要求 primary 在**所有**口上对称持有队列；`01` §3 也确认"primary 常驻不收包"不违反硬约束。但"primary 持有部分口的队列、完全不持有另一些口的队列"这一非对称配置在官方文档中**无先例**（与 `03` 假设 A 同性质）⇒ **必须由 E4（KNI 场景对照实验）实测兜底** | K3 需退化为 K1（primary 保留物理口最小队列） |
+| **假设 D** | **secondary 可以对 primary 已`dev_configure`+`dev_start` 的 virtio_user 口做 `rte_eth_rx_burst`/`tx_burst`**（**K2/K4 的前提；K3-corrected 不依赖此项**，因为 virtio_user 侧仍由 primary 收发） | **✅ E4a 已实测成立**（引自 11 §3.7 + E4a）。secondary 通过 `VDEV_SCAN_REQ` 成功发现 primary 创建的 virtio_user0 口（`VDEV_BUS: receive vdev, virtio_user0` + `Received 1 vdevs`）、独立 probe 该口（`Search driver to probe device virtio_user0`）、成功访问共享 KNI ring（`create kni ring success`）。代码层面：secondary 通过 `rte_eth_dev_attach_secondary(name)` 绑定（`virtio_user_ethdev.c:525-547`），`eth_virtio_dev_init` → `set_rxtx_funcs` 设置 rx/tx burst 函数指针（`virtio_ethdev.c:1951-1953`），`virtio_user_secondary_eth_dev_ops` 提供 secondary 专用 dev_ops（`virtio_ethdev.c:657-666`，不含 configure/start）。**K4 可行性坐实**。限制：vdev 可见性依赖 primary 在线（secondary 重启时需 primary 响应 `VDEV_SCAN_REQ`） | 假设不成立则 K4 不可行，回退到 K3-corrected |
+| **假设 E** | **`rte_memzone_reserve`/`rte_memzone_lookup` 是发布 `nb_dev_ports` 快照的合规手段**（5.2 候选丙） | **仍未决**。`01` 未涉及 memzone 的多进程语义；f-stack 已大量使用 primary-create/secondary-lookup 模式（`02` B8 的 6 类对象），memzone 是 DPDK 标准共享手段，但未查证 24.11.6 是否有额外要求。**注意**：`01` §1.2.2 指出 secondary 无法自行扩堆 ⇒ memzone **必须由 primary 创建**（本方案正是如此），secondary 只 lookup，符合约束。**K4 前置必做** | 改用其他发布渠道（例如共享 struct，或让 secondary 通过 `rte_eth_dev_get_name_by_port()` 逐口识别 virtio_user 自行推导） |
+| **假设 F** | **primary 只做 virtio_user 口收发、完全不碰物理口队列，DPDK 层面无阻碍**（K3-corrected 的核心前提） | **✅ E4a 间接验证**（引自 11 E4a）。E4a 中 primary 成功创建并启动 virtio_user 口（`Port 1 MAC:...`），primary 与 secondary 都完成了完整初始化。**K4 下此假设不再关键**（K4 的 primary 只做 init，runtime owner 是 secondary）。K3-corrected 仍依赖此假设，但 E4a 已证明 primary 能独立配置 virtio_user 口 | K3-corrected 需退化为 K1（primary 保留物理口最小队列） |
 
 ### 其他未决问题
 
-1. **K3 的 `kni_tx_ring` 消费者选择**：单消费者（`RING_F_SC_DEQ`，绑定某个 secondary，简单但引入单点）vs 多消费者（所有 secondary 竞争dequeue，消除单点但略慢）。本文倾向多消费者，需 `06`/`08` 用例量化开销后定稿。
-2. **KNI 轮询频率从"每 rx 队列一次"降为"每轮一次"的实际影响**（管理面吞吐、SSH 交互延迟），需 E4（KNI 场景对照实验，`05` 第九节已列为待做）。
+1. **~~K3 的 `kni_tx_ring` 消费者选择~~**（已关闭，据 `11` Q1 纠正）：`kni_rp`（物理口→内核方向）已是 `RING_F_SC_DEQ` 单消费者，正确且充分，不需要改为多消费者。K3-corrected 的 `kni_tx_ring` 采用 `RING_F_SP_SC`（单生产者 primary → 单消费者一个 secondary），与 `kni_rp` 的单消费者设计一致。K4 不需要 `kni_tx_ring`。
+2. **KNI 轮询频率从"每 rx 队列一次"降为"每轮一次"的实际影响**（管理面吞吐、SSH 交互延迟），需 E4b（KNI 功能基线实验，`11` §E4a 已列出 E4b-E4f 待做）实测。
 3. **`ff_kni_enqueue()` 的错误统计路径**（`lib/ff_dpdk_kni.c:536-540`，已复核）在非 owner 进程上会跳过统计 ⇒ 全局丢包数偏小。是否需要把 `kni_stat` 改为共享（primary 创建、全进程可写）以获得准确统计，待定（涉及跨进程原子累加）。
 4. **`knictl_action` 的逐进程下发**（`lib/ff_dpdk_if.c:77`、`2259-2288`）在 slim 下是否需要"广播"语义（一条命令下发到所有 proc），属工具侧增强，本轮不设计。
 5. **`FF_FLOW_ISOLATE`/`FF_FLOW_IPIP` 与 KNI 同时开启时的 rte_flow 规则是否会把管理流量误导到 secondary 队列**（导致 KNI 收不到 ARP/ICMP），需实测。
 6. **MTU P2 方案中 `dev_stop/dev_start` 期间各secondary 的队列可用性**（`lib/ff_dpdk_if.c:302-318`，已复核）需实测确认恢复行为，否则运行期改 MTU 可能导致 secondary 永久失能。
-7. **广播/多播门禁改造（`lib/ff_dpdk_if.c:2080` → `!pkts_from_ring`）的份数与限速语义需实测**（E4 用例）：确认内核侧每个广播/多播报文恰好收到一份（不重不漏），且 `kni_rate_limt` 由 1 个进程分摊到 N 个进程后聚合限速放大约 N 倍是否可接受（涉及 `console_packets_ratelimit`/`general_packets_ratelimit`/`kernel_packets_ratelimit` 默认值，`lib/ff_config.h:339-341`，已复核）。
-8. **KNI 与 primary 存活期绑定的可接受性**（据 `03` E10修订新增）：K3 下 KNI 能力随 primary 崩溃一并丧失，而 `03` §7.3 已实测 primary 不可原地拉回 ⇒ 恢复 KNI 必须等那次计划内全组重启。若某些部署把 KNI 当作**管理通道**（SSH 走 KNI），则 primary 崩溃会同时失去管理通道，属需在运维手册显著标注的风险；是否需要"KNI owner 在 primary 缺席时降级由某secondary 接管"留待后续里程碑评估（注意：该接管受限于 `01` §1.2.4 的 vdev 可见性与 §1.2.1 的 IPC 依赖，见假设 D）。
+7. **广播/多播门禁改造（`lib/ff_dpdk_if.c:2080` → `!pkts_from_ring`）的份数与限速语义需实测**（E4d 用例）：确认内核侧每个广播/多播报文恰好收到一份（不重不漏），且 `console/general_packets_ratelimit` 由 1 个进程分摊到 N 个进程后聚合限速放大约 N 倍是否可接受（引自 `11` §2.5 Q2 纠正：`kernel_packets_ratelimit` 在 `kni_process_tx` 中只有 owner 执行，天然单点限速，不受影响；涉及 `console_packets_ratelimit`/`general_packets_ratelimit` 默认值，`lib/ff_config.h:339-341`，已复核）。
+8. **K4 的 vdev 可见性边界**（据 `11` §3.6 + E4a 新增）：owner secondary 重启时需要 primary 在线才能重新发现 virtio_user 口（`vdev_scan` 的 IPC 请求）。primary 缺席时 owner secondary 能否重新 probe virtio_user 口？**预期失败**（vdev scan 无 primary 响应），需 E4b 实测确认。但已 probe 且已 start 的口不依赖 primary 在线做 rx/tx burst（引自 `11` §3.7），也需 E4b 实测确认。
+9. **K4 的 owner secondary 崩溃恢复**（据 `11` §3.10 + E4a 新增）：owner secondary 崩溃后 KNI 中断，重启该 secondary 可恢复 KNI（前提：primary 在线、vdev 可见）。需 E4b 实测确认恢复路径。
+10. **~~KNI 与 primary 存活期绑定~~**（K3-corrected 下的风险，K4 下已缓解）：K3-corrected 下 KNI 能力随 primary 崩溃一并丧失，且 `03` §7.3 已实测 primary 不可原地拉回 ⇒ 恢复 KNI 必须等计划内全组重启。**K4 下此风险已缓解**：KNI owner 是 secondary，可原地重启恢复（前提：primary 在线）。若某些部署把 KNI 当作**管理通道**（SSH 走 KNI），则 K3-corrected 下 primary 崩溃会同时失去管理通道，属需在运维手册显著标注的风险；K4 下此风险降级为"owner secondary 崩溃 = KNI 临时中断，重启即恢复"。
