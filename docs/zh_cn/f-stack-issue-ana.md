@@ -1444,6 +1444,7 @@
 - **#1076** 🟢open F-Stack behavior at high CPS
   - 结论：官方结论(open未关闭)：根因——单核CPU达100%时TCP栈处理连接拆除跟不上新连接到达速度，活跃连接堆积，每个连接持有发送/接收缓冲区的mbuf，mbuf池耗尽后整个栈无响应(包括ff_ipc工具如netstat，因其也需mbuf通信)。F-Stack目前没有内置的backpressure机制在接近mbuf耗尽时自动丢弃新连接。建议：1)水平扩展(主要方案)——增加lcore分散CPS负载……
   - 修复/方案信息：mbuf耗尽是根因(无backpressure机制)。建议：1)增加lcore水平扩展；2)增大memory(hugepage)配置扩大mbuf池；3)非RACK/BBR场景降低hz到1000；4)应用层连接数限制+RST拒绝新连接实现优雅降级。memif接口需软件RSS配合多lcore扩展(issue仍open)。
+  - 【2026-08-10深度调研】代码级确认FreeBSD原生4个CC限制机制在f-stack中完整可用：maxsockets(UMA zone max强制执行,uipc_socket.c:320/uma_core.c:4461)、ipfw limit(O_LIMIT→IP_FW_DENY丢包,ip_fw2.c:2937/ip_fw_dynamic.c:1873)、somaxconn(backlog截断+3*qlimit/2检查)、syncache(桶满丢弃最老+pause)。唯一缺失：mbuf池水位背压(收包路径无rte_mempool_avail检查)。ff_ipc使用独立message_pool不直接依赖pktmbuf_pool,但主循环mbuf耗尽时无法到达process_msg_ring间接致ff_ipc不可用。推荐方案C(组合):调低maxsockets到与mbuf池容量匹配+ipfw limit per-source限制+可选mbuf水位背压。实机测试因DPDK网卡与客户端二层网络不连通未完成高CPS压测,代码级结论可靠。详见docs/issue_1076/zh_cn/。
 
 ### 协议栈原理咨询（31 个）
 
