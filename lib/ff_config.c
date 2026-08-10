@@ -1436,15 +1436,27 @@ ff_check_config(struct ff_config *cfg)
             }
         }
         if (cfg->dpdk.primary_slim && cfg->kni.enable) {
-            fprintf(stderr,
-                "primary_slim=1 is incompatible with kni.enable=1 (see issue #1078 M3)\n");
-            return -1;
+            uint16_t owner_lcore = cfg->dpdk.proc_lcore[cfg->kni.owner_proc_id];
+            int j, owner_has_queue = 0;
+            for (j = 0; j < pc->nb_lcores; j++) {
+                if (pc->lcore_list[j] == owner_lcore) {
+                    owner_has_queue = 1;
+                    break;
+                }
+            }
+            if (!owner_has_queue) {
+                fprintf(stderr,
+                    "primary_slim=1 && kni.enable=1 requires owner_proc_id lcore %d in port %d's lcore_list\n",
+                    owner_lcore, pc->port_id);
+                return -1;
+            }
         }
         /*
          * only primary process process KNI, so if KNI enabled,
          * primary lcore must stay in every enabled ports' lcore_list
          */
         if (cfg->kni.enable &&
+            !cfg->dpdk.primary_slim &&
             strcmp(cfg->dpdk.proc_type, "primary") == 0) {
             int found = 0;
             int j;

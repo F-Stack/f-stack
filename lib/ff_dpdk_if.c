@@ -76,7 +76,28 @@ int enable_kni = 0;
 static int kni_accept;
 static enum FF_KNICTL_ACTION knictl_action = FF_KNICTL_ACTION_DEFAULT;
 #endif
-int nb_dev_ports = 0;   /* primary is correct, secondary is not correct, but no impact now*/
+int nb_dev_ports = 0;
+
+static void
+publish_nb_dev_ports(void)
+{
+    if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+        return;
+    const struct rte_memzone *mz = rte_memzone_reserve("ff_nb_dev_ports",
+        sizeof(int), SOCKET_ID_ANY, 0);
+    if (mz != NULL)
+        *(int *)mz->addr = nb_dev_ports;
+}
+
+static void
+lookup_nb_dev_ports(void)
+{
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+        return;
+    const struct rte_memzone *mz = rte_memzone_lookup("ff_nb_dev_ports");
+    if (mz != NULL)
+        nb_dev_ports = *(int *)mz->addr;
+}
 
 static int numa_on;
 
@@ -296,6 +317,8 @@ ff_dpdk_if_set_mtu(struct ff_dpdk_if_context *ctx, uint16_t mtu)
 {
     if (rte_eal_process_type() != RTE_PROC_PRIMARY)
         return 0;
+    if (ff_global_cfg.dpdk.primary_slim)
+        return EPERM;
 
     uint16_t old_mtu = ctx->mtu;
     int ret = rte_eth_dev_set_mtu(ctx->port_id, mtu);
@@ -415,6 +438,13 @@ ff_cur_proc_id(void)
     return ff_cur_lcore_conf()->proc_id;
 }
 
+int
+ff_is_slim_primary(void)
+{
+    return ff_global_cfg.dpdk.primary_slim &&
+           rte_eal_process_type() == RTE_PROC_PRIMARY;
+}
+
 static int
 init_lcore_conf(void)
 {
@@ -424,6 +454,8 @@ init_lcore_conf(void)
     if (nb_dev_ports == 0) {
         rte_exit(EXIT_FAILURE, "No probed ethernet devices\n");
     }
+    publish_nb_dev_ports();
+    lookup_nb_dev_ports();
 
     if (ff_global_cfg.dpdk.max_portid >= nb_dev_ports) {
         rte_exit(EXIT_FAILURE, "this machine doesn't have port %d.\n",
@@ -1755,11 +1787,13 @@ ff_dpdk_init(int argc, char **argv)
      * would iterate all NIC port_ids and take tcp_port from config instead
      * of the magic 80. Same hardware-offload fallback as port_flow_isolate.
      */
-    ret = init_flow(0, 80);
-    if (ret < 0) {
-        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-               "init_flow failed (ret=%d) — NIC lacks rte_flow rule install; "
-               "tcp/80 traffic will follow default RSS distribution.\n", ret);
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        ret = init_flow(0, 80);
+        if (ret < 0) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                   "init_flow failed (ret=%d) — NIC lacks rte_flow rule install; "
+                   "tcp/80 traffic will follow default RSS distribution.\n", ret);
+        }
     }
 #endif
 
@@ -1787,12 +1821,14 @@ ff_dpdk_init(int argc, char **argv)
      * FDIR / rte_flow support; virtio-style drivers return ENOTSUP, so fall
      * back to default RSS hashing instead of rte_exit.
      */
-    ret = fdir_add_tcp_flow(0, 0, FF_FLOW_INGRESS, 0, 80);
-    if (ret) {
-        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-               "fdir_add_tcp_flow failed (ret=%d) — NIC lacks rte_flow FDIR "
-               "support; tcp/80 traffic follows default RSS hash "
-               "distribution.\n", ret);
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        ret = fdir_add_tcp_flow(0, 0, FF_FLOW_INGRESS, 0, 80);
+        if (ret) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                   "fdir_add_tcp_flow failed (ret=%d) — NIC lacks rte_flow FDIR "
+                   "support; tcp/80 traffic follows default RSS hash "
+                   "distribution.\n", ret);
+        }
     }
 #endif
 
@@ -2774,12 +2810,6 @@ main_loop(void *arg)
             queue_id = qconf->rx_queue_list[i].queue_id;
             ctx = veth_ctx[rte_lcore_id()][port_id];
 
-#ifdef FF_KNI
-            if (enable_kni && ff_kni_is_runtime_owner()) {
-                ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
-            }
-#endif
-
             idle &= !process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 
             nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
@@ -2814,6 +2844,15 @@ main_loop(void *arg)
         }
 
         process_msg_ring(qconf->proc_id, pkts_burst);
+
+#ifdef FF_KNI
+        if (enable_kni && ff_kni_is_runtime_owner()) {
+            for (i = 0; i < ff_global_cfg.dpdk.nb_ports; ++i) {
+                uint16_t pid = ff_global_cfg.dpdk.portid_list[i];
+                ff_kni_process(pid, 0, pkts_burst, MAX_PKT_BURST);
+            }
+        }
+#endif
 
         /*
          * Drive the HPTS soft-timer each loop pass so RACK/BBR paced
@@ -3519,7 +3558,7 @@ ff_rss_thash_ctx_init(void)
         struct rte_eth_rss_conf rb;
         uint8_t rb_key[64];
         uint16_t rsz = rss_reta_size[port_id];
-        uint16_t nbq = ff_cur_lcore_conf()->nb_queue_list[port_id];
+        uint16_t nbq = ff_global_cfg.dpdk.port_cfgs[port_id].nb_lcores;
 
         if (!rss_thash_ready[port_id])
             continue;

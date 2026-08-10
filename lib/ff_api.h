@@ -126,6 +126,9 @@ int ff_getsockname(int s, struct linux_sockaddr *name,
 int ff_rss_self_queue_info(uint16_t *proc_id, uint16_t *queueid,
     uint16_t *nb_queues, uint16_t *reta_size);
 
+/* Returns 1 if this process is a slim primary (no rx/tx queues). */
+int ff_is_slim_primary(void);
+
 ssize_t ff_read(int d, void *buf, size_t nbytes);
 ssize_t ff_readv(int fd, const struct iovec *iov, int iovcnt);
 

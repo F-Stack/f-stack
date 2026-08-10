@@ -392,7 +392,7 @@ ff_kni_proto_filter(const void *data, uint16_t len, uint16_t eth_frame_type)
 void
 ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
 {
-    if (ff_kni_is_owner_thread()) {
+    if (ff_kni_is_owner_thread() || ff_kni_is_runtime_owner()) {
         kni_stat = rte_zmalloc("kni:stat",
             sizeof(struct kni_interface_stats *) * nb_ports,
             RTE_CACHE_LINE_SIZE);
