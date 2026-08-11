@@ -822,7 +822,7 @@ int ff_setsockopt_wrapper(int s, int level, int optname,
 - **Error Code 映射**：Linux errno → FreeBSD errno
 - **Address Family 映射**：AF_INET6: 10 (Linux) ↔ 28 (FreeBSD)
 
-### 3.2 ff_dpdk_if.c (2907 行) - NIC 驱动层
+### 3.2 ff_dpdk_if.c - NIC 驱动层
 
 **全局变量**（影响性能的关键状态）：
 

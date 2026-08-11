@@ -487,7 +487,9 @@ F-Stack 部署：
 │  ├─ DPDK EAL 初始化                                │
 │  ├─ 创建共享 hugepage/mempool                      │
 │  ├─ 启动所有从进程                                  │
-│  └─ 监听来自工具的 IPC 消息                        │
+│  ├─ 监听来自工具的 IPC 消息                        │
+│  └─ primary_slim=1 时: 不分配 rx/tx 队列,          │
+│      仅控制面 (NIC init / KNI init / IPC / 扩堆)   │
 │                                                     │
 │  从进程 1 - CPU 1              从进程 2 - CPU 2    │
 │  ┌──────────────────┐         ┌──────────────────┐
@@ -697,6 +699,7 @@ F-Stack (用户态)
 **KNI 和 virtio 选择**：
 
 - 当前版本 KNI 功能保留，但底层实现已从 `rte_kni.ko` 内核模块切换为 `virtio_user`（见 lib/Makefile:34），不再依赖内核 KNI 模块
+- `primary_slim=1` 模式下 KNI 由 primary 进程处理（virtio_user vdev 只能由 primary 创建和操作）；KNI RX 包通过 `kni_inject_rp` 共享 ring 转发给 owner secondary 的 TX queue，避免跨进程 TX queue 竞态（详见 `docs/issue_1078/zh_cn/13-kni-slim-regression.md`）
 
 ---
 

@@ -659,11 +659,11 @@ F-Stack 相关:
 ### 8.1 版本信息
 
 ```
-知识库版本: 1.5（新增 R10：ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 内核 fd 路由 + select/poll 文档限制，2026-06-18；基于 1.4 R9 ff_kqueue/ff_kevent 共存 + IPv6 IPV6_V6ONLY 同步）
+知识库版本: 1.8（新增 issue #1078 post-implementation 修复：KNI inject ring 消除跨进程 TX queue 竞态 + KNI 统计一致性 + 退出清理分析，2026-08-11；基于 1.7 mbuf 水位背压 + primary_slim 主进程瘦身开关；基于 1.6 native-mt SMP-aware pcpu/SMR slot 隔离 + 全局 uma_crit_lock 移除 + MTU/巨帧支持；基于 1.5 R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 内核 fd 路由 + select/poll 文档限制）
 F-Stack 版本: v1.26（分支 feature/1.26）
 FreeBSD 移植基线: 15.0（v1.25 时为 13.0）
 DPDK 版本: 24.11.6 LTS（2026-06-09 自 23.11.5 LTS 升级）
-生成日期: 2026-03-20（最近同步 2026-06-18）
+生成日期: 2026-03-20（最近同步 2026-08-11）
 更新周期: 按 F-Stack 版本更新 (建议每 6-12 个月)
 ```
 

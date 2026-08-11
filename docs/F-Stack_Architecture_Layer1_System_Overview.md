@@ -713,6 +713,7 @@ F-Stack (User-space)
 **KNI and virtio Selection**:
 
 - In the current version, KNI functionality is retained, but the underlying implementation has switched from the `rte_kni.ko` kernel module to `virtio_user` (see lib/Makefile:34), no longer depending on the kernel KNI module
+- When `primary_slim=1`, KNI processing is handled by the primary process (virtio_user vdev can only be created/operated by primary); KNI RX packets are forwarded to the owner secondary's TX queue via `kni_inject_rp` shared ring to avoid cross-process TX queue race (see `docs/issue_1078/zh_cn/13-kni-slim-regression.md`)
 
 ---
 

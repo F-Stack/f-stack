@@ -351,6 +351,10 @@ struct ff_config {
         /* TX burst queue drain nodelay dalay time */
         unsigned pkt_tx_delay;
 
+        /* primary_slim: primary holds no rx/tx queue, control-plane only */
+        int primary_slim;
+        unsigned primary_slim_idle_sleep;    /* default 1000us */
+
         /* list of proc-lcore */
         uint16_t *proc_lcore;
 
@@ -378,6 +382,7 @@ struct ff_config {
         char *method;
         char *tcp_port;
         char *udp_port;
+        int owner_proc_id;                       // primary_slim=1 时 KNI runtime owner secondary proc_id
     } kni;
 
     struct {
@@ -590,6 +595,10 @@ symmetric_rss = 0             # 双向 RSS 对称性
 idle_sleep = 0                # 空闲时 sleep (微秒)
 pkt_tx_delay = 100              # 包发送延迟 (关闭立即发)
 enable_kni = 1                # 启用虚拟网卡
+# primary_slim=1: primary 不分配 rx/tx 队列，仅控制面
+# primary_slim=0 (默认): primary 也参与数据面
+primary_slim = 0
+primary_slim_idle_sleep = 1000  # primary_slim=1 时空闲 sleep (微秒)
 
 [port0]
 # 网卡 0 的配置

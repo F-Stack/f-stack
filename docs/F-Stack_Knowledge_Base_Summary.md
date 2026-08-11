@@ -663,11 +663,11 @@ Performance Optimization:
 ### 8.1 Version Information
 
 ```
-Knowledge base version: 1.7 (adds issue #1076 mbuf water-level backpressure + issue #1078 primary_slim control-plane-only switch, 2026-08-10; on top of 1.6 native-mt SMP-aware pcpu/SMR slot isolation + global uma_crit_lock removal + MTU/jumbo-frame support; on top of 1.5 R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY sync)
+Knowledge base version: 1.8 (adds issue #1078 post-implementation fixes: KNI inject ring for cross-process TX queue race + KNI stat consistency + exit cleanup analysis, 2026-08-11; on top of 1.7 mbuf water-level backpressure + primary_slim control-plane-only switch; on top of 1.6 native-mt SMP-aware pcpu/SMR slot isolation + global uma_crit_lock removal + MTU/jumbo-frame support; on top of 1.5 R10 ff_readv/ff_writev/ff_ioctl/ff_dup/ff_dup2 kernel-fd routing + select/poll documented limits, 2026-06-18; on top of 1.4 R9 ff_kqueue/ff_kevent coexistence + IPv6 IPV6_V6ONLY sync)
 F-Stack version: v1.26 (branch feature/1.26)
 FreeBSD port base: 15.0 (was 13.0 in v1.25)
 DPDK version: 24.11.6 LTS (upgraded from 23.11.5 LTS on 2026-06-09)
-Generation date: 2026-03-20 (last sync 2026-08-10)
+Generation date: 2026-03-20 (last sync 2026-08-11)
 Update cycle: Per F-Stack version updates (recommended every 6-12 months)
 ```
 

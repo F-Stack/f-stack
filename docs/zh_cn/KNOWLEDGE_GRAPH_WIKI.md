@@ -43,7 +43,7 @@
 
 ## 2A. 索引后代码 delta：`FF_KERNEL_COEXIST` 内核栈共存
 
-> **人工补录（尚未重索引）**：上方图谱索引于 commit `208b0c4`（2026-06-08）。此后 `feature/1.26` 分支落地了 **`FF_KERNEL_COEXIST` 自动双栈共存** 特性（commits `ba148589d` → `55a84f313`），**R9** 增量（kqueue/kevent 共存 + IPv6 `IPV6_V6ONLY`），以及 **R10** 增量（`ff_readv`/`ff_writev`/`ff_ioctl` 内核 fd 路由 + `ff_dup`/`ff_dup2`）。在下次 `npx gitnexus analyze` 之前，以下表面以当前源码为准人工记录。
+> **人工补录（尚未重索引）**：上方图谱索引于 commit `208b0c4`（2026-06-08）。此后 `feature/1.26` 分支落地了 **`FF_KERNEL_COEXIST` 自动双栈共存** 特性（commits `ba148589d` → `55a84f313`），**R9** 增量（kqueue/kevent 共存 + IPv6 `IPV6_V6ONLY`），**R10** 增量（`ff_readv`/`ff_writev`/`ff_ioctl` 内核 fd 路由 + `ff_dup`/`ff_dup2`），以及 **issue #1078 primary_slim 主进程瘦身特性**（commits `1c28aaa2d` → `f7961b083` → `f23f1a464` → `f250ad1ea`）。在下次 `npx gitnexus analyze` 之前，以下表面以当前源码为准人工记录。
 
 该特性让单进程从同一个事件循环里（`ff_epoll_wait`，自 R9 起也支持 `ff_kqueue`/`ff_kevent`），同时通过 F-Stack 用户态栈（经 DPDK 网卡）与宿主 Linux 内核栈（经 loopback / 管理网卡）对外服务。**默认关闭**（编译期宏 + 运行期 `kernel_coexist` 开关双门控）；关闭时默认 / `SOCK_FSTACK` 路径逐字节不变。
 
@@ -60,6 +60,24 @@
 | 残余入口共存（R10） | `lib/ff_syscall_wrapper.c`：`ff_ioctl`（L1067）内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`（不经 `linux2freebsd_ioctl`，因 `_IO/_IOR/_IOW(type,nr,size)` 编码在 Linux 与 FreeBSD 不同源；双栈 fd 同驱动自 R10.1 起支持 `FIONBIO`/`FIOASYNC`（F-Stack 成功后用原始 Linux request 同步配对 host fd；`FIONREAD` 等 query 类不同驱动以免覆盖 argp））；`ff_readv`（L1189）/`ff_writev`（L1251）内核 fd 经 `ff_host_readv/writev`（仿 `ff_read/write`，连接 fd 单栈热路径）；`ff_dup`（L2130）内核 fd→`ff_host_dup` 返回新 encode fd；`ff_dup2`（L2156）两端内核 fd→`ff_host_dup2` 返回 encode，**混栈（一端内核一端 F-Stack）拒绝 `errno=EINVAL`**。**已知限制**：`ff_select`（encode 内核 fd≥`0x40000000` 远超 `FD_SETSIZE`(1024) 无法装入 `fd_set`，硬限制不支持）、`ff_poll`（合并复杂度/回归风险高，保守未实现）—— 内核 fd 多路复用请用 `ff_epoll_*`/`ff_kqueue`（R9 已支持） |
 
 可追溯：`docs/kernel_event_support_spec/` 与 `docs/kernel_event_support_spec/zh_cn/`（00-10），含 R8 review-gate 日志、R9 计划 `plan-r9-kqueue-coexist-ipv6.md` 与 R10 计划 `plan-r10-readv-writev-ioctl-coexist.md`。
+
+## 2B. 索引后代码 delta：issue #1078 `primary_slim` 主进程瘦身
+
+> **人工补录（尚未重索引）**：issue #1078 在 `feature/1.26` 分支落地（commits `1c28aaa2d` → `f7961b083` → `f23f1a464` → `f250ad1ea` → `da99a766f`）。
+
+`primary_slim=1` 让 primary 不分配 rx/tx 队列，仅承担控制面职责（NIC 初始化、KNI 初始化、IPC 服务端、扩堆代理）。配套 `owner_proc_id` 指定 KNI runtime owner secondary。KNI 由 primary 执行（virtio_user vdev 只能由 primary 创建/操作），KNI RX 包通过 `kni_inject_rp` 共享 ring 转发给 owner secondary 的 TX queue，消除跨进程 TX queue 竞态。
+
+| 维度 | 源码位置 |
+|------|----------|
+| 配置开关（默认关） | `lib/ff_config.c`：`[dpdk] primary_slim=0/1` + `primary_slim_idle_sleep`（默认 1000us）；`[kni] owner_proc_id` |
+| 配置结构体 | `lib/ff_config.h`：`struct ff_config.dpdk.primary_slim` + `primary_slim_idle_sleep` + `kni.owner_proc_id` |
+| early return | `lib/ff_dpdk_if.c:541-546`：`primary_slim && PRIMARY && nb_rx_queue==0` 时 `return 0` 跳过数据面初始化 |
+| main_loop KNI 门控 | `lib/ff_dpdk_if.c:2905-2940`：`primary_slim` 时 primary 执行 `ff_kni_process`；owner secondary 执行 `ff_kni_inject_process` |
+| KNI inject ring | `lib/ff_dpdk_kni.c`：`kni_inject_rp[]` 全局数组 + `ff_kni_alloc` 中 create/lookup + `kni_process_rx` redirect + `ff_kni_inject_process` dequeue/tx_burst |
+| API | `lib/ff_dpdk_if.h`：`ff_is_slim_primary()` 返回 `primary_slim && RTE_PROC_PRIMARY` |
+| 退出清理 | `lib/ff_dpdk_if.c:3004-3026`：`ff_dpdk_run()` 在 `primary_slim+PRIMARY` 时跳过 `rte_eal_cleanup()`（详见 `docs/issue_1078/zh_cn/14-primary-slim-exit-cleanup-analysis.md`） |
+
+可追溯：`docs/issue_1078/zh_cn/`（00-15），含可行性调研、PoC 实验、正式实现、post-implementation 修复（KNI 回归 + 跨进程 TX queue 竞态）、退出清理分析、结项报告。
 
 ---
 
