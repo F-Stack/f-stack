@@ -604,7 +604,7 @@ ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
     return 0;
 
 error:
-    if (ff_kni_is_owner_thread()) {
+    if (ff_kni_is_owner_thread() || ff_kni_is_runtime_owner()) {
         kni_stat[port_id]->rx_dropped++;
     }
     rte_pktmbuf_free(pkt);
