@@ -2903,10 +2903,17 @@ main_loop(void *arg)
         process_msg_ring(qconf->proc_id, pkts_burst);
 
 #ifdef FF_KNI
-        if (enable_kni && ff_kni_is_runtime_owner()) {
-            for (i = 0; i < ff_global_cfg.dpdk.nb_ports; ++i) {
-                uint16_t pid = ff_global_cfg.dpdk.portid_list[i];
-                ff_kni_process(pid, 0, pkts_burst, MAX_PKT_BURST);
+        if (enable_kni) {
+            int do_kni;
+            if (ff_global_cfg.dpdk.primary_slim)
+                do_kni = (rte_eal_process_type() == RTE_PROC_PRIMARY);
+            else
+                do_kni = ff_kni_is_runtime_owner();
+            if (do_kni) {
+                for (i = 0; i < ff_global_cfg.dpdk.nb_ports; ++i) {
+                    uint16_t pid = ff_global_cfg.dpdk.portid_list[i];
+                    ff_kni_process(pid, 0, pkts_burst, MAX_PKT_BURST);
+                }
             }
         }
 #endif
