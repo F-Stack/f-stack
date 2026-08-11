@@ -67,6 +67,9 @@ void ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
 void ff_kni_process(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned count);
 
+void ff_kni_inject_process(uint16_t port_id, uint16_t queue_id,
+    struct rte_mbuf **pkts_burst, unsigned count);
+
 enum FilterReturn ff_kni_proto_filter(const void *data, uint16_t len, uint16_t eth_frame_type);
 
 int ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt);

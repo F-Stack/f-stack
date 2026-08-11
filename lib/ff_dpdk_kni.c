@@ -87,6 +87,7 @@ struct kni_interface_stats {
 };
 
 struct rte_ring **kni_rp;
+struct rte_ring **kni_inject_rp;
 struct kni_interface_stats **kni_stat;
 
 int
@@ -197,6 +198,20 @@ kni_process_rx(uint16_t port_id, uint16_t queue_id,
     nb_kni_rx = rte_eth_rx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, count);
 
     if (nb_kni_rx > 0) {
+        if (ff_global_cfg.dpdk.primary_slim &&
+            rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            unsigned enq = rte_ring_enqueue_burst(kni_inject_rp[port_id],
+                (void **)pkts_burst, nb_kni_rx, NULL);
+            if (enq < nb_kni_rx) {
+                uint16_t i;
+                for (i = enq; i < nb_kni_rx; ++i)
+                    rte_pktmbuf_free(pkts_burst[i]);
+                kni_stat[port_id]->tx_dropped += (nb_kni_rx - enq);
+            }
+            kni_stat[port_id]->tx_packets += enq;
+            return 0;
+        }
+
         nb_rx = rte_eth_tx_burst(port_id, queue_id, pkts_burst, nb_kni_rx);
         if (nb_rx < nb_kni_rx) {
             uint16_t i;
@@ -414,6 +429,15 @@ ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
                 "failed\n", name_buf);
     }
 
+    snprintf(name_buf, RTE_RING_NAMESIZE, "kni::inject_ring_%d", lcoreid);
+    kni_inject_rp = rte_zmalloc(name_buf,
+            sizeof(struct rte_ring *) * nb_ports,
+            RTE_CACHE_LINE_SIZE);
+    if (kni_inject_rp == NULL) {
+        rte_exit(EXIT_FAILURE, "rte_zmalloc(%s (kni_inject_rp)) "
+                "failed\n", name_buf);
+    }
+
     snprintf(name_buf, RTE_RING_NAMESIZE, "kni:tcp_port_bitmap_%d", lcoreid);
     tcp_port_bitmap = rte_zmalloc("kni:tcp_port_bitmap", 8192,
         RTE_CACHE_LINE_SIZE);
@@ -507,6 +531,22 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
 
     printf("create kni ring success, %u ring entries are now free!\n",
         rte_ring_free_count(kni_rp[port_id]));
+
+    char inject_ring_name[RTE_KNI_NAMESIZE];
+    snprintf((char*)inject_ring_name, RTE_KNI_NAMESIZE, "kni_inject_%u", port_id);
+
+    if (ff_kni_is_owner_thread()) {
+        kni_inject_rp[port_id] = rte_ring_create(inject_ring_name, ring_queue_size,
+            socket_id, RING_F_SC_DEQ);
+
+        if (rte_ring_lookup(inject_ring_name) != kni_inject_rp[port_id])
+            rte_panic("lookup kni inject ring failed!\n");
+    } else {
+        kni_inject_rp[port_id] = rte_ring_lookup(inject_ring_name);
+    }
+
+    if (kni_inject_rp[port_id] == NULL)
+        rte_panic("create kni inject ring failed!\n");
 }
 
 void
@@ -515,6 +555,25 @@ ff_kni_process(uint16_t port_id, uint16_t queue_id,
 {
     kni_process_tx(port_id, queue_id, pkts_burst, count);
     kni_process_rx(port_id, queue_id, pkts_burst, count);
+}
+
+void
+ff_kni_inject_process(uint16_t port_id, uint16_t queue_id,
+    struct rte_mbuf **pkts_burst, unsigned count)
+{
+    uint16_t nb_rx = rte_ring_dequeue_burst(kni_inject_rp[port_id],
+        (void **)pkts_burst, count, NULL);
+    if (nb_rx == 0)
+        return;
+
+    uint16_t nb_tx = rte_eth_tx_burst(port_id, queue_id, pkts_burst, nb_rx);
+    if (nb_tx < nb_rx) {
+        uint16_t i;
+        for (i = nb_tx; i < nb_rx; ++i)
+            rte_pktmbuf_free(pkts_burst[i]);
+        kni_stat[port_id]->tx_dropped += (nb_rx - nb_tx);
+    }
+    kni_stat[port_id]->tx_packets += nb_tx;
 }
 
 /* enqueue the packet, and own it */

@@ -2915,6 +2915,15 @@ main_loop(void *arg)
                     ff_kni_process(pid, 0, pkts_burst, MAX_PKT_BURST);
                 }
             }
+            if (ff_global_cfg.dpdk.primary_slim &&
+                ff_kni_is_runtime_owner() &&
+                rte_eal_process_type() != RTE_PROC_PRIMARY) {
+                for (i = 0; i < qconf->nb_tx_port; i++) {
+                    uint16_t pid = qconf->tx_port_id[i];
+                    ff_kni_inject_process(pid,
+                        qconf->tx_queue_id[pid], pkts_burst, MAX_PKT_BURST);
+                }
+            }
         }
 #endif
 
