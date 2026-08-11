@@ -102,6 +102,8 @@ ff_kni_is_runtime_owner(void)
 {
     if (ff_global_cfg.dpdk.thread_mode)
         return rte_lcore_id() == ff_global_cfg.dpdk.proc_lcore[0];
+    if (!ff_global_cfg.dpdk.primary_slim)
+        return rte_eal_process_type() == RTE_PROC_PRIMARY;
     return ff_global_cfg.dpdk.proc_id == ff_global_cfg.kni.owner_proc_id;
 }
 
