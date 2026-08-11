@@ -45,7 +45,7 @@
 安全检查：
 - 每层解析前验证剩余长度，防止越界读
 - IPv4 IHL 最小值检查（`>= sizeof(struct rte_ipv4_hdr)`）
-- IPv6 不处理扩展头（简化设计，SYN 包通常无扩展头）
+- IPv6 不处理扩展头（简化设计；带扩展头的 SYN 会假阴性=不触发背压，安全失败模式；详见文档 `08-is_tcp_syn-ipv6-ext-hdr-analysis.md`）
 
 ### 2.3 process_packets() 水位检查
 
