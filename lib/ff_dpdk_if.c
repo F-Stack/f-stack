@@ -2910,6 +2910,9 @@ main_loop(void *arg)
             else
                 do_kni = ff_kni_is_runtime_owner();
             if (do_kni) {
+                /* Outside the per-port rx loop: secondary proc may not own
+                 * rx queues of all ports in primary_slim mode, so KNI
+                 * processing must not depend on the rx loop iteration. */
                 for (i = 0; i < ff_global_cfg.dpdk.nb_ports; ++i) {
                     uint16_t pid = ff_global_cfg.dpdk.portid_list[i];
                     ff_kni_process(pid, 0, pkts_burst, MAX_PKT_BURST);

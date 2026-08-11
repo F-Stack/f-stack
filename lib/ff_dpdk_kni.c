@@ -200,6 +200,9 @@ kni_process_rx(uint16_t port_id, uint16_t queue_id,
     if (nb_kni_rx > 0) {
         if (ff_global_cfg.dpdk.primary_slim &&
             rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            /* Redirect to inject ring to avoid race between primary and
+             * owner_proc_id secondary both calling rte_eth_tx_burst on
+             * the same physical port TX queue 0. */
             unsigned enq = rte_ring_enqueue_burst(kni_inject_rp[port_id],
                 (void **)pkts_burst, nb_kni_rx, NULL);
             if (enq < nb_kni_rx) {
