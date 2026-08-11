@@ -145,7 +145,39 @@ echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
 
 此为测试环境 workaround，非代码修复部分。生产环境 veth0 与 eth1 通常不同子网，无此问题。
 
-## 5. 调试方法
+### 4.4 生产场景验证（reply 强制经 veth0）
+
+测试环境的子网重叠会掩盖 KNI RX 回路是否真正工作。为模拟生产场景（client 流量只能经 veth0 进出），需强制 kernel reply 走 veth0：
+
+```bash
+# 删除可能存在的 eth1 主机路由，让 reply 选 veth0（src=DPDK_NIC_IP）
+ip route del <CLIENT_IP>/32 dev eth1 2>/dev/null
+# 确认路由走 veth0
+ip route get <CLIENT_IP>  # 应显示 dev veth0 src <DPDK_NIC_IP>
+# 关闭 rp_filter 避免 veth0 反向路径检查丢包
+echo 0 > /proc/sys/net/ipv4/conf/veth0/rp_filter
+echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
+```
+
+此配置下验证：
+
+```
+ping -c 5 <DPDK_NIC_IP>
+5 packets transmitted, 5 received, 0% packet loss
+rtt min/avg/max/mdev = 1.560/2.017/2.348/0.285 ms
+```
+
+`veth0` RX/TX 统计双向增长，确认 KNI TX（f-stack→kernel）和 KNI RX（kernel→f-stack→物理网卡）回路均正常。
+
+## 5. primary 能用 Port 0 queue 的原理
+
+`primary_slim=1` 时 primary 在 `init_lcore_conf()` early return（`:541-546`），不配置自己的 rx/tx queue。但 `init_port_start()` 中 primary 仍执行 `rte_eth_dev_configure(port_id, nb_queues, nb_queues, ...)` 和 `rte_eth_tx_queue_setup(port_id, q, ...)`（`:1110-1145`），为**所有 lcore 的队列**（包括 secondary 的 queue 0）做 setup。
+
+`nb_queues = pconf->nb_lcores`（`:881`），对于 `lcore_list=1` 即 `nb_lcores=1`，Port 0 配置 1 个 TX queue（queue 0）。primary 的 `kni_process_rx` 调 `rte_eth_tx_burst(Port 0, queue_id=0)` 时，queue 0 已被 primary 在 init 阶段 setup，DPDK ethdev 层允许任何进程 TX 到已配置的 queue，因此成功。
+
+同理 `kni_process_tx` 调 `rte_eth_tx_burst(Port 1=virtio_user0, queue_id=0)`，virtio_user0 的 queue 0 由 primary 创建并 setup（`:890` nb_queues=1），primary 是合法操作者。
+
+## 7. 调试方法
 
 定位 virtio_user 多进程 TX 问题的关键证据：
 
@@ -156,8 +188,30 @@ echo 0 > /proc/sys/net/ipv4/conf/all/rp_filter
 
 修复验证：改为 primary 做 KNI TX/RX 后，`veth0` RX 统计正常增长，`kni_process_rx: rx_burst=1` 从 virtio_user 收到 kernel 回的 reply，`tx_burst=1 (to_phy_port=0)` 成功发出 reply。
 
-## 6. 涉及文件
+## 8. 涉及文件
 
 | 文件 | 修改类型 | 说明 |
 |------|---------|------|
 | `lib/ff_dpdk_if.c` | MODIFY | `main_loop()` 中 KNI process 门控：primary_slim 时由 primary 执行 |
+
+## 9. 修复后数据通路（primary_slim=1 + KNI 开启）
+
+```
+ICMP request 入站：
+  client → 物理网卡(Port0) → secondary rx_burst(q0)
+    → ff_kni_enqueue → KNI ring
+    → primary kni_process_tx: ring dequeue
+    → rte_eth_tx_burst(Port1=virtio_user0, q0)
+    → veth0(tap) → kernel 协议栈 → 生成 ICMP reply
+
+ICMP reply 出站：
+  kernel → veth0(tap) → virtio_user0
+    → primary kni_process_rx: rte_eth_rx_burst(Port1, q0)
+    → rte_eth_tx_burst(Port0, q0)  [primary 在 init 阶段已 setup q0]
+    → 物理网卡 → client
+```
+
+关键点：
+- secondary 负责 `ff_kni_enqueue`（数据面收包后入队 KNI ring）
+- primary 负责 `ff_kni_process`（virtio_user0 TX/RX，因 vdev 仅 primary 合法操作）
+- Port 0 的 queue 0 由 primary 在 `init_port_start` 阶段 setup，primary `kni_process_rx` 的 `rte_eth_tx_burst(Port0, q0)` 可成功
