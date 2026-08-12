@@ -2,7 +2,7 @@
 
 > Reviewer: gatekeeper (independent review agent, strictly separated from all writers)
 > Review time: 2026-08-07 21:20-21:50 (UTC+8)
-> Review target: `docs/issue_1078/zh_cn/` documents 00-08, 10 (10 documents) + PoC patch + probe script + issue-ana updates
+> Review target: `docs/primary_slim_spec/zh_cn/` documents 00-08, 10 (10 documents) + PoC patch + probe script + issue-ana updates
 > Review method: All judgments from actual `read_file`/`awk`/`grep`/`git` commands, **no impression-based judgments**
 
 ---
