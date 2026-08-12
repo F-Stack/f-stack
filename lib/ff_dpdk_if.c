@@ -2904,15 +2904,10 @@ main_loop(void *arg)
 
 #ifdef FF_KNI
         if (enable_kni) {
-            int do_kni;
-            if (ff_global_cfg.dpdk.primary_slim)
-                do_kni = (rte_eal_process_type() == RTE_PROC_PRIMARY);
-            else
-                do_kni = ff_kni_is_runtime_owner();
-            if (do_kni) {
-                /* Outside the per-port rx loop: secondary proc may not own
-                 * rx queues of all ports in primary_slim mode, so KNI
-                 * processing must not depend on the rx loop iteration. */
+            /* KNI virtio_user vdev is created and owned by primary process
+             * (or main thread in thread_mode), so ff_kni_process must run
+             * in the same process/thread to operate the vdev legally. */
+            if (ff_kni_is_owner_thread()) {
                 for (i = 0; i < ff_global_cfg.dpdk.nb_ports; ++i) {
                     uint16_t pid = ff_global_cfg.dpdk.portid_list[i];
                     ff_kni_process(pid, 0, pkts_burst, MAX_PKT_BURST);
