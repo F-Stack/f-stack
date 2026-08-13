@@ -30,8 +30,45 @@ struct thread {
     int dummy;
 };
 
-/* The TLS slot referenced by ff_thread.c via `extern __thread`. */
+/* Minimal placeholder structs for the opaque types referenced by ff_thread.c
+ * and pcpu.h (via `extern __thread struct pcpu *pcpup`). */
+struct pcpu {
+    int pc_cpuid;
+};
+static struct pcpu g_dummy_pcpu = { .pc_cpuid = 0xBEEF };
+
+/* The TLS slots referenced by ff_thread.c / pcpu.h. pcpup is zero-initialized
+ * to match real f-stack (ff_pthread_create threads have no per-CPU context). */
 __thread struct thread *pcurthread = NULL;
+__thread struct pcpu *pcpup = NULL;
+
+/* Mirror lib/include/amd64/include/pcpu.h's lazy fail-fast accessor so the
+ * test exercises the identical semantics (pcpup==NULL -> panic) without
+ * pulling in the FreeBSD machine/pcpu.h include_next chain. */
+void panic(const char *fmt, ...) __attribute__((noreturn));
+static __inline struct pcpu *
+ff_pcpu_get(void)
+{
+	if (__builtin_expect(pcpup == NULL, 0))
+		panic("F-Stack: NULL per-CPU context (pcpup==NULL)");
+	return (pcpup);
+}
+#define PCPU_GET(member)         (ff_pcpu_get()->pc_ ## member)
+#define curcpu                   PCPU_GET(cpuid)
+
+/* The lazy fail-fast path calls panic() (real definition lives in
+ * lib/ff_host_interface.c and calls abort()). We intercept it via
+ * -Wl,--wrap=panic so the fail-fast fires without terminating the process:
+ * __wrap_panic records the flag and longjmp()s out via sigsetjmp. */
+static int g_panic_fired = 0;
+static sigjmp_buf g_panic_jmp;
+void
+__wrap_panic(const char *fmt, ...)
+{
+    (void)fmt;
+    g_panic_fired = 1;
+    siglongjmp(g_panic_jmp, 1);
+}
 
 /* ff_host_interface.c references ff_log() on its mmap failure path; provide
  * a no-op stub to satisfy the linker without pulling in lib/ff_log.c. */
@@ -69,6 +106,8 @@ test_setup(void **state)
     g_routine_invoked = 0;
     g_routine_observed_pcur = (struct thread *)(intptr_t)-1;
     pcurthread = NULL;
+    pcpup = &g_dummy_pcpu;
+    g_panic_fired = 0;
     return 0;
 }
 
@@ -194,6 +233,30 @@ test_ff_pthread_create_malloc_failure(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* TC-U-P2-THR-05: lazy fail-fast when pcpup == NULL (no per-CPU context).   */
+/* Directly set pcpup = NULL on the main thread and touch curcpu (PCPU_GET), */
+/* which must route through ff_pcpu_get() and panic. sigsetjmp/siglongjmp     */
+/* recovers control so the assertion runs on the main thread (no child).     */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_pthread_create_failfast(void **state)
+{
+    (void)state;
+    pcurthread = NULL;
+    pcpup = NULL;
+    g_panic_fired = 0;
+
+    if (sigsetjmp(g_panic_jmp, 1) == 0) {
+        /* touches curcpu -> PCPU_GET(cpuid) -> ff_pcpu_get() -> panic */
+        volatile int c = curcpu;
+        (void)c;
+        /* must not reach here */
+        fail_msg("expected panic on NULL pcpup");
+    }
+    assert_int_equal(g_panic_fired, 1);
+}
+
+/* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
 int
@@ -205,6 +268,7 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ff_pthread_join_retval,     test_setup, NULL),
         /* Stage-6 coverage extension */
         cmocka_unit_test_setup_teardown(test_ff_pthread_create_malloc_failure, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_pthread_create_failfast, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

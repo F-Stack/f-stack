@@ -1596,20 +1596,16 @@ __tcp_run_hpts(void)
 
 	hpts = tcp_choose_hpts_to_run();
 
-	if (hpts->p_hpts_active) {
-		/* Already active */
-		return;
-	}
-	if (!HPTS_TRYLOCK(hpts)) {
-		/* Someone else got the lock */
+	/* Under f-stack p_mtx is a no-op, so use an atomic exchange to claim
+	 * p_hpts_active and provide real per-instance mutual exclusion,
+	 * preventing concurrent re-entry by multiple workers. */
+	if (__atomic_exchange_n(&hpts->p_hpts_active, 1, __ATOMIC_ACQUIRE)) {
+		/* Another worker is already running this instance */
 		return;
 	}
 	NET_EPOCH_ENTER(et);
-	if (hpts->p_hpts_active)
-		goto out_with_mtx;
 	hpts->syscall_cnt++;
 	counter_u64_add(hpts_direct_call, 1);
-	hpts->p_hpts_active = 1;
 	ticks_ran = tcp_hptsi(hpts, false);
 	/* We may want to adjust the sleep values here */
 	if (hpts->p_on_queue_cnt >= conn_cnt_thresh) {
@@ -1653,9 +1649,7 @@ __tcp_run_hpts(void)
 		}
 		hpts->p_on_min_sleep = 1;
 	}
-	hpts->p_hpts_active = 0;
-out_with_mtx:
-	HPTS_UNLOCK(hpts);
+	__atomic_store_n(&hpts->p_hpts_active, 0, __ATOMIC_RELEASE);
 	NET_EPOCH_EXIT(et);
 }
 

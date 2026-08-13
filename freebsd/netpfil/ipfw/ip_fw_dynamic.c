@@ -221,9 +221,11 @@ VNET_DEFINE_STATIC(struct dyn_ipv6_slist, dyn_expired_ipv6);
  * and must not be reclaimed by expiration callout.
  */
 static void **dyn_hp_cache;
-DPCPU_DEFINE_STATIC(void *, dyn_hp);
-#define	DYNSTATE_GET(cpu)	ck_pr_load_ptr(DPCPU_ID_PTR((cpu), dyn_hp))
-#define	DYNSTATE_PROTECT(v)	ck_pr_store_ptr(DPCPU_PTR(dyn_hp), (v))
+/* Under f-stack dpcpu_off[] is always 0, so DPCPU slot addressing aliases;
+ * use an explicit per-cpu array indexed by the dense cpuid instead. */
+static void **dyn_hp;
+#define	DYNSTATE_GET(cpu)	ck_pr_load_ptr(&dyn_hp[(cpu)])
+#define	DYNSTATE_PROTECT(v)	ck_pr_store_ptr(&dyn_hp[curcpu], (v))
 #define	DYNSTATE_RELEASE()	DYNSTATE_PROTECT(NULL)
 #define	DYNSTATE_CRITICAL_ENTER()	critical_enter()
 #define	DYNSTATE_CRITICAL_EXIT()	do {	\
@@ -3232,9 +3234,12 @@ ipfw_dyn_init(struct ip_fw_chain *chain)
 	V_dyn_bucket_lock = NULL;
 	dyn_grow_hashtable(chain, 256, M_WAITOK);
 
-	if (IS_DEFAULT_VNET(curvnet))
+	if (IS_DEFAULT_VNET(curvnet)) {
 		dyn_hp_cache = malloc(mp_ncpus * sizeof(void *), M_IPFW,
 		    M_WAITOK | M_ZERO);
+		dyn_hp = malloc(mp_ncpus * sizeof(void *), M_IPFW,
+		    M_WAITOK | M_ZERO);
+	}
 
 	DYN_EXPIRED_LOCK_INIT();
 	callout_init(&V_dyn_timeout, 1);
@@ -3307,6 +3312,8 @@ ipfw_dyn_uninit(int pass)
 	free(V_dyn_ipv4_parent_add, M_IPFW);
 	free(V_dyn_ipv4_del, M_IPFW);
 	free(V_dyn_ipv4_parent_del, M_IPFW);
-	if (IS_DEFAULT_VNET(curvnet))
+	if (IS_DEFAULT_VNET(curvnet)) {
 		free(dyn_hp_cache, M_IPFW);
+		free(dyn_hp, M_IPFW);
+	}
 }

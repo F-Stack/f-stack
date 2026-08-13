@@ -356,6 +356,12 @@ ff_freebsd_init(void)
 
     cur = ff_global_cfg.freebsd.sysctl;
     while (cur) {
+        if (strcmp(cur->name, "net.isr.dispatch") == 0) {
+            printf("net.isr.dispatch must stay direct (hybrid/deferred "
+                "silently drop packets); ignoring requested value\n");
+            cur = cur->next;
+            continue;
+        }
         error = kernel_sysctlbyname(curthread, cur->name, NULL, NULL,
             cur->value, cur->vlen, NULL, 0);
 

@@ -208,7 +208,7 @@ test_ff_config: test_ff_config.o $(LIB_OBJS_DIR)/ff_config.o $(LIB_OBJS_DIR)/ff_
 # P2 #1 ff_thread (links real pthread + ff_host_interface for ff_malloc/free;
 # the test file ships its own `__thread struct thread *pcurthread` storage)
 test_ff_thread: test_ff_thread.o $(LIB_OBJS_DIR)/ff_thread.o $(LIB_OBJS_DIR)/ff_host_interface.o $(COMMON_OBJS)
-	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=ff_malloc -lpthread -lcrypto
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=ff_malloc -Wl,--wrap=panic -lpthread -lcrypto
 
 # P2 #2 ff_init (4 init step stubs in test file; exit() wrapped so failure
 # paths surface as cmocka assertion failures rather than process death)

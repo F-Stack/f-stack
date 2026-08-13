@@ -183,6 +183,13 @@ int ff_dup2(int oldfd, int newfd);
 
 #ifndef _KERNEL
 #include <pthread.h>
+/*
+ * ff_pthread_create threads are lightweight: they inherit only the parent's
+ * thread context (pcurthread), NOT its per-CPU pcpu pointer (pcpup is NULL in
+ * the new thread). Calling any ff_* interface that touches curcpu/PCPU_* from
+ * such a thread triggers a lazy fail-fast (panic). For a full stack instance
+ * use a worker thread (ff_stack_thread_init) instead.
+ */
 int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr,
     void * (* start_routine) (void *), void * arg);
 int ff_pthread_join(pthread_t thread, void **retval);
