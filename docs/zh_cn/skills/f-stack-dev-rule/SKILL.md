@@ -1,6 +1,6 @@
 ---
 name: f-stack-dev-rule
-description: F-Stack 工程开发强制规约（零容忍）。覆盖：Shell 操作必须走 rm_tmp_file.sh / kill_process.sh / chmod_modify.sh 脚本、改代码先 make clean 再完整编译、config.ini 本地测试值不入库、文档禁止真实 IP（用占位符）、commit message 英文 1-3 句、F-Stack 代码注释与提交信息只用简短英文、lib/ 最小注释、多 agent 协作规约（写审分离 / bounce≤3 / leader 轮询不提前退出）、实际执行不臆测以代码为准、所有提问/分析/调研类任务必须使用 f-stack-info-search 技能搜索资料。当在 /data/workspace/f-stack 工作区执行任何开发、调试、测试、提交任务时使用本技能。
+description: F-Stack 工程开发强制规约（零容忍）。覆盖：Shell 操作必须走 rm_tmp_file.sh / kill_process.sh / chmod_modify.sh 脚本、改代码先 make clean 再完整编译、config.ini 本地测试值不入库、文档禁止真实 IP（用占位符）、commit message 英文 1-3 句、F-Stack 代码注释与提交信息只用简短英文、lib/ 最小注释、多 agent 协作规约（写审分离 / bounce≤3 / leader 轮询不提前退出）、实际执行不臆测以代码为准、所有提问/分析/调研类任务必须使用 f-stack-info-search 技能搜索资料、任务规模判断与 harness 流程（大任务先多 agent 调研出中文 spec 人工审核→人工触发实现验收→plan.md 先审→按里程碑多次提交→验收后翻译英文 spec）、代码改动必须完成单测与运行时回归测试并受门禁限制。当在 /data/workspace/f-stack 工作区执行任何开发、调试、测试、提交任务时使用本技能。
 ---
 
 # F-Stack 开发强制规约
@@ -111,3 +111,17 @@ description: F-Stack 工程开发强制规约（零容忍）。覆盖：Shell �
 - 测试 DPDK 网卡程序：通过 `ssh f-stack-client` 从对端机器访问本机 DPDK 接管网卡（IP 用 `<DPDK_NIC_IP>` 占位符）
 - 本机内核栈测试：用 127.0.0.1 的 lo
 - 停进程走 kill_process.sh，临时文件清理走 rm_tmp_file.sh，config.ini 临时测试值测完还原且不入库
+
+## 12. 任务规模判断与 harness 流程规约
+
+- 由提示词或大模型自动判断任务规模：小任务可以直接分析执行；大任务必须按以下步骤进行：
+- 12.1 功能调研：先使用多 agent harness 方式完成功能调研，产出中文 spec 文档（可安装使用其他 spec 相关 skill）+ 门禁审核；中文文档存放目录 `docs/<FEATURE_NAME>_spec/zh_cn/`；**暂不生成英文 spec 文档**（功能验收完成后再翻译生成英文 spec 文档）；交由人工审核
+- 12.2 功能实现与验收：人工审核 spec 文档通过后，由人工提示词触发进入功能实际实现和验收阶段（使用多 agent harness 方式，遵循多 agent 各种相关规则），完成代码编写、CR、测试（单元测试和运行时测试）、文档更新、各里程碑步骤的门禁审核
+- 12.3 spec 文档生成和功能实际实现都必须先生成 plan.md 交由人工审核后再执行
+- 12.4 按里程碑进行多次 git 提交
+- 12.5 测试验收完成后，将 `docs/<FEATURE_NAME>_spec/zh_cn/` 下的中文 spec 文档翻译为英文文档（文件名和文件内容都需要翻译），存放目录 `docs/<FEATURE_NAME>_spec/`
+
+## 13. 测试门禁规约
+
+- 涉及代码改动必须完成单元测试和运行时回归测试
+- 单元测试和运行时回归测试同样受门禁规则限制（bounce≤3、写审分离等，见第 8 节）

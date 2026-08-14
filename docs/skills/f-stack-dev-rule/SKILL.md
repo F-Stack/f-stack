@@ -1,6 +1,6 @@
 ---
 name: f-stack-dev-rule
-description: Mandatory development rules for the F-Stack project (zero tolerance). Covers: shell operations must go through rm_tmp_file.sh / kill_process.sh / chmod_modify.sh scripts, make clean before full rebuild after code changes, local config.ini test values must not be committed, no real IPs in docs (use placeholders), English commit messages (1-3 sentences), English-only short comments in F-Stack code, minimal comments in lib/, multi-agent collaboration rules (write/review separation, bounce<=3, leader polling without early exit), no speculation without actual execution (code is authoritative), and all question/analysis/research tasks must use the f-stack-info-search skill. Use this skill for any development, debugging, testing, or commit task in the /data/workspace/f-stack workspace.
+description: Mandatory development rules for the F-Stack project (zero tolerance). Covers: shell operations must go through rm_tmp_file.sh / kill_process.sh / chmod_modify.sh scripts, make clean before full rebuild after code changes, local config.ini test values must not be committed, no real IPs in docs (use placeholders), English commit messages (1-3 sentences), English-only short comments in F-Stack code, minimal comments in lib/, multi-agent collaboration rules (write/review separation, bounce<=3, leader polling without early exit), no speculation without actual execution (code is authoritative), all question/analysis/research tasks must use the f-stack-info-search skill, task sizing and harness workflow (large tasks: multi-agent research producing a Chinese spec for human review -> human-triggered implementation and acceptance -> plan.md review first -> multiple milestone commits -> translate the spec to English after acceptance), and code changes must complete unit tests plus runtime regression tests subject to gate rules. Use this skill for any development, debugging, testing, or commit task in the /data/workspace/f-stack workspace.
 ---
 
 # F-Stack Mandatory Development Rules
@@ -111,3 +111,17 @@ Applies to harness-engineering + multi-agent (agent team / spec-driven) tasks:
 - Testing DPDK NIC programs: access the DPDK-managed NIC on this machine from the peer via `ssh f-stack-client` (use the `<DPDK_NIC_IP>` placeholder)
 - Testing the kernel stack on this machine: use 127.0.0.1 on lo
 - Stop processes via kill_process.sh, clean temp files via rm_tmp_file.sh, restore config.ini temp test values after testing, and never commit them
+
+## 12. Task Sizing and Harness Workflow Rules
+
+- Judge the task size automatically from the prompt or by the model: small tasks may be analyzed and executed directly; large tasks must follow these steps:
+- 12.1 Feature research: first complete feature research using the multi-agent harness approach, producing a Chinese spec document (other spec-related skills may be installed and used) plus gate review; Chinese docs go under `docs/<FEATURE_NAME>_spec/zh_cn/`; **do not produce the English spec yet** (translate it only after feature acceptance); submit for human review
+- 12.2 Implementation and acceptance: after the human review of the spec passes, a human prompt triggers the actual implementation and acceptance phase (multi-agent harness approach, following all multi-agent rules), completing code writing, CR, testing (unit tests and runtime tests), doc updates, and gate reviews at each milestone
+- 12.3 Both spec generation and actual implementation must first produce a plan.md for human review before execution
+- 12.4 Make multiple git commits by milestone
+- 12.5 After test acceptance completes, translate the Chinese spec docs under `docs/<FEATURE_NAME>_spec/zh_cn/` into English (both file names and contents must be translated) and place them under `docs/<FEATURE_NAME>_spec/`
+
+## 13. Test Gate Rules
+
+- Any change involving code must complete unit tests and runtime regression tests
+- Unit tests and runtime regression tests are subject to the same gate rules (bounce<=3, write/review separation, etc.; see section 8)
