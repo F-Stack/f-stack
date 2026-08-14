@@ -9,29 +9,29 @@ This skill is a collection of mandatory rules for all development tasks in the /
 
 ## 1. Shell Operation Script Rules
 
-Direct invocation of rm / kill / chmod command families is forbidden. Always use the following scripts:
+Direct invocation of rm / kill / chmod command families is forbidden. Always use the scripts bundled with this skill (under the `scripts/` subdirectory of this skill's directory; resolve them as absolute paths against the skill base directory provided at load time):
 
-### 1.1 Delete files -> /data/workspace/rm_tmp_file.sh
+### 1.1 Delete files -> scripts/rm_tmp_file.sh
 
-- Single file: `/data/workspace/rm_tmp_file.sh /full/path/to/file`
-- Multiple files: `/data/workspace/rm_tmp_file.sh /path/a /path/b`
-- Directory: `/data/workspace/rm_tmp_file.sh /full/path/to/dir`
+- Single file: `scripts/rm_tmp_file.sh /full/path/to/file`
+- Multiple files: `scripts/rm_tmp_file.sh /path/a /path/b`
+- Directory: `scripts/rm_tmp_file.sh /full/path/to/dir`
 - Trash location: `/tmp/.trash` (keeps the path prefix for traceability)
-- Permanent purge: `/data/workspace/rm_tmp_file.sh --purge <trash_path> [--older-than Nd] [--dry-run]` (purge whitelist is only /tmp/.trash, /data/.Trash-0/files, /data/.Trash-0/info)
+- Permanent purge: `scripts/rm_tmp_file.sh --purge <trash_path> [--older-than Nd] [--dry-run]` (purge whitelist is only /tmp/.trash, /data/.Trash-0/files, /data/.Trash-0/info)
 - Forbidden: direct `rm`, `rm -rf`, `find -delete`, or embedding rm inside bash snippets
 - Bulk deletion of *.o etc.: first collect absolute paths with `ls`/`find`, then pass them all to the script at once
 
-### 1.2 Stop processes -> /data/workspace/kill_process.sh
+### 1.2 Stop processes -> scripts/kill_process.sh
 
-- Single PID: `/data/workspace/kill_process.sh <pid>`
-- Multiple PIDs: `/data/workspace/kill_process.sh <pid1> <pid2>`
+- Single PID: `scripts/kill_process.sh <pid>`
+- Multiple PIDs: `scripts/kill_process.sh <pid1> <pid2>`
 - Forbidden: `kill`, `pkill`, `killall`, `kill -9`, `pgrep | xargs kill`, kill embedded in trap/cleanup, or any other form
 
-### 1.3 Change permissions -> /data/workspace/chmod_modify.sh
+### 1.3 Change permissions -> scripts/chmod_modify.sh
 
-- Usage: `/data/workspace/chmod_modify.sh <mode> <path1> <path2> ...` (mode is compatible with chmod(1), octal or symbolic)
+- Usage: `scripts/chmod_modify.sh <mode> <path1> <path2> ...` (mode is compatible with chmod(1), octal or symbolic)
 - Forbidden: direct `chmod`, `chmod -R`, `install -m`, `setfacl`, or any other form
-- Note: the script snapshots pre-change permissions to /tmp/.trash/, audits to /data/workspace/.chmod_audit.log, refuses high-risk paths, and warns on setuid/setgid bits
+- Note: the script snapshots pre-change permissions to /tmp/.trash/, audits to /tmp/.chmod_audit.log, refuses high-risk paths, and warns on setuid/setgid bits
 
 ### 1.4 General rules
 

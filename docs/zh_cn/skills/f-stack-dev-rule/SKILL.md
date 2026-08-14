@@ -9,29 +9,29 @@ description: F-Stack 工程开发强制规约（零容忍）。覆盖：Shell �
 
 ## 1. Shell 操作脚本规约
 
-严禁直接调用 rm / kill / chmod 系列命令，必须一律通过以下脚本执行：
+严禁直接调用 rm / kill / chmod 系列命令，必须一律通过本 skill 附带的以下脚本执行（位于本 skill 目录的 `scripts/` 子目录，以 SKILL 加载时注入的 base directory 为根拼接绝对路径调用）：
 
-### 1.1 删除文件 → /data/workspace/rm_tmp_file.sh
+### 1.1 删除文件 → scripts/rm_tmp_file.sh
 
-- 单文件：`/data/workspace/rm_tmp_file.sh /full/path/to/file`
-- 多文件：`/data/workspace/rm_tmp_file.sh /path/a /path/b`
-- 目录：`/data/workspace/rm_tmp_file.sh /full/path/to/dir`
+- 单文件：`scripts/rm_tmp_file.sh /full/path/to/file`
+- 多文件：`scripts/rm_tmp_file.sh /path/a /path/b`
+- 目录：`scripts/rm_tmp_file.sh /full/path/to/dir`
 - 回收站位置：`/tmp/.trash`（自动保留路径前缀便于回查）
-- 永久清理：`/data/workspace/rm_tmp_file.sh --purge <trash_path> [--older-than Nd] [--dry-run]`（purge 白名单仅 /tmp/.trash、/data/.Trash-0/files、/data/.Trash-0/info）
+- 永久清理：`scripts/rm_tmp_file.sh --purge <trash_path> [--older-than Nd] [--dry-run]`（purge 白名单仅 /tmp/.trash、/data/.Trash-0/files、/data/.Trash-0/info）
 - 禁止：直接 `rm`、`rm -rf`、`find -delete`、嵌入 bash 片段
 - 批量删除 *.o 等：先用 `ls`/`find` 收集绝对路径再一次性传给脚本
 
-### 1.2 停止进程 → /data/workspace/kill_process.sh
+### 1.2 停止进程 → scripts/kill_process.sh
 
-- 单 PID：`/data/workspace/kill_process.sh <pid>`
-- 多 PID：`/data/workspace/kill_process.sh <pid1> <pid2>`
+- 单 PID：`scripts/kill_process.sh <pid>`
+- 多 PID：`scripts/kill_process.sh <pid1> <pid2>`
 - 禁止：`kill`、`pkill`、`killall`、`kill -9`、`pgrep | xargs kill`、trap/cleanup 内嵌 kill 等任何形式
 
-### 1.3 修改权限 → /data/workspace/chmod_modify.sh
+### 1.3 修改权限 → scripts/chmod_modify.sh
 
-- 用法：`/data/workspace/chmod_modify.sh <mode> <path1> <path2> ...`（mode 与 chmod(1) 兼容，八进制/符号式均可）
+- 用法：`scripts/chmod_modify.sh <mode> <path1> <path2> ...`（mode 与 chmod(1) 兼容，八进制/符号式均可）
 - 禁止：直接 `chmod`、`chmod -R`、`install -m`、`setfacl` 等任何形式
-- 说明：脚本会先快照变更前权限到 /tmp/.trash/、审计到 /data/workspace/.chmod_audit.log、拒绝高危路径、对 setuid/setgid 位 WARN
+- 说明：脚本会先快照变更前权限到 /tmp/.trash/、审计到 /tmp/.chmod_audit.log、拒绝高危路径、对 setuid/setgid 位 WARN
 
 ### 1.4 通用规则
 
