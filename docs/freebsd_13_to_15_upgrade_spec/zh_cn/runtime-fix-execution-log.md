@@ -340,7 +340,7 @@ const struct fileops badfileops = {0};
 | 13.0 baseline | `/data/workspace/f-stack-13.0-baseline/example/helloworld_13baseline` | `5b6df6d3…ef53ad5` | 27,934,872 B |
 | 15.0 runtime-fix-done | `/data/workspace/f-stack/example/helloworld_15rfix` | `4e3f3c75…fb53c3b9` | 28,263,952 B |
 
-13.0 lib 编译说明：复用 `f-stack-13.0-baseline/lib/` 现有源码，遵守 DP-10 规约（产物清理走 `/data/workspace/rm_tmp_file.sh`，跳过 Makefile 内嵌 clean target；意外发现 `ff_api.symlist` 是源文件被误判为产物清掉，已从 `/data/workspace/.trash/<ts>/` 恢复后重编成功）。
+13.0 lib 编译说明：复用 `f-stack-13.0-baseline/lib/` 现有源码，遵守 DP-10 规约（产物清理走 `/data/workspace/rm_tmp_file.sh`，跳过 Makefile 内嵌 clean target；意外发现 `ff_api.symlist` 是源文件被误判为产物清掉，已从 `/tmp/.trash/<ts>/` 恢复后重编成功）。
 
 #### 12.10.3 同时序原始数据
 

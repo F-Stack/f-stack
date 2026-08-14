@@ -117,7 +117,7 @@
 | DP-7 | 2026-05-28 17:28 | M1→M2 推迟（uma 部分） | T-vm-01 | uma_core.c (51 行 delta-13 / 1868 行上游 13→15 大改、与 vm 子系统重写紧密耦合) + uma_int.h 暂保留 13.0 F-Stack 版本（标 LEGACY-13.0），M2 阶段 G-M2 编译前再做 5 步法重做 | T-vm-01 当前状态 ⚠️ partial；M2 范围隐式扩展（spec 05 §2.2 M2 本就含 vm/uma 升级，不破坏 spec 边界）；M1 G-M1 编译验收对 uma_*.{c,h} 的检查需调整为"以 13.0 LEGACY 兼容性为准"，不再要求 15.0 baseline 字节一致 |
 | DP-8 | 2026-05-28 17:44 | M1→M2 推迟（arch 全量） | T-arch-01 / T-arch-02 | amd64/x86/arm64 三子目录共 666 文件全量保留 13.0 状态不动；5 个 F-Stack 改造文件（amd64/include/atomic.h, pcpu_aux.h, pcpu.h, vmparam.h + arm64/include/pcpu.h）维持 13.0 LEGACY，M2 阶段 G-M2 编译失败时按需重做 | T-arch-01 / T-arch-02 状态 ⚠️ deferred；M1 G-M1 编译验收对 arch 子目录的检查跳过；spec 06 §2.2 G-M1 仅要求 libff.a 默认 KNOB（x86_64）链接，arch 字节对齐不在 M1 范围；M2 范围从"kern/net/netinet 升级"扩展为"kern/net/netinet + arch + vm/uma 升级"（仍不破坏 spec 整体边界） |
 | DP-9 | 2026-05-28 17:54 | M1→M2 推迟（sys 头 + vm + libalias 全量） | T-sys-01/02/03 + T-vm-01 + T-misc-01(libalias 部分) | G-M1 严格编译命中 4 个跨范围依赖断裂（sys/kassert.h 缺失 + __tcp_get_flags 未定义 + sys/stdarg.h 缺失等），全部回滚到 13.0 F-Stack 版本。spec 05 §2.1 漏列 sys/sys/ 整子目录范围（339 DIFFER + 14 个 F-Stack 改造文件，spec 仅列 4 个） | M1 范围实质收窄为：mips 删除（T-cleanup-01）+ libkern + opencrypto + crypto + netipsec + netgraph 共 6 个子目录全量 15.0 同步；sys 头 / vm / libalias / amd64-x86-arm64 全部 M2 重做。Gate-5b 编译 ✅ PASS（libfstack.a 4.7M 完整生成）。M2 范围比原 spec 增加：sys/sys/ 全量（含 14 个改造文件 5 步法 + 38 NEW + 339 DIFFER）；spec 99 §12.13 新增条目记录该范围扩展 |
-| DP-10 | 2026-05-28 17:50 | 全局新约束：临时文件删除规约 | 全 M1+M2+全部后续阶段 | 用户增设全局规约：所有临时文件/目录删除必须经 `/data/workspace/rm_tmp_file.sh` 脚本执行，严禁直接调用 `rm` shell 命令。脚本提供：高危路径黑名单 + mv 留档至 `/data/workspace/.trash/<UTC时间戳>-<pid>/<原绝对路径>` + 审计追加到 `/data/workspace/.rm_audit.log` | 已实战应用于 DP-9 4 个 sys 头回滚 + vm/ 整目录回滚 + netinet/libalias/ 整目录回滚 + alias*.o 残留清理；trash 目录可随时回查；后续 M1+ 全程沿用此约束 |
+| DP-10 | 2026-05-28 17:50 | 全局新约束：临时文件删除规约 | 全 M1+M2+全部后续阶段 | 用户增设全局规约：所有临时文件/目录删除必须经 `/data/workspace/rm_tmp_file.sh` 脚本执行，严禁直接调用 `rm` shell 命令。脚本提供：高危路径黑名单 + mv 留档至 `/tmp/.trash/<UTC时间戳>-<pid>/<原绝对路径>` + 审计追加到 `/tmp/.rm_audit.log` | 已实战应用于 DP-9 4 个 sys 头回滚 + vm/ 整目录回滚 + netinet/libalias/ 整目录回滚 + alias*.o 残留清理；trash 目录可随时回查；后续 M1+ 全程沿用此约束 |
 
 ### 5.2 G-M1 验收实测（2026-05-28 18:04 完成）
 
@@ -142,7 +142,7 @@
 - M1 升级到 15.0：libkern 81 文件 + opencrypto 36 文件 + crypto 300 文件 + netipsec 32 文件 + netgraph 156+23 LEGACY 文件
 - DP-9 回滚（M1→M2 推迟）：4 sys 头 + vm 53 文件 + netinet/libalias 19 文件全部恢复到 13.0 baseline 字节
 - 编译验收：完整 `make` 链路 ld -r → objcopy localize/globalize → ar 全部通过；libfstack.a 重新生成
-- trash 留档：`/data/workspace/.trash/20260528-095512-891005/` (4 sys 头) + `/data/workspace/.trash/20260528-095628-891911/` (vm) + `/data/workspace/.trash/20260528-095814-893986/` (libalias)；可随时回查
+- trash 留档：`/tmp/.trash/20260528-095512-891005/` (4 sys 头) + `/tmp/.trash/20260528-095628-891911/` (vm) + `/tmp/.trash/20260528-095814-893986/` (libalias)；可随时回查
 
 ### 5.3 全局新约束（DP-10，2026-05-28 17:50 起生效）
 
@@ -150,8 +150,8 @@
 
 脚本能力：
 - 高危路径黑名单（拒绝删除 `/`、`/etc`、`/usr`、`/var`、`/home`、`/root`、`/data`、`/data/workspace`、`/data/workspace/{f-stack, freebsd-src-releng-13.0, freebsd-src-releng-15.0, f-stack-13.0-baseline}` 等工程根）
-- 留档：`mv` 到 `/data/workspace/.trash/<UTC 时间戳>-<pid>/<原绝对路径>`
-- 审计：`/data/workspace/.rm_audit.log` 追加每次操作（BEGIN/OK/SKIP/BLOCK/FAIL/END 状态）
+- 留档：`mv` 到 `/tmp/.trash/<UTC 时间戳>-<pid>/<原绝对路径>`
+- 审计：`/tmp/.rm_audit.log` 追加每次操作（BEGIN/OK/SKIP/BLOCK/FAIL/END 状态）
 - 拒绝 stdin（防误操作），必须显式传入 path 参数
 
 DP-10 实战应用记录见 §3 任务表 + §5.2 关键证据链。
@@ -200,7 +200,7 @@ DP-10 实战应用记录见 §3 任务表 + §5.2 关键证据链。
    - `99-review-report.md` §6 任务追踪表 11 条 M1 状态全部回写
 5. **基础设施**：
    - `/data/workspace/rm_tmp_file.sh` 全局删除规约脚本（DP-10）
-   - `/data/workspace/.trash/` trash 目录（DP-9 三次回滚的留档）
+   - `/tmp/.trash/` trash 目录（DP-9 三次回滚的留档）
    - `/data/workspace/f-stack-13.0-baseline` 整体备份（M1 启动前）
    - `/data/workspace/f-stack-M1-done` 整体备份（M1 末，29597 文件）
 

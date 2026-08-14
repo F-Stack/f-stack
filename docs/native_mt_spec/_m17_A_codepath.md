@@ -1088,6 +1088,6 @@ Per-site judgment:
 ## Appendix B: Temporary Files Used by This Document (cleaned)
 
 `lib/_m17_probe_u1.c`, `lib/_m17_probe_u1.i`, `lib/_m17_probe_u8.c`, `lib/_m17_probe_u8.i`, `_m17_uma_core.i`, `_m17_smr.i`, `_m17_srcset.txt`, `_m17_allc.txt`, `_m17_srcpaths.txt`
-— all deleted via `/data/workspace/rm_tmp_file.sh` (measured output `[OK] all 9 path(s) trashed to /data/workspace/.trash/20260804-051411-923376`), **this agent modified no source code**.
+— all deleted via `/data/workspace/rm_tmp_file.sh` (measured output `[OK] all 9 path(s) trashed to /tmp/.trash/20260804-051411-923376`), **this agent modified no source code**.
 
 > Note: the residual `M lib/Makefile`, `M lib/ff_glue.c`, `?? lib/_m17_probe_build.c/.o`, `?? _m17_A_clean.log` in `git status` **belong to `res-build` (M1-C)'s compile probes** (see the reproducibility note in Section 0), **not this agent's changes; this agent does not clean them up**.

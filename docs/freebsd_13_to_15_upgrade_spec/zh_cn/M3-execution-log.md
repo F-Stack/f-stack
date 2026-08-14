@@ -155,9 +155,9 @@
 
 ### 6.2 关键 .trash 留档（DP-10）
 
-- `/data/workspace/.trash/20260529-072006-141757/` — 18 个 13.0-only 残留（梯度 1）
-- `/data/workspace/.trash/20260529-072028-*/` — Gate 验证临时 .o
-- `/data/workspace/.trash/20260529-073254-151451/` — /tmp/m3_ar_test 提取的 libfstack.ro 测试目录
+- `/tmp/.trash/20260529-072006-141757/` — 18 个 13.0-only 残留（梯度 1）
+- `/tmp/.trash/20260529-072028-*/` — Gate 验证临时 .o
+- `/tmp/.trash/20260529-073254-151451/` — /tmp/m3_ar_test 提取的 libfstack.ro 测试目录
 
 ### 6.3 commit 组织（M3 阶段）
 

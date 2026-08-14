@@ -146,7 +146,7 @@
 - M2 升级 35 个核心改造文件（14 sys/sys + 8 vm + 5 arch + 1 libalias + 7 kern）+ 9 个 ff_kern_* verify-only，全部单文件编译 + lint 通过
 - 1500+ 个非改造文件已 cp -f 同步到 15.0 baseline；63 个 13.0-only 文件经 rm_tmp_file.sh 留档删除（amd64+x86+arm64 44 + sys/sys 0 / 4 LEGACY 保留 + vm 2 + libalias 0 + kern 2 + netipsec/netgraph 已 M1 处理）
 - 10 个 Phase 5b LEGACY-13 文件（kern_descrip/kern_event/kern_mbuf/uipc_mbuf/sys_socket/kern_linker/link_elf/sys_generic/uipc_socket/subr_epoch）保留 13.0 baseline 字节，与 baseline 完全 cmp 一致，无 partial 状态
-- trash 留档：8 次回滚操作，全部记录到 `/data/workspace/.trash/2026*/` + `/data/workspace/.rm_audit.log`
+- trash 留档：8 次回滚操作，全部记录到 `/tmp/.trash/2026*/` + `/tmp/.rm_audit.log`
 - machine_includes 修复：amd64/include/atomic.h 中 atomic_fcmpset_int32 改造的 13.0 baseline 自身 bug（`\\` 续行符 + MPLOCKED 引用），通过 5 步法 Step 3 接口签名变化适配解决（MPLOCKED 改字面 "lock ; "）
 
 ### 5.2.1 严格 Gate 失败 root cause 证明（DP-M2-2=C 降级要件）
@@ -227,7 +227,7 @@
    - `99-review-report.md` §12.13+ spec 偏差修订（待 §7.4 同步执行）
 8. **基础设施**：
    - 沿用 M1 `/data/workspace/rm_tmp_file.sh` 全局规约脚本（DP-10）
-   - `/data/workspace/.trash/20260529-*` 8 次操作留档（4 sys 头试错 + vm 2 文件 + arch 44 文件 + alias 0 + kern 8 文件 + Phase 5b 回滚 5 文件 + machine_include atomic.h 修复 + 1 P0 4 文件回滚）
+   - `/tmp/.trash/20260529-*` 8 次操作留档（4 sys 头试错 + vm 2 文件 + arch 44 文件 + alias 0 + kern 8 文件 + Phase 5b 回滚 5 文件 + machine_include atomic.h 修复 + 1 P0 4 文件回滚）
    - `/data/workspace/f-stack-13.0-baseline` 整体备份（M1 启动前，作 5 步法 baseline-13）
    - `/data/workspace/f-stack-M1-done` 整体备份（M1 末，作 M2 启动 baseline）
    - `/data/workspace/f-stack-M2-done` 整体备份（M2 末，待 §7.4 cp -a）

@@ -175,9 +175,9 @@ M3 已修了 lib/include/sys/{rwlock.h, mutex.h} 的 `DO_NOTHING ((void)0)`，�
 
 ### 6.2 关键 .trash 留档（DP-10）
 
-- `/data/workspace/.trash/20260529-072006-141757/` — M3 18 个 13.0-only 残留（M3 留档）
-- `/data/workspace/.trash/20260529-080901-174744/` — M4 27 个 ff_*.o 强制重编留档（梯度 1）
-- `/data/workspace/.trash/20260529-090022-210703/` — M4 9 个 13.0-only 子系统残留留档（部分 SKIP，因 cp -af 已覆盖）
+- `/tmp/.trash/20260529-072006-141757/` — M3 18 个 13.0-only 残留（M3 留档）
+- `/tmp/.trash/20260529-080901-174744/` — M4 27 个 ff_*.o 强制重编留档（梯度 1）
+- `/tmp/.trash/20260529-090022-210703/` — M4 9 个 13.0-only 子系统残留留档（部分 SKIP，因 cp -af 已覆盖）
 
 ### 6.3 commit 组织（M4 阶段）
 

@@ -1092,6 +1092,6 @@ freebsd/netinet/tcp_hpts.c:1542 tp->t_hpts_cpu = hpts_cpuid(tp, &failed); /* tcp
 ## 附录 B：本文档使用的临时文件（已清理）
 
 `lib/_m17_probe_u1.c`、`lib/_m17_probe_u1.i`、`lib/_m17_probe_u8.c`、`lib/_m17_probe_u8.i`、`_m17_uma_core.i`、`_m17_smr.i`、`_m17_srcset.txt`、`_m17_allc.txt`、`_m17_srcpaths.txt`
-—— 全部通过 `/data/workspace/rm_tmp_file.sh` 删除（实测输出 `[OK] all 9 path(s) trashed to /data/workspace/.trash/20260804-051411-923376`），**本 agent 未修改任何源码**。
+—— 全部通过 `/data/workspace/rm_tmp_file.sh` 删除（实测输出 `[OK] all 9 path(s) trashed to /tmp/.trash/20260804-051411-923376`），**本 agent 未修改任何源码**。
 
 > 说明：`git status` 中残留的 `M lib/Makefile`、`M lib/ff_glue.c`、`?? lib/_m17_probe_build.c/.o`、`?? _m17_A_clean.log` **属于 `res-build`（M1-C）的编译探针**（见第 0 节的可复现性提示），**不是本 agent 的改动，本 agent 不予清理**。

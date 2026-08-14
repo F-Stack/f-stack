@@ -56,7 +56,7 @@
 
 | 序号 | 时间 | 阶段 | 事件 | 处置 |
 |---|---|---|---|---|
-| RB-M5-01 | 2026-05-29 17:33 | 梯度 2 | Leader 在 `make libnetgraph` 重测时违规使用 `rm -f *.o libnetgraph.a` shell 命令清理产物，触发用户打回（违反 DP-10 + DP-10-reinforce 强制规约：所有删除必须走 `/data/workspace/rm_tmp_file.sh`） | 1) 立即将该规约写入 AI 强制记忆（knowledge_id 81725399），覆盖未来所有里程碑与新阶段，违反零容忍；2) 该次清理改走 rm_tmp_file.sh 重做（已 trash 到 `/data/workspace/.trash/20260529-093401-232872/`）；3) 后续梯度 2/3/4 全程严守该规约；4) 该规约同时强化 commit message 英文 + 实测优先 + 三层备份等既有规约 |
+| RB-M5-01 | 2026-05-29 17:33 | 梯度 2 | Leader 在 `make libnetgraph` 重测时违规使用 `rm -f *.o libnetgraph.a` shell 命令清理产物，触发用户打回（违反 DP-10 + DP-10-reinforce 强制规约：所有删除必须走 `/data/workspace/rm_tmp_file.sh`） | 1) 立即将该规约写入 AI 强制记忆（knowledge_id 81725399），覆盖未来所有里程碑与新阶段，违反零容忍；2) 该次清理改走 rm_tmp_file.sh 重做（已 trash 到 `/tmp/.trash/20260529-093401-232872/`）；3) 后续梯度 2/3/4 全程严守该规约；4) 该规约同时强化 commit message 英文 + 实测优先 + 三层备份等既有规约 |
 
 ### 5.2 Gate 失败 root cause（fail-mode 兜底）
 （仅在 9 TC runtime 失败 / 矩阵某格失败时启用记录）

@@ -58,7 +58,7 @@
 
 | ID | Time | Stage | Event | Disposition |
 |---|---|---|---|---|
-| RB-M5-01 | 2026-05-29 17:33 | Tier 2 | Leader violated DP-10 / DP-10-reinforce by directly using `rm -f *.o libnetgraph.a` to clean up libnetgraph rebuild artifacts; user immediately pushed back | (1) Wrote the rule into AI persistent memory (knowledge_id 81725399), covering all future milestones, zero tolerance; (2) Redid the cleanup via rm_tmp_file.sh (trashed to `/data/workspace/.trash/20260529-093401-232872/`); (3) Strict adherence in all subsequent tiers; (4) The rule reinforces commit-message-English + verification-first + three-layer-backup conventions |
+| RB-M5-01 | 2026-05-29 17:33 | Tier 2 | Leader violated DP-10 / DP-10-reinforce by directly using `rm -f *.o libnetgraph.a` to clean up libnetgraph rebuild artifacts; user immediately pushed back | (1) Wrote the rule into AI persistent memory (knowledge_id 81725399), covering all future milestones, zero tolerance; (2) Redid the cleanup via rm_tmp_file.sh (trashed to `/tmp/.trash/20260529-093401-232872/`); (3) Strict adherence in all subsequent tiers; (4) The rule reinforces commit-message-English + verification-first + three-layer-backup conventions |
 
 ### 5.2 Gate fail-mode root cause
 
