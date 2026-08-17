@@ -149,6 +149,8 @@ The iWiki note for native-mt (2026.08.05, 5 days) is honest: "this feature is ex
 
 Every major feature left complete documentation through the harness process: freebsd_13_to_15_upgrade_spec (47 documents), zc_stack_user_spec (37 documents), ld_preload_ring_spec, mtu_change_spec, lro_tso_spec, native_mt_spec, the RSS check optimization spec, and more, plus the three-layer architecture docs (LAYER1/2/3) and the knowledge graph (KNOWLEDGE_GRAPH_WIKI). These documents in turn became the search sources for info-search — documents → code → decisions form a closed loop.
 
+[Note] After a new feature lands, the architecture docs and the knowledge graph should be updated accordingly; otherwise info-search's search sources go stale and later research gets outdated conclusions. The updates can be enforced by process (including doc-update items in each milestone) or automated — e.g., git operations automatically triggering a knowledge-graph rebuild (the GitNexus background updates after every commit are exactly this kind of mechanism).
+
 5. How to use it, how to configure it, and the results
 
 5.1 Skill installation and loading

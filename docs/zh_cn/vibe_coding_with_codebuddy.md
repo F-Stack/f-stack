@@ -143,6 +143,8 @@ native-mt（2026.08.05，5 天）的 iwiki 备注很诚实："本功能超级复
 
 每个大功能都按 harness 流程留下了完整文档：freebsd_13_to_15_upgrade_spec（47 篇）、zc_stack_user_spec（37 篇）、ld_preload_ring_spec、mtu_change_spec、lro_tso_spec、native_mt_spec、rss check 优化 spec 等，加上三层架构文档（LAYER1/2/3）和知识图谱（KNOWLEDGE_GRAPH_WIKI）。这些文档反过来又成了 info-search 的搜索源——文档 → 代码 → 决策形成了闭环。
 
+【注意】新功能更新后应该对应更新架构文档和知识图谱，否则 info-search 的搜索源会失真，后续调研拿到的是过期结论。更新可以靠流程约束（里程碑里带文档更新项），也可以靠自动化——比如 git 操作自动触发知识图谱重建（此前每次提交后 GitNexus 在后台更新知识图谱即是此类机制）。
+
 5. 如何使用、如何配置、使用效果
 
 5.1 Skill 安装与加载
