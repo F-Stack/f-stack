@@ -2,19 +2,17 @@ F-Stack dual-stack coexistence: one listen serving both the DPDK NIC and local l
 
 1. What problem this solves
 
-Getting straight to the point: the kernel-stack coexistence capability introduced in F-Stack v2.0 (expected official release 2026.10) solves one of F-Stack's most classic pain points — after DPDK takes over the NIC, curling a locally listened service from the same machine fails with Connection refused from the kernel.
+The kernel-stack coexistence capability introduced in F-Stack v2.0 (expected official release 2026.10) solves one of F-Stack's most classic pain points — after DPDK takes over the NIC, curling a locally listened service from the same machine fails with Connection refused from the kernel.
 
-First some background. Once F-Stack binds a NIC to DPDK, all traffic on that NIC completely bypasses the Linux kernel protocol stack and goes straight into F-Stack's user-space FreeBSD stack. The consequence: if you listen on port 80 in F-Stack, curling your NIC IP from another machine on the same network works, but curling 127.0.0.1 or the local IP on the same machine gets Connection refused — because local requests go through the Linux kernel stack, which knows nothing about F-Stack's port 80.
+Once F-Stack binds a NIC to DPDK, all traffic on that NIC completely bypasses the Linux kernel protocol stack and goes straight into F-Stack's user-space FreeBSD stack. The consequence: if you listen on port 80 in F-Stack, curling your NIC IP from another machine on the same network works, but curling 127.0.0.1 or the local IP on the same machine gets Connection refused — because local requests go through the Linux kernel stack, which knows nothing about F-Stack's port 80.
 
 This keeps coming up in issues, and the official answer has always been "test from another machine" or "use KNI packet injection". Issues #511/#585/#741/#849 are all the same thing.
 
-This feature turns that "manual workaround" into "default behavior": the same socket, the same listen(80), runs on both the F-Stack user-space stack (DPDK NIC, business fast path) and the Linux kernel stack (local loopback/management plane) at the same time. A remote curl to the NIC IP goes through F-Stack, a local curl to 127.0.0.1 goes through the kernel, both paths work simultaneously, and events from both stacks are handled in the same epoll/kqueue event loop.
-
-The core value in one sentence:
+What we did is turn that "manual workaround" into "default behavior": the same socket, the same listen(80), runs on both the F-Stack user-space stack (DPDK NIC, business fast path) and the Linux kernel stack (local loopback/management plane) at the same time. A remote curl to the NIC IP goes through F-Stack, a local curl to 127.0.0.1 goes through the kernel, both paths work simultaneously, and events from both stacks are handled in the same epoll/kqueue event loop.
 
 【Note 1】The F-Stack user-space stack is always in place and always carries the business fast path; the kernel stack is only a "parallel attachment", the second stack used to serve local/management/client access. It never bypasses or replaces F-Stack.
 
-It must be made clear what this is NOT, to avoid misunderstanding:
+Let me be clear upfront about what this is NOT, to avoid misunderstanding:
 
 - It does not bypass sockets to the kernel (an early erroneous implementation did exactly that, detailed in 4.1, already reverted)
 - It is not "whole process defaults to kernel stack" (that is anti-F-Stack and explicitly out of scope)

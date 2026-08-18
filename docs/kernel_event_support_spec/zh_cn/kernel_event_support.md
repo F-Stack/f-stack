@@ -2,19 +2,17 @@ F-Stack 用户态栈与内核栈自动双栈共存：一个 listen 同时服务 
 
 1. 这功能解决什么问题
 
-直接说目的：F-Stack v2.0（预计 2026.10 正式 release）引入的内核栈共存能力，解决 F-Stack 最经典的一个使用痛点——DPDK 接管网卡后，本机 curl 自己监听的服务会被内核报 Connection refused。
+F-Stack v2.0（预计 2026.10 正式 release）引入的内核栈共存能力，解决 F-Stack 最经典的一个使用痛点——DPDK 接管网卡后，本机 curl 自己监听的服务会被内核报 Connection refused。
 
-先交代背景。F-Stack 把网卡绑定给 DPDK 后，这张网卡上的流量完全绕过 Linux 内核协议栈，直接进 F-Stack 用户态 FreeBSD 栈。后果是：你在 F-Stack 里 listen 了 80 端口，从同网络另一台机器 curl 你的网卡 IP 能通，但在本机 curl 127.0.0.1 或 curl 本机 IP 会报 Connection refused——因为本机请求走的是 Linux 内核栈，而内核对 F-Stack 的这个 80 端口一无所知。
+F-Stack 把网卡绑定给 DPDK 后，这张网卡上的流量完全绕过 Linux 内核协议栈，直接进 F-Stack 用户态 FreeBSD 栈。后果是：你在 F-Stack 里 listen 了 80 端口，从同网络另一台机器 curl 你的网卡 IP 能通，但在本机 curl 127.0.0.1 或 curl 本机 IP 会报 Connection refused——因为本机请求走的是 Linux 内核栈，而内核对 F-Stack 的这个 80 端口一无所知。
 
 这个现象在 issue 里被反复问，官方给的标准答案一直是"从别的机器测"或者"用 KNI 回灌"。issue #511/#585/#741/#849 全是同一件事。
 
-本功能做的就是把这件事从"手动 workaround"变成"默认行为"：同一个 socket、同一个 listen(80)，同时跑在 F-Stack 用户态栈（DPDK 网卡，业务高速路径）和 Linux 内核栈（本机回环/管理面）上。远端 curl 网卡 IP 走 F-Stack，本机 curl 127.0.0.1 走内核，两条路同时通，而且两栈的事件在同一个 epoll/kqueue 事件循环里统一处理。
-
-核心价值一句话：
+我们做的就是把这件事从"手动 workaround"变成"默认行为"：同一个 socket、同一个 listen(80)，同时跑在 F-Stack 用户态栈（DPDK 网卡，业务高速路径）和 Linux 内核栈（本机回环/管理面）上。远端 curl 网卡 IP 走 F-Stack，本机 curl 127.0.0.1 走内核，两条路同时通，而且两栈的事件在同一个 epoll/kqueue 事件循环里统一处理。
 
 【注1】F-Stack 用户态栈始终在位、始终承担业务高速路径，内核栈只是"并行附加"的第二条栈，用来承接本机/管理面/客户端访问，绝不是在旁路或替代 F-Stack。
 
-必须说清楚它不是什么，避免理解偏差：
+这里先说清楚它不是什么，免得理解偏差：
 
 - 不是把 socket 旁路到内核（早期有个错误实现就是这么干的，后文 4.1 详述，已回退）
 - 不是"整进程默认走内核栈"（那是反 F-Stack 的，明确不做）

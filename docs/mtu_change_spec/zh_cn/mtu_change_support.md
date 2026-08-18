@@ -2,20 +2,18 @@ F-Stack 2.0 前瞻7：MTU 修改支持纪实，从「1500 硬上限」到 9000 �
 
 1. 本功能主要作用和特点
 
-直接说目的：F-Stack 的 DPDK 接管网卡之前只能锁死在 MTU 1500，这次把「减小 MTU 已可用、增大 MTU（jumbo frame）完全不可用」的现状，改造成「启动时按配置设置 1500~9000 任意 MTU、运行时通过标准 SIOCSIFMTU ioctl 动态修改、协议栈与 DPDK 硬件联动」的完整支持。
+F-Stack 的 DPDK 接管网卡之前只能锁死在 MTU 1500，这次把「减小 MTU 已可用、增大 MTU（jumbo frame）完全不可用」的现状，改造成「启动时按配置设置 1500~9000 任意 MTU、运行时通过标准 SIOCSIFMTU ioctl 动态修改、协议栈与 DPDK 硬件联动」的完整支持。
 
-先说清楚改造前的基线是什么样。2026-07 中旬做了一次结论性调研（16 篇文档，`docs/mtu_change_spec/zh_cn/00~15`），三方证据交叉得出的结论是「部分支持」：
+改造前的基线是这么个情况。2026-07 中旬做了一次结论性调研（见 `docs/mtu_change_spec/zh_cn/00~15`），三方证据交叉得出的结论是「部分支持」：
 
 - 减小 MTU（≤1500）：开箱可用。`ff_ioctl(SIOCSIFMTU)` 走 FreeBSD `ether_ioctl`，对 ≤ETHERMTU 的值直接写入 `if_mtu` 即生效
 - 增大 MTU（>1500，jumbo）：双重阻断。协议栈层 `ether_ioctl` 对 `ifr_mtu > ETHERMTU(1500)` 硬编码返回 `EINVAL`；DPDK 硬件层完全没有 MTU 接线——没有 `rte_eth_dev_set_mtu` 调用、mbuf 池固定 `RTE_MBUF_DEFAULT_BUF_SIZE`（2048 可用 dataroom）、`rxmode` 无 jumbo/scatter 配置
 
-这个结论和 F-Stack 官方 issue #239/#490/#720 完全一致：jumbo 支持 issue 挂了很久一直是 OPEN，维护者明确回复「mtu 不能超过 1500」。所以这次任务不是打补丁，是把协议栈、DPDK 硬件层、配置体系三个断层全部接上。本次改造的三个关键词：
+这个结论和 F-Stack 官方 issue #239/#490/#720 完全一致：jumbo 支持 issue 挂了很久一直是 OPEN，维护者明确回复「mtu 不能超过 1500」。所以这次任务不是打补丁，是把协议栈、DPDK 硬件层、配置体系三个断层全部接上。几个关键词：
 
 - **软硬联动**：一个 MTU 三个视图——协议栈 `if_mtu`、DPDK 端口 MTU、mbuf 池承载能力，三者必须一致，任一不一致启动即失败
 - **多进程分工**：DPDK 物理端口是共享状态，primary 唯一负责硬件（设软+硬），secondary 只设本进程软件 MTU，进程间零 IPC
 - **零回归承诺**：新增 `mtu_enable` 总开关，不启用时旧配置的 MTU 1500、2176B mbuf、ioctl 行为完全不变
-
-规模数据：调研 16 篇文档（2026-07-17 落盘）→ 实现型 spec 7 篇（07-21）→ 代码实现 M1~M5 共 14 个 commit 一天内完成（07-21）→ 物理机验证 + 英文翻译（07-22）。单元测试 59 通过（含 8 个新增 MTU 测试），IPv4/IPv6 8500 字节巨帧双向收发实测通过。
 
 2. 本功能的主要适用场景
 
@@ -124,7 +122,7 @@ large 模式 `data_room_size = align(HEADROOM + max_mtu + L2_overhead)`，超过
 
 其中 D-MTU-05 最值得说一句：`ether_ioctl` 的 ETHERMTU 硬校验是 FreeBSD 通用语义，f-stack 的选择不是在裁剪栈里改它，而是在 ff_veth 驱动层拦截 SIOCSIFMTU 自己处理。这样 freebsd/ 子树零改动，升级 FreeBSD 基线时不会引入新的 patch 维护负担。
 
-4.2 代码实施（M1~M5，2026-07-21 一天 14 个 commit）
+4.2 代码实施（M1~M5，2026-07-21）
 
 | 里程碑 | commit | 内容 |
 |---|---|---|
@@ -143,7 +141,7 @@ large 模式 `data_room_size = align(HEADROOM + max_mtu + L2_overhead)`，超过
 
 抓包反推：6 片 = 1448×5 + 1268 = 8508，对应分片公式 `len = (mtu - 40 - 8) & ~7`，反解出来 mtu=1500——协议栈明明 if_mtu 已经设成 9000，IPv6 分片用的 MTU 却还是 1500。
 
-根因链拉了 12 个 file:line（完整分析见 `15-IPv6巨帧分片异常分析.md`），一句话总结：
+根因链拉了 12 个 file:line（完整分析见 `15-IPv6巨帧分片异常分析.md`），总结下来就一句：
 
 ```
 ether_ifattach(if_mtu=1500) → nd6_ifattach → nd6_setmtu0(ndi->maxmtu=1500)

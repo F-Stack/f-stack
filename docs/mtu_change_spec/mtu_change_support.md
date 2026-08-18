@@ -2,20 +2,18 @@ F-Stack 2.0 Preview 7: MTU Change Support — Breaking the 1500 Hard Limit for 9
 
 1. What this feature does and its key characteristics
 
-Let's get straight to the point: F-Stack's DPDK-controlled NIC was previously locked at MTU 1500. This project turned the status quo — "decreasing MTU works, increasing MTU (jumbo frames) is completely unsupported" — into full support: set any MTU between 1500 and 9000 at startup via configuration, change it at runtime through the standard SIOCSIFMTU ioctl, with the protocol stack and DPDK hardware kept in sync.
+F-Stack's DPDK-controlled NIC was previously locked at MTU 1500. This project turned the status quo — "decreasing MTU works, increasing MTU (jumbo frames) is completely unsupported" — into full support: set any MTU between 1500 and 9000 at startup via configuration, change it at runtime through the standard SIOCSIFMTU ioctl, with the protocol stack and DPDK hardware kept in sync.
 
-First, what the pre-change baseline looked like. A conclusive research was done in mid-July 2026 (16 documents, `docs/mtu_change_spec/zh_cn/00~15`); the three-way cross-verified conclusion was "partial support":
+The pre-change baseline looked like this. A conclusive research was done in mid-July 2026 (see `docs/mtu_change_spec/zh_cn/00~15`); the three-way cross-verified conclusion was "partial support":
 
 - Decreasing MTU (≤1500): works out of the box. `ff_ioctl(SIOCSIFMTU)` goes through FreeBSD `ether_ioctl`, which writes values ≤ ETHERMTU directly into `if_mtu`.
 - Increasing MTU (>1500, jumbo): double-blocked. At the protocol-stack layer, `ether_ioctl` hardcodes `EINVAL` for `ifr_mtu > ETHERMTU(1500)`; at the DPDK hardware layer there is no MTU wiring at all — no `rte_eth_dev_set_mtu` call, the mbuf pool is fixed at `RTE_MBUF_DEFAULT_BUF_SIZE` (2048 usable dataroom), and `rxmode` has no jumbo/scatter configuration.
 
-This conclusion matched F-Stack official issues #239/#490/#720 exactly: the jumbo support issue had been OPEN for a long time, and the maintainers explicitly replied "mtu cannot exceed 1500". So this project was not about applying patches — it was about connecting three broken layers: the protocol stack, the DPDK hardware layer, and the configuration system. The three keywords of this rework:
+This conclusion matched F-Stack official issues #239/#490/#720 exactly: the jumbo support issue had been OPEN for a long time, and the maintainers explicitly replied "mtu cannot exceed 1500". So this project was not about applying patches — it was about connecting three broken layers: the protocol stack, the DPDK hardware layer, and the configuration system. A few key points:
 
 - **Software-hardware linkage**: one MTU with three views — the protocol-stack `if_mtu`, the DPDK port MTU, and the mbuf pool capacity. All three must agree; startup fails if any mismatches.
 - **Multi-process division of labor**: the DPDK physical port is shared state; the primary alone owns the hardware (sets both soft and hard), while secondaries set only their own process's software MTU — zero IPC between processes.
 - **Zero-regression commitment**: the new `mtu_enable` master switch; when disabled, legacy configs keep the exact MTU 1500, 2176B mbufs, and ioctl behavior.
-
-Scale numbers: 16 research documents (landed 2026-07-17) → 7 implementation spec documents (07-21) → M1~M5 code implementation, 14 commits done in one day (07-21) → physical-machine validation + English translation (07-22). 59 unit tests passed (including 8 new MTU tests); IPv4/IPv6 8500-byte jumbo frames verified bidirectionally on a physical machine.
 
 2. Main applicable scenarios
 
@@ -127,7 +125,7 @@ The research wrapped up with 6 decisions, all carried through the implementation
 
 D-MTU-05 deserves one more sentence: the ETHERMTU hard check in `ether_ioctl` is a general FreeBSD semantic. F-Stack's choice was not to change it inside the trimmed stack, but to intercept SIOCSIFMTU in the ff_veth driver layer and handle it there. This keeps the freebsd/ subtree untouched — no new patch maintenance burden when the FreeBSD baseline is upgraded.
 
-4.2 Code implementation (M1~M5, 14 commits in one day, 2026-07-21)
+4.2 Code implementation (M1~M5, 2026-07-21)
 
 | Milestone | commit | Content |
 |---|---|---|
@@ -146,7 +144,7 @@ During physical-machine validation after the feature went live, a bizarre sympto
 
 Back-calculation from the capture: 6 fragments = 1448×5 + 1268 = 8508, matching the fragmentation formula `len = (mtu - 40 - 8) & ~7`, which solves to mtu=1500 — the stack had if_mtu set to 9000, yet IPv6 fragmentation still used MTU 1500.
 
-The root-cause chain spans 12 file:line references (full analysis in `15-ipv6-jumbo-frame-fragmentation-analysis.md`); the one-sentence summary:
+The root-cause chain spans 12 file:line references (full analysis in `15-ipv6-jumbo-frame-fragmentation-analysis.md`); it boils down to one sentence:
 
 ```
 ether_ifattach(if_mtu=1500) → nd6_ifattach → nd6_setmtu0(ndi->maxmtu=1500)

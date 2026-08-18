@@ -2,9 +2,9 @@ F-Stack 使用 CodeBuddy 开发工作流：三个自建 Skill + harness 多 agen
 
 1. 本功能主要作用和特点
 
-直接说目的：F-Stack 项目从 2026 年初开始用 CodeBuddy 做 AI 辅助开发，到今天已经把「怎么让 AI 在这个大 C 语言项目里干活干得靠谱」沉淀成了一套可复用的工作流——三个自建 Skill（f-stack-dev-rule / f-stack-info-search / f-stack-issue-process）+ harness 工程化多 agent 流程 + 全链路门禁体系。这篇文章把这套工作流讲清楚：它由哪些部分组成、每部分解决什么问题、2026 年实战效果如何。
+我们从 2026 年初开始用 CodeBuddy 做 AI 辅助开发，到今天已经把「怎么让 AI 在这个大 C 语言项目里干活干得靠谱」沉淀成了一套可复用的工作流——三个自建 Skill（f-stack-dev-rule / f-stack-info-search / f-stack-issue-process）+ harness 工程化多 agent 流程 + 全链路门禁体系。这篇把这套工作流捋一遍：由哪些部分组成、每部分解决什么问题、2026 年实战效果如何。
 
-先说结论，2026 年至今（8 月中旬），F-Stack 通过这套工作流由 AI 辅助完成的大功能清单（数据来自项目 iwiki 工作清单）：
+2026 年至今（8 月中旬），我们通过这套工作流由 AI 辅助完成的大功能清单（数据来自项目 iwiki 工作清单）：
 
 | 功能 | 完成时间 | 耗时 |
 |---|---|---|
@@ -22,17 +22,17 @@ F-Stack 使用 CodeBuddy 开发工作流：三个自建 Skill + harness 多 agen
 | 多进程 vnet bonding / 单进程多线程多协议栈（native-mt） | 2026.08.05 | 5 天 |
 | issue 批量处理 320 → 0 | 2026.08.10 | 持续 |
 
-这些功能的统一分工模式是：**所有代码由 AI 完成，人工只做提示词、spec 文档、plan、纠正方向、结果审核和测试验收**。本文的三个关键词：
+这些功能的统一分工模式是：**所有代码由 AI 完成，人工只做提示词、spec 文档、plan、纠正方向、结果审核和测试验收**。几个关键词：
 
 - **规约先行**：AI 在 F-Stack 里干活的第一件事不是写代码，是加载 f-stack-dev-rule——13 节强制规约零容忍，把"AI 容易翻车的点"（rm/kill/chmod、增量编译、config.ini 污染、真实 IP 泄漏、注释风格）全部前置成规则
-- **skill 分层**：三个 skill 各管一段——dev-rule 管"怎么改"、info-search 管"怎么搜"、issue-process 管"issue 怎么处理"，另有一批通用 skill（spec 驱动、harness 工程、C 语言开发、单测等）可以对应安装，不在本文范围
+- **skill 分层**：三个 skill 各管一段——dev-rule 管"怎么改"、info-search 管"怎么搜"、issue-process 管"issue 怎么处理"，另有一批通用 skill（spec 驱动、harness 工程、C 语言开发、单测等）可以对应安装，这篇不展开
 - **harness 多 agent 门禁**：大任务强制走"调研出中文 spec → 人工审核 → 多 agent 实现 → 门禁审核 → 里程碑提交"的完整链路，写审分离、单步打回上限 3 次
 
 2. 本功能的主要适用场景
 
 2.1 大功能开发（调研 + spec + 实现 + 验收）
 
-F-Stack 里凡是"一个新功能/一次大升级"级别的任务，都走 harness 流程：先多 agent 调研产出中文 spec 文档（放 docs/<FEATURE>_spec/zh_cn/），人工审核通过后另起多 agent 做实现和验收，按里程碑多次提交，验收完成后才翻译英文 spec。2026 年的 freebsd 13→15 升级（47 篇 spec 文档）、native-mt、LRO/TSO 都是这么干的。
+F-Stack 里凡是"一个新功能/一次大升级"级别的任务，都走 harness 流程：先多 agent 调研产出中文 spec 文档（放 docs/<FEATURE>_spec/zh_cn/），人工审核通过后另起多 agent 做实现和验收，按里程碑多次提交，验收完成后才翻译英文 spec。2026 年的 freebsd 13→15 升级、native-mt、LRO/TSO 都是这么干的。
 
 2.2 issue 分析与批量处理
 
@@ -135,13 +135,13 @@ AI 写 C 代码最常见的坑是增量编译：FF_ZC_* 开关切换后 make 按
 
 4.5 实战问题四：token 消耗与任务切分
 
-native-mt（2026.08.05，5 天）的 iwiki 备注很诚实："本功能超级复杂，堪比重做一个小 f-stack，消耗 token 较多"，残留风险如实记录后暂停，等 token 额度重置后继续。这说明 harness 流程还有一层现实约束：任务要按 token 预算切里程碑，做不完的宁可如实留档（残留风险清单），也不要糊弄收尾。issue 批量处理 320→0 则是另一个方向的实践——用 imate（内网版OpenClaw）按 SOP 半自动化处理，穿插在 token 紧张期（GLM-5.2不计算额度）。
+native-mt（2026.08.05，5 天）的 iwiki 备注很诚实："本功能超级复杂，堪比重做一个小 f-stack，消耗 token 较多"，残留风险如实记录后暂停，等 token 额度重置后继续。这说明 harness 流程还有一层现实约束：任务要按 token 预算切里程碑，做不完的宁可如实留档（残留风险清单），也不要糊弄收尾。issue 批量处理 320→0 则是另一个方向的实践——用内网版 OpenClaw/Hermes 按 SKILL 的 SOP 半自动化处理，穿插在 token 紧张期（因为内网版 GLM-5.2不计算额度）。
 
-【注意】截止目前（2026.08.17）大任务初始的调研、架构文档、任务拆分等任务依然推荐使用 OPUS-5/Codex 等高价模型（**额度消耗非常非常大，需要特别注意**），完成任务拆分后实际的代码编写等小任务或具体任务可以交由 GLM-5.2/DSV4 等模型执行。备注：目前 Deepseek-V4.0-pro-0813 在大仓库大任务的调研分析和架构设计上表现的依然一塌糊涂；GLM-5.3 的效果则尚未实测。
+【注意】截止目前（2026.08.17）大任务初始的调研、架构文档、任务拆分等任务依然推荐使用高级模型（**额度消耗非常非常大，需要特别注意**，主要是目前其他部分模型在大仓库大任务的调研分析和架构设计上表现的依然一言难尽，就不实际举例了），完成任务拆分后实际的代码编写等小任务或具体任务可以交由较轻量模型（但也应使用GLM-5.2以上模型）执行。
 
 4.6 2026 年各功能沉淀的文档资产
 
-每个大功能都按 harness 流程留下了完整文档：freebsd_13_to_15_upgrade_spec（47 篇）、zc_stack_user_spec（37 篇）、ld_preload_ring_spec、mtu_change_spec、lro_tso_spec、native_mt_spec、rss check 优化 spec 等，加上三层架构文档（LAYER1/2/3）和知识图谱（KNOWLEDGE_GRAPH_WIKI）。这些文档反过来又成了 info-search 的搜索源——文档 → 代码 → 决策形成了闭环。
+每个大功能都按 harness 流程留下了完整文档：freebsd_13_to_15_upgrade_spec、zc_stack_user_spec、ld_preload_ring_spec、mtu_change_spec、lro_tso_spec、native_mt_spec、rss check 优化 spec 等，加上三层架构文档（LAYER1/2/3）和知识图谱（KNOWLEDGE_GRAPH_WIKI）。这些文档反过来又成了 info-search 的搜索源——文档 → 代码 → 决策形成了闭环。
 
 【注意】新功能更新后应该对应更新架构文档和知识图谱，否则 info-search 的搜索源会失真，后续调研拿到的是过期结论。更新可以靠流程约束（里程碑里带文档更新项），也可以靠自动化——比如 git 操作自动触发知识图谱重建（此前每次提交后 GitNexus 在后台更新知识图谱即是此类机制）。
 
@@ -151,7 +151,7 @@ native-mt（2026.08.05，5 天）的 iwiki 备注很诚实："本功能超级复
 
 三个 skill 都装在 ~/.codebuddy/skills/（f-stack-dev-rule / f-stack-info-search / f-stack-issue-process），CodeBuddy 会话中用 use_skill 按需加载。F-Stack 工作区的任何任务第一步先加载 f-stack-dev-rule；提问/分析/调研类任务必须加载 f-stack-info-search；issue 分析处理加载 f-stack-issue-process（其搜索环节内部调用 info-search）。
 
-5.2 配套通用 Skill（对应安装，本文不展开）
+5.2 配套通用 Skill（对应安装，这篇不展开）
 
 spec 驱动开发（spec-driven）、harness 工程（harness-engineering）、C 语言开发/单测（c-pro、c-unittest-expert 等）、C 精准外科手术式修改（c-precision-surgery）等通用 skill 与 F-Stack 自有三个 skill 组合使用——自有 skill 管"F-Stack 特有约束"，通用 skill 管"通用工程方法"。
 
@@ -159,8 +159,8 @@ spec 驱动开发（spec-driven）、harness 工程（harness-engineering）、C
 
 | 维度 | 数据 |
 |---|---|
-| AI 辅助完成大功能 | 13 个（累计约 54 个工作日，实际日历时间远短于 AI 并行） |
-| 最大单任务 | FreeBSD 13→15 升级（10 天，47 篇 spec，26 个 commit，编译矩阵 5 格全绿） |
+| AI 辅助完成大功能 | 13 个 |
+| 最大单任务 | FreeBSD 13→15 升级（编译矩阵 5 格全绿） |
 | issue 清理 | 320 → 0（2026.08.10 清零） |
 | 编译基线 | lib error 0 / warning 51（既有 baseline，新改动零新增 warning） |
 | 文档资产 | 7 个功能 spec 目录 + 三层架构文档 + 知识图谱 + 中英双语 issue 档案 |

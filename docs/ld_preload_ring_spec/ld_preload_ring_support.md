@@ -2,17 +2,15 @@ F-Stack 2.0 Preview 6: LD_PRELOAD Lock-Free Ring IPC — Three Years of Evolutio
 
 1. What this feature does and its key characteristics
 
-Let's get straight to the point: F-Stack's LD_PRELOAD module (libff_syscall.so) has evolved for three years since its initial commit in May 2023. This article covers the lock-free ring queue rework done for it in the first half of 2026 (FF_USE_RING_IPC), along with every optimization and change from the initial version to now.
+F-Stack's LD_PRELOAD module (libff_syscall.so) has evolved for three years since its initial commit in May 2023. This piece covers the lock-free ring queue rework done for it in the first half of 2026 (FF_USE_RING_IPC), along with every optimization and change from the initial version to now.
 
-Some background first. F-Stack's standard integration path requires code changes: the application calls the ff_*-prefixed APIs plus the ff_run() main loop, which is highly invasive. To lower the migration barrier for existing applications, the community submitted the adapter/syscall directory to the dev branch in 2023 (commit 8f5f1dfbb, 2023-05-03), providing the libff_syscall.so dynamic library that hijacks Linux socket syscalls via LD_PRELOAD and forwards them to an fstack instance process for handling — applications can integrate with zero code changes. The official positioning at the initial release was deliberately restrained: "the functionality is still incomplete and for testing only".
+F-Stack's standard integration path requires code changes: the application calls the ff_*-prefixed APIs plus the ff_run() main loop, which is highly invasive. To lower the migration barrier for existing applications, the community submitted the adapter/syscall directory to the dev branch in 2023 (commit 8f5f1dfbb, 2023-05-03), providing the libff_syscall.so dynamic library that hijacks Linux socket syscalls via LD_PRELOAD and forwards them to an fstack instance process for handling — applications can integrate with zero code changes. The official positioning at the initial release was deliberately restrained: "the functionality is still incomplete and for testing only".
 
-Three years later, this module supports fork, accept4, _FORTIFY_SOURCE wrapper functions, and the epoll polling mode, and has evolved the IPC between APP and fstack from three-layer semaphore synchronization to DPDK lock-free rte_ring dual-ring SPSC. The three keywords of this article:
+Three years later, this module supports fork, accept4, _FORTIFY_SOURCE wrapper functions, and the epoll polling mode, and has evolved the IPC between APP and fstack from three-layer semaphore synchronization to DPDK lock-free rte_ring dual-ring SPSC. A few key points:
 
 - **Zero-code integration**: socket/bind/connect/read/write/epoll/kevent/select are all hijacked; existing applications (Nginx, netperf, etc.) run on F-Stack with zero code changes
 - **Dual-ring SPSC**: FF_USE_RING_IPC replaces sem_wait/sem_post with rte_ring single-producer-single-consumer mode, eliminating the global lock and O(n) traversal
-- **Honest convergence**: the ring rework went through seven rounds of measured iteration (v1~v3.7), and the final conclusion was not "ring wins across the board" but "ring has no performance advantage under LD_PRELOAD + FF_MULTI_SC; sem is recommended for production" — the core message of this article: optimization requires baselines, falsification, and the courage to overturn your own conclusions
-
-Scale numbers: the adapter/syscall directory has accumulated 40+ commits since the initial version; the ring project produced 4 spec documents (docs/ld_preload_ring_spec/) and 1 v3.7 final performance analysis (ring_ipc_perf_offline_analysis.md); during the performance campaign, QPS went from 91k to 102.2k (+12.3%).
+- **Honest convergence**: the ring rework went through seven rounds of measured iteration (v1~v3.7), and the final conclusion was not "ring wins across the board" but "ring has no performance advantage under LD_PRELOAD + FF_MULTI_SC; sem is recommended for production" — the core message of this piece: optimization requires baselines, falsification, and the courage to overturn your own conclusions
 
 2. Main applicable scenarios
 
@@ -159,7 +157,7 @@ On 2026-03-27 four spec documents (requirements/architecture/interface/test) wer
 
 4.4 The ring performance campaign (2026-05, the full collection of lessons from seven rounds)
 
-The initial ring failed its first real measurement: short-connection QPS of 91k, 12.4% below the sem baseline of 105k. Thus began the seven-round iteration from v1 to v3.7 — the most valuable part of this article is not "how it was fixed" but "how wrong hypotheses were falsified one by one".
+The initial ring failed its first real measurement: short-connection QPS of 91k, 12.4% below the sem baseline of 105k. Thus began the seven-round iteration from v1 to v3.7 — the most valuable part of this piece is not "how it was fixed" but "how wrong hypotheses were falsified one by one".
 
 **Round 1 hypotheses (H10/H11, v1)**: after reading only the ring branch of ff_socket_ops.c, concluded "the sem mode has no 30us drain forced idle spinning". Falsified — checking the else branch showed sem has the same if (diff_tsc >= drain_tsc) break loop. Lesson: one-sided code analysis; never conclude without comparing against the other branch.
 

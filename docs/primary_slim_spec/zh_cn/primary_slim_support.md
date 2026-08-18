@@ -2,19 +2,19 @@ F-Stack 主进程瘦身 primary_slim：把 primary 单点故障从紧急事故�
 
 1. 这功能解决什么问题
 
-直接说目的：primary_slim 是 F-Stack v2.0（预计 2026.10 正式 release）引入的一个运行开关，解决 DPDK 多进程模式下 primary 进程是单点的问题。
+primary_slim 是 F-Stack v2.0（预计 2026.10 正式 release）引入的一个运行开关，解决 DPDK 多进程模式下 primary 进程是单点的问题。
 
-先交代背景。F-Stack 的标准多进程模式是 1 个 primary + N 个 secondary，每个进程独占一个 lcore 跑一份独立 FreeBSD 栈实例。secondary 崩了可以单独重启，不影响其他进程的队列和已建连接；但 primary 一旦异常退出，问题就大了——按照 DPDK 的设计，primary 是 IPC 唯一服务端、secondary 扩堆必须由 primary 代理、所有中断只在 primary 触发，所以传统认知是"primary 挂了整个进程组都得重启，所有连接受影响"。
+F-Stack 的标准多进程模式是 1 个 primary + N 个 secondary，每个进程独占一个 lcore 跑一份独立 FreeBSD 栈实例。secondary 崩了可以单独重启，不影响其他进程的队列和已建连接；但 primary 一旦异常退出，问题就大了——按照 DPDK 的设计，primary 是 IPC 唯一服务端、secondary 扩堆必须由 primary 代理、所有中断只在 primary 触发，所以传统认知是"primary 挂了整个进程组都得重启，所有连接受影响"。
 
 这个诉求来自上游 issue #1078（https://github.com/F-Stack/f-stack/issues/1078），作者提的想法很直接：把 primary 独立出来，只做网卡队列设置、绑定、初始化这类控制面工作，收包和后续处理全部下移 secondary，这样 primary 就不那么容易异常，对连接的影响范围也小。
 
-primary_slim 干的就是这件事。核心价值一句话概括：
+primary_slim 干的就是这件事：
 
 【注1】primary_slim 把"primary 崩溃 → 必须立刻全组重启 + 约 1/N 连接立即中断"变成"primary 崩溃 → 数据面零损失、业务继续跑、崩掉的 secondary 可原地重启、集群进入控制面降级态、在计划内维护窗口择机全组重启"。
 
-换句话说，是把紧急故障转化为计划内维护，重启时机从被动变成可控。
+说白了，是把紧急故障转化为计划内维护，重启时机从被动变成可控。
 
-必须提前说清楚它不承诺什么，避免过度期待：
+这里先说清楚它不做什么，免得期待过高：
 
 - 不承诺"完全无需重启"——控制面降级态无法就地修复，最终还是要择机全组重启
 - 不承诺"省一个 CPU 核"——瘦身后的 primary 仍会空转占满一核，除非开空闲休眠
@@ -236,7 +236,7 @@ KNI 场景（文档 13 实测）：
 
 延伸阅读：
 
-- 完整调研与实现文档：docs/primary_slim_spec/zh_cn/（00-15 共 16 篇）
+- 完整调研与实现文档：docs/primary_slim_spec/zh_cn/（00-15）
 - 结项报告：docs/primary_slim_spec/zh_cn/15-结项报告.md
 - 三层架构：docs/zh_cn/F-Stack_Architecture_Layer1_System_Overview.md
 - issue 原文：https://github.com/F-Stack/f-stack/issues/1078

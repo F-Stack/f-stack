@@ -2,19 +2,19 @@ F-Stack primary_slim: turning the primary single point of failure from an emerge
 
 1. What problem this solves
 
-Getting straight to the point: primary_slim is a runtime switch introduced in F-Stack v2.0 (expected official release 2026.10) that solves the problem of the primary process being a single point of failure in DPDK multi-process mode.
+primary_slim is a runtime switch introduced in F-Stack v2.0 (expected official release 2026.10) that solves the problem of the primary process being a single point of failure in DPDK multi-process mode.
 
-First some background. F-Stack's standard multi-process mode is 1 primary + N secondaries, each process occupying one lcore running an independent FreeBSD stack instance. A crashed secondary can be restarted independently without affecting other processes' queues or established connections. But if the primary exits abnormally, that's a bigger deal — by DPDK's design the primary is the sole IPC server, secondary heap growth must be proxied by the primary, and all interrupts only fire in the primary, so the conventional wisdom is "if the primary dies the whole process group must restart and all connections are affected".
+F-Stack's standard multi-process mode is 1 primary + N secondaries, each process occupying one lcore running an independent FreeBSD stack instance. A crashed secondary can be restarted independently without affecting other processes' queues or established connections. But if the primary exits abnormally, that's a bigger deal — by DPDK's design the primary is the sole IPC server, secondary heap growth must be proxied by the primary, and all interrupts only fire in the primary, so the conventional wisdom is "if the primary dies the whole process group must restart and all connections are affected".
 
 The requirement comes from upstream issue #1078 (https://github.com/F-Stack/f-stack/issues/1078). The author's idea is straightforward: isolate the primary to do only control-plane work like NIC queue setup, binding and initialization, move packet reception and downstream processing entirely to the secondaries, so the primary is less likely to crash and the impact on connections is smaller.
 
-That's exactly what primary_slim does. The core value in one sentence:
+That's exactly what primary_slim does:
 
 【Note 1】primary_slim turns "primary crash → must immediately restart the whole group + about 1/N connections interrupted right away" into "primary crash → zero data-plane loss, business keeps running, a crashed secondary can be restarted in place, the cluster enters a control-plane degraded state, and a full group restart happens at a planned maintenance window".
 
-In other words, it turns an emergency into planned maintenance, making the restart timing controlled instead of reactive.
+Put simply, it turns an emergency into planned maintenance, making the restart timing controlled instead of reactive.
 
-It must be stated upfront what it does NOT promise, to avoid over-expectation:
+Let me be clear upfront about what it does NOT do, to avoid over-expectation:
 
 - Does not promise "no restart at all" — the control-plane degraded state cannot be fixed in place; a full group restart is eventually still needed at a planned window
 - Does not promise "saving one CPU core" — the slimmed primary still spins and occupies a full core unless idle sleep is enabled
@@ -236,7 +236,7 @@ Closure verification (document 15):
 
 Related reading:
 
-- Full research and implementation docs: docs/primary_slim_spec/zh_cn/ (00-15, 16 documents)
+- Full research and implementation docs: docs/primary_slim_spec/zh_cn/ (00-15)
 - Closure report: docs/primary_slim_spec/zh_cn/15-结项报告.md
 - Three-layer architecture: docs/zh_cn/F-Stack_Architecture_Layer1_System_Overview.md
 - Issue: https://github.com/F-Stack/f-stack/issues/1078

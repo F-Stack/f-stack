@@ -2,20 +2,18 @@ F-Stack 2.0 Preview 8: The User-Space Zero-Copy Stack — From the MAGIC Sentine
 
 1. What this feature does and its key characteristics
 
-Let's get straight to the point: F-Stack has long had a "last mile" memory-copy problem between user space and the protocol stack. This article walks through the evolution of zero-copy from 2018 to 2026 — in the early days only the receive direction was naturally zero-copy, a hacked send-side scheme arrived in 2022, and in June 2026 everything finally converged into a complete, fully symmetric, purely native user-space zero-copy stack.
+This piece covers only the "last mile" memory-copy problem between F-Stack's user space and the protocol stack — zero-copy at other layers is out of scope. It walks through the evolution of zero-copy from 2018 to 2026 — in the early days both directions had memory copies, a hacked send-side scheme arrived in 2022, and in June 2026 everything finally converged into a complete, fully symmetric, purely native user-space zero-copy stack.
 
-First, where the copies happen. Packet processing on a server has two directions:
+First, let's pin down where the copies happen. Packet processing on a server has two directions:
 
 - **Receive direction**: NIC → DPDK hugepage is DMA, naturally zero-copy; but the application's `ff_read()` copies data from the protocol-stack mbuf into the user buffer (confirmed by the maintainers in issue #407 — by design).
 - **Send direction**: two copies — data is copied from the application layer into the FreeBSD protocol stack when the application calls the socket send API (app → stack), and the protocol stack copies data into the DPDK rte_mbuf (stack → NIC).
 
-Before June 2026, F-Stack's zero-copy landscape looked like this: the receive-direction zero-copy (FF_ZC_RECV) existed only as empty interfaces with no actual implementation — the real receive-side zero-copy was implemented via FreeBSD's native interface on 2026-06-11 (commit b87f5f0d2); the send-direction zero-copy (FF_ZC_SEND) used the FSTACK_ZC_MAGIC sentinel + m_uiotombuf kernel-hack workaround — it worked, but carried GPF risk, crashes on large payloads, and high maintenance cost on FreeBSD upgrades. The native rewrite on 2026-06-12 (commit b6ce5884c) moved the send direction onto FreeBSD 15.0's native `sosend(top)` path, completing a fully symmetric bidirectional zero-copy stack. The three keywords of this article:
+Before June 2026, F-Stack's zero-copy landscape looked like this: the receive-direction zero-copy (FF_ZC_RECV) existed only as empty interfaces with no actual implementation — the real receive-side zero-copy was implemented via FreeBSD's native interface on 2026-06-11 (commit b87f5f0d2); the send-direction zero-copy (FF_ZC_SEND) used the FSTACK_ZC_MAGIC sentinel + m_uiotombuf kernel-hack workaround — it worked, but carried GPF risk, crashes on large payloads, and high maintenance cost on FreeBSD upgrades. The native rewrite on 2026-06-12 (commit b6ce5884c) moved the send direction onto FreeBSD 15.0's native `sosend(top)` path, completing a fully symmetric bidirectional zero-copy stack. A few key points:
 
 - **Bidirectional symmetry**: ZC-send (`kern_zc_sendit` + sosend top) and ZC-recv (`kern_zc_recvit` + soreceive mp0) mirror each other across five dimensions — kernel entry, user-space API, lifecycle, error paths, and ABI delta.
 - **Purely native**: directly reuses FreeBSD 15.0 upstream capability — the `sosend(9)` man page literally says "Data may be sent as an mbuf chain via top, avoiding a data copy"; F-Stack only added one entry point to pass top through to sosend.
 - **Hack removal**: all 17 touchpoints of the FSTACK_ZC_MAGIC sentinel + m_uiotombuf hack were removed, m_uiotombuf reverted to the vanilla 15.0 version, and the kernel patch went from "5 hacked sites" to "1 new function only".
-
-Scale numbers: 30+ spec documents (numbered 00-50, spanning three batches: feasibility research, the first ZC-recv spec, and the native ZC-send spec); ZC-recv landed with 4 changes, the ZC-send native rewrite with 10 changes (2 NEW + 3 MODIFY + 5 DELETE); single-core A/B measurements across three wrk tiers were all flat within noise.
 
 2. Main applicable scenarios
 
@@ -29,7 +27,7 @@ Forwarding applications (proxies, gateways) receive data and send it out as-is. 
 
 2.3 Relationship with FF_USE_PAGE_ARRAY (needs clarifying)
 
-FF_USE_PAGE_ARRAY is the "protocol stack → DPDK" direction zero-copy contributed by PR #364 in 2020 (mmap + mlock + virt2phy lookup) — a different copy segment from the application-layer zero-copy in this article. It remains experimental to this day: the issue archive confirms it silently drops packets under i40e and the maintainers do not recommend enabling it; Phase-2 measurements even hit a panic (F-A1, since fixed as a soft drop). The three switches are fully independent and combinable.
+FF_USE_PAGE_ARRAY is the "protocol stack → DPDK" direction zero-copy contributed by PR #364 in 2020 (mmap + mlock + virt2phy lookup) — a different copy segment from the application-layer zero-copy covered in this piece. It remains experimental to this day: the issue archive confirms it silently drops packets under i40e and the maintainers do not recommend enabling it; Phase-2 measurements even hit a panic (F-A1, since fixed as a soft drop). The three switches are fully independent and combinable.
 
 2.4 Scenarios that are not a good fit
 

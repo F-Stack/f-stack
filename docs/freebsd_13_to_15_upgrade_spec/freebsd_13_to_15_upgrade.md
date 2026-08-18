@@ -2,17 +2,15 @@ F-Stack 2.0 Preview: Upgrading the FreeBSD Protocol Stack from 13.0 to 15.0 — 
 
 1. What this project does and its key characteristics
 
-Let's get straight to the point: F-Stack strips the FreeBSD kernel protocol stack out of the kernel and runs it in DPDK user space. The protocol stack is not written from scratch — it is a trimmed subset of the upstream FreeBSD source. F-Stack v1.25 is aligned with FreeBSD 13.0-RELEASE-p2, while FreeBSD 15.0-RELEASE was officially released in 2025. In between lie 6 releases (14.0/14.1/14.2/14.3/14.4, roughly 4 years of evolution). What F-Stack 2.0 sets out to do is to lift this "trimmed subset" from the 13.0 baseline onto the 15.0 baseline.
+F-Stack strips the FreeBSD kernel protocol stack out of the kernel and runs it in DPDK user space. The protocol stack is not written from scratch — it is a trimmed subset of the upstream FreeBSD source. F-Stack v1.25 is aligned with FreeBSD 13.0-RELEASE-p2, while FreeBSD 15.0-RELEASE was officially released in 2025. In between lie 6 releases (14.0/14.1/14.2/14.3/14.4, roughly 4 years of evolution). What F-Stack 2.0 sets out to do is to lift this "trimmed subset" from the 13.0 baseline onto the 15.0 baseline.
 
-Why the upgrade is a must, in one sentence: staying on 13.0 means missing upstream security fixes, performance improvements (TCP stack evolution), and new driver support — and drifting further away from the community. The hard part of this upgrade: between 13 and 15 the networking core went through multiple P0-level KBI/KPI breaking changes. **This cannot be fixed by applying patches — the F-Stack trim + adapt approach must be redone from scratch on the 15.0 source.**
+Why is the upgrade a must? Staying on 13.0 means missing upstream security fixes, performance improvements (TCP stack evolution), and new driver support — and drifting further away from the community. The hard part of this upgrade: between 13 and 15 the networking core went through multiple P0-level KBI/KPI breaking changes. **This cannot be fixed by applying patches — the F-Stack trim + adapt approach must be redone from scratch on the 15.0 source.**
 
-Key characteristics (the three keywords of this upgrade):
+Key characteristics:
 
 - **Trim and redo**: the `freebsd/` subtree of F-Stack is a curated subset of upstream `sys/` (25 top-level directories, 18000+ files). Upgrading means redoing the "trim + FSTACK adaptation" work on the 15.0 source, not porting diffs.
 - **Layered milestones**: M1 infrastructure → M2 kern → M3 network stack → M4 glue-layer ABI → M5 full acceptance. Each milestone ends with a build gate and a bounce-back chain, advancing like a snowball.
 - **Functional parity alignment**: this upgrade is "alignment only, no feature expansion" — new 15.0 capabilities (netlink, ML-KEM post-quantum crypto, etc.) are explicitly out of scope, so that post-upgrade behavior stays equivalent and comparable to the 13.0 baseline.
-
-Some measured numbers to size up the effort: 102 file diffs in the `freebsd/` subtree (~50 files with substantial rework), 163 in `tools/`, 44 `ff_*.c/.h` glue files in `lib/`. The whole project ran from 2026-05-26 to 06-09: 26 commits, 47 spec documents, a 5-cell build matrix all green, and all 9 functional acceptance tests passed.
 
 2. Main applicable scenarios
 
@@ -105,7 +103,7 @@ The rest is a bit dry; skip this section if you don't need the implementation de
 
 4.1 Starting point: dual-version source baselines and a diff plan
 
-The first step of the upgrade was not writing code — it was laying out three source roots (measured versions: 13.0 = RELEASE-p2, 15.0 = RELEASE-p9): the community 13.0 full source, the community 15.0 full source, and the F-Stack tree (adapted from 13.0). Then an untouched 15.0 f-stack-lib baseline was created, and file-by-file diffs produced the map of "what FSTACK customization done on 13.0 must be redone at the corresponding spot on the 15.0 baseline". This diff plan directly determined the project's scale estimate: 102 + 163 + 44 files to rework.
+The first step of the upgrade was not writing code — it was laying out three source roots (measured versions: 13.0 = RELEASE-p2, 15.0 = RELEASE-p9): the community 13.0 full source, the community 15.0 full source, and the F-Stack tree (adapted from 13.0). Then an untouched 15.0 f-stack-lib baseline was created, and file-by-file diffs produced the map of "what FSTACK customization done on 13.0 must be redone at the corresponding spot on the 15.0 baseline". This diff plan directly determined the project's rework surface.
 
 4.2 M1~M3: the trim-and-redo snowball
 

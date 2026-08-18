@@ -307,7 +307,7 @@ With `thread_mode=0` (default), all paths follow existing primary/secondary bran
 ## 6. References
 
 - **Three-layer architecture docs**: `docs/zh_cn/F-Stack_Architecture_Layer1_System_Overview.md`
-- **native-mt spec**: `docs/native_mt_spec/zh_cn/` (00-17, 18 complete design documents)
+- **native-mt spec**: `docs/native_mt_spec/zh_cn/` (00-17, complete design documents)
 - **Knowledge graph**: `docs/zh_cn/KNOWLEDGE_GRAPH_WIKI.md`
 - **Issue summary**: `docs/zh_cn/f-stack-issue-ana.md` (#430/#571/#807/#855 and other multi-threading related issues)
 - **Code commits**: `e79ceb9f0` (CM0-CM3) → `86e0f76b0` (CM4 VIMAGE) → `7495e70c0` (CM5 multi-stack) → `6d74d59e0` (CM6 KNI) → `82b409faf` (worker clock) → `ff09a17b2` (prison isolation) → `c7996a94f` (SMP-aware pcpu) → `57b612d16` (global lock removal)

@@ -303,7 +303,7 @@ cd f-stack/example && make clean && make
 ## 6. 参考资料
 
 - **三层架构文档**：`docs/zh_cn/F-Stack_Architecture_Layer1_System_Overview.md`
-- **native-mt spec**：`docs/native_mt_spec/zh_cn/`（00-17 共 18 篇完整设计文档）
+- **native-mt spec**：`docs/native_mt_spec/zh_cn/`（00-17 完整设计文档）
 - **知识图谱**：`docs/zh_cn/KNOWLEDGE_GRAPH_WIKI.md`
 - **issue 汇总**：`docs/zh_cn/f-stack-issue-ana.md`（#430/#571/#807/#855 等多线程相关 issue）
 - **代码提交**：`e79ceb9f0`（CM0-CM3）→ `86e0f76b0`（CM4 VIMAGE）→ `7495e70c0`（CM5 多栈实例）→ `6d74d59e0`（CM6 KNI）→ `82b409faf`（worker 时钟）→ `ff09a17b2`（prison 隔离）→ `c7996a94f`（SMP-aware pcpu）→ `57b612d16`（去全局锁）

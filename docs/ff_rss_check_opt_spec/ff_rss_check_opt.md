@@ -2,7 +2,7 @@ F-Stack ff_rss_check Optimization in Practice: Three-Layer Acceleration for Clie
 
 1. Purpose and Key Features
 
-Straight to the point: in a multi-queue / multi-process (share-nothing) F-Stack deployment, when a process acts as a client and initiates TCP/UDP connections, it must pick a "smart" local source port — one that makes the connection's return packets (SYN-ACKs, response data) land back in the receive queue of the very process that initiated the connection after NIC RSS hashing. Picking the wrong queue means connections fail to establish or packets "leak" into another process, which is fatal in a multi-process architecture. `ff_rss_check` (`lib/ff_dpdk_if.c`) is the function that does this port selection.
+In a multi-queue / multi-process (share-nothing) F-Stack deployment, when a process acts as a client and initiates TCP/UDP connections, it must pick a "smart" local source port — one that makes the connection's return packets (SYN-ACKs, response data) land back in the receive queue of the very process that initiated the connection after NIC RSS hashing. Picking the wrong queue means connections fail to establish or packets "leak" into another process, which is fatal in a multi-process architecture. `ff_rss_check` (`lib/ff_dpdk_if.c`) is the function that does this port selection.
 
 Selecting a port has two constraints: the return packets must land in the local queue (RSS affinity), and the port must be free (4-tuple uniqueness). The original implementation scanned ports one by one with software Toeplitz hash computation, costing hundreds of tsc per connect on average, and with high process counts it could retry dozens of times, becoming the connection-establishment bottleneck for short-connection workloads.
 
@@ -17,7 +17,7 @@ This feature adds three layers of optimization on this port-selection path:
 
 There are also two supporting changes: the post-reverse-calc software recheck was made a runtime switch (off by default, performance first), and deferred port allocation for `bind(addr,0)`-then-connect (aligning with Linux's `IP_BIND_ADDRESS_NO_PORT` semantics + RSS affinity).
 
-One-sentence summary: **layered hot-path degradation, each layer independently usable, zero tolerance for wrong queues**. A static-table hit takes the fastest path; a miss goes through thash reverse calculation; reverse-calculation failure falls back to the software scan. Every layer guarantees the finally selected port is confirmed by independent software computation to land in the local queue (or explicitly accepts slight distribution unevenness per the switch).
+The whole thing boils down to one point: **layered hot-path degradation, each layer independently usable, zero tolerance for wrong queues**. A static-table hit takes the fastest path; a miss goes through thash reverse calculation; reverse-calculation failure falls back to the software scan. Every layer guarantees the finally selected port is confirmed by independent software computation to land in the local queue (or explicitly accepts slight distribution unevenness per the switch).
 
 2. Main Applicable Scenarios
 

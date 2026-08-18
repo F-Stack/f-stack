@@ -2,9 +2,9 @@ F-Stack Development Workflow with CodeBuddy: Three Self-Built Skills + the Harne
 
 1. What this workflow does and its key characteristics
 
-Let's get straight to the point: F-Stack has been using CodeBuddy for AI-assisted development since early 2026, and by now "how to make AI work reliably in this large C codebase" has been distilled into a reusable workflow — three self-built skills (f-stack-dev-rule / f-stack-info-search / f-stack-issue-process) + the harness engineering multi-agent process + an end-to-end gate system. This article explains the workflow: what it consists of, what problem each part solves, and how it performed in real-world use during 2026.
+We've been using CodeBuddy for AI-assisted development since early 2026, and by now "how to make AI work reliably in this large C codebase" has been distilled into a reusable workflow — three self-built skills (f-stack-dev-rule / f-stack-info-search / f-stack-issue-process) + the harness engineering multi-agent process + an end-to-end gate system. This piece explains the workflow: what it consists of, what problem each part solves, and how it performed in real-world use during 2026.
 
-The conclusion first. From the start of 2026 to now (mid-August), the list of major features completed by F-Stack with AI assistance through this workflow (data from the project's iWiki work list):
+From the start of 2026 to now (mid-August), here's the list of major features we completed with AI assistance through this workflow (data from the project's iWiki work list):
 
 | Feature | Completed | Duration |
 |---|---|---|
@@ -22,17 +22,17 @@ The conclusion first. From the start of 2026 to now (mid-August), the list of ma
 | Multi-process vnet bonding / single-process multi-threaded multi-stack (native-mt) | 2026.08.05 | 5 days |
 | Bulk issue handling 320 → 0 | 2026.08.10 | ongoing |
 
-The unified division of labor across all these features: **all code is written by AI; humans only handle prompts, spec documents, plans, direction correction, result review, and test acceptance**. The three keywords of this article:
+The unified division of labor across all these features: **all code is written by AI; humans only handle prompts, spec documents, plans, direction correction, result review, and test acceptance**. A few key points:
 
 - **Rules first**: the first thing AI does in F-Stack is not writing code, but loading f-stack-dev-rule — 13 sections of mandatory rules with zero tolerance, front-loading every point where AI tends to fail (rm/kill/chmod, incremental builds, config.ini pollution, real IP leakage, comment style) into rules.
-- **Layered skills**: three skills each cover one segment — dev-rule covers "how to change", info-search covers "how to search", issue-process covers "how to handle issues"; a batch of general-purpose skills (spec-driven, harness engineering, C development, unit testing, etc.) can be installed to match — outside the scope of this article.
+- **Layered skills**: three skills each cover one segment — dev-rule covers "how to change", info-search covers "how to search", issue-process covers "how to handle issues"; a batch of general-purpose skills (spec-driven, harness engineering, C development, unit testing, etc.) can be installed to match — not expanded in this piece.
 - **Harness multi-agent gates**: major tasks must follow the full chain of "research → Chinese spec → human review → multi-agent implementation → gate review → milestone commits", with write-review separation and a per-step bounce limit of 3.
 
 2. Main applicable scenarios
 
 2.1 Major feature development (research + spec + implementation + acceptance)
 
-Any task at the "new feature / major upgrade" level in F-Stack goes through the harness process: first a multi-agent research phase produces Chinese spec documents (under docs/<FEATURE>_spec/zh_cn/), after human review passes, a separate multi-agent effort does implementation and acceptance, with multiple milestone commits, and only after acceptance is the English spec translated. The 2026 freebsd 13→15 upgrade (47 spec documents), native-mt, and LRO/TSO were all done this way.
+Any task at the "new feature / major upgrade" level in F-Stack goes through the harness process: first a multi-agent research phase produces Chinese spec documents (under docs/<FEATURE>_spec/zh_cn/), after human review passes, a separate multi-agent effort does implementation and acceptance, with multiple milestone commits, and only after acceptance is the English spec translated. The 2026 freebsd 13→15 upgrade, native-mt, and LRO/TSO were all done this way.
 
 2.2 Issue analysis and bulk handling
 
@@ -141,13 +141,13 @@ The most common pitfall when AI writes C code is incremental builds: after switc
 
 4.5 Real problem 4: token consumption and task splitting
 
-The iWiki note for native-mt (2026.08.05, 5 days) is honest: "this feature is extremely complex, tantamount to rebuilding a small f-stack, and consumes a lot of tokens" — the residual risks were recorded truthfully and work paused, to resume after token quota resets. This shows the harness process has one more real-world constraint: tasks must be split into milestones by token budget, and when something cannot be finished it is better to leave honest archives (residual risk lists) than to paper over the ending. Bulk issue handling 320→0 was practice in the other direction — semi-automated per the SOP using imate (the intranet OpenClaw) during token-tight periods (GLM-5.2 does not count against the quota).
+The iWiki note for native-mt (2026.08.05, 5 days) is honest: "this feature is extremely complex, tantamount to rebuilding a small f-stack, and consumes a lot of tokens" — the residual risks were recorded truthfully and work paused, to resume after token quota resets. This shows the harness process has one more real-world constraint: tasks must be split into milestones by token budget, and when something cannot be finished it is better to leave honest archives (residual risk lists) than to paper over the ending. Bulk issue handling 320→0 was practice in the other direction — semi-automated per the SKILL's SOP using the intranet OpenClaw/Hermes during token-tight periods (since the intranet GLM-5.2 does not count against the quota).
 
-[Note] As of now (2026.08.17), for the initial research, architecture documentation, and task breakdown of major tasks, high-cost models such as OPUS-5/Codex are still recommended (**quota consumption is very, very large — special attention needed**); after the breakdown, the actual coding and other small/concrete tasks can be handed to models like GLM-5.2/DSV4. Side note: Deepseek-V4.0-pro-0813 currently still performs terribly on research analysis and architecture design in large repositories and major tasks; GLM-5.3's performance has not been measured yet.
+[Note] As of now (2026.08.17), high-end models are still recommended for the initial research, architecture documentation, and task breakdown of major tasks (**quota consumption is very, very large — special attention needed**; mainly because some other models still leave much to be desired on research analysis and architecture design in large repositories and major tasks — I won't name names here). After the breakdown, the actual coding and other small/concrete tasks can be handed to lighter models (but they should still be GLM-5.2 or above).
 
 4.6 The documentation assets accumulated across the 2026 features
 
-Every major feature left complete documentation through the harness process: freebsd_13_to_15_upgrade_spec (47 documents), zc_stack_user_spec (37 documents), ld_preload_ring_spec, mtu_change_spec, lro_tso_spec, native_mt_spec, the RSS check optimization spec, and more, plus the three-layer architecture docs (LAYER1/2/3) and the knowledge graph (KNOWLEDGE_GRAPH_WIKI). These documents in turn became the search sources for info-search — documents → code → decisions form a closed loop.
+Every major feature left complete documentation through the harness process: freebsd_13_to_15_upgrade_spec, zc_stack_user_spec, ld_preload_ring_spec, mtu_change_spec, lro_tso_spec, native_mt_spec, the RSS check optimization spec, and more, plus the three-layer architecture docs (LAYER1/2/3) and the knowledge graph (KNOWLEDGE_GRAPH_WIKI). These documents in turn became the search sources for info-search — documents → code → decisions form a closed loop.
 
 [Note] After a new feature lands, the architecture docs and the knowledge graph should be updated accordingly; otherwise info-search's search sources go stale and later research gets outdated conclusions. The updates can be enforced by process (including doc-update items in each milestone) or automated — e.g., git operations automatically triggering a knowledge-graph rebuild (the GitNexus background updates after every commit are exactly this kind of mechanism).
 
@@ -165,8 +165,8 @@ General-purpose skills such as spec-driven development (spec-driven), harness en
 
 | Dimension | Data |
 |---|---|
-| Major features completed with AI assistance | 13 (about 54 working days cumulative; calendar time far shorter thanks to AI parallelism) |
-| Largest single task | FreeBSD 13→15 upgrade (10 days, 47 specs, 26 commits, 5-cell build matrix all green) |
+| Major features completed with AI assistance | 13 |
+| Largest single task | FreeBSD 13→15 upgrade (5-cell build matrix all green) |
 | Issue cleanup | 320 → 0 (cleared 2026.08.10) |
 | Build baseline | lib error 0 / warning 51 (existing baseline, zero new warnings from changes) |
 | Documentation assets | 7 feature spec directories + three-layer architecture docs + knowledge graph + bilingual issue archive |

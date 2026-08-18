@@ -2,17 +2,15 @@ F-Stack 2.0 前瞻6：LD_PRELOAD 无锁 Ring IPC 改造纪实，从信号量三�
 
 1. 本功能主要作用和特点
 
-直接说目的：F-Stack 的 LD_PRELOAD 模块（libff_syscall.so）从 2023-05 初版提交到现在已经演进三年，本文要讲的是 2026 年上半年给它做的无锁环形队列改造（FF_USE_RING_IPC），以及这三年里从初版到现在的全部优化和修改。
+F-Stack 的 LD_PRELOAD 模块（libff_syscall.so）从 2023-05 初版提交到现在演进三年了，这篇讲的是 2026 年上半年给它做的无锁环形队列改造（FF_USE_RING_IPC），顺带把这三年从初版到现在的优化和修改一起捋一遍。
 
-先交代背景。F-Stack 的标准接入方式是改代码：应用调 ff_* 前缀 API + ff_run() 主循环，代码侵入大。为了降低存量应用的迁移门槛，2023 年社区在 dev 分支提交了 adapter/syscall 目录（commit 8f5f1dfbb，2023-05-03），提供 libff_syscall.so 动态库，通过 LD_PRELOAD 劫持 Linux socket 系统调用转发给 fstack 实例进程处理，应用零代码修改即可接入。初版发布时官方定位很克制：「目前功能尚不完善，仅供测试使用」。
+F-Stack 的标准接入方式是改代码：应用调 ff_* 前缀 API + ff_run() 主循环，代码侵入大。为了降低存量应用的迁移门槛，2023 年社区在 dev 分支提交了 adapter/syscall 目录（commit 8f5f1dfbb，2023-05-03），提供 libff_syscall.so 动态库，通过 LD_PRELOAD 劫持 Linux socket 系统调用转发给 fstack 实例进程处理，应用零代码修改即可接入。初版发布时官方定位很克制：「目前功能尚不完善，仅供测试使用」。
 
-三年后的今天，这个模块已经支持 fork、accept4、_FORTIFY_SOURCE 包装函数、epoll polling 模式，并且把 APP 与 fstack 之间的 IPC 从信号量三层同步演进到了 DPDK 无锁 rte_ring 双环 SPSC。本文的三个关键词：
+三年后的今天，这个模块已经支持 fork、accept4、_FORTIFY_SOURCE 包装函数、epoll polling 模式，并且把 APP 与 fstack 之间的 IPC 从信号量三层同步演进到了 DPDK 无锁 rte_ring 双环 SPSC。几个关键点：
 
 - **免改代码接入**：socket/bind/connect/read/write/epoll/kevent/select 全部劫持，存量应用（Nginx、netperf 等）零代码修改直接跑在 F-Stack 上
 - **双环 SPSC**：FF_USE_RING_IPC 用 rte_ring 单生产者单消费者模式替换 sem_wait/sem_post，消灭全局锁和 O(n) 遍历
-- **诚实收敛**：ring 改造经过 v1~v3.7 共七轮实测迭代，最终结论不是"ring 全面胜利"，而是"ring 在 LD_PRELOAD + FF_MULTI_SC 场景下没有性能优势，生产推荐 sem"——这是本文最想传达的：优化要有对照、有证伪、敢于否定自己
-
-规模数据：adapter/syscall 目录从初版到现在 40 余个 commit；ring 专项产出 4 篇 spec 文档（docs/ld_preload_ring_spec/）、1 份 v3.7 终版性能分析（ring_ipc_perf_offline_analysis.md）；性能攻坚期间 9.1w → 10.22w QPS（+12.3%）。
+- **诚实收敛**：ring 改造经过 v1~v3.7 共七轮实测迭代，最终结论不是"ring 全面胜利"，而是"ring 在 LD_PRELOAD + FF_MULTI_SC 场景下没有性能优势，生产推荐 sem"——这是这篇最想说的：优化要有对照、有证伪、敢于否定自己
 
 2. 本功能的主要适用场景
 
@@ -158,7 +156,7 @@ ring 不是凭空出现的，中间这三年社区补了不少坑，按时间排
 
 4.4 ring 性能优化攻坚战（2026-05，七轮迭代的教训全集）
 
-初版 ring 一上实测就出问题：短连接 QPS 9.1w，比 sem 基线 10.5w 低 12.4%。于是有了 v1~v3.7 的七轮迭代，这段过程是本文最有价值的部分——不是"怎么修好的"，而是"怎么一步步证伪自己的错误假设"。
+初版 ring 一上实测就出问题：短连接 QPS 9.1w，比 sem 基线 10.5w 低 12.4%。于是有了 v1~v3.7 的七轮迭代，这段过程是这篇最有价值的部分——不是"怎么修好的"，而是"怎么一步步证伪自己的错误假设"。
 
 **第一轮假设（H10/H11，v1）**：只读了 ff_socket_ops.c 的 ring 分支，下结论"sem 模式没有 30us drain 强制空轮询"。被证伪——对照 else 分支发现 sem 同样有 if (diff_tsc >= drain_tsc) break 循环。教训：单边代码分析，不对照另一分支就下结论。
 

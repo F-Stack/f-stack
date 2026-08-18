@@ -2,20 +2,18 @@ F-Stack 2.0 前瞻8：用户态零拷贝栈纪实，从 MAGIC 哨兵魔改到 Fr
 
 1. 本功能主要作用和特点
 
-直接说目的：F-Stack 的用户态与协议栈之间一直有"最后一公里"的内存拷贝问题，这篇文章把零拷贝从 2018 年到 2026 年的演进讲清楚——早期只有接收方向天然零拷贝，2022 年有了发送方向的魔改方案，2026 年 6 月终于收敛成"双向对称、纯原生"的完整用户态零拷贝栈。
+本篇只讲 F-Stack 的用户态与协议栈之间一直有的"最后一公里"的内存拷贝问题，不涉及其他层的零拷贝，这篇把零拷贝从 2018 年到 2026 年的演进捋一遍——早期双向都有内存拷贝，2022 年有了发送方向的魔改方案，2026 年 6 月终于收敛成"双向对称、纯原生"的完整用户态零拷贝栈。
 
-先说清楚拷贝发生在哪。数据包在服务器的处理分接收和发送两个方向：
+拷贝发生在哪先搞清楚。数据包在服务器的处理分接收和发送两个方向：
 
 - **接收方向**：网卡 → DPDK hugepage 是 DMA，天然零拷贝；但应用调 `ff_read()` 把数据从协议栈 mbuf 搬到用户 buffer 有一次拷贝（issue #407 官方确认，这是设计如此）
 - **发送方向**：有两处拷贝——应用层调用 socket 发送接口时数据从应用层拷到 FreeBSD 协议栈（应用 → 协议栈），以及协议栈把数据拷到 DPDK rte_mbuf（协议栈 → 网卡）
 
-2026 年 6 月之前，F-Stack 零拷贝的版图是这样的：接收方向零拷贝（FF_ZC_RECV）只有空接口，未实际实现，在2026-06-11通过FreeBSD源生接口实现了接受方向零拷贝的实际实现（commit b87f5f0d2）；发送方向零拷贝（FF_ZC_SEND）用的是 FSTACK_ZC_MAGIC 哨兵 + m_uiotombuf 内核魔改的 workaround——能跑但有 GPF 风险、大数据量发送 crash、FreeBSD 升级时维护成本高。2026-06-12 的原生化重构（commit b6ce5884c）把发送方向也换成了 FreeBSD 15.0 原生的 `sosend(top)` 路径，至此形成完全对称的双向零拷贝栈。本文的三个关键词：
+2026 年 6 月之前，F-Stack 零拷贝的版图是这样的：接收方向零拷贝（FF_ZC_RECV）只有空接口，未实际实现，在2026-06-11通过FreeBSD源生接口实现了接受方向零拷贝的实际实现（commit b87f5f0d2）；发送方向零拷贝（FF_ZC_SEND）用的是 FSTACK_ZC_MAGIC 哨兵 + m_uiotombuf 内核魔改的 workaround——能跑但有 GPF 风险、大数据量发送 crash、FreeBSD 升级时维护成本高。2026-06-12 的原生化重构（commit b6ce5884c）把发送方向也换成了 FreeBSD 15.0 原生的 `sosend(top)` 路径，至此形成完全对称的双向零拷贝栈。几个关键词：
 
 - **双向对称**：ZC-send（`kern_zc_sendit` + sosend top）与 ZC-recv（`kern_zc_recvit` + soreceive mp0）在内核入口、用户态 API、生命周期、错误路径、ABI 增量五个维度全镜像
 - **纯原生**：直接复用 FreeBSD 15.0 上游能力——`sosend(9)` 手册原文就写着"Data may be sent as an mbuf chain via top, avoiding a data copy"，f-stack 只是补了一个把 top 贯通进 sosend 的入口
 - **拆除魔改**：FSTACK_ZC_MAGIC 哨兵 + m_uiotombuf 魔改共 17 处触点全部拆除，m_uiotombuf 回归 vanilla 15.0 版本，内核 patch 从"5 处魔改"变成"只新增 1 个函数"
-
-规模数据：spec 文档 30+ 篇（00-50 编号，含可行性研究、ZC-recv 首版 spec、native ZC-send spec 三批）；ZC-recv 落地 4 处改动、ZC-send 原生化 10 处改动（2 NEW + 3 MODIFY + 5 DELETE）；单核 A/B 实测三档压测全部噪声内持平。
 
 2. 本功能的主要适用场景
 
@@ -29,7 +27,7 @@ F-Stack 2.0 前瞻8：用户态零拷贝栈纪实，从 MAGIC 哨兵魔改到 Fr
 
 2.3 与 FF_USE_PAGE_ARRAY 的关系（要说清）
 
-FF_USE_PAGE_ARRAY 是 2020 年 PR #364 贡献的"协议栈 → DPDK"方向零拷贝（mmap + mlock + virt2phy 查找），与本文的应用层零拷贝是两段不同的拷贝。它至今仍是实验性特性：issue 档案确认它在 i40e 下会静默丢包，官方不建议启用；Phase-2 实测还触发过 panic（F-A1，已修复为 soft drop）。三者开关完全独立，可任意组合。
+FF_USE_PAGE_ARRAY 是 2020 年 PR #364 贡献的"协议栈 → DPDK"方向零拷贝（mmap + mlock + virt2phy 查找），与这篇讲的应用层零拷贝是两段不同的拷贝。它至今仍是实验性特性：issue 档案确认它在 i40e 下会静默丢包，官方不建议启用；Phase-2 实测还触发过 panic（F-A1，已修复为 soft drop）。三者开关完全独立，可任意组合。
 
 2.4 不太适合的场景
 
