@@ -57,7 +57,7 @@ F-Stack 的 nginx 适配（`app/nginx-1.28.0/`，源码集成路线）自 2017 �
 
 ### 3.3 落地路径概要
 
-推荐方案 S3 拆解为 M0 预研（RV2/RV7 两项一票否决 PoC）→ M1 常驻 primary 化 → M2 新旧并存 → M3 原子切流+reload 窗口流表转发兜底（稳态零流表开销、只记新流、miss 一律转老 worker）→ M4 drain 收尾与关表回稳态（排空确认后新 worker 关流表防性能退化；排空前拦截重复 reload）→ M5 USR2 → M6 终门禁（循环 reload ≥1000 次零错误）→ M7（可选，DR7 触发）共 8 个里程碑、35 个编码改动点；全程以 `graceful_reload=0`（默认）为配置级总回退点（[07](07-milestones.md)）。
+推荐方案 S3 拆解为 M0 预研 → M1 常驻 primary 化 → M2 新旧并存 → M3 同期移交队列+listen+flow_map 软件分发表（同队列、reta 不改、virtio 与物理网卡均可用）→ M4 drain 收尾与关表回稳态 → M5 USR2 → M6 终门禁（v1.6 修订：循环 reload ≥100 次，每 5s 检测共享内存状态所有 G_old 已退出后 reload 一次）→ M7（可选，DR7 触发）共 8 个里程碑、35 个编码改动点（待配合 v1.6 方案调整）；全程以 `graceful_reload=0`（默认）为配置级总回退点。**v1.6 方案核心**（[06](06-solution-design.md) §3.3/§5）：同队列+proc_id 代际无关固定映射（rss_check 不变）+ ready 后同期移交队列+listen（跨进程互斥标记保证不并发 poll）+ flow_map 软件分发表（只记新流，miss 转 G_old）+ ARP/NDP clone 给 G_old + 同核处理（不占 2N 物理核）+ RX_QUEUE_SIZE 4096。
 
 ## 4. 文档集导读
 

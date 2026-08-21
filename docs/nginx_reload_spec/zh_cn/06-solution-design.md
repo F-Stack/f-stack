@@ -4,9 +4,9 @@
 |---|---|
 | 文档编号 | 06 |
 | 标题 | F-Stack Nginx 无损 reload 候选方案对比（S1~S4）+ 推荐方案 S3 设计 |
-| 版本 | v1.0 |
-| 日期 | 2026-08-18 |
-| 状态 | 待人工审计 |
+| 版本 | v1.6（v1.5 基础上据 2026-08-21 方案修订：S3-M1 主路径从乒乓双队列段+reta 切流改为同队列+ready 后同期移交+flow_map 软件分发表+跨进程互斥+ARP/NDP clone，同时解决审核致命 1-6；reta 不改、不依赖 NIC RSS、virtio 与物理网卡均可用） |
+| 日期 | 2026-08-21 |
+| 状态 | 待人工审计（v1.6 方案级修订，§6.3/§6.4/§6.5 的旧 reta/乒乓/形态 V 内容已过时待后续清理，07/08 的 C-NR/用例需配合调整待后续修订） |
 | 来源产物 | work/solution-design.md（方案设计师 solution-designer，2026-08-18 落盘）。本篇为正式化改写：输入为 [01](01-vpp-vcl-research.md)/[02](02-other-projects-research.md)/[03](03-fstack-legacy-solution.md)/[04](04-fstack-current-analysis.md)/[05](05-ld-preload-alternative.md) 五篇的前身产物（均已全文阅读）+ 关键机制回查实际代码交叉验证（只读）；保留全部事实证据、单来源声明与未坐实标注 |
 
 相关篇章：[00-总览](00-overview.md) | [04-现状分析](04-fstack-current-analysis.md) | [07-里程碑](07-milestones.md) | [08-测试计划](08-testing.md)
@@ -52,7 +52,7 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 | D4 | 与主线演进兼容性 | 与 primary_slim（#1078，已有生产实现）、native_mt（单进程多线程线）、zc_stack、DPDK 23→24 升级线的关系：是承接还是制造长期分叉 |
 | D5 | 性能影响 | 稳态（非 reload 期）每包路径开销；reload 窗口资源开销（是否双倍核/双倍实例） |
 | D6 | 运维复杂度 | 部署形态变化（新增常驻进程？）、配置项数量、监控/降级/回退手段是否明确 |
-| D7 | 可测试性 | 能否套用 VPP 社区验证模式（R-A §6.3-7：带流量循环 reload 数千次 + 不死锁不 crash + 错误数 0 作门禁）；能否增量交付、异常场景可注入 |
+| D7 | 可测试性 | 能否套用 VPP 社区验证模式（R-A §6.3-7：带流量循环 reload + 不死锁不 crash + 错误数 0 作门禁；v1.6 适配防重入语义：节拍以排空确认+READY 为准、≥100 次）；能否增量交付、异常场景可注入 |
 
 补充一条否决性判据（来自 E-C §9-1 与 R-A §6.4 教训）：reload 逻辑必须是**显式的、可观测的状态机**（每阶段可打点/可回退），不能散落在 fork/signal hook 里的隐式逻辑——VPP #3547/#3645 三年未修即前车之鉴（R-A §4.3/§6.4）。
 
@@ -65,7 +65,11 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 3. **配置失败可回滚**：对齐内核 HUP（R-B §2.2：配置解析失败回滚旧配置继续跑）。
 4. **HUP 与 USR2 均可支持**：HUP 换配置、USR2 换二进制（exec），两者数据面机制同源。
 5. **工程意义无损**：接受 R-B §2.2 引 HAProxy 文档的边界——边界条件上 backlog 中的连接仍可能极小概率损失，验收以压测错误数为 0 为门禁而非绝对论断。
-6. **流表仅 reload 窗口生效 + reload 防重入**（v1.3 增补语义）：稳态所有数据包**不经过流表**（零额外每包开销）；流表仅在新 worker 初始化完成（READY）后自动生效，至老 worker 排空确认后关闭。流表**只记录新流**的状态；表项 miss（不在流表中）**一律转老 worker**。老 worker 排空后新 worker 感知并关闭流表、进入稳态成为新的「老 worker」（防止性能退化）。**不支持老 worker 排空前的快速连续 reload**：上一批老 worker 排空前，新的 reload 请求被拦截（拒绝并记日志）。
+6. **流表仅 reload 窗口生效 + reload 防重入**（v1.3 增补语义，v1.6 据 2026-08-21 方案修订改写）：稳态所有数据包**不经过流表**（零额外每包开销）；流表仅在新 worker 初始化完成（READY）并同期接管队列+listen 后自动生效，至老 worker 排空确认后关闭。流表（**flow_map**，软件分发表）**只记录本代际新建连接的四元组**（SYN accept 时入表，非协议栈 inpcb 表）；表项 miss（旧连接的包）**一律经 dispatch_ring 转老 worker**。老 worker 排空后新 worker 感知并关闭 flow_map、进入稳态成为新的「老 worker」（防止性能退化）。**不支持老 worker 排空前的快速连续 reload**：上一批老 worker 排空前，新的 reload 请求被拦截（拒绝并记日志）。
+7. **ready 后同期移交队列+listen**（v1.6 据 2026-08-21 决策修订，替代 v1.4 的「末期一次性移交」）：G_new ready 后**同期移交队列消费权 + listen**给 G_new（不是末期才移交），G_new 立即接管新连接（**新配置立即生效**），旧连接包经 flow_map miss → ring 转 G_old drain。移交靠**跨进程互斥原语**（共享内存标记，非 msg ring）保证 G_old 停 poll 后 G_new 才起 poll，规避并发 poll 同一 queue；移交窗口靠 NIC rx ring 缓冲兜底（RX_QUEUE_SIZE 512→4096 放大 8 倍）。
+8. **同核处理新旧进程**（v1.6 据 X3 决策，替代 v1.4 的「2N 逻辑 lcore_id」）：新旧进程可**同核处理**（不占 2N 物理核、不乒乓双队列段），proc_id 分配改为**代际无关固定映射**到同一批 queue（G_new 启动时直接用 G_old 的队列号，`tx_queue_id / rx_queue_list / dispatch_ring` 全部对齐，不需运行时重算 lcore_conf → rss_check/adjust/tbl/thash 四件套不变）。**但新旧进程高负载时切换瞬间的流量/丢包情况需关注**：两代进程同核时各得约 50% 有效算力 + 上下文切换/cache 抖动，可能延长 drain（需运行时观测，列入 RV）。
+9. **ARP/NDP 等协议包 clone 给 G_old**（v1.6 增补）：reload 窗口内，ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，**额外 clone 一份转发给所有 G_old 进程**（原有 clone 给其他 G_new 和 KNI 的逻辑不变）——确保 G_old drain 期间邻居表正常、能发 RTO/FIN/ACK。
+10. **reta 不改、不依赖 NIC RSS 能力**（v1.6 增补，同时解决审核致命 1/2/3）：S3-M1 不再依赖 reta 切流原语——同队列 + proc_id 代际无关固定映射使 reta 不变、ff_rss_check 四件套不变、不配 2N 队列（不丢半流量）。**virtio 与物理网卡均可用**（无需 guest 侧 RSS 能力）。
 
 ## 3. 候选方案集
 
@@ -143,27 +147,31 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 
 在 app/nginx 源码集成路线内演进，核心是把「数据面资源所有权」从 nginx worker 生命周期中剥离，分两个里程碑：
 
-- **S3-M1（乒乓核 + 队列切换 + 转发兜底）**：
+- **S3-M1（同队列 + ready 后同期移交 + flow_map 软件分发表）**【v1.6 据 2026-08-21 方案修订：从乒乓双队列段+reta 切流改为同队列+软件切流，同时解决审核致命 1/2/3/4/5/6】：
   - 常驻 slim primary（dispatcher 角色，#1078 已验证：primary 持 EAL/设备/队列 setup 不持数据面，杀掉后 12/12 连接零中断，`docs/primary_slim_spec/10-feasibility-conclusion.md` §1.1）。
-  - nginx worker 全部改为 secondary；reload 时新 worker 绑「乒乓」lcore 段（lcore_mask 配 2N 段，稳态用一半、reload 窗口用另一半，新旧 worker **不同核并存**）。
-  - 新 worker ready（栈 init + listen 完成）后切换流量：修改 RSS reta（`set_rss_table`，ff_dpdk_if.c:832（定义，内部 :850 调 rte_eth_dev_rss_reta_update）/:1218（既有调用点）已有）把新 flow 导向新队列段（FB "ready 前不切流"原则）。
-  - 旧连接兜底（reload 窗口流表）：新 worker READY 后**自动注册** packet_dispatcher 回调（`ff_regist_packet_dispatcher`，ff_api.h:299-303）——流表仅 reload 窗口生效，稳态不注册、零每包开销。流表即本栈连接表的实时查询（`ff_conn_owner_query`）：只有本代际**新建的流**在表中（新 SYN 匹配本栈 listen → 本栈 accept 即隐式入表）；表项 miss（旧连接的包因 reta 重哈希落入新队列）**一律转老 worker**（回调返回目标 queue id → `rte_ring_enqueue(dispatch_ring[port][ret])`，ff_dpdk_if.c:2142-2150；旧 worker 侧 process_dispatch_ring dequeue 后进本栈，:2223-2233；ring 来的包不再进回调，:2100，无循环）。
-  - 旧 worker 继续跑 ff_run drain 存量连接，完成后退出；新 worker **感知排空**（控制消息 + SIGCHLD 确认）后**注销回调/关闭流表，进入稳态成为下一轮的「老 worker」**（防止每包判定的性能退化），释放原 lcore 段供下轮 reload 乒乓使用。
-  - reload 防重入：上一批老 worker 排空前，master **拦截（拒绝）新的 reload 请求**并记日志——不支持快速连续 reload（属明确不支持项，非未定义行为）。
+  - nginx worker 全部改为 secondary；**proc_id 代际无关固定映射**到同一批 queue（G_new 启动时直接用 G_old 的队列号，不需运行时重算 lcore_conf → `tx_queue_id / rx_queue_list / dispatch_ring` 全部对齐，rss_check/adjust/tbl/thash 四件套不变）。
+  - **新旧进程可同核处理**（不占 2N 物理核、不乒乓双队列段）；新旧进程高负载切换瞬间性能需关注（见 RV10）。
+  - 新 worker ready（栈 init + listen 完成）后**同期移交队列消费权 + listen**给 G_new（修改 X1：不是末期才移交）：G_new 立即接管新连接（**新配置立即生效**），旧连接 drain 给 G_old。
+  - **跨进程互斥原语**（共享内存标记，非 msg ring）保证 G_old 停 poll 后 G_new 才起 poll，规避并发 poll 同一 queue；移交窗口靠 NIC rx ring 缓冲兜底（RX_QUEUE_SIZE 512→4096 放大 8 倍）。
+  - **G_new 软件分发表 flow_map**（reload 窗口生效，稳态零开销）：flow_map 存 G_new accept 过的连接四元组（SYN accept 时入表，非协议栈 inpcb 表）；drain 期间增量更新；miss（旧连接的包）→ 一律经 dispatch_ring 转 G_old（回调返回目标 queue id → `rte_ring_enqueue(dispatch_ring[port][ret])`，ff_dpdk_if.c:2142-2150；G_old 侧 process_dispatch_ring dequeue 后进本栈，:2223-2233；ring 来的包不再进回调，:2100，无循环）；排空确认后关闭 flow_map 回稳态。
+  - **ARP/NDP 等协议包处理**：reload 窗口内，ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，**额外 clone 一份转发给所有 G_old 进程**（原有 clone 给其他 G_new 和 KNI 的逻辑不变）——确保 G_old drain 期间邻居表正常。
+  - G_old 继续跑 ff_run drain 存量连接，完成后退出；G_new 感知排空（共享内存标记 + SIGCHLD 确认）后关闭 flow_map、进入稳态成为下一轮的「老 worker」。
+  - reload 防重入：上一批老 worker 排空前，master **拦截（拒绝）新的 reload 请求**并记日志。
+  - **reta 不改、不依赖 NIC RSS 能力**：virtio 与物理网卡均可用（无需 guest 侧 RSS 能力、无需 set_rss_table 运行时改造、不破坏 ff_rss_check 不变量、不配 2N 队列不丢半流量）。
 - **S3-M2（可选演进，dispatcher 中心化）**：把「每 worker 独占队列」改为 slim primary 统一收包 + 流表分发（worker 变纯 ring 消费者）——即 VPP/VCL app_listener workers bitmap 同构（R-A §2.2）+ 旧 iWiki dispatch 思想的现代化（避开同核共存，因 dispatcher 与 worker 分核）。是否演进取决于 M1 转发路径的实测开销。
 
 **对 8 项障碍的覆盖**（按 S3-M1）：
 
 | 障碍 | 覆盖 | 说明 |
 |---|---|---|
-| 1 两段串行空窗 | 解决 | 回退为原生顺序：新 worker 起（secondary attach 常驻 primary，无 primary 竞争）→ 切流 → 旧 drain |
-| 2 listening fd 跨进程 | 回避 | 每 worker 栈内自建 listen（栈隔离天然允许多代际 listen 同 IP:port，P-D §3.5）；新连接去向由 reta/回调控制，无需 fd 传递 |
-| 3 TCP 连接无迁移 | 不迁移 + drain 保障 | 旧连接包经 dispatch_ring 显式送达旧 worker，drain 期 timer 正常（旧 worker 活着跑 ff_run） |
-| 4 primary 单点 | 解决 | primary=slim dispatcher 常驻；worker0 不再硬编码 primary（改 ngx_ff_module.c:183-187 与 ngx_process_cycle.c:1117-1121） |
+| 1 两段串行空窗 | 解决 | 回退为原生顺序：新 worker 起（secondary attach 常驻 primary，无 primary 竞争）→ 同期移交队列+listen → 旧 drain |
+| 2 listening fd 跨进程 | 回避 | 每 worker 栈内自建 listen（栈隔离天然允许多代际 listen 同 IP:port，P-D §3.5）；新连接归属由同期移交+flow_map 控制，无需 fd 传递 |
+| 3 TCP 连接无迁移 | 不迁移 + drain 保障 | 旧连接包经 flow_map miss → dispatch_ring 显式送达 G_old，drain 期 timer 正常（G_old 活着跑 ff_run） |
+| 4 primary 单点 | 解决 | primary=slim dispatcher 常驻；worker0 不再硬编码 primary（改 ngx_ff_module.c:183-187 与 ngx_process_cycle.c:1117-1121）；proc_id 代际无关固定映射消除乒乓代际 proc_id 重合（审核 B-1） |
 | 5 respawn/时序脆弱 | 解决 | 原 500ms sleep/15s sem 时序被显式 ready 协议取代 |
-| 6 master 不在数据面 | 重新分工 | master 编排（nginx 语义层）+ primary 提供原子原语（reta 更新/队列状态），master 仍不碰 ff fd |
-| 7 RSS 静态映射窗口 | 解决（原子切流） | reta 切换前旧队列始终有主；切换后新队列已 ready；旧连接经转发兜底 |
-| 8 定时器随进程消亡 | 解决（需实测） | 新旧 worker **不同 lcore** → `priv_timer` 不同槽天然隔离（共享 memzone 按 lcore 分槽，E-C §5.3 结构 + native-mt 已把 freebsd_clock 改 `__thread`，E-C §5.5）；drain 期旧 worker timer 持续驱动 |
+| 6 master 不在数据面 | 重新分工 | master 编排（nginx 语义层）+ primary 提供原子原语（互斥标记/队列状态），master 仍不碰 ff fd |
+| 7 RSS 静态映射窗口 | 解决（同期移交+互斥） | 互斥标记保证 G_old 停 poll 后 G_new 才起 poll（队列始终有主，无空窗）；reta 不改 → ff_rss_check 不变量不破坏（审核 B-2 消解） |
+| 8 定时器随进程消亡 | 解决（需实测） | 新旧进程同核但不同 lcore_id（proc_id 代际无关但 lcore_id 仍需不同，DPDK 硬禁令）→ `priv_timer` 不同槽天然隔离；drain 期 G_old timer 持续驱动 |
 
 **依据的证据**：P-D 全文（现状与障碍，行号在案）；`docs/primary_slim_spec/03/10`（slim primary 可行性 PoC 与生产实现）；R-A §6.2/§6.3（队列归属结论 + 可借鉴机制 1/2/5/7）；R-B §5.3 方向 A；E-C §5（timer 结构与 62f1c34df 补丁）；本设计回查代码（第 0 节）。
 
@@ -194,7 +202,9 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 
 **关键问题**：S4 的「分发层持有队列 + 流表导流 + 旧连接一致性路由」**在机制上与 S3-M2（dispatcher 中心化）完全同构**，且额外要求双实例常驻（双倍内存/双倍栈实例/双倍核，直到 drain 完成）。切流要安全，同样绕不开「旧连接的包必须继续到老实例」——FB 用 flow→socket map 解决 UDP，TCP 靠内核 socket 归属天然不变；F-Stack 用户态栈没有内核 socket 归属，最终仍需 dispatch 层按四元组把旧连接钉给老实例——**这就是 S3 的转发兜底机制**。换言之：S4 做到底 = S3-M2 + 双倍资源，独立实施无增量收益。
 
-**结论要素**：不作为独立方案推荐；其「**ready 前不切流 + 显式切流动作 + 切流可观测**」三原则作为时序设计原则并入 S3（第 5.2 节时序图即按此设计）。
+**结论要素**：不作为进程内 reload 的独立方案推荐；其「**ready 前不切流 + 显式切流动作 + 切流可观测**」三原则作为时序设计原则并入 S3（第 5.2 节时序图即按此设计）。
+
+**v1.4 据 X2 增补——virtio/云主机场景的推荐定位**：S4 形态（多实例蓝绿轮换）在 **virtio/云主机场景**下恰好完全没有 S3 的 reta/queue 共享/syncache/ARP 等障碍（两实例各自 N 队列、各自 file_prefix、不共享任何 state、不需要 reta/queue start-stop/跨代 ring、无不可观测门禁），且复用 F-Stack 已有能力（`file_prefix` 已坐实：ff_config.c:1044/1193/1236、Release Note:299）。**在 virtio/云主机场景推荐作为首选方案**（S3 进程内 reload 在该场景依赖的 reta/queue 切流原语不可用，详见 §6.4 适用范围与网卡能力矩阵）。硬前提：上游撤流能力（LB/consul/etcd/手动摘节点）+ 独立网卡或 VF（或同机双 VIP + 路由）+ 双倍资源 + 业务无单机粘性状态；不适用：单机无 LB/单网卡场景。
 
 ### 3.5 组合关系说明（S2+S3、S1→S3-M2）
 
@@ -208,22 +218,22 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 
 | 维度 | S1 旧方案复活 | S2 ld_preload | S3 原生演进（M1/M2） | S4 双实例热备 |
 |---|---|---|---|---|
-| D1 无损性 | 中高：dispatch 表切流，但依赖同核共存稳定性（未闭环） | 高：stack 常驻，HUP 对齐内核语义 | M1 中高（缓冲+转发兜底，需实测）；M2 高（结构性） | 高（ready 前不切流） |
-| D2 连接语义 | 高：全局表+drain 退出条件 | 中：原生 graceful close（存量连接被关闭而非服务到自然结束——与内核 nginx 一致，但对齐基线 1 的弱化形态） | 高：drain 期旧连接收包路径显式保障（转发兜底）+ timer 持续 | 高 |
-| D3 改动面 | 极大：全量重写（原码未开源）+ 驱动层改造 | 小：nginx 零改动；缺口集中在 adapter 侧（exec hook/回收） | 中：nginx 适配层回退原生顺序 + lib 协议新增；有 primary_slim PoC 基础 | 大：双实例管理 + 分发层全新 |
-| D4 主线兼容 | 低：孤儿路线，同核共存与主线（native_mt 分核演进）方向相反 | 中：独立产品线，与主线无耦合也无承接 | 高：直接承接 primary_slim（生产实现已过测试）；timer 隔离受益于 native-mt `__thread` 改造；与 zc_stack 正交 | 低：双倍栈实例与 share-nothing 主线相悖 |
-| D5 性能 | 中：稳态每包经 dispatch 一跳（旧实测 58 万 QPS 为 18.11 单来源数据） | 低-中：每 socket 调用走 IPC，近双核占用，8 核后短连接劣于 app 模式 | M1 高：稳态零新增开销（转发仅 reload 窗口启用）；M2 中：稳态每包一跳 | 中低：reload 窗口双倍核/内存 |
-| D6 运维 | 高复杂：nice/双 IP/驱动参数 | 中：独立 fstack 实例进程 + 环境变量矩阵 | 中：新增常驻 slim primary + 乒乓 lcore 约定 + reload 状态可观测 | 高：双实例生命周期管理 |
-| D7 可测试性 | 差：无法增量验证（须一次性做成） | 好：可先在非 nginx 应用验证 adapter，再套 nginx | 好：M1 可分里程碑增量交付；reload 状态机显式可打点 | 中：切流逻辑可测，但双实例编排复杂 |
+| D1 无损性 | 中高：dispatch 表切流，但依赖同核共存稳定性（未闭环） | 高：stack 常驻，HUP 对齐内核语义 | v1.6 高（同队列+互斥移交+flow_map 转发兜底，reta 不改不破不变量）；M2 高（结构性） | 高（ready 前不切流） |
+| D2 连接语义 | 高：全局表+drain 退出条件 | 中：原生 graceful close（存量连接被关闭而非服务到自然结束——与内核 nginx 一致，但对齐基线 1 的弱化形态） | 高：drain 期旧连接收包路径显式保障（flow_map miss → ring 转 G_old）+ ARP/NDP clone + timer 持续 | 高 |
+| D3 改动面 | 极大：全量重写（原码未开源）+ 驱动层改造 | 小：nginx 零改动；缺口集中在 adapter 侧（exec hook/回收） | v1.6 中：nginx 适配层回退原生顺序 + lib 新增 flow_map/互斥原语/ARP clone；有 primary_slim PoC 基础；不再依赖 reta 改造（消除 rss_check 四件套改造） | 大：双实例管理 + 分发层全新 |
+| D4 主线兼容 | 低：孤儿路线，同核共存与主线（native_mt 分核演进）方向相反 | 中：独立产品线，与主线无耦合也无承接 | v1.6 高：直接承接 primary_slim；timer 隔离受益于 native-mt `__thread` 改造；与 zc_stack 正交；不再依赖 reta 能力（virtio 也可用） | 低：双倍栈实例与 share-nothing 主线相悖 |
+| D5 性能 | 中：稳态每包经 dispatch 一跳（旧实测 58 万 QPS 为 18.11 单来源数据） | 低-中：每 socket 调用走 IPC，近双核占用，8 核后短连接劣于 app 模式 | v1.6 高：稳态零新增开销（flow_map 仅 reload 窗口）；reload 窗口 flow_map 查表开销 + 同核切换瞬间性能需关注（RV10）；M2 中：稳态每包一跳 | 中低：reload 窗口双倍核/内存 |
+| D6 运维 | 高复杂：nice/双 IP/驱动参数 | 中：独立 fstack 实例进程 + 环境变量矩阵 | v1.6 中：新增常驻 slim primary + 互斥标记 + flow_map + RX_QUEUE_SIZE 调优 + reload 状态可观测 | 高：双实例生命周期管理 |
+| D7 可测试性 | 差：无法增量验证（须一次性做成） | 好：可先在非 nginx 应用验证 adapter，再套 nginx | v1.6 好：M1 可分里程碑增量交付；reload 状态机显式可打点；**virtio 与物理网卡均可验证**（不依赖 reta 能力） | 中：切流逻辑可测，但双实例编排复杂 |
 
 ### 4.2 分档结论
 
 | 分档 | 方案 | 理由 |
 |---|---|---|
-| **推荐** | **S3（M1 先行，M2 视数据演进）** | 唯一同时满足：结构性前提（队列所有权与 worker 解耦，基线 2）、连接语义对齐（基线 1）、稳态零性能损耗（D5-M1 高）、有已验证 PoC 基础（primary_slim，改动面可控）、与主线演进同向（D4 高）、可增量交付（D7 高） |
+| **推荐** | **S3（M1 先行，M2 视数据演进）**【v1.6 修订：同队列+ready 后同期移交+flow_map，virtio 与物理网卡均可用，不再限于物理网卡】 | 唯一同时满足：结构性前提（队列所有权与 worker 解耦，基线 2）、连接语义对齐（基线 1）、稳态零性能损耗（D5-M1 高）、有已验证 PoC 基础（primary_slim，改动面可控）、与主线演进同向（D4 高）、可增量交付（D7 高）、**不依赖 NIC RSS 能力**（reta 不改，virtio 也可用）。前置依赖：primary_slim 合入 |
 | **备选** | **S2（限定场景）** | 适用于「存量应用零改动接入 + 非 proxy 场景 + 可接受 IPC 性能折损」的独立产品线；HUP 语义天然对齐内核 nginx，缺口（exec/回收）收敛在 adapter 侧。**不建议作为 F-Stack nginx（app 源码集成主线）的 reload 解法**，但建议与 S3 并行推进其缺口修复 |
+| **virtio/云主机场景推荐**【v1.4 据 X2 增补】 | **S4 多实例蓝绿轮换** | virtio 场景下 S3 的 reta/queue 切流原语不可用（§6.4）；S4 在该场景完全没有上述障碍、复用 file_prefix 已有能力、零代码。硬前提：上游撤流 + 独立网卡/VF + 双倍资源 + 业务无单机粘性。不适用：单机无 LB/单网卡场景，该场景如必须 `nginx -s reload` 无损，见 §6.5 形态 V 降级路径（未来工作） |
 | **不推荐（独立实施）** | **S1** | 同核共存三支柱（mempool 隔离/nice 调度/timer 隔离）在 24.11.6 全部需重做且 timer 未闭环（E-C §6.2）；原码未开源。其 dispatch 思想由 S3-M2 承接 |
-| **不推荐（独立实施）** | **S4** | 机制上收敛为 S3-M2 + 双倍资源，无增量收益；其切流时序三原则并入 S3 |
 
 ## 5. 推荐方案 S3 关键设计
 
@@ -232,15 +242,15 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 | 层 | 所有者 | reload 时行为 | 依据 |
 |---|---|---|---|
 | L1 EAL/设备/mempool/ring/队列 setup | **slim primary（dispatcher），常驻** | 不动（杀 primary 数据面零影响已实测：`docs/primary_slim_spec/10` §1.1 E3b/E3c；但 primary 只能常驻不能复活，E10） | P-D §3.2；primary_slim_spec 03 §III |
-| L2 队列消费权（rx poll）+ RSS reta | worker 级，可切换 | 新 worker ready 前：旧 worker 持续 poll（队列始终有主，无空窗）；ready 后 reta 切流（或队列移交），旧连接包经 L4 兜底 | ff_dpdk_if.c:508-538（lcore↔queue 映射）、:832/:850/:1218（reta）；基线 2/3 |
-| L3 listening socket | **各 worker 栈内自建**（保持现状） | 不跨进程传递：栈隔离天然允许多代际 worker 并存 listen 同 IP:port（每进程独立 FreeBSD 栈实例各自 bind/listen 互不冲突，P-D §3.5）；新连接归属由 L2 切流决定 | P-D 障碍 2 的回避式解法；R-A §6.3-2 的对照（VPP 用 app_listener 单点，F-Stack 用栈隔离多 listen——路线差异点，功能等价） |
-| L4 TCP 连接 | worker 私有，**不迁移** | 旧 worker drain：其队列/RTO/keepalive 持续驱动；切换后到达新 worker 队列的旧连接包，经 packet_dispatcher 回调 → dispatch_ring 转发回旧 worker（现成机制）。**流表窗口限定**：回调在新 worker READY 后注册、排空确认后注销——稳态零开销；流表只记新流，miss 一律转旧 worker（第 2 节语义 6） | 基线 1；ff_dpdk_if.c:2105-2150/:2223-2233；P-D §3.5（dispatch 回调 nginx 未用——本方案启用） |
+| L2 队列消费权（rx poll） | worker 级，可移交 | 新 worker ready 前：旧 worker 持续 poll（队列始终有主，无空窗）；ready 后**同期移交**（跨进程互斥标记保证 G_old 停后 G_new 才起），旧连接包经 L4 flow_map miss → dispatch_ring 转发兜底 | ff_dpdk_if.c:508-538（lcore↔queue 映射）；基线 2/3；proc_id 代际无关固定映射 |
+| L3 listening socket | **各 worker 栈内自建**（保持现状） | 不跨进程传递：栈隔离天然允许多代际 worker 并存 listen 同 IP:port（每进程独立 FreeBSD 栈实例各自 bind/listen 互不冲突，P-D §3.5）；新连接归属由 L2 同期移交决定（G_new 接管 listen） | P-D 障碍 2 的回避式解法；R-A §6.3-2 的对照（VPP 用 app_listener 单点，F-Stack 用栈隔离多 listen——路线差异点，功能等价） |
+| L4 TCP 连接 | worker 私有，**不迁移** | G_old drain：其队列/RTO/keepalive 持续驱动；ready 后同期移交队列后，到达 G_new 的旧连接包经 **flow_map miss** → dispatch_ring 转发回 G_old（现成机制）。**flow_map 窗口限定**：G_new ready 同期移交后注册 flow_map、排空确认后关闭——稳态零开销；flow_map 只记本代际新流（SYN accept 入表），miss 一律转 G_old（第 2 节语义 6）；ARP/NDP 等协议包额外 clone 给所有 G_old（第 2 节语义 9） | 基线 1；ff_dpdk_if.c:2105-2150/:2223-2233；P-D §3.5（dispatch 回调 nginx 未用——本方案启用） |
 
 设计取舍说明（与 VPP 的有意差异）：VPP 把 listen 收敛到栈侧单点（app_listener + workers bitmap，R-A §2.2），F-Stack 不照搬——fd 是进程内索引（P-D §2.4），跨进程传递无意义；「多代际栈隔离 listen + 数据面切流」在功能上等价于 workers bitmap（决定「谁收新连接」的是 reta/分发层而非 listen 对象本身），改动面小得多。
 
-### 5.2 reload 时序（文字版时序图，HUP）
+### 5.2 reload 时序（文字版时序图，HUP）【v1.6 改写：同队列+同期移交+互斥+flow_map】
 
-前置状态：slim primary 常驻（PID_P）；旧 worker 代际 G_old（N 个 secondary，占 lcore 段 A / queue 集 QA）；lcore_mask 配有乒乓段 B（稳态空闲）。
+前置状态：slim primary 常驻（PID_P）；旧 worker 代际 G_old（N 个 secondary，占 lcore 段 A）；G_new 使用**同批 queue**（proc_id 代际无关固定映射）。
 
 ```
 T0  master 收 HUP
@@ -250,38 +260,44 @@ T0  master 收 HUP
 T1  master fork 新 worker 代际 G_new（NGX_PROCESS_JUST_RESPAWN）
     ├─ 每个 G_new worker: ff_mod_init(--proc-id, secondary)
     │   secondary attach 到常驻 primary——无 primary 竞争（对比现状障碍 4）
-    ├─ G_new worker 绑 lcore 段 B / 对应 queue 集 QB（段 B 与段 A 不同核）
+    ├─ G_new worker 使用 G_old 同批 queue（proc_id 代际无关固定映射，
+    │   tx_queue_id/rx_queue_list/dispatch_ring 全部对齐，rss_check 不变）
+    ├─ G_new worker 与 G_old 同核处理（不占 2N 物理核，第 2 节语义 8）
     ├─ master 不再需要 15s sem 等 primary 就绪（primary 一直在）；保留 ready 上报等待
 T2  G_new worker 各自完成：ff_freebsd_init 栈实例 → ngx_open_listening_sockets
     │   （各自栈内 listen 同 IP:port，与 G_old 并存，栈隔离保证不冲突）
-    ├─ G_new worker 注册 packet_dispatcher 回调——流表随初始化完成自动生效
-    │   （稳态不注册：所有包不过流表零开销，第 2 节语义 6）
-    └─ 经控制通道（ff_msg ring 扩展，见 5.4）向 master 上报 READY
-T3  master 确认全部 G_new READY → 向 primary 请求切流（显式动作，S4 原则）
-    ├─ primary 执行 set_rss_table 重算：reta 将新 flow 哈希导向 QB
-    │   （切换原子性：reta 更新前 QA 始终有 G_old poll——队列无主窗口不存在）
-    └─ G_new 回调流表判定（仅 reload 窗口生效）：
-        收到包 → 解析四元组 → ff 连接归属查询（新 ff_api，见 5.4）
-        ├─ 新流（SYN 匹配本栈 listen → accept 隐式入表）或流表命中
-        │   （本代际已建连接）→ 本栈处理 ✓
-        └─ 流表 miss（旧连接包因 reta 重哈希落入 QB）→ 一律回调返回 G_old 的
-           queue id → rte_ring_enqueue(dispatch_ring) → G_old dequeue →
-           ff_veth_input → 旧栈正常处理（RTO/keepalive/数据）✓
+    └─ 经控制通道向 master 上报 READY
+T3  master 确认全部 G_new READY → 触发同期移交（队列消费权 + listen）
+    ├─ 【跨进程互斥原语】（共享内存标记，非 msg ring，第 2 节语义 7）：
+    │   ① G_old 停止 poll（设置停 poll 标记 + 确认已停）
+    │   ② G_new 确认 G_old 已停 poll 后起 poll（互斥保证不同时 poll 同一 queue）
+    │   ③ 移交窗口靠 NIC rx ring 缓冲兜底（RX_QUEUE_SIZE 512→4096 放大 8 倍）
+    ├─ G_new 同期接管 listen（新连接归 G_new，新配置立即生效，第 2 节语义 7）
+    └─ G_new 注册 flow_map（软件分发表，第 2 节语义 6）：
+        收到包 → 解析四元组 → 查 flow_map
+        ├─ SYN（新连接）→ 本栈 accept → 四元组入 flow_map ✓
+        ├─ flow_map 命中（本代际已建连接后续包）→ 本栈处理 ✓
+        └─ flow_map miss（旧连接的包）→ 经 dispatch_ring 转 G_old ✓
+    ├─ 【ARP/NDP 等协议包处理】（第 2 节语义 9）：
+        ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，
+        额外 clone 一份转发给所有 G_old 进程（原有 clone 给其他 G_new
+        和 KNI 的逻辑不变）
 T4  G_old worker 收到 master 的 graceful shutdown（原生语义）
     ├─ 各自栈内 close listening（只影响自己栈，G_new 的 listening 不受影响）
     ├─ 停止 accept，继续跑 ff_run：drain 存量连接
-    │   （存量连接后续包即使被 reta 导入 QB 也经 T3 回调转发回来）
+    │   （存量连接后续包经 G_new flow_map miss → dispatch_ring 转发回来）
     │   timer 持续驱动（G_old 活着，freebsd_clock 在自己 lcore 槽）
+    │   ARP/NDP 邻居表正常（T3 clone 保证）
     └─ drain 完成（连接数=0 或 no_timers_left）→ 进程退出
 T5  master 收 G_old SIGCHLD（且确认排空：连接数=0 + DRAIN_DONE）→ reload 完成
-    ├─ 通知 G_new：注销回调/关闭流表 → G_new 进入稳态，成为下一轮 reload 的
-    │   「老 worker」（防止性能退化；此后稳态所有包不过流表，第 2 节语义 6）
-    ├─ lcore 段 A 释放，成为下一轮 reload 的乒乓段
-    └─ 下一轮 reload 时 G_new' 绑段 A（乒乓交替；G_new 已可再次接受 reload——
-        防重入拦截随排空确认解除）
+    ├─ 通知 G_new：关闭 flow_map → G_new 进入稳态，成为下一轮 reload 的
+    │   「老 worker」（防止性能退化；此后稳态所有包不过 flow表，第 2 节语义 6）
+    └─ G_new 已可再次接受 reload（防重入拦截随排空确认解除）
 异常分支：
 - T2 前 G_new 任一 worker 起不来/ready 超时 → master 放弃本轮（G_old 未受任何
   影响，服务继续）——对齐内核 HUP 配置失败回滚语义
+- T3 移交失败（G_old 未确认停 poll / G_new 起 poll 超时）→ 放弃本轮（G_old
+  继续服务，G_new 退出）——互斥标记保证不会并发 poll
 - drain 挂起（长连接不退）→ 增补 shutdown timer（P-D §4 补充事实：F-Stack 版
   恰好缺失 ngx_set_shutdown_timer，需补回）兜底强退
 ```
@@ -300,20 +316,21 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 
 ### 5.4 需要新增的 ff_api / config.ini / ff_msg 接口面（设计清单，非实现承诺）
 
-1. **ff_api 新增**（lib 侧，最小集）：
-   - `ff_conn_owner_query(...)`：四元组 → 是否本栈已知连接（封装 in_pcblookup 语义），供 dispatcher 回调判定归属。**窗口语义（第 2 节语义 6）**：仅在 reload 窗口被调用——回调随 G_new READY 注册、随排空确认注销；本栈连接表即「只含本代际新流的流表」，表项 miss 一律转 G_old；稳态零调用。
-   - 可选：`ff_pcb_export(...)` / reload 连接表同步辅助（若回调实时查询性能不足，退化 reload 握手时一次性导出旧连接四元组集，drain 期间增量更新）。
-   - 队列移交模式变体（若 reta 动态更新在某些 PMD 不可用，见 RV2）：`ff_queue_handover(q, from_proc, to_proc)` 原语（旧停 poll → 新起 poll，NIC rx ring 缓冲兜底窗口）。
-2. **ff_msg 扩展**（控制通道，复用现有 msg ring 机制，P-D §3.3）：新增 FF_RELOAD 消息族——READY 上报、切流请求/应答、队列状态查询、drain 进度上报、**drain 完成确认（DRAIN_DONE：触发 G_new 关流表回稳态，第 2 节语义 6）**、**reload 拒绝（REJECT：防重入，上一代 G_old 未排空时 master 拒绝新 HUP）**。注意：现有 msg ring 是工具进程↔ff 进程的控制面（P-D §3.3），扩展为 master↔primary↔worker 的 reload 控制面需评估容量与实时性（或经 nginx channel + primary 轮询组合）。
+1. **ff_api 新增**（lib 侧，最小集）【v1.6 改写】：
+   - `ff_flow_map_lookup(four_tuple)` / `ff_flow_map_insert(four_tuple)` / `ff_flow_map_close()`：**软件分发表 flow_map**（替代 v1.0-v1.5 的 `ff_conn_owner_query`）——存 G_new accept 过的连接四元组（SYN accept 时 insert，非协议栈 inpcb 表）；drain 期间增量更新；miss → 经 dispatch_ring 转 G_old；排空确认后 close 回稳态。窗口语义（第 2 节语义 6）：仅 reload 窗口被调用，稳态零调用。
+   - `ff_queue_handover_mutex(port, queue, from_gen, to_gen)`：**跨进程互斥原语**（共享内存标记，非 msg ring）——G_old 设停 poll 标记 + 确认已停 → G_new 确认后起 poll；保证不同时 poll 同一 queue（第 2 节语义 7）。
+   - `ff_arp_ndp_clone_to_old(m, port)`：ARP/NDP 等协议包 clone 给所有 G_old（第 2 节语义 9）——原有 clone 给其他 G_new 和 KNI 的逻辑不变（ff_dpdk_if.c:2161-2183），新增 clone 给 G_old 分支。
+2. **ff_msg 扩展**（控制通道，复用现有 msg ring 机制，P-D §3.3）：新增 FF_RELOAD 消息族——READY 上报、移交请求/应答、drain 进度上报、**drain 完成确认（DRAIN_DONE：触发 G_new 关 flow_map 回稳态）**、**reload 拒绝（REJECT：防重入）**。注意：移交互斥用共享内存标记轮询而非 msg ring（第 2 节语义 7），msg ring 仅用于 READY/DRAIN_DONE/REJECT 等非实时关键路径。
 3. **config.ini 新增**（[dpdk] 段）：
-   - `primary_slim = 1`（primary_slim_spec 已设计，V2/V4/V5 校验链沿用：需 nb_procs>=2、与 thread_mode=1 互斥、primary lcore 不入 lcore_list）。
+   - `primary_slim = 1`（primary_slim_spec 已设计，V2/V4/V5 校验链沿用）。
    - `graceful_reload = 1`（总开关，默认 0 时行为完全回退现状——0 回归原则）。
-   - 乒乓 lcore 段约定：lcore_mask 含 2N 段 + `reload_lcore_policy = pingpong`。
+   - `rx_queue_size = 4096`（从默认 512 放大 8 倍，增大移交窗口缓冲深度，ff_memory.h:43）。
+   - proc_id 代际无关固定映射配置（替代 v1.0-v1.5 的乒乓 lcore 段约定）。
 4. **nginx 适配层改造**（app/nginx-1.28.0）：
-   - `ngx_process_cycle.c:223-237` 两段式 reload 块整体移除/条件化（graceful_reload=1 时走原生顺序）。
-   - `ngx_ff_module.c:183-187` + `ngx_process_cycle.c:1117-1121`：worker0 不再 primary，全部 secondary；sem 就绪同步改为对常驻 primary 的 attach 确认。
+   - `ngx_process_cycle.c:223-237` 两段式 reload 块整体移除/条件化（graceful_reload=1 时走原生顺序：fork G_new → 等 READY → 同期移交 → G_old QUIT）。
+   - `ngx_ff_module.c:169-187` + `ngx_process_cycle.c:1117-1121`：worker0 不再 primary，全部 secondary；proc_id 改为代际无关固定映射（消除乒乓代际 proc_id 重合，审核 B-1）。
    - 补回 worker QUIT 分支缺失的 `ngx_set_shutdown_timer`（P-D §4 补充事实）。
-   - reload 编排状态机（T0-T5 显式状态 + 打点），满足第 1 节否决性判据（显式可观测，对齐 R-A §6.4 教训）。
+   - reload 编排状态机（T0-T5 显式状态 + 打点），满足第 1 节否决性判据。
 
 ### 5.5 与既有演进线的关系
 
@@ -332,37 +349,67 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 
 | # | 项目 | 验证方法建议 |
 |---|---|---|
-| RV1 | 2N worker + 1 slim primary 多 secondary 并存（24.11.6）稳定性：mempool 跨进程并发（不同 lcore cache）、EAL 资源、msg_ring 广播 | 双代际进程组长时间共存压测 + ff_top/ff_traffic 观测 |
-| RV2 | **reta 运行时更新**（rte_eth_dev_rss_reta_update / set_rss_table 路径）在目标 PMD（virtio 已知 + 物理网卡待测）的支持度与生效时延；若不支持 → 退化到队列移交变体（RV3） | reload 窗口抓包验证新 flow 导向；dpdk-devbind 确认 PMD 能力 |
-| RV3 | 队列移交变体：旧 worker 停 poll → 新 worker 起 poll 的移交窗口内，NIC rx ring（默认描述符深度）缓冲是否足以零丢包（窗口预估微秒~毫秒级） | 高速率注入 + 移交瞬间丢包计数 |
-| RV4 | dispatch_ring 转发旧连接包的吞吐/时延：ring 容量（create_ring 默认）在 drain 高峰（大流量长连接集中转发）是否成为瓶颈 | 构造 80% 流量在旧连接的 reload 压测 |
-| RV5 | dispatcher 回调每包判定开销【仅 reload 窗口，第 2 节语义 6】：稳态流表不生效（回调已注销，零开销为设计属性，非待验证项）；度量对象为 reload 窗口内（切流至排空确认期间）四元组解析 + 归属查询（ff_conn_owner_query）在 10G 线速小包下的 CPU 占比（usr_cb_tsc 已有统计钩子，ff_dpdk_if.c:2111） | reload 窗口内/外 pps 对比；并验证排空确认后回调计数停止增长（关表生效） |
-| RV6 | 不同 lcore 的多进程 timer 槽隔离实测（共享 memzone 结构上分槽，E-C §5.3；native-mt `__thread` 化后未在多进程 reload 场景验证过） | 双代际共存期间观测 RTO/keepalive 精度、rte_timer 状态 |
-| RV7 | 多代际栈隔离 listen 同 IP:port 的实际行为（P-D §3.5 推断栈隔离不冲突，未运行时验证） | 双代际并存期并发 SYN 压测 |
-| RV8 | KNI 启用场景：runtime owner（primary_slim_spec 04 K4 已验证 secondary 为 owner）与双代际 worker 的交互 | enable_kni=1 的 reload 回归 |
-| RV9 | 端到端门禁（对齐 R-A §6.3-7 VPP 验证模式）：带流量循环 reload 数千次 + 无死锁无 crash + 新连接错误数 0 + 存量连接全部 drain 成功 | wrk/JMeter 持续流量 + 每 2s reload 循环（#3547/#3645 复现模式） |
+| RV1 | N worker + 1 slim primary 多 secondary 并存（24.11.6）稳定性：mempool 跨进程并发（不同 lcore cache）、EAL 资源、msg_ring 广播 | 双代际进程组长时间共存压测 + ff_top/ff_traffic 观测 |
+| RV2 | ~~reta 运行时更新~~ v1.6 删除（reta 不改、不依赖 NIC RSS） | — |
+| RV3 | **同期移交互斥正确性**（v1.6 改写）：跨进程互斥标记（共享内存）保证 G_old 停 poll 后 G_new 才起 poll；移交窗口靠 NIC rx ring（RX_QUEUE_SIZE 4096）缓冲兜底；残余风险为 virtqueue 数据结构并发损坏（非业务语义、静态无法定论）；virtio 无 imissed 不可观测 | 高速率注入 + 移交瞬间丢包计数（物理网卡 imissed / virtio 端到端业务指标） |
+| RV4 | dispatch_ring 转发旧连接包的吞吐/时延：ring 容量（DISPATCH_RING_SIZE 2048）在 drain 高峰是否成为瓶颈 | 构造 80% 流量在旧连接的 reload 压测 |
+| RV5 | flow_map 查表开销【仅 reload 窗口】：稳态零开销（flow_map 已关闭）；reload 窗口内四元组解析 + flow_map 查找在 10G 线速小包下的 CPU 占比 | reload 窗口内/外 pps 对比；验证排空确认后 flow_map 查表计数停止增长 |
+| RV6 | 不同 lcore 的多进程 timer 槽隔离实测 | 双代际共存期间观测 RTO/keepalive 精度 |
+| RV7 | 多代际栈隔离 listen 同 IP:port 的实际行为 | 双代际并存期并发 SYN 压测 |
+| RV8 | KNI 启用场景：runtime owner 与双代际 worker 的交互（审核 Q13：KNI owner 固定 proc_id，代际交替后 owner 落已退代际，需解决） | enable_kni=1 的 reload 回归 |
+| RV9 | 端到端门禁：带流量循环 reload + 无死锁无 crash + 新连接错误数 0 + 存量连接全部 drain 成功 | ab 持续流量 + 循环 reload（v1.6 修订节拍：每 5s 检测共享内存状态所有 G_old 已退出后 reload 一次，≥100 次；原「每 2~5s reload、≥1000 次」与防重入语义+25s 初始化不可同时成立） |
+| RV10 | **同核处理新旧进程切换瞬间性能**（v1.6 新增，X3 关注点）：新旧进程同核时高负载切换瞬间的流量/丢包/CPU 抢占情况；drain 期各得约 50% 有效算力 + 上下文切换/cache 抖动的影响 | 高负载 reload 压测 + 切换瞬间 pps/CPU 观测 |
 
 ### 6.2 需设计评审（DR，机制选择需评审定案）
 
 | # | 项目 | 备选与倾向 |
 |---|---|---|
-| DR1 | reload 编排者：nginx master（语义层自然）vs slim primary（全局视图） | 倾向 master 编排 + primary 提供原子原语（reta 更新/队列状态），保持数据面组件无业务语义 |
-| DR2 | 旧连接归属判定：回调实时查询（ff_conn_owner_query）vs reload 握手时导出四元组快照表 | 倾向实时查询：本栈连接表天然「只含本代际新流」（miss=旧连接→一律转 G_old），与流表窗口化原则（第 2 节语义 6）严格契合，且避免快照一致性协议；性能不足再退化快照（RV5 数据支撑决策；**快照形态同样必须遵守窗口语义**——READY 后生效、排空确认后关表） |
-| DR3 | reta 切流 vs 队列移交：两变体的选择依据（RV2/RV3 数据）与兼容降级链 | 设计上并列支持，运行时按 PMD 能力选择 |
-| DR4 | ff_msg ring 作为 reload 控制通道的容量/实时性 vs 新增专用 ring | msg ring 现为工具控制面（P-D §3.3），reload 是数据面近路径控制，评审是否需要专用低延迟通道 |
-| DR5 | 乒乓 lcore 的配置表达与校验链（lcore_mask 2N 约定、worker 数一致性、单代际模式向后兼容） | 仿 primary_slim V2/V4/V5 校验链风格 |
-| DR6 | 异常回退完备性：新 worker 部分失败、primary 被 kill（数据面不受影响但控制面降级，primary_slim E10：不可复活）、drain 挂起强退阈值 | 状态机每阶段定义回退目标态 |
-| DR7 | M2（dispatcher 中心化）启动判据（v1.3 修订：流表窗口化后稳态转发路径不启用、损耗恒 0，原「稳态损耗 >5%」判据失效）：改为 **reload 窗口开销**判据——RV5 实测窗口内回调开销致吞吐下降 >5%，或 drain 期 P99 时延劣化 >10%，或高连接存量场景 drain 时长超 SLO（流表在 drain 全程生效的代价）时才立项 | 评审定阈值 |
+| DR1 | reload 编排者：nginx master（语义层自然）vs slim primary（全局视图） | 倾向 master 编排 + primary 提供原子原语（互斥标记/队列状态），保持数据面组件无业务语义 |
+| DR2 | 旧连接归属判定：flow_map 查表（v1.6 主路径）vs reload 握手时导出四元组快照表 | 已定：flow_map 查表（SYN accept 入表，miss 转 G_old，窗口化）；性能不足再退化快照（RV5 数据支撑） |
+| DR3 | ~~reta 切流 vs 队列移交~~ v1.6 删除（reta 不改，同期移交+flow_map 为主路径） | — |
+| DR4 | reload 控制通道载体（v1.6 已定）：移交互斥用共享内存标记（非 msg ring），READY/DRAIN_DONE/REJECT 用 msg ring | 已定：分两类通道 |
+| DR5 | ~~乒乓 lcore 配置~~ v1.6 删除（不再乒乓，同核处理+proc_id 代际无关固定映射） | — |
+| DR6 | 异常回退完备性：新 worker 部分失败、primary 被 kill、drain 挂起强退、T3 移交失败回退 | 状态机每阶段定义回退目标态 |
+| DR7 | M2（dispatcher 中心化）启动判据：reload 窗口内 flow_map 开销 + drain 期 P99 劣化超阈值时立项 | 评审定阈值 |
+
+### 6.3 同核处理新旧进程的性能考量（v1.6 替代 v1.4 DISC-1，因不再乒乓双队列段）
+
+v1.6 方案不再使用乒乓 2N 队列段，新旧进程同核处理（proc_id 代际无关固定映射到同一批 queue）。性能关注点：
+
+- **DPDK 硬禁令仍生效**：primary/secondary 禁止共用同一 logical core（multi_proc_support.rst:169-172，理由 mempool per-lcore cache 损坏），故新旧进程仍需不同 lcore_id（可经 `--lcores` 亲和到同一物理核）。
+- **同物理核的代价**（X3 关注点，RV10 专项验证）：DPDK 轮询线程 100% 忙等，两代际 lcore 亲和同一物理核时 drain 期各得约 50% 有效算力 + 上下文切换/cache 抖动 + 正反馈延长 drain。**新旧进程高负载时切换瞬间的流量/丢包情况**是核心关注点。
+- **定位**：默认形态（v1.6 主路径）；如物理核充足可给新旧进程分配不同物理核以消除切换开销，但非必需。
+
+### 6.4 适用范围（v1.6 修订：reta 不改，virtio 与物理网卡均可用）
+
+v1.6 方案不依赖 reta 切流原语，故不再有 v1.4/v1.5 的 NIC 能力矩阵限制：
+
+| 部署环境 | S3 v1.6 可行性 | 说明 |
+|---|---|---|
+| 物理网卡（ixgbe/i40e/mlx5/ice 等） | ✅ | reta 不改，rss_check 不变；无 NIC RSS 能力依赖 |
+| virtio/云主机 | ✅ | 同上——**v1.6 关键优势**：virtio 也可用（reta_size==0 不影响，因不调用 set_rss_table） |
+| 启用 FF_FLOW_ISOLATE/FF_FDIR 的部署 | ✅ | 不调用 set_rss_table，无编译期互斥 |
+
+**M1 准入前置依赖**：primary_slim 合入。v1.5 的「取得支持 reta 的物理网卡环境」前置依赖已取消（v1.6 不依赖 reta）。`graceful_reload=1` 的降级语义保留（当环境不支持多队列时退化为有损 reload），但 v1.6 方案在支持多队列的 virtio/物理网卡上均可做无损 reload。
+
+### 6.5 v1.6 对 v1.4/v1.5 旧内容的废弃说明
+
+以下 v1.4/v1.5 增补的内容在 v1.6 方案修订后已**废弃**（保留本节供审计追溯，不再作为设计依据）：
+
+- ~~§6.3 DISC-1（乒乓 lcore_id 亲和物理核）~~：v1.6 不再乒乓双队列段，DISC-1 的前提（2N 队列段浪费 50% 物理核）不存在。同核处理的性能考量见新版 §6.3。
+- ~~§6.4 适用范围与网卡能力矩阵（reta 依赖）~~：v1.6 不依赖 reta，virtio 与物理网卡均可用。新版 §6.4 简化为环境能力说明。
+- ~~§6.4.1 无 RSS 有损 reload 兜底~~：v1.6 不依赖 reta，无「reta 静默成功伪装」黑洞。`graceful_reload=1` 的降级语义保留（不支持多队列时退化为有损），但触发条件从「reta_size==0」改为「不支持多队列」。
+- ~~§6.5 形态 V（软件切流，未来工作）~~：v1.6 主路径本身就是「同队列+软件切流（flow_map）」，形态 V 的机制已并为主路径。不再作为单独的未来工作。
 
 ## 7. 与目标语义的对照验收（推荐方案自检）
 
-| 目标（第 2 节） | S3-M1 达成方式 | 残余风险 |
+| 目标（第 2 节） | S3-M1 达成方式（v1.6） | 残余风险 |
 |---|---|---|
-| 1 新连接零丢失 | reta 切流前 QA 始终有主；切流后 QB 已 ready 且 listening 已建 | RV2/RV3（切流原子性/缓冲） |
-| 2 存量连接完整 drain | G_old 活着跑 ff_run + 转发兜底送达 + timer 持续 | RV4/RV6 |
-| 3 配置失败回滚 | T2 前失败 G_old 未动 | 设计保证（DR6） |
+| 1 新连接零丢失 | 同期移交后 G_new 接管 listen + flow_map 记录新 SYN；互斥标记保证队列始终有主 | RV3（移交互斥正确性/缓冲） |
+| 2 存量连接完整 drain | G_old 活着跑 ff_run + flow_map miss → ring 转发兜底 + ARP/NDP clone + timer 持续 | RV4/RV6 |
+| 3 配置失败回滚 | T2 前失败 G_old 未动；T3 移交失败回退（互斥标记保证不并发 poll） | 设计保证（DR6） |
 | 4 HUP+USR2 均支持 | 机制同源；master 无 ff 状态可安全 exec | USR2 路径需专项测试 |
-| 5 工程意义无损 | 门禁 = RV9 错误数 0 | 接受 HAProxy 文档级边界（R-B §2.2） |
+| 5 工程意义无损 | 门禁 = RV9 错误数 0（v1.6 修订：≥100 次，每 5s 检测排空后 reload） | 接受 HAProxy 文档级边界（R-B §2.2） |
 
 ## 8. 单来源声明
 
@@ -380,4 +427,4 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 
 ---
 
-**核心结论**：推荐 S3（M1 乒乓核队列切换 + dispatch_ring 转发兜底，承接 primary_slim），S2 为并行备选产品线，S1/S4 不独立实施（思想/原则分别并入 S3-M2 与 S3 时序）。落地拆解见 [07-里程碑](07-milestones.md)，测试与验收见 [08-测试计划](08-testing.md)。
+**核心结论**：推荐 S3（v1.6：同队列 + ready 后同期移交队列+listen + flow_map 软件分发表 + 跨进程互斥 + ARP/NDP clone，承接 primary_slim），S2 为并行备选产品线，S1/S4 不独立实施（思想/原则分别并入 S3-M2 与 S3 时序）。落地拆解见 [07-里程碑](07-milestones.md)，测试与验收见 [08-测试计划](08-testing.md)。
