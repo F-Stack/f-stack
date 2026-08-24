@@ -15,7 +15,7 @@
 
 ## 摘要
 
-本文把 [06-方案设计](06-solution-design.md) 的推荐方案 S3（v1.6：同队列 + ready 后同期移交队列+listen + flow_map 软件分发表 + 跨进程互斥 + ARP/NDP clone，承接 primary_slim；M2 大阶段：可选 dispatcher 中心化）拆解为 **M0 预研 → M1 常驻 primary 化 → M2 新旧并存 → M3 同期移交+flow_map → M4 drain 收尾 → M5 USR2 → M6 门禁收尾 → M7（可选，DR7 触发）** 共 8 个里程碑、**35 个编码改动点（C-NR-100~604）**（v1.6 待配合调整：删 reta/乒乓相关、增 flow_map/互斥/ARP clone/proc_id 代际无关相关）。逐项给出文件:行号锚点、依赖、DoD、测试门禁与回退方案；并把 RV1-10 逐项分配到里程碑、DR1-7 标注为对应里程碑开工前置评审。测试计划（16 条单测 UT-NR-01~16 + 8 条真 EAL 集成用例 IT-NR-A（v1.6 新增 A06/A07/A08）+ 15 行实机用例 IT-NR-RT + 6 条性能基线 PT-NR + 20 项验收标准 A-NR + 循环 reload 门禁）见 [08-测试计划](08-testing.md)。
+本文把 [06-方案设计](06-solution-design.md) 的推荐方案 S3（v1.6：同队列 + ready 后同期移交队列+listen + flow_map 软件分发表 + 跨进程互斥 + ARP/NDP clone，承接 primary_slim；v1.7：自驱 hardclock + 应用 mempool 分代际；M2 大阶段：可选 dispatcher 中心化）拆解为 **M0 预研 → M1 常驻 primary 化 → M2 新旧并存 → M3 同期移交+flow_map → M4 drain 收尾 → M5 USR2 → M6 门禁收尾 → M7（可选，DR7 触发）** 共 8 个里程碑、**37 个编码改动点（C-NR-100~604，v1.7 新增 C-NR-307 自驱 hardclock / C-NR-308 应用 mempool 分代际）**。逐项给出文件:行号锚点、依赖、DoD、测试门禁与回退方案；并把 RV1-10 逐项分配到里程碑、DR1-7 标注为对应里程碑开工前置评审。测试计划（16 条单测 UT-NR-01~16 + 8 条真 EAL 集成用例 IT-NR-A（v1.6 新增 A06/A07/A08）+ 15 行实机用例 IT-NR-RT + 6 条性能基线 PT-NR + 20 项验收标准 A-NR + 循环 reload 门禁）见 [08-测试计划](08-testing.md)。
 
 > 【数字口径说明】本文规模数字以实际清点为准：35 个编码改动点（C-NR-100~604）、5 条集成用例、15 行实机用例（RT-00~13，含 RT-04b）。来源产物 work/milestones-testing.md 中的同源旧数字（41/6/13）系中间产物原文，不回改；如与本文冲突以本文为准。
 
@@ -189,6 +189,8 @@
 | C-NR-206 | `lib/ff_config.c` proc_lcore 分配（`ff_dpdk_if.c:508-538` 消费侧）+ `ngx_process_cycle.c:1123` | 修改 | ~~代际号→段号取模~~ → v1.6 改为：**proc_id 代际无关固定映射**——G_new worker 的 proc_id 直接使用与 G_old worker 相同的值（消除审核 B-1 乒乓代际 proc_id 重合导致 lcore/queue/msg_ring 全重合的静默内存损坏问题） |
 | C-NR-207 | `ngx_process_cycle.c:762-764`（respawn 条件） | 修改 | `graceful_reload=1` 时恢复原生 respawn 语义（reload 期间 worker 挂了允许重生或按状态机决策，DR6 定） |
 | C-NR-208 | worker 侧 READY 上报 | 新增 | worker 完成 `ff_freebsd_init` + `ngx_open_listening_sockets` 后经 FF_RELOAD_READY 上报 master |
+| C-NR-307 | `lib/ff_dpdk_if.c` init_clock(:1244-1257)/init_clock_worker(:1262-1272)/main_loop(:2804-2805) | 修改 | **自驱 hardclock**（[06] 第 2 节语义 11，v1.7）：init_clock 删除 `rte_timer_subsystem_init/rte_timer_meta_init/rte_timer_init/reset` 四连，改为计算 `hardclock_interval_tsc = hz_tsc / freebsd.hz`；main_loop 的 `if (freebsd_clock.expire < cur_tsc) rte_timer_manage()` 改为 `if (next_hardclock_tsc < cur_tsc) { ff_hardclock(); ff_update_current_ts(); next_hardclock_tsc += interval; }`——绕开同 lcore_id 下的共享 `priv_timer[L]` 槽（meta_init memset 踩链 + manage 跨进程私有地址解引用双重致命）。**可提前独立提交**（同 C-NR-401 性质：`graceful_reload=0` 也生效且行为等价，需回归 timer 精度） |
+| C-NR-308 | `lib/ff_dpdk_if.c` mempool 创建(:616-638) + ff_mbuf_get/clone alloc 点(:2563/:2705/:2172/:2188) | 修改 | **应用 mempool 分代际 + 方案 A cache_size=0**（[06] 第 2 节语义 12 / §6.6，v1.7 已定）：① primary reload 触发时创建第二代 `mbuf_pool_%d_gen2`（或 init 期预建），G_new secondary lookup 并在 TX/clone/ref 的 alloc 点使用本代际 pool；跨代 free 自动回正确 pool（`m->pool`）；② **方案 A**：`graceful_reload` 部署形态下 `pktmbuf_pool` 创建参数 `MEMPOOL_CACHE_SIZE`→0（:633-634），alloc/free 走 common pool 无锁 ring（多进程安全，iWiki 验证路线）；性能损失以 PT-NR-01 基线对比量化；③ 备选方案 B（仅当 A 实测不可接受）：`local_cache[]` 索引从 lcore_id 改 workerid/代际 id（DPDK `rte_mempool.c` 本地补丁） |
 
 | 项 | 内容 |
 |---|---|

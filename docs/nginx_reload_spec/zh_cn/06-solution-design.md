@@ -4,9 +4,9 @@
 |---|---|
 | 文档编号 | 06 |
 | 标题 | F-Stack Nginx 无损 reload 候选方案对比（S1~S4）+ 推荐方案 S3 设计 |
-| 版本 | v1.6（v1.5 基础上据 2026-08-21 方案修订：S3-M1 主路径从乒乓双队列段+reta 切流改为同队列+ready 后同期移交+flow_map 软件分发表+跨进程互斥+ARP/NDP clone，同时解决审核致命 1-6；reta 不改、不依赖 NIC RSS、virtio 与物理网卡均可用） |
-| 日期 | 2026-08-21 |
-| 状态 | 待人工审计（v1.6 方案级修订，§6.3/§6.4/§6.5 的旧 reta/乒乓/形态 V 内容已过时待后续清理，07/08 的 C-NR/用例需配合调整待后续修订） |
+| 版本 | v1.7（v1.6 基础上据 2026-08-24 定时器/mempool 调研+人工决策：新增语义 11 自驱 hardclock 绕开共享 timer 槽、语义 12 应用 mempool 分代际；§6.6 网卡 RX mempool 已定方案 A cache_size=0 主 + 方案 B cache 槽位改造备选） |
+| 日期 | 2026-08-24 |
+| 状态 | 待人工审计（v1.7 增量修订） |
 | 来源产物 | work/solution-design.md（方案设计师 solution-designer，2026-08-18 落盘）。本篇为正式化改写：输入为 [01](01-vpp-vcl-research.md)/[02](02-other-projects-research.md)/[03](03-fstack-legacy-solution.md)/[04](04-fstack-current-analysis.md)/[05](05-ld-preload-alternative.md) 五篇的前身产物（均已全文阅读）+ 关键机制回查实际代码交叉验证（只读）；保留全部事实证据、单来源声明与未坐实标注 |
 
 相关篇章：[00-总览](00-overview.md) | [04-现状分析](04-fstack-current-analysis.md) | [07-里程碑](07-milestones.md) | [08-测试计划](08-testing.md)
@@ -70,6 +70,8 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 8. **同核处理新旧进程**（v1.6 据 X3 决策，替代 v1.4 的「2N 逻辑 lcore_id」）：新旧进程可**同核处理**（不占 2N 物理核、不乒乓双队列段），proc_id 分配改为**代际无关固定映射**到同一批 queue（G_new 启动时直接用 G_old 的队列号，`tx_queue_id / rx_queue_list / dispatch_ring` 全部对齐，不需运行时重算 lcore_conf → rss_check/adjust/tbl/thash 四件套不变）。**但新旧进程高负载时切换瞬间的流量/丢包情况需关注**：两代进程同核时各得约 50% 有效算力 + 上下文切换/cache 抖动，可能延长 drain（需运行时观测，列入 RV）。
 9. **ARP/NDP 等协议包 clone 给 G_old**（v1.6 增补）：reload 窗口内，ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，**额外 clone 一份转发给所有 G_old 进程**（原有 clone 给其他 G_new 和 KNI 的逻辑不变）——确保 G_old drain 期间邻居表正常、能发 RTO/FIN/ACK。
 10. **reta 不改、不依赖 NIC RSS 能力**（v1.6 增补，同时解决审核致命 1/2/3）：S3-M1 不再依赖 reta 切流原语——同队列 + proc_id 代际无关固定映射使 reta 不变、ff_rss_check 四件套不变、不配 2N 队列（不丢半流量）。**virtio 与物理网卡均可用**（无需 guest 侧 RSS 能力）。
+11. **自驱 hardclock，绕开 DPDK 共享 timer 槽**（v1.7 据 2026-08-24 定时器调研+人工决策）：新旧进程**同 lcore_id** 共存时，DPDK `priv_timer[lcore_id]` 共享槽不可用（`rte_timer_meta_init` 的 memset 会踩掉 G_old 挂着的 timer 链表 → 其 hardclock 永不再触发 → 存量连接 RTO/keepalive 静默停摆；且共享链表上挂对方进程私有地址指针，`rte_timer_manage` 遍历会跨进程解引用私有虚拟地址 → 崩溃/数据损坏，不可修补）。**方案**：放弃 rte_timer 挂槽方式，main_loop 按 TSC 间隔直接调用 `ff_hardclock()`（`if (next_hardclock_tsc < cur_tsc) { ff_hardclock(); ff_update_current_ts(); next_hardclock_tsc += interval; }`）；`init_clock` 删除 `rte_timer_subsystem_init/rte_timer_meta_init/rte_timer_init/reset` 四连，改为计算 `interval = hz_tsc / freebsd.hz`（默认 100 → 10ms）；每进程 hardclock 完全独立、零共享状态，同 lcore_id 无冲突。依据：F-Stack 全树 `freebsd_clock` 是唯一 rte_timer 用户（lib/app 仅 ff_dpdk_if.c 两处），不依赖 rte_timer 任何跨核/同步特性。改动点：`ff_dpdk_if.c` init_clock/init_clock_worker/main_loop 三处。对 `graceful_reload=0` 等价生效（自驱与挂槽行为等价），需回归 timer 精度（RTO/keepalive）。
+12. **应用 mempool 分代际**（v1.7 据 2026-08-24 人工决策）：新旧进程**同 lcore_id** 时 mempool per-lcore cache 竞态——应用侧分配（TX 发包 `ff_mbuf_get` 的 `rte_pktmbuf_alloc(pktmbuf_pool)`、dispatch clone `pktmbuf_deep_clone`、ff_ref_pool 等）改为**分代际 mempool**：G_old 用第一代（现 `pktmbuf_pool[socketid]`），G_new 用第二代（primary 在 reload 触发时创建 `mbuf_pool_%d_gen2` 或 init 期预建，G_new secondary lookup）；mbuf 自带 `m->pool` 指针，跨进程流转后 `rte_pktmbuf_free` 自动回正确 pool。**cache 竞态处理（v1.7 已定）**：mempool 的 `local_cache[lcore_id]` 以 lcore_id 索引，同 lcore_id 两代进程即使在不同 pool 内仍会在同号 cache 槽竞态（RX 共享 pool 的 free + dispatch 跨代 free）→ **叠加方案 A：`graceful_reload` 部署形态下 `pktmbuf_pool` 创建时 `cache_size=0`**（ff_dpdk_if.c:633-634 的 MEMPOOL_CACHE_SIZE→0），alloc/free 全走 common pool 无锁 ring（多进程安全）；性能损失以 PT-NR-01 基线对比量化，若实测不可接受则切备选方案 B（`local_cache[]` 索引改 workerid/代际 id，见 §6.6）。
 
 ## 3. 候选方案集
 
@@ -400,6 +402,21 @@ v1.6 方案不依赖 reta 切流原语，故不再有 v1.4/v1.5 的 NIC 能力�
 - ~~§6.4 适用范围与网卡能力矩阵（reta 依赖）~~：v1.6 不依赖 reta，virtio 与物理网卡均可用。新版 §6.4 简化为环境能力说明。
 - ~~§6.4.1 无 RSS 有损 reload 兜底~~：v1.6 不依赖 reta，无「reta 静默成功伪装」黑洞。`graceful_reload=1` 的降级语义保留（不支持多队列时退化为有损），但触发条件从「reta_size==0」改为「不支持多队列」。
 - ~~§6.5 形态 V（软件切流，未来工作）~~：v1.6 主路径本身就是「同队列+软件切流（flow_map）」，形态 V 的机制已并为主路径。不再作为单独的未来工作。
+
+### 6.6 网卡 RX mempool 同 lcore_id 共存（v1.7 2026-08-24 已定：方案 A 主 + 方案 B 备选）
+
+**现状**（代码事实）：`pktmbuf_pool[socketid]`（ff_dpdk_if.c:149，per-NUMA 一个）由 primary 创建（:616-635，`rte_pktmbuf_pool_create(..., MEMPOOL_CACHE_SIZE, ...)`）、secondary lookup 共享（:638）；**RX queue 在 init 期绑定该 pool**（`rte_eth_rx_queue_setup(..., mbuf_pool)` :1141）且**运行时不可更换**（virtio 无 queue stop/setup）。RX 收包 refill、TX 发包 alloc（:2563/:2705）、dispatch clone（:2172/:2188）全部走同一 pool。
+
+**同 lcore_id 竞态面**（v1.7 调研）：
+1. RX refill：两代进程的 `rx_burst` 内部 `mempool_get` → `local_cache[L]` 同槽竞态
+2. TX/clone alloc：`rte_pktmbuf_alloc` → `local_cache[L]` 同槽竞态
+3. 跨代 free：dispatch 转发的 mbuf 被 G_old 消费后 `rte_pktmbuf_free` → 对端 pool 的 `local_cache[L]` 同槽竞态
+4. **应用 mempool 分代际（语义 12）不能独立消除**：RX mbuf（共享第一代 pool）的 free 与 dispatch 转发 mbuf 的跨代 free 仍落入同号 cache 槽
+
+**候选方案与决策**（v1.7 2026-08-24 人工拍板，对照 iWiki 4015929276/E-C §6.1「网卡驱动 mempool：关闭 cache + 缩小冲突域 + CAS，实测性能损失很小」）：
+- **方案 A（已选定，iWiki 同路）**：RX pool 共享第一代 + 创建时 `cache_size=0`（:633-634 的 MEMPOOL_CACHE_SIZE→0）→ 所有 alloc/free 走 common pool 无锁 ring（多进程安全）；代价：稳态也失去 per-lcore cache 加速，性能损失以 PT-NR-01 基线对比量化（iWiki 18.11 实测「很小」，24.11 virtio 待复测）
+- **方案 B（备选，仅当 A 实测不可接受时启用）**：保持 cache 但把 `local_cache[]` 索引从 lcore_id 改为 workerid/代际 id（改 DPDK `rte_mempool.c` 或 F-Stack 侧 wrapper）→ 稳态保留 cache 性能，reload 期天然分槽；改动面在 DPDK 层（F-Stack 本地补丁，升级 DPDK 需重做）
+- ~~方案 C（双 pool 运行时切换）~~：TX/clone 侧可行但 **RX 侧不可行**（queue 绑定不可换）→ 不能独立成立，否决
 
 ## 7. 与目标语义的对照验收（推荐方案自检）
 
