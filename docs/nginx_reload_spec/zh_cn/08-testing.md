@@ -15,9 +15,9 @@
 
 ## 摘要
 
-本测试计划覆盖 [07-里程碑](07-milestones.md) M0~M7 全周期：**16 条单测用例（UT-NR-01~16）+ 9 个 fixture + 5 条真 EAL 集成用例（IT-NR-A01~05）+ 15 行实机用例（RT-00~13，含 RT-04b）+ 6 条性能基线用例（PT-NR-01~06）+ 20 项验收标准（A-NR-01~20）+ 6 项回归（RG-NR）**，含循环 reload 门禁（v1.6 修订：每 5s 检测共享内存状态所有 G_old 已退出后 reload 一次，≥100 次零错误，依据 [01-VPP/VCL 调研](01-vpp-vcl-research.md) §6.3-7 验证模式并适配防重入语义）与未覆盖风险声明。
+本测试计划覆盖 [07-里程碑](07-milestones.md) M0~M7 全周期：**16 条单测用例（UT-NR-01~16）+ 9 个 fixture + 8 条真 EAL 集成用例（IT-NR-A01~08，v1.6 新增 A06/A07/A08）+ 15 行实机用例（RT-00~13，含 RT-04b）+ 6 条性能基线用例（PT-NR-01~06）+ 20 项验收标准（A-NR-01~20）+ 6 项回归（RG-NR）**，含循环 reload 门禁（v1.6 修订：每 5s 检测共享内存状态所有 G_old 已退出后 reload 一次，≥100 次零错误，依据 [01-VPP/VCL 调研](01-vpp-vcl-research.md) §6.3-7 验证模式并适配防重入语义）与未覆盖风险声明。
 
-> 【数字口径说明】本篇规模数字以实际清点为准：5 条真 EAL 集成用例（IT-NR-A01~05）、15 行实机用例（RT-00~13，含 RT-04b）。来源产物 work/milestones-testing.md 中的同源旧数字（6/13）系中间产物原文，不回改；如与本篇冲突以本篇为准。
+> 【数字口径说明】本篇规模数字以实际清点为准：8 条真 EAL 集成用例（IT-NR-A01~08，v1.6 新增 A06 DRAIN_DONE/REJECT、A07 ARP/NDP clone、A08 flow_map 三态判定）、15 行实机用例（RT-00~13，含 RT-04b）。来源产物 work/milestones-testing.md 中的同源旧数字（6/13）系中间产物原文，不回改；如与本篇冲突以本篇为准。
 
 ## 1. 单元测试计划
 
@@ -41,12 +41,12 @@
 | UT-NR-10 | `test_reload_fsm_transitions` | 状态机转移表：合法转移（T0→T1→T2→T3→T4→T5）通过；非法转移（如 T0 直接 T4、T3 回 T1）拒绝且打点 | 直接调 `ngx_ff_reload.c` 纯转移函数（需设计为无副作用可测） | 合法路径状态推进正确；非法路径返回错误不转移 | C-NR-205/403/404 |
 | UT-NR-11 | `test_reta_recalc_pure_fn` | reta 重算纯函数：给定 QB 段 → 全部表项指向 QB；QB 为空时拒绝 | 本地构造队列集参数 | 表项覆盖断言；边界（reta 表大小非 2 的幂） | C-NR-302 |
 | UT-NR-12 | `test_pingpong_generation_flip` | 乒乓翻转记账：连续两轮 reload 的段分配交替 | 模拟两轮状态机 T5 推进 | 第二轮 G_new' 绑段 A | C-NR-206/403 |
-| UT-NR-13 | `test_conn_owner_query_args` | `ff_conn_owner_query` 参数校验与错误路径（NULL 四元组/非法 family） | 直接调用 | 返回错误码不崩溃 | C-NR-301 |
+| UT-NR-13 | `test_flow_map_ops` | **flow_map 三函数**（v1.6 替代 ff_conn_owner_query）：lookup/insert/close 参数校验与错误路径（NULL 四元组/非法 family/重复 insert/close 后 lookup）；SYN accept 入表→后续包命中/miss 语义 | 直接调用（本地 hash 表，无 FreeBSD 栈依赖） | 返回码正确；insert→lookup 命中；未 insert→lookup miss；close 后 lookup miss | C-NR-301 |
 | UT-NR-14 | `test_ff_reload_msg_serdes` | FF_RELOAD 消息构造/序列化/解析/坏消息丢弃 | 本地构造消息体 | round-trip 一致；截断/魔数错丢弃 | C-NR-202 |
 | UT-NR-15 | `test_fsm_ready_timeout_gives_up` | T2 READY 超时 → 放弃本轮，状态回 T0 且 G_old 未动（状态机层） | 注入超时事件序列 | 状态回退正确 + 打点含放弃原因 | C-NR-404 |
 | UT-NR-16 | `test_fsm_switch_fail_rollback` | T3 切流 ACK(error) → 停在 T2 放弃，不推进 T4 | 注入失败 ACK | 同上 | C-NR-306/404 |
 
-> 诚实标注：`ff_conn_owner_query` 的真实归属判定（栈内已有连接）依赖 FreeBSD 栈状态，单测层不可达——由 IT-NR-A02 与 RT-02 覆盖；单测仅覆盖参数/错误路径（同 primary_slim 08 §1.1.4 的可达性标注法）。流表窗口语义（READY 后生效/miss 一律转 G_old/排空确认后关表）属状态机与回调注册逻辑，由 UT-NR-10 状态机转移 + RT-02/RT-10 判据覆盖。
+> 诚实标注（v1.6 修订）：~~`ff_conn_owner_query` 的真实归属判定依赖 FreeBSD 栈状态~~ → v1.6 改为 flow_map 软件分发表（本地 hash 表，无 FreeBSD 栈依赖），UT-NR-13 可完整测 lookup/insert/close 语义；flow_map 窗口语义（READY 后生效/miss 一律转 G_old/排空确认后关表）属状态机与回调注册逻辑，由 UT-NR-10 状态机转移 + RT-02/RT-10 判据覆盖；跨进程互斥标记正确性由 RV3 实测覆盖。
 
 ### 1.3 新增 fixture 清单（F-NR-1~9，置于 tests/unit/fixtures/）
 
@@ -108,9 +108,12 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | 编号 | 用例 | 步骤 | 判据 | 对应 |
 |---|---|---|---|---|
 | IT-NR-A01 | FF_RELOAD 消息环回 | net_null0 init 后经 msg ring 发 READY/SWITCH_REQ/ACK/DRAIN_PROGRESS | 各消息 round-trip 类型/字段一致；未知子类型丢弃不崩 | C-NR-202/203 |
-| IT-NR-A02 | dispatcher 回调触发与归属判定 | 注入构造包（本代际新流四元组 / 未知四元组=流表 miss）驱动 process_packets 路径 | 本栈新流→本栈处理（流表命中语义）；miss→一律回调返回目标 queue id 且 enqueue 发生 | C-NR-301/303 |
+| IT-NR-A02 | flow_map 查表回调触发与归属判定（v1.6：软件分发表） | 注入构造包（本代际新流四元组 insert 后 / 未知四元组=flow_map miss）驱动 process_packets 路径 | 本代际新流→本栈处理（flow_map 命中语义）；miss→一律经 dispatch_ring enqueue 转发（目标 queue id 正确） | C-NR-301/303 |
 | IT-NR-A03 | dispatch_ring 转发路径 | A02 的 enqueue 后驱动 process_dispatch_ring dequeue | 包进入 ff_veth_input；ring 来的包不二次进回调（ff_dpdk_if.c:2100 语义回归） | C-NR-303 |
-| IT-NR-A04 | 状态机消息驱动 | 注入 READY 序列 → 断言 SWITCH_REQ 发出；注入部分 READY 缺失 → 不发 | 转移与 UT-NR-10 一致 | C-NR-205/306 |
+| IT-NR-A04 | 状态机消息驱动 | 注入 READY 序列 → 断言 HANDOVER_REQ 发出（v1.6：~~SWITCH_REQ~~ 改为移交请求）；注入部分 READY 缺失 → 不发 | 转移与 UT-NR-10 一致 | C-NR-205/306 |
+| IT-NR-A06 | **DRAIN_DONE/REJECT 消息集成**（v1.6 新增） | 注入 DRAIN_DONE → 断言 G_new flow_map close 生效；注入双 reload 场景 → 断言 REJECT 返回 | DRAIN_DONE 后 flow_map 查表停止；REJECT 场景 master 拒绝并记日志 | C-NR-202/403 |
+| IT-NR-A07 | **ARP/NDP clone 给 G_old**（v1.6 新增） | 注入 ARP/NDP 包驱动 process_packets；观察 clone 行为 | 包被 clone 一份转发给所有 G_old（原有 clone 给 G_new/KNI 不受影响） | C-NR-304 |
+| IT-NR-A08 | **flow_map 三态判定完整性**（v1.6 新增） | 注入 SYN→入表→后续包→ACK 包→数据包序列（完整握手+数据） | SYN 入表；ACK/数据包查表命中本栈处理；未入表的旧连接包 miss→转 G_old；**握手中间态包（SYN 已入表但 ACK 未到）不误转** | C-NR-301/303 |
 | IT-NR-A05 | `graceful_reload=0` 零回归 | 同 init 不注册消息族/回调 | handle_msg 对 FF_RELOAD 类型返回未支持（不崩）；回调未注册 | C-NR-101 门控 |
 
 ### 2.3 B 组：实机用例矩阵（RT-00~13，C-NR-601 harness 承载）
@@ -121,13 +124,13 @@ f-stack-client（客户端机，8 核，ssh 可达）
 |---|---|---|---|---|
 | RT-00 | 启动基线 | `graceful_reload=1` 全 secondary 启动 + ab 3 轮 | 启动全成功；QPS 落在 PT-NR-01 基线噪声区间；Failed=0 | M1 |
 | RT-01 | 空载 HUP | 无流量 reload | T0→T5 状态打点完整；G_old 退出/G_new 接管；服务恢复可访问；无 crash | M2（放宽版）/M4（全判据） |
-| RT-02 | 带长连接流量 HUP | 12+ 条 keep-alive 探测持续，中途 reload | **探测 0 失败**；旧连接全部由 G_old drain 完成后自然关闭（或继续服务至客户端断开）；新连接由 G_new accept（日志/计数证实）；无 RST；**排空确认后 G_new 关闭流表回稳态：回调打点计数停止增长、稳态 pps/时延与 reload 前基线一致（流表窗口化验证，[06] 第 2 节语义 6）** | M3/M4 |
+| RT-02 | 带长连接流量 HUP | 12+ 条 keep-alive 探测持续，中途 reload | **探测 0 失败**；旧连接全部由 G_old drain 完成后自然关闭（或继续服务至客户端断开）；新连接由 G_new accept（日志/计数证实）；无 RST；**排空确认后 G_new 关闭 flow_map 回稳态：查表计数停止增长、稳态 pps/时延与 reload 前基线一致（flow_map 窗口化验证，[06] 第 2 节语义 6）；ARP/NDP 正常（G_old drain 期邻居表有效，[06] 第 2 节语义 9）** | M3/M4 |
 | RT-03 | 持续 CPS 压力下 HUP | ab 短连接持续打满，中途 reload | **connect/read/write error = 0**；ab 两段（reload 前后）均 Failed=0 | M3 |
 | RT-04 | USR2 带流量升级 | 同 RT-02 流量下 USR2 换二进制 | 错误 0；新 master+G_new 接管；老 worker drain；pid 双文件共存期正确 | M5 |
 | RT-04b | 升级失败回退 | USR2 后新二进制配置错 → 对老 master HUP | 老代际继续服务；回退后 HUP/QUIT 链路正常 | M5 |
 | RT-05 | 异常：新 worker 起不来 | 注入（配置错/READY 超时，测试构建含 `FF_RELOAD_FAULT_INJECTION` 开关） | G_old 全程服务零影响；master 放弃本轮有明确日志；状态机回 T0 | M4 |
 | RT-06 | 异常：旧 worker 不退 | 构造 drain 挂起（长连接不关 + 压低超时） | shutdown timer 强退生效；reload 不永久挂起；强退前连接得到 graceful 尝试 | M4 |
-| RT-07 | 异常：reta 更新失败 | 故障注入使 SWITCH_REQ 返回 error | 回退停留 T2；G_old 继续服务；告警打点；无半切流状态（QA/QB 均有主或全归 G_old） | M4 |
+| RT-07 | 异常：移交失败（v1.6：~~reta 更新失败~~ → 同期移交失败） | 故障注入使 HANDOVER_REQ 返回 error 或互斥标记超时 | 回退停留 T2；G_old 继续服务（互斥标记保证不会并发 poll）；告警打点；无半移交状态 | M4 |
 | RT-08 | 异常：双 primary 误启 | 人为再拉一个 primary 进程 | DPDK EAL 拒绝（现有机制）；既有进程组不受影响；报错明确 | M1 |
 | RT-09 | reload 中杀 slim primary | T2~T3 窗口 kill_process.sh 杀 primary | 数据面零中断（primary_slim E3b 已验语义回归）；本轮 reload 安全放弃 + 降级告警 | M4 |
 | RT-10 | 连续多轮 reload | 空载+轻流量连续 20 轮；每轮 drain 完成前注入一次抢先 HUP | 每轮乒乓段交替正确；无资源泄漏（mbuf 水位平稳）；20/20 成功；**抢先 HUP 均被拒绝且记日志（reload 防重入），排空确认后下一轮 HUP 正常放行（[06] 第 2 节语义 6）** | M4 |
@@ -183,7 +186,7 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | A-NR-05 | READY 显式协议取代旧时序 | 无 500ms/15s 经验等待依赖；打点可证 | RT-01 状态日志 | ✅ | M2 |
 | A-NR-06 | 多代际 listen 并存（RV7 终验） | E-NR-01 + RT-01/02 | E-NR-01；RT-02 | ✅ | M2/M3 |
 | A-NR-07 | reta 原子切流（RV2 终验） | 切流前后 flow 导向正确；切换窗口 QA 始终有主 | E-NR-02；RT-02 抓包 | ✅ | M3 |
-| A-NR-08 | 转发兜底正确 | 旧连接包达 G_old；drain 期探测 0 失败 | IT-NR-A02/A03；RT-02 | ✅ | M3 |
+| A-NR-08 | 转发兜底正确（v1.6：flow_map miss → ring 转 G_old；ARP/NDP clone） | 旧连接包达 G_old；drain 期探测 0 失败；G_old 邻居表有效 | IT-NR-A02/A03/A07/A08；RT-02 | ✅ | M3 |
 | A-NR-09 | 带流量 reload 零错误（核心） | RT-02/RT-03 判据全满足 | RT-02/RT-03 | ✅ | M3/M4 |
 | A-NR-10 | timer 隔离（RV6 终验） | 并存期 RTO/keepalive 正常 | RV6 记录 | ✅ | M2 |
 | A-NR-11 | drain 语义完整 | 存量连接自然关闭；进度可观测 | RT-02 | ✅ | M4 |

@@ -68,7 +68,7 @@ F-Stack 的 nginx 适配（`app/nginx-1.28.0/`，源码集成路线）自 2017 �
 - **[05 ld_preload 备选路线](05-ld-preload-alternative.md)**：adapter/syscall 架构（hook 面、ring IPC、fork 语义、stack 进程侧、异常退出回收）、与既有 ld_preload_ring_spec 的三处偏差、nginx HUP/USR2 结合可行性、7 项天然优势与 10 项缺口。
 - **[06 方案设计](06-solution-design.md)**：7 个评估维度与否决性判据、目标语义定义（5 条）、候选方案 S1~S4 逐一机制描述/障碍覆盖/风险、对比矩阵与分档结论（推荐 S3、备选 S2、S1/S4 不独立实施）、S3 四层所有权模型与 T0~T5 reload 时序、需新增的 ff_api/ff_msg/config.ini 接口面、RV1~9 运行时验证与 DR1~7 设计评审清单、单来源声明。
 - **[07 里程碑规划](07-milestones.md)**：编号体系与映射表、M0~M7 里程碑总览与逐个详述（目标/范围/编码工作清单 C-NR-100~604 带文件:行号锚点/DoD/测试门禁/风险与回退/提交建议）、35 个编码点的跨里程碑依赖 DAG。
-- **[08 测试计划](08-testing.md)**：16 条单测用例（UT-NR-01~16）+ 9 个 fixture + mock 三层策略、5 条 cmocka 真 EAL 集成用例（IT-NR-A01~05）、15 行实机用例（RT-00~13，含 RT-04b）与测试环境拓扑/硬性规约、6 条性能基线用例（PT-NR-01~06）、20 项验收标准（A-NR-01~20）与 6 项回归（RG-NR）、未覆盖风险声明与未决问题。
+- **[08 测试计划](08-testing.md)**：16 条单测用例（UT-NR-01~16）+ 9 个 fixture + mock 三层策略、8 条 cmocka 真 EAL 集成用例（IT-NR-A01~08，v1.6 新增 A06/A07/A08）、15 行实机用例（RT-00~13，含 RT-04b）与测试环境拓扑/硬性规约、6 条性能基线用例（PT-NR-01~06）、20 项验收标准（A-NR-01~20）与 6 项回归（RG-NR）、未覆盖风险声明与未决问题。
 
 （09-review-report.md 由后续独立审核 agent 产出，不属于本撰写批次。）
 
