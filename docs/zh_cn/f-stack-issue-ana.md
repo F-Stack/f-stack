@@ -935,7 +935,8 @@
   - 修复/方案信息：FreeBSD/F-Stack的IPPROTO_ICMP需配合`SOCK_RAW`使用，不支持`SOCK_DGRAM`+`IPPROTO_ICMP`组合(与Linux行为不同)。
 - **#631** 🟢open ff_shutdown() not working on UDP sockets
   - 结论：【2026-08-06 本地实测】在 F-Stack 1.26 + FreeBSD 15.0 + DPDK 24.11.6 环境上不复现。ff_shutdown(SHUT_RD) 在 UDP 套接字上工作正常：返回 0，后续 ff_recvfrom 返回 0 (EOF)。3 次重复测试一致。根因：udp_shutdown() 即使对未连接 UDP 返回 ENOTCONN，仍然调用 sorflush() 设置 SBS_CANTRCVMORE（udp_usrreq.c:1768）；kern_shutdown() 将 ENOTCONN 转为 0（因 F-Stack p_osrel=0 < P_OSREL_SHUTDOWN_ENOTCONN=1100077）；soreceive_dgram() 检查 SBS_CANTRCVMORE 返回 0 (EOF)（uipc_socket.c:3537）。对比 Linux 内核：shutdown(SHUT_RD) 对未连接 UDP 返回 ENOTCONN 且继续接收数据，F-Stack 行为更符合用户预期。issue 提交于 2021 年（旧版 FreeBSD 11.0），当前版本已不复现。
-  - 修复/方案信息：无需修复。建议关闭 issue 或建议用户升级到最新 dev 分支重试。详细分析见 docs/issue_631/zh_cn/。
+  - 【2026-08-27 代码分析】确认该问题在 1.21 分支（FreeBSD 11.0）**确实存在**：FreeBSD 11 的 soshutdown()（kern/uipc_socket.c:2349-2351）对未连接 socket 在到达 sorflush() **之前**直接返回 ENOTCONN，接收侧从未被关闭；p_osrel=1100122（param.h:61 的 __FreeBSD_version，ff_init_main.c:370 赋值）>= P_OSREL_SHUTDOWN_ENOTCONN=1100077，因此 sys_shutdown() 的 ENOTCONN 转 0 兼容层（uipc_syscalls.c:1340-1342）不生效——ff_shutdown() 返回 -1 且 errno=ENOTCONN，ff_recvfrom 继续正常收包。已连接的 UDP socket 不受影响（sorflush 路径正常工作）。FreeBSD 15 重写了该路径——soshutdown() 完全下放协议层并携带 how 参数（release/2.0 uipc_socket.c:3674-3683），udp_shutdown() 处理未连接场景（udp_usrreq.c:1742+）——这就是 1.26 上不复现的原因。
+  - 修复/方案信息：1.21 分支不修复；需要未连接 UDP 的 ff_shutdown(SHUT_RD) 正常工作的用户请使用最新版本（已于 2026-08-27 在 GitHub 发布英文评论）。详细分析见 docs/issue_631/zh_cn/。
 - **#647** ⚪closed multicast packet can't specified port?
   - 结论：【2026-07-30回复】官方最终确认：F-Stack为用户态栈使用单一虚拟接口(f-stack-0)，IP_MULTICAST_IF的setsockopt设置inp_moptions->imo_multicast_ifp用于in_pcbladdr()中选择多播流量的源地址；观察到的ifa_ifwithnet失败可能是设置IP_MULTICAST_IF时虚拟接口未正确映射所致；由于F-Stack……
   - 修复/方案信息：F-Stack多播流量走单一虚拟接口f-stack-0；多网卡指定端口发送多播存在虚拟接口映射问题，建议尝试最新dev分支(已有多个setsockopt兼容性修复)。
