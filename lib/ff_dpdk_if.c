@@ -1672,7 +1672,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 usr_cb_tsc += rte_rdtsc() - cur_tsc;
             } else if (packet_dispatcher_with_context) {
                 struct ff_dispatcher_context ctx;
-                if (rtem->ol_flags & RTE_MBUF_F_RX_VLAN_STRIPPED) {
+                if (rtem->ol_flags & PKT_RX_VLAN_STRIPPED) {
                     ctx.vlan.stripped = 1;
                     ctx.vlan.vlan_tci = rte_cpu_to_be_16(rtem->vlan_tci);
                 } else {
