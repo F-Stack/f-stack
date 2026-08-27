@@ -176,11 +176,41 @@
 
 /* ioctl define end */
 
+/* fcntl define start */
+
+#define LINUX_F_DUPFD           0
+#define LINUX_F_GETFD           1
+#define LINUX_F_SETFD           2
+#define LINUX_F_GETFL           3
+#define LINUX_F_SETFL           4
+#define LINUX_F_GETLK           5
+#define LINUX_F_SETLK           6
+#define LINUX_F_SETLKW          7
+#define LINUX_F_SETOWN          8
+#define LINUX_F_GETOWN          9
+#define LINUX_F_OFD_GETLK       36
+#define LINUX_F_OFD_SETLK       37
+#define LINUX_F_OFD_SETLKW      38
+
+#define LINUX_O_APPEND          0x400
+#define LINUX_O_NONBLOCK        0x800
+#define LINUX_O_ASYNC           0x2000
+#define LINUX_O_DIRECT          0x4000
+#define LINUX_O_NOATIME         0x40000
+#define LINUX_O_CLOEXEC         0x80000
+
+/* fcntl define end */
+
 /* af define start */
 
 #define LINUX_AF_INET6        10
 
 /* af define end */
+
+/* Flags for socket, socketpair, accept4 */
+
+#define	LINUX_SOCK_CLOEXEC	LINUX_O_CLOEXEC
+#define	LINUX_SOCK_NONBLOCK	LINUX_O_NONBLOCK
 
 /* msghdr define start */
 
@@ -495,6 +525,20 @@ linux2freebsd_opt(int level, int optname)
     }
 }
 
+static int
+linux2freebsd_socket_flags(int flags)
+{
+    if (flags & LINUX_SOCK_NONBLOCK) {
+        flags &= ~LINUX_SOCK_NONBLOCK;
+        flags |= SOCK_NONBLOCK;
+    }
+    if (flags & LINUX_SOCK_CLOEXEC) {
+        flags &= ~LINUX_SOCK_CLOEXEC;
+        flags |= SOCK_CLOEXEC;
+    }
+    return flags;
+}
+
 static void
 linux2freebsd_sockaddr(const struct linux_sockaddr *linux,
     socklen_t addrlen, struct sockaddr *freebsd)
@@ -720,7 +764,7 @@ ff_socket(int domain, int type, int protocol)
     int rc;
     struct socket_args sa;
     sa.domain = domain == LINUX_AF_INET6 ? AF_INET6 : domain;
-    sa.type = type;
+    sa.type = linux2freebsd_socket_flags(type);
     sa.protocol = protocol;
     if ((rc = sys_socket(curthread, &sa)))
         goto kern_fail;
@@ -1164,6 +1208,38 @@ ff_accept(int s, struct linux_sockaddr * addr,
     socklen_t socklen = sizeof(struct sockaddr_storage);
 
     if ((rc = kern_accept(curthread, s, &pf, &socklen, &fp)))
+        goto kern_fail;
+
+    rc = curthread->td_retval[0];
+    fdrop(fp, curthread);
+
+    if (addr && pf)
+        freebsd2linux_sockaddr(addr, pf);
+
+    if (addrlen)
+        *addrlen = pf->sa_len;
+
+    if(pf != NULL)
+        free(pf, M_SONAME);
+    return (rc);
+
+kern_fail:
+    if(pf != NULL)
+        free(pf, M_SONAME);
+    ff_os_errno(rc);
+    return (-1);
+}
+
+int
+ff_accept4(int s, struct linux_sockaddr * addr,
+    socklen_t * addrlen, int flags)
+{
+    int rc;
+    struct file *fp;
+    struct sockaddr *pf = NULL;
+    socklen_t socklen = sizeof(struct sockaddr_storage);
+
+    if ((rc = kern_accept4(curthread, s, &pf, &socklen, linux2freebsd_socket_flags(flags), &fp)))
         goto kern_fail;
 
     rc = curthread->td_retval[0];
