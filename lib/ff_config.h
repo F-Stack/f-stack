@@ -297,6 +297,8 @@ struct ff_config {
         /* TX burst queue drain nodelay dalay time */
         unsigned pkt_tx_delay;
 
+        unsigned mbuf_low_watermark;
+
         /* list of proc-lcore */
         uint16_t *proc_lcore;
 

@@ -988,6 +988,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.pkt_tx_delay = atoi(value);
     } else if (MATCH("dpdk", "symmetric_rss")) {
         pconfig->dpdk.symmetric_rss = atoi(value);
+    } else if (MATCH("dpdk", "mbuf_low_watermark")) {
+        pconfig->dpdk.mbuf_low_watermark = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
     } else if (MATCH("kni", "type")) {
@@ -1349,6 +1351,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.numa_on = 1;
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
+    cfg->dpdk.mbuf_low_watermark = 0;
 
     /* KNI ratelimit default disabled */
     //cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;
