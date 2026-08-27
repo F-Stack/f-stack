@@ -962,6 +962,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.file_prefix = strdup(value);
     } else if (MATCH("dpdk", "pci_whitelist")) {
         pconfig->dpdk.pci_whitelist = strdup(value);
+    } else if (MATCH("dpdk", "extra_eal_args")) {
+        pconfig->dpdk.extra_eal_args = strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "nb_vdev")) {
@@ -1177,6 +1179,19 @@ dpdk_args_setup(struct ff_config *cfg)
                     strcat(temp, temp2);
                 }
                 dpdk_argv[n++] = strdup(temp);
+        }
+    }
+
+    if (cfg->dpdk.extra_eal_args) {
+        char* token;
+        char* rest = cfg->dpdk.extra_eal_args;
+
+        while ((token = strtok_r(rest, " ", &rest))) {
+            if (n >= DPDK_CONFIG_NUM) {
+                printf("extra_eal_args exceed DPDK_CONFIG_NUM, truncated\n");
+                break;
+            }
+            dpdk_argv[n++] = strdup(token);
         }
     }
 

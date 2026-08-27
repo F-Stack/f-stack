@@ -31,8 +31,8 @@
 extern "C" {
 #endif
 
-// dpdk argc, argv, max argc: 16, member of dpdk_config
-#define DPDK_CONFIG_NUM 16
+// dpdk argc, argv, max argc: 32, member of dpdk_config
+#define DPDK_CONFIG_NUM 32
 #define DPDK_CONFIG_MAXLEN 256
 #define DPDK_MAX_LCORE 128
 #define DPDK_MAX_VLAN_FILTER 128
@@ -271,6 +271,9 @@ struct ff_config {
 
         /* load an external driver */
         char *pci_whitelist;
+
+        /* extra DPDK EAL args, appended to rte_eal_init argv */
+        char *extra_eal_args;
 
         int nb_channel;
         int memory;
