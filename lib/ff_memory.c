@@ -316,7 +316,7 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
     ff_mbuf_tx_offload(m, &offload);
     data = rte_pktmbuf_mtod(head, void*);
 
-    if (offload.ip_csum) {
+    if (ctx->hw_features.tx_csum_ip && offload.ip_csum) {
         /* ipv6 not supported yet */
         struct rte_ipv4_hdr *iph;
         int iph_len;

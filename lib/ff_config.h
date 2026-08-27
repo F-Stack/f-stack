@@ -286,6 +286,8 @@ struct ff_config {
         int numa_on;
         int tso;
         int tx_csum_offoad_skip;
+        int tx_csum_ip_skip;
+        int tx_csum_l4_skip;
         int vlan_strip;
         int nb_vlan_filter;
         uint16_t vlan_filter_id[DPDK_MAX_VLAN_FILTER];

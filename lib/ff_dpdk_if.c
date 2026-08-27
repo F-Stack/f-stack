@@ -749,20 +749,26 @@ init_port_start(void)
                     pconf->hw_features.rx_csum = 1;
                 }
 
-                if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0) {
+                if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0 &&
+                    ff_global_cfg.dpdk.tx_csum_ip_skip == 0) {
                     if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM)) {
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX ip checksum offload supported\n");
                         port_conf.txmode.offloads |= DEV_TX_OFFLOAD_IPV4_CKSUM;
                         pconf->hw_features.tx_csum_ip = 1;
                     }
+                }
 
+                if (ff_global_cfg.dpdk.tx_csum_offoad_skip == 0 &&
+                    ff_global_cfg.dpdk.tx_csum_l4_skip == 0) {
                     if ((dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) &&
                         (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM)) {
                         ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX TCP&UDP checksum offload supported\n");
                         port_conf.txmode.offloads |= DEV_TX_OFFLOAD_UDP_CKSUM | DEV_TX_OFFLOAD_TCP_CKSUM;
                         pconf->hw_features.tx_csum_l4 = 1;
                     }
-                } else {
+                }
+
+                if (ff_global_cfg.dpdk.tx_csum_offoad_skip) {
                     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "TX checksum offoad is disabled\n");
                 }
 
@@ -2223,7 +2229,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 
     void *data = rte_pktmbuf_mtod(head, void*);
 
-    if (offload.ip_csum) {
+    if (ctx->hw_features.tx_csum_ip && offload.ip_csum) {
         /* ipv6 not supported yet */
         struct rte_ipv4_hdr *iph;
         int iph_len;
