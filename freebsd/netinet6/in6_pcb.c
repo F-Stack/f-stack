@@ -109,6 +109,13 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/in6_pcb.h>
 #include <netinet6/scope6_var.h>
 
+#ifdef FSTACK
+#include "ff_host_interface.h"
+int ff_in6_pcb_lport(struct inpcb *inp, struct in6_addr *laddr6p,
+    u_short *lportp, struct in6_addr *faddr6p, u_short *fportp,
+    struct ucred *cred, int lookupflags);
+#endif
+
 static struct inpcb *in6_pcblookup_hash_locked(struct inpcbinfo *,
     struct in6_addr *, u_int, struct in6_addr *, u_int, int, struct ifnet *);
 
@@ -358,10 +365,22 @@ in6_pcbladdr(register struct inpcb *inp, struct sockaddr *nam,
 	if ((error = prison_remote_ip6(inp->inp_cred, &sin6->sin6_addr)) != 0)
 		return (error);
 
+#ifdef FSTACK
+	in6a = in6addr_any;
+	ff_in_pcbladdr(AF_INET6, &sin6->sin6_addr,
+	    sin6->sin6_port, &in6a);
+	if (IN6_IS_ADDR_UNSPECIFIED(&in6a)) {
+		error = in6_selectsrc_socket(sin6, inp->in6p_outputopts,
+		    inp, inp->inp_cred, scope_ambiguous, &in6a, NULL);
+		if (error)
+			return (error);
+	}
+#else
 	error = in6_selectsrc_socket(sin6, inp->in6p_outputopts,
 	    inp, inp->inp_cred, scope_ambiguous, &in6a, NULL);
 	if (error)
 		return (error);
+#endif
 
 	/*
 	 * Do not update this earlier, in case we return with an error.
@@ -416,9 +435,26 @@ in6_pcbconnect_mbuf(register struct inpcb *inp, struct sockaddr *nam,
 	}
 	if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr)) {
 		if (inp->inp_lport == 0) {
+#ifdef FSTACK
+			u_short lport6 = 0;
+
+			error = ff_in6_pcb_lport(inp, &addr6, &lport6,
+			    &sin6->sin6_addr, &sin6->sin6_port, cred,
+			    INPLOOKUP_WILDCARD);
+			if (error)
+				return (error);
+			inp->inp_lport = lport6;
+			inp->in6p_laddr = in6addr_any;
+			if (in_pcbinshash(inp) != 0) {
+				inp->in6p_laddr = in6addr_any;
+				inp->inp_lport = 0;
+				return (EAGAIN);
+			}
+#else
 			error = in6_pcbbind(inp, (struct sockaddr *)0, cred);
 			if (error)
 				return (error);
+#endif
 		}
 		inp->in6p_laddr = addr6;
 	}

@@ -687,6 +687,157 @@ ff_in_pcb_lport(struct inpcb *inp, struct in_addr *laddrp, u_short *lportp,
 
 	return (0);
 }
+
+#ifdef FSTACK
+int ff_in6_pcb_lport(struct inpcb *inp, struct in6_addr *laddr6p,
+    u_short *lportp, struct in6_addr *faddr6p, u_short *fportp,
+    struct ucred *cred, int lookupflags);
+#endif
+
+int
+ff_in6_pcb_lport(struct inpcb *inp, struct in6_addr *laddr6p,
+    u_short *lportp, struct in6_addr *faddr6p, u_short *fportp,
+    struct ucred *cred, int lookupflags)
+{
+	struct inpcbinfo *pcbinfo;
+	struct inpcb *tmpinp;
+	unsigned short *lastport;
+	int count, dorandom, error;
+	u_short aux, first, last, lport;
+	u_short rss6_first, rss6_last, *rss6_portrange;
+	/* 0:not init, 1:init successed, -1:init failed */
+	static int rss_tbl6_init = 0;
+	int rss_ret, rss_match = 0;
+	struct ifaddr *ifa;
+	struct ifnet *ifp;
+	struct in6_addr laddr6, faddr6;
+
+	pcbinfo = inp->inp_pcbinfo;
+
+	/*
+	 * Because no actual state changes occur here, a global write lock on
+	 * the pcbinfo isn't required.
+	 */
+	INP_LOCK_ASSERT(inp);
+	INP_HASH_LOCK_ASSERT(pcbinfo);
+
+	if (inp->inp_flags & INP_HIGHPORT) {
+		first = V_ipport_hifirstauto;	/* sysctl */
+		last  = V_ipport_hilastauto;
+		lastport = &pcbinfo->ipi_lasthi;
+	} else if (inp->inp_flags & INP_LOWPORT) {
+		error = priv_check_cred(cred, PRIV_NETINET_RESERVEDPORT, 0);
+		if (error)
+			return (error);
+		first = V_ipport_lowfirstauto;	/* 1023 */
+		last  = V_ipport_lowlastauto;	/* 600 */
+		lastport = &pcbinfo->ipi_lastlow;
+	} else {
+		first = V_ipport_firstauto;	/* sysctl */
+		last  = V_ipport_lastauto;
+		lastport = &pcbinfo->ipi_lastport;
+	}
+	if (V_ipport_randomized &&
+		(!V_ipport_stoprandom || pcbinfo == &V_udbinfo ||
+		pcbinfo == &V_ulitecbinfo))
+		dorandom = 1;
+	else
+		dorandom = 0;
+	if (first == last)
+		dorandom = 0;
+	if (pcbinfo != &V_udbinfo || pcbinfo != &V_ulitecbinfo)
+		V_ipport_tcpallocs++;
+	if (first > last) {
+		aux = first;
+		first = last;
+		last = aux;
+	}
+
+	laddr6 = *laddr6p;
+	faddr6 = *faddr6p;
+	tmpinp = NULL;	/* Make compiler happy. */
+	lport = *lportp;
+
+    if (rss_tbl6_init == 0) {
+        rss_ret = ff_rss_tbl6_set_portrange(first, last);
+        if (rss_ret < 0)
+            rss_tbl6_init = -1;
+        else
+            rss_tbl6_init = 1;
+    }
+
+    if (rss_tbl6_init == 1) {
+        rss_ret = ff_rss_tbl6_get_portrange((const uint8_t *)&faddr6,
+            (const uint8_t *)&laddr6, *fportp,
+            &rss6_first, &rss6_last, &rss6_portrange);
+        if (rss_ret < 0) {
+            if (rss_ret != -ENOENT)
+                rss_tbl6_init = -1;
+        } else {
+            /* [0] store last port idx */
+            rss_match = 1;
+            count = rss6_last - rss6_first + 1;
+            if (dorandom)
+                rss6_portrange[0] = rss6_first + (arc4random() % (count));
+        }
+    }
+
+    if (!rss_match) {
+        struct sockaddr_in6 ifp_sin6;
+        bzero(&ifp_sin6, sizeof(ifp_sin6));
+        ifp_sin6.sin6_addr = laddr6;
+        ifp_sin6.sin6_family = AF_INET6;
+        ifp_sin6.sin6_len = sizeof(ifp_sin6);
+        ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin6, 0, RT_ALL_FIBS);
+        if (ifa == NULL) {
+            ifp_sin6.sin6_addr = faddr6;
+            ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin6, 0, RT_ALL_FIBS);
+            if (ifa == NULL)
+                return (EADDRNOTAVAIL);
+        }
+        ifp = ifa->ifa_ifp;
+
+    	if (dorandom)
+    		*lastport = first + (arc4random() % (last - first));
+
+    	count = last - first;
+    }
+
+	do {
+		if (count-- < 0)	/* completely used? */
+			return (EADDRNOTAVAIL);
+        if (rss_match) {
+            rss6_portrange[0]++;
+            if (rss6_portrange[0] < rss6_first || rss6_portrange[0] > rss6_last)
+                rss6_portrange[0] = rss6_first;
+            *lastport = rss6_portrange[rss6_portrange[0]];
+        } else {
+    		++*lastport;
+    		if (*lastport < first || *lastport > last)
+    			*lastport = first;
+        }
+		lport = htons(*lastport);
+
+		tmpinp = in6_pcblookup_local(pcbinfo,
+		    &inp->in6p_laddr, lport, lookupflags, cred);
+		if (!rss_match && tmpinp == NULL) {
+			/* Note:
+			 * LOOPBACK not support rss.
+			 */
+			if ((ifp->if_softc == NULL) && (ifp->if_flags & IFF_LOOPBACK))
+				break;
+			if (ff_rss_check6(ifp->if_softc, (const uint8_t *)&faddr6,
+			    (const uint8_t *)&laddr6, *fportp, lport))
+				break;
+			else
+				tmpinp++; /* Set not NULL to find another lport */
+		}
+	} while (tmpinp != NULL);
+
+	*lportp = lport;
+
+	return (0);
+}
 #endif
 
 /*

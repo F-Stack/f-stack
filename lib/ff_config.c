@@ -890,8 +890,16 @@ rss_tbl_cfg_handler(struct ff_rss_check_cfg *cur)
 
         /* Note: daddr must be include by port_id's addr or vip_addr, but here not check it now */
         rss_tbl_cfg_p[i].port_id = atoi(rss_tbl_4tuble_array[0]);
-        inet_pton(AF_INET, rss_tbl_4tuble_array[1], (void *)&(rss_tbl_cfg_p[i].daddr));
-        inet_pton(AF_INET, rss_tbl_4tuble_array[2], (void *)&(rss_tbl_cfg_p[i].saddr));
+        /* v6 if the address text contains ':', else v4 (v4 path unchanged) */
+        if (strchr(rss_tbl_4tuble_array[1], ':') != NULL) {
+            rss_tbl_cfg_p[i].family = AF_INET6;
+            inet_pton(AF_INET6, rss_tbl_4tuble_array[1], (void *)&(rss_tbl_cfg_p[i].daddr6));
+            inet_pton(AF_INET6, rss_tbl_4tuble_array[2], (void *)&(rss_tbl_cfg_p[i].saddr6));
+        } else {
+            rss_tbl_cfg_p[i].family = AF_INET;
+            inet_pton(AF_INET, rss_tbl_4tuble_array[1], (void *)&(rss_tbl_cfg_p[i].daddr));
+            inet_pton(AF_INET, rss_tbl_4tuble_array[2], (void *)&(rss_tbl_cfg_p[i].saddr));
+        }
         rss_tbl_cfg_p[i].sport = htons(atoi(rss_tbl_4tuble_array[3]));
     }
 
