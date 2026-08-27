@@ -643,10 +643,20 @@ filt_timerexpire(void *knx)
 
 	if ((kn->kn_flags & EV_ONESHOT) != EV_ONESHOT) {
 		calloutp = (struct callout *)kn->kn_hook;
-		*kn->kn_ptr.p_nexttime += timer2sbintime(kn->kn_sdata, 
+		*kn->kn_ptr.p_nexttime += timer2sbintime(kn->kn_sdata,
 		    kn->kn_sfflags);
+#ifndef FSTACK
 		callout_reset_sbt_on(calloutp, *kn->kn_ptr.p_nexttime, 0,
 		    filt_timerexpire, kn, PCPU_GET(cpuid), C_ABSOLUTE);
+#else
+		/* F-Stack callout is tick-based; the sbt macro ignores C_ABSOLUTE,
+		 * so convert the absolute fire time to relative ticks here. */
+		sbintime_t now = sbinuptime();
+		int to_ticks = *kn->kn_ptr.p_nexttime > now ? (*kn->kn_ptr.p_nexttime - now) / tick_sbt + 1 : 0;
+
+		callout_reset_tick_on(calloutp, to_ticks, filt_timerexpire, kn,
+		    PCPU_GET(cpuid), 0);
+#endif
 	}
 }
 
@@ -687,8 +697,18 @@ filt_timerattach(struct knote *kn)
 	callout_init(calloutp, 1);
 	kn->kn_hook = calloutp;
 	*kn->kn_ptr.p_nexttime = to + sbinuptime();
+#ifndef FSTACK
 	callout_reset_sbt_on(calloutp, *kn->kn_ptr.p_nexttime, 0,
 	    filt_timerexpire, kn, PCPU_GET(cpuid), C_ABSOLUTE);
+#else
+	/* F-Stack callout is tick-based; the sbt macro ignores C_ABSOLUTE,
+	 * so convert the absolute fire time to relative ticks here. */
+	sbintime_t now = sbinuptime();
+	int to_ticks = *kn->kn_ptr.p_nexttime > now ? (*kn->kn_ptr.p_nexttime - now) / tick_sbt + 1 : 0;
+
+	callout_reset_tick_on(calloutp, to_ticks, filt_timerexpire, kn,
+	    PCPU_GET(cpuid), 0);
+#endif
 
 	return (0);
 }
