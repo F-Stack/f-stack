@@ -37,7 +37,7 @@ if ! type "bc" > /dev/null 2>&1; then
     exit
 fi
 
-allcmask0x=`cat ${conf}|grep lcore_mask|awk -F '=' '{print $2}'`
+allcmask0x=`cat ${conf}|sed -n 's/^[[:space:]]*lcore_mask[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*/\1/p'|head -1`
 ((allcmask=16#$allcmask0x))
 
 num_procs=0
