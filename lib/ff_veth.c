@@ -1182,3 +1182,10 @@ ff_mbuf_set_vlan_info(void *hdr, uint16_t vlan_tci) {
     return;
 }
 
+void
+ff_mbuf_set_rcvif(void *hdr, void *ifp) {
+    struct mbuf *m = (struct mbuf *)hdr;
+    m->m_pkthdr.rcvif = (struct ifnet *)ifp;
+    return;
+}
+

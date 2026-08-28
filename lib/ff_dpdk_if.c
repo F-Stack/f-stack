@@ -1715,6 +1715,9 @@ ff_veth_input(struct ff_dpdk_if_context *ctx, struct rte_mbuf *pkt)
     }
 
     if (ctx->lro != NULL) {
+        /* tcp_lro_flush() delivers via if_input() without setting rcvif,
+         * and ether_nh_input() dereferences it; set it before queueing. */
+        ff_mbuf_set_rcvif(hdr, ctx->ifp);
         if (ff_lro_rx(ctx->lro, hdr) == 0)
             return;
     }
