@@ -65,6 +65,7 @@ struct ff_dpdk_if_context {
     uint16_t mtu;
     uint16_t max_mtu;
     enum ff_mbuf_mode mbuf_mode;
+    void *lro;
 } __rte_cache_aligned;
 
 struct mbuf_table {

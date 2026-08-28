@@ -358,11 +358,25 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
         if (offload.tso_seg_size) {
             struct rte_tcp_hdr *tcph;
             int tcph_len;
-            tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
-            tcph_len = (tcph->data_off & 0xf0) >> 2;
-            tcph->cksum = rte_ipv4_phdr_cksum(iph, PKT_TX_TCP_SEG);
+
+            if (((iph->version_ihl) >> 4) == 4) {
+                tcph = (struct rte_tcp_hdr *)((char *)iph + iph_len);
+                tcph_len = (tcph->data_off & 0xf0) >> 2;
+                head->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CKSUM;
+                tcph->cksum = rte_ipv4_phdr_cksum(iph, PKT_TX_TCP_SEG);
+                head->l3_len = iph_len;
+            } else {
+                struct rte_ipv6_hdr *ip6h = (struct rte_ipv6_hdr *)iph;
+                int ip6_len = sizeof(struct rte_ipv6_hdr);
+                tcph = (struct rte_tcp_hdr *)((char *)ip6h + ip6_len);
+                tcph_len = (tcph->data_off & 0xf0) >> 2;
+                head->ol_flags |= PKT_TX_IPV6;
+                tcph->cksum = rte_ipv6_phdr_cksum(ip6h, PKT_TX_TCP_SEG);
+                head->l3_len = ip6_len;
+            }
 
             head->ol_flags |= PKT_TX_TCP_SEG;
+            head->l2_len = RTE_ETHER_HDR_LEN;
             head->l4_len = tcph_len;
             head->tso_segsz = offload.tso_seg_size;
         }

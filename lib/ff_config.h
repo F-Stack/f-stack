@@ -115,6 +115,7 @@ struct ff_hw_features {
     uint8_t tx_csum_ip;
     uint8_t tx_csum_l4;
     uint8_t tx_tso;
+    uint8_t sw_lro;
 };
 
 #ifdef FF_IPFW
@@ -294,6 +295,7 @@ struct ff_config {
         int nb_bond;
         int numa_on;
         int tso;
+        int lro;                 /* TCP large receive offload switch, 0=off */
         int tx_csum_offoad_skip;
         int tx_csum_ip_skip;
         int tx_csum_l4_skip;

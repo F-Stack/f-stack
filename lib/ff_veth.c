@@ -52,6 +52,8 @@
 
 #include <netinet/in.h>
 #include <netinet/in_var.h>
+#include <netinet/ip.h>
+#include <netinet/tcp_lro.h>
 #include <netinet6/nd6.h>
 #ifdef FF_IPFW
 #include <netinet/ip_fw.h>
@@ -425,6 +427,43 @@ ff_mbuf_get(void *p, void *m, void *data, uint16_t len)
     }
 
     return (void *)mb;
+}
+
+void *
+ff_lro_init(void *ifp)
+{
+    struct lro_ctrl *lc = malloc(sizeof(struct lro_ctrl),
+        M_DEVBUF, M_WAITOK | M_ZERO);
+    if (lc == NULL)
+        return NULL;
+    if (tcp_lro_init(lc) != 0) {
+        free(lc, M_DEVBUF);
+        return NULL;
+    }
+    lc->ifp = ifp;
+    return lc;
+}
+
+void
+ff_lro_free(void *lro)
+{
+    if (lro != NULL) {
+        tcp_lro_free(lro);
+        free(lro, M_DEVBUF);
+    }
+}
+
+int
+ff_lro_rx(void *lro, void *m)
+{
+    return tcp_lro_rx(lro, m, 0);
+}
+
+void
+ff_lro_flush(void *lro)
+{
+    struct timeval tv = {0, 0};
+    tcp_lro_flush_inactive(lro, &tv);
 }
 
 void
@@ -844,6 +883,9 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     if (cfg->hw_features.rx_csum) {
         ifp->if_capabilities |= IFCAP_RXCSUM;
     }
+    if (cfg->hw_features.rx_lro || cfg->hw_features.sw_lro) {
+        ifp->if_capabilities |= IFCAP_LRO;
+    }
     if (cfg->hw_features.tx_csum_ip) {
         ifp->if_capabilities |= IFCAP_TXCSUM;
         ifp->if_hwassist |= CSUM_IP;
@@ -854,6 +896,10 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
     if (cfg->hw_features.tx_tso) {
         ifp->if_capabilities |= IFCAP_TSO;
         ifp->if_hwassist |= CSUM_TSO;
+        /* FreeBSD 11 has no if_sethwtsomax* helpers; set fields directly */
+        ifp->if_hw_tsomax = IP_MAXPACKET;
+        ifp->if_hw_tsomaxsegcount = 35;
+        ifp->if_hw_tsomaxsegsize = 2048;
     }
 
     ifp->if_capenable = ifp->if_capabilities;

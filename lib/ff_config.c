@@ -1029,6 +1029,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.numa_on = atoi(value);
     } else if (MATCH("dpdk", "tso")) {
         pconfig->dpdk.tso = atoi(value);
+    } else if (MATCH("dpdk", "lro")) {
+        pconfig->dpdk.lro = atoi(value);
     } else if (MATCH("dpdk", "tx_csum_offoad_skip")) {
         pconfig->dpdk.tx_csum_offoad_skip = atoi(value);
     } else if (MATCH("dpdk", "tx_csum_ip_skip")) {
