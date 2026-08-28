@@ -164,6 +164,11 @@ struct ff_vlan_cfg {
 #endif
 };
 
+enum ff_mbuf_mode {
+    FF_MBUF_MODE_LARGE = 0,
+    FF_MBUF_MODE_SCATTER,
+};
+
 struct ff_port_cfg {
     char *name;
     char *ifname;
@@ -205,6 +210,7 @@ struct ff_port_cfg {
 
     int nb_vlan;
     struct ff_vlan_cfg *vlan_cfgs[DPDK_MAX_VLAN_FILTER];
+    uint16_t mtu;
 };
 
 struct ff_vdev_cfg {
@@ -319,6 +325,9 @@ struct ff_config {
         struct ff_vdev_cfg *vdev_cfgs;
         struct ff_bond_cfg *bond_cfgs;
         struct ff_rss_check_cfg *rss_check_cfgs;
+        int mtu_enable;
+        uint16_t max_mtu;
+        enum ff_mbuf_mode mbuf_mode;
     } dpdk;
 
     struct {

@@ -30,6 +30,7 @@
 #include <stdint.h>
 #include <getopt.h>
 #include <ctype.h>
+#include <errno.h>
 #include <arpa/inet.h>
 #include <rte_config.h>
 #include <rte_string_fns.h>
@@ -538,6 +539,10 @@ err:
 }
 #endif
 
+static int ff_parse_u16(const char *value, uint16_t min, uint16_t max,
+    uint16_t *out);
+static int ff_parse_mbuf_mode(const char *value, enum ff_mbuf_mode *out);
+
 static int
 port_cfg_handler(struct ff_config *cfg, const char *section,
     const char *name, const char *value) {
@@ -563,6 +568,7 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
             pconf->nb_lcores = ff_global_cfg.dpdk.nb_procs;
             memcpy(pconf->lcore_list, ff_global_cfg.dpdk.proc_lcore,
                    pconf->nb_lcores*sizeof(uint16_t));
+            pconf->mtu = 1500;
         }
         cfg->dpdk.port_cfgs = pc;
     }
@@ -634,6 +640,9 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
         cur->vip_prefix_len = atoi(value);
     }
 #endif
+    else if (strcmp(name, "mtu") == 0) {
+        return ff_parse_u16(value, 68, UINT16_MAX, &cur->mtu);
+    }
 
     return 1;
 }
@@ -941,6 +950,42 @@ rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
 }
 
 static int
+ff_parse_u16(const char *value, uint16_t min, uint16_t max,
+    uint16_t *out)
+{
+    if (value == NULL || *value == '\0') {
+        return 0;
+    }
+
+    errno = 0;
+    char *endptr = NULL;
+    unsigned long v = strtoul(value, &endptr, 10);
+    if (errno != 0 || endptr == value || *endptr != '\0' ||
+        v < min || v > max) {
+        return 0;
+    }
+    *out = (uint16_t)v;
+    return 1;
+}
+
+static int
+ff_parse_mbuf_mode(const char *value, enum ff_mbuf_mode *out)
+{
+    if (value == NULL) {
+        return 0;
+    }
+    if (strcmp(value, "large") == 0) {
+        *out = FF_MBUF_MODE_LARGE;
+        return 1;
+    }
+    if (strcmp(value, "scatter") == 0) {
+        *out = FF_MBUF_MODE_SCATTER;
+        return 1;
+    }
+    return 0;
+}
+
+static int
 ini_parse_handler(void* user, const char* section, const char* name,
     const char* value)
 {
@@ -1000,6 +1045,13 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.pkt_tx_delay = atoi(value);
     } else if (MATCH("dpdk", "symmetric_rss")) {
         pconfig->dpdk.symmetric_rss = atoi(value);
+    } else if (MATCH("dpdk", "mtu_enable")) {
+        pconfig->dpdk.mtu_enable = atoi(value);
+    } else if (MATCH("dpdk", "max_mtu")) {
+        return ff_parse_u16(value, 1500, UINT16_MAX,
+            &pconfig->dpdk.max_mtu);
+    } else if (MATCH("dpdk", "mbuf_mode")) {
+        return ff_parse_mbuf_mode(value, &pconfig->dpdk.mbuf_mode);
     } else if (MATCH("dpdk", "mbuf_low_watermark")) {
         pconfig->dpdk.mbuf_low_watermark = atoi(value);
     } else if (MATCH("kni", "enable")) {
@@ -1349,6 +1401,52 @@ ff_check_config(struct ff_config *cfg)
         }
     }
 
+    if (cfg->dpdk.mtu_enable) {
+        if (cfg->dpdk.max_mtu < 1500) {
+            fprintf(stderr, "max_mtu must be >= 1500\n");
+            return -1;
+        }
+        if (cfg->dpdk.mbuf_mode == FF_MBUF_MODE_LARGE) {
+            /* data_room = align(128 + max_mtu + 14 + 8 + 4, 64) */
+            size_t room = 128 + (size_t)cfg->dpdk.max_mtu + 26;
+            room = (room + 63) & ~(size_t)63;
+            if (room > UINT16_MAX) {
+                fprintf(stderr,
+                    "large mode max_mtu %u exceeds mbuf data_room limit\n",
+                    cfg->dpdk.max_mtu);
+                return -1;
+            }
+        }
+        for (i = 0; i < cfg->dpdk.nb_ports; i++) {
+            uint16_t portid = cfg->dpdk.portid_list[i];
+            struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[portid];
+            if (pc->mtu < 68 || pc->mtu > cfg->dpdk.max_mtu) {
+                fprintf(stderr,
+                    "port%d mtu %u out of range [68, %u]\n",
+                    portid, pc->mtu, cfg->dpdk.max_mtu);
+                return -1;
+            }
+        }
+#ifdef FF_KERNEL_COEXIST
+        if (cfg->stack.kernel_coexist) {
+            fprintf(stderr,
+                "mtu_enable=1 is incompatible with kernel_coexist\n");
+            return -1;
+        }
+#endif
+    } else {
+        for (i = 0; i < cfg->dpdk.nb_ports; i++) {
+            uint16_t portid = cfg->dpdk.portid_list[i];
+            struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[portid];
+            if (pc->mtu > 1500) {
+                fprintf(stderr,
+                    "port%d mtu %u > 1500 requires mtu_enable=1\n",
+                    portid, pc->mtu);
+                return -1;
+            }
+        }
+    }
+
     return 0;
 }
 
@@ -1364,6 +1462,10 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
     cfg->dpdk.mbuf_low_watermark = 0;
+
+    cfg->dpdk.mtu_enable = 0;
+    cfg->dpdk.max_mtu = 9000;
+    cfg->dpdk.mbuf_mode = FF_MBUF_MODE_LARGE;
 
     /* KNI ratelimit default disabled */
     //cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;

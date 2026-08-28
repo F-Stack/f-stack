@@ -242,6 +242,21 @@ ff_veth_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
         } else if (ifp->if_drv_flags & IFF_DRV_RUNNING)
             ff_veth_stop(sc);
         break;
+    case SIOCSIFMTU:
+        if (ff_global_cfg.dpdk.mtu_enable) {
+            struct ifreq *ifr = (struct ifreq *)data;
+            uint16_t new_mtu = (uint16_t)ifr->ifr_mtu;
+            error = ff_dpdk_if_set_mtu(sc->host_ctx, new_mtu);
+            if (error == 0) {
+                if_setmtu(ifp, new_mtu);
+                /* nd6/rt sync: 11.0 has no if_notifymtu, but the upper
+                 * ifioctl() layer already runs nd6_setmtu()+rt_updatemtu()
+                 * when if_mtu changes (net/if.c), so nothing to do here. */
+            }
+        } else {
+            error = ether_ioctl(ifp, cmd, data);
+        }
+        break;
     default:
         error = ether_ioctl(ifp, cmd, data);
         break;
@@ -849,6 +864,17 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
         return -1;
     } else {
         printf("%s: Successed to register dpdk interface\n", sc->host_ifname);
+    }
+
+    if (ff_global_cfg.dpdk.mtu_enable && sc->host_ctx) {
+        uint16_t init_mtu;
+        if (ff_dpdk_if_get_mtu(sc->host_ctx, &init_mtu) == 0) {
+            if_setmtu(sc->ifp, init_mtu);
+#ifdef INET6
+            nd6_setmtu(sc->ifp);
+#endif
+            rt_updatemtu(sc->ifp);
+        }
     }
 
     /* if vlan_flag is true, all port's addrs/vips will not to set, just create the iface */

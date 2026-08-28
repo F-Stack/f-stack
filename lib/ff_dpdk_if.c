@@ -206,8 +206,84 @@ ff_dpdk_register_if(void *sc, void *ifp, struct ff_port_cfg *cfg)
     ctx->ifp = ifp;
     ctx->port_id = cfg->port_id;
     ctx->hw_features = cfg->hw_features;
+    ctx->mtu = cfg->mtu;
+    ctx->max_mtu = ff_global_cfg.dpdk.max_mtu;
+    ctx->mbuf_mode = ff_global_cfg.dpdk.mbuf_mode;
 
     return ctx;
+}
+
+static int
+ff_dpdk_errno_to_bsd(int rte_errno)
+{
+    switch (rte_errno) {
+    case 0:        return 0;
+    case -ENOTSUP: return EOPNOTSUPP;
+    case -EINVAL:  return EINVAL;
+    case -EBUSY:   return EBUSY;
+    case -EIO:     return EIO;
+    default:       return EIO;
+    }
+}
+
+int
+ff_dpdk_if_get_mtu(struct ff_dpdk_if_context *ctx, uint16_t *mtu)
+{
+    int ret = rte_eth_dev_get_mtu(ctx->port_id, mtu);
+    return ff_dpdk_errno_to_bsd(ret);
+}
+
+int
+ff_dpdk_if_set_mtu(struct ff_dpdk_if_context *ctx, uint16_t mtu)
+{
+    if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+        return 0;
+
+    uint16_t old_mtu = ctx->mtu;
+    int ret = rte_eth_dev_set_mtu(ctx->port_id, mtu);
+    if (ret == -EBUSY) {
+        /* PMD requires port stopped; stop/set/get/start with rollback */
+        rte_eth_dev_stop(ctx->port_id);
+        ret = rte_eth_dev_set_mtu(ctx->port_id, mtu);
+        if (ret != 0) {
+            rte_eth_dev_set_mtu(ctx->port_id, old_mtu);
+            rte_eth_dev_start(ctx->port_id);
+            return ff_dpdk_errno_to_bsd(ret);
+        }
+        uint16_t actual;
+        if (rte_eth_dev_get_mtu(ctx->port_id, &actual) != 0 ||
+            actual != mtu) {
+            rte_eth_dev_set_mtu(ctx->port_id, old_mtu);
+            rte_eth_dev_start(ctx->port_id);
+            return EIO;
+        }
+        rte_eth_dev_start(ctx->port_id);
+    } else if (ret != 0) {
+        return ff_dpdk_errno_to_bsd(ret);
+    }
+
+    ctx->mtu = mtu;
+    return 0;
+}
+
+int
+ff_dpdk_if_get_mtu_capability(struct ff_dpdk_if_context *ctx,
+    struct ff_mtu_capability *cap)
+{
+    struct rte_eth_dev_info dev_info;
+    int ret = rte_eth_dev_info_get(ctx->port_id, &dev_info);
+    if (ret != 0)
+        return ff_dpdk_errno_to_bsd(ret);
+    cap->min_mtu = dev_info.min_mtu;
+    cap->max_mtu = dev_info.max_mtu;
+    cap->max_rx_pktlen = dev_info.max_rx_pktlen;
+    /* DPDK 19.11 dev_info has no max_rx_bufsize; use min_rx_bufsize */
+    cap->max_rx_bufsize = dev_info.min_rx_bufsize;
+    cap->rx_scatter = !!(dev_info.rx_offload_capa &
+        DEV_RX_OFFLOAD_SCATTER);
+    cap->tx_multi_segs = !!(dev_info.tx_offload_capa &
+        DEV_TX_OFFLOAD_MULTI_SEGS);
+    return 0;
 }
 
 void
@@ -345,6 +421,20 @@ init_lcore_conf(void)
 }
 
 static int
+ff_mtu_data_room_size(uint16_t max_mtu, uint16_t *out)
+{
+    /* DPDK 19.11 has no RTE_VLAN_HLEN; sizeof(struct rte_vlan_hdr) == 4 */
+    size_t frame = (size_t)max_mtu + RTE_ETHER_HDR_LEN +
+        2 * sizeof(struct rte_vlan_hdr) + RTE_ETHER_CRC_LEN;
+    size_t room = RTE_PKTMBUF_HEADROOM + frame;
+    room = RTE_ALIGN_CEIL(room, RTE_CACHE_LINE_SIZE);
+    if (room > UINT16_MAX)
+        return -ERANGE;
+    *out = (uint16_t)room;
+    return 0;
+}
+
+static int
 init_mem_pool(void)
 {
     uint8_t nb_ports = ff_global_cfg.dpdk.nb_ports;
@@ -386,10 +476,24 @@ init_mem_pool(void)
 
         if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
             snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
+            uint16_t data_room = RTE_MBUF_DEFAULT_BUF_SIZE;
+            if (ff_global_cfg.dpdk.mtu_enable &&
+                ff_global_cfg.dpdk.mbuf_mode == FF_MBUF_MODE_LARGE) {
+                uint16_t room;
+                int dr = ff_mtu_data_room_size(
+                    ff_global_cfg.dpdk.max_mtu, &room);
+                if (dr == 0) {
+                    data_room = room;
+                } else {
+                    rte_exit(EXIT_FAILURE,
+                        "large mode max_mtu %u data_room overflow\n",
+                        ff_global_cfg.dpdk.max_mtu);
+                }
+            }
             pktmbuf_pool[socketid] =
                 rte_pktmbuf_pool_create(s, nb_mbuf,
                     MEMPOOL_CACHE_SIZE, 0,
-                    RTE_MBUF_DEFAULT_BUF_SIZE, socketid);
+                    data_room, socketid);
         } else {
             snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
             pktmbuf_pool[socketid] = rte_mempool_lookup(s);
@@ -811,6 +915,38 @@ init_port_start(void)
                     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "port[%d]: rss table size: %d\n", port_id,
                         dev_info.reta_size);
                 }
+
+                if (ff_global_cfg.dpdk.mtu_enable) {
+                    uint16_t req_mtu = pconf ? pconf->mtu : 1500;
+                    if (req_mtu < dev_info.min_mtu ||
+                        req_mtu > dev_info.max_mtu) {
+                        rte_exit(EXIT_FAILURE,
+                            "port %u mtu %u out of PMD range [%u, %u]\n",
+                            port_id, req_mtu,
+                            dev_info.min_mtu, dev_info.max_mtu);
+                    }
+                    /* DPDK 19.11 has no rxmode.mtu; jumbo is expressed by
+                     * max_rx_pkt_len + DEV_RX_OFFLOAD_JUMBO_FRAME. */
+                    port_conf.rxmode.max_rx_pkt_len =
+                        (uint32_t)req_mtu + RTE_ETHER_HDR_LEN +
+                        RTE_ETHER_CRC_LEN;
+                    port_conf.rxmode.offloads |=
+                        DEV_RX_OFFLOAD_JUMBO_FRAME;
+                    if (ff_global_cfg.dpdk.mbuf_mode == FF_MBUF_MODE_SCATTER) {
+                        if (!(dev_info.rx_offload_capa &
+                              DEV_RX_OFFLOAD_SCATTER) ||
+                            !(dev_info.tx_offload_capa &
+                              DEV_TX_OFFLOAD_MULTI_SEGS)) {
+                            rte_exit(EXIT_FAILURE,
+                                "port %u scatter mode requires RX_SCATTER and TX_MULTI_SEGS\n",
+                                port_id);
+                        }
+                        port_conf.rxmode.offloads |=
+                            DEV_RX_OFFLOAD_SCATTER;
+                        port_conf.txmode.offloads |=
+                            DEV_TX_OFFLOAD_MULTI_SEGS;
+                    }
+                }
             }
 
             if (rte_eal_process_type() != RTE_PROC_PRIMARY) {
@@ -893,8 +1029,29 @@ init_port_start(void)
                             ff_global_cfg.dpdk.bond_cfgs->name, count);
                 for (x=0; x<count; x++) {
                     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "Port %u, %s's slave port[%u]\n", port_id,
-                            ff_global_cfg.dpdk.bond_cfgs->name, slaves[x]);
+                                ff_global_cfg.dpdk.bond_cfgs->name, slaves[x]);
                 }
+            }
+
+            if (ff_global_cfg.dpdk.mtu_enable) {
+                uint16_t req_mtu = pconf ? pconf->mtu : 1500;
+                ret = rte_eth_dev_set_mtu(port_id, req_mtu);
+                if (ret != 0) {
+                    rte_exit(EXIT_FAILURE,
+                        "port %u set_mtu(%u) failed: %s\n",
+                        port_id, req_mtu, strerror(-ret));
+                }
+                uint16_t actual_mtu;
+                ret = rte_eth_dev_get_mtu(port_id, &actual_mtu);
+                if (ret != 0 || actual_mtu != req_mtu) {
+                    rte_exit(EXIT_FAILURE,
+                        "port %u mtu mismatch: requested %u got %u\n",
+                        port_id, req_mtu, actual_mtu);
+                }
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+                    "port %u mtu=%u mode=%d\n",
+                    port_id, actual_mtu,
+                    ff_global_cfg.dpdk.mbuf_mode);
             }
 
             ret = rte_eth_dev_start(port_id);
@@ -2232,7 +2389,8 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 
         prev = cur;
         void *data = rte_pktmbuf_mtod(cur, void*);
-        int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
+        int cap = rte_pktmbuf_tailroom(cur);
+        int len = total > cap ? cap : total;
         int ret = ff_mbuf_copydata(m, data, off, len);
         if (ret < 0) {
             ff_traffic.tx_dropped += head->nb_segs;
@@ -2354,7 +2512,8 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
 
         prev = cur;
         void *cur_data = rte_pktmbuf_mtod(cur, void*);
-        int len = total > RTE_MBUF_DEFAULT_DATAROOM ? RTE_MBUF_DEFAULT_DATAROOM : total;
+        int cap = rte_pktmbuf_tailroom(cur);
+        int len = total > cap ? cap : total;
         memcpy(cur_data, data + off, len);
 
         cur->data_len = len;

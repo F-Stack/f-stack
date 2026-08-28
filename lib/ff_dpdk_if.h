@@ -36,12 +36,29 @@ struct loop_routine {
     void *arg;
 };
 
+struct ff_dpdk_if_context;
+
+struct ff_mtu_capability {
+    uint16_t min_mtu;
+    uint16_t max_mtu;
+    uint32_t max_rx_pktlen;
+    uint32_t max_rx_bufsize;
+    /* uint8_t instead of bool: this header is included by ff_veth.c which
+     * is built with -nostdinc (kernel side) and cannot see <stdbool.h>. */
+    uint8_t rx_scatter;
+    uint8_t tx_multi_segs;
+};
+
+int ff_dpdk_if_get_mtu(struct ff_dpdk_if_context *ctx, uint16_t *mtu);
+int ff_dpdk_if_set_mtu(struct ff_dpdk_if_context *ctx, uint16_t mtu);
+int ff_dpdk_if_get_mtu_capability(struct ff_dpdk_if_context *ctx,
+    struct ff_mtu_capability *cap);
+
 int ff_dpdk_init(int argc, char **argv);
 int ff_dpdk_if_up(void);
 void ff_dpdk_run(loop_func_t loop, void *arg);
 void ff_dpdk_stop(void);
 
-struct ff_dpdk_if_context;
 struct ff_port_cfg;
 
 struct ff_tx_offload {
