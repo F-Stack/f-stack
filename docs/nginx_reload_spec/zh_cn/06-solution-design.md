@@ -4,9 +4,9 @@
 |---|---|
 | 文档编号 | 06 |
 | 标题 | F-Stack Nginx 无损 reload 候选方案对比（S1~S4）+ 推荐方案 S3 设计 |
-| 版本 | v1.7（v1.6 基础上据 2026-08-24 定时器/mempool 调研+人工决策：新增语义 11 自驱 hardclock 绕开共享 timer 槽、语义 12 应用 mempool 分代际；§6.6 网卡 RX mempool 已定方案 A cache_size=0 主 + 方案 B cache 槽位改造备选） |
-| 日期 | 2026-08-24 |
-| 状态 | 待人工审计（v1.7 增量修订） |
+| 版本 | v1.8（v1.7 基础上：**修正 flow_map 入表时机**——由「`accept()` 时入表」改为「收到 SYN 并发出 SYN-ACK 时入表」，消除三次握手第 3 个 ACK 被误转 G_old 导致 reload 窗口内新建连接全失败的缺陷） |
+| 日期 | 2026-08-31 |
+| 状态 | 待人工审计（v1.8 增量修订） |
 | 来源产物 | work/solution-design.md（方案设计师 solution-designer，2026-08-18 落盘）。本篇为正式化改写：输入为 [01](01-vpp-vcl-research.md)/[02](02-other-projects-research.md)/[03](03-fstack-legacy-solution.md)/[04](04-fstack-current-analysis.md)/[05](05-ld-preload-alternative.md) 五篇的前身产物（均已全文阅读）+ 关键机制回查实际代码交叉验证（只读）；保留全部事实证据、单来源声明与未坐实标注 |
 
 相关篇章：[00-总览](00-overview.md) | [04-现状分析](04-fstack-current-analysis.md) | [07-里程碑](07-milestones.md) | [08-测试计划](08-testing.md)
@@ -65,7 +65,7 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 3. **配置失败可回滚**：对齐内核 HUP（R-B §2.2：配置解析失败回滚旧配置继续跑）。
 4. **HUP 与 USR2 均可支持**：HUP 换配置、USR2 换二进制（exec），两者数据面机制同源。
 5. **工程意义无损**：接受 R-B §2.2 引 HAProxy 文档的边界——边界条件上 backlog 中的连接仍可能极小概率损失，验收以压测错误数为 0 为门禁而非绝对论断。
-6. **流表仅 reload 窗口生效 + reload 防重入**（v1.3 增补语义，v1.6 据 2026-08-21 方案修订改写）：稳态所有数据包**不经过流表**（零额外每包开销）；流表仅在新 worker 初始化完成（READY）并同期接管队列+listen 后自动生效，至老 worker 排空确认后关闭。流表（**flow_map**，软件分发表）**只记录本代际新建连接的四元组**（SYN accept 时入表，非协议栈 inpcb 表）；表项 miss（旧连接的包）**一律经 dispatch_ring 转老 worker**。老 worker 排空后新 worker 感知并关闭 flow_map、进入稳态成为新的「老 worker」（防止性能退化）。**不支持老 worker 排空前的快速连续 reload**：上一批老 worker 排空前，新的 reload 请求被拦截（拒绝并记日志）。
+6. **流表仅 reload 窗口生效 + reload 防重入**（v1.3 增补语义，v1.6 据 2026-08-21 方案修订改写）：稳态所有数据包**不经过流表**（零额外每包开销）；流表仅在新 worker 初始化完成（READY）并同期接管队列+listen 后自动生效，至老 worker 排空确认后关闭。流表（**flow_map**，软件分发表）**只记录本代际新建连接的四元组**；**入表时机 = 本栈收到 SYN 并发出 SYN-ACK 的时刻**（此时连接进入 syncache 半开态、尚无 inpcb，非协议栈 inpcb 表）——**不得推迟到 `accept()` 返回时**，否则三次握手的第 3 个 ACK 到达时会因连接尚在 syncache 而 miss，被转给 G_old（其无对应 syncache 条目 → 回 RST）导致 reload 窗口内新建连接全失败（v1.8 修正，见 §5.2 T3）；表项 miss（旧连接的包）**一律经 dispatch_ring 转老 worker**。老 worker 排空后新 worker 感知并关闭 flow_map、进入稳态成为新的「老 worker」（防止性能退化）。**不支持老 worker 排空前的快速连续 reload**：上一批老 worker 排空前，新的 reload 请求被拦截（拒绝并记日志）。
 7. **ready 后同期移交队列+listen**（v1.6 据 2026-08-21 决策修订，替代 v1.4 的「末期一次性移交」）：G_new ready 后**同期移交队列消费权 + listen**给 G_new（不是末期才移交），G_new 立即接管新连接（**新配置立即生效**），旧连接包经 flow_map miss → ring 转 G_old drain。移交靠**跨进程互斥原语**（共享内存标记，非 msg ring）保证 G_old 停 poll 后 G_new 才起 poll，规避并发 poll 同一 queue；移交窗口靠 NIC rx ring 缓冲兜底（RX_QUEUE_SIZE 512→4096 放大 8 倍）。
 8. **同核处理新旧进程**（v1.6 据 X3 决策，替代 v1.4 的「2N 逻辑 lcore_id」）：新旧进程可**同核处理**（不占 2N 物理核、不乒乓双队列段），proc_id 分配改为**代际无关固定映射**到同一批 queue（G_new 启动时直接用 G_old 的队列号，`tx_queue_id / rx_queue_list / dispatch_ring` 全部对齐，不需运行时重算 lcore_conf → rss_check/adjust/tbl/thash 四件套不变）。**但新旧进程高负载时切换瞬间的流量/丢包情况需关注**：两代进程同核时各得约 50% 有效算力 + 上下文切换/cache 抖动，可能延长 drain（需运行时观测，列入 RV）。
 9. **ARP/NDP 等协议包 clone 给 G_old**（v1.6 增补）：reload 窗口内，ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，**额外 clone 一份转发给所有 G_old 进程**（原有 clone 给其他 G_new 和 KNI 的逻辑不变）——确保 G_old drain 期间邻居表正常、能发 RTO/FIN/ACK。
@@ -155,7 +155,7 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
   - **新旧进程可同核处理**（不占 2N 物理核、不乒乓双队列段）；新旧进程高负载切换瞬间性能需关注（见 RV10）。
   - 新 worker ready（栈 init + listen 完成）后**同期移交队列消费权 + listen**给 G_new（修改 X1：不是末期才移交）：G_new 立即接管新连接（**新配置立即生效**），旧连接 drain 给 G_old。
   - **跨进程互斥原语**（共享内存标记，非 msg ring）保证 G_old 停 poll 后 G_new 才起 poll，规避并发 poll 同一 queue；移交窗口靠 NIC rx ring 缓冲兜底（RX_QUEUE_SIZE 512→4096 放大 8 倍）。
-  - **G_new 软件分发表 flow_map**（reload 窗口生效，稳态零开销）：flow_map 存 G_new accept 过的连接四元组（SYN accept 时入表，非协议栈 inpcb 表）；drain 期间增量更新；miss（旧连接的包）→ 一律经 dispatch_ring 转 G_old（回调返回目标 queue id → `rte_ring_enqueue(dispatch_ring[port][ret])`，ff_dpdk_if.c:2142-2150；G_old 侧 process_dispatch_ring dequeue 后进本栈，:2223-2233；ring 来的包不再进回调，:2100，无循环）；排空确认后关闭 flow_map 回稳态。
+  - **G_new 软件分发表 flow_map**（reload 窗口生效，稳态零开销）：flow_map 存 G_new 本代际新建连接的四元组，**在收到 SYN 并发出 SYN-ACK 时入表**（非 `accept()` 时，非协议栈 inpcb 表——见第 2 节语义 6 的 v1.8 修正）；drain 期间增量更新；miss（旧连接的包）→ 一律经 dispatch_ring 转 G_old（回调返回目标 queue id → `rte_ring_enqueue(dispatch_ring[port][ret])`，ff_dpdk_if.c:2142-2150；G_old 侧 process_dispatch_ring dequeue 后进本栈，:2223-2233；ring 来的包不再进回调，:2100，无循环）；排空确认后关闭 flow_map 回稳态。
   - **ARP/NDP 等协议包处理**：reload 窗口内，ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，**额外 clone 一份转发给所有 G_old 进程**（原有 clone 给其他 G_new 和 KNI 的逻辑不变）——确保 G_old drain 期间邻居表正常。
   - G_old 继续跑 ff_run drain 存量连接，完成后退出；G_new 感知排空（共享内存标记 + SIGCHLD 确认）后关闭 flow_map、进入稳态成为下一轮的「老 worker」。
   - reload 防重入：上一批老 worker 排空前，master **拦截（拒绝）新的 reload 请求**并记日志。
@@ -246,7 +246,7 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 | L1 EAL/设备/mempool/ring/队列 setup | **slim primary（dispatcher），常驻** | 不动（杀 primary 数据面零影响已实测：`docs/primary_slim_spec/10` §1.1 E3b/E3c；但 primary 只能常驻不能复活，E10） | P-D §3.2；primary_slim_spec 03 §III |
 | L2 队列消费权（rx poll） | worker 级，可移交 | 新 worker ready 前：旧 worker 持续 poll（队列始终有主，无空窗）；ready 后**同期移交**（跨进程互斥标记保证 G_old 停后 G_new 才起），旧连接包经 L4 flow_map miss → dispatch_ring 转发兜底 | ff_dpdk_if.c:508-538（lcore↔queue 映射）；基线 2/3；proc_id 代际无关固定映射 |
 | L3 listening socket | **各 worker 栈内自建**（保持现状） | 不跨进程传递：栈隔离天然允许多代际 worker 并存 listen 同 IP:port（每进程独立 FreeBSD 栈实例各自 bind/listen 互不冲突，P-D §3.5）；新连接归属由 L2 同期移交决定（G_new 接管 listen） | P-D 障碍 2 的回避式解法；R-A §6.3-2 的对照（VPP 用 app_listener 单点，F-Stack 用栈隔离多 listen——路线差异点，功能等价） |
-| L4 TCP 连接 | worker 私有，**不迁移** | G_old drain：其队列/RTO/keepalive 持续驱动；ready 后同期移交队列后，到达 G_new 的旧连接包经 **flow_map miss** → dispatch_ring 转发回 G_old（现成机制）。**flow_map 窗口限定**：G_new ready 同期移交后注册 flow_map、排空确认后关闭——稳态零开销；flow_map 只记本代际新流（SYN accept 入表），miss 一律转 G_old（第 2 节语义 6）；ARP/NDP 等协议包额外 clone 给所有 G_old（第 2 节语义 9） | 基线 1；ff_dpdk_if.c:2105-2150/:2223-2233；P-D §3.5（dispatch 回调 nginx 未用——本方案启用） |
+| L4 TCP 连接 | worker 私有，**不迁移** | G_old drain：其队列/RTO/keepalive 持续驱动；ready 后同期移交队列后，到达 G_new 的旧连接包经 **flow_map miss** → dispatch_ring 转发回 G_old（现成机制）。**flow_map 窗口限定**：G_new ready 同期移交后注册 flow_map、排空确认后关闭——稳态零开销；flow_map 只记本代际新流（**SYN-ACK 时入表**，非 accept 时，第 2 节语义 6 v1.8 修正），miss 一律转 G_old（第 2 节语义 6）；ARP/NDP 等协议包额外 clone 给所有 G_old（第 2 节语义 9） | 基线 1；ff_dpdk_if.c:2105-2150/:2223-2233；P-D §3.5（dispatch 回调 nginx 未用——本方案启用） |
 
 设计取舍说明（与 VPP 的有意差异）：VPP 把 listen 收敛到栈侧单点（app_listener + workers bitmap，R-A §2.2），F-Stack 不照搬——fd 是进程内索引（P-D §2.4），跨进程传递无意义；「多代际栈隔离 listen + 数据面切流」在功能上等价于 workers bitmap（决定「谁收新连接」的是 reta/分发层而非 listen 对象本身），改动面小得多。
 
@@ -276,10 +276,17 @@ T3  master 确认全部 G_new READY → 触发同期移交（队列消费权 + l
     │   ③ 移交窗口靠 NIC rx ring 缓冲兜底（RX_QUEUE_SIZE 512→4096 放大 8 倍）
     ├─ G_new 同期接管 listen（新连接归 G_new，新配置立即生效，第 2 节语义 7）
     └─ G_new 注册 flow_map（软件分发表，第 2 节语义 6）：
-        收到包 → 解析四元组 → 查 flow_map
-        ├─ SYN（新连接）→ 本栈 accept → 四元组入 flow_map ✓
-        ├─ flow_map 命中（本代际已建连接后续包）→ 本栈处理 ✓
+        收到包 → ①先协议过滤（仅 TCP/UDP 四元组参与判定，
+                  ARP/NDP/ICMP/非 IP/分片一律返回 queue_id 走原生路径）
+                → ②解析四元组 → 查 flow_map
+        ├─ SYN（新连接）→ 本栈处理并发 SYN-ACK →
+        │   ★此时立即入 flow_map（v1.8：不等 accept）✓
+        ├─ flow_map 命中（本代际已建连接后续包，**含第 3 个握手 ACK
+        │   ——此刻连接尚在 syncache、accept 未发生，命中靠 SYN-ACK 时入表保证**）
+        │   → 本栈处理 ✓
         └─ flow_map miss（旧连接的包）→ 经 dispatch_ring 转 G_old ✓
+           （目标 queue 按 proc_id 代际无关映射精确反算，并校验 G_old 存活；
+             G_old 已退则本栈按 TCP 规范回 RST，禁止 enqueue 到无主 ring）
     ├─ 【ARP/NDP 等协议包处理】（第 2 节语义 9）：
         ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，
         额外 clone 一份转发给所有 G_old 进程（原有 clone 给其他 G_new
@@ -319,7 +326,7 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 ### 5.4 需要新增的 ff_api / config.ini / ff_msg 接口面（设计清单，非实现承诺）
 
 1. **ff_api 新增**（lib 侧，最小集）【v1.6 改写】：
-   - `ff_flow_map_lookup(four_tuple)` / `ff_flow_map_insert(four_tuple)` / `ff_flow_map_close()`：**软件分发表 flow_map**（替代 v1.0-v1.5 的 `ff_conn_owner_query`）——存 G_new accept 过的连接四元组（SYN accept 时 insert，非协议栈 inpcb 表）；drain 期间增量更新；miss → 经 dispatch_ring 转 G_old；排空确认后 close 回稳态。窗口语义（第 2 节语义 6）：仅 reload 窗口被调用，稳态零调用。
+   - `ff_flow_map_lookup(four_tuple)` / `ff_flow_map_insert(four_tuple)` / `ff_flow_map_close()`：**软件分发表 flow_map**（替代 v1.0-v1.5 的 `ff_conn_owner_query`）——存 G_new 本代际新建连接的四元组，**插入点在 `tcp_input` 的 listen 分支、syncache 插入成功并发 SYN-ACK 之后**（v1.8 修正：非 `accept()` 时，否则第 3 个握手 ACK 会 miss 被误转 G_old → RST）；须覆盖 SYN 重传（命中已有表项不重复插入）；drain 期间增量更新；miss → 经 dispatch_ring 转 G_old；排空确认后 close 回稳态。窗口语义（第 2 节语义 6）：仅 reload 窗口被调用，稳态零调用。
    - `ff_queue_handover_mutex(port, queue, from_gen, to_gen)`：**跨进程互斥原语**（共享内存标记，非 msg ring）——G_old 设停 poll 标记 + 确认已停 → G_new 确认后起 poll；保证不同时 poll 同一 queue（第 2 节语义 7）。
    - `ff_arp_ndp_clone_to_old(m, port)`：ARP/NDP 等协议包 clone 给所有 G_old（第 2 节语义 9）——原有 clone 给其他 G_new 和 KNI 的逻辑不变（ff_dpdk_if.c:2161-2183），新增 clone 给 G_old 分支。
 2. **ff_msg 扩展**（控制通道，复用现有 msg ring 机制，P-D §3.3）：新增 FF_RELOAD 消息族——READY 上报、移交请求/应答、drain 进度上报、**drain 完成确认（DRAIN_DONE：触发 G_new 关 flow_map 回稳态）**、**reload 拒绝（REJECT：防重入）**。注意：移交互斥用共享内存标记轮询而非 msg ring（第 2 节语义 7），msg ring 仅用于 READY/DRAIN_DONE/REJECT 等非实时关键路径。
@@ -367,7 +374,7 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 | # | 项目 | 备选与倾向 |
 |---|---|---|
 | DR1 | reload 编排者：nginx master（语义层自然）vs slim primary（全局视图） | 倾向 master 编排 + primary 提供原子原语（互斥标记/队列状态），保持数据面组件无业务语义 |
-| DR2 | 旧连接归属判定：flow_map 查表（v1.6 主路径）vs reload 握手时导出四元组快照表 | 已定：flow_map 查表（SYN accept 入表，miss 转 G_old，窗口化）；性能不足再退化快照（RV5 数据支撑） |
+| DR2 | 旧连接归属判定：flow_map 查表（v1.6 主路径）vs reload 握手时导出四元组快照表 | 已定：flow_map 查表（**SYN-ACK 时入表**，miss 转 G_old，窗口化；v1.8 修正入表时机）；性能不足再退化快照（RV5 数据支撑） |
 | DR3 | ~~reta 切流 vs 队列移交~~ v1.6 删除（reta 不改，同期移交+flow_map 为主路径） | — |
 | DR4 | reload 控制通道载体（v1.6 已定）：移交互斥用共享内存标记（非 msg ring），READY/DRAIN_DONE/REJECT 用 msg ring | 已定：分两类通道 |
 | DR5 | ~~乒乓 lcore 配置~~ v1.6 删除（不再乒乓，同核处理+proc_id 代际无关固定映射） | — |
