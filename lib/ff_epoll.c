@@ -19,6 +19,67 @@
 
 #include "ff_api.h"
 #include "ff_errno.h"
+#ifdef FF_KERNEL_COEXIST
+#include "ff_host_interface.h"
+
+/*
+ * Kernel-stack coexistence for native epoll (FR-6: unified event loop).
+ *
+ * ff_epoll_create() still returns an F-Stack kqueue fd. When a managed kernel
+ * fd (ff_is_kernel_fd()) is added to such an epoll, a host epoll instance is
+ * lazily created and paired with that kqueue fd; kernel fds are registered on
+ * the host epoll. ff_epoll_wait() then polls the host epoll non-blocking and
+ * merges those events with the F-Stack kqueue events, so a single loop serves
+ * both stacks. When no kernel fd is registered, behaviour is unchanged
+ * (zero regression).
+ */
+#define FF_EPOLL_COEXIST_MAX 4
+static struct { int kq; int host_ep; } ff_epoll_pairs[FF_EPOLL_COEXIST_MAX];
+
+/* Return the host epoll fd paired with kqueue fd kq; create it lazily when
+ * 'create' is non-zero. Returns -1 if none (and create==0) or on failure.
+ * Shared with ff_kevent (ff_syscall_wrapper.c) so both event APIs use one
+ * host epoll per kqueue. */
+int
+ff_epoll_host_ep(int kq, int create)
+{
+    int i, slot = -1, ep = -1;
+
+    for (i = 0; i < FF_EPOLL_COEXIST_MAX; i++) {
+        if (ff_epoll_pairs[i].host_ep > 0) {
+            if (ff_epoll_pairs[i].kq == kq)
+                return ff_epoll_pairs[i].host_ep;
+        } else if (slot < 0) {
+            slot = i;
+        }
+    }
+    if (create && slot >= 0) {
+        ep = ff_host_epoll_create1(0);
+        if (ep > 0) {
+            ff_epoll_pairs[slot].kq = kq;
+            ff_epoll_pairs[slot].host_ep = ep;
+        }
+    }
+    return (ep > 0) ? ep : -1;
+}
+
+/* Close and release the host epoll paired with kqueue fd kq (called from
+ * ff_close). No-op when there is no pair. */
+void
+ff_epoll_close_pair(int kq)
+{
+    int i;
+
+    for (i = 0; i < FF_EPOLL_COEXIST_MAX; i++) {
+        if (ff_epoll_pairs[i].host_ep > 0 && ff_epoll_pairs[i].kq == kq) {
+            ff_host_close(ff_epoll_pairs[i].host_ep);
+            ff_epoll_pairs[i].host_ep = 0;
+            ff_epoll_pairs[i].kq = 0;
+            break;
+        }
+    }
+}
+#endif /* FF_KERNEL_COEXIST */
 
 
 int
@@ -47,6 +108,38 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
         return -1;
     }
 
+#ifdef FF_KERNEL_COEXIST
+    /*
+     * Managed kernel fd: route to the host epoll paired with this kqueue
+     * (created lazily on ADD/MOD). The F-Stack path below is unchanged.
+     */
+    if (ff_is_kernel_fd(fd)) {
+        int host_ep = ff_epoll_host_ep(epfd,
+            op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD);
+        if (host_ep < 0) {
+            if (op == EPOLL_CTL_DEL)
+                return 0;
+            errno = ENOMEM;
+            return -1;
+        }
+        return ff_host_epoll_ctl(host_ep, op, ff_kernel_fd_real(fd), event);
+    }
+
+    /*
+     * Dual-stack fd: also (un)register the paired host kernel fd on the host
+     * epoll, then fall through to register on the F-Stack kqueue below.
+     */
+    {
+        int hfd = ff_native_map_get(fd);
+        if (hfd > 0) {
+            int host_ep = ff_epoll_host_ep(epfd,
+                op == EPOLL_CTL_ADD || op == EPOLL_CTL_MOD);
+            if (host_ep > 0)
+                ff_host_epoll_ctl(host_ep, op, hfd, event);
+        }
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     /*
      * EPOLL_CTL_DEL doesn't need to care for event->events.
      */
@@ -54,7 +147,12 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
         EV_SET(&kev[0], fd, EVFILT_READ, EV_DELETE, 0, 0, NULL);
         EV_SET(&kev[1], fd, EVFILT_WRITE, EV_DELETE, 0, 0, NULL);
 
+#ifdef FF_KERNEL_COEXIST
+        /* Host (un)registration handled above; bypass coexist-aware ff_kevent. */
+        return ff_kevent_do_each(epfd, kev, changes, NULL, 0, NULL, NULL);
+#else
         return ff_kevent(epfd, kev, changes, NULL, 0, NULL);
+#endif
     }
 
     /*
@@ -100,7 +198,12 @@ ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
     EV_SET(&kev[0], fd, EVFILT_READ, read_flags, 0, 0, event->data.ptr);
     EV_SET(&kev[1], fd, EVFILT_WRITE, write_flags, 0, 0, event->data.ptr);
 
+#ifdef FF_KERNEL_COEXIST
+    /* Host (un)registration handled above; bypass coexist-aware ff_kevent. */
+    return ff_kevent_do_each(epfd, kev, changes, NULL, 0, NULL, NULL);
+#else
     return ff_kevent(epfd, kev, changes, NULL, 0, NULL);
+#endif
 }
 
 static void
@@ -147,13 +250,40 @@ ff_event_to_epoll(void **ev, struct kevent *kev)
 int
 ff_epoll_wait(int epfd, struct epoll_event *events, int maxevents, int timeout)
 {
-    int i, ret;
+#ifdef FF_KERNEL_COEXIST
+    int kn = 0, host_ep, rc;
+#endif
     (void)timeout;
     if (!events || maxevents < 1) {
         errno = EINVAL;
         return -1;
     }
 
-    return ff_kevent_do_each(epfd, NULL, 0, events, maxevents, NULL, ff_event_to_epoll);
+#ifdef FF_KERNEL_COEXIST
+    /*
+     * Coexistence: if a host epoll is paired with this kqueue, poll the
+     * kernel-stack events non-blocking first, then merge the F-Stack kqueue
+     * events into the remaining slots. When no kernel fd was registered
+     * (host_ep < 0), this degrades to the original kqueue-only behaviour.
+     */
+    host_ep = ff_epoll_host_ep(epfd, 0);
+    if (host_ep > 0) {
+        kn = ff_host_epoll_wait(host_ep, events, maxevents, 0);
+        if (kn < 0)
+            kn = 0;
+        if (kn >= maxevents)
+            return kn;
+    }
+
+    rc = ff_kevent_do_each(epfd, NULL, 0, events + kn, maxevents - kn, NULL,
+        ff_event_to_epoll);
+    if (rc < 0)
+        return kn > 0 ? kn : -1;
+
+    return kn + rc;
+#else
+    return ff_kevent_do_each(epfd, NULL, 0, events, maxevents, NULL,
+        ff_event_to_epoll);
+#endif /* FF_KERNEL_COEXIST */
 }
 

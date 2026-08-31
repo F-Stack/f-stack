@@ -97,5 +97,98 @@ int ff_rss_tbl6_get_portrange(const uint8_t *saddr6, const uint8_t *daddr6,
     uint16_t sport, uint16_t *rss_first, uint16_t *rss_last,
     uint16_t **rss_portrange);
 
+
+#ifdef FF_KERNEL_COEXIST
+/*
+ * Kernel-stack coexistence (native ff_api mode).
+ *
+ * A native F-Stack application runs ON F-Stack (ff_init/ff_run); business
+ * sockets use the F-Stack user-space stack. When coexistence is enabled
+ * (config.ini [stack] kernel_coexist=1), a socket created with SOCK_KERNEL
+ * additionally uses the host Linux kernel stack, coexisting in the same
+ * process / event loop.
+ *
+ * FD-space separation (zero regression): F-Stack fds keep their raw FreeBSD
+ * values (unchanged). A managed kernel fd is returned to the application as
+ * (host_fd + FF_KERNEL_FD_BASE). FF_KERNEL_FD_BASE is far above the maximum
+ * FreeBSD fd (kern.maxfiles is required to be <= 65536, see adapter README),
+ * and host fds are bounded by RLIMIT_NOFILE, so the two ranges never collide.
+ * The ff_* entry points detect a managed kernel fd via ff_is_kernel_fd() and
+ * route it to the host bridge below; the default / SOCK_FSTACK path is left
+ * byte-for-byte unchanged.
+ */
+#define FF_KERNEL_FD_BASE 0x40000000
+
+static inline int ff_is_kernel_fd(int fd)
+{
+    return fd >= FF_KERNEL_FD_BASE;
+}
+
+static inline int ff_kernel_fd_encode(int host_fd)
+{
+    return host_fd + FF_KERNEL_FD_BASE;
+}
+
+static inline int ff_kernel_fd_real(int fd)
+{
+    return fd - FF_KERNEL_FD_BASE;
+}
+
+/*
+ * Native dual-stack fd map: a coexistence (dual-stack) fd keeps its F-Stack fd
+ * value; the paired host kernel fd is stored here, indexed by the F-Stack fd
+ * (0 = no kernel side). Maintained by the ff_* entry points.
+ */
+int  ff_native_map_get(int fstack_fd);
+void ff_native_map_set(int fstack_fd, int host_fd);
+void ff_native_map_clear(int fstack_fd);
+void ff_epoll_close_pair(int kq);   /* close host epoll paired with a kqueue (ff_epoll.c) */
+int  ff_epoll_host_ep(int kq, int create); /* host epoll paired with a kqueue (ff_epoll.c) */
+int  ff_host_set_v6only(int fd);
+int  ff_host_set_reuseport(int fd);
+void ff_host_kqueue_ctl(int epfd, int del, int hfd, int app_fd, int want_write);
+int  ff_host_kqueue_poll(int epfd, int *triples, int maxevents);
+
+/*
+ * Host kernel-stack bridge (implemented in ff_host_interface.c, host
+ * namespace). These operate on RAW host fds. sockaddr / epoll_event are
+ * passed as void* to avoid struct-layout clashes between the FreeBSD and host
+ * namespaces; struct linux_sockaddr already matches the host sockaddr layout.
+ * On failure they return -1 with the host errno set.
+ */
+int ff_host_socket(int domain, int type, int protocol);
+int ff_host_bind(int fd, const void *addr, unsigned int addrlen);
+int ff_host_listen(int fd, int backlog);
+int ff_host_accept(int fd, void *addr, unsigned int *addrlen);
+int ff_host_connect(int fd, const void *addr, unsigned int addrlen);
+int ff_host_close(int fd);
+ssize_t ff_host_read(int fd, void *buf, size_t nbytes);
+ssize_t ff_host_write(int fd, const void *buf, size_t nbytes);
+ssize_t ff_host_recv(int fd, void *buf, size_t len, int flags);
+ssize_t ff_host_send(int fd, const void *buf, size_t len, int flags);
+ssize_t ff_host_sendto(int fd, const void *buf, size_t len, int flags,
+    const void *to, unsigned int tolen);
+ssize_t ff_host_recvfrom(int fd, void *buf, size_t len, int flags,
+    void *from, unsigned int *fromlen);
+int ff_host_accept4(int fd, void *addr, unsigned int *addrlen, int flags);
+int ff_host_setsockopt(int fd, int level, int optname,
+    const void *optval, unsigned int optlen);
+int ff_host_getsockopt(int fd, int level, int optname,
+    void *optval, unsigned int *optlen);
+int ff_host_fcntl(int fd, int cmd, int arg);
+int ff_host_epoll_create1(int flags);
+int ff_host_epoll_ctl(int epfd, int op, int fd, void *event);
+int ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout);
+ssize_t ff_host_sendmsg(int fd, const void *msg, int flags);
+ssize_t ff_host_recvmsg(int fd, void *msg, int flags);
+int ff_host_shutdown(int fd, int how);
+int ff_host_getpeername(int fd, void *addr, unsigned int *addrlen);
+int ff_host_getsockname(int fd, void *addr, unsigned int *addrlen);
+ssize_t ff_host_readv(int fd, const void *iov, int iovcnt);
+ssize_t ff_host_writev(int fd, const void *iov, int iovcnt);
+int ff_host_ioctl(int fd, unsigned long request, void *argp);
+int ff_host_dup(int fd);
+int ff_host_dup2(int oldfd, int newfd);
+#endif /* FF_KERNEL_COEXIST */
 #endif
 

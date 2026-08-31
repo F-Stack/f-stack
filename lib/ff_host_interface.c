@@ -26,6 +26,12 @@
  * Derived in part from libuinet's uinet_host_interface.c.
  */
 
+#ifdef FF_KERNEL_COEXIST
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   /* for accept4(2) / epoll_create1(2) */
+#endif
+#endif /* FF_KERNEL_COEXIST */
+
 #include <assert.h>
 #include <errno.h>
 #include <string.h>
@@ -35,6 +41,15 @@
 #include <stdlib.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#ifdef FF_KERNEL_COEXIST
+#include <sys/socket.h>
+#include <sys/epoll.h>
+#include <sys/uio.h>
+#include <sys/ioctl.h>
+#include <netinet/in.h>
+#include <fcntl.h>
+#include <unistd.h>
+#endif /* FF_KERNEL_COEXIST */
 #include <pthread.h>
 #include <sched.h>
 #include <time.h>
@@ -234,6 +249,283 @@ char *ff_getenv(const char *name)
 {
     return getenv(name);
 }
+
+#ifdef FF_KERNEL_COEXIST
+/*
+ * Native dual-stack fd map (single-threaded per F-Stack instance, like the
+ * adapter's fstack_kernel_fd_map): F-Stack fd -> paired host kernel fd, 0=none.
+ */
+#define FF_MAX_FREEBSD_FILES 65536
+static int ff_native_fd_map[FF_MAX_FREEBSD_FILES];
+
+int
+ff_native_map_get(int fstack_fd)
+{
+    if (fstack_fd < 0 || fstack_fd >= FF_MAX_FREEBSD_FILES)
+        return 0;
+    return ff_native_fd_map[fstack_fd];
+}
+
+void
+ff_native_map_set(int fstack_fd, int host_fd)
+{
+    if (fstack_fd >= 0 && fstack_fd < FF_MAX_FREEBSD_FILES)
+        ff_native_fd_map[fstack_fd] = host_fd;
+}
+
+void
+ff_native_map_clear(int fstack_fd)
+{
+    if (fstack_fd >= 0 && fstack_fd < FF_MAX_FREEBSD_FILES)
+        ff_native_fd_map[fstack_fd] = 0;
+}
+
+/*
+ * Host kernel-stack bridge for native-mode coexistence. Operate on RAW host
+ * fds; sockaddr / epoll_event arrive as void* (linux_sockaddr layout matches
+ * the host sockaddr). The host libc sets errno on failure.
+ */
+int
+ff_host_socket(int domain, int type, int protocol)
+{
+    return socket(domain, type, protocol);
+}
+
+/*
+ * Force a host AF_INET6 socket to v6-only so a dual-stack pair can share a
+ * port with the paired host AF_INET socket (host net.ipv6.bindv6only may be 0).
+ */
+int
+ff_host_set_v6only(int fd)
+{
+    int on = 1;
+    return setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on, sizeof(on));
+}
+
+int
+ff_host_set_reuseport(int fd)
+{
+    int on = 1;
+    return setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+}
+
+int
+ff_host_bind(int fd, const void *addr, socklen_t addrlen)
+{
+    return bind(fd, (const struct sockaddr *)addr, addrlen);
+}
+
+int
+ff_host_listen(int fd, int backlog)
+{
+    return listen(fd, backlog);
+}
+
+int
+ff_host_accept(int fd, void *addr, socklen_t *addrlen)
+{
+    return accept(fd, (struct sockaddr *)addr, addrlen);
+}
+
+int
+ff_host_connect(int fd, const void *addr, socklen_t addrlen)
+{
+    return connect(fd, (const struct sockaddr *)addr, addrlen);
+}
+
+int
+ff_host_close(int fd)
+{
+    return close(fd);
+}
+
+ssize_t
+ff_host_read(int fd, void *buf, size_t nbytes)
+{
+    return read(fd, buf, nbytes);
+}
+
+ssize_t
+ff_host_write(int fd, const void *buf, size_t nbytes)
+{
+    return write(fd, buf, nbytes);
+}
+
+ssize_t
+ff_host_recv(int fd, void *buf, size_t len, int flags)
+{
+    return recv(fd, buf, len, flags);
+}
+
+ssize_t
+ff_host_send(int fd, const void *buf, size_t len, int flags)
+{
+    return send(fd, buf, len, flags);
+}
+
+ssize_t
+ff_host_sendto(int fd, const void *buf, size_t len, int flags,
+    const void *to, socklen_t tolen)
+{
+    return sendto(fd, buf, len, flags, (const struct sockaddr *)to, tolen);
+}
+
+ssize_t
+ff_host_recvfrom(int fd, void *buf, size_t len, int flags,
+    void *from, socklen_t *fromlen)
+{
+    return recvfrom(fd, buf, len, flags, (struct sockaddr *)from, fromlen);
+}
+
+int
+ff_host_accept4(int fd, void *addr, socklen_t *addrlen, int flags)
+{
+    return accept4(fd, (struct sockaddr *)addr, addrlen, flags);
+}
+
+int
+ff_host_setsockopt(int fd, int level, int optname,
+    const void *optval, socklen_t optlen)
+{
+    return setsockopt(fd, level, optname, optval, optlen);
+}
+
+int
+ff_host_getsockopt(int fd, int level, int optname,
+    void *optval, socklen_t *optlen)
+{
+    return getsockopt(fd, level, optname, optval, optlen);
+}
+
+int
+ff_host_fcntl(int fd, int cmd, int arg)
+{
+    return fcntl(fd, cmd, arg);
+}
+
+int
+ff_host_epoll_create1(int flags)
+{
+    return epoll_create1(flags);
+}
+
+int
+ff_host_epoll_ctl(int epfd, int op, int fd, void *event)
+{
+    return epoll_ctl(epfd, op, fd, (struct epoll_event *)event);
+}
+
+int
+ff_host_epoll_wait(int epfd, void *events, int maxevents, int timeout)
+{
+    return epoll_wait(epfd, (struct epoll_event *)events, maxevents, timeout);
+}
+
+/*
+ * Host-epoll helpers for the native kqueue coexistence path (ff_kevent). The
+ * struct epoll_event stays inside this host-namespace TU; ff_kevent passes
+ * plain ints (app_fd kept in data.fd) to avoid pulling the host epoll layout
+ * into the FreeBSD-namespace syscall wrapper.
+ */
+void
+ff_host_kqueue_ctl(int epfd, int del, int hfd, int app_fd, int want_write)
+{
+    struct epoll_event ev;
+
+    ev.events = want_write ? EPOLLOUT : EPOLLIN;
+    ev.data.fd = app_fd;
+    if (del) {
+        epoll_ctl(epfd, EPOLL_CTL_DEL, hfd, &ev);
+    } else if (epoll_ctl(epfd, EPOLL_CTL_ADD, hfd, &ev) < 0 &&
+        errno == EEXIST) {
+        epoll_ctl(epfd, EPOLL_CTL_MOD, hfd, &ev);
+    }
+}
+
+/*
+ * Poll the host epoll non-blocking and emit (app_fd, is_write, is_eof) triples
+ * so ff_kevent can rebuild struct kevent entries. Returns the event count.
+ */
+int
+ff_host_kqueue_poll(int epfd, int *triples, int maxevents)
+{
+    struct epoll_event evs[maxevents];
+    int n, i;
+
+    n = epoll_wait(epfd, evs, maxevents, 0);
+    if (n <= 0)
+        return 0;
+
+    for (i = 0; i < n; i++) {
+        triples[3 * i] = evs[i].data.fd;
+        triples[3 * i + 1] = (evs[i].events & EPOLLOUT) ? 1 : 0;
+        triples[3 * i + 2] = (evs[i].events & (EPOLLHUP | EPOLLERR)) ? 1 : 0;
+    }
+    return n;
+}
+
+ssize_t
+ff_host_sendmsg(int fd, const void *msg, int flags)
+{
+    return sendmsg(fd, (const struct msghdr *)msg, flags);
+}
+
+ssize_t
+ff_host_recvmsg(int fd, void *msg, int flags)
+{
+    return recvmsg(fd, (struct msghdr *)msg, flags);
+}
+
+int
+ff_host_shutdown(int fd, int how)
+{
+    return shutdown(fd, how);
+}
+
+int
+ff_host_getpeername(int fd, void *addr, socklen_t *addrlen)
+{
+    return getpeername(fd, (struct sockaddr *)addr, addrlen);
+}
+
+int
+ff_host_getsockname(int fd, void *addr, socklen_t *addrlen)
+{
+    return getsockname(fd, (struct sockaddr *)addr, addrlen);
+}
+
+/* iov is a host 'struct iovec *' passed as void* (same ABI as FreeBSD). */
+ssize_t
+ff_host_readv(int fd, const void *iov, int iovcnt)
+{
+    return readv(fd, (const struct iovec *)iov, iovcnt);
+}
+
+ssize_t
+ff_host_writev(int fd, const void *iov, int iovcnt)
+{
+    return writev(fd, (const struct iovec *)iov, iovcnt);
+}
+
+/* request is the raw Linux ioctl request (host namespace, not translated). */
+int
+ff_host_ioctl(int fd, unsigned long request, void *argp)
+{
+    return ioctl(fd, request, argp);
+}
+
+int
+ff_host_dup(int fd)
+{
+    return dup(fd);
+}
+
+int
+ff_host_dup2(int oldfd, int newfd)
+{
+    return dup2(oldfd, newfd);
+}
+#endif /* FF_KERNEL_COEXIST */
 
 void ff_os_errno(int error)
 {

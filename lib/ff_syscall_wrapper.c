@@ -59,6 +59,9 @@
 
 #include "ff_api.h"
 #include "ff_host_interface.h"
+#ifdef FF_KERNEL_COEXIST
+#include "ff_config.h"
+#endif /* FF_KERNEL_COEXIST */
 
 /* setsockopt/getsockopt define start */
 
@@ -763,12 +766,46 @@ ff_socket(int domain, int type, int protocol)
 {
     int rc;
     struct socket_args sa;
+
+#ifdef FF_KERNEL_COEXIST
+    /*
+     * Kernel-stack coexistence. With coexistence enabled: SOCK_KERNEL (without
+     * SOCK_FSTACK) -> kernel stack only; SOCK_FSTACK -> F-Stack only; no marker
+     * (default) -> dual stack (an F-Stack socket plus a paired host kernel
+     * socket kept in the native fd map). Off / macro-off keeps the original
+     * F-Stack path byte-for-byte.
+     */
+    int want_dual = 0;
+    if (ff_global_cfg.stack.kernel_coexist) {
+        if ((type & SOCK_KERNEL) && !(type & SOCK_FSTACK)) {
+            int kfd = ff_host_socket(domain,
+                type & ~(SOCK_KERNEL | SOCK_FSTACK), protocol);
+            return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);
+        }
+        want_dual = !(type & SOCK_FSTACK);
+    }
+    type &= ~(SOCK_KERNEL | SOCK_FSTACK);
+#endif /* FF_KERNEL_COEXIST */
+
     sa.domain = domain == LINUX_AF_INET6 ? AF_INET6 : domain;
     sa.type = linux2freebsd_socket_flags(type);
     sa.protocol = protocol;
     if ((rc = sys_socket(curthread, &sa)))
         goto kern_fail;
 
+#ifdef FF_KERNEL_COEXIST
+    if (want_dual) {
+        int hfd = ff_host_socket(domain, type, protocol);
+        if (hfd >= 0) {
+            if (domain == LINUX_AF_INET6)
+                ff_host_set_v6only(hfd);
+            /* Multi-process F-Stack runs one instance per lcore, all of them
+             * sharing the same listen address on the kernel side. */
+            ff_host_set_reuseport(hfd);
+            ff_native_map_set(curthread->td_retval[0], hfd);
+        }
+    }
+#endif /* FF_KERNEL_COEXIST */
     return curthread->td_retval[0];
 kern_fail:
     ff_os_errno(rc);
@@ -780,6 +817,13 @@ ff_getsockopt(int s, int level, int optname, void *optval,
     socklen_t *optlen)
 {
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_getsockopt(ff_kernel_fd_real(s), level, optname,
+            optval, optlen);
+#endif /* FF_KERNEL_COEXIST */
+
     if (level == LINUX_SOL_SOCKET)
         level = SOL_SOCKET;
 
@@ -822,6 +866,17 @@ ff_setsockopt(int s, int level, int optname, const void *optval,
     socklen_t optlen)
 {
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_setsockopt(ff_kernel_fd_real(s), level, optname,
+            optval, optlen);
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0)
+            ff_host_setsockopt(hfd, level, optname, optval, optlen);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     if (level == LINUX_SOL_SOCKET)
         level = SOL_SOCKET;
@@ -868,6 +923,15 @@ ff_ioctl(int fd, unsigned long request, ...)
     caddr_t argp;
 
     long req = linux2freebsd_ioctl(request);
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd)) {
+        va_start(ap, request);
+        argp = va_arg(ap, caddr_t);
+        va_end(ap);
+        return ff_host_ioctl(ff_kernel_fd_real(fd), request, argp);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     if (req < 0) {
         rc = EINVAL;
         goto kern_fail;
@@ -879,6 +943,20 @@ ff_ioctl(int fd, unsigned long request, ...)
     va_end(ap);
     if ((rc = kern_ioctl(curthread, fd, req, argp)))
         goto kern_fail;
+
+#ifdef FF_KERNEL_COEXIST
+    /* Sync set-direction ioctls (FIONBIO/FIOASYNC) to the paired host fd so a
+     * dual-stack fd keeps the same I/O mode on both stacks. Query ioctls are
+     * not forwarded: they write back into argp and the F-Stack value above is
+     * authoritative for the application fd. Host side uses the raw Linux
+     * request (host namespace, untranslated). */
+    if (ff_global_cfg.stack.kernel_coexist &&
+        (request == LINUX_FIONBIO || request == LINUX_FIOASYNC)) {
+        int hfd = ff_native_map_get(fd);
+        if (hfd > 0)
+            ff_host_ioctl(hfd, request, argp);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     return (rc);
 
@@ -913,8 +991,25 @@ ff_close(int fd)
 {
     int rc;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd))
+        return ff_host_close(ff_kernel_fd_real(fd));
+#endif /* FF_KERNEL_COEXIST */
+
     if ((rc = kern_close(curthread, fd)))
         goto kern_fail;
+
+#ifdef FF_KERNEL_COEXIST
+    /* Try to close the socket fd or epoll fd respectively */
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(fd);
+        if (hfd > 0) {
+            ff_host_close(hfd);
+            ff_native_map_clear(fd);
+        }
+        ff_epoll_close_pair(fd);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     return (rc);
 kern_fail:
@@ -928,6 +1023,11 @@ ff_read(int fd, void *buf, size_t nbytes)
     struct uio auio;
     struct iovec aiov;
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd))
+        return ff_host_read(ff_kernel_fd_real(fd), buf, nbytes);
+#endif /* FF_KERNEL_COEXIST */
 
     if (nbytes > INT_MAX) {
         rc = EINVAL;
@@ -956,6 +1056,11 @@ ff_readv(int fd, const struct iovec *iov, int iovcnt)
     struct uio auio;
     int rc, len, i;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd))
+        return ff_host_readv(ff_kernel_fd_real(fd), iov, iovcnt);
+#endif /* FF_KERNEL_COEXIST */
+
     len = 0;
     for (i = 0; i < iovcnt; i++)
         len += iov[i].iov_len;
@@ -980,6 +1085,11 @@ ff_write(int fd, const void *buf, size_t nbytes)
     struct uio auio;
     struct iovec aiov;
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd))
+        return ff_host_write(ff_kernel_fd_real(fd), buf, nbytes);
+#endif /* FF_KERNEL_COEXIST */
 
     if (nbytes > INT_MAX) {
         rc = EINVAL;
@@ -1007,6 +1117,11 @@ ff_writev(int fd, const struct iovec *iov, int iovcnt)
 {
     struct uio auio;
     int i, rc, len;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd))
+        return ff_host_writev(ff_kernel_fd_real(fd), iov, iovcnt);
+#endif /* FF_KERNEL_COEXIST */
 
     len = 0;
     for (i = 0; i < iovcnt; i++)
@@ -1038,6 +1153,14 @@ ff_sendto(int s, const void *buf, size_t len, int flags,
     struct msghdr msg;
     struct iovec aiov;
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s)) {
+        return to ? ff_host_sendto(ff_kernel_fd_real(s), buf, len, flags,
+                                   to, tolen)
+                  : ff_host_send(ff_kernel_fd_real(s), buf, len, flags);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     struct sockaddr_storage bsdaddr;
     struct sockaddr *pf = (struct sockaddr *)&bsdaddr;
@@ -1073,6 +1196,11 @@ ff_sendmsg(int s, const struct msghdr *msg, int flags)
     struct sockaddr_storage freebsd_sa;
     struct msghdr freebsd_msg;
     struct cmsghdr *freebsd_cmsg = NULL;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_sendmsg(ff_kernel_fd_real(s), msg, flags);
+#endif /* FF_KERNEL_COEXIST */
 
     freebsd_msg.msg_name = &freebsd_sa;
     if ((__DECONST(struct linux_msghdr *, msg))->msg_control) {
@@ -1124,6 +1252,12 @@ ff_recvfrom(int s, void *buf, size_t len, int flags,
     int rc;
     struct sockaddr_storage bsdaddr;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_recvfrom(ff_kernel_fd_real(s), buf, len, flags,
+            from, fromlen);
+#endif /* FF_KERNEL_COEXIST */
+
     if (fromlen != NULL)
         msg.msg_namelen = *fromlen;
     else
@@ -1157,6 +1291,11 @@ ff_recvmsg(int s, struct msghdr *msg, int flags)
     int rc, ret;
     struct msghdr freebsd_msg;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_recvmsg(ff_kernel_fd_real(s), msg, flags);
+#endif /* FF_KERNEL_COEXIST */
+
     ret = linux2freebsd_msghdr((struct linux_msghdr *)msg, &freebsd_msg, 0);
     if (ret < 0) {
         rc = EINVAL;
@@ -1189,6 +1328,16 @@ ff_fcntl(int fd, int cmd, ...)
     argp = va_arg(ap, uintptr_t);
     va_end(ap);
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(fd))
+        return ff_host_fcntl(ff_kernel_fd_real(fd), cmd, (int)argp);
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(fd);
+        if (hfd > 0)
+            ff_host_fcntl(hfd, cmd, (int)argp);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     if ((rc = kern_fcntl(curthread, fd, cmd, argp)))
         goto kern_fail;
     rc = curthread->td_retval[0];
@@ -1207,8 +1356,32 @@ ff_accept(int s, struct linux_sockaddr * addr,
     struct sockaddr *pf = NULL;
     socklen_t socklen = sizeof(struct sockaddr_storage);
 
-    if ((rc = kern_accept(curthread, s, &pf, &socklen, &fp)))
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s)) {
+        int kfd = ff_host_accept(ff_kernel_fd_real(s), addr, addrlen);
+        return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
+    if ((rc = kern_accept(curthread, s, &pf, &socklen, &fp))) {
+#ifdef FF_KERNEL_COEXIST
+        /*
+         * Here, we first attempt to accept the socket fd from the f-stack every time. If none is available,
+         * we will then attempt to accept the socket fd from the kernel. This is different from LD_PRELOAD,
+         * which obtains different fds by calling socket twice, but we cannot distinguish between them here?待定，开epoll是否可以区分
+         */
+        if ((rc == EAGAIN || rc == EWOULDBLOCK) &&
+            ff_global_cfg.stack.kernel_coexist) {
+            int hfd = ff_native_map_get(s);
+            if (hfd > 0) {
+                int kfd = ff_host_accept(hfd, addr, addrlen);
+                if (kfd >= 0)
+                    return ff_kernel_fd_encode(kfd);
+            }
+        }
+#endif /* FF_KERNEL_COEXIST */
         goto kern_fail;
+    }
 
     rc = curthread->td_retval[0];
     fdrop(fp, curthread);
@@ -1239,8 +1412,28 @@ ff_accept4(int s, struct linux_sockaddr * addr,
     struct sockaddr *pf = NULL;
     socklen_t socklen = sizeof(struct sockaddr_storage);
 
-    if ((rc = kern_accept4(curthread, s, &pf, &socklen, linux2freebsd_socket_flags(flags), &fp)))
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s)) {
+        int kfd = ff_host_accept4(ff_kernel_fd_real(s), addr, addrlen, flags);
+        return kfd < 0 ? -1 : ff_kernel_fd_encode(kfd);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
+    if ((rc = kern_accept4(curthread, s, &pf, &socklen, linux2freebsd_socket_flags(flags), &fp))) {
+#ifdef FF_KERNEL_COEXIST
+        if ((rc == EAGAIN || rc == EWOULDBLOCK) &&
+            ff_global_cfg.stack.kernel_coexist) {
+            int hfd = ff_native_map_get(s);
+            if (hfd > 0) {
+                int kfd = ff_host_accept4(hfd, addr, addrlen, flags);
+                if (kfd >= 0)
+                    return ff_kernel_fd_encode(kfd);
+            }
+        }
+#endif /* FF_KERNEL_COEXIST */
+
         goto kern_fail;
+    }
 
     rc = curthread->td_retval[0];
     fdrop(fp, curthread);
@@ -1266,12 +1459,26 @@ int
 ff_listen(int s, int backlog)
 {
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_listen(ff_kernel_fd_real(s), backlog);
+#endif /* FF_KERNEL_COEXIST */
+
     struct listen_args la = {
         .s = s,
         .backlog = backlog,
     };
     if ((rc = sys_listen(curthread, &la)))
         goto kern_fail;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0 && ff_host_listen(hfd, backlog) < 0)
+            return -1;
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     return (rc);
 kern_fail:
@@ -1284,10 +1491,24 @@ ff_bind(int s, const struct linux_sockaddr *addr, socklen_t addrlen)
 {
     int rc;
     struct sockaddr_storage bsdaddr;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_bind(ff_kernel_fd_real(s), addr, addrlen);
+#endif /* FF_KERNEL_COEXIST */
+
     linux2freebsd_sockaddr(addr, addrlen, (struct sockaddr *)&bsdaddr);
 
     if ((rc = kern_bindat(curthread, AT_FDCWD, s, (struct sockaddr *)&bsdaddr)))
         goto kern_fail;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0 && ff_host_bind(hfd, addr, addrlen) < 0)
+            return -1;
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     return (rc);
 kern_fail:
@@ -1300,7 +1521,23 @@ ff_connect(int s, const struct linux_sockaddr *name, socklen_t namelen)
 {
     int rc;
     struct sockaddr_storage bsdaddr;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_connect(ff_kernel_fd_real(s), name, namelen);
+#endif /* FF_KERNEL_COEXIST */
+
     linux2freebsd_sockaddr(name, namelen, (struct sockaddr *)&bsdaddr);
+
+#ifdef FF_KERNEL_COEXIST
+    /* Dual-stack: best-effort concurrent connect on the kernel side; the
+     * F-Stack result below is authoritative for the return value. */
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0)
+            ff_host_connect(hfd, name, namelen);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     if ((rc = kern_connectat(curthread, AT_FDCWD, s, (struct sockaddr *)&bsdaddr)))
         goto kern_fail;
@@ -1317,6 +1554,11 @@ ff_getpeername(int s, struct linux_sockaddr * name,
 {
     int rc;
     struct sockaddr *pf = NULL;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_getpeername(ff_kernel_fd_real(s), name, namelen);
+#endif /* FF_KERNEL_COEXIST */
 
     if ((rc = kern_getpeername(curthread, s, &pf, namelen)))
         goto kern_fail;
@@ -1342,6 +1584,11 @@ ff_getsockname(int s, struct linux_sockaddr *name,
     int rc;
     struct sockaddr *pf = NULL;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_getsockname(ff_kernel_fd_real(s), name, namelen);
+#endif /* FF_KERNEL_COEXIST */
+
     if ((rc = kern_getsockname(curthread, s, &pf, namelen)))
         goto kern_fail;
 
@@ -1364,12 +1611,25 @@ ff_shutdown(int s, int how)
 {
     int rc;
 
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(s))
+        return ff_host_shutdown(ff_kernel_fd_real(s), how);
+#endif /* FF_KERNEL_COEXIST */
+
     struct shutdown_args sa = {
         .s = s,
         .how = how,
     };
     if ((rc = sys_shutdown(curthread, &sa)))
         goto kern_fail;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        int hfd = ff_native_map_get(s);
+        if (hfd > 0)
+            ff_host_shutdown(hfd, how);
+    }
+#endif /* FF_KERNEL_COEXIST */
 
     return (rc);
 kern_fail:
@@ -1403,6 +1663,11 @@ ff_select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 {
     int rc;
 
+    /*
+     * FF_KERNEL_COEXIST limitation: encoded kernel fds (>= FF_KERNEL_FD_BASE,
+     * 0x40000000) far exceed FD_SETSIZE and cannot fit in an fd_set, so select
+     * cannot multiplex coexist kernel fds. Use epoll/kqueue for those instead.
+     */
     rc = kern_select(curthread, nfds, readfds, writefds, exceptfds, timeout, 64);
     if (rc)
         goto kern_fail;
@@ -1420,6 +1685,12 @@ ff_poll(struct pollfd fds[], nfds_t nfds, int timeout)
 {
     int rc;
     struct timespec ts;
+    /*
+     * FF_KERNEL_COEXIST limitation: kern_poll only polls F-Stack fds. Encoded
+     * kernel fds are not routed here (mixing host-poll subsets with kern_poll
+     * and merging revents is high-risk); use epoll/kqueue for coexist kernel
+     * fds instead.
+     */
     ts.tv_sec = 0;
     ts.tv_nsec = 0;
     if ((rc = kern_poll(curthread, fds, nfds, &ts, NULL)))
@@ -1532,10 +1803,94 @@ kern_fail:
     return (-1);
 }
 
+#ifdef FF_KERNEL_COEXIST
+/*
+ * Coexistence for the native kqueue API (mirrors ff_epoll.c). changelist
+ * entries whose ident is a managed kernel fd or a dual-stack fd are
+ * (un)registered on the host epoll paired with this kqueue; the host epoll
+ * stores the application-facing fd in data.fd. Kernel-only changes are not
+ * forwarded to the F-Stack kqueue (it does not know that fd). On wait, the
+ * host epoll is polled non-blocking and ready events are translated back into
+ * struct kevent before the F-Stack events are appended. With no kernel fd
+ * registered the path degrades to the original ff_kevent_do_each behaviour.
+ */
+static int
+ff_kevent_host_change(int kq, const struct kevent *kev)
+{
+    int hfd, app_fd, del;
+
+    if (ff_is_kernel_fd((int)kev->ident)) {
+        hfd = ff_kernel_fd_real((int)kev->ident);
+        app_fd = (int)kev->ident;
+    } else if ((hfd = ff_native_map_get((int)kev->ident)) > 0) {
+        app_fd = (int)kev->ident;
+    } else {
+        return 0;
+    }
+
+    if (kev->flags & EV_DELETE)
+        del = 1;
+    else if (kev->flags & (EV_ADD | EV_ENABLE))
+        del = 0;
+    else
+        return 1;
+
+    int host_ep = ff_epoll_host_ep(kq, !del);
+    if (host_ep > 0)
+        ff_host_kqueue_ctl(host_ep, del, hfd, app_fd,
+            kev->filter == EVFILT_WRITE);
+    return 1;
+}
+
+static int
+ff_kevent_host_wait(int host_ep, struct kevent *eventlist, int nevents)
+{
+    int triples[3 * nevents];
+    int n, i;
+
+    n = ff_host_kqueue_poll(host_ep, triples, nevents);
+    for (i = 0; i < n; i++) {
+        short filter = triples[3 * i + 1] ? EVFILT_WRITE : EVFILT_READ;
+        u_short flags = triples[3 * i + 2] ? EV_EOF : 0;
+        EV_SET(&eventlist[i], triples[3 * i], filter, flags, 0, 1, NULL);
+    }
+    return n;
+}
+#endif /* FF_KERNEL_COEXIST */
+
 int
 ff_kevent(int kq, const struct kevent *changelist, int nchanges,
     struct kevent *eventlist, int nevents, const struct timespec *timeout)
 {
+#ifdef FF_KERNEL_COEXIST
+    if (ff_global_cfg.stack.kernel_coexist) {
+        struct kevent fbsd_changes[nchanges > 0 ? nchanges : 1];
+        int fbsd_n = 0, i, kn = 0, host_ep;
+
+        for (i = 0; i < nchanges; i++) {
+            int handled = ff_kevent_host_change(kq, &changelist[i]);
+            /* dual-stack fds also live on the F-Stack kqueue; kernel-only do not */
+            if (!handled || ff_native_map_get((int)changelist[i].ident) > 0)
+                fbsd_changes[fbsd_n++] = changelist[i];
+        }
+
+        if (eventlist != NULL && nevents > 0) {
+            host_ep = ff_epoll_host_ep(kq, 0);
+            if (host_ep > 0) {
+                kn = ff_kevent_host_wait(host_ep, eventlist, nevents);
+                if (kn >= nevents)
+                    return kn;
+            }
+        }
+
+        int rc = ff_kevent_do_each(kq, fbsd_n > 0 ? fbsd_changes : NULL,
+            fbsd_n, eventlist ? eventlist + kn : NULL,
+            eventlist ? nevents - kn : 0, timeout, NULL);
+        if (rc < 0)
+            return kn > 0 ? kn : -1;
+        return kn + rc;
+    }
+#endif /* FF_KERNEL_COEXIST */
     return ff_kevent_do_each(kq, changelist, nchanges, eventlist, nevents, timeout, NULL);
 }
 
@@ -1556,6 +1911,14 @@ int
 ff_dup(int oldfd)
 {
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    if (ff_is_kernel_fd(oldfd)) {
+        int n = ff_host_dup(ff_kernel_fd_real(oldfd));
+        return n < 0 ? -1 : ff_kernel_fd_encode(n);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     struct dup_args da = {
         .fd = oldfd,
     };
@@ -1574,6 +1937,20 @@ int
 ff_dup2(int oldfd, int newfd)
 {
     int rc;
+
+#ifdef FF_KERNEL_COEXIST
+    /* Cross-stack dup2 (one kernel fd, one F-Stack fd) has no coherent
+     * semantics: the two fd spaces are disjoint and managed separately. */
+    if (ff_is_kernel_fd(oldfd) != ff_is_kernel_fd(newfd)) {
+        ff_os_errno(EINVAL);
+        return (-1);
+    }
+    if (ff_is_kernel_fd(oldfd) && ff_is_kernel_fd(newfd)) {
+        int n = ff_host_dup2(ff_kernel_fd_real(oldfd), ff_kernel_fd_real(newfd));
+        return n < 0 ? -1 : ff_kernel_fd_encode(n);
+    }
+#endif /* FF_KERNEL_COEXIST */
+
     struct dup2_args da = {
         .from = oldfd,
         .to = newfd

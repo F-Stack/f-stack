@@ -47,6 +47,11 @@ FF_IPFW=1
 FF_INET6=1
 #FF_IPSEC=1
 
+# Kernel-stack coexistence: per-fd SOCK_KERNEL sockets additionally use the host
+# Linux kernel stack (local socket/fd/event access) alongside F-Stack. Disabled
+# by default; build with FF_KERNEL_COEXIST=1 (or uncomment below) to compile it.
+#FF_KERNEL_COEXIST=1
+
 include ${TOPDIR}/mk/kern.pre.mk
 
 ifeq ($(FF_DPDK),)
@@ -146,6 +151,11 @@ endif
 GCCVERGE11 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 11)
 ifeq "$(GCCVERGE11)" "1"
     CFLAGS+= -Wno-error=stringop-overread
+endif
+
+ifdef FF_KERNEL_COEXIST
+HOST_CFLAGS+= -DFF_KERNEL_COEXIST
+CFLAGS+= -DFF_KERNEL_COEXIST
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
