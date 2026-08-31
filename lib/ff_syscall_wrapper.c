@@ -951,6 +951,9 @@ ff_socket(int domain, int type, int protocol)
         if (hfd >= 0) {
             if (domain == LINUX_AF_INET6)
                 ff_host_set_v6only(hfd);
+            /* Multi-process F-Stack runs one instance per lcore, all of them
+             * sharing the same listen address on the kernel side. */
+            ff_host_set_reuseport(hfd);
             ff_native_map_set(curthread->td_retval[0], hfd);
         }
     }

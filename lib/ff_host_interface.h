@@ -153,6 +153,7 @@ void ff_native_map_clear(int fstack_fd);
 void ff_epoll_close_pair(int kq);   /* close host epoll paired with a kqueue (ff_epoll.c) */
 int  ff_epoll_host_ep(int kq, int create); /* host epoll paired with a kqueue (ff_epoll.c) */
 int  ff_host_set_v6only(int fd);
+int  ff_host_set_reuseport(int fd);
 void ff_host_kqueue_ctl(int epfd, int del, int hfd, int app_fd, int want_write);
 int  ff_host_kqueue_poll(int epfd, int *triples, int maxevents);
 

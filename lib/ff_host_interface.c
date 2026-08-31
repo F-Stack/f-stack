@@ -303,6 +303,13 @@ ff_host_set_v6only(int fd)
 }
 
 int
+ff_host_set_reuseport(int fd)
+{
+    int on = 1;
+    return setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+}
+
+int
 ff_host_bind(int fd, const void *addr, socklen_t addrlen)
 {
     return bind(fd, (const struct sockaddr *)addr, addrlen);
