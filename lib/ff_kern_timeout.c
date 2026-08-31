@@ -56,6 +56,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/bus.h>
 #include <sys/callout.h>
+#include <sys/limits.h>	/* INT_MAX, for the saturated tick delay */
+#include <sys/time.h>	/* tick_sbt, sbinuptime() */
 
 /*
  * F-Stack: 14.0+ removed CALLOUT_LOCAL_ALLOC and CS_EXECUTING.
@@ -324,6 +326,63 @@ static inline u_int
 callout_get_bucket(int to_ticks)
 {
     return (to_ticks & callwheelmask);
+}
+
+/*
+ * Compute the absolute deadline a callout should fire at.
+ *
+ * Follows callout_when() in sys/kern/kern_timeout.c, without its hardclock-edge
+ * anchoring (kern_clocksource.c is not built here) or its precision floor (this
+ * callwheel is tick-granular, so there is no sub-tick slack to trade).
+ */
+void
+callout_when(sbintime_t sbt, sbintime_t precision, int flags,
+    sbintime_t *sbt_out, sbintime_t *precision_out)
+{
+    sbintime_t to_sbt;
+
+    if ((flags & (C_ABSOLUTE | C_PRECALC)) != 0) {
+        *sbt_out = sbt;
+        *precision_out = precision;
+        return;
+    }
+    /* A hardclock-based timer cannot resolve finer than one tick. */
+    if ((flags & C_HARDCLOCK) != 0 && sbt < tick_sbt)
+        sbt = tick_sbt;
+
+    to_sbt = sbinuptime();
+    /* Saturate: a wrapped deadline is negative, so it would fire at once. */
+    if (SBT_MAX - to_sbt < sbt)
+        to_sbt = SBT_MAX;
+    else
+        to_sbt += sbt;
+
+    *sbt_out = to_sbt;
+    *precision_out = precision;
+}
+
+/*
+ * Delay in ticks for this callwheel, which callout_reset_sbt_on() indexes by.
+ *
+ * An absolute deadline needs the current uptime subtracted first: dividing one
+ * by tick_sbt as though it were a duration schedules the callout an uptime into
+ * the future.
+ */
+int
+ff_callout_delay_ticks(sbintime_t sbt, int flags)
+{
+    sbintime_t now;
+
+    if ((flags & C_ABSOLUTE) == 0)
+        return ((int)(sbt / tick_sbt));
+
+    if (sbt == SBT_MAX)
+        return (INT_MAX);       /* never */
+    now = sbinuptime();
+    if (sbt <= now)
+        return (1);             /* already due */
+    /* Round up, so the callout cannot fire before its deadline. */
+    return ((int)((sbt - now) / tick_sbt) + 1);
 }
 
 void

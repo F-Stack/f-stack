@@ -93,8 +93,10 @@ void	_callout_init_lock(struct callout *, struct lock_object *, int);
 #define	callout_pending(c)	((c)->c_iflags & CALLOUT_PENDING)
 int callout_reset_tick_on(struct callout *, int, void (*)(void *),
 	void *, int, int);
+int ff_callout_delay_ticks(sbintime_t, int);
 #define callout_reset_sbt_on(c, sbt, pr, fn, args, cpu, flags) \
-    callout_reset_tick_on((c), (sbt)/tick_sbt, (fn), (args), (cpu), (flags))
+    callout_reset_tick_on((c), ff_callout_delay_ticks((sbt), (flags)),	\
+        (fn), (args), (cpu), (flags))
 #define	callout_reset_sbt(c, sbt, pr, fn, arg, flags)			\
     callout_reset_sbt_on((c), (sbt), (pr), (fn), (arg), -1, (flags))
 #define	callout_reset_sbt_curcpu(c, sbt, pr, fn, arg, flags)		\
