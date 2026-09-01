@@ -25,12 +25,15 @@
  */
 
 #include <sys/time.h>
+#include <time.h>
 #include <unistd.h>
 #include <errno.h>
 
 #include "ff_dpdk_pcap.h"
 #define FILE_PATH_LEN 64
 #define PCAP_FILE_NUM 10
+#define PCAP_MAGIC_USEC 0xA1B2C3D4
+#define PCAP_MAGIC_NSEC 0xA1B23C4D
 
 struct pcap_file_header {
     uint32_t magic;
@@ -44,7 +47,7 @@ struct pcap_file_header {
 
 struct pcap_pkthdr {
     uint32_t sec;            /* time stamp */
-    uint32_t usec;           /* struct timeval time_t, in linux64: 8*2=16, in cap: 4 */
+    uint32_t usec_or_nsec;   /* usec when magic=0xA1B2C3D4, nsec when magic=0xA1B23C4D */
     uint32_t caplen;         /* length of portion present */
     uint32_t len;            /* length this packet (off wire) */
 };
@@ -53,7 +56,7 @@ static __thread FILE* g_pcap_fp = NULL;
 static __thread uint32_t seq = 0;
 static __thread uint32_t g_flen = 0;
 
-int ff_enable_pcap(const char* dump_path, uint16_t snap_len)
+int ff_enable_pcap(const char* dump_path, uint16_t snap_len, uint8_t timestamp_precision)
 {
     char pcap_f_path[FILE_PATH_LEN] = {0};
 
@@ -68,7 +71,7 @@ int ff_enable_pcap(const char* dump_path, uint16_t snap_len)
     struct pcap_file_header pcap_file_hdr;
     void* file_hdr = &pcap_file_hdr;
 
-    pcap_file_hdr.magic = 0xA1B2C3D4;
+    pcap_file_hdr.magic = timestamp_precision ? PCAP_MAGIC_NSEC : PCAP_MAGIC_USEC;
     pcap_file_hdr.version_major = 0x0002;
     pcap_file_hdr.version_minor = 0x0004;
     pcap_file_hdr.thiszone = 0x00000000;
@@ -83,21 +86,30 @@ int ff_enable_pcap(const char* dump_path, uint16_t snap_len)
 }
 
 int
-ff_dump_packets(const char* dump_path, struct rte_mbuf* pkt, uint16_t snap_len, uint32_t f_maxlen)
+ff_dump_packets(const char* dump_path, struct rte_mbuf* pkt, uint16_t snap_len, uint32_t f_maxlen, uint8_t timestamp_precision)
 {
     unsigned int out_len = 0, wr_len = 0;
     struct pcap_pkthdr pcap_hdr;
     void* hdr = &pcap_hdr;
-    struct timeval ts;
     char pcap_f_path[FILE_PATH_LEN] = {0};
 
     if (g_pcap_fp == NULL) {
         return -1;
     }
     snap_len = pkt->pkt_len < snap_len ? pkt->pkt_len : snap_len;
-    gettimeofday(&ts, NULL);
-    pcap_hdr.sec = ts.tv_sec;
-    pcap_hdr.usec = ts.tv_usec;
+
+    if (timestamp_precision) {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        pcap_hdr.sec = ts.tv_sec;
+        pcap_hdr.usec_or_nsec = ts.tv_nsec;
+    } else {
+        struct timeval ts;
+        gettimeofday(&ts, NULL);
+        pcap_hdr.sec = ts.tv_sec;
+        pcap_hdr.usec_or_nsec = ts.tv_usec;
+    }
+
     pcap_hdr.caplen = snap_len;
     pcap_hdr.len = pkt->pkt_len;
     fwrite(hdr, sizeof(struct pcap_pkthdr), 1, g_pcap_fp);
@@ -117,7 +129,7 @@ ff_dump_packets(const char* dump_path, struct rte_mbuf* pkt, uint16_t snap_len, 
         if ( ++seq >= PCAP_FILE_NUM )
             seq = 0;
         
-        ff_enable_pcap(dump_path, snap_len);
+        ff_enable_pcap(dump_path, snap_len, timestamp_precision);
     }
 
     return 0;

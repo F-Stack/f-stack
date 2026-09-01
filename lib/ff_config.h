@@ -370,6 +370,7 @@ struct ff_config {
         uint16_t snap_len;
         uint32_t save_len;
         char*	 save_path;
+        uint8_t  timestamp_precision; /* 0=usec (default), 1=nsec */
     } pcap;
 };
 

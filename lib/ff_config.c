@@ -1112,6 +1112,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
             pconfig->pcap.enable = (uint16_t)atoi(value);
         } else if (strcmp(name, "savepath") == 0) {
             pconfig->pcap.save_path = strdup(value);
+        } else if (strcmp(name, "timestamp_precision") == 0) {
+            pconfig->pcap.timestamp_precision = (uint8_t)atoi(value);
         }
     } else if (strcmp(section, "rss_check") == 0) {
         return rss_check_cfg_handler(pconfig, section, name, value);

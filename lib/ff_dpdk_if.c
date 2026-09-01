@@ -416,7 +416,7 @@ init_lcore_conf(void)
 
         /* Enable pcap dump */
         if (ff_global_cfg.pcap.enable) {
-            ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len);
+            ff_enable_pcap(ff_global_cfg.pcap.save_path, ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.timestamp_precision);
         }
 
         lcore_conf.nb_queue_list[port_id] = pconf->nb_lcores;
@@ -1916,7 +1916,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 
         if (unlikely( ff_global_cfg.pcap.enable)) {
             if (!pkts_from_ring) {
-                ff_dump_packets( ff_global_cfg.pcap.save_path, rtem, ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len);
+                ff_dump_packets(ff_global_cfg.pcap.save_path, rtem, ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len, ff_global_cfg.pcap.timestamp_precision);
             }
         }
 
@@ -2322,8 +2322,8 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
     if (unlikely(ff_global_cfg.pcap.enable)) {
         uint16_t i;
         for (i = 0; i < n; i++) {
-            ff_dump_packets( ff_global_cfg.pcap.save_path, m_table[i],
-               ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len);
+            ff_dump_packets(ff_global_cfg.pcap.save_path, m_table[i],
+               ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len, ff_global_cfg.pcap.timestamp_precision);
         }
     }
 
