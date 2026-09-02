@@ -10,6 +10,15 @@
 #include <ngx_event.h>
 #include <ngx_channel.h>
 
+#if (NGX_HAVE_FSTACK)
+#include <fcntl.h>
+#include <semaphore.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/wait.h>
+#endif
+
 
 static void ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n,
     ngx_int_t type);
@@ -28,7 +37,15 @@ static void ngx_cache_manager_process_handler(ngx_event_t *ev);
 static void ngx_cache_loader_process_handler(ngx_event_t *ev);
 
 #if (NGX_HAVE_FSTACK)
+static ngx_int_t ngx_ff_slim_primary_ensure(ngx_cycle_t *cycle);
+static void ngx_ff_slim_primary_spawn_child(ngx_cycle_t *cycle,
+    sem_t *ready_sem);
+static ngx_int_t ngx_ff_slim_primary_alive(void);
+static int ngx_ff_slim_primary_loop(void *arg);
 extern int ff_mod_init(const char *conf, int proc_id, int proc_type);
+extern int ngx_ff_slim_primary_init(const char *conf);
+extern int ngx_ff_graceful_reload_detect(const char *conf);
+extern int ngx_ff_conf_dpdk_nb_procs(const char *conf);
 ngx_int_t     ngx_ff_process;
 #endif
 
@@ -137,6 +154,52 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+
+#if (NGX_HAVE_FSTACK)
+    /* graceful_reload=1: make sure a resident slim primary is up before any
+     * worker attaches as a secondary. The slim primary is double-forked and
+     * detached from this master, so reload/exit never signals it. */
+    if (ngx_ff_graceful_reload_detect((const char *) ccf->fstack_conf.data)) {
+        ngx_int_t  nb_procs;
+
+        /* Topology check: slim primary (proc_id 0) + worker_processes
+         * secondaries must match the lcore_mask bit count exactly. */
+        nb_procs = ngx_ff_conf_dpdk_nb_procs(
+            (const char *) ccf->fstack_conf.data);
+        if (nb_procs < 0) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload=1: cannot read dpdk.lcore_mask "
+                          "from fstack conf \"%V\"", &ccf->fstack_conf);
+            /* fatal */
+            exit(2);
+        }
+
+        if (nb_procs > ccf->worker_processes + 1) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload=1: dpdk lcore_mask has %d lcores "
+                          "but worker_processes+1 is %d; the extra queues "
+                          "would have no consumer (silent RSS black hole)",
+                          nb_procs, (int) ccf->worker_processes);
+            /* fatal */
+            exit(2);
+        }
+
+        if (nb_procs < ccf->worker_processes + 1) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload=1: worker_processes+1 is %d but "
+                          "dpdk lcore_mask has only %d lcores; worker attach "
+                          "would fail (proc_id out of range)",
+                          (int) ccf->worker_processes, nb_procs);
+            /* fatal */
+            exit(2);
+        }
+
+        if (ngx_ff_slim_primary_ensure(cycle) != NGX_OK) {
+            /* fatal */
+            exit(2);
+        }
+    }
+#endif
 
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
@@ -301,6 +364,284 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 }
 
 #if (NGX_HAVE_FSTACK)
+
+/* Resident slim primary bookkeeping (graceful_reload=1, C-NR-100).
+ *
+ * The slim primary is a DPDK primary with no rx/tx queue (primary_slim=1)
+ * that outlives the nginx master. Detection uses a pidfile plus
+ * /proc/<pid>/comm to guard against pid reuse; readiness is signalled to the
+ * spawning master through a process-shared POSIX semaphore. */
+
+#define NGX_FF_SLIM_PRIMARY_COMM        "ff_slim_primary"
+#define NGX_FF_SLIM_PRIMARY_PIDFILE     "/var/run/ff_slim_primary.pid"
+#define NGX_FF_SLIM_PRIMARY_LOGFILE     "/var/run/ff_slim_primary.log"
+/* primary_slim baseline reports measured ~25s for primary init (hugepage
+ * mapping + port setup); wait with ample margin instead of the legacy 15s
+ * worker gate. */
+#define NGX_FF_SLIM_PRIMARY_READY_SEC   60
+/* Worker 0 attach confirm timeout under graceful_reload=1. */
+#define NGX_FF_GRACEFUL_ATTACH_SEC      60
+
+
+static ngx_int_t
+ngx_ff_slim_primary_alive(void)
+{
+    int         fd;
+    ssize_t     n;
+    char        buf[32], comm[16], cpath[48];
+    int         pid;
+
+    fd = open(NGX_FF_SLIM_PRIMARY_PIDFILE, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = '\0';
+
+    pid = atoi(buf);
+    if (pid <= 0) {
+        return 0;
+    }
+
+    if (kill(pid, 0) != 0 && errno != EPERM) {
+        return 0;
+    }
+
+    /* guard against pid reuse: comm must still be the slim primary */
+    snprintf(cpath, sizeof(cpath), "/proc/%d/comm", pid);
+    fd = open(cpath, O_RDONLY);
+    if (fd >= 0) {
+        n = read(fd, comm, sizeof(comm));
+        (void) close(fd);
+        if (n <= 0 || strncmp(comm, NGX_FF_SLIM_PRIMARY_COMM,
+                              sizeof(NGX_FF_SLIM_PRIMARY_COMM) - 1) != 0)
+        {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+
+static int
+ngx_ff_slim_primary_loop(void *arg)
+{
+    /* control-plane only: the lib main_loop handles EAL IPC, KNI and the
+     * primary_slim idle sleep; no application work is needed here */
+    (void) arg;
+    return 0;
+}
+
+
+static void
+ngx_ff_slim_primary_spawn_child(ngx_cycle_t *cycle, sem_t *ready_sem)
+{
+    /* runs in the double-forked grandchild, reparented to init; never
+     * returns to nginx code */
+    struct rlimit      rl;
+    ngx_int_t          i, max_fd;
+    int                devnull, logfd, pf;
+    ngx_core_conf_t   *ccf;
+    sigset_t           set;
+    char               conf[NGX_MAX_PATH];
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    snprintf(conf, sizeof(conf), "%s", (char *) ccf->fstack_conf.data);
+
+    /* stdio: diagnostics to a dedicated log, everything else to /dev/null */
+    devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+        (void) dup2(devnull, STDIN_FILENO);
+        (void) dup2(devnull, STDOUT_FILENO);
+    }
+
+    logfd = open(NGX_FF_SLIM_PRIMARY_LOGFILE,
+                 O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logfd >= 0) {
+        (void) dup2(logfd, STDERR_FILENO);
+    } else if (devnull >= 0) {
+        (void) dup2(devnull, STDERR_FILENO);
+    }
+
+    /* close every other inherited fd: the slim primary must not hold the
+     * nginx listening sockets open (they would survive worker reloads) nor
+     * any master channel fds. EAL attach happens only after this. */
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
+        max_fd = rl.rlim_cur;
+    } else {
+        max_fd = sysconf(_SC_OPEN_MAX);
+        if (max_fd < 0) {
+            max_fd = 65536;
+        }
+    }
+    for (i = 3; i < max_fd; i++) {
+        (void) close(i);
+    }
+
+    /* reset signal state inherited from the nginx master */
+    for (i = 1; i < NSIG; i++) {
+        (void) signal(i, SIG_DFL);
+    }
+    (void) signal(SIGPIPE, SIG_IGN);
+    sigemptyset(&set);
+    (void) sigprocmask(SIG_SETMASK, &set, NULL);
+
+    ngx_ff_process = NGX_FF_PROCESS_SLIM_PRIMARY;
+    (void) prctl(PR_SET_NAME, NGX_FF_SLIM_PRIMARY_COMM, 0, 0, 0);
+
+    if (ngx_ff_slim_primary_init(conf) != 0) {
+        /* ff_init() exits on its own failure paths; only a late check can
+         * land here */
+        fprintf(stderr, "ff slim primary: init failed\n");
+        _exit(2);
+    }
+
+    /* publish the pidfile before signalling readiness */
+    pf = open(NGX_FF_SLIM_PRIMARY_PIDFILE,
+              O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (pf >= 0) {
+        dprintf(pf, "%d\n", (int) getpid());
+        (void) close(pf);
+    }
+
+    if (ready_sem != NULL) {
+        (void) sem_post(ready_sem);
+    }
+
+    ff_run(ngx_ff_slim_primary_loop, NULL);
+    _exit(0);
+}
+
+
+static ngx_int_t
+ngx_ff_slim_primary_ensure(ngx_cycle_t *cycle)
+{
+    char             sem_name[48];
+    int              shm_fd, r;
+    sem_t           *sem;
+    struct timespec  ts;
+    pid_t            pid;
+
+    if (ngx_ff_slim_primary_alive()) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: resident slim primary found, reusing");
+        return NGX_OK;
+    }
+
+    snprintf(sem_name, sizeof(sem_name), "/ff_slim_prim_%d", (int) ngx_pid);
+
+    shm_fd = shm_open(sem_name, O_CREAT | O_TRUNC | O_RDWR, 0666);
+    if (shm_fd == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: shm_open(\"%s\") failed", sem_name);
+        return NGX_ERROR;
+    }
+
+    r = ftruncate(shm_fd, sizeof(sem_t));
+    if (r == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: ftruncate failed");
+        (void) close(shm_fd);
+        (void) shm_unlink(sem_name);
+        return NGX_ERROR;
+    }
+
+    sem = mmap(NULL, sizeof(sem_t), PROT_READ | PROT_WRITE, MAP_SHARED,
+               shm_fd, 0);
+    (void) close(shm_fd);
+    if (sem == MAP_FAILED) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: mmap failed");
+        (void) shm_unlink(sem_name);
+        return NGX_ERROR;
+    }
+
+    if (sem_init(sem, 1, 0) != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: sem_init failed");
+        (void) munmap(sem, sizeof(sem_t));
+        (void) shm_unlink(sem_name);
+        return NGX_ERROR;
+    }
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "graceful_reload: spawning resident slim primary");
+
+    pid = fork();
+    if (pid == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: fork failed");
+        (void) munmap(sem, sizeof(sem_t));
+        (void) shm_unlink(sem_name);
+        return NGX_ERROR;
+    }
+
+    if (pid == 0) {
+        /* intermediate child: new session, then fork again so the slim
+         * primary is reparented to init and detached from this master */
+        if (setsid() == -1) {
+            _exit(1);
+        }
+
+        pid = fork();
+        if (pid == -1) {
+            _exit(1);
+        }
+
+        if (pid > 0) {
+            _exit(0);
+        }
+
+        ngx_ff_slim_primary_spawn_child(cycle, sem);
+        _exit(2);
+    }
+
+    /* master: reap the intermediate child right away */
+    (void) waitpid(pid, NULL, 0);
+
+    (void) clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += NGX_FF_SLIM_PRIMARY_READY_SEC;
+    while ((r = sem_timedwait(sem, &ts)) == -1 && errno == EINTR) {
+        continue;
+    }
+
+    if (r == -1) {
+        /* timed out: either our grandchild never came up, or an externally
+         * started slim primary appeared in the meantime */
+        if (!ngx_ff_slim_primary_alive()) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload: slim primary failed to become "
+                          "ready within %ds", NGX_FF_SLIM_PRIMARY_READY_SEC);
+            /* do not sem_destroy(): a stuck grandchild may still post later */
+            (void) munmap(sem, sizeof(sem_t));
+            (void) shm_unlink(sem_name);
+            return NGX_ERROR;
+        }
+
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: reusing externally-started "
+                      "slim primary");
+
+    } else {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: slim primary ready");
+    }
+
+    (void) munmap(sem, sizeof(sem_t));
+    (void) shm_unlink(sem_name);
+    return NGX_OK;
+}
+
+#endif
+
+
+#if (NGX_HAVE_FSTACK)
 static int
 ngx_single_process_cycle_loop(void *arg)
 {
@@ -361,6 +702,12 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
     if (ccf->fstack_conf.len == 0) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                         "fstack_conf null");
+        exit(2);
+    }
+
+    if (ngx_ff_graceful_reload_detect((const char *) ccf->fstack_conf.data)) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload=1 requires master process mode");
         exit(2);
     }
 
@@ -491,7 +838,11 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
             struct timespec ts;
             (void) clock_gettime(CLOCK_REALTIME,&ts);
 
-            ts.tv_sec  += 15; //15s
+            /* graceful_reload=1: the primary is already resident, this wait
+             * confirms worker 0 attached as a secondary (ff_mod_init posts
+             * after a successful attach); legacy path keeps the 15s gate. */
+            ts.tv_sec += ngx_ff_graceful_reload ? NGX_FF_GRACEFUL_ATTACH_SEC
+                                                : 15; //15s
             while ((r = sem_timedwait(ngx_ff_worker_sem, &ts)) == -1
                     && errno == EINTR)
             {
@@ -500,7 +851,9 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
 
             if (r == -1) {
                 ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
-                        "primary worker process failed to initialize");
+                        ngx_ff_graceful_reload
+                            ? "worker 0 failed to attach to the resident primary"
+                            : "primary worker process failed to initialize");
                 exit(2);
             }
 
@@ -1114,7 +1467,12 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
             exit(2);
         }
 
-        if (worker == 0) {
+        if (ngx_ff_graceful_reload) {
+            /* resident slim primary owns the DPDK primary role; every
+             * worker attaches as a secondary (proc_id shift happens in
+             * ff_mod_init) */
+            ngx_ff_process = NGX_FF_PROCESS_SECONDARY;
+        } else if (worker == 0) {
             ngx_ff_process = NGX_FF_PROCESS_PRIMARY;
         } else {
             ngx_ff_process = NGX_FF_PROCESS_SECONDARY;

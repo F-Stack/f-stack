@@ -41,7 +41,12 @@ void ngx_single_process_cycle(ngx_cycle_t *cycle);
 #define                NGX_FF_PROCESS_NONE         0
 #define                NGX_FF_PROCESS_PRIMARY      1
 #define                NGX_FF_PROCESS_SECONDARY    2
+/* Resident slim primary spawned by the master under graceful_reload=1. */
+#define                NGX_FF_PROCESS_SLIM_PRIMARY 3
 extern ngx_int_t       ngx_ff_process;
+/* 1 when the f-stack conf has dpdk.graceful_reload=1 (detected by the master
+ * before workers are spawned); workers inherit it through fork(). */
+extern int             ngx_ff_graceful_reload;
 #endif
 
 extern ngx_uint_t      ngx_process;

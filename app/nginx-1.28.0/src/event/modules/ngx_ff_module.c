@@ -74,6 +74,7 @@
  
  #include <ngx_auto_config.h>
  #include "ff_api.h"
+ #include "ff_config.h"
  
  #define _GNU_SOURCE
  #define __USE_GNU
@@ -167,46 +168,211 @@
  }
  
  // proc_type, 1: primary, 0: secondary.
- int
- ff_mod_init(const char *conf, int proc_id, int proc_type) {
+
+/* Set by the nginx master via ngx_ff_graceful_reload_detect() before workers
+ * are spawned; inherited by workers through fork(). 0 (default) keeps the
+ * legacy behaviour: worker 0 is the DPDK primary. */
+int ngx_ff_graceful_reload = 0;
+
+static int
+ngx_ff_conf_dpdk_str(const char *conf, const char *key, char *buf, size_t len)
+{
+    FILE       *fp;
+    char        line[512], *p;
+    int         in_dpdk = 0;
+    size_t      klen = strlen(key);
+
+    fp = fopen(conf, "r");
+    if (fp == NULL) {
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        p = line + strlen(line);
+        while (p > line && (p[-1] == '\n' || p[-1] == '\r')) {
+            p--;
+        }
+        *p = '\0';
+
+        p = line;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+
+        if (*p == '\0' || *p == ';' || *p == '#') {
+            continue;
+        }
+
+        if (*p == '[') {
+            in_dpdk = (strncmp(p, "[dpdk]", 6) == 0);
+            continue;
+        }
+
+        if (in_dpdk
+            && strncmp(p, key, klen) == 0
+            && p[klen] == '=')
+        {
+            p += klen + 1;
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+            snprintf(buf, len, "%s", p);
+            fclose(fp);
+            return 1;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+
+static int
+ngx_ff_conf_dpdk_flag(const char *conf, const char *key)
+{
+    char  value[64];
+
+    if (ngx_ff_conf_dpdk_str(conf, key, value, sizeof(value))) {
+        return atoi(value) ? 1 : 0;
+    }
+
+    return 0;
+}
+
+
+/* Number of procs implied by [dpdk] lcore_mask (set-bit count), mirroring
+ * parse_lcore_mask() semantics: optional 0x/0X prefix, hex digits.
+ * Returns -1 when the key is missing or has no set bit. */
+int
+ngx_ff_conf_dpdk_nb_procs(const char *conf)
+{
+    char        mask[128];
+    char       *p;
+    int         nb_procs = 0, v;
+
+    if (!ngx_ff_conf_dpdk_str(conf, "lcore_mask", mask, sizeof(mask))) {
+        return -1;
+    }
+
+    p = mask;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+
+    for (; *p != '\0'; p++) {
+        if (*p == ' ' || *p == '\t') {
+            continue;
+        }
+        if (*p >= '0' && *p <= '9') {
+            v = *p - '0';
+        } else if (*p >= 'a' && *p <= 'f') {
+            v = *p - 'a' + 10;
+        } else if (*p >= 'A' && *p <= 'F') {
+            v = *p - 'A' + 10;
+        } else {
+            return -1;
+        }
+        nb_procs += __builtin_popcount(v);
+    }
+
+    return nb_procs > 0 ? nb_procs : -1;
+}
+
+
+int
+ngx_ff_graceful_reload_detect(const char *conf)
+{
+    ngx_ff_graceful_reload = ngx_ff_conf_dpdk_flag(conf, "graceful_reload");
+    return ngx_ff_graceful_reload;
+}
+
+
+static int
+ff_init_with_args(const char *conf, int proc_id, const char *proc_type)
+{
 	 int rc, i;
 	 int ff_argc = 4;
- 
+
 	 char **ff_argv = malloc(sizeof(char *)*ff_argc);
 	 for (i = 0; i < ff_argc; i++) {
 		 ff_argv[i] = malloc(sizeof(char)*PATH_MAX);
 	 }
- 
+
 	 sprintf(ff_argv[0], "nginx");
 	 sprintf(ff_argv[1], "--conf=%s", conf);
 	 sprintf(ff_argv[2], "--proc-id=%d", proc_id);
-	 if (proc_type == 1) {
-		 sprintf(ff_argv[3], "--proc-type=primary");
-	 } else {
-		 sprintf(ff_argv[3], "--proc-type=secondary");
-	 }
- 
+	 sprintf(ff_argv[3], "--proc-type=%s", proc_type);
+
 	 rc = ff_init(ff_argc, ff_argv);
 	 if (rc == 0) {
 		 /* Ensure that the socket we converted
 				 does not exceed the maximum value of 'int' */
- 
+
 		 if(ngx_max_sockets + (unsigned)ff_getmaxfd() > INT_MAX)
 		 {
 			 rc = -1;
 		 }
- 
+
 		 inited = 1;
 	 }
- 
+
 	 for (i = 0; i < ff_argc; i++) {
 		 free(ff_argv[i]);
 	 }
- 
+
 	 free(ff_argv);
- 
+
 	 return rc;
- }
+}
+
+
+int
+ff_mod_init(const char *conf, int proc_id, int proc_type) {
+	 int rc;
+
+	 /* graceful_reload=1: a resident slim primary owns proc_id 0, so every
+	  * nginx worker attaches as a DPDK secondary with proc_id shifted by 1
+	  * (config.ini must set nb_procs/lcore_mask to worker_processes+1). */
+	 if (ngx_ff_graceful_reload) {
+		 proc_id += 1;
+		 proc_type = 0;
+	 }
+
+	 rc = ff_init_with_args(conf, proc_id,
+		 proc_type == 1 ? "primary" : "secondary");
+	 if (rc != 0) {
+		 return rc;
+	 }
+
+	 /* Cross-check: the master's pre-fork scan and this process's
+	  * ff_ini_parser must agree on graceful_reload, otherwise the worker
+	  * would run with a role (secondary + shifted proc_id) that does not
+	  * match the actually resident primary. */
+	 if ((int) ff_global_cfg.dpdk.graceful_reload != ngx_ff_graceful_reload) {
+		 fprintf(stderr,
+			 "ff_mod_init: graceful_reload mismatch: master scan %d, "
+			 "conf parse %d\n",
+			 ngx_ff_graceful_reload,
+			 (int) ff_global_cfg.dpdk.graceful_reload);
+		 return -1;
+	 }
+
+	 return rc;
+}
+
+
+/* Init the resident slim primary: DPDK primary at proc_id 0, holds no rx/tx
+ * queue (primary_slim=1 in config.ini). Used by the nginx master when it
+ * spawns the detached slim primary process. */
+int
+ngx_ff_slim_primary_init(const char *conf)
+{
+	 return ff_init_with_args(conf, 0, "primary");
+}
  
  /*-
   * Verify whether the socket is supported by fstack or not.
