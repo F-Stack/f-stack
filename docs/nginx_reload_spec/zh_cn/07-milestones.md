@@ -119,7 +119,7 @@
 | DR1 | reload 编排者：master vs slim primary | **已定案（v1.9.3）= 候选 b：master 编排 + primary 原语**（决定 M1 的 primary 拉起方式与 M2 状态机归属，见 [09] §24.5/24.6） |
 | DR2 | 旧连接归属判定：实时查询 vs 快照表（两形态均须遵守流表窗口化：READY 后生效、排空确认后关表，[06] 第 2 节语义 6） | M0（接口初评）→ **M3 开工前定案**（RV5 数据支撑） |
 | ~~DR3~~ | ~~reta 切流 vs 末期一次性队列移交~~ | **已取消**（v1.6：reta 不改，同期移交为唯一主路径，见 [06] §6.2 DR3） |
-| DR4 | reload 控制通道载体（v1.6 已定）：移交互斥用**共享内存标记**（非 msg ring），READY/DRAIN_DONE/REJECT 用 msg ring | **M2 开工前** |
+| DR4 | reload 控制通道载体（v1.6 已定）：移交互斥用**共享内存标记**（非 msg ring），READY/DRAIN_DONE/REJECT 用 msg ring。**【M2 v1.8 实现补注（CR 裁定：接受偏离但限定条件）】master↔worker 方向的控制事件（READY 现状、M4 的 DRAIN_DONE/REJECT）实际走 nginx channel + 匿名 MAP_SHARED 共享块**——master 非 DPDK 进程无法 dequeue msg_ring（EAL attach 会破坏 M1 fork 安全定案）；FF_RELOAD 消息族仍在 (proc_id,gen) 隔离的 msg_ring 上承载（lib 侧查询/验证面）。**worker↔primary 方向（M3 的 HANDOVER_REQ/ACK）必须走 msg_ring**（全 EAL 进程） | **已定案确认**（M0 评审 + M2 CR） |
 | ~~DR5~~ | ~~四链解耦与代际 lcore 池的配置表达~~ | **已取消（2026-09-01 人工决策）**：D-A = 同 lcore_id，无 2N lcore_id 需求，`lcore_mask`/`nb_procs`/队列数保持 N。C-NR-311 随之取消 |
 | DR6 | 异常回退完备性（每阶段回退目标态） | **M4 开工前**。**T3 之后 G_new 崩溃已于 2026-09-01 定案：方案① 由 primary 将 rx 交还 G_old**；检测手段 = 共享内存全局切换标记每 loop 递增作心跳（G_old 采样，G_old 排空后标记随 flow_map 消亡不再递增）；超时 **默认 1s 可配置**（M4 实测校准）。落地编码点 **C-NR-316**，附则见 [06] §6.2 DR6 附则 |
 | DR7 | M7（dispatcher 中心化）启动判据与阈值 | **M7 立项评审**（M6 数据齐后；暂定阈值：reload 窗口内转发开销致吞吐下降 >5%、或 drain 期 P99 劣化 >10%、或高存量连接场景 drain 时长超 SLO——流表窗口化后稳态损耗恒 0，原稳态阈值失效）。**v1.9 决策 D-C：M2 不提前，维持可选演进** |
@@ -337,7 +337,7 @@
 
 | 项 | 内容 |
 |---|---|
-| **前置** | M4 合入 |
+| **前置** | M4 合入。**【M2 CR 移交的硬前置】跨 master 世代 gen/ring 撞号问题必须解决**：USR2 新 master 重建匿名块 active_gen=0 起步，老 worker（偶数次 reload 后 gen=0）与新 worker 撞号 ⇒ 共享 gen0 msg_ring 双消费者 + KNI 双主（块独立但 DPDK ring/mempool 名字空间跨 master 共享、常驻 primary 不换代）——ring 名掺入 master epoch 或改命名 shm + 世代握手（C-NR-502 承载） |
 | **DoD** | ① RT-04（USR2 带流量升级零错误）；② RT-04b（升级失败回退可用）；③ HUP 回归复跑不劣化 |
 | **测试门禁** | RT-04/04b + RG-NR-01 |
 | **风险与回退** | 风险：exec 后环境/fd 细节（channel 继承）；候选 b 下 primary 归属交接。回退：不使用 USR2 即无影响（HUP 路径不依赖本章） |
