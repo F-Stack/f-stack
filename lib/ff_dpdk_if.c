@@ -112,6 +112,13 @@ static __thread int stop_loop;
 
 static __thread struct rte_timer freebsd_clock;
 
+/* C-NR-307: graceful_reload self-driven hardclock state. The interval is
+ * computed once in init_clock(); the next-fire TSC replaces the shared
+ * priv_timer[lcore_id] slot so two generations on the same lcore_id never
+ * touch the shared timer skiplist (lcore audit N-1/N-5). */
+static uint64_t gr_hardclock_interval;
+static __thread uint64_t gr_hardclock_next_tsc;
+
 // Mellanox Linux's driver key
 static uint8_t default_rsskey_40bytes[40] = {
     0xd1, 0x81, 0xc6, 0x2c, 0xf7, 0xf4, 0xdb, 0x5b,
@@ -262,6 +269,19 @@ static void
 ff_hardclock_worker_job(__rte_unused struct rte_timer *timer,
     __rte_unused void *arg) {
     ff_hardclock_worker();
+}
+
+/* C-NR-307: TSC ticks per hardclock tick; same formula as the legacy
+ * rte_timer period in init_clock() so the tick cadence is identical. */
+uint64_t
+ff_hardclock_interval_tsc(uint64_t timer_hz, unsigned int bsd_hz)
+{
+    uint64_t intrs;
+
+    if (bsd_hz == 0 || bsd_hz > US_PER_S)
+        return 0;
+    intrs = US_PER_S / bsd_hz;
+    return (timer_hz + US_PER_S - 1) / US_PER_S * intrs;
 }
 
 struct ff_dpdk_if_context *
@@ -563,6 +583,59 @@ ff_mtu_data_room_size(uint16_t max_mtu, uint16_t *out)
     return 0;
 }
 
+/* C-NR-314: per-generation application-side mbuf pools (graceful_reload=1).
+ * Pre-created at init; the active generation is selected by app_mbuf_gen
+ * (constant 0 until reload generation switching lands). */
+static struct rte_mempool *app_pktmbuf_pool[FF_MBUF_GEN_MAX][NB_SOCKETS];
+static int app_mbuf_gen;
+
+struct rte_mempool *
+ff_app_mbuf_pool(unsigned socketid)
+{
+    if (!ff_global_cfg.dpdk.graceful_reload)
+        return pktmbuf_pool[socketid];
+    return app_pktmbuf_pool[app_mbuf_gen][socketid];
+}
+
+void
+ff_app_mbuf_set_gen(int gen)
+{
+    if (gen < 0 || gen >= FF_MBUF_GEN_MAX)
+        return;
+    app_mbuf_gen = gen;
+}
+
+static void
+init_app_mem_pool(unsigned socketid, unsigned nb_app_mbuf, uint16_t data_room)
+{
+    char s[64];
+    int gen;
+
+    for (gen = 0; gen < FF_MBUF_GEN_MAX; gen++) {
+        if (app_pktmbuf_pool[gen][socketid] != NULL)
+            continue;
+        if (ff_mbuf_gen_pool_name(s, sizeof(s), socketid, gen) != 0) {
+            rte_exit(EXIT_FAILURE,
+                "app mbuf pool name error on socket %d gen %d\n",
+                socketid, gen);
+        }
+        if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            app_pktmbuf_pool[gen][socketid] =
+                rte_pktmbuf_pool_create(s, nb_app_mbuf,
+                    MEMPOOL_CACHE_SIZE, 0, data_room, socketid);
+        } else {
+            app_pktmbuf_pool[gen][socketid] = rte_mempool_lookup(s);
+        }
+        if (app_pktmbuf_pool[gen][socketid] == NULL) {
+            rte_exit(EXIT_FAILURE,
+                "Cannot create app mbuf pool %s on socket %d\n",
+                s, socketid);
+        }
+        ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+            "create app mbuf pool %s on socket %d\n", s, socketid);
+    }
+}
+
 static int
 init_mem_pool(void)
 {
@@ -592,6 +665,23 @@ init_mem_pool(void)
         nb_lcores * nb_ports * DISPATCH_RING_SIZE),
         (unsigned)8192);
 
+    /* C-NR-314: TX-side budget for the per-generation application pools
+     * (the non-RX terms of nb_mbuf above; the RX terms stay in the shared
+     * fixed-name pool that the RX queues are bound to). */
+    unsigned nb_app_mbuf = 0;
+    if (ff_global_cfg.dpdk.graceful_reload) {
+        nb_app_mbuf = RTE_ALIGN_CEIL (
+            (nb_ports * (max_portid + 1) * 2 * nb_lcores * MAX_PKT_BURST +
+            nb_ports * (max_portid + 1) * 2 * nb_tx_queue * TX_QUEUE_SIZE +
+            nb_lcores * MEMPOOL_CACHE_SIZE +
+#ifdef FF_KNI
+            nb_ports * KNI_MBUF_MAX +
+            nb_ports * KNI_QUEUE_SIZE +
+#endif
+            nb_lcores * nb_ports * DISPATCH_RING_SIZE),
+            (unsigned)8192);
+    }
+
     unsigned socketid = 0;
     uint16_t i, lcore_id;
     char s[64];
@@ -613,9 +703,9 @@ init_mem_pool(void)
             continue;
         }
 
+        uint16_t data_room = RTE_MBUF_DEFAULT_BUF_SIZE;
         if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
             snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
-            uint16_t data_room = RTE_MBUF_DEFAULT_BUF_SIZE;
             if (ff_global_cfg.dpdk.mtu_enable &&
                 ff_global_cfg.dpdk.mbuf_mode == FF_MBUF_MODE_LARGE) {
                 uint16_t room;
@@ -629,9 +719,14 @@ init_mem_pool(void)
                         ff_global_cfg.dpdk.max_mtu);
                 }
             }
+            /* C-NR-315 (DR11 M-A): this fixed-name pool is bound to the RX
+             * queues and shared by both generations; cache_size=0 removes
+             * the per-lcore local_cache from every alloc/free path. */
             pktmbuf_pool[socketid] =
                 rte_pktmbuf_pool_create(s, nb_mbuf,
-                    MEMPOOL_CACHE_SIZE, 0,
+                    ff_shared_pool_cache_size(
+                        ff_global_cfg.dpdk.graceful_reload,
+                        MEMPOOL_CACHE_SIZE), 0,
                     data_room, socketid);
         } else {
             snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
@@ -642,6 +737,12 @@ init_mem_pool(void)
             rte_exit(EXIT_FAILURE, "Cannot create mbuf pool on socket %d\n", socketid);
         } else {
             ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "create mbuf pool on socket %d\n", socketid);
+        }
+
+        /* C-NR-314: pre-create both generation pools (graceful only);
+         * secondary looks them up, primary creates them. */
+        if (ff_global_cfg.dpdk.graceful_reload) {
+            init_app_mem_pool(socketid, nb_app_mbuf, data_room);
         }
 
 #ifdef FF_USE_PAGE_ARRAY
@@ -747,9 +848,13 @@ init_msg_ring(void)
 
     /* Create message buffer pool */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        /* C-NR-315 (N-4a): shared across processes (reload handshake
+         * messages included); drop local_cache under graceful_reload. */
         message_pool = rte_mempool_create(FF_MSG_POOL,
            MSG_RING_SIZE * 2 * nb_rings,
-           MAX_MSG_BUF_SIZE, MSG_RING_SIZE / 2, 0,
+           MAX_MSG_BUF_SIZE,
+           ff_shared_pool_cache_size(ff_global_cfg.dpdk.graceful_reload,
+               MSG_RING_SIZE / 2), 0,
            NULL, NULL, ff_msg_init, NULL,
            socketid, 0);
     } else {
@@ -1241,6 +1346,30 @@ init_port_start(void)
 static int
 init_clock(void)
 {
+    if (ff_global_cfg.dpdk.graceful_reload) {
+        /* C-NR-307: never register freebsd_clock on the shared
+         * priv_timer[lcore_id] slot (N-1 memset trigger / N-5
+         * locked-critical-section crash). Primary still runs
+         * subsystem_init to create the timer memzone; secondaries bypass
+         * it entirely — it only takes the shared mem_config tlock (N-3)
+         * and graceful mode never calls any rte_timer API. */
+        if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            rte_timer_subsystem_init();
+        } else if (rte_memzone_lookup("rte_timer_mz") == NULL) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                "graceful_reload secondary: rte_timer_mz not created by primary\n");
+        }
+        gr_hardclock_interval = ff_hardclock_interval_tsc(
+            rte_get_timer_hz(), ff_global_cfg.freebsd.hz);
+        if (gr_hardclock_interval == 0)
+            rte_exit(EXIT_FAILURE,
+                "graceful_reload: invalid freebsd.hz=%d\n",
+                ff_global_cfg.freebsd.hz);
+        gr_hardclock_next_tsc = rte_rdtsc() + gr_hardclock_interval;
+        ff_update_current_ts();
+        return 0;
+    }
+
     rte_timer_subsystem_init();
     rte_timer_meta_init();
     uint64_t hz = rte_get_timer_hz();
@@ -1262,6 +1391,12 @@ init_clock(void)
 static void
 init_clock_worker(void)
 {
+    /* C-NR-307 point 4: graceful_reload=1 is rejected with thread_mode=1
+     * by config validation; defensive no-op so the shared-slot issue
+     * cannot migrate to thread mode. */
+    if (ff_global_cfg.dpdk.graceful_reload)
+        return;
+
     uint64_t hz = rte_get_timer_hz();
     uint64_t intrs = US_PER_S / ff_global_cfg.freebsd.hz;
     uint64_t tsc = (hz + US_PER_S - 1) / US_PER_S * intrs;
@@ -1273,7 +1408,11 @@ init_clock_worker(void)
 
 static int
 stop_clock(void) {
-    rte_timer_stop_sync(&freebsd_clock);
+    /* C-NR-307 point 3 (N-2): graceful_reload=1 never registered
+     * freebsd_clock, so the exit path must not touch the shared timer
+     * list either (rte_timer_stop_sync can spin forever on it). */
+    if (!ff_global_cfg.dpdk.graceful_reload)
+        rte_timer_stop_sync(&freebsd_clock);
     return 0;
 }
 #if defined(FF_FLOW_ISOLATE) || defined(FF_FDIR)
@@ -2169,7 +2308,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                         uint16_t lcore_id = qconf->port_cfgs[port_id].lcore_list[j];
                         socket_id = rte_lcore_to_socket_id(lcore_id);
                     }
-                    mbuf_pool = pktmbuf_pool[socket_id];
+                    mbuf_pool = ff_app_mbuf_pool(socket_id);
                     mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                     if(mbuf_clone) {
                         int ret = rte_ring_enqueue(dispatch_ring[port_id][j],
@@ -2184,7 +2323,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
 
 #ifdef FF_KNI
             if (enable_kni && ff_kni_is_runtime_owner()) {
-                mbuf_pool = pktmbuf_pool[qconf->socket_id];
+                mbuf_pool = ff_app_mbuf_pool(qconf->socket_id);
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
                 if(mbuf_clone) {
                     ff_add_vlan_tag(mbuf_clone);
@@ -2560,7 +2699,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     qconf->tx_mbufs[ctx->port_id].len = len;
     return 0;
 #endif
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[ff_cur_lcore_conf()->socket_id];
+    struct rte_mempool *mbuf_pool = ff_app_mbuf_pool(ff_cur_lcore_conf()->socket_id);
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
         ff_traffic.tx_dropped++;
@@ -2702,7 +2841,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 int
 ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
 {
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[ff_cur_lcore_conf()->socket_id];
+    struct rte_mempool *mbuf_pool = ff_app_mbuf_pool(ff_cur_lcore_conf()->socket_id);
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
     if (head == NULL) {
         ff_traffic.tx_dropped++;
@@ -2766,6 +2905,8 @@ main_loop(void *arg)
 
     qconf = ff_cur_lcore_conf();
 
+    const int graceful_reload = ff_global_cfg.dpdk.graceful_reload;
+
     /* CM5-A: per-thread stack init. thread_mode=0 main thread is already
      * initialized (ff_freebsd_init) and skips here (zero regression);
      * thread_mode=1 workers init here. */
@@ -2801,8 +2942,21 @@ main_loop(void *arg)
         }
 
         cur_tsc = rte_rdtsc();
-        if (unlikely(freebsd_clock.expire < cur_tsc)) {
-            rte_timer_manage();
+        /* C-NR-307: graceful_reload=1 drives hardclock from a per-process
+         * TSC throttle instead of the shared priv_timer[lcore_id] slot;
+         * graceful_reload=0 keeps the rte_timer path unchanged. */
+        if (unlikely((graceful_reload ? gr_hardclock_next_tsc
+                : freebsd_clock.expire) < cur_tsc)) {
+            if (graceful_reload) {
+                /* advance before the tick (reset-then-callback order of
+                 * rte_timer); one tick per loop pass catches up after a
+                 * stall, bounded per pass */
+                gr_hardclock_next_tsc += gr_hardclock_interval;
+                ff_hardclock();
+                ff_update_current_ts();
+            } else {
+                rte_timer_manage();
+            }
 
 #ifdef FF_KNI
             /* reset kni ratelimt */

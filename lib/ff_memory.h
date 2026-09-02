@@ -37,6 +37,17 @@ extern "C" {
 
 #define MSG_RING_SIZE 32
 
+/* C-NR-314 (graceful reload): per-generation application-side mbuf pools.
+ * The RX-queue-bound pktmbuf_pool keeps its fixed name and is shared by
+ * both generations (cache_size=0, C-NR-315); alloc-heavy app paths draw
+ * from the active generation's own pool so local_cache[] is never shared
+ * by two processes on the same lcore_id. */
+#define FF_MBUF_GEN_MAX 2
+
+/* Reserved for C-NR-315 M-B fallback (free_ring cross-generation free);
+ * not used by the default M-A (cache_size=0) path. */
+#define FREE_RING_SIZE 4096
+
 /*
  * Configurable number of RX/TX ring descriptors
  */
@@ -109,6 +120,39 @@ ff_lcore_conf_idx(void)
 
 /* Current stack-instance accessor. See ff_lcore_conf_idx() for indexing. */
 #define ff_cur_lcore_conf() (&lcore_conf[ff_lcore_conf_idx()])
+
+/* C-NR-315 (DR11 M-A): with graceful_reload=1 two generations share one
+ * lcore_id, so pools shared across generations must not use the per-lcore
+ * local_cache. cache_size=0 routes every get/put through the MP/MC ring
+ * backend (process-safe); graceful_reload=0 keeps the legacy value. */
+static inline unsigned
+ff_shared_pool_cache_size(int graceful_reload, unsigned legacy_cache)
+{
+    return graceful_reload ? 0 : legacy_cache;
+}
+
+/* C-NR-314: name of a per-generation application-side mbuf pool. */
+static inline int
+ff_mbuf_gen_pool_name(char *buf, unsigned int buflen, int socketid, int gen)
+{
+    int n;
+
+    if (gen < 0 || gen >= FF_MBUF_GEN_MAX)
+        return -1;
+    n = snprintf(buf, buflen, "mbuf_pool_%d_gen%d", socketid, gen);
+    if (n < 0 || (unsigned int)n >= buflen)
+        return -1;
+    return 0;
+}
+
+/* C-NR-314: application-side mbuf pool of the active generation
+ * (graceful_reload=1); identical to pktmbuf_pool[] otherwise. */
+struct rte_mempool;
+struct rte_mempool *ff_app_mbuf_pool(unsigned socketid);
+
+/* C-NR-314: switch the active generation (reload handover seam; the
+ * switch point itself is owned by the reload control plane). */
+void ff_app_mbuf_set_gen(int gen);
 
 //  mbuf_txring save mbuf which had bursted into NIC,  m_tables has same length with NIC dev's sw_ring.
 //  Then when txring.m_table[x] is reused, the packet in txring.m_table[x] had been transmited by NIC.

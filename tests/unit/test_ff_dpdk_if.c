@@ -1664,6 +1664,120 @@ test_ff_dpdk_if_send_null_ctx_with_mbuf(void **state)
     int rv = ff_dpdk_if_send(NULL, &dummy_mbuf, 100);
     assert_int_equal(rv, -1);
 }
+
+/* ======================================================================== */
+/* M2 Batch A (graceful reload resource isolation): UT-NR-17/18/21           */
+/* C-NR-307 self-driven hardclock, C-NR-314 generation pools,                */
+/* C-NR-315 shared-pool cache_size=0 (lcore audit m0-lcore-shared-state)     */
+/* ======================================================================== */
+#include <rte_cycles.h>          /* US_PER_S */
+
+/* pktmbuf_pool is a non-static global in ff_dpdk_if.c (mirrors the extern
+ * in lib/ff_memory.c:70) so the gen-pool boundary test can observe the
+ * graceful_reload=0 fallback. */
+extern struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
+
+/* ------------------------------------------------------------------------ */
+/* UT-NR-17: self-driven hardclock interval computation (pure function      */
+/* ff_hardclock_interval_tsc). Must match the legacy rte_timer period       */
+/* formula used by init_clock(): ceil(hz/1e6) * (1e6/bsd_hz).               */
+/* ------------------------------------------------------------------------ */
+static void
+test_ut_nr_17_hardclock_interval(void **state)
+{
+    (void)state;
+    /* hz=100 on a 1 GHz TSC: 10 ms -> 10,000,000 ticks */
+    assert_int_equal(ff_hardclock_interval_tsc(1000000000ULL, 100),
+                     10000000ULL);
+    /* hz=1000 on 2.5 GHz: 1 ms -> 2,500,000 ticks */
+    assert_int_equal(ff_hardclock_interval_tsc(2500000000ULL, 1000),
+                     2500000ULL);
+    /* ceil term: 2.999999 GHz -> 3000 ticks/us, hz=100 -> 30,000,000 */
+    assert_int_equal(ff_hardclock_interval_tsc(2999999000ULL, 100),
+                     30000000ULL);
+    /* legacy-formula equivalence across hz decades (US_PER_S % hz == 0) */
+    for (unsigned hz = 1; hz <= 1000000; hz *= 10) {
+        uint64_t timer_hz = 2600000000ULL;
+        uint64_t legacy =
+            (timer_hz + US_PER_S - 1) / US_PER_S * (US_PER_S / hz);
+        assert_int_equal(ff_hardclock_interval_tsc(timer_hz, hz), legacy);
+    }
+    /* degenerate hz: 0 and > US_PER_S yield 0 (caller rte_exit()s) */
+    assert_int_equal(ff_hardclock_interval_tsc(1000000000ULL, 0), 0);
+    assert_int_equal(ff_hardclock_interval_tsc(1000000000ULL, US_PER_S + 1), 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* UT-NR-18: generation pool config validation — names, gen bounds, and     */
+/* the ff_app_mbuf_pool() generation selection boundary.                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ut_nr_18_gen_pool_config(void **state)
+{
+    (void)state;
+    char name[64];
+
+    /* gen 0/1 pool names: mbuf_pool_<socket>_gen<gen> */
+    assert_int_equal(ff_mbuf_gen_pool_name(name, sizeof(name), 0, 0), 0);
+    assert_string_equal(name, "mbuf_pool_0_gen0");
+    assert_int_equal(ff_mbuf_gen_pool_name(name, sizeof(name), 3, 1), 0);
+    assert_string_equal(name, "mbuf_pool_3_gen1");
+
+    /* out-of-range generation indices are rejected */
+    assert_int_equal(ff_mbuf_gen_pool_name(name, sizeof(name), 0, -1), -1);
+    assert_int_equal(ff_mbuf_gen_pool_name(name, sizeof(name), 0,
+                                           FF_MBUF_GEN_MAX), -1);
+    /* truncated buffer is rejected (full name needs 18 bytes incl NUL) */
+    char small[8];
+    assert_int_equal(ff_mbuf_gen_pool_name(small, sizeof(small), 0, 0), -1);
+
+    /* ping-pong pair is exactly gen0/gen1 */
+    assert_int_equal(FF_MBUF_GEN_MAX, 2);
+
+    /* ff_app_mbuf_pool boundary: =0 falls back to the shared pool,
+     * =1 returns the (here uncreated, thus NULL) generation pool. */
+    static struct rte_mempool sentinel;
+    pktmbuf_pool[0] = &sentinel;
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    assert_ptr_equal(ff_app_mbuf_pool(0), &sentinel);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    assert_null(ff_app_mbuf_pool(0));
+    /* set_gen switches the selection; invalid gen is ignored */
+    ff_app_mbuf_set_gen(1);
+    assert_null(ff_app_mbuf_pool(0));       /* gen1 slot, also uncreated */
+    ff_app_mbuf_set_gen(FF_MBUF_GEN_MAX);   /* out of range: ignored */
+    assert_null(ff_app_mbuf_pool(0));
+    ff_app_mbuf_set_gen(0);                 /* restore for later tests */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    pktmbuf_pool[0] = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* UT-NR-21: all three shared pools drop the per-lcore local_cache under    */
+/* graceful_reload=1 and keep their legacy cache values at =0:              */
+/*   P1 RX-bound pktmbuf_pool (256), P2 message_pool (16),                  */
+/*   P3 ff_ref_pool (256, FF_USE_PAGE_ARRAY only).                         */
+/* ------------------------------------------------------------------------ */
+static void
+test_ut_nr_21_shared_pool_cache_size(void **state)
+{
+    (void)state;
+    /* P1: RX-bound pktmbuf_pool — legacy MEMPOOL_CACHE_SIZE */
+    assert_int_equal(ff_shared_pool_cache_size(1, MEMPOOL_CACHE_SIZE), 0);
+    assert_int_equal(ff_shared_pool_cache_size(0, MEMPOOL_CACHE_SIZE),
+                     MEMPOOL_CACHE_SIZE);
+    /* P2: message_pool — legacy MSG_RING_SIZE / 2 */
+    assert_int_equal(ff_shared_pool_cache_size(1, MSG_RING_SIZE / 2), 0);
+    assert_int_equal(ff_shared_pool_cache_size(0, MSG_RING_SIZE / 2),
+                     MSG_RING_SIZE / 2);
+    assert_int_equal(MSG_RING_SIZE / 2, 16);
+    /* P3: ff_ref_pool (PA builds) — legacy MEMPOOL_CACHE_SIZE */
+    assert_int_equal(ff_shared_pool_cache_size(1, MEMPOOL_CACHE_SIZE), 0);
+    assert_int_equal(ff_shared_pool_cache_size(0, MEMPOOL_CACHE_SIZE),
+                     MEMPOOL_CACHE_SIZE);
+    /* M-B fallback ring capacity is reserved as a constant */
+    assert_true(FREE_RING_SIZE > 0);
+}
 int
 main(void)
 {
@@ -1717,6 +1831,10 @@ main(void)
         /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),
         cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_with_mbuf),
+        /* M2 Batch A: C-NR-307/314/315 (UT-NR-17/18/21) */
+        cmocka_unit_test(test_ut_nr_17_hardclock_interval),
+        cmocka_unit_test(test_ut_nr_18_gen_pool_config),
+        cmocka_unit_test(test_ut_nr_21_shared_pool_cache_size),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

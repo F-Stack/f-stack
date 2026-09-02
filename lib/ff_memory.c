@@ -219,7 +219,11 @@ void ff_init_ref_pool(int nb_mbuf, int socketid)
     }
     snprintf(s, sizeof(s), "ff_ref_pool_%d", socketid);
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        ff_ref_pool[socketid] = rte_pktmbuf_pool_create(s, nb_mbuf, MEMPOOL_CACHE_SIZE, 0, 0, socketid);
+        /* C-NR-315 (N-4b): shared across generations when PA is enabled;
+         * force cache_size=0 under graceful_reload. */
+        ff_ref_pool[socketid] = rte_pktmbuf_pool_create(s, nb_mbuf,
+            ff_shared_pool_cache_size(ff_global_cfg.dpdk.graceful_reload,
+                MEMPOOL_CACHE_SIZE), 0, 0, socketid);
     } else {
         ff_ref_pool[socketid] = rte_mempool_lookup(s);
     }
@@ -395,7 +399,7 @@ static inline void ff_offload_set(struct ff_dpdk_if_context *ctx, void *m, struc
 // create rte_buf refer to data which is transmit from bsd stack by EXT_CLUSTER.
 static inline struct rte_mbuf*     ff_extcl_to_rte(void *m )
 {
-    struct rte_mempool *mbuf_pool = pktmbuf_pool[ff_cur_lcore_conf()->socket_id];
+    struct rte_mempool *mbuf_pool = ff_app_mbuf_pool(ff_cur_lcore_conf()->socket_id);
     struct rte_mbuf *src_mbuf = NULL;
     struct rte_mbuf *p_head = NULL;
 

@@ -80,4 +80,8 @@ void ff_dpdk_pktmbuf_free(void *m);
 
 int ff_cur_proc_id(void);
 
+/* C-NR-307: TSC ticks per hardclock tick for the graceful_reload
+ * self-driven hardclock (pure; unit-tested as UT-NR-17). */
+uint64_t ff_hardclock_interval_tsc(uint64_t timer_hz, unsigned int bsd_hz);
+
 #endif /* ifndef _FSTACK_DPDK_IF_H */
