@@ -146,11 +146,15 @@ void buf_ring_free(struct buf_ring *br, struct malloc_type *type)
     
 }
 
-void callout_when(sbintime_t sbt, sbintime_t precision, int flags, sbintime_t *sbt_out, sbintime_t *precision_out);
-void callout_when(sbintime_t sbt, sbintime_t precision, int flags, sbintime_t *sbt_out, sbintime_t *precision_out)
-{
-    
-}
+/*
+ * F-Stack P0 timer-fix: callout_when() stub removed.
+ *
+ * The old no-op stub left *sbt_out untouched, so tcp_timer_activate()'s
+ * tp->t_timers[] stayed SBT_MAX, tcp_timer_next() always returned TT_N and
+ * no TCP timer (RTO/keepalive/2MSL/persist/delack) was ever armed. The real
+ * tick-adapted implementation now lives in ff_kern_timeout.c via
+ * ff_callout_sbt.h.
+ */
 
 vm_paddr_t dump_avail[16] = {0};
 

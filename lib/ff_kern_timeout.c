@@ -56,6 +56,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/bus.h>
 #include <sys/callout.h>
+#include <sys/time.h>
 
 /*
  * F-Stack: 14.0+ removed CALLOUT_LOCAL_ALLOC and CS_EXECUTING.
@@ -84,6 +85,13 @@ static int _ff_callout_stop_safe(struct callout *c, int flags, void (*drain)(voi
 #include <sys/sysctl.h>
 #include <sys/smp.h>
 #include <sys/timetc.h>
+
+/*
+ * F-Stack tick-wheel sbt helpers (callout_when + callout_sbt_to_ticks).
+ * Implemented in ff_callout_sbt.h so tests/unit/test_ff_callout.c compiles
+ * the same code against a host shim.
+ */
+#include "ff_callout_sbt.h"
 
 SDT_PROVIDER_DEFINE(callout_execute);
 SDT_PROBE_DEFINE1(callout_execute, , , callout__start, "struct callout *");

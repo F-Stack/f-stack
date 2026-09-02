@@ -169,6 +169,24 @@ void ff_hardclock(void) { }
  * Signature per lib/ff_kern_timeout.c:1271 (void)->(void). */
 void ff_tcp_hpts_softclock(void) { }
 
+/* ff_hardclock_worker: same origin as ff_tcp_hpts_softclock (ff_kern_timeout.c,
+ * native-mt worker-thread clock). Referenced by ff_hardclock_worker_job; none
+ * of our tests reach it. */
+void ff_hardclock_worker(void) { }
+
+/* ff_stack_thread_init: defined in ff_freebsd_init.c (kernel-side, not
+ * host-compilable here). main_loop() (ff_dpdk_if.c:2772) references it; our
+ * tests never reach main_loop. Signature per lib/ff_dpdk_if.c:210. */
+void ff_stack_thread_init(int cpuid) { (void)cpuid; }
+
+/* ff_lro_*: defined in ff_veth.c (kernel-side, not host-compilable here).
+ * Signatures per lib/ff_veth.h:57-60. ff_lro_rx returns 1 ("not consumed")
+ * so the non-LRO path semantics are preserved if ever reached. */
+void *ff_lro_init(void *ifp) { (void)ifp; return NULL; }
+void  ff_lro_free(void *lro) { (void)lro; }
+int   ff_lro_rx(void *lro, void *m) { (void)lro; (void)m; return 1; }
+void  ff_lro_flush(void *lro) { (void)lro; }
+
 /* ff_enable_pcap: defined in ff_dpdk_pcap.c (we do NOT link it here) */
 int  ff_enable_pcap(const char *p, uint16_t s, uint8_t t)
 { (void)p;(void)s;(void)t; return 0; }

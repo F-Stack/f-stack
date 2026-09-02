@@ -53,7 +53,7 @@ WRAP_FF_LOG   := -Wl,--wrap=rte_openlog_stream \
 
 # Tests list
 SANITY_TESTS  := test_hello
-P0_TESTS      := test_ff_ini_parser test_ff_log
+P0_TESTS      := test_ff_ini_parser test_ff_log test_ff_callout
 P1_TESTS      := test_ff_host_interface test_ff_epoll test_ff_config
 P2_TESTS      := test_ff_thread test_ff_init test_ff_dpdk_pcap test_ff_dpdk_if
 P3_TESTS      := test_ff_dpdk_kni test_ff_zc_send
@@ -186,6 +186,12 @@ test_ff_ini_parser: test_ff_ini_parser.o $(LIB_OBJS_DIR)/ff_ini_parser.o
 # P0 #2 ff_log: 4 rte_log API wraps
 test_ff_log: test_ff_log.o $(LIB_OBJS_DIR)/ff_log.o $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(WRAP_FF_LOG)
+
+# P0 #3 ff_callout (P0 TCP-timer fix): compiles the REAL implementation
+# (lib/ff_callout_sbt.h, same code ff_kern_timeout.c builds into libfstack)
+# against the host shim inside the test file. No lib objects needed.
+test_ff_callout: test_ff_callout.o
+	$(CC) -o $@ $^ $(LDFLAGS_BASE)
 
 # P1 #1 ff_host_interface (uses RAND_bytes from libcrypto; ff_log linked locally
 # via stub in the test file since we don't pull in lib/ff_log.c here)

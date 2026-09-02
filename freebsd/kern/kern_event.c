@@ -787,18 +787,11 @@ struct kq_timer_cb_data {
 static void
 kqtimer_sched_callout(struct kq_timer_cb_data *kc)
 {
-#ifndef FSTACK
+	/* The F-Stack callout_reset_sbt_on() macro now converts the absolute
+	 * fire time to relative ticks itself (lib/ff_callout_sbt.h), so the
+	 * former hand-rolled #ifdef FSTACK conversion is no longer needed. */
 	callout_reset_sbt_on(&kc->c, kc->next, 0, filt_timerexpire, kc->kn,
 	    kc->cpuid, C_ABSOLUTE);
-#else
-	/* F-Stack callout is tick-based; the sbt macro ignores C_ABSOLUTE,
-	 * so convert the absolute fire time to relative ticks here. */
-	sbintime_t now = sbinuptime();
-	int to_ticks = kc->next > now ? (kc->next - now) / tick_sbt + 1 : 0;
-
-	callout_reset_tick_on(&kc->c, to_ticks, filt_timerexpire, kc->kn,
-	    kc->cpuid, 0);
-#endif
 }
 
 void

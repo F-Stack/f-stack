@@ -93,8 +93,16 @@ void	_callout_init_lock(struct callout *, struct lock_object *, int);
 #define	callout_pending(c)	((c)->c_iflags & CALLOUT_PENDING)
 int callout_reset_tick_on(struct callout *, int, void (*)(void *),
 	void *, int, int);
-#define callout_reset_sbt_on(c, sbt, pr, fn, args, cpu, flags) \
-    callout_reset_tick_on((c), (sbt)/tick_sbt, (fn), (args), (cpu), (flags))
+/*
+ * F-Stack: convert the sbt argument of callout_reset_sbt_on() to wheel
+ * ticks; C_ABSOLUTE values are made relative to current uptime (see
+ * kern_event.c kqtimer_sched_callout() for the precedent). Precision is
+ * dropped: the tick wheel has no sub-tick precision.
+ */
+int	callout_sbt_to_ticks(sbintime_t sbt, int flags);
+#define callout_reset_sbt_on(c, sbt, pr, fn, args, cpu, flags)		\
+	callout_reset_tick_on((c), callout_sbt_to_ticks((sbt), (flags)),\
+	    (fn), (args), (cpu), (flags))
 #define	callout_reset_sbt(c, sbt, pr, fn, arg, flags)			\
     callout_reset_sbt_on((c), (sbt), (pr), (fn), (arg), -1, (flags))
 #define	callout_reset_sbt_curcpu(c, sbt, pr, fn, arg, flags)		\
