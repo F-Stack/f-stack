@@ -75,6 +75,13 @@
  #include <ngx_auto_config.h>
  #include "ff_api.h"
  #include "ff_config.h"
+ #include "ff_reload.h"
+
+ /* nginx-side reload orchestration globals (ngx_ff_reload.c); declared
+  * locally because this file intentionally avoids nginx core headers. */
+ struct ff_reload_state;
+ extern struct ff_reload_state *ngx_ff_reload_shm;
+ extern int ngx_ff_reload_gen_for_worker(void);
  
  #define _GNU_SOURCE
  #define __USE_GNU
@@ -340,6 +347,13 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
 	 if (ngx_ff_graceful_reload) {
 		 proc_id += 1;
 		 proc_type = 0;
+		 /* C-NR-206/C-NR-313: bind this worker to its reload generation
+		  * BEFORE ff_init — the (proc_id, gen) msg_ring set and the
+		  * per-generation app mempool are selected during init. The gen
+		  * comes from the inherited shared control block (target while
+		  * the reload window is open, active otherwise). */
+		 ff_reload_attach_state(ngx_ff_reload_shm);
+		 ff_reload_set_gen(ngx_ff_reload_gen_for_worker());
 	 }
 
 	 rc = ff_init_with_args(conf, proc_id,
@@ -371,6 +385,10 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
 int
 ngx_ff_slim_primary_init(const char *conf)
 {
+	 /* C-NR-313: the primary pre-creates BOTH generations' msg rings and
+	  * mbuf pools, so its own generation stays 0; attaching the shared
+	  * block lets lib-side helpers (heartbeat view, KNI owner gen) work. */
+	 ff_reload_attach_state(ngx_ff_reload_shm);
 	 return ff_init_with_args(conf, 0, "primary");
 }
  
