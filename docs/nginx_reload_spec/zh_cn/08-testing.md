@@ -183,7 +183,7 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | RT-07 | 异常：移交失败（v1.6：~~reta 更新失败~~ → 同期移交失败） | 故障注入使 HANDOVER_REQ 返回 error 或互斥标记超时 | 回退停留 T2；G_old 继续服务（互斥标记保证不会并发 poll）；告警打点；无半移交状态 | M4 |
 | RT-08 | 异常：双 primary 误启 | 人为再拉一个 primary 进程 | DPDK EAL 拒绝（现有机制）；既有进程组不受影响；报错明确 | M1 |
 | RT-09 | reload 中杀 slim primary | T2~T3 窗口 kill_process.sh 杀 primary | 数据面零中断（primary_slim E3b 已验语义回归）；本轮 reload 安全放弃 + 降级告警 | M4 |
-| RT-10 | 连续多轮 reload | 空载+轻流量连续 20 轮；每轮 drain 完成前注入一次抢先 HUP | **每轮 queue_id 映射一致（代际无关）、两代 lcore_id 相同（v1.4：D-A 定案，取代 v1.9 的「严格不同」；~~严格不同已取消~~）**；无资源泄漏（mbuf 水位平稳、`rte_mempool_avail_count` 无单调下降趋势）；20/20 成功；**抢先 HUP 均被拒绝且记日志（reload 防重入），排空确认后下一轮 HUP 正常放行（[06] 第 2 节语义 6）**；**跨代 mbuf 无泄漏、无 pool 错配**；**`drain_ring` 无残留（每轮注销后 lookup 失败，UT-NR-19 ④ 的实机复验）** | M4 |
+| RT-10 | 连续多轮 reload | 空载+轻流量连续 20 轮；每轮 drain 完成前注入一次抢先 HUP | **每轮 queue_id 映射一致（代际无关）、两代 lcore_id 相同（v1.4：D-A 定案，取代 v1.9 的「严格不同」；~~严格不同已取消~~）**；无资源泄漏（mbuf 水位平稳、`rte_mempool_avail_count` 无单调下降趋势）；20/20 成功；**抢先 HUP 均被拒绝且记日志（reload 防重入），排空确认后下一轮 HUP 正常放行（[06] 第 2 节语义 6）**；**跨代 mbuf 无泄漏、无 pool 错配**；**`drain_ring` 无残留（每轮注销后 lookup 失败，UT-NR-19 ④ 的实机复验）**；**大页余量不随轮次单调下降**（M0 三次独立实测：SIGTERM 退出每次泄漏 ~23 个大页/进程组——nginx 1w=23、2w=24、helloworld=23、双进程 PoC=78~79；若 M2 前未在退出路径补 `rte_eal_cleanup` 或等效释放，RT-10/M6 必须显式断言并量化每轮泄漏，循环 ≥100 次前给出处置） | M4 |
 | RT-11 | （可选）内核栈混跑对照 | `kernel_network_stack` 指令部分 server 走内核栈（127.0.0.1）+ reload | 内核栈 server 全程不受影响 | M6 |
 | RT-12 | KNI 启用 reload | `enable_kni=1` 下 RT-02 复跑（RV8） | 同 RT-02 判据 + KNI 管理面（ping/ssh 旁路）reload 后仍可用 | M6 |
 | RT-13 | zc 收包路径 reload | zc 场景配置下 RT-02 复跑 | 同 RT-02 判据（回调判定与 mbuf 来源无关的验证） | M6 |
@@ -215,7 +215,7 @@ f-stack-client（客户端机，8 核，ssh 可达）
 
 | 编号 | 用例 | 对照 | 判据 |
 |---|---|---|---|
-| PT-NR-01 | 稳态基线（改造前 + `graceful_reload=0` 改造后各测一次） | 自身 | 两次基线差在噪声区间内（证明代码合入零回归）；绝对值沿用「仅同配置对照」原则（客户端是瓶颈，primary_slim 06 §4.4 已证） |
+| PT-NR-01 | 稳态基线（改造前 + `graceful_reload=0` 改造后各测一次） | 自身 | 两次基线差在噪声区间内（证明代码合入零回归）；绝对值沿用「仅同配置对照」原则（客户端是瓶颈，primary_slim 06 §4.4 已证）。**【M0 v1.6 钉死基准（post-P0-fix，2 workers，30s/档，干净环境）】c=1 = 1079.9 QPS / c=8 = 9124.6 QPS / c=32 = 10434.1 QPS，三档零失败；c=8 p99 1.227ms、c=32 p99 5.992ms。注意：前轮「c=8 1684.4 QPS + 0.18% timeout」容差表**作废**（系双 primary 网卡互踩窗口数据）；c=32 干净环境完全可用。采集方法与污染处置见 work/impl/m0-poc-runner-veto2.md §8（客户端临时端口耗尽须 `tcp_tw_reuse=1` 或冷却，测毕还原） |
 | PT-NR-02 | reload 后新代际稳态 vs reload 前稳态 | PT-NR-01 | QPS 差在噪声区间内；Failed=0 |
 | PT-NR-03 | reload 瞬态 | PT-NR-01 稳态 | 窗口内错误数 0；P99 劣化幅度与时长有记录（形成瞬态画像，供 DR7 判据） |
 | PT-NR-04 | drain 期开销：G_old drain 高峰（80% 流量在旧连接——RV4 场景构造）期间 G_new 吞吐 | PT-NR-01 | 有量化数据；若 reload 窗口内吞吐下降 >5%、P99 劣化 >10% 或 drain 时长超 SLO 触发 DR7 评审（v1.3 修订判据，流表窗口化后稳态损耗恒 0） |
