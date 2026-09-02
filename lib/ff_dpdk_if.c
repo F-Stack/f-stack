@@ -67,6 +67,12 @@
 #include "ff_api.h"
 #include "ff_memory.h"
 #include "ff_log.h"
+#include "ff_reload.h"
+
+/* C-NR-313: msg_ring generation count must match the app mbuf pool
+ * generation count (both index by the same gen0/gen1 ping-pong). */
+typedef char ff_reload_gen_max_check[
+    (FF_RELOAD_GEN_MAX == FF_MBUF_GEN_MAX) ? 1 : -1];
 
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
@@ -205,7 +211,13 @@ struct ff_msg_ring {
     struct rte_ring *ring[FF_MSG_NUM];
 } __rte_cache_aligned;
 
-static struct ff_msg_ring msg_ring[RTE_MAX_LCORE];
+/* C-NR-313: (proc_id, generation) indexed msg rings. Index 0 is the only
+ * set used when graceful_reload=0 (legacy unsuffixed names, behavior
+ * identical to the former single array). */
+static struct ff_msg_ring msg_ring[FF_RELOAD_GEN_MAX][RTE_MAX_LCORE];
+/* serving mode, fixed once in init_msg_ring from the static config */
+static int msg_ring_graceful;
+static int msg_ring_serve_both_gens;   /* primary under graceful_reload */
 static struct rte_mempool *message_pool;
 static struct ff_dpdk_if_context *veth_ctx[RTE_MAX_LCORE][RTE_MAX_ETHPORTS];
 
@@ -685,6 +697,7 @@ init_mem_pool(void)
     unsigned socketid = 0;
     uint16_t i, lcore_id;
     char s[64];
+    uint16_t data_room = RTE_MBUF_DEFAULT_BUF_SIZE;
     uint16_t nb_pools = ff_global_cfg.dpdk.thread_mode
         ? ff_global_cfg.dpdk.nb_threads : ff_global_cfg.dpdk.nb_procs;
 
@@ -699,13 +712,7 @@ init_mem_pool(void)
                 socketid, i, NB_SOCKETS);
         }
 
-        if (pktmbuf_pool[socketid] != NULL) {
-            continue;
-        }
-
-        uint16_t data_room = RTE_MBUF_DEFAULT_BUF_SIZE;
         if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-            snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
             if (ff_global_cfg.dpdk.mtu_enable &&
                 ff_global_cfg.dpdk.mbuf_mode == FF_MBUF_MODE_LARGE) {
                 uint16_t room;
@@ -719,6 +726,22 @@ init_mem_pool(void)
                         ff_global_cfg.dpdk.max_mtu);
                 }
             }
+        }
+
+        /* C-NR-314: build the per-generation app pools even when the shared
+         * pool of this socket already exists, so a second init_mem_pool pass
+         * cannot leave the app-pool selector pointing at NULL pools
+         * (m2-reviewer-a P3-5; existing entries are skipped inside). */
+        if (ff_global_cfg.dpdk.graceful_reload) {
+            init_app_mem_pool(socketid, nb_app_mbuf, data_room);
+        }
+
+        if (pktmbuf_pool[socketid] != NULL) {
+            continue;
+        }
+
+        if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
             /* C-NR-315 (DR11 M-A): this fixed-name pool is bound to the RX
              * queues and shared by both generations; cache_size=0 removes
              * the per-lcore local_cache from every alloc/free path. */
@@ -737,12 +760,6 @@ init_mem_pool(void)
             rte_exit(EXIT_FAILURE, "Cannot create mbuf pool on socket %d\n", socketid);
         } else {
             ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB, "create mbuf pool on socket %d\n", socketid);
-        }
-
-        /* C-NR-314: pre-create both generation pools (graceful only);
-         * secondary looks them up, primary creates them. */
-        if (ff_global_cfg.dpdk.graceful_reload) {
-            init_app_mem_pool(socketid, nb_app_mbuf, data_room);
         }
 
 #ifdef FF_USE_PAGE_ARRAY
@@ -840,18 +857,27 @@ ff_msg_init(struct rte_mempool *mp,
 static int
 init_msg_ring(void)
 {
-    uint16_t i, j;
+    uint16_t i, j, g, g_end;
     uint16_t nb_rings = ff_global_cfg.dpdk.thread_mode
         ? ff_global_cfg.dpdk.nb_threads
         : ff_global_cfg.dpdk.nb_procs;
     unsigned socketid = ff_cur_lcore_conf()->socket_id;
 
+    msg_ring_graceful = ff_global_cfg.dpdk.graceful_reload;
+    /* the (resident) primary pre-creates both generations; a secondary
+     * attaches only its own generation's set (created by the primary) */
+    msg_ring_serve_both_gens = msg_ring_graceful
+        && rte_eal_process_type() == RTE_PROC_PRIMARY;
+
     /* Create message buffer pool */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         /* C-NR-315 (N-4a): shared across processes (reload handshake
-         * messages included); drop local_cache under graceful_reload. */
+         * messages included); drop local_cache under graceful_reload.
+         * C-NR-313: graceful_reload keeps two generations of rings live
+         * during the reload window, so the pool doubles. */
         message_pool = rte_mempool_create(FF_MSG_POOL,
-           MSG_RING_SIZE * 2 * nb_rings,
+           MSG_RING_SIZE * 2 * nb_rings
+               * (msg_ring_graceful ? FF_RELOAD_GEN_MAX : 1),
            MAX_MSG_BUF_SIZE,
            ff_shared_pool_cache_size(ff_global_cfg.dpdk.graceful_reload,
                MSG_RING_SIZE / 2), 0,
@@ -865,21 +891,60 @@ init_msg_ring(void)
         rte_panic("Create msg mempool failed\n");
     }
 
-    for(i = 0; i < nb_rings; ++i) {
-        snprintf(msg_ring[i].ring_name[0], RTE_RING_NAMESIZE,
-            "%s%u", FF_MSG_RING_IN, i);
-        msg_ring[i].ring[0] = create_ring(msg_ring[i].ring_name[0],
-            MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
-        if (msg_ring[i].ring[0] == NULL)
-            rte_panic("create ring::%s failed!\n", msg_ring[i].ring_name[0]);
-
-        for (j = FF_SYSCTL; j < FF_MSG_NUM; j++) {
-            snprintf(msg_ring[i].ring_name[j], RTE_RING_NAMESIZE,
-                "%s%u_%u", FF_MSG_RING_OUT, i, j);
-            msg_ring[i].ring[j] = create_ring(msg_ring[i].ring_name[j],
+    if (!msg_ring_graceful) {
+        /* legacy single set: names and flags byte-identical to the
+         * pre-generation layout */
+        for (i = 0; i < nb_rings; ++i) {
+            snprintf(msg_ring[0][i].ring_name[0], RTE_RING_NAMESIZE,
+                "%s%u", FF_MSG_RING_IN, i);
+            msg_ring[0][i].ring[0] = create_ring(msg_ring[0][i].ring_name[0],
                 MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
-            if (msg_ring[i].ring[j] == NULL)
-                rte_panic("create ring::%s failed!\n", msg_ring[i].ring_name[j]);
+            if (msg_ring[0][i].ring[0] == NULL)
+                rte_panic("create ring::%s failed!\n",
+                    msg_ring[0][i].ring_name[0]);
+
+            for (j = FF_SYSCTL; j < FF_MSG_NUM; j++) {
+                snprintf(msg_ring[0][i].ring_name[j], RTE_RING_NAMESIZE,
+                    "%s%u_%u", FF_MSG_RING_OUT, i, j);
+                msg_ring[0][i].ring[j] =
+                    create_ring(msg_ring[0][i].ring_name[j],
+                    MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+                if (msg_ring[0][i].ring[j] == NULL)
+                    rte_panic("create ring::%s failed!\n",
+                        msg_ring[0][i].ring_name[j]);
+            }
+        }
+
+        return 0;
+    }
+
+    /* C-NR-313: (proc_id, gen) indexed rings, "_g<gen>" suffix so two
+     * generations sharing a proc_id never dequeue the same SC ring. */
+    g = msg_ring_serve_both_gens ? 0 : (uint16_t)ff_reload_gen();
+    g_end = msg_ring_serve_both_gens ? FF_RELOAD_GEN_MAX : g + 1;
+
+    for (; g < g_end; ++g) {
+        for (i = 0; i < nb_rings; ++i) {
+            if (ff_reload_msg_ring_name(msg_ring[g][i].ring_name[0],
+                    RTE_RING_NAMESIZE, FF_MSG_RING_IN, i, -1, g, 1) != 0)
+                rte_panic("msg ring name error: proc %u gen %u\n", i, g);
+            msg_ring[g][i].ring[0] = create_ring(msg_ring[g][i].ring_name[0],
+                MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+            if (msg_ring[g][i].ring[0] == NULL)
+                rte_panic("create ring::%s failed!\n",
+                    msg_ring[g][i].ring_name[0]);
+
+            for (j = FF_SYSCTL; j < FF_MSG_NUM; j++) {
+                if (ff_reload_msg_ring_name(msg_ring[g][i].ring_name[j],
+                        RTE_RING_NAMESIZE, FF_MSG_RING_OUT, i, j, g, 1) != 0)
+                    rte_panic("msg ring name error: proc %u type %u\n", i, j);
+                msg_ring[g][i].ring[j] =
+                    create_ring(msg_ring[g][i].ring_name[j],
+                    MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+                if (msg_ring[g][i].ring[j] == NULL)
+                    rte_panic("create ring::%s failed!\n",
+                        msg_ring[g][i].ring_name[j]);
+            }
         }
     }
 
@@ -937,6 +1002,17 @@ static void
 set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
 {
     if (reta_size == 0) {
+        return;
+    }
+
+    /* ENV-1 (C-NR-201): renegotiating RSS during the reload window re-rolls
+     * the vhost MQ distribution dice (per-round random whole-flow drops,
+     * guest-invisible; M0 veto2 §2). Refuse outright while the window is
+     * open. */
+    if (ff_reload_hw_locked()) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
+            "ENV-1: RSS reta update on port %u rejected: "
+            "reload window active\n", port_id);
         return;
     }
 
@@ -1867,6 +1943,20 @@ ff_dpdk_init(int argc, char **argv)
 
     init_mem_pool();
 
+    /* C-NR-314/C-NR-206: bind the app-side pool selector to this process's
+     * generation (set via ff_reload_set_gen before ff_init; constant 0 for
+     * the primary and for apps that never set it).
+     * C-NR-316: heartbeat stall threshold in TSC. */
+    if (ff_global_cfg.dpdk.graceful_reload) {
+        uint32_t hb_ms = ff_global_cfg.dpdk.reload_heartbeat_timeout_ms;
+
+        ff_app_mbuf_set_gen(ff_reload_gen());
+        if (hb_ms == 0)
+            hb_ms = FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT;
+        ff_reload_heartbeat_set_timeout(
+            (uint64_t)hb_ms * rte_get_tsc_hz() / 1000);
+    }
+
     init_dispatch_ring();
 
     init_msg_ring();
@@ -2539,8 +2629,27 @@ handle_default_msg(struct ff_msg *msg)
     msg->result = ENOTSUP;
 }
 
+/* C-NR-203: FF_RELOAD control family dispatch. The reply carries this
+ * process's reload view (its generation, the active generation, the
+ * heartbeat counter), which is what IT-NR-A11 checks per generation. */
 static inline void
-handle_msg(struct ff_msg *msg, uint16_t proc_id)
+handle_reload_msg(struct ff_msg *msg)
+{
+    int cmd, gen, status;
+    uint64_t hb;
+
+    if (ff_reload_msg_parse(msg, &cmd, &gen, &status, &hb) != 0) {
+        msg->result = EINVAL;
+        return;
+    }
+
+    ff_reload_msg_fill(msg, cmd, ff_reload_gen(), 0,
+        ff_reload_heartbeat_counter());
+    msg->result = 0;
+}
+
+static inline void
+handle_msg(struct ff_msg *msg, struct ff_msg_ring *set, uint16_t proc_id)
 {
     switch (msg->msg_type) {
         case FF_SYSCTL:
@@ -2576,11 +2685,14 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
             handle_knictl_msg(msg);
             break;
 #endif
+        case FF_RELOAD:
+            handle_reload_msg(msg);
+            break;
         default:
             handle_default_msg(msg);
             break;
     }
-    if (rte_ring_enqueue(msg_ring[proc_id].ring[msg->msg_type], msg) < 0) {
+    if (rte_ring_enqueue(set[proc_id].ring[msg->msg_type], msg) < 0) {
         if (msg->original_buf) {
             rte_free(msg->buf_addr);
             msg->buf_addr = msg->original_buf;
@@ -2593,23 +2705,47 @@ handle_msg(struct ff_msg *msg, uint16_t proc_id)
 }
 
 static inline int
-process_msg_ring(uint16_t proc_id, struct rte_mbuf **pkts_burst)
+process_msg_ring_set(struct ff_msg_ring *set, uint16_t proc_id,
+    struct rte_mbuf **pkts_burst)
 {
     /* read msg from ring buf and to process */
     uint16_t nb_rb;
     int i;
 
-    nb_rb = rte_ring_dequeue_burst(msg_ring[proc_id].ring[0],
+    nb_rb = rte_ring_dequeue_burst(set[proc_id].ring[0],
         (void **)pkts_burst, MAX_PKT_BURST, NULL);
 
     if (likely(nb_rb == 0))
         return 0;
 
     for (i = 0; i < nb_rb; ++i) {
-        handle_msg((struct ff_msg *)pkts_burst[i], proc_id);
+        handle_msg((struct ff_msg *)pkts_burst[i], set, proc_id);
     }
 
-    return 0;
+    return 1;
+}
+
+static inline int
+process_msg_ring(uint16_t proc_id, struct rte_mbuf **pkts_burst)
+{
+    if (!msg_ring_graceful) {
+        return process_msg_ring_set(&msg_ring[0][0], proc_id, pkts_burst);
+    }
+
+    /* C-NR-313: the resident primary serves both generations' in-rings;
+     * a secondary serves only its own generation. */
+    if (msg_ring_serve_both_gens) {
+        int g, served = 0;
+
+        for (g = 0; g < FF_RELOAD_GEN_MAX; g++) {
+            served |= process_msg_ring_set(&msg_ring[g][0], proc_id,
+                pkts_burst);
+        }
+        return served;
+    }
+
+    return process_msg_ring_set(&msg_ring[ff_reload_gen()][0], proc_id,
+        pkts_burst);
 }
 
 /* Send burst of packets on an output interface */
@@ -2941,6 +3077,17 @@ main_loop(void *arg)
             break;
         }
 
+        /* C-NR-316: reload heartbeat — the rx-owner generation advances the
+         * shared counter once per loop pass (before anything that could
+         * sleep), so the sampling side sees progress even when idle.
+         * P1-2: primary-side only — the resident slim primary stays gen 0
+         * forever, so on target_gen==0 rounds its own increments would
+         * mask a dead G_new. The primary is never the rx owner. */
+        if (graceful_reload
+            && rte_eal_process_type() == RTE_PROC_SECONDARY) {
+            ff_reload_heartbeat_tick();
+        }
+
         cur_tsc = rte_rdtsc();
         /* C-NR-307: graceful_reload=1 drives hardclock from a per-process
          * TSC throttle instead of the shared priv_timer[lcore_id] slot;
@@ -3097,6 +3244,20 @@ main_loop(void *arg)
         }
 
         idle_sleep_tsc = rte_rdtsc();
+
+        /* C-NR-316: non-owner generations sample the heartbeat here so
+         * idle loop passes still detect a stalled rx owner. P1-2: primary
+         * does not sample (never the rx owner, see the tick hook above). */
+        if (graceful_reload
+            && rte_eal_process_type() == RTE_PROC_SECONDARY) {
+            if (ff_reload_heartbeat_sample(idle_sleep_tsc)) {
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                    "reload heartbeat stalled >%ums: rx-owner generation "
+                    "appears dead (rx return is wired in M3/M4)\n",
+                    ff_global_cfg.dpdk.reload_heartbeat_timeout_ms);
+            }
+        }
+
         {
             unsigned effective_sleep = idle_sleep;
             if (ff_global_cfg.dpdk.primary_slim &&

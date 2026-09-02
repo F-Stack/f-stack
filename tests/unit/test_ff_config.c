@@ -1306,6 +1306,365 @@ test_greload_bad_value_atoi(void **state)
     assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
 }
 
+/* ======================================================================== */
+/* M2 Batch B graceful reload (docs/nginx_reload_spec/zh_cn/08-testing.md §1)*/
+/* C-NR-201/202/205/206/313/316                                              */
+/* ======================================================================== */
+
+/* Pure T0-T5 FSM from the nginx tree; header-only and free of nginx
+ * dependencies by design so this suite can include it directly. */
+#include "../../../app/nginx-1.28.0/src/event/modules/ngx_ff_reload_fsm.h"
+#include <sys/socket.h>
+#include "ff_msg.h"
+#include "ff_reload.h"
+
+/* UT-NR-10: legal chain T0->T1->T2->T3->T4->T5->T0 passes; illegal
+ * transitions (T5+HUP re-entry, T0->T4 jump, T3->T1) are rejected. */
+static void
+test_ut_nr_10_reload_fsm_transitions(void **state)
+{
+    (void)state;
+    int st, expect[] = {
+        NGX_FF_RELOAD_T1_GNEW_SPAWN,
+        NGX_FF_RELOAD_T2_HANDOVER,
+        NGX_FF_RELOAD_T3_DRAIN,
+        NGX_FF_RELOAD_T4_DRAIN_DONE,
+        NGX_FF_RELOAD_T5_GOLD_QUIT,
+        NGX_FF_RELOAD_T0_IDLE,
+    };
+    int ev[] = {
+        NGX_FF_RELOAD_EV_HUP,
+        NGX_FF_RELOAD_EV_ALL_READY,
+        NGX_FF_RELOAD_EV_HANDOVER_DONE,
+        NGX_FF_RELOAD_EV_DRAIN_DONE,
+        NGX_FF_RELOAD_EV_QUIT_GOLD,
+        NGX_FF_RELOAD_EV_GOLD_EXITED,
+    };
+    int i;
+
+    st = NGX_FF_RELOAD_T0_IDLE;
+    for (i = 0; i < 6; i++) {
+        st = ngx_ff_reload_fsm_next(st, ev[i]);
+        assert_int_equal(st, expect[i]);
+    }
+
+    /* re-entry protection (semantics 6): HUP is only legal in T0 */
+    st = NGX_FF_RELOAD_T5_GOLD_QUIT;
+    assert_int_equal(ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_HUP),
+                     NGX_FF_RELOAD_T_MAX);
+    st = NGX_FF_RELOAD_T1_GNEW_SPAWN;
+    assert_int_equal(ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_HUP),
+                     NGX_FF_RELOAD_T_MAX);
+
+    /* illegal jumps */
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T0_IDLE,
+                     NGX_FF_RELOAD_EV_QUIT_GOLD), NGX_FF_RELOAD_T_MAX);
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T3_DRAIN,
+                     NGX_FF_RELOAD_EV_ALL_READY), NGX_FF_RELOAD_T_MAX);
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T0_IDLE,
+                     NGX_FF_RELOAD_EV_GOLD_EXITED), NGX_FF_RELOAD_T_MAX);
+
+    /* failure paths: T1 -> T_ERROR -> T0 */
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T1_GNEW_SPAWN,
+                     NGX_FF_RELOAD_EV_GNEW_DIED), NGX_FF_RELOAD_T_ERROR);
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T1_GNEW_SPAWN,
+                     NGX_FF_RELOAD_EV_READY_TIMEOUT), NGX_FF_RELOAD_T_ERROR);
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T_ERROR,
+                     NGX_FF_RELOAD_EV_RESET), NGX_FF_RELOAD_T0_IDLE);
+
+    /* state names resolve for every valid state */
+    for (i = 0; i < NGX_FF_RELOAD_T_MAX; i++) {
+        assert_non_null(ngx_ff_reload_fsm_state_name(i));
+    }
+    assert_string_equal(ngx_ff_reload_fsm_state_name(NGX_FF_RELOAD_T0_IDLE),
+                        "T0_IDLE");
+}
+
+/* UT-NR-12: generation mapping independence (reverse assertions).
+ *  (a) msg_ring ring names differ across (proc_id, gen) — no shared SC ring
+ *      between generations sharing a proc_id (P0-6);
+ *  (b) graceful=0 reproduces legacy names byte-for-byte;
+ *  (c) the proc_id -> lcore mapping is generation-blind: switching the
+ *      active generation never perturbs proc_lcore[] (D-A: two generations
+ *      share the same lcore_id / queue_id). */
+static void
+test_ut_nr_12_generation_mapping(void **state)
+{
+    (void)state;
+    char n1[64], n2[64];
+    uint16_t lcore_before[3];
+    int i, rv;
+
+    /* (a) gen isolation on names */
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_in_", 1, -1, 0, 1), 0);
+    assert_int_equal(ff_reload_msg_ring_name(n2, sizeof(n2),
+        "ff_msg_ring_in_", 1, -1, 1, 1), 0);
+    assert_string_equal(n1, "ff_msg_ring_in_1_g0");
+    assert_string_equal(n2, "ff_msg_ring_in_1_g1");
+    assert_string_not_equal(n1, n2);
+
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_in_", 0, -1, 0, 1), 0);
+    assert_int_equal(ff_reload_msg_ring_name(n2, sizeof(n2),
+        "ff_msg_ring_in_", 1, -1, 0, 1), 0);
+    assert_string_not_equal(n1, n2);
+
+    /* out-ring with msg_type keeps the "<base><proc>_<type>" legacy shape */
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_out_", 1, 3, 0, 1), 0);
+    assert_string_equal(n1, "ff_msg_ring_out_1_3_g0");
+
+    /* (b) graceful=0 names are byte-identical to the pre-change layout */
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_in_", 1, -1, 0, 0), 0);
+    assert_string_equal(n1, "ff_msg_ring_in_1");
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_out_", 1, 3, 0, 0), 0);
+    assert_string_equal(n1, "ff_msg_ring_out_1_3");
+
+    /* truncation is an error */
+    assert_int_equal(ff_reload_msg_ring_name(n1, 8,
+        "ff_msg_ring_in_", 1, -1, 0, 1), -1);
+
+    /* (c) generation switching never touches the proc_id mapping */
+    rv = load_with_proc(FIXTURE_PATH("valid_graceful_reload.ini"),
+                        "secondary", "1");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 3);
+    for (i = 0; i < 3; i++) {
+        lcore_before[i] = ff_global_cfg.dpdk.proc_lcore[i];
+    }
+
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_gen(), 0);
+    for (i = 0; i < 3; i++) {
+        assert_int_equal(ff_global_cfg.dpdk.proc_lcore[i], lcore_before[i]);
+    }
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_reload_gen(), 1);
+    for (i = 0; i < 3; i++) {
+        assert_int_equal(ff_global_cfg.dpdk.proc_lcore[i], lcore_before[i]);
+    }
+
+    /* out-of-range generation is ignored */
+    ff_reload_set_gen(FF_RELOAD_GEN_MAX);
+    assert_int_equal(ff_reload_gen(), 1);
+    ff_reload_set_gen(-1);
+    assert_int_equal(ff_reload_gen(), 1);
+
+    assert_int_equal(FF_RELOAD_GEN_MAX, 2);
+    ff_reload_attach_state(NULL);
+}
+
+/* UT-NR-14: FF_RELOAD message fill/parse round-trip + bad input rejection. */
+static void
+test_ut_nr_14_reload_msg_serdes(void **state)
+{
+    (void)state;
+    struct ff_msg msg;
+    int cmd, gen, status;
+    uint64_t hb;
+
+    memset(&msg, 0, sizeof(msg));
+    ff_reload_msg_fill(&msg, FF_RELOAD_CMD_DRAIN_DONE, 1, 7, 12345);
+    assert_int_equal(msg.msg_type, FF_RELOAD);
+    assert_int_equal(msg.reload.cmd, FF_RELOAD_CMD_DRAIN_DONE);
+    assert_int_equal(msg.reload.gen, 1);
+    assert_int_equal(msg.reload.status, 7);
+    assert_int_equal(msg.reload.heartbeat, 12345);
+
+    assert_int_equal(ff_reload_msg_parse(&msg, &cmd, &gen, &status, &hb), 0);
+    assert_int_equal(cmd, FF_RELOAD_CMD_DRAIN_DONE);
+    assert_int_equal(gen, 1);
+    assert_int_equal(status, 7);
+    assert_int_equal(hb, 12345);
+
+    /* wrong message type is rejected */
+    msg.msg_type = FF_SYSCTL;
+    assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), -1);
+
+    /* out-of-range subcommand is rejected */
+    msg.msg_type = FF_RELOAD;
+    msg.reload.cmd = FF_RELOAD_CMD_REJECT + 1;
+    assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), -1);
+    msg.reload.cmd = 0;
+    assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), -1);
+
+    /* NULL msg is rejected; optional out-params may be NULL */
+    msg.reload.cmd = FF_RELOAD_CMD_READY;
+    assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), 0);
+    assert_int_equal(ff_reload_msg_parse(NULL, NULL, NULL, NULL, NULL), -1);
+
+    /* every v1.6 subcommand parses */
+    int cmds[] = {
+        FF_RELOAD_CMD_READY, FF_RELOAD_CMD_HANDOVER_REQ,
+        FF_RELOAD_CMD_HANDOVER_ACK, FF_RELOAD_CMD_DRAIN_PROGRESS,
+        FF_RELOAD_CMD_DRAIN_DONE, FF_RELOAD_CMD_REJECT,
+    };
+    unsigned i;
+    for (i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        msg.reload.cmd = cmds[i];
+        assert_int_equal(ff_reload_msg_parse(&msg, &cmd, NULL, NULL, NULL), 0);
+        assert_int_equal(cmd, cmds[i]);
+    }
+}
+
+/* UT-NR-20: queue mapping config (reverse assertion, v1.4). graceful=1
+ * must NOT inflate nb_procs / queue counts to 2N; heartbeat config parses;
+ * graceful=0 keeps the defaults untouched. */
+static void
+test_ut_nr_20_queue_mapping_config(void **state)
+{
+    (void)state;
+    int rv;
+    uint16_t portid;
+
+    /* legal: graceful topology, N stays N */
+    rv = load_with_proc(FIXTURE_PATH("valid_graceful_reload.ini"),
+                        "secondary", "0");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 3);       /* NOT 6 */
+    portid = ff_global_cfg.dpdk.portid_list[0];
+    assert_int_equal(ff_global_cfg.dpdk.port_cfgs[portid].nb_lcores, 2);
+                                                            /* NOT 4 */
+    /* default heartbeat timeout when the key is absent */
+    assert_int_equal(ff_global_cfg.dpdk.reload_heartbeat_timeout_ms, 1000);
+
+    /* explicit heartbeat timeout parses */
+    rv = load_with_proc(FIXTURE_PATH("valid_greload_hb_timeout.ini"),
+                        "secondary", "0");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.reload_heartbeat_timeout_ms, 250);
+
+    /* below-floor heartbeat timeout is rejected */
+    rv = load_with_fixture(FIXTURE_PATH("invalid_greload_hb_small.ini"));
+    assert_int_equal(rv, -1);
+
+    /* negative heartbeat timeout is remapped to the default, never a huge
+     * unsigned value that would silently disable stall detection (P3-1) */
+    rv = load_with_fixture(FIXTURE_PATH("valid_greload_hb_negative.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.reload_heartbeat_timeout_ms, 1000);
+
+    /* illegal graceful topology still rejected (fixture from M1) */
+    rv = load_with_fixture(FIXTURE_PATH("invalid_greload_no_slim.ini"));
+    assert_int_equal(rv, -1);
+
+    /* graceful_reload=0: zero regression, defaults intact */
+    rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
+    assert_int_equal(ff_global_cfg.dpdk.reload_heartbeat_timeout_ms, 1000);
+}
+
+/* UT-NR-22: heartbeat liveness evaluation + attached-state flow
+ * (window open/close, per-generation tick, stall detection, READY
+ * bookkeeping, generation flip on completion). */
+static void
+test_ut_nr_22_heartbeat_and_rx_return(void **state)
+{
+    (void)state;
+    struct ff_reload_state st;
+    uint64_t last = 900;
+    uint32_t epoch = 0, target = 0;
+
+    /* ---- pure evaluation ---- */
+    /* counter advanced -> alive, baseline refreshed */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 6, 1000, &last, 100), 1);
+    assert_int_equal(last, 1000);
+    /* not advanced, within window -> alive */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 1099, &last, 100), 1);
+    /* boundary: exactly timeout -> stalled */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 1100, &last, 100), 0);
+    /* timeout disabled -> never stalls */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 99999, &last, 0), 1);
+    /* clock went backwards -> treated as alive */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 500, &last, 100), 1);
+    /* invalid args */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 1000, NULL, 100), -1);
+
+    /* ---- shared block validation ---- */
+    assert_int_equal(ff_reload_state_valid(NULL, sizeof(st)), 0);
+    assert_int_equal(ff_reload_state_valid(&st, 8), 0);
+    memset(&st, 0, sizeof(st));
+    assert_int_equal(ff_reload_state_valid(&st, sizeof(st)), 0);
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    assert_int_equal(ff_reload_state_valid(&st, sizeof(st)), 1);
+    st.len = 4;
+    assert_int_equal(ff_reload_state_valid(&st, sizeof(st)), 0);
+    st.len = (uint32_t)sizeof(st);
+
+    /* ---- attached-state flow ---- */
+    ff_reload_attach_state(&st);
+    assert_int_equal(ff_reload_state_attached(), 1);
+
+    /* steady state: worker gen follows active (0) */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_worker_gen(), 0);
+
+    /* open the window: epoch 1, target gen 1 */
+    ff_reload_master_begin(&epoch, &target);
+    assert_int_equal(epoch, 1);
+    assert_int_equal(target, 1);
+    assert_int_equal(ff_reload_hw_locked(), 1);         /* ENV-1 armed */
+    assert_int_equal(ff_reload_worker_gen(), 1);
+
+    /* rx-owner generation (gen == target) ticks each loop pass */
+    ff_reload_set_gen(1);
+    ff_reload_heartbeat_set_timeout(1000);
+    ff_reload_heartbeat_tick();
+    ff_reload_heartbeat_tick();
+    assert_int_equal(ff_reload_heartbeat_counter(), 2);
+
+    /* non-owner (G_old, gen 0) samples: no stall while ticks flow */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_heartbeat_sample(2000), 0);  /* baseline */
+    assert_int_equal(ff_reload_heartbeat_sample(2050), 0);  /* alive */
+    ff_reload_set_gen(1);
+    ff_reload_heartbeat_tick();
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_heartbeat_sample(2100), 0);  /* advanced */
+
+    /* owner dies: no further ticks -> stall detected once, then rebased */
+    assert_int_equal(ff_reload_heartbeat_sample(3100), 1);  /* 1000 stall */
+    assert_int_equal(st.heartbeat_stalls, 1);
+    assert_int_equal(ff_reload_heartbeat_sample(3150), 0);  /* rebased */
+
+    /* READY bookkeeping: epoch+pid correlation */
+    ff_reload_publish_ready(3, 4242);
+    assert_int_equal(ff_reload_ready_matches(3, 4242, epoch), 1);
+    assert_int_equal(ff_reload_ready_matches(3, 9999, epoch), 0);
+    assert_int_equal(ff_reload_ready_matches(3, 4242, epoch + 1), 0);
+    assert_int_equal(ff_reload_ready_matches(200, 4242, epoch), 0);
+
+    /* window closed with flip: active = target, KNI owner follows */
+    ff_reload_master_complete();
+    assert_int_equal(ff_reload_hw_locked(), 0);
+    assert_int_equal(ff_reload_active_gen(), 1);
+    assert_int_equal(ff_reload_kni_owner_gen(), 1);
+    assert_int_equal(ff_reload_worker_gen(), 1);        /* active now */
+
+    /* heartbeat stops once the window is closed (flow_map died) */
+    ff_reload_set_gen(1);
+    ff_reload_heartbeat_tick();
+    assert_int_equal(ff_reload_heartbeat_counter(), 3); /* unchanged */
+
+    /* abort path: window closes without flipping */
+    ff_reload_master_begin(&epoch, &target);
+    ff_reload_master_abort();
+    assert_int_equal(ff_reload_hw_locked(), 0);
+    assert_int_equal(ff_reload_active_gen(), 1);        /* no flip */
+
+    /* detach restores the not-attached baseline */
+    ff_reload_attach_state(NULL);
+    assert_int_equal(ff_reload_state_attached(), 0);
+    assert_int_equal(ff_reload_active_gen(), 0);
+    assert_int_equal(ff_reload_hw_locked(), 0);
+}
+
 int
 main(void)
 {
@@ -1390,6 +1749,12 @@ main(void)
         cmocka_unit_test_setup_teardown(test_greload_thread_mode_mutex,    test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_greload_off_no_new_checks,    test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_greload_bad_value_atoi,       test_setup, NULL),
+        /* M2 Batch B (C-NR-201/202/205/206/313/316) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_10_reload_fsm_transitions, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_12_generation_mapping,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_14_reload_msg_serdes,      test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_20_queue_mapping_config,   test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_22_heartbeat_and_rx_return, test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),

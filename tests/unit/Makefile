@@ -208,7 +208,7 @@ test_ff_epoll: test_ff_epoll.o $(LIB_OBJS_DIR)/ff_epoll.o $(COMMON_OBJS)
 # ff_global_cfg so we DO NOT link common/ff_log_stub.o here, only rte_stub.o)
 # FU-S8-CFG-OOM: --wrap=calloc lets TCs force allocation failures to cover
 # the `if (X == NULL)` OOM error legs in parse_lcore_mask / port / vlan.
-test_ff_config: test_ff_config.o $(LIB_OBJS_DIR)/ff_config.o $(LIB_OBJS_DIR)/ff_ini_parser.o $(COMMON_DIR)/rte_stub.o
+test_ff_config: test_ff_config.o $(LIB_OBJS_DIR)/ff_config.o $(LIB_OBJS_DIR)/ff_ini_parser.o $(LIB_OBJS_DIR)/ff_reload.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=calloc
 
 # P2 #1 ff_thread (links real pthread + ff_host_interface for ff_malloc/free;
@@ -235,13 +235,13 @@ test_ff_dpdk_pcap: test_ff_dpdk_pcap.o $(LIB_OBJS_DIR)/ff_dpdk_pcap.o $(COMMON_D
 WRAP_FF_DPDKIF := -Wl,--wrap=rte_get_tsc_hz \
                   -Wl,--wrap=ff_rss_check \
                   -Wl,--wrap=ff_rss_check6
-test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(COMMON_DIR)/rte_stub.o
+test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_reload.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(WRAP_FF_DPDKIF) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
 
 # P3 #1 ff_dpdk_kni (FU-S4-KNI subset: ff_kni_enqueue ratelimit branches;
 # requires real DPDK EAL --no-huge for mempool + ring; if EAL init fails
 # at runtime, all 4 TC are marked skip().)
-test_ff_dpdk_kni: test_ff_dpdk_kni.o $(LIB_OBJS_DIR)/ff_dpdk_kni.o $(COMMON_DIR)/rte_stub.o
+test_ff_dpdk_kni: test_ff_dpdk_kni.o $(LIB_OBJS_DIR)/ff_dpdk_kni.o $(LIB_OBJS_DIR)/ff_reload.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
 
 # P3 #2 ff_zc_send (FSTACK_ZC_SEND user-space logic; algorithm-conformance

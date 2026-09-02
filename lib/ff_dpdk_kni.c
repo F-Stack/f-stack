@@ -40,6 +40,7 @@
 
 #include "ff_dpdk_kni.h"
 #include "ff_config.h"
+#include "ff_reload.h"
 
 #ifndef IPPROTO_OSPFIGP
 #define IPPROTO_OSPFIGP 89  /**< OSPFIGP */
@@ -105,7 +106,16 @@ ff_kni_is_runtime_owner(void)
         return rte_lcore_id() == ff_global_cfg.dpdk.proc_lcore[0];
     if (!ff_global_cfg.dpdk.primary_slim)
         return rte_eal_process_type() == RTE_PROC_PRIMARY;
-    return ff_global_cfg.dpdk.proc_id == ff_global_cfg.kni.owner_proc_id;
+    if (ff_global_cfg.dpdk.proc_id != ff_global_cfg.kni.owner_proc_id)
+        return 0;
+    /* C-NR-313: under graceful_reload two generations share the same
+     * proc_id, so the owner check must also match the generation: only the
+     * active generation owns KNI runtime (the master flips the active gen
+     * at T5). Without an attached reload state (non-nginx apps) the legacy
+     * proc_id-only comparison is kept. */
+    if (ff_global_cfg.dpdk.graceful_reload && ff_reload_state_attached())
+        return ff_reload_gen() == ff_reload_active_gen();
+    return 1;
 }
 
 struct kni_ratelimit kni_rate_limt = {0, 0, 0};

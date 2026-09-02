@@ -45,6 +45,13 @@ enum FF_MSG_TYPE {
     FF_IPFW_CTL,
     FF_TRAFFIC,
     FF_KNICTL,
+    /*
+     * C-NR-202: graceful reload control family (v1.6 HANDOVER semantics,
+     * not SWITCH). Subcommand in ff_reload_args.cmd; replies carry the
+     * answering process's reload view (generation, heartbeat, active gen).
+     * Transported over the (proc_id, generation) msg_ring set (C-NR-313).
+     */
+    FF_RELOAD,
 
     /*
      * to add other msg type before FF_MSG_NUM
@@ -127,6 +134,25 @@ struct ff_knictl_args {
     int kni_action;
 };
 
+/* C-NR-202: FF_RELOAD message subcommands. */
+enum FF_RELOAD_CMD {
+    FF_RELOAD_CMD_UNKNOWN = 0,
+    FF_RELOAD_CMD_READY,
+    FF_RELOAD_CMD_HANDOVER_REQ,
+    FF_RELOAD_CMD_HANDOVER_ACK,
+    FF_RELOAD_CMD_DRAIN_PROGRESS,
+    FF_RELOAD_CMD_DRAIN_DONE,
+    FF_RELOAD_CMD_REJECT,
+};
+
+struct ff_reload_args {
+    uint32_t cmd;        /* enum FF_RELOAD_CMD */
+    uint32_t gen;        /* sender or target generation */
+    uint32_t status;     /* command result / progress */
+    uint32_t active_gen; /* active generation as seen by the sender */
+    uint64_t heartbeat;  /* heartbeat counter snapshot */
+};
+
 
 #define MAX_MSG_BUF_SIZE 10240
 
@@ -151,6 +177,7 @@ struct ff_msg {
         struct ff_ipfw_args ipfw;
         struct ff_traffic_args traffic;
         struct ff_knictl_args knictl;
+        struct ff_reload_args reload;
     };
 } __attribute__((packed)) __rte_cache_aligned;
 

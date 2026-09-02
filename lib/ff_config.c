@@ -38,6 +38,7 @@
 #include "ff_config.h"
 #include "ff_ini_parser.h"
 #include "ff_log.h"
+#include "ff_reload.h"
 
 #define DEFAULT_CONFIG_FILE   "config.ini"
 
@@ -1038,6 +1039,16 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.primary_slim = atoi(value);
     } else if (MATCH("dpdk", "graceful_reload")) {
         pconfig->dpdk.graceful_reload = atoi(value);
+    } else if (MATCH("dpdk", "reload_heartbeat_timeout_ms")) {
+        /* P3-1: negative values must not reach the unsigned field (they
+         * would pass the >=10 validation as huge values and silently
+         * disable stall detection); remap them to the default like 0. */
+        int hb_ms = atoi(value);
+
+        if (hb_ms <= 0) {
+            hb_ms = FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT;
+        }
+        pconfig->dpdk.reload_heartbeat_timeout_ms = (uint32_t)hb_ms;
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
@@ -1554,6 +1565,14 @@ ff_check_config(struct ff_config *cfg)
             fprintf(stderr, "graceful_reload=1 requires nb_procs >= 2\n");
             return -1;
         }
+        /* C-NR-201/316: heartbeat stall threshold sanity (0 is remapped to
+         * the default at parse time, so only absurdly small values land
+         * here). */
+        if (cfg->dpdk.reload_heartbeat_timeout_ms &&
+            cfg->dpdk.reload_heartbeat_timeout_ms < 10) {
+            fprintf(stderr, "reload_heartbeat_timeout_ms must be >= 10\n");
+            return -1;
+        }
     }
 
     if (cfg->dpdk.thread_mode) {
@@ -1594,6 +1613,8 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
     cfg->dpdk.primary_slim = 0;
     cfg->dpdk.graceful_reload = 0;
+    cfg->dpdk.reload_heartbeat_timeout_ms =
+        FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT;
     cfg->dpdk.primary_slim_idle_sleep = 1000;
 
     cfg->dpdk.mtu_enable = 0;
