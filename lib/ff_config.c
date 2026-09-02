@@ -1036,6 +1036,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.thread_mode = atoi(value);
     } else if (MATCH("dpdk", "primary_slim")) {
         pconfig->dpdk.primary_slim = atoi(value);
+    } else if (MATCH("dpdk", "graceful_reload")) {
+        pconfig->dpdk.graceful_reload = atoi(value);
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
@@ -1539,6 +1541,21 @@ ff_check_config(struct ff_config *cfg)
         }
     }
 
+    if (cfg->dpdk.graceful_reload) {
+        if (!cfg->dpdk.primary_slim) {
+            fprintf(stderr, "graceful_reload=1 requires primary_slim=1\n");
+            return -1;
+        }
+        if (cfg->dpdk.thread_mode) {
+            fprintf(stderr, "graceful_reload=1 is incompatible with thread_mode=1\n");
+            return -1;
+        }
+        if (cfg->dpdk.nb_procs < 2) {
+            fprintf(stderr, "graceful_reload=1 requires nb_procs >= 2\n");
+            return -1;
+        }
+    }
+
     if (cfg->dpdk.thread_mode) {
         /* Single-process multi-thread: force primary, derive nb_threads,
          * collapse to one process, and expose all lcores to EAL via a
@@ -1576,6 +1593,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
     cfg->dpdk.primary_slim = 0;
+    cfg->dpdk.graceful_reload = 0;
     cfg->dpdk.primary_slim_idle_sleep = 1000;
 
     cfg->dpdk.mtu_enable = 0;

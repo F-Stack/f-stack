@@ -295,6 +295,7 @@ struct ff_config {
         int thread_mode;    /* 0=multi-process (default); 1=single-process multi-thread multi-stack */
         int nb_threads;     /* thread mode: number of threads = lcore_mask set-bit count */
         int primary_slim;   /* 0=off (default); 1=primary holds no rx/tx queue */
+        int graceful_reload; /* 0=off (default); 1=nginx all-secondary workers with resident slim primary */
         int promiscuous;
         int nb_vdev;
         int nb_bond;

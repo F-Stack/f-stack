@@ -1237,6 +1237,75 @@ test_ff_load_config_tcp_ecn_enabled(void **state)
     assert_int_equal(ff_global_cfg.freebsd.mem_size, 256);
 }
 
+/* ======================================================================== */
+/* M1 graceful_reload (docs/nginx_reload_spec/zh_cn/08-testing.md §1)        */
+/* C-NR-101: [dpdk] graceful_reload parse/default/validation chain           */
+/* ======================================================================== */
+
+/* UT-NR-01: default off, zero-regression — legacy fixture without the new
+ * key loads cleanly and graceful_reload stays 0. */
+static void
+test_graceful_reload_default_off(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
+}
+
+/* UT-NR-02: graceful_reload=1 parses when primary_slim=1 is set. */
+static void
+test_graceful_reload_parse(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("valid_graceful_reload.ini"),
+                            "secondary", "0");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 1);
+    assert_int_equal(ff_global_cfg.dpdk.primary_slim, 1);
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 3);
+}
+
+/* UT-NR-03: graceful_reload=1 without primary_slim=1 is rejected. */
+static void
+test_graceful_reload_requires_slim(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_greload_no_slim.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* UT-NR-06: graceful_reload=1 is incompatible with thread_mode=1. */
+static void
+test_greload_thread_mode_mutex(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_greload_thread_mode.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* UT-NR-07: graceful_reload=0 — none of the new validations fire. */
+static void
+test_greload_off_no_new_checks(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
+    assert_int_equal(ff_global_cfg.dpdk.primary_slim, 0);
+}
+
+/* UT-NR-08: non-numeric value degrades to 0 through the legacy atoi
+ * semantics (documented behavior, not an error). */
+static void
+test_greload_bad_value_atoi(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_greload_bad_value.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
+}
+
 int
 main(void)
 {
@@ -1314,6 +1383,13 @@ main(void)
         /* CM4 (native-mt) ECN config switch (freebsd.tcp_ecn) */
         cmocka_unit_test_setup_teardown(test_ff_load_config_tcp_ecn_default_off, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_load_config_tcp_ecn_enabled,     test_setup, NULL),
+        /* M1 graceful_reload (C-NR-101) */
+        cmocka_unit_test_setup_teardown(test_graceful_reload_default_off,  test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_graceful_reload_parse,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_graceful_reload_requires_slim, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_greload_thread_mode_mutex,    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_greload_off_no_new_checks,    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_greload_bad_value_atoi,       test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),
