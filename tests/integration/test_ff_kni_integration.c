@@ -49,6 +49,7 @@ struct kni_interface_stats {
 };
 
 extern struct rte_ring **kni_rp;
+extern struct rte_ring **kni_inject_rp;   /* inject rings (primary_slim) */
 extern struct kni_interface_stats **kni_stat;
 extern struct kni_ratelimit kni_rate_limt;
 
@@ -135,8 +136,12 @@ group_setup(void **state)
     /* Wire ff_dpdk_kni globals: port 0 == our net_ring port. */
     kni_rp   = malloc(sizeof(*kni_rp) * 1);
     kni_stat = malloc(sizeof(*kni_stat) * 1);
-    if (!kni_rp || !kni_stat) { snprintf(g_skip, sizeof(g_skip), "oom"); return 0; }
+    kni_inject_rp = malloc(sizeof(*kni_inject_rp) * 1);  /* ff_kni_alloc writes it */
+    if (!kni_rp || !kni_stat || !kni_inject_rp) {
+        snprintf(g_skip, sizeof(g_skip), "oom"); return 0;
+    }
     kni_rp[0] = g_kni_ring;
+    kni_inject_rp[0] = NULL;
     memset(&g_stat, 0, sizeof(g_stat));
     g_stat.port_id = (uint16_t)port;
     kni_stat[0] = &g_stat;
@@ -150,8 +155,9 @@ group_teardown(void **state)
 {
     (void)state;
     free(kni_rp);
+    free(kni_inject_rp);
     free(kni_stat);
-    kni_rp = NULL; kni_stat = NULL;
+    kni_rp = NULL; kni_inject_rp = NULL; kni_stat = NULL;
     return 0;
 }
 
@@ -347,9 +353,11 @@ test_kni_alloc_primary_happy_path(void **state)
     SKIP_IF_NO_EAL();
 
     struct rte_ring            **saved_rp   = kni_rp;
+    struct rte_ring            **saved_inj  = kni_inject_rp;
     struct kni_interface_stats **saved_stat = kni_stat;
 
-    /* ff_kni_alloc writes kni_stat[port_id]/kni_rp[port_id]; give it slot 0. */
+    /* ff_kni_alloc writes kni_stat[port_id]/kni_rp[port_id]/
+     * kni_inject_rp[port_id]; give it slot 0. */
     ff_kni_alloc((uint16_t)PORT_ID, (unsigned)rte_socket_id(),
                  /*port_idx*/0, /*ring_queue_size*/512);
 
@@ -360,6 +368,7 @@ test_kni_alloc_primary_happy_path(void **state)
     /* Best-effort cleanup of what ff_kni_alloc allocated, then restore. */
     rte_free(kni_stat[PORT_ID]);
     kni_rp   = saved_rp;
+    kni_inject_rp = saved_inj;
     kni_stat = saved_stat;
 }
 

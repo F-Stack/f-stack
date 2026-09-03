@@ -43,7 +43,8 @@ BASE_WRAPS    := -Wl,--wrap=rte_exit -Wl,--wrap=rte_panic
 LDFLAGS_BASE  := $(CMOCKA_LIBS)
 
 # Tests list
-ALL_TESTS     := test_ff_dpdk_if_integration test_ff_kni_integration
+ALL_TESTS     := test_ff_dpdk_if_integration test_ff_kni_integration \
+                 test_ff_reload_integration
 
 # Common stub objects
 COMMON_OBJS   := $(COMMON_DIR)/rte_stub.o
@@ -127,12 +128,16 @@ $(COMMON_DIR)/%.o: $(COMMON_DIR)/%.c
 # Links full DPDK shared libs + ff_dpdk_if.o + ff_config.o + ff_ini_parser.o
 # + ff_log.o (real, since logging happens during ff_dpdk_init) + ff_host_interface.o
 # (for ff_clock_gettime in ff_get_tsc_ns).
+# ff_reload.o + ff_drain_ring.o: M2/M3 graceful-reload objects referenced by
+# ff_dpdk_if.c (ff_no_hw_mode / drain rings / heartbeat hooks).
 INT_LIB_OBJS := \
     $(LIB_OBJS_DIR)/ff_dpdk_if.o \
     $(LIB_OBJS_DIR)/ff_config.o \
     $(LIB_OBJS_DIR)/ff_ini_parser.o \
     $(LIB_OBJS_DIR)/ff_log.o \
-    $(LIB_OBJS_DIR)/ff_host_interface.o
+    $(LIB_OBJS_DIR)/ff_host_interface.o \
+    $(LIB_OBJS_DIR)/ff_reload.o \
+    $(LIB_OBJS_DIR)/ff_drain_ring.o
 
 test_ff_dpdk_if_integration: test_ff_dpdk_if_integration.o $(INT_LIB_OBJS) $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \
@@ -146,11 +151,33 @@ KNI_LIB_OBJS := \
     $(LIB_OBJS_DIR)/ff_config.o \
     $(LIB_OBJS_DIR)/ff_ini_parser.o \
     $(LIB_OBJS_DIR)/ff_log.o \
-    $(LIB_OBJS_DIR)/ff_host_interface.o
+    $(LIB_OBJS_DIR)/ff_host_interface.o \
+    $(LIB_OBJS_DIR)/ff_reload.o
 
 test_ff_kni_integration: test_ff_kni_integration.o $(KNI_LIB_OBJS) $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \
 	    $(DPDK_LIBS) -lrte_net_ring -lrte_net_bond -Wl,-rpath=$(DPDK_RUNPATH) \
+	    -lpthread -lcrypto -ldl -lm
+
+# ----- graceful-reload integration test (IT-NR-A09/A10, nginx_reload_spec 08) -----
+# Full graceful-reload lib surface: ff_reload.o (shared state + handover
+# primitives), ff_drain_ring.o (bidirectional drain rings), ff_flow_map.o
+# (flow table). Note rte_eth_tx_burst is a static inline in this DPDK, so
+# the RV11 tx counting is done via rte_eth_fp_ops[] pointer swap inside the
+# test source (no --wrap possible).
+RELOAD_LIB_OBJS := \
+    $(LIB_OBJS_DIR)/ff_dpdk_if.o \
+    $(LIB_OBJS_DIR)/ff_config.o \
+    $(LIB_OBJS_DIR)/ff_ini_parser.o \
+    $(LIB_OBJS_DIR)/ff_log.o \
+    $(LIB_OBJS_DIR)/ff_host_interface.o \
+    $(LIB_OBJS_DIR)/ff_reload.o \
+    $(LIB_OBJS_DIR)/ff_drain_ring.o \
+    $(LIB_OBJS_DIR)/ff_flow_map.o
+
+test_ff_reload_integration: test_ff_reload_integration.o $(RELOAD_LIB_OBJS) $(COMMON_OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \
+	    $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=$(DPDK_RUNPATH) \
 	    -lpthread -lcrypto -ldl -lm
 
 # ----- clean (NFR-U-7: must use workspace wrapper, no direct rm) -----

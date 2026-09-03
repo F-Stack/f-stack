@@ -44,3 +44,22 @@ __wrap_rte_panic(const char *funcname, const char *format, ...)
     mock_assert(0, "rte_panic", __FILE__, __LINE__);
     /* unreachable */
 }
+
+/*
+ * FreeBSD-stack bridge stubs (linker resolution only).
+ *
+ * lib/ff_dpdk_if.c references these symbols; their real definitions live in
+ * the FreeBSD adapter objects (ff_freebsd_init.c / ff_kern_timeout.c /
+ * ff_veth.c) which the integration harness does not link. Calling any of
+ * them means coverage moved beyond the intended scope, so they are no-ops
+ * that keep the state harmless (lro pointers stay NULL, which main_loop
+ * already guards with `if (ctx->lro != NULL)`).
+ */
+void ff_stack_thread_init(int cpuid) { (void)cpuid; }
+void ff_tcp_hpts_softclock(void) { }
+void ff_hardclock_worker(void) { }
+
+void *ff_lro_init(void *ifp) { (void)ifp; return NULL; }
+void  ff_lro_free(void *lro) { (void)lro; }
+int   ff_lro_rx(void *lro, void *m) { (void)lro; (void)m; return -1; }
+void  ff_lro_flush(void *lro) { (void)lro; }
