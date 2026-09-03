@@ -1486,7 +1486,7 @@ test_ut_nr_14_reload_msg_serdes(void **state)
 
     /* out-of-range subcommand is rejected */
     msg.msg_type = FF_RELOAD;
-    msg.reload.cmd = FF_RELOAD_CMD_REJECT + 1;
+    msg.reload.cmd = FF_RELOAD_CMD_QUERY + 1;
     assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), -1);
     msg.reload.cmd = 0;
     assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), -1);
@@ -1495,6 +1495,11 @@ test_ut_nr_14_reload_msg_serdes(void **state)
     msg.reload.cmd = FF_RELOAD_CMD_READY;
     assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), 0);
     assert_int_equal(ff_reload_msg_parse(NULL, NULL, NULL, NULL, NULL), -1);
+
+    /* the read-only tools probe command is accepted (M3 Batch C) */
+    msg.reload.cmd = FF_RELOAD_CMD_QUERY;
+    assert_int_equal(ff_reload_msg_parse(&msg, &cmd, NULL, NULL, NULL), 0);
+    assert_int_equal(cmd, FF_RELOAD_CMD_QUERY);
 
     /* every v1.6 subcommand parses */
     int cmds[] = {
@@ -1665,6 +1670,220 @@ test_ut_nr_22_heartbeat_and_rx_return(void **state)
     assert_int_equal(ff_reload_hw_locked(), 0);
 }
 
+/* ======================================================================== */
+/* M3 Batch A (docs/nginx_reload_spec/zh_cn/07-milestones.md §2.4)          */
+/* C-NR-302 (rx handover mutex) / C-NR-305 (drain_ring_size)                */
+/* ======================================================================== */
+
+/* UT-NR-25: drain_ring_size parse / remap / validate / default. */
+static void
+test_ut_nr_25_drain_ring_size_config(void **state)
+{
+    (void)state;
+
+    /* explicit value */
+    assert_int_equal(load_with_proc(
+        FIXTURE_PATH("valid_drain_ring_size.ini"), "secondary", "0"), 0);
+    assert_int_equal(ff_global_cfg.dpdk.drain_ring_size, 4096);
+
+    /* negative value remapped to the default (never reaches unsigned) */
+    assert_int_equal(load_with_proc(
+        FIXTURE_PATH("valid_drain_ring_size_neg.ini"), "secondary", "0"), 0);
+    assert_int_equal(ff_global_cfg.dpdk.drain_ring_size,
+                     FF_DRAIN_RING_SIZE_DEFAULT);
+
+    /* non-power-of-two rejected */
+    assert_int_equal(load_with_proc(
+        FIXTURE_PATH("invalid_drain_ring_size_pow2.ini"), "secondary", "0"),
+        -1);
+
+    /* the default itself is a power of two and sane */
+    assert_int_equal(FF_DRAIN_RING_SIZE_DEFAULT, 2048u);
+    assert_int_equal(FF_DRAIN_RING_SIZE_DEFAULT &
+                     (FF_DRAIN_RING_SIZE_DEFAULT - 1), 0u);
+}
+
+/* UT-NR-26: rx handover markers — ownership transfer, no stealing, timeout,
+ * and full reversibility (C-NR-316 hands rx back to the old generation). */
+static void
+test_ut_nr_26_rx_handover_markers(void **state)
+{
+    (void)state;
+    struct ff_reload_state st;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+
+    /* not attached: everything degrades, ff_no_hw_mode() must stay 0 so a
+     * legacy (graceful_reload=0) process is never parked */
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    assert_int_equal(ff_reload_rx_owner_gen(), -1);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 10),
+                     FF_RELOAD_HANDOVER_INVAL);
+
+    ff_reload_attach_state(&st);
+    ff_reload_set_gen(0);
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+
+    /* gen0 owns the hardware: it is allowed on the hardware, gen1 is not */
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+    ff_reload_set_gen(0);
+
+    /* bad arguments */
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 0, 10),
+                     FF_RELOAD_HANDOVER_INVAL);
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, FF_RELOAD_GEN_MAX, 10),
+                     FF_RELOAD_HANDOVER_INVAL);
+    assert_int_equal(ff_reload_rx_release(FF_RELOAD_GEN_MAX),
+                     FF_RELOAD_HANDOVER_INVAL);
+
+    /* gen1 asks for the hardware while gen0 still holds it and never parks:
+     * bounded wait, then timeout (no stealing, no hang) */
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 60),
+                     FF_RELOAD_HANDOVER_TIMEOUT);
+    assert_int_equal(ff_reload_rx_owner_gen(), 0);
+
+    /* gen0 parks and hands over */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_rx_release(1), FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_stopped(), 1);
+    assert_int_equal(ff_reload_rx_owner_gen(), 1);
+    /* parked owner is off the hardware too */
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    /* gen1 acquires; the parked flag clears so its main_loop resumes */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 100),
+                     FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    /* gen0 is now the parked side */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    /* re-acquiring is idempotent (the drain confirmation can be delivered
+     * more than once across a round) */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 10),
+                     FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(0);
+
+    /* H-12: hand rx back to gen0 — the markers are fully reversible */
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    /* graceful_reload=0 never parks anything, whatever the markers say */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+
+    ff_reload_attach_state(NULL);
+}
+
+/* UT-NR-11: T2 park barrier (C-NR-306) — the confirmation layer that lets
+ * the acquirer poll. The mutex alone only observes the ownership word;
+ * the epoch-tagged ack words are what prove every old-generation worker
+ * finished its last hardware pass. Ends with the UT-NR-11 judgement: no
+ * reachable marker state has both generations on the hardware. */
+static void
+test_ut_nr_11_handover_barrier(void **state)
+{
+    (void)state;
+    struct ff_reload_state st;
+    uint32_t e1, e2;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+
+    /* no slot registered (primary / helper): ack is a no-op */
+    ff_reload_set_slot(FF_RELOAD_MAX_PROCS);    /* out of range: ignored */
+    ff_reload_handover_ack();
+    ff_reload_handover_arm(&e1);
+    assert_int_equal(e1, 1);
+    assert_int_equal(ff_reload_handover_parked(0, e1), 0);
+
+    /* armed, nobody acked yet: the wait must not proceed */
+    assert_int_equal(ff_reload_handover_parked(1, e1), 0);
+
+    /* slot 0 acks: parked for this epoch only */
+    ff_reload_set_slot(0);
+    ff_reload_handover_ack();
+    assert_int_equal(ff_reload_handover_parked(0, e1), 1);
+    assert_int_equal(ff_reload_handover_parked(1, e1), 0);      /* other slot */
+    assert_int_equal(ff_reload_handover_parked(0, e1 + 1), 0);  /* other epoch */
+
+    /* a fresh round: the wait predicate is the NEW epoch. The stale word
+     * from e1 may keep matching an e1 query — harmless, epochs are
+     * monotonic and the master never asks about a past epoch again. */
+    ff_reload_handover_arm(&e2);
+    assert_int_equal(e2, 2);
+    assert_int_equal(ff_reload_handover_parked(0, e2), 0);
+    ff_reload_handover_ack();
+    assert_int_equal(ff_reload_handover_parked(0, e2), 1);
+
+    /* out-of-range slot on the master side */
+    assert_int_equal(ff_reload_handover_parked(FF_RELOAD_MAX_PROCS, e2), 0);
+
+    /* the UT-NR-11 judgement, marker-level: replay the master sequence
+     * and assert at every step that not both generations are unparked. */
+    ff_reload_set_gen(0);
+    ff_reload_set_slot(1);
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+    assert_int_equal(ff_no_hw_mode(), 0);       /* G_old owns and polls */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_new parked from birth */
+
+    ff_reload_rx_stopped_set(1);               /* park order */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_old parks by order */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_new still parked */
+    ff_reload_handover_ack();                  /* G_new worker acks too: inert */
+
+    assert_int_equal(ff_reload_rx_release(1), FF_RELOAD_HANDOVER_OK);
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_old definitively off */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* ...until stopped clears */
+
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 10),
+                     FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);       /* G_new polls, alone */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_old parked, alone */
+
+    /* H-12 reversal (rx return): the markers flip back in one write pair */
+    ff_reload_set_gen(0);
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
 int
 main(void)
 {
@@ -1755,6 +1974,11 @@ main(void)
         cmocka_unit_test_setup_teardown(test_ut_nr_14_reload_msg_serdes,      test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ut_nr_20_queue_mapping_config,   test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ut_nr_22_heartbeat_and_rx_return, test_setup, NULL),
+        /* M3 Batch A (C-NR-302 / C-NR-305) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_25_drain_ring_size_config, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_26_rx_handover_markers,    test_setup, NULL),
+        /* M3 Batch B (C-NR-306: T2 park barrier) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_11_handover_barrier,       test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),

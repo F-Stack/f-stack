@@ -1778,6 +1778,418 @@ test_ut_nr_21_shared_pool_cache_size(void **state)
     /* M-B fallback ring capacity is reserved as a constant */
     assert_true(FREE_RING_SIZE > 0);
 }
+
+/* ======================================================================== */
+/* M3 Batch A (docs/nginx_reload_spec/zh_cn/07-milestones.md §2.4)          */
+/* C-NR-301 (flow map) / C-NR-303 (unregister) / C-NR-310 (drain rings)     */
+/* ======================================================================== */
+
+#include <rte_ring.h>
+#include <rte_mbuf.h>
+#include <rte_mempool.h>
+
+#include "ff_flow_map.h"
+#include "ff_drain_ring.h"
+#include "ff_reload.h"
+
+/* UT-NR-19: drain_ring pair — per-generation naming, SP/SC flags, ownership
+ * rules, full-ring behaviour and the unregister-only teardown (R-310-1). */
+static void
+test_ut_nr_19_drain_ring_sp_sc(void **state)
+{
+    static uint16_t port_list[1] = { 0 };
+    /* Two queues = two independent stack instances. Without a queue
+     * dimension a packet would be handed to a stack that has no PCB for it
+     * (it would answer RST), and two workers would share one SP/SC ring. */
+    static struct ff_port_cfg port_cfgs[1];
+    struct rte_mbuf *pkts[MAX_PKT_BURST];
+    struct rte_mempool *pool = NULL;
+    struct rte_mbuf *m;
+    struct rte_ring *r, *r_q1;
+    char name[RTE_RING_NAMESIZE];
+    int g, q;
+
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("[INFO] rte_eal_init failed; UT-NR-19 skipped\n");
+        skip();
+        return;
+    }
+
+    pool = rte_pktmbuf_pool_create("ut_nr_19_pool", 128, 0, 0, 256,
+        SOCKET_ID_ANY);
+    if (pool == NULL) {
+        printf("[INFO] mbuf pool failed; UT-NR-19 skipped\n");
+        skip();
+        return;
+    }
+
+    /* graceful_reload=0: no rings at all (zero-regression) */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 0);
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = port_list;
+    memset(port_cfgs, 0, sizeof(port_cfgs));
+    port_cfgs[0].nb_lcores = 2;
+    ff_global_cfg.dpdk.port_cfgs = port_cfgs;
+    /* smaller than the pool so the fill loop below can actually overflow it */
+    ff_global_cfg.dpdk.drain_ring_size = 64;    /* power of two */
+    lcore_conf[0].socket_id = 0;
+    ff_reload_set_gen(0);
+
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 1);
+
+    /* one pair per (queue, generation). P1-a: drain_rx is multi-producer —
+     * the same-queue miss forwarder and the ARP/NDP clone fan-out (any
+     * peer worker, nb_queues >= 2) can race one ring — but stays
+     * single-consumer; drain_tx keeps SP/SC (its only producer is the
+     * parked generation's own queue worker). */
+    for (q = 0; q < 2; q++) {
+        for (g = 0; g < FF_RELOAD_GEN_MAX; g++) {
+            snprintf(name, sizeof(name), "drain_rx_p0_q%d_g%d", q, g);
+            r = rte_ring_lookup(name);
+            assert_non_null(r);
+            assert_int_equal(rte_ring_is_prod_single(r), 0);
+            assert_int_equal(rte_ring_is_cons_single(r), 1);
+
+            snprintf(name, sizeof(name), "drain_tx_p0_q%d_g%d", q, g);
+            r = rte_ring_lookup(name);
+            assert_non_null(r);
+            assert_int_equal(rte_ring_is_prod_single(r), 1);
+            assert_int_equal(rte_ring_is_cons_single(r), 1);
+        }
+    }
+
+    /* We are gen0. rx_enqueue takes the DESTINATION generation, so a
+     * flow-map miss here goes to gen1's ring; our own gen would be a
+     * self-loop and is rejected outright. */
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 1, m), 0);
+    r = rte_ring_lookup("drain_rx_p0_q0_g1");
+    r_q1 = rte_ring_lookup("drain_rx_p0_q1_g1");
+    assert_non_null(r_q1);
+    assert_int_equal((int)rte_ring_count(r), 1);
+    /* queue isolation: a queue-0 flow must not land in queue 1's ring. */
+    assert_int_equal((int)rte_ring_count(r_q1), 0);
+    /* our own inbound ring (gen0) is untouched by that enqueue */
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal((int)rte_ring_count(r), 1);
+
+    /* seen from gen1 it is ours to consume: ctx == NULL frees instead of
+     * leaking, and the ring is drained either way. */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 1, pkts, NULL), 0);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal((int)rte_ring_count(r), 0);
+    assert_int_equal((int)rte_mempool_avail_count(pool), 128);
+    ff_reload_set_gen(0);
+
+    /* tx_enqueue takes the SOURCE generation, i.e. our own; gen1 reads it
+     * and is the only side allowed to call rte_eth_tx_burst. */
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 1, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 0, m), 0);
+    assert_int_equal((int)rte_ring_count(
+        rte_ring_lookup("drain_tx_p0_q0_g0")), 1);
+    assert_int_equal((int)rte_ring_count(
+        rte_ring_lookup("drain_tx_p0_q1_g0")), 0);
+
+    /* tx_drain on an empty peer ring returns 0 without touching ethdev */
+    assert_int_equal(ff_drain_ring_tx_drain(0, 0, pkts, MAX_PKT_BURST), 0);
+
+    /* out-of-range gen / queue / port / not-ready are rejected, mbuf stays
+     * owned by the caller (R-303-1: the dispatcher must free it itself) */
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, FF_RELOAD_GEN_MAX, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, -1, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(RTE_MAX_ETHPORTS, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 99, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 0, NULL), -1);
+
+    /* fill the rx ring: enqueue fails (counted, never a silent drop) and the
+     * caller keeps the mbuf. */
+    {
+        uint64_t rx_full_before, rx_full_after, tx_full, tx_drop;
+        int i;
+
+        ff_drain_ring_stats(&rx_full_before, &tx_full, &tx_drop);
+        for (i = 0; i < 200; i++) {
+            struct rte_mbuf *mm = rte_pktmbuf_alloc(pool);
+            if (mm == NULL)
+                break;
+            if (ff_drain_ring_rx_enqueue(0, 0, 1, mm) != 0) {
+                rte_pktmbuf_free(mm);
+                break;
+            }
+        }
+        ff_drain_ring_stats(&rx_full_after, &tx_full, &tx_drop);
+        assert_int_equal((int)(rx_full_after - rx_full_before), 1);
+    }
+
+    /* R-310-1: unregister detaches without destroying — the rings stay
+     * lookup-able so the next reload round can reuse them. */
+    ff_drain_ring_unregist();
+    assert_int_equal(ff_drain_ring_ready(), 0);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 1, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal(ff_drain_ring_tx_drain(0, 0, pkts, MAX_PKT_BURST), 0);
+    assert_non_null(rte_ring_lookup("drain_rx_p0_q0_g0"));
+    ff_drain_ring_unregist();    /* idempotent */
+    /* re-init reuses the pointer arrays instead of leaking a new block */
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 1);
+    assert_non_null(rte_ring_lookup("drain_rx_p0_q1_g1"));
+    ff_drain_ring_unregist();
+
+    /* mbufs still sitting in the rings stay owned by the rings; the pool is
+     * never freed (it stays registered with the EAL for the process). */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.nb_ports = 0;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs = NULL;
+    ff_global_cfg.dpdk.drain_ring_size = 0;
+}
+
+/* UT-NR-23: flow map — layout, gating, idempotent insert, lookup, and the
+ * reversible open/close window. */
+static void
+test_ut_nr_23_flow_map(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t k, k2;
+
+    (void)state;
+
+    /* the FreeBSD side builds the same struct; a layout drift would silently
+     * corrupt every key, so pin it. */
+    assert_int_equal((int)sizeof(ff_flow_key_t), 40);
+
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.src[0] = 0x0a000001;
+    k.dst[0] = 0x0a000002;
+    k.sport = 0x1234;
+    k.dport = 0x0050;
+
+    /* graceful_reload=0: recording is a no-op and lookup always misses */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_attach_state(NULL);
+    ff_flow_map_close();
+    assert_int_equal(ff_flow_map_active(), 0);
+    assert_int_equal(ff_flow_map_insert(&k), -1);
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+
+    /* graceful_reload=1 but no shared block (non-nginx app): still off */
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    assert_int_equal(ff_flow_map_insert(&k), -1);
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+
+    /* window still closed: insert is a no-op */
+    assert_int_equal(ff_flow_map_active(), 0);
+    assert_int_equal(ff_flow_map_insert(&k), -1);
+
+    ff_flow_map_open();
+    assert_int_equal(ff_flow_map_active(), 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    assert_int_equal(ff_flow_map_insert(&k), 0);
+    /* idempotent: a repeated four-tuple must not consume a second slot */
+    assert_int_equal(ff_flow_map_insert(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+
+    /* a different source port is a different flow, and does not disturb the
+     * first one (no hash-collision damage) */
+    memcpy(&k2, &k, sizeof(k2));
+    k2.sport = 0x1235;
+    assert_int_equal(ff_flow_map_lookup(&k2), 0);
+    assert_int_equal(ff_flow_map_insert(&k2), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k2), 1);
+
+    /* v6 flows live in the same table and stay distinct from v4 */
+    memcpy(&k2, &k, sizeof(k2));
+    k2.af = FF_FLOW_MAP_V6;
+    assert_int_equal(ff_flow_map_lookup(&k2), 0);
+
+    /* close empties the table; open starts a fresh one (reversible) */
+    ff_flow_map_close();
+    assert_int_equal(ff_flow_map_active(), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    ff_flow_map_open();
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    assert_int_equal(ff_flow_map_insert(&k), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    ff_flow_map_close();
+
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* UT-NR-24: dispatcher unregistration is idempotent — the drain confirmation
+ * that drives it can be delivered more than once in a reload round. */
+static void
+test_ut_nr_24_unregist_dispatcher(void **state)
+{
+    (void)state;
+
+    ff_unregist_packet_dispatcher();
+    ff_unregist_packet_dispatcher();
+    ff_unregist_packet_dispatcher_context();
+    ff_unregist_packet_dispatcher_context();
+
+    /* re-register / unregister round-trip must not wedge the pointers */
+    ff_regist_packet_dispatcher(NULL);
+    ff_regist_packet_dispatcher_context(NULL);
+    ff_unregist_packet_dispatcher();
+    ff_unregist_packet_dispatcher_context();
+}
+
+/* UT-NR-27 (C-NR-303, R-303-1 boundary): FF_DISPATCH_PEER — the library
+ * owns the mbuf end to end. A miss is forwarded to the peer generation's
+ * drain_rx ring and NOT freed by the framework; a full ring (or no reload
+ * window) drops + counts instead of leaking into an unconsumed ring.
+ * The old double-free trap (callback enqueues, framework also frees)
+ * cannot be built on this path: the callback never touches the mbuf. */
+static int ut27_ret;
+static int
+ut27_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
+    uint16_t nb_queues, struct ff_dispatcher_context context)
+{
+    (void)data; (void)len; (void)queue_id;
+    (void)nb_queues; (void)context;
+    return ut27_ret;
+}
+
+static void
+test_ut_nr_27_dispatch_peer_boundary(void **state)
+{
+    static uint16_t port_list[1] = { 0 };
+    static struct ff_port_cfg port_cfgs[1];
+    static struct ff_reload_state st;
+    struct rte_mempool *pool = NULL;
+    struct rte_mbuf *m, *mm;
+    struct rte_ring *peer_rx;
+    int avail;
+    uint64_t rf0, rf1, tf, td;
+
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("[INFO] rte_eal_init failed; UT-NR-27 skipped\n");
+        skip();
+        return;
+    }
+
+    pool = rte_pktmbuf_pool_create("ut_nr_27_pool", 512, 0, 0, 256,
+        SOCKET_ID_ANY);
+    if (pool == NULL) {
+        printf("[INFO] mbuf pool failed; UT-NR-27 skipped\n");
+        skip();
+        return;
+    }
+
+    /* reload window open; we are gen0 (the classifying side), peer gen1
+     * holds the PCBs of the flows that will miss */
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    st.reload_active = 1;
+    st.active_gen = 1;
+    st.target_gen = 0;
+    ff_reload_attach_state(&st);
+    ff_reload_set_gen(0);
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = port_list;
+    memset(port_cfgs, 0, sizeof(port_cfgs));
+    port_cfgs[0].nb_lcores = 2;
+    ff_global_cfg.dpdk.port_cfgs = port_cfgs;
+    ff_global_cfg.dpdk.drain_ring_size = 64;
+    ff_global_cfg.dpdk.mbuf_low_watermark = 0;
+    lcore_conf[0].socket_id = 0;
+    lcore_conf[0].nb_queue_list[0] = 2;
+    lcore_conf[0].tx_queue_id[0] = 0;
+    assert_int_equal(ff_drain_ring_init(), 0);
+
+    peer_rx = rte_ring_lookup("drain_rx_p0_q0_g1");
+    assert_non_null(peer_rx);
+    /* UT-NR-19 may have left mbufs in the shared rings: drain first so
+     * the count assertions below are self-contained. */
+    while (rte_ring_dequeue(peer_rx, (void **) &mm) == 0)
+        rte_pktmbuf_free(mm);
+
+    /* 1) miss forwarded: the mbuf lands in the peer ring and is NOT
+     *    freed by the framework (ownership moved with it) */
+    ut27_ret = FF_DISPATCH_PEER;
+    ff_regist_packet_dispatcher_context(ut27_dispatcher);
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    avail = (int)rte_mempool_avail_count(pool);
+    ff_dpdk_process_packets(0, 0, &m, 1, NULL, 0);
+    assert_int_equal((int)rte_ring_count(peer_rx), 1);
+    /* still exactly one mbuf outstanding from the pool: the forwarded
+     * packet is owned by the ring, not returned */
+    assert_int_equal((int)rte_mempool_avail_count(pool), avail);
+
+    /* 2) full peer ring: enqueue fails -> the framework frees the mbuf
+     *    exactly once and the ring-full counter moves (no silent drop,
+     *    no leak; valgrind owns the double-free proof) */
+    while (rte_ring_dequeue(peer_rx, (void **) &mm) == 0)
+        rte_pktmbuf_free(mm);
+    {
+        int i;
+        for (i = 0; i < 4096; i++) {
+            mm = rte_pktmbuf_alloc(pool);
+            if (mm == NULL)
+                break;
+            if (ff_drain_ring_rx_enqueue(0, 0, 1, mm) != 0) {
+                rte_pktmbuf_free(mm);
+                break;
+            }
+        }
+    }
+    ff_drain_ring_stats(&rf0, &tf, &td);
+    avail = (int)rte_mempool_avail_count(pool);
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    ff_dpdk_process_packets(0, 0, &m, 1, NULL, 0);
+    assert_int_equal((int)rte_mempool_avail_count(pool), avail);
+    ff_drain_ring_stats(&rf1, &tf, &td);
+    assert_int_equal((int)(rf1 - rf0), 1);
+
+    /* 3) window closed: PEER degrades to drop + free — never an enqueue
+     *    into a ring nobody drains */
+    st.reload_active = 0;
+    avail = (int)rte_mempool_avail_count(pool);
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    ff_dpdk_process_packets(0, 0, &m, 1, NULL, 0);
+    assert_int_equal((int)rte_mempool_avail_count(pool), avail);
+
+    /* cleanup: the ring keeps its fill mbufs (pool is never freed) */
+    ff_unregist_packet_dispatcher_context();
+    ff_drain_ring_unregist();
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.nb_ports = 0;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs = NULL;
+    ff_global_cfg.dpdk.drain_ring_size = 0;
+    ff_global_cfg.dpdk.mbuf_low_watermark = 0;
+}
+
 int
 main(void)
 {
@@ -1835,6 +2247,12 @@ main(void)
         cmocka_unit_test(test_ut_nr_17_hardclock_interval),
         cmocka_unit_test(test_ut_nr_18_gen_pool_config),
         cmocka_unit_test(test_ut_nr_21_shared_pool_cache_size),
+        /* M3 Batch A: C-NR-301/303/310 (UT-NR-19/23/24) */
+        cmocka_unit_test(test_ut_nr_19_drain_ring_sp_sc),
+        cmocka_unit_test(test_ut_nr_23_flow_map),
+        cmocka_unit_test(test_ut_nr_24_unregist_dispatcher),
+        /* M3 Batch B (C-NR-303: R-303-1 dispatcher boundary) */
+        cmocka_unit_test(test_ut_nr_27_dispatch_peer_boundary),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

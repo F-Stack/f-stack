@@ -235,7 +235,9 @@ test_ff_dpdk_pcap: test_ff_dpdk_pcap.o $(LIB_OBJS_DIR)/ff_dpdk_pcap.o $(COMMON_D
 WRAP_FF_DPDKIF := -Wl,--wrap=rte_get_tsc_hz \
                   -Wl,--wrap=ff_rss_check \
                   -Wl,--wrap=ff_rss_check6
-test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_reload.o $(COMMON_DIR)/rte_stub.o
+# C-NR-301/310: ff_flow_map.o (host heap only, no EAL) and ff_drain_ring.o
+# (real rte_ring, needs the EAL the test brings up on demand).
+test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_reload.o $(LIB_OBJS_DIR)/ff_flow_map.o $(LIB_OBJS_DIR)/ff_drain_ring.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(WRAP_FF_DPDKIF) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
 
 # P3 #1 ff_dpdk_kni (FU-S4-KNI subset: ff_kni_enqueue ratelimit branches;
