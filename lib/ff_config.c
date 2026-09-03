@@ -1049,6 +1049,15 @@ ini_parse_handler(void* user, const char* section, const char* name,
             hb_ms = FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT;
         }
         pconfig->dpdk.reload_heartbeat_timeout_ms = (uint32_t)hb_ms;
+    } else if (MATCH("dpdk", "drain_ring_size")) {
+        /* Same trap as reload_heartbeat_timeout_ms (P3-1): a negative value
+         * must not reach the unsigned field, and 0 means "use the default". */
+        int drs = atoi(value);
+
+        if (drs <= 0) {
+            drs = (int)FF_DRAIN_RING_SIZE_DEFAULT;
+        }
+        pconfig->dpdk.drain_ring_size = (unsigned)drs;
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
@@ -1573,6 +1582,20 @@ ff_check_config(struct ff_config *cfg)
             fprintf(stderr, "reload_heartbeat_timeout_ms must be >= 10\n");
             return -1;
         }
+        /* C-NR-305/310: drain_ring capacity. 0 can only come from a caller
+         * that filled the struct by hand (the parser remaps it). */
+        if (cfg->dpdk.drain_ring_size == 0) {
+            cfg->dpdk.drain_ring_size = FF_DRAIN_RING_SIZE_DEFAULT;
+        }
+        if (cfg->dpdk.drain_ring_size & (cfg->dpdk.drain_ring_size - 1)) {
+            fprintf(stderr, "drain_ring_size must be a power of 2\n");
+            return -1;
+        }
+        if (cfg->dpdk.drain_ring_size < 1024) {
+            fprintf(stderr, "WARNING: drain_ring_size %u < 1024, the "
+                "handover window may overflow the ring\n",
+                cfg->dpdk.drain_ring_size);
+        }
     }
 
     if (cfg->dpdk.thread_mode) {
@@ -1615,6 +1638,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.graceful_reload = 0;
     cfg->dpdk.reload_heartbeat_timeout_ms =
         FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT;
+    cfg->dpdk.drain_ring_size = FF_DRAIN_RING_SIZE_DEFAULT;
     cfg->dpdk.primary_slim_idle_sleep = 1000;
 
     cfg->dpdk.mtu_enable = 0;

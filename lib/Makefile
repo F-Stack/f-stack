@@ -301,6 +301,8 @@ FF_HOST_SRCS+=              \
 	ff_config.c         \
 	ff_ini_parser.c     \
 	ff_reload.c         \
+	ff_flow_map.c       \
+	ff_drain_ring.c     \
 	ff_dpdk_if.c        \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
@@ -757,6 +759,7 @@ install:
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
 	rm -rf ${PREFIX_INCLUDE}/ff_log.h
 	rm -rf ${PREFIX_INCLUDE}/ff_reload.h
+	rm -rf ${PREFIX_INCLUDE}/ff_flow_map.h
 	rm -rf ${PREFIX_BIN}/ff_start
 
 	cp -f libfstack.a ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
@@ -768,6 +771,7 @@ install:
 	cp -f ff_epoll.h ${PREFIX_INCLUDE}/ff_epoll.h
 	cp -f ff_log.h ${PREFIX_INCLUDE}/ff_log.h
 	cp -f ff_reload.h ${PREFIX_INCLUDE}/ff_reload.h
+	cp -f ff_flow_map.h ${PREFIX_INCLUDE}/ff_flow_map.h
 	cp -f ${TOPDIR}/start.sh ${PREFIX_BIN}/ff_start
 	test -f '${F-STACK_CONF}' || cp -f ${TOPDIR}/config.ini ${F-STACK_CONF}
 
@@ -781,6 +785,7 @@ uninstall:
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
 	rm -rf ${PREFIX_INCLUDE}/ff_log.h
 	rm -rf ${PREFIX_INCLUDE}/ff_reload.h
+	rm -rf ${PREFIX_INCLUDE}/ff_flow_map.h
 	rm -rf ${PREFIX_BIN}/ff_start
 	rm -rf ${F-STACK_CONF}
 

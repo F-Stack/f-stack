@@ -39,6 +39,10 @@ extern "C" {
 
 #include "ff_event.h"
 #include "ff_errno.h"
+/* C-NR-301: struct ff_flow_key / ff_flow_key_t. Kept in a zero-include header
+ * so the FreeBSD side (which must not include ff_api.h) can share the exact
+ * same layout. */
+#include "ff_flow_map.h"
 
 struct linux_sockaddr {
     short sa_family;
@@ -235,6 +239,12 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
 /* dispatch api begin */
 #define FF_DISPATCH_ERROR (-1)
 #define FF_DISPATCH_RESPONSE (-2)
+/* C-NR-303: the packet belongs to the peer generation of a graceful
+ * reload (flow-map miss). The library forwards the mbuf on the peer
+ * generation's drain_rx ring — the callback never touches the mbuf, so
+ * ownership cannot be split. Dropped and counted if that ring is full or
+ * no reload window is open. */
+#define FF_DISPATCH_PEER (-3)
 
 /*
  * Packet dispatch callback function.
@@ -253,8 +263,11 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
  *   The queue id that the packet will be dispatched to.
  * @return FF_DISPATCH_ERROR (-1)
  *   Error occurs or packet is handled by user, packet will be freed.
-* @return FF_DISPATCH_RESPONSE (-2)
+ * @return FF_DISPATCH_RESPONSE (-2)
  *   Packet is handled by user, packet will be responsed.
+ * @return FF_DISPATCH_PEER (-3)
+ *   C-NR-303: the packet belongs to the peer generation of a graceful
+ *   reload; the library forwards it (the mbuf stays library-owned).
  *
  */
 typedef int (*dispatch_func_t)(void *data, uint16_t *len,
@@ -292,6 +305,9 @@ struct ff_dispatcher_context {
  *   Error occurs or packet is handled by user, packet will be freed.
  * @return FF_DISPATCH_RESPONSE (-2)
  *   Packet is handled by user, packet will be responsed.
+ * @return FF_DISPATCH_PEER (-3)
+ *   C-NR-303: the packet belongs to the peer generation of a graceful
+ *   reload; the library forwards it (the mbuf stays library-owned).
  */
 typedef int (*dispatch_func_context_t)(void *data, uint16_t *len,
     uint16_t queue_id, uint16_t nb_queues, struct ff_dispatcher_context context);
@@ -301,6 +317,12 @@ void ff_regist_packet_dispatcher(dispatch_func_t func);
 
 /* Register a packet dispatch function with context support */
 void ff_regist_packet_dispatcher_context(dispatch_func_context_t func);
+
+/* Unregister the packet dispatch callbacks (C-NR-303: the new generation
+ * unregisters once the drain rings have been confirmed empty). Idempotent —
+ * calling it with no callback registered is a no-op. */
+void ff_unregist_packet_dispatcher(void);
+void ff_unregist_packet_dispatcher_context(void);
 
 /*
  * RAW packet send direty with DPDK by user APP.
@@ -317,6 +339,63 @@ void ff_regist_packet_dispatcher_context(dispatch_func_context_t func);
  *  -1 means error.
  */
 int ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id);
+
+/* flow map api begin */
+/* C-NR-301: software flow table used during the graceful-reload handover.
+ * While the new generation owns the hardware and the old one is still
+ * draining, every inbound packet has to be classified as "new flow, mine" or
+ * "old flow, forward to the draining generation" — the stack's inpcb cannot
+ * answer that question on its own.
+ *
+ * Entry timing: a flow is recorded the moment its SYN has been answered with
+ * a SYN-ACK and the connection has landed in the syncache, NOT when accept()
+ * returns. The third handshake ACK arrives while the connection is still
+ * half-open; recording at accept() time would let that ACK miss the table and
+ * be forwarded to a generation that has no syncache entry for it, which would
+ * reset every connection established across the handover.
+ *
+ * The table is process-local (each generation keeps its own), so there is no
+ * shared memory and no cross-process locking. Addresses and ports are stored
+ * in network byte order; only equality is ever tested, so nothing is byte
+ * swapped. */
+typedef struct ff_flow_key ff_flow_key_t;
+
+/* Open / close the recording window. Insert and lookup are no-ops while the
+ * window is closed, so steady state costs nothing. Both are idempotent and
+ * reversible: close() empties the table, open() starts a fresh one. */
+void ff_flow_map_open(void);
+void ff_flow_map_close(void);
+
+/* 1 = the four-tuple belongs to this generation, 0 = miss (forward it). */
+int ff_flow_map_lookup(const ff_flow_key_t *key);
+
+/* 0 = inserted, 1 = already present (idempotent), <0 = error or table full. */
+int ff_flow_map_insert(const ff_flow_key_t *key);
+
+/* flow map api end */
+
+/* reload drain ring api begin */
+/* C-NR-310: hand packets to the peer generation during the graceful-reload
+ * handover. Full ring ownership model in lib/ff_drain_ring.h; these two are
+ * the app-side (dispatcher callback) entry points — the dequeue/drain sides
+ * are consumed by lib's main loop. */
+struct rte_mbuf;
+
+/* Forward a flow-map miss to the draining generation. 'gen' is the
+ * DESTINATION generation (the peer, the one that owns the PCB); 'queue_id'
+ * is the queue this packet arrived on, which is the peer's queue index too
+ * (RSS is symmetric). The caller keeps mbuf ownership when this returns
+ * non-zero (ring full / not ready) and must free it itself. */
+int ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
+    struct rte_mbuf *m);
+
+/* Queue an outgoing packet for the peer generation to transmit. 'gen' is
+ * the SOURCE generation (your own): the peer is the only side allowed to
+ * call rte_eth_tx_burst and it reads the source-generation ring. Same mbuf
+ * ownership rule as ff_drain_ring_rx_enqueue(). */
+int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
+    struct rte_mbuf *m);
+/* reload drain ring api end */
 
 /* dispatch api end */
 

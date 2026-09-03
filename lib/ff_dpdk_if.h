@@ -37,6 +37,8 @@ struct loop_routine {
 };
 
 struct ff_dpdk_if_context;
+struct rte_mbuf;
+struct rte_ring;
 
 struct ff_mtu_capability {
     uint16_t min_mtu;
@@ -83,5 +85,20 @@ int ff_cur_proc_id(void);
 /* C-NR-307: TSC ticks per hardclock tick for the graceful_reload
  * self-driven hardclock (pure; unit-tested as UT-NR-17). */
 uint64_t ff_hardclock_interval_tsc(uint64_t timer_hz, unsigned int bsd_hz);
+
+/* C-NR-310: the one ring-construction helper (primary creates, secondary
+ * looks up). Non-static so lib/ff_drain_ring.c can reuse it instead of
+ * carrying a second copy. */
+struct rte_ring *create_ring(const char *name, unsigned count, int socket_id,
+    unsigned flags);
+
+/* C-NR-310: hand a batch of mbufs to the stack. Non-static so
+ * ff_drain_ring_rx_dequeue() can feed the drain rings into the same path
+ * process_dispatch_ring() uses. pkts_from_ring must be 1 for anything that
+ * did not come straight out of rte_eth_rx_burst (it gates cloning and the
+ * dispatcher callback, and prevents forwarding loops). */
+void ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
+    struct rte_mbuf **bufs, uint16_t count, struct ff_dpdk_if_context *ctx,
+    int pkts_from_ring);
 
 #endif /* ifndef _FSTACK_DPDK_IF_H */

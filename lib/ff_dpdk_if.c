@@ -27,6 +27,7 @@
 #include <unistd.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include <time.h>
 
 #include <rte_common.h>
 #include <rte_byteorder.h>
@@ -36,6 +37,7 @@
 #include <rte_memzone.h>
 #include <rte_config.h>
 #include <rte_eal.h>
+#include <rte_errno.h>
 #include <rte_pci.h>
 #include <rte_mbuf.h>
 #include <rte_memory.h>
@@ -68,6 +70,7 @@
 #include "ff_memory.h"
 #include "ff_log.h"
 #include "ff_reload.h"
+#include "ff_drain_ring.h"
 
 /* C-NR-313: msg_ring generation count must match the app mbuf pool
  * generation count (both index by the same gen0/gen1 ping-pong). */
@@ -665,8 +668,23 @@ init_mem_pool(void)
     }
     uint16_t max_portid = ff_global_cfg.dpdk.max_portid;
 
+    /* C-NR-305: RX descriptor depth (widened under graceful_reload). */
+    unsigned rx_desc = ff_rx_queue_size(ff_global_cfg.dpdk.graceful_reload);
+
+    /* C-NR-310: one drain ring per (queue, generation, direction). The queue
+     * count is what matters, not the lcore count: every queue is an
+     * independent stack instance with its own pair, in both directions.
+     * Zero unless graceful_reload=1 — the rings are not created then, and
+     * the shared pool sizing must not change. */
+    unsigned drain_ring_sz = ff_global_cfg.dpdk.drain_ring_size;
+    unsigned drain_mbuf = 0;
+    if (drain_ring_sz == 0)
+        drain_ring_sz = FF_DRAIN_RING_SIZE_DEFAULT;
+    if (ff_global_cfg.dpdk.graceful_reload)
+        drain_mbuf = nb_rx_queue * FF_RELOAD_GEN_MAX * 2 * drain_ring_sz;
+
     unsigned nb_mbuf = RTE_ALIGN_CEIL (
-        (nb_rx_queue * (max_portid + 1) * 2 * RX_QUEUE_SIZE          +
+        (nb_rx_queue * (max_portid + 1) * 2 * rx_desc                   +
         nb_ports * (max_portid + 1) * 2 * nb_lcores * MAX_PKT_BURST    +
         nb_ports * (max_portid + 1) * 2 * nb_tx_queue * TX_QUEUE_SIZE  +
         nb_lcores * MEMPOOL_CACHE_SIZE +
@@ -674,7 +692,8 @@ init_mem_pool(void)
         nb_ports * KNI_MBUF_MAX +
         nb_ports * KNI_QUEUE_SIZE +
 #endif
-        nb_lcores * nb_ports * DISPATCH_RING_SIZE),
+        nb_lcores * nb_ports * DISPATCH_RING_SIZE +
+        drain_mbuf),
         (unsigned)8192);
 
     /* C-NR-314: TX-side budget for the per-generation application pools
@@ -690,7 +709,8 @@ init_mem_pool(void)
             nb_ports * KNI_MBUF_MAX +
             nb_ports * KNI_QUEUE_SIZE +
 #endif
-            nb_lcores * nb_ports * DISPATCH_RING_SIZE),
+            nb_lcores * nb_ports * DISPATCH_RING_SIZE +
+            drain_mbuf),
             (unsigned)8192);
     }
 
@@ -775,7 +795,9 @@ init_mem_pool(void)
     return 0;
 }
 
-static struct rte_ring *
+/* C-NR-310: non-static so lib/ff_drain_ring.c can reuse the
+ * "primary creates / secondary looks up" policy instead of duplicating it. */
+struct rte_ring *
 create_ring(const char *name, unsigned count, int socket_id, unsigned flags)
 {
     struct rte_ring *ring;
@@ -786,6 +808,17 @@ create_ring(const char *name, unsigned count, int socket_id, unsigned flags)
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         ring = rte_ring_create(name, count, socket_id, flags);
+        /* EEXIST: the memzone survived a previous init (R-310-1 detaches
+         * without freeing) or belongs to another master (R-310-2 name
+         * clash). Attach to the existing ring instead of exiting; its
+         * size/flags are reused as-is. */
+        if (ring == NULL && rte_errno == EEXIST) {
+            ring = rte_ring_lookup(name);
+            if (ring != NULL)
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                    "ring %s already exists, attaching "
+                    "(size/flags of the existing ring are reused)\n", name);
+        }
     } else {
         ring = rte_ring_lookup(name);
     }
@@ -1295,10 +1328,21 @@ init_port_start(void)
 
             static uint16_t nb_rxd = RX_QUEUE_SIZE;
             static uint16_t nb_txd = TX_QUEUE_SIZE;
+            /* C-NR-305: widen the RX ring for the handover window. H-8: the
+             * PMD clamps the request, so the effective value must be read
+             * back from nb_rxd rather than assumed. */
+            if (ff_global_cfg.dpdk.graceful_reload)
+                nb_rxd = RX_QUEUE_SIZE_GRACEFUL;
             ret = rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &nb_rxd, &nb_txd);
             if (ret < 0)
                 ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB, "Could not adjust number of descriptors "
                         "for port%u (%d)\n", (unsigned)port_id, ret);
+            else if (ff_global_cfg.dpdk.graceful_reload &&
+                     nb_rxd != RX_QUEUE_SIZE_GRACEFUL)
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB, "port%u rx "
+                        "descriptors clamped to %u (requested %u)\n",
+                        (unsigned)port_id, (unsigned)nb_rxd,
+                        (unsigned)RX_QUEUE_SIZE_GRACEFUL);
 
             uint16_t q;
             for (q = 0; q < nb_queues; q++) {
@@ -1959,6 +2003,16 @@ ff_dpdk_init(int argc, char **argv)
 
     init_dispatch_ring();
 
+    /* C-NR-310: bidirectional drain rings (graceful_reload only). Fail
+     * hard: every failure mode (pointer-array alloc, name overflow) is a
+     * non-recoverable config error, and a silent failure would turn every
+     * flow-map miss into a dropped packet during the handover. */
+    if (ff_global_cfg.dpdk.graceful_reload) {
+        if (ff_drain_ring_init() != 0) {
+            rte_exit(EXIT_FAILURE, "ff_drain_ring_init failed\n");
+        }
+    }
+
     init_msg_ring();
 
 #ifdef FF_KNI
@@ -2297,9 +2351,55 @@ is_tcp_syn(const void *data, uint16_t len)
         RTE_TCP_SYN_FLAG;
 }
 
-static inline void
-process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
-    uint16_t count, struct ff_dpdk_if_context *ctx, int pkts_from_ring)
+/* C-NR-309 ⑤: diverted-path losses must be visible. Rate-limited to one
+ * line per second — a full drain ring fails per packet. clock-based so
+ * the helper works in any context (rte_get_tsc_hz is not available in
+ * all unit-test link setups). */
+static void
+ff_divert_drop_warn(const char *reason)
+{
+    static time_t last_warn_sec;
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        ts.tv_sec = 0;
+    if (last_warn_sec != 0 && ts.tv_sec == last_warn_sec)
+        return;
+    last_warn_sec = ts.tv_sec;
+    ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+        "graceful reload divert: %s\n", reason);
+}
+
+/* C-NR-309: hand one converted rte mbuf to this generation's drain_tx
+ * ring; the peer generation (the hardware owner) transmits it. pcap
+ * capture and tx accounting mirror send_burst so the diverted path stays
+ * observable. A full ring drops, counts and warns — never silently. */
+static void
+ff_divert_tx_mbuf(uint8_t port, uint16_t queue_id, struct rte_mbuf *m)
+{
+    if (unlikely(ff_global_cfg.pcap.enable)) {
+        ff_dump_packets(ff_global_cfg.pcap.save_path, m,
+            ff_global_cfg.pcap.snap_len, ff_global_cfg.pcap.save_len,
+            ff_global_cfg.pcap.timestamp_precision);
+    }
+
+    if (ff_drain_ring_tx_enqueue(port, queue_id, ff_reload_gen(), m) != 0) {
+        ff_traffic.tx_dropped += m->nb_segs;
+        rte_pktmbuf_free(m);
+        ff_divert_drop_warn("drain_ring_tx full: packet dropped");
+        return;
+    }
+
+    ff_traffic.tx_packets += m->nb_segs;
+    ff_traffic.tx_bytes += rte_pktmbuf_pkt_len(m);
+}
+
+/* C-NR-310: non-static so ff_drain_ring_rx_dequeue() can feed drain-ring
+ * packets into the exact same path process_dispatch_ring() uses. */
+void
+ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
+    struct rte_mbuf **bufs, uint16_t count, struct ff_dpdk_if_context *ctx,
+    int pkts_from_ring)
 {
     struct lcore_conf *qconf = ff_cur_lcore_conf();
     uint16_t nb_queues = qconf->nb_queue_list[port_id];
@@ -2362,6 +2462,26 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                 continue;
             }
 
+            if (ret == FF_DISPATCH_PEER) {
+                /* C-NR-303: flow-map miss — the flow belongs to the peer
+                 * generation. The mbuf stays owned by this path the whole
+                 * time (the callback never sees it), so there is exactly
+                 * one free: on a full ring, or outside a reload window,
+                 * drop + count instead of leaking into an unconsumed ring.
+                 * A drop beats a RST here: retransmits retry once the
+                 * draining generation catches up. */
+                if (ff_reload_hw_locked() &&
+                    ff_drain_ring_rx_enqueue(port_id, queue_id,
+                        ff_drain_ring_peer_gen(), rtem) == 0) {
+                    continue;
+                }
+                ff_traffic.rx_dropped += rtem->nb_segs;
+                rte_pktmbuf_free(rtem);
+                ff_divert_drop_warn("drain_rx full or no window: "
+                    "forwarded packet dropped");
+                continue;
+            }
+
             if (ret == FF_DISPATCH_ERROR || ret >= nb_queues) {
                 //ff_traffic.rx_dropped += rtem->nb_segs; /* Not counted as packet drop */
                 rte_pktmbuf_free(rtem);
@@ -2407,6 +2527,40 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
                             ff_traffic.rx_dropped += mbuf_clone->nb_segs;
                             rte_pktmbuf_free(mbuf_clone);
                         }
+                    }
+                }
+            }
+
+            /* C-NR-304: clone ARP/NDP to the peer generation's every
+             * queue. dispatch_ring cannot carry it: post-handover its
+             * per-queue rings are dequeued by this generation only (the
+             * parked generation no longer drains them), yet the parked
+             * generation still needs neighbour resolution for the
+             * connections it is draining — this clone is its only source.
+             * Guarded by !pkts_from_ring (H-5, no loop) and by the reload
+             * window (outside it there is no draining peer to feed).
+             * ff_app_mbuf_pool per H-6; the peer frees the clone. */
+            if (!pkts_from_ring && ff_global_cfg.dpdk.graceful_reload
+                && ff_reload_hw_locked() && ff_drain_ring_ready()) {
+                int dst_gen = ff_drain_ring_peer_gen();
+                uint16_t j;
+                for (j = 0; j < nb_queues; ++j) {
+                    unsigned socket_id = 0;
+                    if (numa_on) {
+                        uint16_t lcore_id =
+                            qconf->port_cfgs[port_id].lcore_list[j];
+                        socket_id = rte_lcore_to_socket_id(lcore_id);
+                    }
+                    mbuf_pool = ff_app_mbuf_pool(socket_id);
+                    mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
+                    if (mbuf_clone == NULL)
+                        continue;
+                    if (ff_drain_ring_rx_enqueue(port_id, j, dst_gen,
+                            mbuf_clone) != 0) {
+                        ff_traffic.rx_dropped += mbuf_clone->nb_segs;
+                        rte_pktmbuf_free(mbuf_clone);
+                        ff_divert_drop_warn("drain_rx full: "
+                            "ARP/NDP clone dropped");
                     }
                 }
             }
@@ -2458,7 +2612,7 @@ process_dispatch_ring(uint16_t port_id, uint16_t queue_id,
         (void **)pkts_burst, MAX_PKT_BURST, NULL);
 
     if(nb_rb > 0) {
-        process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);
+        ff_dpdk_process_packets(port_id, queue_id, pkts_burst, nb_rb, ctx, 1);
     }
 
     return nb_rb;
@@ -2643,6 +2797,13 @@ handle_reload_msg(struct ff_msg *msg)
         return;
     }
 
+    /* tools probe; any command added later must be handled explicitly here
+     * rather than being echoed back as a no-op (M4/M5 handover commands). */
+    if (cmd != FF_RELOAD_CMD_QUERY) {
+        msg->result = ENOTSUP;
+        return;
+    }
+
     ff_reload_msg_fill(msg, cmd, ff_reload_gen(), 0,
         ff_reload_heartbeat_counter());
     msg->result = 0;
@@ -2767,6 +2928,31 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
         }
     }
 
+    /* C-NR-309 (RV11): a parked generation must never reach the hardware
+     * tx queue. Every legitimate path diverts to the drain ring long
+     * before this point, so arriving here means a tx path was missed —
+     * drop, count and warn instead of racing the owner on the queue
+     * (dpdk allows lockless same-queue tx only for MT_LOCKFREE PMDs,
+     * which virtio is not). This single guard covers all five paths that
+     * can stage packets, including FF_DISPATCH_RESPONSE and
+     * FF_USE_PAGE_ARRAY builds. */
+    if (unlikely(ff_no_hw_mode())) {
+        uint16_t i;
+        uint16_t dropped = 0;
+        for (i = 0; i < n; i++) {
+            dropped += m_table[i]->nb_segs;
+            rte_pktmbuf_free(m_table[i]);
+#ifdef FF_USE_PAGE_ARRAY
+            if (qconf->tx_mbufs[port].bsd_m_table[i])
+                ff_mbuf_free(qconf->tx_mbufs[port].bsd_m_table[i]);
+#endif
+        }
+        ff_traffic.tx_dropped += dropped;
+        ff_divert_drop_warn("send_burst reached while parked "
+            "(missed tx divert path)");
+        return 0;
+    }
+
     ret = rte_eth_tx_burst(port, queueid, m_table, n);
     uint16_t i;
     for (i = 0; i < ret; i++) {
@@ -2816,6 +3002,15 @@ int
 ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     int total)
 {
+    /* C-NR-309: evaluated before the FF_USE_PAGE_ARRAY branch (H-7). A
+     * parked generation must not stage into tx_mbufs — page-array pages
+     * and the shared table are not a hand-off-able representation, so a
+     * parked sender always takes the pktmbuf conversion below and hands
+     * the result to this generation's drain_tx ring (the bsd mbuf itself
+     * cannot cross a process boundary, hence divert only after the
+     * conversion). */
+    const int no_hw = ff_no_hw_mode();
+
     if (unlikely(ctx == NULL)) {
         ff_traffic.tx_dropped++;
         if (m != NULL) {
@@ -2824,16 +3019,18 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
         return -1;
     }
 #ifdef FF_USE_PAGE_ARRAY
-    struct lcore_conf *qconf = ff_cur_lcore_conf();
-    int    len = 0;
+    if (!no_hw) {
+        struct lcore_conf *qconf = ff_cur_lcore_conf();
+        int    len = 0;
 
-    len = ff_if_send_onepkt(ctx, m,total);
-    if (unlikely(len == MAX_PKT_BURST)) {
-        send_burst(qconf, MAX_PKT_BURST, ctx->port_id);
-        len = 0;
+        len = ff_if_send_onepkt(ctx, m,total);
+        if (unlikely(len == MAX_PKT_BURST)) {
+            send_burst(qconf, MAX_PKT_BURST, ctx->port_id);
+            len = 0;
+        }
+        qconf->tx_mbufs[ctx->port_id].len = len;
+        return 0;
     }
-    qconf->tx_mbufs[ctx->port_id].len = len;
-    return 0;
 #endif
     struct rte_mempool *mbuf_pool = ff_app_mbuf_pool(ff_cur_lcore_conf()->socket_id);
     struct rte_mbuf *head = rte_pktmbuf_alloc(mbuf_pool);
@@ -2971,6 +3168,14 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
 
     ff_mbuf_free(m);
 
+    if (unlikely(no_hw)) {
+        /* C-NR-309: parked — the peer generation transmits this packet. */
+        struct lcore_conf *qconf = ff_cur_lcore_conf();
+        ff_divert_tx_mbuf(ctx->port_id,
+            qconf->tx_queue_id[ctx->port_id], head);
+        return 0;
+    }
+
     return send_single_packet(head, ctx->port_id);
 }
 
@@ -3014,6 +3219,14 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
         off += len;
         total -= len;
         cur = NULL;
+    }
+
+    if (unlikely(ff_no_hw_mode())) {
+        /* C-NR-309: raw sends of a parked generation go through the drain
+         * ring like every other outgoing packet. */
+        struct lcore_conf *qconf = ff_cur_lcore_conf();
+        ff_divert_tx_mbuf(port_id, qconf->tx_queue_id[port_id], head);
+        return 0;
     }
 
     return send_single_packet(head, port_id);
@@ -3139,6 +3352,21 @@ main_loop(void *arg)
         usr_tsc = 0;
         usr_cb_tsc = 0;
 
+        /* C-NR-302/306: hardware view for this pass, sampled once so the
+         * park ack and the tx/rx sections below cannot disagree. */
+        const int no_hw = ff_no_hw_mode();
+
+        if (unlikely(no_hw)
+            && ff_reload_rx_stopped()
+            && ff_reload_rx_owner_gen() == ff_reload_gen()) {
+            /* Parked by order (T2 barrier, C-NR-306): this pass performs
+             * no rx_burst and no tx drain, and no earlier pass of this
+             * loop is still running — which is exactly what the ack tells
+             * the master. Processes without a slot (primary, helpers)
+             * ack nothing. */
+            ff_reload_handover_ack();
+        }
+
         /*
          * TX burst queue drain
          */
@@ -3151,9 +3379,22 @@ main_loop(void *arg)
 
                 idle = 0;
 
-                send_burst(qconf,
-                    qconf->tx_mbufs[port_id].len,
-                    port_id);
+                if (likely(!no_hw)) {
+                    send_burst(qconf,
+                        qconf->tx_mbufs[port_id].len,
+                        port_id);
+                } else {
+                    /* C-NR-309: staged before the park took effect — the
+                     * packets still have to leave, so divert them like
+                     * every other outgoing packet of this generation. */
+                    uint16_t k;
+                    uint16_t n_staged = qconf->tx_mbufs[port_id].len;
+                    struct rte_mbuf **staged =
+                        (struct rte_mbuf **)qconf->tx_mbufs[port_id].m_table;
+                    for (k = 0; k < n_staged; k++)
+                        ff_divert_tx_mbuf(port_id,
+                            qconf->tx_queue_id[port_id], staged[k]);
+                }
                 qconf->tx_mbufs[port_id].len = 0;
             }
 
@@ -3168,40 +3409,70 @@ main_loop(void *arg)
             queue_id = qconf->rx_queue_list[i].queue_id;
             ctx = veth_ctx[rte_lcore_id()][port_id];
 
-            idle &= !process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
+            if (likely(!no_hw)) {
+                idle &= !process_dispatch_ring(port_id, queue_id, pkts_burst, ctx);
 
-            nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
-                MAX_PKT_BURST);
-            if (nb_rx == 0) {
-                if (ctx->lro != NULL)
-                    ff_lro_flush(ctx->lro);
-                continue;
-            }
+                nb_rx = rte_eth_rx_burst(port_id, queue_id, pkts_burst,
+                    MAX_PKT_BURST);
+                if (nb_rx == 0) {
+                    if (ctx->lro != NULL)
+                        ff_lro_flush(ctx->lro);
+                    continue;
+                }
 
-            idle = 0;
+                idle = 0;
 
-            /* Prefetch first packets */
-            for (j = 0; j < PREFETCH_OFFSET && j < nb_rx; j++) {
-                rte_prefetch0(rte_pktmbuf_mtod(
-                        pkts_burst[j], void *));
-            }
+                /* Prefetch first packets */
+                for (j = 0; j < PREFETCH_OFFSET && j < nb_rx; j++) {
+                    rte_prefetch0(rte_pktmbuf_mtod(
+                            pkts_burst[j], void *));
+                }
 
-            /* Prefetch and handle already prefetched packets */
-            for (j = 0; j < (nb_rx - PREFETCH_OFFSET); j++) {
-                rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[
-                        j + PREFETCH_OFFSET], void *));
-                process_packets(port_id, queue_id, &pkts_burst[j], 1, ctx, 0);
-            }
+                /* Prefetch and handle already prefetched packets */
+                for (j = 0; j < (nb_rx - PREFETCH_OFFSET); j++) {
+                    rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[
+                            j + PREFETCH_OFFSET], void *));
+                    ff_dpdk_process_packets(port_id, queue_id, &pkts_burst[j], 1,
+                        ctx, 0);
+                }
 
-            /* Handle remaining prefetched packets */
-            for (; j < nb_rx; j++) {
-                process_packets(port_id, queue_id, &pkts_burst[j], 1, ctx, 0);
+                /* Handle remaining prefetched packets */
+                for (; j < nb_rx; j++) {
+                    ff_dpdk_process_packets(port_id, queue_id, &pkts_burst[j], 1,
+                        ctx, 0);
+                }
+            } else {
+                /* C-NR-302/310 (P1-4): this generation is parked off the
+                 * hardware, but the loop must keep running — packets the
+                 * peer forwards for this generation (flow-map misses,
+                 * ARP/NDP clones) arrive on this generation's drain_rx
+                 * ring. process_dispatch_ring is deliberately not served:
+                 * its per-queue rings have exactly one consumer, the
+                 * generation that owns the hardware. */
+                idle &= !ff_drain_ring_rx_dequeue(port_id, queue_id,
+                    pkts_burst, ctx);
             }
             if (ctx->lro != NULL)
                 ff_lro_flush(ctx->lro);
         }
 
         process_msg_ring(qconf->proc_id, pkts_burst);
+
+        /* C-NR-309: the hardware owner is the sole consumer of the peer
+         * generation's drain_tx ring — transmit whatever the parked
+         * generation queued. The primary is excluded: it never owns
+         * queues, and two readers would break the single-consumer ring. */
+        if (graceful_reload && likely(!no_hw)
+            && rte_eal_process_type() == RTE_PROC_SECONDARY) {
+            for (i = 0; i < qconf->nb_tx_port; i++) {
+                port_id = qconf->tx_port_id[i];
+                if (ff_drain_ring_tx_drain(port_id,
+                        qconf->tx_queue_id[port_id], pkts_burst,
+                        MAX_PKT_BURST) != 0) {
+                    idle = 0;
+                }
+            }
+        }
 
 #ifdef FF_KNI
         if (enable_kni) {
@@ -3251,10 +3522,30 @@ main_loop(void *arg)
         if (graceful_reload
             && rte_eal_process_type() == RTE_PROC_SECONDARY) {
             if (ff_reload_heartbeat_sample(idle_sleep_tsc)) {
-                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-                    "reload heartbeat stalled >%ums: rx-owner generation "
-                    "appears dead (rx return is wired in M3/M4)\n",
-                    ff_global_cfg.dpdk.reload_heartbeat_timeout_ms);
+                /* DR6 (first half, C-NR-306/316): the sampler is the old
+                 * generation and the rx owner has stalled for the whole
+                 * timeout. Take the hardware back — ownership is the only
+                 * arbiter, so a late-waking owner parks itself on its
+                 * next pass. Guarded: never while a park order is pending
+                 * (that would break the T2 barrier) and never while this
+                 * generation still owns rx itself. Full crash handling
+                 * (flow_map teardown, window close) is M4 (C-NR-404). */
+                if (!ff_reload_rx_stopped()
+                    && ff_reload_rx_owner_gen() != ff_reload_gen()) {
+                    ff_log(FF_LOG_ALERT, FF_LOGTYPE_FSTACK_LIB,
+                        "reload rx owner stalled >%ums: generation %d "
+                        "taking rx back\n",
+                        ff_global_cfg.dpdk.reload_heartbeat_timeout_ms,
+                        ff_reload_gen());
+                    ff_reload_rx_owner_gen_set(ff_reload_gen());
+                    ff_reload_rx_stopped_set(0);
+                } else {
+                    ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                        "reload heartbeat stalled >%ums (rx return "
+                        "deferred: park order pending or not detached "
+                        "from hardware)\n",
+                        ff_global_cfg.dpdk.reload_heartbeat_timeout_ms);
+                }
             }
         }
 
@@ -4536,6 +4827,21 @@ void
 ff_regist_packet_dispatcher_context(dispatch_func_context_t func)
 {
     packet_dispatcher_with_context = func;
+}
+
+/* C-NR-303: the new generation drops the flow-map callback once the drain
+ * rings have been confirmed empty. Idempotent by design — the drain
+ * confirmation can be delivered more than once across a reload round. */
+void
+ff_unregist_packet_dispatcher(void)
+{
+    packet_dispatcher = NULL;
+}
+
+void
+ff_unregist_packet_dispatcher_context(void)
+{
+    packet_dispatcher_with_context = NULL;
 }
 
 uint64_t

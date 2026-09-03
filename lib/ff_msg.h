@@ -143,6 +143,11 @@ enum FF_RELOAD_CMD {
     FF_RELOAD_CMD_DRAIN_PROGRESS,
     FF_RELOAD_CMD_DRAIN_DONE,
     FF_RELOAD_CMD_REJECT,
+    /*
+     * C-NR-313 tools probe (M3 Batch C): read-only, no state change. Kept
+     * last so the value of every state-driving command stays stable.
+     */
+    FF_RELOAD_CMD_QUERY,
 };
 
 struct ff_reload_args {

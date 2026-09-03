@@ -49,10 +49,21 @@ extern "C" {
 #define FREE_RING_SIZE 4096
 
 /*
- * Configurable number of RX/TX ring descriptors
+ * Configurable number of RX/TX ring descriptors.
+ * C-NR-305: graceful_reload=1 widens the RX ring so the handover window has
+ * somewhere to buffer; =0 keeps the legacy depth. Access through
+ * ff_rx_queue_size() — the effective value is a runtime decision, and
+ * rte_eth_dev_adjust_nb_rx_tx_desc() may clamp it further (H-8).
  */
 #define RX_QUEUE_SIZE 512
+#define RX_QUEUE_SIZE_GRACEFUL 4096
 #define TX_QUEUE_SIZE 512
+
+static inline unsigned
+ff_rx_queue_size(int graceful_reload)
+{
+    return graceful_reload ? RX_QUEUE_SIZE_GRACEFUL : RX_QUEUE_SIZE;
+}
 
 /*
  * Try to avoid TX buffering if we have at least MAX_TX_BURST packets to send.

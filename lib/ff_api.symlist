@@ -91,3 +91,4 @@ ff_log
 ff_vlog
 ff_log_close
 ff_stack_thread_init
+ff_flow_map_lookup

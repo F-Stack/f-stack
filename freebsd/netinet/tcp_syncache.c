@@ -100,6 +100,11 @@
 
 #include <machine/in_cksum.h>
 
+/* C-NR-301: flow-map producer hook. Zero-include header (lib/ff_flow_map.h,
+ * reachable through the -I. that lib/ builds with) so this TU pulls in no
+ * host/F-Stack header of its own. */
+#include "ff_flow_map.h"
+
 #include <security/mac/mac_framework.h>
 
 VNET_DEFINE_STATIC(bool, tcp_syncookies) = true;
@@ -404,6 +409,42 @@ syncache_insert(struct syncache *sc, struct syncache_head *sch)
 
 	TCPSTATES_INC(TCPS_SYN_RECEIVED);
 	TCPSTAT_INC(tcps_sc_added);
+}
+
+/*
+ * C-NR-301: publish a freshly created half-open connection to the software
+ * flow table, so the graceful-reload dispatcher can tell "connection opened
+ * after the handover" (mine) from "established before it" (forward to the
+ * draining generation).
+ *
+ * Called with no inp, syncache or pcbinfo lock held and under NET_EPOCH, so
+ * it must stay non-blocking: ff_flow_map_insert() allocates only the first
+ * time a window opens and never sleeps.
+ */
+static void
+syncache_flow_map_insert(const struct syncache *sc)
+{
+	struct ff_flow_key key;
+
+	bzero(&key, sizeof(key));
+#ifdef INET6
+	if (sc->sc_inc.inc_flags & INC_ISIPV6) {
+		key.af = FF_FLOW_MAP_V6;
+		bcopy(&sc->sc_inc.inc6_faddr, key.src, sizeof(struct in6_addr));
+		bcopy(&sc->sc_inc.inc6_laddr, key.dst, sizeof(struct in6_addr));
+	} else
+#endif
+	{
+		key.af = FF_FLOW_MAP_V4;
+		key.src[0] = sc->sc_inc.inc_faddr.s_addr;
+		key.dst[0] = sc->sc_inc.inc_laddr.s_addr;
+	}
+	/* Ports are recorded in network byte order; the flow table only ever
+	 * compares for equality, so nothing is byte-swapped here. */
+	key.sport = sc->sc_inc.inc_fport;
+	key.dport = sc->sc_inc.inc_lport;
+
+	ff_flow_map_insert(&key);
 }
 
 /*
@@ -1745,8 +1786,22 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	 * Do a standard 3-way handshake.
 	 */
 	if (syncache_respond(sc, m, TH_SYN|TH_ACK) == 0) {
-		if (sc != &scs)
+		if (sc != &scs) {
 			syncache_insert(sc, sch);   /* locks and unlocks sch */
+			/* C-NR-301: the SYN-ACK is out and the entry is in the
+			 * syncache — this is the earliest moment the four-tuple
+			 * is a real connection. Recording later (at accept())
+			 * would let the third handshake ACK miss the table and
+			 * be forwarded to a generation that has no syncache
+			 * entry for it. Only reached for the standard handshake:
+			 * syncookies-only mode keeps sc on the stack
+			 * (sc == &scs) and never enters the syncache, and a
+			 * retransmitted SYN returns at tcps_sc_dupsyn long
+			 * before this point, so no dedup logic is needed here.
+			 * sc is left alone; the table only reads its inc. */
+			if (__predict_false(ff_flow_map_active()))
+				syncache_flow_map_insert(sc);
+		}
 		TCPSTAT_INC(tcps_sndacks);
 		TCPSTAT_INC(tcps_sndtotal);
 	} else {

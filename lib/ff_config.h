@@ -59,6 +59,11 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 #define FF_MTU_DEFAULT       1500  /* default Ethernet MTU */
 #define FF_MTU_JUMBO_DEFAULT 9000  /* default jumbo MTU */
 
+/* C-NR-305/310: default capacity (entries) of one generation's drain_ring
+ * pair. Must stay a power of two — rte_ring silently rounds a non-power-of-two
+ * count up, and ff_config.c rejects anything else. */
+#define FF_DRAIN_RING_SIZE_DEFAULT  2048U
+
 #define VIP_MAX_NUM 64
 
 /* ff_rss_check table args */
@@ -299,6 +304,9 @@ struct ff_config {
         /* C-NR-316: heartbeat stall threshold for G_old detecting a dead
          * G_new during the reload window (ms; 0 -> default 1000). */
         unsigned reload_heartbeat_timeout_ms;
+        /* C-NR-305/310: capacity in entries of one generation's drain_ring
+         * pair (0 -> FF_DRAIN_RING_SIZE_DEFAULT, see above). */
+        unsigned drain_ring_size;
         int promiscuous;
         int nb_vdev;
         int nb_bond;
