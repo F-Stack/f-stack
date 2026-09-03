@@ -337,6 +337,130 @@ ff_init_with_args(const char *conf, int proc_id, const char *proc_type)
 }
 
 
+/* C-NR-303 (M3): flow-map classification callback of the NEW generation.
+ *
+ * Registered by the target generation's workers once their ff stack is up
+ * and kept across rounds (teardown is C-NR-403, M4). Only TCP/UDP over
+ * IPv4/IPv6 participates in flow ownership; ARP/NDP/ICMP/fragments and
+ * anything unparseable stay on the local stack (the ARP/NDP clone to the
+ * old generation happens inside ff_dpdk_if.c, C-NR-304). A flow-map hit
+ * is a flow opened by this generation; a miss belongs to the old one and
+ * is answered FF_DISPATCH_PEER — the library then owns the mbuf end to
+ * end (R-303-1: no app-side free, no double free).
+ *
+ * Outside a reload window, or when this process is not the target
+ * generation (the previous round's G_new keeps its registration), every
+ * packet stays local: the steady state pays one cheap check per packet
+ * and behaves exactly like an unregistered dispatcher. */
+static int
+ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
+    uint16_t nb_queues, struct ff_dispatcher_context context)
+{
+    ff_flow_key_t         key;
+    const unsigned char  *p;
+    uint16_t              off, l4, etype, frag;
+    uint8_t               proto;
+
+    (void) nb_queues;
+    (void) context;
+
+    if (!ff_reload_state_attached()
+        || !ff_reload_hw_locked()
+        || ff_reload_gen() != ff_reload_target_gen())
+    {
+        return queue_id;
+    }
+
+    /* Ethernet (one optional VLAN tag) — no DPDK headers here, the frame
+     * is parsed by hand exactly like the stack would. */
+    p = data;
+    if (*len < 14) {
+        return queue_id;
+    }
+
+    etype = (uint16_t) ((p[12] << 8) | p[13]);
+    off = 14;
+    if (etype == 0x8100) {
+        if (*len < (uint16_t) (off + 4)) {
+            return queue_id;
+        }
+        etype = (uint16_t) ((p[off + 2] << 8) | p[off + 3]);
+        off += 4;
+    }
+
+    memset(&key, 0, sizeof(key));
+
+    if (etype == 0x0800) {              /* IPv4 */
+        if (*len < (uint16_t) (off + 24)) {
+            return queue_id;
+        }
+        if ((p[off] >> 4) != 4) {
+            return queue_id;
+        }
+        l4 = (uint16_t) ((p[off] & 0x0f) << 2);
+        if (l4 < 20 || *len < (uint16_t) (off + l4 + 4)) {
+            return queue_id;
+        }
+        proto = p[off + 9];
+        frag = (uint16_t) ((p[off + 6] << 8) | p[off + 7]);
+        if (frag & 0x3fff) {
+            return queue_id;            /* any fragment stays local */
+        }
+        if (proto != 6 && proto != 17) {
+            return queue_id;            /* TCP/UDP only */
+        }
+        key.af = FF_FLOW_MAP_V4;
+        memcpy(&key.src[0], p + off + 12, 4);   /* foreign (src) address */
+        memcpy(&key.dst[0], p + off + 16, 4);   /* local (dst) address */
+        l4 = (uint16_t) (off + l4);
+    } else if (etype == 0x86dd) {       /* IPv6 */
+        if (*len < (uint16_t) (off + 44)) {
+            return queue_id;
+        }
+        proto = p[off + 6];
+        if (proto != 6 && proto != 17) {
+            /* extension headers (incl. fragment, proto 44) cannot be
+             * classified cheaply: keep them on this stack */
+            return queue_id;
+        }
+        key.af = FF_FLOW_MAP_V6;
+        memcpy(&key.src[0], p + off + 8, 16);
+        memcpy(&key.dst[0], p + off + 24, 16);
+        l4 = (uint16_t) (off + 40);
+    } else {
+        return queue_id;                /* non-IP: local */
+    }
+
+    key.sport = (uint16_t) ((p[l4] << 8) | p[l4 + 1]);
+    key.dport = (uint16_t) ((p[l4 + 2] << 8) | p[l4 + 3]);
+
+    if (ff_flow_map_lookup(&key)) {
+        return queue_id;                /* this generation's flow: keep it */
+    }
+
+    return FF_DISPATCH_PEER;            /* miss: forward to G_old */
+}
+
+/* C-NR-303: arm the flow table and register the classifier. Called from
+ * ff_mod_init after the stack is up — before READY and long before the
+ * master hands rx over, so no packet can reach the callback before the
+ * table is armed (this generation is parked off the hardware until then).
+ * D-NR-303 (open at init, not at T3): a parked generation receives no
+ * packets, so arming early is indistinguishable from arming at T3. */
+static void
+ngx_ff_flow_map_arm(void)
+{
+    if (!ff_reload_state_attached()
+        || !ff_reload_hw_locked()
+        || ff_reload_gen() != ff_reload_target_gen())
+    {
+        return;
+    }
+
+    ff_flow_map_open();
+    ff_regist_packet_dispatcher_context(ngx_ff_flow_map_dispatcher);
+}
+
 int
 ff_mod_init(const char *conf, int proc_id, int proc_type) {
 	 int rc;
@@ -373,6 +497,13 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
 			 ngx_ff_graceful_reload,
 			 (int) ff_global_cfg.dpdk.graceful_reload);
 		 return -1;
+	 }
+
+	 /* C-NR-303: G_new arms its flow table + classification callback once
+	  * the stack is up (inert while parked off the hardware; teardown on
+	  * drain confirmation is C-NR-403, M4). */
+	 if (ngx_ff_graceful_reload) {
+		 ngx_ff_flow_map_arm();
 	 }
 
 	 return rc;

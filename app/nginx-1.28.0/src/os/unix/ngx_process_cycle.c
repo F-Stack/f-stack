@@ -48,6 +48,7 @@ static ngx_int_t ngx_ff_slim_primary_alive(void);
 static int ngx_ff_slim_primary_loop(void *arg);
 static ngx_int_t ngx_ff_reload_hup(ngx_cycle_t **pcycle,
     ngx_core_conf_t **pccf, ngx_uint_t *live);
+static ngx_int_t ngx_ff_reload_handover(ngx_cycle_t *cycle);
 static void ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle);
 extern int ff_mod_init(const char *conf, int proc_id, int proc_type);
 extern int ngx_ff_slim_primary_init(const char *conf);
@@ -868,6 +869,119 @@ ngx_ff_reload_wait_ready(ngx_cycle_t *cycle)
     }
 }
 
+/* C-NR-306 (M3): T2 same-era handover — park G_old, then flip rx/tx
+ * ownership to G_new. Sequence (all markers live in the shared block):
+ *
+ *   1. arm a fresh handover epoch;
+ *   2. order the owner generation to park (rx_stopped=1): every G_old
+ *      worker's next main-loop pass skips rx_burst/tx drain and acks the
+ *      epoch (the park order parks BOTH generations, so nothing polls in
+ *      between);
+ *   3. wait, bounded by the handover timeout, for every live G_old worker
+ *      slot to ack — the ack implies that worker's last hardware pass is
+ *      complete, which is what rules out an in-flight rx_burst racing the
+ *      new owner (RV3). A dead worker never acks and is treated as parked
+ *      (its liveness is probed, not assumed);
+ *   4. timeout -> abort the round (DR6, first half): the markers are
+ *      restored to the active generation and G_old simply resumes
+ *      polling. Forcing past a wedged G_old would risk two pollers on one
+ *      virtqueue and stays refused;
+ *   5. all acked -> ff_reload_rx_release() flips the ownership in the
+ *      safe order and ff_queue_handover_mutex() (already satisfied)
+ *      clears rx_stopped, so G_new's main loops resume rx/tx on their
+ *      next pass while G_old stays parked permanently (H-12: reversible
+ *      — C-NR-316's rx return just writes the markers back).
+ *
+ * Listen need no explicit takeover: both generations listen from their
+ * own init; whoever owns rx accepts. KNI runtime ownership follows the
+ * active generation and flips at completion (C-NR-313). */
+static ngx_int_t
+ngx_ff_reload_handover(ngx_cycle_t *cycle)
+{
+    uint32_t    epoch;
+    ngx_int_t   i;
+    ngx_msec_t  deadline;
+    ngx_uint_t  waiting;
+    int         active, target;
+
+    active = ff_reload_active_gen();
+    target = ff_reload_target_gen();
+
+    if (active == target) {
+        /* no generation to take over from (should not happen: the window
+         * is open) — nothing to park, flip directly */
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                      "graceful reload: handover with active == target "
+                      "(%d), skipping park barrier", active);
+        return NGX_OK;
+    }
+
+    ff_reload_handover_arm(&epoch);
+
+    /* park order */
+    ff_reload_rx_stopped_set(1);
+
+    deadline = ngx_current_msec + FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT;
+
+    for ( ;; ) {
+
+        ngx_time_update();
+
+        waiting = 0;
+
+        for (i = 0; i < ngx_last_process; i++) {
+            if (ngx_processes[i].pid == -1
+                || ngx_processes[i].just_spawn
+                || ngx_ff_reload_new_slots[i]
+                || ngx_processes[i].proc != ngx_worker_process_cycle)
+            {
+                /* not an old-generation worker: cache managers never run
+                 * an ff main loop and never ack; the just-spawned set is
+                 * G_new (parked already since it does not own rx) */
+                continue;
+            }
+
+            if (ngx_processes[i].exited
+                || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+            {
+                continue;   /* dead is parked */
+            }
+
+            if (!ff_reload_handover_parked((unsigned) i, epoch)) {
+                waiting = 1;
+                break;
+            }
+        }
+
+        if (!waiting) {
+            break;
+        }
+
+        if (ngx_current_msec >= deadline) {
+            ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_ABORT,
+                                "G_old park confirmation timed out");
+            return NGX_ERROR;
+        }
+
+        ngx_msleep(1);
+    }
+
+    /* every live G_old worker has acked: flip the ownership. rx_release
+     * rewrites the park markers in the safe order; the mutex helper then
+     * clears rx_stopped so G_new resumes polling. */
+    if (ff_reload_rx_release(target) != FF_RELOAD_HANDOVER_OK
+        || ff_queue_handover_mutex(0, 0, active, target,
+                                   FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT)
+           != FF_RELOAD_HANDOVER_OK)
+    {
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_ABORT,
+                            "rx ownership flip failed");
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
 static ngx_int_t
 ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     ngx_uint_t *live)
@@ -955,9 +1069,19 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
 
     (void) ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_ALL_READY);   /* -> T2 */
 
-    /* T2/T3: same-era handover and drain are M3/M4 (C-NR-306/405); the M2
-     * orchestration drives the placeholders straight through. */
+    /* C-NR-306 (M3): real same-era handover — park G_old behind the epoch
+     * barrier, then flip rx/tx ownership to G_new (which also activates
+     * the flow-map callback it registered at init, the drain rings and
+     * the ARP/NDP clone). EV_HANDOVER_DONE is only fired on success; a
+     * failure aborts the round with G_old restored to the hardware. */
+    if (ngx_ff_reload_handover(cycle) != NGX_OK) {
+        return NGX_ERROR;
+    }
     (void) ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_HANDOVER_DONE); /* -> T3 */
+
+    /* T3 -> T4: drain completion (FF_RELOAD_DRAIN_DONE: connections 0 and
+     * all G_old processes gone) is M4 (C-NR-402/403/405); the M3
+     * orchestration still drives the placeholder straight through. */
     (void) ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_DRAIN_DONE);    /* -> T4 */
 
     /* T4 --QUIT_GOLD--> T5: graceful-quit only the old generation */
@@ -1956,6 +2080,11 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
                           "ff_mod_init failed");
             exit(2);
         }
+
+        /* C-NR-306: publish this worker's slot in the shared block so its
+         * main loop can ack the T2 park barrier (helpers forked through
+         * ngx_worker_process_init(worker == -1) never get here). */
+        ff_reload_set_slot(ngx_process_slot);
 
         if (worker == 0) {
             (void) sem_post(ngx_ff_worker_sem);

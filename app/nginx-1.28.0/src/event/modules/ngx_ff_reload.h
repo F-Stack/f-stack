@@ -39,6 +39,11 @@ int ngx_ff_reload_gen_for_worker(void);
 /* re-entry bookkeeping (semantics 6) */
 void ngx_ff_reload_note_hup_rejected(void);
 
+/* C-NR-403 (M4) call point, shipped by M3: retire the completed
+ * generation's reload data plane (unregister the flow-map dispatcher,
+ * close the flow table). Idempotent. */
+void ngx_ff_reload_flow_map_teardown(void);
+
 /* F4: rebind the FSM transition log (cycle logs die with their cycle) */
 void ngx_ff_reload_set_log(ngx_log_t *log);
 

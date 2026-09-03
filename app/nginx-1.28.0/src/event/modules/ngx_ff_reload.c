@@ -131,6 +131,21 @@ ngx_ff_reload_fsm_event(int event)
         ff_reload_master_abort();
         break;
 
+    case NGX_FF_RELOAD_T2_HANDOVER:
+        /* C-NR-306 (M3): entering T2 arms nothing by itself. The actual
+         * handover (park order -> epoch barrier wait -> ownership flip)
+         * needs the process table and runs in ngx_ff_reload_handover()
+         * (ngx_process_cycle.c), which fires EV_HANDOVER_DONE only on
+         * success. */
+        break;
+
+    case NGX_FF_RELOAD_T3_DRAIN:
+        /* C-NR-306: G_new owns rx/tx/listen; G_old is parked in no-hw
+         * drain mode (forwarded misses via drain_rx, outgoing packets
+         * via drain_tx). Drain completion (EV_DRAIN_DONE) is M4
+         * (C-NR-402/403/405). */
+        break;
+
     case NGX_FF_RELOAD_T0_IDLE:
         /* arriving from T5: flip generations (KNI owner follows active);
          * arriving from T_ERROR: window already closed by the abort above */
@@ -228,6 +243,22 @@ void
 ngx_ff_reload_note_hup_rejected(void)
 {
     ff_reload_hup_rejected++;
+}
+
+/* C-NR-403 (M4) call point: once the master confirms the old generation
+ * fully drained and exited, the new generation retires its reload data
+ * plane. Shipped by M3 (C-NR-303 ④ leaves the call point) so M4 only has
+ * to deliver the notification; idempotent, and safe to call from any
+ * worker of the completed generation. */
+void
+ngx_ff_reload_flow_map_teardown(void)
+{
+    if (!ngx_ff_graceful_reload) {
+        return;
+    }
+
+    ff_unregist_packet_dispatcher_context();
+    ff_flow_map_close();
 }
 
 /* F4: rebind the FSM transition log. The log bound at state_create belongs

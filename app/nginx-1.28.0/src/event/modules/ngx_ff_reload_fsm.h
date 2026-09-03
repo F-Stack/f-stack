@@ -11,9 +11,11 @@
  * in ngx_ff_reload.c and ngx_process_cycle.c; the transition legality and
  * the next-state computation are defined here only.
  *
- * M2 scope: T2 (handover) and T3 (drain) are placeholders — the M2
- * orchestrator drives them straight through with synthetic events until
- * M3 (C-NR-306) and M4 (C-NR-403/405) wire the real ones.
+ * M3 (C-NR-306): the T2 handover is real (park barrier + rx ownership
+ * flip, driven from ngx_process_cycle.c); T3 side effects on the worker
+ * side (flow-map callback, drain rings) were armed at G_new init. The
+ * T3 -> T4 drain confirmation remains a placeholder until M4
+ * (C-NR-402/403/405).
  */
 
 #ifndef _NGX_FF_RELOAD_FSM_H_INCLUDED_
