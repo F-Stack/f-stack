@@ -6,8 +6,9 @@ void
 usage(void)
 {
     printf("Usage:\n");
-    printf("  knictl [-p <f-stack proc_id|thread_id>] [-P <max proc_id|thread_id>] "
-        "[-a alltokni/alltoff/default][-n]\n    use `-a` to set kni action\n    use `-n` to show \n");
+    printf("  knictl [-p <f-stack proc_id|thread_id>[:<gen>]] [-g <gen>] [-P <max proc_id|thread_id>] "
+        "[-a alltokni/alltoff/default][-n]\n    use `-a` to set kni action\n    use `-n` to show \n"
+        "    use `-g` to select the graceful_reload generation (default: the active one)\n");
 }
 
 enum FF_KNICTL_CMD get_action(const char *c){
@@ -70,8 +71,10 @@ int knictl_status(struct ff_knictl_args *knictl){
 
         ret = ff_ipc_recv(&retmsg, msg->msg_type);
         if (ret < 0) {
+            /* F5: the stack may still hold this buffer (late answer), so it
+             * must not go back to the pool here - all other tools leave it
+             * behind too and the next mismatched reply reclaims it. */
             errno = EPIPE;
-            ff_ipc_msg_free(msg);
             return -1;
         }
     } while (msg != retmsg);
@@ -92,11 +95,13 @@ int main(int argc, char **argv)
     int proc_id = 0, max_proc_id = -1;
 
     ff_ipc_init();
-    while ((ch = getopt(argc, argv, "hp:P:a:n")) != -1) {
+    while ((ch = getopt(argc, argv, "hp:P:a:ng:")) != -1) {
         switch(ch) {
         case 'p':
-            proc_id = atoi(optarg);
-            ff_set_proc_id(proc_id);
+            proc_id = ff_set_proc_id_str(optarg);
+            break;
+        case 'g':
+            ff_set_gen(atoi(optarg));
             break;
         case 'P':
             max_proc_id = atoi(optarg);

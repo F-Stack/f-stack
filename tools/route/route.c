@@ -190,7 +190,7 @@ usage(const char *cp)
 #ifndef FSTACK
 	errx(EX_USAGE, "usage: route [-46dnqtv] command [[modifiers] args]");
 #else
-	errx(EX_USAGE, "usage: route -p <f-stack proc_id|thread_id> [-46dnqtv] command [[modifiers] args]");
+	errx(EX_USAGE, "usage: route -p <f-stack proc_id|thread_id>[:<gen>] [-g <gen>] [-46dnqtv] command [[modifiers] args]");
 #endif
 	/* NOTREACHED */
 }
@@ -208,7 +208,7 @@ main(int argc, char **argv)
 	while ((ch = getopt(argc, argv, "46nqdtv")) != -1)
 #else
 	ff_ipc_init();
-	while ((ch = getopt(argc, argv, "46nqdtvp:")) != -1)
+	while ((ch = getopt(argc, argv, "46nqdtvp:g:")) != -1)
 #endif
 		switch(ch) {
 		case '4':
@@ -244,7 +244,10 @@ main(int argc, char **argv)
 			break;
 #ifdef FSTACK
 		case 'p':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+		case 'g':
+			ff_set_gen(atoi(optarg));
 			break;
 #endif
 		case '?':

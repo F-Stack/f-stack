@@ -48,7 +48,8 @@ help(void)
 #ifndef FSTACK
 "\tipfw [-abcdefhnNqStTv] <command>\n\n"
 #else
-"\tipfw -P <f-stack proc_id|thread_id> [-abcdefhnNqStTv] <command>\n\n"
+"\tipfw -P <f-stack proc_id|thread_id>[:<gen>] [-g <gen>] [-abcdefhnNqStTv] <command>\n"
+"\t  (-g selects the graceful_reload generation, default: the active one)\n\n"
 #endif
 "where <command> is one of the following:\n\n"
 "add [num] [set N] [prob x] RULE-BODY\n"
@@ -280,7 +281,7 @@ ipfw_main(int oldac, char **oldav)
 #ifndef FSTACK
 	while ((ch = getopt(ac, av, "abcdDefhinNp:qs:STtv")) != -1)
 #else
-	while ((ch = getopt(ac, av, "abcdDefhinNp:qs:STtvP:")) != -1)
+	while ((ch = getopt(ac, av, "abcdDefhinNp:qs:STtvP:g:")) != -1)
 #endif
 		switch (ch) {
 		case 'a':
@@ -360,7 +361,11 @@ ipfw_main(int oldac, char **oldav)
 
 #ifdef FSTACK
 		case 'P':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+
+		case 'g':
+			ff_set_gen(atoi(optarg));
 			break;
 #endif
 
@@ -508,7 +513,7 @@ ipfw_readfile(int ac, char *av[])
 #ifndef FSTACK
 	while ((c = getopt(ac, av, "cfNnp:qS")) != -1) {
 #else
-	while ((c = getopt(ac, av, "cfNnp:qSP:")) != -1) {
+	while ((c = getopt(ac, av, "cfNnp:qSP:g:")) != -1) {
 #endif
 		switch(c) {
 		case 'c':
@@ -562,7 +567,11 @@ ipfw_readfile(int ac, char *av[])
 
 #ifdef FSTACK
 		case 'P':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+
+		case 'g':
+			ff_set_gen(atoi(optarg));
 			break;
 #endif
 

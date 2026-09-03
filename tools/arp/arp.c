@@ -148,7 +148,7 @@ main(int argc, char *argv[])
 	while ((ch = getopt(argc, argv, "andfsSi:")) != -1)
 #else
 	ff_ipc_init();
-	while ((ch = getopt(argc, argv, "andfsSi:p:")) != -1)
+	while ((ch = getopt(argc, argv, "andfsSi:p:g:")) != -1)
 #endif
 		switch(ch) {
 		case 'a':
@@ -174,7 +174,10 @@ main(int argc, char *argv[])
 			break;
 #ifdef FSTACK
 		case 'p':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+		case 'g':
+			ff_set_gen(atoi(optarg));
 			break;
 #endif
 		case '?':
@@ -754,6 +757,8 @@ usage(void)
 	    "       arp -p <f-stack proc_id|thread_id> -f filename");
 #endif
 #ifdef FSTACK
+	fprintf(stderr, "%s\n",
+	    "       -p takes <proc_id>[:<gen>], -g <gen> selects the graceful_reload generation");
 	ff_ipc_exit();
 #endif
 

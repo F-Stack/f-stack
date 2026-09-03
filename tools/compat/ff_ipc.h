@@ -32,6 +32,15 @@
 /* Set F-Stack proccess id to communicate with */
 void ff_set_proc_id(int pid);
 
+/* Same from a command line argument, "<proc_id>[:<gen>]"; the optional
+ * generation is equivalent to ff_set_gen(). Returns the proc id. */
+int ff_set_proc_id_str(const char *arg);
+
+/* Target graceful_reload generation (0..FF_RELOAD_GEN_MAX-1). Unset means
+ * auto: the legacy ring names on a graceful_reload=0 stack, otherwise the
+ * generation the resident primary reports as active. */
+void ff_set_gen(int gen);
+
 int ff_ipc_init(void);
 void ff_ipc_exit(void);
 struct ff_msg *ff_ipc_msg_alloc(void);

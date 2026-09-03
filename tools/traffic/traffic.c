@@ -5,8 +5,9 @@ void
 usage(void)
 {
     printf("Usage:\n");
-    printf("  top [-p <f-stack proc_id|thread_id>] [-P <max proc_id|thread_id>] "
-        "[-d <secs>] [-n num] [-s]\n");
+    printf("  top [-p <f-stack proc_id|thread_id>[:<gen>]] [-g <gen>] "
+        "[-P <max proc_id|thread_id>] [-d <secs>] [-n num] [-s]\n");
+    printf("  -g selects the graceful_reload generation (default: the active one)\n");
 }
 
 int traffic_status(struct ff_traffic_args *traffic)
@@ -65,11 +66,13 @@ int main(int argc, char **argv)
 #define DIFF_P(member) (ptraffic[j].member - potr[j].member)
 #define ADD_S(member) (traffic.member += ptraffic[j].member)
 
-    while ((ch = getopt(argc, argv, "hp:P:d:n:s")) != -1) {
+    while ((ch = getopt(argc, argv, "hp:P:d:n:sg:")) != -1) {
         switch(ch) {
         case 'p':
-            proc_id = atoi(optarg);
-            ff_set_proc_id(proc_id);
+            proc_id = ff_set_proc_id_str(optarg);
+            break;
+        case 'g':
+            ff_set_gen(atoi(optarg));
             break;
         case 'P':
             max_proc_id = atoi(optarg);

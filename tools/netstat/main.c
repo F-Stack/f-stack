@@ -272,7 +272,7 @@ main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	while ((ch = getopt(argc, argv, "46AaBbCcdF:f:ghI:iLlnOoPp:Qq:RrSTsuWw:xzt:"))
+	while ((ch = getopt(argc, argv, "46AaBbCcdF:f:ghI:iLlnOoPp:Qq:RrSTsuWw:xzt:G:"))
 #endif
 	    != -1)
 		switch(ch) {
@@ -436,7 +436,10 @@ main(int argc, char *argv[])
 			break;
 #ifdef FSTACK
 		case 't':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+		case 'G':
+			ff_set_gen(atoi(optarg));
 			break;
 #endif
 		case '?':
@@ -1022,6 +1025,9 @@ usage(void)
 "       netstat -t <f-stack proc_id|thread_id> -gs [-46s] [-f address_family]",
 "       netstat -t <f-stack proc_id|thread_id> -Q");
 
+	(void)xo_error("%s\n",
+"       -t takes <proc_id>[:<gen>], -G <gen> selects the graceful_reload\n"
+"       generation (-g is taken by multicast, hence -G here)");
 #endif
 	xo_finish();
 #ifdef FSTACK

@@ -177,7 +177,7 @@ main(int ac, char *av[])
 	while ((ch = getopt(ac, av, "df:n:")) != -1) {
 #else
 	ff_ipc_init();
-	while ((ch = getopt(ac, av, "df:n:p:")) != -1) {
+	while ((ch = getopt(ac, av, "df:n:p:g:")) != -1) {
 #endif
 		switch (ch) {
 		case 'd':
@@ -194,7 +194,10 @@ main(int ac, char *av[])
 			break;
 #ifdef FSTACK
 		case 'p':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+		case 'g':
+			ff_set_gen(atoi(optarg));
 			break;
 #endif
 		case '?':
@@ -722,7 +725,7 @@ Usage(const char *msg)
 #ifndef FSTACK
 		"usage: ngctl [-d] [-f file] [-n name] [command ...]\n");
 #else
-		"usage: ngctl -p <f-stack proc_id|thread_id>  [-d] [-f file] [-n name] [command ...]\n");
+		"usage: ngctl -p <f-stack proc_id|thread_id>[:<gen>] [-g <gen>] [-d] [-f file] [-n name] [command ...]\n");
 
 	ff_ipc_exit();
 #endif

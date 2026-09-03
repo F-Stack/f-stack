@@ -234,7 +234,7 @@ main(int argc, char **argv)
 	while ((ch = getopt(argc, argv, "acd:f:Ii:nprstA:HPR")) != -1)
 #else
 	ff_ipc_init();
-	while ((ch = getopt(argc, argv, "acd:f:Ii:nprstA:HPRC:")) != -1)
+	while ((ch = getopt(argc, argv, "acd:f:Ii:nprstA:HPRC:g:")) != -1)
 #endif
 		switch (ch) {
 		case 'a':
@@ -284,7 +284,10 @@ main(int argc, char **argv)
 			break;
 #ifdef FSTACK
 		case 'C':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+		case 'g':
+			ff_set_gen(atoi(optarg));
 			break;
 #endif
 		default:
@@ -928,6 +931,7 @@ usage()
 	printf("       ndp -C <f-stack proc_id|thread_id> [-nt] -I [interface|delete]\n");
 #endif
 	printf("       ndp -C <f-stack proc_id|thread_id> [-nt] -s nodename etheraddr [temp] [proxy]\n");
+	printf("       -C takes <proc_id>[:<gen>], -g <gen> selects the graceful_reload generation\n");
 #endif
 	exit(1);
 }

@@ -249,9 +249,10 @@ usage(void)
 	    "usage: sysctl [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
 	    "       sysctl [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
 #else
-        (void)fprintf(stderr, "%s\n%s\n",
-            "usage: sysctl -p <f-stack proc_id|thread_id> [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
-            "       sysctl -p <f-stack proc_id|thread_id> [-bdehNnoqTtWx] [ -B <bufsize> ] -a");
+        (void)fprintf(stderr, "%s\n%s\n%s\n",
+            "usage: sysctl -p <f-stack proc_id|thread_id>[:<gen>] [-g <gen>] [-bdehiNnoqTtWx] [ -B <bufsize> ] [-f filename] name[=value] ...",
+            "       sysctl -p <f-stack proc_id|thread_id>[:<gen>] [-g <gen>] [-bdehNnoqTtWx] [ -B <bufsize> ] -a",
+            "       -g selects the graceful_reload generation (default: the active one)");
         ff_ipc_exit();
 #endif
 	exit(1);
@@ -274,7 +275,7 @@ main(int argc, char **argv)
 #ifndef FSTACK
 	while ((ch = getopt(argc, argv, "AabB:def:hiNnoqtTwWxX")) != -1) {
 #else
-	while ((ch = getopt(argc, argv, "AabB:def:hiNnoqtTwWxXp:")) != -1) {
+	while ((ch = getopt(argc, argv, "AabB:def:hiNnoqtTwWxXp:g:")) != -1) {
 #endif
 		switch (ch) {
 		case 'A':
@@ -339,7 +340,10 @@ main(int argc, char **argv)
 			break;
 #ifdef FSTACK
 		case 'p':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+		case 'g':
+			ff_set_gen(atoi(optarg));
 			break;
 #endif
 		default:
