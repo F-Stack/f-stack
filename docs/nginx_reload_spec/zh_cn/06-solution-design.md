@@ -4,11 +4,11 @@
 |---|---|
 | 文档编号 | 06 |
 | 标题 | F-Stack Nginx 无损 reload 候选方案对比（S1~S4）+ 推荐方案 S3 设计 |
-| 版本 | v1.9.3（v1.9 基础上：**人工决策反转 D-A = 两代使用相同 lcore_id**，并据此细化代际 mempool 方案、取消四链解耦、定案 DR6 与心跳机制） |
+| 版本 | v1.9.4（v1.9.3 基础上：**M4 实现批注 —— DR6① 按「G_old worker 自治夺回」的实现形态修订表述**，并补记 M4 收尾范围） |
 | 日期 | 2026-09-02 |
 | 状态 | 待人工审计（v1.9 交叉审核修订 + 人工决策落盘） |
 | 修订来源 | 2026-09-01 独立交叉审核（只读，无代码改动、无 git 写操作），全部结论带 `文件:行号` 证据，区分「代码坐实」与「推断」 |
-| 决策定案 | **D-A=两代使用相同 lcore_id**（2026-09-01 人工决策，推翻本轮前一版「不同 lcore_id」；DPDK 硬禁令理由由代际 mempool 消除 ⇒ 例外适用）；D-B=**采用 M1′ 形态**；D-C=**M2 维持可选演进**（DR7 触发，不提前）；**DR5 取消**；**DR6=方案① primary 将 rx 交还 G_old**（心跳=共享内存全局切换标记每 loop 递增，G_old 排空后随 flow_map 消亡，超时默认 1s 可配）；**语义 11/12 恢复为必需项** |
+| 决策定案 | **D-A=两代使用相同 lcore_id**（2026-09-01 人工决策，推翻本轮前一版「不同 lcore_id」；DPDK 硬禁令理由由代际 mempool 消除 ⇒ 例外适用）；D-B=**采用 M1′ 形态**；D-C=**M2 维持可选演进**（DR7 触发，不提前）；**DR5 取消**；**DR6=方案① 将 rx 交还 G_old**（心跳=共享内存全局切换标记每 loop 递增，G_old 排空后随 flow_map 消亡，超时默认 1s 可配）；**【v1.9.4 M4 实现批注】执行者由「primary 回写」修订为「G_old worker 自治夺回」（二者语义等价，且自治形态天然防空交还；spec 按实现形态修订，不得按字面重做以免引入双写者竞态）**；**语义 11/12 恢复为必需项** |
 | v1.9.1 变更 | 语义 8/11/12/15、§6.2（DR5 取消 / DR6 定案+附则 / DR8 反转 / 新增 DR11）、§6.3（重写）、§6.6（重写为代际 mempool 细化设计）、§4.1 D5、§5.4-3、§7、§9 |
 | 来源产物 | work/solution-design.md（方案设计师 solution-designer，2026-08-18 落盘）。本篇为正式化改写：输入为 [01](01-vpp-vcl-research.md)/[02](02-other-projects-research.md)/[03](03-fstack-legacy-solution.md)/[04](04-fstack-current-analysis.md)/[05](05-ld-preload-alternative.md) 五篇的前身产物（均已全文阅读）+ 关键机制回查实际代码交叉验证（只读）；保留全部事实证据、单来源声明与未坐实标注 |
 
@@ -524,7 +524,7 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 | DR3 | ~~reta 切流 vs 队列移交~~ v1.6 删除（reta 不改，同期接管+flow_map 为主路径） | — |
 | DR4 | reload 控制通道载体（v1.6 已定）：移交互斥用共享内存标记（非 msg ring），READY/DRAIN_DONE/REJECT 用 msg ring | 已定：分两类通道。**v1.9 补充约束**：msg ring 必须做代际隔离（语义 15），否则两代 dequeue 同一 SP/SC ring |
 | ~~DR5~~ | ~~代际 lcore 池与四链解耦的配置表达~~ | **已取消（2026-09-01 人工决策）**：D-A 定案「两代同 lcore_id」后，不需要 2N 个 lcore_id，`lcore_mask`/`nb_procs`/队列数保持 N 不变，**无新增配置面**。原 C-NR-311 随之取消。保留本行仅供审计追溯 |
-| DR6 | 异常回退完备性：新 worker 部分失败、primary 被 kill、drain 挂起强退、T3 接管失败回退 | 状态机每阶段定义回退目标态。**v1.9 新增必答项已于 2026-09-01 定案**：**T3 之后 G_new 崩溃** → **采用方案① 由 primary 将 rx 交还 G_old**（M1′ 下 G_old 已脱离硬件、无法自行恢复 rx，v1.6 形态下 G_old 仍持 rx 可续服）。检测与超时见 DR6 附则 |
+| DR6 | 异常回退完备性：新 worker 部分失败、primary 被 kill、drain 挂起强退、T3 接管失败回退 | 状态机每阶段定义回退目标态。**v1.9 新增必答项已于 2026-09-01 定案**：**T3 之后 G_new 崩溃** → **采用方案① 将 rx 交还 G_old**（M1′ 下 G_old 已脱离硬件、无法自行恢复 rx，v1.6 形态下 G_old 仍持 rx 可续服）。检测与超时见 DR6 附则。**【v1.9.4 M4 实现批注】** 定案的方案①不变，但**执行者按 M3 已落地的实现形态表述为「G_old worker 自治夺回」**：`rx_owner_gen` 由 G_old 自己在检出心跳失活后写回（而非 primary 代写）—— 二者回退目标态完全一致（owner 回到 G_old、退出无硬件模式恢复 rx/tx、关闭 flow_map），且自治形态天然防空交还。**此修订为 spec 向实现对齐，不得反向按字面重做 primary 回写**（会产生两个写者写 `rx_owner_gen` 的竞态）。M4 的收尾范围 = flow_map teardown（结构性 no-op，见下）/ reload 窗口关闭（master 轮询 epoch-tagged `reclaim` 共享字 → EV_ABORT 回滚）/ 告警秒级限频 / 打点 |
 | DR7 | M2（dispatcher 中心化）启动判据：reload 窗口内 flow_map 开销 + drain 期 P99 劣化超阈值时立项 | 评审定阈值。**v1.9 决策 D-C**：M2 维持可选演进，不提前为主路径 |
 | **DR8** | **【v1.9·2026-09-01 终版定案 D-A】lcore_id 策略** | **已定案：两代使用相同 lcore_id**（同核同 lcore_id）。理由：改用不同 lcore_id 会牵动 `lcore_mask → nb_procs → lcore_id → queue_id` 整条链，由此产生的各类池冲突**远严重于** `priv_timer` 与 mempool 同槽这一处问题。DPDK 硬禁令（`multi_proc_support.rst:169-172`）的理由正是 mempool cache 损坏，本方案以代际 mempool 分离消除该机理，属**理由不成立后的例外适用**（论证见语义 8）。**推论：语义 11（自驱 hardclock）与语义 12（代际 mempool）恢复为必需项** |
 | **DR11**（v1.9 新增） | **共享 RX 池的跨代 free 方案**：M-A（RX 池 `cache_size=0`，简单但有稳态损耗）vs M-B（RX 池保留 cache，`free_ring` 由 G_new 代 free，稳态零损耗但有多一道 inbound 滞留） | **已定案（v1.9.3 人工决策）：先按 M-A 进行，M-B 作为 M-A 性能不达标的备选**。依据：M-A 实现简单、无 free_ring 标记混淆、触发占用饥饿更晚（§24.2）；M-B 仅在 PT-NR-09 显示 M-A 稳态损耗不可接受时启用 |
@@ -534,8 +534,10 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 - **心跳载体**：共享内存中的**全局切换标记（generation heartbeat counter）**，由 **G_new 在其 main_loop 每轮递增**。
 - **G_old 侧检测**：G_old 在自己的 main_loop 中每轮（或每 N 轮）读取该标记，与上一轮采样值比较；**连续未递增超过阈值**即判定 G_new 失活。
 - **标记的生命周期（关键，避免误判）**：标记持续递增，**直到 G_old 排空退出为止**；G_old 排空退出后，全局切换标记**随 flow_map 一并消亡、不再递增**。因此 G_old 只在「自己还存在」的窗口内检测心跳，**不存在「G_old 已退出后无人递增导致误报」的问题**。
-- **超时值**：**默认 1s，可配置**（配置项沿用 §5.4-3 的开关族，建议 `reload_heartbeat_timeout_ms`，默认 1000）。1s 的依据：main_loop 为忙轮询、无阻塞，正常轮次间隔为微秒级；1s 对「进程崩溃/被 kill」这类硬失效有充分余量，同时将服务中断窗口控制在秒级。**该值须由 RV11/RT 实测校准**（M4 阶段）。
-- **回退动作（方案①）**：G_old 判定 G_new 失活后，**由 primary 将 rx 交还 G_old**——即置 `rx_owner_gen` 回退为 G_old 代际、G_old 退出「无硬件模式」恢复 `rte_eth_rx_burst` 与 tx，并**关闭 flow_map**（此时无新代际，flow_map 无意义）。同时上报告警打点。
+- **超时值**：**默认 1s，可配置**（配置项沿用 §5.4-3 的开关族，建议 `reload_heartbeat_timeout_ms`，默认 1000）。1s 的依据：main_loop 为忙轮询、无阻塞，正常轮次间隔为微秒级；1s 对「进程崩溃/被 kill」这类硬失效有充分余量，同时将服务中断窗口控制在秒级。**该值须由 RV11/RT 实测校准**（M4 阶段）。**【v1.9.4 M4 实现批注】M4 未执行 G_new 崩溃的实机注入**（M4 的异常注入覆盖 READY 超时 / park / flip / mutex / kill primary / attach gate，未覆盖「G_new 进程被杀」），本超时值**仍为未校准状态，随 DR6① 复验一并移交 M6**（IT-NR-A12 为承载用例）。
+- **回退动作（方案①）**：G_old 判定 G_new 失活后，**将 rx 交还 G_old**——即置 `rx_owner_gen` 回退为 G_old 代际、G_old 退出「无硬件模式」恢复 `rte_eth_rx_burst` 与 tx，并**关闭 flow_map**（此时无新代际，flow_map 无意义）。同时上报告警打点。
+- **【v1.9.4 M4 实现批注·执行者】** 本附则原文写「由 primary 将 rx 交还 G_old」，**M3 的实现形态是「G_old worker 自治夺回」**：G_old 在自己的 main_loop 检出心跳失活后**自行写回 `rx_owner_gen`**（`ff_reload_drain_reclaim_mark()` 写 epoch-tagged 共享字 + 限频 ALERT）。语义等价性：心跳载体（共享内存全局切换标记每 loop 递增）、G_old 采样检测、1s 超时可配（`reload_heartbeat_timeout_ms`）、「G_old 排空退出后标记随 flow_map 消亡不再递增」四点全部符合本附则；且自治形态下写者唯一，**不存在「primary 与 G_old 双写 `rx_owner_gen`」的竞态**。spec 据此按实现形态修订（2026-09-04 人工重确认）。
+- **【v1.9.4 M4 实现批注·收尾范围】** M4 在本机制之上只补四项收尾：① **flow_map teardown 为结构性 no-op** —— `ngx_ff_flow_map_arm` 仅 init 期受 `hw_locked && gen==target_gen` 双门控调用，G_old 在任何一轮都从未 arm 过 dispatcher/flow_map，失活 G_new 的进程局部状态随其死亡消亡，无需跨进程拆除；② **窗口关闭归 master** —— t3_check 轮询 epoch 匹配的 `reclaim` 共享字 → `EV_ABORT` 回滚（TERM 残留 G_new + `ff_reload_master_abort` 复位 owner，与夺回方所写值幂等一致，G_old 无扰继续服务）；③ **告警秒级限频**（`ff_reload_stall_warn`，镜像 `ff_divert_drop_warn`，F-M3-4 修复）；④ **打点**（heartbeat_stalls 计数 + reclaim 共享字）。**已知窄边**：FSM 表 T5 仅接受 `GOLD_EXITED`，夺回发生在 T5 期间不检测 —— 有界不永挂（master 的 TERM 升级可收口），归 M6 复验。
 - **前置条件**：该回退要求 G_old 具备「可逆转回硬件模式」的能力，须在 C-NR-309 的实现中一并设计（无硬件模式标志必须可逆，且恢复 rx 前须确认 G_new 确已不再 poll——否则回到并发 poll 的老问题）。**该点已列入 C-NR-309 的实现约束与 M3 风险。**
 - **未覆盖**：G_new 与 G_old **同时**崩溃（此时仅剩 primary，无法恢复数据面）→ 依赖外部运维重启，须写进运维手册。
 | **DR9** | **【v1.9 新增】TX 处理形态**：(a) G_new 代发（M1′ 主路径，推荐）/ (b) init 期多配 `nb_tx_queues = 2N` 代际各一组（零跳，依赖硬件多队列）/ (c) 共享内存自旋锁保护 tx queue（改动最小，有锁开销与优先级反转） | 倾向 (a)；若 RV11 实测代发路径成为 drain 期瓶颈，评审切 (b)（需先确认目标网卡支持 2N tx queue） |
@@ -704,7 +706,7 @@ v1.6 的「两代共享同一批硬件队列（rx 互斥移交 + tx 无保护）
 | **D-B** 方案形态 | **M1′ 单硬件所有者 + drain 代际软件寄生**（G_new 独占 rx+tx，G_old 软件寄生，双向 `drain_ring`） | 一次性消除 P0-1（TX 并发）与 P0-2（ring 双消费者）两类契约级风险；代价为 drain 期出包多一跳（PT-NR-10 量化） |
 | **D-C** M2 定位 | 维持可选演进（DR7 触发），**不提前**为主路径 | M2 稳态每包一跳，收益需以 M1′ 实测数据为前提 |
 | **DR5** 代际 lcore 池 / 四链解耦 | **取消**（D-A 定案的推论） | 同 lcore_id 不需要 2N 个 lcore_id；`lcore_mask`/`nb_procs`/队列数保持 N；C-NR-311 一并取消；**P0-3 随之消解** |
-| **DR6** T3 后 G_new 崩溃 | **方案① 由 primary 将 rx 交还 G_old** | 见 DR6 附则：共享内存全局切换标记每 loop 递增作心跳，G_old 检测；G_old 排空退出后标记随 flow_map 消亡不再递增；超时默认 1s 可配置 |
+| **DR6** T3 后 G_new 崩溃 | **方案① 将 rx 交还 G_old**；**执行者 = G_old worker 自治夺回**（v1.9.4 按 M3/M4 实现形态修订，非 primary 回写） | 见 DR6 附则：共享内存全局切换标记每 loop 递增作心跳，G_old 检测；G_old 排空退出后标记随 flow_map 消亡不再递增；超时默认 1s 可配置。**M4 收尾**：flow_map teardown（结构性 no-op）/ 窗口关闭归 master（epoch-tagged `reclaim` 字 → EV_ABORT 回滚）/ 告警秒级限频 / 打点。T5 期间夺回不检测（FSM 表 T5 仅接受 GOLD_EXITED），窄边归 M6 |
 | **语义 11 自驱 hardclock** | **恢复为必需项** | D-A = 同 lcore_id ⇒ `priv_timer` 必然同槽；PT-NR-08 为合入门槛 |
 | **语义 12 代际 mempool** | **恢复为必需项并细化** | 应用侧分代际 pool（独立 cache，竞态归零）；共享 RX 池按 DR11 选 M-A/M-B（**M-A 为主，M-B 备选**） |
 | 半开连接窗口（语义 14） | 倾向 (a) listening 延迟关闭；(b) syncache 导出的前提是新增 static 函数导出钩子，改动更大 | `tcp_subr.c:2517-2553`、`tcp_syncache.c:1033-1055` |
