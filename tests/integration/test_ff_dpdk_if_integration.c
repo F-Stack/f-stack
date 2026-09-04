@@ -142,6 +142,15 @@ void *ff_veth_softc_to_hostc(void *sc) { (void)sc; return NULL; }
 int   ff_sysctl(const int *n, unsigned nl, void *o, size_t *ol, const void *i, size_t il)
 { (void)n;(void)nl;(void)o;(void)ol;(void)i;(void)il; return 0; }
 int   ff_socket(int d, int t, int p) { (void)d;(void)t;(void)p; return -1; }
+/* M4 (C-NR-402/F-M3-1, F-M4-6): ff_socket_* are defined in
+ * freebsd/kern/uipc_syscalls.c and ff_syncache_count in
+ * freebsd/netinet/tcp_syncache.c — all part of the localized .ro archive
+ * and NOT linked here; referenced by the ~1 Hz reload-plane housekeeping
+ * hook in ff_dpdk_if.c, which is gated by graceful_reload (0 throughout
+ * this harness) and never reached by our one main_loop pass. */
+int ff_socket_snd_pending(void) { return 0; }
+int ff_socket_drain_count(void) { return 0; }
+int ff_syncache_count(void) { return 0; }
 int   ff_ioctl_freebsd(int f, unsigned long r, ...) { (void)f;(void)r; return -1; }
 int   ff_close(int f) { (void)f; return 0; }
 int   ff_rtioctl(int f, void *d, unsigned int *l, unsigned int al)

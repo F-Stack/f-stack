@@ -16,12 +16,14 @@
  * rte_eth_tx_burst is NEVER invoked for the dpdk data ports, and that the
  * packets leave through drain_ring_tx when the owner side drains it.
  *
- * IT-NR-A10 (half-open connection window, framework): the complete RV12
- * criteria need M4 C-NR-312 plus a real FreeBSD syncache and a second
- * process (RT-02/RT-15 own the two-process timing). What this harness pins
- * is the dispatch-side mechanism both directions depend on: flow-map hit =>
- * handled locally (including the syncache stage, before accept()), miss =>
- * forwarded to the draining generation's drain_rx ring.
+ * IT-NR-A10 (half-open connection window): the complete RV12 criteria need
+ * M4 C-NR-312 plus a real FreeBSD syncache and a second process (RT-02/
+ * RT-15 own the two-process timing; RV12 owns the final judgments). What
+ * this harness pins is the mechanism both directions depend on: flow-map
+ * hit => handled locally (including the syncache stage, before accept()),
+ * miss => forwarded to the draining generation's drain_rx ring (TC-5),
+ * plus the G_old-side consumption of forwarded packets through the parked
+ * dequeue path and the closed-window drop (TC-6, mechanism level).
  *
  * tx counting: rte_eth_tx_burst() is static inline in this DPDK and
  * dispatches through the exported rte_eth_fp_ops[] fast-path table, so the
@@ -229,6 +231,16 @@ void *ff_veth_softc_to_hostc(void *sc) { (void)sc; return NULL; }
 int   ff_sysctl(const int *n, unsigned nl, void *o, size_t *ol, const void *i, size_t il)
 { (void)n;(void)nl;(void)o;(void)ol;(void)i;(void)il; return 0; }
 int   ff_socket(int d, int t, int p) { (void)d;(void)t;(void)p; return -1; }
+/* M4 (C-NR-402/F-M3-1, F-M4-6): ff_socket_* are defined in
+ * freebsd/kern/uipc_syscalls.c and ff_syncache_count in
+ * freebsd/netinet/tcp_syncache.c (all inside the localized .ro archive,
+ * not linked here); the only caller is the ~1 Hz reload-plane
+ * housekeeping hook, which is gated on a SECONDARY process type — this
+ * harness boots as PRIMARY, so the stubs are never invoked (zero
+ * behavior, linker resolution only). */
+int   ff_socket_snd_pending(void) { return 0; }
+int   ff_socket_drain_count(void) { return 0; }
+int   ff_syncache_count(void) { return 0; }
 int   ff_ioctl_freebsd(int f, unsigned long r, ...) { (void)f;(void)r; return -1; }
 int   ff_close(int f) { (void)f; return 0; }
 int   ff_rtioctl(int f, void *d, unsigned int *l, unsigned int al)
@@ -784,22 +796,118 @@ test_it_a10_halfopen_dispatch(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
-/* TC 6 (IT-NR-A10 framework): complete RV12 criteria — M4 C-NR-312 gated.   */
-/* Enable when "delay close listening" (or syncache export) lands; the      */
-/* two-process timing itself is RT-02/RT-15.                                */
+/* TC 6 (IT-NR-A10, M4 Batch C): half-open window, mechanism level.          */
+/*                                                                           */
+/* Full RV12 judgments (real ESTABLISHED, no-RST, syncache count draining)   */
+/* need the real FreeBSD syncache + a live two-process handover: this        */
+/* harness links no stack adapter (ff_syncache_count lives inside the        */
+/* localized libfstack .ro blob, not a linkable host object; the delayed-    */
+/* close decision is an nginx-side static), so those belong to RV12 on the   */
+/* real machine (Runtime batch). What IS pinned here, through the real       */
+/* code paths, is the mechanism C-NR-312(a) depends on for both directions:  */
+/*                                                                           */
+/*   (a) 3rd ACK of a pre-T3 half-open connection arrives at G_new after     */
+/*       T3: flow-map miss -> FF_DISPATCH_PEER -> forwarded to G_old's       */
+/*       drain_rx ring (ownership moves with the mbuf, nothing freed);      */
+/*   (b) G_old side: parked-generation dequeue (the exact function the      */
+/*       parked main_loop calls) consumes the forwarded packet into the     */
+/*       local stack path exactly once — the C-NR-312a gating predicate     */
+/*       ff_is_drain_generation() holds while it does;                      */
+/*   (c) a later data segment on the same connection repeats (a)+(b);       */
+/*   (d) reload window closed (abort round): the same miss is dropped and   */
+/*       counted, never forwarded into an unowned ring.                     */
 /* ------------------------------------------------------------------------ */
 static void
-test_it_a10_full_handshake_m4_pending(void **state)
+test_it_a10_halfopen_window_mechanism(void **state)
 {
+    /* doc addresses only (192.168.1.0/24 fixture style) */
+    const uint32_t cli = 0xc0a80111, srv = 0xc0a80121;
+    struct rte_ring *gold_rx;
+    struct rte_mbuf *burst[MAX_PKT_BURST];
+    struct rte_mbuf *m, *mm;
+    struct ff_traffic_args t0, t1;
+    ff_flow_key_t k;
+    int avail0, n;
+
     (void)state;
-    print_message("[IT-NR-A10] full criteria (RV12) pending M4 C-NR-312:\n"
-        "  SYN -> G_old before T3, handover, 3rd ACK after T3:\n"
-        "  1) handshake completes (ESTABLISHED, no RST)\n"
-        "  2) later data on the connection still served by G_old\n"
-        "  3) success rate 100%% across (a) delayed-close and (b) syncache-export\n"
-        "  Requires: real FreeBSD stack + two processes (this harness links no\n"
-        "  stack adapter); run under RT-02/RT-15 once C-NR-312 is in.\n");
-    skip();
+    SKIP_IF_NO_INIT();
+    assert_non_null(g_inj_pool);
+
+    /* round-2 topology, same as TC-5: this process is G_new (gen 0, rx
+     * owner, reload window open); gen 1 plays G_old, which holds the
+     * pre-T3 half-open connection's syncache entry. */
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_flow_map_open();
+
+    gold_rx = rte_ring_lookup("drain_rx_p0_q0_g1");    /* G_old inbound */
+    assert_non_null(gold_rx);
+    while (rte_ring_dequeue(gold_rx, (void **)&mm) == 0)
+        rte_pktmbuf_free(mm);
+
+    ff_regist_packet_dispatcher_context(it_flow_dispatcher);
+
+    /* the pre-T3 connection never entered G_new's flow map: its syncache
+     * entry (and the future accepted socket) belongs to G_old */
+    flow_key_v4(&k, cli, srv, htons(40011), htons(80));
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+
+    /* (a) 3rd ACK after T3: forwarded, never freed by the forwarder */
+    avail0 = (int)rte_mempool_avail_count(g_inj_pool);
+    m = inj_mbuf(cli, srv, htons(40011), htons(80));
+    assert_non_null(m);
+    ff_dpdk_process_packets(IT_PORT_ID, 0, &m, 1, g_ctx, 0);
+    assert_int_equal((int)rte_ring_count(gold_rx), 1);
+    assert_int_equal((int)rte_mempool_avail_count(g_inj_pool), avail0 - 1);
+
+    /* (b) G_old consumes through the parked-generation dequeue path (the
+     * same call the parked main_loop pass makes); the packet reaches the
+     * local stack input exactly once and is freed exactly once */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+    assert_int_equal(ff_is_drain_generation(), 1);   /* C-NR-312a gate */
+    n = ff_drain_ring_rx_dequeue(IT_PORT_ID, 0, burst, g_ctx);
+    assert_int_equal(n, 1);
+    assert_int_equal((int)rte_ring_count(gold_rx), 0);
+    assert_int_equal((int)rte_mempool_avail_count(g_inj_pool), avail0);
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_is_drain_generation(), 0);   /* G_new is not it */
+
+    /* (c) later data on the same connection: same both-direction path */
+    m = inj_mbuf(cli, srv, htons(40011), htons(80));
+    assert_non_null(m);
+    ff_dpdk_process_packets(IT_PORT_ID, 0, &m, 1, g_ctx, 0);
+    assert_int_equal((int)rte_ring_count(gold_rx), 1);
+    ff_reload_set_gen(1);
+    n = ff_drain_ring_rx_dequeue(IT_PORT_ID, 0, burst, g_ctx);
+    assert_int_equal(n, 1);
+    assert_int_equal((int)rte_mempool_avail_count(g_inj_pool), avail0);
+    ff_reload_set_gen(0);
+
+    /* (d) reload window closed (abort round): the same miss must be
+     * dropped and counted, never forwarded into an unowned ring */
+    g_st.reload_active = 0;
+    t0 = traffic_get();
+    m = inj_mbuf(cli, srv, htons(40011), htons(80));
+    assert_non_null(m);
+    ff_dpdk_process_packets(IT_PORT_ID, 0, &m, 1, g_ctx, 0);
+    assert_int_equal((int)rte_ring_count(gold_rx), 0);
+    t1 = traffic_get();
+    assert_int_equal((int)(t1.rx_dropped - t0.rx_dropped), 1);
+    assert_int_equal((int)rte_mempool_avail_count(g_inj_pool), avail0);
+    g_st.reload_active = 1;
+
+    /* cleanup */
+    while (rte_ring_dequeue(gold_rx, (void **)&mm) == 0)
+        rte_pktmbuf_free(mm);
+    ff_unregist_packet_dispatcher_context();
+    ff_flow_map_close();
+
+    print_message("[IT-NR-A10] mechanism level passed; full RV12 judgments "
+        "(ESTABLISHED handshake, no RST, syncache count draining to zero, "
+        "(a)/(b) form comparison) remain with the Runtime batch on the real "
+        "machine — this harness links no FreeBSD stack adapter.\n");
 }
 
 /* ------------------------------------------------------------------------ */
@@ -877,7 +985,7 @@ main(void)
         cmocka_unit_test(test_it_a09_drain_ring_tx_watermark),
         cmocka_unit_test(test_it_a09_send_burst_guard),
         cmocka_unit_test(test_it_a10_halfopen_dispatch),
-        cmocka_unit_test(test_it_a10_full_handshake_m4_pending),
+        cmocka_unit_test(test_it_a10_halfopen_window_mechanism),
         /* MUST be last: tears down the EAL via ff_dpdk_run */
         cmocka_unit_test(test_it_a09_main_loop_parked_pass),
     };

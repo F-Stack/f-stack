@@ -1380,6 +1380,188 @@ test_ut_nr_10_reload_fsm_transitions(void **state)
                         "T0_IDLE");
 }
 
+/* UT-NR-10 (M4 Batch C completion): the authoritative legal-transition
+ * table, kept in one place so the exhaustive sweep below and the legal-path
+ * walk stay in sync with ngx_ff_reload_fsm.h by construction. */
+struct ut_nr10_trans {
+    int state, event, next;
+};
+
+static const struct ut_nr10_trans ut_nr10_legal[] = {
+    { NGX_FF_RELOAD_T0_IDLE,       NGX_FF_RELOAD_EV_HUP,           NGX_FF_RELOAD_T1_GNEW_SPAWN },
+    { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_ALL_READY,     NGX_FF_RELOAD_T2_HANDOVER },
+    { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_READY_TIMEOUT, NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_GNEW_DIED,     NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T2_HANDOVER,   NGX_FF_RELOAD_EV_HANDOVER_DONE, NGX_FF_RELOAD_T3_DRAIN },
+    { NGX_FF_RELOAD_T2_HANDOVER,   NGX_FF_RELOAD_EV_ABORT,         NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T3_DRAIN,      NGX_FF_RELOAD_EV_DRAIN_DONE,    NGX_FF_RELOAD_T4_DRAIN_DONE },
+    { NGX_FF_RELOAD_T3_DRAIN,      NGX_FF_RELOAD_EV_ABORT,         NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T4_DRAIN_DONE, NGX_FF_RELOAD_EV_QUIT_GOLD,     NGX_FF_RELOAD_T5_GOLD_QUIT },
+    { NGX_FF_RELOAD_T4_DRAIN_DONE, NGX_FF_RELOAD_EV_ABORT,         NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T5_GOLD_QUIT,  NGX_FF_RELOAD_EV_GOLD_EXITED,   NGX_FF_RELOAD_T0_IDLE },
+    { NGX_FF_RELOAD_T_ERROR,       NGX_FF_RELOAD_EV_RESET,         NGX_FF_RELOAD_T0_IDLE },
+};
+
+/* UT-NR-10a: every legal transition, driven one by one from T0 (including
+ * the ones the happy-path test above does not reach: each ABORT entry and
+ * both T1 failure events), then two consecutive full rounds to prove the
+ * FSM returns to a fully reusable T0 after T5 and after RESET. */
+static void
+test_ut_nr_10_all_legal_transitions(void **state)
+{
+    unsigned i;
+    int round;
+
+    (void)state;
+
+    for (i = 0; i < sizeof(ut_nr10_legal) / sizeof(ut_nr10_legal[0]); i++) {
+        assert_int_equal(ngx_ff_reload_fsm_next(ut_nr10_legal[i].state,
+                                                ut_nr10_legal[i].event),
+                         ut_nr10_legal[i].next);
+    }
+
+    /* two full rounds back to back: T0 must be indistinguishable after a
+     * completed round (re-entry protection must reset with the state) */
+    for (round = 0; round < 2; round++) {
+        int st = NGX_FF_RELOAD_T0_IDLE;
+        int ev[] = {
+            NGX_FF_RELOAD_EV_HUP,
+            NGX_FF_RELOAD_EV_ALL_READY,
+            NGX_FF_RELOAD_EV_HANDOVER_DONE,
+            NGX_FF_RELOAD_EV_DRAIN_DONE,
+            NGX_FF_RELOAD_EV_QUIT_GOLD,
+            NGX_FF_RELOAD_EV_GOLD_EXITED,
+        };
+        int expect[] = {
+            NGX_FF_RELOAD_T1_GNEW_SPAWN,
+            NGX_FF_RELOAD_T2_HANDOVER,
+            NGX_FF_RELOAD_T3_DRAIN,
+            NGX_FF_RELOAD_T4_DRAIN_DONE,
+            NGX_FF_RELOAD_T5_GOLD_QUIT,
+            NGX_FF_RELOAD_T0_IDLE,
+        };
+        unsigned k;
+
+        for (k = 0; k < sizeof(ev) / sizeof(ev[0]); k++) {
+            st = ngx_ff_reload_fsm_next(st, ev[k]);
+            assert_int_equal(st, expect[k]);
+        }
+    }
+}
+
+/* UT-NR-10b: exhaustive 7-state x 11-event sweep. Every (state, event)
+ * pair outside the legal table above must be refused with T_MAX — no
+ * undocumented transition, no fallback to a "nearest" state, and EV_NONE
+ * is never accepted anywhere. */
+static void
+test_ut_nr_10_illegal_combinations_exhaustive(void **state)
+{
+    int s, e;
+    unsigned i;
+
+    (void)state;
+
+    assert_int_equal(NGX_FF_RELOAD_T_MAX, 7);    /* sweep assumptions */
+    assert_int_equal(NGX_FF_RELOAD_EV_MAX, 11);
+
+    for (s = 0; s < NGX_FF_RELOAD_T_MAX; s++) {
+        for (e = 0; e < NGX_FF_RELOAD_EV_MAX; e++) {
+            int legal = 0;
+            int next = ngx_ff_reload_fsm_next(s, e);
+
+            for (i = 0; i < sizeof(ut_nr10_legal) / sizeof(ut_nr10_legal[0]); i++) {
+                if (ut_nr10_legal[i].state == s
+                    && ut_nr10_legal[i].event == e) {
+                    legal = 1;
+                    assert_int_equal(next, ut_nr10_legal[i].next);
+                    break;
+                }
+            }
+
+            if (!legal) {
+                assert_int_equal(next, NGX_FF_RELOAD_T_MAX);
+            }
+        }
+    }
+
+    /* out-of-range states are refused for every event (EV_NONE included) */
+    {
+        int bad_states[] = { NGX_FF_RELOAD_T_MAX, -1, 99 };
+        unsigned b;
+
+        for (b = 0; b < sizeof(bad_states) / sizeof(bad_states[0]); b++) {
+            for (e = 0; e < NGX_FF_RELOAD_EV_MAX; e++) {
+                assert_int_equal(
+                    ngx_ff_reload_fsm_next(bad_states[b], e),
+                    NGX_FF_RELOAD_T_MAX);
+            }
+        }
+    }
+}
+
+/* UT-NR-10c: T_ERROR recovery from every failure entry. Each state that
+ * can enter T_ERROR must do so via its own event, RESET must be the only
+ * way out, and after recovery a fresh legal round must complete — the
+ * abort paths of C-NR-404 (READY timeout / G_new death / handover park
+ * timeout / DR6 reclaim during drain) all land in this shared pattern. */
+static void
+test_ut_nr_10_error_recovery_and_abort(void **state)
+{
+    struct {
+        int from_state, event;
+    } failure_entries[] = {
+        { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_READY_TIMEOUT },
+        { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_GNEW_DIED },
+        { NGX_FF_RELOAD_T2_HANDOVER,   NGX_FF_RELOAD_EV_ABORT },
+        { NGX_FF_RELOAD_T3_DRAIN,      NGX_FF_RELOAD_EV_ABORT },
+        { NGX_FF_RELOAD_T4_DRAIN_DONE, NGX_FF_RELOAD_EV_ABORT },
+    };
+    unsigned i, k;
+    int ev_round[] = {
+        NGX_FF_RELOAD_EV_HUP,
+        NGX_FF_RELOAD_EV_ALL_READY,
+        NGX_FF_RELOAD_EV_HANDOVER_DONE,
+        NGX_FF_RELOAD_EV_DRAIN_DONE,
+        NGX_FF_RELOAD_EV_QUIT_GOLD,
+        NGX_FF_RELOAD_EV_GOLD_EXITED,
+    };
+    int expect_round[] = {
+        NGX_FF_RELOAD_T1_GNEW_SPAWN,
+        NGX_FF_RELOAD_T2_HANDOVER,
+        NGX_FF_RELOAD_T3_DRAIN,
+        NGX_FF_RELOAD_T4_DRAIN_DONE,
+        NGX_FF_RELOAD_T5_GOLD_QUIT,
+        NGX_FF_RELOAD_T0_IDLE,
+    };
+
+    (void)state;
+
+    for (i = 0; i < sizeof(failure_entries) / sizeof(failure_entries[0]); i++) {
+        int st = ngx_ff_reload_fsm_next(failure_entries[i].from_state,
+                                        failure_entries[i].event);
+
+        assert_int_equal(st, NGX_FF_RELOAD_T_ERROR);
+
+        /* RESET is the only exit; everything else is refused */
+        assert_int_equal(
+            ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_RESET),
+            NGX_FF_RELOAD_T0_IDLE);
+        assert_int_equal(
+            ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_HUP),
+            NGX_FF_RELOAD_T_MAX);
+        assert_int_equal(
+            ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_GOLD_EXITED),
+            NGX_FF_RELOAD_T_MAX);
+
+        /* a fresh full round must succeed right after recovery */
+        st = NGX_FF_RELOAD_T0_IDLE;
+        for (k = 0; k < sizeof(ev_round) / sizeof(ev_round[0]); k++) {
+            st = ngx_ff_reload_fsm_next(st, ev_round[k]);
+            assert_int_equal(st, expect_round[k]);
+        }
+    }
+}
+
 /* UT-NR-12: generation mapping independence (reverse assertions).
  *  (a) msg_ring ring names differ across (proc_id, gen) — no shared SC ring
  *      between generations sharing a proc_id (P0-6);
@@ -1970,6 +2152,10 @@ main(void)
         cmocka_unit_test_setup_teardown(test_greload_bad_value_atoi,       test_setup, NULL),
         /* M2 Batch B (C-NR-201/202/205/206/313/316) */
         cmocka_unit_test_setup_teardown(test_ut_nr_10_reload_fsm_transitions, test_setup, NULL),
+        /* M4 Batch C: UT-NR-10 full transition table (C-NR-205/403/404) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_10_all_legal_transitions, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_10_illegal_combinations_exhaustive, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_10_error_recovery_and_abort, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ut_nr_12_generation_mapping,     test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ut_nr_14_reload_msg_serdes,      test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ut_nr_20_queue_mapping_config,   test_setup, NULL),
