@@ -64,7 +64,13 @@ tests/unit/test_ff_log
 tests/unit/test_ff_host_interface
 tests/unit/test_ff_epoll
 tests/unit/test_ff_config
+tests/unit/test_ff_callout
+tests/unit/test_ff_zc_send
+tests/unit/test_ff_dpdk_if
 tests/unit/common/*.o
+tests/integration/test_ff_dpdk_if_integration
+tests/integration/test_ff_kni_integration
+tests/integration/test_ff_reload_integration
 
 # Stage-3 coverage artifacts (produced by `make coverage`)
 tests/unit/*.gcda
