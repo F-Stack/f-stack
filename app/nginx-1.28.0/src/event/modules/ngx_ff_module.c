@@ -431,11 +431,31 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
         return queue_id;                /* non-IP: local */
     }
 
-    key.sport = (uint16_t) ((p[l4] << 8) | p[l4 + 1]);
-    key.dport = (uint16_t) ((p[l4 + 2] << 8) | p[l4 + 3]);
+    /* Raw wire bytes, exactly like the addresses above: the table keys
+     * ports in network byte order (ff_flow_map.h, and the syncache hook
+     * stores inc_fport/inc_lport unchanged). Assembling them as a
+     * big-endian integer would store host order and never match an
+     * inserted key. */
+    memcpy(&key.sport, p + l4, 2);
+    memcpy(&key.dport, p + l4 + 2, 2);
 
     if (ff_flow_map_lookup(&key)) {
         return queue_id;                /* this generation's flow: keep it */
+    }
+
+    /* F-M4-3/4/5/6 common cause (C-NR-312a): a SYN without the ACK bit is
+     * the first packet of a brand-new connection, so it cannot belong to
+     * the draining generation. Serving it here stops the dying generation
+     * from being fed new flows for the whole drain/exit window (the S7'
+     * root cause: conns/snd_pending/syncache refilled in turn, so their
+     * AND is never satisfiable). The syncache hook records the four-tuple
+     * at SYN-ACK time, so the third ACK of the handshake hits this table
+     * and the connection completes here. Every other miss is a packet of
+     * an already established flow and keeps the peer-forward semantics. */
+    if (proto == 6 && *len >= (uint16_t) (l4 + 14)
+        && (p[l4 + 13] & 0x02) != 0 && (p[l4 + 13] & 0x10) == 0)
+    {
+        return queue_id;
     }
 
     return FF_DISPATCH_PEER;            /* miss: forward to G_old */
