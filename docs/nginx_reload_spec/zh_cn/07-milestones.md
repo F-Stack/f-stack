@@ -357,7 +357,7 @@
 
 | 项 | 级别 | 数据 | 建议 |
 |---|---|---|---|
-| S7ᶠ `fresh_fail` | 观察 | 151/1424 = **10.7%**（TIMEOUT 型，50 轮切换瞬间窗口累计；编码方与独立复测分别为 10.6% / 10.7%，同水位） | M6 观察项：高频探测（50ms 级）复跑 100+ 轮定位窗口边界 |
+| S7ᶠ `fresh_fail` | 观察 | **独立复测口径 152/1420 = 10.7%**（TIMEOUT 型，50 轮切换瞬间窗口累计）；编码方自测为 151/1424 = 10.6% —— 两轮同水位，本表统一取**独立复测口径**，编码方自测值仅作一致性参照 | M6 观察项：高频探测（50ms 级）复跑 100+ 轮定位窗口边界 |
 | S8ᶠ 每轮 T5 走 30s cap | P2-10 | `listen close capped (syncache=1)`；有界、无失败，但 cap 为固定 30s、**不随 `worker_shutdown_timeout` 取 max** —— 运维显式配置 >30s 的 shutdown_timeout 时其优雅窗口被截断 | M6：cap 取 `max(30s, shutdown_timeout)` 或文档声明 |
 | `drain_ring_tx` 满环告警 | P3 | 同 F-M4-1 | M6 |
 | P2-6 syncache 撕裂窄边 | P2 | 1Hz 节拍下 reader 理论可见「新 word + 旧 syncache」，竞态方向恰退化为修复前行为（该 ACK 吃稳态 RST），不产生新危害 | 接受登记，word-last / seqlock 重构无必要 |
