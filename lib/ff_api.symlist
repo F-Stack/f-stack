@@ -92,3 +92,7 @@ ff_vlog
 ff_log_close
 ff_stack_thread_init
 ff_flow_map_lookup
+ff_syncache_count
+ff_is_drain_generation
+ff_socket_snd_pending
+ff_socket_drain_count

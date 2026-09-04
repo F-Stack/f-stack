@@ -49,6 +49,7 @@
 #include <sys/jail.h>
 #include <sys/mbuf.h>
 #include <sys/protosw.h>
+#include <sys/domain.h>
 #include <sys/rwlock.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
@@ -67,6 +68,9 @@
 #endif
 
 #include <net/vnet.h>
+#include <netinet/in.h>
+#include <netinet/in_pcb.h>
+#include <netinet/tcp_var.h>
 
 #include <security/audit/audit.h>
 #include <security/mac/mac_framework.h>
@@ -123,6 +127,76 @@ getsock(struct thread *td, int fd, const cap_rights_t *rightsp,
 	}
 	*fpp = fp;
 	return (0);
+}
+
+/* F-M3-1 / F-M4-2 / C-NR-402 (M4): drain-side socket aggregation for the
+ * graceful reload orchestration. ff_socket_drain_count() walks this
+ * process's descriptor table; the nginx worker is single-threaded on the
+ * ff datapath, so no fd-table lock is needed. Only INET/INET6 sockets
+ * count and listening sockets are excluded (the master<->worker channel
+ * socketpair is AF_LOCAL). ff_socket_snd_pending() instead walks the full
+ * TCP inpcb list (F-M4-2): an app-closed socket whose so_snd the stack is
+ * still draining has no descriptor and is invisible to the fd walk.
+ * TIME_WAIT entries carry no socket and are skipped naturally. The
+ * app-face declarations live in ff_api.h. */
+int ff_socket_snd_pending(void);
+int ff_socket_drain_count(void);
+
+static int
+ff_socket_is_drain_conn(struct socket *so)
+{
+
+	if (so == NULL || so->so_proto == NULL
+	    || so->so_proto->pr_domain == NULL)
+		return (0);
+	switch (so->so_proto->pr_domain->dom_family) {
+	case AF_INET:
+#ifdef INET6
+	case AF_INET6:
+#endif
+		break;
+	default:
+		return (0);
+	}
+	if (SOLISTENING(so))
+		return (0);
+	return (1);
+}
+
+int
+ff_socket_snd_pending(void)
+{
+	struct inpcb_iterator inpi = INP_ALL_ITERATOR(&V_tcbinfo,
+	    INPLOOKUP_RLOCKPCB);
+	struct inpcb *inp;
+	u_long pending = 0;
+
+	while ((inp = inp_next(&inpi)) != NULL) {
+		struct socket *so = inp->inp_socket;
+
+		if (so != NULL && !SOLISTENING(so))
+			pending += sbavail(&so->so_snd);
+	}
+	/* int return per the app face; clamp rather than wrap */
+	return (pending > 0x7fffffffUL ? 0x7fffffff : (int)pending);
+}
+
+int
+ff_socket_drain_count(void)
+{
+	struct filedesc *fdp = curthread->td_proc->p_fd;
+	int conns = 0;
+	int fd;
+
+	for (fd = 0; fd < fdp->fd_nfiles; fd++) {
+		struct file *fp = fdp->fd_ofiles[fd].fde_file;
+
+		if (fp == NULL || fp->f_type != DTYPE_SOCKET)
+			continue;
+		if (ff_socket_is_drain_conn(fp->f_data))
+			conns++;
+	}
+	return (conns);
 }
 
 /*

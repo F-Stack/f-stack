@@ -170,6 +170,12 @@ static void	syncookie_cmp(struct in_conninfo *,
 VNET_DEFINE_STATIC(struct tcp_syncache, tcp_syncache);
 #define	V_tcp_syncache			VNET(tcp_syncache)
 
+/* C-NR-312a: per-VNET total of half-open entries, maintained at the two
+ * funnel points syncache_insert()/syncache_drop() (every add/remove path
+ * goes through them). */
+VNET_DEFINE_STATIC(u_int, syncache_entries);
+#define	V_syncache_entries		VNET(syncache_entries)
+
 static SYSCTL_NODE(_net_inet_tcp, OID_AUTO, syncache,
     CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TCP SYN cache");
@@ -391,6 +397,7 @@ syncache_insert(struct syncache *sc, struct syncache_head *sch)
 	/* Put it into the bucket. */
 	TAILQ_INSERT_HEAD(&sch->sch_bucket, sc, sc_hash);
 	sch->sch_length++;
+	V_syncache_entries++;
 
 #ifdef TCP_OFFLOAD
 	if (ADDED_BY_TOE(sc)) {
@@ -460,6 +467,7 @@ syncache_drop(struct syncache *sc, struct syncache_head *sch)
 	TCPSTATES_DEC(TCPS_SYN_RECEIVED);
 	TAILQ_REMOVE(&sch->sch_bucket, sc, sc_hash);
 	sch->sch_length--;
+	V_syncache_entries--;
 
 #ifdef TCP_OFFLOAD
 	if (ADDED_BY_TOE(sc)) {
@@ -470,6 +478,24 @@ syncache_drop(struct syncache *sc, struct syncache_head *sch)
 #endif
 
 	syncache_free(sc);
+}
+
+/*
+ * C-NR-312a: current number of half-open entries in this stack, polled by
+ * the graceful-reload drain logic to learn when the half-open window has
+ * closed.  Entries change on the single datapath thread, so no lock.
+ */
+u_int
+syncache_count(void)
+{
+	return (V_syncache_entries);
+}
+
+/* ff_api export (lib/ff_api.h), no-arg direct read for the app side. */
+int
+ff_syncache_count(void)
+{
+	return ((int)syncache_count());
 }
 
 /*
@@ -1315,6 +1341,7 @@ syncache_expand(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 
 		TAILQ_REMOVE(&sch->sch_bucket, sc, sc_hash);
 		sch->sch_length--;
+		V_syncache_entries--;
 #ifdef TCP_OFFLOAD
 		if (ADDED_BY_TOE(sc)) {
 			struct toedev *tod = sc->sc_tod;

@@ -109,7 +109,43 @@ struct ff_reload_state {
     uint32_t handover_epoch;
     uint64_t rx_parked[FF_RELOAD_MAX_PROCS];
 
+    /* M4 (C-NR-402/403/406) reserved-word assignment:
+     *   reserved[0..1]: pointer to the drain extension block below,
+     *                   written once by the master before any fork
+     *   reserved[2]:    handover duration ms (T2 park -> owner flip)
+     *   reserved[3]:    drain duration ms (T3 entry -> DRAIN_DONE)
+     *   reserved[4..6]: spare
+     * Accessed only through the helpers below, never directly. */
     uint32_t reserved[7];
+};
+
+/* Drain reporting extension (M4: C-NR-402/403/406): a second anonymous
+ * MAP_SHARED block created by the master right after the main block, so
+ * every child inherits both the mapping and the lib-side pointer through
+ * fork(). Carries the per-worker drain progress the master polls during
+ * T3 (D-M4-1: shared words, not msg_ring — the master runs no ff loop)
+ * plus cumulative drain-plane counters for the completion summary. */
+#define FF_RELOAD_DRAIN_MAGIC  0x46524C44U  /* "FRLD" */
+
+struct ff_reload_drain_report {
+    /* (epoch << 32) | connection count, like ready[]/rx_parked[]: a
+     * stale report from an aborted round never parses as fresh */
+    uint64_t word;
+    uint64_t snd_pending;    /* bytes queued in so_snd (F-M3-1) */
+    uint64_t syncache;       /* half-open syncache entries (F-M4-6) */
+    uint64_t last_active_ms; /* CLOCK_MONOTONIC ms of the last publish */
+};
+
+struct ff_reload_drain_state {
+    uint32_t magic;
+    uint32_t len;
+    struct ff_reload_drain_report slot[FF_RELOAD_MAX_PROCS];
+    /* per-round cumulative counters (master resets, RELAXED ops) */
+    uint64_t rx_fwd;         /* packets forwarded via drain_ring_rx */
+    uint64_t tx_fwd;         /* packets relayed via drain_ring_tx */
+    uint64_t rx_peak;        /* peak drain_rx ring occupancy */
+    uint64_t tx_peak;        /* peak drain_tx ring occupancy */
+    uint64_t reclaim;        /* DR6: (epoch << 32) | gen that took rx back */
 };
 
 struct ff_msg;
@@ -246,6 +282,47 @@ int  ff_reload_handover_parked(unsigned slot, uint32_t epoch);
 /* Worker (main loop, parked pass): ack the current epoch. No-op when no
  * slot is registered or no block is attached. */
 void ff_reload_handover_ack(void);
+
+/* ---- drain reporting (M4: C-NR-402/403/406) ----------------------------- */
+
+/* Phase-duration words in ff_reload_state.reserved (observability). */
+#define FF_RELOAD_PHASE_HANDOVER  0
+#define FF_RELOAD_PHASE_DRAIN     1
+
+/* Attach (validate + remember) the extension block; also publishes its
+ * address through the main block's reserved[0..1] (idempotent, same value
+ * written by the master before any fork). Returns 0 on success. */
+int  ff_reload_drain_attach(void *block, size_t len);
+
+/* Slot / shared-epoch views used by the worker-side publisher. */
+int      ff_reload_slot(void);
+uint32_t ff_reload_shared_epoch(void);
+
+/* Worker: publish this slot's drain progress (SEQ_CST, ~1 Hz). */
+void ff_reload_drain_publish(unsigned slot, uint32_t epoch, uint32_t conns,
+    uint64_t snd_pending, uint64_t syncache);
+
+/* Master: 0 plus fresh values when 'slot' published under 'epoch'. */
+int  ff_reload_drain_report(unsigned slot, uint32_t epoch, uint32_t *conns,
+    uint64_t *snd_pending, uint64_t *syncache, uint64_t *last_active_ms);
+
+/* Master: reset the per-round counters (call at window open). */
+void ff_reload_drain_reset(void);
+
+/* Cumulative drain-plane counters (RELAXED; observability only). */
+void ff_reload_drain_fwd_add(int tx, uint64_t n);
+void ff_reload_drain_peak_max(int tx, uint64_t v);
+void ff_reload_drain_counters(uint64_t *rx_fwd, uint64_t *tx_fwd,
+    uint64_t *rx_peak, uint64_t *tx_peak);
+
+/* DR6 (C-NR-404): the draining generation marks the block after taking rx
+ * back from a stalled owner; the master polls the word and aborts. */
+void ff_reload_drain_reclaim_mark(void);
+int  ff_reload_drain_reclaim(uint32_t *epoch, int *gen);
+
+/* Phase durations (C-NR-406), stored in ff_reload_state.reserved. */
+void     ff_reload_phase_ms_set(int phase, uint32_t ms);
+uint32_t ff_reload_phase_ms_get(int phase);
 
 /* ---- main_loop hooks (C-NR-316; called from ff_dpdk_if.c) -------------- */
 

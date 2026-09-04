@@ -59,6 +59,14 @@ static uint64_t g_rx_full;
 static uint64_t g_tx_full;
 static uint64_t g_tx_dropped;
 
+/* C-NR-406: local cumulative forward counters, flushed as deltas into the
+ * shared drain block at ~1 Hz (single datapath thread per process, no
+ * atomics needed until the flush). */
+static uint64_t g_rx_fwd;
+static uint64_t g_tx_fwd;
+static uint64_t g_rx_fwd_flushed;
+static uint64_t g_tx_fwd_flushed;
+
 /* The peer generation; FF_RELOAD_GEN_MAX is 2 (compile-checked against
  * FF_MBUF_GEN_MAX in ff_dpdk_if.c), so the modulo is the same as ^1. */
 static int
@@ -246,6 +254,7 @@ ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
         g_rx_full++;
         return -1;
     }
+    g_rx_fwd++;
     return 0;
 }
 
@@ -332,7 +341,37 @@ ff_drain_ring_tx_drain(uint16_t port_id, uint16_t queue_id,
             rte_pktmbuf_free(pkts_burst[i]);
         g_tx_dropped += (uint64_t)(nb - sent);
     }
+    g_tx_fwd += sent;
     return sent;
+}
+
+void
+ff_drain_ring_flush_stats(void)
+{
+    uint16_t p;
+    unsigned q;
+
+    /* publish the local deltas since the last flush */
+    ff_reload_drain_fwd_add(0, g_rx_fwd - g_rx_fwd_flushed);
+    g_rx_fwd_flushed = g_rx_fwd;
+    ff_reload_drain_fwd_add(1, g_tx_fwd - g_tx_fwd_flushed);
+    g_tx_fwd_flushed = g_tx_fwd;
+
+    if (!drain_ring_up) {
+        return;
+    }
+
+    /* watermarks: sample every attached ring; the max-update races between
+     * the two generations are benign (observability only) */
+    for (p = 0; p < RTE_MAX_ETHPORTS; p++) {
+        if (drain_ring_rx[p] == NULL || drain_ring_tx[p] == NULL) {
+            continue;
+        }
+        for (q = 0; q < drain_ring_nb_queues[p] * FF_RELOAD_GEN_MAX; q++) {
+            ff_reload_drain_peak_max(0, rte_ring_count(drain_ring_rx[p][q]));
+            ff_reload_drain_peak_max(1, rte_ring_count(drain_ring_tx[p][q]));
+        }
+    }
 }
 
 void

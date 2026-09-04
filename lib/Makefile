@@ -176,6 +176,14 @@ HOST_CFLAGS+= -DFF_KERNEL_COEXIST
 CFLAGS+= -DFF_KERNEL_COEXIST
 endif
 
+# Test-only graceful-reload fault injection (nginx_reload_spec 08,
+# RT-05/06/07): FF_FAULT env hooks in lib/ff_reload.c. Build with
+# FF_RELOAD_FAULT_INJECTION=1 for the runtime fault-injection builds;
+# never enabled in default/production builds.
+ifdef FF_RELOAD_FAULT_INJECTION
+HOST_CFLAGS+= -DFF_RELOAD_FAULT_INJECTION
+endif
+
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
 
 

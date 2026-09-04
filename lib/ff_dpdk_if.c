@@ -2370,6 +2370,33 @@ ff_divert_drop_warn(const char *reason)
         "graceful reload divert: %s\n", reason);
 }
 
+/* F-M3-4 (C-NR-404): heartbeat stall alerts re-fire every timeout period
+ * while the owner stays dead (the sampler rebases once per episode only);
+ * cap at one line per second, same mechanism as ff_divert_drop_warn(). */
+static void
+ff_reload_stall_warn(int alert, unsigned timeout_ms, int gen)
+{
+    static time_t last_warn_sec;
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        ts.tv_sec = 0;
+    if (last_warn_sec != 0 && ts.tv_sec == last_warn_sec)
+        return;
+    last_warn_sec = ts.tv_sec;
+
+    if (alert) {
+        ff_log(FF_LOG_ALERT, FF_LOGTYPE_FSTACK_LIB,
+            "reload rx owner stalled >%ums: generation %d taking rx back\n",
+            timeout_ms, gen);
+    } else {
+        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+            "reload heartbeat stalled >%ums, generation %d (rx return "
+            "deferred: park order pending or not detached from "
+            "hardware)\n", timeout_ms, gen);
+    }
+}
+
 /* C-NR-309: hand one converted rte mbuf to this generation's drain_tx
  * ring; the peer generation (the hardware owner) transmits it. pcap
  * capture and tx accounting mirror send_burst so the diverted path stays
@@ -3232,6 +3259,65 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
     return send_single_packet(head, port_id);
 }
 
+/* C-NR-402/403/406 (M4): ~1 Hz reload-plane housekeeping, run from
+ * main_loop. All off the per-packet path:
+ *   - the draining generation publishes per-slot drain progress for the
+ *     master (its DRAIN_DONE wait polls it);
+ *   - the generation that has taken over retires its reload data plane
+ *     once the window is closed (all G_old gone by then): flow map,
+ *     dispatcher callback and drain rings, so steady state carries zero
+ *     reload overhead. The drain rings re-attach when the next window
+ *     opens — this very process needs them as the drainer in that round;
+ *   - drain-ring counters and watermarks flush to the shared block. */
+static void
+ff_reload_plane_housekeeping(uint64_t now_tsc)
+{
+    static uint64_t next_tsc;
+    uint64_t hz;
+
+    if (!ff_global_cfg.dpdk.graceful_reload)
+        return;
+    if (rte_eal_process_type() != RTE_PROC_SECONDARY)
+        return;
+    if (next_tsc != 0 && now_tsc < next_tsc)
+        return;
+    hz = rte_get_tsc_hz();
+    next_tsc = now_tsc + (hz != 0 ? hz : 1000000000ull);
+
+    /* C-NR-402 producer: the draining generation only (rx handed over) */
+    if (ff_reload_hw_locked() && ff_is_drain_generation()
+        && ff_reload_state_attached() && ff_reload_slot() >= 0) {
+        ff_reload_drain_publish((unsigned)ff_reload_slot(),
+            ff_reload_shared_epoch(),
+            (uint32_t)ff_socket_drain_count(),
+            (uint64_t)ff_socket_snd_pending(),
+            (uint64_t)ff_syncache_count());
+    }
+
+    /* C-NR-403: retire the reload data plane in steady state, re-arm the
+     * drain rings when a new window opens. */
+    if (!ff_reload_hw_locked()
+        && ff_reload_active_gen() == ff_reload_gen()) {
+        if (packet_dispatcher_with_context != NULL || ff_flow_map_active()
+            || ff_drain_ring_ready()) {
+            ff_unregist_packet_dispatcher_context();
+            ff_flow_map_close();
+            ff_drain_ring_unregist();
+            ff_log(FF_LOG_NOTICE, FF_LOGTYPE_FSTACK_LIB,
+                "reload data plane retired (steady state, "
+                "generation %d)\n", ff_reload_gen());
+        }
+    } else if (ff_reload_hw_locked() && !ff_drain_ring_ready()) {
+        if (ff_drain_ring_init() != 0)
+            ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
+                "ff_drain_ring_init failed on window open\n");
+    }
+
+    /* C-NR-406: shared counters + watermarks */
+    if (ff_reload_hw_locked() && ff_drain_ring_ready())
+        ff_drain_ring_flush_stats();
+}
+
 static int
 main_loop(void *arg)
 {
@@ -3528,26 +3614,33 @@ main_loop(void *arg)
                  * arbiter, so a late-waking owner parks itself on its
                  * next pass. Guarded: never while a park order is pending
                  * (that would break the T2 barrier) and never while this
-                 * generation still owns rx itself. Full crash handling
-                 * (flow_map teardown, window close) is M4 (C-NR-404). */
+                 * generation still owns rx itself. M4 (C-NR-404): the
+                 * takeover is flagged for the master, which aborts the
+                 * round and closes the reload window (below). */
                 if (!ff_reload_rx_stopped()
                     && ff_reload_rx_owner_gen() != ff_reload_gen()) {
-                    ff_log(FF_LOG_ALERT, FF_LOGTYPE_FSTACK_LIB,
-                        "reload rx owner stalled >%ums: generation %d "
-                        "taking rx back\n",
+                    ff_reload_stall_warn(1,
                         ff_global_cfg.dpdk.reload_heartbeat_timeout_ms,
                         ff_reload_gen());
                     ff_reload_rx_owner_gen_set(ff_reload_gen());
                     ff_reload_rx_stopped_set(0);
+                    /* C-NR-404 (DR6 first half, M4): flag the takeover so
+                     * the master aborts the round and closes the window.
+                     * The stalled owner's flow map and dispatcher state
+                     * died with it (process-local); the reclaimer never
+                     * armed any (it retired them at the previous round's
+                     * completion) — nothing to tear down on this side. */
+                    ff_reload_drain_reclaim_mark();
                 } else {
-                    ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-                        "reload heartbeat stalled >%ums (rx return "
-                        "deferred: park order pending or not detached "
-                        "from hardware)\n",
-                        ff_global_cfg.dpdk.reload_heartbeat_timeout_ms);
+                    ff_reload_stall_warn(0,
+                        ff_global_cfg.dpdk.reload_heartbeat_timeout_ms,
+                        ff_reload_gen());
                 }
             }
         }
+
+        /* M4 (C-NR-402/403/406): ~1 Hz reload-plane housekeeping */
+        ff_reload_plane_housekeeping(cur_tsc);
 
         {
             unsigned effective_sleep = idle_sleep;

@@ -397,6 +397,28 @@ int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
     struct rte_mbuf *m);
 /* reload drain ring api end */
 
+/* C-NR-312a: number of half-open (syncache) entries currently held by this
+ * process's stack. The draining generation polls it to learn when its
+ * half-open window has closed and its listening sockets can be closed. */
+int ff_syncache_count(void);
+
+/* C-NR-405: 1 = this process no longer owns rx (the peer generation took
+ * it over during a graceful reload), i.e. it is the draining generation.
+ * 0 otherwise, including when no reload is in flight. */
+int ff_is_drain_generation(void);
+
+/* F-M3-1 / F-M4-2 (M4): total bytes the TCP sockets of this process's
+ * stack still hold queued in so_snd (listening excluded), including
+ * app-closed sockets the stack is still draining (no descriptor left).
+ * The draining generation defers its exit while it is non-zero so
+ * in-flight tails are not reset by the worker's death. */
+int ff_socket_snd_pending(void);
+
+/* C-NR-402 (M4): number of open INET/INET6 connections (listening
+ * excluded) in this process — the drain-progress figure the master waits
+ * on before declaring DRAIN_DONE. */
+int ff_socket_drain_count(void);
+
 /* dispatch api end */
 
 /* pcb lddr api begin */

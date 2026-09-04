@@ -46,6 +46,9 @@ struct socket *	 syncache_add(struct in_conninfo *, struct tcpopt *,
 void	 syncache_chkrst(struct in_conninfo *, struct tcphdr *, struct mbuf *,
 	     uint16_t);
 int	 syncache_pcblist(struct sysctl_req *);
+u_int	 syncache_count(void);
+/* ff_api export; declared for applications in lib/ff_api.h. */
+int	 ff_syncache_count(void);
 
 struct syncache {
 	TAILQ_ENTRY(syncache)	sc_hash;

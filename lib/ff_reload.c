@@ -43,6 +43,45 @@ static uint64_t g_hb_last_advance;
 static uint64_t g_hb_timeout_tsc;
 static int      g_hb_inited;
 
+#ifdef FF_RELOAD_FAULT_INJECTION
+/* Test builds only (nginx_reload_spec 08, RT-05/06/07): named faults are
+ * selected with the FF_FAULT environment variable. Default builds carry
+ * none of this code. noinline keeps the hooks visible to nm. */
+#include <stdlib.h>
+#include <errno.h>
+
+__attribute__((noinline)) static int
+ff_reload_fault_is(const char *name)
+{
+    static const char *sel;
+    static int inited;
+
+    if (!inited) {
+        sel = getenv("FF_FAULT");
+        inited = 1;
+    }
+    return sel != NULL && strcmp(sel, name) == 0;
+}
+
+/* RT-05: FF_FAULT=ready_delay publishes READY FF_FAULT_DELAY_MS late
+ * (default past the 60 s master READY wait, i.e. a forced timeout). */
+__attribute__((noinline)) static void
+ff_reload_fault_delay(void)
+{
+    const char *v = getenv("FF_FAULT_DELAY_MS");
+    long ms = (v != NULL) ? strtol(v, NULL, 10) : 70000;
+    struct timespec ts;
+
+    if (ms <= 0) {
+        ms = 70000;
+    }
+    ts.tv_sec = ms / 1000;
+    ts.tv_nsec = (ms % 1000) * 1000000L;
+    while (nanosleep(&ts, &ts) != 0 && errno == EINTR) {
+    }
+}
+#endif /* FF_RELOAD_FAULT_INJECTION */
+
 /* ---- pure helpers ------------------------------------------------------ */
 
 int
@@ -279,8 +318,25 @@ ff_no_hw_mode(void)
 }
 
 int
+ff_is_drain_generation(void)
+{
+    int owner = ff_reload_rx_owner_gen();
+
+    if (owner < 0)
+        return 0;
+    return owner != ff_reload_gen();
+}
+
+int
 ff_reload_rx_release(int to_gen)
 {
+#ifdef FF_RELOAD_FAULT_INJECTION
+    /* RT-07 test hook: forced ownership-flip failure (markers untouched,
+     * so the master's abort rollback stays consistent). */
+    if (ff_reload_fault_is("flip_fail")) {
+        return FF_RELOAD_HANDOVER_TIMEOUT;
+    }
+#endif
     if (g_reload_state == NULL)
         return FF_RELOAD_HANDOVER_INVAL;
     if (to_gen < 0 || to_gen >= FF_RELOAD_GEN_MAX)
@@ -306,6 +362,12 @@ ff_queue_handover_mutex(uint16_t port_id, uint16_t queue_id,
     (void)port_id;
     (void)queue_id;
 
+#ifdef FF_RELOAD_FAULT_INJECTION
+    /* RT-07 test hook: forced cross-process handover-mutex timeout. */
+    if (ff_reload_fault_is("mutex_timeout")) {
+        return FF_RELOAD_HANDOVER_TIMEOUT;
+    }
+#endif
     if (g_reload_state == NULL)
         return FF_RELOAD_HANDOVER_INVAL;
     if (from_gen == to_gen)
@@ -391,6 +453,12 @@ ff_reload_handover_ack(void)
     uint32_t epoch;
     uint64_t word;
 
+#ifdef FF_RELOAD_FAULT_INJECTION
+    /* RT-07 test hook: a wedged worker that never acks the park order. */
+    if (ff_reload_fault_is("park_never")) {
+        return;
+    }
+#endif
     if (g_reload_state == NULL || g_reload_slot < 0)
         return;
     /* A racing re-arm between the load and the store can only produce a
@@ -401,6 +469,253 @@ ff_reload_handover_ack(void)
     word = ((uint64_t)epoch << 32) | 1u;
     __atomic_store_n(&g_reload_state->rx_parked[g_reload_slot], word,
         __ATOMIC_SEQ_CST);
+}
+
+/* ---- drain reporting (M4: C-NR-402/403/406) ---------------------------- */
+
+static struct ff_reload_drain_state *g_drain_state;
+
+int
+ff_reload_drain_attach(void *block, size_t len)
+{
+    struct ff_reload_drain_state *d = block;
+    uintptr_t addr;
+
+    if (block == NULL) {
+        return -1;
+    }
+    if (len < sizeof(*d) || d->magic != FF_RELOAD_DRAIN_MAGIC
+        || d->len != sizeof(*d)) {
+        fprintf(stderr, "ff_reload: invalid drain state block ignored\n");
+        return -1;
+    }
+
+    g_drain_state = d;
+
+    /* Self-describing: a tool holding only the main block can follow to
+     * the extension. The master writes this before any fork; children
+     * re-attach defensively with the same value. */
+    if (g_reload_state != NULL) {
+        addr = (uintptr_t)d;
+        __atomic_store_n(&g_reload_state->reserved[0],
+            (uint32_t)(addr & 0xffffffffu), __ATOMIC_SEQ_CST);
+        __atomic_store_n(&g_reload_state->reserved[1],
+            (uint32_t)(addr >> 32), __ATOMIC_SEQ_CST);
+    }
+    return 0;
+}
+
+int
+ff_reload_slot(void)
+{
+    return g_reload_slot;
+}
+
+uint32_t
+ff_reload_shared_epoch(void)
+{
+    if (g_reload_state == NULL) {
+        return 0;
+    }
+    return __atomic_load_n(&g_reload_state->epoch, __ATOMIC_SEQ_CST);
+}
+
+void
+ff_reload_drain_publish(unsigned slot, uint32_t epoch, uint32_t conns,
+    uint64_t snd_pending, uint64_t syncache)
+{
+    struct ff_reload_drain_report *r;
+    struct timespec ts;
+    uint64_t now_ms;
+
+    if (g_drain_state == NULL) {
+        return;
+    }
+    if (slot >= FF_RELOAD_MAX_PROCS) {
+        /* same bound as ready[] in ff_reload_publish_ready */
+        fprintf(stderr, "ff_reload: worker slot %u >= %d, "
+            "drain report dropped\n", slot, FF_RELOAD_MAX_PROCS);
+        return;
+    }
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) {
+        now_ms = 0;
+    } else {
+        now_ms = (uint64_t)ts.tv_sec * 1000u
+            + (uint64_t)(ts.tv_nsec / 1000000);
+    }
+
+    r = &g_drain_state->slot[slot];
+    /* word first: a racing reader sees either the old pair or the new
+     * epoch + count together, never a mix */
+    __atomic_store_n(&r->word, ((uint64_t)epoch << 32) | conns,
+        __ATOMIC_SEQ_CST);
+    __atomic_store_n(&r->snd_pending, snd_pending, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&r->syncache, syncache, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&r->last_active_ms, now_ms, __ATOMIC_SEQ_CST);
+}
+
+int
+ff_reload_drain_report(unsigned slot, uint32_t epoch, uint32_t *conns,
+    uint64_t *snd_pending, uint64_t *syncache, uint64_t *last_active_ms)
+{
+    struct ff_reload_drain_report *r;
+    uint64_t word;
+
+    if (g_drain_state == NULL || slot >= FF_RELOAD_MAX_PROCS) {
+        return -1;
+    }
+
+    r = &g_drain_state->slot[slot];
+    word = __atomic_load_n(&r->word, __ATOMIC_SEQ_CST);
+    if ((uint32_t)(word >> 32) != epoch) {
+        return -1;
+    }
+
+    if (conns != NULL) {
+        *conns = (uint32_t)word;
+    }
+    if (snd_pending != NULL) {
+        *snd_pending = __atomic_load_n(&r->snd_pending, __ATOMIC_SEQ_CST);
+    }
+    if (syncache != NULL) {
+        *syncache = __atomic_load_n(&r->syncache, __ATOMIC_SEQ_CST);
+    }
+    if (last_active_ms != NULL) {
+        *last_active_ms = __atomic_load_n(&r->last_active_ms,
+            __ATOMIC_SEQ_CST);
+    }
+    return 0;
+}
+
+void
+ff_reload_drain_reset(void)
+{
+    if (g_drain_state == NULL) {
+        return;
+    }
+    /* slots need no clearing: reports are epoch-tagged */
+    __atomic_store_n(&g_drain_state->rx_fwd, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_drain_state->tx_fwd, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_drain_state->rx_peak, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_drain_state->tx_peak, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&g_drain_state->reclaim, 0, __ATOMIC_RELAXED);
+}
+
+void
+ff_reload_drain_fwd_add(int tx, uint64_t n)
+{
+    if (g_drain_state == NULL || n == 0) {
+        return;
+    }
+    if (tx) {
+        __atomic_fetch_add(&g_drain_state->tx_fwd, n, __ATOMIC_RELAXED);
+    } else {
+        __atomic_fetch_add(&g_drain_state->rx_fwd, n, __ATOMIC_RELAXED);
+    }
+}
+
+void
+ff_reload_drain_peak_max(int tx, uint64_t v)
+{
+    uint64_t *p, cur;
+
+    if (g_drain_state == NULL) {
+        return;
+    }
+    p = tx ? &g_drain_state->tx_peak : &g_drain_state->rx_peak;
+    cur = __atomic_load_n(p, __ATOMIC_RELAXED);
+    while (v > cur
+        && !__atomic_compare_exchange_n(p, &cur, v, 0,
+            __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+        /* cur refreshed by the failed CAS */
+    }
+}
+
+void
+ff_reload_drain_counters(uint64_t *rx_fwd, uint64_t *tx_fwd,
+    uint64_t *rx_peak, uint64_t *tx_peak)
+{
+    if (rx_fwd != NULL) {
+        *rx_fwd = (g_drain_state == NULL) ? 0
+            : __atomic_load_n(&g_drain_state->rx_fwd, __ATOMIC_RELAXED);
+    }
+    if (tx_fwd != NULL) {
+        *tx_fwd = (g_drain_state == NULL) ? 0
+            : __atomic_load_n(&g_drain_state->tx_fwd, __ATOMIC_RELAXED);
+    }
+    if (rx_peak != NULL) {
+        *rx_peak = (g_drain_state == NULL) ? 0
+            : __atomic_load_n(&g_drain_state->rx_peak, __ATOMIC_RELAXED);
+    }
+    if (tx_peak != NULL) {
+        *tx_peak = (g_drain_state == NULL) ? 0
+            : __atomic_load_n(&g_drain_state->tx_peak, __ATOMIC_RELAXED);
+    }
+}
+
+void
+ff_reload_drain_reclaim_mark(void)
+{
+    if (g_drain_state == NULL) {
+        return;
+    }
+    __atomic_store_n(&g_drain_state->reclaim,
+        ((uint64_t)ff_reload_shared_epoch() << 32)
+            | (uint32_t)ff_reload_gen(), __ATOMIC_SEQ_CST);
+}
+
+int
+ff_reload_drain_reclaim(uint32_t *epoch, int *gen)
+{
+    uint64_t w;
+
+    if (g_drain_state == NULL) {
+        return -1;
+    }
+    w = __atomic_load_n(&g_drain_state->reclaim, __ATOMIC_SEQ_CST);
+    if (w == 0) {
+        return -1;
+    }
+    if (epoch != NULL) {
+        *epoch = (uint32_t)(w >> 32);
+    }
+    if (gen != NULL) {
+        *gen = (int)(uint32_t)w;
+    }
+    return 0;
+}
+
+void
+ff_reload_phase_ms_set(int phase, uint32_t ms)
+{
+    if (g_reload_state == NULL) {
+        return;
+    }
+    if (phase == FF_RELOAD_PHASE_HANDOVER) {
+        __atomic_store_n(&g_reload_state->reserved[2], ms,
+            __ATOMIC_SEQ_CST);
+    } else if (phase == FF_RELOAD_PHASE_DRAIN) {
+        __atomic_store_n(&g_reload_state->reserved[3], ms,
+            __ATOMIC_SEQ_CST);
+    }
+}
+
+uint32_t
+ff_reload_phase_ms_get(int phase)
+{
+    if (g_reload_state == NULL) {
+        return 0;
+    }
+    if (phase == FF_RELOAD_PHASE_HANDOVER) {
+        return __atomic_load_n(&g_reload_state->reserved[2],
+            __ATOMIC_SEQ_CST);
+    }
+    if (phase == FF_RELOAD_PHASE_DRAIN) {
+        return __atomic_load_n(&g_reload_state->reserved[3],
+            __ATOMIC_SEQ_CST);
+    }
+    return 0;
 }
 
 /* ---- master-side orchestration ----------------------------------------- */
@@ -458,6 +773,15 @@ ff_reload_publish_ready(unsigned int slot, uint32_t pid)
 {
     uint64_t word;
 
+#ifdef FF_RELOAD_FAULT_INJECTION
+    /* RT-05 test hook: suppress or delay this worker's READY report. */
+    if (ff_reload_fault_is("ready_never")) {
+        return;
+    }
+    if (ff_reload_fault_is("ready_delay")) {
+        ff_reload_fault_delay();
+    }
+#endif
     if (g_reload_state == NULL)
         return;
     if (slot >= FF_RELOAD_MAX_PROCS) {

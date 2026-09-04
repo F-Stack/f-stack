@@ -119,4 +119,9 @@ unsigned ff_drain_ring_tx_drain(uint16_t port_id, uint16_t queue_id,
 void ff_drain_ring_stats(uint64_t *rx_full, uint64_t *tx_full,
     uint64_t *tx_dropped);
 
+/* C-NR-406 (M4): flush the local forward counters (deltas) into the
+ * shared drain block and sample ring watermarks. Off the data path —
+ * called ~1 Hz from the reload-plane housekeeping hook in ff_dpdk_if.c. */
+void ff_drain_ring_flush_stats(void);
+
 #endif /* _FF_DRAIN_RING_H_ */
