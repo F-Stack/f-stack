@@ -37,6 +37,7 @@
 
 /* inherited by every forked child (slim primary + workers) */
 struct ff_reload_state *ngx_ff_reload_shm = NULL;
+struct ff_reload_drain_state *ngx_ff_reload_drain_shm = NULL;
 
 static int      ff_reload_fsm_state = NGX_FF_RELOAD_T0_IDLE;
 static ngx_msec_t ff_reload_t_start;
@@ -211,6 +212,24 @@ ngx_ff_reload_state_create(ngx_cycle_t *cycle)
      * lib pointer state (re-attached defensively in ff_mod_init). */
     ff_reload_attach_state(ngx_ff_reload_shm);
 
+    /* M4 (C-NR-402/403/406): drain reporting extension — same lifetime
+     * and inheritance model as the main block (created before any child
+     * is forked, so every process maps it through fork()). */
+    p = mmap(NULL, sizeof(struct ff_reload_drain_state),
+             PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful reload: mmap drain state failed");
+        return NGX_ERROR;
+    }
+
+    memset(p, 0, sizeof(struct ff_reload_drain_state));
+    ngx_ff_reload_drain_shm = (struct ff_reload_drain_state *) p;
+    ngx_ff_reload_drain_shm->magic = FF_RELOAD_DRAIN_MAGIC;
+    ngx_ff_reload_drain_shm->len = sizeof(struct ff_reload_drain_state);
+    (void) ff_reload_drain_attach(ngx_ff_reload_drain_shm,
+                                   sizeof(struct ff_reload_drain_state));
+
     return NGX_OK;
 }
 
@@ -226,6 +245,13 @@ ngx_ff_reload_worker_ready(void)
 
     ff_reload_attach_state(ngx_ff_reload_shm);
     ff_reload_publish_ready((unsigned) ngx_process_slot, (uint32_t) ngx_pid);
+
+    /* M4: the drain extension pointer is fork-inherited; re-attach
+     * defensively like the main block above. */
+    if (ngx_ff_reload_drain_shm != NULL) {
+        (void) ff_reload_drain_attach(ngx_ff_reload_drain_shm,
+                                       sizeof(struct ff_reload_drain_state));
+    }
 }
 
 /* Convenience views used by ngx_process_cycle.c / ngx_ff_module.c. */

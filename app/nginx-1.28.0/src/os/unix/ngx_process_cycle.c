@@ -50,6 +50,10 @@ static ngx_int_t ngx_ff_reload_hup(ngx_cycle_t **pcycle,
     ngx_core_conf_t **pccf, ngx_uint_t *live);
 static ngx_int_t ngx_ff_reload_handover(ngx_cycle_t *cycle);
 static void ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle);
+static void ngx_ff_reload_t3_check(ngx_cycle_t *cycle);
+static void ngx_ff_reload_quit_gold(ngx_cycle_t *cycle);
+static void ngx_ff_reload_watchdog_arm(ngx_cycle_t *cycle);
+static void ngx_ff_reload_watchdog_disarm(void);
 extern int ff_mod_init(const char *conf, int proc_id, int proc_type);
 extern int ngx_ff_slim_primary_init(const char *conf);
 extern int ngx_ff_graceful_reload_detect(const char *conf);
@@ -66,6 +70,16 @@ static uint32_t ngx_ff_reload_ready_epoch;
 static ngx_msec_t ngx_ff_reload_t5_start;
 static ngx_uint_t ngx_ff_reload_t5_resent;
 static ngx_uint_t ngx_ff_reload_t5_tered;
+/* M4 (C-NR-403): T3 drain wait bookkeeping (async, watchdog-driven);
+ * F-M3-2 (C-NR-404): worker 0 attach failure flag (reload round only) */
+static ngx_msec_t ngx_ff_reload_t3_start;
+static ngx_int_t  ngx_ff_reload_attach_failed;
+/* F7/P3-a: 1 s watchdog ownership — only the arm owner disarms, and never
+ * while the native terminate path holds ITIMER_REAL. P3-b: the T5
+ * thresholds are env-overridable (defaults in the defines below). */
+static ngx_uint_t ngx_ff_reload_wd_armed;
+static ngx_msec_t ngx_ff_reload_resend_quit_ms;
+static ngx_msec_t ngx_ff_reload_escalate_term_ms;
 #define NGX_FF_RELOAD_READY_WAIT_SEC  60   /* aligns the M1 attach confirm */
 #define NGX_FF_RELOAD_T5_RESEND_QUIT_MS   10000
 #define NGX_FF_RELOAD_T5_ESCALATE_TERM_MS 90000
@@ -712,6 +726,67 @@ ngx_ff_slim_primary_ensure(ngx_cycle_t *cycle)
  * ngx_signal_worker_processes) and the master-loop `live` local; the pure
  * FSM and the shared-state updates live in ngx_ff_reload(_fsm).{h,c}. */
 
+/* F7/P3-a (C-NR-402): the master sleeps in sigsuspend, so every FSM state
+ * it can only leave on time (T3 drain wait, T5 exit wait) needs the 1 s
+ * ITIMER_REAL to keep the loop waking. Armed immediately at the waiting
+ * state's entry (F7: the arm used to live only inside wait_or_check, so a
+ * master that never saw a child exit never armed it), disarmed only by
+ * its owner and never while the native terminate path holds the timer. */
+static void
+ngx_ff_reload_watchdog_arm(ngx_cycle_t *cycle)
+{
+    struct itimerval  itv;
+
+    if (ngx_ff_reload_wd_armed) {
+        return;
+    }
+
+    ngx_memzero(&itv, sizeof(itv));
+    itv.it_value.tv_sec = 1;
+    itv.it_interval.tv_sec = 1;
+    if (setitimer(ITIMER_REAL, &itv, NULL) == -1) {
+        ngx_log_error(NGX_LOG_WARN, cycle->log, ngx_errno,
+                      "graceful reload: watchdog setitimer() failed, "
+                      "stuck G_old detection disabled");
+        return;
+    }
+    ngx_ff_reload_wd_armed = 1;
+}
+
+static void
+ngx_ff_reload_watchdog_disarm(void)
+{
+    struct itimerval  itv;
+
+    if (!ngx_ff_reload_wd_armed) {
+        return;                 /* P3-a: never touch a foreign timer */
+    }
+    if (ngx_terminate) {
+        return;                 /* native delay backoff owns ITIMER_REAL */
+    }
+
+    ngx_memzero(&itv, sizeof(itv));
+    (void) setitimer(ITIMER_REAL, &itv, NULL);
+    ngx_ff_reload_wd_armed = 0;
+}
+
+/* P3-b: the watchdog thresholds stay constants by default; the two env
+ * overrides let an operator tighten them without a rebuild. */
+static ngx_msec_t
+ngx_ff_reload_env_msec(const char *name, ngx_msec_t def)
+{
+    u_char     *v;
+    ngx_int_t   n;
+
+    v = (u_char *) getenv(name);
+    if (v == NULL) {
+        return def;
+    }
+
+    n = ngx_atoi(v, ngx_strlen(v));
+    return (n > 0) ? (ngx_msec_t) n : def;
+}
+
 static void
 ngx_ff_reload_abort(ngx_cycle_t *cycle, int fsm_event, const char *reason)
 {
@@ -900,12 +975,15 @@ ngx_ff_reload_handover(ngx_cycle_t *cycle)
 {
     uint32_t    epoch;
     ngx_int_t   i;
-    ngx_msec_t  deadline;
+    ngx_msec_t  deadline, t_start;
     ngx_uint_t  waiting;
     int         active, target;
 
     active = ff_reload_active_gen();
     target = ff_reload_target_gen();
+
+    /* C-NR-406: takeover latency (park order -> owner flip) */
+    t_start = ngx_current_msec;
 
     if (active == target) {
         /* no generation to take over from (should not happen: the window
@@ -979,6 +1057,10 @@ ngx_ff_reload_handover(ngx_cycle_t *cycle)
         return NGX_ERROR;
     }
 
+    /* C-NR-406: publish the takeover latency for the completion summary */
+    ff_reload_phase_ms_set(FF_RELOAD_PHASE_HANDOVER,
+                           (uint32_t) (ngx_current_msec - t_start));
+
     return NGX_OK;
 }
 
@@ -1027,6 +1109,22 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     }
     ngx_ff_reload_ready_epoch = ngx_ff_reload_epoch();
 
+    /* C-NR-402: fresh per-round drain counters (slots are epoch-tagged
+     * and need no clearing) */
+    ff_reload_drain_reset();
+    ngx_ff_reload_attach_failed = 0;
+
+    /* G-B4 P0-1 (bounce 1): clear the G_new slot snapshot BEFORE any
+     * spawn or abort of this round. Every abort below the snapshot
+     * (failed init_cycle, failed worker-0 attach) TERMs just_spawn ||
+     * new_slots[]; on round >= 2 the stale array still names the
+     * PREVIOUS round's G_new — the currently active generation — so an
+     * early abort would TERM every live worker with respawn=0 and take
+     * the whole service down instead of keeping G_old serving. With the
+     * early clear, a pre-snapshot abort touches only just_spawn slots
+     * (none spawned yet, or the failed worker 0 alone). */
+    ngx_memzero(ngx_ff_reload_new_slots, sizeof(ngx_ff_reload_new_slots));
+
     /* re-read the configuration; on failure roll back (G_old untouched,
      * aligned with the kernel HUP semantics) */
     cycle = ngx_init_cycle(cycle);
@@ -1048,6 +1146,17 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     /* fork G_new in the native order */
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_JUST_RESPAWN);
+
+    if (ngx_ff_reload_attach_failed) {
+        /* F-M3-2 (C-NR-404): worker 0 failed to attach; roll the round
+         * back instead of killing the master (see the attach gate in
+         * ngx_start_worker_processes). G_old keeps serving. */
+        ngx_ff_reload_attach_failed = 0;
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "worker 0 failed to attach to the resident "
+                            "primary");
+        return NGX_ERROR;
+    }
 
     /* snapshot the new worker slots before the cache manager processes
      * also become just_spawn (the flag is consumed later by
@@ -1079,12 +1188,15 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     }
     (void) ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_HANDOVER_DONE); /* -> T3 */
 
-    /* T3 -> T4: drain completion (FF_RELOAD_DRAIN_DONE: connections 0 and
-     * all G_old processes gone) is M4 (C-NR-402/403/405); the M3
-     * orchestration still drives the placeholder straight through. */
-    (void) ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_DRAIN_DONE);    /* -> T4 */
+    /* C-NR-403 (M4): T3 is a real waiting state now. The master returns
+     * to its loop (stays responsive to signals; the anchor's blocking
+     * risk) and the 1 s watchdog drives ngx_ff_reload_t3_check() from
+     * wait_or_check until every live G_old worker reports an empty drain
+     * set (C-NR-402) or the deadline forces the round onward. */
 
-    /* T4 --QUIT_GOLD--> T5: graceful-quit only the old generation */
+    /* Snapshot the G_old set at T3 entry: it is both the drain-wait
+     * audience and the QUIT audience (nothing signals workers in between,
+     * so just_spawn is unchanged from the M3 flow's later snapshot). */
     ngx_memzero(ngx_ff_reload_old_slots, sizeof(ngx_ff_reload_old_slots));
     for (i = 0; i < ngx_last_process; i++) {
         if (ngx_processes[i].pid != -1 && !ngx_processes[i].just_spawn
@@ -1094,14 +1206,8 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
         }
     }
 
-    ngx_signal_worker_processes(cycle,
-                                ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
-
-    if (ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_QUIT_GOLD)
-        != NGX_FF_RELOAD_T5_GOLD_QUIT)
-    {
-        return NGX_ERROR;
-    }
+    ngx_ff_reload_t3_start = ngx_current_msec;
+    ngx_ff_reload_watchdog_arm(cycle);   /* F7: arm at the waiting state */
 
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                   "graceful reload: new generation ready (%ui workers), "
@@ -1109,6 +1215,117 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
 
     *live = 1;
     return NGX_OK;
+}
+
+/* C-NR-403 (M4): DRAIN_DONE confirmed — quit the old generation and enter
+ * T5. Extracted from the M3 straight-through path so the async T3 wait
+ * can fire it when the drain completes. */
+static void
+ngx_ff_reload_quit_gold(ngx_cycle_t *cycle)
+{
+    ngx_signal_worker_processes(cycle,
+                                ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
+
+    if (ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_QUIT_GOLD)
+        != NGX_FF_RELOAD_T5_GOLD_QUIT)
+    {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                      "graceful reload: QUIT_GOLD transition failed in "
+                      "state %s",
+                      ngx_ff_reload_fsm_state_name(
+                          ngx_ff_reload_fsm_state()));
+    }
+}
+
+/* C-NR-402/403 (M4): asynchronous T3 drain wait, evaluated once per
+ * master-loop pass (the watchdog wakes the loop every second). DRAIN_DONE
+ * needs every live G_old worker's report to show zero open connections,
+ * an empty send backlog (F-M3-1) and no half-open syncache entries
+ * (F-M4-6: the forwarding window must outlive late final ACKs); dead slots
+ * count as drained (probed, not assumed). Forced through once the drain
+ * exceeds worker_shutdown_timeout (the T5 escalation constant when the
+ * directive is off) so a stuck round can never wedge re-entry forever. */
+static void
+ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
+{
+    ngx_core_conf_t  *ccf;
+    uint32_t          epoch = ngx_ff_reload_ready_epoch;
+    uint32_t          conns;
+    uint64_t          snd_pending;
+    uint64_t          syncache;
+    ngx_msec_t        deadline;
+    ngx_int_t         i;
+    ngx_uint_t        drained, forced;
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+
+    ngx_ff_reload_watchdog_arm(cycle);   /* F7: defensive re-arm */
+
+    /* DR6 (C-NR-404): a G_old worker that took rx back after the new
+     * generation stalled flags it here; abort the round — G_old is
+     * already serving again, only the reload window needs closing. */
+    {
+        uint32_t  r_epoch;
+        int       r_gen;
+
+        if (ff_reload_drain_reclaim(&r_epoch, &r_gen) == 0
+            && r_epoch == epoch)
+        {
+            ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_ABORT,
+                                "new generation stalled: old generation "
+                                "reclaimed rx (DR6), rolling back");
+            ngx_ff_reload_t3_start = 0;
+            ngx_ff_reload_watchdog_disarm();
+            return;
+        }
+    }
+
+    drained = 1;
+    for (i = 0; i < ngx_last_process; i++) {
+        if (!ngx_ff_reload_old_slots[i]) {
+            continue;
+        }
+        if (ngx_processes[i].pid == -1 || ngx_processes[i].exited
+            || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+        {
+            continue;           /* dead is drained */
+        }
+
+        if (ff_reload_drain_report((unsigned) i, epoch, &conns,
+                                   &snd_pending, &syncache, NULL) != 0
+            || conns != 0 || snd_pending != 0 || syncache != 0)
+        {
+            drained = 0;
+            break;
+        }
+    }
+
+    deadline = ccf->shutdown_timeout ? ccf->shutdown_timeout
+                                     : ngx_ff_reload_escalate_term_ms;
+    forced = !drained
+        && ngx_current_msec - ngx_ff_reload_t3_start > deadline;
+
+    if (!drained && !forced) {
+        return;
+    }
+
+    /* T3 -> T4 -> T5 */
+    ff_reload_phase_ms_set(FF_RELOAD_PHASE_DRAIN,
+                           (uint32_t) (ngx_current_msec
+                                       - ngx_ff_reload_t3_start));
+    ngx_ff_reload_t3_start = 0;
+
+    if (ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_DRAIN_DONE)
+        != NGX_FF_RELOAD_T4_DRAIN_DONE)
+    {
+        return;
+    }
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "graceful reload: old generation drained%s, quitting",
+                  forced ? " (deadline forced)" : "");
+
+    ngx_ff_reload_quit_gold(cycle);
 }
 
 /* master-loop hook: close T5 once every G_old slot is gone (flips
@@ -1126,18 +1343,36 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
 static void
 ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
 {
-    struct itimerval  itv;
     ngx_int_t         i;
     ngx_msec_t        now;
+    int               state;
 
-    if (ngx_ff_reload_fsm_state() != NGX_FF_RELOAD_T5_GOLD_QUIT) {
+    /* P3-b: resolve the env overrides once (0 is not a valid threshold,
+     * so it doubles as the "unresolved" sentinel) */
+    if (ngx_ff_reload_resend_quit_ms == 0) {
+        ngx_ff_reload_resend_quit_ms = ngx_ff_reload_env_msec(
+            "NGX_FF_RELOAD_T5_RESEND_QUIT_MS",
+            NGX_FF_RELOAD_T5_RESEND_QUIT_MS);
+        ngx_ff_reload_escalate_term_ms = ngx_ff_reload_env_msec(
+            "NGX_FF_RELOAD_T5_ESCALATE_TERM_MS",
+            NGX_FF_RELOAD_T5_ESCALATE_TERM_MS);
+    }
 
-        /* defensive disarm if T5 was left by any other path */
-        if (ngx_ff_reload_t5_start != 0) {
-            ngx_memzero(&itv, sizeof(itv));
-            (void) setitimer(ITIMER_REAL, &itv, NULL);
-            ngx_ff_reload_t5_start = 0;
-        }
+    state = ngx_ff_reload_fsm_state();
+
+    /* C-NR-403 (M4): T3 is evaluated here — the 1 s watchdog keeps the
+     * master loop waking while the old generation drains. */
+    if (state == NGX_FF_RELOAD_T3_DRAIN) {
+        ngx_ff_reload_t3_check(cycle);
+        return;
+    }
+
+    if (state != NGX_FF_RELOAD_T5_GOLD_QUIT) {
+
+        /* defensive disarm if T5 was left by any other path (P3-a: the
+         * disarm only fires for a timer this module armed) */
+        ngx_ff_reload_watchdog_disarm();
+        ngx_ff_reload_t5_start = 0;
 
         return;
     }
@@ -1145,14 +1380,7 @@ ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
     now = ngx_current_msec;
 
     if (ngx_ff_reload_t5_start == 0) {
-        ngx_memzero(&itv, sizeof(itv));
-        itv.it_value.tv_sec = 1;
-        itv.it_interval.tv_sec = 1;
-        if (setitimer(ITIMER_REAL, &itv, NULL) == -1) {
-            ngx_log_error(NGX_LOG_WARN, cycle->log, ngx_errno,
-                          "graceful reload: T5 watchdog setitimer() failed, "
-                          "stuck G_old detection disabled");
-        }
+        ngx_ff_reload_watchdog_arm(cycle);   /* F7: also reached async */
         ngx_ff_reload_t5_start = now;
         ngx_ff_reload_t5_resent = 0;
         ngx_ff_reload_t5_tered = 0;
@@ -1165,7 +1393,7 @@ ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
     }
 
     if (!ngx_ff_reload_t5_resent
-        && now - ngx_ff_reload_t5_start > NGX_FF_RELOAD_T5_RESEND_QUIT_MS)
+        && now - ngx_ff_reload_t5_start > ngx_ff_reload_resend_quit_ms)
     {
         ngx_ff_reload_t5_resent = 1;
 
@@ -1186,11 +1414,11 @@ ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
         ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
                       "graceful reload: G_old drain exceeds %M ms, QUIT "
                       "re-delivered by signal (channel suspected lost)",
-                      (ngx_msec_t) NGX_FF_RELOAD_T5_RESEND_QUIT_MS);
+                      ngx_ff_reload_resend_quit_ms);
     }
 
     if (!ngx_ff_reload_t5_tered
-        && now - ngx_ff_reload_t5_start > NGX_FF_RELOAD_T5_ESCALATE_TERM_MS)
+        && now - ngx_ff_reload_t5_start > ngx_ff_reload_escalate_term_ms)
     {
         ngx_ff_reload_t5_tered = 1;
 
@@ -1208,7 +1436,7 @@ ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
         ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
                       "graceful reload: G_old drain exceeds %M ms, "
                       "SIGTERM escalation (open connections will be reset)",
-                      (ngx_msec_t) NGX_FF_RELOAD_T5_ESCALATE_TERM_MS);
+                      ngx_ff_reload_escalate_term_ms);
     }
 
     for (i = 0; i < ngx_last_process; i++) {
@@ -1220,17 +1448,28 @@ ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
         }
     }
 
-    ngx_memzero(&itv, sizeof(itv));
-    (void) setitimer(ITIMER_REAL, &itv, NULL);
+    ngx_ff_reload_watchdog_disarm();
     ngx_ff_reload_t5_start = 0;
 
     if (ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_GOLD_EXITED)
         == NGX_FF_RELOAD_T0_IDLE)
     {
+        /* C-NR-406: completion summary — master-measured durations plus
+         * the worker-published drain-plane counters. */
+        uint64_t  rx_fwd, tx_fwd, rx_peak, tx_peak;
+
+        ff_reload_drain_counters(&rx_fwd, &tx_fwd, &rx_peak, &tx_peak);
         ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                       "graceful reload complete: generation %d now active "
-                      "(took %M ms)",
-                      ff_reload_active_gen(), ngx_ff_reload_elapsed_ms());
+                      "(took %M ms: handover %M ms, drain %M ms, "
+                      "drain forwarded %uL / relayed %uL pkts, "
+                      "ring peak rx %uL / tx %uL)",
+                      ff_reload_active_gen(), ngx_ff_reload_elapsed_ms(),
+                      (ngx_msec_t) ff_reload_phase_ms_get(
+                          FF_RELOAD_PHASE_HANDOVER),
+                      (ngx_msec_t) ff_reload_phase_ms_get(
+                          FF_RELOAD_PHASE_DRAIN),
+                      rx_fwd, tx_fwd, rx_peak, tx_peak);
     }
 }
 
@@ -1450,12 +1689,28 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
                         ngx_ff_graceful_reload
                             ? "worker 0 failed to attach to the resident primary"
                             : "primary worker process failed to initialize");
-                exit(2);
+
+                /* F-M3-2 (C-NR-404): inside a reload round the master must
+                 * survive a failed attach — report to the caller, which
+                 * aborts and rolls the round back (G_old keeps serving).
+                 * First-start and respawn paths keep the native exit(2). */
+                if (ngx_ff_graceful_reload
+                    && ngx_ff_reload_fsm_state()
+                       == NGX_FF_RELOAD_T1_GNEW_SPAWN)
+                {
+                    ngx_ff_reload_attach_failed = 1;
+                } else {
+                    exit(2);
+                }
             }
 
             sem_destroy(ngx_ff_worker_sem);
             munmap(ngx_ff_worker_sem, sizeof(sem_t));
             shm_unlink(shm_name);
+
+            if (ngx_ff_reload_attach_failed) {
+                break;      /* no point spawning the rest of G_new */
+            }
         }
 #endif
 
@@ -1710,6 +1965,14 @@ ngx_reap_children(ngx_cycle_t *cycle)
                 && !ngx_quit
 #if (NGX_HAVE_FSTACK)
                 && !ngx_reconfigure
+                /* M4 (C-NR-403): T3 is a long-lived state now; a worker
+                 * crashing mid-round must not be respawned — the respawned
+                 * hybrid would bind to the target generation with a
+                 * proc_id that collides with an existing G_new worker.
+                 * Reload-round failures are handled by the abort paths. */
+                && !(ngx_ff_graceful_reload
+                     && ngx_ff_reload_fsm_state()
+                        != NGX_FF_RELOAD_T0_IDLE)
 #endif
             )
             {
@@ -1813,13 +2076,149 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
 }
 
 #if (NGX_HAVE_FSTACK)
+
+/*
+ * C-NR-405: delayed listening close for a draining worker
+ * (graceful_reload=1).  After QUIT the worker stops accepting but keeps
+ * its listening sockets open until its syncache half-open entries are
+ * gone: a third handshake ACK for a pre-handover SYN is forwarded back by
+ * the new generation and must still find a listening socket for
+ * syncache_expand() to complete the handshake instead of being reset.
+ *
+ * A non-cancelable poll timer keeps ngx_event_no_timers_left() from
+ * reporting "done" while the half-open window is still open, so the exit
+ * check at the top of the loop cannot fire early.  The shutdown timer set
+ * by C-NR-401 (and the master's TERM escalation) bounds the wait.
+ */
+
+#define NGX_FF_LISTEN_CLOSE_POLL_MS   100
+
+/* FIX-4 (F-M4-6 residual): hard cap on the delayed listening close.
+ * Miss-forwarded fresh SYNs keep refilling the dying generation's
+ * syncache (S7' root cause), so natural convergence is not guaranteed;
+ * twice the syncache retransmit-exhaustion bound (~15s) caps the wait. */
+#define NGX_FF_LISTEN_CLOSE_MAX_MS    30000
+
+static ngx_event_t  ngx_ff_listen_close_timer;
+static ngx_int_t    ngx_ff_listen_close_pending;
+static ngx_msec_t   ngx_ff_listen_close_quit_msec;
+
+static void ngx_ff_stop_accept_events(ngx_cycle_t *cycle);
+static void ngx_ff_listen_close_timer_handler(ngx_event_t *ev);
+
+
+static void
+ngx_ff_stop_accept_events(ngx_cycle_t *cycle)
+{
+    ngx_uint_t         i;
+    ngx_listening_t   *ls;
+    ngx_connection_t  *c;
+
+    /* Same read-event removal as ngx_disable_accept_events() (native WINCH
+     * path), applied to every listening socket, reuseport ones included:
+     * the draining worker must not accept new connections anymore. */
+    ls = cycle->listening.elts;
+    for (i = 0; i < cycle->listening.nelts; i++) {
+
+        c = ls[i].connection;
+
+        if (c == NULL || !c->read->active) {
+            continue;
+        }
+
+        if (ngx_del_event(c->read, NGX_READ_EVENT, NGX_DISABLE_EVENT)
+            == NGX_ERROR)
+        {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                          "del accept event failed");
+        }
+    }
+}
+
+
+static void
+ngx_ff_listen_close_timer_handler(ngx_event_t *ev)
+{
+    /* Re-arm while the delayed close is pending so a non-cancelable timer
+     * always keeps the worker alive through the exit check.  The actual
+     * poll runs in ngx_worker_process_cycle_loop() on every pass. */
+    if (ngx_ff_listen_close_pending) {
+        ngx_add_timer(ev, NGX_FF_LISTEN_CLOSE_POLL_MS);
+    }
+}
+
+
+/*
+ * F-M3-1 (C-NR-404, M4): the draining worker must not exit while any of
+ * its sockets still queues data in so_snd — process death resets in-flight
+ * tails (M3 measured 3~54 KB losses per flow).  Only the drain generation
+ * waits: a full shutdown (nginx -s quit) and graceful_reload=0 keep the
+ * native judgement, avoiding an unbounded wait when worker_shutdown_timeout
+ * is unset.  Sampled at most once a second, never a per-packet path; the
+ * Batch A listen-close keepalive timer invariant is untouched (this check
+ * only ADDS a wait condition on top of no_timers_left).
+ */
+#define NGX_FF_SND_POLL_MS   1000
+
+static ngx_uint_t
+ngx_ff_worker_may_exit(ngx_cycle_t *cycle)
+{
+    static ngx_msec_t  last_check;
+    static ngx_uint_t  last_result = 1;
+    static ngx_uint_t  cap_logged = 0;
+
+    if (!ngx_ff_graceful_reload || !ff_is_drain_generation()) {
+        return 1;
+    }
+
+    /* FIX-5: worker_shutdown_timeout force-closes the nginx side, but
+     * orphan sockets (fd already closed, so_snd still unACKed) retransmit
+     * for TCP-RTO minutes, so the snd_pending wait below is unbounded and
+     * the master reaps us with TERM at 90s (S8'' T5 = 92s).  Cap it like
+     * FIX-4 caps the listen close: past NGX_FF_LISTEN_CLOSE_MAX_MS since
+     * QUIT, give up — the orphans die with the worker (peers see RST),
+     * matching the native nginx shutdown_timeout semantics.  quit_msec
+     * == 0 means the drain-QUIT path never ran: keep the original
+     * judgement. */
+    if (ngx_ff_listen_close_quit_msec != 0
+        && ngx_current_msec - ngx_ff_listen_close_quit_msec
+           >= NGX_FF_LISTEN_CLOSE_MAX_MS)
+    {
+        if (!cap_logged) {
+            cap_logged = 1;
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff drain: snd_pending wait capped at %d ms "
+                          "(quit+%ui ms, snd_pending=%d, syncache=%d), "
+                          "giving up; orphans reset with the worker",
+                          (int) NGX_FF_LISTEN_CLOSE_MAX_MS,
+                          (ngx_uint_t) (ngx_current_msec
+                                        - ngx_ff_listen_close_quit_msec),
+                          ff_socket_snd_pending(), ff_syncache_count());
+        }
+        return 1;
+    }
+
+    if (last_check != 0
+        && ngx_current_msec - last_check < NGX_FF_SND_POLL_MS)
+    {
+        return last_result;
+    }
+    last_check = ngx_current_msec;
+    last_result = (ff_socket_snd_pending() == 0);
+
+    return last_result;
+}
+
+
 static int
 ngx_worker_process_cycle_loop(void *arg)
 {
     ngx_cycle_t *cycle = (ngx_cycle_t *)arg;
 
     if (ngx_exiting) {
-        if (ngx_event_no_timers_left() == NGX_OK) {
+        if (ngx_event_no_timers_left() == NGX_OK
+            && ngx_ff_worker_may_exit(cycle))
+        {
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exiting");
             ngx_worker_process_exit(cycle);
         }
@@ -1842,8 +2241,54 @@ ngx_worker_process_cycle_loop(void *arg)
 
         if (!ngx_exiting) {
             ngx_exiting = 1;
-            ngx_close_listening_sockets(cycle);
+            ngx_set_shutdown_timer(cycle);
+
+            if (ngx_ff_graceful_reload && ff_is_drain_generation()) {
+                /* C-NR-405: graceful drain: stop accepting but keep the
+                 * listening sockets open until the syncache half-open
+                 * window closes (see the poll below).  Only the generation
+                 * that lost rx to the successor delays: a full shutdown
+                 * (nginx -s quit) still owns rx and must close at once,
+                 * otherwise new SYNs keep refilling the syncache and the
+                 * count never reaches zero. */
+                ngx_ff_stop_accept_events(cycle);
+                ngx_ff_listen_close_pending = 1;
+                ngx_ff_listen_close_quit_msec = ngx_current_msec;
+                ngx_ff_listen_close_timer.handler =
+                    ngx_ff_listen_close_timer_handler;
+                ngx_ff_listen_close_timer.log = cycle->log;
+                ngx_add_timer(&ngx_ff_listen_close_timer,
+                              NGX_FF_LISTEN_CLOSE_POLL_MS);
+
+            } else {
+                ngx_close_listening_sockets(cycle);
+            }
+
             ngx_close_idle_connections(cycle);
+            ngx_event_process_posted(cycle, &ngx_posted_events);
+        }
+    }
+
+    if (ngx_ff_listen_close_pending) {
+        if (ff_syncache_count() == 0 || ngx_terminate) {
+            ngx_ff_listen_close_pending = 0;
+            ngx_close_listening_sockets(cycle);
+
+        } else if (ngx_current_msec - ngx_ff_listen_close_quit_msec
+                   >= NGX_FF_LISTEN_CLOSE_MAX_MS)
+        {
+            /* FIX-4 cap fired: forwarded fresh SYNs keep refilling the
+             * syncache, so the natural path may never converge (S7').
+             * NOTICE is an observability anchor for M6. */
+            ngx_ff_listen_close_pending = 0;
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff drain: listen close capped at %d ms "
+                          "(quit+%ui ms, syncache=%d, snd_pending=%d)",
+                          (int) NGX_FF_LISTEN_CLOSE_MAX_MS,
+                          (ngx_uint_t) (ngx_current_msec
+                                        - ngx_ff_listen_close_quit_msec),
+                          ff_syncache_count(), ff_socket_snd_pending());
+            ngx_close_listening_sockets(cycle);
         }
     }
 

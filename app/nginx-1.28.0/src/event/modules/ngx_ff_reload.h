@@ -15,7 +15,9 @@
 /* shared reload control block; created by the master (anonymous MAP_SHARED)
  * before any child is forked, inherited through fork() */
 struct ff_reload_state;
+struct ff_reload_drain_state;
 extern struct ff_reload_state *ngx_ff_reload_shm;
+extern struct ff_reload_drain_state *ngx_ff_reload_drain_shm;
 
 /* FSM (pure table in ngx_ff_reload_fsm.h); wrapper in ngx_ff_reload.c */
 int ngx_ff_reload_fsm_state(void);
