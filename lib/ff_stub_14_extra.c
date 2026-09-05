@@ -146,12 +146,6 @@ void buf_ring_free(struct buf_ring *br, struct malloc_type *type)
     
 }
 
-void callout_when(sbintime_t sbt, sbintime_t precision, int flags, sbintime_t *sbt_out, sbintime_t *precision_out);
-void callout_when(sbintime_t sbt, sbintime_t precision, int flags, sbintime_t *sbt_out, sbintime_t *precision_out)
-{
-    
-}
-
 vm_paddr_t dump_avail[16] = {0};
 
 void fdescfree_adapt_use(struct proc *p);
