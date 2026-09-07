@@ -309,6 +309,7 @@ FF_HOST_SRCS+=              \
 	ff_config.c         \
 	ff_ini_parser.c     \
 	ff_reload.c         \
+	ff_reload_gendir.c  \
 	ff_flow_map.c       \
 	ff_drain_ring.c     \
 	ff_dpdk_if.c        \

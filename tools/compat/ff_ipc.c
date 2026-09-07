@@ -61,6 +61,8 @@ uint16_t ff_proc_id = 0;
 
 static int ff_gen_arg = FF_IPC_GEN_AUTO;
 static int ff_ring_gen = FF_IPC_GEN_AUTO;
+/* M5: master epoch the resolved generation belongs to (ring-name slot). */
+static uint32_t ff_ring_epoch;
 
 /* F5: the reply this process is waiting for; see ff_ipc_recv. */
 static const struct ff_msg *ff_pending_msg;
@@ -198,17 +200,22 @@ ff_ipc_msg_free(struct ff_msg *msg)
     return 0;
 }
 
-/* Mirror of ff_reload_msg_ring_name() (contract in lib/ff_reload.h): the
+/* Mirror of ff_reload_msg_ring_name_e() (contract in lib/ff_reload.h): the
  * tools cannot link lib/ff_reload.c, it pulls in ff_global_cfg and the rest
- * of the stack, so the two implementations must stay byte-compatible. */
+ * of the stack, so the two implementations must stay byte-compatible.
+ * 'epoch' is the master epoch; slot 0 (epoch 0, no directory) reproduces
+ * the pre-M5 names exactly. */
 static int
 ff_msg_ring_name(char *buf, unsigned int buflen, const char *base,
-    unsigned int proc_id, int msg_type, int gen, int graceful)
+    unsigned int proc_id, int msg_type, int gen, uint32_t epoch, int graceful)
 {
+    unsigned slot;
     int n;
 
     if (buf == NULL || buflen == 0 || base == NULL)
         return -1;
+
+    slot = ff_reload_epoch_slot_of(epoch);
 
     if (!graceful) {
         if (msg_type < 0)
@@ -220,11 +227,23 @@ ff_msg_ring_name(char *buf, unsigned int buflen, const char *base,
             gen = 0;
         if (gen >= FF_RELOAD_GEN_MAX)
             gen = FF_RELOAD_GEN_MAX - 1;
-        if (msg_type < 0)
-            n = snprintf(buf, buflen, "%s%u_g%d", base, proc_id, gen);
-        else
-            n = snprintf(buf, buflen, "%s%u_%d_g%d", base, proc_id,
-                msg_type, gen);
+        /* slot 0 keeps the pre-M5 names byte-for-byte (P0-6 style); every
+         * other slot inserts "_e<slot>", one digit — a ring name is capped
+         * at 28 bytes and this is the only width that always fits. */
+        if (slot == 0) {
+            if (msg_type < 0)
+                n = snprintf(buf, buflen, "%s%u_g%d", base, proc_id, gen);
+            else
+                n = snprintf(buf, buflen, "%s%u_%d_g%d", base, proc_id,
+                    msg_type, gen);
+        } else {
+            if (msg_type < 0)
+                n = snprintf(buf, buflen, "%s%u_e%u_g%d", base, proc_id,
+                    slot, gen);
+            else
+                n = snprintf(buf, buflen, "%s%u_%d_e%u_g%d", base, proc_id,
+                    msg_type, slot, gen);
+        }
     }
 
     if (n < 0 || (unsigned int)n >= buflen)
@@ -240,31 +259,36 @@ ff_msg_ring_name(char *buf, unsigned int buflen, const char *base,
  * FF_RELOAD_CMD_QUERY is the read-only probe command: handle_reload_msg()
  * rejects anything else with ENOTSUP, so this never looks like a READY or
  * a handover acknowledgement to the reload machinery. */
+/* M5: the probe now resolves the full (epoch, generation) coordinate.
+ * Silently falling back to generation 0 used to at worst talk to the idle
+ * generation; with several masters alive it would silently talk to the
+ * rings of a completely different process group, so a missed probe is
+ * reported as an error instead. */
 static int
-ff_ipc_probe_active_gen(void)
+ff_ipc_probe_coord(uint32_t *epoch, int *gen)
 {
     char in_name[RTE_RING_NAMESIZE], out_name[RTE_RING_NAMESIZE];
     struct rte_ring *in_ring, *out_ring;
     struct ff_msg *msg;
     void *obj;
-    int i, gen = 0;
+    int i;
 
     if (ff_msg_ring_name(in_name, RTE_RING_NAMESIZE, FF_MSG_RING_IN,
-            FF_IPC_PRIMARY_PROC_ID, -1, 0, 1) != 0 ||
+            FF_IPC_PRIMARY_PROC_ID, -1, 0, 0, 1) != 0 ||
         ff_msg_ring_name(out_name, RTE_RING_NAMESIZE, FF_MSG_RING_OUT,
-            FF_IPC_PRIMARY_PROC_ID, FF_RELOAD, 0, 1) != 0) {
-        return 0;
+            FF_IPC_PRIMARY_PROC_ID, FF_RELOAD, 0, 0, 1) != 0) {
+        return -1;
     }
 
     in_ring = rte_ring_lookup(in_name);
     out_ring = rte_ring_lookup(out_name);
     if (in_ring == NULL || out_ring == NULL) {
-        return 0;
+        return -1;
     }
 
     msg = ff_ipc_msg_alloc();
     if (msg == NULL) {
-        return 0;
+        return -1;
     }
 
     msg->msg_type = FF_RELOAD;
@@ -274,12 +298,13 @@ ff_ipc_probe_active_gen(void)
 
     if (rte_ring_enqueue(in_ring, msg) < 0) {
         ff_ipc_msg_free(msg);
-        return 0;
+        return -1;
     }
 
     for (i = 0; i < FF_IPC_GEN_PROBE_ATTEMPTS; i++) {
         if (rte_ring_dequeue(out_ring, &obj) == 0) {
             struct ff_msg *reply = (struct ff_msg *)obj;
+            int rc = -1;
 
             if (reply != msg) {
                 ff_ipc_msg_free(reply);
@@ -287,19 +312,20 @@ ff_ipc_probe_active_gen(void)
             }
             if (reply->result == 0 &&
                 reply->reload.active_gen < FF_RELOAD_GEN_MAX) {
-                gen = (int)reply->reload.active_gen;
+                if (gen)
+                    *gen = (int)reply->reload.active_gen;
+                if (epoch)
+                    *epoch = reply->reload.epoch;
+                rc = 0;
             }
             ff_ipc_msg_free(reply);
-            return gen;
+            return rc;
         }
 
         usleep(1000);
     }
 
-    fprintf(stderr, "ff ipc: proc %d did not answer, assuming generation 0, "
-        "use -g <gen> to select one explicitly\n", FF_IPC_PRIMARY_PROC_ID);
-
-    return 0;
+    return -1;
 }
 
 static int
@@ -313,6 +339,7 @@ ff_ipc_ring_gen(void)
 
     if (ff_gen_arg != FF_IPC_GEN_AUTO) {
         ff_ring_gen = ff_gen_arg;
+        ff_ring_epoch = 0;
         return ff_ring_gen;
     }
 
@@ -321,13 +348,28 @@ ff_ipc_ring_gen(void)
      * always has one, so the mode is detected without depending on which
      * proc this tool targets. */
     if (ff_msg_ring_name(name, RTE_RING_NAMESIZE, FF_MSG_RING_IN,
-            FF_IPC_PRIMARY_PROC_ID, -1, 0, 0) == 0 &&
+            FF_IPC_PRIMARY_PROC_ID, -1, 0, 0, 0) == 0 &&
         rte_ring_lookup(name) != NULL) {
         ff_ring_gen = FF_IPC_GEN_LEGACY;
+        ff_ring_epoch = 0;
         return ff_ring_gen;
     }
 
-    ff_ring_gen = ff_ipc_probe_active_gen();
+    {
+        uint32_t epoch = 0;
+        int gen = 0;
+
+        if (ff_ipc_probe_coord(&epoch, &gen) != 0) {
+            fprintf(stderr, "ff ipc: proc %d did not answer the generation "
+                "probe; refusing to guess — the stack may be mid-reload or "
+                "an old generation may be the only one left. Use "
+                "-p <proc>[:<gen>] to select one explicitly.\n",
+                FF_IPC_PRIMARY_PROC_ID);
+            return FF_IPC_GEN_AUTO;
+        }
+        ff_ring_gen = gen;
+        ff_ring_epoch = epoch;
+    }
 
     return ff_ring_gen;
 }
@@ -339,8 +381,13 @@ ff_ipc_ring_name(char *buf, unsigned int buflen, const char *base,
     int gen = ff_ipc_ring_gen();
     int graceful = gen != FF_IPC_GEN_LEGACY;
 
+    if (gen == FF_IPC_GEN_AUTO) {
+        /* probe failed: never silently fall back to generation 0 */
+        return -1;
+    }
+
     return ff_msg_ring_name(buf, buflen, base, ff_proc_id, msg_type,
-        graceful ? gen : 0, graceful);
+        graceful ? gen : 0, graceful ? ff_ring_epoch : 0, graceful);
 }
 
 int

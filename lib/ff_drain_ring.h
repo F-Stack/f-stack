@@ -80,6 +80,11 @@ int ff_drain_ring_ready(void);
  * the generation whose PCBs own the flow that just missed. */
 int ff_drain_ring_peer_gen(void);
 
+/* M5: drain (and free) everything left in one epoch slot's ring pairs.
+ * Used when a slot is recycled from a dead master; no-op if the rings are
+ * not attached. */
+void ff_drain_ring_reset_slot(unsigned slot);
+
 /* R-310-1: detach only — null the pointers and stop all enqueue/dequeue.
  * The rings themselves are intentionally not destroyed: only one process
  * could call rte_ring_free(), and the _g<gen> pairs are reused on the next

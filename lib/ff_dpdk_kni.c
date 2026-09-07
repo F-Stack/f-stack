@@ -112,9 +112,13 @@ ff_kni_is_runtime_owner(void)
      * proc_id, so the owner check must also match the generation: only the
      * active generation owns KNI runtime (the master flips the active gen
      * at T5). Without an attached reload state (non-nginx apps) the legacy
-     * proc_id-only comparison is kept. */
+     * proc_id-only comparison is kept.
+     * M5: across masters the generation alone is ambiguous (both start at
+     * gen 0 in their own anonymous block), so the check goes through the
+     * generation directory's single (epoch, gen) KNI owner word — two
+     * processes must never both rte_eth_tx_burst the same TX queue. */
     if (ff_global_cfg.dpdk.graceful_reload && ff_reload_state_attached())
-        return ff_reload_gen() == ff_reload_active_gen();
+        return ff_reload_kni_owner_match();
     return 1;
 }
 

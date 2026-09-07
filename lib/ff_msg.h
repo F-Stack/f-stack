@@ -154,8 +154,15 @@ struct ff_reload_args {
     uint32_t cmd;        /* enum FF_RELOAD_CMD */
     uint32_t gen;        /* sender or target generation */
     uint32_t status;     /* command result / progress */
-    uint32_t active_gen; /* active generation as seen by the sender */
+    uint32_t active_gen; /* serving generation: with a generation directory
+                          * this is the rx-owner gen (flips at T3, not T5);
+                          * without one it is the sender's view, as before */
     uint64_t heartbeat;  /* heartbeat counter snapshot */
+    /* M5: master epoch of the reported active generation. Ring names are
+     * namespaced by it, so a tool that omits it can address the wrong
+     * master's rings after an USR2. 0 == pre-M5 / no directory. */
+    uint32_t epoch;
+    uint32_t pad;
 };
 
 

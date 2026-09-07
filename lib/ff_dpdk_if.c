@@ -77,6 +77,31 @@
 typedef char ff_reload_gen_max_check[
     (FF_RELOAD_GEN_MAX == FF_MBUF_GEN_MAX) ? 1 : -1];
 
+/* M5: a ring name must fit in RTE_RING_NAMESIZE-1 bytes. The longest one we
+ * can build is ff_msg_ring_out_<proc>_<type>_e<slot>_g<gen>; with the
+ * current FF_MSG_NUM (type is two digits: FF_RELOAD == 10) and
+ * FF_RELOAD_EPOCH_SLOT_MAX that is exactly RTE_RING_NAMESIZE-1, i.e. zero
+ * margin — so widening either one must break the build here instead of
+ * silently truncating a name at runtime. */
+/* Digit budgets, derived instead of guessed: msg_type comes straight out of
+ * FF_MSG_NUM (FF_RELOAD == 10 today, so two digits), and proc_id is bounded
+ * by RTE_MAX_LCORE — the assert below is what keeps the literal 3 honest, a
+ * wider RTE_MAX_LCORE breaks the build here rather than truncating a name. */
+#define FF_RELOAD_MSG_TYPE_DIGITS \
+    ((FF_MSG_NUM - 1) < 10 ? 1 : ((FF_MSG_NUM - 1) < 100 ? 2 : 3))
+#define FF_RELOAD_MSG_PROC_DIGITS  3
+
+typedef char ff_reload_proc_id_digits_check[
+    (RTE_MAX_LCORE <= 999) ? 1 : -1];
+
+typedef char ff_reload_ring_name_fit_check[
+    ((sizeof(FF_MSG_RING_OUT) - 1)        /* "ff_msg_ring_out_" */
+     + FF_RELOAD_MSG_PROC_DIGITS          /* proc_id < RTE_MAX_LCORE */
+     + 1 + FF_RELOAD_MSG_TYPE_DIGITS      /* "_" + msg_type */
+     + 2 + 1                              /* "_e" + epoch slot, one digit */
+     + 2 + 1                              /* "_g" + generation */
+     <= (size_t)(RTE_RING_NAMESIZE - 1)) ? 1 : -1];
+
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
 #define KNI_QUEUE_SIZE KNI_MBUF_MAX
@@ -214,10 +239,14 @@ struct ff_msg_ring {
     struct rte_ring *ring[FF_MSG_NUM];
 } __rte_cache_aligned;
 
-/* C-NR-313: (proc_id, generation) indexed msg rings. Index 0 is the only
- * set used when graceful_reload=0 (legacy unsuffixed names, behavior
- * identical to the former single array). */
-static struct ff_msg_ring msg_ring[FF_RELOAD_GEN_MAX][RTE_MAX_LCORE];
+/* C-NR-313/M5: (epoch slot, generation, proc_id) indexed msg rings. Index
+ * [0][0] is the only set used when graceful_reload=0 (legacy unsuffixed
+ * names, behavior identical to the former single array). The resident
+ * primary pre-creates every slot so a secondary of any master only ever
+ * attaches an existing ring — that is what keeps the DPDK "primary creates
+ * / secondary looks up" policy intact across an USR2. */
+static struct ff_msg_ring msg_ring[FF_RELOAD_EPOCH_SLOT_MAX]
+    [FF_RELOAD_GEN_MAX][RTE_MAX_LCORE];
 /* serving mode, fixed once in init_msg_ring from the static config */
 static int msg_ring_graceful;
 static int msg_ring_serve_both_gens;   /* primary under graceful_reload */
@@ -890,7 +919,7 @@ ff_msg_init(struct rte_mempool *mp,
 static int
 init_msg_ring(void)
 {
-    uint16_t i, j, g, g_end;
+    uint16_t i, j, g, g_end, e, e_end;
     uint16_t nb_rings = ff_global_cfg.dpdk.thread_mode
         ? ff_global_cfg.dpdk.nb_threads
         : ff_global_cfg.dpdk.nb_procs;
@@ -910,7 +939,7 @@ init_msg_ring(void)
          * during the reload window, so the pool doubles. */
         message_pool = rte_mempool_create(FF_MSG_POOL,
            MSG_RING_SIZE * 2 * nb_rings
-               * (msg_ring_graceful ? FF_RELOAD_GEN_MAX : 1),
+               * (msg_ring_graceful ? FF_RELOAD_GEN_MAX * 2 : 1),
            MAX_MSG_BUF_SIZE,
            ff_shared_pool_cache_size(ff_global_cfg.dpdk.graceful_reload,
                MSG_RING_SIZE / 2), 0,
@@ -928,57 +957,69 @@ init_msg_ring(void)
         /* legacy single set: names and flags byte-identical to the
          * pre-generation layout */
         for (i = 0; i < nb_rings; ++i) {
-            snprintf(msg_ring[0][i].ring_name[0], RTE_RING_NAMESIZE,
+            snprintf(msg_ring[0][0][i].ring_name[0], RTE_RING_NAMESIZE,
                 "%s%u", FF_MSG_RING_IN, i);
-            msg_ring[0][i].ring[0] = create_ring(msg_ring[0][i].ring_name[0],
+            msg_ring[0][0][i].ring[0] =
+                create_ring(msg_ring[0][0][i].ring_name[0],
                 MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
-            if (msg_ring[0][i].ring[0] == NULL)
+            if (msg_ring[0][0][i].ring[0] == NULL)
                 rte_panic("create ring::%s failed!\n",
-                    msg_ring[0][i].ring_name[0]);
+                    msg_ring[0][0][i].ring_name[0]);
 
             for (j = FF_SYSCTL; j < FF_MSG_NUM; j++) {
-                snprintf(msg_ring[0][i].ring_name[j], RTE_RING_NAMESIZE,
+                snprintf(msg_ring[0][0][i].ring_name[j], RTE_RING_NAMESIZE,
                     "%s%u_%u", FF_MSG_RING_OUT, i, j);
-                msg_ring[0][i].ring[j] =
-                    create_ring(msg_ring[0][i].ring_name[j],
+                msg_ring[0][0][i].ring[j] =
+                    create_ring(msg_ring[0][0][i].ring_name[j],
                     MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
-                if (msg_ring[0][i].ring[j] == NULL)
+                if (msg_ring[0][0][i].ring[j] == NULL)
                     rte_panic("create ring::%s failed!\n",
-                        msg_ring[0][i].ring_name[j]);
+                        msg_ring[0][0][i].ring_name[j]);
             }
         }
 
         return 0;
     }
 
-    /* C-NR-313: (proc_id, gen) indexed rings, "_g<gen>" suffix so two
-     * generations sharing a proc_id never dequeue the same SC ring. */
+    /* C-NR-313/M5: (epoch slot, proc_id, gen) indexed rings, "_e<slot>_g<gen>"
+     * suffix so two generations — of the same master or of two masters —
+     * sharing a proc_id never dequeue the same SC ring. The resident primary
+     * builds every slot; a secondary attaches only its own coordinate.
+     * The name epoch is the slot itself, which ff_reload_epoch_slot_of()
+     * maps back onto the same slot for any real epoch. */
+    e = msg_ring_serve_both_gens ? 0 : (uint16_t)ff_reload_epoch_slot();
+    e_end = msg_ring_serve_both_gens ? FF_RELOAD_EPOCH_SLOT_MAX : e + 1;
+
+    for (; e < e_end; ++e) {
     g = msg_ring_serve_both_gens ? 0 : (uint16_t)ff_reload_gen();
     g_end = msg_ring_serve_both_gens ? FF_RELOAD_GEN_MAX : g + 1;
 
     for (; g < g_end; ++g) {
         for (i = 0; i < nb_rings; ++i) {
-            if (ff_reload_msg_ring_name(msg_ring[g][i].ring_name[0],
-                    RTE_RING_NAMESIZE, FF_MSG_RING_IN, i, -1, g, 1) != 0)
+            if (ff_reload_msg_ring_name_e(msg_ring[e][g][i].ring_name[0],
+                    RTE_RING_NAMESIZE, FF_MSG_RING_IN, i, -1, g, e, 1) != 0)
                 rte_panic("msg ring name error: proc %u gen %u\n", i, g);
-            msg_ring[g][i].ring[0] = create_ring(msg_ring[g][i].ring_name[0],
+            msg_ring[e][g][i].ring[0] =
+                create_ring(msg_ring[e][g][i].ring_name[0],
                 MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
-            if (msg_ring[g][i].ring[0] == NULL)
+            if (msg_ring[e][g][i].ring[0] == NULL)
                 rte_panic("create ring::%s failed!\n",
-                    msg_ring[g][i].ring_name[0]);
+                    msg_ring[e][g][i].ring_name[0]);
 
             for (j = FF_SYSCTL; j < FF_MSG_NUM; j++) {
-                if (ff_reload_msg_ring_name(msg_ring[g][i].ring_name[j],
-                        RTE_RING_NAMESIZE, FF_MSG_RING_OUT, i, j, g, 1) != 0)
+                if (ff_reload_msg_ring_name_e(msg_ring[e][g][i].ring_name[j],
+                        RTE_RING_NAMESIZE, FF_MSG_RING_OUT, i, j, g, e, 1)
+                    != 0)
                     rte_panic("msg ring name error: proc %u type %u\n", i, j);
-                msg_ring[g][i].ring[j] =
-                    create_ring(msg_ring[g][i].ring_name[j],
+                msg_ring[e][g][i].ring[j] =
+                    create_ring(msg_ring[e][g][i].ring_name[j],
                     MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
-                if (msg_ring[g][i].ring[j] == NULL)
+                if (msg_ring[e][g][i].ring[j] == NULL)
                     rte_panic("create ring::%s failed!\n",
-                        msg_ring[g][i].ring_name[j]);
+                        msg_ring[e][g][i].ring_name[j]);
             }
         }
+    }
     }
 
     return 0;
@@ -1985,6 +2026,11 @@ ff_dpdk_init(int argc, char **argv)
 
     init_lcore_conf();
 
+    /* M5: cross-master generation directory. Must precede every resource
+     * whose name carries the epoch (per-gen app pools, drain rings, msg
+     * rings) and is a no-op unless graceful_reload=1. */
+    ff_reload_gendir_attach();
+
     init_mem_pool();
 
     /* C-NR-314/C-NR-206: bind the app-side pool selector to this process's
@@ -2014,6 +2060,42 @@ ff_dpdk_init(int argc, char **argv)
     }
 
     init_msg_ring();
+
+    /* M5: this process recycled an epoch slot whose previous master died —
+     * the rings of that slot still hold its messages and mbufs, which would
+     * otherwise surface as a stale request answered by the wrong generation
+     * (or as leaked mbufs). Only the process that won the slot CAS gets
+     * here, and it runs before this process serves any traffic. */
+    if (ff_global_cfg.dpdk.graceful_reload &&
+        ff_reload_gendir_reset_pending()) {
+        unsigned slot = ff_reload_epoch_slot();
+        uint16_t i2, j2;
+        int g2;
+
+        ff_drain_ring_reset_slot(slot);
+        for (g2 = 0; g2 < FF_RELOAD_GEN_MAX; g2++) {
+            for (i2 = 0; i2 < RTE_MAX_LCORE; i2++) {
+                for (j2 = 0; j2 < FF_MSG_NUM; j2++) {
+                    struct rte_ring *r = msg_ring[slot][g2][i2].ring[j2];
+                    void *obj;
+                    char rname[RTE_RING_NAMESIZE];
+
+                    /* A secondary only attached its own generation's set,
+                     * so the peer generation's rings are NULL here — look
+                     * them up by name instead of leaving them full. Their
+                     * owner is the dead master we just displaced. */
+                    if (r == NULL && j2 < FF_MSG_NUM &&
+                        ff_reload_msg_ring_name_e(rname, sizeof(rname),
+                            j2 == 0 ? FF_MSG_RING_IN : FF_MSG_RING_OUT,
+                            i2, j2 == 0 ? -1 : (int)j2, g2, slot, 1) == 0) {
+                        r = rte_ring_lookup(rname);
+                    }
+                    while (r != NULL && rte_ring_dequeue(r, &obj) == 0)
+                        rte_mempool_put(message_pool, obj);
+                }
+            }
+        }
+    }
 
 #ifdef FF_KNI
     enable_kni = ff_global_cfg.kni.enable;
@@ -2496,9 +2578,10 @@ ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
                  * one free: on a full ring, or outside a reload window,
                  * drop + count instead of leaking into an unconsumed ring.
                  * A drop beats a RST here: retransmits retry once the
-                 * draining generation catches up. */
-                if (ff_reload_hw_locked() &&
-                    ff_drain_ring_rx_enqueue(port_id, queue_id,
+                 * draining generation catches up. F-M5-1 (USR2): the
+                 * window is the block's OR a live cross-master peer. */
+                if ((ff_reload_hw_locked() || ff_reload_peer_draining())
+                    && ff_drain_ring_rx_enqueue(port_id, queue_id,
                         ff_drain_ring_peer_gen(), rtem) == 0) {
                     continue;
                 }
@@ -2565,10 +2648,12 @@ ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
              * generation still needs neighbour resolution for the
              * connections it is draining — this clone is its only source.
              * Guarded by !pkts_from_ring (H-5, no loop) and by the reload
-             * window (outside it there is no draining peer to feed).
+             * window (outside it there is no draining peer to feed; F-M5-1:
+             * a cross-master USR2 peer counts as one).
              * ff_app_mbuf_pool per H-6; the peer frees the clone. */
             if (!pkts_from_ring && ff_global_cfg.dpdk.graceful_reload
-                && ff_reload_hw_locked() && ff_drain_ring_ready()) {
+                && (ff_reload_hw_locked() || ff_reload_peer_draining())
+                && ff_drain_ring_ready()) {
                 int dst_gen = ff_drain_ring_peer_gen();
                 uint16_t j;
                 for (j = 0; j < nb_queues; ++j) {
@@ -2917,22 +3002,25 @@ static inline int
 process_msg_ring(uint16_t proc_id, struct rte_mbuf **pkts_burst)
 {
     if (!msg_ring_graceful) {
-        return process_msg_ring_set(&msg_ring[0][0], proc_id, pkts_burst);
+        return process_msg_ring_set(&msg_ring[0][0][0], proc_id, pkts_burst);
     }
 
-    /* C-NR-313: the resident primary serves both generations' in-rings;
-     * a secondary serves only its own generation. */
+    /* C-NR-313/M5: the resident primary serves every live coordinate's
+     * in-ring; a secondary serves only its own (epoch slot, generation). */
     if (msg_ring_serve_both_gens) {
-        int g, served = 0;
+        int e, g, served = 0;
 
-        for (g = 0; g < FF_RELOAD_GEN_MAX; g++) {
-            served |= process_msg_ring_set(&msg_ring[g][0], proc_id,
-                pkts_burst);
+        for (e = 0; e < FF_RELOAD_EPOCH_SLOT_MAX; e++) {
+            for (g = 0; g < FF_RELOAD_GEN_MAX; g++) {
+                served |= process_msg_ring_set(&msg_ring[e][g][0], proc_id,
+                    pkts_burst);
+            }
         }
         return served;
     }
 
-    return process_msg_ring_set(&msg_ring[ff_reload_gen()][0], proc_id,
+    return process_msg_ring_set(
+        &msg_ring[ff_reload_epoch_slot()][ff_reload_gen()][0], proc_id,
         pkts_burst);
 }
 
@@ -3295,8 +3383,13 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
     }
 
     /* C-NR-403: retire the reload data plane in steady state, re-arm the
-     * drain rings when a new window opens. */
+     * drain rings when a new window opens. F-M5-1 (USR2): the directory
+     * peer is a window equivalent for the data plane — a fresh master's
+     * block never opens one, yet both sides need the plane from the WINCH
+     * handover until the old generation's last worker is gone (stale slot
+     * stamp), so the retire gate must not fire under it. */
     if (!ff_reload_hw_locked()
+        && !ff_reload_peer_draining()
         && ff_reload_active_gen() == ff_reload_gen()) {
         if (packet_dispatcher_with_context != NULL || ff_flow_map_active()
             || ff_drain_ring_ready()) {
@@ -3307,14 +3400,16 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
                 "reload data plane retired (steady state, "
                 "generation %d)\n", ff_reload_gen());
         }
-    } else if (ff_reload_hw_locked() && !ff_drain_ring_ready()) {
+    } else if ((ff_reload_hw_locked() || ff_reload_peer_draining())
+        && !ff_drain_ring_ready()) {
         if (ff_drain_ring_init() != 0)
             ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
                 "ff_drain_ring_init failed on window open\n");
     }
 
     /* C-NR-406: shared counters + watermarks */
-    if (ff_reload_hw_locked() && ff_drain_ring_ready())
+    if ((ff_reload_hw_locked() || ff_reload_peer_draining())
+        && ff_drain_ring_ready())
         ff_drain_ring_flush_stats();
 }
 
@@ -3728,6 +3823,10 @@ ff_dpdk_stop(void) {
         rte_eal_process_type() == RTE_PROC_PRIMARY) {
         fprintf(stderr, "WARNING: slim primary stopping - control plane degraded, need planned full restart\n");
     }
+    /* M5: drop the generation-directory mapping and, when this process is
+     * entitled to it, release its epoch slot so the next master can reuse
+     * the ring set instead of leaking one per USR2 round. */
+    ff_reload_gendir_detach();
     stop_loop = 1;
 }
 

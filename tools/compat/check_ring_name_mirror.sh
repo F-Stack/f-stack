@@ -1,6 +1,7 @@
 #!/bin/sh
 # Assert that the msg ring name builder used by the tools is byte-identical
-# to the one the stack uses (lib/ff_reload.c ff_reload_msg_ring_name()).
+# to the one the stack uses (lib/ff_reload.c ff_reload_msg_ring_name_e();
+# ff_reload_msg_ring_name() is its epoch-0 wrapper).
 #
 # The tools cannot link lib/ff_reload.c (it pulls in ff_global_cfg), so the
 # builder is mirrored as ff_msg_ring_name() in ff_ipc.c. A silent divergence
@@ -26,7 +27,7 @@ for f in "$LIB_SRC" "$TOOLS_SRC"; do
 done
 
 # body after the argument list, i.e. everything from the first '{'
-sed -n '/^ff_reload_msg_ring_name(char /,/^}/p' "$LIB_SRC" | sed '1d' > "$TMP/lib"
+sed -n '/^ff_reload_msg_ring_name_e(char /,/^}/p' "$LIB_SRC" | sed '1d' > "$TMP/lib"
 sed -n '/^ff_msg_ring_name(char /,/^}/p'        "$TOOLS_SRC" | sed '1d' > "$TMP/tools"
 
 if [ ! -s "$TMP/lib" ] || [ ! -s "$TMP/tools" ]; then

@@ -28,6 +28,8 @@
 #include <string.h>
 #include <time.h>          /* clock_gettime for the handover deadline */
 #include <sched.h>         /* sched_yield while waiting for rx release */
+#include <signal.h>        /* kill(pid, 0) for epoch liveness */
+#include <errno.h>
 #include <sys/socket.h>    /* socklen_t for ff_msg.h */
 
 #include "ff_reload.h"     /* stdint/stddef + block layout */
@@ -36,6 +38,14 @@
 
 static struct ff_reload_state *g_reload_state;
 static int g_reload_gen;
+
+/* M5: master epoch + the generation directory (NULL when graceful_reload=0,
+ * when there is no resident primary, or in any process that never ran
+ * rte_eal_init — i.e. the nginx master). */
+static uint32_t g_reload_epoch;
+static struct ff_reload_gendir *g_reload_gendir;
+/* 0 until the attach path confirms this process may publish ownership. */
+static int g_reload_dir_publish;
 
 /* sampler bookkeeping (per process) */
 static uint64_t g_hb_last_cnt;
@@ -101,13 +111,16 @@ ff_reload_state_valid(const void *block, size_t len)
 }
 
 int
-ff_reload_msg_ring_name(char *buf, unsigned int buflen, const char *base,
-    unsigned int proc_id, int msg_type, int gen, int graceful)
+ff_reload_msg_ring_name_e(char *buf, unsigned int buflen, const char *base,
+    unsigned int proc_id, int msg_type, int gen, uint32_t epoch, int graceful)
 {
+    unsigned slot;
     int n;
 
     if (buf == NULL || buflen == 0 || base == NULL)
         return -1;
+
+    slot = ff_reload_epoch_slot_of(epoch);
 
     if (!graceful) {
         if (msg_type < 0)
@@ -119,16 +132,36 @@ ff_reload_msg_ring_name(char *buf, unsigned int buflen, const char *base,
             gen = 0;
         if (gen >= FF_RELOAD_GEN_MAX)
             gen = FF_RELOAD_GEN_MAX - 1;
-        if (msg_type < 0)
-            n = snprintf(buf, buflen, "%s%u_g%d", base, proc_id, gen);
-        else
-            n = snprintf(buf, buflen, "%s%u_%d_g%d", base, proc_id,
-                msg_type, gen);
+        /* slot 0 keeps the pre-M5 names byte-for-byte (P0-6 style); every
+         * other slot inserts "_e<slot>", one digit — a ring name is capped
+         * at 28 bytes and this is the only width that always fits. */
+        if (slot == 0) {
+            if (msg_type < 0)
+                n = snprintf(buf, buflen, "%s%u_g%d", base, proc_id, gen);
+            else
+                n = snprintf(buf, buflen, "%s%u_%d_g%d", base, proc_id,
+                    msg_type, gen);
+        } else {
+            if (msg_type < 0)
+                n = snprintf(buf, buflen, "%s%u_e%u_g%d", base, proc_id,
+                    slot, gen);
+            else
+                n = snprintf(buf, buflen, "%s%u_%d_e%u_g%d", base, proc_id,
+                    msg_type, slot, gen);
+        }
     }
 
     if (n < 0 || (unsigned int)n >= buflen)
         return -1;
     return 0;
+}
+
+int
+ff_reload_msg_ring_name(char *buf, unsigned int buflen, const char *base,
+    unsigned int proc_id, int msg_type, int gen, int graceful)
+{
+    return ff_reload_msg_ring_name_e(buf, buflen, base, proc_id, msg_type,
+        gen, 0, graceful);
 }
 
 int
@@ -188,6 +221,511 @@ int
 ff_reload_gen(void)
 {
     return g_reload_gen;
+}
+
+/* ---- M5: master epoch + generation directory --------------------------- */
+
+void
+ff_reload_set_epoch(uint32_t epoch)
+{
+    if (epoch == FF_RELOAD_EPOCH_NONE)
+        return;
+    g_reload_epoch = epoch;
+}
+
+uint32_t
+ff_reload_epoch(void)
+{
+    return g_reload_epoch;
+}
+
+unsigned
+ff_reload_epoch_slot(void)
+{
+    return ff_reload_epoch_slot_of(g_reload_epoch);
+}
+
+int
+ff_reload_gendir_install(void *addr, size_t len)
+{
+    const struct ff_reload_gendir *d = addr;
+
+    if (d == NULL || len < sizeof(*d) || d->magic != FF_RELOAD_GENDIR_MAGIC
+        || d->version != FF_RELOAD_GENDIR_VERSION
+        || d->len != (uint32_t)sizeof(*d)
+        || d->slot_max != FF_RELOAD_EPOCH_SLOT_MAX
+        || d->gen_max != FF_RELOAD_GEN_MAX) {
+        if (addr != NULL)
+            fprintf(stderr, "ff_reload: incompatible generation directory, "
+                "cross-master extras disabled\n");
+        g_reload_gendir = NULL;
+        return -1;
+    }
+    g_reload_gendir = (struct ff_reload_gendir *)addr;
+    return 0;
+}
+
+void
+ff_reload_dir_sync_enable(int enable)
+{
+    g_reload_dir_publish = enable ? 1 : 0;
+}
+
+/* Local copy of the liveness test: ff_reload.c must stay linkable without
+ * the DPDK-dependent directory module (tools and ff_config unit tests pull
+ * this object alone). */
+static int
+epoch_slot_live(struct ff_reload_gendir *d, unsigned i)
+{
+    uint32_t pid, st;
+
+    st = __atomic_load_n(&d->slot[i].state, __ATOMIC_SEQ_CST);
+    if (st != FF_RELOAD_SLOT_LIVE)
+        return 0;
+    pid = __atomic_load_n(&d->slot[i].master_pid, __ATOMIC_SEQ_CST);
+    if (pid == 0)
+        return 0;
+    return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
+static uint64_t
+dir_pack(uint32_t epoch, uint32_t gen)
+{
+    return (((uint64_t)epoch) << 32) | (uint64_t)gen;
+}
+
+static uint64_t
+dir_now_ms(void)
+{
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+static int
+epoch_live(struct ff_reload_gendir *d, uint32_t epoch)
+{
+    unsigned i;
+
+    if (d == NULL || epoch == FF_RELOAD_EPOCH_NONE)
+        return 0;
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+        if (__atomic_load_n(&d->slot[i].epoch, __ATOMIC_SEQ_CST) != epoch)
+            continue;
+        return epoch_slot_live(d, i);
+    }
+    return 0;
+}
+
+/* F-M5-1 (USR2): a slot whose master pid is gone but whose workers still
+ * refresh the stamp — the drain window between "old master quit" and
+ * "last old worker exited". Workers exit with exit(0) and cannot run any
+ * teardown, so the stamp going stale is the only death notice this side
+ * gets. Unsigned delta keeps the comparison wrap-safe. */
+static int
+epoch_slot_draining(struct ff_reload_gendir *d, unsigned i)
+{
+    uint32_t stamp;
+
+    if (__atomic_load_n(&d->slot[i].state, __ATOMIC_SEQ_CST)
+        != FF_RELOAD_SLOT_LIVE)
+        return 0;
+    stamp = __atomic_load_n(&d->slot[i].pad, __ATOMIC_SEQ_CST);
+    return (uint32_t)(dir_now_ms() - stamp) < FF_RELOAD_SLOT_STALE_MS;
+}
+
+/* C-NR-501/M5: the anonymous block is master-private, so the directory can
+ * only be updated by a process that inherited it — a worker. Two rules keep
+ * that safe: inside our own epoch we simply follow our master's flip, and
+ * an epoch we do not own may only be displaced once it is dead. */
+void
+ff_reload_dir_sync(void)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t cur, next;
+    uint32_t bep, bgen, bstop, oe;
+    int owner_gen;
+
+    if (d == NULL || !g_reload_dir_publish)
+        return;
+
+    if (g_reload_state == NULL) {
+        bep = g_reload_epoch;
+        bgen = (uint32_t)ff_reload_gen();
+        bstop = 0;
+    } else {
+        owner_gen = ff_reload_rx_owner_gen();
+        bgen = (uint32_t)(owner_gen < 0 ? ff_reload_gen() : owner_gen);
+        bstop = (uint32_t)(ff_reload_rx_stopped() ? 1 : 0);
+        bep = __atomic_load_n(&g_reload_state->reserved[4],
+            __ATOMIC_SEQ_CST);
+        if (bep == 0)
+            bep = g_reload_epoch;
+    }
+
+    /* F-M5-1: keep our own slot stamp fresh (throttled: one shared-line
+     * write per second is enough for the FF_RELOAD_SLOT_STALE_MS window)
+     * and publish the peer coordinate into the block BEFORE the ownership
+     * gate below — a worker parked behind a foreign live owner returns
+     * early there, and its master's block (and its per-packet mirror
+     * view) must still learn that the peer exists. */
+    {
+        static uint64_t last_stamp_ms;
+        uint64_t now = dir_now_ms();
+        unsigned i;
+
+        if (g_reload_state != NULL) {
+            uint32_t pe;
+            int pg;
+
+            ff_reload_peer_coord(&pe, &pg);
+            if (__atomic_load_n(&g_reload_state->peer_epoch, __ATOMIC_SEQ_CST)
+                != pe)
+                __atomic_store_n(&g_reload_state->peer_epoch, pe,
+                    __ATOMIC_SEQ_CST);
+            if (__atomic_load_n(&g_reload_state->peer_gen, __ATOMIC_SEQ_CST)
+                != (uint32_t)pg)
+                __atomic_store_n(&g_reload_state->peer_gen, (uint32_t)pg,
+                    __ATOMIC_SEQ_CST);
+        }
+
+        if (now - last_stamp_ms >= FF_RELOAD_SLOT_STALE_MS / 2) {
+            last_stamp_ms = now;
+            for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+                if (__atomic_load_n(&d->slot[i].epoch, __ATOMIC_SEQ_CST)
+                    == g_reload_epoch) {
+                    __atomic_store_n(&d->slot[i].pad, (uint32_t)now,
+                        __ATOMIC_SEQ_CST);
+                    break;
+                }
+            }
+        }
+    }
+
+    cur = __atomic_load_n(&d->rx_owner_word, __ATOMIC_SEQ_CST);
+    oe = (uint32_t)(cur >> 32);
+    if (oe != g_reload_epoch && oe != FF_RELOAD_EPOCH_NONE
+        && epoch_live(d, oe))
+        return;
+
+    next = (((uint64_t)bep) << 32) | (uint64_t)bgen;
+    if (next != cur)
+        __atomic_store_n(&d->rx_owner_word, next, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&d->rx_stopped, __ATOMIC_SEQ_CST) != bstop)
+        __atomic_store_n(&d->rx_stopped, bstop, __ATOMIC_SEQ_CST);
+
+    /* KNI runtime ownership follows the same (epoch, gen) coordinate. */
+    {
+        uint64_t knew, kcur;
+        uint32_t kep = bep;
+        uint32_t kg = (uint32_t)ff_reload_kni_owner_gen();
+
+        if (kg >= FF_RELOAD_GEN_MAX)
+            kg = (uint32_t)ff_reload_gen();
+        knew = (((uint64_t)kep) << 32) | (uint64_t)kg;
+        kcur = __atomic_load_n(&d->kni_owner_word, __ATOMIC_SEQ_CST);
+        if (kcur != knew)
+            __atomic_store_n(&d->kni_owner_word, knew, __ATOMIC_SEQ_CST);
+    }
+
+    /* Active generation: same source and same gate as the rx owner, so the
+     * directory cannot end up pointing at a master that no longer serves
+     * (a stale owner would keep answering tool probes after the handover).
+     * Without this the word only ever carries FF_RELOAD_EPOCH_NONE — the
+     * master cannot write it (no EAL) — and the primary would answer every
+     * probe with its own epoch 0, i.e. slot 0, which nobody dequeues. */
+    {
+        uint64_t acur = __atomic_load_n(&d->active_word, __ATOMIC_SEQ_CST);
+
+        if (acur != next)
+            __atomic_store_n(&d->active_word, next, __ATOMIC_SEQ_CST);
+    }
+}
+
+/* 1 when the directory (if any) agrees that this (epoch, gen) owns the
+ * hardware. A directory that has not been claimed yet does not narrow
+ * anything, so a stack without one behaves exactly as before M5. */
+static int
+dir_allows_hw(void)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t w;
+
+    if (d == NULL)
+        return 1;
+    w = __atomic_load_n(&d->rx_owner_word, __ATOMIC_SEQ_CST);
+    if ((uint32_t)(w >> 32) == FF_RELOAD_EPOCH_NONE)
+        return 1;
+    if ((uint32_t)(w >> 32) != g_reload_epoch)
+        return 0;
+    if ((uint32_t)w != (uint32_t)ff_reload_gen())
+        return 0;
+    return __atomic_load_n(&d->rx_stopped, __ATOMIC_SEQ_CST) == 0;
+}
+
+int
+ff_reload_kni_owner_match(void)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t w;
+
+    if (d == NULL)
+        return ff_reload_gen() == ff_reload_active_gen();
+    w = __atomic_load_n(&d->kni_owner_word, __ATOMIC_SEQ_CST);
+    if ((uint32_t)(w >> 32) == FF_RELOAD_EPOCH_NONE)
+        return ff_reload_gen() == ff_reload_active_gen();
+    return (uint32_t)(w >> 32) == g_reload_epoch
+        && (uint32_t)w == (uint32_t)ff_reload_gen();
+}
+
+void
+ff_reload_peer_coord(uint32_t *epoch, int *gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint32_t best_epoch = FF_RELOAD_EPOCH_NONE;
+    uint32_t best_gen = 0;
+    unsigned i;
+
+    /* F-M5-1: while THIS master runs its own reload window the peer is the
+     * intra-master generation pair (the fallback below), never a foreign
+     * epoch — a coexisting master's slot must not capture the drain rings
+     * of an M4 round. Outside a window (steady state, USR2 handover) the
+     * newest foreign epoch is the peer. */
+    if (d != NULL && !ff_reload_hw_locked()) {
+        for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+            uint32_t e, g, fl;
+
+            fl = __atomic_load_n(&d->slot[i].flags, __ATOMIC_SEQ_CST);
+            /* The resident primary holds slot 0 / epoch 0 forever and runs
+             * no stack instance, so it is never a drain peer: selecting it
+             * would send flow-map misses into a ring nobody dequeues. */
+            if (fl & FF_RELOAD_SLOT_PRIMARY)
+                continue;
+            e = __atomic_load_n(&d->slot[i].epoch, __ATOMIC_SEQ_CST);
+            if (e == g_reload_epoch || e == FF_RELOAD_EPOCH_NONE)
+                continue;
+            if (!epoch_slot_live(d, i) && !epoch_slot_draining(d, i))
+                continue;
+            g = __atomic_load_n(&d->slot[i].gen, __ATOMIC_SEQ_CST);
+            if (best_epoch != FF_RELOAD_EPOCH_NONE && e <= best_epoch)
+                continue;
+            best_epoch = e;
+            best_gen = g;
+        }
+    }
+
+    if (best_epoch == FF_RELOAD_EPOCH_NONE) {
+        best_epoch = g_reload_epoch;
+        best_gen = (uint32_t)((ff_reload_gen() + 1) % FF_RELOAD_GEN_MAX);
+    }
+    if (epoch)
+        *epoch = best_epoch;
+    if (gen)
+        *gen = (int)best_gen;
+}
+
+int
+ff_reload_peer_draining(void)
+{
+    uint32_t pe;
+    int pg;
+
+    ff_reload_peer_coord(&pe, &pg);
+    return pe != FF_RELOAD_EPOCH_NONE && pe != g_reload_epoch;
+}
+
+int
+ff_reload_peer_mirror_draining(void)
+{
+    uint32_t pe, pg;
+
+    if (g_reload_state == NULL)
+        return 0;
+    ff_reload_peer_block(&pe, &pg);
+    return pe != 0 && pe != FF_RELOAD_EPOCH_NONE && pe != g_reload_epoch
+        && pg < FF_RELOAD_GEN_MAX;
+}
+
+void
+ff_reload_peer_block(uint32_t *epoch, uint32_t *gen)
+{
+    if (epoch)
+        *epoch = 0;
+    if (gen)
+        *gen = 0;
+    if (g_reload_state == NULL)
+        return;
+    if (epoch)
+        *epoch = __atomic_load_n(&g_reload_state->peer_epoch,
+            __ATOMIC_SEQ_CST);
+    if (gen)
+        *gen = __atomic_load_n(&g_reload_state->peer_gen, __ATOMIC_SEQ_CST);
+}
+
+int
+ff_reload_gendir_active(uint32_t *epoch, uint32_t *gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t w;
+
+    if (d == NULL)
+        return -1;
+    w = __atomic_load_n(&d->active_word, __ATOMIC_SEQ_CST);
+    if (epoch)
+        *epoch = (uint32_t)(w >> 32);
+    if (gen)
+        *gen = (uint32_t)w;
+    return 0;
+}
+
+void
+ff_reload_gendir_active_set(uint32_t epoch, uint32_t gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+
+    if (d == NULL)
+        return;
+    __atomic_store_n(&d->active_word, dir_pack(epoch, gen),
+        __ATOMIC_SEQ_CST);
+}
+
+int
+ff_reload_gendir_rx_owner(uint32_t *epoch, uint32_t *gen, uint32_t *stopped)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t w;
+
+    if (d == NULL)
+        return -1;
+    w = __atomic_load_n(&d->rx_owner_word, __ATOMIC_SEQ_CST);
+    if (epoch)
+        *epoch = (uint32_t)(w >> 32);
+    if (gen)
+        *gen = (uint32_t)w;
+    if (stopped)
+        *stopped = __atomic_load_n(&d->rx_stopped, __ATOMIC_SEQ_CST);
+    return 0;
+}
+
+int
+ff_reload_gendir_kni_owner(uint32_t *epoch, uint32_t *gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t w;
+
+    if (d == NULL)
+        return -1;
+    w = __atomic_load_n(&d->kni_owner_word, __ATOMIC_SEQ_CST);
+    if (epoch)
+        *epoch = (uint32_t)(w >> 32);
+    if (gen)
+        *gen = (uint32_t)w;
+    return 0;
+}
+
+void
+ff_reload_gendir_kni_owner_set(uint32_t epoch, uint32_t gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+
+    if (d == NULL)
+        return;
+    __atomic_store_n(&d->kni_owner_word, dir_pack(epoch, gen),
+        __ATOMIC_SEQ_CST);
+}
+
+int
+ff_reload_gendir_rx_release(uint32_t to_epoch, uint32_t to_gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t mine, next;
+
+    if (d == NULL)
+        return FF_RELOAD_HANDOVER_INVAL;
+    if (to_gen >= FF_RELOAD_GEN_MAX)
+        return FF_RELOAD_HANDOVER_INVAL;
+
+    mine = dir_pack(ff_reload_epoch(), (uint32_t)ff_reload_gen());
+    next = dir_pack(to_epoch, to_gen);
+
+    /* Park first, then transfer: a reader sampling in between still sees
+     * rx_stopped and stays off the hardware. */
+    __atomic_store_n(&d->rx_stopped, 1u, __ATOMIC_SEQ_CST);
+    if (!__atomic_compare_exchange_n(&d->rx_owner_word, &mine, next, 0,
+            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+        if (__atomic_load_n(&d->rx_owner_word, __ATOMIC_SEQ_CST) != next)
+            __atomic_store_n(&d->rx_stopped, 0u, __ATOMIC_SEQ_CST);
+        return FF_RELOAD_HANDOVER_BUSY;
+    }
+    return FF_RELOAD_HANDOVER_OK;
+}
+
+int
+ff_reload_gendir_rx_claim(uint32_t from_epoch, uint32_t from_gen,
+    uint32_t to_epoch, uint32_t to_gen, unsigned timeout_ms)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t from, to;
+    uint64_t deadline;
+
+    if (d == NULL)
+        return FF_RELOAD_HANDOVER_INVAL;
+    if (to_gen >= FF_RELOAD_GEN_MAX)
+        return FF_RELOAD_HANDOVER_INVAL;
+
+    from = dir_pack(from_epoch, from_gen);
+    to = dir_pack(to_epoch, to_gen);
+
+    if (__atomic_load_n(&d->rx_owner_word, __ATOMIC_SEQ_CST) == to) {
+        __atomic_store_n(&d->rx_stopped, 0u, __ATOMIC_SEQ_CST);
+        return FF_RELOAD_HANDOVER_OK;
+    }
+    /* Never steal the hardware from a third coordinate. */
+    if (__atomic_load_n(&d->rx_owner_word, __ATOMIC_SEQ_CST) != from)
+        return FF_RELOAD_HANDOVER_BUSY;
+
+    if (timeout_ms == 0)
+        timeout_ms = FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT;
+    deadline = dir_now_ms() + timeout_ms;
+
+    for (;;) {
+        if (__atomic_load_n(&d->rx_owner_word, __ATOMIC_SEQ_CST) == to) {
+            __atomic_store_n(&d->rx_stopped, 0u, __ATOMIC_SEQ_CST);
+            return FF_RELOAD_HANDOVER_OK;
+        }
+        if (dir_now_ms() >= deadline)
+            return FF_RELOAD_HANDOVER_TIMEOUT;
+        sched_yield();
+    }
+}
+
+int
+ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint64_t cur, next;
+
+    if (d == NULL)
+        return FF_RELOAD_HANDOVER_INVAL;
+    if (my_gen >= FF_RELOAD_GEN_MAX)
+        return FF_RELOAD_HANDOVER_INVAL;
+
+    next = dir_pack(my_epoch, my_gen);
+    cur = __atomic_load_n(&d->rx_owner_word, __ATOMIC_SEQ_CST);
+    if (cur == next) {
+        __atomic_store_n(&d->rx_stopped, 0u, __ATOMIC_SEQ_CST);
+        return FF_RELOAD_HANDOVER_OK;
+    }
+    /* M4 DR6(1) / RT-04b: only a dead owner may be displaced. */
+    if (epoch_live(d, (uint32_t)(cur >> 32)))
+        return FF_RELOAD_HANDOVER_BUSY;
+    if (!__atomic_compare_exchange_n(&d->rx_owner_word, &cur, next, 0,
+            __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+        return FF_RELOAD_HANDOVER_BUSY;
+    __atomic_store_n(&d->rx_stopped, 0u, __ATOMIC_SEQ_CST);
+    return FF_RELOAD_HANDOVER_OK;
 }
 
 int
@@ -295,6 +833,11 @@ ff_no_hw_mode(void)
     if (!ff_global_cfg.dpdk.graceful_reload)
         return 0;
 
+    /* M5: publish this master's decision into the cross-master directory
+     * before deciding. It can only ever narrow the verdict below, never
+     * widen it, so a directory lag costs one parked pass at most. */
+    ff_reload_dir_sync();
+
     /* P1-b: read rx_stopped BEFORE rx_owner_gen. The two loads are
      * separate atomics, so a preemption between them can pair values that
      * never coexisted. With this order the dangerous verdict (owner ==
@@ -311,10 +854,14 @@ ff_no_hw_mode(void)
     stopped = ff_reload_rx_stopped();
     owner = ff_reload_rx_owner_gen();
     if (owner < 0)
-        return 0;
+        return !dir_allows_hw();
     if (owner != ff_reload_gen())
         return 1;
-    return stopped != 0;
+    if (stopped)
+        return 1;
+    /* M5: the directory is the cross-master authority — two masters with
+     * the same gen must never both come back "unparked" here. */
+    return !dir_allows_hw();
 }
 
 int
@@ -323,8 +870,10 @@ ff_is_drain_generation(void)
     int owner = ff_reload_rx_owner_gen();
 
     if (owner < 0)
-        return 0;
-    return owner != ff_reload_gen();
+        return !dir_allows_hw();
+    if (owner != ff_reload_gen())
+        return 1;
+    return !dir_allows_hw();
 }
 
 int
@@ -348,6 +897,30 @@ ff_reload_rx_release(int to_gen)
     ff_reload_rx_stopped_set(1);
     ff_reload_rx_owner_gen_set(to_gen);
     return FF_RELOAD_HANDOVER_OK;
+}
+
+int
+ff_reload_rx_release_epoch(uint32_t to_epoch, int to_gen)
+{
+    int rc;
+
+    if (g_reload_state == NULL)
+        return FF_RELOAD_HANDOVER_INVAL;
+    if (to_gen < 0 || to_gen >= FF_RELOAD_GEN_MAX)
+        return FF_RELOAD_HANDOVER_INVAL;
+
+    /* reserved[4] carries the epoch the hardware is handed to (0 == our
+     * own), so the workers that mirror the block into the directory can
+     * move ownership to another master's generation (M5/USR2). */
+    __atomic_store_n(&g_reload_state->reserved[4], to_epoch,
+        __ATOMIC_SEQ_CST);
+    ff_reload_rx_stopped_set(1);
+    ff_reload_rx_owner_gen_set(to_gen);
+
+    rc = ff_reload_gendir_rx_release(to_epoch, (uint32_t)to_gen);
+    if (rc == FF_RELOAD_HANDOVER_INVAL)
+        rc = FF_RELOAD_HANDOVER_OK;   /* no directory: block-only, as M4 */
+    return rc;
 }
 
 int
@@ -742,13 +1315,24 @@ ff_reload_master_begin(uint32_t *epoch, uint32_t *target_gen)
 void
 ff_reload_master_abort(void)
 {
+    uint32_t ag;
+
     if (g_reload_state == NULL)
         return;
     __atomic_store_n(&g_reload_state->reload_active, 0, __ATOMIC_SEQ_CST);
     /* C-NR-302: an aborted reload must give the hardware back to the
      * generation that is still active (H-12 — the markers are reversible). */
-    ff_reload_rx_owner_gen_set(ff_reload_active_gen());
+    ag = (uint32_t)ff_reload_active_gen();
+    __atomic_store_n(&g_reload_state->reserved[4], g_reload_epoch,
+        __ATOMIC_SEQ_CST);
+    ff_reload_rx_owner_gen_set((int)ag);
     ff_reload_rx_stopped_set(0);
+    /* M5: the directory is only reachable from a process with an EAL (the
+     * master has none), so this is a best-effort publish for the callers
+     * that do have one — the per-pass ff_reload_dir_sync() is the path that
+     * normally keeps it in step. */
+    ff_reload_gendir_active_set(g_reload_epoch, ag);
+    ff_reload_gendir_kni_owner_set(g_reload_epoch, ag);
 }
 
 void
@@ -762,10 +1346,17 @@ ff_reload_master_complete(void)
     t = __atomic_load_n(&g_reload_state->target_gen, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_reload_state->active_gen, t, __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_reload_state->kni_owner_gen, t, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_reload_state->reserved[5], g_reload_epoch,
+        __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_reload_state->reserved[4], g_reload_epoch,
+        __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_reload_state->reload_active, 0, __ATOMIC_SEQ_CST);
     /* C-NR-302: hardware ownership follows the active generation. */
     ff_reload_rx_owner_gen_set((int)t);
     ff_reload_rx_stopped_set(0);
+    /* M5: see ff_reload_master_abort() — best-effort directory publish. */
+    ff_reload_gendir_active_set(g_reload_epoch, t);
+    ff_reload_gendir_kni_owner_set(g_reload_epoch, t);
 }
 
 void
@@ -832,6 +1423,39 @@ ff_reload_msg_fill(struct ff_msg *msg, int cmd, int gen, int status,
     msg->reload.status = (uint32_t)status;
     msg->reload.active_gen = (uint32_t)ff_reload_active_gen();
     msg->reload.heartbeat = heartbeat;
+    /* M5: report the epoch the active generation belongs to, so a tool
+     * builds ring names for the master that is actually serving. */
+    {
+        uint32_t ae, ag;
+
+        if (ff_reload_gendir_active(&ae, &ag) == 0 &&
+            ae != FF_RELOAD_EPOCH_NONE) {
+            /* epoch and gen must come from the same source: the directory
+             * active word tracks the rx owner, the block's active_gen lags
+             * it until T5, and mixing the two would name a ring nobody
+             * dequeues. */
+            msg->reload.epoch = ae;
+            msg->reload.active_gen = ag;
+        } else if (ff_reload_epoch() == 0) {
+            /* This is the resident primary (or a stack without a
+             * directory): no worker has mirrored an active generation yet,
+             * so fall back to the newest live master epoch in the
+             * directory rather than to our own epoch 0 / slot 0. */
+            uint32_t pe;
+            int pg;
+
+            ff_reload_peer_coord(&pe, &pg);
+            if (pe != ff_reload_epoch()) {
+                /* epoch and gen from the same source, as above */
+                msg->reload.epoch = pe;
+                msg->reload.active_gen = (uint32_t)pg;
+            } else {
+                msg->reload.epoch = 0u;
+            }
+        } else {
+            msg->reload.epoch = ff_reload_epoch();
+        }
+    }
 }
 
 int
