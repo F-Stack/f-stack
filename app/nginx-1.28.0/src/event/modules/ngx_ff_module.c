@@ -351,7 +351,12 @@ ff_init_with_args(const char *conf, int proc_id, const char *proc_type)
  * Outside a reload window, or when this process is not the target
  * generation (the previous round's G_new keeps its registration), every
  * packet stays local: the steady state pays one cheap check per packet
- * and behaves exactly like an unregistered dispatcher. */
+ * and behaves exactly like an unregistered dispatcher.
+ *
+ * F-M5-1 (USR2): the window may also be the cross-master one — the block
+ * of a fresh master never opens the M4 window, so the peer check below
+ * uses the block mirror (a plain shared read refreshed once per loop pass
+ * by ff_reload_dir_sync, no directory scan on the per-packet path). */
 static int
 ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
     uint16_t nb_queues, struct ff_dispatcher_context context)
@@ -365,8 +370,8 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
     (void) context;
 
     if (!ff_reload_state_attached()
-        || !ff_reload_hw_locked()
-        || ff_reload_gen() != ff_reload_target_gen())
+        || ff_reload_gen() != ff_reload_target_gen()
+        || (!ff_reload_hw_locked() && !ff_reload_peer_mirror_draining()))
     {
         return queue_id;
     }
@@ -466,13 +471,19 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
  * master hands rx over, so no packet can reach the callback before the
  * table is armed (this generation is parked off the hardware until then).
  * D-NR-303 (open at init, not at T3): a parked generation receives no
- * packets, so arming early is indistinguishable from arming at T3. */
+ * packets, so arming early is indistinguishable from arming at T3.
+ * F-M5-1 (USR2): the fresh master's anonymous block never opens the M4
+ * reload window, so the block-only gate cannot arm its workers. The
+ * directory provides the equivalent condition — a peer master epoch that
+ * is live or still draining — and arming still happens at init, while
+ * parked, so the first pass that owns rx already classifies (otherwise
+ * every old-generation flow dies in a burst of RSTs at the WINCH flip). */
 static void
 ngx_ff_flow_map_arm(void)
 {
     if (!ff_reload_state_attached()
-        || !ff_reload_hw_locked()
-        || ff_reload_gen() != ff_reload_target_gen())
+        || ff_reload_gen() != ff_reload_target_gen()
+        || (!ff_reload_hw_locked() && !ff_reload_peer_draining()))
     {
         return;
     }

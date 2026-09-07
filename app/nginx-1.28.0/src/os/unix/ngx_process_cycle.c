@@ -50,6 +50,12 @@ static ngx_int_t ngx_ff_reload_hup(ngx_cycle_t **pcycle,
     ngx_core_conf_t **pccf, ngx_uint_t *live);
 static ngx_int_t ngx_ff_reload_handover(ngx_cycle_t *cycle);
 static void ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle);
+/* C-NR-501..504 (M5): USR2 binary upgrade, old-master side */
+static void ngx_ff_usr2_begin(ngx_cycle_t *cycle);
+static ngx_int_t ngx_ff_usr2_handover(ngx_cycle_t *cycle);
+static void ngx_ff_usr2_reclaim(ngx_cycle_t *cycle);
+static void ngx_ff_usr2_check(ngx_cycle_t *cycle);
+static ngx_uint_t ngx_ff_usr2_old_workers(void);
 static void ngx_ff_reload_t3_check(ngx_cycle_t *cycle);
 static void ngx_ff_reload_quit_gold(ngx_cycle_t *cycle);
 static void ngx_ff_reload_watchdog_arm(ngx_cycle_t *cycle);
@@ -80,6 +86,19 @@ static ngx_int_t  ngx_ff_reload_attach_failed;
 static ngx_uint_t ngx_ff_reload_wd_armed;
 static ngx_msec_t ngx_ff_reload_resend_quit_ms;
 static ngx_msec_t ngx_ff_reload_escalate_term_ms;
+/* C-NR-501..504 (M5): USR2 bookkeeping. The old master keeps owning the
+ * hardware until the operator asks for the cut-over (WINCH), so a broken new
+ * binary costs nothing; HUP during an upgrade takes rx back (RT-04b). */
+#define NGX_FF_USR2_NONE      0
+#define NGX_FF_USR2_PENDING   1   /* new binary running, we still own rx */
+#define NGX_FF_USR2_HANDED    2   /* rx handed to the new master's epoch */
+static ngx_uint_t ngx_ff_usr2_state;
+static uint32_t   ngx_ff_usr2_base_epoch;  /* peer_epoch when exec()ed */
+static uint32_t   ngx_ff_usr2_epoch;       /* epoch rx was handed to */
+static ngx_msec_t ngx_ff_usr2_start;
+static ngx_uint_t ngx_ff_usr2_winch;       /* WINCH before the peer was up */
+static ngx_msec_t ngx_ff_usr2_wait_ms;
+#define NGX_FF_USR2_WAIT_MS   120000
 #define NGX_FF_RELOAD_READY_WAIT_SEC  60   /* aligns the M1 attach confirm */
 #define NGX_FF_RELOAD_T5_RESEND_QUIT_MS   10000
 #define NGX_FF_RELOAD_T5_ESCALATE_TERM_MS 90000
@@ -298,6 +317,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
          * noticed between child exits */
         if (ngx_ff_graceful_reload) {
             ngx_ff_reload_wait_or_check(cycle);
+            ngx_ff_usr2_check(cycle);
         }
 #endif
 
@@ -328,6 +348,20 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         if (ngx_quit) {
+#if (NGX_HAVE_FSTACK)
+            /* C-NR-503: quitting the old master before the new generation
+             * registered would leave a hardware queue with no poller until
+             * this master is gone. Move rx first when we still can. */
+            if (ngx_ff_graceful_reload
+                && ngx_ff_usr2_state == NGX_FF_USR2_PENDING
+                && ngx_ff_usr2_handover(cycle) != NGX_OK)
+            {
+                ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                              "ff usr2: QUIT before the new generation "
+                              "registered, the new binary takes over once "
+                              "this master exits");
+            }
+#endif
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
 #if (!NGX_HAVE_FSTACK)
@@ -405,10 +439,27 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
         if (ngx_restart) {
             ngx_restart = 0;
-            ngx_start_worker_processes(cycle, ccf->worker_processes,
-                                       NGX_PROCESS_RESPAWN);
-            ngx_start_cache_manager_processes(cycle, 0);
-            live = 1;
+#if (NGX_HAVE_FSTACK)
+            /* P1-2 (G-B5): under graceful_reload, ngx_restart only ever
+             * means "the new binary died after a WINCH". Respawning right
+             * away would add a second worker set with the same (epoch, gen,
+             * proc_id) while the old workers are still serving (deferred
+             * WINCH) or draining (rx already handed over) — two rx pollers
+             * and two ring consumers the generation directory cannot
+             * arbitrate apart. Same rule as the C-NR-504 roll-back: only
+             * respawn once the last old worker is gone. */
+            if (ngx_ff_graceful_reload && ngx_ff_usr2_old_workers() > 0) {
+                ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                              "ff usr2: new binary died with old workers "
+                              "still alive, keeping them (respawn skipped)");
+            } else
+#endif
+            {
+                ngx_start_worker_processes(cycle, ccf->worker_processes,
+                                           NGX_PROCESS_RESPAWN);
+                ngx_start_cache_manager_processes(cycle, 0);
+                live = 1;
+            }
         }
 
         if (ngx_reopen) {
@@ -420,14 +471,56 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         if (ngx_change_binary) {
+#if (NGX_HAVE_FSTACK)
+            /* C-NR-502: an upgrade and a reload round both move the
+             * hardware, so refuse to interleave them; a second upgrade
+             * after the traffic already moved is refused as well. */
+            if (ngx_ff_graceful_reload
+                && (ngx_ff_usr2_state == NGX_FF_USR2_HANDED
+                    || (ngx_ff_usr2_state == NGX_FF_USR2_NONE
+                        && ngx_ff_reload_fsm_state()
+                           != NGX_FF_RELOAD_T0_IDLE)))
+            {
+                ngx_change_binary = 0;
+                ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                              "ff usr2: rejected, %s",
+                              ngx_ff_usr2_state == NGX_FF_USR2_HANDED
+                                  ? "traffic already handed over"
+                                  : "a graceful reload round is in flight");
+                continue;
+            }
+#endif
             ngx_change_binary = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "changing binary");
             ngx_new_binary = ngx_exec_new_binary(cycle, ngx_argv);
+#if (NGX_HAVE_FSTACK)
+            if (ngx_ff_graceful_reload && ngx_new_binary > 0) {
+                ngx_ff_usr2_begin(cycle);
+            }
+#endif
         }
 
         if (ngx_noaccept) {
             ngx_noaccept = 0;
             ngx_noaccepting = 1;
+#if (NGX_HAVE_FSTACK)
+            /* C-NR-503: this master owns the only hardware queue set, so
+             * WINCH must hand rx to the new binary's generation before the
+             * old workers start draining (M4). If that generation has not
+             * registered yet, defer the QUIT to the watchdog instead of
+             * leaving the queue with no poller. */
+            if (ngx_ff_graceful_reload
+                && ngx_ff_usr2_state == NGX_FF_USR2_PENDING
+                && ngx_ff_usr2_handover(cycle) != NGX_OK)
+            {
+                ngx_ff_usr2_winch = 1;
+                ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                              "ff usr2: WINCH before the new generation "
+                              "registered, deferring (old workers keep "
+                              "serving)");
+                continue;
+            }
+#endif
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
         }
@@ -1073,6 +1166,51 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     ngx_int_t        i;
     ngx_uint_t       n_gnew;
 
+    /* C-NR-504 (RT-04b): a HUP while a binary upgrade is being tracked is
+     * the roll-back, not a reload. The block write alone cannot create a
+     * second rx poller — ff_reload_dir_sync() refuses to displace a live
+     * owner, so the hardware only actually comes back once the new master
+     * is gone. */
+    if (ngx_ff_usr2_state != NGX_FF_USR2_NONE) {
+        ngx_uint_t  nlive;
+
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "ff usr2: HUP during a binary upgrade, rolling back "
+                      "(state %ui)", ngx_ff_usr2_state);
+        ngx_ff_usr2_reclaim(cycle);
+        ngx_ff_usr2_state = NGX_FF_USR2_NONE;
+        ngx_ff_usr2_winch = 0;
+
+        /* Roll-back semantics: workers that never got a QUIT are serving
+         * again the moment the owner markers are ours. Workers already
+         * quitting keep the native one-way exit (they finish their
+         * connections instead of being resurrected), so a WINCH that ran to
+         * completion can leave this master with no worker at all — respawn
+         * them, exactly like the native path does after a failed binary. */
+        nlive = 0;
+        for (i = 0; i < ngx_last_process; i++) {
+            if (ngx_processes[i].pid != -1
+                && !ngx_processes[i].exited
+                && ngx_processes[i].proc == ngx_worker_process_cycle)
+            {
+                nlive++;
+            }
+        }
+
+        if (nlive == 0) {
+            ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx,
+                                                   ngx_core_module);
+            ngx_start_worker_processes(cycle, ccf->worker_processes,
+                                       NGX_PROCESS_RESPAWN);
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff usr2: no old worker left, respawned %d",
+                          (int) ccf->worker_processes);
+        }
+
+        *live = 1;
+        return NGX_OK;
+    }
+
     /* semantics 6: no reload while T1..T5 is in flight */
     if (ngx_ff_reload_fsm_state() != NGX_FF_RELOAD_T0_IDLE) {
         ngx_ff_reload_note_hup_rejected();
@@ -1083,7 +1221,11 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
         return NGX_DECLINED;
     }
 
-    if (ngx_new_binary) {
+    /* M5: an upgrade this master tracks is rolled back above, so reaching
+     * here with one means the state machine is out of step. A new binary
+     * left running after a rollback is not a reason to refuse: the hardware
+     * is ours again and the HUP chain has to keep working (RT-04b). */
+    if (ngx_new_binary && ngx_ff_usr2_state != NGX_FF_USR2_NONE) {
         ngx_ff_reload_note_hup_rejected();
         ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                       "graceful reload rejected: binary upgrade in progress");
@@ -1470,6 +1612,247 @@ ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
                       (ngx_msec_t) ff_reload_phase_ms_get(
                           FF_RELOAD_PHASE_DRAIN),
                       rx_fwd, tx_fwd, rx_peak, tx_peak);
+    }
+}
+
+/* ---- C-NR-501..504 (M5): USR2 binary upgrade ----------------------------
+ *
+ * Two nginx masters share one hardware queue set and one resident slim
+ * primary. Batch A gave every master its own epoch (minted in the hugepage
+ * generation directory by whichever worker calls ff_dpdk_init() first) and
+ * made the directory the single authority on who may poll rx. What is left
+ * for the old master is the decision itself, and it can only be expressed
+ * through its own anonymous block: the master never runs ff_init() and has
+ * no EAL, so it can neither read nor write the directory. That is enough,
+ * because the coordinate it must hand the hardware to (the peer's epoch and
+ * generation) is mirrored into its block by its own workers, and every
+ * worker mirrors the block back into the directory on each main-loop pass.
+ *
+ * Cut-over: WINCH, exactly where native nginx stops serving on the old
+ * binary. USR2 alone only starts the new master and never moves rx, so a new
+ * binary that dies (bad configuration, failed attach) costs nothing. HUP
+ * while an upgrade is tracked is the RT-04b roll-back. */
+
+/* Peer coordinate from the master's point of view: whatever the workers
+ * mirrored, minus "no peer" (0 / NONE) and minus the value already present
+ * when the new binary was exec()ed (ff_reload_peer_coord() falls back to our
+ * own epoch when there is no other live master). Returns 0 when there is no
+ * usable peer yet. */
+static uint32_t
+ngx_ff_usr2_peer(uint32_t *gen)
+{
+    uint32_t  epoch, g;
+
+    if (ngx_ff_reload_shm == NULL) {
+        return 0;
+    }
+
+    ff_reload_peer_block(&epoch, &g);
+
+    if (epoch == 0 || epoch == FF_RELOAD_EPOCH_NONE
+        || epoch == ngx_ff_usr2_base_epoch)
+    {
+        return 0;
+    }
+
+    if (g >= FF_RELOAD_GEN_MAX) {
+        return 0;
+    }
+
+    if (gen != NULL) {
+        *gen = g;
+    }
+
+    return epoch;
+}
+
+static void
+ngx_ff_usr2_begin(ngx_cycle_t *cycle)
+{
+    if (ngx_ff_reload_shm == NULL) {
+        return;
+    }
+
+    ngx_ff_usr2_state = NGX_FF_USR2_PENDING;
+    ngx_ff_usr2_epoch = 0;
+    ngx_ff_usr2_winch = 0;
+    ngx_ff_usr2_start = ngx_current_msec;
+
+    (void) ff_reload_peer_block(&ngx_ff_usr2_base_epoch, NULL);
+
+    ngx_ff_reload_watchdog_arm(cycle);
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff usr2: new binary started, waiting for its generation "
+                  "to register (WINCH moves the traffic)");
+}
+
+/* Hand the hardware to the new master's generation. Block-only: the
+ * directory is moved by our own workers on their next pass, and
+ * ff_reload_dir_sync() never displaces a live owner, so this can neither
+ * lose the hardware nor create a second poller. */
+static ngx_int_t
+ngx_ff_usr2_handover(ngx_cycle_t *cycle)
+{
+    uint32_t  epoch, gen = 0;
+
+    if (ngx_ff_reload_shm == NULL) {
+        return NGX_OK;                 /* graceful_reload=0: native WINCH */
+    }
+
+    epoch = ngx_ff_usr2_peer(&gen);
+    if (epoch == 0) {
+        return NGX_DECLINED;           /* nothing registered yet */
+    }
+
+    if (ff_reload_rx_release_epoch(epoch, (int) gen)
+        != FF_RELOAD_HANDOVER_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "ff usr2: rx handover to epoch %uD failed, "
+                      "old generation keeps serving", epoch);
+        return NGX_ERROR;
+    }
+
+    ngx_ff_usr2_state = NGX_FF_USR2_HANDED;
+    ngx_ff_usr2_epoch = epoch;
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff usr2: handed rx to the new binary (epoch %uD gen %uD), "
+                  "old generation draining", epoch, gen);
+
+    return NGX_OK;
+}
+
+/* M4 DR6(1) semantics, master side: declare the hardware ours again. Safe
+ * even while the new master is alive and healthy — the directory keeps the
+ * old workers parked until the new epoch is really gone. */
+static void
+ngx_ff_usr2_reclaim(ngx_cycle_t *cycle)
+{
+    if (ngx_ff_reload_shm == NULL) {
+        return;
+    }
+
+    (void) ff_reload_rx_release_epoch(0, ff_reload_active_gen());
+    ff_reload_rx_stopped_set(0);
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff usr2: rx owner reset to generation %d, "
+                  "old generation serving again", ff_reload_active_gen());
+}
+
+/* P1-2 (G-B5): workers of this master still holding their (epoch, gen,
+ * proc_id) coordinates — serving (deferred WINCH) or draining (rx already
+ * handed over). Live, non-exited worker-process slots only. */
+static ngx_uint_t
+ngx_ff_usr2_old_workers(void)
+{
+    ngx_int_t   i;
+    ngx_uint_t  n;
+
+    n = 0;
+    for (i = 0; i < ngx_last_process; i++) {
+        if (ngx_processes[i].pid != -1
+            && !ngx_processes[i].exited
+            && ngx_processes[i].proc == ngx_worker_process_cycle)
+        {
+            n++;
+        }
+    }
+
+    return n;
+}
+
+static void
+ngx_ff_usr2_check(ngx_cycle_t *cycle)
+{
+    if (!ngx_ff_graceful_reload || ngx_ff_usr2_state == NGX_FF_USR2_NONE) {
+        return;
+    }
+
+    if (ngx_ff_usr2_wait_ms == 0) {
+        ngx_ff_usr2_wait_ms = ngx_ff_reload_env_msec("NGX_FF_USR2_WAIT_MS",
+                                                     NGX_FF_USR2_WAIT_MS);
+    }
+
+    if (ngx_new_binary == 0) {
+        /* exec() failed or the new binary already exited: nothing can take
+         * the hardware over. */
+        if (ngx_ff_usr2_state == NGX_FF_USR2_HANDED) {
+            ngx_ff_usr2_reclaim(cycle);
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff usr2: new binary exited before taking over, "
+                          "old generation keeps serving");
+        }
+
+        ngx_ff_usr2_state = NGX_FF_USR2_NONE;
+        ngx_ff_usr2_winch = 0;
+
+        return;
+    }
+
+    if (ngx_ff_usr2_state == NGX_FF_USR2_HANDED) {
+        if (ngx_ff_usr2_peer(NULL) != ngx_ff_usr2_epoch) {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff usr2: new binary (epoch %uD) is gone, "
+                          "taking rx back", ngx_ff_usr2_epoch);
+            ngx_ff_usr2_reclaim(cycle);
+            ngx_ff_usr2_state = NGX_FF_USR2_NONE;
+            ngx_ff_usr2_winch = 0;
+        }
+
+        return;
+    }
+
+    /* PENDING: poll until the new generation registers, then honour a WINCH
+     * that arrived too early. */
+    ngx_ff_reload_watchdog_arm(cycle);
+
+    if (ngx_ff_usr2_winch && ngx_ff_usr2_handover(cycle) == NGX_OK) {
+        ngx_ff_usr2_winch = 0;
+        ngx_signal_worker_processes(cycle,
+                                    ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
+        return;
+    }
+
+    /* P1-1 (G-B5): a peer that already registered means the upgrade is
+     * armed, not stalled — PENDING then waits for the operator's WINCH
+     * with no deadline. Only a new binary whose generation never showed
+     * up (or mirrored an unusable coordinate) may time out. */
+    if (ngx_current_msec - ngx_ff_usr2_start > ngx_ff_usr2_wait_ms
+        && ngx_ff_usr2_peer(NULL) == 0)
+    {
+        uint32_t  raw_epoch, raw_gen;
+
+        ff_reload_peer_block(&raw_epoch, &raw_gen);
+
+        if (raw_epoch != 0 && raw_epoch != FF_RELOAD_EPOCH_NONE
+            && raw_epoch != ngx_ff_usr2_base_epoch)
+        {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "ff usr2: peer epoch %uD mirrored with unusable "
+                          "gen %uD for %M ms, giving up on the upgrade",
+                          raw_epoch, raw_gen, ngx_ff_usr2_wait_ms);
+        } else {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "ff usr2: no new generation registered within "
+                          "%M ms", ngx_ff_usr2_wait_ms);
+        }
+
+        if (ngx_ff_usr2_winch) {
+            /* the operator asked for the old workers to go: do not wedge
+             * the shutdown on a new binary that never came up */
+            ngx_ff_usr2_winch = 0;
+            ngx_signal_worker_processes(cycle,
+                                        ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff usr2: old generation keeps serving");
+        }
+
+        ngx_ff_usr2_state = NGX_FF_USR2_NONE;
     }
 }
 
