@@ -4,7 +4,7 @@
 |---|---|
 | 文档编号 | 06 |
 | 标题 | F-Stack Nginx 无损 reload 候选方案对比（S1~S4）+ 推荐方案 S3 设计 |
-| 版本 | v1.9.4（v1.9.3 基础上：**M4 实现批注 —— DR6① 按「G_old worker 自治夺回」的实现形态修订表述**，并补记 M4 收尾范围） |
+| 版本 | v1.9.5（v1.9.4 基础上：**M5 实现批注 —— §5.2/5.3 USR2 段按「切流点 = WINCH + 世代目录 + master 无 EAL 约束」的实证形态修订**，并修订 KNI owner 翻转结论的适用范围（仅单 master 成立）） |
 | 日期 | 2026-09-02 |
 | 状态 | 待人工审计（v1.9 交叉审核修订 + 人工决策落盘） |
 | 修订来源 | 2026-09-01 独立交叉审核（只读，无代码改动、无 git 写操作），全部结论带 `文件:行号` 证据，区分「代码坐实」与「推断」 |
@@ -433,7 +433,7 @@ T5  master 收 G_old SIGCHLD（且确认排空：连接数=0 + DRAIN_DONE）→ 
   恰好缺失 ngx_set_shutdown_timer，需补回）兜底强退
 ```
 
-USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exec 换代——master 本就无任何 ff 状态（P-D §2.2：master 不 ff_init、socket() 未劫持走内核），exec 是纯内核操作；新 master fork 的 worker 全是 secondary（T1 机制），常驻 primary 不受影响。**这使 #12 结论 "exec() is not supported"（R-B §3.7：DPDK 资源不能跨 exec 存活）在 S3 下不再阻塞 nginx USR2**——该限制约束的是 DPDK 进程自身的 exec，而 nginx master 不是 DPDK 进程。
+USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exec 换代——master 本就无任何 ff 状态（P-D §2.2：master 不 ff_init、socket() 未劫持走内核），exec 是纯内核操作；新 master fork 的 worker 全是 secondary（T1 机制），常驻 primary 不受影响。**这使 #12 结论 "exec() is not supported"（R-B §3.7：DPDK 资源不能跨 exec 存活）在 S3 下不再阻塞 nginx USR2**——该限制约束的是 DPDK 进程自身的 exec，而 nginx master 不是 DPDK 进程。**【v1.9.5 M5 实现批注】** 实证形态与本段有四处修订：① **切流点 = WINCH 而非 USR2**——USR2 只拉起新 master 并开始跟踪（老 master 完整保留服务与回退能力，回退零成本），WINCH 是原生「停止用旧二进制服务」的语义点，也是运维确认新代际就绪后唯一无损切流点；目录 slot 无 READY 位，不支持 USR2 自动切流（登记 F-M5-3，M6 候选）。② **跨 master 仲裁由世代目录承载**——常驻 primary 内 hugepage memzone 世代目录（master epoch / rx owner / kni owner / slot 表），ring 命名掺 epoch slot（1 位十进制，slot 0 留 primary；`graceful_reload=0` 名字逐字节不变）。③ **架构约束（实证修正）**：nginx master 从不 `ff_init()` ⇒ 无 EAL ⇒ 读写不到 hugepage 目录——目录写入全部由有 EAL 的 worker/primary 完成（worker 逐 pass `dir_sync()` 镜像，master 只写自己的匿名块、经 `peer_epoch/peer_gen` 读对端坐标），「两 master 都可写目录」的前提不成立。④ **USR2 不走 T1-T5 FSM**：master 侧为独立 USR2 状态机（PENDING/HANDED），worker 侧复用的是 drain/park/drain_ring 机制而非状态机本身（详注见 [07](07-milestones.md) §2.6）。
 
 ### 5.3 与 nginx HUP/USR2 语义的映射
 
@@ -441,9 +441,9 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 |---|---|
 | HUP：新 worker 先起 → 旧 worker 关监听继续服务存量 → 排空退出 | 完全对齐（T1→T4）；「关监听」= 各自栈内 close，无跨进程影响；**v1.9 修正为「先停 accept、延迟 close listening」（语义 14），否则移交瞬间 G_old 的半开连接会全部失败** |
 | HUP：配置失败回滚 | T2 前失败即回滚（G_old 未动） |
-| USR2：旧 master 不关监听、保留回退能力 | 数据面等价物 = G_old drain 期间 drain_ring 双向路径持续可用；回退 = T3 前可随时放弃 G_new |
-| USR2：新旧 worker 并行 accept | **v1.9 修正（原文残留 v1.0-v1.5 的 reta 表述）**：v1.6 起已不切流，本行为表现为「有序接管」——接管前 G_old 收新连接，接管后 G_new 收（更优：避免双代际同时 accept 的连接分布碎片化） |
-| WINCH/QUIT：worker 优雅/强制退出 | drain 语义保留；补回 ngx_set_shutdown_timer |
+| USR2：旧 master 不关监听、保留回退能力 | 数据面等价物 = G_old drain 期间 drain_ring 双向路径持续可用；回退 = T3 前可随时放弃 G_new。**【v1.9.5 M5 实现批注】WINCH 切流下更强**：USR2 后老 master 什么都没交出去，回退在 WINCH 前是零成本的；「T3 等价点」= WINCH 交接，之前放弃 G_new 即终止新 master 一句话的事 |
+| USR2：新旧 worker 并行 accept | **v1.9 修正（原文残留 v1.0-v1.5 的 reta 表述）**：v1.6 起已不切流，本行为表现为「有序接管」——接管前 G_old 收新连接，接管后 G_new 收（更优：避免双代际同时 accept 的连接分布碎片化）。**【v1.9.5 M5 实现批注】USR2 场景下「接管前 G_old 收新连接」延长至 WINCH 时刻**（新代际 worker parked 在无硬件模式等交接） |
+| WINCH/QUIT：worker 优雅/强制退出 | drain 语义保留；补回 ngx_set_shutdown_timer。**【v1.9.5 M5 实现批注】WINCH 语义扩展为「先交接再停旧」**：老 master 收 WINCH 先 `ff_reload_rx_release_epoch()` 交接 rx 再 QUIT 老 worker（避免硬件队列无 poller 窗口；WINCH 早到则 defer 至新代际注册）；QUIT 路径同样先尝试交接、失败走原生 QUIT。常驻 primary 经进程拓扑天然豁免（setsid + 双 fork 不在 `ngx_processes[]`），无需显式豁免点 |
 
 ### 5.4 需要新增的 ff_api / config.ini / ff_msg 接口面（设计清单，非实现承诺）
 
@@ -464,7 +464,7 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
    - **【v1.9 新增】半开连接窗口处理**（语义 14，择一）：
      - (a) `ff_listen_defer_close(so)`：G_old 进入 drain 时只停 accept、保留 listening socket，轮询自身 syncache 半开条目计数至 0 或超时后 close（推荐，改动小）。
      - (b) `ff_syncache_export_pending(...)`：T3 时导出 G_old syncache 中的半开四元组给 G_new，登记进 flow_map 并标记「转 G_old」（需新增 syncache 导出钩子，`syncache_lookup` 现为 static，见 tcp_syncache.c:1052）。
-   - **【v1.9 新增】代际隔离相关**：`msg_ring` 索引由 `proc_id` 改为 `(proc_id, gen)`（`ff_dpdk_if.c:2903`/`:2457-2470`）；KNI runtime owner 改为跟随当前活跃代际（`ff_dpdk_kni.c:101-109`），由 T5 更新（语义 15）。
+   - **【v1.9 新增】代际隔离相关**：`msg_ring` 索引由 `proc_id` 改为 `(proc_id, gen)`（`ff_dpdk_if.c:2903`/`:2457-2470`）；KNI runtime owner 改为跟随当前活跃代际（`ff_dpdk_kni.c:101-109`），由 T5 更新（语义 15）。**【v1.9.5 M5 实现批注】M4 落地的「owner 已随 `ff_reload_master_complete` 与 active_gen 原子同值翻转」仅在单 master 下成立**——翻转写的是本 master 匿名块，跨 master 不可见 ⇒ 双主（两代 proc_id/gen/active_gen 全重合、两个进程同时对同一物理 TX queue 0 `rte_eth_tx_burst`）；M5 起 owner 判定改经世代目录 (epoch,gen)（`ff_reload_kni_owner_match()`，无目录时退回原 gen 比较），跨 master 双主消除。msg_ring 命名同步掺 epoch slot（见 §5.2 注②）
 2. **ff_msg 扩展**（控制通道）：新增 FF_RELOAD 消息族——READY 上报、接管请求/应答、drain 进度上报、**DRAIN_DONE（触发 G_new 关 flow_map、注销 drain_ring 回稳态）**、**REJECT（防重入）**、**HANDOVER_TIMEOUT**（v1.9 新增，见上）。**v1.9 约束**：msg ring 必须做代际隔离（语义 15），否则两代 dequeue 同一 ring（`RING_F_SP_ENQ|RING_F_SC_DEQ`，`ff_dpdk_if.c:764-777`）导致控制消息错收。移交互斥仍用共享内存标记轮询而非 msg ring。
 3. **config.ini 新增**（[dpdk] 段）：
    - `primary_slim = 1`（primary_slim_spec 已设计，V2/V4/V5 校验链沿用）。
@@ -670,7 +670,7 @@ v1.6 的「两代共享同一批硬件队列（rx 互斥移交 + tx 无保护）
 | 1 新连接零丢失 | G_new 接管 rx+tx+listen 后 flow_map 记录新 SYN（SYN-ACK 时入表）；互斥标记保证 rx 队列始终有主；**移交瞬间的半开连接由语义 14 兜底** | RV3（接管互斥正确性/缓冲）、RV12（半开连接窗口） |
 | 2 存量连接完整 drain | G_old 活着跑 ff_run（无硬件模式）+ flow_map miss → `drain_ring_rx` 送达 + 出包经 `drain_ring_tx` 代发 + ARP/NDP clone + **timer 持续（同 lcore_id ⇒ 由自驱 hardclock 保证，语义 11 必需项）** | RV4（ring 容量与满环行为）、RV6（自驱精度等价性，PT-NR-08 为门槛）、RV11（TX 独占回归） |
 | 3 配置失败回滚 | T2 前失败 G_old 未动；T3 接管失败回退（互斥标记保证不并发 rx）；**T3 后 G_new 崩溃的回退由 DR6 定案** | 设计保证（DR6，v1.9 新增必答项） |
-| 4 HUP+USR2 均支持 | 机制同源；master 无 ff 状态可安全 exec | USR2 路径需专项测试 |
+| 4 HUP+USR2 均支持 | 机制同源；master 无 ff 状态可安全 exec | USR2 路径需专项测试。**【v1.9.5 M5 实现批注】** 专项测试已过（RT-04/RT-04b，G-M5 门禁 PASS，切流点 = WINCH，见 [07](07-milestones.md) §2.6 门禁结论块）；残余风险更新为 F-M5-3（无跨 master READY 信号，WINCH 时机依赖运维确认） |
 | 5 工程意义无损 | 门禁 = RV9 错误数 0（≥100 次，排空确认后 reload）；**v1.9 补充 RV14：须实测 keepalive 下 drain 时长并确定强退阈值，否则门禁机时不可控** | 接受 HAProxy 文档级边界（R-B §2.2） |
 | 6（语义 6 防重入） | 排空前拒绝新 reload（REJECT）；多代并存放松属 DR10 可选增强 | DR10 未定案 |
 | **13（TX 独占，v1.9 新增行）** | G_new 独占 tx：G_old 置「无硬件模式」后**三处 flush 入口全部短路**（`:2532`/`:2557`/`:2853`），出包一律 enqueue `drain_ring_tx` 由 G_new 代发；`drain_ring_rx`/`drain_ring_tx` 各自 SP/SC，不再有 `dispatch_ring` 双消费者问题 | RV11（TX 独占回归，IT-NR-A09 断言 G_old 侧 tx_burst 计数恒 0）；PT-NR-10（代发开销）；**T3 后 G_new 崩溃 → 无进程收发包**（DR6） |
