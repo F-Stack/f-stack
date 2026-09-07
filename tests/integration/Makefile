@@ -44,7 +44,7 @@ LDFLAGS_BASE  := $(CMOCKA_LIBS)
 
 # Tests list
 ALL_TESTS     := test_ff_dpdk_if_integration test_ff_kni_integration \
-                 test_ff_reload_integration
+                 test_ff_reload_integration test_ff_gendir_mp_integration
 
 # Common stub objects
 COMMON_OBJS   := $(COMMON_DIR)/rte_stub.o
@@ -66,10 +66,25 @@ help:
 	@echo "  make coverage_clean - remove gcov/.gcda/.gcno + coverage_report/"
 
 test: all
-	@for t in $(ALL_TESTS); do \
-	  echo "==> running $$t"; $(RUN_ENV) ./$$t || exit 1; \
-	done
-	@echo "ALL INTEGRATION TESTS PASS ($(words $(ALL_TESTS)) binaries)"
+	@# The hugepage cleanup below must run even when a test FAILS (review
+	@# P2-1): a failed run leaks 256 pages (512 MB) and ~7 failures would
+	@# exhaust the 2048-page pool, so record the failure, clean, then exit.
+	@fail=0; for t in $(ALL_TESTS); do \
+	  echo "==> running $$t"; $(RUN_ENV) ./$$t || { fail=1; break; }; \
+	done; \
+	if ls /dev/hugepages/ff_gendir_mpmap_* >/dev/null 2>&1; then \
+	  echo "==> cleaning ff_gendir_mp hugepage files"; \
+	  ls /dev/hugepages/ff_gendir_mpmap_* | while read f; do \
+	    /data/workspace/rm_tmp_file.sh "$$f" >/dev/null; \
+	  done; \
+	fi; \
+	if [ -d /var/run/dpdk/ff_gendir_mp ]; then \
+	  /data/workspace/rm_tmp_file.sh /var/run/dpdk/ff_gendir_mp >/dev/null; \
+	fi; \
+	if [ $$fail -ne 0 ]; then \
+	  echo "INTEGRATION TESTS FAILED"; exit 1; \
+	fi; \
+	echo "ALL INTEGRATION TESTS PASS ($(words $(ALL_TESTS)) binaries)"
 
 # ----- check (valgrind memcheck on integration tests) -------------------
 VALGRIND      ?= valgrind
@@ -137,6 +152,7 @@ INT_LIB_OBJS := \
     $(LIB_OBJS_DIR)/ff_log.o \
     $(LIB_OBJS_DIR)/ff_host_interface.o \
     $(LIB_OBJS_DIR)/ff_reload.o \
+    $(LIB_OBJS_DIR)/ff_reload_gendir.o \
     $(LIB_OBJS_DIR)/ff_drain_ring.o \
     $(LIB_OBJS_DIR)/ff_flow_map.o
 
@@ -173,10 +189,24 @@ RELOAD_LIB_OBJS := \
     $(LIB_OBJS_DIR)/ff_log.o \
     $(LIB_OBJS_DIR)/ff_host_interface.o \
     $(LIB_OBJS_DIR)/ff_reload.o \
+    $(LIB_OBJS_DIR)/ff_reload_gendir.o \
     $(LIB_OBJS_DIR)/ff_drain_ring.o \
     $(LIB_OBJS_DIR)/ff_flow_map.o
 
 test_ff_reload_integration: test_ff_reload_integration.o $(RELOAD_LIB_OBJS) $(COMMON_OBJS)
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \
+	    $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=$(DPDK_RUNPATH) \
+	    -lpthread -lcrypto -ldl -lm
+
+# ----- M5 Batch C: cross-master generation directory, real two-process EAL --
+# (IT-NR-A14, nginx_reload_spec 08). Unlike the harnesses above this one
+# boots a real PRIMARY (huge mode, no --no-huge: a DPDK 24.11 secondary
+# needs the runtime-dir hugepage_data the primary only writes in that mode)
+# and forks master->worker chains that attach as real secondaries with the
+# same --file-prefix. NIC exclusivity is kept via --no-pci + net_null0.
+MP_LIB_OBJS := $(RELOAD_LIB_OBJS)
+
+test_ff_gendir_mp_integration: test_ff_gendir_mp_integration.o $(MP_LIB_OBJS) $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \
 	    $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=$(DPDK_RUNPATH) \
 	    -lpthread -lcrypto -ldl -lm

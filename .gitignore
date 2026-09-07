@@ -71,6 +71,7 @@ tests/unit/common/*.o
 tests/integration/test_ff_dpdk_if_integration
 tests/integration/test_ff_kni_integration
 tests/integration/test_ff_reload_integration
+tests/integration/test_ff_gendir_mp_integration
 
 # Stage-3 coverage artifacts (produced by `make coverage`)
 tests/unit/*.gcda
