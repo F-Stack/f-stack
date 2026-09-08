@@ -54,7 +54,8 @@ WRAP_FF_LOG   := -Wl,--wrap=rte_openlog_stream \
 # Tests list
 SANITY_TESTS  := test_hello
 P0_TESTS      := test_ff_ini_parser test_ff_log test_ff_callout
-P1_TESTS      := test_ff_host_interface test_ff_epoll test_ff_config
+P1_TESTS      := test_ff_host_interface test_ff_epoll test_ff_config \
+                 test_ff_ipc
 P2_TESTS      := test_ff_thread test_ff_init test_ff_dpdk_pcap test_ff_dpdk_if
 P3_TESTS      := test_ff_dpdk_kni test_ff_zc_send
 ALL_TESTS     := $(SANITY_TESTS) $(P0_TESTS) $(P1_TESTS) $(P2_TESTS) $(P3_TESTS)
@@ -210,6 +211,13 @@ test_ff_epoll: test_ff_epoll.o $(LIB_OBJS_DIR)/ff_epoll.o $(COMMON_OBJS)
 # the `if (X == NULL)` OOM error legs in parse_lcore_mask / port / vlan.
 test_ff_config: test_ff_config.o $(LIB_OBJS_DIR)/ff_config.o $(LIB_OBJS_DIR)/ff_ini_parser.o $(LIB_OBJS_DIR)/ff_reload.o $(COMMON_DIR)/rte_stub.o
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) -Wl,--wrap=calloc
+
+# P1 #4 ff_ipc (F-M5-2: tools-side "<proc>[:<gen>[:<epoch>]]" addressing).
+# The test #includes tools/compat/ff_ipc.c so its static epoch / ring-name
+# state is assertable; only the DPDK stubs and the real DPDK libs are linked.
+# --wrap=exit turns a rejected argument into a cmocka assertion failure.
+test_ff_ipc: test_ff_ipc.o $(COMMON_DIR)/rte_stub.o
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm -Wl,--wrap=exit
 
 # P2 #1 ff_thread (links real pthread + ff_host_interface for ff_malloc/free;
 # the test file ships its own `__thread struct thread *pcurthread` storage)

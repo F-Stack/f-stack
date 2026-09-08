@@ -53,7 +53,7 @@ COMMON_OBJS   := $(COMMON_DIR)/rte_stub.o
 DPDK_RUNPATH  := /usr/local/lib64
 RUN_ENV       := LD_LIBRARY_PATH=$(DPDK_RUNPATH):$$LD_LIBRARY_PATH
 
-.PHONY: all test check clean coverage coverage_clean help
+.PHONY: all test check clean coverage coverage_clean help reload-harness reload-harness-dry
 all: $(ALL_TESTS)
 
 help:
@@ -64,6 +64,29 @@ help:
 	@echo "  make coverage     - build with gcov + run + emit lcov HTML report"
 	@echo "  make clean        - clean build artifacts (uses rm_tmp_file.sh wrapper)"
 	@echo "  make coverage_clean - remove gcov/.gcda/.gcno + coverage_report/"
+	@echo "  make reload-harness - real-machine graceful-reload harness (needs TARGET_IP)"
+
+# ----- graceful-reload real-machine harness (C-NR-601) ---------------------
+# Deliberately NOT part of ALL_TESTS / `make test`: this one boots nginx on
+# the DPDK-owned NIC, needs TARGET_IP plus a client machine and runs for
+# minutes, none of which a CI box has. Keeping the default target C-only also
+# guarantees `make test` never fails just because TARGET_IP is unset.
+#   make reload-harness TARGET_IP=<DPDK_NIC_IP> HARNESS_ARGS="--rounds 100"
+#   make reload-harness-dry TARGET_IP=<DPDK_NIC_IP>          (2-round smoke)
+RELOAD_HARNESS := test_graceful_reload.sh
+HARNESS_ARGS   ?=
+
+reload-harness:
+	@if [ -z "$(TARGET_IP)" ]; then \
+	  echo "ERROR: TARGET_IP is mandatory (make reload-harness TARGET_IP=<DPDK_NIC_IP>)"; \
+	  exit 2; \
+	fi
+	@/data/workspace/chmod_modify.sh +x $(RELOAD_HARNESS) >/dev/null
+	@./$(RELOAD_HARNESS) -t "$(TARGET_IP)" $(HARNESS_ARGS)
+
+reload-harness-dry:
+	@$(MAKE) --no-print-directory reload-harness \
+	  HARNESS_ARGS="--cases precheck,rt01,rv9 --rounds 2 --interval 6 $(HARNESS_ARGS)"
 
 test: all
 	@# The hugepage cleanup below must run even when a test FAILS (review

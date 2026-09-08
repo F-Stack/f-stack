@@ -1983,6 +1983,94 @@ test_ut_nr_19_drain_ring_sp_sc(void **state)
     ff_global_cfg.dpdk.drain_ring_size = 0;
 }
 
+/* F-M4-1: a full drain ring must be visible. The counter was always exact,
+ * but the only watermark was sampled at 1 Hz by flush_stats(), so M4 logged
+ * rounds with full-ring drops and a peak of 43. The enqueue failure now
+ * publishes the occupancy it sees. */
+static void
+test_f_m4_1_drain_ring_full_visible(void **state)
+{
+    static uint16_t port_list[1] = { 0 };
+    static struct ff_port_cfg port_cfgs[1];
+    static struct ff_reload_drain_state drain_state;
+    struct rte_mempool *pool = NULL;
+    struct rte_ring *r;
+    uint64_t rx_fwd, tx_fwd, rx_peak, tx_peak;
+    uint64_t rf = 0, tf = 0, td = 0;
+    unsigned cap;
+    int i;
+
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("[INFO] rte_eal_init failed; F-M4-1 skipped\n");
+        skip();
+        return;
+    }
+
+    pool = rte_pktmbuf_pool_create("ut_f_m4_1_pool", 512, 0, 0, 256,
+        SOCKET_ID_ANY);
+    if (pool == NULL) {
+        printf("[INFO] mbuf pool failed; F-M4-1 skipped\n");
+        skip();
+        return;
+    }
+
+    /* the shared drain block the completion summary reads its peak from */
+    memset(&drain_state, 0, sizeof(drain_state));
+    drain_state.magic = FF_RELOAD_DRAIN_MAGIC;
+    drain_state.len = (uint32_t)sizeof(drain_state);
+    assert_int_equal(ff_reload_drain_attach(&drain_state,
+        sizeof(drain_state)), 0);
+    ff_reload_drain_reset();
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = port_list;
+    memset(port_cfgs, 0, sizeof(port_cfgs));
+    port_cfgs[0].nb_lcores = 1;
+    ff_global_cfg.dpdk.port_cfgs = port_cfgs;
+    ff_global_cfg.dpdk.drain_ring_size = 64;    /* power of two */
+    lcore_conf[0].socket_id = 0;
+    ff_reload_set_gen(0);
+
+    assert_int_equal(ff_drain_ring_init(), 0);
+    r = rte_ring_lookup("drain_tx_p0_q0_g0");
+    assert_non_null(r);
+    cap = rte_ring_get_capacity(r);
+
+    /* fill it; the enqueue after that is the one that must not stay quiet */
+    for (i = 0; i < (int)cap + 4; i++) {
+        struct rte_mbuf *m = rte_pktmbuf_alloc(pool);
+
+        if (m == NULL) {
+            break;
+        }
+        if (ff_drain_ring_tx_enqueue(0, 0, 0, m) != 0) {
+            rte_pktmbuf_free(m);
+            break;
+        }
+    }
+    assert_int_equal((int)rte_ring_count(r), (int)cap);
+
+    /* the ring-layer counter stays exact */
+    ff_drain_ring_stats(&rf, &tf, &td);
+    assert_int_equal((int)tf, 1);
+    assert_int_equal((int)td, 0);
+
+    /* and the watermark the "graceful reload complete" line prints now
+     * carries the occupancy the 1 Hz sampler would have missed */
+    ff_reload_drain_counters(&rx_fwd, &tx_fwd, &rx_peak, &tx_peak);
+    assert_true(tx_peak >= (uint64_t)cap);
+    assert_int_equal((int)rx_peak, 0);
+
+    ff_drain_ring_unregist();
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.nb_ports = 0;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs = NULL;
+    ff_global_cfg.dpdk.drain_ring_size = 0;
+}
+
 /* UT-NR-23: flow map — layout, gating, idempotent insert, lookup, and the
  * reversible open/close window. */
 static void
@@ -2279,6 +2367,8 @@ main(void)
         cmocka_unit_test(test_ut_nr_24_unregist_dispatcher),
         /* M3 Batch B (C-NR-303: R-303-1 dispatcher boundary) */
         cmocka_unit_test(test_ut_nr_27_dispatch_peer_boundary),
+        /* M6: F-M4-1 (drain ring full: warning + watermark) */
+        cmocka_unit_test(test_f_m4_1_drain_ring_full_visible),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
