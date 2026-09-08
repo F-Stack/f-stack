@@ -63,6 +63,9 @@ static int ff_gen_arg = FF_IPC_GEN_AUTO;
 static int ff_ring_gen = FF_IPC_GEN_AUTO;
 /* M5: master epoch the resolved generation belongs to (ring-name slot). */
 static uint32_t ff_ring_epoch;
+/* F-M5-2: epoch given on the command line. FF_RELOAD_EPOCH_NONE means
+ * "not given" and resolves to slot 0, i.e. the pre-M5 ring names. */
+static uint32_t ff_epoch_arg = FF_RELOAD_EPOCH_NONE;
 
 /* F5: the reply this process is waiting for; see ff_ipc_recv. */
 static const struct ff_msg *ff_pending_msg;
@@ -89,11 +92,76 @@ ff_set_gen(int gen)
     ff_ring_gen = FF_IPC_GEN_AUTO;
 }
 
+void
+ff_set_epoch(uint32_t epoch)
+{
+    if (epoch == FF_RELOAD_EPOCH_NONE) {
+        printf("Invalid F-Stack reload epoch, expect 0..%u\n",
+            FF_RELOAD_EPOCH_NONE - 1);
+        exit(1);
+    }
+    ff_epoch_arg = epoch;
+    ff_ring_gen = FF_IPC_GEN_AUTO;
+}
+
+/* "<epoch>": the ring-name slot is derived from it, so the only value that
+ * cannot be expressed is the FF_RELOAD_EPOCH_NONE sentinel itself. */
+static uint32_t
+ff_parse_epoch(const char *arg)
+{
+    char *end;
+    unsigned long epoch;
+
+    if (arg == NULL) {
+        printf("Invalid F-Stack reload epoch\n");
+        exit(1);
+    }
+
+    epoch = strtoul(arg, &end, 10);
+    if (end == arg || *end != '\0' || epoch > FF_RELOAD_EPOCH_NONE - 1UL) {
+        printf("Invalid F-Stack reload epoch:%s\n", arg);
+        exit(1);
+    }
+
+    return (uint32_t)epoch;
+}
+
+/* "<gen>[:<epoch>]" — F-M5-2: the epoch is what tells apart the same
+ * generation number running under two different masters. */
+static void
+ff_parse_gen(const char *arg)
+{
+    char *end;
+    long gen;
+
+    if (arg == NULL) {
+        printf("Invalid F-Stack reload generation\n");
+        exit(1);
+    }
+
+    gen = strtol(arg, &end, 10);
+    if (end == arg || (*end != '\0' && *end != ':')) {
+        printf("Invalid F-Stack reload generation:%s\n", arg);
+        exit(1);
+    }
+    ff_set_gen((int)gen);
+
+    if (*end == ':') {
+        ff_set_epoch(ff_parse_epoch(end + 1));
+    }
+}
+
+void
+ff_set_gen_str(const char *arg)
+{
+    ff_parse_gen(arg);
+}
+
 int
 ff_set_proc_id_str(const char *arg)
 {
     char *end;
-    long id, gen;
+    long id;
 
     if (arg == NULL) {
         printf("Invalid F-Stack proccess id\n");
@@ -108,14 +176,7 @@ ff_set_proc_id_str(const char *arg)
     ff_set_proc_id((int)id);
 
     if (*end == ':') {
-        const char *genarg = end + 1;
-
-        gen = strtol(genarg, &end, 10);
-        if (end == genarg || *end != '\0') {
-            printf("Invalid F-Stack reload generation:%s\n", arg);
-            exit(1);
-        }
-        ff_set_gen((int)gen);
+        ff_parse_gen(end + 1);
     }
 
     return (int)id;
@@ -339,7 +400,11 @@ ff_ipc_ring_gen(void)
 
     if (ff_gen_arg != FF_IPC_GEN_AUTO) {
         ff_ring_gen = ff_gen_arg;
-        ff_ring_epoch = 0;
+        /* F-M5-2: an epoch given on the command line selects the slot.
+         * ff_epoch_arg defaults to FF_RELOAD_EPOCH_NONE, whose slot is 0 —
+         * exactly the value this used to hard-code — so an unspecified
+         * epoch resolves to the same ring names as before. */
+        ff_ring_epoch = ff_epoch_arg;
         return ff_ring_gen;
     }
 

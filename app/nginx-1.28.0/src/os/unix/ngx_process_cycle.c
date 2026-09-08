@@ -2090,6 +2090,13 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
             sem_destroy(ngx_ff_worker_sem);
             munmap(ngx_ff_worker_sem, sizeof(sem_t));
             shm_unlink(shm_name);
+            /* F2: the mapping and the shm object are gone here, but the
+             * static pointer is inherited by every later fork — including
+             * the same-slot respawn from ngx_reap_children(), which does
+             * not run ngx_start_worker_processes() again. A respawned
+             * worker 0 would post through a dangling pointer (glibc futex
+             * fatal -> SIGABRT storm), so clear it. */
+            ngx_ff_worker_sem = NULL;
 
             if (ngx_ff_reload_attach_failed) {
                 break;      /* no point spawning the rest of G_new */
@@ -2490,6 +2497,27 @@ static void ngx_ff_stop_accept_events(ngx_cycle_t *cycle);
 static void ngx_ff_listen_close_timer_handler(ngx_event_t *ev);
 
 
+/* P2-10 / F-M5-4: how long a drain that cannot converge on its own may keep
+ * the worker alive. Both callers bound a wait that would otherwise run
+ * forever, not a wait the operator asked for, so the cap follows
+ * worker_shutdown_timeout upwards and never shrinks below the built-in
+ * value: without that directive it is still NGX_FF_LISTEN_CLOSE_MAX_MS,
+ * which makes every existing configuration behave exactly as before. */
+static ngx_msec_t
+ngx_ff_drain_cap_ms(ngx_cycle_t *cycle)
+{
+    ngx_core_conf_t  *ccf;
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+
+    if (ccf->shutdown_timeout > NGX_FF_LISTEN_CLOSE_MAX_MS) {
+        return ccf->shutdown_timeout;
+    }
+
+    return NGX_FF_LISTEN_CLOSE_MAX_MS;
+}
+
+
 static void
 ngx_ff_stop_accept_events(ngx_cycle_t *cycle)
 {
@@ -2549,6 +2577,7 @@ ngx_ff_worker_may_exit(ngx_cycle_t *cycle)
     static ngx_msec_t  last_check;
     static ngx_uint_t  last_result = 1;
     static ngx_uint_t  cap_logged = 0;
+    ngx_msec_t         cap;
 
     if (!ngx_ff_graceful_reload || !ff_is_drain_generation()) {
         return 1;
@@ -2558,22 +2587,22 @@ ngx_ff_worker_may_exit(ngx_cycle_t *cycle)
      * orphan sockets (fd already closed, so_snd still unACKed) retransmit
      * for TCP-RTO minutes, so the snd_pending wait below is unbounded and
      * the master reaps us with TERM at 90s (S8'' T5 = 92s).  Cap it like
-     * FIX-4 caps the listen close: past NGX_FF_LISTEN_CLOSE_MAX_MS since
-     * QUIT, give up — the orphans die with the worker (peers see RST),
-     * matching the native nginx shutdown_timeout semantics.  quit_msec
-     * == 0 means the drain-QUIT path never ran: keep the original
-     * judgement. */
+     * FIX-4 caps the listen close: past the drain cap since QUIT, give up
+     * — the orphans die with the worker (peers see RST), matching the
+     * native nginx shutdown_timeout semantics.  quit_msec == 0 means the
+     * drain-QUIT path never ran: keep the original judgement. */
+    cap = ngx_ff_drain_cap_ms(cycle);
+
     if (ngx_ff_listen_close_quit_msec != 0
-        && ngx_current_msec - ngx_ff_listen_close_quit_msec
-           >= NGX_FF_LISTEN_CLOSE_MAX_MS)
+        && ngx_current_msec - ngx_ff_listen_close_quit_msec >= cap)
     {
         if (!cap_logged) {
             cap_logged = 1;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
-                          "ff drain: snd_pending wait capped at %d ms "
+                          "ff drain: snd_pending wait capped at %M ms "
                           "(quit+%ui ms, snd_pending=%d, syncache=%d), "
                           "giving up; orphans reset with the worker",
-                          (int) NGX_FF_LISTEN_CLOSE_MAX_MS,
+                          cap,
                           (ngx_uint_t) (ngx_current_msec
                                         - ngx_ff_listen_close_quit_msec),
                           ff_socket_snd_pending(), ff_syncache_count());
@@ -2657,21 +2686,23 @@ ngx_worker_process_cycle_loop(void *arg)
             ngx_ff_listen_close_pending = 0;
             ngx_close_listening_sockets(cycle);
 
-        } else if (ngx_current_msec - ngx_ff_listen_close_quit_msec
-                   >= NGX_FF_LISTEN_CLOSE_MAX_MS)
-        {
-            /* FIX-4 cap fired: forwarded fresh SYNs keep refilling the
-             * syncache, so the natural path may never converge (S7').
-             * NOTICE is an observability anchor for M6. */
-            ngx_ff_listen_close_pending = 0;
-            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
-                          "ff drain: listen close capped at %d ms "
-                          "(quit+%ui ms, syncache=%d, snd_pending=%d)",
-                          (int) NGX_FF_LISTEN_CLOSE_MAX_MS,
-                          (ngx_uint_t) (ngx_current_msec
-                                        - ngx_ff_listen_close_quit_msec),
-                          ff_syncache_count(), ff_socket_snd_pending());
-            ngx_close_listening_sockets(cycle);
+        } else {
+            ngx_msec_t  cap = ngx_ff_drain_cap_ms(cycle);
+
+            if (ngx_current_msec - ngx_ff_listen_close_quit_msec >= cap) {
+                /* FIX-4 cap fired: forwarded fresh SYNs keep refilling the
+                 * syncache, so the natural path may never converge (S7').
+                 * NOTICE is an observability anchor for M6. */
+                ngx_ff_listen_close_pending = 0;
+                ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                              "ff drain: listen close capped at %M ms "
+                              "(quit+%ui ms, syncache=%d, snd_pending=%d)",
+                              cap,
+                              (ngx_uint_t) (ngx_current_msec
+                                            - ngx_ff_listen_close_quit_msec),
+                              ff_syncache_count(), ff_socket_snd_pending());
+                ngx_close_listening_sockets(cycle);
+            }
         }
     }
 
@@ -2914,7 +2945,11 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
          * ngx_worker_process_init(worker == -1) never get here). */
         ff_reload_set_slot(ngx_process_slot);
 
-        if (worker == 0) {
+        /* F2: only a worker 0 forked out of ngx_start_worker_processes()
+         * has a master waiting on this semaphore; a same-slot respawn has
+         * neither a waiter nor a mapping (see the NULL assignment there),
+         * so posting is skipped instead of touching a dangling pointer. */
+        if (worker == 0 && ngx_ff_worker_sem != NULL) {
             (void) sem_post(ngx_ff_worker_sem);
         }
 

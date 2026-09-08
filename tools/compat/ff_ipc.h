@@ -32,14 +32,26 @@
 /* Set F-Stack proccess id to communicate with */
 void ff_set_proc_id(int pid);
 
-/* Same from a command line argument, "<proc_id>[:<gen>]"; the optional
- * generation is equivalent to ff_set_gen(). Returns the proc id. */
+/* Same from a command line argument, "<proc_id>[:<gen>[:<epoch>]]"; the
+ * optional generation is equivalent to ff_set_gen() and the optional epoch
+ * to ff_set_epoch(). Returns the proc id. */
 int ff_set_proc_id_str(const char *arg);
 
 /* Target graceful_reload generation (0..FF_RELOAD_GEN_MAX-1). Unset means
  * auto: the legacy ring names on a graceful_reload=0 stack, otherwise the
  * generation the resident primary reports as active. */
 void ff_set_gen(int gen);
+
+/* Same from a command line argument, "<gen>[:<epoch>]". */
+void ff_set_gen_str(const char *arg);
+
+/* F-M5-2: the master epoch the target generation belongs to. Two masters
+ * (USR2) run the same generation number in different epoch slots, so
+ * reaching one of them takes both numbers. Unset (FF_RELOAD_EPOCH_NONE)
+ * selects slot 0, which is what an unspecified epoch has always resolved
+ * to. Never falls back silently: an explicit generation without a reachable
+ * epoch is an error, not a guess. */
+void ff_set_epoch(uint32_t epoch);
 
 int ff_ipc_init(void);
 void ff_ipc_exit(void);

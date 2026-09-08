@@ -365,7 +365,7 @@ ipfw_main(int oldac, char **oldav)
 			break;
 
 		case 'g':
-			ff_set_gen(atoi(optarg));
+			ff_set_gen_str(optarg);
 			break;
 #endif
 
@@ -571,7 +571,7 @@ ipfw_readfile(int ac, char *av[])
 			break;
 
 		case 'g':
-			ff_set_gen(atoi(optarg));
+			ff_set_gen_str(optarg);
 			break;
 #endif
 

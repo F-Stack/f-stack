@@ -439,7 +439,7 @@ main(int argc, char *argv[])
 			ff_set_proc_id_str(optarg);
 			break;
 		case 'G':
-			ff_set_gen(atoi(optarg));
+			ff_set_gen_str(optarg);
 			break;
 #endif
 		case '?':

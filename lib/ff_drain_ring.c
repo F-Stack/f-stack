@@ -27,6 +27,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 #include <rte_ring.h>
 #include <rte_mbuf.h>
@@ -112,6 +113,28 @@ gen_mismatch_warn(const char *fn, int gen)
     ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
         "%s: gen %d is the wrong side (rx takes the destination generation, "
         "tx takes the source one); packet rejected\n", fn, gen);
+}
+
+/* F-M4-1: a full ring drops per packet, so the warning is capped at one line
+ * per second and per direction (clock-based, same mechanism as the divert
+ * path warning in ff_dpdk_if.c). The counters stay exact; the log line is
+ * only the alarm. */
+static void
+drain_ring_full_warn(int tx, unsigned count, unsigned cap, uint64_t drops)
+{
+    static time_t last_warn_sec[2];
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        ts.tv_sec = 0;
+    if (last_warn_sec[tx] != 0 && ts.tv_sec == last_warn_sec[tx])
+        return;
+    last_warn_sec[tx] = ts.tv_sec;
+
+    ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+        "graceful reload drain: %s full (%u/%u entries, %lu dropped): "
+        "packet dropped, TCP retransmits recover\n",
+        tx ? "drain_tx" : "drain_rx", count, cap, (unsigned long)drops);
 }
 
 static struct rte_ring *
@@ -352,6 +375,12 @@ ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
 
     if (rte_ring_enqueue(r, m) != 0) {
         g_rx_full++;
+        /* The 1 Hz sampler in flush_stats() cannot see a transient full
+         * ring (M4 logged rounds with full events but a peak of 43), so
+         * publish the occupancy observed right here. */
+        ff_reload_drain_peak_max(0, rte_ring_count(r));
+        drain_ring_full_warn(0, rte_ring_count(r),
+            rte_ring_get_capacity(r), g_rx_full);
         return -1;
     }
     g_rx_fwd++;
@@ -378,6 +407,9 @@ ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
 
     if (rte_ring_enqueue(r, m) != 0) {
         g_tx_full++;
+        ff_reload_drain_peak_max(1, rte_ring_count(r));
+        drain_ring_full_warn(1, rte_ring_count(r),
+            rte_ring_get_capacity(r), g_tx_full);
         return -1;
     }
     return 0;

@@ -197,7 +197,7 @@ main(int ac, char *av[])
 			ff_set_proc_id_str(optarg);
 			break;
 		case 'g':
-			ff_set_gen(atoi(optarg));
+			ff_set_gen_str(optarg);
 			break;
 #endif
 		case '?':

@@ -101,7 +101,7 @@ int main(int argc, char **argv)
             proc_id = ff_set_proc_id_str(optarg);
             break;
         case 'g':
-            ff_set_gen(atoi(optarg));
+            ff_set_gen_str(optarg);
             break;
         case 'P':
             max_proc_id = atoi(optarg);
