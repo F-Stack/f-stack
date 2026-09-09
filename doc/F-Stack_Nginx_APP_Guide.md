@@ -50,17 +50,22 @@ All the directives below are available only when ```NGX_HAVE_FSTACK``` is define
 ```
     Syntax: kernel_network_stack on | off;
     Default: kernel_network_stack off;
-    Context: http, server
+    Context: http, server, stream, mail
 
-    Determines whether server should run on kernel network stack or fstack.
+    Determines whether the listening socket of this server should run on the
+    kernel network stack or on fstack. The listening socket is opened by the
+    master with a plain socket() and inherited by every worker generation;
+    the connection is then driven by nginx's internal host epoll.
 ```
 
 ```
     Syntax: proxy_kernel_network_stack on | off;
     Default: proxy_kernel_network_stack off;
-    Context: http, stream, mail, server
+    Context: http, server, location (http proxy); stream, server (stream proxy)
 
-    Determines whether proxy should go through kernel network stack or fstack.
+    Determines whether the proxied (upstream) connection should go through
+    kernel network stack or fstack. It affects the upstream connection only,
+    not the listener. This directive is not available in the mail module.
 ```
 
 ```
@@ -70,6 +75,8 @@ All the directives below are available only when ```NGX_HAVE_FSTACK``` is define
 
     Sets a time interval for polling kernel_network_stack. The default value is 30 msec.
 ```
+
+Note on scope: these two directives are implemented by nginx itself (an internal host epoll plus a `socket()` override that adds `SOCK_FSTACK` for F-Stack sockets). They are **not** the library's stack-coexist mechanism (`[stack] kernel_coexist` in the F-Stack config file plus the `FF_KERNEL_COEXIST` build flag, which serves native `ff_api` applications). The nginx directives work with a default build and are not affected by that flag or config key. See "Mixed mode" below for the operational limits of running part of the traffic on the kernel stack.
 
 ### Command-line `reload`
 With the default `graceful_reload=0`, the `reload` is not graceful: service will still be unavailable (about one second) during the process of reloading.
@@ -177,11 +184,21 @@ Behavior notes:
 - Rollback: `kill -HUP <old master>` during an upgrade is interpreted as a rollback (`ff usr2: HUP during a binary upgrade, rolling back`); if the new master dies after the handover, the old generation reclaims rx automatically (`ff usr2: new binary (epoch <N>) is gone, taking rx back`, `ff usr2: rx owner reset to generation <G>, old generation serving again`).
 - There is no automatic traffic switch on USR2: the switch happens on WINCH, issued by the operator or automation once the new generation is confirmed ready.
 
+### Mixed mode: some servers on the kernel stack
+
+With `kernel_network_stack on` (listener side) and/or `proxy_kernel_network_stack on` (upstream side), one nginx instance serves part of its traffic from the Linux kernel stack while the rest runs on F-Stack. Operational notes measured on a `graceful_reload=1` deployment:
+
+- **Idle kernel-stack connections are dropped when the old generation exits.** The drain completion test is F-Stack specific (`ff_socket_snd_pending()` / `ff_syncache_count()` plus `worker_shutdown_timeout`); kernel-stack connections are not counted in it. An old generation that only holds **idle** keepalive connections on a `kernel_network_stack on` server therefore finishes draining immediately (drain ~1s) and `ngx_close_idle_connections()` closes them, at the same moment the old generation logs `exiting`. **Active** connections are not affected: in measurements, streams in flight (including proxied upstream connections that live on the kernel stack) ran to natural completion with zero errors, and the old generation stayed until they ended. Long-lived **idle** connections on a mixed-mode server are consequently not protected by the drain window — expect reconnects at reload time, or keep that traffic on F-Stack listeners.
+- **Kernel-stack listeners themselves survive the reload.** The listening socket is opened by the master and inherited by every generation, so its socket inode does not change across a reload and new connections are accepted throughout.
+- Polling granularity for the mixed event loop is `schedule_timeout` (main context, default 30ms). Lowering it reduces the response latency of kernel-stack connections at the cost of more loop passes.
+
 ### KNI notes (graceful_reload + `[kni]` enable=1)
 
 - The kernel-side exception interface is a virtio_user paired port named `veth<port_id>` (rte_kni.ko is no longer supported). It survives reloads, and KNI ownership follows the generation directory across generations and masters. Set `owner_proc_id` to a secondary proc_id whose lcore is in the port's `lcore_list`.
 - **Addressing warning**: the kernel-side `veth<port_id>` address must be a `/32` (or live in a dedicated subnet). Configuring it with the same subnet mask as another interface of the host (e.g. the management NIC) adds a second connected route and hijacks the host's return traffic (observed: ssh sessions broken).
 - Known limitation: on clouds whose fabric only delivers platform-assigned IPs, management-plane reachability of a self-chosen KNI address from external clients cannot be validated (proxy ARP answers, but the packets never reach the NIC). The KNI data plane itself (divert-to-kernel and inject-from-kernel) is verified bidirectionally across reloads on such environments.
+- **Do not use ICMP as the control probe when testing KNI reachability, and do not ping from the server itself.** With `method=reject`, ICMP is not in the `tcp_port`/`udp_port` whitelist, so it is diverted to the kernel — which does not own the F-Stack IP and silently drops it. A perfectly healthy stack is then reported as unreachable. Use an HTTP/TCP probe against a whitelisted port instead (e.g. `curl -o /dev/null -w '%{http_code}' http://<DPDK_NIC_IP>/` == 200).
+- Likewise, a management-plane ping must be issued **from a remote client**, not from the server: the server-local ping to its own `veth<port_id>` address is answered by the host route and never leaves the host or traverses KNI, so it is always "ok" and says nothing about KNI. Judge the result in three states: `ok` (client ping answered), `LIMITED` (KNI address unreachable while the control address answers — the environment cannot deliver the address, the criterion is not judged rather than failed), `DOWN` (neither answers — a real failure).
 
 ### Tools: addressing a generation (`-p` / `-g`)
 
