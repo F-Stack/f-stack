@@ -46,7 +46,9 @@ PROBE_DIR="$REPO_ROOT/docs/nginx_reload_spec/work/m4-poc"
 CLIENT=f-stack-client
 WORKERS=2
 LCORE_MASK=""
+LCORE_MASK_SET=0
 LCORE_LIST=""
+LCORE_LIST_SET=0
 SHUTDOWN_TIMEOUT=0
 GRACEFUL=1
 DRAIN_TIMEOUT=120
@@ -133,9 +135,11 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                               m4_stream.py / m4_outage.py
   --client <ssh-host>         client machine running the probes
   --workers <n>               nginx worker_processes (default 2)
-  --lcore-mask <hex>          default: (2^(workers+1))-1
-  --lcore-list <csv>          default: mask minus the lowest set bit
-                              (the resident primary lcore)
+  --lcore-mask <hex>          default: (2^(workers+1))-1 with graceful=1,
+                              (2^workers)-1 with graceful=0 (no primary)
+  --lcore-list <csv>          default: mask minus the lowest set bit with
+                              graceful=1 (the resident primary lcore), the
+                              whole mask with graceful=0
   --shutdown-timeout <s>      0 = omit worker_shutdown_timeout (default);
                               10..20 recommended for the rv9 loop gate
   --graceful <0|1>            graceful_reload value for the main cases
@@ -172,8 +176,8 @@ while [ $# -gt 0 ]; do
         --probe-dir)         PROBE_DIR="${2:-}"; shift 2 ;;
         --client)            CLIENT="${2:-}"; shift 2 ;;
         --workers)           WORKERS="${2:-}"; shift 2 ;;
-        --lcore-mask)        LCORE_MASK="${2:-}"; shift 2 ;;
-        --lcore-list)        LCORE_LIST="${2:-}"; shift 2 ;;
+        --lcore-mask)        LCORE_MASK="${2:-}"; LCORE_MASK_SET=1; shift 2 ;;
+        --lcore-list)        LCORE_LIST="${2:-}"; LCORE_LIST_SET=1; shift 2 ;;
         --shutdown-timeout)  SHUTDOWN_TIMEOUT="${2:-}"; shift 2 ;;
         --graceful)          GRACEFUL="${2:-}"; shift 2 ;;
         --drain-timeout)     DRAIN_TIMEOUT="${2:-}"; shift 2 ;;
@@ -227,24 +231,43 @@ say "out=$OUT cases=$CASES rounds=$ROUNDS interval=${INTERVAL}s poll=${POLL}s"
 say "workers=$WORKERS graceful=$GRACEFUL shutdown_timeout=${SHUTDOWN_TIMEOUT}s"
 
 # ---- derived topology -----------------------------------------------------
-[ -n "$LCORE_MASK" ] || LCORE_MASK=$(awk -v n="$WORKERS" 'BEGIN { printf "%x", (2^(n+1))-1 }')
-MASK_DEC=$(printf '%d' "0x$LCORE_MASK" 2>/dev/null) || MASK_DEC=0
-[ "${MASK_DEC:-0}" -gt 0 ] || die_usage "--lcore-mask is not a valid hex mask: $LCORE_MASK"
+# graceful=1 reserves the lowest set bit of the mask for the resident slim
+# primary and gives the remaining bits to the workers. graceful=0 has no
+# primary at all, so every bit of the mask must be a worker: reusing the =1
+# topology (or leaving the port lcore_list untouched) puts the =0 instance on a
+# degraded form -- F-M6-3(1), where gr0 measured ok=89/windows=38 against the
+# 20024/1 baseline form of the =0 control. --lcore-mask / --lcore-list always
+# win over the derived values.
+derive_lcores() { # graceful(0|1)
+    local g="$1"
+    local l
+    if [ "$LCORE_MASK_SET" != "1" ]; then
+        if [ "$g" = "1" ]; then
+            LCORE_MASK=$(awk -v n="$WORKERS" 'BEGIN { printf "%x", (2^(n+1))-1 }')
+        else
+            LCORE_MASK=$(awk -v n="$WORKERS" 'BEGIN { printf "%x", (2^n)-1 }')
+        fi
+    fi
+    MASK_DEC=$(printf '%d' "0x$LCORE_MASK" 2>/dev/null) || MASK_DEC=0
+    [ "${MASK_DEC:-0}" -gt 0 ] || die_usage "--lcore-mask is not a valid hex mask: $LCORE_MASK"
 
-# The resident slim primary owns the lowest set bit; the workers own the rest.
-PRIMARY_LCORE=0
-while [ $(( (MASK_DEC >> PRIMARY_LCORE) & 1 )) -eq 0 ]; do
-    PRIMARY_LCORE=$(( PRIMARY_LCORE + 1 ))
-done
-if [ -z "$LCORE_LIST" ]; then
-    LCORE_LIST=""
-    for ((l = 0; l < 32; l++)); do
-        [ $(( (MASK_DEC >> l) & 1 )) -eq 1 ] || continue
-        [ "$l" = "$PRIMARY_LCORE" ] && continue
-        LCORE_LIST="${LCORE_LIST:+$LCORE_LIST,}$l"
+    # The resident slim primary owns the lowest set bit; the workers own the
+    # rest (with graceful=0 there is no primary, so they own all of it).
+    PRIMARY_LCORE=0
+    while [ $(( (MASK_DEC >> PRIMARY_LCORE) & 1 )) -eq 0 ]; do
+        PRIMARY_LCORE=$(( PRIMARY_LCORE + 1 ))
     done
-fi
-say "topology lcore_mask=0x$LCORE_MASK primary_lcore=$PRIMARY_LCORE worker_lcores=[$LCORE_LIST]"
+    if [ "$LCORE_LIST_SET" != "1" ]; then
+        LCORE_LIST=""
+        for ((l = 0; l < 32; l++)); do
+            [ $(( (MASK_DEC >> l) & 1 )) -eq 1 ] || continue
+            [ "$g" = "1" ] && [ "$l" = "$PRIMARY_LCORE" ] && continue
+            LCORE_LIST="${LCORE_LIST:+$LCORE_LIST,}$l"
+        done
+    fi
+}
+derive_lcores "$GRACEFUL"
+say "topology (graceful=$GRACEFUL) lcore_mask=0x$LCORE_MASK primary_lcore=$PRIMARY_LCORE worker_lcores=[$LCORE_LIST]"
 
 # ---- process / state observation ------------------------------------------
 worker_count() {
@@ -312,7 +335,10 @@ ini_set() { # file section key value -- insert under the header, drop later dupe
     grep -q "^$key=" "$f" || say "WARN ini_set: key $key not present after patching [$sec]"
 }
 
-# Workers must not sit on the resident primary lcore when graceful_reload=1.
+# Workers must not sit on the resident primary lcore when graceful_reload=1;
+# with graceful_reload=0 there is no primary, so the whole mask is the worker
+# set. The harness always writes the list it derived instead of inheriting
+# whatever the template happens to carry.
 ini_force_port_lcores() { # file csv
     local f="$1" ll="$2" tmp="$1.tmp$$"
     awk -v ll="$ll" '
@@ -361,14 +387,22 @@ gen_fstack_ini() { # tag graceful kni(0|1)
     # `local tag=$1 ini=$OUT/...$tag...` and set -u would abort the function.
     local tag="$1" g="$2" kni="${3:-0}"
     local ini="$OUT/fstack_$tag.ini"
+    # The topology follows the graceful form of THIS case, not the global
+    # default: rv9/rt02/rt12/rt13 always run =1 while gr0 and a --graceful 0
+    # rt01/baseline run =0 (F-M6-3(1)).
+    derive_lcores "$g"
+    # Log-only on purpose: gen_fstack_ini's stdout is the ini path, so a say()
+    # here (tee to stdout + log) would end up inside the caller's variable.
+    printf 'topology tag=%s graceful=%s lcore_mask=0x%s primary_lcore=%s worker_lcores=[%s]\n' \
+        "$tag" "$g" "$LCORE_MASK" "$PRIMARY_LCORE" "$LCORE_LIST" >> "$LOG"
     cp -f "$FSTACK_TPL" "$ini" || die_dep "cannot copy the f-stack template"
     ini_set "$ini" dpdk graceful_reload "$g"
     if [ "$g" = "1" ]; then
         ini_set "$ini" dpdk primary_slim 1
-        ini_force_port_lcores "$ini" "$LCORE_LIST"
     else
         ini_set "$ini" dpdk primary_slim 0
     fi
+    ini_force_port_lcores "$ini" "$LCORE_LIST"
     ini_set "$ini" dpdk lcore_mask "$LCORE_MASK"
     # The template's log prefix may be a relative path, which would drop
     # f-stack-<proc_id>.log into whatever directory the harness was started
@@ -1025,7 +1059,8 @@ case_gr0() {
 # /dev/vhost-net. The verdict is written for that form, not for rte_kni.
 case_rt12() {
     say "=== case rt12 (KNI / virtio_user management plane) ==="
-    local reason="" conf before after ping=1 rc=0 crit mp_note=""
+    local reason="" conf before after rc=0 crit mp_note=""
+    local ping_client="not-checked" ping_local="not-checked" mp_state="" ctrl=""
     [ -c /dev/vhost-net ] || reason="no /dev/vhost-net device"
     if [ -n "$reason" ]; then
         record "rt12" "SKIP" \
@@ -1072,19 +1107,51 @@ case_rt12() {
     fi
     after=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -c '^veth[0-9][0-9]*$')
     if [ -n "$KERNEL_NIC_IP" ]; then
-        ping -c 2 -W 2 "$KERNEL_NIC_IP" >/dev/null 2>&1 && ping=0
-    else
-        ping="not-checked"
+        # F-M6-3(2): the management-plane probe is issued from the CLIENT, so
+        # the ICMP really crosses the KNI path (physical rx -> f-stack -> KNI
+        # -> kernel) instead of looping inside the server. The server-local
+        # ping is kept only as a clearly labelled weak observation: an address
+        # configured on the server is answered by its own kernel and never
+        # leaves the host.
+        ping -c 2 -W 2 "$KERNEL_NIC_IP" >/dev/null 2>&1 \
+            && ping_local="ok(local-scope,weak)" || ping_local="fail"
+        if run_client "ping -c 3 -W 2 $KERNEL_NIC_IP >/dev/null 2>&1"; then
+            ping_client="ok"
+        else
+            # Control probe: HTTP, not ICMP. Under [kni] method=reject an ICMP
+            # echo to the f-stack address is diverted into the kernel, which
+            # does not own that address, so it is silently dropped -- pinging
+            # the control would make a perfectly healthy stack look dead (the
+            # traffic probe and wait_http both prove the data path is up).
+            ctrl=$(run_client "curl -s -m 3 -o /dev/null -w '%{http_code}' http://$TARGET_IP/" 2>/dev/null)
+            if [ "$ctrl" = "200" ]; then
+                # The control address serves, so the client does reach the host
+                # and only <KERNEL_NIC_IP> is undeliverable -- a cloud fabric
+                # that delivers platform-assigned addresses only (M6 S2.4).
+                # That is an environment limit, not a reload regression, so the
+                # criterion is downgraded instead of failed.
+                ping_client="unreachable"; mp_state="LIMITED"
+            else
+                ping_client="unreachable"; mp_state="DOWN"
+            fi
+        fi
     fi
     stop_stack "rt12" "$conf"
     [ "$before" -ge 1 ] || { rc=1; say "rt12: no veth netif before reload"; }
     [ "$after" -ge 1 ]  || { rc=1; say "rt12: no veth netif after reload"; }
-    if [ -n "$KERNEL_NIC_IP" ] && [ "$ping" != "0" ]; then
-        rc=1; say "rt12: management plane unreachable after reload"
+    if [ "$mp_state" = "DOWN" ]; then
+        rc=1
+        say "rt12: management plane down: <KERNEL_NIC_IP> does not answer the client ping and the control address <DPDK_NIC_IP> does not serve HTTP either (ctrl=${ctrl:-none})"
+    elif [ "$mp_state" = "LIMITED" ]; then
+        say "rt12: LIMITED: <KERNEL_NIC_IP> unreachable from the client while the control address answers -- the management-plane criterion is NOT judged (environment: only platform-assigned addresses are delivered, M6 S2.4)"
     fi
     crit="veth<port_id> present before and after the reload + reload completes"
     if [ -n "$KERNEL_NIC_IP" ]; then
-        crit="$crit + management plane (<KERNEL_NIC_IP>) reachable afterwards"
+        if [ "$mp_state" = "LIMITED" ]; then
+            crit="$crit + management plane (<KERNEL_NIC_IP>) reachable from the client [NOT JUDGED: undeliverable from the client while the control address answers; the server-local ping below is a local-scope weak observation only]"
+        else
+            crit="$crit + management plane (<KERNEL_NIC_IP>) reachable from the client afterwards"
+        fi
     else
         crit="$crit ($mp_note)"
     fi
@@ -1092,15 +1159,15 @@ case_rt12() {
     # the traffic probe, so missing probe data downgrades only the traffic part.
     if [ "$rc" = "0" ] && [ "$nodata" != "0" ]; then
         record "rt12" "SKIP" "$crit" \
-          "NO_DATA: KNI criteria passed (veth_before=$before veth_after=$after ping=$ping drain=${HUP_DRAIN}ms) but $summary"
+          "NO_DATA: KNI criteria passed (veth_before=$before veth_after=$after ping_client=$ping_client control_http=${ctrl:-n/a} ping_local=$ping_local drain=${HUP_DRAIN}ms) but $summary"
         return 0
     fi
     if [ "$rc" = "0" ]; then
         record "rt12" "PASS" "$crit" \
-          "veth_before=$before veth_after=$after ping=$ping drain=${HUP_DRAIN}ms traffic=$summary"
+          "veth_before=$before veth_after=$after ping_client=$ping_client control_http=${ctrl:-n/a} ping_local=$ping_local drain=${HUP_DRAIN}ms traffic=$summary"
     else
         record "rt12" "FAIL" "$crit" \
-          "veth_before=$before veth_after=$after ping=$ping drain=${HUP_DRAIN}ms traffic=$summary"
+          "veth_before=$before veth_after=$after ping_client=$ping_client control_http=${ctrl:-n/a} ping_local=$ping_local drain=${HUP_DRAIN}ms traffic=$summary"
     fi
     return $rc
 }
@@ -1111,13 +1178,62 @@ case_rt12() {
 # build form, and uses the drain forwarded/relayed pair as the observable
 # proof that the dispatcher verdict does not depend on the mbuf source
 # (hardware rx vs drain_ring).
-detect_zc_build() {
+zc_archive() {
     local a
     for a in "$REPO_ROOT/lib/libfstack.a" /usr/local/lib/libfstack.a /usr/local/lib64/libfstack.a; do
         [ -f "$a" ] || continue
-        nm "$a" 2>/dev/null | grep -q 'kern_zc_recvit\|ff_zc_mbuf_get' && { echo 1; return; }
+        printf '%s' "$a"; return 0
     done
+    return 1
+}
+
+# F-M6-1: ff_zc_mbuf_get (lib/ff_veth.c) is compiled unconditionally, so the
+# old probe made every default build report zc=1. kern_zc_recvit lives inside
+# #ifdef FSTACK_ZC_RECV (freebsd/kern/uipc_syscalls.c), so it is the only
+# symbol that actually separates the two build forms.
+detect_zc_build() {
+    local a syms
+    a=$(zc_archive) || { echo 0; return; }
+    # grep -c, never grep -q: under `set -o pipefail` a `nm | grep -q` pipeline
+    # exits 141 because nm dies of SIGPIPE as soon as grep has its match (the
+    # symbol dump is ~0.5 MB, far past the pipe buffer), which made the probe
+    # report "not a zc build" whatever the archive really holds.
+    syms=$(nm "$a" 2>/dev/null | grep -c 'kern_zc_recvit')
+    [ "${syms:-0}" != "0" ] && { echo 1; return; }
     echo 0
+}
+
+# Dry self-check (no NIC, no stack): a probe that cannot tell the two build
+# forms apart silently mislabels every rt13 verdict, so assert the probe still
+# follows the gated symbol and is never decided by the unconditional one --
+# that combination is exactly the default-build shape (ff_zc_mbuf_get present,
+# kern_zc_recvit absent) the old probe misreported as zc=1.
+zc_probe_selftest() {
+    local a syms gated uncond got i
+    a=$(zc_archive) || { say "ZC-PROBE no libfstack.a found -- self-check skipped"; return 0; }
+    for i in 1 2; do
+        syms=$(nm "$a" 2>/dev/null)
+        gated=$(printf '%s\n' "$syms" | grep -c 'kern_zc_recvit')
+        uncond=$(printf '%s\n' "$syms" | grep -c 'ff_zc_mbuf_get')
+        got=$(detect_zc_build)
+        # A concurrent lib rebuild rewrites the archive between two nm runs, so
+        # a first mismatch is re-read once before it is believed: that is a
+        # build race, not a broken probe.
+        if [ "$gated" != "0" ] && [ "$got" != "1" ] && [ "$i" = "1" ]; then
+            sleep 2; continue
+        fi
+        break
+    done
+    say "ZC-PROBE archive=$a gated(kern_zc_recvit)=$gated unconditional(ff_zc_mbuf_get)=$uncond detected=$got"
+    if [ "$gated" = "0" ] && [ "$uncond" != "0" ] && [ "$got" != "0" ]; then
+        say "ZC-SELFTEST-FAIL: default-build shape (gated=0 with the unconditional symbol present) but detection reported $got"
+        return 1
+    fi
+    if [ "$gated" != "0" ] && [ "$got" != "1" ]; then
+        say "ZC-SELFTEST-FAIL: gated symbol present but detection reported $got"
+        return 1
+    fi
+    return 0
 }
 
 case_rt13() {
@@ -1177,6 +1293,9 @@ need_case() { case ",$CASES," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 for t in "$KILLTOOL" "$RMTMP" "$CHMODTOOL"; do
     [ -x "$t" ] || { printf 'FATAL: mandated wrapper %s is missing\n' "$t" >&2; exit 4; }
 done
+
+# Dry gate: runs before anything touches the NIC (F-M6-1).
+zc_probe_selftest || die_abort "zc probe self-check failed (see ZC-SELFTEST-FAIL)"
 
 # The three-check is a hard gate: starting f-stack without it would grab an
 # already-owned NIC. It therefore always runs, whatever --cases says.
