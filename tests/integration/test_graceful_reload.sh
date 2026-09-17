@@ -349,15 +349,20 @@ ini_force_port_lcores() { # file csv
     ' "$f" > "$tmp" && mv "$tmp" "$f"
 }
 
-# RT-12: KNI in this tree is a virtio_user vdev, driven by [kni] enable=1.
-ini_force_kni() { # file owner_proc_id
-    local f="$1" owner="$2" tmp="$1.tmp$$"
+# Drop any [kni] section a template may carry.
+ini_strip_kni() { # file
+    local f="$1" tmp="$1.tmp$$"
     awk '
         /^#?\[kni\]/ { skip=1; next }
         /^\[/       { skip=0 }
         skip == 0   { print }
-    ' "$f" > "$tmp"
-    mv "$tmp" "$f"
+    ' "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+# RT-12: KNI in this tree is a virtio_user vdev, driven by [kni] enable=1.
+ini_force_kni() { # file owner_proc_id
+    local f="$1" owner="$2"
+    ini_strip_kni "$f"
     cat >> "$f" <<KNI
 
 [kni]
@@ -412,6 +417,9 @@ gen_fstack_ini() { # tag graceful kni(0|1)
         ini_set "$ini" freebsd.sysctl net.link.ether.inet.garp_rexmit_count 8
     fi
     [ "$kni" = "1" ] && ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
+    # A local template may carry [kni] enable=1; kni=0 cases must strip it or
+    # they silently run with KNI, contradicting the documented harness design.
+    [ "$kni" != "1" ] && ini_strip_kni "$ini"
     ini_drop_proc_type_auto "$ini" || return 1
     printf '%s' "$ini"
 }
