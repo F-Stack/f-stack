@@ -4,10 +4,11 @@
 |---|---|
 | 文档编号 | 03 |
 | 标题 | issue #547 / #12 全链考证、iWiki 4015929276 旧方案解析、PR#559、DPDK 18.11→19.11→24.11.6 定时器演变 git 证据链、旧方案失效性结论 |
-| 版本 | v1.0 |
+| 版本 | v1.1 |
 | 日期 | 2026-08-18 |
 | 状态 | 待人工审计 |
 | 来源产物 | work/evidence-legacy.md（考证员 evidence-hunter，2026-08-18 落盘）。本篇为正式化改写：保留全部事实证据（issue 评论原文、commit hash、行号、iWiki 元数据）、未坐实标注；原文档中出现的真实测试地址已按工作区规约替换为占位符（`<DPDK_NIC_IP>`），并在相应位置注明；「实际执行的操作清单」保留为第 0 节以体现证据可追溯 |
+| 修订说明 | v1.1（2026-09-17）：本轮 spec×代码交叉审核（plan_audit）订正——`rte_timer` 相关 commit 数由「全树仅 3 个」更正为 **4 个**（补 M2 Batch A `982a5793a` 自驱 hardclock）；§5.5 表 HEAD 列行号按 HEAD `28e751259` 重定位（v1.20 列加注「M0 期快照，本轮未复核」）；§8 U1（及 §6.2）`ff_syscall_wrapper.c` 行号更新为 `:100/982/1044-1049` |
 
 相关篇章：[00-总览](00-overview.md) | [04-现状分析](04-fstack-current-analysis.md) | [06-方案设计](06-solution-design.md)
 
@@ -411,10 +412,11 @@ PR 仅 1 条：**PR#559**（已合并）。
 
 - `git log -i --grep=nginx`：主要是 nginx 1.11.10 → 1.25.2 → 1.28.0 升级、IP_TRANSPARENT 支持、IPV6_PKTINFO 翻译等，**无 reload 核心 commit**。
 - `git log -i --grep=reload`：命中 `docs: ...` 类的博客/benchmark commit，无 reload 代码改动（最新 native-mt / 23→24 升级等都不是 reload 主题）。
-- `git log -S 'rte_timer' -- lib/ff_dpdk_if.c` 全树仅 3 个 commit：
+- `git log -S 'rte_timer' -- lib/ff_dpdk_if.c`：截至本篇撰写基线（2026-08-18）为 **3 个** commit，后续 M2 Batch A 新增 1 个，**现共 4 个**：
   - `a9643ea85`（2017-04-21 init，F-Stack 仓库初始化）
   - `62f1c34df`（2026-01-16，jinliu777 "Fix infinite loop when restarting DPDK secondary process"，引入 `rte_timer_meta_init`）
   - `82b409faf`（2026 native-mt callwheel per-thread）
+  - `982a5793a`（2026-09-02，M2 Batch A 自驱 hardclock——commit message 明示 self-driven hardclock **replaces rte_timer** on the graceful path）
 
 ## 5. 定时器演变 git 证据链
 
@@ -550,14 +552,16 @@ lib/ff_dpdk_if.c           |  8 ++++++++   # init_clock 调一次，stop_clock �
 
 ### 5.5 F-Stack 自身 ff_dpdk_if.c timer 使用层（变更前 vs 当前）
 
-| 项目 | v1.20（init a9643ea85 + v1.20 tag） | 当前 HEAD（DPDK 24.11.6）|
+| 项目 | v1.20（init a9643ea85 + v1.20 tag）（*） | 当前 HEAD（DPDK 24.11.6）|
 |------|--------------------------------------|----------------------------|
-| `freebsd_clock` 存储 | `static struct rte_timer freebsd_clock;`（L80，全局）| `static __thread struct rte_timer freebsd_clock;`（L113，每线程一份，native-mt 改造）|
-| hardclock 回调 | `freebsd_hardclock_job`（L131）| `ff_hardclock_job`（L255，主线程）+ `ff_hardclock_worker_job`（L262，worker 线程）|
-| subsystem_init 调 | `rte_timer_subsystem_init()`（L794）| `rte_timer_subsystem_init()` + `rte_timer_meta_init()`（L1244-1245）|
-| main_loop 驱动 | `rte_timer_manage()`（L1533）| `rte_timer_manage()`（L2805），调度点 `if (unlikely(freebsd_clock.expire < cur_tsc))` 一致 |
+| `freebsd_clock` 存储 | `static struct rte_timer freebsd_clock;`（L80，全局）| `static __thread struct rte_timer freebsd_clock;`（L147，每线程一份，native-mt 改造）|
+| hardclock 回调 | `freebsd_hardclock_job`（L131）| `ff_hardclock_job`（L306，主线程）+ `ff_hardclock_worker_job`（L313，worker 线程）|
+| subsystem_init 调 | `rte_timer_subsystem_init()`（L794）| `rte_timer_subsystem_init()` + `rte_timer_meta_init()`（L1534-1535）|
+| main_loop 驱动 | `rte_timer_manage()`（L1533）| `rte_timer_manage()`（L3499），调度点 `if (unlikely(freebsd_clock.expire < cur_tsc))` 一致 |
 
-**关键发现**：F-Stack 自身 `ff_dpdk_if.c` 中 timer 使用代码（subsystem_init + reset + manage 调用骨架）从 2017 init 到 2026 之间**基本未变**（除 native-mt 改成 `__thread`）。**变化的全部集中在 DPDK timer lib 自身（18.11 静态 → 19.11+ 共享 memzone）以及 F-Stack 给该库打的本地补丁。**
+（*）v1.20 列为 M0 期快照，本轮（2026-09-17）未复核。
+
+**关键发现**：F-Stack 自身 `ff_dpdk_if.c` 中 timer 使用代码（subsystem_init + reset + manage 调用骨架）从 2017 init 到 2026 之间**基本未变**（除 native-mt 改成 `__thread`）。**变化的全部集中在 DPDK timer lib 自身（18.11 静态 → 19.11+ 共享 memzone）以及 F-Stack 给该库打的本地补丁。** 另注（2026-09-17 订正）：M2 Batch A（`982a5793a`）在 graceful 路径上以自驱 hardclock **替换** `rte_timer` 调用（C-NR-307），见 §4.3。
 
 ## 6. 旧方案要点与失效性结论（以代码为准）
 
@@ -582,14 +586,14 @@ lib/ff_dpdk_if.c           |  8 ++++++++   # init_clock 调一次，stop_clock �
 | 多进程同 core 共存 | mempool 隔离 + nice 调整可解决。但 timer 共享后，dispatch 进程 + worker 进程的 rte_timer_manage 会在同一 lcore 上跑（不同时刻），prev_lcore 关系紊乱 | worker 的 `ff_hardclock` 触发节奏被打乱，连接超时/RTO 重传时间不准，间接导致 reload 期间连接异常 |
 | `rte_timer_subsystem_init` 仅 init 一次 | **现版本需配套 `rte_timer_meta_init`** 显式初始化本进程 lcore 槽（补丁 62f1c34df，2026-01-16），否则 secondary 进程重启会"infinite loop" | 2026 年仍有 F-Stack 本地补丁在补这一缺陷；orange30 在 2020-11 描述的"DPDK 19 timer 库变化"问题至今未通过上游修复彻底闭环 |
 | `--file-prefix` 支持 reload 期间多组 DPDK 进程内存隔离 | PR#559（2020-11 合入）补了配置文件解析 | 这一层已 OK，但只是基础设施，不是 timer/connection 共享状态问题的解药 |
-| freebsd 协议栈 `IP_BIND_ADDRESS_NO_PORT` | 当前 freebsd 15.0 树**已支持**（**2026-08-18 已坐实**，见 §8 U1）：协议栈行为层由 cb9b4d462（2025-07-25，bind 不分配端口、connect 时按 RSS 一致性选源端口）经 ff9e3c449（2026-06-22）port 到 15.0 树（`freebsd/netinet/in_pcb.c` `#ifdef FSTACK` 块）；setsockopt 接口层由 a2537e143（2026-07-16）在 `lib/ff_syscall_wrapper.c:100/979/1041-1046` 拦截 `LINUX_IP_BIND_ADDRESS_NO_PORT(24)` 为成功 no-op（处理与 FreeBSD `IP_BINDANY(24)` 数值冲突）。注：此系 F-Stack 本地扩展，上游原生 FreeBSD 15.0 无此选项（Linux 兼容层显式报 unsupported）| "网卡双 IP + 新旧 worker 各用一 IP"方案的协议栈前提**已具备**，S1 评估中该风险消除（见 [06](06-solution-design.md) §3.1/S1）|
+| freebsd 协议栈 `IP_BIND_ADDRESS_NO_PORT` | 当前 freebsd 15.0 树**已支持**（**2026-08-18 已坐实**，见 §8 U1）：协议栈行为层由 cb9b4d462（2025-07-25，bind 不分配端口、connect 时按 RSS 一致性选源端口）经 ff9e3c449（2026-06-22）port 到 15.0 树（`freebsd/netinet/in_pcb.c` `#ifdef FSTACK` 块）；setsockopt 接口层由 a2537e143（2026-07-16）在 `lib/ff_syscall_wrapper.c:100/982/1044-1049` 拦截 `LINUX_IP_BIND_ADDRESS_NO_PORT(24)` 为成功 no-op（处理与 FreeBSD `IP_BINDANY(24)` 数值冲突）。注：此系 F-Stack 本地扩展，上游原生 FreeBSD 15.0 无此选项（Linux 兼容层显式报 unsupported）| "网卡双 IP + 新旧 worker 各用一 IP"方案的协议栈前提**已具备**，S1 评估中该风险消除（见 [06](06-solution-design.md) §3.1/S1）|
 
 ### 6.3 失效分水岭与现状定性
 
 - **分水岭 commit**：`37a7c72f0 / 4418919fe`（2020-06-18，"DPDK: upgrade to DPDK 19.11.2(LTS)."）。该 commit 之前 v1.20（DPDK 18.11.5）timer 库是进程内静态；之后 v1.21+ 改共享 memzone。
 - **旧方案失效确认人**：orange30 本人（issue #547 评论 C2，2020-11-02）。
 - **维护者归档确认**：fengbojiang (jfb8856606) 把方案放进个人 iWiki 空间 4015929276 标注"1.21+ 不适用"，间接官方承认失效。
-- **F-Stack 主线未做任何针对 reload 期间多进程共享 timer 状态的修复**——git log -S 'rte_timer' -- lib/ff_dpdk_if.c 全树仅 3 个 commit（init 2017 / 2026-01-16 补丁 / 2026 native-mt callwheel），其中 native-mt 改造目标也不是 reload。
+- **F-Stack 主线未做任何针对 reload 期间多进程共享 timer 状态的修复**——`git log -S 'rte_timer' -- lib/ff_dpdk_if.c` 截至撰写基线（2026-08-18）为 3 个 commit（init 2017 / 2026-01-16 补丁 / 2026 native-mt callwheel），**后续 M2 Batch A 新增第 4 个 `982a5793a`（2026-09-02 自驱 hardclock，见 §4.3）**；上述四者的改造目标均非 reload。
 
 ## 7. 关联本地档案（已坐实条目）
 
@@ -607,7 +611,7 @@ lib/ff_dpdk_if.c           |  8 ++++++++   # init_clock 调一次，stop_clock �
 
 | 编号 | 未坐实项 | 原因 | 建议下一步 |
 |------|----------|------|------------|
-| U1 | ~~当前 freebsd 15.0 树是否已支持 `IP_BIND_ADDRESS_NO_PORT`~~ **→ 已坐实（2026-08-18）：支持** | 原未坐实原因：初版考证未在 freebsd/ 树中以标识符 grep 定位（实现为 `#ifdef FSTACK` 行为改动 + `lib/ff_syscall_wrapper.c` 拦截，无裸选项名命中），且未跑 `git log --grep=IP_BIND_ADDRESS_NO_PORT`。坐实证据链（均 `git merge-base --is-ancestor` 确认 IN-HEAD）：cb9b4d462（2025-07-25 原始实现）→ ff9e3c449（2026-06-22 port 到 15.0 树，`freebsd/netinet/in_pcb.c` bind-then-connect + RSS 一致性选源端口）→ a2537e143（2026-07-16 `lib/ff_syscall_wrapper.c:100/979/1041-1046` setsockopt/getsockopt 接线，处理与 `IP_BINDANY(24)` 数值冲突）；配套 35aa95846/23e545932/458e91288/699c763b4 共 8 个相关 commit | ~~已解决~~ 注意：该支持为 **F-Stack 本地扩展**，上游原生 FreeBSD 15.0（freebsd-src-releng-15.0）无此选项（Linux 兼容层 `linux_socket.c` 显式报 unsupported），升级 freebsd 树时需保留这些补丁 |
+| U1 | ~~当前 freebsd 15.0 树是否已支持 `IP_BIND_ADDRESS_NO_PORT`~~ **→ 已坐实（2026-08-18）：支持** | 原未坐实原因：初版考证未在 freebsd/ 树中以标识符 grep 定位（实现为 `#ifdef FSTACK` 行为改动 + `lib/ff_syscall_wrapper.c` 拦截，无裸选项名命中），且未跑 `git log --grep=IP_BIND_ADDRESS_NO_PORT`。坐实证据链（均 `git merge-base --is-ancestor` 确认 IN-HEAD）：cb9b4d462（2025-07-25 原始实现）→ ff9e3c449（2026-06-22 port 到 15.0 树，`freebsd/netinet/in_pcb.c` bind-then-connect + RSS 一致性选源端口）→ a2537e143（2026-07-16 `lib/ff_syscall_wrapper.c:100/982/1044-1049` setsockopt/getsockopt 接线，处理与 `IP_BINDANY(24)` 数值冲突）；配套 35aa95846/23e545932/458e91288/699c763b4 共 8 个相关 commit | ~~已解决~~ 注意：该支持为 **F-Stack 本地扩展**，上游原生 FreeBSD 15.0（freebsd-src-releng-15.0）无此选项（Linux 兼容层 `linux_socket.c` 显式报 unsupported），升级 freebsd 树时需保留这些补丁 |
 | U2 | F-Stack 1.20 vs 1.21 升级期间 ff_dpdk_if.c timer 使用层是否曾有调整 | `git log -S 'rte_timer' -- lib/ff_dpdk_if.c` 仅返回 3 个 commit，且 v1.20→v1.21 diff 关键字 'timer' 无输出（说明骨架无变）| 但未对 `freebsd_clock` 标识符名、job 函数名等做完整比对；如要 100% 坐实需对 v1.20 与 v1.21 完整 diff |
 | U3 | iWiki 截图 7（验收）柱状图原始数据 | 柱状图无具体测试命令/环境参数；截图自述"详见附件"但 iWiki 文档无附件链接 | 实地复测：找一台 4-rcv-core + 26-nginx-core 的对照机，按 orange30 改法实测 QPS |
 | U4 | "wrk 跑 10h 200 次 reload 112 timeout" 对应 0.000006% 概率的复现性 | 截图数据可信但需独立实测验证 | 复现：wireshark/ebpf 抓流量切换瞬间，验证 timeout 集中点 |

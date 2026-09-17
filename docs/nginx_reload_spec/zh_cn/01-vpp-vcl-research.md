@@ -4,10 +4,11 @@
 |---|---|
 | 文档编号 | 01 |
 | 标题 | VPP VCL 支撑 Nginx 无损 reload 的机制、工程问题与启示 |
-| 版本 | v1.0 |
+| 版本 | v1.1 |
 | 日期 | 2026-08-18 |
 | 状态 | 待人工审计 |
 | 来源产物 | work/research-vpp-vcl.md（调研员 researcher-vpp-vcl，2026-08-18 落盘）。本篇为正式化改写：删除过程性叙述，保留全部事实证据（文件:行号、URL、commit hash、issue 编号）、未坐实标注与单来源声明；「实际执行的操作清单」保留为第 1 节以体现证据可追溯 |
+| 修订说明 | v1.1（2026-09-17）：本轮 spec×代码交叉审核（plan_audit）订正——§6.4 对 VPP issue #3547 的时效表述由「连环 crash 三年未修」更正为依据 `gh` 元数据的事实（created 2025-02-02，未修复即关闭，至今近两年） |
 
 相关篇章：[00-总览](00-overview.md) | [02-其他项目调研](02-other-projects-research.md) | [06-方案设计](06-solution-design.md)
 
@@ -251,7 +252,7 @@ F-Stack HUP 丢包的根因已由本地档案 #1036 坐实（docs/f-stack-issue-
 
 ### 6.4 VCL 的教训（负面启示）
 
-- VCL 的 reload 路径（fork 注册 + 双代 worker 并存 + 注销清理 + 事件同步）是全链路里 bug 最密集的区域之一：#3547 连环 crash 三年未修、#3645 卡死至今 open。说明即使架构上「机制性支持无损 reload」，跨进程状态（TLS worker index、每 worker 池、VPP 侧事件同步）的一致性维护极难做对。F-Stack 设计时应当把 reload 做成显式的、可观测的状态机（每个阶段可打点/可回退），而不是散落在 fork/signal hook 里的隐式逻辑。
+- VCL 的 reload 路径（fork 注册 + 双代 worker 并存 + 注销清理 + 事件同步）是全链路里 bug 最密集的区域之一：#3547 连环 crash（gh 元数据：created 2025-02-02，至今近两年未修复即被关闭）、#3645 卡死至今 open。说明即使架构上「机制性支持无损 reload」，跨进程状态（TLS worker index、每 worker 池、VPP 侧事件同步）的一致性维护极难做对。F-Stack 设计时应当把 reload 做成显式的、可观测的状态机（每个阶段可打点/可回退），而不是散落在 fork/signal hook 里的隐式逻辑。
 - VCL 用「锁垫层（VLS）+ 显式共享」换正确性，又用 VSAP「去掉锁层」换性能——两难本身说明「多进程共享一个栈」的锁粒度设计是核心难点，F-Stack 的 per-worker 独立实例路线天然避开共享锁，但代价就是 listen 连续性，属于路线取舍而非实现瑕疵。
 
 ## 7. 未坐实清单

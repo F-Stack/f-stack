@@ -4,7 +4,8 @@
 |---|---|
 | 文档编号 | 06 |
 | 标题 | F-Stack Nginx 无损 reload 候选方案对比（S1~S4）+ 推荐方案 S3 设计 |
-| 版本 | v1.9.5（v1.9.4 基础上：**M5 实现批注 —— §5.2/5.3 USR2 段按「切流点 = WINCH + 世代目录 + master 无 EAL 约束」的实证形态修订**，并修订 KNI owner 翻转结论的适用范围（仅单 master 成立）） |
+| 版本 | v1.9.6（v1.9.5 基础上：**按本轮 plan_audit 交叉审核（work/audit-F-solution.md）订正**——`drain_ring` rx/tx flags 口径、§5.4-3 未实现配置键、§5.2 异常分支执行者、§6.2 DR6 附则 M6 复验回写） |
+| 修订记录 | v1.9.6（2026-09-17）：本轮 plan_audit P1 独立双审核员交叉审核订正（F-01/F-02/F-08/F-09 + R1 复验回写），以实际代码为准。 |
 | 日期 | 2026-09-02 |
 | 状态 | 待人工审计（v1.9 交叉审核修订 + 人工决策落盘） |
 | 修订来源 | 2026-09-01 独立交叉审核（只读，无代码改动、无 git 写操作），全部结论带 `文件:行号` 证据，区分「代码坐实」与「推断」 |
@@ -21,7 +22,7 @@
 | # | 缺陷（v1.8 现文） | 关键证据 | v1.9 处理 |
 |---|---|---|---|
 | P0-1 | **TX 队列并发独占违反 DPDK 契约**：T3 后 G_old drain 发包与 G_new 服务发包使用同一 `tx_queue_id`，06 只对 rx 做互斥、tx 零保护 | `ff_dpdk_if.c:486/:534`（tx 与 rx 同号）、`:2478-2495`（唯一 `rte_eth_tx_burst` 点）、`:2532`/`:2557`（`FF_USE_PAGE_ARRAY` 分支内）/`2844-2856`（三处 flush 入口，v1.9 复审修正：原写「两个」漏了 `:2557`）；`dpdk/lib/ethdev/rte_ethdev.h:6575-6577`（仅 `RTE_ETH_TX_OFFLOAD_MT_LOCKFREE` PMD 允许无锁并发，virtio 未声明） | 语义 13：G_new 独占 tx，G_old 出包经 `drain_ring_tx` 代发 |
-| P0-2 | **dispatch_ring 双消费者违反 `RING_F_SC_DEQ`**：同队列下两代 dequeue 同一个 ring | `ff_dpdk_if.c:710-713`（`RING_F_SC_DEQ`）、`:2865-2870`（同循环同 queue_id dequeue）、`:2144-2147`（满环静默丢包） | 语义 13：改用 per-generation `drain_ring_rx`/`drain_ring_tx`，各自 SP/SC 明确 |
+| P0-2 | **dispatch_ring 双消费者违反 `RING_F_SC_DEQ`**：同队列下两代 dequeue 同一个 ring | `ff_dpdk_if.c:710-713`（`RING_F_SC_DEQ`）、`:2865-2870`（同循环同 queue_id dequeue）、`:2144-2147`（满环静默丢包） | 语义 13：改用 per-generation `drain_ring_rx`/`drain_ring_tx`，各自 flags 明确（rx MP/SC、tx SP/SC） |
 | P0-3 | **「同队列 + 不同 lcore_id」与 nb_procs/lcore_mask 语义死锁** | `ff_config.c:118/:127/:139`（lcore_mask 置位数 = nb_procs）、`ff_dpdk_if.c:508`/`:518-524`（proc_id→lcore_id→queueid 一条链）、`ff_config.c:555-574`（nb_lcores = nb_procs） | ~~语义 15：四链解耦规则 + 新增配置面~~ → **v1.9.1 随 D-A 反转为「同 lcore_id」而消解**：不需要 2N 个 lcore_id，`lcore_mask`/`nb_procs`/队列数保持 N，无新增配置面 |
 | P0-4 | **lcore_id 口径自相矛盾**：§6.3 说「不同 lcore_id」、语义 11/§6.6 按「同 lcore_id」设计 | 06 §6.3:388、§3.3:176 vs §2 语义 11:73、§6.6:413-426 | **v1.9.1 终版：统一为「同 lcore_id」**（D-A 人工决策），§6.3 重写、**语义 11/12 恢复为必需项**（v1.9 曾定「不同 lcore_id + 两条改造降为加固项」，已被推翻） |
 | P0-5 | **移交瞬间半开连接无归属**：G_old close listening 后其 syncache 半开条目无法完成握手 | `tcp_syncache.c:1033-1055`（expand 需 lsop）、`tcp_subr.c:2517-2553`（`tcp_close` 对 LISTEN 不清 syncache，仅 `in_pcbdrop`） | 语义 14：listening 延迟关闭至 syncache 排空（或 T3 导出半开四元组） |
@@ -113,7 +114,7 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
    - **物理核**：两代同 lcore_id ⇒ 天然同物理核，无需 `--lcores` 亲和；X3 决策（2N 物理核非必需）自动满足。drain 期算力竞争由 RV10 实测。
 9. **ARP/NDP 等协议包 clone 给 G_old**（v1.6 增补）：reload 窗口内，ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，**额外 clone 一份转发给所有 G_old 进程**（原有 clone 给其他 G_new 和 KNI 的逻辑不变）——确保 G_old drain 期间邻居表正常、能发 RTO/FIN/ACK。
 10. **reta 不改、不依赖 NIC RSS 能力**（v1.6 增补，同时解决审核致命 1/2/3）：S3-M1′ 不再依赖 reta 切流原语——同队列 + **queue_id 代际无关固定映射**使 reta 不变、ff_rss_check 四件套不变、不配 2N 队列（不丢半流量）。**virtio 与物理网卡均可用**（无需 guest 侧 RSS 能力）。
-11. **自驱 hardclock，绕开 DPDK 共享 timer 槽**（**v1.9 终版定案：必需项**，因 D-A 定案「同 lcore_id」而恢复；v1.7 据 2026-08-24 定时器调研+人工决策）：新旧进程**同 lcore_id** 共存时，DPDK `priv_timer[lcore_id]` 共享槽不可用（`rte_timer_meta_init` 的 memset 会踩掉 G_old 挂着的 timer 链表 → 其 hardclock 永不再触发 → 存量连接 RTO/keepalive 静默停摆；且共享链表上挂对方进程私有地址指针，`rte_timer_manage` 遍历会跨进程解引用私有虚拟地址 → 崩溃/数据损坏，不可修补）。**方案**：放弃 rte_timer 挂槽方式，main_loop 按 TSC 间隔直接调用 `ff_hardclock()`（`if (next_hardclock_tsc < cur_tsc) { ff_hardclock(); ff_update_current_ts(); next_hardclock_tsc += interval; }`）；`init_clock` 删除 `rte_timer_subsystem_init/rte_timer_meta_init/rte_timer_init/reset` 四连，改为计算 `interval = hz_tsc / freebsd.hz`（默认 100 → 10ms）；每进程 hardclock 完全独立、零共享状态，同 lcore_id 无冲突。依据：F-Stack 全树 `freebsd_clock` 是唯一 rte_timer 用户（lib/app 仅 ff_dpdk_if.c 两处），不依赖 rte_timer 任何跨核/同步特性。改动点：`ff_dpdk_if.c` init_clock/init_clock_worker/main_loop 三处。对 `graceful_reload=0` 等价生效（自驱与挂槽行为等价），需回归 timer 精度（RTO/keepalive）。
+11. **自驱 hardclock，绕开 DPDK 共享 timer 槽**（**v1.9 终版定案：必需项**，因 D-A 定案「同 lcore_id」而恢复；v1.7 据 2026-08-24 定时器调研+人工决策）：新旧进程**同 lcore_id** 共存时，DPDK `priv_timer[lcore_id]` 共享槽不可用（`rte_timer_meta_init` 的 memset 会踩掉 G_old 挂着的 timer 链表 → 其 hardclock 永不再触发 → 存量连接 RTO/keepalive 静默停摆；且共享链表上挂对方进程私有地址指针，`rte_timer_manage` 遍历会跨进程解引用私有虚拟地址 → 崩溃/数据损坏，不可修补）。**方案**：放弃 rte_timer 挂槽方式，main_loop 按 TSC 间隔直接调用 `ff_hardclock()`（`if (next_hardclock_tsc < cur_tsc) { ff_hardclock(); ff_update_current_ts(); next_hardclock_tsc += interval; }`）；graceful 分支下 **secondary 不再注册任何 timer**；**primary 保留 `rte_timer_subsystem_init()` 以创建 `rte_timer_mz` memzone**（`lib/ff_dpdk_if.c:1517-1518`），`rte_timer_meta_init/rte_timer_init/reset` 一并去掉，改为计算 `interval = hz_tsc / freebsd.hz`（默认 100 → 10ms）；`graceful_reload=0` 分支四连完整保留、行为逐字不变（`:1534-1542`）。每进程 hardclock 完全独立、零共享状态，同 lcore_id 无冲突。依据：F-Stack 全树 `freebsd_clock` 是唯一 rte_timer 用户（lib/app 仅 ff_dpdk_if.c 两处），不依赖 rte_timer 任何跨核/同步特性。改动点：`ff_dpdk_if.c` init_clock/init_clock_worker/main_loop 三处。对 `graceful_reload=0` 等价生效（自驱与挂槽行为等价），需回归 timer 精度（RTO/keepalive）。
    **v1.9 终版定案（D-A = 同 lcore_id）**：`priv_timer` 必然同槽，故本项**恢复为 M1′ 必需项**，不再是可选项。附加收益有二——(a) 无需依赖 `--lcores` 映射的正确性；(b) M1′ 下 G_old 不再 poll 硬件、main_loop 语义变「纯软件循环」，自驱 hardclock 免去了对 `rte_timer_manage` lcore 语义的依赖，实现更简单。**回归要求**：PT-NR-08 精度回归为**合入门槛，不可省略**；RTO/keepalive/延迟 ACK 精度与 `graceful_reload=0` 基线偏差 ≤5%（阈值 M0 校准），且无漏触发/重复触发。
 12. **代际 mempool 与共享 RX 池的细化方案**（**v1.9 终版定案：必需项**，因 D-A 定案「同 lcore_id」而恢复并细化；v1.7 据 2026-08-24 人工决策提出，v1.9 按人工决策「细化不同代际 mempool 的具体实现方案」展开）：
 
@@ -150,9 +151,9 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 
 13. **TX 独占与 `drain_ring` 双向转发**（v1.9 新增，消解 P0-1/P0-2）：
     - **TX 独占**：G_new 是唯一调用 `rte_eth_tx_burst` 的进程。G_old drain 期间的出包（RTO 重传 / keepalive / FIN / 数据 ACK / SYN-ACK 重传）**不再自己发**，改为 enqueue 到 `drain_ring_tx`，由 G_new 取出后代发。**依据（代码坐实）**：`ff_dpdk_if.c:2478-2495` 是全文件唯一 `rte_eth_tx_burst` 调用点且 `queueid = qconf->tx_queue_id[port]`，而 `tx_queue_id` 与 rx `queue_id` 同号（`:486/:534`）；`dpdk/lib/ethdev/rte_ethdev.h:6575-6577` 限定仅 `RTE_ETH_TX_OFFLOAD_MT_LOCKFREE` PMD 允许同一 tx queue 无锁并发（virtio 未声明该能力，F-Stack 亦无能力探测）。故「两代共享硬件队列」形态下 tx 并发属**契约违反**，必须在**机制层面消除**而非加锁掩盖。
-    - **双向 ring 均按代际建立、各自 SP/SC 明确**：
-      - `drain_ring_rx`（G_new → G_old）：G_new flow_map miss 的包 enqueue，G_old 为唯一消费者。
-      - `drain_ring_tx`（G_old → G_new）：G_old 的出包 enqueue，G_new 为唯一消费者，取出后直接 `rte_eth_tx_burst`。
+    - **双向 ring 均按代际建立、各自 flags 明确（M4 实现口径，2026-09-17 按 HEAD `28e751259` 复核）**：
+      - `drain_ring_rx`（G_new → G_old）：flags = `RING_F_SC_DEQ`（**MP/SC**）——生产者有两类：owner 代 queue-Q worker 的 flow_map miss 转发，以及 owner 代任意 worker 向**每个**对端队列扇出的 ARP/NDP clone（`nb_queues >= 2` 时必然多生产者）；用 `RING_F_SP_ENQ` 会损坏 prod head。G_old 为唯一消费者。依据 `lib/ff_drain_ring.c:270-273` 及设计注释 `:213-224`（P1-a 修复）。
+      - `drain_ring_tx`（G_old → G_new）：flags = `RING_F_SP_ENQ | RING_F_SC_DEQ`（**SP/SC**）——唯一生产者 `ff_divert_tx_mbuf`，保留零 CAS 快路径。G_new 为唯一消费者，取出后直接 `rte_eth_tx_burst`。依据 `lib/ff_drain_ring.c:279-282`。
     - **为什么不能复用 `dispatch_ring`**：其一，`dispatch_ring` 是 per-(port,queue) 且 `RING_F_SC_DEQ`（`ff_dpdk_if.c:710-713`），同队列下两代会成为**同一 ring 的两个消费者**（P0-2）；其二，`process_dispatch_ring`（`:2222-2236`）的语义是 dequeue 后以 `pkts_from_ring=1` 进 `process_packets → ff_veth_input`，即**入向进协议栈**，与「出向代发」语义相反，不可复用。
     - **满环行为**：`drain_ring_rx` 满时的丢弃是**已建连接的数据包**，须显式计数与告警（现有 `dispatch_ring` 满环是静默 `rx_dropped++`，`:2144-2147`），不得静默（见 RV4 修订）。
     - **备选形态**（DR9 待评审，非当前主路径）：(a) init 期多配 `nb_tx_queues = 2N`，代际各用一组 tx queue（零跳、无锁，但需改 `:486/:534` 的 tx/rx 同号分配且依赖硬件多队列）；(b) G_old 直接 tx + 共享内存自旋锁保护 tx queue（`rte_ethdev.h:6575-6577` 允许应用自加 SW lock；改动最小但有锁开销与优先级反转风险）。
@@ -250,7 +251,7 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
   - 新 worker ready（栈 init + listen 完成）后**同期接管 rx poll + tx + listen**：G_new 立即接管新连接（**新配置立即生效**），并自此成为**唯一触碰硬件队列的进程**。
   - **跨进程互斥原语**（共享内存标记，非 msg ring）保证 G_old 停 rx poll 后 G_new 才起 rx poll；移交窗口靠 NIC rx ring 缓冲兜底（RX_QUEUE_SIZE 512→4096 放大 8 倍）。**互斥只需保护 rx 一侧**——tx 由 G_new 独占，不存在并发。
   - **G_old 退化为软件寄生进程**：不再 `rte_eth_rx_burst` / `rte_eth_tx_burst`，只跑协议栈 + 定时器，经两个 per-generation ring 与 G_new 双向通信（语义 13）：
-    - 下行 `drain_ring_rx`：G_new flow_map miss 的旧连接包 → enqueue → G_old dequeue 后进本栈（唯一消费者，SP/SC 明确）。
+    - 下行 `drain_ring_rx`：G_new flow_map miss 的旧连接包 → enqueue → G_old dequeue 后进本栈（唯一消费者；**MP/SC**，另含 ARP/NDP clone 扇出生产者，语义 13）。
     - 上行 `drain_ring_tx`：G_old 的出包（RTO/FIN/ACK/SYN-ACK 重传）→ enqueue → G_new dequeue 后代发 `rte_eth_tx_burst`（唯一消费者）。
   - **G_new 软件分发表 flow_map**（reload 窗口生效，稳态零开销）：flow_map 存 G_new 本代际新建连接的四元组，**在收到 SYN 并发出 SYN-ACK 时入表**（非 `accept()` 时，非协议栈 inpcb 表——第 2 节语义 6 的 v1.8 修正）；drain 期间增量更新；miss（旧连接包）→ 一律经 `drain_ring_rx` 转 G_old；排空确认后关闭 flow_map 回稳态。**移交瞬间的半开连接**由语义 14 单独处理（G_old 延迟关闭 listening 或 T3 导出半开四元组）。
   - **ARP/NDP 等协议包处理**：reload 窗口内，ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，**额外 clone 一份转发给所有 G_old 进程**（原有 clone 给其他 G_new 和 KNI 的逻辑不变）——G_old 已无硬件出口，其邻居表全靠此路径维持，否则发不出任何包。
@@ -344,7 +345,7 @@ R-A §6.2 与 R-B §5.2 增补段独立得出同构结论，本设计将其作�
 | L1 EAL/设备/mempool/ring/队列 setup | **slim primary（dispatcher），常驻** | 不动（杀 primary 数据面零影响已实测：`docs/primary_slim_spec/10` §1.1 E3b/E3c；但 primary 只能常驻不能复活，E10） | P-D §3.2；primary_slim_spec 03 §III |
 | L2a 收包消费权（rx poll） | **G_new 独占**（reload 窗口内） | G_new ready 前：G_old 持续 poll（队列始终有主，无空窗）；ready 后**同期接管**（跨进程互斥标记保证 G_old 停 rx 后 G_new 才起 rx）。G_old 自此**不再调用 `rte_eth_rx_burst`** | ff_dpdk_if.c:508-538（lcore↔queue 映射）、:2865-2872（rx_burst 调用点）；基线 2/3；queue_id 代际无关固定映射 |
 | L2b 发包权（tx burst） | **G_new 独占**（全程） | G_old 出包一律经 `drain_ring_tx` 由 G_new 代发；G_old **不再调用 `rte_eth_tx_burst`**。**依据**：`ff_dpdk_if.c:2478-2495` 唯一 tx 出口 + `tx_queue_id` 与 rx 同号（:486/:534）+ `rte_ethdev.h:6575-6577` 并发契约 | 语义 13；P0-1 消解 |
-| L2c 代际通信 ring | per-generation，`drain_ring_rx` / `drain_ring_tx` 各一 | 下行：G_new flow_map miss → enqueue → G_old 唯一消费者；上行：G_old 出包 → enqueue → G_new 唯一消费者后代发。两 ring 均 SP/SC 明确，**不复用 per-(port,queue) 的 `dispatch_ring`**（后者在同队列下会产生双消费者，且其语义为入向进协议栈） | 语义 13；ff_dpdk_if.c:710-713（`RING_F_SC_DEQ`）、:2222-2236（入向语义） |
+| L2c 代际通信 ring | per-generation，`drain_ring_rx` / `drain_ring_tx` 各一 | 下行：G_new flow_map miss → enqueue → G_old 唯一消费者；上行：G_old 出包 → enqueue → G_new 唯一消费者后代发。**flags 两侧不同（M4 实现口径，2026-09-17 复核）**：`drain_ring_rx` = **MP/SC**（`RING_F_SC_DEQ`，flow_map miss + ARP/NDP clone 扇出两类生产者）、`drain_ring_tx` = **SP/SC**（`RING_F_SP_ENQ\|RING_F_SC_DEQ`），**不复用 per-(port,queue) 的 `dispatch_ring`**（后者在同队列下会产生双消费者，且其语义为入向进协议栈） | 语义 13；`lib/ff_drain_ring.c:270-273/279-282`、注释 `:213-224`；ff_dpdk_if.c:710-713（`RING_F_SC_DEQ`）、:2222-2236（入向语义，M4 后为 :2718 起） |
 | L3 listening socket | **各 worker 栈内自建**（保持现状） | 不跨进程传递：栈隔离天然允许多代际 worker 并存 listen 同 IP:port（每进程独立 FreeBSD 栈实例各自 bind/listen 互不冲突，P-D §3.5）；新连接归属由 L2a 同期接管决定（G_new 接管 listen）。**G_old 的 listening 延迟关闭**至自身 syncache 半开条目排空（语义 14） | P-D 障碍 2 的回避式解法；R-A §6.3-2 的对照（VPP 用 app_listener 单点，F-Stack 用栈隔离多 listen——路线差异点，功能等价） |
 | L4 TCP 连接 | worker 私有，**不迁移** | G_old drain：其 RTO/keepalive 持续驱动（自身 lcore_id 上的 timer）；到达 G_new 的旧连接包经 **flow_map miss** → `drain_ring_rx` 转发回 G_old，G_old 的响应经 `drain_ring_tx` 回 G_new 代发。**flow_map 窗口限定**：G_new 接管后注册、排空确认后关闭——稳态零开销；flow_map 只记本代际新流（**SYN-ACK 时入表**，第 2 节语义 6 v1.8 修正），miss 一律转 G_old；ARP/NDP 等协议包额外 clone 给所有 G_old（第 2 节语义 9）；**移交瞬间的半开连接**由语义 14 处理 | 基线 1；ff_dpdk_if.c:2105-2150；语义 13/14；P-D §3.5（dispatch 回调 nginx 未用——本方案启用） |
 
@@ -373,7 +374,7 @@ T2  G_new worker 各自完成：ff_freebsd_init 栈实例 → ngx_open_listening
     │   （各自栈内 listen 同 IP:port，与 G_old 并存，栈隔离保证不冲突）
     └─ 经控制通道向 master 上报 READY
 T3  master 确认全部 G_new READY → 触发同期接管（rx poll + tx + listen）
-    ├─ ③-1【建立双向 drain_ring】（per-generation，SP/SC 明确，语义 13）：
+    ├─ ③-1【建立双向 drain_ring】（per-generation，rx=MP/SC、tx=SP/SC，语义 13）：
     │      drain_ring_rx（G_new enqueue → G_old 唯一 dequeue）
     │      drain_ring_tx（G_old enqueue → G_new 唯一 dequeue 后代发）
     ├─ ③-2【跨进程互斥原语】移交 rx（共享内存标记，非 msg ring，语义 7/§5.4-1）：
@@ -425,9 +426,10 @@ T5  master 收 G_old SIGCHLD（且确认排空：连接数=0 + DRAIN_DONE）→ 
 - T3 移交失败（G_old 未确认停 rx / G_new 起 rx 超时）→ 放弃本轮（G_old
   恢复 rx poll 继续服务，G_new 退出）——互斥标记保证不会并发 poll
 - T3 后 G_new 崩溃 → G_old 已脱离硬件，无法自行恢复 rx（v1.6 下 G_old 仍持 rx
-  可继续服务，此处为 M1′ 相对 v1.6 的**新增风险**）→ 必须由 primary 或 master
-  检测到后将 rx 交还给 G_old（若其仍在）或触发 worker 重生；该项须在 DR6 中
-  定义明确的回退目标态与超时（见 §6.2 DR6 修订）
+  可继续服务，此处为 M1′ 相对 v1.6 的**新增风险**）→ 由 **G_old worker 自治夺回**
+  （`ff_reload_drain_reclaim_mark()` 写 epoch-tagged 共享字 + 非 owner 采样
+  `ff_reload_heartbeat_sample()`；master 经 reclaim 共享字与 EV_ABORT 收口），
+  与 §6.2 DR6 附则 / §9 定案一致——**不是** primary 回写（避免双写者竞态）
 - drain_ring 满环 → 显式计数 + 告警（RV4），不静默丢弃已建连接包
 - drain 挂起（长连接不退）→ 增补 shutdown timer（P-D §4 补充事实：F-Stack 版
   恰好缺失 ngx_set_shutdown_timer，需补回）兜底强退
@@ -450,8 +452,8 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 1. **ff_api 新增**（lib 侧）【v1.9 改写】：
    - `ff_flow_map_lookup(four_tuple)` / `ff_flow_map_insert(four_tuple)` / `ff_flow_map_close()`：**软件分发表 flow_map**（替代 v1.0-v1.5 的 `ff_conn_owner_query`）——存 G_new 本代际新建连接的四元组，**插入点在 `tcp_input` 的 listen 分支、syncache 插入成功并发 SYN-ACK 之后**（v1.8 修正：非 `accept()` 时，否则第 3 个握手 ACK 会 miss 被误转 G_old → RST）；须覆盖 SYN 重传（命中已有表项不重复插入）；drain 期间增量更新；miss → 经 **`drain_ring_rx`** 转 G_old；排空确认后 close 回稳态。窗口语义（第 2 节语义 6）：仅 reload 窗口被调用，稳态零调用。
    - **【v1.9 新增】`ff_drain_ring_create(port, gen)` / `ff_drain_ring_rx_enqueue(m)` / `ff_drain_ring_tx_enqueue(m)` / `ff_drain_ring_drain(dir, burst)` / `ff_drain_ring_destroy(port, gen)`**：per-generation 双向 ring（语义 13）。**约束**：
-     - 两个 ring 均按 `(port, 代际号)` 命名，创建于 primary（secondary lookup），flags 分别取 `RING_F_SP_ENQ | RING_F_SC_DEQ`（单生产者单消费者，比 `dispatch_ring` 的多生产者语义更严，可在单测中直接断言）。
-     - `drain_ring_rx`：生产者恒为持有队列的 G_new（每个 queue 一个生产者），消费者恒为对应的 G_old 进程。
+     - 两个 ring 均按 `(port, 代际号)` 命名，创建于 primary（secondary lookup），**flags 两侧不同**：`drain_ring_rx` = `RING_F_SC_DEQ`（**MP/SC**，多生产者：flow_map miss 转发 + ARP/NDP clone fan-out），`drain_ring_tx` = `RING_F_SP_ENQ | RING_F_SC_DEQ`（**SP/SC**）。可直接在单测中断言：rx `rte_ring_is_prod_single()==0`、tx `==1`（`tests/unit/test_ff_dpdk_if.c`；依据 `lib/ff_drain_ring.c:270-273/279-282`）。
+     - `drain_ring_rx`：生产者为持有队列的 G_new（flow_map miss 转发）**以及 owner 代中扇出 ARP/NDP clone 的 worker**（故为 MP），消费者恒为对应的 G_old 进程。
      - `drain_ring_tx`：生产者为 G_old 进程，消费者恒为 G_new；G_new 侧 dequeue 后**直接 `rte_eth_tx_burst`**，不进协议栈（与 `process_dispatch_ring` 的入向语义区分，ff_dpdk_if.c:2222-2236）。
      - 满环行为：必须 `__atomic` 计数 + 日志告警，**禁止沿用 `:2144-2147` 的静默 `rx_dropped++`**（丢的是已建连接的数据包）。
    - **【v1.9 规格补全】`ff_queue_handover_mutex(port, queue, from_gen, to_gen)`**：**跨进程互斥原语**（共享内存标记，非 msg ring，语义 7）——G_old 设停 rx 标记 + 确认已停 → G_new 确认后起 rx poll。v1.6 只给了函数名，v1.9 补全规格：
@@ -469,12 +471,12 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 3. **config.ini 新增**（[dpdk] 段）：
    - `primary_slim = 1`（primary_slim_spec 已设计，V2/V4/V5 校验链沿用）。
    - `graceful_reload = 1`（总开关，默认 0 时行为完全回退现状——0 回归原则）。
-   - `rx_queue_size = 4096`（从默认 512 放大 8 倍，增大接管窗口缓冲深度，ff_memory.h:43）。
-   - **【v1.9 新增】`drain_ring_size`**：默认建议 2048（与 `DISPATCH_RING_SIZE` 对齐，ff_memory.h:36），可按 drain 期旧连接流量调整；须同步计入 mbuf 池预留。
+   - **RX 队列尺寸不是配置键**：`RX_QUEUE_SIZE_GRACEFUL`（4096）与 `RX_QUEUE_SIZE`（512）为编译期常量（`lib/ff_memory.h:58-65`，经 `ff_rx_queue_size(graceful)` 生效），graceful 下**无条件启用**，无 `rx_queue_size` 配置项（2026-09-17 按 HEAD 复核订正）。
+   - **【v1.9 新增】`drain_ring_size`**：默认 2048（`FF_DRAIN_RING_SIZE_DEFAULT`，`lib/ff_config.c:1052-1060` 解析、`:1587-1597` 校验；默认值同样代码内建），可按 drain 期旧连接流量调整；须同步计入 mbuf 池预留。
    - ~~**【v1.9 新增】代际 lcore 池配置**~~ **已取消（2026-09-01 人工决策）**：D-A 定案两代同 lcore_id 后，`lcore_mask`/`nb_procs`/队列数保持 N 不变，**无需任何新增配置面**。原 C-NR-311 一并取消。
-   - **【v1.9.1 新增】代际 mempool 配置**：`graceful_reload=1` 时 init 期预建 `mbuf_pool_%d_gen0/gen1`（乒乓复用），G_new secondary lookup（语义 12 / §6.6.3）。可选项：`reload_free_ring_size`（仅 M-B 需要，与 `drain_ring_size` 同族）。
-   - **【v1.9.1 新增】心跳超时配置**：`reload_heartbeat_timeout_ms`，默认 **1000**（1s，可配置），用于 G_old 检测 G_new 失活（DR6 附则 / U-NR-8）。
-   - **【v1.9 新增（加固项，默认关）】`self_driven_hardclock = 0` / `mempool_cache_size`**：对应语义 11/12 的加固项；D-A 定案后默认不需要开启，开启条件见语义 11/12 与 §6.6。
+   - **【v1.9.1 新增】代际 mempool 配置**：`graceful_reload=1` 时 init 期预建 `mbuf_pool_%d_gen0/gen1`（乒乓复用），G_new secondary lookup（语义 12 / §6.6.3）。~~可选项 `reload_free_ring_size`（仅 M-B 需要，与 `drain_ring_size` 同族）~~ **该键未实现**——DR11 已定案 M-A 为主，无 free_ring。
+   - **【v1.9.1 新增】心跳超时配置**：`reload_heartbeat_timeout_ms`，默认 **1000**（1s，可配置；字段 `lib/ff_config.h:306`、解析 `lib/ff_config.c:1042-1051`、默认值 `:1639-1640`），用于 G_old 检测 G_new 失活（DR6 附则 / U-NR-8）。
+   - ~~**【v1.9 新增（加固项，默认关）】`self_driven_hardclock = 0` / `mempool_cache_size`**~~ **均已废止/未实现**：自驱 hardclock 在 graceful 下**无条件启用**（`lib/ff_dpdk_if.c:3489-3497`，无开关）；mempool cache 由代际池 + DR11 M-A 处理，**无配置键**（见 §6.6 与 §9 末行「加固项默认态已废止」）。
 4. **nginx 适配层改造**（app/nginx-1.28.0）：
    - `ngx_process_cycle.c:223-237` 两段式 reload 块整体移除/条件化（graceful_reload=1 时走原生顺序：fork G_new → 等 READY → 同期接管 → G_old QUIT）。
    - `ngx_ff_module.c:169-187` + `ngx_process_cycle.c:1117-1121`：worker0 不再 primary，全部 secondary；queue_id 代际无关固定映射、lcore_id 两代相同（语义 15，DR8 定案；~~代际 lcore 池随 DR5 取消~~）。
@@ -537,7 +539,7 @@ USR2 时序：与 HUP 共用 T1-T5 机制，差异仅在 master 自身也经 exe
 - **超时值**：**默认 1s，可配置**（配置项沿用 §5.4-3 的开关族，建议 `reload_heartbeat_timeout_ms`，默认 1000）。1s 的依据：main_loop 为忙轮询、无阻塞，正常轮次间隔为微秒级；1s 对「进程崩溃/被 kill」这类硬失效有充分余量，同时将服务中断窗口控制在秒级。**该值须由 RV11/RT 实测校准**（M4 阶段）。**【v1.9.4 M4 实现批注】M4 未执行 G_new 崩溃的实机注入**（M4 的异常注入覆盖 READY 超时 / park / flip / mutex / kill primary / attach gate，未覆盖「G_new 进程被杀」），本超时值**仍为未校准状态，随 DR6① 复验一并移交 M6**（IT-NR-A12 为承载用例）。
 - **回退动作（方案①）**：G_old 判定 G_new 失活后，**将 rx 交还 G_old**——即置 `rx_owner_gen` 回退为 G_old 代际、G_old 退出「无硬件模式」恢复 `rte_eth_rx_burst` 与 tx，并**关闭 flow_map**（此时无新代际，flow_map 无意义）。同时上报告警打点。
 - **【v1.9.4 M4 实现批注·执行者】** 本附则原文写「由 primary 将 rx 交还 G_old」，**M3 的实现形态是「G_old worker 自治夺回」**：G_old 在自己的 main_loop 检出心跳失活后**自行写回 `rx_owner_gen`**（`ff_reload_drain_reclaim_mark()` 写 epoch-tagged 共享字 + 限频 ALERT）。语义等价性：心跳载体（共享内存全局切换标记每 loop 递增）、G_old 采样检测、1s 超时可配（`reload_heartbeat_timeout_ms`）、「G_old 排空退出后标记随 flow_map 消亡不再递增」四点全部符合本附则；且自治形态下写者唯一，**不存在「primary 与 G_old 双写 `rx_owner_gen`」的竞态**。spec 据此按实现形态修订（2026-09-04 人工重确认）。
-- **【v1.9.4 M4 实现批注·收尾范围】** M4 在本机制之上只补四项收尾：① **flow_map teardown 为结构性 no-op** —— `ngx_ff_flow_map_arm` 仅 init 期受 `hw_locked && gen==target_gen` 双门控调用，G_old 在任何一轮都从未 arm 过 dispatcher/flow_map，失活 G_new 的进程局部状态随其死亡消亡，无需跨进程拆除；② **窗口关闭归 master** —— t3_check 轮询 epoch 匹配的 `reclaim` 共享字 → `EV_ABORT` 回滚（TERM 残留 G_new + `ff_reload_master_abort` 复位 owner，与夺回方所写值幂等一致，G_old 无扰继续服务）；③ **告警秒级限频**（`ff_reload_stall_warn`，镜像 `ff_divert_drop_warn`，F-M3-4 修复）；④ **打点**（heartbeat_stalls 计数 + reclaim 共享字）。**已知窄边**：FSM 表 T5 仅接受 `GOLD_EXITED`，夺回发生在 T5 期间不检测 —— 有界不永挂（master 的 TERM 升级可收口），归 M6 复验。
+- **【v1.9.4 M4 实现批注·收尾范围】** M4 在本机制之上只补四项收尾：① **flow_map teardown 为结构性 no-op** —— `ngx_ff_flow_map_arm` 仅 init 期受 `hw_locked && gen==target_gen` 双门控调用，G_old 在任何一轮都从未 arm 过 dispatcher/flow_map，失活 G_new 的进程局部状态随其死亡消亡，无需跨进程拆除；② **窗口关闭归 master** —— t3_check 轮询 epoch 匹配的 `reclaim` 共享字 → `EV_ABORT` 回滚（TERM 残留 G_new + `ff_reload_master_abort` 复位 owner，与夺回方所写值幂等一致，G_old 无扰继续服务）；③ **告警秒级限频**（`ff_reload_stall_warn`，镜像 `ff_divert_drop_warn`，F-M3-4 修复）；④ **打点**（heartbeat_stalls 计数 + reclaim 共享字）。**已知窄边**：FSM 表 T5 仅接受 `GOLD_EXITED`，夺回发生在 T5 期间不检测 —— 有界不永挂（master 的 TERM 升级可收口），归 M6 复验。**【2026-09-17 复验回写】M6 已复验**：`work/impl/test-m6.md` §S4.4（RT-04b）实证两条路径——流已结束时杀新 master → `rx owner reset to generation 0, old generation serving again`（声明式夺回）→ nlive==0 自动重生 worker；流进行中杀 → `respawn skipped`（P1-2 nlive 互锁）+ 声明式夺回 + 无双 worker 集，两条分支均由 recovery HUP 闭合。
 - **前置条件**：该回退要求 G_old 具备「可逆转回硬件模式」的能力，须在 C-NR-309 的实现中一并设计（无硬件模式标志必须可逆，且恢复 rx 前须确认 G_new 确已不再 poll——否则回到并发 poll 的老问题）。**该点已列入 C-NR-309 的实现约束与 M3 风险。**
 - **未覆盖**：G_new 与 G_old **同时**崩溃（此时仅剩 primary，无法恢复数据面）→ 依赖外部运维重启，须写进运维手册。
 | **DR9** | **【v1.9 新增】TX 处理形态**：(a) G_new 代发（M1′ 主路径，推荐）/ (b) init 期多配 `nb_tx_queues = 2N` 代际各一组（零跳，依赖硬件多队列）/ (c) 共享内存自旋锁保护 tx queue（改动最小，有锁开销与优先级反转） | 倾向 (a)；若 RV11 实测代发路径成为 drain 期瓶颈，评审切 (b)（需先确认目标网卡支持 2N tx queue） |
@@ -602,7 +604,7 @@ v1.6 的「两代共享同一批硬件队列（rx 互斥移交 + tx 无保护）
 |---|---|---|
 | rx | 互斥移交，两代先后持有 | 互斥接管，此后仅 G_new 持有 |
 | tx | **两代并发同一 `tx_queue_id`（违反 `rte_ethdev.h:6575-6577` 契约）** | G_new 独占；G_old 出包经 `drain_ring_tx` 代发 |
-| 旧连接入向 | 复用 `dispatch_ring`（同队列下产生双消费者，违反 `RING_F_SC_DEQ`） | per-generation `drain_ring_rx`（SP/SC 明确） |
+| 旧连接入向 | 复用 `dispatch_ring`（同队列下产生双消费者，违反 `RING_F_SC_DEQ`） | per-generation `drain_ring_rx`（**MP/SC**，见语义 13） |
 | 旧连接出向 | 零跳（但并发不安全） | 一跳（安全） |
 | 硬件状态共享面 | rx + tx 双份 | 仅 rx，且互斥保护 |
 | G_old 崩溃影响 | 无（G_new 独占后） | 同上 |
@@ -617,6 +619,8 @@ v1.6 的「两代共享同一批硬件队列（rx 互斥移交 + tx 无保护）
 #### 6.6.1 现状与关键事实
 
 **代码事实**：`pktmbuf_pool[socketid]`（`ff_dpdk_if.c:149`，per-NUMA 一个）由 primary 创建（`:616-635`，`rte_pktmbuf_pool_create(..., MEMPOOL_CACHE_SIZE, ...)`）、secondary lookup 共享（`:638`）。**RX queue 在 init 期绑定该 pool**（`rte_eth_rx_queue_setup(..., mbuf_pool)` `:1141`）且**运行时不可更换**（virtio 无 queue stop/setup）。应用侧 alloc 点：TX 发包 `:2564`/`:2706`、dispatch clone `:2173`/`:2188`（v1.9 复审修正：原引 :2563/:2705/:2172 是「取池」行）。
+
+**补充（M4 实现坐实）**：不只 RX 池——`message_pool`（reload 握手消息池，跨进程共享）在 `graceful_reload=1` 下也**同样去掉 per-lcore local cache**，经 `ff_shared_pool_cache_size(graceful, MSG_RING_SIZE/2)` 创建（`lib/ff_dpdk_if.c:940-947`），与本节的 M-A 处理同源（C-NR-315 的 N-4a 扩展）。
 
 **关键事实（决定了方案形态）**：`local_cache` 是 **`struct rte_mempool` 的成员**（`dpdk/lib/mempool/rte_mempool.h:258`），访问为 `&mp->local_cache[lcore_id]`（`:1340-1341`）。
 
@@ -673,7 +677,7 @@ v1.6 的「两代共享同一批硬件队列（rx 互斥移交 + tx 无保护）
 | 4 HUP+USR2 均支持 | 机制同源；master 无 ff 状态可安全 exec | USR2 路径需专项测试。**【v1.9.5 M5 实现批注】** 专项测试已过（RT-04/RT-04b，G-M5 门禁 PASS，切流点 = WINCH，见 [07](07-milestones.md) §2.6 门禁结论块）；残余风险更新为 F-M5-3（无跨 master READY 信号，WINCH 时机依赖运维确认） |
 | 5 工程意义无损 | 门禁 = RV9 错误数 0（≥100 次，排空确认后 reload）；**v1.9 补充 RV14：须实测 keepalive 下 drain 时长并确定强退阈值，否则门禁机时不可控** | 接受 HAProxy 文档级边界（R-B §2.2） |
 | 6（语义 6 防重入） | 排空前拒绝新 reload（REJECT）；多代并存放松属 DR10 可选增强 | DR10 未定案 |
-| **13（TX 独占，v1.9 新增行）** | G_new 独占 tx：G_old 置「无硬件模式」后**三处 flush 入口全部短路**（`:2532`/`:2557`/`:2853`），出包一律 enqueue `drain_ring_tx` 由 G_new 代发；`drain_ring_rx`/`drain_ring_tx` 各自 SP/SC，不再有 `dispatch_ring` 双消费者问题 | RV11（TX 独占回归，IT-NR-A09 断言 G_old 侧 tx_burst 计数恒 0）；PT-NR-10（代发开销）；**T3 后 G_new 崩溃 → 无进程收发包**（DR6） |
+| **13（TX 独占，v1.9 新增行）** | G_new 独占 tx：G_old 置「无硬件模式」后**三处 flush 入口全部短路**（`:2532`/`:2557`/`:2853`），出包一律 enqueue `drain_ring_tx` 由 G_new 代发；`drain_ring_rx` = MP/SC、`drain_ring_tx` = SP/SC，不再有 `dispatch_ring` 双消费者问题 | RV11（TX 独占回归，IT-NR-A09 断言 G_old 侧 tx_burst 计数恒 0）；PT-NR-10（代发开销）；**T3 后 G_new 崩溃 → 无进程收发包**（DR6） |
 | **14（半开连接窗口，v1.9 新增行）** | G_old 停 accept 但**延迟 close listening** 至自身 syncache 半开条目排空或超时（shutdown timer 兜底），使移交前收到的 SYN 仍能完成三次握手 | RV12（IT-NR-A10）；`tcp_syncache.h:36-48` 无计数接口 → 需新增导出（C-NR-312）；修法 (a)/(b) 待 U-NR-9 定案 |
 | **15（代际隔离，v1.9 新增行）** | **两代同 lcore_id**（D-A 终版），queue_id 代际无关映射；`lcore_mask`/`nb_procs`/队列数保持 N 不变，**无新增配置面**（DR5 取消）；msg_ring 按 (proc_id, 代际) 索引 + KNI runtime owner 跟随活跃代际（T5 更新） | RV13（IT-NR-A11、UT-NR-12）；同 lcore_id 的 timer/mempool 同槽由语义 11/12 解决 |
 | **同 lcore_id 的 timer 同槽（语义 11，必需）** | 自驱 hardclock：main_loop 按 TSC 间隔直调 `ff_hardclock()`，每进程 timer 完全独立 | PT-NR-08 精度回归为**合入门槛**（偏差 ≤5%，无漏/重复触发）；RV6 长稳 |
