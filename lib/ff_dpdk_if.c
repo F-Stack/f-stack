@@ -664,9 +664,13 @@ init_app_mem_pool(unsigned socketid, unsigned nb_app_mbuf, uint16_t data_room)
                 socketid, gen);
         }
         if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            /* C-NR-315: the peer generation frees into this pool (ARP/NDP
+             * clone, drain_tx), so its per-lcore cache goes too. */
             app_pktmbuf_pool[gen][socketid] =
                 rte_pktmbuf_pool_create(s, nb_app_mbuf,
-                    MEMPOOL_CACHE_SIZE, 0, data_room, socketid);
+                    ff_shared_pool_cache_size(
+                        ff_global_cfg.dpdk.graceful_reload,
+                        MEMPOOL_CACHE_SIZE), 0, data_room, socketid);
         } else {
             app_pktmbuf_pool[gen][socketid] = rte_mempool_lookup(s);
         }
@@ -3666,7 +3670,10 @@ main_loop(void *arg)
                     ff_kni_process(pid, 0, pkts_burst, MAX_PKT_BURST);
                 }
             }
+            /* C-NR-302: same gate as drain_tx/send_burst — a parked
+             * generation must not reach the hardware tx queue. */
             if (ff_global_cfg.dpdk.primary_slim &&
+                likely(!no_hw) &&
                 ff_kni_is_runtime_owner() &&
                 rte_eal_process_type() != RTE_PROC_PRIMARY) {
                 for (i = 0; i < qconf->nb_tx_port; i++) {
