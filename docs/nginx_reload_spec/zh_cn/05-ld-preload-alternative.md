@@ -4,9 +4,10 @@
 |---|---|
 | 文档编号 | 05 |
 | 标题 | F-Stack adapter/syscall（LD_PRELOAD ring IPC）架构探测 + nginx 无损 reload 可行性与缺口清单 |
-| 版本 | v1.0 |
-| 日期 | 2026-08-18 |
+| 版本 | v1.3（v1.2 基础上：**终门禁 G-D 返工 F-01 的跨篇回扫**——R-01 代码修复（`lib/ff_dpdk_if.c:669-673` 代际池 `cache_size=0`）已落地，本篇经全篇回扫**无「代际池未归零 / 仍带 256」类表述需改写**（本篇 `256` 的命中均为 `FF_KERNEL_EVENT` 的「每 256 次轮询内核 fd」，与 mempool cache 无关），仅版本头同步。v1.1 =**按 `plan_cross_audit` G-A 裁决 R-27/R-28 订正**——§1 六个文件行数按 `wc -l` 实测订正（163/752/371/36/267/437；原 164/753/372/37/268/439）；§2.3 rsp_ring legacy 兜底锚点由 `ff_ring_ipc.c:49-75` + `ff_hook_syscall.c:3411-3440` 订正为 `ff_ring_ipc.c:141-155`（入队 `:154`）；§6-3/-4/-7 按「已坐实部分 + 未坐实部分」拆分并补 `ff_hook_syscall.c:255-258`/`:3248`、`ff_compat.c:97`、`ff_init_main.c:541` 坐标） |
+| 日期 | 2026-08-18（v1.1 增补：2026-09-17） |
 | 状态 | 待人工审计 |
+| 修订说明 | v1.1（2026-09-17）：按 `plan_cross_audit` G-A 裁决 R-27/R-28 订正——§1 行数、`§2.3` rsp_ring 锚点、§6 未坐实项 3/4/7 拆分改写，详见「版本」行。v1.2（2026-09-18）：终门禁 G-D 返工 F-01 跨篇回扫——R-01 代码修复已落地，本篇回扫无 R-01 相关表述需改写，仅版本头同步。**v1.3（2026-09-18）：R-01 机理错误收尾（G-D「提交前必补」）**——本篇经回扫无该机理错误落点（本篇 `256` 的命中均为 `FF_KERNEL_EVENT` 每 256 次轮询、与 mempool cache 无关），仅版本头同步 |
 | 来源产物 | work/probe-ld-preload.md（探测员 probe-ldpreload，2026-08-18 落盘，只读探测，未改任何代码，未执行 git 写操作）。本篇为正式化改写：保留全部事实证据（文件:行号）、与既有 spec 的偏差标注、未坐实清单；「探测方法」保留为第 1 节以体现证据可追溯 |
 
 探测范围：`/data/workspace/f-stack/adapter/syscall/` + `docs/ld_preload_ring_spec/zh_cn/` 01/02 两篇。所有行号以当前工作区代码为准（探测时点 2026-08-18）。
@@ -20,9 +21,9 @@
 - 通读 `docs/ld_preload_ring_spec/zh_cn/01-requirements-spec.md`、`02-architecture-design-spec.md` 全文（各约 300/640 行），提炼功能定位。
 - 逐行通读代码（全文非抽样）：
   - `adapter/syscall/ff_hook_syscall.c`（3445 行，全文分 4 段读完）
-  - `adapter/syscall/ff_ring_ipc.c`（164 行）、`ff_socket_ops.c`（753 行）、`ff_so_zone.c`（372 行）、`fstack.c`（37 行）
-  - `ff_declare_syscalls.h`、`ff_hook_syscall.h`、`ff_socket_ops.h`、`ff_adapter.h`、`ff_linux_syscall.c`（268 行）、`Makefile`
-  - `adapter/syscall/README.md`（439 行，英文版）
+  - `adapter/syscall/ff_ring_ipc.c`（**163** 行）、`ff_socket_ops.c`（**752** 行）、`ff_so_zone.c`（**371** 行）、`fstack.c`（**36** 行）—— **【2026-09-17 订正·R-27】原写 164/753/372/37 与 `wc -l` 差 1**（`wc -l` 计换行符，末行无换行符时不计；此处以 `wc -l` 实测为准）
+  - `ff_declare_syscalls.h`、`ff_hook_syscall.h`、`ff_socket_ops.h`、`ff_adapter.h`、`ff_linux_syscall.c`（**267** 行，同上订正）、`Makefile`
+  - `adapter/syscall/README.md`（**437** 行，英文版，同上订正）
 - 分析方法：从 hook 面（syscall 覆盖）、IPC 面（ring/sem 双路径）、生命周期面（attach/detach/fork/exit）、nginx 映射面（master/worker、HUP/USR2、连接所有权）四个维度交叉核对代码事实。
 - 未做：编译、运行、git log 考古（本轮时间盒内以现行代码为准）。
 
@@ -46,7 +47,7 @@
 ### 2.3 spec 与代码的偏差（重要）
 
 - **wait_mode 运行时配置未实现**：spec 02 §6.2 承诺 `FF_RING_WAIT_MODE` 环境变量；代码中无任何 `getenv` 读取该变量，`ff_create_so_memzone` 调 `ff_create_sc_ring_zone(proc_id, FF_RING_SIZE, FF_RING_DEFAULT_WAIT_MODE)`（`ff_so_zone.c:124-125`），`FF_RING_DEFAULT_WAIT_MODE` 是编译期常量（`ff_socket_ops.h:155-157`）。
-- **响应路径已偏离 spec v1.0**：spec 设计响应走 rsp_ring；实现演进为 v3.3 D2 修复——fstack 侧不再向 rsp_ring 入队，而是直接置 `sc->completion=1`（与 result 同 cache line），rsp_ring 仅在 `ff_ring_alarm_wakeup` 里作 legacy 兜底入队（`ff_ring_ipc.c:49-75`、`ff_hook_syscall.c:3411-3440` 注释）。
+- **响应路径已偏离 spec v1.0**：spec 设计响应走 rsp_ring；实现演进为 v3.3 D2 修复——fstack 侧不再向 rsp_ring 入队，而是直接置 `sc->completion=1`（与 result 同 cache line），rsp_ring 仅在 `ff_ring_alarm_wakeup` 里作 legacy 兜底入队。**【2026-09-17 订正·R-27】锚点错位**：`ff_ring_ipc.c:49-75` 是 **completion 路径**（`ff_ring_submit_and_wait` 侧的响应等待），**legacy 兜底入队的实际落点为 `ff_ring_ipc.c:141-155`**（`ff_ring_alarm_wakeup()`，入队语句在 **`:154`**（`rte_ring_sp_enqueue(ring_zone->rsp_ring, sc)`），`:148-150` 注释明写 "kept as a no-op fallback for any legacy path"）；`ff_hook_syscall.c:3411-3440` 与本处无关，原引用有误。
 - **detach 清理 ring 未实现**：spec C-005 要求 detach 时排空 ring 残留；`ff_detach_so_context`（`ff_so_zone.c:229-264`）无任何 ring 操作。
 - 03/04（interface/test）与 `ld_preload_ring_support.md`、`ring_ipc_perf_offline_analysis.md` 本轮未读（任务只要求 01/02），可能含补充约束（见 §6-6）。
 
@@ -177,9 +178,9 @@
 
 1. **ff_adapter_child_process_init 固定 attach zone 0**（`ff_hook_syscall.c:3338`：`ff_attach_so_context(0)`，而该函数在 FF_MULTI_SC 下会 `ff_so_zone = ff_so_zones[0]`，`ff_so_zone.c:165-167`）与 FF_MULTI_SC fork 前切到 `current_worker_id` zone（L2434-2435）的交互：子进程 sc 变量被 zone-0 新 sc 覆盖后，`scs[current_worker_id].sc` 继承值与实际使用值是否一致，静态读码存疑，需运行时打日志核实（对 nginx fork 流程正确性有直接影响）。
 2. USR2 场景新 master 重新 bind 同地址时，老 master 是否已 close 旧 listening fd（决定 `ff_bound_fds`/ff_dup2 复用是否成立）——取决于 nginx USR2 时序与 stack 侧 unbind 时序，需实测。
-3. FF_KERNEL_EVENT 下 fd 映射表在 fork 继承后的行为（master 的 map 被所有 worker 继承，各自 close 时 L1875-1883 的 map 清理跨进程是否互踩）。
-4. `FF_PROC_ID` 环境变量在 nginx 场景的实际使用方式（README L421-429 提到但 nginx 部署章节只用 FF_NB_FSTACK_INSTANCE，L280-282）；exec 后该环境变量是否仍在。
+3. FF_KERNEL_EVENT 下 fd 映射表在 fork 继承后的行为（master 的 map 被所有 worker 继承，各自 close 时 L1875-1883 的 map 清理跨进程是否互踩）。**【2026-09-17 拆分·R-28】已坐实部分**：`fstack_kernel_fd_map[]`（`ff_hook_syscall.c:255-258`）是**进程内** static 数组（受 `#ifdef FF_KERNEL_EVENT` 门控，`FF_MAX_FREEBSD_FILES = 65536`）⇒ **fork 时逐页复制继承（各进程独立副本）、exec 后丢失、不跨进程互踩** — 这一点可静态坐实。**仍未坐实**：fd 表复制的**完整语义**（各 worker 继承的是 fork 瞬间的快照，此后各自独立；与 `ff_adapt_user_proc_add`/`thread_add` 的交互见第 7 项）。
+4. `FF_PROC_ID` 环境变量在 nginx 场景的实际使用方式（README L421-429 提到但 nginx 部署章节只用 FF_NB_FSTACK_INSTANCE，L280-282）；exec 后该环境变量是否仍在。**【2026-09-17 拆分·R-28】已坐实部分**：读取点为 `ff_hook_syscall.c:3248`（`getenv(FF_PROC_ID_STR)`，`:3246` 注释明写「to set worker_id」，即 **worker_id / CPU 亲和基准**）。**仍未坐实（明确标注）**：**exec 后 `FF_PROC_ID` 是否被保留 —— 未实测**（Linux exec 保留 environ 属预期行为，但本树未实测，不做断言）。
 5. 多轮 HUP reload 下 scs[]/zone 占用的实测曲线（缺口 7 的量化）。
 6. 03-interface-spec.md / 04-test-spec.md / ld_preload_ring_support.md / ring_ipc_perf_offline_analysis.md 未读，可能含 sc 共享与容量设计的补充约束。
-7. `ff_adapt_user_thread_add/exit`（lib 侧）的 fd 表复制完整语义（本轮只看了 adapter 层调用点，未深入 ff_adapt_user_proc/thread 实现）。
+7. `ff_adapt_user_thread_add/exit`（lib 侧）的 fd 表复制完整语义（本轮只看了 adapter 层调用点，未深入 ff_adapt_user_proc/thread 实现）。**【2026-09-17 补注·R-28】入口坐标已定位**：`ff_adapt_user_thread_add()` 在 **`lib/ff_compat.c:97`**、`ff_adapt_user_proc_add()` 在 **`lib/ff_init_main.c:541`**；**fd 表复制的完整语义仍需精读，维持未坐实**。
 8. epoll_wait 的 kevent 封装在多 accept/multi_accept 下的边缘行为（README L138 提到有差异，未逐条核实 ff_epoll 实现）。

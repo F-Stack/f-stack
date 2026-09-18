@@ -4,11 +4,11 @@
 |---|---|
 | 文档编号 | 01 |
 | 标题 | VPP VCL 支撑 Nginx 无损 reload 的机制、工程问题与启示 |
-| 版本 | v1.1 |
-| 日期 | 2026-08-18 |
+| 版本 | v1.4（v1.3 基础上：**终门禁 G-D 返工 F-01 的跨篇回扫**——R-01 代码修复（`lib/ff_dpdk_if.c:669-673` 代际池 `cache_size=0`）已落地，本篇经全篇回扫**无「代际池未归零 / 仍带 256」类表述需改写**（本篇不涉及代际 mempool 论述），仅版本头同步。v1.2 =**按 `plan_cross_audit` G-A 裁决 R-11 订正**——§6.1 对照表两处失效锚点：`ff_init`/`ff_run` 的 `ngx_process_cycle.c L397/L924` 改为 `ngx_ff_module.c:317` 与 `ngx_process_cycle.c:681/1962/2732`（并注明以符号为准）；`ngx_ff_worker_sem` 的 `L459-L509` 改为 `:2024-2037` 创建 / `:2063-2064` 15s `sem_timedwait` / `:2090-2099` 销毁+置 NULL / `:2952-2953` worker0 `sem_post`，并补注 M6 已坐实的 F2 根因与修复） |
+| 日期 | 2026-08-18（v1.1~v1.2 增补：2026-09-17） |
 | 状态 | 待人工审计 |
 | 来源产物 | work/research-vpp-vcl.md（调研员 researcher-vpp-vcl，2026-08-18 落盘）。本篇为正式化改写：删除过程性叙述，保留全部事实证据（文件:行号、URL、commit hash、issue 编号）、未坐实标注与单来源声明；「实际执行的操作清单」保留为第 1 节以体现证据可追溯 |
-| 修订说明 | v1.1（2026-09-17）：本轮 spec×代码交叉审核（plan_audit）订正——§6.4 对 VPP issue #3547 的时效表述由「连环 crash 三年未修」更正为依据 `gh` 元数据的事实（created 2025-02-02，未修复即关闭，至今近两年） |
+| 修订说明 | v1.1（2026-09-17）：本轮 spec×代码交叉审核（plan_audit）订正——§6.4 对 VPP issue #3547 的时效表述由「连环 crash 三年未修」更正为依据 `gh` 元数据的事实（created 2025-02-02，未修复即关闭，至今近两年）。**v1.2（2026-09-17）：按 `plan_cross_audit` G-A 裁决 R-11 订正**——§6.1 对照表两处失效锚点订正（`ff_init`/`ff_run` 与 `ngx_ff_worker_sem`），详见「版本」行。**v1.3（2026-09-18）：终门禁 G-D 返工 F-01 跨篇回扫**——R-01 代码修复已落地，本篇回扫无 R-01 相关表述需改写，仅版本头同步。**v1.4（2026-09-18）：R-01 机理错误收尾（G-D「提交前必补」）**——本篇经回扫无该机理错误落点（本篇不涉及代际 mempool 论述），仅版本头同步 |
 
 相关篇章：[00-总览](00-overview.md) | [02-其他项目调研](02-other-projects-research.md) | [06-方案设计](06-solution-design.md)
 
@@ -223,10 +223,10 @@ https://github.com/FDio/vpp/issues/3645
 
 | 维度 | VPP + VCL | F-Stack app/nginx（源码集成） | F-Stack adapter/syscall（LD_PRELOAD） |
 |------|-----------|------------------------------|----------------------------------------|
-| 协议栈位置 | 独立 VPP 进程，中心化单实例 | 每 worker 进程内嵌一个 FreeBSD 栈实例（`ff_init` + `ff_run`，ngx_process_cycle.c L397/L924 核实） | 独立 fstack 实例进程（`ff_handle_each_context` 循环），app 进程经 libff_syscall.so 以 sc 上下文对接 |
+| 协议栈位置 | 独立 VPP 进程，中心化单实例 | 每 worker 进程内嵌一个 FreeBSD 栈实例（`ff_init` + `ff_run`）。**【2026-09-17 订正·R-11】原引 `ngx_process_cycle.c L397/L924` 已失效**：`ff_init()` 的唯一调用点在 **`app/nginx-1.28.0/src/event/modules/ngx_ff_module.c:317`**；`ff_run` 在 **`ngx_process_cycle.c:681`/`:1962`/`:2732`**（M1~M6 实现使行号系统性漂移）。**建议改引符号名而非行号** | 独立 fstack 实例进程（`ff_handle_each_context` 循环），app 进程经 libff_syscall.so 以 sc 上下文对接 |
 | listen 归属 | VPP 侧 app_listener 单点持有，app worker 经 bitmap 共享 | 各 worker 的栈实例各自 bind/listen（reuseport 类语义） | fstack 实例持有，fd 经 hook 映射（FF_MULTI_SC：master 为每 worker 预建 fd + sc 绑定，README 核实） |
 | app↔栈通道 | 共享内存 svm fifo（数据）+ svm_msg_q（事件/控制），每 worker 独立 mq | 进程内直调 ff_api（无 IPC） | Hugepage 共享内存 sc 上下文 + sem 或 DPDK SPSC rte_ring IPC（FF_USE_RING_IPC，ld_preload_ring_spec） |
-| fork 语义 | pthread_atfork 三阶段：注册新 app worker + 复制 session 池 + 显式共享；SIGCHLD 延迟清理 | master fork worker 后靠 POSIX shm 信号量同步启动（ngx_ff_worker_sem，15s 超时，ngx_process_cycle.c L459-L509 核实）；新 worker 全新栈实例 | 2023 年起支持 fork（PR #887：每个 fork 进程拥有自己的 FreeBSD struct thread）；FF_MULTI_SC 用静态 scs 数组按 current_worker_id 选 sc |
+| fork 语义 | pthread_atfork 三阶段：注册新 app worker + 复制 session 池 + 显式共享；SIGCHLD 延迟清理 | master fork worker 后靠 POSIX shm 信号量同步启动（ngx_ff_worker_sem，15s 超时）。**【2026-09-17 订正·R-11】原引 `ngx_process_cycle.c L459-L509` 已失效**，实测落点为：**创建 `:2024-2037`** / **15s `sem_timedwait` `:2063-2064`** / **销毁 + 置 NULL `:2090-2099`** / **worker0 `sem_post`（带判空）`:2952-2953`**。另注：M6 已坐实该信号量生命周期错配为 F2（respawn 风暴）根因，修复为销毁后置 NULL + post 前判空（见 [07](07-milestones.md) §2.7(3)）；新 worker 全新栈实例 | 2023 年起支持 fork（PR #887：每个 fork 进程拥有自己的 FreeBSD struct thread）；FF_MULTI_SC 用静态 scs 数组按 current_worker_id 选 sc |
 | reload 时 listen 连续性 | 机制性保证（listen 与进程解耦 + worker 注册/注销） | 无保证：新 worker 新实例重新建立 listen，存在窗口 → 丢包/断连接（团队已知问题，本篇给出现状对照） | 结构上更接近 VPP（栈进程中心化），但 sc→实例映射是静态预分配的，reload 换 worker 集合需重配 |
 
 ### 6.2 关键层面区分：网卡队列归属 vs 监听 fd 归属（与 #1036 根因对照）

@@ -4,12 +4,12 @@
 |---|---|
 | 文档编号 | 04 |
 | 标题 | F-Stack nginx 适配层与 lib 层现状代码探测（无损 reload 前置事实 + 8 项代码级障碍） |
-| 版本 | v1.2 |
-| 日期 | 2026-08-18 |
+| 版本 | v1.5（v1.4 基础上：**终门禁 G-D 返工 F-01 的跨篇回扫**——R-01 代码修复（`lib/ff_dpdk_if.c:669-673` 代际池 `cache_size=0`）已落地，本篇经全篇回扫**无「代际池未归零 / 仍带 256」类表述需改写**（§5-2 的 F2「脏 EAL」证伪条目与 R-01 无关，维持原样），仅版本头同步。v1.3 =**按 `plan_cross_audit` G-A 裁决 R-25 订正**——§3.5 末条「dispatch 回调 nginx 未使用」已过时：M0 期未使用，**M3 起 nginx 已注册 flow_map dispatcher**（`ngx_ff_module.c:492`）） |
+| 日期 | 2026-08-18（v1.1~v1.3 增补：2026-09-17） |
 | 状态 | 待人工审计 |
 | 来源产物 | work/probe-fstack-current.md（探测员 probe-fstack，2026-08-18 落盘，只读探测，未改任何代码）。本篇为正式化改写：保留全部事实证据（文件:行号）、未坐实标注；「探测方法与读过文件清单」保留为第 1 节以体现证据可追溯 |
 | 行号复核 | 本现行号锚点已于 2026-09-17 按 HEAD `28e751259` 复核订正 |
-| 修订说明 | v1.1（2026-09-17）：本轮 spec×代码交叉审核（plan_audit）订正——按 HEAD `28e751259` 复核重写 nginx 适配层与 lib 层行号锚点（M1~M6 实现导致 `lib/ff_dpdk_if.c`/`lib/ff_api.h`/`lib/ff_config.c`/`ngx_ff_module.c`/`ngx_process_cycle.c` 系统性漂移），订正已被实现推翻的 2 条事实描述（worker QUIT 分支的 `ngx_set_shutdown_timer` 已由 M4 补回；worker 0 硬编码 primary 在 `graceful_reload=1` 下已由 M1 消解），并将 F2「脏 EAL」机理标注为已证伪。**v1.2（2026-09-17）：据 audit-anchor 独立复核（`work/audit-G1-fix-review-anchor.md`，bounce-1）订正**——§3.2 收发模型多进程路径锚点改 `ff_dpdk_if.c:562-601`（取 lcore `:572`、lcore_list 下标→queue id `:584-596`，§4 障碍 7 同步）；§3.1 `ff_stop_run` 置 stop_loop 锚点改 `:3830`；§5-6 KNI 锚点改 `:3658-3676` 且配置键订正为 `[kni] enable`；§2.1 `ngx_ff_graceful_reload` 锚点改 `:49`；§3.3 消息类型补 `FF_RELOAD`（共 10 类）；§1 读文件清单加「M0 基线」注 |
+| 修订说明 | v1.1（2026-09-17）：本轮 spec×代码交叉审核（plan_audit）订正——按 HEAD `28e751259` 复核重写 nginx 适配层与 lib 层行号锚点（M1~M6 实现导致 `lib/ff_dpdk_if.c`/`lib/ff_api.h`/`lib/ff_config.c`/`ngx_ff_module.c`/`ngx_process_cycle.c` 系统性漂移），订正已被实现推翻的 2 条事实描述（worker QUIT 分支的 `ngx_set_shutdown_timer` 已由 M4 补回；worker 0 硬编码 primary 在 `graceful_reload=1` 下已由 M1 消解），并将 F2「脏 EAL」机理标注为已证伪。**v1.2（2026-09-17）：据 audit-anchor 独立复核（`work/audit-G1-fix-review-anchor.md`，bounce-1）订正**——§3.2 收发模型多进程路径锚点改 `ff_dpdk_if.c:562-601`（取 lcore `:572`、lcore_list 下标→queue id `:584-596`，§4 障碍 7 同步）；§3.1 `ff_stop_run` 置 stop_loop 锚点改 `:3830`；§5-6 KNI 锚点改 `:3658-3676` 且配置键订正为 `[kni] enable`；§2.1 `ngx_ff_graceful_reload` 锚点改 `:49`；§3.3 消息类型补 `FF_RELOAD`（共 10 类）；§1 读文件清单加「M0 基线」注。**v1.3（2026-09-17）：按 `plan_cross_audit` G-A 裁决 R-25 订正**——① §3.5 末条「dispatch 回调 … nginx 未使用」就地加注：该表述仅对 M0~M2 成立，M3 起 nginx 已注册 flow_map dispatcher（`app/nginx-1.28.0/src/event/modules/ngx_ff_module.c:492`）；② 经复核 §3.2 三个锚点（含取 lcore `:572`）无需订正；③ 篇头声明随 R-11 收敛为逐条可核验口径（本篇无整篇兜底声明，无需改写）。**v1.4（2026-09-18）：终门禁 G-D 返工 F-01 跨篇回扫**——R-01 代码修复已落地，本篇回扫无 R-01 相关表述需改写，仅版本头同步。**v1.5（2026-09-18）：R-01 机理错误收尾（G-D「提交前必补」）**——本篇经回扫无该机理错误落点（§5-2 的 F2「脏 EAL」证伪条目与 R-01 无关，维持原样），仅版本头同步 |
 
 探测范围：/data/workspace/f-stack（DPDK 24.11.6 + FreeBSD 15.0），nginx 适配 `app/nginx-1.28.0/`，核心库 `lib/`。
 
@@ -158,7 +158,7 @@ F-Stack 对 `ngx_master_process_cycle` 的 ngx_reconfigure 分支改成了【两
 - SO_REUSEPORT：仅作为 setsockopt 的 Linux→FreeBSD 常量透传（lib/ff_syscall_wrapper.c:82, 561-562）。F-Stack nginx 多 worker 不是内核 reuseport 语义，而是【每 worker 一个完全隔离的 FreeBSD 协议栈实例，各自 socket/bind/listen 同一 IP:port 互不冲突（栈隔离），流量由 NIC RSS queue↔proc 静态映射分流，每条 TCP 连接只存在于一个进程的栈内】。
 - 每进程独立协议栈实例：`ff_freebsd_init()`（lib/ff_freebsd_init.c:269-370）在每进程内跑完整 FreeBSD 内核初始化（kern_setenv、mp_ncpus、UMA、mi_startup、fd_reserve），thread_mode=0 时 nb_cpus=1（:298-301）。
 - thread_mode=1（进程内多线程 native-mt）与 proc_type=secondary 显式互斥（lib/ff_config.c:1601-1608 报错；:1610-1611 强制 primary）。nginx 多进程模式用的是 thread_mode=0。
-- dispatch 回调：`ff_regist_packet_dispatcher(_context)` 允许 app 重定向包到指定 queue/进程（ff_api.h:247 / :316-319；ff_dpdk_if.c:2589-2604），nginx 未使用。
+- dispatch 回调：`ff_regist_packet_dispatcher(_context)` 允许 app 重定向包到指定 queue/进程（ff_api.h:247 / :316-319；ff_dpdk_if.c:2589-2604）。~~nginx 未使用~~ **【2026-09-17 订正·R-25】该表述已过时**：**M0 期未使用；M3 起 nginx 已注册 flow_map dispatcher**（`app/nginx-1.28.0/src/event/modules/ngx_ff_module.c:492` `ff_regist_packet_dispatcher_context(ngx_ff_flow_map_dispatcher)`），本条仅对 M0~M2 时点成立。
 
 ## 4. 无损 reload 的代码级障碍清单
 

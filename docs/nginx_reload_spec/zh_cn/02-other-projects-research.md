@@ -4,9 +4,10 @@
 |---|---|
 | 文档编号 | 02 |
 | 标题 | 内核基线三种机制 / eBPF 线 / 其他用户态协议栈 / 通用模式归纳与适用性初判 |
-| 版本 | v1.0 |
-| 日期 | 2026-08-18 |
+| 版本 | v1.3（v1.2 基础上：**终门禁 G-D 返工 F-01 的跨篇回扫**——R-01 代码修复（`lib/ff_dpdk_if.c:669-673` 代际池 `cache_size=0`）已落地，本篇经全篇回扫**无「代际池未归零 / 仍带 256」类表述需改写**（本篇不涉及代际 mempool 论述），仅版本头同步。v1.1 =**按 `plan_cross_audit` G-A 裁决 R-07 同源项订正**——§5.1-1 第 1 条「USR2 式二进制升级在 F-Stack 现架构下不可行」就地加注：该结论仅针对 M5 之前的主线架构，M5 已通过「常驻 slim primary + 世代目录仲裁」实现 USR2（`ngx_process_cycle.c:495` `ngx_exec_new_binary`，C-NR-501~504，[08](08-testing.md) RT-04/RT-04b 实机 PASS）；历史结论**保留不删**以维持审计可追溯性） |
+| 日期 | 2026-08-18（v1.1 增补：2026-09-17） |
 | 状态 | 待人工审计 |
+| 修订说明 | v1.1（2026-09-17）：按 `plan_cross_audit` G-A 裁决 R-07 同源项订正——§5.1-1 第 1 条 USR2 结论就地加注 M5 已实现的事实，历史结论保留不删。v1.2（2026-09-18）：终门禁 G-D 返工 F-01 跨篇回扫——R-01 代码修复已落地，本篇回扫无 R-01 相关表述需改写，仅版本头同步。**v1.3（2026-09-18）：R-01 机理错误收尾（G-D「提交前必补」）**——本篇经回扫无该机理错误落点（本篇不涉及代际 mempool 论述），仅版本头同步 |
 | 来源产物 | work/research-other-projects.md（调研员 researcher-others，2026-08-18 落盘）。本篇为正式化改写：删除过程性叙述，保留全部事实证据（URL、原句、issue/PR 编号）、未坐实标注与单来源声明；「实际执行的操作清单」保留为第 1 节以体现证据可追溯 |
 
 相关篇章：[00-总览](00-overview.md) | [01-VPP/VCL 调研](01-vpp-vcl-research.md) | [06-方案设计](06-solution-design.md)
@@ -202,7 +203,7 @@ reload 行为：官方文档对「reuseport 模式下 HUP/USR2 的具体行为�
 
 结合本地档案（3.7）与上节模式：
 
-1. USR2 式二进制升级（P1 的 exec 变体）在 F-Stack 现架构下不可行：DPDK 资源不能跨 exec 存活（档案 #12 结论），且旧 master/exec 新 master 均需重新 ff_init 绑定队列。除非把「栈实例」与「nginx 进程」解耦（见第 4 节）。
+1. USR2 式二进制升级（P1 的 exec 变体）在 F-Stack 现架构下不可行：DPDK 资源不能跨 exec 存活（档案 #12 结论），且旧 master/exec 新 master 均需重新 ff_init 绑定队列。除非把「栈实例」与「nginx 进程」解耦（见第 4 节）。**【2026-09-17 就地加注·R-07 同源】** 该结论针对 **M5 之前** 的主线架构（无常驻 primary）。**M5 已通过「常驻 slim primary + 世代目录仲裁」实现 USR2 二进制升级**（`ngx_process_cycle.c:495` `ngx_exec_new_binary`，C-NR-501~504，[08](08-testing.md) RT-04 / RT-04b 实机 PASS）：exec 仍然发生，但 DPDK 资源归常驻 primary 所有、不随 master exec 消失。**保留本条历史结论以维持审计可追溯性，不要删除**（未删除本条正是为了让读者看到结论如何被后续里程碑推翻）。
 2. HUP 式 reload 的丢包根因不是监听 fd（用户态栈里 fd 只是句柄），而是 RSS 硬件队列所有权的空窗期（档案 #1036 根因）。因此照搬 P1（fd 传递/SCM_RIGHTS）不解决问题；照搬 P2 的收益也有限——F-Stack 每 worker 本来就是独立 listen 的栈实例，「reuseport 等价物」天然存在（新连接按 RSS 哈希进各队列），真正缺的是「切换期间队列始终有人收」。
    【2026-08-18 增补：与 VPP/VCL 线交叉收敛】本判断与 [01-VPP/VCL 调研](01-vpp-vcl-research.md) 6.2 节独立得出同构结论：**网卡队列/收包所有权与业务进程生命周期的解耦，是用户态栈无损 reload 的结构性前提；监听 fd 是第二位问题**。VPP/VCL 模式两层天然解耦（数据面：队列归独立 VPP 进程，主窗口问题结构性不存在，#3645 反面印证包持续进 VPP、仅事件同步卡死；控制面：listen 归 VPP 侧 app 级单点）。佐证（据 researcher-vpp-vcl 报告转述，本报告未独立核实）：#1078 primary_slim PoC 杀 primary 后 12/12 存量连接零中断、adapter/syscall 中心化设计。下述方向 A/B/C 的共同前置条件即此结构性前提；方向 C 与 VCL 的 atfork + app_listener workers bitmap（新 worker 注册进 bitmap 前 accept 事件不分发给它，与 Facebook "ready 前不切流"同构）属同族设计。
 3. 初判最可行的方向（供 spec 阶段论证，非结论；最终分档见 [06-方案设计](06-solution-design.md) §4）：
