@@ -47,6 +47,10 @@ CLAUDE.md
 plan.md
 docs/unit_test_spec/zh_cn/plan-*.md
 
+# Nginx graceful-reload spec working artifacts (local only; harness output
+# embeds the machine's real addresses, so it must never be committed)
+docs/nginx_reload_spec/work/
+
 # Nginx build artifacts (F-Stack app/nginx-1.28.0)
 app/nginx-1.28.0/Makefile
 app/nginx-1.28.0/dist/
