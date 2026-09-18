@@ -155,13 +155,10 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
             }
         }
 
-        if (is_primary)
-            return -1;
-        i++;
-        if (i >= FF_RELOAD_EPOCH_SLOT_MAX)
-            i = 1;
-        if (i == start)
-            return -1;
+        /* R-16: every drain/msg ring name is derived from
+         * ff_reload_epoch_slot_of(epoch), so landing on another slot would
+         * be named inconsistently. Fail instead of advancing. */
+        return -1;
     }
 }
 
