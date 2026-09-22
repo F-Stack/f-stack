@@ -410,7 +410,7 @@ PR 仅 1 条：**PR#559**（已合并）。
 
 ### 4.3 其他 grep 命中（仅文档/历史 commit，非代码改动）
 
-- `git log -i --grep=nginx`：主要是 nginx 1.11.10 → 1.25.2 → 1.28.0 升级、IP_TRANSPARENT 支持、IPV6_PKTINFO 翻译等，**无 reload 核心 commit**。
+- `git log -i --grep=nginx`：主要是 nginx 1.11.10 → 1.25.2 → 1.28.0 升级、IP_TRANSPARENT 支持、IPV6_PKTINFO 翻译等，**【截至 2026-08-18 基线】无 reload 核心 commit**。**【2026-09-22 同步·A01-4】** 此后 M2/M5 已落地 reload 与 USR2 相关改动，本句仅描述该基线时点的仓库状态。
 - `git log -i --grep=reload`：命中 `docs: ...` 类的博客/benchmark commit，无 reload 代码改动（最新 native-mt / 23→24 升级等都不是 reload 主题）。
 - `git log -S 'rte_timer' -- lib/ff_dpdk_if.c`：截至本篇撰写基线（2026-08-18）为 **3 个** commit，后续 M2 Batch A 新增 1 个，**现共 4 个**：
   - `a9643ea85`（2017-04-21 init，F-Stack 仓库初始化）

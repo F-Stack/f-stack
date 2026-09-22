@@ -161,7 +161,7 @@ reload 行为：官方文档对「reuseport 模式下 HUP/USR2 的具体行为�
 来源：本地仓库 /data/workspace/f-stack/docs/f-stack-issue-ana.md（issue 分析档案，#12/#528/#547/#1036 条目）
 
 - 官方结论：F-Stack nginx 开箱不支持优雅 reload（doc/F-Stack_Nginx_APP_Guide.md 已明确）；根因："under F-Stack's multi-process model, each worker exclusively binds a NIC hardware queue (via RSS); during reload, when the old worker exits before the new worker has finished initializing DPDK/the F-Stack stack, there is a window where no process holds that queue, causing packets to be dropped—unlike native nginx workers, which share..."（#1036 结论）。
-- 多进程约束："exec() is not supported; DPDK resources cannot survive an exec() call. Multi-process operation uses fork() followed by separate ff_init() calls per process."（档案中 #12 相关结论）→ 直接判死 nginx USR2 路线（USR2 依赖 exec 新二进制）。
+- 多进程约束："exec() is not supported; DPDK resources cannot survive an exec() call. Multi-process operation uses fork() followed by separate ff_init() calls per process."（档案中 #12 相关结论）→ **截至本次调研基线（2026-08-18）**据此判死 nginx USR2 路线（USR2 依赖 exec 新二进制）。**【2026-09-22 同步·A01-4】** 该结论含历史限定：**M5 已落地自研 USR2 形态**（[00] §3.3「跨 master 世代隔离」、nginx 侧 `ngx_ff_reload_fsm.h` 与 `ngx_process_cycle.c` 的 USR2 分支），故「判死」仅适用于**原始基线形态**，不得作为当前方案的结论引用。
 - 社区先例：#547（orange30，2021-09-22 确认）"DPDK 18.11 + f-stack-1.20，专用接收核（rcv core）与 nginx 核分离 + 动态 renice 优先级，实现 nginx reload 零丢包」，未合并官方主线，DPDK 19+ 因 timer 库变化不兼容。
 - 另外：LD_PRELOAD 模式（libff_syscall.so hook 系统调用）是另一条接入路径（docs/zh_cn/F-Stack_Architecture_Layer1_System_Overview.md 方式 2），详见 [05-ld_preload 备选路线](05-ld-preload-alternative.md)。
 

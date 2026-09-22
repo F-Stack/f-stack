@@ -128,7 +128,7 @@
 
 ### 4.2 HUP reload（master 不退出，换 worker）
 
-- master 存活 → listening fd 持有不断，stack 侧 listening socket 稳定。**listening 无损成立**。
+- master 存活 → listening fd 持有不断，stack 侧 listening socket 稳定。**listening 无损在「首次 fork / 单轮」场景成立**【2026-09-22 同步·A01-7：未证明多轮 reload 下的索引与代际生命周期，多轮未证】。
 - 新 worker fork：走已验证的 fork hook 路径，可再生成 worker（每次 HUP 会令 master 再 fork 一批 worker；FF_MULTI_SC 的 scs[]/current_worker_id 继续递增，zone 内 32 sc 是容量上限——多轮 reload 的过渡期「老 worker 未退 + 新 worker 已起」会同时占用 sc，多次 reload 有耗尽风险，需压测）。
 - 老 worker 退出：nginx graceful 逻辑会显式 close 连接（close hook → FF_SO_CLOSE → stack 关 socket）——**连接处理语义与内核 nginx 相同：优雅退役、非无损**。若 worker 异常死亡（未 close），stack 侧 fd 泄漏（§3.5）。sc 槽靠 refcount/detach 回收（正常退出路径有；异常退出无）。
 - 结论：HUP 在该架构下行为对齐内核 nginx（listening 无损、存量连接优雅关闭），没有天然增益也没有额外损失（除 sc 容量与泄漏风险）。
@@ -157,7 +157,7 @@
 2. **fd 无进程归属**：fd 数字在 stack 实例的 FreeBSD fd 表内全局有效，ff_sys_* 直接以 args->fd 执行、无 sc 归属校验（§3.6）——连接跨进程迁移只需传递 fd 数字，无需 SCM_RIGHTS 类内核 fd 传递。
 3. **stack 进程对 nginx 重启零感知**：fstack 独立进程 + 全部 IPC 状态（zone/sc/ring）在 Hugepage 共享内存（`ff_so_zone.c:66-157`），nginx 整体重启不影响 stack 侧数据结构。
 4. **listening socket 跨代际复用有现成机制**：stack 侧 `ff_bound_fds` + `ff_dup2`（`ff_socket_ops.c:131-147`），新 master bind 同地址可挂回旧 listening socket。
-5. **fork 已完整支持且经 nginx 验证**：FF_MULTI_SC + FF_USE_THREAD_STRUCT_HANDLE 的 fork 路径（`ff_hook_syscall.c:2426-2496`）即按 nginx reuseport 工作流设计（README L188-201）。
+5. **fork 在「首次 fork + nginx 单轮」路径已支持并验证**【2026-09-22 同步·A01-7：「完整支持」过强；多轮 reload 的索引/代际生命周期与上文第 3 点的 32 sc 容量上限未证，需压测佐证】：FF_MULTI_SC + FF_USE_THREAD_STRUCT_HANDLE 的 fork 路径（`ff_hook_syscall.c:2426-2496`）即按 nginx reuseport 工作流设计（README L188-201）。
 6. **控制面自动落内核**：FF_KERNEL_EVENT 让 nginx channel/timer 等控制 fd 保持内核语义（L2324-2345），reload 控制行为与内核 nginx 一致，无需适配。
 7. **sc refcount 支持父子共享**（L2447 + `ff_so_zone.c:244-256`）：master fork worker 不额外消耗新 sc（共享计数），过渡期容量压力小于每 worker 独占。
 
