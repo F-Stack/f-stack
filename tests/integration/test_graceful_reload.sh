@@ -77,6 +77,10 @@ STREAM_MB=8
 # the 180 s summary wait and the 300 s remote probe budget.
 STREAM_DURATION=120
 KERNEL_NIC_IP=""
+# Runtime fault injection (FF_FAULT). Empty = production form; a non-empty name
+# requires a fault-injection build manifest (checked by reload_checks.verify-build).
+FAULT=""
+FAULT_DELAY_MS=15000
 ZC_BUILD=auto
 RTE_FRESH_MIN=10
 # KNI owner must be a *secondary* proc_id, never the resident primary (0):
@@ -139,7 +143,11 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                               test (write <DPDK_NIC_IP> in any report).
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
-                                         rt12,rt13
+                                         rt12,rt13,rt20,rt20b,rt21,rt22,rt23
+  --fault <name>            runtime fault injection (FF_FAULT); requires a
+                            fault-injection build manifest. rt23 is the only
+                            fault case that runs on the production form
+  --fault-delay-ms <n>      FF_FAULT_DELAY_MS for ready_delay (1..59000)
                               default  : precheck,rt01,rv9
   -r, --rounds <n>            reload-loop rounds for rv9 (default 100)
   -i, --interval <s>          reload-loop cadence in seconds (default 15)
@@ -213,6 +221,8 @@ while [ $# -gt 0 ]; do
         --baseline-duration) BASELINE_DURATION="${2:-}"; shift 2 ;;
         --stream-mb)         STREAM_MB="${2:-}"; shift 2 ;;
         --kernel-nic-ip)     KERNEL_NIC_IP="${2:-}"; shift 2 ;;
+        --fault)             FAULT="${2:-}"; shift 2 ;;
+        --fault-delay-ms)   FAULT_DELAY_MS="${2:-}"; shift 2 ;;
         --zc-build)          ZC_BUILD="${2:-}"; shift 2 ;;
         --rte-fresh-min)     RTE_FRESH_MIN="${2:-}"; shift 2 ;;
         -h|--help)           usage; exit 0 ;;
@@ -226,7 +236,8 @@ done
 local n
 local -a values=()
 for n in TARGET_IP CLIENT CASES ROUNDS INTERVAL POLL WORKERS DRAIN_TIMEOUT STARTUP_WAIT \
-    STREAM_MB RTE_FRESH_MIN SHUTDOWN_TIMEOUT BASELINE_DURATION GRACEFUL ZC_BUILD \
+    STREAM_MB RTE_FRESH_MIN SHUTDOWN_TIMEOUT BASELINE_DURATION GRACEFUL ZC_BUILD FAULT \
+    FAULT_DELAY_MS \
     NGINX_BIN FSTACK_TPL PROBE_DIR OUT BUILD_MANIFEST KERNEL_NIC_IP LCORE_MASK LCORE_LIST; do
     values+=("$n=${!n}")
 done
@@ -809,6 +820,187 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps)
     return 0
 }
 
+# ---- fault-injection cases (F1) ------------------------------------------
+# These need a fault-injection build (FF_RELOAD_FAULT_INJECTION=1) and a
+# manifest that declares it; reload_checks.verify-build enforces the pairing in
+# both directions. They never contribute to functional acceptance: rt23 is the
+# only one that runs on the production form.
+fault_case() { # tag fault expect(ok|abort) criterion [abort-signature]
+    local tag="$1" fault="$2" expect="$3" crit="$4" sig="${5:-}"
+    local rc=0 conf out before
+    # The --fault option drives the build-form gate; it must name the same
+    # fault the case injects, otherwise a verdict could be labelled wrongly.
+    if [ "$FAULT" != "$fault" ]; then
+        say "$tag: --fault=$FAULT does not match the case fault $fault"
+        record "$tag" "FAIL" "$crit" "fault option/case mismatch ($FAULT vs $fault)"
+        return 1
+    fi
+    export FF_FAULT="$fault"
+    if [ "$fault" = "ready_delay" ]; then
+        export FF_FAULT_DELAY_MS="$FAULT_DELAY_MS"
+    else
+        unset FF_FAULT_DELAY_MS
+    fi
+    conf=$(gen_nginx_conf "$tag" 0)
+    push_probes || { unset FF_FAULT; unset FF_FAULT_DELAY_MS; return 1; }
+    if ! start_stack "$tag" 1 0; then
+        stop_stack "$tag" "$conf" || rc=1
+        unset FF_FAULT
+        record "$tag" "FAIL" "$crit" "start failed (fault=$fault)"
+        return 1
+    fi
+    before=$(worker_count)
+    if have_probe m4_lc.py; then
+        launch_probe "$tag" 120 m4_lc.py --server "$TARGET_IP" --conns 12 \
+            --interval 0.1 --duration 45 --fresh 0.5 --timeout 2 \
+            || { unset FF_FAULT; unset FF_FAULT_DELAY_MS; stop_stack "$tag" "$conf"; record "$tag" "FAIL" "$crit" "probe launch failed"; return 1; }
+        sleep 3
+    fi
+    probe_running || rc=1
+    local hrc=0
+    if [ "$expect" = abort ]; then
+        # An aborted reload never prints the completion line, so waiting for it
+        # would only burn the drain timeout. Wait for the abort signature
+        # instead, bounded by the READY/park budget plus a margin.
+        nginx_signal "$conf" reload || hrc=1
+        local deadline=$((SECONDS + 90)) found=0
+        while [ "$SECONDS" -lt "$deadline" ]; do
+            if [ -n "$sig" ]; then
+                if grep -q "graceful reload aborted: $sig" "$ERRLOG"; then found=1; break; fi
+            elif grep -q "graceful reload aborted" "$ERRLOG"; then
+                found=1; break
+            fi
+            sleep 1
+        done
+        if [ "$found" != "1" ]; then
+            say "$tag: no bounded abort within 90 s (errlog: $ERRLOG)"
+            hrc=1
+        fi
+    else
+        hup_once "$conf" || hrc=1
+    fi
+    # hrc == 0 means the expected event happened: the bounded abort signature
+    # for expect=abort, the completion line for expect=ok.
+    [ "$hrc" = "0" ] || { say "$tag: expect=$expect not satisfied (rc=$hrc)"; rc=1; }
+    # NB: no probe_running check here -- by the time the bounded abort/completion
+    # is observed the probe (45 s) has normally finished; the probe's own
+    # summary below is the evidence that G_old kept serving, not a liveness bit.
+    # G_old must have kept serving: the probe's own verdict must be clean.
+    local summary="no probe" fetch=0
+    if ! have_probe m4_lc.py; then
+        # No probe means no evidence that G_old kept serving: never a silent
+        # pass (same rule as the other cases in this harness).
+        unset FF_FAULT
+        unset FF_FAULT_DELAY_MS
+        stop_stack "$tag" "$conf" || rc=1
+        record "$tag" "SKIP" "$crit" "NO_DATA (m4_lc.py absent from $PROBE_DIR)"
+        return 0
+    fi
+    if have_probe m4_lc.py; then
+        summary=$(wait_client_summary /tmp/gr_${tag}_lc_out.log 'LC_SUMMARY' 120) || fetch=$?
+        if [ "$fetch" = "1" ]; then
+            summary="NO_DATA (m4_lc.py did not report within 120 s)"; rc=1
+        elif [ "$fetch" = "2" ]; then
+            say "$tag: probe reported a summary but failed its own criterion"; rc=1
+        fi
+        check_summary lc "$summary" || { say "$tag: lc verdict below target: $summary"; rc=1; }
+    fi
+    # no double master and no lost generation: the count must be back to
+    # exactly the pre-reload set.
+    if [ "$(worker_count)" -ne "$before" ]; then
+        say "$tag: worker count changed ($before -> $(worker_count))"
+        rc=1
+    fi
+    unset FF_FAULT
+    unset FF_FAULT_DELAY_MS
+    stop_stack "$tag" "$conf" || rc=1
+    if [ "$rc" = "0" ]; then
+        record "$tag" "PASS" "$crit" \
+          "fault=$fault expect=$expect hrc=$hrc workers_before=$before traffic=$summary (fault-injection build)"
+    else
+        record "$tag" "FAIL" "$crit" \
+          "fault=$fault expect=$expect hrc=$hrc workers_before=$before traffic=$summary (fault-injection build)"
+    fi
+    return $rc
+}
+
+case_rt20() {
+    say "=== case rt20 (READY never arrives -> bounded abort) ==="
+    fault_case "rt20" ready_never abort \
+      "READY wait times out within NGX_FF_RELOAD_READY_WAIT_SEC (60s); reload aborts to T0_IDLE; G_old keeps serving; no second master" \
+      "READY wait timed out"
+}
+case_rt20b() {
+    say "=== case rt20b (READY late but reachable -> completes) ==="
+    fault_case "rt20b" ready_delay ok \
+      "READY delayed by FF_FAULT_DELAY_MS (<60s) still completes: 6/6 FSM, workers back to N, service restored"
+}
+case_rt21() {
+    say "=== case rt21 (handover flip fails -> T2/T_ERROR/T0) ==="
+    fault_case "rt21" flip_fail abort \
+      "T2 -> T_ERROR -> T0 with 'rx ownership flip failed'; G_old keeps serving; no half-handover" \
+      "rx ownership flip failed"
+}
+case_rt22() {
+    say "=== case rt22 (park never confirmed -> bounded abort) ==="
+    fault_case "rt22" park_never abort \
+      "park budget (FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT 100U) expires: T_ERROR -> T0 with 'G_old park confirmation timed out'" \
+      "G_old park confirmation timed out"
+}
+case_rt23() {
+    say "=== case rt23 (reload re-entry during drain is refused) ==="
+    local rc=0 conf out
+    # rt23 is the only fault-matrix case that runs on the PRODUCTION form:
+    # --fault/BUILD_MANIFEST are per-run globals, so refuse the mixed form and
+    # drop any inherited fault variables.
+    if [ -n "$FAULT" ]; then
+        say "rt23: requires the production form (--fault=$FAULT)"
+        record "rt23" "FAIL" "second HUP during T3 is refused; first reload still completes" \
+          "fault form not allowed for rt23"
+        return 1
+    fi
+    unset FF_FAULT
+    unset FF_FAULT_DELAY_MS
+    conf=$(gen_nginx_conf "rt23" 0)
+    prep_stream_payload || return 1
+    push_probes || return 1
+    if ! start_stack "rt23" 1 0; then
+        stop_stack "rt23" "$conf" || rc=1
+        record "rt23" "FAIL" "second HUP during T3 is refused; first reload still completes" "start failed"
+        return 1
+    fi
+    launch_probe rt23 300 m4_stream.py --server "$TARGET_IP" \
+        --path /dl/big.bin --streams 12 --chunk 16384 --gap 0.1 \
+        --timeout 5 --stall 3.0 --duration "$STREAM_DURATION" \
+        --expect-md5 "$STREAM_MD5" || return 1
+    sleep 3
+    probe_running || rc=1
+    # The second HUP must land WHILE the first one is draining (T3), not after
+    # it finished, otherwise it simply starts a second reload.
+    nginx_signal "$conf" reload || rc=1
+    sleep 5
+    nginx_signal "$conf" reload || rc=1
+    local deadline=$((SECONDS + 150)) done=0
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if grep -q "graceful reload complete" "$ERRLOG"; then done=1; break; fi
+        sleep 1
+    done
+    [ "$done" = "1" ] || { say "rt23: first reload did not complete within 150 s"; rc=1; }
+    grep -q "graceful reload rejected: previous reload still in progress" "$ERRLOG" \
+        || { say "rt23: re-entry refusal not found in $ERRLOG"; rc=1; }
+    HUP_SUMMARY=$(wait_client_summary /tmp/gr_rt23_stream.log 'STREAM_SUMMARY' 120) \
+        || HUP_SUMMARY="NO_DATA (m4_stream.py did not report within 120 s)"
+    stop_stack "rt23" "$conf" || rc=1
+    if [ "$rc" = "0" ]; then
+        record "rt23" "PASS" "second HUP during T3 is refused; first reload still completes" \
+          "fsm=$HUP_FSM/6 drain=${HUP_DRAIN}ms traffic=$HUP_SUMMARY"
+    else
+        record "rt23" "FAIL" "second HUP during T3 is refused; first reload still completes" \
+          "fsm=$HUP_FSM/6 drain=${HUP_DRAIN}ms traffic=$HUP_SUMMARY"
+    fi
+    return $rc
+}
+
 case_rt01() {
     say "=== case rt01 (unloaded HUP) ==="
     local rc=0
@@ -1250,7 +1442,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break

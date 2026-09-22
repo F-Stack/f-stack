@@ -13,7 +13,11 @@ import subprocess
 import sys
 import time
 
-CASES = {"precheck", "baseline", "rt01", "rt02", "rv9", "gr0", "rt12", "rt13"}
+CASES = {"precheck", "baseline", "rt01", "rt02", "rv9", "gr0", "rt12", "rt13",
+         "rt20", "rt20b", "rt21", "rt22", "rt23"}
+# Named faults are the ones implemented under FF_RELOAD_FAULT_INJECTION
+# (lib/ff_reload.c:1130/1224/1315/1657/1660). Empty means the production form.
+FAULTS = {"", "ready_never", "ready_delay", "park_never", "flip_fail", "mutex_timeout"}
 SAFE_PATH = re.compile(r"/[A-Za-z0-9_./-]+\Z")
 KILL_TOOL = "/data/workspace/kill_process.sh"
 
@@ -30,12 +34,16 @@ def validate(values):
         address(values["KERNEL_NIC_IP"])
     if not re.fullmatch(r"(?:[A-Za-z_][A-Za-z0-9_.-]*@)?[A-Za-z0-9][A-Za-z0-9_.-]*", values["CLIENT"]):
         raise ValueError("invalid client host")
+    fault = values.get("FAULT", "")
+    if fault not in FAULTS:
+        raise ValueError("unknown fault")
     names = values["CASES"].split(",")
     if len(names) != len(set(names)) or any(n not in CASES for n in names):
         raise ValueError("unknown or duplicate case")
     bounds = {"ROUNDS": (1, 10000), "INTERVAL": (1, 3600), "POLL": (1, 60),
               "WORKERS": (1, 30), "DRAIN_TIMEOUT": (1, 900), "STARTUP_WAIT": (1, 120),
               "STREAM_MB": (1, 1024), "RTE_FRESH_MIN": (1, 1440),
+              "FAULT_DELAY_MS": (1, 59000),
               "SHUTDOWN_TIMEOUT": (0, 900)}
     for key, (low, high) in bounds.items():
         value = values[key]
@@ -199,13 +207,41 @@ def source_record(path):
     return {"path": str(path), "kind": "file", "sha256": digest(path)}
 
 
-def verify_build(path, nginx, expected_head):
+def verify_build(path, nginx, expected_head, fault=""):
+    """Bind a manifest to the artifacts on disk.
+
+    The form must match in BOTH directions: a production run (fault == "") needs
+    a production manifest, and a fault run needs a fault-injection manifest that
+    really carries the hooks -- otherwise a fault that never took effect could be
+    reported as a passing fault case.
+    """
     with open(path) as f:
         data = json.load(f)
     if data.get("version") != 1 or data.get("source_head") != expected_head:
         raise ValueError("build source identity mismatch")
-    if data.get("fault_injection") is not False or not data.get("build_commands"):
+    if fault and fault not in FAULTS:
+        raise ValueError("unknown fault")
+    declared = data.get("fault_injection")
+    if fault == "" and declared is not False:
         raise ValueError("production build provenance missing")
+    if fault == "" and any("FF_RELOAD_FAULT_INJECTION=1" in c for c in data["build_commands"]):
+        raise ValueError("fault build presented as production")
+    if fault != "" and declared is not True:
+        raise ValueError("fault-injection manifest required for a fault run")
+    if not data.get("build_commands"):
+        raise ValueError("build provenance missing")
+    if fault != "":
+        symbols = data.get("fault_symbols") or []
+        if not symbols:
+            raise ValueError("fault symbols missing")
+        if not any("FF_RELOAD_FAULT_INJECTION=1" in c for c in data["build_commands"]):
+            raise ValueError("fault build command missing")
+        archive = Path(data["libfstack"]["path"])
+        listing = subprocess.run(["nm", "--defined-only", str(archive)],
+                                 capture_output=True, text=True, check=True).stdout
+        for symbol in symbols:
+            if symbol not in listing:
+                raise ValueError("fault symbol absent from the archive: " + symbol)
     sources = data.get("source_files", [])
     if not sources or len({item["path"] for item in sources}) != len(sources):
         raise ValueError("source content inventory missing")

@@ -18,6 +18,9 @@ import time
 
 from reload_checks import digest, identity
 
+# Environment variables a run may forward into the supervised stack.
+FAULT_ENV_KEYS = {"FF_FAULT", "FF_FAULT_DELAY_MS"}
+
 KILL_TOOL = "/data/workspace/kill_process.sh"
 POLL = 0.05
 CLEANUP_SECONDS = 10
@@ -469,6 +472,14 @@ class Supervisor:
             self.tree.default_stack = stack
             env = {k: v for k, v in os.environ.items() if not k.startswith("GR_SUPERVISOR_")}
             env["FF_RELOAD_RUN_ID"] = self.run_id
+            # The supervisor may predate the run that needs these, so its own
+            # environment is not enough: fault variables are forwarded with the
+            # request, restricted to a fixed allowlist (never arbitrary env).
+            extra = args.get("env")
+            if isinstance(extra, dict):
+                for key, value in extra.items():
+                    if key in FAULT_ENV_KEYS and isinstance(value, str):
+                        env[key] = value
             self.launcher = self.tree.spawn(argv, "target", stack, env)
             self.phase = "starting"
             self.start_deadline = time.monotonic() + 10
@@ -740,7 +751,8 @@ def main(argv):
         value = request("hello", run_id=args[0])
     elif op == "start":
         stack, sha, *cmd = args
-        value = request("start", stack, dict(argv=cmd, sha256=sha))
+        env = {k: v for k, v in os.environ.items() if k in FAULT_ENV_KEYS}
+        value = request("start", stack, dict(argv=cmd, sha256=sha, env=env))
         value = wait_phase(stack, "running", 10)
     elif op == "stop":
         value = request("stop", args[0])

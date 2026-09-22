@@ -170,7 +170,7 @@ wait_http() {
 verify_build_identity() {
     [ -n "$BUILD_MANIFEST" ] || return 1
     python3 -B "$CHECKS" verify-build "$BUILD_MANIFEST" "$NGINX_BIN" \
-        "$(git -C "$REPO_ROOT" rev-parse HEAD)" > "$OUT/build-verified.json"
+        "$(git -C "$REPO_ROOT" rev-parse HEAD)" "$FAULT" > "$OUT/build-verified.json"
 }
 
 zc_archive() {
