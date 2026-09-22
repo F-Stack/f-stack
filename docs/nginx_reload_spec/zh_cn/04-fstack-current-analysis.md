@@ -73,7 +73,7 @@
 - 【fork 后每个 worker 独立 ff_init】：`ngx_worker_process_init` 内调用 `ff_mod_init(fstack_conf, worker, worker==0)`（ngx_process_cycle.c:2936）。在 `graceful_reload=0`（默认）下 worker 0 → `--proc-type=primary`，worker i>0 → `--proc-type=secondary`（ngx_process_cycle.c:2931/2933；ngx_ff_module.c:496-515 ff_mod_init 拼参数）。
   > **注意（2026-09-17 订正）**：M1 后 `graceful_reload=1` 下全 worker 为 secondary + 常驻 slim primary（`ngx_ff_module.c:496-527`、`ngx_process_cycle.c:2929/2933`）；`graceful_reload=0` 分支逐字保留上文原始描述。
 - master 用 POSIX shm + 无名信号量同步 worker 0 初始化：`mmap + sem_init(pshared=1)`，master `sem_timedwait` 最多等 15s，超时则 master exit(2)（ngx_process_cycle.c:2024-2099）；worker 0 在 ff_mod_init 成功后 `sem_post`（:2952-2953）。
-- listening socket 在每个 worker 内创建：ff_mod_init 成功后 worker 调 `ngx_open_listening_sockets(cycle)`（ngx_process_cycle.c:2956）。此时 `ngx_socket(...)` 走 libc 劫持的 `socket()` → `ff_socket()`（见 2.4 fd 机制）。
+- listening socket 在每个 worker 内创建：ff_mod_init 成功后 worker 调 `ngx_open_listening_sockets(cycle)`（ngx_process_cycle.c:3147；2026-09-22 同步：原 :2956 为行号漂移，实际调用点已更正）。此时 `ngx_socket(...)` 走 libc 劫持的 `socket()` → `ff_socket()`（见 2.4 fd 机制）。
 - nginx worker 数与 config.ini 的 nb_procs 一一对应（worker i ↔ --proc-id=i），流量靠 NIC RSS queue ↔ proc 映射分流（见 3.2/3.5）。
 - worker 退出顺序保护：primary worker（worker 0）退出前 `ngx_msleep(500)` 等 secondary 先退（ngx_process_cycle.c:3082-3084）。
 

@@ -238,7 +238,7 @@ F-Stack HUP 丢包的根因已由本地档案 #1036 坐实（docs/f-stack-issue-
 
 对 F-Stack 的推论：app/nginx 路线（每 worker 内嵌栈实例 + 直接占队列）要消灭无主窗口，等价于把「收包/队列所有权」从 worker 生命周期中剥离——这正是 #1078 primary_slim 已验证的方向（primary 不占队列不退场、secondary 换代时队列归属不变，PoC 实测杀 primary 后 12/12 连接零中断，见 docs/issue_1078/zh_cn/），也与 adapter/syscall 路线（fstack 实例进程中心化、不随 app reload 退出）同构。三个独立来源（VPP 架构、#1078 PoC、adapter/syscall 设计）指向同一结论：**队列/收包所有权中心化、与业务进程生命周期解耦，是用户态栈无损 reload 的结构性前提**；监听 fd 归属是第二位的控制面问题。
 
-【注】与 [02-其他项目调研](02-other-projects-research.md) 的交叉印证：其「业界无 TCP 已建连接迁移先例（Envoy 原句 existing connections are not transferred）」与本篇 4.2 节第 5 点（VCL 模式旧 worker 的连接随 drain 关闭而非迁移）互相印证；其 Facebook LPC 2021「新实例 ready 前流量持续导给旧实例」模式与本篇 app_listener workers bitmap 机制（新 worker 未注册进 bitmap 前 accept 不分发给它，且 VPP 侧持续收包不丢）同构——"ready 前不切流"在 VPP 结构里是免费的，在 F-Stack 结构里则必须先解决队列有主才有前提。
+【注】与 [02-其他项目调研](02-other-projects-research.md) 的交叉印证：其「**本次检索范围内未见** TCP 已建连接迁移先例（Envoy 原句 existing connections are not transferred；Envoy 原句只描述 Envoy 自身行为，不是业界普查结论）」与本篇 4.2 节第 5 点（VCL 模式旧 worker 的连接随 drain 关闭而非迁移）互相印证；其 Facebook LPC 2021「新实例 ready 前流量持续导给旧实例」模式与本篇 app_listener workers bitmap 机制（新 worker 未注册进 bitmap 前 accept 不分发给它，且 VPP 侧持续收包不丢）同构——"ready 前不切流"在 VPP 结构里是免费的，在 F-Stack 结构里则必须先解决队列有主才有前提。
 
 ### 6.3 可借鉴的具体机制（按对 F-Stack nginx reload 问题的相关度排序）
 

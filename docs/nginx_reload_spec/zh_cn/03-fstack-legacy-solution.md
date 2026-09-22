@@ -366,7 +366,7 @@ freebsd/kern/kern_descrip.c                                       |  20 +-   # k
 
 ### 3.4 关键事实提炼
 
-- **本方案是 orange30 个人在 F-Stack 1.20（DPDK 18.11）上做的改造版，原始代码从未开源/未合并**。issue #547 仅有截图讨论、微信联系。
+- **本方案是 orange30 个人在 F-Stack 1.20（DPDK 18.11）上做的改造版，原始代码在本次检索范围内未取得（未见开源/未合并；检索截止 2026-09，仅见 issue #547 截图与微信联系线索）**。issue #547 仅有截图讨论、微信联系。
 - 维护者 fengbojiang 自己把方案归档到 iWiki 个人空间，并明确标注"**1.21（DPDK-19.11）以后版本不适用**"——这与 #547 评论 C2 中 orange30 自陈"my version cann't be work in new f-stack version"完全一致。
 - 方案核心四大改造点：
   1. **dispatch 进程中间层**维护全局 connection 表 + 无锁 ring 队列（与 #12 commit 406002113 的 `ngx_ff_channel.c` 中间层 channel 思路同源但更激进——前者是 fork 协议适配，后者是 DPDK multi-process 共享状态）。
@@ -583,7 +583,7 @@ lib/ff_dpdk_if.c           |  8 ++++++++   # init_clock 调一次，stop_clock �
 | 旧方案依赖点 | DPDK 19.11+ 实际情况 | 失效影响 |
 |--------------|----------------------|----------|
 | "timer 库是每进程独立静态数据" → dispatch 进程与其他 worker 进程的 `priv_timer` 数组物理隔离 | **19.11 起 `priv_timer` 数组搬入共享 memzone**（"rte_timer_mz"），所有 DPDK 进程共享同一份 `rte_timer_data` | 每进程 reset 的 `freebsd_clock` 都进同一份 `priv_timer[lcore_id]` 槽；多进程同时驱动同一槽→ 竞争、重复触发、`rte_timer_manage` 误触发别进程定时器 |
-| 多进程同 core 共存 | mempool 隔离 + nice 调整可解决。但 timer 共享后，dispatch 进程 + worker 进程的 rte_timer_manage 会在同一 lcore 上跑（不同时刻），prev_lcore 关系紊乱 | worker 的 `ff_hardclock` 触发节奏被打乱，连接超时/RTO 重传时间不准，间接导致 reload 期间连接异常 |
+| 多进程同 core 共存 | **【2026-09-22 同步·A01-3】**「mempool 隔离 + nice 调整**可解决**」为过强表述：DPDK 硬禁令原文为 *among other issues*，mempool 仅其一例；本 spec 方案（S3）**只对已识别的 mempool 与 timer 两条路径做了隔离，其余按 lcore_id 索引的共享槽位风险未穷举**，故改为「**已识别路径已隔离、其余未穷举**」。**原验收门槛不因本条放宽**（仍须 RV1/RV6/RV15 + PT-NR-08/09 + IT-NR-A13 实测佐证），既有同 lcore 定案不变。但 timer 共享后，dispatch 进程 + worker 进程的 rte_timer_manage 会在同一 lcore 上跑（不同时刻），prev_lcore 关系紊乱 | worker 的 `ff_hardclock` 触发节奏被打乱，连接超时/RTO 重传时间不准，间接导致 reload 期间连接异常 |
 | `rte_timer_subsystem_init` 仅 init 一次 | **现版本需配套 `rte_timer_meta_init`** 显式初始化本进程 lcore 槽（补丁 62f1c34df，2026-01-16），否则 secondary 进程重启会"infinite loop" | 2026 年仍有 F-Stack 本地补丁在补这一缺陷；orange30 在 2020-11 描述的"DPDK 19 timer 库变化"问题至今未通过上游修复彻底闭环 |
 | `--file-prefix` 支持 reload 期间多组 DPDK 进程内存隔离 | PR#559（2020-11 合入）补了配置文件解析 | 这一层已 OK，但只是基础设施，不是 timer/connection 共享状态问题的解药 |
 | freebsd 协议栈 `IP_BIND_ADDRESS_NO_PORT` | 当前 freebsd 15.0 树**已支持**（**2026-08-18 已坐实**，见 §8 U1）：协议栈行为层由 cb9b4d462（2025-07-25，bind 不分配端口、connect 时按 RSS 一致性选源端口）经 ff9e3c449（2026-06-22）port 到 15.0 树（`freebsd/netinet/in_pcb.c` `#ifdef FSTACK` 块）；setsockopt 接口层由 a2537e143（2026-07-16）在 `lib/ff_syscall_wrapper.c:100/982/1044-1049` 拦截 `LINUX_IP_BIND_ADDRESS_NO_PORT(24)` 为成功 no-op（处理与 FreeBSD `IP_BINDANY(24)` 数值冲突）。注：此系 F-Stack 本地扩展，上游原生 FreeBSD 15.0 无此选项（Linux 兼容层显式报 unsupported）| "网卡双 IP + 新旧 worker 各用一 IP"方案的协议栈前提**已具备**，S1 评估中该风险消除（见 [06](06-solution-design.md) §3.1/S1）|
@@ -615,7 +615,7 @@ lib/ff_dpdk_if.c           |  8 ++++++++   # init_clock 调一次，stop_clock �
 | U2 | F-Stack 1.20 vs 1.21 升级期间 ff_dpdk_if.c timer 使用层是否曾有调整 | `git log -S 'rte_timer' -- lib/ff_dpdk_if.c` 仅返回 3 个 commit，且 v1.20→v1.21 diff 关键字 'timer' 无输出（说明骨架无变）| 但未对 `freebsd_clock` 标识符名、job 函数名等做完整比对；如要 100% 坐实需对 v1.20 与 v1.21 完整 diff |
 | U3 | iWiki 截图 7（验收）柱状图原始数据 | 柱状图无具体测试命令/环境参数；截图自述"详见附件"但 iWiki 文档无附件链接 | 实地复测：找一台 4-rcv-core + 26-nginx-core 的对照机，按 orange30 改法实测 QPS |
 | U4 | "wrk 跑 10h 200 次 reload 112 timeout" 对应 0.000006% 概率的复现性 | 截图数据可信但需独立实测验证 | 复现：wireshark/ebpf 抓流量切换瞬间，验证 timeout 集中点 |
-| U5 | orange30 改造版原始代码 | 仅有截图 + 微信联系，**从未开源** | 不可恢复；如有需要只能向 jfb8856606 通过微信群引荐（issue #547 评论 C3）|
+| U5 | orange30 改造版原始代码 | 仅有截图 + 微信联系，**本次检索范围内未取得（未见开源；检索截止 2026-09）** | **在本次检索范围内**不可恢复；如有需要只能向 jfb8856606 通过微信群引荐（issue #547 评论 C3）|
 | U6 | 当前 24.11.6 + native-mt 下"reload 期间多 worker 进程"实测表现 | 本考证仅做静态分析，缺运行时数据 | 在本机 DPDK 网卡 + 4-core/26-core 配比下做一次 reload 零丢包复现：先看是否丢包、丢多少、看 rte_timer_manage 错误计数、看 memzone refcnt 异常 |
 | U7 | issue #528、#1036、#673 评论是否补充新方案细节 | 本考证按任务要求只深抓 #547、#12；其余仅做交叉引用 | 如需完整画像再单开考证 |
 

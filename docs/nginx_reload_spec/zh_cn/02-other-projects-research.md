@@ -65,7 +65,7 @@
 
 来源：[NGINX-CTL]。原文："The master process first checks the syntax validity, then tries to apply new configuration... If this fails, it rolls back changes and continues to work with old configuration. If this succeeds, it starts new worker processes, and sends messages to old worker processes requesting them to shut down gracefully. Old worker processes close listen sockets and continue to service old clients. After all clients are serviced, old worker processes are shut down."
 
-要点：配置失败可回滚；新 worker 先起，旧 worker 关监听但继续服务存量连接直至排空。与 USR2 的区别：HUP 换配置不换二进制，旧 worker 会关监听 socket（无回退保留）；USR2 换二进制，旧 master 不关监听以支持回退。
+要点：配置失败可回滚；新 worker 先起，旧 worker 关监听但继续服务存量连接直至排空。与 USR2 的区别：HUP 换配置不换二进制，旧 worker 会关监听 socket（无回退保留）；USR2 换二进制，旧 master 不关监听以支持回退。**【2026-09-22 同步·A01-5】** 上述为**一般 HUP/USR2 语义**，须再按「监听配置是否变化」分述：监听（listen）指令未变时，新 worker 沿用/继承同一监听 fd（`ngx_cycle.c:533-540` 的 listening 复用），旧 worker 才关闭自己的引用；监听指令变化（端口/地址增减）时，新 cycle 通过 `ngx_open_listening_sockets(cycle)` 新建监听 socket（`ngx_cycle.c:624`；worker 侧同函数见 `ngx_process_cycle.c:2111`/`:3147`），旧监听随旧 worker 退出关闭。不得笼统写成「新 worker 总新建监听、旧 worker 保留至退出」。
 
 已知边界（HAProxy 文档对同类机制的表述，可作旁证）：旧进程关闭监听端口时，"the kernel may not always redistribute any pending connection that was remaining in the socket's backlog. Under high loads, a SYN packet may happen just before the socket is closed, and will lead to an RST packet being sent to the client."（https://docs.haproxy.org/3.0/management.html）。即 backlog 中未 accept 的连接在边界上仍可能丢，"无损"是工程意义上的近似无损。
 
@@ -75,7 +75,7 @@
 - nginx 官方 listen 文档：https://nginx.org/en/docs/http/ngx_http_core_module.html —— "reuseport this parameter (1.9.1) instructs to create an individual listening socket for each worker process (using the SO_REUSEPORT socket option on Linux 3.9+ and DragonFly BSD, or SO_REUSEPORT_LB on FreeBSD 12+), allowing a kernel to distribute incoming connections between worker processes."
 - NGINX 官方博客（F5 存档）：https://www.f5.com/company/blog/nginx/socket-sharding-nginx-release-1-9-1 （Andrew Hutchings，2015-05-26）："there are multiple socket listeners for each IP address and port combination, one for each worker process"、"The kernel determines which available socket listener (and by implication, which worker) gets the connection."；性能：36 核 4 worker、wrk 压测 "reuseport increases requests per second by 2 to 3 times, and reduces both latency and the standard deviation for latency"；注意事项：单 worker 阻塞会连带影响内核已分给它的待处理连接；邮件模块不支持。
 
-reload 行为：官方文档对「reuseport 模式下 HUP/USR2 的具体行为」没有专门描述【未查到官方原文】。机制上可推断（推断，未在官方文档坐实）：reload 时新 worker 各自新建监听 socket 加入内核 reuseport 组，旧 worker 保留自己的 socket 继续服务存量连接直至退出；新连接由内核在「当时组内所有 socket」间按哈希分发，期间新旧 worker 并行收新连接。旁证：Envoy 默认 reuse_port 且热重启时 "Envoy passes each socket to the new process by worker index. Thus, no connections are dropped in the accept queues of the draining process."（https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/operations/hot_restart）——同为 reuseport + 热重启组合的官方行为描述。
+reload 行为：官方文档对「reuseport 模式下 HUP/USR2 的具体行为」没有专门描述【未查到官方原文】。机制上可推断（推断，未在官方文档坐实）：reload 时新 worker 各自新建监听 socket 加入内核 reuseport 组，旧 worker 保留自己的 socket 继续服务存量连接直至退出；新连接由内核在「当时组内所有 socket」间按哈希分发，期间新旧 worker 并行收新连接。旁证：Envoy 默认 reuse_port 且热重启时 "Envoy passes each socket to the new process by worker index. Thus, no connections are dropped in the accept queues of the draining process."（https://www.envoyproxy.io/docs/envoy/latest/intro/arch_overview/operations/hot_restart）——同为 reuseport + 热重启组合的官方行为描述。**【2026-09-22 同步·A01-5】** Envoy 是**另一款代理**的官方行为，**不能作为 nginx 在 reuseport 下 HUP/USR2 行为的证据**；此处仅作「同机制组合」的旁证登记，nginx 侧结论仍以 nginx 源码/官方文档为准，上段推断维持「未查到官方原文」的标注。
 
 已知短板：
 - 内核按连接四元组哈希分发，非负载感知；「分布不均」（如个别大流量长连接集中到某 worker）在 nginx 官方材料中未承认（官方博客反而称 "the load was spread evenly across the worker processes"，其测试条件为短连接压测），此问题在调研中未找到 nginx 场景的一手定量来源【未坐实】。UDP 场景的分布问题有 Facebook 一手材料（见 2.4）。
@@ -210,7 +210,7 @@ reload 行为：官方文档对「reuseport 模式下 HUP/USR2 的具体行为�
    - 方向 A（对应 P2/P4，业界主流形态）：旧 worker 保留队列与存量连接继续 drain，新 worker 完成初始化后再接管队列收新连接——难点在 DPDK 队列独占模型下一次只能一个进程持有队列，这正是 #547 社区方案（专用接收核 + 动态优先级）要解决的，但该方案基于 DPDK 18.11 未合并、19+ 不兼容。当前仓库主线是 DPDK 24.11.6，需重新设计（如独立 dispatcher/接收进程持有全部队列，按流表分发到各 nginx 进程——形态上接近 FB 的「专用接收路径 + flow→进程 map」（2.4(a)）与 VPP 的 worker 分发模型）。
    - 方向 B（对应 P3）：在 F-Stack 的 RSS/分发层引入「可编程 socket 查找」等价物（dispatcher 进程内 map：VIP:Port → nginx 实例），新实例 ready 前流量持续导给旧实例，由显式动作触发切换——FB sk_reuseport 模式的用户态移植。UDP/多租户场景需 flow 一致性表（FB 经验）。
    - 方向 C（对应 P5，架构性）：LD_PRELOAD 适配器模式下若能把「栈状态」与 fd 语义进一步内核化/守护进程化（栈独立于应用进程），reload 问题转化为守护进程不动、仅换应用进程——接近 OpenOnload/VCL(LDP) 形态；此线与调研员 A 的 VPP/VCL 结论交叉，spec 阶段合并评估。
-   - 连接迁移（TCP 状态搬家）：业界无先例（P4 结论），不建议作为 F-Stack 目标；目标应定义为「新连接零丢 + 存量连接 drain 完成或由旧实例服务到自然结束」。
+   - 连接迁移（TCP 状态搬家）：**本次检索范围内未见先例**（P4 结论；检索截止 2026-09，不主张客观不存在），不建议作为 F-Stack 目标；目标应定义为「新连接零丢 + 存量连接 drain 完成或由旧实例服务到自然结束」。
 4. 明确不适用：systemd socket activation（nginx 官方不支持，trac #237）；Cilium SocketLB（与重启无关，2.4(c)）；纯内核 eBPF 钩子（F-Stack 收包不经内核）。
 
 ## 6. 未坐实 / 未查到清单
