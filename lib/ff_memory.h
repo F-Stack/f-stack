@@ -37,6 +37,14 @@ extern "C" {
 
 #define MSG_RING_SIZE 32
 
+/* P4 (C-P4-6): the IPC rings are used by N tool processes plus the stack
+ * process at the same time, so they are created MP/MC. Single-producer/
+ * single-consumer flags only ever described the first process that touched
+ * them; a tool that requeues a foreign reply is another producer by
+ * definition. Changing this needs the stack process (the ring creator) to
+ * be restarted before tools are replaced. */
+#define FF_MSG_RING_FLAGS   0
+
 /* C-NR-314 (graceful reload): per-generation application-side mbuf pools.
  * The RX-queue-bound pktmbuf_pool keeps its fixed name and is shared by
  * both generations (cache_size=0, C-NR-315); alloc-heavy app paths draw

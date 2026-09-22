@@ -122,6 +122,19 @@ ff_kni_is_runtime_owner(void)
     return 1;
 }
 
+/* B01-3: the stats table must exist for every process that can become the
+ * KNI runtime owner later — a slim process configured as owner_proc_id owns
+ * the inject/TX path as soon as its generation is activated, which can be
+ * after ff_kni_init(). Allocation here grants no runtime right at all:
+ * hotplug and ring creation stay gated on ff_kni_is_owner_thread(). */
+static int
+kni_needs_stats(void)
+{
+    return ff_kni_is_owner_thread() ||
+        (!ff_global_cfg.dpdk.thread_mode && ff_global_cfg.dpdk.primary_slim &&
+         ff_global_cfg.dpdk.proc_id == ff_global_cfg.kni.owner_proc_id);
+}
+
 struct kni_ratelimit kni_rate_limt = {0, 0, 0};
 
 static void
@@ -426,7 +439,7 @@ ff_kni_proto_filter(const void *data, uint16_t len, uint16_t eth_frame_type)
 void
 ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
 {
-    if (ff_kni_is_owner_thread() || ff_kni_is_runtime_owner()) {
+    if (kni_needs_stats()) {
         kni_stat = rte_zmalloc("kni:stat",
             sizeof(struct kni_interface_stats *) * nb_ports,
             RTE_CACHE_LINE_SIZE);
@@ -482,7 +495,7 @@ void
 ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
     unsigned ring_queue_size)
 {
-    if (ff_kni_is_owner_thread() || ff_kni_is_runtime_owner()) {
+    if (kni_needs_stats()) {
         struct rte_ether_addr addr = {{0}};
         int ret;
 
@@ -500,7 +513,9 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
         kni_stat[port_id]->tx_packets = 0;
         kni_stat[port_id]->tx_dropped = 0;
 
-        /* Get the interface default mac address */
+        /* Get the interface default mac address. A future owner reads it
+         * and stores the virtio port id below so kni_process_tx() can
+         * burst to the right port once this generation is activated. */
         rte_eth_macaddr_get(port_id,
                 (struct rte_ether_addr *)&addr);
         printf("ff_kni_alloc get Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",

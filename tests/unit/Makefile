@@ -67,6 +67,16 @@ COMMON_OBJS   := $(COMMON_DIR)/ff_log_stub.o $(COMMON_DIR)/rte_stub.o
 .PHONY: all test test_p0 test_p1 test_p2 test_p3 test_sanity check clean coverage coverage_clean help
 all: $(ALL_TESTS)
 
+.PHONY: test_reload_harness clean_reload_harness
+test_reload_harness: reload_process_fixture
+	python3 -B test_reload_harness.py -v
+
+reload_process_fixture: reload_process_fixture.c
+	$(CC) -std=c11 -O0 -g -Wall -Wextra -Werror -o $@ $<
+
+clean_reload_harness:
+	@if [ -e "$(CURDIR)/reload_process_fixture" ]; then /data/workspace/rm_tmp_file.sh "$(CURDIR)/reload_process_fixture"; fi
+
 help:
 	@echo "F-Stack lib/ unit-test build targets:"
 	@echo "  make all          - build all test binaries"
@@ -242,7 +252,9 @@ test_ff_dpdk_pcap: test_ff_dpdk_pcap.o $(LIB_OBJS_DIR)/ff_dpdk_pcap.o $(COMMON_D
 # pulls in the bond PMD which is not in the default libdpdk umbrella.)
 WRAP_FF_DPDKIF := -Wl,--wrap=rte_get_tsc_hz \
                   -Wl,--wrap=ff_rss_check \
-                  -Wl,--wrap=ff_rss_check6
+                  -Wl,--wrap=ff_rss_check6 \
+                  -Wl,--wrap=rte_eal_process_type -Wl,--wrap=getppid \
+                  -Wl,--wrap=rte_memzone_lookup
 # C-NR-301/310: ff_flow_map.o (host heap only, no EAL) and ff_drain_ring.o
 # (real rte_ring, needs the EAL the test brings up on demand).
 test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_reload.o $(LIB_OBJS_DIR)/ff_reload_gendir.o $(LIB_OBJS_DIR)/ff_flow_map.o $(LIB_OBJS_DIR)/ff_drain_ring.o $(COMMON_DIR)/rte_stub.o
@@ -252,7 +264,7 @@ test_ff_dpdk_if: test_ff_dpdk_if.o $(LIB_OBJS_DIR)/ff_dpdk_if.o $(LIB_OBJS_DIR)/
 # requires real DPDK EAL --no-huge for mempool + ring; if EAL init fails
 # at runtime, all 4 TC are marked skip().)
 test_ff_dpdk_kni: test_ff_dpdk_kni.o $(LIB_OBJS_DIR)/ff_dpdk_kni.o $(LIB_OBJS_DIR)/ff_reload.o $(COMMON_DIR)/rte_stub.o
-	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm
+	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) $(DPDK_LIBS) -lrte_net_bond -Wl,-rpath=/usr/local/lib64 -lpthread -lcrypto -ldl -lm -Wl,--wrap=rte_eal_process_type -Wl,--wrap=rte_zmalloc -Wl,--wrap=rte_eal_hotplug_add -Wl,--wrap=rte_eth_macaddr_get -Wl,--wrap=__rte_panic
 
 # P3 #2 ff_zc_send (FSTACK_ZC_SEND user-space logic; algorithm-conformance
 # test with a self-contained mbuf shim, no lib/rte deps — the real TUs

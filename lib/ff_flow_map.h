@@ -64,15 +64,40 @@ struct ff_flow_key {
  * key". Called once per accepted SYN, so it must stay a load + compare. */
 int ff_flow_map_active(void);
 
-/* Record a flow. Idempotent: a repeated key returns 1 instead of inserting a
- * second entry. Never blocks, never sleeps, never allocates once the table
- * exists, and never takes any stack lock (it runs under NET_EPOCH with the
- * inp/syncache locks already dropped).
- * Returns 0 inserted, 1 already present, <0 on error / table full. */
+/* P3 (C-P3-1/10): reserve a placeholder for a flow BEFORE its SYN-ACK is
+ * sent. Idempotent: a repeated key returns 1 instead of reserving a second
+ * entry. Never blocks, never sleeps and never takes any stack lock (it runs
+ * under NET_EPOCH with the inp/syncache locks already dropped).
+ * Returns 0 reserved, 1 already present, <0 on error / table full.
+ * A reserved entry is NOT visible to ff_flow_map_lookup(): the flow only
+ * becomes "this generation" once ff_flow_map_commit() promotes it. */
 int ff_flow_map_insert(const struct ff_flow_key *key);
+
+/* Promote the placeholder of 'key' (looked up ignoring its state) to a
+ * tracked flow. Called only after the SYN-ACK (or the TFO completion) is
+ * really out, so a failed respond cannot leave a "fake this-generation"
+ * entry behind. Returns 0 promoted, <0 when there is no such key / closed. */
+int ff_flow_map_commit(const struct ff_flow_key *key);
 
 /* Counters for ff_top / drain observability; any output pointer may be NULL. */
 void ff_flow_map_stats(uint64_t *inserted, uint64_t *dup, uint64_t *full);
+
+/* P3 (C-P3-3/4): extended counters plus the live capacity. 'grown' counts the
+ * bounded expansions of the current window, 'grow_fail' an abandoned
+ * migration, 'alloc_fail' a failed allocation, 'reserved_stale' placeholders
+ * that were never promoted. Any output pointer may be NULL. */
+void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
+    uint64_t *grown, uint64_t *grow_fail, uint64_t *alloc_fail,
+    uint64_t *reserved_stale, uint32_t *cap);
+
+/* P3 (C-P3-3): capacity knob for tests and control-plane callers — a power of
+ * two within [FF_FLOW_MAP_CAP_MIN, FF_FLOW_MAP_CAP_MAX]. Takes effect at the
+ * next open() (or immediately drops the current table, keeping the old one
+ * reachable for in-flight lookups). Not a config directive: the default is
+ * unchanged. */
+#define FF_FLOW_MAP_CAP_MIN  64u
+#define FF_FLOW_MAP_CAP_MAX  (1u << 20)
+void ff_flow_map_cap_set(uint32_t cap);
 
 #ifdef __cplusplus
 }

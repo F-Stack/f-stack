@@ -80,6 +80,14 @@ static ngx_uint_t ngx_ff_reload_t5_tered;
  * F-M3-2 (C-NR-404): worker 0 attach failure flag (reload round only) */
 static ngx_msec_t ngx_ff_reload_t3_start;
 static ngx_int_t  ngx_ff_reload_attach_failed;
+/* P2 (C-P2-8/9/10): the expected worker set of the round. Without it a
+ * worker that never spawned, or never got a slot, is simply missing from
+ * every snapshot and a short round still declares ALL_READY / DRAIN_DONE.
+ * Registered at T1 (worker_processes) and compared against the spawns and
+ * the READY / drain passes; only ever used inside a reload round. */
+static ngx_uint_t ngx_ff_reload_n_expected;
+static ngx_uint_t ngx_ff_reload_n_spawned;
+static ngx_int_t  ngx_ff_reload_spawn_failed;
 /* F7/P3-a: 1 s watchdog ownership — only the arm owner disarms, and never
  * while the native terminate path holds ITIMER_REAL. P3-b: the T5
  * thresholds are env-overridable (defaults in the defines below). */
@@ -100,6 +108,12 @@ static ngx_uint_t ngx_ff_usr2_winch;       /* WINCH before the peer was up */
 static ngx_msec_t ngx_ff_usr2_wait_ms;
 #define NGX_FF_USR2_WAIT_MS   120000
 #define NGX_FF_RELOAD_READY_WAIT_SEC  60   /* aligns the M1 attach confirm */
+
+/* P2 (C-P2-5): bounded park wait for the USR2 handover. Same order of
+ * magnitude as the HUP park barrier, but long enough for a busy worker to
+ * reach its next loop pass; a timeout only retries on a later pass (the
+ * old generation keeps serving), it never forces the handover. */
+#define NGX_FF_USR2_PARK_WAIT_MS      1000
 #define NGX_FF_RELOAD_T5_RESEND_QUIT_MS   10000
 #define NGX_FF_RELOAD_T5_ESCALATE_TERM_MS 90000
 #endif
@@ -885,6 +899,11 @@ ngx_ff_reload_abort(ngx_cycle_t *cycle, int fsm_event, const char *reason)
 {
     ngx_int_t  i;
 
+    /* P2: the round is over — no expected set to compare against until
+     * the next T1 registers one. */
+    ngx_ff_reload_n_expected = 0;
+    ngx_ff_reload_n_spawned = 0;
+
     /* P1-1: terminate EVERY process spawned for the aborted round — the
      * JUST_RESPAWN workers AND the cache manager/loader children spawned
      * by ngx_start_cache_manager_processes(cycle, 1). A leftover
@@ -975,7 +994,7 @@ static ngx_int_t
 ngx_ff_reload_wait_ready(ngx_cycle_t *cycle)
 {
     ngx_int_t    i;
-    ngx_uint_t   all_ready;
+    ngx_uint_t   all_ready, n_slots, n_ready;
     ngx_msec_t   deadline;
 
     deadline = ngx_current_msec + NGX_FF_RELOAD_READY_WAIT_SEC * 1000;
@@ -994,11 +1013,15 @@ ngx_ff_reload_wait_ready(ngx_cycle_t *cycle)
         }
 
         all_ready = 1;
+        n_slots = 0;
+        n_ready = 0;
 
         for (i = 0; i < ngx_last_process; i++) {
             if (!ngx_ff_reload_new_slots[i]) {
                 continue;
             }
+
+            n_slots++;
 
             if (ngx_processes[i].pid == -1 || ngx_processes[i].exited) {
                 all_ready = 0;
@@ -1006,11 +1029,23 @@ ngx_ff_reload_wait_ready(ngx_cycle_t *cycle)
             }
 
             if (!ff_reload_ready_matches((unsigned) i,
-                                          (uint32_t) ngx_processes[i].pid,
-                                          ngx_ff_reload_ready_epoch))
+                                         (uint32_t) ngx_processes[i].pid,
+                                         ngx_ff_reload_ready_epoch))
             {
                 all_ready = 0;
+            } else {
+                n_ready++;
             }
+        }
+
+        /* P2 (C-P2-9): the snapshot is not the contract — every expected
+         * worker has to be there AND ready, so a round that lost a worker
+         * before the snapshot cannot declare ALL_READY. */
+        if (all_ready && ngx_ff_reload_n_expected != 0
+            && (n_slots != ngx_ff_reload_n_expected
+                || n_ready != ngx_ff_reload_n_expected))
+        {
+            all_ready = 0;
         }
 
         if (all_ready) {
@@ -1285,9 +1320,34 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     *pccf = ccf;
 
+    /* P2 (C-P2-8): the expected set is the configured worker count —
+     * registered before the fork so a short round can be detected. */
+    ngx_ff_reload_n_expected = (ngx_uint_t) ccf->worker_processes;
+    ngx_ff_reload_n_spawned = 0;
+    ngx_ff_reload_spawn_failed = 0;
+
     /* fork G_new in the native order */
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_JUST_RESPAWN);
+
+    if (ngx_ff_reload_spawn_failed) {
+        ngx_ff_reload_spawn_failed = 0;
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "a new worker failed to spawn");
+        return NGX_ERROR;
+    }
+
+    if (ngx_ff_reload_n_spawned != ngx_ff_reload_n_expected) {
+        /* missing workers are not "fewer workers": every queue of the
+         * configuration has to be owned by a live process */
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload: only %ui of %ui new workers were "
+                      "spawned", ngx_ff_reload_n_spawned,
+                      ngx_ff_reload_n_expected);
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "not every new worker was spawned");
+        return NGX_ERROR;
+    }
 
     if (ngx_ff_reload_attach_failed) {
         /* F-M3-2 (C-NR-404): worker 0 failed to attach; roll the round
@@ -1427,6 +1487,14 @@ ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
         if (!ngx_ff_reload_old_slots[i]) {
             continue;
         }
+        /* P2: the drain contract only covers workers. A cache manager is
+         * part of the old snapshot (it is not just_spawn) but runs no ff
+         * loop and never publishes a report — counting it here would make
+         * the round look permanently undrained (and, with the force gate
+         * below, abort a perfectly healthy round). */
+        if (ngx_processes[i].proc != ngx_worker_process_cycle) {
+            continue;
+        }
         if (ngx_processes[i].pid == -1 || ngx_processes[i].exited
             || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
         {
@@ -1446,6 +1514,41 @@ ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
                                      : ngx_ff_reload_escalate_term_ms;
     forced = !drained
         && ngx_current_msec - ngx_ff_reload_t3_start > deadline;
+
+    if (forced) {
+        /* P2 (C-P2-10): forcing may only complete over workers we can
+         * account for. A live old worker that never published a drain
+         * report is unobserved, not drained — aborting the round (G_new
+         * is killed by the abort path) is safer than declaring a drain
+         * that never happened. */
+        for (i = 0; i < ngx_last_process; i++) {
+            if (!ngx_ff_reload_old_slots[i]) {
+                continue;
+            }
+
+            /* same filter as the drain pass above: only workers publish */
+            if (ngx_processes[i].proc != ngx_worker_process_cycle) {
+                continue;
+            }
+
+            if (ngx_processes[i].pid == -1 || ngx_processes[i].exited
+                || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+            {
+                continue;               /* dead is accounted for */
+            }
+
+            if (ff_reload_drain_report((unsigned) i, epoch, &conns,
+                                       &snd_pending, &syncache, NULL) != 0)
+            {
+                ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_ABORT,
+                                    "T3 forced with an old worker that "
+                                    "never reported its drain state");
+                ngx_ff_reload_t3_start = 0;
+                ngx_ff_reload_watchdog_disarm();
+                return;
+            }
+        }
+    }
 
     if (!drained && !forced) {
         return;
@@ -1687,6 +1790,56 @@ ngx_ff_usr2_begin(ngx_cycle_t *cycle)
                   "to register (WINCH moves the traffic)");
 }
 
+/* P2 (C-P2-5): the USR2 handover used to flip ownership straight away. It
+ * now runs the same park barrier a HUP round runs: arm a handover epoch,
+ * park our workers, wait (bounded) until every one of them has acked from
+ * a pass that touches no hardware, and only then move rx. */
+static ngx_int_t
+ngx_ff_usr2_wait_parked(ngx_cycle_t *cycle, uint32_t epoch)
+{
+    ngx_int_t    i;
+    ngx_msec_t   deadline;
+    ngx_uint_t   waiting;
+
+    deadline = ngx_current_msec + NGX_FF_USR2_PARK_WAIT_MS;
+
+    for ( ;; ) {
+
+        ngx_time_update();
+
+        waiting = 0;
+
+        for (i = 0; i < ngx_last_process; i++) {
+            if (ngx_processes[i].pid == -1
+                || ngx_processes[i].proc != ngx_worker_process_cycle)
+            {
+                continue;              /* cache managers never ack */
+            }
+
+            if (ngx_processes[i].exited
+                || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+            {
+                continue;              /* dead is parked */
+            }
+
+            if (!ff_reload_handover_parked((unsigned) i, epoch)) {
+                waiting = 1;
+                break;
+            }
+        }
+
+        if (!waiting) {
+            return NGX_OK;
+        }
+
+        if (ngx_current_msec >= deadline) {
+            return NGX_DECLINED;
+        }
+
+        ngx_msleep(1);
+    }
+}
+
 /* Hand the hardware to the new master's generation. Block-only: the
  * directory is moved by our own workers on their next pass, and
  * ff_reload_dir_sync() never displaces a live owner, so this can neither
@@ -1694,7 +1847,7 @@ ngx_ff_usr2_begin(ngx_cycle_t *cycle)
 static ngx_int_t
 ngx_ff_usr2_handover(ngx_cycle_t *cycle)
 {
-    uint32_t  epoch, gen = 0;
+    uint32_t  epoch, gen = 0, ho_epoch = 0;
 
     if (ngx_ff_reload_shm == NULL) {
         return NGX_OK;                 /* graceful_reload=0: native WINCH */
@@ -1705,9 +1858,26 @@ ngx_ff_usr2_handover(ngx_cycle_t *cycle)
         return NGX_DECLINED;           /* nothing registered yet */
     }
 
+    ff_reload_handover_arm(&ho_epoch);
+
+    /* park order first: a worker only acks from the pass that skips rx/tx */
+    ff_reload_rx_stopped_set(1);
+
+    if (ngx_ff_usr2_wait_parked(cycle, ho_epoch) != NGX_OK) {
+        ff_reload_rx_stopped_set(0);
+        /* retried on the next pass, so this is notice-level: the old
+         * generation keeps serving and nothing was lost */
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "ff usr2: park confirmation timed out, "
+                      "old generation keeps serving");
+        return NGX_DECLINED;           /* retry on a later pass */
+    }
+
     if (ff_reload_rx_release_epoch(epoch, (int) gen)
         != FF_RELOAD_HANDOVER_OK)
     {
+        /* P2: roll the park order back — nothing was handed over */
+        ff_reload_rx_stopped_set(0);
         ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
                       "ff usr2: rx handover to epoch %uD failed, "
                       "old generation keeps serving", epoch);
@@ -2043,9 +2213,30 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "start worker processes");
 
     for (i = 0; i < n; i++) {
+        ngx_pid_t  pid;
 
-        ngx_spawn_process(cycle, ngx_worker_process_cycle,
-                          (void *) (intptr_t) i, "worker process", type);
+        pid = ngx_spawn_process(cycle, ngx_worker_process_cycle,
+                                (void *) (intptr_t) i, "worker process", type);
+
+        /* P2 (C-P2-8): a failed spawn used to be invisible — the round
+         * simply ran with fewer workers. Inside a reload round it has to
+         * stop the round; outside one (first start, respawn) the native
+         * behaviour is kept, only the error is logged. */
+        if (pid == NGX_INVALID_PID) {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                          "start worker processes: ngx_spawn_process failed");
+
+            if (ngx_ff_graceful_reload
+                && ngx_ff_reload_fsm_state() == NGX_FF_RELOAD_T1_GNEW_SPAWN)
+            {
+                ngx_ff_reload_spawn_failed = 1;
+                break;
+            }
+        } else if (ngx_ff_graceful_reload
+                   && ngx_ff_reload_fsm_state() == NGX_FF_RELOAD_T1_GNEW_SPAWN)
+        {
+            ngx_ff_reload_n_spawned++;
+        }
 
         ngx_pass_open_channel(cycle);
 

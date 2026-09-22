@@ -30,6 +30,7 @@
 #include <sched.h>         /* sched_yield while waiting for rx release */
 #include <signal.h>        /* kill(pid, 0) for epoch liveness */
 #include <errno.h>
+#include <unistd.h>        /* getpid for the hardware-user table */
 #include <sys/socket.h>    /* socklen_t for ff_msg.h */
 
 #include "ff_reload.h"     /* stdint/stddef + block layout */
@@ -271,9 +272,236 @@ ff_reload_dir_sync_enable(int enable)
     g_reload_dir_publish = enable ? 1 : 0;
 }
 
+/* ---- P2: hardware users, takeover proof, bounded budget --------------- */
+
+/* Defined below with the slot liveness helpers; declared here so the user
+ * table can use the one authority for "is this pid still around". */
+static int reload_pid_alive(uint32_t pid);
+
+static unsigned g_reclaim_timeout_ms = FF_RELOAD_RECLAIM_TIMEOUT_MS_DEFAULT;
+
+unsigned
+ff_reload_reclaim_timeout_ms(void)
+{
+    return g_reclaim_timeout_ms;
+}
+
+void
+ff_reload_reclaim_timeout_set(unsigned ms)
+{
+    /* Test-only knob: 0 would mean "no budget at all", i.e. never take
+     * anything over, so it maps back to the default. */
+    if (ms == 0)
+        ms = FF_RELOAD_RECLAIM_TIMEOUT_MS_DEFAULT;
+    g_reclaim_timeout_ms = ms;
+}
+
+static void
+reclaim_refused_add(void)
+{
+    if (g_reload_gendir != NULL)
+        __atomic_add_fetch(&g_reload_gendir->reclaim_refused, 1,
+            __ATOMIC_SEQ_CST);
+}
+
+uint32_t
+ff_reload_gendir_reclaim_refused(void)
+{
+    if (g_reload_gendir == NULL)
+        return 0;
+    return __atomic_load_n(&g_reload_gendir->reclaim_refused,
+        __ATOMIC_SEQ_CST);
+}
+
+uint32_t
+ff_reload_gendir_reclaim_forced(void)
+{
+    if (g_reload_gendir == NULL)
+        return 0;
+    return __atomic_load_n(&g_reload_gendir->reclaim_forced, __ATOMIC_SEQ_CST);
+}
+
+void
+ff_reload_gendir_reclaim_forced_add(void)
+{
+    if (g_reload_gendir != NULL)
+        __atomic_add_fetch(&g_reload_gendir->reclaim_forced, 1,
+            __ATOMIC_SEQ_CST);
+}
+
+void
+ff_reload_gendir_reclaim_counters_reset(void)
+{
+    if (g_reload_gendir == NULL)
+        return;
+    __atomic_store_n(&g_reload_gendir->reclaim_refused, 0u, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&g_reload_gendir->reclaim_forced, 0u, __ATOMIC_SEQ_CST);
+}
+
+static struct ff_reload_hw_user *
+user_self(struct ff_reload_gendir *d, uint32_t epoch, uint32_t gen,
+    uint32_t pid)
+{
+    unsigned i;
+
+    for (i = 0; i < FF_RELOAD_GENDIR_USER_MAX; i++) {
+        struct ff_reload_hw_user *u = &d->user[i];
+
+        if (__atomic_load_n(&u->pid, __ATOMIC_SEQ_CST) != pid)
+            continue;
+        if (__atomic_load_n(&u->epoch, __ATOMIC_SEQ_CST) != epoch)
+            continue;
+        if (__atomic_load_n(&u->gen, __ATOMIC_SEQ_CST) != gen)
+            continue;
+        return u;
+    }
+    return NULL;
+}
+
+int
+ff_reload_gendir_user_add(uint32_t epoch, int gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    struct ff_reload_hw_user *u;
+    uint32_t pid;
+    unsigned i;
+
+    if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
+        return -1;
+    pid = (uint32_t)getpid();
+
+    u = user_self(d, epoch, (uint32_t)gen, pid);
+    if (u != NULL) {
+        if (__atomic_load_n(&u->state, __ATOMIC_SEQ_CST)
+            != FF_RELOAD_USER_ACTIVE)
+            __atomic_store_n(&u->state, FF_RELOAD_USER_ACTIVE,
+                __ATOMIC_SEQ_CST);
+        return 0;
+    }
+
+    /* Claim a free entry or one left by a process that is gone: its pid is
+     * the proof that it can no longer poll anything (C-P2-2 (2)). */
+    for (i = 0; i < FF_RELOAD_GENDIR_USER_MAX; i++) {
+        uint32_t expect;
+
+        u = &d->user[i];
+        expect = __atomic_load_n(&u->pid, __ATOMIC_SEQ_CST);
+        if (expect != 0 && reload_pid_alive(expect))
+            continue;
+        if (!__atomic_compare_exchange_n(&u->pid, &expect, pid, 0,
+                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            continue;
+        __atomic_store_n(&u->state, FF_RELOAD_USER_FREE, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&u->epoch, epoch, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&u->gen, (uint32_t)gen, __ATOMIC_SEQ_CST);
+        __atomic_store_n(&u->state, FF_RELOAD_USER_ACTIVE, __ATOMIC_SEQ_CST);
+        return 0;
+    }
+    return -1;
+}
+
+void
+ff_reload_gendir_user_stop(uint32_t epoch, int gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    struct ff_reload_hw_user *u;
+
+    if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
+        return;
+    u = user_self(d, epoch, (uint32_t)gen, (uint32_t)getpid());
+    if (u != NULL)
+        __atomic_store_n(&u->state, FF_RELOAD_USER_STOPPED, __ATOMIC_SEQ_CST);
+}
+
+void
+ff_reload_gendir_user_release(uint32_t epoch, int gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    struct ff_reload_hw_user *u;
+
+    if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
+        return;
+    u = user_self(d, epoch, (uint32_t)gen, (uint32_t)getpid());
+    if (u == NULL)
+        return;
+    __atomic_store_n(&u->state, FF_RELOAD_USER_FREE, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&u->pid, 0u, __ATOMIC_SEQ_CST);
+}
+
+/* An entry blocks a takeover only while it is ACTIVE and its pid still
+ * exists: STOPPED is the positive ack (1) and a dead pid is the exit
+ * proof (2). */
+static int
+user_blocks(const struct ff_reload_hw_user *u, uint32_t epoch, int gen)
+{
+    if (gen >= 0 && __atomic_load_n(&u->gen, __ATOMIC_SEQ_CST)
+        != (uint32_t)gen)
+        return 0;
+    if (__atomic_load_n(&u->epoch, __ATOMIC_SEQ_CST) != epoch)
+        return 0;
+    if (__atomic_load_n(&u->state, __ATOMIC_SEQ_CST) != FF_RELOAD_USER_ACTIVE)
+        return 0;
+    return reload_pid_alive(__atomic_load_n(&u->pid, __ATOMIC_SEQ_CST));
+}
+
+static int
+users_clear(struct ff_reload_gendir *d, uint32_t epoch, int gen)
+{
+    unsigned i;
+
+    for (i = 0; i < FF_RELOAD_GENDIR_USER_MAX; i++) {
+        if (user_blocks(&d->user[i], epoch, gen))
+            return 0;
+    }
+    return 1;
+}
+
+int
+ff_reload_gendir_users_clear(uint32_t epoch, int gen)
+{
+    if (g_reload_gendir == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
+        return 1;   /* no directory: nothing can be proven, nothing blocks */
+    return users_clear(g_reload_gendir, epoch, gen);
+}
+
+int
+ff_reload_gendir_epoch_users_clear(uint32_t epoch)
+{
+    if (g_reload_gendir == NULL)
+        return 1;
+    return users_clear(g_reload_gendir, epoch, -1);
+}
+
+int
+ff_reload_gendir_users_active(uint32_t epoch, int gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    unsigned i;
+    int n = 0;
+
+    if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
+        return 0;
+    for (i = 0; i < FF_RELOAD_GENDIR_USER_MAX; i++) {
+        if (user_blocks(&d->user[i], epoch, gen))
+            n++;
+    }
+    return n;
+}
+
 /* Local copy of the liveness test: ff_reload.c must stay linkable without
  * the DPDK-dependent directory module (tools and ff_config unit tests pull
  * this object alone). */
+/* One liveness authority for both slot masters and hardware users: pid 0 is
+ * unused, a zombie still answers kill(0) but nginx has already reaped its
+ * master by then, and EPERM (another user's process) means alive. */
+static int
+reload_pid_alive(uint32_t pid)
+{
+    if (pid == 0)
+        return 0;
+    return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
 static int
 epoch_slot_live(struct ff_reload_gendir *d, unsigned i)
 {
@@ -283,9 +511,7 @@ epoch_slot_live(struct ff_reload_gendir *d, unsigned i)
     if (st != FF_RELOAD_SLOT_LIVE)
         return 0;
     pid = __atomic_load_n(&d->slot[i].master_pid, __ATOMIC_SEQ_CST);
-    if (pid == 0)
-        return 0;
-    return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+    return reload_pid_alive(pid);
 }
 
 static uint64_t
@@ -304,6 +530,8 @@ dir_now_ms(void)
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
 }
 
+static int epoch_slot_draining(struct ff_reload_gendir *d, unsigned i);
+
 static int
 epoch_live(struct ff_reload_gendir *d, uint32_t epoch)
 {
@@ -314,7 +542,14 @@ epoch_live(struct ff_reload_gendir *d, uint32_t epoch)
     for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
         if (__atomic_load_n(&d->slot[i].epoch, __ATOMIC_SEQ_CST) != epoch)
             continue;
-        return epoch_slot_live(d, i);
+        if (epoch_slot_live(d, i))
+            return 1;
+        /* P2 (B02-1): the master is gone but its workers may still be
+         * draining — they keep refreshing the slot stamp, and that stamp
+         * going stale is the only death notice this side gets. Until then
+         * the epoch stays a live counterpart: taking its hardware or
+         * recycling its slot would race those workers. */
+        return epoch_slot_draining(d, i);
     }
     return 0;
 }
@@ -721,6 +956,16 @@ ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
     /* M4 DR6(1) / RT-04b: only a dead owner may be displaced. */
     if (epoch_live(d, (uint32_t)(cur >> 32)))
         return FF_RELOAD_HANDOVER_BUSY;
+    /* P2 (B01-1, C-P2-3): a dead master is not enough — the displaced
+     * coordinate's workers must have confirmed they stopped (park ack) or
+     * be gone. Without that proof a still-polling worker races this
+     * takeover on the same queue, which is exactly what the directory is
+     * there to prevent. */
+    if (!ff_reload_gendir_users_clear((uint32_t)(cur >> 32),
+            (int)(uint32_t)cur)) {
+        reclaim_refused_add();
+        return FF_RELOAD_HANDOVER_BUSY;
+    }
     if (!__atomic_compare_exchange_n(&d->rx_owner_word, &cur, next, 0,
             __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
         return FF_RELOAD_HANDOVER_BUSY;
@@ -899,6 +1144,26 @@ ff_reload_rx_release(int to_gen)
     return FF_RELOAD_HANDOVER_OK;
 }
 
+/* C-P2-4b: wait, bounded and without spinning, until every user of
+ * (epoch, gen) has confirmed it stopped or is gone. */
+static int
+users_proven_stopped(uint32_t epoch, int gen)
+{
+    uint64_t deadline = reload_now_ms() + ff_reload_reclaim_timeout_ms();
+    struct timespec ts;
+
+    ts.tv_sec = 0;
+    ts.tv_nsec = 2 * 1000 * 1000;   /* 2 ms: well below the stamp window */
+
+    for (;;) {
+        if (ff_reload_gendir_users_clear(epoch, gen))
+            return 1;
+        if (reload_now_ms() >= deadline)
+            return 0;
+        nanosleep(&ts, NULL);
+    }
+}
+
 int
 ff_reload_rx_release_epoch(uint32_t to_epoch, int to_gen)
 {
@@ -909,12 +1174,31 @@ ff_reload_rx_release_epoch(uint32_t to_epoch, int to_gen)
     if (to_gen < 0 || to_gen >= FF_RELOAD_GEN_MAX)
         return FF_RELOAD_HANDOVER_INVAL;
 
+    /* P2 (B01-1, C-P2-3): the USR2 path hands the hardware straight over
+     * without the HUP park barrier, so it needs the same proof. Park order
+     * first: the peer workers of this coordinate only stop once they see
+     * rx_stopped, so waiting before setting it could never collect their
+     * acks. Then this process confirms its own stop and waits, bounded,
+     * until every other user of its coordinate has done the same or is
+     * gone. Refusing is the safe answer — the old generation keeps serving
+     * rather than sharing a queue, and the park order is rolled back. */
+    {
+        int saved_stopped = ff_reload_rx_stopped();
+
+        ff_reload_rx_stopped_set(1);
+        ff_reload_gendir_user_stop(ff_reload_epoch(), ff_reload_gen());
+        if (!users_proven_stopped(ff_reload_epoch(), ff_reload_gen())) {
+            reclaim_refused_add();
+            ff_reload_rx_stopped_set(saved_stopped);
+            return FF_RELOAD_HANDOVER_BUSY;
+        }
+    }
+
     /* reserved[4] carries the epoch the hardware is handed to (0 == our
      * own), so the workers that mirror the block into the directory can
      * move ownership to another master's generation (M5/USR2). */
     __atomic_store_n(&g_reload_state->reserved[4], to_epoch,
         __ATOMIC_SEQ_CST);
-    ff_reload_rx_stopped_set(1);
     ff_reload_rx_owner_gen_set(to_gen);
 
     rc = ff_reload_gendir_rx_release(to_epoch, (uint32_t)to_gen);
@@ -1042,6 +1326,10 @@ ff_reload_handover_ack(void)
     word = ((uint64_t)epoch << 32) | 1u;
     __atomic_store_n(&g_reload_state->rx_parked[g_reload_slot], word,
         __ATOMIC_SEQ_CST);
+    /* P2 (C-P2-2 (1)): the ack is the positive proof that this process is
+     * out of the hardware, so it is also what a takeover in the directory
+     * waits for. */
+    ff_reload_gendir_user_stop(ff_reload_epoch(), ff_reload_gen());
 }
 
 /* ---- drain reporting (M4: C-NR-402/403/406) ---------------------------- */

@@ -326,22 +326,25 @@ ff_drain_ring_reset_slot(unsigned slot)
  * reader (the peer only enqueues), and its drain_tx reader is the peer
  * generation, which is parked exactly while we own the hardware. */
 static void
-drain_ring_drain_own(uint16_t p, unsigned q)
+drain_ring_drain_own(uint16_t p, unsigned q, int tx)
 {
     struct rte_ring *r;
     void *obj;
     unsigned slot = ff_reload_epoch_slot();
     int gen = ff_reload_gen();
 
-    r = pick_ring(drain_ring_rx[p], p, (uint16_t)q, slot, gen);
-    while (r != NULL && rte_ring_dequeue(r, &obj) == 0)
-        rte_pktmbuf_free((struct rte_mbuf *)obj);
-
+    /* Called with drain_ring_up already cleared: the ring pointers are
+     * still valid because the rings themselves outlive unregistration
+     * (R-310-1), so draining after the flag is down is intentional. */
+    if (p >= RTE_MAX_ETHPORTS)
+        return;
     /* A second reader would break the single-consumer ring: drain_tx only
      * while the peer generation is the parked one. */
-    if (ff_reload_rx_owner_gen() != gen || ff_reload_peer_draining())
+    if (tx && (ff_reload_rx_owner_gen() != gen || ff_no_hw_mode() ||
+            ff_reload_peer_draining()))
         return;
-    r = pick_ring(drain_ring_tx[p], p, (uint16_t)q, slot, gen);
+    r = pick_ring(tx ? drain_ring_tx[p] : drain_ring_rx[p],
+        p, (uint16_t)q, slot, gen);
     while (r != NULL && rte_ring_dequeue(r, &obj) == 0)
         rte_pktmbuf_free((struct rte_mbuf *)obj);
 }
@@ -349,15 +352,20 @@ drain_ring_drain_own(uint16_t p, unsigned q)
 void
 ff_drain_ring_unregist(void)
 {
+    struct lcore_conf *qconf = ff_cur_lcore_conf();
     uint16_t p;
     unsigned q;
 
     drain_ring_up = 0;
+    for (q = 0; q < qconf->nb_rx_queue && q < MAX_RX_QUEUE_PER_LCORE; q++)
+        drain_ring_drain_own(qconf->rx_queue_list[q].port_id,
+            qconf->rx_queue_list[q].queue_id, 0);
+    for (q = 0; q < qconf->nb_tx_port && q < RTE_MAX_ETHPORTS; q++) {
+        p = qconf->tx_port_id[q];
+        if (p < RTE_MAX_ETHPORTS)
+            drain_ring_drain_own(p, qconf->tx_queue_id[p], 1);
+    }
     for (p = 0; p < RTE_MAX_ETHPORTS; p++) {
-        if (drain_ring_rx[p] != NULL || drain_ring_tx[p] != NULL) {
-            for (q = 0; q < drain_ring_nb_queues[p]; q++)
-                drain_ring_drain_own(p, q);
-        }
         if (drain_ring_rx[p] != NULL) {
             for (q = 0; q < drain_ring_nb_queues[p] * FF_RELOAD_EPOCH_SLOT_MAX
                 * FF_RELOAD_GEN_MAX; q++)

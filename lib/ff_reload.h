@@ -78,8 +78,19 @@ extern "C" {
 #define FF_RELOAD_SLOT_PRIMARY      0x1u   /* slot flags: resident primary */
 
 #define FF_RELOAD_GENDIR_MAGIC      0x46524744U   /* "FRGD" */
-#define FF_RELOAD_GENDIR_VERSION    1U
+/* P2 (B01-1/B02-1): version 2 adds the hardware-user table below, so a
+ * directory created by an older build is rejected by install() — every
+ * process of a deployment (resident primary included) must be restarted
+ * together. */
+#define FF_RELOAD_GENDIR_VERSION    2U
 #define FF_RELOAD_GENDIR_NAME       "ff_reload_gendir"
+
+/* P2 (C-P2-1): hardware-user states. A user is a secondary that owns a
+ * queue pair, i.e. a process that can still be inside an rx_burst. */
+#define FF_RELOAD_USER_FREE         0
+#define FF_RELOAD_USER_ACTIVE       1
+#define FF_RELOAD_USER_STOPPED      2
+#define FF_RELOAD_GENDIR_USER_MAX   FF_RELOAD_MAX_PROCS
 
 /* F-M5-1 (USR2): a slot whose master pid is gone still counts as a drain
  * counterpart while its workers refresh the slot stamp at least this
@@ -90,8 +101,17 @@ extern "C" {
 
 /* Heartbeat stall threshold default (ms). timeout==0 disables stall
  * detection, but it is NOT expressible through the config: ff_config.c
- * remaps 0 and negative values to this default (P3-1/P3-5). */
+ * remaps 0 and negative values to this default (P3-1/P3-5).
+ * P2: this is also the DR6 "stalled owner" evidence, unchanged. */
 #define FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT  1000U
+
+/* P2 (C-P2-4b): bounded budget for "wait until the previous hardware users
+ * are proven stopped" — slot recycling retry and the USR2 release wait.
+ * Must cover the worst-case stamp window (STALE_MS plus its refresh period)
+ * and stay below the nginx attach timeout (NGX_FF_GRACEFUL_ATTACH_SEC, 60s).
+ * It is deliberately NOT the heartbeat threshold: DR6 timing stays as
+ * published. */
+#define FF_RELOAD_RECLAIM_TIMEOUT_MS_DEFAULT    5000U
 
 /* C-NR-302: how long the acquiring generation waits for the current rx owner
  * to park before the handover is declared failed (ms). Calibrated by RV3. */
@@ -191,6 +211,17 @@ struct ff_reload_epoch_slot {
     uint64_t since_ms;
 };
 
+/* P2 (C-P2-1): one registered hardware user — a secondary that currently
+ * owns a queue pair under (epoch, gen). The table is the only place that
+ * can answer "is any previous holder of this coordinate still able to poll
+ * the hardware", which is what every takeover has to prove (C-P2-2/3). */
+struct ff_reload_hw_user {
+    uint32_t epoch;
+    uint32_t gen;
+    uint32_t pid;      /* 0 == unused; CAS gate for registration */
+    uint32_t state;    /* FF_RELOAD_USER_* */
+};
+
 struct ff_reload_gendir {
     uint32_t magic;
     uint32_t version;
@@ -211,6 +242,12 @@ struct ff_reload_gendir {
     uint64_t _rsv1[3];
 
     struct ff_reload_epoch_slot slot[FF_RELOAD_EPOCH_SLOT_MAX];
+
+    /* P2: takeover accounting + hardware-user table. */
+    uint32_t reclaim_refused;   /* C-P2-3: takeover refused, proof missing */
+    uint32_t reclaim_forced;    /* C-P2-2(3): heartbeat-stall takeover */
+    uint32_t _pad2[2];
+    struct ff_reload_hw_user user[FF_RELOAD_GENDIR_USER_MAX];
 };
 
 /* Drain reporting extension (M4: C-NR-402/403/406): a second anonymous
@@ -356,8 +393,42 @@ int  ff_reload_gendir_present(void);
  * Returns 0 on success, -1 when the block is missing or incompatible. */
 int ff_reload_gendir_install(void *addr, size_t len);
 
-/* 1 while 'epoch' still has a registered live master. */
+/* 1 while 'epoch' still has a registered live master. P2 (B02-1): a dead
+ * master whose workers still refresh the slot stamp keeps the epoch live —
+ * orphan workers are still draining and still consume that slot's rings. */
 int  ff_reload_gendir_epoch_live(uint32_t epoch);
+
+/* ---- P2: hardware users and takeover proof ----------------------------- */
+
+/* Register this process as a hardware user of (epoch, gen) — idempotent,
+ * cheap enough to call on every ownership state change. Returns 0 when the
+ * process is registered (or was already), -1 without a directory or when
+ * the table is full. */
+int  ff_reload_gendir_user_add(uint32_t epoch, int gen);
+/* Mark this process's own entry stopped (parked pass / ack): the positive
+ * proof that no rx_burst of this process is in flight. */
+void ff_reload_gendir_user_stop(uint32_t epoch, int gen);
+/* Drop this process's own entry (shutdown). */
+void ff_reload_gendir_user_release(uint32_t epoch, int gen);
+/* 1 when no live ACTIVE user remains under (epoch, gen): every entry is
+ * either STOPPED or belongs to a pid that is gone (C-P2-2 (1)/(2)). */
+int  ff_reload_gendir_users_clear(uint32_t epoch, int gen);
+/* Same over every generation of 'epoch' (slot-reset gating). */
+int  ff_reload_gendir_epoch_users_clear(uint32_t epoch);
+/* Number of live ACTIVE users under (epoch, gen) (observability/tests). */
+int  ff_reload_gendir_users_active(uint32_t epoch, int gen);
+
+/* Takeover accounting (C-P2-3 / C-P2-2(3)). */
+uint32_t ff_reload_gendir_reclaim_refused(void);
+uint32_t ff_reload_gendir_reclaim_forced(void);
+void     ff_reload_gendir_reclaim_forced_add(void);
+void     ff_reload_gendir_reclaim_counters_reset(void);
+
+/* C-P2-4b: the bounded "wait for the previous users" budget (ms). One
+ * source for both the slot-recycling retry and the release wait; the test
+ * setter must never be used outside tests. */
+unsigned ff_reload_reclaim_timeout_ms(void);
+void     ff_reload_reclaim_timeout_set(unsigned ms);
 
 /* Directory views; return 0 and zero the outputs when there is no
  * directory. */
@@ -393,6 +464,9 @@ void ff_reload_gendir_retire(void);
  * before use. Only the process that won the slot CAS ever sees 1, so the
  * drain has exactly one actor. */
 int  ff_reload_gendir_reset_pending(void);
+/* Same verdict without consuming it (P2: slot reset is gated on the
+ * orphan-user proof as well). */
+int  ff_reload_gendir_reset_pending_peek(void);
 /* Newest live (epoch, gen) other than this process's; 0 when there is
  * none. */
 int  ff_reload_gendir_peer(uint32_t *epoch, uint32_t *gen);

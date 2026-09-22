@@ -170,6 +170,13 @@ struct ff_reload_args {
 
 /* structure of ipc msg */
 struct ff_msg {
+    /* P4 (C-P4-1): who owns this buffer. The tools' out-ring is shared by
+     * every process of one (proc_id, msg_type, slot, gen) coordinate and a
+     * DPDK secondary's hugepage VA is not the same as another's, so the
+     * reply identity must not be a pointer comparison. 0 == untagged and is
+     * never claimed as "mine". */
+    uint32_t ipc_cookie;
+    uint32_t ipc_owner_pid;
     enum FF_MSG_TYPE msg_type;
     /* Result of msg processing */
     int result;
@@ -192,5 +199,14 @@ struct ff_msg {
         struct ff_reload_args reload;
     };
 } __attribute__((packed)) __rte_cache_aligned;
+
+/* P4 (C-P4-1): the two new fields above fit into the padding the cache-line
+ * alignment already produced (32B header + 48B union + 8B = 88 of 128, after
+ * this change 96 of 128), so the *element size* of FF_MSG_POOL is unchanged.
+ * The offsets behind them do shift by 8 bytes — the stack and the tools must
+ * therefore always be built from the same tree. Pinned, because a silent
+ * growth would also change buf_len (elt_size - sizeof(struct ff_msg)) and
+ * desynchronise a running stack from a newly built tool. */
+typedef char ff_msg_size_check[(sizeof(struct ff_msg) == 128) ? 1 : -1];
 
 #endif

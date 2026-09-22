@@ -776,6 +776,11 @@ test_it_a10_halfopen_dispatch(void **state)
     flow_key_v4(&k_new, cli, srv, htons(40002), htons(80));
     assert_int_equal(ff_flow_map_lookup(&k_new), 0);
     assert_int_equal(ff_flow_map_insert(&k_new), 0);
+    /* P3 (C-P3-10): the insert is only a placeholder — the flow becomes
+     * "ours" when the SYN-ACK is confirmed, which is what the syncache hook
+     * does with ff_flow_map_commit(). */
+    assert_int_equal(ff_flow_map_lookup(&k_new), 0);
+    assert_int_equal(ff_flow_map_commit(&k_new), 0);
     /* the entry exists BEFORE the 3rd ACK is injected: syncache-stage
      * timing, not accept()-time (the whole point of C-NR-301) */
     assert_int_equal(ff_flow_map_lookup(&k_new), 1);

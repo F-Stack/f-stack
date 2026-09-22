@@ -61,4 +61,11 @@ int ff_ipc_msg_free(struct ff_msg *msg);
 int ff_ipc_send(const struct ff_msg *msg);
 int ff_ipc_recv(struct ff_msg **msg, enum FF_MSG_TYPE msg_type);
 
+/* P4 (C-P4-8): reply-ownership counters. foreign_requeued counts replies of
+ * other clients that were put back instead of freed, orphan_dropped replies
+ * whose owner was provably gone, reply_lost foreign replies that could not
+ * be put back and were dropped. Any pointer may be NULL. */
+void ff_ipc_reply_stats(uint64_t *foreign_requeued, uint64_t *orphan_dropped,
+    uint64_t *reply_lost);
+
 #endif

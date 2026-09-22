@@ -40,6 +40,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <signal.h>
@@ -86,6 +87,18 @@ pid_alive(uint32_t pid)
     return kill((pid_t)pid, 0) == 0 || errno == EPERM;
 }
 
+/* P2 (C-P2-6): a slot can only be recycled once nothing refreshes its
+ * stamp any more — workers of a dead master keep refreshing it while they
+ * drain, and they still consume that slot's rings. Unsigned delta keeps the
+ * comparison wrap-safe; a never-stamped slot (pad == 0) is stale. */
+static int
+slot_stale(struct ff_reload_gendir *d, unsigned i)
+{
+    uint32_t stamp = __atomic_load_n(&d->slot[i].pad, __ATOMIC_SEQ_CST);
+
+    return (uint32_t)(gendir_now_ms() - stamp) >= FF_RELOAD_SLOT_STALE_MS;
+}
+
 int
 ff_reload_gendir_present(void)
 {
@@ -117,6 +130,7 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
     int gen, int is_primary, unsigned *slot_out)
 {
     unsigned i, start;
+    uint64_t deadline = gendir_now_ms() + ff_reload_reclaim_timeout_ms();
 
     if (is_primary) {
         i = 0;
@@ -131,8 +145,9 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
         struct ff_reload_epoch_slot *s = &d->slot[i];
         uint32_t owner = __atomic_load_n(&s->master_pid, __ATOMIC_SEQ_CST);
         uint32_t expect = owner;
+        int stale = slot_stale(d, i);
 
-        if (owner == 0 || !pid_alive(owner)) {
+        if (owner == 0 || (!pid_alive(owner) && stale)) {
             if (__atomic_compare_exchange_n(&s->master_pid, &expect, pid,
                     0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
                 /* Recycled slot: whatever the previous owner left in these
@@ -153,6 +168,26 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
                     *slot_out = i;
                 return 0;
             }
+            continue;   /* lost the race: re-read the same slot */
+        }
+
+        /* P2 (C-P2-6a): the master is gone but its workers still refresh
+         * the stamp, so the slot is only TEMPORARILY unavailable — the
+         * window right after an old master quit, while its workers drain.
+         * Wait for the stamp to go stale instead of killing this process:
+         * the retry stays on this slot (R-16) and is bounded by the single
+         * reclaim budget. */
+        if (owner != 0 && !pid_alive(owner) && !stale) {
+            struct timespec ts;
+
+            if (gendir_now_ms() >= deadline) {
+                __atomic_add_fetch(&d->reclaim_refused, 1, __ATOMIC_SEQ_CST);
+                return -1;
+            }
+            ts.tv_sec = 0;
+            ts.tv_nsec = 2 * 1000 * 1000;   /* 2 ms, no spinning */
+            nanosleep(&ts, NULL);
+            continue;
         }
 
         /* R-16: every drain/msg ring name is derived from
@@ -165,7 +200,7 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
 /* Register this process's master epoch. Workers key on getppid() (the nginx
  * master); the resident primary is reparented to init by its double fork,
  * so it keys on its own pid and always takes slot 0 / epoch 0. */
-static void
+static int
 gendir_register_self(struct ff_reload_gendir *d)
 {
     int is_primary = rte_eal_process_type() == RTE_PROC_PRIMARY;
@@ -196,7 +231,7 @@ gendir_register_self(struct ff_reload_gendir *d)
         g_dir_slot = (int)i;
         g_dir_epoch = __atomic_load_n(&s->epoch, __ATOMIC_SEQ_CST);
         ff_reload_set_epoch(g_dir_epoch);
-        return;
+        return 0;
     }
 
     {
@@ -206,19 +241,13 @@ gendir_register_self(struct ff_reload_gendir *d)
         epoch = is_primary ? 0u
             : __atomic_add_fetch(&d->next_epoch, 1, __ATOMIC_SEQ_CST);
         if (slot_acquire(d, epoch, pid, ff_reload_gen(), is_primary,
-                &slot) != 0) {
-            ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
-                "generation directory: no free epoch slot for pid %u, "
-                "keeping the pre-M5 identity\n", pid);
-            g_dir_slot = 0;
-            g_dir_epoch = 0;
-            ff_reload_set_epoch(0);
-            return;
-        }
+                &slot) != 0)
+            return -1;
         g_dir_slot = (int)slot;
         g_dir_epoch = epoch;
         ff_reload_set_epoch(epoch);
     }
+    return 0;
 }
 
 void
@@ -244,10 +273,10 @@ ff_reload_gendir_attach(void)
         mz = rte_memzone_lookup(FF_RELOAD_GENDIR_NAME);
     }
     if (mz == NULL) {
-        ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-            "generation directory unavailable, cross-master epoch "
-            "isolation disabled\n");
-        return;
+        /* B01-4: without the directory every epoch-named resource would
+         * silently collapse into slot 0 / epoch 0 — two masters' workers
+         * sharing one ring set. Refuse to come up instead. */
+        goto fail;
     }
 
     d = (struct ff_reload_gendir *)mz->addr;
@@ -266,10 +295,15 @@ ff_reload_gendir_attach(void)
         __atomic_thread_fence(__ATOMIC_SEQ_CST);
     }
 
+    /* Publish nothing until this process owns a slot: a worker that failed
+     * to register must not claim ownership in a directory it is not part
+     * of. */
+    ff_reload_dir_sync_enable(0);
     if (ff_reload_gendir_install(d, sizeof(*d)) != 0)
-        return;
+        goto fail;
+    if (gendir_register_self(d) != 0)
+        goto fail;
     g_dir = d;
-    gendir_register_self(g_dir);
     /* Only a secondary ever owns a queue, so only a secondary may publish
      * an ownership claim — otherwise the resident primary (epoch 0) would
      * win the initial claim against the workers of the first master. */
@@ -278,6 +312,18 @@ ff_reload_gendir_attach(void)
         "generation directory attached: epoch %u slot %u pid %u\n",
         g_dir_epoch, (unsigned)(g_dir_slot < 0 ? 0 : g_dir_slot),
         (unsigned)getpid());
+    return;
+
+fail:
+    ff_reload_dir_sync_enable(0);
+    ff_reload_gendir_install(NULL, 0);
+    g_dir = NULL;
+    g_dir_slot = -1;
+    g_dir_epoch = 0;
+    (void)ff_reload_gendir_reset_pending();
+    rte_exit(EXIT_FAILURE, "generation directory: cannot register this "
+        "process (no usable epoch slot / incompatible directory); refusing "
+        "to start without cross-master epoch isolation\n");
 }
 
 int
@@ -294,8 +340,13 @@ ff_reload_gendir_epoch_live(uint32_t epoch)
         if (__atomic_load_n(&d->slot[i].state, __ATOMIC_SEQ_CST)
             != FF_RELOAD_SLOT_LIVE)
             return 0;
-        return pid_alive(__atomic_load_n(&d->slot[i].master_pid,
-            __ATOMIC_SEQ_CST));
+        if (pid_alive(__atomic_load_n(&d->slot[i].master_pid,
+            __ATOMIC_SEQ_CST)))
+            return 1;
+        /* P2 (B02-1): orphan workers of a dead master keep refreshing the
+         * stamp while they drain — until it goes stale the epoch is still
+         * a live counterpart and must not be displaced. */
+        return !slot_stale(d, i);
     }
     return 0;
 }
@@ -323,6 +374,15 @@ ff_reload_gendir_reset_pending(void)
 
     g_dir_reset_pending = 0;
     return pending;
+}
+
+/* Same verdict without consuming it: P2 (C-P2-6) only drains the recycled
+ * slot's rings once no orphan user can still be consuming them, so the
+ * consumer has to be able to ask first and clear the flag later. */
+int
+ff_reload_gendir_reset_pending_peek(void)
+{
+    return g_dir_reset_pending;
 }
 
 void

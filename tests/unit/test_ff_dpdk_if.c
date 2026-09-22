@@ -49,6 +49,38 @@
 #include <rte_eal.h>              /* rte_eal_init (R-B 0.3 thash needs EAL) */
 #include <rte_random.h>           /* rte_srand (thash flaky fix, M4 Batch C) */
 #include <rte_thash.h>            /* rte_thash_* (R-B 0.3 hit-rate quantification) */
+#include <rte_memzone.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include "ff_reload.h"
+
+static int p1_process_type = -1;
+static pid_t p1_parent;
+static int p1_missing_directory;
+extern enum rte_proc_type_t __real_rte_eal_process_type(void);
+extern pid_t __real_getppid(void);
+extern const struct rte_memzone *__real_rte_memzone_lookup(const char *name);
+
+enum rte_proc_type_t
+__wrap_rte_eal_process_type(void)
+{
+    return p1_process_type < 0 ? __real_rte_eal_process_type()
+        : (enum rte_proc_type_t)p1_process_type;
+}
+
+pid_t
+__wrap_getppid(void)
+{
+    return p1_parent ? p1_parent : __real_getppid();
+}
+
+const struct rte_memzone *
+__wrap_rte_memzone_lookup(const char *name)
+{
+    if (p1_missing_directory && strcmp(name, FF_RELOAD_GENDIR_NAME) == 0)
+        return NULL;
+    return __real_rte_memzone_lookup(name);
+}
 
 /* ------------------------------------------------------------------------ */
 /* Wrap rte_get_tsc_hz (real DPDK function; wrappable via -Wl,--wrap)        */
@@ -904,10 +936,13 @@ equiv_eal_init_once(void)
     static int done = 0;     /* 0=untried, 1=ok, -1=failed */
     if (done != 0)
         return done;
+    char prefix[64];
+    snprintf(prefix, sizeof(prefix), "--file-prefix=ff_p1_if_%ld", (long)getpid());
     char *argv[] = {
         (char *)"test_ff_dpdk_if", (char *)"--no-huge", (char *)"-m",
         (char *)"64", (char *)"--no-pci", (char *)"-c", (char *)"0x1",
-        (char *)"--log-level", (char *)"lib.eal:error", NULL
+        (char *)"--log-level", (char *)"lib.eal:error",
+        (char *)"--no-shconf", (char *)"--no-telemetry", prefix, NULL
     };
     int argc = (int)(sizeof(argv) / sizeof(argv[0])) - 1;
     done = (rte_eal_init(argc, argv) < 0) ? -1 : 1;
@@ -2118,6 +2153,10 @@ test_ut_nr_23_flow_map(void **state)
     assert_int_equal(ff_flow_map_active(), 1);
     assert_int_equal(ff_flow_map_lookup(&k), 0);
     assert_int_equal(ff_flow_map_insert(&k), 0);
+    /* P3 (C-P3-10): the placeholder is not a flow yet — it only becomes
+     * visible to the dispatcher once the SYN-ACK is confirmed. */
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    assert_int_equal(ff_flow_map_commit(&k), 0);
     /* idempotent: a repeated four-tuple must not consume a second slot */
     assert_int_equal(ff_flow_map_insert(&k), 1);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
@@ -2128,6 +2167,7 @@ test_ut_nr_23_flow_map(void **state)
     k2.sport = 0x1235;
     assert_int_equal(ff_flow_map_lookup(&k2), 0);
     assert_int_equal(ff_flow_map_insert(&k2), 0);
+    assert_int_equal(ff_flow_map_commit(&k2), 0);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
     assert_int_equal(ff_flow_map_lookup(&k2), 1);
 
@@ -2143,9 +2183,148 @@ test_ut_nr_23_flow_map(void **state)
     ff_flow_map_open();
     assert_int_equal(ff_flow_map_lookup(&k), 0);
     assert_int_equal(ff_flow_map_insert(&k), 0);
+    assert_int_equal(ff_flow_map_commit(&k), 0);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
     ff_flow_map_close();
 
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* P3 (B01-6, C-P3-10): a reserved placeholder must not be mistaken for a
+ * tracked flow, and only a commit makes it one. */
+static void
+test_p3_flow_map_placeholder(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t k, k2;
+    uint64_t stale = 0;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.src[0] = 0x0a000001;
+    k.dst[0] = 0x0a000002;
+    k.sport = 0x2222;
+    k.dport = 0x0050;
+
+    ff_flow_map_open();
+    assert_int_equal(ff_flow_map_insert(&k), 0);
+    /* reserved: invisible to the dispatcher */
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    /* a repeated SYN on the same four-tuple is admitted, not rejected */
+    assert_int_equal(ff_flow_map_insert(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+
+    assert_int_equal(ff_flow_map_commit(&k), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    /* commit is idempotent */
+    assert_int_equal(ff_flow_map_commit(&k), 0);
+
+    /* a key that was never reserved cannot be committed */
+    memcpy(&k2, &k, sizeof(k2));
+    k2.sport = 0x2223;
+    assert_int_equal(ff_flow_map_commit(&k2), -1);
+
+    /* an unconfirmed placeholder is accounted for when the window closes */
+    assert_int_equal(ff_flow_map_insert(&k2), 0);
+    ff_flow_map_close();
+    ff_flow_map_stats2(NULL, NULL, NULL, NULL, NULL, NULL, &stale, NULL);
+    assert_true(stale >= 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+
+    ff_flow_map_open();
+    ff_flow_map_close();
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* P3 (B01-6, C-P3-3): a full table may double, but only a bounded number of
+ * times per window and never past FF_FLOW_MAP_CAP_MAX. */
+static void
+test_p3_flow_map_bounded_growth(void **state)
+{
+    struct ff_reload_state st;
+    uint64_t full = 0, grown = 0, grow_fail = 0, full_before = 0;
+    uint32_t cap = 0;
+    int i;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+
+    ff_flow_map_cap_set(64);
+    ff_flow_map_open();
+
+    /* fill until the expansion bound is reached */
+    for (i = 0; i < 20000; i++) {
+        ff_flow_key_t k;
+
+        memset(&k, 0, sizeof(k));
+        k.af = FF_FLOW_MAP_V4;
+        k.src[0] = 0x0b000000u + (uint32_t)i;
+        k.dst[0] = 0x0b000001;
+        k.sport = (uint16_t)(0x2000u + (uint16_t)(i & 0xffff));
+        k.dport = 0x0050;
+
+        if (ff_flow_map_insert(&k) == 0)
+            (void)ff_flow_map_commit(&k);
+
+        ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL, NULL,
+            &cap);
+        if (grown >= 4)
+            break;
+    }
+
+    assert_true(grown >= 1);
+    assert_true(grown <= 4);
+    assert_int_equal((int)cap, 64 << (int)grown);
+    assert_int_equal((int)grow_fail, 0);
+
+    /* past the bound the table reports full instead of growing forever */
+    full_before = full;
+    for (i = 0; i < 4096; i++) {
+        ff_flow_key_t k;
+
+        memset(&k, 0, sizeof(k));
+        k.af = FF_FLOW_MAP_V4;
+        k.src[0] = 0x0c000000u + (uint32_t)i;
+        k.dst[0] = 0x0c000001;
+        k.sport = (uint16_t)(0x3000u + (uint16_t)(i & 0xffff));
+        k.dport = 0x0050;
+
+        if (ff_flow_map_insert(&k) == 0)
+            (void)ff_flow_map_commit(&k);
+    }
+    ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL, NULL,
+        &cap);
+    assert_int_equal((int)grown, 4);
+    assert_int_equal((int)cap, 64 << 4);
+    assert_true(full > full_before);
+
+    /* the knob is bounded: a non power of two or an out-of-range value is
+     * ignored, so the capacity can never drift */
+    ff_flow_map_close();
+    ff_flow_map_cap_set(100);
+    ff_flow_map_open();
+    ff_flow_map_stats2(NULL, NULL, NULL, NULL, NULL, NULL, NULL, &cap);
+    assert_int_equal((int)cap, 64 << 4);
+
+    ff_flow_map_close();
+    ff_flow_map_cap_set(1u << 16);      /* restore the default for later TCs */
     ff_reload_attach_state(NULL);
     ff_global_cfg.dpdk.graceful_reload = 0;
 }
@@ -2304,6 +2483,344 @@ test_ut_nr_27_dispatch_peer_boundary(void **state)
     ff_global_cfg.dpdk.mbuf_low_watermark = 0;
 }
 
+static struct ff_config p1_saved_cfg;
+static struct lcore_conf p1_saved_qconf;
+static struct ff_reload_state p1_reload;
+static struct ff_reload_gendir *p1_dir;
+static struct rte_ring *p1_rings[2][2][2];
+static struct rte_mempool *p1_pool;
+static struct ff_port_cfg p1_port;
+static uint16_t p1_port_id;
+
+static int
+p1_teardown(void **state)
+{
+    unsigned tx, q, gen;
+    void *obj;
+    (void)state;
+    p1_process_type = -1;
+    p1_parent = 0;
+    p1_missing_directory = 0;
+    ff_reload_dir_sync_enable(0);
+    ff_reload_gendir_detach();
+    ff_reload_attach_state(NULL);
+    for (tx = 0; tx < 2; tx++)
+        for (q = 0; q < 2; q++)
+            for (gen = 0; gen < 2; gen++)
+                while (p1_rings[tx][q][gen] != NULL &&
+                    rte_ring_dequeue(p1_rings[tx][q][gen], &obj) == 0)
+                    rte_pktmbuf_free(obj);
+    ff_drain_ring_unregist();
+    if (p1_pool != NULL) {
+        assert_int_equal(rte_mempool_avail_count(p1_pool), 64);
+        rte_mempool_free(p1_pool);
+        p1_pool = NULL;
+    }
+    ff_global_cfg = p1_saved_cfg;
+    lcore_conf[0] = p1_saved_qconf;
+    ff_reload_set_epoch(0);
+    ff_reload_set_gen(0);
+    return 0;
+}
+
+static int
+p1_setup(void **state)
+{
+    const struct rte_memzone *mz;
+    unsigned tx, q, gen;
+    char name[64];
+    (void)state;
+    p1_saved_cfg = ff_global_cfg;
+    p1_saved_qconf = lcore_conf[0];
+    memset(p1_rings, 0, sizeof(p1_rings));
+    assert_true(equiv_eal_init_once() >= 0);
+    ff_reload_gendir_detach();
+    ff_reload_dir_sync_enable(0);
+    memset(&p1_reload, 0, sizeof(p1_reload));
+    p1_reload.magic = FF_RELOAD_STATE_MAGIC;
+    p1_reload.version = FF_RELOAD_STATE_VERSION;
+    p1_reload.len = sizeof(p1_reload);
+    ff_reload_attach_state(&p1_reload);
+    ff_reload_set_epoch(1);
+    ff_reload_set_gen(0);
+    ff_global_cfg.dpdk.thread_mode = 0;
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = &p1_port_id;
+    memset(&p1_port, 0, sizeof(p1_port));
+    p1_port.nb_lcores = 2;
+    ff_global_cfg.dpdk.port_cfgs = &p1_port;
+    ff_global_cfg.dpdk.drain_ring_size = 64;
+    memset(&lcore_conf[0], 0, sizeof(lcore_conf[0]));
+    lcore_conf[0].nb_rx_queue = 1;
+    lcore_conf[0].rx_queue_list[0].queue_id = 0;
+    lcore_conf[0].nb_tx_port = 1;
+    lcore_conf[0].tx_queue_id[0] = 1;
+    assert_int_equal(ff_drain_ring_init(), 0);
+    p1_pool = rte_pktmbuf_pool_create("p1_drain_pool", 64, 0, 0, 256, SOCKET_ID_ANY);
+    assert_non_null(p1_pool);
+    for (tx = 0; tx < 2; tx++)
+        for (q = 0; q < 2; q++)
+            for (gen = 0; gen < 2; gen++) {
+                snprintf(name, sizeof(name), "drain_%s_p0_q%u_e1_g%u",
+                    tx ? "tx" : "rx", q, gen);
+                p1_rings[tx][q][gen] = rte_ring_lookup(name);
+                assert_non_null(p1_rings[tx][q][gen]);
+                assert_int_equal(rte_ring_count(p1_rings[tx][q][gen]), 0);
+            }
+    mz = rte_memzone_lookup(FF_RELOAD_GENDIR_NAME);
+    if (mz == NULL)
+        mz = rte_memzone_reserve(FF_RELOAD_GENDIR_NAME, sizeof(*p1_dir), SOCKET_ID_ANY, 0);
+    assert_non_null(mz);
+    p1_dir = mz->addr;
+    memset(p1_dir, 0, sizeof(*p1_dir));
+    p1_dir->magic = FF_RELOAD_GENDIR_MAGIC;
+    p1_dir->version = FF_RELOAD_GENDIR_VERSION;
+    p1_dir->len = sizeof(*p1_dir);
+    p1_dir->slot_max = FF_RELOAD_EPOCH_SLOT_MAX;
+    p1_dir->gen_max = FF_RELOAD_GEN_MAX;
+    p1_dir->rx_owner_word = (uint64_t)1 << 32;
+    p1_dir->active_word = (uint64_t)1 << 32;
+    p1_dir->kni_owner_word = (uint64_t)1 << 32;
+    return 0;
+}
+
+static void
+p1_drain_check(unsigned mode)
+{
+    unsigned tx, q, gen;
+    if (mode == 1)
+        p1_reload.rx_owner_gen = 1;
+    if (mode == 2) {
+        assert_int_equal(ff_reload_gendir_install(p1_dir, sizeof(*p1_dir)), 0);
+        p1_dir->slot[2].epoch = 2;
+        p1_dir->slot[2].state = FF_RELOAD_SLOT_LIVE;
+        p1_dir->slot[2].master_pid = getpid();
+    }
+    if (mode == 3) {
+        assert_int_equal(ff_reload_gendir_install(p1_dir, sizeof(*p1_dir)), 0);
+        p1_dir->rx_owner_word = (uint64_t)2 << 32;
+    }
+    if (mode == 4) {
+        lcore_conf[0].nb_rx_queue = 0;
+        lcore_conf[0].nb_tx_port = 0;
+    }
+    for (tx = 0; tx < 2; tx++)
+        for (q = 0; q < 2; q++)
+            for (gen = 0; gen < 2; gen++) {
+                struct rte_mbuf *m = rte_pktmbuf_alloc(p1_pool);
+                assert_non_null(m);
+                assert_int_equal(rte_ring_enqueue(p1_rings[tx][q][gen], m), 0);
+            }
+    ff_drain_ring_unregist();
+    for (tx = 0; tx < 2; tx++)
+        for (q = 0; q < 2; q++)
+            for (gen = 0; gen < 2; gen++) {
+                int drained = gen == 0 && mode != 4 &&
+                    ((!tx && q == 0) || (tx && q == 1 && mode == 0));
+                assert_int_equal(rte_ring_count(p1_rings[tx][q][gen]), !drained);
+            }
+    assert_int_equal(rte_mempool_avail_count(p1_pool), 56 + (mode == 0 ? 2 : mode == 4 ? 0 : 1));
+    ff_drain_ring_unregist();
+    assert_int_equal(ff_drain_ring_ready(), 0);
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_ptr_equal(rte_ring_lookup("drain_rx_p0_q0_e1_g0"), p1_rings[0][0][0]);
+}
+
+static void test_p1_drain_queue_ownership(void **state) { (void)state; p1_drain_check(0); }
+static void test_p1_drain_nonowner_tx(void **state) { (void)state; p1_drain_check(1); }
+static void test_p1_drain_peer_tx(void **state) { (void)state; p1_drain_check(2); }
+static void test_p1_drain_foreign_epoch_tx(void **state) { (void)state; p1_drain_check(3); }
+static void test_p1_drain_empty_qconf(void **state) { (void)state; p1_drain_check(4); }
+
+static void
+p1_directory_conflict(int full)
+{
+    unsigned i, attempt;
+    uint64_t owner;
+    struct ff_reload_epoch_slot primary;
+    p1_dir->next_epoch = 0;
+    for (i = 0; i < (full ? FF_RELOAD_EPOCH_SLOT_MAX : 2u); i++) {
+        p1_dir->slot[i].epoch = i;
+        p1_dir->slot[i].state = FF_RELOAD_SLOT_LIVE;
+        p1_dir->slot[i].master_pid = getpid();
+    }
+    primary = p1_dir->slot[0];
+    owner = p1_dir->rx_owner_word;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_parent = __real_getppid();
+    ff_reload_set_epoch(9);
+    for (attempt = 0; attempt < 2; attempt++) {
+        p1_dir->next_epoch = 0;
+        expect_assert_failure(ff_reload_gendir_attach());
+        assert_int_equal(ff_reload_gendir_present(), 0);
+        assert_int_equal(ff_reload_epoch(), 9);
+        assert_int_equal(ff_reload_gendir_reset_pending(), 0);
+        ff_reload_dir_sync();
+        assert_int_equal(p1_dir->rx_owner_word, owner);
+        assert_memory_equal(&p1_dir->slot[0], &primary, sizeof(primary));
+        if (!full)
+            assert_int_equal(p1_dir->slot[2].master_pid, 0);
+    }
+}
+
+static void test_p1_directory_live_slot(void **state) { (void)state; p1_directory_conflict(0); }
+static void test_p1_directory_full(void **state) { (void)state; p1_directory_conflict(1); }
+
+static void
+test_p1_directory_missing(void **state)
+{
+    (void)state;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_missing_directory = 1;
+    expect_assert_failure(ff_reload_gendir_attach());
+    assert_int_equal(ff_reload_gendir_present(), 0);
+}
+
+static void
+test_p1_directory_invalid(void **state)
+{
+    (void)state;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_dir->version++;
+    expect_assert_failure(ff_reload_gendir_attach());
+    assert_int_equal(ff_reload_gendir_present(), 0);
+}
+
+static void
+test_p1_directory_success(void **state)
+{
+    uint32_t epoch;
+    (void)state;
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_reload_gendir_present(), 0);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_parent = __real_getppid();
+    ff_reload_gendir_attach();
+    epoch = ff_reload_epoch();
+    assert_int_equal(ff_reload_gendir_present(), 1);
+    assert_int_not_equal(epoch, 0);
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_reload_epoch(), epoch);
+    assert_int_equal(p1_dir->next_epoch, epoch);
+}
+
+static void
+test_p1_directory_primary_slot_busy(void **state)
+{
+    uint64_t owner;
+
+    (void)state;
+    /* slot 0 is the resident primary's own identity: a primary that cannot
+     * claim it must not silently share it with a live predecessor. */
+    owner = p1_dir->rx_owner_word;
+    p1_dir->slot[0].epoch = 0;
+    p1_dir->slot[0].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->slot[0].master_pid = (uint32_t)__real_getppid();
+    p1_process_type = RTE_PROC_PRIMARY;
+    ff_reload_set_epoch(7);
+    expect_assert_failure(ff_reload_gendir_attach());
+    assert_int_equal(ff_reload_gendir_present(), 0);
+    assert_int_equal(ff_reload_epoch(), 7);
+    ff_reload_dir_sync();
+    assert_int_equal(p1_dir->rx_owner_word, owner);
+}
+
+/* P2 (C-P2-6a): a reaped child is a pid that is certainly gone. */
+static uint32_t
+p1_dead_pid(void)
+{
+    pid_t child = fork();
+    int wstatus = 0;
+
+    assert_true(child >= 0);
+    if (child == 0)
+        _exit(0);
+    assert_int_equal(waitpid(child, &wstatus, 0), child);
+    return (uint32_t)child;
+}
+
+static uint32_t
+p1_now_ms(void)
+{
+    struct timespec ts;
+
+    assert_int_equal(clock_gettime(CLOCK_MONOTONIC, &ts), 0);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u
+        + (uint64_t)(ts.tv_nsec / 1000000));
+}
+
+/* Set up "old master gone, its workers still refreshing the stamp" on the
+ * slot this process would mint (epoch 1 -> slot 1). */
+static void
+p1_orphan_slot(uint32_t dead)
+{
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_parent = (uint32_t)__real_getppid();
+    p1_dir->next_epoch = 0;
+    p1_dir->slot[1].epoch = 1;
+    p1_dir->slot[1].gen = 0;
+    p1_dir->slot[1].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->slot[1].master_pid = dead;
+    p1_dir->slot[1].pad = p1_now_ms();
+}
+
+/* C-P2-6a: the window right after an old master quit must NOT kill the new
+ * generation — the slot is only temporarily unavailable. */
+static void
+test_p2_slot_transient_window(void **state)
+{
+    uint32_t dead = p1_dead_pid();
+
+    (void)state;
+    p1_orphan_slot(dead);
+    /* Budget above the stamp window: the retry has to be able to wait for
+     * the orphan workers' stamp to go stale. */
+    ff_reload_reclaim_timeout_set(FF_RELOAD_SLOT_STALE_MS + 500u);
+
+    {
+        uint32_t t0 = p1_now_ms();
+
+        ff_reload_gendir_attach();
+        /* The slot was held by a dead master with a fresh stamp: taking it
+         * immediately would mean the orphan workers were never waited for,
+         * so the attach must have waited for the stamp to go stale. */
+        assert_true((uint32_t)(p1_now_ms() - t0) >= FF_RELOAD_SLOT_STALE_MS);
+    }
+    ff_reload_reclaim_timeout_set(0);
+
+    assert_int_equal(ff_reload_gendir_present(), 1);
+    assert_int_equal(ff_reload_epoch(), 1);
+    assert_int_equal(p1_dir->slot[1].master_pid, p1_parent);
+    /* R-16: no hopping to a neighbouring slot */
+    assert_int_equal(p1_dir->slot[2].master_pid, 0);
+    assert_int_equal(p1_dir->slot[3].master_pid, 0);
+    assert_int_equal(p1_dir->reclaim_refused, 0);
+}
+
+/* C-P2-6a: once that budget is exhausted, refusing is the answer — and it
+ * is counted, not taken silently. */
+static void
+test_p2_slot_transient_exhausted(void **state)
+{
+    uint32_t dead = p1_dead_pid();
+
+    (void)state;
+    p1_orphan_slot(dead);
+    ff_reload_reclaim_timeout_set(50);
+
+    expect_assert_failure(ff_reload_gendir_attach());
+    ff_reload_reclaim_timeout_set(0);
+
+    assert_int_equal(ff_reload_gendir_present(), 0);
+    assert_int_equal(p1_dir->slot[1].master_pid, dead);
+    assert_int_equal(p1_dir->slot[2].master_pid, 0);
+    assert_int_equal(p1_dir->slot[3].master_pid, 0);
+    assert_int_equal(p1_dir->reclaim_refused, 1);
+}
+
 int
 main(void)
 {
@@ -2369,6 +2886,21 @@ main(void)
         cmocka_unit_test(test_ut_nr_27_dispatch_peer_boundary),
         /* M6: F-M4-1 (drain ring full: warning + watermark) */
         cmocka_unit_test(test_f_m4_1_drain_ring_full_visible),
+        cmocka_unit_test_setup_teardown(test_p1_drain_queue_ownership, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_drain_nonowner_tx, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_drain_peer_tx, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_drain_foreign_epoch_tx, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_drain_empty_qconf, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_live_slot, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_full, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_missing, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_invalid, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_success, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_primary_slot_busy, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p2_slot_transient_window, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p2_slot_transient_exhausted, p1_setup, p1_teardown),
+        cmocka_unit_test(test_p3_flow_map_placeholder),
+        cmocka_unit_test(test_p3_flow_map_bounded_growth),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

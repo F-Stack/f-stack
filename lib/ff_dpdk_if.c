@@ -965,7 +965,7 @@ init_msg_ring(void)
                 "%s%u", FF_MSG_RING_IN, i);
             msg_ring[0][0][i].ring[0] =
                 create_ring(msg_ring[0][0][i].ring_name[0],
-                MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+                MSG_RING_SIZE, socketid, FF_MSG_RING_FLAGS);
             if (msg_ring[0][0][i].ring[0] == NULL)
                 rte_panic("create ring::%s failed!\n",
                     msg_ring[0][0][i].ring_name[0]);
@@ -975,7 +975,7 @@ init_msg_ring(void)
                     "%s%u_%u", FF_MSG_RING_OUT, i, j);
                 msg_ring[0][0][i].ring[j] =
                     create_ring(msg_ring[0][0][i].ring_name[j],
-                    MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+                    MSG_RING_SIZE, socketid, FF_MSG_RING_FLAGS);
                 if (msg_ring[0][0][i].ring[j] == NULL)
                     rte_panic("create ring::%s failed!\n",
                         msg_ring[0][0][i].ring_name[j]);
@@ -1005,7 +1005,7 @@ init_msg_ring(void)
                 rte_panic("msg ring name error: proc %u gen %u\n", i, g);
             msg_ring[e][g][i].ring[0] =
                 create_ring(msg_ring[e][g][i].ring_name[0],
-                MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+                MSG_RING_SIZE, socketid, FF_MSG_RING_FLAGS);
             if (msg_ring[e][g][i].ring[0] == NULL)
                 rte_panic("create ring::%s failed!\n",
                     msg_ring[e][g][i].ring_name[0]);
@@ -1017,7 +1017,7 @@ init_msg_ring(void)
                     rte_panic("msg ring name error: proc %u type %u\n", i, j);
                 msg_ring[e][g][i].ring[j] =
                     create_ring(msg_ring[e][g][i].ring_name[j],
-                    MSG_RING_SIZE, socketid, RING_F_SP_ENQ | RING_F_SC_DEQ);
+                    MSG_RING_SIZE, socketid, FF_MSG_RING_FLAGS);
                 if (msg_ring[e][g][i].ring[j] == NULL)
                     rte_panic("create ring::%s failed!\n",
                         msg_ring[e][g][i].ring_name[j]);
@@ -2071,31 +2071,47 @@ ff_dpdk_init(int argc, char **argv)
      * (or as leaked mbufs). Only the process that won the slot CAS gets
      * here, and it runs before this process serves any traffic. */
     if (ff_global_cfg.dpdk.graceful_reload &&
-        ff_reload_gendir_reset_pending()) {
+        ff_reload_gendir_reset_pending_peek()) {
         unsigned slot = ff_reload_epoch_slot();
-        uint16_t i2, j2;
-        int g2;
+        int orphan;
 
-        ff_drain_ring_reset_slot(slot);
-        for (g2 = 0; g2 < FF_RELOAD_GEN_MAX; g2++) {
-            for (i2 = 0; i2 < RTE_MAX_LCORE; i2++) {
-                for (j2 = 0; j2 < FF_MSG_NUM; j2++) {
-                    struct rte_ring *r = msg_ring[slot][g2][i2].ring[j2];
-                    void *obj;
-                    char rname[RTE_RING_NAMESIZE];
+        /* P2 (C-P2-6): only drain these rings once no user of this slot can
+         * still be consuming them — a worker of the dead master is still
+         * dequeuing them, and draining here would race it. */
+        orphan = !ff_reload_gendir_epoch_users_clear(ff_reload_epoch());
+        if (orphan) {
+            ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                "epoch slot %u recycled but previous users are still "
+                "active: keeping the ring reset pending\n", slot);
+        } else {
+            uint16_t i2, j2;
+            int g2;
 
-                    /* A secondary only attached its own generation's set,
-                     * so the peer generation's rings are NULL here — look
-                     * them up by name instead of leaving them full. Their
-                     * owner is the dead master we just displaced. */
-                    if (r == NULL && j2 < FF_MSG_NUM &&
-                        ff_reload_msg_ring_name_e(rname, sizeof(rname),
-                            j2 == 0 ? FF_MSG_RING_IN : FF_MSG_RING_OUT,
-                            i2, j2 == 0 ? -1 : (int)j2, g2, slot, 1) == 0) {
-                        r = rte_ring_lookup(rname);
+            (void)ff_reload_gendir_reset_pending();
+            ff_drain_ring_reset_slot(slot);
+            for (g2 = 0; g2 < FF_RELOAD_GEN_MAX; g2++) {
+                for (i2 = 0; i2 < RTE_MAX_LCORE; i2++) {
+                    for (j2 = 0; j2 < FF_MSG_NUM; j2++) {
+                        struct rte_ring *r =
+                            msg_ring[slot][g2][i2].ring[j2];
+                        void *obj;
+                        char rname[RTE_RING_NAMESIZE];
+
+                        /* A secondary only attached its own generation's
+                         * set, so the peer generation's rings are NULL
+                         * here — look them up by name instead of leaving
+                         * them full. Their owner is the dead master we
+                         * just displaced. */
+                        if (r == NULL && j2 < FF_MSG_NUM &&
+                            ff_reload_msg_ring_name_e(rname, sizeof(rname),
+                                j2 == 0 ? FF_MSG_RING_IN : FF_MSG_RING_OUT,
+                                i2, j2 == 0 ? -1 : (int)j2, g2, slot,
+                                1) == 0) {
+                            r = rte_ring_lookup(rname);
+                        }
+                        while (r != NULL && rte_ring_dequeue(r, &obj) == 0)
+                            rte_mempool_put(message_pool, obj);
                     }
-                    while (r != NULL && rte_ring_dequeue(r, &obj) == 0)
-                        rte_mempool_put(message_pool, obj);
                 }
             }
         }
@@ -2507,6 +2523,123 @@ ff_divert_tx_mbuf(uint8_t port, uint16_t queue_id, struct rte_mbuf *m)
     ff_traffic.tx_bytes += rte_pktmbuf_pkt_len(m);
 }
 
+#if (!defined(__FreeBSD__) && defined(INET6) ) || \
+    ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
+/* B01-5: NDP (IPv6 neighbour discovery) is multicast at L2 (33:33:*), so
+ * protocol_filter() answers FILTER_MULTI and the ARP/NDP fanout below never
+ * runs — a draining generation would then never see NS/NA/RS/RA and could
+ * not refresh the neighbours of the connections it is still serving.
+ * This asks "is this NDP" independently of the L2 verdict, using the one
+ * NDP authority (ff_kni_proto_filter(), which walks the IPv6 extension
+ * headers) with the same L3 pointer/length protocol_filter() computes. */
+static int
+pkt_is_ndp(const void *data, uint16_t len)
+{
+    const struct rte_ether_hdr *hdr;
+    const struct rte_vlan_hdr *vlanhdr;
+    uint16_t ether_type;
+
+    if (len < RTE_ETHER_HDR_LEN)
+        return 0;
+
+    hdr = (const struct rte_ether_hdr *)data;
+    ether_type = rte_be_to_cpu_16(hdr->ether_type);
+    data = (const unsigned char *)data + RTE_ETHER_HDR_LEN;
+    len -= RTE_ETHER_HDR_LEN;
+
+    if (ether_type == RTE_ETHER_TYPE_VLAN) {
+        if (len < sizeof(*vlanhdr))
+            return 0;
+        vlanhdr = (const struct rte_vlan_hdr *)data;
+        ether_type = rte_be_to_cpu_16(vlanhdr->eth_proto);
+        data = (const unsigned char *)data + sizeof(*vlanhdr);
+        len -= sizeof(*vlanhdr);
+    }
+
+    if (ether_type != RTE_ETHER_TYPE_IPV6)
+        return 0;
+
+    return ff_kni_proto_filter(data, len, ether_type) == FILTER_NDP;
+}
+#endif
+
+/* The two fanout stages of a neighbour-resolution frame: a clone to every
+ * other queue of this generation, and the cross-generation clone into
+ * drain_rx. Extracted so a multicast NDP frame (whose classification stays
+ * FILTER_MULTI, and whose KNI/veth tail therefore stays exactly as it is)
+ * can get the same treatment. */
+static void
+ff_fanout_neighbour(uint16_t port_id, uint16_t queue_id,
+    struct rte_mbuf *rtem, struct lcore_conf *qconf, uint16_t nb_queues,
+    int pkts_from_ring)
+{
+    struct rte_mempool *mbuf_pool;
+    struct rte_mbuf *mbuf_clone;
+    uint16_t j;
+
+    if (!pkts_from_ring) {
+        for (j = 0; j < nb_queues; ++j) {
+            unsigned socket_id = 0;
+
+            if (j == queue_id)
+                continue;
+
+            if (numa_on) {
+                uint16_t lcore_id = qconf->port_cfgs[port_id].lcore_list[j];
+
+                socket_id = rte_lcore_to_socket_id(lcore_id);
+            }
+            mbuf_pool = ff_app_mbuf_pool(socket_id);
+            mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
+            if (mbuf_clone) {
+                int ret = rte_ring_enqueue(dispatch_ring[port_id][j],
+                    mbuf_clone);
+
+                if (ret < 0) {
+                    ff_traffic.rx_dropped += mbuf_clone->nb_segs;
+                    rte_pktmbuf_free(mbuf_clone);
+                }
+            }
+        }
+    }
+
+    /* C-NR-304: clone ARP/NDP to the peer generation's every queue.
+     * dispatch_ring cannot carry it: post-handover its per-queue rings are
+     * dequeued by this generation only (the parked generation no longer
+     * drains them), yet the parked generation still needs neighbour
+     * resolution for the connections it is draining — this clone is its
+     * only source. Guarded by !pkts_from_ring (H-5, no loop) and by the
+     * reload window (outside it there is no draining peer to feed; F-M5-1:
+     * a cross-master USR2 peer counts as one).
+     * ff_app_mbuf_pool per H-6; the peer frees the clone. */
+    if (!pkts_from_ring && ff_global_cfg.dpdk.graceful_reload
+        && (ff_reload_hw_locked() || ff_reload_peer_draining())
+        && ff_drain_ring_ready()) {
+        int dst_gen = ff_drain_ring_peer_gen();
+
+        for (j = 0; j < nb_queues; ++j) {
+            unsigned socket_id = 0;
+
+            if (numa_on) {
+                uint16_t lcore_id = qconf->port_cfgs[port_id].lcore_list[j];
+
+                socket_id = rte_lcore_to_socket_id(lcore_id);
+            }
+            mbuf_pool = ff_app_mbuf_pool(socket_id);
+            mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
+            if (mbuf_clone == NULL)
+                continue;
+            if (ff_drain_ring_rx_enqueue(port_id, j, dst_gen,
+                    mbuf_clone) != 0) {
+                ff_traffic.rx_dropped += mbuf_clone->nb_segs;
+                rte_pktmbuf_free(mbuf_clone);
+                ff_divert_drop_warn("drain_rx full: "
+                    "ARP/NDP clone dropped");
+            }
+        }
+    }
+}
+
 /* C-NR-310: non-static so ff_drain_ring_rx_dequeue() can feed drain-ring
  * packets into the exact same path process_dispatch_ring() uses. */
 void
@@ -2614,74 +2747,33 @@ ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
         }
 
         enum FilterReturn filter = protocol_filter(data, len);
+#if (!defined(__FreeBSD__) && defined(INET6) ) || \
+    ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
+        /* B01-5: an L2-multicast NDP frame is FILTER_MULTI, so the branch
+         * below (and with it both fanout stages) would never run for it.
+         * Only the fanout is added here — the classification value, and
+         * therefore the KNI/veth tail, is left exactly as it is. */
+        if (filter == FILTER_MULTI && pkt_is_ndp(data, len)) {
+            ff_fanout_neighbour(port_id, queue_id, rtem, qconf, nb_queues,
+                pkts_from_ring);
+        }
+#endif
 #ifdef INET6
         if (filter == FILTER_ARP || filter == FILTER_NDP) {
 #else
         if (filter == FILTER_ARP) {
 #endif
-            struct rte_mempool *mbuf_pool;
-            struct rte_mbuf *mbuf_clone;
-            if (!pkts_from_ring) {
-                uint16_t j;
-                for(j = 0; j < nb_queues; ++j) {
-                    if(j == queue_id)
-                        continue;
-
-                    unsigned socket_id = 0;
-                    if (numa_on) {
-                        uint16_t lcore_id = qconf->port_cfgs[port_id].lcore_list[j];
-                        socket_id = rte_lcore_to_socket_id(lcore_id);
-                    }
-                    mbuf_pool = ff_app_mbuf_pool(socket_id);
-                    mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
-                    if(mbuf_clone) {
-                        int ret = rte_ring_enqueue(dispatch_ring[port_id][j],
-                            mbuf_clone);
-                        if (ret < 0) {
-                            ff_traffic.rx_dropped += mbuf_clone->nb_segs;
-                            rte_pktmbuf_free(mbuf_clone);
-                        }
-                    }
-                }
-            }
-
-            /* C-NR-304: clone ARP/NDP to the peer generation's every
-             * queue. dispatch_ring cannot carry it: post-handover its
-             * per-queue rings are dequeued by this generation only (the
-             * parked generation no longer drains them), yet the parked
-             * generation still needs neighbour resolution for the
-             * connections it is draining — this clone is its only source.
-             * Guarded by !pkts_from_ring (H-5, no loop) and by the reload
-             * window (outside it there is no draining peer to feed; F-M5-1:
-             * a cross-master USR2 peer counts as one).
-             * ff_app_mbuf_pool per H-6; the peer frees the clone. */
-            if (!pkts_from_ring && ff_global_cfg.dpdk.graceful_reload
-                && (ff_reload_hw_locked() || ff_reload_peer_draining())
-                && ff_drain_ring_ready()) {
-                int dst_gen = ff_drain_ring_peer_gen();
-                uint16_t j;
-                for (j = 0; j < nb_queues; ++j) {
-                    unsigned socket_id = 0;
-                    if (numa_on) {
-                        uint16_t lcore_id =
-                            qconf->port_cfgs[port_id].lcore_list[j];
-                        socket_id = rte_lcore_to_socket_id(lcore_id);
-                    }
-                    mbuf_pool = ff_app_mbuf_pool(socket_id);
-                    mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
-                    if (mbuf_clone == NULL)
-                        continue;
-                    if (ff_drain_ring_rx_enqueue(port_id, j, dst_gen,
-                            mbuf_clone) != 0) {
-                        ff_traffic.rx_dropped += mbuf_clone->nb_segs;
-                        rte_pktmbuf_free(mbuf_clone);
-                        ff_divert_drop_warn("drain_rx full: "
-                            "ARP/NDP clone dropped");
-                    }
-                }
-            }
+            /* both stages now live in ff_fanout_neighbour() — a multicast
+             * NDP frame (still classified FILTER_MULTI) gets exactly the
+             * same treatment from the call site below. */
+            ff_fanout_neighbour(port_id, queue_id, rtem, qconf, nb_queues,
+                pkts_from_ring);
 
 #ifdef FF_KNI
+            {
+                struct rte_mempool *mbuf_pool;
+                struct rte_mbuf *mbuf_clone;
+
             if (enable_kni && ff_kni_is_runtime_owner()) {
                 mbuf_pool = ff_app_mbuf_pool(qconf->socket_id);
                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
@@ -2689,6 +2781,7 @@ ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
                     ff_add_vlan_tag(mbuf_clone);
                     ff_kni_enqueue(filter, port_id, mbuf_clone);
                 }
+            }
             }
 #endif
             ff_veth_input(ctx, rtem);
@@ -2899,6 +2992,17 @@ handle_default_msg(struct ff_msg *msg)
     msg->result = ENOTSUP;
 }
 
+/* P4 (C-P4-7): replies lost because the out ring was full. The requestor
+ * cannot be told anything else (its query already timed out), but the loss
+ * must not be silent. */
+static uint64_t g_ipc_reply_dropped;
+
+uint64_t
+ff_ipc_reply_dropped(void)
+{
+    return g_ipc_reply_dropped;
+}
+
 /* C-NR-203: FF_RELOAD control family dispatch. The reply carries this
  * process's reload view (its generation, the active generation, the
  * heartbeat counter), which is what IT-NR-A11 checks per generation. */
@@ -2969,6 +3073,9 @@ handle_msg(struct ff_msg *msg, struct ff_msg_ring *set, uint16_t proc_id)
             handle_default_msg(msg);
             break;
     }
+    /* P4 (C-P4-1/7): the reply is the requestor's own buffer, so its
+     * ownership tag travels back untouched — the requeue/recv side keys on
+     * it, never on the address. */
     if (rte_ring_enqueue(set[proc_id].ring[msg->msg_type], msg) < 0) {
         if (msg->original_buf) {
             rte_free(msg->buf_addr);
@@ -2977,6 +3084,10 @@ handle_msg(struct ff_msg *msg, struct ff_msg_ring *set, uint16_t proc_id)
             msg->original_buf = NULL;
         }
 
+        /* The out ring is full: the requestor will time out. Counted, not
+         * silent. */
+        g_ipc_reply_dropped++;
+        ff_divert_drop_warn("msg out ring full: reply dropped");
         rte_mempool_put(message_pool, msg);
     }
 }
@@ -3376,6 +3487,40 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
     hz = rte_get_tsc_hz();
     next_tsc = now_tsc + (hz != 0 ? hz : 1000000000ull);
 
+    /* P3 (C-P3-4): flow-table observability at ~1 Hz. The counters live in
+     * ff_flow_map.c (which deliberately links without DPDK and without
+     * logging), so the periodic report belongs here. Only deltas are logged,
+     * i.e. a healthy round stays silent. */
+    {
+        static uint64_t last_full, last_grow_fail, last_alloc_fail;
+        static uint64_t last_reserved;
+        uint64_t full = 0, grow_fail = 0, alloc_fail = 0, reserved = 0;
+
+        ff_flow_map_stats2(NULL, NULL, &full, NULL, &grow_fail, &alloc_fail,
+            &reserved, NULL);
+        if (full != last_full || grow_fail != last_grow_fail
+            || alloc_fail != last_alloc_fail || reserved != last_reserved) {
+            if (full > last_full || grow_fail > last_grow_fail
+                || alloc_fail > last_alloc_fail) {
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                    "flow map: %llu untracked SYN (table full), %llu failed "
+                    "expansion(s), %llu allocation failure(s)\n",
+                    (unsigned long long)(full - last_full),
+                    (unsigned long long)(grow_fail - last_grow_fail),
+                    (unsigned long long)(alloc_fail - last_alloc_fail));
+            }
+            if (reserved > last_reserved) {
+                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+                    "flow map: %llu SYN placeholder(s) never confirmed\n",
+                    (unsigned long long)(reserved - last_reserved));
+            }
+            last_full = full;
+            last_grow_fail = grow_fail;
+            last_alloc_fail = alloc_fail;
+            last_reserved = reserved;
+        }
+    }
+
     /* C-NR-402 producer: the draining generation only (rx handed over) */
     if (ff_reload_hw_locked() && ff_is_drain_generation()
         && ff_reload_state_attached() && ff_reload_slot() >= 0) {
@@ -3416,6 +3561,12 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
         && ff_drain_ring_ready())
         ff_drain_ring_flush_stats();
 }
+
+/* P2 (C-P2-1): last published hardware-user state of this process
+ * (-1 unknown, 0 stopped, 1 active). Only a state change touches the
+ * directory, so the main loop pays nothing per pass. */
+static int g_hw_user_state = -1;
+static int g_hw_user_warned;
 
 static int
 main_loop(void *arg)
@@ -3540,6 +3691,25 @@ main_loop(void *arg)
         /* C-NR-302/306: hardware view for this pass, sampled once so the
          * park ack and the tx/rx sections below cannot disagree. */
         const int no_hw = ff_no_hw_mode();
+
+        /* P2 (C-P2-1): register/STOP this process as a hardware user of its
+         * coordinate. It is the only record a takeover can consult to prove
+         * that nobody is inside an rx_burst any more (C-P2-2/3); the
+         * primary never owns a queue here, so it never registers. */
+        if (unlikely(graceful_reload)
+            && rte_eal_process_type() == RTE_PROC_SECONDARY) {
+            int want = no_hw ? 0 : 1;
+
+            if (want != g_hw_user_state) {
+                if (want)
+                    ff_reload_gendir_user_add(ff_reload_epoch(),
+                        ff_reload_gen());
+                else
+                    ff_reload_gendir_user_stop(ff_reload_epoch(),
+                        ff_reload_gen());
+                g_hw_user_state = want;
+            }
+        }
 
         if (unlikely(no_hw)
             && ff_reload_rx_stopped()
@@ -3733,6 +3903,11 @@ main_loop(void *arg)
                      * armed any (it retired them at the previous round's
                      * completion) — nothing to tear down on this side. */
                     ff_reload_drain_reclaim_mark();
+                    /* P2 (C-P2-2 (3)): the stall itself is the evidence
+                     * here — the owner never parked but has not advanced
+                     * its heartbeat for a full timeout. Counted, so the
+                     * forced takeover is visible instead of silent. */
+                    ff_reload_gendir_reclaim_forced_add();
                 } else {
                     ff_reload_stall_warn(0,
                         ff_global_cfg.dpdk.reload_heartbeat_timeout_ms,

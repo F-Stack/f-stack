@@ -429,29 +429,56 @@ syncache_insert(struct syncache *sc, struct syncache_head *sch)
  * time a window opens and never sleeps.
  */
 static void
-syncache_flow_map_insert(const struct syncache *sc)
+syncache_flow_key(const struct syncache *sc, struct ff_flow_key *key)
 {
-	struct ff_flow_key key;
-
-	bzero(&key, sizeof(key));
+	bzero(key, sizeof(*key));
 #ifdef INET6
 	if (sc->sc_inc.inc_flags & INC_ISIPV6) {
-		key.af = FF_FLOW_MAP_V6;
-		bcopy(&sc->sc_inc.inc6_faddr, key.src, sizeof(struct in6_addr));
-		bcopy(&sc->sc_inc.inc6_laddr, key.dst, sizeof(struct in6_addr));
+		key->af = FF_FLOW_MAP_V6;
+		bcopy(&sc->sc_inc.inc6_faddr, key->src, sizeof(struct in6_addr));
+		bcopy(&sc->sc_inc.inc6_laddr, key->dst, sizeof(struct in6_addr));
 	} else
 #endif
 	{
-		key.af = FF_FLOW_MAP_V4;
-		key.src[0] = sc->sc_inc.inc_faddr.s_addr;
-		key.dst[0] = sc->sc_inc.inc_laddr.s_addr;
+		key->af = FF_FLOW_MAP_V4;
+		key->src[0] = sc->sc_inc.inc_faddr.s_addr;
+		key->dst[0] = sc->sc_inc.inc_laddr.s_addr;
 	}
 	/* Ports are recorded in network byte order; the flow table only ever
 	 * compares for equality, so nothing is byte-swapped here. */
-	key.sport = sc->sc_inc.inc_fport;
-	key.dport = sc->sc_inc.inc_lport;
+	key->sport = sc->sc_inc.inc_fport;
+	key->dport = sc->sc_inc.inc_lport;
+}
 
-	ff_flow_map_insert(&key);
+/* P3 (C-P3-1/2, D2): admit the flow before any SYN-ACK goes out.
+ * A SYN-ACK that is not in the flow table makes the third handshake ACK
+ * look like "not this generation", so it is forwarded to the draining
+ * generation and answered with a RST — the connection dies although both
+ * ends believe it was established. Refusing the SYN here is the honest
+ * failure. Returns 1 when a placeholder was reserved. */
+static int
+syncache_flow_map_admit(const struct syncache *sc)
+{
+	struct ff_flow_key key;
+
+	syncache_flow_key(sc, &key);
+
+	/* 0 (new slot) and 1 (this four-tuple is already present) both count
+	 * as admitted: a duplicate must not consume a second slot, and
+	 * refusing it would leave the four-tuple permanently untracked. */
+	return ff_flow_map_insert(&key) >= 0 ? 1 : 0;
+}
+
+/* P3 (C-P3-10): promote the placeholder once the SYN-ACK (or the TFO
+ * completion) is really out, so a failed syncache_respond() cannot leave a
+ * "fake this-generation" entry behind. */
+static void
+syncache_flow_map_commit(const struct syncache *sc)
+{
+	struct ff_flow_key key;
+
+	syncache_flow_key(sc, &key);
+	ff_flow_map_commit(&key);
 }
 
 /*
@@ -1451,6 +1478,9 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	unsigned int *tfo_pending = NULL;
 	int tfo_cookie_valid = 0;
 	int tfo_response_cookie_valid = 0;
+	/* P3 (C-P3-1/2): 1 while this SYN holds a flow-map placeholder that
+	 * still has to be promoted (or dropped) with the SYN-ACK result. */
+	int admitted = 0;
 	bool locked;
 
 	INP_RLOCK_ASSERT(inp);			/* listen socket */
@@ -1802,6 +1832,24 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	if (locked)
 		SCH_UNLOCK(sch);
 
+	/* P3 (C-P3-1/2, D2): admission before the SYN-ACK, covering both the
+	 * standard handshake and TFO (the TFO branch below must not bypass
+	 * it). The on-stack syncookie entry (sc == &scs) is admitted too —
+	 * it used to be skipped, so a syncookie connection was never tracked
+	 * even though its SYN-ACK went out. */
+	admitted = 0;
+	if (__predict_false(ff_flow_map_active())) {
+		admitted = syncache_flow_map_admit(sc);
+		if (!admitted) {
+			/* Table full (and not expandable): do not send a
+			 * SYN-ACK that would be RST'd on the next ACK. */
+			if (sc != &scs)
+				syncache_free(sc);
+			TCPSTAT_INC(tcps_sc_dropped);
+			goto donenoprobe;
+		}
+	}
+
 	if (tfo_cookie_valid) {
 		rv = syncache_tfo_expand(sc, so, m, tfo_response_cookie);
 		/* INP_RUNLOCK(inp) will be performed by the caller */
@@ -1813,25 +1861,26 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	 * Do a standard 3-way handshake.
 	 */
 	if (syncache_respond(sc, m, TH_SYN|TH_ACK) == 0) {
-		if (sc != &scs) {
+		/* C-NR-301: the SYN-ACK is out and the entry is in the
+		 * syncache — this is the earliest moment the four-tuple is a
+		 * real connection. Recording later (at accept()) would let the
+		 * third handshake ACK miss the table and be forwarded to a
+		 * generation that has no syncache entry for it. sc is left
+		 * alone; the table only reads its inc.
+		 * P3: the placeholder is promoted here, and only here. */
+		if (admitted)
+			syncache_flow_map_commit(sc);
+		if (sc != &scs)
 			syncache_insert(sc, sch);   /* locks and unlocks sch */
-			/* C-NR-301: the SYN-ACK is out and the entry is in the
-			 * syncache — this is the earliest moment the four-tuple
-			 * is a real connection. Recording later (at accept())
-			 * would let the third handshake ACK miss the table and
-			 * be forwarded to a generation that has no syncache
-			 * entry for it. Only reached for the standard handshake:
-			 * syncookies-only mode keeps sc on the stack
-			 * (sc == &scs) and never enters the syncache, and a
-			 * retransmitted SYN returns at tcps_sc_dupsyn long
-			 * before this point, so no dedup logic is needed here.
-			 * sc is left alone; the table only reads its inc. */
-			if (__predict_false(ff_flow_map_active()))
-				syncache_flow_map_insert(sc);
-		}
 		TCPSTAT_INC(tcps_sndacks);
 		TCPSTAT_INC(tcps_sndtotal);
 	} else {
+		/* P3: the SYN-ACK never went out, so the flow must NOT become
+		 * "this generation". donenoprobe falls through to tfo_expanded
+		 * below, which would otherwise commit the placeholder — drop the
+		 * admission here and leave the entry RESERVED (the table counts
+		 * it at close()). */
+		admitted = 0;
 		if (sc != &scs)
 			syncache_free(sc);
 		TCPSTAT_INC(tcps_sc_dropped);
@@ -1853,6 +1902,12 @@ donenoprobe:
 		tcp_fastopen_decrement_counter(tfo_pending);
 
 tfo_expanded:
+	/* P3 (C-P3-1/2): syncache_tfo_expand() completes the connection without
+	 * ever calling syncache_respond(), so the placeholder has to be
+	 * promoted here — otherwise the TFO flow stays RESERVED (and the
+	 * dispatcher skips RESERVED) and is RST'd like an untracked flow. */
+	if (admitted && rv != NULL)
+		syncache_flow_map_commit(sc);
 	if (cred != NULL)
 		crfree(cred);
 	if (sc == NULL || sc == &scs) {
