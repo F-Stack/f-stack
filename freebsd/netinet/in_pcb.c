@@ -709,7 +709,7 @@ ff_in6_pcb_lport(struct inpcb *inp, struct in6_addr *laddr6p,
 	static int rss_tbl6_init = 0;
 	int rss_ret, rss_match = 0;
 	struct ifaddr *ifa;
-	struct ifnet *ifp;
+	struct ifnet *ifp = NULL;
 	struct in6_addr laddr6, faddr6;
 
 	pcbinfo = inp->inp_pcbinfo;
@@ -792,10 +792,11 @@ ff_in6_pcb_lport(struct inpcb *inp, struct in6_addr *laddr6p,
         if (ifa == NULL) {
             ifp_sin6.sin6_addr = faddr6;
             ifa = ifa_ifwithnet((struct sockaddr *)&ifp_sin6, 0, RT_ALL_FIBS);
-            if (ifa == NULL)
-                return (EADDRNOTAVAIL);
         }
-        ifp = ifa->ifa_ifp;
+        /* No egress ifp: leave ifp NULL and fall back to the native port
+         * scan, instead of failing a connect that used to succeed. */
+        if (ifa != NULL)
+            ifp = ifa->ifa_ifp;
 
     	if (dorandom)
     		*lastport = first + (arc4random() % (last - first));
@@ -824,7 +825,9 @@ ff_in6_pcb_lport(struct inpcb *inp, struct in6_addr *laddr6p,
 			/* Note:
 			 * LOOPBACK not support rss.
 			 */
-			if ((ifp->if_softc == NULL) && (ifp->if_flags & IFF_LOOPBACK))
+			if (ifp == NULL ||
+			    ((ifp->if_softc == NULL) &&
+			    (ifp->if_flags & IFF_LOOPBACK)))
 				break;
 			if (ff_rss_check6(ifp->if_softc, (const uint8_t *)&faddr6,
 			    (const uint8_t *)&laddr6, *fportp, lport))

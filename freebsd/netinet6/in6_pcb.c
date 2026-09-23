@@ -303,6 +303,15 @@ in6_pcbbind(register struct inpcb *inp, struct sockaddr *nam,
 		inp->in6p_laddr = sin6->sin6_addr;
 	}
 	if (lport == 0) {
+#ifdef FSTACK
+		/* Bind no port: an explicit bind() with a local address but no
+		 * port defers the ephemeral port selection to connect time, so
+		 * that ff_in6_pcb_lport() can pick an RSS friendly one.  nam
+		 * == NULL is the listen/connect helper path, which must still
+		 * allocate the port here. */
+		if (nam != NULL)
+			return (0);
+#endif
 		if ((error = in6_pcbsetport(&inp->in6p_laddr, inp, cred)) != 0) {
 			/* Undo an address bind that may have occurred. */
 			inp->in6p_laddr = in6addr_any;
@@ -433,29 +442,37 @@ in6_pcbconnect_mbuf(register struct inpcb *inp, struct sockaddr *nam,
 			      inp->inp_lport, 0, NULL) != NULL) {
 		return (EADDRINUSE);
 	}
-	if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr)) {
-		if (inp->inp_lport == 0) {
 #ifdef FSTACK
-			u_short lport6 = 0;
+	if (inp->inp_lport == 0) {
+		u_short lport6 = 0;
+		struct in6_addr *laddr6p;
 
-			error = ff_in6_pcb_lport(inp, &addr6, &lport6,
-			    &sin6->sin6_addr, &sin6->sin6_port, cred,
-			    INPLOOKUP_WILDCARD);
-			if (error)
-				return (error);
-			inp->inp_lport = lport6;
-			inp->in6p_laddr = in6addr_any;
-			if (in_pcbinshash(inp) != 0) {
-				inp->in6p_laddr = in6addr_any;
-				inp->inp_lport = 0;
-				return (EAGAIN);
-			}
-#else
+		/* A bind() with a local address but no port defers the port
+		 * selection to here; the RSS tuple must then use that bound
+		 * address, not the one picked by in6_pcbladdr(). */
+		laddr6p = IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr) ?
+		    &addr6 : &inp->in6p_laddr;
+
+		error = ff_in6_pcb_lport(inp, laddr6p, &lport6,
+		    &sin6->sin6_addr, &sin6->sin6_port, cred,
+		    INPLOOKUP_WILDCARD);
+		if (error)
+			return (error);
+		inp->inp_lport = lport6;
+		if (in_pcbinshash(inp) != 0) {
+			inp->inp_lport = 0;
+			return (EAGAIN);
+		}
+	}
+#endif
+	if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr)) {
+#ifndef FSTACK
+		if (inp->inp_lport == 0) {
 			error = in6_pcbbind(inp, (struct sockaddr *)0, cred);
 			if (error)
 				return (error);
-#endif
 		}
+#endif
 		inp->in6p_laddr = addr6;
 	}
 	inp->in6p_faddr = sin6->sin6_addr;
