@@ -92,7 +92,7 @@
 | 验收点 | 期望 | 实测 | 状态 |
 |---|---|---|---|
 | 1. helloworld init success | `helloworld init success.` 输出 + 进入 ff_run loop | `/data/workspace/f-stack/helloworld.log` 中含 `helloworld init success.`；进程持续运行（PID 113746 已稳定 10s+，4 线程 1R+3S） | ✅ **PASS** |
-| 2. ff_ifconfig | `f-stack-0` 接口含 `inet x.x.x.17` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500 / ether 20:90:6f:7d:5d:8`；接口本身存在 + UP + RUNNING，但缺 inet 行（ff_veth_setaddr 失败 errno 55 EOPNOTSUPP，来自 rib_action） | 🟡 **2/3 PASS**（接口可见，但 IP 未配） |
+| 2. ff_ifconfig | `f-stack-0` 接口含 `inet x.x.x.17` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500 / ether <NIC_MAC>`；接口本身存在 + UP + RUNNING，但缺 inet 行（ff_veth_setaddr 失败 errno 55 EOPNOTSUPP，来自 rib_action） | 🟡 **2/3 PASS**（接口可见，但 IP 未配） |
 | 3. ff_netstat -a | `tcp4 *.80 LISTEN` | `tcp4 0 0 *.80 *.* LISTEN` + `tcp6 0 0 *.80 *.* LISTEN` 两条都出现 | ✅ **PASS** |
 
 **总结**：3 项验收 2.5/3 PASS（项 2 接口可见但 IP 未配，因 ff_veth_setaddr / rib_action 在 14.0+ rib/nexthop 重写后仍有问题 — 此为下一阶段任务）

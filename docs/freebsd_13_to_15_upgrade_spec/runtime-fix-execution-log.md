@@ -94,7 +94,7 @@
 | Item | Expectation | Measured | Status |
 |---|---|---|---|
 | 1. helloworld init success | `helloworld init success.` printed + enters `ff_run` loop | `/data/workspace/f-stack/helloworld.log` contains `helloworld init success.`; PID 113746 stable for 10 s+, 4 threads (1R+3S) | ✅ **PASS** |
-| 2. ff_ifconfig | `f-stack-0` interface contains `inet x.x.x.17` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500 / ether 20:90:6f:7d:5d:8`; interface present + UP + RUNNING but inet line missing (`ff_veth_setaddr` failed errno 55, originally mis-tagged as `EOPNOTSUPP`) | 🟡 **2/3 PASS** (interface visible but IP unset) → fixed in Phase 2 |
+| 2. ff_ifconfig | `f-stack-0` interface contains `inet x.x.x.17` | `f-stack-0: flags=8843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST> mtu 1500 / ether <NIC_MAC>`; interface present + UP + RUNNING but inet line missing (`ff_veth_setaddr` failed errno 55, originally mis-tagged as `EOPNOTSUPP`) | 🟡 **2/3 PASS** (interface visible but IP unset) → fixed in Phase 2 |
 | 3. ff_netstat -a | `tcp4 *.80 LISTEN` | `tcp4 0 0 *.80 *.* LISTEN` + `tcp6 0 0 *.80 *.* LISTEN` both show | ✅ **PASS** |
 
 **Summary**: Phase 1 — 2.5/3 PASS; item 2 deferred to Phase 2 (rib-fix). Phase 2 closes item 2 → 3/3.

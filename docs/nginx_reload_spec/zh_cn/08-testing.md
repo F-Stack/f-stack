@@ -196,7 +196,7 @@ f-stack-client（客户端机，8 核，ssh 可达）
 #### 2.3.0 C-NR-601 harness 接口（2026-09-17 补记，此前测试篇零结构化记录）
 
 - **资产**：`tests/integration/test_graceful_reload.sh`（**1460 行**，2026-09-22 实测；M6 初版 755 行，M6b、`ini_strip_kni()` 与 F1 故障用例后增长）。
-- **case 列表（13 个，2026-09-22 同步·P-7）**：`precheck`、`baseline`、`rt01`、`rt02`、`rv9`、`gr0`、`rt12`、`rt13`、`rt20`、`rt20b`、`rt21`、`rt22`、`rt23`；**默认集合 `CASES="precheck,rt01,rv9"`**。注意两处口径：脚本内 `ALL_CASES` 仍为前 8 个（不含故障/边界用例），而校验器 `reload_checks.py::CASES` 为全部 13 个；`rt20/rt20b/rt21/rt22` 需**显式 `-c <case> --fault <name>`** 且必须配**故障构建形态**；**`rt23`（重入）相反——只能跑生产形态**（`FAULT` 为空），非空即 `record rt23 FAIL "fault form not allowed for rt23"`，`test_graceful_reload.sh:951-960`）。双向形态配对不匹配一律拒绝（`reload_checks.py:222-238`）（双向形态配对，不匹配直接拒绝）。
+- **case 列表（13 个，2026-09-22 同步·P-7）**：`precheck`、`baseline`、`rt01`、`rt02`、`rv9`、`gr0`、`rt12`、`rt13`、`rt20`、`rt20b`、`rt21`、`rt22`、`rt23`；**默认集合 `CASES="precheck,rt01,rv9"`**。注意两处口径：脚本内 `ALL_CASES` 仍为前 8 个（不含故障/边界用例），而校验器 `reload_checks.py::CASES` 为全部 13 个；**`rt13` 已永久排除：`-c all` 不再包含它，显式调用记录 `EXCLUDED`（既不算 PASS 也不计入 `failed`）**；`rt20/rt20b/rt21/rt22` 需**显式 `-c <case> --fault <name>`** 且必须配**故障构建形态**；**`rt23`（重入）相反——只能跑生产形态**（`FAULT` 为空），非空即 `record rt23 FAIL "fault form not allowed for rt23"`，`test_graceful_reload.sh:951-960`）。双向形态配对不匹配一律拒绝（`reload_checks.py:222-238`）（双向形态配对，不匹配直接拒绝）。
 - **参数表**：`-t/--target-ip`（**必填**）、`-c/--cases`、`-r/--rounds`（默认 100）、`-i/--interval`、`-p/--poll`、`-o/--out`、`--nginx`、`--fstack-conf`、`--probe-dir`、`--client`、`--workers`、`--build-manifest`（**REQUIRED**）、`--fault <name>`（故障注入，取值 `ready_never`/`ready_delay`/`park_never`/`flip_fail`/`mutex_timeout`；空 = 生产形态；**须配故障构建形态**）、`--fault-delay-ms <n>`（`ready_delay` 延迟，1..59000）、`--lcore-mask`、`--lcore-list`、`--shutdown-timeout`、`--graceful`、`--drain-timeout`、`--startup-wait`、`--baseline`、`--baseline-duration`、`--stream-mb`、`--kernel-nic-ip`、`--zc-build`、`--rte-fresh-min`。
 - **退出码**：`0` 全通过 / `100+N` 有 N 个 case 失败 / `2` usage / `3` preconditions 不满足 / `4` dependency missing / `5` aborted。
 - **Makefile 挂载**：`make reload-harness TARGET_IP=<DPDK_NIC_IP>`、`make reload-harness-dry`（2 轮冒烟）。**刻意不并入 `ALL_TESTS`**（`tests/integration/Makefile:70`）：现有 `make test` 被 CI 调用，而实机用例需要 TARGET_IP + 客户端机 + DPDK 独占网卡，挂入必挂。
@@ -208,7 +208,7 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | RT-02 | `rt02` | harness |
 | RT-10 | `rv9`（循环门禁，同形态） | harness |
 | RT-12 | `rt12` | harness |
-| RT-13 | `rt13`（2026-09-17 RT-2b 为 SKIP；**RT-13 自 2026-09-22 起永久排除**） | harness |
+| RT-13 | `rt13`（2026-09-17 RT-2b 为 SKIP；**2026-09-22 起永久排除，2026-09-23 起 `-c all` 不再包含，显式调用记录 `EXCLUDED`**） | harness |
 | RG-NR-01 | `gr0`（=0 HUP + =0 USR2） | harness |
 | RT-00 / RT-03 / RT-04 / RT-04b / RT-05 / RT-06 / RT-07 / RT-08 / RT-09 / RT-11 / RT-14 / RT-15 | —（无 harness 落点） | **历史一次性脚本 / 未自动化** |
 | `precheck` / `baseline` | 环境与基线，非用例 | harness（前置腿） |
@@ -242,10 +242,10 @@ f-stack-client（客户端机，8 核，ssh 可达）
 > **【2026-09-22 第四轮真机（P2a 之后运行时矩阵 + F1 故障/边界矩阵）】** 依据 `docs/nginx_reload_spec/work/recheck-20260921/`（`runtime-evidence-post-p2a.md`、`task5-fault-matrix-f1-status.md`、`gf-final-gate-20260922.md`），被测 HEAD `f7b1fe200`。
 >
 > - **形态**：生产构建（`nm --defined-only lib/libfstack.a | grep -c ff_reload_fault_is` = **0**，清单 `build-manifest-20260922c.json`；**归属说明**：生产矩阵实测于 2026-09-21（清单 `build-manifest-20260921b.json` / HEAD `daedf35b1dc8`），`20260922c` 为 G-F 终态复建清单，故障→生产恢复后**仅抽测 rt01**，rt02/rv9 未重跑 ⇒ **LIMITED**）；故障形态为**另行构建**（`fault_injection: true`，`nm` 钩子 1），其结论**只用于故障路径判据，不进功能验收 aggregate**。
-> - **生产形态实测**：precheck PASS；rt01 PASS（`fsm=6/6 drain=1000ms`）；**rt02 由 FAIL 修复为 PASS**（探针改 `--duration` 有界，解耦「探针寿命」与「数据量」，消除「排空完成 ⇔ 长流跑完」同秒竞态；`streams=36 ok=36 md5_ok=36 eof_clean=36 stalls=0`，负例仍可判别）；gr0 PASS（`longest_outage=1.001s`）；rt12 PASS（`veth_before=1 veth_after=1 ping_client=ok`，内核侧地址 = f-stack 地址本身；`control_http=n/a`，**管理面为弱判据**，P-3 待闭环）；baseline PASS（`reqs=9600 fail=0`）；**rv9 IPv4 100/100**（`rtemap slope=0`、`hp final=2048`）；rt01 IPv6 PASS；**rv9 IPv6 20/20**。
+> - **生产形态实测**：precheck PASS；rt01 PASS（`fsm=6/6 drain=1000ms`）；**rt02 由 FAIL 修复为 PASS**（探针改 `--duration` 有界，解耦「探针寿命」与「数据量」，消除「排空完成 ⇔ 长流跑完」同秒竞态；`streams=36 ok=36 md5_ok=36 eof_clean=36 stalls=0`，负例仍可判别；**P-9**：`ok` / `md5_ok` / `eof_clean` 改为**独立计数**并新增 `integrity_fail`，不再把同一个计数器打印成四个字段）；gr0 PASS（`longest_outage=1.001s`）；rt12 PASS（`veth_before=1 veth_after=1 ping_client=ok`，内核侧地址 = f-stack 地址本身；**P-3 已闭环**：客户端 ping 原文与服务端本地 ping 原文均落盘（`ping_client_rt12.txt` / `ping_local_rt12.txt`），HTTP 控制腿改为常跑（`control_http=200`），并以「veth0 存在但未配址」负对照取得 **100% packet loss** ⇒ 该腿可判别，不再仅凭退出码判断）；baseline PASS（`reqs=9600 fail=0`）；**rv9 IPv4 100/100**（`rtemap slope=0`、`hp final=2048`）；rt01 IPv6 PASS；**rv9 IPv6 100/100**（2026-09-23 实机：`ok=100/100 bad=0`、`rtemap[min=138 max=138 slope=0]`、`hp[base=1910 final=2048]`、`failed=0`；产物由 `run-identity.json` 自证 `address_family=ipv6`）。
 > - **F1 故障形态**：rt20（`ready_never`）/ rt21（`flip_fail`）/ rt22（`park_never`）/ rt20b（`ready_delay` + `FF_FAULT_DELAY_MS=15000`）**均 PASS**（中止签名命中、worker 数 2→2、探针 `fail=0 reconnects=0 fresh_fail=0`）；rt20b 重载完成 `took 42297 ms`；rt23（重入）PASS **但判据不自洽**（`measured fsm=0/6`，首次重载 6/6 未在判据与产物中体现，P-2 待闭环）。**限定**：rt20 首轮「红跑」FAIL（`FF_FAULT` 未转发到 worker）已订正后复验 PASS；rt21 的 PASS **不得**作为「abort 语义无缺陷」的证据（abort 后 master 退出语义仍挂账，P-13）。
-> - **排除**：rt13（zc）**永久排除**（不构建、不测、不进行支持）。
-> - **门禁**：G-F **PASS（附条件）→ 初步可用、初步结项**；附条件 7 项（G-F §5 原列 11 项，P-1 / F-R2-02 / P-7 / P-8 已闭环；余：rt12 管理面证据链、IPv6 百轮、IPv6 产物地址族自证、摘要计数承载、rt13 计数、裸 `rm` 自证、历史 spec 真实 MAC/token）。
+> - **排除**：rt13（zc）**永久排除**（不构建、不测、不进行支持）；`-c all` 已剔除该用例，显式调用记录 `EXCLUDED`，不再计入 `failed`（P-11）。
+> - **门禁**：G-F **PASS（附条件）→ 初步可用、初步结项**；附条件 7 项（P-3 / P-4 / P-12 / P-9 / P-11 / F-R2-03 / F-R2-04-05）**已于 2026-09-23 全部闭环**。
 > - **待办（不做实际动作）**：F2/F3 场景、跨进程 MP 集成、G-D 英文译审。
 > - **口径声明**：本轮**非**「全用例 PASS」——rt13 永久排除、rt12 管理面为弱判据、故障形态结论不进功能验收。
 
