@@ -3245,7 +3245,6 @@ ff_rss_tbl6_set_portrange(uint16_t first, uint16_t last)
             ff_rss_tbl6[i].dip_tbl[j].last = last;
 
             ff_rss_tbl6[i].dip_tbl[j].first_idx = 0;
-            ff_rss_tbl6[i].dip_tbl[j].last_idx = 0;
             for (k = 1; k <= ff_rss_tbl6[i].dip_tbl[j].num; k++) {
                 if (ff_rss_tbl6[i].dip_tbl[j].first_idx == 0 &&
                         ff_rss_tbl6[i].dip_tbl[j].dport[k] >= first) {
@@ -3308,16 +3307,6 @@ ff_rss_tbl6_get_portrange(const uint8_t *saddr6, const uint8_t *daddr6,
                 }
 
                 if (memcmp(ff_rss_tbl6[idx].dip_tbl[daddr_idx].daddr6, daddr6, 16) == 0) {
-                    /* Reject an entry whose portrange was never computed or
-                     * is out of bounds, so the caller falls back to
-                     * ff_rss_check6() instead of indexing garbage. */
-                    if (ff_rss_tbl6[idx].dip_tbl[daddr_idx].first_idx == 0 ||
-                        ff_rss_tbl6[idx].dip_tbl[daddr_idx].last_idx <
-                        ff_rss_tbl6[idx].dip_tbl[daddr_idx].first_idx ||
-                        ff_rss_tbl6[idx].dip_tbl[daddr_idx].last_idx >
-                        ff_rss_tbl6[idx].dip_tbl[daddr_idx].num) {
-                        return -ENOENT;
-                    }
                     *rss_first = ff_rss_tbl6[idx].dip_tbl[daddr_idx].first_idx;
                     *rss_last = ff_rss_tbl6[idx].dip_tbl[daddr_idx].last_idx;
                     *rss_portrange = &ff_rss_tbl6[idx].dip_tbl[daddr_idx].dport[0];
@@ -3381,16 +3370,8 @@ ff_rss_check6(void *softc, const uint8_t *saddr6, const uint8_t *daddr6,
     uint16_t sport, uint16_t dport)
 {
     struct lcore_conf *qconf = &lcore_conf;
-    struct ff_dpdk_if_context *ctx;
-    uint16_t nb_queues;
-
-    /* No softc (e.g. non DPDK backed ifp): nothing to steer, accept. */
-    if (softc == NULL) {
-        return 1;
-    }
-
-    ctx = ff_veth_softc_to_hostc(softc);
-    nb_queues = qconf->nb_queue_list[ctx->port_id];
+    struct ff_dpdk_if_context *ctx = ff_veth_softc_to_hostc(softc);
+    uint16_t nb_queues = qconf->nb_queue_list[ctx->port_id];
 
     if (nb_queues <= 1) {
         return 1;

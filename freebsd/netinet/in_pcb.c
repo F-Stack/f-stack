@@ -825,9 +825,7 @@ ff_in6_pcb_lport(struct inpcb *inp, struct in6_addr *laddr6p,
 			/* Note:
 			 * LOOPBACK not support rss.
 			 */
-			if (ifp == NULL ||
-			    ((ifp->if_softc == NULL) &&
-			    (ifp->if_flags & IFF_LOOPBACK)))
+			if (ifp == NULL || ifp->if_softc == NULL)
 				break;
 			if (ff_rss_check6(ifp->if_softc, (const uint8_t *)&faddr6,
 			    (const uint8_t *)&laddr6, *fportp, lport))
