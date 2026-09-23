@@ -29,7 +29,8 @@ def default_values():
                 ROUNDS="100", INTERVAL="15", POLL="5", WORKERS="2", DRAIN_TIMEOUT="120",
                 STARTUP_WAIT="28", STREAM_MB="8", RTE_FRESH_MIN="10", SHUTDOWN_TIMEOUT="0",
                 BASELINE_DURATION="330", GRACEFUL="1", ZC_BUILD="auto", NGINX_BIN="/safe/nginx",
-                FSTACK_TPL="/safe/config.ini", PROBE_DIR="/safe/probes", OUT="", BUILD_MANIFEST="")
+                FSTACK_TPL="/safe/config.ini", PROBE_DIR="/safe/probes", OUT="", BUILD_MANIFEST="",
+                FAULT="", FAULT_DELAY_MS="15000")
 
 
 class ValidationTests(unittest.TestCase):

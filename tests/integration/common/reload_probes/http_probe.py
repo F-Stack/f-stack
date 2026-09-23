@@ -9,7 +9,11 @@ import threading
 import time
 
 
-def response(sock, chunk_size=65536, gap=0, expect_md5=None, expect_eof=False, path="/"):
+def response(sock, chunk_size=65536, gap=0, expect_md5=None, expect_eof=False, path="/",
+             strict=True):
+    # strict=False reports the integrity verdict instead of raising, so the
+    # caller can count md5_ok and eof_clean separately. Printing one counter
+    # under four names makes the criterion an identity, not a check.
     connection = "close" if expect_eof else "keep-alive"
     sock.sendall(("GET %s HTTP/1.1\r\nHost: reload-test\r\nConnection: %s\r\n\r\n" % (path, connection)).encode("ascii"))
     data = b""
@@ -46,11 +50,17 @@ def response(sock, chunk_size=65536, gap=0, expect_md5=None, expect_eof=False, p
         digest.update(part)
     if received != length:
         raise ValueError("body length mismatch")
+    md5_ok = True
     if expect_md5 and digest.hexdigest() != expect_md5:
-        raise ValueError("body digest mismatch")
+        md5_ok = False
+        if strict:
+            raise ValueError("body digest mismatch")
+    eof_clean = True
     if expect_eof and sock.recv(1) != b"":
-        raise ValueError("trailing body bytes")
-    return received, digest.hexdigest(), worst
+        eof_clean = False
+        if strict:
+            raise ValueError("trailing body bytes")
+    return received, digest.hexdigest(), worst, md5_ok, eof_clean
 
 
 def main(mode):
@@ -92,7 +102,8 @@ def main(mode):
     started = time.monotonic()
     until = started + a.duration
     lock = threading.Lock()
-    stats = dict(reqs=0, fail=0, fresh_n=0, fresh_fail=0, streams=0, stalls=0, worst=0.0,
+    stats = dict(reqs=0, fail=0, fresh_n=0, fresh_fail=0, streams=0, ok=0, md5_ok=0,
+                 eof_clean=0, integrity_fail=0, stalls=0, worst=0.0,
                  reconnects=0, workers_done=0, workers_active=0, worker_errors=0,
                  outage_start=None, windows=0, longest=0.0)
     local = threading.local()
@@ -153,15 +164,21 @@ def main(mode):
             ok = False
             try:
                 with connect() as sock:
-                    size, digest, worst = response(sock, a.chunk, a.gap, a.expect_md5, True, a.path)
+                    size, digest, worst, md5_ok, eof_clean = response(
+                        sock, a.chunk, a.gap, a.expect_md5, True, a.path, strict=False)
                 with lock:
                     stats["streams"] += 1
+                    stats["ok"] += bool(md5_ok and eof_clean)
+                    stats["md5_ok"] += bool(md5_ok)
+                    stats["eof_clean"] += bool(eof_clean)
+                    stats["integrity_fail"] += not (md5_ok and eof_clean)
                     stats["stalls"] += worst > a.stall
                     stats["worst"] = max(stats["worst"], worst)
-                    print("STREAM wid=%d wave=%d bytes=%d md5=%s start=%.6f end=%.6f" %
-                          (index, local.wave, size, digest, begin - started,
-                           time.monotonic() - started), flush=True)
-                ok = True
+                    print("STREAM wid=%d wave=%d bytes=%d md5=%s md5_ok=%d eof_clean=%d "
+                          "start=%.6f end=%.6f" %
+                          (index, local.wave, size, digest, bool(md5_ok), bool(eof_clean),
+                           begin - started, time.monotonic() - started), flush=True)
+                ok = bool(md5_ok and eof_clean)
             except (OSError, ValueError) as exc:
                 print("STREAM_FAIL wid=%d wave=%d type=%s" %
                       (index, local.wave, type(exc).__name__), flush=True)
@@ -205,10 +222,13 @@ def main(mode):
         line = "CPS_SUMMARY threads=%d n=%d ok=%d fail=%d" % (
             a.threads, stats["fresh_n"], stats["fresh_n"] - stats["fresh_fail"], stats["fresh_fail"])
     elif mode == "stream":
-        # streams= is the number of COMPLETED downloads (one wave is 12), so
-        # the four counts stay consistent under the duration-bounded form.
-        line = "STREAM_SUMMARY streams=%d ok=%d md5_ok=%d eof_clean=%d stalls(>%ss)=%d worst_gap=%.3fs" % (
-            stats["streams"], stats["streams"], stats["streams"], stats["streams"], a.stall, stats["stalls"], stats["worst"])
+        # streams= is the number of COMPLETED downloads (one wave is 12);
+        # ok / md5_ok / eof_clean are counted independently, so a corrupt or
+        # truncated body shows up as a divergence instead of an alias.
+        line = ("STREAM_SUMMARY streams=%d ok=%d md5_ok=%d eof_clean=%d integrity_fail=%d "
+                "stalls(>%ss)=%d worst_gap=%.3fs") % (
+            stats["streams"], stats["ok"], stats["md5_ok"], stats["eof_clean"],
+            stats["integrity_fail"], a.stall, stats["stalls"], stats["worst"])
     else:
         line = "OUTAGE_SUMMARY ok=%d windows=%d longest_outage=%.3fs" % (
             stats["fresh_n"] - stats["fresh_fail"], stats["windows"], stats["longest"])
@@ -218,4 +238,7 @@ def main(mode):
     if mode == "outage":
         return 0 if stats["fresh_n"] > stats["fresh_fail"] else 1
     return int(bool(stats["fail"] or stats["fresh_fail"] or stats["reconnects"] or
-                    (mode == "stream" and (stats["streams"] < a.streams or stats["stalls"]))))
+                    (mode == "stream" and (stats["streams"] < a.streams or stats["stalls"] or
+                                           stats["ok"] != stats["streams"] or
+                                           stats["md5_ok"] != stats["streams"] or
+                                           stats["eof_clean"] != stats["streams"]))))

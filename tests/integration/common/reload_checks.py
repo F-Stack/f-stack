@@ -140,7 +140,9 @@ def aggregate(records, expected=None):
     failures = sum(r["verdict"] == "FAIL" or r.get("exit_code", 0) != 0 for r in records)
     if failures:
         return 100 + min(failures, 150)
-    if any(r["verdict"] != "PASS" for r in records):
+    # EXCLUDED is a product decision, not a failure: it must not turn a
+    # clean matrix into a non-zero aggregate (rt13, the zc build form).
+    if any(r["verdict"] not in ("PASS", "EXCLUDED") for r in records):
         return 6
     return 0
 

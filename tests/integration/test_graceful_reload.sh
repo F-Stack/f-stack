@@ -93,6 +93,11 @@ RTE_FRESH_MIN=10
 KNI_OWNER_PROC_ID=1
 
 ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt13"
+# rt13 (the zc build form) is permanently excluded by decision 2026-09-22:
+# this tree does not build the zc form, so the case is dropped from every
+# matrix (-c all). It stays invocable explicitly and then records EXCLUDED,
+# which is judged neither as PASS nor as a failure (run_case / aggregate).
+EXCLUDED_CASES="rt13"
 
 # ---- globals shared between helpers ---------------------------------------
 ERRLOG=""
@@ -232,6 +237,17 @@ done
 
 [ -n "$TARGET_IP" ] || die_usage "TARGET_IP is mandatory (-t <DPDK_NIC_IP>)"
 [ "$CASES" = "all" ] && CASES="$ALL_CASES"
+# Drop the permanently excluded cases from a matrix run. An explicit
+# invocation keeps them: that is how the exclusion itself is evidenced.
+if [ "$CASES" = "$ALL_CASES" ]; then
+    filtered=""
+    for c in ${ALL_CASES//,/ }; do
+        skip=0
+        for x in $EXCLUDED_CASES; do [ "$c" = "$x" ] && skip=1; done
+        [ "$skip" = 0 ] && filtered="${filtered:+$filtered,}$c"
+    done
+    CASES="$filtered"
+fi
 [ "$BASELINE" = "1" ] && case ",$CASES," in *",baseline,"*) ;; *) CASES="$CASES,baseline" ;; esac
 local n
 local -a values=()
@@ -259,6 +275,25 @@ init_output() {
     LOG="$OUT/harness.log"
     : > "$LOG"
     : > "$OUT/results.jsonl"
+    # P-12: an IPv6 run prints the same criterion text and the same measured
+    # values as the IPv4 one, so the artifacts have to carry their own target
+    # and address family instead of leaving it to the invocation history.
+    run_identity=$(python3 -B - "$OUT" "$TARGET_IP" "$CASES" "${BUILD_MANIFEST:-}" <<'PYEOF'
+import ipaddress, json, subprocess, sys
+out, target, cases, manifest = sys.argv[1:5]
+try:
+    family = "ipv6" if ipaddress.ip_address(target).version == 6 else "ipv4"
+except ValueError:
+    family = "unknown"
+head = subprocess.run(["git", "-C", "/data/workspace/f-stack", "rev-parse", "HEAD"],
+                      capture_output=True, text=True).stdout.strip()
+with open(out + "/run-identity.json", "w") as handle:
+    json.dump({"target_ip": target, "address_family": family, "cases": cases,
+               "build_manifest": manifest, "head": head}, handle, indent=1)
+print("RUN address_family=%s cases=%s head=%s" % (family, cases, head))
+PYEOF
+    ) || return 1
+    say "run identity: $run_identity"
     printf '[]\n' > "$OUT/processes.json"
 }
 
@@ -1306,17 +1341,21 @@ case_rt12() {
         # ping is kept only as a clearly labelled weak observation: an address
         # configured on the server is answered by its own kernel and never
         # leaves the host.
-        ping -c 2 -W 2 "$KERNEL_NIC_IP" >/dev/null 2>&1 \
+        # P-3: keep the raw transcripts. The criterion used to be judged from
+        # a discarded exit status, so the leg had no evidence in the artifacts
+        # and could not be re-checked or compared with a negative control.
+        ping -c 2 -W 2 "$KERNEL_NIC_IP" > "$OUT/ping_local_rt12.txt" 2>&1 \
             && ping_local="ok(local-scope,weak)" || ping_local="fail"
-        if run_client "ping -c 3 -W 2 $KERNEL_NIC_IP >/dev/null 2>&1"; then
+        ping_client_out=$(run_client "ping -c 3 -W 2 $KERNEL_NIC_IP" 2>&1); ping_rc=$?
+        printf '%s\n' "$ping_client_out" > "$OUT/ping_client_rt12.txt"
+        # Control probe: HTTP, not ICMP, and always run -- it is the only way
+        # to tell "the stack is down" from "this address is not delivered":
+        # under [kni] method=reject an ICMP echo to the f-stack address is
+        # diverted into the kernel, so a ping failure alone proves nothing.
+        ctrl=$(run_client "curl -s -m 3 -o /dev/null -w '%{http_code}' '$TARGET_URL'" 2>/dev/null)
+        if [ "$ping_rc" = 0 ] && printf '%s\n' "$ping_client_out" | grep -q "0% packet loss"; then
             ping_client="ok"
         else
-            # Control probe: HTTP, not ICMP. Under [kni] method=reject an ICMP
-            # echo to the f-stack address is diverted into the kernel, which
-            # does not own that address, so it is silently dropped -- pinging
-            # the control would make a perfectly healthy stack look dead (the
-            # traffic probe and wait_http both prove the data path is up).
-            ctrl=$(run_client "curl -s -m 3 -o /dev/null -w '%{http_code}' '$TARGET_URL'" 2>/dev/null)
             if [ "$ctrl" = "200" ]; then
                 # The control address serves, so the client does reach the host
                 # and only <KERNEL_NIC_IP> is undeliverable -- a cloud fabric
@@ -1381,9 +1420,9 @@ case_rt13() {
     local zc="$ZC_BUILD" rc=0 src_ok=1
     [ "$zc" = "auto" ] && zc=$(detect_zc_build)
     if [ "$zc" != "1" ]; then
-        record "rt13" "SKIP" \
+        record "rt13" "EXCLUDED" \
           "zc build form reloads without regression; drain forwarded>0 and relayed>0 prove source independence" \
-          "LIMITED: zc not compiled in (rebuild with FF_ZC_RECV=1); the case skeleton is in place"
+          "EXCLUDED by decision 2026-09-22: the tree does not build the zc form (needs FF_ZC_RECV=1); not tested, not supported; the case skeleton is in place"
         return 0
     fi
     local hrc=0

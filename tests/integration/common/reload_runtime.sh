@@ -211,6 +211,11 @@ run_case() {
     verdict="${C_VERDICT[${#C_VERDICT[@]}-1]}"
     python3 -B "$CHECKS" record "$OUT/results.jsonl" "$name" "$verdict" \
         "${C_CRIT[${#C_CRIT[@]}-1]}" "${C_MEAS[${#C_MEAS[@]}-1]}" "$rc" || { rc=1; CLEANUP_FAILED=1; }
-    [ "$rc" = 0 ] && [ "$verdict" = PASS ] || FAILED=$((FAILED + 1))
+    # EXCLUDED is "out of scope by product decision", not "not passing":
+    # counting it here is what turned rt13 into failed=1 in a clean matrix.
+    case "$verdict" in
+        PASS|EXCLUDED) [ "$rc" = 0 ] || FAILED=$((FAILED + 1)) ;;
+        *) FAILED=$((FAILED + 1)) ;;
+    esac
     return "$rc"
 }
