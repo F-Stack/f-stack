@@ -46,14 +46,15 @@ extern "C" {
 #define FF_FLOW_MAP_V4  0
 #define FF_FLOW_MAP_V6  1
 
-/* 40 bytes, no padding: hash/compare walk the raw bytes.
+/* 40 bytes, no padding: the compare walks the raw bytes, while the hash mixes
+ * only the bytes that carry identity (af, the addresses this af uses, ports).
  * Addresses and ports are kept in network byte order — the table only ever
  * compares for equality, so no byte-swapping is needed (and swapping on the
  * syncache hook would cost a division-free but still useless ntohl per SYN). */
 struct ff_flow_key {
     uint8_t  af;        /* FF_FLOW_MAP_V4 / FF_FLOW_MAP_V6 */
-    uint8_t  reserved;  /* keep zero: participates in the hash */
-    uint16_t pad;       /* keep zero: participates in the hash */
+    uint8_t  reserved;  /* keep zero: covered by the 40-byte compare */
+    uint16_t pad;       /* keep zero: covered by the 40-byte compare */
     uint32_t src[4];    /* foreign address; V4 uses src[0] only */
     uint32_t dst[4];    /* local address;   V4 uses dst[0] only */
     uint16_t sport;     /* foreign port */
