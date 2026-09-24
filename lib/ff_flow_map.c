@@ -35,11 +35,14 @@
  * its own connections, so no hugepage/shared-memory backing is needed and no
  * multi-writer support has to be paid for.
  *
- * Concurrency: both the producer (syncache hook, inside ff_veth_input) and the
- * consumer (dispatcher callback) run on the datapath thread inside main_loop,
- * so the table is single-threaded in practice. The state word is nevertheless
- * read/written with SEQ_CST atomics so a sampler on another thread can never
- * observe a half-initialised entry. No locks are taken anywhere.
+ * Single-thread contract: the producer (syncache hook, inside ff_veth_input),
+ * the consumer (dispatcher callback) and the control plane (open/close, the
+ * 1 Hz stats report) all run on the datapath thread inside main_loop, and the
+ * table is process-local heap memory. Accesses are therefore plain, with no
+ * locks and no atomics. A sampler on another thread would need a real
+ * publication mechanism (seqlock/RCU): the previous SEQ_CST-on-state was not
+ * one — the capacity and its mask were plain reads and close() wiped the
+ * whole table with memset.
  */
 
 #include <stdint.h>
@@ -82,13 +85,9 @@ static int g_open;
  * old table. */
 static uint32_t g_cap = FF_FLOW_MAP_ENTRIES;
 static uint32_t g_cap_mask = FF_FLOW_MAP_MASK;
-/* P3: superseded tables are kept (never freed) until close(): a lookup that
- * is already in flight on another thread must not touch freed memory. */
-static void *g_old[FF_FLOW_MAP_GROW_MAX];
-static int g_old_n;
 static uint32_t g_grown;
 
-/* Observability counters (deliberately plain: read by the sampler, never
+/* Observability counters (deliberately plain: observability only, never
  * used for correctness). */
 static uint64_t g_inserted;
 static uint64_t g_dup;
@@ -138,40 +137,13 @@ flow_map_active(void)
         return 0;
     if (!ff_reload_state_attached())
         return 0;
-    return __atomic_load_n(&g_open, __ATOMIC_RELAXED) != 0;
+    return g_open != 0;
 }
 
 int
 ff_flow_map_active(void)
 {
     return flow_map_active();
-}
-
-/* Keep a superseded table reachable until close() (P3: growth must not free
- * a table an in-flight lookup may still be reading). Bounded by GROW_MAX. */
-static void
-flow_map_retain_old(struct ff_flow_slot *old)
-{
-    if (old == NULL)
-        return;
-    if (g_old_n >= FF_FLOW_MAP_GROW_MAX) {
-        /* Only reachable from the capacity setter (a control/test path, no
-         * datapath lookup can be in flight there). Growth itself is capped
-         * by the same constant, so this branch is not its caller. */
-        free(old);
-        return;
-    }
-    g_old[g_old_n++] = old;
-}
-
-static void
-flow_map_drop_old(void)
-{
-    int i;
-
-    for (i = 0; i < g_old_n; i++)
-        free(g_old[i]);
-    g_old_n = 0;
 }
 
 void
@@ -186,32 +158,31 @@ ff_flow_map_open(void)
             g_alloc_fail++;
     }
     g_grown = 0;
-    __atomic_store_n(&g_open, 1, __ATOMIC_SEQ_CST);
+    g_open = 1;
 }
 
 void
 ff_flow_map_close(void)
 {
-    __atomic_store_n(&g_open, 0, __ATOMIC_SEQ_CST);
+    g_open = 0;
 
-    /* The allocation is retained (not freed) so a lookup that is already in
-     * flight on another thread can never touch freed memory; close() is
-     * driven from the control plane while lookups run on the datapath.
-     * P3: placeholders that never got promoted are counted here and the
-     * superseded tables from a grown window are released now. */
+    /* Single-thread contract: nothing can be reading the table here, so the
+     * allocation is released and the steady state carries no flow-map memory
+     * at all; the next open() re-creates it on the control plane.
+     * P3: placeholders that never got promoted are counted before the free.
+     * g_cap is kept: it survives the window so a capacity set by cap_set()
+     * still describes the table that the next open() rebuilds. */
     if (g_table != NULL) {
         uint32_t i;
 
         for (i = 0; i < g_cap; i++) {
-            if (__atomic_load_n(&g_table[i].state, __ATOMIC_SEQ_CST)
-                == FF_FLOW_SLOT_RESERVED)
+            if (g_table[i].state == FF_FLOW_SLOT_RESERVED)
                 g_reserved_stale++;
         }
-        memset(g_table, 0, (size_t)g_cap * sizeof(*g_table));
+        free(g_table);
+        g_table = NULL;
     }
-    flow_map_drop_old();
-    /* g_cap is deliberately NOT reset here: it must always describe the
-     * table that is actually allocated. */
+    g_grown = 0;
 }
 
 int
@@ -223,20 +194,19 @@ ff_flow_map_lookup(const struct ff_flow_key *key)
 
     if (key == NULL)
         return 0;
-    if (!__atomic_load_n(&g_open, __ATOMIC_SEQ_CST))
+    if (!g_open)
         return 0;
-    /* The mask is read before the table: the publisher stores the new table
-     * first and the new capacity second, so this order can only ever pair a
-     * mask with a table that is at least as large (never index past it). */
+    /* The mask is taken before the table: growth replaces the table before
+     * the capacity, so this order never pairs a mask with a smaller table. */
     mask = g_cap_mask;
-    t = __atomic_load_n(&g_table, __ATOMIC_SEQ_CST);
+    t = g_table;
     if (t == NULL)
         return 0;
     h = flow_hash(key);
     idx = h & mask;
     {
         for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
-            uint32_t st = __atomic_load_n(&t[idx].state, __ATOMIC_SEQ_CST);
+            uint32_t st = t[idx].state;
 
             if (st == FF_FLOW_SLOT_EMPTY)
                 return 0;
@@ -259,18 +229,18 @@ ff_flow_map_commit(const struct ff_flow_key *key)
 
     if (key == NULL)
         return -1;
-    if (!__atomic_load_n(&g_open, __ATOMIC_SEQ_CST))
+    if (!g_open)
         return -1;
     /* same order as lookup: mask first, then the table it describes */
     mask = g_cap_mask;
-    t = __atomic_load_n(&g_table, __ATOMIC_SEQ_CST);
+    t = g_table;
     if (t == NULL)
         return -1;
 
     h = flow_hash(key);
     idx = h & mask;
     for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
-        uint32_t st = __atomic_load_n(&t[idx].state, __ATOMIC_SEQ_CST);
+        uint32_t st = t[idx].state;
 
         if (st == FF_FLOW_SLOT_EMPTY)
             return -1;                      /* no such key */
@@ -278,8 +248,7 @@ ff_flow_map_commit(const struct ff_flow_key *key)
          * in a placeholder from an earlier pass of this window. */
         if (slot_matches(&t[idx], key, h)) {
             if (st != FF_FLOW_SLOT_USED)
-                __atomic_store_n(&t[idx].state, FF_FLOW_SLOT_USED,
-                    __ATOMIC_SEQ_CST);
+                t[idx].state = FF_FLOW_SLOT_USED;
             return 0;
         }
         idx = (idx + 1) & mask;
@@ -309,24 +278,21 @@ flow_map_grow(void)
         return 0;
     }
 
-    old = __atomic_load_n(&g_table, __ATOMIC_SEQ_CST);
+    old = g_table;
     for (i = 0; old != NULL && i < g_cap; i++) {
         uint32_t idx;
         unsigned probe;
         int placed = 0;
 
-        if (__atomic_load_n(&old[i].state, __ATOMIC_SEQ_CST)
-            != FF_FLOW_SLOT_USED)
+        if (old[i].state != FF_FLOW_SLOT_USED)
             continue;
 
         idx = old[i].hash & (new_cap - 1);
         for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
-            if (__atomic_load_n(&nt[idx].state, __ATOMIC_SEQ_CST)
-                == FF_FLOW_SLOT_EMPTY) {
+            if (nt[idx].state == FF_FLOW_SLOT_EMPTY) {
                 memcpy(&nt[idx].key, &old[i].key, sizeof(nt[idx].key));
                 nt[idx].hash = old[i].hash;
-                __atomic_store_n(&nt[idx].state, FF_FLOW_SLOT_USED,
-                    __ATOMIC_SEQ_CST);
+                nt[idx].state = FF_FLOW_SLOT_USED;
                 placed = 1;
                 break;
             }
@@ -340,9 +306,9 @@ flow_map_grow(void)
         }
     }
 
-    flow_map_retain_old(old);
-    /* publish the table first, then the capacity that describes it */
-    __atomic_store_n(&g_table, nt, __ATOMIC_SEQ_CST);
+    /* replace the table first, then the capacity that describes it */
+    g_table = nt;
+    free(old);
     g_cap = new_cap;
     g_cap_mask = new_cap - 1;
     g_grown++;
@@ -361,7 +327,7 @@ ff_flow_map_insert(const struct ff_flow_key *key)
     if (!flow_map_active())
         return -1;
 
-    if (__atomic_load_n(&g_table, __ATOMIC_SEQ_CST) == NULL) {
+    if (g_table == NULL) {
         /* Lazy fallback when open() could not allocate. Counted like a
          * full table: downstream an unrecorded flow is indistinguishable
          * from a table-full one (both forward the packet). */
@@ -371,29 +337,27 @@ ff_flow_map_insert(const struct ff_flow_key *key)
             g_full++;
             return -1;
         }
-        __atomic_store_n(&g_table, t, __ATOMIC_SEQ_CST);
+        g_table = t;
     }
 
 again:
-    /* mask first, then the table: growth publishes the table before the
-     * capacity, so this order can never index past the table it pairs
-     * with (cap_set() may also have dropped the table to NULL). */
+    /* mask first, then the table: growth replaces the table before the
+     * capacity, and cap_set() may have dropped the table to NULL. */
     mask = g_cap_mask;
-    t = __atomic_load_n(&g_table, __ATOMIC_SEQ_CST);
+    t = g_table;
     if (t == NULL)
         return -1;
     h = flow_hash(key);
     idx = h & mask;
     for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
-        uint32_t st = __atomic_load_n(&t[idx].state, __ATOMIC_SEQ_CST);
+        uint32_t st = t[idx].state;
 
         if (st == FF_FLOW_SLOT_EMPTY) {
             memcpy(&t[idx].key, key, sizeof(*key));
             t[idx].hash = h;
             /* P3: the placeholder only becomes visible to lookup() once
              * ff_flow_map_commit() confirms the SYN-ACK went out. */
-            __atomic_store_n(&t[idx].state, FF_FLOW_SLOT_RESERVED,
-                __ATOMIC_SEQ_CST);
+            t[idx].state = FF_FLOW_SLOT_RESERVED;
             g_inserted++;
             return 0;
         }
@@ -459,12 +423,11 @@ ff_flow_map_cap_set(uint32_t cap)
         return;
     if ((cap & (cap - 1)) != 0)
         return;                     /* power of two: mask indexing */
-    /* Drop the table before publishing the new capacity, so the single
-     * publish order stays "table first, capacity second" (a reader may
-     * otherwise pair the larger mask with the smaller table). */
-    if (__atomic_load_n(&g_table, __ATOMIC_SEQ_CST) != NULL) {
-        flow_map_retain_old(__atomic_load_n(&g_table, __ATOMIC_SEQ_CST));
-        __atomic_store_n(&g_table, NULL, __ATOMIC_SEQ_CST);
+    /* Drop the table before the new capacity takes effect: nothing reads it
+     * here (single-thread contract) and the next open() rebuilds it. */
+    if (g_table != NULL) {
+        free(g_table);
+        g_table = NULL;
     }
     g_cap = cap;
     g_cap_mask = cap - 1;
