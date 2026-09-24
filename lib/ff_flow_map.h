@@ -93,9 +93,10 @@ void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
 
 /* P3 (C-P3-3): capacity knob for tests and control-plane callers — a power of
  * two within [FF_FLOW_MAP_CAP_MIN, FF_FLOW_MAP_CAP_MAX]. Takes effect at the
- * next open() (or immediately drops the current table, keeping the old one
- * reachable for in-flight lookups). Not a config directive: the default is
- * unchanged. */
+ * next open(); it also releases the current table at once (single-thread
+ * contract: nothing can be looking up while this runs). The capacity survives
+ * close(), so it still describes the table the next open() rebuilds. Not a
+ * config directive: the default is unchanged. */
 #define FF_FLOW_MAP_CAP_MIN  64u
 #define FF_FLOW_MAP_CAP_MAX  (1u << 20)
 void ff_flow_map_cap_set(uint32_t cap);

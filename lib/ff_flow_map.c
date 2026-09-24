@@ -80,9 +80,8 @@ struct ff_flow_slot {
 
 static struct ff_flow_slot *g_table;
 static int g_open;
-/* Capacity of the live table (power of two) and its index mask. Published
- * together, table first — a reader must never combine the new mask with the
- * old table. */
+/* Capacity of the live table (power of two) and its index mask, always kept
+ * in sync: the mask must never describe a larger table than the one held. */
 static uint32_t g_cap = FF_FLOW_MAP_ENTRIES;
 static uint32_t g_cap_mask = FF_FLOW_MAP_MASK;
 static uint32_t g_grown;
@@ -299,7 +298,7 @@ flow_map_grow(void)
             idx = (idx + 1) & (new_cap - 1);
         }
         if (!placed) {
-            /* half-migrated tables are never published */
+            /* a half-migrated table never becomes the live one */
             free(nt);
             g_grow_fail++;
             return 0;
