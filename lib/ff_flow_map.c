@@ -72,6 +72,7 @@
 struct ff_flow_slot {
     struct ff_flow_key key;
     uint32_t state;
+    uint32_t hash;      /* flow_hash(key): compared before the 40-byte key */
 };
 
 static struct ff_flow_slot *g_table;
@@ -96,26 +97,36 @@ static uint64_t g_grow_fail;
 static uint64_t g_alloc_fail;
 static uint64_t g_reserved_stale;
 
-/* FNV-1a over the raw 40 key bytes. The padding fields are zeroed by every
- * producer, so the hash is stable across v4/v6 and across processes. */
+/* Portable word hash, no ISA or DPDK dependency. Only the bytes that carry
+ * identity are mixed (V4 leaves src[1..3]/dst[1..3] zero), the two address
+ * chains run in parallel to shorten the multiply chain, and the tail is
+ * avalanched because the index comes from the low bits (h & mask). */
 static uint32_t
 flow_hash(const struct ff_flow_key *k)
 {
-    const unsigned char *p = (const unsigned char *)k;
-    uint32_t h = 2166136261u;
-    unsigned i;
+    uint32_t a = 2166136261u, b = 2166136261u;
+    uint32_t h;
+    unsigned i, n;
 
-    for (i = 0; i < sizeof(*k); i++) {
-        h ^= (uint32_t)p[i];
-        h *= 16777619u;
+    n = k->af == FF_FLOW_MAP_V6 ? 4u : 1u;
+    for (i = 0; i < n; i++) {
+        a = (a ^ k->src[i]) * 16777619u;
+        b = (b ^ k->dst[i]) * 16777619u;
     }
+    h = a * 16777619u ^ b;
+    h ^= (uint32_t)k->af + (((uint32_t)k->sport << 16) | k->dport);
+    h *= 16777619u;
+    h ^= h >> 16;
+    h *= 2246822519u;
+    h ^= h >> 13;
     return h;
 }
 
 static int
-slot_matches(const struct ff_flow_slot *s, const struct ff_flow_key *k)
+slot_matches(const struct ff_flow_slot *s, const struct ff_flow_key *k,
+    uint32_t h)
 {
-    return memcmp(&s->key, k, sizeof(*k)) == 0;
+    return s->hash == h && memcmp(&s->key, k, sizeof(*k)) == 0;
 }
 
 /* Gate: recording is only meaningful for an app that actually runs the
@@ -207,7 +218,7 @@ int
 ff_flow_map_lookup(const struct ff_flow_key *key)
 {
     struct ff_flow_slot *t;
-    uint32_t idx, mask;
+    uint32_t idx, mask, h;
     unsigned probe;
 
     if (key == NULL)
@@ -221,7 +232,8 @@ ff_flow_map_lookup(const struct ff_flow_key *key)
     t = __atomic_load_n(&g_table, __ATOMIC_SEQ_CST);
     if (t == NULL)
         return 0;
-    idx = flow_hash(key) & mask;
+    h = flow_hash(key);
+    idx = h & mask;
     {
         for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
             uint32_t st = __atomic_load_n(&t[idx].state, __ATOMIC_SEQ_CST);
@@ -230,7 +242,7 @@ ff_flow_map_lookup(const struct ff_flow_key *key)
                 return 0;
             /* P3: a placeholder is not a flow yet — keep probing so an
              * unconfirmed SYN cannot claim "this generation". */
-            if (st == FF_FLOW_SLOT_USED && slot_matches(&t[idx], key))
+            if (st == FF_FLOW_SLOT_USED && slot_matches(&t[idx], key, h))
                 return 1;
             idx = (idx + 1) & mask;
         }
@@ -242,7 +254,7 @@ int
 ff_flow_map_commit(const struct ff_flow_key *key)
 {
     struct ff_flow_slot *t;
-    uint32_t idx, mask;
+    uint32_t idx, mask, h;
     unsigned probe;
 
     if (key == NULL)
@@ -255,7 +267,8 @@ ff_flow_map_commit(const struct ff_flow_key *key)
     if (t == NULL)
         return -1;
 
-    idx = flow_hash(key) & mask;
+    h = flow_hash(key);
+    idx = h & mask;
     for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
         uint32_t st = __atomic_load_n(&t[idx].state, __ATOMIC_SEQ_CST);
 
@@ -263,7 +276,7 @@ ff_flow_map_commit(const struct ff_flow_key *key)
             return -1;                      /* no such key */
         /* state is ignored on purpose: the same four-tuple may be sitting
          * in a placeholder from an earlier pass of this window. */
-        if (slot_matches(&t[idx], key)) {
+        if (slot_matches(&t[idx], key, h)) {
             if (st != FF_FLOW_SLOT_USED)
                 __atomic_store_n(&t[idx].state, FF_FLOW_SLOT_USED,
                     __ATOMIC_SEQ_CST);
@@ -306,11 +319,12 @@ flow_map_grow(void)
             != FF_FLOW_SLOT_USED)
             continue;
 
-        idx = flow_hash(&old[i].key) & (new_cap - 1);
+        idx = old[i].hash & (new_cap - 1);
         for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
             if (__atomic_load_n(&nt[idx].state, __ATOMIC_SEQ_CST)
                 == FF_FLOW_SLOT_EMPTY) {
                 memcpy(&nt[idx].key, &old[i].key, sizeof(nt[idx].key));
+                nt[idx].hash = old[i].hash;
                 __atomic_store_n(&nt[idx].state, FF_FLOW_SLOT_USED,
                     __ATOMIC_SEQ_CST);
                 placed = 1;
@@ -339,7 +353,7 @@ int
 ff_flow_map_insert(const struct ff_flow_key *key)
 {
     struct ff_flow_slot *t;
-    uint32_t idx, mask;
+    uint32_t idx, mask, h;
     unsigned probe;
 
     if (key == NULL)
@@ -368,12 +382,14 @@ again:
     t = __atomic_load_n(&g_table, __ATOMIC_SEQ_CST);
     if (t == NULL)
         return -1;
-    idx = flow_hash(key) & mask;
+    h = flow_hash(key);
+    idx = h & mask;
     for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
         uint32_t st = __atomic_load_n(&t[idx].state, __ATOMIC_SEQ_CST);
 
         if (st == FF_FLOW_SLOT_EMPTY) {
             memcpy(&t[idx].key, key, sizeof(*key));
+            t[idx].hash = h;
             /* P3: the placeholder only becomes visible to lookup() once
              * ff_flow_map_commit() confirms the SYN-ACK went out. */
             __atomic_store_n(&t[idx].state, FF_FLOW_SLOT_RESERVED,
@@ -381,7 +397,7 @@ again:
             g_inserted++;
             return 0;
         }
-        if (slot_matches(&t[idx], key)) {
+        if (slot_matches(&t[idx], key, h)) {
             /* Idempotent: a retransmitted SYN, or a four-tuple reused right
              * after a close, must not consume a second slot. A placeholder
              * counts as "already admitted" — refusing it would leave the
