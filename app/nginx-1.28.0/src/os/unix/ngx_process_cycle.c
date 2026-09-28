@@ -2753,6 +2753,8 @@ static ngx_event_t  ngx_ff_listen_close_timer;
 static ngx_int_t    ngx_ff_listen_close_pending;
 static ngx_msec_t   ngx_ff_listen_close_quit_msec;
 static ngx_uint_t   ngx_ff_drain_started;
+static uint32_t     ngx_ff_drain_epoch;
+static ngx_msec_t   ngx_ff_drain_idle_msec;
 
 static void ngx_ff_stop_accept_events(ngx_cycle_t *cycle);
 static void ngx_ff_listen_close_timer_handler(ngx_event_t *ev);
@@ -2872,11 +2874,18 @@ ngx_ff_is_draining_generation(void)
 static void
 ngx_ff_drain_start(ngx_cycle_t *cycle)
 {
-    if (ngx_ff_drain_started) {
+    uint32_t  epoch = ff_reload_shared_epoch();
+
+    /* One drain per reload round, not one per worker: an abort leaves the old
+     * generation alive and untouched (only the new one is killed), so the same
+     * worker drains again on the next HUP. */
+    if (ngx_ff_drain_started && epoch == ngx_ff_drain_epoch) {
         return;
     }
 
     ngx_ff_drain_started = 1;
+    ngx_ff_drain_epoch = epoch;
+    ngx_ff_drain_idle_msec = ngx_current_msec;
 
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                   "ff drain: started (drain generation, conns=%d syncache=%d)",
@@ -3014,6 +3023,15 @@ ngx_worker_process_cycle_loop(void *arg)
      * of waiting for a QUIT that only arrives once T3 has completed. */
     if (ngx_ff_is_draining_generation()) {
         ngx_ff_drain_start(cycle);
+
+        /* A connection that only becomes idle after the sweep above is never
+         * closed by it (keep-alive stays enabled until ngx_exiting, and that
+         * is set by QUIT in T4 -- too late for T3 to converge), so sweep again
+         * about once a second while this generation is being drained. */
+        if (ngx_current_msec - ngx_ff_drain_idle_msec >= NGX_FF_SND_POLL_MS) {
+            ngx_ff_drain_idle_msec = ngx_current_msec;
+            ngx_close_idle_connections(cycle);
+        }
     }
 
     if (ngx_ff_listen_close_pending) {
