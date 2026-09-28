@@ -109,6 +109,44 @@ probe_running() {
     run_client "python3 -B '$REMOTE_DIR/reload_remote.py' running '$REMOTE_DIR' '$CURRENT_PROBE'" >/dev/null 2>&1
 }
 
+# Anchor the reload on the probe's own progress instead of a fixed sleep
+# after launch: the probe prints one '<PATTERN> elapsed=.. n=..' line per
+# second, so the HUP can be sent at a moment that is proven to have traffic
+# (F-M4-7 wants ACTIVE connections for the drain verdict) and that can be
+# quoted afterwards. Prints the matching line, 1 = never reached the anchor.
+wait_probe_progress() { # pattern min_elapsed min_count timeout
+    local pattern="$1" min_elapsed="$2" min_count="$3" seconds="$4"
+    local output line until
+    [ -n "$CURRENT_PROBE" ] || return 1
+    until=$((SECONDS + seconds))
+    while [ "$SECONDS" -lt "$until" ]; do
+        # 'result' prints nothing until the job finishes (it returns 75
+        # while running), so the live progress has to be read from the log.
+        # Only the progress lines: a burst of PROBE_ERROR must not evict
+        # them from a tail window and turn the anchor into a timeout.
+        output=$(CLIENT_TIMEOUT=$((until - SECONDS)) run_client \
+            "grep -a '^"$pattern"' '$REMOTE_DIR/$CURRENT_PROBE.log' 2>/dev/null | tail -n 5") \
+            || output=""
+        line=$(printf '%s\n' "$output" | awk -v p="$pattern" \
+            -v e="$min_elapsed" -v c="$min_count" '
+            $1 == p {
+                el = 0; nn = 0;
+                for (i = 2; i <= NF; i++) {
+                    if ($i ~ /^elapsed=/) el = substr($i, 9) + 0;
+                    if ($i ~ /^n=/) nn = substr($i, 3) + 0;
+                }
+                if (el >= e && nn >= c) last = $0;
+            }
+            END { if (last != "") print last; }')
+        if [ -n "$line" ]; then
+            printf '%s\n' "$line"
+            return 0
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 wait_client_summary() {
     local ignored_path="$1" pattern="$2" seconds="$3" output rc until
     [ -n "$CURRENT_PROBE" ] || return 1

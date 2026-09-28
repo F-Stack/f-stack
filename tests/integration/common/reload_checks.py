@@ -47,6 +47,8 @@ def validate(values):
               "PERF_THREADS": (1, 256),
               "PERF_CONNS": (1, 1024),
               "PERF_DURATION": (1, 600),
+              "HUP_ANCHOR_SEC": (1, 600),
+              "HUP_ANCHOR_COUNT": (1, 100000000),
               "SHUTDOWN_TIMEOUT": (0, 900)}
     for key, (low, high) in bounds.items():
         value = values[key]

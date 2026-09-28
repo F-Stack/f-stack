@@ -202,17 +202,43 @@ def main(mode):
                 stats["workers_done"] += 1
                 stats["workers_active"] += local.requests > 0
 
+    # One line per second so the harness can anchor the reload on proven
+    # progress (the probe is really producing traffic) instead of a fixed
+    # sleep after the process merely exists.
+    def report_progress(prefix, key, fail_key):
+        while not progress_done.wait(1.0):
+            with lock:
+                n = stats[key]
+                f = stats[fail_key]
+            print("%s elapsed=%.1f n=%d fail=%d" %
+                  (prefix, time.monotonic() - started, n, f), flush=True)
+
     if mode == "stream":
         jobs = [(stream, i) for i in range(a.streams)]
     elif mode == "lc":
         jobs = [(traffic, "lc", True) for _ in range(a.conns)] + [(traffic, "fresh", False)]
     else:
         jobs = [(traffic, "fresh", False) for _ in range(a.threads if mode == "cps" else 1)]
+    progress_done = threading.Event()
+    progressor = None
+    if mode == "cps":
+        progressor = threading.Thread(target=report_progress, daemon=True,
+                                      args=("CPS_PROGRESS", "fresh_n", "fresh_fail"))
+    elif mode == "lc":
+        progressor = threading.Thread(target=report_progress, daemon=True,
+                                      args=("LC_PROGRESS", "reqs", "fail"))
+    if progressor is not None:
+        progressor.start()
+
     workers = [threading.Thread(target=guarded, args=job) for job in jobs]
     for worker in workers:
         worker.start()
     for worker in workers:
         worker.join()
+
+    if progressor is not None:
+        progress_done.set()
+        progressor.join(timeout=2)
     details = " workers_expected=%d workers_done=%d workers_active=%d worker_errors=%d" % (
         len(workers), stats["workers_done"], stats["workers_active"], stats["worker_errors"])
     if mode == "lc":

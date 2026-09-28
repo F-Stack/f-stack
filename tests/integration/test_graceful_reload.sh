@@ -80,7 +80,21 @@ STREAM_DURATION=120
 # of do_hup_case(), so these defaults cannot change any other case.
 PERF_THREADS=1
 PERF_CONNS=12
-PERF_DURATION=110
+# The probe has to outlive the reload window: the worst observed window is
+# ~120 s (a stalled drain hits the 90 s deadline and G_old then quits), and
+# 'probe still running after the reload' is part of the verdict. Note that
+# this also widens that liveness margin (~105 s -> ~175 s); every rate is
+# n / PERF_DURATION, so baselines stay comparable, and the longer window is
+# stricter for the fail=0 style criteria.
+PERF_DURATION=180
+# HUP anchor: the reload is sent once the probe has proven this much
+# progress, instead of a fixed sleep after the process merely exists.
+# Measured: at 3 s the probe has already produced ~20k requests (proof of
+# active traffic) and the window drains in ~2 s; anchoring later (8 s,
+# ~55k requests) reproducibly strands a half-open entry in G_old and the
+# drain runs to its 90 s deadline (2/2 runs), so 3 s is the default.
+HUP_ANCHOR_SEC=3
+HUP_ANCHOR_COUNT=200
 KERNEL_NIC_IP=""
 # Runtime fault injection (FF_FAULT). Empty = production form; a non-empty name
 # requires a fault-injection build manifest (checked by reload_checks.verify-build).
@@ -108,6 +122,7 @@ EXCLUDED_CASES="rt13"
 ERRLOG=""
 PIDFILE=""
 STREAM_MD5=""
+HUP_ANCHOR_LINE=""
 HUP_SUMMARY="NA"
 HUP_DRAIN="NA"
 HUP_FWD="NA"
@@ -196,7 +211,9 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
   --rte-fresh-min <min>       /var/run/dpdk/rte freshness gate (default 10)
   --perf-threads <n>          m4_cps.py threads for rt30 (default 1)
   --perf-conns <n>            m4_lc.py connections for rt31 (default 12)
-  --perf-duration <s>         probe duration for rt30/rt31 (default 110)
+  --perf-duration <s>         probe duration for rt30/rt31 (default 180)
+  --hup-anchor-sec <s>        HUP once the probe ran this long (default 3)
+  --hup-anchor-count <n>      ... and produced this many requests (default 200)
 
 Exit: 0 all pass | 100+N N cases failed | 2 usage | 3 preconditions
       | 4 dependency missing | 5 aborted
@@ -244,6 +261,8 @@ while [ $# -gt 0 ]; do
         --perf-threads)      PERF_THREADS="${2:-}"; shift 2 ;;
         --perf-conns)        PERF_CONNS="${2:-}"; shift 2 ;;
         --perf-duration)     PERF_DURATION="${2:-}"; shift 2 ;;
+        --hup-anchor-sec)    HUP_ANCHOR_SEC="${2:-}"; shift 2 ;;
+        --hup-anchor-count)  HUP_ANCHOR_COUNT="${2:-}"; shift 2 ;;
         -h|--help)           usage; exit 0 ;;
         *)                   die_usage "unknown option: $1" ;;
     esac
@@ -268,6 +287,7 @@ local -a values=()
 for n in TARGET_IP CLIENT CASES ROUNDS INTERVAL POLL WORKERS DRAIN_TIMEOUT STARTUP_WAIT \
     STREAM_MB RTE_FRESH_MIN SHUTDOWN_TIMEOUT BASELINE_DURATION GRACEFUL ZC_BUILD FAULT \
     FAULT_DELAY_MS PERF_THREADS PERF_CONNS PERF_DURATION \
+    HUP_ANCHOR_SEC HUP_ANCHOR_COUNT \
     NGINX_BIN FSTACK_TPL PROBE_DIR OUT BUILD_MANIFEST KERNEL_NIC_IP LCORE_MASK LCORE_LIST; do
     values+=("$n=${!n}")
 done
@@ -830,6 +850,9 @@ hup_once() { # conf
 # as a regression either, hence the dedicated code.
 do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [check-mode]
     local tag="$1" g="$2" st="$3" probe="$4" mode="${5:-}"
+    # Reset the anchor: it is global so case_rt30/rt31 can quote it, and a
+    # leftover from the previous case must never be reported as this one's.
+    HUP_ANCHOR_LINE=""
     local conf out rc=0 nodata=0 wave=0 fetch=0 summary="no traffic probe"
     conf=$(gen_nginx_conf "$tag" "$st")
     push_probes || return 1
@@ -860,11 +883,19 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
         lc)
             launch_probe "$tag" 240 m4_lc.py --server "$TARGET_IP" --conns "$PERF_CONNS" \
                 --interval 0.1 --duration "$PERF_DURATION" --fresh 0.5 --timeout 2 || return 1
-            sleep 3 ;;
+            HUP_ANCHOR_LINE=$(wait_probe_progress LC_PROGRESS "$HUP_ANCHOR_SEC" \
+                "$HUP_ANCHOR_COUNT" 60) \
+                || { say "$tag: lc probe never reached the HUP anchor "
+                     "(${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"; return 1; }
+            say "$tag: HUP anchored at: $HUP_ANCHOR_LINE" ;;
         cps)
             launch_probe "$tag" 240 m4_cps.py --server "$TARGET_IP" --threads "$PERF_THREADS" \
                 --duration "$PERF_DURATION" --timeout 2 || return 1
-            sleep 3 ;;
+            HUP_ANCHOR_LINE=$(wait_probe_progress CPS_PROGRESS "$HUP_ANCHOR_SEC" \
+                "$HUP_ANCHOR_COUNT" 60) \
+                || { say "$tag: cps probe never reached the HUP anchor "
+                     "(${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"; return 1; }
+            say "$tag: HUP anchored at: $HUP_ANCHOR_LINE" ;;
     esac
 
     # Only the perf cases sample process CPU: the inventory walk would
@@ -875,7 +906,10 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
     esac
     [ "$probe" = none ] || probe_running || { say "$tag: probe not running before the reload"; rc=1; }
     hup_once "$conf" || rc=1
-    [ "$probe" = none ] || probe_running || { say "$tag: probe not running after the reload (window longer than the probe?)"; rc=1; }
+    [ "$probe" = none ] || probe_running \
+        || { say "$tag: probe not running after the reload (window longer than "
+                 "the probe? drain=${HUP_DRAIN}ms duration=${PERF_DURATION}s "
+                 "anchor=${HUP_ANCHOR_LINE:-none})"; rc=1; }
 
     # wait_client_summary reports 1 = no data (timeout / summary absent) and
     # 2 = the probe reported a summary but failed its own criterion. Only the
@@ -956,7 +990,7 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
 # (est_pps), not measured on the wire.
 case_rt30() {
     say "=== case rt30 (PT-NR-01: high CPS short connections) ==="
-    local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas
+    local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas anchor remaining
     crit="high-rate CPS: client fail=0 + reload complete + 6/6 FSM + workers back to $WORKERS"
     do_hup_case "rt30" 1 0 cps || hrc=$?
     if [ "$hrc" = "2" ]; then
@@ -968,7 +1002,13 @@ case_rt30() {
     rate=$(awk -v n="${n:-0}" -v d="$PERF_DURATION" 'BEGIN { if (n == 0 || d == 0) print "NA"; else printf "%.1f", n / d }')
     cpu_per_1k=$(awk -v c="$HUP_CPU_MS" -v n="${n:-0}" 'BEGIN { if (c == "NA" || n == 0) print "NA"; else printf "%.2f", c * 1000 / n }')
     est_pps=$(awk -v r="$rate" 'BEGIN { if (r == "NA") print "NA"; else printf "%.0f", r * 9 }')
-    meas="mode=cps threads=$PERF_THREADS duration=${PERF_DURATION}s n=${n:-NA} rate=${rate}/s cpu_ms=$HUP_CPU_MS cpu_per_1k=$cpu_per_1k est_pps=$est_pps drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} $HUP_SUMMARY"
+    # Anchor evidence: where in the probe life the reload was sent, and how
+    # much of the probe was left at that moment (not after the reload).
+    anchor=$(printf '%s' "$HUP_ANCHOR_LINE" | sed -n 's/.*elapsed=\([0-9.]*\).*/\1/p')
+    [ -n "$anchor" ] || anchor="NA"
+    remaining=$(awk -v d="$PERF_DURATION" -v a="$anchor" \
+        'BEGIN { if (a == "NA") print "NA"; else printf "%.1f", d - a }')
+    meas="mode=cps threads=$PERF_THREADS duration=${PERF_DURATION}s n=${n:-NA} rate=${rate}/s cpu_ms=$HUP_CPU_MS cpu_per_1k=$cpu_per_1k est_pps=$est_pps drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} anchor=${anchor}s remaining=${remaining}s $HUP_SUMMARY"
     if [ "$rc" = "0" ]; then
         record "rt30" "PASS" "$crit" "$meas"
     else
@@ -979,7 +1019,7 @@ case_rt30() {
 
 case_rt31() {
     say "=== case rt31 (PT-NR-02: high packet rate, long connections) ==="
-    local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas
+    local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas anchor remaining
     crit="high packet rate: fresh_fail=0 + at most one keep-alive closure per connection (G_old drains) + reload complete + 6/6 FSM + workers back to $WORKERS"
     do_hup_case "rt31" 1 0 lc perf || hrc=$?
     if [ "$hrc" = "2" ]; then
@@ -991,7 +1031,13 @@ case_rt31() {
     rate=$(awk -v n="${n:-0}" -v d="$PERF_DURATION" 'BEGIN { if (n == 0 || d == 0) print "NA"; else printf "%.1f", n / d }')
     cpu_per_1k=$(awk -v c="$HUP_CPU_MS" -v n="${n:-0}" 'BEGIN { if (c == "NA" || n == 0) print "NA"; else printf "%.2f", c * 1000 / n }')
     est_pps=$(awk -v r="$rate" 'BEGIN { if (r == "NA") print "NA"; else printf "%.0f", r * 3 }')
-    meas="mode=lc conns=$PERF_CONNS duration=${PERF_DURATION}s reqs=${n:-NA} rate=${rate}/s cpu_ms=$HUP_CPU_MS cpu_per_1k=$cpu_per_1k est_pps=$est_pps drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} $HUP_SUMMARY"
+    # Anchor evidence: where in the probe life the reload was sent, and how
+    # much of the probe was left at that moment (not after the reload).
+    anchor=$(printf '%s' "$HUP_ANCHOR_LINE" | sed -n 's/.*elapsed=\([0-9.]*\).*/\1/p')
+    [ -n "$anchor" ] || anchor="NA"
+    remaining=$(awk -v d="$PERF_DURATION" -v a="$anchor" \
+        'BEGIN { if (a == "NA") print "NA"; else printf "%.1f", d - a }')
+    meas="mode=lc conns=$PERF_CONNS duration=${PERF_DURATION}s reqs=${n:-NA} rate=${rate}/s cpu_ms=$HUP_CPU_MS cpu_per_1k=$cpu_per_1k est_pps=$est_pps drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} anchor=${anchor}s remaining=${remaining}s $HUP_SUMMARY"
     if [ "$rc" = "0" ]; then
         record "rt31" "PASS" "$crit" "$meas"
     else
