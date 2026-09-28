@@ -78,7 +78,13 @@ static ngx_uint_t ngx_ff_reload_t5_resent;
 static ngx_uint_t ngx_ff_reload_t5_tered;
 /* M4 (C-NR-403): T3 drain wait bookkeeping (async, watchdog-driven);
  * F-M3-2 (C-NR-404): worker 0 attach failure flag (reload round only) */
+/* 90s drain fix: T3 that is still not converged after this long logs the
+ * counters of the worker that blocks it, once per round. Without it a
+ * stalled drain was only visible as "deadline forced" 90 s later. */
+#define NGX_FF_RELOAD_T3_STALL_LOG_MS 5000
+
 static ngx_msec_t ngx_ff_reload_t3_start;
+static ngx_uint_t   ngx_ff_reload_t3_stall_logged;
 static ngx_int_t  ngx_ff_reload_attach_failed;
 /* P2 (C-P2-8/9/10): the expected worker set of the round. Without it a
  * worker that never spawned, or never got a slot, is simply missing from
@@ -1409,6 +1415,7 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     }
 
     ngx_ff_reload_t3_start = ngx_current_msec;
+    ngx_ff_reload_t3_stall_logged = 0;
     ngx_ff_reload_watchdog_arm(cycle);   /* F7: arm at the waiting state */
 
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
@@ -1457,6 +1464,7 @@ ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
     uint64_t          syncache;
     ngx_msec_t        deadline;
     ngx_int_t         i;
+    ngx_int_t         blocking = -1;
     ngx_uint_t        drained, forced;
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
@@ -1506,6 +1514,7 @@ ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
             || conns != 0 || snd_pending != 0 || syncache != 0)
         {
             drained = 0;
+            blocking = (int) i;
             break;
         }
     }
@@ -1514,6 +1523,33 @@ ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
                                      : ngx_ff_reload_escalate_term_ms;
     forced = !drained
         && ngx_current_msec - ngx_ff_reload_t3_start > deadline;
+
+    /* 90s drain fix: name the counter that holds T3 open instead of only
+     * reporting the deadline 90 s later. */
+    if (!drained && blocking >= 0 && !ngx_ff_reload_t3_stall_logged
+        && ngx_current_msec - ngx_ff_reload_t3_start
+            > NGX_FF_RELOAD_T3_STALL_LOG_MS)
+    {
+        ngx_ff_reload_t3_stall_logged = 1;
+
+        if (ff_reload_drain_report((unsigned) blocking, epoch, &conns,
+                                   &snd_pending, &syncache, NULL) != 0)
+        {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff drain: T3 stalled, slot %d published no report",
+                          blocking);
+
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff drain: T3 stalled on slot %d "
+                          "(conns=%ul snd_pending=%ul syncache=%ul, "
+                          "elapsed %M ms)",
+                          blocking, (unsigned long) conns,
+                          (unsigned long) snd_pending,
+                          (unsigned long) syncache,
+                          ngx_current_msec - ngx_ff_reload_t3_start);
+        }
+    }
 
     if (forced) {
         /* P2 (C-P2-10): forcing may only complete over workers we can
@@ -2680,12 +2716,23 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
  * twice the syncache retransmit-exhaustion bound (~15s) caps the wait. */
 #define NGX_FF_LISTEN_CLOSE_MAX_MS    30000
 
+/* 90s drain fix: how long the drain generation waits for its half-open
+ * window to close before closing the listeners anyway. An entry still here
+ * after the grace cannot complete any more -- its client gave up, or its ACK
+ * was claimed by the successor generation and is never forwarded back -- so
+ * waiting for it only pinned T3 to its 90 s deadline. Long enough for a
+ * forwarded third handshake ACK, far below FIX-4's hard cap. */
+#define NGX_FF_SYNCACHE_GRACE_MS      3000
+
 static ngx_event_t  ngx_ff_listen_close_timer;
 static ngx_int_t    ngx_ff_listen_close_pending;
 static ngx_msec_t   ngx_ff_listen_close_quit_msec;
+static ngx_uint_t   ngx_ff_drain_started;
+static ngx_msec_t   ngx_ff_syncache_grace_ms;
 
 static void ngx_ff_stop_accept_events(ngx_cycle_t *cycle);
 static void ngx_ff_listen_close_timer_handler(ngx_event_t *ev);
+static void ngx_ff_drain_start(ngx_cycle_t *cycle);
 
 
 /* P2-10 / F-M5-4: how long a drain that cannot converge on its own may keep
@@ -2761,6 +2808,78 @@ ngx_ff_listen_close_timer_handler(ngx_event_t *ev)
  * only ADDS a wait condition on top of no_timers_left).
  */
 #define NGX_FF_SND_POLL_MS   1000
+
+static ngx_msec_t
+ngx_ff_syncache_grace(void)
+{
+    if (ngx_ff_syncache_grace_ms == 0) {
+        ngx_ff_syncache_grace_ms = ngx_ff_reload_env_msec(
+            "NGX_FF_SYNCACHE_GRACE_MS", NGX_FF_SYNCACHE_GRACE_MS);
+    }
+
+    return ngx_ff_syncache_grace_ms;
+}
+
+
+/* 90s drain fix: "this worker's generation is the one being drained".
+ * ff_is_drain_generation() alone is NOT enough for a self-triggered drain: it
+ * also reports 1 for the incoming generation, which does not own rx yet and
+ * must keep accepting (used that way it stopped the new workers and dropped
+ * the CPS run to a trickle). A reload is in flight when active != target, and
+ * the drained generation is the still-active one. */
+static ngx_uint_t
+ngx_ff_is_draining_generation(void)
+{
+    int  active, target;
+
+    if (!ngx_ff_graceful_reload) {
+        return 0;
+    }
+
+    active = ff_reload_active_gen();
+    target = ff_reload_target_gen();
+
+    /* No reload in flight (or no shared block: both read back as 0). */
+    if (active == target || ff_reload_gen() != active) {
+        return 0;
+    }
+
+    return ff_is_drain_generation() ? 1 : 0;
+}
+
+
+/* 90s drain fix: T3 asks every old worker for conns == 0, snd_pending == 0
+ * and syncache == 0, but the drain generation used to start draining only
+ * when QUIT arrived -- in T4, i.e. after T3 had already been waiting for
+ * exactly those counters. A keep-alive connection (never ends on its own) or
+ * a half-open entry that can no longer complete therefore pinned T3 to its
+ * deadline on every round. Start the drain as soon as this worker is the
+ * drain generation instead: only idle connections are closed here, so an
+ * active request (rt02's 8 MB stream) still runs to completion.
+ * Idempotent: re-entering must not restart the cap clock below. */
+static void
+ngx_ff_drain_start(ngx_cycle_t *cycle)
+{
+    if (ngx_ff_drain_started) {
+        return;
+    }
+
+    ngx_ff_drain_started = 1;
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff drain: started (drain generation, conns=%d syncache=%d)",
+                  ff_socket_drain_count(), ff_syncache_count());
+
+    ngx_ff_stop_accept_events(cycle);
+    ngx_ff_listen_close_pending = 1;
+    ngx_ff_listen_close_quit_msec = ngx_current_msec;
+    ngx_ff_listen_close_timer.handler = ngx_ff_listen_close_timer_handler;
+    ngx_ff_listen_close_timer.log = cycle->log;
+    ngx_add_timer(&ngx_ff_listen_close_timer, NGX_FF_LISTEN_CLOSE_POLL_MS);
+
+    ngx_close_idle_connections(cycle);
+}
+
 
 static ngx_uint_t
 ngx_ff_worker_may_exit(ngx_cycle_t *cycle)
@@ -2853,15 +2972,10 @@ ngx_worker_process_cycle_loop(void *arg)
                  * that lost rx to the successor delays: a full shutdown
                  * (nginx -s quit) still owns rx and must close at once,
                  * otherwise new SYNs keep refilling the syncache and the
-                 * count never reaches zero. */
-                ngx_ff_stop_accept_events(cycle);
-                ngx_ff_listen_close_pending = 1;
-                ngx_ff_listen_close_quit_msec = ngx_current_msec;
-                ngx_ff_listen_close_timer.handler =
-                    ngx_ff_listen_close_timer_handler;
-                ngx_ff_listen_close_timer.log = cycle->log;
-                ngx_add_timer(&ngx_ff_listen_close_timer,
-                              NGX_FF_LISTEN_CLOSE_POLL_MS);
+                 * count never reaches zero.  The drain generation normally
+                 * got here earlier (ngx_ff_drain_start(), on becoming the
+                 * drain generation); this call is the idempotent backstop. */
+                ngx_ff_drain_start(cycle);
 
             } else {
                 ngx_close_listening_sockets(cycle);
@@ -2872,6 +2986,13 @@ ngx_worker_process_cycle_loop(void *arg)
         }
     }
 
+    /* 90s drain fix: see ngx_ff_drain_start(). T3 is already waiting for
+     * this worker's counters, so it must start draining on its own instead
+     * of waiting for a QUIT that only arrives once T3 has completed. */
+    if (ngx_ff_is_draining_generation()) {
+        ngx_ff_drain_start(cycle);
+    }
+
     if (ngx_ff_listen_close_pending) {
         if (ff_syncache_count() == 0 || ngx_terminate) {
             ngx_ff_listen_close_pending = 0;
@@ -2879,16 +3000,19 @@ ngx_worker_process_cycle_loop(void *arg)
 
         } else {
             ngx_msec_t  cap = ngx_ff_drain_cap_ms(cycle);
+            ngx_msec_t  grace = ngx_ff_syncache_grace();
+            ngx_msec_t  wait_ms = grace < cap ? grace : cap;
 
-            if (ngx_current_msec - ngx_ff_listen_close_quit_msec >= cap) {
-                /* FIX-4 cap fired: forwarded fresh SYNs keep refilling the
-                 * syncache, so the natural path may never converge (S7').
-                 * NOTICE is an observability anchor for M6. */
+            if (ngx_current_msec - ngx_ff_listen_close_quit_msec >= wait_ms) {
+                /* 90s drain fix: past the grace the remaining entry cannot
+                 * complete any more (see NGX_FF_SYNCACHE_GRACE_MS), so stop
+                 * holding the listeners -- and with them T3 -- open for it.
+                 * FIX-4's cap still bounds the pathological refill case. */
                 ngx_ff_listen_close_pending = 0;
                 ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
-                              "ff drain: listen close capped at %M ms "
+                              "ff drain: syncache wait capped at %M ms "
                               "(quit+%ui ms, syncache=%d, snd_pending=%d)",
-                              cap,
+                              wait_ms,
                               (ngx_uint_t) (ngx_current_msec
                                             - ngx_ff_listen_close_quit_msec),
                               ff_syncache_count(), ff_socket_snd_pending());
