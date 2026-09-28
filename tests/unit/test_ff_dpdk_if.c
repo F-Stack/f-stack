@@ -2275,9 +2275,12 @@ test_a1_flow_map_admission_rule(void **state)
     ff_reload_attach_state(&st);
 
     /* a live window with room: admitted and recorded */
+    ff_flow_map_close();
     ff_flow_map_open();
     assert_int_equal(ff_flow_map_admit(&k), 1);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
+    /* a retransmitted SYN on the same four-tuple is admitted, not refused */
+    assert_int_equal(ff_flow_map_admit(&k), 1);
     ff_flow_map_close();
 
     /* a saturated window: refused, and the refused tuple stays out */

@@ -347,9 +347,8 @@ int ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id);
  * "old flow, forward to the draining generation" — the stack's inpcb cannot
  * answer that question on its own.
  *
- * Entry timing: a flow is recorded the moment its SYN has been answered with
- * a SYN-ACK and the connection has landed in the syncache, NOT when accept()
- * returns. The third handshake ACK arrives while the connection is still
+ * Entry timing: a flow is recorded when its SYN is admitted, before the
+ * SYN-ACK goes out, NOT when accept() returns (2026-09-28 A1). The third handshake ACK arrives while the connection is still
  * half-open; recording at accept() time would let that ACK miss the table and
  * be forwarded to a generation that has no syncache entry for it, which would
  * reset every connection established across the handover.

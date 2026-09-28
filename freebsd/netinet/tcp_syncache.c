@@ -455,12 +455,17 @@ syncache_flow_key(const struct syncache *sc, struct ff_flow_key *key)
  * look like "not this generation", so it is forwarded to the draining
  * generation and answered with a RST — the connection dies although both
  * ends believe it was established. Refusing the SYN here is the honest
- * failure. Returns 1 when the four-tuple is recorded (new or duplicate). */
+ * failure. Returns 1 when the four-tuple is recorded (new or duplicate)
+ * or when no window is open (nothing to refuse). */
 static int
 syncache_flow_map_admit(const struct syncache *sc)
 {
 	struct ff_flow_key key;
 
+	/* Cheap gate first: outside a window there is nothing to record, and
+	 * building the key would be steady-state cost for every SYN. */
+	if (!ff_flow_map_active())
+		return 1;
 	syncache_flow_key(sc, &key);
 
 	/* 0 (new slot) and 1 (this four-tuple is already present) both count
