@@ -214,6 +214,20 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | RT-00 / RT-03 / RT-04 / RT-04b / RT-05 / RT-06 / RT-07 / RT-08 / RT-09 / RT-11 / RT-14 / RT-15 | —（无 harness 落点） | **历史一次性脚本 / 未自动化** |
 | `precheck` / `baseline` | 环境与基线，非用例 | harness（前置腿） |
 
+#### 2.3.1 性能基线用例（PT-NR，2026-09-28 新增）
+
+| 编号 | 用例 | 负载形态 | 记录指标 |
+| --- | --- | --- | --- |
+| **PT-NR-01** | `rt30` | 高 CPS 短连接（`m4_cps.py --threads`，SYN 密集） | `rate`(conn/s)、`cpu_ms`、`cpu_per_1k`、`est_pps`、`drain`、`fwd/rel` |
+| **PT-NR-02** | `rt31` | 长连接小响应（`m4_lc.py --conns`，高包率） | 同上（`rate` 为 req/s） |
+
+- **口径**：`cpu_ms` 是 reload 窗口内按 pid 采样 `/proc/<pid>/stat` 的 utime+stime 增量（reload 会换掉 worker，故按 pid 取增量而非比较两次进程清单）；`est_pps` 是**折算估算**（短连接约 9 包/连接、长连接约 3 包/请求），**不是实测线速 pps**。
+- **判据**：性能数值**不设门槛、不作为门禁**；仍需功能不变量：reload 完成 + 6/6 FSM + worker 数回到配置值。长连接形态额外允许"至多每条长连接一次关闭"（G_old 排空时优雅关闭 keep-alive 属预期，`LC_SUMMARY` 的 `fail/reconnects ≤ conns`），但 **`fresh_fail` 必须为 0**（新连接由 G_new 服务，是真正的正确性信号）。
+- **运行**（显式调用，`-c all` 不包含，不进功能验收 aggregate）：
+  `bash tests/integration/test_graceful_reload.sh -t <DPDK_NIC_IP> -c rt30 -o <OUT> --build-manifest <manifest> --nginx <bin> --client <client> --workers 2 --perf-threads 8 --perf-duration 110`
+  （`rt31` 用 `--perf-conns 48`；`--perf-threads/--perf-conns/--perf-duration` 只影响这两个用例，其余用例参数默认值不变。）
+- **2026-09-28 A/B 实测**（P1 前 `ca5dcb03b` vs 当前 `a0f00630e`，同参数各一轮）：rt30 吞吐 6960.3 → 6926.8 conn/s（−0.48%）、rt31 479.4 → 479.3 req/s（−0.02%），CPU 代理差异 ±1.5% 且方向不一致 ⇒ **在本机负载（约 62k est_pps 短连接、1.4k est_pps 长连接）下 P1 的端到端收益低于噪声，判定为无可测差异**；微基准收益（33.73 → 3.27 ns/包）在该负载下仅相当于单核 0.19%。详见 `work/recheck-20260921/ptnr-p1-perf-ab.md`。
+
 > **【2026-09-17 补登记·R-03】覆盖缺口**：当前 17 行 RT 中**无「部分 worker 死亡（G_new 单 worker 被杀）」场景**。因心跳与 rx 交还是**全进程组单字**（`lib/ff_reload.h:118`，见 [06](06-solution-design.md) §6.2 DR6 附则：[07](07-milestones.md) §2.3 C-NR-316 ⑥），该场景下的 per-queue 失活**不可被现有机制检出**，需补一条实机用例（建议编号 RT-16，与「改 per-queue 心跳」同列为下一轮议题）。
 
 | 编号 | 场景 | 步骤要点 | 通过判据 | 阶段 |
