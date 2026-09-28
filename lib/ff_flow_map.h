@@ -65,6 +65,13 @@ struct ff_flow_key {
  * key". Called once per accepted SYN, so it must stay a load + compare. */
 int ff_flow_map_active(void);
 
+/* The admission rule for a SYN: 1 = go on and answer it, 0 = refuse it
+ * (free the entry, drop the segment) because the flow cannot be recorded
+ * and would otherwise be answered with a SYN-ACK that the draining
+ * generation can only RST. Returns 1 unconditionally while no window is
+ * open — an untracked window is not a reason to refuse a connection. */
+int ff_flow_map_admit(const struct ff_flow_key *key);
+
 /* P3 (C-P3-1): record a flow as "this generation" BEFORE its SYN-ACK is
  * sent, so the third handshake ACK is classified by the dispatcher instead
  * of being forwarded to the draining generation. Idempotent: a repeated key

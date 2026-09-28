@@ -2238,6 +2238,73 @@ test_a1_flow_map_single_phase(void **state)
     ff_global_cfg.dpdk.graceful_reload = 0;
 }
 
+/* A1 / I-5: the admission rule the SYN-ACK path relies on. A window that is
+ * not tracking must never refuse a SYN; a live window that cannot hold the
+ * four-tuple must refuse it and must not record it. */
+static void
+test_a1_flow_map_admission_rule(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t k, fill;
+    uint32_t i;
+    int refused = 0;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.src[0] = 0x0d000001;
+    k.dst[0] = 0x0d000002;
+    k.sport = 0x3333;
+    k.dport = 0x0050;
+
+    /* no window: nothing is tracked, so nothing may be refused */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_attach_state(NULL);
+    assert_int_equal(ff_flow_map_admit(&k), 1);
+
+    /* graceful_reload=1 but no shared block (non-nginx app): ditto */
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    assert_int_equal(ff_flow_map_admit(&k), 1);
+
+    ff_reload_attach_state(&st);
+
+    /* a live window with room: admitted and recorded */
+    ff_flow_map_open();
+    assert_int_equal(ff_flow_map_admit(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    ff_flow_map_close();
+
+    /* a saturated window: refused, and the refused tuple stays out */
+    ff_flow_map_cap_set(64);
+    ff_flow_map_open();
+    for (i = 0; i < 20000; i++) {
+        memset(&fill, 0, sizeof(fill));
+        fill.af = FF_FLOW_MAP_V4;
+        fill.src[0] = 0x0e000000u + i;
+        fill.dst[0] = 0x0e000001;
+        fill.sport = (uint16_t)(0x4000u + (uint16_t)(i & 0xffff));
+        fill.dport = 0x0050;
+        if (ff_flow_map_insert(&fill) < 0) {
+            refused = 1;
+            break;
+        }
+    }
+    assert_int_equal(refused, 1);
+    assert_int_equal(ff_flow_map_admit(&fill), 0);
+    assert_int_equal(ff_flow_map_lookup(&fill), 0);
+
+    ff_flow_map_close();
+    ff_flow_map_cap_set(1u << 16);      /* restore the default for later TCs */
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
 /* P3 (B01-6, C-P3-3): a full table may double, but only a bounded number of
  * times per window and never past FF_FLOW_MAP_CAP_MAX. */
 static void
@@ -2888,6 +2955,7 @@ main(void)
         cmocka_unit_test_setup_teardown(test_p2_slot_transient_window, p1_setup, p1_teardown),
         cmocka_unit_test_setup_teardown(test_p2_slot_transient_exhausted, p1_setup, p1_teardown),
         cmocka_unit_test(test_a1_flow_map_single_phase),
+        cmocka_unit_test(test_a1_flow_map_admission_rule),
         cmocka_unit_test(test_p3_flow_map_bounded_growth),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

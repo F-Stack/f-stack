@@ -465,8 +465,11 @@ syncache_flow_map_admit(const struct syncache *sc)
 
 	/* 0 (new slot) and 1 (this four-tuple is already present) both count
 	 * as admitted: a duplicate must not consume a second slot, and
-	 * refusing it would leave the four-tuple permanently untracked. */
-	return ff_flow_map_insert(&key) >= 0 ? 1 : 0;
+	 * refusing it would leave the four-tuple permanently untracked.
+	 * The refusal itself (a table that cannot hold the four-tuple) and the
+	 * "no window, nothing to refuse" case both live in ff_flow_map_admit(),
+	 * so the rule is testable without the stack. */
+	return ff_flow_map_admit(&key);
 }
 
 /*
@@ -1823,18 +1826,13 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	 * it). The on-stack syncookie entry (sc == &scs) is admitted too —
 	 * it used to be skipped, so a syncookie connection was never tracked
 	 * even though its SYN-ACK went out. */
-	int admitted = 0;
-
-	if (__predict_false(ff_flow_map_active())) {
-		admitted = syncache_flow_map_admit(sc);
-		if (!admitted) {
-			/* Table full (and not expandable): do not send a
-			 * SYN-ACK that would be RST'd on the next ACK. */
-			if (sc != &scs)
-				syncache_free(sc);
-			TCPSTAT_INC(tcps_sc_dropped);
-			goto donenoprobe;
-		}
+	if (!syncache_flow_map_admit(sc)) {
+		/* Table full (and not expandable): do not send a
+		 * SYN-ACK that would be RST'd on the next ACK. */
+		if (sc != &scs)
+			syncache_free(sc);
+		TCPSTAT_INC(tcps_sc_dropped);
+		goto donenoprobe;
 	}
 
 	if (tfo_cookie_valid) {

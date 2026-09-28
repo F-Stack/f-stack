@@ -141,6 +141,19 @@ ff_flow_map_active(void)
     return flow_map_active();
 }
 
+int
+ff_flow_map_admit(const struct ff_flow_key *key)
+{
+    /* The rule the SYN-ACK path applies, kept here so the whole rule and
+     * not just insert's return code is testable without the stack: outside
+     * a window nothing is tracked, so a SYN must NOT be refused; inside one
+     * a four-tuple the table cannot hold is refused instead of getting a
+     * SYN-ACK that the next ACK would only RST. */
+    if (!flow_map_active())
+        return 1;
+    return ff_flow_map_insert(key) >= 0 ? 1 : 0;
+}
+
 void
 ff_flow_map_open(void)
 {
