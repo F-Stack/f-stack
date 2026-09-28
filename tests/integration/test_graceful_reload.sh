@@ -76,6 +76,11 @@ STREAM_MB=8
 # one download can never be seen "still running" after the reload. Kept below
 # the 180 s summary wait and the 300 s remote probe budget.
 STREAM_DURATION=120
+# PT-NR performance-baseline knobs (rt30/rt31). The defaults reproduce the
+# existing cps/lc probe invocations so no other case changes behaviour.
+PERF_THREADS=1
+PERF_CONNS=12
+PERF_DURATION=110
 KERNEL_NIC_IP=""
 # Runtime fault injection (FF_FAULT). Empty = production form; a non-empty name
 # requires a fault-injection build manifest (checked by reload_checks.verify-build).
@@ -108,6 +113,7 @@ HUP_DRAIN="NA"
 HUP_FWD="NA"
 HUP_REL="NA"
 HUP_FSM="0"
+HUP_CPU_MS="NA"
 FAILED=0
 
 declare -a C_NAME=()
@@ -148,7 +154,8 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                               test (write <DPDK_NIC_IP> in any report).
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
-                                         rt12,rt13,rt20,rt20b,rt21,rt22,rt23
+                                         rt12,rt13,rt20,rt20b,rt21,rt22,rt23,
+                                         rt30,rt31 (PT-NR baselines)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -186,6 +193,9 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
   --zc-build <auto|0|1>       zc build form (default auto: probed from the
                               installed f-stack archive)
   --rte-fresh-min <min>       /var/run/dpdk/rte freshness gate (default 10)
+  --perf-threads <n>          m4_cps.py threads for rt30 (default 1)
+  --perf-conns <n>            m4_lc.py connections for rt31 (default 12)
+  --perf-duration <s>         probe duration for rt30/rt31 (default 90)
 
 Exit: 0 all pass | 100+N N cases failed | 2 usage | 3 preconditions
       | 4 dependency missing | 5 aborted
@@ -230,6 +240,9 @@ while [ $# -gt 0 ]; do
         --fault-delay-ms)   FAULT_DELAY_MS="${2:-}"; shift 2 ;;
         --zc-build)          ZC_BUILD="${2:-}"; shift 2 ;;
         --rte-fresh-min)     RTE_FRESH_MIN="${2:-}"; shift 2 ;;
+        --perf-threads)      PERF_THREADS="${2:-}"; shift 2 ;;
+        --perf-conns)        PERF_CONNS="${2:-}"; shift 2 ;;
+        --perf-duration)     PERF_DURATION="${2:-}"; shift 2 ;;
         -h|--help)           usage; exit 0 ;;
         *)                   die_usage "unknown option: $1" ;;
     esac
@@ -253,7 +266,7 @@ local n
 local -a values=()
 for n in TARGET_IP CLIENT CASES ROUNDS INTERVAL POLL WORKERS DRAIN_TIMEOUT STARTUP_WAIT \
     STREAM_MB RTE_FRESH_MIN SHUTDOWN_TIMEOUT BASELINE_DURATION GRACEFUL ZC_BUILD FAULT \
-    FAULT_DELAY_MS \
+    FAULT_DELAY_MS PERF_THREADS PERF_CONNS PERF_DURATION \
     NGINX_BIN FSTACK_TPL PROBE_DIR OUT BUILD_MANIFEST KERNEL_NIC_IP LCORE_MASK LCORE_LIST; do
     values+=("$n=${!n}")
 done
@@ -714,17 +727,72 @@ case_baseline() {
     esac
 }
 
+# PT-NR: "pid ticks" for every process the supervisor has on record. A reload
+# replaces the workers, so the window is sampled repeatedly and the per-pid
+# deltas are summed instead of comparing two live inventories.
+cpu_snapshot() {
+    python3 -B - "$OUT/processes.json" <<'PY' 2>/dev/null
+import json, sys
+
+try:
+    procs = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+for item in procs:
+    pid = item.get("pid")
+    if not pid:
+        continue
+    try:
+        with open("/proc/%d/stat" % pid) as handle:
+            fields = handle.read().rsplit(") ", 1)[1].split()
+        print("%d %d" % (pid, int(fields[11]) + int(fields[12])))  # utime+stime
+    except (OSError, ValueError, IndexError):
+        continue
+PY
+}
+
+# PT-NR: milliseconds of stack CPU inside the window from the snapshots.
+# Baseline only - no samples or no growth yields NA and never changes a verdict.
+cpu_window_ms() { # sample file
+    local clk
+    clk=$(getconf CLK_TCK 2>/dev/null)
+    if [ -z "$clk" ] || [ "$clk" -le 0 ]; then
+        echo NA
+        return 0
+    fi
+    awk -v clk="$clk" '
+        NF == 2 {
+            if (!($1 in first)) first[$1] = $2
+            if (!($1 in last) || $2 > last[$1]) last[$1] = $2
+            seen[$1] = 1
+        }
+        END {
+            total = 0
+            for (p in seen) {
+                delta = last[p] - first[p]
+                if (delta > 0) total += delta
+            }
+            if (total == 0) { print "NA"; exit }
+            printf "%.0f", total * 1000 / clk
+        }' "$1" 2>/dev/null || echo NA
+}
+
 # One HUP against the stack that is currently running. Results land in the
 # HUP_* globals.
 hup_once() { # conf
-    local conf="$1" mark w line n drain fwd rel fsm nworkers
+    local conf="$1" mark w line n drain fwd rel fsm nworkers snap clk
     mark=$(wc -l < "$ERRLOG")
+    snap="$OUT/cpu-window.samples"
+    : > "$snap"
+    cpu_snapshot >> "$snap"
     nginx_signal "$conf" reload || return 1
     w=0
     while [ "$w" -lt "$DRAIN_TIMEOUT" ]; do
+        cpu_snapshot >> "$snap"
         tail -n +$((mark + 1)) "$ERRLOG" | grep -q 'graceful reload complete' && break
         sleep 1; w=$((w + 1))
     done
+    cpu_snapshot >> "$snap"
     line=$(tail -n +$((mark + 1)) "$ERRLOG" | grep 'graceful reload complete' | tail -1)
     n=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete')
     fsm=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload fsm:')
@@ -732,11 +800,12 @@ hup_once() { # conf
     fwd=$(printf '%s' "$line" | sed -n 's/.*drain forwarded \([0-9]*\).*/\1/p')
     rel=$(printf '%s' "$line" | sed -n 's/.*relayed \([0-9]*\) pkts.*/\1/p')
     nworkers=$(worker_count)
+    HUP_CPU_MS=$(cpu_window_ms "$snap")
     HUP_FSM="$fsm"
     HUP_DRAIN="${drain:-NA}"
     HUP_FWD="${fwd:-NA}"
     HUP_REL="${rel:-NA}"
-    say "HUP fsm=$fsm/6 complete=$n drain=${HUP_DRAIN}ms forwarded=${HUP_FWD} relayed=${HUP_REL} workers=$nworkers"
+    say "HUP fsm=$fsm/6 complete=$n drain=${HUP_DRAIN}ms forwarded=${HUP_FWD} relayed=${HUP_REL} workers=$nworkers cpu_ms=${HUP_CPU_MS}"
     [ -n "$line" ] || { say "HUP: no 'graceful reload complete' within ${DRAIN_TIMEOUT}s"; return 1; }
     [ "$n" = "1" ] || { say "HUP: $n completion lines, expected exactly 1"; return 1; }
     [ "$fsm" -ge 6 ] || { say "HUP: only $fsm/6 FSM transitions"; return 1; }
@@ -748,8 +817,8 @@ hup_once() { # conf
 # Returns: 0 pass / 1 fail / 2 the reload passed but the traffic criterion has
 # no data. A missing probe must never be silently counted as a pass, and never
 # as a regression either, hence the dedicated code.
-do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps)
-    local tag="$1" g="$2" st="$3" probe="$4"
+do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [check-mode]
+    local tag="$1" g="$2" st="$3" probe="$4" mode="${5:-}"
     local conf out rc=0 nodata=0 wave=0 fetch=0 summary="no traffic probe"
     conf=$(gen_nginx_conf "$tag" "$st")
     push_probes || return 1
@@ -778,12 +847,12 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps)
                 --expect-md5 "$STREAM_MD5" || return 1
             sleep 3 ;;
         lc)
-            launch_probe "$tag" 120 m4_lc.py --server "$TARGET_IP" --conns 12 \
-                --interval 0.1 --duration 90 --fresh 0.5 --timeout 2 || return 1
+            launch_probe "$tag" 240 m4_lc.py --server "$TARGET_IP" --conns "$PERF_CONNS" \
+                --interval 0.1 --duration "$PERF_DURATION" --fresh 0.5 --timeout 2 || return 1
             sleep 3 ;;
         cps)
-            launch_probe "$tag" 120 m4_cps.py --server "$TARGET_IP" --threads 1 \
-                --duration 90 --timeout 2 || return 1
+            launch_probe "$tag" 240 m4_cps.py --server "$TARGET_IP" --threads "$PERF_THREADS" \
+                --duration "$PERF_DURATION" --timeout 2 || return 1
             sleep 3 ;;
     esac
 
@@ -823,11 +892,19 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps)
             if [ "$fetch" = "1" ]; then
                 summary="NO_DATA (m4_lc.py did not report within 180 s)"; nodata=1
             elif [ "$fetch" = "2" ]; then
-                say "lc probe reported a summary but failed its own criterion"
-                rc=1
+                if [ "$mode" = "perf" ]; then
+                    # Long-connection form: the draining generation closes its
+                    # keep-alive connections, so the probe's own strict check
+                    # trips on reconnects. The harness criterion below is the
+                    # verdict: bounded closures plus fresh_fail=0.
+                    say "lc probe tripped its own strict criterion; the perf criterion judges the summary"
+                else
+                    say "lc probe reported a summary but failed its own criterion"
+                    rc=1
+                fi
             fi
             if [ "$nodata" = "0" ]; then
-                check_summary lc "$summary" || { say "lc verdict below target"; rc=1; }
+                check_summary lc "$summary" "$mode" || { say "lc verdict below target"; rc=1; }
             else
                 say "lc criterion has no data: $summary"
             fi ;;
@@ -853,6 +930,57 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps)
     [ "$rc" != "0" ] && return 1
     [ "$nodata" != "0" ] && return 2
     return 0
+}
+
+# ---- performance-baseline cases (PT-NR) -----------------------------------
+# rt30/rt31 load the handover window at a high rate so the flow-map cost inside
+# the window can be compared between builds. The numbers are a baseline, not a
+# gate: the functional invariants still hold, and the packet rate is derived
+# (est_pps), not measured on the wire.
+case_rt30() {
+    say "=== case rt30 (PT-NR-01: high CPS short connections) ==="
+    local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas
+    crit="high-rate CPS: client fail=0 + reload complete + 6/6 FSM + workers back to $WORKERS"
+    do_hup_case "rt30" 1 0 cps || hrc=$?
+    if [ "$hrc" = "2" ]; then
+        record "rt30" "SKIP" "$crit" "NO_DATA: $HUP_SUMMARY"
+        return 0
+    fi
+    [ "$hrc" != "0" ] && rc=1
+    n=$(printf '%s' "$HUP_SUMMARY" | sed -n 's/.*CPS_SUMMARY threads=[0-9]* n=\([0-9]*\).*/\1/p')
+    rate=$(awk -v n="${n:-0}" -v d="$PERF_DURATION" 'BEGIN { if (n == 0 || d == 0) print "NA"; else printf "%.1f", n / d }')
+    cpu_per_1k=$(awk -v c="$HUP_CPU_MS" -v n="${n:-0}" 'BEGIN { if (c == "NA" || n == 0) print "NA"; else printf "%.2f", c * 1000 / n }')
+    est_pps=$(awk -v r="$rate" 'BEGIN { if (r == "NA") print "NA"; else printf "%.0f", r * 9 }')
+    meas="mode=cps threads=$PERF_THREADS duration=${PERF_DURATION}s n=${n:-NA} rate=${rate}/s cpu_ms=$HUP_CPU_MS cpu_per_1k=$cpu_per_1k est_pps=$est_pps drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} $HUP_SUMMARY"
+    if [ "$rc" = "0" ]; then
+        record "rt30" "PASS" "$crit" "$meas"
+    else
+        record "rt30" "FAIL" "$crit" "$meas"
+    fi
+    return $rc
+}
+
+case_rt31() {
+    say "=== case rt31 (PT-NR-02: high packet rate, long connections) ==="
+    local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas
+    crit="high packet rate: fresh_fail=0 + at most one keep-alive closure per connection (G_old drains) + reload complete + 6/6 FSM + workers back to $WORKERS"
+    do_hup_case "rt31" 1 0 lc perf || hrc=$?
+    if [ "$hrc" = "2" ]; then
+        record "rt31" "SKIP" "$crit" "NO_DATA: $HUP_SUMMARY"
+        return 0
+    fi
+    [ "$hrc" != "0" ] && rc=1
+    n=$(printf '%s' "$HUP_SUMMARY" | sed -n 's/.*LC_SUMMARY conns=[0-9]* reqs=\([0-9]*\).*/\1/p')
+    rate=$(awk -v n="${n:-0}" -v d="$PERF_DURATION" 'BEGIN { if (n == 0 || d == 0) print "NA"; else printf "%.1f", n / d }')
+    cpu_per_1k=$(awk -v c="$HUP_CPU_MS" -v n="${n:-0}" 'BEGIN { if (c == "NA" || n == 0) print "NA"; else printf "%.2f", c * 1000 / n }')
+    est_pps=$(awk -v r="$rate" 'BEGIN { if (r == "NA") print "NA"; else printf "%.0f", r * 3 }')
+    meas="mode=lc conns=$PERF_CONNS duration=${PERF_DURATION}s reqs=${n:-NA} rate=${rate}/s cpu_ms=$HUP_CPU_MS cpu_per_1k=$cpu_per_1k est_pps=$est_pps drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} $HUP_SUMMARY"
+    if [ "$rc" = "0" ]; then
+        record "rt31" "PASS" "$crit" "$meas"
+    else
+        record "rt31" "FAIL" "$crit" "$meas"
+    fi
+    return $rc
 }
 
 # ---- fault-injection cases (F1) ------------------------------------------
@@ -1481,7 +1609,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break

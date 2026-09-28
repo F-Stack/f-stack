@@ -1,7 +1,7 @@
 # Bounded execution helpers for the graceful-reload harness.
 
-check_summary() {
-    printf '%s\n' "$2" | python3 -B "$CHECKS" summary "$1" >/dev/null
+check_summary() { # kind summary [mode]
+    printf '%s\n' "$2" | python3 -B "$CHECKS" summary "$1" "${3:-}" >/dev/null
 }
 
 run_client() {

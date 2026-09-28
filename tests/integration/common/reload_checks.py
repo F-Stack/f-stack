@@ -14,7 +14,7 @@ import sys
 import time
 
 CASES = {"precheck", "baseline", "rt01", "rt02", "rv9", "gr0", "rt12", "rt13",
-         "rt20", "rt20b", "rt21", "rt22", "rt23"}
+         "rt20", "rt20b", "rt21", "rt22", "rt23", "rt30", "rt31"}
 # Named faults are the ones implemented under FF_RELOAD_FAULT_INJECTION
 # (lib/ff_reload.c:1130/1224/1315/1657/1660). Empty means the production form.
 FAULTS = {"", "ready_never", "ready_delay", "park_never", "flip_fail", "mutex_timeout"}
@@ -44,6 +44,9 @@ def validate(values):
               "WORKERS": (1, 30), "DRAIN_TIMEOUT": (1, 900), "STARTUP_WAIT": (1, 120),
               "STREAM_MB": (1, 1024), "RTE_FRESH_MIN": (1, 1440),
               "FAULT_DELAY_MS": (1, 59000),
+              "PERF_THREADS": (1, 256),
+              "PERF_CONNS": (1, 1024),
+              "PERF_DURATION": (1, 600),
               "SHUTDOWN_TIMEOUT": (0, 900)}
     for key, (low, high) in bounds.items():
         value = values[key]
@@ -69,7 +72,7 @@ def validate(values):
             raise ValueError("invalid lcore list")
 
 
-def summary(kind, text):
+def summary(kind, text, mode=""):
     prefix = {"lc": "LC_SUMMARY", "cps": "CPS_SUMMARY", "stream": "STREAM_SUMMARY",
               "outage": "OUTAGE_SUMMARY"}[kind]
     lines = [line for line in text.splitlines() if line.startswith(prefix + " ")]
@@ -97,10 +100,21 @@ def summary(kind, text):
         raise ValueError("worker count does not match probe shape")
     if kind == "lc":
         conns, reqs, fresh = (integer(k) for k in ("conns", "reqs", "fresh_n"))
-        if any(integer(k) for k in ("fail", "reconnects", "fresh_fail")):
-            raise ValueError("connection failure")
+        fail, reconnects, fresh_fail = (integer(k) for k in
+                                        ("fail", "reconnects", "fresh_fail"))
+        if fresh_fail:
+            raise ValueError("fresh connection failure")
         if reqs + fresh == 0 or (conns > 0 and reqs < conns) or fresh == 0:
             raise ValueError("insufficient traffic samples")
+        if mode == "perf":
+            # PT-NR long-connection form: the draining generation closes its
+            # keep-alive connections, so one closure per long connection is
+            # expected. Fresh connections are served by the new generation and
+            # must never fail -- that is the real correctness signal here.
+            if fail > conns or reconnects > conns:
+                raise ValueError("unexpected connection failures")
+        elif fail or reconnects:
+            raise ValueError("connection failure")
     elif kind == "cps":
         n = integer("n")
         if n == 0 or integer("ok") != n or integer("fail") != 0:
@@ -415,7 +429,8 @@ def main(argv):
         ip = address(args[0])
         print("http://%s/" % ("[" + str(ip) + "]" if ip.version == 6 else str(ip)))
     elif command == "summary":
-        print(json.dumps(summary(args[0], sys.stdin.read())))
+        print(json.dumps(summary(args[0], sys.stdin.read(),
+                                args[1] if len(args) > 1 else "")))
     elif command == "aggregate":
         with open(args[0]) as f:
             expected = set(args[1].split(",")) | {"precheck"} if len(args) > 1 else None
