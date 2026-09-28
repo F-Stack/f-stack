@@ -2153,10 +2153,9 @@ test_ut_nr_23_flow_map(void **state)
     assert_int_equal(ff_flow_map_active(), 1);
     assert_int_equal(ff_flow_map_lookup(&k), 0);
     assert_int_equal(ff_flow_map_insert(&k), 0);
-    /* P3 (C-P3-10): the placeholder is not a flow yet — it only becomes
-     * visible to the dispatcher once the SYN-ACK is confirmed. */
-    assert_int_equal(ff_flow_map_lookup(&k), 0);
-    assert_int_equal(ff_flow_map_commit(&k), 0);
+    /* A1: the insert itself marks the flow as this generation, so the
+     * third handshake ACK is classified without a second step */
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
     /* idempotent: a repeated four-tuple must not consume a second slot */
     assert_int_equal(ff_flow_map_insert(&k), 1);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
@@ -2167,7 +2166,6 @@ test_ut_nr_23_flow_map(void **state)
     k2.sport = 0x1235;
     assert_int_equal(ff_flow_map_lookup(&k2), 0);
     assert_int_equal(ff_flow_map_insert(&k2), 0);
-    assert_int_equal(ff_flow_map_commit(&k2), 0);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
     assert_int_equal(ff_flow_map_lookup(&k2), 1);
 
@@ -2183,7 +2181,6 @@ test_ut_nr_23_flow_map(void **state)
     ff_flow_map_open();
     assert_int_equal(ff_flow_map_lookup(&k), 0);
     assert_int_equal(ff_flow_map_insert(&k), 0);
-    assert_int_equal(ff_flow_map_commit(&k), 0);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
     ff_flow_map_close();
 
@@ -2191,14 +2188,13 @@ test_ut_nr_23_flow_map(void **state)
     ff_global_cfg.dpdk.graceful_reload = 0;
 }
 
-/* P3 (B01-6, C-P3-10): a reserved placeholder must not be mistaken for a
- * tracked flow, and only a commit makes it one. */
+/* A1: a SYN is recorded as this generation by the insert itself — there is
+ * no placeholder state and no promotion step any more. */
 static void
-test_p3_flow_map_placeholder(void **state)
+test_a1_flow_map_single_phase(void **state)
 {
     struct ff_reload_state st;
     ff_flow_key_t k, k2;
-    uint64_t stale = 0;
 
     (void)state;
 
@@ -2218,27 +2214,22 @@ test_p3_flow_map_placeholder(void **state)
 
     ff_flow_map_open();
     assert_int_equal(ff_flow_map_insert(&k), 0);
-    /* reserved: invisible to the dispatcher */
-    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    /* visible to the dispatcher right away (single phase) */
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
     /* a repeated SYN on the same four-tuple is admitted, not rejected */
     assert_int_equal(ff_flow_map_insert(&k), 1);
-    assert_int_equal(ff_flow_map_lookup(&k), 0);
-
-    assert_int_equal(ff_flow_map_commit(&k), 0);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
-    /* commit is idempotent */
-    assert_int_equal(ff_flow_map_commit(&k), 0);
 
-    /* a key that was never reserved cannot be committed */
+    /* a second flow does not disturb the first */
     memcpy(&k2, &k, sizeof(k2));
     k2.sport = 0x2223;
-    assert_int_equal(ff_flow_map_commit(&k2), -1);
-
-    /* an unconfirmed placeholder is accounted for when the window closes */
+    assert_int_equal(ff_flow_map_lookup(&k2), 0);
     assert_int_equal(ff_flow_map_insert(&k2), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k2), 1);
+
+    /* close empties the table; open starts a fresh one (reversible) */
     ff_flow_map_close();
-    ff_flow_map_stats2(NULL, NULL, NULL, NULL, NULL, NULL, &stale, NULL);
-    assert_true(stale >= 1);
     assert_int_equal(ff_flow_map_lookup(&k), 0);
 
     ff_flow_map_open();
@@ -2280,10 +2271,9 @@ test_p3_flow_map_bounded_growth(void **state)
         k.sport = (uint16_t)(0x2000u + (uint16_t)(i & 0xffff));
         k.dport = 0x0050;
 
-        if (ff_flow_map_insert(&k) == 0)
-            (void)ff_flow_map_commit(&k);
+        (void)ff_flow_map_insert(&k);
 
-        ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL, NULL,
+        ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL,
             &cap);
         if (grown >= 4)
             break;
@@ -2306,11 +2296,9 @@ test_p3_flow_map_bounded_growth(void **state)
         k.sport = (uint16_t)(0x3000u + (uint16_t)(i & 0xffff));
         k.dport = 0x0050;
 
-        if (ff_flow_map_insert(&k) == 0)
-            (void)ff_flow_map_commit(&k);
+        (void)ff_flow_map_insert(&k);
     }
-    ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL, NULL,
-        &cap);
+    ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL, &cap);
     assert_int_equal((int)grown, 4);
     assert_int_equal((int)cap, 64 << 4);
     assert_true(full > full_before);
@@ -2320,7 +2308,7 @@ test_p3_flow_map_bounded_growth(void **state)
     ff_flow_map_close();
     ff_flow_map_cap_set(100);
     ff_flow_map_open();
-    ff_flow_map_stats2(NULL, NULL, NULL, NULL, NULL, NULL, NULL, &cap);
+    ff_flow_map_stats2(NULL, NULL, NULL, NULL, NULL, NULL, &cap);
     assert_int_equal((int)cap, 64 << 4);
 
     ff_flow_map_close();
@@ -2899,7 +2887,7 @@ main(void)
         cmocka_unit_test_setup_teardown(test_p1_directory_primary_slot_busy, p1_setup, p1_teardown),
         cmocka_unit_test_setup_teardown(test_p2_slot_transient_window, p1_setup, p1_teardown),
         cmocka_unit_test_setup_teardown(test_p2_slot_transient_exhausted, p1_setup, p1_teardown),
-        cmocka_unit_test(test_p3_flow_map_placeholder),
+        cmocka_unit_test(test_a1_flow_map_single_phase),
         cmocka_unit_test(test_p3_flow_map_bounded_growth),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
