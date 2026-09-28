@@ -56,6 +56,30 @@ static ngx_int_t ngx_ff_usr2_handover(ngx_cycle_t *cycle);
 static void ngx_ff_usr2_reclaim(ngx_cycle_t *cycle);
 static void ngx_ff_usr2_check(ngx_cycle_t *cycle);
 static ngx_uint_t ngx_ff_usr2_old_workers(void);
+/* 90s drain fix: how long the drain generation waits for its half-open
+ * window to close before closing the listeners anyway. An entry still here
+ * after the grace cannot complete any more -- its client gave up, or its ACK
+ * was claimed by the successor generation and is never forwarded back -- so
+ * waiting for it only pinned T3 to its 90 s deadline. Long enough for a
+ * forwarded third handshake ACK, far below FIX-4's hard cap. */
+#define NGX_FF_SYNCACHE_GRACE_MS      3000
+
+static ngx_msec_t ngx_ff_syncache_grace_ms;
+static ngx_msec_t ngx_ff_reload_env_msec(const char *name,
+    ngx_msec_t def);
+
+static ngx_msec_t
+ngx_ff_syncache_grace(void)
+{
+    if (ngx_ff_syncache_grace_ms == 0) {
+        ngx_ff_syncache_grace_ms = ngx_ff_reload_env_msec(
+            "NGX_FF_SYNCACHE_GRACE_MS", NGX_FF_SYNCACHE_GRACE_MS);
+    }
+
+    return ngx_ff_syncache_grace_ms;
+}
+
+
 static void ngx_ff_reload_t3_check(ngx_cycle_t *cycle);
 static void ngx_ff_reload_quit_gold(ngx_cycle_t *cycle);
 static void ngx_ff_reload_watchdog_arm(ngx_cycle_t *cycle);
@@ -1465,7 +1489,7 @@ ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
     ngx_msec_t        deadline;
     ngx_int_t         i;
     ngx_int_t         blocking = -1;
-    ngx_uint_t        drained, forced;
+    ngx_uint_t        drained, forced, syncache_expired = 0;
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
@@ -1490,6 +1514,14 @@ ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
         }
     }
 
+    /* 90s drain fix: the half-open counter only blocks T3 for the same grace
+     * the worker uses. An entry that is still there afterwards cannot complete
+     * any more (its client gave up, or its ACK was claimed by the successor and
+     * is never forwarded back), and closing the listeners does not drop it, so
+     * waiting for it only pinned every round to the deadline. */
+    syncache_expired = ngx_current_msec - ngx_ff_reload_t3_start
+                           > ngx_ff_syncache_grace();
+
     drained = 1;
     for (i = 0; i < ngx_last_process; i++) {
         if (!ngx_ff_reload_old_slots[i]) {
@@ -1511,7 +1543,8 @@ ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
 
         if (ff_reload_drain_report((unsigned) i, epoch, &conns,
                                    &snd_pending, &syncache, NULL) != 0
-            || conns != 0 || snd_pending != 0 || syncache != 0)
+            || conns != 0 || snd_pending != 0
+            || (syncache != 0 && !syncache_expired))
         {
             drained = 0;
             blocking = (int) i;
@@ -2716,19 +2749,10 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
  * twice the syncache retransmit-exhaustion bound (~15s) caps the wait. */
 #define NGX_FF_LISTEN_CLOSE_MAX_MS    30000
 
-/* 90s drain fix: how long the drain generation waits for its half-open
- * window to close before closing the listeners anyway. An entry still here
- * after the grace cannot complete any more -- its client gave up, or its ACK
- * was claimed by the successor generation and is never forwarded back -- so
- * waiting for it only pinned T3 to its 90 s deadline. Long enough for a
- * forwarded third handshake ACK, far below FIX-4's hard cap. */
-#define NGX_FF_SYNCACHE_GRACE_MS      3000
-
 static ngx_event_t  ngx_ff_listen_close_timer;
 static ngx_int_t    ngx_ff_listen_close_pending;
 static ngx_msec_t   ngx_ff_listen_close_quit_msec;
 static ngx_uint_t   ngx_ff_drain_started;
-static ngx_msec_t   ngx_ff_syncache_grace_ms;
 
 static void ngx_ff_stop_accept_events(ngx_cycle_t *cycle);
 static void ngx_ff_listen_close_timer_handler(ngx_event_t *ev);
@@ -2808,18 +2832,6 @@ ngx_ff_listen_close_timer_handler(ngx_event_t *ev)
  * only ADDS a wait condition on top of no_timers_left).
  */
 #define NGX_FF_SND_POLL_MS   1000
-
-static ngx_msec_t
-ngx_ff_syncache_grace(void)
-{
-    if (ngx_ff_syncache_grace_ms == 0) {
-        ngx_ff_syncache_grace_ms = ngx_ff_reload_env_msec(
-            "NGX_FF_SYNCACHE_GRACE_MS", NGX_FF_SYNCACHE_GRACE_MS);
-    }
-
-    return ngx_ff_syncache_grace_ms;
-}
-
 
 /* 90s drain fix: "this worker's generation is the one being drained".
  * ff_is_drain_generation() alone is NOT enough for a self-triggered drain: it
