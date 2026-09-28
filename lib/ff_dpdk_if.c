@@ -3493,13 +3493,12 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
      * i.e. a healthy round stays silent. */
     {
         static uint64_t last_full, last_grow_fail, last_alloc_fail;
-        static uint64_t last_reserved;
-        uint64_t full = 0, grow_fail = 0, alloc_fail = 0, reserved = 0;
+        uint64_t full = 0, grow_fail = 0, alloc_fail = 0;
 
         ff_flow_map_stats2(NULL, NULL, &full, NULL, &grow_fail, &alloc_fail,
-            &reserved, NULL);
+            NULL);
         if (full != last_full || grow_fail != last_grow_fail
-            || alloc_fail != last_alloc_fail || reserved != last_reserved) {
+            || alloc_fail != last_alloc_fail) {
             if (full > last_full || grow_fail > last_grow_fail
                 || alloc_fail > last_alloc_fail) {
                 ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
@@ -3509,15 +3508,9 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
                     (unsigned long long)(grow_fail - last_grow_fail),
                     (unsigned long long)(alloc_fail - last_alloc_fail));
             }
-            if (reserved > last_reserved) {
-                ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
-                    "flow map: %llu SYN placeholder(s) never confirmed\n",
-                    (unsigned long long)(reserved - last_reserved));
-            }
             last_full = full;
             last_grow_fail = grow_fail;
             last_alloc_fail = alloc_fail;
-            last_reserved = reserved;
         }
     }
 

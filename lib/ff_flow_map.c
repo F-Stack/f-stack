@@ -68,9 +68,6 @@
 
 #define FF_FLOW_SLOT_EMPTY      0
 #define FF_FLOW_SLOT_USED       1
-/* P3 (C-P3-10): reserved by a SYN that has not sent its SYN-ACK yet. Not
- * visible to lookup(), so a failed respond cannot claim "this generation". */
-#define FF_FLOW_SLOT_RESERVED   2
 
 struct ff_flow_slot {
     struct ff_flow_key key;
@@ -93,7 +90,6 @@ static uint64_t g_dup;
 static uint64_t g_full;
 static uint64_t g_grow_fail;
 static uint64_t g_alloc_fail;
-static uint64_t g_reserved_stale;
 
 /* Portable word hash, no ISA or DPDK dependency. Only the bytes that carry
  * identity are mixed (V4 leaves src[1..3]/dst[1..3] zero), the two address
@@ -168,16 +164,9 @@ ff_flow_map_close(void)
     /* Single-thread contract: nothing can be reading the table here, so the
      * allocation is released and the steady state carries no flow-map memory
      * at all; the next open() re-creates it on the control plane.
-     * P3: placeholders that never got promoted are counted before the free.
      * g_cap is kept: it survives the window so a capacity set by cap_set()
      * still describes the table that the next open() rebuilds. */
     if (g_table != NULL) {
-        uint32_t i;
-
-        for (i = 0; i < g_cap; i++) {
-            if (g_table[i].state == FF_FLOW_SLOT_RESERVED)
-                g_reserved_stale++;
-        }
         free(g_table);
         g_table = NULL;
     }
@@ -217,42 +206,6 @@ ff_flow_map_lookup(const struct ff_flow_key *key)
         }
     }
     return 0;
-}
-
-int
-ff_flow_map_commit(const struct ff_flow_key *key)
-{
-    struct ff_flow_slot *t;
-    uint32_t idx, mask, h;
-    unsigned probe;
-
-    if (key == NULL)
-        return -1;
-    if (!g_open)
-        return -1;
-    /* same order as lookup: mask first, then the table it describes */
-    mask = g_cap_mask;
-    t = g_table;
-    if (t == NULL)
-        return -1;
-
-    h = flow_hash(key);
-    idx = h & mask;
-    for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
-        uint32_t st = t[idx].state;
-
-        if (st == FF_FLOW_SLOT_EMPTY)
-            return -1;                      /* no such key */
-        /* state is ignored on purpose: the same four-tuple may be sitting
-         * in a placeholder from an earlier pass of this window. */
-        if (slot_matches(&t[idx], key, h)) {
-            if (st != FF_FLOW_SLOT_USED)
-                t[idx].state = FF_FLOW_SLOT_USED;
-            return 0;
-        }
-        idx = (idx + 1) & mask;
-    }
-    return -1;
 }
 
 /* P3 (C-P3-3): double the table once, bounded by GROW_MAX and CAP_MAX.
@@ -354,17 +307,15 @@ again:
         if (st == FF_FLOW_SLOT_EMPTY) {
             memcpy(&t[idx].key, key, sizeof(*key));
             t[idx].hash = h;
-            /* P3: the placeholder only becomes visible to lookup() once
-             * ff_flow_map_commit() confirms the SYN-ACK went out. */
-            t[idx].state = FF_FLOW_SLOT_RESERVED;
+            t[idx].state = FF_FLOW_SLOT_USED;
             g_inserted++;
             return 0;
         }
         if (slot_matches(&t[idx], key, h)) {
             /* Idempotent: a retransmitted SYN, or a four-tuple reused right
-             * after a close, must not consume a second slot. A placeholder
-             * counts as "already admitted" — refusing it would leave the
-             * four-tuple permanently untracked for this window. */
+             * after a close, must not consume a second slot. Refusing it
+             * would leave the four-tuple permanently untracked for this
+             * window. */
             g_dup++;
             return 1;
         }
@@ -395,7 +346,7 @@ ff_flow_map_stats(uint64_t *inserted, uint64_t *dup, uint64_t *full)
 void
 ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
     uint64_t *grown, uint64_t *grow_fail, uint64_t *alloc_fail,
-    uint64_t *reserved_stale, uint32_t *cap)
+    uint32_t *cap)
 {
     if (inserted != NULL)
         *inserted = g_inserted;
@@ -409,8 +360,6 @@ ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
         *grow_fail = g_grow_fail;
     if (alloc_fail != NULL)
         *alloc_fail = g_alloc_fail;
-    if (reserved_stale != NULL)
-        *reserved_stale = g_reserved_stale;
     if (cap != NULL)
         *cap = g_cap;
 }

@@ -469,18 +469,6 @@ syncache_flow_map_admit(const struct syncache *sc)
 	return ff_flow_map_insert(&key) >= 0 ? 1 : 0;
 }
 
-/* P3 (C-P3-10): promote the placeholder once the SYN-ACK (or the TFO
- * completion) is really out, so a failed syncache_respond() cannot leave a
- * "fake this-generation" entry behind. */
-static void
-syncache_flow_map_commit(const struct syncache *sc)
-{
-	struct ff_flow_key key;
-
-	syncache_flow_key(sc, &key);
-	ff_flow_map_commit(&key);
-}
-
 /*
  * Remove and free entry from syncache bucket row.
  * Expects locked syncache head.
@@ -1866,21 +1854,18 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 		 * real connection. Recording later (at accept()) would let the
 		 * third handshake ACK miss the table and be forwarded to a
 		 * generation that has no syncache entry for it. sc is left
-		 * alone; the table only reads its inc.
-		 * P3: the placeholder is promoted here, and only here. */
-		if (admitted)
-			syncache_flow_map_commit(sc);
+		 * alone; the table only reads its inc. The flow was already
+		 * recorded by the admission above. */
 		if (sc != &scs)
 			syncache_insert(sc, sch);   /* locks and unlocks sch */
 		TCPSTAT_INC(tcps_sndacks);
 		TCPSTAT_INC(tcps_sndtotal);
 	} else {
-		/* P3: the SYN-ACK never went out, so the flow must NOT become
-		 * "this generation". donenoprobe falls through to tfo_expanded
-		 * below, which would otherwise commit the placeholder — drop the
-		 * admission here and leave the entry RESERVED (the table counts
-		 * it at close()). */
-		admitted = 0;
+		/* A1 trade-off: the four-tuple was recorded by the admission, so a
+		 * SYN-ACK that never went out leaves a "this generation" record for
+		 * a connection that was not established. The impact is bounded: the
+		 * client only retransmits the pure SYN, which the dispatcher keeps
+		 * locally anyway. */
 		if (sc != &scs)
 			syncache_free(sc);
 		TCPSTAT_INC(tcps_sc_dropped);
@@ -1902,12 +1887,9 @@ donenoprobe:
 		tcp_fastopen_decrement_counter(tfo_pending);
 
 tfo_expanded:
-	/* P3 (C-P3-1/2): syncache_tfo_expand() completes the connection without
-	 * ever calling syncache_respond(), so the placeholder has to be
-	 * promoted here — otherwise the TFO flow stays RESERVED (and the
-	 * dispatcher skips RESERVED) and is RST'd like an untracked flow. */
-	if (admitted && rv != NULL)
-		syncache_flow_map_commit(sc);
+	/* A1: syncache_tfo_expand() completes the connection without ever
+	 * calling syncache_respond(), but the flow is already recorded by the
+	 * admission above, so nothing has to be promoted here. */
 	if (cred != NULL)
 		crfree(cred);
 	if (sc == NULL || sc == &scs) {
