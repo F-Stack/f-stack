@@ -76,8 +76,8 @@ STREAM_MB=8
 # one download can never be seen "still running" after the reload. Kept below
 # the 180 s summary wait and the 300 s remote probe budget.
 STREAM_DURATION=120
-# PT-NR performance-baseline knobs (rt30/rt31). The defaults reproduce the
-# existing cps/lc probe invocations so no other case changes behaviour.
+# PT-NR performance-baseline knobs. Only rt30/rt31 use the cps/lc probe branch
+# of do_hup_case(), so these defaults cannot change any other case.
 PERF_THREADS=1
 PERF_CONNS=12
 PERF_DURATION=110
@@ -114,6 +114,7 @@ HUP_FWD="NA"
 HUP_REL="NA"
 HUP_FSM="0"
 HUP_CPU_MS="NA"
+HUP_CPU_SAMPLE=0
 FAILED=0
 
 declare -a C_NAME=()
@@ -195,7 +196,7 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
   --rte-fresh-min <min>       /var/run/dpdk/rte freshness gate (default 10)
   --perf-threads <n>          m4_cps.py threads for rt30 (default 1)
   --perf-conns <n>            m4_lc.py connections for rt31 (default 12)
-  --perf-duration <s>         probe duration for rt30/rt31 (default 90)
+  --perf-duration <s>         probe duration for rt30/rt31 (default 110)
 
 Exit: 0 all pass | 100+N N cases failed | 2 usage | 3 preconditions
       | 4 dependency missing | 5 aborted
@@ -745,7 +746,10 @@ for item in procs:
     try:
         with open("/proc/%d/stat" % pid) as handle:
             fields = handle.read().rsplit(") ", 1)[1].split()
-        print("%d %d" % (pid, int(fields[11]) + int(fields[12])))  # utime+stime
+        # pid alone is not stable across a reload: key on pid + start_time so a
+        # recycled pid cannot mix two processes' ticks.
+        print("%d %d %d" % (pid, item.get("start_time", 0),
+                            int(fields[11]) + int(fields[12])))  # utime+stime
     except (OSError, ValueError, IndexError):
         continue
 PY
@@ -761,10 +765,11 @@ cpu_window_ms() { # sample file
         return 0
     fi
     awk -v clk="$clk" '
-        NF == 2 {
-            if (!($1 in first)) first[$1] = $2
-            if (!($1 in last) || $2 > last[$1]) last[$1] = $2
-            seen[$1] = 1
+        NF == 3 {
+            key = $1 " " $2
+            if (!(key in first)) first[key] = $3
+            if (!(key in last) || $3 > last[key]) last[key] = $3
+            seen[key] = 1
         }
         END {
             total = 0
@@ -783,16 +788,18 @@ hup_once() { # conf
     local conf="$1" mark w line n drain fwd rel fsm nworkers snap clk
     mark=$(wc -l < "$ERRLOG")
     snap="$OUT/cpu-window.samples"
-    : > "$snap"
-    cpu_snapshot >> "$snap"
+    if [ "$HUP_CPU_SAMPLE" = "1" ]; then
+        : > "$snap"
+        cpu_snapshot >> "$snap"
+    fi
     nginx_signal "$conf" reload || return 1
     w=0
     while [ "$w" -lt "$DRAIN_TIMEOUT" ]; do
-        cpu_snapshot >> "$snap"
+        [ "$HUP_CPU_SAMPLE" = "1" ] && cpu_snapshot >> "$snap"
         tail -n +$((mark + 1)) "$ERRLOG" | grep -q 'graceful reload complete' && break
         sleep 1; w=$((w + 1))
     done
-    cpu_snapshot >> "$snap"
+    [ "$HUP_CPU_SAMPLE" = "1" ] && cpu_snapshot >> "$snap"
     line=$(tail -n +$((mark + 1)) "$ERRLOG" | grep 'graceful reload complete' | tail -1)
     n=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete')
     fsm=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload fsm:')
@@ -800,7 +807,11 @@ hup_once() { # conf
     fwd=$(printf '%s' "$line" | sed -n 's/.*drain forwarded \([0-9]*\).*/\1/p')
     rel=$(printf '%s' "$line" | sed -n 's/.*relayed \([0-9]*\) pkts.*/\1/p')
     nworkers=$(worker_count)
-    HUP_CPU_MS=$(cpu_window_ms "$snap")
+    if [ "$HUP_CPU_SAMPLE" = "1" ]; then
+        HUP_CPU_MS=$(cpu_window_ms "$snap")
+    else
+        HUP_CPU_MS="NA"
+    fi
     HUP_FSM="$fsm"
     HUP_DRAIN="${drain:-NA}"
     HUP_FWD="${fwd:-NA}"
@@ -856,9 +867,15 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
             sleep 3 ;;
     esac
 
-    [ "$probe" = none ] || probe_running || rc=1
+    # Only the perf cases sample process CPU: the inventory walk would
+    # otherwise run for every reload case.
+    case "$probe" in
+        lc|cps) HUP_CPU_SAMPLE=1 ;;
+        *) HUP_CPU_SAMPLE=0 ;;
+    esac
+    [ "$probe" = none ] || probe_running || { say "$tag: probe not running before the reload"; rc=1; }
     hup_once "$conf" || rc=1
-    [ "$probe" = none ] || probe_running || rc=1
+    [ "$probe" = none ] || probe_running || { say "$tag: probe not running after the reload (window longer than the probe?)"; rc=1; }
 
     # wait_client_summary reports 1 = no data (timeout / summary absent) and
     # 2 = the probe reported a summary but failed its own criterion. Only the
