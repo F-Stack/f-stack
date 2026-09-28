@@ -455,7 +455,7 @@ syncache_flow_key(const struct syncache *sc, struct ff_flow_key *key)
  * look like "not this generation", so it is forwarded to the draining
  * generation and answered with a RST — the connection dies although both
  * ends believe it was established. Refusing the SYN here is the honest
- * failure. Returns 1 when a placeholder was reserved. */
+ * failure. Returns 1 when the four-tuple is recorded (new or duplicate). */
 static int
 syncache_flow_map_admit(const struct syncache *sc)
 {
@@ -1466,9 +1466,7 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	unsigned int *tfo_pending = NULL;
 	int tfo_cookie_valid = 0;
 	int tfo_response_cookie_valid = 0;
-	/* P3 (C-P3-1/2): 1 while this SYN holds a flow-map placeholder that
-	 * still has to be promoted (or dropped) with the SYN-ACK result. */
-	int admitted = 0;
+	/* P3 (C-P3-1/2): 1 once this SYN has been recorded as this generation. */
 	bool locked;
 
 	INP_RLOCK_ASSERT(inp);			/* listen socket */
@@ -1825,7 +1823,8 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	 * it). The on-stack syncookie entry (sc == &scs) is admitted too —
 	 * it used to be skipped, so a syncookie connection was never tracked
 	 * even though its SYN-ACK went out. */
-	admitted = 0;
+	int admitted = 0;
+
 	if (__predict_false(ff_flow_map_active())) {
 		admitted = syncache_flow_map_admit(sc);
 		if (!admitted) {

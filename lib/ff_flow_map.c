@@ -198,8 +198,8 @@ ff_flow_map_lookup(const struct ff_flow_key *key)
 
             if (st == FF_FLOW_SLOT_EMPTY)
                 return 0;
-            /* P3: a placeholder is not a flow yet — keep probing so an
-             * unconfirmed SYN cannot claim "this generation". */
+            /* Only a live entry claims "this generation"; an empty slot
+             * terminates the probe chain. */
             if (st == FF_FLOW_SLOT_USED && slot_matches(&t[idx], key, h))
                 return 1;
             idx = (idx + 1) & mask;
@@ -209,9 +209,9 @@ ff_flow_map_lookup(const struct ff_flow_key *key)
 }
 
 /* P3 (C-P3-3): double the table once, bounded by GROW_MAX and CAP_MAX.
- * Only USED entries are migrated (a placeholder is per-window and is
- * dropped); if any entry cannot be placed the whole migration is abandoned
- * and the old table stays authoritative. Returns 1 on success. */
+ * Only live entries are migrated; if any entry cannot be placed the whole
+ * migration is abandoned and the old table stays authoritative.
+ * Returns 1 on success. */
 static int
 flow_map_grow(void)
 {
