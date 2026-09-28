@@ -2882,13 +2882,11 @@ ngx_ff_drain_start(ngx_cycle_t *cycle)
                   "ff drain: started (drain generation, conns=%d syncache=%d)",
                   ff_socket_drain_count(), ff_syncache_count());
 
-    ngx_ff_stop_accept_events(cycle);
-    ngx_ff_listen_close_pending = 1;
-    ngx_ff_listen_close_quit_msec = ngx_current_msec;
-    ngx_ff_listen_close_timer.handler = ngx_ff_listen_close_timer_handler;
-    ngx_ff_listen_close_timer.log = cycle->log;
-    ngx_add_timer(&ngx_ff_listen_close_timer, NGX_FF_LISTEN_CLOSE_POLL_MS);
-
+    /* Only the idle connections go. Stopping the accept events here would
+     * strand the connections that were already queued at the handover and
+     * reset them when the worker exits (measured as one client failure per
+     * round); the drain generation no longer receives new SYNs anyway, so
+     * nothing refills the queue. The listeners close on QUIT, unchanged. */
     ngx_close_idle_connections(cycle);
 }
 
@@ -2988,6 +2986,19 @@ ngx_worker_process_cycle_loop(void *arg)
                  * got here earlier (ngx_ff_drain_start(), on becoming the
                  * drain generation); this call is the idempotent backstop. */
                 ngx_ff_drain_start(cycle);
+
+                /* C-NR-405 as before: stop accepting but keep the listeners
+                 * open until the half-open window closes (poll below). Only
+                 * here, and not already in ngx_ff_drain_start(), because a
+                 * handover-instant accept queue must still be served. */
+                ngx_ff_stop_accept_events(cycle);
+                ngx_ff_listen_close_pending = 1;
+                ngx_ff_listen_close_quit_msec = ngx_current_msec;
+                ngx_ff_listen_close_timer.handler =
+                    ngx_ff_listen_close_timer_handler;
+                ngx_ff_listen_close_timer.log = cycle->log;
+                ngx_add_timer(&ngx_ff_listen_close_timer,
+                              NGX_FF_LISTEN_CLOSE_POLL_MS);
 
             } else {
                 ngx_close_listening_sockets(cycle);
