@@ -2346,7 +2346,7 @@ test_a1_flow_map_revoke(void **state)
         if (ff_flow_map_admit(&k[n], &created) == 1 && created == 1)
             n++;
     }
-    assert_true(n >= 8);
+    assert_true(n >= 32);
 
     for (i = 0; i < n; i++)
         assert_int_equal(ff_flow_map_lookup(&k[i]), 1);
