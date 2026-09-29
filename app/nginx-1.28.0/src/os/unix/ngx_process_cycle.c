@@ -2836,15 +2836,21 @@ ngx_ff_listen_close_timer_handler(ngx_event_t *ev)
 #define NGX_FF_SND_POLL_MS   1000
 
 /* 90s drain fix: "this worker's generation is the one being drained".
- * ff_is_drain_generation() alone is NOT enough for a self-triggered drain: it
- * also reports 1 for the incoming generation, which does not own rx yet and
- * must keep accepting (used that way it stopped the new workers and dropped
- * the CPS run to a trickle). A reload is in flight when active != target, and
- * the drained generation is the still-active one. */
+ * Three conditions, in this order:
+ *   - a reload is in flight (active != target; both read back as 0 when the
+ *     shared block is not attached, so that case falls out here);
+ *   - this worker belongs to the generation that is being replaced (active);
+ *   - rx ownership really moved to the other generation.
+ * The last one is what ff_is_drain_generation() cannot tell: it also reports 1
+ * for the incoming generation, and it reports 1 for the outgoing one as soon
+ * as the window opens -- before the handover. Draining on the window alone
+ * made an aborted round (flip fails, the old generation keeps serving) close
+ * its idle keep-alive connections after all, which cost every client a
+ * reconnect (rt21: fail=12 reconnects=12). */
 static ngx_uint_t
 ngx_ff_is_draining_generation(void)
 {
-    int  active, target;
+    int  active, target, owner;
 
     if (!ngx_ff_graceful_reload) {
         return 0;
@@ -2853,12 +2859,19 @@ ngx_ff_is_draining_generation(void)
     active = ff_reload_active_gen();
     target = ff_reload_target_gen();
 
-    /* No reload in flight (or no shared block: both read back as 0). */
     if (active == target || ff_reload_gen() != active) {
         return 0;
     }
 
-    return ff_is_drain_generation() ? 1 : 0;
+    owner = ff_reload_rx_owner_gen();
+
+    /* Not attached, or rx still ours: the handover did not happen, so there is
+     * nothing to drain yet (and on an aborted round there never will be). */
+    if (owner < 0 || owner == ff_reload_gen()) {
+        return 0;
+    }
+
+    return 1;
 }
 
 
