@@ -171,7 +171,8 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
                                          rt12,rt13,rt20,rt20b,rt21,rt22,rt23,
-                                         rt30,rt31 (PT-NR baselines)
+                                         rt24,rt30,rt31 (rt24 and the other
+                                         rt2x need a fault-injection build)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -992,7 +993,7 @@ case_rt24() {
     say "=== case rt24 (abort, then HUP again: the surviving G_old drains a second time) ==="
     local rc=0 hrc=0 conf out before after found=0 done=0 deadline fetch
     local crit meas completions drain nworkers t0_line
-    crit="round 1 aborts (rx ownership flip failed, G_old untouched); round 2 completes with a bounded drain (<= 15000 ms), 6/6 FSM and workers back to $WORKERS"
+    crit="round 1 aborts (rx ownership flip failed, G_old untouched); round 2 completes with a bounded drain (<= 15000 ms), a T5 -> T0 transition, workers back to $WORKERS, and fresh_fail=0 with at most one closure per connection"
 
     if [ "$FAULT" != "flip_fail_once" ]; then
         say "rt24: --fault=$FAULT does not match the case fault flip_fail_once"
@@ -1066,16 +1067,23 @@ case_rt24() {
 
     meas="round1=abort round2=complete completions=$completions drain=${drain}ms bound=15000ms t5_to_t0=$t0_line workers=${nworkers}/${WORKERS} before=$before"
 
-    probe_running || { say "rt24: probe not running after the second reload"; rc=1; }
-    # fetch=1 is missing data; fetch=2 is the probe's own strict criterion,
-    # which an aborted round is expected to trip (connections are reset). The
-    # summary is still the evidence that G_old kept serving, so keep it.
+    # No liveness check: the probe (30 s) can finish before the second round is
+    # judged, same convention as fault_case(). Its summary is the evidence.
+    # fetch=1 is missing data; fetch=2 is the probe's own strict criterion, which
+    # an aborted round resets connections into. What has to hold is fresh_fail=0
+    # and at most one closure per connection (rt31's judgement).
     local fetch=0
     out=$(wait_client_summary "/tmp/gr_rt24_lc_out.log" 'LC_SUMMARY' 90) || fetch=$?
     if [ "$fetch" = "1" ]; then
         out="NO_DATA (m4_lc.py did not report within 90 s)"
+        say "rt24: no probe summary -- no evidence that G_old kept serving"
+        rc=1
     elif [ "$fetch" = "2" ]; then
-        say "rt24: lc probe tripped its own strict criterion (an aborted round resets connections); the summary is kept as evidence"
+        say "rt24: lc probe tripped its own strict criterion; judging it as rt31 does"
+    fi
+    if [ "$fetch" != "1" ] && ! check_summary lc "$out" perf; then
+        say "rt24: lc verdict below target (closures not bounded or a fresh failure): $out"
+        rc=1
     fi
 
     unset FF_FAULT
@@ -1231,8 +1239,19 @@ fault_case() { # tag fault expect(ok|abort) criterion [abort-signature]
             # once, which trips the probe's own strict check. What has to hold
             # is a bounded closure per connection and no failure on fresh (new)
             # connections -- the same rule rt31 documents for the drain.
-            say "$tag: lc probe tripped its own strict criterion; judging it as rt31 does (at most one closure per connection, fresh_fail=0)"
-            lcmode=perf
+            say "$tag: lc probe tripped its own strict criterion"
+            if [ "$expect" = ok ]; then
+                # A completing round drains the old generation, which closes
+                # each keep-alive connection once -- the same judgement rt31
+                # documents. An aborted round must keep the strict verdict: it
+                # is exactly how the drain latch closing connections it should
+                # not have (rt21) becomes visible.
+                say "$tag: judging it as rt31 does (at most one closure per connection, fresh_fail=0)"
+                lcmode=perf
+            else
+                say "$tag: abort round keeps the strict verdict"
+                rc=1
+            fi
         fi
         check_summary lc "$summary" "$lcmode" \
             || { say "$tag: lc verdict below target: $summary"; rc=1; }
