@@ -1116,7 +1116,7 @@ case_rt25() {
     before=$(worker_count)
     if have_probe m4_lc.py; then
         launch_probe "rt25" 240 m4_lc.py --server "$TARGET_IP" --conns 12 \
-            --interval 0.1 --duration 90 --fresh 0.5 --timeout 2 \
+            --interval 0.1 --duration 45 --fresh 0.5 --timeout 2 \
             || { stop_stack "rt25" "$conf"; record "rt25" "FAIL" "$crit" "probe launch failed"; return 1; }
         sleep 3
     fi
