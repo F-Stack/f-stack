@@ -401,6 +401,11 @@ int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
  * half-open window has closed and its listening sockets can be closed. */
 int ff_syncache_count(void);
 
+/* Orphan forensics: SYN-ACKs that could not be sent, and handshake ACKs
+ * that were claimed by this generation but answered a different ISS.
+ * Any output pointer may be NULL. */
+void ff_syncache_counters(uint64_t *synack_fail, uint64_t *ack_mismatch);
+
 /* C-NR-405: 1 = this process no longer owns rx (the peer generation took
  * it over during a graceful reload), i.e. it is the draining generation.
  * 0 otherwise, including when no reload is in flight. */

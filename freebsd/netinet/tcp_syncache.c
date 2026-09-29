@@ -175,6 +175,12 @@ VNET_DEFINE_STATIC(struct tcp_syncache, tcp_syncache);
  * goes through them). */
 VNET_DEFINE_STATIC(u_int, syncache_entries);
 #define	V_syncache_entries		VNET(syncache_entries)
+/* Orphan forensics: how often a SYN-ACK could not go out, and how often
+ * a claimed handshake ACK did not match the ISS this stack sent. */
+VNET_DEFINE_STATIC(u_int, syncache_synack_fail);
+VNET_DEFINE_STATIC(u_int, syncache_ack_mismatch);
+#define	V_syncache_synack_fail		VNET(syncache_synack_fail)
+#define	V_syncache_ack_mismatch		VNET(syncache_ack_mismatch)
 
 static SYSCTL_NODE(_net_inet_tcp, OID_AUTO, syncache,
     CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
@@ -519,6 +525,17 @@ int
 ff_syncache_count(void)
 {
 	return ((int)syncache_count());
+}
+
+/* Orphan forensics: the two counters above. Any output pointer may be
+ * NULL; read on the datapath thread only. */
+void
+ff_syncache_counters(uint64_t *synack_fail, uint64_t *ack_mismatch)
+{
+	if (synack_fail != NULL)
+		*synack_fail = (uint64_t)V_syncache_synack_fail;
+	if (ack_mismatch != NULL)
+		*ack_mismatch = (uint64_t)V_syncache_ack_mismatch;
 }
 
 /*
@@ -1353,6 +1370,7 @@ syncache_expand(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 		 * SEG.ACK must match our initial send sequence number + 1.
 		 */
 		if (th->th_ack != sc->sc_iss + 1) {
+			V_syncache_ack_mismatch++;
 			if ((s = tcp_log_addrs(inc, th, NULL, NULL)))
 				log(LOG_DEBUG, "%s; %s: ACK %u != ISS+1 %u, "
 				    "segment rejected\n",
@@ -1868,6 +1886,7 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 		 * a connection that was not established. The impact is bounded: the
 		 * client only retransmits the pure SYN, which the dispatcher keeps
 		 * locally anyway. */
+		V_syncache_synack_fail++;
 		if (sc != &scs)
 			syncache_free(sc);
 		TCPSTAT_INC(tcps_sc_dropped);

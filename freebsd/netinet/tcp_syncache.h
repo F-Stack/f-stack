@@ -49,6 +49,7 @@ int	 syncache_pcblist(struct sysctl_req *);
 u_int	 syncache_count(void);
 /* ff_api export; declared for applications in lib/ff_api.h. */
 int	 ff_syncache_count(void);
+void	 ff_syncache_counters(uint64_t *, uint64_t *);
 
 struct syncache {
 	TAILQ_ENTRY(syncache)	sc_hash;
