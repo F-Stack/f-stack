@@ -988,6 +988,95 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
 # the window can be compared between builds. The numbers are a baseline, not a
 # gate: the functional invariants still hold, and the packet rate is derived
 # (est_pps), not measured on the wire.
+case_rt24() {
+    say "=== case rt24 (abort, then HUP again: the surviving G_old drains a second time) ==="
+    local rc=0 hrc=0 conf out before after found=0 done=0 deadline
+    local crit meas completions drain nworkers t0_line
+    crit="round 1 aborts (rx ownership flip failed, G_old untouched); round 2 completes with a bounded drain (<= 15000 ms), 6/6 FSM and workers back to $WORKERS"
+
+    if [ "$FAULT" != "flip_fail_once" ]; then
+        say "rt24: --fault=$FAULT does not match the case fault flip_fail_once"
+        record "rt24" "FAIL" "$crit" "fault option/case mismatch ($FAULT vs flip_fail_once)"
+        return 1
+    fi
+    export FF_FAULT="flip_fail_once"
+    unset FF_FAULT_DELAY_MS
+
+    conf=$(gen_nginx_conf "rt24" 0)
+    push_probes || { unset FF_FAULT; return 1; }
+    if ! start_stack "rt24" 1 0; then
+        stop_stack "rt24" "$conf" || rc=1
+        unset FF_FAULT
+        record "rt24" "FAIL" "$crit" "start failed (fault=flip_fail_once)"
+        return 1
+    fi
+    before=$(worker_count)
+    if have_probe m4_lc.py; then
+        launch_probe "rt24" 240 m4_lc.py --server "$TARGET_IP" --conns 12 \
+            --interval 0.1 --duration 150 --fresh 0.5 --timeout 2 \
+            || { unset FF_FAULT; stop_stack "rt24" "$conf"; record "rt24" "FAIL" "$crit" "probe launch failed"; return 1; }
+        sleep 3
+    fi
+    probe_running || rc=1
+
+    # Round 1: aborted. An aborted reload never prints the completion line, so
+    # wait for the abort signature instead.
+    nginx_signal "$conf" reload || hrc=1
+    deadline=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if grep -q "graceful reload aborted: rx ownership flip failed" "$ERRLOG"; then
+            found=1; break
+        fi
+        sleep 1
+    done
+    [ "$found" = "1" ] || { say "rt24: round 1 did not abort within 60 s"; hrc=1; }
+
+    # Round 2: the old generation survived the abort, so it becomes the drain
+    # generation a second time. The drain latch is keyed on the reload epoch,
+    # so this round must converge on its own instead of waiting for the 90 s
+    # deadline.
+    sleep 5
+    nginx_signal "$conf" reload || hrc=1
+    deadline=$((SECONDS + 120))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if grep -q "graceful reload complete" "$ERRLOG"; then done=1; break; fi
+        sleep 1
+    done
+    [ "$done" = "1" ] || { say "rt24: round 2 did not complete within 120 s"; hrc=1; }
+
+    [ "$hrc" = "0" ] || rc=1
+
+    # Evidence: exactly one completion (round 1 aborted), its drain, and the
+    # FSM having reached T5 -> T0.
+    completions=$(grep -c "graceful reload complete" "$ERRLOG")
+    drain=$(sed -n 's/.*graceful reload complete.*drain \([0-9]*\) ms.*/\1/p' "$ERRLOG" | tail -1)
+    t0_line=$(grep -c "graceful reload fsm: T5_GOLD_QUIT -> T0_IDLE" "$ERRLOG")
+    nworkers=$(worker_count)
+
+    [ "$completions" = "1" ] || { say "rt24: $completions completion lines, expected exactly 1"; rc=1; }
+    [ -n "$drain" ] || drain="NA"
+    if [ "$drain" != "NA" ] && [ "$drain" -gt 15000 ]; then
+        say "rt24: round 2 drain ${drain}ms exceeds the 15000 ms bound"
+        rc=1
+    fi
+    [ "$t0_line" -ge 1 ] || { say "rt24: no T5 -> T0 transition"; rc=1; }
+    [ "$nworkers" = "$WORKERS" ] || { say "rt24: workers=$nworkers != $WORKERS"; rc=1; }
+
+    meas="round1=abort round2=complete completions=$completions drain=${drain}ms bound=15000ms t5_to_t0=$t0_line workers=${nworkers}/${WORKERS} before=$before"
+
+    probe_running || { say "rt24: probe not running after the second reload"; rc=1; }
+    out=$(wait_client_summary "/tmp/gr_rt24_lc_out.log" 'LC_SUMMARY' 60) \
+        || out="NO_DATA (m4_lc.py did not report within 60 s)"
+
+    unset FF_FAULT
+    if [ "$rc" = "0" ]; then
+        record "rt24" "PASS" "$crit" "$meas traffic=$out"
+    else
+        record "rt24" "FAIL" "$crit" "$meas traffic=$out"
+    fi
+    [ "$rc" = "0" ]
+}
+
 case_rt30() {
     say "=== case rt30 (PT-NR-01: high CPS short connections) ==="
     local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas anchor remaining
@@ -1672,7 +1761,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23 rt30 rt31; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break

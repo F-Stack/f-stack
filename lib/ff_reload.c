@@ -74,6 +74,25 @@ ff_reload_fault_is(const char *name)
     return sel != NULL && strcmp(sel, name) == 0;
 }
 
+/* Same, but fires only once per process: an abort has to be followed by a
+ * clean reload in the same stack to prove that a generation which survived an
+ * aborted round (the old one is left untouched) drains again on the next HUP
+ * instead of keeping the one-shot drain latch from the aborted round. */
+__attribute__((noinline)) static int
+ff_reload_fault_is_once(const char *name)
+{
+    static int fired;
+
+    if (fired) {
+        return 0;
+    }
+    if (!ff_reload_fault_is(name)) {
+        return 0;
+    }
+    fired = 1;
+    return 1;
+}
+
 /* RT-05: FF_FAULT=ready_delay publishes READY FF_FAULT_DELAY_MS late
  * (default past the 60 s master READY wait, i.e. a forced timeout). */
 __attribute__((noinline)) static void
@@ -1128,6 +1147,11 @@ ff_reload_rx_release(int to_gen)
     /* RT-07 test hook: forced ownership-flip failure (markers untouched,
      * so the master's abort rollback stays consistent). */
     if (ff_reload_fault_is("flip_fail")) {
+        return FF_RELOAD_HANDOVER_TIMEOUT;
+    }
+    /* RT-24: abort the first round only, so the next HUP can exercise a
+     * surviving old generation draining a second time. */
+    if (ff_reload_fault_is_once("flip_fail_once")) {
         return FF_RELOAD_HANDOVER_TIMEOUT;
     }
 #endif
