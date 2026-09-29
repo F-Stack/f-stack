@@ -55,6 +55,8 @@ def packets(path):
         ts_sec, ts_frac, caplen, _origlen = struct.unpack(
             endian + "IIII", blob[off:off + 16])
         off += 16
+        if (caplen == 0 or off + caplen > n):
+            break
         data = blob[off:off + caplen]
         off += caplen
         yield linktype, ts_sec + (ts_frac / 1e9 if nano else ts_frac / 1e6), data
@@ -117,7 +119,7 @@ def main(argv):
             continue
         cur = live.get(cport)
         if from_client and flags & SYN and not flags & ACK:
-            if cur is not None and cur.isn == seq and not cur.synack:
+            if cur is not None and cur.isn == seq:
                 cur.retrans += 1                  # the SYN was retried
                 continue
             if cur is not None:

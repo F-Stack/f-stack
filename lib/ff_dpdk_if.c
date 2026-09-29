@@ -3522,8 +3522,8 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
         uint64_t synack_fail = 0, ack_mismatch = 0, inserted = 0, dup = 0;
 
         ff_syncache_counters(&synack_fail, &ack_mismatch);
-        if (synack_fail > last_synack_fail
-            || ack_mismatch > last_ack_mismatch) {
+        if (synack_fail != last_synack_fail
+            || ack_mismatch != last_ack_mismatch) {
             ff_flow_map_stats2(&inserted, &dup, NULL, NULL, NULL, NULL, NULL,
                 NULL);
             ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,

@@ -1899,11 +1899,11 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 		TCPSTAT_INC(tcps_sndacks);
 		TCPSTAT_INC(tcps_sndtotal);
 	} else {
-		/* A1 trade-off: the four-tuple was recorded by the admission, so a
-		 * SYN-ACK that never went out leaves a "this generation" record for
-		 * a connection that was not established. The impact is bounded: the
-		 * client only retransmits the pure SYN, which the dispatcher keeps
-		 * locally anyway. */
+		/* The admission above recorded the four-tuple, so undo it here:
+		 * a leftover record would claim the client\'s retransmissions for
+		 * a connection this generation cannot complete, and the draining
+		 * generation\'s own half-open entry would never see them. A
+		 * duplicate four-tuple belongs to an earlier SYN and stays. */
 		V_syncache_synack_fail++;
 		if (created)
 			syncache_flow_map_revoke(sc);

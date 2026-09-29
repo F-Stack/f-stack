@@ -88,9 +88,9 @@ int ff_flow_map_revoke(const struct ff_flow_key *key);
  * never takes any stack lock (it runs under NET_EPOCH with the inp/syncache
  * locks already dropped).
  * Returns 0 recorded, 1 already present, <0 on error / table full.
- * The entry is visible to ff_flow_map_lookup() right away: a SYN-ACK that
- * fails to go out therefore leaves a record for a connection that was never
- * established, which is the accepted trade-off of the single-phase form. */
+ * The entry is visible to ff_flow_map_lookup() right away. A SYN-ACK that
+ * fails to go out is undone by the caller through ff_flow_map_revoke(),
+ * which is why admit() also reports whether it created the record. */
 int ff_flow_map_insert(const struct ff_flow_key *key);
 
 /* Counters for ff_top / drain observability; any output pointer may be NULL. */

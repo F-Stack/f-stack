@@ -205,10 +205,12 @@ ff_flow_map_revoke(const struct ff_flow_key *key)
         d_home = (home - hole) & mask;
         if (d_home >= 1 && d_home <= ((j - hole) & mask))
             continue;
-        memcpy(&t[hole].key, &t[j].key, sizeof(t[j].key));
-        t[hole].hash = t[j].hash;
-        t[hole].state = FF_FLOW_SLOT_USED;
-        hole = j;
+        if (hole != j) {
+            memcpy(&t[hole].key, &t[j].key, sizeof(t[j].key));
+            t[hole].hash = t[j].hash;
+            t[hole].state = FF_FLOW_SLOT_USED;
+            hole = j;
+        }
     }
     t[hole].state = FF_FLOW_SLOT_EMPTY;
     g_revoked++;
