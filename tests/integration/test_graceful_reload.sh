@@ -95,6 +95,9 @@ PERF_DURATION=180
 # drain runs to its 90 s deadline (2/2 runs), so 3 s is the default.
 HUP_ANCHOR_SEC=3
 HUP_ANCHOR_COUNT=200
+CAPTURE=0                       # orphan forensics: capture on the client
+CLIENT_IF=eth1
+CLIENT_PORT=80
 KERNEL_NIC_IP=""
 # Runtime fault injection (FF_FAULT). Empty = production form; a non-empty name
 # requires a fault-injection build manifest (checked by reload_checks.verify-build).
@@ -215,6 +218,8 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
   --perf-conns <n>            m4_lc.py connections for rt31 (default 12)
   --perf-duration <s>         probe duration for rt30/rt31 (default 180)
   --hup-anchor-sec <s>        HUP once the probe ran this long (default 3)
+  --capture                   capture the handshake on the client (orphan
+                              forensics; needs tcpdump on the client)
   --hup-anchor-count <n>      ... and produced this many requests (default 200)
 
 Exit: 0 all pass | 100+N N cases failed | 2 usage | 3 preconditions
@@ -264,6 +269,8 @@ while [ $# -gt 0 ]; do
         --perf-conns)        PERF_CONNS="${2:-}"; shift 2 ;;
         --perf-duration)     PERF_DURATION="${2:-}"; shift 2 ;;
         --hup-anchor-sec)    HUP_ANCHOR_SEC="${2:-}"; shift 2 ;;
+        --capture)           CAPTURE=1; shift ;;
+        --client-if)         CLIENT_IF="${2:-}"; shift 2 ;;
         --hup-anchor-count)  HUP_ANCHOR_COUNT="${2:-}"; shift 2 ;;
         -h|--help)           usage; exit 0 ;;
         *)                   die_usage "unknown option: $1" ;;
@@ -850,6 +857,28 @@ hup_once() { # conf
 # Returns: 0 pass / 1 fail / 2 the reload passed but the traffic criterion has
 # no data. A missing probe must never be silently counted as a pass, and never
 # as a regression either, hence the dedicated code.
+# Orphan forensics: a reload can answer one four-tuple with two SYN-ACKs
+# (the draining generation answered the original SYN, the new one answered
+# the retransmitted SYN). The capture makes that visible instead of
+# inferred. Bounded by timeout, so nothing has to be killed on the client.
+capture_start() { # tag
+    [ "$CAPTURE" = "1" ] || return 0
+    run_client "nohup timeout $(( PERF_DURATION + 120 )) tcpdump -nn -tttt -S -i $CLIENT_IF -s 96 -w $REMOTE_DIR/gr_${1}_cap.pcap \"host $TARGET_IP and tcp port $CLIENT_PORT\" >/dev/null 2>&1 &" \
+        || { say "capture: cannot start tcpdump on $CLIENT"; return 1; }
+    say "capture: started on $CLIENT ($CLIENT_IF)"
+}
+
+capture_collect() { # tag
+    [ "$CAPTURE" = "1" ] || return 0
+    local pcap="$REMOTE_DIR/gr_${1}_cap.pcap"
+    local txt="$OUT/capture_${1}.txt"
+    if ! run_client "python3 -B $REMOTE_DIR/orphan_capture_analyze.py $pcap $CLIENT_PORT" > "$txt" 2>&1; then
+        say "capture: no report for $tag"
+        return 0
+    fi
+    say "capture: $(tail -1 "$txt")"
+}
+
 do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [check-mode]
     local tag="$1" g="$2" st="$3" probe="$4" mode="${5:-}"
     # Reset the anchor: it is global so case_rt30/rt31 can quote it, and a
@@ -858,6 +887,7 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
     local conf out rc=0 nodata=0 wave=0 fetch=0 summary="no traffic probe"
     conf=$(gen_nginx_conf "$tag" "$st")
     push_probes || return 1
+    capture_start "$tag" || return 1
     if ! start_stack "$tag" "$g" "$st"; then
         stop_stack "$tag" "$conf" || rc=1
         HUP_SUMMARY="start failed"
@@ -979,6 +1009,7 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
     esac
 
     stop_stack "$tag" "$conf" || rc=1
+    capture_collect "$tag"
     HUP_SUMMARY="$summary"
     [ "$rc" != "0" ] && return 1
     [ "$nodata" != "0" ] && return 2

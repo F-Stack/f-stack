@@ -86,7 +86,7 @@ push_probes() {
             -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
             "$PROBE_DIR/$p" "$CLIENT:$REMOTE_DIR/$p" || return 1
     done
-    for p in reload_checks.py reload_remote.py; do
+    for p in reload_checks.py reload_remote.py orphan_capture_analyze.py; do
         python3 -B "$CHECKS" bounded 30 scp -q -o BatchMode=yes \
             -o StrictHostKeyChecking=yes -o ConnectTimeout=5 \
             "$SCRIPT_DIR/common/$p" "$CLIENT:$REMOTE_DIR/$p" || return 1
