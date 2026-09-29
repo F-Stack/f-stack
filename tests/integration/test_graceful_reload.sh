@@ -1155,8 +1155,10 @@ case_rt25() {
     if [ "$handed" = "1" ]; then
         deadline=$((SECONDS + 120))
         while [ "$SECONDS" -lt "$deadline" ]; do
+            # 'worker' only: the old master also keeps a cache manager child,
+            # which is not told to quit by the handover and is not a worker.
             workers_left=$(ps -eo pid,ppid,stat,comm 2>/dev/null \
-                | awk -v m="$old" '$2==m && $1!=m && $3 !~ /^Z/ && $4 ~ /^nginx/ {c++} END {print c+0}')
+                | awk -v m="$old" '$2==m && $1!=m && $3 !~ /^Z/ && $4 ~ /worker/ {c++} END {print c+0}')
             [ "$workers_left" = "0" ] && break
             sleep 2
         done
