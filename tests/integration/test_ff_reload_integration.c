@@ -241,6 +241,8 @@ int   ff_socket(int d, int t, int p) { (void)d;(void)t;(void)p; return -1; }
 int   ff_socket_snd_pending(void) { return 0; }
 int   ff_socket_drain_count(void) { return 0; }
 int   ff_syncache_count(void) { return 0; }
+void  ff_syncache_counters(uint64_t *a, uint64_t *b)
+{ if (a) *a = 0; if (b) *b = 0; }
 int   ff_ioctl_freebsd(int f, unsigned long r, ...) { (void)f;(void)r; return -1; }
 int   ff_close(int f) { (void)f; return 0; }
 int   ff_rtioctl(int f, void *d, unsigned int *l, unsigned int al)

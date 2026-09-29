@@ -196,6 +196,8 @@ int   ff_socket(int d, int t, int p) { (void)d;(void)t;(void)p; return -1; }
 int ff_socket_snd_pending(void) { return 0; }
 int ff_socket_drain_count(void) { return 0; }
 int ff_syncache_count(void) { return 0; }
+void ff_syncache_counters(uint64_t *a, uint64_t *b)
+{ if (a) *a = 0; if (b) *b = 0; }
 
 int   ff_ioctl_freebsd(int f, unsigned long r, ...) { (void)f;(void)r; return -1; }
 int   ff_close(int f) { (void)f; return 0; }
@@ -2266,21 +2268,21 @@ test_a1_flow_map_admission_rule(void **state)
     /* no window: nothing is tracked, so nothing may be refused */
     ff_global_cfg.dpdk.graceful_reload = 0;
     ff_reload_attach_state(NULL);
-    assert_int_equal(ff_flow_map_admit(&k), 1);
+    assert_int_equal(ff_flow_map_admit(&k, NULL), 1);
 
     /* graceful_reload=1 but no shared block (non-nginx app): ditto */
     ff_global_cfg.dpdk.graceful_reload = 1;
-    assert_int_equal(ff_flow_map_admit(&k), 1);
+    assert_int_equal(ff_flow_map_admit(&k, NULL), 1);
 
     ff_reload_attach_state(&st);
 
     /* a live window with room: admitted and recorded */
     ff_flow_map_close();
     ff_flow_map_open();
-    assert_int_equal(ff_flow_map_admit(&k), 1);
+    assert_int_equal(ff_flow_map_admit(&k, NULL), 1);
     assert_int_equal(ff_flow_map_lookup(&k), 1);
     /* a retransmitted SYN on the same four-tuple is admitted, not refused */
-    assert_int_equal(ff_flow_map_admit(&k), 1);
+    assert_int_equal(ff_flow_map_admit(&k, NULL), 1);
     ff_flow_map_close();
 
     /* a saturated window: refused, and the refused tuple stays out */
@@ -2299,11 +2301,91 @@ test_a1_flow_map_admission_rule(void **state)
         }
     }
     assert_int_equal(refused, 1);
-    assert_int_equal(ff_flow_map_admit(&fill), 0);
+    assert_int_equal(ff_flow_map_admit(&fill, NULL), 0);
     assert_int_equal(ff_flow_map_lookup(&fill), 0);
 
     ff_flow_map_close();
     ff_flow_map_cap_set(1u << 16);      /* restore the default for later TCs */
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* A1 / orphan fix: undoing an admission whose SYN-ACK never went out. The
+ * entry lives in a linear-probing table, so clearing its slot must not end
+ * the probe chain for the entries that had to step past it. */
+static void
+test_a1_flow_map_revoke(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t k[64], ghost;
+    uint32_t i, n = 0;
+    int created = 0;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_reload_attach_state(&st);
+
+    ff_flow_map_cap_set(64);
+    ff_flow_map_close();
+    ff_flow_map_open();
+
+    /* Fill a small table so plenty of entries share probe chains. */
+    for (i = 0; i < 64; i++) {
+        memset(&k[n], 0, sizeof(k[n]));
+        k[n].af = FF_FLOW_MAP_V4;
+        k[n].src[0] = 0x0f000000u + i;
+        k[n].dst[0] = 0x0f000001;
+        k[n].sport = (uint16_t)(0x5000u + (uint16_t)i);
+        k[n].dport = 0x0050;
+        if (ff_flow_map_admit(&k[n], &created) == 1 && created == 1)
+            n++;
+    }
+    assert_true(n >= 8);
+
+    for (i = 0; i < n; i++)
+        assert_int_equal(ff_flow_map_lookup(&k[i]), 1);
+
+    /* Revoking an entry must hide only that one. Done for every entry: with
+     * the table half full, at least one slot has an entry that had to step
+     * past it, and clearing that slot without pulling the others back would
+     * hide it. */
+    for (i = 0; i < n; i++) {
+        uint32_t j;
+
+        assert_int_equal(ff_flow_map_revoke(&k[i]), 1);
+        assert_int_equal(ff_flow_map_lookup(&k[i]), 0);
+        for (j = 0; j < n; j++) {
+            if (j == i)
+                continue;
+            assert_int_equal(ff_flow_map_lookup(&k[j]), 1);
+        }
+        assert_int_equal(ff_flow_map_insert(&k[i]), 0);
+    }
+
+    /* A duplicate four-tuple is not "created", so an earlier SYN's record is
+     * not revoked when a later SYN-ACK fails. */
+    created = 1;
+    assert_int_equal(ff_flow_map_admit(&k[0], &created), 1);
+    assert_int_equal(created, 0);
+    assert_int_equal(ff_flow_map_lookup(&k[0]), 1);
+
+    /* Revoking something that is not there changes nothing. */
+    memset(&ghost, 0, sizeof(ghost));
+    ghost.af = FF_FLOW_MAP_V4;
+    ghost.src[0] = 0x0fffffffu;
+    ghost.dst[0] = 0x0f000001;
+    ghost.sport = 0x7fff;
+    ghost.dport = 0x0050;
+    assert_int_equal(ff_flow_map_revoke(&ghost), 0);
+
+    ff_flow_map_close();
+    ff_flow_map_cap_set(1u << 16);
     ff_reload_attach_state(NULL);
     ff_global_cfg.dpdk.graceful_reload = 0;
 }
@@ -2344,7 +2426,7 @@ test_p3_flow_map_bounded_growth(void **state)
         (void)ff_flow_map_insert(&k);
 
         ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL,
-            &cap);
+            &cap, NULL);
         if (grown >= 4)
             break;
     }
@@ -2368,7 +2450,8 @@ test_p3_flow_map_bounded_growth(void **state)
 
         (void)ff_flow_map_insert(&k);
     }
-    ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL, &cap);
+    ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL, &cap,
+        NULL);
     assert_int_equal((int)grown, 4);
     assert_int_equal((int)cap, 64 << 4);
     assert_true(full > full_before);
@@ -2378,7 +2461,7 @@ test_p3_flow_map_bounded_growth(void **state)
     ff_flow_map_close();
     ff_flow_map_cap_set(100);
     ff_flow_map_open();
-    ff_flow_map_stats2(NULL, NULL, NULL, NULL, NULL, NULL, &cap);
+    ff_flow_map_stats2(NULL, NULL, NULL, NULL, NULL, NULL, &cap, NULL);
     assert_int_equal((int)cap, 64 << 4);
 
     ff_flow_map_close();
@@ -2959,6 +3042,7 @@ main(void)
         cmocka_unit_test_setup_teardown(test_p2_slot_transient_exhausted, p1_setup, p1_teardown),
         cmocka_unit_test(test_a1_flow_map_single_phase),
         cmocka_unit_test(test_a1_flow_map_admission_rule),
+        cmocka_unit_test(test_a1_flow_map_revoke),
         cmocka_unit_test(test_p3_flow_map_bounded_growth),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
