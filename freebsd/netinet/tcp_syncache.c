@@ -464,10 +464,12 @@ syncache_flow_key(const struct syncache *sc, struct ff_flow_key *key)
  * failure. Returns 1 when the four-tuple is recorded (new or duplicate)
  * or when no window is open (nothing to refuse). */
 static int
-syncache_flow_map_admit(const struct syncache *sc)
+syncache_flow_map_admit(const struct syncache *sc, int *created)
 {
 	struct ff_flow_key key;
 
+	if (created != NULL)
+		*created = 0;
 	/* Cheap gate first: outside a window there is nothing to record, and
 	 * building the key would be steady-state cost for every SYN. */
 	if (!ff_flow_map_active())
@@ -480,7 +482,22 @@ syncache_flow_map_admit(const struct syncache *sc)
 	 * The refusal itself (a table that cannot hold the four-tuple) and the
 	 * "no window, nothing to refuse" case both live in ff_flow_map_admit(),
 	 * so the rule is testable without the stack. */
-	return ff_flow_map_admit(&key);
+	return ff_flow_map_admit(&key, created);
+}
+
+/* Undo the admission above when the SYN-ACK never went out: keeping the
+ * record would claim the client's retransmissions for a connection this
+ * generation cannot complete, and the draining generation's own half-open
+ * entry would never see them. */
+static void
+syncache_flow_map_revoke(const struct syncache *sc)
+{
+	struct ff_flow_key key;
+
+	if (!ff_flow_map_active())
+		return;
+	syncache_flow_key(sc, &key);
+	ff_flow_map_revoke(&key);
 }
 
 /*
@@ -1849,7 +1866,8 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	 * it). The on-stack syncookie entry (sc == &scs) is admitted too —
 	 * it used to be skipped, so a syncookie connection was never tracked
 	 * even though its SYN-ACK went out. */
-	if (!syncache_flow_map_admit(sc)) {
+	int created = 0;
+	if (!syncache_flow_map_admit(sc, &created)) {
 		/* Table full (and not expandable): do not send a
 		 * SYN-ACK that would be RST'd on the next ACK. */
 		if (sc != &scs)
@@ -1887,6 +1905,8 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 		 * client only retransmits the pure SYN, which the dispatcher keeps
 		 * locally anyway. */
 		V_syncache_synack_fail++;
+		if (created)
+			syncache_flow_map_revoke(sc);
 		if (sc != &scs)
 			syncache_free(sc);
 		TCPSTAT_INC(tcps_sc_dropped);

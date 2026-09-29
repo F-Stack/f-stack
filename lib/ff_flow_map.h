@@ -70,7 +70,16 @@ int ff_flow_map_active(void);
  * and would otherwise be answered with a SYN-ACK that the draining
  * generation can only RST. Returns 1 unconditionally while no window is
  * open — an untracked window is not a reason to refuse a connection. */
-int ff_flow_map_admit(const struct ff_flow_key *key);
+/* As above; *created (may be NULL) reports whether this call added the
+ * record, which is what makes it safe to revoke later: a duplicate
+ * four-tuple belongs to an earlier SYN. */
+int ff_flow_map_admit(const struct ff_flow_key *key, int *created);
+
+/* Undo an admission whose SYN-ACK never went out, so the four-tuple is
+ * forwarded to the draining generation again instead of being claimed
+ * here for a connection this generation cannot complete. Returns 1 when
+ * a record was removed. */
+int ff_flow_map_revoke(const struct ff_flow_key *key);
 
 /* P3 (C-P3-1): record a flow as "this generation" BEFORE its SYN-ACK is
  * sent, so the third handshake ACK is classified by the dispatcher instead
@@ -93,7 +102,7 @@ void ff_flow_map_stats(uint64_t *inserted, uint64_t *dup, uint64_t *full);
  * NULL. */
 void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
     uint64_t *grown, uint64_t *grow_fail, uint64_t *alloc_fail,
-    uint32_t *cap);
+    uint32_t *cap, uint64_t *revoked);
 
 /* P3 (C-P3-3): capacity knob for tests and control-plane callers — a power of
  * two within [FF_FLOW_MAP_CAP_MIN, FF_FLOW_MAP_CAP_MAX]. Takes effect at the

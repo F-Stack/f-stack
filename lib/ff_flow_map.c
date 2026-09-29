@@ -90,6 +90,7 @@ static uint64_t g_dup;
 static uint64_t g_full;
 static uint64_t g_grow_fail;
 static uint64_t g_alloc_fail;
+static uint64_t g_revoked;
 
 /* Portable word hash, no ISA or DPDK dependency. Only the bytes that carry
  * identity are mixed (V4 leaves src[1..3]/dst[1..3] zero), the two address
@@ -142,8 +143,12 @@ ff_flow_map_active(void)
 }
 
 int
-ff_flow_map_admit(const struct ff_flow_key *key)
+ff_flow_map_admit(const struct ff_flow_key *key, int *created)
 {
+    int rc;
+
+    if (created != NULL)
+        *created = 0;
     /* The rule the SYN-ACK path applies, kept here so the whole rule and
      * not just insert's return code is testable without the stack: outside
      * a window nothing is tracked, so a SYN must NOT be refused; inside one
@@ -151,7 +156,63 @@ ff_flow_map_admit(const struct ff_flow_key *key)
      * SYN-ACK that the next ACK would only RST. */
     if (!flow_map_active())
         return 1;
-    return ff_flow_map_insert(key) >= 0 ? 1 : 0;
+    rc = ff_flow_map_insert(key);
+    if (rc == 0 && created != NULL)
+        *created = 1;
+    return rc >= 0 ? 1 : 0;
+}
+
+int
+ff_flow_map_revoke(const struct ff_flow_key *key)
+{
+    struct ff_flow_slot *t;
+    uint32_t idx, mask, h, hole, j, n;
+    unsigned probe, found = 0;
+
+    if (key == NULL || !g_open || g_table == NULL)
+        return 0;
+    mask = g_cap_mask;
+    t = g_table;
+    h = flow_hash(key);
+    idx = h & mask;
+    for (probe = 0; probe < FF_FLOW_MAP_PROBE_MAX; probe++) {
+        uint32_t st = t[idx].state;
+
+        if (st == FF_FLOW_SLOT_EMPTY)
+            return 0;
+        if (st == FF_FLOW_SLOT_USED && slot_matches(&t[idx], key, h)) {
+            found = 1;
+            break;
+        }
+        idx = (idx + 1) & mask;
+    }
+    if (!found)
+        return 0;
+
+    /* Linear probing: clearing the slot would end the probe chain for the
+     * entries that had to step past it, so pull those back into the hole.
+     * An entry whose home lies between the hole and its current slot in
+     * the probe order would become unreachable if it moved, so it stays. */
+    hole = idx;
+    j = idx;
+    for (n = 0; n <= mask; n++) {
+        uint32_t home, d_home;
+
+        j = (j + 1) & mask;
+        if (t[j].state == FF_FLOW_SLOT_EMPTY)
+            break;
+        home = t[j].hash & mask;
+        d_home = (home - hole) & mask;
+        if (d_home >= 1 && d_home <= ((j - hole) & mask))
+            continue;
+        memcpy(&t[hole].key, &t[j].key, sizeof(t[j].key));
+        t[hole].hash = t[j].hash;
+        t[hole].state = FF_FLOW_SLOT_USED;
+        hole = j;
+    }
+    t[hole].state = FF_FLOW_SLOT_EMPTY;
+    g_revoked++;
+    return 1;
 }
 
 void
@@ -359,7 +420,7 @@ ff_flow_map_stats(uint64_t *inserted, uint64_t *dup, uint64_t *full)
 void
 ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
     uint64_t *grown, uint64_t *grow_fail, uint64_t *alloc_fail,
-    uint32_t *cap)
+    uint32_t *cap, uint64_t *revoked)
 {
     if (inserted != NULL)
         *inserted = g_inserted;
@@ -375,6 +436,8 @@ ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
         *alloc_fail = g_alloc_fail;
     if (cap != NULL)
         *cap = g_cap;
+    if (revoked != NULL)
+        *revoked = g_revoked;
 }
 
 void
