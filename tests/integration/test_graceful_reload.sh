@@ -235,7 +235,7 @@ die_abort() { printf 'FATAL: aborted: %s\n' "$1" >&2; exit 5; }
 parse_args() {
 while [ $# -gt 0 ]; do
     case "$1" in
-        -h|--help|--baseline) ;;
+        -h|--help|--baseline|--capture) ;;
         *) [ "$#" -ge 2 ] && [ -n "$2" ] || die_usage "missing option value" ;;
     esac
     case "$1" in
@@ -863,7 +863,7 @@ hup_once() { # conf
 # inferred. Bounded by timeout, so nothing has to be killed on the client.
 capture_start() { # tag
     [ "$CAPTURE" = "1" ] || return 0
-    run_client "nohup timeout $(( PERF_DURATION + 120 )) tcpdump -nn -tttt -S -i $CLIENT_IF -s 96 -w $REMOTE_DIR/gr_${1}_cap.pcap \"host $TARGET_IP and tcp port $CLIENT_PORT\" >/dev/null 2>&1 &" \
+    run_client "nohup timeout $(( PERF_DURATION + 120 )) tcpdump -nn -tttt -S -i $CLIENT_IF -s 96 -w $REMOTE_DIR/gr_${1}_cap.pcap \"host $TARGET_IP and tcp port $CLIENT_PORT and (tcp[tcpflags] & (tcp-syn|tcp-rst|tcp-fin) != 0 or (tcp[tcpflags] = tcp-ack and tcp[12] = 80))\" >/dev/null 2>&1 &" \
         || { say "capture: cannot start tcpdump on $CLIENT"; return 1; }
     say "capture: started on $CLIENT ($CLIENT_IF)"
 }
