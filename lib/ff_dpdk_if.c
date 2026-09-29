@@ -3496,7 +3496,7 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
         uint64_t full = 0, grow_fail = 0, alloc_fail = 0;
 
         ff_flow_map_stats2(NULL, NULL, &full, NULL, &grow_fail, &alloc_fail,
-            NULL);
+            NULL, NULL);
         if (full != last_full || grow_fail != last_grow_fail
             || alloc_fail != last_alloc_fail) {
             if (full > last_full || grow_fail > last_grow_fail
@@ -3524,7 +3524,8 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
         ff_syncache_counters(&synack_fail, &ack_mismatch);
         if (synack_fail > last_synack_fail
             || ack_mismatch > last_ack_mismatch) {
-            ff_flow_map_stats2(&inserted, &dup, NULL, NULL, NULL, NULL, NULL);
+            ff_flow_map_stats2(&inserted, &dup, NULL, NULL, NULL, NULL, NULL,
+                NULL);
             ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
                 "syncache: %llu SYN-ACK failure(s), %llu handshake ACK "
                 "mismatch(es) (flow map: %llu inserted, %llu duplicate)\n",
