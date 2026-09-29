@@ -171,8 +171,9 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
                                          rt12,rt13,rt20,rt20b,rt21,rt22,rt23,
-                                         rt24,rt30,rt31 (rt24 and the other
-                                         rt2x need a fault-injection build)
+                                         rt24,rt25,rt30,rt31 (rt24 and the
+                                         other rt2x need a fault-injection
+                                         build; rt25 drives USR2 + WINCH)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -1101,7 +1102,7 @@ case_rt24() {
 # recorded as LIMITED/FAIL with its evidence, never as a silent pass.
 case_rt25() {
     say "=== case rt25 (RT-04: USR2 binary upgrade under traffic) ==="
-    local rc=0 conf out before=0 old=0 deadline
+    local rc=0 conf out before=0 old=0 new=0 deadline
     local crit meas started=0 handed=0 workers_left=-1 fetch=0
     crit="USR2 exec -> new binary takes over -> WINCH hands rx over -> old workers quit, while the new master keeps serving (fresh_fail=0, at most one closure per connection)"
 
@@ -1120,6 +1121,13 @@ case_rt25() {
         sleep 3
     fi
     probe_running || rc=1
+
+    # One HUP first: a fresh binary numbers its generation 0, and so does this
+    # master, so without a preceding round the USR2 branch of the drain
+    # predicate stays in its fail-safe no-op (owner gen == own gen). After a
+    # HUP the surviving workers are generation 1 and the peer is 0, which is
+    # what the branch needs. It is also the realistic upgrade order.
+    hup_once "$conf" || rc=1
 
     nginx_signal "$conf" usr2 || rc=1
 
@@ -1155,10 +1163,14 @@ case_rt25() {
     if [ "$handed" = "1" ]; then
         deadline=$((SECONDS + 120))
         while [ "$SECONDS" -lt "$deadline" ]; do
-            # 'worker' only: the old master also keeps a cache manager child,
-            # which is not told to quit by the handover and is not a worker.
+            # Children of the OLD master that are still alive, minus the NEW
+            # master itself (it is the old master's exec()ed child and stays by
+            # design). nginx rewrites argv, not comm, so every nginx process is
+            # 'nginx' here -- identity comes from the pid files, not the title.
+            new=$(cat "$OUT/nginx.pid" 2>/dev/null)
             workers_left=$(ps -eo pid,ppid,stat,comm 2>/dev/null \
-                | awk -v m="$old" '$2==m && $1!=m && $3 !~ /^Z/ && $4 ~ /worker/ {c++} END {print c+0}')
+                | awk -v m="$old" -v n="$new" '$2==m && $1!=m && $1!=n \
+                    && $3 !~ /^Z/ && $4 ~ /^nginx/ {c++} END {print c+0}')
             [ "$workers_left" = "0" ] && break
             sleep 2
         done
@@ -1169,14 +1181,33 @@ case_rt25() {
     local summary="NO_DATA (probe never reported)"
     if have_probe m4_lc.py; then
         summary=$(wait_client_summary /tmp/gr_rt25_lc_out.log 'LC_SUMMARY' 120) || fetch=$?
-        [ "$fetch" = "1" ] && summary="NO_DATA (m4_lc.py did not report within 120 s)"
-        if [ "$fetch" != "1" ] && ! check_summary lc "$summary" perf; then
+        if [ "$fetch" = "1" ]; then
+            summary="NO_DATA (m4_lc.py did not report within 120 s)"
+            say "rt25: no probe summary -- no evidence that the new master served"
+            rc=1
+        elif ! check_summary lc "$summary" perf; then
             say "rt25: lc verdict below target: $summary"
             rc=1
         fi
+    else
+        say "rt25: no lc probe -- no evidence that the new master served"
+        rc=1
     fi
 
-    meas="usr2_exec=$started handover=$handed old_workers_left=$workers_left workers_before=$before traffic=$summary"
+    # Evidence of which path started the drain: the USR2 branch runs from the
+    # worker loop right after the handover, the fallback from the QUIT handler.
+    # Both call the same drain start, so this is recorded, not judged.
+    local drain_line=0 quit_line=0 drain_before_quit=0
+    drain_line=$(grep -n "ff drain: started" "$ERRLOG" 2>/dev/null | head -1 | cut -d: -f1)
+    quit_line=$(grep -n "gracefully shutting down" "$ERRLOG" 2>/dev/null | head -1 | cut -d: -f1)
+    if [ -n "$drain_line" ] && [ -n "$quit_line" ] && [ "$drain_line" -lt "$quit_line" ]; then
+        drain_before_quit=1
+    fi
+
+    meas="usr2_exec=$started handover=$handed old_workers_left=$workers_left \
+workers_before=$before drain_before_quit=$drain_before_quit traffic=$summary"
+
+    stop_stack "rt25" "$conf" || rc=1
 
     if [ "$rc" = "0" ]; then
         record "rt25" "PASS" "$crit" "$meas"
