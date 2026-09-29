@@ -1104,7 +1104,7 @@ case_rt25() {
     say "=== case rt25 (RT-04: USR2 binary upgrade under traffic) ==="
     local rc=0 conf out before=0 old=0 new=0 deadline
     local crit meas started=0 handed=0 workers_left=-1 fetch=0
-    crit="USR2 exec -> new binary takes over -> WINCH hands rx over -> old workers quit, while the new master keeps serving (fresh_fail=0, at most one closure per connection)"
+    crit="USR2 exec -> new binary takes over -> WINCH hands rx over -> old workers quit, while the new master keeps serving (fresh_fail=0, at most one closure per connection per drain round -- this run drains twice: the priming HUP and the upgrade)"
 
     conf=$(gen_nginx_conf "rt25" 0)
     push_probes || return 1
@@ -1185,8 +1185,8 @@ case_rt25() {
             summary="NO_DATA (m4_lc.py did not report within 120 s)"
             say "rt25: no probe summary -- no evidence that the new master served"
             rc=1
-        elif ! check_summary lc "$summary" perf; then
-            say "rt25: lc verdict below target: $summary"
+        elif ! check_summary lc "$summary" usr2; then
+            say "rt25: lc verdict below target (two drain rounds): $summary"
             rc=1
         fi
     else

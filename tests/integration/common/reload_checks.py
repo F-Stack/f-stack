@@ -119,6 +119,14 @@ def summary(kind, text, mode=""):
             # must never fail -- that is the real correctness signal here.
             if fail > conns or reconnects > conns:
                 raise ValueError("unexpected connection failures")
+        elif mode == "usr2":
+            # rt25 drains twice in one run: the priming HUP round (which is what
+            # makes the peer generation differ from ours, so the USR2 branch of
+            # the drain predicate can fire at all) and the upgrade itself. Two
+            # closures per long connection is therefore the bound; fresh
+            # connections still must never fail.
+            if fail > 2 * conns or reconnects > 2 * conns:
+                raise ValueError("more closures than the two drain rounds allow")
         elif fail or reconnects:
             raise ValueError("connection failure")
     elif kind == "cps":
