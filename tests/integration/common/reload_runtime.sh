@@ -20,7 +20,14 @@ nginx_signal() {
     local conf="$1" sig="$2" pid
     [ -f "$conf" ] || return 1
     case "$conf" in "$OUT"/ngx_*.conf) ;; *) return 1 ;; esac
-    case "$sig" in reload) sig=HUP ;; stop) sig=TERM ;; quit) sig=QUIT ;; *) return 1 ;; esac
+    case "$sig" in
+        reload) sig=HUP ;;
+        stop) sig=TERM ;;
+        quit) sig=QUIT ;;
+        usr2) sig=USR2 ;;
+        winch) sig=WINCH ;;
+        *) return 1 ;;
+    esac
     collect_owned || return 1
     pid=$(master_pid)
     case "$pid" in ''|*[!0-9]*) return 1 ;; esac

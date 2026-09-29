@@ -2850,7 +2850,8 @@ ngx_ff_listen_close_timer_handler(ngx_event_t *ev)
 static ngx_uint_t
 ngx_ff_is_draining_generation(void)
 {
-    int  active, target, owner;
+    int      active, target, owner;
+    uint32_t peer_epoch, peer_gen;
 
     if (!ngx_ff_graceful_reload) {
         return 0;
@@ -2860,7 +2861,33 @@ ngx_ff_is_draining_generation(void)
     target = ff_reload_target_gen();
 
     if (active == target || ff_reload_gen() != active) {
-        return 0;
+        /* Not a HUP round of our own. It can still be an USR2 upgrade: the old
+         * master hands rx to the new binary's epoch, which never shows up as
+         * active != target in our block (the round is the peer's). USR2 sends
+         * QUIT right after the handover, so this is about doing the same
+         * sweep and leaving the same evidence as a HUP round, not about a
+         * stall -- USR2 has no T3 wait to be stuck in.
+         *
+         * Both conditions are required, and the second is what keeps it safe:
+         * while the upgrade is still PENDING the owner is still our own
+         * generation, so nothing is closed before rx really moved. Should the
+         * peer master number its generation the same as ours, the branch
+         * simply never fires and the QUIT path drains as before (fail-safe). */
+        ff_reload_peer_block(&peer_epoch, &peer_gen);
+
+        if (peer_epoch == 0 || peer_epoch == FF_RELOAD_EPOCH_NONE
+            || peer_epoch == ff_reload_epoch())
+        {
+            return 0;
+        }
+
+        owner = ff_reload_rx_owner_gen();
+
+        if (owner < 0 || owner == ff_reload_gen()) {
+            return 0;
+        }
+
+        return 1;
     }
 
     owner = ff_reload_rx_owner_gen();

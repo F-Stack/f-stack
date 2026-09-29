@@ -1095,6 +1095,100 @@ case_rt24() {
     [ "$rc" = "0" ]
 }
 
+# RT-04 (spec 08): USR2 binary upgrade under traffic. The old master execs the
+# new binary, waits for it to register, then WINCH hands rx over and the old
+# workers are told to quit. Every step is bounded: a step that never happens is
+# recorded as LIMITED/FAIL with its evidence, never as a silent pass.
+case_rt25() {
+    say "=== case rt25 (RT-04: USR2 binary upgrade under traffic) ==="
+    local rc=0 conf out before=0 old=0 deadline
+    local crit meas started=0 handed=0 workers_left=-1 fetch=0
+    crit="USR2 exec -> new binary takes over -> WINCH hands rx over -> old workers quit, while the new master keeps serving (fresh_fail=0, at most one closure per connection)"
+
+    conf=$(gen_nginx_conf "rt25" 0)
+    push_probes || return 1
+    if ! start_stack "rt25" 1 0; then
+        stop_stack "rt25" "$conf" || rc=1
+        record "rt25" "FAIL" "$crit" "start failed"
+        return 1
+    fi
+    before=$(worker_count)
+    if have_probe m4_lc.py; then
+        launch_probe "rt25" 240 m4_lc.py --server "$TARGET_IP" --conns 12 \
+            --interval 0.1 --duration 90 --fresh 0.5 --timeout 2 \
+            || { stop_stack "rt25" "$conf"; record "rt25" "FAIL" "$crit" "probe launch failed"; return 1; }
+        sleep 3
+    fi
+    probe_running || rc=1
+
+    nginx_signal "$conf" usr2 || rc=1
+
+    # USR2 renames nginx.pid to nginx.pid.oldbin and execs the new binary, so
+    # the oldbin pid file is the evidence that the exec really happened.
+    deadline=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if [ -s "$OUT/nginx.pid.oldbin" ]; then started=1; break; fi
+        sleep 1
+    done
+    [ "$started" = "1" ] || { say "rt25: no nginx.pid.oldbin within 60 s (USR2 exec failed?)"; rc=1; }
+
+    # WINCH must reach the OLD master: nginx.pid now names the new one.
+    old=$(cat "$OUT/nginx.pid.oldbin" 2>/dev/null)
+    if [ "$started" = "1" ] && [ -n "$old" ]; then
+        collect_owned || rc=1
+        python3 -B "$SUPERVISOR" signal "$STACK_ID" "$old" WINCH >/dev/null || rc=1
+        deadline=$((SECONDS + 60))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+            if grep -q "ff usr2: handed rx to the new binary" "$ERRLOG"; then
+                handed=1; break
+            fi
+            sleep 1
+        done
+        [ "$handed" = "1" ] || { say "rt25: no rx handover within 60 s of WINCH"; rc=1; }
+    fi
+
+    # Two masters coexist by design here, so record them instead of failing.
+    three_check 1
+
+    # The old workers were told to quit with the handover; give them a bounded
+    # window and report what is left.
+    if [ "$handed" = "1" ]; then
+        deadline=$((SECONDS + 120))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+            workers_left=$(ps -eo pid,ppid,stat,comm 2>/dev/null \
+                | awk -v m="$old" '$2==m && $1!=m && $3 !~ /^Z/ && $4 ~ /^nginx/ {c++} END {print c+0}')
+            [ "$workers_left" = "0" ] && break
+            sleep 2
+        done
+        [ "$workers_left" = "0" ] \
+            || { say "rt25: $workers_left old worker(s) still alive after 120 s"; rc=1; }
+    fi
+
+    local summary="NO_DATA (probe never reported)"
+    if have_probe m4_lc.py; then
+        summary=$(wait_client_summary /tmp/gr_rt25_lc_out.log 'LC_SUMMARY' 120) || fetch=$?
+        [ "$fetch" = "1" ] && summary="NO_DATA (m4_lc.py did not report within 120 s)"
+        if [ "$fetch" != "1" ] && ! check_summary lc "$summary" perf; then
+            say "rt25: lc verdict below target: $summary"
+            rc=1
+        fi
+    fi
+
+    meas="usr2_exec=$started handover=$handed old_workers_left=$workers_left workers_before=$before traffic=$summary"
+
+    if [ "$rc" = "0" ]; then
+        record "rt25" "PASS" "$crit" "$meas"
+    elif [ "$started" != "1" ] || [ "$handed" != "1" ]; then
+        # The upgrade did not even get to the handover: say which step and do
+        # not call it a functional failure of the product.
+        record "rt25" "LIMITED" "$crit" "$meas -- upgrade did not reach the handover"
+        rc=1
+    else
+        record "rt25" "FAIL" "$crit" "$meas"
+    fi
+    [ "$rc" = "0" ]
+}
+
 case_rt30() {
     say "=== case rt30 (PT-NR-01: high CPS short connections) ==="
     local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas anchor remaining
@@ -1797,7 +1891,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt30 rt31; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break
