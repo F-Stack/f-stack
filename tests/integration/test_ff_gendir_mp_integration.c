@@ -1242,6 +1242,25 @@ tc3_teardown(void **state)
     return 0;
 }
 
+/* A master that has been reaped leaves its epoch LIVE for as long as
+ * something still refreshes the slot stamp (FF_RELOAD_SLOT_STALE_MS):
+ * orphan workers of that master keep draining and still consume its
+ * rings, so the epoch is a live counterpart until the stamp goes
+ * stale. Sampling the verdict once races that window; wait for it.
+ * Returns 0 once the epoch is no longer live, 1 on timeout. */
+static int
+wait_epoch_not_live(uint32_t epoch, unsigned timeout_ms)
+{
+    uint64_t end = mp_now_ms() + timeout_ms;
+
+    while (mp_now_ms() < end) {
+        if (ff_reload_gendir_epoch_live(epoch) == 0)
+            return 0;
+        usleep(100000);
+    }
+    return 1;
+}
+
 /* TC-4 (liveness / bounded slots): once a master is gone its epoch is no
  * longer live, so a long USR2 chain recycles slots instead of leaking one
  * ring set per round. */
@@ -1256,7 +1275,7 @@ test_it_a14_epoch_liveness_after_exit(void **state)
     parse_result("w2", &w);
     assert_int_equal(w.have, 1);
     assert_int_not_equal(w.epoch, 0);
-    assert_int_equal(ff_reload_gendir_epoch_live(w.epoch), 0);
+    assert_int_equal(wait_epoch_not_live(w.epoch, 30000), 0);
     /* the primary's own slot 0 / epoch 0 is still live in this process */
     assert_int_equal(ff_reload_gendir_epoch_live(0), 1);
 }
@@ -1291,6 +1310,20 @@ test_it_a14_probe_roundtrip_tools_contract(void **state)
      * green path the rings are empty; on a TC-3 failure path this is what
      * keeps a stale token from turning into a SIGSEGV here. */
     mp_drain_all_in_rings();
+
+    /* TC-5 wants w3 to be the queue owner (nohw1 == 0). The takeover
+     * rule leaves rx with a live epoch, so that only holds once the
+     * earlier workers stopped refreshing their stamps. */
+    {
+        struct mp_worker_result prev;
+
+        parse_result("w1", &prev);
+        if (prev.have)
+            assert_int_equal(wait_epoch_not_live(prev.epoch, 30000), 0);
+        parse_result("w2", &prev);
+        if (prev.have)
+            assert_int_equal(wait_epoch_not_live(prev.epoch, 30000), 0);
+    }
 
     g_m3 = spawn_worker_probe("w3", 1);
     assert_true(g_m3 > 0);
