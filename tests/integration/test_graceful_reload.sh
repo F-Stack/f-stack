@@ -1525,21 +1525,23 @@ case_rt23() {
 
 # rt26: the counters live in the worker logs (fstack-*.log), not in nginx
 # error log, and the 1 Hz line prints deltas, so the sum is the total.
+# rt26: the counters live in the worker logs (fstack-*.log), not in nginx
+# error log. SYN-ACK failures and ACK mismatches are printed as deltas, so
+# their sum is the total; revoked is printed as a running total, so the
+# last value of a file is that file's total.
 synack_fail_counters() {
-    local f n r fails=0 undone=0
+    local f n high fails=0 undone=0
     for f in "$OUT"/fstack-*.log; do
         [ -r "$f" ] || continue
         n=$(sed -n 's/.*syncache: \([0-9][0-9]*\) SYN-ACK failure(s).*/\1/p' "$f" \
             | awk '{s+=$1} END {print s+0}')
-        r=$(sed -n 's/.*mismatch(es), \([0-9][0-9]*\) revoked admission(s).*/\1/p' "$f" \
-            | awk '{s+=$1} END {print s+0}')
+        high=$(sed -n 's/.*SYN-ACK failure(s), [0-9][0-9]* handshake ACK mismatch(es), \([0-9][0-9]*\) revoked.*/\1/p' "$f" | tail -1)
         fails=$((fails + n))
-        undone=$((undone + r))
+        undone=$((undone + high))
     done
     printf "synack_fail=%s revoked=%s" "$fails" "$undone"
     [ "$fails" -gt 0 ] && [ "$undone" -gt 0 ]
 }
-
 case_rt26() {
     say "=== case rt26 (a SYN-ACK that cannot be sent) ==="
     local rc=0 crit

@@ -3,6 +3,7 @@
 
 import argparse
 import ctypes
+import errno
 import fcntl
 import json
 import math
@@ -59,7 +60,13 @@ def exited(fd):
     processes, at which point select() fails with EINVAL."""
     poller = select.poll()
     poller.register(fd, select.POLLIN)
-    return bool(poller.poll(0))
+    events = poller.poll(0)
+    if not events:
+        return False
+    revents = events[0][1]
+    if revents & (select.POLLNVAL | select.POLLERR):
+        raise OSError(errno.EBADF, "process descriptor unusable")
+    return bool(revents & select.POLLIN)
 
 
 def children(pid):
@@ -317,7 +324,7 @@ class ProcessTree:
             self.emit("reaped", pid=pid, exit_code=code)
             helper = self.helper_targets.pop(pid, None)
             if helper:
-                target, sig, deadline, attempt = helper
+                target, sig, deadline, attempt, control = helper
                 self.emit("signal_result", helper=pid, pid=target, signal=sig, exit_code=code)
                 if code != 0:
                     item = self.members.get(target)
@@ -328,8 +335,10 @@ class ProcessTree:
                         self.emit("signal_helper_moot", helper=pid, pid=target,
                                   signal=sig, exit_code=code)
                     elif attempt < MAX_SIGNAL_ATTEMPTS:
+                        self.emit("signal_retry", pid=target, signal=sig,
+                                  exit_code=code)
                         try:
-                            self.send(item, sig, attempt=attempt + 1)
+                            self.send(item, sig, control, attempt + 1)
                         except (OSError, ValueError) as exc:
                             # send() re-checks the identity and raises
                             # when the pid is gone or recycled; that is
@@ -344,10 +353,12 @@ class ProcessTree:
                                           signal=sig,
                                           cause=type(exc).__name__)
                                 self.helper_unconfirmed[target] = (
-                                    sig, time.monotonic() + SIGNAL_CONFIRM_GRACE)
+                                    sig, time.monotonic() + SIGNAL_CONFIRM_GRACE,
+                                    item["start_time"])
                     else:
                         self.helper_unconfirmed[target] = (
-                            sig, time.monotonic() + SIGNAL_CONFIRM_GRACE)
+                            sig, time.monotonic() + SIGNAL_CONFIRM_GRACE,
+                            item["start_time"])
                         self.emit("signal_helper_unconfirmed", pid=target,
                                   signal=sig, exit_code=code)
         self.check_helper_deadlines()
@@ -359,19 +370,25 @@ class ProcessTree:
                 del self.members[pid]
 
     def check_unconfirmed(self):
-        for target, (sig, deadline) in list(self.helper_unconfirmed.items()):
+        for target, (sig, deadline, start) in list(self.helper_unconfirmed.items()):
             item = self.members.get(target)
             if item is None or exited(item["pidfd"]):
                 del self.helper_unconfirmed[target]
                 self.emit("signal_helper_moot", pid=target, signal=sig,
-                          exit_code=0)
+                          reason="target_gone")
+            elif item["start_time"] != start:
+                # The pid was recycled into a new member: the signal we
+                # could not confirm belonged to the process that is gone.
+                del self.helper_unconfirmed[target]
+                self.emit("signal_helper_moot", pid=target, signal=sig,
+                          reason="target_replaced")
             elif time.monotonic() >= deadline:
                 del self.helper_unconfirmed[target]
                 self.fail("signal_helper_failed")
 
     def check_helper_deadlines(self):
         if any(time.monotonic() >= deadline
-               for _, _, deadline, _ in self.helper_targets.values()):
+               for _, _, deadline, _, _ in self.helper_targets.values()):
             self.fail("signal_helper_timeout")
 
     def active(self, stack=None):
@@ -394,7 +411,7 @@ class ProcessTree:
                 "--device", str(current["device"]), "--inode", str(current["inode"]), "--wait", "0"]
         helper = self.spawn(args, "helper")
         self.helper_targets[helper] = (item["pid"], sig,
-                                      time.monotonic() + 2, attempt)
+                                      time.monotonic() + 2, attempt, control)
         self.emit("signal_requested", pid=item["pid"], start_time=item["start_time"], signal=sig, helper=helper)
 
     def stop(self, stack=None):
