@@ -15,6 +15,7 @@ import socket
 import struct
 import sys
 import time
+import traceback
 
 from reload_checks import digest, identity
 
@@ -26,6 +27,13 @@ POLL = 0.05
 CLEANUP_SECONDS = 10
 MAX_MEMBERS = 4096
 MAX_PACKET = 65536
+# A signal helper can legitimately fail while its target is on the way out:
+# the identity check races an exiting or recycled pid. One bounded retry
+# separates a moot signal from a run that really could not be controlled.
+MAX_SIGNAL_ATTEMPTS = 2
+# A signal that never got confirmed is only a failure if the target is
+# still alive once this grace is over.
+SIGNAL_CONFIRM_GRACE = 2.0
 
 
 def subreaper():
@@ -46,7 +54,12 @@ def proc_stat(pid):
 
 
 def exited(fd):
-    return bool(select.select([fd], [], [], 0)[0])
+    """poll() rather than select(): a pidfd is an ordinary fd and its
+    number passes FD_SETSIZE quickly once a run tracks a few hundred
+    processes, at which point select() fails with EINVAL."""
+    poller = select.poll()
+    poller.register(fd, select.POLLIN)
+    return bool(poller.poll(0))
 
 
 def children(pid):
@@ -82,6 +95,7 @@ class ProcessTree:
         self.default_stack = None
         self.orphan_role = "orphan"
         self.helper_targets = {}
+        self.helper_unconfirmed = {}
 
     def emit(self, kind, **fields):
         try:
@@ -303,19 +317,61 @@ class ProcessTree:
             self.emit("reaped", pid=pid, exit_code=code)
             helper = self.helper_targets.pop(pid, None)
             if helper:
-                target, sig, deadline = helper
+                target, sig, deadline, attempt = helper
                 self.emit("signal_result", helper=pid, pid=target, signal=sig, exit_code=code)
-                if code != 0 and target in self.members and not exited(self.members[target]["pidfd"]):
-                    self.fail("signal_helper_failed")
+                if code != 0:
+                    item = self.members.get(target)
+                    if item is None or exited(item["pidfd"]):
+                        # The helper's identity check races an exiting (or
+                        # recycled) pid: the signal is moot, the run is not
+                        # out of control.
+                        self.emit("signal_helper_moot", helper=pid, pid=target,
+                                  signal=sig, exit_code=code)
+                    elif attempt < MAX_SIGNAL_ATTEMPTS:
+                        try:
+                            self.send(item, sig, attempt=attempt + 1)
+                        except (OSError, ValueError) as exc:
+                            # send() re-checks the identity and raises
+                            # when the pid is gone or recycled; that is
+                            # the same moot signal, not a lost run.
+                            again = self.members.get(target)
+                            if again is None or exited(again["pidfd"]):
+                                self.emit("signal_helper_moot", helper=pid,
+                                          pid=target, signal=sig,
+                                          exit_code=code)
+                            else:
+                                self.emit("signal_retry_failed", pid=target,
+                                          signal=sig,
+                                          cause=type(exc).__name__)
+                                self.helper_unconfirmed[target] = (
+                                    sig, time.monotonic() + SIGNAL_CONFIRM_GRACE)
+                    else:
+                        self.helper_unconfirmed[target] = (
+                            sig, time.monotonic() + SIGNAL_CONFIRM_GRACE)
+                        self.emit("signal_helper_unconfirmed", pid=target,
+                                  signal=sig, exit_code=code)
         self.check_helper_deadlines()
+        self.check_unconfirmed()
         for pid, item in list(self.members.items()):
             if exited(item["pidfd"]):
                 self.emit("exited", pid=pid, start_time=item["start_time"], role=item["role"], stack=item["stack"])
                 os.close(item["pidfd"])
                 del self.members[pid]
 
+    def check_unconfirmed(self):
+        for target, (sig, deadline) in list(self.helper_unconfirmed.items()):
+            item = self.members.get(target)
+            if item is None or exited(item["pidfd"]):
+                del self.helper_unconfirmed[target]
+                self.emit("signal_helper_moot", pid=target, signal=sig,
+                          exit_code=0)
+            elif time.monotonic() >= deadline:
+                del self.helper_unconfirmed[target]
+                self.fail("signal_helper_failed")
+
     def check_helper_deadlines(self):
-        if any(time.monotonic() >= deadline for _, _, deadline in self.helper_targets.values()):
+        if any(time.monotonic() >= deadline
+               for _, _, deadline, _ in self.helper_targets.values()):
             self.fail("signal_helper_timeout")
 
     def active(self, stack=None):
@@ -323,7 +379,7 @@ class ProcessTree:
                 if (stack is None or (item["stack"] == stack and item["role"] in ("target", "orphan")))
                 and not exited(item["pidfd"])]
 
-    def send(self, item, sig, control=False):
+    def send(self, item, sig, control=False, attempt=1):
         if exited(item["pidfd"]):
             if control:
                 raise ValueError("control target exited")
@@ -337,7 +393,8 @@ class ProcessTree:
                 "--start-time", str(current["start_time"]), "--exe", current["exe"],
                 "--device", str(current["device"]), "--inode", str(current["inode"]), "--wait", "0"]
         helper = self.spawn(args, "helper")
-        self.helper_targets[helper] = (item["pid"], sig, time.monotonic() + 2)
+        self.helper_targets[helper] = (item["pid"], sig,
+                                      time.monotonic() + 2, attempt)
         self.emit("signal_requested", pid=item["pid"], start_time=item["start_time"], signal=sig, helper=helper)
 
     def stop(self, stack=None):
@@ -601,8 +658,11 @@ class Supervisor:
                     self.result = 125
                     break
                 select.select([self.server], [], [], POLL)
-        except (OSError, ValueError, RuntimeError, KeyError):
-            self.tree.fail("supervisor_error")
+        except (OSError, ValueError, RuntimeError, KeyError) as exc:
+            self.tree.fail("supervisor_error:%s:%s" % (
+                type(exc).__name__, exc))
+            if os.environ.get("GR_SUPERVISOR_DEBUG"):
+                traceback.print_exc()
             self.result = 125
         finally:
             try:
@@ -632,7 +692,22 @@ class Supervisor:
 
 
 def request(operation, stack=None, arguments=None, run_id=None, timeout=2):
+    """Control request whose failure names the operation and the cause.
+    The CLI only reports an exit code, so a bare RELOAD_SUPERVISOR_FAILED
+    (which used to swallow the exception) says nothing about where the
+    control channel broke."""
     started = time.monotonic()
+    try:
+        return _request(operation, stack, arguments, run_id, timeout, started)
+    except Exception as exc:
+        raise RuntimeError("supervisor control failure: op=%s timeout=%s "
+                           "elapsed=%.3fs cause=%s: %s" % (
+                               operation, timeout,
+                               time.monotonic() - started,
+                               type(exc).__name__, exc)) from exc
+
+
+def _request(operation, stack, arguments, run_id, timeout, started):
     expected = json.loads(os.environ["GR_SUPERVISOR_ID"])
     if identity(expected["pid"]) != expected:
         raise RuntimeError("supervisor identity changed")
@@ -683,7 +758,7 @@ def wait_phase(stack, desired, seconds):
     while time.monotonic() < until:
         value = request("status", stack, timeout=min(2, max(0.001, until - time.monotonic())))
         if value["failure"]:
-            raise RuntimeError("supervised run failed")
+            raise RuntimeError("supervised run failed: %s" % value["failure"])
         if value["phase"] == desired:
             return value
         time.sleep(POLL)
@@ -775,6 +850,10 @@ def main(argv):
 if __name__ == "__main__":
     try:
         raise SystemExit(main(sys.argv[1:]))
-    except (OSError, ValueError, KeyError, RuntimeError, IndexError):
+    except (OSError, ValueError, KeyError, RuntimeError, IndexError) as exc:
         print("RELOAD_SUPERVISOR_FAILED", file=sys.stderr)
+        print("  cause: %s: %s" % (type(exc).__name__, exc),
+              file=sys.stderr)
+        if os.environ.get("GR_SUPERVISOR_DEBUG"):
+            traceback.print_exc()
         raise SystemExit(125)
