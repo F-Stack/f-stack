@@ -89,6 +89,25 @@
 | `ff_mbuf_free` | Free mbuf | - |
 | `ff_mbuf_copydata` | Copy mbuf data | - |
 
+### 1.7b Graceful Reload Functions (`graceful_reload=1`)
+
+| Function | Purpose | Notes |
+|==========|---------|=======|
+| `ff_reload_attach_state` | Bind the shared reload block | Created by the nginx master, inherited by `fork()` |
+| `ff_reload_gen` / `ff_reload_set_gen` | This process's generation | Selects msg ring, app mbuf pool, drain ring set |
+| `ff_reload_epoch` / `ff_reload_epoch_slot` | Master epoch and its directory slot | Ring names carry the slot (`_e<slot>`), not the epoch |
+| `ff_reload_active_gen` / `ff_reload_target_gen` | Serving / being spawned | - |
+| `ff_reload_hw_locked` | 1 = do not touch the hardware | Derived, reversible — never latched |
+| `ff_reload_rx_release` / `ff_reload_rx_release_epoch` | Hand hardware to a generation | Cross-master variant takes an epoch |
+| `ff_reload_handover_arm` | Arm a park-barrier round | Stale acks carry the wrong epoch and are ignored |
+| `ff_reload_heartbeat_sample` / `ff_reload_heartbeat_eval` | Owner liveness | Reports a stall after one full timeout |
+| `ff_flow_map_admit` | Record a four-tuple at SYN-ACK time | `created` is 1 only when this call added it |
+| `ff_flow_map_revoke` | Undo an admission whose SYN-ACK failed | Backward-shift deletion keeps the probe chain |
+| `ff_flow_map_lookup` | Dispatcher hot path | Hit = this generation, miss = the peer |
+| `ff_drain_ring_rx_enqueue` / `_tx_enqueue` | Feed the draining generation | Peer side of the handover |
+| `ff_drain_ring_rx_dequeue` | Draining side pull | - |
+| `ff_syncache_count` / `ff_syncache_counters` | Half-open entries + failure counters | Drain criteria and observability |
+
 ### 1.8 Multi-Threading Functions
 
 | Function | Purpose |

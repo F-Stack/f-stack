@@ -89,6 +89,12 @@ Actual data on 10GbE link:
 │   ├── ff_epoll.c            (289 lines)  # Epoll compat (unified F-Stack+kernel)
 │   ├── ff_host_interface.c   (617 lines)  # Host OS iface + FF_KERNEL_COEXIST bridges (32 ff_host_*)
 │   ├── ff_dpdk_kni.c                      # Virtual NIC support
+│   ├── ff_reload.c           (1863 lines) # Graceful reload: shared control block,
+│   │                                      # rx/kni ownership, T2 park barrier, heartbeat
+│   ├── ff_reload_gendir.c    (406 lines)  # Cross-master generation directory (hugepage)
+│   ├── ff_flow_map.c         (461 lines)  # Software flow table (generation admission)
+│   ├── ff_drain_ring.c       (563 lines)  # Per-(queue, generation, direction) drain rings
+│   ├── ff_reload_fault.h                  # Fault injection hooks (test builds only)
 │   ├── ff_*.h                             # API and data structure definitions
 │   └── Makefile              (765 lines)  # Build system
 │
@@ -118,6 +124,8 @@ Actual data on 10GbE link:
 │
 ├── app/                                    # Application integration examples
 │   ├── nginx-1.28.0/         # Nginx integration
+│   │   └── src/event/modules/ngx_ff_reload.*  # graceful reload: master-side T0-T5 FSM,
+│   │                                          # shared block creation, READY publish
 │   └── redis-6.2.6/          # Redis integration
 │
 ├── example/                                # Development examples
@@ -136,7 +144,8 @@ Actual data on 10GbE link:
 │   ├── traffic/              # Traffic statistics
 │   ├── ndp/                  # IPv6 Neighbor Discovery
 │   ├── ngctl/                # Netgraph control
-│   └── compat/ff_ipc.*       # IPC communication library
+│   └── compat/ff_ipc.*       # IPC communication library (generation/epoch aware ring
+│                             # naming: "<proc>[:<gen>[:<epoch>]]")
 │
 ├── adapter/                                # Network adapters
 │   ├── micro_thread/             # Micro-thread interface for stateful applications using F-Stack
@@ -162,6 +171,11 @@ Actual data on 10GbE link:
 | **Initialization Coordination** | ff_init.c | 69 | Startup flow orchestration | All other modules |
 | **Host Interface** | ff_host_interface.c | - | mmap/pthread/time interfaces | System libraries |
 | **Virtual NIC** | ff_dpdk_kni.c | - | Kernel virtual NIC support | DPDK KNI |
+| **Graceful Reload** | ff_reload.c | 1863 | Reload control block, rx/kni ownership arbitration, park barrier, heartbeat liveness | ff_config, ff_dpdk_if, ff_reload_gendir |
+| **Generation Directory** | ff_reload_gendir.c | 406 | Cross-master epoch→slot map, hardware-user table, bounded slot recycling | DPDK memzone (resident primary) |
+| **Software Flow Map** | ff_flow_map.c | 461 | Per-process four-tuple table; decides whether a packet belongs to this generation | tcp_syncache (producer), dispatcher (consumer) |
+| **Drain Rings** | ff_drain_ring.c | 563 | Bidirectional rings that feed the draining generation's in-flight packets | DPDK ring |
+| **nginx Reload Module** | ngx_ff_reload.c, ngx_ff_reload_fsm.h | 439 | Master-side T0-T5 state machine, spawn/signal sequencing, READY publish | ff_reload.h, ngx_process_cycle.c |
 
 ### 2.3 Inter-Module Communication Relationships
 
@@ -607,6 +621,40 @@ Inter-Process Communication (IPC):
 
 ---
 
+### 4.5 Graceful Reload: Two Generations on the Same `lcore_id`
+
+Enabled with `graceful_reload=1` (default off). A reload spawns a **new generation**
+(G_new) while the **old generation** (G_old) keeps serving the connections it owns;
+both run on the **same `lcore_id`** as two processes, which is what lets a reload
+happen without a second NIC queue or an RSS reconfiguration.
+
+| Phase | Hardware rx/tx | Listening sockets | Established connections |
+|-------|----------------|------------------|------------------------|
+| T0 idle | G_old | G_old | G_old |
+| T1 spawn | G_old | G_new (G_old closes) | G_old |
+| T2 park barrier | handed to G_new | G_new | G_old (draining) |
+| T3 drain | G_new | G_new | G_old finishes, then exits |
+| T4/T5 complete | G_new | G_new | G_new |
+
+Key mechanisms:
+
+- **Ownership arbitration** — `rx_owner_gen` / `rx_stopped` live in the anonymous
+  `MAP_SHARED` reload block that every process inherits through `fork()`; the T2 park
+  barrier makes sure no `rx_burst` is in flight when ownership flips.
+- **Generation identity** — msg rings, app mbuf pools and drain rings are indexed by
+  generation (`gen0`/`gen1` ping-pong) and named with a `_g<gen>` suffix, so two
+  generations never share a single-consumer ring.
+- **Packet classification** — `lib/ff_flow_map.c` records a four-tuple at SYN-ACK time,
+  so the third handshake ACK and every established-flow packet land in the generation
+  that owns them; a pure SYN is never forwarded, and a miss is forwarded to the peer.
+- **Draining** — `lib/ff_drain_ring.c` carries G_old's in-flight packets across the
+  handover; the exit condition is `conns && snd_pending && syncache` all drained.
+- **Cross-master (USR2 binary upgrade)** — `lib/ff_reload_gendir.c` keeps a hugepage
+  generation directory owned by the resident slim primary: it maps each master to an
+  epoch slot and holds the one live hardware/KNI owner as a single 64-bit CAS word.
+
+---
+
 ## 5. Technology Selection Analysis
 
 ### 5.1 Why Choose DPDK?
@@ -864,6 +912,7 @@ Operations tools communicate with F-Stack processes via IPC:
 | **traffic** | Traffic statistics | FF_TRAFFIC message, supports multi-process aggregation |
 | **ndp** | IPv6 Neighbor Discovery | ioctl communication (SIOCGNBRINFO_IN6, etc.) |
 | **ngctl** | Netgraph control | FF_NGCTL message |
+| **ff_ipc (compat)** | IPC transport shared by all tools | Targets a generation/epoch: `"<proc>[:<gen>[:<epoch>]]"`; with `graceful_reload=1` it also reaches the resident slim primary, which serves both generations |
 
 ---
 

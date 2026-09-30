@@ -120,9 +120,39 @@ void ff_log_close(void);
 int ff_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                       void *(*start_routine)(void *), void *arg);
 int ff_pthread_join(pthread_t thread, void **value_ptr);
+
+// Graceful reload (graceful_reload=1; no-ops otherwise) — lib/ff_reload.h
+void     ff_reload_attach_state(void *block);   // bind the block the master mapped
+int      ff_reload_gen(void);                   // this process's generation
+uint32_t ff_reload_epoch(void);                 // master epoch (cross-master identity)
+int      ff_reload_active_gen(void);            // generation currently serving
+int      ff_reload_hw_locked(void);             // 1 = this process must not touch hw
+int      ff_reload_rx_release(int to_gen);      // hand the hardware over
+int      ff_reload_heartbeat_eval(uint64_t prev, uint64_t cur,
+                                  uint64_t *last_advance,
+                                  uint64_t now, uint64_t timeout);
+
+// Software flow map (lib/ff_flow_map.h)
+int  ff_flow_map_admit(const struct ff_flow_key *key, int *created);
+int  ff_flow_map_revoke(const struct ff_flow_key *key);
+int  ff_flow_map_lookup(const struct ff_flow_key *key);
+
+// Drain rings (lib/ff_drain_ring.h)
+int  ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...);
+int  ff_drain_ring_rx_dequeue(uint16_t port_id, uint16_t queue_id, ...);
 ```
 
 ## 2. Configuration System
+
+Reload knobs (both in `[dpdk]`, both optional):
+
+```ini
+graceful_reload = 0           # two generations per lcore_id; needs an nginx master
+reload_heartbeat_timeout_ms = 1000   # G_old stall detection on G_new (0 -> default)
+```
+
+`graceful_reload=1` implies all-secondary workers plus a resident slim primary on
+proc_id 0, and is rejected together with `thread_mode=1`.
 
 ### 2.1 Configuration File Format (INI)
 

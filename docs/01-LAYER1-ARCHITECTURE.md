@@ -128,7 +128,33 @@ NIC Hardware
 | **ff_veth.c** | 1132 | Virtual ethernet device (28 if_t accessor rewrites at M4) | FreeBSD net/if |
 | **ff_kern_timeout.c** | 1266 | callout subsystem (`callout_init`, `_reset_tick_on`, `ff_timecounter`) | DPDK rte_timer |
 | **ff_ng_base.c** | 3887 | netgraph framework full port (M5: `node_p → node_cp` correction) | FreeBSD netgraph headers |
+| **ff_reload.c** | 1863 | NEW: graceful reload — shared control block, rx/kni ownership, park barrier, heartbeat |
+| **ff_reload_gendir.c** | 406 | NEW: cross-master generation directory (hugepage memzone owned by the resident primary) |
+| **ff_flow_map.c** | 461 | NEW: software flow table; decides which generation owns a packet |
+| **ff_drain_ring.c** | 563 | NEW: per-(queue, generation, direction) drain rings for the draining generation |
 | **ff_stub_14_extra.c** | 799 | NEW (M5 + runtime-fix): central 14.0+ stub bank (123 stubs, 661 undef resolutions) + 5 P0 SIGSEGV fixes + defensive `vm_page_alloc_noobj` panic | FreeBSD 14.0+ KBI |
+
+### 2.3 Graceful Reload: Two Generations on the Same `lcore_id`
+
+With `graceful_reload=1` (default off) a reload spawns G_new while G_old keeps
+serving the connections it owns; both run on the **same `lcore_id`**, so no second
+queue and no RSS reconfiguration are needed.
+
+| Phase | Hardware rx/tx | Listening | Established connections |
+|-------|---------------|-----------|------------------------|
+| T0 idle | G_old | G_old | G_old |
+| T1 spawn | G_old | G_new | G_old |
+| T2 park barrier | → G_new | G_new | G_old (draining) |
+| T3 drain | G_new | G_new | G_old finishes, then exits |
+| T4/T5 complete | G_new | G_new | G_new |
+
+Ownership is two words in the shared reload block (`rx_owner_gen`, `rx_stopped`);
+the park barrier guarantees no `rx_burst` is in flight when it flips. Packets are
+classified by `lib/ff_flow_map.c` (recorded at SYN-ACK time), G_old's in-flight
+packets travel over `lib/ff_drain_ring.c`, and an nginx USR2 upgrade additionally
+uses the generation directory so two masters never both own the hardware.
+
+---
 
 ## 3. FreeBSD TCP/IP Stack Porting Approach
 

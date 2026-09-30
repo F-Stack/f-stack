@@ -7,29 +7,49 @@ This directory contains the complete three-layer architecture knowledge base for
 ### Document List
 
 ```
-1. F-Stack_Knowledge_Base_Summary.md (751 lines)
+1. F-Stack_Knowledge_Base_Summary.md (793 lines)
    ├─ Overview document - Quick navigation and reference
    ├─ Contains navigation tables and quick reference cards for all documents
    └─ ⭐ Recommended to read first
 
-2. F-Stack_Architecture_Layer1_System_Overview.md (825 lines)
+2. F-Stack_Architecture_Layer1_System_Overview.md (955 lines)
    ├─ Layer 1: System Overall Architecture
    ├─ Module boundaries, technology selection, core design
    └─ Suitable for architects and system designers
 
-3. F-Stack_Architecture_Layer2_Interface_Specification.md (1183 lines)
+3. F-Stack_Architecture_Layer2_Interface_Specification.md (1223 lines)
    ├─ Layer 2: Interface Definitions and Specifications
    ├─ API details, configuration system, development guidelines
    └─ Suitable for application developers and system integration engineers
 
-4. F-Stack_Architecture_Layer3_Function_Index.md (1112 lines)
+4. F-Stack_Architecture_Layer3_Function_Index.md (1471 lines)
    ├─ Layer 3: Function-Level Index and Data Model
    ├─ 80+ function details, source code analysis, thread safety
    └─ Suitable for kernel developers and performance analysts
 
+5. KNOWLEDGE_GRAPH_WIKI.md (365 lines)
+   ├─ Symbol/relation graph view of the source surface
+   ├─ §2A-2I are manual addenda for code landed after the last index run
+   └─ §2I covers the graceful reload subsystem
+
 <!-- Note: This modification is based on 2/3 review consensus (GPT-5.4 + Claude) -->
 Total: 3120 lines full version (+ 1436 lines simplified version) = **4556 lines** (including navigation + summary ~5839 lines)
 ```
+
+## 🆕 Graceful Reload (nginx_reload_spec)
+
+`graceful_reload=1` (default off) runs two generations of the stack on the same
+`lcore_id`, so an nginx HUP reload or USR2 binary upgrade drops no connection:
+
+| Question | Where to look |
+|----------|---------------|
+| Model and phases (T0-T5) | Layer 1 §4.5 · `01-LAYER1-ARCHITECTURE.md` §2.3 |
+| API, config, IPC messages | Layer 2 §1.1/§3.1/§4.2 · `02-LAYER2-INTERFACES.md` §1 |
+| Functions and data structures | Layer 3 §1/§2.8/§3.5 · `03-LAYER3-FUNCTIONS.md` §1.7b |
+| Source landing points | `KNOWLEDGE_GRAPH_WIKI.md` §2I |
+| Full design, milestones, tests | `docs/nginx_reload_spec/zh_cn/` (00-09) |
+
+---
 
 ## 🚀 Quick Start
 

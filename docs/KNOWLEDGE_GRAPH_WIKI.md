@@ -196,6 +196,40 @@ Traceability: `docs/issue_1063/zh_cn/` (00-03). Key commits: `b295b9300` (UDP ec
 
 ---
 
+## 2I. Post-index code delta: graceful reload (nginx_reload_spec)
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-09-30).
+> Covers the reload / binary-upgrade path that keeps two generations of the stack alive on
+> the **same `lcore_id`**; default OFF (`graceful_reload=0`).
+
+An nginx reload (HUP) or binary upgrade (USR2) spawns a new generation (G_new) while the old
+one (G_old) finishes the connections it owns and then exits. Ownership of the hardware is a
+single reversible word, so an aborted reload hands it back instead of dropping traffic.
+
+| Symbol / Area | Where in source |
+|---------------|-----------------|
+| Config gate (default OFF) | `lib/ff_config.c`: `graceful_reload` (field `dpdk.graceful_reload` in `lib/ff_config.h`), `reload_heartbeat_timeout_ms`; rejected with `thread_mode=1` |
+| New: reload control plane | `lib/ff_reload.c` (1863 L) + `lib/ff_reload.h` — shared block, generation identity, rx/kni ownership, park barrier, heartbeat |
+| New: generation directory | `lib/ff_reload_gendir.c` (406 L) — hugepage memzone owned by the resident slim primary: epoch→slot map, packed `(epoch << 32) | gen` owner coordinate, liveness stamps |
+| New: software flow map | `lib/ff_flow_map.c` (461 L) — `ff_flow_map_admit()` records a four-tuple at SYN-ACK time; `ff_flow_map_revoke()` undoes an admission whose SYN-ACK never went out |
+| New: drain rings | `lib/ff_drain_ring.c` (563 L) — per-(queue, generation, direction) rings carrying G_old's in-flight packets |
+| Shared control block | `lib/ff_reload.h`: `struct ff_reload_state`; attached by `ff_reload_attach_state()`, checked by `ff_reload_state_valid()` |
+| rx/kni ownership | `lib/ff_reload.c`: `ff_reload_rx_owner_gen()` / `ff_reload_rx_owner_gen_set()`, `ff_reload_rx_stopped_set()`, `ff_reload_rx_release()` / `ff_reload_rx_release_epoch()` |
+| T2 park barrier | `lib/ff_reload.c`: `ff_reload_handover_arm()` arms a fresh epoch; `ff_reload_gendir_user_stop()` is the parked-pass ack recorded in `rx_parked[]`; ownership flips only after every live old-generation process acked |
+| Heartbeat liveness | `lib/ff_reload.c`: `ff_reload_heartbeat_sample()` + `ff_reload_heartbeat_eval()` |
+| Dispatcher classification | `app/nginx-1.28.0/src/event/modules/ngx_ff_module.c`: `ngx_ff_flow_map_dispatcher()` — a pure SYN stays local, a hit stays local, a miss is forwarded to the peer |
+| Stack-side producers | `freebsd/netinet/tcp_syncache.c`: `syncache_add()` admits through `syncache_flow_map_admit()`; `ff_syncache_count()` / `ff_syncache_counters()` feed the drain criteria |
+| nginx master FSM | `app/nginx-1.28.0/src/event/modules/ngx_ff_reload.c` + `ngx_ff_reload_fsm.h` — T0→T5 transition table driven by `ngx_ff_reload_fsm_event()` |
+| nginx process model | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c`: `ngx_ff_reload_hup()`, `ngx_ff_reload_wait_or_check()`, `ngx_ff_reload_t3_check()`, `ngx_ff_reload_quit_gold()` |
+| Tooling | `tools/compat/ff_ipc.c`: generation/epoch aware ring naming `"<proc>[:<gen>[:<epoch>]]"` via `ff_set_gen_str()` / `ff_set_epoch()` |
+| Observability | `lib/ff_dpdk_if.c`: 1 Hz reload-plane report — drain progress, heartbeat stalls, flow-map counters, syncache counts |
+
+Traceability: `docs/nginx_reload_spec/zh_cn/` (00 overview, 06 solution design, 07 milestones,
+08 testing, 09 review) and `docs/nginx_reload_spec/work/` (evidence, audits, run logs). Code
+anchors in those documents name **symbols**, not line numbers.
+
+---
+
 ## 3. Directory Structure
 
 ```

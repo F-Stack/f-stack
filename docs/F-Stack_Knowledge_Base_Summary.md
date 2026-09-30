@@ -123,6 +123,14 @@ Actual benchmark data on 10GbE network:
 
 ### 3.1 Layer 1: System Overall Architecture
 
+**Graceful reload (`graceful_reload=1`, default off)** — two generations share one
+`lcore_id`: G_new takes the hardware while G_old drains, so an nginx reload or USR2
+upgrade drops no connection. Entry points: `lib/ff_reload.c` (control block,
+rx/kni ownership, park barrier), `lib/ff_reload_gendir.c` (cross-master directory),
+`lib/ff_flow_map.c` (packet classification), `lib/ff_drain_ring.c` (in-flight packets),
+`ngx_ff_reload.c` + `ngx_ff_reload_fsm.h` (master-side T0-T5 FSM). See
+`docs/nginx_reload_spec/zh_cn/` and §2I of `KNOWLEDGE_GRAPH_WIKI.md`.
+
 **File**: `F-Stack_Architecture_Layer1_System_Overview.md`  
 **Coverage**: 23 subsections
 
@@ -168,6 +176,14 @@ Ecosystem Integration
 **Target Audience**: Architects, CTOs, performance analysts, system designers
 
 ### 3.2 Layer 2: Interface Definitions and Specifications
+
+**Graceful reload (`graceful_reload=1`, default off)** — two generations share one
+`lcore_id`: G_new takes the hardware while G_old drains, so an nginx reload or USR2
+upgrade drops no connection. Entry points: `lib/ff_reload.c` (control block,
+rx/kni ownership, park barrier), `lib/ff_reload_gendir.c` (cross-master directory),
+`lib/ff_flow_map.c` (packet classification), `lib/ff_drain_ring.c` (in-flight packets),
+`ngx_ff_reload.c` + `ngx_ff_reload_fsm.h` (master-side T0-T5 FSM). See
+`docs/nginx_reload_spec/zh_cn/` and §2I of `KNOWLEDGE_GRAPH_WIKI.md`.
 
 **File**: `F-Stack_Architecture_Layer2_Interface_Specification.md`  
 **Coverage**: 26 subsections
@@ -220,6 +236,14 @@ Tools and Integration
 **Target Audience**: Application developers, system integration engineers, operations engineers
 
 ### 3.3 Layer 3: Function-Level Index and Data Model
+
+**Graceful reload (`graceful_reload=1`, default off)** — two generations share one
+`lcore_id`: G_new takes the hardware while G_old drains, so an nginx reload or USR2
+upgrade drops no connection. Entry points: `lib/ff_reload.c` (control block,
+rx/kni ownership, park barrier), `lib/ff_reload_gendir.c` (cross-master directory),
+`lib/ff_flow_map.c` (packet classification), `lib/ff_drain_ring.c` (in-flight packets),
+`ngx_ff_reload.c` + `ngx_ff_reload_fsm.h` (master-side T0-T5 FSM). See
+`docs/nginx_reload_spec/zh_cn/` and §2I of `KNOWLEDGE_GRAPH_WIKI.md`.
 
 **File**: `F-Stack_Architecture_Layer3_Function_Index.md`  
 **Coverage**: 18 subsections

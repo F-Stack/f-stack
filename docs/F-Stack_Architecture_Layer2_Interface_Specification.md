@@ -57,10 +57,24 @@ F-Stack exports **80+ public symbols**, divided into the following major categor
 │     ff_gettimeofday / ff_clock_gettime          │
 │     ff_log_open_set / ff_log / ff_vlog           │
 │     ...                                         │
+│                                                 │
+│ 11. Graceful Reload (ff_reload.h)               │
+│     ff_reload_attach_state / ff_reload_set_gen  │
+│     ff_reload_active_gen / ff_reload_hw_locked  │
+│     ff_reload_gendir_* (epoch directory)        │
+│                                                 │
+│ 12. Software Flow Map (ff_flow_map.h)           │
+│     ff_flow_map_admit / insert / revoke         │
+│     ff_flow_map_lookup / stats2                 │
+│                                                 │
+│ 13. Drain Rings (ff_drain_ring.h)               │
+│     ff_drain_ring_init / rx_enqueue / tx_enqueue│
+│     ff_drain_ring_rx_dequeue / stats            │
+│                                                 │
 └─────────────────────────────────────────────────┘
 ```
 
-### 1.2 Detailed Description of Six Major Header Files
+### 1.2 Detailed Description of Major Header Files
 
 #### **ff_api.h (491 Lines) - Main API**
 
@@ -529,6 +543,9 @@ enable_kni = 1                # Enable virtual NIC
 mbuf_low_watermark = 0        # mbuf water-level threshold (0=disabled; issue #1076)
 primary_slim = 0              # Primary runs control-plane only (0=disabled; issue #1078)
 primary_slim_idle_sleep = 1000  # Sleep (us) when primary_slim=1 (default 1000)
+graceful_reload = 0           # Two generations per lcore_id (0=off; needs nginx
+                              # master; all-secondary workers + resident primary)
+reload_heartbeat_timeout_ms = 1000  # G_old stall detection on G_new (0 -> default)
 
 [port0]
 addr = 10.0.0.1
@@ -831,6 +848,36 @@ ff_ipc_msg_free(msg);
 ff_ipc_msg_free(retmsg);
 ```
 
+#### **Reload Messages (`FF_RELOAD`, `graceful_reload=1` only)**
+
+Reload control does not use a new channel: it rides the existing per-generation
+msg rings as message type `FF_RELOAD`, with the subcommand in `ff_reload_args`.
+
+```c
+enum FF_RELOAD_CMD {
+    FF_RELOAD_CMD_UNKNOWN = 0,
+    FF_RELOAD_CMD_READY,          /* worker: generation bound and running */
+    FF_RELOAD_CMD_HANDOVER_REQ,   /* master: park rx, hand hardware over */
+    FF_RELOAD_CMD_HANDOVER_ACK,
+    FF_RELOAD_CMD_DRAIN_PROGRESS, /* worker: conns / snd_pending / syncache */
+    FF_RELOAD_CMD_DRAIN_DONE,
+    FF_RELOAD_CMD_REJECT,         /* reload refused, old generation resumes */
+    FF_RELOAD_CMD_QUERY,          /* observability: current reload view */
+};
+
+struct ff_reload_args {
+    uint32_t cmd;         /* enum FF_RELOAD_CMD */
+    uint32_t gen;         /* sender or target generation */
+    uint32_t status;      /* command result / progress */
+    uint32_t active_gen;  /* serving generation */
+};
+```
+
+Ring naming is generation- and epoch-aware, so a tool has to name the generation
+it wants to talk to: `ff_ipc` accepts `"<proc>[:<gen>[:<epoch>]]"` and resolves
+`AUTO` on the first send. With `graceful_reload=1` the resident slim primary
+(proc_id 0) serves both generations and never leaves, so it is always reachable.
+
 ### 4.3 Multi-Thread Interface
 
 F-Stack provides basic multi-threading support, but sockets are **not shared** between threads:
@@ -1110,6 +1157,7 @@ symmetric_rss = 1  # Bidirectional connections to same queue
 | **traffic** | Traffic statistics export | FF_TRAFFIC | `traffic -p <proc_id> -d <secs>` |
 | **ndp** | IPv6 Neighbor Discovery | ioctl (SIOCGNBRINFO_IN6) | `ndp -C <proc_id> -a` |
 | **ngctl** | Netgraph control | FF_NGCTL | `ngctl -p <proc_id> list` |
+| **ff_ipc** | Reload/generation-aware IPC for all tools | FF_RELOAD (query) | `ff_ipc -p 0:auto` |
 
 ### 6.2 Application Integration Interfaces
 

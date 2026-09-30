@@ -456,6 +456,111 @@ const char * ff_strerror(int errnum)
 
 ---
 
+#### **Graceful Reload (`ff_reload.h` / `ff_reload_gendir.c`)**
+
+Only reachable with `graceful_reload=1`; every symbol degrades to a no-op otherwise.
+
+```c
+void ff_reload_attach_state(void *block)
+    // Attach the anonymous MAP_SHARED reload block created by the nginx master
+    // Inherited through fork(); apps not driven by the master never attach
+    // Thread safety: n/a (called once, before any child exists)
+
+int ff_reload_gen(void); void ff_reload_set_gen(int gen)
+    // This process's generation (gen0/gen1 ping-pong)
+    // Selects the msg ring, app mbuf pool and drain ring set
+
+uint32_t ff_reload_epoch(void); unsigned ff_reload_epoch_slot(void)
+    // Master epoch and its directory slot; slot 0 is the directory-less identity
+    // Ring names carry the slot ("_e<slot>"), not the monotonic epoch, because a
+    // ring name is capped at RTE_RING_NAMESIZE-1 bytes
+
+int ff_reload_active_gen(void); int ff_reload_target_gen(void)
+int ff_reload_kni_owner_gen(void); int ff_reload_worker_gen(void)
+    // Generational view: serving, being spawned, KNI owner, this worker's binding
+
+int ff_reload_hw_locked(void)
+    // 1 while this process must not touch the hardware
+    // Derived from rx_owner_gen/rx_stopped, deliberately reversible
+
+int ff_reload_peer_draining(void); int ff_reload_peer_mirror_draining(void)
+    // 1 while another master's epoch is a live or still-draining counterpart
+    // Full scan: for init / 1 Hz / miss paths only
+
+int ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
+                             uint64_t *last_advance, uint64_t now,
+                             uint64_t timeout)
+    // Liveness of the rx-owner generation: advanced -> alive, stalled past
+    // timeout -> dead. Returns -1 on invalid arguments
+
+int ff_reload_gendir_epoch_live(uint32_t epoch)
+    // Directory liveness; a slot whose master is gone stays live until its
+    // orphan workers stop refreshing the stamp (FF_RELOAD_SLOT_STALE_MS)
+
+int ff_reload_gendir_rx_claim(uint32_t from_epoch, uint32_t from_gen, ...)
+int ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
+    // Take rx from the current owner (claim) or from a dead one (reclaim)
+    // Owner coordinates are one 64-bit word ((epoch << 32) | gen): a single CAS,
+    // so two masters can never both match
+
+void ff_reload_master_begin(uint32_t *epoch, uint32_t *target_gen)
+void ff_reload_master_abort(void); void ff_reload_master_complete(void)
+    // Master-side window open / roll back / close
+
+int ff_reload_msg_fill(struct ff_msg *msg, int cmd, int gen, int status, ...)
+int ff_reload_msg_parse(const struct ff_msg *msg, int *cmd, int *gen, ...)
+    // Encode/decode the FF_RELOAD subcommand carried over the msg ring
+
+int ff_syncache_count(void)
+void ff_syncache_counters(uint64_t *synack_fail, uint64_t *ack_mismatch)
+    // Half-open entries, and the two reload-relevant failure counters
+```
+
+#### **Software Flow Map (`ff_flow_map.h`)**
+
+```c
+int ff_flow_map_active(void)
+    // 1 while a reload window is open and the table is armed
+
+int ff_flow_map_admit(const struct ff_flow_key *key, int *created)
+    // Record a four-tuple as "this generation" at SYN-ACK time, so the third
+    // handshake ACK is classified instead of being forwarded to the peer.
+    // *created is 1 only when this call added the entry (a duplicate is not)
+
+int ff_flow_map_revoke(const struct ff_flow_key *key)
+    // Undo an admission whose SYN-ACK never went out; only the entry this
+    // admission created is removed. Uses backward-shift deletion so no entry
+    // behind it in the probe chain is hidden
+
+int ff_flow_map_lookup(const struct ff_flow_key *key)
+    // Dispatcher hot path: hit -> this generation, miss -> the draining peer
+
+void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
+                        uint64_t *grown, uint64_t *grow_fail,
+                        uint64_t *alloc_fail, uint32_t *cap,
+                        uint64_t *revoked)
+    // Counters for ff_top / drain observability; any pointer may be NULL
+```
+
+#### **Drain Rings (`ff_drain_ring.h`)**
+
+```c
+int ff_drain_ring_init(void); int ff_drain_ring_ready(void)
+    // Create (or report) the per-(queue, generation, direction) ring set
+
+int ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
+int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
+    // Hand a packet to the draining generation; caller must be the peer
+
+int ff_drain_ring_rx_dequeue(uint16_t port_id, uint16_t queue_id, ...)
+    // Draining side: pull the packets the new generation diverted to it
+
+void ff_drain_ring_stats(uint64_t *rx_full, uint64_t *tx_full, ...)
+    // Ring-full counters (a full ring drops, so it is rate-limited and logged)
+```
+
+---
+
 ## 2. Core Data Structures in Detail
 
 ### 2.1 Kevent Event Structure
@@ -757,6 +862,66 @@ ff_poll(fds, 2, -1);  // Block until events arrive
 
 ---
 
+### 2.8 Reload Control Block (`struct ff_reload_state`)
+
+An anonymous `MAP_SHARED` block created by the nginx master before any `fork()`,
+so the resident slim primary and every worker inherit it. Cross-process fields are
+read and written only through `__atomic` helpers (`__ATOMIC_SEQ_CST`).
+
+```c
+struct ff_reload_state {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t len;               /* sizeof(struct ff_reload_state) */
+    uint32_t epoch;             /* bumped by the master per reload attempt */
+
+    uint32_t active_gen;        /* generation currently serving traffic */
+    uint32_t target_gen;        /* generation being spawned (reload window) */
+    uint32_t reload_active;     /* 1 during T1..T5, 0 in steady state */
+    uint32_t kni_owner_gen;     /* KNI runtime-owner generation */
+
+    uint64_t heartbeat;         /* per-loop increment by the rx-owner gen */
+    uint64_t heartbeat_stalls;  /* sampling-side detected stalls */
+
+    uint64_t ready[FF_RELOAD_MAX_PROCS];
+
+    uint32_t rx_owner_gen;      /* generation that owns the hardware rx/tx */
+    uint32_t rx_stopped;        /* 1 while the owner must not burst */
+
+    uint32_t fsm_state;
+    uint32_t handover_epoch;    /* tags park acks to one handover round */
+    uint64_t rx_parked[FF_RELOAD_MAX_PROCS];
+
+    uint32_t reserved[7];       /* drain-report pointer, phase durations, epochs */
+    uint32_t peer_epoch;        /* mirrored cross-master coordinate */
+    uint32_t peer_gen;
+};
+```
+
+### 2.9 Flow Map Key and Reload Message Payload
+
+```c
+struct ff_flow_key {
+    uint8_t  af;                /* FF_FLOW_MAP_V4 / FF_FLOW_MAP_V6 */
+    uint32_t src[4], dst[4];
+    uint16_t sport, dport;
+};
+
+struct ff_reload_args {
+    uint32_t cmd;               /* enum FF_RELOAD_CMD */
+    uint32_t gen;               /* sender or target generation */
+    uint32_t status;            /* command result / progress */
+    uint32_t active_gen;        /* serving generation */
+};
+```
+
+The key is hashed into a per-process open-addressing table (`FF_FLOW_MAP_CAP_MIN`
+64 … `FF_FLOW_MAP_CAP_MAX` 1<<20 entries, linear probing with a bounded probe
+length). The table is process-local: the two generations each hold their own, which
+is why admitting a four-tuple is meaningful without any cross-process agreement.
+
+---
+
 ## 3. In-Depth Analysis of Three Key Source Files
 
 ### 3.1 ff_syscall_wrapper.c (2265 Lines)
@@ -1027,6 +1192,40 @@ Two files carry the optional coexistence machinery (compiled only with `FF_KERNE
 **Entry routing in `ff_syscall_wrapper.c`** (§3.1): each kernel-aware `ff_*` entry detects a managed kernel fd via `ff_is_kernel_fd()` and forwards to the matching `ff_host_*` bridge; dual-created sockets additionally drive the paired host fd looked up via `ff_native_map_get()`. On `AF_INET6` dual-build, `ff_socket` calls `ff_host_set_v6only(hfd)` (L952) so the `-DINET6` build starts cleanly with v4+v6 on the same port (fixes the prior host-IPv6 `errno=98 EADDRINUSE`).
 
 **R10: residual-entry coexistence** — `ff_ioctl` (L1067, kernel fd uses the **raw Linux request** straight to `ff_host_ioctl`, NOT via `linux2freebsd_ioctl`; dual-stack fd same-driver since R10.1 syncs `FIONBIO`/`FIOASYNC`), `ff_readv` (L1189)/`ff_writev` (L1251, kernel fd → `ff_host_readv/writev`, mimic read/write, connection fds single-stack hot path), `ff_dup` (L2130, kernel fd → `ff_host_dup`+encode), `ff_dup2` (L2156, both-kernel → `ff_host_dup2`+encode; cross-stack rejected `errno=EINVAL`). Known limitation: `ff_select` (encode kernel fd ≫ `FD_SETSIZE` hard limit) / `ff_poll` (conservatively not implemented) do not support kernel-fd coexistence — use `ff_epoll_*`/`ff_kqueue`.
+
+---
+
+### 3.5 ff_reload.c (1863 Lines) - Graceful Reload Control Plane
+
+**Shared block lifecycle** — `ff_reload_attach_state()` binds the block the nginx
+master mapped; `ff_reload_state_valid()` checks magic/version/length, so a block
+from a different build is rejected rather than misread.
+
+**Generation identity** — `ff_reload_msg_ring_name()` / `..._name_e()` build
+`"<base><proc_id>[_<type>]_g<gen>"` (plus `"_e<slot>"` for a non-zero epoch).
+`graceful_reload=0` reproduces the legacy names byte-for-byte.
+
+**rx/kni ownership** — two plain words, `rx_owner_gen` and `rx_stopped`, arbitrate
+the hardware. The old generation stores `rx_stopped=1` first and `rx_owner_gen`
+second; the acquiring generation waits for the owner to park, then clears
+`rx_stopped`. Because the markers are ordinary read/write words, an aborted reload
+gives the hardware back by writing the old generation into `rx_owner_gen`.
+
+**T2 park barrier** — the master arms a fresh `handover_epoch`; each worker acks
+with `(epoch << 32) | 1` from the loop pass that will skip rx/tx. Only after every
+live old-generation process has acked does ownership flip, which is what rules out
+an in-flight `rx_burst` racing the new owner. Stale acks from an aborted round are
+harmless because they carry the wrong epoch.
+
+**Heartbeat** — the rx owner increments `heartbeat` once per loop; the sampler keeps
+`(last_cnt, last_advance)` and reports a stall when the counter stops advancing for
+longer than the threshold. Under `graceful_reload=0` nothing samples it.
+
+**Cross-master directory** — `ff_reload_gendir.c` (406 lines) owns a hugepage memzone
+created by the resident slim primary: the epoch→slot map, the packed
+`(epoch << 32) | gen` owner coordinates, and liveness stamps used to recycle the ring
+set of a master that died. Slot recycling is bounded and counts both refused and
+forced reclaims.
 
 ---
 
