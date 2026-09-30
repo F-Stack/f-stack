@@ -4,11 +4,11 @@
 |---|---|
 | 文档编号 | 03 |
 | 标题 | issue #547 / #12 全链考证、iWiki 4015929276 旧方案解析、PR#559、DPDK 18.11→19.11→24.11.6 定时器演变 git 证据链、旧方案失效性结论 |
-| 版本 | v1.1 |
+| 版本 | v1.2（v1.1 基础上：**2026-09-30：代码锚点由 `文件:行号` 改为 `文件: 符号名`（删除冗余注释后行号整体漂移，符号名稳定）**）——v1.1 |
 | 日期 | 2026-08-18 |
 | 状态 | 待人工审计 |
 | 来源产物 | work/evidence-legacy.md（考证员 evidence-hunter，2026-08-18 落盘）。本篇为正式化改写：保留全部事实证据（issue 评论原文、commit hash、行号、iWiki 元数据）、未坐实标注；原文档中出现的真实测试地址已按工作区规约替换为占位符（`<DPDK_NIC_IP>`），并在相应位置注明；「实际执行的操作清单」保留为第 0 节以体现证据可追溯 |
-| 修订说明 | v1.1（2026-09-17）：本轮 spec×代码交叉审核（plan_audit）订正——`rte_timer` 相关 commit 数由「全树仅 3 个」更正为 **4 个**（补 M2 Batch A `982a5793a` 自驱 hardclock）；§5.5 表 HEAD 列行号按 HEAD `28e751259` 重定位（v1.20 列加注「M0 期快照，本轮未复核」）；§8 U1（及 §6.2）`ff_syscall_wrapper.c` 行号更新为 `:100/982/1044-1049` |
+| 修订说明 | **v1.2（2026-09-30）：代码锚点改引符号名——清理冗余注释后行号整体漂移，zh_cn 全篇 948 处 `file:line` 锚点改为 `file: 符号名`（ctags 解析并校验符号在当前代码仍存在）；11 处纯行号审计叙述与 1 处仓库外文件保留原样** —— v1.1（2026-09-17）：本轮 spec×代码交叉审核（plan_audit）订正——`rte_timer` 相关 commit 数由「全树仅 3 个」更正为 **4 个**（补 M2 Batch A `982a5793a` 自驱 hardclock）；§5.5 表 HEAD 列行号按 HEAD `28e751259` 重定位（v1.20 列加注「M0 期快照，本轮未复核」）；§8 U1（及 §6.2）`ff_syscall_wrapper.c` 行号更新为 `:100/982/1044-1049` |
 
 相关篇章：[00-总览](00-overview.md) | [04-现状分析](04-fstack-current-analysis.md) | [06-方案设计](06-solution-design.md)
 
@@ -586,7 +586,7 @@ lib/ff_dpdk_if.c           |  8 ++++++++   # init_clock 调一次，stop_clock �
 | 多进程同 core 共存 | **【2026-09-22 同步·A01-3】**「mempool 隔离 + nice 调整**可解决**」为过强表述：DPDK 硬禁令原文为 *among other issues*，mempool 仅其一例；本 spec 方案（S3）**只对已识别的 mempool 与 timer 两条路径做了隔离，其余按 lcore_id 索引的共享槽位风险未穷举**，故改为「**已识别路径已隔离、其余未穷举**」。**原验收门槛不因本条放宽**（仍须 RV1/RV6/RV15 + PT-NR-08/09 + IT-NR-A13 实测佐证），既有同 lcore 定案不变。但 timer 共享后，dispatch 进程 + worker 进程的 rte_timer_manage 会在同一 lcore 上跑（不同时刻），prev_lcore 关系紊乱 | worker 的 `ff_hardclock` 触发节奏被打乱，连接超时/RTO 重传时间不准，间接导致 reload 期间连接异常 |
 | `rte_timer_subsystem_init` 仅 init 一次 | **现版本需配套 `rte_timer_meta_init`** 显式初始化本进程 lcore 槽（补丁 62f1c34df，2026-01-16），否则 secondary 进程重启会"infinite loop" | 2026 年仍有 F-Stack 本地补丁在补这一缺陷；orange30 在 2020-11 描述的"DPDK 19 timer 库变化"问题至今未通过上游修复彻底闭环 |
 | `--file-prefix` 支持 reload 期间多组 DPDK 进程内存隔离 | PR#559（2020-11 合入）补了配置文件解析 | 这一层已 OK，但只是基础设施，不是 timer/connection 共享状态问题的解药 |
-| freebsd 协议栈 `IP_BIND_ADDRESS_NO_PORT` | 当前 freebsd 15.0 树**已支持**（**2026-08-18 已坐实**，见 §8 U1）：协议栈行为层由 cb9b4d462（2025-07-25，bind 不分配端口、connect 时按 RSS 一致性选源端口）经 ff9e3c449（2026-06-22）port 到 15.0 树（`freebsd/netinet/in_pcb.c` `#ifdef FSTACK` 块）；setsockopt 接口层由 a2537e143（2026-07-16）在 `lib/ff_syscall_wrapper.c:100/982/1044-1049` 拦截 `LINUX_IP_BIND_ADDRESS_NO_PORT(24)` 为成功 no-op（处理与 FreeBSD `IP_BINDANY(24)` 数值冲突）。注：此系 F-Stack 本地扩展，上游原生 FreeBSD 15.0 无此选项（Linux 兼容层显式报 unsupported）| "网卡双 IP + 新旧 worker 各用一 IP"方案的协议栈前提**已具备**，S1 评估中该风险消除（见 [06](06-solution-design.md) §3.1/S1）|
+| freebsd 协议栈 `IP_BIND_ADDRESS_NO_PORT` | 当前 freebsd 15.0 树**已支持**（**2026-08-18 已坐实**，见 §8 U1）：协议栈行为层由 cb9b4d462（2025-07-25，bind 不分配端口、connect 时按 RSS 一致性选源端口）经 ff9e3c449（2026-06-22）port 到 15.0 树（`freebsd/netinet/in_pcb.c` `#ifdef FSTACK` 块）；setsockopt 接口层由 a2537e143（2026-07-16）在 `lib/ff_syscall_wrapper.c: LINUX_IP_BIND_ADDRESS_NO_PORT/982/1044-1049` 拦截 `LINUX_IP_BIND_ADDRESS_NO_PORT(24)` 为成功 no-op（处理与 FreeBSD `IP_BINDANY(24)` 数值冲突）。注：此系 F-Stack 本地扩展，上游原生 FreeBSD 15.0 无此选项（Linux 兼容层显式报 unsupported）| "网卡双 IP + 新旧 worker 各用一 IP"方案的协议栈前提**已具备**，S1 评估中该风险消除（见 [06](06-solution-design.md) §3.1/S1）|
 
 ### 6.3 失效分水岭与现状定性
 
@@ -611,7 +611,7 @@ lib/ff_dpdk_if.c           |  8 ++++++++   # init_clock 调一次，stop_clock �
 
 | 编号 | 未坐实项 | 原因 | 建议下一步 |
 |------|----------|------|------------|
-| U1 | ~~当前 freebsd 15.0 树是否已支持 `IP_BIND_ADDRESS_NO_PORT`~~ **→ 已坐实（2026-08-18）：支持** | 原未坐实原因：初版考证未在 freebsd/ 树中以标识符 grep 定位（实现为 `#ifdef FSTACK` 行为改动 + `lib/ff_syscall_wrapper.c` 拦截，无裸选项名命中），且未跑 `git log --grep=IP_BIND_ADDRESS_NO_PORT`。坐实证据链（均 `git merge-base --is-ancestor` 确认 IN-HEAD）：cb9b4d462（2025-07-25 原始实现）→ ff9e3c449（2026-06-22 port 到 15.0 树，`freebsd/netinet/in_pcb.c` bind-then-connect + RSS 一致性选源端口）→ a2537e143（2026-07-16 `lib/ff_syscall_wrapper.c:100/982/1044-1049` setsockopt/getsockopt 接线，处理与 `IP_BINDANY(24)` 数值冲突）；配套 35aa95846/23e545932/458e91288/699c763b4 共 8 个相关 commit | ~~已解决~~ 注意：该支持为 **F-Stack 本地扩展**，上游原生 FreeBSD 15.0（freebsd-src-releng-15.0）无此选项（Linux 兼容层 `linux_socket.c` 显式报 unsupported），升级 freebsd 树时需保留这些补丁 |
+| U1 | ~~当前 freebsd 15.0 树是否已支持 `IP_BIND_ADDRESS_NO_PORT`~~ **→ 已坐实（2026-08-18）：支持** | 原未坐实原因：初版考证未在 freebsd/ 树中以标识符 grep 定位（实现为 `#ifdef FSTACK` 行为改动 + `lib/ff_syscall_wrapper.c` 拦截，无裸选项名命中），且未跑 `git log --grep=IP_BIND_ADDRESS_NO_PORT`。坐实证据链（均 `git merge-base --is-ancestor` 确认 IN-HEAD）：cb9b4d462（2025-07-25 原始实现）→ ff9e3c449（2026-06-22 port 到 15.0 树，`freebsd/netinet/in_pcb.c` bind-then-connect + RSS 一致性选源端口）→ a2537e143（2026-07-16 `lib/ff_syscall_wrapper.c: LINUX_IP_BIND_ADDRESS_NO_PORT/982/1044-1049` setsockopt/getsockopt 接线，处理与 `IP_BINDANY(24)` 数值冲突）；配套 35aa95846/23e545932/458e91288/699c763b4 共 8 个相关 commit | ~~已解决~~ 注意：该支持为 **F-Stack 本地扩展**，上游原生 FreeBSD 15.0（freebsd-src-releng-15.0）无此选项（Linux 兼容层 `linux_socket.c` 显式报 unsupported），升级 freebsd 树时需保留这些补丁 |
 | U2 | F-Stack 1.20 vs 1.21 升级期间 ff_dpdk_if.c timer 使用层是否曾有调整 | `git log -S 'rte_timer' -- lib/ff_dpdk_if.c` 仅返回 3 个 commit，且 v1.20→v1.21 diff 关键字 'timer' 无输出（说明骨架无变）| 但未对 `freebsd_clock` 标识符名、job 函数名等做完整比对；如要 100% 坐实需对 v1.20 与 v1.21 完整 diff |
 | U3 | iWiki 截图 7（验收）柱状图原始数据 | 柱状图无具体测试命令/环境参数；截图自述"详见附件"但 iWiki 文档无附件链接 | 实地复测：找一台 4-rcv-core + 26-nginx-core 的对照机，按 orange30 改法实测 QPS |
 | U4 | "wrk 跑 10h 200 次 reload 112 timeout" 对应 0.000006% 概率的复现性 | 截图数据可信但需独立实测验证 | 复现：wireshark/ebpf 抓流量切换瞬间，验证 timeout 集中点 |
