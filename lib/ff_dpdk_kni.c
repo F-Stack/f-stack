@@ -108,12 +108,12 @@ ff_kni_is_runtime_owner(void)
         return rte_eal_process_type() == RTE_PROC_PRIMARY;
     if (ff_global_cfg.dpdk.proc_id != ff_global_cfg.kni.owner_proc_id)
         return 0;
-    /* C-NR-313: under graceful_reload two generations share the same
+    /* under graceful_reload two generations share the same
      * proc_id, so the owner check must also match the generation: only the
      * active generation owns KNI runtime (the master flips the active gen
      * at T5). Without an attached reload state (non-nginx apps) the legacy
      * proc_id-only comparison is kept.
-     * M5: across masters the generation alone is ambiguous (both start at
+     * across masters the generation alone is ambiguous (both start at
      * gen 0 in their own anonymous block), so the check goes through the
      * generation directory's single (epoch, gen) KNI owner word — two
      * processes must never both rte_eth_tx_burst the same TX queue. */
@@ -122,7 +122,7 @@ ff_kni_is_runtime_owner(void)
     return 1;
 }
 
-/* B01-3: the stats table must exist for every process that can become the
+/* the stats table must exist for every process that can become the
  * KNI runtime owner later — a slim process configured as owner_proc_id owns
  * the inject/TX path as soon as its generation is activated, which can be
  * after ff_kni_init(). Allocation here grants no runtime right at all:

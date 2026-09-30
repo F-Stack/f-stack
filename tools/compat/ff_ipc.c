@@ -47,7 +47,7 @@ static struct rte_mempool *message_pool;
 
 uint16_t ff_proc_id = 0;
 
-/* C-NR-313: with graceful_reload=1 the msg rings are indexed by
+/* with graceful_reload=1 the msg rings are indexed by
  * (proc_id, generation) and named with a "_g<gen>" suffix, so a tool has to
  * name the generation it wants to talk to. AUTO resolves it on the first
  * send, LEGACY selects the unsuffixed names a graceful_reload=0 stack
@@ -63,16 +63,16 @@ uint16_t ff_proc_id = 0;
 
 static int ff_gen_arg = FF_IPC_GEN_AUTO;
 static int ff_ring_gen = FF_IPC_GEN_AUTO;
-/* M5: master epoch the resolved generation belongs to (ring-name slot). */
+/* master epoch the resolved generation belongs to (ring-name slot). */
 static uint32_t ff_ring_epoch;
-/* F-M5-2: epoch given on the command line. FF_RELOAD_EPOCH_NONE means
- * "not given" and resolves to slot 0, i.e. the pre-M5 ring names. */
+/* epoch given on the command line. FF_RELOAD_EPOCH_NONE means
+ * "not given" and resolves to slot 0, i.e. the pre- ring names. */
 static uint32_t ff_epoch_arg = FF_RELOAD_EPOCH_NONE;
 
-/* F5: the reply this process is waiting for; see ff_ipc_recv. */
+/* the reply this process is waiting for; see ff_ipc_recv. */
 static const struct ff_msg *ff_pending_msg;
 
-/* ---- P4 (C01-5): reply ownership ---------------------------------------
+/* (C01-5): reply ownership ---------------------------------------
  *
  * The out-ring is shared by every process of one coordinate, so a reader
  * can dequeue another client's reply. It used to be freed on the spot
@@ -99,17 +99,17 @@ static struct {
     unsigned seen;
 } ff_ipc_foreign[FF_IPC_FOREIGN_TRACKED];
 
-/* Observability (C-P4-8). */
+/* Observability. */
 static uint64_t ff_ipc_foreign_requeued;
 static uint64_t ff_ipc_orphan_dropped;
 static uint64_t ff_ipc_reply_lost;
 
-/* Total wait budget of the generation probe (C-P4-5): the whole probe must
+/* Total wait budget of the generation probe: the whole probe must
  * not cost more than one legacy probe did. */
 #define FF_IPC_PROBE_BUDGET_MS  200
 #define FF_IPC_PROBE_MIN_ATTEMPTS   10
 
-/* P4 (C-P4-4): give up on our own pending buffer — it may still come back
+/* give up on our own pending buffer — it may still come back
  * later, and is then recognised (and released) by cookie, never taken as an
  * answer. Called from every recv exit that is not "got our reply". */
 static void
@@ -196,7 +196,7 @@ ff_ipc_stash_flush(struct rte_ring *ring)
     }
 }
 
-/* Reclaim a foreign reply only when its owner is provably gone (C-P4-2):
+/* Reclaim a foreign reply only when its owner is provably gone:
  * a live owner's reply is never touched, no matter how often we see it. */
 static int
 ff_ipc_orphan_drop(struct ff_msg *m)
@@ -301,7 +301,7 @@ ff_parse_epoch(const char *arg)
     return (uint32_t)epoch;
 }
 
-/* "<gen>[:<epoch>]" — F-M5-2: the epoch is what tells apart the same
+/* "<gen>[:<epoch>]" —: the epoch is what tells apart the same
  * generation number running under two different masters. */
 static void
 ff_parse_gen(const char *arg)
@@ -393,7 +393,7 @@ ff_ipc_init(void)
 void
 ff_ipc_exit(void)
 {
-	/* P4: anything still stashed belongs to another client. The EAL is
+	/* anything still stashed belongs to another client. The EAL is
 	 * about to be torn down, so it cannot be put back into a ring any
 	 * more; it is returned to the pool (with the cross-process buffer
 	 * reference dropped) and counted as lost rather than leaked. */
@@ -425,7 +425,7 @@ ff_ipc_msg_alloc(void)
         return NULL;
     }
 
-    /* P4 (C-P4-1): the owner is stamped at the single allocation point —
+    /* the owner is stamped at the single allocation point —
      * ff_ipc_send() takes a const pointer and cannot do it. Never 0, and
      * paired with the pid so two tools cannot collide. */
     if (++ff_ipc_cookie_seq == 0)
@@ -460,7 +460,7 @@ ff_ipc_msg_free(struct ff_msg *msg)
  * tools cannot link lib/ff_reload.c, it pulls in ff_global_cfg and the rest
  * of the stack, so the two implementations must stay byte-compatible.
  * 'epoch' is the master epoch; slot 0 (epoch 0, no directory) reproduces
- * the pre-M5 names exactly. */
+ * the pre- names exactly. */
 static int
 ff_msg_ring_name(char *buf, unsigned int buflen, const char *base,
     unsigned int proc_id, int msg_type, int gen, uint32_t epoch, int graceful)
@@ -483,7 +483,7 @@ ff_msg_ring_name(char *buf, unsigned int buflen, const char *base,
             gen = 0;
         if (gen >= FF_RELOAD_GEN_MAX)
             gen = FF_RELOAD_GEN_MAX - 1;
-        /* slot 0 keeps the pre-M5 names byte-for-byte (P0-6 style); every
+        /* slot 0 keeps the pre- names byte-for-byte; every
          * other slot inserts "_e<slot>", one digit — a ring name is capped
          * at 28 bytes and this is the only width that always fits. */
         if (slot == 0) {
@@ -515,7 +515,7 @@ ff_msg_ring_name(char *buf, unsigned int buflen, const char *base,
  * FF_RELOAD_CMD_QUERY is the read-only probe command: handle_reload_msg()
  * rejects anything else with ENOTSUP, so this never looks like a READY or
  * a handover acknowledgement to the reload machinery. */
-/* M5: the probe now resolves the full (epoch, generation) coordinate.
+/* the probe now resolves the full (epoch, generation) coordinate.
  * Silently falling back to generation 0 used to at worst talk to the idle
  * generation; with several masters alive it would silently talk to the
  * rings of a completely different process group, so a missed probe is
@@ -573,7 +573,7 @@ ff_ipc_probe_once(struct rte_ring *in_ring, struct rte_ring *out_ring,
     return -1;
 }
 
-/* P4 (C-P4-5): two stages. A pure ring lookup cannot answer which
+/* two stages. A pure ring lookup cannot answer which
  * generation is serving (that only exists in the QUERY reply), and the old
  * probe both assumed gen/epoch 0 and freed every reply that was not its
  * own — destroying other clients' answers, including FF_RELOAD control
@@ -668,7 +668,7 @@ ff_ipc_ring_gen(void)
 
     if (ff_gen_arg != FF_IPC_GEN_AUTO) {
         ff_ring_gen = ff_gen_arg;
-        /* F-M5-2: an epoch given on the command line selects the slot.
+        /* an epoch given on the command line selects the slot.
          * ff_epoch_arg defaults to FF_RELOAD_EPOCH_NONE, whose slot is 0 —
          * exactly the value this used to hard-code — so an unspecified
          * epoch resolves to the same ring names as before. */
@@ -787,7 +787,7 @@ ff_ipc_recv(struct ff_msg **msg, enum FF_MSG_TYPE msg_type)
         if (ret == 0) {
             struct ff_msg *m = (struct ff_msg *)obj;
 
-            /* P4 (C-P4-3): success means "this is the reply to the query
+            /* success means "this is the reply to the query
              * this process sent", proven by cookie + pid — not by pointer
              * equality, and never by "something came out of the ring". */
             if (ff_ipc_owns(m)) {
@@ -809,7 +809,7 @@ ff_ipc_recv(struct ff_msg **msg, enum FF_MSG_TYPE msg_type)
                 continue;
             }
 
-            /* F5: an out ring outlives the process generation that answers
+            /* an out ring outlives the process generation that answers
              * on it, so another client's reply can surface here. It is put
              * back (never freed — it may point into that process's heap);
              * only a reply whose owner is provably gone is reclaimed. */
@@ -830,7 +830,7 @@ ff_ipc_recv(struct ff_msg **msg, enum FF_MSG_TYPE msg_type)
         usleep(1000);
     }
 
-    /* P4 (C-P4-3/4): no reply of ours — never report the last dequeue
+    /* no reply of ours — never report the last dequeue
      * result as success, and always clear the pending pointer. */
     ff_ipc_recv_abandon();
     ff_ipc_stash_flush(ring);

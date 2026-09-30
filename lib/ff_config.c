@@ -1040,7 +1040,7 @@ ini_parse_handler(void* user, const char* section, const char* name,
     } else if (MATCH("dpdk", "graceful_reload")) {
         pconfig->dpdk.graceful_reload = atoi(value);
     } else if (MATCH("dpdk", "reload_heartbeat_timeout_ms")) {
-        /* P3-1: negative values must not reach the unsigned field (they
+        /* negative values must not reach the unsigned field (they
          * would pass the >=10 validation as huge values and silently
          * disable stall detection); remap them to the default like 0. */
         int hb_ms = atoi(value);
@@ -1050,7 +1050,7 @@ ini_parse_handler(void* user, const char* section, const char* name,
         }
         pconfig->dpdk.reload_heartbeat_timeout_ms = (uint32_t)hb_ms;
     } else if (MATCH("dpdk", "drain_ring_size")) {
-        /* Same trap as reload_heartbeat_timeout_ms (P3-1): a negative value
+        /* Same trap as reload_heartbeat_timeout_ms: a negative value
          * must not reach the unsigned field, and 0 means "use the default". */
         int drs = atoi(value);
 
@@ -1574,7 +1574,7 @@ ff_check_config(struct ff_config *cfg)
             fprintf(stderr, "graceful_reload=1 requires nb_procs >= 2\n");
             return -1;
         }
-        /* C-NR-201/316: heartbeat stall threshold sanity (0 is remapped to
+        /* heartbeat stall threshold sanity (0 is remapped to
          * the default at parse time, so only absurdly small values land
          * here). */
         if (cfg->dpdk.reload_heartbeat_timeout_ms &&
@@ -1582,7 +1582,7 @@ ff_check_config(struct ff_config *cfg)
             fprintf(stderr, "reload_heartbeat_timeout_ms must be >= 10\n");
             return -1;
         }
-        /* C-NR-305/310: drain_ring capacity. 0 can only come from a caller
+        /* drain_ring capacity. 0 can only come from a caller
          * that filled the struct by hand (the parser remaps it). */
         if (cfg->dpdk.drain_ring_size == 0) {
             cfg->dpdk.drain_ring_size = FF_DRAIN_RING_SIZE_DEFAULT;

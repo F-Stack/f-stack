@@ -100,7 +100,7 @@
 
 #include <machine/in_cksum.h>
 
-/* C-NR-301: flow-map producer hook. Zero-include header (lib/ff_flow_map.h,
+/* flow-map producer hook. Zero-include header (lib/ff_flow_map.h,
  * reachable through the -I. that lib/ builds with) so this TU pulls in no
  * host/F-Stack header of its own. */
 #include "ff_flow_map.h"
@@ -171,7 +171,7 @@ static void	syncookie_cmp(struct in_conninfo *,
 VNET_DEFINE_STATIC(struct tcp_syncache, tcp_syncache);
 #define	V_tcp_syncache			VNET(tcp_syncache)
 
-/* C-NR-312a: per-VNET total of half-open entries, maintained at the two
+/* per-VNET total of half-open entries, maintained at the two
  * funnel points syncache_insert()/syncache_drop() (every add/remove path
  * goes through them). */
 VNET_DEFINE_STATIC(u_int, syncache_entries);
@@ -426,7 +426,7 @@ syncache_insert(struct syncache *sc, struct syncache_head *sch)
 }
 
 /*
- * C-NR-301: publish a freshly created half-open connection to the software
+ * publish a freshly created half-open connection to the software
  * flow table, so the graceful-reload dispatcher can tell "connection opened
  * after the handover" (mine) from "established before it" (forward to the
  * draining generation).
@@ -457,7 +457,7 @@ syncache_flow_key(const struct syncache *sc, struct ff_flow_key *key)
 	key->dport = sc->sc_inc.inc_lport;
 }
 
-/* P3 (C-P3-1/2, D2): admit the flow before any SYN-ACK goes out.
+/* admit the flow before any SYN-ACK goes out.
  * A SYN-ACK that is not in the flow table makes the third handshake ACK
  * look like "not this generation", so it is forwarded to the draining
  * generation and answered with a RST — the connection dies although both
@@ -548,9 +548,9 @@ syncache_drop(struct syncache *sc, struct syncache_head *sch)
 }
 
 /*
- * C-NR-312a: current number of half-open entries in this stack, polled by
+ * current number of half-open entries in this stack, polled by
  * the graceful-reload drain logic to learn when the half-open window has
- * closed.  Entries change on the single datapath thread, so no lock.
+ * closed. Entries change on the single datapath thread, so no lock.
  */
 u_int
 syncache_count(void)
@@ -1530,7 +1530,7 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	unsigned int *tfo_pending = NULL;
 	int tfo_cookie_valid = 0;
 	int tfo_response_cookie_valid = 0;
-	/* P3 (C-P3-1/2): 1 once this SYN has been recorded as this generation. */
+	/* 1 once this SYN has been recorded as this generation. */
 	bool locked;
 
 	INP_RLOCK_ASSERT(inp);			/* listen socket */
@@ -1882,7 +1882,7 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	if (locked)
 		SCH_UNLOCK(sch);
 
-	/* P3 (C-P3-1/2, D2): admission before the SYN-ACK, covering both the
+	/* admission before the SYN-ACK, covering both the
 	 * standard handshake and TFO (the TFO branch below must not bypass
 	 * it). The on-stack syncookie entry (sc == &scs) is admitted too —
 	 * it used to be skipped, so a syncookie connection was never tracked
@@ -1909,7 +1909,7 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	 */
 	if (!syncache_respond_blocked()
 	    && syncache_respond(sc, m, TH_SYN|TH_ACK) == 0) {
-		/* C-NR-301: the SYN-ACK is out and the entry is in the
+		/* the SYN-ACK is out and the entry is in the
 		 * syncache — this is the earliest moment the four-tuple is a
 		 * real connection. Recording later (at accept()) would let the
 		 * third handshake ACK miss the table and be forwarded to a

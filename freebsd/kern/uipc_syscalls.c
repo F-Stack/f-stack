@@ -129,13 +129,13 @@ getsock(struct thread *td, int fd, const cap_rights_t *rightsp,
 	return (0);
 }
 
-/* F-M3-1 / F-M4-2 / C-NR-402 (M4): drain-side socket aggregation for the
+/* drain-side socket aggregation for the
  * graceful reload orchestration. ff_socket_drain_count() walks this
  * process's descriptor table; the nginx worker is single-threaded on the
  * ff datapath, so no fd-table lock is needed. Only INET/INET6 sockets
  * count and listening sockets are excluded (the master<->worker channel
  * socketpair is AF_LOCAL). ff_socket_snd_pending() instead walks the full
- * TCP inpcb list (F-M4-2): an app-closed socket whose so_snd the stack is
+ * TCP inpcb list: an app-closed socket whose so_snd the stack is
  * still draining has no descriptor and is invisible to the fd walk.
  * TIME_WAIT entries carry no socket and are skipped naturally. The
  * app-face declarations live in ff_api.h. */

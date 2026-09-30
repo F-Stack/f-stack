@@ -72,12 +72,12 @@
 #include "ff_reload.h"
 #include "ff_drain_ring.h"
 
-/* C-NR-313: msg_ring generation count must match the app mbuf pool
+/* msg_ring generation count must match the app mbuf pool
  * generation count (both index by the same gen0/gen1 ping-pong). */
 typedef char ff_reload_gen_max_check[
     (FF_RELOAD_GEN_MAX == FF_MBUF_GEN_MAX) ? 1 : -1];
 
-/* M5: a ring name must fit in RTE_RING_NAMESIZE-1 bytes. The longest one we
+/* a ring name must fit in RTE_RING_NAMESIZE-1 bytes. The longest one we
  * can build is ff_msg_ring_out_<proc>_<type>_e<slot>_g<gen>; with the
  * current FF_MSG_NUM (type is two digits: FF_RELOAD == 10) and
  * FF_RELOAD_EPOCH_SLOT_MAX that is exactly RTE_RING_NAMESIZE-1, i.e. zero
@@ -146,10 +146,10 @@ static __thread int stop_loop;
 
 static __thread struct rte_timer freebsd_clock;
 
-/* C-NR-307: graceful_reload self-driven hardclock state. The interval is
+/* graceful_reload self-driven hardclock state. The interval is
  * computed once in init_clock(); the next-fire TSC replaces the shared
  * priv_timer[lcore_id] slot so two generations on the same lcore_id never
- * touch the shared timer skiplist (lcore audit N-1/N-5). */
+ * touch the shared timer skiplist. */
 static uint64_t gr_hardclock_interval;
 static __thread uint64_t gr_hardclock_next_tsc;
 
@@ -239,12 +239,12 @@ struct ff_msg_ring {
     struct rte_ring *ring[FF_MSG_NUM];
 } __rte_cache_aligned;
 
-/* C-NR-313/M5: (epoch slot, generation, proc_id) indexed msg rings. Index
+/* (epoch slot, generation, proc_id) indexed msg rings. Index
  * [0][0] is the only set used when graceful_reload=0 (legacy unsuffixed
  * names, behavior identical to the former single array). The resident
  * primary pre-creates every slot so a secondary of any master only ever
  * attaches an existing ring — that is what keeps the DPDK "primary creates
- * / secondary looks up" policy intact across an USR2. */
+ * secondary looks up" policy intact across an USR2. */
 static struct ff_msg_ring msg_ring[FF_RELOAD_EPOCH_SLOT_MAX]
     [FF_RELOAD_GEN_MAX][RTE_MAX_LCORE];
 /* serving mode, fixed once in init_msg_ring from the static config */
@@ -315,7 +315,7 @@ ff_hardclock_worker_job(__rte_unused struct rte_timer *timer,
     ff_hardclock_worker();
 }
 
-/* C-NR-307: TSC ticks per hardclock tick; same formula as the legacy
+/* TSC ticks per hardclock tick; same formula as the legacy
  * rte_timer period in init_clock() so the tick cadence is identical. */
 uint64_t
 ff_hardclock_interval_tsc(uint64_t timer_hz, unsigned int bsd_hz)
@@ -627,7 +627,7 @@ ff_mtu_data_room_size(uint16_t max_mtu, uint16_t *out)
     return 0;
 }
 
-/* C-NR-314: per-generation application-side mbuf pools (graceful_reload=1).
+/* per-generation application-side mbuf pools (graceful_reload=1).
  * Pre-created at init; the active generation is selected by app_mbuf_gen
  * (constant 0 until reload generation switching lands). */
 static struct rte_mempool *app_pktmbuf_pool[FF_MBUF_GEN_MAX][NB_SOCKETS];
@@ -664,7 +664,7 @@ init_app_mem_pool(unsigned socketid, unsigned nb_app_mbuf, uint16_t data_room)
                 socketid, gen);
         }
         if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-            /* C-NR-315: the peer generation frees into this pool (ARP/NDP
+            /* the peer generation frees into this pool (ARP/NDP
              * clone, drain_tx), so its per-lcore cache goes too. */
             app_pktmbuf_pool[gen][socketid] =
                 rte_pktmbuf_pool_create(s, nb_app_mbuf,
@@ -701,10 +701,10 @@ init_mem_pool(void)
     }
     uint16_t max_portid = ff_global_cfg.dpdk.max_portid;
 
-    /* C-NR-305: RX descriptor depth (widened under graceful_reload). */
+    /* RX descriptor depth (widened under graceful_reload). */
     unsigned rx_desc = ff_rx_queue_size(ff_global_cfg.dpdk.graceful_reload);
 
-    /* C-NR-310: one drain ring per (queue, generation, direction). The queue
+    /* one drain ring per (queue, generation, direction). The queue
      * count is what matters, not the lcore count: every queue is an
      * independent stack instance with its own pair, in both directions.
      * Zero unless graceful_reload=1 — the rings are not created then, and
@@ -729,7 +729,7 @@ init_mem_pool(void)
         drain_mbuf),
         (unsigned)8192);
 
-    /* C-NR-314: TX-side budget for the per-generation application pools
+    /* TX-side budget for the per-generation application pools
      * (the non-RX terms of nb_mbuf above; the RX terms stay in the shared
      * fixed-name pool that the RX queues are bound to). */
     unsigned nb_app_mbuf = 0;
@@ -781,10 +781,10 @@ init_mem_pool(void)
             }
         }
 
-        /* C-NR-314: build the per-generation app pools even when the shared
+        /* build the per-generation app pools even when the shared
          * pool of this socket already exists, so a second init_mem_pool pass
          * cannot leave the app-pool selector pointing at NULL pools
-         * (m2-reviewer-a P3-5; existing entries are skipped inside). */
+         * (m2-reviewer-a; existing entries are skipped inside). */
         if (ff_global_cfg.dpdk.graceful_reload) {
             init_app_mem_pool(socketid, nb_app_mbuf, data_room);
         }
@@ -795,7 +795,7 @@ init_mem_pool(void)
 
         if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
             snprintf(s, sizeof(s), "mbuf_pool_%d", socketid);
-            /* C-NR-315 (DR11 M-A): this fixed-name pool is bound to the RX
+            /* this fixed-name pool is bound to the RX
              * queues and shared by both generations; cache_size=0 removes
              * the per-lcore local_cache from every alloc/free path. */
             pktmbuf_pool[socketid] =
@@ -828,7 +828,7 @@ init_mem_pool(void)
     return 0;
 }
 
-/* C-NR-310: non-static so lib/ff_drain_ring.c can reuse the
+/* non-static so lib/ff_drain_ring.c can reuse the
  * "primary creates / secondary looks up" policy instead of duplicating it. */
 struct rte_ring *
 create_ring(const char *name, unsigned count, int socket_id, unsigned flags)
@@ -841,8 +841,8 @@ create_ring(const char *name, unsigned count, int socket_id, unsigned flags)
 
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         ring = rte_ring_create(name, count, socket_id, flags);
-        /* EEXIST: the memzone survived a previous init (R-310-1 detaches
-         * without freeing) or belongs to another master (R-310-2 name
+        /* EEXIST: the memzone survived a previous init (-1 detaches
+         * without freeing) or belongs to another master (-2 name
          * clash). Attach to the existing ring instead of exiting; its
          * size/flags are reused as-is. */
         if (ring == NULL && rte_errno == EEXIST) {
@@ -937,13 +937,13 @@ init_msg_ring(void)
 
     /* Create message buffer pool */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        /* C-NR-315 (N-4a): shared across processes (reload handshake
+        /* shared across processes (reload handshake
          * messages included); drop local_cache under graceful_reload.
-         * C-NR-313: graceful_reload keeps two generations of rings live
+         * graceful_reload keeps two generations of rings live
          * during the reload window, so the pool doubles. */
         message_pool = rte_mempool_create(FF_MSG_POOL,
            MSG_RING_SIZE * 2 * nb_rings
-               * (msg_ring_graceful ? FF_RELOAD_GEN_MAX * 2 : 1),
+               * (msg_ring_graceful ? FF_RELOAD_GEN_MAX * 2: 1),
            MAX_MSG_BUF_SIZE,
            ff_shared_pool_cache_size(ff_global_cfg.dpdk.graceful_reload,
                MSG_RING_SIZE / 2), 0,
@@ -985,7 +985,7 @@ init_msg_ring(void)
         return 0;
     }
 
-    /* C-NR-313/M5: (epoch slot, proc_id, gen) indexed rings, "_e<slot>_g<gen>"
+    /* (epoch slot, proc_id, gen) indexed rings, "_e<slot>_g<gen>"
      * suffix so two generations — of the same master or of two masters —
      * sharing a proc_id never dequeue the same SC ring. The resident primary
      * builds every slot; a secondary attaches only its own coordinate.
@@ -1083,9 +1083,9 @@ set_rss_table(uint16_t port_id, uint16_t reta_size, uint16_t nb_queues)
         return;
     }
 
-    /* ENV-1 (C-NR-201): renegotiating RSS during the reload window re-rolls
+    /* renegotiating RSS during the reload window re-rolls
      * the vhost MQ distribution dice (per-round random whole-flow drops,
-     * guest-invisible; M0 veto2 §2). Refuse outright while the window is
+     * guest-invisible; veto2). Refuse outright while the window is
      * open. */
     if (ff_reload_hw_locked()) {
         ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
@@ -1373,7 +1373,7 @@ init_port_start(void)
 
             static uint16_t nb_rxd = RX_QUEUE_SIZE;
             static uint16_t nb_txd = TX_QUEUE_SIZE;
-            /* C-NR-305: widen the RX ring for the handover window. H-8: the
+            /* widen the RX ring for the handover window. the
              * PMD clamps the request, so the effective value must be read
              * back from nb_rxd rather than assumed. */
             if (ff_global_cfg.dpdk.graceful_reload)
@@ -1512,11 +1512,11 @@ static int
 init_clock(void)
 {
     if (ff_global_cfg.dpdk.graceful_reload) {
-        /* C-NR-307: never register freebsd_clock on the shared
-         * priv_timer[lcore_id] slot (N-1 memset trigger / N-5
+        /* never register freebsd_clock on the shared
+         * priv_timer[lcore_id] slot (memset trigger /
          * locked-critical-section crash). Primary still runs
          * subsystem_init to create the timer memzone; secondaries bypass
-         * it entirely — it only takes the shared mem_config tlock (N-3)
+         * it entirely — it only takes the shared mem_config tlock
          * and graceful mode never calls any rte_timer API. */
         if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
             rte_timer_subsystem_init();
@@ -1556,7 +1556,7 @@ init_clock(void)
 static void
 init_clock_worker(void)
 {
-    /* C-NR-307 point 4: graceful_reload=1 is rejected with thread_mode=1
+    /* graceful_reload=1 is rejected with thread_mode=1
      * by config validation; defensive no-op so the shared-slot issue
      * cannot migrate to thread mode. */
     if (ff_global_cfg.dpdk.graceful_reload)
@@ -1573,7 +1573,7 @@ init_clock_worker(void)
 
 static int
 stop_clock(void) {
-    /* C-NR-307 point 3 (N-2): graceful_reload=1 never registered
+    /* graceful_reload=1 never registered
      * freebsd_clock, so the exit path must not touch the shared timer
      * list either (rte_timer_stop_sync can spin forever on it). */
     if (!ff_global_cfg.dpdk.graceful_reload)
@@ -2030,17 +2030,17 @@ ff_dpdk_init(int argc, char **argv)
 
     init_lcore_conf();
 
-    /* M5: cross-master generation directory. Must precede every resource
+    /* cross-master generation directory. Must precede every resource
      * whose name carries the epoch (per-gen app pools, drain rings, msg
      * rings) and is a no-op unless graceful_reload=1. */
     ff_reload_gendir_attach();
 
     init_mem_pool();
 
-    /* C-NR-314/C-NR-206: bind the app-side pool selector to this process's
+    /* bind the app-side pool selector to this process's
      * generation (set via ff_reload_set_gen before ff_init; constant 0 for
      * the primary and for apps that never set it).
-     * C-NR-316: heartbeat stall threshold in TSC. */
+     * heartbeat stall threshold in TSC. */
     if (ff_global_cfg.dpdk.graceful_reload) {
         uint32_t hb_ms = ff_global_cfg.dpdk.reload_heartbeat_timeout_ms;
 
@@ -2053,7 +2053,7 @@ ff_dpdk_init(int argc, char **argv)
 
     init_dispatch_ring();
 
-    /* C-NR-310: bidirectional drain rings (graceful_reload only). Fail
+    /* bidirectional drain rings (graceful_reload only). Fail
      * hard: every failure mode (pointer-array alloc, name overflow) is a
      * non-recoverable config error, and a silent failure would turn every
      * flow-map miss into a dropped packet during the handover. */
@@ -2065,7 +2065,7 @@ ff_dpdk_init(int argc, char **argv)
 
     init_msg_ring();
 
-    /* M5: this process recycled an epoch slot whose previous master died —
+    /* this process recycled an epoch slot whose previous master died —
      * the rings of that slot still hold its messages and mbufs, which would
      * otherwise surface as a stale request answered by the wrong generation
      * (or as leaked mbufs). Only the process that won the slot CAS gets
@@ -2075,7 +2075,7 @@ ff_dpdk_init(int argc, char **argv)
         unsigned slot = ff_reload_epoch_slot();
         int orphan;
 
-        /* P2 (C-P2-6): only drain these rings once no user of this slot can
+        /* only drain these rings once no user of this slot can
          * still be consuming them — a worker of the dead master is still
          * dequeuing them, and draining here would race it. */
         orphan = !ff_reload_gendir_epoch_users_clear(ff_reload_epoch());
@@ -2453,7 +2453,7 @@ is_tcp_syn(const void *data, uint16_t len)
         RTE_TCP_SYN_FLAG;
 }
 
-/* C-NR-309 ⑤: diverted-path losses must be visible. Rate-limited to one
+/* diverted-path losses must be visible. Rate-limited to one
  * line per second — a full drain ring fails per packet. clock-based so
  * the helper works in any context (rte_get_tsc_hz is not available in
  * all unit-test link setups). */
@@ -2472,7 +2472,7 @@ ff_divert_drop_warn(const char *reason)
         "graceful reload divert: %s\n", reason);
 }
 
-/* F-M3-4 (C-NR-404): heartbeat stall alerts re-fire every timeout period
+/* heartbeat stall alerts re-fire every timeout period
  * while the owner stays dead (the sampler rebases once per episode only);
  * cap at one line per second, same mechanism as ff_divert_drop_warn(). */
 static void
@@ -2499,7 +2499,7 @@ ff_reload_stall_warn(int alert, unsigned timeout_ms, int gen)
     }
 }
 
-/* C-NR-309: hand one converted rte mbuf to this generation's drain_tx
+/* hand one converted rte mbuf to this generation's drain_tx
  * ring; the peer generation (the hardware owner) transmits it. pcap
  * capture and tx accounting mirror send_burst so the diverted path stays
  * observable. A full ring drops, counts and warns — never silently. */
@@ -2525,7 +2525,7 @@ ff_divert_tx_mbuf(uint8_t port, uint16_t queue_id, struct rte_mbuf *m)
 
 #if (!defined(__FreeBSD__) && defined(INET6) ) || \
     ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
-/* B01-5: NDP (IPv6 neighbour discovery) is multicast at L2 (33:33:*), so
+/* NDP (IPv6 neighbour discovery) is multicast at L2 (33:33:*), so
  * protocol_filter() answers FILTER_MULTI and the ARP/NDP fanout below never
  * runs — a draining generation would then never see NS/NA/RS/RA and could
  * not refresh the neighbours of the connections it is still serving.
@@ -2603,15 +2603,15 @@ ff_fanout_neighbour(uint16_t port_id, uint16_t queue_id,
         }
     }
 
-    /* C-NR-304: clone ARP/NDP to the peer generation's every queue.
+    /* clone ARP/NDP to the peer generation's every queue.
      * dispatch_ring cannot carry it: post-handover its per-queue rings are
      * dequeued by this generation only (the parked generation no longer
      * drains them), yet the parked generation still needs neighbour
      * resolution for the connections it is draining — this clone is its
-     * only source. Guarded by !pkts_from_ring (H-5, no loop) and by the
-     * reload window (outside it there is no draining peer to feed; F-M5-1:
+     * only source. Guarded by !pkts_from_ring and by the
+     * reload window (outside it there is no draining peer to feed;:
      * a cross-master USR2 peer counts as one).
-     * ff_app_mbuf_pool per H-6; the peer frees the clone. */
+     * ff_app_mbuf_pool per; the peer frees the clone. */
     if (!pkts_from_ring && ff_global_cfg.dpdk.graceful_reload
         && (ff_reload_hw_locked() || ff_reload_peer_draining())
         && ff_drain_ring_ready()) {
@@ -2640,7 +2640,7 @@ ff_fanout_neighbour(uint16_t port_id, uint16_t queue_id,
     }
 }
 
-/* C-NR-310: non-static so ff_drain_ring_rx_dequeue() can feed drain-ring
+/* non-static so ff_drain_ring_rx_dequeue() can feed drain-ring
  * packets into the exact same path process_dispatch_ring() uses. */
 void
 ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
@@ -2709,13 +2709,13 @@ ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
             }
 
             if (ret == FF_DISPATCH_PEER) {
-                /* C-NR-303: flow-map miss — the flow belongs to the peer
+                /* flow-map miss — the flow belongs to the peer
                  * generation. The mbuf stays owned by this path the whole
                  * time (the callback never sees it), so there is exactly
                  * one free: on a full ring, or outside a reload window,
                  * drop + count instead of leaking into an unconsumed ring.
                  * A drop beats a RST here: retransmits retry once the
-                 * draining generation catches up. F-M5-1 (USR2): the
+                 * draining generation catches up. (USR2): the
                  * window is the block's OR a live cross-master peer. */
                 if ((ff_reload_hw_locked() || ff_reload_peer_draining())
                     && ff_drain_ring_rx_enqueue(port_id, queue_id,
@@ -2749,7 +2749,7 @@ ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
         enum FilterReturn filter = protocol_filter(data, len);
 #if (!defined(__FreeBSD__) && defined(INET6) ) || \
     ( defined(__FreeBSD__) && defined(INET6) && defined(FF_KNI))
-        /* B01-5: an L2-multicast NDP frame is FILTER_MULTI, so the branch
+        /* an L2-multicast NDP frame is FILTER_MULTI, so the branch
          * below (and with it both fanout stages) would never run for it.
          * Only the fanout is added here — the classification value, and
          * therefore the KNI/veth tail, is left exactly as it is. */
@@ -2992,7 +2992,7 @@ handle_default_msg(struct ff_msg *msg)
     msg->result = ENOTSUP;
 }
 
-/* P4 (C-P4-7): replies lost because the out ring was full. The requestor
+/* replies lost because the out ring was full. The requestor
  * cannot be told anything else (its query already timed out), but the loss
  * must not be silent. */
 static uint64_t g_ipc_reply_dropped;
@@ -3003,9 +3003,9 @@ ff_ipc_reply_dropped(void)
     return g_ipc_reply_dropped;
 }
 
-/* C-NR-203: FF_RELOAD control family dispatch. The reply carries this
+/* FF_RELOAD control family dispatch. The reply carries this
  * process's reload view (its generation, the active generation, the
- * heartbeat counter), which is what IT-NR-A11 checks per generation. */
+ * heartbeat counter), which is what checks per generation. */
 static inline void
 handle_reload_msg(struct ff_msg *msg)
 {
@@ -3018,7 +3018,7 @@ handle_reload_msg(struct ff_msg *msg)
     }
 
     /* tools probe; any command added later must be handled explicitly here
-     * rather than being echoed back as a no-op (M4/M5 handover commands). */
+     * rather than being echoed back as a no-op. */
     if (cmd != FF_RELOAD_CMD_QUERY) {
         msg->result = ENOTSUP;
         return;
@@ -3073,7 +3073,7 @@ handle_msg(struct ff_msg *msg, struct ff_msg_ring *set, uint16_t proc_id)
             handle_default_msg(msg);
             break;
     }
-    /* P4 (C-P4-1/7): the reply is the requestor's own buffer, so its
+    /* the reply is the requestor's own buffer, so its
      * ownership tag travels back untouched — the requeue/recv side keys on
      * it, never on the address. */
     if (rte_ring_enqueue(set[proc_id].ring[msg->msg_type], msg) < 0) {
@@ -3120,7 +3120,7 @@ process_msg_ring(uint16_t proc_id, struct rte_mbuf **pkts_burst)
         return process_msg_ring_set(&msg_ring[0][0][0], proc_id, pkts_burst);
     }
 
-    /* C-NR-313/M5: the resident primary serves every live coordinate's
+    /* the resident primary serves every live coordinate's
      * in-ring; a secondary serves only its own (epoch slot, generation). */
     if (msg_ring_serve_both_gens) {
         int e, g, served = 0;
@@ -3158,7 +3158,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
         }
     }
 
-    /* C-NR-309 (RV11): a parked generation must never reach the hardware
+    /* a parked generation must never reach the hardware
      * tx queue. Every legitimate path diverts to the drain ring long
      * before this point, so arriving here means a tx path was missed —
      * drop, count and warn instead of racing the owner on the queue
@@ -3232,7 +3232,7 @@ int
 ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     int total)
 {
-    /* C-NR-309: evaluated before the FF_USE_PAGE_ARRAY branch (H-7). A
+    /* evaluated before the FF_USE_PAGE_ARRAY branch. A
      * parked generation must not stage into tx_mbufs — page-array pages
      * and the shared table are not a hand-off-able representation, so a
      * parked sender always takes the pktmbuf conversion below and hands
@@ -3399,7 +3399,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
     ff_mbuf_free(m);
 
     if (unlikely(no_hw)) {
-        /* C-NR-309: parked — the peer generation transmits this packet. */
+        /* parked — the peer generation transmits this packet. */
         struct lcore_conf *qconf = ff_cur_lcore_conf();
         ff_divert_tx_mbuf(ctx->port_id,
             qconf->tx_queue_id[ctx->port_id], head);
@@ -3452,7 +3452,7 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
     }
 
     if (unlikely(ff_no_hw_mode())) {
-        /* C-NR-309: raw sends of a parked generation go through the drain
+        /* raw sends of a parked generation go through the drain
          * ring like every other outgoing packet. */
         struct lcore_conf *qconf = ff_cur_lcore_conf();
         ff_divert_tx_mbuf(port_id, qconf->tx_queue_id[port_id], head);
@@ -3462,16 +3462,16 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
     return send_single_packet(head, port_id);
 }
 
-/* C-NR-402/403/406 (M4): ~1 Hz reload-plane housekeeping, run from
+/* /406: ~1 Hz reload-plane housekeeping, run from
  * main_loop. All off the per-packet path:
- *   - the draining generation publishes per-slot drain progress for the
- *     master (its DRAIN_DONE wait polls it);
- *   - the generation that has taken over retires its reload data plane
- *     once the window is closed (all G_old gone by then): flow map,
- *     dispatcher callback and drain rings, so steady state carries zero
- *     reload overhead. The drain rings re-attach when the next window
- *     opens — this very process needs them as the drainer in that round;
- *   - drain-ring counters and watermarks flush to the shared block. */
+ * the draining generation publishes per-slot drain progress for the
+ * master (its DRAIN_DONE wait polls it);
+ * the generation that has taken over retires its reload data plane
+ * once the window is closed (all G_old gone by then): flow map,
+ * dispatcher callback and drain rings, so steady state carries zero
+ * reload overhead. The drain rings re-attach when the next window
+ * opens — this very process needs them as the drainer in that round;
+ * drain-ring counters and watermarks flush to the shared block. */
 static void
 ff_reload_plane_housekeeping(uint64_t now_tsc)
 {
@@ -3487,7 +3487,7 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
     hz = rte_get_tsc_hz();
     next_tsc = now_tsc + (hz != 0 ? hz : 1000000000ull);
 
-    /* P3 (C-P3-4): flow-table observability at ~1 Hz. The counters live in
+    /* flow-table observability at ~1 Hz. The counters live in
      * ff_flow_map.c (which deliberately links without DPDK and without
      * logging), so the periodic report belongs here. Only deltas are logged,
      * i.e. a healthy round stays silent. */
@@ -3540,7 +3540,7 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
         }
     }
 
-    /* C-NR-402 producer: the draining generation only (rx handed over) */
+    /* producer: the draining generation only (rx handed over) */
     if (ff_reload_hw_locked() && ff_is_drain_generation()
         && ff_reload_state_attached() && ff_reload_slot() >= 0) {
         ff_reload_drain_publish((unsigned)ff_reload_slot(),
@@ -3550,8 +3550,8 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
             (uint64_t)ff_syncache_count());
     }
 
-    /* C-NR-403: retire the reload data plane in steady state, re-arm the
-     * drain rings when a new window opens. F-M5-1 (USR2): the directory
+    /* retire the reload data plane in steady state, re-arm the
+     * drain rings when a new window opens. (USR2): the directory
      * peer is a window equivalent for the data plane — a fresh master's
      * block never opens one, yet both sides need the plane from the WINCH
      * handover until the old generation's last worker is gone (stale slot
@@ -3575,13 +3575,13 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
                 "ff_drain_ring_init failed on window open\n");
     }
 
-    /* C-NR-406: shared counters + watermarks */
+    /* shared counters + watermarks */
     if ((ff_reload_hw_locked() || ff_reload_peer_draining())
         && ff_drain_ring_ready())
         ff_drain_ring_flush_stats();
 }
 
-/* P2 (C-P2-1): last published hardware-user state of this process
+/* last published hardware-user state of this process
  * (-1 unknown, 0 stopped, 1 active). Only a state change touches the
  * directory, so the main loop pays nothing per pass. */
 static int g_hw_user_state = -1;
@@ -3645,10 +3645,10 @@ main_loop(void *arg)
             break;
         }
 
-        /* C-NR-316: reload heartbeat — the rx-owner generation advances the
+        /* reload heartbeat — the rx-owner generation advances the
          * shared counter once per loop pass (before anything that could
          * sleep), so the sampling side sees progress even when idle.
-         * P1-2: primary-side only — the resident slim primary stays gen 0
+         * primary-side only — the resident slim primary stays gen 0
          * forever, so on target_gen==0 rounds its own increments would
          * mask a dead G_new. The primary is never the rx owner. */
         if (graceful_reload
@@ -3657,7 +3657,7 @@ main_loop(void *arg)
         }
 
         cur_tsc = rte_rdtsc();
-        /* C-NR-307: graceful_reload=1 drives hardclock from a per-process
+        /* graceful_reload=1 drives hardclock from a per-process
          * TSC throttle instead of the shared priv_timer[lcore_id] slot;
          * graceful_reload=0 keeps the rte_timer path unchanged. */
         if (unlikely((graceful_reload ? gr_hardclock_next_tsc
@@ -3707,13 +3707,13 @@ main_loop(void *arg)
         usr_tsc = 0;
         usr_cb_tsc = 0;
 
-        /* C-NR-302/306: hardware view for this pass, sampled once so the
+        /* hardware view for this pass, sampled once so the
          * park ack and the tx/rx sections below cannot disagree. */
         const int no_hw = ff_no_hw_mode();
 
-        /* P2 (C-P2-1): register/STOP this process as a hardware user of its
+        /* register/STOP this process as a hardware user of its
          * coordinate. It is the only record a takeover can consult to prove
-         * that nobody is inside an rx_burst any more (C-P2-2/3); the
+         * that nobody is inside an rx_burst any more; the
          * primary never owns a queue here, so it never registers. */
         if (unlikely(graceful_reload)
             && rte_eal_process_type() == RTE_PROC_SECONDARY) {
@@ -3733,7 +3733,7 @@ main_loop(void *arg)
         if (unlikely(no_hw)
             && ff_reload_rx_stopped()
             && ff_reload_rx_owner_gen() == ff_reload_gen()) {
-            /* Parked by order (T2 barrier, C-NR-306): this pass performs
+            /* Parked by order: this pass performs
              * no rx_burst and no tx drain, and no earlier pass of this
              * loop is still running — which is exactly what the ack tells
              * the master. Processes without a slot (primary, helpers)
@@ -3758,7 +3758,7 @@ main_loop(void *arg)
                         qconf->tx_mbufs[port_id].len,
                         port_id);
                 } else {
-                    /* C-NR-309: staged before the park took effect — the
+                    /* staged before the park took effect — the
                      * packets still have to leave, so divert them like
                      * every other outgoing packet of this generation. */
                     uint16_t k;
@@ -3816,7 +3816,7 @@ main_loop(void *arg)
                         ctx, 0);
                 }
             } else {
-                /* C-NR-302/310 (P1-4): this generation is parked off the
+                /* this generation is parked off the
                  * hardware, but the loop must keep running — packets the
                  * peer forwards for this generation (flow-map misses,
                  * ARP/NDP clones) arrive on this generation's drain_rx
@@ -3832,7 +3832,7 @@ main_loop(void *arg)
 
         process_msg_ring(qconf->proc_id, pkts_burst);
 
-        /* C-NR-309: the hardware owner is the sole consumer of the peer
+        /* the hardware owner is the sole consumer of the peer
          * generation's drain_tx ring — transmit whatever the parked
          * generation queued. The primary is excluded: it never owns
          * queues, and two readers would break the single-consumer ring. */
@@ -3859,7 +3859,7 @@ main_loop(void *arg)
                     ff_kni_process(pid, 0, pkts_burst, MAX_PKT_BURST);
                 }
             }
-            /* C-NR-302: same gate as drain_tx/send_burst — a parked
+            /* same gate as drain_tx/send_burst — a parked
              * generation must not reach the hardware tx queue. */
             if (ff_global_cfg.dpdk.primary_slim &&
                 likely(!no_hw) &&
@@ -3893,19 +3893,19 @@ main_loop(void *arg)
 
         idle_sleep_tsc = rte_rdtsc();
 
-        /* C-NR-316: non-owner generations sample the heartbeat here so
-         * idle loop passes still detect a stalled rx owner. P1-2: primary
+        /* non-owner generations sample the heartbeat here so
+         * idle loop passes still detect a stalled rx owner. primary
          * does not sample (never the rx owner, see the tick hook above). */
         if (graceful_reload
             && rte_eal_process_type() == RTE_PROC_SECONDARY) {
             if (ff_reload_heartbeat_sample(idle_sleep_tsc)) {
-                /* DR6 (first half, C-NR-306/316): the sampler is the old
+                /* the sampler is the old
                  * generation and the rx owner has stalled for the whole
                  * timeout. Take the hardware back — ownership is the only
                  * arbiter, so a late-waking owner parks itself on its
                  * next pass. Guarded: never while a park order is pending
                  * (that would break the T2 barrier) and never while this
-                 * generation still owns rx itself. M4 (C-NR-404): the
+                 * generation still owns rx itself. the
                  * takeover is flagged for the master, which aborts the
                  * round and closes the reload window (below). */
                 if (!ff_reload_rx_stopped()
@@ -3915,14 +3915,14 @@ main_loop(void *arg)
                         ff_reload_gen());
                     ff_reload_rx_owner_gen_set(ff_reload_gen());
                     ff_reload_rx_stopped_set(0);
-                    /* C-NR-404 (DR6 first half, M4): flag the takeover so
+                    /* flag the takeover so
                      * the master aborts the round and closes the window.
                      * The stalled owner's flow map and dispatcher state
                      * died with it (process-local); the reclaimer never
                      * armed any (it retired them at the previous round's
                      * completion) — nothing to tear down on this side. */
                     ff_reload_drain_reclaim_mark();
-                    /* P2 (C-P2-2 (3)): the stall itself is the evidence
+                    /* ((3)): the stall itself is the evidence
                      * here — the owner never parked but has not advanced
                      * its heartbeat for a full timeout. Counted, so the
                      * forced takeover is visible instead of silent. */
@@ -3935,7 +3935,7 @@ main_loop(void *arg)
             }
         }
 
-        /* M4 (C-NR-402/403/406): ~1 Hz reload-plane housekeeping */
+        /* ~1 Hz reload-plane housekeeping */
         ff_reload_plane_housekeeping(cur_tsc);
 
         {
@@ -4024,7 +4024,7 @@ ff_dpdk_stop(void) {
         rte_eal_process_type() == RTE_PROC_PRIMARY) {
         fprintf(stderr, "WARNING: slim primary stopping - control plane degraded, need planned full restart\n");
     }
-    /* M5: drop the generation-directory mapping and, when this process is
+    /* drop the generation-directory mapping and, when this process is
      * entitled to it, release its epoch slot so the next master can reuse
      * the ring set instead of leaking one per USR2 round. */
     ff_reload_gendir_detach();
@@ -5222,7 +5222,7 @@ ff_regist_packet_dispatcher_context(dispatch_func_context_t func)
     packet_dispatcher_with_context = func;
 }
 
-/* C-NR-303: the new generation drops the flow-map callback once the drain
+/* the new generation drops the flow-map callback once the drain
  * rings have been confirmed empty. Idempotent by design — the drain
  * confirmation can be delivered more than once across a reload round. */
 void

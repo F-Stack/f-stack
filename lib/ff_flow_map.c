@@ -23,7 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/* C-NR-301: process-local software flow table.
+/* process-local software flow table.
  *
  * Why a table at all: during the graceful-reload handover the new generation
  * owns the hardware while the old one is still draining established
@@ -61,7 +61,7 @@
 #define FF_FLOW_MAP_MASK        (FF_FLOW_MAP_ENTRIES - 1)
 #define FF_FLOW_MAP_PROBE_MAX   16
 
-/* P3 (C-P3-3): bounded growth of a full table — at most GROW_MAX doublings
+/* bounded growth of a full table — at most GROW_MAX doublings
  * per window and never beyond FF_FLOW_MAP_CAP_MAX (ff_flow_map.h). The
  * default capacity and therefore the default behaviour are unchanged. */
 #define FF_FLOW_MAP_GROW_MAX    4
@@ -93,7 +93,7 @@ static uint64_t g_alloc_fail;
 static uint64_t g_revoked;
 
 /* Portable word hash, no ISA or DPDK dependency. Only the bytes that carry
- * identity are mixed (V4 leaves src[1..3]/dst[1..3] zero), the two address
+ * identity are mixed (V4 leaves src[1.3]/dst[1.3] zero), the two address
  * chains run in parallel to shorten the multiply chain, and the tail is
  * avalanched because the index comes from the low bits (h & mask). */
 static uint32_t
@@ -284,7 +284,7 @@ ff_flow_map_lookup(const struct ff_flow_key *key)
     return 0;
 }
 
-/* P3 (C-P3-3): double the table once, bounded by GROW_MAX and CAP_MAX.
+/* double the table once, bounded by GROW_MAX and CAP_MAX.
  * Only live entries are migrated; if any entry cannot be placed the whole
  * migration is abandoned and the old table stays authoritative.
  * Returns 1 on success. */
@@ -398,7 +398,7 @@ again:
         idx = (idx + 1) & mask;
     }
 
-    /* P3 (C-P3-3): one bounded expansion, then a single retry. */
+    /* one bounded expansion, then a single retry. */
     if (flow_map_grow())
         goto again;
 

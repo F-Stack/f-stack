@@ -28,24 +28,24 @@
 
 #include <stdint.h>
 
-/* C-NR-310: per-generation bidirectional drain rings (internal lib header;
+/* per-generation bidirectional drain rings (internal lib header;
  * the public surface for apps stays ff_api.h).
  *
  * A ring pair suffixed _q<Q>_g<N> belongs to queue Q of generation N:
- *   drain_rx_p<port>_q<Q>_g<N>
- *                          carries packets forwarded TOWARD generation N's
- *                          queue-Q stack instance.
- *                          Producers (MP): the peer's queue-Q worker
- *                          (flow-map miss) AND, with nb_queues >= 2, any
- *                          peer worker fanning out an ARP/NDP clone to
- *                          every queue (C-NR-304).
- *                          Consumer: generation N, queue Q (single consumer).
- *   drain_tx_p<port>_q<Q>_g<N>
- *                          carries packets sent BY generation N's queue-Q
- *                          instance while it no longer owns the hardware.
- *                          Producer: generation N, queue Q (single producer).
- *                          Consumer: the peer generation, which is the only
- *                          side allowed to call rte_eth_tx_burst.
+ * drain_rx_p<port>_q<Q>_g<N>
+ * carries packets forwarded TOWARD generation N's
+ * queue-Q stack instance.
+ * Producers (MP): the peer's queue-Q worker
+ * (flow-map miss) AND, with nb_queues >= 2, any
+ * peer worker fanning out an ARP/NDP clone to
+ * every queue.
+ * Consumer: generation N, queue Q (single consumer).
+ * drain_tx_p<port>_q<Q>_g<N>
+ * carries packets sent BY generation N's queue-Q
+ * instance while it no longer owns the hardware.
+ * Producer: generation N, queue Q (single producer).
+ * Consumer: the peer generation, which is the only
+ * side allowed to call rte_eth_tx_burst.
  *
  * The queue dimension is mandatory, not cosmetic: F-Stack multi-process mode
  * runs one independent FreeBSD stack per queue, so a packet that belongs to
@@ -57,7 +57,7 @@
  * The queue index is the same on both sides (RSS is symmetric), so a packet
  * received on queue Q is enqueued at queue Q for the peer.
  *
- * Flags (P1-a fix): drain_tx is RING_F_SP_ENQ | RING_F_SC_DEQ; drain_rx is
+ * Flags: drain_tx is RING_F_SP_ENQ | RING_F_SC_DEQ; drain_rx is
  * RING_F_SC_DEQ only (multi-producer — the ARP/NDP clone fan-out can race
  * the same-queue miss forwarder). Unlike dispatch_ring neither is
  * multi-consumer: a queue must never be drained from two processes.
@@ -76,16 +76,16 @@ int ff_drain_ring_init(void);
 int ff_drain_ring_ready(void);
 
 /* The other generation (FF_RELOAD_GEN_MAX == 2). Destination generation
- * for FF_DISPATCH_PEER misses and for the ARP/NDP clone (C-NR-303/304):
+ * for FF_DISPATCH_PEER misses and for the ARP/NDP clone:
  * the generation whose PCBs own the flow that just missed. */
 int ff_drain_ring_peer_gen(void);
 
-/* M5: drain (and free) everything left in one epoch slot's ring pairs.
+/* drain (and free) everything left in one epoch slot's ring pairs.
  * Used when a slot is recycled from a dead master; no-op if the rings are
  * not attached. */
 void ff_drain_ring_reset_slot(unsigned slot);
 
-/* R-310-1: detach only — null the pointers and stop all enqueue/dequeue.
+/* 1: detach only — null the pointers and stop all enqueue/dequeue.
  * The rings themselves are intentionally not destroyed: only one process
  * could call rte_ring_free(), and the _g<gen> pairs are reused on the next
  * reload round, so freeing would force a rebuild. Idempotent. */
@@ -120,11 +120,11 @@ int ff_drain_ring_rx_dequeue(uint16_t port_id, uint16_t queue_id,
 unsigned ff_drain_ring_tx_drain(uint16_t port_id, uint16_t queue_id,
     struct rte_mbuf **pkts_burst, unsigned max);
 
-/* Counters (C-NR-309/310: ring-full may never be a silent drop). */
+/* Counters (310: ring-full may never be a silent drop). */
 void ff_drain_ring_stats(uint64_t *rx_full, uint64_t *tx_full,
     uint64_t *tx_dropped);
 
-/* C-NR-406 (M4): flush the local forward counters (deltas) into the
+/* flush the local forward counters (deltas) into the
  * shared drain block and sample ring watermarks. Off the data path —
  * called ~1 Hz from the reload-plane housekeeping hook in ff_dpdk_if.c. */
 void ff_drain_ring_flush_stats(void);

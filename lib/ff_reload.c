@@ -40,7 +40,7 @@
 static struct ff_reload_state *g_reload_state;
 static int g_reload_gen;
 
-/* M5: master epoch + the generation directory (NULL when graceful_reload=0,
+/* master epoch + the generation directory (NULL when graceful_reload=0,
  * when there is no resident primary, or in any process that never ran
  * rte_eal_init — i.e. the nginx master). */
 static uint32_t g_reload_epoch;
@@ -55,7 +55,7 @@ static uint64_t g_hb_timeout_tsc;
 static int      g_hb_inited;
 
 #ifdef FF_RELOAD_FAULT_INJECTION
-/* Test builds only (nginx_reload_spec 08, RT-05/06/07): named faults are
+/* Test builds only: named faults are
  * selected with the FF_FAULT environment variable. Default builds carry
  * none of this code. noinline keeps the hooks visible to nm. */
 #include <stdlib.h>
@@ -96,7 +96,7 @@ ff_reload_fault_is_once(const char *name)
     return 1;
 }
 
-/* RT-05: FF_FAULT=ready_delay publishes READY FF_FAULT_DELAY_MS late
+/* FF_FAULT=ready_delay publishes READY FF_FAULT_DELAY_MS late
  * (default past the 60 s master READY wait, i.e. a forced timeout). */
 __attribute__((noinline)) static void
 ff_reload_fault_delay(void)
@@ -115,7 +115,7 @@ ff_reload_fault_delay(void)
 }
 #endif /* FF_RELOAD_FAULT_INJECTION */
 
-/* ---- pure helpers ------------------------------------------------------ */
+/* pure helpers ------------------------------------------------------ */
 
 int
 ff_reload_state_valid(const void *block, size_t len)
@@ -155,7 +155,7 @@ ff_reload_msg_ring_name_e(char *buf, unsigned int buflen, const char *base,
             gen = 0;
         if (gen >= FF_RELOAD_GEN_MAX)
             gen = FF_RELOAD_GEN_MAX - 1;
-        /* slot 0 keeps the pre-M5 names byte-for-byte (P0-6 style); every
+        /* slot 0 keeps the pre- names byte-for-byte; every
          * other slot inserts "_e<slot>", one digit — a ring name is capped
          * at 28 bytes and this is the only width that always fits. */
         if (slot == 0) {
@@ -209,7 +209,7 @@ ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
     return (now - *last_advance) < timeout;
 }
 
-/* ---- lifecycle / generation -------------------------------------------- */
+/* lifecycle / generation -------------------------------------------- */
 
 void
 ff_reload_attach_state(void *block)
@@ -246,7 +246,7 @@ ff_reload_gen(void)
     return g_reload_gen;
 }
 
-/* ---- M5: master epoch + generation directory --------------------------- */
+/* master epoch + generation directory --------------------------- */
 
 void
 ff_reload_set_epoch(uint32_t epoch)
@@ -294,7 +294,7 @@ ff_reload_dir_sync_enable(int enable)
     g_reload_dir_publish = enable ? 1 : 0;
 }
 
-/* ---- P2: hardware users, takeover proof, bounded budget --------------- */
+/* hardware users, takeover proof, bounded budget --------------- */
 
 /* Defined below with the slot liveness helpers; declared here so the user
  * table can use the one authority for "is this pid still around". */
@@ -402,7 +402,7 @@ ff_reload_gendir_user_add(uint32_t epoch, int gen)
     }
 
     /* Claim a free entry or one left by a process that is gone: its pid is
-     * the proof that it can no longer poll anything (C-P2-2 (2)). */
+     * the proof that it can no longer poll anything ((2)). */
     for (i = 0; i < FF_RELOAD_GENDIR_USER_MAX; i++) {
         uint32_t expect;
 
@@ -566,7 +566,7 @@ epoch_live(struct ff_reload_gendir *d, uint32_t epoch)
             continue;
         if (epoch_slot_live(d, i))
             return 1;
-        /* P2 (B02-1): the master is gone but its workers may still be
+        /* the master is gone but its workers may still be
          * draining — they keep refreshing the slot stamp, and that stamp
          * going stale is the only death notice this side gets. Until then
          * the epoch stays a live counterpart: taking its hardware or
@@ -576,7 +576,7 @@ epoch_live(struct ff_reload_gendir *d, uint32_t epoch)
     return 0;
 }
 
-/* F-M5-1 (USR2): a slot whose master pid is gone but whose workers still
+/* (USR2): a slot whose master pid is gone but whose workers still
  * refresh the stamp — the drain window between "old master quit" and
  * "last old worker exited". Workers exit with exit(0) and cannot run any
  * teardown, so the stamp going stale is the only death notice this side
@@ -593,7 +593,7 @@ epoch_slot_draining(struct ff_reload_gendir *d, unsigned i)
     return (uint32_t)(dir_now_ms() - stamp) < FF_RELOAD_SLOT_STALE_MS;
 }
 
-/* C-NR-501/M5: the anonymous block is master-private, so the directory can
+/* the anonymous block is master-private, so the directory can
  * only be updated by a process that inherited it — a worker. Two rules keep
  * that safe: inside our own epoch we simply follow our master's flip, and
  * an epoch we do not own may only be displaced once it is dead. */
@@ -622,7 +622,7 @@ ff_reload_dir_sync(void)
             bep = g_reload_epoch;
     }
 
-    /* F-M5-1: keep our own slot stamp fresh (throttled: one shared-line
+    /* keep our own slot stamp fresh (throttled: one shared-line
      * write per second is enough for the FF_RELOAD_SLOT_STALE_MS window)
      * and publish the peer coordinate into the block BEFORE the ownership
      * gate below — a worker parked behind a foreign live owner returns
@@ -703,7 +703,7 @@ ff_reload_dir_sync(void)
 
 /* 1 when the directory (if any) agrees that this (epoch, gen) owns the
  * hardware. A directory that has not been claimed yet does not narrow
- * anything, so a stack without one behaves exactly as before M5. */
+ * anything, so a stack without one behaves exactly as before. */
 static int
 dir_allows_hw(void)
 {
@@ -745,10 +745,10 @@ ff_reload_peer_coord(uint32_t *epoch, int *gen)
     uint32_t best_gen = 0;
     unsigned i;
 
-    /* F-M5-1: while THIS master runs its own reload window the peer is the
+    /* while THIS master runs its own reload window the peer is the
      * intra-master generation pair (the fallback below), never a foreign
      * epoch — a coexisting master's slot must not capture the drain rings
-     * of an M4 round. Outside a window (steady state, USR2 handover) the
+     * of an round. Outside a window (steady state, USR2 handover) the
      * newest foreign epoch is the peer. */
     if (d != NULL && !ff_reload_hw_locked()) {
         for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
@@ -975,10 +975,10 @@ ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
         __atomic_store_n(&d->rx_stopped, 0u, __ATOMIC_SEQ_CST);
         return FF_RELOAD_HANDOVER_OK;
     }
-    /* M4 DR6(1) / RT-04b: only a dead owner may be displaced. */
+    /* (1) /: only a dead owner may be displaced. */
     if (epoch_live(d, (uint32_t)(cur >> 32)))
         return FF_RELOAD_HANDOVER_BUSY;
-    /* P2 (B01-1, C-P2-3): a dead master is not enough — the displaced
+    /* a dead master is not enough — the displaced
      * coordinate's workers must have confirmed they stopped (park ack) or
      * be gone. Without that proof a still-polling worker races this
      * takeover on the same queue, which is exactly what the directory is
@@ -1041,7 +1041,7 @@ ff_reload_hw_locked(void)
         __ATOMIC_SEQ_CST) != 0;
 }
 
-/* ---- rx handover (C-NR-302) -------------------------------------------- */
+/* rx handover -------------------------------------------- */
 
 /* Monotonic clock in ms for the handover deadline. */
 static uint64_t
@@ -1100,12 +1100,12 @@ ff_no_hw_mode(void)
     if (!ff_global_cfg.dpdk.graceful_reload)
         return 0;
 
-    /* M5: publish this master's decision into the cross-master directory
+    /* publish this master's decision into the cross-master directory
      * before deciding. It can only ever narrow the verdict below, never
      * widen it, so a directory lag costs one parked pass at most. */
     ff_reload_dir_sync();
 
-    /* P1-b: read rx_stopped BEFORE rx_owner_gen. The two loads are
+    /* read rx_stopped BEFORE rx_owner_gen. The two loads are
      * separate atomics, so a preemption between them can pair values that
      * never coexisted. With this order the dangerous verdict (owner ==
      * my gen && stopped == 0, i.e. unparked) can only be built while the
@@ -1126,7 +1126,7 @@ ff_no_hw_mode(void)
         return 1;
     if (stopped)
         return 1;
-    /* M5: the directory is the cross-master authority — two masters with
+    /* the directory is the cross-master authority — two masters with
      * the same gen must never both come back "unparked" here. */
     return !dir_allows_hw();
 }
@@ -1147,12 +1147,12 @@ int
 ff_reload_rx_release(int to_gen)
 {
 #ifdef FF_RELOAD_FAULT_INJECTION
-    /* RT-07 test hook: forced ownership-flip failure (markers untouched,
+    /* test hook: forced ownership-flip failure (markers untouched,
      * so the master's abort rollback stays consistent). */
     if (ff_reload_fault_is("flip_fail")) {
         return FF_RELOAD_HANDOVER_TIMEOUT;
     }
-    /* RT-24: abort the first round only, so the next HUP can exercise a
+    /* abort the first round only, so the next HUP can exercise a
      * surviving old generation draining a second time. */
     if (ff_reload_fault_is_once("flip_fail_once")) {
         return FF_RELOAD_HANDOVER_TIMEOUT;
@@ -1171,7 +1171,7 @@ ff_reload_rx_release(int to_gen)
     return FF_RELOAD_HANDOVER_OK;
 }
 
-/* C-P2-4b: wait, bounded and without spinning, until every user of
+/* wait, bounded and without spinning, until every user of
  * (epoch, gen) has confirmed it stopped or is gone. */
 static int
 users_proven_stopped(uint32_t epoch, int gen)
@@ -1201,7 +1201,7 @@ ff_reload_rx_release_epoch(uint32_t to_epoch, int to_gen)
     if (to_gen < 0 || to_gen >= FF_RELOAD_GEN_MAX)
         return FF_RELOAD_HANDOVER_INVAL;
 
-    /* P2 (B01-1, C-P2-3): the USR2 path hands the hardware straight over
+    /* the USR2 path hands the hardware straight over
      * without the HUP park barrier, so it needs the same proof. Park order
      * first: the peer workers of this coordinate only stop once they see
      * rx_stopped, so waiting before setting it could never collect their
@@ -1223,7 +1223,7 @@ ff_reload_rx_release_epoch(uint32_t to_epoch, int to_gen)
 
     /* reserved[4] carries the epoch the hardware is handed to (0 == our
      * own), so the workers that mirror the block into the directory can
-     * move ownership to another master's generation (M5/USR2). */
+     * move ownership to another master's generation. */
     __atomic_store_n(&g_reload_state->reserved[4], to_epoch,
         __ATOMIC_SEQ_CST);
     ff_reload_rx_owner_gen_set(to_gen);
@@ -1247,7 +1247,7 @@ ff_queue_handover_mutex(uint16_t port_id, uint16_t queue_id,
     (void)queue_id;
 
 #ifdef FF_RELOAD_FAULT_INJECTION
-    /* RT-07 test hook: forced cross-process handover-mutex timeout. */
+    /* test hook: forced cross-process handover-mutex timeout. */
     if (ff_reload_fault_is("mutex_timeout")) {
         return FF_RELOAD_HANDOVER_TIMEOUT;
     }
@@ -1290,7 +1290,7 @@ ff_queue_handover_mutex(uint16_t port_id, uint16_t queue_id,
     }
 }
 
-/* ---- T2 park barrier (C-NR-306) ----------------------------------------- */
+/* T2 park barrier ----------------------------------------- */
 
 /* Slot of this process in the shared block; only real workers register one. */
 static int g_reload_slot = -1;
@@ -1338,7 +1338,7 @@ ff_reload_handover_ack(void)
     uint64_t word;
 
 #ifdef FF_RELOAD_FAULT_INJECTION
-    /* RT-07 test hook: a wedged worker that never acks the park order. */
+    /* test hook: a wedged worker that never acks the park order. */
     if (ff_reload_fault_is("park_never")) {
         return;
     }
@@ -1353,13 +1353,13 @@ ff_reload_handover_ack(void)
     word = ((uint64_t)epoch << 32) | 1u;
     __atomic_store_n(&g_reload_state->rx_parked[g_reload_slot], word,
         __ATOMIC_SEQ_CST);
-    /* P2 (C-P2-2 (1)): the ack is the positive proof that this process is
+    /* ((1)): the ack is the positive proof that this process is
      * out of the hardware, so it is also what a takeover in the directory
      * waits for. */
     ff_reload_gendir_user_stop(ff_reload_epoch(), ff_reload_gen());
 }
 
-/* ---- drain reporting (M4: C-NR-402/403/406) ---------------------------- */
+/* drain reporting ---------------------------- */
 
 static struct ff_reload_drain_state *g_drain_state;
 
@@ -1606,7 +1606,7 @@ ff_reload_phase_ms_get(int phase)
     return 0;
 }
 
-/* ---- master-side orchestration ----------------------------------------- */
+/* master-side orchestration ----------------------------------------- */
 
 void
 ff_reload_master_begin(uint32_t *epoch, uint32_t *target_gen)
@@ -1635,14 +1635,14 @@ ff_reload_master_abort(void)
     if (g_reload_state == NULL)
         return;
     __atomic_store_n(&g_reload_state->reload_active, 0, __ATOMIC_SEQ_CST);
-    /* C-NR-302: an aborted reload must give the hardware back to the
-     * generation that is still active (H-12 — the markers are reversible). */
+    /* an aborted reload must give the hardware back to the
+     * generation that is still active (— the markers are reversible). */
     ag = (uint32_t)ff_reload_active_gen();
     __atomic_store_n(&g_reload_state->reserved[4], g_reload_epoch,
         __ATOMIC_SEQ_CST);
     ff_reload_rx_owner_gen_set((int)ag);
     ff_reload_rx_stopped_set(0);
-    /* M5: the directory is only reachable from a process with an EAL (the
+    /* the directory is only reachable from a process with an EAL (the
      * master has none), so this is a best-effort publish for the callers
      * that do have one — the per-pass ff_reload_dir_sync() is the path that
      * normally keeps it in step. */
@@ -1666,10 +1666,10 @@ ff_reload_master_complete(void)
     __atomic_store_n(&g_reload_state->reserved[4], g_reload_epoch,
         __ATOMIC_SEQ_CST);
     __atomic_store_n(&g_reload_state->reload_active, 0, __ATOMIC_SEQ_CST);
-    /* C-NR-302: hardware ownership follows the active generation. */
+    /* hardware ownership follows the active generation. */
     ff_reload_rx_owner_gen_set((int)t);
     ff_reload_rx_stopped_set(0);
-    /* M5: see ff_reload_master_abort() — best-effort directory publish. */
+    /* see ff_reload_master_abort() — best-effort directory publish. */
     ff_reload_gendir_active_set(g_reload_epoch, t);
     ff_reload_gendir_kni_owner_set(g_reload_epoch, t);
 }
@@ -1680,7 +1680,7 @@ ff_reload_publish_ready(unsigned int slot, uint32_t pid)
     uint64_t word;
 
 #ifdef FF_RELOAD_FAULT_INJECTION
-    /* RT-05 test hook: suppress or delay this worker's READY report. */
+    /* test hook: suppress or delay this worker's READY report. */
     if (ff_reload_fault_is("ready_never")) {
         return;
     }
@@ -1721,7 +1721,7 @@ ff_reload_ready_matches(unsigned int slot, uint32_t pid, uint32_t epoch)
     return word == (((uint64_t)epoch << 32) | (uint32_t)pid);
 }
 
-/* ---- FF_RELOAD message helpers ----------------------------------------- */
+/* FF_RELOAD message helpers ----------------------------------------- */
 
 void
 ff_reload_msg_fill(struct ff_msg *msg, int cmd, int gen, int status,
@@ -1738,7 +1738,7 @@ ff_reload_msg_fill(struct ff_msg *msg, int cmd, int gen, int status,
     msg->reload.status = (uint32_t)status;
     msg->reload.active_gen = (uint32_t)ff_reload_active_gen();
     msg->reload.heartbeat = heartbeat;
-    /* M5: report the epoch the active generation belongs to, so a tool
+    /* report the epoch the active generation belongs to, so a tool
      * builds ring names for the master that is actually serving. */
     {
         uint32_t ae, ag;
@@ -1794,7 +1794,7 @@ ff_reload_msg_parse(const struct ff_msg *msg, int *cmd, int *gen,
     return 0;
 }
 
-/* ---- main_loop hooks ---------------------------------------------------- */
+/* main_loop hooks ---------------------------------------------------- */
 
 void
 ff_reload_heartbeat_set_timeout(uint64_t timeout_tsc)
@@ -1854,8 +1854,8 @@ ff_reload_heartbeat_sample(uint64_t cur_tsc)
 
     /* stalled episode: count once and rebase so the next report only comes
      * after another full timeout if the owner is still dead.
-     * Rx return to G_old (DR6-1) is wired in M3/M4 (C-NR-309/316):
-     * under M2 G_old still owns rx, so detection is observability only. */
+     * Rx return to G_old is wired in /:
+     * under G_old still owns rx, so detection is observability only. */
     __atomic_add_fetch(&g_reload_state->heartbeat_stalls, 1,
         __ATOMIC_SEQ_CST);
     g_hb_last_advance = cur_tsc;

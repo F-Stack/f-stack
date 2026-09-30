@@ -23,7 +23,7 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-/* C-NR-310: see lib/ff_drain_ring.h for the ring-pair ownership model. */
+/* See lib/ff_drain_ring.h for the ring-pair ownership model. */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -48,8 +48,8 @@
  * generation's same queue. */
 #define FF_DRAIN_RX_RING_FMT   "drain_rx_p%u_q%u_g%d"
 #define FF_DRAIN_TX_RING_FMT   "drain_tx_p%u_q%u_g%d"
-/* M5: same, namespaced by the master epoch slot (one digit — a ring name
- * is capped at 28 bytes). Slot 0 keeps the pre-M5 name byte-for-byte. */
+/* same, namespaced by the master epoch slot (one digit — a ring name
+ * is capped at 28 bytes). Slot 0 keeps the pre- name byte-for-byte. */
 #define FF_DRAIN_RX_RING_FMT_E "drain_rx_p%u_q%u_e%u_g%d"
 #define FF_DRAIN_TX_RING_FMT_E "drain_tx_p%u_q%u_e%u_g%d"
 
@@ -58,7 +58,7 @@
     ((((unsigned)(q)) * FF_RELOAD_EPOCH_SLOT_MAX + (unsigned)(slot)) \
         * FF_RELOAD_GEN_MAX + (unsigned)(gen))
 
-/* M5: same fit check as the msg rings — "drain_tx_p<port>_q<queue>_e<slot>_g<gen>"
+/* same fit check as the msg rings — "drain_tx_p<port>_q<queue>_e<slot>_g<gen>"
  * with a uint16 port/queue is again exactly RTE_RING_NAMESIZE-1 bytes. */
 typedef char ff_drain_ring_name_fit_check[
     (10                                   /* "drain_tx_p" */
@@ -78,7 +78,7 @@ static uint64_t g_rx_full;
 static uint64_t g_tx_full;
 static uint64_t g_tx_dropped;
 
-/* C-NR-406: local cumulative forward counters, flushed as deltas into the
+/* local cumulative forward counters, flushed as deltas into the
  * shared drain block at ~1 Hz (single datapath thread per process, no
  * atomics needed until the flush). */
 static uint64_t g_rx_fwd;
@@ -115,7 +115,7 @@ gen_mismatch_warn(const char *fn, int gen)
         "tx takes the source one); packet rejected\n", fn, gen);
 }
 
-/* F-M4-1: a full ring drops per packet, so the warning is capped at one line
+/* a full ring drops per packet, so the warning is capped at one line
  * per second and per direction (clock-based, same mechanism as the divert
  * path warning in ff_dpdk_if.c). The counters stay exact; the log line is
  * only the alarm. */
@@ -151,7 +151,7 @@ pick_ring(struct rte_ring **rings, uint16_t port_id, uint16_t queue_id,
     return rings[FF_DRAIN_RING_INDEX(queue_id, slot, gen)];
 }
 
-/* M5: ring name for one (port, queue, epoch slot, generation). */
+/* ring name for one (port, queue, epoch slot, generation). */
 static int
 drain_ring_name(char *buf, size_t buflen, int tx, unsigned port_id,
     unsigned queue_id, unsigned slot, int gen)
@@ -181,7 +181,7 @@ ff_drain_ring_peer_gen(void)
 {
     int gen;
 
-    /* M5: across masters the peer is the newest live epoch's generation,
+    /* across masters the peer is the newest live epoch's generation,
      * not the ping-pong of our own master. */
     ff_reload_peer_coord(NULL, &gen);
     if (gen < 0 || gen >= FF_RELOAD_GEN_MAX)
@@ -217,7 +217,7 @@ ff_drain_ring_init(void)
      * The queue dimension is non-negotiable: one stack instance per queue,
      * and one consumer per queue ring. drain_tx stays SP: its only
      * producer is the parked generation's own queue-Q worker
-     * (ff_divert_tx_mbuf). drain_rx must be MP (P1-a fix): a queue-Q rx
+     * (ff_divert_tx_mbuf). drain_rx must be MP: a queue-Q rx
      * ring takes both the owner's queue-Q worker (flow-map misses) and,
      * with nb_queues >= 2, any OTHER owner worker fanning out an ARP/NDP
      * clone to every peer queue — two processes on an SP ring corrupt the
@@ -231,7 +231,7 @@ ff_drain_ring_init(void)
         if (nb_queues == 0)
             continue;
 
-        /* R-310-1: unregist() only detaches, so on a later init() the
+        /* 1: unregist() only detaches, so on a later init() the
          * pointer arrays are still there — reuse them instead of leaking a
          * new block on every reload round. */
         sz = sizeof(struct rte_ring *) * nb_queues
@@ -254,11 +254,11 @@ ff_drain_ring_init(void)
 
         drain_ring_nb_queues[portid] = nb_queues;
 
-        /* M5: every epoch slot is attached, like every generation is — a
+        /* every epoch slot is attached, like every generation is — a
          * process cannot know at init which peer coordinate the next
          * reload round will pair it with. The resident primary creates
          * them all (create_ring), so a secondary only ever looks them up
-         * and the pre-M5 "primary creates / secondary attaches" policy is
+         * and the pre- "primary creates / secondary attaches" policy is
          * left untouched. */
         for (q = 0; q < (int)nb_queues; q++) {
             for (e = 0; e < (int)FF_RELOAD_EPOCH_SLOT_MAX; e++) {
@@ -267,7 +267,7 @@ ff_drain_ring_init(void)
                             (unsigned)portid, (unsigned)q, (unsigned)e,
                             g) != 0)
                         return -1;
-                    /* P1-a: MP — see the comment above the port loop */
+                    /* MP — see the comment above the port loop */
                     drain_ring_rx[portid][
                         FF_DRAIN_RING_INDEX(q, e, g)] =
                         create_ring(name, count, socketid, RING_F_SC_DEQ);
@@ -289,7 +289,7 @@ ff_drain_ring_init(void)
     return 0;
 }
 
-/* M5: drop everything a dead master left behind in one epoch slot's rings.
+/* drop everything a dead master left behind in one epoch slot's rings.
  * Only the process that won the slot takeover CAS ever calls this (see
  * ff_reload_gendir_reset_pending()), and it runs before that slot's rings
  * are used, so nobody else can be dequeuing them. */
@@ -320,7 +320,7 @@ ff_drain_ring_reset_slot(unsigned slot)
     }
 }
 
-/* R-15: the ring pairs outlive unregist (R-310-1), so whatever is still
+/* the ring pairs outlive unregist, so whatever is still
  * queued in them would surface as a stale packet in the next round. Only
  * this process's own pair may be drained here: its drain_rx has no second
  * reader (the peer only enqueues), and its drain_tx reader is the peer
@@ -335,7 +335,7 @@ drain_ring_drain_own(uint16_t p, unsigned q, int tx)
 
     /* Called with drain_ring_up already cleared: the ring pointers are
      * still valid because the rings themselves outlive unregistration
-     * (R-310-1), so draining after the flag is down is intentional. */
+     * so draining after the flag is down is intentional. */
     if (p >= RTE_MAX_ETHPORTS)
         return;
     /* A second reader would break the single-consumer ring: drain_tx only
@@ -376,7 +376,7 @@ ff_drain_ring_unregist(void)
                 * FF_RELOAD_GEN_MAX; q++)
                 drain_ring_tx[p][q] = NULL;
         }
-        /* The pointer arrays stay allocated (R-310-1: detach, never
+        /* The pointer arrays stay allocated (-1: detach, never
          * destroy) so the next init() can reuse them. */
         drain_ring_nb_queues[p] = 0;
     }
@@ -396,14 +396,14 @@ ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
      * but "own" is the full (slot, gen) coordinate: a USR2 peer master
      * legitimately runs the SAME gen in a different epoch slot, and its
      * rings are namespaced by that slot, so only an exact self-match is a
-     * loop (F-M5-1). */
+     * loop. */
     ff_reload_peer_coord(&epoch, NULL);
     if (gen == ff_reload_gen()
         && ff_reload_epoch_slot_of(epoch) == ff_reload_epoch_slot()) {
         gen_mismatch_warn(__func__, gen);
         return -1;
     }
-    /* M5: the destination generation may belong to another master, so the
+    /* the destination generation may belong to another master, so the
      * epoch comes from the directory (our own peer generation when there
      * is only one master). */
     r = pick_ring(drain_ring_rx[port_id], port_id, queue_id,
@@ -414,7 +414,7 @@ ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
     if (rte_ring_enqueue(r, m) != 0) {
         g_rx_full++;
         /* The 1 Hz sampler in flush_stats() cannot see a transient full
-         * ring (M4 logged rounds with full events but a peak of 43), so
+         * ring (logged rounds with full events but a peak of 43), so
          * publish the occupancy observed right here. */
         ff_reload_drain_peak_max(0, rte_ring_count(r));
         drain_ring_full_warn(0, rte_ring_count(r),

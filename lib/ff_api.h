@@ -39,7 +39,7 @@ extern "C" {
 
 #include "ff_event.h"
 #include "ff_errno.h"
-/* C-NR-301: struct ff_flow_key / ff_flow_key_t. Kept in a zero-include header
+/* struct ff_flow_key / ff_flow_key_t. Kept in a zero-include header
  * so the FreeBSD side (which must not include ff_api.h) can share the exact
  * same layout. */
 #include "ff_flow_map.h"
@@ -239,7 +239,7 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
 /* dispatch api begin */
 #define FF_DISPATCH_ERROR (-1)
 #define FF_DISPATCH_RESPONSE (-2)
-/* C-NR-303: the packet belongs to the peer generation of a graceful
+/* the packet belongs to the peer generation of a graceful
  * reload (flow-map miss). The library forwards the mbuf on the peer
  * generation's drain_rx ring — the callback never touches the mbuf, so
  * ownership cannot be split. Dropped and counted if that ring is full or
@@ -266,8 +266,8 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
  * @return FF_DISPATCH_RESPONSE (-2)
  *   Packet is handled by user, packet will be responsed.
  * @return FF_DISPATCH_PEER (-3)
- *   C-NR-303: the packet belongs to the peer generation of a graceful
- *   reload; the library forwards it (the mbuf stays library-owned).
+ * the packet belongs to the peer generation of a graceful
+ * reload; the library forwards it (the mbuf stays library-owned).
  *
  */
 typedef int (*dispatch_func_t)(void *data, uint16_t *len,
@@ -306,8 +306,8 @@ struct ff_dispatcher_context {
  * @return FF_DISPATCH_RESPONSE (-2)
  *   Packet is handled by user, packet will be responsed.
  * @return FF_DISPATCH_PEER (-3)
- *   C-NR-303: the packet belongs to the peer generation of a graceful
- *   reload; the library forwards it (the mbuf stays library-owned).
+ * the packet belongs to the peer generation of a graceful
+ * reload; the library forwards it (the mbuf stays library-owned).
  */
 typedef int (*dispatch_func_context_t)(void *data, uint16_t *len,
     uint16_t queue_id, uint16_t nb_queues, struct ff_dispatcher_context context);
@@ -318,7 +318,7 @@ void ff_regist_packet_dispatcher(dispatch_func_t func);
 /* Register a packet dispatch function with context support */
 void ff_regist_packet_dispatcher_context(dispatch_func_context_t func);
 
-/* Unregister the packet dispatch callbacks (C-NR-303: the new generation
+/* Unregister the packet dispatch callbacks (: the new generation
  * unregisters once the drain rings have been confirmed empty). Idempotent —
  * calling it with no callback registered is a no-op. */
 void ff_unregist_packet_dispatcher(void);
@@ -341,7 +341,7 @@ void ff_unregist_packet_dispatcher_context(void);
 int ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id);
 
 /* flow map api begin */
-/* C-NR-301: software flow table used during the graceful-reload handover.
+/* software flow table used during the graceful-reload handover.
  * While the new generation owns the hardware and the old one is still
  * draining, every inbound packet has to be classified as "new flow, mine" or
  * "old flow, forward to the draining generation" — the stack's inpcb cannot
@@ -374,7 +374,7 @@ int ff_flow_map_insert(const ff_flow_key_t *key);
 /* flow map api end */
 
 /* reload drain ring api begin */
-/* C-NR-310: hand packets to the peer generation during the graceful-reload
+/* hand packets to the peer generation during the graceful-reload
  * handover. Full ring ownership model in lib/ff_drain_ring.h; these two are
  * the app-side (dispatcher callback) entry points — the dequeue/drain sides
  * are consumed by lib's main loop. */
@@ -396,7 +396,7 @@ int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
     struct rte_mbuf *m);
 /* reload drain ring api end */
 
-/* C-NR-312a: number of half-open (syncache) entries currently held by this
+/* number of half-open (syncache) entries currently held by this
  * process's stack. The draining generation polls it to learn when its
  * half-open window has closed and its listening sockets can be closed. */
 int ff_syncache_count(void);
@@ -406,19 +406,19 @@ int ff_syncache_count(void);
  * Any output pointer may be NULL. */
 void ff_syncache_counters(uint64_t *synack_fail, uint64_t *ack_mismatch);
 
-/* C-NR-405: 1 = this process no longer owns rx (the peer generation took
+/* 1 = this process no longer owns rx (the peer generation took
  * it over during a graceful reload), i.e. it is the draining generation.
  * 0 otherwise, including when no reload is in flight. */
 int ff_is_drain_generation(void);
 
-/* F-M3-1 / F-M4-2 (M4): total bytes the TCP sockets of this process's
+/* total bytes the TCP sockets of this process's
  * stack still hold queued in so_snd (listening excluded), including
  * app-closed sockets the stack is still draining (no descriptor left).
  * The draining generation defers its exit while it is non-zero so
  * in-flight tails are not reset by the worker's death. */
 int ff_socket_snd_pending(void);
 
-/* C-NR-402 (M4): number of open INET/INET6 connections (listening
+/* number of open INET/INET6 connections (listening
  * excluded) in this process — the drain-progress figure the master waits
  * on before declaring DRAIN_DONE. */
 int ff_socket_drain_count(void);

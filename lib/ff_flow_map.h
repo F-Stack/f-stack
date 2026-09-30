@@ -27,7 +27,7 @@
 #ifndef _FF_FLOW_MAP_H_
 #define _FF_FLOW_MAP_H_
 
-/* C-NR-301: software flow table shared between the FreeBSD stack (producer,
+/* software flow table shared between the FreeBSD stack (producer,
  * at syncache-insert time) and the packet dispatcher callback (consumer).
  *
  * This header deliberately includes nothing: freebsd/ translation units must
@@ -81,7 +81,7 @@ int ff_flow_map_admit(const struct ff_flow_key *key, int *created);
  * a record was removed. */
 int ff_flow_map_revoke(const struct ff_flow_key *key);
 
-/* P3 (C-P3-1): record a flow as "this generation" BEFORE its SYN-ACK is
+/* record a flow as "this generation" BEFORE its SYN-ACK is
  * sent, so the third handshake ACK is classified by the dispatcher instead
  * of being forwarded to the draining generation. Idempotent: a repeated key
  * returns 1 instead of taking a second entry. Never blocks, never sleeps and
@@ -96,7 +96,7 @@ int ff_flow_map_insert(const struct ff_flow_key *key);
 /* Counters for ff_top / drain observability; any output pointer may be NULL. */
 void ff_flow_map_stats(uint64_t *inserted, uint64_t *dup, uint64_t *full);
 
-/* P3 (C-P3-3/4): extended counters plus the live capacity. 'grown' counts the
+/* extended counters plus the live capacity. 'grown' counts the
  * bounded expansions of the current window, 'grow_fail' an abandoned
  * migration, 'alloc_fail' a failed allocation. Any output pointer may be
  * NULL. */
@@ -104,7 +104,7 @@ void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
     uint64_t *grown, uint64_t *grow_fail, uint64_t *alloc_fail,
     uint32_t *cap, uint64_t *revoked);
 
-/* P3 (C-P3-3): capacity knob for tests and control-plane callers — a power of
+/* capacity knob for tests and control-plane callers — a power of
  * two within [FF_FLOW_MAP_CAP_MIN, FF_FLOW_MAP_CAP_MAX]. Takes effect at the
  * next open(); it also releases the current table at once (single-thread
  * contract: nothing can be looking up while this runs). The capacity survives

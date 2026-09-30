@@ -3,7 +3,7 @@
  * Copyright (C) 2026 F-Stack project
  */
 
-/* C-NR-205: graceful reload orchestration state machine, master side.
+/* graceful reload orchestration state machine, master side.
  *
  * Division of labour (the nginx process statics force the split): the
  * spawn/signal/READY-wait sequencing lives in ngx_process_cycle.c (it needs
@@ -14,7 +14,7 @@
  *   - the side-effectful FSM wrapper (transition logging + per-state
  *     counters + shared-state updates on window open/abort/complete);
  *   - the READY publish entry point used by workers.
- * The transition table itself is pure: ngx_ff_reload_fsm.h (UT-NR-10).
+ * The transition table itself is pure: ngx_ff_reload_fsm.h.
  */
 
 #include <ngx_config.h>
@@ -29,7 +29,7 @@
 
 #include <ngx_auto_config.h>
 #include "ff_api.h"
-#include "ff_reload.h"       /* lib reload helpers (C-NR-313/316) */
+#include "ff_reload.h"       /* lib reload helpers */
 
 #include "ngx_ff_reload_fsm.h"
 
@@ -133,7 +133,7 @@ ngx_ff_reload_fsm_event(int event)
         break;
 
     case NGX_FF_RELOAD_T2_HANDOVER:
-        /* C-NR-306 (M3): entering T2 arms nothing by itself. The actual
+        /* entering T2 arms nothing by itself. The actual
          * handover (park order -> epoch barrier wait -> ownership flip)
          * needs the process table and runs in ngx_ff_reload_handover()
          * (ngx_process_cycle.c), which fires EV_HANDOVER_DONE only on
@@ -141,10 +141,10 @@ ngx_ff_reload_fsm_event(int event)
         break;
 
     case NGX_FF_RELOAD_T3_DRAIN:
-        /* C-NR-306: G_new owns rx/tx/listen; G_old is parked in no-hw
+        /* G_new owns rx/tx/listen; G_old is parked in no-hw
          * drain mode (forwarded misses via drain_rx, outgoing packets
-         * via drain_tx). Drain completion (EV_DRAIN_DONE) is M4
-         * (C-NR-402/403/405). */
+         * via drain_tx). Drain completion (EV_DRAIN_DONE) is
+         * */
         break;
 
     case NGX_FF_RELOAD_T0_IDLE:
@@ -212,7 +212,7 @@ ngx_ff_reload_state_create(ngx_cycle_t *cycle)
      * lib pointer state (re-attached defensively in ff_mod_init). */
     ff_reload_attach_state(ngx_ff_reload_shm);
 
-    /* M4 (C-NR-402/403/406): drain reporting extension — same lifetime
+    /* drain reporting extension — same lifetime
      * and inheritance model as the main block (created before any child
      * is forked, so every process maps it through fork()). */
     p = mmap(NULL, sizeof(struct ff_reload_drain_state),
@@ -246,7 +246,7 @@ ngx_ff_reload_worker_ready(void)
     ff_reload_attach_state(ngx_ff_reload_shm);
     ff_reload_publish_ready((unsigned) ngx_process_slot, (uint32_t) ngx_pid);
 
-    /* M4: the drain extension pointer is fork-inherited; re-attach
+    /* the drain extension pointer is fork-inherited; re-attach
      * defensively like the main block above. */
     if (ngx_ff_reload_drain_shm != NULL) {
         (void) ff_reload_drain_attach(ngx_ff_reload_drain_shm,
@@ -271,9 +271,9 @@ ngx_ff_reload_note_hup_rejected(void)
     ff_reload_hup_rejected++;
 }
 
-/* C-NR-403 (M4) call point: once the master confirms the old generation
+/* call point: once the master confirms the old generation
  * fully drained and exited, the new generation retires its reload data
- * plane. Shipped by M3 (C-NR-303 ④ leaves the call point) so M4 only has
+ * plane. Shipped by (leaves the call point) so only has
  * to deliver the notification; idempotent, and safe to call from any
  * worker of the completed generation. */
 void
@@ -287,7 +287,7 @@ ngx_ff_reload_flow_map_teardown(void)
     ff_flow_map_close();
 }
 
-/* F4: rebind the FSM transition log. The log bound at state_create belongs
+/* rebind the FSM transition log. The log bound at state_create belongs
  * to a cycle that a later ngx_init_cycle destroys (pool freed, fd closed);
  * the orchestrator calls this at reload entry (old cycle still live) and
  * right after a successful init_cycle (new cycle log). */

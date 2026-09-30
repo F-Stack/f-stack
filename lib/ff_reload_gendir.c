@@ -24,7 +24,7 @@
  * SUCH DAMAGE.
  */
 
-/* M5: cross-master generation directory — DPDK half.
+/* cross-master generation directory — DPDK half.
  *
  * The resident slim primary is the only F-Stack process that survives an
  * nginx USR2 exec, so it owns the directory (a hugepage memzone) and every
@@ -87,7 +87,7 @@ pid_alive(uint32_t pid)
     return kill((pid_t)pid, 0) == 0 || errno == EPERM;
 }
 
-/* P2 (C-P2-6): a slot can only be recycled once nothing refreshes its
+/* a slot can only be recycled once nothing refreshes its
  * stamp any more — workers of a dead master keep refreshing it while they
  * drain, and they still consume that slot's rings. Unsigned delta keeps the
  * comparison wrap-safe; a never-stamped slot (pad == 0) is stale. */
@@ -117,7 +117,7 @@ ff_reload_gendir_detach(void)
 }
 
 /* Claim a free slot for 'pid'. Slot 0 belongs to the resident primary, so
- * masters cycle through 1..SLOT_MAX-1 and a slot whose master pid is gone
+ * masters cycle through 1.SLOT_MAX-1 and a slot whose master pid is gone
  * is recycled — that is what keeps an USR2 chain from leaking one ring set
  * per round (DPDK never frees a memzone on process exit). Liveness is the
  * pid alone, the same authority epoch_live() uses: an nginx master has no
@@ -171,11 +171,11 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
             continue;   /* lost the race: re-read the same slot */
         }
 
-        /* P2 (C-P2-6a): the master is gone but its workers still refresh
+        /* the master is gone but its workers still refresh
          * the stamp, so the slot is only TEMPORARILY unavailable — the
          * window right after an old master quit, while its workers drain.
          * Wait for the stamp to go stale instead of killing this process:
-         * the retry stays on this slot (R-16) and is bounded by the single
+         * the retry stays on this slot and is bounded by the single
          * reclaim budget. */
         if (owner != 0 && !pid_alive(owner) && !stale) {
             struct timespec ts;
@@ -190,7 +190,7 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
             continue;
         }
 
-        /* R-16: every drain/msg ring name is derived from
+        /* every drain/msg ring name is derived from
          * ff_reload_epoch_slot_of(epoch), so landing on another slot would
          * be named inconsistently. Fail instead of advancing. */
         return -1;
@@ -273,7 +273,7 @@ ff_reload_gendir_attach(void)
         mz = rte_memzone_lookup(FF_RELOAD_GENDIR_NAME);
     }
     if (mz == NULL) {
-        /* B01-4: without the directory every epoch-named resource would
+        /* without the directory every epoch-named resource would
          * silently collapse into slot 0 / epoch 0 — two masters' workers
          * sharing one ring set. Refuse to come up instead. */
         goto fail;
@@ -343,7 +343,7 @@ ff_reload_gendir_epoch_live(uint32_t epoch)
         if (pid_alive(__atomic_load_n(&d->slot[i].master_pid,
             __ATOMIC_SEQ_CST)))
             return 1;
-        /* P2 (B02-1): orphan workers of a dead master keep refreshing the
+        /* orphan workers of a dead master keep refreshing the
          * stamp while they drain — until it goes stale the epoch is still
          * a live counterpart and must not be displaced. */
         return !slot_stale(d, i);
@@ -376,7 +376,7 @@ ff_reload_gendir_reset_pending(void)
     return pending;
 }
 
-/* Same verdict without consuming it: P2 (C-P2-6) only drains the recycled
+/* Same verdict without consuming it: only drains the recycled
  * slot's rings once no orphan user can still be consuming them, so the
  * consumer has to be able to ask first and clear the flag later. */
 int

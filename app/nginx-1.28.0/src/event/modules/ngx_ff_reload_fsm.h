@@ -3,19 +3,18 @@
  * Copyright (C) 2026 F-Stack project
  */
 
-/* C-NR-205: T0-T5 graceful reload orchestration state machine, PURE part.
+/* T0-T5 graceful reload orchestration state machine, PURE part.
  *
  * This header must stay free of nginx dependencies (only stdint) so the
- * unit tests can include it directly (UT-NR-10). The side-effectful
+ * unit tests can include it directly. The side-effectful
  * wrapper (logging, shared-state updates, spawn/signal sequencing) lives
  * in ngx_ff_reload.c and ngx_process_cycle.c; the transition legality and
  * the next-state computation are defined here only.
  *
- * M3 (C-NR-306): the T2 handover is real (park barrier + rx ownership
- * flip, driven from ngx_process_cycle.c); T3 side effects on the worker
- * side (flow-map callback, drain rings) were armed at G_new init. The
- * T3 -> T4 drain confirmation remains a placeholder until M4
- * (C-NR-402/403/405).
+ * The T2 handover is real (park barrier + rx ownership flip, driven from
+ * ngx_process_cycle.c); T3 side effects on the worker side (flow-map
+ * callback, drain rings) were armed at G_new init. The T3 -> T4 drain
+ * confirmation is still a placeholder.
  */
 
 #ifndef _NGX_FF_RELOAD_FSM_H_INCLUDED_
@@ -53,7 +52,7 @@ typedef enum {
 
 /* Pure transition table: returns the next state for (state, event), or
  * NGX_FF_RELOAD_T_MAX when the transition is illegal. Re-entry protection
- * (semantics 6) falls out of the table: EV_HUP is only legal in T0. */
+ * () falls out of the table: EV_HUP is only legal in T0. */
 static inline int
 ngx_ff_reload_fsm_next(int state, int event)
 {

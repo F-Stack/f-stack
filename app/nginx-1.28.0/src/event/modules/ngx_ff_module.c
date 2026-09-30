@@ -337,24 +337,24 @@ ff_init_with_args(const char *conf, int proc_id, const char *proc_type)
 }
 
 
-/* C-NR-303 (M3): flow-map classification callback of the NEW generation.
+/* flow-map classification callback of the NEW generation.
  *
  * Registered by the target generation's workers once their ff stack is up
- * and kept across rounds (teardown is C-NR-403, M4). Only TCP/UDP over
+ * and kept across rounds. Only TCP/UDP over
  * IPv4/IPv6 participates in flow ownership; ARP/NDP/ICMP/fragments and
  * anything unparseable stay on the local stack (the ARP/NDP clone to the
- * old generation happens inside ff_dpdk_if.c, C-NR-304). A flow-map hit
+ * old generation happens inside ff_dpdk_if.c,). A flow-map hit
  * is a flow opened by this generation; a miss belongs to the old one and
  * is answered FF_DISPATCH_PEER — the library then owns the mbuf end to
- * end (R-303-1: no app-side free, no double free).
+ * end (-1: no app-side free, no double free).
  *
  * Outside a reload window, or when this process is not the target
  * generation (the previous round's G_new keeps its registration), every
  * packet stays local: the steady state pays one cheap check per packet
  * and behaves exactly like an unregistered dispatcher.
  *
- * F-M5-1 (USR2): the window may also be the cross-master one — the block
- * of a fresh master never opens the M4 window, so the peer check below
+ * (USR2): the window may also be the cross-master one — the block
+ * of a fresh master never opens the window, so the peer check below
  * uses the block mirror (a plain shared read refreshed once per loop pass
  * by ff_reload_dir_sync, no directory scan on the per-packet path). */
 static int
@@ -436,7 +436,7 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
         return queue_id;                /* non-IP: local */
     }
 
-    /* F-M4-3/4/5/6 common cause (C-NR-312a): a SYN without the ACK bit is
+    /* 4/5/6 common cause: a SYN without the ACK bit is
      * the first packet of a brand-new connection, so it cannot belong to
      * the draining generation. Serving it here stops the dying generation
      * from being fed new flows for the whole drain/exit window (the S7'
@@ -468,13 +468,13 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
     return FF_DISPATCH_PEER;            /* miss: forward to G_old */
 }
 
-/* C-NR-303: arm the flow table and register the classifier. Called from
+/* arm the flow table and register the classifier. Called from
  * ff_mod_init after the stack is up — before READY and long before the
  * master hands rx over, so no packet can reach the callback before the
  * table is armed (this generation is parked off the hardware until then).
- * D-NR-303 (open at init, not at T3): a parked generation receives no
+ * (open at init, not at T3): a parked generation receives no
  * packets, so arming early is indistinguishable from arming at T3.
- * F-M5-1 (USR2): the fresh master's anonymous block never opens the M4
+ * (USR2): the fresh master's anonymous block never opens the
  * reload window, so the block-only gate cannot arm its workers. The
  * directory provides the equivalent condition — a peer master epoch that
  * is live or still draining — and arming still happens at init, while
@@ -504,7 +504,7 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
 	 if (ngx_ff_graceful_reload) {
 		 proc_id += 1;
 		 proc_type = 0;
-		 /* C-NR-206/C-NR-313: bind this worker to its reload generation
+		 /* bind this worker to its reload generation
 		  * BEFORE ff_init — the (proc_id, gen) msg_ring set and the
 		  * per-generation app mempool are selected during init. The gen
 		  * comes from the inherited shared control block (target while
@@ -532,9 +532,9 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
 		 return -1;
 	 }
 
-	 /* C-NR-303: G_new arms its flow table + classification callback once
+	 /* G_new arms its flow table + classification callback once
 	  * the stack is up (inert while parked off the hardware; teardown on
-	  * drain confirmation is C-NR-403, M4). */
+	  * drain confirmation is,). */
 	 if (ngx_ff_graceful_reload) {
 		 ngx_ff_flow_map_arm();
 	 }
@@ -549,7 +549,7 @@ ff_mod_init(const char *conf, int proc_id, int proc_type) {
 int
 ngx_ff_slim_primary_init(const char *conf)
 {
-	 /* C-NR-313: the primary pre-creates BOTH generations' msg rings and
+	 /* the primary pre-creates BOTH generations' msg rings and
 	  * mbuf pools, so its own generation stays 0; attaching the shared
 	  * block lets lib-side helpers (heartbeat view, KNI owner gen) work. */
 	 ff_reload_attach_state(ngx_ff_reload_shm);

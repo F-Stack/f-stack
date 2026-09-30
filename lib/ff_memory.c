@@ -219,7 +219,7 @@ void ff_init_ref_pool(int nb_mbuf, int socketid)
     }
     snprintf(s, sizeof(s), "ff_ref_pool_%d", socketid);
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
-        /* C-NR-315 (N-4b): shared across generations when PA is enabled;
+        /* shared across generations when PA is enabled;
          * force cache_size=0 under graceful_reload. */
         ff_ref_pool[socketid] = rte_pktmbuf_pool_create(s, nb_mbuf,
             ff_shared_pool_cache_size(ff_global_cfg.dpdk.graceful_reload,

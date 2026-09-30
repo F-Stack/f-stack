@@ -46,10 +46,10 @@ enum FF_MSG_TYPE {
     FF_TRAFFIC,
     FF_KNICTL,
     /*
-     * C-NR-202: graceful reload control family (v1.6 HANDOVER semantics,
+     * graceful reload control family (v1.6 HANDOVER semantics,
      * not SWITCH). Subcommand in ff_reload_args.cmd; replies carry the
      * answering process's reload view (generation, heartbeat, active gen).
-     * Transported over the (proc_id, generation) msg_ring set (C-NR-313).
+     * Transported over the (proc_id, generation) msg_ring set.
      */
     FF_RELOAD,
 
@@ -134,7 +134,7 @@ struct ff_knictl_args {
     int kni_action;
 };
 
-/* C-NR-202: FF_RELOAD message subcommands. */
+/* FF_RELOAD message subcommands. */
 enum FF_RELOAD_CMD {
     FF_RELOAD_CMD_UNKNOWN = 0,
     FF_RELOAD_CMD_READY,
@@ -144,7 +144,7 @@ enum FF_RELOAD_CMD {
     FF_RELOAD_CMD_DRAIN_DONE,
     FF_RELOAD_CMD_REJECT,
     /*
-     * C-NR-313 tools probe (M3 Batch C): read-only, no state change. Kept
+     * tools probe: read-only, no state change. Kept
      * last so the value of every state-driving command stays stable.
      */
     FF_RELOAD_CMD_QUERY,
@@ -158,9 +158,9 @@ struct ff_reload_args {
                           * this is the rx-owner gen (flips at T3, not T5);
                           * without one it is the sender's view, as before */
     uint64_t heartbeat;  /* heartbeat counter snapshot */
-    /* M5: master epoch of the reported active generation. Ring names are
+    /* master epoch of the reported active generation. Ring names are
      * namespaced by it, so a tool that omits it can address the wrong
-     * master's rings after an USR2. 0 == pre-M5 / no directory. */
+     * master's rings after an USR2. 0 == pre- / no directory. */
     uint32_t epoch;
     uint32_t pad;
 };
@@ -170,7 +170,7 @@ struct ff_reload_args {
 
 /* structure of ipc msg */
 struct ff_msg {
-    /* P4 (C-P4-1): who owns this buffer. The tools' out-ring is shared by
+    /* who owns this buffer. The tools' out-ring is shared by
      * every process of one (proc_id, msg_type, slot, gen) coordinate and a
      * DPDK secondary's hugepage VA is not the same as another's, so the
      * reply identity must not be a pointer comparison. 0 == untagged and is
@@ -200,7 +200,7 @@ struct ff_msg {
     };
 } __attribute__((packed)) __rte_cache_aligned;
 
-/* P4 (C-P4-1): the two new fields above fit into the padding the cache-line
+/* the two new fields above fit into the padding the cache-line
  * alignment already produced (32B header + 48B union + 8B = 88 of 128, after
  * this change 96 of 128), so the *element size* of FF_MSG_POOL is unchanged.
  * The offsets behind them do shift by 8 bytes — the stack and the tools must
