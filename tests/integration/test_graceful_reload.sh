@@ -174,9 +174,10 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
                                          rt12,rt13,rt20,rt20b,rt21,rt22,rt23,
-                                         rt24,rt25,rt30,rt31 (rt24 and the
+                                         rt24,rt25,rt26,rt30,rt31 (rt24 and the
                                          other rt2x need a fault-injection
-                                         build; rt25 drives USR2 + WINCH)
+                                         build; rt25 drives USR2 + WINCH;
+                                         rt26 needs --fault synack_fail)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -1321,8 +1322,9 @@ case_rt31() {
 # manifest that declares it; reload_checks.verify-build enforces the pairing in
 # both directions. They never contribute to functional acceptance: rt23 is the
 # only one that runs on the production form.
-fault_case() { # tag fault expect(ok|abort) criterion [abort-signature]
+fault_case() { # tag fault expect(ok|abort) criterion [abort-signature] [extra-check]
     local tag="$1" fault="$2" expect="$3" crit="$4" sig="${5:-}"
+    local extra="${6:-}"
     local rc=0 conf out before
     # The --fault option drives the build-form gate; it must name the same
     # fault the case injects, otherwise a verdict could be labelled wrongly.
@@ -1428,12 +1430,18 @@ fault_case() { # tag fault expect(ok|abort) criterion [abort-signature]
     unset FF_FAULT
     unset FF_FAULT_DELAY_MS
     stop_stack "$tag" "$conf" || rc=1
+    # Optional case-specific assertion: it runs once the artifacts are
+    # complete and feeds both the verdict and the measured text.
+    local extra_txt=""
+    if [ -n "$extra" ]; then
+        extra_txt=$("$extra") || rc=1
+    fi
     if [ "$rc" = "0" ]; then
         record "$tag" "PASS" "$crit" \
-          "fault=$fault expect=$expect hrc=$hrc workers_before=$before traffic=$summary (fault-injection build)"
+          "fault=$fault expect=$expect hrc=$hrc workers_before=$before traffic=$summary $extra_txt (fault-injection build)"
     else
         record "$tag" "FAIL" "$crit" \
-          "fault=$fault expect=$expect hrc=$hrc workers_before=$before traffic=$summary (fault-injection build)"
+          "fault=$fault expect=$expect hrc=$hrc workers_before=$before traffic=$summary $extra_txt (fault-injection build)"
     fi
     return $rc
 }
@@ -1515,6 +1523,30 @@ case_rt23() {
     return $rc
 }
 
+# rt26: the counters live in the worker logs (fstack-*.log), not in nginx
+# error log, and the 1 Hz line prints deltas, so the sum is the total.
+synack_fail_counters() {
+    local f n r fails=0 undone=0
+    for f in "$OUT"/fstack-*.log; do
+        [ -r "$f" ] || continue
+        n=$(sed -n 's/.*syncache: \([0-9][0-9]*\) SYN-ACK failure(s).*/\1/p' "$f" \
+            | awk '{s+=$1} END {print s+0}')
+        r=$(sed -n 's/.*mismatch(es), \([0-9][0-9]*\) revoked admission(s).*/\1/p' "$f" \
+            | awk '{s+=$1} END {print s+0}')
+        fails=$((fails + n))
+        undone=$((undone + r))
+    done
+    printf "synack_fail=%s revoked=%s" "$fails" "$undone"
+    [ "$fails" -gt 0 ] && [ "$undone" -gt 0 ]
+}
+
+case_rt26() {
+    say "=== case rt26 (a SYN-ACK that cannot be sent) ==="
+    local rc=0 crit
+    crit="the SYN-ACK failure is counted, its admission is undone, and the reload still completes"
+    fault_case "rt26" synack_fail ok "$crit" "" synack_fail_counters || rc=1
+    return $rc
+}
 case_rt01() {
     say "=== case rt01 (unloaded HUP) ==="
     local rc=0
@@ -1960,7 +1992,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt30 rt31; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break
