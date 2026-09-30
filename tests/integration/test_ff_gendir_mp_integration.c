@@ -1318,11 +1318,11 @@ test_it_a14_probe_roundtrip_tools_contract(void **state)
         struct mp_worker_result prev;
 
         parse_result("w1", &prev);
-        if (prev.have)
-            assert_int_equal(wait_epoch_not_live(prev.epoch, 30000), 0);
+        assert_int_equal(prev.have, 1);
+        assert_int_equal(wait_epoch_not_live(prev.epoch, 30000), 0);
         parse_result("w2", &prev);
-        if (prev.have)
-            assert_int_equal(wait_epoch_not_live(prev.epoch, 30000), 0);
+        assert_int_equal(prev.have, 1);
+        assert_int_equal(wait_epoch_not_live(prev.epoch, 30000), 0);
     }
 
     g_m3 = spawn_worker_probe("w3", 1);
