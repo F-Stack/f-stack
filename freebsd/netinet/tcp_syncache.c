@@ -104,6 +104,7 @@
  * reachable through the -I. that lib/ builds with) so this TU pulls in no
  * host/F-Stack header of its own. */
 #include "ff_flow_map.h"
+#include "ff_reload_fault.h"
 
 #include <security/mac/mac_framework.h>
 
@@ -489,6 +490,26 @@ syncache_flow_map_admit(const struct syncache *sc, int *created)
  * record would claim the client's retransmissions for a connection this
  * generation cannot complete, and the draining generation's own half-open
  * entry would never see them. */
+/* Test builds only: pretend the SYN-ACK could not be sent, so the failure
+ * branch (drop the half-open entry and undo the admission) can be exercised
+ * on a real machine. Default builds carry none of this. */
+static int
+syncache_respond_blocked(void)
+{
+#ifdef FF_RELOAD_FAULT_INJECTION
+    static int fired;
+
+    /* One lost SYN-ACK per process is enough to prove the branch, and
+     * it leaves the rest of the traffic healthy enough to be judged. */
+    if (fired || !ff_reload_fault_is("synack_fail"))
+        return 0;
+    fired = 1;
+    return 1;
+#else
+    return 0;
+#endif
+}
+
 static void
 syncache_flow_map_revoke(const struct syncache *sc)
 {
@@ -1886,7 +1907,8 @@ syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
 	/*
 	 * Do a standard 3-way handshake.
 	 */
-	if (syncache_respond(sc, m, TH_SYN|TH_ACK) == 0) {
+	if (!syncache_respond_blocked()
+	    && syncache_respond(sc, m, TH_SYN|TH_ACK) == 0) {
 		/* C-NR-301: the SYN-ACK is out and the entry is in the
 		 * syncache — this is the earliest moment the four-tuple is a
 		 * real connection. Recording later (at accept()) would let the

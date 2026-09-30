@@ -60,8 +60,11 @@ static int      g_hb_inited;
  * none of this code. noinline keeps the hooks visible to nm. */
 #include <stdlib.h>
 #include <errno.h>
+#include "ff_reload_fault.h"
 
-__attribute__((noinline)) static int
+/* Not static: the localized stack (tcp_syncache.c) reaches the same hook
+ * through the zero-include header above. */
+__attribute__((noinline)) int
 ff_reload_fault_is(const char *name)
 {
     static const char *sel;

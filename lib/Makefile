@@ -182,6 +182,9 @@ endif
 # never enabled in default/production builds.
 ifdef FF_RELOAD_FAULT_INJECTION
 HOST_CFLAGS+= -DFF_RELOAD_FAULT_INJECTION
+# the SYN-ACK fault point lives in the localized stack, which is built
+# with CFLAGS rather than HOST_CFLAGS
+CFLAGS+= -DFF_RELOAD_FAULT_INJECTION
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<

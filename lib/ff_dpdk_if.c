@@ -3520,18 +3520,21 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
     {
         static uint64_t last_synack_fail, last_ack_mismatch;
         uint64_t synack_fail = 0, ack_mismatch = 0, inserted = 0, dup = 0;
+        uint64_t revoked = 0;
 
         ff_syncache_counters(&synack_fail, &ack_mismatch);
         if (synack_fail != last_synack_fail
             || ack_mismatch != last_ack_mismatch) {
             ff_flow_map_stats2(&inserted, &dup, NULL, NULL, NULL, NULL, NULL,
-                NULL);
+                &revoked);
             ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
                 "syncache: %llu SYN-ACK failure(s), %llu handshake ACK "
-                "mismatch(es) (flow map: %llu inserted, %llu duplicate)\n",
+                "mismatch(es), %llu revoked admission(s) (flow map: %llu "
+                "inserted, %llu duplicate)\n",
                 (unsigned long long)(synack_fail - last_synack_fail),
                 (unsigned long long)(ack_mismatch - last_ack_mismatch),
-                (unsigned long long)inserted, (unsigned long long)dup);
+                (unsigned long long)revoked, (unsigned long long)inserted,
+                (unsigned long long)dup);
             last_synack_fail = synack_fail;
             last_ack_mismatch = ack_mismatch;
         }
