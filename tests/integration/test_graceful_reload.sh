@@ -566,6 +566,11 @@ http {
 
     keepalive_timeout  300;
 
+    # The long-connection case judges "the draining generation closes a
+    # keep-alive connection once"; nginx's default request cap (1000) closes
+    # one more time on a long run and is counted as a second failure.
+    keepalive_requests  100000;
+
     server {
         listen       $listen;
         server_name  localhost;
