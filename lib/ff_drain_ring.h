@@ -71,6 +71,8 @@ struct ff_dpdk_if_context;
 /* Create (primary) / attach (secondary) the ring pairs. No-op when
  * graceful_reload=0 or when already initialised. Returns 0 on success. */
 int ff_drain_ring_init(void);
+/* Same, but fails at once instead of waiting for a running purge. */
+int ff_drain_ring_try_init(void);
 
 /* 1 once the rings are usable. */
 int ff_drain_ring_ready(void);
@@ -81,9 +83,13 @@ int ff_drain_ring_ready(void);
 int ff_drain_ring_peer_gen(void);
 
 /* drain (and free) everything left in one epoch slot's ring pairs.
- * Used when a slot is recycled from a dead master; no-op if the rings are
- * not attached. */
-void ff_drain_ring_reset_slot(unsigned slot);
+ * Used when a slot is recycled from a dead master. -1 when the purge lock
+ * could not be taken (or there is no directory). */
+int ff_drain_ring_reset_slot(unsigned slot);
+
+/* Resident primary only: free what is queued for drain-ring consumers that
+ * are gone (see ff_reload_gendir_ring_census()). Returns the mbufs freed. */
+unsigned ff_drain_ring_purge_orphans(void);
 
 /* 1: detach only — null the pointers and stop all enqueue/dequeue.
  * The rings themselves are intentionally not destroyed: only one process

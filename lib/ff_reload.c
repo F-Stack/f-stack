@@ -361,13 +361,13 @@ ff_reload_gendir_reclaim_counters_reset(void)
 }
 
 static struct ff_reload_hw_user *
-user_self(struct ff_reload_gendir *d, uint32_t epoch, uint32_t gen,
-    uint32_t pid)
+user_self(struct ff_reload_hw_user *tab, unsigned n, uint32_t epoch,
+    uint32_t gen, uint32_t pid)
 {
     unsigned i;
 
-    for (i = 0; i < FF_RELOAD_GENDIR_USER_MAX; i++) {
-        struct ff_reload_hw_user *u = &d->user[i];
+    for (i = 0; i < n; i++) {
+        struct ff_reload_hw_user *u = &tab[i];
 
         if (__atomic_load_n(&u->pid, __ATOMIC_SEQ_CST) != pid)
             continue;
@@ -380,19 +380,19 @@ user_self(struct ff_reload_gendir *d, uint32_t epoch, uint32_t gen,
     return NULL;
 }
 
-int
-ff_reload_gendir_user_add(uint32_t epoch, int gen)
+/* Register 'pid' as an ACTIVE entry of 'tab' under (epoch, gen). A free
+ * entry is taken, or one left by a process that is gone: its pid is the
+ * proof that it can no longer poll anything. With free_first, free entries
+ * are used up before dead ones, so dead entries survive as long as the
+ * table allows. */
+static int
+user_claim(struct ff_reload_hw_user *tab, unsigned n, uint32_t epoch,
+    int gen, uint32_t pid, int free_first)
 {
-    struct ff_reload_gendir *d = g_reload_gendir;
     struct ff_reload_hw_user *u;
-    uint32_t pid;
-    unsigned i;
+    unsigned i, pass;
 
-    if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
-        return -1;
-    pid = (uint32_t)getpid();
-
-    u = user_self(d, epoch, (uint32_t)gen, pid);
+    u = user_self(tab, n, epoch, (uint32_t)gen, pid);
     if (u != NULL) {
         if (__atomic_load_n(&u->state, __ATOMIC_SEQ_CST)
             != FF_RELOAD_USER_ACTIVE)
@@ -401,25 +401,40 @@ ff_reload_gendir_user_add(uint32_t epoch, int gen)
         return 0;
     }
 
-    /* Claim a free entry or one left by a process that is gone: its pid is
-     * the proof that it can no longer poll anything. */
-    for (i = 0; i < FF_RELOAD_GENDIR_USER_MAX; i++) {
-        uint32_t expect;
+    for (pass = free_first ? 0 : 1; pass < 2; pass++) {
+        for (i = 0; i < n; i++) {
+            uint32_t expect;
 
-        u = &d->user[i];
-        expect = __atomic_load_n(&u->pid, __ATOMIC_SEQ_CST);
-        if (expect != 0 && reload_pid_alive(expect))
-            continue;
-        if (!__atomic_compare_exchange_n(&u->pid, &expect, pid, 0,
-                __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
-            continue;
-        __atomic_store_n(&u->state, FF_RELOAD_USER_FREE, __ATOMIC_SEQ_CST);
-        __atomic_store_n(&u->epoch, epoch, __ATOMIC_SEQ_CST);
-        __atomic_store_n(&u->gen, (uint32_t)gen, __ATOMIC_SEQ_CST);
-        __atomic_store_n(&u->state, FF_RELOAD_USER_ACTIVE, __ATOMIC_SEQ_CST);
-        return 0;
+            u = &tab[i];
+            expect = __atomic_load_n(&u->pid, __ATOMIC_SEQ_CST);
+            if (pass == 0 && expect != 0)
+                continue;
+            if (expect != 0 && reload_pid_alive(expect))
+                continue;
+            if (!__atomic_compare_exchange_n(&u->pid, &expect, pid, 0,
+                    __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+                continue;
+            __atomic_store_n(&u->state, FF_RELOAD_USER_FREE,
+                __ATOMIC_SEQ_CST);
+            __atomic_store_n(&u->epoch, epoch, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&u->gen, (uint32_t)gen, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&u->state, FF_RELOAD_USER_ACTIVE,
+                __ATOMIC_SEQ_CST);
+            return 0;
+        }
     }
     return -1;
+}
+
+int
+ff_reload_gendir_user_add(uint32_t epoch, int gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+
+    if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
+        return -1;
+    return user_claim(d->user, FF_RELOAD_GENDIR_USER_MAX, epoch, gen,
+        (uint32_t)getpid(), 0);
 }
 
 void
@@ -430,7 +445,8 @@ ff_reload_gendir_user_stop(uint32_t epoch, int gen)
 
     if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
         return;
-    u = user_self(d, epoch, (uint32_t)gen, (uint32_t)getpid());
+    u = user_self(d->user, FF_RELOAD_GENDIR_USER_MAX, epoch, (uint32_t)gen,
+        (uint32_t)getpid());
     if (u != NULL)
         __atomic_store_n(&u->state, FF_RELOAD_USER_STOPPED, __ATOMIC_SEQ_CST);
 }
@@ -443,7 +459,8 @@ ff_reload_gendir_user_release(uint32_t epoch, int gen)
 
     if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
         return;
-    u = user_self(d, epoch, (uint32_t)gen, (uint32_t)getpid());
+    u = user_self(d->user, FF_RELOAD_GENDIR_USER_MAX, epoch, (uint32_t)gen,
+        (uint32_t)getpid());
     if (u == NULL)
         return;
     __atomic_store_n(&u->state, FF_RELOAD_USER_FREE, __ATOMIC_SEQ_CST);
@@ -508,6 +525,161 @@ ff_reload_gendir_users_active(uint32_t epoch, int gen)
             n++;
     }
     return n;
+}
+
+static uint64_t dir_now_ms(void);
+
+int
+ff_reload_gendir_ring_attach(uint32_t epoch, int gen, unsigned wait_ms)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint32_t pid, owner;
+    uint64_t deadline;
+    struct timespec ts;
+
+    if (d == NULL)
+        return 0;
+    if (gen < 0 || gen >= FF_RELOAD_GEN_MAX)
+        return -1;
+    pid = (uint32_t)getpid();
+    if (user_claim(d->ring_user, FF_RELOAD_GENDIR_RING_USER_MAX, epoch, gen,
+            pid, 1) != 0)
+        return -1;
+
+    /* Entry first, lock second (the purge takes the lock first and reads
+     * the entries second): either the purge sees this entry and leaves our
+     * rings alone, or we see its lock here and wait it out. */
+    deadline = dir_now_ms() + wait_ms;
+    for (;;) {
+        owner = __atomic_load_n(&d->ring_purge_owner, __ATOMIC_SEQ_CST);
+        if (owner == 0 || owner == pid || !reload_pid_alive(owner))
+            return 0;
+        if (dir_now_ms() >= deadline) {
+            ff_reload_gendir_ring_detach(epoch, gen);
+            return -1;
+        }
+        ts.tv_sec = 0;
+        ts.tv_nsec = 100 * 1000;
+        nanosleep(&ts, NULL);
+    }
+}
+
+void
+ff_reload_gendir_ring_detach(uint32_t epoch, int gen)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    struct ff_reload_hw_user *u;
+
+    if (d == NULL || gen < 0 || gen >= FF_RELOAD_GEN_MAX)
+        return;
+    u = user_self(d->ring_user, FF_RELOAD_GENDIR_RING_USER_MAX, epoch,
+        (uint32_t)gen, (uint32_t)getpid());
+    if (u == NULL)
+        return;
+    __atomic_store_n(&u->state, FF_RELOAD_USER_FREE, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&u->pid, 0u, __ATOMIC_SEQ_CST);
+}
+
+int
+ff_reload_gendir_ring_census(
+    uint32_t live[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX],
+    uint32_t dead[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX],
+    int clear_idle)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint32_t pid_seen[FF_RELOAD_GENDIR_RING_USER_MAX];
+    uint8_t slot_of[FF_RELOAD_GENDIR_RING_USER_MAX];
+    uint8_t is_dead[FF_RELOAD_GENDIR_RING_USER_MAX];
+    unsigned i, e;
+
+    if (d == NULL)
+        return -1;
+    memset(live, 0, sizeof(uint32_t) * FF_RELOAD_EPOCH_SLOT_MAX
+        * FF_RELOAD_GEN_MAX);
+    memset(dead, 0, sizeof(uint32_t) * FF_RELOAD_EPOCH_SLOT_MAX
+        * FF_RELOAD_GEN_MAX);
+    for (i = 0; i < FF_RELOAD_GENDIR_RING_USER_MAX; i++) {
+        struct ff_reload_hw_user *u = &d->ring_user[i];
+        uint32_t g;
+
+        is_dead[i] = 0;
+        pid_seen[i] = __atomic_load_n(&u->pid, __ATOMIC_SEQ_CST);
+        if (pid_seen[i] == 0)
+            continue;
+        if (__atomic_load_n(&u->state, __ATOMIC_SEQ_CST)
+            != FF_RELOAD_USER_ACTIVE)
+            continue;
+        g = __atomic_load_n(&u->gen, __ATOMIC_SEQ_CST);
+        e = ff_reload_epoch_slot_of(__atomic_load_n(&u->epoch,
+            __ATOMIC_SEQ_CST));
+        if (g >= FF_RELOAD_GEN_MAX || e >= FF_RELOAD_EPOCH_SLOT_MAX)
+            continue;
+        slot_of[i] = (uint8_t)e;
+        if (reload_pid_alive(pid_seen[i])) {
+            live[e][g]++;
+        } else {
+            dead[e][g]++;
+            is_dead[i] = 1;
+        }
+    }
+    if (!clear_idle)
+        return 0;
+    for (i = 0; i < FF_RELOAD_GENDIR_RING_USER_MAX; i++) {
+        uint32_t expect = pid_seen[i];
+        unsigned g, busy = 0;
+
+        if (!is_dead[i])
+            continue;
+        for (g = 0; g < FF_RELOAD_GEN_MAX; g++)
+            busy += live[slot_of[i]][g];
+        if (busy)
+            continue;
+        /* pid only: a racing claim owns the entry once its CAS lands, and
+         * a state store from here could overwrite its registration. */
+        (void)__atomic_compare_exchange_n(&d->ring_user[i].pid, &expect, 0u,
+            0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    }
+    return 0;
+}
+
+int
+ff_reload_gendir_ring_purge_lock(unsigned wait_ms)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint32_t pid, cur;
+    uint64_t deadline;
+    struct timespec ts;
+
+    if (d == NULL)
+        return -1;
+    pid = (uint32_t)getpid();
+    deadline = dir_now_ms() + wait_ms;
+    for (;;) {
+        cur = __atomic_load_n(&d->ring_purge_owner, __ATOMIC_SEQ_CST);
+        if (cur == pid)
+            return 0;
+        if ((cur == 0 || !reload_pid_alive(cur))
+            && __atomic_compare_exchange_n(&d->ring_purge_owner, &cur, pid,
+                0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST))
+            return 0;
+        if (dir_now_ms() >= deadline)
+            return -1;
+        ts.tv_sec = 0;
+        ts.tv_nsec = 100 * 1000;
+        nanosleep(&ts, NULL);
+    }
+}
+
+void
+ff_reload_gendir_ring_purge_unlock(void)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint32_t pid = (uint32_t)getpid();
+
+    if (d == NULL)
+        return;
+    (void)__atomic_compare_exchange_n(&d->ring_purge_owner, &pid, 0u, 0,
+        __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 }
 
 /* Local copy of the directory module's liveness test, so this object links

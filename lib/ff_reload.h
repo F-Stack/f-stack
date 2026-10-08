@@ -78,11 +78,11 @@ extern "C" {
 #define FF_RELOAD_SLOT_PRIMARY      0x1u   /* slot flags: resident primary */
 
 #define FF_RELOAD_GENDIR_MAGIC      0x46524744U   /* "FRGD" */
-/* version 2 adds the hardware-user table below, so a
- * directory created by an older build is rejected by install() — every
- * process of a deployment (resident primary included) must be restarted
- * together. */
-#define FF_RELOAD_GENDIR_VERSION    2U
+/* version 2 adds the hardware-user table below, version 3 the drain-ring
+ * user table; install() also checks the length, so a directory created by
+ * an older build is rejected — every process of a deployment (resident
+ * primary included) must be restarted together. */
+#define FF_RELOAD_GENDIR_VERSION    3U
 #define FF_RELOAD_GENDIR_NAME       "ff_reload_gendir"
 
 /* hardware-user states. A user is a secondary that owns a
@@ -91,6 +91,8 @@ extern "C" {
 #define FF_RELOAD_USER_ACTIVE       1
 #define FF_RELOAD_USER_STOPPED      2
 #define FF_RELOAD_GENDIR_USER_MAX   FF_RELOAD_MAX_PROCS
+/* both generations of two masters can have the drain rings attached */
+#define FF_RELOAD_GENDIR_RING_USER_MAX  (2 * FF_RELOAD_MAX_PROCS)
 
 /* (USR2): a slot whose master pid is gone still counts as a drain
  * counterpart while its workers refresh the slot stamp at least this
@@ -248,6 +250,14 @@ struct ff_reload_gendir {
     uint32_t reclaim_forced;    /* heartbeat-stall takeover */
     uint32_t _pad2[2];
     struct ff_reload_hw_user user[FF_RELOAD_GENDIR_USER_MAX];
+
+    /* drain-ring users: one ACTIVE entry per secondary that has the drain
+     * rings attached. A worker exits without detaching, so an ACTIVE entry
+     * with a dead pid marks rings whose consumer is gone. ring_purge_owner
+     * is the pid currently freeing such rings; attach waits for it. */
+    uint32_t ring_purge_owner;
+    uint32_t _pad3[3];
+    struct ff_reload_hw_user ring_user[FF_RELOAD_GENDIR_RING_USER_MAX];
 };
 
 /* Drain reporting extension: a second anonymous
@@ -417,6 +427,27 @@ int  ff_reload_gendir_users_clear(uint32_t epoch, int gen);
 int  ff_reload_gendir_epoch_users_clear(uint32_t epoch);
 /* Number of live ACTIVE users under (epoch, gen) (observability/tests). */
 int  ff_reload_gendir_users_active(uint32_t epoch, int gen);
+
+/* drain-ring users and orphan purge ----------------------------- */
+
+/* Register this process as a drain-ring user of (epoch, gen), then wait
+ * up to wait_ms for a running purge to finish. 0 on success or without a
+ * directory, -1 (and no entry left) when the table is full or the purge
+ * holder does not let go in time. */
+int  ff_reload_gendir_ring_attach(uint32_t epoch, int gen, unsigned wait_ms);
+void ff_reload_gendir_ring_detach(uint32_t epoch, int gen);
+/* Count drain-ring users per (ring slot, gen): live ones and entries left
+ * by a process that is gone. With clear_idle, the dead entries of a slot
+ * without any live user are forgotten. -1 without a directory. */
+int  ff_reload_gendir_ring_census(
+    uint32_t live[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX],
+    uint32_t dead[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX],
+    int clear_idle);
+/* Exclusive right to dequeue rings this process does not consume itself,
+ * waiting up to wait_ms for a live holder. 0 when acquired, -1 without a
+ * directory or on timeout. */
+int  ff_reload_gendir_ring_purge_lock(unsigned wait_ms);
+void ff_reload_gendir_ring_purge_unlock(void);
 
 /* Takeover accounting. */
 uint32_t ff_reload_gendir_reclaim_refused(void);

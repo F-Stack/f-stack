@@ -189,8 +189,8 @@ ff_drain_ring_peer_gen(void)
     return gen;
 }
 
-int
-ff_drain_ring_init(void)
+static int
+drain_ring_init_wait(unsigned wait_ms)
 {
     unsigned socketid, count;
     /* Wider than RTE_RING_NAMESIZE: three numeric fields make GCC's
@@ -285,22 +285,48 @@ ff_drain_ring_init(void)
         }
     }
 
+    /* the resident primary frees rings whose consumer is gone; it must
+     * see this process as a consumer before the first dequeue. */
+    if (rte_eal_process_type() == RTE_PROC_SECONDARY
+        && ff_reload_gendir_ring_attach(ff_reload_epoch(),
+            ff_reload_gen(), wait_ms) != 0)
+        return -1;
+
     drain_ring_up = 1;
     return 0;
 }
 
+int
+ff_drain_ring_init(void)
+{
+    if (drain_ring_init_wait(ff_reload_reclaim_timeout_ms()) == 0)
+        return 0;
+    ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
+        "drain rings: cannot register as a ring user\n");
+    return -1;
+}
+
+int
+ff_drain_ring_try_init(void)
+{
+    return drain_ring_init_wait(0);
+}
+
 /* drop everything a dead master left behind in one epoch slot's rings.
  * Only the process that won the slot takeover CAS ever calls this (see
- * ff_reload_gendir_reset_pending()), and it runs before that slot's rings
- * are used, so nobody else can be dequeuing them. */
-void
+ * ff_reload_gendir_reset_pending()), before that slot's rings are used;
+ * the purge lock keeps the primary purge off them meanwhile. */
+int
 ff_drain_ring_reset_slot(unsigned slot)
 {
     uint16_t p;
     unsigned q, g;
 
     if (slot >= FF_RELOAD_EPOCH_SLOT_MAX)
-        return;
+        return 0;
+    if (ff_reload_gendir_ring_purge_lock(ff_reload_reclaim_timeout_ms())
+        != 0)
+        return -1;
     for (p = 0; p < RTE_MAX_ETHPORTS; p++) {
         if (drain_ring_rx[p] == NULL || drain_ring_tx[p] == NULL)
             continue;
@@ -318,6 +344,88 @@ ff_drain_ring_reset_slot(unsigned slot)
             }
         }
     }
+    ff_reload_gendir_ring_purge_unlock();
+    return 0;
+}
+
+static unsigned
+drain_ring_free_all(struct rte_ring *r)
+{
+    void *obj;
+    unsigned n = 0;
+
+    while (r != NULL && rte_ring_dequeue(r, &obj) == 0) {
+        rte_pktmbuf_free((struct rte_mbuf *)obj);
+        n++;
+    }
+    return n;
+}
+
+/* Resident primary only. A worker exits without detaching, so whatever is
+ * still queued for it would reach the next process of the same (slot,
+ * gen) as a stale packet. drain_rx has one consumer, (slot, gen) itself:
+ * it is freed while that coordinate has a dead user and no live one.
+ * drain_tx is read by whichever process owns the hardware, so it is only
+ * freed when no secondary has the rings attached. The dead users of a slot
+ * are forgotten once the whole slot is idle, so in the next round packets
+ * queued for a process that has not attached yet are kept (until then a
+ * coordinate with a dead user drops them too). Returns the mbufs freed. */
+unsigned
+ff_drain_ring_purge_orphans(void)
+{
+    uint32_t live[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX];
+    uint32_t dead[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX];
+    uint16_t p;
+    unsigned q, e, g, n = 0, pending = 0, nlive = 0;
+
+    if (!drain_ring_up || rte_eal_process_type() != RTE_PROC_PRIMARY)
+        return 0;
+    for (p = 0; p < RTE_MAX_ETHPORTS && !pending; p++) {
+        if (drain_ring_rx[p] == NULL || drain_ring_tx[p] == NULL)
+            continue;
+        for (q = 0; q < drain_ring_nb_queues[p] * FF_RELOAD_EPOCH_SLOT_MAX
+            * FF_RELOAD_GEN_MAX && !pending; q++)
+            pending = rte_ring_count(drain_ring_rx[p][q])
+                + rte_ring_count(drain_ring_tx[p][q]);
+    }
+    if (!pending) {
+        (void)ff_reload_gendir_ring_census(live, dead, 1);
+        return 0;
+    }
+
+    /* lock first, census second: see ff_reload_gendir_ring_attach() */
+    if (ff_reload_gendir_ring_purge_lock(0) != 0)
+        return 0;
+    if (ff_reload_gendir_ring_census(live, dead, 1) != 0) {
+        ff_reload_gendir_ring_purge_unlock();
+        return 0;
+    }
+    for (e = 0; e < FF_RELOAD_EPOCH_SLOT_MAX; e++)
+        for (g = 0; g < (unsigned)FF_RELOAD_GEN_MAX; g++)
+            nlive += live[e][g];
+
+    for (e = 0; e < FF_RELOAD_EPOCH_SLOT_MAX; e++) {
+        for (g = 0; g < (unsigned)FF_RELOAD_GEN_MAX; g++) {
+            int rx_dead = live[e][g] == 0 && dead[e][g] != 0;
+
+            if (!rx_dead && nlive != 0)
+                continue;
+            for (p = 0; p < RTE_MAX_ETHPORTS; p++) {
+                if (drain_ring_rx[p] == NULL || drain_ring_tx[p] == NULL)
+                    continue;
+                for (q = 0; q < drain_ring_nb_queues[p]; q++) {
+                    if (rx_dead)
+                        n += drain_ring_free_all(drain_ring_rx[p][
+                            FF_DRAIN_RING_INDEX(q, e, g)]);
+                    if (nlive == 0)
+                        n += drain_ring_free_all(drain_ring_tx[p][
+                            FF_DRAIN_RING_INDEX(q, e, g)]);
+                }
+            }
+        }
+    }
+    ff_reload_gendir_ring_purge_unlock();
+    return n;
 }
 
 /* the ring pairs outlive unregist, so whatever is still
@@ -380,6 +488,8 @@ ff_drain_ring_unregist(void)
          * destroy) so the next init() can reuse them. */
         drain_ring_nb_queues[p] = 0;
     }
+    if (rte_eal_process_type() == RTE_PROC_SECONDARY)
+        ff_reload_gendir_ring_detach(ff_reload_epoch(), ff_reload_gen());
 }
 
 int

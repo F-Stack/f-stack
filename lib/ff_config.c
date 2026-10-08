@@ -1570,6 +1570,13 @@ ff_check_config(struct ff_config *cfg)
             fprintf(stderr, "graceful_reload=1 is incompatible with thread_mode=1\n");
             return -1;
         }
+#ifdef FF_USE_PAGE_ARRAY
+        /* a park hands staged tx mbufs to another process, which cannot
+         * release this process's bsd_m_table references */
+        fprintf(stderr, "graceful_reload=1 is not supported in "
+            "FF_USE_PAGE_ARRAY builds\n");
+        return -1;
+#endif
         if (cfg->dpdk.nb_procs < 2) {
             fprintf(stderr, "graceful_reload=1 requires nb_procs >= 2\n");
             return -1;

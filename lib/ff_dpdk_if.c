@@ -2088,7 +2088,12 @@ ff_dpdk_init(int argc, char **argv)
             int g2;
 
             (void)ff_reload_gendir_reset_pending();
-            ff_drain_ring_reset_slot(slot);
+            /* not retried: the primary purge still frees what the dead
+             * master's workers left for coordinates nobody holds now */
+            if (ff_drain_ring_reset_slot(slot) != 0)
+                ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
+                    "epoch slot %u drain ring reset skipped: purge lock "
+                    "busy\n", slot);
             for (g2 = 0; g2 < FF_RELOAD_GEN_MAX; g2++) {
                 for (i2 = 0; i2 < RTE_MAX_LCORE; i2++) {
                     for (j2 = 0; j2 < FF_MSG_NUM; j2++) {
@@ -3462,8 +3467,39 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
     return send_single_packet(head, port_id);
 }
 
-/* ~1 Hz reload-plane housekeeping, run from
- * main_loop. All off the per-packet path:
+/* re-attach the drain rings this process retired in steady state. Called
+ * from the 1 Hz housekeeping and, without waiting for it, when the reload
+ * window opens and right before a park ack: a parked generation diverts
+ * every packet it sends into drain_tx. Never blocks the loop; a failed
+ * attempt is retried after 10 ms and reported at most once a second. */
+static void
+ff_reload_plane_attach(const char *why)
+{
+    static uint64_t retry_tsc, warn_tsc;
+    uint64_t now, hz;
+
+    if (ff_drain_ring_ready())
+        return;
+    now = rte_rdtsc();
+    if (now < retry_tsc)
+        return;
+    if (ff_drain_ring_try_init() != 0) {
+        hz = rte_get_tsc_hz();
+        retry_tsc = now + hz / 100;
+        if (now >= warn_tsc) {
+            warn_tsc = now + hz;
+            ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
+                "reload data plane attach failed (%s), retrying\n", why);
+        }
+        return;
+    }
+    ff_log(FF_LOG_NOTICE, FF_LOGTYPE_FSTACK_LIB,
+        "reload data plane attached (%s, generation %d)\n", why,
+        ff_reload_gen());
+}
+
+/* ~1 Hz reload-plane housekeeping (the primary runs its orphan purge at
+ * ~10 Hz instead), run from main_loop. All off the per-packet path:
  * the draining generation publishes per-slot drain progress for the
  * master (its DRAIN_DONE wait polls it);
  * the generation that has taken over retires its reload data plane
@@ -3480,12 +3516,33 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
 
     if (!ff_global_cfg.dpdk.graceful_reload)
         return;
+    hz = rte_get_tsc_hz();
+    if (hz == 0)
+        hz = 1000000000ull;
+    /* the resident primary outlives every worker: it frees what dead
+     * drain-ring consumers left queued, at ~10 Hz so the rings are clean
+     * well before the next generation can attach. */
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        static uint64_t freed, next_log_tsc;
+
+        if (next_tsc != 0 && now_tsc < next_tsc)
+            return;
+        next_tsc = now_tsc + hz / 10;
+        freed += ff_drain_ring_purge_orphans();
+        if (freed != 0 && now_tsc >= next_log_tsc) {
+            ff_log(FF_LOG_NOTICE, FF_LOGTYPE_FSTACK_LIB,
+                "drain rings: freed %llu orphaned mbuf(s)\n",
+                (unsigned long long)freed);
+            freed = 0;
+            next_log_tsc = now_tsc + hz;
+        }
+        return;
+    }
     if (rte_eal_process_type() != RTE_PROC_SECONDARY)
         return;
     if (next_tsc != 0 && now_tsc < next_tsc)
         return;
-    hz = rte_get_tsc_hz();
-    next_tsc = now_tsc + (hz != 0 ? hz : 1000000000ull);
+    next_tsc = now_tsc + hz;
 
     /* flow-table observability at ~1 Hz. The counters live in
      * ff_flow_map.c (which deliberately links without DPDK and without
@@ -3558,7 +3615,8 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
      * stamp), so the retire gate must not fire under it. */
     if (!ff_reload_hw_locked()
         && !ff_reload_peer_draining()
-        && ff_reload_active_gen() == ff_reload_gen()) {
+        && ff_reload_active_gen() == ff_reload_gen()
+        && !ff_no_hw_mode_nosync()) {
         if (packet_dispatcher_with_context != NULL || ff_flow_map_active()
             || ff_drain_ring_ready()) {
             ff_unregist_packet_dispatcher_context();
@@ -3568,11 +3626,10 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
                 "reload data plane retired (steady state, "
                 "generation %d)\n", ff_reload_gen());
         }
-    } else if ((ff_reload_hw_locked() || ff_reload_peer_draining())
-        && !ff_drain_ring_ready()) {
-        if (ff_drain_ring_init() != 0)
-            ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_LIB,
-                "ff_drain_ring_init failed on window open\n");
+    } else if (ff_reload_hw_locked()) {
+        ff_reload_plane_attach("window open");
+    } else if (ff_reload_peer_draining()) {
+        ff_reload_plane_attach("peer master");
     }
 
     /* shared counters + watermarks */
@@ -3586,6 +3643,7 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
  * directory, so the main loop pays nothing per pass. */
 static int g_hw_user_state = -1;
 static int g_hw_user_warned;
+static int g_hw_locked_seen;
 
 static int
 main_loop(void *arg)
@@ -3718,6 +3776,13 @@ main_loop(void *arg)
         if (unlikely(graceful_reload)
             && rte_eal_process_type() == RTE_PROC_SECONDARY) {
             int want = no_hw ? 0 : 1;
+            int locked = ff_reload_hw_locked();
+
+            if (unlikely(locked != g_hw_locked_seen)) {
+                g_hw_locked_seen = locked;
+                if (locked)
+                    ff_reload_plane_attach("window open");
+            }
 
             if (want != g_hw_user_state) {
                 if (want)
@@ -3737,7 +3802,10 @@ main_loop(void *arg)
              * no rx_burst and no tx drain, and no earlier pass of this
              * loop is still running — which is exactly what the ack tells
              * the master. Processes without a slot (primary, helpers)
-             * ack nothing. */
+             * ack nothing. The ack does not wait for a failed attach. */
+            if (graceful_reload
+                && rte_eal_process_type() == RTE_PROC_SECONDARY)
+                ff_reload_plane_attach("park");
             ff_reload_handover_ack();
         }
 
@@ -3935,7 +4003,7 @@ main_loop(void *arg)
             }
         }
 
-        /* ~1 Hz reload-plane housekeeping */
+        /* reload-plane housekeeping (~1 Hz, ~10 Hz on the primary) */
         ff_reload_plane_housekeeping(cur_tsc);
 
         {

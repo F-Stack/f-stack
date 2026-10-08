@@ -2876,6 +2876,118 @@ test_p2_orphan_workers_keep_epoch_live(void **state)
     ff_reload_gendir_install(NULL, 0);
 }
 
+/* RX-15: the drain-ring user table the resident primary purges against. */
+static void
+test_rx15_ring_user_census_and_purge_lock(void **state)
+{
+    uint32_t live[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX];
+    uint32_t dead[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX];
+    struct ff_reload_gendir gd;
+    uint32_t gone = p2_dead_pid();
+
+    (void)state;
+    /* no directory: attach is a no-op, census and purge are refused */
+    ff_reload_gendir_install(NULL, 0);
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), -1);
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(0), -1);
+
+    p2_gendir_init(&gd);
+
+    /* attach registers exactly one live entry; detach drops it */
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+    assert_int_equal(live[1][0], 1);
+    assert_int_equal(live[1][1] + dead[1][0] + dead[1][1], 0);
+    ff_reload_gendir_ring_detach(1, 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+    assert_int_equal(live[1][0], 0);
+
+    /* an exited worker leaves a dead entry; a new user takes a free entry
+     * first, so the marker survives (epoch 4 shares ring slot 1) */
+    gd.ring_user[0].epoch = 1;
+    gd.ring_user[0].gen = 1;
+    gd.ring_user[0].pid = gone;
+    gd.ring_user[0].state = FF_RELOAD_USER_ACTIVE;
+    assert_int_equal(ff_reload_gendir_ring_attach(4, 0, 0), 0);
+    assert_int_equal(gd.ring_user[0].pid, gone);
+    assert_int_equal(gd.ring_user[1].pid, (uint32_t)getpid());
+
+    /* the slot is busy: the marker is counted and kept */
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 1), 0);
+    assert_int_equal(live[1][0], 1);
+    assert_int_equal(dead[1][1], 1);
+    assert_int_equal(gd.ring_user[0].pid, gone);
+
+    /* a dead entry of another slot does not count for slot 1 */
+    gd.ring_user[2].epoch = 2;
+    gd.ring_user[2].gen = 0;
+    gd.ring_user[2].pid = gone;
+    gd.ring_user[2].state = FF_RELOAD_USER_ACTIVE;
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+    assert_int_equal(dead[1][0], 0);
+    assert_int_equal(dead[2][0], 1);
+
+    /* once slot 1 is idle its markers are reported one last time and then
+     * forgotten; slot 2 is idle too and is cleared the same way */
+    ff_reload_gendir_ring_detach(4, 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 1), 0);
+    assert_int_equal(dead[1][1], 1);
+    assert_int_equal(gd.ring_user[0].pid, 0);
+    assert_int_equal(gd.ring_user[2].pid, 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 1), 0);
+    assert_int_equal(dead[1][1] + dead[2][0], 0);
+
+    /* the table holds both generations of two masters: with as many live
+     * users as one master can have, attach still finds an entry */
+    {
+        unsigned k;
+
+        for (k = 0; k < FF_RELOAD_MAX_PROCS; k++) {
+            gd.ring_user[k].epoch = 2;
+            gd.ring_user[k].gen = 1;
+            gd.ring_user[k].pid = 1u;
+            gd.ring_user[k].state = FF_RELOAD_USER_ACTIVE;
+        }
+        assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+        assert_int_equal(gd.ring_user[FF_RELOAD_MAX_PROCS].pid,
+            (uint32_t)getpid());
+        assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+        assert_int_equal(live[2][1], FF_RELOAD_MAX_PROCS);
+        assert_int_equal(live[1][0], 1);
+        ff_reload_gendir_ring_detach(1, 0);
+        memset(gd.ring_user, 0, sizeof(gd.ring_user));
+    }
+
+    /* purge lock: exclusive, idempotent for the holder */
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(0), 0);
+    assert_int_equal(gd.ring_purge_owner, (uint32_t)getpid());
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(0), 0);
+    ff_reload_gendir_ring_purge_unlock();
+    assert_int_equal(gd.ring_purge_owner, 0);
+
+    /* a live foreign holder (pid 1): lock times out, attach gives up
+     * without leaving an entry behind */
+    gd.ring_purge_owner = 1u;
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(5), -1);
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 20), -1);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+    assert_int_equal(live[1][0], 0);
+    ff_reload_gendir_ring_purge_unlock();     /* not ours: untouched */
+    assert_int_equal(gd.ring_purge_owner, 1u);
+
+    /* a dead holder blocks nobody and can be taken over */
+    gd.ring_purge_owner = gone;
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(0), 0);
+    ff_reload_gendir_ring_purge_unlock();
+    ff_reload_gendir_ring_detach(1, 0);
+
+    ff_reload_gendir_install(NULL, 0);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
 main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -2988,6 +3100,7 @@ main(void)
         cmocka_unit_test_setup_teardown(test_p2_reclaim_needs_user_proof, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_p2_release_epoch_needs_proof, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_p2_orphan_workers_keep_epoch_live, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx15_ring_user_census_and_purge_lock, test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),
