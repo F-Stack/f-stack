@@ -128,7 +128,27 @@ NIC 驱动 (igb_uio / vfio-pci)
 | **ff_veth.c** | 1132 | 虚拟以太网设备（M4 完成 28 处 if_t accessor 重写） | FreeBSD net/if |
 | **ff_kern_timeout.c** | 1266 | callout 子系统（`callout_init`、`_reset_tick_on`、`ff_timecounter`） | DPDK rte_timer |
 | **ff_ng_base.c** | 3887 | netgraph 框架完整移植（M5：`node_p → node_cp` 修正） | FreeBSD netgraph 头文件 |
+| **ff_reload.c** | 1863 | 新增：无损 reload——共享控制块、rx/kni 归属、park 屏障、心跳 | — |
+| **ff_reload_gendir.c** | 406 | 新增：跨 master 世代目录（由常驻 primary 持有的 hugepage memzone） | DPDK memzone |
+| **ff_flow_map.c** | 461 | 新增：软件流表，判定报文归属哪一代 | — |
+| **ff_drain_ring.c** | 563 | 新增：按（队列, 代, 方向）划分的 drain ring，供排空中的一代收发报文 | DPDK rte_ring |
 | **ff_stub_14_extra.c** | 799 | 新增（M5 + runtime-fix）：14.0+ 中央 stub 库（123 个 stub，661 个 undef 解决） + 5 个 P0 SIGSEGV 修复 + 防御性 `vm_page_alloc_noobj` panic | FreeBSD 14.0+ KBI |
+
+### 2.3 无损 reload：同一 `lcore_id` 上的两代协议栈
+
+`graceful_reload=1`（默认关闭）时，reload 会拉起新一代 G_new，旧一代 G_old 继续服务自己名下的连接；两代运行在**同一个 `lcore_id`** 上，不需要第二条队列，也不重配 RSS。
+
+| 阶段 | 硬件 rx/tx | 监听 | 已建立连接 |
+|------|-----------|------|-----------|
+| T0 空闲 | G_old | G_old | G_old |
+| T1 拉起 | G_old | G_new | G_old |
+| T2 park 屏障 | → G_new | G_new | G_old（排空中） |
+| T3 排空 | G_new | G_new | G_old 处理完后退出 |
+| T4/T5 完成 | G_new | G_new | G_new |
+
+归属由共享 reload 块中的两个字（`rx_owner_gen`、`rx_stopped`）表示，park 屏障保证翻转时没有正在进行的 `rx_burst`。G_old 一旦失去 rx 所有权就开始排空，并关闭自己的空闲 keep-alive 连接。报文由 `lib/ff_flow_map.c` 分类（SYN 准入时、SYN-ACK 发出之前入表），G_old 的在途报文经 `lib/ff_drain_ring.c` 收发；nginx USR2 升级还会使用世代目录，保证两个 master 不会同时持有硬件。
+
+---
 
 ## 3. FreeBSD TCP/IP 栈移植方式
 

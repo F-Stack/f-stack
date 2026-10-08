@@ -483,12 +483,18 @@ int ff_reload_hw_locked(void)
     // 1 while this process must not touch the hardware
     // Derived from rx_owner_gen/rx_stopped, deliberately reversible
 
+int ff_no_hw_mode(void); int ff_no_hw_mode_nosync(void)
+    // Is this process off the hardware now; the first syncs the directory
+    // (main loop, once per pass), the second does not (per-packet tx path)
+
 int ff_reload_peer_draining(void); int ff_reload_peer_mirror_draining(void)
     // 1 while another master's epoch is a live or still-draining counterpart
-    // Full scan: for init / 1 Hz / miss paths only
+    // The first is a full scan (a kill(2) per LIVE slot): init / 1 Hz only;
+    // the second reads the mirror refreshed by each directory sync and
+    // serves the per-packet paths
 
 int ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
-                             uint64_t *last_advance, uint64_t now,
+                             uint64_t now, uint64_t *last_advance,
                              uint64_t timeout)
     // Liveness of the rx-owner generation: advanced -> alive, stalled past
     // timeout -> dead. Returns -1 on invalid arguments
@@ -507,7 +513,7 @@ void ff_reload_master_begin(uint32_t *epoch, uint32_t *target_gen)
 void ff_reload_master_abort(void); void ff_reload_master_complete(void)
     // Master-side window open / roll back / close
 
-int ff_reload_msg_fill(struct ff_msg *msg, int cmd, int gen, int status, ...)
+void ff_reload_msg_fill(struct ff_msg *msg, int cmd, int gen, int status, ...)
 int ff_reload_msg_parse(const struct ff_msg *msg, int *cmd, int *gen, ...)
     // Encode/decode the FF_RELOAD subcommand carried over the msg ring
 
@@ -523,7 +529,8 @@ int ff_flow_map_active(void)
     // 1 while a reload window is open and the table is armed
 
 int ff_flow_map_admit(const struct ff_flow_key *key, int *created)
-    // Record a four-tuple as "this generation" at SYN-ACK time, so the third
+    // Record a four-tuple as "this generation" when its SYN is admitted
+    // (before the SYN-ACK is sent), so the third
     // handshake ACK is classified instead of being forwarded to the peer.
     // *created is 1 only when this call added the entry (a duplicate is not)
 
@@ -901,9 +908,12 @@ struct ff_reload_state {
 ### 2.9 Flow Map Key and Reload Message Payload
 
 ```c
-struct ff_flow_key {
+struct ff_flow_key {            /* 40 bytes, no padding; network byte order */
     uint8_t  af;                /* FF_FLOW_MAP_V4 / FF_FLOW_MAP_V6 */
-    uint32_t src[4], dst[4];
+    uint8_t  reserved;          /* keep zero */
+    uint16_t pad;               /* keep zero */
+    uint32_t src[4];            /* foreign address; V4 uses src[0] only */
+    uint32_t dst[4];            /* local address; V4 uses dst[0] only */
     uint16_t sport, dport;
 };
 
@@ -911,13 +921,16 @@ struct ff_reload_args {
     uint32_t cmd;               /* enum FF_RELOAD_CMD */
     uint32_t gen;               /* sender or target generation */
     uint32_t status;            /* command result / progress */
-    uint32_t active_gen;        /* serving generation */
+    uint32_t active_gen;        /* serving gen; with a gendir: the rx owner */
+    uint64_t heartbeat;         /* heartbeat counter snapshot */
+    uint32_t epoch;             /* master epoch of active_gen (0: no gendir) */
+    uint32_t pad;
 };
 ```
 
-The key is hashed into a per-process open-addressing table (`FF_FLOW_MAP_CAP_MIN`
-64 … `FF_FLOW_MAP_CAP_MAX` 1<<20 entries, linear probing with a bounded probe
-length). The table is process-local: the two generations each hold their own, which
+The key is hashed into a per-process open-addressing table (`FF_FLOW_MAP_ENTRIES`
+64K entries initially; a full table doubles at most 4 times per window, up to
+`FF_FLOW_MAP_CAP_MAX` 1<<20; linear probing with a bounded probe length of 16). The table is process-local: the two generations each hold their own, which
 is why admitting a four-tuple is meaningful without any cross-process agreement.
 
 ---
@@ -1216,6 +1229,13 @@ with `(epoch << 32) | 1` from the loop pass that will skip rx/tx. Only after eve
 live old-generation process has acked does ownership flip, which is what rules out
 an in-flight `rx_burst` racing the new owner. Stale acks from an aborted round are
 harmless because they carry the wrong epoch.
+
+**No-hardware verdict** — `ff_no_hw_mode()` publishes this master's decision
+into the directory (`ff_reload_dir_sync()`) before deciding and runs once per
+main-loop pass. The per-packet tx paths (`send_burst()`, `ff_dpdk_if_send()`,
+`ff_dpdk_raw_packet_send()`) call `ff_no_hw_mode_nosync()`; the verdict itself is
+never cached. The `kill(pid,0)` probe of a LIVE directory slot is cached per
+slot for 50 ms.
 
 **Heartbeat** — the rx owner increments `heartbeat` once per loop; the sampler keeps
 `(last_cnt, last_advance)` and reports a stall when the counter stops advancing for

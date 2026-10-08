@@ -87,6 +87,11 @@ F-Stack 模式 (用户态网络)
 │   ├── ff_epoll.c            (289行)      # Epoll 兼容（F-Stack+内核统一）
 │   ├── ff_host_interface.c   (617行)      # 主机 OS 接口 + FF_KERNEL_COEXIST 桥（32 个 ff_host_*）
 │   ├── ff_dpdk_kni.c                      # 虚拟网卡支持
+│   ├── ff_reload.c           (1863行)     # 无损 reload：共享控制块、rx/kni 归属、T2 park 屏障、心跳
+│   ├── ff_reload_gendir.c    (406行)      # 跨 master 世代目录（hugepage）
+│   ├── ff_flow_map.c         (461行)      # 软件流表（按代准入）
+│   ├── ff_drain_ring.c       (563行)      # 按（队列, 代, 方向）划分的 drain ring
+│   ├── ff_reload_fault.h                  # 故障注入钩子（仅测试构建）
 │   ├── ff_*.h                             # API 和数据结构定义
 │   └── Makefile              (765行)      # 编译系统
 │
@@ -116,6 +121,7 @@ F-Stack 模式 (用户态网络)
 │
 ├── app/                                    # 应用集成示例
 │   ├── nginx-1.28.0/         # Nginx 集成
+│   │   └── src/event/modules/ngx_ff_reload.*  # 无损 reload：master 侧 T0-T5 状态机、共享块创建、READY 发布
 │   └── redis-6.2.6/          # Redis 集成
 │
 ├── example/                                # 开发示例
@@ -135,6 +141,7 @@ F-Stack 模式 (用户态网络)
 │   ├── ndp/                  # IPv6 邻居发现
 │   ├── ngctl/                # Netgraph 控制
 │   └── compat/ff_ipc.*       # IPC 通信库
+│                             # （按代/epoch 命名 ring："<proc>[:<gen>[:<epoch>]]"）
 │
 ├── adapter/                                # 网络适配器
 │   ├── micro_thread/             # 微线程接口，方便有状态应用使用 F-Stack
@@ -160,6 +167,11 @@ F-Stack 模式 (用户态网络)
 | **初始化协调** | ff_init.c | 69 | 启动流程编排 | 其他所有模块 |
 | **主机接口** | ff_host_interface.c | - | mmap/pthread/时间接口 | 系统库 |
 | **虚拟网卡** | ff_dpdk_kni.c | - | 内核虚拟网卡支持 | DPDK KNI |
+| **无损 reload** | ff_reload.c | 1863 | reload 控制块、rx/kni 归属仲裁、park 屏障、心跳存活检测 | ff_config、ff_dpdk_if、ff_reload_gendir |
+| **世代目录** | ff_reload_gendir.c | 406 | 跨 master 的 epoch→槽映射、硬件使用者表、有界的槽回收 | DPDK memzone（常驻 primary） |
+| **软件流表** | ff_flow_map.c | 461 | 进程内四元组表，判定报文是否属于本代 | tcp_syncache（写入方）、dispatcher（读取方） |
+| **drain ring** | ff_drain_ring.c | 563 | 双向 ring，为排空中的一代收发在途报文 | DPDK ring |
+| **nginx reload 模块** | ngx_ff_reload.c、ngx_ff_reload_fsm.h | 439 | master 侧 T0-T5 状态机、拉起/信号时序、READY 发布 | ff_reload.h、ngx_process_cycle.c |
 
 ### 2.3 模块间通信关系
 
@@ -593,6 +605,28 @@ bash start.sh  (启动脚本)
 
 ---
 
+### 4.5 无损 reload：同一 `lcore_id` 上的两代协议栈
+
+由 `graceful_reload=1` 开启（默认关闭）。reload 时拉起**新一代**（G_new），**旧一代**（G_old）继续服务自己名下的连接；两代作为两个进程运行在**同一个 `lcore_id`** 上，因此 reload 不需要第二条网卡队列，也不需要重配 RSS。
+
+| 阶段 | 硬件 rx/tx | 监听 socket | 已建立连接 |
+|------|-----------|------------|-----------|
+| T0 空闲 | G_old | G_old | G_old |
+| T1 拉起 | G_old | G_new（G_old 关闭） | G_old |
+| T2 park 屏障 | 移交给 G_new | G_new | G_old（排空中） |
+| T3 排空 | G_new | G_new | G_old 处理完后退出 |
+| T4/T5 完成 | G_new | G_new | G_new |
+
+关键机制：
+
+- **归属仲裁**：`rx_owner_gen` / `rx_stopped` 位于匿名 `MAP_SHARED` reload 块中，所有进程经 `fork()` 继承；T2 park 屏障保证归属翻转时没有正在进行的 `rx_burst`。
+- **代身份**：msg ring、应用 mbuf 池和 drain ring 都按代索引（`gen0`/`gen1` 乒乓复用），名字带 `_g<gen>` 后缀，两代永远不会共用一个单消费者 ring。
+- **报文分类**：`lib/ff_flow_map.c` 在 SYN 准入时（SYN-ACK 发出之前）登记四元组，所以握手的第三个 ACK 和所有已建立流的报文都落到其所属的代；纯 SYN 从不转发，未命中则转给对端。
+- **排空**：G_old 一旦失去 rx 所有权就开始排空，并关闭自己的空闲 keep-alive 连接；`lib/ff_drain_ring.c` 在移交期间收发 G_old 的在途报文；退出条件是连接数、`snd_pending`、syncache 三者都已清空。
+- **跨 master（USR2 二进制升级）**：`lib/ff_reload_gendir.c` 维护一个由常驻 slim primary 持有的 hugepage 世代目录，把每个 master 映射到一个 epoch 槽，并用一个 64 位 CAS 字记录唯一在用的硬件/KNI 所有者。
+
+---
+
 ## 5. 技术选型分析
 
 ### 5.1 为什么选择 DPDK？
@@ -843,6 +877,7 @@ LD_PRELOAD=/path/to/libff_syscall.so nginx
 | **ipfw** | 防火墙 | FF_IPFW_CTL 消息 |
 | **knictl** | KNI 控制 | FF_KNICTL 消息 |
 | **traffic** | 流量统计 | FF_TRAFFIC 消息，支持多进程汇总 |
+| **ff_ipc（compat）** | 所有工具共用的 IPC 传输层 | 可指定代/epoch：`"<proc>[:<gen>[:<epoch>]]"`；`graceful_reload=1` 时还能访问常驻 slim primary，它同时服务两代 |
 | **ndp** | IPv6 邻居发现 | ioctl 通信 (SIOCGNBRINFO_IN6 等) |
 | **ngctl** | Netgraph 控制 | FF_NGCTL 消息 |
 

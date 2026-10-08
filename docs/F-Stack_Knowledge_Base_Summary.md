@@ -125,7 +125,8 @@ Actual benchmark data on 10GbE network:
 
 **Graceful reload (`graceful_reload=1`, default off)** — two generations share one
 `lcore_id`: G_new takes the hardware while G_old drains, so an nginx reload or USR2
-upgrade drops no connection. Entry points: `lib/ff_reload.c` (control block,
+upgrade does not reset in-flight requests or new connections (idle keep-alive
+connections are closed when the drain starts and clients reconnect). Entry points: `lib/ff_reload.c` (control block,
 rx/kni ownership, park barrier), `lib/ff_reload_gendir.c` (cross-master directory),
 `lib/ff_flow_map.c` (packet classification), `lib/ff_drain_ring.c` (in-flight packets),
 `ngx_ff_reload.c` + `ngx_ff_reload_fsm.h` (master-side T0-T5 FSM). See
@@ -179,7 +180,8 @@ Ecosystem Integration
 
 **Graceful reload (`graceful_reload=1`, default off)** — two generations share one
 `lcore_id`: G_new takes the hardware while G_old drains, so an nginx reload or USR2
-upgrade drops no connection. Entry points: `lib/ff_reload.c` (control block,
+upgrade does not reset in-flight requests or new connections (idle keep-alive
+connections are closed when the drain starts and clients reconnect). Entry points: `lib/ff_reload.c` (control block,
 rx/kni ownership, park barrier), `lib/ff_reload_gendir.c` (cross-master directory),
 `lib/ff_flow_map.c` (packet classification), `lib/ff_drain_ring.c` (in-flight packets),
 `ngx_ff_reload.c` + `ngx_ff_reload_fsm.h` (master-side T0-T5 FSM). See
@@ -239,7 +241,8 @@ Tools and Integration
 
 **Graceful reload (`graceful_reload=1`, default off)** — two generations share one
 `lcore_id`: G_new takes the hardware while G_old drains, so an nginx reload or USR2
-upgrade drops no connection. Entry points: `lib/ff_reload.c` (control block,
+upgrade does not reset in-flight requests or new connections (idle keep-alive
+connections are closed when the drain starts and clients reconnect). Entry points: `lib/ff_reload.c` (control block,
 rx/kni ownership, park barrier), `lib/ff_reload_gendir.c` (cross-master directory),
 `lib/ff_flow_map.c` (packet classification), `lib/ff_drain_ring.c` (in-flight packets),
 `ngx_ff_reload.c` + `ngx_ff_reload_fsm.h` (master-side T0-T5 FSM). See

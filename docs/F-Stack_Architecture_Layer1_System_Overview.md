@@ -644,11 +644,12 @@ Key mechanisms:
 - **Generation identity** — msg rings, app mbuf pools and drain rings are indexed by
   generation (`gen0`/`gen1` ping-pong) and named with a `_g<gen>` suffix, so two
   generations never share a single-consumer ring.
-- **Packet classification** — `lib/ff_flow_map.c` records a four-tuple at SYN-ACK time,
+- **Packet classification** — `lib/ff_flow_map.c` records a four-tuple when its SYN is admitted (before the SYN-ACK is sent),
   so the third handshake ACK and every established-flow packet land in the generation
   that owns them; a pure SYN is never forwarded, and a miss is forwarded to the peer.
-- **Draining** — `lib/ff_drain_ring.c` carries G_old's in-flight packets across the
-  handover; the exit condition is `conns && snd_pending && syncache` all drained.
+- **Draining** — G_old starts draining as soon as it loses rx ownership and closes
+  its idle keep-alive connections; `lib/ff_drain_ring.c` carries G_old's in-flight
+  packets across the handover; the exit condition is `conns && snd_pending && syncache` all drained.
 - **Cross-master (USR2 binary upgrade)** — `lib/ff_reload_gendir.c` keeps a hugepage
   generation directory owned by the resident slim primary: it maps each master to an
   epoch slot and holds the one live hardware/KNI owner as a single 64-bit CAS word.

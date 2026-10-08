@@ -149,8 +149,9 @@ queue and no RSS reconfiguration are needed.
 | T4/T5 complete | G_new | G_new | G_new |
 
 Ownership is two words in the shared reload block (`rx_owner_gen`, `rx_stopped`);
-the park barrier guarantees no `rx_burst` is in flight when it flips. Packets are
-classified by `lib/ff_flow_map.c` (recorded at SYN-ACK time), G_old's in-flight
+the park barrier guarantees no `rx_burst` is in flight when it flips. G_old starts
+draining as soon as it loses rx ownership and closes its idle keep-alive connections. Packets are
+classified by `lib/ff_flow_map.c` (recorded when the SYN is admitted, before the SYN-ACK is sent), G_old's in-flight
 packets travel over `lib/ff_drain_ring.c`, and an nginx USR2 upgrade additionally
 uses the generation directory so two masters never both own the hardware.
 

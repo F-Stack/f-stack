@@ -128,9 +128,9 @@ uint32_t ff_reload_epoch(void);                 // master epoch (cross-master id
 int      ff_reload_active_gen(void);            // generation currently serving
 int      ff_reload_hw_locked(void);             // 1 = this process must not touch hw
 int      ff_reload_rx_release(int to_gen);      // hand the hardware over
-int      ff_reload_heartbeat_eval(uint64_t prev, uint64_t cur,
-                                  uint64_t *last_advance,
-                                  uint64_t now, uint64_t timeout);
+int      ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
+                                  uint64_t now, uint64_t *last_advance,
+                                  uint64_t timeout);
 
 // Software flow map (lib/ff_flow_map.h)
 int  ff_flow_map_admit(const struct ff_flow_key *key, int *created);
@@ -149,10 +149,12 @@ Reload knobs (both in `[dpdk]`, both optional):
 ```ini
 graceful_reload = 0           # two generations per lcore_id; needs an nginx master
 reload_heartbeat_timeout_ms = 1000   # G_old stall detection on G_new (0 -> default)
+drain_ring_size = 2048        # per-direction drain ring slots (power of 2)
 ```
 
 `graceful_reload=1` implies all-secondary workers plus a resident slim primary on
-proc_id 0, and is rejected together with `thread_mode=1`.
+proc_id 0: it requires `primary_slim=1` and `nb_procs >= 2`, and is rejected
+together with `thread_mode=1`.
 
 ### 2.1 Configuration File Format (INI)
 

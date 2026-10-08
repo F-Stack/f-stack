@@ -120,7 +120,37 @@ void ff_log_close(void);
 int ff_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                       void *(*start_routine)(void *), void *arg);
 int ff_pthread_join(pthread_t thread, void **value_ptr);
+
+// 无损 reload（graceful_reload=1 时生效，否则为空操作）— lib/ff_reload.h
+void     ff_reload_attach_state(void *block);   // 绑定 master 映射的共享块
+int      ff_reload_gen(void);                   // 本进程所属的代
+uint32_t ff_reload_epoch(void);                 // master epoch（跨 master 身份）
+int      ff_reload_active_gen(void);            // 当前正在服务的代
+int      ff_reload_hw_locked(void);             // 1 = 本进程不得操作硬件
+int      ff_reload_rx_release(int to_gen);      // 移交硬件
+int      ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
+                                  uint64_t now, uint64_t *last_advance,
+                                  uint64_t timeout);
+
+// 软件流表（lib/ff_flow_map.h）
+int  ff_flow_map_admit(const struct ff_flow_key *key, int *created);
+int  ff_flow_map_revoke(const struct ff_flow_key *key);
+int  ff_flow_map_lookup(const struct ff_flow_key *key);
+
+// drain ring（lib/ff_drain_ring.h）
+int  ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...);
+int  ff_drain_ring_rx_dequeue(uint16_t port_id, uint16_t queue_id, ...);
 ```
+
+reload 配置项（都在 `[dpdk]` 段，都可省略）：
+
+```ini
+graceful_reload = 0           # 同一 lcore_id 上跑两代；需要 nginx master
+reload_heartbeat_timeout_ms = 1000   # G_old 检测 G_new 停滞的超时（0 -> 默认值）
+drain_ring_size = 2048        # 每个方向的 drain ring 槽数（2 的幂）
+```
+
+`graceful_reload=1` 意味着 worker 全部是 secondary，另有一个常驻 slim primary 占用 proc_id 0：要求 `primary_slim=1` 且 `nb_procs >= 2`，并且不能与 `thread_mode=1` 同时使用。
 
 ## 2. 配置系统
 

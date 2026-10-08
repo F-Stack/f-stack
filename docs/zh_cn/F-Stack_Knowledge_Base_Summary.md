@@ -122,6 +122,8 @@ F-Stack 架构知识库
 
 ### 3.1 第一层：系统总体架构
 
+**无损 reload（`graceful_reload=1`，默认关闭）**——两代协议栈共用一个 `lcore_id`：G_new 接管硬件，G_old 排空，nginx reload 或 USR2 升级不会重置在途请求和新建连接（drain 开始时会关闭空闲 keep-alive 连接，客户端需重连）。入口：`lib/ff_reload.c`（控制块、rx/kni 归属、park 屏障）、`lib/ff_reload_gendir.c`（跨 master 目录）、`lib/ff_flow_map.c`（报文分类）、`lib/ff_drain_ring.c`（在途报文）、`ngx_ff_reload.c` + `ngx_ff_reload_fsm.h`（master 侧 T0-T5 状态机）。详见 `docs/nginx_reload_spec/zh_cn/` 与 `KNOWLEDGE_GRAPH_WIKI.md` §2C。
+
 **文件**: `F-Stack_Architecture_Layer1_System_Overview.md`  
 **覆盖面**: 23 个小节
 
@@ -167,6 +169,8 @@ F-Stack 架构知识库
 **适读人群**: 架构师、CTO、性能分析师、系统设计师
 
 ### 3.2 第二层：接口定义与规范
+
+**无损 reload（`graceful_reload=1`，默认关闭）**——两代协议栈共用一个 `lcore_id`：G_new 接管硬件，G_old 排空，nginx reload 或 USR2 升级不会重置在途请求和新建连接（drain 开始时会关闭空闲 keep-alive 连接，客户端需重连）。入口：`lib/ff_reload.c`（控制块、rx/kni 归属、park 屏障）、`lib/ff_reload_gendir.c`（跨 master 目录）、`lib/ff_flow_map.c`（报文分类）、`lib/ff_drain_ring.c`（在途报文）、`ngx_ff_reload.c` + `ngx_ff_reload_fsm.h`（master 侧 T0-T5 状态机）。详见 `docs/nginx_reload_spec/zh_cn/` 与 `KNOWLEDGE_GRAPH_WIKI.md` §2C。
 
 **文件**: `F-Stack_Architecture_Layer2_Interface_Specification.md`  
 **覆盖面**: 26 个小节
@@ -219,6 +223,8 @@ F-Stack 架构知识库
 **适读人群**: 应用开发者、系统集成工程师、运维工程师
 
 ### 3.3 第三层：函数级索引与数据模型
+
+**无损 reload（`graceful_reload=1`，默认关闭）**——两代协议栈共用一个 `lcore_id`：G_new 接管硬件，G_old 排空，nginx reload 或 USR2 升级不会重置在途请求和新建连接（drain 开始时会关闭空闲 keep-alive 连接，客户端需重连）。入口：`lib/ff_reload.c`（控制块、rx/kni 归属、park 屏障）、`lib/ff_reload_gendir.c`（跨 master 目录）、`lib/ff_flow_map.c`（报文分类）、`lib/ff_drain_ring.c`（在途报文）、`ngx_ff_reload.c` + `ngx_ff_reload_fsm.h`（master 侧 T0-T5 状态机）。详见 `docs/nginx_reload_spec/zh_cn/` 与 `KNOWLEDGE_GRAPH_WIKI.md` §2C。
 
 **文件**: `F-Stack_Architecture_Layer3_Function_Index.md`  
 **覆盖面**: 18 个小节

@@ -57,10 +57,23 @@ F-Stack 导出 **80+ 个公开符号**，分为以下几大类：
 │     ff_gettimeofday / ff_clock_gettime         │
 │     ff_log_open_set / ff_log / ff_vlog          │
 │     ...                                         │
+│                                                 │
+│ 11. 无损 reload (ff_reload.h)                  │
+│     ff_reload_attach_state / ff_reload_set_gen  │
+│     ff_reload_active_gen / ff_reload_hw_locked  │
+│     ff_reload_gendir_*（epoch 目录）            │
+│                                                 │
+│ 12. 软件流表 (ff_flow_map.h)                   │
+│     ff_flow_map_admit / insert / revoke         │
+│     ff_flow_map_lookup / stats2                 │
+│                                                 │
+│ 13. drain ring (ff_drain_ring.h)               │
+│     ff_drain_ring_init / rx_enqueue / tx_enqueue│
+│     ff_drain_ring_rx_dequeue / stats            │
 └─────────────────────────────────────────────────┘
 ```
 
-### 1.2 六个主要头文件详解
+### 1.2 主要头文件详解
 
 #### **ff_api.h (491 行) - 主 API**
 
@@ -599,6 +612,12 @@ enable_kni = 1                # 启用虚拟网卡
 # primary_slim=0 (默认): primary 也参与数据面
 primary_slim = 0
 primary_slim_idle_sleep = 1000  # primary_slim=1 时空闲 sleep (微秒)
+graceful_reload = 0           # 同一 lcore_id 上跑两代（0=关闭；需要 nginx
+                              # master；worker 全 secondary + 常驻 primary）
+reload_heartbeat_timeout_ms = 1000  # G_old 检测 G_new 停滞的超时（0 -> 默认值）
+drain_ring_size = 2048        # 每个方向的 drain ring 槽数（2 的幂；
+                              # graceful_reload=1 还要求 primary_slim=1
+                              # 且 nb_procs >= 2）
 
 [port0]
 # 网卡 0 的配置
@@ -885,6 +904,35 @@ printf("TX packets: %lu\n", retmsg->msg_body.traffic.tx_packets);
 ff_ipc_msg_free(msg);
 ff_ipc_msg_free(retmsg);
 ```
+
+#### **reload 消息（`FF_RELOAD`，仅 `graceful_reload=1`）**
+
+reload 控制没有新开通道，而是作为消息类型 `FF_RELOAD` 走现有的按代划分的 msg ring，子命令放在 `ff_reload_args` 里。
+
+```c
+enum FF_RELOAD_CMD {
+    FF_RELOAD_CMD_UNKNOWN = 0,
+    FF_RELOAD_CMD_READY,          /* worker：本代已绑定并运行 */
+    FF_RELOAD_CMD_HANDOVER_REQ,   /* master：park rx，移交硬件 */
+    FF_RELOAD_CMD_HANDOVER_ACK,
+    FF_RELOAD_CMD_DRAIN_PROGRESS, /* worker：conns / snd_pending / syncache */
+    FF_RELOAD_CMD_DRAIN_DONE,
+    FF_RELOAD_CMD_REJECT,         /* reload 被拒，旧一代继续服务 */
+    FF_RELOAD_CMD_QUERY,          /* 可观测：当前 reload 视图 */
+};
+
+struct ff_reload_args {
+    uint32_t cmd;         /* enum FF_RELOAD_CMD */
+    uint32_t gen;         /* 发送方或目标代 */
+    uint32_t status;      /* 命令结果 / 进度 */
+    uint32_t active_gen;  /* 正在服务的代；有世代目录时为 rx 所有者 */
+    uint64_t heartbeat;   /* 心跳计数快照 */
+    uint32_t epoch;       /* active_gen 所属 master 的 epoch（0：无目录） */
+    uint32_t pad;
+};
+```
+
+ring 名同时带代和 epoch，所以工具必须指明要对话的代：`ff_ipc` 接受 `"<proc>[:<gen>[:<epoch>]]"`，首次发送时解析 `AUTO`。`graceful_reload=1` 时常驻 slim primary（proc_id 0）同时服务两代且不会退出，因此始终可达。
 
 ### 4.3 多线程接口
 
@@ -1218,6 +1266,7 @@ symmetric_rss = 1  # 双向连接到同一队列
 | **ipfw** | 防火墙规则 | FF_IPFW_CTL | `ipfw add ...` |
 | **knictl** | 虚拟网卡控制 | FF_KNICTL | `knictl set-rate ...` |
 | **traffic** | 流量统计导出 | FF_TRAFFIC | `traffic -p <proc_id> -d <secs>` |
+| **ff_ipc** | 所有工具共用的、感知 reload/代的 IPC | FF_RELOAD（查询） | `ff_ipc -p 0` 或 `ff_ipc -p 0:<gen>[:<epoch>]` |
 | **ndp** | IPv6 邻居发现 | ioctl (SIOCGNBRINFO_IN6) | `ndp -C <proc_id> -a` |
 | **ngctl** | Netgraph 控制 | FF_NGCTL | `ngctl -p <proc_id> list` |
 

@@ -39,7 +39,8 @@ Total: 3120 lines full version (+ 1436 lines simplified version) = **4556 lines*
 ## 🆕 Graceful Reload (nginx_reload_spec)
 
 `graceful_reload=1` (default off) runs two generations of the stack on the same
-`lcore_id`, so an nginx HUP reload or USR2 binary upgrade drops no connection:
+`lcore_id`, so an nginx HUP reload or USR2 binary upgrade does not reset in-flight requests or
+new connections (idle keep-alive connections are closed when the drain starts):
 
 | Question | Where to look |
 |----------|---------------|

@@ -98,10 +98,11 @@
 | `ff_reload_epoch` / `ff_reload_epoch_slot` | Master epoch and its directory slot | Ring names carry the slot (`_e<slot>`), not the epoch |
 | `ff_reload_active_gen` / `ff_reload_target_gen` | Serving / being spawned | - |
 | `ff_reload_hw_locked` | 1 = do not touch the hardware | Derived, reversible — never latched |
+| `ff_no_hw_mode` / `ff_no_hw_mode_nosync` | Is this process off the hardware now | The first syncs the directory (once per pass); the second does not and serves the per-packet tx path |
 | `ff_reload_rx_release` / `ff_reload_rx_release_epoch` | Hand hardware to a generation | Cross-master variant takes an epoch |
 | `ff_reload_handover_arm` | Arm a park-barrier round | Stale acks carry the wrong epoch and are ignored |
 | `ff_reload_heartbeat_sample` / `ff_reload_heartbeat_eval` | Owner liveness | Reports a stall after one full timeout |
-| `ff_flow_map_admit` | Record a four-tuple at SYN-ACK time | `created` is 1 only when this call added it |
+| `ff_flow_map_admit` | Record a four-tuple when its SYN is admitted, before the SYN-ACK | `created` is 1 only when this call added it |
 | `ff_flow_map_revoke` | Undo an admission whose SYN-ACK failed | Backward-shift deletion keeps the probe chain |
 | `ff_flow_map_lookup` | Dispatcher hot path | Hit = this generation, miss = the peer |
 | `ff_drain_ring_rx_enqueue` / `_tx_enqueue` | Feed the draining generation | Peer side of the handover |

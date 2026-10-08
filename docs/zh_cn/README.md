@@ -31,6 +31,20 @@
 总计: 3120 行完整版 (+ 1436 行简化版本) = **4556 行** (含导览+汇总约 5839 行)
 ```
 
+## 🆕 无损 reload（nginx_reload_spec）
+
+`graceful_reload=1`（默认关闭）时，协议栈在同一个 `lcore_id` 上运行两代，nginx 的 HUP reload 或 USR2 二进制升级不会重置在途请求和新建连接（drain 开始时会关闭空闲 keep-alive 连接，客户端需重连）：
+
+| 想了解 | 去哪里看 |
+|--------|---------|
+| 模型与阶段（T0-T5） | `F-Stack_Architecture_Layer1_System_Overview.md`「无损 reload」一节 · `01-LAYER1-ARCHITECTURE.md` §2.3 |
+| API、配置、IPC 消息 | `F-Stack_Architecture_Layer2_Interface_Specification.md`「无损 reload」相关小节 · `02-LAYER2-INTERFACES.md` §1 |
+| 函数与数据结构 | `F-Stack_Architecture_Layer3_Function_Index.md`「无损 reload」相关小节 · `03-LAYER3-FUNCTIONS.md` §1.7b |
+| 源码落点 | `KNOWLEDGE_GRAPH_WIKI.md`「无损 reload 子系统」一节 |
+| 完整设计、里程碑与测试 | `docs/nginx_reload_spec/zh_cn/`（00-09） |
+
+---
+
 ## 🚀 快速开始
 
 ### 场景 1：我想快速了解 F-Stack 是什么

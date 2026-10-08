@@ -546,6 +546,9 @@ primary_slim_idle_sleep = 1000  # Sleep (us) when primary_slim=1 (default 1000)
 graceful_reload = 0           # Two generations per lcore_id (0=off; needs nginx
                               # master; all-secondary workers + resident primary)
 reload_heartbeat_timeout_ms = 1000  # G_old stall detection on G_new (0 -> default)
+drain_ring_size = 2048        # Drain ring slots per direction (power of 2;
+                              # graceful_reload=1 also needs primary_slim=1
+                              # and nb_procs >= 2)
 
 [port0]
 addr = 10.0.0.1
@@ -869,7 +872,10 @@ struct ff_reload_args {
     uint32_t cmd;         /* enum FF_RELOAD_CMD */
     uint32_t gen;         /* sender or target generation */
     uint32_t status;      /* command result / progress */
-    uint32_t active_gen;  /* serving generation */
+    uint32_t active_gen;  /* serving gen; with a gendir: the rx owner */
+    uint64_t heartbeat;   /* heartbeat counter snapshot */
+    uint32_t epoch;       /* master epoch of active_gen (0: no gendir) */
+    uint32_t pad;
 };
 ```
 
@@ -1157,7 +1163,7 @@ symmetric_rss = 1  # Bidirectional connections to same queue
 | **traffic** | Traffic statistics export | FF_TRAFFIC | `traffic -p <proc_id> -d <secs>` |
 | **ndp** | IPv6 Neighbor Discovery | ioctl (SIOCGNBRINFO_IN6) | `ndp -C <proc_id> -a` |
 | **ngctl** | Netgraph control | FF_NGCTL | `ngctl -p <proc_id> list` |
-| **ff_ipc** | Reload/generation-aware IPC for all tools | FF_RELOAD (query) | `ff_ipc -p 0:auto` |
+| **ff_ipc** | Reload/generation-aware IPC for all tools | FF_RELOAD (query) | `ff_ipc -p 0` or `ff_ipc -p 0:<gen>[:<epoch>]` |
 
 ### 6.2 Application Integration Interfaces
 

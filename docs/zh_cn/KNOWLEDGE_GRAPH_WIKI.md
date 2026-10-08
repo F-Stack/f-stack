@@ -81,6 +81,35 @@
 
 ---
 
+## 2C. 索引后代码 delta：无损 reload（nginx_reload_spec，对应英文版 §2I）
+
+> **人工补充（尚未重新索引）**：依据当前源码编写（2026-09-30 首版，2026-10-08 交叉审核后修订）。覆盖让两代协议栈在**同一个 `lcore_id`** 上共存的 reload / 二进制升级路径；默认关闭（`graceful_reload=0`）。
+
+nginx reload（HUP）或二进制升级（USR2）会拉起新一代（G_new），旧一代（G_old）处理完自己名下的连接后退出。硬件归属是一个可逆的字，reload 中止时会把硬件交还给旧一代，而不是丢流量。
+
+| 符号 / 领域 | 源码位置 |
+|-------------|---------|
+| 配置开关（默认关闭） | `lib/ff_config.c`：`graceful_reload`（`lib/ff_config.h` 中的字段 `dpdk.graceful_reload`）、`reload_heartbeat_timeout_ms`、`drain_ring_size`；要求 `primary_slim=1` 且 `nb_procs >= 2`，与 `thread_mode=1` 互斥 |
+| 新增：reload 控制面 | `lib/ff_reload.c`（1863 行）+ `lib/ff_reload.h`——共享块、代身份、rx/kni 归属、park 屏障、心跳 |
+| 新增：世代目录 | `lib/ff_reload_gendir.c`（406 行）——由常驻 slim primary 持有的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) \| gen` 所有者坐标、存活戳 |
+| 新增：软件流表 | `lib/ff_flow_map.c`（461 行）——`ff_flow_map_admit()` 在 SYN 准入时（SYN-ACK 之前）登记四元组；`ff_flow_map_revoke()` 撤销 SYN-ACK 没发出去的准入 |
+| 新增：drain ring | `lib/ff_drain_ring.c`（563 行）——按（队列, 代, 方向）划分的 ring，收发 G_old 的在途报文 |
+| 共享控制块 | `lib/ff_reload.h`：`struct ff_reload_state`；由 `ff_reload_attach_state()` 绑定，`ff_reload_state_valid()` 校验 |
+| rx/kni 归属 | `lib/ff_reload.c`：`ff_reload_rx_owner_gen()` / `ff_reload_rx_owner_gen_set()`、`ff_reload_rx_stopped_set()`、`ff_reload_rx_release()` / `ff_reload_rx_release_epoch()` |
+| 无硬件判定 | `lib/ff_reload.c`：`ff_no_hw_mode()`（先做目录同步，main_loop 每 pass 调用）与 `ff_no_hw_mode_nosync()`（不同步，供每包 TX 路径） |
+| T2 park 屏障 | `lib/ff_reload.c`：`ff_reload_handover_arm()` 布置新的 epoch；`ff_reload_handover_ack()` 把本 pass 已 park 的确认写入 `rx_parked[]`（并调用 `ff_reload_gendir_user_stop()` 在目录中标记本进程已离开硬件）；所有存活的旧一代进程都确认后才翻转归属 |
+| 心跳存活 | `lib/ff_reload.c`：`ff_reload_heartbeat_sample()` + `ff_reload_heartbeat_eval()` |
+| 分发分类 | `app/nginx-1.28.0/src/event/modules/ngx_ff_module.c`：`ngx_ff_flow_map_dispatcher()`——纯 SYN 留本地，命中留本地，未命中转给对端 |
+| 协议栈侧写入方 | `freebsd/netinet/tcp_syncache.c`：`syncache_add()` 经 `syncache_flow_map_admit()` 准入；`ff_syncache_count()` / `ff_syncache_counters()` 供 drain 判据使用 |
+| nginx master 状态机 | `app/nginx-1.28.0/src/event/modules/ngx_ff_reload.c` + `ngx_ff_reload_fsm.h`——由 `ngx_ff_reload_fsm_event()` 驱动的 T0→T5 转移表 |
+| nginx 进程模型 | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c`：`ngx_ff_reload_hup()`、`ngx_ff_reload_wait_or_check()`、`ngx_ff_reload_t3_check()`、`ngx_ff_reload_quit_gold()`；drain 起点 `ngx_ff_is_draining_generation()` / `ngx_ff_drain_start()` |
+| 工具 | `tools/compat/ff_ipc.c`：按代/epoch 命名 ring `"<proc>[:<gen>[:<epoch>]]"`，经 `ff_set_gen_str()` / `ff_set_epoch()` |
+| 可观测 | `lib/ff_dpdk_if.c`：1 Hz reload 面报告——drain 进度、心跳停滞、flow map 计数、syncache 计数 |
+
+溯源：`docs/nginx_reload_spec/zh_cn/`（00 总览、06 方案设计、07 里程碑、08 测试、09 审核）和 `docs/nginx_reload_spec/work/`（证据、审核、运行日志，本地）。这些文档中的代码锚点使用**符号名**，不使用行号。
+
+---
+
 ## 3. 目录结构
 
 ```

@@ -455,6 +455,115 @@ const char * ff_strerror(int errnum)
 
 ---
 
+#### **无损 reload（`ff_reload.h` / `ff_reload_gendir.c`）**
+
+只在 `graceful_reload=1` 时可达；否则所有符号都退化为空操作。
+
+```c
+void ff_reload_attach_state(void *block)
+    // 绑定 nginx master 创建的匿名 MAP_SHARED reload 块
+    // 经 fork() 继承；不受 master 驱动的应用从不 attach
+    // 线程安全：不适用（在任何子进程存在之前调用一次）
+
+int ff_reload_gen(void); void ff_reload_set_gen(int gen)
+    // 本进程所属的代（gen0/gen1 乒乓复用）
+    // 决定 msg ring、应用 mbuf 池和 drain ring 组
+
+uint32_t ff_reload_epoch(void); unsigned ff_reload_epoch_slot(void)
+    // master epoch 及其目录槽；槽 0 是无目录时的身份
+    // ring 名带的是槽号（"_e<slot>"）而不是单调递增的 epoch，
+    // 因为 ring 名长度上限为 RTE_RING_NAMESIZE-1 字节
+
+int ff_reload_active_gen(void); int ff_reload_target_gen(void)
+int ff_reload_kni_owner_gen(void); int ff_reload_worker_gen(void)
+    // 按代的视图：正在服务、正在拉起、KNI 所有者、本 worker 绑定的代
+
+int ff_reload_hw_locked(void)
+    // 本进程不得操作硬件时为 1
+    // 由 rx_owner_gen/rx_stopped 推导，刻意设计为可逆
+
+int ff_no_hw_mode(void); int ff_no_hw_mode_nosync(void)
+    // 本进程当前是否处于无硬件模式；前者先做一次目录同步（main_loop
+    // 每 pass 调用一次），后者不同步，供每包 TX 路径使用
+
+int ff_reload_peer_draining(void); int ff_reload_peer_mirror_draining(void)
+    // 另一个 master 的 epoch 仍存活或仍在排空时为 1
+    // 前者全量扫描目录（每个 LIVE 槽一次 kill(2)），只用于 init / 1 Hz；
+    // 后者读每次目录同步刷新的镜像值，供每包路径使用
+
+int ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
+                             uint64_t now, uint64_t *last_advance,
+                             uint64_t timeout)
+    // rx 所有者一代的存活判定：计数前进 -> 存活，停滞超过 timeout -> 失活
+    // 参数非法时返回 -1
+
+int ff_reload_gendir_epoch_live(uint32_t epoch)
+    // 目录存活判定；master 已退出的槽，在其孤儿 worker 停止刷新存活戳
+    // 之前（FF_RELOAD_SLOT_STALE_MS）仍视为存活
+
+int ff_reload_gendir_rx_claim(uint32_t from_epoch, uint32_t from_gen, ...)
+int ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
+    // 从当前所有者（claim）或已失活的所有者（reclaim）手里取得 rx
+    // 所有者坐标是一个 64 位字 ((epoch << 32) | gen)：一次 CAS，
+    // 两个 master 不可能同时匹配
+
+void ff_reload_master_begin(uint32_t *epoch, uint32_t *target_gen)
+void ff_reload_master_abort(void); void ff_reload_master_complete(void)
+    // master 侧打开窗口 / 回滚 / 关闭窗口
+
+void ff_reload_msg_fill(struct ff_msg *msg, int cmd, int gen, int status, ...)
+int ff_reload_msg_parse(const struct ff_msg *msg, int *cmd, int *gen, ...)
+    // 编解码 msg ring 上携带的 FF_RELOAD 子命令
+
+int ff_syncache_count(void)
+void ff_syncache_counters(uint64_t *synack_fail, uint64_t *ack_mismatch)
+    // 半开连接数，以及与 reload 相关的两类失败计数
+```
+
+#### **软件流表（`ff_flow_map.h`）**
+
+```c
+int ff_flow_map_active(void)
+    // reload 窗口打开且表已布置时为 1
+
+int ff_flow_map_admit(const struct ff_flow_key *key, int *created)
+    // 在 SYN 准入时（SYN-ACK 发出之前）把四元组登记为"本代"，
+    // 这样握手的第三个 ACK 会被正确分类，而不是转给对端
+    // 只有本次调用新增表项时 *created 才为 1（重复登记不算）
+
+int ff_flow_map_revoke(const struct ff_flow_key *key)
+    // 撤销 SYN-ACK 没发出去的准入；只删除这次准入新建的表项
+    // 采用回填删除，探测链后面的表项不会被遮住
+
+int ff_flow_map_lookup(const struct ff_flow_key *key)
+    // 分发热路径：命中 -> 本代，未命中 -> 正在排空的对端
+
+void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
+                        uint64_t *grown, uint64_t *grow_fail,
+                        uint64_t *alloc_fail, uint32_t *cap,
+                        uint64_t *revoked)
+    // 供 ff_top / drain 观测使用的计数；任一指针可为 NULL
+```
+
+#### **drain ring（`ff_drain_ring.h`）**
+
+```c
+int ff_drain_ring_init(void); int ff_drain_ring_ready(void)
+    // 创建（或报告）按（队列, 代, 方向）划分的 ring 组
+
+int ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
+int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
+    // 把报文交给正在排空的一代；调用方必须是对端
+
+int ff_drain_ring_rx_dequeue(uint16_t port_id, uint16_t queue_id, ...)
+    // 排空方：取出新一代转过来的报文
+
+void ff_drain_ring_stats(uint64_t *rx_full, uint64_t *tx_full, ...)
+    // ring 满计数（满环即丢包，因此限频记录日志）
+```
+
+---
+
 ## 2. 核心数据结构详解
 
 ### 2.1 Kevent 事件结构
@@ -756,6 +865,67 @@ ff_poll(fds, 2, -1);  // 阻塞直到事件到达
 
 ---
 
+### 2.8 reload 控制块（`struct ff_reload_state`）
+
+由 nginx master 在任何 `fork()` 之前创建的匿名 `MAP_SHARED` 块，常驻 slim primary 和所有 worker 都会继承。跨进程字段只通过 `__atomic` 辅助函数（`__ATOMIC_SEQ_CST`）读写。
+
+```c
+struct ff_reload_state {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t len;               /* sizeof(struct ff_reload_state) */
+    uint32_t epoch;             /* master 每次尝试 reload 时递增 */
+
+    uint32_t active_gen;        /* 当前服务流量的代 */
+    uint32_t target_gen;        /* 正在拉起的代（reload 窗口内） */
+    uint32_t reload_active;     /* T1..T5 期间为 1，稳态为 0 */
+    uint32_t kni_owner_gen;     /* KNI 运行时所有者的代 */
+
+    uint64_t heartbeat;         /* rx 所有者一代每轮循环递增 */
+    uint64_t heartbeat_stalls;  /* 采样方检测到的停滞次数 */
+
+    uint64_t ready[FF_RELOAD_MAX_PROCS];
+
+    uint32_t rx_owner_gen;      /* 持有硬件 rx/tx 的代 */
+    uint32_t rx_stopped;        /* 所有者不得收发时为 1 */
+
+    uint32_t fsm_state;
+    uint32_t handover_epoch;    /* 把 park ack 标记到某一轮移交 */
+    uint64_t rx_parked[FF_RELOAD_MAX_PROCS];
+
+    uint32_t reserved[7];       /* drain 报告指针、阶段耗时、epoch */
+    uint32_t peer_epoch;        /* 镜像的跨 master 坐标 */
+    uint32_t peer_gen;
+};
+```
+
+### 2.9 流表 key 与 reload 消息载荷
+
+```c
+struct ff_flow_key {            /* 40 字节，无填充；地址与端口为网络字节序 */
+    uint8_t  af;                /* FF_FLOW_MAP_V4 / FF_FLOW_MAP_V6 */
+    uint8_t  reserved;          /* 保持为 0 */
+    uint16_t pad;               /* 保持为 0 */
+    uint32_t src[4];            /* 对端地址；V4 只用 src[0] */
+    uint32_t dst[4];            /* 本端地址；V4 只用 dst[0] */
+    uint16_t sport, dport;
+};
+
+struct ff_reload_args {
+    uint32_t cmd;               /* enum FF_RELOAD_CMD */
+    uint32_t gen;               /* 发送方或目标代 */
+    uint32_t status;            /* 命令结果 / 进度 */
+    uint32_t active_gen;        /* 正在服务的代；有世代目录时为 rx 所有者 */
+    uint64_t heartbeat;         /* 心跳计数快照 */
+    uint32_t epoch;             /* active_gen 所属 master 的 epoch（0：无目录） */
+    uint32_t pad;
+};
+```
+
+key 被哈希进一个进程内的开放寻址表：初始 `FF_FLOW_MAP_ENTRIES`（64K）项，满表时每个窗口最多 4 次倍增扩容，上限 `FF_FLOW_MAP_CAP_MAX`（1<<20）；线性探测，探测长度有上限（16）。表是进程本地的，两代各持一份，所以登记四元组不需要任何跨进程协商。
+
+---
+
 ## 3. 三个关键源文件深度分析
 
 ### 3.1 ff_syscall_wrapper.c (2265 行)
@@ -1026,6 +1196,24 @@ struct prison *prison0;           // 全局命名空间
 **`ff_syscall_wrapper.c` 中的入口路由**（§3.1）：每个内核感知的 `ff_*` 入口通过 `ff_is_kernel_fd()` 识别受管内核 fd 并转发到对应 `ff_host_*` 桥；双建 socket 还会驱动经 `ff_native_map_get()` 查得的配对宿主 fd。`AF_INET6` 双建时 `ff_socket` 调 `ff_host_set_v6only(hfd)`（L952），使 `-DINET6` 构建以 v4+v6 同端口干净启动（修复此前宿主 IPv6 `errno=98 EADDRINUSE`）。
 
 **R10：残余入口共存** —— `ff_ioctl`（L1067，内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`，不经 `linux2freebsd_ioctl`；双栈 fd 同驱动自 R10.1 起支持 `FIONBIO`/`FIOASYNC`）、`ff_readv`（L1189）/`ff_writev`（L1251，内核 fd→`ff_host_readv/writev`，仿 read/write，连接 fd 单栈热路径）、`ff_dup`（L2130，内核 fd→`ff_host_dup`+encode）、`ff_dup2`（L2156，两端内核 fd→`ff_host_dup2`+encode；混栈拒绝 `errno=EINVAL`）。已知限制：`ff_select`（encode 内核 fd 超 `FD_SETSIZE` 硬限制）/`ff_poll`（保守未实现）不支持内核 fd 共存 —— 改用 `ff_epoll_*`/`ff_kqueue`。
+
+---
+
+### 3.5 ff_reload.c（1863 行）- 无损 reload 控制面
+
+**共享块生命周期**：`ff_reload_attach_state()` 绑定 nginx master 映射的块；`ff_reload_state_valid()` 校验 magic/version/长度，来自不同构建的块会被拒绝，而不是被误读。
+
+**代身份**：`ff_reload_msg_ring_name()` / `..._name_e()` 生成 `"<base><proc_id>[_<type>]_g<gen>"`（epoch 非 0 时再加 `"_e<slot>"`）。`graceful_reload=0` 时逐字节还原旧名字。
+
+**rx/kni 归属**：由 `rx_owner_gen` 和 `rx_stopped` 两个普通字仲裁硬件。旧一代先写 `rx_stopped=1`，再写 `rx_owner_gen`；接收方等所有者 park 后清除 `rx_stopped`。由于这两个标记是普通的读写字，reload 中止时只需把旧一代写回 `rx_owner_gen` 即可交还硬件。
+
+**无硬件判定**：`ff_no_hw_mode()` 先调用 `ff_reload_dir_sync()` 把本 master 的决定发布到跨 master 目录，再判定；它只在 main_loop 每 pass 调用一次。每包 TX 路径（`send_burst()`、`ff_dpdk_if_send()`、`ff_dpdk_raw_packet_send()`）调用不做同步的 `ff_no_hw_mode_nosync()`，判定结论本身不缓存。目录扫描对 LIVE 槽的 `kill(pid,0)` 探测按槽缓存 50 ms。
+
+**T2 park 屏障**：master 布置一个新的 `handover_epoch`；每个 worker 在将要跳过 rx/tx 的那一轮循环中用 `(epoch << 32) | 1` 确认。只有所有存活的旧一代进程都确认后才翻转归属，这样就排除了正在进行的 `rx_burst` 与新所有者竞争。中止轮次留下的过期 ack 携带错误的 epoch，不会造成影响。
+
+**心跳**：rx 所有者每轮循环递增一次 `heartbeat`；采样方保存 `(last_cnt, last_advance)`，计数停止前进超过阈值即报告停滞。`graceful_reload=0` 时没有任何一方采样。
+
+**跨 master 目录**：`ff_reload_gendir.c`（406 行）持有一个由常驻 slim primary 创建的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) | gen` 所有者坐标，以及用于回收已退出 master 的 ring 组的存活戳。槽回收是有界的，被拒绝的和被强制的 reclaim 都会计数。
 
 ---
 

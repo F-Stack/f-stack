@@ -89,6 +89,26 @@
 | `ff_mbuf_free` | 释放 mbuf | - |
 | `ff_mbuf_copydata` | 拷贝 mbuf 数据 | - |
 
+### 1.7b 无损 reload 函数（`graceful_reload=1`）
+
+| 函数 | 功能 | 说明 |
+|-----|------|------|
+| `ff_reload_attach_state` | 绑定共享 reload 块 | 由 nginx master 创建，经 `fork()` 继承 |
+| `ff_reload_gen` / `ff_reload_set_gen` | 本进程所属的代 | 决定 msg ring、应用 mbuf 池、drain ring 组 |
+| `ff_reload_epoch` / `ff_reload_epoch_slot` | master 的 epoch 及其目录槽 | ring 名带的是槽号（`_e<slot>`），不是 epoch |
+| `ff_reload_active_gen` / `ff_reload_target_gen` | 正在服务的代 / 正在拉起的代 | - |
+| `ff_reload_hw_locked` | 1 = 不得操作硬件 | 由归属推导、可逆，从不锁存 |
+| `ff_no_hw_mode` / `ff_no_hw_mode_nosync` | 本进程当前是否处于无硬件模式 | 前者先做一次目录同步（每 pass 调用），后者不同步，供每包 TX 路径使用 |
+| `ff_reload_rx_release` / `ff_reload_rx_release_epoch` | 把硬件交给某一代 | 跨 master 版本多带一个 epoch |
+| `ff_reload_handover_arm` | 布置一轮 park 屏障 | 过期 ack 的 epoch 不符，会被忽略 |
+| `ff_reload_heartbeat_sample` / `ff_reload_heartbeat_eval` | rx 所有者存活检测 | 停滞满一个超时才报告 stall |
+| `ff_flow_map_admit` | SYN 准入时（SYN-ACK 之前）登记四元组 | 只有本次调用新增表项时 `created` 才为 1 |
+| `ff_flow_map_revoke` | 撤销 SYN-ACK 发送失败的准入 | 回填删除，保持探测链完整 |
+| `ff_flow_map_lookup` | 分发热路径 | 命中 = 本代，未命中 = 对端 |
+| `ff_drain_ring_rx_enqueue` / `_tx_enqueue` | 给排空中的一代投递报文 | 移交的对端一侧 |
+| `ff_drain_ring_rx_dequeue` | 排空方取报文 | - |
+| `ff_syncache_count` / `ff_syncache_counters` | 半开连接数与失败计数 | 用于 drain 判据与观测 |
+
 ### 1.8 多线程函数
 
 | 函数 | 功能 |
