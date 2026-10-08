@@ -550,6 +550,12 @@ void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
 ```c
 int ff_drain_ring_init(void); int ff_drain_ring_ready(void)
     // 创建（或报告）按（队列, 代, 方向）划分的 ring 组
+int ff_drain_ring_try_init(void)
+    // 同上，但不等待正在进行的残包回收（main loop 路径）
+int ff_drain_ring_reset_slot(unsigned slot)
+    // 在清理锁内清空被回收 epoch 槽的 ring；锁被占用返回 -1
+unsigned ff_drain_ring_purge_orphans(void)
+    // 常驻 primary：回收已退出消费者留在 drain ring 里的报文
 
 int ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
 int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
@@ -1199,7 +1205,7 @@ struct prison *prison0;           // 全局命名空间
 
 ---
 
-### 3.5 ff_reload.c（1863 行）- 无损 reload 控制面
+### 3.5 ff_reload.c（2063 行）- 无损 reload 控制面
 
 **共享块生命周期**：`ff_reload_attach_state()` 绑定 nginx master 映射的块；`ff_reload_state_valid()` 校验 magic/version/长度，来自不同构建的块会被拒绝，而不是被误读。
 
@@ -1213,7 +1219,7 @@ struct prison *prison0;           // 全局命名空间
 
 **心跳**：rx 所有者每轮循环递增一次 `heartbeat`；采样方保存 `(last_cnt, last_advance)`，计数停止前进超过阈值即报告停滞。`graceful_reload=0` 时没有任何一方采样。
 
-**跨 master 目录**：`ff_reload_gendir.c`（406 行）持有一个由常驻 slim primary 创建的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) | gen` 所有者坐标，以及用于回收已退出 master 的 ring 组的存活戳。槽回收是有界的，被拒绝的和被强制的 reclaim 都会计数。
+**跨 master 目录**：`ff_reload_gendir.c`（406 行）持有一个由常驻 slim primary 创建的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) | gen` 所有者坐标，以及用于回收已退出 master 的 ring 组的存活戳。槽回收是有界的，被拒绝的和被强制的 reclaim 都会计数。drain ring 使用者表（`ff_reload_gendir_ring_attach/detach/census`）和清理锁（`ff_reload_gendir_ring_purge_lock/unlock`）让常驻 primary 能回收已退出消费者留在 drain ring 里的报文。
 
 ---
 

@@ -554,6 +554,12 @@ void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
 ```c
 int ff_drain_ring_init(void); int ff_drain_ring_ready(void)
     // Create (or report) the per-(queue, generation, direction) ring set
+int ff_drain_ring_try_init(void)
+    // Same, without waiting for a running orphan purge (main-loop path)
+int ff_drain_ring_reset_slot(unsigned slot)
+    // Empty a recycled epoch slot's rings under the purge lock; -1 if busy
+unsigned ff_drain_ring_purge_orphans(void)
+    // Resident primary: free packets left for drain-ring consumers that exited
 
 int ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
 int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
@@ -1208,7 +1214,7 @@ Two files carry the optional coexistence machinery (compiled only with `FF_KERNE
 
 ---
 
-### 3.5 ff_reload.c (1863 Lines) - Graceful Reload Control Plane
+### 3.5 ff_reload.c (2063 Lines) - Graceful Reload Control Plane
 
 **Shared block lifecycle** — `ff_reload_attach_state()` binds the block the nginx
 master mapped; `ff_reload_state_valid()` checks magic/version/length, so a block
@@ -1245,7 +1251,9 @@ longer than the threshold. Under `graceful_reload=0` nothing samples it.
 created by the resident slim primary: the epoch→slot map, the packed
 `(epoch << 32) | gen` owner coordinates, and liveness stamps used to recycle the ring
 set of a master that died. Slot recycling is bounded and counts both refused and
-forced reclaims.
+forced reclaims. A drain-ring user table (`ff_reload_gendir_ring_attach/detach/census`) and a purge
+lock (`ff_reload_gendir_ring_purge_lock/unlock`) let the resident primary free what exited consumers
+left in the drain rings.
 
 ---
 

@@ -4,7 +4,7 @@
 |---|---|
 | 文档编号 | 08 |
 | 标题 | Nginx 无损 reload（S3 方案）测试计划（UT/IT/PT/A/RG 编号体系） |
-| 版本 | v1.25（v1.24 基础上：**2026-10-08：交叉审核同步——harness 接口按代码重写、现行验收口径、本轮回归结果**）——v1.24（v1.23 基础上：**2026-09-30：代码锚点由 `文件:行号` 改为 `文件: 符号名`（删除冗余注释后行号整体漂移，符号名稳定）**）——v1.23（v1.22 基础上：2026-09-28 A1 修订——UT-NR-13 / UT-NR-23 / IT-NR-A08 的入表时机口径改为「SYN 准入即入表、SYN-ACK 之前」）**——**v1.22（v1.21 基础上：2026-09-22 G-D 同步·P-7/P-8——§2.3.0 case 列表 8→13、参数表与覆盖度口径同步；新增第四轮真机登记）**——**v1.21（v1.20 基础上：2026-09-22 G-D 订正——RT-13（zc）永久排除，历史 PASS 记录加注为历史口径）**——v1.20（v1.19 基础上：**2026-09-22 交叉审核 medium/P2 级订正：M02-1/M02-2/M03-1/M03-2/M03-3/C01-7/C01-8 + D-NEW-3 登记**）——v1.19（v1.18 基础上：**R-01 代码修复已落地，本文 R-01/R-22 措辞同步**（所有「代际池仍带 256 条 cache / 未消除」类表述均已由 R-01 修复而作废或撤销）（终门禁 G-D 返工项 F-01）+ **F-03 补登记 RT-3**——PT-NR-09 的 R-22 判据完成自陈的前置复核：代际应用池已 `cache_size=0`（`lib/ff_dpdk_if.c: init_app_mem_pool()`）⇒ `avail_count` 对代际池**恢复可信**，原「只能用 flush 后读数或趋势判据」的限定撤销（flush 与趋势保留为稳妥做法），并补 R-01 配套判据（drain 期大量 TX + ARP 注入下 `avail_count` / `rte_mempool_audit()`）**未执行、维持登记**；§2.3 末补登记 RT-3（2026-09-17、md5 `d4171372…`、7 PASS + rt13 SKIP、rv9 50/50、退出码写「由 `failed=0` 推断」）。v1.16 = 按 `plan_cross_audit` G-A 裁决 R-09/R-10/R-20/R-21/R-22/R-03 订正——新增 §2.3.0 C-NR-601 harness 接口（case 列表 / 参数表 / 退出码 / Makefile 挂载 / 覆盖度映射表）、§2.3 标题覆盖度如实化（8 case、仅 5 个映射 RT）、RT-11 数据有效性声明的 `config.ini` 定性更正、RT-13 的 `lib/Makefile` 锚点统一为 `lib/Makefile` 的 CFLAGS 行（非 C 文件，按文件名引用；d752ed69f 曾误映射为 C 符号）、PT-NR-09 判据按池分别规定、fixture 数 9→10、补登记「部分 worker 死亡」覆盖缺口；v1.15 = 终门禁 N1/N3 定向整改；v1.14 = P5b RT 结果收口；v1.13 = bounce-2 整改 + P5 结果同步；v1.12 = bounce-1；v1.11 = 本轮 plan_audit 交叉审核订正） |
+| 版本 | v1.26（v1.25 基础上：**2026-10-08 第二轮：RX-15/29/30 修复的单测与回归结果**）——v1.25（v1.24 基础上：**2026-10-08：交叉审核同步——harness 接口按代码重写、现行验收口径、本轮回归结果**）——v1.24（v1.23 基础上：**2026-09-30：代码锚点由 `文件:行号` 改为 `文件: 符号名`（删除冗余注释后行号整体漂移，符号名稳定）**）——v1.23（v1.22 基础上：2026-09-28 A1 修订——UT-NR-13 / UT-NR-23 / IT-NR-A08 的入表时机口径改为「SYN 准入即入表、SYN-ACK 之前」）**——**v1.22（v1.21 基础上：2026-09-22 G-D 同步·P-7/P-8——§2.3.0 case 列表 8→13、参数表与覆盖度口径同步；新增第四轮真机登记）**——**v1.21（v1.20 基础上：2026-09-22 G-D 订正——RT-13（zc）永久排除，历史 PASS 记录加注为历史口径）**——v1.20（v1.19 基础上：**2026-09-22 交叉审核 medium/P2 级订正：M02-1/M02-2/M03-1/M03-2/M03-3/C01-7/C01-8 + D-NEW-3 登记**）——v1.19（v1.18 基础上：**R-01 代码修复已落地，本文 R-01/R-22 措辞同步**（所有「代际池仍带 256 条 cache / 未消除」类表述均已由 R-01 修复而作废或撤销）（终门禁 G-D 返工项 F-01）+ **F-03 补登记 RT-3**——PT-NR-09 的 R-22 判据完成自陈的前置复核：代际应用池已 `cache_size=0`（`lib/ff_dpdk_if.c: init_app_mem_pool()`）⇒ `avail_count` 对代际池**恢复可信**，原「只能用 flush 后读数或趋势判据」的限定撤销（flush 与趋势保留为稳妥做法），并补 R-01 配套判据（drain 期大量 TX + ARP 注入下 `avail_count` / `rte_mempool_audit()`）**未执行、维持登记**；§2.3 末补登记 RT-3（2026-09-17、md5 `d4171372…`、7 PASS + rt13 SKIP、rv9 50/50、退出码写「由 `failed=0` 推断」）。v1.16 = 按 `plan_cross_audit` G-A 裁决 R-09/R-10/R-20/R-21/R-22/R-03 订正——新增 §2.3.0 C-NR-601 harness 接口（case 列表 / 参数表 / 退出码 / Makefile 挂载 / 覆盖度映射表）、§2.3 标题覆盖度如实化（8 case、仅 5 个映射 RT）、RT-11 数据有效性声明的 `config.ini` 定性更正、RT-13 的 `lib/Makefile` 锚点统一为 `lib/Makefile` 的 CFLAGS 行（非 C 文件，按文件名引用；d752ed69f 曾误映射为 C 符号）、PT-NR-09 判据按池分别规定、fixture 数 9→10、补登记「部分 worker 死亡」覆盖缺口；v1.15 = 终门禁 N1/N3 定向整改；v1.14 = P5b RT 结果收口；v1.13 = bounce-2 整改 + P5 结果同步；v1.12 = bounce-1；v1.11 = 本轮 plan_audit 交叉审核订正） |
 | 日期 | 2026-09-09（v1.11~v1.19 增补：2026-09-17~18） ；**v1.20~v1.22 增补：2026-09-22** |
 | 状态 | 待人工审计（v1.4 人工决策落盘） |
 | 对齐基线 | [06-方案设计](06-solution-design.md) **v1.9.17** / [07-里程碑](07-milestones.md) **v1.27**（本行自 v1.5 起未随版本同步刷新，v1.7~v1.17 借各轮回写顺手更正为当前版本；各版的历史对齐关系以两篇的「修订记录」行为准） |
@@ -249,6 +249,8 @@ f-stack-client（客户端机，8 核，ssh 可达）
 
 #### 2.3.3 2026-10-08 回归结果（HEAD eb6b32c82 + 本轮修复）
 
+> 第二轮（构建 RX3）新增单测：`test_ff_config` 的 `test_rx15_ring_user_census_and_purge_lock`、`test_ff_dpdk_if` 的 `test_rx15_primary_purges_orphaned_rings`，以及新二进制 `test_ff_config_pa`（ff_config.c 以 `-DFF_USE_PAGE_ARRAY` 编译，验证 RX-30 的拒绝）。RX-29 的 main loop 时序无单测，以实机日志时序佐证。
+
 每次构建都先 `make clean` 再完整构建：lib 0 error，warning 数与本轮基线（51）相同；nginx 0 warning。生产形态的 `nm` 中 `ff_reload_fault_is` 为 0，故障形态则存在。目标地址一律记为 `<DPDK_NIC_IP>` / `<DPDK_NIC_IPV6>`，客户端为 f-stack-client。原始数据在仓库外 `/data/workspace/.nginx-reload-audit/*-20261008/`。
 
 | 构建 | 形态与源码 | 用例 | 结果 | 关键数据 |
@@ -265,6 +267,9 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | E | 生产；最终源码（与提交一致） | IPv4：precheck、rt01、rt23；rt12（KNI，`--kernel-nic-ip`，veth0 由环境脚本配址） | **4/4 PASS** | 恢复构建上的终验：rt01 fsm=6/6；rt23 fsm=6/6 rounds=1，streams=36 全部完整；rt12 veth 前后都在、ping_client=ok、control_http=200、fresh_fail=0。单测 UT_RC=0，harness 单测 53 OK，集成 4/4 |
 | E | 同上 | IPv4 rv9 100 轮（提交后补跑，manifest 按新 HEAD 重签，源码与二进制逐项相同） | **PASS** | ok=100/100 bad=0，rtemap 恒 138、斜率 0，停栈后大页 2048，fresh_n=7947 fresh_fail=0 |
 | G2 | 生产；E + 迟到审核意见的注释清理（只改注释，nginx 二进制 sha 与改前相同） | IPv4：precheck、rt01、rt02、rt23 | **4/4 PASS** | rt01 fsm=6/6；rt02/rt23 streams=36 ok=36 md5_ok=36 eof_clean=36 stalls=0；UT_RC=0，harness 单测 53 OK，集成 4/4 |
+| RX3 | 生产；G2 + RX-15/29/30 修复 | IPv4：precheck、rt01、rt02、rt23、rt25、rt30、rt31 | **7/7 PASS** | rt02/rt23 streams=36 ok=36 md5_ok=36 eof_clean=36 stalls=0；rt25 drain_before_quit=1、fresh_fail=0；rt30 n=203904 fail=0；rt01 T1→T2 161 ms，G_old 窗口打开即 attach；rt25 一栈 primary 回收 2 个无主 mbuf |
+| RX3 | 同上 | IPv4 rv9 30 轮 | PASS | ok=30/30，rtemap 斜率 0，大页最终 2048；60 次 `attached (window open)`，无 attach 失败 |
+| RX3 | 同上 | IPv6：precheck、rt01、rt02、rv9 20 轮 | **4/4 PASS**（rt02 streams=36 ok=36 md5_ok=36；rv9 ok=20/20，rtemap 斜率 0，大页最终 2048） | — |
 
 未执行：rt13（永久排除）。RT-00/03/05~09/11/14/15 等没有 harness 落点的历史一次性用例，本轮没有重跑。
 

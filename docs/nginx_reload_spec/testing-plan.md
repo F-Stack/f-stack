@@ -1,6 +1,6 @@
 # Test Plan — Units, Integration, Performance Baselines and Acceptance (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.25). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.26). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (case list, criteria table, coverage boundaries), not a line-by-line translation of all ~500 lines.
 > Revised 2026-10-08.
@@ -134,6 +134,9 @@ baseline, rt01, rt02, gr0, rt23, rt25, rt30, rt31 all PASS; IPv6: precheck, rt01
 (`ok=100/100`, `fresh_fail=0`, flat rtemap). Fault-injection build F: rt20, rt20b, rt21, rt22, rt24, rt26 all
 PASS. The restored production build E repeated precheck, rt01, rt23 and rt12 (with the KNI management plane) and
 IPv4 rv9 100 rounds (`ok=100/100`, flat rtemap): all PASS. Build G2 (comment-only follow-up to late reviews;
-the nginx binary hash is unchanged) repeated precheck, rt01, rt02 and rt23: all PASS. A batch on an intermediate
+the nginx binary hash is unchanged) repeated precheck, rt01, rt02 and rt23: all PASS. Build RX3 (the RX-15/29/30 fixes) passed
+IPv4 precheck, rt01, rt02, rt23, rt25, rt30, rt31 and rv9 30 rounds, and IPv6 precheck, rt01, rt02, rv9 20 rounds all PASS; new unit tests
+`test_rx15_ring_user_census_and_purge_lock`, `test_rx15_primary_purges_orphaned_rings` and the binary
+`test_ff_config_pa`. A batch on an intermediate
 build was voided because a source comment was edited during the run and the build-identity gate refused to
 start the remaining stacks.

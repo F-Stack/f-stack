@@ -209,10 +209,10 @@ single reversible word, so an aborted reload hands it back instead of dropping t
 | Symbol / Area | Where in source |
 |---------------|-----------------|
 | Config gate (default OFF) | `lib/ff_config.c`: `graceful_reload` (field `dpdk.graceful_reload` in `lib/ff_config.h`), `reload_heartbeat_timeout_ms`, `drain_ring_size`; requires `primary_slim=1` and `nb_procs >= 2`, rejected with `thread_mode=1` |
-| New: reload control plane | `lib/ff_reload.c` (1863 L) + `lib/ff_reload.h` — shared block, generation identity, rx/kni ownership, park barrier, heartbeat |
-| New: generation directory | `lib/ff_reload_gendir.c` (406 L) — hugepage memzone owned by the resident slim primary: epoch→slot map, packed `(epoch << 32) | gen` owner coordinate, liveness stamps |
+| New: reload control plane | `lib/ff_reload.c` (2063 L) + `lib/ff_reload.h` — shared block, generation identity, rx/kni ownership, park barrier, heartbeat |
+| New: generation directory | `lib/ff_reload_gendir.c` (406 L) — hugepage memzone owned by the resident slim primary: epoch→slot map, packed `(epoch << 32) | gen` owner coordinate, liveness stamps, hardware-user and drain-ring user tables (the primary frees orphaned drain-ring packets) |
 | New: software flow map | `lib/ff_flow_map.c` (461 L) — `ff_flow_map_admit()` records a four-tuple when its SYN is admitted, before the SYN-ACK; `ff_flow_map_revoke()` undoes an admission whose SYN-ACK never went out |
-| New: drain rings | `lib/ff_drain_ring.c` (563 L) — per-(queue, generation, direction) rings carrying G_old's in-flight packets |
+| New: drain rings | `lib/ff_drain_ring.c` (673 L) — per-(queue, generation, direction) rings carrying G_old's in-flight packets |
 | Shared control block | `lib/ff_reload.h`: `struct ff_reload_state`; attached by `ff_reload_attach_state()`, checked by `ff_reload_state_valid()` |
 | rx/kni ownership | `lib/ff_reload.c`: `ff_reload_rx_owner_gen()` / `ff_reload_rx_owner_gen_set()`, `ff_reload_rx_stopped_set()`, `ff_reload_rx_release()` / `ff_reload_rx_release_epoch()` |
 | T2 park barrier | `lib/ff_reload.c`: `ff_reload_handover_arm()` arms a fresh epoch; `ff_reload_handover_ack()` records the parked-pass ack in `rx_parked[]` (and calls `ff_reload_gendir_user_stop()` to mark the process out of the hardware in the directory); ownership flips only after every live old-generation process acked |

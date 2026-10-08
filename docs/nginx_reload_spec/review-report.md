@@ -1,6 +1,6 @@
 # Independent Gate Audit Report — Specification Set 00–08 (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.16). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.17). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (audit scope, gates, findings and closure), not a line-by-line translation of all ~900 lines.
 > Revised 2026-10-08.
@@ -99,3 +99,16 @@ its writer. Highlights:
   edition of the graceful reload sections.
 
 Runtime results of the round are listed in the Chinese 09 §28 and in testing-plan §7.
+
+## 9. Second round on 2026-10-08: RX-15, RX-29 and RX-30 (mirror of zh_cn 09 §29)
+
+The maintainers asked for RX-15, RX-29 and RX-30 to be fixed with chosen approaches (the primary resets the rings
+when the window closes; attach on the hw_locked edge or before a park ack; refuse graceful_reload=1 in
+FF_USE_PAGE_ARRAY builds); the other seven items stay registered only. The writer did not review its own work:
+CR-RX reviewed the change (PASS, six SHOULD items: a possibly blocking attach in the main loop, log flooding on
+failure, a lost reset when the lock is busy, table capacity, retire/park flapping, stale comments) and a fresh
+reviewer, CR-RX2, re-checked the fixes (PASS; its remaining suggestions were applied). Every .c/.h change was
+followed by a clean full build (RX, RX2, RX3; lib warnings equal to the baseline of 51); results are in the
+testing plan and in the RX3 rows of zh_cn 08 §2.3.3. Limits: the RX-29 timing is backed by runtime
+logs only, and the RX-15 runtime evidence is one natural purge in the rt25 stack, not a targeted fault test.
+

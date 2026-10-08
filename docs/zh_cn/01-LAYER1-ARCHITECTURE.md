@@ -128,10 +128,10 @@ NIC 驱动 (igb_uio / vfio-pci)
 | **ff_veth.c** | 1132 | 虚拟以太网设备（M4 完成 28 处 if_t accessor 重写） | FreeBSD net/if |
 | **ff_kern_timeout.c** | 1266 | callout 子系统（`callout_init`、`_reset_tick_on`、`ff_timecounter`） | DPDK rte_timer |
 | **ff_ng_base.c** | 3887 | netgraph 框架完整移植（M5：`node_p → node_cp` 修正） | FreeBSD netgraph 头文件 |
-| **ff_reload.c** | 1863 | 新增：无损 reload——共享控制块、rx/kni 归属、park 屏障、心跳 | — |
+| **ff_reload.c** | 2063 | 新增：无损 reload——共享控制块、rx/kni 归属、park 屏障、心跳 | — |
 | **ff_reload_gendir.c** | 406 | 新增：跨 master 世代目录（由常驻 primary 持有的 hugepage memzone） | DPDK memzone |
 | **ff_flow_map.c** | 461 | 新增：软件流表，判定报文归属哪一代 | — |
-| **ff_drain_ring.c** | 563 | 新增：按（队列, 代, 方向）划分的 drain ring，供排空中的一代收发报文 | DPDK rte_ring |
+| **ff_drain_ring.c** | 673 | 新增：按（队列, 代, 方向）划分的 drain ring，供排空中的一代收发报文 | DPDK rte_ring |
 | **ff_stub_14_extra.c** | 799 | 新增（M5 + runtime-fix）：14.0+ 中央 stub 库（123 个 stub，661 个 undef 解决） + 5 个 P0 SIGSEGV 修复 + 防御性 `vm_page_alloc_noobj` panic | FreeBSD 14.0+ KBI |
 
 ### 2.3 无损 reload：同一 `lcore_id` 上的两代协议栈

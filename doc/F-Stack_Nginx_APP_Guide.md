@@ -108,7 +108,7 @@ Optional: `worker_shutdown_timeout` (e.g. `worker_shutdown_timeout 30s;`) bounds
 The nginx APP supports lossless reload and binary upgrade via `graceful_reload` in the `[dpdk]` section of the F-Stack config file (`fstack_conf`).
 
 - `graceful_reload=0` (default): behavior identical to previous releases. Worker 0 is the DPDK primary; `reload` follows the legacy two-phase serial order (old workers exit before new workers start) with about one second of service unavailability.
-- `graceful_reload=1`: lossless reload and lossless binary upgrade. Requires `primary_slim=1`, `nb_procs >= 2` (set nginx `worker_processes = nb_procs - 1`) and `thread_mode=0`.
+- `graceful_reload=1`: lossless reload and lossless binary upgrade. Requires `primary_slim=1`, `nb_procs >= 2` (set nginx `worker_processes = nb_procs - 1`) and `thread_mode=0`, and a library built without `FF_USE_PAGE_ARRAY` (that build is refused when the resident primary loads its config; the reason is in `/var/run/ff_slim_primary.log`). All processes of a deployment, the resident primary included, must run the same libfstack build.
 
 With `graceful_reload=1`:
 
@@ -129,7 +129,8 @@ Each reload round is driven by an explicit T0-T5 state machine; every transition
 - `graceful reload fsm: <S1> -> <S2> (transition <n>, elapsed <M> ms)` — one line per FSM transition; a normal round shows six (T0_IDLE -> T1_GNEW_SPAWN -> T2_HANDOVER -> T3_DRAIN -> T4_DRAIN_DONE -> T5_GOLD_QUIT -> T0_IDLE).
 - `graceful reload: old generation drained, quitting` — drain complete (T3 -> T4); ` (deadline forced)` is appended when the `worker_shutdown_timeout` deadline forced completion.
 - `graceful reload complete: generation <N> now active (took <M> ms: handover <M> ms, drain <M> ms, drain forwarded <N> / relayed <N> pkts, ring peak rx <N> / tx <N>)` — round complete (T5 -> T0). Fields: total wall time, handover phase, drain phase, packets forwarded to / relayed from the old generation over the drain rings, and the drain ring peak occupancy (see below).
-- After each round the workers log the steady state in the F-Stack log: `reload data plane retired (steady state, generation <N>)`.
+- After each round the workers log the steady state in the F-Stack log: `reload data plane retired (steady state, generation <N>)`. A generation that retired its plane re-attaches it and logs `reload data plane attached (<reason>, generation <N>)`: `window open` when the next reload window opens, `park` right before it acks a park order, `peer master` when a USR2 peer master appears (either side).
+- The resident primary frees packets left in the drain rings of workers that have exited and logs `drain rings: freed <N> orphaned mbuf(s)` (at most once a second); an occasional line after a round is expected.
 
 Failure paths — the old generation is never touched by an abort:
 

@@ -87,10 +87,10 @@ F-Stack 模式 (用户态网络)
 │   ├── ff_epoll.c            (289行)      # Epoll 兼容（F-Stack+内核统一）
 │   ├── ff_host_interface.c   (617行)      # 主机 OS 接口 + FF_KERNEL_COEXIST 桥（32 个 ff_host_*）
 │   ├── ff_dpdk_kni.c                      # 虚拟网卡支持
-│   ├── ff_reload.c           (1863行)     # 无损 reload：共享控制块、rx/kni 归属、T2 park 屏障、心跳
+│   ├── ff_reload.c           (2063行)     # 无损 reload：共享控制块、rx/kni 归属、T2 park 屏障、心跳
 │   ├── ff_reload_gendir.c    (406行)      # 跨 master 世代目录（hugepage）
 │   ├── ff_flow_map.c         (461行)      # 软件流表（按代准入）
-│   ├── ff_drain_ring.c       (563行)      # 按（队列, 代, 方向）划分的 drain ring
+│   ├── ff_drain_ring.c       (673行)      # 按（队列, 代, 方向）划分的 drain ring
 │   ├── ff_reload_fault.h                  # 故障注入钩子（仅测试构建）
 │   ├── ff_*.h                             # API 和数据结构定义
 │   └── Makefile              (765行)      # 编译系统
@@ -167,10 +167,10 @@ F-Stack 模式 (用户态网络)
 | **初始化协调** | ff_init.c | 69 | 启动流程编排 | 其他所有模块 |
 | **主机接口** | ff_host_interface.c | - | mmap/pthread/时间接口 | 系统库 |
 | **虚拟网卡** | ff_dpdk_kni.c | - | 内核虚拟网卡支持 | DPDK KNI |
-| **无损 reload** | ff_reload.c | 1863 | reload 控制块、rx/kni 归属仲裁、park 屏障、心跳存活检测 | ff_config、ff_dpdk_if、ff_reload_gendir |
+| **无损 reload** | ff_reload.c | 2063 | reload 控制块、rx/kni 归属仲裁、park 屏障、心跳存活检测 | ff_config、ff_dpdk_if、ff_reload_gendir |
 | **世代目录** | ff_reload_gendir.c | 406 | 跨 master 的 epoch→槽映射、硬件使用者表、有界的槽回收 | DPDK memzone（常驻 primary） |
 | **软件流表** | ff_flow_map.c | 461 | 进程内四元组表，判定报文是否属于本代 | tcp_syncache（写入方）、dispatcher（读取方） |
-| **drain ring** | ff_drain_ring.c | 563 | 双向 ring，为排空中的一代收发在途报文 | DPDK ring |
+| **drain ring** | ff_drain_ring.c | 673 | 双向 ring，为排空中的一代收发在途报文 | DPDK ring |
 | **nginx reload 模块** | ngx_ff_reload.c、ngx_ff_reload_fsm.h | 439 | master 侧 T0-T5 状态机、拉起/信号时序、READY 发布 | ff_reload.h、ngx_process_cycle.c |
 
 ### 2.3 模块间通信关系
