@@ -131,6 +131,7 @@ built source file may change while the harness runs (the build-identity gate the
 no fault hooks; full table in the Chinese 08 §2.3.3). Production IPv4 on the code-final build D: precheck,
 baseline, rt01, rt02, gr0, rt23, rt25, rt30, rt31 all PASS; IPv6: precheck, rt01, rv9 100 rounds PASS
 (`ok=100/100`, `fresh_fail=0`, flat rtemap). Fault-injection build F: rt20, rt20b, rt21, rt22, rt24, rt26 all
-PASS. The restored production build E repeated precheck, rt01, rt23 and rt12 (with the KNI management plane): all PASS. A batch on an intermediate
+PASS. The restored production build E repeated precheck, rt01, rt23 and rt12 (with the KNI management plane) and
+IPv4 rv9 100 rounds (`ok=100/100`, flat rtemap): all PASS. A batch on an intermediate
 build was voided because a source comment was edited during the run and the build-identity gate refused to
 start the remaining stacks.

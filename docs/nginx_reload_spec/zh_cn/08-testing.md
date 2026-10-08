@@ -259,10 +259,11 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | B | 同上 | IPv6：precheck、rt01、rv9 100 轮 | 3/3 PASS | ok=100/100，fresh_fail=0，rtemap 斜率 0 |
 | C | B + SHOULD 修正 | IPv4 批次 | 作废 | 运行期间修改了源文件注释，源码身份门拒绝启动后 4 个用例（L-06）；证明门禁有效 |
 | D | 生产；C + 注释清理 | IPv4：precheck、baseline、rt01、rt02、gr0、rt23、rt25、rt30、rt31 | **9/9 PASS** | baseline 24 连接 fail=0；rt02 streams=36 ok=36 md5_ok=36 eof_clean=36 stalls=0，drain 48 s；gr0 最长中断 1.001 s；rt23 fsm=6/6 rounds=1；rt25 usr2_exec=1 handover=1 old_workers_left=0 drain_before_quit=1，LC fail=24 reconnects=24（12 连接 × 2 轮）fresh_fail=0；rt30 CPS n=202816 fail=0；rt31 LC fail=12 reconnects=12 fresh_fail=0 |
-| D | 同上 | strace（单 worker，5 s） | — | rt25 USR2 移交后：kill(2) 100 次/5 s（约 20 次/s，与 50 ms 缓存一致）；稳态单 master 0 次 |
+| D | 同上 | strace（单 worker，5 s） | — | rt25 USR2 移交后：kill(2) 100 次/5 s（约 20 次/s，与 50 ms 缓存一致）；稳态单 master 的 0 次来自构建 B 的 rt23 采样（构建 D 的稳态采样点当时还没有 worker，未采到） |
 | D | 同上 | IPv6：precheck、rt01、rv9 100 轮 | **3/3 PASS** | run-identity address_family=ipv6；rv9 ok=100/100 bad=0，rtemap 恒 138、斜率 0，停栈后大页 2048，fresh_n=7947 fresh_fail=0 |
 | F | 故障注入；D + L-04 注释 | rt20（ready_never）、rt20b（ready_delay 15 s）、rt21（flip_fail）、rt22（park_never）、rt24（flip_fail_once）、rt26（synack_fail） | **6/6 PASS** | 各故障签名命中，worker 数保持 2；abort 类用例 LC fail=0；rt20b/rt26 LC fail=12 reconnects=12 fresh_fail=0；rt24 第 1 轮 abort、第 2 轮 drain 1000 ms 完成且出现 T5→T0；rt26 synack_fail=4 revoked=2。rt24 首跑判 PASS，但收尾时 harness 自身的进程监管器因读 `/proc/<pid>/exe` 撞上已退出子进程的 EACCES 而中止（退出码 125，仪表缺陷，非产品问题），修正 `reload_supervisor.py` 并补 2 条单测后复跑 PASS、failed=0、退出码 0 |
 | E | 生产；最终源码（与提交一致） | IPv4：precheck、rt01、rt23；rt12（KNI，`--kernel-nic-ip`，veth0 由环境脚本配址） | **4/4 PASS** | 恢复构建上的终验：rt01 fsm=6/6；rt23 fsm=6/6 rounds=1，streams=36 全部完整；rt12 veth 前后都在、ping_client=ok、control_http=200、fresh_fail=0。单测 UT_RC=0，harness 单测 53 OK，集成 4/4 |
+| E | 同上 | IPv4 rv9 100 轮（提交后补跑，manifest 按新 HEAD 重签，源码与二进制逐项相同） | **PASS** | ok=100/100 bad=0，rtemap 恒 138、斜率 0，停栈后大页 2048，fresh_n=7947 fresh_fail=0 |
 
 未执行：rt13（永久排除）。RT-00/03/05~09/11/14/15 等没有 harness 落点的历史一次性用例，本轮没有重跑。
 
