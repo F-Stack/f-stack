@@ -54,6 +54,25 @@ def proc_stat(pid):
     return fields[0], int(fields[1]), int(fields[19])
 
 
+def live_identity(pid, fd, attempts=5, pause=0.01):
+    """identity() of a member, or None once it is on its way out.
+
+    /proc/<pid>/exe can deny access (EACCES) to a task that is exiting; that
+    denial is tolerated only while the task is seen to finish within a few
+    milliseconds. A live process that stays unreadable still fails closed."""
+    for _ in range(attempts):
+        try:
+            return identity(pid)
+        except PermissionError:
+            try:
+                if exited(fd) or proc_stat(pid)[0] in ("Z", "X"):
+                    return None
+            except (FileNotFoundError, ProcessLookupError):
+                return None
+            time.sleep(pause)
+    return identity(pid)
+
+
 def exited(fd):
     """poll() rather than select(): a pidfd is an ordinary fd and its
     number passes FD_SETSIZE quickly once a run tracks a few hundred
@@ -142,7 +161,7 @@ class ProcessTree:
         fd = known["pidfd"] if known is not None else os.pidfd_open(pid)
         retained = known is not None
         try:
-            current = None if state == "Z" else identity(pid)
+            current = None if state == "Z" else live_identity(pid, fd)
             _, again_parent, again_start = proc_stat(pid)
             if (again_parent != parent or again_start != start
                     or (current is not None and current["start_time"] != start)):
@@ -272,7 +291,9 @@ class ProcessTree:
                     if item is None:
                         continue
                     if not exited(item["pidfd"]):
-                        current = identity(pid)
+                        current = live_identity(pid, item["pidfd"])
+                        if current is None:
+                            continue
                         if current["start_time"] != item["start_time"]:
                             raise RuntimeError("descendant identity mismatch")
                         key = (current["device"], current["inode"])

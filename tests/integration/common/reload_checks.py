@@ -17,7 +17,9 @@ CASES = {"precheck", "baseline", "rt01", "rt02", "rv9", "gr0", "rt12", "rt13",
          "rt20", "rt20b", "rt21", "rt22", "rt23", "rt24", "rt25", "rt26",
          "rt30", "rt31"}
 # Named faults are the ones implemented under FF_RELOAD_FAULT_INJECTION
-# (lib/ff_reload.c:1130/1224/1315/1657/1660). Empty means the production form.
+# (ff_reload_fault_is*() call sites in lib/ff_reload.c and synack_fail in
+# freebsd/netinet/tcp_syncache.c). Empty means the production form.
+# mutex_timeout has no harness case; it is for manual runs only.
 # flip_fail_once aborts the first round only, so the following HUP exercises
 # an old generation that survived the abort.
 FAULTS = {"", "ready_never", "ready_delay", "park_never", "flip_fail",

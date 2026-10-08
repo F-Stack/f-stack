@@ -30,7 +30,8 @@ def default_values():
                 STARTUP_WAIT="28", STREAM_MB="8", RTE_FRESH_MIN="10", SHUTDOWN_TIMEOUT="0",
                 BASELINE_DURATION="330", GRACEFUL="1", ZC_BUILD="auto", NGINX_BIN="/safe/nginx",
                 FSTACK_TPL="/safe/config.ini", PROBE_DIR="/safe/probes", OUT="", BUILD_MANIFEST="",
-                FAULT="", FAULT_DELAY_MS="15000")
+                FAULT="", FAULT_DELAY_MS="15000", PERF_THREADS="1", PERF_CONNS="12",
+                PERF_DURATION="180", HUP_ANCHOR_SEC="3", HUP_ANCHOR_COUNT="200")
 
 
 class ValidationTests(unittest.TestCase):
@@ -57,7 +58,9 @@ class ValidationTests(unittest.TestCase):
                            ("SHUTDOWN_TIMEOUT", "$(false)"), ("BASELINE_DURATION", "nan"),
                            ("BASELINE_DURATION", ".."), ("CASES", "rt01,rt01"),
                            ("CASES", "unknown"), ("CASES", "rt01,"),
-                           ("OUT", "/safe/path;false"), ("OUT", "/safe/../other")):
+                           ("OUT", "/safe/path;false"), ("OUT", "/safe/../other"),
+                           ("PERF_THREADS", "0"), ("PERF_DURATION", "601"),
+                           ("HUP_ANCHOR_COUNT", "0")):
             with self.subTest(key=key, value=value):
                 values = default_values()
                 values[key] = value
@@ -518,6 +521,30 @@ class ParentAuthorizationTests(unittest.TestCase):
             self.tree.stop("test-stack")
             send.assert_not_called()
 
+    def test_exe_denied_while_exiting_is_tolerated(self):
+        def view(pid):
+            if pid == self.child_pid:
+                raise PermissionError(13, "exe")
+            return self.identity_view(pid)
+
+        self.patch("identity", side_effect=view)
+        self.patch("exited", side_effect=lambda fd: fd == self.child_fd)
+        item = self.register_child()
+        self.assertIsNotNone(item)
+        self.assertIsNone(item["current"])
+        self.assertIsNone(self.tree.failure)
+
+    def test_exe_denied_on_live_process_fails_closed(self):
+        def view(pid):
+            if pid == self.child_pid:
+                raise PermissionError(13, "exe")
+            return self.identity_view(pid)
+
+        self.patch("identity", side_effect=view)
+        self.patch("time.sleep")
+        with self.assertRaises(PermissionError):
+            self.register_child()
+
     def test_missing_parent_during_revalidation_releases_candidate(self):
         self.after_child_identity = lambda: setattr(self, "parent_missing", True)
         self.assertIsNone(self.register_child())
@@ -855,7 +882,7 @@ class OwnershipSupervisorTests(unittest.TestCase):
         import reload_supervisor as supervisor
         tree = object.__new__(supervisor.ProcessTree)
         tree.failure = None
-        tree.helper_targets = {123: (456, "TERM", 20.0)}
+        tree.helper_targets = {123: (456, "TERM", 20.0, 1, False)}
         with mock.patch.object(supervisor.time, "monotonic", return_value=19.0):
             tree.check_helper_deadlines()
         self.assertIsNone(tree.failure)

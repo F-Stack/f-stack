@@ -219,9 +219,10 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
   --perf-conns <n>            m4_lc.py connections for rt31 (default 12)
   --perf-duration <s>         probe duration for rt30/rt31 (default 180)
   --hup-anchor-sec <s>        HUP once the probe ran this long (default 3)
+  --hup-anchor-count <n>      ... and produced this many requests (default 200)
   --capture                   capture the handshake on the client (orphan
                               forensics; needs tcpdump on the client)
-  --hup-anchor-count <n>      ... and produced this many requests (default 200)
+  --client-if <if>            client interface for --capture
 
 Exit: 0 all pass | 100+N N cases failed | 2 usage | 3 preconditions
       | 4 dependency missing | 5 aborted
@@ -623,9 +624,8 @@ start_stack() { # tag graceful shutdown_timeout [kni]
 
 # ---- three-check ----------------------------------------------------------
 # dual=1 is the USR2 (RT-04/04b) form: two masters coexist by design, so the
-# check records the live master list instead of failing. The current case set
-# has no USR2 scenario, so nothing calls it yet -- it is the documented hook
-# point for RT-04/04b; stop_stack already handles the nginx.pid.oldbin pair.
+# check records the live master list instead of failing. rt25 calls it while
+# both masters are up; stop_stack already handles the nginx.pid.oldbin pair.
 three_check() { # [dual]  dual=1 -> two masters expected (USR2), record only
     local dual="${1:-0}" res=0 left z sp rt fresh p
     if [ "$dual" = "1" ]; then
@@ -820,7 +820,7 @@ cpu_window_ms() { # sample file
 # One HUP against the stack that is currently running. Results land in the
 # HUP_* globals.
 hup_once() { # conf
-    local conf="$1" mark w line n drain fwd rel fsm nworkers snap clk
+    local conf="$1" mark w line n drain fwd rel fsm illegal nworkers snap clk
     mark=$(wc -l < "$ERRLOG")
     snap="$OUT/cpu-window.samples"
     if [ "$HUP_CPU_SAMPLE" = "1" ]; then
@@ -831,13 +831,14 @@ hup_once() { # conf
     w=0
     while [ "$w" -lt "$DRAIN_TIMEOUT" ]; do
         [ "$HUP_CPU_SAMPLE" = "1" ] && cpu_snapshot >> "$snap"
-        tail -n +$((mark + 1)) "$ERRLOG" | grep -q 'graceful reload complete' && break
+        tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete' >/dev/null && break
         sleep 1; w=$((w + 1))
     done
     [ "$HUP_CPU_SAMPLE" = "1" ] && cpu_snapshot >> "$snap"
     line=$(tail -n +$((mark + 1)) "$ERRLOG" | grep 'graceful reload complete' | tail -1)
     n=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete')
-    fsm=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload fsm:')
+    fsm=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload fsm: [A-Z0-9_]* -> ')
+    illegal=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload fsm: illegal event')
     drain=$(printf '%s' "$line" | sed -n 's/.*drain \([0-9]*\) ms.*/\1/p')
     fwd=$(printf '%s' "$line" | sed -n 's/.*drain forwarded \([0-9]*\).*/\1/p')
     rel=$(printf '%s' "$line" | sed -n 's/.*relayed \([0-9]*\) pkts.*/\1/p')
@@ -854,7 +855,8 @@ hup_once() { # conf
     say "HUP fsm=$fsm/6 complete=$n drain=${HUP_DRAIN}ms forwarded=${HUP_FWD} relayed=${HUP_REL} workers=$nworkers cpu_ms=${HUP_CPU_MS}"
     [ -n "$line" ] || { say "HUP: no 'graceful reload complete' within ${DRAIN_TIMEOUT}s"; return 1; }
     [ "$n" = "1" ] || { say "HUP: $n completion lines, expected exactly 1"; return 1; }
-    [ "$fsm" -ge 6 ] || { say "HUP: only $fsm/6 FSM transitions"; return 1; }
+    [ "$fsm" = "6" ] || { say "HUP: $fsm FSM transitions, expected exactly 6"; return 1; }
+    [ "$illegal" = "0" ] || { say "HUP: $illegal illegal FSM events"; return 1; }
     [ "$nworkers" = "$WORKERS" ] || { say "HUP: workers=$nworkers != $WORKERS (G_old still alive)"; return 1; }
     return 0
 }
@@ -903,7 +905,7 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
     # streaming set or a high-rate fresh-connection probe, never idle ones.
     case "$probe" in
         stream)
-            prep_stream_payload || return 1
+            prep_stream_payload || { stop_stack "$tag" "$conf"; return 1; }
             # One wave costs payload / (chunk per gap) seconds; the probe lives
             # STREAM_DURATION and then finishes the wave in flight. Refuse a
             # payload that cannot fit the 300 s remote probe budget instead of
@@ -911,28 +913,32 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
             wave=$(( STREAM_MB * 1048576 / 163840 ))
             if [ $(( STREAM_DURATION + wave )) -gt 300 ]; then
                 say "stream payload ${STREAM_MB}MB needs ~$(( STREAM_DURATION + wave ))s > 300s probe budget"
+                stop_stack "$tag" "$conf"
                 return 1
             fi
             launch_probe "$tag" 300 m4_stream.py --server "$TARGET_IP" \
                 --path /dl/big.bin --streams 12 --chunk 16384 --gap 0.1 \
                 --timeout 5 --stall 3.0 --duration "$STREAM_DURATION" \
-                --expect-md5 "$STREAM_MD5" || return 1
+                --expect-md5 "$STREAM_MD5" || { stop_stack "$tag" "$conf"; return 1; }
             sleep 3 ;;
         lc)
             launch_probe "$tag" 240 m4_lc.py --server "$TARGET_IP" --conns "$PERF_CONNS" \
-                --interval 0.1 --duration "$PERF_DURATION" --fresh 0.5 --timeout 2 || return 1
+                --interval 0.1 --duration "$PERF_DURATION" --fresh 0.5 --timeout 2 \
+                || { stop_stack "$tag" "$conf"; return 1; }
             HUP_ANCHOR_LINE=$(wait_probe_progress LC_PROGRESS "$HUP_ANCHOR_SEC" \
                 "$HUP_ANCHOR_COUNT" 60) \
                 || { say "$tag: lc probe never reached the HUP anchor "
-                     "(${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"; return 1; }
+                     "(${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"
+                     stop_stack "$tag" "$conf"; return 1; }
             say "$tag: HUP anchored at: $HUP_ANCHOR_LINE" ;;
         cps)
             launch_probe "$tag" 240 m4_cps.py --server "$TARGET_IP" --threads "$PERF_THREADS" \
-                --duration "$PERF_DURATION" --timeout 2 || return 1
+                --duration "$PERF_DURATION" --timeout 2 \
+                || { stop_stack "$tag" "$conf"; return 1; }
             HUP_ANCHOR_LINE=$(wait_probe_progress CPS_PROGRESS "$HUP_ANCHOR_SEC" \
                 "$HUP_ANCHOR_COUNT" 60) \
-                || { say "$tag: cps probe never reached the HUP anchor "
-                     "(${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"; return 1; }
+                || { say "$tag: cps probe never reached the HUP anchor (${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"
+                     stop_stack "$tag" "$conf"; return 1; }
             say "$tag: HUP anchored at: $HUP_ANCHOR_LINE" ;;
     esac
 
@@ -1234,9 +1240,13 @@ case_rt25() {
     # Evidence of which path started the drain: the USR2 branch runs from the
     # worker loop right after the handover, the fallback from the QUIT handler.
     # Both call the same drain start, so this is recorded, not judged.
-    local drain_line=0 quit_line=0 drain_before_quit=0
-    drain_line=$(grep -n "ff drain: started" "$ERRLOG" 2>/dev/null | head -1 | cut -d: -f1)
-    quit_line=$(grep -n "gracefully shutting down" "$ERRLOG" 2>/dev/null | head -1 | cut -d: -f1)
+    # The priming HUP drains too, so only lines after the USR2 handover count.
+    local drain_line=0 quit_line=0 drain_before_quit=0 hand_line=0
+    hand_line=$(grep -n "ff usr2: handed rx" "$ERRLOG" 2>/dev/null | head -1 | cut -d: -f1)
+    if [ -n "$hand_line" ]; then
+        drain_line=$(tail -n +"$hand_line" "$ERRLOG" | grep -n "ff drain: started" | head -1 | cut -d: -f1)
+        quit_line=$(tail -n +"$hand_line" "$ERRLOG" | grep -n "gracefully shutting down" | head -1 | cut -d: -f1)
+    fi
     if [ -n "$drain_line" ] && [ -n "$quit_line" ] && [ "$drain_line" -lt "$quit_line" ]; then
         drain_before_quit=1
     fi
@@ -1494,37 +1504,54 @@ case_rt23() {
     launch_probe rt23 300 m4_stream.py --server "$TARGET_IP" \
         --path /dl/big.bin --streams 12 --chunk 16384 --gap 0.1 \
         --timeout 5 --stall 3.0 --duration "$STREAM_DURATION" \
-        --expect-md5 "$STREAM_MD5" || return 1
+        --expect-md5 "$STREAM_MD5" || { stop_stack "rt23" "$conf"; return 1; }
     sleep 3
     probe_running || rc=1
     # The second HUP must land WHILE the first one is draining (T3), not after
     # it finished, otherwise it simply starts a second reload.
     nginx_signal "$conf" reload || rc=1
-    sleep 5
+    local deadline=$((SECONDS + 60)) in_t3=0
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if grep -q "graceful reload fsm: T2_HANDOVER -> T3_DRAIN" "$ERRLOG"; then in_t3=1; break; fi
+        sleep 1
+    done
+    [ "$in_t3" = "1" ] || { say "rt23: first reload never reached T3 within 60 s"; rc=1; }
     nginx_signal "$conf" reload || rc=1
-    local deadline=$((SECONDS + 150)) done=0
+    local done=0 line fsm t01 drain summary fetch=0
+    deadline=$((SECONDS + 150))
     while [ "$SECONDS" -lt "$deadline" ]; do
         if grep -q "graceful reload complete" "$ERRLOG"; then done=1; break; fi
         sleep 1
     done
     [ "$done" = "1" ] || { say "rt23: first reload did not complete within 150 s"; rc=1; }
-    grep -q "graceful reload rejected: previous reload still in progress" "$ERRLOG" \
-        || { say "rt23: re-entry refusal not found in $ERRLOG"; rc=1; }
-    HUP_SUMMARY=$(wait_client_summary /tmp/gr_rt23_stream.log 'STREAM_SUMMARY' 120) \
-        || HUP_SUMMARY="NO_DATA (m4_stream.py did not report within 120 s)"
-    stop_stack "rt23" "$conf" || rc=1
-    if [ "$rc" = "0" ]; then
-        record "rt23" "PASS" "second HUP during T3 is refused; first reload still completes" \
-          "fsm=$HUP_FSM/6 drain=${HUP_DRAIN}ms traffic=$HUP_SUMMARY"
-    else
-        record "rt23" "FAIL" "second HUP during T3 is refused; first reload still completes" \
-          "fsm=$HUP_FSM/6 drain=${HUP_DRAIN}ms traffic=$HUP_SUMMARY"
+    grep -q "graceful reload rejected: previous reload still in progress (state T3_DRAIN)" "$ERRLOG" \
+        || { say "rt23: re-entry refusal during T3_DRAIN not found in $ERRLOG"; rc=1; }
+    # This case never runs hup_once, so its own errlog is the only evidence:
+    # exactly one round (one T0 -> T1, six transitions) and one completion.
+    fsm=$(grep -c "graceful reload fsm: [A-Z0-9_]* -> " "$ERRLOG")
+    t01=$(grep -c "graceful reload fsm: T0_IDLE -> T1_GNEW_SPAWN" "$ERRLOG")
+    line=$(grep "graceful reload complete" "$ERRLOG" | tail -1)
+    drain=$(printf '%s' "$line" | sed -n 's/.*drain \([0-9]*\) ms.*/\1/p')
+    [ "$fsm" = "6" ] || { say "rt23: $fsm FSM transitions, expected exactly 6"; rc=1; }
+    [ "$t01" = "1" ] || { say "rt23: $t01 rounds started, expected exactly 1"; rc=1; }
+    [ "$(grep -c 'graceful reload complete' "$ERRLOG")" = "1" ] \
+        || { say "rt23: completion count != 1"; rc=1; }
+    summary=$(wait_client_summary /tmp/gr_rt23_stream.log 'STREAM_SUMMARY' 120) || fetch=$?
+    if [ "$fetch" = "1" ]; then
+        summary="NO_DATA (m4_stream.py did not report within 120 s)"; rc=1
+    elif [ "$fetch" = "2" ]; then
+        say "rt23: stream probe reported a summary but failed its own criterion"; rc=1
+    elif ! check_summary stream "$summary"; then
+        say "rt23: stream verdict below target: $summary"; rc=1
     fi
+    stop_stack "rt23" "$conf" || rc=1
+    local verdict=PASS
+    [ "$rc" = "0" ] || verdict=FAIL
+    record "rt23" "$verdict" "second HUP during T3 is refused; first reload still completes (exactly 6/6 FSM, one round, intact streams)" \
+      "fsm=$fsm/6 rounds=$t01 drain=${drain:-NA}ms traffic=$summary"
     return $rc
 }
 
-# rt26: the counters live in the worker logs (fstack-*.log), not in nginx
-# error log, and the 1 Hz line prints deltas, so the sum is the total.
 # rt26: the counters live in the worker logs (fstack-*.log), not in nginx
 # error log. SYN-ACK failures and ACK mismatches are printed as deltas, so
 # their sum is the total; revoked is printed as a running total, so the
@@ -1624,8 +1651,10 @@ case_rv9() {
     if have_probe m4_lc.py; then
         local dur=$(( ROUNDS * INTERVAL + 90 ))
         launch_probe rv9 "$((dur + 30))" m4_lc.py --server "$TARGET_IP" --conns 0 \
-            --interval 0.5 --duration "$dur" --fresh 0.2 --timeout 2 || return 1
+            --interval 0.5 --duration "$dur" --fresh 0.2 --timeout 2 \
+            || { stop_stack "rv9" "$conf"; return 1; }
     else
+        stop_stack "rv9" "$conf"
         record rv9 BLOCKED 'fresh-connection probe required' 'probe missing'
         return 1
     fi
@@ -1652,7 +1681,7 @@ case_rv9() {
             nginx_signal "$conf" reload || { bad=$((bad + 1)); break; }
             w=0
             while [ "$w" -lt "$DRAIN_TIMEOUT" ]; do
-                tail -n +$((mark + 1)) "$ERRLOG" | grep -q 'graceful reload complete' && break
+                tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete' >/dev/null && break
                 sleep 1; w=$((w + 1))
             done
             line=$(tail -n +$((mark + 1)) "$ERRLOG" | grep 'graceful reload complete' | tail -1)
@@ -1742,7 +1771,8 @@ case_gr0() {
         return 1
     fi
     if have_probe m4_outage.py; then
-        launch_probe gr0 45 m4_outage.py --server "$TARGET_IP" --duration 25 --timeout 0.5 || return 1
+        launch_probe gr0 45 m4_outage.py --server "$TARGET_IP" --duration 25 --timeout 0.5 \
+            || { stop_stack "gr0" "$conf"; return 1; }
         sleep 5
         probe_running || rc=1
         nginx_signal "$conf" reload || rc=1
@@ -1824,7 +1854,8 @@ case_rt12() {
         # Keep the probe shorter than the wait below, otherwise it can never
         # report and the KNI verdict gets buried under a NO_DATA skip.
         launch_probe rt12 90 m4_lc.py --server "$TARGET_IP" --conns 0 \
-            --interval 0.5 --duration 45 --fresh 0.5 --timeout 2 || return 1
+            --interval 0.5 --duration 45 --fresh 0.5 --timeout 2 \
+            || { stop_stack "rt12" "$conf"; return 1; }
         sleep 3
     fi
     probe_running || rc=1
