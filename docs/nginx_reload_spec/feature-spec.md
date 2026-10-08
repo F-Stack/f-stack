@@ -17,7 +17,7 @@ reload that keeps serving traffic across a generation change. Scope:
 
 1. **Zero loss for new connections** — at every instant of the reload, an arriving SYN is taken by some process and
    accepted. Brief queueing in the NIC rx ring or the stack backlog is allowed; RST or silent drop is not.
-   This is the design goal, not an absolute guarantee: a full flow map (after its bounded growth) or an
+   This is the design goal, not an absolute guarantee (see also the nginx guide): a full flow map (after its bounded growth) or an
    allocation failure refuses the SYN, the mbuf low watermark drops SYNs, and a full drain ring drops packets
    — all counted and logged (solution-design §10.2 RX-19).
 2. **Graceful drain of existing connections** — in-flight requests on connections established before the reload

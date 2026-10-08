@@ -600,7 +600,7 @@ M6 收尾时登记的可选/遗留项在本轮全部实跑闭环。**RT-11 由�
 
 **(9) 2026-10-08 交叉审核同步（对 HEAD eb6b32c82）**
 
-- **结项状态**：M6 终门禁 G-F 于 2026-09-23 **正式结项**（`work/recheck-20260921/formal-close-20260923.md`，被测 HEAD ca5dcb03b）。此后 09-24~09-30 又有约 55 个提交改动了 drain 起点、flow-map 准入与 revoke、USR2 drain 分支和测试资产，这些只有局部回归证据；本轮在 HEAD eb6b32c82（加本轮修复）上补做了完整回归，结果见 [08] §2.3.2、§2.3.3、[09] §28。
+- **结项状态**：M6 终门禁 G-F 于 2026-09-23 **正式结项**（`work/recheck-20260921/formal-close-20260923.md`，被测 HEAD ca5dcb03b）。此后 09-24~09-30 又有 57 个提交改动了 drain 起点、flow-map 准入与 revoke、USR2 drain 分支和测试资产，这些只有局部回归证据；本轮在 HEAD eb6b32c82（加本轮修复）上补做了完整回归，结果见 [08] §2.3.2、§2.3.3、[09] §28。
 - **09-24 后新增、此前未登记的用例**：`rt24`（`flip_fail_once`：首轮 abort 后同一 master 再 HUP 一次必须成功）、`rt25`（USR2 + WINCH，带长连接流量，是 RT-04 的 harness 落点）、`rt26`（`synack_fail`：SYN-ACK 发不出去时撤销准入，并以计数器证明）、`rt30`/`rt31`（PT-NR-01/02 性能基线）。故障名新增 `flip_fail_once`、`synack_fail`。
 - **drain 起点**：见 C-NR-405 的 2026-10-08 现行口径；C-NR-312「延迟 close listening 至 syncache 排空」仍成立，但宽限期为 3 s，超过后不再等半开条目。
 - **验收口径**：drain 开始时主动关闭空闲 keepalive，所以长连接探针每条连接每轮会被关闭一次，「无损」的现行判据是新建请求 0 失败（`fresh_fail=0`）加每连接关闭次数有界（`fail/reconnects ≤ conns`，USR2 两轮为 2×conns；只用于会经历 drain 的长连接用例，其余用例仍要求 fail=0），详见 [08] §2.3.2、§2.3.3。

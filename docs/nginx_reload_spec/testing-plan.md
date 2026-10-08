@@ -123,7 +123,8 @@ not a per-connection one. The bound applies only to the long-connection cases th
 rt26, rt31; usr2 mode: rt25); baseline, rv9 and rt12 keep the default criterion `fail=0`, `reconnects=0`. Streams: all of `ok`, `md5_ok`, `eof_clean` equal `streams`, no stall over 3 s.
 `hup_once()`: exactly one completion, exactly 6 FSM transitions, no illegal event, worker count restored. rv9:
 fails on rtemap slope > 0.05, rtemap range > 32, hugepage drop > 64, rtemap ≠ 0 after stop, or > 32 hugepages
-unreclaimed. gr0: longest outage within 0.3–2.5 s and no reload log line. rt02: drain ≥ 100 ms. rt24: round 2
+unreclaimed. gr0: longest outage within 0.3–2.5 s and no reload log line (no probe data with no reload log line is SKIP,
+aggregate exit code 6). rt02: drain ≥ 100 ms. rt24: round 2
 drain ≤ 15000 ms. The gendir MP integration test must run through `make -C tests/integration test`, and no
 built source file may change while the harness runs (the build-identity gate then refuses to start a stack).
 
@@ -132,6 +133,7 @@ no fault hooks; full table in the Chinese 08 §2.3.3). Production IPv4 on the co
 baseline, rt01, rt02, gr0, rt23, rt25, rt30, rt31 all PASS; IPv6: precheck, rt01, rv9 100 rounds PASS
 (`ok=100/100`, `fresh_fail=0`, flat rtemap). Fault-injection build F: rt20, rt20b, rt21, rt22, rt24, rt26 all
 PASS. The restored production build E repeated precheck, rt01, rt23 and rt12 (with the KNI management plane) and
-IPv4 rv9 100 rounds (`ok=100/100`, flat rtemap): all PASS. A batch on an intermediate
+IPv4 rv9 100 rounds (`ok=100/100`, flat rtemap): all PASS. Build G2 (comment-only follow-up to late reviews;
+the nginx binary hash is unchanged) repeated precheck, rt01, rt02 and rt23: all PASS. A batch on an intermediate
 build was voided because a source comment was edited during the run and the build-identity gate refused to
 start the remaining stacks.

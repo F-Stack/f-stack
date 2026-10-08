@@ -241,7 +241,7 @@ f-stack-client（客户端机，8 核，ssh 可达）
 - **rt23（重入）**：自己解析本用例 errlog——恰好 6 次转移、恰好 1 次 `T0_IDLE -> T1_GNEW_SPAWN`、恰好 1 条完成行；拒绝串必须是 `graceful reload rejected: previous reload still in progress (state T3_DRAIN)`；第二次 HUP 等到 T3 转移行出现后再发（不再固定 sleep 5 s）；流探针结果走 `check_summary stream`。
 - **rt25（USR2）**：`drain_before_quit` 只统计 `ff usr2: handed rx` 之后的日志行（前置 HUP 那一轮的 drain 不计）。
 - **rv9 百轮**：每轮必须完成；`rtemap` 斜率 > 0.05、`rtemap` 极差 > 32、大页相对基线下降 > 64、停栈后 `rtemap ≠ 0`、停栈后大页未回收 > 32，任一成立即 FAIL。
-- **gr0（graceful_reload=0 回归）**：最长中断窗口必须在 0.3–2.5 s 之间，且 reload 日志行数为 0。gr0 只发 HUP，不覆盖 `=0` 下的 USR2。
+- **gr0（graceful_reload=0 回归）**：最长中断窗口必须在 0.3–2.5 s 之间，且 reload 日志行数为 0；探针没有数据而 reload 日志行数为 0 时记 SKIP（聚合退出码为 6）。gr0 只发 HUP，不覆盖 `=0` 下的 USR2。
 - **rt02 drain 下限**：`drain ≥ 100 ms`，防止流量没有真正经过 drain 也判 PASS。
 - **rt24**：第 1 轮 60 s 内出现 abort 签名；第 2 轮 120 s 内完成，`drain ≤ 15000 ms`，出现 `T5 -> T0`，worker 数回到配置值，长连接走 perf 判据。
 - **gendir MP 集成测试**：必须用 `make -C tests/integration test` 运行；直接执行二进制会在 `/dev/hugepages` 留下 `ff_gendir_mpmap_*` 残留（2026-10-08 实测 256 个文件、512 MB，已用受控脚本清理）。
@@ -264,6 +264,7 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | F | 故障注入；D + L-04 注释 | rt20（ready_never）、rt20b（ready_delay 15 s）、rt21（flip_fail）、rt22（park_never）、rt24（flip_fail_once）、rt26（synack_fail） | **6/6 PASS** | 各故障签名命中，worker 数保持 2；abort 类用例 LC fail=0；rt20b/rt26 LC fail=12 reconnects=12 fresh_fail=0；rt24 第 1 轮 abort、第 2 轮 drain 1000 ms 完成且出现 T5→T0；rt26 synack_fail=4 revoked=2。rt24 首跑判 PASS，但收尾时 harness 自身的进程监管器因读 `/proc/<pid>/exe` 撞上已退出子进程的 EACCES 而中止（退出码 125，仪表缺陷，非产品问题），修正 `reload_supervisor.py` 并补 2 条单测后复跑 PASS、failed=0、退出码 0 |
 | E | 生产；最终源码（与提交一致） | IPv4：precheck、rt01、rt23；rt12（KNI，`--kernel-nic-ip`，veth0 由环境脚本配址） | **4/4 PASS** | 恢复构建上的终验：rt01 fsm=6/6；rt23 fsm=6/6 rounds=1，streams=36 全部完整；rt12 veth 前后都在、ping_client=ok、control_http=200、fresh_fail=0。单测 UT_RC=0，harness 单测 53 OK，集成 4/4 |
 | E | 同上 | IPv4 rv9 100 轮（提交后补跑，manifest 按新 HEAD 重签，源码与二进制逐项相同） | **PASS** | ok=100/100 bad=0，rtemap 恒 138、斜率 0，停栈后大页 2048，fresh_n=7947 fresh_fail=0 |
+| G2 | 生产；E + 迟到审核意见的注释清理（只改注释，nginx 二进制 sha 与改前相同） | IPv4：precheck、rt01、rt02、rt23 | **4/4 PASS** | rt01 fsm=6/6；rt02/rt23 streams=36 ok=36 md5_ok=36 eof_clean=36 stalls=0；UT_RC=0，harness 单测 53 OK，集成 4/4 |
 
 未执行：rt13（永久排除）。RT-00/03/05~09/11/14/15 等没有 harness 落点的历史一次性用例，本轮没有重跑。
 
