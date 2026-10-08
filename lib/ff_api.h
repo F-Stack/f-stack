@@ -318,8 +318,8 @@ void ff_regist_packet_dispatcher(dispatch_func_t func);
 /* Register a packet dispatch function with context support */
 void ff_regist_packet_dispatcher_context(dispatch_func_context_t func);
 
-/* Unregister the packet dispatch callbacks (: the new generation
- * unregisters once the drain rings have been confirmed empty). Idempotent —
+/* Unregister the packet dispatch callbacks (the new generation retires
+ * them once the reload window has closed). Idempotent —
  * calling it with no callback registered is a no-op. */
 void ff_unregist_packet_dispatcher(void);
 void ff_unregist_packet_dispatcher_context(void);
@@ -348,10 +348,11 @@ int ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id);
  * answer that question on its own.
  *
  * Entry timing: a flow is recorded when its SYN is admitted, before the
- * SYN-ACK goes out, NOT when accept() returns (2026-09-28 A1). The third handshake ACK arrives while the connection is still
- * half-open; recording at accept() time would let that ACK miss the table and
- * be forwarded to a generation that has no syncache entry for it, which would
- * reset every connection established across the handover.
+ * SYN-ACK goes out, NOT when accept() returns. The third handshake ACK
+ * arrives while the connection is still half-open; recording at accept()
+ * time would let that ACK miss the table and be forwarded to a generation
+ * that has no syncache entry for it, which would reset every connection
+ * established across the handover.
  *
  * The table is process-local (each generation keeps its own), so there is no
  * shared memory and no cross-process locking. Addresses and ports are stored

@@ -143,8 +143,8 @@ ngx_ff_reload_fsm_event(int event)
     case NGX_FF_RELOAD_T3_DRAIN:
         /* G_new owns rx/tx/listen; G_old is parked in no-hw
          * drain mode (forwarded misses via drain_rx, outgoing packets
-         * via drain_tx). Drain completion (EV_DRAIN_DONE) is
-         * */
+         * via drain_tx). Drain completion (EV_DRAIN_DONE) is raised by
+         * the master's T3 check. */
         break;
 
     case NGX_FF_RELOAD_T0_IDLE:

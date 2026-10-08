@@ -432,8 +432,8 @@ syncache_insert(struct syncache *sc, struct syncache_head *sch)
  * draining generation).
  *
  * Called with no inp, syncache or pcbinfo lock held and under NET_EPOCH, so
- * it must stay non-blocking: ff_flow_map_insert() allocates only the first
- * time a window opens and never sleeps.
+ * it must stay non-blocking: ff_flow_map_insert() never sleeps; it only
+ * allocates when a window opens or the table has to grow (bounded).
  */
 static void
 syncache_flow_key(const struct syncache *sc, struct ff_flow_key *key)

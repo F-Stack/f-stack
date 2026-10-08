@@ -402,7 +402,7 @@ ff_reload_gendir_user_add(uint32_t epoch, int gen)
     }
 
     /* Claim a free entry or one left by a process that is gone: its pid is
-     * the proof that it can no longer poll anything ((2)). */
+     * the proof that it can no longer poll anything. */
     for (i = 0; i < FF_RELOAD_GENDIR_USER_MAX; i++) {
         uint32_t expect;
 
@@ -510,12 +510,10 @@ ff_reload_gendir_users_active(uint32_t epoch, int gen)
     return n;
 }
 
-/* Local copy of the liveness test: ff_reload.c must stay linkable without
- * the DPDK-dependent directory module (tools and ff_config unit tests pull
- * this object alone). */
-/* One liveness authority for both slot masters and hardware users: pid 0 is
- * unused, a zombie still answers kill(0) but nginx has already reaped its
- * master by then, and EPERM (another user's process) means alive. */
+/* Local copy of the directory module's liveness test, so this object links
+ * without it (tools and ff_config unit tests). pid 0 is unused, a zombie
+ * still answers kill(0) but nginx has already reaped its master by then,
+ * and EPERM (another user's process) means alive. */
 static int
 reload_pid_alive(uint32_t pid)
 {
@@ -524,16 +522,38 @@ reload_pid_alive(uint32_t pid)
     return kill((pid_t)pid, 0) == 0 || errno == EPERM;
 }
 
+static uint64_t dir_now_ms(void);
+
+#define EPOCH_SLOT_PROBE_TTL_MS  50
+
+/* A dead master's slot stays LIVE until recycled, so the pid probe is
+ * cached per slot to keep kill(2) off hot callers. Single-threaded by
+ * contract: graceful_reload=1 rejects thread_mode=1. */
 static int
 epoch_slot_live(struct ff_reload_gendir *d, unsigned i)
 {
+    static struct {
+        uint32_t pid;
+        int alive;
+        uint64_t at_ms;
+    } probe[FF_RELOAD_EPOCH_SLOT_MAX];
     uint32_t pid, st;
+    uint64_t now;
 
+    if (i >= FF_RELOAD_EPOCH_SLOT_MAX)
+        return 0;
     st = __atomic_load_n(&d->slot[i].state, __ATOMIC_SEQ_CST);
     if (st != FF_RELOAD_SLOT_LIVE)
         return 0;
     pid = __atomic_load_n(&d->slot[i].master_pid, __ATOMIC_SEQ_CST);
-    return reload_pid_alive(pid);
+    now = dir_now_ms();
+    if (now == 0 || probe[i].pid != pid
+        || now - probe[i].at_ms >= EPOCH_SLOT_PROBE_TTL_MS) {
+        probe[i].pid = pid;
+        probe[i].alive = reload_pid_alive(pid);
+        probe[i].at_ms = now;
+    }
+    return probe[i].alive;
 }
 
 static uint64_t
@@ -748,7 +768,7 @@ ff_reload_peer_coord(uint32_t *epoch, int *gen)
     /* while THIS master runs its own reload window the peer is the
      * intra-master generation pair (the fallback below), never a foreign
      * epoch — a coexisting master's slot must not capture the drain rings
-     * of an round. Outside a window (steady state, USR2 handover) the
+     * of an in-master round. Outside a window (steady state, USR2 handover) the
      * newest foreign epoch is the peer. */
     if (d != NULL && !ff_reload_hw_locked()) {
         for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
@@ -1093,17 +1113,12 @@ ff_reload_rx_stopped_set(int stopped)
 }
 
 int
-ff_no_hw_mode(void)
+ff_no_hw_mode_nosync(void)
 {
     int owner, stopped;
 
     if (!ff_global_cfg.dpdk.graceful_reload)
         return 0;
-
-    /* publish this master's decision into the cross-master directory
-     * before deciding. It can only ever narrow the verdict below, never
-     * widen it, so a directory lag costs one parked pass at most. */
-    ff_reload_dir_sync();
 
     /* read rx_stopped BEFORE rx_owner_gen. The two loads are
      * separate atomics, so a preemption between them can pair values that
@@ -1129,6 +1144,19 @@ ff_no_hw_mode(void)
     /* the directory is the cross-master authority — two masters with
      * the same gen must never both come back "unparked" here. */
     return !dir_allows_hw();
+}
+
+int
+ff_no_hw_mode(void)
+{
+    if (!ff_global_cfg.dpdk.graceful_reload)
+        return 0;
+
+    /* publish this master's decision into the cross-master directory
+     * before deciding. It can only ever narrow the verdict, never widen
+     * it, so a directory lag costs one parked pass at most. */
+    ff_reload_dir_sync();
+    return ff_no_hw_mode_nosync();
 }
 
 int
@@ -1353,7 +1381,7 @@ ff_reload_handover_ack(void)
     word = ((uint64_t)epoch << 32) | 1u;
     __atomic_store_n(&g_reload_state->rx_parked[g_reload_slot], word,
         __ATOMIC_SEQ_CST);
-    /* ((1)): the ack is the positive proof that this process is
+    /* the ack is the positive proof that this process is
      * out of the hardware, so it is also what a takeover in the directory
      * waits for. */
     ff_reload_gendir_user_stop(ff_reload_epoch(), ff_reload_gen());

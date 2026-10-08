@@ -551,7 +551,7 @@ struct rib_subscription *rib_subscribe_internal(struct rib_head *rnh, void (*cb)
  * NULL, which caused rib_add_route() -> add_route_byinfo() to bail out
  * with ENOBUFS (errno 55) — making ff_veth_setaddr() and
  * ifa_maintain_loopback_route() always fail, so f-stack-0 never got
- * `inet 9.134.214.176`.
+ * `inet <DPDK_NIC_IP>`.
  *
  * Real implementations now come from route_rtentry.o (added to
  * VM/NET_SRCS in lib/Makefile in the same change). The functions

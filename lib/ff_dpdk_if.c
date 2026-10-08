@@ -2609,11 +2609,11 @@ ff_fanout_neighbour(uint16_t port_id, uint16_t queue_id,
      * drains them), yet the parked generation still needs neighbour
      * resolution for the connections it is draining — this clone is its
      * only source. Guarded by !pkts_from_ring and by the
-     * reload window (outside it there is no draining peer to feed;:
-     * a cross-master USR2 peer counts as one).
-     * ff_app_mbuf_pool per; the peer frees the clone. */
+     * reload window (outside it there is no draining peer to feed;
+     * a cross-master USR2 peer counts as one). The clone comes from
+     * ff_app_mbuf_pool; the peer frees it. */
     if (!pkts_from_ring && ff_global_cfg.dpdk.graceful_reload
-        && (ff_reload_hw_locked() || ff_reload_peer_draining())
+        && (ff_reload_hw_locked() || ff_reload_peer_mirror_draining())
         && ff_drain_ring_ready()) {
         int dst_gen = ff_drain_ring_peer_gen();
 
@@ -2715,9 +2715,9 @@ ff_dpdk_process_packets(uint16_t port_id, uint16_t queue_id,
                  * one free: on a full ring, or outside a reload window,
                  * drop + count instead of leaking into an unconsumed ring.
                  * A drop beats a RST here: retransmits retry once the
-                 * draining generation catches up. (USR2): the
+                 * draining generation catches up. Under USR2 the
                  * window is the block's OR a live cross-master peer. */
-                if ((ff_reload_hw_locked() || ff_reload_peer_draining())
+                if ((ff_reload_hw_locked() || ff_reload_peer_mirror_draining())
                     && ff_drain_ring_rx_enqueue(port_id, queue_id,
                         ff_drain_ring_peer_gen(), rtem) == 0) {
                     continue;
@@ -3166,7 +3166,7 @@ send_burst(struct lcore_conf *qconf, uint16_t n, uint8_t port)
      * which virtio is not). This single guard covers all five paths that
      * can stage packets, including FF_DISPATCH_RESPONSE and
      * FF_USE_PAGE_ARRAY builds. */
-    if (unlikely(ff_no_hw_mode())) {
+    if (unlikely(ff_no_hw_mode_nosync())) {
         uint16_t i;
         uint16_t dropped = 0;
         for (i = 0; i < n; i++) {
@@ -3239,7 +3239,7 @@ ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m,
      * the result to this generation's drain_tx ring (the bsd mbuf itself
      * cannot cross a process boundary, hence divert only after the
      * conversion). */
-    const int no_hw = ff_no_hw_mode();
+    const int no_hw = ff_no_hw_mode_nosync();
 
     if (unlikely(ctx == NULL)) {
         ff_traffic.tx_dropped++;
@@ -3451,7 +3451,7 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
         cur = NULL;
     }
 
-    if (unlikely(ff_no_hw_mode())) {
+    if (unlikely(ff_no_hw_mode_nosync())) {
         /* raw sends of a parked generation go through the drain
          * ring like every other outgoing packet. */
         struct lcore_conf *qconf = ff_cur_lcore_conf();
@@ -3462,14 +3462,14 @@ ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id)
     return send_single_packet(head, port_id);
 }
 
-/* /406: ~1 Hz reload-plane housekeeping, run from
+/* ~1 Hz reload-plane housekeeping, run from
  * main_loop. All off the per-packet path:
  * the draining generation publishes per-slot drain progress for the
  * master (its DRAIN_DONE wait polls it);
  * the generation that has taken over retires its reload data plane
  * once the window is closed (all G_old gone by then): flow map,
- * dispatcher callback and drain rings, so steady state carries zero
- * reload overhead. The drain rings re-attach when the next window
+ * dispatcher callback and drain rings, so steady state carries no
+ * flow-map or drain-ring cost. The drain rings re-attach when the next window
  * opens — this very process needs them as the drainer in that round;
  * drain-ring counters and watermarks flush to the shared block. */
 static void
@@ -3551,7 +3551,7 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
     }
 
     /* retire the reload data plane in steady state, re-arm the
-     * drain rings when a new window opens. (USR2): the directory
+     * drain rings when a new window opens. Under USR2 the directory
      * peer is a window equivalent for the data plane — a fresh master's
      * block never opens one, yet both sides need the plane from the WINCH
      * handover until the old generation's last worker is gone (stale slot
@@ -3922,7 +3922,7 @@ main_loop(void *arg)
                      * armed any (it retired them at the previous round's
                      * completion) — nothing to tear down on this side. */
                     ff_reload_drain_reclaim_mark();
-                    /* ((3)): the stall itself is the evidence
+                    /* the stall itself is the evidence
                      * here — the owner never parked but has not advanced
                      * its heartbeat for a full timeout. Counted, so the
                      * forced takeover is visible instead of silent. */

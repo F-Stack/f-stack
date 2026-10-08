@@ -244,8 +244,8 @@ struct ff_reload_gendir {
     struct ff_reload_epoch_slot slot[FF_RELOAD_EPOCH_SLOT_MAX];
 
     /* takeover accounting + hardware-user table. */
-    uint32_t reclaim_refused;   /* C-P2-3: takeover refused, proof missing */
-    uint32_t reclaim_forced;    /* C-P2-2(3): heartbeat-stall takeover */
+    uint32_t reclaim_refused;   /* takeover refused, proof missing */
+    uint32_t reclaim_forced;    /* heartbeat-stall takeover */
     uint32_t _pad2[2];
     struct ff_reload_hw_user user[FF_RELOAD_GENDIR_USER_MAX];
 };
@@ -254,7 +254,7 @@ struct ff_reload_gendir {
  * MAP_SHARED block created by the master right after the main block, so
  * every child inherits both the mapping and the lib-side pointer through
  * fork(). Carries the per-worker drain progress the master polls during
- * T3 (: shared words, not msg_ring — the master runs no ff loop)
+ * T3 (shared words, not msg_ring — the master runs no ff loop)
  * plus cumulative drain-plane counters for the completion summary. */
 #define FF_RELOAD_DRAIN_MAGIC  0x46524C44U  /* "FRLD" */
 
@@ -464,7 +464,7 @@ void ff_reload_gendir_retire(void);
  * before use. Only the process that won the slot CAS ever sees 1, so the
  * drain has exactly one actor. */
 int  ff_reload_gendir_reset_pending(void);
-/* Same verdict without consuming it (: slot reset is gated on the
+/* Same verdict without consuming it (slot reset is gated on the
  * orphan-user proof as well). */
 int  ff_reload_gendir_reset_pending_peek(void);
 /* Newest live (epoch, gen) other than this process's; 0 when there is
@@ -521,6 +521,9 @@ void ff_reload_rx_stopped_set(int stopped);
 /* seam: 1 while this process must not touch the hardware.
  * Reversible — it is derived from rx_owner_gen/rx_stopped, never latched. */
 int  ff_no_hw_mode(void);
+/* Same verdict without the directory sync, for per-packet tx callers; the
+ * main loop syncs once per pass. */
+int  ff_no_hw_mode_nosync(void);
 
 /* Yielding side: park, then hand the hardware to gen. Returns 0 on success,
  * FF_RELOAD_HANDOVER_INVAL on bad arguments. */

@@ -420,7 +420,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
                 /* graceful_reload=1 reloads in the native order
                  * (fork G_new -> wait FF_RELOAD_READY -> [same-era
                  * handover] -> QUIT G_old), with re-entry protection
-                 * (: a HUP while T1.T5 is in flight is rejected
+                 * (a HUP while T1..T5 is in flight is rejected
                  * and logged). graceful_reload=0 keeps the legacy two-phase
                  * block below byte-for-byte. */
                 ngx_reconfigure = 0;
@@ -851,8 +851,8 @@ ngx_ff_slim_primary_ensure(ngx_cycle_t *cycle)
  *
  * ngx_ff_reload_hup runs inside the master's reconfigure branch:
  * T0 --HUP--> T1 fork G_new (JUST_RESPAWN) -> bounded wait for
- * FF_RELOAD_READY from every G_new worker -> T2/T3 (placeholders,
- * driven straight through) -> T4 -> QUIT G_old only (just_spawn children
+ * FF_RELOAD_READY from every G_new worker -> T2 park + rx flip -> T3
+ * asynchronous drain wait -> T4 -> QUIT G_old only (just_spawn children
  * are skipped by ngx_signal_worker_processes) -> T5.
  * T5 completion is asynchronous: ngx_ff_reload_wait_or_check is called from
  * the master loop after every ngx_reap_children() and closes the round when
@@ -1122,8 +1122,8 @@ ngx_ff_reload_wait_ready(ngx_cycle_t *cycle)
  * 5. all acked -> ff_reload_rx_release() flips the ownership in the
  * safe order and ff_queue_handover_mutex() (already satisfied)
  * clears rx_stopped, so G_new's main loops resume rx/tx on their
- * next pass while G_old stays parked permanently (: reversible
- * — 's rx return just writes the markers back).
+ * next pass while G_old stays parked (reversible: an rx return just
+ * writes the markers back).
  *
  * Listen need no explicit takeover: both generations listen from their
  * own init; whoever owns rx accepts. KNI runtime ownership follows the
@@ -1474,7 +1474,7 @@ ngx_ff_reload_quit_gold(ngx_cycle_t *cycle)
  * master-loop pass (the watchdog wakes the loop every second). DRAIN_DONE
  * needs every live G_old worker's report to show zero open connections,
  * an empty send backlog and no half-open syncache entries
- * (: the forwarding window must outlive late final ACKs); dead slots
+ * (the forwarding window must outlive late final ACKs); dead slots
  * count as drained (probed, not assumed). Forced through once the drain
  * exceeds worker_shutdown_timeout (the T5 escalation constant when the
  * directive is off) so a stuck round can never wedge re-entry forever. */
@@ -1683,7 +1683,7 @@ ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
 
     if (state != NGX_FF_RELOAD_T5_GOLD_QUIT) {
 
-        /* defensive disarm if T5 was left by any other path (: the
+        /* defensive disarm if T5 was left by any other path (the
          * disarm only fires for a timer this module armed) */
         ngx_ff_reload_watchdog_disarm();
         ngx_ff_reload_t5_start = 0;
@@ -3088,7 +3088,7 @@ ngx_worker_process_cycle_loop(void *arg)
                 /* 90s drain fix: past the grace the remaining entry cannot
                  * complete any more (see NGX_FF_SYNCACHE_GRACE_MS), so stop
                  * holding the listeners -- and with them T3 -- open for it.
-                 * 's cap still bounds the pathological refill case. */
+                 * The drain cap still bounds the pathological refill case. */
                 ngx_ff_listen_close_pending = 0;
                 ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                               "ff drain: syncache wait capped at %M ms "

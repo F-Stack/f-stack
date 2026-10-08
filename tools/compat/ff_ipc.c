@@ -301,7 +301,7 @@ ff_parse_epoch(const char *arg)
     return (uint32_t)epoch;
 }
 
-/* "<gen>[:<epoch>]" —: the epoch is what tells apart the same
+/* "<gen>[:<epoch>]" — the epoch is what tells apart the same
  * generation number running under two different masters. */
 static void
 ff_parse_gen(const char *arg)

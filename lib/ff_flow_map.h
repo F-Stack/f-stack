@@ -84,9 +84,9 @@ int ff_flow_map_revoke(const struct ff_flow_key *key);
 /* record a flow as "this generation" BEFORE its SYN-ACK is
  * sent, so the third handshake ACK is classified by the dispatcher instead
  * of being forwarded to the draining generation. Idempotent: a repeated key
- * returns 1 instead of taking a second entry. Never blocks, never sleeps and
- * never takes any stack lock (it runs under NET_EPOCH with the inp/syncache
- * locks already dropped).
+ * returns 1 instead of taking a second entry. Never sleeps and never takes
+ * any stack lock (it runs under NET_EPOCH with the inp/syncache locks already
+ * dropped); a full table may grow in place (calloc + rehash, bounded).
  * Returns 0 recorded, 1 already present, <0 on error / table full.
  * The entry is visible to ff_flow_map_lookup() right away. A SYN-ACK that
  * fails to go out is undone by the caller through ff_flow_map_revoke(),

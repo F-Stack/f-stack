@@ -339,8 +339,8 @@ ff_init_with_args(const char *conf, int proc_id, const char *proc_type)
 
 /* flow-map classification callback of the NEW generation.
  *
- * Registered by the target generation's workers once their ff stack is up
- * and kept across rounds. Only TCP/UDP over
+ * Registered by the target generation's workers once their ff stack is up;
+ * the library retires it when the reload window closes. Only TCP/UDP over
  * IPv4/IPv6 participates in flow ownership; ARP/NDP/ICMP/fragments and
  * anything unparseable stay on the local stack (the ARP/NDP clone to the
  * old generation happens inside ff_dpdk_if.c,). A flow-map hit
@@ -442,8 +442,9 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
      * from being fed new flows for the whole drain/exit window (the S7'
      * root cause: conns/snd_pending/syncache refilled in turn, so their
      * AND is never satisfiable). The syncache hook records the four-tuple
-     * at SYN-ACK time, so the third ACK of the handshake hits this table
-     * and the connection completes here. Every other miss is a packet of
+     * when the SYN is admitted, before the SYN-ACK, so the third ACK hits
+     * this table and the connection completes here. Every other miss is a
+     * packet of
      * an already established flow and keeps the peer-forward semantics.
      * Checked before the key is assembled and hashed: a brand-new flow
      * cannot be in the table, and both orders return the local queue. */

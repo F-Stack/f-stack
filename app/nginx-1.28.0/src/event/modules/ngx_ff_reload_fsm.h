@@ -13,8 +13,8 @@
  *
  * The T2 handover is real (park barrier + rx ownership flip, driven from
  * ngx_process_cycle.c); T3 side effects on the worker side (flow-map
- * callback, drain rings) were armed at G_new init. The T3 -> T4 drain
- * confirmation is still a placeholder.
+ * callback, drain rings) were armed at G_new init. T3 -> T4 waits for the
+ * drain reports of G_old (ngx_ff_reload_t3_check).
  */
 
 #ifndef _NGX_FF_RELOAD_FSM_H_INCLUDED_
