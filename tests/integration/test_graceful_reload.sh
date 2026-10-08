@@ -19,6 +19,7 @@
 #   3        environment precondition not met (three-check gate)
 #   4        required dependency missing
 #   5        aborted (signal or internal failure)
+#   6        no case failed, but some were SKIP or LIMITED
 #
 # No address is stored in this file. TARGET_IP is a mandatory argument; use
 # the placeholders <DPDK_NIC_IP> / <CLIENT_IP> / <KERNEL_NIC_IP> in reports.
@@ -927,8 +928,7 @@ do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [
                 || { stop_stack "$tag" "$conf"; return 1; }
             HUP_ANCHOR_LINE=$(wait_probe_progress LC_PROGRESS "$HUP_ANCHOR_SEC" \
                 "$HUP_ANCHOR_COUNT" 60) \
-                || { say "$tag: lc probe never reached the HUP anchor "
-                     "(${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"
+                || { say "$tag: lc probe never reached the HUP anchor (${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"
                      stop_stack "$tag" "$conf"; return 1; }
             say "$tag: HUP anchored at: $HUP_ANCHOR_LINE" ;;
         cps)

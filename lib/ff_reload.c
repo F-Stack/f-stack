@@ -596,7 +596,7 @@ epoch_live(struct ff_reload_gendir *d, uint32_t epoch)
     return 0;
 }
 
-/* (USR2): a slot whose master pid is gone but whose workers still
+/* Under USR2, a slot whose master pid is gone but whose workers still
  * refresh the stamp — the drain window between "old master quit" and
  * "last old worker exited". Workers exit with exit(0) and cannot run any
  * teardown, so the stamp going stale is the only death notice this side
@@ -995,7 +995,7 @@ ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
         __atomic_store_n(&d->rx_stopped, 0u, __ATOMIC_SEQ_CST);
         return FF_RELOAD_HANDOVER_OK;
     }
-    /* (1) /: only a dead owner may be displaced. */
+    /* Only a dead owner may be displaced. */
     if (epoch_live(d, (uint32_t)(cur >> 32)))
         return FF_RELOAD_HANDOVER_BUSY;
     /* a dead master is not enough — the displaced

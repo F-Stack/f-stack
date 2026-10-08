@@ -343,7 +343,7 @@ ff_init_with_args(const char *conf, int proc_id, const char *proc_type)
  * the library retires it when the reload window closes. Only TCP/UDP over
  * IPv4/IPv6 participates in flow ownership; ARP/NDP/ICMP/fragments and
  * anything unparseable stay on the local stack (the ARP/NDP clone to the
- * old generation happens inside ff_dpdk_if.c,). A flow-map hit
+ * old generation happens inside ff_dpdk_if.c). A flow-map hit
  * is a flow opened by this generation; a miss belongs to the old one and
  * is answered FF_DISPATCH_PEER — the library then owns the mbuf end to
  * end (-1: no app-side free, no double free).
@@ -353,7 +353,7 @@ ff_init_with_args(const char *conf, int proc_id, const char *proc_type)
  * packet stays local: the steady state pays one cheap check per packet
  * and behaves exactly like an unregistered dispatcher.
  *
- * (USR2): the window may also be the cross-master one — the block
+ * Under USR2 the window may also be the cross-master one — the block
  * of a fresh master never opens the window, so the peer check below
  * uses the block mirror (a plain shared read refreshed once per loop pass
  * by ff_reload_dir_sync, no directory scan on the per-packet path). */
@@ -436,16 +436,15 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
         return queue_id;                /* non-IP: local */
     }
 
-    /* 4/5/6 common cause: a SYN without the ACK bit is
-     * the first packet of a brand-new connection, so it cannot belong to
-     * the draining generation. Serving it here stops the dying generation
-     * from being fed new flows for the whole drain/exit window (the S7'
-     * root cause: conns/snd_pending/syncache refilled in turn, so their
-     * AND is never satisfiable). The syncache hook records the four-tuple
-     * when the SYN is admitted, before the SYN-ACK, so the third ACK hits
-     * this table and the connection completes here. Every other miss is a
-     * packet of
-     * an already established flow and keeps the peer-forward semantics.
+    /* A SYN without the ACK bit is the first packet of a brand-new
+     * connection, so it cannot belong to the draining generation. Serving
+     * it here stops the dying generation from being fed new flows for the
+     * whole drain/exit window (otherwise conns/snd_pending/syncache refill
+     * in turn and their AND is never satisfiable). The syncache hook
+     * records the four-tuple when the SYN is admitted, before the SYN-ACK,
+     * so the third ACK hits this table and the connection completes here.
+     * Every other miss is a packet of an already established flow and
+     * keeps the peer-forward semantics.
      * Checked before the key is assembled and hashed: a brand-new flow
      * cannot be in the table, and both orders return the local queue. */
     if (proto == 6 && *len >= (uint16_t) (l4 + 14)
@@ -473,9 +472,9 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
  * ff_mod_init after the stack is up — before READY and long before the
  * master hands rx over, so no packet can reach the callback before the
  * table is armed (this generation is parked off the hardware until then).
- * (open at init, not at T3): a parked generation receives no
+ * Arming at init rather than at T3 is safe: a parked generation receives no
  * packets, so arming early is indistinguishable from arming at T3.
- * (USR2): the fresh master's anonymous block never opens the
+ * Under USR2 the fresh master's anonymous block never opens the
  * reload window, so the block-only gate cannot arm its workers. The
  * directory provides the equivalent condition — a peer master epoch that
  * is live or still draining — and arming still happens at init, while

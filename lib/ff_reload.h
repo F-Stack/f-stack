@@ -354,10 +354,10 @@ void     ff_reload_peer_coord(uint32_t *epoch, int *gen);
  * the hardware to across a USR2. 0 means "no peer registered yet". */
 void     ff_reload_peer_block(uint32_t *epoch, uint32_t *gen);
 
-/* (USR2): 1 while another master's epoch is a live or still-draining
+/* Under USR2, 1 while another master's epoch is a live or still-draining
  * counterpart in the directory — the directory equivalent of the per-master
  * reload window (which a fresh master's block never opens). 0 without a
- * directory (=0, tools) and for a lone master. Full
+ * directory (graceful_reload=0, tools) and for a lone master. Full
  * scan, for init / 1 Hz / miss-path callers only. */
 int      ff_reload_peer_draining(void);
 /* Same verdict from the block mirror (refreshed once per main-loop pass by
