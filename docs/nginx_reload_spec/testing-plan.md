@@ -1,9 +1,9 @@
 # Test Plan — Units, Integration, Performance Baselines and Acceptance (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.23). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.25). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (case list, criteria table, coverage boundaries), not a line-by-line translation of all ~500 lines.
-> Revised 2026-09-30.
+> Revised 2026-10-08.
 
 ---
 
@@ -105,3 +105,32 @@ Selected cases:
 - rt26 added with its own criterion (counters, not borrowed from rt30).
 - Long-connection criterion clarified (`keepalive_requests`), probe-progress anchoring recorded, harness
   control-channel fixes recorded.
+
+## 7. Changes in the 2026-10-08 edition (mirror of zh_cn 08 §2.3.0 / §2.3.2 / §2.3.3)
+
+**Harness interface (current).** `tests/integration/test_graceful_reload.sh` has 18 cases (`reload_checks.py:
+CASES`): precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt13, rt20, rt20b, rt21, rt22, rt23, rt24, rt25, rt26,
+rt30, rt31. `-c all` still covers only the first eight minus the permanently excluded rt13. Seven fault names:
+ready_never, ready_delay, park_never, flip_fail, mutex_timeout (manual use only, no case), flip_fail_once,
+synack_fail. Extra options: `--perf-threads/--perf-conns/--perf-duration/--hup-anchor-sec/--hup-anchor-count`,
+`--capture`, `--client-if`. The aggregator also returns exit code 6 (no FAIL but SKIP/LIMITED). RT-04 maps to
+rt25; gr0 covers only the `graceful_reload=0` HUP, not the `=0` USR2.
+
+**Acceptance criteria (current).** Because the drain closes idle keep-alive connections, "lossless" now means:
+zero failed new requests (`fresh_fail=0`) plus a bounded number of closures of existing long connections
+(`fail ≤ conns`, `reconnects ≤ conns`; `2 × conns` for the USR2 case that drains twice). This is a total bound,
+not a per-connection one. The bound applies only to the long-connection cases that go through a drain (perf mode: rt20b, rt24,
+rt26, rt31; usr2 mode: rt25); baseline, rv9 and rt12 keep the default criterion `fail=0`, `reconnects=0`. Streams: all of `ok`, `md5_ok`, `eof_clean` equal `streams`, no stall over 3 s.
+`hup_once()`: exactly one completion, exactly 6 FSM transitions, no illegal event, worker count restored. rv9:
+fails on rtemap slope > 0.05, rtemap range > 32, hugepage drop > 64, rtemap ≠ 0 after stop, or > 32 hugepages
+unreclaimed. gr0: longest outage within 0.3–2.5 s and no reload log line. rt02: drain ≥ 100 ms. rt24: round 2
+drain ≤ 15000 ms. The gendir MP integration test must run through `make -C tests/integration test`, and no
+built source file may change while the harness runs (the build-identity gate then refuses to start a stack).
+
+**2026-10-08 runtime results** (every build clean, lib warnings equal to the baseline, production builds with
+no fault hooks; full table in the Chinese 08 §2.3.3). Production IPv4 on the code-final build D: precheck,
+baseline, rt01, rt02, gr0, rt23, rt25, rt30, rt31 all PASS; IPv6: precheck, rt01, rv9 100 rounds PASS
+(`ok=100/100`, `fresh_fail=0`, flat rtemap). Fault-injection build F: rt20, rt20b, rt21, rt22, rt24, rt26 all
+PASS. The restored production build E repeated precheck, rt01, rt23 and rt12 (with the KNI management plane): all PASS. A batch on an intermediate
+build was voided because a source comment was edited during the run and the build-identity gate refused to
+start the remaining stacks.

@@ -1,9 +1,9 @@
 # Independent Gate Audit Report — Specification Set 00–08 (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.14). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.16). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (audit scope, gates, findings and closure), not a line-by-line translation of all ~900 lines.
-> Revised 2026-09-30.
+> Revised 2026-10-08.
 
 ---
 
@@ -25,14 +25,15 @@ path (which gate the work goes back to).
 | **G-D** | Chinese text, historical state, test mapping and architecture consistent; **English translation review after functional acceptance** | D revises |
 | **G-F** | all in-scope problems closed; recovery / stash / commit / agent final state checked | back to the corresponding stage; no unhealthy ending |
 
-**G-D status (2026-09-30): done.** The English edition was refreshed from the current Chinese sources
+**G-D status (2026-10-08): done** — the 2026-10-08 sync was reviewed by R4′ (one bounce, three fixes) and
+rechecked by R4″. **G-D status (2026-09-30): done.** The English edition was refreshed from the current Chinese sources
 (00 v1.9.11, 06 v1.9.16, 07 v1.27, 08 v1.23, 09 v1.9.14), and English mirrors of the specification documents
 were added next to the Chinese ones.
 
 ## 3. Evidence-chain spot checks
 
 Spot checks cover the load-bearing claims: the absence of established-connection migration precedent, the
-queue-ownership decoupling precondition, the "ready before cut-over" pattern, the退役 of the ping-pong lcore
+queue-ownership decoupling precondition, the "ready before cut-over" pattern, the retirement of the ping-pong lcore
 segment, and the self-driven hardclock necessity that follows from D-A.
 
 ## 4. Consistency and completeness
@@ -60,8 +61,41 @@ The most recent additions concern the flow-map admission: the insertion point is
 SYN-ACK**, the admission rule is a single authority that can refuse a SYN, and a failed SYN-ACK undoes the
 admission. All three are now asserted on a real machine.
 
-## 7. Changes since the previous English edition (2026-09-22)
+## 7. Changes in the 2026-09-30 edition (relative to 2026-09-22)
 
 - G-D recorded as done, with the refreshed English edition and the English mirrors.
 - The flow-map admission addenda (insertion point, admission rule, undo on failure) summarised.
 - The orphan half-open entry investigation and the `syncookies_only=1` note registered as known, not open.
+
+## 8. 2026-09-23 formal closure and the 2026-10-08 round (mirror of zh_cn 09 §27/§28)
+
+**Formal closure (2026-09-23).** G-F **PASS, no blocking item** on HEAD `ca5dcb03b`; the seven conditions of the
+preliminary closure and N-UT-01 were all closed. Functional acceptance: production form precheck / rt01 / rt02 /
+gr0 / rt12 / baseline / rv9-IPv4 100 rounds / rt01-IPv6 / rv9-IPv6 100 rounds. Fault cases rt20/rt21/rt22/rt20b
+count only for their fault-path criteria; rt13 is permanently excluded. P-2 and P-13 stayed open.
+
+**2026-10-08 round.** Three read-only auditors (docs/sources, data plane, control plane/tests) cross-checked
+zh_cn 00–09 against HEAD `eb6b32c82`; an independent reviewer de-duplicated and graded the findings (34 items,
+R-01..R-34). The asynchronous team channel stopped delivering results during the delta code review and the
+documentation review, so those were redone by fresh synchronous reviewers (R3′, R4′); no item was reviewed by
+its writer. Highlights:
+
+- **Code fix R-02 (P1).** Every tx packet used to run `ff_reload_dir_sync()`; after a USR2 the dead old master's
+  directory slot stays LIVE, so each tx packet of the new master's workers issued a `kill(pid, 0)`. Now the
+  per-packet tx paths call `ff_no_hw_mode_nosync()`, the neighbour-clone and miss-forward gates read
+  `ff_reload_peer_mirror_draining()`, and the pid probe is cached per slot for 50 ms. Measured with strace on one
+  worker: steady state 0 kill(2); USR2 coexistence about 20/s per worker (intermediate build B with a 1 ms cache: about 1000/s; the final code caches 50 ms).
+- **Harness fixes.** rt23 now parses its own errlog (exactly 6 transitions, one round, refusal in `T3_DRAIN`,
+  stream verdict checked) — this closes **P-2**. `hup_once()` requires exactly 6 transitions and no illegal event.
+  rt25's `drain_before_quit` only looks after the USR2 handover. Early-return branches stop the stack. The unit
+  fixture was updated for the 09-28 validator keys (the formal-close "51 tests OK" no longer held on HEAD).
+  The process supervisor no longer aborts a whole run when `/proc/<pid>/exe` of a child that is just exiting
+  returns EACCES (seen once in rt24; a live process that stays unreadable still fails the run).
+- **P-13 closed** as expected semantics: after an abort the master returns to T0 and keeps running; rt24 shows the
+  same master completing a HUP after an abort.
+- **Documentation.** The 09-30 symbol-anchor conversion had mapped many anchors to unrelated functions; all anchors
+  were re-checked. 06 gained §10 (errata, the R-02 fix, risks registered but not closed), 07/08 the current drain
+  timing and acceptance criteria, 08 a rewritten harness interface, and the three-layer knowledge base a Chinese
+  edition of the graceful reload sections.
+
+Runtime results of the round are listed in the Chinese 09 §28 and in testing-plan §7.

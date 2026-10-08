@@ -3,8 +3,9 @@
 > **Status of this document.** This is the English feature edition. It mirrors the Chinese specification under
 > `docs/nginx_reload_spec/zh_cn/` (00–09). **The Chinese text is authoritative**: where the two differ, the Chinese
 > original governs, and any correction is applied there first and then reflected here.
-> Chinese source versions at this revision: 00 v1.9.11, 06 v1.9.16, 07 v1.27, 08 v1.23, 09 v1.9.14.
-> Previous edition: 2026-09-22 (00 v1.9.9, 06 v1.9.10, 07 v1.22, 08 v1.20). Revised 2026-09-30.
+> Chinese source versions at this revision: 00 v1.9.13, 06 v1.9.18, 07 v1.29, 08 v1.25, 09 v1.9.16.
+> Previous editions: 2026-09-30 (00 v1.9.11, 06 v1.9.16, 07 v1.27, 08 v1.23, 09 v1.9.14) and 2026-09-22.
+> Revised 2026-10-08.
 > IP addresses below are descriptive placeholders (see §7).
 
 ---
@@ -16,8 +17,13 @@ reload that keeps serving traffic across a generation change. Scope:
 
 1. **Zero loss for new connections** — at every instant of the reload, an arriving SYN is taken by some process and
    accepted. Brief queueing in the NIC rx ring or the stack backlog is allowed; RST or silent drop is not.
-2. **Graceful drain of existing connections** — connections established before the reload are served by the old
-   workers until they close naturally (client close or keepalive timeout). During drain, the old workers' TCP timers
+   This is the design goal, not an absolute guarantee: a full flow map (after its bounded growth) or an
+   allocation failure refuses the SYN, the mbuf low watermark drops SYNs, and a full drain ring drops packets
+   — all counted and logged (solution-design §10.2 RX-19).
+2. **Graceful drain of existing connections** — in-flight requests on connections established before the reload
+   are served by the old workers until they complete. **Current behaviour (since 2026-09-28):** the old workers
+   start draining as soon as they lose rx ownership and close their idle keep-alive connections at that point,
+   so a keep-alive client sees one close per reload and reconnects to the new generation. During drain, the old workers' TCP timers
    (RTO / keepalive / delayed ACK) keep running. **Migration of TCP state across processes is explicitly out of scope.**
 3. **Rollback on configuration failure** — aligned with kernel nginx HUP semantics: a configuration that fails to
    parse rolls back and the old configuration keeps running.
@@ -28,7 +34,8 @@ reload that keeps serving traffic across a generation change. Scope:
    rather than nested.
 6. **Lossless in the engineering sense** — following the boundary stated in the HAProxy documentation cited by the
    Chinese spec: connections sitting in a backlog may still be lost with very small probability at the boundary.
-   Acceptance is gated on **zero client errors under load**, not on an absolute claim. (Items 1–4 above are the first
+   Acceptance is gated on **zero failed new requests** (`fresh_fail=0`) plus a bounded number of closures of
+   existing long connections (the drain closes idle keep-alive connections once per reload), not on an absolute claim. (Items 1–4 above are the first
 four of the fifteen target semantics of the Chinese source; item 5 — flow-table windowing and re-entry protection —
 is included here because the runtime evidence in §4 depends on it; item 6 is the engineering-sense boundary.)
 
@@ -77,14 +84,14 @@ Decisions that constrain the design:
 ## 4. Verification performed
 
 Runtime harness: `tests/integration/test_graceful_reload.sh`
-(default cases: precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt13; the rt2x fault cases and rt30/rt31 are opt-in).
+(default cases: precheck, rt01, rv9 (`-c all`: precheck, baseline, rt01, rt02, rv9, gr0, rt12; rt13 is permanently excluded); the rt2x fault cases and rt30/rt31 are opt-in).
 
 | Case | Result (representative) |
 | --- | --- |
 | rt01 (unloaded HUP) | PASS — FSM 6/6, drain ≈1000 ms |
 | rt02 (HUP under 12 active streams) | PASS — drain ≈48 s, 3 waves × 12 streams, `ok=36 md5_ok=36 eof_clean=36 stalls=0` |
 | rv9 (100 reload rounds, IPv4) | PASS — `ok=100/100`, rtemap flat (138→138), hugepages restored (2048) |
-| rt01 / rv9 (IPv6, 20 rounds) | PASS — `ok=20/20`, fresh connections 1949, `fresh_fail=0` |
+| rt01 / rv9 (IPv6, 20 rounds; 100 rounds on 2026-09-23 and again on 2026-10-08) | PASS — `ok=20/20`, fresh connections 1949, `fresh_fail=0` |
 | gr0 (`graceful_reload=0` control) | PASS — longest outage 1.001 s |
 | rt12 (KNI / virtio_user management plane) | PASS — veth survives the reload (`veth_before=1 veth_after=1`); client-side ICMP crosses the KNI path (`ping_client=ok`, the authoritative probe); the server-local ping is recorded only as a weak, local-scope observation (`ping_local=ok(local-scope,weak)`), and `control_http=n/a` |
 | rt13 (zero-copy form) | Excluded by decision — not tested, not supported |
@@ -149,3 +156,11 @@ committed**. Local `config.ini` is not part of any commit.
 | Supervisor control channel | A refused controlled signal is moot once the target is gone, retried once while it is alive, and only a target alive past a short grace fails the run; `exited()` polls instead of using `select()` (which failed with EINVAL once a pidfd number passed `FD_SETSIZE`); failures carry the cause. |
 | Reproducibility | The reload is anchored on the probe's progress; the anchor and the remaining probe time are recorded. |
 | syncookies-only | Registered as a note (not measured) with the parts the code does prove. |
+
+## 9. Changes in the 2026-10-08 edition
+
+- Cross-audit against HEAD `eb6b32c82`; see review-report §8 for the summary and solution-design §10 for the errata.
+- Code fix R-02: the per-packet tx path no longer syncs the generation directory, and a dead master's slot no
+  longer costs one kill(2) per tx packet.
+- The scope item on draining (§1 item 2) now states the idle keep-alive close that the drain performs.
+- P-2 and P-13 are closed.

@@ -1,9 +1,9 @@
 # Milestones — M0 to M7 and the Coding Work List (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/07-milestones.md` (v1.27). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/07-milestones.md` (v1.29). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (numbering, milestone table, coding points, key requirements), not a line-by-line translation of all
-> ~700 lines. Revised 2026-09-30.
+> ~700 lines. Revised 2026-10-08.
 
 ---
 
@@ -61,3 +61,23 @@ M4, 5xx for M5, 6xx for M6). Each work point maps to acceptance criteria (A-NR-x
 - The admission rule and its first automated assertion registered against C-NR-301.
 - The orphan half-open entry investigation registered: the dominant source is the client retransmitting, which
   is generation-agnostic; the A1-specific unbounded source is closed by the undo on failure.
+
+## 5. Changes in the 2026-10-08 edition (mirror of zh_cn 07 §2.7 (9))
+
+- **Status**: M6 was formally closed on 2026-09-23 (evidence baseline `ca5dcb03b`); the 2026-10-08 round re-ran the
+  full matrix on HEAD `eb6b32c82` plus its fixes.
+- **Drain start (C-NR-405, current since 09-28)**: a worker starts draining as soon as its generation loses rx
+  ownership (`ngx_ff_is_draining_generation()` → `ngx_ff_drain_start()`, latched once per round), closes its idle
+  connections then and about once a second afterwards. QUIT still stops accept and closes the listeners late; the
+  listeners wait for half-open entries for at most `min(3 s grace, cap)`, with cap `max(30 s,
+  worker_shutdown_timeout)`. Keep-alive no longer stretches T3 to 90 s; the price is one close per idle keep-alive
+  connection per reload.
+- **Cases registered**: rt24 (`flip_fail_once`, a HUP after an abort must succeed), rt25 (USR2 + WINCH under
+  traffic, the harness home of RT-04), rt26 (`synack_fail`, revoke proven by counters), rt30/rt31 (PT-NR-01/02).
+- **Acceptance**: since the drain closes idle keep-alive connections, "lossless" now means zero failed new
+  requests (`fresh_fail=0`) plus a bounded number of closures (`fail/reconnects ≤ conns`, `2 × conns` for the
+  USR2 case that drains twice; only for long-connection cases that go through a drain, the others keep
+  `fail=0`). C-NR-312 (late listener close until syncache drains) still holds, with a 3 s
+  grace. New fault names: `flip_fail_once`, `synack_fail`.
+- **P-2 and P-13 closed** (see review-report §8; P-13: after an abort the master returns to T0 and only exits on
+  `!live && (ngx_terminate || ngx_quit)`). **Code fix R-02** (see solution-design §10).

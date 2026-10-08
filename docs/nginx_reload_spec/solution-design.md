@@ -1,8 +1,8 @@
 # 06 Solution Design: Candidate Comparison and the Key Design of the Recommended S3 (English)
 
-> **English translation** of `docs/nginx_reload_spec/zh_cn/06-solution-design.md` (v1.9.16). The Chinese text is
+> **English translation** of `docs/nginx_reload_spec/zh_cn/06-solution-design.md` (v1.9.18). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs.
-> Translated 2026-09-30.
+> Translated 2026-09-30; §10 added on 2026-10-08.
 
 | Item | Value |
 | --- | --- |
@@ -226,3 +226,42 @@ Based on baselines 1/2 and on R-B §2.2 (kernel HUP semantics) and §2.1 (USR2 s
 ### 8. Single-source declaration
 
 ### 9. v1.9 decision summary (decision record)
+
+## 10. 2026-10-08 cross-audit errata and registrations (mirror of zh_cn 06 §10)
+
+Audited baseline: HEAD `eb6b32c82` (release/2.0). Where this section disagrees with the body, this section wins;
+where it disagrees with the code, the code wins.
+
+### 10.1 Code fix
+
+| ID | Problem | Fix | Verification |
+|---|---|---|---|
+| RX-02 | With `graceful_reload=1` every tx packet ran `ff_no_hw_mode()` → `ff_reload_dir_sync()` (a clock read, a directory scan and a dozen atomics). After a USR2 the dead old master's slot stays LIVE, so every tx packet of the new master's workers issued a `kill(pid, 0)`, breaking the contract in `ff_reload.h` that the full scan must stay off the datapath. | `ff_no_hw_mode_nosync()` (same verdict, no directory sync) for `send_burst()`, `ff_dpdk_if_send()` and `ff_dpdk_raw_packet_send()`; the directory is synced once per main-loop pass and by the ~1 Hz housekeeping. The verdict is not cached (a heartbeat takeover must be seen on the next packet). The neighbour-clone and miss-forward gates read `ff_reload_peer_mirror_draining()`. `epoch_slot_live()` caches the pid probe per slot for 50 ms. | Clean production build with the baseline warning count; unit, harness-unit and integration tests pass; IPv4/IPv6 runtime matrix passes; strace on one worker: 0 kill(2) in steady state, about 20/s during USR2 coexistence. |
+
+### 10.2 Documentation errata
+
+| ID | Where | Old statement | Current statement (per code) |
+|---|---|---|---|
+| RX-01 | All anchors | The 09-30 conversion from `file:line` to `file: symbol` resolved old line numbers against the new files and pointed many anchors at unrelated functions | Re-checked and re-mapped; anchors that could not be confirmed are marked in place |
+| RX-02 | §2 item 6, §7 | "Zero extra per-packet cost in steady state" | Holds for the flow map and drain rings only; each tx packet still reads the rx-ownership words and the directory mirror (no system call), and the directory is synced once per pass |
+| RX-03 | §2 items 4/14, §5.2 T4 | The drain starts when G_old receives QUIT; keep-alive can stretch T3 to the deadline | The drain starts when the generation loses rx ownership (after the T3 handover), latched once per round; idle connections are closed then and about once a second afterwards; QUIT still stops accept and closes the listeners late, waiting for half-open entries for at most min(3 s grace, cap). Idle keep-alive connections are therefore closed once per reload; acceptance is zero failed new requests plus a bounded number of closures |
+| RX-06 | §5.2 ③-5 | A miss is forwarded only after checking that G_old is alive; otherwise the stack answers RST | No liveness check: the gate is `hw_locked` or `peer_mirror_draining` plus a successful enqueue; otherwise the packet is dropped, counted and logged at a limited rate, never answered with RST |
+| RX-09 | §5.4 R-23 | close() memsets the table; a full table is only counted, not reported; capacity fixed at 64K | close() frees the table; 64K entries and probe limit 16 initially; a full table doubles up to 4 times per window (cap `FF_FLOW_MAP_CAP_MAX`); after that, or on an allocation failure, the SYN is refused; full / grow_fail / alloc_fail are reported by the 1 Hz housekeeping |
+| RX-12 | §2 item 6, §5.2 ③-5 | Look up first, insert after the SYN-ACK; every miss goes to G_old | Fast path without a window; a pure SYN stays local before any key is built; syncache admits the flow on SYN admission, before the SYN-ACK (cookie entries too), refuses the SYN on a full table or allocation failure, and revokes the admission when the SYN-ACK fails synchronously; UDP is never admitted, so in the window every UDP packet misses (RX-11) |
+| RX-13 | §2.1-15 R-30(b) | No one delivers to KNI during T3→T5 | Delivery continues: non-ARP traffic is delivered by G_new, ARP clones by G_old as runtime owner; only the inject side (kernel to NIC) stops. Not re-verified with `enable_kni=1` |
+| RX-14 | §5.4-1 handover mutex | A hugepage `struct ff_handover_state` created by the primary | Design-time text: `rx_owner_gen`/`rx_stopped` live in the anonymous `MAP_SHARED` block the nginx master creates before fork; the yielding side writes `rx_stopped=1` then `rx_owner_gen`, the receiver clears `rx_stopped` once it owns; T2 adds the `rx_parked[]` barrier; cross-master ownership is the gendir `rx_owner_word` |
+| RX-16 | DR6 note | main_loop is a non-blocking busy loop | The heartbeat tick and the nginx event loop run serially in one pass; if every G_new worker blocks longer than the timeout (default 1000 ms) in one iteration, G_old declares a stall, takes rx back and the master aborts (registered in 10.3) |
+| RX-19 | §2 item 1 | Every SYN is accepted at any time | A design goal, not an absolute: a full flow map or allocation failure refuses the SYN, the mbuf low watermark drops SYNs, and a full drain ring drops packets |
+| RX-28 | Small items | revoke "fixes" a missing SYN-ACK; T5 is triggered by DRAIN_DONE after the rings are confirmed empty; msg_ring is SP/SC; `ff_ref_pool` is per generation; syncache has no counters; rx ring "8 times larger"; ring names are (port, generation) | revoke covers synchronous send failures only; G_new retires on its own in the 1 Hz housekeeping without checking the rings or waiting for a message; the rings are pre-built by the primary at init and re-attached by the workers when a window opens; the flow map is armed in `ff_mod_init` (before READY); `FF_MSG_RING_FLAGS` = 0 (MP/MC); `ff_ref_pool_%d` is one per socket with cache 0; `ff_syncache_count()` and `ff_syncache_counters()` exist; 4096 is a request the PMD may clamp; names include port, queue, epoch slot and generation; the ring-full counters are plain per-process counters, not atomics |
+
+### 10.3 Registered, not closed (none verified at runtime)
+
+RX-10 flow-map growth latency spike on the SYN path; RX-11 every UDP packet misses during the window and goes to
+G_old; RX-15 stale packets left in an exited G_old's drain_rx can surface in a later round; RX-16 heartbeat
+false positive when the event loop blocks; RX-20 workers that crash during T1~T5 are not respawned; RX-29 the
+drain ring re-attach can lag a park by up to ~1 s; RX-30 `FF_USE_PAGE_ARRAY` builds leak `bsd_m_table` at park;
+RX-32 zero-copy rx mbufs held by an exiting G_old are not returned (no growth seen over 100 rounds), and the
+§6.6.3 statement that a generation's pools are emptied after G_old exits has no code behind it; RX-33 pid
+reuse can keep a dead slot "alive"; RX-34 USR2 requires both binaries built from the same libfstack (already
+stated in the nginx guide; a version/len check on the secondary is suggested).
+
