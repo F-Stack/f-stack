@@ -16,6 +16,7 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/prctl.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include "ff_api.h"
 #include "ff_reload.h"              /* ff_reload_* */
@@ -56,6 +57,38 @@ static ngx_int_t ngx_ff_usr2_handover(ngx_cycle_t *cycle);
 static void ngx_ff_usr2_reclaim(ngx_cycle_t *cycle);
 static void ngx_ff_usr2_check(ngx_cycle_t *cycle);
 static ngx_uint_t ngx_ff_usr2_old_workers(void);
+static void ngx_ff_conf_snapshot_sweep(void);
+static ngx_int_t ngx_ff_conf_snapshot_take(ngx_log_t *log, const char *src,
+    char *dst);
+static void ngx_ff_conf_snapshot_drop(char *path);
+static void ngx_ff_conf_snapshot_drop_all(void);
+static ngx_int_t ngx_ff_slim_primary_check(ngx_cycle_t *cycle,
+    ngx_uint_t no_restart);
+static ngx_int_t ngx_ff_reload_conf_precheck(ngx_cycle_t *cycle,
+    const char *conf);
+
+/* The resident slim primary applies the device-side part of the fstack config
+ * (ports, pools, rings, KNI) once. It is reused only with the same digest of
+ * that part (/var/run/ff_slim_primary.conf, written by the primary itself),
+ * and every generation reads a private snapshot of the config it was
+ * started or reloaded with. */
+
+#define NGX_FF_SLIM_PRIMARY_CONFFILE    "/var/run/ff_slim_primary.conf"
+#define NGX_FF_CONF_SNAPSHOT_DIR        "/var/run"
+#define NGX_FF_CONF_SNAPSHOT_PREFIX     "ff_nginx_fstack."
+#define NGX_FF_SLIM_PRIMARY_STOP_SEC    10
+
+typedef struct {
+    int                  pid;
+    unsigned long long   start_time;
+    uint64_t             digest;
+    int                  kni;
+    char                 runtime_dir[NGX_MAX_PATH];
+} ngx_ff_primary_record_t;
+
+static char        ngx_ff_conf_snap[NGX_MAX_PATH];
+static char        ngx_ff_conf_snap_next[NGX_MAX_PATH];
+static ngx_uint_t  ngx_ff_conf_snap_seq;
 /* 90s drain fix: how long the drain generation waits for its half-open
  * window to close before closing the listeners anyway. An entry still here
  * after the grace cannot complete any more -- its client gave up, or its ACK
@@ -261,15 +294,31 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
     if (ngx_ff_graceful_reload_detect((const char *) ccf->fstack_conf.data)) {
         ngx_int_t  nb_procs;
 
+        ngx_ff_conf_snapshot_sweep();
+        if (ngx_ff_conf_snapshot_take(cycle->log,
+                (const char *) ccf->fstack_conf.data, ngx_ff_conf_snap)
+            != NGX_OK)
+        {
+            exit(2);
+        }
+
+        if (!ngx_ff_graceful_reload_detect(ngx_ff_conf_snap)) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload: fstack conf \"%V\" changed "
+                          "during startup", &ccf->fstack_conf);
+            ngx_ff_conf_snapshot_drop_all();
+            exit(2);
+        }
+
         /* Topology check: slim primary (proc_id 0) + worker_processes
          * secondaries must match the lcore_mask bit count exactly. */
-        nb_procs = ngx_ff_conf_dpdk_nb_procs(
-            (const char *) ccf->fstack_conf.data);
+        nb_procs = ngx_ff_conf_dpdk_nb_procs(ngx_ff_conf_snap);
         if (nb_procs < 0) {
             ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                           "graceful_reload=1: cannot read dpdk.lcore_mask "
                           "from fstack conf \"%V\"", &ccf->fstack_conf);
             /* fatal */
+            ngx_ff_conf_snapshot_drop_all();
             exit(2);
         }
 
@@ -280,6 +329,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
                           "would have no consumer (silent RSS black hole)",
                           nb_procs, (int) ccf->worker_processes + 1);
             /* fatal */
+            ngx_ff_conf_snapshot_drop_all();
             exit(2);
         }
 
@@ -290,6 +340,7 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
                           "would fail (proc_id out of range)",
                           (int) ccf->worker_processes + 1, nb_procs);
             /* fatal */
+            ngx_ff_conf_snapshot_drop_all();
             exit(2);
         }
 
@@ -297,11 +348,13 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
          * the slim primary and any worker are forked (inherited mappings). */
         if (ngx_ff_reload_state_create(cycle) != NGX_OK) {
             /* fatal */
+            ngx_ff_conf_snapshot_drop_all();
             exit(2);
         }
 
         if (ngx_ff_slim_primary_ensure(cycle) != NGX_OK) {
             /* fatal */
+            ngx_ff_conf_snapshot_drop_all();
             exit(2);
         }
     }
@@ -590,6 +643,531 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 /* Worker 0 attach confirm timeout under graceful_reload=1. */
 #define NGX_FF_GRACEFUL_ATTACH_SEC      60
 
+/* state (field 3) and start time (field 22) of /proc/<pid>/stat */
+static int
+ngx_ff_proc_stat(int pid, char *state, unsigned long long *start)
+{
+    char     path[48], buf[1024], *p;
+    int      fd, i;
+    ssize_t  n;
+
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return -1;
+    }
+    buf[n] = '\0';
+
+    p = strrchr(buf, ')');
+    if (p == NULL || p[1] != ' ') {
+        return -1;
+    }
+    p += 2;
+
+    if (state != NULL) {
+        *state = *p;
+    }
+
+    for (i = 0; i < 19; i++) {
+        p = strchr(p, ' ');
+        if (p == NULL) {
+            return -1;
+        }
+        p++;
+    }
+
+    if (start != NULL) {
+        *start = strtoull(p, NULL, 10);
+    }
+
+    return 0;
+}
+
+
+static int
+ngx_ff_proc_threads(int pid)
+{
+    char            path[48];
+    DIR            *dir;
+    struct dirent  *e;
+    int             n = 0;
+
+    snprintf(path, sizeof(path), "/proc/%d/task", pid);
+    dir = opendir(path);
+    if (dir == NULL) {
+        return 0;
+    }
+
+    while ((e = readdir(dir)) != NULL) {
+        if (e->d_name[0] != '.') {
+            n++;
+        }
+    }
+
+    (void) closedir(dir);
+    return n;
+}
+
+
+static void
+ngx_ff_conf_snapshot_drop(char *path)
+{
+    if (path[0] != '\0') {
+        (void) unlink(path);
+        path[0] = '\0';
+    }
+}
+
+
+static void
+ngx_ff_conf_snapshot_drop_all(void)
+{
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap_next);
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap);
+}
+
+
+/* snapshots are named <prefix><pid>.<start_time>.<seq>; drop the ones whose
+ * master is gone, and any left by an earlier process with our pid */
+static void
+ngx_ff_conf_snapshot_sweep(void)
+{
+    char                 path[NGX_MAX_PATH];
+    DIR                 *dir;
+    struct dirent       *e;
+    int                  pid;
+    unsigned long long   st, now;
+    size_t               plen = sizeof(NGX_FF_CONF_SNAPSHOT_PREFIX) - 1;
+
+    dir = opendir(NGX_FF_CONF_SNAPSHOT_DIR);
+    if (dir == NULL) {
+        return;
+    }
+
+    while ((e = readdir(dir)) != NULL) {
+        if (strncmp(e->d_name, NGX_FF_CONF_SNAPSHOT_PREFIX, plen) != 0
+            || sscanf(e->d_name + plen, "%d.%llu.", &pid, &st) != 2)
+        {
+            continue;
+        }
+
+        if (pid != (int) ngx_pid
+            && ngx_ff_proc_stat(pid, NULL, &now) == 0 && now == st)
+        {
+            continue;
+        }
+
+        snprintf(path, sizeof(path), NGX_FF_CONF_SNAPSHOT_DIR "/%s",
+                 e->d_name);
+        (void) unlink(path);
+    }
+
+    (void) closedir(dir);
+}
+
+
+static ngx_int_t
+ngx_ff_conf_snapshot_take(ngx_log_t *log, const char *src, char *dst)
+{
+    char                 tmp[NGX_MAX_PATH + 8], buf[4096];
+    int                  in, out = -1;
+    ssize_t              n;
+    unsigned long long   st;
+
+    if (ngx_ff_proc_stat((int) ngx_pid, NULL, &st) != 0) {
+        ngx_log_error(NGX_LOG_EMERG, log, ngx_errno,
+                      "graceful_reload: cannot read /proc/%P/stat", ngx_pid);
+        dst[0] = '\0';
+        return NGX_ERROR;
+    }
+
+    snprintf(dst, NGX_MAX_PATH,
+             NGX_FF_CONF_SNAPSHOT_DIR "/" NGX_FF_CONF_SNAPSHOT_PREFIX
+             "%d.%llu.%u.conf", (int) ngx_pid, st,
+             (unsigned) ++ngx_ff_conf_snap_seq);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", dst);
+
+    in = open(src, O_RDONLY | O_CLOEXEC);
+    if (in < 0) {
+        goto failed;
+    }
+
+    out = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+               0600);
+    if (out < 0) {
+        goto failed;
+    }
+
+    while ((n = read(in, buf, sizeof(buf))) > 0) {
+        if (write(out, buf, n) != n) {
+            goto failed;
+        }
+    }
+
+    if (n < 0) {
+        goto failed;
+    }
+
+    if (close(out) != 0) {
+        out = -1;
+        goto failed;
+    }
+    out = -1;
+    (void) close(in);
+    in = -1;
+
+    if (rename(tmp, dst) != 0) {
+        goto failed;
+    }
+
+    return NGX_OK;
+
+failed:
+
+    ngx_log_error(NGX_LOG_EMERG, log, ngx_errno,
+                  "graceful_reload: cannot snapshot fstack conf \"%s\" "
+                  "to \"%s\"", src, dst);
+    if (in >= 0) {
+        (void) close(in);
+    }
+    if (out >= 0) {
+        (void) close(out);
+    }
+    (void) unlink(tmp);
+    dst[0] = '\0';
+    return NGX_ERROR;
+}
+
+
+/* runs in the slim primary after ff_init() */
+static ngx_int_t
+ngx_ff_primary_record_write(const char *conf)
+{
+    ngx_ff_primary_record_t   r;
+    const char               *dir;
+    char                      tmp[64];
+    int                       fd, rc;
+
+    if (ff_primary_conf_digest(conf, &r.digest, &r.kni) != 0
+        || ngx_ff_proc_stat(getpid(), NULL, &r.start_time) != 0)
+    {
+        return NGX_ERROR;
+    }
+
+    dir = ff_eal_runtime_dir();
+    if (dir == NULL || dir[0] == '\0') {
+        return NGX_ERROR;
+    }
+
+    snprintf(tmp, sizeof(tmp), NGX_FF_SLIM_PRIMARY_CONFFILE ".%d.tmp",
+             (int) getpid());
+    (void) unlink(tmp);
+
+    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        return NGX_ERROR;
+    }
+
+    rc = dprintf(fd, "pid=%d\nstart_time=%llu\ndigest=%016llx\nkni=%d\n"
+                 "runtime_dir=%s\n", (int) getpid(), r.start_time,
+                 (unsigned long long) r.digest, r.kni, dir);
+
+    if (close(fd) != 0 || rc < 0
+        || rename(tmp, NGX_FF_SLIM_PRIMARY_CONFFILE) != 0)
+    {
+        (void) unlink(tmp);
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_ff_primary_record_read(int pid, ngx_ff_primary_record_t *r)
+{
+    char                 buf[NGX_MAX_PATH + 256], *p, *v, *nl;
+    int                  fd, have = 0;
+    ssize_t              n;
+    unsigned long long   st;
+
+    fd = open(NGX_FF_SLIM_PRIMARY_CONFFILE, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) {
+        return NGX_ERROR;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return NGX_ERROR;
+    }
+    buf[n] = '\0';
+
+    ngx_memzero(r, sizeof(ngx_ff_primary_record_t));
+
+    for (p = buf; *p != '\0'; p = nl) {
+        nl = strchr(p, '\n');
+        if (nl != NULL) {
+            *nl++ = '\0';
+        } else {
+            nl = p + strlen(p);
+        }
+
+        v = strchr(p, '=');
+        if (v == NULL) {
+            continue;
+        }
+        *v++ = '\0';
+
+        if (strcmp(p, "pid") == 0) {
+            r->pid = atoi(v);
+            have |= 1;
+        } else if (strcmp(p, "start_time") == 0) {
+            r->start_time = strtoull(v, NULL, 10);
+            have |= 2;
+        } else if (strcmp(p, "digest") == 0) {
+            r->digest = strtoull(v, NULL, 16);
+            have |= 4;
+        } else if (strcmp(p, "kni") == 0) {
+            r->kni = atoi(v);
+            have |= 8;
+        } else if (strcmp(p, "runtime_dir") == 0) {
+            snprintf(r->runtime_dir, sizeof(r->runtime_dir), "%s", v);
+            have |= 16;
+        }
+    }
+
+    if (have != 31 || r->pid != pid || r->runtime_dir[0] == '\0'
+        || ngx_ff_proc_stat(pid, NULL, &st) != 0 || st != r->start_time)
+    {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+/* only for a primary nobody uses any more; never escalates past SIGTERM */
+static ngx_int_t
+ngx_ff_slim_primary_stop(ngx_cycle_t *cycle, ngx_ff_primary_record_t *r)
+{
+    char                 comm[16], cpath[48], state;
+    int                  fd, pfd, users;
+    ssize_t              n = 0;
+    ngx_uint_t           i;
+    unsigned long long   st;
+
+    users = ff_primary_users(r->runtime_dir);
+    if (users != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "is still used by %d process(es); not stopping it",
+                      r->pid, users);
+        return NGX_ERROR;
+    }
+
+    /* the pidfd pins the process checked below, so the signal cannot
+     * reach a recycled pid (Linux 5.3+) */
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    pfd = (int) syscall(SYS_pidfd_open, r->pid, 0);
+#else
+    pfd = -1;
+    errno = ENOSYS;
+#endif
+    if (pfd < 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: pidfd_open(%d) failed%s; not "
+                      "stopping the resident slim primary", r->pid,
+                      errno == ENOSYS ? " (pidfd unsupported)" : "");
+        return NGX_ERROR;
+    }
+
+    snprintf(cpath, sizeof(cpath), "/proc/%d/comm", r->pid);
+    fd = open(cpath, O_RDONLY);
+    if (fd >= 0) {
+        n = read(fd, comm, sizeof(comm));
+        (void) close(fd);
+    }
+
+    if (n <= 0 || strncmp(comm, NGX_FF_SLIM_PRIMARY_COMM,
+                          sizeof(NGX_FF_SLIM_PRIMARY_COMM) - 1) != 0
+        || ngx_ff_proc_stat(r->pid, NULL, &st) != 0 || st != r->start_time)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: cannot verify the resident slim "
+                      "primary (pid %d) before stopping it", r->pid);
+        (void) close(pfd);
+        return NGX_ERROR;
+    }
+
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    if (syscall(SYS_pidfd_send_signal, pfd, SIGTERM, NULL, 0) != 0) {
+#else
+    if (1) {
+#endif
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: cannot send SIGTERM to the resident "
+                      "slim primary (pid %d)", r->pid);
+        (void) close(pfd);
+        return NGX_ERROR;
+    }
+    (void) close(pfd);
+
+    for (i = 0; i < NGX_FF_SLIM_PRIMARY_STOP_SEC * 10; i++) {
+        if (ngx_ff_proc_stat(r->pid, &state, &st) != 0
+            || st != r->start_time
+            || ((state == 'Z' || state == 'X')
+                && ngx_ff_proc_threads(r->pid) <= 1))
+        {
+            break;
+        }
+        ngx_msleep(100);
+    }
+
+    if (i == NGX_FF_SLIM_PRIMARY_STOP_SEC * 10) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "did not exit within %ds after SIGTERM; not escalating",
+                      r->pid, NGX_FF_SLIM_PRIMARY_STOP_SEC);
+        return NGX_ERROR;
+    }
+
+    (void) unlink(NGX_FF_SLIM_PRIMARY_PIDFILE);
+    (void) unlink(NGX_FF_SLIM_PRIMARY_CONFFILE);
+    return NGX_OK;
+}
+
+
+/* NGX_OK: reuse the live primary; NGX_DECLINED: spawn one (none alive, or
+ * the stale one was stopped); NGX_ERROR: refused, already logged */
+static ngx_int_t
+ngx_ff_slim_primary_check(ngx_cycle_t *cycle, ngx_uint_t no_restart)
+{
+    ngx_ff_primary_record_t   r;
+    uint64_t                  digest;
+    int                       pid, kni, ok, same, users = -1;
+
+    pid = (int) ngx_ff_slim_primary_alive();
+    if (pid == 0) {
+        return NGX_DECLINED;
+    }
+
+    if (ff_primary_conf_digest(ngx_ff_conf_snap, &digest, &kni) != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: cannot parse fstack conf \"%s\"",
+                      ngx_ff_conf_snap);
+        return NGX_ERROR;
+    }
+
+    ok = (ngx_ff_primary_record_read(pid, &r) == NGX_OK);
+    same = ok && r.digest == digest;
+    if (ok && !same) {
+        users = ff_primary_users(r.runtime_dir);
+    }
+
+    switch (ff_primary_reuse_check(ok, same, users,
+                                   no_restart || ngx_inherited))
+    {
+    case FF_PRIMARY_REUSE:
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: resident slim primary found, reusing");
+        return NGX_OK;
+
+    case FF_PRIMARY_RESTART:
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: restarting the resident slim primary "
+                      "(pid %d): its fstack config differs ([kni] enable "
+                      "%d -> %d)", pid, r.kni, kni);
+        return ngx_ff_slim_primary_stop(cycle, &r) == NGX_OK
+               ? NGX_DECLINED : NGX_ERROR;
+
+    default:
+        break;
+    }
+
+    if (!ok) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "has no valid record in " NGX_FF_SLIM_PRIMARY_CONFFILE
+                      " (started by another build?); stop it and start "
+                      "nginx again", pid);
+
+    } else if (users != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "runs another fstack config ([kni] enable %d, this "
+                      "config %d) and is still used by %d process(es) "
+                      "(-1: unknown); stop them and the slim primary, then "
+                      "start nginx again", pid, r.kni, kni, users);
+
+    } else {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "runs another fstack config ([kni] enable %d, this "
+                      "config %d); an upgrade cannot replace it, stop nginx "
+                      "and the slim primary, then start nginx again",
+                      pid, r.kni, kni);
+    }
+
+    return NGX_ERROR;
+}
+
+
+/* HUP: the new generation must match the resident primary; on success
+ * ngx_ff_conf_snap_next holds the snapshot it will read */
+static ngx_int_t
+ngx_ff_reload_conf_precheck(ngx_cycle_t *cycle, const char *conf)
+{
+    ngx_ff_primary_record_t   r;
+    uint64_t                  digest;
+    int                       pid, kni;
+
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap_next);
+    if (ngx_ff_conf_snapshot_take(cycle->log, conf, ngx_ff_conf_snap_next)
+        != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload rejected: cannot snapshot the fstack "
+                      "config");
+        return NGX_ERROR;
+    }
+
+    pid = (int) ngx_ff_slim_primary_alive();
+    if (pid == 0) {
+        return NGX_OK;
+    }
+
+    if (ff_primary_conf_digest(ngx_ff_conf_snap_next, &digest, &kni) != 0) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload rejected: cannot parse fstack conf "
+                      "\"%s\"", conf);
+
+    } else if (ngx_ff_primary_record_read(pid, &r) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload rejected: the resident slim primary "
+                      "(pid %d) has no valid record; restart nginx and the "
+                      "slim primary", pid);
+
+    } else if (r.digest == digest) {
+        return NGX_OK;
+
+    } else {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload rejected: fstack config differs from "
+                      "the resident slim primary (kni %d -> %d); restart "
+                      "nginx and the slim primary to apply it", r.kni, kni);
+    }
+
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap_next);
+    return NGX_ERROR;
+}
+
 
 static ngx_int_t
 ngx_ff_slim_primary_alive(void)
@@ -633,7 +1211,7 @@ ngx_ff_slim_primary_alive(void)
         }
     }
 
-    return 1;
+    return pid;
 }
 
 
@@ -660,7 +1238,8 @@ ngx_ff_slim_primary_spawn_child(ngx_cycle_t *cycle, sem_t *ready_sem)
     char               conf[NGX_MAX_PATH];
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
-    snprintf(conf, sizeof(conf), "%s", (char *) ccf->fstack_conf.data);
+    snprintf(conf, sizeof(conf), "%s", ngx_ff_conf_snap[0] != '\0'
+             ? ngx_ff_conf_snap : (char *) ccf->fstack_conf.data);
 
     /* stdio: diagnostics to a dedicated log, everything else to /dev/null */
     devnull = open("/dev/null", O_RDWR);
@@ -710,6 +1289,12 @@ ngx_ff_slim_primary_spawn_child(ngx_cycle_t *cycle, sem_t *ready_sem)
         _exit(2);
     }
 
+    if (ngx_ff_primary_record_write(conf) != NGX_OK) {
+        fprintf(stderr, "ff slim primary: cannot write %s\n",
+                NGX_FF_SLIM_PRIMARY_CONFFILE);
+        _exit(2);
+    }
+
     /* publish the pidfile before signalling readiness */
     pf = open(NGX_FF_SLIM_PRIMARY_PIDFILE,
               O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -736,10 +1321,9 @@ ngx_ff_slim_primary_ensure(ngx_cycle_t *cycle)
     struct timespec  ts;
     pid_t            pid;
 
-    if (ngx_ff_slim_primary_alive()) {
-        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
-                      "graceful_reload: resident slim primary found, reusing");
-        return NGX_OK;
+    r = ngx_ff_slim_primary_check(cycle, 0);
+    if (r != NGX_DECLINED) {
+        return r;
     }
 
     snprintf(sem_name, sizeof(sem_name), "/ff_slim_prim_%d", (int) ngx_pid);
@@ -827,6 +1411,12 @@ ngx_ff_slim_primary_ensure(ngx_cycle_t *cycle)
                           "graceful_reload: slim primary failed to become "
                           "ready within %ds", NGX_FF_SLIM_PRIMARY_READY_SEC);
             /* do not sem_destroy(): a stuck grandchild may still post later */
+            (void) munmap(sem, sizeof(sem_t));
+            (void) shm_unlink(sem_name);
+            return NGX_ERROR;
+        }
+
+        if (ngx_ff_slim_primary_check(cycle, 1) != NGX_OK) {
             (void) munmap(sem, sizeof(sem_t));
             (void) shm_unlink(sem_name);
             return NGX_ERROR;
@@ -1230,6 +1820,7 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     ngx_core_conf_t *ccf;
     ngx_int_t        i;
     ngx_uint_t       n_gnew;
+    char             oldconf[NGX_MAX_PATH];
 
     /* a HUP while a binary upgrade is being tracked is
      * the roll-back, not a reload. The block write alone cannot create a
@@ -1303,6 +1894,13 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
         return NGX_DECLINED;
     }
 
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    snprintf(oldconf, sizeof(oldconf), "%s", (char *) ccf->fstack_conf.data);
+    if (ngx_ff_reload_conf_precheck(cycle, oldconf) != NGX_OK) {
+        ngx_ff_reload_note_hup_rejected();
+        return NGX_DECLINED;
+    }
+
     /* ff_reload_log was bound to a cycle log that a previous reload's
      * ngx_init_cycle may already have destroyed (pool freed, fd closed);
      * rebind to the live cycle log before any FSM logging below */
@@ -1337,6 +1935,7 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     cycle = ngx_init_cycle(cycle);
     if (cycle == NULL) {
         cycle = *pcycle;
+        ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap_next);
         ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
                             "new configuration failed to load");
         return NGX_ERROR;
@@ -1349,6 +1948,23 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
     *pcycle = cycle;
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
     *pccf = ccf;
+
+    if (ccf->fstack_conf.data != NULL
+        && ngx_strcmp(oldconf, ccf->fstack_conf.data) != 0
+        && ngx_ff_reload_conf_precheck(cycle,
+               (const char *) ccf->fstack_conf.data) != NGX_OK)
+    {
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "the new fstack_conf differs from the resident "
+                            "slim primary");
+        return NGX_ERROR;
+    }
+
+    /* G_new and every later respawn read the snapshot taken for it */
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap);
+    ngx_memcpy(ngx_ff_conf_snap, ngx_ff_conf_snap_next,
+               sizeof(ngx_ff_conf_snap));
+    ngx_ff_conf_snap_next[0] = '\0';
 
     /* the expected set is the configured worker count —
      * registered before the fork so a short round can be detected. */
@@ -2343,6 +2959,7 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
                 {
                     ngx_ff_reload_attach_failed = 1;
                 } else {
+                    ngx_ff_conf_snapshot_drop_all();
                     exit(2);
                 }
             }
@@ -2689,6 +3306,10 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
     ngx_uint_t  i;
 
     ngx_delete_pidfile(cycle);
+
+#if (NGX_HAVE_FSTACK)
+    ngx_ff_conf_snapshot_drop_all();
+#endif
 
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exit");
 
@@ -3329,7 +3950,8 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
             ngx_ff_process = NGX_FF_PROCESS_SECONDARY;
         }
 
-        if (ff_mod_init((const char *)ccf->fstack_conf.data, worker,
+        if (ff_mod_init(ngx_ff_conf_snap[0] != '\0' ? ngx_ff_conf_snap
+                            : (const char *) ccf->fstack_conf.data, worker,
             ngx_ff_process == NGX_FF_PROCESS_PRIMARY)) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                           "ff_mod_init failed");

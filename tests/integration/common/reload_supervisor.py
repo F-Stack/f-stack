@@ -534,6 +534,19 @@ class Supervisor:
         self.tree.allowed.add((st.st_dev, st.st_ino))
         self.allowed_files[path] = (st.st_dev, st.st_ino, expected)
 
+    def target_env(self, args):
+        env = {k: v for k, v in os.environ.items() if not k.startswith("GR_SUPERVISOR_")}
+        env["FF_RELOAD_RUN_ID"] = self.run_id
+        # The supervisor may predate the run that needs these, so its own
+        # environment is not enough: fault variables are forwarded with the
+        # request, restricted to a fixed allowlist (never arbitrary env).
+        extra = args.get("env")
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                if key in FAULT_ENV_KEYS and isinstance(value, str):
+                    env[key] = value
+        return env
+
     def dispatch(self, message, caller):
         sequence = message.get("sequence")
         if type(sequence) is not int or sequence <= self.last_sequence:
@@ -565,17 +578,7 @@ class Supervisor:
             self.stack = stack
             self.started_stacks.add(stack)
             self.tree.default_stack = stack
-            env = {k: v for k, v in os.environ.items() if not k.startswith("GR_SUPERVISOR_")}
-            env["FF_RELOAD_RUN_ID"] = self.run_id
-            # The supervisor may predate the run that needs these, so its own
-            # environment is not enough: fault variables are forwarded with the
-            # request, restricted to a fixed allowlist (never arbitrary env).
-            extra = args.get("env")
-            if isinstance(extra, dict):
-                for key, value in extra.items():
-                    if key in FAULT_ENV_KEYS and isinstance(value, str):
-                        env[key] = value
-            self.launcher = self.tree.spawn(argv, "target", stack, env)
+            self.launcher = self.tree.spawn(argv, "target", stack, self.target_env(args))
             self.phase = "starting"
             self.start_deadline = time.monotonic() + 10
             self.expect_daemon = bool(args.get("daemon", True))
@@ -594,6 +597,22 @@ class Supervisor:
                 self.sent.clear()
                 self.phase = "stopping"
             return self.snapshot()
+        if op == "launch":
+            # Another master inside the running stack (it reuses the stack's
+            # resident primary). Never a binary upgrade: nginx treats an
+            # inherited NGINX variable as one.
+            if self.phase != "running" or self.tree.failure:
+                raise ValueError("stack not controllable")
+            argv = args["argv"]
+            if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+                raise ValueError("invalid launch arguments")
+            self.approve_image(argv[0], args["sha256"])
+            env = self.target_env(args)
+            env.pop("NGINX", None)
+            pid = self.tree.spawn(argv, "target", self.stack, env)
+            value = self.snapshot()
+            value["launched"] = pid
+            return value
         if op == "signal":
             if self.phase != "running" or self.tree.failure:
                 raise ValueError("stack not controllable")
@@ -867,6 +886,10 @@ def main(argv):
         env = {k: v for k, v in os.environ.items() if k in FAULT_ENV_KEYS}
         value = request("start", stack, dict(argv=cmd, sha256=sha, env=env))
         value = wait_phase(stack, "running", 10)
+    elif op == "launch":
+        stack, sha, *cmd = args
+        env = {k: v for k, v in os.environ.items() if k in FAULT_ENV_KEYS}
+        value = request("launch", stack, dict(argv=cmd, sha256=sha, env=env))
     elif op == "stop":
         value = request("stop", args[0])
         value = wait_phase(args[0], "stopped", CLEANUP_SECONDS + 2)

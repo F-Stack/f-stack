@@ -115,7 +115,7 @@ RTE_FRESH_MIN=10
 # first worker (the shipped config.ini default owner_proc_id is 1 as well).
 KNI_OWNER_PROC_ID=1
 
-ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt13"
+ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt13"
 # rt13 (the zc build form) is permanently excluded by decision 2026-09-22:
 # this tree does not build the zc form, so the case is dropped from every
 # matrix (-c all). It stays invocable explicitly and then records EXCLUDED,
@@ -174,11 +174,13 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                               test (write <DPDK_NIC_IP> in any report).
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
-                                         rt12,rt13,rt20,rt20b,rt21,rt22,rt23,
+                                         rt12,rt27,rt13,rt20,rt20b,rt21,rt22,rt23,
                                          rt24,rt25,rt26,rt30,rt31 (rt24 and the
                                          other rt2x need a fault-injection
                                          build; rt25 drives USR2 + WINCH;
-                                         rt26 needs --fault synack_fail)
+                                         rt26 needs --fault synack_fail;
+                                         rt27 changes [kni] under a
+                                         resident primary)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -1821,6 +1823,230 @@ case_gr0() {
     return $rc
 }
 
+# ---- rt27: the resident primary and a changed fstack config ---------------
+SLIM_PIDFILE=/var/run/ff_slim_primary.pid
+SLIM_RECORD=/var/run/ff_slim_primary.conf
+
+slim_pid()   { cat "$SLIM_PIDFILE" 2>/dev/null; }
+proc_start() { awk '{sub(/.*\) /, ""); print $20}' "/proc/$1/stat" 2>/dev/null; }
+pid_alive()  { # a process that vanishes while being read is gone
+    local st
+    [ -n "$1" ] || return 1
+    st=$(grep '^State:' "/proc/$1/status" 2>/dev/null) || return 1
+    case "$st" in *Z*) return 1 ;; esac
+}
+veth_count() { ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -c '^veth[0-9][0-9]*$'; }
+http_ok()    { [ "$(run_client "curl -s -m 3 -o /dev/null -w '%{http_code}' '$TARGET_URL'" 2>/dev/null)" = 200 ]; }
+log_since()  { tail -n +$(($2 + 1)) "$1" 2>/dev/null; }
+
+wait_gone() { # pid seconds
+    local until=$((SECONDS + $2))
+    while [ "$SECONDS" -lt "$until" ]; do
+        pid_alive "$1" || return 0
+        sleep 1
+    done
+    return 1
+}
+
+wait_log() { # file mark pattern seconds
+    local until=$((SECONDS + $4))
+    while [ "$SECONDS" -lt "$until" ]; do
+        log_since "$1" "$2" | grep -q -- "$3" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+# stop only the master: its workers go with it, the resident primary stays
+stop_master_only() { # conf
+    local m; m=$(master_pid)
+    nginx_signal "$1" stop || return 1
+    wait_gone "$m" 30
+}
+
+# start another master in the running stack (supervisor 'launch')
+relaunch_master() { # conf
+    case "$1" in "$OUT"/ngx_*.conf) ;; *) return 1 ;; esac
+    collect_owned || return 1
+    python3 -B "$SUPERVISOR" launch "$STACK_ID" \
+        "$(sha256sum "$NGINX_BIN" | awk '{print $1}')" "$NGINX_BIN" -c "$1" >> "$LOG" 2>&1
+}
+
+# the master started by relaunch_master refused to run: it logged the
+# expected line and is gone (it never removes its pid file)
+expect_refused() { # step mark pattern seconds pidfile
+    local m
+    wait_log "$ERRLOG" "$2" "$3" "$4" \
+        || { say "rt27 $1: no '$3' within $4 s"; return 1; }
+    m=$(cat "${5:-$OUT/nginx.pid}" 2>/dev/null)
+    [ -n "$m" ] || { say "rt27 $1: the refused master left no pid"; return 1; }
+    wait_gone "$m" 15 || { say "rt27 $1: refused master $m still alive"; return 1; }
+}
+
+expect_serving() { # step
+    local n
+    wait_http || { say "rt27 $1: HTTP is not 200"; return 1; }
+    n=$(worker_count)
+    [ "$n" = "$WORKERS" ] || { say "rt27 $1: workers=$n != $WORKERS"; return 1; }
+}
+
+case_rt27() {
+    say "=== case rt27 (resident primary vs a changed fstack config) ==="
+    local crit="kni 0->1 rebuilds an unused primary; a HUP / USR2 / second master / missing record / stuck primary is refused and leaves the running service alone"
+    local conf conf2 ini mark fsm0 fsm1 p1 p1s p2 p3 w1 w2 rc=0 step="" meas f pid leak=0 evmark nkill
+    if [ ! -c /dev/vhost-net ]; then
+        record "rt27" "SKIP" "$crit" "LIMITED: no /dev/vhost-net device"
+        return 0
+    fi
+    conf=$(gen_nginx_conf "rt27" 0)
+    if ! start_stack "rt27" 1 0 0; then
+        stop_stack "rt27" "$conf"
+        record "rt27" "FAIL" "$crit" "kni=0 start failed, see $LOG"
+        return 1
+    fi
+    ini="$OUT/fstack_rt27.ini"
+    p1=$(slim_pid); p1s=$(proc_start "$p1")
+    say "rt27 1: kni=0 primary P1=$p1 veth=$(veth_count)"
+
+    # 2. HUP with kni=1 is refused before the window opens
+    step=2; ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
+    mark=$(wc -l < "$ERRLOG")
+    fsm0=$(grep -c 'graceful reload fsm: [A-Z0-9_]* -> ' "$ERRLOG")
+    w1=$(ps -eo pid,ppid,comm | awk -v m="$(master_pid)" '$2==m && $3 ~ /^nginx/ {print $1}' | sort | tr '\n' ' ')
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'graceful reload rejected: fstack config differs' 15 \
+        || { say "rt27 2: no rejection line"; rc=1; }
+    sleep 2
+    fsm1=$(grep -c 'graceful reload fsm: [A-Z0-9_]* -> ' "$ERRLOG")
+    w2=$(ps -eo pid,ppid,comm | awk -v m="$(master_pid)" '$2==m && $3 ~ /^nginx/ {print $1}' | sort | tr '\n' ' ')
+    [ "$fsm0" = "$fsm1" ] || { say "rt27 2: FSM moved ($fsm0 -> $fsm1)"; rc=1; }
+    [ "$w1" = "$w2" ] || { say "rt27 2: workers changed ($w1 -> $w2)"; rc=1; }
+    http_ok || { say "rt27 2: HTTP is not 200 after the refusal"; rc=1; }
+    say "rt27 2: HUP refused fsm=$fsm0->$fsm1 workers_before=[$w1] after=[$w2]"
+    # an old-generation worker that dies now respawns from its own snapshot
+    mark=$(wc -l < "$ERRLOG")
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "${w1%% *}" TERM >> "$LOG" 2>&1 || rc=1
+    sleep 8
+    expect_serving "2-respawn" || rc=1
+    if log_since "$ERRLOG" "$mark" | grep -q -E 'PANIC|cannot be respawned'; then
+        say "rt27 2: the respawned worker failed"; rc=1
+    fi
+    say "rt27 2: G_old worker ${w1%% *} TERMed, workers now $(worker_count), panics=$(log_since "$ERRLOG" "$mark" | grep -c PANIC)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 3. a binary upgrade cannot replace a primary that is in use
+    step=3; mark=$(wc -l < "$ERRLOG")
+    nginx_signal "$conf" usr2 || rc=1
+    wait_log "$ERRLOG" "$mark" 'runs another fstack config' 30 \
+        || { say "rt27 3: the new binary did not refuse"; rc=1; }
+    wait_log "$ERRLOG" "$mark" 'new binary exited before taking over' 30 \
+        || { say "rt27 3: the old master did not see the new binary exit"; rc=1; }
+    ini_strip_kni "$ini"
+    mark=$(wc -l < "$ERRLOG")
+    HUP_FSM=NA
+    hup_once "$conf" || { say "rt27 3: HUP after the refused upgrade failed"; rc=1; }
+    if log_since "$ERRLOG" "$mark" | grep -q 'HUP during a binary upgrade, rolling back'; then
+        say "rt27 3: the upgrade state was not reset"; rc=1
+    fi
+    say "rt27 3: USR2 refused, later HUP fsm=$HUP_FSM rollback=$(log_since "$ERRLOG" "$mark" | grep -c 'rolling back')"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 4. a second master cannot restart a primary that is in use
+    step=4; ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
+    conf2="$OUT/ngx_rt27b.conf"
+    sed -e "s#^error_log .*#error_log  $OUT/err_rt27b.log  notice;#" \
+        -e "s#^pid .*#pid        $OUT/nginx_rt27b.pid;#" "$conf" > "$conf2"
+    : > "$OUT/err_rt27b.log"
+    [ -e "$OUT/nginx_rt27b.pid" ] && "$RMTMP" "$OUT/nginx_rt27b.pid" >/dev/null
+    relaunch_master "$conf2" || rc=1
+    ERRLOG="$OUT/err_rt27b.log" expect_refused 4 0 'is still used by' 30 \
+        "$OUT/nginx_rt27b.pid" || rc=1
+    [ "$(slim_pid)" = "$p1" ] && [ "$(proc_start "$p1")" = "$p1s" ] \
+        || { say "rt27 4: the primary was touched"; rc=1; }
+    expect_serving 4 || rc=1
+    say "rt27 4: second master refused, primary still P1=$(slim_pid) workers=$(worker_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 5. no record: never touch the primary
+    step=5; mv "$SLIM_RECORD" "$OUT/slim_record.bak" || rc=1
+    stop_master_only "$conf" || rc=1
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    expect_refused 5 "$mark" 'has no valid record' 30 || rc=1
+    mv "$OUT/slim_record.bak" "$SLIM_RECORD" || rc=1
+    [ "$(slim_pid)" = "$p1" ] && [ "$(proc_start "$p1")" = "$p1s" ] \
+        || { say "rt27 5: the primary was touched"; rc=1; }
+    say "rt27 5: no record refused, primary still P1=$(slim_pid) start=$(proc_start "$p1")"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 6. the reported case: kni 0 -> 1 rebuilds the unused primary
+    step=6; mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    wait_log "$ERRLOG" "$mark" 'restarting the resident slim primary' 30 \
+        || { say "rt27 6: no restart line"; rc=1; }
+    expect_serving 6 || rc=1
+    p2=$(slim_pid)
+    { [ -n "$p2" ] && [ "$p2" != "$p1" ] && ! pid_alive "$p1"; } \
+        || { say "rt27 6: primary not rebuilt (P1=$p1 P2=$p2)"; rc=1; }
+    [ "$(veth_count)" -ge 1 ] || { say "rt27 6: no veth netif"; rc=1; }
+    say "rt27 6: rebuilt P1=$p1 -> P2=$p2 workers=$(worker_count) veth=$(veth_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 7. an unchanged config reloads as usual, KNI included
+    step=7; HUP_FSM=NA; hup_once "$conf" || rc=1
+    [ "$(veth_count)" -ge 1 ] || { say "rt27 7: no veth netif after HUP"; rc=1; }
+    say "rt27 7: HUP fsm=$HUP_FSM veth=$(veth_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 8. the other way round: kni 1 -> 0
+    step=8; stop_master_only "$conf" || rc=1
+    ini_strip_kni "$ini"
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    wait_log "$ERRLOG" "$mark" 'restarting the resident slim primary' 30 \
+        || { say "rt27 8: no restart line"; rc=1; }
+    expect_serving 8 || rc=1
+    p3=$(slim_pid)
+    { [ -n "$p3" ] && [ "$p3" != "$p2" ] && ! pid_alive "$p2"; } \
+        || { say "rt27 8: primary not rebuilt (P2=$p2 P3=$p3)"; rc=1; }
+    [ "$(veth_count)" = 0 ] || { say "rt27 8: veth netif still present"; rc=1; }
+    say "rt27 8: rebuilt P2=$p2 -> P3=$p3 workers=$(worker_count) veth=$(veth_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 9. a primary that does not exit is never escalated
+    step=9; stop_master_only "$conf" || rc=1
+    ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
+    evmark=$(wc -l < "$OUT/ownership-events.jsonl")
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$p3" STOP >> "$LOG" 2>&1 || rc=1
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    expect_refused 9 "$mark" 'did not exit within' 40 || rc=1
+    pid_alive "$p3" || { say "rt27 9: the stopped primary was escalated"; rc=1; }
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$p3" CONT >> "$LOG" 2>&1 || rc=1
+    wait_gone "$p3" 15 || { say "rt27 9: P3 did not act on its pending TERM"; rc=1; }
+    nkill=$(tail -n +$((evmark + 1)) "$OUT/ownership-events.jsonl" \
+        | grep '"event": "signal_requested"' | grep -c '"signal": "KILL"')
+    [ "$nkill" = 0 ] || { say "rt27 9: KILL was requested"; rc=1; }
+    say "rt27 9: stuck primary refused, KILL requests since STOP=$nkill, P3 gone after CONT"
+
+    say "rt27 10: snapshots before stop: $(ls /var/run/ff_nginx_fstack.* 2>/dev/null | tr '\n' ' ')"
+    stop_stack "rt27" "$conf"
+    say "rt27 10: snapshots after stop: $(ls /var/run/ff_nginx_fstack.* 2>/dev/null | tr '\n' ' ')"
+    for f in /var/run/ff_nginx_fstack.*; do
+        [ -e "$f" ] || continue
+        pid=$(basename "$f" | cut -d. -f2)
+        pid_alive "$pid" || { say "rt27 10: leaked snapshot $f"; leak=1; }
+    done
+    [ "$leak" = 0 ] || rc=1
+    meas="P1=$p1 P2=$p2 P3=$p3 refusals=hup,usr2,in-use,no-record,stuck rebuilds=0->1,1->0 snapshots_leaked=$leak"
+    if [ "$rc" = 0 ]; then
+        record "rt27" "PASS" "$crit" "$meas"
+    else
+        record "rt27" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
 # RT-12. This tree has no rte_kni: KNI is a virtio_user vdev hot-plugged by
 # ff_dpdk_kni.c, the kernel-side netif is veth<port_id>, and it needs
 # /dev/vhost-net. The verdict is written for that form, not for rte_kni.
@@ -2025,7 +2251,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break

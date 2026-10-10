@@ -37,6 +37,10 @@
 #include <time.h>             /* F-M5-1: slot stamp freshness */
 #include <sys/wait.h>         /* F-M5-1: reaped-child pid is a dead master */
 
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#include "ff_api.h"
 #include "ff_config.h"
 #include "ff_log.h"           /* for ff_log declaration only */
 #include "ff_reload.h"        /* M5: generation directory arbitration */
@@ -2988,6 +2992,162 @@ test_rx15_ring_user_census_and_purge_lock(void **state)
     ff_global_cfg.dpdk.graceful_reload = 0;
 }
 
+/* RX-35: the resident primary is reused only with the same device-side config. */
+static char *
+rx35_write_ini(const char *body)
+{
+    static char path[64];
+    int fd;
+
+    snprintf(path, sizeof(path), "/tmp/ut_rx35_%d_XXXXXX", (int)getpid());
+    fd = mkstemp(path);
+    assert_true(fd >= 0);
+    assert_int_equal(write(fd, body, strlen(body)), (ssize_t)strlen(body));
+    close(fd);
+    return path;
+}
+
+static uint64_t
+rx35_digest(const char *body, int *kni)
+{
+    uint64_t d = 0;
+    char *p = rx35_write_ini(body);
+
+    assert_int_equal(ff_primary_conf_digest(p, &d, kni), 0);
+    unlink(p);
+    return d;
+}
+
+#define RX35_BASE \
+    "[dpdk]\nlcore_mask=7\nprimary_slim=1\ngraceful_reload=1\n" \
+    "file_prefix=gr\nidle_sleep=20\nport_list=0\n" \
+    "[port0]\naddr=192.168.1.10\nlcore_list=1,2\nipfw_pr=0\n" \
+    "[freebsd.boot]\nhz=100\n"
+
+static void
+test_rx35_primary_conf_digest(void **state)
+{
+    uint64_t base;
+    int kni = -1;
+
+    (void)state;
+    base = rx35_digest(RX35_BASE, &kni);
+    assert_int_equal(kni, 0);
+
+    /* same tokens for the lib parser: whitespace and inline comments */
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask = 7 ; three lcores\nprimary_slim=1\n"
+        "graceful_reload=1\nfile_prefix=gr\nidle_sleep=20\nport_list=0\n"
+        "[port0]\naddr=192.168.1.10\nlcore_list=1,2\nipfw_pr=0\n"
+        "[freebsd.boot]\nhz=100\n", NULL) == base);
+
+    /* per-process keys do not count */
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask=7\nprimary_slim=1\ngraceful_reload=1\n"
+        "file_prefix=gr\nidle_sleep=0\nport_list=0\nfstack_log_level=7\n"
+        "[port0]\naddr=192.168.1.11\nlcore_list=1,2\nipfw_pr=1\n"
+        "[freebsd.boot]\nhz=1000\n[kni]\nmethod=accept\n", NULL) == base);
+
+    /* primary-side keys do */
+    assert_true(rx35_digest(RX35_BASE "[kni]\nenable = 1\n", &kni) != base);
+    assert_int_equal(kni, 1);
+    assert_true(rx35_digest(RX35_BASE "[kni]\nenable=0\n", &kni) != base);
+    assert_int_equal(kni, 0);
+    assert_true(rx35_digest(RX35_BASE "[kni]\nowner_proc_id=1\n", NULL)
+        != base);
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask=f\nprimary_slim=1\ngraceful_reload=1\n"
+        "file_prefix=gr\nidle_sleep=20\nport_list=0\n"
+        "[port0]\naddr=192.168.1.10\nlcore_list=1,2\nipfw_pr=0\n"
+        "[freebsd.boot]\nhz=100\n", NULL) != base);
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask=7\nprimary_slim=1\ngraceful_reload=1\n"
+        "file_prefix=other\nidle_sleep=20\nport_list=0\n"
+        "[port0]\naddr=192.168.1.10\nlcore_list=1,2\nipfw_pr=0\n"
+        "[freebsd.boot]\nhz=100\n", NULL) != base);
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask=7\nprimary_slim=1\ngraceful_reload=1\n"
+        "file_prefix=gr\nidle_sleep=20\nport_list=0\n"
+        "[port0]\naddr=192.168.1.10\nlcore_list=1\nipfw_pr=0\n"
+        "[freebsd.boot]\nhz=100\n", NULL) != base);
+
+    {
+        char *bad = rx35_write_ini("[dpdk]\nlcore_mask=7\nno equals sign\n");
+
+        assert_int_equal(ff_primary_conf_digest(bad, NULL, NULL), -1);
+        unlink(bad);
+    }
+    assert_int_equal(ff_primary_conf_digest("/nonexistent/rx35.ini",
+        NULL, NULL), -1);
+    assert_int_equal(ff_primary_conf_digest(NULL, NULL, NULL), -1);
+}
+
+static int
+rx35_bind(const char *dir, const char *name)
+{
+    struct sockaddr_un un;
+    int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+
+    assert_true(fd >= 0);
+    memset(&un, 0, sizeof(un));
+    un.sun_family = AF_UNIX;
+    snprintf(un.sun_path, sizeof(un.sun_path), "%s/%s", dir, name);
+    assert_int_equal(bind(fd, (struct sockaddr *)&un, sizeof(un)), 0);
+    return fd;
+}
+
+static void
+test_rx35_primary_users(void **state)
+{
+    char dir[] = "/tmp/ut_rx35_rt_XXXXXX";
+    char path[128];
+    int own, live, stale;
+
+    (void)state;
+    assert_non_null(mkdtemp(dir));
+    assert_int_equal(ff_primary_users(dir), 0);
+
+    own = rx35_bind(dir, "mp_socket");
+    assert_int_equal(ff_primary_users(dir), 0);
+
+    live = rx35_bind(dir, "mp_socket_4242_1a2b");
+    assert_int_equal(ff_primary_users(dir), 1);
+
+    /* a process that died without cleanup leaves its socket file */
+    stale = rx35_bind(dir, "mp_socket_4243_3c4d");
+    close(stale);
+    assert_int_equal(ff_primary_users(dir), 1);
+
+    close(live);
+    assert_int_equal(ff_primary_users(dir), 0);
+    close(own);
+
+    snprintf(path, sizeof(path), "%s/mp_socket", dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/mp_socket_4242_1a2b", dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/mp_socket_4243_3c4d", dir);
+    unlink(path);
+    assert_int_equal(rmdir(dir), 0);
+
+    assert_int_equal(ff_primary_users(dir), -1);
+    assert_int_equal(ff_primary_users(NULL), -1);
+}
+
+static void
+test_rx35_primary_reuse_check(void **state)
+{
+    (void)state;
+    assert_int_equal(ff_primary_reuse_check(1, 1, 3, 1), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, -1, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(0, 1, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(0, 0, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 2, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, -1, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 1), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 0), FF_PRIMARY_RESTART);
+}
+
 main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -3101,6 +3261,9 @@ main(void)
         cmocka_unit_test_setup_teardown(test_p2_release_epoch_needs_proof, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_p2_orphan_workers_keep_epoch_live, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rx15_ring_user_census_and_purge_lock, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx35_primary_conf_digest, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx35_primary_users, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx35_primary_reuse_check, test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),

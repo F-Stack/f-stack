@@ -556,6 +556,10 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
             rte_panic("lookup kni ring failed!\n");
     } else {
         kni_rp[port_id] = rte_ring_lookup(ring_name);
+        if (kni_rp[port_id] == NULL)
+            rte_panic("kni ring %s not found: the primary did not create it"
+                " (is [kni] enable=1 in the primary's config?)\n",
+                ring_name);
     }
 
     if (kni_rp[port_id] == NULL)
@@ -575,6 +579,10 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
             rte_panic("lookup kni inject ring failed!\n");
     } else {
         kni_inject_rp[port_id] = rte_ring_lookup(inject_ring_name);
+        if (kni_inject_rp[port_id] == NULL)
+            rte_panic("kni ring %s not found: the primary did not create it"
+                " (is [kni] enable=1 in the primary's config?)\n",
+                inject_ring_name);
     }
 
     if (kni_inject_rp[port_id] == NULL)

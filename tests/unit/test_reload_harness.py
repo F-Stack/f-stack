@@ -878,6 +878,58 @@ class OwnershipSupervisorTests(unittest.TestCase):
     def test_owned_08_persistence_failure(self):
         self.run_scenario("persistence", False)
 
+    def launch_fixture(self, phase):
+        import reload_supervisor as supervisor
+        sup = object.__new__(supervisor.Supervisor)
+        sup.run_id, sup.last_sequence, sup.stack, sup.phase = "r", 0, "s1", phase
+        tree = object.__new__(supervisor.ProcessTree)
+        tree.failure, tree.allowed = None, set()
+        tree.members = {os.getpid(): dict(role="controller", pidfd=os.pidfd_open(os.getpid()))}
+        tree.spawned = []
+        tree.spawn = lambda argv, role, stack=None, env=None, pass_fds=(): (
+            tree.spawned.append((argv, role, stack, env)) or 4242)
+        sup.tree = tree
+        sup.snapshot = lambda: {}
+        sup.allowed_files = {}
+        sup.launcher = 1111
+        self.addCleanup(os.close, tree.members[os.getpid()]["pidfd"])
+        return sup
+
+    def launch(self, sup, sha, stack="s1"):
+        sup.last_sequence = 0
+        msg = dict(sequence=1, run_id="r", stack=stack, operation="launch",
+                   arguments=dict(argv=[sys.executable, "-c", "pass"], sha256=sha))
+        return sup.dispatch(msg, os.getpid())
+
+    def test_launch_only_into_a_running_stack(self):
+        import reload_supervisor as supervisor
+        sha = supervisor.digest(str(Path(sys.executable).resolve()))
+        for phase in ("idle", "starting", "stopping", "stopped"):
+            sup = self.launch_fixture(phase)
+            with self.assertRaisesRegex(ValueError, "stack not controllable"):
+                self.launch(sup, sha)
+            self.assertEqual(sup.tree.spawned, [])
+        sup = self.launch_fixture("running")
+        with self.assertRaisesRegex(ValueError, "binary digest mismatch"):
+            self.launch(sup, "0" * 64)
+        with self.assertRaisesRegex(ValueError, "wrong stack identity"):
+            self.launch(sup, sha, stack="s2")
+        sup.tree.failure = "stack_cleanup_timeout"
+        with self.assertRaisesRegex(ValueError, "stack not controllable"):
+            self.launch(sup, sha)
+        sup.tree.failure = None
+        self.assertEqual(sup.tree.spawned, [])
+        with mock.patch.dict(os.environ, {"NGINX": "6;", "GR_SUPERVISOR_FD": "9"}):
+            value = self.launch(sup, sha)
+        self.assertEqual(value["launched"], 4242)
+        argv, role, stack, env = sup.tree.spawned[0]
+        self.assertEqual((role, stack), ("target", "s1"))
+        self.assertNotIn("NGINX", env)
+        self.assertNotIn("GR_SUPERVISOR_FD", env)
+        self.assertEqual(env["FF_RELOAD_RUN_ID"], "r")
+        self.assertEqual(sup.phase, "running")
+        self.assertEqual(sup.launcher, 1111)
+
     def test_owned_08_helper_deadline(self):
         import reload_supervisor as supervisor
         tree = object.__new__(supervisor.ProcessTree)

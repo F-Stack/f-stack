@@ -90,6 +90,14 @@ ff_dpdk_stop(void)
     g_dpdk_stop_calls++;
 }
 
+static const char *g_runtime_dir = "";
+
+const char *
+rte_eal_get_runtime_dir(void)
+{
+    return g_runtime_dir;
+}
+
 /* ------------------------------------------------------------------------ */
 /* exit() wrap — fail-fast via cmocka so the test process is not killed.    */
 /* When ff_init's exit(1) path triggers, we record the code and longjmp     */
@@ -262,6 +270,18 @@ test_ff_init_fail_dpdk_if_up(void **state)
     assert_int_equal(g_last_exit_code,     1);
 }
 
+/* RX-35: the slim primary records the EAL runtime directory it really uses */
+static void
+test_ff_eal_runtime_dir_forward(void **state)
+{
+    (void)state;
+    g_runtime_dir = "";
+    assert_string_equal(ff_eal_runtime_dir(), "");
+    g_runtime_dir = "/var/run/dpdk/container-gr";
+    assert_string_equal(ff_eal_runtime_dir(), "/var/run/dpdk/container-gr");
+    g_runtime_dir = "";
+}
+
 /* ------------------------------------------------------------------------ */
 /* Main runner                                                              */
 /* ------------------------------------------------------------------------ */
@@ -276,6 +296,7 @@ main(void)
         /* Stage-6 coverage extensions */
         cmocka_unit_test_setup_teardown(test_ff_init_fail_freebsd_init, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_ff_init_fail_dpdk_if_up,   test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_eal_runtime_dir_forward, test_setup, NULL),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

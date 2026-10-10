@@ -26,6 +26,8 @@
 
 #include <stdlib.h>
 
+#include <rte_eal.h>
+
 #include "ff_api.h"
 #include "ff_config.h"
 #include "ff_dpdk_if.h"
@@ -67,3 +69,8 @@ ff_stop_run(void)
     ff_dpdk_stop();
 }
 
+const char *
+ff_eal_runtime_dir(void)
+{
+    return rte_eal_get_runtime_dir();
+}

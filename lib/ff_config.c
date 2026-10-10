@@ -31,10 +31,15 @@
 #include <getopt.h>
 #include <ctype.h>
 #include <errno.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <arpa/inet.h>
 #include <rte_config.h>
 #include <rte_string_fns.h>
 
+#include "ff_api.h"
 #include "ff_config.h"
 #include "ff_ini_parser.h"
 #include "ff_log.h"
@@ -1987,4 +1992,131 @@ ff_unload_config(void)
     /* freebsd.boot / freebsd.sysctl : linked-list chains */
     ff_cfg_free_freebsd_chain(&ff_global_cfg.freebsd.boot);
     ff_cfg_free_freebsd_chain(&ff_global_cfg.freebsd.sysctl);
+}
+
+struct primary_digest {
+    uint64_t hash;
+    int kni_enable;
+};
+
+static void
+primary_digest_add(uint64_t *h, const char *s)
+{
+    do {
+        *h ^= (unsigned char)*s;
+        *h *= 0x100000001b3ULL;
+    } while (*s++ != '\0');
+}
+
+static int
+primary_digest_skip(const char *section, const char *name)
+{
+    static const char *const dpdk_local[] = {
+        "log_level", "fstack_log_level", "fstack_log_file_prefix",
+        "idle_sleep", "pkt_tx_delay", "reload_heartbeat_timeout_ms", NULL
+    };
+    static const char *const port_local[] = {
+        "addr", "netmask", "broadcast", "gateway", "addr6", "prefix_len",
+        "gateway6", "if_name", "ipfw_pr", NULL
+    };
+    const char *const *k;
+
+    if (strcmp(section, "dpdk") == 0) {
+        for (k = dpdk_local; *k != NULL; k++)
+            if (strcmp(name, *k) == 0)
+                return 1;
+        return 0;
+    }
+    if (strcmp(section, "kni") == 0)
+        return strcmp(name, "enable") != 0
+            && strcmp(name, "owner_proc_id") != 0
+            && strcmp(name, "kernel_packets_ratelimit") != 0;
+    if (strncmp(section, "port", 4) == 0 || strncmp(section, "vlan", 4) == 0
+        || strncmp(section, "vdev", 4) == 0
+        || strncmp(section, "bond", 4) == 0) {
+        if (strncmp(name, "vip_", 4) == 0)
+            return 1;
+        for (k = port_local; *k != NULL; k++)
+            if (strcmp(name, *k) == 0)
+                return 1;
+        return 0;
+    }
+    return 1;
+}
+
+static int
+primary_digest_handler(void *user, const char *section, const char *name,
+    const char *value)
+{
+    struct primary_digest *d = user;
+
+    if (strcmp(section, "kni") == 0 && strcmp(name, "enable") == 0)
+        d->kni_enable = atoi(value);
+    if (primary_digest_skip(section, name))
+        return 1;
+    primary_digest_add(&d->hash, section);
+    primary_digest_add(&d->hash, name);
+    primary_digest_add(&d->hash, value);
+    return 1;
+}
+
+int
+ff_primary_conf_digest(const char *conf, uint64_t *digest, int *kni_enable)
+{
+    struct primary_digest d = { 0xcbf29ce484222325ULL, 0 };
+
+    if (conf == NULL || ini_parse(conf, primary_digest_handler, &d) != 0)
+        return -1;
+    if (digest != NULL)
+        *digest = d.hash;
+    if (kni_enable != NULL)
+        *kni_enable = d.kni_enable;
+    return 0;
+}
+
+int
+ff_primary_users(const char *runtime_dir)
+{
+    struct sockaddr_un un;
+    struct dirent *e;
+    DIR *dir;
+    int fd, n = 0;
+
+    if (runtime_dir == NULL || (dir = opendir(runtime_dir)) == NULL)
+        return -1;
+    while ((e = readdir(dir)) != NULL) {
+        if (strncmp(e->d_name, "mp_socket_", 10) != 0)
+            continue;
+        memset(&un, 0, sizeof(un));
+        un.sun_family = AF_UNIX;
+        if ((size_t)snprintf(un.sun_path, sizeof(un.sun_path), "%s/%s",
+            runtime_dir, e->d_name) >= sizeof(un.sun_path)) {
+            n++;
+            continue;
+        }
+        fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) {
+            n++;
+            continue;
+        }
+        if (connect(fd, (struct sockaddr *)&un, sizeof(un)) == 0
+            || (errno != ECONNREFUSED && errno != ENOENT))
+            n++;
+        close(fd);
+    }
+    closedir(dir);
+    return n;
+}
+
+int
+ff_primary_reuse_check(int record_ok, int same_digest, int users,
+    int inherited)
+{
+    if (!record_ok)
+        return FF_PRIMARY_REFUSE;
+    if (same_digest)
+        return FF_PRIMARY_REUSE;
+    if (users != 0 || inherited)
+        return FF_PRIMARY_REFUSE;
+    return FF_PRIMARY_RESTART;
 }
