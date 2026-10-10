@@ -1,9 +1,9 @@
 # Test Plan — Units, Integration, Performance Baselines and Acceptance (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.26). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.27). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (case list, criteria table, coverage boundaries), not a line-by-line translation of all ~500 lines.
-> Revised 2026-10-08.
+> Revised 2026-10-08; rt27 and build K added on 2026-10-10.
 
 ---
 
@@ -33,7 +33,8 @@ True-EAL integration (`tests/integration`) runs real DPDK processes:
 ## 3. Runtime harness
 
 `tests/integration/test_graceful_reload.sh` drives a real machine, a real client (`f-stack-client`) and the
-supervised stack. Default cases: `precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt13`; the **rt2x** fault
+supervised stack. Default cases (no `-c`): `precheck, rt01, rv9`; `-c all`: `precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27, rt13`
+(rt13 permanently excluded); the **rt2x** fault
 cases and **rt30 / rt31** are opt-in; **rt26** (SYN-ACK failure) needs a fault-injection build.
 
 Selected cases:
@@ -106,11 +107,13 @@ Selected cases:
 - Long-connection criterion clarified (`keepalive_requests`), probe-progress anchoring recorded, harness
   control-channel fixes recorded.
 
-## 7. Changes in the 2026-10-08 edition (mirror of zh_cn 08 §2.3.0 / §2.3.2 / §2.3.3)
+## 7. Changes in the 2026-10-08 and 2026-10-10 editions (mirror of zh_cn 08 §2.3.0 / §2.3.2 / §2.3.3)
 
-**Harness interface (current).** `tests/integration/test_graceful_reload.sh` has 18 cases (`reload_checks.py:
-CASES`): precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt13, rt20, rt20b, rt21, rt22, rt23, rt24, rt25, rt26,
-rt30, rt31. `-c all` still covers only the first eight minus the permanently excluded rt13. Seven fault names:
+**Harness interface (current).** `tests/integration/test_graceful_reload.sh` has 19 cases (`reload_checks.py:
+CASES`): precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27 (2026-10-10, resident primary
+vs a changed f-stack config; needs /dev/vhost-net), rt13, rt20, rt20b, rt21, rt22, rt23, rt24, rt25, rt26,
+rt30, rt31. `-c all` (ALL_CASES) is precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27 and rt13, the last one permanently
+excluded. Seven fault names:
 ready_never, ready_delay, park_never, flip_fail, mutex_timeout (manual use only, no case), flip_fail_once,
 synack_fail. Extra options: `--perf-threads/--perf-conns/--perf-duration/--hup-anchor-sec/--hup-anchor-count`,
 `--capture`, `--client-if`. The aggregator also returns exit code 6 (no FAIL but SKIP/LIMITED). RT-04 maps to
@@ -140,3 +143,9 @@ IPv4 precheck, rt01, rt02, rt23, rt25, rt30, rt31 and rv9 30 rounds, and IPv6 pr
 `test_ff_config_pa`. A batch on an intermediate
 build was voided because a source comment was edited during the run and the build-identity gate refused to
 start the remaining stacks.
+
+**2026-10-10 build K (RX-35).** rt27 (all ten steps) and rt12 with the management plane pass (rt12 was LIMITED in the first batch, which had
+no `--kernel-nic-ip`, and passed when rerun with the management plane). The IPv4 batch (precheck, baseline, rt01, rt02, gr0, rt23, rt25, rt30, rt31) passes 9/9, IPv4 and IPv6 rv9 pass 100/100 each (flat rtemap, hugepages back to 2048), IPv6 precheck, rt01, rt02 and rt27 pass, and rt27 rerun with per-step evidence lines still passes on both families (no KILL request, no leaked snapshot). Test-evidence audit: TA FAIL (four evidence-chain items) → TA2 PASS.
+The supervisor gained `launch` (running phase and no supervisor failure only, always the current stack, sha256
+re-checked, `NGINX` stripped, the start launcher untouched) so a case can
+start another master inside its stack.

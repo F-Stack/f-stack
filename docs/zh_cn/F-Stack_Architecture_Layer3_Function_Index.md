@@ -460,6 +460,16 @@ const char * ff_strerror(int errnum)
 只在 `graceful_reload=1` 时可达；否则所有符号都退化为空操作。
 
 ```c
+// 以下 4 个在 ff_api.h 中声明（ff_config.c / ff_init.c 实现），供 nginx master 判断常驻 primary 能否复用
+int ff_primary_conf_digest(const char *conf, uint64_t *digest, int *kni_enable)
+    // ff_config.c：常驻 slim primary 所应用配置部分的摘要；无法解析返回 -1
+int ff_primary_users(const char *runtime_dir)
+    // ff_config.c：primary 的存活 DPDK secondary 数（mp_socket_* 连接探测）；-1 表示未知
+int ff_primary_reuse_check(int record_ok, int same_digest, int users, int inherited)
+    // ff_config.c：FF_PRIMARY_REUSE / FF_PRIMARY_REFUSE / FF_PRIMARY_RESTART
+const char *ff_eal_runtime_dir(void)
+    // ff_init.c：本进程的 EAL 运行目录
+
 void ff_reload_attach_state(void *block)
     // 绑定 nginx master 创建的匿名 MAP_SHARED reload 块
     // 经 fork() 继承；不受 master 驱动的应用从不 attach

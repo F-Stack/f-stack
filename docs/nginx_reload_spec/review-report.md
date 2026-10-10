@@ -1,9 +1,9 @@
 # Independent Gate Audit Report — Specification Set 00–08 (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.17). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.18). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (audit scope, gates, findings and closure), not a line-by-line translation of all ~900 lines.
-> Revised 2026-10-08.
+> Revised 2026-10-08; §10 added on 2026-10-10.
 
 ---
 
@@ -112,3 +112,14 @@ followed by a clean full build (RX, RX2, RX3; lib warnings equal to the baseline
 testing plan and in the RX3 rows of zh_cn 08 §2.3.3. Limits: the RX-29 timing is backed by runtime
 logs only, and the RX-15 runtime evidence is one natural purge in the rt25 stack, not a targeted fault test.
 
+## 10. 2026-10-10: RX-35 (mirror of zh_cn 09 §30)
+
+Reproduced on a clean host (kni=0 primary stays → kni=1 → restart master → every worker panics) against a clean
+KNI start that works; two independent researchers agreed on the root cause, unrelated to 35bf93dc1 (gh search was
+not run: the token returned 401). The plan took four gate rounds (PR-K 6 MUST, PR-K2 3 MUST, PR-K3 1 MUST, PR-K4
+PASS), within the three-bounce limit. Code review: CR-K PASS (four SHOULD items fixed, signalling moved to a pidfd),
+CR-K2 and CR-K3 PASS on the follow-ups; every reviewer was a fresh instance and none reviewed its own work. Each
+.c/.h change was followed by a clean full build. The test-evidence audit failed once (TA: four evidence-chain gaps)
+and passed after rt27 gained per-step evidence lines (CR-K4 FAIL, CR-K5 PASS), the build counts and the raw
+user-instance output were recorded and rv9 was extended to 100 rounds per family (TA2 PASS). Residuals are listed
+in the solution design §10.5.

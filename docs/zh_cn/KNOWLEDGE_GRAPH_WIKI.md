@@ -91,7 +91,7 @@ nginx reload（HUP）或二进制升级（USR2）会拉起新一代（G_new）�
 |-------------|---------|
 | 配置开关（默认关闭） | `lib/ff_config.c`：`graceful_reload`（`lib/ff_config.h` 中的字段 `dpdk.graceful_reload`）、`reload_heartbeat_timeout_ms`、`drain_ring_size`；要求 `primary_slim=1` 且 `nb_procs >= 2`，与 `thread_mode=1` 互斥 |
 | 新增：reload 控制面 | `lib/ff_reload.c`（2063 行）+ `lib/ff_reload.h`——共享块、代身份、rx/kni 归属、park 屏障、心跳 |
-| 新增：世代目录 | `lib/ff_reload_gendir.c`（406 行）——由常驻 slim primary 持有的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) \| gen` 所有者坐标、存活戳、硬件使用者表与 drain ring 使用者表（primary 据此回收无主残包） |
+| 新增：世代目录 | `lib/ff_reload_gendir.c`（406 行）——由常驻 slim primary 持有的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) \| gen` 所有者坐标、存活戳、硬件使用者表与 drain ring 使用者表（primary 据此回收无主残包）。nginx master 只在设备侧配置摘要相同时复用常驻 primary（`ff_primary_conf_digest()`，记录 `/var/run/ff_slim_primary.conf`），否则在无使用者时重建、在用时拒绝启动 |
 | 新增：软件流表 | `lib/ff_flow_map.c`（461 行）——`ff_flow_map_admit()` 在 SYN 准入时（SYN-ACK 之前）登记四元组；`ff_flow_map_revoke()` 撤销 SYN-ACK 没发出去的准入 |
 | 新增：drain ring | `lib/ff_drain_ring.c`（673 行）——按（队列, 代, 方向）划分的 ring，收发 G_old 的在途报文 |
 | 共享控制块 | `lib/ff_reload.h`：`struct ff_reload_state`；由 `ff_reload_attach_state()` 绑定，`ff_reload_state_valid()` 校验 |

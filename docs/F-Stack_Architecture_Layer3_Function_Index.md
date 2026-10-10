@@ -461,6 +461,16 @@ const char * ff_strerror(int errnum)
 Only reachable with `graceful_reload=1`; every symbol degrades to a no-op otherwise.
 
 ```c
+// Declared in ff_api.h (ff_config.c / ff_init.c); used by the nginx master to decide on the resident primary
+int ff_primary_conf_digest(const char *conf, uint64_t *digest, int *kni_enable)
+    // ff_config.c: digest of the config part the resident slim primary applies; -1 if unparsable
+int ff_primary_users(const char *runtime_dir)
+    // ff_config.c: live DPDK secondaries of a primary (mp_socket_* connect probe); -1 = unknown
+int ff_primary_reuse_check(int record_ok, int same_digest, int users, int inherited)
+    // ff_config.c: FF_PRIMARY_REUSE / FF_PRIMARY_REFUSE / FF_PRIMARY_RESTART
+const char *ff_eal_runtime_dir(void)
+    // ff_init.c: EAL runtime directory of this process
+
 void ff_reload_attach_state(void *block)
     // Attach the anonymous MAP_SHARED reload block created by the nginx master
     // Inherited through fork(); apps not driven by the master never attach
