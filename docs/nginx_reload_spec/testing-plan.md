@@ -145,7 +145,8 @@ build was voided because a source comment was edited during the run and the buil
 start the remaining stacks.
 
 **2026-10-10 build K (RX-35).** rt27 (all ten steps) and rt12 with the management plane pass (rt12 was LIMITED in the first batch, which had
-no `--kernel-nic-ip`, and passed when rerun with the management plane). The IPv4 batch (precheck, baseline, rt01, rt02, gr0, rt23, rt25, rt30, rt31) passes 9/9, IPv4 and IPv6 rv9 pass 100/100 each (flat rtemap, hugepages back to 2048), IPv6 precheck, rt01, rt02 and rt27 pass, and rt27 rerun with per-step evidence lines still passes on both families (no KILL request, no leaked snapshot). Test-evidence audit: TA FAIL (four evidence-chain items) → TA2 PASS.
+no `--kernel-nic-ip`, and passed when rerun with the management plane). The IPv4 batch (precheck, baseline, rt01, rt02, gr0, rt23, rt25, rt30, rt31) passes 9/9, IPv4 and IPv6 rv9 pass 100/100 each (flat rtemap, hugepages back to 2048), IPv6 precheck, rt01, rt02 and rt27 pass, and rt27 rerun with per-step evidence lines still passes on both families (no KILL request; no exited master left a snapshot behind: at step 10 no master runs any more, and on the user
+instance the snapshot count drops to 0 when the master stops and is 1 at every sample taken while it runs). Test-evidence audit: TA FAIL (four evidence-chain items) → TA2 PASS.
 The supervisor gained `launch` (running phase and no supervisor failure only, always the current stack, sha256
 re-checked, `NGINX` stripped, the start launcher untouched) so a case can
 start another master inside its stack.

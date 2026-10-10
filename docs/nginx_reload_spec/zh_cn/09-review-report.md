@@ -1063,6 +1063,7 @@ DR1 直接决定以下编码点的形态：
 
 - **复现与根因**：leader 在干净环境下复现「kni=0 常驻 primary → 改 kni=1 → 重启 master → worker panic」，并与「全新启动 + KNI 正常」对照；调研员 A（代码与提交历史）、调研员 B（文档与 issue 档案）独立结论一致，leader 补充外网与 DPDK 源码证据（`vdev_scan` 的 IPC 语义、mp_socket 命名、`clear_hugedir`）。gh 检索因 token 失效（401）未执行，如实登记。根因与 35bf93dc1 无关。
 - **计划门禁**：plan_kni_fix.md 四轮——PR-K FAIL（6 MUST：HUP 中止位置、使用者统计的目录、使用者判活方法、supervisor 不支持只重启 master、致命项覆盖、解析一致性）、PR-K2 FAIL（3 MUST：G_old 重拉读磁盘新配置、runtime_dir 推算不可信、rt27 判据矛盾）、PR-K3 FAIL（1 MUST：rt27 步骤顺序）、PR-K4 PASS。计划阶段打回 3 次，第 4 版通过，未超过上限。
-- **代码门禁**：CR-K PASS（0 MUST，S1 fd 泄漏、S2 判据空转、S3 用例覆盖、S4 pid 复用 TOCTOU 均已修，S4 改用 pidfd）；CR-K2 PASS（增量；pidfd 宏保护、`O_CLOEXEC`、`pid_alive` 竞态、旧 pid 文件、断言精确化均已修）；CR-K3 PASS（增量）。写审分离：代码由 leader 编写，审核员均为新实例。
+- **代码门禁**：CR-K PASS（0 MUST，S1 fd 泄漏、S2 判据空转、S3 用例覆盖、S4 pid 复用 TOCTOU 均已修，S4 改用 pidfd）；CR-K2 PASS（增量；pidfd 宏保护、`O_CLOEXEC`、`pid_alive` 竞态、旧 pid 文件、断言精确化均已修）；CR-K3 PASS（增量）；rt27 证据行增补后 CR-K4 FAIL（第 9 步 KILL 统计口径为整次运行）→ CR-K5 PASS，代码阶段打回 1 次。写审分离：代码由 leader 编写，审核员均为新实例。
 - **构建与测试**：每次改 .c/.h 后 make clean 全量构建；结果见 08 §2.3.3 K 行与 06 §10.5。测试证据审计 TA 首轮 FAIL（4 条 MUST 均为证据链缺口：supervisor phase 未解释、rt27 第 10 步无原始行、构建计数不可核、现场叙述无原始材料），rt27 增加逐步证据行（CR-K4 FAIL→CR-K5 PASS）、补齐构建计数与现场原始输出、rv9 补到 IPv4/IPv6 各 100 轮后，TA2 PASS。
+- **文档门禁**：GD-K FAIL（4 MUST：「超时不发信号」与代码矛盾、英文 overview 版本行、台账未支撑审核轮次、`-c all` 口径过时）→ GD-K2 FAIL（英文测试计划默认用例列表）→ GD-K3 PASS，打回 2 次；终门禁 G-K PASS。
 - **结论边界**：残余 7 项见 06 §10.5；vfio-pci 未实测；USR2 跨越本修复不受支持。

@@ -118,8 +118,10 @@ Reproduced on a clean host (kni=0 primary stays → kni=1 → restart master →
 KNI start that works; two independent researchers agreed on the root cause, unrelated to 35bf93dc1 (gh search was
 not run: the token returned 401). The plan took four gate rounds (PR-K 6 MUST, PR-K2 3 MUST, PR-K3 1 MUST, PR-K4
 PASS), within the three-bounce limit. Code review: CR-K PASS (four SHOULD items fixed, signalling moved to a pidfd),
-CR-K2 and CR-K3 PASS on the follow-ups; every reviewer was a fresh instance and none reviewed its own work. Each
+CR-K2 and CR-K3 PASS on the follow-ups, then CR-K4 FAIL → CR-K5 PASS on the rt27 evidence lines (one
+code-stage bounce); every reviewer was a fresh instance and none reviewed its own work. Each
 .c/.h change was followed by a clean full build. The test-evidence audit failed once (TA: four evidence-chain gaps)
-and passed after rt27 gained per-step evidence lines (CR-K4 FAIL, CR-K5 PASS), the build counts and the raw
-user-instance output were recorded and rv9 was extended to 100 rounds per family (TA2 PASS). Residuals are listed
-in the solution design §10.5.
+and passed after rt27 gained per-step evidence lines, the build counts and the raw
+user-instance output were recorded and rv9 was extended to 100 rounds per family (TA2 PASS). The documentation gate failed twice (GD-K: four MUST items, GD-K2: the default case list of
+the English testing plan) and passed with GD-K3; the final gate G-K passed. Residuals are listed in the solution
+design §10.5.

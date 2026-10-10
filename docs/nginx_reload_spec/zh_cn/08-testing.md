@@ -275,7 +275,7 @@ f-stack-client（客户端机，8 核，ssh 可达）
 | K | 同上 | IPv4：precheck、baseline、rt01、rt02、gr0、rt23、rt25、rt30、rt31 | **9/9 PASS** | baseline conns=24 fail=0 fresh_fail=0；rt02/rt23 streams=36 md5_ok=36 stalls=0；rt25 fail=24（≤2×conns）fresh_fail=0；rt30 n=203874 fail=0；rt31 fail=12（≤conns）；gr0 longest_outage=1.001s |
 | K | 同上 | IPv4 rv9 100 轮；IPv6 rv9 100 轮 | **PASS** | 均 ok=100/100，rtemap 斜率 0，大页最终 2048 |
 | K | 同上 | IPv6：precheck、rt01、rt02、rv9 20 轮、rt27 | **PASS** | rt02 streams=36 md5_ok=36；rv9 ok=20/20；rt27 十步同 IPv4 |
-| K | 同上（rt27 加逐步证据行） | IPv4、IPv6：precheck、rt27 | **PASS** | 逐步行：HUP 拒绝 fsm 0→0、G_old 重拉 panics=0、USR2 后 HUP fsm=6 rollback=0、P1→P2→P3、veth 1/0、STOP 后 KILL 请求 0、停栈前后无快照 |
+| K | 同上（rt27 加逐步证据行） | IPv4、IPv6：precheck、rt27 | **PASS** | 逐步行：HUP 拒绝 fsm 0→0、G_old 重拉 panics=0、USR2 后 HUP fsm=6 rollback=0、P1→P2→P3、veth 1/0、STOP 后 KILL 请求 0、已退出的 master 均未遗留快照（第 10 步时已无 master 在运行；正向对照见用户现场 states.txt（本地归档、未入库）：master 停止后快照为 0，各运行期采样点（启动后、kni=1 重启后、HUP 后）均只有 1 份，HUP 后只剩当前一份） |
 | K | 用户现场 nginx-gr-live | kni=0 常驻 → kni=1 重启 master → HUP | **PASS** | 自动重建 primary、veth0 出现、短连接 2014/0 失败、50 MB md5 一致 |
 
 未执行：rt13（永久排除）。RT-00/03/05~09/11/14/15 等没有 harness 落点的历史一次性用例，本轮没有重跑。
