@@ -1,9 +1,9 @@
 # Independent Gate Audit Report — Specification Set 00–08 (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.19). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.21). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (audit scope, gates, findings and closure), not a line-by-line translation of all ~900 lines.
-> Revised 2026-10-08; §10 added on 2026-10-10.
+> Revised 2026-10-08; §10 added on 2026-10-10, §11 to §13 on 2026-10-12.
 
 ---
 
@@ -154,3 +154,15 @@ missing builds that have a record but whose master does not stop the primary on 
 GD-S2 FAIL (one line count left in the Chinese Layer 1 tree), second bounce, fixed together with
 the guide's USR2 command examples turned into prose; GD-S3 PASS (section 9 of the ledger). Every reviewer was a fresh instance; every .c/.h change was followed by a clean full build
 (S1 to S8). Residuals are listed in the solution design §10.7.
+
+## 13. 2026-10-12: RX-38 (mirror of zh_cn 09 §33)
+
+Reproduced on the user's default instance with only `[port0] mtu=9000`: a 60 s wait, a generic `failed to become
+ready` and a stale nginx.pid, while the primary log has `port0 mtu 9000 > 1500 requires mtu_enable=1`;
+graceful_reload=0 rejects the same config, so the contract stays and the graceful defect is the hidden reason, the 60
+s wait and the pid file. `mtu_enable=1` with large and scatter mbufs was measured to start, reload, upgrade and pass
+md5 downloads, so the lib is unchanged; end-to-end jumbo TCP cannot be checked behind the cloud path's MSS clamp.
+Design review PASS (0 MUST, 6 SHOULD, all applied; a pipe was chosen over the planned shm{sem,pid}). Code review
+CR-M1 PASS (0 MUST, 3 SHOULD: an ALERT on a failed read, the `(void) write` under FORTIFY, the same stale pid file on
+the worker-0 attach exit), applied and rebuilt clean as M2, CR-M2 PASS (0 MUST, 0 SHOULD). Every reviewer was a fresh
+instance. Residuals are listed in the solution design §10.8.

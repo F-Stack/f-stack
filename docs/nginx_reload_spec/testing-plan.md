@@ -1,9 +1,9 @@
 # Test Plan — Units, Integration, Performance Baselines and Acceptance (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.28). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.30). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (case list, criteria table, coverage boundaries), not a line-by-line translation of all ~500 lines.
-> Revised 2026-10-08; rt27 and build K added on 2026-10-10.
+> Revised 2026-10-08; rt27 and build K added on 2026-10-10; rt28 and rt29 on 2026-10-12.
 
 ---
 
@@ -109,7 +109,7 @@ Selected cases:
 
 ## 7. Changes in the 2026-10-08 and 2026-10-10 editions (mirror of zh_cn 08 §2.3.0 / §2.3.2 / §2.3.3)
 
-**Harness interface (current).** `tests/integration/test_graceful_reload.sh` has 19 cases (`reload_checks.py:
+**Harness interface (2026-10-10 edition; since 2026-10-12 there are 21 cases with rt28 and rt29, and `ALL_CASES` has 11 entries, see the RX-37 and RX-38 paragraphs below).** `tests/integration/test_graceful_reload.sh` had 19 cases (`reload_checks.py:
 CASES`): precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27 (2026-10-10, resident primary
 vs a changed f-stack config; needs /dev/vhost-net), rt13, rt20, rt20b, rt21, rt22, rt23, rt24, rt25, rt26,
 rt30, rt31. `-c all` (ALL_CASES) is precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27 and rt13, the last one permanently
@@ -155,5 +155,15 @@ start another master inside its stack.
 tool once, four samplers through three HUPs and a USR2/WINCH/QUIT upgrade (no error, no wrapped value, client
 8889/0 failures), every tool again after the upgrade and after SIGINTs. A `graceful_reload=0` stack on the default
 prefix, with the record of an exited primary left behind, passes 6/6; `test_ff_ipc` 16/16.
+
+**2026-10-12 builds M1 and M2 (RX-38).** New case rt29 (stop of a 1500 stack; `[port0] mtu=9000` alone must be
+refused within 20 s by an EMERG `slim primary exited during initialization` carrying `requires mtu_enable=1`, with
+the master gone, nginx.pid removed, no primary and no 60 s timeout; then `mtu_enable=1` + `max_mtu=9000` must serve
+with `f-stack-0` mtu 9000 and reload once), 21 cases, `ALL_CASES` 11. `expect_refused` takes the refused master's pid
+from its EMERG line (`emerg_pid`) and then requires the pid file to be gone. M1: IPv4 precheck, rt29, rt27, rt28 4/4
+PASS. M2: IPv4 precheck, rt01, rt02, rt25, rt27, rt28, rt29 7/7 PASS (rt02 streams=36 md5_ok=36 stalls=0; rt25
+fail=24, at most 2 x conns, fresh_fail=0; rt29 refused in 1 s), rt12 with the management plane PASS; IPv6 precheck,
+rt01, rt27, rt28 and rt29 5/5 PASS. On the user's instance, after adding `mtu_enable=1` and `max_mtu=9000`, both
+workers show mtu 9000, HTTP returns 200 and a HUP hands over to new workers.
 
 **2026-10-12 builds S5 to S8 (RX-37).** New case rt28 (stop, quit, SIGKILL with an immediate start, SIGKILL with a wait, USR2+WINCH+QUIT then stop) passes on IPv4 and IPv6, and rt27 now creates its left-behind primary by SIGKILLing the master and its workers. On S5 the IPv4 batch (precheck, rt01, rt02, rt23, rt25, rt30, rt31), rt12 with the management plane, IPv4 rv9 30 rounds and IPv6 precheck, rt01, rt02, rt27 and rv9 20 rounds pass; IPv6 rt28 step 4 failed (master and workers died within the primary's first second) and was fixed in S7, where IPv4 precheck, rt01, rt02, rt25, rt27, rt28, rt12, rv9 10 rounds and IPv6 precheck, rt01, rt27, rt28 pass. S8 (pid in the self-exit line) reruns IPv4 precheck, rt01, rt27, rt28 and IPv6 precheck, rt28: all pass. On the user's default instance stop, quit and a SIGKILL by name leave nothing behind (the primary exits on its own 10 s after the SIGKILL) and every restart serves. The supervisor gained the fixed tuning allowlist `TUNING_ENV_KEYS` (only `NGX_FF_SLIM_PRIMARY_ORPHAN_MS`).
