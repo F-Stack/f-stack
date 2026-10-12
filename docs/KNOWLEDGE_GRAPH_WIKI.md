@@ -222,7 +222,7 @@ single reversible word, so an aborted reload hands it back instead of dropping t
 | Stack-side producers | `freebsd/netinet/tcp_syncache.c`: `syncache_add()` admits through `syncache_flow_map_admit()`; `ff_syncache_count()` / `ff_syncache_counters()` feed the drain criteria |
 | nginx master FSM | `app/nginx-1.28.0/src/event/modules/ngx_ff_reload.c` + `ngx_ff_reload_fsm.h` — T0→T5 transition table driven by `ngx_ff_reload_fsm_event()` |
 | nginx process model | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c`: `ngx_ff_reload_hup()`, `ngx_ff_reload_wait_or_check()`, `ngx_ff_reload_t3_check()`, `ngx_ff_reload_quit_gold()`; drain start `ngx_ff_is_draining_generation()` / `ngx_ff_drain_start()` |
-| Tooling | `tools/compat/ff_ipc.c`: generation/epoch aware ring naming `"<proc>[:<gen>[:<epoch>]]"` via `ff_set_gen_str()` / `ff_set_epoch()` |
+| Tooling | `tools/compat/ff_ipc.c`: generation/epoch aware ring naming `"<proc>[:<gen>[:<epoch>]]"` via `ff_set_gen_str()` / `ff_set_epoch()`; EAL file prefix from `FF_FILE_PREFIX` or the live resident primary's record, `--no-pci`; follow mode (`ff_ipc_set_follow()`, used by top/traffic) re-resolves the generation after a reload |
 | Observability | `lib/ff_dpdk_if.c`: 1 Hz reload-plane report — drain progress, heartbeat stalls, flow-map counters, syncache counts |
 
 Traceability: `docs/nginx_reload_spec/zh_cn/` (00 overview, 06 solution design, 07 milestones,

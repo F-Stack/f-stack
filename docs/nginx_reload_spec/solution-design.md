@@ -1,8 +1,8 @@
 # 06 Solution Design: Candidate Comparison and the Key Design of the Recommended S3 (English)
 
-> **English translation** of `docs/nginx_reload_spec/zh_cn/06-solution-design.md` (v1.9.20). The Chinese text is
+> **English translation** of `docs/nginx_reload_spec/zh_cn/06-solution-design.md` (v1.9.21). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs.
-> Translated 2026-09-30; §10 added on 2026-10-08, §10.4 in its second round, §10.5 on 2026-10-10.
+> Translated 2026-09-30; §10 added on 2026-10-08, §10.4 in its second round, §10.5 on 2026-10-10, §10.6 on 2026-10-12.
 
 | Item | Value |
 | --- | --- |
@@ -368,3 +368,42 @@ measured on igb_uio only (vfio-pci is argued, not tested); the digest covers val
 because the primary did not exit leaves the SIGTERM pending, so that primary exits once it runs again; an older
 build's primary has no record, so upgrading across this fix needs nginx and the resident primary fully stopped
 (USR2 across it is refused).
+
+### 10.6 2026-10-12: RX-36, the F-Stack tools do not work on a graceful deployment
+
+Only `tools/` changed. Where this text and the code differ, the code wins.
+
+| ID | Symptom | Root cause |
+|---|---|---|
+| A | With `[dpdk] file_prefix` set, every tool fails at once: `EAL: Cannot open '/var/run/dpdk/rte/config'` / `Error with EAL initialization` | `ff_ipc_init()` hard-codes its EAL arguments without `--file-prefix`, while the stack runs with `--file-prefix=container-<file_prefix>` (`container` for a `[vdevN]` setup without file_prefix). Same in upstream dev; see also F-Stack issue #419. |
+| B | Every tool prints `ETHDEV: Device <kernel NIC> is not driven by the primary process`; a tool interrupted inside `rte_eal_init` leaves every later secondary (tools and the workers of the next HUP) hanging in `rte_eth_dev_attach_secondary()` | The tools probed every PCI device while holding the ethdev spinlock in the primary's shared memory; the lock was read as 1 with gdb on the live host. |
+| C | `ff_ngctl` crashes on every run | `ff_ipc_exit()` ran `rte_eal_cleanup()`, then the `close_ng_socks()` destructor allocated from the unmapped pool. Dates from 2021, unrelated to reload. |
+| D | A long-running `ff_top`/`ff_traffic` exits with `fstack ipc message error` when the old generation leaves; the sample spanning the switch shows wrapped values such as 18446744073709551398 | The auto-resolved generation was probed once and cached; the new generation's counters start at zero. |
+
+Fix: the EAL file prefix comes from `FF_FILE_PREFIX` (validated), else from `runtime_dir` in the live resident
+primary's record `/var/run/ff_slim_primary.conf` (pid and start time checked, direct child of `/var/run/dpdk/`,
+no heap use before the EAL), else the DPDK default, and a failed EAL start suggests `FF_FILE_PREFIX`; the tools pass
+`--no-pci`; ngctl closes its sockets before
+`ff_ipc_exit()`, which is idempotent and makes later allocations fail cleanly. A follow mode
+(`ff_ipc_set_follow()`, off by default, enabled only by `ff_top` and `ff_traffic`) re-probes the auto-resolved
+generation before a send once it is older than 100 ms, keeps the old coordinate if the probe fails, and bumps
+`ff_ipc_target_seq()` when the target moves; the two tools skip that delta (and the `-P` total) and retry a
+failed request once after `ff_ipc_gen_invalidate()`. The probe asks the pair that answered last first and frees
+its own late replies, so a slow primary cannot fill the reload out ring or exhaust the message pool. Also fixed:
+`ff_traffic`'s usage text and its `-s -P` drop columns.
+
+Verification: clean tools build with no compiler warnings (`-Werror`; the log has two awk notes from the build
+scripts); `test_ff_ipc` 16/16 including
+`test_ff_ipc_file_prefix`, `test_ff_ipc_alloc_after_exit`, `test_p4_gen_refresh` and
+`test_p4_probe_releases_late_reply` (which fails without the fix), all unit tests and the ring-name mirror check
+pass; on the user's instance (file_prefix set, KNI
+on) all eleven tools work with no extra option, four samplers run through three HUPs and a USR2/WINCH/QUIT
+upgrade with no error and no wrapped value while the client sees 8889/0 failures, the tools work in the
+dual-master window, after the upgrade and after SIGINTs; a `graceful_reload=0` stack on the default prefix, with the
+record of an exited primary left behind, passes 6/6.
+
+Residuals (registered): only `ff_top`/`ff_traffic` follow reloads (`netstat -w` and the like still exit when
+their generation leaves); two reloads between samples that land on the same generation are not seen; a stack on
+a non-default prefix without a primary record needs `FF_FILE_PREFIX`, and with a graceful and a default-prefix
+stack on one host the tools pick the graceful one (`FF_FILE_PREFIX=rte` selects the other); an ethdev lock already leaked by an older tool needs a
+primary restart, and with KNI on the tools still attach `virtio_user0` through the vdev scan (a brief lock hold).

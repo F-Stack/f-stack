@@ -1,6 +1,6 @@
 # Independent Gate Audit Report — Specification Set 00–08 (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.18). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.19). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (audit scope, gates, findings and closure), not a line-by-line translation of all ~900 lines.
 > Revised 2026-10-08; §10 added on 2026-10-10.
@@ -125,3 +125,17 @@ and passed after rt27 gained per-step evidence lines, the build counts and the r
 user-instance output were recorded and rv9 was extended to 100 rounds per family (TA2 PASS). The documentation gate failed twice (GD-K: four MUST items, GD-K2: the default case list of
 the English testing plan) and passed with GD-K3; the final gate G-K passed. Residuals are listed in the solution
 design §10.5.
+
+## 11. 2026-10-12: RX-36 (mirror of zh_cn 09 §31)
+
+Reproduced on the user's instance: the missing EAL file prefix (A), the PCI probe and its leaked ethdev lock (B,
+lock value read with gdb), the ngctl exit crash (C) and the long-running samplers dying or wrapping across a
+reload (D). The gh token returned 401; the GitHub REST search and raw sources showed the same hard-coded EAL
+arguments upstream and issue #419 as a related case. Code review: CR-T PASS (its SHOULD items applied, the vdev
+path registered), CR-T2 FAIL on the follow-up (TTL refresh applied to every tool would move ngctl sessions; the
+probe did not free its own late replies), one bounce, CR-T3 PASS; every reviewer was a fresh instance. The
+documentation review failed twice (GD-T: a duplicated README section, no archived output for the
+`graceful_reload=0` and stale-record checks, no ledger of the review rounds; GD-T2: the build log was not
+archived) and passed with GD-T3. Every tools change
+was followed by a clean full build; only `tools/` changed, and the residuals are listed in the solution design
+§10.6.

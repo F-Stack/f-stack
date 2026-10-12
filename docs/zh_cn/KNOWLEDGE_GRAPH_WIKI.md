@@ -103,7 +103,7 @@ nginx reload（HUP）或二进制升级（USR2）会拉起新一代（G_new）�
 | 协议栈侧写入方 | `freebsd/netinet/tcp_syncache.c`：`syncache_add()` 经 `syncache_flow_map_admit()` 准入；`ff_syncache_count()` / `ff_syncache_counters()` 供 drain 判据使用 |
 | nginx master 状态机 | `app/nginx-1.28.0/src/event/modules/ngx_ff_reload.c` + `ngx_ff_reload_fsm.h`——由 `ngx_ff_reload_fsm_event()` 驱动的 T0→T5 转移表 |
 | nginx 进程模型 | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c`：`ngx_ff_reload_hup()`、`ngx_ff_reload_wait_or_check()`、`ngx_ff_reload_t3_check()`、`ngx_ff_reload_quit_gold()`；drain 起点 `ngx_ff_is_draining_generation()` / `ngx_ff_drain_start()` |
-| 工具 | `tools/compat/ff_ipc.c`：按代/epoch 命名 ring `"<proc>[:<gen>[:<epoch>]]"`，经 `ff_set_gen_str()` / `ff_set_epoch()` |
+| 工具 | `tools/compat/ff_ipc.c`：按代/epoch 命名 ring `"<proc>[:<gen>[:<epoch>]]"`，经 `ff_set_gen_str()` / `ff_set_epoch()`；EAL 文件前缀取自 `FF_FILE_PREFIX` 或存活常驻 primary 的记录，带 `--no-pci`；follow 模式（`ff_ipc_set_follow()`，top/traffic 使用）在 reload 后重新解析代际 |
 | 可观测 | `lib/ff_dpdk_if.c`：1 Hz reload 面报告——drain 进度、心跳停滞、flow map 计数、syncache 计数 |
 
 溯源：`docs/nginx_reload_spec/zh_cn/`（00 总览、06 方案设计、07 里程碑、08 测试、09 审核）和 `docs/nginx_reload_spec/work/`（证据、审核、运行日志，本地）。这些文档中的代码锚点使用**符号名**，不使用行号。

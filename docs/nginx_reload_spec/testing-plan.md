@@ -1,6 +1,6 @@
 # Test Plan — Units, Integration, Performance Baselines and Acceptance (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.27). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.28). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (case list, criteria table, coverage boundaries), not a line-by-line translation of all ~500 lines.
 > Revised 2026-10-08; rt27 and build K added on 2026-10-10.
@@ -150,3 +150,8 @@ instance the snapshot count drops to 0 when the master stops and is 1 at every s
 The supervisor gained `launch` (running phase and no supervisor failure only, always the current stack, sha256
 re-checked, `NGINX` stripped, the start launcher untouched) so a case can
 start another master inside its stack.
+
+**2026-10-12 tools build t5 (RX-36).** On the user's instance (file_prefix set, KNI on) 23/23 checks pass: every
+tool once, four samplers through three HUPs and a USR2/WINCH/QUIT upgrade (no error, no wrapped value, client
+8889/0 failures), every tool again after the upgrade and after SIGINTs. A `graceful_reload=0` stack on the default
+prefix, with the record of an exited primary left behind, passes 6/6; `test_ff_ipc` 16/16.

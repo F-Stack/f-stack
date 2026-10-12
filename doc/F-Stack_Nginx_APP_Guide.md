@@ -214,12 +214,14 @@ With `kernel_network_stack on` (listener side) and/or `proxy_kernel_network_stac
 
 ### Tools: addressing a generation (`-p` / `-g`)
 
+While the resident slim primary is running, the tools read the EAL file prefix from its record `/var/run/ff_slim_primary.conf`, so a `[dpdk] file_prefix` in the f-stack config needs no extra option. Set `FF_FILE_PREFIX=<directory name under /var/run/dpdk>` to reach another stack: `rte` for a `graceful_reload=0` stack without file_prefix or `[vdevN]`, `container-<file_prefix>` or `container` otherwise.
+
 The `ff_*` tools (`ff_netstat`, `ff_sysctl`, `ff_traffic`, ...) accept:
 
 - `-p <proc_id>[:<gen>[:<epoch>]]`
 - `-g <gen>[:<epoch>]`
 
-The recommended path is to omit both: the tool auto-probes the resident primary for the currently active `(epoch, gen)` and addresses the serving generation — this works through reloads and through the dual-master USR2 window. Explicit coordinates are only needed to address a non-active generation (e.g. the draining old one); take the epoch from the `generation directory attached: epoch <N> slot <S>` line of the target's F-Stack log. There is no silent fallback: if the probe fails or a coordinate is malformed, the tool refuses with an explicit error.
+The recommended path is to omit both: the tool auto-probes the resident primary for the currently active `(epoch, gen)` and addresses the serving generation — this works through reloads and through the dual-master USR2 window. `ff_top` and `ff_traffic` keep following the serving generation while they sample (a sample spanning the switch is skipped); other tools resolve the generation once per run. Explicit coordinates are only needed to address a non-active generation (e.g. the draining old one); take the epoch from the `generation directory attached: epoch <N> slot <S>` line of the target's F-Stack log. There is no silent fallback: if the probe fails or a coordinate is malformed, the tool refuses with an explicit error.
 
 ## Nginx compiling
 	./configure --prefix=/usr/local/nginx_fstack --with-ff_module
