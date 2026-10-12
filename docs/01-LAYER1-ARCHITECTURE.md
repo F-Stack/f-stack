@@ -128,7 +128,7 @@ NIC Hardware
 | **ff_veth.c** | 1132 | Virtual ethernet device (28 if_t accessor rewrites at M4) | FreeBSD net/if |
 | **ff_kern_timeout.c** | 1266 | callout subsystem (`callout_init`, `_reset_tick_on`, `ff_timecounter`) | DPDK rte_timer |
 | **ff_ng_base.c** | 3887 | netgraph framework full port (M5: `node_p → node_cp` correction) | FreeBSD netgraph headers |
-| **ff_reload.c** | 2063 | NEW: graceful reload — shared control block, rx/kni ownership, park barrier, heartbeat | — |
+| **ff_reload.c** | 2133 | NEW: graceful reload — shared control block, rx/kni ownership, park barrier, heartbeat | — |
 | **ff_reload_gendir.c** | 406 | NEW: cross-master generation directory (hugepage memzone owned by the resident primary) | DPDK memzone |
 | **ff_flow_map.c** | 461 | NEW: software flow table; decides which generation owns a packet | — |
 | **ff_drain_ring.c** | 673 | NEW: per-(queue, generation, direction) drain rings for the draining generation | DPDK rte_ring |

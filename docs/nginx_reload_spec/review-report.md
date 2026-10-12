@@ -139,3 +139,18 @@ documentation review failed twice (GD-T: a duplicated README section, no archive
 archived) and passed with GD-T3. Every tools change
 was followed by a clean full build; only `tools/` changed, and the residuals are listed in the solution design
 §10.6.
+
+## 12. 2026-10-12: RX-37 (mirror of zh_cn 09 §32)
+
+Reproduced on the user's default instance: stop, quit and a SIGKILL by process name all leave the resident primary
+behind, and a graceful_reload=0 start then fails with `Is another primary process running?`. Design gate: DR-S FAIL
+(deleting the files before the self-exit opens a window while the EAL lock is still held; rt27 must export its grace
+before the stack starts), one bounce; the revisions were checked item by item by the code review CR-S (MUST-1 and the
+SHOULD items) and the harness review CR-H (MUST-2) instead of a separate design re-review. Code review: CR-S FAIL (a unit test wrote past the slot array, `main` lacked its
+return type), one bounce, CR-S2 PASS; CR-H PASS on the harness; IPv6 rt28 step 4 failed on the host, one bounce, fixed
+with `ff_reload_gendir_masters_seen()` and passed CR-S3. Test-evidence audit: TA-S FAIL (it could not open the build logs, which do exist, and some reproduction
+outputs were not archived; the self-exit line also gained the pid), TA-S2 PASS. Documentation review: GD-S FAIL (the ff_reload.c line count, the guide's upgrade entry
+missing builds that have a record but whose master does not stop the primary on exit, review rounds missing from the ledger), one bounce;
+GD-S2 FAIL (one line count left in the Chinese Layer 1 tree), second bounce, fixed together with
+the guide's USR2 command examples turned into prose; GD-S3 PASS (section 9 of the ledger). Every reviewer was a fresh instance; every .c/.h change was followed by a clean full build
+(S1 to S8). Residuals are listed in the solution design §10.7.

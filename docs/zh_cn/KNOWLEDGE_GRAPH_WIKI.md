@@ -90,7 +90,7 @@ nginx reload（HUP）或二进制升级（USR2）会拉起新一代（G_new）�
 | 符号 / 领域 | 源码位置 |
 |-------------|---------|
 | 配置开关（默认关闭） | `lib/ff_config.c`：`graceful_reload`（`lib/ff_config.h` 中的字段 `dpdk.graceful_reload`）、`reload_heartbeat_timeout_ms`、`drain_ring_size`；要求 `primary_slim=1` 且 `nb_procs >= 2`，与 `thread_mode=1` 互斥 |
-| 新增：reload 控制面 | `lib/ff_reload.c`（2063 行）+ `lib/ff_reload.h`——共享块、代身份、rx/kni 归属、park 屏障、心跳 |
+| 新增：reload 控制面 | `lib/ff_reload.c`（2133 行）+ `lib/ff_reload.h`——共享块、代身份、rx/kni 归属、park 屏障、心跳 |
 | 新增：世代目录 | `lib/ff_reload_gendir.c`（406 行）——由常驻 slim primary 持有的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) \| gen` 所有者坐标、存活戳、硬件使用者表与 drain ring 使用者表（primary 据此回收无主残包）。nginx master 只在设备侧配置摘要相同时复用常驻 primary（`ff_primary_conf_digest()`，记录 `/var/run/ff_slim_primary.conf`），否则在无使用者时重建、在用时拒绝启动 |
 | 新增：软件流表 | `lib/ff_flow_map.c`（461 行）——`ff_flow_map_admit()` 在 SYN 准入时（SYN-ACK 之前）登记四元组；`ff_flow_map_revoke()` 撤销 SYN-ACK 没发出去的准入 |
 | 新增：drain ring | `lib/ff_drain_ring.c`（673 行）——按（队列, 代, 方向）划分的 ring，收发 G_old 的在途报文 |
@@ -101,6 +101,7 @@ nginx reload（HUP）或二进制升级（USR2）会拉起新一代（G_new）�
 | 心跳存活 | `lib/ff_reload.c`：`ff_reload_heartbeat_sample()` + `ff_reload_heartbeat_eval()` |
 | 分发分类 | `app/nginx-1.28.0/src/event/modules/ngx_ff_module.c`：`ngx_ff_flow_map_dispatcher()`——纯 SYN 留本地，命中留本地，未命中转给对端 |
 | 协议栈侧写入方 | `freebsd/netinet/tcp_syncache.c`：`syncache_add()` 经 `syncache_flow_map_admit()` 准入；`ff_syncache_count()` / `ff_syncache_counters()` 供 drain 判据使用 |
+| 常驻 primary 生命周期 | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c`：`ngx_ff_slim_primary_ensure()`（double fork）、`ngx_ff_slim_primary_check()`（经 `ff_primary_reuse_check()` 复用 / 重建 / 拒绝）、`ngx_ff_slim_primary_release()`（最后一个 master 退出时停止它）、`ngx_ff_slim_primary_loop()`（`ff_primary_users()` 与 `ff_reload_gendir_masters_live()` 持续为 0 时自行退出；`ff_reload_gendir_masters_seen()` 告诉它曾有 master 来过） |
 | nginx master 状态机 | `app/nginx-1.28.0/src/event/modules/ngx_ff_reload.c` + `ngx_ff_reload_fsm.h`——由 `ngx_ff_reload_fsm_event()` 驱动的 T0→T5 转移表 |
 | nginx 进程模型 | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c`：`ngx_ff_reload_hup()`、`ngx_ff_reload_wait_or_check()`、`ngx_ff_reload_t3_check()`、`ngx_ff_reload_quit_gold()`；drain 起点 `ngx_ff_is_draining_generation()` / `ngx_ff_drain_start()` |
 | 工具 | `tools/compat/ff_ipc.c`：按代/epoch 命名 ring `"<proc>[:<gen>[:<epoch>]]"`，经 `ff_set_gen_str()` / `ff_set_epoch()`；EAL 文件前缀取自 `FF_FILE_PREFIX` 或存活常驻 primary 的记录，带 `--no-pci`；follow 模式（`ff_ipc_set_follow()`，top/traffic 使用）在 reload 后重新解析代际 |

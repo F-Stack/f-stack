@@ -465,8 +465,10 @@ int ff_primary_conf_digest(const char *conf, uint64_t *digest, int *kni_enable)
     // ff_config.c：常驻 slim primary 所应用配置部分的摘要；无法解析返回 -1
 int ff_primary_users(const char *runtime_dir)
     // ff_config.c：primary 的存活 DPDK secondary 数（mp_socket_* 连接探测）；-1 表示未知
-int ff_primary_reuse_check(int record_ok, int same_digest, int users, int inherited)
-    // ff_config.c：FF_PRIMARY_REUSE / FF_PRIMARY_REFUSE / FF_PRIMARY_RESTART
+int ff_primary_reuse_check(int record_ok, int same_digest, int users, int idle,
+                           int inherited)
+    // ff_config.c：FF_PRIMARY_REUSE / FF_PRIMARY_REFUSE / FF_PRIMARY_RESTART；
+    // idle：primary 报告已没有任何 master 与 worker 使用它
 const char *ff_eal_runtime_dir(void)
     // ff_init.c：本进程的 EAL 运行目录
 
@@ -510,6 +512,16 @@ int ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
 int ff_reload_gendir_epoch_live(uint32_t epoch)
     // 目录存活判定；master 已退出的槽，在其孤儿 worker 停止刷新存活戳
     // 之前（FF_RELOAD_SLOT_STALE_MS）仍视为存活
+
+int ff_reload_gendir_masters_live(void)
+    // 目录中仍在运行的 nginx master 数（僵尸不计），不含常驻 primary 与调用者；
+    // 没有目录时返回 -1。它与使用者数持续为 0 时，常驻 primary 自行退出
+    // （nginx ngx_ff_slim_primary_loop）
+
+int ff_reload_gendir_masters_seen(void)
+    // 曾被 nginx master 认领过的槽数（无论是否仍在运行），不含常驻 primary
+    // 与调用者；没有目录时返回 -1。primary 据此把首次检查前就已死去的
+    // master 也算作见过使用者
 
 int ff_reload_gendir_rx_claim(uint32_t from_epoch, uint32_t from_gen, ...)
 int ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
@@ -1215,7 +1227,7 @@ struct prison *prison0;           // 全局命名空间
 
 ---
 
-### 3.5 ff_reload.c（2063 行）- 无损 reload 控制面
+### 3.5 ff_reload.c（2133 行）- 无损 reload 控制面
 
 **共享块生命周期**：`ff_reload_attach_state()` 绑定 nginx master 映射的块；`ff_reload_state_valid()` 校验 magic/version/长度，来自不同构建的块会被拒绝，而不是被误读。
 

@@ -89,7 +89,7 @@ Actual data on 10GbE link:
 │   ├── ff_epoll.c            (289 lines)  # Epoll compat (unified F-Stack+kernel)
 │   ├── ff_host_interface.c   (617 lines)  # Host OS iface + FF_KERNEL_COEXIST bridges (32 ff_host_*)
 │   ├── ff_dpdk_kni.c                      # Virtual NIC support
-│   ├── ff_reload.c           (2063 lines) # Graceful reload: shared control block,
+│   ├── ff_reload.c           (2133 lines) # Graceful reload: shared control block,
 │   │                                      # rx/kni ownership, T2 park barrier, heartbeat
 │   ├── ff_reload_gendir.c    (406 lines)  # Cross-master generation directory (hugepage)
 │   ├── ff_flow_map.c         (461 lines)  # Software flow table (generation admission)
@@ -171,7 +171,7 @@ Actual data on 10GbE link:
 | **Initialization Coordination** | ff_init.c | 69 | Startup flow orchestration | All other modules |
 | **Host Interface** | ff_host_interface.c | - | mmap/pthread/time interfaces | System libraries |
 | **Virtual NIC** | ff_dpdk_kni.c | - | Kernel virtual NIC support | DPDK KNI |
-| **Graceful Reload** | ff_reload.c | 2063 | Reload control block, rx/kni ownership arbitration, park barrier, heartbeat liveness | ff_config, ff_dpdk_if, ff_reload_gendir |
+| **Graceful Reload** | ff_reload.c | 2133 | Reload control block, rx/kni ownership arbitration, park barrier, heartbeat liveness | ff_config, ff_dpdk_if, ff_reload_gendir |
 | **Generation Directory** | ff_reload_gendir.c | 406 | Cross-master epoch→slot map, hardware-user table, bounded slot recycling | DPDK memzone (resident primary) |
 | **Software Flow Map** | ff_flow_map.c | 461 | Per-process four-tuple table; decides whether a packet belongs to this generation | tcp_syncache (producer), dispatcher (consumer) |
 | **Drain Rings** | ff_drain_ring.c | 673 | Bidirectional rings that feed the draining generation's in-flight packets | DPDK ring |

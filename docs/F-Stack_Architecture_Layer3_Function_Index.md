@@ -466,8 +466,10 @@ int ff_primary_conf_digest(const char *conf, uint64_t *digest, int *kni_enable)
     // ff_config.c: digest of the config part the resident slim primary applies; -1 if unparsable
 int ff_primary_users(const char *runtime_dir)
     // ff_config.c: live DPDK secondaries of a primary (mp_socket_* connect probe); -1 = unknown
-int ff_primary_reuse_check(int record_ok, int same_digest, int users, int inherited)
-    // ff_config.c: FF_PRIMARY_REUSE / FF_PRIMARY_REFUSE / FF_PRIMARY_RESTART
+int ff_primary_reuse_check(int record_ok, int same_digest, int users, int idle,
+                           int inherited)
+    // ff_config.c: FF_PRIMARY_REUSE / FF_PRIMARY_REFUSE / FF_PRIMARY_RESTART;
+    // idle: the primary reports that no master and no worker uses it
 const char *ff_eal_runtime_dir(void)
     // ff_init.c: EAL runtime directory of this process
 
@@ -512,6 +514,18 @@ int ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
 int ff_reload_gendir_epoch_live(uint32_t epoch)
     // Directory liveness; a slot whose master is gone stays live until its
     // orphan workers stop refreshing the stamp (FF_RELOAD_SLOT_STALE_MS)
+
+int ff_reload_gendir_masters_live(void)
+    // nginx masters registered in the directory that still run (zombies do
+    // not count), the resident primary and the caller excluded; -1 without
+    // a directory.
+    // The resident primary exits on its own once this and its user count
+    // stay at 0 (nginx ngx_ff_slim_primary_loop)
+
+int ff_reload_gendir_masters_seen(void)
+    // Slots ever claimed by an nginx master, running or not, the resident
+    // primary and the caller excluded; -1 without a directory. Lets the
+    // primary treat a master that died before its first check as a user
 
 int ff_reload_gendir_rx_claim(uint32_t from_epoch, uint32_t from_gen, ...)
 int ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
@@ -1224,7 +1238,7 @@ Two files carry the optional coexistence machinery (compiled only with `FF_KERNE
 
 ---
 
-### 3.5 ff_reload.c (2063 Lines) - Graceful Reload Control Plane
+### 3.5 ff_reload.c (2133 Lines) - Graceful Reload Control Plane
 
 **Shared block lifecycle** — `ff_reload_attach_state()` binds the block the nginx
 master mapped; `ff_reload_state_valid()` checks magic/version/length, so a block
