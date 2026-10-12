@@ -21,7 +21,10 @@ import traceback
 from reload_checks import digest, identity
 
 # Environment variables a run may forward into the supervised stack.
-FAULT_ENV_KEYS = {"FF_FAULT", "FF_FAULT_DELAY_MS"}
+FAULT_ENV_KEYS = frozenset({"FF_FAULT", "FF_FAULT_DELAY_MS"})
+# product tunables a case may set for its own stack only
+TUNING_ENV_KEYS = frozenset({"NGX_FF_SLIM_PRIMARY_ORPHAN_MS"})
+FORWARD_ENV_KEYS = FAULT_ENV_KEYS | TUNING_ENV_KEYS
 
 KILL_TOOL = "/data/workspace/kill_process.sh"
 POLL = 0.05
@@ -538,12 +541,13 @@ class Supervisor:
         env = {k: v for k, v in os.environ.items() if not k.startswith("GR_SUPERVISOR_")}
         env["FF_RELOAD_RUN_ID"] = self.run_id
         # The supervisor may predate the run that needs these, so its own
-        # environment is not enough: fault variables are forwarded with the
-        # request, restricted to a fixed allowlist (never arbitrary env).
+        # environment is not enough: fault and tuning variables are forwarded
+        # with the request, restricted to a fixed allowlist (never arbitrary
+        # env).
         extra = args.get("env")
         if isinstance(extra, dict):
             for key, value in extra.items():
-                if key in FAULT_ENV_KEYS and isinstance(value, str):
+                if key in FORWARD_ENV_KEYS and isinstance(value, str):
                     env[key] = value
         return env
 
@@ -598,9 +602,10 @@ class Supervisor:
                 self.phase = "stopping"
             return self.snapshot()
         if op == "launch":
-            # Another master inside the running stack (it reuses the stack's
-            # resident primary). Never a binary upgrade: nginx treats an
-            # inherited NGINX variable as one.
+            # Another master inside the running stack (it reuses or rebuilds
+            # the stack's resident primary, or spawns one when every process
+            # of the stack has exited). Never a binary upgrade: nginx treats
+            # an inherited NGINX variable as one.
             if self.phase != "running" or self.tree.failure:
                 raise ValueError("stack not controllable")
             argv = args["argv"]
@@ -883,12 +888,12 @@ def main(argv):
         value = request("hello", run_id=args[0])
     elif op == "start":
         stack, sha, *cmd = args
-        env = {k: v for k, v in os.environ.items() if k in FAULT_ENV_KEYS}
+        env = {k: v for k, v in os.environ.items() if k in FORWARD_ENV_KEYS}
         value = request("start", stack, dict(argv=cmd, sha256=sha, env=env))
         value = wait_phase(stack, "running", 10)
     elif op == "launch":
         stack, sha, *cmd = args
-        env = {k: v for k, v in os.environ.items() if k in FAULT_ENV_KEYS}
+        env = {k: v for k, v in os.environ.items() if k in FORWARD_ENV_KEYS}
         value = request("launch", stack, dict(argv=cmd, sha256=sha, env=env))
     elif op == "stop":
         value = request("stop", args[0])

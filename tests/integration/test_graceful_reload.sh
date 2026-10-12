@@ -115,7 +115,7 @@ RTE_FRESH_MIN=10
 # first worker (the shipped config.ini default owner_proc_id is 1 as well).
 KNI_OWNER_PROC_ID=1
 
-ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt13"
+ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt28,rt13"
 # rt13 (the zc build form) is permanently excluded by decision 2026-09-22:
 # this tree does not build the zc form, so the case is dropped from every
 # matrix (-c all). It stays invocable explicitly and then records EXCLUDED,
@@ -174,13 +174,15 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                               test (write <DPDK_NIC_IP> in any report).
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
-                                         rt12,rt27,rt13,rt20,rt20b,rt21,rt22,rt23,
+                                         rt12,rt27,rt28,rt13,rt20,rt20b,rt21,rt22,
+                                         rt23,
                                          rt24,rt25,rt26,rt30,rt31 (rt24 and the
                                          other rt2x need a fault-injection
                                          build; rt25 drives USR2 + WINCH;
                                          rt26 needs --fault synack_fail;
                                          rt27 changes [kni] under a
-                                         resident primary)
+                                         resident primary; rt28 stops,
+                                         quits and SIGKILLs nginx)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -646,7 +648,7 @@ three_check() { # [dual]  dual=1 -> two masters expected (USR2), record only
     z=$(ps -eo stat,comm 2>/dev/null | awk '$1 ~ /^Z/ && $2 ~ /^nginx/ {c++} END {print c+0}')
     [ "$z" != "0" ] && say "CHECK3-NOTE: $z zombie nginx (bypassed, holds no resources)"
     sp=$(ps -eo stat,comm 2>/dev/null | awk '$1 !~ /^Z/ && $2 ~ /^ff_slim/ {c++} END {print c+0}')
-    [ "$sp" != "0" ] && say "CHECK3-NOTE: $sp resident slim primary (by design, not residue)"
+    [ "$sp" != "0" ] && say "CHECK3-NOTE: $sp resident slim primary alive (expected only while a stack runs)"
     rt=$(rtemap_count)
     [ "$rt" != "0" ] && { say "CHECK3-FAIL: $rt rtemap files in /dev/hugepages"; res=1; }
     if [ -d /var/run/dpdk/rte ]; then
@@ -1857,11 +1859,22 @@ wait_log() { # file mark pattern seconds
     return 1
 }
 
-# stop only the master: its workers go with it, the resident primary stays
-stop_master_only() { # conf
-    local m; m=$(master_pid)
-    nginx_signal "$1" stop || return 1
-    wait_gone "$m" 30
+# SIGKILL the master and its workers (what a by-name SIGKILL of nginx
+# matches): the resident primary is left behind without any master
+crash_master_only() {
+    local m w p
+    m=$(master_pid)
+    case "$m" in ''|*[!0-9]*) return 1 ;; esac
+    w=$(ps -eo pid,ppid,stat,comm \
+        | awk -v m="$m" '$2==m && $3 !~ /^Z/ && $4 ~ /^nginx/ {print $1}')
+    collect_owned || return 1
+    for p in $m $w; do
+        python3 -B "$SUPERVISOR" signal "$STACK_ID" "$p" KILL >> "$LOG" 2>&1 \
+            || ! pid_alive "$p" || return 1
+    done
+    for p in $m $w; do
+        wait_gone "$p" 15 || return 1
+    done
 }
 
 # start another master in the running stack (supervisor 'launch')
@@ -1894,6 +1907,8 @@ case_rt27() {
     say "=== case rt27 (resident primary vs a changed fstack config) ==="
     local crit="kni 0->1 rebuilds an unused primary; a HUP / USR2 / second master / missing record / stuck primary is refused and leaves the running service alone"
     local conf conf2 ini mark fsm0 fsm1 p1 p1s p2 p3 w1 w2 rc=0 step="" meas f pid leak=0 evmark nkill
+    # the masters of steps 5, 8 and 9 are killed: keep their primary around
+    local -x NGX_FF_SLIM_PRIMARY_ORPHAN_MS=600000
     if [ ! -c /dev/vhost-net ]; then
         record "rt27" "SKIP" "$crit" "LIMITED: no /dev/vhost-net device"
         return 0
@@ -1969,7 +1984,7 @@ case_rt27() {
 
     # 5. no record: never touch the primary
     step=5; mv "$SLIM_RECORD" "$OUT/slim_record.bak" || rc=1
-    stop_master_only "$conf" || rc=1
+    crash_master_only || rc=1
     mark=$(wc -l < "$ERRLOG")
     relaunch_master "$conf" || rc=1
     expect_refused 5 "$mark" 'has no valid record' 30 || rc=1
@@ -1999,7 +2014,7 @@ case_rt27() {
     [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
 
     # 8. the other way round: kni 1 -> 0
-    step=8; stop_master_only "$conf" || rc=1
+    step=8; crash_master_only || rc=1
     ini_strip_kni "$ini"
     mark=$(wc -l < "$ERRLOG")
     relaunch_master "$conf" || rc=1
@@ -2014,7 +2029,7 @@ case_rt27() {
     [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
 
     # 9. a primary that does not exit is never escalated
-    step=9; stop_master_only "$conf" || rc=1
+    step=9; crash_master_only || rc=1
     ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
     evmark=$(wc -l < "$OUT/ownership-events.jsonl")
     python3 -B "$SUPERVISOR" signal "$STACK_ID" "$p3" STOP >> "$LOG" 2>&1 || rc=1
@@ -2043,6 +2058,152 @@ case_rt27() {
         record "rt27" "PASS" "$crit" "$meas"
     else
         record "rt27" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- rt28: stopping nginx takes the resident primary with it --------------
+SLIM_IDLE=/var/run/ff_slim_primary.idle
+SLIM_LOG=/var/run/ff_slim_primary.log
+
+slim_files_gone() {
+    [ ! -e "$SLIM_PIDFILE" ] && [ ! -e "$SLIM_RECORD" ] && [ ! -e "$SLIM_IDLE" ]
+}
+
+rt28_serving() { # step
+    local n
+    wait_http || { say "rt28 $1: HTTP is not 200"; return 1; }
+    n=$(worker_count)
+    [ "$n" = "$WORKERS" ] || { say "rt28 $1: workers=$n != $WORKERS"; return 1; }
+}
+
+# stop or quit the only master: it takes the primary with it
+rt28_stop() { # step conf stop|quit
+    local m p mark res=0 deadline
+    m=$(master_pid); p=$(slim_pid); mark=$(wc -l < "$ERRLOG")
+    [ -n "$p" ] && pid_alive "$p" || { say "rt28 $1: no live primary"; return 1; }
+    nginx_signal "$2" "$3" || res=1
+    wait_gone "$m" 60 || { say "rt28 $1: master $m still alive"; res=1; }
+    wait_gone "$p" 5 || { say "rt28 $1: primary $p still alive"; res=1; }
+    slim_files_gone || { say "rt28 $1: primary files left: $(ls /var/run/ff_slim_primary.* 2>/dev/null | tr '\n' ' ')"; res=1; }
+    wait_log "$ERRLOG" "$mark" "stopped the resident slim primary (pid $p)" 5 \
+        || { say "rt28 $1: no stop line for primary $p"; res=1; }
+    deadline=$((SECONDS + 5))
+    while [ "$(veth_count)" != 0 ] && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 1
+    done
+    [ "$(veth_count)" = 0 ] || { say "rt28 $1: veth netif left"; res=1; }
+    say "rt28 $1: $3 -> master=$m primary=$p gone, veth=$(veth_count)"
+    return "$res"
+}
+
+rt28_relaunch() { # step conf pattern
+    local mark
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$2" || { say "rt28 $1: relaunch failed"; return 1; }
+    wait_log "$ERRLOG" "$mark" "$3" 30 || { say "rt28 $1: no '$3'"; return 1; }
+    rt28_serving "$1"
+}
+
+case_rt28() {
+    say "=== case rt28 (stop / quit / SIGKILL leave no resident primary behind) ==="
+    local crit="nginx -s stop and -s quit stop the resident primary with the last master; after the master and workers are SIGKILLed an unused primary is rebuilt by the next start or exits on its own; the old master of a USR2 upgrade leaves it to the new one; every start serves"
+    local conf kni=0 rc=0 step="" meas p p2 old new mark smark t0 dt=-1 started=0 handed=0 deadline
+    local -x NGX_FF_SLIM_PRIMARY_ORPHAN_MS=10000
+    [ -c /dev/vhost-net ] && kni=1
+    conf=$(gen_nginx_conf "rt28" 0)
+    if ! start_stack "rt28" 1 0 "$kni"; then
+        stop_stack "rt28" "$conf"
+        record "rt28" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+
+    # 1. nginx -s stop
+    step=1; rt28_stop 1 "$conf" stop || rc=1
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 2. a fresh start spawns a new primary and reloads as usual
+    step=2; rt28_relaunch 2 "$conf" 'spawning resident slim primary' || rc=1
+    HUP_FSM=NA; hup_once "$conf" || { say "rt28 2: HUP failed"; rc=1; }
+    say "rt28 2: restarted primary=$(slim_pid) HUP fsm=$HUP_FSM veth=$(veth_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 3. nginx -s quit
+    step=3; rt28_stop 3 "$conf" quit || rc=1
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 4. SIGKILL master + workers; the next start rebuilds the idle primary
+    step=4; rt28_relaunch 4 "$conf" 'spawning resident slim primary' || rc=1
+    p=$(slim_pid)
+    [ -n "$p" ] || { say "rt28 4: no primary"; rc=1; }
+    crash_master_only || { say "rt28 4: SIGKILL via the supervisor failed"; rc=1; }
+    deadline=$((SECONDS + 10))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        [ "$(cut -d' ' -f1 "$SLIM_IDLE" 2>/dev/null)" = "$p" ] && break
+        sleep 1
+    done
+    [ "$(cut -d' ' -f1 "$SLIM_IDLE" 2>/dev/null)" = "$p" ] \
+        || { say "rt28 4: primary $p never reported idle"; rc=1; }
+    rt28_relaunch 4 "$conf" 'no master or worker uses it' || rc=1
+    p2=$(slim_pid)
+    { [ -n "$p2" ] && [ "$p2" != "$p" ] && ! pid_alive "$p"; } \
+        || { say "rt28 4: primary not rebuilt ($p -> $p2)"; rc=1; }
+    say "rt28 4: SIGKILL + start rebuilt primary $p -> $p2"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 5. SIGKILL again and wait: the primary exits on its own
+    step=5; p=$(slim_pid); smark=$(wc -l < "$SLIM_LOG")
+    [ -n "$p" ] && pid_alive "$p" || { say "rt28 5: no live primary"; rc=1; }
+    t0=$SECONDS
+    crash_master_only || { say "rt28 5: SIGKILL via the supervisor failed"; rc=1; }
+    wait_gone "$p" 40 || { say "rt28 5: primary $p still alive after 40 s"; rc=1; }
+    dt=$((SECONDS - t0))
+    log_since "$SLIM_LOG" "$smark" | grep -q "(pid $p): no master or worker for" \
+        || { say "rt28 5: no self-exit line in $SLIM_LOG"; rc=1; }
+    [ "$dt" -ge 8 ] || { say "rt28 5: primary left after ${dt}s, before the grace"; rc=1; }
+    say "rt28 5: SIGKILL -> primary $p exited on its own after ${dt}s"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 6. USR2 + WINCH + QUIT of the old master keeps the primary; stopping
+    # the new master afterwards stops it
+    step=6; rt28_relaunch 6 "$conf" 'spawning resident slim primary' || rc=1
+    p=$(slim_pid); old=$(master_pid); mark=$(wc -l < "$ERRLOG")
+    nginx_signal "$conf" usr2 || rc=1
+    deadline=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if [ -s "$OUT/nginx.pid.oldbin" ] && [ "$(master_pid)" != "$old" ] \
+            && [ "$(worker_count)" = "$WORKERS" ]; then started=1; break; fi
+        sleep 1
+    done
+    [ "$started" = 1 ] || { say "rt28 6: the new binary did not come up"; rc=1; }
+    new=$(master_pid)
+    collect_owned || rc=1
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$old" WINCH >> "$LOG" 2>&1 || rc=1
+    deadline=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        log_since "$ERRLOG" "$mark" | grep -q "ff usr2: handed rx to the new binary" \
+            && { handed=1; break; }
+        sleep 1
+    done
+    [ "$handed" = 1 ] || { say "rt28 6: no rx handover"; rc=1; }
+    mark=$(wc -l < "$ERRLOG")
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$old" QUIT >> "$LOG" 2>&1 || rc=1
+    wait_gone "$old" 120 || { say "rt28 6: old master $old still alive"; rc=1; }
+    log_since "$ERRLOG" "$mark" | grep -q 'keeping the resident slim primary for the other master' \
+        || { say "rt28 6: the old master did not keep the primary"; rc=1; }
+    pid_alive "$p" && [ "$(slim_pid)" = "$p" ] \
+        || { say "rt28 6: primary $p lost with the old master"; rc=1; }
+    http_ok || { say "rt28 6: HTTP is not 200 on the new master"; rc=1; }
+    say "rt28 6: USR2 old=$old -> new=$new, old quit, primary $p kept"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+    rt28_stop 6 "$conf" stop || rc=1
+
+    stop_stack "rt28" "$conf" || rc=1
+    meas="kni=$kni stop,quit=primary stopped; sigkill+start=rebuilt; sigkill=self-exit ${dt}s; usr2 old quit=kept, new stop=stopped"
+    if [ "$rc" = 0 ]; then
+        record "rt28" "PASS" "$crit" "$meas"
+    else
+        record "rt28" "FAIL" "$crit" "$meas (step $step)"
     fi
     return "$rc"
 }
@@ -2251,7 +2412,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt28 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break

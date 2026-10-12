@@ -255,6 +255,7 @@ ff_reload_gendir_attach(void)
 {
     const struct rte_memzone *mz;
     struct ff_reload_gendir *d;
+    int fresh = 0;
 
     if (!ff_global_cfg.dpdk.graceful_reload)
         return;
@@ -264,6 +265,7 @@ ff_reload_gendir_attach(void)
     if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
         mz = rte_memzone_reserve(FF_RELOAD_GENDIR_NAME,
             sizeof(struct ff_reload_gendir), SOCKET_ID_ANY, 0);
+        fresh = mz != NULL;
         if (mz == NULL) {
             /* Already there (a previous init in this process, or a
              * re-attached primary): reuse it instead of failing. */
@@ -280,8 +282,9 @@ ff_reload_gendir_attach(void)
     }
 
     d = (struct ff_reload_gendir *)mz->addr;
+    /* a fresh zone may sit on reused hugepage content: never trust it */
     if (rte_eal_process_type() == RTE_PROC_PRIMARY &&
-        d->magic != FF_RELOAD_GENDIR_MAGIC) {
+        (fresh || d->magic != FF_RELOAD_GENDIR_MAGIC)) {
         memset(d, 0, sizeof(*d));
         d->magic = FF_RELOAD_GENDIR_MAGIC;
         d->version = FF_RELOAD_GENDIR_VERSION;

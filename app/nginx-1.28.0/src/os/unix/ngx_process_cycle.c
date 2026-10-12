@@ -47,6 +47,7 @@ static void ngx_ff_slim_primary_spawn_child(ngx_cycle_t *cycle,
     sem_t *ready_sem);
 static ngx_int_t ngx_ff_slim_primary_alive(void);
 static int ngx_ff_slim_primary_loop(void *arg);
+static void ngx_ff_slim_primary_release(ngx_cycle_t *cycle);
 static ngx_int_t ngx_ff_reload_hup(ngx_cycle_t **pcycle,
     ngx_core_conf_t **pccf, ngx_uint_t *live);
 static ngx_int_t ngx_ff_reload_handover(ngx_cycle_t *cycle);
@@ -77,6 +78,12 @@ static ngx_int_t ngx_ff_reload_conf_precheck(ngx_cycle_t *cycle,
 #define NGX_FF_CONF_SNAPSHOT_DIR        "/var/run"
 #define NGX_FF_CONF_SNAPSHOT_PREFIX     "ff_nginx_fstack."
 #define NGX_FF_SLIM_PRIMARY_STOP_SEC    10
+/* written by a primary that no master and no worker uses any more */
+#define NGX_FF_SLIM_PRIMARY_IDLEFILE    "/var/run/ff_slim_primary.idle"
+/* how long such a primary waits before it exits on its own */
+#define NGX_FF_SLIM_PRIMARY_ORPHAN_MS   10000
+/* the same for a primary that never had a user (its master died early) */
+#define NGX_FF_SLIM_PRIMARY_UNUSED_MS   180000
 
 typedef struct {
     int                  pid;
@@ -290,7 +297,8 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 #if (NGX_HAVE_FSTACK)
     /* graceful_reload=1: make sure a resident slim primary is up before any
      * worker attaches as a secondary. The slim primary is double-forked and
-     * detached from this master, so reload/exit never signals it. */
+     * detached from this master, so a reload or an upgrade never signals it;
+     * the last master to exit stops it. */
     if (ngx_ff_graceful_reload_detect((const char *) ccf->fstack_conf.data)) {
         ngx_int_t  nb_procs;
 
@@ -629,9 +637,10 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 /* Resident slim primary bookkeeping.
  *
  * The slim primary is a DPDK primary with no rx/tx queue (primary_slim=1)
- * that outlives the nginx master. Detection uses a pidfile plus
- * proc/<pid>/comm to guard against pid reuse; readiness is signalled to the
- * spawning master through a process-shared POSIX semaphore. */
+ * that outlives a master handing over to a new binary. Detection uses a
+ * pidfile plus proc/<pid>/comm to guard against pid reuse; readiness is
+ * signalled to the spawning master through a process-shared POSIX
+ * semaphore. */
 
 #define NGX_FF_SLIM_PRIMARY_COMM        "ff_slim_primary"
 #define NGX_FF_SLIM_PRIMARY_PIDFILE     "/var/run/ff_slim_primary.pid"
@@ -953,12 +962,85 @@ ngx_ff_primary_record_read(int pid, ngx_ff_primary_record_t *r)
 }
 
 
+static ngx_int_t
+ngx_ff_primary_idle_read(int pid, unsigned long long start)
+{
+    char                 buf[64];
+    int                  fd, p = 0;
+    ssize_t              n;
+    unsigned long long   st = 0;
+
+    fd = open(NGX_FF_SLIM_PRIMARY_IDLEFILE, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) {
+        return 0;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = '\0';
+
+    return sscanf(buf, "%d %llu", &p, &st) == 2 && p == pid && st == start;
+}
+
+
+/* pid at the start of a file, after 'key' (0 when unreadable) */
+static int
+ngx_ff_slim_primary_file_pid(const char *path, const char *key)
+{
+    char     buf[256], *p;
+    int      fd;
+    ssize_t  n;
+
+    fd = open(path, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) {
+        return 0;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = '\0';
+
+    p = buf;
+    if (ngx_strncmp(p, key, ngx_strlen(key)) != 0) {
+        return 0;
+    }
+
+    return atoi(p + ngx_strlen(key));
+}
+
+
+/* drop the files of a primary that is gone, never those of a newer one */
+static void
+ngx_ff_slim_primary_forget(int pid)
+{
+    if (ngx_ff_slim_primary_file_pid(NGX_FF_SLIM_PRIMARY_PIDFILE, "") == pid) {
+        (void) unlink(NGX_FF_SLIM_PRIMARY_PIDFILE);
+    }
+
+    if (ngx_ff_slim_primary_file_pid(NGX_FF_SLIM_PRIMARY_CONFFILE, "pid=")
+        == pid)
+    {
+        (void) unlink(NGX_FF_SLIM_PRIMARY_CONFFILE);
+    }
+
+    if (ngx_ff_slim_primary_file_pid(NGX_FF_SLIM_PRIMARY_IDLEFILE, "") == pid) {
+        (void) unlink(NGX_FF_SLIM_PRIMARY_IDLEFILE);
+    }
+}
+
+
 /* only for a primary nobody uses any more; never escalates past SIGTERM */
 static ngx_int_t
 ngx_ff_slim_primary_stop(ngx_cycle_t *cycle, ngx_ff_primary_record_t *r)
 {
     char                 comm[16], cpath[48], state;
-    int                  fd, pfd, users;
+    int                  fd, pfd, users, rc;
     ssize_t              n = 0;
     ngx_uint_t           i;
     unsigned long long   st;
@@ -980,6 +1062,10 @@ ngx_ff_slim_primary_stop(ngx_cycle_t *cycle, ngx_ff_primary_record_t *r)
     pfd = -1;
     errno = ENOSYS;
 #endif
+    if (pfd < 0 && errno == ESRCH) {
+        goto gone;
+    }
+
     if (pfd < 0) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                       "graceful_reload: pidfd_open(%d) failed%s; not "
@@ -988,16 +1074,29 @@ ngx_ff_slim_primary_stop(ngx_cycle_t *cycle, ngx_ff_primary_record_t *r)
         return NGX_ERROR;
     }
 
+    errno = 0;
+    rc = ngx_ff_proc_stat(r->pid, NULL, &st);
+    if ((rc != 0 && (errno == ENOENT || errno == ESRCH))
+        || (rc == 0 && st != r->start_time))
+    {
+        (void) close(pfd);
+        goto gone;
+    }
+
     snprintf(cpath, sizeof(cpath), "/proc/%d/comm", r->pid);
     fd = open(cpath, O_RDONLY);
     if (fd >= 0) {
         n = read(fd, comm, sizeof(comm));
         (void) close(fd);
+
+    } else if (errno == ENOENT) {
+        (void) close(pfd);
+        goto gone;
     }
 
-    if (n <= 0 || strncmp(comm, NGX_FF_SLIM_PRIMARY_COMM,
-                          sizeof(NGX_FF_SLIM_PRIMARY_COMM) - 1) != 0
-        || ngx_ff_proc_stat(r->pid, NULL, &st) != 0 || st != r->start_time)
+    if (rc != 0 || n <= 0
+        || strncmp(comm, NGX_FF_SLIM_PRIMARY_COMM,
+                   sizeof(NGX_FF_SLIM_PRIMARY_COMM) - 1) != 0)
     {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                       "graceful_reload: cannot verify the resident slim "
@@ -1011,6 +1110,11 @@ ngx_ff_slim_primary_stop(ngx_cycle_t *cycle, ngx_ff_primary_record_t *r)
 #else
     if (1) {
 #endif
+        if (errno == ESRCH) {
+            (void) close(pfd);
+            goto gone;
+        }
+
         ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
                       "graceful_reload: cannot send SIGTERM to the resident "
                       "slim primary (pid %d)", r->pid);
@@ -1038,8 +1142,9 @@ ngx_ff_slim_primary_stop(ngx_cycle_t *cycle, ngx_ff_primary_record_t *r)
         return NGX_ERROR;
     }
 
-    (void) unlink(NGX_FF_SLIM_PRIMARY_PIDFILE);
-    (void) unlink(NGX_FF_SLIM_PRIMARY_CONFFILE);
+gone:
+
+    ngx_ff_slim_primary_forget(r->pid);
     return NGX_OK;
 }
 
@@ -1051,7 +1156,7 @@ ngx_ff_slim_primary_check(ngx_cycle_t *cycle, ngx_uint_t no_restart)
 {
     ngx_ff_primary_record_t   r;
     uint64_t                  digest;
-    int                       pid, kni, ok, same, users = -1;
+    int                       pid, kni, ok, same, idle = 0, users = -1;
 
     pid = (int) ngx_ff_slim_primary_alive();
     if (pid == 0) {
@@ -1067,11 +1172,12 @@ ngx_ff_slim_primary_check(ngx_cycle_t *cycle, ngx_uint_t no_restart)
 
     ok = (ngx_ff_primary_record_read(pid, &r) == NGX_OK);
     same = ok && r.digest == digest;
-    if (ok && !same) {
+    if (ok) {
         users = ff_primary_users(r.runtime_dir);
+        idle = ngx_ff_primary_idle_read(pid, r.start_time);
     }
 
-    switch (ff_primary_reuse_check(ok, same, users,
+    switch (ff_primary_reuse_check(ok, same, users, idle,
                                    no_restart || ngx_inherited))
     {
     case FF_PRIMARY_REUSE:
@@ -1080,10 +1186,17 @@ ngx_ff_slim_primary_check(ngx_cycle_t *cycle, ngx_uint_t no_restart)
         return NGX_OK;
 
     case FF_PRIMARY_RESTART:
-        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
-                      "graceful_reload: restarting the resident slim primary "
-                      "(pid %d): its fstack config differs ([kni] enable "
-                      "%d -> %d)", pid, r.kni, kni);
+        if (same) {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "graceful_reload: restarting the resident slim "
+                          "primary (pid %d): no master or worker uses it",
+                          pid);
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "graceful_reload: restarting the resident slim "
+                          "primary (pid %d): its fstack config differs "
+                          "([kni] enable %d -> %d)", pid, r.kni, kni);
+        }
         return ngx_ff_slim_primary_stop(cycle, &r) == NGX_OK
                ? NGX_DECLINED : NGX_ERROR;
 
@@ -1215,12 +1328,150 @@ ngx_ff_slim_primary_alive(void)
 }
 
 
+/* the last master to leave takes the resident primary with it; the other
+ * master of a binary upgrade, or any process still attached, keeps it */
+static void
+ngx_ff_slim_primary_release(ngx_cycle_t *cycle)
+{
+    ngx_ff_primary_record_t  r;
+    int                      pid, users;
+
+    if (ngx_process != NGX_PROCESS_MASTER || !ngx_ff_graceful_reload) {
+        return;
+    }
+
+    if (ngx_new_binary != 0 || (ngx_inherited && getppid() == ngx_parent)) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: keeping the resident slim primary "
+                      "for the other master of the binary upgrade");
+        return;
+    }
+
+    pid = (int) ngx_ff_slim_primary_alive();
+    if (pid == 0) {
+        return;
+    }
+
+    if (ngx_ff_primary_record_read(pid, &r) != NGX_OK) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "has no valid record; not stopping it", pid);
+        return;
+    }
+
+    users = ff_primary_users(r.runtime_dir);
+    if (users != 0) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: keeping the resident slim primary "
+                      "(pid %d): still used by %d process(es)", pid, users);
+        return;
+    }
+
+    if (ngx_ff_slim_primary_stop(cycle, &r) == NGX_OK) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: stopped the resident slim primary "
+                      "(pid %d)", pid);
+    }
+}
+
+
+static void
+ngx_ff_slim_primary_idle_mark(ngx_uint_t on)
+{
+    const char          *tmp = NGX_FF_SLIM_PRIMARY_IDLEFILE ".tmp";
+    unsigned long long   st;
+    int                  fd;
+
+    if (ngx_ff_proc_stat(getpid(), NULL, &st) != 0) {
+        return;
+    }
+
+    if (!on) {
+        if (ngx_ff_primary_idle_read(getpid(), st)) {
+            (void) unlink(NGX_FF_SLIM_PRIMARY_IDLEFILE);
+        }
+        return;
+    }
+
+    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        return;
+    }
+
+    if (dprintf(fd, "%d %llu\n", (int) getpid(), st) < 0 || close(fd) != 0
+        || rename(tmp, NGX_FF_SLIM_PRIMARY_IDLEFILE) != 0)
+    {
+        (void) unlink(tmp);
+    }
+}
+
+
 static int
 ngx_ff_slim_primary_loop(void *arg)
 {
     /* control-plane only: the lib main_loop handles EAL IPC, KNI and the
-     * primary_slim idle sleep; no application work is needed here */
+     * primary_slim idle sleep. Once no master and no worker has been left
+     * for a while (the masters were killed), the primary exits; its files
+     * stay, they are self-checking. */
+    static ngx_msec_t   next, since, limit;
+    static ngx_uint_t   seen, idle, stopping;
+    struct timespec     ts;
+    ngx_msec_t          now;
+    int                 users, masters;
+
     (void) arg;
+
+    (void) clock_gettime(CLOCK_MONOTONIC, &ts);
+    now = (ngx_msec_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (stopping || now < next) {
+        return 0;
+    }
+    next = now + 1000;
+
+    if (limit == 0) {
+        limit = ngx_ff_reload_env_msec("NGX_FF_SLIM_PRIMARY_ORPHAN_MS",
+                                       NGX_FF_SLIM_PRIMARY_ORPHAN_MS);
+        if (limit < 3000 || limit > 3600000) {
+            limit = NGX_FF_SLIM_PRIMARY_ORPHAN_MS;
+        }
+    }
+
+    users = ff_primary_users(ff_eal_runtime_dir());
+    masters = ff_reload_gendir_masters_live();
+    if (users != 0 || masters != 0) {
+        seen = 1;
+        since = 0;
+        if (idle) {
+            ngx_ff_slim_primary_idle_mark(0);
+            idle = 0;
+        }
+        return 0;
+    }
+
+    if (since == 0) {
+        since = now;
+    }
+
+    /* a master whose workers attached and died between two checks */
+    if (!seen && ff_reload_gendir_masters_seen() > 0) {
+        seen = 1;
+    }
+
+    if (seen && !idle) {
+        ngx_ff_slim_primary_idle_mark(1);
+        idle = 1;
+    }
+
+    if (now - since < (seen ? limit
+                            : ngx_max(limit, NGX_FF_SLIM_PRIMARY_UNUSED_MS)))
+    {
+        return 0;
+    }
+
+    fprintf(stderr, "ff slim primary (pid %d): no master or worker for "
+            "%lu ms, exiting\n", (int) getpid(), (unsigned long) (now - since));
+    stopping = 1;
+    ff_stop_run();
     return 0;
 }
 
@@ -1301,6 +1552,11 @@ ngx_ff_slim_primary_spawn_child(ngx_cycle_t *cycle, sem_t *ready_sem)
     if (pf >= 0) {
         dprintf(pf, "%d\n", (int) getpid());
         (void) close(pf);
+    }
+
+    pf = ngx_ff_slim_primary_file_pid(NGX_FF_SLIM_PRIMARY_IDLEFILE, "");
+    if (pf > 0 && kill(pf, 0) != 0 && errno == ESRCH) {
+        (void) unlink(NGX_FF_SLIM_PRIMARY_IDLEFILE);
     }
 
     if (ready_sem != NULL) {
@@ -3304,6 +3560,12 @@ static void
 ngx_master_process_exit(ngx_cycle_t *cycle)
 {
     ngx_uint_t  i;
+
+#if (NGX_HAVE_FSTACK)
+    /* before the pid file goes: whoever waits for it must find the
+     * primary stopped too */
+    ngx_ff_slim_primary_release(cycle);
+#endif
 
     ngx_delete_pidfile(cycle);
 

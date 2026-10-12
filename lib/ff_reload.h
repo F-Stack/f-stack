@@ -407,6 +407,13 @@ int ff_reload_gendir_install(void *addr, size_t len);
  * master whose workers still refresh the slot stamp keeps the epoch live —
  * orphan workers are still draining and still consume that slot's rings. */
 int  ff_reload_gendir_epoch_live(uint32_t epoch);
+/* nginx masters registered in the directory that still run (zombies do not
+ * count), the resident primary and the caller excluded; -1 without a
+ * directory. */
+int  ff_reload_gendir_masters_live(void);
+/* slots ever claimed by an nginx master, running or not, the resident
+ * primary and the caller excluded; -1 without a directory. */
+int  ff_reload_gendir_masters_seen(void);
 
 /* hardware users and takeover proof ----------------------------- */
 

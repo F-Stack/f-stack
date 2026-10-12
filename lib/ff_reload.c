@@ -32,6 +32,7 @@
 #include <errno.h>
 #include <unistd.h>        /* getpid for the hardware-user table */
 #include <sys/socket.h>    /* socklen_t for ff_msg.h */
+#include <fcntl.h>
 
 #include "ff_reload.h"     /* stdint/stddef + block layout */
 #include "ff_config.h"
@@ -692,6 +693,75 @@ reload_pid_alive(uint32_t pid)
     if (pid == 0)
         return 0;
     return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
+/* like reload_pid_alive(), but a zombie or dying process is gone */
+static int
+reload_pid_running(uint32_t pid)
+{
+    char path[32], buf[256], *p;
+    ssize_t n;
+    int fd;
+
+    if (!reload_pid_alive(pid))
+        return 0;
+    snprintf(path, sizeof(path), "/proc/%u/stat", (unsigned)pid);
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0)
+        return errno != ENOENT;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return 1;
+    buf[n] = '\0';
+    p = strrchr(buf, ')');
+    return p == NULL || p[1] != ' ' || (p[2] != 'Z' && p[2] != 'X');
+}
+
+int
+ff_reload_gendir_masters_live(void)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint32_t self = (uint32_t)getpid();
+    unsigned i;
+    int n = 0;
+
+    if (d == NULL)
+        return -1;
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+        uint32_t pid = __atomic_load_n(&d->slot[i].master_pid,
+            __ATOMIC_SEQ_CST);
+
+        if (pid == 0 || pid == self
+            || (__atomic_load_n(&d->slot[i].flags, __ATOMIC_SEQ_CST)
+                & FF_RELOAD_SLOT_PRIMARY))
+            continue;
+        if (reload_pid_running(pid))
+            n++;
+    }
+    return n;
+}
+
+int
+ff_reload_gendir_masters_seen(void)
+{
+    struct ff_reload_gendir *d = g_reload_gendir;
+    uint32_t self = (uint32_t)getpid();
+    unsigned i;
+    int n = 0;
+
+    if (d == NULL)
+        return -1;
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+        uint32_t pid = __atomic_load_n(&d->slot[i].master_pid,
+            __ATOMIC_SEQ_CST);
+
+        if (pid != 0 && pid != self
+            && !(__atomic_load_n(&d->slot[i].flags, __ATOMIC_SEQ_CST)
+                & FF_RELOAD_SLOT_PRIMARY))
+            n++;
+    }
+    return n;
 }
 
 static uint64_t dir_now_ms(void);

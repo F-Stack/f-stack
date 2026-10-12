@@ -70,7 +70,8 @@ void ff_stop_run(void);
  *   (devices, rings, pools, KNI); -1 if the file cannot be parsed.
  * ff_primary_users: live DPDK secondaries of the primary owning runtime_dir,
  *   -1 if the directory cannot be read (callers treat it as "in use").
- * ff_primary_reuse_check: FF_PRIMARY_* verdict for a live primary.
+ * ff_primary_reuse_check: FF_PRIMARY_* verdict for a live primary; idle:
+ *   the primary reports that no master and no worker uses it any more.
  * ff_eal_runtime_dir: EAL runtime directory of this process.
  */
 #define FF_PRIMARY_REUSE    0
@@ -80,7 +81,7 @@ int ff_primary_conf_digest(const char *conf, uint64_t *digest,
     int *kni_enable);
 int ff_primary_users(const char *runtime_dir);
 int ff_primary_reuse_check(int record_ok, int same_digest, int users,
-    int inherited);
+    int idle, int inherited);
 const char *ff_eal_runtime_dir(void);
 
 /* POSIX-LIKE api begin */

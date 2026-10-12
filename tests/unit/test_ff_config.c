@@ -36,6 +36,7 @@
 #include <unistd.h>           /* getpid() for the M5 directory liveness stubs */
 #include <time.h>             /* F-M5-1: slot stamp freshness */
 #include <sys/wait.h>         /* F-M5-1: reaped-child pid is a dead master */
+#include <signal.h>
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -3138,16 +3139,94 @@ static void
 test_rx35_primary_reuse_check(void **state)
 {
     (void)state;
-    assert_int_equal(ff_primary_reuse_check(1, 1, 3, 1), FF_PRIMARY_REUSE);
-    assert_int_equal(ff_primary_reuse_check(1, 1, -1, 0), FF_PRIMARY_REUSE);
-    assert_int_equal(ff_primary_reuse_check(0, 1, 0, 0), FF_PRIMARY_REFUSE);
-    assert_int_equal(ff_primary_reuse_check(0, 0, 0, 0), FF_PRIMARY_REFUSE);
-    assert_int_equal(ff_primary_reuse_check(1, 0, 2, 0), FF_PRIMARY_REFUSE);
-    assert_int_equal(ff_primary_reuse_check(1, 0, -1, 0), FF_PRIMARY_REFUSE);
-    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 1), FF_PRIMARY_REFUSE);
-    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 0), FF_PRIMARY_RESTART);
+    assert_int_equal(ff_primary_reuse_check(1, 1, 3, 0, 1), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, -1, 0, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(0, 1, 0, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(0, 0, 0, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 2, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, -1, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 0, 1), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 0, 0), FF_PRIMARY_RESTART);
 }
 
+/* RX-37: an idle primary (its masters were killed) is rebuilt, never
+ * reused, unless a binary upgrade inherits it or somebody still uses it. */
+static void
+test_rx37_primary_reuse_check_idle(void **state)
+{
+    (void)state;
+    assert_int_equal(ff_primary_reuse_check(1, 1, 0, 0, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, 0, 1, 0), FF_PRIMARY_RESTART);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 1, 0), FF_PRIMARY_RESTART);
+    assert_int_equal(ff_primary_reuse_check(1, 1, 0, 1, 1), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 1, 1), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, 2, 1, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, -1, 1, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(0, 1, 0, 1, 0), FF_PRIMARY_REFUSE);
+}
+
+/* RX-37: what the resident primary counts as a master still around. */
+static void
+test_rx37_gendir_masters_live(void **state)
+{
+    struct ff_reload_gendir gd;
+    uint32_t gone = p2_dead_pid();
+    pid_t zombie;
+    int live;
+
+    (void)state;
+    ff_reload_gendir_install(NULL, 0);
+    assert_int_equal(ff_reload_gendir_masters_live(), -1);
+    assert_int_equal(ff_reload_gendir_masters_seen(), -1);
+
+    p2_gendir_init(&gd);
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+    assert_int_equal(ff_reload_gendir_masters_seen(), 0);
+
+    /* the primary's own slot and this process are never a master */
+    gd.slot[0].master_pid = 1u;
+    gd.slot[0].flags = FF_RELOAD_SLOT_PRIMARY;
+    gd.slot[1].master_pid = (uint32_t)getpid();
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+
+    /* a running master counts, a dead one does not */
+    gd.slot[2].master_pid = 1u;
+    gd.slot[3].master_pid = gone;
+    assert_int_equal(ff_reload_gendir_masters_live(), 1);
+    gd.slot[2].master_pid = 0;
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+
+    /* a master that has gone still counts as seen; the primary slot and
+     * this process never */
+    assert_int_equal(ff_reload_gendir_masters_seen(), 1);
+
+    /* a master that is still running counts until it exits, and an
+     * unreaped (zombie) one is gone already */
+    zombie = fork();
+    assert_true(zombie >= 0);
+    if (zombie == 0) {
+        pause();
+        _exit(0);
+    }
+    gd.slot[3].master_pid = (uint32_t)zombie;
+    live = ff_reload_gendir_masters_live();
+    assert_int_equal(kill(zombie, SIGKILL), 0);
+    assert_int_equal(live, 1);
+    {
+        siginfo_t si;
+
+        memset(&si, 0, sizeof(si));
+        assert_int_equal(waitid(P_PID, zombie, &si, WEXITED | WNOWAIT), 0);
+    }
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+    assert_int_equal(waitpid(zombie, NULL, 0), zombie);
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+
+    ff_reload_gendir_install(NULL, 0);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+int
 main(void)
 {
     const struct CMUnitTest tests[] = {
@@ -3264,6 +3343,8 @@ main(void)
         cmocka_unit_test_setup_teardown(test_rx35_primary_conf_digest, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rx35_primary_users, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rx35_primary_reuse_check, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx37_primary_reuse_check_idle, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx37_gendir_masters_live, test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),

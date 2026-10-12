@@ -2109,14 +2109,14 @@ ff_primary_users(const char *runtime_dir)
 }
 
 int
-ff_primary_reuse_check(int record_ok, int same_digest, int users,
+ff_primary_reuse_check(int record_ok, int same_digest, int users, int idle,
     int inherited)
 {
     if (!record_ok)
         return FF_PRIMARY_REFUSE;
-    if (same_digest)
-        return FF_PRIMARY_REUSE;
-    if (users != 0 || inherited)
-        return FF_PRIMARY_REFUSE;
-    return FF_PRIMARY_RESTART;
+    if (inherited)
+        return same_digest ? FF_PRIMARY_REUSE : FF_PRIMARY_REFUSE;
+    if (users == 0 && (idle || !same_digest))
+        return FF_PRIMARY_RESTART;
+    return same_digest ? FF_PRIMARY_REUSE : FF_PRIMARY_REFUSE;
 }
