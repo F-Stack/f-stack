@@ -13,8 +13,8 @@ import subprocess
 import sys
 import time
 
-CASES = {"precheck", "baseline", "rt01", "rt02", "rv9", "gr0", "rt12", "rt27", "rt28", "rt13",
-         "rt20", "rt20b", "rt21", "rt22", "rt23", "rt24", "rt25", "rt26",
+CASES = {"precheck", "baseline", "rt01", "rt02", "rv9", "gr0", "rt12", "rt27", "rt28", "rt29",
+         "rt13", "rt20", "rt20b", "rt21", "rt22", "rt23", "rt24", "rt25", "rt26",
          "rt30", "rt31"}
 # Named faults are the ones implemented under FF_RELOAD_FAULT_INJECTION
 # (ff_reload_fault_is*() call sites in lib/ff_reload.c and synack_fail in

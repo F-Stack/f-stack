@@ -115,7 +115,7 @@ RTE_FRESH_MIN=10
 # first worker (the shipped config.ini default owner_proc_id is 1 as well).
 KNI_OWNER_PROC_ID=1
 
-ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt28,rt13"
+ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt28,rt29,rt13"
 # rt13 (the zc build form) is permanently excluded by decision 2026-09-22:
 # this tree does not build the zc form, so the case is dropped from every
 # matrix (-c all). It stays invocable explicitly and then records EXCLUDED,
@@ -174,15 +174,17 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                               test (write <DPDK_NIC_IP> in any report).
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
-                                         rt12,rt27,rt28,rt13,rt20,rt20b,rt21,rt22,
-                                         rt23,
+                                         rt12,rt27,rt28,rt29,rt13,rt20,rt20b,rt21,
+                                         rt22,rt23,
                                          rt24,rt25,rt26,rt30,rt31 (rt24 and the
                                          other rt2x need a fault-injection
                                          build; rt25 drives USR2 + WINCH;
                                          rt26 needs --fault synack_fail;
                                          rt27 changes [kni] under a
                                          resident primary; rt28 stops,
-                                         quits and SIGKILLs nginx)
+                                         quits and SIGKILLs nginx; rt29
+                                         starts with a rejected and a
+                                         valid MTU config)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -1885,15 +1887,22 @@ relaunch_master() { # conf
         "$(sha256sum "$NGINX_BIN" | awk '{print $1}')" "$NGINX_BIN" -c "$1" >> "$LOG" 2>&1
 }
 
+# the pid in the first "[emerg] <pid>#0: ...<pattern>" line since mark
+emerg_pid() { # file mark pattern
+    log_since "$1" "$2" | grep -- "$3" \
+        | sed -n 's/.*\[emerg\] \([0-9][0-9]*\)#.*/\1/p' | head -1
+}
+
 # the master started by relaunch_master refused to run: it logged the
-# expected line and is gone (it never removes its pid file)
+# expected line, removed its pid file and is gone
 expect_refused() { # step mark pattern seconds pidfile
-    local m
+    local m pf="${5:-$OUT/nginx.pid}"
     wait_log "$ERRLOG" "$2" "$3" "$4" \
         || { say "rt27 $1: no '$3' within $4 s"; return 1; }
-    m=$(cat "${5:-$OUT/nginx.pid}" 2>/dev/null)
-    [ -n "$m" ] || { say "rt27 $1: the refused master left no pid"; return 1; }
+    m=$(emerg_pid "$ERRLOG" "$2" "$3")
+    [ -n "$m" ] || { say "rt27 $1: no pid in the refusal line"; return 1; }
     wait_gone "$m" 15 || { say "rt27 $1: refused master $m still alive"; return 1; }
+    [ ! -e "$pf" ] || { say "rt27 $1: the refused master left $pf"; return 1; }
 }
 
 expect_serving() { # step
@@ -2208,6 +2217,75 @@ case_rt28() {
     return "$rc"
 }
 
+# ---- rt29: an MTU config the primary rejects fails fast, with its reason ---
+case_rt29() {
+    say "=== case rt29 (MTU config: a rejected one fails fast, a valid one serves) ==="
+    local crit="with [port0] mtu=9000 and no mtu_enable the master exits within 20 s, logs the primary's reason and leaves no pid file or primary; with mtu_enable=1 the stack serves, f-stack-0 has mtu 9000 and a HUP reloads"
+    local conf ini rc=0 step="" meas mark t0 dt=-1 m p line mtu=NA
+    conf=$(gen_nginx_conf "rt29" 0)
+    if ! start_stack "rt29" 1 0 0; then
+        stop_stack "rt29" "$conf"
+        record "rt29" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    ini="$OUT/fstack_rt29.ini"
+
+    # 1. stop the 1500-MTU stack
+    step=1; m=$(master_pid); p=$(slim_pid)
+    [ -n "$p" ] && pid_alive "$p" || { say "rt29 1: no live primary"; rc=1; }
+    nginx_signal "$conf" stop || rc=1
+    wait_gone "$m" 60 || { say "rt29 1: master $m still alive"; rc=1; }
+    wait_gone "$p" 10 || { say "rt29 1: primary $p still alive"; rc=1; }
+    slim_files_gone || { say "rt29 1: primary files left"; rc=1; }
+    say "rt29 1: stopped master=$m primary=$p"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt29" "$conf"; record "rt29" FAIL "$crit" "$meas"; return 1; }
+
+    # 2. mtu=9000 without mtu_enable: refused within seconds, with the reason
+    step=2; ini_set "$ini" port0 mtu 9000
+    mark=$(wc -l < "$ERRLOG"); t0=$SECONDS
+    relaunch_master "$conf" || rc=1
+    wait_log "$ERRLOG" "$mark" 'slim primary exited during initialization' 20 \
+        || { say "rt29 2: no early-exit line within 20 s"; rc=1; }
+    dt=$((SECONDS - t0))
+    line=$(log_since "$ERRLOG" "$mark" | grep 'exited during initialization' | head -1)
+    case "$line" in
+        *'requires mtu_enable=1'*) ;;
+        *) say "rt29 2: the reason is missing: [$line]"; rc=1 ;;
+    esac
+    m=$(emerg_pid "$ERRLOG" "$mark" 'exited during initialization')
+    { [ -n "$m" ] && wait_gone "$m" 15; } || { say "rt29 2: master [$m] still alive"; rc=1; }
+    [ ! -e "$OUT/nginx.pid" ] || { say "rt29 2: nginx.pid left behind"; rc=1; }
+    ! pid_alive "$(slim_pid)" || { say "rt29 2: a primary is alive"; rc=1; }
+    if log_since "$ERRLOG" "$mark" | grep -q 'failed to become ready'; then
+        say "rt29 2: fell back to the ready timeout"; rc=1
+    fi
+    say "rt29 2: refused after ${dt}s: ${line#*graceful_reload: }"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt29" "$conf"; record "rt29" FAIL "$crit" "$meas"; return 1; }
+
+    # 3. mtu_enable=1: the stack serves with a 9000 MTU and reloads
+    step=3; ini_set "$ini" dpdk mtu_enable 1; ini_set "$ini" dpdk max_mtu 9000
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    wait_log "$ERRLOG" "$mark" 'slim primary ready' 60 \
+        || { say "rt29 3: no ready line"; rc=1; }
+    wait_http || { say "rt29 3: HTTP is not 200"; rc=1; }
+    [ "$(worker_count)" = "$WORKERS" ] || { say "rt29 3: workers=$(worker_count)"; rc=1; }
+    mtu=$(timeout 20 "$REPO_ROOT/tools/sbin/ifconfig" -p 1 f-stack-0 2>/dev/null \
+        | grep -o -E 'mtu [0-9]+' | head -1 | cut -d' ' -f2)
+    [ "$mtu" = 9000 ] || { say "rt29 3: f-stack-0 mtu=[$mtu]"; rc=1; }
+    HUP_FSM=NA; hup_once "$conf" || { say "rt29 3: HUP failed"; rc=1; }
+    say "rt29 3: mtu=$mtu HUP fsm=$HUP_FSM workers=$(worker_count)"
+
+    stop_stack "rt29" "$conf" || rc=1
+    meas="mtu=9000 w/o mtu_enable refused in ${dt}s with the reason; mtu_enable=1 mtu=$mtu HUP fsm=$HUP_FSM"
+    if [ "$rc" = 0 ]; then
+        record "rt29" "PASS" "$crit" "$meas"
+    else
+        record "rt29" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
 # RT-12. This tree has no rte_kni: KNI is a virtio_user vdev hot-plugged by
 # ff_dpdk_kni.c, the kernel-side netif is veth<port_id>, and it needs
 # /dev/vhost-net. The verdict is written for that form, not for rte_kni.
@@ -2412,7 +2490,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt28 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt28 rt29 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break
