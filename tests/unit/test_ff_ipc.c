@@ -19,6 +19,7 @@
 #include <string.h>
 #include <unistd.h>             /* fork/_exit for the dead-owner case */
 #include <sys/wait.h>
+#include <pthread.h>
 
 #include "../../tools/compat/ff_ipc.c"
 
@@ -177,6 +178,90 @@ test_ff_ipc_rejects_malformed(void **state)
     expect_assert_failure(ff_set_epoch(FF_RELOAD_EPOCH_NONE));
 }
 
+/* ---- EAL file prefix the tools attach with ----------------------------- */
+static void
+prefix_record(char *path, size_t len, long pid, unsigned long long start,
+    const char *dir)
+{
+    FILE *fp;
+    int fd;
+
+    snprintf(path, len, "/tmp/ff_ipc_prefix_XXXXXX");
+    fd = mkstemp(path);
+    assert_true(fd >= 0);
+    fp = fdopen(fd, "w");
+    assert_non_null(fp);
+    fprintf(fp, "pid=%ld\nstart_time=%llu\ndigest=0123456789abcdef\n"
+        "kni=1\nruntime_dir=%s\n", pid, start, dir);
+    fclose(fp);
+}
+
+static void
+test_ff_ipc_file_prefix(void **state)
+{
+    char rec[64], prefix[64];
+    unsigned long long st;
+
+    (void)state;
+    unsetenv("FF_FILE_PREFIX");
+    assert_int_equal(ff_ipc_proc_start((long)getpid(), &st), 0);
+
+    /* a live primary's record gives the runtime directory's name */
+    prefix_record(rec, sizeof(rec), (long)getpid(), st,
+        "/var/run/dpdk/container-gr_live");
+    assert_string_equal(ff_ipc_file_prefix(rec, prefix, sizeof(prefix)),
+        "container-gr_live");
+
+    /* the environment wins over the record */
+    setenv("FF_FILE_PREFIX", "rte", 1);
+    assert_string_equal(ff_ipc_file_prefix(rec, prefix, sizeof(prefix)),
+        "rte");
+    setenv("FF_FILE_PREFIX", "", 1);
+    assert_string_equal(ff_ipc_file_prefix(rec, prefix, sizeof(prefix)),
+        "container-gr_live");
+    unsetenv("FF_FILE_PREFIX");
+
+    /* a buffer too small for the name is not truncated into a guess */
+    assert_null(ff_ipc_file_prefix(rec, prefix, 8));
+    unlink(rec);
+
+    /* a record whose process is gone or was replaced is ignored */
+    prefix_record(rec, sizeof(rec), (long)getpid(), st + 1,
+        "/var/run/dpdk/container-gr_live");
+    assert_null(ff_ipc_file_prefix(rec, prefix, sizeof(prefix)));
+    unlink(rec);
+    prefix_record(rec, sizeof(rec), 0, st, "/var/run/dpdk/x");
+    assert_null(ff_ipc_file_prefix(rec, prefix, sizeof(prefix)));
+    unlink(rec);
+
+    /* only a direct child of /var/run/dpdk is accepted */
+    prefix_record(rec, sizeof(rec), (long)getpid(), st, "/tmp/dpdk/x");
+    assert_null(ff_ipc_file_prefix(rec, prefix, sizeof(prefix)));
+    unlink(rec);
+    prefix_record(rec, sizeof(rec), (long)getpid(), st, "/var/run/dpdk/a/b");
+    assert_null(ff_ipc_file_prefix(rec, prefix, sizeof(prefix)));
+    unlink(rec);
+    prefix_record(rec, sizeof(rec), (long)getpid(), st, "/var/run/dpdk/");
+    assert_null(ff_ipc_file_prefix(rec, prefix, sizeof(prefix)));
+    unlink(rec);
+
+    /* no record at all: the EAL default prefix */
+    assert_null(ff_ipc_file_prefix("/nonexistent/ff_slim_primary.conf",
+        prefix, sizeof(prefix)));
+}
+
+/* after ff_ipc_exit() the EAL is gone: a late caller (ngctl's destructor)
+ * gets no message instead of touching the unmapped pool. */
+static void
+test_ff_ipc_alloc_after_exit(void **state)
+{
+    (void)state;
+    ff_ipc_exited = 1;
+    assert_null(ff_ipc_msg_alloc());
+    ff_ipc_exit();                  /* idempotent */
+    ff_ipc_exited = 0;
+}
+
 /* ---- P4 (C01-5): reply ownership, driven with a real EAL ---------------
  *
  * ff_ipc_init() itself always attaches as a DPDK secondary to a running
@@ -226,6 +311,10 @@ p4_setup(void **state)
     ff_ring_gen = 0;
     ff_epoch_arg = 0;               /* slot 0 */
     ff_ring_epoch = 0;
+    ff_ipc_follow = 0;
+    ff_ring_probed_ms = 0;
+    ff_probe_hit_slot = -1;
+    ff_probe_hit_gen = -1;
 
     if (message_pool == NULL) {
         message_pool = rte_mempool_create("ff_msg_pool", 64,
@@ -432,6 +521,139 @@ test_p4_probe_is_non_destructive(void **state)
     rte_mempool_put(message_pool, obj);
 }
 
+/* the resident primary's side of one QUERY: active generation 'gen' */
+static void *
+refresh_responder(void *arg)
+{
+    int gen = (int)(intptr_t)arg, i;
+    void *obj;
+
+    for (i = 0; i < 2000; i++) {
+        if (rte_ring_dequeue(p4_in_ring, &obj) == 0) {
+            struct ff_msg *m = (struct ff_msg *)obj;
+
+            m->result = 0;
+            m->reload.active_gen = (uint32_t)gen;
+            m->reload.epoch = 0;
+            (void)rte_ring_enqueue(p4_out_reload, m);
+            return NULL;
+        }
+        usleep(500);
+    }
+    return NULL;
+}
+
+/* In follow mode an auto-resolved generation is re-probed once older than
+ * the TTL, so a long-running tool follows a reload; explicit, legacy and fresh
+ * coordinates are left alone, and a failed probe keeps the old one. */
+static void
+test_p4_gen_refresh(void **state)
+{
+    pthread_t th;
+    uint64_t before;
+    void *obj;
+    unsigned int s0, avail;
+
+    (void)state;
+    ff_gen_arg = FF_IPC_GEN_AUTO;
+    ff_ring_gen = 0;
+    ff_ring_epoch = 0;
+    s0 = ff_ipc_target_seq();
+    avail = rte_mempool_avail_count(message_pool);
+
+    /* off by default: a stale coordinate is kept */
+    ff_ring_probed_ms = 0;
+    ff_ipc_gen_refresh();
+    assert_int_equal((int)rte_ring_count(p4_in_ring), 0);
+    ff_ipc_set_follow(1);
+
+    ff_ring_probed_ms = ff_ipc_now_ms();
+    ff_ipc_gen_refresh();
+    assert_int_equal(ff_ring_gen, 0);
+    assert_int_equal((int)rte_ring_count(p4_in_ring), 0);
+
+    /* nobody answers: the coordinate survives, the TTL restarts */
+    ff_ring_probed_ms = 0;
+    before = ff_ipc_now_ms();
+    ff_ipc_gen_refresh();
+    assert_int_equal(ff_ring_gen, 0);
+    assert_true(ff_ring_probed_ms >= before);
+    assert_int_equal(ff_ipc_target_seq(), s0);
+    while (rte_ring_dequeue(p4_in_ring, &obj) == 0)
+        rte_mempool_put(message_pool, obj);
+
+    /* the same generation answered again: the target did not move */
+    assert_int_equal(pthread_create(&th, NULL, refresh_responder,
+        (void *)(intptr_t)0), 0);
+    ff_ring_probed_ms = 0;
+    ff_ipc_gen_refresh();
+    pthread_join(th, NULL);
+    assert_int_equal(ff_ring_gen, 0);
+    assert_int_equal(ff_ipc_target_seq(), s0);
+
+    /* the primary reports generation 1 as active: the tool follows */
+    assert_int_equal(pthread_create(&th, NULL, refresh_responder,
+        (void *)(intptr_t)1), 0);
+    ff_ring_probed_ms = 0;
+    ff_ipc_gen_refresh();
+    pthread_join(th, NULL);
+    assert_int_equal(ff_ring_gen, 1);
+    assert_int_equal(ff_ipc_target_seq(), s0 + 1);
+    assert_int_equal((int)rte_ring_count(p4_in_ring), 0);
+    assert_int_equal((int)rte_ring_count(p4_out_reload), 0);
+    assert_int_equal(rte_mempool_avail_count(message_pool), avail);
+
+    /* invalidate forces the next refresh to probe again */
+    ff_ring_probed_ms = ff_ipc_now_ms();
+    ff_ipc_gen_invalidate();
+    assert_int_equal((int)ff_ring_probed_ms, 0);
+
+    /* legacy and explicit coordinates are never re-probed */
+    ff_ring_probed_ms = 0;
+    ff_ring_gen = FF_IPC_GEN_LEGACY;
+    ff_ipc_gen_refresh();
+    assert_int_equal(ff_ring_gen, FF_IPC_GEN_LEGACY);
+    ff_gen_arg = 0;
+    ff_ring_gen = 0;
+    ff_ipc_gen_refresh();
+    assert_int_equal(ff_ring_gen, 0);
+    assert_int_equal((int)rte_ring_count(p4_in_ring), 0);
+    ff_ipc_set_follow(0);
+}
+
+/* A probe that gave up leaves its query behind; when the answer finally
+ * arrives, the next probe releases it instead of putting it back, so a
+ * slow primary does not drain the message pool. */
+static void
+test_p4_probe_releases_late_reply(void **state)
+{
+    unsigned int avail, round;
+    uint32_t epoch = 0;
+    int gen = -1;
+    void *obj;
+
+    (void)state;
+    avail = rte_mempool_avail_count(message_pool);
+
+    for (round = 0; round < 3; round++) {
+        /* nobody answers in time */
+        assert_int_not_equal(ff_ipc_probe_coord(&epoch, &gen), 0);
+        assert_int_equal((int)rte_ring_count(p4_in_ring), 1);
+        /* the primary answers late */
+        assert_int_equal(rte_ring_dequeue(p4_in_ring, &obj), 0);
+        ((struct ff_msg *)obj)->result = 0;
+        ((struct ff_msg *)obj)->reload.active_gen = 0;
+        assert_int_equal(rte_ring_enqueue(p4_out_reload, obj), 0);
+    }
+
+    /* one more probe meets the late answer and releases it */
+    assert_int_not_equal(ff_ipc_probe_coord(&epoch, &gen), 0);
+    assert_int_equal((int)rte_ring_count(p4_out_reload), 0);
+    while (rte_ring_dequeue(p4_in_ring, &obj) == 0)
+        rte_mempool_put(message_pool, obj);
+    assert_int_equal(rte_mempool_avail_count(message_pool), avail);
+}
+
 int
 main(void)
 {
@@ -450,6 +672,8 @@ main(void)
             ff_ipc_arg_reset, NULL),
         cmocka_unit_test_setup_teardown(test_ff_ipc_rejects_malformed,
             ff_ipc_arg_reset, NULL),
+        cmocka_unit_test(test_ff_ipc_file_prefix),
+        cmocka_unit_test(test_ff_ipc_alloc_after_exit),
         /* P4 (C01-5): reply ownership, real EAL */
         cmocka_unit_test_setup_teardown(test_p4_recv_own_reply,
             p4_setup, p4_teardown),
@@ -460,6 +684,10 @@ main(void)
         cmocka_unit_test_setup_teardown(test_p4_recv_orphan_dead_owner,
             p4_setup, p4_teardown),
         cmocka_unit_test_setup_teardown(test_p4_probe_is_non_destructive,
+            p4_setup, p4_teardown),
+        cmocka_unit_test_setup_teardown(test_p4_gen_refresh,
+            p4_setup, p4_teardown),
+        cmocka_unit_test_setup_teardown(test_p4_probe_releases_late_reply,
             p4_setup, p4_teardown),
     };
 

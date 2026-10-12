@@ -37,11 +37,19 @@
 #include <string.h>
 #include <signal.h>        /* P4: kill(pid, 0) proves a foreign owner is gone */
 #include <errno.h>
+#include <fcntl.h>
+#include <time.h>
 
 #include "ff_ipc.h"
 #include "ff_reload.h"
 
 static int inited;
+static int ff_ipc_exited;
+
+/* EAL file prefix override, the directory name under /var/run/dpdk */
+#define FF_IPC_PREFIX_ENV       "FF_FILE_PREFIX"
+#define FF_IPC_PRIMARY_RECORD   "/var/run/ff_slim_primary.conf"
+#define FF_IPC_RUNTIME_BASE     "/var/run/dpdk/"
 
 static struct rte_mempool *message_pool;
 
@@ -50,8 +58,8 @@ uint16_t ff_proc_id = 0;
 /* with graceful_reload=1 the msg rings are indexed by
  * (proc_id, generation) and named with a "_g<gen>" suffix, so a tool has to
  * name the generation it wants to talk to. AUTO resolves it on the first
- * send, LEGACY selects the unsuffixed names a graceful_reload=0 stack
- * creates. */
+ * send (and, in follow mode, again after every reload), LEGACY selects the
+ * unsuffixed names a graceful_reload=0 stack creates. */
 #define FF_IPC_GEN_AUTO         (-1)
 #define FF_IPC_GEN_LEGACY       (-2)
 
@@ -65,6 +73,17 @@ static int ff_gen_arg = FF_IPC_GEN_AUTO;
 static int ff_ring_gen = FF_IPC_GEN_AUTO;
 /* master epoch the resolved generation belongs to (ring-name slot). */
 static uint32_t ff_ring_epoch;
+/* follow mode (sampling tools only): the auto-resolved generation is
+ * re-probed once older than the TTL. Off by default, so a tool holding
+ * per-stack state (ngctl sockets) never moves to another generation. */
+static int ff_ipc_follow;
+static uint64_t ff_ring_probed_ms;
+#define FF_IPC_GEN_TTL_MS       100
+/* bumped whenever a re-probe moves to another coordinate */
+static unsigned int ff_ring_seq;
+/* proc-0 ring pair that answered the last probe, asked first next time */
+static int ff_probe_hit_slot = -1;
+static int ff_probe_hit_gen = -1;
 /* epoch given on the command line. FF_RELOAD_EPOCH_NONE means
  * "not given" and resolves to slot 0, i.e. the pre- ring names. */
 static uint32_t ff_epoch_arg = FF_RELOAD_EPOCH_NONE;
@@ -357,27 +376,140 @@ ff_set_proc_id_str(const char *arg)
     return (int)id;
 }
 
+/* start time (field 22) of /proc/<pid>/stat */
+static int
+ff_ipc_proc_start(long pid, unsigned long long *start)
+{
+    char path[48], buf[1024], *p;
+    int fd, i;
+    ssize_t n;
+
+    snprintf(path, sizeof(path), "/proc/%ld/stat", pid);
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return -1;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return -1;
+    buf[n] = '\0';
+
+    p = strrchr(buf, ')');
+    if (p == NULL || p[1] != ' ')
+        return -1;
+    p += 2;
+    for (i = 0; i < 19; i++) {
+        p = strchr(p, ' ');
+        if (p == NULL)
+            return -1;
+        p++;
+    }
+    *start = strtoull(p, NULL, 10);
+    return 0;
+}
+
+/* EAL file prefix of the runtime directory recorded by a live resident
+ * slim primary (graceful_reload=1). No heap use: the EAL is not up yet. */
+static int
+ff_ipc_record_prefix(const char *record, char *prefix, size_t len)
+{
+    char buf[1024], *line, *save = NULL, *dir = NULL, *name;
+    unsigned long long start = 0, now;
+    long pid = 0;
+    int fd;
+    ssize_t n;
+
+    fd = open(record, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0)
+        return -1;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return -1;
+    buf[n] = '\0';
+
+    for (line = strtok_r(buf, "\n", &save); line != NULL;
+        line = strtok_r(NULL, "\n", &save)) {
+        if (strncmp(line, "pid=", 4) == 0)
+            pid = strtol(line + 4, NULL, 10);
+        else if (strncmp(line, "start_time=", 11) == 0)
+            start = strtoull(line + 11, NULL, 10);
+        else if (strncmp(line, "runtime_dir=", 12) == 0)
+            dir = line + 12;
+    }
+
+    if (pid <= 0 || dir == NULL
+        || ff_ipc_proc_start(pid, &now) != 0 || now != start)
+        return -1;
+    if (strncmp(dir, FF_IPC_RUNTIME_BASE, strlen(FF_IPC_RUNTIME_BASE)) != 0)
+        return -1;
+    name = dir + strlen(FF_IPC_RUNTIME_BASE);
+    if (*name == '\0' || strchr(name, '/') != NULL || strlen(name) >= len)
+        return -1;
+    snprintf(prefix, len, "%s", name);
+    return 0;
+}
+
+/* FF_FILE_PREFIX wins, then the resident primary's record; otherwise
+ * the EAL default prefix is used. */
+static const char *
+ff_ipc_file_prefix(const char *record, char *prefix, size_t len)
+{
+    const char *env = getenv(FF_IPC_PREFIX_ENV);
+
+    if (env != NULL && *env != '\0') {
+        if (strlen(env) >= len || strchr(env, '/') != NULL) {
+            fprintf(stderr, "Invalid " FF_IPC_PREFIX_ENV ": %s\n", env);
+            exit(1);
+        }
+        snprintf(prefix, len, "%s", env);
+        return prefix;
+    }
+    if (ff_ipc_record_prefix(record, prefix, len) == 0)
+        return prefix;
+    return NULL;
+}
+
 int
 ff_ipc_init(void)
 {
+    char prefix[256], prefix_arg[sizeof(prefix) + 16];
+    const char *p;
+    int argc;
+
     if (inited) {
         return 0;
+    }
+    if (ff_ipc_exited) {
+        return -1;
     }
 
     if (getuid() != 0) {
         rte_exit(EXIT_FAILURE, "Error: F-Stack tools must be run as root.\n");
     }
 
+    /* tools only use rings and the message pool: no PCI device is probed */
     char *dpdk_argv[] = {
         "ff-ipc", "-c1", "-n4",
         "--proc-type=secondary",
         /* RTE_LOG_WARNING */
         "--log-level=5",
+        "--no-pci",
+        NULL, NULL,
     };
 
-    int ret = rte_eal_init(sizeof(dpdk_argv)/sizeof(dpdk_argv[0]), dpdk_argv);
+    argc = (int)(sizeof(dpdk_argv) / sizeof(dpdk_argv[0])) - 2;
+    p = ff_ipc_file_prefix(FF_IPC_PRIMARY_RECORD, prefix, sizeof(prefix));
+    if (p != NULL) {
+        snprintf(prefix_arg, sizeof(prefix_arg), "--file-prefix=%s", p);
+        dpdk_argv[argc++] = prefix_arg;
+    }
+
+    int ret = rte_eal_init(argc, dpdk_argv);
     if (ret < 0) {
-        rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+        rte_exit(EXIT_FAILURE, "Error with EAL initialization (file prefix "
+            "%s); set " FF_IPC_PREFIX_ENV " to the stack's directory name "
+            "under " FF_IPC_RUNTIME_BASE "\n", p != NULL ? p : "default");
     }
 
     message_pool = rte_mempool_lookup(FF_MSG_POOL);
@@ -393,6 +525,9 @@ ff_ipc_init(void)
 void
 ff_ipc_exit(void)
 {
+	if (ff_ipc_exited)
+		return;
+
 	/* anything still stashed belongs to another client. The EAL is
 	 * about to be torn down, so it cannot be put back into a ring any
 	 * more; it is returned to the pool (with the cross-process buffer
@@ -406,12 +541,19 @@ ff_ipc_exit(void)
 	}
 
 	rte_eal_cleanup();
+	ff_ipc_exited = 1;
+	inited = 0;
+	message_pool = NULL;
 	return;
 }
 
 struct ff_msg *
 ff_ipc_msg_alloc(void)
 {
+    /* the EAL is gone, e.g. a destructor running after ff_ipc_exit() */
+    if (ff_ipc_exited)
+        return NULL;
+
     if (inited == 0) {
         int ret = ff_ipc_init();
         if (ret < 0) {
@@ -522,9 +664,9 @@ ff_msg_ring_name(char *buf, unsigned int buflen, const char *base,
  * reported as an error instead. */
 /* One QUERY round trip on one candidate coordinate, with a private dequeue
  * loop. ff_ipc_recv() must not be reused here: it names the ring after
- * ff_proc_id (not FF_IPC_PRIMARY_PROC_ID) and rewrites ff_pending_msg
- * (ff_ipc.c:479/533), which would re-introduce exactly the mix-up this
- * batch fixes. Foreign replies are requeued, never freed. */
+ * ff_proc_id (not FF_IPC_PRIMARY_PROC_ID) and rewrites ff_pending_msg,
+ * which would re-introduce exactly the mix-up this batch fixes. Foreign
+ * replies are requeued, never freed; our own late replies are freed. */
 static int
 ff_ipc_probe_once(struct rte_ring *in_ring, struct rte_ring *out_ring,
     struct ff_msg *msg, int attempts, uint32_t *epoch, int *gen)
@@ -547,6 +689,13 @@ ff_ipc_probe_once(struct rte_ring *in_ring, struct rte_ring *out_ring,
         }
 
         struct ff_msg *reply = (struct ff_msg *)obj;
+        if (reply->ipc_owner_pid == (uint32_t)getpid()
+            && reply->ipc_cookie != 0
+            && reply->ipc_cookie != msg->ipc_cookie) {
+            /* ours, from a probe that gave up: release it */
+            ff_ipc_msg_free(reply);
+            continue;
+        }
         if (reply->ipc_owner_pid == (uint32_t)getpid()
             && reply->ipc_cookie == msg->ipc_cookie) {
             int rc = -1;
@@ -578,7 +727,8 @@ ff_ipc_probe_once(struct rte_ring *in_ring, struct rte_ring *out_ring,
  * probe both assumed gen/epoch 0 and freed every reply that was not its
  * own — destroying other clients' answers, including FF_RELOAD control
  * replies. Stage one only checks which coordinates exist (no dequeue, no
- * free); stage two asks the existing ones, cheapest first. */
+ * free); stage two asks the existing ones, the last one that answered
+ * first. */
 static int
 ff_ipc_probe_coord(uint32_t *epoch, int *gen)
 {
@@ -612,6 +762,17 @@ ff_ipc_probe_coord(uint32_t *epoch, int *gen)
     if (ncand == 0)
         return -1;
 
+    for (i = 1; i < ncand; i++) {
+        if ((int)cand_epoch[i] == ff_probe_hit_slot
+            && cand_gen[i] == ff_probe_hit_gen) {
+            cand_epoch[i] = cand_epoch[0];
+            cand_gen[i] = cand_gen[0];
+            cand_epoch[0] = (uint32_t)ff_probe_hit_slot;
+            cand_gen[0] = ff_probe_hit_gen;
+            break;
+        }
+    }
+
     /* stage 2: the whole probe must not cost more than one legacy probe */
     attempts = FF_IPC_PROBE_BUDGET_MS / ncand;
     if (attempts < FF_IPC_PROBE_MIN_ATTEMPTS)
@@ -638,8 +799,10 @@ ff_ipc_probe_coord(uint32_t *epoch, int *gen)
         /* One buffer per candidate: a ring that nobody drains survives a
          * stack restart (ff_dpdk_if.c:844), so a single object enqueued into
          * several rings would end up owned twice — in a ring and in the
-         * pool. A candidate that is never answered parks at most one
-         * buffer, which is cheaper than corrupting the pool. */
+         * pool. A candidate that is never answered parks one buffer per
+         * probe, which is cheaper than corrupting the pool; follow mode
+         * asks the pair that answered last first, so normally only that
+         * one is asked. */
         msg = ff_ipc_msg_alloc();
         if (msg == NULL)
             continue;
@@ -650,11 +813,64 @@ ff_ipc_probe_coord(uint32_t *epoch, int *gen)
 
         if (ff_ipc_probe_once(in_ring, out_ring, msg, attempts, epoch,
                 gen) == 0) {
+            ff_probe_hit_slot = (int)cand_epoch[i];
+            ff_probe_hit_gen = cand_gen[i];
             return 0;
         }
     }
 
     return -1;
+}
+
+static uint64_t
+ff_ipc_now_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
+
+/* A probed coordinate goes stale once a reload switches generations, and
+ * the old generation exits soon after. Called when a request starts, never
+ * between its send and recv, so both use the same rings. */
+static void
+ff_ipc_gen_refresh(void)
+{
+    uint32_t epoch;
+    int gen;
+
+    /* explicit, legacy or not yet resolved: nothing to refresh */
+    if (!ff_ipc_follow || ff_gen_arg != FF_IPC_GEN_AUTO || ff_ring_gen < 0)
+        return;
+    if (ff_ipc_now_ms() - ff_ring_probed_ms < FF_IPC_GEN_TTL_MS)
+        return;
+    /* a failed probe keeps the last coordinate */
+    if (ff_ipc_probe_coord(&epoch, &gen) == 0) {
+        if (gen != ff_ring_gen || epoch != ff_ring_epoch)
+            ff_ring_seq++;
+        ff_ring_gen = gen;
+        ff_ring_epoch = epoch;
+    }
+    ff_ring_probed_ms = ff_ipc_now_ms();
+}
+
+void
+ff_ipc_set_follow(int on)
+{
+    ff_ipc_follow = on;
+}
+
+void
+ff_ipc_gen_invalidate(void)
+{
+    ff_ring_probed_ms = 0;
+}
+
+unsigned int
+ff_ipc_target_seq(void)
+{
+    return ff_ring_seq;
 }
 
 static int
@@ -702,6 +918,7 @@ ff_ipc_ring_gen(void)
         }
         ff_ring_gen = gen;
         ff_ring_epoch = epoch;
+        ff_ring_probed_ms = ff_ipc_now_ms();
     }
 
     return ff_ring_gen;
@@ -734,6 +951,7 @@ ff_ipc_send(const struct ff_msg *msg)
     }
 
     char name[RTE_RING_NAMESIZE];
+    ff_ipc_gen_refresh();
     if (ff_ipc_ring_name(name, RTE_RING_NAMESIZE, FF_MSG_RING_IN, -1) != 0) {
         printf("message ring name too long\n");
         return -1;

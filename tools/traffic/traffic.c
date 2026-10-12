@@ -5,7 +5,7 @@ void
 usage(void)
 {
     printf("Usage:\n");
-    printf("  top [-p <f-stack proc_id|thread_id>[:<gen>]] [-g <gen>] "
+    printf("  traffic [-p <f-stack proc_id|thread_id>[:<gen>]] [-g <gen>] "
         "[-P <max proc_id|thread_id>] [-d <secs>] [-n num] [-s]\n");
     printf("  -g selects the graceful_reload generation (default: the active one)\n");
 }
@@ -48,6 +48,16 @@ int traffic_status(struct ff_traffic_args *traffic)
     return 0;
 }
 
+/* the target may have exited under a reload: re-resolve and retry once */
+static int
+traffic_status_retry(struct ff_traffic_args *traffic)
+{
+    if (traffic_status(traffic) == 0)
+        return 0;
+    ff_ipc_gen_invalidate();
+    return traffic_status(traffic);
+}
+
 int main(int argc, char **argv)
 {
     int ch, delay = 1, n = 0;
@@ -59,8 +69,12 @@ int main(int argc, char **argv)
     uint64_t rxp, rxb, txp, txb, rxd, txd;
     uint64_t prxp, prxb, ptxp, ptxb, prxd, ptxd;
     int title_line = 40;
+    /* target generation of each sample: a delta needs both from one */
+    unsigned int seq, oseq = 0, pseq[RTE_MAX_LCORE] = { 0 };
+    int fresh, stale;
 
     ff_ipc_init();
+    ff_ipc_set_follow(1);
 
 #define DIFF(member) (traffic.member - otr.member)
 #define DIFF_P(member) (ptraffic[j].member - potr[j].member)
@@ -103,7 +117,7 @@ int main(int argc, char **argv)
 
     if (single) {
         if (max_proc_id == -1) {
-            if (traffic_status(&traffic)) {
+            if (traffic_status_retry(&traffic)) {
                 printf("fstack ipc message error !\n");
                 ff_ipc_exit();
                 return -1;
@@ -115,7 +129,7 @@ int main(int argc, char **argv)
         } else {
             for (j = proc_id; j <= max_proc_id; j++) {
                 ff_set_proc_id(j);
-                if (traffic_status(&ptraffic[j])) {
+                if (traffic_status_retry(&ptraffic[j])) {
                     printf("fstack ipc message error, proc id:%d!\n", j);
                     ff_ipc_exit();
                     return -1;
@@ -124,12 +138,14 @@ int main(int argc, char **argv)
                 printf("%9d,%20lu,%20lu,%20lu,%20lu,%20lu,%20lu,\n",
                     j, ptraffic[j].rx_packets, ptraffic[j].rx_bytes,
                     ptraffic[j].tx_packets, ptraffic[j].tx_bytes,
-                    traffic.rx_dropped, traffic.tx_dropped);
+                    ptraffic[j].rx_dropped, ptraffic[j].tx_dropped);
 
                 ADD_S(rx_packets);
                 ADD_S(rx_bytes);
                 ADD_S(tx_packets);
                 ADD_S(tx_bytes);
+                ADD_S(rx_dropped);
+                ADD_S(tx_dropped);
             }
 
             printf("%9s,%20lu,%20lu,%20lu,%20lu,%20lu,%20lu\n",
@@ -143,11 +159,14 @@ int main(int argc, char **argv)
 
     for (i = 0; ; i++) {
         if (max_proc_id == -1) {
-            if (traffic_status(&traffic)) {
+            if (traffic_status_retry(&traffic)) {
                 printf("fstack ipc message error !\n");
                 ff_ipc_exit();
                 return -1;
             }
+            seq = ff_ipc_target_seq();
+            fresh = i && seq == oseq;
+            oseq = seq;
 
             if (i % title_line == 0) {
                 printf("|--------------------|--------------------|");
@@ -160,7 +179,7 @@ int main(int argc, char **argv)
                     "--------------------|--------------------|\n");
             }
 
-            if (i) {
+            if (fresh) {
                 rxp = DIFF(rx_packets);
                 rxb = DIFF(rx_bytes);
                 txp = DIFF(tx_packets);
@@ -188,17 +207,23 @@ int main(int argc, char **argv)
             }
 
             rxp = rxb = txp = txb = rxd = txd = 0;
+            stale = 0;
             for (j = proc_id; j <= max_proc_id; j++) {
                 potr[j] = ptraffic[j];
 
                 ff_set_proc_id(j);
-                if (traffic_status(&ptraffic[j])) {
+                if (traffic_status_retry(&ptraffic[j])) {
                     printf("fstack ipc message error, proc id:%d!\n", j);
                     ff_ipc_exit();
                     return -1;
                 }
+                seq = ff_ipc_target_seq();
+                fresh = i && seq == pseq[j];
+                pseq[j] = seq;
+                if (!fresh)
+                    stale = 1;
 
-                if (i) {
+                if (fresh) {
                     prxp = DIFF_P(rx_packets);
                     prxb = DIFF_P(rx_bytes);
                     ptxp = DIFF_P(tx_packets);
@@ -215,7 +240,7 @@ int main(int argc, char **argv)
                     rxd += prxd;
                     txd += ptxd;
 
-                    if (j == max_proc_id) {
+                    if (j == max_proc_id && !stale) {
                         printf("|%9s|%20lu|%20lu|%20lu|%20lu|%20lu|%20lu|\n",
                             "total", rxp, rxb, txp, txb, rxd, txd);
                         printf("|         |                    |"

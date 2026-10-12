@@ -61,6 +61,17 @@ int ff_ipc_msg_free(struct ff_msg *msg);
 int ff_ipc_send(const struct ff_msg *msg);
 int ff_ipc_recv(struct ff_msg **msg, enum FF_MSG_TYPE msg_type);
 
+/* Follow mode, for sampling tools: an auto-resolved generation is
+ * re-resolved after a reload instead of staying on the one that exits.
+ * Never for tools holding per-stack state such as ngctl sockets. */
+void ff_ipc_set_follow(int on);
+/* Re-resolve on the next send, e.g. after a request to it failed. */
+void ff_ipc_gen_invalidate(void);
+/* Changes whenever follow mode moved to another generation, whose counters
+ * start from zero, so a sampling tool restarts its deltas. Two reloads
+ * between samples that land on the same generation are not seen. */
+unsigned int ff_ipc_target_seq(void);
+
 /* reply-ownership counters. foreign_requeued counts replies of
  * other clients that were put back instead of freed, orphan_dropped replies
  * whose owner was provably gone, reply_lost foreign replies that could not

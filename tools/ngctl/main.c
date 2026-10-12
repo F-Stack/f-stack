@@ -150,10 +150,12 @@ __attribute__((destructor)) close_ng_socks()
 {
 	if (csock >= 0) {
 		ng_close(csock);
+		csock = -1;
 	}
 
 	if (dsock >= 0) {
 		ng_close(dsock);
+		dsock = -1;
 	}
 }
 #endif
@@ -239,6 +241,8 @@ main(int ac, char *av[])
 		break;
 	}
 #ifdef FSTACK
+	/* the sockets live in the stack: close them while IPC still works */
+	close_ng_socks();
 	ff_ipc_exit();
 #endif
 	return (rtn);
@@ -727,6 +731,7 @@ Usage(const char *msg)
 #else
 		"usage: ngctl -p <f-stack proc_id|thread_id>[:<gen>] [-g <gen>] [-d] [-f file] [-n name] [command ...]\n");
 
+	close_ng_socks();
 	ff_ipc_exit();
 #endif
 	exit(EX_USAGE);
