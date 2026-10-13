@@ -1,9 +1,9 @@
 # Test Plan — Units, Integration, Performance Baselines and Acceptance (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.30). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.31). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (case list, criteria table, coverage boundaries), not a line-by-line translation of all ~500 lines.
-> Revised 2026-10-08; rt27 and build K added on 2026-10-10; rt28 and rt29 on 2026-10-12.
+> Revised 2026-10-08; rt27 and build K added on 2026-10-10; rt28 and rt29 on 2026-10-12, rt32 on 2026-10-13.
 
 ---
 
@@ -107,9 +107,9 @@ Selected cases:
 - Long-connection criterion clarified (`keepalive_requests`), probe-progress anchoring recorded, harness
   control-channel fixes recorded.
 
-## 7. Changes in the 2026-10-08 and 2026-10-10 editions (mirror of zh_cn 08 §2.3.0 / §2.3.2 / §2.3.3)
+## 7. Changes in the 2026-10-08 to 2026-10-13 editions (mirror of zh_cn 08 §2.3.0 / §2.3.2 / §2.3.3)
 
-**Harness interface (2026-10-10 edition; since 2026-10-12 there are 21 cases with rt28 and rt29, and `ALL_CASES` has 11 entries, see the RX-37 and RX-38 paragraphs below).** `tests/integration/test_graceful_reload.sh` had 19 cases (`reload_checks.py:
+**Harness interface (2026-10-10 edition; since 2026-10-13 there are 22 cases with rt28, rt29 and rt32, and `ALL_CASES` has 12 entries, see the RX-37, RX-38 and RX-39 paragraphs below).** `tests/integration/test_graceful_reload.sh` had 19 cases (`reload_checks.py:
 CASES`): precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27 (2026-10-10, resident primary
 vs a changed f-stack config; needs /dev/vhost-net), rt13, rt20, rt20b, rt21, rt22, rt23, rt24, rt25, rt26,
 rt30, rt31. `-c all` (ALL_CASES) is precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27 and rt13, the last one permanently
@@ -155,6 +155,23 @@ start another master inside its stack.
 tool once, four samplers through three HUPs and a USR2/WINCH/QUIT upgrade (no error, no wrapped value, client
 8889/0 failures), every tool again after the upgrade and after SIGINTs. A `graceful_reload=0` stack on the default
 prefix, with the record of an exited primary left behind, passes 6/6; `test_ff_ipc` 16/16.
+
+**2026-10-13 builds A3 and A4 (RX-39).** New case rt32 (reverse proxy across a reload; IPv4 and `--workers 1`, SKIP
+otherwise): the upstream `common/reload_upstream.py` runs on the client as a bounded `reload_remote.py` job (`/ok`
+returns the connection's peer port, `/slow?sec=N`, `/big` 64 MiB) and nginx has no upstream keep-alive, so each
+request connects upstream. It requires 5/5 before the reload on one port parity, a 30 s stream and a 64 MiB download
+through the old generation, 20/20 inside the window on the opposite parity with the window still open and no
+`upstream timed out`, the stream `200 2457600` and a matching md5, and 5/5 afterwards. 22 cases, `ALL_CASES` 12;
+`gen_nginx_conf` gained the `NGX_EXTRA_HTTP`/`NGX_EXTRA_LOC` hooks. Before the fix (the RX-38 M2 build, sha256
+989709ed..., repro.sh) the 5 recorded window requests got 504; A3 20/20 over one reused upstream connection. A3: rt32
+only logged that its upstream job did not start, inferred (not archived) to be the client port taken by the
+reproduction's upstream (moved to 18932, the job log is now printed on failure; that run also had two workers); A4
+with two workers: rt32 failed before the reload already, inferred to be the missing RSS on this host (stated by the
+user, not probed), so it now needs one worker; A4: precheck, rt01, rt02, rt25, rt27, rt28, rt29 7/7 PASS with two
+workers, precheck, rt01, rt32 3/3 PASS with one worker; IPv6 precheck, rt01, rt02, rt27, rt29 5/5 PASS (inbound IPv6;
+rt32 SKIP by design); USR2 through the proxy passes (20/20 on the new master's parity, the new master refuses a HUP
+while the old one runs, after QUIT a HUP held open by a 25 s stream gets 10/10 inside its window on the other
+parity).
 
 **2026-10-12 builds M1 and M2 (RX-38).** New case rt29 (stop of a 1500 stack; `[port0] mtu=9000` alone must be
 refused within 20 s by an EMERG `slim primary exited during initialization` carrying `requires mtu_enable=1`, with

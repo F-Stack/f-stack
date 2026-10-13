@@ -1,9 +1,9 @@
 # Independent Gate Audit Report — Specification Set 00–08 (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.21). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.22). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (audit scope, gates, findings and closure), not a line-by-line translation of all ~900 lines.
-> Revised 2026-10-08; §10 added on 2026-10-10, §11 to §13 on 2026-10-12.
+> Revised 2026-10-08; §10 added on 2026-10-10, §11 to §13 on 2026-10-12, §14 on 2026-10-13.
 
 ---
 
@@ -166,3 +166,15 @@ Design review PASS (0 MUST, 6 SHOULD, all applied; a pipe was chosen over the pl
 CR-M1 PASS (0 MUST, 3 SHOULD: an ALERT on a failed read, the `(void) write` under FORTIFY, the same stale pid file on
 the worker-0 attach exit), applied and rebuilt clean as M2, CR-M2 PASS (0 MUST, 0 SHOULD). Every reviewer was a fresh
 instance. Residuals are listed in the solution design §10.8.
+
+## 14. 2026-10-13: RX-39 (mirror of zh_cn 09 §34)
+
+Run as a harness + spec driven agent team: the leader coordinated, wrote the code, built, ran the tests and wrote the
+documents; research, design gate, code reviews, test-evidence audit, documentation gate and final gate were fresh
+code-explorer instances. One asynchronous researcher produced nothing in 30 minutes and did not answer a probe, so it
+was shut down and a new instance redid the narrowed research. Reproduced on the build before the fix (5/5 window
+requests 504, SYN-ACKs retransmitted, no third ACK, no RST). Design gate DR-1 FAIL (a third generation after a HUP to
+the new master while the old one runs breaks the parity invariant), one bounce, DR-2 PASS. Code review CR-1 PASS (3
+SHOULD applied, rebuilt as A3), CR-2 PASS (1 SHOULD applied, rebuilt as A4). Runtime: rt32 failed on A3 (client port
+taken, one bounce) and on A4 with two workers (no RSS, second bounce, now requires one worker); the rest passed.
+Every .c/.h change was followed by a clean full build. Residuals are listed in the solution design §10.9.

@@ -552,10 +552,18 @@ int ff_flow_map_admit(const struct ff_flow_key *key, int *created)
     // 在 SYN 准入时（SYN-ACK 发出之前）把四元组登记为"本代"，
     // 这样握手的第三个 ACK 会被正确分类，而不是转给对端
     // 只有本次调用新增表项时 *created 才为 1（重复登记不算）
+    // 主动 TCP connect 发 SYN 前也经 in_pcb_flow_admit() 调用
 
 int ff_flow_map_revoke(const struct ff_flow_key *key)
     // 撤销 SYN-ACK 没发出去的准入；只删除这次准入新建的表项
     // 采用回填删除，探测链后面的表项不会被遮住
+    // 主动 connect 的 pcb 离开 hash 时（INP_FF_FLOWMAP，in_pcbremhash_locked()）也调用
+
+void ff_flow_map_lport_split(int parity)
+int ff_flow_map_lport_ok(uint16_t lport)
+    // 本代临时端口奇偶（目录 attach 时设置；-1 表示不限）。in_pcb_lport_dest()
+    // 跳过 lport_ok() 不通过的 TCP 端口；in_pcbconnect()/in6_pcbconnect() 在发
+    // SYN 前经 in_pcb_flow_admit() 登记主动 connect
 
 int ff_flow_map_lookup(const struct ff_flow_key *key)
     // 分发热路径：命中 -> 本代，未命中 -> 正在排空的对端
@@ -1227,7 +1235,7 @@ struct prison *prison0;           // 全局命名空间
 
 ---
 
-### 3.5 ff_reload.c（2133 行）- 无损 reload 控制面
+### 3.5 ff_reload.c（2147 行）- 无损 reload 控制面
 
 **共享块生命周期**：`ff_reload_attach_state()` 绑定 nginx master 映射的块；`ff_reload_state_valid()` 校验 magic/version/长度，来自不同构建的块会被拒绝，而不是被误读。
 
@@ -1241,7 +1249,7 @@ struct prison *prison0;           // 全局命名空间
 
 **心跳**：rx 所有者每轮循环递增一次 `heartbeat`；采样方保存 `(last_cnt, last_advance)`，计数停止前进超过阈值即报告停滞。`graceful_reload=0` 时没有任何一方采样。
 
-**跨 master 目录**：`ff_reload_gendir.c`（406 行）持有一个由常驻 slim primary 创建的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) | gen` 所有者坐标，以及用于回收已退出 master 的 ring 组的存活戳。槽回收是有界的，被拒绝的和被强制的 reclaim 都会计数。drain ring 使用者表（`ff_reload_gendir_ring_attach/detach/census`）和清理锁（`ff_reload_gendir_ring_purge_lock/unlock`）让常驻 primary 能回收已退出消费者留在 drain ring 里的报文。
+**跨 master 目录**：`ff_reload_gendir.c`（450 行）持有一个由常驻 slim primary 创建的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) | gen` 所有者坐标，以及用于回收已退出 master 的 ring 组的存活戳。槽回收是有界的，被拒绝的和被强制的 reclaim 都会计数。drain ring 使用者表（`ff_reload_gendir_ring_attach/detach/census`）和清理锁（`ff_reload_gendir_ring_purge_lock/unlock`）让常驻 primary 能回收已退出消费者留在 drain ring 里的报文。
 
 ---
 

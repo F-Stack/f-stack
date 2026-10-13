@@ -181,6 +181,15 @@ The resident slim primary applies the device-side part of the f-stack config onc
 - `mtu_enable`, `max_mtu`, `mbuf_mode` and `[portN] mtu` are device-side keys: changing them needs a full restart, a HUP is rejected.
 - `mbuf_mode=large` and `mbuf_mode=scatter` were both verified with graceful reload (start, HUP, transfers checked by md5); the USR2 upgrade was verified with `scatter`. The KNI port stays at 1500; set the kernel-side `veth0` mtu by hand if needed.
 
+### Reverse proxy and other outbound TCP connections (graceful_reload=1)
+
+- A connection nginx opens to an upstream (proxy, health checks) inside a reload window is recorded in the flow map before its SYN goes out, so the upstream's reply stays with the new generation; connections opened before the reload keep being served by the old generation until they close.
+- The two generations that can coexist use TCP ephemeral ports of opposite parity (`port parity N` in the generation directory attach line of each worker), so they never pick the same upstream four-tuple. Each generation therefore has about half of `net.inet.ip.portrange.first`..`last` per destination; a port given explicitly (bind with a port) is not constrained.
+- While the old master of a binary upgrade (USR2) still runs, the new master refuses a HUP: `graceful reload rejected: the old master of the binary upgrade is still running`. Send it after the old master has quit.
+- UDP is not recorded: replies to UDP the new generation sends inside the window (e.g. `resolver` queries) go to the old generation, so name resolution at request time can time out during the window.
+- If the flow map is full inside the window, a new upstream connect fails (ENOBUFS) and nginx treats it as an upstream connection error; the 1 Hz line `flow map: N untracked SYN/connect (table full)` reports it.
+- Verified with one worker and IPv4 upstreams. Several workers additionally rely on NIC RSS to steer the upstream replies to the connecting worker's queue.
+
 ### New generation crash after handover (heartbeat takeover)
 
 After the handover the old generation has already detached from the hardware. If the new generation stalls or crashes:
@@ -199,7 +208,7 @@ Standard procedure (all signals go to the old master's pid):
 
 1. Build the new binary against the same `libfstack` as the running one (rebuild both binaries together; mixing binaries from different lib builds is not supported).
 2. Send USR2 to the old master: the new master starts, reuses the resident slim primary and forks all-secondary workers. The old generation keeps serving; USR2 moves no hardware ownership.
-3. Confirm the new generation is up: the new master's worker processes exist, and the F-Stack log of the new workers shows `generation directory attached: epoch <N> slot <S> pid <PID>` with an epoch different from the old generation's (slot in 1..3). Note this line appears at the very beginning of the worker init and is **not** a readiness marker — confirm the workers finished initialization (steady-state log lines / listening sockets up) and keep a safety margin before the next step.
+3. Confirm the new generation is up: the new master's worker processes exist, and the F-Stack log of the new workers shows `generation directory attached: epoch <N> slot <S> pid <PID> port parity <P>` with an epoch different from the old generation's (slot in 1..3). Note this line appears at the very beginning of the worker init and is **not** a readiness marker — confirm the workers finished initialization (steady-state log lines / listening sockets up) and keep a safety margin before the next step.
 4. Send WINCH to the old master: rx is handed to the new binary — `ff usr2: handed rx to the new binary (epoch <N> gen <G>), old generation draining` — and the old workers drain their established connections (same drain machinery as a HUP reload).
 5. Send QUIT to the old master after the drain to finish the upgrade.
 

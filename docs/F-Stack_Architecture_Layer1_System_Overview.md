@@ -89,10 +89,10 @@ Actual data on 10GbE link:
 │   ├── ff_epoll.c            (289 lines)  # Epoll compat (unified F-Stack+kernel)
 │   ├── ff_host_interface.c   (617 lines)  # Host OS iface + FF_KERNEL_COEXIST bridges (32 ff_host_*)
 │   ├── ff_dpdk_kni.c                      # Virtual NIC support
-│   ├── ff_reload.c           (2133 lines) # Graceful reload: shared control block,
+│   ├── ff_reload.c           (2147 lines) # Graceful reload: shared control block,
 │   │                                      # rx/kni ownership, T2 park barrier, heartbeat
-│   ├── ff_reload_gendir.c    (406 lines)  # Cross-master generation directory (hugepage)
-│   ├── ff_flow_map.c         (461 lines)  # Software flow table (generation admission)
+│   ├── ff_reload_gendir.c    (450 lines)  # Cross-master generation directory (hugepage)
+│   ├── ff_flow_map.c         (476 lines)  # Software flow table (generation admission)
 │   ├── ff_drain_ring.c       (673 lines)  # Per-(queue, generation, direction) drain rings
 │   ├── ff_reload_fault.h                  # Fault injection hooks (test builds only)
 │   ├── ff_*.h                             # API and data structure definitions
@@ -171,9 +171,9 @@ Actual data on 10GbE link:
 | **Initialization Coordination** | ff_init.c | 69 | Startup flow orchestration | All other modules |
 | **Host Interface** | ff_host_interface.c | - | mmap/pthread/time interfaces | System libraries |
 | **Virtual NIC** | ff_dpdk_kni.c | - | Kernel virtual NIC support | DPDK KNI |
-| **Graceful Reload** | ff_reload.c | 2133 | Reload control block, rx/kni ownership arbitration, park barrier, heartbeat liveness | ff_config, ff_dpdk_if, ff_reload_gendir |
-| **Generation Directory** | ff_reload_gendir.c | 406 | Cross-master epoch→slot map, hardware-user table, bounded slot recycling | DPDK memzone (resident primary) |
-| **Software Flow Map** | ff_flow_map.c | 461 | Per-process four-tuple table; decides whether a packet belongs to this generation | tcp_syncache (producer), dispatcher (consumer) |
+| **Graceful Reload** | ff_reload.c | 2147 | Reload control block, rx/kni ownership arbitration, park barrier, heartbeat liveness | ff_config, ff_dpdk_if, ff_reload_gendir |
+| **Generation Directory** | ff_reload_gendir.c | 450 | Cross-master epoch→slot map, hardware-user table, bounded slot recycling | DPDK memzone (resident primary) |
+| **Software Flow Map** | ff_flow_map.c | 476 | Per-process four-tuple table; decides whether a packet belongs to this generation | tcp_syncache and in_pcb connect (producers), dispatcher (consumer) |
 | **Drain Rings** | ff_drain_ring.c | 673 | Bidirectional rings that feed the draining generation's in-flight packets | DPDK ring |
 | **nginx Reload Module** | ngx_ff_reload.c, ngx_ff_reload_fsm.h | 439 | Master-side T0-T5 state machine, spawn/signal sequencing, READY publish | ff_reload.h, ngx_process_cycle.c |
 
@@ -644,7 +644,7 @@ Key mechanisms:
 - **Generation identity** — msg rings, app mbuf pools and drain rings are indexed by
   generation (`gen0`/`gen1` ping-pong) and named with a `_g<gen>` suffix, so two
   generations never share a single-consumer ring.
-- **Packet classification** — `lib/ff_flow_map.c` records a four-tuple when its SYN is admitted (before the SYN-ACK is sent),
+- **Packet classification** — `lib/ff_flow_map.c` records a four-tuple when its SYN is admitted (before the SYN-ACK is sent) and when an active TCP connect is about to send its SYN,
   so the third handshake ACK and every established-flow packet land in the generation
   that owns them; a pure SYN is never forwarded, and a miss is forwarded to the peer.
 - **Draining** — G_old starts draining as soon as it loses rx ownership and closes

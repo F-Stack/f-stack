@@ -556,15 +556,24 @@ int ff_flow_map_admit(const struct ff_flow_key *key, int *created)
     // Record a four-tuple as "this generation" when its SYN is admitted
     // (before the SYN-ACK is sent), so the third
     // handshake ACK is classified instead of being forwarded to the peer.
-    // *created is 1 only when this call added the entry (a duplicate is not)
+    // *created is 1 only when this call added the entry (a duplicate is not).
+    // Also called for an active TCP connect before its SYN (in_pcb_flow_admit)
 
 int ff_flow_map_revoke(const struct ff_flow_key *key)
     // Undo an admission whose SYN-ACK never went out; only the entry this
-    // admission created is removed. Uses backward-shift deletion so no entry
+    // admission created is removed. Also called for an active connect whose
+    // pcb leaves the hash (INP_FF_FLOWMAP, in_pcbremhash_locked()). Uses backward-shift deletion so no entry
     // behind it in the probe chain is hidden
 
 int ff_flow_map_lookup(const struct ff_flow_key *key)
     // Dispatcher hot path: hit -> this generation, miss -> the draining peer
+
+void ff_flow_map_lport_split(int parity)
+int ff_flow_map_lport_ok(uint16_t lport)
+    // Ephemeral port parity of this generation (set at the generation
+    // directory attach; -1 = every port). in_pcb_lport_dest() skips TCP
+    // ports that fail lport_ok(); in_pcbconnect()/in6_pcbconnect() admit an
+    // active connect through in_pcb_flow_admit() before its SYN
 
 void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
                         uint64_t *grown, uint64_t *grow_fail,
@@ -1238,7 +1247,7 @@ Two files carry the optional coexistence machinery (compiled only with `FF_KERNE
 
 ---
 
-### 3.5 ff_reload.c (2133 Lines) - Graceful Reload Control Plane
+### 3.5 ff_reload.c (2147 Lines) - Graceful Reload Control Plane
 
 **Shared block lifecycle** — `ff_reload_attach_state()` binds the block the nginx
 master mapped; `ff_reload_state_valid()` checks magic/version/length, so a block
@@ -1271,7 +1280,7 @@ slot for 50 ms.
 `(last_cnt, last_advance)` and reports a stall when the counter stops advancing for
 longer than the threshold. Under `graceful_reload=0` nothing samples it.
 
-**Cross-master directory** — `ff_reload_gendir.c` (406 lines) owns a hugepage memzone
+**Cross-master directory** — `ff_reload_gendir.c` (450 lines) owns a hugepage memzone
 created by the resident slim primary: the epoch→slot map, the packed
 `(epoch << 32) | gen` owner coordinates, and liveness stamps used to recycle the ring
 set of a master that died. Slot recycling is bounded and counts both refused and
