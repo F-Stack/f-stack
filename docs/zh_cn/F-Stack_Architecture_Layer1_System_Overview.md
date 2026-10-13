@@ -89,7 +89,8 @@ F-Stack 模式 (用户态网络)
 │   ├── ff_dpdk_kni.c                      # 虚拟网卡支持
 │   ├── ff_reload.c           (2147行)     # 无损 reload：共享控制块、rx/kni 归属、T2 park 屏障、心跳
 │   ├── ff_reload_gendir.c    (450行)      # 跨 master 世代目录（hugepage）
-│   ├── ff_flow_map.c         (476行)      # 软件流表（按代准入）
+│   ├── ff_flow_map.c         (478行)      # 软件流表（按代准入）
+│   ├── ff_flow_peer.c        (510行)      # UDP 发布表（排空代的 UDP 流）
 │   ├── ff_drain_ring.c       (673行)      # 按（队列, 代, 方向）划分的 drain ring
 │   ├── ff_reload_fault.h                  # 故障注入钩子（仅测试构建）
 │   ├── ff_*.h                             # API 和数据结构定义
@@ -169,7 +170,8 @@ F-Stack 模式 (用户态网络)
 | **虚拟网卡** | ff_dpdk_kni.c | - | 内核虚拟网卡支持 | DPDK KNI |
 | **无损 reload** | ff_reload.c | 2147 | reload 控制块、rx/kni 归属仲裁、park 屏障、心跳存活检测 | ff_config、ff_dpdk_if、ff_reload_gendir |
 | **世代目录** | ff_reload_gendir.c | 450 | 跨 master 的 epoch→槽映射、硬件使用者表、有界的槽回收 | DPDK memzone（常驻 primary） |
-| **软件流表** | ff_flow_map.c | 476 | 进程内四元组表，判定报文是否属于本代 | tcp_syncache 与 in_pcb connect（写入方）、dispatcher（读取方） |
+| **软件流表** | ff_flow_map.c | 478 | 进程内四元组表（key 带协议），判定报文是否属于本代 | tcp_syncache 与 in_pcb connect（写入方）、dispatcher（读取方） |
+| **UDP 发布表** | ff_flow_peer.c | 510 | 按 (proc, epoch slot, gen) 的 memzone，记录 worker 服务的 UDP 流并按空闲老化；排空代发布、新代读取 | udp_input/udp_send（写入方）、nginx 快照、dispatcher（读取方） |
 | **drain ring** | ff_drain_ring.c | 673 | 双向 ring，为排空中的一代收发在途报文 | DPDK ring |
 | **nginx reload 模块** | ngx_ff_reload.c、ngx_ff_reload_fsm.h | 439 | master 侧 T0-T5 状态机、拉起/信号时序、READY 发布 | ff_reload.h、ngx_process_cycle.c |
 
@@ -621,7 +623,7 @@ bash start.sh  (启动脚本)
 
 - **归属仲裁**：`rx_owner_gen` / `rx_stopped` 位于匿名 `MAP_SHARED` reload 块中，所有进程经 `fork()` 继承；T2 park 屏障保证归属翻转时没有正在进行的 `rx_burst`。
 - **代身份**：msg ring、应用 mbuf 池和 drain ring 都按代索引（`gen0`/`gen1` 乒乓复用），名字带 `_g<gen>` 后缀，两代永远不会共用一个单消费者 ring。
-- **报文分类**：`lib/ff_flow_map.c` 在 SYN 准入时（SYN-ACK 发出之前）以及主动 TCP connect 发 SYN 之前登记四元组，所以握手的第三个 ACK 和所有已建立流的报文都落到其所属的代；纯 SYN 从不转发，未命中则转给对端。
+- **报文分类**：`lib/ff_flow_map.c` 在 SYN 准入时（SYN-ACK 发出之前）以及主动 TCP connect 发 SYN 之前登记四元组，所以握手的第三个 ACK 和所有已建立流的报文都落到其所属的代；纯 SYN 从不转发，TCP 未命中则转给对端。UDP 没有 SYN：`lib/ff_flow_peer.c` 记录各 worker 服务的 UDP 流，排空代在 T1 发布，新代只把已发布且未空闲的流转给它，其余 UDP 一律本地处理（RX-40）。
 - **排空**：G_old 一旦失去 rx 所有权就开始排空，并关闭自己的空闲 keep-alive 连接；`lib/ff_drain_ring.c` 在移交期间收发 G_old 的在途报文；退出条件是连接数、`snd_pending`、syncache 三者都已清空。
 - **跨 master（USR2 二进制升级）**：`lib/ff_reload_gendir.c` 维护一个由常驻 slim primary 持有的 hugepage 世代目录，把每个 master 映射到一个 epoch 槽，并用一个 64 位 CAS 字记录唯一在用的硬件/KNI 所有者。
 

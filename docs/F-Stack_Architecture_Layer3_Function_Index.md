@@ -566,13 +566,14 @@ int ff_flow_map_revoke(const struct ff_flow_key *key)
     // behind it in the probe chain is hidden
 
 int ff_flow_map_lookup(const struct ff_flow_key *key)
-    // Dispatcher hot path: hit -> this generation, miss -> the draining peer
+    // Dispatcher hot path: hit -> this generation, TCP miss -> the draining
+    // peer (a UDP miss goes on to ff_flow_peer_classify())
 
 void ff_flow_map_lport_split(int parity)
 int ff_flow_map_lport_ok(uint16_t lport)
     // Ephemeral port parity of this generation (set at the generation
-    // directory attach; -1 = every port). in_pcb_lport_dest() skips TCP
-    // ports that fail lport_ok(); in_pcbconnect()/in6_pcbconnect() admit an
+    // directory attach; -1 = every port). in_pcb_lport_dest() skips TCP and
+    // UDP ports that fail lport_ok(); in_pcbconnect()/in6_pcbconnect() admit an
     // active connect through in_pcb_flow_admit() before its SYN
 
 void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
@@ -580,6 +581,36 @@ void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
                         uint64_t *alloc_fail, uint32_t *cap,
                         uint64_t *revoked)
     // Counters for ff_top / drain observability; any pointer may be NULL
+```
+
+#### **UDP Peer Table (`ff_flow_peer.h`, app face in `ff_api.h`)**
+
+```c
+void ff_flow_peer_attach(void)
+    // At ff_dpdk_init (graceful secondaries): reserve or look up this
+    // worker's memzone ff_fpeer_p<proc>_e<slot>_g<gen>, reset it, start
+    // recording; refuses a table whose live owner is another process
+void ff_flow_peer_tick(void)
+    // Every main-loop pass, before the park ack: start publishing at T1
+    // (HUP: window open and not the target; USR2: a newer peer epoch in the
+    // block), withdraw on an abandoned round, refresh the reader's view
+void ff_flow_peer_note(const struct ff_flow_key *key)
+    // udp_input/udp6_input/udp_send/udp6_send and the snapshots: record a
+    // UDP four-tuple this worker serves (refresh or add, idle slots reused)
+int  ff_flow_peer_classify(const ff_flow_key_t *key)
+    // Dispatcher: LEGACY (no usable peer table: forward), LOCAL, FWD
+    // (the peer still serves it), LEARN (idle: keep it, insert into the
+    // flow map)
+void ff_flow_peer_snapshot_regist(void (*fn)(void))
+void ff_flow_peer_publish(const ff_flow_key_t *key)
+    // App snapshot of its UDP sessions at T1 (nginx: stream udp sessions)
+int  ff_flow_peer_active_flows(void)
+    // Non-idle published flows (recomputed at most every 100 ms); added to
+    // the drain report's conns
+int  ff_flow_peer_linger(void)
+    // USR2 drain generation that still has active UDP flows
+void ff_flow_peer_stop(void)
+    // Header to HANDED: the new generation keeps every UDP packet
 ```
 
 #### **Drain Rings (`ff_drain_ring.h`)**
@@ -949,7 +980,7 @@ struct ff_reload_state {
 ```c
 struct ff_flow_key {            /* 40 bytes, no padding; network byte order */
     uint8_t  af;                /* FF_FLOW_MAP_V4 / FF_FLOW_MAP_V6 */
-    uint8_t  reserved;          /* keep zero */
+    uint8_t  proto;             /* IPPROTO_TCP / IPPROTO_UDP */
     uint16_t pad;               /* keep zero */
     uint32_t src[4];            /* foreign address; V4 uses src[0] only */
     uint32_t dst[4];            /* local address; V4 uses dst[0] only */

@@ -1,9 +1,9 @@
 # Test Plan — Units, Integration, Performance Baselines and Acceptance (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.31). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/08-testing.md` (v1.32). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (case list, criteria table, coverage boundaries), not a line-by-line translation of all ~500 lines.
-> Revised 2026-10-08; rt27 and build K added on 2026-10-10; rt28 and rt29 on 2026-10-12, rt32 on 2026-10-13.
+> Revised 2026-10-08; rt27 and build K added on 2026-10-10; rt28 and rt29 on 2026-10-12, rt32, rt33, rt34 and rt35 on 2026-10-13.
 
 ---
 
@@ -109,7 +109,7 @@ Selected cases:
 
 ## 7. Changes in the 2026-10-08 to 2026-10-13 editions (mirror of zh_cn 08 §2.3.0 / §2.3.2 / §2.3.3)
 
-**Harness interface (2026-10-10 edition; since 2026-10-13 there are 22 cases with rt28, rt29 and rt32, and `ALL_CASES` has 12 entries, see the RX-37, RX-38 and RX-39 paragraphs below).** `tests/integration/test_graceful_reload.sh` had 19 cases (`reload_checks.py:
+**Harness interface (2026-10-10 edition; since 2026-10-13 there are 25 cases with rt28, rt29, rt32, rt33, rt34 and rt35, and `ALL_CASES` has 14 entries, see the RX-37 to RX-40 paragraphs below).** `tests/integration/test_graceful_reload.sh` had 19 cases (`reload_checks.py:
 CASES`): precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27 (2026-10-10, resident primary
 vs a changed f-stack config; needs /dev/vhost-net), rt13, rt20, rt20b, rt21, rt22, rt23, rt24, rt25, rt26,
 rt30, rt31. `-c all` (ALL_CASES) is precheck, baseline, rt01, rt02, rv9, gr0, rt12, rt27 and rt13, the last one permanently
@@ -184,3 +184,17 @@ rt01, rt27, rt28 and rt29 5/5 PASS. On the user's instance, after adding `mtu_en
 workers show mtu 9000, HTTP returns 200 and a HUP hands over to new workers.
 
 **2026-10-12 builds S5 to S8 (RX-37).** New case rt28 (stop, quit, SIGKILL with an immediate start, SIGKILL with a wait, USR2+WINCH+QUIT then stop) passes on IPv4 and IPv6, and rt27 now creates its left-behind primary by SIGKILLing the master and its workers. On S5 the IPv4 batch (precheck, rt01, rt02, rt23, rt25, rt30, rt31), rt12 with the management plane, IPv4 rv9 30 rounds and IPv6 precheck, rt01, rt02, rt27 and rv9 20 rounds pass; IPv6 rt28 step 4 failed (master and workers died within the primary's first second) and was fixed in S7, where IPv4 precheck, rt01, rt02, rt25, rt27, rt28, rt12, rv9 10 rounds and IPv6 precheck, rt01, rt27, rt28 pass. S8 (pid in the self-exit line) reruns IPv4 precheck, rt01, rt27, rt28 and IPv6 precheck, rt28: all pass. On the user's default instance stop, quit and a SIGKILL by name leave nothing behind (the primary exits on its own 10 s after the SIGKILL) and every restart serves. The supervisor gained the fixed tuning allowlist `TUNING_ENV_KEYS` (only `NGX_FF_SLIM_PRIMARY_ORPHAN_MS`).
+
+**2026-10-13 builds u0 and u7 (RX-40, RX-41).** New cases rt33 (UDP server across HUPs), rt34 (UDP reverse proxy
+across a HUP; IPv4 and `--workers 1`, SKIP otherwise) and rt35 (UDP server across USR2 + WINCH, called explicitly
+like rt25), with the probe `common/reload_udp.py` (a whitelisted remote job: a UDP echo upstream that answers with
+the peer port it sees, and stop-and-wait flows of one connected socket each, a datagram every 0.2 s, 1 s timeout
+counted as a loss, late replies counted apart as stray), the `NGX_EXTRA_MAIN` hook of `gen_nginx_conf` and the
+`FSTACK_EXTRA_DPDK` hook of `gen_fstack_ini`. Before the fix (u0, clean build of HEAD 646902e65): rt33 FAIL (6 of 8
+new flows answered by the old generation, both HUPs ran into the deadline at about 91 s, the long flow never handed
+over), rt34 FAIL (a SIGSEGV per proxied datagram, 8 in about 3 s), rt35 FAIL (24/24 new datagrams unanswered after
+the handover, 63/259 old ones lost). On u7: IPv4 with two workers precheck, rt01, rt02, rt25, rt27, rt28, rt29 and
+rt33 8/8 PASS, and precheck plus rt33 2/2 PASS again with the reviewed probe (reloads of 15 s and 26 s); IPv4 with
+one worker precheck, rt32, rt34 and rt35 4/4 PASS (rt34 upstream port parity 0 then 1, 493/493 and 120/120 datagrams;
+rt35 linger over after 18200 ms with 0 flows still active); IPv6 with two workers precheck, rt01, rt27 and rt33 4/4
+PASS; precheck and rt12 2/2 PASS.

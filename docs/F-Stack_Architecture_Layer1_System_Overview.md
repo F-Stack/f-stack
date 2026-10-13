@@ -92,7 +92,8 @@ Actual data on 10GbE link:
 │   ├── ff_reload.c           (2147 lines) # Graceful reload: shared control block,
 │   │                                      # rx/kni ownership, T2 park barrier, heartbeat
 │   ├── ff_reload_gendir.c    (450 lines)  # Cross-master generation directory (hugepage)
-│   ├── ff_flow_map.c         (476 lines)  # Software flow table (generation admission)
+│   ├── ff_flow_map.c         (478 lines)  # Software flow table (generation admission)
+│   ├── ff_flow_peer.c        (510 lines)  # UDP peer table (UDP flows of the draining generation)
 │   ├── ff_drain_ring.c       (673 lines)  # Per-(queue, generation, direction) drain rings
 │   ├── ff_reload_fault.h                  # Fault injection hooks (test builds only)
 │   ├── ff_*.h                             # API and data structure definitions
@@ -173,7 +174,8 @@ Actual data on 10GbE link:
 | **Virtual NIC** | ff_dpdk_kni.c | - | Kernel virtual NIC support | DPDK KNI |
 | **Graceful Reload** | ff_reload.c | 2147 | Reload control block, rx/kni ownership arbitration, park barrier, heartbeat liveness | ff_config, ff_dpdk_if, ff_reload_gendir |
 | **Generation Directory** | ff_reload_gendir.c | 450 | Cross-master epoch→slot map, hardware-user table, bounded slot recycling | DPDK memzone (resident primary) |
-| **Software Flow Map** | ff_flow_map.c | 476 | Per-process four-tuple table; decides whether a packet belongs to this generation | tcp_syncache and in_pcb connect (producers), dispatcher (consumer) |
+| **Software Flow Map** | ff_flow_map.c | 478 | Per-process four-tuple table (key carries the protocol); decides whether a packet belongs to this generation | tcp_syncache and in_pcb connect (producers), dispatcher (consumer) |
+| **UDP Peer Table** | ff_flow_peer.c | 510 | Per-(proc, epoch slot, gen) memzone of the UDP flows a worker serves, aged by idle time; published by the draining generation, read by the new one | udp_input/udp_send (producers), nginx snapshot, dispatcher (consumer) |
 | **Drain Rings** | ff_drain_ring.c | 673 | Bidirectional rings that feed the draining generation's in-flight packets | DPDK ring |
 | **nginx Reload Module** | ngx_ff_reload.c, ngx_ff_reload_fsm.h | 439 | Master-side T0-T5 state machine, spawn/signal sequencing, READY publish | ff_reload.h, ngx_process_cycle.c |
 
@@ -646,7 +648,10 @@ Key mechanisms:
   generations never share a single-consumer ring.
 - **Packet classification** — `lib/ff_flow_map.c` records a four-tuple when its SYN is admitted (before the SYN-ACK is sent) and when an active TCP connect is about to send its SYN,
   so the third handshake ACK and every established-flow packet land in the generation
-  that owns them; a pure SYN is never forwarded, and a miss is forwarded to the peer.
+  that owns them; a pure SYN is never forwarded, and a TCP miss is forwarded to the peer.
+  UDP has no SYN: `lib/ff_flow_peer.c` keeps the UDP flows each worker serves, the
+  draining generation publishes them at T1, and the new generation forwards only the
+  published flows that are not idle; every other UDP packet stays local (RX-40).
 - **Draining** — G_old starts draining as soon as it loses rx ownership and closes
   its idle keep-alive connections; `lib/ff_drain_ring.c` carries G_old's in-flight
   packets across the handover; the exit condition is `conns && snd_pending && syncache` all drained.

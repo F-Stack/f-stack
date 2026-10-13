@@ -562,17 +562,45 @@ int ff_flow_map_revoke(const struct ff_flow_key *key)
 void ff_flow_map_lport_split(int parity)
 int ff_flow_map_lport_ok(uint16_t lport)
     // 本代临时端口奇偶（目录 attach 时设置；-1 表示不限）。in_pcb_lport_dest()
-    // 跳过 lport_ok() 不通过的 TCP 端口；in_pcbconnect()/in6_pcbconnect() 在发
+    // 跳过 lport_ok() 不通过的 TCP/UDP 端口；in_pcbconnect()/in6_pcbconnect() 在发
     // SYN 前经 in_pcb_flow_admit() 登记主动 connect
 
 int ff_flow_map_lookup(const struct ff_flow_key *key)
-    // 分发热路径：命中 -> 本代，未命中 -> 正在排空的对端
+    // 分发热路径：命中 -> 本代，TCP 未命中 -> 正在排空的对端
+    // （UDP 未命中再交给 ff_flow_peer_classify()）
 
 void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
                         uint64_t *grown, uint64_t *grow_fail,
                         uint64_t *alloc_fail, uint32_t *cap,
                         uint64_t *revoked)
     // 供 ff_top / drain 观测使用的计数；任一指针可为 NULL
+```
+
+#### **UDP 发布表（`ff_flow_peer.h`，应用侧接口在 `ff_api.h`）**
+
+```c
+void ff_flow_peer_attach(void)
+    // ff_dpdk_init 时（graceful secondary）：lookup 或 reserve 本 worker 的
+    // memzone ff_fpeer_p<proc>_e<slot>_g<gen>，复位并开始记录；同坐标仍有
+    // 存活的其他进程在用时放弃
+void ff_flow_peer_tick(void)
+    // 每轮主循环、park ack 之前：T1 开始发布（HUP：窗口打开且本代不是
+    // target；USR2：block 里出现更新的对端 epoch），放弃时撤回，刷新读者视图
+void ff_flow_peer_note(const struct ff_flow_key *key)
+    // udp_input/udp6_input/udp_send/udp6_send 与快照：记录本 worker 服务的
+    // UDP 四元组（刷新或新增，只复用已老化槽位）
+int  ff_flow_peer_classify(const ff_flow_key_t *key)
+    // 分流器：LEGACY（无可用对端表：转发）、LOCAL、FWD（对端仍在服务）、
+    // LEARN（已空闲：留本地并插入 flow map）
+void ff_flow_peer_snapshot_regist(void (*fn)(void))
+void ff_flow_peer_publish(const ff_flow_key_t *key)
+    // T1 时应用快照自己的 UDP 会话（nginx：stream udp 会话）
+int  ff_flow_peer_active_flows(void)
+    // 已发布且未老化的流数（至多每 100 ms 重算），计入 drain report 的 conns
+int  ff_flow_peer_linger(void)
+    // USR2 的 drain 代仍有活跃 UDP 流
+void ff_flow_peer_stop(void)
+    // 表头置 HANDED：新代此后自己处理全部 UDP
 ```
 
 #### **drain ring（`ff_drain_ring.h`）**
@@ -940,7 +968,7 @@ struct ff_reload_state {
 ```c
 struct ff_flow_key {            /* 40 字节，无填充；地址与端口为网络字节序 */
     uint8_t  af;                /* FF_FLOW_MAP_V4 / FF_FLOW_MAP_V6 */
-    uint8_t  reserved;          /* 保持为 0 */
+    uint8_t  proto;             /* IPPROTO_TCP / IPPROTO_UDP */
     uint16_t pad;               /* 保持为 0 */
     uint32_t src[4];            /* 对端地址；V4 只用 src[0] */
     uint32_t dst[4];            /* 本端地址；V4 只用 dst[0] */

@@ -366,7 +366,7 @@
 | P2-7 `snd_pending` 口径收窄 | P2 | 改 inpcb 口径后只统计 TCP（`V_tcbinfo`），不再含 UDP INET socket；UDP close 无孤儿排空语义 | 契约注释已如实改写；M6 若引入 UDP 测试面需重评 |
 | P2-11 流表容量与生命周期 | P2 | 65536 槽 / probe 16 / **表项不随连接 close 回收**；修复前 HIT 为死路径、容量语义从未真实运行，修复后单窗口 ~3k 插入且 `g_full=0` | M6 观察项：长窗口（S2 型 36s drain 叠高 CPS）下需评估扩容 / 表项跟连接回收 / 满表回退语义 |
 | P2-8 双 SYN-ACK 窄边竞态 | P2 | FIX-3 重做后 SYN+ACK（ACK 位置位）仍判 PEER，触发条件收窄为「pre-T3 SYN 的 SYN-ACK 在 drain_tx 环内滞留 >1s」；最坏单次握手失败 + 客户端换源端口重试成功 | 严重度不高于修复前形态，M6 复评（彻底闭合需 expand 序号不匹配时回退转发） |
-| P2-9 UDP 新流无判别面 | P2 | UDP 无 SYN 标记，`proto==6` 不满足 → miss 仍走 PEER；字节序修复后 UDP 键亦与栈侧一致（同走 `memcpy` 端口路径） | M6：若引入 UDP 测试面需专项设计判别面（如 socket 维度） |
+| P2-9 UDP 新流无判别面（2026-10-13 已由 RX-40 处理，见 [06] §10.10） | P2 | UDP 无 SYN 标记，`proto==6` 不满足 → miss 仍走 PEER；字节序修复后 UDP 键亦与栈侧一致（同走 `memcpy` 端口路径） | M6：若引入 UDP 测试面需专项设计判别面（如 socket 维度） |
 
 **(4) 既有移交项状态**
 
@@ -384,7 +384,7 @@
 2. **流表容量与生命周期**（P2-11）：HIT 分支真实生效后该面才转为活跃。
 3. **cap 与 `worker_shutdown_timeout` 联动**（P2-10）。
 4. **测试方法论**：分派器的流表键构造收敛为**共享内联函数**（生产分派器与 `tests/integration` 的镜像分派器各写一份键构造，字节序缺陷因此长期未被镜像测试暴露）—— 这是本轮最贵的教训。
-5. **UDP 新流判别面**（原 P2-9，随 FIX-3 重做需重评）。
+5. **UDP 新流判别面**（原 P2-9，随 FIX-3 重做需重评；2026-10-13 已由 RX-40 处理，见 [06] §10.10）。
 6. F-M4-1 `drain_ring_tx` 满环（P3）与 S7ᶠ `fresh_fail` 10.7% 残留（观察项）。
 7. 收敛 G_new teardown 双通道（`ngx_ff_reload_flow_map_teardown` 至今无调用者，实际由 lib 侧 housekeeping 触发）。
 

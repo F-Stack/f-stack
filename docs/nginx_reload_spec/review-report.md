@@ -1,9 +1,9 @@
 # Independent Gate Audit Report — Specification Set 00–08 (English)
 
-> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.22). The Chinese text is
+> **English mirror** of `docs/nginx_reload_spec/zh_cn/09-review-report.md` (v1.9.23). The Chinese text is
 > authoritative; where the two differ, the Chinese original governs. This is a structural and content sync
 > (audit scope, gates, findings and closure), not a line-by-line translation of all ~900 lines.
-> Revised 2026-10-08; §10 added on 2026-10-10, §11 to §13 on 2026-10-12, §14 on 2026-10-13.
+> Revised 2026-10-08; §10 added on 2026-10-10, §11 to §13 on 2026-10-12, §14 and §15 on 2026-10-13.
 
 ---
 
@@ -178,3 +178,30 @@ the new master while the old one runs breaks the parity invariant), one bounce, 
 SHOULD applied, rebuilt as A3), CR-2 PASS (1 SHOULD applied, rebuilt as A4). Runtime: rt32 failed on A3 (client port
 taken, one bounce) and on A4 with two workers (no RSS, second bounce, now requires one worker); the rest passed.
 Every .c/.h change was followed by a clean full build. Residuals are listed in the solution design §10.9.
+
+## 15. 2026-10-13: RX-40 and RX-41 (mirror of zh_cn 09 §35)
+
+Run as a harness + spec driven agent team (team udp-dispatch): the leader coordinated, did the web research, wrote
+the code, built, ran the tests and wrote the documents; the two asynchronous researchers (rs-reload, rs-udp; rs-udp
+produced nothing for 30 minutes, was probed by message and delivered 9 minutes later), the spec reviews, code
+reviews, the harness review, the test-evidence audit and the documentation gate were fresh code-explorer instances.
+Reproduced on u0 before the fix: rt33, rt34 and rt35 all failed, and gdb pinned RX-41. Spec gate: SR-1 FAIL (2 MUST:
+learning every UDP miss would let a UDP flood fill the flow map TCP depends on; a linger that delays QUIT stacks the
+caps) -> v0.2; SR-2 FAIL (1 MUST: a stopped table made readers fall back to forwarding) -> v0.3 with a three-state
+header; SR-3 FAIL (1 MUST: the dead-writer rule overrode HANDED) -> v0.4 with a window identity; SR-4 PASS (1 SHOULD
+and 4 NITs folded into v1.0); three bounces, within the limit. Code gate: CR-1 FAIL (1 MUST: an unsigned age check
+made a live flow look idle when the writer sampled its clock 1 ms later) -> signed check plus test, and rt33 showed
+the first drain report came before any flow was counted -> lazy recount; CR-2 FAIL (1 MUST: a 100 ms cache of the
+USR2 start condition could let the park ack precede publishing) -> read the per-pass block mirror, and rt33 showed
+the second HUP's old generation had an empty table -> record all the time, publish at T1; CR-3 FAIL (1 MUST: a park
+order alone closed the start gate before the rx flip) -> gate on "rx not flipped yet"; CR-4 PASS (1 SHOULD applied);
+three bounces, within the limit. Every .c/.h change was followed by a clean full build (u1 to u7; the disk filled up
+during u4, the recycle bin entries older than a day were purged through the delete script's purge mode and u5 was
+rebuilt). Harness review HR-1 PASS (4 SHOULD applied: rt34 SKIPs with the default two workers and the usage text says
+so, new flows assert the window is still open, late replies of `return` are counted apart, times come from the
+completion line), then rt33, rt34 and rt35 were re-run. Test-evidence audit: TA-1 FAIL (1 MUST: the pre-fix rt34
+crash was 8 SIGSEGVs in about 3 s, not 9 in 1 s; 2 SHOULD: the gdb stack came from a separate reproduction, and u0 =
+installed binary had no archived proof) -> corrected and the sha256 archived -> TA-2 PASS. Documentation gate: GD-1
+FAIL (2 MUST: the IPv4 send hook is in `udp_send()`, not `udp_output`; an unescaped `|` broke a table in zh 06
+§10.10; 4 SHOULD) -> all applied -> GD-2 PASS. Residuals: the eight items of §10.10; multi-worker proxying (RSS) and
+IPv6 upstreams were not tested.

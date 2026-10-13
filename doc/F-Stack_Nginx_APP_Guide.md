@@ -186,9 +186,19 @@ The resident slim primary applies the device-side part of the f-stack config onc
 - A connection nginx opens to an upstream (proxy, health checks) inside a reload window is recorded in the flow map before its SYN goes out, so the upstream's reply stays with the new generation; connections opened before the reload keep being served by the old generation until they close.
 - The two generations that can coexist use TCP ephemeral ports of opposite parity (`port parity N` in the generation directory attach line of each worker), so they never pick the same upstream four-tuple. Each generation therefore has about half of `net.inet.ip.portrange.first`..`last` per destination; a port given explicitly (bind with a port) is not constrained.
 - While the old master of a binary upgrade (USR2) still runs, the new master refuses a HUP: `graceful reload rejected: the old master of the binary upgrade is still running`. Send it after the old master has quit.
-- UDP is not recorded: replies to UDP the new generation sends inside the window (e.g. `resolver` queries) go to the old generation, so name resolution at request time can time out during the window.
+- UDP upstreams (`stream` `proxy_pass` over UDP) follow the same port parity, so their replies stay with the generation that sent the request. nginx's `resolver` uses the kernel stack, not F-Stack, and is not affected by the reload at all.
 - If the flow map is full inside the window, a new upstream connect fails (ENOBUFS) and nginx treats it as an upstream connection error; the 1 Hz line `flow map: N untracked SYN/connect (table full)` reports it.
 - Verified with one worker and IPv4 upstreams. Several workers additionally rely on NIC RSS to steer the upstream replies to the connecting worker's queue.
+
+### UDP servers and UDP proxying: DNS, QUIC (graceful_reload=1)
+
+- Each worker records the UDP four-tuples it serves. When a reload starts, the old generation publishes them; inside the window the new generation forwards only those still active to the old generation and serves every other UDP packet itself, so new UDP clients reach the new configuration at once and existing ones keep their old session until they go idle.
+- A flow counts as ended after `[dpdk] reload_udp_idle_ms` without traffic (default 10000, range 100..3600000; no restart of the resident primary needed to change it). After a HUP the reload completes once the old generation's TCP connections are gone and its UDP flows are idle, still bounded by `worker_shutdown_timeout` (90 s without it); a flow that is still active then moves to the new generation. After USR2 + WINCH the old workers keep serving their active UDP flows for up to `worker_shutdown_timeout` (30 s without it) before they quit (`ff drain: UDP linger ...` in error.log).
+- If the old generation runs a binary without this support (a USR2 upgrade from an older build), it publishes nothing and UDP keeps the old behaviour for that window: everything goes to the old generation.
+- One-shot exchanges such as DNS end with their reply and need nothing special. A `listen ... udp` no longer pins every reload to the 90 s deadline.
+- Dispatch is by four-tuple. A QUIC connection that migrates (or whose client NAT rebinds) during the window gets new four-tuples and is handled by the new generation, where it has no state; connection-ID based routing is not implemented. This build does not enable `--with-http_v3_module`; the description applies to any UDP service.
+- IP-fragmented UDP datagrams, multicast/broadcast UDP and ICMP errors are handled by the new generation inside the window.
+- Verified with stream udp servers on two workers (IPv4 and IPv6) and with UDP proxying and USR2 on one worker (IPv4).
 
 ### New generation crash after handover (heartbeat takeover)
 
