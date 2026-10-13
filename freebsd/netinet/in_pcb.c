@@ -109,6 +109,10 @@
 
 #ifdef FSTACK
 #include "ff_host_interface.h"
+#include "ff_flow_map.h"
+#ifdef INET6
+#include <netinet6/scope6_var.h>
+#endif
 #endif
 
 #define	INPCBLBGROUP_SIZMIN	8
@@ -756,6 +760,92 @@ in_pcbbind(struct inpcb *inp, struct sockaddr_in *sin, int flags,
 #endif
 
 #if defined(INET) || defined(INET6)
+#ifdef FSTACK
+/*
+ * Graceful reload: an active TCP connect is recorded in the flow map before
+ * its SYN goes out, and its ephemeral port keeps the parity of this
+ * generation, so the SYN-ACK and the rest of the flow stay here while the
+ * other generation drains.  Key addresses and ports are in network byte
+ * order; the port predicate takes host order.
+ */
+static int
+in_pcb_is_tcp(const struct inpcb *inp)
+{
+	return (inp->inp_socket != NULL &&
+	    inp->inp_socket->so_proto->pr_protocol == IPPROTO_TCP);
+}
+
+static int
+in_pcb_lport_gen_ok(const struct inpcb *inp, u_short port)
+{
+	return (ff_flow_map_lport_ok(port) || !in_pcb_is_tcp(inp));
+}
+
+static void
+in_pcb_flow_key(struct ff_flow_key *k, int v6, const void *faddr,
+    const void *laddr, u_short fport, u_short lport)
+{
+	bzero(k, sizeof(*k));
+#ifdef INET6
+	if (v6) {
+		struct in6_addr a;
+
+		k->af = FF_FLOW_MAP_V6;
+		a = *(const struct in6_addr *)faddr;
+		in6_clearscope(&a);
+		bcopy(&a, k->src, sizeof(a));
+		a = *(const struct in6_addr *)laddr;
+		in6_clearscope(&a);
+		bcopy(&a, k->dst, sizeof(a));
+	} else
+#endif
+	{
+		k->af = FF_FLOW_MAP_V4;
+		k->src[0] = ((const struct in_addr *)faddr)->s_addr;
+		k->dst[0] = ((const struct in_addr *)laddr)->s_addr;
+	}
+	k->sport = fport;
+	k->dport = lport;
+}
+
+int
+in_pcb_flow_admit(struct inpcb *inp, int v6, const void *faddr,
+    const void *laddr, u_short fport, u_short lport)
+{
+	struct ff_flow_key k;
+	int created;
+
+	if (!ff_flow_map_active() || !in_pcb_is_tcp(inp))
+		return (0);
+	in_pcb_flow_key(&k, v6, faddr, laddr, fport, lport);
+	/* A passive connection was admitted by the syncache already. */
+	if (ff_flow_map_lookup(&k))
+		return (0);
+	if (!ff_flow_map_admit(&k, &created))
+		return (ENOBUFS);
+	if (created)
+		inp->inp_flags2 |= INP_FF_FLOWMAP;
+	return (0);
+}
+
+static void
+in_pcb_flow_revoke(struct inpcb *inp)
+{
+	struct ff_flow_key k;
+
+	inp->inp_flags2 &= ~INP_FF_FLOWMAP;
+#ifdef INET6
+	if (inp->inp_vflag & INP_IPV6)
+		in_pcb_flow_key(&k, 1, &inp->in6p_faddr, &inp->in6p_laddr,
+		    inp->inp_fport, inp->inp_lport);
+	else
+#endif
+		in_pcb_flow_key(&k, 0, &inp->inp_faddr, &inp->inp_laddr,
+		    inp->inp_fport, inp->inp_lport);
+	ff_flow_map_revoke(&k);
+}
+#endif
+
 /*
  * Assign a local port like in_pcb_lport(), but also used with connect()
  * and a foreign address and port.  If fsa is non-NULL, choose a local port
@@ -900,6 +990,8 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 					    faddr6->s6_addr, laddr6->s6_addr,
 					    fport, &rss_sel, first, last) != 0)
 						break;
+					if (!in_pcb_lport_gen_ok(inp, rss_sel))
+						continue;
 					lport = htons(rss_sel);
 					if (in6_pcblookup_local(pcbinfo,
 					    &inp->in6p_laddr, lport, RT_ALL_FIBS,
@@ -963,6 +1055,8 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 					    faddr.s_addr, laddr.s_addr, fport,
 					    &rss_sel, first, last) != 0)
 						break;
+					if (!in_pcb_lport_gen_ok(inp, rss_sel))
+						continue;
 					lport = htons(rss_sel);
 					if (in_pcblookup_local(pcbinfo, laddr,
 					    lport, RT_ALL_FIBS, lookupflags,
@@ -1021,6 +1115,10 @@ in_pcb_lport_dest(const struct inpcb *inp, struct sockaddr *lsa,
 		lport = htons(*lastport);
 
 #ifdef FSTACK
+		if (!in_pcb_lport_gen_ok(inp, *lastport)) {
+			tmpinp = __DECONST(struct inpcb *, inp);
+			continue;
+		}
 		if (!rss_check_flag && fsa != NULL) {
 #else
 		if (fsa != NULL) {
@@ -1387,6 +1485,11 @@ in_pcbconnect(struct inpcb *inp, struct sockaddr_in *sin, struct ucred *cred)
 	MPASS(!in_nullhost(inp->inp_laddr) || inp->inp_lport != 0 ||
 	    !(inp->inp_flags & INP_INHASHLIST));
 
+#ifdef FSTACK
+	error = in_pcb_flow_admit(inp, 0, &faddr, &laddr, sin->sin_port, lport);
+	if (error)
+		return (error);
+#endif
 	inp->inp_faddr = faddr;
 	inp->inp_fport = sin->sin_port;
 	inp->inp_laddr = laddr;
@@ -2941,6 +3044,10 @@ in_pcbremhash_locked(struct inpcb *inp)
 	INP_HASH_WLOCK_ASSERT(inp->inp_pcbinfo);
 	MPASS(inp->inp_flags & INP_INHASHLIST);
 
+#ifdef FSTACK
+	if (inp->inp_flags2 & INP_FF_FLOWMAP)
+		in_pcb_flow_revoke(inp);
+#endif
 	if ((inp->inp_flags & INP_INLBGROUP) != 0)
 		in_pcbremlbgrouphash(inp);
 #ifdef INET6

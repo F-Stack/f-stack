@@ -3559,7 +3559,8 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
             if (full > last_full || grow_fail > last_grow_fail
                 || alloc_fail > last_alloc_fail) {
                 ff_log(FF_LOG_WARNING, FF_LOGTYPE_FSTACK_LIB,
-                    "flow map: %llu untracked SYN (table full), %llu failed "
+                    "flow map: %llu untracked SYN/connect (table full), "
+                    "%llu failed "
                     "expansion(s), %llu allocation failure(s)\n",
                     (unsigned long long)(full - last_full),
                     (unsigned long long)(grow_fail - last_grow_fail),

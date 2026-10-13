@@ -3114,6 +3114,143 @@ test_p2_slot_transient_exhausted(void **state)
     assert_int_equal(p1_dir->reclaim_refused, 1);
 }
 
+/* RX-39: two coexisting generations never share an ephemeral port parity. */
+static void
+test_rx39_port_parity_rules(void **state)
+{
+    int g, peer, p_old;
+    uint32_t odd;
+    (void)state;
+
+    assert_int_equal(ff_reload_port_parity(0, 0), 0);
+    assert_int_equal(ff_reload_port_parity(1, 0), 1);
+    assert_int_equal(ff_reload_port_parity(0, FF_RELOAD_SLOT_PORT_ODD), 1);
+    assert_int_equal(ff_reload_port_parity(1, FF_RELOAD_SLOT_PORT_ODD), 0);
+    assert_int_equal(ff_reload_port_parity(2, FF_RELOAD_SLOT_PRIMARY), 0);
+    assert_int_equal(ff_reload_port_odd_for(0, -1), 0);
+
+    /* HUP inside one master: gen flips, the slot flag stays */
+    for (odd = 0; odd <= FF_RELOAD_SLOT_PORT_ODD;
+        odd += FF_RELOAD_SLOT_PORT_ODD)
+        assert_int_not_equal(ff_reload_port_parity(0, odd),
+            ff_reload_port_parity(1, odd));
+
+    /* USR2: the new master's slot is set against the serving generation,
+     * then its own HUPs alternate again */
+    for (peer = 0; peer < 2; peer++)
+        for (g = 0; g < 2; g++) {
+            odd = ff_reload_port_odd_for(g, peer);
+            assert_int_not_equal(ff_reload_port_parity(g, odd), peer);
+        }
+
+    /* a chain of upgrades: each new master starts against the generation
+     * its predecessor reached after some HUPs, then HUPs itself */
+    odd = 0;
+    for (g = 0; g < 8; g++) {
+        int gen = (g % 3) & 1, start = (g >> 1) & 1;
+        uint32_t nodd;
+
+        p_old = ff_reload_port_parity(gen, odd);
+        nodd = ff_reload_port_odd_for(start, p_old);
+        assert_int_not_equal(ff_reload_port_parity(start, nodd), p_old);
+        assert_int_not_equal(ff_reload_port_parity(0, nodd),
+            ff_reload_port_parity(1, nodd));
+        odd = nodd;
+    }
+}
+
+static void
+test_rx39_lport_split(void **state)
+{
+    (void)state;
+
+    ff_flow_map_lport_split(-1);
+    assert_int_equal(ff_flow_map_lport_ok(10000), 1);
+    assert_int_equal(ff_flow_map_lport_ok(10001), 1);
+    ff_flow_map_lport_split(0);
+    assert_int_equal(ff_flow_map_lport_ok(10000), 1);
+    assert_int_equal(ff_flow_map_lport_ok(10001), 0);
+    assert_int_equal(ff_flow_map_lport_ok(65535), 0);
+    ff_flow_map_lport_split(1);
+    assert_int_equal(ff_flow_map_lport_ok(10000), 0);
+    assert_int_equal(ff_flow_map_lport_ok(65535), 1);
+    ff_flow_map_lport_split(-5);
+    assert_int_equal(ff_flow_map_lport_ok(10001), 1);
+}
+
+static void
+rx39_attach(int gen, uint64_t active, int want_parity)
+{
+    ff_reload_gendir_detach();
+    p1_dir->active_word = active;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_parent = __real_getppid();
+    ff_reload_set_gen(gen);
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_reload_gendir_present(), 1);
+    assert_int_equal(ff_flow_map_lport_ok(20000), want_parity == 0);
+    assert_int_equal(ff_flow_map_lport_ok(20001), want_parity == 1);
+}
+
+static void
+test_rx39_gendir_parity(void **state)
+{
+    unsigned i, mine = FF_RELOAD_EPOCH_SLOT_MAX;
+    (void)state;
+
+    /* first master: no serving generation -> gen 0 on even ports */
+    rx39_attach(0, (uint64_t)FF_RELOAD_EPOCH_NONE << 32, 0);
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++)
+        if (p1_dir->slot[i].master_pid == (uint32_t)__real_getppid())
+            mine = i;
+    assert_true(mine < FF_RELOAD_EPOCH_SLOT_MAX);
+    assert_int_equal(p1_dir->slot[mine].flags & FF_RELOAD_SLOT_PORT_ODD, 0);
+
+    /* HUP of the same master: the slot is reused, gen 1 -> odd ports */
+    ff_reload_gendir_detach();
+    p1_dir->slot[mine].master_pid = (uint32_t)__real_getppid();
+    p1_dir->slot[mine].state = FF_RELOAD_SLOT_LIVE;
+    ff_reload_set_gen(1);
+    p1_process_type = RTE_PROC_SECONDARY;
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_flow_map_lport_ok(20001), 1);
+    assert_int_equal(ff_flow_map_lport_ok(20000), 0);
+
+    /* USR2: an old master (live, another pid; epoch 7 lives in slot 1,
+     * the new epoch 8 in slot 2) serves gen 1 on a slot without the flag
+     * (parity 1) -> the new master's gen 0 is even */
+    memset(p1_dir->slot, 0, sizeof(p1_dir->slot));
+    p1_dir->slot[1].epoch = 7;
+    p1_dir->slot[1].master_pid = (uint32_t)getpid();
+    p1_dir->slot[1].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->next_epoch = 7;
+    rx39_attach(0, ((uint64_t)7 << 32) | 1, 0);
+
+    /* same, old gen 0 -> parity 0 -> the new master is odd */
+    memset(p1_dir->slot, 0, sizeof(p1_dir->slot));
+    p1_dir->slot[1].epoch = 7;
+    p1_dir->slot[1].master_pid = (uint32_t)getpid();
+    p1_dir->slot[1].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->next_epoch = 7;
+    rx39_attach(0, (uint64_t)7 << 32, 1);
+
+    /* old slot already carries the flag: gen 0 there is odd -> even here */
+    memset(p1_dir->slot, 0, sizeof(p1_dir->slot));
+    p1_dir->slot[1].epoch = 7;
+    p1_dir->slot[1].master_pid = (uint32_t)getpid();
+    p1_dir->slot[1].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->next_epoch = 7;
+    p1_dir->slot[1].flags = FF_RELOAD_SLOT_PORT_ODD;
+    rx39_attach(0, (uint64_t)7 << 32, 0);
+
+    /* graceful_reload=0: no directory, every port allowed */
+    ff_reload_gendir_detach();
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_flow_map_lport_ok(20000), 1);
+    assert_int_equal(ff_flow_map_lport_ok(20001), 1);
+}
+
 int
 main(void)
 {
@@ -3197,6 +3334,9 @@ main(void)
         cmocka_unit_test(test_a1_flow_map_revoke),
         cmocka_unit_test(test_p3_flow_map_bounded_growth),
         cmocka_unit_test(test_rx15_primary_purges_orphaned_rings),
+        cmocka_unit_test(test_rx39_port_parity_rules),
+        cmocka_unit_test(test_rx39_lport_split),
+        cmocka_unit_test_setup_teardown(test_rx39_gendir_parity, p1_setup, p1_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }

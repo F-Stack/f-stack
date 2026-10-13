@@ -76,6 +76,7 @@ extern "C" {
 #define FF_RELOAD_SLOT_LIVE         1
 #define FF_RELOAD_SLOT_DEAD         2
 #define FF_RELOAD_SLOT_PRIMARY      0x1u   /* slot flags: resident primary */
+#define FF_RELOAD_SLOT_PORT_ODD     0x2u   /* slot flags: gen 0 on odd ports */
 
 #define FF_RELOAD_GENDIR_MAGIC      0x46524744U   /* "FRGD" */
 /* version 2 adds the hardware-user table below, version 3 the drain-ring
@@ -204,7 +205,7 @@ struct ff_reload_epoch_slot {
     uint32_t gen;          /* last generation registered by that master */
     uint32_t master_pid;   /* 0 == unused; CAS gate for registration */
     uint32_t state;        /* FF_RELOAD_SLOT_* */
-    uint32_t flags;        /* FF_RELOAD_SLOT_PRIMARY for the resident primary */
+    uint32_t flags;        /* FF_RELOAD_SLOT_PRIMARY / FF_RELOAD_SLOT_PORT_ODD */
     uint32_t pad;          /* F-M5-1: liveness stamp, low 32 bits of
                             * CLOCK_MONOTONIC ms; workers refresh it once
                             * per main-loop pass (throttled), so a dead
@@ -295,6 +296,13 @@ struct ff_msg;
 
 /* Validate a candidate block created elsewhere (magic/version/len). */
 int ff_reload_state_valid(const void *block, size_t len);
+
+/* Ephemeral port parity of a generation: its gen bit flipped by the
+ * FF_RELOAD_SLOT_PORT_ODD flag of its master's slot. port_odd_for() is
+ * the flag a new master's slot needs so that generation 'gen' gets the
+ * parity opposite to the serving peer's (peer_parity < 0: no peer). */
+int      ff_reload_port_parity(int gen, uint32_t slot_flags);
+uint32_t ff_reload_port_odd_for(int gen, int peer_parity);
 
 /* msg ring name for a (proc_id, generation) pair.
  * graceful=0 reproduces the legacy names byte-for-byte:

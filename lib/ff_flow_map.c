@@ -35,8 +35,9 @@
  * its own connections, so no hugepage/shared-memory backing is needed and no
  * multi-writer support has to be paid for.
  *
- * Single-thread contract: the producer (syncache hook, inside ff_veth_input),
- * the consumer (dispatcher callback) and the control plane (open/close, the
+ * Single-thread contract: the producers (syncache hook, inside ff_veth_input;
+ * active connect, inside the app call), the consumer (dispatcher callback)
+ * and the control plane (open/close, the
  * 1 Hz stats report) all run on the datapath thread inside main_loop, and the
  * table is process-local heap memory. Accesses are therefore plain, with no
  * locks and no atomics. A sampler on another thread would need a real
@@ -458,4 +459,18 @@ ff_flow_map_cap_set(uint32_t cap)
     g_cap = cap;
     g_cap_mask = cap - 1;
     g_grown = 0;
+}
+
+static int g_lport_parity = -1;
+
+void
+ff_flow_map_lport_split(int parity)
+{
+    g_lport_parity = parity < 0 ? -1 : (parity & 1);
+}
+
+int
+ff_flow_map_lport_ok(uint16_t lport)
+{
+    return g_lport_parity < 0 || (lport & 1) == g_lport_parity;
 }

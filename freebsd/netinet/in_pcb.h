@@ -597,7 +597,11 @@ void 	inp_4tuple_get(struct inpcb *inp, uint32_t *laddr, uint16_t *lp,
 #define	INP_RECVRSSBUCKETID	0x00000200 /* populate recv datagram with bucket id */
 #define	INP_RATE_LIMIT_CHANGED	0x00000400 /* rate limit needs attention */
 #define	INP_ORIGDSTADDR		0x00000800 /* receive IP dst address/port */
+#ifdef FSTACK
+#define	INP_FF_FLOWMAP		0x00001000 /* F-Stack flow map */
+#else
 /*				0x00001000 */
+#endif
 /*				0x00002000 */
 /*				0x00004000 */
 /*				0x00008000 */

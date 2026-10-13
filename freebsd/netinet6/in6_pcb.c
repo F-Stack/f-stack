@@ -476,6 +476,9 @@ in6_pcbconnect(struct inpcb *inp, struct sockaddr_in6 *sin6, struct ucred *cred,
 	struct inpcbinfo *pcbinfo = inp->inp_pcbinfo;
 	struct sockaddr_in6 laddr6;
 	int error;
+#ifdef FSTACK
+	bool lport0, laddr0;
+#endif
 
 	NET_EPOCH_ASSERT();
 	INP_WLOCK_ASSERT(inp);
@@ -515,6 +518,8 @@ in6_pcbconnect(struct inpcb *inp, struct sockaddr_in6 *sin6, struct ucred *cred,
 	    M_NODOM, RT_ALL_FIBS) != NULL)
 		return (EADDRINUSE);
 #ifdef FSTACK
+	lport0 = inp->inp_lport == 0;
+	laddr0 = IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr);
 	if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr) || inp->inp_lport == 0) {
 #else
 	if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr)) {
@@ -534,6 +539,17 @@ in6_pcbconnect(struct inpcb *inp, struct sockaddr_in6 *sin6, struct ucred *cred,
 		if (IN6_IS_ADDR_UNSPECIFIED(&inp->in6p_laddr))
 			inp->in6p_laddr = laddr6.sin6_addr;
 	}
+#ifdef FSTACK
+	error = in_pcb_flow_admit(inp, 1, &sin6->sin6_addr, &inp->in6p_laddr,
+	    sin6->sin6_port, inp->inp_lport);
+	if (error) {
+		if (lport0)
+			inp->inp_lport = 0;
+		if (laddr0)
+			inp->in6p_laddr = in6addr_any;
+		return (error);
+	}
+#endif
 	inp->in6p_faddr = sin6->sin6_addr;
 	inp->inp_fport = sin6->sin6_port;
 	/* update flowinfo - draft-itojun-ipv6-flowlabel-api-00 */

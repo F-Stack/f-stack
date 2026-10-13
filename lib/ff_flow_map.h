@@ -27,8 +27,9 @@
 #ifndef _FF_FLOW_MAP_H_
 #define _FF_FLOW_MAP_H_
 
-/* software flow table shared between the FreeBSD stack (producer,
- * at syncache-insert time) and the packet dispatcher callback (consumer).
+/* software flow table shared between the FreeBSD stack (producer: the
+ * syncache insert and an active TCP connect) and the packet dispatcher
+ * callback (consumer).
  *
  * This header deliberately includes nothing: freebsd/ translation units must
  * NOT pull in ff_api.h, and the fixed-width types below are available both
@@ -62,7 +63,8 @@ struct ff_flow_key {
 };
 
 /* Cheap gate for the call site in the stack: 0 means "do not even build a
- * key". Called once per accepted SYN, so it must stay a load + compare. */
+ * key". Called once per accepted SYN and per connect, so it must stay a
+ * load + compare. */
 int ff_flow_map_active(void);
 
 /* The admission rule for a SYN: 1 = go on and answer it, 0 = refuse it
@@ -81,12 +83,16 @@ int ff_flow_map_admit(const struct ff_flow_key *key, int *created);
  * a record was removed. */
 int ff_flow_map_revoke(const struct ff_flow_key *key);
 
+/* 1 when the four-tuple is recorded in this generation's table. */
+int ff_flow_map_lookup(const struct ff_flow_key *key);
+
 /* record a flow as "this generation" BEFORE its SYN-ACK is
  * sent, so the third handshake ACK is classified by the dispatcher instead
  * of being forwarded to the draining generation. Idempotent: a repeated key
  * returns 1 instead of taking a second entry. Never sleeps and never takes
- * any stack lock (it runs under NET_EPOCH with the inp/syncache locks already
- * dropped); a full table may grow in place (calloc + rehash, bounded).
+ * any stack lock (callers: the syncache with its locks dropped, and an
+ * active connect under the inp/hash locks); a full table may grow in place
+ * (calloc + rehash, bounded).
  * Returns 0 recorded, 1 already present, <0 on error / table full.
  * The entry is visible to ff_flow_map_lookup() right away. A SYN-ACK that
  * fails to go out is undone by the caller through ff_flow_map_revoke(),
@@ -113,6 +119,12 @@ void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
 #define FF_FLOW_MAP_CAP_MIN  64u
 #define FF_FLOW_MAP_CAP_MAX  (1u << 20)
 void ff_flow_map_cap_set(uint32_t cap);
+
+/* Ephemeral port split between two coexisting generations: parity 0/1
+ * admits only even/odd TCP ports (host order), a negative parity admits
+ * every port (the default, and always so with graceful_reload=0). */
+void ff_flow_map_lport_split(int parity);
+int ff_flow_map_lport_ok(uint16_t lport);
 
 #ifdef __cplusplus
 }

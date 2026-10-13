@@ -53,6 +53,7 @@
 #include "ff_reload.h"
 #include "ff_config.h"
 #include "ff_log.h"
+#include "ff_flow_map.h"
 
 static struct ff_reload_gendir *g_dir;
 static int g_dir_slot = -1;     /* this process's slot in the directory */
@@ -60,6 +61,7 @@ static uint32_t g_dir_epoch;    /* full epoch of that slot */
 /* 1 when this process displaced a dead master from its slot: the rings of
  * that slot still hold the previous owner's messages/mbufs. */
 static int g_dir_reset_pending;
+static int g_dir_port_parity = -1;
 
 static uint64_t
 gendir_now_ms(void)
@@ -112,6 +114,8 @@ ff_reload_gendir_detach(void)
     g_dir = NULL;
     g_dir_slot = -1;
     g_dir_epoch = 0;
+    g_dir_port_parity = -1;
+    ff_flow_map_lport_split(-1);
     ff_reload_set_epoch(0);
     ff_reload_gendir_install(NULL, 0);
 }
@@ -127,7 +131,7 @@ ff_reload_gendir_detach(void)
  * place. */
 static int
 slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
-    int gen, int is_primary, unsigned *slot_out)
+    int gen, int is_primary, uint32_t port_flag, unsigned *slot_out)
 {
     unsigned i, start;
     uint64_t deadline = gendir_now_ms() + ff_reload_reclaim_timeout_ms();
@@ -158,7 +162,7 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
                 __atomic_store_n(&s->epoch, epoch, __ATOMIC_SEQ_CST);
                 __atomic_store_n(&s->gen, (uint32_t)gen, __ATOMIC_SEQ_CST);
                 __atomic_store_n(&s->flags,
-                    is_primary ? FF_RELOAD_SLOT_PRIMARY : 0u,
+                    is_primary ? FF_RELOAD_SLOT_PRIMARY : port_flag,
                     __ATOMIC_SEQ_CST);
                 __atomic_store_n(&s->since_ms, gendir_now_ms(),
                     __ATOMIC_SEQ_CST);
@@ -197,6 +201,32 @@ slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
     }
 }
 
+/* Port parity of the generation serving traffic, -1 without one. */
+static int
+gendir_serving_parity(struct ff_reload_gendir *d)
+{
+    uint64_t w = __atomic_load_n(&d->active_word, __ATOMIC_SEQ_CST);
+    uint32_t e = (uint32_t)(w >> 32), fl;
+    unsigned i;
+
+    if (e == 0 || e == FF_RELOAD_EPOCH_NONE)
+        return -1;
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+        struct ff_reload_epoch_slot *s = &d->slot[i];
+
+        if (__atomic_load_n(&s->epoch, __ATOMIC_SEQ_CST) != e)
+            continue;
+        fl = __atomic_load_n(&s->flags, __ATOMIC_SEQ_CST);
+        if (fl & FF_RELOAD_SLOT_PRIMARY)
+            continue;
+        if (!pid_alive(__atomic_load_n(&s->master_pid, __ATOMIC_SEQ_CST))
+            && slot_stale(d, i))
+            continue;
+        return ff_reload_port_parity((int)(uint32_t)w, fl);
+    }
+    return -1;
+}
+
 /* Register this process's master epoch. Workers key on getppid() (the nginx
  * master); the resident primary is reparented to init by its double fork,
  * so it keys on its own pid and always takes slot 0 / epoch 0. */
@@ -231,21 +261,29 @@ gendir_register_self(struct ff_reload_gendir *d)
         g_dir_slot = (int)i;
         g_dir_epoch = __atomic_load_n(&s->epoch, __ATOMIC_SEQ_CST);
         ff_reload_set_epoch(g_dir_epoch);
+        if (!is_primary)
+            g_dir_port_parity = ff_reload_port_parity(ff_reload_gen(),
+                __atomic_load_n(&s->flags, __ATOMIC_SEQ_CST));
         return 0;
     }
 
     {
-        uint32_t epoch;
+        uint32_t epoch, odd = 0;
         unsigned slot = 0;
 
+        if (!is_primary)
+            odd = ff_reload_port_odd_for(ff_reload_gen(),
+                gendir_serving_parity(d));
         epoch = is_primary ? 0u
             : __atomic_add_fetch(&d->next_epoch, 1, __ATOMIC_SEQ_CST);
         if (slot_acquire(d, epoch, pid, ff_reload_gen(), is_primary,
-                &slot) != 0)
+                odd, &slot) != 0)
             return -1;
         g_dir_slot = (int)slot;
         g_dir_epoch = epoch;
         ff_reload_set_epoch(epoch);
+        if (!is_primary)
+            g_dir_port_parity = ff_reload_port_parity(ff_reload_gen(), odd);
     }
     return 0;
 }
@@ -307,14 +345,16 @@ ff_reload_gendir_attach(void)
     if (gendir_register_self(d) != 0)
         goto fail;
     g_dir = d;
+    ff_flow_map_lport_split(g_dir_port_parity);
     /* Only a secondary ever owns a queue, so only a secondary may publish
      * an ownership claim — otherwise the resident primary (epoch 0) would
      * win the initial claim against the workers of the first master. */
     ff_reload_dir_sync_enable(rte_eal_process_type() == RTE_PROC_SECONDARY);
     ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
-        "generation directory attached: epoch %u slot %u pid %u\n",
+        "generation directory attached: epoch %u slot %u pid %u "
+        "port parity %d\n",
         g_dir_epoch, (unsigned)(g_dir_slot < 0 ? 0 : g_dir_slot),
-        (unsigned)getpid());
+        (unsigned)getpid(), g_dir_port_parity);
     return;
 
 fail:
@@ -363,7 +403,8 @@ ff_reload_gendir_mint(uint32_t *epoch, unsigned *slot, int gen, uint32_t pid)
     if (d == NULL)
         return -1;
     e = __atomic_add_fetch(&d->next_epoch, 1, __ATOMIC_SEQ_CST);
-    if (slot_acquire(d, e, pid, gen, 0, slot) != 0)
+    if (slot_acquire(d, e, pid, gen, 0,
+            ff_reload_port_odd_for(gen, gendir_serving_parity(d)), slot) != 0)
         return -1;
     if (epoch)
         *epoch = e;

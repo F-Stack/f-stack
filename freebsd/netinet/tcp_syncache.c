@@ -79,6 +79,9 @@
 #include <netinet6/nd6.h>
 #include <netinet6/ip6_var.h>
 #include <netinet6/in6_pcb.h>
+#ifdef FSTACK
+#include <netinet6/scope6_var.h>
+#endif
 #endif
 #include <netinet/tcp.h>
 #include <netinet/tcp_fastopen.h>
@@ -442,8 +445,15 @@ syncache_flow_key(const struct syncache *sc, struct ff_flow_key *key)
 #ifdef INET6
 	if (sc->sc_inc.inc_flags & INC_ISIPV6) {
 		key->af = FF_FLOW_MAP_V6;
-		bcopy(&sc->sc_inc.inc6_faddr, key->src, sizeof(struct in6_addr));
-		bcopy(&sc->sc_inc.inc6_laddr, key->dst, sizeof(struct in6_addr));
+		struct in6_addr a;
+
+		/* the wire carries no embedded scope (link-local) */
+		a = sc->sc_inc.inc6_faddr;
+		in6_clearscope(&a);
+		bcopy(&a, key->src, sizeof(a));
+		a = sc->sc_inc.inc6_laddr;
+		in6_clearscope(&a);
+		bcopy(&a, key->dst, sizeof(a));
 	} else
 #endif
 	{

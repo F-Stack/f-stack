@@ -2283,6 +2283,16 @@ ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
         return NGX_DECLINED;
     }
 
+    /* a third generation would share the ephemeral port parity of one of
+     * the two already running */
+    if (ngx_inherited && getppid() == ngx_parent) {
+        ngx_ff_reload_note_hup_rejected();
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful reload rejected: the old master of the "
+                      "binary upgrade is still running");
+        return NGX_DECLINED;
+    }
+
     if (ngx_ff_reload_shm == NULL) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
                       "graceful reload rejected: shared state missing");

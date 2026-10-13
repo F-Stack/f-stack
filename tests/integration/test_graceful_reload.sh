@@ -115,7 +115,7 @@ RTE_FRESH_MIN=10
 # first worker (the shipped config.ini default owner_proc_id is 1 as well).
 KNI_OWNER_PROC_ID=1
 
-ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt28,rt29,rt13"
+ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt28,rt29,rt32,rt13"
 # rt13 (the zc build form) is permanently excluded by decision 2026-09-22:
 # this tree does not build the zc form, so the case is dropped from every
 # matrix (-c all). It stays invocable explicitly and then records EXCLUDED,
@@ -174,8 +174,8 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                               test (write <DPDK_NIC_IP> in any report).
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
-                                         rt12,rt27,rt28,rt29,rt13,rt20,rt20b,rt21,
-                                         rt22,rt23,
+                                         rt12,rt27,rt28,rt29,rt32,rt13,rt20,
+                                         rt20b,rt21,rt22,rt23,
                                          rt24,rt25,rt26,rt30,rt31 (rt24 and the
                                          other rt2x need a fault-injection
                                          build; rt25 drives USR2 + WINCH;
@@ -184,7 +184,8 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                                          resident primary; rt28 stops,
                                          quits and SIGKILLs nginx; rt29
                                          starts with a rejected and a
-                                         valid MTU config)
+                                         valid MTU config; rt32 proxies to
+                                         an upstream on the client)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -568,6 +569,7 @@ events {
 }
 
 http {
+${NGX_EXTRA_HTTP:-}
     include       /usr/local/nginx_fstack/conf/mime.types;
     default_type  application/octet-stream;
     access_log    off;
@@ -589,6 +591,7 @@ http {
             index  index.html index.htm;
         }
 
+${NGX_EXTRA_LOC:-}
         # active-stream payload root (RT-02 / F-M4-7)
         location /dl/ {
             root   $OUT/www;
@@ -2286,6 +2289,125 @@ case_rt29() {
     return "$rc"
 }
 
+# ---- rt32: reverse proxy, upstream connections opened during a reload ------
+# The upstream runs on the client (bounded reload_remote.py job), reached
+# through the f-stack NIC. Requests sent while the new generation serves and
+# the old one drains make the new generation connect upstream: the upstream's
+# SYN-ACK must stay with it (flow map), and the transfers the old generation
+# started before the HUP must still complete.
+# parity shared by every "peer_port=N" in the input, "mixed" or "none"
+rt32_parity() {
+    printf '%s\n' "$1" | sed -n 's/^ok peer_port=\([0-9]*\).*/\1/p' \
+        | awk '{p = $1 % 2; s[p] = 1} END {
+            if (s[0] && s[1]) print "mixed"; else if (s[0]) print 0;
+            else if (s[1]) print 1; else print "none" }'
+}
+
+case_rt32() {
+    say "=== case rt32 (reverse proxy across a reload) ==="
+    local crit="through the proxy (no upstream keepalive, so every request connects upstream): requests sent in the reload window all return 200, their local ports have the opposite parity of the old generation's, a 30 s stream and a 64 MiB download started before the HUP complete intact, and the window was still open while the requests ran"
+    local conf up_ip up_port=18932 rc=0 step="" meas mark out n ok slow md5 ref
+    local p_old p_new
+    WIN_OK=0
+    case "$TARGET_IP" in *:*)
+        record "rt32" "SKIP" "$crit" "IPv4 only (the upstream is reached over IPv4)"; return 0 ;;
+    esac
+    # more than one worker needs NIC RSS to steer the upstream replies to
+    # the connecting worker's queue, which this case does not verify
+    [ "$WORKERS" = 1 ] || { record "rt32" "SKIP" "$crit" "needs --workers 1"; return 0; }
+    up_ip=$(run_client "ip -4 -o addr show $CLIENT_IF" 2>/dev/null \
+        | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [ -n "$up_ip" ] || { record "rt32" "SKIP" "$crit" "no IPv4 address on the client $CLIENT_IF"; return 0; }
+
+    NGX_EXTRA_HTTP="    upstream up_rt32 { server $up_ip:$up_port; }"
+    NGX_EXTRA_LOC="        location /up/ { proxy_connect_timeout 5s; proxy_http_version 1.1; proxy_set_header Connection \"\"; proxy_buffering off; proxy_pass http://up_rt32; }"
+    conf="$OUT/ngx_rt32.conf"
+    if ! start_stack "rt32" 1 0 0; then
+        NGX_EXTRA_HTTP=""; NGX_EXTRA_LOC=""
+        stop_stack "rt32" "$conf"
+        record "rt32" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    NGX_EXTRA_HTTP=""; NGX_EXTRA_LOC=""
+    grep -q "proxy_pass http://up_rt32" "$conf" \
+        || { stop_stack "rt32" "$conf"; record "rt32" FAIL "$crit" "proxy config missing"; return 1; }
+    step=1
+    if ! launch_probe rt32_up 400 reload_upstream.py --server "$up_ip" --port "$up_port"; then
+        say "rt32 1: upstream job log: $(run_client "tail -n 3 '$REMOTE_DIR/rt32_up.log'" 2>/dev/null | tr '\n' ' ')"
+        stop_stack "rt32" "$conf"; record "rt32" FAIL "$crit" "upstream job did not start"; return 1
+    fi
+    ref=$(run_client "python3 -B '$REMOTE_DIR/reload_upstream.py' md5" 2>/dev/null)
+    for n in 1 2 3 4 5 6 7 8 9 10; do
+        [ "$(run_client "curl -s -m 3 -o /dev/null -w '%{http_code}' '$TARGET_URL/up/ok'" 2>/dev/null)" = 200 ] && break
+        sleep 1
+    done
+    out=$(CLIENT_TIMEOUT=60 run_client "for i in 1 2 3 4 5; do curl -s -m 8 -w '\n' '$TARGET_URL/up/ok'; done" 2>/dev/null)
+    ok=$(printf '%s\n' "$out" | grep -c '^ok peer_port=')
+    p_old=$(rt32_parity "$out")
+    say "rt32 1: before the reload ok=$ok/5 port parity=$p_old (upstream <CLIENT_IP>:$up_port)"
+    [ "$ok" = 5 ] || rc=1
+    case "$p_old" in 0|1) ;; *) rc=1 ;; esac
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt32" "$conf"; record "rt32" FAIL "$crit" "$meas"; return 1; }
+
+    # 2. transfers through the old generation, then HUP
+    step=2
+    run_client "nohup sh -c \"curl -s -m 120 -o /dev/null -w '%{http_code} %{size_download}' '$TARGET_URL/up/slow?sec=30' > '$REMOTE_DIR/rt32_slow.txt'\" </dev/null >/dev/null 2>&1 &
+nohup sh -c \"curl -s -m 150 --limit-rate 2M '$TARGET_URL/up/big' | md5sum > '$REMOTE_DIR/rt32_big.md5'\" </dev/null >/dev/null 2>&1 &" || rc=1
+    sleep 3
+    mark=$(wc -l < "$ERRLOG")
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'old generation draining' 30 \
+        || { say "rt32 2: the window did not open"; rc=1; }
+    sleep 2
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt32" "$conf"; record "rt32" FAIL "$crit" "$meas"; return 1; }
+
+    # 3. new requests inside the window: the new generation connects upstream
+    step=3
+    out=$(CLIENT_TIMEOUT=200 run_client "for i in \$(seq 1 20); do curl -s -m 8 -w ' code=%{http_code}\n' '$TARGET_URL/up/ok'; done" 2>/dev/null)
+    ok=$(printf '%s\n' "$out" | grep -c '^ok peer_port=[0-9]* code=200$')
+    p_new=$(rt32_parity "$out")
+    WIN_OK=$ok
+    if log_since "$ERRLOG" "$mark" | grep -q 'graceful reload complete'; then
+        say "rt32 3: the window closed before the requests finished"; rc=1
+    fi
+    say "rt32 3: in the window ok=$ok/20 port parity=$p_new codes=[$(printf '%s\n' "$out" | sed -n 's/.*code=//p' | sort | uniq -c | tr -s ' \n' ' ')]"
+    [ "$ok" = 20 ] || rc=1
+    case "$p_old$p_new" in 01|10) ;; *) say "rt32 3: parity not split"; rc=1 ;; esac
+    if log_since "$ERRLOG" "$mark" | grep -q 'upstream timed out'; then
+        say "rt32 3: upstream timed out logged"; rc=1
+    fi
+
+    # 4. the transfers of the old generation complete intact
+    step=4
+    for n in $(seq 1 40); do
+        slow=$(run_client "cat '$REMOTE_DIR/rt32_slow.txt' 2>/dev/null")
+        md5=$(run_client "cut -d' ' -f1 '$REMOTE_DIR/rt32_big.md5' 2>/dev/null")
+        [ -n "$slow" ] && [ -n "$md5" ] && break
+        sleep 5
+    done
+    say "rt32 4: slow=[$slow] big md5 ok=$([ -n "$ref" ] && [ "$md5" = "$ref" ] && echo 1 || echo 0)"
+    [ "$slow" = "200 2457600" ] || rc=1
+    [ -n "$ref" ] && [ "$md5" = "$ref" ] || rc=1
+    wait_log "$ERRLOG" "$mark" 'graceful reload complete' 120 \
+        || { say "rt32 4: the reload did not complete"; rc=1; }
+
+    # 5. after the window
+    step=5
+    out=$(CLIENT_TIMEOUT=60 run_client "for i in 1 2 3 4 5; do curl -s -m 8 -w '\n' '$TARGET_URL/up/ok'; done" 2>/dev/null)
+    ok=$(printf '%s\n' "$out" | grep -c '^ok peer_port=')
+    say "rt32 5: after the reload ok=$ok/5 port parity=$(rt32_parity "$out")"
+    [ "$ok" = 5 ] || rc=1
+
+    stop_stack "rt32" "$conf" || rc=1
+    meas="window ok=$WIN_OK/20 parity old=$p_old new=$p_new slow=[$slow] md5_ok=$([ "$md5" = "$ref" ] && echo 1 || echo 0)"
+    if [ "$rc" = 0 ]; then
+        record "rt32" "PASS" "$crit" "$meas"
+    else
+        record "rt32" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
 # RT-12. This tree has no rte_kni: KNI is a virtio_user vdev hot-plugged by
 # ff_dpdk_kni.c, the kernel-side netif is veth<port_id>, and it needs
 # /dev/vhost-net. The verdict is written for that form, not for rte_kni.
@@ -2490,7 +2612,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt28 rt29 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt28 rt29 rt32 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break

@@ -135,6 +135,20 @@ ff_reload_state_valid(const void *block, size_t len)
 }
 
 int
+ff_reload_port_parity(int gen, uint32_t slot_flags)
+{
+    return (gen & 1) ^ ((slot_flags & FF_RELOAD_SLOT_PORT_ODD) ? 1 : 0);
+}
+
+uint32_t
+ff_reload_port_odd_for(int gen, int peer_parity)
+{
+    if (peer_parity < 0)
+        return 0;
+    return ((gen & 1) ^ 1 ^ (peer_parity & 1)) ? FF_RELOAD_SLOT_PORT_ODD : 0;
+}
+
+int
 ff_reload_msg_ring_name_e(char *buf, unsigned int buflen, const char *base,
     unsigned int proc_id, int msg_type, int gen, uint32_t epoch, int graceful)
 {
