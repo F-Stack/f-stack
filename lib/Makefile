@@ -314,6 +314,7 @@ FF_HOST_SRCS+=              \
 	ff_reload.c         \
 	ff_reload_gendir.c  \
 	ff_flow_map.c       \
+	ff_flow_peer.c      \
 	ff_drain_ring.c     \
 	ff_dpdk_if.c        \
 	ff_dpdk_pcap.c      \

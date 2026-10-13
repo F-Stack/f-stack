@@ -115,7 +115,7 @@ RTE_FRESH_MIN=10
 # first worker (the shipped config.ini default owner_proc_id is 1 as well).
 KNI_OWNER_PROC_ID=1
 
-ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt28,rt29,rt32,rt13"
+ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt28,rt29,rt32,rt33,rt34,rt13"
 # rt13 (the zc build form) is permanently excluded by decision 2026-09-22:
 # this tree does not build the zc form, so the case is dropped from every
 # matrix (-c all). It stays invocable explicitly and then records EXCLUDED,
@@ -174,8 +174,8 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                               test (write <DPDK_NIC_IP> in any report).
   -c, --cases <list>          Comma-separated case list, or 'all'.
                               available: precheck,baseline,rt01,rt02,rv9,gr0,
-                                         rt12,rt27,rt28,rt29,rt32,rt13,rt20,
-                                         rt20b,rt21,rt22,rt23,
+                                         rt12,rt27,rt28,rt29,rt32,rt33,rt34,
+                                         rt35,rt13,rt20,rt20b,rt21,rt22,rt23,
                                          rt24,rt25,rt26,rt30,rt31 (rt24 and the
                                          other rt2x need a fault-injection
                                          build; rt25 drives USR2 + WINCH;
@@ -185,7 +185,11 @@ Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
                                          quits and SIGKILLs nginx; rt29
                                          starts with a rejected and a
                                          valid MTU config; rt32 proxies to
-                                         an upstream on the client)
+                                         an upstream on the client; rt33
+                                         serves UDP flows, rt34 proxies
+                                         them to the client, rt35 drives
+                                         them through USR2 + WINCH; rt32
+                                         and rt34 need --workers 1)
   --fault <name>            runtime fault injection (FF_FAULT); requires a
                             fault-injection build manifest. rt23 is the only
                             fault case that runs on the production form
@@ -522,6 +526,10 @@ gen_fstack_ini() { # tag graceful kni(0|1)
     # f-stack-<proc_id>.log into whatever directory the harness was started
     # from (i.e. inside the repo). Keep every artifact under $OUT.
     ini_set "$ini" dpdk fstack_log_file_prefix "$OUT/fstack-"
+    # per-case [dpdk] overrides, "key=value key=value"
+    for kv in ${FSTACK_EXTRA_DPDK:-}; do
+        ini_set "$ini" dpdk "${kv%%=*}" "${kv#*=}"
+    done
     if [ "$BASELINE" = "1" ]; then
         ini_set "$ini" freebsd.sysctl net.link.ether.inet.garp_rexmit_count 8
     fi
@@ -598,6 +606,7 @@ ${NGX_EXTRA_LOC:-}
         }
     }
 }
+${NGX_EXTRA_MAIN:-}
 CONF
     printf '%s' "$conf"
 }
@@ -2408,6 +2417,293 @@ nohup sh -c \"curl -s -m 150 --limit-rate 2M '$TARGET_URL/up/big' | md5sum > '$R
     return "$rc"
 }
 
+# ---- UDP cases (rt33 server, rt34 proxy, rt35 USR2) ------------------------
+# live nginx children of a master, comma separated
+udp_pids() { # master
+    ps -eo pid,ppid,stat,comm 2>/dev/null \
+        | awk -v m="$1" '$2==m && $1!=m && $3 !~ /^Z/ && $4 ~ /^nginx/ {print $1}' \
+        | sort -n | paste -sd, -
+}
+
+# copy a reload_udp.py job log here once it holds its summary
+udp_fetch() { # job seconds
+    local f="$OUT/$1.log" until=$((SECONDS + $2))
+    while [ "$SECONDS" -lt "$until" ]; do
+        run_client "cat '$REMOTE_DIR/$1.log'" > "$f" 2>/dev/null
+        grep -q '^UDP_SUMMARY ' "$f" && return 0
+        sleep 2
+    done
+    return 1
+}
+
+udp_check() { # job mode old new [check args]
+    local job="$1" mode="$2" old="$3" new="$4"
+    shift 4
+    python3 -B "$SCRIPT_DIR/common/reload_udp.py" check "$OUT/$job.log" \
+        --mode "$mode" --old "$old" --new "$new" "$@"
+}
+
+udp_flows() { # job seconds flows duration port [name]
+    launch_probe "$1" "$2" reload_udp.py flows --server "$TARGET_IP" \
+        --port "$5" --flows "$3" --duration "$4" --interval 0.2 \
+        --timeout 1 --name "${6:-$1}"
+}
+
+# the reload time from the completion line logged since mark, in seconds
+udp_took() { # mark
+    log_since "$ERRLOG" "$1" | grep -o 'graceful reload complete: .*(took [0-9]* ms' \
+        | tail -1 | sed -n 's/.*took \([0-9]*\) ms/\1/p' | awk '{print int($1 / 1000)}'
+}
+
+# the reload window opened at mark is still open
+udp_window_open() { # mark
+    ! log_since "$ERRLOG" "$1" | grep -q 'graceful reload complete'
+}
+
+udp_listen() { # port
+    case "$TARGET_IP" in
+        *:*) printf '[::]:%s udp ipv6only=on' "$1" ;;
+        *) printf '%s udp' "$1" ;;
+    esac
+}
+
+# ---- rt33: stream udp server across HUPs --------------------------------
+case_rt33() {
+    say "=== case rt33 (UDP server flows across HUPs) ==="
+    local crit="worker_shutdown_timeout 25 s: flows started before the HUP are answered by the old generation only, flows started in the window by the new one only, no datagram lost or refused; once the old flows go idle the reload completes before the 25 s deadline; a flow that never goes idle moves to the new generation exactly once, at most 1 datagram lost"
+    local conf port=19533 rc=0 step="" meas mark t0 m old new old2 new2
+    local ca="" cb="" cc="" dt1=-1 dt2=-1
+    NGX_EXTRA_MAIN="stream { server { listen $(udp_listen $port); return \"pid=\$pid\"; } }"
+    FSTACK_EXTRA_DPDK="reload_udp_idle_ms=3000"
+    conf="$OUT/ngx_rt33.conf"
+    if ! start_stack "rt33" 1 25 0; then
+        NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+        stop_stack "rt33" "$conf"
+        record "rt33" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+    m=$(master_pid); old=$(udp_pids "$m")
+
+    # 1. the server answers
+    step=1
+    udp_flows rt33_pre 30 2 4 "$port" || rc=1
+    udp_fetch rt33_pre 30 || rc=1
+    say "rt33 1: $(udp_check rt33_pre old "$old" "")"
+    udp_check rt33_pre old "$old" "" >/dev/null || rc=1
+    [ "$rc" = 0 ] || { stop_stack "rt33" "$conf"; record "rt33" FAIL "$crit" "step $step failed"; return 1; }
+
+    # 2. old flows, HUP, new flows inside the window
+    step=2
+    udp_flows rt33_a 90 8 15 "$port" || rc=1
+    sleep 3
+    mark=$(wc -l < "$ERRLOG"); t0=$SECONDS
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'old generation draining' 30 \
+        || { say "rt33 2: the window did not open"; rc=1; }
+    new=$(udp_pids "$m" | tr ',' '\n' | grep -v -x -F -e "${old//,/$'\n'}" | paste -sd, -)
+    udp_flows rt33_b 60 8 6 "$port" || rc=1
+    udp_fetch rt33_b 40 || rc=1
+    udp_window_open "$mark" || { say "rt33 2: the window closed before the new flows ended"; rc=1; }
+    cb=$(udp_check rt33_b new "$old" "$new")
+    say "rt33 2: new flows: $cb (old=$old new=$new)"
+    case "$cb" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+
+    # 3. the old flows stayed on the old generation, which converges once
+    # they are idle, before the deadline
+    step=3
+    udp_fetch rt33_a 60 || rc=1
+    ca=$(udp_check rt33_a old "$old" "$new")
+    say "rt33 3: old flows: $ca"
+    case "$ca" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    wait_log "$ERRLOG" "$mark" 'graceful reload complete' $((t0 + 120 - SECONDS)) \
+        || { say "rt33 3: the reload did not complete"; rc=1; }
+    dt1=$(udp_took "$mark"); dt1=${dt1:-999}
+    say "rt33 3: complete after ${dt1}s"
+    [ "$dt1" -le 24 ] || { say "rt33 3: the reload took ${dt1}s"; rc=1; }
+
+    # 4. a flow that never goes idle: handed over at the T3 deadline
+    step=4
+    old2=$(udp_pids "$m")
+    udp_flows rt33_c 150 2 60 "$port" || rc=1
+    sleep 3
+    mark=$(wc -l < "$ERRLOG"); t0=$SECONDS
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'graceful reload complete' 120 \
+        || { say "rt33 4: the reload did not complete"; rc=1; }
+    dt2=$(udp_took "$mark"); dt2=${dt2:-0}
+    new2=$(udp_pids "$m")
+    udp_fetch rt33_c 120 || rc=1
+    cc=$(udp_check rt33_c switch "$old2" "$new2" --max-lost 1 --need-switch)
+    say "rt33 4: complete after ${dt2}s; long flows: $cc"
+    case "$cc" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    # the long flows hold the old generation until the 25 s deadline
+    [ "$dt2" -ge 22 ] || { say "rt33 4: the reload took only ${dt2}s"; rc=1; }
+
+    stop_stack "rt33" "$conf" || rc=1
+    meas="new: ${cb#CHECK }; old: ${ca#CHECK }; idle reload ${dt1}s; long: ${cc#CHECK }, reload ${dt2}s"
+    if [ "$rc" = 0 ]; then
+        record "rt33" "PASS" "$crit" "$meas"
+    else
+        record "rt33" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- rt34: stream udp reverse proxy across a HUP ------------------------
+case_rt34() {
+    say "=== case rt34 (UDP reverse proxy across a HUP) ==="
+    local crit="through a stream udp proxy: every flow keeps one upstream port (one session) with no datagram lost, flows started before the HUP use the old generation's port parity and flows started in the window the opposite one, and the reload completes within 60 s"
+    local conf port=19534 up_ip up_port=18934 rc=0 step="" mark t0 m
+    local cp="" ca="" cb="" p_old="" p_new="" dt=-1 meas
+    case "$TARGET_IP" in *:*)
+        record "rt34" "SKIP" "$crit" "IPv4 only (the upstream is reached over IPv4)"; return 0 ;;
+    esac
+    [ "$WORKERS" = 1 ] || { record "rt34" "SKIP" "$crit" "needs --workers 1"; return 0; }
+    up_ip=$(run_client "ip -4 -o addr show $CLIENT_IF" 2>/dev/null \
+        | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [ -n "$up_ip" ] || { record "rt34" "SKIP" "$crit" "no IPv4 address on the client $CLIENT_IF"; return 0; }
+    NGX_EXTRA_MAIN="stream { upstream up_rt34 { server $up_ip:$up_port; } server { listen $port udp; proxy_pass up_rt34; proxy_timeout 20s; } }"
+    FSTACK_EXTRA_DPDK="reload_udp_idle_ms=3000"
+    conf="$OUT/ngx_rt34.conf"
+    if ! start_stack "rt34" 1 0 0; then
+        NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+        stop_stack "rt34" "$conf"
+        record "rt34" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+    m=$(master_pid)
+
+    # 1. the upstream answers through the proxy
+    step=1
+    launch_probe rt34_up 400 reload_udp.py serve --server "$up_ip" --port "$up_port" || rc=1
+    udp_flows rt34_pre 30 2 4 "$port" || rc=1
+    udp_fetch rt34_pre 30 || rc=1
+    cp=$(udp_check rt34_pre old "" "")
+    p_old=$(printf '%s' "$cp" | sed -n 's/.* parity=\([01NA]*\) .*/\1/p')
+    say "rt34 1: $cp (upstream <CLIENT_IP>:$up_port)"
+    case "$cp" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    case "$p_old" in 0|1) ;; *) rc=1 ;; esac
+    [ "$rc" = 0 ] || { stop_stack "rt34" "$conf"; record "rt34" FAIL "$crit" "step $step failed"; return 1; }
+
+    # 2. old flows, HUP, new flows inside the window
+    step=2
+    udp_flows rt34_a 90 4 25 "$port" || rc=1
+    sleep 3
+    mark=$(wc -l < "$ERRLOG"); t0=$SECONDS
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'old generation draining' 30 \
+        || { say "rt34 2: the window did not open"; rc=1; }
+    udp_flows rt34_b 60 4 6 "$port" || rc=1
+    udp_fetch rt34_b 40 || rc=1
+    udp_window_open "$mark" || { say "rt34 2: the window closed before the new flows ended"; rc=1; }
+    cb=$(udp_check rt34_b new "" "")
+    p_new=$(printf '%s' "$cb" | sed -n 's/.* parity=\([01NA]*\) .*/\1/p')
+    say "rt34 2: new flows: $cb"
+    case "$cb" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    case "$p_old$p_new" in 01|10) ;; *) say "rt34 2: parity not split ($p_old/$p_new)"; rc=1 ;; esac
+
+    # 3. the old flows kept their sessions, the old generation converges
+    step=3
+    udp_fetch rt34_a 60 || rc=1
+    ca=$(udp_check rt34_a old "" "")
+    say "rt34 3: old flows: $ca"
+    case "$ca" in "CHECK ok=1 "*"parity=$p_old "*) ;; *) rc=1 ;; esac
+    wait_log "$ERRLOG" "$mark" 'graceful reload complete' $((t0 + 120 - SECONDS)) \
+        || { say "rt34 3: the reload did not complete"; rc=1; }
+    dt=$(udp_took "$mark"); dt=${dt:-999}
+    say "rt34 3: complete after ${dt}s"
+    [ "$dt" -le 60 ] || rc=1
+
+    stop_stack "rt34" "$conf" || rc=1
+    meas="parity old=$p_old new=$p_new; new: ${cb#CHECK }; old: ${ca#CHECK }; reload ${dt}s"
+    if [ "$rc" = 0 ]; then
+        record "rt34" "PASS" "$crit" "$meas"
+    else
+        record "rt34" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- rt35: stream udp server across USR2 + WINCH -------------------------
+case_rt35() {
+    say "=== case rt35 (UDP server flows across USR2 + WINCH) ==="
+    local crit="after a priming HUP, USR2 + WINCH: flows started before the handover are answered by the old master's workers only, flows started after it by the new master's workers only, nothing lost or refused, the old workers linger until the old flows are idle (0 flows left) and exit within 60 s of the old flows ending"
+    local conf port=19535 rc=0 step="" m old new oldm="" ca="" cb="" left=-1 meas until lg=""
+    case "$TARGET_IP" in *:*)
+        record "rt35" "SKIP" "$crit" "IPv4 only"; return 0 ;;
+    esac
+    NGX_EXTRA_MAIN="stream { server { listen $(udp_listen $port); return \"pid=\$pid\"; } }"
+    FSTACK_EXTRA_DPDK="reload_udp_idle_ms=3000"
+    conf="$OUT/ngx_rt35.conf"
+    if ! start_stack "rt35" 1 0 0; then
+        NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+        stop_stack "rt35" "$conf"
+        record "rt35" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+
+    # 1. priming HUP (see rt25), then old flows and USR2 + WINCH
+    step=1
+    hup_once "$conf" || rc=1
+    oldm=$(master_pid); old=$(udp_pids "$oldm")
+    udp_flows rt35_a 90 4 25 "$port" || rc=1
+    sleep 3
+    nginx_signal "$conf" usr2 || rc=1
+    until=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$until" ] && [ ! -s "$OUT/nginx.pid.oldbin" ]; do sleep 1; done
+    [ -s "$OUT/nginx.pid.oldbin" ] || { say "rt35 1: no nginx.pid.oldbin"; rc=1; }
+    sleep 5
+    collect_owned || rc=1
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$oldm" WINCH >/dev/null || rc=1
+    until=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$until" ]; do
+        grep -q "ff usr2: handed rx to the new binary" "$ERRLOG" && break
+        sleep 1
+    done
+    grep -q "ff usr2: handed rx to the new binary" "$ERRLOG" || { say "rt35 1: no handover"; rc=1; }
+    [ "$rc" = 0 ] || { stop_stack "rt35" "$conf"; record "rt35" FAIL "$crit" "step $step failed"; return 1; }
+
+    # 2. new flows go to the new master
+    step=2
+    m=$(master_pid); new=$(udp_pids "$m")
+    udp_flows rt35_b 60 4 6 "$port" || rc=1
+    udp_fetch rt35_b 40 || rc=1
+    [ -n "$(udp_pids "$oldm" | tr ',' '\n' | grep -v -x -e "$m")" ] \
+        || { say "rt35 2: the old workers left before the new flows ended"; rc=1; }
+    cb=$(udp_check rt35_b new "$old" "$new")
+    say "rt35 2: new flows: $cb (old=$old new=$new)"
+    case "$cb" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+
+    # 3. old flows stayed, old workers leave once they are idle
+    step=3
+    udp_fetch rt35_a 60 || rc=1
+    ca=$(udp_check rt35_a old "$old" "$new")
+    say "rt35 3: old flows: $ca"
+    case "$ca" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    until=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$until" ]; do
+        left=$(udp_pids "$oldm" | tr ',' '\n' | grep -c -v -x -e "$m" -e '')
+        [ "$left" = 0 ] && break
+        sleep 2
+    done
+    lg=$(grep -o 'ff drain: UDP linger over after [0-9]* ms, [0-9]* flow(s) still active' "$ERRLOG" | tail -1)
+    say "rt35 3: old workers left=$left [$lg]"
+    [ "$left" = 0 ] || rc=1
+    case "$lg" in *", 0 flow(s) still active") ;; *) rc=1 ;; esac
+
+    stop_stack "rt35" "$conf" || rc=1
+    meas="new: ${cb#CHECK }; old: ${ca#CHECK }; old workers left=$left; ${lg#ff drain: }"
+    if [ "$rc" = 0 ]; then
+        record "rt35" "PASS" "$crit" "$meas"
+    else
+        record "rt35" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
 # RT-12. This tree has no rte_kni: KNI is a virtio_user vdev hot-plugged by
 # ff_dpdk_kni.c, the kernel-side netif is veth<port_id>, and it needs
 # /dev/vhost-net. The verdict is written for that form, not for rte_kni.
@@ -2612,7 +2908,7 @@ main() {
     [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
     zc_probe_selftest || return 4
     run_case precheck || { print_summary; return 3; }
-    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt28 rt29 rt32 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt28 rt29 rt32 rt33 rt34 rt35 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
         need_case "$t" || continue
         run_case "$t"
         [ "$CLEANUP_FAILED" = 0 ] || break

@@ -160,6 +160,9 @@ ff_socket_is_drain_conn(struct socket *so)
 	}
 	if (SOLISTENING(so))
 		return (0);
+	/* UDP flows are counted by the reload peer table */
+	if (so->so_type == SOCK_DGRAM)
+		return (0);
 	return (1);
 }
 

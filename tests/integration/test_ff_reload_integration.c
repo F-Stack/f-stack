@@ -240,6 +240,7 @@ int   ff_socket(int d, int t, int p) { (void)d;(void)t;(void)p; return -1; }
  * behavior, linker resolution only). */
 int   ff_socket_snd_pending(void) { return 0; }
 int   ff_socket_drain_count(void) { return 0; }
+void  ff_udp_flow_peer_snapshot(void) {}
 int   ff_syncache_count(void) { return 0; }
 void  ff_syncache_counters(uint64_t *a, uint64_t *b)
 { if (a) *a = 0; if (b) *b = 0; }
@@ -453,6 +454,7 @@ flow_key_v4(ff_flow_key_t *k, uint32_t foreign, uint32_t local,
 {
     memset(k, 0, sizeof(*k));
     k->af = FF_FLOW_MAP_V4;
+    k->proto = 6;
     k->src[0] = foreign;                     /* foreign address first */
     k->dst[0] = local;
     k->sport = sport;
@@ -724,6 +726,7 @@ it_flow_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
 
     memset(&k, 0, sizeof(k));
     k.af = FF_FLOW_MAP_V4;
+    k.proto = 6;
     memcpy(&k.src[0], ip + 12, 4);               /* foreign */
     memcpy(&k.dst[0], ip + 16, 4);               /* local */
     memcpy(&k.sport, tp, 2);

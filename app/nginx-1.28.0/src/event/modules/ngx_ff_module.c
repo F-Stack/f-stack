@@ -415,6 +415,7 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
             return queue_id;            /* TCP/UDP only */
         }
         key.af = FF_FLOW_MAP_V4;
+        key.proto = proto;
         memcpy(&key.src[0], p + off + 12, 4);   /* foreign (src) address */
         memcpy(&key.dst[0], p + off + 16, 4);   /* local (dst) address */
         l4 = (uint16_t) (off + l4);
@@ -429,6 +430,7 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
             return queue_id;
         }
         key.af = FF_FLOW_MAP_V6;
+        key.proto = proto;
         memcpy(&key.src[0], p + off + 8, 16);
         memcpy(&key.dst[0], p + off + 24, 16);
         l4 = (uint16_t) (off + 40);
@@ -463,6 +465,20 @@ ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
 
     if (ff_flow_map_lookup(&key)) {
         return queue_id;                /* this generation's flow: keep it */
+    }
+
+    /* UDP has no SYN: only the flows G_old published go to it */
+    if (proto == 17) {
+        switch (ff_flow_peer_classify(&key)) {
+        case FF_FLOW_PEER_LEGACY:
+        case FF_FLOW_PEER_FWD:
+            return FF_DISPATCH_PEER;
+        case FF_FLOW_PEER_LEARN:
+            (void) ff_flow_map_insert(&key);
+            return queue_id;
+        default:
+            return queue_id;
+        }
     }
 
     return FF_DISPATCH_PEER;            /* miss: forward to G_old */

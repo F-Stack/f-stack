@@ -33,6 +33,7 @@
 #include <pthread.h>
 
 #include "ff_api.h"
+#include "ff_flow_peer.h"
 #include "ff_msg.h"               /* struct ff_traffic_args */
 #include "ff_config.h"            /* MAX_PKT_BURST / ff_hw_features (needed by ff_memory.h) */
 #include "ff_dpdk_if.h"
@@ -74,9 +75,16 @@ __wrap_getppid(void)
     return p1_parent ? p1_parent : __real_getppid();
 }
 
+/* RX-40: fake UDP peer tables */
+static struct ff_flow_peer_tab rx40_own, rx40_peer;
+static struct rte_memzone rx40_mz_own, rx40_mz_peer;
+static int rx40_fake_mz;
+
 const struct rte_memzone *
 __wrap_rte_memzone_lookup(const char *name)
 {
+    if (rx40_fake_mz && strncmp(name, "ff_fpeer_", 9) == 0)
+        return strstr(name, "_g0") ? &rx40_mz_own : &rx40_mz_peer;
     if (p1_missing_directory && strcmp(name, FF_RELOAD_GENDIR_NAME) == 0)
         return NULL;
     return __real_rte_memzone_lookup(name);
@@ -195,6 +203,7 @@ int   ff_socket(int d, int t, int p) { (void)d;(void)t;(void)p; return -1; }
  * executed). */
 int ff_socket_snd_pending(void) { return 0; }
 int ff_socket_drain_count(void) { return 0; }
+void ff_udp_flow_peer_snapshot(void) {}
 int ff_syncache_count(void) { return 0; }
 void ff_syncache_counters(uint64_t *a, uint64_t *b)
 { if (a) *a = 0; if (b) *b = 0; }
@@ -3159,6 +3168,249 @@ test_rx39_port_parity_rules(void **state)
     }
 }
 
+/* RX-40: TCP and UDP of the same four-tuple are different flows */
+static void
+test_rx40_flow_key_proto(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t t, u;
+
+    (void)state;
+
+    memset(&t, 0, sizeof(t));
+    t.af = FF_FLOW_MAP_V4;
+    t.proto = 6;
+    t.src[0] = 0x0a000001;
+    t.dst[0] = 0x0a000002;
+    t.sport = 0x1234;
+    t.dport = 0x0035;
+    u = t;
+    u.proto = 17;
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+    ff_flow_map_open();
+
+    assert_int_equal(ff_flow_map_insert(&t), 0);
+    assert_int_equal(ff_flow_map_lookup(&t), 1);
+    assert_int_equal(ff_flow_map_lookup(&u), 0);
+    assert_int_equal(ff_flow_map_insert(&u), 0);
+    assert_int_equal(ff_flow_map_revoke(&t), 1);
+    assert_int_equal(ff_flow_map_lookup(&t), 0);
+    assert_int_equal(ff_flow_map_lookup(&u), 1);
+
+    ff_flow_map_close();
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* RX-40: the UDP peer table primitives (note / find / age / reuse) */
+static void
+test_rx40_flow_peer_table(void **state)
+{
+    static struct ff_flow_peer_ent tab[64];
+    ff_flow_key_t k;
+    uint64_t fp, fp2;
+    uint32_t i;
+
+    (void)state;
+
+    memset(tab, 0, sizeof(tab));
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.proto = 17;
+    k.src[0] = 0x0a000001;
+    k.dst[0] = 0x0a000002;
+    k.sport = 0x1111;
+    k.dport = 0x2222;
+    fp = ff_flow_peer_fp(&k);
+    assert_true(fp != 0);
+    k.proto = 6;
+    assert_true(ff_flow_peer_fp(&k) != fp);
+    k.proto = 17;
+
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp, 1000, 100),
+        FF_FLOW_PEER_TAB_MISS);
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp, 1000, 100), 0);
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp, 1050, 100), 1);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp, 1150, 100),
+        FF_FLOW_PEER_TAB_LIVE);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp, 1151, 100),
+        FF_FLOW_PEER_TAB_AGED);
+    assert_int_equal(ff_flow_peer_tab_active(tab, 64, 1150, 100), 1);
+    assert_int_equal(ff_flow_peer_tab_active(tab, 64, 1151, 100), 0);
+    /* the clock wraps */
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp, 0xffffffe0u, 100), 1);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp, 0x10, 100),
+        FF_FLOW_PEER_TAB_LIVE);
+
+    /* fill one probe window with colliding fingerprints */
+    memset(tab, 0, sizeof(tab));
+    for (i = 0; i < FF_FLOW_PEER_PROBE; i++)
+        assert_int_equal(ff_flow_peer_tab_note(tab, 64, 5 + 64 * (i + 1),
+            1000, 100), 0);
+    fp2 = 5 + 64 * (FF_FLOW_PEER_PROBE + 1);
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp2, 1050, 100), -1);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp2, 1050, 100),
+        FF_FLOW_PEER_TAB_MISS);
+    /* once they are idle a slot is reused, the others stay findable */
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp2, 1101, 100), 0);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp2, 1101, 100),
+        FF_FLOW_PEER_TAB_LIVE);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, 5 + 64 * 2, 1101, 100),
+        FF_FLOW_PEER_TAB_AGED);
+    assert_int_equal(ff_flow_peer_tab_active(tab, 64, 1101, 100), 1);
+}
+
+/* RX-40: classify rules and the writer state machine, on two fake tables
+ * handed out by the rte_memzone_lookup wrap (g0 = own, g1 = peer) */
+static uint32_t
+rx40_now(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + ts.tv_nsec / 1000000);
+}
+
+static void
+test_rx40_flow_peer_rules(void **state)
+{
+    static struct ff_reload_state st;
+    ff_flow_key_t k;
+    uint64_t wid;
+    int saved_proc = ff_global_cfg.dpdk.proc_id;
+
+    (void)state;
+
+    memset(&rx40_own, 0, sizeof(rx40_own));
+    memset(&rx40_peer, 0, sizeof(rx40_peer));
+    rx40_mz_own.addr = &rx40_own;
+    rx40_mz_own.len = sizeof(rx40_own);
+    rx40_mz_peer.addr = &rx40_peer;
+    rx40_mz_peer.len = sizeof(rx40_peer);
+    rx40_peer.h.magic = FF_FLOW_PEER_MAGIC;
+    rx40_fake_mz = 1;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    st.epoch = 7;
+    st.reload_active = 1;
+    st.target_gen = 0;
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.proc_id = 1;
+    ff_global_cfg.dpdk.reload_udp_idle_ms = 100;
+    p1_process_type = RTE_PROC_SECONDARY;
+    ff_reload_attach_state(&st);
+    ff_reload_set_gen(0);
+    ff_reload_set_slot(0);
+
+    ff_flow_peer_attach();
+    assert_int_equal(rx40_own.h.magic, FF_FLOW_PEER_MAGIC);
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.proto = 17;
+    k.src[0] = 0x0a000001;
+    k.dst[0] = 0x0a000002;
+    k.sport = 0x1111;
+    k.dport = 0x2222;
+
+    /* reader: gen 0 is the target, the peer table is g1 */
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LEGACY);
+
+    wid = ((uint64_t)ff_reload_epoch() << 32) | 7;
+    rx40_peer.h.wid = wid;
+    rx40_peer.h.mode = FF_FLOW_PEER_MODE_HUP;
+    rx40_peer.h.pid = (int32_t)getpid();
+    rx40_peer.h.idle_ms = 100;
+    rx40_peer.h.state = FF_FLOW_PEER_PUBLISHING;
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LOCAL);
+    ff_flow_peer_tab_note(rx40_peer.e, FF_FLOW_PEER_CAP, ff_flow_peer_fp(&k),
+        rx40_now(), 100);
+    ff_flow_peer_tick();
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_FWD);
+    /* the writer sampled its clock after the reader did */
+    ff_flow_peer_tab_note(rx40_peer.e, FF_FLOW_PEER_CAP, ff_flow_peer_fp(&k),
+        rx40_now() + 5, 100);
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_FWD);
+    ff_flow_peer_tab_note(rx40_peer.e, FF_FLOW_PEER_CAP, ff_flow_peer_fp(&k),
+        rx40_now() - 1000, 100);
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LEARN);
+    rx40_peer.h.wid = wid + 1;
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LEGACY);
+    rx40_peer.h.wid = wid;
+    rx40_peer.h.mode = FF_FLOW_PEER_MODE_USR2;
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LEGACY);
+    rx40_peer.h.mode = FF_FLOW_PEER_MODE_HUP;
+    rx40_peer.h.state = FF_FLOW_PEER_HANDED;
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LOCAL);
+
+    /* writer: gen 0 drains once gen 1 is the target */
+    st.target_gen = 1;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_PUBLISHING);
+    assert_true(rx40_own.h.wid == wid);
+    assert_int_equal(rx40_own.h.mode, FF_FLOW_PEER_MODE_HUP);
+    assert_int_equal(ff_flow_peer_active_flows(), 0);
+    ff_flow_peer_note(&k);
+    ff_flow_peer_note(&k);
+
+    st.reload_active = 0;
+    ff_flow_peer_tick();
+    assert_int_equal(ff_flow_peer_active_flows(), 0);
+    /* rx stayed here: the round was given up */
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+    st.reload_active = 1;
+    st.epoch = 8;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_PUBLISHING);
+    usleep(110 * 1000);
+    ff_flow_peer_tick();
+    ff_flow_peer_note(&k);
+    assert_int_equal(ff_flow_peer_active_flows(), 1);
+    /* the HUP round is given up */
+    st.reload_active = 0;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+    /* rx already flipped to the other generation: too late to start */
+    st.rx_owner_gen = 1;
+    st.reload_active = 1;
+    st.epoch = 9;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+    st.reload_active = 0;
+    st.rx_owner_gen = 0;
+    /* a newer master shows up (USR2) */
+    st.peer_epoch = ff_reload_epoch() + 3;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_PUBLISHING);
+    assert_int_equal(rx40_own.h.mode, FF_FLOW_PEER_MODE_USR2);
+    assert_true(rx40_own.h.wid == (((uint64_t)st.peer_epoch << 32)
+        | ff_reload_epoch()));
+    ff_flow_peer_note(&k);
+    assert_int_equal(ff_flow_peer_linger(), 0);   /* rx still here */
+    ff_flow_peer_stop();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_HANDED);
+    assert_true(rx40_own.h.noted >= 1);
+    assert_int_equal(ff_flow_peer_active_flows(), 0);
+
+    rx40_fake_mz = 0;
+    p1_process_type = -1;
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.proc_id = saved_proc;
+}
+
 static void
 test_rx39_lport_split(void **state)
 {
@@ -3336,6 +3588,9 @@ main(void)
         cmocka_unit_test(test_rx15_primary_purges_orphaned_rings),
         cmocka_unit_test(test_rx39_port_parity_rules),
         cmocka_unit_test(test_rx39_lport_split),
+        cmocka_unit_test(test_rx40_flow_key_proto),
+        cmocka_unit_test(test_rx40_flow_peer_table),
+        cmocka_unit_test(test_rx40_flow_peer_rules),
         cmocka_unit_test_setup_teardown(test_rx39_gendir_parity, p1_setup, p1_teardown),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);

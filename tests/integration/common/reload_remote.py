@@ -33,7 +33,7 @@ def run(root, name, seconds, script, argv):
     status, logfile = job_paths(root, name)
     seconds = int(seconds)
     if not 1 <= seconds <= 14400 or script not in ("m4_lc.py", "m4_cps.py", "m4_stream.py", "m4_outage.py",
-                                                       "reload_upstream.py"):
+                                                       "reload_upstream.py", "reload_udp.py"):
         raise ValueError("invalid probe")
     if status.exists() or logfile.exists():
         raise ValueError("job already exists")

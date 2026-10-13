@@ -225,7 +225,9 @@ ngx_sendmsg_vec(ngx_connection_t *c, ngx_iovec_t *vec)
 
 #if (NGX_HAVE_ADDRINFO_CMSG)
 #if (NGX_HAVE_FSTACK)
-    if ((!c->listening->belong_to_host) && c->listening && c->listening->wildcard && c->local_sockaddr) {
+    if (c->listening && !c->listening->belong_to_host
+        && c->listening->wildcard && c->local_sockaddr)
+    {
 #else
     if (c->listening && c->listening->wildcard && c->local_sockaddr) {
 #endif

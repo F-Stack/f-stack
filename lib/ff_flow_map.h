@@ -48,13 +48,14 @@ extern "C" {
 #define FF_FLOW_MAP_V6  1
 
 /* 40 bytes, no padding: the compare walks the raw bytes, while the hash mixes
- * only the bytes that carry identity (af, the addresses this af uses, ports).
+ * only the bytes that carry identity (af, proto, the addresses this af uses,
+ * ports).
  * Addresses and ports are kept in network byte order — the table only ever
  * compares for equality, so no byte-swapping is needed (and swapping on the
  * syncache hook would cost a division-free but still useless ntohl per SYN). */
 struct ff_flow_key {
     uint8_t  af;        /* FF_FLOW_MAP_V4 / FF_FLOW_MAP_V6 */
-    uint8_t  reserved;  /* keep zero: covered by the 40-byte compare */
+    uint8_t  proto;     /* IPPROTO_TCP (6) / IPPROTO_UDP (17) */
     uint16_t pad;       /* keep zero: covered by the 40-byte compare */
     uint32_t src[4];    /* foreign address; V4 uses src[0] only */
     uint32_t dst[4];    /* local address;   V4 uses dst[0] only */
@@ -121,7 +122,7 @@ void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
 void ff_flow_map_cap_set(uint32_t cap);
 
 /* Ephemeral port split between two coexisting generations: parity 0/1
- * admits only even/odd TCP ports (host order), a negative parity admits
+ * admits only even/odd TCP/UDP ports (host order), a negative parity admits
  * every port (the default, and always so with graceful_reload=0). */
 void ff_flow_map_lport_split(int parity);
 int ff_flow_map_lport_ok(uint16_t lport);

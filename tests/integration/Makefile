@@ -177,7 +177,8 @@ INT_LIB_OBJS := \
     $(LIB_OBJS_DIR)/ff_reload.o \
     $(LIB_OBJS_DIR)/ff_reload_gendir.o \
     $(LIB_OBJS_DIR)/ff_drain_ring.o \
-    $(LIB_OBJS_DIR)/ff_flow_map.o
+    $(LIB_OBJS_DIR)/ff_flow_map.o \
+    $(LIB_OBJS_DIR)/ff_flow_peer.o
 
 test_ff_dpdk_if_integration: test_ff_dpdk_if_integration.o $(INT_LIB_OBJS) $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \
@@ -214,7 +215,8 @@ RELOAD_LIB_OBJS := \
     $(LIB_OBJS_DIR)/ff_reload.o \
     $(LIB_OBJS_DIR)/ff_reload_gendir.o \
     $(LIB_OBJS_DIR)/ff_drain_ring.o \
-    $(LIB_OBJS_DIR)/ff_flow_map.o
+    $(LIB_OBJS_DIR)/ff_flow_map.o \
+    $(LIB_OBJS_DIR)/ff_flow_peer.o
 
 test_ff_reload_integration: test_ff_reload_integration.o $(RELOAD_LIB_OBJS) $(COMMON_OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS_BASE) $(BASE_WRAPS) \

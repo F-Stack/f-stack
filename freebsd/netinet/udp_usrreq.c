@@ -97,6 +97,11 @@
 
 #include <machine/in_cksum.h>
 
+#ifdef FSTACK
+#include <netinet/in_pcb_var.h>
+#include "ff_flow_peer.h"
+#endif
+
 #include <security/mac/mac_framework.h>
 
 /*
@@ -702,6 +707,11 @@ udp_input(struct mbuf **mp, int *offp, int proto)
 		UDPLITE_PROBE(receive, NULL, inp, ip, inp, uh);
 	else
 		UDP_PROBE(receive, NULL, inp, ip, inp, uh);
+#ifdef FSTACK
+	if (proto == IPPROTO_UDP && ff_flow_peer_recording())
+		in_pcb_flow_peer_note(0, &ip->ip_src, &ip->ip_dst,
+		    uh->uh_sport, uh->uh_dport);
+#endif
 	if (!udp_append(inp, ip, m, iphlen, udp_in))
 		INP_RUNLOCK(inp);
 	return (IPPROTO_DONE);
@@ -711,6 +721,30 @@ badunlocked:
 	return (IPPROTO_DONE);
 }
 #endif /* INET */
+
+#ifdef FSTACK
+/* Record every connected UDP pcb into the reload peer table. */
+void
+ff_udp_flow_peer_snapshot(void)
+{
+	struct inpcb_iterator inpi = INP_ALL_ITERATOR(&V_udbinfo,
+	    INPLOOKUP_RLOCKPCB);
+	struct inpcb *inp;
+
+	while ((inp = inp_next(&inpi)) != NULL) {
+		if (inp->inp_fport == 0)
+			continue;
+#ifdef INET6
+		if (inp->inp_vflag & INP_IPV6)
+			in_pcb_flow_peer_note(1, &inp->in6p_faddr,
+			    &inp->in6p_laddr, inp->inp_fport, inp->inp_lport);
+		else
+#endif
+			in_pcb_flow_peer_note(0, &inp->inp_faddr,
+			    &inp->inp_laddr, inp->inp_fport, inp->inp_lport);
+	}
+}
+#endif
 
 /*
  * Notify a udp user of an asynchronous error; just wake up so that they can
@@ -1517,6 +1551,11 @@ udp_send(struct socket *so, int flags, struct mbuf *m, struct sockaddr *addr,
 		UDPLITE_PROBE(send, NULL, inp, &ui->ui_i, inp, &ui->ui_u);
 	else
 		UDP_PROBE(send, NULL, inp, &ui->ui_i, inp, &ui->ui_u);
+#ifdef FSTACK
+	if (pr == IPPROTO_UDP && ff_flow_peer_recording())
+		in_pcb_flow_peer_note(0, &ui->ui_dst, &ui->ui_src,
+		    ui->ui_dport, ui->ui_sport);
+#endif
 	error = ip_output(m, inp->inp_options,
 	    use_cached_route ? &inp->inp_route : NULL, ipflags,
 	    inp->inp_moptions, inp);

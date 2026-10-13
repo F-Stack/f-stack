@@ -63,6 +63,9 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
  * pair. Must stay a power of two — rte_ring silently rounds a non-power-of-two
  * count up, and ff_config.c rejects anything else. */
 #define FF_DRAIN_RING_SIZE_DEFAULT  2048U
+#define FF_RELOAD_UDP_IDLE_MS_DEFAULT 10000U
+#define FF_RELOAD_UDP_IDLE_MS_MIN   100U
+#define FF_RELOAD_UDP_IDLE_MS_MAX   3600000U
 
 #define VIP_MAX_NUM 64
 
@@ -307,6 +310,8 @@ struct ff_config {
         /* capacity in entries of one generation's drain_ring
          * pair (0 -> FF_DRAIN_RING_SIZE_DEFAULT, see above). */
         unsigned drain_ring_size;
+        /* a UDP flow idle this long has ended (ms, 0 -> default) */
+        unsigned reload_udp_idle_ms;
         int promiscuous;
         int nb_vdev;
         int nb_bond;

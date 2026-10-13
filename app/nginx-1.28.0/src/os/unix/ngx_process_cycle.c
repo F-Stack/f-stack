@@ -4022,6 +4022,178 @@ ngx_ff_worker_may_exit(ngx_cycle_t *cycle)
 }
 
 
+/* graceful reload, UDP: the stream udp sessions of this worker */
+static ngx_uint_t   ngx_ff_udp_linger_state;    /* 0 no, 1 on, 2 over */
+static ngx_msec_t   ngx_ff_udp_linger_msec;
+
+
+static ngx_uint_t
+ngx_ff_udp_session(ngx_connection_t *c)
+{
+    return c->fd != (ngx_socket_t) -1 && c->read != NULL
+           && !c->read->accept && !c->read->channel && !c->read->resolver
+           && c->type == SOCK_DGRAM && c->shared && c->listening != NULL
+           && c->sockaddr != NULL && c->local_sockaddr != NULL;
+}
+
+
+static ngx_int_t
+ngx_ff_udp_key(ngx_connection_t *c, ff_flow_key_t *k)
+{
+    struct sockaddr_in   *f4, *l4;
+#if (NGX_HAVE_INET6)
+    struct sockaddr_in6  *f6, *l6;
+#endif
+
+    ngx_memzero(k, sizeof(ff_flow_key_t));
+    k->proto = IPPROTO_UDP;
+
+    if (c->sockaddr->sa_family == AF_INET
+        && c->local_sockaddr->sa_family == AF_INET)
+    {
+        f4 = (struct sockaddr_in *) c->sockaddr;
+        l4 = (struct sockaddr_in *) c->local_sockaddr;
+        if (l4->sin_addr.s_addr == INADDR_ANY) {
+            return NGX_DECLINED;
+        }
+        k->af = FF_FLOW_MAP_V4;
+        ngx_memcpy(&k->src[0], &f4->sin_addr, 4);
+        ngx_memcpy(&k->dst[0], &l4->sin_addr, 4);
+        k->sport = f4->sin_port;
+        k->dport = l4->sin_port;
+        return NGX_OK;
+    }
+
+#if (NGX_HAVE_INET6)
+    if (c->sockaddr->sa_family == AF_INET6
+        && c->local_sockaddr->sa_family == AF_INET6)
+    {
+        f6 = (struct sockaddr_in6 *) c->sockaddr;
+        l6 = (struct sockaddr_in6 *) c->local_sockaddr;
+        if (IN6_IS_ADDR_UNSPECIFIED(&l6->sin6_addr)) {
+            return NGX_DECLINED;
+        }
+        if (IN6_IS_ADDR_V4MAPPED(&f6->sin6_addr)) {
+            if (!IN6_IS_ADDR_V4MAPPED(&l6->sin6_addr)) {
+                return NGX_DECLINED;
+            }
+            k->af = FF_FLOW_MAP_V4;
+            ngx_memcpy(&k->src[0], &f6->sin6_addr.s6_addr[12], 4);
+            ngx_memcpy(&k->dst[0], &l6->sin6_addr.s6_addr[12], 4);
+        } else {
+            k->af = FF_FLOW_MAP_V6;
+            ngx_memcpy(k->src, &f6->sin6_addr, 16);
+            ngx_memcpy(k->dst, &l6->sin6_addr, 16);
+        }
+        k->sport = f6->sin6_port;
+        k->dport = l6->sin6_port;
+        return NGX_OK;
+    }
+#endif
+
+    return NGX_DECLINED;
+}
+
+
+/* called by the lib when this generation starts publishing its UDP flows */
+static void
+ngx_ff_udp_snapshot(void)
+{
+    ngx_uint_t         i;
+    ngx_connection_t  *c;
+    ff_flow_key_t      k;
+
+    c = ngx_cycle->connections;
+
+    for (i = 0; i < ngx_cycle->connection_n; i++) {
+        if (ngx_ff_udp_session(&c[i])
+            && ngx_ff_udp_key(&c[i], &k) == NGX_OK)
+        {
+            ff_flow_peer_publish(&k);
+        }
+    }
+}
+
+
+/* After USR2 the old master quits its workers right after the handover:
+ * keep serving the UDP flows still active, within one shutdown budget. */
+static ngx_uint_t
+ngx_ff_udp_linger(ngx_cycle_t *cycle)
+{
+    int               n;
+    ngx_msec_t        cap, el;
+    ngx_core_conf_t  *ccf;
+
+    if (ngx_ff_udp_linger_state == 2 || ngx_terminate) {
+        return 0;
+    }
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    cap = ccf->shutdown_timeout ? ccf->shutdown_timeout
+                                : ngx_ff_drain_cap_ms(cycle);
+    n = ff_flow_peer_active_flows();
+
+    if (ngx_ff_udp_linger_state == 0) {
+        if (!ff_flow_peer_linger()) {
+            return 0;
+        }
+        ngx_ff_udp_linger_state = 1;
+        ngx_ff_udp_linger_msec = ngx_current_msec;
+        ngx_set_shutdown_timer(cycle);
+        ngx_ff_drain_start(cycle);
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "ff drain: UDP linger: %d flow(s), up to %M ms", n, cap);
+        return 1;
+    }
+
+    el = ngx_current_msec - ngx_ff_udp_linger_msec;
+
+    if (n > 0 && el < cap) {
+        if (ngx_current_msec - ngx_ff_drain_idle_msec >= NGX_FF_SND_POLL_MS) {
+            ngx_ff_drain_idle_msec = ngx_current_msec;
+            ngx_close_idle_connections(cycle);
+        }
+        return 1;
+    }
+
+    ngx_ff_udp_linger_state = 2;
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff drain: UDP linger over after %M ms, %d flow(s) still "
+                  "active", el, n);
+    return 0;
+}
+
+
+/* the new generation takes every UDP flow over: end the sessions here */
+static void
+ngx_ff_udp_handover(ngx_cycle_t *cycle)
+{
+    ngx_uint_t         i, n;
+    ngx_connection_t  *c;
+
+    ff_flow_peer_stop();
+
+    n = 0;
+    c = cycle->connections;
+
+    for (i = 0; i < cycle->connection_n; i++) {
+        if (!ngx_ff_udp_session(&c[i])) {
+            continue;
+        }
+        c[i].close = 1;
+        c[i].error = 1;
+        c[i].read->handler(c[i].read);
+        n++;
+    }
+
+    if (n) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "ff drain: closed %ui UDP session(s), UDP flows "
+                      "handed over", n);
+    }
+}
+
+
 static int
 ngx_worker_process_cycle_loop(void *arg)
 {
@@ -4045,7 +4217,10 @@ ngx_worker_process_cycle_loop(void *arg)
         ngx_worker_process_exit(cycle);
     }
 
-    if (ngx_quit) {
+    if (ngx_quit
+        && (ngx_exiting || !ngx_ff_graceful_reload
+            || !ngx_ff_udp_linger(cycle)))
+    {
         ngx_quit = 0;
         ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                       "gracefully shutting down");
@@ -4053,7 +4228,9 @@ ngx_worker_process_cycle_loop(void *arg)
 
         if (!ngx_exiting) {
             ngx_exiting = 1;
-            ngx_set_shutdown_timer(cycle);
+            if (ngx_ff_udp_linger_state == 0) {
+                ngx_set_shutdown_timer(cycle);
+            }
 
             if (ngx_ff_graceful_reload && ff_is_drain_generation()) {
                 /* graceful drain: stop accepting but keep the
@@ -4067,13 +4244,18 @@ ngx_worker_process_cycle_loop(void *arg)
                  * drain generation); this call is the idempotent backstop. */
                 ngx_ff_drain_start(cycle);
 
+                /* before the UDP listeners stop being read */
+                ngx_ff_udp_handover(cycle);
+
                 /* as before: stop accepting but keep the listeners
                  * open until the half-open window closes (poll below). Only
                  * here, and not already in ngx_ff_drain_start(), because a
                  * handover-instant accept queue must still be served. */
                 ngx_ff_stop_accept_events(cycle);
                 ngx_ff_listen_close_pending = 1;
-                ngx_ff_listen_close_quit_msec = ngx_current_msec;
+                ngx_ff_listen_close_quit_msec = ngx_ff_udp_linger_state
+                                                ? ngx_ff_udp_linger_msec
+                                                : ngx_current_msec;
                 ngx_ff_listen_close_timer.handler =
                     ngx_ff_listen_close_timer_handler;
                 ngx_ff_listen_close_timer.log = cycle->log;
@@ -4372,6 +4554,10 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
          * main loop can ack the T2 park barrier (helpers forked through
          * ngx_worker_process_init(worker == -1) never get here). */
         ff_reload_set_slot(ngx_process_slot);
+
+        if (ngx_ff_graceful_reload) {
+            ff_flow_peer_snapshot_regist(ngx_ff_udp_snapshot);
+        }
 
         /* only a worker 0 forked out of ngx_start_worker_processes()
          * has a master waiting on this semaphore; a same-slot respawn has

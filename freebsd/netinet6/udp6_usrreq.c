@@ -122,6 +122,11 @@
 
 #include <security/mac/mac_framework.h>
 
+#ifdef FSTACK
+#include <netinet/in_pcb_var.h>
+#include "ff_flow_peer.h"
+#endif
+
 VNET_DEFINE(int, zero_checksum_port) = 0;
 #define	V_zero_checksum_port	VNET(zero_checksum_port)
 SYSCTL_INT(_net_inet6_udp6, OID_AUTO, rfc6935_port, CTLFLAG_VNET | CTLFLAG_RW,
@@ -548,6 +553,11 @@ skip_checksum:
 		UDPLITE_PROBE(receive, NULL, inp, ip6, inp, uh);
 	else
 		UDP_PROBE(receive, NULL, inp, ip6, inp, uh);
+#ifdef FSTACK
+	if (nxt == IPPROTO_UDP && ff_flow_peer_recording())
+		in_pcb_flow_peer_note(1, &ip6->ip6_src, &ip6->ip6_dst,
+		    uh->uh_sport, uh->uh_dport);
+#endif
 	if (udp6_append(inp, m, off, fromsa) == 0)
 		INP_RUNLOCK(inp);
 	*mp = NULL;
@@ -956,6 +966,11 @@ udp6_send(struct socket *so, int flags_arg, struct mbuf *m,
 		UDPLITE_PROBE(send, NULL, inp, ip6, inp, udp6);
 	else
 		UDP_PROBE(send, NULL, inp, ip6, inp, udp6);
+#ifdef FSTACK
+	if (nxt == IPPROTO_UDP && ff_flow_peer_recording())
+		in_pcb_flow_peer_note(1, &ip6->ip6_dst, &ip6->ip6_src,
+		    udp6->uh_dport, udp6->uh_sport);
+#endif
 	error = ip6_output(m, optp,
 	    INP_WLOCKED(inp) ? &inp->inp_route6 : NULL, flags,
 	    inp->in6p_moptions, NULL, inp);

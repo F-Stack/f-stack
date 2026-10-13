@@ -110,6 +110,7 @@
 #ifdef FSTACK
 #include "ff_host_interface.h"
 #include "ff_flow_map.h"
+#include "ff_flow_peer.h"
 #ifdef INET6
 #include <netinet6/scope6_var.h>
 #endif
@@ -763,29 +764,40 @@ in_pcbbind(struct inpcb *inp, struct sockaddr_in *sin, int flags,
 #ifdef FSTACK
 /*
  * Graceful reload: an active TCP connect is recorded in the flow map before
- * its SYN goes out, and its ephemeral port keeps the parity of this
- * generation, so the SYN-ACK and the rest of the flow stay here while the
- * other generation drains.  Key addresses and ports are in network byte
- * order; the port predicate takes host order.
+ * its SYN goes out, and TCP/UDP ephemeral ports keep the parity of this
+ * generation, so the replies stay here while the other generation drains.
+ * Key addresses and ports are in network byte order; the port predicate
+ * takes host order.
  */
+static int
+in_pcb_proto(const struct inpcb *inp)
+{
+	if (inp->inp_socket == NULL)
+		return (0);
+	return (inp->inp_socket->so_proto->pr_protocol);
+}
+
 static int
 in_pcb_is_tcp(const struct inpcb *inp)
 {
-	return (inp->inp_socket != NULL &&
-	    inp->inp_socket->so_proto->pr_protocol == IPPROTO_TCP);
+	return (in_pcb_proto(inp) == IPPROTO_TCP);
 }
 
 static int
 in_pcb_lport_gen_ok(const struct inpcb *inp, u_short port)
 {
-	return (ff_flow_map_lport_ok(port) || !in_pcb_is_tcp(inp));
+	int p = in_pcb_proto(inp);
+
+	return (ff_flow_map_lport_ok(port) ||
+	    (p != IPPROTO_TCP && p != IPPROTO_UDP));
 }
 
 static void
-in_pcb_flow_key(struct ff_flow_key *k, int v6, const void *faddr,
+in_pcb_flow_key(struct ff_flow_key *k, int v6, int proto, const void *faddr,
     const void *laddr, u_short fport, u_short lport)
 {
 	bzero(k, sizeof(*k));
+	k->proto = proto;
 #ifdef INET6
 	if (v6) {
 		struct in6_addr a;
@@ -817,7 +829,7 @@ in_pcb_flow_admit(struct inpcb *inp, int v6, const void *faddr,
 
 	if (!ff_flow_map_active() || !in_pcb_is_tcp(inp))
 		return (0);
-	in_pcb_flow_key(&k, v6, faddr, laddr, fport, lport);
+	in_pcb_flow_key(&k, v6, IPPROTO_TCP, faddr, laddr, fport, lport);
 	/* A passive connection was admitted by the syncache already. */
 	if (ff_flow_map_lookup(&k))
 		return (0);
@@ -836,13 +848,24 @@ in_pcb_flow_revoke(struct inpcb *inp)
 	inp->inp_flags2 &= ~INP_FF_FLOWMAP;
 #ifdef INET6
 	if (inp->inp_vflag & INP_IPV6)
-		in_pcb_flow_key(&k, 1, &inp->in6p_faddr, &inp->in6p_laddr,
-		    inp->inp_fport, inp->inp_lport);
+		in_pcb_flow_key(&k, 1, IPPROTO_TCP, &inp->in6p_faddr,
+		    &inp->in6p_laddr, inp->inp_fport, inp->inp_lport);
 	else
 #endif
-		in_pcb_flow_key(&k, 0, &inp->inp_faddr, &inp->inp_laddr,
-		    inp->inp_fport, inp->inp_lport);
+		in_pcb_flow_key(&k, 0, IPPROTO_TCP, &inp->inp_faddr,
+		    &inp->inp_laddr, inp->inp_fport, inp->inp_lport);
 	ff_flow_map_revoke(&k);
+}
+
+/* A UDP four-tuple this generation serves, for the reload peer table. */
+void
+in_pcb_flow_peer_note(int v6, const void *faddr, const void *laddr,
+    u_short fport, u_short lport)
+{
+	struct ff_flow_key k;
+
+	in_pcb_flow_key(&k, v6, IPPROTO_UDP, faddr, laddr, fport, lport);
+	ff_flow_peer_note(&k);
 }
 #endif
 

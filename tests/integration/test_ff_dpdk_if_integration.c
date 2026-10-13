@@ -150,6 +150,7 @@ int   ff_socket(int d, int t, int p) { (void)d;(void)t;(void)p; return -1; }
  * this harness) and never reached by our one main_loop pass. */
 int ff_socket_snd_pending(void) { return 0; }
 int ff_socket_drain_count(void) { return 0; }
+void  ff_udp_flow_peer_snapshot(void) {}
 int ff_syncache_count(void) { return 0; }
 void  ff_syncache_counters(uint64_t *a, uint64_t *b)
 { if (a) *a = 0; if (b) *b = 0; }

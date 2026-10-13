@@ -94,7 +94,8 @@ static uint64_t g_alloc_fail;
 static uint64_t g_revoked;
 
 /* Portable word hash, no ISA or DPDK dependency. Only the bytes that carry
- * identity are mixed (V4 leaves src[1.3]/dst[1.3] zero), the two address
+ * identity are mixed (af, proto, addresses, ports; V4 leaves src[1.3]/dst[1.3]
+ * zero), the two address
  * chains run in parallel to shorten the multiply chain, and the tail is
  * avalanched because the index comes from the low bits (h & mask). */
 static uint32_t
@@ -110,7 +111,8 @@ flow_hash(const struct ff_flow_key *k)
         b = (b ^ k->dst[i]) * 16777619u;
     }
     h = a * 16777619u ^ b;
-    h ^= (uint32_t)k->af + (((uint32_t)k->sport << 16) | k->dport);
+    h ^= ((uint32_t)k->af | ((uint32_t)k->proto << 8))
+        + (((uint32_t)k->sport << 16) | k->dport);
     h *= 16777619u;
     h ^= h >> 16;
     h *= 2246822519u;

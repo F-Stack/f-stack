@@ -1063,6 +1063,11 @@ ini_parse_handler(void* user, const char* section, const char* name,
             drs = (int)FF_DRAIN_RING_SIZE_DEFAULT;
         }
         pconfig->dpdk.drain_ring_size = (unsigned)drs;
+    } else if (MATCH("dpdk", "reload_udp_idle_ms")) {
+        int ms = atoi(value);
+
+        pconfig->dpdk.reload_udp_idle_ms = ms <= 0 ?
+            FF_RELOAD_UDP_IDLE_MS_DEFAULT : (unsigned)ms;
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
@@ -1594,6 +1599,12 @@ ff_check_config(struct ff_config *cfg)
             fprintf(stderr, "reload_heartbeat_timeout_ms must be >= 10\n");
             return -1;
         }
+        if (cfg->dpdk.reload_udp_idle_ms < FF_RELOAD_UDP_IDLE_MS_MIN
+            || cfg->dpdk.reload_udp_idle_ms > FF_RELOAD_UDP_IDLE_MS_MAX) {
+            fprintf(stderr, "reload_udp_idle_ms must be in [%u, %u]\n",
+                FF_RELOAD_UDP_IDLE_MS_MIN, FF_RELOAD_UDP_IDLE_MS_MAX);
+            return -1;
+        }
         /* drain_ring capacity. 0 can only come from a caller
          * that filled the struct by hand (the parser remaps it). */
         if (cfg->dpdk.drain_ring_size == 0) {
@@ -1651,6 +1662,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.reload_heartbeat_timeout_ms =
         FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT;
     cfg->dpdk.drain_ring_size = FF_DRAIN_RING_SIZE_DEFAULT;
+    cfg->dpdk.reload_udp_idle_ms = FF_RELOAD_UDP_IDLE_MS_DEFAULT;
     cfg->dpdk.primary_slim_idle_sleep = 1000;
 
     cfg->dpdk.mtu_enable = 0;
@@ -2013,7 +2025,8 @@ primary_digest_skip(const char *section, const char *name)
 {
     static const char *const dpdk_local[] = {
         "log_level", "fstack_log_level", "fstack_log_file_prefix",
-        "idle_sleep", "pkt_tx_delay", "reload_heartbeat_timeout_ms", NULL
+        "idle_sleep", "pkt_tx_delay", "reload_heartbeat_timeout_ms",
+        "reload_udp_idle_ms", NULL
     };
     static const char *const port_local[] = {
         "addr", "netmask", "broadcast", "gateway", "addr6", "prefix_len",

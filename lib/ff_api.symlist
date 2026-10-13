@@ -97,3 +97,4 @@ ff_syncache_counters
 ff_is_drain_generation
 ff_socket_snd_pending
 ff_socket_drain_count
+ff_udp_flow_peer_snapshot

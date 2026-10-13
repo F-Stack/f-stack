@@ -71,6 +71,7 @@
 #include "ff_log.h"
 #include "ff_reload.h"
 #include "ff_drain_ring.h"
+#include "ff_flow_peer.h"
 
 /* msg_ring generation count must match the app mbuf pool
  * generation count (both index by the same gen0/gen1 ping-pong). */
@@ -2061,6 +2062,7 @@ ff_dpdk_init(int argc, char **argv)
         if (ff_drain_ring_init() != 0) {
             rte_exit(EXIT_FAILURE, "ff_drain_ring_init failed\n");
         }
+        ff_flow_peer_attach();
     }
 
     init_msg_ring();
@@ -3603,7 +3605,8 @@ ff_reload_plane_housekeeping(uint64_t now_tsc)
         && ff_reload_state_attached() && ff_reload_slot() >= 0) {
         ff_reload_drain_publish((unsigned)ff_reload_slot(),
             ff_reload_shared_epoch(),
-            (uint32_t)ff_socket_drain_count(),
+            (uint32_t)ff_socket_drain_count()
+                + (uint32_t)ff_flow_peer_active_flows(),
             (uint64_t)ff_socket_snd_pending(),
             (uint64_t)ff_syncache_count());
     }
@@ -3794,6 +3797,8 @@ main_loop(void *arg)
                         ff_reload_gen());
                 g_hw_user_state = want;
             }
+            /* UDP flows: published before the park ack below */
+            ff_flow_peer_tick();
         }
 
         if (unlikely(no_hw)

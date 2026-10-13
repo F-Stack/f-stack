@@ -61,6 +61,8 @@ void    in_pcbremhash_locked(struct inpcb *);
 #ifdef FSTACK
 int	in_pcb_flow_admit(struct inpcb *, int, const void *, const void *,
 	    u_short, u_short);
+void	in_pcb_flow_peer_note(int, const void *, const void *, u_short,
+	    u_short);
 #endif
 
 /*

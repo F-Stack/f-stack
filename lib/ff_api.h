@@ -394,6 +394,38 @@ int ff_flow_map_insert(const ff_flow_key_t *key);
 
 /* flow map api end */
 
+/* reload UDP peer table api begin */
+/* Graceful reload, UDP (key proto 17). The draining generation publishes the
+ * UDP flows it serves; the new generation's dispatcher asks where a UDP
+ * packet goes:
+ *   FF_FLOW_PEER_LEGACY  no usable table (old peer binary): forward it
+ *   FF_FLOW_PEER_LOCAL   keep it (a new flow, or the peer handed over)
+ *   FF_FLOW_PEER_FWD     forward it, the peer still serves the flow
+ *   FF_FLOW_PEER_LEARN   keep it and ff_flow_map_insert() it: the peer's
+ *                        flow went idle and is taken over here */
+#define FF_FLOW_PEER_LEGACY 0
+#define FF_FLOW_PEER_LOCAL  1
+#define FF_FLOW_PEER_FWD    2
+#define FF_FLOW_PEER_LEARN  3
+int ff_flow_peer_classify(const ff_flow_key_t *key);
+
+/* Draining side. The callback runs once when publishing starts and should
+ * ff_flow_peer_publish() every UDP session the app holds (the stack adds
+ * connected sockets and every datagram in or out by itself). */
+void ff_flow_peer_snapshot_regist(void (*fn)(void));
+void ff_flow_peer_publish(const ff_flow_key_t *key);
+
+/* UDP flows published and not idle yet (0 when not publishing). */
+int ff_flow_peer_active_flows(void);
+
+/* 1 while a generation that lost rx to another master (USR2) still has
+ * active UDP flows: the app should keep serving them before it exits. */
+int ff_flow_peer_linger(void);
+
+/* Hand every published flow to the new generation (call before exiting). */
+void ff_flow_peer_stop(void);
+/* reload UDP peer table api end */
+
 /* reload drain ring api begin */
 /* hand packets to the peer generation during the graceful-reload
  * handover. Full ring ownership model in lib/ff_drain_ring.h; these two are
@@ -439,7 +471,7 @@ int ff_is_drain_generation(void);
  * in-flight tails are not reset by the worker's death. */
 int ff_socket_snd_pending(void);
 
-/* number of open INET/INET6 connections (listening
+/* number of open INET/INET6 connections (listening and UDP sockets
  * excluded) in this process — the drain-progress figure the master waits
  * on before declaring DRAIN_DONE. */
 int ff_socket_drain_count(void);

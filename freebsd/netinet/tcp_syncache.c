@@ -442,6 +442,7 @@ static void
 syncache_flow_key(const struct syncache *sc, struct ff_flow_key *key)
 {
 	bzero(key, sizeof(*key));
+	key->proto = IPPROTO_TCP;
 #ifdef INET6
 	if (sc->sc_inc.inc_flags & INC_ISIPV6) {
 		key->af = FF_FLOW_MAP_V6;
