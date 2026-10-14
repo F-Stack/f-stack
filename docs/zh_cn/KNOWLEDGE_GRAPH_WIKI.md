@@ -245,3 +245,25 @@ npx gitnexus wiki --force
 ---
 
 *Generated from GitNexus knowledge graph (64,855 nodes, 113,858 edges) — 2026-06-08，commit `208b0c4`。Schema v1 / ladybugdb provider.*
+
+---
+
+## 索引后补充：`idle_loop_interval`（空闲 loop() 回调频率解冻耦）
+
+> **人工补充（尚未重新索引）**：依据当前源码记录（2026-10）。
+
+改动前 `main_loop()` 中用户 `loop()` 回调的空闲节流直接复用 `drain_tsc`，而 `drain_tsc` 由 `pkt_tx_delay` 推导——同一个值同时门控 TX burst 聚合发送与空闲回调频率。后果：一个旋钮管两件无关的事，且空闲回调间隔被 `BURST_TX_DRAIN_US`（100 µs）封顶，最快约 1 万次/秒。
+
+| 位置 | 源码 |
+|------|------|
+| `idle_loop_interval` 配置 | `lib/ff_config.h`（结构体字段 `dpdk.idle_loop_interval`）、`lib/ff_config.c`（`MATCH("dpdk","idle_loop_interval")`，默认 `IDLE_LOOP_INTERVAL_US_DEFAULT` = 100） |
+| 取值边界 | `lib/ff_config.h` — `IDLE_LOOP_INTERVAL_US_DEFAULT 100` / `IDLE_LOOP_INTERVAL_US_MAX 100000`；在 `ff_dpdk_if.c`（`ff_dpdk_init`）中 clamp，方式与 `pkt_tx_delay` clamp 到 `BURST_TX_DRAIN_US` 一致 |
+| 节流点 | `lib/ff_dpdk_if.c` `main_loop()` —— `idle_loop_tsc` 仅在 `idle` 时门控 `lr->loop()`；`drain_tsc`（源自 `pkt_tx_delay`）现在只门控 TX burst drain |
+| 每进程配置 | `lib/ff_config.c` `primary_digest_skip()` —— `idle_loop_interval` 已加入 `dpdk_local[]`，不参与 slim primary 设备侧配置 digest |
+| `config.ini` | `[dpdk] idle_loop_interval`，带行内注释（默认 100 µs，0 = 每圈都进，>100000 被 clamp） |
+| 单元测试 | `tests/unit/fixtures/valid_idle_loop_interval.ini`、`tests/unit/test_ff_config.c`（`test_idle_loop_interval_parsed_independently`、`test_idle_loop_interval_default`） |
+| 仍用 `pkt_tx_delay` 处 | `adapter/syscall/ff_socket_ops.c` `ff_handle_each_context()` 用 `pkt_tx_delay` 作为**回调内部**的自旋驻留时长（ring 请求批处理）。刻意不改——语义不同，需单独做 LD_PRELOAD 性能验证 |
+
+运行时验证（DPDK 网卡，`idle_sleep=20`）：空闲频率随 `idle_loop_interval` 变化（100 µs → 约 6.0k/s，1000 µs → 约 940/s，100000 µs → 约 10/s，0 → 约 12k/s 即每圈一次），且**不受 `pkt_tx_delay` 影响**（0 与 100 频率相同）；`idle_loop_interval=100000` 时，空闲约 10/s 在 HTTP 打流下跃升至约 3.0k/s——报文到达时节流被绕过。
+
+可追溯：`docs/idle_loop_interval_spec/zh_cn/`（plan.md + 实施与验证报告）。

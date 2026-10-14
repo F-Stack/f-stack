@@ -1190,7 +1190,10 @@ static int main_loop(void *arg) {
         }
         
         // [4] Application callback
-        if (loop_func) {
+        // Runs on every pass that received a packet. While idle it is
+        // throttled by idle_loop_tsc (idle_loop_interval, default 100 us);
+        // note this is NOT drain_tsc, which only gates the TX drain above.
+        if (loop_func && (!idle || cur_tsc - usch_tsc >= idle_loop_tsc)) {
             loop_func(loop_arg);
         }
     }

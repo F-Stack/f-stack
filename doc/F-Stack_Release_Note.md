@@ -14,6 +14,7 @@
 - Add reload heartbeat (`reload_heartbeat_timeout_ms`, default 1000): the old generation autonomously reclaims rx when the new generation stalls after handover.
 - Apply the drain forced-exit caps at max(30s, `worker_shutdown_timeout`) instead of a fixed 30s.
 - Fix a worker-0 respawn SIGABRT storm caused by a dangling ff_shm semaphore pointer (worker 0 killed in steady state).
+- Add `idle_loop_interval` parameter in `config.ini` (µs, default 100, range 0-100000, `0` = every loop pass): the interval between user `loop()` callback invocations when no packet is received. `pkt_tx_delay` no longer controls that rate and is back to gating only the TX burst drain. Deployments that explicitly lowered `pkt_tx_delay` below 100 now get a 100 µs idle callback interval by default; set `idle_loop_interval` to the old `pkt_tx_delay` value to keep the previous behaviour.
 
 1. ff tools
 

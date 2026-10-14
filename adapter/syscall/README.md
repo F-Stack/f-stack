@@ -89,6 +89,8 @@ This function has a **crucial** impact on the overall performance of `libff_sysc
 
 If you want to improve the overall performance of `libff_syscall.so`, the matching between the `fstack` instance application program and the APP application program is very important. Only when all events in one `ff_handle_each_context` loop are matched as much as possible, can the optimal performance be achieved. This requires very fine tuning, but currently, the rough value of the `pkt_tx_dalay` parameter is used.
 
+【Note】The main loop's idle throttle of the user `loop()` callback no longer reuses `pkt_tx_dalay`; since it is controlled by the dedicated `idle_loop_interval` parameter, `ff_handle_each_context` here still uses `pkt_tx_dalay` — but only as the spin dwell **inside** the callback (how long to keep dequeuing ring requests before returning), which is a different thing from how often the callback is entered.
+
 【Tip】The default value of the `pkt_tx_dalay` parameter is 100us, which is more suitable for long connections. If it is a short connection scenario of Nginx, it should be set to 50us, which can achieve better performance. Of course, different usage scenarios may require business-specific adjustments and testing to achieve optimal performance. Reusing this parameter is only a temporary solution, and if there is a better solution in the future, it may be adjusted at any time.
 
 ### libff_syscall.so

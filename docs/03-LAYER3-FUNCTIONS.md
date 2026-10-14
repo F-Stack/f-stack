@@ -496,7 +496,10 @@ int main_loop(void *arg) {
         }
         
         // === 4. Execute user callback ===
-        if (lr->loop) {
+        // Runs on every pass that received a packet. While idle it is
+        // throttled by idle_loop_tsc (idle_loop_interval, default 100 us);
+        // note this is NOT drain_tsc, which only gates the TX drain above.
+        if (lr->loop && (!idle || cur_tsc - usch_tsc >= idle_loop_tsc)) {
             lr->loop(lr->arg);         // Application business logic
         }
         

@@ -295,6 +295,7 @@ int main_loop(void *arg) {
 - **No interrupts**: → Low latency, high throughput
 - **CPU-intensive**: 100% utilization (optimized through CPU isolation)
 - **Configurable sleep**: `idle_sleep` parameter supports microsecond-level yielding
+- **Configurable idle callback rate**: while no packet arrives, the user `loop()` callback is invoked at most once per `idle_loop_interval` (µs, default 100); it is invoked on every pass as soon as a packet arrives
 
 ## 6. Process Model
 

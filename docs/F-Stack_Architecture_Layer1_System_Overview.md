@@ -421,7 +421,10 @@ static int main_loop(void *arg) {
         }
         
         // [5] Application Callback - Business logic
-        if (loop_func) {
+        // Runs on every pass that received a packet; while idle it is
+        // throttled by idle_loop_interval (default 100 us, config.ini
+        // [dpdk]) — independent of pkt_tx_delay.
+        if (loop_func && (!idle || cur_tsc - usch_tsc >= idle_loop_tsc)) {
             loop_func(loop_arg);  // User's main_loop callback
         }
         

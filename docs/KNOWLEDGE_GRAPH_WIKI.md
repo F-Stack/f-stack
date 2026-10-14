@@ -366,3 +366,25 @@ npx gitnexus wiki --force
 ---
 
 *Generated from GitNexus knowledge graph (64,855 nodes, 113,858 edges) — 2026-06-08, commit `208b0c4`. Schema v1 / ladybugdb provider.*
+
+---
+
+## Post-index addendum: `idle_loop_interval` (decoupled idle loop() callback rate)
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-10).
+
+Before this change the idle throttle of the user `loop()` callback in `main_loop()` reused `drain_tsc`, which is derived from `pkt_tx_delay` — the same value that gates the TX burst drain. One knob therefore controlled two unrelated things: the TX aggregation window and the idle callback rate. It also capped the idle callback interval at `BURST_TX_DRAIN_US` (100 µs), i.e. a floor of ~10k callbacks/s.
+
+| Area | Where in source |
+|------|-----------------|
+| `idle_loop_interval` config | `lib/ff_config.h` (struct field `dpdk.idle_loop_interval`), `lib/ff_config.c` (`MATCH("dpdk","idle_loop_interval")`, default `IDLE_LOOP_INTERVAL_US_DEFAULT` = 100). |
+| Bounds | `lib/ff_config.h` — `IDLE_LOOP_INTERVAL_US_DEFAULT 100` / `IDLE_LOOP_INTERVAL_US_MAX 100000`; clamped in `ff_dpdk_if.c` (`ff_dpdk_init`) the same way `pkt_tx_delay` is clamped to `BURST_TX_DRAIN_US`. |
+| Throttle site | `lib/ff_dpdk_if.c` `main_loop()` — `idle_loop_tsc` gates `lr->loop()` only when `idle`; `drain_tsc` (from `pkt_tx_delay`) now only gates the TX burst drain. |
+| Per-process config | `lib/ff_config.c` `primary_digest_skip()` — `idle_loop_interval` listed in `dpdk_local[]`, so it is excluded from the slim primary's device-side config digest. |
+| `config.ini` | `[dpdk] idle_loop_interval` with inline comment (default 100 µs, 0 = every pass, >100000 clamped). |
+| Unit tests | `tests/unit/fixtures/valid_idle_loop_interval.ini`, `tests/unit/test_ff_config.c` (`test_idle_loop_interval_parsed_independently`, `test_idle_loop_interval_default`). |
+| Still on `pkt_tx_delay` | `adapter/syscall/ff_socket_ops.c` `ff_handle_each_context()` uses `pkt_tx_delay` as the spin dwell **inside** the callback (ring request batching). Deliberately unchanged — different semantics, needs its own LD_PRELOAD perf validation. |
+
+Runtime verification (DPDK NIC, `idle_sleep=20`): idle rate tracks `idle_loop_interval` (100 µs → ~6.0k/s, 1000 µs → ~940/s, 100000 µs → ~10/s, 0 → ~12k/s = per-pass) **independently** of `pkt_tx_delay` (0 vs 100 give the same rate), and with `idle_loop_interval=100000` the rate jumps from ~10/s idle to ~3.0k/s under HTTP load — packets bypass the throttle.
+
+Traceability: `docs/idle_loop_interval_spec/zh_cn/` (plan.md + verification report).
