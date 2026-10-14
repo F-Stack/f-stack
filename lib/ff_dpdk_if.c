@@ -24,9 +24,13 @@
  *
  */
 #include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <time.h>
 
 #include <rte_common.h>
@@ -102,6 +106,9 @@ typedef char ff_reload_ring_name_fit_check[
      + 2 + 1                              /* "_e" + epoch slot, one digit */
      + 2 + 1                              /* "_g" + generation */
      <= (size_t)(RTE_RING_NAMESIZE - 1)) ? 1 : -1];
+
+/* also read by tools/compat/ff_ipc.c */
+#define FF_PRIMARY_RECORD "/var/run/ff_primary.conf"
 
 #ifdef FF_KNI
 #define KNI_MBUF_MAX 2048
@@ -2001,6 +2008,51 @@ fdir_add_tcp_flow(uint16_t port_id, uint16_t queue, uint16_t dir,
 
 #endif
 
+/* lets the F-Stack tools find this primary's EAL file prefix
+ * (tools/compat/ff_ipc.c reads it back). Best effort: a missing record
+ * only means the tools fall back to FF_FILE_PREFIX or the default. */
+static void
+ff_primary_record_write(void)
+{
+    char path[64], buf[1024], tmp[sizeof(FF_PRIMARY_RECORD) + 24], *p;
+    unsigned long long start;
+    int fd, i, rc;
+    ssize_t n;
+
+    snprintf(path, sizeof(path), "/proc/%d/stat", (int)getpid());
+    fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return;
+    n = read(fd, buf, sizeof(buf) - 1);
+    close(fd);
+    if (n <= 0)
+        return;
+    buf[n] = '\0';
+
+    /* field 22 (starttime), counted after the ")" that ends comm */
+    p = strrchr(buf, ')');
+    if (p == NULL || p[1] != ' ')
+        return;
+    p += 2;
+    for (i = 0; i < 19; i++) {
+        p = strchr(p, ' ');
+        if (p == NULL)
+            return;
+        p++;
+    }
+    start = strtoull(p, NULL, 10);
+
+    snprintf(tmp, sizeof(tmp), FF_PRIMARY_RECORD ".%d.tmp", (int)getpid());
+    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+    if (fd < 0)
+        return;
+    rc = dprintf(fd, "pid=%d\nstart_time=%llu\nruntime_dir=%s\n",
+        (int)getpid(), start, rte_eal_get_runtime_dir());
+    close(fd);
+    if (rc <= 0 || rename(tmp, FF_PRIMARY_RECORD) != 0)
+        unlink(tmp);
+}
+
 int
 ff_dpdk_init(int argc, char **argv)
 {
@@ -2017,6 +2069,10 @@ ff_dpdk_init(int argc, char **argv)
     int ret = rte_eal_init(argc, argv);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
+    }
+
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        ff_primary_record_write();
     }
 
     if (ff_global_cfg.log.level) {

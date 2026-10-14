@@ -49,6 +49,8 @@ static int ff_ipc_exited;
 /* EAL file prefix override, the directory name under /var/run/dpdk */
 #define FF_IPC_PREFIX_ENV       "FF_FILE_PREFIX"
 #define FF_IPC_PRIMARY_RECORD   "/var/run/ff_slim_primary.conf"
+/* written by every F-Stack primary (lib/ff_dpdk_if.c) */
+#define FF_IPC_FSTACK_RECORD    "/var/run/ff_primary.conf"
 #define FF_IPC_RUNTIME_BASE     "/var/run/dpdk/"
 
 static struct rte_mempool *message_pool;
@@ -408,8 +410,9 @@ ff_ipc_proc_start(long pid, unsigned long long *start)
     return 0;
 }
 
-/* EAL file prefix of the runtime directory recorded by a live resident
- * slim primary (graceful_reload=1). No heap use: the EAL is not up yet. */
+/* EAL file prefix of the runtime directory recorded by a live primary:
+ * the resident slim primary (graceful_reload=1) or any F-Stack primary.
+ * No heap use: the EAL is not up yet. */
 static int
 ff_ipc_record_prefix(const char *record, char *prefix, size_t len)
 {
@@ -450,8 +453,9 @@ ff_ipc_record_prefix(const char *record, char *prefix, size_t len)
     return 0;
 }
 
-/* FF_FILE_PREFIX wins, then the resident primary's record; otherwise
- * the EAL default prefix is used. */
+/* FF_FILE_PREFIX wins, then the resident primary's record; ff_ipc_init()
+ * then tries the F-Stack primary's record, otherwise the EAL default
+ * prefix is used. */
 static const char *
 ff_ipc_file_prefix(const char *record, char *prefix, size_t len)
 {
@@ -500,6 +504,9 @@ ff_ipc_init(void)
 
     argc = (int)(sizeof(dpdk_argv) / sizeof(dpdk_argv[0])) - 2;
     p = ff_ipc_file_prefix(FF_IPC_PRIMARY_RECORD, prefix, sizeof(prefix));
+    if (p == NULL && ff_ipc_record_prefix(FF_IPC_FSTACK_RECORD, prefix,
+        sizeof(prefix)) == 0)
+        p = prefix;
     if (p != NULL) {
         snprintf(prefix_arg, sizeof(prefix_arg), "--file-prefix=%s", p);
         dpdk_argv[argc++] = prefix_arg;
