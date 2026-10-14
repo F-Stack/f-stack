@@ -31,8 +31,9 @@ Each tool add an option `-p`(Which F-Stack process to communicate with, default 
 The tools attach to the stack as DPDK secondary processes, so they must use the stack's EAL file prefix (the directory name under `/var/run/dpdk/`):
 
 - with `graceful_reload=1` the prefix is read from the resident slim primary's record `/var/run/ff_slim_primary.conf` (only while that primary is alive);
+- otherwise from the record every F-Stack primary writes, `/var/run/ff_primary.conf` (only while that primary is alive; with several stacks on one host it names the one started last);
 - otherwise the DPDK default `rte` is used;
-- `FF_FILE_PREFIX=<name>` overrides both. Note that `[dpdk] file_prefix=<v>` in config.ini gives the directory `container-<v>`, and a config with `[vdevN]` but no file_prefix gives `container`, e.g. `FF_FILE_PREFIX=container-<v> ff_top`.
+- `FF_FILE_PREFIX=<name>` overrides all of them, e.g. to pick one of several stacks. Note that `[dpdk] file_prefix=<v>` in config.ini gives the directory `container-<v>`, and a config with `[vdevN]` but no file_prefix gives `container`, e.g. `FF_FILE_PREFIX=container-<v> ff_top`.
 
 The tools do not probe PCI devices (`--no-pci`). `ff_top` and `ff_traffic` follow graceful reloads while sampling: a sample taken right after the target switched generations is not printed, because the new generation's counters start from zero.
 
