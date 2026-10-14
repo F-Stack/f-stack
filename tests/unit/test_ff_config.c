@@ -171,6 +171,38 @@ test_ff_load_config_valid_minimal_ini(void **state)
     assert_int_equal(ff_global_cfg.dpdk.numa_on, 1);
     assert_int_equal(ff_global_cfg.dpdk.idle_sleep, 20);
     assert_int_equal(ff_global_cfg.dpdk.pkt_tx_delay, 100);
+    /* valid_minimal.ini has no idle_loop_interval key -> default applies. */
+    assert_int_equal(ff_global_cfg.dpdk.idle_loop_interval,
+        IDLE_LOOP_INTERVAL_US_DEFAULT);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-IDLELOOP-01: idle_loop_interval parses independently of pkt_tx_delay */
+/* ------------------------------------------------------------------------ */
+static void
+test_idle_loop_interval_parsed_independently(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_idle_loop_interval.ini"));
+    (void)rv;
+    /* The two knobs must not overwrite each other: before this feature the
+     * main loop throttled the user loop() callback with pkt_tx_delay. */
+    assert_int_equal(ff_global_cfg.dpdk.pkt_tx_delay, 30);
+    assert_int_equal(ff_global_cfg.dpdk.idle_loop_interval, 1000);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-IDLELOOP-02: idle_loop_interval omitted -> default 100 us           */
+/* ------------------------------------------------------------------------ */
+static void
+test_idle_loop_interval_default(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.idle_loop_interval,
+        IDLE_LOOP_INTERVAL_US_DEFAULT);
+    assert_int_equal(IDLE_LOOP_INTERVAL_US_DEFAULT, 100);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -414,6 +446,8 @@ test_ff_load_config_dpdk_full(void **state)
     (void)rv;
     /* lcore_mask=0xF -> 4 lcores; proc_lcore allocated, nb_procs >= 1 */
     assert_non_null(ff_global_cfg.dpdk.proc_lcore);
+    /* idle_loop_interval=500 parsed from the [dpdk] section */
+    assert_int_equal(ff_global_cfg.dpdk.idle_loop_interval, 500);
     /* port_list=0-1 -> nb_ports = 2 */
     assert_int_equal(ff_global_cfg.dpdk.nb_ports, 2);
     /* bond enabled, nb_bond=1, bond_cfgs allocated */
@@ -3345,6 +3379,9 @@ main(void)
         cmocka_unit_test_setup_teardown(test_rx35_primary_reuse_check, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rx37_primary_reuse_check_idle, test_setup, NULL),
         cmocka_unit_test_setup_teardown(test_rx37_gendir_masters_live, test_setup, NULL),
+        /* idle_loop_interval: decoupled idle loop() callback interval */
+        cmocka_unit_test_setup_teardown(test_idle_loop_interval_parsed_independently, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_idle_loop_interval_default,             test_setup, NULL),
 #ifdef FF_KERNEL_COEXIST
         /* kernel_event_support: [stack] kernel_coexist */
         cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),
