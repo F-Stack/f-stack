@@ -364,6 +364,9 @@ struct ff_config {
         /* TX burst queue drain nodelay dalay time */
         unsigned pkt_tx_delay;
 
+        /* interval between user loop() calls when no pkt received */
+        unsigned idle_loop_interval;
+
         /* primary_slim: primary holds no rx/tx queue, control-plane only */
         int primary_slim;
         unsigned primary_slim_idle_sleep;    /* default 1000us */
@@ -607,6 +610,8 @@ vlan_strip = 1                # VLAN 硬件标签剥离
 symmetric_rss = 0             # 双向 RSS 对称性
 idle_sleep = 0                # 空闲时 sleep (微秒)
 pkt_tx_delay = 100              # 包发送延迟 (关闭立即发)
+idle_loop_interval = 100      # 无收包时用户 loop() 回调间隔 (微秒)
+                              # (0 = 每圈都进；与 pkt_tx_delay 相互独立)
 enable_kni = 1                # 启用虚拟网卡
 # primary_slim=1: primary 不分配 rx/tx 队列，仅控制面
 # primary_slim=0 (默认): primary 也参与数据面

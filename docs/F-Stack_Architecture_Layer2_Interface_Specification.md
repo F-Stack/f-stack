@@ -329,6 +329,7 @@ struct ff_config {
         int symmetric_rss;
         unsigned idle_sleep;
         unsigned pkt_tx_delay;
+        unsigned idle_loop_interval;
         uint16_t *proc_lcore;
         int nb_ports;
         uint16_t max_portid;
@@ -539,6 +540,8 @@ vlan_strip = 1                # VLAN hardware tag stripping
 symmetric_rss = 0             # Bidirectional RSS symmetry
 idle_sleep = 0                # Idle sleep (microseconds)
 pkt_tx_delay = 100            # Packet TX delay (set 0 for immediate send)
+idle_loop_interval = 100      # Loop() callback interval (us) when no pkt arrives
+                              # (0 = every pass; independent of pkt_tx_delay)
 enable_kni = 1                # Enable virtual NIC
 mbuf_low_watermark = 0        # mbuf water-level threshold (0=disabled; issue #1076)
 primary_slim = 0              # Primary runs control-plane only (0=disabled; issue #1078)
