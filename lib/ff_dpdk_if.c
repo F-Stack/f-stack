@@ -145,6 +145,7 @@ static int numa_on;
 
 static unsigned idle_sleep;
 static unsigned pkt_tx_delay;
+static unsigned idle_loop_interval;
 static int timestamp_dynfield_offset = -1;
 static uint64_t timestamp_dynflag_mask;
 static uint64_t usr_cb_tsc;
@@ -2085,6 +2086,10 @@ ff_dpdk_init(int argc, char **argv)
     pkt_tx_delay = ff_global_cfg.dpdk.pkt_tx_delay > BURST_TX_DRAIN_US ? \
         BURST_TX_DRAIN_US : ff_global_cfg.dpdk.pkt_tx_delay;
 
+    idle_loop_interval = ff_global_cfg.dpdk.idle_loop_interval > \
+        IDLE_LOOP_INTERVAL_US_MAX ? IDLE_LOOP_INTERVAL_US_MAX : \
+        ff_global_cfg.dpdk.idle_loop_interval;
+
     init_lcore_conf();
 
     /* cross-master generation directory. Must precede every resource
@@ -3716,11 +3721,16 @@ main_loop(void *arg)
     uint16_t port_id, queue_id;
     struct lcore_conf *qconf;
     uint64_t drain_tsc = 0;
+    uint64_t idle_loop_tsc = 0;
     struct ff_dpdk_if_context *ctx;
 
     if (pkt_tx_delay) {
         drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * pkt_tx_delay;
     }
+
+    /* Interval between user loop() calls while idle; 0 = every pass. */
+    idle_loop_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S *
+        idle_loop_interval;
 
     prev_tsc = 0;
     usch_tsc = 0;
@@ -4016,7 +4026,7 @@ main_loop(void *arg)
 #endif
         div_tsc = rte_rdtsc();
 
-        if (likely(lr->loop != NULL && (!idle || cur_tsc - usch_tsc >= drain_tsc))) {
+        if (likely(lr->loop != NULL && (!idle || cur_tsc - usch_tsc >= idle_loop_tsc))) {
             usch_tsc = cur_tsc;
             lr->loop(lr->arg);
         }

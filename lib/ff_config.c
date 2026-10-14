@@ -1109,6 +1109,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.primary_slim_idle_sleep = atoi(value);
     } else if (MATCH("dpdk", "pkt_tx_delay")) {
         pconfig->dpdk.pkt_tx_delay = atoi(value);
+    } else if (MATCH("dpdk", "idle_loop_interval")) {
+        pconfig->dpdk.idle_loop_interval = atoi(value);
     } else if (MATCH("dpdk", "symmetric_rss")) {
         pconfig->dpdk.symmetric_rss = atoi(value);
     } else if (MATCH("dpdk", "mtu_enable")) {
@@ -1657,6 +1659,7 @@ ff_default_config(struct ff_config *cfg)
     cfg->dpdk.numa_on = 1;
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
+    cfg->dpdk.idle_loop_interval = IDLE_LOOP_INTERVAL_US_DEFAULT;
     cfg->dpdk.primary_slim = 0;
     cfg->dpdk.graceful_reload = 0;
     cfg->dpdk.reload_heartbeat_timeout_ms =
@@ -2025,8 +2028,8 @@ primary_digest_skip(const char *section, const char *name)
 {
     static const char *const dpdk_local[] = {
         "log_level", "fstack_log_level", "fstack_log_file_prefix",
-        "idle_sleep", "pkt_tx_delay", "reload_heartbeat_timeout_ms",
-        "reload_udp_idle_ms", NULL
+        "idle_sleep", "pkt_tx_delay", "idle_loop_interval",
+        "reload_heartbeat_timeout_ms", "reload_udp_idle_ms", NULL
     };
     static const char *const port_local[] = {
         "addr", "netmask", "broadcast", "gateway", "addr6", "prefix_len",
