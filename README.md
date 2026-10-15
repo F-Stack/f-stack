@@ -225,4 +225,4 @@ And more info see [deepwiki of F-Stack](https://deepwiki.com/F-Stack/f-stack), [
 Tencent Cloud F-Stack team developed F-Stack which is a general network framework based on DPDK and provides ultra high network performance. We are here looking for more and more talented people with great passion on technology to join us. You would have the chance to work with brightest minds on this planet and help Tencent cloud and F-stack continuously evolve. Send us your resume or refer your friend to us if you are interested in joining us.
 
 Open Positions: Software engineer(C/C++), Web developer, IOS/Android developer, Product Manager, Operating Manager, etc.
-Contact: Please send your resume to [us](mailto:fengbojiang@tencent.com)
+Contact: Please send your resume to [us](mailto:ellalujiang@tencent.com)
