@@ -1178,6 +1178,13 @@ static int main_loop(void *arg) {
         if (loop_func) {
             loop_func(loop_arg);
         }
+
+        // [5] 空闲 sleep，或用户空闲回调
+        if (idle_callback != NULL && idle) {
+            idle_callback(idle_cb_arg);   // 库不再 sleep，空闲行为交给用户
+        } else if (idle && idle_sleep) {
+            rte_delay_us(idle_sleep);
+        }
     }
     
     return 0;

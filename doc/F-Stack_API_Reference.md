@@ -248,6 +248,38 @@ However, it is  supported only before F-Stack is started.
  - nb_queues
    Number of queues to be dispatched.
 
+### Idle callback API
+
+ Idle callback, invoked by the main loop on every pass that received no packet.
+
+\ttypedef void (*idle_func_t)(void *arg);
+
+\tvoid ff_regist_idle_callback(idle_func_t func, void *arg);
+
+\tvoid ff_unregist_idle_callback(void);
+
+  Registering an idle callback replaces the library idle sleep (`idle_sleep`,
+  or `primary_slim_idle_sleep` for a slim primary): the main loop then calls
+  the callback instead of sleeping, and the application owns the idle
+  behaviour. Applications that register one must yield the CPU by themselves
+  (e.g. usleep inside the callback), otherwise the loop spins at full speed.
+  Without a registered callback the sleep behaviour is unchanged.
+  `ff_regist_idle_callback(NULL, NULL)` and `ff_unregist_idle_callback()` both
+  unregister and are idempotent.
+
+#### param
+
+ - arg
+   The argument passed to `ff_regist_idle_callback()`.
+
+#### note
+
+ - The callback runs on every idle pass, including the passes on which the
+   `loop()` callback was already invoked; `loop()` keeps its own
+   `idle_loop_interval` throttle.
+ - In `thread_mode=1` it runs concurrently on every lcore and must be
+   thread-safe. Register before `ff_run()`.
+
 #### return
 
  - 0 to (nb_queues - 1)

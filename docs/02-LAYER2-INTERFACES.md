@@ -20,6 +20,10 @@
 int ff_init(int argc, char * const argv[]);      // Initialize F-Stack
 void ff_run(loop_func_t loop, void *arg);        // Start main loop (blocking)
 void ff_stop_run(void);                          // Gracefully stop loop
+
+// Idle callback (registered separately, NOT through ff_run)
+void ff_regist_idle_callback(idle_func_t func, void *arg);  // Replaces idle sleep
+void ff_unregist_idle_callback(void);                       // Idempotent
 ```
 
 ### 1.2 Socket API (POSIX Compatible)
@@ -441,6 +445,8 @@ void worker_main(int worker_id) {
 - Creating/destroying threads while running
 - Registering new callbacks after ff_run()
 - Cross-lcore socket operations
+- 空闲回调 (`ff_regist_idle_callback`)：`thread_mode=1` 时会被每个 lcore 线程并发调用，
+  需由用户自行保证线程安全（与 `ff_run` 注册的 `loop()` 语义一致）
 
 ### 5.1.1 Native Multi-Thread Mode (`thread_mode=1`, v1.26+)
 

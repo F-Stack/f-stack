@@ -421,8 +421,10 @@ static int main_loop(void *arg) {
             loop_func(loop_arg);  // 用户的 main_loop 回调
         }
         
-        // [6] 可选：空闲 sleep
-        if (idle_sleep && nb_rx == 0) {
+        // [6] 可选：空闲 sleep，或用户空闲回调
+        if (idle_callback != NULL && nb_rx == 0) {
+            idle_callback(idle_cb_arg);   // 库不再 sleep，空闲行为交给用户
+        } else if (idle_sleep && nb_rx == 0) {
             rte_delay_us(idle_sleep);  // 微秒级 sleep
         }
     }

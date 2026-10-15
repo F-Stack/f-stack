@@ -93,6 +93,15 @@ void ff_run(loop_func_t loop, void *arg);
     // Called once per lcore
 
 void ff_stop_run(void);
+
+void ff_regist_idle_callback(idle_func_t func, void *arg);
+    // Register an idle callback invoked on every idle main loop pass
+    // Replaces the library idle sleep (idle_sleep / primary_slim_idle_sleep):
+    // the application must yield the CPU by itself once registered
+    // (NULL, NULL) unregisters; must be called before ff_run()
+
+void ff_unregist_idle_callback(void);
+    // Unregister the idle callback. Idempotent.
     // Stop the polling loop
     // Graceful shutdown, waits for all packet processing to complete
 ```

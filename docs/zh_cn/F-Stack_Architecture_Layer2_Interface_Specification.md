@@ -86,6 +86,14 @@ int ff_init(int argc, char * const argv[]);
     // 必须在主进程首先调用
 
 void ff_run(loop_func_t loop, void *arg);
+
+void ff_regist_idle_callback(idle_func_t func, void *arg);
+    // 注册空闲回调，在每个空闲主循环圈被调用
+    // 注册后取代库自带的空闲 sleep(idle_sleep / primary_slim_idle_sleep)，
+    // 应用需自行让出 CPU；(NULL, NULL) 表示注销；须在 ff_run() 之前调用
+
+void ff_unregist_idle_callback(void);
+    // 注销空闲回调，幂等
     // 启动主轮询循环
     // 参数: 用户回调函数、用户参数
     // 不返回 (除非 ff_stop_run() 调用)

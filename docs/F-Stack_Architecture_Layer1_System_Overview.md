@@ -428,8 +428,10 @@ static int main_loop(void *arg) {
             loop_func(loop_arg);  // User's main_loop callback
         }
         
-        // [6] Optional: Idle sleep
-        if (idle_sleep && nb_rx == 0) {
+        // [6] Optional: Idle sleep, or the user idle callback
+        if (idle_callback != NULL && nb_rx == 0) {
+            idle_callback(idle_cb_arg);   // no library sleep; user owns idle
+        } else if (idle_sleep && nb_rx == 0) {
             rte_delay_us(idle_sleep);  // Microsecond-level sleep
         }
     }

@@ -1196,6 +1196,13 @@ static int main_loop(void *arg) {
         if (loop_func && (!idle || cur_tsc - usch_tsc >= idle_loop_tsc)) {
             loop_func(loop_arg);
         }
+
+        // [5] Idle sleep, or the user idle callback
+        if (idle_callback != NULL && idle) {
+            idle_callback(idle_cb_arg);   // no library sleep; user owns idle
+        } else if (idle && idle_sleep) {
+            rte_delay_us(idle_sleep);
+        }
     }
     
     return 0;

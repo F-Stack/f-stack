@@ -494,8 +494,10 @@ int main_loop(void *arg) {
             lr->loop(lr->arg);         // 应用业务逻辑
         }
         
-        // === 5. 空闲睡眠 ===
-        if (likely(idle && idle_sleep)) {
+        // === 5. 空闲睡眠，或用户空闲回调 ===
+        if (unlikely(idle && idle_callback != NULL)) {
+            idle_callback(idle_callback_arg);  // 库不再 sleep，空闲行为交给用户
+        } else if (likely(idle && idle_sleep)) {
             rte_delay_us_sleep(idle_sleep);
         }
     }

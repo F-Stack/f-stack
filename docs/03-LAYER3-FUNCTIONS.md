@@ -503,8 +503,10 @@ int main_loop(void *arg) {
             lr->loop(lr->arg);         // Application business logic
         }
         
-        // === 5. Idle sleep ===
-        if (likely(idle && idle_sleep)) {
+        // === 5. Idle sleep, or the user idle callback ===
+        if (unlikely(idle && idle_callback != NULL)) {
+            idle_callback(idle_callback_arg);  // no library sleep; user owns idle
+        } else if (likely(idle && idle_sleep)) {
             rte_delay_us_sleep(idle_sleep);
         }
     }

@@ -388,3 +388,27 @@ Before this change the idle throttle of the user `loop()` callback in `main_loop
 Runtime verification (DPDK NIC, `idle_sleep=20`): idle rate tracks `idle_loop_interval` (100 µs → ~6.0k/s, 1000 µs → ~940/s, 100000 µs → ~10/s, 0 → ~12k/s = per-pass) **independently** of `pkt_tx_delay` (0 vs 100 give the same rate), and with `idle_loop_interval=100000` the rate jumps from ~10/s idle to ~3.0k/s under HTTP load — packets bypass the throttle.
 
 Traceability: `docs/idle_loop_interval_spec/zh_cn/` (plan.md + verification report).
+
+---
+
+## Post-index addendum: idle callback (`ff_regist_idle_callback`)
+
+> **Manual addendum (not yet re-indexed)**: documented against current source (2026-10).
+
+Applications can take over what the main loop does when it has nothing to do. Registering an idle callback replaces the library idle sleep on every idle pass; without one the sleep path is byte-for-byte the old behaviour.
+
+| Area | Where in source |
+|------|-----------------|
+| Public API | `lib/ff_api.h` — `typedef void (*idle_func_t)(void *arg);`, `void ff_regist_idle_callback(idle_func_t func, void *arg);`, `void ff_unregist_idle_callback(void);` declared right after the packet-dispatcher registration block. |
+| Storage | `lib/ff_dpdk_if.c` — `static idle_func_t idle_callback; static void *idle_callback_arg;` next to `packet_dispatcher`. |
+| Setters | `lib/ff_dpdk_if.c` — `ff_regist_idle_callback()` / `ff_unregist_idle_callback()` right after `ff_unregist_packet_dispatcher_context()`. `ff_regist_idle_callback(NULL, NULL)` == unregister; both idempotent. |
+| Trigger site | `lib/ff_dpdk_if.c` `main_loop()` — the idle-sleep block now branches `unlikely(idle && idle_callback != NULL)` first (callback, no sleep), else the original `likely(idle && effective_sleep)` sleep, else no sleep. The `primary_slim` `primary_slim_idle_sleep` path is likewise bypassed. |
+| Accounting | `main_loop()` — per-pass `idle_cb_tsc` is added into `usr_tsc` (`usr_tsc = usr_cb_tsc + idle_cb_tsc`), so `ff_top` counts callback time as user time, not idle. |
+| Symbol export | No `ff_api.symlist` change needed: `lib/Makefile` only `--localize-symbols` on `${OBJS}` and `ar`s `${HOST_OBJS}` (incl. `ff_dpdk_if.o`) verbatim — the same reason `ff_regist_packet_dispatcher` links although it is not in the symlist. Verified `nm libfstack.a \| grep ff_regist_idle_callback` = `T`. |
+| Unit test | `tests/unit/test_ff_dpdk_if.c` — `test_ff_regist_idle_callback_smoke`. |
+
+Semantics: the callback runs on **every** idle pass, including passes on which `loop()` already ran; `loop()` keeps its own `idle_loop_interval` throttle. In `thread_mode=1` it is invoked concurrently on every lcore (same contract as `lr->loop`), so it must be thread-safe; register before `ff_run()`.
+
+Runtime verification (DPDK NIC, `idle_sleep=20`, `idle_loop_interval=100`, `pkt_tx_delay=30`): no callback → `loop()` 6.0k/s, idle callback 0/s (identical to the pre-change baseline); registered with a 20 µs in-callback sleep → idle callback 12.0k/s and `loop()` still 6.0k/s (exactly 2:1, i.e. one idle callback per idle pass); registered without pacing → idle callback ~6.2M/s (loop spins at full speed — the documented hazard); unregistering at runtime drops the callback back to 0/s and `loop()` back to 6.0k/s; under HTTP load (`<DPDK_NIC_IP>`) 15675/15675 requests returned 200 with `loop()` rising to ~7.2k/s (packets bypass the throttle).
+
+Traceability: `docs/idle_callback_spec/zh_cn/` (plan.md + verification report).

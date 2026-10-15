@@ -267,3 +267,27 @@ npx gitnexus wiki --force
 运行时验证（DPDK 网卡，`idle_sleep=20`）：空闲频率随 `idle_loop_interval` 变化（100 µs → 约 6.0k/s，1000 µs → 约 940/s，100000 µs → 约 10/s，0 → 约 12k/s 即每圈一次），且**不受 `pkt_tx_delay` 影响**（0 与 100 频率相同）；`idle_loop_interval=100000` 时，空闲约 10/s 在 HTTP 打流下跃升至约 3.0k/s——报文到达时节流被绕过。
 
 可追溯：`docs/idle_loop_interval_spec/zh_cn/`（plan.md + 实施与验证报告）。
+
+---
+
+## 索引后补充：空闲回调（`ff_regist_idle_callback`）
+
+> **人工补充（尚未重新索引）**：依据当前源码记录（2026-10）。
+
+应用可以接管主循环"无事可做"时的行为：注册空闲回调后，每个空闲圈改调该回调、不再执行库自带的空闲 sleep；未注册时 sleep 路径与改动前逐位一致。
+
+| 位置 | 源码 |
+|------|------|
+| 公开 API | `lib/ff_api.h` —— `typedef void (*idle_func_t)(void *arg);`、`void ff_regist_idle_callback(idle_func_t func, void *arg);`、`void ff_unregist_idle_callback(void);`，声明紧随 packet dispatcher 注册块 |
+| 存储 | `lib/ff_dpdk_if.c` —— `static idle_func_t idle_callback; static void *idle_callback_arg;`，与 `packet_dispatcher` 相邻 |
+| 注册/注销实现 | `lib/ff_dpdk_if.c` —— 紧跟 `ff_unregist_packet_dispatcher_context()`；`ff_regist_idle_callback(NULL, NULL)` 等价于注销，两者幂等 |
+| 触发点 | `lib/ff_dpdk_if.c` `main_loop()` —— 空闲 sleep 块新增 `unlikely(idle && idle_callback != NULL)` 优先分支（调回调、不 sleep），否则走原 `likely(idle && effective_sleep)` sleep，再否则不 sleep；`primary_slim` 的 `primary_slim_idle_sleep` 同样被旁路 |
+| 记账 | `main_loop()` —— 每圈 `idle_cb_tsc` 并入 `usr_tsc`（`usr_tsc = usr_cb_tsc + idle_cb_tsc`），`ff_top` 把回调用时算作用户态而非空闲 |
+| 符号导出 | 无需改 `ff_api.symlist`：`lib/Makefile` 只对 `${OBJS}` 做 `--localize-symbols`，`${HOST_OBJS}`（含 `ff_dpdk_if.o`）原样 `ar` 进去——`ff_regist_packet_dispatcher` 不在 symlist 却能链接同理。已实测 `nm libfstack.a \| grep ff_regist_idle_callback` 为 `T` |
+| 单元测试 | `tests/unit/test_ff_dpdk_if.c` —— `test_ff_regist_idle_callback_smoke` |
+
+语义：回调在**每个**空闲圈调用，包括本圈已调用过 `loop()` 的圈；`loop()` 仍保持自己的 `idle_loop_interval` 节流。`thread_mode=1` 下会被每个 lcore 并发调用（与 `lr->loop` 同一契约），需用户自行保证线程安全；须在 `ff_run()` 之前注册。
+
+运行时验证（DPDK 网卡，`idle_sleep=20`，`idle_loop_interval=100`，`pkt_tx_delay=30`）：未注册 → `loop()` 6.0k/s、空闲回调 0/s（与改动前基线完全一致）；注册且回调内 `usleep(20)` → 空闲回调 12.0k/s 且 `loop()` 仍为 6.0k/s（恰为 2:1，即每空闲圈一次）；注册但不自我限速 → 空闲回调约 6.2M/s（主循环满速空转，即文档警示的风险）；运行中注销 → 回调归零、`loop()` 回到 6.0k/s；HTTP 打流（`<DPDK_NIC_IP>`）15675/15675 返回 200，`loop()` 升至约 7.2k/s（有包时节流被绕过）。
+
+可追溯：`docs/idle_callback_spec/zh_cn/`（plan.md + 实施与验证报告）。

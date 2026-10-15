@@ -296,6 +296,7 @@ int main_loop(void *arg) {
 - **CPU-intensive**: 100% utilization (optimized through CPU isolation)
 - **Configurable sleep**: `idle_sleep` parameter supports microsecond-level yielding
 - **Configurable idle callback rate**: while no packet arrives, the user `loop()` callback is invoked at most once per `idle_loop_interval` (µs, default 100); it is invoked on every pass as soon as a packet arrives
+- **User-owned idle behaviour**: if an idle callback is registered with `ff_regist_idle_callback()`, the library idle sleep is skipped and that callback runs on every idle pass instead — the application then owns the idle behaviour and must yield the CPU by itself
 
 ## 6. Process Model
 
