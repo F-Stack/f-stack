@@ -364,6 +364,32 @@ test_ff_regist_packet_dispatcher_context_smoke(void **state)
 }
 
 /* ------------------------------------------------------------------------ */
+/* TC-U-P2-DPDKIF-05b: register/unregist_idle_callback                      */
+/* ------------------------------------------------------------------------ */
+static int idle_cb_calls;
+
+static void
+fake_idle_callback(void *arg)
+{
+    (void)arg;
+    idle_cb_calls++;
+}
+
+static void
+test_ff_regist_idle_callback_smoke(void **state)
+{
+    (void)state;
+    ff_regist_idle_callback(fake_idle_callback, &idle_cb_calls);
+    /* re-registering with NULL is an unregist, and unregist is idempotent */
+    ff_regist_idle_callback(NULL, NULL);
+    ff_unregist_idle_callback();
+    ff_unregist_idle_callback();
+    /* registering again after an unregist must work too */
+    ff_regist_idle_callback(fake_idle_callback, &idle_cb_calls);
+    ff_unregist_idle_callback();
+}
+
+/* ------------------------------------------------------------------------ */
 /* TC-U-P2-DPDKIF-07: ff_get_tsc_ns returns monotonic non-zero with the      */
 /* mocked rte_get_tsc_hz = 1 GHz. rte_rdtsc remains the real CPU intrinsic. */
 /* ------------------------------------------------------------------------ */
@@ -3592,6 +3618,7 @@ main(void)
         cmocka_unit_test(test_rx40_flow_peer_table),
         cmocka_unit_test(test_rx40_flow_peer_rules),
         cmocka_unit_test_setup_teardown(test_rx39_gendir_parity, p1_setup, p1_teardown),
+        cmocka_unit_test(test_ff_regist_idle_callback_smoke),
     };
     return cmocka_run_group_tests(tests, NULL, NULL);
 }
