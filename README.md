@@ -145,6 +145,34 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
     route add -net 0.0.0.0 gw <gateway> dev veth0
     # route add -net ...  # other route rules
 
+## Notes for sources copied from Windows
+
+A Windows filesystem keeps neither the Unix executable bit nor symlinks. If the
+source tree is copied from a Windows host (shared folder, exported zip, etc.)
+instead of being cloned with git, the build breaks in non-obvious ways. Restore
+the lost metadata before compiling:
+
+    # DPDK helper scripts
+    chmod +x dpdk/usertools/*
+    chmod +x dpdk/buildtools/*
+
+    # F-Stack lib: recreate the arch include symlink (do not copy a directory)
+    cd lib/include && rm -f machine && ln -s amd64/include/ machine && cd -
+
+    # Redis / jemalloc: without these jemalloc's configure cannot run, and the
+    # build fails with "jemalloc/jemalloc.h: No such file or directory" or
+    # "Newer version of jemalloc required"
+    chmod +x app/redis-6.2.6/deps/jemalloc/configure
+    chmod +x app/redis-6.2.6/deps/jemalloc/include/jemalloc/internal/*.sh
+    chmod +x app/redis-6.2.6/deps/jemalloc/build-aux/config.guess \
+             app/redis-6.2.6/deps/jemalloc/build-aux/config.sub \
+             app/redis-6.2.6/deps/jemalloc/build-aux/install-sh
+    chmod +x app/redis-6.2.6/src/*.sh
+    chmod +x app/redis-6.2.6/utils/*.sh
+
+A plain `git clone` keeps all of this intact, so the steps above are only
+needed when the tree comes from Windows.
+
 ## Nginx Testing Result
 
 Test environment
