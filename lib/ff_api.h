@@ -345,6 +345,22 @@ void ff_unregist_packet_dispatcher(void);
 void ff_unregist_packet_dispatcher_context(void);
 
 /*
+ * Idle callback, invoked on every main loop pass that received no packet.
+ * Registering it replaces the library idle sleep (idle_sleep /
+ * primary_slim_idle_sleep): the application then owns the idle behaviour and
+ * must yield the CPU by itself, otherwise the loop spins at full speed.
+ * In thread_mode=1 the callback runs concurrently on every lcore, so it must
+ * be thread-safe. Register before ff_run().
+ */
+typedef void (*idle_func_t)(void *arg);
+
+/* regist an idle callback; ff_regist_idle_callback(NULL, NULL) unregists it */
+void ff_regist_idle_callback(idle_func_t func, void *arg);
+
+/* Unregist the idle callback. Idempotent. */
+void ff_unregist_idle_callback(void);
+
+/*
  * RAW packet send direty with DPDK by user APP.
  *
  * @param data

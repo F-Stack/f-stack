@@ -204,6 +204,9 @@ static struct rte_ring **dispatch_ring[RTE_MAX_ETHPORTS];
 static dispatch_func_t packet_dispatcher;
 static dispatch_func_context_t packet_dispatcher_with_context;
 
+static idle_func_t idle_callback;
+static void *idle_callback_arg;
+
 static uint16_t rss_reta_size[RTE_MAX_ETHPORTS];
 
 /* per-port rte_thash ctx for dynamic sport reverse-calc.
@@ -3717,6 +3720,7 @@ main_loop(void *arg)
 
     struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
     uint64_t prev_tsc, diff_tsc, cur_tsc, usch_tsc, div_tsc, usr_tsc, sys_tsc, end_tsc, idle_sleep_tsc;
+    uint64_t idle_cb_tsc;
     int i, j, nb_rx, idle;
     uint16_t port_id, queue_id;
     struct lcore_conf *qconf;
@@ -3834,6 +3838,7 @@ main_loop(void *arg)
         sys_tsc = 0;
         usr_tsc = 0;
         usr_cb_tsc = 0;
+        idle_cb_tsc = 0;
 
         /* hardware view for this pass, sampled once so the
          * park ack and the tx/rx sections below cannot disagree. */
@@ -4084,7 +4089,13 @@ main_loop(void *arg)
                 rte_eal_process_type() == RTE_PROC_PRIMARY) {
                 effective_sleep = ff_global_cfg.dpdk.primary_slim_idle_sleep;
             }
-            if (likely(idle && effective_sleep)) {
+            if (unlikely(idle && idle_callback != NULL)) {
+                /* the application owns the idle behaviour: no library sleep */
+                uint64_t cb_tsc = rte_rdtsc();
+                idle_callback(idle_callback_arg);
+                idle_cb_tsc += rte_rdtsc() - cb_tsc;
+                end_tsc = rte_rdtsc();
+            } else if (likely(idle && effective_sleep)) {
                 rte_delay_us_sleep(effective_sleep);
                 end_tsc = rte_rdtsc();
             } else {
@@ -4092,7 +4103,7 @@ main_loop(void *arg)
             }
         }
 
-        usr_tsc = usr_cb_tsc;
+        usr_tsc = usr_cb_tsc + idle_cb_tsc;
         if (usch_tsc == cur_tsc) {
             usr_tsc += idle_sleep_tsc - div_tsc;
         }
@@ -5375,6 +5386,20 @@ void
 ff_unregist_packet_dispatcher_context(void)
 {
     packet_dispatcher_with_context = NULL;
+}
+
+void
+ff_regist_idle_callback(idle_func_t func, void *arg)
+{
+    idle_callback = func;
+    idle_callback_arg = arg;
+}
+
+void
+ff_unregist_idle_callback(void)
+{
+    idle_callback = NULL;
+    idle_callback_arg = NULL;
 }
 
 uint64_t
