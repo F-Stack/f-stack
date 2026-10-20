@@ -40,8 +40,8 @@ the executable bits are lost and the bundled jemalloc fails to configure, which
 shows up as `jemalloc/jemalloc.h: No such file or directory` or
 `Newer version of jemalloc required`. Restore them first:
 
-    % chmod +x deps/jemalloc/configure deps/jemalloc/include/jemalloc/internal/*.sh
-    % chmod +x deps/jemalloc/build-aux/config.guess deps/jemalloc/build-aux/config.sub deps/jemalloc/build-aux/install-sh
+    % chmod +x deps/jemalloc/configure deps/jemalloc/include/jemalloc/*.sh deps/jemalloc/include/jemalloc/internal/*.sh
+    % chmod +x deps/jemalloc/build-aux/*
     % chmod +x src/*.sh utils/*.sh
 
 To build with TLS support, you'll need OpenSSL development libraries (e.g.

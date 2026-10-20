@@ -48,8 +48,8 @@ $ make install
 $ cd app/redis-6.2.6
 # If the sources were copied from Windows instead of cloned with git, the
 # executable bits are lost: restore them first or jemalloc's configure fails.
-$ chmod +x deps/jemalloc/configure deps/jemalloc/include/jemalloc/internal/*.sh
-$ chmod +x deps/jemalloc/build-aux/config.guess deps/jemalloc/build-aux/config.sub deps/jemalloc/build-aux/install-sh
+$ chmod +x deps/jemalloc/configure deps/jemalloc/include/jemalloc/*.sh deps/jemalloc/include/jemalloc/internal/*.sh
+$ chmod +x deps/jemalloc/build-aux/*
 $ chmod +x src/*.sh utils/*.sh
 $ make
 

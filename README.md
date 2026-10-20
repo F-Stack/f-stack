@@ -163,10 +163,9 @@ the lost metadata before compiling:
     # build fails with "jemalloc/jemalloc.h: No such file or directory" or
     # "Newer version of jemalloc required"
     chmod +x app/redis-6.2.6/deps/jemalloc/configure
+    chmod +x app/redis-6.2.6/deps/jemalloc/include/jemalloc/*.sh
     chmod +x app/redis-6.2.6/deps/jemalloc/include/jemalloc/internal/*.sh
-    chmod +x app/redis-6.2.6/deps/jemalloc/build-aux/config.guess \
-             app/redis-6.2.6/deps/jemalloc/build-aux/config.sub \
-             app/redis-6.2.6/deps/jemalloc/build-aux/install-sh
+    chmod +x app/redis-6.2.6/deps/jemalloc/build-aux/*
     chmod +x app/redis-6.2.6/src/*.sh
     chmod +x app/redis-6.2.6/utils/*.sh
 
