@@ -43,8 +43,9 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
 
     cd f-stack
     # Compile DPDK
-    cd dpdk/usertools
-    ./dpdk-setup.sh # compile with x86_64-native-linuxapp-gcc
+    cd dpdk
+    make config T=x86_64-native-linuxapp-gcc
+    make
 
     # Set hugepage (Linux only)
     # single-node system
@@ -68,8 +69,8 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # Offload NIC
     # For Linux:
     modprobe uio
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko carrier=on # carrier=on is necessary, otherwise need to be up `veth0` via `echo 1 > /sys/class/net/veth0/carrier`
+    insmod /data/f-stack/dpdk/build/kmod/igb_uio.ko
+    insmod /data/f-stack/dpdk/build/kmod/rte_kni.ko carrier=on # carrier=on is necessary, otherwise need to be up `veth0` via `echo 1 > /sys/class/net/veth0/carrier`
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
@@ -84,7 +85,6 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     #kldload nic_uio
 
     # Install DPDK
-    cd ../x86_64-native-linuxapp-gcc
     make install
 
     # On Ubuntu, use gawk instead of the default mawk.
@@ -96,7 +96,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
  
     # Compile F-Stack
     export FF_PATH=/data/f-stack
-    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
+    export FF_DPDK=/data/f-stack/dpdk/build
     cd ../../lib/
     make    # On Linux
     #gmake   # On FreeBSD

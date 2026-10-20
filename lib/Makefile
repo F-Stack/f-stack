@@ -58,7 +58,7 @@ ifeq ($(FF_DPDK),)
 ifeq (${MACHINE_CPUARCH},aarch64)
     FF_DPDK=${TOPDIR}/dpdk/build
 else
-    FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
+    FF_DPDK=${TOPDIR}/dpdk/build
 endif
 endif
 
@@ -66,7 +66,7 @@ ifdef RTE_SDK
 ifeq (${MACHINE_CPUARCH},aarch64)
     FF_DPDK=${RTE_SDK}/build
 else
-    FF_DPDK=${RTE_SDK}/x86_64-native-linuxapp-gcc
+    FF_DPDK=${RTE_SDK}/build
 endif
 endif
 

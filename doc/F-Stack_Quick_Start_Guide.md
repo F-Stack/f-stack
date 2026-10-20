@@ -16,10 +16,9 @@ See Intel DPDK [linux_gsg](http://dpdk.org/doc/guides/linux_gsg/index.html)
 
 Read DPDK Quick Started Guide or run the command below
 
-	cd /data/f-stack/dpdk/tools
-	./dpdk-setup.sh 
-
-Compile with x86_64-native-linuxapp-gcc
+	cd /data/f-stack/dpdk
+	make config T=x86_64-native-linuxapp-gcc
+	make
 
 ## Set hugepage
 
@@ -44,8 +43,8 @@ The mount point can be made permanent across reboots, by adding the following li
 ## offload NIC
 
     modprobe uio
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/igb_uio.ko
-    insmod /data/f-stack/dpdk/x86_64-native-linuxapp-gcc/kmod/rte_kni.ko carrier=on
+    insmod /data/f-stack/dpdk/build/kmod/igb_uio.ko
+    insmod /data/f-stack/dpdk/build/kmod/rte_kni.ko carrier=on
     python dpdk-devbind.py --status
     ifconfig eth0 down
     python dpdk-devbind.py --bind=igb_uio eth0 # assuming that use 10GE NIC and eth0
@@ -53,8 +52,8 @@ The mount point can be made permanent across reboots, by adding the following li
 ## Compile  lib
 
     export FF_PATH=/data/f-stack
-    export FF_DPDK=/data/f-stack/dpdk/x86_64-native-linuxapp-gcc
-    cd ../../
+    export FF_DPDK=/data/f-stack/dpdk/build
+    cd ..
     cd lib
     make
 

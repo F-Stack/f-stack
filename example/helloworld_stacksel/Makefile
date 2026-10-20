@@ -5,7 +5,7 @@ ifeq ($(FF_PATH),)
 endif
 
 ifeq ($(FF_DPDK),)
-	FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
+	FF_DPDK=${TOPDIR}/dpdk/build
 endif
 
 LIBS+= -L${FF_PATH}/lib -Wl,--whole-archive,-lfstack,--no-whole-archive

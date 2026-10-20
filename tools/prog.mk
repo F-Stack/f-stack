@@ -42,7 +42,7 @@ OBJS+= $(patsubst %.c,%.o, $(filter %.c,${SRCS}))
 OBJS+= $(patsubst %.cc,%.o, $(filter %.cc,${SRCS}))
 
 ifeq ($(FF_DPDK),)
-	FF_DPDK=${TOPDIR}/dpdk/x86_64-native-linuxapp-gcc
+	FF_DPDK=${TOPDIR}/dpdk/build
 endif
 
 FF_PROG_CFLAGS:= -g -Wall -Werror -DFSTACK -std=gnu99
