@@ -213,6 +213,20 @@ rte_timer_init(struct rte_timer *tim)
 	rte_atomic_store_explicit(&tim->status.u32, status.u32, rte_memory_order_relaxed);
 }
 
+int
+rte_timer_meta_init(void)
+{
+    struct rte_timer_data *timer_data;
+    struct priv_timer *pt;
+    unsigned lcore_id = rte_lcore_id();
+
+    TIMER_DATA_VALID_GET_OR_ERR_RET(default_data_id, timer_data, -EINVAL);
+    pt = &timer_data->priv_timer[lcore_id];
+    memset(pt, 0, sizeof(*pt));
+    pt->prev_lcore = lcore_id;
+    return 0;
+}
+
 /*
  * if timer is pending or stopped (or running on the same core than
  * us), mark timer as configuring, and on success return the previous

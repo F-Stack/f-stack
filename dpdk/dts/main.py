@@ -4,28 +4,20 @@
 # Copyright(c) 2022 PANTHEON.tech s.r.o.
 # Copyright(c) 2022 University of New Hampshire
 
-"""The DTS executable."""
+"""
+A test framework for testing DPDK.
+"""
 
-from framework import settings
+import logging
+
+from framework import dts
 
 
 def main() -> None:
-    """Set DTS settings, then run DTS.
-
-    The DTS settings are taken from the command line arguments and the environment variables.
-    The settings object is stored in the module-level variable settings.SETTINGS which the entire
-    framework uses. After importing the module (or the variable), any changes to the variable are
-    not going to be reflected without a re-import. This means that the SETTINGS variable must
-    be modified before the settings module is imported anywhere else in the framework.
-    """
-    settings.SETTINGS = settings.get_settings()
-
-    from framework.runner import DTSRunner
-
-    dts = DTSRunner()
-    dts.run()
+    dts.run_all()
 
 
 # Main program begins here
 if __name__ == "__main__":
+    logging.raiseExceptions = True
     main()

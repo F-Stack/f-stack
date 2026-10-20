@@ -1321,7 +1321,12 @@ rte_eal_cleanup(void)
 		rte_memseg_walk(mark_freeable, NULL);
 
 	rte_service_finalize();
-	eal_bus_cleanup();
+	/* F-Stack 92718178b: secondary must not call drv->remove() on devices
+	 * still used by primary (F-Stack issue #860), not fixed upstream as of
+	 * 24.11.8.
+	 */
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY)
+		eal_bus_cleanup();
 #ifdef VFIO_PRESENT
 	vfio_mp_sync_cleanup();
 #endif
