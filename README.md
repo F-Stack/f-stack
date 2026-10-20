@@ -141,6 +141,33 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
 
 We provide a  f-stack-binary-release package that you can use F-Stack directly without compiling. For more details, see [Binary_Release_Quick_Start](https://github.com/F-Stack/f-stack/blob/master/doc/F-Stack_Binary_Release_Quick_Start.md).
 
+## Notes for sources copied from Windows
+
+A Windows filesystem keeps neither the Unix executable bit nor symlinks. If the
+source tree is copied from a Windows host (shared folder, exported zip, etc.)
+instead of being cloned with git, the build breaks in non-obvious ways. Restore
+the lost metadata before compiling:
+
+    # DPDK helper scripts
+    chmod +x dpdk/usertools/*
+    chmod +x dpdk/buildtools/*
+
+    # F-Stack lib: recreate the arch include symlink (do not copy a directory)
+    cd lib/include && rm -f machine && ln -s amd64/include/ machine && cd -
+
+    # Redis / jemalloc: without these jemalloc's configure cannot run, and the
+    # build fails with "jemalloc/jemalloc.h: No such file or directory" or
+    # "Newer version of jemalloc required"
+    chmod +x app/redis-5.0.5/deps/jemalloc/configure
+    chmod +x app/redis-5.0.5/deps/jemalloc/include/jemalloc/*.sh
+    chmod +x app/redis-5.0.5/deps/jemalloc/include/jemalloc/internal/*.sh
+    chmod +x app/redis-5.0.5/deps/jemalloc/build-aux/*
+    chmod +x app/redis-5.0.5/src/*.sh
+    chmod +x app/redis-5.0.5/utils/*.sh
+
+A plain `git clone` keeps all of this intact, so the steps above are only
+needed when the tree comes from Windows.
+
 ## Nginx Testing Result
 
 Test environment

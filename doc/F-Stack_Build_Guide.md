@@ -31,6 +31,11 @@ $ make install
 
 # Compile Redis
 $ cd ../redis-5.0.5
+# If the sources were copied from Windows instead of cloned with git, the
+# executable bits are lost: restore them first or jemalloc's configure fails.
+$ chmod +x deps/jemalloc/configure deps/jemalloc/include/jemalloc/*.sh deps/jemalloc/include/jemalloc/internal/*.sh
+$ chmod +x deps/jemalloc/build-aux/*
+$ chmod +x src/*.sh utils/*.sh
 $ make
 
 # Compile f-stack tools

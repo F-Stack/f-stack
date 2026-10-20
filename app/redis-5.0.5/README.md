@@ -35,6 +35,15 @@ It is as simple as:
 
     % make
 
+If the sources were copied from a Windows host instead of being cloned with git,
+the executable bits are lost and the bundled jemalloc fails to configure, which
+shows up as `jemalloc/jemalloc.h: No such file or directory` or
+`Newer version of jemalloc required`. Restore them first:
+
+    % chmod +x deps/jemalloc/configure deps/jemalloc/include/jemalloc/*.sh deps/jemalloc/include/jemalloc/internal/*.sh
+    % chmod +x deps/jemalloc/build-aux/*
+    % chmod +x src/*.sh utils/*.sh
+
 You can run a 32 bit Redis binary using:
 
     % make 32bit
