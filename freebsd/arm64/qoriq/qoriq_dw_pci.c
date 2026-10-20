@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -28,14 +28,9 @@
 
 /* Layerscape DesignWare PCIe driver */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
-#include <sys/devmap.h>
 #include <sys/proc.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
@@ -64,7 +59,7 @@ __FBSDID("$FreeBSD$");
 
 struct qoriq_dw_pci_cfg {
 	uint32_t	pex_pf0_dgb;	/* offset of PEX_PF0_DBG register */
-	uint32_t	ltssm_bit;	/* LSB bit of of LTSSM state field */
+	uint32_t	ltssm_bit;	/* LSB bit of LTSSM state field */
 };
 
 struct qorif_dw_pci_softc {
@@ -150,7 +145,7 @@ qorif_dw_pci_get_link(device_t dev, bool *status)
 	reg = pci_dw_dbi_rd4(sc->dev, sc->soc_cfg->pex_pf0_dgb);
 	reg >>=  sc->soc_cfg->ltssm_bit;
 	reg &= 0x3F;
-	*status = (reg = 0x11) ? true: false;
+	*status = (reg == 0x11) ? true : false;
 	return (0);
 }
 
@@ -188,6 +183,8 @@ qorif_dw_pci_probe(device_t dev)
 static int
 qorif_dw_pci_attach(device_t dev)
 {
+	struct resource_map_request req;
+	struct resource_map map;
 	struct qorif_dw_pci_softc *sc;
 	phandle_t node;
 	int rv;
@@ -202,12 +199,22 @@ qorif_dw_pci_attach(device_t dev)
 
 	rid = 0;
 	sc->dw_sc.dbi_res = bus_alloc_resource_any(dev, SYS_RES_MEMORY, &rid,
-	    RF_ACTIVE);
+	    RF_ACTIVE | RF_UNMAPPED);
 	if (sc->dw_sc.dbi_res == NULL) {
 		device_printf(dev, "Cannot allocate DBI memory\n");
 		rv = ENXIO;
 		goto out;
 	}
+
+	resource_init_map_request(&req);
+	req.memattr = VM_MEMATTR_DEVICE_NP;
+	rv = bus_map_resource(dev, SYS_RES_MEMORY, sc->dw_sc.dbi_res, &req,
+	    &map);
+	if (rv != 0) {
+		device_printf(dev, "could not map memory.\n");
+		return (rv);
+	}
+	rman_set_mapping(sc->dw_sc.dbi_res, &map);
 
 	/* PCI interrupt */
 	rid = 0;
@@ -233,7 +240,8 @@ qorif_dw_pci_attach(device_t dev)
 		goto out;
 	}
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 out:
 	/* XXX Cleanup */
 	return (rv);
@@ -251,6 +259,4 @@ static device_method_t qorif_dw_pci_methods[] = {
 
 DEFINE_CLASS_1(pcib, qorif_dw_pci_driver, qorif_dw_pci_methods,
     sizeof(struct qorif_dw_pci_softc), pci_dw_driver);
-static devclass_t qorif_dw_pci_devclass;
-DRIVER_MODULE( qorif_dw_pci, simplebus, qorif_dw_pci_driver, qorif_dw_pci_devclass,
-    NULL, NULL);
+DRIVER_MODULE( qorif_dw_pci, simplebus, qorif_dw_pci_driver, NULL, NULL);

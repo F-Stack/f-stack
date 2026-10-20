@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,12 +24,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/kernel.h>
@@ -117,7 +112,7 @@ struct domain {
 
 static SLIST_HEAD(, domain) domhead;
 
-#define	DRHD_MAX_UNITS	8
+#define	DRHD_MAX_UNITS	16
 static ACPI_DMAR_HARDWARE_UNIT	*drhds[DRHD_MAX_UNITS];
 static int			drhd_num;
 static struct vtdmap		*vtdmaps[DRHD_MAX_UNITS];
@@ -436,8 +431,8 @@ vtd_disable(void)
 	}
 }
 
-static void
-vtd_add_device(void *arg, uint16_t rid)
+static int
+vtd_add_device(void *arg, device_t dev __unused, uint16_t rid)
 {
 	int idx;
 	uint64_t *ctxp;
@@ -445,6 +440,8 @@ vtd_add_device(void *arg, uint16_t rid)
 	vm_paddr_t pt_paddr;
 	struct vtdmap *vtdmap;
 	uint8_t bus;
+
+	KASSERT(dom != NULL, ("domain is NULL"));
 
 	bus = PCI_RID2BUS(rid);
 	ctxp = ctx_tables[bus];
@@ -478,10 +475,11 @@ vtd_add_device(void *arg, uint16_t rid)
 	 * 'Not Present' entries are not cached in either the Context Cache
 	 * or in the IOTLB, so there is no need to invalidate either of them.
 	 */
+	return (0);
 }
 
-static void
-vtd_remove_device(void *arg, uint16_t rid)
+static int
+vtd_remove_device(void *arg, device_t dev __unused, uint16_t rid)
 {
 	int i, idx;
 	uint64_t *ctxp;
@@ -509,6 +507,7 @@ vtd_remove_device(void *arg, uint16_t rid)
 		vtd_ctx_global_invalidate(vtdmap);
 		vtd_iotlb_global_invalidate(vtdmap);
 	}
+	return (0);
 }
 
 #define	CREATE_MAPPING	0
@@ -603,21 +602,24 @@ vtd_update_mapping(void *arg, vm_paddr_t gpa, vm_paddr_t hpa, uint64_t len,
 	return (1UL << ptpshift);
 }
 
-static uint64_t
-vtd_create_mapping(void *arg, vm_paddr_t gpa, vm_paddr_t hpa, uint64_t len)
+static int
+vtd_create_mapping(void *arg, vm_paddr_t gpa, vm_paddr_t hpa, uint64_t len,
+    uint64_t *res_len)
 {
 
-	return (vtd_update_mapping(arg, gpa, hpa, len, CREATE_MAPPING));
+	*res_len = vtd_update_mapping(arg, gpa, hpa, len, CREATE_MAPPING);
+	return (0);
 }
 
-static uint64_t
-vtd_remove_mapping(void *arg, vm_paddr_t gpa, uint64_t len)
+static int
+vtd_remove_mapping(void *arg, vm_paddr_t gpa, uint64_t len, uint64_t *res_len)
 {
 
-	return (vtd_update_mapping(arg, gpa, 0, len, REMOVE_MAPPING));
+	*res_len = vtd_update_mapping(arg, gpa, 0, len, REMOVE_MAPPING);
+	return (0);
 }
 
-static void
+static int
 vtd_invalidate_tlb(void *dom)
 {
 	int i;
@@ -631,6 +633,7 @@ vtd_invalidate_tlb(void *dom)
 		vtdmap = vtdmaps[i];
 		vtd_iotlb_global_invalidate(vtdmap);
 	}
+	return (0);
 }
 
 static void *
@@ -761,16 +764,16 @@ vtd_destroy_domain(void *arg)
 	free(dom, M_VTD);
 }
 
-struct iommu_ops iommu_ops_intel = {
-	vtd_init,
-	vtd_cleanup,
-	vtd_enable,
-	vtd_disable,
-	vtd_create_domain,
-	vtd_destroy_domain,
-	vtd_create_mapping,
-	vtd_remove_mapping,
-	vtd_add_device,
-	vtd_remove_device,
-	vtd_invalidate_tlb,
+const struct iommu_ops iommu_ops_intel = {
+	.init = vtd_init,
+	.cleanup = vtd_cleanup,
+	.enable = vtd_enable,
+	.disable = vtd_disable,
+	.create_domain = vtd_create_domain,
+	.destroy_domain = vtd_destroy_domain,
+	.create_mapping = vtd_create_mapping,
+	.remove_mapping = vtd_remove_mapping,
+	.add_device = vtd_add_device,
+	.remove_device = vtd_remove_device,
+	.invalidate_tlb = vtd_invalidate_tlb,
 };

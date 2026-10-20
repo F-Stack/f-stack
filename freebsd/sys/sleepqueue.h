@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 John Baldwin <jhb@FreeBSD.org>
  *
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_SLEEPQUEUE_H_
@@ -85,22 +83,24 @@ struct thread;
 #define	SLEEPQ_LK		0x04		/* Used by a lockmgr. */
 #define	SLEEPQ_INTERRUPTIBLE	0x100		/* Sleep is interruptible. */
 #define	SLEEPQ_UNFAIR		0x200		/* Unfair wakeup order. */
+#define	SLEEPQ_DROP		0x400		/* Return without lock held. */
 
 void	init_sleepqueues(void);
-int	sleepq_abort(struct thread *td, int intrval);
+void	sleepq_abort(struct thread *td, int intrval);
 void	sleepq_add(const void *wchan, struct lock_object *lock,
 	    const char *wmesg, int flags, int queue);
 struct sleepqueue *sleepq_alloc(void);
-int	sleepq_broadcast(const void *wchan, int flags, int pri, int queue);
+void	sleepq_broadcast(const void *wchan, int flags, int pri, int queue);
 void	sleepq_chains_remove_matching(bool (*matches)(struct thread *));
 void	sleepq_free(struct sleepqueue *sq);
 void	sleepq_lock(const void *wchan);
 struct sleepqueue *sleepq_lookup(const void *wchan);
 void	sleepq_release(const void *wchan);
 void	sleepq_remove(struct thread *td, const void *wchan);
-int	sleepq_remove_matching(struct sleepqueue *sq, int queue,
+void	sleepq_remove_matching(struct sleepqueue *sq, int queue,
 	    bool (*matches)(struct thread *), int pri);
-int	sleepq_signal(const void *wchan, int flags, int pri, int queue);
+void	sleepq_remove_nested(struct thread *td);
+void	sleepq_signal(const void *wchan, int flags, int pri, int queue);
 void	sleepq_set_timeout_sbt(const void *wchan, sbintime_t sbt,
 	    sbintime_t pr, int flags);
 #define	sleepq_set_timeout(wchan, timo)					\

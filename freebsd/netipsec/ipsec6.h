@@ -1,4 +1,3 @@
-/*	$FreeBSD$	*/
 /*	$KAME: ipsec.h,v 1.44 2001/03/23 08:08:47 itojun Exp $	*/
 
 /*-
@@ -66,14 +65,10 @@ struct secpolicy *ipsec6_checkpolicy(const struct mbuf *,
 
 void ipsec6_setsockaddrs(const struct mbuf *, union sockaddr_union *,
     union sockaddr_union *);
-int ipsec6_input(struct mbuf *, int, int);
-int ipsec6_in_reject(const struct mbuf *, struct inpcb *);
-int ipsec6_forward(struct mbuf *);
-int ipsec6_pcbctl(struct inpcb *, struct sockopt *);
-int ipsec6_output(struct mbuf *, struct inpcb *);
-int ipsec6_capability(struct mbuf *, u_int);
 int ipsec6_common_input_cb(struct mbuf *, struct secasvar *, int, int);
-int ipsec6_process_packet(struct mbuf *, struct secpolicy *, struct inpcb *);
+int ipsec6_check_pmtu(struct ifnet *, struct mbuf *, struct secpolicy *, int);
+int ipsec6_process_packet(struct ifnet *, struct mbuf *, struct secpolicy *,
+    struct inpcb *, u_long);
 
 int ip6_ipsec_filtertunnel(struct mbuf *);
 int ip6_ipsec_pcbctl(struct inpcb *, struct sockopt *);

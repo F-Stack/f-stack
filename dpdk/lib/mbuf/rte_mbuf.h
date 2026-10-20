@@ -108,7 +108,7 @@ int rte_get_tx_ol_flag_list(uint64_t mask, char *buf, size_t buflen);
 static inline void
 rte_mbuf_prefetch_part1(struct rte_mbuf *m)
 {
-	rte_prefetch0(&m->cacheline0);
+	rte_prefetch0(m);
 }
 
 /**
@@ -126,7 +126,7 @@ static inline void
 rte_mbuf_prefetch_part2(struct rte_mbuf *m)
 {
 #if RTE_CACHE_LINE_SIZE == 64
-	rte_prefetch0(&m->cacheline1);
+	rte_prefetch0(RTE_PTR_ADD(m, RTE_CACHE_LINE_MIN_SIZE));
 #else
 	RTE_SET_USED(m);
 #endif
@@ -595,12 +595,15 @@ __rte_mbuf_raw_sanity_check(__rte_unused const struct rte_mbuf *m)
  */
 static inline struct rte_mbuf *rte_mbuf_raw_alloc(struct rte_mempool *mp)
 {
-	struct rte_mbuf *m;
+	union {
+		void *ptr;
+		struct rte_mbuf *m;
+	} ret;
 
-	if (rte_mempool_get(mp, (void **)&m) < 0)
+	if (rte_mempool_get(mp, &ret.ptr) < 0)
 		return NULL;
-	__rte_mbuf_raw_sanity_check(m);
-	return m;
+	__rte_mbuf_raw_sanity_check(ret.m);
+	return ret.m;
 }
 
 /**
@@ -1735,7 +1738,7 @@ const void *__rte_pktmbuf_read(const struct rte_mbuf *m, uint32_t off,
 static inline const void *rte_pktmbuf_read(const struct rte_mbuf *m,
 	uint32_t off, uint32_t len, void *buf)
 {
-	if (likely(off + len <= rte_pktmbuf_data_len(m)))
+	if (likely((uint64_t)off + len <= rte_pktmbuf_data_len(m)))
 		return rte_pktmbuf_mtod_offset(m, char *, off);
 	else
 		return __rte_pktmbuf_read(m, off, len, buf);

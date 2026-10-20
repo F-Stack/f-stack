@@ -232,7 +232,7 @@ restart:
         if ((*sipp)->subsystem == SI_SUB_DUMMY)
             continue;    /* skip dummy task(s)*/
 
-        if ((*sipp)->subsystem == SI_SUB_DONE)
+        if ((*sipp)->subsystem == SI_SUB_LAST)
             continue;
 
 #ifdef VERBOSE_SYSINIT
@@ -268,7 +268,7 @@ restart:
 #endif
 
         /* Check off the one we're just done */
-        (*sipp)->subsystem = SI_SUB_DONE;
+        (*sipp)->subsystem = SI_SUB_LAST;
 
         /* Check if we've installed more sysinit items via KLD */
         if (newsysinit != NULL) {
@@ -301,14 +301,12 @@ null_set_syscall_retval(struct thread *td __unused, int error __unused)
 struct sysentvec null_sysvec = {
     .sv_size    = 0,
     .sv_table    = NULL,
-    .sv_transtrap    = NULL,
     .sv_fixup    = NULL,
     .sv_sendsig    = NULL,
     .sv_sigcode    = NULL,
     .sv_szsigcode    = NULL,
     .sv_name    = "null",
     .sv_coredump    = NULL,
-    .sv_imgact_try    = NULL,
     .sv_minsigstksz    = 0,
     .sv_minuser    = VM_MIN_ADDRESS,
     .sv_maxuser    = VM_MAXUSER_ADDRESS,
@@ -465,7 +463,7 @@ proc0_init(void *dummy __unused)
 #endif
 
     /* Create the file descriptor table. */
-    p->p_fd = fdinit(NULL, false, NULL);
+    p->p_fd = fdinit();
     p->p_fdtol = NULL;
 
 

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Attilio Rao <attilio@FreeBSD.org>
  * All rights reserved.
@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS__LOCKMGR_H_
@@ -40,9 +38,9 @@
 struct lock {
 	struct lock_object	lock_object;
 	volatile uintptr_t	lk_lock;
-	u_int			lk_exslpfail;
+	u_short			lk_exslpfail;
+	u_short			lk_pri;
 	int			lk_timo;
-	int			lk_pri;
 #ifdef DEBUG_LOCKS
 	struct stack		lk_stack;
 #endif

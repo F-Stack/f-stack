@@ -26,29 +26,24 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS__STDARG_H_
 #define _SYS__STDARG_H_
 
-#include <sys/cdefs.h>
-#include <sys/_types.h>
+#include <sys/_visible.h>
 
 #ifndef _VA_LIST_DECLARED
-  #define _VA_LIST_DECLARED
-  typedef __va_list       va_list;
+#define	_VA_LIST_DECLARED
+typedef	__builtin_va_list	va_list;
 #endif
 
-#ifdef __GNUCLIKE_BUILTIN_STDARG
-  #define	va_start(ap, last)	__builtin_va_start((ap), (last))
-  #define	va_arg(ap, type)	__builtin_va_arg((ap), type)
-  #define	__va_copy(dest, src)	__builtin_va_copy((dest), (src))
-  #if __ISO_C_VISIBLE >= 1999
-    #define	va_copy(dest, src)	__va_copy(dest, src)
-  #endif
-  #define	va_end(ap)		__builtin_va_end(ap)
+#define	va_start(ap, last)	__builtin_va_start((ap), (last))
+#define	va_arg(ap, type)	__builtin_va_arg((ap), type)
+#define	__va_copy(dest, src)	__builtin_va_copy((dest), (src))
+#if __ISO_C_VISIBLE >= 1999
+  #define va_copy(dest, src)	__va_copy(dest, src)
 #endif
+#define	va_end(ap)		__builtin_va_end(ap)
 
 #endif /* ! _SYS__STDARG_H_ */

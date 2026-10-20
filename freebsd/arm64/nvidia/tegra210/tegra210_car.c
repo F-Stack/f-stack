@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -25,9 +25,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -42,11 +39,11 @@ __FBSDID("$FreeBSD$");
 #include <machine/bus.h>
 #include <machine/cpu.h>
 
-#include <dev/extres/clk/clk_div.h>
-#include <dev/extres/clk/clk_fixed.h>
-#include <dev/extres/clk/clk_gate.h>
-#include <dev/extres/clk/clk_mux.h>
-#include <dev/extres/hwreset/hwreset.h>
+#include <dev/clk/clk_div.h>
+#include <dev/clk/clk_fixed.h>
+#include <dev/clk/clk_gate.h>
+#include <dev/clk/clk_mux.h>
+#include <dev/hwreset/hwreset.h>
 #include <dev/ofw/openfirm.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
@@ -189,7 +186,7 @@ PLIST(mux_xusb_hs) = {"xusb_ss_div2", "pllU_60", "pc_xusb_ss" };
 PLIST(mux_xusb_ssp) = {"xusb_ss", "osc_div_clk"};
 
 
-/* Clocks ajusted online. */
+/* Clocks adjusted online. */
 static struct clk_fixed_def fixed_osc =
 	FRATE(TEGRA210_CLK_CLK_M, "osc", 38400000);
 static struct clk_fixed_def fixed_clk_m =
@@ -594,8 +591,7 @@ static device_method_t tegra210_car_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t tegra210_car_devclass;
 static DEFINE_CLASS_0(car, tegra210_car_driver, tegra210_car_methods,
     sizeof(struct tegra210_car_softc));
-EARLY_DRIVER_MODULE(tegra210_car, simplebus, tegra210_car_driver,
-    tegra210_car_devclass, NULL, NULL, BUS_PASS_TIMER);
+EARLY_DRIVER_MODULE(tegra210_car, simplebus, tegra210_car_driver, NULL, NULL,
+    BUS_PASS_TIMER);

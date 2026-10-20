@@ -30,9 +30,6 @@
  *	Date:	7/90
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 
 #include <ddb/ddb.h>

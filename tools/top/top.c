@@ -5,8 +5,9 @@ void
 usage(void)
 {
     printf("Usage:\n");
-    printf("  top [-p <f-stack proc_id>] [-P <max proc_id>] "
-        "[-d <secs>] [-n <num>]\n");
+    printf("  top [-p <f-stack proc_id|thread_id>[:<gen>]] [-g <gen>] "
+        "[-P <max proc_id|thread_id>] [-d <secs>] [-n <num>]\n");
+    printf("  -g selects the graceful_reload generation (default: the active one)\n");
 }
 
 int cpu_status(struct ff_top_args *top)
@@ -47,6 +48,16 @@ int cpu_status(struct ff_top_args *top)
     return 0;
 }
 
+/* the target may have exited under a reload: re-resolve and retry once */
+static int
+cpu_status_retry(struct ff_top_args *top)
+{
+    if (cpu_status(top) == 0)
+        return 0;
+    ff_ipc_gen_invalidate();
+    return cpu_status(top);
+}
+
 int main(int argc, char **argv)
 {
     int ch, delay = 1, n = 0;
@@ -58,17 +69,23 @@ int main(int argc, char **argv)
     float psys, pusr, pidle;
     unsigned long loops, ploops;
     int title_line = 40;
+    /* target generation of each sample: a delta needs both from one */
+    unsigned int seq, oseq = 0, pseq[RTE_MAX_LCORE] = { 0 };
+    int fresh, stale;
 
     ff_ipc_init();
+    ff_ipc_set_follow(1);
 
 #define TOP_DIFF(member) (top.member - otop.member)
 #define TOP_DIFF_P(member) (ptop[j].member - potop[j].member)
 
-    while ((ch = getopt(argc, argv, "hp:P:d:n:")) != -1) {
+    while ((ch = getopt(argc, argv, "hp:P:d:n:g:")) != -1) {
         switch(ch) {
         case 'p':
-            proc_id = atoi(optarg);
-            ff_set_proc_id(proc_id);
+            proc_id = ff_set_proc_id_str(optarg);
+            break;
+        case 'g':
+            ff_set_gen_str(optarg);
             break;
         case 'P':
             max_proc_id = atoi(optarg);
@@ -96,11 +113,14 @@ int main(int argc, char **argv)
 
     for (i = 0; ; i++) {
         if (max_proc_id == -1) {
-            if (cpu_status(&top)) {
+            if (cpu_status_retry(&top)) {
                 printf("fstack ipc message error !\n");
                 ff_ipc_exit();
                 return -1;
             }
+            seq = ff_ipc_target_seq();
+            fresh = i && seq == oseq;
+            oseq = seq;
 
             if (i % title_line == 0) {
                 printf("|---------|---------|---------|---------------|\n");
@@ -108,7 +128,7 @@ int main(int argc, char **argv)
                 printf("|---------|---------|---------|---------------|\n");
             }
 
-            if (i) {
+            if (fresh) {
                 sys = TOP_DIFF(sys_tsc) / (TOP_DIFF(work_tsc) / 100.0);
                 usr = TOP_DIFF(usr_tsc) / (TOP_DIFF(work_tsc) / 100.0);
                 idle = TOP_DIFF(idle_tsc) / (TOP_DIFF(work_tsc) / 100.0);
@@ -130,17 +150,23 @@ int main(int argc, char **argv)
             }
 
             sys = usr = idle = loops = 0;
+            stale = 0;
             for (j = proc_id; j <= max_proc_id; j++) {
                 potop[j] = ptop[j];
 
                 ff_set_proc_id(j);
-                if (cpu_status(&ptop[j])) {
+                if (cpu_status_retry(&ptop[j])) {
                     printf("fstack ipc message error, proc id:%d!\n", j);
                     ff_ipc_exit();
                     return -1;
                 }
+                seq = ff_ipc_target_seq();
+                fresh = i && seq == pseq[j];
+                pseq[j] = seq;
+                if (!fresh)
+                    stale = 1;
 
-                if (i) {
+                if (fresh) {
                     psys = TOP_DIFF_P(sys_tsc) / \
                         (TOP_DIFF_P(work_tsc) / 100.0);
                     pusr = TOP_DIFF_P(usr_tsc) / \
@@ -156,7 +182,7 @@ int main(int argc, char **argv)
                     idle += pidle;
                     loops += ploops;
 
-                    if (j == max_proc_id) {
+                    if (j == max_proc_id && !stale) {
                         printf("|%9s|%8.2f%%|%8.2f%%|%8.2f%%|%15lu|\n",
                             "total", idle, sys, usr, loops);
                         printf("|         |         |         |"

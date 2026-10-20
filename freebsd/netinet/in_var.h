@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)in_var.h	8.2 (Berkeley) 1/9/95
- * $FreeBSD$
  */
 
 #ifndef _NETINET_IN_VAR_H_
@@ -79,7 +76,7 @@ struct in_ifaddr {
 					/* ia_subnet{,mask} in host order */
 	u_long	ia_subnet;		/* subnet address */
 	u_long	ia_subnetmask;		/* mask of subnet */
-	LIST_ENTRY(in_ifaddr) ia_hash;	/* entry in bucket of inet addresses */
+	CK_LIST_ENTRY(in_ifaddr) ia_hash;	/* hash of internet addresses */
 	CK_STAILQ_ENTRY(in_ifaddr) ia_link;	/* list of internet addresses */
 	struct	sockaddr_in ia_addr;	/* reserve space for interface name */
 	struct	sockaddr_in ia_dstaddr; /* reserve space for broadcast addr */
@@ -100,7 +97,10 @@ struct in_ifaddr {
 #define IN_LNAOF(in, ifa) \
 	((ntohl((in).s_addr) & ~((struct in_ifaddr *)(ifa)->ia_subnetmask))
 
-extern	u_char	inetctlerrmap[];
+#ifdef _KERNEL
+#define IN_ARE_MASKED_ADDR_EQUAL(d, a, m)	(		\
+	((((d).s_addr ^ (a).s_addr) & (m).s_addr)) == 0 )
+#endif
 
 #define LLTABLE(ifp)	\
 	((struct in_ifinfo *)(ifp)->if_afdata[AF_INET])->ii_llt
@@ -108,7 +108,7 @@ extern	u_char	inetctlerrmap[];
  * Hash table for IP addresses.
  */
 CK_STAILQ_HEAD(in_ifaddrhead, in_ifaddr);
-LIST_HEAD(in_ifaddrhashhead, in_ifaddr);
+CK_LIST_HEAD(in_ifaddrhashhead, in_ifaddr);
 
 VNET_DECLARE(struct in_ifaddrhashhead *, in_ifaddrhashtbl);
 VNET_DECLARE(struct in_ifaddrhead, in_ifaddrhead);
@@ -124,16 +124,6 @@ VNET_DECLARE(u_long, in_ifaddrhmask);		/* mask for hash table */
 #define INADDR_HASH(x) \
 	(&V_in_ifaddrhashtbl[INADDR_HASHVAL(x) & V_in_ifaddrhmask])
 
-extern	struct rmlock in_ifaddr_lock;
-
-#define	IN_IFADDR_LOCK_ASSERT()	rm_assert(&in_ifaddr_lock, RA_LOCKED)
-#define	IN_IFADDR_RLOCK(t)	rm_rlock(&in_ifaddr_lock, (t))
-#define	IN_IFADDR_RLOCK_ASSERT()	rm_assert(&in_ifaddr_lock, RA_RLOCKED)
-#define	IN_IFADDR_RUNLOCK(t)	rm_runlock(&in_ifaddr_lock, (t))
-#define	IN_IFADDR_WLOCK()	rm_wlock(&in_ifaddr_lock)
-#define	IN_IFADDR_WLOCK_ASSERT()	rm_assert(&in_ifaddr_lock, RA_WLOCKED)
-#define	IN_IFADDR_WUNLOCK()	rm_wunlock(&in_ifaddr_lock)
-
 /*
  * Macro for finding the internet address structure (in_ifaddr)
  * corresponding to one of our IP addresses (in_addr).
@@ -141,11 +131,11 @@ extern	struct rmlock in_ifaddr_lock;
 #define INADDR_TO_IFADDR(addr, ia) \
 	/* struct in_addr addr; */ \
 	/* struct in_ifaddr *ia; */ \
-do { \
-\
-	LIST_FOREACH(ia, INADDR_HASH((addr).s_addr), ia_hash) \
-		if (IA_SIN(ia)->sin_addr.s_addr == (addr).s_addr) \
-			break; \
+do {									\
+	NET_EPOCH_ASSERT();						\
+	CK_LIST_FOREACH(ia, INADDR_HASH((addr).s_addr), ia_hash)	\
+		if (IA_SIN(ia)->sin_addr.s_addr == (addr).s_addr)	\
+			break;						\
 } while (0)
 
 /*
@@ -166,18 +156,15 @@ do { \
  * Macro for finding the internet address structure (in_ifaddr) corresponding
  * to a given interface (ifnet structure).
  */
-#define IFP_TO_IA(ifp, ia, t)						\
+#define IFP_TO_IA(ifp, ia)						\
 	/* struct ifnet *ifp; */					\
 	/* struct in_ifaddr *ia; */					\
-	/* struct rm_priotracker *t; */					\
 do {									\
 	NET_EPOCH_ASSERT();						\
-	IN_IFADDR_RLOCK((t));						\
 	for ((ia) = CK_STAILQ_FIRST(&V_in_ifaddrhead);			\
 	    (ia) != NULL && (ia)->ia_ifp != (ifp);			\
-	    (ia) = CK_STAILQ_NEXT((ia), ia_link))				\
+	    (ia) = CK_STAILQ_NEXT((ia), ia_link))			\
 		continue;						\
-	IN_IFADDR_RUNLOCK((t));						\
 } while (0)
 
 /*
@@ -395,7 +382,21 @@ extern struct sx in_multi_sx;
 #define	IN_MULTI_UNLOCK_ASSERT() sx_assert(&in_multi_sx, SA_XUNLOCKED)
 
 void inm_disconnect(struct in_multi *inm);
-extern int ifma_restart;
+
+/*
+ * Get the in_multi pointer from a ifmultiaddr.
+ * Returns NULL if ifmultiaddr is no longer valid.
+ */
+static __inline struct in_multi *
+inm_ifmultiaddr_get_inm(struct ifmultiaddr *ifma)
+{
+
+	NET_EPOCH_ASSERT();
+
+	return ((ifma->ifma_addr->sa_family != AF_INET ||
+	    (ifma->ifma_flags & IFMA_F_ENQUEUED) == 0) ? NULL :
+	    ifma->ifma_protospec);
+}
 
 /* Acquire an in_multi record. */
 static __inline void
@@ -438,6 +439,7 @@ inm_rele_locked(struct in_multi_head *inmh, struct in_multi *inm)
 
 struct rib_head;
 struct	ip_moptions;
+struct ucred;
 
 struct in_multi *inm_lookup_locked(struct ifnet *, const struct in_addr);
 struct in_multi *inm_lookup(struct ifnet *, const struct in_addr);
@@ -450,8 +452,6 @@ int	inm_record_source(struct in_multi *inm, const in_addr_t);
 void	inm_release_deferred(struct in_multi *);
 void	inm_release_list_deferred(struct in_multi_head *);
 void	inm_release_wait(void *);
-struct	in_multi *
-in_addmulti(struct in_addr *, struct ifnet *);
 int	in_joingroup(struct ifnet *, const struct in_addr *,
 	    /*const*/ struct in_mfilter *, struct in_multi **);
 int	in_joingroup_locked(struct ifnet *, const struct in_addr *,
@@ -459,12 +459,14 @@ int	in_joingroup_locked(struct ifnet *, const struct in_addr *,
 int	in_leavegroup(struct in_multi *, /*const*/ struct in_mfilter *);
 int	in_leavegroup_locked(struct in_multi *,
 	    /*const*/ struct in_mfilter *);
-int	in_control(struct socket *, u_long, caddr_t, struct ifnet *,
+int	in_mask2len(struct in_addr *);
+int	in_control(struct socket *, u_long, void *, struct ifnet *,
 	    struct thread *);
+int	in_control_ioctl(u_long, void *, struct ifnet *,
+	    struct ucred *);
 int	in_addprefix(struct in_ifaddr *);
 int	in_scrubprefix(struct in_ifaddr *, u_int);
 void	in_ifscrub_all(void);
-int	in_handle_ifaddr_route(int, struct in_ifaddr *);
 void	ip_input(struct mbuf *);
 void	ip_direct_input(struct mbuf *);
 void	in_ifadown(struct ifaddr *ifa, int);

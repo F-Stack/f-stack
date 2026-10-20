@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010 Luigi Rizzo, Riccardo Panicucci, Universita` di Pisa
  * All rights reserved
@@ -28,8 +28,6 @@
 
 /*
  * internal dummynet APIs.
- *
- * $FreeBSD$
  */
 
 #ifndef _IP_DN_PRIVATE_H
@@ -46,7 +44,7 @@
 #define D(fmt, ...) printf("%-10s " fmt "\n",      \
         __FUNCTION__, ## __VA_ARGS__)
 #define DX(lev, fmt, ...) do {              \
-        if (dn_cfg.debug > lev) D(fmt, ## __VA_ARGS__); } while (0)
+        if (V_dn_cfg.debug > lev) D(fmt, ## __VA_ARGS__); } while (0)
 #endif
 
 MALLOC_DECLARE(M_DUMMYNET);
@@ -56,36 +54,28 @@ MALLOC_DECLARE(M_DUMMYNET);
 #endif
 
 #define DN_LOCK_INIT() do {				\
-	mtx_init(&dn_cfg.uh_mtx, "dn_uh", NULL, MTX_DEF);	\
-	mtx_init(&dn_cfg.bh_mtx, "dn_bh", NULL, MTX_DEF);	\
+	mtx_init(&V_dn_cfg.uh_mtx, "dn_uh", NULL, MTX_DEF);	\
+	mtx_init(&V_dn_cfg.bh_mtx, "dn_bh", NULL, MTX_DEF);	\
 	} while (0)
 #define DN_LOCK_DESTROY() do {				\
-	mtx_destroy(&dn_cfg.uh_mtx);			\
-	mtx_destroy(&dn_cfg.bh_mtx);			\
+	mtx_destroy(&V_dn_cfg.uh_mtx);			\
+	mtx_destroy(&V_dn_cfg.bh_mtx);			\
 	} while (0)
 #if 0 /* not used yet */
-#define DN_UH_RLOCK()		mtx_lock(&dn_cfg.uh_mtx)
-#define DN_UH_RUNLOCK()		mtx_unlock(&dn_cfg.uh_mtx)
-#define DN_UH_WLOCK()		mtx_lock(&dn_cfg.uh_mtx)
-#define DN_UH_WUNLOCK()		mtx_unlock(&dn_cfg.uh_mtx)
-#define DN_UH_LOCK_ASSERT()	mtx_assert(&dn_cfg.uh_mtx, MA_OWNED)
+#define DN_UH_RLOCK()		mtx_lock(&V_dn_cfg.uh_mtx)
+#define DN_UH_RUNLOCK()		mtx_unlock(&V_dn_cfg.uh_mtx)
+#define DN_UH_WLOCK()		mtx_lock(&V_dn_cfg.uh_mtx)
+#define DN_UH_WUNLOCK()		mtx_unlock(&V_dn_cfg.uh_mtx)
+#define DN_UH_LOCK_ASSERT()	mtx_assert(&V_dn_cfg.uh_mtx, MA_OWNED)
 #endif
 
-#define DN_BH_RLOCK()		mtx_lock(&dn_cfg.uh_mtx)
-#define DN_BH_RUNLOCK()		mtx_unlock(&dn_cfg.uh_mtx)
-#define DN_BH_WLOCK()		mtx_lock(&dn_cfg.uh_mtx)
-#define DN_BH_WUNLOCK()		mtx_unlock(&dn_cfg.uh_mtx)
-#define DN_BH_LOCK_ASSERT()	mtx_assert(&dn_cfg.uh_mtx, MA_OWNED)
+#define DN_BH_RLOCK()		mtx_lock(&V_dn_cfg.uh_mtx)
+#define DN_BH_RUNLOCK()		mtx_unlock(&V_dn_cfg.uh_mtx)
+#define DN_BH_WLOCK()		mtx_lock(&V_dn_cfg.uh_mtx)
+#define DN_BH_WUNLOCK()		mtx_unlock(&V_dn_cfg.uh_mtx)
+#define DN_BH_LOCK_ASSERT()	mtx_assert(&V_dn_cfg.uh_mtx, MA_OWNED)
 
-SLIST_HEAD(dn_schk_head, dn_schk);
-SLIST_HEAD(dn_sch_inst_head, dn_sch_inst);
 SLIST_HEAD(dn_fsk_head, dn_fsk);
-SLIST_HEAD(dn_queue_head, dn_queue);
-SLIST_HEAD(dn_alg_head, dn_alg);
-
-#ifdef NEW_AQM
-SLIST_HEAD(dn_aqm_head, dn_aqm); /* for new AQMs */
-#endif
 
 struct mq {	/* a basic queue of packets*/
         struct mbuf *head, *tail;
@@ -101,7 +91,7 @@ set_oid(struct dn_id *o, int type, int len)
 }
 
 /*
- * configuration and global data for a dummynet instance
+ * configuration and data for a dummynet instance
  *
  * When a configuration is modified from userland, 'id' is incremented
  * so we can use the value to check for stale pointers.
@@ -125,11 +115,24 @@ struct dn_parms {
 	struct timeval prev_t;		/* last time dummynet_tick ran */
 	struct dn_heap	evheap;		/* scheduled events */
 
+	long	tick_last;		/* Last tick duration (usec). */
+	long	tick_delta;		/* Last vs standard tick diff (usec). */
+	long	tick_delta_sum;	/* Accumulated tick difference (usec).*/
+	long	tick_adjustment;	/* Tick adjustments done. */
+	long	tick_lost;		/* Lost(coalesced) ticks number. */
+	/* Adjusted vs non-adjusted curr_time difference (ticks). */
+	long	tick_diff;
+
 	/* counters of objects -- used for reporting space */
 	int	schk_count;
 	int	si_count;
 	int	fsk_count;
 	int	queue_count;
+
+	/* packet counters */
+	unsigned long	io_pkt;
+	unsigned long	io_pkt_fast;
+	unsigned long	io_pkt_drop;
 
 	/* ticks and other stuff */
 	uint64_t	curr_time;
@@ -141,10 +144,6 @@ struct dn_parms {
 	struct dn_ht	*schedhash;
 	/* list of flowsets without a scheduler -- use sch_chain */
 	struct dn_fsk_head	fsu;	/* list of unlinked flowsets */
-	struct dn_alg_head	schedlist;	/* list of algorithms */
-#ifdef NEW_AQM
-	struct dn_aqm_head	aqmlist;	/* list of AQMs */
-#endif
 
 	/* Store the fs/sch to scan when draining. The value is the
 	 * bucket number of the hash table. Expire can be disabled
@@ -157,13 +156,6 @@ struct dn_parms {
 	uint32_t expire_cycle;	/* tick count */
 
 	int init_done;
-
-	/* if the upper half is busy doing something long,
-	 * can set the busy flag and we will enqueue packets in
-	 * a queue for later processing.
-	 */
-	int	busy;
-	struct	mq	pending;
 
 #ifdef _KERNEL
 	/*
@@ -380,8 +372,8 @@ struct dn_pkt_tag {
 	int dn_dir;		/* action when packet comes out.*/
 				/* see ip_fw_private.h		*/
 	uint64_t output_time;	/* when the pkt is due for delivery*/
-	struct ifnet *ifp;	/* interface, for ip_output	*/
-	struct _ip6dn_args ip6opt;	/* XXX ipv6 options	*/
+	uint16_t if_index;
+	uint16_t if_idxgen;
 	uint16_t iphdr_off;	/* IP header offset for mtodo()	*/
 };
 
@@ -400,11 +392,22 @@ enum {
 	PROTO_IFB =	0x0c, /* layer2 + ifbridge */
 };
 
-extern struct dn_parms dn_cfg;
-//VNET_DECLARE(struct dn_parms, _base_dn_cfg);
-//#define dn_cfg	VNET(_base_dn_cfg)
+/*
+ * States for the Packet Loss Rate Gilbert-Elliott
+ * channel model
+ */
+enum {
+	PLR_STATE_G = 0,
+	PLR_STATE_B,
+};
+
+//extern struct dn_parms V_dn_cfg;
+VNET_DECLARE(struct dn_parms, dn_cfg);
+#define V_dn_cfg	VNET(dn_cfg)
 
 int dummynet_io(struct mbuf **, struct ip_fw_args *);
+void dummynet_sched_lock(void);
+void dummynet_sched_unlock(void);
 void dummynet_task(void *context, int pending);
 void dn_reschedule(void);
 struct dn_pkt_tag * dn_tag_get(struct mbuf *m);
@@ -434,16 +437,8 @@ struct copy_args {
 };
 
 struct sockopt;
-int ip_dummynet_compat(struct sockopt *sopt);
-int dummynet_get(struct sockopt *sopt, void **compat);
-int dn_c_copy_q (void *_ni, void *arg);
-int dn_c_copy_pipe(struct dn_schk *s, struct copy_args *a, int nq);
-int dn_c_copy_fs(struct dn_fsk *f, struct copy_args *a, int nq);
-int dn_compat_copy_queue(struct copy_args *a, void *_o);
-int dn_compat_copy_pipe(struct copy_args *a, void *_o);
-int copy_data_helper_compat(void *_o, void *_arg);
-int dn_compat_calc_size(void);
-int do_config(void *p, int l);
+int dummynet_get(struct sockopt *sopt);
+int do_config(void *p, size_t l);
 
 /* function to drain idle object */
 void dn_drain_scheduler(void);

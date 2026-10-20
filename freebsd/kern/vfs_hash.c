@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Poul-Henning Kamp
  * All rights reserved.
@@ -26,9 +26,6 @@
  * SUCH DAMAGE.
  *
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -93,8 +90,14 @@ vfs_hash_get(const struct mount *mp, u_int hash, int flags, struct thread *td,
 			error = vget_finish(vp, flags, vs);
 			if (error == ENOENT && (flags & LK_NOWAIT) == 0)
 				break;
-			if (error)
+			if (error != 0)
 				return (error);
+			if (vp->v_hash != hash ||
+			    (fn != NULL && fn(vp, arg))) {
+				vput(vp);
+				/* Restart the bucket walk. */
+				break;
+			}
 			*vpp = vp;
 			return (0);
 		}
@@ -190,6 +193,7 @@ vfs_hash_insert(struct vnode *vp, u_int hash, int flags, struct thread *td,
 void
 vfs_hash_rehash(struct vnode *vp, u_int hash)
 {
+	ASSERT_VOP_ELOCKED(vp, "rehash requires excl lock");
 
 	rw_wlock(&vfs_hash_lock);
 	LIST_REMOVE(vp, v_hashlist);

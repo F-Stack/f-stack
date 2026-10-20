@@ -51,6 +51,7 @@
 #define ICE_PKG_FILE_UPDATES "/lib/firmware/updates/intel/ice/ddp/ice.pkg"
 #define ICE_PKG_FILE_SEARCH_PATH_DEFAULT "/lib/firmware/intel/ice/ddp/"
 #define ICE_PKG_FILE_SEARCH_PATH_UPDATES "/lib/firmware/updates/intel/ice/ddp/"
+#define ICE_PKG_FILE_CUSTOMIZED_PATH "/sys/module/firmware_class/parameters/path"
 #define ICE_MAX_PKG_FILENAME_SIZE   256
 
 #define MAX_ACL_NORMAL_ENTRIES    256
@@ -345,13 +346,11 @@ struct ice_fdir_filter_conf {
 	uint64_t input_set_i; /* only for tunnel inner fields */
 	uint32_t mark_flag;
 
-	struct ice_parser_profile *prof;
+	struct ice_parser_profile prof;
 	bool parser_ena;
 	u8 *pkt_buf;
 	u8 pkt_len;
 };
-
-#define ICE_MAX_FDIR_FILTER_NUM		(1024 * 16)
 
 struct ice_fdir_fltr_pattern {
 	enum ice_fltr_ptype flow_type;
@@ -459,6 +458,8 @@ struct ice_acl_info {
 TAILQ_HEAD(ice_shaper_profile_list, ice_tm_shaper_profile);
 TAILQ_HEAD(ice_tm_node_list, ice_tm_node);
 
+#define ICE_TM_MAX_LAYERS ICE_SCHED_9_LAYERS
+
 struct ice_tm_shaper_profile {
 	TAILQ_ENTRY(ice_tm_shaper_profile) node;
 	uint32_t shaper_profile_id;
@@ -470,39 +471,28 @@ struct ice_tm_shaper_profile {
 struct ice_tm_node {
 	TAILQ_ENTRY(ice_tm_node) node;
 	uint32_t id;
-	uint32_t tc;
 	uint32_t priority;
 	uint32_t weight;
+	uint32_t level;
 	uint32_t reference_count;
 	struct ice_tm_node *parent;
 	struct ice_tm_node **children;
 	struct ice_tm_shaper_profile *shaper_profile;
 	struct rte_tm_node_params params;
-};
-
-/* node type of Traffic Manager */
-enum ice_tm_node_type {
-	ICE_TM_NODE_TYPE_PORT,
-	ICE_TM_NODE_TYPE_TC,
-	ICE_TM_NODE_TYPE_VSI,
-	ICE_TM_NODE_TYPE_QGROUP,
-	ICE_TM_NODE_TYPE_QUEUE,
-	ICE_TM_NODE_TYPE_MAX,
+	struct ice_sched_node *sched_node;
 };
 
 /* Struct to store all the Traffic Manager configuration. */
 struct ice_tm_conf {
 	struct ice_shaper_profile_list shaper_profile_list;
 	struct ice_tm_node *root; /* root node - port */
-	struct ice_tm_node_list tc_list; /* node list for all the TCs */
-	struct ice_tm_node_list vsi_list; /* node list for all the VSIs */
-	struct ice_tm_node_list qgroup_list; /* node list for all the queue groups */
-	struct ice_tm_node_list queue_list; /* node list for all the queues */
-	uint32_t nb_tc_node;
-	uint32_t nb_vsi_node;
-	uint32_t nb_qgroup_node;
-	uint32_t nb_queue_node;
+	uint8_t hidden_layers;    /* the number of hierarchy layers hidden from app */
 	bool committed;
+	bool clear_on_fail;
+};
+
+struct ice_mbuf_stats {
+	uint64_t tx_pkt_errors;
 };
 
 struct ice_pf {
@@ -534,6 +524,7 @@ struct ice_pf {
 	uint16_t fdir_fltr_cnt[ICE_FLTR_PTYPE_MAX][ICE_FD_HW_SEG_MAX];
 	struct ice_hw_port_stats stats_offset;
 	struct ice_hw_port_stats stats;
+	struct ice_mbuf_stats mbuf_stats;
 	/* internal packet statistics, it should be excluded from the total */
 	struct ice_eth_stats internal_stats_offset;
 	struct ice_eth_stats internal_stats;
@@ -568,10 +559,14 @@ struct ice_devargs {
 	uint8_t proto_xtr[ICE_MAX_QUEUE_NUM];
 	uint8_t pin_idx;
 	uint8_t pps_out_ena;
+	uint8_t ddp_load_sched;
+	uint8_t tm_exposed_levels;
 	int xtr_field_offs;
 	uint8_t xtr_flag_offs[PROTO_XTR_MAX];
 	/* Name of the field. */
 	char xtr_field_name[RTE_MBUF_DYN_NAMESIZE];
+	uint64_t mbuf_check;
+	const char *ddp_filename;
 };
 
 /**
@@ -590,6 +585,11 @@ struct ice_rss_prof_info {
 	bool symm;
 };
 
+#define ICE_MBUF_CHECK_F_TX_MBUF        (1ULL << 0)
+#define ICE_MBUF_CHECK_F_TX_SIZE        (1ULL << 1)
+#define ICE_MBUF_CHECK_F_TX_SEGMENT     (1ULL << 2)
+#define ICE_MBUF_CHECK_F_TX_OFFLOAD     (1ULL << 3)
+
 /**
  * Structure to store private data for each PF/VF instance.
  */
@@ -602,21 +602,22 @@ struct ice_adapter {
 	bool tx_vec_allowed;
 	bool tx_simple_allowed;
 	/* ptype mapping table */
-	uint32_t ptype_tbl[ICE_MAX_PKT_TYPE] __rte_cache_min_aligned;
+	alignas(RTE_CACHE_LINE_MIN_SIZE) uint32_t ptype_tbl[ICE_MAX_PKT_TYPE];
 	bool is_safe_mode;
 	struct ice_devargs devargs;
 	enum ice_pkg_type active_pkg_type; /* loaded ddp package type */
 	uint16_t fdir_ref_cnt;
+	/* For vector PMD */
+	eth_rx_burst_t tx_pkt_burst;
 	/* For PTP */
-	struct rte_timecounter systime_tc;
-	struct rte_timecounter rx_tstamp_tc;
-	struct rte_timecounter tx_tstamp_tc;
+	uint8_t ptp_tx_block;
+	uint8_t ptp_tx_index;
 	bool ptp_ena;
 	uint64_t time_hw;
 	struct ice_fdir_prof_info fdir_prof_info[ICE_MAX_PTGS];
 	struct ice_rss_prof_info rss_prof_info[ICE_MAX_PTGS];
 	/* True if DCF state of the associated PF is on */
-	bool dcf_state_on;
+	RTE_ATOMIC(bool) dcf_state_on;
 	/* Set bit if the engine is disabled */
 	unsigned long disabled_engine_mask;
 	struct ice_parser *psr;
@@ -663,7 +664,7 @@ struct ice_vsi_vlan_pvid_info {
 
 /* ICE_PF_TO */
 #define ICE_PF_TO_HW(pf) \
-	(&(((struct ice_pf *)pf)->adapter->hw))
+	(&((pf)->adapter->hw))
 #define ICE_PF_TO_ADAPTER(pf) \
 	((struct ice_adapter *)(pf)->adapter)
 #define ICE_PF_TO_ETH_DEV(pf) \
@@ -734,9 +735,28 @@ ice_align_floor(int n)
 	((phy_type) & ICE_PHY_TYPE_HIGH_100G_AUI2_AOC_ACC) || \
 	((phy_type) & ICE_PHY_TYPE_HIGH_100G_AUI2))
 
+#define ICE_PHY_TYPE_SUPPORT_200G_HIGH(phy_type) \
+	(((phy_type) & ICE_PHY_TYPE_HIGH_200G_CR4_PAM4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_SR4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_FR4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_LR4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_DR4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_KR4_PAM4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_AUI4_AOC_ACC) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_AUI4) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_AUI8_AOC_ACC) || \
+	((phy_type) & ICE_PHY_TYPE_HIGH_200G_AUI8))
+
 __rte_experimental
 int rte_pmd_ice_dump_package(uint16_t port, uint8_t **buff, uint32_t *size);
 
 __rte_experimental
 int rte_pmd_ice_dump_switch(uint16_t port, uint8_t **buff, uint32_t *size);
+
+__rte_experimental
+int rte_pmd_ice_dump_txsched(uint16_t port, bool detail, FILE *stream);
+
+int
+ice_tm_setup_txq_node(struct ice_pf *pf, struct ice_hw *hw, uint16_t qid, uint32_t node_teid);
+
 #endif /* _ICE_ETHDEV_H_ */

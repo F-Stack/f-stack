@@ -257,6 +257,12 @@ struct cnxk_eth_dev_sec_inb {
 
 	/* Lock to synchronize sa setup/release */
 	rte_spinlock_t lock;
+
+	/* Disable custom meta aura */
+	bool custom_meta_aura_dis;
+
+	/* Inline device CPT queue info */
+	struct roc_nix_inl_dev_q *inl_dev_q;
 };
 
 /* Outbound security data */
@@ -425,6 +431,12 @@ struct cnxk_eth_dev {
 	struct cnxk_mcs_dev *mcs_dev;
 	struct cnxk_macsec_sess_list mcs_list;
 
+	/* Inject packets */
+	struct cnxk_ethdev_inj_cfg inj_cfg;
+
+	/* Eswitch domain ID */
+	uint16_t switch_domain_id;
+
 	/* SSO event dev */
 	void *evdev_priv;
 
@@ -465,6 +477,67 @@ cnxk_eth_txq_to_sp(void *__txq)
 	return ((struct cnxk_eth_txq_sp *)__txq) - 1;
 }
 
+static inline int
+cnxk_nix_tx_queue_count(uint64_t *mem, uint16_t sqes_per_sqb_log2)
+{
+	uint64_t val;
+
+	val = rte_atomic_load_explicit((RTE_ATOMIC(uint64_t)*)mem, rte_memory_order_relaxed);
+	val = (val << sqes_per_sqb_log2) - val;
+
+	return (val & 0xFFFF);
+}
+
+static inline int
+cnxk_nix_tx_queue_sec_count(uint64_t *mem, uint16_t sqes_per_sqb_log2, uint64_t *sec_fc)
+{
+	uint64_t sq_cnt, sec_cnt, val;
+
+	sq_cnt = rte_atomic_load_explicit((RTE_ATOMIC(uint64_t)*)mem, rte_memory_order_relaxed);
+	sq_cnt = (sq_cnt << sqes_per_sqb_log2) - sq_cnt;
+	sec_cnt = rte_atomic_load_explicit((RTE_ATOMIC(uint64_t)*)sec_fc,
+					   rte_memory_order_relaxed);
+	val = RTE_MAX(sq_cnt, sec_cnt);
+
+	return (val & 0xFFFF);
+}
+
+static inline int
+cnxk_nix_inl_fc_check(uint64_t *fc, int32_t *fc_sw, uint32_t nb_desc, uint16_t nb_inst)
+{
+	uint8_t retry_count = 32;
+	int32_t val, newval;
+
+	/* Check if there is any CPT instruction to submit */
+	if (!nb_inst)
+		return -EINVAL;
+
+retry:
+	val = rte_atomic_fetch_sub_explicit((RTE_ATOMIC(int32_t)*)fc_sw, nb_inst,
+					    rte_memory_order_relaxed) - nb_inst;
+	if (likely(val >= 0))
+		return 0;
+
+	newval = (int64_t)nb_desc - rte_atomic_load_explicit((RTE_ATOMIC(uint64_t)*)fc,
+							     rte_memory_order_relaxed);
+	newval -= nb_inst;
+
+	if (!rte_atomic_compare_exchange_strong_explicit((RTE_ATOMIC(int32_t)*)fc_sw, &val, newval,
+							 rte_memory_order_release,
+							 rte_memory_order_relaxed)) {
+		if (retry_count) {
+			retry_count--;
+			goto retry;
+		} else {
+			return -EAGAIN;
+		}
+	}
+	if (unlikely(newval < 0))
+		return -EAGAIN;
+
+	return 0;
+}
+
 /* Common ethdev ops */
 extern struct eth_dev_ops cnxk_eth_dev_ops;
 
@@ -476,6 +549,15 @@ extern struct rte_security_ops cnxk_eth_sec_ops;
 
 /* Common tm ops */
 extern struct rte_tm_ops cnxk_tm_ops;
+
+/* Platform specific rte pmd cnxk ops */
+typedef uint16_t (*cnxk_inl_dev_submit_cb_t)(struct roc_nix_inl_dev_q *q, void *inst,
+					     uint16_t nb_inst);
+
+struct cnxk_ethdev_pmd_ops {
+	cnxk_inl_dev_submit_cb_t inl_dev_submit;
+};
+extern struct cnxk_ethdev_pmd_ops cnxk_pmd_ops;
 
 /* Ops */
 int cnxk_nix_probe(struct rte_pci_driver *pci_drv,
@@ -564,6 +646,8 @@ int cnxk_nix_tm_mark_ip_ecn(struct rte_eth_dev *eth_dev, int mark_green,
 int cnxk_nix_tm_mark_ip_dscp(struct rte_eth_dev *eth_dev, int mark_green,
 			     int mark_yellow, int mark_red,
 			     struct rte_tm_error *error);
+int cnxk_nix_tx_descriptor_dump(const struct rte_eth_dev *eth_dev, uint16_t qid, uint16_t offset,
+				uint16_t num, FILE *file);
 
 /* MTR */
 int cnxk_nix_mtr_ops_get(struct rte_eth_dev *dev, void *ops);
@@ -620,7 +704,8 @@ int cnxk_nix_tx_descriptor_status(void *txq, uint16_t offset);
 uint32_t cnxk_nix_rx_queue_count(void *rxq);
 
 /* Lookup configuration */
-const uint32_t *cnxk_nix_supported_ptypes_get(struct rte_eth_dev *eth_dev);
+const uint32_t *cnxk_nix_supported_ptypes_get(struct rte_eth_dev *eth_dev,
+					      size_t *no_of_elements);
 void *cnxk_nix_fastpath_lookup_mem_get(void);
 
 /* Devargs */

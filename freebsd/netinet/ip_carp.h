@@ -1,4 +1,3 @@
-/*	$FreeBSD$	*/
 /*	$OpenBSD: ip_carp.h,v 1.8 2004/07/29 22:12:15 mcbride Exp $	*/
 
 /*-
@@ -32,6 +31,7 @@
 #ifndef _IP_CARP_H
 #define	_IP_CARP_H
 
+#ifdef _KERNEL
 /*
  * The CARP header layout is as follows:
  *
@@ -78,14 +78,53 @@ struct carp_header {
 	unsigned char	carp_md[20];	/* SHA1 HMAC */
 } __packed;
 
-#ifdef CTASSERT
 CTASSERT(sizeof(struct carp_header) == 36);
+
+/*
+ * The VRRPv3 header layout is as follows:
+ * See RFC9568, 5.1.  VRRP Packet Format
+ *
+ *   0                   1                   2                   3
+ *   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+ *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *  |Version| Type  | Virtual Rtr ID|   Priority    |Count IPvX Addr|
+ *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *  |(rsvd) |     Max Adver Int     |          Checksum             |
+ *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *  |                                                               |
+ *  +                                                               +
+ *  |                       IPvX Address(es)                        |
+ *  +                                                               +
+ *  +                                                               +
+ *  +                                                               +
+ *  +                                                               +
+ *  |                                                               |
+ *  +                                                               +
+ *  |                                                               |
+ *  +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+ *
+ */
+
+struct vrrpv3_header {
+#if BYTE_ORDER == LITTLE_ENDIAN
+	uint8_t		vrrp_type:4,
+			vrrp_version:4;
 #endif
+#if BYTE_ORDER == BIG_ENDIAN
+	uint8_t		vrrp_version:4,
+			vrrp_type:4;
+#endif
+	uint8_t		vrrp_vrtid;
+	uint8_t		vrrp_priority;
+	uint8_t		vrrp_count_addr;
+	uint16_t	vrrp_max_adver_int;
+	uint16_t	vrrp_checksum;
+} __packed;
+
+CTASSERT(sizeof(struct vrrpv3_header) == 8);
+#endif /* _KERNEL */
 
 #define	CARP_DFLTTL		255
-
-/* carp_version */
-#define	CARP_VERSION		2
 
 /* carp_type */
 #define	CARP_ADVERTISEMENT	0x01
@@ -95,6 +134,8 @@ CTASSERT(sizeof(struct carp_header) == 36);
 /* carp_advbase */
 #define	CARP_DFLTINTV		1
 
+#define	VRRP_TYPE_ADVERTISEMENT	0x01
+#define	VRRP_MAX_INTERVAL	(0x1000 - 1)
 /*
  * Statistics.
  */
@@ -137,13 +178,16 @@ struct carpreq {
 #define	SIOCSVH	_IOWR('i', 245, struct ifreq)
 #define	SIOCGVH	_IOWR('i', 246, struct ifreq)
 
+typedef enum carp_version {
+	CARP_VERSION_CARP	= 2,
+	CARP_VERSION_VRRPv3	= 3,
+} carp_version_t;
+
 #ifdef _KERNEL
 int		carp_ioctl(struct ifreq *, u_long, struct thread *);
 int		carp_attach(struct ifaddr *, int);
 void		carp_detach(struct ifaddr *, bool);
 void		carp_carpdev_state(struct ifnet *);
-int		carp_input(struct mbuf **, int *, int);
-int		carp6_input (struct mbuf **, int *, int);
 int		carp_output (struct ifnet *, struct mbuf *,
 		    const struct sockaddr *);
 int		carp_master(struct ifaddr *);

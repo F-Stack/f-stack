@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2016,2021 NXP
+ *   Copyright 2016,2021-2023 NXP
  *
  */
 
@@ -12,10 +12,6 @@
  *
  * RTE FSLMC Bus Interface
  */
-
-#ifdef __cplusplus
-extern "C" {
-#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,8 +33,9 @@ extern "C" {
 
 #include <fslmc_vfio.h>
 
-#include "portal/dpaa2_hw_pvt.h"
-#include "portal/dpaa2_hw_dpio.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #define FSLMC_OBJECT_MAX_LEN 32   /**< Length of each device on bus */
 
@@ -92,11 +89,39 @@ enum rte_dpaa2_dev_type {
 	DPAA2_DEVTYPE_MAX,
 };
 
-TAILQ_HEAD(rte_dpaa2_object_list, rte_dpaa2_object);
+/**
+ * A structure describing a DPAA2 device.
+ */
+struct rte_dpaa2_device {
+	TAILQ_ENTRY(rte_dpaa2_device) next; /**< Next probed DPAA2 device. */
+	struct rte_device device;           /**< Inherit core device */
+	union {
+		struct rte_cryptodev *cryptodev;    /**< Crypto Device */
+		struct rte_dma_dev *dmadev;          /**< DMA Device */
+		struct rte_rawdev *rawdev;          /**< Raw Device */
+	};
+	enum rte_dpaa2_dev_type dev_type;   /**< Device Type */
+	uint16_t object_id;                 /**< DPAA2 Object ID */
+	enum rte_dpaa2_dev_type ep_dev_type;   /**< Endpoint Device Type */
+	struct dpaa2_dprc_dev *container;
+	uint16_t ep_object_id;                 /**< Endpoint DPAA2 Object ID */
+	char ep_name[RTE_DEV_NAME_MAX_LEN];
+	struct rte_intr_handle *intr_handle; /**< Interrupt handle */
+	struct rte_dpaa2_driver *driver;    /**< Associated driver */
+	char name[FSLMC_OBJECT_MAX_LEN];    /**< DPAA2 Object name*/
+};
 
 typedef int (*rte_dpaa2_obj_create_t)(int vdev_fd,
 				      struct vfio_device_info *obj_info,
-				      int object_id);
+				      struct rte_dpaa2_device *dev);
+
+typedef void (*rte_dpaa2_obj_close_t)(int object_id);
+
+typedef int (*rte_dpaa2_probe_t)(struct rte_dpaa2_driver *dpaa2_drv,
+				 struct rte_dpaa2_device *dpaa2_dev);
+typedef int (*rte_dpaa2_remove_t)(struct rte_dpaa2_device *dpaa2_dev);
+
+TAILQ_HEAD(rte_dpaa2_object_list, rte_dpaa2_object);
 
 /**
  * A structure describing a DPAA2 object.
@@ -106,33 +131,13 @@ struct rte_dpaa2_object {
 	const char *name;                   /**< Name of Object. */
 	enum rte_dpaa2_dev_type dev_type;   /**< Type of device */
 	rte_dpaa2_obj_create_t create;
+	rte_dpaa2_obj_close_t close;
 };
 
-/**
- * A structure describing a DPAA2 device.
- */
-struct rte_dpaa2_device {
-	TAILQ_ENTRY(rte_dpaa2_device) next; /**< Next probed DPAA2 device. */
-	struct rte_device device;           /**< Inherit core device */
-	union {
-		struct rte_eth_dev *eth_dev;        /**< ethernet device */
-		struct rte_cryptodev *cryptodev;    /**< Crypto Device */
-		struct rte_dma_dev *dmadev;          /**< DMA Device */
-		struct rte_rawdev *rawdev;          /**< Raw Device */
-	};
-	enum rte_dpaa2_dev_type dev_type;   /**< Device Type */
-	uint16_t object_id;                 /**< DPAA2 Object ID */
-	enum rte_dpaa2_dev_type ep_dev_type;   /**< Endpoint Device Type */
-	uint16_t ep_object_id;                 /**< Endpoint DPAA2 Object ID */
-	char ep_name[RTE_DEV_NAME_MAX_LEN];
-	struct rte_intr_handle *intr_handle; /**< Interrupt handle */
-	struct rte_dpaa2_driver *driver;    /**< Associated driver */
-	char name[FSLMC_OBJECT_MAX_LEN];    /**< DPAA2 Object name*/
-};
-
-typedef int (*rte_dpaa2_probe_t)(struct rte_dpaa2_driver *dpaa2_drv,
-				 struct rte_dpaa2_device *dpaa2_dev);
-typedef int (*rte_dpaa2_remove_t)(struct rte_dpaa2_device *dpaa2_dev);
+int
+rte_fslmc_vfio_mem_dmamap(uint64_t vaddr, uint64_t iova, uint64_t size);
+int
+rte_fslmc_vfio_mem_dmaunmap(uint64_t iova, uint64_t size);
 
 /**
  * A structure describing a DPAA2 driver.
@@ -145,6 +150,32 @@ struct rte_dpaa2_driver {
 	rte_dpaa2_probe_t probe;
 	rte_dpaa2_remove_t remove;
 };
+
+int
+rte_fslmc_vfio_mem_dmamap(uint64_t vaddr, uint64_t iova, uint64_t size);
+__rte_internal
+int
+rte_fslmc_vfio_mem_dmaunmap(uint64_t iova, uint64_t size);
+__rte_internal
+uint64_t
+rte_fslmc_cold_mem_vaddr_to_iova(void *vaddr,
+	uint64_t size);
+__rte_internal
+void *
+rte_fslmc_cold_mem_iova_to_vaddr(uint64_t iova,
+	uint64_t size);
+__rte_internal
+__rte_hot uint64_t
+rte_fslmc_mem_vaddr_to_iova(void *vaddr);
+__rte_internal
+__rte_hot void *
+rte_fslmc_mem_iova_to_vaddr(uint64_t iova);
+__rte_internal
+uint64_t
+rte_fslmc_io_vaddr_to_iova(void *vaddr);
+__rte_internal
+void *
+rte_fslmc_io_iova_to_vaddr(uint64_t iova);
 
 /**
  * Register a DPAA2 driver.

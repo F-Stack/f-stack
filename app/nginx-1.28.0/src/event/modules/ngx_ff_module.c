@@ -74,6 +74,14 @@
  
  #include <ngx_auto_config.h>
  #include "ff_api.h"
+ #include "ff_config.h"
+ #include "ff_reload.h"
+
+ /* nginx-side reload orchestration globals (ngx_ff_reload.c); declared
+  * locally because this file intentionally avoids nginx core headers. */
+ struct ff_reload_state;
+ extern struct ff_reload_state *ngx_ff_reload_shm;
+ extern int ngx_ff_reload_gen_for_worker(void);
  
  #define _GNU_SOURCE
  #define __USE_GNU
@@ -167,46 +175,402 @@
  }
  
  // proc_type, 1: primary, 0: secondary.
- int
- ff_mod_init(const char *conf, int proc_id, int proc_type) {
+
+/* Set by the nginx master via ngx_ff_graceful_reload_detect() before workers
+ * are spawned; inherited by workers through fork(). 0 (default) keeps the
+ * legacy behaviour: worker 0 is the DPDK primary. */
+int ngx_ff_graceful_reload = 0;
+
+static int
+ngx_ff_conf_dpdk_str(const char *conf, const char *key, char *buf, size_t len)
+{
+    FILE       *fp;
+    char        line[512], *p;
+    int         in_dpdk = 0;
+    size_t      klen = strlen(key);
+
+    fp = fopen(conf, "r");
+    if (fp == NULL) {
+        return 0;
+    }
+
+    while (fgets(line, sizeof(line), fp) != NULL) {
+        p = line + strlen(line);
+        while (p > line && (p[-1] == '\n' || p[-1] == '\r')) {
+            p--;
+        }
+        *p = '\0';
+
+        p = line;
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+
+        if (*p == '\0' || *p == ';' || *p == '#') {
+            continue;
+        }
+
+        if (*p == '[') {
+            in_dpdk = (strncmp(p, "[dpdk]", 6) == 0);
+            continue;
+        }
+
+        if (in_dpdk
+            && strncmp(p, key, klen) == 0
+            && p[klen] == '=')
+        {
+            p += klen + 1;
+            while (*p == ' ' || *p == '\t') {
+                p++;
+            }
+            snprintf(buf, len, "%s", p);
+            fclose(fp);
+            return 1;
+        }
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+
+static int
+ngx_ff_conf_dpdk_flag(const char *conf, const char *key)
+{
+    char  value[64];
+
+    if (ngx_ff_conf_dpdk_str(conf, key, value, sizeof(value))) {
+        return atoi(value) ? 1 : 0;
+    }
+
+    return 0;
+}
+
+
+/* Number of procs implied by [dpdk] lcore_mask (set-bit count), mirroring
+ * parse_lcore_mask() semantics: optional 0x/0X prefix, hex digits.
+ * Returns -1 when the key is missing or has no set bit. */
+int
+ngx_ff_conf_dpdk_nb_procs(const char *conf)
+{
+    char        mask[128];
+    char       *p;
+    int         nb_procs = 0, v;
+
+    if (!ngx_ff_conf_dpdk_str(conf, "lcore_mask", mask, sizeof(mask))) {
+        return -1;
+    }
+
+    p = mask;
+    while (*p == ' ' || *p == '\t') {
+        p++;
+    }
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X')) {
+        p += 2;
+    }
+
+    for (; *p != '\0'; p++) {
+        if (*p == ' ' || *p == '\t') {
+            continue;
+        }
+        if (*p >= '0' && *p <= '9') {
+            v = *p - '0';
+        } else if (*p >= 'a' && *p <= 'f') {
+            v = *p - 'a' + 10;
+        } else if (*p >= 'A' && *p <= 'F') {
+            v = *p - 'A' + 10;
+        } else {
+            return -1;
+        }
+        nb_procs += __builtin_popcount(v);
+    }
+
+    return nb_procs > 0 ? nb_procs : -1;
+}
+
+
+int
+ngx_ff_graceful_reload_detect(const char *conf)
+{
+    ngx_ff_graceful_reload = ngx_ff_conf_dpdk_flag(conf, "graceful_reload");
+    return ngx_ff_graceful_reload;
+}
+
+
+static int
+ff_init_with_args(const char *conf, int proc_id, const char *proc_type)
+{
 	 int rc, i;
 	 int ff_argc = 4;
- 
+
 	 char **ff_argv = malloc(sizeof(char *)*ff_argc);
 	 for (i = 0; i < ff_argc; i++) {
 		 ff_argv[i] = malloc(sizeof(char)*PATH_MAX);
 	 }
- 
+
 	 sprintf(ff_argv[0], "nginx");
 	 sprintf(ff_argv[1], "--conf=%s", conf);
 	 sprintf(ff_argv[2], "--proc-id=%d", proc_id);
-	 if (proc_type == 1) {
-		 sprintf(ff_argv[3], "--proc-type=primary");
-	 } else {
-		 sprintf(ff_argv[3], "--proc-type=secondary");
-	 }
- 
+	 sprintf(ff_argv[3], "--proc-type=%s", proc_type);
+
 	 rc = ff_init(ff_argc, ff_argv);
 	 if (rc == 0) {
 		 /* Ensure that the socket we converted
 				 does not exceed the maximum value of 'int' */
- 
+
 		 if(ngx_max_sockets + (unsigned)ff_getmaxfd() > INT_MAX)
 		 {
 			 rc = -1;
 		 }
- 
+
 		 inited = 1;
 	 }
- 
+
 	 for (i = 0; i < ff_argc; i++) {
 		 free(ff_argv[i]);
 	 }
- 
+
 	 free(ff_argv);
- 
+
 	 return rc;
- }
+}
+
+
+/* flow-map classification callback of the NEW generation.
+ *
+ * Registered by the target generation's workers once their ff stack is up;
+ * the library retires it when the reload window closes. Only TCP/UDP over
+ * IPv4/IPv6 participates in flow ownership; ARP/NDP/ICMP/fragments and
+ * anything unparseable stay on the local stack (the ARP/NDP clone to the
+ * old generation happens inside ff_dpdk_if.c). A flow-map hit
+ * is a flow opened by this generation; a miss belongs to the old one and
+ * is answered FF_DISPATCH_PEER — the library then owns the mbuf end to
+ * end (-1: no app-side free, no double free).
+ *
+ * Outside a reload window, or when this process is not the target
+ * generation (the previous round's G_new keeps its registration), every
+ * packet stays local: the steady state pays one cheap check per packet
+ * and behaves exactly like an unregistered dispatcher.
+ *
+ * Under USR2 the window may also be the cross-master one — the block
+ * of a fresh master never opens the window, so the peer check below
+ * uses the block mirror (a plain shared read refreshed once per loop pass
+ * by ff_reload_dir_sync, no directory scan on the per-packet path). */
+static int
+ngx_ff_flow_map_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
+    uint16_t nb_queues, struct ff_dispatcher_context context)
+{
+    ff_flow_key_t         key;
+    const unsigned char  *p;
+    uint16_t              off, l4, etype, frag;
+    uint8_t               proto;
+
+    (void) nb_queues;
+    (void) context;
+
+    if (!ff_reload_state_attached()
+        || ff_reload_gen() != ff_reload_target_gen()
+        || (!ff_reload_hw_locked() && !ff_reload_peer_mirror_draining()))
+    {
+        return queue_id;
+    }
+
+    /* Ethernet (one optional VLAN tag) — no DPDK headers here, the frame
+     * is parsed by hand exactly like the stack would. */
+    p = data;
+    if (*len < 14) {
+        return queue_id;
+    }
+
+    etype = (uint16_t) ((p[12] << 8) | p[13]);
+    off = 14;
+    if (etype == 0x8100) {
+        if (*len < (uint16_t) (off + 4)) {
+            return queue_id;
+        }
+        etype = (uint16_t) ((p[off + 2] << 8) | p[off + 3]);
+        off += 4;
+    }
+
+    memset(&key, 0, sizeof(key));
+
+    if (etype == 0x0800) {              /* IPv4 */
+        if (*len < (uint16_t) (off + 24)) {
+            return queue_id;
+        }
+        if ((p[off] >> 4) != 4) {
+            return queue_id;
+        }
+        l4 = (uint16_t) ((p[off] & 0x0f) << 2);
+        if (l4 < 20 || *len < (uint16_t) (off + l4 + 4)) {
+            return queue_id;
+        }
+        proto = p[off + 9];
+        frag = (uint16_t) ((p[off + 6] << 8) | p[off + 7]);
+        if (frag & 0x3fff) {
+            return queue_id;            /* any fragment stays local */
+        }
+        if (proto != 6 && proto != 17) {
+            return queue_id;            /* TCP/UDP only */
+        }
+        key.af = FF_FLOW_MAP_V4;
+        key.proto = proto;
+        memcpy(&key.src[0], p + off + 12, 4);   /* foreign (src) address */
+        memcpy(&key.dst[0], p + off + 16, 4);   /* local (dst) address */
+        l4 = (uint16_t) (off + l4);
+    } else if (etype == 0x86dd) {       /* IPv6 */
+        if (*len < (uint16_t) (off + 44)) {
+            return queue_id;
+        }
+        proto = p[off + 6];
+        if (proto != 6 && proto != 17) {
+            /* extension headers (incl. fragment, proto 44) cannot be
+             * classified cheaply: keep them on this stack */
+            return queue_id;
+        }
+        key.af = FF_FLOW_MAP_V6;
+        key.proto = proto;
+        memcpy(&key.src[0], p + off + 8, 16);
+        memcpy(&key.dst[0], p + off + 24, 16);
+        l4 = (uint16_t) (off + 40);
+    } else {
+        return queue_id;                /* non-IP: local */
+    }
+
+    /* A SYN without the ACK bit is the first packet of a brand-new
+     * connection, so it cannot belong to the draining generation. Serving
+     * it here stops the dying generation from being fed new flows for the
+     * whole drain/exit window (otherwise conns/snd_pending/syncache refill
+     * in turn and their AND is never satisfiable). The syncache hook
+     * records the four-tuple when the SYN is admitted, before the SYN-ACK,
+     * so the third ACK hits this table and the connection completes here.
+     * Every other miss is a packet of an already established flow and
+     * keeps the peer-forward semantics.
+     * Checked before the key is assembled and hashed: a brand-new flow
+     * cannot be in the table, and both orders return the local queue. */
+    if (proto == 6 && *len >= (uint16_t) (l4 + 14)
+        && (p[l4 + 13] & 0x02) != 0 && (p[l4 + 13] & 0x10) == 0)
+    {
+        return queue_id;
+    }
+
+    /* Raw wire bytes, exactly like the addresses above: the table keys
+     * ports in network byte order (ff_flow_map.h, and the syncache hook
+     * stores inc_fport/inc_lport unchanged). Assembling them as a
+     * big-endian integer would store host order and never match an
+     * inserted key. */
+    memcpy(&key.sport, p + l4, 2);
+    memcpy(&key.dport, p + l4 + 2, 2);
+
+    if (ff_flow_map_lookup(&key)) {
+        return queue_id;                /* this generation's flow: keep it */
+    }
+
+    /* UDP has no SYN: only the flows G_old published go to it */
+    if (proto == 17) {
+        switch (ff_flow_peer_classify(&key)) {
+        case FF_FLOW_PEER_LEGACY:
+        case FF_FLOW_PEER_FWD:
+            return FF_DISPATCH_PEER;
+        case FF_FLOW_PEER_LEARN:
+            (void) ff_flow_map_insert(&key);
+            return queue_id;
+        default:
+            return queue_id;
+        }
+    }
+
+    return FF_DISPATCH_PEER;            /* miss: forward to G_old */
+}
+
+/* arm the flow table and register the classifier. Called from
+ * ff_mod_init after the stack is up — before READY and long before the
+ * master hands rx over, so no packet can reach the callback before the
+ * table is armed (this generation is parked off the hardware until then).
+ * Arming at init rather than at T3 is safe: a parked generation receives no
+ * packets, so arming early is indistinguishable from arming at T3.
+ * Under USR2 the fresh master's anonymous block never opens the
+ * reload window, so the block-only gate cannot arm its workers. The
+ * directory provides the equivalent condition — a peer master epoch that
+ * is live or still draining — and arming still happens at init, while
+ * parked, so the first pass that owns rx already classifies (otherwise
+ * every old-generation flow dies in a burst of RSTs at the WINCH flip). */
+static void
+ngx_ff_flow_map_arm(void)
+{
+    if (!ff_reload_state_attached()
+        || ff_reload_gen() != ff_reload_target_gen()
+        || (!ff_reload_hw_locked() && !ff_reload_peer_draining()))
+    {
+        return;
+    }
+
+    ff_flow_map_open();
+    ff_regist_packet_dispatcher_context(ngx_ff_flow_map_dispatcher);
+}
+
+int
+ff_mod_init(const char *conf, int proc_id, int proc_type) {
+	 int rc;
+
+	 /* graceful_reload=1: a resident slim primary owns proc_id 0, so every
+	  * nginx worker attaches as a DPDK secondary with proc_id shifted by 1
+	  * (config.ini must set nb_procs/lcore_mask to worker_processes+1). */
+	 if (ngx_ff_graceful_reload) {
+		 proc_id += 1;
+		 proc_type = 0;
+		 /* bind this worker to its reload generation
+		  * BEFORE ff_init — the (proc_id, gen) msg_ring set and the
+		  * per-generation app mempool are selected during init. The gen
+		  * comes from the inherited shared control block (target while
+		  * the reload window is open, active otherwise). */
+		 ff_reload_attach_state(ngx_ff_reload_shm);
+		 ff_reload_set_gen(ngx_ff_reload_gen_for_worker());
+	 }
+
+	 rc = ff_init_with_args(conf, proc_id,
+		 proc_type == 1 ? "primary" : "secondary");
+	 if (rc != 0) {
+		 return rc;
+	 }
+
+	 /* Cross-check: the master's pre-fork scan and this process's
+	  * ff_ini_parser must agree on graceful_reload, otherwise the worker
+	  * would run with a role (secondary + shifted proc_id) that does not
+	  * match the actually resident primary. */
+	 if ((int) ff_global_cfg.dpdk.graceful_reload != ngx_ff_graceful_reload) {
+		 fprintf(stderr,
+			 "ff_mod_init: graceful_reload mismatch: master scan %d, "
+			 "conf parse %d\n",
+			 ngx_ff_graceful_reload,
+			 (int) ff_global_cfg.dpdk.graceful_reload);
+		 return -1;
+	 }
+
+	 /* G_new arms its flow table + classification callback once
+	  * the stack is up (inert while parked off the hardware; teardown on
+	  * drain confirmation is,). */
+	 if (ngx_ff_graceful_reload) {
+		 ngx_ff_flow_map_arm();
+	 }
+
+	 return rc;
+}
+
+
+/* Init the resident slim primary: DPDK primary at proc_id 0, holds no rx/tx
+ * queue (primary_slim=1 in config.ini). Used by the nginx master when it
+ * spawns the detached slim primary process. */
+int
+ngx_ff_slim_primary_init(const char *conf)
+{
+	 /* the primary pre-creates BOTH generations' msg rings and
+	  * mbuf pools, so its own generation stays 0; attaching the shared
+	  * block lets lib-side helpers (heartbeat view, KNI owner gen) work. */
+	 ff_reload_attach_state(ngx_ff_reload_shm);
+	 return ff_init_with_args(conf, 0, "primary");
+}
  
  /*-
   * Verify whether the socket is supported by fstack or not.

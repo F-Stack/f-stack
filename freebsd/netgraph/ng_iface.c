@@ -36,8 +36,6 @@
  * OF SUCH DAMAGE.
  *
  * Author: Archie Cobbs <archie@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_iface.c,v 1.33 1999/11/01 09:24:51 julian Exp $
  */
 
@@ -74,6 +72,7 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_types.h>
 #include <net/bpf.h>
 #include <net/netisr.h>
@@ -368,10 +367,10 @@ ng_iface_output(struct ifnet *ifp, struct mbuf *m,
 	}
 
 	/* BPF writes need to be handled specially. */
-	if (dst->sa_family == AF_UNSPEC)
+	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
 		bcopy(dst->sa_data, &af, sizeof(af));
 	else
-		af = dst->sa_family;
+		af = RO_GET_FAMILY(ro, dst);
 
 	/* Berkeley packet filter */
 	ng_iface_bpftap(ifp, m, af);
@@ -525,10 +524,6 @@ ng_iface_constructor(node_p node)
 	/* Allocate node and interface private structures */
 	priv = malloc(sizeof(*priv), M_NETGRAPH_IFACE, M_WAITOK | M_ZERO);
 	ifp = if_alloc(IFT_PROPVIRTUAL);
-	if (ifp == NULL) {
-		free(priv, M_NETGRAPH_IFACE);
-		return (ENOMEM);
-	}
 
 	rm_init(&priv->lock, "ng_iface private rmlock");
 
@@ -550,7 +545,6 @@ ng_iface_constructor(node_p node)
 	ifp->if_ioctl = ng_iface_ioctl;
 	ifp->if_mtu = NG_IFACE_MTU_DEFAULT;
 	ifp->if_flags = (IFF_SIMPLEX|IFF_POINTOPOINT|IFF_NOARP|IFF_MULTICAST);
-	ifp->if_type = IFT_PROPVIRTUAL;		/* XXX */
 	ifp->if_addrlen = 0;			/* XXX */
 	ifp->if_hdrlen = 0;			/* XXX */
 	ifp->if_baudrate = 64000;		/* XXX */

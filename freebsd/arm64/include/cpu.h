@@ -32,20 +32,23 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)cpu.h 5.4 (Berkeley) 5/9/91
  *	from: FreeBSD: src/sys/i386/include/cpu.h,v 1.62 2001/06/29
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/cpu.h>
+#else /* !__arm__ */
 
 #ifndef _MACHINE_CPU_H_
 #define	_MACHINE_CPU_H_
 
+#if !defined(__ASSEMBLER__)
 #include <machine/atomic.h>
 #include <machine/frame.h>
+#endif
 #include <machine/armreg.h>
 
-#define	TRAPF_PC(tfp)		((tfp)->tf_lr)
+#define	TRAPF_PC(tfp)		((tfp)->tf_elr)
 #define	TRAPF_USERMODE(tfp)	(((tfp)->tf_spsr & PSR_M_MASK) == PSR_M_EL0t)
 
 #define	cpu_getstack(td)	((td)->td_frame->tf_sp)
@@ -71,16 +74,22 @@
 #define	CPU_IMPL_BROADCOM	0x42
 #define	CPU_IMPL_CAVIUM		0x43
 #define	CPU_IMPL_DEC		0x44
+#define	CPU_IMPL_FUJITSU	0x46
+#define	CPU_IMPL_HISILICON	0x48
 #define	CPU_IMPL_INFINEON	0x49
 #define	CPU_IMPL_FREESCALE	0x4D
 #define	CPU_IMPL_NVIDIA		0x4E
 #define	CPU_IMPL_APM		0x50
 #define	CPU_IMPL_QUALCOMM	0x51
 #define	CPU_IMPL_MARVELL	0x56
+#define	CPU_IMPL_APPLE		0x61
 #define	CPU_IMPL_INTEL		0x69
+#define	CPU_IMPL_AMPERE		0xC0
+#define	CPU_IMPL_MICROSOFT	0x6D
 
 /* ARM Part numbers */
 #define	CPU_PART_FOUNDATION	0xD00
+#define	CPU_PART_CORTEX_A34	0xD02
 #define	CPU_PART_CORTEX_A53	0xD03
 #define	CPU_PART_CORTEX_A35	0xD04
 #define	CPU_PART_CORTEX_A55	0xD05
@@ -93,6 +102,34 @@
 #define	CPU_PART_NEOVERSE_N1	0xD0C
 #define	CPU_PART_CORTEX_A77	0xD0D
 #define	CPU_PART_CORTEX_A76AE	0xD0E
+#define	CPU_PART_AEM_V8		0xD0F
+#define	CPU_PART_NEOVERSE_V1	0xD40
+#define	CPU_PART_CORTEX_A78	0xD41
+#define	CPU_PART_CORTEX_A78AE	0xD42
+#define	CPU_PART_CORTEX_A65AE	0xD43
+#define	CPU_PART_CORTEX_X1	0xD44
+#define	CPU_PART_CORTEX_A510	0xD46
+#define	CPU_PART_CORTEX_A710	0xD47
+#define	CPU_PART_CORTEX_X2	0xD48
+#define	CPU_PART_NEOVERSE_N2	0xD49
+#define	CPU_PART_NEOVERSE_E1	0xD4A
+#define	CPU_PART_CORTEX_A78C	0xD4B
+#define	CPU_PART_CORTEX_X1C	0xD4C
+#define	CPU_PART_CORTEX_A715	0xD4D
+#define	CPU_PART_CORTEX_X3	0xD4E
+#define	CPU_PART_NEOVERSE_V2	0xD4F
+#define	CPU_PART_CORTEX_A520	0xD80
+#define	CPU_PART_CORTEX_A720	0xD81
+#define	CPU_PART_CORTEX_X4	0xD82
+#define	CPU_PART_NEOVERSE_V3AE	0xD83
+#define	CPU_PART_NEOVERSE_V3	0xD84
+#define	CPU_PART_CORTEX_X925	0xD85
+#define	CPU_PART_CORTEX_A725	0xD87
+#define	CPU_PART_C1_NANO	0xD8A
+#define	CPU_PART_C1_PRO		0xD8B
+#define	CPU_PART_C1_ULTRA	0xD8C
+#define	CPU_PART_NEOVERSE_N3	0xD8E
+#define	CPU_PART_C1_PREMIUM	0xD90
 
 /* Cavium Part numbers */
 #define	CPU_PART_THUNDERX	0x0A1
@@ -105,22 +142,50 @@
 
 #define	CPU_REV_THUNDERX2_0	0x00
 
-/* APM / Ampere Part Number */
+/* APM (now Ampere) Part number */
 #define CPU_PART_EMAG8180	0x000
+
+/* Ampere Part numbers */
+#define	CPU_PART_AMPERE1	0xAC3
+#define	CPU_PART_AMPERE1A	0xAC4
+
+/* Microsoft Part numbers */
+#define	CPU_PART_AZURE_COBALT_100	0xD49
+
+/* Qualcomm */
+#define	CPU_PART_KRYO400_GOLD	0x804
+#define	CPU_PART_KRYO400_SILVER	0x805
+
+/* Apple part numbers */
+#define CPU_PART_M1_ICESTORM      0x022
+#define CPU_PART_M1_FIRESTORM     0x023
+#define CPU_PART_M1_ICESTORM_PRO  0x024
+#define CPU_PART_M1_FIRESTORM_PRO 0x025
+#define CPU_PART_M1_ICESTORM_MAX  0x028
+#define CPU_PART_M1_FIRESTORM_MAX 0x029
+#define CPU_PART_M2_BLIZZARD      0x032
+#define CPU_PART_M2_AVALANCHE     0x033
+#define CPU_PART_M2_BLIZZARD_PRO  0x034
+#define CPU_PART_M2_AVALANCHE_PRO 0x035
+#define CPU_PART_M2_BLIZZARD_MAX  0x038
+#define CPU_PART_M2_AVALANCHE_MAX 0x039
 
 #define	CPU_IMPL(midr)	(((midr) >> 24) & 0xff)
 #define	CPU_PART(midr)	(((midr) >> 4) & 0xfff)
 #define	CPU_VAR(midr)	(((midr) >> 20) & 0xf)
+#define	CPU_ARCH(midr)	(((midr) >> 16) & 0xf)
 #define	CPU_REV(midr)	(((midr) >> 0) & 0xf)
 
 #define	CPU_IMPL_TO_MIDR(val)	(((val) & 0xff) << 24)
 #define	CPU_PART_TO_MIDR(val)	(((val) & 0xfff) << 4)
 #define	CPU_VAR_TO_MIDR(val)	(((val) & 0xf) << 20)
+#define	CPU_ARCH_TO_MIDR(val)	(((val) & 0xf) << 16)
 #define	CPU_REV_TO_MIDR(val)	(((val) & 0xf) << 0)
 
 #define	CPU_IMPL_MASK	(0xff << 24)
 #define	CPU_PART_MASK	(0xfff << 4)
 #define	CPU_VAR_MASK	(0xf << 20)
+#define	CPU_ARCH_MASK	(0xf << 16)
 #define	CPU_REV_MASK	(0xf << 0)
 
 #define	CPU_ID_RAW(impl, part, var, rev)		\
@@ -132,8 +197,30 @@
     (((mask) & PCPU_GET(midr)) ==			\
     ((mask) & CPU_ID_RAW((impl), (part), (var), (rev))))
 
-#define	CPU_MATCH_RAW(mask, devid)			\
-    (((mask) & PCPU_GET(midr)) == ((mask) & (devid)))
+#if !defined(__ASSEMBLER__)
+static inline bool
+midr_check_var_part_range(u_int midr, u_int impl, u_int part, u_int var_low,
+    u_int part_low, u_int var_high, u_int part_high)
+{
+	/* Check for the correct part */
+	if (CPU_IMPL(midr) != impl || CPU_PART(midr) != part)
+		return (false);
+
+	/* Check if the variant is between var_low and var_high inclusive */
+	if (CPU_VAR(midr) < var_low || CPU_VAR(midr) > var_high)
+		return (false);
+
+	/* If the variant is the low value, check if the part is high enough */
+	if (CPU_VAR(midr) == var_low && CPU_PART(midr) < part_low)
+		return (false);
+
+	/* If the variant is the high value, check if the part is low enough */
+	if (CPU_VAR(midr) == var_high && CPU_PART(midr) > part_high)
+		return (false);
+
+	return (true);
+}
+#endif
 
 /*
  * Chip-specific errata. This defines are intended to be
@@ -157,10 +244,20 @@
 #define	CPU_MATCH_ERRATA_CAVIUM_THUNDERX_1_1	0
 #endif
 
+#if !defined(__ASSEMBLER__)
 extern char btext[];
 extern char etext[];
 
 extern uint64_t __cpu_affinity[];
+
+struct arm64_addr_mask;
+extern struct arm64_addr_mask elf64_addr_mask;
+#ifdef COMPAT_FREEBSD14
+extern struct arm64_addr_mask elf64_addr_mask_14;
+#endif
+
+typedef void (*cpu_reset_hook_t)(void);
+extern cpu_reset_hook_t cpu_reset_hook;
 
 void	cpu_halt(void) __dead2;
 void	cpu_reset(void) __dead2;
@@ -168,12 +265,34 @@ void	fork_trampoline(void);
 void	identify_cache(uint64_t);
 void	identify_cpu(u_int);
 void	install_cpu_errata(void);
-void	swi_vm(void *v);
+
+/* Pointer Authentication Code (PAC) support */
+void	ptrauth_init(void);
+void	ptrauth_fork(struct thread *, struct thread *);
+void	ptrauth_exec(struct thread *);
+void	ptrauth_copy_thread(struct thread *, struct thread *);
+void	ptrauth_thread_alloc(struct thread *);
+void	ptrauth_thread0(struct thread *);
+#ifdef SMP
+void	ptrauth_mp_start(uint64_t);
+#endif
 
 /* Functions to read the sanitised view of the special registers */
 void	update_special_regs(u_int);
-bool	extract_user_id_field(u_int, u_int, uint8_t *);
-bool	get_kernel_reg(u_int, uint64_t *);
+void	update_special_reg_iss(u_int, uint64_t, uint64_t);
+#define	update_special_reg(reg, clear, set)			\
+    update_special_reg_iss(reg ## _ISS, clear, set)
+bool	get_kernel_reg_iss(u_int, uint64_t *);
+#define	get_kernel_reg(reg, valp)				\
+    get_kernel_reg_iss(reg ## _ISS, valp)
+bool	get_kernel_reg_iss_masked(u_int, uint64_t *, uint64_t);
+#define	get_kernel_reg_masked(reg, valp, mask)			\
+    get_kernel_reg_iss_masked(reg ## _ISS, valp, mask)
+bool	get_user_reg_iss(u_int, uint64_t *, bool);
+#define	get_user_reg(reg, valp, fbsd)					\
+    get_user_reg_iss(reg ## _ISS, valp, fbsd)
+
+void	cpu_desc_init(void);
 
 #define	CPU_AFFINITY(cpu)	__cpu_affinity[(cpu)]
 #define	CPU_CURRENT_SOCKET				\
@@ -196,7 +315,8 @@ arm64_address_translate_ ##stage (uint64_t addr)		\
 	uint64_t ret;						\
 								\
 	__asm __volatile(					\
-	    "at " __STRING(stage) ", %1 \n"					\
+	    "at " __STRING(stage) ", %1 \n"			\
+	    "isb \n"						\
 	    "mrs %0, par_el1" : "=r"(ret) : "r"(addr));		\
 								\
 	return (ret);						\
@@ -207,6 +327,9 @@ ADDRESS_TRANSLATE_FUNC(s1e0w)
 ADDRESS_TRANSLATE_FUNC(s1e1r)
 ADDRESS_TRANSLATE_FUNC(s1e1w)
 
+#endif /* !__ASSEMBLER__ */
 #endif
 
 #endif /* !_MACHINE_CPU_H_ */
+
+#endif /* !__arm__ */

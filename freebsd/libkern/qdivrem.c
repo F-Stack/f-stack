@@ -34,8 +34,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * Multiprecision divide.  This algorithm is from Knuth vol. 2 (2nd ed),
  * section 4.3.1, pp. 257--259.
@@ -91,7 +89,7 @@ __qdivrem(u_quad_t uq, u_quad_t vq, u_quad_t *arq)
 	/*
 	 * Take care of special cases: divide by zero, and u < v.
 	 */
-	if (vq == 0) {
+	if (__predict_false(vq == 0)) {
 		/* divide by zero. */
 		static volatile const unsigned int zero = 0;
 

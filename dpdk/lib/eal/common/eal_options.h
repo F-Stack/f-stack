@@ -33,8 +33,12 @@ enum {
 	OPT_HUGE_UNLINK_NUM,
 #define OPT_LCORES            "lcores"
 	OPT_LCORES_NUM,
+#define OPT_LOG_COLOR	      "log-color"
+	OPT_LOG_COLOR_NUM,
 #define OPT_LOG_LEVEL         "log-level"
 	OPT_LOG_LEVEL_NUM,
+#define OPT_LOG_TIMESTAMP     "log-timestamp"
+	OPT_LOG_TIMESTAMP_NUM,
 #define OPT_TRACE             "trace"
 	OPT_TRACE_NUM,
 #define OPT_TRACE_DIR         "trace-dir"
@@ -96,6 +100,8 @@ enum {
 extern const char eal_short_options[];
 extern const struct option eal_long_options[];
 
+bool eal_option_is_log(int opt);
+int eal_parse_log_options(int argc, char * const argv[]);
 int eal_parse_common_option(int opt, const char *argv,
 			    struct internal_config *conf);
 int eal_option_device_parse(void);

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000 Doug Rabson
  * All rights reserved.
@@ -24,13 +24,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS__TASK_H_
 #define _SYS__TASK_H_
 
+#include <sys/_callout.h>
 #include <sys/queue.h>
 
 /*
@@ -59,6 +58,15 @@ struct task {
 #define	TASK_NETWORK		0x4
 
 #define	TASK_IS_NET(ta)		((ta)->ta_flags & TASK_NETWORK)
+
+struct taskqueue;
+
+struct timeout_task {
+	struct taskqueue *q;
+	struct task t;
+	struct callout c;
+	int    f;
+};
 
 #ifdef _KERNEL
 

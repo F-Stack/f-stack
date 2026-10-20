@@ -28,13 +28,14 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)udp_var.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 #ifndef _NETINET_UDP_VAR_H_
 #define	_NETINET_UDP_VAR_H_
+
+#include <sys/types.h>
+#include <netinet/ip_var.h>
+#include <netinet/udp.h>
 
 /*
  * UDP kernel structures and variables.
@@ -54,27 +55,14 @@ struct udpiphdr {
 #define	ui_ulen		ui_u.uh_ulen
 #define	ui_sum		ui_u.uh_sum
 
-struct inpcb;
-struct mbuf;
-
-typedef void(*udp_tun_func_t)(struct mbuf *, int, struct inpcb *,
-			      const struct sockaddr *, void *);
-typedef void(*udp_tun_icmp_t)(int, struct sockaddr *, void *, void *);
-
 /*
- * UDP control block; one per udp.
+ * Identifiers for UDP sysctl nodes.
  */
-struct udpcb {
-	udp_tun_func_t	u_tun_func;	/* UDP kernel tunneling callback. */
-	udp_tun_icmp_t  u_icmp_func;	/* UDP kernel tunneling icmp callback */
-	u_int		u_flags;	/* Generic UDP flags. */
-	uint16_t	u_rxcslen;	/* Coverage for incoming datagrams. */
-	uint16_t	u_txcslen;	/* Coverage for outgoing datagrams. */
-	void 		*u_tun_ctx;	/* Tunneling callback context. */
-};
-
-#define	intoudpcb(ip)	((struct udpcb *)(ip)->inp_ppcb)
-#define	sotoudpcb(so)	(intoudpcb(sotoinpcb(so)))
+#define	UDPCTL_CHECKSUM		1	/* checksum UDP packets */
+#define	UDPCTL_STATS		2	/* statistics (read-only) */
+#define	UDPCTL_MAXDGRAM		3	/* max datagram size */
+#define	UDPCTL_RECVSPACE	4	/* default receive buffer space */
+#define	UDPCTL_PCBLIST		5	/* list of PCBs for UDP sockets */
 
 				/* IPsec: ESP in UDP tunneling: */
 #define	UF_ESPINUDP_NON_IKE	0x00000001	/* w/ non-IKE marker .. */
@@ -103,55 +91,80 @@ struct udpstat {
 };
 
 #ifdef _KERNEL
+#include <netinet/in_pcb.h>
 #include <sys/counter.h>
+#include <netinet/in_kdtrace.h>
+struct mbuf;
+
+typedef bool	udp_tun_func_t(struct mbuf *, int, struct inpcb *,
+		    const struct sockaddr *, void *);
+typedef union {
+	struct icmp *icmp;
+	struct ip6ctlparam *ip6cp;
+} udp_tun_icmp_param_t __attribute__((__transparent_union__));
+typedef void	udp_tun_icmp_t(udp_tun_icmp_param_t);
+
+/*
+ * UDP control block; one per udp.
+ */
+struct udpcb {
+	struct inpcb	u_inpcb;
+#define	u_start_zero	u_tun_func
+#define	u_zero_size	(sizeof(struct udpcb) - \
+			    offsetof(struct udpcb, u_start_zero))
+	udp_tun_func_t	*u_tun_func;	/* UDP kernel tunneling callback. */
+	udp_tun_icmp_t  *u_icmp_func;	/* UDP kernel tunneling icmp callback */
+	u_int		u_flags;	/* Generic UDP flags. */
+	uint16_t	u_rxcslen;	/* Coverage for incoming datagrams. */
+	uint16_t	u_txcslen;	/* Coverage for outgoing datagrams. */
+	void 		*u_tun_ctx;	/* Tunneling callback context. */
+};
+
+#define	intoudpcb(ip)	__containerof((ip), struct udpcb, u_inpcb)
+#define	sotoudpcb(so)	(intoudpcb(sotoinpcb(so)))
 
 VNET_PCPUSTAT_DECLARE(struct udpstat, udpstat);
 /*
  * In-kernel consumers can use these accessor macros directly to update
  * stats.
  */
-#define	UDPSTAT_ADD(name, val)  \
-    VNET_PCPUSTAT_ADD(struct udpstat, udpstat, name, (val))
-#define	UDPSTAT_INC(name)	UDPSTAT_ADD(name, 1)
+#define UDPSTAT_ADD(name, val)                                           \
+	do {                                                             \
+		MIB_SDT_PROBE1(udp, count, name, (val));                 \
+		VNET_PCPUSTAT_ADD(struct udpstat, udpstat, name, (val)); \
+	} while (0)
+#define UDPSTAT_INC(name) UDPSTAT_ADD(name, 1)
 
 /*
  * Kernel module consumers must use this accessor macro.
  */
 void	kmod_udpstat_inc(int statnum);
-#define	KMOD_UDPSTAT_INC(name)	\
-    kmod_udpstat_inc(offsetof(struct udpstat, name) / sizeof(uint64_t))
-#endif
+#define KMOD_UDPSTAT_INC(name)                                          \
+	do {                                                            \
+		MIB_SDT_PROBE1(udp, count, name, 1);                    \
+		kmod_udpstat_inc(                                       \
+		    offsetof(struct udpstat, name) / sizeof(uint64_t)); \
+	} while (0)
 
-/*
- * Identifiers for UDP sysctl nodes.
- */
-#define	UDPCTL_CHECKSUM		1	/* checksum UDP packets */
-#define	UDPCTL_STATS		2	/* statistics (read-only) */
-#define	UDPCTL_MAXDGRAM		3	/* max datagram size */
-#define	UDPCTL_RECVSPACE	4	/* default receive buffer space */
-#define	UDPCTL_PCBLIST		5	/* list of PCBs for UDP sockets */
-
-#ifdef _KERNEL
-#include <netinet/in_pcb.h>
 SYSCTL_DECL(_net_inet_udp);
+SYSCTL_DECL(_net_inet_udplite);
 
-extern struct pr_usrreqs	udp_usrreqs;
-VNET_DECLARE(struct inpcbhead, udb);
 VNET_DECLARE(struct inpcbinfo, udbinfo);
-VNET_DECLARE(struct inpcbhead, ulitecb);
 VNET_DECLARE(struct inpcbinfo, ulitecbinfo);
-#define	V_udb			VNET(udb)
 #define	V_udbinfo		VNET(udbinfo)
-#define	V_ulitecb		VNET(ulitecb)
 #define	V_ulitecbinfo		VNET(ulitecbinfo)
 
 extern u_long			udp_sendspace;
 extern u_long			udp_recvspace;
-VNET_DECLARE(int, udp_cksum);
+VNET_DECLARE(int, udp_bind_all_fibs);
 VNET_DECLARE(int, udp_blackhole);
+VNET_DECLARE(bool, udp_blackhole_local);
+VNET_DECLARE(int, udp_cksum);
 VNET_DECLARE(int, udp_log_in_vain);
-#define	V_udp_cksum		VNET(udp_cksum)
+#define	V_udp_bind_all_fibs	VNET(udp_bind_all_fibs)
 #define	V_udp_blackhole		VNET(udp_blackhole)
+#define	V_udp_blackhole_local	VNET(udp_blackhole_local)
+#define	V_udp_cksum		VNET(udp_cksum)
 #define	V_udp_log_in_vain	VNET(udp_log_in_vain)
 
 VNET_DECLARE(int, zero_checksum_port);
@@ -163,27 +176,19 @@ udp_get_inpcbinfo(int protocol)
 	return (protocol == IPPROTO_UDP) ? &V_udbinfo : &V_ulitecbinfo;
 }
 
-static __inline struct inpcbhead *
-udp_get_pcblist(int protocol)
-{
-	return (protocol == IPPROTO_UDP) ? &V_udb : &V_ulitecb;
-}
-
-int		udp_newudpcb(struct inpcb *);
-void		udp_discardcb(struct udpcb *);
-
-void		udp_ctlinput(int, struct sockaddr *, void *);
-void		udplite_ctlinput(int, struct sockaddr *, void *);
 int		udp_ctloutput(struct socket *, struct sockopt *);
-void		udp_init(void);
-void		udplite_init(void);
-int		udp_input(struct mbuf **, int *, int);
 void		udplite_input(struct mbuf *, int);
 struct inpcb	*udp_notify(struct inpcb *inp, int errno);
-int		udp_shutdown(struct socket *so);
+int		udp_shutdown(struct socket *, enum shutdown_how);
 
 int		udp_set_kernel_tunneling(struct socket *so, udp_tun_func_t f,
 		    udp_tun_icmp_t i, void *ctx);
+
+#ifdef _SYS_PROTOSW_H_
+pr_abort_t	udp_abort;
+pr_disconnect_t	udp_disconnect;
+pr_send_t	udp_send;
+#endif
 
 #endif /* _KERNEL */
 

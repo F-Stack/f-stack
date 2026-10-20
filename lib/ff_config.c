@@ -30,13 +30,20 @@
 #include <stdint.h>
 #include <getopt.h>
 #include <ctype.h>
+#include <errno.h>
+#include <dirent.h>
+#include <unistd.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #include <arpa/inet.h>
 #include <rte_config.h>
 #include <rte_string_fns.h>
 
+#include "ff_api.h"
 #include "ff_config.h"
 #include "ff_ini_parser.h"
 #include "ff_log.h"
+#include "ff_reload.h"
 
 #define DEFAULT_CONFIG_FILE   "config.ini"
 
@@ -538,6 +545,10 @@ err:
 }
 #endif
 
+static int ff_parse_u16(const char *value, uint16_t min, uint16_t max,
+    uint16_t *out);
+static int ff_parse_mbuf_mode(const char *value, enum ff_mbuf_mode *out);
+
 static int
 port_cfg_handler(struct ff_config *cfg, const char *section,
     const char *name, const char *value) {
@@ -563,6 +574,7 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
             pconf->nb_lcores = ff_global_cfg.dpdk.nb_procs;
             memcpy(pconf->lcore_list, ff_global_cfg.dpdk.proc_lcore,
                    pconf->nb_lcores*sizeof(uint16_t));
+            pconf->mtu = FF_MTU_DEFAULT;
         }
         cfg->dpdk.port_cfgs = pc;
     }
@@ -587,14 +599,19 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
     }
 
     if (strcmp(name, "if_name") == 0) {
+        if (cur->ifname) free(cur->ifname);
         cur->ifname = strdup(value);
     } else if (strcmp(name, "addr") == 0) {
+        if (cur->addr) free(cur->addr);
         cur->addr = strdup(value);
     } else if (strcmp(name, "netmask") == 0) {
+        if (cur->netmask) free(cur->netmask);
         cur->netmask = strdup(value);
     } else if (strcmp(name, "broadcast") == 0) {
+        if (cur->broadcast) free(cur->broadcast);
         cur->broadcast = strdup(value);
     } else if (strcmp(name, "gateway") == 0) {
+        if (cur->gateway) free(cur->gateway);
         cur->gateway = strdup(value);
     } else if (strcmp(name, "lcore_list") == 0) {
         return parse_port_lcore_list(cur, value);
@@ -606,7 +623,10 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
             return vip_cfg_handler(cur, NULL);
         }
     } else if (strcmp(name, "vip_ifname") == 0) {
+        if (cur->vip_ifname) free(cur->vip_ifname);
         cur->vip_ifname = strdup(value);
+    } else if (strcmp(name, "mtu") == 0) {
+        return ff_parse_u16(value, 68, UINT16_MAX, &cur->mtu);
     }
 
 #ifdef FF_IPFW
@@ -620,10 +640,12 @@ port_cfg_handler(struct ff_config *cfg, const char *section,
 
 #ifdef INET6
     else if (0 == strcmp(name, "addr6")) {
+        if (cur->addr6_str) free(cur->addr6_str);
         cur->addr6_str = strdup(value);
     } else if (0 == strcmp(name, "prefix_len")) {
         cur->prefix_len = atoi(value);
     } else if (0 == strcmp(name, "gateway6")) {
+        if (cur->gateway6_str) free(cur->gateway6_str);
         cur->gateway6_str = strdup(value);
     } else if (strcmp(name, "vip_addr6") == 0) {
         cur->vip_addr6_str = strdup(value);
@@ -669,11 +691,10 @@ vlan_cfg_handler(struct ff_config *cfg, const char *section,
         if (vlanid == cfg->dpdk.vlan_filter_id[vlan_index]) {
             break;
         }
-
-        if (vlan_index >= cfg->dpdk.nb_vlan_filter) {
-            fprintf(stderr, "vlan_cfg_handler section[%s] mot match vlan filter, ignore it\n", section);
-            return 1;
-        }
+    }
+    if (vlan_index >= cfg->dpdk.nb_vlan_filter) {
+        fprintf(stderr, "vlan_cfg_handler section[%s] not match vlan_filter, ignore\n", section);
+        return 1;
     }
 
     struct ff_vlan_cfg *cur = &cfg->dpdk.vlan_cfgs[vlan_index];
@@ -698,12 +719,16 @@ vlan_cfg_handler(struct ff_config *cfg, const char *section,
         pc->vlan_cfgs[pc->nb_vlan] = cur;
         pc->nb_vlan++;
     } else if (strcmp(name, "addr") == 0) {
+        if (cur->addr) free(cur->addr);
         cur->addr = strdup(value);
     } else if (strcmp(name, "netmask") == 0) {
+        if (cur->netmask) free(cur->netmask);
         cur->netmask = strdup(value);
     } else if (strcmp(name, "broadcast") == 0) {
+        if (cur->broadcast) free(cur->broadcast);
         cur->broadcast = strdup(value);
     } else if (strcmp(name, "gateway") == 0) {
+        if (cur->gateway) free(cur->gateway);
         cur->gateway = strdup(value);
     } else if (strcmp(name, "vip_addr") == 0) {
         cur->vip_addr_str = strdup(value);
@@ -725,10 +750,12 @@ vlan_cfg_handler(struct ff_config *cfg, const char *section,
 
 #ifdef INET6
     else if (0 == strcmp(name, "addr6")) {
+        if (cur->addr6_str) free(cur->addr6_str);
         cur->addr6_str = strdup(value);
     } else if (0 == strcmp(name, "prefix_len")) {
         cur->prefix_len = atoi(value);
     } else if (0 == strcmp(name, "gateway6")) {
+        if (cur->gateway6_str) free(cur->gateway6_str);
         cur->gateway6_str = strdup(value);
     } else if (strcmp(name, "vip_addr6") == 0) {
         cur->vip_addr6_str = strdup(value);
@@ -781,14 +808,17 @@ vdev_cfg_handler(struct ff_config *cfg, const char *section,
     }
 
     if (strcmp(name, "iface") == 0) {
+        if (cur->iface) free(cur->iface);
         cur->iface = strdup(value);
     } else if (strcmp(name, "path") == 0) {
+        if (cur->path) free(cur->path);
         cur->path = strdup(value);
     } else if (strcmp(name, "queues") == 0) {
         cur->nb_queues = atoi(value);
     } else if (strcmp(name, "queue_size") == 0) {
         cur->queue_size = atoi(value);
     } else if (strcmp(name, "mac") == 0) {
+        if (cur->mac) free(cur->mac);
         cur->mac = strdup(value);
     } else if (strcmp(name, "cq") == 0) {
         cur->nb_cq = atoi(value);
@@ -837,14 +867,18 @@ bond_cfg_handler(struct ff_config *cfg, const char *section,
     if (strcmp(name, "mode") == 0) {
         cur->mode = atoi(value);
     } else if (strcmp(name, "slave") == 0) {
+        if (cur->slave) free(cur->slave);
         cur->slave = strdup(value);
     } else if (strcmp(name, "primary") == 0) {
+        if (cur->primary) free(cur->primary);
         cur->primary = strdup(value);
     } else if (strcmp(name, "socket_id") == 0) {
         cur->socket_id = atoi(value);
     } else if (strcmp(name, "mac") == 0) {
+        if (cur->bond_mac) free(cur->bond_mac);
         cur->bond_mac = strdup(value);
     } else if (strcmp(name, "xmit_policy") == 0) {
+        if (cur->xmit_policy) free(cur->xmit_policy);
         cur->xmit_policy = strdup(value);
     } else if (strcmp(name, "lsc_poll_period_ms") == 0) {
         cur->lsc_poll_period_ms = atoi(value);
@@ -890,8 +924,16 @@ rss_tbl_cfg_handler(struct ff_rss_check_cfg *cur)
 
         /* Note: daddr must be include by port_id's addr or vip_addr, but here not check it now */
         rss_tbl_cfg_p[i].port_id = atoi(rss_tbl_4tuble_array[0]);
-        inet_pton(AF_INET, rss_tbl_4tuble_array[1], (void *)&(rss_tbl_cfg_p[i].daddr));
-        inet_pton(AF_INET, rss_tbl_4tuble_array[2], (void *)&(rss_tbl_cfg_p[i].saddr));
+        /* v6 if the address text contains ':', else v4 (v4 path unchanged) */
+        if (strchr(rss_tbl_4tuble_array[1], ':') != NULL) {
+            rss_tbl_cfg_p[i].family = AF_INET6;
+            inet_pton(AF_INET6, rss_tbl_4tuble_array[1], (void *)&(rss_tbl_cfg_p[i].daddr6));
+            inet_pton(AF_INET6, rss_tbl_4tuble_array[2], (void *)&(rss_tbl_cfg_p[i].saddr6));
+        } else {
+            rss_tbl_cfg_p[i].family = AF_INET;
+            inet_pton(AF_INET, rss_tbl_4tuble_array[1], (void *)&(rss_tbl_cfg_p[i].daddr));
+            inet_pton(AF_INET, rss_tbl_4tuble_array[2], (void *)&(rss_tbl_cfg_p[i].saddr));
+        }
         rss_tbl_cfg_p[i].sport = htons(atoi(rss_tbl_4tuble_array[3]));
     }
 
@@ -915,6 +957,7 @@ rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
             fprintf(stderr, "rss_check_cfg_handler malloc failed\n");
             return 0;
         }
+        rcc->thash_adjust = 1;   /* default on; "thash_adjust=" may override */
         cfg->dpdk.rss_check_cfgs = rcc;
     }
 
@@ -922,6 +965,10 @@ rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
 
     if (strcmp(name, "enable") == 0) {
         cur->enable = atoi(value);
+    } else if (strcmp(name, "recheck") == 0) {
+        cur->recheck = atoi(value);
+    } else if (strcmp(name, "thash_adjust") == 0) {
+        cur->thash_adjust = atoi(value);
     } else if (strcmp(name, "rss_tbl") == 0) {
         cur->rss_tbl_str = strdup(value);
         if (cur->rss_tbl_str) {
@@ -930,6 +977,42 @@ rss_check_cfg_handler(struct ff_config *cfg, __rte_unused const char *section,
     }
 
     return 1;
+}
+
+static int
+ff_parse_u16(const char *value, uint16_t min, uint16_t max,
+    uint16_t *out)
+{
+    if (value == NULL || *value == '\0') {
+        return 0;
+    }
+
+    errno = 0;
+    char *endptr = NULL;
+    unsigned long v = strtoul(value, &endptr, 10);
+    if (errno != 0 || endptr == value || *endptr != '\0' ||
+        v < min || v > max) {
+        return 0;
+    }
+    *out = (uint16_t)v;
+    return 1;
+}
+
+static int
+ff_parse_mbuf_mode(const char *value, enum ff_mbuf_mode *out)
+{
+    if (value == NULL) {
+        return 0;
+    }
+    if (strcmp(value, "large") == 0) {
+        *out = FF_MBUF_MODE_LARGE;
+        return 1;
+    }
+    if (strcmp(value, "scatter") == 0) {
+        *out = FF_MBUF_MODE_SCATTER;
+        return 1;
+    }
+    return 0;
 }
 
 static int
@@ -946,6 +1029,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
     } else if (MATCH("dpdk", "fstack_log_level")) {
         pconfig->log.level = atoi(value);
     } else if (MATCH("dpdk", "fstack_log_file_prefix")) {
+        /* default_config strdup'd the default; free it before overwrite. */
+        if (pconfig->log.dir) free((void *)pconfig->log.dir);
         pconfig->log.dir = strdup(value);
     } else if (MATCH("dpdk", "channel")) {
         pconfig->dpdk.nb_channel = atoi(value);
@@ -953,6 +1038,36 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.memory = atoi(value);
     } else if (MATCH("dpdk", "no_huge")) {
         pconfig->dpdk.no_huge = atoi(value);
+    } else if (MATCH("dpdk", "thread_mode")) {
+        pconfig->dpdk.thread_mode = atoi(value);
+    } else if (MATCH("dpdk", "primary_slim")) {
+        pconfig->dpdk.primary_slim = atoi(value);
+    } else if (MATCH("dpdk", "graceful_reload")) {
+        pconfig->dpdk.graceful_reload = atoi(value);
+    } else if (MATCH("dpdk", "reload_heartbeat_timeout_ms")) {
+        /* negative values must not reach the unsigned field (they
+         * would pass the >=10 validation as huge values and silently
+         * disable stall detection); remap them to the default like 0. */
+        int hb_ms = atoi(value);
+
+        if (hb_ms <= 0) {
+            hb_ms = FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT;
+        }
+        pconfig->dpdk.reload_heartbeat_timeout_ms = (uint32_t)hb_ms;
+    } else if (MATCH("dpdk", "drain_ring_size")) {
+        /* Same trap as reload_heartbeat_timeout_ms: a negative value
+         * must not reach the unsigned field, and 0 means "use the default". */
+        int drs = atoi(value);
+
+        if (drs <= 0) {
+            drs = (int)FF_DRAIN_RING_SIZE_DEFAULT;
+        }
+        pconfig->dpdk.drain_ring_size = (unsigned)drs;
+    } else if (MATCH("dpdk", "reload_udp_idle_ms")) {
+        int ms = atoi(value);
+
+        pconfig->dpdk.reload_udp_idle_ms = ms <= 0 ?
+            FF_RELOAD_UDP_IDLE_MS_DEFAULT : (unsigned)ms;
     } else if (MATCH("dpdk", "lcore_mask")) {
         pconfig->dpdk.lcore_mask = strdup(value);
         return parse_lcore_mask(pconfig, pconfig->dpdk.lcore_mask);
@@ -962,6 +1077,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.file_prefix = strdup(value);
     } else if (MATCH("dpdk", "allow")) {
         pconfig->dpdk.allow = strdup(value);
+    } else if (MATCH("dpdk", "extra_eal_args")) {
+        pconfig->dpdk.extra_eal_args = strdup(value);
     } else if (MATCH("dpdk", "port_list")) {
         return parse_port_list(pconfig, value);
     } else if (MATCH("dpdk", "nb_vdev")) {
@@ -974,20 +1091,41 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->dpdk.numa_on = atoi(value);
     } else if (MATCH("dpdk", "tso")) {
         pconfig->dpdk.tso = atoi(value);
+    } else if (MATCH("dpdk", "lro")) {
+        pconfig->dpdk.lro = atoi(value);
     } else if (MATCH("dpdk", "tx_csum_offoad_skip")) {
         pconfig->dpdk.tx_csum_offoad_skip = atoi(value);
+    } else if (MATCH("dpdk", "tx_csum_ip_skip")) {
+        pconfig->dpdk.tx_csum_ip_skip = atoi(value);
+    } else if (MATCH("dpdk", "tx_csum_l4_skip")) {
+        pconfig->dpdk.tx_csum_l4_skip = atoi(value);
     } else if (MATCH("dpdk", "vlan_strip")) {
         pconfig->dpdk.vlan_strip = atoi(value);
     } else if (MATCH("dpdk", "vlan_filter")) {
         return parse_vlan_filter_list(pconfig, value);
     } else if (MATCH("dpdk", "idle_sleep")) {
         pconfig->dpdk.idle_sleep = atoi(value);
+    } else if (MATCH("dpdk", "primary_slim_idle_sleep")) {
+        pconfig->dpdk.primary_slim_idle_sleep = atoi(value);
     } else if (MATCH("dpdk", "pkt_tx_delay")) {
         pconfig->dpdk.pkt_tx_delay = atoi(value);
+    } else if (MATCH("dpdk", "idle_loop_interval")) {
+        pconfig->dpdk.idle_loop_interval = atoi(value);
     } else if (MATCH("dpdk", "symmetric_rss")) {
         pconfig->dpdk.symmetric_rss = atoi(value);
+    } else if (MATCH("dpdk", "mtu_enable")) {
+        pconfig->dpdk.mtu_enable = atoi(value);
+    } else if (MATCH("dpdk", "max_mtu")) {
+        return ff_parse_u16(value, FF_MTU_DEFAULT, UINT16_MAX,
+            &pconfig->dpdk.max_mtu);
+    } else if (MATCH("dpdk", "mbuf_mode")) {
+        return ff_parse_mbuf_mode(value, &pconfig->dpdk.mbuf_mode);
+    } else if (MATCH("dpdk", "mbuf_low_watermark")) {
+        pconfig->dpdk.mbuf_low_watermark = atoi(value);
     } else if (MATCH("kni", "enable")) {
         pconfig->kni.enable= atoi(value);
+    } else if (MATCH("kni", "owner_proc_id")) {
+        pconfig->kni.owner_proc_id= atoi(value);
     } else if (MATCH("kni", "console_packets_ratelimit")) {
         pconfig->kni.console_packets_ratelimit= atoi(value);
     } else if (MATCH("kni", "general_packets_ratelimit")) {
@@ -1002,6 +1140,13 @@ ini_parse_handler(void* user, const char* section, const char* name,
         pconfig->kni.tcp_port = strdup(value);
     } else if (MATCH("kni", "udp_port")) {
         pconfig->kni.udp_port= strdup(value);
+#ifdef FF_KERNEL_COEXIST
+    } else if (MATCH("stack", "kernel_coexist")) {
+        pconfig->stack.kernel_coexist =
+            (strcasecmp(value, "1") == 0 || strcasecmp(value, "on") == 0 ||
+             strcasecmp(value, "true") == 0 || strcasecmp(value, "yes") == 0)
+            ? 1 : 0;
+#endif /* FF_KERNEL_COEXIST */
     } else if (strcmp(section, "freebsd.boot") == 0) {
         if (strcmp(name, "hz") == 0) {
             pconfig->freebsd.hz = atoi(value);
@@ -1011,6 +1156,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
             pconfig->freebsd.fd_reserve = atoi(value);
         } else if (strcmp(name, "memsz_MB") == 0) {
             pconfig->freebsd.mem_size = atoi(value);
+        } else if (strcmp(name, "tcp_ecn") == 0) {
+            pconfig->freebsd.tcp_ecn = atoi(value);
         } else {
             return freebsd_conf_handler(pconfig, "boot", name, value);
         }
@@ -1033,6 +1180,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
             pconfig->pcap.enable = (uint16_t)atoi(value);
         } else if (strcmp(name, "savepath") == 0) {
             pconfig->pcap.save_path = strdup(value);
+        } else if (strcmp(name, "timestamp_precision") == 0) {
+            pconfig->pcap.timestamp_precision = (uint8_t)atoi(value);
         }
     } else if (strcmp(section, "rss_check") == 0) {
         return rss_check_cfg_handler(pconfig, section, name, value);
@@ -1178,6 +1327,19 @@ dpdk_args_setup(struct ff_config *cfg)
         }
     }
 
+    if (cfg->dpdk.extra_eal_args) {
+        char* token;
+        char* rest = cfg->dpdk.extra_eal_args;
+
+        while ((token = strtok_r(rest, " ", &rest))) {
+            if (n >= DPDK_CONFIG_NUM) {
+                printf("extra_eal_args exceed DPDK_CONFIG_NUM, truncated\n");
+                break;
+            }
+            dpdk_argv[n++] = strdup(token);
+        }
+    }
+
     dpdk_argc = n;
 
     for (i=0; i<n; i++)
@@ -1196,12 +1358,15 @@ ff_parse_args(struct ff_config *cfg, int argc, char *const argv[])
     while((c = getopt_long(argc, argv, short_options, long_options, &index)) != -1) {
         switch (c) {
             case 'c':
+                /* Free the default-config strdup'd filename before overwrite. */
+                if (cfg->filename) free(cfg->filename);
                 cfg->filename = strdup(optarg);
                 break;
             case 'p':
                 cfg->dpdk.proc_id = atoi(optarg);
                 break;
             case 't':
+                if (cfg->dpdk.proc_type) free(cfg->dpdk.proc_type);
                 cfg->dpdk.proc_type = strdup(optarg);
                 break;
             default:
@@ -1289,11 +1454,45 @@ ff_check_config(struct ff_config *cfg)
                 return -1;
             }
         }
+        if (cfg->dpdk.primary_slim &&
+            strcmp(cfg->dpdk.proc_type, "primary") == 0) {
+            uint16_t prim_lcore = cfg->dpdk.proc_lcore[cfg->dpdk.proc_id];
+            int j, found = 0;
+            for (j = 0; j < pc->nb_lcores; j++) {
+                if (pc->lcore_list[j] == prim_lcore) {
+                    found = 1;
+                    break;
+                }
+            }
+            if (found) {
+                fprintf(stderr,
+                    "primary_slim=1 but primary lcore %d is still in port %d's lcore_list\n",
+                    prim_lcore, pc->port_id);
+                return -1;
+            }
+        }
+        if (cfg->dpdk.primary_slim && cfg->kni.enable) {
+            uint16_t owner_lcore = cfg->dpdk.proc_lcore[cfg->kni.owner_proc_id];
+            int j, owner_has_queue = 0;
+            for (j = 0; j < pc->nb_lcores; j++) {
+                if (pc->lcore_list[j] == owner_lcore) {
+                    owner_has_queue = 1;
+                    break;
+                }
+            }
+            if (!owner_has_queue) {
+                fprintf(stderr,
+                    "primary_slim=1 && kni.enable=1 requires owner_proc_id lcore %d in port %d's lcore_list\n",
+                    owner_lcore, pc->port_id);
+                return -1;
+            }
+        }
         /*
          * only primary process process KNI, so if KNI enabled,
          * primary lcore must stay in every enabled ports' lcore_list
          */
         if (cfg->kni.enable &&
+            !cfg->dpdk.primary_slim &&
             strcmp(cfg->dpdk.proc_type, "primary") == 0) {
             int found = 0;
             int j;
@@ -1312,6 +1511,139 @@ ff_check_config(struct ff_config *cfg)
         }
     }
 
+    if (cfg->dpdk.mtu_enable) {
+        if (cfg->dpdk.max_mtu < FF_MTU_DEFAULT) {
+            fprintf(stderr, "max_mtu must be >= 1500\n");
+            return -1;
+        }
+        if (cfg->dpdk.mbuf_mode == FF_MBUF_MODE_LARGE) {
+            /* data_room = align(128 + max_mtu + 14 + 8 + 4, 64) */
+            size_t room = 128 + (size_t)cfg->dpdk.max_mtu + 26;
+            room = (room + 63) & ~(size_t)63;
+            if (room > UINT16_MAX) {
+                fprintf(stderr,
+                    "large mode max_mtu %u exceeds mbuf data_room limit\n",
+                    cfg->dpdk.max_mtu);
+                return -1;
+            }
+        }
+        for (i = 0; i < cfg->dpdk.nb_ports; i++) {
+            uint16_t portid = cfg->dpdk.portid_list[i];
+            struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[portid];
+            if (pc->mtu < FF_MTU_MIN || pc->mtu > cfg->dpdk.max_mtu) {
+                fprintf(stderr,
+                    "port%d mtu %u out of range [68, %u]\n",
+                    portid, pc->mtu, cfg->dpdk.max_mtu);
+                return -1;
+            }
+        }
+#ifdef FF_KERNEL_COEXIST
+        if (cfg->stack.kernel_coexist) {
+            fprintf(stderr,
+                "mtu_enable=1 is incompatible with kernel_coexist\n");
+            return -1;
+        }
+#endif
+    } else {
+        for (i = 0; i < cfg->dpdk.nb_ports; i++) {
+            uint16_t portid = cfg->dpdk.portid_list[i];
+            struct ff_port_cfg *pc = &cfg->dpdk.port_cfgs[portid];
+            if (pc->mtu > FF_MTU_DEFAULT) {
+                fprintf(stderr,
+                    "port%d mtu %u > 1500 requires mtu_enable=1\n",
+                    portid, pc->mtu);
+                return -1;
+            }
+        }
+    }
+
+    if (cfg->dpdk.primary_slim && cfg->dpdk.thread_mode) {
+        fprintf(stderr, "primary_slim=1 is incompatible with thread_mode=1\n");
+        return -1;
+    }
+    if (cfg->dpdk.primary_slim && cfg->dpdk.nb_procs < 2) {
+        fprintf(stderr, "primary_slim=1 requires nb_procs >= 2\n");
+        return -1;
+    }
+    if (cfg->dpdk.primary_slim) {
+        fprintf(stderr, "primary_slim=1: proc_id=%d proc_type=%s nb_procs=%d\n",
+            cfg->dpdk.proc_id, cfg->dpdk.proc_type, cfg->dpdk.nb_procs);
+        if (cfg->dpdk.nb_procs < 3) {
+            fprintf(stderr, "WARNING: primary_slim with only 1 secondary may cause RSS reta edge effects\n");
+        }
+    }
+
+    if (cfg->dpdk.graceful_reload) {
+        if (!cfg->dpdk.primary_slim) {
+            fprintf(stderr, "graceful_reload=1 requires primary_slim=1\n");
+            return -1;
+        }
+        if (cfg->dpdk.thread_mode) {
+            fprintf(stderr, "graceful_reload=1 is incompatible with thread_mode=1\n");
+            return -1;
+        }
+#ifdef FF_USE_PAGE_ARRAY
+        /* a park hands staged tx mbufs to another process, which cannot
+         * release this process's bsd_m_table references */
+        fprintf(stderr, "graceful_reload=1 is not supported in "
+            "FF_USE_PAGE_ARRAY builds\n");
+        return -1;
+#endif
+        if (cfg->dpdk.nb_procs < 2) {
+            fprintf(stderr, "graceful_reload=1 requires nb_procs >= 2\n");
+            return -1;
+        }
+        /* heartbeat stall threshold sanity (0 is remapped to
+         * the default at parse time, so only absurdly small values land
+         * here). */
+        if (cfg->dpdk.reload_heartbeat_timeout_ms &&
+            cfg->dpdk.reload_heartbeat_timeout_ms < 10) {
+            fprintf(stderr, "reload_heartbeat_timeout_ms must be >= 10\n");
+            return -1;
+        }
+        if (cfg->dpdk.reload_udp_idle_ms < FF_RELOAD_UDP_IDLE_MS_MIN
+            || cfg->dpdk.reload_udp_idle_ms > FF_RELOAD_UDP_IDLE_MS_MAX) {
+            fprintf(stderr, "reload_udp_idle_ms must be in [%u, %u]\n",
+                FF_RELOAD_UDP_IDLE_MS_MIN, FF_RELOAD_UDP_IDLE_MS_MAX);
+            return -1;
+        }
+        /* drain_ring capacity. 0 can only come from a caller
+         * that filled the struct by hand (the parser remaps it). */
+        if (cfg->dpdk.drain_ring_size == 0) {
+            cfg->dpdk.drain_ring_size = FF_DRAIN_RING_SIZE_DEFAULT;
+        }
+        if (cfg->dpdk.drain_ring_size & (cfg->dpdk.drain_ring_size - 1)) {
+            fprintf(stderr, "drain_ring_size must be a power of 2\n");
+            return -1;
+        }
+        if (cfg->dpdk.drain_ring_size < 1024) {
+            fprintf(stderr, "WARNING: drain_ring_size %u < 1024, the "
+                "handover window may overflow the ring\n",
+                cfg->dpdk.drain_ring_size);
+        }
+    }
+
+    if (cfg->dpdk.thread_mode) {
+        /* Single-process multi-thread: force primary, derive nb_threads,
+         * collapse to one process, and expose all lcores to EAL via a
+         * full-bit proc_mask. Done after per-port lcore checks so those
+         * still validate against the original nb_procs=bit-count set. */
+        if (cfg->dpdk.proc_type && strcmp(cfg->dpdk.proc_type, "secondary") == 0) {
+            fprintf(stderr, "thread_mode=1 is incompatible with proc_type secondary\n");
+            return -1;
+        }
+        if (cfg->dpdk.proc_type) free(cfg->dpdk.proc_type);
+        cfg->dpdk.proc_type = strdup("primary");
+
+        cfg->dpdk.nb_threads = cfg->dpdk.nb_procs;
+        cfg->dpdk.nb_procs = 1;
+        cfg->dpdk.proc_id = 0;
+        if (cfg->dpdk.lcore_mask) {
+            if (cfg->dpdk.proc_mask) free(cfg->dpdk.proc_mask);
+            cfg->dpdk.proc_mask = strdup(cfg->dpdk.lcore_mask);
+        }
+    }
+
     return 0;
 }
 
@@ -1320,12 +1652,30 @@ ff_default_config(struct ff_config *cfg)
 {
     memset(cfg, 0, sizeof(struct ff_config));
 
-    cfg->filename = DEFAULT_CONFIG_FILE;
+    /* Sstrdup the default literalsso ff_unload_config can free() them uniformly.*/
+    cfg->filename = strdup(DEFAULT_CONFIG_FILE);
 
     cfg->dpdk.proc_id = -1;
     cfg->dpdk.numa_on = 1;
     cfg->dpdk.promiscuous = 1;
     cfg->dpdk.pkt_tx_delay = BURST_TX_DRAIN_US;
+    cfg->dpdk.idle_loop_interval = IDLE_LOOP_INTERVAL_US_DEFAULT;
+    cfg->dpdk.primary_slim = 0;
+    cfg->dpdk.graceful_reload = 0;
+    cfg->dpdk.reload_heartbeat_timeout_ms =
+        FF_RELOAD_HEARTBEAT_TIMEOUT_MS_DEFAULT;
+    cfg->dpdk.drain_ring_size = FF_DRAIN_RING_SIZE_DEFAULT;
+    cfg->dpdk.reload_udp_idle_ms = FF_RELOAD_UDP_IDLE_MS_DEFAULT;
+    cfg->dpdk.primary_slim_idle_sleep = 1000;
+
+    cfg->dpdk.mtu_enable = 0;
+    cfg->dpdk.max_mtu = FF_MTU_JUMBO_DEFAULT;
+    cfg->dpdk.mbuf_mode = FF_MBUF_MODE_LARGE;
+    cfg->dpdk.mbuf_low_watermark = 0;
+
+#ifdef FF_KERNEL_COEXIST
+    cfg->stack.kernel_coexist = 0;
+#endif /* FF_KERNEL_COEXIST */
 
     /* KNI ratelimit default disabled */
     //cfg->kni.console_packets_ratelimit = KNI_RATELIMT_CONSOLE;
@@ -1336,14 +1686,25 @@ ff_default_config(struct ff_config *cfg)
     cfg->freebsd.physmem = 1048576*256;
     cfg->freebsd.fd_reserve = 0;
     cfg->freebsd.mem_size = 256;
+    cfg->freebsd.tcp_ecn = 0;
 
     cfg->log.level = FF_LOG_DISABLE;
-    cfg->log.dir = FF_LOG_FILENAME_PREFIX;
+    cfg->log.dir = strdup(FF_LOG_FILENAME_PREFIX);
 }
 
 int
 ff_load_config(int argc, char *const argv[])
 {
+    /* Idempotency: free any state from a prior ff_load_config so repeated
+     * invocations (test harness, hot-reload) don't accumulate unbounded heap.
+     */
+    if (ff_global_cfg.dpdk.proc_lcore != NULL ||
+        ff_global_cfg.dpdk.port_cfgs  != NULL ||
+        ff_global_cfg.dpdk.vlan_cfgs  != NULL ||
+        ff_global_cfg.dpdk.bond_cfgs  != NULL) {
+        ff_unload_config();
+    }
+
     ff_default_config(&ff_global_cfg);
 
     int ret = ff_parse_args(&ff_global_cfg, argc, argv);
@@ -1376,4 +1737,402 @@ ff_load_config(int argc, char *const argv[])
     }
 
     return 0;
+}
+
+/* ======================================================================== */
+/* ff_unload_config (FU-S2-2-CFG-UNLOAD): free every heap-allocated field   */
+/* referenced by ff_global_cfg + dpdk_argv[] and zero-init the structure so */
+/* a subsequent ff_load_config() call starts from a clean slate.            */
+/*                                                                          */
+/* Registered via atexit() at the end of the first successful               */
+/* ff_load_config(). Also called at the start of any later ff_load_config() */
+/* (idempotency) to prevent unbounded heap accumulation across reloads.    */
+/*                                                                          */
+/* IMPORTANT: log.dir is intentionally NOT freed here. ff_default_config    */
+/* writes a string-literal pointer into log.dir; the INI parser may then    */
+/* overwrite it with a strdup'd value. Distinguishing the two would require */
+/* a flag we don't have, so we accept a one-time O(strlen) leak in exchange */
+/* for crash-safety. Tracked under FU-CB-CFG-LOGDIR if a future reader      */
+/* wants to fix it via a `static int log_dir_owned` flag.                  */
+/* ======================================================================== */
+
+static void
+ff_cfg_free_freebsd_chain(struct ff_freebsd_cfg **head)
+{
+    struct ff_freebsd_cfg *cur = *head, *next;
+    while (cur != NULL) {
+        next = cur->next;
+        /* freebsd_conf_handler aliases newconf->value = newconf->str for
+         * boot section and non-integer sysctl values. Free value FIRST
+         * only when it's NOT aliased into str -- otherwise the free of
+         * str below covers it. */
+        if (cur->value != NULL && cur->value != (void *)cur->str) {
+            free(cur->value);
+        }
+        if (cur->str)  free(cur->str);
+        if (cur->name) free(cur->name);
+        free(cur);
+        cur = next;
+    }
+    *head = NULL;
+}
+
+static void
+ff_cfg_free_port_one(struct ff_port_cfg *p)
+{
+    if (p == NULL) return;
+    if (p->name)         { free(p->name);         p->name = NULL; }
+    if (p->ifname)       { free(p->ifname);       p->ifname = NULL; }
+    if (p->addr)         { free(p->addr);         p->addr = NULL; }
+    if (p->netmask)      { free(p->netmask);      p->netmask = NULL; }
+    if (p->broadcast)    { free(p->broadcast);    p->broadcast = NULL; }
+    if (p->gateway)      { free(p->gateway);      p->gateway = NULL; }
+    if (p->vip_ifname)   { free(p->vip_ifname);   p->vip_ifname = NULL; }
+    if (p->vip_addr_str) { free(p->vip_addr_str); p->vip_addr_str = NULL; }
+    if (p->vip_addr_array) {
+        /* IMPORTANT: vip_addr_array[i] are pointers INTO vip_addr_str
+         * (rte_strsplit splits in place; see vip_cfg_handler). We must
+         * only free the array container, NOT the element pointers. */
+        free(p->vip_addr_array);
+        p->vip_addr_array = NULL;
+    }
+    p->nb_vip = 0;
+#ifdef FF_IPFW
+    if (p->pr_addr_str) { free(p->pr_addr_str); p->pr_addr_str = NULL; }
+    if (p->pr_cfg)      { free(p->pr_cfg);      p->pr_cfg = NULL; }
+    p->nb_pr = 0;
+#endif
+#ifdef INET6
+    if (p->addr6_str)     { free(p->addr6_str);     p->addr6_str = NULL; }
+    if (p->gateway6_str)  { free(p->gateway6_str);  p->gateway6_str = NULL; }
+    if (p->vip_addr6_str) { free(p->vip_addr6_str); p->vip_addr6_str = NULL; }
+    if (p->vip_addr6_array) {
+        /* Same alias-into-vip_addr6_str semantics as IPv4 above. */
+        free(p->vip_addr6_array);
+        p->vip_addr6_array = NULL;
+    }
+    p->nb_vip6 = 0;
+#endif
+    if (p->slave_portid_list) {
+        free(p->slave_portid_list);
+        p->slave_portid_list = NULL;
+    }
+    /* p->vlan_cfgs[] entries point INTO ff_global_cfg.dpdk.vlan_cfgs[]
+     * (set by vlan_cfg_handler when binding a VLAN to its parent port).
+     * We must NOT free them here — they are freed once via the dpdk.vlan_cfgs
+     * array sweep below. */
+}
+
+static void
+ff_cfg_free_vlan_one(struct ff_vlan_cfg *v)
+{
+    if (v == NULL) return;
+    if (v->name)         { free(v->name);         v->name = NULL; }
+    if (v->ifname)       { free(v->ifname);       v->ifname = NULL; }
+    if (v->addr)         { free(v->addr);         v->addr = NULL; }
+    if (v->netmask)      { free(v->netmask);      v->netmask = NULL; }
+    if (v->broadcast)    { free(v->broadcast);    v->broadcast = NULL; }
+    if (v->gateway)      { free(v->gateway);      v->gateway = NULL; }
+    if (v->vip_ifname)   { free(v->vip_ifname);   v->vip_ifname = NULL; }
+    if (v->vip_addr_str) { free(v->vip_addr_str); v->vip_addr_str = NULL; }
+    if (v->vip_addr_array) {
+        free(v->vip_addr_array);
+        v->vip_addr_array = NULL;
+    }
+    v->nb_vip = 0;
+#ifdef FF_IPFW
+    if (v->pr_addr_str)  { free(v->pr_addr_str);  v->pr_addr_str = NULL; }
+#endif
+#ifdef INET6
+    if (v->addr6_str)     { free(v->addr6_str);     v->addr6_str = NULL; }
+    if (v->gateway6_str)  { free(v->gateway6_str);  v->gateway6_str = NULL; }
+    if (v->vip_addr6_str) { free(v->vip_addr6_str); v->vip_addr6_str = NULL; }
+#endif
+}
+
+static void
+ff_cfg_free_vdev_one(struct ff_vdev_cfg *v)
+{
+    if (v == NULL) return;
+    if (v->name)  { free(v->name);  v->name = NULL; }
+    if (v->iface) { free(v->iface); v->iface = NULL; }
+    if (v->path)  { free(v->path);  v->path = NULL; }
+    if (v->mac)   { free(v->mac);   v->mac = NULL; }
+}
+
+static void
+ff_cfg_free_bond_one(struct ff_bond_cfg *b)
+{
+    if (b == NULL) return;
+    if (b->name)        { free(b->name);        b->name = NULL; }
+    if (b->slave)       { free(b->slave);       b->slave = NULL; }
+    if (b->primary)     { free(b->primary);     b->primary = NULL; }
+    if (b->bond_mac)    { free(b->bond_mac);    b->bond_mac = NULL; }
+    if (b->xmit_policy) { free(b->xmit_policy); b->xmit_policy = NULL; }
+}
+
+void
+ff_unload_config(void)
+{
+    /* dpdk_argv[] entries (each strdup'd in dpdk_args_setup) */
+    for (int i = 0; i < dpdk_argc; i++) {
+        if (dpdk_argv[i]) {
+            free(dpdk_argv[i]);
+            dpdk_argv[i] = NULL;
+        }
+    }
+    dpdk_argc = 0;
+
+    /* Top-level filename + dpdk.* string fields */
+    if (ff_global_cfg.filename) {
+        free(ff_global_cfg.filename);
+        ff_global_cfg.filename = NULL;
+    }
+    if (ff_global_cfg.dpdk.proc_type) {
+        free(ff_global_cfg.dpdk.proc_type);
+        ff_global_cfg.dpdk.proc_type = NULL;
+    }
+    if (ff_global_cfg.dpdk.lcore_mask) {
+        free(ff_global_cfg.dpdk.lcore_mask);
+        ff_global_cfg.dpdk.lcore_mask = NULL;
+    }
+    if (ff_global_cfg.dpdk.proc_mask) {
+        free(ff_global_cfg.dpdk.proc_mask);
+        ff_global_cfg.dpdk.proc_mask = NULL;
+    }
+    if (ff_global_cfg.dpdk.base_virtaddr) {
+        free(ff_global_cfg.dpdk.base_virtaddr);
+        ff_global_cfg.dpdk.base_virtaddr = NULL;
+    }
+    if (ff_global_cfg.dpdk.file_prefix) {
+        free(ff_global_cfg.dpdk.file_prefix);
+        ff_global_cfg.dpdk.file_prefix = NULL;
+    }
+    if (ff_global_cfg.dpdk.allow) {
+        free(ff_global_cfg.dpdk.allow);
+        ff_global_cfg.dpdk.allow = NULL;
+    }
+    if (ff_global_cfg.dpdk.extra_eal_args) {
+        free(ff_global_cfg.dpdk.extra_eal_args);
+        ff_global_cfg.dpdk.extra_eal_args = NULL;
+    }
+    if (ff_global_cfg.dpdk.proc_lcore) {
+        free(ff_global_cfg.dpdk.proc_lcore);
+        ff_global_cfg.dpdk.proc_lcore = NULL;
+    }
+    if (ff_global_cfg.dpdk.portid_list) {
+        free(ff_global_cfg.dpdk.portid_list);
+        ff_global_cfg.dpdk.portid_list = NULL;
+    }
+
+    /* port_cfgs[] : array sized RTE_MAX_ETHPORTS */
+    if (ff_global_cfg.dpdk.port_cfgs) {
+        for (int i = 0; i < RTE_MAX_ETHPORTS; i++) {
+            ff_cfg_free_port_one(&ff_global_cfg.dpdk.port_cfgs[i]);
+        }
+        free(ff_global_cfg.dpdk.port_cfgs);
+        ff_global_cfg.dpdk.port_cfgs = NULL;
+    }
+
+    /* vlan_cfgs[] : array sized DPDK_MAX_VLAN_FILTER */
+    if (ff_global_cfg.dpdk.vlan_cfgs) {
+        for (int i = 0; i < DPDK_MAX_VLAN_FILTER; i++) {
+            ff_cfg_free_vlan_one(&ff_global_cfg.dpdk.vlan_cfgs[i]);
+        }
+        free(ff_global_cfg.dpdk.vlan_cfgs);
+        ff_global_cfg.dpdk.vlan_cfgs = NULL;
+    }
+
+    /* vdev_cfgs[] : array sized RTE_MAX_ETHPORTS */
+    if (ff_global_cfg.dpdk.vdev_cfgs) {
+        for (int i = 0; i < RTE_MAX_ETHPORTS; i++) {
+            ff_cfg_free_vdev_one(&ff_global_cfg.dpdk.vdev_cfgs[i]);
+        }
+        free(ff_global_cfg.dpdk.vdev_cfgs);
+        ff_global_cfg.dpdk.vdev_cfgs = NULL;
+    }
+
+    /* bond_cfgs[] : array sized RTE_MAX_ETHPORTS */
+    if (ff_global_cfg.dpdk.bond_cfgs) {
+        for (int i = 0; i < RTE_MAX_ETHPORTS; i++) {
+            ff_cfg_free_bond_one(&ff_global_cfg.dpdk.bond_cfgs[i]);
+        }
+        free(ff_global_cfg.dpdk.bond_cfgs);
+        ff_global_cfg.dpdk.bond_cfgs = NULL;
+    }
+
+    /* rss_check_cfgs : single struct */
+    if (ff_global_cfg.dpdk.rss_check_cfgs) {
+        if (ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_str) {
+            free((void *)ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_str);
+            ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_str = NULL;
+        }
+        free(ff_global_cfg.dpdk.rss_check_cfgs);
+        ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+    }
+
+    /* kni.* string fields */
+    if (ff_global_cfg.kni.kni_action) {
+        free(ff_global_cfg.kni.kni_action);
+        ff_global_cfg.kni.kni_action = NULL;
+    }
+    if (ff_global_cfg.kni.method) {
+        free(ff_global_cfg.kni.method);
+        ff_global_cfg.kni.method = NULL;
+    }
+    if (ff_global_cfg.kni.tcp_port) {
+        free(ff_global_cfg.kni.tcp_port);
+        ff_global_cfg.kni.tcp_port = NULL;
+    }
+    if (ff_global_cfg.kni.udp_port) {
+        free(ff_global_cfg.kni.udp_port);
+        ff_global_cfg.kni.udp_port = NULL;
+    }
+
+    /* pcap.save_path */
+    if (ff_global_cfg.pcap.save_path) {
+        free(ff_global_cfg.pcap.save_path);
+        ff_global_cfg.pcap.save_path = NULL;
+    }
+
+    /* log.dir : ff_default_config strdup's the literal default; the INI
+     * parser may overwrite with another strdup (which leaks the default).
+     * That overwrite leak is fixed by the strdup_replace pattern in
+     * ini_parse_handler -- here we just free whatever heap pointer survives. */
+    if (ff_global_cfg.log.dir) {
+        free((void *)ff_global_cfg.log.dir);
+        ff_global_cfg.log.dir = NULL;
+    }
+
+    /* freebsd.boot / freebsd.sysctl : linked-list chains */
+    ff_cfg_free_freebsd_chain(&ff_global_cfg.freebsd.boot);
+    ff_cfg_free_freebsd_chain(&ff_global_cfg.freebsd.sysctl);
+}
+
+struct primary_digest {
+    uint64_t hash;
+    int kni_enable;
+};
+
+static void
+primary_digest_add(uint64_t *h, const char *s)
+{
+    do {
+        *h ^= (unsigned char)*s;
+        *h *= 0x100000001b3ULL;
+    } while (*s++ != '\0');
+}
+
+static int
+primary_digest_skip(const char *section, const char *name)
+{
+    static const char *const dpdk_local[] = {
+        "log_level", "fstack_log_level", "fstack_log_file_prefix",
+        "idle_sleep", "pkt_tx_delay", "idle_loop_interval",
+        "reload_heartbeat_timeout_ms", "reload_udp_idle_ms", NULL
+    };
+    static const char *const port_local[] = {
+        "addr", "netmask", "broadcast", "gateway", "addr6", "prefix_len",
+        "gateway6", "if_name", "ipfw_pr", NULL
+    };
+    const char *const *k;
+
+    if (strcmp(section, "dpdk") == 0) {
+        for (k = dpdk_local; *k != NULL; k++)
+            if (strcmp(name, *k) == 0)
+                return 1;
+        return 0;
+    }
+    if (strcmp(section, "kni") == 0)
+        return strcmp(name, "enable") != 0
+            && strcmp(name, "owner_proc_id") != 0
+            && strcmp(name, "kernel_packets_ratelimit") != 0;
+    if (strncmp(section, "port", 4) == 0 || strncmp(section, "vlan", 4) == 0
+        || strncmp(section, "vdev", 4) == 0
+        || strncmp(section, "bond", 4) == 0) {
+        if (strncmp(name, "vip_", 4) == 0)
+            return 1;
+        for (k = port_local; *k != NULL; k++)
+            if (strcmp(name, *k) == 0)
+                return 1;
+        return 0;
+    }
+    return 1;
+}
+
+static int
+primary_digest_handler(void *user, const char *section, const char *name,
+    const char *value)
+{
+    struct primary_digest *d = user;
+
+    if (strcmp(section, "kni") == 0 && strcmp(name, "enable") == 0)
+        d->kni_enable = atoi(value);
+    if (primary_digest_skip(section, name))
+        return 1;
+    primary_digest_add(&d->hash, section);
+    primary_digest_add(&d->hash, name);
+    primary_digest_add(&d->hash, value);
+    return 1;
+}
+
+int
+ff_primary_conf_digest(const char *conf, uint64_t *digest, int *kni_enable)
+{
+    struct primary_digest d = { 0xcbf29ce484222325ULL, 0 };
+
+    if (conf == NULL || ini_parse(conf, primary_digest_handler, &d) != 0)
+        return -1;
+    if (digest != NULL)
+        *digest = d.hash;
+    if (kni_enable != NULL)
+        *kni_enable = d.kni_enable;
+    return 0;
+}
+
+int
+ff_primary_users(const char *runtime_dir)
+{
+    struct sockaddr_un un;
+    struct dirent *e;
+    DIR *dir;
+    int fd, n = 0;
+
+    if (runtime_dir == NULL || (dir = opendir(runtime_dir)) == NULL)
+        return -1;
+    while ((e = readdir(dir)) != NULL) {
+        if (strncmp(e->d_name, "mp_socket_", 10) != 0)
+            continue;
+        memset(&un, 0, sizeof(un));
+        un.sun_family = AF_UNIX;
+        if ((size_t)snprintf(un.sun_path, sizeof(un.sun_path), "%s/%s",
+            runtime_dir, e->d_name) >= sizeof(un.sun_path)) {
+            n++;
+            continue;
+        }
+        fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+        if (fd < 0) {
+            n++;
+            continue;
+        }
+        if (connect(fd, (struct sockaddr *)&un, sizeof(un)) == 0
+            || (errno != ECONNREFUSED && errno != ENOENT))
+            n++;
+        close(fd);
+    }
+    closedir(dir);
+    return n;
+}
+
+int
+ff_primary_reuse_check(int record_ok, int same_digest, int users, int idle,
+    int inherited)
+{
+    if (!record_ok)
+        return FF_PRIMARY_REFUSE;
+    if (inherited)
+        return same_digest ? FF_PRIMARY_REUSE : FF_PRIMARY_REFUSE;
+    if (users == 0 && (idle || !same_digest))
+        return FF_PRIMARY_RESTART;
+    return same_digest ? FF_PRIMARY_REUSE : FF_PRIMARY_REFUSE;
 }

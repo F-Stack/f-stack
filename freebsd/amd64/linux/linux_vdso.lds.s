@@ -1,8 +1,6 @@
 /*
  * Linker script for 64-bit vDSO.
  * Copied from Linux kernel arch/x86/vdso/vdso-layout.lds.S
- *
- * $FreeBSD$
  */
 
 SECTIONS
@@ -54,16 +52,21 @@ VERSION
 {
 	LINUX_2.6 {
 	global:
-		time;
 		__vdso_time;
-		gettimeofday;
 		__vdso_gettimeofday;
-		getcpu;
 		__vdso_getcpu;
-		clock_gettime;
 		__vdso_clock_gettime;
+		__vdso_clock_getres;
+	local: *;
+	};
+
+	LINUX_0.0 {
+	global:
 		linux_rt_sigcode;
 		linux_platform;
+		kern_timekeep_base;
+		kern_tsc_selector;
+		kern_cpu_selector;
 	local: *;
 	};
 }

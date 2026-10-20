@@ -27,15 +27,11 @@
  * SUCH DAMAGE.
  *
  *	from tahoe:	in_cksum.c	1.2	86/01/05
- *	from:		@(#)in_cksum.c	1.3 (Berkeley) 1/19/91
  *	from: Id: in_cksum.c,v 1.8 1995/12/03 18:35:19 bde Exp
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_IN_CKSUM_H_
 #define	_MACHINE_IN_CKSUM_H_	1
-
-#include <sys/cdefs.h>
 
 #ifdef _KERNEL
 #define	in_cksum(m, len)	in_cksum_skip(m, len, 0)

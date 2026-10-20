@@ -11,17 +11,11 @@
  * RTE CRC Hash
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 
 #include <rte_branch_prediction.h>
 #include <rte_common.h>
 #include <rte_config.h>
-#include <rte_cpuflags.h>
-#include <rte_log.h>
 
 #include "rte_crc_sw.h"
 
@@ -31,7 +25,7 @@ extern "C" {
 #define CRC32_SSE42_x64     (CRC32_x64|CRC32_SSE42)
 #define CRC32_ARM64         (1U << 3)
 
-static uint8_t crc32_alg = CRC32_SW;
+extern uint8_t rte_hash_crc32_alg;
 
 #if defined(RTE_ARCH_ARM64) && defined(__ARM_FEATURE_CRC32)
 #include "rte_crc_arm64.h"
@@ -39,6 +33,10 @@ static uint8_t crc32_alg = CRC32_SW;
 #include "rte_crc_x86.h"
 #else
 #include "rte_crc_generic.h"
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 /**
@@ -52,48 +50,8 @@ static uint8_t crc32_alg = CRC32_SW;
  *   - (CRC32_SSE42_x64) Use 64-bit SSE4.2 intrinsic if available (default x86)
  *   - (CRC32_ARM64) Use ARMv8 CRC intrinsic if available (default ARMv8)
  */
-static inline void
-rte_hash_crc_set_alg(uint8_t alg)
-{
-	crc32_alg = CRC32_SW;
-
-	if (alg == CRC32_SW)
-		return;
-
-#if defined RTE_ARCH_X86
-	if (!(alg & CRC32_SSE42_x64))
-		RTE_LOG(WARNING, HASH,
-			"Unsupported CRC32 algorithm requested using CRC32_x64/CRC32_SSE42\n");
-	if (!rte_cpu_get_flag_enabled(RTE_CPUFLAG_EM64T) || alg == CRC32_SSE42)
-		crc32_alg = CRC32_SSE42;
-	else
-		crc32_alg = CRC32_SSE42_x64;
-#endif
-
-#if defined RTE_ARCH_ARM64
-	if (!(alg & CRC32_ARM64))
-		RTE_LOG(WARNING, HASH,
-			"Unsupported CRC32 algorithm requested using CRC32_ARM64\n");
-	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_CRC32))
-		crc32_alg = CRC32_ARM64;
-#endif
-
-	if (crc32_alg == CRC32_SW)
-		RTE_LOG(WARNING, HASH,
-			"Unsupported CRC32 algorithm requested using CRC32_SW\n");
-}
-
-/* Setting the best available algorithm */
-RTE_INIT(rte_hash_crc_init_alg)
-{
-#if defined(RTE_ARCH_X86)
-	rte_hash_crc_set_alg(CRC32_SSE42_x64);
-#elif defined(RTE_ARCH_ARM64) && defined(__ARM_FEATURE_CRC32)
-	rte_hash_crc_set_alg(CRC32_ARM64);
-#else
-	rte_hash_crc_set_alg(CRC32_SW);
-#endif
-}
+void
+rte_hash_crc_set_alg(uint8_t alg);
 
 #ifdef __DOXYGEN__
 
@@ -168,6 +126,16 @@ rte_hash_crc(const void *data, uint32_t data_len, uint32_t init_val)
 {
 	unsigned i;
 	uintptr_t pd = (uintptr_t) data;
+
+	/* align input to 8 byte boundary if needed */
+	if (pd & 0x7) {
+		unsigned int unaligned_bytes = RTE_MIN(8 - (pd & 0x7), data_len);
+		for (i = 0; i < unaligned_bytes; i++) {
+			init_val = rte_hash_crc_1byte(*(const uint8_t *)pd, init_val);
+			pd++;
+			data_len--;
+		}
+	}
 
 	for (i = 0; i < data_len / 8; i++) {
 		init_val = rte_hash_crc_8byte(*(const uint64_t *)pd, init_val);

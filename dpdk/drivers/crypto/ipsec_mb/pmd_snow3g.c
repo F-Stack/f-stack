@@ -157,7 +157,8 @@ process_snow3g_cipher_op(struct ipsec_mb_qp *qp, struct rte_crypto_op **ops,
 	for (i = 0; i < num_ops; i++) {
 		if ((session->op == IPSEC_MB_OP_HASH_VERIFY_THEN_DECRYPT ||
 			session->op == IPSEC_MB_OP_HASH_GEN_THEN_ENCRYPT) &&
-				ops[i]->sym->m_dst != NULL) {
+				ops[i]->sym->m_dst != NULL &&
+				ops[i]->sym->m_dst != ops[i]->sym->m_src) {
 			digest_appended[i] =
 				snow3g_digest_appended_in_src(ops[i]);
 			/* Clear unencrypted digest from
@@ -248,8 +249,8 @@ process_snow3g_hash_op(struct ipsec_mb_qp *qp, struct rte_crypto_op **ops,
 
 		length_in_bits = ops[i]->sym->auth.data.length;
 
-		src = rte_pktmbuf_mtod(ops[i]->sym->m_src, uint8_t *) +
-				(ops[i]->sym->auth.data.offset >> 3);
+		src = rte_pktmbuf_mtod_offset(ops[i]->sym->m_src, uint8_t *,
+					      (ops[i]->sym->auth.data.offset >> 3));
 		iv = rte_crypto_op_ctod_offset(ops[i], uint8_t *,
 				session->auth_iv_offset);
 

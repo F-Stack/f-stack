@@ -10,11 +10,13 @@
 #include <sys/queue.h>
 
 #include <rte_memory.h>
+#include <rte_common.h>
 #include <rte_per_lcore.h>
 #include <rte_launch.h>
 #include <rte_atomic.h>
 #include <rte_eal.h>
 #include <rte_lcore.h>
+#include <rte_pause.h>
 #include <rte_random.h>
 #include <rte_hash_crc.h>
 
@@ -99,7 +101,15 @@
 
 #define NUM_ATOMIC_TYPES 3
 
-#define N 1000000
+#define N_BASE 1000000u
+#define N_MIN  10000u
+
+/*
+ * Number of iterations for each test, scaled inversely with core count.
+ * More cores means more contention which increases time per operation.
+ * Calculated once at test start to avoid repeated computation in workers.
+ */
+static unsigned int num_iterations;
 
 static rte_atomic16_t a16;
 static rte_atomic32_t a32;
@@ -110,36 +120,36 @@ static rte_atomic32_t synchro;
 static int
 test_atomic_usual(__rte_unused void *arg)
 {
-	unsigned i;
+	unsigned int i;
 
 	while (rte_atomic32_read(&synchro) == 0)
-		;
+		rte_pause();
 
-	for (i = 0; i < N; i++)
+	for (i = 0; i < num_iterations; i++)
 		rte_atomic16_inc(&a16);
-	for (i = 0; i < N; i++)
+	for (i = 0; i < num_iterations; i++)
 		rte_atomic16_dec(&a16);
-	for (i = 0; i < (N / 5); i++)
+	for (i = 0; i < (num_iterations / 5); i++)
 		rte_atomic16_add(&a16, 5);
-	for (i = 0; i < (N / 5); i++)
+	for (i = 0; i < (num_iterations / 5); i++)
 		rte_atomic16_sub(&a16, 5);
 
-	for (i = 0; i < N; i++)
+	for (i = 0; i < num_iterations; i++)
 		rte_atomic32_inc(&a32);
-	for (i = 0; i < N; i++)
+	for (i = 0; i < num_iterations; i++)
 		rte_atomic32_dec(&a32);
-	for (i = 0; i < (N / 5); i++)
+	for (i = 0; i < (num_iterations / 5); i++)
 		rte_atomic32_add(&a32, 5);
-	for (i = 0; i < (N / 5); i++)
+	for (i = 0; i < (num_iterations / 5); i++)
 		rte_atomic32_sub(&a32, 5);
 
-	for (i = 0; i < N; i++)
+	for (i = 0; i < num_iterations; i++)
 		rte_atomic64_inc(&a64);
-	for (i = 0; i < N; i++)
+	for (i = 0; i < num_iterations; i++)
 		rte_atomic64_dec(&a64);
-	for (i = 0; i < (N / 5); i++)
+	for (i = 0; i < (num_iterations / 5); i++)
 		rte_atomic64_add(&a64, 5);
-	for (i = 0; i < (N / 5); i++)
+	for (i = 0; i < (num_iterations / 5); i++)
 		rte_atomic64_sub(&a64, 5);
 
 	return 0;
@@ -149,7 +159,7 @@ static int
 test_atomic_tas(__rte_unused void *arg)
 {
 	while (rte_atomic32_read(&synchro) == 0)
-		;
+		rte_pause();
 
 	if (rte_atomic16_test_and_set(&a16))
 		rte_atomic64_inc(&count);
@@ -167,12 +177,12 @@ test_atomic_addsub_and_return(__rte_unused void *arg)
 	uint32_t tmp16;
 	uint32_t tmp32;
 	uint64_t tmp64;
-	unsigned i;
+	unsigned int i;
 
 	while (rte_atomic32_read(&synchro) == 0)
-		;
+		rte_pause();
 
-	for (i = 0; i < N; i++) {
+	for (i = 0; i < num_iterations; i++) {
 		tmp16 = rte_atomic16_add_return(&a16, 1);
 		rte_atomic64_add(&count, tmp16);
 
@@ -209,7 +219,7 @@ static int
 test_atomic_inc_and_test(__rte_unused void *arg)
 {
 	while (rte_atomic32_read(&synchro) == 0)
-		;
+		rte_pause();
 
 	if (rte_atomic16_inc_and_test(&a16)) {
 		rte_atomic64_inc(&count);
@@ -236,7 +246,7 @@ static int
 test_atomic_dec_and_test(__rte_unused void *arg)
 {
 	while (rte_atomic32_read(&synchro) == 0)
-		;
+		rte_pause();
 
 	if (rte_atomic16_dec_and_test(&a16))
 		rte_atomic64_inc(&count);
@@ -268,11 +278,11 @@ test_atomic128_cmp_exchange(__rte_unused void *arg)
 	unsigned int i;
 
 	while (rte_atomic32_read(&synchro) == 0)
-		;
+		rte_pause();
 
 	expected = count128;
 
-	for (i = 0; i < N; i++) {
+	for (i = 0; i < num_iterations; i++) {
 		do {
 			rte_int128_t desired;
 
@@ -399,14 +409,14 @@ get_crc8(uint8_t *message, int length)
 static int
 test_atomic_exchange(__rte_unused void *arg)
 {
-	int i;
+	unsigned int i;
 	test16_t nt16, ot16; /* new token, old token */
 	test32_t nt32, ot32;
 	test64_t nt64, ot64;
 
 	/* Wait until all of the other threads have been dispatched */
 	while (rte_atomic32_read(&synchro) == 0)
-		;
+		rte_pause();
 
 	/*
 	 * Let the battle begin! Every thread attempts to steal the current
@@ -415,7 +425,7 @@ test_atomic_exchange(__rte_unused void *arg)
 	 * appropriate crc32 hash for the data) then the test iteration has
 	 * passed.  If the token is invalid, increment the counter.
 	 */
-	for (i = 0; i < N; i++) {
+	for (i = 0; i < num_iterations; i++) {
 
 		/* Test 64bit Atomic Exchange */
 		nt64.u64 = rte_rand();
@@ -444,6 +454,8 @@ test_atomic_exchange(__rte_unused void *arg)
 static int
 test_atomic(void)
 {
+	num_iterations = test_scale_iterations(N_BASE, N_MIN);
+
 	rte_atomic16_init(&a16);
 	rte_atomic32_init(&a32);
 	rte_atomic64_init(&a64);
@@ -591,7 +603,7 @@ test_atomic(void)
 	rte_atomic32_clear(&synchro);
 
 	iterations = count128.val[0] - count128.val[1];
-	if (iterations != (uint64_t)4*N*(rte_lcore_count()-1)) {
+	if (iterations != (uint64_t)4*num_iterations*(rte_lcore_count()-1)) {
 		printf("128-bit compare and swap failed\n");
 		return -1;
 	}

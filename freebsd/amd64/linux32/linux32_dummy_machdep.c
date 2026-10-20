@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1994-1995 Søren Schmidt
  * All rights reserved.
@@ -26,14 +26,10 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/kernel.h>
-#include <sys/sdt.h>
-#include <sys/systm.h>
 #include <sys/proc.h>
+#include <sys/sdt.h>
 
 #include <amd64/linux32/linux.h>
 #include <amd64/linux32/linux32_proto.h>
@@ -45,6 +41,7 @@ LIN_SDT_PROVIDER_DECLARE(LINUX_DTRACE);
 
 UNIMPLEMENTED(break);
 UNIMPLEMENTED(ftime);
+UNIMPLEMENTED(fstat);
 UNIMPLEMENTED(gtty);
 UNIMPLEMENTED(stty);
 UNIMPLEMENTED(lock);
@@ -58,32 +55,10 @@ DUMMY(olduname);
 DUMMY(uname);
 DUMMY(bdflush);
 DUMMY(ptrace);
-DUMMY(mq_open);
-DUMMY(mq_unlink);
-DUMMY(mq_timedsend);
-DUMMY(mq_timedreceive);
-DUMMY(mq_notify);
-DUMMY(mq_getsetattr);
 /* Linux 4.11: */
 DUMMY(arch_prctl);
 /* Linux 5.0: */
-DUMMY(clock_gettime64);
-DUMMY(clock_settime64);
 DUMMY(clock_adjtime64);
-DUMMY(clock_getres_time64);
-DUMMY(clock_nanosleep_time64);
-DUMMY(timer_gettime64);
-DUMMY(timer_settime64);
-DUMMY(timerfd_gettime64);
-DUMMY(timerfd_settime64);
-DUMMY(utimensat_time64);
-DUMMY(pselect6_time64);
-DUMMY(ppoll_time64);
 DUMMY(io_pgetevents_time64);
-DUMMY(recvmmsg_time64);
 DUMMY(mq_timedsend_time64);
 DUMMY(mq_timedreceive_time64);
-DUMMY(semtimedop_time64);
-DUMMY(rt_sigtimedwait_time64);
-DUMMY(futex_time64);
-DUMMY(sched_rr_get_interval_time64);

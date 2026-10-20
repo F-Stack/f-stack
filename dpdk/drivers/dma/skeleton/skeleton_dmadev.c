@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2021 HiSilicon Limited
+ * Copyright(c) 2021-2024 HiSilicon Limited
  */
 
 #include <inttypes.h>
@@ -21,9 +21,9 @@
 #include "skeleton_dmadev.h"
 
 RTE_LOG_REGISTER_DEFAULT(skeldma_logtype, INFO);
-#define SKELDMA_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, skeldma_logtype, "%s(): " fmt "\n", \
-		__func__, ##args)
+#define RTE_LOGTYPE_SKELDMA skeldma_logtype
+#define SKELDMA_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, SKELDMA, "%s(): ", __func__, __VA_ARGS__)
 
 static int
 skeldma_info_get(const struct rte_dma_dev *dev, struct rte_dma_info *dev_info,
@@ -37,10 +37,13 @@ skeldma_info_get(const struct rte_dma_dev *dev, struct rte_dma_info *dev_info,
 
 	dev_info->dev_capa = RTE_DMA_CAPA_MEM_TO_MEM |
 			     RTE_DMA_CAPA_SVA |
-			     RTE_DMA_CAPA_OPS_COPY;
+			     RTE_DMA_CAPA_OPS_COPY |
+			     RTE_DMA_CAPA_OPS_COPY_SG |
+			     RTE_DMA_CAPA_OPS_FILL;
 	dev_info->max_vchans = 1;
 	dev_info->max_desc = SKELDMA_MAX_DESC;
 	dev_info->min_desc = SKELDMA_MIN_DESC;
+	dev_info->max_sges = SKELDMA_MAX_SGES;
 
 	return 0;
 }
@@ -55,8 +58,62 @@ skeldma_configure(struct rte_dma_dev *dev, const struct rte_dma_conf *conf,
 	return 0;
 }
 
+static inline void
+do_copy_sg_one(struct rte_dma_sge *src, struct rte_dma_sge *dst, uint16_t nb_dst, uint64_t offset)
+{
+	uint32_t src_off = 0, dst_off = 0;
+	uint32_t copy_len = 0;
+	uint64_t tmp = 0;
+	uint16_t i;
+
+	/* Locate the segment from which the copy is started. */
+	for (i = 0; i < nb_dst; i++) {
+		tmp += dst[i].length;
+		if (offset < tmp) {
+			copy_len = tmp - offset;
+			dst_off = dst[i].length - copy_len;
+			break;
+		}
+	}
+
+	for (/* Use the above index */; i < nb_dst; i++, copy_len = dst[i].length) {
+		copy_len = RTE_MIN(copy_len, src->length - src_off);
+		rte_memcpy((uint8_t *)(uintptr_t)dst[i].addr + dst_off,
+			   (uint8_t *)(uintptr_t)src->addr + src_off,
+			   copy_len);
+		src_off += copy_len;
+		if (src_off >= src->length)
+			break;
+		dst_off = 0;
+	}
+}
+
+static inline void
+do_copy_sg(struct skeldma_desc *desc)
+{
+	uint64_t offset = 0;
+	uint16_t i;
+
+	for (i = 0; i < desc->copy_sg.nb_src; i++) {
+		do_copy_sg_one(&desc->copy_sg.src[i], desc->copy_sg.dst,
+			       desc->copy_sg.nb_dst, offset);
+		offset += desc->copy_sg.src[i].length;
+	}
+}
+
+static inline void
+do_fill(struct skeldma_desc *desc)
+{
+	uint8_t *fills = (uint8_t *)&desc->fill.pattern;
+	uint8_t *dst = (uint8_t *)desc->fill.dst;
+	uint32_t i;
+
+	for (i = 0; i < desc->fill.len; i++)
+		dst[i] = fills[i % 8];
+}
+
 static uint32_t
-cpucopy_thread(void *param)
+cpuwork_thread(void *param)
 {
 #define SLEEP_THRESHOLD		10000
 #define SLEEP_US_VAL		10
@@ -76,10 +133,16 @@ cpucopy_thread(void *param)
 				rte_delay_us_sleep(SLEEP_US_VAL);
 			continue;
 		}
-
 		hw->zero_req_count = 0;
-		rte_memcpy(desc->dst, desc->src, desc->len);
-		__atomic_fetch_add(&hw->completed_count, 1, __ATOMIC_RELEASE);
+
+		if (desc->op == SKELDMA_OP_COPY)
+			rte_memcpy(desc->copy.dst, desc->copy.src, desc->copy.len);
+		else if (desc->op == SKELDMA_OP_COPY_SG)
+			do_copy_sg(desc);
+		else if (desc->op == SKELDMA_OP_FILL)
+			do_fill(desc);
+
+		rte_atomic_fetch_add_explicit(&hw->completed_count, 1, rte_memory_order_release);
 		(void)rte_ring_enqueue(hw->desc_completed, (void *)desc);
 	}
 
@@ -113,7 +176,7 @@ skeldma_start(struct rte_dma_dev *dev)
 	 * 1) fflush pending/running/completed ring to empty ring.
 	 * 2) init ring idx to zero.
 	 * 3) init running statistics.
-	 * 4) mark cpucopy task exit_flag to false.
+	 * 4) mark cpuwork task exit_flag to false.
 	 */
 	fflush_ring(hw, hw->desc_pending);
 	fflush_ring(hw, hw->desc_running);
@@ -129,9 +192,9 @@ skeldma_start(struct rte_dma_dev *dev)
 
 	snprintf(name, sizeof(name), "dma-skel%d", dev->data->dev_id);
 	ret = rte_thread_create_internal_control(&hw->thread, name,
-			cpucopy_thread, dev);
+			cpuwork_thread, dev);
 	if (ret) {
-		SKELDMA_LOG(ERR, "Start cpucopy thread fail!");
+		SKELDMA_LOG(ERR, "Start cpuwork thread fail!");
 		return -EINVAL;
 	}
 
@@ -272,7 +335,8 @@ skeldma_vchan_status(const struct rte_dma_dev *dev,
 	RTE_SET_USED(vchan);
 
 	*status = RTE_DMA_VCHAN_IDLE;
-	if (hw->submitted_count != __atomic_load_n(&hw->completed_count, __ATOMIC_ACQUIRE)
+	if (hw->submitted_count != rte_atomic_load_explicit(&hw->completed_count,
+			rte_memory_order_acquire)
 			|| hw->zero_req_count == 0)
 		*status = RTE_DMA_VCHAN_ACTIVE;
 	return 0;
@@ -368,10 +432,70 @@ skeldma_copy(void *dev_private, uint16_t vchan,
 	ret = rte_ring_dequeue(hw->desc_empty, (void **)&desc);
 	if (ret)
 		return -ENOSPC;
-	desc->src = (void *)(uintptr_t)src;
-	desc->dst = (void *)(uintptr_t)dst;
-	desc->len = length;
+	desc->op = SKELDMA_OP_COPY;
 	desc->ridx = hw->ridx;
+	desc->copy.src = (void *)(uintptr_t)src;
+	desc->copy.dst = (void *)(uintptr_t)dst;
+	desc->copy.len = length;
+	if (flags & RTE_DMA_OP_FLAG_SUBMIT)
+		submit(hw, desc);
+	else
+		(void)rte_ring_enqueue(hw->desc_pending, (void *)desc);
+	hw->submitted_count++;
+
+	return hw->ridx++;
+}
+
+static int
+skeldma_copy_sg(void *dev_private, uint16_t vchan,
+		const struct rte_dma_sge *src,
+		const struct rte_dma_sge *dst,
+		uint16_t nb_src, uint16_t nb_dst,
+		uint64_t flags)
+{
+	struct skeldma_hw *hw = dev_private;
+	struct skeldma_desc *desc;
+	int ret;
+
+	RTE_SET_USED(vchan);
+
+	ret = rte_ring_dequeue(hw->desc_empty, (void **)&desc);
+	if (ret)
+		return -ENOSPC;
+	desc->op = SKELDMA_OP_COPY_SG;
+	desc->ridx = hw->ridx;
+	memcpy(desc->copy_sg.src, src, sizeof(*src) * nb_src);
+	memcpy(desc->copy_sg.dst, dst, sizeof(*dst) * nb_dst);
+	desc->copy_sg.nb_src = nb_src;
+	desc->copy_sg.nb_dst = nb_dst;
+	if (flags & RTE_DMA_OP_FLAG_SUBMIT)
+		submit(hw, desc);
+	else
+		(void)rte_ring_enqueue(hw->desc_pending, (void *)desc);
+	hw->submitted_count++;
+
+	return hw->ridx++;
+}
+
+static int
+skeldma_fill(void *dev_private, uint16_t vchan,
+	     uint64_t pattern, rte_iova_t dst,
+	     uint32_t length, uint64_t flags)
+{
+	struct skeldma_hw *hw = dev_private;
+	struct skeldma_desc *desc;
+	int ret;
+
+	RTE_SET_USED(vchan);
+
+	ret = rte_ring_dequeue(hw->desc_empty, (void **)&desc);
+	if (ret)
+		return -ENOSPC;
+	desc->op = SKELDMA_OP_FILL;
+	desc->ridx = hw->ridx;
+	desc->fill.dst = (void *)(uintptr_t)dst;
+	desc->fill.len = length;
+	desc->fill.pattern = pattern;
 	if (flags & RTE_DMA_OP_FLAG_SUBMIT)
 		submit(hw, desc);
 	else
@@ -491,6 +615,8 @@ skeldma_create(const char *name, struct rte_vdev_device *vdev, int lcore_id)
 	dev->dev_ops = &skeldma_ops;
 	dev->fp_obj->dev_private = dev->data->dev_private;
 	dev->fp_obj->copy = skeldma_copy;
+	dev->fp_obj->copy_sg = skeldma_copy_sg;
+	dev->fp_obj->fill = skeldma_fill;
 	dev->fp_obj->submit = skeldma_submit;
 	dev->fp_obj->completed = skeldma_completed;
 	dev->fp_obj->completed_status = skeldma_completed_status;

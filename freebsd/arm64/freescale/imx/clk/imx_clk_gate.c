@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2016 Michal Meloun <mmel@FreeBSD.org>
  * All rights reserved.
@@ -26,14 +26,11 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
 
-#include <dev/extres/clk/clk.h>
+#include <dev/clk/clk.h>
 
 #include <arm64/freescale/imx/clk/imx_clk_gate.h>
 

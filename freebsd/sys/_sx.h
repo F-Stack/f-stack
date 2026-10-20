@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2007 Attilio Rao <attilio@freebsd.org>
  * All rights reserved.
@@ -26,19 +26,20 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_SYS__SX_H_
 #define	_SYS__SX_H_
+
+#include <sys/_types.h>
+#include <sys/_lock.h>
 
 /*
  * Shared/exclusive lock main structure definition.
  */
 struct sx {
 	struct lock_object	lock_object;
-	volatile uintptr_t	sx_lock;
+	volatile __uintptr_t	sx_lock;
 };
 
 #endif	/* !_SYS__SX_H_ */

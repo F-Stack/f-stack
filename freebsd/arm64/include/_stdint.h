@@ -26,9 +26,11 @@
  * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
  * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  * POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/_stdint.h>
+#else /* !__arm__ */
 
 #ifndef _MACHINE__STDINT_H_
 #define	_MACHINE__STDINT_H_
@@ -143,8 +145,8 @@
 #define	PTRDIFF_MAX	INT64_MAX
 
 /* Limits of sig_atomic_t. */
-#define	SIG_ATOMIC_MIN	INT32_MIN
-#define	SIG_ATOMIC_MAX	INT32_MAX
+#define	SIG_ATOMIC_MIN	INT64_MIN
+#define	SIG_ATOMIC_MAX	INT64_MAX
 
 /* Limit of size_t. */
 #define	SIZE_MAX	UINT64_MAX
@@ -156,3 +158,5 @@
 #endif /* !defined(__cplusplus) || defined(__STDC_LIMIT_MACROS) */
 
 #endif /* !_MACHINE__STDINT_H_ */
+
+#endif /* !__arm__ */

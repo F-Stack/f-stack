@@ -10,30 +10,6 @@
 #include "nfp_logs.h"
 #include "nfp_nffw.h"
 
-#define NFP_MIP_SIGNATURE        rte_cpu_to_le_32(0x0050494d)  /* "MIP\0" */
-#define NFP_MIP_VERSION          rte_cpu_to_le_32(1)
-#define NFP_MIP_MAX_OFFSET       (256 * 1024)
-
-struct nfp_mip {
-	uint32_t signature;
-	uint32_t mip_version;
-	uint32_t mip_size;
-	uint32_t first_entry;
-
-	uint32_t version;
-	uint32_t buildnum;
-	uint32_t buildtime;
-	uint32_t loadtime;
-
-	uint32_t symtab_addr;
-	uint32_t symtab_size;
-	uint32_t strtab_addr;
-	uint32_t strtab_size;
-
-	char name[16];
-	char toolchain[32];
-};
-
 /* Read memory and check if it could be a valid MIP */
 static int
 nfp_mip_try_read(struct nfp_cpp *cpp,
@@ -45,18 +21,18 @@ nfp_mip_try_read(struct nfp_cpp *cpp,
 
 	ret = nfp_cpp_read(cpp, cpp_id, addr, mip, sizeof(*mip));
 	if (ret != sizeof(*mip)) {
-		PMD_DRV_LOG(ERR, "Failed to read MIP data");
+		PMD_DRV_LOG(ERR, "Failed to read MIP data.");
 		return -EIO;
 	}
 
 	if (mip->signature != NFP_MIP_SIGNATURE) {
-		PMD_DRV_LOG(ERR, "Incorrect MIP signature %#08x",
+		PMD_DRV_LOG(ERR, "Incorrect MIP signature %#08x.",
 				rte_le_to_cpu_32(mip->signature));
 		return -EINVAL;
 	}
 
 	if (mip->mip_version != NFP_MIP_VERSION) {
-		PMD_DRV_LOG(ERR, "Unsupported MIP version %d",
+		PMD_DRV_LOG(ERR, "Unsupported MIP version %d.",
 				rte_le_to_cpu_32(mip->mip_version));
 		return -EINVAL;
 	}
@@ -112,7 +88,7 @@ nfp_mip_open(struct nfp_cpp *cpp)
 
 	err = nfp_mip_read_resource(cpp, mip);
 	if (err != 0) {
-		PMD_DRV_LOG(ERR, "Failed to read MIP resource");
+		PMD_DRV_LOG(ERR, "Failed to read MIP resource.");
 		free(mip);
 		return NULL;
 	}
@@ -132,6 +108,12 @@ const char *
 nfp_mip_name(const struct nfp_mip *mip)
 {
 	return mip->name;
+}
+
+uint32_t
+nfp_mip_fw_version(const struct nfp_mip *mip)
+{
+	return rte_le_to_cpu_32(mip->version);
 }
 
 /**

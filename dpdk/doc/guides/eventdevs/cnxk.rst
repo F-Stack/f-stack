@@ -16,6 +16,7 @@ Supported OCTEON cnxk SoCs
 
 - CN9XX
 - CN10XX
+- CN20XX
 
 Features
 --------
@@ -36,7 +37,7 @@ Features of the OCTEON cnxk SSO PMD are:
   DRAM
 - HW accelerated dequeue timeout support to enable power management
 - HW managed event timers support through TIM, with high precision and
-  time granularity of 2.5us on CN9K and 1us on CN10K.
+  time granularity of 2.5us on CN9K and 1us on CN10K/CN20K.
 - Up to 256 TIM rings a.k.a event timer adapters.
 - Up to 8 rings traversed in parallel.
 - HW managed packets enqueued from ethdev to eventdev exposed through event eth
@@ -45,8 +46,8 @@ Features of the OCTEON cnxk SSO PMD are:
 - Lockfree Tx from event eth Tx adapter using ``RTE_ETH_TX_OFFLOAD_MT_LOCKFREE``
   capability while maintaining receive packet order.
 - Full Rx/Tx offload support defined through ethdev queue configuration.
-- HW managed event vectorization on CN10K for packets enqueued from ethdev to
-  eventdev configurable per each Rx queue in Rx adapter.
+- HW managed event vectorization on CN10K/CN20K for packets enqueued from ethdev
+  to eventdev configurable per each Rx queue in Rx adapter.
 - Event vector transmission via Tx adapter.
 - Up to 2 event link profiles.
 
@@ -78,16 +79,6 @@ Runtime Config Options
 
     -a 0002:0e:00.0,single_ws=1
 
-- ``CN10K Getwork mode``
-
-  CN10K supports three getwork prefetch modes no prefetch[0], prefetch
-  immediately[1] and delayed prefetch on forward progress event[2].
-  The default getwork mode is 2.
-
-  For example::
-
-    -a 0002:0e:00.0,gw_mode=1
-
 - ``Event Group QoS support``
 
   SSO GGRPs i.e. queue uses DRAM & SRAM buffers to hold in-flight
@@ -103,9 +94,9 @@ Runtime Config Options
 
     -a 0002:0e:00.0,qos=[1-50-50]
 
-- ``CN10K WQE stashing support``
+- ``CN10K/CN20K WQE stashing support``
 
-  CN10K supports stashing the scheduled WQE carried by `rte_event` to the
+  CN10K/CN20K supports stashing the scheduled WQE carried by `rte_event` to the
   cores L2 Dcache. The number of cache lines to be stashed and the offset
   is configurable per HWGRP i.e. event queue. The dictionary format is as
   follows `[Qx|stash_offset|stash_length]` here the stash offset can be
@@ -198,6 +189,14 @@ Runtime Config Options
 
     -a 0002:0e:00.0,tim_eclk_freq=122880000-1000000000-0
 
+Power Saving on CN10K/CN20K
+---------------------------
+
+ARM cores can additionally use WFE when polling for transactions on SSO bus
+to save power i.e., in the event dequeue call ARM core can enter WFE and exit
+when either work has been scheduled or dequeue timeout has reached.
+This feature can be selected by configuring meson with ``RTE_ARM_USE_WFE`` enabled.
+
 Debugging Options
 -----------------
 
@@ -227,3 +226,8 @@ ethernet devices connected to event device to override this applications can
 use `force_rx_bp=1` device arguments.
 Using unique mempool per each ethernet device is recommended when they are
 connected to event device.
+
+DMA adapter new mode support
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+DMA driver does not support DMA adapter configured in new mode.

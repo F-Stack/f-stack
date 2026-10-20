@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002, 2003, 2004, 2005 Jeffrey Roberson <jeff@FreeBSD.org>
  * Copyright (c) 2004, 2005 Bosko Milekic <bmilekic@FreeBSD.org>
@@ -25,8 +25,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  *
  */
 
@@ -233,6 +231,10 @@ uma_zone_t uma_zcache_create(const char *name, int size, uma_ctor ctor,
  * These flags share space with UMA_ZFLAGs in uma_int.h.  Be careful not to
  * overlap when adding new features.
  */
+#define	UMA_ZONE_UNMANAGED	0x0001	/*
+					 * Don't regulate the cache size, even
+					 * under memory pressure.
+					 */
 #define UMA_ZONE_ZINIT		0x0002	/* Initialize with zeros */
 #define UMA_ZONE_CONTIG		0x0004	/*
 					 * Physical memory underlying an object
@@ -250,6 +252,7 @@ uma_zone_t uma_zcache_create(const char *name, int size, uma_ctor ctor,
 #define	UMA_ZONE_SECONDARY	0x0200	/* Zone is a Secondary Zone */
 #define	UMA_ZONE_NOBUCKET	0x0400	/* Do not use buckets. */
 #define	UMA_ZONE_MAXBUCKET	0x0800	/* Use largest buckets. */
+#define	UMA_ZONE_NOTRIM		0x1000	/* Don't trim this zone */
 #define	UMA_ZONE_CACHESPREAD	0x2000	/*
 					 * Spread memory start locations across
 					 * all possible cache lines.  May
@@ -276,6 +279,11 @@ uma_zone_t uma_zcache_create(const char *name, int size, uma_ctor ctor,
 					 *
 					 * See sys/smr.h for more details.
 					 */
+#define	UMA_ZONE_NOKASAN	0x80000	/*
+					 * Disable KASAN verification.  This is
+					 * implied by NOFREE.  Cache zones are
+					 * not verified by default.
+					 */
 /* In use by UMA_ZFLAGs:	0xffe00000 */
 
 /*
@@ -286,7 +294,7 @@ uma_zone_t uma_zcache_create(const char *name, int size, uma_ctor ctor,
 #define	UMA_ZONE_INHERIT						\
     (UMA_ZONE_NOTOUCH | UMA_ZONE_MALLOC | UMA_ZONE_NOFREE |		\
      UMA_ZONE_VM | UMA_ZONE_NOTPAGE | UMA_ZONE_PCPU |			\
-     UMA_ZONE_FIRSTTOUCH | UMA_ZONE_ROUNDROBIN)
+     UMA_ZONE_FIRSTTOUCH | UMA_ZONE_ROUNDROBIN | UMA_ZONE_NOKASAN)
 
 /* Definitions for align */
 #define UMA_ALIGN_PTR	(sizeof(void *) - 1)	/* Alignment fit for ptr */
@@ -294,7 +302,9 @@ uma_zone_t uma_zcache_create(const char *name, int size, uma_ctor ctor,
 #define UMA_ALIGN_INT	(sizeof(int) - 1)	/* "" int */
 #define UMA_ALIGN_SHORT	(sizeof(short) - 1)	/* "" short */
 #define UMA_ALIGN_CHAR	(sizeof(char) - 1)	/* "" char */
-#define UMA_ALIGN_CACHE	(0 - 1)			/* Cache line size align */
+#define UMA_ALIGN_CACHE	(uma_get_cache_align_mask()) /* Cache line size align */
+/* Align both to cache line size and an explicit alignment (through mask). */
+#define UMA_ALIGN_CACHE_AND_MASK(mask) (uma_get_cache_align_mask() | (mask))
 #define	UMA_ALIGNOF(type) (_Alignof(type) - 1)	/* Alignment fit for 'type' */
 
 #define	UMA_ANYDOMAIN	-1	/* Special value for domain search. */
@@ -441,10 +451,12 @@ typedef void *(*uma_alloc)(uma_zone_t zone, vm_size_t size, int domain,
 typedef void (*uma_free)(void *item, vm_size_t size, uint8_t pflag);
 
 /*
- * Reclaims unused memory
+ * Reclaims unused memory.  If no NUMA domain is specified, memory from all
+ * domains is reclaimed.
  *
  * Arguments:
- *	req  Reclamation request type.
+ *	req    Reclamation request type.
+ *	domain The target NUMA domain.
  * Returns:
  *	None
  */
@@ -452,19 +464,23 @@ typedef void (*uma_free)(void *item, vm_size_t size, uint8_t pflag);
 #define	UMA_RECLAIM_DRAIN_CPU	2	/* release bucket and per-CPU caches */
 #define	UMA_RECLAIM_TRIM	3	/* trim bucket cache to WSS */
 void uma_reclaim(int req);
+void uma_reclaim_domain(int req, int domain);
 void uma_zone_reclaim(uma_zone_t, int req);
+void uma_zone_reclaim_domain(uma_zone_t, int req, int domain);
 
 /*
  * Sets the alignment mask to be used for all zones requesting cache
  * alignment.  Should be called by MD boot code prior to starting VM/UMA.
  *
  * Arguments:
- *	align The alignment mask
+ *	mask The alignment mask
  *
  * Returns:
  *	Nothing
  */
-void uma_set_align(int align);
+void uma_set_cache_align_mask(unsigned int mask);
+
+#include <vm/uma_align_mask.h>
 
 /*
  * Set a reserved number of items to hold for M_USE_RESERVE allocations.  All
@@ -474,7 +490,8 @@ void uma_zone_reserve(uma_zone_t zone, int nitems);
 
 /*
  * Reserves the maximum KVA space required by the zone and configures the zone
- * to use a VM_ALLOC_NOOBJ-based backend allocator.
+ * to use a backend that allocates physical memory and maps it using the
+ * reserved KVA. 
  *
  * Arguments:
  *	zone  The zone to update.
@@ -625,7 +642,7 @@ void uma_zone_set_smr(uma_zone_t zone, smr_t smr);
 smr_t uma_zone_get_smr(uma_zone_t zone);
 
 /*
- * These flags are setable in the allocf and visible in the freef.
+ * These flags are settable in the allocf and visible in the freef.
  */
 #define UMA_SLAB_BOOT	0x01		/* Slab alloced from boot pages */
 #define UMA_SLAB_KERNEL	0x04		/* Slab alloced from kmem */

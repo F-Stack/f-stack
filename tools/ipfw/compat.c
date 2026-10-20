@@ -29,6 +29,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <string.h>
+#include <rte_malloc.h>
 
 #include "ff_ipc.h"
 
@@ -58,9 +59,16 @@ ipfw_ctl(int cmd, int level, int optname, void *optval, socklen_t *optlen)
 
     len = sizeof(struct ff_ipfw_args) + *optlen + sizeof(socklen_t);
     if (len > msg->buf_len) {
-        errno = EINVAL;
-        ff_ipc_msg_free(msg);
-        return -1;
+        char *extra_buf = rte_malloc(NULL, len, 0);
+        if (extra_buf == NULL) {
+            errno = ENOMEM;
+            ff_ipc_msg_free(msg);
+            return -1;
+        }
+        msg->original_buf = msg->buf_addr;
+        msg->original_buf_len = msg->buf_len;
+        msg->buf_addr = extra_buf;
+        msg->buf_len = len;
     }
 
     msg->msg_type = FF_IPFW_CTL;

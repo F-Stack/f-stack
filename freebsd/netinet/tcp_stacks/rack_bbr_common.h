@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * __FBSDID("$FreeBSD$");
  */
 
 /* Common defines and such used by both RACK and BBR */
@@ -87,47 +85,47 @@
 #ifdef _KERNEL
 /* We have only 7 bits in rack so assert its true */
 CTASSERT((PACE_TMR_MASK & 0x80) == 0);
-#ifdef KERN_TLS
-uint32_t ctf_get_opt_tls_size(struct socket *so, uint32_t rwnd);
-#endif
-int
-ctf_process_inbound_raw(struct tcpcb *tp, struct socket *so,
-    struct mbuf *m, int has_pkt);
-int
-ctf_do_queued_segments(struct socket *so, struct tcpcb *tp, int have_pkt);
+int ctf_do_queued_segments(struct tcpcb *tp, int have_pkt);
 uint32_t ctf_outstanding(struct tcpcb *tp);
 uint32_t ctf_flight_size(struct tcpcb *tp, uint32_t rc_sacked);
 int
-ctf_drop_checks(struct tcpopt *to, struct mbuf *m,
-    struct tcphdr *th, struct tcpcb *tp, int32_t * tlenp, int32_t * thf,
-    int32_t * drop_hdrlen, int32_t * ret_val);
+ctf_drop_checks(struct tcpopt *to, struct mbuf *m, struct tcphdr *th,
+    struct tcpcb *tp, int32_t *tlenp,
+    int32_t *thf, int32_t *drop_hdrlen, int32_t *ret_val);
+void ctf_ack_war_checks(struct tcpcb *tp);
+
 void
 ctf_do_dropafterack(struct mbuf *m, struct tcpcb *tp,
-    struct tcphdr *th, int32_t thflags, int32_t tlen, int32_t * ret_val);
+      struct tcphdr *th, int32_t thflags, int32_t tlen,
+      int32_t *ret_val);
+
 void
 ctf_do_dropwithreset(struct mbuf *m, struct tcpcb *tp,
-	struct tcphdr *th, int32_t rstreason, int32_t tlen);
+	struct tcphdr *th, int32_t tlen);
 void
 ctf_do_drop(struct mbuf *m, struct tcpcb *tp);
 
 int
 ctf_process_rst(struct mbuf *m, struct tcphdr *th,
-    struct socket *so, struct tcpcb *tp);
+      struct socket *so, struct tcpcb *tp);
 
 void
 ctf_challenge_ack(struct mbuf *m, struct tcphdr *th,
-    struct tcpcb *tp, int32_t * ret_val);
+    struct tcpcb *tp, uint8_t iptos, int32_t * ret_val);
 
 int
 ctf_ts_check(struct mbuf *m, struct tcphdr *th,
     struct tcpcb *tp, int32_t tlen, int32_t thflags, int32_t * ret_val);
+
+int
+ctf_ts_check_ac(struct tcpcb *tp, int32_t thflags);
 
 void
 ctf_calc_rwin(struct socket *so, struct tcpcb *tp);
 
 void
 ctf_do_dropwithreset_conn(struct mbuf *m, struct tcpcb *tp, struct tcphdr *th,
-    int32_t rstreason, int32_t tlen);
+    int32_t tlen);
 
 uint32_t
 ctf_fixed_maxseg(struct tcpcb *tp);

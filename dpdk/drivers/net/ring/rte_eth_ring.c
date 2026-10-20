@@ -44,8 +44,9 @@ enum dev_action {
 
 struct ring_queue {
 	struct rte_ring *rng;
-	uint64_t rx_pkts;
-	uint64_t tx_pkts;
+	uint16_t in_port;
+	RTE_ATOMIC(uint64_t) rx_pkts;
+	RTE_ATOMIC(uint64_t) tx_pkts;
 };
 
 struct pmd_internals {
@@ -67,22 +68,25 @@ static struct rte_eth_link pmd_link = {
 };
 
 RTE_LOG_REGISTER_DEFAULT(eth_ring_logtype, NOTICE);
+#define RTE_LOGTYPE_ETH_RING eth_ring_logtype
 
-#define PMD_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, eth_ring_logtype, \
-		"%s(): " fmt "\n", __func__, ##args)
+#define PMD_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, ETH_RING, "%s(): ", __func__, __VA_ARGS__)
 
 static uint16_t
 eth_ring_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 {
+	unsigned int i;
 	void **ptrs = (void *)&bufs[0];
 	struct ring_queue *r = q;
 	const uint16_t nb_rx = (uint16_t)rte_ring_dequeue_burst(r->rng,
 			ptrs, nb_bufs, NULL);
+	for (i = 0; i < nb_rx; i++)
+		bufs[i]->port = r->in_port;
 	if (r->rng->flags & RING_F_SC_DEQ)
 		r->rx_pkts += nb_rx;
 	else
-		__atomic_fetch_add(&r->rx_pkts, nb_rx, __ATOMIC_RELAXED);
+		rte_atomic_fetch_add_explicit(&r->rx_pkts, nb_rx, rte_memory_order_relaxed);
 	return nb_rx;
 }
 
@@ -96,7 +100,7 @@ eth_ring_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 	if (r->rng->flags & RING_F_SP_ENQ)
 		r->tx_pkts += nb_tx;
 	else
-		__atomic_fetch_add(&r->tx_pkts, nb_tx, __ATOMIC_RELAXED);
+		rte_atomic_fetch_add_explicit(&r->tx_pkts, nb_tx, rte_memory_order_relaxed);
 	return nb_tx;
 }
 
@@ -155,7 +159,7 @@ eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 				    struct rte_mempool *mb_pool __rte_unused)
 {
 	struct pmd_internals *internals = dev->data->dev_private;
-
+	internals->rx_ring_queues[rx_queue_id].in_port = dev->data->port_id;
 	dev->data->rx_queues[rx_queue_id] = &internals->rx_ring_queues[rx_queue_id];
 	return 0;
 }
@@ -414,10 +418,12 @@ do_eth_dev_ring_create(const char *name,
 	internals->max_tx_queues = nb_tx_queues;
 	for (i = 0; i < nb_rx_queues; i++) {
 		internals->rx_ring_queues[i].rng = rx_queues[i];
+		internals->rx_ring_queues[i].in_port = -1;
 		data->rx_queues[i] = &internals->rx_ring_queues[i];
 	}
 	for (i = 0; i < nb_tx_queues; i++) {
 		internals->tx_ring_queues[i].rng = tx_queues[i];
+		internals->tx_ring_queues[i].in_port = -1;
 		data->tx_queues[i] = &internals->tx_ring_queues[i];
 	}
 

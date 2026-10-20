@@ -22,9 +22,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/cpufunc.h>
+#else /* !__arm__ */
 
 #ifndef _MACHINE_CPUFUNC_H_
 #define	_MACHINE_CPUFUNC_H_
@@ -37,67 +39,7 @@ breakpoint(void)
 }
 
 #ifdef _KERNEL
-
-#define	HAVE_INLINE_FFS
-
-static __inline __pure2 int
-ffs(int mask)
-{
-
-	return (__builtin_ffs(mask));
-}
-
-#define	HAVE_INLINE_FFSL
-
-static __inline __pure2 int
-ffsl(long mask)
-{
-
-	return (__builtin_ffsl(mask));
-}
-
-#define	HAVE_INLINE_FFSLL
-
-static __inline __pure2 int
-ffsll(long long mask)
-{
-
-	return (__builtin_ffsll(mask));
-}
-
-#define	HAVE_INLINE_FLS
-
-static __inline __pure2 int
-fls(int mask)
-{
-
-	return (mask == 0 ? 0 :
-	    8 * sizeof(mask) - __builtin_clz((u_int)mask));
-}
-
-#define	HAVE_INLINE_FLSL
-
-static __inline __pure2 int
-flsl(long mask)
-{
-
-	return (mask == 0 ? 0 :
-	    8 * sizeof(mask) - __builtin_clzl((u_long)mask));
-}
-
-#define	HAVE_INLINE_FLSLL
-
-static __inline __pure2 int
-flsll(long long mask)
-{
-
-	return (mask == 0 ? 0 :
-	    8 * sizeof(mask) - __builtin_clzll((unsigned long long)mask));
-}
-
 #include <machine/armreg.h>
-
-void pan_enable(void);
 
 static __inline register_t
 dbg_disable(void)
@@ -106,7 +48,7 @@ dbg_disable(void)
 
 	__asm __volatile(
 	    "mrs %x0, daif   \n"
-	    "msr daifset, #8 \n"
+	    "msr daifset, #(" __XSTRING(DAIF_D) ") \n"
 	    : "=&r" (ret));
 
 	return (ret);
@@ -116,7 +58,7 @@ static __inline void
 dbg_enable(void)
 {
 
-	__asm __volatile("msr daifclr, #8");
+	__asm __volatile("msr daifclr, #(" __XSTRING(DAIF_D) ")");
 }
 
 static __inline register_t
@@ -127,7 +69,7 @@ intr_disable(void)
 
 	__asm __volatile(
 	    "mrs %x0, daif   \n"
-	    "msr daifset, #2 \n"
+	    "msr daifset, #(" __XSTRING(DAIF_INTR) ") \n"
 	    : "=&r" (ret));
 
 	return (ret);
@@ -144,7 +86,14 @@ static __inline void
 intr_enable(void)
 {
 
-	__asm __volatile("msr daifclr, #2");
+	__asm __volatile("msr daifclr, #(" __XSTRING(DAIF_INTR) ")");
+}
+
+static __inline void
+serror_enable(void)
+{
+
+	__asm __volatile("msr daifclr, #(" __XSTRING(DAIF_A) ")");
 }
 
 static __inline register_t
@@ -209,6 +158,26 @@ invalidate_local_icache(void)
 	    "isb               \n");
 }
 
+static __inline void
+wfet(uint64_t val)
+{
+	__asm __volatile(
+		"msr s0_3_c1_c0_0, %0\n"
+		:
+		: "r" ((val))
+		: "memory");
+}
+
+static __inline void
+wfit(uint64_t val)
+{
+	__asm __volatile(
+		"msr s0_3_c1_c0_1, %0\n"
+		:
+		: "r" ((val))
+		: "memory");
+}
+
 extern bool icache_aliasing;
 extern bool icache_vmid;
 
@@ -226,19 +195,23 @@ extern int64_t dczva_line_size;
 #define	cpu_dcache_inv_range(a, s)	arm64_dcache_inv_range((a), (s))
 #define	cpu_dcache_wb_range(a, s)	arm64_dcache_wb_range((a), (s))
 
-extern void (*arm64_icache_sync_range)(vm_offset_t, vm_size_t);
+extern void (*arm64_icache_sync_range)(void *, vm_size_t);
 
 #define	cpu_icache_sync_range(a, s)	arm64_icache_sync_range((a), (s))
 #define cpu_icache_sync_range_checked(a, s) arm64_icache_sync_range_checked((a), (s))
 
 void arm64_nullop(void);
 void arm64_tlb_flushID(void);
-void arm64_dic_idc_icache_sync_range(vm_offset_t, vm_size_t);
-void arm64_aliasing_icache_sync_range(vm_offset_t, vm_size_t);
-int arm64_icache_sync_range_checked(vm_offset_t, vm_size_t);
-void arm64_dcache_wbinv_range(vm_offset_t, vm_size_t);
-void arm64_dcache_inv_range(vm_offset_t, vm_size_t);
-void arm64_dcache_wb_range(vm_offset_t, vm_size_t);
+void arm64_dic_idc_icache_sync_range(void *, vm_size_t);
+void arm64_idc_aliasing_icache_sync_range(void *, vm_size_t);
+void arm64_aliasing_icache_sync_range(void *, vm_size_t);
+int arm64_icache_sync_range_checked(void *, vm_size_t);
+void arm64_dcache_wbinv_range(void *, vm_size_t);
+void arm64_dcache_inv_range(void *, vm_size_t);
+void arm64_dcache_wb_range(void *, vm_size_t);
+bool arm64_get_writable_addr(void *, void **);
 
 #endif	/* _KERNEL */
 #endif	/* _MACHINE_CPUFUNC_H_ */
+
+#endif /* !__arm__ */

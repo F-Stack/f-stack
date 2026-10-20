@@ -25,13 +25,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)disklabel.h	8.2 (Berkeley) 7/10/94
- * $FreeBSD$
  */
 
 #ifndef _SYS_DISK_MBR_H_
 #define	_SYS_DISK_MBR_H_
+
+#include <sys/types.h>
 
 #define	DOSBBSECTOR	0	/* DOS boot block relative sector number */
 #define	DOSDSNOFF	440	/* WinNT/2K/XP Drive Serial Number offset */

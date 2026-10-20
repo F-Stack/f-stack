@@ -2,13 +2,12 @@
  * System call numbers.
  *
  * DO NOT EDIT-- this file is automatically @generated.
- * $FreeBSD$
  */
 
 #define	LINUX32_SYS_linux_exit	1
 #define	LINUX32_SYS_linux_fork	2
 #define	LINUX32_SYS_read	3
-#define	LINUX32_SYS_write	4
+#define	LINUX32_SYS_linux_write	4
 #define	LINUX32_SYS_linux_open	5
 #define	LINUX32_SYS_close	6
 #define	LINUX32_SYS_linux_waitpid	7
@@ -152,7 +151,7 @@
 #define	LINUX32_SYS_linux_mremap	163
 #define	LINUX32_SYS_linux_setresuid16	164
 #define	LINUX32_SYS_linux_getresuid16	165
-#define	LINUX32_SYS_poll	168
+#define	LINUX32_SYS_linux_poll	168
 #define	LINUX32_SYS_linux_setresgid16	170
 #define	LINUX32_SYS_linux_getresgid16	171
 #define	LINUX32_SYS_linux_prctl	172
@@ -383,10 +382,35 @@
 #define	LINUX32_SYS_linux_mq_timedreceive_time64	419
 #define	LINUX32_SYS_linux_semtimedop_time64	420
 #define	LINUX32_SYS_linux_rt_sigtimedwait_time64	421
-#define	LINUX32_SYS_linux_futex_time64	422
+#define	LINUX32_SYS_linux_sys_futex_time64	422
 #define	LINUX32_SYS_linux_sched_rr_get_interval_time64	423
 #define	LINUX32_SYS_linux_pidfd_send_signal	424
 #define	LINUX32_SYS_linux_io_uring_setup	425
 #define	LINUX32_SYS_linux_io_uring_enter	426
 #define	LINUX32_SYS_linux_io_uring_register	427
-#define	LINUX32_SYS_MAXSYSCALL	429
+#define	LINUX32_SYS_linux_open_tree	428
+#define	LINUX32_SYS_linux_move_mount	429
+#define	LINUX32_SYS_linux_fsopen	430
+#define	LINUX32_SYS_linux_fsconfig	431
+#define	LINUX32_SYS_linux_fsmount	432
+#define	LINUX32_SYS_linux_fspick	433
+#define	LINUX32_SYS_linux_pidfd_open	434
+#define	LINUX32_SYS_linux_clone3	435
+#define	LINUX32_SYS_linux_close_range	436
+#define	LINUX32_SYS_linux_openat2	437
+#define	LINUX32_SYS_linux_pidfd_getfd	438
+#define	LINUX32_SYS_linux_faccessat2	439
+#define	LINUX32_SYS_linux_process_madvise	440
+#define	LINUX32_SYS_linux_epoll_pwait2_64	441
+#define	LINUX32_SYS_linux_mount_setattr	442
+#define	LINUX32_SYS_linux_quotactl_fd	443
+#define	LINUX32_SYS_linux_landlock_create_ruleset	444
+#define	LINUX32_SYS_linux_landlock_add_rule	445
+#define	LINUX32_SYS_linux_landlock_restrict_self	446
+#define	LINUX32_SYS_linux_memfd_secret	447
+#define	LINUX32_SYS_linux_process_mrelease	448
+#define	LINUX32_SYS_linux_futex_waitv	449
+#define	LINUX32_SYS_linux_set_mempolicy_home_node	450
+#define	LINUX32_SYS_linux_cachestat	451
+#define	LINUX32_SYS_linux_fchmodat2	452
+#define	LINUX32_SYS_MAXSYSCALL	453

@@ -376,6 +376,9 @@ opdl_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *info)
 		.max_event_port_enqueue_depth = MAX_OPDL_CONS_Q_DEPTH,
 		.max_num_events = OPDL_INFLIGHT_EVENTS_TOTAL,
 		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE |
+				 RTE_EVENT_DEV_CAP_ORDERED |
+				 RTE_EVENT_DEV_CAP_ATOMIC |
+				 RTE_EVENT_DEV_CAP_PARALLEL |
 				 RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
 				 RTE_EVENT_DEV_CAP_MAINTENANCE_FREE,
 		.max_profiles_per_port = 1,
@@ -715,11 +718,9 @@ opdl_probe(struct rte_vdev_device *vdev)
 
 	dev->dev_ops = &evdev_opdl_ops;
 
-	dev->enqueue = opdl_event_enqueue;
 	dev->enqueue_burst = opdl_event_enqueue_burst;
 	dev->enqueue_new_burst = opdl_event_enqueue_burst;
 	dev->enqueue_forward_burst = opdl_event_enqueue_burst;
-	dev->dequeue = opdl_event_dequeue;
 	dev->dequeue_burst = opdl_event_dequeue_burst;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)

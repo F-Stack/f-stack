@@ -111,6 +111,20 @@ For more detail on SR-IOV, please refer to the following documents:
     by setting the ``devargs`` parameter like ``-a 18:01.0,no-poll-on-link-down=1``
     when IAVF is backed by an Intel\ |reg| E810 device or an Intel\ |reg| 700 Series Ethernet device.
 
+    Similarly, when IAVF is backed by an Intel\ |reg| E810 device
+    or an Intel\ |reg| 700 Series Ethernet device,
+    set the ``devargs`` parameter ``mbuf_check`` to enable Tx diagnostics.
+    For example, ``-a 18:01.0,mbuf_check=<case>`` or ``-a 18:01.0,mbuf_check=[<case1>,<case2>...]``.
+    Thereafter, ``rte_eth_xstats_get()`` can be used to get the error counts,
+    which are collected in ``tx_mbuf_error_packets`` xstats.
+    In testpmd these can be shown via: ``testpmd> show port xstats all``.
+    Supported values for the ``case`` parameter are:
+
+    * ``mbuf``: Check for corrupted mbuf.
+    * ``size``: Check min/max packet length according to HW spec.
+    * ``segment``: Check number of mbuf segments does not exceed HW limits.
+    * ``offload``: Check for use of an unsupported offload flag.
+
 The PCIE host-interface of Intel Ethernet Switch FM10000 Series VF infrastructure
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -627,6 +641,23 @@ Inline IPsec Support
     documentation.
 
 
+Diagnostic Utilities
+--------------------
+
+Register mbuf dynfield to test Tx LLDP
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Register an mbuf dynfield ``IAVF_TX_LLDP_DYNFIELD`` on ``dev_start``
+to indicate the need to send LLDP packet.
+This dynfield needs to be set to 1 when preparing packet.
+
+For ``dpdk-testpmd`` application, it needs to stop and restart Tx port to take effect.
+
+Usage::
+
+    testpmd> set tx lldp on
+
+
 Limitations or Knowing issues
 -----------------------------
 
@@ -699,3 +730,13 @@ and has this issue.
 
 Set the parameter `--force-max-simd-bitwidth` as 64/128/256
 to avoid selecting AVX-512 Tx path.
+
+ice: VLAN tag length not included in MTU
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When configuring MTU for a VF, MTU must not include VLAN tag length.
+In practice, when kernel driver configures VLAN filtering for a VF,
+the VLAN header tag length will be automatically added to MTU when configuring queues.
+As a consequence, when attempting to configure a VF port with MTU that,
+together with a VLAN tag header, exceeds maximum supported MTU,
+port configuration will fail if kernel driver has configured VLAN filtering on that VF.

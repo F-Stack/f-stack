@@ -699,6 +699,8 @@ struct txgbe_phy_info {
 #define TXGBE_DEVARG_FFE_MAIN		"ffe_main"
 #define TXGBE_DEVARG_FFE_PRE		"ffe_pre"
 #define TXGBE_DEVARG_FFE_POST		"ffe_post"
+#define TXGBE_DEVARG_FDIR_PBALLOC	"pkt-filter-size"
+#define TXGBE_DEVARG_FDIR_DROP_QUEUE	"pkt-filter-drop-queue"
 
 static const char * const txgbe_valid_arguments[] = {
 	TXGBE_DEVARG_BP_AUTO,
@@ -709,6 +711,8 @@ static const char * const txgbe_valid_arguments[] = {
 	TXGBE_DEVARG_FFE_MAIN,
 	TXGBE_DEVARG_FFE_PRE,
 	TXGBE_DEVARG_FFE_POST,
+	TXGBE_DEVARG_FDIR_PBALLOC,
+	TXGBE_DEVARG_FDIR_DROP_QUEUE,
 	NULL
 };
 
@@ -771,10 +775,12 @@ struct txgbe_hw {
 	u16 vendor_id;
 	u16 subsystem_device_id;
 	u16 subsystem_vendor_id;
+	u8 port_id;
 	u8 revision_id;
 	bool adapter_stopped;
 	int api_version;
 	bool allow_unsupported_sfp;
+	bool lldp_enabled;
 	bool need_crosstalk_fix;
 	bool dev_start;
 	bool autoneg;

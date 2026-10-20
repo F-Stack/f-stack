@@ -142,7 +142,7 @@ struct nfp_ipsec_msg {
 	};
 };
 
-struct nfp_ipsec_session {
+struct __rte_cache_aligned nfp_ipsec_session {
 	/** Opaque user defined data */
 	void *user_data;
 	/** NFP sa_entries database parameter index */
@@ -155,18 +155,12 @@ struct nfp_ipsec_session {
 	struct rte_security_ipsec_xform ipsec;
 	/** Security session action type */
 	enum rte_security_session_action_type action;
-} __rte_cache_aligned;
+};
 
 struct nfp_net_ipsec_data {
 	int pkt_dynfield_offset;
 	uint32_t sa_free_cnt;
 	struct nfp_ipsec_session *sa_entries[NFP_NET_IPSEC_MAX_SA_CNT];
-};
-
-enum nfp_ipsec_meta_layer {
-	NFP_IPSEC_META_SAIDX,       /**< Order of SA index in metadata */
-	NFP_IPSEC_META_SEQLOW,      /**< Order of Sequence Number (low 32bits) in metadata */
-	NFP_IPSEC_META_SEQHI,       /**< Order of Sequence Number (high 32bits) in metadata */
 };
 
 int nfp_ipsec_init(struct rte_eth_dev *dev);

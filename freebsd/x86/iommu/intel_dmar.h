@@ -1,8 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013-2015 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Konstantin Belousov <kib@FreeBSD.org>
  * under sponsorship from the FreeBSD Foundation.
@@ -27,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef __X86_IOMMU_INTEL_DMAR_H
@@ -68,7 +65,6 @@ struct dmar_domain {
 	u_int refs;			/* (u) Refs, including ctx */
 	struct dmar_unit *dmar;		/* (c) */
 	LIST_ENTRY(dmar_domain) link;	/* (u) Member in the dmar list */
-	LIST_HEAD(, dmar_ctx) contexts;	/* (u) */
 	vm_object_t pgtbl_obj;		/* (c) Page table pages */
 	u_int batch_no;
 };
@@ -76,8 +72,6 @@ struct dmar_domain {
 struct dmar_ctx {
 	struct iommu_ctx context;
 	uint64_t last_fault_rec[2];	/* Last fault reported */
-	LIST_ENTRY(dmar_ctx) link;	/* (u) Member in the domain list */
-	u_int refs;			/* (u) References from tags */
 };
 
 #define	DMAR_DOMAIN_PGLOCK(dom)		VM_OBJECT_WLOCK((dom)->pgtbl_obj)
@@ -90,15 +84,15 @@ struct dmar_ctx {
 #define	DMAR_DOMAIN_UNLOCK(dom)	mtx_unlock(&(dom)->iodom.lock)
 #define	DMAR_DOMAIN_ASSERT_LOCKED(dom) mtx_assert(&(dom)->iodom.lock, MA_OWNED)
 
-#define	DMAR2IOMMU(dmar)	&((dmar)->iommu)
+#define	DMAR2IOMMU(dmar)	(&((dmar)->iommu))
 #define	IOMMU2DMAR(dmar)	\
 	__containerof((dmar), struct dmar_unit, iommu)
 
-#define	DOM2IODOM(domain)	&((domain)->iodom)
+#define	DOM2IODOM(domain)	(&((domain)->iodom))
 #define	IODOM2DOM(domain)	\
 	__containerof((domain), struct dmar_domain, iodom)
 
-#define	CTX2IOCTX(ctx)		&((ctx)->context)
+#define	CTX2IOCTX(ctx)		(&((ctx)->context))
 #define	IOCTX2CTX(ctx)		\
 	__containerof((ctx), struct dmar_ctx, context)
 
@@ -106,35 +100,20 @@ struct dmar_ctx {
 #define	CTX2DMAR(ctx)		(CTX2DOM(ctx)->dmar)
 #define	DOM2DMAR(domain)	((domain)->dmar)
 
-struct dmar_msi_data {
-	int irq;
-	int irq_rid;
-	struct resource *irq_res;
-	void *intr_handle;
-	int (*handler)(void *);
-	int msi_data_reg;
-	int msi_addr_reg;
-	int msi_uaddr_reg;
-	void (*enable_intr)(struct dmar_unit *);
-	void (*disable_intr)(struct dmar_unit *);
-	const char *name;
-};
-
 #define	DMAR_INTR_FAULT		0
 #define	DMAR_INTR_QI		1
 #define	DMAR_INTR_TOTAL		2
 
 struct dmar_unit {
 	struct iommu_unit iommu;
-	device_t dev;
+	struct x86_unit_common x86c;
 	uint16_t segment;
 	uint64_t base;
+	int memdomain;
 
 	/* Resources */
 	int reg_rid;
 	struct resource *regs;
-
-	struct dmar_msi_data intrs[DMAR_INTR_TOTAL];
 
 	/* Hardware registers cache */
 	uint32_t hw_ver;
@@ -159,17 +138,6 @@ struct dmar_unit {
 
 	/* QI */
 	int qi_enabled;
-	vm_offset_t inv_queue;
-	vm_size_t inv_queue_size;
-	uint32_t inv_queue_avail;
-	uint32_t inv_queue_tail;
-	volatile uint32_t inv_waitd_seq_hw; /* hw writes there on wait
-					       descr completion */
-	uint64_t inv_waitd_seq_hw_phys;
-	uint32_t inv_waitd_seq; /* next sequence number to use for wait descr */
-	u_int inv_waitd_gen;	/* seq number generation AKA seq overflows */
-	u_int inv_seq_waiters;	/* count of waiters for seq */
-	u_int inv_queue_full;	/* informational counter */
 
 	/* IR */
 	int ir_enabled;
@@ -177,16 +145,11 @@ struct dmar_unit {
 	dmar_irte_t *irt;
 	u_int irte_cnt;
 	vmem_t *irtids;
-
-	/* Delayed freeing of map entries queue processing */
-	struct iommu_map_entries_tailq tlb_flush_entries;
-	struct task qi_task;
-	struct taskqueue *qi_taskqueue;
 };
 
-#define	DMAR_LOCK(dmar)		mtx_lock(&(dmar)->iommu.lock)
-#define	DMAR_UNLOCK(dmar)	mtx_unlock(&(dmar)->iommu.lock)
-#define	DMAR_ASSERT_LOCKED(dmar) mtx_assert(&(dmar)->iommu.lock, MA_OWNED)
+#define	DMAR_LOCK(dmar)		mtx_lock(&DMAR2IOMMU(dmar)->lock)
+#define	DMAR_UNLOCK(dmar)	mtx_unlock(&DMAR2IOMMU(dmar)->lock)
+#define	DMAR_ASSERT_LOCKED(dmar) mtx_assert(&DMAR2IOMMU(dmar)->lock, MA_OWNED)
 
 #define	DMAR_FAULT_LOCK(dmar)	mtx_lock_spin(&(dmar)->fault_lock)
 #define	DMAR_FAULT_UNLOCK(dmar)	mtx_unlock_spin(&(dmar)->fault_lock)
@@ -201,6 +164,8 @@ struct dmar_unit {
 #define	DMAR_BARRIER_RMRR	0
 #define	DMAR_BARRIER_USEQ	1
 
+SYSCTL_DECL(_hw_iommu_dmar);
+
 struct dmar_unit *dmar_find(device_t dev, bool verbose);
 struct dmar_unit *dmar_find_hpet(device_t dev, uint16_t *rid);
 struct dmar_unit *dmar_find_ioapic(u_int apic_id, uint16_t *rid);
@@ -210,24 +175,18 @@ bool dmar_pglvl_supported(struct dmar_unit *unit, int pglvl);
 int domain_set_agaw(struct dmar_domain *domain, int mgaw);
 int dmar_maxaddr2mgaw(struct dmar_unit *unit, iommu_gaddr_t maxaddr,
     bool allow_less);
-vm_pindex_t pglvl_max_pages(int pglvl);
 int domain_is_sp_lvl(struct dmar_domain *domain, int lvl);
-iommu_gaddr_t pglvl_page_size(int total_pglvl, int lvl);
 iommu_gaddr_t domain_page_size(struct dmar_domain *domain, int lvl);
 int calc_am(struct dmar_unit *unit, iommu_gaddr_t base, iommu_gaddr_t size,
     iommu_gaddr_t *isizep);
-struct vm_page *dmar_pgalloc(vm_object_t obj, vm_pindex_t idx, int flags);
-void dmar_pgfree(vm_object_t obj, vm_pindex_t idx, int flags);
-void *dmar_map_pgtbl(vm_object_t obj, vm_pindex_t idx, int flags,
-    struct sf_buf **sf);
-void dmar_unmap_pgtbl(struct sf_buf *sf);
 int dmar_load_root_entry_ptr(struct dmar_unit *unit);
 int dmar_inv_ctx_glob(struct dmar_unit *unit);
 int dmar_inv_iotlb_glob(struct dmar_unit *unit);
 int dmar_flush_write_bufs(struct dmar_unit *unit);
-void dmar_flush_pte_to_ram(struct dmar_unit *unit, dmar_pte_t *dst);
+void dmar_flush_pte_to_ram(struct dmar_unit *unit, iommu_pte_t *dst);
 void dmar_flush_ctx_to_ram(struct dmar_unit *unit, dmar_ctx_entry_t *dst);
 void dmar_flush_root_to_ram(struct dmar_unit *unit, dmar_root_entry_t *dst);
+int dmar_disable_protected_regions(struct dmar_unit *unit);
 int dmar_enable_translation(struct dmar_unit *unit);
 int dmar_disable_translation(struct dmar_unit *unit);
 int dmar_load_irt_ptr(struct dmar_unit *unit);
@@ -239,30 +198,32 @@ uint64_t dmar_get_timeout(void);
 void dmar_update_timeout(uint64_t newval);
 
 int dmar_fault_intr(void *arg);
-void dmar_enable_fault_intr(struct dmar_unit *unit);
-void dmar_disable_fault_intr(struct dmar_unit *unit);
+void dmar_enable_fault_intr(struct iommu_unit *unit);
+void dmar_disable_fault_intr(struct iommu_unit *unit);
 int dmar_init_fault_log(struct dmar_unit *unit);
 void dmar_fini_fault_log(struct dmar_unit *unit);
 
 int dmar_qi_intr(void *arg);
-void dmar_enable_qi_intr(struct dmar_unit *unit);
-void dmar_disable_qi_intr(struct dmar_unit *unit);
+void dmar_enable_qi_intr(struct iommu_unit *unit);
+void dmar_disable_qi_intr(struct iommu_unit *unit);
 int dmar_init_qi(struct dmar_unit *unit);
 void dmar_fini_qi(struct dmar_unit *unit);
-void dmar_qi_invalidate_locked(struct dmar_domain *domain, iommu_gaddr_t start,
-    iommu_gaddr_t size, struct iommu_qi_genseq *psec, bool emit_wait);
+void dmar_qi_invalidate_locked(struct dmar_domain *domain,
+    struct iommu_map_entry *entry, bool emit_wait);
+void dmar_qi_invalidate_sync(struct dmar_domain *domain, iommu_gaddr_t start,
+    iommu_gaddr_t size, bool cansleep);
 void dmar_qi_invalidate_ctx_glob_locked(struct dmar_unit *unit);
 void dmar_qi_invalidate_iotlb_glob_locked(struct dmar_unit *unit);
 void dmar_qi_invalidate_iec_glob(struct dmar_unit *unit);
 void dmar_qi_invalidate_iec(struct dmar_unit *unit, u_int start, u_int cnt);
 
-vm_object_t domain_get_idmap_pgtbl(struct dmar_domain *domain,
+vm_object_t dmar_get_idmap_pgtbl(struct dmar_domain *domain,
     iommu_gaddr_t maxaddr);
-void put_idmap_pgtbl(vm_object_t obj);
-void domain_flush_iotlb_sync(struct dmar_domain *domain, iommu_gaddr_t base,
+void dmar_put_idmap_pgtbl(vm_object_t obj);
+void dmar_flush_iotlb_sync(struct dmar_domain *domain, iommu_gaddr_t base,
     iommu_gaddr_t size);
-int domain_alloc_pgtbl(struct dmar_domain *domain);
-void domain_free_pgtbl(struct dmar_domain *domain);
+int dmar_domain_alloc_pgtbl(struct dmar_domain *domain);
+void dmar_domain_free_pgtbl(struct dmar_domain *domain);
 extern const struct iommu_domain_map_ops dmar_domain_map_ops;
 
 int dmar_dev_depth(device_t child);
@@ -274,13 +235,15 @@ struct dmar_ctx *dmar_get_ctx_for_devpath(struct dmar_unit *dmar, uint16_t rid,
     int dev_domain, int dev_busno, const void *dev_path, int dev_path_len,
     bool id_mapped, bool rmrr_init);
 int dmar_move_ctx_to_domain(struct dmar_domain *domain, struct dmar_ctx *ctx);
-void dmar_free_ctx_locked(struct dmar_unit *dmar, struct dmar_ctx *ctx);
-void dmar_free_ctx(struct dmar_ctx *ctx);
+void dmar_free_ctx_locked_method(struct iommu_unit *dmar,
+    struct iommu_ctx *ctx);
 struct dmar_ctx *dmar_find_ctx_locked(struct dmar_unit *dmar, uint16_t rid);
-void dmar_domain_unload_entry(struct iommu_map_entry *entry, bool free);
-void dmar_domain_unload(struct dmar_domain *domain,
+struct iommu_ctx *dmar_get_ctx(struct iommu_unit *iommu, device_t dev,
+    uint16_t rid, bool id_mapped, bool rmrr_init);
+void dmar_domain_unload_entry(struct iommu_map_entry *entry, bool free,
+    bool cansleep);
+void dmar_domain_unload(struct iommu_domain *iodom,
     struct iommu_map_entries_tailq *entries, bool cansleep);
-void dmar_domain_free_entry(struct iommu_map_entry *entry, bool free);
 
 void dmar_dev_parse_rmrr(struct dmar_domain *domain, int dev_domain,
     int dev_busno, const void *dev_path, int dev_path_len,
@@ -292,11 +255,18 @@ void dmar_quirks_pre_use(struct iommu_unit *dmar);
 
 int dmar_init_irt(struct dmar_unit *unit);
 void dmar_fini_irt(struct dmar_unit *unit);
+int dmar_alloc_msi_intr(device_t src, u_int *cookies, u_int count);
+int dmar_map_msi_intr(device_t src, u_int cpu, u_int vector, u_int cookie,
+    uint64_t *addr, uint32_t *data);
+int dmar_unmap_msi_intr(device_t src, u_int cookie);
+int dmar_map_ioapic_intr(u_int ioapic_id, u_int cpu, u_int vector, bool edge,
+    bool activehi, int irq, u_int *cookie, uint32_t *hi, uint32_t *lo);
+int dmar_unmap_ioapic_intr(u_int ioapic_id, u_int *cookie);
 
-extern iommu_haddr_t dmar_high;
+int dmar_is_running(void);
+
 extern int haw;
-extern int dmar_tbl_pagecnt;
-extern int dmar_batch_coalesce;
+extern int dmar_rmrr_enable;
 
 static inline uint32_t
 dmar_read4(const struct dmar_unit *unit, int reg)

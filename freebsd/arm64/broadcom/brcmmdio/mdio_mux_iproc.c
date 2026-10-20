@@ -25,9 +25,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
@@ -138,12 +135,10 @@ static device_method_t brcm_iproc_mdio_fdt_methods[] = {
 DEFINE_CLASS_0(brcm_iproc_mdio, brcm_iproc_mdio_driver,
     brcm_iproc_mdio_fdt_methods, sizeof(struct brcm_iproc_mdio_softc));
 
-static devclass_t brcm_iproc_mdio_fdt_devclass;
-
-EARLY_DRIVER_MODULE(brcm_iproc_mdio, ofwbus, brcm_iproc_mdio_driver,
-    brcm_iproc_mdio_fdt_devclass, 0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
-EARLY_DRIVER_MODULE(brcm_iproc_mdio, simplebus, brcm_iproc_mdio_driver,
-    brcm_iproc_mdio_fdt_devclass, 0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(brcm_iproc_mdio, ofwbus, brcm_iproc_mdio_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(brcm_iproc_mdio, simplebus, brcm_iproc_mdio_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
 
 static struct ofw_compat_data mdio_compat_data[] = {
 	{"brcm,mdio-mux-iproc",	true},
@@ -347,7 +342,7 @@ brcm_iproc_mdio_attach(device_t dev)
 		ofw_bus_intr_to_rl(dev, node, &di->di_rl, NULL);
 
 		/* Add newbus device for this FDT node */
-		child = device_add_child(dev, NULL, -1);
+		child = device_add_child(dev, NULL, DEVICE_UNIT_ANY);
 		if (child == NULL) {
 			printf("Failed to add child\n");
 			resource_list_free(&di->di_rl);
@@ -367,7 +362,8 @@ brcm_iproc_mdio_attach(device_t dev)
 	node = ofw_bus_get_node(dev);
 	OF_device_register_xref(OF_xref_from_node(node), dev);
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 
 error:
 	brcm_iproc_mdio_detach(dev);

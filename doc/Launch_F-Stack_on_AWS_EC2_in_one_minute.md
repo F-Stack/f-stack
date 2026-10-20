@@ -13,7 +13,7 @@
     # Compile DPDK
     cd /data/f-stack/dpdk
     # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
-    meson -Denable_kmods=true build
+    meson setup -Denable_kmods=true build
     ninja -C build
     ninja -C build install
 
@@ -29,6 +29,10 @@
     modprobe uio
     modprobe hwmon
     insmod build/kernel/linux/igb_uio/igb_uio.ko
+
+    # Note: rte_kni.ko is no longer needed (removed in F-Stack dev, Nov 2025).
+    # KNI now uses virtio_user + vhost-net (built into most kernels).
+    # The veth0 interface is created automatically by F-Stack on startup.
 
     # set ip address
     #redhat7.3
@@ -89,7 +93,8 @@
     # start Nginx
     /usr/local/nginx_fstack/sbin/nginx
 
-    # start kni
+    # configure kni interface (veth0 is created automatically by F-Stack on startup)
+    # wait for veth0 to appear before configuring it
     sleep 10
     ifconfig veth0 ${myaddr}  netmask ${mymask}  broadcast ${mybc} hw ether ${myhw}
     route add -net 0.0.0.0 gw ${mygw} dev veth0

@@ -14,8 +14,6 @@
  * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
  * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
- *
- * $FreeBSD$
  */
 
 #ifndef _NET_LAGG_H
@@ -223,7 +221,7 @@ struct lagg_lb {
 
 struct lagg_mc {
 	struct sockaddr_dl	mc_addr;
-	struct ifmultiaddr      *mc_ifma;
+	struct ifmultiaddr	*mc_ifma;
 	SLIST_ENTRY(lagg_mc)	mc_entries;
 };
 
@@ -273,6 +271,7 @@ struct lagg_port {
 	uint32_t			lp_flags;	/* port flags */
 	int				lp_ifflags;	/* saved ifp flags */
 	int				lp_ifcapenable;	/* saved ifp capenable */
+	int				lp_ifcapenable2;/* saved ifp capenable2 */
 	void				*lh_cookie;	/* if state hook */
 	void				*lp_psc;	/* protocol data */
 	int				lp_detaching;	/* ifnet is detaching */

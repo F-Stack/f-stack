@@ -1,7 +1,7 @@
 /* lint -save -library Flexelint comment for external headers */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001 Charles Mott <cm@linktel.net>
  * All rights reserved.
@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -46,7 +44,7 @@
 #include <netinet/ip.h>
 
 #define LIBALIAS_BUF_SIZE 128
-#ifdef	_KERNEL
+#ifdef _KERNEL
 /*
  * The kernel version of libalias does not support these features.
  */
@@ -86,10 +84,10 @@ struct alias_link;
 /* Initialization and control functions. */
 struct libalias *LibAliasInit(struct libalias *);
 void		LibAliasSetAddress(struct libalias *, struct in_addr _addr);
+void		LibAliasSetAliasPortRange(struct libalias *la, u_short port_low, u_short port_hi);
 void		LibAliasSetFWBase(struct libalias *, unsigned int _base, unsigned int _num);
 void		LibAliasSetSkinnyPort(struct libalias *, unsigned int _port);
-unsigned int
-		LibAliasSetMode(struct libalias *, unsigned int _flags, unsigned int _mask);
+unsigned int	LibAliasSetMode(struct libalias *, unsigned int _flags, unsigned int _mask);
 void		LibAliasUninit(struct libalias *);
 
 /* Packet Handling functions. */
@@ -100,42 +98,36 @@ int		LibAliasUnaliasOut(struct libalias *, void *_ptr, int _maxpacketsize);
 
 /* Port and address redirection functions. */
 
-int
-LibAliasAddServer(struct libalias *, struct alias_link *_lnk,
-    struct in_addr _addr, unsigned short _port);
-struct alias_link *
-LibAliasRedirectAddr(struct libalias *, struct in_addr _src_addr,
-    struct in_addr _alias_addr);
+int		LibAliasAddServer(struct libalias *, struct alias_link *_lnk,
+		    struct in_addr _addr, unsigned short _port);
+struct alias_link * LibAliasRedirectAddr(struct libalias *, struct in_addr _src_addr,
+		    struct in_addr _alias_addr);
 int		LibAliasRedirectDynamic(struct libalias *, struct alias_link *_lnk);
 void		LibAliasRedirectDelete(struct libalias *, struct alias_link *_lnk);
-struct alias_link *
-LibAliasRedirectPort(struct libalias *, struct in_addr _src_addr,
-    unsigned short _src_port, struct in_addr _dst_addr,
-    unsigned short _dst_port, struct in_addr _alias_addr,
-    unsigned short _alias_port, unsigned char _proto);
-struct alias_link *
-LibAliasRedirectProto(struct libalias *, struct in_addr _src_addr,
-    struct in_addr _dst_addr, struct in_addr _alias_addr,
-    unsigned char _proto);
+struct alias_link * LibAliasRedirectPort(struct libalias *, struct in_addr _src_addr,
+		    unsigned short _src_port, struct in_addr _dst_addr,
+		    unsigned short _dst_port, struct in_addr _alias_addr,
+		    unsigned short _alias_port, unsigned char _proto);
+struct alias_link * LibAliasRedirectProto(struct libalias *, struct in_addr _src_addr,
+		    struct in_addr _dst_addr, struct in_addr _alias_addr,
+		    unsigned char _proto);
 
 /* Fragment Handling functions. */
 void		LibAliasFragmentIn(struct libalias *, void *_ptr, void *_ptr_fragment);
-void           *LibAliasGetFragment(struct libalias *, void *_ptr);
+void	       *LibAliasGetFragment(struct libalias *, void *_ptr);
 int		LibAliasSaveFragment(struct libalias *, void *_ptr);
 
 /* Miscellaneous functions. */
-int		LibAliasCheckNewLink(struct libalias *);
-unsigned short
-		LibAliasInternetChecksum(struct libalias *, unsigned short *_ptr, int _nbytes);
+unsigned short	LibAliasInternetChecksum(struct libalias *, unsigned short *_ptr, int _nbytes);
 void		LibAliasSetTarget(struct libalias *, struct in_addr _target_addr);
 
 /* Transparent proxying routines. */
 int		LibAliasProxyRule(struct libalias *, const char *_cmd);
 
 /* Module handling API */
-int             LibAliasLoadModule(char *);
-int             LibAliasUnLoadAllModule(void);
-int             LibAliasRefreshModules(void);
+int		LibAliasLoadModule(char *);
+int		LibAliasUnLoadAllModule(void);
+int		LibAliasRefreshModules(void);
 
 /* Mbuf helper function. */
 struct mbuf    *m_megapullup(struct mbuf *, int);
@@ -175,7 +167,7 @@ struct mbuf    *m_megapullup(struct mbuf *, int);
  * require this.  This bit is set after a call to PacketAliasInit(), so it is
  * a default mode of operation.
  */
-#ifndef	NO_USE_SOCKETS
+#ifndef NO_USE_SOCKETS
 #define	PKT_ALIAS_USE_SOCKETS		0x08
 #endif
 /*-
@@ -234,6 +226,26 @@ struct mbuf    *m_megapullup(struct mbuf *, int);
  *		100.64.0.0   ->   100.127.255.255
  */
 #define	PKT_ALIAS_UNREGISTERED_CGN	0x400
+
+/*
+ * When this bit is set, UDP uses endpoint-independent mapping (EIM), as per
+ * RFC 4787 ("full cone" NAT of RFC 3489). All packets from the same internal
+ * address:port are mapped to the same NAT address:port, regardless of their
+ * destination address:port. If filtering rules allow, and if
+ * PKT_ALIAS_DENY_INCOMING is unset, any other external address:port can also
+ * send to the internal address:port through its mapped NAT address:port. This
+ * is more compatible with applications, and can reduce the need for port
+ * forwarding, but less scalable as each NAT address:port can only be
+ * concurrently used by at most one internal address:port.
+ *
+ * When this bit is unset, UDP packets use endpoint-dependent mapping (EDM)
+ * ("symmetric" NAT). Each connection from a particular internal address:port
+ * to different external addresses:ports is mapped to a random and
+ * unpredictable NAT address:port. Two appplications behind EDM NATs can only
+ * connect to each other by port forwarding on the NAT, or tunnelling through
+ * an in-between server.
+ */
+#define PKT_ALIAS_UDP_EIM		0x800
 
 /* Function return codes. */
 #define	PKT_ALIAS_ERROR			-1

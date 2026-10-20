@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alexander V. Chernikov
  *
@@ -26,7 +26,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_route.h"
@@ -60,8 +59,14 @@ __FBSDID("$FreeBSD$");
 #endif
 #ifdef INET6
 #include <netinet6/in6_fib.h>
+#include <netinet6/in6_var.h>
 #endif
 #include <net/vnet.h>
+
+#define	DEBUG_MOD_NAME	rt_helpers
+#define	DEBUG_MAX_LEVEL	LOG_DEBUG2
+#include <net/route/route_debug.h>
+_DECLARE_DEBUG(LOG_INFO);
 
 /*
  * RIB helper functions.
@@ -126,6 +131,38 @@ rib_walk(uint32_t fibnum, int family, bool wlock, rib_walktree_f_t *wa_f,
 {
 
 	rib_walk_ext(fibnum, family, wlock, wa_f, NULL, arg);
+}
+
+/*
+ * Calls @wa_f with @arg for each entry in the table matching @prefix/@mask.
+ *
+ * The following flags are supported:
+ *  RIB_FLAG_WLOCK: acquire exclusive lock
+ *  RIB_FLAG_LOCKED: Assumes the table is already locked & skip locking
+ *
+ * By default, table is traversed under read lock.
+ */
+void
+rib_walk_from(uint32_t fibnum, int family, uint32_t flags, struct sockaddr *prefix,
+    struct sockaddr *mask, rib_walktree_f_t *wa_f, void *arg)
+{
+	RIB_RLOCK_TRACKER;
+	struct rib_head *rnh = rt_tables_get_rnh(fibnum, family);
+
+	if (rnh == NULL)
+		return;
+
+	if (flags & RIB_FLAG_WLOCK)
+		RIB_WLOCK(rnh);
+	else if (!(flags & RIB_FLAG_LOCKED))
+		RIB_RLOCK(rnh);
+
+	rnh->rnh_walktree_from(&rnh->head, prefix, mask, (walktree_f_t *)wa_f, arg);
+
+	if (flags & RIB_FLAG_WLOCK)
+		RIB_WUNLOCK(rnh);
+	else if (!(flags & RIB_FLAG_LOCKED))
+		RIB_RUNLOCK(rnh);
 }
 
 /*
@@ -222,12 +259,43 @@ rib_lookup(uint32_t fibnum, const struct sockaddr *dst, uint32_t flags,
 
 #ifdef ROUTE_MPATH
 static void
-decompose_change_notification(struct rib_cmd_info *rc, route_notification_t *cb,
+notify_add(struct rib_cmd_info *rc, const struct weightened_nhop *wn_src,
+    route_notification_t *cb, void *cbdata)
+{
+	rc->rc_nh_new = wn_src->nh;
+	rc->rc_nh_weight = wn_src->weight;
+
+	IF_DEBUG_LEVEL(LOG_DEBUG2) {
+		char nhbuf[NHOP_PRINT_BUFSIZE] __unused;
+		FIB_NH_LOG(LOG_DEBUG2, wn_src->nh, "RTM_ADD for %s @ w=%u",
+		    nhop_print_buf(wn_src->nh, nhbuf, sizeof(nhbuf)),
+		    wn_src->weight);
+	}
+	cb(rc, cbdata);
+}
+
+static void
+notify_del(struct rib_cmd_info *rc, const struct weightened_nhop *wn_src,
+    route_notification_t *cb, void *cbdata)
+{
+	rc->rc_nh_old = wn_src->nh;
+	rc->rc_nh_weight = wn_src->weight;
+
+	IF_DEBUG_LEVEL(LOG_DEBUG2) {
+		char nhbuf[NHOP_PRINT_BUFSIZE] __unused;
+		FIB_NH_LOG(LOG_DEBUG2, wn_src->nh, "RTM_DEL for %s @ w=%u",
+		    nhop_print_buf(wn_src->nh, nhbuf, sizeof(nhbuf)),
+		    wn_src->weight);
+	}
+	cb(rc, cbdata);
+}
+
+static void
+decompose_change_notification(const struct rib_cmd_info *rc, route_notification_t *cb,
     void *cbdata)
 {
 	uint32_t num_old, num_new;
-	uint32_t nh_idx_old, nh_idx_new;
-	struct weightened_nhop *wn_old, *wn_new;
+	const struct weightened_nhop *wn_old, *wn_new;
 	struct weightened_nhop tmp = { NULL, 0 };
 	uint32_t idx_old = 0, idx_new = 0;
 
@@ -250,90 +318,56 @@ decompose_change_notification(struct rib_cmd_info *rc, route_notification_t *cb,
 		wn_new = &tmp;
 		num_new = 1;
 	}
+	IF_DEBUG_LEVEL(LOG_DEBUG) {
+		char buf_old[NHOP_PRINT_BUFSIZE], buf_new[NHOP_PRINT_BUFSIZE];
+		nhop_print_buf_any(rc->rc_nh_old, buf_old, NHOP_PRINT_BUFSIZE);
+		nhop_print_buf_any(rc->rc_nh_new, buf_new, NHOP_PRINT_BUFSIZE);
+		FIB_NH_LOG(LOG_DEBUG, wn_old[0].nh, "change %s -> %s", buf_old, buf_new);
+	}
 
 	/* Use the fact that each @wn array is sorted */
 	/*
-	 * Want to convert into set of add and delete operations
-	 * [1] -> [1, 2] = A{2}
-	 * [2] -> [1, 2] = A{1}
-	 * [1, 2, 4]->[1, 3, 4] = A{2}, D{3}
-	 * [1, 2, 4]->[1, 4] = D{2}
-	 * [1, 2, 4] -> [3, 4] = D{1}, C{2,3} OR C{1,3}, D{2} OR D{1},D{2},A{3}
-	 * [1, 2] -> [3, 4] =
+	 * Here we have one (or two) multipath groups and transition
+	 *  between them needs to be reported to the caller, using series
+	 *  of primitive (RTM_DEL, RTM_ADD) operations.
 	 *
+	 * Leverage the fact that each nexthop group has its nexthops sorted
+	 *  by their indices.
+	 * [1] -> [1, 2] = A{2}
+	 * [1, 2] -> [1] = D{2}
+	 * [1, 2, 4] -> [1, 3, 4] = D{2}, A{3}
+	 * [1, 2] -> [3, 4] = D{1}, D{2}, A{3}, A{4]
 	 */
-	idx_old = 0;
 	while ((idx_old < num_old) && (idx_new < num_new)) {
-		nh_idx_old = wn_old[idx_old].nh->nh_priv->nh_idx;
-		nh_idx_new = wn_new[idx_new].nh->nh_priv->nh_idx;
+		uint32_t nh_idx_old = wn_old[idx_old].nh->nh_priv->nh_idx;
+		uint32_t nh_idx_new = wn_new[idx_new].nh->nh_priv->nh_idx;
 
 		if (nh_idx_old == nh_idx_new) {
 			if (wn_old[idx_old].weight != wn_new[idx_new].weight) {
 				/* Update weight by providing del/add notifications */
-				rc_del.rc_nh_old = wn_old[idx_old].nh;
-				rc_del.rc_nh_weight = wn_old[idx_old].weight;
-				cb(&rc_del, cbdata);
-
-				rc_add.rc_nh_new = wn_new[idx_new].nh;
-				rc_add.rc_nh_weight = wn_new[idx_new].weight;
-				cb(&rc_add, cbdata);
+				notify_del(&rc_del, &wn_old[idx_old], cb, cbdata);
+				notify_add(&rc_add, &wn_new[idx_new], cb, cbdata);
 			}
 			idx_old++;
 			idx_new++;
 		} else if (nh_idx_old < nh_idx_new) {
-			/*
-			 * [1, ~2~, 4], [1, ~3~, 4]
-			 * [1, ~2~, 5], [1, ~3~, 4]
-			 * [1, ~2~], [1, ~3~, 4]
-			 */
-			if ((idx_old + 1 >= num_old) ||
-			    (wn_old[idx_old + 1].nh->nh_priv->nh_idx > nh_idx_new)) {
-				/* Add new unless the next old item is still <= new */
-				rc_add.rc_nh_new = wn_new[idx_new].nh;
-				rc_add.rc_nh_weight = wn_new[idx_new].weight;
-				cb(&rc_add, cbdata);
-				idx_new++;
-			}
-			/* In any case, delete current old */
-			rc_del.rc_nh_old = wn_old[idx_old].nh;
-			rc_del.rc_nh_weight = wn_old[idx_old].weight;
-			cb(&rc_del, cbdata);
+			/* [1, ~2~, 4], [1, ~3~, 4] */
+			notify_del(&rc_del, &wn_old[idx_old], cb, cbdata);
 			idx_old++;
 		} else {
-			/*
-			 * nh_idx_old > nh_idx_new
-			 *
-			 * [1, ~3~, 4], [1, ~2~, 4]
-			 * [1, ~3~, 5], [1, ~2~, 4]
-			 * [1, ~3~, 4], [1, ~2~]
-			 */
-			if ((idx_new + 1 >= num_new) ||
-			    (wn_new[idx_new + 1].nh->nh_priv->nh_idx > nh_idx_old)) {
-				/* No next item or next item is > current one */
-				rc_add.rc_nh_new = wn_new[idx_new].nh;
-				rc_add.rc_nh_weight = wn_new[idx_new].weight;
-				cb(&rc_add, cbdata);
-				idx_new++;
-			}
-			/* In any case, delete current old */
-			rc_del.rc_nh_old = wn_old[idx_old].nh;
-			rc_del.rc_nh_weight = wn_old[idx_old].weight;
-			cb(&rc_del, cbdata);
-			idx_old++;
+			/* nh_idx_old > nh_idx_new. */
+			notify_add(&rc_add, &wn_new[idx_new], cb, cbdata);
+			idx_new++;
 		}
 	}
 
 	while (idx_old < num_old) {
-		rc_del.rc_nh_old = wn_old[idx_old].nh;
-		rc_del.rc_nh_weight = wn_old[idx_old].weight;
-		cb(&rc_del, cbdata);
+		notify_del(&rc_del, &wn_old[idx_old], cb, cbdata);
 		idx_old++;
 	}
 
 	while (idx_new < num_new) {
-		rc_add.rc_nh_new = wn_new[idx_new].nh;
-		rc_add.rc_nh_weight = wn_new[idx_new].weight;
-		cb(&rc_add, cbdata);
+		notify_add(&rc_add, &wn_new[idx_new], cb, cbdata);
 		idx_new++;
 	}
 }
@@ -344,25 +378,21 @@ decompose_change_notification(struct rib_cmd_info *rc, route_notification_t *cb,
  * Assumes at least one of the nexthops in @rc is multipath.
  */
 void
-rib_decompose_notification(struct rib_cmd_info *rc, route_notification_t *cb,
+rib_decompose_notification(const struct rib_cmd_info *rc, route_notification_t *cb,
     void *cbdata)
 {
-	struct weightened_nhop *wn;
+	const struct weightened_nhop *wn;
 	uint32_t num_nhops;
 	struct rib_cmd_info rc_new;
 
 	rc_new = *rc;
-	DPRINTF("cb=%p cmd=%d nh_old=%p nh_new=%p",
-	    cb, rc->cmd, rc->nh_old, rc->nh_new);
 	switch (rc->rc_cmd) {
 	case RTM_ADD:
 		if (!NH_IS_NHGRP(rc->rc_nh_new))
 			return;
 		wn = nhgrp_get_nhops((struct nhgrp_object *)rc->rc_nh_new, &num_nhops);
 		for (uint32_t i = 0; i < num_nhops; i++) {
-			rc_new.rc_nh_new = wn[i].nh;
-			rc_new.rc_nh_weight = wn[i].weight;
-			cb(&rc_new, cbdata);
+			notify_add(&rc_new, &wn[i], cb, cbdata);
 		}
 		break;
 	case RTM_DELETE:
@@ -370,9 +400,7 @@ rib_decompose_notification(struct rib_cmd_info *rc, route_notification_t *cb,
 			return;
 		wn = nhgrp_get_nhops((struct nhgrp_object *)rc->rc_nh_old, &num_nhops);
 		for (uint32_t i = 0; i < num_nhops; i++) {
-			rc_new.rc_nh_old = wn[i].nh;
-			rc_new.rc_nh_weight = wn[i].weight;
-			cb(&rc_new, cbdata);
+			notify_del(&rc_new, &wn[i], cb, cbdata);
 		}
 		break;
 	case RTM_CHANGE:
@@ -383,3 +411,273 @@ rib_decompose_notification(struct rib_cmd_info *rc, route_notification_t *cb,
 	}
 }
 #endif
+
+union sockaddr_union {
+	struct sockaddr		sa;
+	struct sockaddr_in	sin;
+	struct sockaddr_in6	sin6;
+	char			_buf[32];
+};
+
+/*
+ * Creates nexhops suitable for using as a default route nhop.
+ * Helper for the various kernel subsystems adding/changing default route.
+ */
+int
+rib_add_default_route(uint32_t fibnum, int family, struct ifnet *ifp,
+    struct sockaddr *gw, struct rib_cmd_info *rc)
+{
+	struct route_nhop_data rnd = { .rnd_weight = RT_DEFAULT_WEIGHT };
+	union sockaddr_union saun = {};
+	struct sockaddr *dst = &saun.sa;
+	int error;
+
+	switch (family) {
+#ifdef INET
+	case AF_INET:
+		saun.sin.sin_family = AF_INET;
+		saun.sin.sin_len = sizeof(struct sockaddr_in);
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		saun.sin6.sin6_family = AF_INET6;
+		saun.sin6.sin6_len = sizeof(struct sockaddr_in6);
+		break;
+#endif
+	default:
+		return (EAFNOSUPPORT);
+	}
+
+	struct ifaddr *ifa = ifaof_ifpforaddr(gw, ifp);
+	if (ifa == NULL)
+		return (ENOENT);
+
+	struct nhop_object *nh = nhop_alloc(fibnum, family);
+	if (nh == NULL)
+		return (ENOMEM);
+
+	nhop_set_gw(nh, gw, true);
+	nhop_set_transmit_ifp(nh, ifp);
+	nhop_set_src(nh, ifa);
+	nhop_set_pxtype_flag(nh, NHF_DEFAULT);
+	rnd.rnd_nhop = nhop_get_nhop(nh, &error);
+
+	if (error == 0)
+		error = rib_add_route_px(fibnum, dst, 0, &rnd, RTM_F_CREATE, rc);
+	return (error);
+}
+
+#ifdef INET
+/*
+ * Checks if the found key in the trie contains (<=) a prefix covering
+ *  @paddr/@plen.
+ * Returns the most specific rtentry matching the condition or NULL.
+ */
+static struct rtentry *
+get_inet_parent_prefix(uint32_t fibnum, struct in_addr addr, int plen)
+{
+	struct route_nhop_data rnd;
+	struct rtentry *rt;
+	struct in_addr addr4;
+	uint32_t scopeid;
+	int parent_plen;
+	struct radix_node *rn;
+
+	rt = fib4_lookup_rt(fibnum, addr, 0, NHR_UNLOCKED, &rnd);
+	if (rt == NULL)
+		return (NULL);
+
+	rt_get_inet_prefix_plen(rt, &addr4, &parent_plen, &scopeid);
+	if (parent_plen <= plen)
+		return (rt);
+
+	/*
+	 * There can be multiple prefixes associated with the found key:
+	 * 10.0.0.0 -> 10.0.0.0/24, 10.0.0.0/23, 10.0.0.0/22, etc.
+	 * All such prefixes are linked via rn_dupedkey, from most specific
+	 *  to least specific. Iterate over them to check if any of these
+	 *  prefixes are wider than desired plen.
+	 */
+	rn = (struct radix_node *)rt;
+	while ((rn = rn_nextprefix(rn)) != NULL) {
+		rt = RNTORT(rn);
+		rt_get_inet_prefix_plen(rt, &addr4, &parent_plen, &scopeid);
+		if (parent_plen <= plen)
+			return (rt);
+	}
+
+	return (NULL);
+}
+
+/*
+ * Returns the most specific prefix containing (>) @paddr/plen.
+ */
+struct rtentry *
+rt_get_inet_parent(uint32_t fibnum, struct in_addr addr, int plen)
+{
+	struct in_addr lookup_addr = { .s_addr = INADDR_BROADCAST };
+	struct in_addr addr4 = addr;
+	struct in_addr mask4;
+	struct rtentry *rt;
+
+	while (plen-- > 0) {
+		/* Calculate wider mask & new key to lookup */
+		mask4.s_addr = htonl(plen ? ~((1 << (32 - plen)) - 1) : 0);
+		addr4.s_addr = htonl(ntohl(addr4.s_addr) & ntohl(mask4.s_addr));
+		if (addr4.s_addr == lookup_addr.s_addr) {
+			/* Skip lookup if the key is the same */
+			continue;
+		}
+		lookup_addr = addr4;
+
+		rt = get_inet_parent_prefix(fibnum, lookup_addr, plen);
+		if (rt != NULL)
+			return (rt);
+	}
+
+	return (NULL);
+}
+#endif
+
+#ifdef INET6
+/*
+ * Checks if the found key in the trie contains (<=) a prefix covering
+ *  @paddr/@plen.
+ * Returns the most specific rtentry matching the condition or NULL.
+ */
+static struct rtentry *
+get_inet6_parent_prefix(uint32_t fibnum, const struct in6_addr *paddr, int plen)
+{
+	struct route_nhop_data rnd;
+	struct rtentry *rt;
+	struct in6_addr addr6;
+	uint32_t scopeid;
+	int parent_plen;
+	struct radix_node *rn;
+
+	rt = fib6_lookup_rt(fibnum, paddr, 0, NHR_UNLOCKED, &rnd);
+	if (rt == NULL)
+		return (NULL);
+
+	rt_get_inet6_prefix_plen(rt, &addr6, &parent_plen, &scopeid);
+	if (parent_plen <= plen)
+		return (rt);
+
+	/*
+	 * There can be multiple prefixes associated with the found key:
+	 * 2001:db8:1::/64 -> 2001:db8:1::/56, 2001:db8:1::/48, etc.
+	 * All such prefixes are linked via rn_dupedkey, from most specific
+	 *  to least specific. Iterate over them to check if any of these
+	 *  prefixes are wider than desired plen.
+	 */
+	rn = (struct radix_node *)rt;
+	while ((rn = rn_nextprefix(rn)) != NULL) {
+		rt = RNTORT(rn);
+		rt_get_inet6_prefix_plen(rt, &addr6, &parent_plen, &scopeid);
+		if (parent_plen <= plen)
+			return (rt);
+	}
+
+	return (NULL);
+}
+
+void
+ip6_writemask(struct in6_addr *addr6, uint8_t mask)
+{
+	uint32_t *cp;
+
+	for (cp = (uint32_t *)addr6; mask >= 32; mask -= 32)
+		*cp++ = 0xFFFFFFFF;
+	if (mask > 0)
+		*cp = htonl(mask ? ~((1 << (32 - mask)) - 1) : 0);
+}
+
+/*
+ * Returns the most specific prefix containing (>) @paddr/plen.
+ */
+struct rtentry *
+rt_get_inet6_parent(uint32_t fibnum, const struct in6_addr *paddr, int plen)
+{
+	struct in6_addr lookup_addr = in6mask128;
+	struct in6_addr addr6 = *paddr;
+	struct in6_addr mask6;
+	struct rtentry *rt;
+
+	while (plen-- > 0) {
+		/* Calculate wider mask & new key to lookup */
+		ip6_writemask(&mask6, plen);
+		IN6_MASK_ADDR(&addr6, &mask6);
+		if (IN6_ARE_ADDR_EQUAL(&addr6, &lookup_addr)) {
+			/* Skip lookup if the key is the same */
+			continue;
+		}
+		lookup_addr = addr6;
+
+		rt = get_inet6_parent_prefix(fibnum, &lookup_addr, plen);
+		if (rt != NULL)
+			return (rt);
+	}
+
+	return (NULL);
+}
+#endif
+
+/*
+ * Prints rtentry @rt data in the provided @buf.
+ * Example: rt/192.168.0.0/24
+ */
+char *
+rt_print_buf(const struct rtentry *rt, char *buf, size_t bufsize)
+{
+#if defined(INET) || defined(INET6)
+	char abuf[INET6_ADDRSTRLEN];
+	uint32_t scopeid;
+	int plen;
+#endif
+
+	switch (rt_get_family(rt)) {
+#ifdef INET
+	case AF_INET:
+		{
+			struct in_addr addr4;
+			rt_get_inet_prefix_plen(rt, &addr4, &plen, &scopeid);
+			inet_ntop(AF_INET, &addr4, abuf, sizeof(abuf));
+			snprintf(buf, bufsize, "rt/%s/%d", abuf, plen);
+		}
+		break;
+#endif
+#ifdef INET6
+	case AF_INET6:
+		{
+			struct in6_addr addr6;
+			rt_get_inet6_prefix_plen(rt, &addr6, &plen, &scopeid);
+			inet_ntop(AF_INET6, &addr6, abuf, sizeof(abuf));
+			snprintf(buf, bufsize, "rt/%s/%d", abuf, plen);
+		}
+		break;
+#endif
+	default:
+		snprintf(buf, bufsize, "rt/unknown_af#%d", rt_get_family(rt));
+		break;
+	}
+
+	return (buf);
+}
+
+const char *
+rib_print_cmd(int rib_cmd)
+{
+	switch (rib_cmd) {
+	case RTM_ADD:
+		return ("RTM_ADD");
+	case RTM_CHANGE:
+		return ("RTM_CHANGE");
+	case RTM_DELETE:
+		return ("RTM_DELETE");
+	case RTM_GET:
+		return ("RTM_GET");
+	}
+
+	return ("UNKNOWN");
+}

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright 2017,2020 NXP
+ * Copyright 2017,2020,2022-2023 NXP
  *
  */
 
@@ -88,6 +88,11 @@ fman_if_add_hash_mac_addr(struct fman_if *p, uint8_t *eth)
 
 	struct __fman_if *__if = container_of(p, struct __fman_if, __if);
 
+	/* Add hash mac addr not supported on Offline port and onic port */
+	if (__if->__if.mac_type == fman_offline_internal ||
+	    __if->__if.mac_type == fman_onic)
+		return 0;
+
 	eth_addr = ETH_ADDR_TO_UINT64(eth);
 
 	if (!(eth_addr & GROUP_ADDRESS))
@@ -109,6 +114,16 @@ fman_if_get_primary_mac_addr(struct fman_if *p, uint8_t *eth)
 	void *mac_reg =
 		&((struct memac_regs *)__if->ccsr_map)->mac_addr0.mac_addr_l;
 	u32 val = in_be32(mac_reg);
+	int i;
+
+	/* Get mac addr not supported on Offline port and onic port */
+	/* Return NULL mac address */
+	if (__if->__if.mac_type == fman_offline_internal ||
+	    __if->__if.mac_type == fman_onic) {
+		for (i = 0; i < 6; i++)
+			eth[i] = 0x0;
+		return 0;
+	}
 
 	eth[0] = (val & 0x000000ff) >> 0;
 	eth[1] = (val & 0x0000ff00) >> 8;
@@ -130,6 +145,11 @@ fman_if_clear_mac_addr(struct fman_if *p, uint8_t addr_num)
 	struct __fman_if *m = container_of(p, struct __fman_if, __if);
 	void *reg;
 
+	/* Clear mac addr not supported on Offline port and onic port */
+	if (m->__if.mac_type == fman_offline_internal ||
+	    m->__if.mac_type == fman_onic)
+		return;
+
 	if (addr_num) {
 		reg = &((struct memac_regs *)m->ccsr_map)->
 				mac_addr[addr_num-1].mac_addr_l;
@@ -149,9 +169,13 @@ int
 fman_if_add_mac_addr(struct fman_if *p, uint8_t *eth, uint8_t addr_num)
 {
 	struct __fman_if *m = container_of(p, struct __fman_if, __if);
-
 	void *reg;
 	u32 val;
+
+	/* Set mac addr not supported on Offline port and onic port */
+	if (m->__if.mac_type == fman_offline_internal ||
+	    m->__if.mac_type == fman_onic)
+		return 0;
 
 	memcpy(&m->__if.mac_addr, eth, ETHER_ADDR_LEN);
 
@@ -265,6 +289,67 @@ fman_if_stats_reset(struct fman_if *p)
 
 	while (in_be32(&regs->statn_config) & STATS_CFG_CLR)
 		;
+}
+
+void
+fman_if_bmi_stats_enable(struct fman_if *p)
+{
+	struct __fman_if *m = container_of(p, struct __fman_if, __if);
+	struct rx_bmi_regs *regs = (struct rx_bmi_regs *)m->bmi_map;
+	uint32_t tmp;
+
+	tmp = in_be32(&regs->fmbm_rstc);
+
+	tmp |= FMAN_BMI_COUNTERS_EN;
+
+	out_be32(&regs->fmbm_rstc, tmp);
+}
+
+void
+fman_if_bmi_stats_disable(struct fman_if *p)
+{
+	struct __fman_if *m = container_of(p, struct __fman_if, __if);
+	struct rx_bmi_regs *regs = (struct rx_bmi_regs *)m->bmi_map;
+	uint32_t tmp;
+
+	tmp = in_be32(&regs->fmbm_rstc);
+
+	tmp &= ~FMAN_BMI_COUNTERS_EN;
+
+	out_be32(&regs->fmbm_rstc, tmp);
+}
+
+void
+fman_if_bmi_stats_get_all(struct fman_if *p, uint64_t *value)
+{
+	struct __fman_if *m = container_of(p, struct __fman_if, __if);
+	struct rx_bmi_regs *regs = (struct rx_bmi_regs *)m->bmi_map;
+	int i = 0;
+
+	value[i++] = (u32)in_be32(&regs->fmbm_rfrc);
+	value[i++] = (u32)in_be32(&regs->fmbm_rfbc);
+	value[i++] = (u32)in_be32(&regs->fmbm_rlfc);
+	value[i++] = (u32)in_be32(&regs->fmbm_rffc);
+	value[i++] = (u32)in_be32(&regs->fmbm_rfdc);
+	value[i++] = (u32)in_be32(&regs->fmbm_rfldec);
+	value[i++] = (u32)in_be32(&regs->fmbm_rodc);
+	value[i++] = (u32)in_be32(&regs->fmbm_rbdc);
+}
+
+void
+fman_if_bmi_stats_reset(struct fman_if *p)
+{
+	struct __fman_if *m = container_of(p, struct __fman_if, __if);
+	struct rx_bmi_regs *regs = (struct rx_bmi_regs *)m->bmi_map;
+
+	out_be32(&regs->fmbm_rfrc, 0);
+	out_be32(&regs->fmbm_rfbc, 0);
+	out_be32(&regs->fmbm_rlfc, 0);
+	out_be32(&regs->fmbm_rffc, 0);
+	out_be32(&regs->fmbm_rfdc, 0);
+	out_be32(&regs->fmbm_rfldec, 0);
+	out_be32(&regs->fmbm_rodc, 0);
+	out_be32(&regs->fmbm_rbdc, 0);
 }
 
 void
@@ -503,6 +588,10 @@ fman_if_set_ic_params(struct fman_if *fm_if,
 	unsigned int *fmbm_ricp =
 		&((struct rx_bmi_regs *)__if->bmi_map)->fmbm_ricp;
 	out_be32(fmbm_ricp, val);
+
+	unsigned int *fmbm_ticp =
+		&((struct tx_bmi_regs *)__if->tx_bmi_map)->fmbm_ticp;
+	out_be32(fmbm_ticp, val);
 
 	return 0;
 }

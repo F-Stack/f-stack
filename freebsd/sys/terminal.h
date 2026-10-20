@@ -1,8 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Ed Schouten under sponsorship from the
  * FreeBSD Foundation.
@@ -27,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_TERMINAL_H_
@@ -95,7 +92,7 @@ typedef teken_color_t term_color_t;
 #define	FG_CYAN			TCOLOR_FG(TC_CYAN)
 #define	FG_RED			TCOLOR_FG(TC_RED)
 #define	FG_MAGENTA		TCOLOR_FG(TC_MAGENTA)
-#define	FG_BROWN		TCOLOR_FG(TC_BROWN)
+#define	FG_BROWN		TCOLOR_FG(TC_YELLOW)
 #define	FG_LIGHTGREY		TCOLOR_FG(TC_WHITE)
 #define	FG_DARKGREY		(TFORMAT(TF_BOLD) | TCOLOR_FG(TC_BLACK))
 #define	FG_LIGHTBLUE		(TFORMAT(TF_BOLD) | TCOLOR_FG(TC_BLUE))
@@ -103,7 +100,7 @@ typedef teken_color_t term_color_t;
 #define	FG_LIGHTCYAN		(TFORMAT(TF_BOLD) | TCOLOR_FG(TC_CYAN))
 #define	FG_LIGHTRED		(TFORMAT(TF_BOLD) | TCOLOR_FG(TC_RED))
 #define	FG_LIGHTMAGENTA		(TFORMAT(TF_BOLD) | TCOLOR_FG(TC_MAGENTA))
-#define	FG_YELLOW		(TFORMAT(TF_BOLD) | TCOLOR_FG(TC_BROWN))
+#define	FG_YELLOW		(TFORMAT(TF_BOLD) | TCOLOR_FG(TC_YELLOW))
 #define	FG_WHITE		(TFORMAT(TF_BOLD) | TCOLOR_FG(TC_WHITE))
 #define	FG_BLINK		TFORMAT(TF_BLINK)
 
@@ -114,7 +111,7 @@ typedef teken_color_t term_color_t;
 #define	BG_CYAN			TCOLOR_BG(TC_CYAN)
 #define	BG_RED			TCOLOR_BG(TC_RED)
 #define	BG_MAGENTA		TCOLOR_BG(TC_MAGENTA)
-#define	BG_BROWN		TCOLOR_BG(TC_BROWN)
+#define	BG_BROWN		TCOLOR_BG(TC_YELLOW)
 #define	BG_LIGHTGREY		TCOLOR_BG(TC_WHITE)
 #define	BG_DARKGREY		(TFORMAT(TF_BOLD) | TCOLOR_BG(TC_BLACK))
 #define	BG_LIGHTBLUE		(TFORMAT(TF_BOLD) | TCOLOR_BG(TC_BLUE))
@@ -122,7 +119,7 @@ typedef teken_color_t term_color_t;
 #define	BG_LIGHTCYAN		(TFORMAT(TF_BOLD) | TCOLOR_BG(TC_CYAN))
 #define	BG_LIGHTRED		(TFORMAT(TF_BOLD) | TCOLOR_BG(TC_RED))
 #define	BG_LIGHTMAGENTA		(TFORMAT(TF_BOLD) | TCOLOR_BG(TC_MAGENTA))
-#define	BG_YELLOW		(TFORMAT(TF_BOLD) | TCOLOR_BG(TC_BROWN))
+#define	BG_YELLOW		(TFORMAT(TF_BOLD) | TCOLOR_BG(TC_YELLOW))
 #define	BG_WHITE		(TFORMAT(TF_BOLD) | TCOLOR_BG(TC_WHITE))
 
 #ifndef TERMINAL_NORM_ATTR

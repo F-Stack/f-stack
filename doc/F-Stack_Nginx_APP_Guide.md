@@ -4,7 +4,7 @@ F-Stack is an open source network framework based on DPDK. F-Stack supports stan
 
 ## How does Nginx use F-Stack?
 
-  Nginx APP is in `app/nginx-1.25.2` directory.
+  Nginx APP is in `app/nginx-1.28.0` directory.
 
 ```
 
@@ -42,23 +42,30 @@ first one to start |                    |     |                   |    |        
 
 - a major addition to the worker process is fstack-handling：ff_init();ff_run(worker_process_cycle); worker_process_cycle(handle channel/host/fstack event).
 
+- with `graceful_reload=1` the topology changes: a resident slim primary (a DPDK primary with no rx/tx queue) is spawned at startup and survives reloads/upgrades, and every nginx worker attaches as a DPDK secondary. See "Graceful reload" below.
+
 ## What's Different?
 ### New directives:
 All the directives below are available only when ```NGX_HAVE_FSTACK``` is defined.
 ```
     Syntax: kernel_network_stack on | off;
     Default: kernel_network_stack off;
-    Context: http, server
+    Context: http, server, stream, mail
 
-    Determines whether server should run on kernel network stack or fstack.
+    Determines whether the listening socket of this server should run on the
+    kernel network stack or on fstack. The listening socket is opened by the
+    master with a plain socket() and inherited by every worker generation;
+    the connection is then driven by nginx's internal host epoll.
 ```
 
 ```
     Syntax: proxy_kernel_network_stack on | off;
     Default: proxy_kernel_network_stack off;
-    Context: http, stream, mail, server
+    Context: http, server, location (http proxy); stream, server (stream proxy)
 
-    Determines whether proxy should go through kernel network stack or fstack.
+    Determines whether the proxied (upstream) connection should go through
+    kernel network stack or fstack. It affects the upstream connection only,
+    not the listener. This directive is not available in the mail module.
 ```
 
 ```
@@ -69,14 +76,20 @@ All the directives below are available only when ```NGX_HAVE_FSTACK``` is define
     Sets a time interval for polling kernel_network_stack. The default value is 30 msec.
 ```
 
+Note on scope: these two directives are implemented by nginx itself (an internal host epoll plus a `socket()` override that adds `SOCK_FSTACK` for F-Stack sockets). They are **not** the library's stack-coexist mechanism (`[stack] kernel_coexist` in the F-Stack config file plus the `FF_KERNEL_COEXIST` build flag, which serves native `ff_api` applications). The nginx directives work with a default build and are not affected by that flag or config key. See "Mixed mode" below for the operational limits of running part of the traffic on the kernel stack.
+
 ### Command-line `reload`
-the `reload` is not graceful, service will still be unavailable during the process of reloading.
+With the default `graceful_reload=0`, the `reload` is not graceful: service will still be unavailable (about one second) during the process of reloading.
+
+With `graceful_reload=1`, the `reload` is lossless: the new generation of workers spawns and reaches READY while the old generation keeps serving, rx ownership then flips to the new generation, and the old generation drains its established connections to natural completion. See "Graceful reload" below.
 
 ### Necessary modifies in nginx.conf:
 ```
     user  root; # root account is necessary.
     fstack_conf f-stack.conf;  # path of f-stack configuration file, default: $NGX_PREFIX/conf/f-stack.conf.
-    worker_processes  1; # should be equal to the lcore count of `dpdk.lcore_mask` in f-stack.conf.
+    worker_processes  1; # graceful_reload=0: equal to the lcore count of `dpdk.lcore_mask` in f-stack.conf;
+                         # graceful_reload=1: one less than the lcore count (the resident slim primary owns one lcore,
+                         #                     and worker_processes = nb_procs - 1).
 
     events {
         worker_connections  102400; # increase
@@ -86,8 +99,167 @@ the `reload` is not graceful, service will still be unavailable during the proce
     sendfile off; # sendfile off
 ```
 
+Optional: `worker_shutdown_timeout` (e.g. `worker_shutdown_timeout 30s;`) bounds the drain window of old workers during a graceful reload; when unset, internal 30s caps apply (see "Forced-exit cap" below).
+
+## Graceful reload (`graceful_reload`)
+
+### Overview and deployment form
+
+The nginx APP supports lossless reload and binary upgrade via `graceful_reload` in the `[dpdk]` section of the F-Stack config file (`fstack_conf`).
+
+- `graceful_reload=0` (default): behavior identical to previous releases. Worker 0 is the DPDK primary; `reload` follows the legacy two-phase serial order (old workers exit before new workers start) with about one second of service unavailability.
+- `graceful_reload=1`: lossless reload and lossless binary upgrade. Requires `primary_slim=1`, `nb_procs >= 2` (set nginx `worker_processes = nb_procs - 1`) and `thread_mode=0`, and a library built without `FF_USE_PAGE_ARRAY` (that build is refused when the resident primary loads its config; the reason is in `/var/run/ff_slim_primary.log`). All processes of a deployment, the resident primary included, must run the same libfstack build.
+
+With `graceful_reload=1`:
+
+- The nginx master spawns a **resident slim primary** at startup: a DPDK primary with no rx/tx queue (`--proc-type=primary --proc-id=0` + `primary_slim=1`) that runs the control plane only (device init, IPC server, KNI init). It is double-forked and detached from the master: `reload`/`upgrade` never signal it, and it outlives a master that hands over to a new binary. Stopping nginx stops it too (see "Stopping nginx" below). It is detected via `/var/run/ff_slim_primary.pid` (diagnostics go to `/var/run/ff_slim_primary.log`); run the master as root or make `/var/run` writable.
+- All nginx workers attach as DPDK **secondaries**: worker `i` runs F-Stack `proc_id = i + 1` because the slim primary owns `proc_id 0`. Accordingly set `dpdk.lcore_mask` to `worker_processes + 1` bits and exclude the primary lcore from every `[portN] lcore_list`. The master validates the topology before spawning workers: the `dpdk.lcore_mask` bit count must equal `worker_processes + 1` exactly (too many lcores leave queues with no consumer — a silent RSS black hole; too few make worker attach fail with proc_id out of range).
+- The master waits up to 60s for the slim primary to become ready (the primary_slim baseline reports measured ~25s for EAL + port init) and up to 60s for worker 0 to confirm its secondary attach; the legacy 15s primary-worker gate stays unchanged when `graceful_reload=0`. If the primary exits before it is ready (for example it rejects the config), the master stops waiting at once, logs `graceful_reload: slim primary exited during initialization: "<last line the primary logged>" (see /var/run/ff_slim_primary.log)` and exits without leaving `nginx.pid` behind.
+- The queue/lcore mapping is **generation-agnostic**: during a reload the new worker of a slot uses the same lcore and rx queue as the old one, so no lcore or queue configuration changes across generations. RX queue ownership flips from the old generation to the new one at handover.
+- **Generational mempools** (`mbuf_pool_<n>_gen0/gen1`) are pre-built at init and ping-pong reused, so application-side allocations of the two generations coexisting on the same lcore never come from the same pool. The shared RX pool is still common to both generations (with `cache_size=0`), and in-flight packets cross between generations over the drain rings.
+- On `reload` (HUP): the new generation of workers is spawned and reaches READY **while the old generation keeps serving**; rx ownership then flips to the new generation (handover) and the old generation drains its established connections before exiting. In-flight requests run to natural completion — packets arriving on a queue already owned by the new generation are forwarded between the generations over per-generation drain rings. The old generation starts draining as soon as it loses rx ownership (not when it receives QUIT): at that moment, and about once a second afterwards, it closes its **idle** keep-alive connections (the native nginx QUIT behavior, brought forward), so keep-alive clients see one connection close per reload and reconnect to the new generation. New connections are not refused, except when the reload flow map is full or cannot grow, or `mbuf_low_watermark` is set (default 0, off) and the mbuf pool is below it (both are counted, the flow-map case is also logged at 1 Hz; the client retransmits the SYN). A HUP issued while a round is in flight is rejected (`graceful reload rejected: previous reload still in progress`).
+- On `upgrade` (USR2): traffic switches on WINCH, and USR2 itself moves no hardware ownership, so a failed new binary costs nothing. See "Binary upgrade (USR2/WINCH)" below.
+
+### Reload observability (log lines)
+
+Each reload round is driven by an explicit T0-T5 state machine; every transition is logged at NOTICE level in the nginx error log:
+
+- `graceful reload: spawning new generation <N> (epoch <E>)` — round starts (T0 -> T1).
+- `graceful reload: new generation ready (<N> workers), old generation draining` — all new workers READY (T1 -> T2).
+- `graceful reload fsm: <S1> -> <S2> (transition <n>, elapsed <M> ms)` — one line per FSM transition; a normal round shows six (T0_IDLE -> T1_GNEW_SPAWN -> T2_HANDOVER -> T3_DRAIN -> T4_DRAIN_DONE -> T5_GOLD_QUIT -> T0_IDLE).
+- `graceful reload: old generation drained, quitting` — drain complete (T3 -> T4); ` (deadline forced)` is appended when the `worker_shutdown_timeout` deadline forced completion.
+- `graceful reload complete: generation <N> now active (took <M> ms: handover <M> ms, drain <M> ms, drain forwarded <N> / relayed <N> pkts, ring peak rx <N> / tx <N>)` — round complete (T5 -> T0). Fields: total wall time, handover phase, drain phase, packets forwarded to / relayed from the old generation over the drain rings, and the drain ring peak occupancy (see below).
+- After each round the workers log the steady state in the F-Stack log: `reload data plane retired (steady state, generation <N>)`. A generation that retired its plane re-attaches it and logs `reload data plane attached (<reason>, generation <N>)`: `window open` when the next reload window opens, `park` right before it acks a park order, `peer master` when a USR2 peer master appears (either side).
+- The resident primary frees packets left in the drain rings of workers that have exited and logs `drain rings: freed <N> orphaned mbuf(s)` (at most once a second); an occasional line after a round is expected.
+
+Failure paths — the old generation is never touched by an abort:
+
+- `graceful reload rejected: previous reload still in progress (state <S>)` / `graceful reload rejected: binary upgrade in progress` — re-entry protection.
+- `graceful reload aborted: <reason> (old generation untouched)` — e.g. `READY wait timed out`, `worker 0 failed to attach to the resident primary`, `G_old park confirmation timed out`, `rx ownership flip failed`; the FSM goes T_ERROR and back to T0_IDLE.
+- If the old generation hangs in drain: `graceful reload: G_old drain exceeds <M> ms, QUIT re-delivered by signal (channel suspected lost)`, then `graceful reload: G_old drain exceeds <M> ms, SIGTERM escalation (open connections will be reset)`.
+
+### drain_ring watermark and full-ring alerts
+
+While the old generation drains, packets of its connections are forwarded between the two generations over per-generation drain rings:
+
+- `drain_ring_size` (default 2048; must be a power of two; values below 1024 draw a warning) sets the capacity of one generation's drain ring pair. Raising it reserves `nb_rx_queue * 2 (generations) * 2 (directions) * drain_ring_size` additional mbufs in each of the two mbuf pool budgets — check memory headroom before increasing.
+- A full drain ring drops the packet and logs a rate-limited WARNING (at most one line per second and per direction):
+  `graceful reload drain: drain_tx full (<n>/<cap> entries, <drops> dropped): packet dropped, TCP retransmits recover`
+  (and the `drain_rx` counterpart). A drop here is recovered end-to-end by TCP retransmission — the alert indicates latency/retransmission pressure during the drain, not permanent data loss for TCP traffic.
+- The peak occupancy is reported in the `ring peak rx <N> / tx <M>` field of the `graceful reload complete` line; full-ring events always show up there. If the peak is persistently close to the capacity, increase `drain_ring_size` for the site. With the default 2048 the measured peak stayed below 1.2% of capacity in testing (12 active streams, ~66k relayed packets per reload).
+
+### Resident primary failure (degradation and recovery)
+
+The resident slim primary holds no rx/tx queue, so its death does **not** interrupt the data plane: the workers (DPDK secondaries) keep serving (verified with active streams, zero failures). Notes:
+
+- The slim primary is not respawned automatically.
+- A reload issued while the primary is dead may still complete if the DPDK runtime files under `/var/run/dpdk/rte/` are intact (new workers attach to the leftover mappings). If they are gone, new workers fail to attach and the master aborts the round after the 60s attach gate — the old generation keeps serving (fail-safe).
+- Recovery: fully restart nginx (stop, then start). The master spawns a fresh slim primary when `/var/run/ff_slim_primary.pid` no longer points to a live process.
+
+### Stopping nginx (resident primary)
+
+- `nginx -s stop`, `nginx -s quit` (and SIGTERM, SIGINT or SIGQUIT to the master) stop the resident primary too: once the last master has reaped its workers it stops the primary before it removes `nginx.pid` (`graceful_reload: stopped the resident slim primary (pid N)`), so nothing of nginx is left running and the next start, with any config, comes up normally. If that stop fails the master still exits and logs an EMERG naming the primary (for example `pidfd_open(N) failed`, `cannot verify the resident slim primary`, `cannot send SIGTERM to the resident slim primary` or `did not exit within 10s after SIGTERM; not escalating`); the primary is then left behind and exits on its own once it has no user (next item).
+- It keeps the primary, with a NOTICE, when another master still needs it: the old master of a USR2 upgrade (`keeping the resident slim primary for the other master of the binary upgrade`), a new master that is stopped while its old master still runs (rollback), or any process still attached (`... still used by N process(es)`, F-Stack tools included).
+- The primary's process name (comm) is `ff_slim_primary`, while `ps` shows it under the master's title `nginx: master process ...`. Killing nginx by process name therefore reaches the master and the workers but not the primary. A primary that is left without any master and any worker exits on its own after 10 s and logs `ff slim primary (pid N): no master or worker for <ms> ms, exiting` in `/var/run/ff_slim_primary.log`; a primary that never had a user, and no master ever registered with it, waits at least 180 s instead. The grace can be set with `NGX_FF_SLIM_PRIMARY_ORPHAN_MS` in the environment of the master that starts the primary (3000 to 3600000 ms; other values fall back to 10 s); a USR2 new binary gets an environment rebuilt by nginx (TZ and the variables passed by the `env` directive only), which does not matter because the primary is never respawned by an upgrade. Within about a second after it lost its last user the primary marks itself idle; a start after that rebuilds it (`restarting the resident slim primary (pid N): no master or worker uses it`), while a start right after the kill reuses it and its new workers keep it in use.
+- After a stop, the hugepage files and `/var/run/dpdk/<prefix>` stay, as with `graceful_reload=0`; the next primary of the same prefix reclaims them.
+- During a USR2 upgrade, stopping both masters at the same time leaves the primary to its own exit (about 10 s).
+
+### Changing the f-stack config (resident primary)
+
+The resident slim primary applies the device-side part of the f-stack config once, when it starts: `[dpdk]` (except the per-process `log_level`, `fstack_log_level`, `fstack_log_file_prefix`, `idle_sleep`, `pkt_tx_delay`, `reload_heartbeat_timeout_ms`), `[kni] enable / owner_proc_id / kernel_packets_ratelimit`, and `[portN]` / `[vdevN]` / `[bondN]` / `[vlanN]` except `addr`, `netmask`, `broadcast`, `gateway`, `addr6`, `prefix_len`, `gateway6`, `vip_*`, `if_name` and `ipfw_pr`; every other section is per process. It records a digest of that part in `/var/run/ff_slim_primary.conf`, and every generation of workers reads a private snapshot of the config it was started or reloaded with (`/var/run/ff_nginx_fstack.*.conf`, mode 0600 — readable because nginx.conf must say `user  root;`, see "Necessary modifies in nginx.conf").
+
+- **Full restart** (stop nginx, start it again): stopping nginx stops the primary, so the next start spawns one with the new config, KNI included. This is the way to enable or disable KNI. A primary that was left behind (its master was killed, or another process still used it when nginx stopped) is restarted by the next start once no process uses it — `graceful_reload: restarting the resident slim primary (pid N): its fstack config differs ([kni] enable 0 -> 1)`, or `... (pid N): no master or worker uses it` with an unchanged config.
+- **HUP** with a changed device-side part is rejected before anything is spawned: `graceful reload rejected: fstack config differs from the resident slim primary (kni 0 -> 1); restart nginx and the slim primary to apply it`. The running generation keeps serving and keeps its own snapshot, so a worker that crashes afterwards respawns with the old config. Per-process keys (addresses, FreeBSD sysctls, KNI filters, log levels) still apply on HUP. If the new nginx.conf points `fstack_conf` at another file, that file is checked after the configuration is loaded and a mismatch aborts the round (`the new fstack_conf differs from the resident slim primary`); the old generation keeps serving.
+- **USR2** with a changed device-side part is refused by the new master (EMERG, exit); the old master logs `ff usr2: new binary exited before taking over`.
+- The master refuses (EMERG, exit) without signalling the primary when the primary is still used by other processes (`... is still used by N process(es) ...`) or has no valid record (`... has no valid record in /var/run/ff_slim_primary.conf (started by another build?) ...`). If it did send SIGTERM for a restart but the primary does not exit within 10 s, it logs `... did not exit within 10s after SIGTERM; not escalating` and refuses; it never sends KILL, and the pending SIGTERM ends that primary once it runs again, so start nginx again afterwards.
+- Restarting the primary needs Linux 5.3+ and libc headers that define `SYS_pidfd_open` and `SYS_pidfd_send_signal` (otherwise `pidfd unsupported` is logged and the restart is refused). Its DMA safety was verified with igb_uio; vfio-pci was not tested.
+- Upgrading from an older build (one service interruption): builds without this record, and builds with it whose master does not stop the primary on exit (before the stop handling described in "Stopping nginx"), leave their primary running when nginx stops, and a new build started next to it would refuse it (no record), rebuild it (changed device-side config, unused) or reuse it (same config, unused). So: (1) stop nginx (`nginx -s stop`); (2) send SIGTERM to the process named in `/var/run/ff_slim_primary.pid` after checking that `/proc/<pid>/comm` is `ff_slim_primary` (`ps` shows it as `nginx: master process ...`, so go by comm), and wait until `/proc/<pid>` is gone; (3) start the new build. A USR2 binary upgrade from a build without the record is refused by the new master; from a build with the record it keeps the old build's primary, which therefore needs the full stop above before the deployment runs on a single build again.
+
+### MTU / jumbo frames (graceful_reload=1)
+
+- A `[portN] mtu` above 1500 needs `[dpdk] mtu_enable=1` (`max_mtu` defaults to 9000 and must not be below any port mtu), the same as with `graceful_reload=0`. Without it the resident primary rejects the config and the master exits at once: `graceful_reload: slim primary exited during initialization: "port0 mtu 9000 > 1500 requires mtu_enable=1" (see /var/run/ff_slim_primary.log)`.
+- `mtu_enable`, `max_mtu`, `mbuf_mode` and `[portN] mtu` are device-side keys: changing them needs a full restart, a HUP is rejected.
+- `mbuf_mode=large` and `mbuf_mode=scatter` were both verified with graceful reload (start, HUP, transfers checked by md5); the USR2 upgrade was verified with `scatter`. The KNI port stays at 1500; set the kernel-side `veth0` mtu by hand if needed.
+
+### Reverse proxy and other outbound TCP connections (graceful_reload=1)
+
+- A connection nginx opens to an upstream (proxy, health checks) inside a reload window is recorded in the flow map before its SYN goes out, so the upstream's reply stays with the new generation; connections opened before the reload keep being served by the old generation until they close.
+- The two generations that can coexist use TCP ephemeral ports of opposite parity (`port parity N` in the generation directory attach line of each worker), so they never pick the same upstream four-tuple. Each generation therefore has about half of `net.inet.ip.portrange.first`..`last` per destination; a port given explicitly (bind with a port) is not constrained.
+- While the old master of a binary upgrade (USR2) still runs, the new master refuses a HUP: `graceful reload rejected: the old master of the binary upgrade is still running`. Send it after the old master has quit.
+- UDP upstreams (`stream` `proxy_pass` over UDP) follow the same port parity, so their replies stay with the generation that sent the request. nginx's `resolver` uses the kernel stack, not F-Stack, and is not affected by the reload at all.
+- If the flow map is full inside the window, a new upstream connect fails (ENOBUFS) and nginx treats it as an upstream connection error; the 1 Hz line `flow map: N untracked SYN/connect (table full)` reports it.
+- Verified with one worker and IPv4 upstreams. Several workers additionally rely on NIC RSS to steer the upstream replies to the connecting worker's queue.
+
+### UDP servers and UDP proxying: DNS, QUIC (graceful_reload=1)
+
+- Each worker records the UDP four-tuples it serves. When a reload starts, the old generation publishes them; inside the window the new generation forwards only those still active to the old generation and serves every other UDP packet itself, so new UDP clients reach the new configuration at once and existing ones keep their old session until they go idle.
+- A flow counts as ended after `[dpdk] reload_udp_idle_ms` without traffic (default 10000, range 100..3600000; no restart of the resident primary needed to change it). After a HUP the reload completes once the old generation's TCP connections are gone and its UDP flows are idle, still bounded by `worker_shutdown_timeout` (90 s without it); a flow that is still active then moves to the new generation. After USR2 + WINCH the old workers keep serving their active UDP flows for up to `worker_shutdown_timeout` (30 s without it) before they quit (`ff drain: UDP linger ...` in error.log).
+- If the old generation runs a binary without this support (a USR2 upgrade from an older build), it publishes nothing and UDP keeps the old behaviour for that window: everything goes to the old generation.
+- One-shot exchanges such as DNS end with their reply and need nothing special. A `listen ... udp` no longer pins every reload to the 90 s deadline.
+- Dispatch is by four-tuple. A QUIC connection that migrates (or whose client NAT rebinds) during the window gets new four-tuples and is handled by the new generation, where it has no state; connection-ID based routing is not implemented. This build does not enable `--with-http_v3_module`; the description applies to any UDP service.
+- IP-fragmented UDP datagrams, multicast/broadcast UDP and ICMP errors are handled by the new generation inside the window.
+- Verified with stream udp servers on two workers (IPv4 and IPv6) and with UDP proxying and USR2 on one worker (IPv4).
+
+### New generation crash after handover (heartbeat takeover)
+
+After the handover the old generation has already detached from the hardware. If the new generation stalls or crashes:
+
+- The rx-owner generation advances a shared-memory heartbeat counter once per loop pass; the old generation samples it. A stall longer than `reload_heartbeat_timeout_ms` (default 1000 ms; `0` falls back to the default) makes the old generation autonomously reclaim rx and keep serving. The takeover is logged in the F-Stack log: `reload rx owner stalled >%ums: generation %d taking rx back` (ALERT); a deferred variant (`reload heartbeat stalled >%ums, generation %d (rx return deferred: park order pending or not detached from hardware)`, WARNING) covers stalls where the old generation cannot yet return to the hardware.
+- Tuning: the default 1s balances failover speed against false positives; a smaller value fails over faster but may trigger on transient stalls.
+- Residual case: if **both** generations are gone, only the resident primary remains and nothing polls the NIC — a full outage requiring an external restart of nginx.
+
+### Forced-exit cap (`worker_shutdown_timeout`)
+
+`worker_shutdown_timeout` bounds how long an old worker may drain: when set, drain completion is forced at the deadline (`old generation drained (deadline forced)`). Independently, two internal safety caps (the `snd_pending` wait and the delayed listening-socket close) apply at `max(30s, worker_shutdown_timeout)`; the delayed listening-socket close waits for the half-open (syncache) entries for at most `min(3s grace, cap)` (the grace can be overridden with the `NGX_FF_SYNCACHE_GRACE_MS` environment variable). Hitting a limit logs `ff drain: syncache wait capped at <N> ms (quit+<M> ms, syncache=<n>, snd_pending=<n>)` or `ff drain: snd_pending wait capped at <N> ms (...)`. With `worker_shutdown_timeout` unset or <= 30s the cap is 30s (the previous fixed behavior).
+
+### Binary upgrade (USR2/WINCH)
+
+Standard procedure (all signals go to the old master's pid):
+
+1. Build the new binary against the same `libfstack` as the running one (rebuild both binaries together; mixing binaries from different lib builds is not supported).
+2. Send USR2 to the old master: the new master starts, reuses the resident slim primary and forks all-secondary workers. The old generation keeps serving; USR2 moves no hardware ownership.
+3. Confirm the new generation is up: the new master's worker processes exist, and the F-Stack log of the new workers shows `generation directory attached: epoch <N> slot <S> pid <PID> port parity <P>` with an epoch different from the old generation's (slot in 1..3). Note this line appears at the very beginning of the worker init and is **not** a readiness marker — confirm the workers finished initialization (steady-state log lines / listening sockets up) and keep a safety margin before the next step.
+4. Send WINCH to the old master: rx is handed to the new binary — `ff usr2: handed rx to the new binary (epoch <N> gen <G>), old generation draining` — and the old workers drain their established connections (same drain machinery as a HUP reload).
+5. Send QUIT to the old master after the drain to finish the upgrade.
+
+Behavior notes:
+
+- WINCH issued before the new generation registered is deferred (`ff usr2: WINCH before the new generation registered, deferring (old workers keep serving)`); a new binary that never registers times out after 120s.
+- A new binary that dies before taking over is free of impact: `ff usr2: new binary exited before taking over, old generation keeps serving`.
+- Rollback: HUP sent to the old master during an upgrade is interpreted as a rollback (`ff usr2: HUP during a binary upgrade, rolling back`); if the new master dies after the handover, the old generation reclaims rx automatically (`ff usr2: new binary (epoch <N>) is gone, taking rx back`, `ff usr2: rx owner reset to generation <G>, old generation serving again`).
+- There is no automatic traffic switch on USR2: the switch happens on WINCH, issued by the operator or automation once the new generation is confirmed ready.
+
+### Mixed mode: some servers on the kernel stack
+
+With `kernel_network_stack on` (listener side) and/or `proxy_kernel_network_stack on` (upstream side), one nginx instance serves part of its traffic from the Linux kernel stack while the rest runs on F-Stack. Operational notes measured on a `graceful_reload=1` deployment:
+
+- **Idle kernel-stack connections are dropped when the old generation exits.** The drain completion test is F-Stack specific (`ff_socket_snd_pending()` / `ff_syncache_count()` plus `worker_shutdown_timeout`); kernel-stack connections are not counted in it. An old generation that only holds **idle** keepalive connections on a `kernel_network_stack on` server therefore finishes draining immediately (drain ~1s) and `ngx_close_idle_connections()` closes them, at the same moment the old generation logs `exiting`. **Active** connections are not affected: in measurements, streams in flight (including proxied upstream connections that live on the kernel stack) ran to natural completion with zero errors, and the old generation stayed until they ended. Long-lived **idle** connections on a mixed-mode server are consequently not protected by the drain window — expect reconnects at reload time, or keep that traffic on F-Stack listeners.
+- **Kernel-stack listeners themselves survive the reload.** The listening socket is opened by the master and inherited by every generation, so its socket inode does not change across a reload and new connections are accepted throughout.
+- Polling granularity for the mixed event loop is `schedule_timeout` (main context, default 30ms). Lowering it reduces the response latency of kernel-stack connections at the cost of more loop passes.
+
+### KNI notes (graceful_reload + `[kni]` enable=1)
+
+- The kernel-side exception interface is a virtio_user paired port named `veth<port_id>` (rte_kni.ko is no longer supported). It is created by the resident slim primary, so `[kni] enable` takes effect only when that primary (re)starts — see "Changing the f-stack config" above. It survives reloads, and KNI ownership follows the generation directory across generations and masters. Set `owner_proc_id` to a secondary proc_id whose lcore is in the port's `lcore_list`.
+- **Addressing warning**: the kernel-side `veth<port_id>` address must be a `/32` (or live in a dedicated subnet). Configuring it with the same subnet mask as another interface of the host (e.g. the management NIC) adds a second connected route and hijacks the host's return traffic (observed: ssh sessions broken).
+- Known limitation: on clouds whose fabric only delivers platform-assigned IPs, management-plane reachability of a self-chosen KNI address from external clients cannot be validated (proxy ARP answers, but the packets never reach the NIC). The KNI data plane itself (divert-to-kernel and inject-from-kernel) is verified bidirectionally across reloads on such environments.
+- **Do not use ICMP as the control probe when testing KNI reachability, and do not ping from the server itself.** With `method=reject`, ICMP is not in the `tcp_port`/`udp_port` whitelist, so it is diverted to the kernel — which does not own the F-Stack IP and silently drops it. A perfectly healthy stack is then reported as unreachable. Use an HTTP/TCP probe against a whitelisted port instead (e.g. `curl -o /dev/null -w '%{http_code}' http://<DPDK_NIC_IP>/` == 200).
+- Likewise, a management-plane ping must be issued **from a remote client**, not from the server: the server-local ping to its own `veth<port_id>` address is answered by the host route and never leaves the host or traverses KNI, so it is always "ok" and says nothing about KNI. Judge the result in three states: `ok` (client ping answered), `LIMITED` (KNI address unreachable while the control address answers — the environment cannot deliver the address, the criterion is not judged rather than failed), `DOWN` (neither answers — a real failure).
+
+### Tools: addressing a generation (`-p` / `-g`)
+
+While the resident slim primary is running, the tools read the EAL file prefix from its record `/var/run/ff_slim_primary.conf`, so a `[dpdk] file_prefix` in the f-stack config needs no extra option. Set `FF_FILE_PREFIX=<directory name under /var/run/dpdk>` to reach another stack: `rte` for a `graceful_reload=0` stack without file_prefix or `[vdevN]`, `container-<file_prefix>` or `container` otherwise.
+
+The `ff_*` tools (`ff_netstat`, `ff_sysctl`, `ff_traffic`, ...) accept:
+
+- `-p <proc_id>[:<gen>[:<epoch>]]`
+- `-g <gen>[:<epoch>]`
+
+The recommended path is to omit both: the tool auto-probes the resident primary for the currently active `(epoch, gen)` and addresses the serving generation — this works through reloads and through the dual-master USR2 window. `ff_top` and `ff_traffic` keep following the serving generation while they sample (a sample spanning the switch is skipped); other tools resolve the generation once per run. Explicit coordinates are only needed to address a non-active generation (e.g. the draining old one); take the epoch from the `generation directory attached: epoch <N> slot <S>` line of the target's F-Stack log. There is no silent fallback: if the probe fails or a coordinate is malformed, the tool refuses with an explicit error.
+
 ## Nginx compiling
 	./configure --prefix=/usr/local/nginx_fstack --with-ff_module
 	make
 	make install
+
+Optional modules used by the F-Stack test setup: `--with-stream --with-stream_ssl_module --with-http_ssl_module --with-http_v2_module`. For binary upgrades (USR2) both the old and the new binary must be built against the same libfstack.
 

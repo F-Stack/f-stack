@@ -6,12 +6,14 @@
 
 #include <rte_thread.h>
 #include <rte_debug.h>
+#include <rte_stdatomic.h>
+#include <rte_pause.h>
 
 #include "test.h"
 
 RTE_LOG_REGISTER(threads_logtype_test, test.threads, INFO);
 
-static uint32_t thread_id_ready;
+static RTE_ATOMIC(uint32_t) thread_id_ready;
 
 static uint32_t
 thread_main(void *arg)
@@ -19,10 +21,10 @@ thread_main(void *arg)
 	if (arg != NULL)
 		*(rte_thread_t *)arg = rte_thread_self();
 
-	__atomic_store_n(&thread_id_ready, 1, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(&thread_id_ready, 1, rte_memory_order_release);
 
-	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 1)
-		;
+	while (rte_atomic_load_explicit(&thread_id_ready, rte_memory_order_acquire) == 1)
+		rte_pause();
 
 	return 0;
 }
@@ -37,13 +39,13 @@ test_thread_create_join(void)
 	RTE_TEST_ASSERT(rte_thread_create(&thread_id, NULL, thread_main, &thread_main_id) == 0,
 		"Failed to create thread.");
 
-	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 0)
-		;
+	while (rte_atomic_load_explicit(&thread_id_ready, rte_memory_order_acquire) == 0)
+		rte_pause();
 
 	RTE_TEST_ASSERT(rte_thread_equal(thread_id, thread_main_id) != 0,
 		"Unexpected thread id.");
 
-	__atomic_store_n(&thread_id_ready, 2, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(&thread_id_ready, 2, rte_memory_order_release);
 
 	RTE_TEST_ASSERT(rte_thread_join(thread_id, NULL) == 0,
 		"Failed to join thread.");
@@ -61,13 +63,13 @@ test_thread_create_detach(void)
 	RTE_TEST_ASSERT(rte_thread_create(&thread_id, NULL, thread_main,
 		&thread_main_id) == 0, "Failed to create thread.");
 
-	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 0)
-		;
+	while (rte_atomic_load_explicit(&thread_id_ready, rte_memory_order_acquire) == 0)
+		rte_pause();
 
 	RTE_TEST_ASSERT(rte_thread_equal(thread_id, thread_main_id) != 0,
 		"Unexpected thread id.");
 
-	__atomic_store_n(&thread_id_ready, 2, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(&thread_id_ready, 2, rte_memory_order_release);
 
 	RTE_TEST_ASSERT(rte_thread_detach(thread_id) == 0,
 		"Failed to detach thread.");
@@ -85,8 +87,8 @@ test_thread_priority(void)
 	RTE_TEST_ASSERT(rte_thread_create(&thread_id, NULL, thread_main, NULL) == 0,
 		"Failed to create thread");
 
-	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 0)
-		;
+	while (rte_atomic_load_explicit(&thread_id_ready, rte_memory_order_acquire) == 0)
+		rte_pause();
 
 	priority = RTE_THREAD_PRIORITY_NORMAL;
 	RTE_TEST_ASSERT(rte_thread_set_priority(thread_id, priority) == 0,
@@ -121,7 +123,7 @@ test_thread_priority(void)
 	RTE_TEST_ASSERT(priority == RTE_THREAD_PRIORITY_NORMAL,
 		"Priority set mismatches priority get");
 
-	__atomic_store_n(&thread_id_ready, 2, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(&thread_id_ready, 2, rte_memory_order_release);
 
 	return 0;
 }
@@ -137,8 +139,8 @@ test_thread_affinity(void)
 	RTE_TEST_ASSERT(rte_thread_create(&thread_id, NULL, thread_main, NULL) == 0,
 		"Failed to create thread");
 
-	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 0)
-		;
+	while (rte_atomic_load_explicit(&thread_id_ready, rte_memory_order_acquire) == 0)
+		rte_pause();
 
 	RTE_TEST_ASSERT(rte_thread_get_affinity_by_id(thread_id, &cpuset0) == 0,
 		"Failed to get thread affinity");
@@ -190,15 +192,15 @@ test_thread_attributes_affinity(void)
 	RTE_TEST_ASSERT(rte_thread_create(&thread_id, &attr, thread_main, NULL) == 0,
 		"Failed to create attributes affinity thread.");
 
-	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 0)
-		;
+	while (rte_atomic_load_explicit(&thread_id_ready, rte_memory_order_acquire) == 0)
+		rte_pause();
 
 	RTE_TEST_ASSERT(rte_thread_get_affinity_by_id(thread_id, &cpuset1) == 0,
 		"Failed to get attributes thread affinity");
 	RTE_TEST_ASSERT(memcmp(&cpuset0, &cpuset1, sizeof(rte_cpuset_t)) == 0,
 		"Failed to apply affinity attributes");
 
-	__atomic_store_n(&thread_id_ready, 2, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(&thread_id_ready, 2, rte_memory_order_release);
 
 	return 0;
 }
@@ -219,15 +221,15 @@ test_thread_attributes_priority(void)
 	RTE_TEST_ASSERT(rte_thread_create(&thread_id, &attr, thread_main, NULL) == 0,
 		"Failed to create attributes priority thread.");
 
-	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 0)
-		;
+	while (rte_atomic_load_explicit(&thread_id_ready, rte_memory_order_acquire) == 0)
+		rte_pause();
 
 	RTE_TEST_ASSERT(rte_thread_get_priority(thread_id, &priority) == 0,
 		"Failed to get thread priority");
 	RTE_TEST_ASSERT(priority == RTE_THREAD_PRIORITY_NORMAL,
 		"Failed to apply priority attributes");
 
-	__atomic_store_n(&thread_id_ready, 2, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(&thread_id_ready, 2, rte_memory_order_release);
 
 	return 0;
 }
@@ -243,13 +245,13 @@ test_thread_control_create_join(void)
 		thread_main, &thread_main_id) == 0,
 		"Failed to create thread.");
 
-	while (__atomic_load_n(&thread_id_ready, __ATOMIC_ACQUIRE) == 0)
-		;
+	while (rte_atomic_load_explicit(&thread_id_ready, rte_memory_order_acquire) == 0)
+		rte_pause();
 
 	RTE_TEST_ASSERT(rte_thread_equal(thread_id, thread_main_id) != 0,
 		"Unexpected thread id.");
 
-	__atomic_store_n(&thread_id_ready, 2, __ATOMIC_RELEASE);
+	rte_atomic_store_explicit(&thread_id_ready, 2, rte_memory_order_release);
 
 	RTE_TEST_ASSERT(rte_thread_join(thread_id, NULL) == 0,
 		"Failed to join thread.");

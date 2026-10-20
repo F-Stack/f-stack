@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2017 Intel Corporation
  */
+#include <stdlib.h>
+
 #include <rte_tm_driver.h>
 
 #include "base/ice_sched.h"
@@ -12,13 +14,13 @@ static int ice_dcf_hierarchy_commit(struct rte_eth_dev *dev,
 static int ice_dcf_node_add(struct rte_eth_dev *dev, uint32_t node_id,
 	      uint32_t parent_node_id, uint32_t priority,
 	      uint32_t weight, uint32_t level_id,
-	      struct rte_tm_node_params *params,
+	      const struct rte_tm_node_params *params,
 	      struct rte_tm_error *error);
 static int ice_dcf_node_delete(struct rte_eth_dev *dev, uint32_t node_id,
 			    struct rte_tm_error *error);
 static int ice_dcf_shaper_profile_add(struct rte_eth_dev *dev,
 			uint32_t shaper_profile_id,
-			struct rte_tm_shaper_params *profile,
+			const struct rte_tm_shaper_params *profile,
 			struct rte_tm_error *error);
 static int ice_dcf_shaper_profile_del(struct rte_eth_dev *dev,
 				   uint32_t shaper_profile_id,
@@ -139,7 +141,7 @@ ice_dcf_shaper_profile_search(struct rte_eth_dev *dev,
 static int
 ice_dcf_node_param_check(struct ice_dcf_hw *hw, uint32_t node_id,
 		      uint32_t priority, uint32_t weight,
-		      struct rte_tm_node_params *params,
+		      const struct rte_tm_node_params *params,
 		      struct rte_tm_error *error)
 {
 	/* checked all the unsupported parameter */
@@ -230,7 +232,7 @@ static int
 ice_dcf_node_add(struct rte_eth_dev *dev, uint32_t node_id,
 	      uint32_t parent_node_id, uint32_t priority,
 	      uint32_t weight, uint32_t level_id,
-	      struct rte_tm_node_params *params,
+	      const struct rte_tm_node_params *params,
 	      struct rte_tm_error *error)
 {
 	enum ice_dcf_tm_node_type parent_node_type = ICE_DCF_TM_NODE_TYPE_MAX;
@@ -463,7 +465,7 @@ ice_dcf_node_delete(struct rte_eth_dev *dev, uint32_t node_id,
 }
 
 static int
-ice_dcf_shaper_profile_param_check(struct rte_tm_shaper_params *profile,
+ice_dcf_shaper_profile_param_check(const struct rte_tm_shaper_params *profile,
 				struct rte_tm_error *error)
 {
 	/* min bucket size not supported */
@@ -491,7 +493,7 @@ ice_dcf_shaper_profile_param_check(struct rte_tm_shaper_params *profile,
 static int
 ice_dcf_shaper_profile_add(struct rte_eth_dev *dev,
 			uint32_t shaper_profile_id,
-			struct rte_tm_shaper_params *profile,
+			const struct rte_tm_shaper_params *profile,
 			struct rte_tm_error *error)
 {
 	struct ice_dcf_adapter *adapter = dev->data->dev_private;
@@ -746,8 +748,8 @@ static int ice_dcf_hierarchy_commit(struct rte_eth_dev *dev,
 {
 	struct ice_dcf_adapter *adapter = dev->data->dev_private;
 	struct ice_dcf_hw *hw = &adapter->real_hw;
-	struct virtchnl_dcf_bw_cfg_list *vf_bw;
-	struct virtchnl_dcf_bw_cfg_list *tc_bw;
+	struct virtchnl_dcf_bw_cfg_list *vf_bw = NULL;
+	struct virtchnl_dcf_bw_cfg_list *tc_bw = NULL;
 	struct ice_dcf_tm_node_list *vsi_list = &hw->tm_conf.vsi_list;
 	struct rte_tm_shaper_params *profile;
 	struct ice_dcf_tm_node *tm_node;
@@ -770,12 +772,12 @@ static int ice_dcf_hierarchy_commit(struct rte_eth_dev *dev,
 	size = sizeof(struct virtchnl_dcf_bw_cfg_list) +
 		sizeof(struct virtchnl_dcf_bw_cfg) *
 		(hw->tm_conf.nb_tc_node - 1);
-	vf_bw = rte_zmalloc("vf_bw", size, 0);
+	vf_bw = calloc(1, size);
 	if (!vf_bw) {
 		ret_val = ICE_ERR_NO_MEMORY;
 		goto fail_clear;
 	}
-	tc_bw = rte_zmalloc("tc_bw", size, 0);
+	tc_bw = calloc(1, size);
 	if (!tc_bw) {
 		ret_val = ICE_ERR_NO_MEMORY;
 		goto fail_clear;
@@ -875,6 +877,11 @@ static int ice_dcf_hierarchy_commit(struct rte_eth_dev *dev,
 	return ret_val;
 
 fail_clear:
+	if (vf_bw != NULL)
+		free(vf_bw);
+	if (tc_bw != NULL)
+		free(tc_bw);
+
 	/* clear all the traffic manager configuration */
 	if (clear_on_fail) {
 		ice_dcf_tm_conf_uninit(dev);

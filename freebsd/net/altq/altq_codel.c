@@ -36,8 +36,6 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  * OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH
  * DAMAGE.
- *
- * $FreeBSD$
  */
 #include "opt_altq.h"
 #include "opt_inet.h"
@@ -53,6 +51,7 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <netinet/in.h>
 
 #include <netpfil/pf/pf.h>
@@ -85,7 +84,7 @@ codel_pfattach(struct pf_altq *a)
 		return (EINVAL);
 
 	return (altq_attach(&ifp->if_snd, ALTQT_CODEL, a->altq_disc,
-	    codel_enqueue, codel_dequeue, codel_request, NULL, NULL));
+	    codel_enqueue, codel_dequeue, codel_request));
 }
 
 int
@@ -288,16 +287,18 @@ codel_addq(struct codel *c, class_queue_t *q, struct mbuf *m)
 
 	if (qlen(q) < qlimit(q)) {
 		mtag = m_tag_locate(m, MTAG_CODEL, 0, NULL);
-		if (mtag == NULL)
+		if (mtag == NULL) {
 			mtag = m_tag_alloc(MTAG_CODEL, 0, sizeof(uint64_t),
 			    M_NOWAIT);
+			if (mtag != NULL)
+				m_tag_prepend(m, mtag);
+		}
 		if (mtag == NULL) {
 			m_freem(m);
 			return (-1);
 		}
 		enqueue_time = (uint64_t *)(mtag + 1);
 		*enqueue_time = read_machclk();
-		m_tag_prepend(m, mtag);
 		_addq(q, m);
 		return (0);
 	}

@@ -152,6 +152,7 @@ gve_rx(struct gve_rx_queue *rxq, volatile struct gve_rx_desc *rxd, uint16_t rx_i
 
 	rxe = rxq->sw_ring[rx_id];
 	gve_rx_mbuf(rxq, rxe, frag_size, rx_id);
+	rxq->sw_ring[rx_id] = NULL;
 	rxq->stats.bytes += frag_size;
 
 	if (is_first_frag) {
@@ -204,6 +205,8 @@ gve_rx_burst(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		if (gve_rx(rxq, rxd, rx_id)) {
 			if (!ctx->drop_pkt)
 				rx_pkts[nb_rx++] = ctx->mbuf_head;
+			else if (ctx->mbuf_head != NULL)
+				rte_pktmbuf_free(ctx->mbuf_head);
 			rxq->nb_avail += ctx->total_frags;
 			gve_rx_ctx_clear(ctx);
 		}
@@ -279,7 +282,7 @@ gve_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 		return;
 
 	if (q->is_gqi_qpl) {
-		gve_adminq_unregister_page_list(q->hw, q->qpl->id);
+		gve_teardown_queue_page_list(q->hw, q->qpl);
 		q->qpl = NULL;
 	}
 
@@ -304,11 +307,12 @@ gve_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id,
 	uint32_t mbuf_len;
 	int err = 0;
 
-	if (nb_desc != hw->rx_desc_cnt) {
-		PMD_DRV_LOG(WARNING, "gve doesn't support nb_desc config, use hw nb_desc %u.",
-			    hw->rx_desc_cnt);
+	/* Ring size is required to be a power of two. */
+	if (!rte_is_power_of_2(nb_desc)) {
+		PMD_DRV_LOG(ERR, "Invalid ring size %u. GVE ring size must be a power of 2.",
+			    nb_desc);
+		return -EINVAL;
 	}
-	nb_desc = hw->rx_desc_cnt;
 
 	/* Free memory if needed. */
 	if (dev->data->rx_queues[queue_id]) {
@@ -382,11 +386,16 @@ gve_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id,
 	}
 	rxq->rx_data_ring = (union gve_rx_data_slot *)mz->addr;
 	rxq->data_mz = mz;
+
+	/* Allocate and register QPL for the queue. */
 	if (rxq->is_gqi_qpl) {
-		rxq->qpl = &hw->qpl[rxq->ntfy_id];
-		err = gve_adminq_register_page_list(hw, rxq->qpl);
-		if (err != 0) {
-			PMD_DRV_LOG(ERR, "Failed to register qpl %u", queue_id);
+		rxq->qpl = gve_setup_queue_page_list(hw, queue_id, true,
+						     nb_desc);
+		if (!rxq->qpl) {
+			err = -ENOMEM;
+			PMD_DRV_LOG(ERR,
+				    "Failed to alloc rx qpl for queue %hu.",
+				    queue_id);
 			goto err_data_ring;
 		}
 	}
@@ -397,7 +406,7 @@ gve_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id,
 	if (mz == NULL) {
 		PMD_DRV_LOG(ERR, "Failed to reserve DMA memory for RX resource");
 		err = -ENOMEM;
-		goto err_data_ring;
+		goto err_qpl;
 	}
 	rxq->qres = (struct gve_queue_resources *)mz->addr;
 	rxq->qres_mz = mz;
@@ -407,7 +416,11 @@ gve_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id,
 	dev->data->rx_queues[queue_id] = rxq;
 
 	return 0;
-
+err_qpl:
+	if (rxq->is_gqi_qpl) {
+		gve_teardown_queue_page_list(hw, rxq->qpl);
+		rxq->qpl = NULL;
+	}
 err_data_ring:
 	rte_memzone_free(rxq->data_mz);
 err_rx_ring:

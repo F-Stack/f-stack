@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2005, Gleb Smirnoff <glebius@FreeBSD.org>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #define NG_NAT_NODE_TYPE    "nat"
@@ -54,6 +52,8 @@ struct ng_nat_mode {
 #define NG_NAT_RESET_ON_ADDR_CHANGE	0x20
 #define NG_NAT_PROXY_ONLY		0x40
 #define NG_NAT_REVERSE			0x80
+#define NG_NAT_UNREGISTERED_CGN		0x100
+#define NG_NAT_UDP_EIM			0x200
 
 #define NG_NAT_DESC_LENGTH	64
 #define NG_NAT_REDIRPROTO_ADDR	(IPPROTO_MAX + 3) 	/* LibAlias' LINK_ADDR, also unused in in.h */

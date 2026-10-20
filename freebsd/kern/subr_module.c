@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 Michael Smith
  * All rights reserved.
@@ -28,9 +28,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/linker.h>
@@ -47,7 +44,20 @@ __FBSDID("$FreeBSD$");
  */
 
 vm_offset_t preload_addr_relocate = 0;
-caddr_t preload_metadata;
+caddr_t preload_metadata, preload_kmdp;
+
+const char preload_modtype[] = MODTYPE;
+const char preload_kerntype[] = KERNTYPE;
+const char preload_modtype_obj[] = MODTYPE_OBJ;
+
+void
+preload_initkmdp(bool fatal)
+{
+	preload_kmdp = preload_search_by_type(preload_kerntype);
+
+	if (preload_kmdp == NULL && fatal)
+		panic("unable to find kernel metadata");
+}
 
 /*
  * Search for the preloaded module (name)
@@ -296,6 +306,7 @@ preload_bootstrap_relocate(vm_offset_t offset)
 	    switch (hdr[0]) {
 	    case MODINFO_ADDR:
 	    case MODINFO_METADATA|MODINFOMD_FONT:
+	    case MODINFO_METADATA|MODINFOMD_SPLASH:
 	    case MODINFO_METADATA|MODINFOMD_SSYM:
 	    case MODINFO_METADATA|MODINFOMD_ESYM:
 		ptr = (vm_offset_t *)(curp + (sizeof(uint32_t) * 2));
@@ -427,6 +438,16 @@ preload_modinfo_type(struct sbuf *sbp, int type)
 		sbuf_cat(sbp, "MODINFOMD_FONT");
 		break;
 #endif
+#ifdef MODINFOMD_SPLASH
+	case MODINFOMD_SPLASH:
+		sbuf_cat(sbp, "MODINFOMD_SPLASH");
+		break;
+#endif
+#ifdef MODINFOMD_BOOT_HARTID
+	case MODINFOMD_BOOT_HARTID:
+		sbuf_cat(sbp, "MODINFOMD_BOOT_HARTID");
+		break;
+#endif
 	default:
 		sbuf_cat(sbp, "unrecognized metadata type");
 	}
@@ -479,11 +500,19 @@ preload_modinfo_value(struct sbuf *sbp, uint32_t *bptr, int type, int len)
 #ifdef MODINFOMD_FONT
 	case MODINFO_METADATA | MODINFOMD_FONT:
 #endif
+#ifdef MODINFOMD_SPLASH
+	case MODINFO_METADATA | MODINFOMD_SPLASH:
+#endif
 		sbuf_print_vmoffset(sbp, *(vm_offset_t *)bptr);
 		break;
 	case MODINFO_METADATA | MODINFOMD_HOWTO:
 		sbuf_printf(sbp, "0x%08x", *bptr);
 		break;
+#ifdef MODINFOMD_BOOT_HARTID
+	case MODINFO_METADATA | MODINFOMD_BOOT_HARTID:
+		sbuf_printf(sbp, "0x%lu", *(uint64_t *)bptr);
+		break;
+#endif
 	case MODINFO_METADATA | MODINFOMD_SHDR:
 	case MODINFO_METADATA | MODINFOMD_ELFHDR:
 	case MODINFO_METADATA | MODINFOMD_FW_HANDLE:

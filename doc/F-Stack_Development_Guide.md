@@ -13,14 +13,17 @@ F-Stack is an open source high performant network framework based on DPDK with t
 
 ## Structure of F-Stack code
 
-    ├── app  -- Nginx(1.16.1)/Redis(3.2.8)/Microthread framework
+    ├── app  -- Nginx(1.28.0)/Redis(6.2.6)/Microthread framework
+    ├── adapter  -- Network adapters (micro_thread, syscall via LD_PRELOAD)
     ├── config.ini
-    ├── doc
-    ├── dpdk -- Intel DPDK(16.07) directory
+    ├── doc  -- Original English documentation
+    ├── docs  -- Three-layer architecture knowledge base documentation
+    ├── dpdk -- Intel DPDK(23.11.5) directory
     ├── example -- DEMO
-    ├── freebsd -- FreeBSD(11.0) Network Stack directory
+    ├── freebsd -- FreeBSD(13.0) Network Stack directory
     ├── lib -- F-Stack lib directory
     ├── mk
+    ├── tools -- Utility scripts (top, sysctl, ifconfig, etc.)
     └── start.sh
 
 

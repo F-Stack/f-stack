@@ -43,13 +43,13 @@
 static inline uint64_t
 counter_u64_fetch_inline(uint64_t *p)
 {
-    return (*p);
+    return (__atomic_load_n(p, __ATOMIC_RELAXED));
 }
 
 static inline void
 counter_u64_zero_inline(counter_u64_t c)
 {
-    *c = 0;
+    __atomic_store_n(c, 0, __ATOMIC_RELAXED);
 }
 #endif
 
@@ -58,7 +58,7 @@ counter_u64_zero_inline(counter_u64_t c)
 static inline void
 counter_u64_add(counter_u64_t c, int64_t inc)
 {
-    *c += inc;
+    __atomic_fetch_add(c, inc, __ATOMIC_RELAXED);
 }
 
 #endif    /* ! __FSTACK_MACHINE_COUNTER_H__ */

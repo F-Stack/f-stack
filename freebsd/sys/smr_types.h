@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019, 2020 Jeffrey Roberson <jeff@FreeBSD.org>
  *
@@ -23,8 +23,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_SMR_TYPES_H_
@@ -62,7 +60,8 @@ struct {								\
  */
 #define	smr_entered_load(p, smr) ({					\
 	SMR_ASSERT(SMR_ENTERED((smr)), "smr_entered_load");		\
-	(__typeof((p)->__ptr))atomic_load_acq_ptr((uintptr_t *)&(p)->__ptr); \
+	(__typeof((p)->__ptr))atomic_load_acq_ptr(			\
+	    (const uintptr_t *)&(p)->__ptr);				\
 })
 
 /*
@@ -72,7 +71,8 @@ struct {								\
  */
 #define	smr_serialized_load(p, ex) ({					\
 	SMR_ASSERT(ex, "smr_serialized_load");				\
-	(__typeof((p)->__ptr))atomic_load_ptr(&(p)->__ptr);		\
+	(__typeof((p)->__ptr))atomic_load_ptr(				\
+	    (const uintptr_t *)&(p)->__ptr);				\
 })
 
 /*

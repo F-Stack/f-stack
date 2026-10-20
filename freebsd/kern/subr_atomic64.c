@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Justin Hibbits
  *
@@ -23,11 +23,8 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
-#include <sys/cdefs.h>
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
@@ -80,8 +77,8 @@ static struct mtx a64_mtx_pool[A64_POOL_SIZE];
 
 #define ATOMIC64_EMU_UN(op, rt, block, ret) \
     rt \
-    atomic_##op##_64(volatile u_int64_t *p) {			\
-	u_int64_t tmp __unused;					\
+    atomic_##op##_64(const volatile uint64_t *p) {		\
+	uint64_t tmp __unused;					\
 	LOCK_A64();						\
 	block;							\
 	UNLOCK_A64();						\
@@ -89,8 +86,8 @@ static struct mtx a64_mtx_pool[A64_POOL_SIZE];
 
 #define	ATOMIC64_EMU_BIN(op, rt, block, ret) \
     rt \
-    atomic_##op##_64(volatile u_int64_t *p, u_int64_t v) {	\
-	u_int64_t tmp __unused;					\
+    atomic_##op##_64(volatile uint64_t *p, uint64_t v) {	\
+	uint64_t tmp __unused;					\
 	LOCK_A64();						\
 	block;							\
 	UNLOCK_A64();						\
@@ -98,16 +95,16 @@ static struct mtx a64_mtx_pool[A64_POOL_SIZE];
 
 ATOMIC64_EMU_BIN(add, void, (*p = *p + v), return);
 ATOMIC64_EMU_BIN(clear, void, *p &= ~v, return);
-ATOMIC64_EMU_BIN(fetchadd, u_int64_t, (*p = *p + v, v = *p - v), return (v));
-ATOMIC64_EMU_UN(load, u_int64_t, (tmp = *p), return (tmp));
+ATOMIC64_EMU_BIN(fetchadd, uint64_t, (*p = *p + v, v = *p - v), return (v));
+ATOMIC64_EMU_UN(load, uint64_t, (tmp = *p), return (tmp));
 ATOMIC64_EMU_BIN(set, void, *p |= v, return);
 ATOMIC64_EMU_BIN(subtract, void, (*p = *p - v), return);
 ATOMIC64_EMU_BIN(store, void, *p = v, return);
-ATOMIC64_EMU_BIN(swap, u_int64_t, tmp = *p; *p = v; v = tmp, return(v));
+ATOMIC64_EMU_BIN(swap, uint64_t, tmp = *p; *p = v; v = tmp, return(v));
 
-int atomic_cmpset_64(volatile u_int64_t *p, u_int64_t old, u_int64_t new)
+int atomic_cmpset_64(volatile uint64_t *p, uint64_t old, uint64_t new)
 {
-	u_int64_t tmp;
+	uint64_t tmp;
 
 	LOCK_A64();
 	tmp = *p;
@@ -118,9 +115,9 @@ int atomic_cmpset_64(volatile u_int64_t *p, u_int64_t old, u_int64_t new)
 	return (tmp == old);
 }
 
-int atomic_fcmpset_64(volatile u_int64_t *p, u_int64_t *old, u_int64_t new)
+int atomic_fcmpset_64(volatile uint64_t *p, uint64_t *old, uint64_t new)
 {
-	u_int64_t tmp, tmp_old;
+	uint64_t tmp, tmp_old;
 
 	LOCK_A64();
 	tmp = *p;

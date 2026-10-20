@@ -58,9 +58,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ip_var.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 #ifndef _NETINET6_IP6_VAR_H_
@@ -81,7 +78,7 @@ struct	ip6q {
 	u_int32_t	ip6q_ident;
 	u_int8_t	ip6q_nxt;
 	u_int8_t	ip6q_ecn;
-	u_int8_t	ip6q_ttl;
+	u_int16_t	ip6q_ttl;
 	struct in6_addr ip6q_src, ip6q_dst;
 	TAILQ_ENTRY(ip6q) ip6q_tq;
 	int		ip6q_unfrglen;	/* len of unfragmentable part */
@@ -133,27 +130,26 @@ struct	ip6po_nhinfo {
 #define ip6po_nexthop	ip6po_nhinfo.ip6po_nhi_nexthop
 #define ip6po_nextroute	ip6po_nhinfo.ip6po_nhi_route
 
+/*
+ * Note that fields with valid data must be flagged in ip6po_valid.
+ * This is done to reduce cache misses in ip6_output().  Before
+ * ip6po_valid, ip6_output needed to check all the individual fields
+ * of ip6_pktopts needed to be checked themselves, and they are spread
+ * across 4 cachelines. ip6_output() is currently the only consumer of
+ * these flags, as it is in the critical path of every packet sent.
+ */
 struct	ip6_pktopts {
-	struct	mbuf *ip6po_m;	/* Pointer to mbuf storing the data */
+	uint32_t ip6po_valid;
+#define IP6PO_VALID_HLIM	0x0001
+#define IP6PO_VALID_PKTINFO	0x0002
+#define IP6PO_VALID_NHINFO	0x0004
+#define IP6PO_VALID_HBH		0x0008
+#define IP6PO_VALID_DEST1	0x0010
+#define IP6PO_VALID_RHINFO	0x0020
+#define IP6PO_VALID_DEST2	0x0040
+#define IP6PO_VALID_TC		0x0080
+
 	int	ip6po_hlim;	/* Hoplimit for outgoing packets */
-
-	/* Outgoing IF/address information */
-	struct	in6_pktinfo *ip6po_pktinfo;
-
-	/* Next-hop address information */
-	struct	ip6po_nhinfo ip6po_nhinfo;
-
-	struct	ip6_hbh *ip6po_hbh; /* Hop-by-Hop options header */
-
-	/* Destination options header (before a routing header) */
-	struct	ip6_dest *ip6po_dest1;
-
-	/* Routing header related info. */
-	struct	ip6po_rhinfo ip6po_rhinfo;
-
-	/* Destination options header (after a routing header) */
-	struct	ip6_dest *ip6po_dest2;
-
 	int	ip6po_tclass;	/* traffic class */
 
 	int	ip6po_minmtu;  /* fragment vs PMTU discovery policy */
@@ -174,6 +170,25 @@ struct	ip6_pktopts {
 #endif
 #define IP6PO_DONTFRAG	0x04	/* disable fragmentation (IPV6_DONTFRAG) */
 #define IP6PO_USECOA	0x08	/* use care of address */
+
+	struct	mbuf *ip6po_m;	/* Pointer to mbuf storing the data */
+
+	/* Outgoing IF/address information */
+	struct	in6_pktinfo *ip6po_pktinfo;
+
+	/* Next-hop address information */
+	struct	ip6po_nhinfo ip6po_nhinfo;
+
+	struct	ip6_hbh *ip6po_hbh; /* Hop-by-Hop options header */
+
+	/* Destination options header (before a routing header) */
+	struct	ip6_dest *ip6po_dest1;
+
+	/* Routing header related info. */
+	struct	ip6po_rhinfo ip6po_rhinfo;
+
+	/* Destination options header (after a routing header) */
+	struct	ip6_dest *ip6po_dest2;
 };
 
 /*
@@ -248,13 +263,22 @@ struct	ip6stat {
 
 #ifdef _KERNEL
 #include <sys/counter.h>
+#include <netinet/in_kdtrace.h>
 
 VNET_PCPUSTAT_DECLARE(struct ip6stat, ip6stat);
-#define	IP6STAT_ADD(name, val)	\
-    VNET_PCPUSTAT_ADD(struct ip6stat, ip6stat, name, (val))
-#define	IP6STAT_SUB(name, val)	IP6STAT_ADD(name, -(val))
+#define	IP6STAT_ADD(name, val)                                           \
+	do {                                                             \
+		MIB_SDT_PROBE1(ip6, count, name, (val));                 \
+		VNET_PCPUSTAT_ADD(struct ip6stat, ip6stat, name, (val)); \
+	} while (0)
+#define IP6STAT_SUB(name, val) IP6STAT_ADD(name, -(val))
 #define	IP6STAT_INC(name)	IP6STAT_ADD(name, 1)
-#define	IP6STAT_DEC(name)	IP6STAT_SUB(name, 1)
+#define IP6STAT_INC2(name, type)                                     \
+	do {                                                         \
+		MIB_SDT_PROBE2(ip6, count, name, 1, type);           \
+		VNET_PCPUSTAT_ADD(struct ip6stat, ip6stat, name, 1); \
+	} while (0)
+#define IP6STAT_DEC(name) IP6STAT_SUB(name, 1)
 #endif
 
 #ifdef _KERNEL
@@ -293,8 +317,6 @@ VNET_DECLARE(int, ip6_norbit_raif);	/* Disable R-bit in NA on RA
 					 * receiving IF. */
 VNET_DECLARE(int, ip6_rfc6204w3);	/* Accept defroute from RA even when
 					   forwarding enabled */
-VNET_DECLARE(int, ip6_log_interval);
-VNET_DECLARE(time_t, ip6_log_time);
 VNET_DECLARE(int, ip6_hdrnestlimit);	/* upper limit of # of extension
 					 * headers */
 VNET_DECLARE(int, ip6_dad_count);	/* DupAddrDetectionTransmits */
@@ -304,8 +326,6 @@ VNET_DECLARE(int, ip6_dad_count);	/* DupAddrDetectionTransmits */
 #define	V_ip6_no_radr			VNET(ip6_no_radr)
 #define	V_ip6_norbit_raif		VNET(ip6_norbit_raif)
 #define	V_ip6_rfc6204w3			VNET(ip6_rfc6204w3)
-#define	V_ip6_log_interval		VNET(ip6_log_interval)
-#define	V_ip6_log_time			VNET(ip6_log_time)
 #define	V_ip6_hdrnestlimit		VNET(ip6_hdrnestlimit)
 #define	V_ip6_dad_count			VNET(ip6_dad_count)
 
@@ -329,27 +349,25 @@ VNET_DECLARE(struct pfil_head *, inet6_pfil_head);
 #define	V_inet6_pfil_head	VNET(inet6_pfil_head)
 #define	PFIL_INET6_NAME		"inet6"
 
+VNET_DECLARE(struct pfil_head *, inet6_local_pfil_head);
+#define	V_inet6_local_pfil_head	VNET(inet6_local_pfil_head)
+#define	PFIL_INET6_LOCAL_NAME	"inet6-local"
+
 #ifdef IPSTEALTH
 VNET_DECLARE(int, ip6stealth);
 #define	V_ip6stealth			VNET(ip6stealth)
 #endif
 
-#ifdef EXPERIMENTAL
-VNET_DECLARE(int, nd6_ignore_ipv6_only_ra);
-#define	V_nd6_ignore_ipv6_only_ra	VNET(nd6_ignore_ipv6_only_ra)
-#endif
+VNET_DECLARE(bool, ip6_log_cannot_forward);
+#define	V_ip6_log_cannot_forward	VNET(ip6_log_cannot_forward)
 
 extern struct	pr_usrreqs rip6_usrreqs;
 struct sockopt;
 
 struct inpcb;
+struct ucred;
 
 int	icmp6_ctloutput(struct socket *, struct sockopt *sopt);
-
-struct in6_ifaddr;
-void	ip6_init(void);
-int	ip6proto_register(short);
-int	ip6proto_unregister(short);
 
 void	ip6_input(struct mbuf *);
 void	ip6_direct_input(struct mbuf *);
@@ -396,14 +414,10 @@ int	route6_input(struct mbuf **, int *, int);
 void	frag6_init(void);
 void	frag6_destroy(void);
 int	frag6_input(struct mbuf **, int *, int);
-void	frag6_slowtimo(void);
-void	frag6_drain(void);
+void	frag6_drain(void *, int);
 
 void	rip6_init(void);
-int	rip6_input(struct mbuf **, int *, int);
-void	rip6_ctlinput(int, struct sockaddr *, void *);
 int	rip6_ctloutput(struct socket *, struct sockopt *);
-int	rip6_output(struct mbuf *, struct socket *, ...);
 int	rip6_usrreq(struct socket *,
 	    int, struct mbuf *, struct mbuf *, struct mbuf *, struct thread *);
 
@@ -420,6 +434,51 @@ int in6_selectroute(struct sockaddr_in6 *, struct ip6_pktopts *,
 u_int32_t ip6_randomid(void);
 u_int32_t ip6_randomflowlabel(void);
 void in6_delayed_cksum(struct mbuf *m, uint32_t plen, u_short offset);
+
+int	ip6_log_ratelimit(void);
+
+/*
+ * Argument type for the last arg of ip6proto_ctlinput_t().
+ *
+ * IPv6 ICMP IPv6 [exthdrs] finalhdr payload
+ * ^    ^    ^              ^
+ * |    |    ip6c_ip6       ip6c_off
+ * |    ip6c_icmp6
+ * ip6c_m
+ *
+ * ip6c_finaldst's sin6_addr usually points to ip6c_ip6->ip6_dst.  If the
+ * original * (internal) packet carries a routing header, it may point the
+ * final * destination address in the routing header.
+ *
+ * ip6c_src: ip6c_ip6->ip6_src + scope info + flowlabel in ip6c_ip6
+ *	(beware of flowlabel, if you try to compare it against others)
+ * ip6c_dst: ip6c_finaldst + scope info
+ */
+struct ip6ctlparam {
+	struct mbuf *ip6c_m;		/* start of mbuf chain */
+	struct icmp6_hdr *ip6c_icmp6;	/* icmp6 header of target packet */
+	struct ip6_hdr *ip6c_ip6;	/* ip6 header of target packet */
+	int ip6c_off;			/* offset of the target proto header */
+	struct sockaddr_in6 *ip6c_src;	/* srcaddr w/ additional info */
+	struct sockaddr_in6 *ip6c_dst;	/* (final) dstaddr w/ additional info */
+	struct sockaddr_in6 *ip6c_finaldst;	/* final destination address */
+	void *ip6c_cmdarg;		/* control command dependent data */
+	u_int8_t ip6c_nxt;		/* final next header field */
+};
+
+typedef int	ip6proto_input_t(struct mbuf **, int *, int);
+typedef void	ip6proto_ctlinput_t(struct ip6ctlparam *);
+int	ip6proto_register(uint8_t, ip6proto_input_t, ip6proto_ctlinput_t);
+int	ip6proto_unregister(uint8_t);
+#define	IP6PROTO_REGISTER(prot, input, ctl)	do {			\
+	int error __diagused;						\
+	error = ip6proto_register(prot, input, ctl);			\
+	MPASS(error == 0);						\
+} while (0)
+
+ip6proto_input_t	rip6_input;
+ip6proto_ctlinput_t	rip6_ctlinput;
+
 #endif /* _KERNEL */
 
 #endif /* !_NETINET6_IP6_VAR_H_ */

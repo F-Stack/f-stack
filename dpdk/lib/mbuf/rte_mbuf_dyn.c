@@ -2,6 +2,7 @@
  * Copyright 2019 6WIND S.A.
  */
 
+#include <stdalign.h>
 #include <sys/queue.h>
 #include <stdint.h>
 #include <limits.h>
@@ -16,6 +17,8 @@
 #include <rte_bitops.h>
 #include <rte_mbuf.h>
 #include <rte_mbuf_dyn.h>
+
+#include "mbuf_log.h"
 
 #define RTE_MBUF_DYN_MZNAME "rte_mbuf_dyn"
 
@@ -116,7 +119,7 @@ init_shared_mem(void)
 		mz = rte_memzone_lookup(RTE_MBUF_DYN_MZNAME);
 	}
 	if (mz == NULL) {
-		RTE_LOG(ERR, MBUF, "Failed to get mbuf dyn shared memory\n");
+		MBUF_LOG(ERR, "Failed to get mbuf dyn shared memory");
 		return -1;
 	}
 
@@ -315,7 +318,7 @@ __rte_mbuf_dynfield_register_offset(const struct rte_mbuf_dynfield *params,
 		shm->free_space[i] = 0;
 	process_score();
 
-	RTE_LOG(DEBUG, MBUF, "Registered dynamic field %s (sz=%zu, al=%zu, fl=0x%x) -> %zd\n",
+	MBUF_LOG(DEBUG, "Registered dynamic field %s (sz=%zu, al=%zu, fl=0x%x) -> %zd",
 		params->name, params->size, params->align, params->flags,
 		offset);
 
@@ -489,7 +492,7 @@ __rte_mbuf_dynflag_register_bitnum(const struct rte_mbuf_dynflag *params,
 
 	shm->free_flags &= ~(1ULL << bitnum);
 
-	RTE_LOG(DEBUG, MBUF, "Registered dynamic flag %s (fl=0x%x) -> %u\n",
+	MBUF_LOG(DEBUG, "Registered dynamic flag %s (fl=0x%x) -> %u",
 		params->name, params->flags, bitnum);
 
 	return bitnum;
@@ -583,15 +586,15 @@ rte_mbuf_dyn_timestamp_register(int *field_offset, uint64_t *flag,
 	static const struct rte_mbuf_dynfield field_desc = {
 		.name = RTE_MBUF_DYNFIELD_TIMESTAMP_NAME,
 		.size = sizeof(rte_mbuf_timestamp_t),
-		.align = __alignof__(rte_mbuf_timestamp_t),
+		.align = alignof(rte_mbuf_timestamp_t),
 	};
 	struct rte_mbuf_dynflag flag_desc = {};
 	int offset;
 
 	offset = rte_mbuf_dynfield_register(&field_desc);
 	if (offset < 0) {
-		RTE_LOG(ERR, MBUF,
-			"Failed to register mbuf field for timestamp\n");
+		MBUF_LOG(ERR,
+			"Failed to register mbuf field for timestamp");
 		return -1;
 	}
 	if (field_offset != NULL)
@@ -600,8 +603,8 @@ rte_mbuf_dyn_timestamp_register(int *field_offset, uint64_t *flag,
 	strlcpy(flag_desc.name, flag_name, sizeof(flag_desc.name));
 	offset = rte_mbuf_dynflag_register(&flag_desc);
 	if (offset < 0) {
-		RTE_LOG(ERR, MBUF,
-			"Failed to register mbuf flag for %s timestamp\n",
+		MBUF_LOG(ERR,
+			"Failed to register mbuf flag for %s timestamp",
 			direction);
 		return -1;
 	}

@@ -33,8 +33,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
@@ -60,6 +58,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_clone.h>
 #include <net/if_types.h>
 #include <net/netisr.h>
@@ -214,7 +213,7 @@ vnet_gif_init(const void *unused __unused)
 	in6_gif_init();
 #endif
 }
-VNET_SYSINIT(vnet_gif_init, SI_SUB_PROTO_IFATTACHDOMAIN, SI_ORDER_ANY,
+VNET_SYSINIT(vnet_gif_init, SI_SUB_PSEUDO, SI_ORDER_ANY,
     vnet_gif_init, NULL);
 
 static void
@@ -229,7 +228,7 @@ vnet_gif_uninit(const void *unused __unused)
 	in6_gif_uninit();
 #endif
 }
-VNET_SYSUNINIT(vnet_gif_uninit, SI_SUB_PROTO_IFATTACHDOMAIN, SI_ORDER_ANY,
+VNET_SYSUNINIT(vnet_gif_uninit, SI_SUB_PSEUDO, SI_ORDER_ANY,
     vnet_gif_uninit, NULL);
 
 static int
@@ -313,10 +312,7 @@ gif_transmit(struct ifnet *ifp, struct mbuf *m)
 		goto err;
 	}
 	/* Now pull back the af that we stashed in the csum_data. */
-	if (ifp->if_bridge)
-		af = AF_LINK;
-	else
-		af = m->m_pkthdr.csum_data;
+	af = m->m_pkthdr.csum_data;
 	m->m_flags &= ~(M_BCAST|M_MCAST);
 	M_SETFIB(m, sc->gif_fibnum);
 	BPF_MTAP2(ifp, &af, sizeof(af), m);
@@ -356,6 +352,8 @@ gif_transmit(struct ifnet *ifp, struct mbuf *m)
 		break;
 #endif
 	case AF_LINK:
+		KASSERT(ifp->if_bridge != NULL,
+		    ("%s: bridge not attached", __func__));
 		proto = IPPROTO_ETHERIP;
 		M_PREPEND(m, sizeof(struct etherip_header), M_NOWAIT);
 		if (m == NULL) {
@@ -406,10 +404,11 @@ gif_output(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
 {
 	uint32_t af;
 
-	if (dst->sa_family == AF_UNSPEC)
-		bcopy(dst->sa_data, &af, sizeof(af));
+	/* BPF writes need to be handled specially. */
+	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
+		memcpy(&af, dst->sa_data, sizeof(af));
 	else
-		af = dst->sa_family;
+		af = RO_GET_FAMILY(ro, dst);
 	/*
 	 * Now save the af in the inbound pkt csum data, this is a cheat since
 	 * we are using the inbound csum_data field to carry the af over to
@@ -540,7 +539,8 @@ gif_input(struct mbuf *m, struct ifnet *ifp, int proto, uint8_t ecn)
 			m_freem(m);
 			goto drop;
 		}
-		m_adj(m, sizeof(struct etherip_header));
+
+		m_adj_decap(m, sizeof(struct etherip_header));
 
 		m->m_flags &= ~(M_BCAST|M_MCAST);
 		m->m_pkthdr.rcvif = ifp;

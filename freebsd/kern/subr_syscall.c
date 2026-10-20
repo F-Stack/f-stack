@@ -36,15 +36,10 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)trap.c	7.4 (Berkeley) 5/13/91
  */
 
 #include "opt_capsicum.h"
 #include "opt_ktrace.h"
-
-__FBSDID("$FreeBSD$");
-
 #include <sys/capsicum.h>
 #include <sys/ktr.h>
 #include <sys/vmmeter.h>
@@ -68,16 +63,19 @@ syscallenter(struct thread *td)
 	sa = &td->td_sa;
 
 	td->td_pticks = 0;
-	if (__predict_false(td->td_cowgen != p->p_cowgen))
+	if (__predict_false(td->td_cowgen != atomic_load_int(&p->p_cowgen)))
 		thread_cow_update(td);
 	traced = (p->p_flag & P_TRACED) != 0;
 	if (__predict_false(traced || td->td_dbgflags & TDB_USERWR)) {
 		PROC_LOCK(p);
+		MPASS((td->td_dbgflags & TDB_BOUNDARY) == 0);
 		td->td_dbgflags &= ~TDB_USERWR;
 		if (traced)
 			td->td_dbgflags |= TDB_SCE;
 		PROC_UNLOCK(p);
 	}
+	if ((td->td_pflags2 & TDP2_UEXTERR) != 0)
+		td->td_pflags2 &= ~TDP2_EXTERR;
 	error = (p->p_sysent->sv_fetch_syscall_args)(td);
 	se = sa->callp;
 #ifdef KTRACE
@@ -122,10 +120,13 @@ syscallenter(struct thread *td)
 	 * In capability mode, we only allow access to system calls
 	 * flagged with SYF_CAPENABLED.
 	 */
-	if (__predict_false(IN_CAPABILITY_MODE(td) &&
-	    (se->sy_flags & SYF_CAPENABLED) == 0)) {
-		td->td_errno = error = ECAPMODE;
-		goto retval;
+	if ((se->sy_flags & SYF_CAPENABLED) == 0) {
+		if (CAP_TRACING(td))
+			ktrcapfail(CAPFAIL_SYSCALL, NULL);
+		if (IN_CAPABILITY_MODE(td)) {
+			td->td_errno = error = ECAPMODE;
+			goto retval;
+		}
 	}
 #endif
 
@@ -142,11 +143,11 @@ syscallenter(struct thread *td)
 
 	sy_thr_static = (se->sy_thrcnt & SY_THR_STATIC) != 0;
 
-	if (__predict_false(SYSTRACE_ENABLED() ||
-	    AUDIT_SYSCALL_ENTER(sa->code, td) ||
-	    !sy_thr_static)) {
+	if (__predict_false(AUDIT_SYSCALL_ENABLED() ||
+	    SYSTRACE_ENABLED() || !sy_thr_static)) {
 		if (!sy_thr_static) {
-			error = syscall_thread_enter(td, se);
+			error = syscall_thread_enter(td, &se);
+			sy_thr_static = (se->sy_thrcnt & SY_THR_STATIC) != 0;
 			if (error != 0) {
 				td->td_errno = error;
 				goto retval;
@@ -158,6 +159,9 @@ syscallenter(struct thread *td)
 		if (__predict_false(se->sy_entry != 0))
 			(*systrace_probe_func)(sa, SYSTRACE_ENTRY, 0);
 #endif
+
+		AUDIT_SYSCALL_ENTER(sa->code, td);
+
 		error = (se->sy_call)(td, sa->args);
 		/* Save the latest error return value. */
 		if (__predict_false((td->td_pflags & TDP_NERRNO) != 0))
@@ -201,10 +205,12 @@ syscallenter(struct thread *td)
 	    td->td_retval[1]);
 	if (__predict_false(traced)) {
 		PROC_LOCK(p);
-		td->td_dbgflags &= ~TDB_SCE;
+		td->td_dbgflags &= ~(TDB_SCE | TDB_BOUNDARY);
 		PROC_UNLOCK(p);
 	}
 	(p->p_sysent->sv_set_syscall_retval)(td, error);
+	if (error != 0 && (td->td_pflags2 & TDP2_UEXTERR) != 0)
+		exterr_copyout(td);
 }
 
 static inline void
@@ -215,8 +221,6 @@ syscallret(struct thread *td)
 	ksiginfo_t ksi;
 	int traced;
 
-	KASSERT((td->td_pflags & TDP_FORKING) == 0,
-	    ("fork() did not clear TDP_FORKING upon completion"));
 	KASSERT(td->td_errno != ERELOOKUP,
 	    ("ERELOOKUP not consumed syscall %d", td->td_sa.code));
 
@@ -230,6 +234,7 @@ syscallret(struct thread *td)
 			ksi.ksi_signo = SIGTRAP;
 			ksi.ksi_errno = td->td_errno;
 			ksi.ksi_code = TRAP_CAP;
+			ksi.ksi_info.si_syscall = sa->original_code;
 			trapsignal(td, &ksi);
 		}
 	}
@@ -256,6 +261,24 @@ syscallret(struct thread *td)
 	    (td->td_dbgflags & (TDB_EXEC | TDB_FORK)) != 0)) {
 		PROC_LOCK(p);
 		/*
+		 * Linux debuggers expect an additional stop for exec,
+		 * between the usual syscall entry and exit.  Raise
+		 * the exec event now and then clear TDB_EXEC so that
+		 * the next stop is reported as a syscall exit by
+		 * linux_ptrace_status().
+		 *
+		 * We are accessing p->p_pptr without any additional
+		 * locks here: it cannot change while p is kept locked;
+		 * while the debugger could in theory change its ABI
+		 * while tracing another process, the outcome of such
+		 * a race wouln't be deterministic anyway.
+		 */
+		if (traced && (td->td_dbgflags & TDB_EXEC) != 0 &&
+		    SV_PROC_ABI(p->p_pptr) == SV_ABI_LINUX) {
+			ptracestop(td, SIGTRAP, NULL);
+			td->td_dbgflags &= ~TDB_EXEC;
+		}
+		/*
 		 * If tracing the execed process, trap to the debugger
 		 * so that breakpoints can be set before the program
 		 * executes.  If debugger requested tracing of syscall
@@ -263,12 +286,13 @@ syscallret(struct thread *td)
 		 */
 		if (traced &&
 		    ((td->td_dbgflags & (TDB_FORK | TDB_EXEC)) != 0 ||
-		    (p->p_ptevents & PTRACE_SCX) != 0))
+		    (p->p_ptevents & PTRACE_SCX) != 0)) {
+			MPASS((td->td_dbgflags & TDB_BOUNDARY) == 0);
+			td->td_dbgflags |= TDB_BOUNDARY;
 			ptracestop(td, SIGTRAP, NULL);
-		td->td_dbgflags &= ~(TDB_SCX | TDB_EXEC | TDB_FORK);
+		}
+		td->td_dbgflags &= ~(TDB_SCX | TDB_EXEC | TDB_FORK |
+		    TDB_BOUNDARY);
 		PROC_UNLOCK(p);
 	}
-
-	if (__predict_false(td->td_pflags & TDP_RFPPWAIT))
-		fork_rfppwait(td);
 }

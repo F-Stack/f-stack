@@ -33,11 +33,23 @@
 
 /*
  * Vnode types.  VNON means no type.
+ *
+ * 14.0+ added __enum_uint8_decl()/__enum_uint8() in sys/types.h to make
+ * vnode v_type a strict 8-bit packed enum. The expansion pattern is
+ *   __enum_uint8(vtype)  =>  enum __attribute__((packed)) enum_vtype_uint8
+ * so the underlying tag name is `enum_vtype_uint8`. To stay compatible
+ * with both 13.0-era F-Stack code that writes `enum vtype` *and* 14.0+
+ * kernel code that uses `__enum_uint8(vtype) type;`, we define the
+ * enumerators inside `enum_vtype_uint8` (as 14.0+ does upstream) and
+ * #define `enum vtype` as a textual alias of the same tag, so that a
+ * variable typed `enum vtype` and one typed via `__enum_uint8(vtype)`
+ * share the same tag and can be compared/assigned without warnings.
  */
-enum vtype {
+__enum_uint8_decl(vtype) {
     VNON, VREG, VDIR, VBLK, VCHR,
     VLNK, VSOCK, VFIFO, VBAD, VMARKER
 };
+#define	vtype	enum_vtype_uint8
 
 struct nameidata;
 struct stat;

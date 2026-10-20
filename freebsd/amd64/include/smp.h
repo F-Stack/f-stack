@@ -6,16 +6,12 @@
  * this stuff is worth it, you can buy me a beer in return.   Poul-Henning Kamp
  * ----------------------------------------------------------------------------
  *
- * $FreeBSD$
- *
  */
 
 #ifndef _MACHINE_SMP_H_
 #define _MACHINE_SMP_H_
 
 #ifdef _KERNEL
-
-#ifdef SMP
 
 #ifndef LOCORE
 
@@ -38,11 +34,9 @@ inthand_t
 	IDTVEC(rendezvous_pti);
 
 void	invlop_handler(void);
-int	native_start_all_aps(void);
-void	mp_bootaddress(vm_paddr_t *, unsigned int *);
+int	start_all_aps(void);
 
 #endif /* !LOCORE */
-#endif /* SMP */
 
 #endif /* _KERNEL */
 #endif /* _MACHINE_SMP_H_ */

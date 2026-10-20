@@ -1,8 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013-2015 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Konstantin Belousov <kib@FreeBSD.org>
  * under sponsorship from the FreeBSD Foundation.
@@ -27,22 +26,10 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef __X86_IOMMU_INTEL_REG_H
 #define	__X86_IOMMU_INTEL_REG_H
-
-#define	DMAR_PAGE_SIZE	PAGE_SIZE
-#define	DMAR_PAGE_MASK	(DMAR_PAGE_SIZE - 1)
-#define	DMAR_PAGE_SHIFT	PAGE_SHIFT
-#define	DMAR_NPTEPG	(DMAR_PAGE_SIZE / sizeof(dmar_pte_t))
-#define	DMAR_NPTEPGSHIFT 9
-#define	DMAR_PTEMASK	(DMAR_NPTEPG - 1)
-
-#define	IOMMU_PAGE_SIZE	DMAR_PAGE_SIZE
-#define	IOMMU_PAGE_MASK	DMAR_PAGE_MASK
 
 typedef struct dmar_root_entry {
 	uint64_t r1;
@@ -52,7 +39,7 @@ typedef struct dmar_root_entry {
 #define	DMAR_ROOT_R1_CTP_MASK	0xfffffffffffff000 /* Mask for Context-Entry
 						      Table Pointer */
 
-#define	DMAR_CTX_CNT		(DMAR_PAGE_SIZE / sizeof(dmar_root_entry_t))
+#define	DMAR_CTX_CNT		(IOMMU_PAGE_SIZE / sizeof(dmar_root_entry_t))
 
 typedef	struct dmar_ctx_entry {
 	uint64_t ctx1;
@@ -76,9 +63,6 @@ typedef	struct dmar_ctx_entry {
 #define	DMAR_CTX2_DID(x)	((x) << 8)	/* Domain Identifier */
 #define	DMAR_CTX2_GET_DID(ctx2)	(((ctx2) & DMAR_CTX2_DID_MASK) >> 8)
 
-typedef struct dmar_pte {
-	uint64_t pte;
-} dmar_pte_t;
 #define	DMAR_PTE_R		1		/* Read */
 #define	DMAR_PTE_W		(1 << 1)	/* Write */
 #define	DMAR_PTE_SP		(1 << 7)	/* Super Page */

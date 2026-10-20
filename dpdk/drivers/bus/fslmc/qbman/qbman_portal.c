@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  * Copyright (C) 2014-2016 Freescale Semiconductor, Inc.
- * Copyright 2018-2020 NXP
+ * Copyright 2018-2020,2023-2024 NXP
  *
  */
 
@@ -41,6 +41,8 @@
 
 /* opaque token for static dequeues */
 #define QMAN_SDQCR_TOKEN    0xbb
+
+#define BMAN_VALID_RSLT_NUM_MASK 0x7
 
 enum qbman_sdqcr_dct {
 	qbman_sdqcr_dct_null = 0,
@@ -1006,9 +1008,9 @@ static int qbman_swp_enqueue_multiple_direct(struct qbman_swp *s,
 				QBMAN_CENA_SWP_EQCR(eqcr_pi & half_mask));
 		p[0] = cl[0] | s->eqcr.pi_vb;
 		if (flags && (flags[i] & QBMAN_ENQUEUE_FLAG_DCA)) {
-			struct qbman_eq_desc *d = (struct qbman_eq_desc *)p;
+			struct qbman_eq_desc *desc = (struct qbman_eq_desc *)p;
 
-			d->eq.dca = (1 << QB_ENQUEUE_CMD_DCA_EN_SHIFT) |
+			desc->eq.dca = (1 << QB_ENQUEUE_CMD_DCA_EN_SHIFT) |
 				((flags[i]) & QBMAN_EQCR_DCA_IDXMASK);
 		}
 		eqcr_pi++;
@@ -1879,7 +1881,7 @@ void qbman_pull_desc_set_rad(struct qbman_pull_desc *d, int rad)
 		else
 			d->pull.verb &= ~(1 << QB_VDQCR_VERB_RAD_SHIFT);
 	} else {
-		printf("The RAD feature is not valid when RLS = 0\n");
+		pr_warn("The RAD feature is not valid when RLS = 0\n");
 	}
 }
 
@@ -2628,7 +2630,7 @@ struct qbman_acquire_rslt {
 	uint16_t reserved;
 	uint8_t num;
 	uint8_t reserved2[3];
-	uint64_t buf[7];
+	uint64_t buf[BMAN_VALID_RSLT_NUM_MASK];
 };
 
 static int qbman_swp_acquire_direct(struct qbman_swp *s, uint16_t bpid,
@@ -2636,8 +2638,9 @@ static int qbman_swp_acquire_direct(struct qbman_swp *s, uint16_t bpid,
 {
 	struct qbman_acquire_desc *p;
 	struct qbman_acquire_rslt *r;
+	int num;
 
-	if (!num_buffers || (num_buffers > 7))
+	if (!num_buffers || (num_buffers > BMAN_VALID_RSLT_NUM_MASK))
 		return -EINVAL;
 
 	/* Start the management command */
@@ -2668,12 +2671,13 @@ static int qbman_swp_acquire_direct(struct qbman_swp *s, uint16_t bpid,
 		return -EIO;
 	}
 
-	QBMAN_BUG_ON(r->num > num_buffers);
+	num = r->num & BMAN_VALID_RSLT_NUM_MASK;
+	QBMAN_BUG_ON(num > num_buffers);
 
 	/* Copy the acquired buffers to the caller's array */
-	u64_from_le32_copy(buffers, &r->buf[0], r->num);
+	u64_from_le32_copy(buffers, &r->buf[0], num);
 
-	return (int)r->num;
+	return num;
 }
 
 static int qbman_swp_acquire_cinh_direct(struct qbman_swp *s, uint16_t bpid,
@@ -2681,8 +2685,9 @@ static int qbman_swp_acquire_cinh_direct(struct qbman_swp *s, uint16_t bpid,
 {
 	struct qbman_acquire_desc *p;
 	struct qbman_acquire_rslt *r;
+	int num;
 
-	if (!num_buffers || (num_buffers > 7))
+	if (!num_buffers || (num_buffers > BMAN_VALID_RSLT_NUM_MASK))
 		return -EINVAL;
 
 	/* Start the management command */
@@ -2713,12 +2718,13 @@ static int qbman_swp_acquire_cinh_direct(struct qbman_swp *s, uint16_t bpid,
 		return -EIO;
 	}
 
-	QBMAN_BUG_ON(r->num > num_buffers);
+	num = r->num & BMAN_VALID_RSLT_NUM_MASK;
+	QBMAN_BUG_ON(num > num_buffers);
 
 	/* Copy the acquired buffers to the caller's array */
-	u64_from_le32_copy(buffers, &r->buf[0], r->num);
+	u64_from_le32_copy(buffers, &r->buf[0], num);
 
-	return (int)r->num;
+	return num;
 }
 
 int qbman_swp_acquire(struct qbman_swp *s, uint16_t bpid, uint64_t *buffers,

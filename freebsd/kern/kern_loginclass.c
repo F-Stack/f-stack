@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 The FreeBSD Foundation
  *
@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -42,9 +40,6 @@
  * Code in this file implements setloginclass(2) and getloginclass(2)
  * system calls, and maintains class name storage and retrieval.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/eventhandler.h>
@@ -230,6 +225,8 @@ sys_setloginclass(struct thread *td, struct setloginclass_args *uap)
 	proc_set_cred(p, newcred);
 #ifdef RACCT
 	racct_proc_ucred_changed(p, oldcred, newcred);
+#endif
+#ifdef RCTL
 	crhold(newcred);
 #endif
 	PROC_UNLOCK(p);

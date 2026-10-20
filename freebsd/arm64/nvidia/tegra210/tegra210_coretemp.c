@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -25,9 +25,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -41,7 +38,7 @@ __FBSDID("$FreeBSD$");
 #include <machine/bus.h>
 #include <machine/cpu.h>
 
-#include <dev/extres/clk/clk.h>
+#include <dev/clk/clk.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
 #include "tegra_soctherm_if.h"
@@ -184,9 +181,9 @@ tegra210_coretemp_identify(driver_t *driver, device_t parent)
 	root = OF_finddevice("/");
 	if (!ofw_bus_node_is_compatible(root, "nvidia,tegra210"))
 		return;
-	if (device_find_child(parent, "tegra210_coretemp", -1) != NULL)
+	if (device_find_child(parent, "tegra210_coretemp", DEVICE_UNIT_ANY) != NULL)
 		return;
-	if (BUS_ADD_CHILD(parent, 0, "tegra210_coretemp", -1) == NULL)
+	if (BUS_ADD_CHILD(parent, 0, "tegra210_coretemp", DEVICE_UNIT_ANY) == NULL)
 		device_printf(parent, "add child failed\n");
 }
 
@@ -249,9 +246,6 @@ tegra210_coretemp_attach(device_t dev)
 static int
 tegra210_coretemp_detach(device_t dev)
 {
-	struct tegra210_coretemp_softc *sc;
-
-	sc = device_get_softc(dev);
 	return (0);
 }
 
@@ -265,8 +259,6 @@ static device_method_t tegra210_coretemp_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t tegra210_coretemp_devclass;
 static DEFINE_CLASS_0(tegra210_coretemp, tegra210_coretemp_driver,
     tegra210_coretemp_methods, sizeof(struct tegra210_coretemp_softc));
-DRIVER_MODULE(tegra210_coretemp, cpu, tegra210_coretemp_driver,
-    tegra210_coretemp_devclass, NULL, NULL);
+DRIVER_MODULE(tegra210_coretemp, cpu, tegra210_coretemp_driver, NULL, NULL);

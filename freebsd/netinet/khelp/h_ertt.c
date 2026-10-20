@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2010
  * 	Swinburne University of Technology, Melbourne, Australia
@@ -37,9 +37,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/kernel.h>
@@ -178,7 +175,7 @@ marked_packet_rtt(struct txseginfo *txsi, struct ertt *e_t, struct tcpcb *tp,
 		e_t->flags |= ERTT_NEW_MEASUREMENT;
 
 		if (tp->t_flags & TF_TSO) {
-			/* Temporarily disable TSO to aid a new measurment. */
+			/* Temporarily disable TSO to aid a new measurement. */
 			tp->t_flags &= ~TF_TSO;
 			/* Keep track that we've disabled it. */
 			e_t->flags |= ERTT_TSO_DISABLED;
@@ -219,7 +216,7 @@ ertt_packet_measurement_hook(int hhook_type, int hhook_id, void *udata,
 	measurenext = measurenext_len = multiack = rts = rtt_bytes_adjust = 0;
 	acked = th->th_ack - tp->snd_una;
 
-	INP_WLOCK_ASSERT(tp->t_inpcb);
+	INP_WLOCK_ASSERT(tptoinpcb(tp));
 
 	/* Packet has provided new acknowledgements. */
 	if (acked > 0 || new_sacked_bytes) {
@@ -452,7 +449,7 @@ ertt_add_tx_segment_info_hook(int hhook_type, int hhook_id, void *udata,
 	len = thdp->len;
 	tso = thdp->tso;
 
-	INP_WLOCK_ASSERT(tp->t_inpcb);
+	INP_WLOCK_ASSERT(tptoinpcb(tp));
 
 	if (len > 0) {
 		txsi = uma_zalloc(txseginfo_zone, M_NOWAIT);

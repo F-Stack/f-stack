@@ -31,8 +31,8 @@
 extern "C" {
 #endif
 
-// dpdk argc, argv, max argc: 16, member of dpdk_config
-#define DPDK_CONFIG_NUM 16
+// dpdk argc, argv, max argc: 32, member of dpdk_config
+#define DPDK_CONFIG_NUM 32
 #define DPDK_CONFIG_MAXLEN 256
 #define DPDK_MAX_LCORE 128
 #define DPDK_MAX_VLAN_FILTER 128
@@ -54,6 +54,22 @@ extern char *dpdk_argv[DPDK_CONFIG_NUM + 1];
 
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
+
+/* Interval between user loop() calls while no pkt is received, in us. */
+#define IDLE_LOOP_INTERVAL_US_DEFAULT 100
+#define IDLE_LOOP_INTERVAL_US_MAX     100000
+
+#define FF_MTU_MIN           68    /* minimum MTU (IPv4) */
+#define FF_MTU_DEFAULT       1500  /* default Ethernet MTU */
+#define FF_MTU_JUMBO_DEFAULT 9000  /* default jumbo MTU */
+
+/* default capacity (entries) of one generation's drain_ring
+ * pair. Must stay a power of two — rte_ring silently rounds a non-power-of-two
+ * count up, and ff_config.c rejects anything else. */
+#define FF_DRAIN_RING_SIZE_DEFAULT  2048U
+#define FF_RELOAD_UDP_IDLE_MS_DEFAULT 10000U
+#define FF_RELOAD_UDP_IDLE_MS_MIN   100U
+#define FF_RELOAD_UDP_IDLE_MS_MAX   3600000U
 
 #define VIP_MAX_NUM 64
 
@@ -111,6 +127,7 @@ struct ff_hw_features {
     uint8_t tx_csum_ip;
     uint8_t tx_csum_l4;
     uint8_t tx_tso;
+    uint8_t sw_lro;
 };
 
 #ifdef FF_IPFW
@@ -160,6 +177,11 @@ struct ff_vlan_cfg {
 #endif
 };
 
+enum ff_mbuf_mode {
+    FF_MBUF_MODE_LARGE = 0,
+    FF_MBUF_MODE_SCATTER,
+};
+
 struct ff_port_cfg {
     char *name;
     char *ifname;
@@ -201,6 +223,7 @@ struct ff_port_cfg {
 
     int nb_vlan;
     struct ff_vlan_cfg *vlan_cfgs[DPDK_MAX_VLAN_FILTER];
+    uint16_t mtu;
 };
 
 struct ff_vdev_cfg {
@@ -231,12 +254,17 @@ struct ff_bond_cfg {
 struct ff_rss_tbl_cfg {
     uint16_t port_id;
     uint16_t sport;
-    uint32_t daddr; /* local */
-    uint32_t saddr; /* remote */
+    uint32_t daddr; /* local, v4 */
+    uint32_t saddr; /* remote, v4 */
+    uint8_t family;       /* AF_INET (default) or AF_INET6 */
+    uint8_t daddr6[16];   /* local, v6 */
+    uint8_t saddr6[16];   /* remote, v6 */
 };
 
 struct ff_rss_check_cfg {
     int enable;
+    int recheck;
+    int thash_adjust;   /* 1=thash reverse-calc + NIC RSS key sync (default); 0=soft scan */
     int nb_rss_tbl;
     char *rss_tbl_str;
     struct ff_rss_tbl_cfg rss_tbl_cfgs[FF_RSS_TBL_MAX_ENTRIES];
@@ -268,17 +296,35 @@ struct ff_config {
         /* pci whiltelist */
         char *allow;
 
+        /* extra DPDK EAL args, appended to rte_eal_init argv */
+        char *extra_eal_args;
+
         int nb_channel;
         int memory;
         int no_huge;
         int nb_procs;
         int proc_id;
+        int thread_mode;    /* 0=multi-process (default); 1=single-process multi-thread multi-stack */
+        int nb_threads;     /* thread mode: number of threads = lcore_mask set-bit count */
+        int primary_slim;   /* 0=off (default); 1=primary holds no rx/tx queue */
+        int graceful_reload; /* 0=off (default); 1=nginx all-secondary workers with resident slim primary */
+        /* heartbeat stall threshold for G_old detecting a dead
+         * G_new during the reload window (ms; 0 -> default 1000). */
+        unsigned reload_heartbeat_timeout_ms;
+        /* capacity in entries of one generation's drain_ring
+         * pair (0 -> FF_DRAIN_RING_SIZE_DEFAULT, see above). */
+        unsigned drain_ring_size;
+        /* a UDP flow idle this long has ended (ms, 0 -> default) */
+        unsigned reload_udp_idle_ms;
         int promiscuous;
         int nb_vdev;
         int nb_bond;
         int numa_on;
         int tso;
+        int lro;                 /* TCP large receive offload switch, 0=off */
         int tx_csum_offoad_skip;
+        int tx_csum_ip_skip;
+        int tx_csum_l4_skip;
         int vlan_strip;
         int nb_vlan_filter;
         uint16_t vlan_filter_id[DPDK_MAX_VLAN_FILTER];
@@ -286,9 +332,13 @@ struct ff_config {
 
         /* sleep x microseconds when no pkts incomming */
         unsigned idle_sleep;
+        unsigned primary_slim_idle_sleep;
 
         /* TX burst queue drain nodelay dalay time */
         unsigned pkt_tx_delay;
+
+        /* interval between user loop() calls when no pkt received */
+        unsigned idle_loop_interval;
 
         /* list of proc-lcore */
         uint16_t *proc_lcore;
@@ -305,6 +355,10 @@ struct ff_config {
         struct ff_vdev_cfg *vdev_cfgs;
         struct ff_bond_cfg *bond_cfgs;
         struct ff_rss_check_cfg *rss_check_cfgs;
+        int mtu_enable;
+        uint16_t max_mtu;
+        enum ff_mbuf_mode mbuf_mode;
+        unsigned mbuf_low_watermark;
     } dpdk;
 
     struct {
@@ -312,11 +366,18 @@ struct ff_config {
         int console_packets_ratelimit;
         int general_packets_ratelimit;
         int kernel_packets_ratelimit;
+        int owner_proc_id;
         char *kni_action;
         char *method;
         char *tcp_port;
         char *udp_port;
     } kni;
+
+#ifdef FF_KERNEL_COEXIST
+    struct {
+        int kernel_coexist;
+    } stack;
+#endif /* FF_KERNEL_COEXIST */
 
     struct {
         int level;
@@ -331,6 +392,7 @@ struct ff_config {
         int hz;
         int fd_reserve;
         int mem_size;
+        int tcp_ecn;    /* 0=disable ECN (default, zero-regression); 1=passive ECN (upstream default 2) */
     } freebsd;
 
     struct {
@@ -338,12 +400,15 @@ struct ff_config {
         uint16_t snap_len;
         uint32_t save_len;
         char*    save_path;
+        uint8_t  timestamp_precision; /* 0=usec (default), 1=nsec */
     } pcap;
 };
 
 extern struct ff_config ff_global_cfg;
 
 int ff_load_config(int argc, char * const argv[]);
+
+void ff_unload_config(void);
 
 #ifdef __cplusplus
 }

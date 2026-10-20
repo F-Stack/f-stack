@@ -1,0 +1,450 @@
+/*-
+ * Copyright (C) 2017-2021 THL A29 Limited, a Tencent company.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the copyright notice,
+ *    this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the copyright notice,
+ *    this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ */
+
+/* cross-master generation directory — DPDK half.
+ *
+ * The resident slim primary is the only F-Stack process that survives an
+ * nginx USR2 exec, so it owns the directory (a hugepage memzone) and every
+ * secondary looks it up: the same "primary creates / secondary looks up"
+ * shape ff_dpdk_if.c already uses for ff_nb_dev_ports.
+ *
+ * Everything that only touches the directory CONTENT lives in ff_reload.c
+ * instead: that object must stay linkable without DPDK (ff_config unit
+ * tests and the compat tools link it on its own), so this translation unit
+ * is limited to reserving/looking up the memzone and to epoch bookkeeping.
+ */
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <signal.h>
+#include <time.h>
+#include <errno.h>
+
+#include <rte_eal.h>
+#include <rte_memzone.h>
+
+#include "ff_reload.h"
+#include "ff_config.h"
+#include "ff_log.h"
+#include "ff_flow_map.h"
+
+static struct ff_reload_gendir *g_dir;
+static int g_dir_slot = -1;     /* this process's slot in the directory */
+static uint32_t g_dir_epoch;    /* full epoch of that slot */
+/* 1 when this process displaced a dead master from its slot: the rings of
+ * that slot still hold the previous owner's messages/mbufs. */
+static int g_dir_reset_pending;
+static int g_dir_port_parity = -1;
+
+static uint64_t
+gendir_now_ms(void)
+{
+    struct timespec ts;
+
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0)
+        return 0;
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)(ts.tv_nsec / 1000000);
+}
+
+static uint64_t
+pack_coord(uint32_t epoch, uint32_t gen)
+{
+    return ((uint64_t)epoch << 32) | (uint64_t)gen;
+}
+
+static int
+pid_alive(uint32_t pid)
+{
+    if (pid == 0)
+        return 0;
+    /* A zombie still answers kill(0), but by then nginx has already reaped
+     * its master; treat "exists" as live. */
+    return kill((pid_t)pid, 0) == 0 || errno == EPERM;
+}
+
+/* a slot can only be recycled once nothing refreshes its
+ * stamp any more — workers of a dead master keep refreshing it while they
+ * drain, and they still consume that slot's rings. Unsigned delta keeps the
+ * comparison wrap-safe; a never-stamped slot (pad == 0) is stale. */
+static int
+slot_stale(struct ff_reload_gendir *d, unsigned i)
+{
+    uint32_t stamp = __atomic_load_n(&d->slot[i].pad, __ATOMIC_SEQ_CST);
+
+    return (uint32_t)(gendir_now_ms() - stamp) >= FF_RELOAD_SLOT_STALE_MS;
+}
+
+int
+ff_reload_gendir_present(void)
+{
+    return g_dir != NULL;
+}
+
+void
+ff_reload_gendir_detach(void)
+{
+    ff_reload_gendir_retire();
+    g_dir = NULL;
+    g_dir_slot = -1;
+    g_dir_epoch = 0;
+    g_dir_port_parity = -1;
+    ff_flow_map_lport_split(-1);
+    ff_reload_set_epoch(0);
+    ff_reload_gendir_install(NULL, 0);
+}
+
+/* Claim a free slot for 'pid'. Slot 0 belongs to the resident primary, so
+ * masters cycle through 1.SLOT_MAX-1 and a slot whose master pid is gone
+ * is recycled — that is what keeps an USR2 chain from leaking one ring set
+ * per round (DPDK never frees a memzone on process exit). Liveness is the
+ * pid alone, the same authority epoch_live() uses: an nginx master has no
+ * EAL and can never retire its own slot, so a dead master's state stays
+ * LIVE forever and a state-based gate would never recycle it. master_pid
+ * is the CAS gate and is published last, after the slot content is in
+ * place. */
+static int
+slot_acquire(struct ff_reload_gendir *d, uint32_t epoch, uint32_t pid,
+    int gen, int is_primary, uint32_t port_flag, unsigned *slot_out)
+{
+    unsigned i, start;
+    uint64_t deadline = gendir_now_ms() + ff_reload_reclaim_timeout_ms();
+
+    if (is_primary) {
+        i = 0;
+    } else {
+        start = ff_reload_epoch_slot_of(epoch);
+        if (start == 0)
+            start = 1;
+        i = start;
+    }
+
+    for (;;) {
+        struct ff_reload_epoch_slot *s = &d->slot[i];
+        uint32_t owner = __atomic_load_n(&s->master_pid, __ATOMIC_SEQ_CST);
+        uint32_t expect = owner;
+        int stale = slot_stale(d, i);
+
+        if (owner == 0 || (!pid_alive(owner) && stale)) {
+            if (__atomic_compare_exchange_n(&s->master_pid, &expect, pid,
+                    0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST)) {
+                /* Recycled slot: whatever the previous owner left in these
+                 * rings is garbage for us. Only the CAS winner gets here,
+                 * so exactly one process performs the drain. */
+                if (owner != 0)
+                    g_dir_reset_pending = 1;
+                __atomic_store_n(&s->epoch, epoch, __ATOMIC_SEQ_CST);
+                __atomic_store_n(&s->gen, (uint32_t)gen, __ATOMIC_SEQ_CST);
+                __atomic_store_n(&s->flags,
+                    is_primary ? FF_RELOAD_SLOT_PRIMARY : port_flag,
+                    __ATOMIC_SEQ_CST);
+                __atomic_store_n(&s->since_ms, gendir_now_ms(),
+                    __ATOMIC_SEQ_CST);
+                __atomic_store_n(&s->state, FF_RELOAD_SLOT_LIVE,
+                    __ATOMIC_SEQ_CST);
+                if (slot_out)
+                    *slot_out = i;
+                return 0;
+            }
+            continue;   /* lost the race: re-read the same slot */
+        }
+
+        /* the master is gone but its workers still refresh
+         * the stamp, so the slot is only TEMPORARILY unavailable — the
+         * window right after an old master quit, while its workers drain.
+         * Wait for the stamp to go stale instead of killing this process:
+         * the retry stays on this slot and is bounded by the single
+         * reclaim budget. */
+        if (owner != 0 && !pid_alive(owner) && !stale) {
+            struct timespec ts;
+
+            if (gendir_now_ms() >= deadline) {
+                __atomic_add_fetch(&d->reclaim_refused, 1, __ATOMIC_SEQ_CST);
+                return -1;
+            }
+            ts.tv_sec = 0;
+            ts.tv_nsec = 2 * 1000 * 1000;   /* 2 ms, no spinning */
+            nanosleep(&ts, NULL);
+            continue;
+        }
+
+        /* every drain/msg ring name is derived from
+         * ff_reload_epoch_slot_of(epoch), so landing on another slot would
+         * be named inconsistently. Fail instead of advancing. */
+        return -1;
+    }
+}
+
+/* Port parity of the generation serving traffic, -1 without one. */
+static int
+gendir_serving_parity(struct ff_reload_gendir *d)
+{
+    uint64_t w = __atomic_load_n(&d->active_word, __ATOMIC_SEQ_CST);
+    uint32_t e = (uint32_t)(w >> 32), fl;
+    unsigned i;
+
+    if (e == 0 || e == FF_RELOAD_EPOCH_NONE)
+        return -1;
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+        struct ff_reload_epoch_slot *s = &d->slot[i];
+
+        if (__atomic_load_n(&s->epoch, __ATOMIC_SEQ_CST) != e)
+            continue;
+        fl = __atomic_load_n(&s->flags, __ATOMIC_SEQ_CST);
+        if (fl & FF_RELOAD_SLOT_PRIMARY)
+            continue;
+        if (!pid_alive(__atomic_load_n(&s->master_pid, __ATOMIC_SEQ_CST))
+            && slot_stale(d, i))
+            continue;
+        return ff_reload_port_parity((int)(uint32_t)w, fl);
+    }
+    return -1;
+}
+
+/* Register this process's master epoch. Workers key on getppid() (the nginx
+ * master); the resident primary is reparented to init by its double fork,
+ * so it keys on its own pid and always takes slot 0 / epoch 0. */
+static int
+gendir_register_self(struct ff_reload_gendir *d)
+{
+    int is_primary = rte_eal_process_type() == RTE_PROC_PRIMARY;
+    uint32_t pid;
+    unsigned i;
+
+    if (is_primary) {
+        pid = (uint32_t)getpid();
+        __atomic_store_n(&d->primary_pid, pid, __ATOMIC_SEQ_CST);
+    } else {
+        pid = (uint32_t)getppid();
+    }
+
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+        struct ff_reload_epoch_slot *s = &d->slot[i];
+
+        if (__atomic_load_n(&s->master_pid, __ATOMIC_SEQ_CST) != pid)
+            continue;
+
+        __atomic_store_n(&s->gen, (uint32_t)ff_reload_gen(),
+            __ATOMIC_SEQ_CST);
+        if (is_primary) {
+            __atomic_store_n(&s->epoch, 0u, __ATOMIC_SEQ_CST);
+            __atomic_store_n(&s->flags, FF_RELOAD_SLOT_PRIMARY,
+                __ATOMIC_SEQ_CST);
+        }
+        __atomic_store_n(&s->state, FF_RELOAD_SLOT_LIVE, __ATOMIC_SEQ_CST);
+        g_dir_slot = (int)i;
+        g_dir_epoch = __atomic_load_n(&s->epoch, __ATOMIC_SEQ_CST);
+        ff_reload_set_epoch(g_dir_epoch);
+        if (!is_primary)
+            g_dir_port_parity = ff_reload_port_parity(ff_reload_gen(),
+                __atomic_load_n(&s->flags, __ATOMIC_SEQ_CST));
+        return 0;
+    }
+
+    {
+        uint32_t epoch, odd = 0;
+        unsigned slot = 0;
+
+        if (!is_primary)
+            odd = ff_reload_port_odd_for(ff_reload_gen(),
+                gendir_serving_parity(d));
+        epoch = is_primary ? 0u
+            : __atomic_add_fetch(&d->next_epoch, 1, __ATOMIC_SEQ_CST);
+        if (slot_acquire(d, epoch, pid, ff_reload_gen(), is_primary,
+                odd, &slot) != 0)
+            return -1;
+        g_dir_slot = (int)slot;
+        g_dir_epoch = epoch;
+        ff_reload_set_epoch(epoch);
+        if (!is_primary)
+            g_dir_port_parity = ff_reload_port_parity(ff_reload_gen(), odd);
+    }
+    return 0;
+}
+
+void
+ff_reload_gendir_attach(void)
+{
+    const struct rte_memzone *mz;
+    struct ff_reload_gendir *d;
+    int fresh = 0;
+
+    if (!ff_global_cfg.dpdk.graceful_reload)
+        return;
+    if (g_dir != NULL)
+        return;
+
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+        mz = rte_memzone_reserve(FF_RELOAD_GENDIR_NAME,
+            sizeof(struct ff_reload_gendir), SOCKET_ID_ANY, 0);
+        fresh = mz != NULL;
+        if (mz == NULL) {
+            /* Already there (a previous init in this process, or a
+             * re-attached primary): reuse it instead of failing. */
+            mz = rte_memzone_lookup(FF_RELOAD_GENDIR_NAME);
+        }
+    } else {
+        mz = rte_memzone_lookup(FF_RELOAD_GENDIR_NAME);
+    }
+    if (mz == NULL) {
+        /* without the directory every epoch-named resource would
+         * silently collapse into slot 0 / epoch 0 — two masters' workers
+         * sharing one ring set. Refuse to come up instead. */
+        goto fail;
+    }
+
+    d = (struct ff_reload_gendir *)mz->addr;
+    /* a fresh zone may sit on reused hugepage content: never trust it */
+    if (rte_eal_process_type() == RTE_PROC_PRIMARY &&
+        (fresh || d->magic != FF_RELOAD_GENDIR_MAGIC)) {
+        memset(d, 0, sizeof(*d));
+        d->magic = FF_RELOAD_GENDIR_MAGIC;
+        d->version = FF_RELOAD_GENDIR_VERSION;
+        d->len = (uint32_t)sizeof(*d);
+        d->slot_max = FF_RELOAD_EPOCH_SLOT_MAX;
+        d->gen_max = FF_RELOAD_GEN_MAX;
+        d->next_epoch = 1;
+        d->active_word = pack_coord(FF_RELOAD_EPOCH_NONE, 0);
+        d->rx_owner_word = pack_coord(FF_RELOAD_EPOCH_NONE, 0);
+        d->kni_owner_word = pack_coord(FF_RELOAD_EPOCH_NONE, 0);
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+    }
+
+    /* Publish nothing until this process owns a slot: a worker that failed
+     * to register must not claim ownership in a directory it is not part
+     * of. */
+    ff_reload_dir_sync_enable(0);
+    if (ff_reload_gendir_install(d, sizeof(*d)) != 0)
+        goto fail;
+    if (gendir_register_self(d) != 0)
+        goto fail;
+    g_dir = d;
+    ff_flow_map_lport_split(g_dir_port_parity);
+    /* Only a secondary ever owns a queue, so only a secondary may publish
+     * an ownership claim — otherwise the resident primary (epoch 0) would
+     * win the initial claim against the workers of the first master. */
+    ff_reload_dir_sync_enable(rte_eal_process_type() == RTE_PROC_SECONDARY);
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_LIB,
+        "generation directory attached: epoch %u slot %u pid %u "
+        "port parity %d\n",
+        g_dir_epoch, (unsigned)(g_dir_slot < 0 ? 0 : g_dir_slot),
+        (unsigned)getpid(), g_dir_port_parity);
+    return;
+
+fail:
+    ff_reload_dir_sync_enable(0);
+    ff_reload_gendir_install(NULL, 0);
+    g_dir = NULL;
+    g_dir_slot = -1;
+    g_dir_epoch = 0;
+    (void)ff_reload_gendir_reset_pending();
+    rte_exit(EXIT_FAILURE, "generation directory: cannot register this "
+        "process (no usable epoch slot / incompatible directory); refusing "
+        "to start without cross-master epoch isolation\n");
+}
+
+int
+ff_reload_gendir_epoch_live(uint32_t epoch)
+{
+    struct ff_reload_gendir *d = g_dir;
+    unsigned i;
+
+    if (d == NULL || epoch == FF_RELOAD_EPOCH_NONE)
+        return 0;
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++) {
+        if (__atomic_load_n(&d->slot[i].epoch, __ATOMIC_SEQ_CST) != epoch)
+            continue;
+        if (__atomic_load_n(&d->slot[i].state, __ATOMIC_SEQ_CST)
+            != FF_RELOAD_SLOT_LIVE)
+            return 0;
+        if (pid_alive(__atomic_load_n(&d->slot[i].master_pid,
+            __ATOMIC_SEQ_CST)))
+            return 1;
+        /* orphan workers of a dead master keep refreshing the
+         * stamp while they drain — until it goes stale the epoch is still
+         * a live counterpart and must not be displaced. */
+        return !slot_stale(d, i);
+    }
+    return 0;
+}
+
+int
+ff_reload_gendir_mint(uint32_t *epoch, unsigned *slot, int gen, uint32_t pid)
+{
+    struct ff_reload_gendir *d = g_dir;
+    uint32_t e;
+
+    if (d == NULL)
+        return -1;
+    e = __atomic_add_fetch(&d->next_epoch, 1, __ATOMIC_SEQ_CST);
+    if (slot_acquire(d, e, pid, gen, 0,
+            ff_reload_port_odd_for(gen, gendir_serving_parity(d)), slot) != 0)
+        return -1;
+    if (epoch)
+        *epoch = e;
+    return 0;
+}
+
+int
+ff_reload_gendir_reset_pending(void)
+{
+    int pending = g_dir_reset_pending;
+
+    g_dir_reset_pending = 0;
+    return pending;
+}
+
+/* Same verdict without consuming it: only drains the recycled
+ * slot's rings once no orphan user can still be consuming them, so the
+ * consumer has to be able to ask first and clear the flag later. */
+int
+ff_reload_gendir_reset_pending_peek(void)
+{
+    return g_dir_reset_pending;
+}
+
+void
+ff_reload_gendir_retire(void)
+{
+    struct ff_reload_gendir *d = g_dir;
+    uint32_t owner;
+
+    if (d == NULL || g_dir_slot < 0)
+        return;
+    /* A worker exits on every reload round while its master stays up; only
+     * the process that registered the slot under its own pid (the resident
+     * primary) or the last one of a dead master may release it. */
+    owner = __atomic_load_n(&d->slot[g_dir_slot].master_pid,
+        __ATOMIC_SEQ_CST);
+    if (owner != (uint32_t)getpid() && pid_alive(owner))
+        return;
+    __atomic_store_n(&d->slot[g_dir_slot].state, FF_RELOAD_SLOT_DEAD,
+        __ATOMIC_SEQ_CST);
+    g_dir_slot = -1;
+}

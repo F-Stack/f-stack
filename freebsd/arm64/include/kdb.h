@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_KDB_H_
@@ -39,12 +37,16 @@
 
 void kdb_cpu_clear_singlestep(void);
 void kdb_cpu_set_singlestep(void);
+int kdb_cpu_set_breakpoint(vm_offset_t addr);
+int kdb_cpu_clr_breakpoint(vm_offset_t addr);
+int kdb_cpu_set_watchpoint(vm_offset_t addr, size_t size, int access);
+int kdb_cpu_clr_watchpoint(vm_offset_t addr, size_t size);
 
 static __inline void
 kdb_cpu_sync_icache(unsigned char *addr, size_t size)
 {
 
-	cpu_icache_sync_range((vm_offset_t)addr, size);
+	cpu_icache_sync_range(addr, size);
 }
 
 static __inline void

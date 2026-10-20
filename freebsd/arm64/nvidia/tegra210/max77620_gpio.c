@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -24,9 +24,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -675,7 +672,7 @@ max77620_gpio_attach(struct max77620_softc *sc, phandle_t node)
 
 	sx_init(&sc->gpio_lock, "MAX77620 GPIO lock");
 
-	sc->gpio_busdev = gpiobus_attach_bus(sc->dev);
+	sc->gpio_busdev = gpiobus_add_bus(sc->dev);
 	if (sc->gpio_busdev == NULL)
 		return (ENXIO);
 

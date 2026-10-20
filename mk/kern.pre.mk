@@ -51,15 +51,8 @@ CFLAGS=	${COPTFLAGS} ${C_DIALECT} ${DEBUG} ${CWARNFLAGS}
 KERNEL_CFLAGS= -D__FreeBSD__ -D_KERNEL -DHAVE_KERNEL_OPTION_HEADERS -include opt_global.h -fno-builtin
 ifneq (${COMPILER_TYPE},clang)
 CFLAGS+= -fno-common -finline-limit=${INLINE_LIMIT}
-ifneq (${MACHINE_CPUARCH},mips)
 CFLAGS+= --param inline-unit-growth=100
 CFLAGS+= --param large-function-growth=1000
-else
-# XXX Actually a gross hack just for Octeon because of the Simple Executive.
-CFLAGS+= --param inline-unit-growth=10000
-CFLAGS+= --param large-function-growth=100000
-CFLAGS+= --param max-inline-insns-single=10000
-endif
 endif
 WERROR?= -Werror -Wno-unused-variable
 
@@ -109,6 +102,7 @@ IMACROS_FILTER+= __CYGWIN__ __CYGWIN32__
 IMACROS_FILTER+= __FreeBSD__
 IMACROS_FILTER+= __linux __linux__ __gnu__linux__ linux
 IMACROS_FILTER+= _WIN32 _WIN64
+IMACROS_FILTER+= __STDC_EMBED_EMPTY__ __STDC_EMBED_FOUND__ __STDC_EMBED_NOT_FOUND__
 
 SPACE= $(eval) $(eval)
 IMACROS_FILTER_EXPR:= $(subst ${SPACE},|,$(strip ${IMACROS_FILTER}))

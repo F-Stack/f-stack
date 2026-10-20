@@ -29,9 +29,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -173,7 +170,7 @@ static int
 etm_init(device_t dev)
 {
 	struct etm_softc *sc;
-	uint32_t reg;
+	uint32_t reg __unused;
 
 	sc = device_get_softc(dev);
 

@@ -34,6 +34,7 @@
  * user cache created with rte_mempool_cache_create().
  */
 
+#include <stdalign.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <inttypes.h>
@@ -43,6 +44,7 @@
 #include <rte_spinlock.h>
 #include <rte_debug.h>
 #include <rte_lcore.h>
+#include <rte_log.h>
 #include <rte_branch_prediction.h>
 #include <rte_ring.h>
 #include <rte_memcpy.h>
@@ -65,7 +67,7 @@ extern "C" {
  * captured since they can be calculated from other stats.
  * For example: put_cache_objs = put_objs - put_common_pool_objs.
  */
-struct rte_mempool_debug_stats {
+struct __rte_cache_aligned rte_mempool_debug_stats {
 	uint64_t put_bulk;             /**< Number of puts. */
 	uint64_t put_objs;             /**< Number of objects successfully put. */
 	uint64_t put_common_pool_bulk; /**< Number of bulks enqueued in common pool. */
@@ -79,13 +81,13 @@ struct rte_mempool_debug_stats {
 	uint64_t get_success_blks;     /**< Successful allocation number of contiguous blocks. */
 	uint64_t get_fail_blks;        /**< Failed allocation number of contiguous blocks. */
 	RTE_CACHE_GUARD;
-} __rte_cache_aligned;
+};
 #endif
 
 /**
  * A structure that stores a per-core object cache.
  */
-struct rte_mempool_cache {
+struct __rte_cache_aligned rte_mempool_cache {
 	uint32_t size;	      /**< Size of the cache */
 	uint32_t flushthresh; /**< Threshold before we flush excess elements */
 	uint32_t len;	      /**< Current cache count */
@@ -108,8 +110,8 @@ struct rte_mempool_cache {
 	 * Cache is allocated to this size to allow it to overflow in certain
 	 * cases to avoid needless emptying of cache.
 	 */
-	void *objs[RTE_MEMPOOL_CACHE_MAX_SIZE * 2] __rte_cache_aligned;
-} __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) void *objs[RTE_MEMPOOL_CACHE_MAX_SIZE * 2];
+};
 
 /**
  * A structure that stores the size of mempool elements.
@@ -177,6 +179,14 @@ struct rte_mempool_objtlr {
 #endif
 
 /**
+ * @internal Logtype used for mempool related messages.
+ */
+extern int rte_mempool_logtype;
+#define RTE_LOGTYPE_MEMPOOL	rte_mempool_logtype
+#define RTE_MEMPOOL_LOG(level, ...) \
+	RTE_LOG_LINE(level, MEMPOOL, "" __VA_ARGS__)
+
+/**
  * A list of memory where objects are stored
  */
 RTE_STAILQ_HEAD(rte_mempool_memhdr_list, rte_mempool_memhdr);
@@ -209,15 +219,15 @@ struct rte_mempool_memhdr {
  * The structure is cache-line aligned to avoid ABI breakages in
  * a number of cases when something small is added.
  */
-struct rte_mempool_info {
+struct __rte_cache_aligned rte_mempool_info {
 	/** Number of objects in the contiguous block */
 	unsigned int contig_block_size;
-} __rte_cache_aligned;
+};
 
 /**
  * The RTE mempool structure.
  */
-struct rte_mempool {
+struct __rte_cache_aligned rte_mempool {
 	char name[RTE_MEMPOOL_NAMESIZE]; /**< Name of mempool. */
 	union {
 		void *pool_data;         /**< Ring or pool to store objects. */
@@ -259,7 +269,7 @@ struct rte_mempool {
 	 */
 	struct rte_mempool_debug_stats stats[RTE_MAX_LCORE + 1];
 #endif
-}  __rte_cache_aligned;
+};
 
 /** Spreading among memory channels not required. */
 #define RTE_MEMPOOL_F_NO_SPREAD		0x0001
@@ -679,7 +689,7 @@ typedef int (*rte_mempool_get_info_t)(const struct rte_mempool *mp,
 
 
 /** Structure defining mempool operations structure */
-struct rte_mempool_ops {
+struct __rte_cache_aligned rte_mempool_ops {
 	char name[RTE_MEMPOOL_OPS_NAMESIZE]; /**< Name of mempool ops struct. */
 	rte_mempool_alloc_t alloc;       /**< Allocate private data. */
 	rte_mempool_free_t free;         /**< Free the external pool. */
@@ -704,7 +714,7 @@ struct rte_mempool_ops {
 	 * Dequeue a number of contiguous object blocks.
 	 */
 	rte_mempool_dequeue_contig_blocks_t dequeue_contig_blocks;
-} __rte_cache_aligned;
+};
 
 #define RTE_MEMPOOL_MAX_OPS_IDX 16  /**< Max registered ops structs */
 
@@ -717,14 +727,14 @@ struct rte_mempool_ops {
  * any function pointers stored directly in the mempool struct would not be.
  * This results in us simply having "ops_index" in the mempool struct.
  */
-struct rte_mempool_ops_table {
+struct __rte_cache_aligned rte_mempool_ops_table {
 	rte_spinlock_t sl;     /**< Spinlock for add/delete. */
 	uint32_t num_ops;      /**< Number of used ops structs in the table. */
 	/**
 	 * Storage for all possible ops structs.
 	 */
 	struct rte_mempool_ops ops[RTE_MEMPOOL_MAX_OPS_IDX];
-} __rte_cache_aligned;
+};
 
 /** Array of registered ops structs. */
 extern struct rte_mempool_ops_table rte_mempool_ops_table;
@@ -840,7 +850,7 @@ rte_mempool_ops_enqueue_bulk(struct rte_mempool *mp, void * const *obj_table,
 	ret = ops->enqueue(mp, obj_table, n);
 #ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 	if (unlikely(ret < 0))
-		RTE_LOG(CRIT, MEMPOOL, "cannot enqueue %u objects to mempool %s\n",
+		RTE_MEMPOOL_LOG(CRIT, "cannot enqueue %u objects to mempool %s",
 			n, mp->name);
 #endif
 	return ret;
@@ -1511,7 +1521,7 @@ rte_mempool_do_generic_get(struct rte_mempool *mp, void **obj_table,
 	/* The cache is a stack, so copy will be in reverse order. */
 	cache_objs = &cache->objs[cache->len];
 
-	if (__extension__(__builtin_constant_p(n)) && n <= cache->len) {
+	if (__rte_constant(n) && n <= cache->len) {
 		/*
 		 * The request size is known at build time, and
 		 * the entire request can be satisfied from the cache,
@@ -1532,8 +1542,7 @@ rte_mempool_do_generic_get(struct rte_mempool *mp, void **obj_table,
 	 * If the request size 'n' is known at build time, the above comparison
 	 * ensures that n > cache->len here, so omit RTE_MIN().
 	 */
-	len = __extension__(__builtin_constant_p(n)) ? cache->len :
-			RTE_MIN(n, cache->len);
+	len = __rte_constant(n) ? cache->len : RTE_MIN(n, cache->len);
 	cache->len -= len;
 	remaining = n - len;
 	for (index = 0; index < len; index++)
@@ -1544,7 +1553,7 @@ rte_mempool_do_generic_get(struct rte_mempool *mp, void **obj_table,
 	 * where the entire request can be satisfied from the cache
 	 * has already been handled above, so omit handling it here.
 	 */
-	if (!__extension__(__builtin_constant_p(n)) && remaining == 0) {
+	if (!__rte_constant(n) && remaining == 0) {
 		/* The entire request is satisfied from the cache. */
 
 		RTE_MEMPOOL_CACHE_STAT_ADD(cache, get_success_bulk, 1);
@@ -1906,6 +1915,55 @@ uint32_t rte_mempool_calc_obj_size(uint32_t elt_size, uint32_t flags,
  */
 void rte_mempool_walk(void (*func)(struct rte_mempool *, void *arg),
 		      void *arg);
+
+/**
+ * A structure used to retrieve information about the memory range
+ * of the mempool.
+ */
+struct rte_mempool_mem_range_info {
+	/** Start of the memory range used by mempool objects */
+	void *start;
+	/** Length of the memory range used by mempool objects */
+	size_t length;
+	/** Are all memory addresses used by mempool objects contiguous */
+	bool is_contiguous;
+};
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Get information about the memory range used to store objects in the mempool.
+ *
+ * @param[in] mp
+ *   Pointer to an initialized mempool.
+ * @param[out] mem_range
+ *   Pointer to struct which is used to return lowest address,
+ *   length of the memory range containing all the addresses,
+ *   and whether these addresses are contiguous.
+ * @return
+ *   0 on success, -EINVAL if mempool is not valid or mem_range is NULL.
+ **/
+__rte_experimental
+int
+rte_mempool_get_mem_range(const struct rte_mempool *mp,
+	struct rte_mempool_mem_range_info *mem_range);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Return alignment of objects stored in the mempool.
+ *
+ * @param[in] mp
+ *   Pointer to a mempool.
+ * @return
+ *   Object alignment if mp is valid. 0 if mp is NULL.
+ *
+ **/
+__rte_experimental
+size_t
+rte_mempool_get_obj_alignment(const struct rte_mempool *mp);
 
 /**
  * @internal Get page size used for mempool object allocation.

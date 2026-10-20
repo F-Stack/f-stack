@@ -5,6 +5,7 @@
 #ifndef HISI_DMADEV_H
 #define HISI_DMADEV_H
 
+#include <rte_bitops.h>
 #include <rte_byteorder.h>
 #include <rte_common.h>
 #include <rte_memzone.h>
@@ -14,7 +15,7 @@
 #define BITS_PER_LONG	(__SIZEOF_LONG__ * 8)
 #define GENMASK(h, l) \
 		(((~0UL) << (l)) & (~0UL >> (BITS_PER_LONG - 1 - (h))))
-#define BF_SHF(x) (__builtin_ffsll(x) - 1)
+#define BF_SHF(x) rte_bsf64(x)
 #define FIELD_GET(mask, reg) \
 		((typeof(mask))(((reg) & (mask)) >> BF_SHF(mask)))
 
@@ -141,6 +142,7 @@ enum {
 
 struct hisi_dma_sqe {
 	uint32_t dw0;
+#define SQE_DROP_FLAG	BIT(4)
 #define SQE_FENCE_FLAG	BIT(10)
 #define SQE_OPCODE_M2M	0x4
 	uint32_t dw1;
@@ -211,6 +213,7 @@ struct hisi_dma_dev {
 	 */
 	uint16_t cqs_completed;
 	uint8_t cqe_vld; /**< valid bit for CQE, will change for every round. */
+	volatile uint8_t stop_proc; /**< whether stop processing new requests. */
 
 	uint64_t submitted;
 	uint64_t completed;

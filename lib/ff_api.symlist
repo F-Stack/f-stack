@@ -1,4 +1,6 @@
 ff_hardclock
+ff_hardclock_worker
+ff_tcp_hpts_softclock
 ff_freebsd_init
 ff_socket
 ff_setsockopt
@@ -27,6 +29,7 @@ ff_bind
 ff_connect
 ff_getpeername
 ff_getsockname
+ff_rss_self_queue_info
 ff_shutdown
 ff_sysctl 
 ff_kqueue
@@ -35,6 +38,10 @@ ff_kevent_do_each
 ff_veth_attach
 ff_veth_detach
 ff_veth_process_packet
+ff_lro_init
+ff_lro_free
+ff_lro_rx
+ff_lro_flush
 ff_veth_softc_to_hostc
 ff_mbuf_gethdr
 ff_mbuf_get
@@ -56,9 +63,14 @@ ff_next_mbuf
 ff_mbuf_mtod
 ff_rte_frm_extcl
 ff_mbuf_set_vlan_info
+ff_mbuf_set_timestamp
 ff_zc_mbuf_get
 ff_zc_mbuf_write
 ff_zc_mbuf_read
+ff_zc_send
+ff_zc_recv
+ff_zc_mbuf_segment
+ff_zc_recv_free
 ff_get_traffic
 ff_pthread_create
 ff_pthread_join
@@ -77,4 +89,12 @@ ff_log_set_global_level
 ff_log_set_level
 ff_log
 ff_vlog
-ff_log_clse
+ff_log_close
+ff_stack_thread_init
+ff_flow_map_lookup
+ff_syncache_count
+ff_syncache_counters
+ff_is_drain_generation
+ff_socket_snd_pending
+ff_socket_drain_count
+ff_udp_flow_peer_snapshot

@@ -1,0 +1,1573 @@
+# F-Stack v1.26 Layer 3 Architecture Analysis: Function-Level Index & Data Models
+
+**Document Version**: 1.0  
+**Analysis Date**: 2026-03-20  
+**Coverage**: F-Stack v1.26 Exported Functions, Data Structures, Thread Safety (FreeBSD 15.0 port; runtime-fix landing functions catalogued)  
+**Target Audience**: Kernel Developers, Performance Analysts, Debugging Engineers
+
+---
+
+## 1. Complete Function Export List
+
+### 1.1 Overview of 80+ Exported Functions by Category
+
+F-Stack defines all public symbols through `/data/workspace/f-stack/lib/ff_api.symlist`. The following is the complete list categorized by functionality:
+
+#### **Lifecycle Management (3)**
+
+```c
+int ff_init(int argc, char * const argv[])
+    // Initialize the F-Stack library
+    // Must be called first, only by the primary process
+    // Parameters: Command-line arguments in DPDK EAL format
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: No (call only during initialization)
+
+void ff_run(loop_func_t loop, void *arg)
+    // Start the main polling loop
+    // Called once per lcore
+    // Parameters: User callback function pointer, callback argument
+    // Does not return (unless ff_stop_run() is called)
+    // Thread safety: No (blocks until stopped)
+
+void ff_stop_run(void)
+    // Stop the polling loop
+    // Can be called from any thread
+    // Graceful shutdown, waits for all packet processing to complete
+    // Thread safety: Yes (atomic operation)
+```
+
+#### **Socket Lifecycle (12)**
+
+```c
+int ff_socket(int domain, int type, int protocol)
+    // Create a socket
+    // domain: AF_INET(=2) / AF_INET6(=10 Linux/28 FreeBSD)
+    // type: SOCK_STREAM(1) / SOCK_DGRAM(2) / SOCK_RAW(3)
+    // protocol: 0 (auto), IPPROTO_TCP(6), IPPROTO_UDP(17)
+    // Returns: fd >= 0, -1 on error
+    // Thread safety: Yes (per-thread socket table)
+
+int ff_bind(int sockfd, const struct linux_sockaddr *addr, socklen_t addrlen)
+    // Bind a local address
+    // addr: Pointer to sockaddr structure
+    // addrlen: Size of the address structure
+    // Returns: 0 on success, -1 on failure + errno
+    // Thread safety: Yes (fd isolation)
+
+int ff_listen(int sockfd, int backlog)
+    // Mark socket as listening state (TCP only)
+    // backlog: Size of the pending connection queue
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
+
+int ff_accept(int sockfd, struct linux_sockaddr *addr, socklen_t *addrlen)
+    // Accept a new connection (TCP only)
+    // Returns: New socket fd, -1 on error
+    // Returns the address to the addr structure
+    // Thread safety: Yes
+
+int ff_accept4(int sockfd, struct linux_sockaddr *addr, socklen_t *addrlen, int flags)
+    // Enhanced version of ff_accept(), supports flags (e.g., SOCK_NONBLOCK)
+    // Thread safety: Yes
+
+int ff_connect(int sockfd, const struct linux_sockaddr *addr, socklen_t addrlen)
+    // Establish a connection (TCP only)
+    // Non-blocking: May return -1 + errno=EINPROGRESS
+    // Monitor EVFILT_WRITE to detect connection completion
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
+
+int ff_close(int sockfd)
+    // Close a socket
+    // Waits for all pending data to be sent, graceful close
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
+
+int ff_shutdown(int sockfd, int how)
+    // Shut down one or both directions of communication
+    // how: SHUT_RD(0), SHUT_WR(1), SHUT_RDWR(2)
+    // Thread safety: Yes
+
+int ff_dup(int oldfd)
+    // Duplicate a file descriptor (returns the lowest available fd)
+    // Thread safety: Yes
+
+int ff_dup2(int oldfd, int newfd)
+    // Duplicate a file descriptor (to a specified target fd)
+    // Thread safety: Yes
+
+int ff_dup3(int oldfd, int newfd, int flags)
+    // Enhanced version of ff_dup2(), supports flags
+    // Thread safety: Yes
+
+int ff_getpeername(int sockfd, struct linux_sockaddr *addr, socklen_t *addrlen)
+    // Get the peer address
+    // Thread safety: Yes
+```
+
+#### **Data I/O Operations (13)**
+
+```c
+ssize_t ff_read(int fd, void *buf, size_t nbytes)
+    // Read data
+    // Returns: > 0 actual bytes read, 0 EOF, -1 error
+    // errno is set on error
+    // Non-blocking: Returns -1 + EAGAIN when no data available
+    // Thread safety: Yes
+
+ssize_t ff_write(int fd, const void *buf, size_t nbytes)
+    // Write data
+    // Returns: > 0 actual bytes sent, -1 buffer full or error
+    // Note: Returns -1 when buffer is full, NOT partial send!
+    // Should monitor EVFILT_WRITE event then retry
+    // Thread safety: Yes
+
+ssize_t ff_readv(int fd, const struct iovec *iov, int iovcnt)
+    // Scatter-gather read
+    // iov: Pointer to iovec array
+    // iovcnt: Number of elements in the iovec array
+    // Thread safety: Yes
+
+ssize_t ff_writev(int fd, const struct iovec *iov, int iovcnt)
+    // Scatter-gather write
+    // Thread safety: Yes
+
+ssize_t ff_pread(int fd, void *buf, size_t nbytes, off_t offset)
+    // Read from a specified offset (files only)
+    // Thread safety: Yes
+
+ssize_t ff_pwrite(int fd, const void *buf, size_t nbytes, off_t offset)
+    // Write to a specified offset (files only)
+    // Thread safety: Yes
+
+ssize_t ff_send(int fd, const void *buf, size_t len, int flags)
+    // Send data (TCP/UDP)
+    // flags: MSG_MORE (do not send immediately), MSG_OOB (out-of-band data)
+    // Thread safety: Yes
+
+ssize_t ff_sendto(int fd, const void *buf, size_t len, int flags,
+                  const struct linux_sockaddr *to, socklen_t tolen)
+    // Send data to a specified address (UDP only)
+    // Thread safety: Yes
+
+ssize_t ff_sendmsg(int fd, const struct msghdr *msg, int flags)
+    // Send a message (using msghdr structure, supports control information)
+    // Thread safety: Yes
+
+ssize_t ff_recv(int fd, void *buf, size_t len, int flags)
+    // Receive data (TCP/UDP)
+    // Thread safety: Yes
+
+ssize_t ff_recvfrom(int fd, void *buf, size_t len, int flags,
+                    struct linux_sockaddr *from, socklen_t *fromlen)
+    // Receive data and source address (UDP)
+    // Thread safety: Yes
+
+ssize_t ff_recvmsg(int fd, struct msghdr *msg, int flags)
+    // Receive a message (supports control information)
+    // Thread safety: Yes
+
+ssize_t ff_recvfrom_timeout(int fd, void *buf, size_t len, int flags,
+                           struct linux_sockaddr *from, socklen_t *fromlen,
+                           int timeout)
+    // Enhanced version of ff_recvfrom(), supports timeout
+    // Thread safety: Yes
+```
+
+#### **Event Multiplexing (7)**
+
+```c
+int ff_kqueue(void)
+    // Create a kqueue event object
+    // Returns: kqueue fd, -1 on error
+    // Thread safety: Yes
+
+int ff_kevent(int kq, const struct kevent *changelist, int nchanges,
+              struct kevent *eventlist, int nevents,
+              const struct timespec *timeout)
+    // Register events and wait for events to be ready
+    // changelist: Array of events to register (may be NULL)
+    // eventlist: Array of ready events to return
+    // timeout: NULL for blocking, 0 for non-blocking, > 0 for timeout
+    // Returns: Number of ready events, -1 on error
+    // Thread safety: Yes
+
+void ff_kevent_do_each(int kq, struct kevent *changelist, int nchanges,
+                       void (*callback)(struct kevent *kev, void *arg),
+                       void *arg)
+    // Convenience function: calls kevent once and invokes callback for each event
+    // Thread safety: Yes
+
+int ff_select(int nfds, fd_set *readfds, fd_set *writefds,
+              fd_set *exceptfds, struct timeval *timeout)
+    // select() implementation (for compatibility, not recommended)
+    // Thread safety: Yes
+
+int ff_poll(struct pollfd *fds, nfds_t nfds, int timeout)
+    // poll() implementation (for compatibility, not recommended)
+    // timeout: -1 blocking, 0 non-blocking, > 0 milliseconds
+    // Thread safety: Yes
+
+// Epoll compatibility (3)
+int ff_epoll_create(int size)
+    // Create an epoll object (actually calls ff_kqueue)
+    // Thread safety: Yes
+
+int ff_epoll_ctl(int epfd, int op, int fd, struct epoll_event *event)
+    // Register/modify/delete epoll events
+    // op: EPOLL_CTL_ADD(1) / EPOLL_CTL_MOD(2) / EPOLL_CTL_DEL(3)
+    // Thread safety: Yes
+
+int ff_epoll_wait(int epfd, struct epoll_event *events, 
+                  int maxevents, int timeout)
+    // Wait for epoll events
+    // timeout: -1 blocking, 0 non-blocking, > 0 milliseconds
+    // Thread safety: Yes
+```
+
+#### **Socket Option Operations (6)**
+
+```c
+int ff_setsockopt(int s, int level, int optname, const void *optval, socklen_t optlen)
+    // Set socket options
+    // level: SOL_SOCKET / IPPROTO_IP / IPPROTO_TCP / IPPROTO_IPV6
+    // optname: SO_* / IP_* / TCP_* constants
+    // Thread safety: Yes
+
+int ff_getsockopt(int s, int level, int optname, void *optval, socklen_t *optlen)
+    // Get socket option values
+    // Thread safety: Yes
+
+int ff_ioctl(int fd, unsigned long request, ...)
+    // I/O control (variadic)
+    // Common: FIONBIO (non-blocking), FIONREAD (readable bytes)
+    // Thread safety: Yes
+
+int ff_fcntl(int fd, int cmd, ...)
+    // File control (variadic)
+    // cmd: F_GETFL / F_SETFL / F_GETFD / F_SETFD
+    // Thread safety: Yes
+
+struct hostent * ff_gethostbyname(const char *name)
+    // Domain name → IPv4 address (basic implementation)
+    // Returns: hostent pointer, NULL on error
+    // Thread safety: No (returns static buffer, requires mutex)
+
+struct hostent * ff_gethostbyname2(const char *name, int af)
+    // Domain name → address (supports AF_INET / AF_INET6)
+    // Thread safety: No
+```
+
+#### **Route Management (1)**
+
+```c
+int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
+                 struct linux_sockaddr *dst, struct linux_sockaddr *gw,
+                 struct linux_sockaddr *netmask)
+    // Routing table operations
+    // req:  FF_ROUTE_ADD / FF_ROUTE_DEL / FF_ROUTE_CHANGE
+    // flag: FF_RTF_HOST / FF_RTF_GATEWAY
+    // dst: Destination network address
+    // gw: Gateway address
+    // netmask: Subnet mask
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
+```
+
+#### **Zero-Copy Mbuf (5)**
+
+```c
+struct ff_mbuf * ff_mbuf_gethdr(void)
+    // Get an empty mbuf header
+    // Returns: mbuf pointer, NULL on error
+    // Thread safety: Yes (lock-free allocation from memory pool)
+
+struct ff_mbuf * ff_mbuf_get(const void *data, uint16_t len)
+    // Create an mbuf containing data
+    // Returns: New mbuf, NULL on error
+    // Thread safety: Yes
+
+void ff_mbuf_free(struct ff_mbuf *mbuf)
+    // Free an mbuf (return to memory pool)
+    // Thread safety: Yes
+
+ssize_t ff_mbuf_copydata(struct ff_mbuf *mbuf, uint16_t off,
+                         uint16_t len, void *buf)
+    // Copy data from mbuf to buffer
+    // off: Offset (bytes)
+    // len: Length to copy
+    // Returns: Actual bytes copied, -1 on error
+    // Thread safety: Yes
+
+// Zero-Copy send/receive (3)
+int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len)
+    // Allocate a zero-copy mbuf chain (caller provides pre-allocated struct ff_zc_mbuf)
+    // m: Caller-allocated ff_zc_mbuf pointer (must not be NULL)
+    // len: Total length of mbuf chain to allocate
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
+
+int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len)
+    // Write data to mbuf chain in zero-copy mode (caller then sends with ff_write)
+    // Requires prior call to ff_zc_mbuf_get
+    // Thread safety: Yes
+
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len)
+    // Zero-copy read (not yet implemented, planned for future support)
+    // Thread safety: Yes
+```
+
+#### **Multi-Threading Support (2)**
+
+```c
+int ff_pthread_create(pthread_t *thread, const pthread_attr_t *attr,
+                      void *(*start_routine)(void *), void *arg)
+    // Create a thread (wraps pthread_create)
+    // Each thread must independently call ff_init() and ff_run()
+    // Thread safety: Yes
+
+int ff_pthread_join(pthread_t thread, void **retval)
+    // Wait for thread termination (wraps pthread_join)
+    // Thread safety: Yes
+```
+
+#### **Logging and Diagnostics (8)**
+
+```c
+int ff_log_open_set(void)
+    // Open the F-Stack log file (path and level read from config.ini)
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: No (requires external synchronization)
+
+int ff_log_reset_stream(void *f)
+    // Reset log output stream (f is FILE *, managed by the application)
+    // Used to redirect logs to a custom FILE stream
+    // Thread safety: No
+
+void ff_log_set_global_level(uint32_t level)
+    // Set the global log level
+    // Thread safety: No
+
+int ff_log_set_level(uint32_t logtype, uint32_t level)
+    // Set the log level for a specific log type
+    // logtype: FF_LOGTYPE_* (e.g., FF_LOGTYPE_USER1)
+    // Thread safety: No
+
+int ff_log(uint32_t level, uint32_t logtype, const char *format, ...)
+    // Output a log message (printf-style)
+    // level: FF_LOG_* (e.g., FF_LOG_INFO)
+    // logtype: FF_LOGTYPE_* (e.g., FF_LOGTYPE_USER1)
+    // Thread safety: Yes (per-thread independent buffer)
+
+int ff_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)
+    // va_list version of ff_log()
+    // Thread safety: Yes
+
+void ff_log_close(void)
+    // Close the logging system
+    // Thread safety: No
+```
+
+#### **System Interfaces (8)**
+
+```c
+int ff_gettimeofday(struct timeval *tv, struct timezone *tz)
+    // Get the current time (wall clock time)
+    // Precision: Microseconds (μs)
+    // Returns: 0 on success, -1 on failure
+    // Thread safety: Yes
+
+int ff_clock_gettime(clockid_t clock_id, struct timespec *tp)
+    // High-precision time query
+    // clock_id: CLOCK_REALTIME / CLOCK_MONOTONIC
+    // Precision: Nanoseconds (ns)
+    // Thread safety: Yes
+
+int ff_usleep(unsigned int useconds)
+    // Microsecond-level sleep (use only during initialization)
+    // Thread safety: No
+
+void ff_sync_time_to_freebsd(void)
+    // Synchronize Linux system time to the FreeBSD stack
+    // Thread safety: No (initialization only)
+
+time_t ff_time(time_t *tloc)
+    // Get second-level timestamp
+    // Thread safety: Yes
+
+int ff_nanosleep(const struct timespec *req, struct timespec *rem)
+    // Nanosecond-level sleep
+    // Thread safety: Yes
+
+// Packet dispatch callback (optional)
+void ff_set_pkt_dispatcher(pkt_dispatcher_t func)
+    // Register a custom packet dispatch function
+    // Function: Intercept packets before protocol processing for custom handling (e.g., VLAN classification)
+    // Thread safety: No (set during initialization)
+
+int ff_packet_filter(ff_pkt_type type, uint16_t proto)
+    // Query whether this type of packet should be received
+    // Thread safety: Yes
+```
+
+#### **Others (3+)**
+
+```c
+int ff_sysctl(const int *name, u_int namelen, void *oldp, size_t *oldlenp,
+              const void *newp, size_t newlen)
+    // sysctl interface (query/modify kernel parameters)
+    // name: MIB integer array (e.g., {CTL_NET, PF_INET, IPPROTO_TCP, TCPCTL_SENDSPACE})
+    // namelen: Length of the MIB array
+    // Thread safety: Yes
+
+int ff_arp_add(const char *ip, const char *mac)
+    // Add an ARP entry
+    // Thread safety: Yes
+
+int ff_arp_del(const char *ip)
+    // Delete an ARP entry
+    // Thread safety: Yes
+
+// Other utility functions...
+const char * ff_strerror(int errnum)
+    // Error number → error message string
+    // Thread safety: Yes
+
+// === Kernel-stack coexistence (only when built with FF_KERNEL_COEXIST) ===
+// Per-socket stack markers (ff_api.h): SOCK_FSTACK 0x01000000 / SOCK_KERNEL 0x02000000
+// Internal machinery (lib/ff_host_interface.{c,h}):
+//   32 ff_host_* host-libc bridges: ff_host_socket/bind/listen/accept/accept4/
+//     connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/
+//     shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/
+//     epoll_create1/epoll_ctl/epoll_wait
+//     + R9: ff_host_set_v6only (setsockopt IPV6_V6ONLY=1 on host IPv6 socket),
+//           ff_host_kqueue_ctl / ff_host_kqueue_poll (kqueue<->host-epoll bridge)
+//     + R10: ff_host_readv / ff_host_writev / ff_host_ioctl (raw Linux request) /
+//           ff_host_dup / ff_host_dup2
+//   ff_native_map_get/set/clear     - F-Stack fd <-> host fd pairing table (65536 entries)
+//   ff_is_kernel_fd/ff_kernel_fd_encode/ff_kernel_fd_real (inline; FF_KERNEL_FD_BASE=0x40000000)
+// R9 kqueue coexistence (lib/ff_syscall_wrapper.c): ff_kqueue/ff_kevent mirror the epoll
+//   path - lazily pair a host epoll per kqueue (shared ff_epoll_host_ep), register
+//   kernel/dual-stack-fd EVFILT_READ/WRITE into it, synthesize struct kevent from the
+//   host epoll then merge ff_kevent_do_each F-Stack events. Kernel fds: READ/WRITE only.
+// Compiled out entirely when FF_KERNEL_COEXIST is undefined.
+```
+
+---
+
+#### **Graceful Reload (`ff_reload.h` / `ff_reload_gendir.c`)**
+
+Only reachable with `graceful_reload=1`; every symbol degrades to a no-op otherwise.
+
+```c
+// Declared in ff_api.h (ff_config.c / ff_init.c); used by the nginx master to decide on the resident primary
+int ff_primary_conf_digest(const char *conf, uint64_t *digest, int *kni_enable)
+    // ff_config.c: digest of the config part the resident slim primary applies; -1 if unparsable
+int ff_primary_users(const char *runtime_dir)
+    // ff_config.c: live DPDK secondaries of a primary (mp_socket_* connect probe); -1 = unknown
+int ff_primary_reuse_check(int record_ok, int same_digest, int users, int idle,
+                           int inherited)
+    // ff_config.c: FF_PRIMARY_REUSE / FF_PRIMARY_REFUSE / FF_PRIMARY_RESTART;
+    // idle: the primary reports that no master and no worker uses it
+const char *ff_eal_runtime_dir(void)
+    // ff_init.c: EAL runtime directory of this process
+
+void ff_reload_attach_state(void *block)
+    // Attach the anonymous MAP_SHARED reload block created by the nginx master
+    // Inherited through fork(); apps not driven by the master never attach
+    // Thread safety: n/a (called once, before any child exists)
+
+int ff_reload_gen(void); void ff_reload_set_gen(int gen)
+    // This process's generation (gen0/gen1 ping-pong)
+    // Selects the msg ring, app mbuf pool and drain ring set
+
+uint32_t ff_reload_epoch(void); unsigned ff_reload_epoch_slot(void)
+    // Master epoch and its directory slot; slot 0 is the directory-less identity
+    // Ring names carry the slot ("_e<slot>"), not the monotonic epoch, because a
+    // ring name is capped at RTE_RING_NAMESIZE-1 bytes
+
+int ff_reload_active_gen(void); int ff_reload_target_gen(void)
+int ff_reload_kni_owner_gen(void); int ff_reload_worker_gen(void)
+    // Generational view: serving, being spawned, KNI owner, this worker's binding
+
+int ff_reload_hw_locked(void)
+    // 1 while this process must not touch the hardware
+    // Derived from rx_owner_gen/rx_stopped, deliberately reversible
+
+int ff_no_hw_mode(void); int ff_no_hw_mode_nosync(void)
+    // Is this process off the hardware now; the first syncs the directory
+    // (main loop, once per pass), the second does not (per-packet tx path)
+
+int ff_reload_peer_draining(void); int ff_reload_peer_mirror_draining(void)
+    // 1 while another master's epoch is a live or still-draining counterpart
+    // The first is a full scan (a kill(2) per LIVE slot): init / 1 Hz only;
+    // the second reads the mirror refreshed by each directory sync and
+    // serves the per-packet paths
+
+int ff_reload_heartbeat_eval(uint64_t prev_cnt, uint64_t cur_cnt,
+                             uint64_t now, uint64_t *last_advance,
+                             uint64_t timeout)
+    // Liveness of the rx-owner generation: advanced -> alive, stalled past
+    // timeout -> dead. Returns -1 on invalid arguments
+
+int ff_reload_gendir_epoch_live(uint32_t epoch)
+    // Directory liveness; a slot whose master is gone stays live until its
+    // orphan workers stop refreshing the stamp (FF_RELOAD_SLOT_STALE_MS)
+
+int ff_reload_gendir_masters_live(void)
+    // nginx masters registered in the directory that still run (zombies do
+    // not count), the resident primary and the caller excluded; -1 without
+    // a directory.
+    // The resident primary exits on its own once this and its user count
+    // stay at 0 (nginx ngx_ff_slim_primary_loop)
+
+int ff_reload_gendir_masters_seen(void)
+    // Slots ever claimed by an nginx master, running or not, the resident
+    // primary and the caller excluded; -1 without a directory. Lets the
+    // primary treat a master that died before its first check as a user
+
+int ff_reload_gendir_rx_claim(uint32_t from_epoch, uint32_t from_gen, ...)
+int ff_reload_gendir_rx_reclaim(uint32_t my_epoch, uint32_t my_gen)
+    // Take rx from the current owner (claim) or from a dead one (reclaim)
+    // Owner coordinates are one 64-bit word ((epoch << 32) | gen): a single CAS,
+    // so two masters can never both match
+
+void ff_reload_master_begin(uint32_t *epoch, uint32_t *target_gen)
+void ff_reload_master_abort(void); void ff_reload_master_complete(void)
+    // Master-side window open / roll back / close
+
+void ff_reload_msg_fill(struct ff_msg *msg, int cmd, int gen, int status, ...)
+int ff_reload_msg_parse(const struct ff_msg *msg, int *cmd, int *gen, ...)
+    // Encode/decode the FF_RELOAD subcommand carried over the msg ring
+
+int ff_syncache_count(void)
+void ff_syncache_counters(uint64_t *synack_fail, uint64_t *ack_mismatch)
+    // Half-open entries, and the two reload-relevant failure counters
+```
+
+#### **Software Flow Map (`ff_flow_map.h`)**
+
+```c
+int ff_flow_map_active(void)
+    // 1 while a reload window is open and the table is armed
+
+int ff_flow_map_admit(const struct ff_flow_key *key, int *created)
+    // Record a four-tuple as "this generation" when its SYN is admitted
+    // (before the SYN-ACK is sent), so the third
+    // handshake ACK is classified instead of being forwarded to the peer.
+    // *created is 1 only when this call added the entry (a duplicate is not).
+    // Also called for an active TCP connect before its SYN (in_pcb_flow_admit)
+
+int ff_flow_map_revoke(const struct ff_flow_key *key)
+    // Undo an admission whose SYN-ACK never went out; only the entry this
+    // admission created is removed. Also called for an active connect whose
+    // pcb leaves the hash (INP_FF_FLOWMAP, in_pcbremhash_locked()). Uses backward-shift deletion so no entry
+    // behind it in the probe chain is hidden
+
+int ff_flow_map_lookup(const struct ff_flow_key *key)
+    // Dispatcher hot path: hit -> this generation, TCP miss -> the draining
+    // peer (a UDP miss goes on to ff_flow_peer_classify())
+
+void ff_flow_map_lport_split(int parity)
+int ff_flow_map_lport_ok(uint16_t lport)
+    // Ephemeral port parity of this generation (set at the generation
+    // directory attach; -1 = every port). in_pcb_lport_dest() skips TCP and
+    // UDP ports that fail lport_ok(); in_pcbconnect()/in6_pcbconnect() admit an
+    // active connect through in_pcb_flow_admit() before its SYN
+
+void ff_flow_map_stats2(uint64_t *inserted, uint64_t *dup, uint64_t *full,
+                        uint64_t *grown, uint64_t *grow_fail,
+                        uint64_t *alloc_fail, uint32_t *cap,
+                        uint64_t *revoked)
+    // Counters for ff_top / drain observability; any pointer may be NULL
+```
+
+#### **UDP Peer Table (`ff_flow_peer.h`, app face in `ff_api.h`)**
+
+```c
+void ff_flow_peer_attach(void)
+    // At ff_dpdk_init (graceful secondaries): reserve or look up this
+    // worker's memzone ff_fpeer_p<proc>_e<slot>_g<gen>, reset it, start
+    // recording; refuses a table whose live owner is another process
+void ff_flow_peer_tick(void)
+    // Every main-loop pass, before the park ack: start publishing at T1
+    // (HUP: window open and not the target; USR2: a newer peer epoch in the
+    // block), withdraw on an abandoned round, refresh the reader's view
+void ff_flow_peer_note(const struct ff_flow_key *key)
+    // udp_input/udp6_input/udp_send/udp6_send and the snapshots: record a
+    // UDP four-tuple this worker serves (refresh or add, idle slots reused)
+int  ff_flow_peer_classify(const ff_flow_key_t *key)
+    // Dispatcher: LEGACY (no usable peer table: forward), LOCAL, FWD
+    // (the peer still serves it), LEARN (idle: keep it, insert into the
+    // flow map)
+void ff_flow_peer_snapshot_regist(void (*fn)(void))
+void ff_flow_peer_publish(const ff_flow_key_t *key)
+    // App snapshot of its UDP sessions at T1 (nginx: stream udp sessions)
+int  ff_flow_peer_active_flows(void)
+    // Non-idle published flows (recomputed at most every 100 ms); added to
+    // the drain report's conns
+int  ff_flow_peer_linger(void)
+    // USR2 drain generation that still has active UDP flows
+void ff_flow_peer_stop(void)
+    // Header to HANDED: the new generation keeps every UDP packet
+```
+
+#### **Drain Rings (`ff_drain_ring.h`)**
+
+```c
+int ff_drain_ring_init(void); int ff_drain_ring_ready(void)
+    // Create (or report) the per-(queue, generation, direction) ring set
+int ff_drain_ring_try_init(void)
+    // Same, without waiting for a running orphan purge (main-loop path)
+int ff_drain_ring_reset_slot(unsigned slot)
+    // Empty a recycled epoch slot's rings under the purge lock; -1 if busy
+unsigned ff_drain_ring_purge_orphans(void)
+    // Resident primary: free packets left for drain-ring consumers that exited
+
+int ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
+int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen, ...)
+    // Hand a packet to the draining generation; caller must be the peer
+
+int ff_drain_ring_rx_dequeue(uint16_t port_id, uint16_t queue_id, ...)
+    // Draining side: pull the packets the new generation diverted to it
+
+void ff_drain_ring_stats(uint64_t *rx_full, uint64_t *tx_full, ...)
+    // Ring-full counters (a full ring drops, so it is rate-limited and logged)
+```
+
+---
+
+## 2. Core Data Structures in Detail
+
+### 2.1 Kevent Event Structure
+
+```c
+struct kevent {
+    uintptr_t ident;      // [0]  Event identifier (socket fd, PID, timer ID, etc.)
+    short filter;         // [8]  Event filter type (EVFILT_READ/WRITE/TIMER/...), values are negative
+    unsigned short flags; // [10] Event flags (EV_ADD/DELETE/ONESHOT/CLEAR/...)
+    unsigned int fflags;  // [12] Filter-specific flags (ioctl/timeout, etc.)
+    __int64_t data;       // [16] Data returned by the filter (fixed 64-bit)
+                          //      EVFILT_READ: Number of readable bytes
+                          //      EVFILT_WRITE: Number of writable bytes
+                          //      EVFILT_TIMER: Number of triggers
+    void *udata;          // [24] User-defined data pointer (callback argument)
+    __uint64_t ext[4];    // [32] FreeBSD 13/15 extended fields (KBI unchanged across upgrade; M2 verify-only)
+};
+
+// Supported filter types
+#define EVFILT_READ      -1     // Read ready
+#define EVFILT_WRITE     -2     // Write ready
+#define EVFILT_AIO       -3     // Asynchronous I/O
+#define EVFILT_VNODE     -4     // File/directory inode events
+#define EVFILT_PROC      -5     // Process events
+#define EVFILT_SIGNAL    -6     // Signal delivery
+#define EVFILT_TIMER     -7     // Timer
+#define EVFILT_PROCDESC  -8     // Process descriptor events
+#define EVFILT_FS        -9     // Filesystem changes
+#define EVFILT_LIO      -10     // Asynchronous I/O list
+#define EVFILT_USER     -11     // User events
+#define EVFILT_SENDFILE -12     // Kernel sendfile events
+#define EVFILT_EMPTY    -13     // Empty send socket buffer
+#define EVFILT_SYSCOUNT  13     // ... 13 filter types in total
+
+// Event flags
+#define EV_ADD       0x0001   // Add event (register)
+#define EV_DELETE    0x0002   // Delete event (unregister)
+#define EV_ENABLE    0x0004   // Enable event (restore from disabled)
+#define EV_DISABLE   0x0008   // Disable event (temporarily turn off)
+#define EV_ONESHOT   0x0010   // One-shot trigger (auto-delete)
+#define EV_CLEAR     0x0020   // Auto-clear (edge-triggered)
+#define EV_RECEIPT   0x0040   // Event status feedback
+#define EV_DISPATCH  0x0080   // Disable event after addition
+#define EV_EOF       0x8000   // Connection/file close flag
+#define EV_ERROR     0x4000   // Error flag
+
+// Convenience macro
+#define EV_SET(kevp, a, b, c, d, e, f) do { \
+        (kevp)->ident = (a);      /* socket fd */ \
+        (kevp)->filter = (b);     /* EVFILT_* */ \
+        (kevp)->flags = (c);      /* EV_ADD/DELETE/... */ \
+        (kevp)->fflags = (d);     /* filter flags */ \
+        (kevp)->data = (e);       /* initial data */ \
+        (kevp)->udata = (f);      /* user pointer */ \
+    } while (0)
+```
+
+### 2.2 Socket Address Structures
+
+```c
+// Linux sockaddr (used for F-Stack API)
+struct linux_sockaddr {
+    unsigned short sa_family;     // AF_INET (2) or AF_INET6 (10)
+    char sa_data[14];             // Address data (protocol-dependent)
+};
+
+// IPv4 address structure
+struct sockaddr_in {
+    __kernel_sa_family_t sin_family;     // AF_INET
+    __be16 sin_port;                      // Port in network byte order (htons())
+    struct in_addr sin_addr;              // IPv4 address
+    unsigned char __pad[sizeof(struct sockaddr) - sizeof(short int) -
+                        sizeof(unsigned short int) - sizeof(struct in_addr)];
+};
+
+// IPv6 address structure
+struct sockaddr_in6 {
+    __kernel_sa_family_t sin6_family;     // AF_INET6
+    __be16 sin6_port;                      // Port (htons())
+    __be32 sin6_flowinfo;                  // Flow information
+    struct in6_addr sin6_addr;             // IPv6 address
+    __u32 sin6_scope_id;                   // Scope ID
+};
+
+// IPv4 address
+struct in_addr {
+    __be32 s_addr;  // IPv4 address (network byte order)
+};
+
+// IPv6 address
+struct in6_addr {
+    union {
+        __u8 u6_addr8[16];
+        __be16 u6_addr16[8];
+        __be32 u6_addr32[4];
+    } in6_u;
+#define s6_addr          in6_u.u6_addr8
+#define s6_addr16        in6_u.u6_addr16
+#define s6_addr32        in6_u.u6_addr32
+};
+```
+
+### 2.3 Epoll Event Structure
+
+```c
+struct epoll_event {
+    uint32_t events;      // Event mask (EPOLLIN/EPOLLOUT/...)
+    epoll_data_t data;    // User data
+
+    union epoll_data {
+        void *ptr;        // Pointer (commonly used)
+        int fd;           // File descriptor
+        uint32_t u32;     // 32-bit integer
+        uint64_t u64;     // 64-bit integer
+    };
+};
+
+// Supported events
+#define EPOLLIN   0x00000001      // Readable
+#define EPOLLPRI  0x00000002      // Priority data
+#define EPOLLOUT  0x00000004      // Writable
+#define EPOLLRDNORM 0x00000040    // Normal data readable
+#define EPOLLRDBAND 0x00000080    // Priority data readable
+#define EPOLLWRNORM 0x00000100    // Normal data writable
+#define EPOLLWRBAND 0x00000200    // Priority data writable
+#define EPOLLERR  0x00000008      // Error
+#define EPOLLHUP  0x00000010      // Hang up
+#define EPOLLRDHUP 0x00002000     // Peer closed
+#define EPOLLET   0x80000000      // Edge-triggered (EV_CLEAR)
+#define EPOLLONESHOT 0x40000000   // One-shot trigger (EV_ONESHOT)
+```
+
+### 2.4 Config Structure
+
+```c
+struct ff_config {
+    char *filename;
+  
+    // DPDK configuration section
+    struct {
+        char *proc_type;
+        /* mask of enabled lcores */
+        char *lcore_mask;         // [0x4] CPU core mask (hexadecimal)
+        /* mask of current proc on all lcores */
+        char *proc_mask;
+
+        /* specify base virtual address to map. */
+        char *base_virtaddr;
+
+        /* allow processes that do not want to co-operate to have different memory regions */
+        char *file_prefix;
+
+        /* pci whitelist */
+        char *allow;
+
+        int nb_channel;           // [0x8] Number of memory channels
+        int memory;               // [0xC] Reserved memory (MB)
+        int no_huge;
+        int nb_procs;
+        int proc_id;
+        int promiscuous;               // [0x10] Promiscuous mode
+        int nb_vdev;
+        int nb_bond;
+        int numa_on;                   // [0x14] NUMA support
+        int tso;
+        int tx_csum_offoad_skip;
+        int vlan_strip;
+        int nb_vlan_filter;
+        uint16_t vlan_filter_id[DPDK_MAX_VLAN_FILTER];
+        int symmetric_rss;
+
+        /* sleep x microseconds when no pkts incoming */
+        unsigned idle_sleep;
+
+        /* TX burst queue drain nodelay delay time */
+        unsigned pkt_tx_delay;
+
+        /* list of proc-lcore */
+        uint16_t *proc_lcore;
+
+        int nb_ports;
+        uint16_t max_portid;
+        uint16_t *portid_list;
+
+        // load dpdk log level
+        uint16_t log_level;
+        // MAP(portid => struct ff_port_cfg*)
+        struct ff_port_cfg *port_cfgs;
+        struct ff_vlan_cfg *vlan_cfgs;
+        struct ff_vdev_cfg *vdev_cfgs;
+        struct ff_bond_cfg *bond_cfgs;
+        struct ff_rss_check_cfg *rss_check_cfgs;
+    } dpdk;
+    
+    // KNI configuration
+    struct {
+        int enable;
+        int console_packets_ratelimit;           // Rate limit (QPS)
+        int general_packets_ratelimit;
+        int kernel_packets_ratelimit;
+        char *kni_action;
+        char *method;
+        char *tcp_port;
+        char *udp_port;
+    } kni;
+
+    struct {
+        int level;
+        const char *dir;
+        void *f; /* FILE * */
+    } log;
+  
+    // FreeBSD boot parameters
+    struct {
+        struct ff_freebsd_cfg *boot;
+        struct ff_freebsd_cfg *sysctl;
+        long physmem;
+        int hz;                   // Clock frequency (1000 = 1kHz)
+        int fd_reserve;           // Reserved fd count
+        int mem_size;
+    } freebsd;
+
+    struct {
+        uint16_t enable;
+        uint16_t snap_len;
+        uint32_t save_len;
+        char*    save_path;
+    } pcap;
+};
+```
+
+### 2.5 Iovec Structure (Scatter-Gather I/O)
+
+```c
+struct iovec {
+    void  *iov_base;      // Buffer pointer
+    size_t iov_len;       // Buffer length (bytes)
+};
+
+// Example: Scatter read into 3 buffers
+struct iovec iov[3] = {
+    {buf1, 1024},         // Read 1024 bytes into buf1
+    {buf2, 2048},         // Read 2048 bytes into buf2
+    {buf3, 512}           // Read 512 bytes into buf3
+};
+
+ssize_t n = ff_readv(sockfd, iov, 3);  // Read into 3 buffers in one system call
+```
+
+### 2.6 Msghdr Structure (Message Header)
+
+```c
+struct msghdr {
+    void         *msg_name;           // Peer address pointer
+    socklen_t     msg_namelen;        // Address length
+    struct iovec *msg_iov;            // iovec array
+    size_t        msg_iovlen;         // Number of iovec elements
+    void         *msg_control;        // Control information (ancillary data)
+    socklen_t     msg_controllen;     // Control information length
+    int           msg_flags;          // Returned flags (MSG_EOR/MSG_TRUNC)
+};
+
+// Example: Send a message
+char buf[] = "Hello";
+struct iovec iov = {buf, strlen(buf)};
+struct msghdr msg = {
+    .msg_iov = &iov,
+    .msg_iovlen = 1
+};
+
+ff_sendmsg(sockfd, &msg, 0);
+```
+
+### 2.7 Pollfd Structure (poll Multiplexing)
+
+```c
+struct pollfd {
+    int fd;        // File descriptor (-1 to ignore)
+    short events;  // Events of interest (POLLIN/POLLOUT/...)
+    short revents; // Returned events (filled by ff_poll())
+};
+
+// Event types
+#define POLLIN    0x001   // Data readable
+#define POLLPRI   0x002   // Priority data
+#define POLLOUT   0x004   // Writable
+#define POLLERR   0x008   // Error
+#define POLLHUP   0x010   // Hang up
+#define POLLNVAL  0x020   // Invalid fd
+
+// Example: poll multiple fds
+struct pollfd fds[2] = {
+    {sockfd1, POLLIN | POLLOUT},
+    {sockfd2, POLLIN}
+};
+
+ff_poll(fds, 2, -1);  // Block until events arrive
+```
+
+---
+
+### 2.8 Reload Control Block (`struct ff_reload_state`)
+
+An anonymous `MAP_SHARED` block created by the nginx master before any `fork()`,
+so the resident slim primary and every worker inherit it. Cross-process fields are
+read and written only through `__atomic` helpers (`__ATOMIC_SEQ_CST`).
+
+```c
+struct ff_reload_state {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t len;               /* sizeof(struct ff_reload_state) */
+    uint32_t epoch;             /* bumped by the master per reload attempt */
+
+    uint32_t active_gen;        /* generation currently serving traffic */
+    uint32_t target_gen;        /* generation being spawned (reload window) */
+    uint32_t reload_active;     /* 1 during T1..T5, 0 in steady state */
+    uint32_t kni_owner_gen;     /* KNI runtime-owner generation */
+
+    uint64_t heartbeat;         /* per-loop increment by the rx-owner gen */
+    uint64_t heartbeat_stalls;  /* sampling-side detected stalls */
+
+    uint64_t ready[FF_RELOAD_MAX_PROCS];
+
+    uint32_t rx_owner_gen;      /* generation that owns the hardware rx/tx */
+    uint32_t rx_stopped;        /* 1 while the owner must not burst */
+
+    uint32_t fsm_state;
+    uint32_t handover_epoch;    /* tags park acks to one handover round */
+    uint64_t rx_parked[FF_RELOAD_MAX_PROCS];
+
+    uint32_t reserved[7];       /* drain-report pointer, phase durations, epochs */
+    uint32_t peer_epoch;        /* mirrored cross-master coordinate */
+    uint32_t peer_gen;
+};
+```
+
+### 2.9 Flow Map Key and Reload Message Payload
+
+```c
+struct ff_flow_key {            /* 40 bytes, no padding; network byte order */
+    uint8_t  af;                /* FF_FLOW_MAP_V4 / FF_FLOW_MAP_V6 */
+    uint8_t  proto;             /* IPPROTO_TCP / IPPROTO_UDP */
+    uint16_t pad;               /* keep zero */
+    uint32_t src[4];            /* foreign address; V4 uses src[0] only */
+    uint32_t dst[4];            /* local address; V4 uses dst[0] only */
+    uint16_t sport, dport;
+};
+
+struct ff_reload_args {
+    uint32_t cmd;               /* enum FF_RELOAD_CMD */
+    uint32_t gen;               /* sender or target generation */
+    uint32_t status;            /* command result / progress */
+    uint32_t active_gen;        /* serving gen; with a gendir: the rx owner */
+    uint64_t heartbeat;         /* heartbeat counter snapshot */
+    uint32_t epoch;             /* master epoch of active_gen (0: no gendir) */
+    uint32_t pad;
+};
+```
+
+The key is hashed into a per-process open-addressing table (`FF_FLOW_MAP_ENTRIES`
+64K entries initially; a full table doubles at most 4 times per window, up to
+`FF_FLOW_MAP_CAP_MAX` 1<<20; linear probing with a bounded probe length of 16). The table is process-local: the two generations each hold their own, which
+is why admitting a four-tuple is meaningful without any cross-process agreement.
+
+---
+
+## 3. In-Depth Analysis of Three Key Source Files
+
+### 3.1 ff_syscall_wrapper.c (2265 Lines)
+
+**Responsibility**: Linux ↔ FreeBSD system call and parameter mapping
+
+**Key Mapping Tables**:
+
+```c
+// Socket option level mapping
+#define LINUX_SOL_SOCKET  1          // → SOL_SOCKET
+#define LINUX_IPPROTO_IP  0          // → IPPROTO_IP
+#define LINUX_IPPROTO_TCP 6          // → IPPROTO_TCP
+#define LINUX_IPPROTO_UDP 17         // → IPPROTO_UDP
+
+// IPv4 socket option mapping (Linux → FreeBSD)
+struct linux_to_bsd_opt_map {
+    int linux_opt;  // Linux option number
+    int bsd_opt;    // FreeBSD option number
+} ipv4_opt_map[] = {
+    {LINUX_IP_TOS, IP_TOS},
+    {LINUX_IP_TTL, IP_TTL},
+    {LINUX_IP_HDRINCL, IP_HDRINCL},
+    {LINUX_IP_MULTICAST_IF, IP_MULTICAST_IF},
+    {LINUX_IP_MULTICAST_TTL, IP_MULTICAST_TTL},
+    // ... more
+};
+
+// TCP socket option mapping
+struct linux_to_bsd_opt_map tcp_opt_map[] = {
+    {LINUX_TCP_NODELAY, TCP_NODELAY},        // Disable Nagle algorithm
+    {LINUX_TCP_MAXSEG, TCP_MAXSEG},          // MSS (Maximum Segment Size)
+    {LINUX_TCP_CORK, TCP_CORK},              // Buffer data
+    {LINUX_TCP_KEEPIDLE, TCP_KEEPIDLE},      // TCP keepalive idle time
+    {LINUX_TCP_KEEPINTVL, TCP_KEEPINTVL},    // TCP keepalive interval
+    {LINUX_TCP_KEEPCNT, TCP_KEEPCNT},        // TCP keepalive retry count
+    // ... more
+};
+
+// Core function
+int ff_setsockopt_wrapper(int s, int level, int optname,
+                          const void *optval, socklen_t optlen) {
+    int bsd_level = convert_level(level);      // Convert level
+    int bsd_optname = convert_optname(optname); // Convert optname
+    
+    // Handle special parameter value mapping
+    if (level == IPPROTO_IP && optname == IP_TOS) {
+        // Linux and FreeBSD TOS values are compatible, no conversion needed
+    }
+    
+    // Handle sockaddr structure mapping (if needed)
+    if (special_struct_conversion_needed()) {
+        convert_params(...);
+    }
+    
+    // Call FreeBSD implementation
+    return ff_setsockopt_real(s, bsd_level, bsd_optname, 
+                             converted_val, optlen);
+}
+```
+
+**Key Features**:
+- **IOCTL Mapping**: FIONBIO (0x5421) → FIONBIO (different code values)
+- **Error Code Mapping**: Linux errno → FreeBSD errno
+- **Address Family Mapping**: AF_INET6: 10 (Linux) ↔ 28 (FreeBSD)
+
+### 3.2 ff_dpdk_if.c (2907 Lines) - NIC Driver Layer
+
+**Global Variables** (key state affecting performance):
+
+```c
+// Global configuration
+static struct ff_config ff_global_cfg;
+static volatile int stop_run = 0;      // Stop flag
+
+// NIC management
+static struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
+static int nb_dev_ports = 0;           // Number of active NICs (int in source, not uint32_t)
+static uint32_t nb_lcores = 0;         // Number of active lcores
+static struct lcore_conf lcore_conf[RTE_MAX_LCORE];
+
+// RSS table (connection affinity)
+static struct ff_rss_tbl ff_rss_tbl[FF_RSS_TBL_MAX_SADDR_SPORT_ENTRIES];
+
+// Performance parameters
+static unsigned idle_sleep;             // Idle sleep (microseconds, no default value)
+static uint32_t pkt_tx_delay = 1;      // Packet TX delay (microseconds)
+int enable_kni = 0;                    // KNI enabled (non-static, globally visible)
+
+// Timer state
+static struct {
+    uint64_t prev_tsc;
+    uint64_t cur_tsc;
+    uint64_t drain_tsc;    // TX drain period
+} timer_state;
+```
+
+**Key Functions**:
+
+```c
+// Initialization flow
+int ff_dpdk_init(int argc, char *argv[]) {
+    // 1. DPDK EAL initialization
+    if (rte_eal_init(dpdk_argc, dpdk_argv) < 0) {
+        rte_exit(EXIT_FAILURE, "EAL init failed\n");
+    }
+    
+    // 2. lcore and NIC configuration
+    init_lcore_conf();
+    init_mem_pool();
+    
+    // 3. NIC initialization
+    for (port_id = 0; port_id < nb_dev_ports; port_id++) {
+        // 3.1 Configure NIC
+        rte_eth_dev_configure(port_id, nb_rx_queue, nb_tx_queue, &port_conf);
+        
+        // 3.2 Configure RSS
+        struct rte_eth_rss_conf rss_conf = {
+            .rss_key = rss_key,
+            .rss_key_len = sizeof(rss_key),
+            .rss_hf = ETH_RSS_IP | ETH_RSS_TCP | ETH_RSS_UDP
+        };
+        rte_eth_dev_rss_hash_update(port_id, &rss_conf);
+        
+        // 3.3 Configure offloads (TSO/Checksum)
+        configure_offload(port_id);
+        
+        // 3.4 Start NIC
+        rte_eth_dev_start(port_id);
+    }
+    
+    // 4. Initialize RSS classification table
+    ff_rss_tbl_init();
+    
+    return 0;
+}
+
+// Packet processing
+static inline void process_packets(struct rte_mbuf **m, uint16_t nb_m) {
+    for (i = 0; i < nb_m; i++) {
+        struct rte_mbuf *pkt = m[i];
+        
+        // 1. Get Ethernet header
+        struct rte_ether_hdr *eth_hdr = rte_pktmbuf_mtod(pkt, ...);
+        
+        // 2. Protocol filtering
+        if (eth_hdr->ether_type == RTE_ETHER_TYPE_IPv4) {
+            // 3. Forward to FreeBSD protocol stack
+            if_input(ifp, pkt);
+        }
+    }
+}
+
+// Main polling loop
+static int main_loop(void *arg) {
+    struct lcore_conf *qconf = rte_lcore_conf + rte_lcore_id();
+    struct rte_mbuf *pkts[MAX_PKT_BURST];
+    
+    while (!stop_run) {
+        cur_tsc = rte_rdtsc();
+        
+        // [1] Clock-driven
+        if (freebsd_clock.expire < cur_tsc) {
+            rte_timer_manage();  // Trigger TCP timers, etc.
+        }
+        
+        // [2] Receive packets
+        for (qconf->port in port_list) {
+            nb_rx = rte_eth_rx_burst(qconf->port, qconf->queue, 
+                                     pkts, MAX_PKT_BURST);
+            if (nb_rx > 0) {
+                process_packets(pkts, nb_rx);
+            }
+        }
+        
+        // [3] Timed transmission
+        if ((cur_tsc - prev_tsc) > drain_tsc) {
+            for (each port) {
+                rte_eth_tx_burst(port, qconf->tx_queue, 
+                                 tx_buffer, nb_tx);
+            }
+            prev_tsc = cur_tsc;
+        }
+        
+        // [4] Application callback
+        // Runs on every pass that received a packet. While idle it is
+        // throttled by idle_loop_tsc (idle_loop_interval, default 100 us);
+        // note this is NOT drain_tsc, which only gates the TX drain above.
+        if (loop_func && (!idle || cur_tsc - usch_tsc >= idle_loop_tsc)) {
+            loop_func(loop_arg);
+        }
+
+        // [5] Idle sleep, or the user idle callback
+        if (idle_callback != NULL && idle) {
+            idle_callback(idle_cb_arg);   // no library sleep; user owns idle
+        } else if (idle && idle_sleep) {
+            rte_delay_us(idle_sleep);
+        }
+    }
+    
+    return 0;
+}
+```
+
+**Key Optimizations**:
+- **Interrupt-free polling**: 100% CPU for low latency
+- **Batch processing**: Receive/send 32 packets at a time
+- **Cache affinity**: RSS ensures connections do not migrate
+- **Hardware offloading**: TSO, Checksum offload
+
+### 3.3 ff_glue.c (1467 Lines) - Kernel Emulation Layer
+
+**Kernel Primitive Emulation**:
+
+```c
+// Mutex
+struct mtx {
+    void *ctx;  // Actually points to pthread_mutex_t
+};
+
+void mtx_init(struct mtx *m, const char *name, const char *type, int opts) {
+    pthread_mutex_t *mutex = malloc(sizeof(pthread_mutex_t));
+    pthread_mutex_init(mutex, NULL);
+    m->ctx = mutex;
+}
+
+void mtx_lock(struct mtx *m) {
+    pthread_mutex_lock((pthread_mutex_t *)m->ctx);
+}
+
+// Condition variable
+struct condvar {
+    void *ctx;  // Actually points to pthread_cond_t
+};
+
+void cv_init(struct condvar *cv, const char *desc) {
+    pthread_cond_t *cond = malloc(sizeof(pthread_cond_t));
+    pthread_cond_init(cond, NULL);
+    cv->ctx = cond;
+}
+
+// Memory management
+void *malloc(size_t size, struct malloc_type *type, int flags) {
+    // Uses DPDK rte_malloc with NUMA support
+    return rte_malloc("malloc", size, 0);
+}
+
+// Global variable emulation
+volatile int ticks = 0;           // Clock tick counter
+int mp_ncpus = 1;                 // CPU count
+struct vmspace *vmspace0;         // Global address space
+struct prison *prison0;           // Global namespace
+```
+
+**Key Features**:
+- **No VFS support**: Limited file operations
+- **Simplified IPC**: Inter-process communication via DPDK Ring
+- **Soft interrupt emulation**: Handled via taskqueue
+
+### 3.4 Kernel-Stack Coexistence Source Files (`FF_KERNEL_COEXIST`, optional)
+
+Two files carry the optional coexistence machinery (compiled only with `FF_KERNEL_COEXIST=1`):
+
+**`ff_host_interface.c` (617 Lines) / `ff_host_interface.h` (187 Lines)**
+- `FF_KERNEL_FD_BASE = 0x40000000` and three inline helpers `ff_is_kernel_fd / ff_kernel_fd_encode / ff_kernel_fd_real` (`.h` L113-128). A managed kernel fd = `host_fd + 0x40000000`, which never collides with FreeBSD fds (`kern.maxfiles <= 65536`).
+- `ff_native_fd_map[65536]` + `ff_native_map_get/set/clear` (`.c` L257-278): the F-Stack fd ↔ host fd pairing table (single-threaded per instance).
+- **32 `ff_host_*` bridges**: thin passthroughs to host libc (`socket/bind/listen/accept/accept4/connect/close/read/write/recv/recvfrom/send/sendto/sendmsg/recvmsg/shutdown/getpeername/getsockname/setsockopt/getsockopt/fcntl/epoll_create1/epoll_ctl/epoll_wait`). **R9 added 3**: `ff_host_set_v6only` (`setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)` on a host IPv6 socket so it coexists with the same-port host IPv4 socket), `ff_host_kqueue_ctl` and `ff_host_kqueue_poll` (servicing the kqueue↔host-epoll coexistence path). **R10 added 5**: `ff_host_readv`, `ff_host_writev`, `ff_host_ioctl` (raw Linux request passed straight to host libc), `ff_host_dup`, `ff_host_dup2`.
+
+**`ff_epoll.c` (289 Lines) - unified F-Stack + kernel epoll**
+- `ff_epoll_pairs[64]{kq, host_ep}`: lazily pairs one host `epoll` fd per kqueue.
+- `ff_epoll_ctl`: routes a managed kernel fd to the host epoll, or dual-registers a dual-stack fd on both the host epoll and the kqueue.
+- `ff_epoll_wait`: first non-blocking poll of the host epoll, then merge kqueue events into the same `events[]` array.
+- `ff_epoll_pairs_lock` was removed — F-Stack runs single-threaded per instance (commit `3e71f4699`).
+- **R9**: `ff_epoll_host_ep(kq, create)` promoted from `static` to a shared symbol (declared `ff_host_interface.h` L139) so the kqueue coexistence path reuses the same `ff_epoll_pairs` pairing table.
+
+**R9: unified kqueue/kevent coexistence in `ff_syscall_wrapper.c`** — `ff_kqueue` (L1895) and `ff_kevent` (L2050) now mirror the epoll path. `ff_kevent` splits the changelist via `ff_kevent_host_change` (L2006): entries whose `ident` is a managed kernel fd (`ff_is_kernel_fd`) or a dual-stack fd (`ff_native_map_get>0`) have their `EVFILT_READ/WRITE` registered into the kqueue-paired host epoll through `ff_host_kqueue_ctl` (kernel-only changes are NOT forwarded to the F-Stack kqueue; dual-stack fds are still forwarded). The eventlist is filled by `ff_kevent_host_wait` (L2034) — `ff_host_kqueue_poll(timeout=0)` then synthesizes `struct kevent` (`ident`=app-side fd, `filter`=READ/WRITE, `EV_EOF`↔`EPOLLHUP|ERR`) — merged with `ff_kevent_do_each` F-Stack events. This fixes the `example/main.c` kqueue model so the kernel-side `curl 127.0.0.1:80` returns **200 size=438** (was 000). Known limitation: kernel fds via kqueue support `EVFILT_READ/WRITE` only.
+
+**Entry routing in `ff_syscall_wrapper.c`** (§3.1): each kernel-aware `ff_*` entry detects a managed kernel fd via `ff_is_kernel_fd()` and forwards to the matching `ff_host_*` bridge; dual-created sockets additionally drive the paired host fd looked up via `ff_native_map_get()`. On `AF_INET6` dual-build, `ff_socket` calls `ff_host_set_v6only(hfd)` (L952) so the `-DINET6` build starts cleanly with v4+v6 on the same port (fixes the prior host-IPv6 `errno=98 EADDRINUSE`).
+
+**R10: residual-entry coexistence** — `ff_ioctl` (L1067, kernel fd uses the **raw Linux request** straight to `ff_host_ioctl`, NOT via `linux2freebsd_ioctl`; dual-stack fd same-driver since R10.1 syncs `FIONBIO`/`FIOASYNC`), `ff_readv` (L1189)/`ff_writev` (L1251, kernel fd → `ff_host_readv/writev`, mimic read/write, connection fds single-stack hot path), `ff_dup` (L2130, kernel fd → `ff_host_dup`+encode), `ff_dup2` (L2156, both-kernel → `ff_host_dup2`+encode; cross-stack rejected `errno=EINVAL`). Known limitation: `ff_select` (encode kernel fd ≫ `FD_SETSIZE` hard limit) / `ff_poll` (conservatively not implemented) do not support kernel-fd coexistence — use `ff_epoll_*`/`ff_kqueue`.
+
+---
+
+### 3.5 ff_reload.c (2147 Lines) - Graceful Reload Control Plane
+
+**Shared block lifecycle** — `ff_reload_attach_state()` binds the block the nginx
+master mapped; `ff_reload_state_valid()` checks magic/version/length, so a block
+from a different build is rejected rather than misread.
+
+**Generation identity** — `ff_reload_msg_ring_name()` / `..._name_e()` build
+`"<base><proc_id>[_<type>]_g<gen>"` (plus `"_e<slot>"` for a non-zero epoch).
+`graceful_reload=0` reproduces the legacy names byte-for-byte.
+
+**rx/kni ownership** — two plain words, `rx_owner_gen` and `rx_stopped`, arbitrate
+the hardware. The old generation stores `rx_stopped=1` first and `rx_owner_gen`
+second; the acquiring generation waits for the owner to park, then clears
+`rx_stopped`. Because the markers are ordinary read/write words, an aborted reload
+gives the hardware back by writing the old generation into `rx_owner_gen`.
+
+**T2 park barrier** — the master arms a fresh `handover_epoch`; each worker acks
+with `(epoch << 32) | 1` from the loop pass that will skip rx/tx. Only after every
+live old-generation process has acked does ownership flip, which is what rules out
+an in-flight `rx_burst` racing the new owner. Stale acks from an aborted round are
+harmless because they carry the wrong epoch.
+
+**No-hardware verdict** — `ff_no_hw_mode()` publishes this master's decision
+into the directory (`ff_reload_dir_sync()`) before deciding and runs once per
+main-loop pass. The per-packet tx paths (`send_burst()`, `ff_dpdk_if_send()`,
+`ff_dpdk_raw_packet_send()`) call `ff_no_hw_mode_nosync()`; the verdict itself is
+never cached. The `kill(pid,0)` probe of a LIVE directory slot is cached per
+slot for 50 ms.
+
+**Heartbeat** — the rx owner increments `heartbeat` once per loop; the sampler keeps
+`(last_cnt, last_advance)` and reports a stall when the counter stops advancing for
+longer than the threshold. Under `graceful_reload=0` nothing samples it.
+
+**Cross-master directory** — `ff_reload_gendir.c` (450 lines) owns a hugepage memzone
+created by the resident slim primary: the epoch→slot map, the packed
+`(epoch << 32) | gen` owner coordinates, and liveness stamps used to recycle the ring
+set of a master that died. Slot recycling is bounded and counts both refused and
+forced reclaims. A drain-ring user table (`ff_reload_gendir_ring_attach/detach/census`) and a purge
+lock (`ff_reload_gendir_ring_purge_lock/unlock`) let the resident primary free what exited consumers
+left in the drain rings.
+
+---
+
+## 4. Thread Safety Analysis
+
+### 4.1 Thread Safety Classification
+
+**Fully Thread-Safe** ✓ (can be called across threads):
+- ff_socket / ff_bind / ff_listen / ff_accept / ff_connect / ff_close
+- ff_read / ff_write / ff_send / ff_recv
+- ff_kqueue / ff_kevent / ff_epoll_* (per-fd isolation)
+- ff_setsockopt / ff_getsockopt / ff_fcntl / ff_ioctl
+- ff_route_ctl (atomic routing operations)
+- ff_gettimeofday / ff_clock_gettime
+- ff_mbuf_get / ff_mbuf_free
+- ff_pthread_create / ff_pthread_join
+
+**Conditionally Thread-Safe** ⚠️ (requires external synchronization):
+- ff_init (initialization only, requires single thread)
+- ff_run (exclusive to one lcore, cannot run in parallel)
+- ff_log / ff_vlog (recommend using a mutex)
+- ff_gethostbyname / ff_gethostbyname2 (returns static buffer)
+
+**Not Thread-Safe** ✗ (cannot be called across threads):
+- ff_stop_run (can be called from any thread, but the ff_run thread will exit)
+- Configuration-related functions (initialization only)
+- ff_set_pkt_dispatcher (initialization only)
+
+### 4.2 Per-Thread Socket Table
+
+```c
+// Each thread maintains an independent socket table
+struct ff_thread_local {
+    struct socket *socket_table[FF_MAX_SOCKETS];
+    int max_fd;
+} __thread ff_tls;
+
+// Socket is assigned to the current thread's fd on creation
+int ff_socket(...) {
+    struct socket *so = socreate(...);
+    ff_tls.socket_table[fd] = so;
+    return fd;
+}
+
+// Table lookup during read/write
+ssize_t ff_read(int fd, void *buf, size_t nbytes) {
+    struct socket *so = ff_tls.socket_table[fd];
+    return sorecvX(so, buf, nbytes);
+}
+
+// ✓ Thread-safe: socket_table is independent per thread
+// ✓ No race conditions: each socket is accessed only by the thread that created it
+```
+
+### 4.3 Concurrency Model
+
+```
+Multi-threaded Model:
+
+Main Thread                   Worker Thread 1
+├─ ff_init()                 ├─ ff_init()
+├─ ff_run(loop1)             ├─ ff_run(loop2)
+│  Exclusive lcore 0          │  Exclusive lcore 1
+│  Continuous polling          │  Continuous polling
+│  ├─ Receive packets         │  ├─ Receive packets
+│  ├─ Process packets         │  ├─ Process packets
+│  └─ Application loop1       │  └─ Application loop2
+│                              │
+└─ Communication via shared   └─ Communication via shared
+   mempool and atomic ops        mempool and atomic ops
+
+Characteristics:
+✓ Each thread has exclusive lcore (no CPU contention)
+✓ Each thread has independent socket table
+✓ Shared resources (mempool) protected by atomic operations
+✗ Cannot share sockets across threads
+```
+
+---
+
+## 5. Compilation and Linking
+
+### 5.1 Compilation Commands
+
+```bash
+# Compile F-Stack library
+cd /data/workspace/f-stack/lib
+make clean
+make
+
+# Output: libfstack.a (4.7 MB)
+
+# Install headers and library
+make install PREFIX=/usr/local
+
+# Target locations:
+#   /usr/local/lib/libfstack.a
+#   /usr/local/include/ff_*.h
+```
+
+### 5.2 Application Linking
+
+```bash
+# Compilation flags
+FSTACK_CFLAGS = $(shell pkg-config --cflags libfstack)
+FSTACK_LIBS = $(shell pkg-config --libs libfstack)
+
+# Or specify manually
+FSTACK_CFLAGS = -I/usr/local/include
+FSTACK_LIBS = -L/usr/local/lib -lfstack $(shell pkg-config --libs libdpdk)
+
+# Compile application
+gcc -o app main.c $(FSTACK_CFLAGS) $(FSTACK_LIBS)
+
+# Library link order
+ld -o app main.o \
+    -lfstack \
+    -ldpdk \
+    -lpthread \
+    -lm \
+    -lnuma
+```
+
+### 5.3 Runtime Dependencies
+
+```bash
+# Required DPDK setup
+# 1. Hugepage memory
+sysctl vm.nr_hugepages=2048  # Allocate 2GB huge pages
+
+# 2. NIC driver binding (choose one)
+# Method A: igb_uio (better performance)
+modprobe igb_uio
+python dpdk_devbind.py -b igb_uio 0000:05:00.0  # Bind NIC
+
+# Method B: vfio-pci (more secure)
+modprobe vfio_pci
+python dpdk_devbind.py -b vfio-pci 0000:05:00.0
+
+# 3. Run application (use start.sh with config.ini to launch)
+bash start.sh -c config.ini -b ./app
+# start.sh will automatically launch primary/secondary processes
+# based on the lcore_mask in config.ini
+```
+
+---
+
+## Summary
+
+**Key Data Structures**:
+- `kevent` - BSD event structure
+- `epoll_event` - Linux epoll compatibility
+- `ff_config` - F-Stack global configuration
+- Socket address structures (sockaddr_in/in6)
+
+**Thread Safety**:
+- Socket operations: Fully thread-safe (per-thread isolation)
+- Multi-threaded model: Each thread has exclusive lcore + socket table
+- Shared resources: mempool protected by atomic operations
+
+**Performance Optimizations**:
+- Batch processing: Receive/send 32 packets at a time
+- Cache affinity: RSS classification + CPU isolation
+- Hardware offloading: TSO, Checksum, LRO
+- Zero-copy: Direct mbuf operations, no data copying
+
+---
+
+## Recent Code Delta (2026-07, RSS thash reverse path + IPv6 reverse-proxy fix)
+
+> 与 `01/02/03-LAYER*` 文档同步；权威细节见 `docs/ff_rss_check_opt_spec/zh_cn/`。
+
+- **`ff_rss_adjust_sport` / `ff_rss_adjust_sport6` 签名新增 `uint16_t first, uint16_t last`**（临时端口范围，`freebsd/netinet/in_pcb.c` 传入）：反算把候选端口对齐到 `[first,last]` 内的 reta_size 对齐块，解出端口后校验落在 `[first,last]`；tuple 采用 reply（inbound SYN-ACK）字段序确保回程落本队列（`lib/ff_dpdk_if.c:3242` / `:3681`）。
+- **NIC RSS KEY_FINAL 构建/发布**：`ff_rss_thash_build_key(port_id, reta_size)`（`ff_dpdk_if.c:3016`）在 `dev_configure` **之前**构建 v4/v6 thash ctx 并发布全局 `rsskey`（v4 sport offset=80、v6=272、helper len=16）；`ff_rss_thash_ctx_init(void)`（`:3177`，primary）启动后读回 NIC key/RETA 诊断核对。
+- **`[rss_check] thash_adjust` 开关**（默认 1，与 `rss_check.enable` 解耦）：门控 build_key / ctx_init / adjust_sport 的路线②软扫描回退。诊断 dump（`ff_rss_diag_dump_key`）由编译宏 **`FF_RSS_DIAG` 门控，默认关闭，不影响数据面**。
+- **IPv6 反代地址修复（`lib/ff_veth.c`）**：VIP6 作为 /128 host addr（prefixmask 全 `0xff`，避免 on-link 前缀路由）、链路本地网关 `in6_setscope` 补 zone、`ND6_IFF_NO_DAD` 跳过 DAD（FreeBSD 15 `ip6_input` 丢 NOTREADY/TENTATIVE 单播）。
+
+---
+
+## Recent Code Delta (2026-07~08, MTU jumbo-frame support + native-mt SMP-aware pcpu/SMR slot isolation)
+
+> 与 `01/02/03-LAYER*` 文档同步；权威细节见 `docs/mtu_change_spec/` 和 `docs/native_mt_spec/`。
+
+### MTU / jumbo-frame configuration support
+
+- **MTU capability query**：`lib/ff_dpdk_if.c` `ff_mtu_capability()` 查询 `rte_eth_dev_info` 的 `max_mtu`/`min_mtu`；jumbo-capable 标志用 `uint8_t`（非 `bool`，因 `-nostdinc` 下 `stdbool.h` 不可用）。魔数替换为命名宏 `FF_MTU_DEFAULT` / `FF_MTU_JUMBO_THRESHOLD` 等。
+- **SIOCSIFMTU ioctl 去重**：`lib/ff_veth.c` 通过 fall-through 使 v4/v6 共用一条 MTU 设置路径；校验硬件能力后调 `rte_eth_dev_set_mtu`。
+- **KNI/MTU 互斥解除**：`mtu_enable` 与 `kni.enable` 的互斥检查已移除（commit `989f1d2da`），二者可同时启用。
+- **IPv6 nd_ifinfo maxmtu 同步**：`lib/ff_veth.c` 在 MTU 变更时调 `if_notifymtu` 传播到 `nd_ifinfo.maxmtu`（commit `0f25ac495`），使 IPv6 路径 MTU 发现与邻居发现跟踪配置的 MTU。
+- **config.ini `[portN]`**：新增每端口 `mtu` 配置项（默认 1500）。
+- Traceability: `docs/mtu_change_spec/` (00-09, zh_cn/). Key commits: `0f8f6991e`, `332abf997`, `4c30d118f`, `989f1d2da`, `0f25ac495`.
+
+### native-mt SMP-aware pcpu/SMR slot isolation + global lock removal
+
+- **`-DSMP` 构建标志**（`lib/Makefile:221-223`）：激活 `MAXCPU=1024`、`UMA_ZONE_PCPU` 不再被剥离、per-cpu `M_ZERO` 全槽清零、`tcp_hpts.c` 的 `smp_topo()` 调用点。
+- **三元组 `mp_ncpus`/`mp_maxid`/`all_cpus`**（`lib/ff_freebsd_init.c:314-317`）：`thread_mode ? nb_threads : 1`，在 `uma_startup1()` 和 `mi_startup()` 之前设置且此后不变。
+- **`uma_page_slab_hash` 提前初始化**（`lib/ff_freebsd_init.c:379-387`）：移到 `uma_startup1()` 之前，修复 `mp_maxid ≥ 2` 时 zone-of-zones 多页导致的启动崩溃。
+- **`ff_pcpu_thread_init(cpuid)` 恢复使用形参**（`lib/ff_freebsd_init.c:106-112`）：`pcpu_init(pcpup, cpuid, ...)`（原为硬编码 `0`）；新增 `cpuid > mp_maxid` 的 `panic` 上界检查（因 `subr_pcpu.c:88 KASSERT` 在无 `INVARIANTS` 时被编译掉）。
+- **稠密 pcpu id**：主线程 `ff_pcpu_thread_init(thread_mode ? ff_cur_proc_id() : 0)`；worker `ff_stack_thread_init(thread_mode ? qconf->proc_id : 0)`；`ff_cur_proc_id()` = `ff_cur_lcore_conf()->proc_id`（稠密 `[0, nb_threads-1]`）。
+- **`curcpu` per-thread 化**（`lib/include/sys/pcpu.h:34`）：`#define curcpu PCPU_GET(cpuid)` = `pcpup->pc_cpuid`（原为字面量 `0`）；保留 `#undef curcpu` 避免与上游重定义。
+- **`timeout_cpu` 改 `__thread`**（`lib/ff_kern_timeout.c:190`）：`static __thread int timeout_cpu`（原为 `static int`，全局被每线程写）。
+- **`pause_wchan` 引导窗口兜底**（`lib/ff_kern_synch.c:105`）：`&pause_wchan[pcpup != NULL ? curcpu : 0]`——`malloc()` OOM 重试在 pcpu 建立前可达。
+- **`uma_crit_lock` 全局锁移除**（G2，commit `57b612d16`）：`lib/include/vm/uma_int.h:44-50` 的 `critical_enter/exit` 改为 `do {} while(0)` 空操作 + 3 行注释；`lib/ff_glue.c` 删除 `volatile int uma_crit_lock;` 定义。安全前提：`curcpu` 已绑线程（抢占/迁核不改变槽位归属），SMR 读侧的 `critical_enter` 在非 UMA TU 中本就是空操作。
+- **`thread_mode=0` 零回归**：所有路径由 `thread_mode ?` 三元运算门控；逻辑值等价（`mp_ncpus=1`/`mp_maxid=0`/`all_cpus={0}`/`curcpu=0`），4 项非等价差异已记录（`UMA_ZONE_PCPU` 不再剥离、CK `lock` 前缀恢复、`MAXCPU` BSS 增长、`curcpu` 内存载入）。
+- Traceability: `docs/native_mt_spec/zh_cn/` (00-17 + `_m17_*`), English in `docs/native_mt_spec/` root. Key commits: `c7996a94f` (G1), `57b612d16` (G2).
+- **物理机人工校验（2026-08-06）**：功能验证 PASS、性能测试 PASS。残留风险如实记录（本轮不修）：ipfw/netisr DPCPU 槽位别名、counter(9) 统计竞争、tcp_hpts 实例数 1→N callout 归属错配（R6）、net.isr.dispatch 须保持 direct、ff_subr_prf.c 全局无锁行缓冲、ff_pthread_create 线程不支持 ff_*。**新增残留风险 §6.23**：多次 wrk 压测偶发进程 crash（非必现，需多次复现抓栈定位）。详见 spec 17 §6.23 + `_m17_F_runtime.md` 第六部分。
+
+---
+
+## Recent Code Delta (2026-08, mbuf water-level backpressure + primary_slim switch)
+
+> 与 `01/02/03-LAYER*` 文档同步；权威细节见 `docs/issue_1076/zh_cn/` 和 `docs/issue_1078/zh_cn/`。
+
+### mbuf water-level backpressure (issue #1076)
+
+- **`is_tcp_syn()` 辅助函数**（`lib/ff_dpdk_if.c:2024`）：解析 Ethernet/VLAN/IPv4/IPv6/TCP 头以识别 TCP SYN 包。
+- **水位检查**（`lib/ff_dpdk_if.c:2091-2094`）：`process_packets()` 入口调用 `rte_mempool_avail_count()` 检查 RX mbuf 池可用量；低于 `mbuf_low_watermark` 阈值时丢弃 TCP SYN 包（不回 SYN-ACK），保护已建连接的 mbuf 供给。非 SYN 包和非 TCP 包不受影响。
+- **`mbuf_low_watermark` 配置**（`lib/ff_config.h:337`、`lib/ff_config.c:1089-1090`）：`[dpdk]` 段新增项，类型 `unsigned`，默认 0（禁用，零回归）。
+- 4 个 FreeBSD 原生 CC 限制机制（maxsockets / ipfw limit / somaxconn / syncache）代码级确认完整可用，但作用于 socket 层，无法在 `maxsockets` 过大时阻止 mbuf 先耗尽。水位背压是互补的安全网。
+- Traceability: `docs/issue_1076/zh_cn/` (00-07). Key commits: `7112dc2bc`, `12ebe973b`.
+
+### primary_slim control-plane-only switch (issue #1078)
+
+- **`primary_slim` 配置**（`lib/ff_config.h:297`、`lib/ff_config.c:1037-1038`）：`[dpdk]` 段新增项，默认 0（禁用）。开启后 primary 只跑控制面（NIC init / KNI init / IPC server / 扩堆代理），不跑 RX 数据面。
+- **`primary_slim_idle_sleep` 配置**（`lib/ff_config.h:314`、`lib/ff_config.c:1076-1077`）：默认 1000 µs。slim primary 空闲时 `rte_pause()` 睡眠时长。
+- **`ff_is_slim_primary()` API**（`lib/ff_api.h:130` 声明、`lib/ff_dpdk_if.c:442-444` 实现）：返回当前进程是否为 slim primary。
+- **V2~V6 校验链**（`lib/ff_config.c:1423-1538`）：`primary_slim=1` 须多进程、`proc_type=primary`、lcore_list 不与 secondary 重叠、数据面 lcore 全覆盖、idle_sleep 合理性。
+- **队列数收缩**：`nb_queues` 来源于 port 的 `lcore_list` 长度（`ff_dpdk_if.c:696,881`），`queueid` 是 lcore 在 `lcore_list` 中的下标（`:479-481,518-523`），与 `proc_id` 解耦→摘掉 primary lcore 后队列数/RSS reta 一致收缩。
+- **DPDK 硬约束**：primary 是 IPC 唯一服务端、secondary 扩堆须 primary 代理、中断只在 primary 触发→primary 只能常驻不能退出。
+- **rte_exit 门控**（`lib/ff_dpdk_if.c:542`）：slim primary 中抑制 `rte_exit()`，避免控制面错误中止整个 DPDK 会话。
+- **MTU EPERM 门控（C17）**（`lib/ff_dpdk_if.c:320`）：`primary_slim=1` 时 secondary 进程设置 MTU 返回 `EPERM`（仅 primary 可设 MTU）。
+- **eal_cleanup 跳过**（`lib/ff_dpdk_if.c:3004-3008`）：slim primary 跳过 `rte_eal_cleanup()`，避免释放 secondary 仍依赖的共享资源。
+- **`nb_dev_ports` 共享 memzone**（`lib/ff_dpdk_if.c:79,82-99`）：设备端口数存入共享 memzone，secondary 可读无需重新探测。
+- **ff_dpdk_stop 门控**（`lib/ff_dpdk_if.c:3014`）：slim primary 打印停止警告而非执行完整停止逻辑。
+- **KNI runtime owner（K4）**（`lib/ff_dpdk_kni.c:101` `ff_kni_is_runtime_owner()`、`:395,442`）：放宽 KNI mutex 检查，secondary 可作运行时 KNI owner，`owner_proc_id` 检查替代硬编码 primary 检查。
+- Traceability: `docs/issue_1078/zh_cn/` (00-11 + plan + plan_impl). Key commits: `1c28aaa2d` (M1), `f7961b083` (M2-M4), `09417c0f9` (config).
+
+---
+
+**Related Documents**:
+- [Layer 1: System Architecture Overview](./F-Stack_Architecture_Layer1_System_Overview.md)
+- [Layer 2: Interface Definition and Specification](./F-Stack_Architecture_Layer2_Interface_Specification.md)
+- [Knowledge Base Summary](./F-Stack_Knowledge_Base_Summary.md)

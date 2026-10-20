@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2017-2018 Intel Corporation
  */
-#include <rte_malloc.h>
+		#include <rte_malloc.h>
 #include <rte_hash.h>
 #include <rte_jhash.h>
+#include <rte_log.h>
 #include <rte_mbuf.h>
 #include <rte_cryptodev.h>
 
@@ -17,23 +18,23 @@
 #define IV_OFFSET		(sizeof(struct rte_crypto_op) + \
 				sizeof(struct rte_crypto_sym_op))
 
-#ifdef RTE_LIBRTE_VHOST_DEBUG
-#define VC_LOG_ERR(fmt, args...)				\
-	RTE_LOG(ERR, USER1, "[%s] %s() line %u: " fmt "\n",	\
-		"Vhost-Crypto",	__func__, __LINE__, ## args)
-#define VC_LOG_INFO(fmt, args...)				\
-	RTE_LOG(INFO, USER1, "[%s] %s() line %u: " fmt "\n",	\
-		"Vhost-Crypto",	__func__, __LINE__, ## args)
+RTE_LOG_REGISTER_SUFFIX(vhost_crypto_logtype, crypto, INFO);
+#define RTE_LOGTYPE_VHOST_CRYPTO	vhost_crypto_logtype
 
-#define VC_LOG_DBG(fmt, args...)				\
-	RTE_LOG(DEBUG, USER1, "[%s] %s() line %u: " fmt "\n",	\
-		"Vhost-Crypto",	__func__, __LINE__, ## args)
+#define VC_LOG_ERR(...)	\
+	RTE_LOG_LINE_PREFIX(ERR, VHOST_CRYPTO, "%s() line %u: ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
+
+#define VC_LOG_INFO(...) \
+	RTE_LOG_LINE_PREFIX(INFO, VHOST_CRYPTO, "%s() line %u: ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
+
+#ifdef RTE_LIBRTE_VHOST_DEBUG
+#define VC_LOG_DBG(...)	\
+	RTE_LOG_LINE_PREFIX(DEBUG, VHOST_CRYPTO, "%s() line %u: ", \
+		__func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 #else
-#define VC_LOG_ERR(fmt, args...)				\
-	RTE_LOG(ERR, USER1, "[VHOST-Crypto]: " fmt "\n", ## args)
-#define VC_LOG_INFO(fmt, args...)				\
-	RTE_LOG(INFO, USER1, "[VHOST-Crypto]: " fmt "\n", ## args)
-#define VC_LOG_DBG(fmt, args...)
+#define VC_LOG_DBG(...)
 #endif
 
 #define VIRTIO_CRYPTO_FEATURES ((1ULL << VIRTIO_F_NOTIFY_ON_EMPTY) |	\
@@ -191,7 +192,7 @@ static int get_iv_len(enum rte_crypto_cipher_algorithm algo)
  * one DPDK crypto device that deals with all crypto workloads. It is declared
  * here and defined in vhost_crypto.c
  */
-struct vhost_crypto {
+struct __rte_cache_aligned vhost_crypto {
 	/** Used to lookup DPDK Cryptodev Session based on VIRTIO crypto
 	 *  session ID.
 	 */
@@ -206,15 +207,13 @@ struct vhost_crypto {
 
 	uint64_t last_session_id;
 
-	uint64_t cache_session_id;
-	struct rte_cryptodev_sym_session *cache_session;
 	/** socket id for the device */
 	int socket_id;
 
 	struct virtio_net *dev;
 
 	uint8_t option;
-} __rte_cache_aligned;
+};
 
 struct vhost_crypto_writeback_data {
 	uint8_t *src;
@@ -613,6 +612,15 @@ copy_data(void *data, struct vhost_crypto_data_req *vc_req,
 }
 
 static void
+init_wb_data(struct rte_mempool *mp __rte_unused, void *opaque __rte_unused,
+		void *obj, unsigned int obj_idx __rte_unused)
+{
+	struct vhost_crypto_writeback_data *wb_data = obj;
+
+	wb_data->next = NULL;
+}
+
+static void
 write_back_data(struct vhost_crypto_data_req *vc_req)
 {
 	struct vhost_crypto_writeback_data *wb_data = vc_req->wb, *wb_last;
@@ -622,6 +630,8 @@ write_back_data(struct vhost_crypto_data_req *vc_req)
 		memset(wb_data->src, 0, wb_data->len);
 		wb_last = wb_data;
 		wb_data = wb_data->next;
+
+		wb_last->next = NULL;
 		rte_mempool_put(vc_req->wb_pool, wb_last);
 	}
 }
@@ -630,9 +640,10 @@ static void
 free_wb_data(struct vhost_crypto_writeback_data *wb_data,
 		struct rte_mempool *mp)
 {
-	while (wb_data->next != NULL)
+	if (wb_data->next != NULL)
 		free_wb_data(wb_data->next, mp);
 
+	wb_data->next = NULL;
 	rte_mempool_put(mp, wb_data);
 }
 
@@ -672,7 +683,7 @@ prepare_write_back_data(struct vhost_crypto_data_req *vc_req,
 		uint32_t max_n_descs)
 	__rte_shared_locks_required(&vc_req->vq->iotlb_lock)
 {
-	struct vhost_crypto_writeback_data *wb_data, *head;
+	struct vhost_crypto_writeback_data *wb_data, *head = NULL;
 	struct vhost_crypto_desc *desc = *cur_desc;
 	uint64_t dlen;
 	uint8_t *dst;
@@ -711,8 +722,7 @@ prepare_write_back_data(struct vhost_crypto_data_req *vc_req,
 			}
 
 			wb_data = wb_data->next;
-		} else
-			wb_data->next = NULL;
+		}
 	} else
 		offset -= desc->len;
 
@@ -754,8 +764,7 @@ prepare_write_back_data(struct vhost_crypto_data_req *vc_req,
 			}
 
 			wb_data = wb_data->next;
-		} else
-			wb_data->next = NULL;
+		}
 	}
 
 	if (unlikely(desc - head_desc == (int)max_n_descs))
@@ -929,11 +938,11 @@ vhost_crypto_check_chain_request(struct virtio_crypto_alg_chain_data_req *req)
 		(req->para.hash_start_src_offset <
 			VHOST_CRYPTO_MAX_DATA_SIZE) &&
 		(req->para.len_to_hash <= VHOST_CRYPTO_MAX_DATA_SIZE) &&
-		(req->para.cipher_start_src_offset + req->para.len_to_cipher <=
+		((uint64_t)req->para.cipher_start_src_offset + req->para.len_to_cipher <=
 			req->para.src_data_len) &&
-		(req->para.hash_start_src_offset + req->para.len_to_hash <=
+		((uint64_t)req->para.hash_start_src_offset + req->para.len_to_hash <=
 			req->para.src_data_len) &&
-		(req->para.dst_data_len + req->para.hash_result_len <=
+		((uint64_t)req->para.dst_data_len + req->para.hash_result_len <=
 			VHOST_CRYPTO_MAX_DATA_SIZE)))
 		return VIRTIO_CRYPTO_OK;
 	return VIRTIO_CRYPTO_BADMSG;
@@ -1227,22 +1236,14 @@ vhost_crypto_process_one_req(struct vhost_crypto *vcrypto,
 	case VIRTIO_CRYPTO_CIPHER_DECRYPT:
 		session_id = req.header.session_id;
 
-		/* one branch to avoid unnecessary table lookup */
-		if (vcrypto->cache_session_id != session_id) {
-			err = rte_hash_lookup_data(vcrypto->session_map,
-					&session_id, (void **)&session);
-			if (unlikely(err < 0)) {
-				err = VIRTIO_CRYPTO_ERR;
-				VC_LOG_ERR("Failed to find session %"PRIu64,
+		err = rte_hash_lookup_data(vcrypto->session_map,
+				&session_id, (void **)&session);
+		if (unlikely(err < 0)) {
+			err = VIRTIO_CRYPTO_ERR;
+			VC_LOG_ERR("Failed to find session %"PRIu64,
 						session_id);
-				goto error_exit;
-			}
-
-			vcrypto->cache_session = session;
-			vcrypto->cache_session_id = session_id;
+			goto error_exit;
 		}
-
-		session = vcrypto->cache_session;
 
 		err = rte_crypto_op_attach_sym_session(op, session);
 		if (unlikely(err < 0)) {
@@ -1297,17 +1298,22 @@ vhost_crypto_finalize_one_request(struct rte_crypto_op *op,
 	struct rte_mbuf *m_dst = op->sym->m_dst;
 	struct vhost_crypto_data_req *vc_req = rte_mbuf_to_priv(m_src);
 	struct vhost_virtqueue *vq;
-	uint16_t used_idx, desc_idx;
+	uint16_t desc_idx;
 
 	if (unlikely(!vc_req)) {
 		VC_LOG_ERR("Failed to retrieve vc_req");
 		return NULL;
 	}
 	vq = vc_req->vq;
-	used_idx = vc_req->desc_idx;
+	desc_idx = vc_req->desc_idx;
 
 	if (old_vq && (vq != old_vq))
 		return vq;
+
+	if (unlikely(desc_idx >= vq->size)) {
+		VC_LOG_ERR("Invalid descriptor index %u", desc_idx);
+		return NULL;
+	}
 
 	if (unlikely(op->status != RTE_CRYPTO_OP_STATUS_SUCCESS))
 		vc_req->inhdr->status = VIRTIO_CRYPTO_ERR;
@@ -1316,8 +1322,7 @@ vhost_crypto_finalize_one_request(struct rte_crypto_op *op,
 			write_back_data(vc_req);
 	}
 
-	desc_idx = vq->avail->ring[used_idx];
-	vq->used->ring[desc_idx].id = vq->avail->ring[desc_idx];
+	vq->used->ring[desc_idx].id = desc_idx;
 	vq->used->ring[desc_idx].len = vc_req->len;
 
 	rte_mempool_put(m_src->pool, (void *)m_src);
@@ -1406,7 +1411,6 @@ rte_vhost_crypto_create(int vid, uint8_t cryptodev_id,
 
 	vcrypto->sess_pool = sess_pool;
 	vcrypto->cid = cryptodev_id;
-	vcrypto->cache_session_id = UINT64_MAX;
 	vcrypto->last_session_id = 1;
 	vcrypto->dev = dev;
 	vcrypto->option = RTE_VHOST_CRYPTO_ZERO_COPY_DISABLE;
@@ -1440,7 +1444,7 @@ rte_vhost_crypto_create(int vid, uint8_t cryptodev_id,
 	vcrypto->wb_pool = rte_mempool_create(name,
 			VHOST_CRYPTO_MBUF_POOL_SIZE,
 			sizeof(struct vhost_crypto_writeback_data),
-			128, 0, NULL, NULL, NULL, NULL,
+			128, 0, NULL, NULL, init_wb_data, NULL,
 			rte_socket_id(), 0);
 	if (!vcrypto->wb_pool) {
 		VC_LOG_ERR("Failed to creath mempool");
@@ -1531,7 +1535,7 @@ rte_vhost_crypto_set_zero_copy(int vid, enum rte_vhost_crypto_zero_copy option)
 		vcrypto->wb_pool = rte_mempool_create(name,
 				VHOST_CRYPTO_MBUF_POOL_SIZE,
 				sizeof(struct vhost_crypto_writeback_data),
-				128, 0, NULL, NULL, NULL, NULL,
+				128, 0, NULL, NULL, init_wb_data, NULL,
 				rte_socket_id(), 0);
 		if (!vcrypto->wb_pool) {
 			VC_LOG_ERR("Failed to creath mbuf pool");
@@ -1616,16 +1620,20 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 		for (i = 0; i < count; i++) {
 			uint16_t used_idx = (start_idx + i) & (vq->size - 1);
 			uint16_t desc_idx = vq->avail->ring[used_idx];
-			struct vring_desc *head = &vq->desc[desc_idx];
+			struct vring_desc *head;
 			struct rte_crypto_op *op = ops[i];
 
+			if (unlikely(desc_idx >= vq->size))
+				break;
+
+			head = &vq->desc[desc_idx];
 			op->sym->m_src = mbufs[i * 2];
 			op->sym->m_dst = mbufs[i * 2 + 1];
 			op->sym->m_src->data_off = 0;
 			op->sym->m_dst->data_off = 0;
 
 			if (unlikely(vhost_crypto_process_one_req(vcrypto, vq,
-					op, head, descs, used_idx) < 0))
+					op, head, descs, desc_idx) < 0))
 				break;
 		}
 
@@ -1646,9 +1654,13 @@ rte_vhost_crypto_fetch_requests(int vid, uint32_t qid,
 		for (i = 0; i < count; i++) {
 			uint16_t used_idx = (start_idx + i) & (vq->size - 1);
 			uint16_t desc_idx = vq->avail->ring[used_idx];
-			struct vring_desc *head = &vq->desc[desc_idx];
+			struct vring_desc *head;
 			struct rte_crypto_op *op = ops[i];
 
+			if (unlikely(desc_idx >= vq->size))
+				break;
+
+			head = &vq->desc[desc_idx];
 			op->sym->m_src = mbufs[i];
 			op->sym->m_dst = NULL;
 			op->sym->m_src->data_off = 0;

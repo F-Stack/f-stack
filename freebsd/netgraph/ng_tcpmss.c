@@ -1,7 +1,7 @@
 /*-
  * ng_tcpmss.c
  *
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004, Alexey Popov <lollypop@flexuser.ru>
  * All rights reserved.
@@ -30,8 +30,6 @@
  *
  * This software includes fragments of the following programs:
  *	tcpmssd		Ruslan Ermilov <ru@FreeBSD.org>
- *
- * $FreeBSD$
  */
 
 /*
@@ -64,6 +62,12 @@
 #include <netgraph/netgraph.h>
 #include <netgraph/ng_parse.h>
 #include <netgraph/ng_tcpmss.h>
+
+#ifdef NG_SEPARATE_MALLOC
+static MALLOC_DEFINE(M_NETGRAPH_TCPMSS, "netgraph_tcpmss", "netgraph tcpmss node");
+#else
+#define M_NETGRAPH_TCPMSS M_NETGRAPH
+#endif
 
 /* Per hook info. */
 typedef struct {
@@ -161,7 +165,7 @@ ng_tcpmss_newhook(node_p node, hook_p hook, const char *name)
 {
 	hpriv_p priv;
 
-	priv = malloc(sizeof(*priv), M_NETGRAPH, M_NOWAIT | M_ZERO);
+	priv = malloc(sizeof(*priv), M_NETGRAPH_TCPMSS, M_NOWAIT | M_ZERO);
 	if (priv == NULL)
 		return (ENOMEM);
 
@@ -326,7 +330,7 @@ ng_tcpmss_rcvdata(hook_p hook, item_p item)
 		ERROUT(EINVAL);
 
 	/* Check SYN packet and has options. */
-	if (!(tcp->th_flags & TH_SYN) || tcphlen == sizeof(struct tcphdr))
+	if (!(tcp_get_flags(tcp) & TH_SYN) || tcphlen == sizeof(struct tcphdr))
 		goto send;
 
 	/* Update SYN stats. */
@@ -373,7 +377,7 @@ ng_tcpmss_disconnect(hook_p hook)
 			priv->outHook = NULL;
 	}
 
-	free(NG_HOOK_PRIVATE(hook), M_NETGRAPH);
+	free(NG_HOOK_PRIVATE(hook), M_NETGRAPH_TCPMSS);
 
 	if (NG_NODE_NUMHOOKS(NG_HOOK_NODE(hook)) == 0)
 		ng_rmnode_self(NG_HOOK_NODE(hook));

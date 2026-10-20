@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000 Jake Burkholder <jake@freebsd.org>.
  * All rights reserved.
@@ -24,20 +24,10 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_SYS_CONDVAR_H_
 #define	_SYS_CONDVAR_H_
-
-#ifndef	LOCORE
-#include <sys/queue.h>
-
-struct lock_object;
-struct thread;
-
-TAILQ_HEAD(cv_waitq, thread);
 
 /*
  * Condition variable.  The waiters count is protected by the mutex that
@@ -51,6 +41,10 @@ struct cv {
 };
 
 #ifdef _KERNEL
+#include <sys/types.h>
+
+struct lock_object;
+
 void	cv_init(struct cv *cvp, const char *desc);
 void	cv_destroy(struct cv *cvp);
 
@@ -87,5 +81,4 @@ void	cv_broadcastpri(struct cv *cvp, int pri);
 #define	cv_wmesg(cvp)		((cvp)->cv_description)
 
 #endif	/* _KERNEL */
-#endif	/* !LOCORE */
 #endif	/* _SYS_CONDVAR_H_ */

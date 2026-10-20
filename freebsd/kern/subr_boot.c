@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 Michael Smith <msmith@freebsd.org>
  * All Rights Reserved.
@@ -36,8 +36,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /* Note: This is compiled in both the kernel and boot loader contexts */
 
 #include <sys/param.h>
@@ -48,6 +46,7 @@ __FBSDID("$FreeBSD$");
 #endif
 #include <sys/reboot.h>
 #include <sys/boot.h>
+#include <sys/tslog.h>
 
 #ifdef _KERNEL
 #define SETENV(k, v)	kern_setenv(k, v)
@@ -71,6 +70,7 @@ static struct
 	{ "boot_gdb",		RB_GDB},
 	{ "boot_multicons",	RB_MULTIPLE},
 	{ "boot_mute",		RB_MUTE},
+	{ "boot_mutemsgs",	RB_MUTEMSGS},
 	{ "boot_pause",		RB_PAUSE},
 	{ "boot_serial",	RB_SERIAL},
 	{ "boot_single",	RB_SINGLE},
@@ -95,12 +95,14 @@ boot_env_to_howto(void)
 	int i, howto;
 	char *val;
 
+	TSENTER();
 	for (howto = 0, i = 0; howto_names[i].ev != NULL; i++) {
 		val = GETENV(howto_names[i].ev);
 		if (val != NULL && strcasecmp(val, "no") != 0)
 			howto |= howto_names[i].mask;
 		FREE(val);
 	}
+	TSEXIT();
 	return (howto);
 }
 
@@ -125,17 +127,17 @@ boot_howto_to_env(int howto)
  * variable and set that instead.
  */
 int
-boot_parse_arg(char *v)
+boot_parse_arg(const char *v)
 {
 	char *n;
 	int howto;
 
 #if 0
 /* Need to see if this is better or worse than the meat of the #else */
-static const char howto_switches[] = "aCdrgDmphsv";
+static const char howto_switches[] = "aCdrgDmMphsv";
 static int howto_masks[] = {
 	RB_ASKNAME, RB_CDROM, RB_KDB, RB_DFLTROOT, RB_GDB, RB_MULTIPLE,
-	RB_MUTE, RB_PAUSE, RB_SERIAL, RB_SINGLE, RB_VERBOSE
+	RB_MUTE, RB_MUTEMSGS, RB_PAUSE, RB_SERIAL, RB_SINGLE, RB_VERBOSE
 };
 
 	opts = strchr(kargs, '-');
@@ -159,6 +161,7 @@ static int howto_masks[] = {
 			case 'd': howto |= RB_KDB; break;
 			case 'D': howto |= RB_MULTIPLE; break;
 			case 'm': howto |= RB_MUTE; break;
+			case 'M': howto |= RB_MUTEMSGS; break;
 			case 'g': howto |= RB_GDB; break;
 			case 'h': howto |= RB_SERIAL; break;
 			case 'p': howto |= RB_PAUSE; break;
@@ -170,11 +173,15 @@ static int howto_masks[] = {
 			}
 		}
 	} else {
-		n = strsep(&v, "=");
-		if (v == NULL)
+		char buf[128];
+		char *vv = buf;
+
+		strlcpy(buf, v, sizeof(buf));
+		n = strsep(&vv, "=");
+		if (vv == NULL)
 			SETENV(n, "1");
 		else
-			SETENV(n, v);
+			SETENV(n, vv);
 	}
 #endif
 	return (howto);
@@ -189,12 +196,14 @@ boot_parse_cmdline_delim(char *cmdline, const char *delim)
 	char *v;
 	int howto;
 
+	TSENTER();
 	howto = 0;
 	while ((v = strsep(&cmdline, delim)) != NULL) {
 		if (*v == '\0')
 			continue;
 		howto |= boot_parse_arg(v);
 	}
+	TSEXIT();
 	return (howto);
 }
 

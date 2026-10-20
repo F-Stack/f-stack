@@ -37,17 +37,31 @@
 #undef PCPU_INC
 #undef PCPU_PTR
 #undef PCPU_SET
+#undef zpcpu_offset_cpu
+#undef zpcpu_base_to_offset
+#undef zpcpu_offset_to_base
 
 extern __thread struct thread *pcurthread;
-extern struct pcpu *pcpup;
+extern __thread struct pcpu *pcpup;
 
-#define	get_pcpu()              (pcpup->pc_ ## prvspace)
+void panic(const char *fmt, ...) __attribute__((noreturn));
 
-#define PCPU_GET(member)         (pcpup->pc_ ## member)
-#define PCPU_ADD(member, val)    (pcpup->pc_ ## member += (val))
+static __inline struct pcpu *
+ff_pcpu_get(void)
+{
+	if (__builtin_expect(pcpup == NULL, 0))
+		panic("F-Stack: NULL per-CPU context (pcpup==NULL); "
+		      "curcpu/PCPU_* are unsupported in ff_pthread_create threads");
+	return (pcpup);
+}
+
+#define	get_pcpu()              (ff_pcpu_get()->pc_ ## prvspace)
+
+#define PCPU_GET(member)         (ff_pcpu_get()->pc_ ## member)
+#define PCPU_ADD(member, val)    (ff_pcpu_get()->pc_ ## member += (val))
 #define PCPU_INC(member)         PCPU_ADD(member, 1)
-#define PCPU_PTR(member)         (&pcpup->pc_ ## member)
-#define PCPU_SET(member, val)    (pcpup->pc_ ## member = (val))
+#define PCPU_PTR(member)         (&ff_pcpu_get()->pc_ ## member)
+#define PCPU_SET(member, val)    (ff_pcpu_get()->pc_ ## member = (val))
 
 static __inline struct thread *
 __curthread_ff(void)

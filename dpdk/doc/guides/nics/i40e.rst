@@ -104,6 +104,14 @@ For X710/XL710/XXV710,
    +--------------+-----------------------+------------------+
    | DPDK version | Kernel driver version | Firmware version |
    +==============+=======================+==================+
+   |    24.11     |         2.26.8        |       9.52       |
+   +--------------+-----------------------+------------------+
+   |    24.07     |         2.25.9        |       9.50       |
+   +--------------+-----------------------+------------------+
+   |    24.03     |         2.24.6        |       9.40       |
+   +--------------+-----------------------+------------------+
+   |    23.11     |         2.23.17       |       9.30       |
+   +--------------+-----------------------+------------------+
    |    23.07     |         2.22.20       |       9.20       |
    +--------------+-----------------------+------------------+
    |    23.03     |         2.22.18       |       9.20       |
@@ -167,6 +175,14 @@ For X722,
    +--------------+-----------------------+------------------+
    | DPDK version | Kernel driver version | Firmware version |
    +==============+=======================+==================+
+   |    24.11     |         2.26.8        |       6.50       |
+   +--------------+-----------------------+------------------+
+   |    24.07     |         2.25.9        |       6.50       |
+   +--------------+-----------------------+------------------+
+   |    24.03     |         2.24.6        |       6.20       |
+   +--------------+-----------------------+------------------+
+   |    23.11     |         2.23.17       |       6.20       |
+   +--------------+-----------------------+------------------+
    |    23.07     |         2.22.20       |       6.20       |
    +--------------+-----------------------+------------------+
    |    23.03     |         2.22.18       |       6.20       |
@@ -270,6 +286,20 @@ Runtime Configuration
   For example::
 
   -a 84:00.0,vf_msg_cfg=80@120:180
+
+- ``Support Tx diagnostics`` (default ``not enabled``)
+
+  Set the ``devargs`` parameter ``mbuf_check`` to enable Tx diagnostics.
+  For example, ``-a 18:01.0,mbuf_check=<case>`` or ``-a 18:01.0,mbuf_check=[<case1>,<case2>...]``.
+  Also, ``xstats_get`` can be used to get the error counts,
+  which are collected in ``tx_mbuf_error_packets`` xstats.
+  For example, to show the statistics in testpmd, use: ``testpmd> show port xstats all``.
+  Supported values for the ``<case>`` parameter:
+
+  * ``mbuf``: Check for corrupted mbuf.
+  * ``size``: Check min/max packet length according to HW spec.
+  * ``segment``: Check number of mbuf segments not exceed hw limitation.
+  * ``offload``: Check any unsupported offload flag.
 
 Vector RX Pre-conditions
 ~~~~~~~~~~~~~~~~~~~~~~~~
@@ -410,12 +440,12 @@ The default input set of each flow type is::
 
 The flex payload is selected from offset 0 to 15 of packet's payload by default, while it is masked out from matching.
 
-Start ``testpmd`` with ``--disable-rss`` and ``--pkt-filter-mode=perfect``:
+Start ``testpmd`` with ``--disable-rss``:
 
 .. code-block:: console
 
    ./<build_dir>/app/dpdk-testpmd -l 0-15 -n 4 -- -i --disable-rss \
-                 --pkt-filter-mode=perfect --rxq=8 --txq=8 --nb-cores=8 \
+                 --rxq=8 --txq=8 --nb-cores=8 \
                  --nb-ports=1
 
 Add a rule to direct ``ipv4-udp`` packet whose ``dst_ip=2.2.2.5, src_ip=2.2.2.3, src_port=32, dst_port=32`` to queue 1:

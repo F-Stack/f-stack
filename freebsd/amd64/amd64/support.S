@@ -31,8 +31,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include "opt_ddb.h"
@@ -82,7 +80,7 @@ ENTRY(pagecopy)
 END(pagecopy)
 
 /*
- * memcmpy(b1, b2, len)
+ * memcmp(b1, b2, len)
  *	   rdi,rsi,rdx
  */
 ENTRY(memcmp)
@@ -507,13 +505,6 @@ END(memcmp)
 	ALIGN_TEXT
 2256:
 	std
-.if \erms == 1
-	leaq	-1(%rdi,%rcx),%rdi
-	leaq	-1(%rsi,%rcx),%rsi
-	rep
-	movsb
-	cld
-.else
 	leaq	-8(%rdi,%rcx),%rdi
 	leaq	-8(%rsi,%rcx),%rsi
 	shrq	$3,%rcx
@@ -523,7 +514,6 @@ END(memcmp)
 	movq	%rdx,%rcx
 	andb	$7,%cl
 	jne	2004b
-.endif
 	\end
 	ret
 .endif
@@ -697,6 +687,72 @@ ENTRY(fillw)
 	ret
 END(fillw)
 
+/*
+ * strlen(string)
+ *	  %rdi
+ *
+ * Uses the ((x - 0x01....01) & ~x & 0x80....80) trick.
+ *
+ * 0x01....01 is replaced with 0x0 - 0x01....01 so that it can be added
+ * with leaq.
+ *
+ * For a description see either:
+ * - "Hacker's Delight" by Henry S. Warren, Jr.
+ * - "Optimizing subroutines in assembly language: An optimization guide for x86 platforms"
+ *   by Agner Fog
+ *
+ * The latter contains a 32-bit variant of the same algorithm coded in assembly for i386.
+ */
+ENTRY(strlen)
+	PUSH_FRAME_POINTER
+	movabsq	$0xfefefefefefefeff,%r8
+	movabsq	$0x8080808080808080,%r9
+
+	movq	%rdi,%r10
+	movq	%rdi,%rcx
+	testb	$7,%dil
+	jz	2f
+
+	/*
+	 * Handle misaligned reads: align to 8 and fill
+	 * the spurious bytes.
+	 */
+	andq	$~7,%rdi
+	movq	(%rdi),%r11
+	shlq	$3,%rcx
+	movq	$-1,%rdx
+	shlq	%cl,%rdx
+	notq	%rdx
+	orq	%rdx,%r11
+
+	leaq	(%r11,%r8),%rcx
+	notq	%r11
+	andq	%r11,%rcx
+	andq	%r9,%rcx
+	jnz	3f
+
+	/*
+	 * Main loop.
+	 */
+	ALIGN_TEXT
+1:
+	leaq	8(%rdi),%rdi
+2:
+	movq	(%rdi),%r11
+	leaq	(%r11,%r8),%rcx
+	notq	%r11
+	andq	%r11,%rcx
+	andq	%r9,%rcx
+	jz	1b
+3:
+	bsfq	%rcx,%rcx
+	shrq	$3,%rcx
+	leaq	(%rcx,%rdi),%rax
+	subq	%r10,%rax
+	POP_FRAME_POINTER
+	ret
+END(strlen)
+
 /*****************************************************************************/
 /* copyout and fubyte family                                                 */
 /*****************************************************************************/
@@ -864,7 +920,8 @@ copy_fault:
 
 /*
  * casueword32.  Compare and set user integer.  Returns -1 on fault,
- *        0 if access was successful.  Old value is written to *oldp.
+ *        0 if access was successful, and 1 when comparison failed.
+ *        Old value is written to *oldp.
  *        dst = %rdi, old = %esi, oldp = %rdx, new = %ecx
  */
 ENTRY(casueword32_nosmap)
@@ -877,10 +934,7 @@ ENTRY(casueword32_nosmap)
 	ja	fusufault
 
 	movl	%esi,%eax			/* old */
-#ifdef SMP
-	lock
-#endif
-	cmpxchgl %ecx,(%rdi)			/* new = %ecx */
+	lock cmpxchgl %ecx,(%rdi)		/* new = %ecx */
 	setne	%cl
 
 	/*
@@ -914,10 +968,7 @@ ENTRY(casueword32_smap)
 
 	movl	%esi,%eax			/* old */
 	stac
-#ifdef SMP
-	lock
-#endif
-	cmpxchgl %ecx,(%rdi)			/* new = %ecx */
+	lock cmpxchgl %ecx,(%rdi)		/* new = %ecx */
 	clac
 	setne	%cl
 
@@ -943,7 +994,8 @@ END(casueword32_smap)
 
 /*
  * casueword.  Compare and set user long.  Returns -1 on fault,
- *        0 if access was successful.  Old value is written to *oldp.
+ *        0 if access was successful, and 1 when comparison failed.
+ *        Old value is written to *oldp.
  *        dst = %rdi, old = %rsi, oldp = %rdx, new = %rcx
  */
 ENTRY(casueword_nosmap)
@@ -956,10 +1008,7 @@ ENTRY(casueword_nosmap)
 	ja	fusufault
 
 	movq	%rsi,%rax			/* old */
-#ifdef SMP
-	lock
-#endif
-	cmpxchgq %rcx,(%rdi)			/* new = %rcx */
+	lock cmpxchgq %rcx,(%rdi)		/* new = %rcx */
 	setne	%cl
 
 	/*
@@ -987,10 +1036,7 @@ ENTRY(casueword_smap)
 
 	movq	%rsi,%rax			/* old */
 	stac
-#ifdef SMP
-	lock
-#endif
-	cmpxchgq %rcx,(%rdi)			/* new = %rcx */
+	lock cmpxchgq %rcx,(%rdi)		/* new = %rcx */
 	clac
 	setne	%cl
 
@@ -1430,7 +1476,6 @@ ENTRY(lgdt)
 	popq	%rax
 	pushq	$KCSEL
 	pushq	%rax
-	MEXITCOUNT
 	lretq
 END(lgdt)
 
@@ -1475,6 +1520,7 @@ ENTRY(rdmsr_safe)
 /* int rdmsr_safe(u_int msr, uint64_t *data) */
 	PUSH_FRAME_POINTER
 	movq	PCPU(CURPCB),%r8
+	movq	PCB_ONFAULT(%r8),%r9
 	movq	$msr_onfault,PCB_ONFAULT(%r8)
 	movl	%edi,%ecx
 	rdmsr			/* Read MSR pointed by %ecx. Returns
@@ -1483,8 +1529,8 @@ ENTRY(rdmsr_safe)
 	movl	%eax,%eax	/* zero-extend %eax -> %rax */
 	orq	%rdx,%rax
 	movq	%rax,(%rsi)
-	xorq	%rax,%rax
-	movq	%rax,PCB_ONFAULT(%r8)
+	movq	%r9,PCB_ONFAULT(%r8)
+	xorl	%eax,%eax
 	POP_FRAME_POINTER
 	ret
 
@@ -1496,6 +1542,7 @@ ENTRY(wrmsr_safe)
 /* int wrmsr_safe(u_int msr, uint64_t data) */
 	PUSH_FRAME_POINTER
 	movq	PCPU(CURPCB),%r8
+	movq	PCB_ONFAULT(%r8),%r9
 	movq	$msr_onfault,PCB_ONFAULT(%r8)
 	movl	%edi,%ecx
 	movl	%esi,%eax
@@ -1503,8 +1550,8 @@ ENTRY(wrmsr_safe)
 	movl	%esi,%edx
 	wrmsr			/* Write MSR pointed by %ecx. Accepts
 				   hi byte in edx, lo in %eax. */
-	xorq	%rax,%rax
-	movq	%rax,PCB_ONFAULT(%r8)
+	movq	%r9,PCB_ONFAULT(%r8)
+	xorl	%eax,%eax
 	POP_FRAME_POINTER
 	ret
 
@@ -1513,10 +1560,26 @@ ENTRY(wrmsr_safe)
  */
 	ALIGN_TEXT
 msr_onfault:
-	movq	$0,PCB_ONFAULT(%r8)
+	movq	%r9,PCB_ONFAULT(%r8)
 	movl	$EFAULT,%eax
 	POP_FRAME_POINTER
 	ret
+
+ENTRY(wrmsr_early_safe)
+	movl	%edi,%ecx
+	movl	%esi,%eax
+	sarq	$32,%rsi
+	movl	%esi,%edx
+	wrmsr
+	xorl	%eax,%eax
+wrmsr_early_faulted:
+	ret
+
+ENTRY(wrmsr_early_safe_gp_handler)
+	addq	$8,%rsp
+	movl	$EFAULT,%eax
+	movq	$wrmsr_early_faulted,(%rsp)
+	iretq
 
 /*
  * void pmap_pti_pcid_invalidate(uint64_t ucr3, uint64_t kcr3);
@@ -1912,3 +1975,24 @@ ENTRY(mds_handler_silvermont)
 	popq	%rax
 	retq
 END(mds_handler_silvermont)
+
+/*
+ * Do the same as Linux and execute IRET explicitly, despite IPI
+ * return does it as well.
+ */
+ENTRY(cpu_sync_core)
+/*
+ * Can utilize SERIALIZE when instruction is moved from
+ * 'future extensions' to SDM.
+ */
+	movq	(%rsp), %rdx
+	movl	%ss, %eax
+	pushq	%rax
+	pushq	%rsp
+	addq	$16, (%rsp)
+	pushfq
+	movl	%cs, %eax
+	pushq	%rax
+	pushq	%rdx
+	iretq
+END(cpu_sync_core)

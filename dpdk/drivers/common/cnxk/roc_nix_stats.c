@@ -173,10 +173,34 @@ nix_stat_rx_queue_reset(struct nix *nix, uint16_t qid)
 		aq->rq_mask.drop_octs = ~(aq->rq_mask.drop_octs);
 		aq->rq_mask.drop_pkts = ~(aq->rq_mask.drop_pkts);
 		aq->rq_mask.re_pkts = ~(aq->rq_mask.re_pkts);
-	} else {
+	} else if (roc_model_is_cn10k()) {
 		struct nix_cn10k_aq_enq_req *aq;
 
 		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
+		if (!aq) {
+			rc = -ENOSPC;
+			goto exit;
+		}
+
+		aq->qidx = qid;
+		aq->ctype = NIX_AQ_CTYPE_RQ;
+		aq->op = NIX_AQ_INSTOP_WRITE;
+
+		aq->rq.octs = 0;
+		aq->rq.pkts = 0;
+		aq->rq.drop_octs = 0;
+		aq->rq.drop_pkts = 0;
+		aq->rq.re_pkts = 0;
+
+		aq->rq_mask.octs = ~(aq->rq_mask.octs);
+		aq->rq_mask.pkts = ~(aq->rq_mask.pkts);
+		aq->rq_mask.drop_octs = ~(aq->rq_mask.drop_octs);
+		aq->rq_mask.drop_pkts = ~(aq->rq_mask.drop_pkts);
+		aq->rq_mask.re_pkts = ~(aq->rq_mask.re_pkts);
+	} else {
+		struct nix_cn20k_aq_enq_req *aq;
+
+		aq = mbox_alloc_msg_nix_cn20k_aq_enq(mbox);
 		if (!aq) {
 			rc = -ENOSPC;
 			goto exit;
@@ -233,10 +257,33 @@ nix_stat_tx_queue_reset(struct nix *nix, uint16_t qid)
 		aq->sq_mask.pkts = ~(aq->sq_mask.pkts);
 		aq->sq_mask.drop_octs = ~(aq->sq_mask.drop_octs);
 		aq->sq_mask.drop_pkts = ~(aq->sq_mask.drop_pkts);
-	} else {
+	} else if (roc_model_is_cn10k()) {
 		struct nix_cn10k_aq_enq_req *aq;
 
 		aq = mbox_alloc_msg_nix_cn10k_aq_enq(mbox);
+		if (!aq) {
+			rc = -ENOSPC;
+			goto exit;
+		}
+
+		aq->qidx = qid;
+		aq->ctype = NIX_AQ_CTYPE_SQ;
+		aq->op = NIX_AQ_INSTOP_WRITE;
+		aq->sq.octs = 0;
+		aq->sq.pkts = 0;
+		aq->sq.drop_octs = 0;
+		aq->sq.drop_pkts = 0;
+
+		aq->sq_mask.octs = ~(aq->sq_mask.octs);
+		aq->sq_mask.pkts = ~(aq->sq_mask.pkts);
+		aq->sq_mask.drop_octs = ~(aq->sq_mask.drop_octs);
+		aq->sq_mask.drop_pkts = ~(aq->sq_mask.drop_pkts);
+		aq->sq_mask.aged_drop_octs = ~(aq->sq_mask.aged_drop_octs);
+		aq->sq_mask.aged_drop_pkts = ~(aq->sq_mask.aged_drop_pkts);
+	} else {
+		struct nix_cn20k_aq_enq_req *aq;
+
+		aq = mbox_alloc_msg_nix_cn20k_aq_enq(mbox);
 		if (!aq) {
 			rc = -ENOSPC;
 			goto exit;
@@ -375,7 +422,7 @@ roc_nix_xstats_get(struct roc_nix *roc_nix, struct roc_nix_xstat *xstats,
 	xstats[count].id = count;
 	count++;
 
-	if (roc_model_is_cn10k()) {
+	if (roc_model_is_cn10k() || roc_model_is_cn20k()) {
 		for (i = 0; i < CNXK_NIX_NUM_CN10K_RX_XSTATS; i++) {
 			xstats[count].value =
 				NIX_RX_STATS(nix_cn10k_rx_xstats[i].offset);
@@ -456,46 +503,51 @@ roc_nix_xstats_names_get(struct roc_nix *roc_nix,
 	struct idev_cfg *idev = idev_get_cfg();
 	uint64_t i, count = 0;
 
-	PLT_SET_USED(limit);
-
 	for (i = 0; i < CNXK_NIX_NUM_TX_XSTATS; i++) {
-		NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_tx_xstats, i);
+		if (xstats_names && count < limit)
+			NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_tx_xstats, i);
 		count++;
 	}
 
 	for (i = 0; i < CNXK_NIX_NUM_RX_XSTATS; i++) {
-		NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_rx_xstats, i);
+		if (xstats_names && count < limit)
+			NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_rx_xstats, i);
 		count++;
 	}
 
 	if (nix->inb_inl_dev && idev) {
 		if (idev->nix_inl_dev) {
 			for (i = 0; i < CNXK_INL_NIX_NUM_RX_XSTATS; i++) {
-				NIX_XSTATS_NAME_PRINT(xstats_names, count,
-						      inl_nix_rx_xstats, i);
+				if (xstats_names && count < limit)
+					NIX_XSTATS_NAME_PRINT(xstats_names, count,
+							      inl_nix_rx_xstats, i);
 				count++;
 			}
 			for (i = 0; i < CNXK_INL_NIX_RQ_XSTATS; i++) {
-				NIX_XSTATS_NAME_PRINT(xstats_names, count,
-						      inl_nix_rq_xstats, i);
+				if (xstats_names && count < limit)
+					NIX_XSTATS_NAME_PRINT(xstats_names, count,
+							      inl_nix_rq_xstats, i);
 				count++;
 			}
 			for (i = 0; i < PLT_DIM(inl_sw_xstats); i++) {
-				NIX_XSTATS_NAME_PRINT(xstats_names, count, inl_sw_xstats, i);
+				if (xstats_names && count < limit)
+					NIX_XSTATS_NAME_PRINT(xstats_names, count, inl_sw_xstats,
+							      i);
 				count++;
 			}
 		}
 	}
 
 	for (i = 0; i < CNXK_NIX_NUM_QUEUE_XSTATS; i++) {
-		NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_q_xstats, i);
+		if (xstats_names && count < limit)
+			NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_q_xstats, i);
 		count++;
 	}
 
-	if (roc_model_is_cn10k()) {
+	if (roc_model_is_cn10k() || roc_model_is_cn20k()) {
 		for (i = 0; i < CNXK_NIX_NUM_CN10K_RX_XSTATS; i++) {
-			NIX_XSTATS_NAME_PRINT(xstats_names, count,
-					      nix_cn10k_rx_xstats, i);
+			if (xstats_names && count < limit)
+				NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_cn10k_rx_xstats, i);
 			count++;
 		}
 	}
@@ -505,30 +557,29 @@ roc_nix_xstats_names_get(struct roc_nix *roc_nix,
 
 	if (roc_model_is_cn9k()) {
 		for (i = 0; i < CNXK_NIX_NUM_RX_XSTATS_CGX; i++) {
-			NIX_XSTATS_NAME_PRINT(xstats_names, count,
-					      nix_rx_xstats_cgx, i);
+			if (xstats_names && count < limit)
+				NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_rx_xstats_cgx, i);
 			count++;
 		}
 
 		for (i = 0; i < CNXK_NIX_NUM_TX_XSTATS_CGX; i++) {
-			NIX_XSTATS_NAME_PRINT(xstats_names, count,
-					      nix_tx_xstats_cgx, i);
+			if (xstats_names && count < limit)
+				NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_tx_xstats_cgx, i);
 			count++;
 		}
 
 	} else {
 		for (i = 0; i < CNXK_NIX_NUM_RX_XSTATS_RPM; i++) {
-			NIX_XSTATS_NAME_PRINT(xstats_names, count,
-					      nix_rx_xstats_rpm, i);
+			if (xstats_names && count < limit)
+				NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_rx_xstats_rpm, i);
 			count++;
 		}
 
 		for (i = 0; i < CNXK_NIX_NUM_TX_XSTATS_RPM; i++) {
-			NIX_XSTATS_NAME_PRINT(xstats_names, count,
-					      nix_tx_xstats_rpm, i);
+			if (xstats_names && count < limit)
+				NIX_XSTATS_NAME_PRINT(xstats_names, count, nix_tx_xstats_rpm, i);
 			count++;
 		}
 	}
-
 	return count;
 }

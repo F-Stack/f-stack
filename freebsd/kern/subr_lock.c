@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2006 John Baldwin <jhb@FreeBSD.org>
  *
@@ -31,8 +31,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_mprof.h"
 
@@ -40,6 +38,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/kernel.h>
 #include <sys/ktr.h>
+#include <sys/limits.h>
 #include <sys/lock.h>
 #include <sys/lock_profile.h>
 #include <sys/malloc.h>
@@ -57,8 +56,11 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/cpufunc.h>
 
-SDT_PROVIDER_DEFINE(lock);
-SDT_PROBE_DEFINE1(lock, , , starvation, "u_int");
+/*
+ * Uncomment to validate that spin argument to acquire/release routines matches
+ * the flag in the lock
+ */
+//#define	LOCK_PROFILING_DEBUG_SPIN
 
 CTASSERT(LOCK_CLASS_MAX == 15);
 
@@ -113,33 +115,19 @@ static SYSCTL_NODE(_debug_lock, OID_AUTO, delay,
     CTLFLAG_RD | CTLFLAG_MPSAFE, NULL,
     "lock delay");
 
-static u_int __read_mostly starvation_limit = 131072;
-SYSCTL_INT(_debug_lock_delay, OID_AUTO, starvation_limit, CTLFLAG_RW,
-    &starvation_limit, 0, "");
-
-static u_int __read_mostly restrict_starvation = 0;
-SYSCTL_INT(_debug_lock_delay, OID_AUTO, restrict_starvation, CTLFLAG_RW,
-    &restrict_starvation, 0, "");
-
 void
 lock_delay(struct lock_delay_arg *la)
 {
 	struct lock_delay_config *lc = la->config;
-	u_short i;
-
-	la->delay <<= 1;
-	if (__predict_false(la->delay > lc->max))
-		la->delay = lc->max;
+	u_int i;
 
 	for (i = la->delay; i > 0; i--)
 		cpu_spinwait();
-
 	la->spin_cnt += la->delay;
-	if (__predict_false(la->spin_cnt > starvation_limit)) {
-		SDT_PROBE1(lock, , , starvation, la->delay);
-		if (restrict_starvation)
-			la->delay = lc->base;
-	}
+
+	la->delay <<= 1;
+	if (__predict_false(la->delay > (u_int)lc->max))
+		la->delay = lc->max;
 }
 
 static u_int
@@ -158,9 +146,7 @@ lock_delay_default_init(struct lock_delay_config *lc)
 {
 
 	lc->base = 1;
-	lc->max = lock_roundup_2(mp_ncpus) * 256;
-	if (lc->max > 32678)
-		lc->max = 32678;
+	lc->max = min(lock_roundup_2(mp_ncpus) * 256, SHRT_MAX);
 }
 
 struct lock_delay_config __read_frequently locks_delay;
@@ -271,13 +257,13 @@ DPCPU_DEFINE_STATIC(struct lock_prof_cpu, lp);
 #define	LP_CPU(cpu)	(DPCPU_ID_PTR((cpu), lp))
 
 volatile int __read_mostly lock_prof_enable;
+int __read_mostly lock_contested_only;
 static volatile int lock_prof_resetting;
 
 #define LPROF_SBUF_SIZE		256
 
 static int lock_prof_rejected;
 static int lock_prof_skipspin;
-static int lock_prof_skipcount;
 
 #ifndef USE_CPU_NANOSECONDS
 uint64_t
@@ -593,25 +579,29 @@ lock_profile_object_lookup(struct lock_object *lo, int spin, const char *file,
 }
 
 void
-lock_profile_obtain_lock_success(struct lock_object *lo, int contested,
-    uint64_t waittime, const char *file, int line)
+lock_profile_obtain_lock_success(struct lock_object *lo, bool spin,
+    int contested, uint64_t waittime, const char *file, int line)
 {
-	static int lock_prof_count;
 	struct lock_profile_object *l;
-	int spin;
 
-	if (SCHEDULER_STOPPED())
-		return;
+#ifdef LOCK_PROFILING_DEBUG_SPIN
+	bool is_spin = (LOCK_CLASS(lo)->lc_flags & LC_SPINLOCK);
+	if ((spin && !is_spin) || (!spin && is_spin))
+		printf("%s: lock %s spin mismatch (arg %d, flag %d)\n", __func__,
+		    lo->lo_name, spin, is_spin);
+#endif
 
 	/* don't reset the timer when/if recursing */
 	if (!lock_prof_enable || (lo->lo_flags & LO_NOPROFILE))
 		return;
-	if (lock_prof_skipcount &&
-	    (++lock_prof_count % lock_prof_skipcount) != 0)
+	if (lock_contested_only && !contested)
 		return;
-	spin = (LOCK_CLASS(lo)->lc_flags & LC_SPINLOCK) ? 1 : 0;
 	if (spin && lock_prof_skipspin == 1)
 		return;
+
+	if (SCHEDULER_STOPPED())
+		return;
+
 	critical_enter();
 	/* Recheck enabled now that we're in a critical section. */
 	if (lock_prof_enable == 0)
@@ -662,22 +652,27 @@ lock_profile_thread_exit(struct thread *td)
 }
 
 void
-lock_profile_release_lock(struct lock_object *lo)
+lock_profile_release_lock(struct lock_object *lo, bool spin)
 {
 	struct lock_profile_object *l;
 	struct lock_prof_type *type;
 	struct lock_prof *lp;
 	uint64_t curtime, holdtime;
 	struct lpohead *head;
-	int spin;
 
-	if (SCHEDULER_STOPPED())
-		return;
+#ifdef LOCK_PROFILING_DEBUG_SPIN
+	bool is_spin = (LOCK_CLASS(lo)->lc_flags & LC_SPINLOCK);
+	if ((spin && !is_spin) || (!spin && is_spin))
+		printf("%s: lock %s spin mismatch (arg %d, flag %d)\n", __func__,
+		    lo->lo_name, spin, is_spin);
+#endif
+
 	if (lo->lo_flags & LO_NOPROFILE)
 		return;
-	spin = (LOCK_CLASS(lo)->lc_flags & LC_SPINLOCK) ? 1 : 0;
 	head = &curthread->td_lprof[spin];
 	if (LIST_FIRST(head) == NULL)
+		return;
+	if (SCHEDULER_STOPPED())
 		return;
 	critical_enter();
 	/* Recheck enabled now that we're in a critical section. */
@@ -731,10 +726,10 @@ static SYSCTL_NODE(_debug_lock, OID_AUTO, prof,
     "lock profiling");
 SYSCTL_INT(_debug_lock_prof, OID_AUTO, skipspin, CTLFLAG_RW,
     &lock_prof_skipspin, 0, "Skip profiling on spinlocks.");
-SYSCTL_INT(_debug_lock_prof, OID_AUTO, skipcount, CTLFLAG_RW,
-    &lock_prof_skipcount, 0, "Sample approximately every N lock acquisitions.");
 SYSCTL_INT(_debug_lock_prof, OID_AUTO, rejected, CTLFLAG_RD,
     &lock_prof_rejected, 0, "Number of rejected profiling records");
+SYSCTL_INT(_debug_lock_prof, OID_AUTO, contested_only, CTLFLAG_RW,
+    &lock_contested_only, 0, "Only profile contested acquires");
 SYSCTL_PROC(_debug_lock_prof, OID_AUTO, stats,
     CTLTYPE_STRING | CTLFLAG_RD | CTLFLAG_MPSAFE, NULL, 0,
     dump_lock_prof_stats, "A",

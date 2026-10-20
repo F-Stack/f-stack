@@ -32,6 +32,27 @@
 /* Set F-Stack proccess id to communicate with */
 void ff_set_proc_id(int pid);
 
+/* Same from a command line argument, "<proc_id>[:<gen>[:<epoch>]]"; the
+ * optional generation is equivalent to ff_set_gen() and the optional epoch
+ * to ff_set_epoch(). Returns the proc id. */
+int ff_set_proc_id_str(const char *arg);
+
+/* Target graceful_reload generation (0.FF_RELOAD_GEN_MAX-1). Unset means
+ * auto: the legacy ring names on a graceful_reload=0 stack, otherwise the
+ * generation the resident primary reports as active. */
+void ff_set_gen(int gen);
+
+/* Same from a command line argument, "<gen>[:<epoch>]". */
+void ff_set_gen_str(const char *arg);
+
+/* the master epoch the target generation belongs to. Two masters
+ * (USR2) run the same generation number in different epoch slots, so
+ * reaching one of them takes both numbers. Unset (FF_RELOAD_EPOCH_NONE)
+ * selects slot 0, which is what an unspecified epoch has always resolved
+ * to. Never falls back silently: an explicit generation without a reachable
+ * epoch is an error, not a guess. */
+void ff_set_epoch(uint32_t epoch);
+
 int ff_ipc_init(void);
 void ff_ipc_exit(void);
 struct ff_msg *ff_ipc_msg_alloc(void);
@@ -39,5 +60,23 @@ int ff_ipc_msg_free(struct ff_msg *msg);
 
 int ff_ipc_send(const struct ff_msg *msg);
 int ff_ipc_recv(struct ff_msg **msg, enum FF_MSG_TYPE msg_type);
+
+/* Follow mode, for sampling tools: an auto-resolved generation is
+ * re-resolved after a reload instead of staying on the one that exits.
+ * Never for tools holding per-stack state such as ngctl sockets. */
+void ff_ipc_set_follow(int on);
+/* Re-resolve on the next send, e.g. after a request to it failed. */
+void ff_ipc_gen_invalidate(void);
+/* Changes whenever follow mode moved to another generation, whose counters
+ * start from zero, so a sampling tool restarts its deltas. Two reloads
+ * between samples that land on the same generation are not seen. */
+unsigned int ff_ipc_target_seq(void);
+
+/* reply-ownership counters. foreign_requeued counts replies of
+ * other clients that were put back instead of freed, orphan_dropped replies
+ * whose owner was provably gone, reply_lost foreign replies that could not
+ * be put back and were dropped. Any pointer may be NULL. */
+void ff_ipc_reply_stats(uint64_t *foreign_requeued, uint64_t *orphan_dropped,
+    uint64_t *reply_lost);
 
 #endif

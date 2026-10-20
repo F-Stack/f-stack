@@ -28,9 +28,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)tcp_fsm.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 #ifndef _NETINET_TCP_FSM_H_
@@ -59,20 +56,6 @@
 #define	TCPS_FIN_WAIT_2		9	/* have closed, fin is acked */
 #define	TCPS_TIME_WAIT		10	/* in 2*msl quiet wait after close */
 
-/* for KAME src sync over BSD*'s */
-#define	TCP6_NSTATES		TCP_NSTATES
-#define	TCP6S_CLOSED		TCPS_CLOSED
-#define	TCP6S_LISTEN		TCPS_LISTEN
-#define	TCP6S_SYN_SENT		TCPS_SYN_SENT
-#define	TCP6S_SYN_RECEIVED	TCPS_SYN_RECEIVED
-#define	TCP6S_ESTABLISHED	TCPS_ESTABLISHED
-#define	TCP6S_CLOSE_WAIT	TCPS_CLOSE_WAIT
-#define	TCP6S_FIN_WAIT_1	TCPS_FIN_WAIT_1
-#define	TCP6S_CLOSING		TCPS_CLOSING
-#define	TCP6S_LAST_ACK		TCPS_LAST_ACK
-#define	TCP6S_FIN_WAIT_2	TCPS_FIN_WAIT_2
-#define	TCP6S_TIME_WAIT		TCPS_TIME_WAIT
-
 #define	TCPS_HAVERCVDSYN(s)	((s) >= TCPS_SYN_RECEIVED)
 #define	TCPS_HAVEESTABLISHED(s)	((s) >= TCPS_ESTABLISHED)
 #define	TCPS_HAVERCVDFIN(s)	\
@@ -98,10 +81,6 @@ static u_char	tcp_outflags[TCP_NSTATES] = {
 	TH_ACK,			/* 9, FIN_WAIT_2 */
 	TH_ACK,			/* 10, TIME_WAIT */
 };
-#endif
-
-#ifdef KPROF
-int	tcp_acounts[TCP_NSTATES][PRU_NREQ];
 #endif
 
 #ifdef	TCPSTATES

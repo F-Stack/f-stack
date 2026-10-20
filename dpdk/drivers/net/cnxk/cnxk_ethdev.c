@@ -4,8 +4,17 @@
 #include <cnxk_ethdev.h>
 
 #include <rte_eventdev.h>
+#include <rte_pmd_cnxk.h>
 
 #define CNXK_NIX_CQ_INL_CLAMP_MAX (64UL * 1024UL)
+
+#define NIX_TM_DFLT_RR_WT 71
+
+const char *
+rte_pmd_cnxk_model_str_get(void)
+{
+	return roc_model->name;
+}
 
 static inline uint64_t
 nix_get_rx_offload_capa(struct cnxk_eth_dev *dev)
@@ -105,6 +114,11 @@ nix_security_setup(struct cnxk_eth_dev *dev)
 		nix->ipsec_in_min_spi = dev->inb.no_inl_dev ? dev->inb.min_spi : 0;
 		nix->ipsec_in_max_spi = dev->inb.no_inl_dev ? dev->inb.max_spi : 1;
 
+		/* Enable custom meta aura when multi-chan is used */
+		if (nix->local_meta_aura_ena && roc_nix_inl_dev_is_multi_channel() &&
+		    !dev->inb.custom_meta_aura_dis)
+			nix->custom_meta_aura_ena = true;
+
 		/* Setup Inline Inbound */
 		rc = roc_nix_inl_inb_init(nix);
 		if (rc) {
@@ -128,6 +142,7 @@ nix_security_setup(struct cnxk_eth_dev *dev)
 			rc = -ENOMEM;
 			goto cleanup;
 		}
+		dev->inb.inl_dev_q = roc_nix_inl_dev_qptr_get(0);
 	}
 
 	if (dev->tx_offloads & RTE_ETH_TX_OFFLOAD_SECURITY ||
@@ -390,7 +405,7 @@ nix_update_flow_ctrl_config(struct rte_eth_dev *eth_dev)
 	struct cnxk_fc_cfg *fc = &dev->fc_cfg;
 	struct rte_eth_fc_conf fc_cfg = {0};
 
-	if (roc_nix_is_sdp(&dev->nix))
+	if (roc_nix_is_sdp(&dev->nix) || roc_nix_is_esw(&dev->nix))
 		return 0;
 
 	/* Don't do anything if PFC is enabled */
@@ -1262,6 +1277,9 @@ cnxk_nix_configure(struct rte_eth_dev *eth_dev)
 	dev->rx_offloads = rxmode->offloads;
 	dev->tx_offloads = txmode->offloads;
 
+	if (nix->custom_inb_sa)
+		dev->rx_offloads |= RTE_ETH_RX_OFFLOAD_SECURITY;
+
 	/* Prepare rx cfg */
 	rx_cfg = ROC_NIX_LF_RX_CFG_DIS_APAD;
 	if (dev->rx_offloads &
@@ -1457,12 +1475,14 @@ skip_lbk_setup:
 		goto cq_fini;
 
 	/* Init flow control configuration */
-	fc_cfg.type = ROC_NIX_FC_RXCHAN_CFG;
-	fc_cfg.rxchan_cfg.enable = true;
-	rc = roc_nix_fc_config_set(nix, &fc_cfg);
-	if (rc) {
-		plt_err("Failed to initialize flow control rc=%d", rc);
-		goto cq_fini;
+	if (!roc_nix_is_esw(nix)) {
+		fc_cfg.type = ROC_NIX_FC_RXCHAN_CFG;
+		fc_cfg.rxchan_cfg.enable = true;
+		rc = roc_nix_fc_config_set(nix, &fc_cfg);
+		if (rc) {
+			plt_err("Failed to initialize flow control rc=%d", rc);
+			goto cq_fini;
+		}
 	}
 
 	/* Update flow control configuration to PMD */
@@ -1529,7 +1549,7 @@ cnxk_nix_tx_queue_start(struct rte_eth_dev *eth_dev, uint16_t qid)
 	if (data->tx_queue_state[qid] == RTE_ETH_QUEUE_STATE_STARTED)
 		return 0;
 
-	rc = roc_nix_tm_sq_aura_fc(sq, true);
+	rc = roc_nix_sq_ena_dis(sq, true);
 	if (rc) {
 		plt_err("Failed to enable sq aura fc, txq=%u, rc=%d", qid, rc);
 		goto done;
@@ -1551,7 +1571,7 @@ cnxk_nix_tx_queue_stop(struct rte_eth_dev *eth_dev, uint16_t qid)
 	if (data->tx_queue_state[qid] == RTE_ETH_QUEUE_STATE_STOPPED)
 		return 0;
 
-	rc = roc_nix_tm_sq_aura_fc(sq, false);
+	rc = roc_nix_sq_ena_dis(sq, false);
 	if (rc) {
 		plt_err("Failed to disable sqb aura fc, txq=%u, rc=%d", qid,
 			rc);
@@ -1617,17 +1637,25 @@ cnxk_nix_dev_stop(struct rte_eth_dev *eth_dev)
 	int count, i, j, rc;
 	void *rxq;
 
-	/* Disable all the NPC entries */
-	rc = roc_npc_mcam_enable_all_entries(&dev->npc, 0);
-	if (rc)
-		return rc;
+	/* In case of Inline IPSec, will need to avoid disabling the MCAM rules and NPC Rx
+	 * in this routine to continue processing of second pass inflight packets if any.
+	 * Drop of second pass packets will leak first pass buffers on some platforms
+	 * due to hardware limitations.
+	 */
+	if (roc_feature_nix_has_second_pass_drop() ||
+	    !(dev->rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY)) {
+		/* Disable all the NPC entries */
+		rc = roc_npc_mcam_enable_all_entries(&dev->npc, 0);
+		if (rc)
+			return rc;
+
+		/* Disable Rx via NPC */
+		roc_nix_npc_rx_ena_dis(&dev->nix, false);
+	}
 
 	/* Stop link change events */
 	if (!roc_nix_is_vf_or_sdp(&dev->nix))
 		roc_nix_mac_link_event_start_stop(&dev->nix, false);
-
-	/* Disable Rx via NPC */
-	roc_nix_npc_rx_ena_dis(&dev->nix, false);
 
 	roc_nix_inl_outb_soft_exp_poll_switch(&dev->nix, false);
 
@@ -1829,6 +1857,7 @@ struct eth_dev_ops cnxk_eth_dev_ops = {
 	.cman_config_init = cnxk_nix_cman_config_init,
 	.cman_config_set = cnxk_nix_cman_config_set,
 	.cman_config_get = cnxk_nix_cman_config_get,
+	.eth_tx_descriptor_dump = cnxk_nix_tx_descriptor_dump,
 };
 
 void
@@ -1882,6 +1911,8 @@ cnxk_eth_dev_init(struct rte_eth_dev *eth_dev)
 	nix->pci_dev = pci_dev;
 	nix->hw_vlan_ins = true;
 	nix->port_id = eth_dev->data->port_id;
+	/* For better performance set default VF root schedule weight */
+	nix->root_sched_weight = NIX_TM_DFLT_RR_WT;
 	if (roc_feature_nix_has_own_meta_aura())
 		nix->local_meta_aura_ena = true;
 	rc = roc_nix_dev_init(nix);
@@ -1984,11 +2015,21 @@ cnxk_eth_dev_init(struct rte_eth_dev *eth_dev)
 		TAILQ_INIT(&dev->mcs_list);
 	}
 
-	plt_nix_dbg("Port=%d pf=%d vf=%d ver=%s hwcap=0x%" PRIx64
-		    " rxoffload_capa=0x%" PRIx64 " txoffload_capa=0x%" PRIx64,
-		    eth_dev->data->port_id, roc_nix_get_pf(nix),
-		    roc_nix_get_vf(nix), CNXK_ETH_DEV_PMD_VERSION, dev->hwcap,
-		    dev->rx_offload_capa, dev->tx_offload_capa);
+	/* Reserve a switch domain for eswitch device */
+	if (pci_dev->id.device_id == PCI_DEVID_CNXK_RVU_ESWITCH_VF) {
+		eth_dev->data->dev_flags |= RTE_ETH_DEV_REPRESENTOR;
+		rc = rte_eth_switch_domain_alloc(&dev->switch_domain_id);
+		if (rc) {
+			plt_err("Failed to alloc switch domain: %d", rc);
+			goto free_mac_addrs;
+		}
+	}
+
+	plt_nix_dbg("Port=%d pf=%d vf=%d ver=%s hwcap=0x%" PRIx64 " rxoffload_capa=0x%" PRIx64
+		    " txoffload_capa=0x%" PRIx64,
+		    eth_dev->data->port_id, roc_nix_get_pf(nix), roc_nix_get_vf(nix),
+		    CNXK_ETH_DEV_PMD_VERSION, dev->hwcap, dev->rx_offload_capa,
+		    dev->tx_offload_capa);
 	return 0;
 
 free_mac_addrs:
@@ -2026,6 +2067,11 @@ cnxk_eth_dev_uninit(struct rte_eth_dev *eth_dev, bool reset)
 	/* Clear the flag since we are closing down */
 	dev->configured = 0;
 
+	/* Disable all the NPC entries */
+	rc = roc_npc_mcam_enable_all_entries(&dev->npc, 0);
+	if (rc)
+		return rc;
+
 	roc_nix_npc_rx_ena_dis(nix, false);
 
 	/* Restore 802.3 Flow control configuration */
@@ -2053,6 +2099,11 @@ cnxk_eth_dev_uninit(struct rte_eth_dev *eth_dev, bool reset)
 				plt_err("Failed to reset PFC. error code(%d)", rc);
 		}
 	}
+
+	/* Free switch domain ID reserved for eswitch device */
+	if ((eth_dev->data->dev_flags & RTE_ETH_DEV_REPRESENTOR) &&
+	    rte_eth_switch_domain_free(dev->switch_domain_id))
+		plt_err("Failed to free switch domain");
 
 	/* Disable and free rte_meter entries */
 	nix_meter_fini(dev);

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014, 2017 Mark Johnston <markj@FreeBSD.org>
  *
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS__COMPRESSOR_H_
@@ -44,6 +42,7 @@ struct compressor;
 bool		compressor_avail(int format);
 struct compressor *compressor_init(compressor_cb_t cb, int format,
 		    size_t maxiosize, int level, void *arg);
+int		compressor_format(const struct compressor *stream);
 void		compressor_reset(struct compressor *stream);
 int		compressor_write(struct compressor *stream, void *data,
 		    size_t len);

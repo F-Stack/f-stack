@@ -119,6 +119,7 @@ struct mlx5_hca_flex_attr {
 	uint8_t  sample_tunnel_inner2:1;
 	uint8_t  zero_size_supported:1;
 	uint8_t  sample_id_in_out:1;
+	uint8_t  header_length_field_mode_wa:1;
 	uint16_t max_base_header_length;
 	uint8_t  max_sample_base_offset;
 	uint16_t max_next_header_offset;
@@ -212,8 +213,11 @@ struct mlx5_hca_attr {
 	uint32_t lro_timer_supported_periods[MLX5_LRO_NUM_SUPP_PERIODS];
 	uint16_t lro_min_mss_size;
 	uint32_t flex_parser_protocols;
-	uint32_t max_geneve_tlv_options;
-	uint32_t max_geneve_tlv_option_data_len;
+	uint32_t max_geneve_tlv_options:8;
+	uint32_t max_geneve_tlv_option_data_len:5;
+	uint32_t geneve_tlv_sample:1;
+	uint32_t geneve_tlv_option_offset:1;
+	uint32_t geneve_tlv_option_sample_id:4;
 	uint32_t hairpin:1;
 	uint32_t log_max_hairpin_queues:5;
 	uint32_t log_max_hairpin_wq_data_sz:5;
@@ -265,10 +269,10 @@ struct mlx5_hca_attr {
 	struct mlx5_hca_flex_attr flex;
 	struct mlx5_hca_crypto_mmo_attr crypto_mmo;
 	uint8_t log_max_wq_sz;
-	int log_max_qp_sz;
-	int log_max_cq_sz;
-	int log_max_qp;
-	int log_max_cq;
+	uint8_t log_max_qp_sz;
+	uint8_t log_max_cq_sz;
+	uint8_t log_max_qp;
+	uint8_t log_max_cq;
 	uint32_t log_max_pd;
 	uint32_t log_max_mrw_sz;
 	uint32_t log_max_srq;
@@ -305,6 +309,7 @@ struct mlx5_hca_attr {
 	uint32_t set_reg_c:16;
 	uint32_t nic_flow_table:1;
 	uint32_t modify_outer_ip_ecn:1;
+	uint32_t modify_outer_ipv6_traffic_class:1;
 	union {
 		uint32_t max_flow_counter;
 		struct {
@@ -322,6 +327,8 @@ struct mlx5_hca_attr {
 	uint32_t lag_rx_port_affinity:1;
 	uint32_t wqe_based_flow_table_sup:1;
 	uint8_t max_header_modify_pattern_length;
+	uint64_t system_image_guid;
+	uint32_t log_max_conn_track_offload:5;
 };
 
 /* LAG Context. */
@@ -624,6 +631,7 @@ struct mlx5_devx_graph_node_attr {
 	uint32_t header_length_base_value:16;
 	uint32_t header_length_field_shift:4;
 	uint32_t header_length_field_offset:16;
+	uint32_t header_length_field_offset_mode:1;
 	uint32_t header_length_field_mask;
 	struct mlx5_devx_match_sample_attr sample[MLX5_GRAPH_NODE_SAMPLE_NUM];
 	uint32_t next_header_field_offset:16;
@@ -665,6 +673,18 @@ struct mlx5_devx_crypto_login_attr {
 	uint32_t credential_pointer:24;
 	uint32_t session_import_kek_ptr:24;
 	uint8_t credential[MLX5_CRYPTO_CREDENTIAL_SIZE];
+};
+
+/*
+ * GENEVE TLV option attributes structure, used by GENEVE TLV option create.
+ */
+struct mlx5_devx_geneve_tlv_option_attr {
+	uint32_t option_class:16;
+	uint32_t option_type:8;
+	uint32_t option_data_len:5;
+	uint32_t option_class_ignore:1;
+	uint32_t offset_valid:1;
+	uint32_t sample_offset:8;
 };
 
 /* mlx5_devx_cmds.c */
@@ -719,6 +739,15 @@ struct mlx5_devx_obj *mlx5_devx_cmd_create_sq(void *ctx,
 __rte_internal
 int mlx5_devx_cmd_modify_sq(struct mlx5_devx_obj *sq,
 			    struct mlx5_devx_modify_sq_attr *sq_attr);
+__rte_internal
+int mlx5_devx_cmd_query_sq(struct mlx5_devx_obj *sq, void *out, size_t outlen);
+
+__rte_internal
+int mlx5_devx_cmd_query_cq(struct mlx5_devx_obj *cq, void *out, size_t outlen);
+
+__rte_internal
+int mlx5_devx_cmd_query_rq(struct mlx5_devx_obj *rq, void *out, size_t outlen);
+
 __rte_internal
 struct mlx5_devx_obj *mlx5_devx_cmd_create_tis(void *ctx,
 					   struct mlx5_devx_tis_attr *tis_attr);
@@ -777,7 +806,13 @@ int mlx5_devx_cmd_register_write(void *ctx, uint16_t reg_id,
 __rte_internal
 struct mlx5_devx_obj *
 mlx5_devx_cmd_create_geneve_tlv_option(void *ctx,
-		uint16_t class, uint8_t type, uint8_t len);
+				 struct mlx5_devx_geneve_tlv_option_attr *attr);
+
+__rte_internal
+int
+mlx5_devx_cmd_query_geneve_tlv_option(void *ctx,
+				      struct mlx5_devx_obj *geneve_tlv_opt_obj,
+				      struct mlx5_devx_match_sample_info_query_attr *attr);
 
 /**
  * Create virtio queue counters object DevX API.

@@ -2,10 +2,21 @@
 #define _FF_SOCKET_OPS_H_
 
 #include <unistd.h>
+
+#ifdef FF_USE_RING_IPC
+#include <rte_ring.h>
+#include <rte_cycles.h>
+#else
 #include <semaphore.h>
+#endif
 
 #include <rte_atomic.h>
 #include <rte_spinlock.h>
+
+/* Compile-time mutual exclusion check */
+#if defined(FF_USE_RING_IPC) && defined(FF_PRELOAD_POLLING_MODE)
+#error "FF_USE_RING_IPC and FF_PRELOAD_POLLING_MODE are mutually exclusive"
+#endif
 
 /*
  * Per thread separate initialization dpdk lib and attach sc when needed,
@@ -91,7 +102,12 @@ struct ff_socket_ops_zone {
     uint8_t inuse[SOCKET_OPS_CONTEXT_MAX_NUM];
     struct ff_so_context *sc;
 
+#ifdef FF_USE_RING_IPC
+    struct ff_sc_ring_zone *ring_zone;
+    uint8_t padding[8];
+#else
     uint8_t padding[16];
+#endif
 } __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
 
 struct ff_so_context {
@@ -108,7 +124,14 @@ struct ff_so_context {
     int result;
     int idx;
 
+#ifdef FF_USE_RING_IPC
+    /* Replace sem_t wait_sem (32B) with ring IPC fields */
+    volatile uint32_t completion;     /*  4B, offset 32 — atomic completion flag */
+    uint32_t ring_zone_id;            /*  4B, offset 36 — associated ring zone index */
+    uint8_t reserved[24];             /* 24B, offset 40 — keep cache line 0 = 64B */
+#else
     sem_t wait_sem; /* 32 bytes */
+#endif
 
     /* CACHE LINE 1 */
     /* listen fd, refcount.. */
@@ -116,6 +139,70 @@ struct ff_so_context {
     void *ff_thread_handle;
     volatile int forking;
 } __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
+
+#ifdef FF_USE_RING_IPC
+/*
+ * Ring IPC configuration defaults.
+ */
+#ifndef FF_RING_SIZE
+#define FF_RING_SIZE 64
+#endif
+
+#define FF_RING_WAIT_BUSY_POLL  0
+#define FF_RING_WAIT_YIELD_POLL 1
+#define FF_RING_WAIT_EVENTFD    2
+
+#ifndef FF_RING_DEFAULT_WAIT_MODE
+#define FF_RING_DEFAULT_WAIT_MODE FF_RING_WAIT_YIELD_POLL
+#endif
+
+/*
+ * Per fstack-instance ring zone for lock-free IPC.
+ *
+ * Each fstack instance creates one ring zone containing:
+ *   - A request ring (APP enqueues, fstack dequeues)
+ *   - A response ring (fstack enqueues, APP dequeues)
+ *
+ * Both rings operate in SPSC (Single Producer Single Consumer) mode
+ * for maximum performance without CAS overhead.
+ */
+struct ff_sc_ring_zone {
+    struct rte_ring *req_ring;    /* APP -> fstack request queue (SPSC) */
+    struct rte_ring *rsp_ring;    /* fstack -> APP response queue (SPSC) */
+    uint32_t ring_size;           /* ring capacity (power of 2, default 64) */
+    uint8_t wait_mode;            /* 0=busy-poll, 1=yield-poll, 2=eventfd */
+    int eventfd_req;              /* eventfd: APP->fstack notify (wait_mode==2 only) */
+    int eventfd_rsp;              /* eventfd: fstack->APP notify (wait_mode==2 only) */
+    uint8_t padding[32];          /* pad to 64B cache line */
+} __attribute__((aligned(RTE_CACHE_LINE_SIZE)));
+
+/* Ring zone lifecycle — primary process */
+int ff_create_sc_ring_zone(int proc_id, uint32_t ring_size, uint8_t wait_mode);
+/* Ring zone lifecycle — secondary process */
+struct ff_sc_ring_zone *ff_attach_sc_ring_zone(int proc_id);
+
+/* APP side: submit request and wait for response */
+int ff_ring_submit_and_wait(struct ff_sc_ring_zone *ring_zone,
+                            struct ff_so_context *sc,
+                            int64_t timeout_us);
+
+/* fstack side: batch dequeue and process requests */
+uint16_t ff_ring_process_requests(struct ff_sc_ring_zone *ring_zone,
+                                  void (*handler)(struct ff_so_context *),
+                                  uint16_t max_burst);
+
+/* fstack side: enqueue processed response */
+int ff_ring_send_response(struct ff_sc_ring_zone *ring_zone,
+                          struct ff_so_context *sc);
+
+/* Replace alarm_event_sem: wakeup APP via ring */
+void ff_ring_alarm_wakeup(struct ff_sc_ring_zone *ring_zone,
+                          struct ff_so_context *sc);
+
+/* Timeout-aware ring dequeue */
+int ff_ring_dequeue_wait(struct rte_ring *ring, void **obj_p,
+                         int64_t timeout_us, uint8_t wait_mode);
+#endif /* FF_USE_RING_IPC */
 
 extern __FF_THREAD struct ff_socket_ops_zone *ff_so_zone;
 #ifdef FF_MULTI_SC

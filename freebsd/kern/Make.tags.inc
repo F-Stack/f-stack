@@ -1,5 +1,3 @@
-# $FreeBSD$
-#	@(#)Make.tags.inc	8.1 (Berkeley) 6/11/93
 
 SYS?=	${.CURDIR}/..
 
@@ -12,12 +10,10 @@ SYS?=	${.CURDIR}/..
 
 COMM=	${SYS}/sys/vnode.h \
 	${SYS}/dev/alc/*.[ch] \
-	${SYS}/dev/en/*.[ch] \
 	${SYS}/dev/iicbus/*.[ch] \
 	${SYS}/dev/isp/*.[ch] \
 	${SYS}/dev/ppbus/*.[ch] \
 	${SYS}/dev/smbus/*.[ch] \
-	${SYS}/dev/vx/*.[ch] \
 	${SYS}/fs/autofs/*.[ch] \
 	${SYS}/fs/cd9660/*.[ch] \
 	${SYS}/fs/cuse/*.[ch] \
@@ -44,7 +40,6 @@ COMM=	${SYS}/sys/vnode.h \
 	${SYS}/netinet/*.[ch] \
 	${SYS}/netinet6/*.[ch] \
 	${SYS}/netipsec/*.[ch] \
-	${SYS}/netnatm/*.[ch] \
 	${SYS}/ddb/*.[ch] \
 	${SYS}/ufs/ffs/*.[ch] \
 	${SYS}/ufs/ufs/*.[ch] \
@@ -58,19 +53,16 @@ COMMDIR1= ${SYS}/conf \
 	${SYS}/netinet \
 	${SYS}/netinet6 \
 	${SYS}/netipsec \
-	${SYS}/netnatm \
 	${SYS}/ddb \
 	${SYS}/vm \
 	${SYS}/sys
 
 COMMDIR2= ${SYS}/dev/alc \
-	${SYS}/dev/en \
 	${SYS}/dev/iicbus \
 	${SYS}/dev/isp \
 	${SYS}/dev/md \
 	${SYS}/dev/ppbus \
 	${SYS}/dev/smbus \
-	${SYS}/dev/vx \
 	${SYS}/fs/autofs \
 	${SYS}/fs/cd9660 \
 	${SYS}/fs/cuse \

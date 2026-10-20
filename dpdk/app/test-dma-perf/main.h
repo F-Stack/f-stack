@@ -10,7 +10,7 @@
 #include <rte_cycles.h>
 #include <rte_dev.h>
 
-#define MAX_WORKER_NB 128
+#define MAX_WORKER_NB RTE_MAX_LCORE
 #define MAX_OUTPUT_STR_LEN 512
 
 #define MAX_DMA_NB 128
@@ -32,25 +32,40 @@ struct test_configure_entry {
 };
 
 struct lcore_dma_map_t {
-	uint32_t lcores[MAX_WORKER_NB];
-	char dma_names[MAX_WORKER_NB][RTE_DEV_NAME_MAX_LEN];
-	int16_t dma_ids[MAX_WORKER_NB];
-	uint16_t cnt;
+	char dma_names[RTE_DEV_NAME_MAX_LEN];
+	uint32_t lcore;
+	int16_t dma_id;
+};
+
+struct vchan_dev_config {
+	struct rte_dma_port_param port;
+	uintptr_t raddr;
+	uint8_t tdir;
+};
+
+struct lcore_dma_config {
+	struct lcore_dma_map_t lcore_dma_map;
+	struct vchan_dev_config vchan_dev;
 };
 
 struct test_configure {
 	bool is_valid;
+	bool is_skip;
 	uint8_t test_type;
 	const char *test_type_str;
 	uint16_t src_numa_node;
 	uint16_t dst_numa_node;
 	uint16_t opcode;
 	bool is_dma;
-	struct lcore_dma_map_t lcore_dma_map;
+	bool is_sg;
+	struct lcore_dma_config dma_config[MAX_WORKER_NB];
 	struct test_configure_entry mem_size;
 	struct test_configure_entry buf_size;
 	struct test_configure_entry ring_size;
 	struct test_configure_entry kick_batch;
+	uint16_t num_worker;
+	uint8_t nb_src_sges;
+	uint8_t nb_dst_sges;
 	uint8_t cache_flush;
 	uint32_t nr_buf;
 	uint16_t test_secs;
@@ -58,6 +73,6 @@ struct test_configure {
 	uint8_t scenario_id;
 };
 
-void mem_copy_benchmark(struct test_configure *cfg, bool is_dma);
+int mem_copy_benchmark(struct test_configure *cfg);
 
 #endif /* MAIN_H */

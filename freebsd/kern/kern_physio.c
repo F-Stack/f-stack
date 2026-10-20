@@ -1,6 +1,4 @@
 /*-
- * SPDX-License-Identifier: BSD-4-Clause
- *
  * Copyright (c) 1994 John S. Dyson
  * All rights reserved.
  *
@@ -18,9 +16,6 @@
  * 4. Modifications may be freely made to this file if the above conditions
  *    are met.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -61,7 +56,7 @@ physio(struct cdev *dev, struct uio *uio, int ioflag)
 		return (ENXIO);
 
 	/* XXX: sanity check */
-	if(dev->si_iosize_max < PAGE_SIZE) {
+	if (dev->si_iosize_max < PAGE_SIZE) {
 		printf("WARNING: %s si_iosize_max=%d, using DFLTPHYS.\n",
 		    devtoname(dev), dev->si_iosize_max);
 		dev->si_iosize_max = DFLTPHYS;
@@ -92,12 +87,6 @@ physio(struct cdev *dev, struct uio *uio, int ioflag)
 		return (EFBIG);
 	}
 
-	/*
-	 * Keep the process UPAGES from being swapped.  Processes swapped
-	 * out while holding pbufs, used by swapper, may lead to deadlock.
-	 */
-	PHOLD(curproc);
-
 	bp = g_alloc_bio();
 	if (uio->uio_segflg != UIO_USERSPACE) {
 		pbuf = NULL;
@@ -121,14 +110,17 @@ physio(struct cdev *dev, struct uio *uio, int ioflag)
 #ifdef RACCT
 		if (racct_enable) {
 			PROC_LOCK(curproc);
-			if (uio->uio_rw == UIO_READ) {
+			switch (uio->uio_rw) {
+			case UIO_READ:
 				racct_add_force(curproc, RACCT_READBPS,
 				    uio->uio_iov[i].iov_len);
 				racct_add_force(curproc, RACCT_READIOPS, 1);
-			} else {
+				break;
+			case UIO_WRITE:
 				racct_add_force(curproc, RACCT_WRITEBPS,
 				    uio->uio_iov[i].iov_len);
 				racct_add_force(curproc, RACCT_WRITEIOPS, 1);
+				break;
 			}
 			PROC_UNLOCK(curproc);
 		}
@@ -136,12 +128,15 @@ physio(struct cdev *dev, struct uio *uio, int ioflag)
 
 		while (uio->uio_iov[i].iov_len) {
 			g_reset_bio(bp);
-			if (uio->uio_rw == UIO_READ) {
+			switch (uio->uio_rw) {
+			case UIO_READ:
 				bp->bio_cmd = BIO_READ;
 				curthread->td_ru.ru_inblock++;
-			} else {
+				break;
+			case UIO_WRITE:
 				bp->bio_cmd = BIO_WRITE;
 				curthread->td_ru.ru_oublock++;
+				break;
 			}
 			bp->bio_offset = uio->uio_offset;
 			base = uio->uio_iov[i].iov_base;
@@ -208,6 +203,5 @@ doerror:
 	else if (pages)
 		free(pages, M_DEVBUF);
 	g_destroy_bio(bp);
-	PRELE(curproc);
 	return (error);
 }

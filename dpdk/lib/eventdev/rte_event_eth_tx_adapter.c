@@ -63,11 +63,11 @@ do { \
 
 #define TXA_CHECK_OR_ERR_RET(id) \
 do {\
-	int ret; \
+	int _ret; \
 	RTE_EVENT_ETH_TX_ADAPTER_ID_VALID_OR_ERR_RET((id), -EINVAL); \
-	ret = txa_init(); \
-	if (ret != 0) \
-		return ret; \
+	_ret = txa_init(); \
+	if (_ret != 0) \
+		return _ret; \
 	if (!txa_adapter_exist((id))) \
 		return -EINVAL; \
 } while (0)
@@ -109,7 +109,7 @@ struct txa_service_queue_info {
 };
 
 /* PMD private structure */
-struct txa_service_data {
+struct __rte_cache_aligned txa_service_data {
 	/* Max mbufs processed in any service function invocation */
 	uint32_t max_nb_tx;
 	/* Number of Tx queues in adapter */
@@ -144,7 +144,7 @@ struct txa_service_data {
 	int64_t service_id;
 	/* Memory allocation name */
 	char mem_name[TXA_MEM_NAME_LEN];
-} __rte_cache_aligned;
+};
 
 /* Per eth device structure */
 struct txa_service_ethdev {

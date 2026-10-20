@@ -7,7 +7,7 @@ sources += files('commands.c', 'test.c')
 
 # optional dependencies: some files may use these - and so we should link them in -
 # but do not explicitly require them so they are not listed in the per-file lists below
-optional_deps = ['crypto_scheduler']
+optional_deps = ['crypto_scheduler', 'lpm']
 
 # some other utility C files, providing functions used by various tests
 # so we need to include these deps in the dependency list for the files using those fns.
@@ -20,22 +20,23 @@ test_cryptodev_deps = ['bus_vdev', 'net', 'cryptodev', 'security']
 source_file_deps = {
     # The C files providing functionality to other test cases
     'packet_burst_generator.c': packet_burst_generator_deps,
-#    'resource.c': [],          # unused currently.
     'sample_packet_forward.c': sample_packet_forward_deps,
     'virtual_pmd.c': virtual_pmd_deps,
 
     # the various test_*.c files
     'test_acl.c': ['net', 'acl'],
     'test_alarm.c': [],
+    'test_argparse.c': ['argparse'],
     'test_atomic.c': ['hash'],
     'test_barrier.c': [],
     'test_bitcount.c': [],
     'test_bitmap.c': [],
     'test_bitops.c': [],
+    'test_bitset.c': [],
     'test_bitratestats.c': ['metrics', 'bitratestats', 'ethdev'] + sample_packet_forward_deps,
     'test_bpf.c': ['bpf', 'net'],
     'test_byteorder.c': [],
-#    'test_cfgfile.c': ['cfgfile'],
+    'test_cfgfile.c': ['cfgfile'],
     'test_cksum.c': ['net'],
     'test_cksum_perf.c': ['net'],
     'test_cmdline.c': [],
@@ -56,6 +57,7 @@ source_file_deps = {
     'test_cryptodev_crosscheck.c': test_cryptodev_deps,
     'test_cryptodev_security_ipsec.c': test_cryptodev_deps,
     'test_cryptodev_security_pdcp.c': test_cryptodev_deps,
+    'test_cryptodev_security_tls_record.c': ['cryptodev', 'security'],
     'test_cycles.c': [],
     'test_debug.c': [],
     'test_devargs.c': ['kvargs'],
@@ -101,12 +103,14 @@ source_file_deps = {
     'test_ipsec_sad.c': ['ipsec'],
     'test_kvargs.c': ['kvargs'],
     'test_latencystats.c': ['ethdev', 'latencystats', 'metrics'] + sample_packet_forward_deps,
+    'test_lcore_var.c': [],
+    'test_lcore_var_perf.c': [],
     'test_lcores.c': [],
     'test_link_bonding.c': ['ethdev', 'net_bond',
         'net'] + packet_burst_generator_deps + virtual_pmd_deps,
     'test_link_bonding_mode4.c': ['ethdev', 'net_ring', 'net_bond',
         'net'] + packet_burst_generator_deps,
-    'test_link_bonding_rssconf.c': ['ethdev', 'bus_vdev', 'net_bond'],
+    'test_link_bonding_rssconf.c': ['ethdev', 'bus_vdev', 'net_bond', 'net_null'],
     'test_logs.c': [],
     'test_lpm.c': ['net', 'lpm'],
     'test_lpm6.c': ['lpm'],
@@ -126,9 +130,10 @@ source_file_deps = {
     'test_memzone.c': [],
     'test_meter.c': ['meter'],
     'test_metrics.c': ['metrics'],
-    'test_mp_secondary.c': ['hash', 'lpm'],
+    'test_mp_secondary.c': ['hash'],
     'test_net_ether.c': ['net'],
-    'test_pcapng.c': ['ethdev', 'net', 'pcapng', 'bus_vdev'],
+    'test_net_ip6.c': ['net'],
+    'test_pcapng.c': ['net_null', 'net', 'ethdev', 'pcapng', 'bus_vdev'],
     'test_pdcp.c': ['eventdev', 'pdcp', 'net', 'timer', 'security'],
     'test_pdump.c': ['pdump'] + sample_packet_forward_deps,
     'test_per_lcore.c': [],
@@ -142,6 +147,7 @@ source_file_deps = {
     'test_power_intel_uncore.c': ['power'],
     'test_power_kvm_vm.c': ['power'],
     'test_prefetch.c': [],
+    'test_ptr_compress.c': ['ptr_compress'],
     'test_rand_perf.c': [],
     'test_rawdev.c': ['rawdev', 'bus_vdev'],
     'test_rcu_qsbr.c': ['rcu', 'hash'],
@@ -151,24 +157,24 @@ source_file_deps = {
     'test_reciprocal_division_perf.c': [],
     'test_red.c': ['sched'],
     'test_reorder.c': ['reorder'],
-#    'test_resource.c': [],
     'test_rib.c': ['net', 'rib'],
     'test_rib6.c': ['net', 'rib'],
-    'test_ring.c': [],
-    'test_ring_hts_stress.c': [],
-    'test_ring_mpmc_stress.c': [],
-    'test_ring_mt_peek_stress.c': [],
-    'test_ring_mt_peek_stress_zc.c': [],
-    'test_ring_perf.c': [],
-    'test_ring_rts_stress.c': [],
-    'test_ring_st_peek_stress.c': [],
-    'test_ring_st_peek_stress_zc.c': [],
-    'test_ring_stress.c': [],
+    'test_ring.c': ['ptr_compress'],
+    'test_ring_hts_stress.c': ['ptr_compress'],
+    'test_ring_mpmc_stress.c': ['ptr_compress'],
+    'test_ring_mt_peek_stress.c': ['ptr_compress'],
+    'test_ring_mt_peek_stress_zc.c': ['ptr_compress'],
+    'test_ring_perf.c': ['ptr_compress'],
+    'test_ring_rts_stress.c': ['ptr_compress'],
+    'test_ring_st_peek_stress.c': ['ptr_compress'],
+    'test_ring_st_peek_stress_zc.c': ['ptr_compress'],
+    'test_ring_stress.c': ['ptr_compress'],
     'test_rwlock.c': [],
     'test_sched.c': ['net', 'sched'],
     'test_security.c': ['net', 'security'],
     'test_security_inline_macsec.c': ['ethdev', 'security'],
     'test_security_inline_proto.c': ['ethdev', 'security', 'eventdev'] + test_cryptodev_deps,
+    'test_security_proto.c' : ['cryptodev', 'security'],
     'test_seqlock.c': [],
     'test_service_cores.c': [],
     'test_spinlock.c': [],
@@ -195,7 +201,7 @@ source_file_deps = {
     'test_trace.c': [],
     'test_trace_perf.c': [],
     'test_trace_register.c': [],
-    'test_vdev.c': ['kvargs', 'bus_vdev'],
+    'test_vdev.c': ['kvargs', 'bus_vdev', 'net_null'],
     'test_version.c': [],
 }
 
@@ -259,3 +265,7 @@ if not is_windows
             build_by_default: true,
             install: false)
 endif
+
+subdir('test_cfgfiles')
+
+resources += test_cfgfile_h

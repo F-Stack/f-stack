@@ -32,24 +32,14 @@
  * SUCH DAMAGE.
  *
  * From: Id: vfscanf.c,v 1.13 1998/09/25 12:20:27 obrien Exp 
- * From: static char sccsid[] = "@(#)strtol.c	8.1 (Berkeley) 6/4/93";
- * From: static char sccsid[] = "@(#)strtoul.c	8.1 (Berkeley) 6/4/93";
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/ctype.h>
 #include <sys/limits.h>
+#include <sys/stdarg.h>
 #include <sys/stddef.h>
-
-/*
- * Note that stdarg.h and the ANSI style va_start macro is used for both
- * ANSI and traditional C compilers.
- */
-#include <machine/stdarg.h>
 
 #define	BUF		32 	/* Maximum length of numeric string. */
 

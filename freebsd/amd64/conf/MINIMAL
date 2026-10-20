@@ -6,10 +6,6 @@
 # modules.
 #
 # Exceptions:
-# o While UFS is buildable as a module, the current module lacks
-#   some features (ACL, GJOURNAL) that GENERIC includes.
-# o acpi as a module has been reported flakey and not well tested, so
-#   is included in the kernel.
 # o (non-loaded) random is included due to uncertainty...
 # o Many networking things are included
 #
@@ -18,7 +14,7 @@
 # For more information on this file, please read the config(5) manual page,
 # and/or the handbook section on Kernel Configuration Files:
 #
-#    https://www.FreeBSD.org/doc/en_US.ISO8859-1/books/handbook/kernelconfig-config.html
+#    https://docs.freebsd.org/en/books/handbook/kernelconfig/#kernelconfig-config
 #
 # The handbook is also available locally in /usr/share/doc/handbook
 # if you've installed the doc distribution, otherwise always see the
@@ -30,7 +26,6 @@
 # If you are in doubt as to the purpose or necessity of a line, check first
 # in NOTES.
 #
-# $FreeBSD$
 
 cpu		HAMMER
 ident		MINIMAL
@@ -41,32 +36,27 @@ makeoptions	WITH_CTF=1		# Run ctfconvert(1) for DTrace support
 options 	SCHED_ULE		# ULE scheduler
 options 	NUMA			# Non-Uniform Memory Architecture support
 options 	PREEMPTION		# Enable kernel thread preemption
+options 	VIMAGE			# Subsystem virtualization, e.g. VNET
 options 	INET			# InterNETworking
 options 	INET6			# IPv6 communications protocols
 options 	TCP_OFFLOAD		# TCP offload
 options 	SCTP_SUPPORT		# Allow kldload of SCTP
-options 	FFS			# Berkeley Fast Filesystem
 options 	SOFTUPDATES		# Enable FFS soft updates support
 options 	UFS_ACL			# Support for access control lists
 options 	UFS_DIRHASH		# Improve performance on big directories
 options 	UFS_GJOURNAL		# Enable gjournal-based UFS journaling
 options 	QUOTA			# Enable disk quotas for UFS
 options 	MD_ROOT			# MD is a potential root device
+options 	GEOM_LABEL		# Provides labelization
 options 	COMPAT_FREEBSD32	# Compatible with i386 binaries
-options 	COMPAT_FREEBSD4		# Compatible with FreeBSD4
-options 	COMPAT_FREEBSD5		# Compatible with FreeBSD5
-options 	COMPAT_FREEBSD6		# Compatible with FreeBSD6
-options 	COMPAT_FREEBSD7		# Compatible with FreeBSD7
-options 	COMPAT_FREEBSD9		# Compatible with FreeBSD9
 options 	COMPAT_FREEBSD10	# Compatible with FreeBSD10
 options 	COMPAT_FREEBSD11	# Compatible with FreeBSD11
 options 	COMPAT_FREEBSD12	# Compatible with FreeBSD12
+options 	COMPAT_FREEBSD13	# Compatible with FreeBSD13
+options 	COMPAT_FREEBSD14	# Compatible with FreeBSD14
 options 	SCSI_DELAY=5000		# Delay (in ms) before probing SCSI
 options 	KTRACE			# ktrace(1) support
 options 	STACK			# stack(9) support
-options 	SYSVSHM			# SYSV-style shared memory
-options 	SYSVMSG			# SYSV-style message queues
-options 	SYSVSEM			# SYSV-style semaphores
 options 	_KPOSIX_PRIORITY_SCHEDULING # POSIX P1003_1B real-time extensions
 options 	PRINTF_BUFR_SIZE=128	# Prevent printf output being interspersed.
 options 	KBD_INSTALL_CDEV	# install a CDEV entry in /dev
@@ -86,7 +76,6 @@ options 	KDB_TRACE		# Print a stack trace for a panic.
 
 # Make an SMP-capable kernel by default
 options 	SMP			# Symmetric MultiProcessor Kernel
-options 	EARLY_AP_STARTUP
 
 # CPU frequency control
 device		cpufreq
@@ -103,16 +92,13 @@ device		psm			# PS/2 mouse
 
 device		kbdmux			# keyboard multiplexer
 
+# syscons is the legacy console driver, resembling an SCO console
 device		vga			# VGA video card driver
-options 	VESA			# Add support for VESA BIOS Extensions (VBE)
-
 device		splash			# Splash screen and screen saver support
-
-# syscons is the default console driver, resembling an SCO console
 device		sc
 options 	SC_PIXEL_MODE		# add support for the raster text mode
 
-# vt is the new video console driver
+# vt is the default video console driver
 device		vt
 device		vt_vga
 device		vt_efifb
@@ -120,26 +106,51 @@ device		vt_vbefb
 
 device		agp			# support several AGP chipsets
 
+# Serial (COM) ports
+device		uart			# Generic UART driver
+
 # Pseudo devices.
 device		loop			# Network loopback
 device		padlock_rng		# VIA Padlock RNG
 device		rdrand_rng		# Intel Bull Mountain RNG
 device		ether			# Ethernet support
-device		vlan			# 802.1Q VLAN support
-device		tuntap			# Packet tunnel.
-device		gif			# IPv6 and IPv4 tunneling
 
 # The `bpf' device enables the Berkeley Packet Filter.
 # Be aware of the administrative consequences of enabling this!
 # Note that 'bpf' is required for DHCP.
 device		bpf			# Berkeley packet filter
 
+# VirtIO support
+device		virtio			# Generic VirtIO bus (required)
+device		virtio_pci		# VirtIO PCI device
+device		vtnet			# VirtIO Ethernet device
+device		virtio_blk		# VirtIO Block device
+device		virtio_balloon		# VirtIO Memory Balloon device
+
+# Linux KVM paravirtualization support
+device		kvm_clock		# KVM paravirtual clock driver
+
 # Xen HVM Guest Optimizations
-# NOTE: XENHVM depends on xenpci.  They must be added or removed together.
+# NOTE: XENHVM depends on xenpci and xentimer.
+# They must be added or removed together.
 options 	XENHVM			# Xen HVM kernel infrastructure
+device		xenefi			# Xen EFI timer device
 device		xenpci			# Xen HVM Hypervisor services driver
+device		xentimer		# Xen x86 PV timer device
 
 # evdev interface
 options 	EVDEV_SUPPORT		# evdev support in legacy drivers
 device		evdev			# input event device support
 device		uinput			# install /dev/uinput cdev
+
+# NVM Express (NVMe) support
+device		nvme			# base NVMe driver
+
+# ATA controllers
+device		ahci			# AHCI-compatible SATA controllers
+
+# CAM
+device		scbus			# SCSI bus (required for ATA/SCSI)
+device		da			# Direct Access (disks)
+device		cd			# CD
+device		pass			# Passthrough device (direct ATA/SCSI access)

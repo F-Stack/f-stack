@@ -8,6 +8,7 @@
 #include <sys/queue.h>
 
 #include <rte_common.h>
+#include <rte_tailq.h>
 
 #if defined(RTE_ARCH_ARM64)
 #include <rte_cmp_arm64.h>
@@ -18,11 +19,17 @@
 #include "rte_ip_frag.h"
 #include "ip_reassembly.h"
 
+extern int ipfrag_logtype;
+#define RTE_LOGTYPE_IPFRAG	ipfrag_logtype
+
 /* logging macros. */
+#define IP_FRAG_LOG_LINE(level, ...) \
+	RTE_LOG_LINE(level, IPFRAG, "" __VA_ARGS__)
+
 #ifdef RTE_LIBRTE_IP_FRAG_DEBUG
-#define	IP_FRAG_LOG(lvl, fmt, args...)	RTE_LOG(lvl, USER1, fmt, ##args)
+#define IP_FRAG_LOG(lvl, ...) RTE_LOG(lvl, IPFRAG, __VA_ARGS__)
 #else
-#define	IP_FRAG_LOG(lvl, fmt, args...)	do {} while(0)
+#define IP_FRAG_LOG(lvl, ...) do {} while (0)
 #endif /* IP_FRAG_DEBUG */
 
 #define IPV4_KEYLEN 1

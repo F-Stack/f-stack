@@ -1,6 +1,6 @@
 /*	$NetBSD: if_tun.c,v 1.14 1994/06/29 06:36:25 cgd Exp $	*/
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 1999-2000 by Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -42,8 +42,6 @@
  * roots in a similar driver written by Phil Cockcroft (formerly) at
  * UCL. This driver is based much more on read/write/poll mode of
  * operation though.
- *
- * $FreeBSD$
  */
 
 #include "opt_inet.h"
@@ -76,6 +74,7 @@
 #include <sys/malloc.h>
 #include <sys/random.h>
 #include <sys/ctype.h>
+#include <sys/osd.h>
 
 #include <net/ethernet.h>
 #include <net/if.h>
@@ -83,6 +82,7 @@
 #include <net/if_clone.h>
 #include <net/if_dl.h>
 #include <net/if_media.h>
+#include <net/if_private.h>
 #include <net/if_types.h>
 #include <net/if_vlan_var.h>
 #include <net/netisr.h>
@@ -98,6 +98,7 @@
 #endif
 #include <netinet/udp.h>
 #include <netinet/tcp.h>
+#include <netinet/tcp_lro.h>
 #include <net/bpf.h>
 #include <net/if_tap.h>
 #include <net/if_tun.h>
@@ -131,6 +132,7 @@ struct tuntap_softc {
 #define	TUN_DYING	0x0200
 #define	TUN_L2		0x0400
 #define	TUN_VMNET	0x0800
+#define	TUN_TRANSIENT	0x1000
 
 #define	TUN_DRIVER_IDENT_MASK	(TUN_L2 | TUN_VMNET)
 #define	TUN_READY		(TUN_OPEN | TUN_INITED)
@@ -145,6 +147,8 @@ struct tuntap_softc {
 	struct ether_addr	 tun_ether;	/* remote address */
 	int			 tun_busy;	/* busy count */
 	int			 tun_vhdrlen;	/* virtio-net header length */
+	struct lro_ctrl		 tun_lro;	/* for TCP LRO */
+	bool			 tun_lro_ready;	/* TCP LRO initialized */
 };
 #define	TUN2IFP(sc)	((sc)->tun_ifp)
 
@@ -176,6 +180,7 @@ struct tuntap_softc {
 static struct mtx tunmtx;
 static eventhandler_tag arrival_tag;
 static eventhandler_tag clone_tag;
+static int tuntap_osd_jail_slot;
 static const char tunname[] = "tun";
 static const char tapname[] = "tap";
 static const char vmnetname[] = "vmnet";
@@ -235,8 +240,9 @@ static void	tunstart_l2(struct ifnet *);
 static int	tun_clone_match(struct if_clone *ifc, const char *name);
 static int	tap_clone_match(struct if_clone *ifc, const char *name);
 static int	vmnet_clone_match(struct if_clone *ifc, const char *name);
-static int	tun_clone_create(struct if_clone *, char *, size_t, caddr_t);
-static int	tun_clone_destroy(struct if_clone *, struct ifnet *);
+static int	tun_clone_create(struct if_clone *, char *, size_t,
+		    struct ifc_data *, struct ifnet **);
+static int	tun_clone_destroy(struct if_clone *, struct ifnet *, uint32_t);
 static void	tun_vnethdr_set(struct ifnet *ifp, int vhdrlen);
 
 static d_open_t		tunopen;
@@ -250,14 +256,14 @@ static int		tunkqread(struct knote *, long);
 static int		tunkqwrite(struct knote *, long);
 static void		tunkqdetach(struct knote *);
 
-static struct filterops tun_read_filterops = {
+static const struct filterops tun_read_filterops = {
 	.f_isfd =	1,
 	.f_attach =	NULL,
 	.f_detach =	tunkqdetach,
 	.f_event =	tunkqread,
 };
 
-static struct filterops tun_write_filterops = {
+static const struct filterops tun_write_filterops = {
 	.f_isfd =	1,
 	.f_attach =	NULL,
 	.f_detach =	tunkqdetach,
@@ -269,9 +275,9 @@ static struct tuntap_driver {
 	int			 ident_flags;
 	struct unrhdr		*unrhdr;
 	struct clonedevs	*clones;
-	ifc_match_t		*clone_match_fn;
-	ifc_create_t		*clone_create_fn;
-	ifc_destroy_t		*clone_destroy_fn;
+	ifc_match_f		*clone_match_fn;
+	ifc_create_f		*clone_create_fn;
+	ifc_destroy_f		*clone_destroy_fn;
 } tuntap_drivers[] = {
 	{
 		.ident_flags =	0,
@@ -325,16 +331,9 @@ static struct tuntap_driver {
 		.clone_destroy_fn =	tun_clone_destroy,
 	},
 };
+#define	NDRV	nitems(tuntap_drivers)
 
-struct tuntap_driver_cloner {
-	SLIST_ENTRY(tuntap_driver_cloner)	 link;
-	struct tuntap_driver			*drv;
-	struct if_clone				*cloner;
-};
-
-VNET_DEFINE_STATIC(SLIST_HEAD(, tuntap_driver_cloner), tuntap_driver_cloners) =
-    SLIST_HEAD_INITIALIZER(tuntap_driver_cloners);
-
+VNET_DEFINE_STATIC(struct if_clone *, tuntap_driver_cloners[NDRV]);
 #define	V_tuntap_driver_cloners	VNET(tuntap_driver_cloners)
 
 /*
@@ -403,7 +402,6 @@ static int
 tuntap_name2info(const char *name, int *outunit, int *outflags)
 {
 	struct tuntap_driver *drv;
-	struct tuntap_driver_cloner *drvc;
 	char *dname;
 	int flags, unit;
 	bool found;
@@ -419,12 +417,8 @@ tuntap_name2info(const char *name, int *outunit, int *outflags)
 	dname = __DECONST(char *, name);
 	found = false;
 
-	KASSERT(!SLIST_EMPTY(&V_tuntap_driver_cloners),
-	    ("tuntap_driver_cloners failed to initialize"));
-	SLIST_FOREACH(drvc, &V_tuntap_driver_cloners, link) {
-		KASSERT(drvc->drv != NULL,
-		    ("tuntap_driver_cloners entry not properly initialized"));
-		drv = drvc->drv;
+	for (u_int i = 0; i < NDRV; i++) {
+		drv = &tuntap_drivers[i];
 
 		if (strcmp(name, drv->cdevsw.d_name) == 0) {
 			found = true;
@@ -450,26 +444,31 @@ tuntap_name2info(const char *name, int *outunit, int *outflags)
 	return (0);
 }
 
+static struct if_clone *
+tuntap_cloner_from_flags(int tun_flags)
+{
+
+	for (u_int i = 0; i < NDRV; i++)
+		if ((tun_flags & TUN_DRIVER_IDENT_MASK) ==
+		    tuntap_drivers[i].ident_flags)
+			return (V_tuntap_driver_cloners[i]);
+
+	return (NULL);
+}
+
 /*
  * Get driver information from a set of flags specified.  Masks the identifying
  * part of the flags and compares it against all of the available
- * tuntap_drivers. Must be called with correct vnet context.
+ * tuntap_drivers.
  */
 static struct tuntap_driver *
 tuntap_driver_from_flags(int tun_flags)
 {
-	struct tuntap_driver *drv;
-	struct tuntap_driver_cloner *drvc;
 
-	KASSERT(!SLIST_EMPTY(&V_tuntap_driver_cloners),
-	    ("tuntap_driver_cloners failed to initialize"));
-	SLIST_FOREACH(drvc, &V_tuntap_driver_cloners, link) {
-		KASSERT(drvc->drv != NULL,
-		    ("tuntap_driver_cloners entry not properly initialized"));
-		drv = drvc->drv;
-		if ((tun_flags & TUN_DRIVER_IDENT_MASK) == drv->ident_flags)
-			return (drv);
-	}
+	for (u_int i = 0; i < NDRV; i++)
+		if ((tun_flags & TUN_DRIVER_IDENT_MASK) ==
+		    tuntap_drivers[i].ident_flags)
+			return (&tuntap_drivers[i]);
 
 	return (NULL);
 }
@@ -513,8 +512,13 @@ vmnet_clone_match(struct if_clone *ifc, const char *name)
 	return (0);
 }
 
+/*
+ * Create a clone via the ifnet cloning mechanism.  Note that this is invoked
+ * indirectly by tunclone() below.
+ */
 static int
-tun_clone_create(struct if_clone *ifc, char *name, size_t len, caddr_t params)
+tun_clone_create(struct if_clone *ifc, char *name, size_t len,
+    struct ifc_data *ifd, struct ifnet **ifpp)
 {
 	struct tuntap_driver *drv;
 	struct cdev *dev;
@@ -546,12 +550,20 @@ tun_clone_create(struct if_clone *ifc, char *name, size_t len, caddr_t params)
 	/* No preexisting struct cdev *, create one */
 	if (i != 0)
 		i = tun_create_device(drv, unit, NULL, &dev, name);
-	if (i == 0)
+	if (i == 0) {
+		struct tuntap_softc *tp;
+
 		tuncreate(dev);
+		tp = dev->si_drv1;
+		*ifpp = tp->tun_ifp;
+	}
 
 	return (i);
 }
 
+/*
+ * Create a clone via devfs access.
+ */
 static void
 tunclone(void *arg, struct ucred *cred, char *name, int namelen,
     struct cdev **dev)
@@ -606,6 +618,9 @@ tunclone(void *arg, struct ucred *cred, char *name, int namelen,
 		}
 
 		i = tun_create_device(drv, u, cred, dev, name);
+	} else {
+		/* Consumed by the dev_clone invoker. */
+		dev_ref(*dev);
 	}
 	if (i == 0)
 		if_clone_create(name, namelen, NULL);
@@ -613,18 +628,38 @@ out:
 	CURVNET_RESTORE();
 }
 
-static void
-tun_destroy(struct tuntap_softc *tp)
+static int
+tun_destroy(struct tuntap_softc *tp, bool may_intr)
 {
+	int error;
 
 	TUN_LOCK(tp);
+
+	/*
+	 * Transient tunnels may have set TUN_DYING if we're being destroyed as
+	 * a result of the last close, which we'll allow.
+	 */
+	MPASS((tp->tun_flags & (TUN_DYING | TUN_TRANSIENT)) != TUN_DYING);
 	tp->tun_flags |= TUN_DYING;
-	if (tp->tun_busy != 0)
-		cv_wait_unlock(&tp->tun_cv, &tp->tun_mtx);
-	else
-		TUN_UNLOCK(tp);
+	error = 0;
+	while (tp->tun_busy != 0) {
+		if (may_intr)
+			error = cv_wait_sig(&tp->tun_cv, &tp->tun_mtx);
+		else
+			cv_wait(&tp->tun_cv, &tp->tun_mtx);
+		if (error != 0) {
+			tp->tun_flags &= ~TUN_DYING;
+			TUN_UNLOCK(tp);
+			return (error);
+		}
+	}
+	TUN_UNLOCK(tp);
 
 	CURVNET_SET(TUN2IFP(tp)->if_vnet);
+
+	mtx_lock(&tunmtx);
+	TAILQ_REMOVE(&tunhead, tp, tun_list);
+	mtx_unlock(&tunmtx);
 
 	/* destroy_dev will take care of any alias. */
 	destroy_dev(tp->tun_dev);
@@ -646,57 +681,34 @@ tun_destroy(struct tuntap_softc *tp)
 	cv_destroy(&tp->tun_cv);
 	free(tp, M_TUN);
 	CURVNET_RESTORE();
+
+	return (0);
 }
 
 static int
-tun_clone_destroy(struct if_clone *ifc __unused, struct ifnet *ifp)
+tun_clone_destroy(struct if_clone *ifc __unused, struct ifnet *ifp, uint32_t flags)
 {
 	struct tuntap_softc *tp = ifp->if_softc;
 
-	mtx_lock(&tunmtx);
-	TAILQ_REMOVE(&tunhead, tp, tun_list);
-	mtx_unlock(&tunmtx);
-	tun_destroy(tp);
-
-	return (0);
+	return (tun_destroy(tp, true));
 }
 
 static void
 vnet_tun_init(const void *unused __unused)
 {
-	struct tuntap_driver *drv;
-	struct tuntap_driver_cloner *drvc;
-	int i;
 
-	for (i = 0; i < nitems(tuntap_drivers); ++i) {
-		drv = &tuntap_drivers[i];
-		drvc = malloc(sizeof(*drvc), M_TUN, M_WAITOK | M_ZERO);
-
-		drvc->drv = drv;
-		drvc->cloner = if_clone_advanced(drv->cdevsw.d_name, 0,
-		    drv->clone_match_fn, drv->clone_create_fn,
-		    drv->clone_destroy_fn);
-		SLIST_INSERT_HEAD(&V_tuntap_driver_cloners, drvc, link);
+	for (u_int i = 0; i < NDRV; ++i) {
+		struct if_clone_addreq req = {
+			.match_f = tuntap_drivers[i].clone_match_fn,
+			.create_f = tuntap_drivers[i].clone_create_fn,
+			.destroy_f = tuntap_drivers[i].clone_destroy_fn,
+		};
+		V_tuntap_driver_cloners[i] =
+		    ifc_attach_cloner(tuntap_drivers[i].cdevsw.d_name, &req);
 	};
 }
 VNET_SYSINIT(vnet_tun_init, SI_SUB_PROTO_IF, SI_ORDER_ANY,
 		vnet_tun_init, NULL);
-
-static void
-vnet_tun_uninit(const void *unused __unused)
-{
-	struct tuntap_driver_cloner *drvc;
-
-	while (!SLIST_EMPTY(&V_tuntap_driver_cloners)) {
-		drvc = SLIST_FIRST(&V_tuntap_driver_cloners);
-		SLIST_REMOVE_HEAD(&V_tuntap_driver_cloners, link);
-
-		if_clone_detach(drvc->cloner);
-		free(drvc, M_TUN);
-	}
-}
-VNET_SYSUNINIT(vnet_tun_uninit, SI_SUB_PROTO_IF, SI_ORDER_ANY,
-    vnet_tun_uninit, NULL);
 
 static void
 tun_uninit(const void *unused __unused)
@@ -707,13 +719,22 @@ tun_uninit(const void *unused __unused)
 
 	EVENTHANDLER_DEREGISTER(ifnet_arrival_event, arrival_tag);
 	EVENTHANDLER_DEREGISTER(dev_clone, clone_tag);
-	drain_dev_clone_events();
+
+	CURVNET_SET(vnet0);
+	for (u_int i = 0; i < NDRV; i++) {
+		if_clone_detach(V_tuntap_driver_cloners[i]);
+		V_tuntap_driver_cloners[i] = NULL;
+	}
+	CURVNET_RESTORE();
+
+	if (tuntap_osd_jail_slot != 0)
+		osd_jail_deregister(tuntap_osd_jail_slot);
 
 	mtx_lock(&tunmtx);
 	while ((tp = TAILQ_FIRST(&tunhead)) != NULL) {
-		TAILQ_REMOVE(&tunhead, tp, tun_list);
 		mtx_unlock(&tunmtx);
-		tun_destroy(tp);
+		/* tun_destroy() will remove it from the tailq. */
+		tun_destroy(tp, false);
 		mtx_lock(&tunmtx);
 	}
 	mtx_unlock(&tunmtx);
@@ -744,6 +765,30 @@ tuntap_driver_from_ifnet(const struct ifnet *ifp)
 	return (NULL);
 }
 
+/*
+ * Remove devices that were created by devfs cloning, as they hold references
+ * which prevent the prison from collapsing, in which state VNET sysuninits will
+ * not be invoked.
+ */
+static int
+tuntap_prison_remove(void *obj, void *data __unused)
+{
+#ifdef VIMAGE
+	struct prison *pr;
+
+	pr = obj;
+	if (prison_owns_vnet(pr)) {
+		CURVNET_SET(pr->pr_vnet);
+		for (u_int i = 0; i < NDRV; i++) {
+			if_clone_detach(V_tuntap_driver_cloners[i]);
+			V_tuntap_driver_cloners[i] = NULL;
+		}
+		CURVNET_RESTORE();
+	}
+#endif
+	return (0);
+}
+
 static int
 tuntapmodevent(module_t mod, int type, void *data)
 {
@@ -758,8 +803,12 @@ tuntapmodevent(module_t mod, int type, void *data)
 			clone_setup(&drv->clones);
 			drv->unrhdr = new_unrhdr(0, IF_MAXUNIT, &tunmtx);
 		}
+		osd_method_t methods[PR_MAXMETHOD] = {
+			[PR_METHOD_REMOVE] = tuntap_prison_remove,
+		};
+		tuntap_osd_jail_slot = osd_jail_register(NULL, methods);
 		arrival_tag = EVENTHANDLER_REGISTER(ifnet_arrival_event,
-		   tunrename, 0, 1000);
+		    tunrename, 0, 1000);
 		if (arrival_tag == NULL)
 			return (ENOMEM);
 		clone_tag = EVENTHANDLER_REGISTER(dev_clone, tunclone, 0, 1000);
@@ -767,7 +816,7 @@ tuntapmodevent(module_t mod, int type, void *data)
 			return (ENOMEM);
 		break;
 	case MOD_UNLOAD:
-		/* See tun_uninit, so it's done after the vnet_sysuninit() */
+		/* See tun_uninit(). */
 		break;
 	default:
 		return EOPNOTSUPP;
@@ -808,7 +857,7 @@ tun_create_device(struct tuntap_driver *drv, int unit, struct ucred *cr,
 
 	make_dev_args_init(&args);
 	if (cr != NULL)
-		args.mda_flags = MAKEDEV_REF;
+		args.mda_flags = MAKEDEV_REF | MAKEDEV_CHECKNAME;
 	args.mda_devsw = &drv->cdevsw;
 	args.mda_cr = cr;
 	args.mda_uid = UID_UUCP;
@@ -818,6 +867,8 @@ tun_create_device(struct tuntap_driver *drv, int unit, struct ucred *cr,
 	args.mda_si_drv1 = tp;
 	error = make_dev_s(&args, dev, "%s", name);
 	if (error != 0) {
+		mtx_destroy(&tp->tun_mtx);
+		cv_destroy(&tp->tun_cv);
 		free(tp, M_TUN);
 		return (error);
 	}
@@ -854,7 +905,7 @@ tunstart(struct ifnet *ifp)
 		tp->tun_flags &= ~TUN_RWAIT;
 		wakeup(tp);
 	}
-	selwakeuppri(&tp->tun_rsel, PZERO + 1);
+	selwakeuppri(&tp->tun_rsel, PZERO);
 	KNOTE_LOCKED(&tp->tun_rsel.si_note, 0);
 	if (tp->tun_flags & TUN_ASYNC && tp->tun_sigio) {
 		TUN_UNLOCK(tp);
@@ -915,7 +966,7 @@ tunstart_l2(struct ifnet *ifp)
 			TUN_LOCK(tp);
 		}
 
-		selwakeuppri(&tp->tun_rsel, PZERO+1);
+		selwakeuppri(&tp->tun_rsel, PZERO);
 		KNOTE_LOCKED(&tp->tun_rsel.si_note, 0);
 		if_inc_counter(ifp, IFCOUNTER_OPACKETS, 1); /* obytes are counted in ether_output */
 	}
@@ -924,7 +975,16 @@ tunstart_l2(struct ifnet *ifp)
 	TUN_UNLOCK(tp);
 } /* tunstart_l2 */
 
-/* XXX: should return an error code so it can fail. */
+static int
+tap_transmit(struct ifnet *ifp, struct mbuf *m)
+{
+	int error;
+
+	BPF_MTAP(ifp, m);
+	IFQ_HANDOFF(ifp, m, error);
+	return (error);
+}
+
 static void
 tuncreate(struct cdev *dev)
 {
@@ -949,20 +1009,22 @@ tuncreate(struct cdev *dev)
 		iflags |= IFF_POINTOPOINT;
 	}
 	ifp = tp->tun_ifp = if_alloc(type);
-	if (ifp == NULL)
-		panic("%s%d: failed to if_alloc() interface.\n",
-		    drv->cdevsw.d_name, dev2unit(dev));
 	ifp->if_softc = tp;
 	if_initname(ifp, drv->cdevsw.d_name, dev2unit(dev));
 	ifp->if_ioctl = tunifioctl;
 	ifp->if_flags = iflags;
 	IFQ_SET_MAXLEN(&ifp->if_snd, ifqmaxlen);
-	ifp->if_capabilities |= IFCAP_LINKSTATE;
-	ifp->if_capenable |= IFCAP_LINKSTATE;
+	ifp->if_capabilities |= IFCAP_LINKSTATE | IFCAP_MEXTPG;
+	if ((tp->tun_flags & TUN_L2) != 0)
+		ifp->if_capabilities |=
+		    IFCAP_RXCSUM | IFCAP_RXCSUM_IPV6 | IFCAP_LRO;
+	ifp->if_capenable |= IFCAP_LINKSTATE | IFCAP_MEXTPG;
 
 	if ((tp->tun_flags & TUN_L2) != 0) {
 		ifp->if_init = tunifinit;
 		ifp->if_start = tunstart_l2;
+		ifp->if_transmit = tap_transmit;
+		ifp->if_qflush = if_qflush;
 
 		ether_gen_addr(ifp, &eaddr);
 		ether_ifattach(ifp, eaddr.octet);
@@ -1042,7 +1104,7 @@ tunopen(struct cdev *dev, int flag, int mode, struct thread *td)
 {
 	struct ifnet	*ifp;
 	struct tuntap_softc *tp;
-	int error, tunflags;
+	int error __diagused, tunflags;
 
 	tunflags = 0;
 	CURVNET_SET(TD_TO_VNET(td));
@@ -1151,7 +1213,13 @@ tundtor(void *data)
 	if ((tp->tun_flags & TUN_VMNET) != 0 ||
 	    (l2tun && (ifp->if_flags & IFF_LINK0) != 0))
 		goto out;
-
+#if defined(INET) || defined(INET6)
+	if (l2tun && tp->tun_lro_ready) {
+		TUNDEBUG (ifp, "LRO disabled\n");
+		tcp_lro_free(&tp->tun_lro);
+		tp->tun_lro_ready = false;
+	}
+#endif
 	if (ifp->if_flags & IFF_UP) {
 		TUN_UNLOCK(tp);
 		if_down(ifp);
@@ -1171,7 +1239,7 @@ out:
 	CURVNET_RESTORE();
 
 	funsetown(&tp->tun_sigio);
-	selwakeuppri(&tp->tun_rsel, PZERO + 1);
+	selwakeuppri(&tp->tun_rsel, PZERO);
 	KNOTE_LOCKED(&tp->tun_rsel.si_note, 0);
 	TUNDEBUG (ifp, "closed\n");
 	tp->tun_flags &= ~TUN_OPEN;
@@ -1179,6 +1247,23 @@ out:
 	tun_vnethdr_set(ifp, 0);
 
 	tun_unbusy_locked(tp);
+	if ((tp->tun_flags & TUN_TRANSIENT) != 0) {
+		struct if_clone *cloner;
+		int error __diagused;
+
+		/* Mark it busy so that nothing can re-open it. */
+		tp->tun_flags |= TUN_DYING;
+		TUN_UNLOCK(tp);
+
+		CURVNET_SET_QUIET(ifp->if_home_vnet);
+		cloner = tuntap_cloner_from_flags(tp->tun_flags);
+		CURVNET_RESTORE();
+
+		error = if_clone_destroyif(cloner, ifp);
+		MPASS(error == 0 || error == EINTR || error == ERESTART);
+		return;
+	}
+
 	TUN_UNLOCK(tp);
 }
 
@@ -1196,6 +1281,16 @@ tuninit(struct ifnet *ifp)
 		getmicrotime(&ifp->if_lastchange);
 		TUN_UNLOCK(tp);
 	} else {
+#if defined(INET) || defined(INET6)
+		if (tcp_lro_init(&tp->tun_lro) == 0) {
+			TUNDEBUG(ifp, "LRO enabled\n");
+			tp->tun_lro.ifp = ifp;
+			tp->tun_lro_ready = true;
+		} else {
+			TUNDEBUG(ifp, "Could not enable LRO\n");
+			tp->tun_lro_ready = false;
+		}
+#endif
 		ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
 		TUN_UNLOCK(tp);
 		/* attempt to start output */
@@ -1333,7 +1428,7 @@ tunifioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		dummy = ifmr->ifm_count;
 		ifmr->ifm_count = 1;
 		ifmr->ifm_status = IFM_AVALID;
-		ifmr->ifm_active = IFM_ETHER;
+		ifmr->ifm_active = IFM_ETHER | IFM_FDX | IFM_1000_T;
 		if (tp->tun_flags & TUN_OPEN)
 			ifmr->ifm_status |= IFM_ACTIVE;
 		ifmr->ifm_current = ifmr->ifm_active;
@@ -1399,13 +1494,12 @@ tunoutput(struct ifnet *ifp, struct mbuf *m0, const struct sockaddr *dst,
 	}
 
 	/* BPF writes need to be handled specially. */
-	if (dst->sa_family == AF_UNSPEC)
+	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
 		bcopy(dst->sa_data, &af, sizeof(af));
 	else
-		af = dst->sa_family;
+		af = RO_GET_FAMILY(ro, dst);
 
-	if (bpf_peers_present(ifp->if_bpf))
-		bpf_mtap2(ifp->if_bpf, &af, sizeof(af), m0);
+	BPF_MTAP2(ifp, &af, sizeof(af), m0);
 
 	/* prepend sockaddr? this may abort if the mbuf allocation fails */
 	if (cached_tun_flags & TUN_LMODE) {
@@ -1621,6 +1715,19 @@ tunioctl(struct cdev *dev, u_long cmd, caddr_t data, int flag,
 	case TUNGDEBUG:
 		*(int *)data = tundebug;
 		break;
+	case TUNSTRANSIENT:
+		TUN_LOCK(tp);
+		if (*(int *)data)
+			tp->tun_flags |= TUN_TRANSIENT;
+		else
+			tp->tun_flags &= ~TUN_TRANSIENT;
+		TUN_UNLOCK(tp);
+		break;
+	case TUNGTRANSIENT:
+		TUN_LOCK(tp);
+		*(int *)data = (tp->tun_flags & TUN_TRANSIENT) != 0;
+		TUN_UNLOCK(tp);
+		break;
 	case FIONBIO:
 		break;
 	case FIOASYNC:
@@ -1696,7 +1803,7 @@ tunread(struct cdev *dev, struct uio *uio, int flag)
 			return (EWOULDBLOCK);
 		}
 		tp->tun_flags |= TUN_RWAIT;
-		error = mtx_sleep(tp, &tp->tun_mtx, PCATCH | (PZERO + 1),
+		error = mtx_sleep(tp, &tp->tun_mtx, PCATCH | PZERO,
 		    "tunread", 0);
 		if (error != 0) {
 			TUN_UNLOCK(tp);
@@ -1704,9 +1811,6 @@ tunread(struct cdev *dev, struct uio *uio, int flag)
 		}
 	}
 	TUN_UNLOCK(tp);
-
-	if ((tp->tun_flags & TUN_L2) != 0)
-		BPF_MTAP(ifp, m);
 
 	len = min(tp->tun_vhdrlen, uio->uio_resid);
 	if (len > 0) {
@@ -1724,18 +1828,9 @@ tunread(struct cdev *dev, struct uio *uio, int flag)
 		    vhdr.hdr.csum_offset);
 		error = uiomove(&vhdr, len, uio);
 	}
-
-	while (m && uio->uio_resid > 0 && error == 0) {
-		len = min(uio->uio_resid, m->m_len);
-		if (len != 0)
-			error = uiomove(mtod(m, void *), len, uio);
-		m = m_free(m);
-	}
-
-	if (m) {
-		TUNDEBUG(ifp, "Dropping mbuf\n");
-		m_freem(m);
-	}
+	if (error == 0)
+		error = m_mbuftouio(uio, m, 0);
+	m_freem(m);
 	return (error);
 }
 
@@ -1760,22 +1855,54 @@ tunwrite_l2(struct tuntap_softc *tp, struct mbuf *m,
 
 	eh = mtod(m, struct ether_header *);
 
-	if (eh && (ifp->if_flags & IFF_PROMISC) == 0 &&
+	if ((ifp->if_flags & IFF_PROMISC) == 0 &&
 	    !ETHER_IS_MULTICAST(eh->ether_dhost) &&
 	    bcmp(eh->ether_dhost, IF_LLADDR(ifp), ETHER_ADDR_LEN) != 0) {
 		m_freem(m);
 		return (0);
 	}
 
-	if (vhdr != NULL && virtio_net_rx_csum(m, &vhdr->hdr)) {
-		m_freem(m);
-		return (0);
+	if (vhdr != NULL) {
+		if (virtio_net_rx_csum(m, &vhdr->hdr)) {
+			m_freem(m);
+			return (0);
+		}
+	} else {
+		switch (ntohs(eh->ether_type)) {
+#ifdef INET
+		case ETHERTYPE_IP:
+			if (ifp->if_capenable & IFCAP_RXCSUM) {
+				m->m_pkthdr.csum_flags |=
+				    CSUM_IP_CHECKED | CSUM_IP_VALID |
+				    CSUM_DATA_VALID | CSUM_SCTP_VALID |
+				    CSUM_PSEUDO_HDR;
+				m->m_pkthdr.csum_data = 0xffff;
+			}
+			break;
+#endif
+#ifdef INET6
+		case ETHERTYPE_IPV6:
+			if (ifp->if_capenable & IFCAP_RXCSUM_IPV6) {
+				m->m_pkthdr.csum_flags |=
+				    CSUM_DATA_VALID_IPV6 | CSUM_SCTP_VALID |
+				    CSUM_PSEUDO_HDR;
+				m->m_pkthdr.csum_data = 0xffff;
+			}
+			break;
+#endif
+		}
 	}
 
 	/* Pass packet up to parent. */
 	CURVNET_SET(ifp->if_vnet);
 	NET_EPOCH_ENTER(et);
-	(*ifp->if_input)(ifp, m);
+#if defined(INET) || defined(INET6)
+	if (tp->tun_lro_ready && ifp->if_capenable & IFCAP_LRO &&
+	    tcp_lro_rx(&tp->tun_lro, m, 0) == 0)
+		tcp_lro_flush_all(&tp->tun_lro);
+	else
+#endif
+		(*ifp->if_input)(ifp, m);
 	NET_EPOCH_EXIT(et);
 	CURVNET_RESTORE();
 	/* ibytes are counted in parent */

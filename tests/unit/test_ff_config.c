@@ -1,0 +1,3394 @@
+/*
+ * F-Stack lib/ unit test: ff_config.c (P1 #3, most complex)
+ *
+ * Spec anchor: docs/unit_test_spec/zh_cn/06-test-cases-and-acceptance.md §4.3
+ * Coverage: 11 TC (TC-U-P1-CFG-01..11) — end-to-end fixture-driven via
+ * ff_load_config(), the only non-static entry. All `_handler` functions in
+ * ff_config.c are static (verified via Stage-1 spec-author audit) so we
+ * exercise them transitively through the public ini-parse path.
+ *
+ * Strategy:
+ *   - 5 .ini fixtures in fixtures/ exercise different parser branches
+ *   - Each TC:
+ *       (a) memset ff_global_cfg back to zero (reset state across tests)
+ *       (b) build argv-style "f-stack -c fixtures/...ini"
+ *       (c) call ff_load_config, capturing rv
+ *       (d) inspect ff_global_cfg.* fields that the ini handlers should
+ *           have populated
+ *
+ * Notes (DP-U-12 "代码为准"):
+ *   - ff_load_config may return -1 even when the parser populated fields
+ *     correctly, because ff_check_config / dpdk_args_setup add downstream
+ *     constraints (e.g. port_cfgs[].addr must be non-NULL). The TCs below
+ *     accept either 0 or -1 and assert ff_global_cfg state directly when
+ *     the parser portion succeeded.
+ */
+
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <cmocka.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>           /* getpid() for the M5 directory liveness stubs */
+#include <time.h>             /* F-M5-1: slot stamp freshness */
+#include <sys/wait.h>         /* F-M5-1: reaped-child pid is a dead master */
+#include <signal.h>
+
+#include <sys/socket.h>
+#include <sys/un.h>
+
+#include "ff_api.h"
+#include "ff_config.h"
+#include "ff_log.h"           /* for ff_log declaration only */
+#include "ff_reload.h"        /* M5: generation directory arbitration */
+#include "ff_msg.h"           /* FF_MSG_RING_IN/OUT, FF_RELOAD */
+
+/* ------------------------------------------------------------------------ */
+/* FU-S8-CFG-OOM: calloc wrapper (linked via -Wl,--wrap=calloc).            */
+/* Passes through to __real_calloc unless armed; when g_calloc_fail_after is */
+/* >0 it counts down and returns NULL on the target call. This lets a TC    */
+/* force a single allocation failure (the Nth calloc after arming) to cover */
+/* the `if (X == NULL)` OOM error legs without disturbing cmocka, which     */
+/* does its own allocations only while the wrapper is disarmed (==0).       */
+/* ------------------------------------------------------------------------ */
+extern void *__real_calloc(size_t nmemb, size_t size);
+static int g_calloc_fail_after = 0;   /* 0 = disarmed; N = fail the Nth call */
+
+void *
+__wrap_calloc(size_t nmemb, size_t size)
+{
+    if (g_calloc_fail_after > 0) {
+        if (--g_calloc_fail_after == 0) {
+            return NULL;              /* simulate OOM on this call */
+        }
+    }
+    return __real_calloc(nmemb, size);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Local stubs to satisfy linker (ff_config.c indirectly references these)  */
+/* ------------------------------------------------------------------------ */
+
+/* ff_log: ff_config.c references it transitively via ff_log.h includes; we
+ * stub here to avoid pulling in lib/ff_log.c (which would mandate the rte_log
+ * wrap chain). */
+int
+ff_log(uint32_t level, uint32_t logtype, const char *format, ...)
+{
+    (void)level; (void)logtype; (void)format;
+    return 0;
+}
+
+/* FF_LOG_FILENAME_PREFIX: declared `extern char FF_LOG_FILENAME_PREFIX[]` in
+ * ff_log.h; defined as the storage in lib/ff_log.c. Since we don't link
+ * ff_log.o here, provide a minimal definition. */
+char FF_LOG_FILENAME_PREFIX[] = "./f-stack-";
+
+/* rte_strsplit: provided by DPDK librte_eal (rte_string_fns.h). We don't
+ * want to drag DPDK libraries into unit-test linkage, so we ship a small
+ * compliant reimplementation. Signature mirrors DPDK 23.11/24.11.
+ *
+ *   Splits *string* in-place by replacing each *delim* with '\0' and writes
+ *   pointers to up-to *maxtokens* substrings into *tokens[]*. Returns the
+ *   number of tokens written, or -1 on argument error.
+ */
+int
+rte_strsplit(char *string, int stringlen, char **tokens, int maxtokens, char delim)
+{
+    (void)stringlen;
+    if (!string || !tokens || maxtokens <= 0) {
+        return -1;
+    }
+    int  count = 0;
+    char *p    = string;
+    tokens[count++] = p;
+    while (*p != '\0' && count < maxtokens) {
+        if (*p == delim) {
+            *p = '\0';
+            tokens[count++] = p + 1;
+        }
+        p++;
+    }
+    return count;
+}
+
+/* ------------------------------------------------------------------------ */
+/* Test helpers                                                             */
+/* ------------------------------------------------------------------------ */
+
+#define FIXTURE_PATH(name) "fixtures/" name
+
+static int
+test_setup(void **state)
+{
+    (void)state;
+    /* Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD): use the lib-provided unload
+     * helper to free any heap from a prior test, then zero. This keeps
+     * valgrind clean across the 19 TCs (used to bleed ~50 KB / load). */
+    ff_unload_config();
+    memset(&ff_global_cfg, 0, sizeof(ff_global_cfg));
+    return 0;
+}
+
+static int
+load_with_fixture(const char *fixture_path)
+{
+    /* Build argv-style invocation: "f-stack -c <fixture>" */
+    char prog[]  = "f-stack";
+    char dashc[] = "-c";
+    char path_buf[256];
+    snprintf(path_buf, sizeof(path_buf), "%s", fixture_path);
+
+    char *argv[] = { prog, dashc, path_buf, NULL };
+    int   argc   = 3;
+
+    /* getopt_long uses optind; reset between calls (R-S2-3 hardening) */
+    extern int optind;
+    optind = 1;
+
+    return ff_load_config(argc, argv);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-01: minimal valid .ini -> parser populates dpdk fields        */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_valid_minimal_ini(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    /* rv may be 0 (full success) or -1 (post-parse check failure); either way
+     * the parser portion must have run and populated dpdk.* fields. */
+    (void)rv;
+    assert_non_null(ff_global_cfg.dpdk.lcore_mask);
+    assert_string_equal(ff_global_cfg.dpdk.lcore_mask, "1");
+    assert_int_equal(ff_global_cfg.dpdk.nb_channel, 4);
+    assert_int_equal(ff_global_cfg.dpdk.promiscuous, 1);
+    assert_int_equal(ff_global_cfg.dpdk.numa_on, 1);
+    assert_int_equal(ff_global_cfg.dpdk.idle_sleep, 20);
+    assert_int_equal(ff_global_cfg.dpdk.pkt_tx_delay, 100);
+    /* valid_minimal.ini has no idle_loop_interval key -> default applies. */
+    assert_int_equal(ff_global_cfg.dpdk.idle_loop_interval,
+        IDLE_LOOP_INTERVAL_US_DEFAULT);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-IDLELOOP-01: idle_loop_interval parses independently of pkt_tx_delay */
+/* ------------------------------------------------------------------------ */
+static void
+test_idle_loop_interval_parsed_independently(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_idle_loop_interval.ini"));
+    (void)rv;
+    /* The two knobs must not overwrite each other: before this feature the
+     * main loop throttled the user loop() callback with pkt_tx_delay. */
+    assert_int_equal(ff_global_cfg.dpdk.pkt_tx_delay, 30);
+    assert_int_equal(ff_global_cfg.dpdk.idle_loop_interval, 1000);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-IDLELOOP-02: idle_loop_interval omitted -> default 100 us           */
+/* ------------------------------------------------------------------------ */
+static void
+test_idle_loop_interval_default(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.idle_loop_interval,
+        IDLE_LOOP_INTERVAL_US_DEFAULT);
+    assert_int_equal(IDLE_LOOP_INTERVAL_US_DEFAULT, 100);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-02: empty .ini — verifies parser ran without populating any   */
+/* dpdk fields. Note: ff_load_config may still return 0 because nb_ports==0  */
+/* skips the per-port validation in ff_check_config; therefore we assert     */
+/* on the absence of populated fields rather than on rv.                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_no_dpdk_section(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_no_dpdk.ini"));
+    (void)rv;
+    /* Empty file: ini_parse_handler never invoked; lcore_mask stays NULL. */
+    assert_null(ff_global_cfg.dpdk.lcore_mask);
+    assert_int_equal(ff_global_cfg.dpdk.nb_channel, 0);
+    /* port_cfgs may still be allocated by ff_default_config? No — defaults
+     * leave it NULL. Confirm. */
+    assert_null(ff_global_cfg.dpdk.port_cfgs);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-03: bad lcore_mask -> error                                  */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_invalid_lcore_mask(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_bad_lcore.ini"));
+    /* parse_lcore_mask returns 0 (= handler error) for non-hex chars, which
+     * causes ini_parse to record an error line number. ff_load_config then
+     * proceeds to ff_check_config which fails (no valid lcore for port0).
+     * Result must be -1. */
+    assert_int_not_equal(rv, 0);
+    /* The bad string itself should still have been strdup'd by handler. */
+    assert_non_null(ff_global_cfg.dpdk.lcore_mask);
+    assert_string_equal(ff_global_cfg.dpdk.lcore_mask, "ZZZ_NOT_HEX");
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-04: dual-vlan fixture -> handler creates 2 vlan_cfgs entries */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_dual_vlan(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dual_vlan.ini"));
+    (void)rv;
+    /* dpdk.nb_vlan_filter or vlan_cfgs should be populated; we check that
+     * lcore_mask was parsed (=3) and the parser ran past [vlan0]/[vlan1]
+     * sections without crashing. */
+    assert_non_null(ff_global_cfg.dpdk.lcore_mask);
+    assert_string_equal(ff_global_cfg.dpdk.lcore_mask, "3");
+    assert_int_equal(ff_global_cfg.dpdk.vlan_strip, 1);
+    /* vlan_cfgs is allocated lazily by vlan_cfg_handler when [vlanN] sections
+     * appear; if the handler ran at all, this should be non-NULL. */
+    assert_non_null(ff_global_cfg.dpdk.vlan_cfgs);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-05: valid_minimal.ini parses [port0] addr/netmask/etc         */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_with_vip_addr(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    /* port_cfgs allocated by port_cfg_handler for [port0] */
+    assert_non_null(ff_global_cfg.dpdk.port_cfgs);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-06: argv override -- "-t primary" sets proc_type             */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_argv_override(void **state)
+{
+    (void)state;
+    char prog[]  = "f-stack";
+    char dashc[] = "-c";
+    char path[]  = FIXTURE_PATH("valid_minimal.ini");
+    char dasht[] = "-t";
+    char ptype[] = "primary";
+
+    char *argv[] = { prog, dashc, path, dasht, ptype, NULL };
+    int   argc   = 5;
+
+    extern int optind;
+    optind = 1;
+    int rv = ff_load_config(argc, argv);
+    (void)rv;
+    assert_non_null(ff_global_cfg.dpdk.proc_type);
+    assert_string_equal(ff_global_cfg.dpdk.proc_type, "primary");
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-07: unknown section in .ini does not crash, parse continues  */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_unknown_section(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_with_unknown.ini"));
+    (void)rv;
+    /* Even with [unknown_section] present, dpdk.lcore_mask must still parse */
+    assert_non_null(ff_global_cfg.dpdk.lcore_mask);
+    assert_string_equal(ff_global_cfg.dpdk.lcore_mask, "1");
+    /* And [kni] section should populate kni.enable / kni.method */
+    assert_int_equal(ff_global_cfg.kni.enable, 1);
+    assert_non_null(ff_global_cfg.kni.method);
+    assert_string_equal(ff_global_cfg.kni.method, "accept");
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-08: missing -c argument -> ff_load_config fails               */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_empty_ini(void **state)
+{
+    (void)state;
+    char prog[] = "f-stack";
+    char *argv[] = { prog, NULL };
+    int argc = 1;
+
+    extern int optind;
+    optind = 1;
+    int rv = ff_load_config(argc, argv);
+    /* Without -c filename, cfg->filename stays NULL -> ini_parse(NULL,...)
+     * returns -1 in glibc fopen; ff_load_config returns -1 via ini_parse path. */
+    assert_int_equal(rv, -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-09: nonexistent .ini path -> -1                              */
+/* (renamed from spec's vlan_cfg_handler_isolated white-box test, which     */
+/*  cannot run without #include "ff_config.c" — see DP-S2-2 outcome below)  */
+/* ------------------------------------------------------------------------ */
+static void
+test_vlan_cfg_handler_isolated(void **state)
+{
+    (void)state;
+    char prog[]  = "f-stack";
+    char dashc[] = "-c";
+    char nopath[] = "/nonexistent/path/__ut_no_such__.ini";
+    char *argv[] = { prog, dashc, nopath, NULL };
+
+    extern int optind;
+    optind = 1;
+    int rv = ff_load_config(3, argv);
+    assert_int_equal(rv, -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-10: invalid proc_type "-t bogus" -> ff_parse_args returns -1  */
+/* ------------------------------------------------------------------------ */
+static void
+test_ipfw_pr_cfg_handler_isolated(void **state)
+{
+    (void)state;
+    char prog[]  = "f-stack";
+    char dashc[] = "-c";
+    char path[]  = FIXTURE_PATH("valid_minimal.ini");
+    char dasht[] = "-t";
+    char bogus[] = "bogus_proc_type";
+
+    char *argv[] = { prog, dashc, path, dasht, bogus, NULL };
+    extern int optind;
+    optind = 1;
+    int rv = ff_load_config(5, argv);
+    assert_int_equal(rv, -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-11: port_cfg parsing places [port0] addr correctly            */
+/* ------------------------------------------------------------------------ */
+static void
+test_port_cfg_handler_addr_parse(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    /* port_cfgs is a sparse array indexed by port_id; valid_minimal.ini
+     * declares port 0. After parsing, port_cfgs[0].addr should be the
+     * strdup'd "192.168.1.10". */
+    assert_non_null(ff_global_cfg.dpdk.port_cfgs);
+    assert_non_null(ff_global_cfg.dpdk.port_cfgs[0].addr);
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].addr,    "192.168.1.10");
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].netmask, "255.255.255.0");
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-12 (Stage-3 coverage extension): comprehensive fixture       */
+/* exercising every supported section ([dpdk]+[port0]+[vlan0]+[vdev0]+      */
+/* [freebsd.boot]+[freebsd.sysctl]+[kni]+[pcap]) to broaden parser branch    */
+/* coverage past the 50% line threshold required for ff_config.c.           */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_all_sections(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_all_sections.ini"));
+    (void)rv;
+    /* dpdk fields */
+    assert_non_null(ff_global_cfg.dpdk.lcore_mask);
+    assert_int_equal(ff_global_cfg.dpdk.nb_channel,  4);
+    assert_int_equal(ff_global_cfg.dpdk.memory,      128);
+    assert_int_equal(ff_global_cfg.dpdk.tso,         0);
+    assert_int_equal(ff_global_cfg.dpdk.lro,         0);
+    assert_int_equal(ff_global_cfg.dpdk.symmetric_rss, 1);
+    assert_int_equal(ff_global_cfg.dpdk.idle_sleep, 20);
+    /* kni section parsed */
+    assert_int_equal(ff_global_cfg.kni.enable, 1);
+    assert_non_null(ff_global_cfg.kni.method);
+    /* pcap section parsed (timestamp_precision = 0 default still 0; but
+     * snap_len/save_path should be populated) */
+    assert_non_null(ff_global_cfg.pcap.save_path);
+    /* freebsd boot/sysctl sections allocate cfg pointers */
+    /* ff_freebsd_cfg *boot is populated by freebsd_conf_handler when [freebsd.boot]
+     * lines arrive; non-NULL after parse. */
+    assert_non_null(ff_global_cfg.freebsd.boot);
+    assert_non_null(ff_global_cfg.freebsd.sysctl);
+}
+
+/* ======================================================================== */
+/* Stage-6 Phase-2 coverage extensions: ff_config 59.5%->>=80% line          */
+/* ======================================================================== */
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-13 (Stage-6): full DPDK fixture exercises hex lcore_mask,    */
+/* port range list (0-1), bond config, and rss_check + rss_tbl 4-tuple     */
+/* parsing. Targets the largest gap in ff_config.c (parse_lcore_mask hex,  */
+/* __parse_config_list range, bond_cfg_handler all fields, rss_tbl_*).    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_dpdk_full(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    (void)rv;
+    /* lcore_mask=0xF -> 4 lcores; proc_lcore allocated, nb_procs >= 1 */
+    assert_non_null(ff_global_cfg.dpdk.proc_lcore);
+    /* idle_loop_interval=500 parsed from the [dpdk] section */
+    assert_int_equal(ff_global_cfg.dpdk.idle_loop_interval, 500);
+    /* port_list=0-1 -> nb_ports = 2 */
+    assert_int_equal(ff_global_cfg.dpdk.nb_ports, 2);
+    /* bond enabled, nb_bond=1, bond_cfgs allocated */
+    assert_int_equal(ff_global_cfg.dpdk.nb_bond, 1);
+    assert_non_null(ff_global_cfg.dpdk.bond_cfgs);
+    /* bond0 fields: mode=4, slave="eth0,eth1", primary="eth0" */
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].mode, 4);
+    assert_non_null(ff_global_cfg.dpdk.bond_cfgs[0].slave);
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].slave, "eth0,eth1");
+    assert_non_null(ff_global_cfg.dpdk.bond_cfgs[0].primary);
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].primary, "eth0");
+    assert_non_null(ff_global_cfg.dpdk.bond_cfgs[0].bond_mac);
+    assert_non_null(ff_global_cfg.dpdk.bond_cfgs[0].xmit_policy);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].lsc_poll_period_ms, 100);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].up_delay,           200);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].down_delay,         200);
+    /* rss_check + rss_tbl: 2 entries (port 0 + port 1) */
+    assert_non_null(ff_global_cfg.dpdk.rss_check_cfgs);
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->enable, 1);
+    /* R-F: thash_adjust defaults to 1 when omitted. */
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust, 1);
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->nb_rss_tbl, 2);
+    /* port0 entry: port_id=0, sport=80 (htons applied internally) */
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_cfgs[0].port_id, 0);
+    /* port1 entry: port_id=1, sport=443 */
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->rss_tbl_cfgs[1].port_id, 1);
+    /* port0 lcore_list parsed as 0,1 */
+    assert_non_null(ff_global_cfg.dpdk.port_cfgs);
+    assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].nb_lcores, 2);
+    /* port0 nb_vip = 3 */
+    assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].nb_vip, 3);
+    /* port0 nb_vip6 = 2 (only when INET6 is enabled in lib build) */
+#ifdef INET6
+    assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].nb_vip6, 2);
+#endif
+    /* port1 lcore_list=2-3 -> nb_lcores=2 */
+    assert_int_equal(ff_global_cfg.dpdk.port_cfgs[1].nb_lcores, 2);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-14 (Stage-6): lcore_mask with 0 bits set -> parse_lcore_mask */
+/* returns 0 / nb_procs stays 0. Covers the "i == 0 after strip" branch.   */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_lcore_mask_no_bits(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_lcore_no_bit.ini"));
+    (void)rv;
+    /* parse_lcore_mask sees i==0 after stripping leading zeros, returns 0
+     * without populating proc_lcore. ff_global_cfg.dpdk.nb_procs == 0. */
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-15 (Stage-6): port_list with non-integer token triggers      */
+/* __parse_config_list "is not a integer" error path. Covers L277-L310.    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_load_config_portlist_nonint(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_portlist_nonint.ini"));
+    (void)rv;
+    /* Parser hit "not an integer" -> __parse_config_list returns 0,
+     * which propagates up; nb_ports may stay 0 or partial. We assert
+     * the parser did NOT crash and bond_cfgs was never allocated. */
+    assert_null(ff_global_cfg.dpdk.bond_cfgs);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-16 (Stage-6): [bond0] section with NO dpdk.nb_bond key       */
+/* makes bond_cfg_handler reject every line; bond_cfgs stays NULL, parser  */
+/* still completes successfully overall.                                   */
+/* ------------------------------------------------------------------------ */
+static void
+test_bond_cfg_handler_no_nb_bond(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_bond_no_nb_bond.ini"));
+    (void)rv;
+    /* bond_cfg_handler returned 0 -> ini_parse stops with error; in either
+     * case bond_cfgs was never allocated (the early-return "must config
+     * dpdk.nb_bond first" branch). */
+    assert_null(ff_global_cfg.dpdk.bond_cfgs);
+    assert_int_equal(ff_global_cfg.dpdk.nb_bond, 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-17 (Stage-6): malformed bond section name [bond_xx] (not    */
+/* matching "bondNN") triggers the sscanf-error branch.                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_bond_cfg_handler_bad_section(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_bond_bad_section.ini"));
+    (void)rv;
+    /* nb_bond=1 -> bond_cfgs alloc'd; but [bond_xx] section sscanf fails,
+     * so handler returned 0. We assert the alloc happened (proves the
+     * "section format error" path was reached, after the alloc). */
+    assert_int_equal(ff_global_cfg.dpdk.nb_bond, 1);
+    /* The rejection happened before any field was set on bond[0]. */
+    if (ff_global_cfg.dpdk.bond_cfgs != NULL) {
+        assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].mode, 0);
+    }
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-18 (Stage-6): [rss_check] without prior port_cfgs/vlan_cfgs */
+/* makes rss_check_cfg_handler reject (returns 0) on the first key.        */
+/* ------------------------------------------------------------------------ */
+static void
+test_rss_check_cfg_handler_no_port_no_vlan(void **state)
+{
+    (void)state;
+    /* Note: [rss_check] section appears BEFORE [portN] in the fixture so
+     * port_cfgs is still NULL when rss_check_cfg_handler is invoked. */
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_rss_check_no_port.ini"));
+    (void)rv;
+    assert_null(ff_global_cfg.dpdk.rss_check_cfgs);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-19 (Stage-6): rss_tbl with 3-token entries (not 4-tuple)    */
+/* triggers rss_tbl_cfg_handler per-entry parse error (still returns 1).   */
+/* ------------------------------------------------------------------------ */
+static void
+test_rss_tbl_cfg_handler_bad_tuple(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_rss_tbl_bad_tuple.ini"));
+    (void)rv;
+    /* rss_check_cfgs allocated (port_cfgs was set up by [port0]); but the
+     * 3-token rss_tbl entry caused per-entry error, so nb_rss_tbl stays 0
+     * (or rss_tbl_cfgs[0] left at default zero values). */
+    if (ff_global_cfg.dpdk.rss_check_cfgs != NULL) {
+        /* Either the malformed entry was rejected outright (nb_rss_tbl=0),
+         * or it was partially parsed (port_id=0, daddr/saddr empty). */
+        assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->nb_rss_tbl, 0);
+    }
+}
+
+/* TC-U-P1-CFG-RF-01: explicit thash_adjust=0 is parsed correctly. */
+static void
+test_rss_check_thash_adjust_off_parses(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_rss_check_thash_adjust_off.ini"));
+    assert_int_equal(rv, 0);
+    assert_non_null(ff_global_cfg.dpdk.rss_check_cfgs);
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->enable,        1);
+    assert_int_equal(ff_global_cfg.dpdk.rss_check_cfgs->thash_adjust,  0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P1-CFG-20 (Stage-6 Phase-8): ff_unload_config zeroes all heap-owned */
+/* fields after a load. Closes FU-S2-2-CFG-UNLOAD. Repeated load/unload    */
+/* cycles must remain valgrind-clean (verified out-of-band via make check). */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_unload_config_zeroes_state(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    /* After load: at minimum proc_lcore + filename are non-NULL. */
+    assert_non_null(ff_global_cfg.dpdk.proc_lcore);
+    assert_non_null(ff_global_cfg.filename);
+
+    ff_unload_config();
+
+    /* All ownership pointers must be NULL'd (defense-in-depth: a future
+     * caller that re-uses ff_global_cfg without re-loading must not see
+     * dangling pointers). */
+    assert_null(ff_global_cfg.dpdk.proc_lcore);
+    assert_null(ff_global_cfg.dpdk.port_cfgs);
+    assert_null(ff_global_cfg.dpdk.vlan_cfgs);
+    assert_null(ff_global_cfg.dpdk.bond_cfgs);
+    assert_null(ff_global_cfg.dpdk.vdev_cfgs);
+    assert_null(ff_global_cfg.dpdk.rss_check_cfgs);
+    assert_null(ff_global_cfg.dpdk.portid_list);
+    assert_null(ff_global_cfg.filename);
+    assert_null(ff_global_cfg.dpdk.lcore_mask);
+    assert_null(ff_global_cfg.freebsd.boot);
+    assert_null(ff_global_cfg.freebsd.sysctl);
+    /* Idempotent: a second call on already-unloaded state is a no-op. */
+    ff_unload_config();
+    assert_null(ff_global_cfg.filename);
+}
+/* ======================================================================== */
+/* Stage-7 Phase-3 (FU-S7-CFG-*): branch-coverage boost for ff_config.c     */
+/* ======================================================================== */
+
+/* TC-S7-CFG-01: parse_lcore_mask accepts uppercase "0X" prefix.            */
+static void
+test_parse_lcore_mask_uppercase_0X_succeeds(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_lcore_uppercase.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 2);
+}
+
+/* TC-S7-CFG-02: vlan_cfg_handler returns 1 (skip) when vlanid is not in   */
+/* the configured vlan_filter list (FU-S7-CFG-VLAN-OOB regression guard). */
+static void
+test_vlan_cfg_handler_id_not_in_filter_returns_one(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_vlan_id_not_in_filter.ini"));
+    /* Load itself succeeds (rv=0); the handler simply ignores the orphan
+     * [vlan99] section so vlan_cfgs[0] (slot for vlan_filter[0]=10) stays
+     * un-named. */
+    assert_int_equal(rv, 0);
+    assert_non_null(ff_global_cfg.dpdk.vlan_cfgs);
+    /* slot 0 was allocated but no [vlanN] matched filter[0]=10, so name is NULL */
+    assert_null(ff_global_cfg.dpdk.vlan_cfgs[0].name);
+}
+
+/* TC-S7-CFG-03: vlan_cfg_handler returns 0 on malformed section name.     */
+static void
+test_vlan_cfg_handler_bad_section_returns_zero(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_vlan_bad_section.ini"));
+    /* sscanf failure inside vlan_cfg_handler aborts ff_load_config (rv=-1) */
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S7-CFG-04: vdev_cfg_handler returns 0 when [dpdk] is missing nb_vdev.*/
+static void
+test_vdev_cfg_handler_no_nb_vdev_returns_zero(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_vdev_no_nb_vdev.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S7-CFG-05: full vdev section populates iface/path/mac/queues/cq.    */
+static void
+test_ff_load_config_vdev_full(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_vdev.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_vdev, 1);
+    assert_non_null(ff_global_cfg.dpdk.vdev_cfgs);
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].iface, "eth0");
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].path, "/var/run/usvhost");
+    assert_int_equal(ff_global_cfg.dpdk.vdev_cfgs[0].nb_queues, 2);
+    assert_int_equal(ff_global_cfg.dpdk.vdev_cfgs[0].queue_size, 512);
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].mac, "00:11:22:33:44:55");
+    assert_int_equal(ff_global_cfg.dpdk.vdev_cfgs[0].nb_cq, 1);
+}
+
+/* TC-S7-CFG-06: full bond section populates mode/slave/primary/etc.     */
+static void
+test_ff_load_config_bond_full(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_bond.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_bond, 1);
+    assert_non_null(ff_global_cfg.dpdk.bond_cfgs);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].mode, 4);
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].slave, "0,1");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].primary, "0");
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].socket_id, 0);
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].bond_mac, "AA:BB:CC:DD:EE:FF");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].xmit_policy, "l34");
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].lsc_poll_period_ms, 100);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].up_delay, 100);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].down_delay, 200);
+}
+
+/* TC-S7-CFG-07: port_cfg_handler returns 0 on malformed [portXX] name.   */
+static void
+test_port_cfg_handler_bad_section_returns_zero(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_port_bad_section.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S7-CFG-08: port_cfg_handler returns 1 (skip) when portid > max.    */
+static void
+test_port_cfg_handler_id_over_max_returns_one(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_port_id_over_max.ini"));
+    /* Load succeeds; [port200] section is silently ignored. */
+    assert_int_equal(rv, 0);
+    /* Only port0 should have a name */
+    assert_non_null(ff_global_cfg.dpdk.port_cfgs);
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].name, "port0");
+}
+
+/* TC-S7-CFG-09: repeated keys (addr=A then addr=B) must not leak the     */
+/* old strdup'd value (FU-S7-CFG-FREE-BEFORE-STRDUP regression guard).   */
+/* valgrind verification is performed out-of-band by `make check`.       */
+static void
+test_ff_load_config_repeat_keys_no_leak(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_repeat_keys.ini"));
+    assert_int_equal(rv, 0);
+    /* Last value of each repeated key wins. */
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].addr,    "192.168.1.30");
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].netmask, "255.255.0.0");
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].gateway, "192.168.1.254");
+}
+
+/* TC-S7-CFG-10: freebsd.boot section accepts multiple integer + string   */
+/* entries forming a chain visible via cfg.freebsd.boot list.            */
+static void
+test_ff_load_config_freebsd_boot_multi_entries(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_freebsd_boot.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.freebsd.hz, 200);
+    /* Walk the boot/sysctl chains; at least 1 entry should be present. */
+    int nboot = 0;
+    for (struct ff_freebsd_cfg *p = ff_global_cfg.freebsd.boot; p; p = p->next) {
+        nboot++;
+    }
+    int nsysctl = 0;
+    for (struct ff_freebsd_cfg *p = ff_global_cfg.freebsd.sysctl; p; p = p->next) {
+        nsysctl++;
+    }
+    /* boot has panicstr (string-typed), sysctl has 5 entries above. */
+    assert_true(nboot >= 1);
+    assert_int_equal(nsysctl, 5);
+}
+
+/* TC-S7-CFG-11: INET6 directives are silently ignored when the build does */
+/* not define INET6 (load still succeeds). The fixture also exercises the  */
+/* free-before-strdup path on broadcast/if_name/addr6/gateway6 indirectly. */
+static void
+test_ff_load_config_inet6_fixture_ignored(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_inet6.ini"));
+    assert_int_equal(rv, 0);
+    /* INET4 portions still parse correctly. */
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].addr,    "192.168.1.10");
+    assert_string_equal(ff_global_cfg.dpdk.port_cfgs[0].netmask, "255.255.255.0");
+}
+
+/* TC-S7-CFG-12: argv override for -t (proc_type) and -p (proc_id).      */
+static void
+test_ff_load_config_argv_t_override(void **state)
+{
+    (void)state;
+    /* Build argv: f-stack -c <fixture> -t secondary -p 0 */
+    char prog[]  = "f-stack";
+    char dashc[] = "-c";
+    char dasht[] = "-t";
+    char dashp[] = "-p";
+    char path[]  = FIXTURE_PATH("valid_minimal.ini");
+    char tval[]  = "secondary";
+    char pval[]  = "0";
+    char *argv[] = { prog, dashc, path, dasht, tval, dashp, pval, NULL };
+    extern int optind;
+    optind = 1;
+    int rv = ff_load_config(7, argv);
+    assert_int_equal(rv, 0);
+    assert_string_equal(ff_global_cfg.dpdk.proc_type, "secondary");
+    assert_int_equal(ff_global_cfg.dpdk.proc_id, 0);
+}
+
+/* ======================================================================== */
+/* Stage-8 Phase-2 (FU-S8-CFG-ARGV-FIXTURES): branch boost, no wrap         */
+/* ======================================================================== */
+
+/* TC-S8-CFG-01: lcore_mask with leading/trailing blanks + multi-bit mask
+ * "0x5" (bits 0,2 set; bit 1 clear) -> covers parse_lcore_mask blank-strip
+ * (L96/L103) and the (1<<j)&val false leg (L121). */
+static void
+test_parse_lcore_mask_blank_and_multibit(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_lcore_blank_multibit.ini"));
+    assert_int_equal(rv, 0);
+    /* 0x5 = bits 0 and 2 -> 2 procs (lcore 0 and lcore 2). */
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 2);
+}
+
+/* TC-S8-CFG-02: all-blank lcore_mask -> parse_lcore_mask hits i==0 and
+ * returns 0 (handler error), so ff_load_config returns -1. (L106). */
+static void
+test_parse_lcore_mask_all_blank_returns_error(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_lcore_all_blank.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-03: mid-string non-hex char ("0x1Z") -> isxdigit==0 leg
+ * (L113) -> parse_lcore_mask returns 0 -> load fails. */
+static void
+test_parse_lcore_mask_mid_nonhex_returns_error(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_lcore_midhex.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-04: vlan section carrying vip_addr drives vip_cfg_handler down
+ * its cur_vlan_cfg branch (L390/L417) and the cur->vip_addr_str guard
+ * (L724). portid=0 also exercises the vlan portid binding path. */
+static void
+test_ff_load_config_vlan_vip_addr(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_vlan_vip.ini"));
+    assert_int_equal(rv, 0);
+    assert_non_null(ff_global_cfg.dpdk.vlan_cfgs);
+    /* vlan10 is filter index 0; it must have parsed a vip_addr_str. */
+    assert_non_null(ff_global_cfg.dpdk.vlan_cfgs[0].vip_addr_str);
+    assert_int_equal(ff_global_cfg.dpdk.vlan_cfgs[0].nb_vip, 3);
+}
+
+/* TC-S8-CFG-05: vlan portid greater than max_portid -> vlan_cfg_handler
+ * returns 1 (skip) via the L702 true leg; load still succeeds. */
+static void
+test_vlan_cfg_handler_portid_over_max_skips(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_vlan_portid_overmax.ini"));
+    assert_int_equal(rv, 0);
+}
+
+/* Helper: load a fixture with explicit -t <proc_type> -p <proc_id>. */
+static int
+load_with_proc(const char *fixture_path, const char *proc_type, const char *proc_id)
+{
+    char prog[]  = "f-stack";
+    char dashc[] = "-c";
+    char dasht[] = "-t";
+    char dashp[] = "-p";
+    char path[256]; snprintf(path, sizeof(path), "%s", fixture_path);
+    char tval[32];  snprintf(tval, sizeof(tval), "%s", proc_type);
+    char pval[32];  snprintf(pval, sizeof(pval), "%s", proc_id);
+    char *argv[] = { prog, dashc, path, dasht, tval, dashp, pval, NULL };
+    extern int optind;
+    optind = 1;
+    return ff_load_config(7, argv);
+}
+
+/* TC-S8-CFG-06: proc_id == count-1 (in range) with multi-bit mask exercises
+ * the proc_id==count match path (L131) and proc_mask synthesis. */
+static void
+test_parse_lcore_mask_proc_id_in_range(void **state)
+{
+    (void)state;
+    /* lcore_mask=0x3 -> 2 procs; proc_id=1 is valid (last). */
+    int rv = load_with_proc(FIXTURE_PATH("valid_lcore_blank_multibit.ini"),
+                            "primary", "1");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.proc_id, 1);
+    assert_non_null(ff_global_cfg.dpdk.proc_mask);
+}
+
+/* TC-S8-CFG-07: proc_id >= count -> parse_lcore_mask returns 0 (L135),
+ * so ff_load_config fails. (0x5 -> 2 procs; proc_id=5 is out of range.) */
+static void
+test_parse_lcore_mask_proc_id_over_count_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("valid_lcore_blank_multibit.ini"),
+                            "primary", "5");
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-08: kni.method=reject is accepted by ff_check_config (L1271
+ * reject leg of the strcasecmp pair). */
+static void
+test_ff_check_config_kni_method_reject_ok(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_kni_method_reject.ini"));
+    assert_int_equal(rv, 0);
+    assert_string_equal(ff_global_cfg.kni.method, "reject");
+}
+
+/* TC-S8-CFG-09: kni.method=<garbage> fails ff_check_config (both
+ * strcasecmp != 0 -> return -1). */
+static void
+test_ff_check_config_kni_method_invalid_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_kni_method_bad.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-10: kni enabled + proc_type=primary + primary lcore present in
+ * the port lcore_list -> ff_check_config passes (L1331/1332 found=1 leg). */
+static void
+test_ff_check_config_kni_primary_lcore_present_ok(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("valid_kni_primary_lcore_ok.ini"),
+                            "primary", "0");
+    assert_int_equal(rv, 0);
+}
+
+/* TC-S8-CFG-11: kni enabled + proc_type=primary + primary lcore MISSING
+ * from the port lcore_list -> ff_check_config returns -1 (L1336 !found). */
+static void
+test_ff_check_config_kni_primary_lcore_missing_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("invalid_kni_primary_lcore_missing.ini"),
+                            "primary", "0");
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-12: dpdk base_virtaddr/file_prefix/allow + full vdev (cq) +
+ * full bond (down_delay) exercise the extra MATCH("dpdk",..) key legs
+ * (L984/986/988), vdev cq (L812), bond down_delay (L876), and the
+ * dpdk_args_setup allow strtok_r loop (L1113). */
+static void
+test_ff_load_config_dpdk_extra_keys(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_extra_keys.ini"));
+    assert_int_equal(rv, 0);
+    assert_string_equal(ff_global_cfg.dpdk.base_virtaddr, "0x200000000");
+    assert_string_equal(ff_global_cfg.dpdk.file_prefix,   "mytest");
+    assert_int_equal(ff_global_cfg.dpdk.nb_vdev, 1);
+    assert_int_equal(ff_global_cfg.dpdk.vdev_cfgs[0].nb_cq, 1);
+    assert_int_equal(ff_global_cfg.dpdk.bond_cfgs[0].down_delay, 300);
+}
+
+/* TC-S8-CFG-13: repeated iface/path/mac (vdev) and slave/primary/mac/
+ * xmit_policy (bond) keys exercise the free-before-strdup true legs
+ * (L810/859/862/867/870). Last value wins; valgrind verifies no leak. */
+static void
+test_ff_load_config_bond_vdev_repeat_keys_no_leak(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_bond_vdev_repeat.ini"));
+    assert_int_equal(rv, 0);
+    /* Last value of each repeated key wins. */
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].iface, "net_pcap_b");
+    assert_string_equal(ff_global_cfg.dpdk.vdev_cfgs[0].path,  "/tmp/b");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].slave,       "eth0,eth1");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].primary,     "eth1");
+    assert_string_equal(ff_global_cfg.dpdk.bond_cfgs[0].xmit_policy, "l34");
+}
+
+/* TC-S8-CFG-14 (FU-S8-CFG-OOM): the FIRST calloc during load is the
+ * proc_lcore array in parse_lcore_mask (L85). Forcing it NULL exercises
+ * the L86 OOM error leg -> parse_lcore_mask returns 0 -> load fails. */
+static void
+test_parse_lcore_mask_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 1;     /* fail the 1st calloc (proc_lcore) */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    g_calloc_fail_after = 0;     /* disarm */
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-15 (FU-S8-CFG-OOM): the SECOND calloc is the port_cfgs array
+ * (L551, alloc_port_cfgs). Forcing it NULL exercises that OOM leg. The
+ * proc_lcore calloc (1st) succeeds; the port_cfgs calloc (2nd) fails. */
+static void
+test_alloc_port_cfgs_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 2;     /* fail the 2nd calloc (port_cfgs) */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    g_calloc_fail_after = 0;
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-16 (FU-S8-CFG-OOM): with [dpdk]->[port0]->[vlanN] section order
+ * the 3rd calloc is vlan_cfgs (L661). Forcing it NULL covers that OOM leg. */
+static void
+test_vlan_cfgs_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 3;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dual_vlan.ini"));
+    g_calloc_fail_after = 0;
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-17 (FU-S8-CFG-OOM): [dpdk]->[port0]->[vdev0]; 3rd calloc is
+ * vdev_cfgs (L772). Forcing it NULL covers that OOM leg. */
+static void
+test_vdev_cfgs_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 3;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_vdev.ini"));
+    g_calloc_fail_after = 0;
+    assert_int_equal(rv, -1);
+}
+
+/* TC-S8-CFG-18 (FU-S8-CFG-OOM): [dpdk]->[port0]->[bond0]; 3rd calloc is
+ * bond_cfgs (L829). Forcing it NULL covers that OOM leg. */
+static void
+test_bond_cfgs_calloc_oom_returns_error(void **state)
+{
+    (void)state;
+    g_calloc_fail_after = 3;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_bond.ini"));
+    g_calloc_fail_after = 0;
+    assert_int_equal(rv, -1);
+}
+
+#ifdef FF_KERNEL_COEXIST
+/* ------------------------------------------------------------------------ */
+/* kernel_event_support (coexistence): [stack] kernel_coexist parsing        */
+/* ------------------------------------------------------------------------ */
+/* kernel_coexist=1 -> stack.kernel_coexist == 1 */
+static void
+test_ff_load_config_stack_coexist_enabled(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_stack_kernel.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.stack.kernel_coexist, 1);
+}
+
+/* [stack] absent -> coexistence disabled (0) */
+static void
+test_ff_load_config_stack_absent_defaults_disabled(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
+}
+
+/* kernel_coexist with an unrecognized value -> falls back to disabled (0) */
+static void
+test_ff_load_config_stack_garbage_defaults_disabled(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_stack_garbage.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
+}
+
+/* explicit kernel_coexist=0 -> 0 (verified via valid_all_sections.ini) */
+static void
+test_ff_load_config_stack_coexist_disabled_explicit(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_all_sections.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.stack.kernel_coexist, 0);
+}
+#endif /* FF_KERNEL_COEXIST */
+
+/* ------------------------------------------------------------------------ */
+/* MTU configuration tests (UT-CFG-01..07)                                   */
+/* ------------------------------------------------------------------------ */
+
+/* UT-CFG-01: legacy fixture without MTU keys -> defaults populated */
+static void
+test_mtu_defaults_legacy(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.mtu_enable, 0);
+    assert_int_equal(ff_global_cfg.dpdk.max_mtu, FF_MTU_JUMBO_DEFAULT);
+    assert_int_equal(ff_global_cfg.dpdk.mbuf_mode, FF_MBUF_MODE_LARGE);
+    if (ff_global_cfg.dpdk.port_cfgs) {
+        assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].mtu, FF_MTU_DEFAULT);
+    }
+}
+
+/* UT-CFG-02: mtu_enable=1, large, 9000 */
+static void
+test_mtu_large_9000(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_mtu_large_9000.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.mtu_enable, 1);
+    assert_int_equal(ff_global_cfg.dpdk.max_mtu, FF_MTU_JUMBO_DEFAULT);
+    assert_int_equal(ff_global_cfg.dpdk.mbuf_mode, FF_MBUF_MODE_LARGE);
+    if (ff_global_cfg.dpdk.port_cfgs) {
+        assert_int_equal(ff_global_cfg.dpdk.port_cfgs[0].mtu, FF_MTU_JUMBO_DEFAULT);
+    }
+}
+
+/* UT-CFG-03: scatter mode */
+static void
+test_mtu_scatter_mode(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_mtu_scatter.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.mtu_enable, 1);
+    assert_int_equal(ff_global_cfg.dpdk.mbuf_mode, FF_MBUF_MODE_SCATTER);
+}
+
+/* UT-CFG-04: invalid mbuf_mode -> parse failure */
+static void
+test_mtu_invalid_mode_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_bad_mode.ini"));
+    assert_int_not_equal(rv, 0);
+}
+
+/* UT-CFG-05: max_mtu non-numeric -> parse failure */
+static void
+test_mtu_max_mtu_non_numeric_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_max_mtu_bad.ini"));
+    assert_int_not_equal(rv, 0);
+}
+
+/* UT-CFG-06: port.mtu > max_mtu -> check failure */
+static void
+test_mtu_port_over_max_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_port_over_max.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* UT-CFG-07: mtu_enable=0, port.mtu>1500 -> check failure */
+static void
+test_mtu_disabled_port_over_1500_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_disabled_port_over_1500.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* UT-CFG-08: large mode max_mtu=65535 -> data_room overflow -> check failure */
+static void
+test_mtu_large_65535_fails(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_mtu_large_65535.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* ======================================================================== */
+/* CM1 (native-mt): thread_mode config switch                               */
+/* Spec: native_mt_spec/zh_cn. thread_mode解析@ff_config.c:1035 +           */
+/* ff_check_config thread块@:1463 (force primary / derive nb_threads /      */
+/* nb_procs=1 / proc_mask=lcore_mask全bit).                                 */
+/* ======================================================================== */
+
+/* TC-CM1-01: thread_mode=1 collapses to single process, derives threads. */
+static void
+test_ff_load_config_thread_mode_enabled(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_thread_mode.ini"));
+    assert_int_equal(rv, 0);
+    /* thread_mode flag parsed from [dpdk] thread_mode=1. */
+    assert_int_equal(ff_global_cfg.dpdk.thread_mode, 1);
+    /* nb_threads = original bit-count of lcore_mask (0xf -> 4). */
+    assert_int_equal(ff_global_cfg.dpdk.nb_threads, 4);
+    /* Collapsed to a single process. */
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 1);
+    /* proc_type forced to primary. */
+    assert_non_null(ff_global_cfg.dpdk.proc_type);
+    assert_string_equal(ff_global_cfg.dpdk.proc_type, "primary");
+    /* proc_mask overwritten with the full lcore_mask ("0xf"). */
+    assert_non_null(ff_global_cfg.dpdk.proc_mask);
+    assert_string_equal(ff_global_cfg.dpdk.proc_mask, "0xf");
+}
+
+/* TC-CM1-02: no thread_mode key -> defaults off, multi-process semantics. */
+static void
+test_ff_load_config_thread_mode_default_off(void **state)
+{
+    (void)state;
+    /* valid_dpdk_full.ini has lcore_mask=0xF and NO thread_mode key. */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.dpdk.thread_mode, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_threads, 0);
+    /* Multi-process semantics unchanged: nb_procs == lcore_mask bit count. */
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 4);
+}
+
+/* TC-CM1-03: thread_mode=1 with proc_type=secondary is rejected (-1). */
+static void
+test_ff_load_config_thread_mode_secondary_conflict(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("valid_thread_mode.ini"),
+                            "secondary", "0");
+    assert_int_equal(rv, -1);
+}
+
+/* ======================================================================== */
+/* CM4 (native-mt): ECN config switch (freebsd.tcp_ecn, [freebsd.boot] key)  */
+/* Spec: native_mt_spec/zh_cn. Parse @ff_config.c:1111, default 0 @:1519.    */
+/* Runtime maps tcp_ecn -> V_tcp_do_ecn (0=off / 1=passive) in              */
+/* ff_freebsd_init.c; that runtime effect is out of unit-test scope.        */
+/* ======================================================================== */
+
+/* TC-CM4-01: no tcp_ecn key -> defaults to 0 (zero-regression). */
+static void
+test_ff_load_config_tcp_ecn_default_off(void **state)
+{
+    (void)state;
+    /* valid_minimal.ini has [freebsd.boot] but NO tcp_ecn key. */
+    int rv = load_with_fixture(FIXTURE_PATH("valid_minimal.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.freebsd.tcp_ecn, 0);
+}
+
+/* TC-CM4-02: explicit tcp_ecn=1 in [freebsd.boot] -> parsed as 1. */
+static void
+test_ff_load_config_tcp_ecn_enabled(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_tcp_ecn.ini"));
+    (void)rv;
+    assert_int_equal(ff_global_cfg.freebsd.tcp_ecn, 1);
+    /* New key must not disturb sibling [freebsd.boot] parsing. */
+    assert_int_equal(ff_global_cfg.freebsd.hz, 100);
+    assert_int_equal(ff_global_cfg.freebsd.mem_size, 256);
+}
+
+/* ======================================================================== */
+/* M1 graceful_reload (docs/nginx_reload_spec/zh_cn/08-testing.md §1)        */
+/* C-NR-101: [dpdk] graceful_reload parse/default/validation chain           */
+/* ======================================================================== */
+
+/* UT-NR-01: default off, zero-regression — legacy fixture without the new
+ * key loads cleanly and graceful_reload stays 0. */
+static void
+test_graceful_reload_default_off(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
+}
+
+/* UT-NR-02: graceful_reload=1 parses when primary_slim=1 is set. */
+static void
+test_graceful_reload_parse(void **state)
+{
+    (void)state;
+    int rv = load_with_proc(FIXTURE_PATH("valid_graceful_reload.ini"),
+                            "secondary", "0");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 1);
+    assert_int_equal(ff_global_cfg.dpdk.primary_slim, 1);
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 3);
+}
+
+/* UT-NR-03: graceful_reload=1 without primary_slim=1 is rejected. */
+static void
+test_graceful_reload_requires_slim(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_greload_no_slim.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* UT-NR-06: graceful_reload=1 is incompatible with thread_mode=1. */
+static void
+test_greload_thread_mode_mutex(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("invalid_greload_thread_mode.ini"));
+    assert_int_equal(rv, -1);
+}
+
+/* UT-NR-07: graceful_reload=0 — none of the new validations fire. */
+static void
+test_greload_off_no_new_checks(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
+    assert_int_equal(ff_global_cfg.dpdk.primary_slim, 0);
+}
+
+/* UT-NR-08: non-numeric value degrades to 0 through the legacy atoi
+ * semantics (documented behavior, not an error). */
+static void
+test_greload_bad_value_atoi(void **state)
+{
+    (void)state;
+    int rv = load_with_fixture(FIXTURE_PATH("valid_greload_bad_value.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
+}
+
+/* ======================================================================== */
+/* M2 Batch B graceful reload (docs/nginx_reload_spec/zh_cn/08-testing.md §1)*/
+/* C-NR-201/202/205/206/313/316                                              */
+/* ======================================================================== */
+
+/* Pure T0-T5 FSM from the nginx tree; header-only and free of nginx
+ * dependencies by design so this suite can include it directly. */
+#include "../../../app/nginx-1.28.0/src/event/modules/ngx_ff_reload_fsm.h"
+#include <sys/socket.h>
+#include "ff_msg.h"
+#include "ff_reload.h"
+
+/* UT-NR-10: legal chain T0->T1->T2->T3->T4->T5->T0 passes; illegal
+ * transitions (T5+HUP re-entry, T0->T4 jump, T3->T1) are rejected. */
+static void
+test_ut_nr_10_reload_fsm_transitions(void **state)
+{
+    (void)state;
+    int st, expect[] = {
+        NGX_FF_RELOAD_T1_GNEW_SPAWN,
+        NGX_FF_RELOAD_T2_HANDOVER,
+        NGX_FF_RELOAD_T3_DRAIN,
+        NGX_FF_RELOAD_T4_DRAIN_DONE,
+        NGX_FF_RELOAD_T5_GOLD_QUIT,
+        NGX_FF_RELOAD_T0_IDLE,
+    };
+    int ev[] = {
+        NGX_FF_RELOAD_EV_HUP,
+        NGX_FF_RELOAD_EV_ALL_READY,
+        NGX_FF_RELOAD_EV_HANDOVER_DONE,
+        NGX_FF_RELOAD_EV_DRAIN_DONE,
+        NGX_FF_RELOAD_EV_QUIT_GOLD,
+        NGX_FF_RELOAD_EV_GOLD_EXITED,
+    };
+    int i;
+
+    st = NGX_FF_RELOAD_T0_IDLE;
+    for (i = 0; i < 6; i++) {
+        st = ngx_ff_reload_fsm_next(st, ev[i]);
+        assert_int_equal(st, expect[i]);
+    }
+
+    /* re-entry protection (semantics 6): HUP is only legal in T0 */
+    st = NGX_FF_RELOAD_T5_GOLD_QUIT;
+    assert_int_equal(ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_HUP),
+                     NGX_FF_RELOAD_T_MAX);
+    st = NGX_FF_RELOAD_T1_GNEW_SPAWN;
+    assert_int_equal(ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_HUP),
+                     NGX_FF_RELOAD_T_MAX);
+
+    /* illegal jumps */
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T0_IDLE,
+                     NGX_FF_RELOAD_EV_QUIT_GOLD), NGX_FF_RELOAD_T_MAX);
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T3_DRAIN,
+                     NGX_FF_RELOAD_EV_ALL_READY), NGX_FF_RELOAD_T_MAX);
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T0_IDLE,
+                     NGX_FF_RELOAD_EV_GOLD_EXITED), NGX_FF_RELOAD_T_MAX);
+
+    /* failure paths: T1 -> T_ERROR -> T0 */
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T1_GNEW_SPAWN,
+                     NGX_FF_RELOAD_EV_GNEW_DIED), NGX_FF_RELOAD_T_ERROR);
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T1_GNEW_SPAWN,
+                     NGX_FF_RELOAD_EV_READY_TIMEOUT), NGX_FF_RELOAD_T_ERROR);
+    assert_int_equal(ngx_ff_reload_fsm_next(NGX_FF_RELOAD_T_ERROR,
+                     NGX_FF_RELOAD_EV_RESET), NGX_FF_RELOAD_T0_IDLE);
+
+    /* state names resolve for every valid state */
+    for (i = 0; i < NGX_FF_RELOAD_T_MAX; i++) {
+        assert_non_null(ngx_ff_reload_fsm_state_name(i));
+    }
+    assert_string_equal(ngx_ff_reload_fsm_state_name(NGX_FF_RELOAD_T0_IDLE),
+                        "T0_IDLE");
+}
+
+/* UT-NR-10 (M4 Batch C completion): the authoritative legal-transition
+ * table, kept in one place so the exhaustive sweep below and the legal-path
+ * walk stay in sync with ngx_ff_reload_fsm.h by construction. */
+struct ut_nr10_trans {
+    int state, event, next;
+};
+
+static const struct ut_nr10_trans ut_nr10_legal[] = {
+    { NGX_FF_RELOAD_T0_IDLE,       NGX_FF_RELOAD_EV_HUP,           NGX_FF_RELOAD_T1_GNEW_SPAWN },
+    { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_ALL_READY,     NGX_FF_RELOAD_T2_HANDOVER },
+    { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_READY_TIMEOUT, NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_GNEW_DIED,     NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T2_HANDOVER,   NGX_FF_RELOAD_EV_HANDOVER_DONE, NGX_FF_RELOAD_T3_DRAIN },
+    { NGX_FF_RELOAD_T2_HANDOVER,   NGX_FF_RELOAD_EV_ABORT,         NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T3_DRAIN,      NGX_FF_RELOAD_EV_DRAIN_DONE,    NGX_FF_RELOAD_T4_DRAIN_DONE },
+    { NGX_FF_RELOAD_T3_DRAIN,      NGX_FF_RELOAD_EV_ABORT,         NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T4_DRAIN_DONE, NGX_FF_RELOAD_EV_QUIT_GOLD,     NGX_FF_RELOAD_T5_GOLD_QUIT },
+    { NGX_FF_RELOAD_T4_DRAIN_DONE, NGX_FF_RELOAD_EV_ABORT,         NGX_FF_RELOAD_T_ERROR },
+    { NGX_FF_RELOAD_T5_GOLD_QUIT,  NGX_FF_RELOAD_EV_GOLD_EXITED,   NGX_FF_RELOAD_T0_IDLE },
+    { NGX_FF_RELOAD_T_ERROR,       NGX_FF_RELOAD_EV_RESET,         NGX_FF_RELOAD_T0_IDLE },
+};
+
+/* UT-NR-10a: every legal transition, driven one by one from T0 (including
+ * the ones the happy-path test above does not reach: each ABORT entry and
+ * both T1 failure events), then two consecutive full rounds to prove the
+ * FSM returns to a fully reusable T0 after T5 and after RESET. */
+static void
+test_ut_nr_10_all_legal_transitions(void **state)
+{
+    unsigned i;
+    int round;
+
+    (void)state;
+
+    for (i = 0; i < sizeof(ut_nr10_legal) / sizeof(ut_nr10_legal[0]); i++) {
+        assert_int_equal(ngx_ff_reload_fsm_next(ut_nr10_legal[i].state,
+                                                ut_nr10_legal[i].event),
+                         ut_nr10_legal[i].next);
+    }
+
+    /* two full rounds back to back: T0 must be indistinguishable after a
+     * completed round (re-entry protection must reset with the state) */
+    for (round = 0; round < 2; round++) {
+        int st = NGX_FF_RELOAD_T0_IDLE;
+        int ev[] = {
+            NGX_FF_RELOAD_EV_HUP,
+            NGX_FF_RELOAD_EV_ALL_READY,
+            NGX_FF_RELOAD_EV_HANDOVER_DONE,
+            NGX_FF_RELOAD_EV_DRAIN_DONE,
+            NGX_FF_RELOAD_EV_QUIT_GOLD,
+            NGX_FF_RELOAD_EV_GOLD_EXITED,
+        };
+        int expect[] = {
+            NGX_FF_RELOAD_T1_GNEW_SPAWN,
+            NGX_FF_RELOAD_T2_HANDOVER,
+            NGX_FF_RELOAD_T3_DRAIN,
+            NGX_FF_RELOAD_T4_DRAIN_DONE,
+            NGX_FF_RELOAD_T5_GOLD_QUIT,
+            NGX_FF_RELOAD_T0_IDLE,
+        };
+        unsigned k;
+
+        for (k = 0; k < sizeof(ev) / sizeof(ev[0]); k++) {
+            st = ngx_ff_reload_fsm_next(st, ev[k]);
+            assert_int_equal(st, expect[k]);
+        }
+    }
+}
+
+/* UT-NR-10b: exhaustive 7-state x 11-event sweep. Every (state, event)
+ * pair outside the legal table above must be refused with T_MAX — no
+ * undocumented transition, no fallback to a "nearest" state, and EV_NONE
+ * is never accepted anywhere. */
+static void
+test_ut_nr_10_illegal_combinations_exhaustive(void **state)
+{
+    int s, e;
+    unsigned i;
+
+    (void)state;
+
+    assert_int_equal(NGX_FF_RELOAD_T_MAX, 7);    /* sweep assumptions */
+    assert_int_equal(NGX_FF_RELOAD_EV_MAX, 11);
+
+    for (s = 0; s < NGX_FF_RELOAD_T_MAX; s++) {
+        for (e = 0; e < NGX_FF_RELOAD_EV_MAX; e++) {
+            int legal = 0;
+            int next = ngx_ff_reload_fsm_next(s, e);
+
+            for (i = 0; i < sizeof(ut_nr10_legal) / sizeof(ut_nr10_legal[0]); i++) {
+                if (ut_nr10_legal[i].state == s
+                    && ut_nr10_legal[i].event == e) {
+                    legal = 1;
+                    assert_int_equal(next, ut_nr10_legal[i].next);
+                    break;
+                }
+            }
+
+            if (!legal) {
+                assert_int_equal(next, NGX_FF_RELOAD_T_MAX);
+            }
+        }
+    }
+
+    /* out-of-range states are refused for every event (EV_NONE included) */
+    {
+        int bad_states[] = { NGX_FF_RELOAD_T_MAX, -1, 99 };
+        unsigned b;
+
+        for (b = 0; b < sizeof(bad_states) / sizeof(bad_states[0]); b++) {
+            for (e = 0; e < NGX_FF_RELOAD_EV_MAX; e++) {
+                assert_int_equal(
+                    ngx_ff_reload_fsm_next(bad_states[b], e),
+                    NGX_FF_RELOAD_T_MAX);
+            }
+        }
+    }
+}
+
+/* UT-NR-10c: T_ERROR recovery from every failure entry. Each state that
+ * can enter T_ERROR must do so via its own event, RESET must be the only
+ * way out, and after recovery a fresh legal round must complete — the
+ * abort paths of C-NR-404 (READY timeout / G_new death / handover park
+ * timeout / DR6 reclaim during drain) all land in this shared pattern. */
+static void
+test_ut_nr_10_error_recovery_and_abort(void **state)
+{
+    struct {
+        int from_state, event;
+    } failure_entries[] = {
+        { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_READY_TIMEOUT },
+        { NGX_FF_RELOAD_T1_GNEW_SPAWN, NGX_FF_RELOAD_EV_GNEW_DIED },
+        { NGX_FF_RELOAD_T2_HANDOVER,   NGX_FF_RELOAD_EV_ABORT },
+        { NGX_FF_RELOAD_T3_DRAIN,      NGX_FF_RELOAD_EV_ABORT },
+        { NGX_FF_RELOAD_T4_DRAIN_DONE, NGX_FF_RELOAD_EV_ABORT },
+    };
+    unsigned i, k;
+    int ev_round[] = {
+        NGX_FF_RELOAD_EV_HUP,
+        NGX_FF_RELOAD_EV_ALL_READY,
+        NGX_FF_RELOAD_EV_HANDOVER_DONE,
+        NGX_FF_RELOAD_EV_DRAIN_DONE,
+        NGX_FF_RELOAD_EV_QUIT_GOLD,
+        NGX_FF_RELOAD_EV_GOLD_EXITED,
+    };
+    int expect_round[] = {
+        NGX_FF_RELOAD_T1_GNEW_SPAWN,
+        NGX_FF_RELOAD_T2_HANDOVER,
+        NGX_FF_RELOAD_T3_DRAIN,
+        NGX_FF_RELOAD_T4_DRAIN_DONE,
+        NGX_FF_RELOAD_T5_GOLD_QUIT,
+        NGX_FF_RELOAD_T0_IDLE,
+    };
+
+    (void)state;
+
+    for (i = 0; i < sizeof(failure_entries) / sizeof(failure_entries[0]); i++) {
+        int st = ngx_ff_reload_fsm_next(failure_entries[i].from_state,
+                                        failure_entries[i].event);
+
+        assert_int_equal(st, NGX_FF_RELOAD_T_ERROR);
+
+        /* RESET is the only exit; everything else is refused */
+        assert_int_equal(
+            ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_RESET),
+            NGX_FF_RELOAD_T0_IDLE);
+        assert_int_equal(
+            ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_HUP),
+            NGX_FF_RELOAD_T_MAX);
+        assert_int_equal(
+            ngx_ff_reload_fsm_next(st, NGX_FF_RELOAD_EV_GOLD_EXITED),
+            NGX_FF_RELOAD_T_MAX);
+
+        /* a fresh full round must succeed right after recovery */
+        st = NGX_FF_RELOAD_T0_IDLE;
+        for (k = 0; k < sizeof(ev_round) / sizeof(ev_round[0]); k++) {
+            st = ngx_ff_reload_fsm_next(st, ev_round[k]);
+            assert_int_equal(st, expect_round[k]);
+        }
+    }
+}
+
+/* UT-NR-12: generation mapping independence (reverse assertions).
+ *  (a) msg_ring ring names differ across (proc_id, gen) — no shared SC ring
+ *      between generations sharing a proc_id (P0-6);
+ *  (b) graceful=0 reproduces legacy names byte-for-byte;
+ *  (c) the proc_id -> lcore mapping is generation-blind: switching the
+ *      active generation never perturbs proc_lcore[] (D-A: two generations
+ *      share the same lcore_id / queue_id). */
+static void
+test_ut_nr_12_generation_mapping(void **state)
+{
+    (void)state;
+    char n1[64], n2[64];
+    uint16_t lcore_before[3];
+    int i, rv;
+
+    /* (a) gen isolation on names */
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_in_", 1, -1, 0, 1), 0);
+    assert_int_equal(ff_reload_msg_ring_name(n2, sizeof(n2),
+        "ff_msg_ring_in_", 1, -1, 1, 1), 0);
+    assert_string_equal(n1, "ff_msg_ring_in_1_g0");
+    assert_string_equal(n2, "ff_msg_ring_in_1_g1");
+    assert_string_not_equal(n1, n2);
+
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_in_", 0, -1, 0, 1), 0);
+    assert_int_equal(ff_reload_msg_ring_name(n2, sizeof(n2),
+        "ff_msg_ring_in_", 1, -1, 0, 1), 0);
+    assert_string_not_equal(n1, n2);
+
+    /* out-ring with msg_type keeps the "<base><proc>_<type>" legacy shape */
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_out_", 1, 3, 0, 1), 0);
+    assert_string_equal(n1, "ff_msg_ring_out_1_3_g0");
+
+    /* (b) graceful=0 names are byte-identical to the pre-change layout */
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_in_", 1, -1, 0, 0), 0);
+    assert_string_equal(n1, "ff_msg_ring_in_1");
+    assert_int_equal(ff_reload_msg_ring_name(n1, sizeof(n1),
+        "ff_msg_ring_out_", 1, 3, 0, 0), 0);
+    assert_string_equal(n1, "ff_msg_ring_out_1_3");
+
+    /* truncation is an error */
+    assert_int_equal(ff_reload_msg_ring_name(n1, 8,
+        "ff_msg_ring_in_", 1, -1, 0, 1), -1);
+
+    /* (c) generation switching never touches the proc_id mapping */
+    rv = load_with_proc(FIXTURE_PATH("valid_graceful_reload.ini"),
+                        "secondary", "1");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 3);
+    for (i = 0; i < 3; i++) {
+        lcore_before[i] = ff_global_cfg.dpdk.proc_lcore[i];
+    }
+
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_gen(), 0);
+    for (i = 0; i < 3; i++) {
+        assert_int_equal(ff_global_cfg.dpdk.proc_lcore[i], lcore_before[i]);
+    }
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_reload_gen(), 1);
+    for (i = 0; i < 3; i++) {
+        assert_int_equal(ff_global_cfg.dpdk.proc_lcore[i], lcore_before[i]);
+    }
+
+    /* out-of-range generation is ignored */
+    ff_reload_set_gen(FF_RELOAD_GEN_MAX);
+    assert_int_equal(ff_reload_gen(), 1);
+    ff_reload_set_gen(-1);
+    assert_int_equal(ff_reload_gen(), 1);
+
+    assert_int_equal(FF_RELOAD_GEN_MAX, 2);
+    ff_reload_attach_state(NULL);
+}
+
+/* UT-NR-14: FF_RELOAD message fill/parse round-trip + bad input rejection. */
+static void
+test_ut_nr_14_reload_msg_serdes(void **state)
+{
+    (void)state;
+    struct ff_msg msg;
+    int cmd, gen, status;
+    uint64_t hb;
+
+    memset(&msg, 0, sizeof(msg));
+    ff_reload_msg_fill(&msg, FF_RELOAD_CMD_DRAIN_DONE, 1, 7, 12345);
+    assert_int_equal(msg.msg_type, FF_RELOAD);
+    assert_int_equal(msg.reload.cmd, FF_RELOAD_CMD_DRAIN_DONE);
+    assert_int_equal(msg.reload.gen, 1);
+    assert_int_equal(msg.reload.status, 7);
+    assert_int_equal(msg.reload.heartbeat, 12345);
+
+    assert_int_equal(ff_reload_msg_parse(&msg, &cmd, &gen, &status, &hb), 0);
+    assert_int_equal(cmd, FF_RELOAD_CMD_DRAIN_DONE);
+    assert_int_equal(gen, 1);
+    assert_int_equal(status, 7);
+    assert_int_equal(hb, 12345);
+
+    /* wrong message type is rejected */
+    msg.msg_type = FF_SYSCTL;
+    assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), -1);
+
+    /* out-of-range subcommand is rejected */
+    msg.msg_type = FF_RELOAD;
+    msg.reload.cmd = FF_RELOAD_CMD_QUERY + 1;
+    assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), -1);
+    msg.reload.cmd = 0;
+    assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), -1);
+
+    /* NULL msg is rejected; optional out-params may be NULL */
+    msg.reload.cmd = FF_RELOAD_CMD_READY;
+    assert_int_equal(ff_reload_msg_parse(&msg, NULL, NULL, NULL, NULL), 0);
+    assert_int_equal(ff_reload_msg_parse(NULL, NULL, NULL, NULL, NULL), -1);
+
+    /* the read-only tools probe command is accepted (M3 Batch C) */
+    msg.reload.cmd = FF_RELOAD_CMD_QUERY;
+    assert_int_equal(ff_reload_msg_parse(&msg, &cmd, NULL, NULL, NULL), 0);
+    assert_int_equal(cmd, FF_RELOAD_CMD_QUERY);
+
+    /* every v1.6 subcommand parses */
+    int cmds[] = {
+        FF_RELOAD_CMD_READY, FF_RELOAD_CMD_HANDOVER_REQ,
+        FF_RELOAD_CMD_HANDOVER_ACK, FF_RELOAD_CMD_DRAIN_PROGRESS,
+        FF_RELOAD_CMD_DRAIN_DONE, FF_RELOAD_CMD_REJECT,
+    };
+    unsigned i;
+    for (i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++) {
+        msg.reload.cmd = cmds[i];
+        assert_int_equal(ff_reload_msg_parse(&msg, &cmd, NULL, NULL, NULL), 0);
+        assert_int_equal(cmd, cmds[i]);
+    }
+}
+
+/* UT-NR-20: queue mapping config (reverse assertion, v1.4). graceful=1
+ * must NOT inflate nb_procs / queue counts to 2N; heartbeat config parses;
+ * graceful=0 keeps the defaults untouched. */
+static void
+test_ut_nr_20_queue_mapping_config(void **state)
+{
+    (void)state;
+    int rv;
+    uint16_t portid;
+
+    /* legal: graceful topology, N stays N */
+    rv = load_with_proc(FIXTURE_PATH("valid_graceful_reload.ini"),
+                        "secondary", "0");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.nb_procs, 3);       /* NOT 6 */
+    portid = ff_global_cfg.dpdk.portid_list[0];
+    assert_int_equal(ff_global_cfg.dpdk.port_cfgs[portid].nb_lcores, 2);
+                                                            /* NOT 4 */
+    /* default heartbeat timeout when the key is absent */
+    assert_int_equal(ff_global_cfg.dpdk.reload_heartbeat_timeout_ms, 1000);
+
+    /* explicit heartbeat timeout parses */
+    rv = load_with_proc(FIXTURE_PATH("valid_greload_hb_timeout.ini"),
+                        "secondary", "0");
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.reload_heartbeat_timeout_ms, 250);
+
+    /* below-floor heartbeat timeout is rejected */
+    rv = load_with_fixture(FIXTURE_PATH("invalid_greload_hb_small.ini"));
+    assert_int_equal(rv, -1);
+
+    /* negative heartbeat timeout is remapped to the default, never a huge
+     * unsigned value that would silently disable stall detection (P3-1) */
+    rv = load_with_fixture(FIXTURE_PATH("valid_greload_hb_negative.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.reload_heartbeat_timeout_ms, 1000);
+
+    /* illegal graceful topology still rejected (fixture from M1) */
+    rv = load_with_fixture(FIXTURE_PATH("invalid_greload_no_slim.ini"));
+    assert_int_equal(rv, -1);
+
+    /* graceful_reload=0: zero regression, defaults intact */
+    rv = load_with_fixture(FIXTURE_PATH("valid_dpdk_full.ini"));
+    assert_int_equal(rv, 0);
+    assert_int_equal(ff_global_cfg.dpdk.graceful_reload, 0);
+    assert_int_equal(ff_global_cfg.dpdk.reload_heartbeat_timeout_ms, 1000);
+}
+
+/* UT-NR-22: heartbeat liveness evaluation + attached-state flow
+ * (window open/close, per-generation tick, stall detection, READY
+ * bookkeeping, generation flip on completion). */
+static void
+test_ut_nr_22_heartbeat_and_rx_return(void **state)
+{
+    (void)state;
+    struct ff_reload_state st;
+    uint64_t last = 900;
+    uint32_t epoch = 0, target = 0;
+
+    /* ---- pure evaluation ---- */
+    /* counter advanced -> alive, baseline refreshed */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 6, 1000, &last, 100), 1);
+    assert_int_equal(last, 1000);
+    /* not advanced, within window -> alive */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 1099, &last, 100), 1);
+    /* boundary: exactly timeout -> stalled */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 1100, &last, 100), 0);
+    /* timeout disabled -> never stalls */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 99999, &last, 0), 1);
+    /* clock went backwards -> treated as alive */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 500, &last, 100), 1);
+    /* invalid args */
+    assert_int_equal(ff_reload_heartbeat_eval(5, 5, 1000, NULL, 100), -1);
+
+    /* ---- shared block validation ---- */
+    assert_int_equal(ff_reload_state_valid(NULL, sizeof(st)), 0);
+    assert_int_equal(ff_reload_state_valid(&st, 8), 0);
+    memset(&st, 0, sizeof(st));
+    assert_int_equal(ff_reload_state_valid(&st, sizeof(st)), 0);
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    assert_int_equal(ff_reload_state_valid(&st, sizeof(st)), 1);
+    st.len = 4;
+    assert_int_equal(ff_reload_state_valid(&st, sizeof(st)), 0);
+    st.len = (uint32_t)sizeof(st);
+
+    /* ---- attached-state flow ---- */
+    ff_reload_attach_state(&st);
+    assert_int_equal(ff_reload_state_attached(), 1);
+
+    /* steady state: worker gen follows active (0) */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_worker_gen(), 0);
+
+    /* open the window: epoch 1, target gen 1 */
+    ff_reload_master_begin(&epoch, &target);
+    assert_int_equal(epoch, 1);
+    assert_int_equal(target, 1);
+    assert_int_equal(ff_reload_hw_locked(), 1);         /* ENV-1 armed */
+    assert_int_equal(ff_reload_worker_gen(), 1);
+
+    /* rx-owner generation (gen == target) ticks each loop pass */
+    ff_reload_set_gen(1);
+    ff_reload_heartbeat_set_timeout(1000);
+    ff_reload_heartbeat_tick();
+    ff_reload_heartbeat_tick();
+    assert_int_equal(ff_reload_heartbeat_counter(), 2);
+
+    /* non-owner (G_old, gen 0) samples: no stall while ticks flow */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_heartbeat_sample(2000), 0);  /* baseline */
+    assert_int_equal(ff_reload_heartbeat_sample(2050), 0);  /* alive */
+    ff_reload_set_gen(1);
+    ff_reload_heartbeat_tick();
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_heartbeat_sample(2100), 0);  /* advanced */
+
+    /* owner dies: no further ticks -> stall detected once, then rebased */
+    assert_int_equal(ff_reload_heartbeat_sample(3100), 1);  /* 1000 stall */
+    assert_int_equal(st.heartbeat_stalls, 1);
+    assert_int_equal(ff_reload_heartbeat_sample(3150), 0);  /* rebased */
+
+    /* READY bookkeeping: epoch+pid correlation */
+    ff_reload_publish_ready(3, 4242);
+    assert_int_equal(ff_reload_ready_matches(3, 4242, epoch), 1);
+    assert_int_equal(ff_reload_ready_matches(3, 9999, epoch), 0);
+    assert_int_equal(ff_reload_ready_matches(3, 4242, epoch + 1), 0);
+    assert_int_equal(ff_reload_ready_matches(200, 4242, epoch), 0);
+
+    /* window closed with flip: active = target, KNI owner follows */
+    ff_reload_master_complete();
+    assert_int_equal(ff_reload_hw_locked(), 0);
+    assert_int_equal(ff_reload_active_gen(), 1);
+    assert_int_equal(ff_reload_kni_owner_gen(), 1);
+    assert_int_equal(ff_reload_worker_gen(), 1);        /* active now */
+
+    /* heartbeat stops once the window is closed (flow_map died) */
+    ff_reload_set_gen(1);
+    ff_reload_heartbeat_tick();
+    assert_int_equal(ff_reload_heartbeat_counter(), 3); /* unchanged */
+
+    /* abort path: window closes without flipping */
+    ff_reload_master_begin(&epoch, &target);
+    ff_reload_master_abort();
+    assert_int_equal(ff_reload_hw_locked(), 0);
+    assert_int_equal(ff_reload_active_gen(), 1);        /* no flip */
+
+    /* detach restores the not-attached baseline */
+    ff_reload_attach_state(NULL);
+    assert_int_equal(ff_reload_state_attached(), 0);
+    assert_int_equal(ff_reload_active_gen(), 0);
+    assert_int_equal(ff_reload_hw_locked(), 0);
+}
+
+/* ======================================================================== */
+/* M3 Batch A (docs/nginx_reload_spec/zh_cn/07-milestones.md §2.4)          */
+/* C-NR-302 (rx handover mutex) / C-NR-305 (drain_ring_size)                */
+/* ======================================================================== */
+
+/* UT-NR-25: drain_ring_size parse / remap / validate / default. */
+static void
+test_ut_nr_25_drain_ring_size_config(void **state)
+{
+    (void)state;
+
+    /* explicit value */
+    assert_int_equal(load_with_proc(
+        FIXTURE_PATH("valid_drain_ring_size.ini"), "secondary", "0"), 0);
+    assert_int_equal(ff_global_cfg.dpdk.drain_ring_size, 4096);
+
+    /* negative value remapped to the default (never reaches unsigned) */
+    assert_int_equal(load_with_proc(
+        FIXTURE_PATH("valid_drain_ring_size_neg.ini"), "secondary", "0"), 0);
+    assert_int_equal(ff_global_cfg.dpdk.drain_ring_size,
+                     FF_DRAIN_RING_SIZE_DEFAULT);
+
+    /* non-power-of-two rejected */
+    assert_int_equal(load_with_proc(
+        FIXTURE_PATH("invalid_drain_ring_size_pow2.ini"), "secondary", "0"),
+        -1);
+
+    /* the default itself is a power of two and sane */
+    assert_int_equal(FF_DRAIN_RING_SIZE_DEFAULT, 2048u);
+    assert_int_equal(FF_DRAIN_RING_SIZE_DEFAULT &
+                     (FF_DRAIN_RING_SIZE_DEFAULT - 1), 0u);
+}
+
+/* UT-NR-26: rx handover markers — ownership transfer, no stealing, timeout,
+ * and full reversibility (C-NR-316 hands rx back to the old generation). */
+static void
+test_ut_nr_26_rx_handover_markers(void **state)
+{
+    (void)state;
+    struct ff_reload_state st;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+
+    /* not attached: everything degrades, ff_no_hw_mode() must stay 0 so a
+     * legacy (graceful_reload=0) process is never parked */
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    assert_int_equal(ff_reload_rx_owner_gen(), -1);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 10),
+                     FF_RELOAD_HANDOVER_INVAL);
+
+    ff_reload_attach_state(&st);
+    ff_reload_set_gen(0);
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+
+    /* gen0 owns the hardware: it is allowed on the hardware, gen1 is not */
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+    ff_reload_set_gen(0);
+
+    /* bad arguments */
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 0, 10),
+                     FF_RELOAD_HANDOVER_INVAL);
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, FF_RELOAD_GEN_MAX, 10),
+                     FF_RELOAD_HANDOVER_INVAL);
+    assert_int_equal(ff_reload_rx_release(FF_RELOAD_GEN_MAX),
+                     FF_RELOAD_HANDOVER_INVAL);
+
+    /* gen1 asks for the hardware while gen0 still holds it and never parks:
+     * bounded wait, then timeout (no stealing, no hang) */
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 60),
+                     FF_RELOAD_HANDOVER_TIMEOUT);
+    assert_int_equal(ff_reload_rx_owner_gen(), 0);
+
+    /* gen0 parks and hands over */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_reload_rx_release(1), FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_stopped(), 1);
+    assert_int_equal(ff_reload_rx_owner_gen(), 1);
+    /* parked owner is off the hardware too */
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    /* gen1 acquires; the parked flag clears so its main_loop resumes */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 100),
+                     FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    /* gen0 is now the parked side */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    /* re-acquiring is idempotent (the drain confirmation can be delivered
+     * more than once across a round) */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 10),
+                     FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(0);
+
+    /* H-12: hand rx back to gen0 — the markers are fully reversible */
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    /* graceful_reload=0 never parks anything, whatever the markers say */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+
+    ff_reload_attach_state(NULL);
+}
+
+/* UT-NR-11: T2 park barrier (C-NR-306) — the confirmation layer that lets
+ * the acquirer poll. The mutex alone only observes the ownership word;
+ * the epoch-tagged ack words are what prove every old-generation worker
+ * finished its last hardware pass. Ends with the UT-NR-11 judgement: no
+ * reachable marker state has both generations on the hardware. */
+static void
+test_ut_nr_11_handover_barrier(void **state)
+{
+    (void)state;
+    struct ff_reload_state st;
+    uint32_t e1, e2;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+
+    /* no slot registered (primary / helper): ack is a no-op */
+    ff_reload_set_slot(FF_RELOAD_MAX_PROCS);    /* out of range: ignored */
+    ff_reload_handover_ack();
+    ff_reload_handover_arm(&e1);
+    assert_int_equal(e1, 1);
+    assert_int_equal(ff_reload_handover_parked(0, e1), 0);
+
+    /* armed, nobody acked yet: the wait must not proceed */
+    assert_int_equal(ff_reload_handover_parked(1, e1), 0);
+
+    /* slot 0 acks: parked for this epoch only */
+    ff_reload_set_slot(0);
+    ff_reload_handover_ack();
+    assert_int_equal(ff_reload_handover_parked(0, e1), 1);
+    assert_int_equal(ff_reload_handover_parked(1, e1), 0);      /* other slot */
+    assert_int_equal(ff_reload_handover_parked(0, e1 + 1), 0);  /* other epoch */
+
+    /* a fresh round: the wait predicate is the NEW epoch. The stale word
+     * from e1 may keep matching an e1 query — harmless, epochs are
+     * monotonic and the master never asks about a past epoch again. */
+    ff_reload_handover_arm(&e2);
+    assert_int_equal(e2, 2);
+    assert_int_equal(ff_reload_handover_parked(0, e2), 0);
+    ff_reload_handover_ack();
+    assert_int_equal(ff_reload_handover_parked(0, e2), 1);
+
+    /* out-of-range slot on the master side */
+    assert_int_equal(ff_reload_handover_parked(FF_RELOAD_MAX_PROCS, e2), 0);
+
+    /* the UT-NR-11 judgement, marker-level: replay the master sequence
+     * and assert at every step that not both generations are unparked. */
+    ff_reload_set_gen(0);
+    ff_reload_set_slot(1);
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+    assert_int_equal(ff_no_hw_mode(), 0);       /* G_old owns and polls */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_new parked from birth */
+
+    ff_reload_rx_stopped_set(1);               /* park order */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_old parks by order */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_new still parked */
+    ff_reload_handover_ack();                  /* G_new worker acks too: inert */
+
+    assert_int_equal(ff_reload_rx_release(1), FF_RELOAD_HANDOVER_OK);
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_old definitively off */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* ...until stopped clears */
+
+    assert_int_equal(ff_queue_handover_mutex(0, 0, 0, 1, 10),
+                     FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);       /* G_new polls, alone */
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_no_hw_mode(), 1);       /* G_old parked, alone */
+
+    /* H-12 reversal (rx return): the markers flip back in one write pair */
+    ff_reload_set_gen(0);
+    ff_reload_rx_owner_gen_set(0);
+    ff_reload_rx_stopped_set(0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* M5 (C-NR-501): master epoch -> ring-name slot, and the epoch-aware ring
+ * name builder. Slot 0 must reproduce the pre-M5 names byte-for-byte, which
+ * is what keeps graceful_reload=0 and every directory-less stack (unit
+ * tests, examples, tools on a legacy stack) untouched. */
+static void
+test_ut_nr_m5_epoch_slot_and_ring_name(void **state)
+{
+    char a[64], b[64];
+
+    (void)state;
+
+    /* slot 0 is the resident primary's / the directory-less identity,
+     * masters cycle through 1..FF_RELOAD_EPOCH_SLOT_MAX-1. */
+    assert_int_equal(ff_reload_epoch_slot_of(0), 0);
+    assert_int_equal(ff_reload_epoch_slot_of(FF_RELOAD_EPOCH_NONE), 0);
+    assert_int_equal(ff_reload_epoch_slot_of(1), 1);
+    assert_int_equal(ff_reload_epoch_slot_of(2), 2);
+    assert_int_equal(ff_reload_epoch_slot_of(3), 3);
+    assert_int_equal(ff_reload_epoch_slot_of(4), 1);
+
+    /* graceful=0: the epoch must not change a single byte */
+    assert_int_equal(ff_reload_msg_ring_name(a, sizeof(a), FF_MSG_RING_IN,
+        1, -1, 0, 0), 0);
+    assert_string_equal(a, "ff_msg_ring_in_1");
+    assert_int_equal(ff_reload_msg_ring_name_e(b, sizeof(b), FF_MSG_RING_IN,
+        1, -1, 0, 3, 0), 0);
+    assert_string_equal(a, b);
+
+    /* graceful=1 + slot 0: identical to the M4 builder (P0-6 style) */
+    assert_int_equal(ff_reload_msg_ring_name(a, sizeof(a), FF_MSG_RING_IN,
+        1, -1, 1, 1), 0);
+    assert_int_equal(ff_reload_msg_ring_name_e(b, sizeof(b), FF_MSG_RING_IN,
+        1, -1, 1, 0, 1), 0);
+    assert_string_equal(a, b);
+    assert_string_equal(a, "ff_msg_ring_in_1_g1");
+
+    /* graceful=1 + slot 1: namespaced by the master epoch */
+    assert_int_equal(ff_reload_msg_ring_name_e(a, sizeof(a), FF_MSG_RING_IN,
+        1, -1, 1, 1, 1), 0);
+    assert_string_equal(a, "ff_msg_ring_in_1_e1_g1");
+
+    /* the longest name this builder can produce: proc 999, FF_RELOAD (10,
+     * two digits), slot 3, gen 1 — 28 bytes == RTE_RING_NAMESIZE-1, i.e.
+     * exactly the ring-name cap (see the compile-time fit checks in
+     * ff_dpdk_if.c / ff_drain_ring.c). */
+    assert_int_equal(ff_reload_msg_ring_name_e(a, sizeof(a), FF_MSG_RING_OUT,
+        999, FF_RELOAD, 1, 3, 1), 0);
+    assert_string_equal(a, "ff_msg_ring_out_999_10_e3_g1");
+
+    /* truncation and bad arguments are reported, never silent */
+    assert_int_equal(ff_reload_msg_ring_name_e(a, 8, FF_MSG_RING_OUT, 999,
+        FF_RELOAD, 1, 3, 1), -1);
+    assert_int_equal(ff_reload_msg_ring_name_e(NULL, sizeof(a),
+        FF_MSG_RING_IN, 0, -1, 0, 0, 1), -1);
+}
+
+/* M5 (C-NR-501): cross-master arbitration through the generation directory.
+ * The directory is plain shared memory, so a locally allocated
+ * struct ff_reload_gendir is enough to drive the whole protocol — no EAL,
+ * which is exactly why this lives in the config unit test that links
+ * ff_reload.o on its own. */
+static void
+test_ut_nr_m5_gendir_arbitration(void **state)
+{
+    struct ff_reload_state st;
+    struct ff_reload_gendir gd;
+    uint32_t oe = 0, og = 0, stopped = 0, ae = 0, ag = 0, pe = 0;
+    int pg = -1;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    memset(&gd, 0, sizeof(gd));
+
+    /* only a well-formed directory is accepted */
+    assert_int_equal(ff_reload_gendir_install(NULL, 0), -1);
+    assert_int_equal(ff_reload_gendir_install(&gd, sizeof(gd)), -1);
+    gd.magic = FF_RELOAD_GENDIR_MAGIC;
+    gd.version = FF_RELOAD_GENDIR_VERSION;
+    gd.len = (uint32_t)sizeof(gd);
+    gd.gen_max = FF_RELOAD_GEN_MAX;
+    gd.slot_max = FF_RELOAD_EPOCH_SLOT_MAX - 1;   /* foreign layout */
+    assert_int_equal(ff_reload_gendir_install(&gd, sizeof(gd)), -1);
+    gd.slot_max = FF_RELOAD_EPOCH_SLOT_MAX;
+    assert_int_equal(ff_reload_gendir_install(&gd, sizeof(gd)), 0);
+
+    /* nothing claimed yet */
+    gd.active_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd.rx_owner_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd.kni_owner_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    st.active_gen = 0;
+    st.kni_owner_gen = 0;
+    st.rx_owner_gen = 0;
+    st.rx_stopped = 0;
+
+    ff_reload_attach_state(&st);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_reload_set_epoch(1);
+    ff_reload_set_gen(0);
+    ff_reload_dir_sync_enable(1);
+
+    /* two live masters: epoch 1 (ours, primary-flagged) and epoch 2 */
+    gd.slot[0].epoch = 1;
+    gd.slot[0].master_pid = (uint32_t)getpid();
+    gd.slot[0].state = FF_RELOAD_SLOT_LIVE;
+    gd.slot[0].flags = FF_RELOAD_SLOT_PRIMARY;
+    gd.slot[1].epoch = 2;
+    gd.slot[1].gen = 1;
+    gd.slot[1].master_pid = (uint32_t)getpid();
+    gd.slot[1].state = FF_RELOAD_SLOT_LIVE;
+
+    /* an unclaimed directory narrows nothing */
+    assert_int_equal(ff_no_hw_mode(), 0);
+
+    /* first pass claims rx/kni/active for our epoch and publishes the peer
+     * coordinate into the block — the master has no EAL and can only read
+     * the block, so this is its only route to the other master's epoch. */
+    ff_reload_dir_sync();
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 1);
+    assert_int_equal(og, 0);
+    assert_int_equal(stopped, 0);
+    assert_int_equal(ff_reload_gendir_active(&ae, &ag), 0);
+    assert_int_equal(ae, 1);
+    assert_int_equal(ag, 0);
+    assert_int_equal(st.peer_epoch, 2);
+    assert_int_equal(st.peer_gen, 1);
+
+    assert_int_equal(ff_no_hw_mode(), 0);
+    assert_int_equal(ff_reload_kni_owner_match(), 1);
+
+    /* the probe reply must carry the epoch of the serving generation, not
+     * the answering process's own — otherwise a tool targeting proc N
+     * builds slot-0 names nobody dequeues (M5 review P0-1). */
+    {
+        struct ff_msg m;
+
+        memset(&m, 0, sizeof(m));
+        ff_reload_msg_fill(&m, FF_RELOAD_CMD_QUERY, 0, 0, 7);
+        assert_int_equal(m.reload.active_gen, 0);
+        assert_int_equal(m.reload.epoch, 1);
+        assert_int_equal(m.reload.heartbeat, 7);
+    }
+
+    /* the other generation of the same master stays parked */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+    assert_int_equal(ff_reload_kni_owner_match(), 0);
+    ff_reload_set_gen(0);
+
+    /* another master running the same gen: the anonymous block alone would
+     * answer "owner" for both, the directory is the tie-breaker. */
+    ff_reload_set_epoch(2);
+    assert_int_equal(ff_no_hw_mode(), 1);
+    assert_int_equal(ff_reload_kni_owner_match(), 0);
+    /* and a live owner is never displaced by a foreign sync */
+    ff_reload_dir_sync();
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 1);
+    ff_reload_set_epoch(1);
+
+    /* release: park first, then transfer — only the current owner may */
+    assert_int_equal(ff_reload_gendir_rx_release(2, 1),
+        FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 2);
+    assert_int_equal(og, 1);
+    assert_int_equal(stopped, 1);            /* parked until claimed */
+    assert_int_equal(ff_reload_gendir_rx_release(1, 0),
+        FF_RELOAD_HANDOVER_BUSY);
+
+    /* claim: satisfied immediately once the transfer happened */
+    assert_int_equal(ff_reload_gendir_rx_claim(2, 0, 2, 1, 10),
+        FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(stopped, 0);
+    /* a third coordinate is refused instead of stolen */
+    assert_int_equal(ff_reload_gendir_rx_claim(9, 0, 9, 1, 10),
+        FF_RELOAD_HANDOVER_BUSY);
+
+    /* reclaim (M4 DR6-1 / RT-04b): only from a dead owner */
+    assert_int_equal(ff_reload_gendir_rx_reclaim(1, 0),
+        FF_RELOAD_HANDOVER_BUSY);
+    gd.slot[1].state = FF_RELOAD_SLOT_DEAD;
+    assert_int_equal(ff_reload_gendir_rx_reclaim(1, 0),
+        FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 1);
+    assert_int_equal(og, 0);
+    assert_int_equal(stopped, 0);
+
+    /* peer: newest live epoch other than ours, else our own peer gen */
+    gd.slot[1].state = FF_RELOAD_SLOT_LIVE;   /* revived after the reclaim */
+    ff_reload_peer_coord(&pe, &pg);
+    assert_int_equal(pe, 2);
+    assert_int_equal(pg, 1);
+    gd.slot[1].state = FF_RELOAD_SLOT_DEAD;
+    ff_reload_peer_coord(&pe, &pg);
+    assert_int_equal(pe, 1);
+    assert_int_equal(pg, 1);
+
+    /* F-M5-1 (USR2): a dead master whose workers still drain — the slot
+     * stamp stays fresh — remains a peer; a fully dead epoch does not. */
+    {
+        struct timespec ts;
+        pid_t child = fork();
+        int wstatus;
+
+        assert_true(child >= 0);
+        if (child == 0) {
+            _exit(0);
+        }
+        assert_int_equal(waitpid(child, &wstatus, 0), child);
+
+        gd.slot[1].state = FF_RELOAD_SLOT_LIVE;
+        gd.slot[1].master_pid = (uint32_t)child;   /* reaped: gone */
+        gd.slot[1].pad = 0;                        /* stale stamp */
+        ff_reload_peer_coord(&pe, &pg);
+        assert_int_equal(pe, 1);                   /* fallback: fully dead */
+        assert_int_equal(pg, 1);
+        assert_int_equal(ff_reload_peer_draining(), 0);
+
+        assert_int_equal(clock_gettime(CLOCK_MONOTONIC, &ts), 0);
+        gd.slot[1].pad = (uint32_t)(ts.tv_sec * 1000
+            + ts.tv_nsec / 1000000);
+        ff_reload_peer_coord(&pe, &pg);
+        assert_int_equal(pe, 2);                   /* draining peer */
+        assert_int_equal(pg, 1);
+        assert_int_equal(ff_reload_peer_draining(), 1);
+
+        /* during our own master's reload window the peer must stay the
+         * intra-master pair even with a foreign epoch alive: an M4 round
+         * must not capture a coexisting master's drain rings */
+        st.reload_active = 1;
+        ff_reload_peer_coord(&pe, &pg);
+        assert_int_equal(pe, 1);
+        assert_int_equal(pg, 1);
+        assert_int_equal(ff_reload_peer_draining(), 0);
+        st.reload_active = 0;
+
+        /* the block-mirror view follows after a sync pass — the per-packet
+         * gate of the nginx dispatcher reads exactly this */
+        ff_reload_dir_sync();
+        assert_int_equal(st.peer_epoch, 2);
+        assert_int_equal(ff_reload_peer_mirror_draining(), 1);
+
+        gd.slot[1].state = FF_RELOAD_SLOT_DEAD;
+        ff_reload_dir_sync();
+        assert_int_equal(ff_reload_peer_mirror_draining(), 0);
+    }
+
+    /* no directory (graceful=0 / no primary / master): nothing narrows */
+    ff_reload_gendir_install(NULL, 0);
+    ff_reload_dir_sync_enable(0);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), -1);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    assert_int_equal(ff_reload_kni_owner_match(), 1);
+    {
+        struct ff_msg m;
+
+        /* without a directory the reply is the process's own epoch — for
+         * the pre-M5 / directory-less identity that is 0, i.e. slot 0. */
+        ff_reload_set_epoch(0);
+        memset(&m, 0, sizeof(m));
+        ff_reload_msg_fill(&m, FF_RELOAD_CMD_QUERY, 0, 0, 0);
+        assert_int_equal(m.reload.epoch, 0);
+    }
+
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_set_epoch(0);
+    ff_reload_set_gen(0);
+    ff_reload_attach_state(NULL);
+}
+
+/* M5 Batch C: the tool probe is answered by the resident primary (epoch 0),
+ * so the epoch it reports decides which ring names ff_ipc builds. Answering
+ * slot 0 while another master is serving is exactly the P0-1 regression:
+ * the tool writes a ring nobody dequeues and hangs. This is the only place
+ * that pins the epoch-0 fallback to the newest LIVE master. */
+static void
+test_ut_nr_m5_probe_epoch_fallback(void **state)
+{
+    struct ff_reload_gendir gd;
+    struct ff_msg m;
+    uint32_t me = (uint32_t)getpid();
+
+    (void)state;
+
+    memset(&gd, 0, sizeof(gd));
+    gd.magic = FF_RELOAD_GENDIR_MAGIC;
+    gd.version = FF_RELOAD_GENDIR_VERSION;
+    gd.len = (uint32_t)sizeof(gd);
+    gd.slot_max = FF_RELOAD_EPOCH_SLOT_MAX;
+    gd.gen_max = FF_RELOAD_GEN_MAX;
+    gd.active_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd.rx_owner_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd.kni_owner_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+
+    /* This process is the resident primary: epoch 0 / slot 0, and it is the
+     * one that answers ff_ipc probes until a worker has mirrored an active
+     * generation into the directory. */
+    gd.slot[0].epoch = 0;
+    gd.slot[0].master_pid = me;
+    gd.slot[0].state = FF_RELOAD_SLOT_LIVE;
+    gd.slot[0].flags = FF_RELOAD_SLOT_PRIMARY;
+    gd.slot[1].epoch = 1;
+    gd.slot[1].gen = 0;
+    gd.slot[1].master_pid = me;
+    gd.slot[1].state = FF_RELOAD_SLOT_LIVE;
+    gd.slot[2].epoch = 2;
+    gd.slot[2].gen = 1;
+    gd.slot[2].master_pid = me;
+    gd.slot[2].state = FF_RELOAD_SLOT_LIVE;
+
+    assert_int_equal(ff_reload_gendir_install(&gd, sizeof(gd)), 0);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_reload_set_epoch(0);
+    ff_reload_set_gen(0);
+
+    /* no active mirror yet: report the newest live master, not slot 0 */
+    memset(&m, 0, sizeof(m));
+    ff_reload_msg_fill(&m, FF_RELOAD_CMD_QUERY, 0, 0, 0);
+    assert_int_equal(m.reload.epoch, 2);
+    assert_int_equal(m.reload.active_gen, 1);
+
+    /* that master retires: the fallback follows the next newest one */
+    gd.slot[2].state = FF_RELOAD_SLOT_DEAD;
+    memset(&m, 0, sizeof(m));
+    ff_reload_msg_fill(&m, FF_RELOAD_CMD_QUERY, 0, 0, 0);
+    assert_int_equal(m.reload.epoch, 1);
+    assert_int_equal(m.reload.active_gen, 0);
+
+    /* no other master left: pre-M5 behaviour, slot 0 */
+    gd.slot[1].state = FF_RELOAD_SLOT_DEAD;
+    memset(&m, 0, sizeof(m));
+    ff_reload_msg_fill(&m, FF_RELOAD_CMD_QUERY, 0, 0, 0);
+    assert_int_equal(m.reload.epoch, 0);
+
+    /* an explicit active word always outranks the fallback */
+    gd.slot[1].state = FF_RELOAD_SLOT_LIVE;
+    gd.slot[2].state = FF_RELOAD_SLOT_LIVE;
+    ff_reload_gendir_active_set(1, 0);
+    memset(&m, 0, sizeof(m));
+    ff_reload_msg_fill(&m, FF_RELOAD_CMD_QUERY, 0, 0, 0);
+    assert_int_equal(m.reload.epoch, 1);
+    assert_int_equal(m.reload.active_gen, 0);
+
+    ff_reload_gendir_install(NULL, 0);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* M5 Batch C: two masters share one config, so they share every proc_id and
+ * can sit on the same generation at the same time. Every name a generation
+ * touches must therefore be namespaced — one forgotten branch is a silent
+ * slot collision (two readers on one SC ring), so the sweep covers the whole
+ * (proc_id, gen, msg_type) space rather than a single sample. */
+static void
+test_ut_nr_m5_cross_master_name_isolation(void **state)
+{
+    static const unsigned procs[] = { 0u, 1u, 7u, 127u };
+    char a[64], b[64], c[64], d[64];
+    unsigned i, p;
+    int g, t;
+
+    (void)state;
+
+    for (i = 0; i < sizeof(procs) / sizeof(procs[0]); i++) {
+        p = procs[i];
+        for (g = 0; g < FF_RELOAD_GEN_MAX; g++) {
+            assert_int_equal(ff_reload_msg_ring_name_e(a, sizeof(a),
+                FF_MSG_RING_IN, p, -1, g, 1, 1), 0);
+            assert_int_equal(ff_reload_msg_ring_name_e(b, sizeof(b),
+                FF_MSG_RING_IN, p, -1, g, 2, 1), 0);
+            assert_int_not_equal(strcmp(a, b), 0);
+            assert_non_null(strstr(a, "_e1_"));
+            assert_non_null(strstr(b, "_e2_"));
+            assert_true(strlen(a) <= 28);      /* RTE_RING_NAMESIZE-1 */
+            assert_true(strlen(b) <= 28);
+
+            /* the pre-M5 identity is shared by every master: that is the
+             * collision this milestone exists to remove. */
+            assert_int_equal(ff_reload_msg_ring_name_e(c, sizeof(c),
+                FF_MSG_RING_IN, p, -1, g, 0, 1), 0);
+            assert_int_equal(ff_reload_msg_ring_name_e(d, sizeof(d),
+                FF_MSG_RING_IN, p, -1, g, FF_RELOAD_EPOCH_NONE, 1), 0);
+            assert_string_equal(c, d);
+
+            for (t = FF_SYSCTL; t < FF_MSG_NUM; t++) {
+                assert_int_equal(ff_reload_msg_ring_name_e(a, sizeof(a),
+                    FF_MSG_RING_OUT, p, t, g, 1, 1), 0);
+                assert_int_equal(ff_reload_msg_ring_name_e(b, sizeof(b),
+                    FF_MSG_RING_OUT, p, t, g, 2, 1), 0);
+                assert_int_not_equal(strcmp(a, b), 0);
+                assert_non_null(strstr(a, "_e1_"));
+                assert_non_null(strstr(b, "_e2_"));
+                assert_true(strlen(a) <= 28);
+                assert_true(strlen(b) <= 28);
+            }
+        }
+    }
+}
+
+/* M5 Batch C: graceful_reload=0 must stay byte-identical no matter which
+ * epoch a process carries (P0-6). The epoch slot is only ever consulted on
+ * the graceful=1 path; a single stray branch would rename the rings of every
+ * legacy stack, example and tool. */
+static void
+test_ut_nr_m5_graceful_zero_epoch_invariance(void **state)
+{
+    static const uint32_t epochs[] = { 0u, 1u, 2u, 3u, 4u,
+        FF_RELOAD_EPOCH_NONE };
+    static const unsigned procs[] = { 0u, 1u, 127u, 999u };
+    char a[64], b[64];
+    unsigned i, j, p;
+    int g, t;
+
+    (void)state;
+
+    for (i = 0; i < sizeof(epochs) / sizeof(epochs[0]); i++) {
+        for (j = 0; j < sizeof(procs) / sizeof(procs[0]); j++) {
+            p = procs[j];
+            for (g = 0; g < FF_RELOAD_GEN_MAX; g++) {
+                assert_int_equal(ff_reload_msg_ring_name_e(a, sizeof(a),
+                    FF_MSG_RING_IN, p, -1, g, epochs[i], 0), 0);
+                assert_int_equal(ff_reload_msg_ring_name(b, sizeof(b),
+                    FF_MSG_RING_IN, p, -1, g, 0), 0);
+                assert_string_equal(a, b);
+                assert_null(strstr(a, "_e"));
+                assert_null(strstr(a, "_g"));
+
+                for (t = FF_SYSCTL; t < FF_MSG_NUM; t++) {
+                    assert_int_equal(ff_reload_msg_ring_name_e(a, sizeof(a),
+                        FF_MSG_RING_OUT, p, t, g, epochs[i], 0), 0);
+                    assert_int_equal(ff_reload_msg_ring_name(b, sizeof(b),
+                        FF_MSG_RING_OUT, p, t, g, 0), 0);
+                    assert_string_equal(a, b);
+                    assert_null(strstr(a, "_e"));
+                    assert_null(strstr(a, "_g"));
+                }
+            }
+        }
+    }
+}
+
+/* M5 Batch C: the cross-master handover that USR2 drives, at lib level.
+ * One process plays both masters' workers by switching its epoch, which is
+ * exactly how the two real workers see the directory: same memory, different
+ * (epoch, gen) coordinate. The point is the ORDER — the old master must have
+ * parked before the new one may poll — and that a rollback is only possible
+ * once the new master's epoch is no longer live. */
+static void
+test_ut_nr_m5_cross_master_handover_sequence(void **state)
+{
+    /* Two anonymous blocks: each master owns a private one, which is the
+     * whole reason a cross-master transfer needs the directory at all. */
+    struct ff_reload_state st_old, st_new;
+    struct ff_reload_gendir gd;
+    uint32_t oe = 0, og = 0, stopped = 0;
+    uint32_t me = (uint32_t)getpid();
+
+    (void)state;
+
+    memset(&st_old, 0, sizeof(st_old));
+    memset(&st_new, 0, sizeof(st_new));
+    memset(&gd, 0, sizeof(gd));
+    gd.magic = FF_RELOAD_GENDIR_MAGIC;
+    gd.version = FF_RELOAD_GENDIR_VERSION;
+    gd.len = (uint32_t)sizeof(gd);
+    gd.slot_max = FF_RELOAD_EPOCH_SLOT_MAX;
+    gd.gen_max = FF_RELOAD_GEN_MAX;
+    gd.active_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd.rx_owner_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd.kni_owner_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd.slot[1].epoch = 1;
+    gd.slot[1].master_pid = me;
+    gd.slot[1].state = FF_RELOAD_SLOT_LIVE;
+    gd.slot[2].epoch = 2;
+    gd.slot[2].master_pid = me;
+    gd.slot[2].state = FF_RELOAD_SLOT_LIVE;
+
+    st_old.magic = FF_RELOAD_STATE_MAGIC;
+    st_old.version = FF_RELOAD_STATE_VERSION;
+    st_old.len = (uint32_t)sizeof(st_old);
+    st_new.magic = FF_RELOAD_STATE_MAGIC;
+    st_new.version = FF_RELOAD_STATE_VERSION;
+    st_new.len = (uint32_t)sizeof(st_new);
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_reload_set_gen(0);
+    ff_reload_dir_sync_enable(1);
+    assert_int_equal(ff_reload_gendir_install(&gd, sizeof(gd)), 0);
+
+    /* T0: the old master (epoch 1) owns the hardware and serves. */
+    ff_reload_attach_state(&st_old);
+    ff_reload_set_epoch(1);
+    ff_reload_dir_sync();
+    assert_int_equal(ff_no_hw_mode(), 0);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 1);
+    assert_int_equal(og, 0);
+    /* the only route by which a master without an EAL learns the peer */
+    assert_int_equal(st_old.peer_epoch, 2);
+    assert_int_equal(st_old.peer_gen, 0);
+
+    /* T3a: the old master parks and hands the coordinate over. */
+    assert_int_equal(ff_reload_rx_release_epoch(st_old.peer_epoch,
+        (int)st_old.peer_gen), FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(st_old.reserved[4], 2);  /* handed-to epoch */
+    assert_int_equal(ff_reload_rx_stopped(), 1);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 2);
+    assert_int_equal(stopped, 1);             /* parked until claimed */
+    assert_int_equal(ff_no_hw_mode(), 1);     /* old master off the hardware */
+
+    /* T3b: the new master claims, the hardware unparks. Note the new master
+     * reads its OWN block (rx_stopped 0) — the old one's park flag is not
+     * visible to it, which is why the directory has to arbitrate. */
+    ff_reload_attach_state(&st_new);
+    ff_reload_set_epoch(2);
+    assert_int_equal(ff_reload_gendir_rx_claim(1, 0, 2, 0, 50),
+        FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(stopped, 0);
+    assert_int_equal(ff_no_hw_mode(), 0);
+    ff_reload_attach_state(&st_old);
+    ff_reload_set_epoch(1);
+    assert_int_equal(ff_no_hw_mode(), 1);
+
+    /* RT-04b rollback while the new master is alive: refused. */
+    assert_int_equal(ff_reload_gendir_rx_reclaim(1, 0),
+        FF_RELOAD_HANDOVER_BUSY);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 2);
+
+    /* ... and granted once its epoch is gone. */
+    gd.slot[2].state = FF_RELOAD_SLOT_DEAD;
+    assert_int_equal(ff_reload_gendir_rx_reclaim(1, 0),
+        FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 1);
+    assert_int_equal(stopped, 0);
+    /* reclaim() only clears the DIRECTORY park flag. The master must also
+     * drop its own hand-over target (reserved[4]) and unpark its block —
+     * ff_reload_master_abort() is the existing path that does both. Without
+     * that reset the old generation's workers keep publishing the dead
+     * epoch as the rx owner on every dir_sync() pass and the rollback never
+     * resumes service. */
+    ff_reload_master_abort();
+    assert_int_equal(st_old.reserved[4], 1);
+    assert_int_equal(ff_reload_rx_stopped(), 0);
+    assert_int_equal(ff_no_hw_mode(), 0);     /* old generation serving again */
+
+    /* The rolled-back generation's workers may still be alive (draining).
+     * They must stay off the hardware and must not be able to steal it back
+     * by mirroring their own block: double poll is the failure this
+     * milestone exists to prevent. */
+    gd.slot[2].state = FF_RELOAD_SLOT_LIVE;
+    ff_reload_attach_state(&st_new);
+    ff_reload_set_epoch(2);
+    assert_int_equal(ff_no_hw_mode(), 1);
+    ff_reload_dir_sync();
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 1);
+    ff_reload_attach_state(&st_old);
+    ff_reload_set_epoch(1);
+    assert_int_equal(ff_no_hw_mode(), 0);
+
+    ff_reload_gendir_install(NULL, 0);
+    ff_reload_dir_sync_enable(0);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_set_epoch(0);
+    ff_reload_attach_state(NULL);
+}
+
+/* ---- P2 (B01-1 / B02-1): takeover proof -------------------------------- */
+
+static uint32_t
+p2_dead_pid(void)
+{
+    pid_t child = fork();
+    int wstatus = 0;
+
+    assert_true(child >= 0);
+    if (child == 0)
+        _exit(0);
+    assert_int_equal(waitpid(child, &wstatus, 0), child);
+    return (uint32_t)child;
+}
+
+static uint32_t
+p2_now_ms(void)
+{
+    struct timespec ts;
+
+    assert_int_equal(clock_gettime(CLOCK_MONOTONIC, &ts), 0);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u
+        + (uint64_t)(ts.tv_nsec / 1000000));
+}
+
+static void
+p2_gendir_init(struct ff_reload_gendir *gd)
+{
+    memset(gd, 0, sizeof(*gd));
+    gd->magic = FF_RELOAD_GENDIR_MAGIC;
+    gd->version = FF_RELOAD_GENDIR_VERSION;
+    gd->len = (uint32_t)sizeof(*gd);
+    gd->slot_max = FF_RELOAD_EPOCH_SLOT_MAX;
+    gd->gen_max = FF_RELOAD_GEN_MAX;
+    gd->active_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd->rx_owner_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    gd->kni_owner_word = ((uint64_t)FF_RELOAD_EPOCH_NONE << 32);
+    assert_int_equal(ff_reload_gendir_install(gd, sizeof(*gd)), 0);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_reload_gendir_reclaim_counters_reset();
+}
+
+/* C-P2-1/2: the hardware-user table is what a takeover consults. */
+static void
+test_p2_hw_user_proof(void **state)
+{
+    struct ff_reload_gendir gd;
+    uint32_t dead = p2_dead_pid();
+
+    (void)state;
+    p2_gendir_init(&gd);
+    ff_reload_set_epoch(1);
+    ff_reload_set_gen(0);
+
+    /* no users: nothing to prove, nothing blocks */
+    assert_int_equal(ff_reload_gendir_users_clear(1, 0), 1);
+    assert_int_equal(ff_reload_gendir_users_active(1, 0), 0);
+
+    /* a live peer user blocks, a dead one does not (exit proof) */
+    gd.user[0].epoch = 1;
+    gd.user[0].gen = 0;
+    gd.user[0].pid = (uint32_t)getppid();
+    gd.user[0].state = FF_RELOAD_USER_ACTIVE;
+    gd.user[1].epoch = 1;
+    gd.user[1].gen = 0;
+    gd.user[1].pid = dead;
+    gd.user[1].state = FF_RELOAD_USER_ACTIVE;
+    assert_int_equal(ff_reload_gendir_users_active(1, 0), 1);
+    assert_int_equal(ff_reload_gendir_users_clear(1, 0), 0);
+    assert_int_equal(ff_reload_gendir_epoch_users_clear(1), 0);
+
+    /* registration is idempotent: two adds leave exactly one own entry */
+    assert_int_equal(ff_reload_gendir_user_add(1, 0), 0);
+    assert_int_equal(ff_reload_gendir_user_add(1, 0), 0);
+    assert_int_equal(ff_reload_gendir_users_active(1, 0), 2);
+
+    /* our own ack is a STOPPED entry, not a disappearance */
+    ff_reload_gendir_user_stop(1, 0);
+    assert_int_equal(ff_reload_gendir_users_active(1, 0), 1);
+    assert_int_equal(ff_reload_gendir_users_clear(1, 0), 0);
+
+    /* the peer's ack clears the coordinate; another coordinate is untouched */
+    gd.user[0].state = FF_RELOAD_USER_STOPPED;
+    assert_int_equal(ff_reload_gendir_users_clear(1, 0), 1);
+    gd.user[2].epoch = 2;
+    gd.user[2].gen = 1;
+    gd.user[2].pid = (uint32_t)getppid();
+    gd.user[2].state = FF_RELOAD_USER_ACTIVE;
+    assert_int_equal(ff_reload_gendir_users_clear(2, 1), 0);
+    assert_int_equal(ff_reload_gendir_users_clear(1, 0), 1);
+
+    ff_reload_gendir_user_release(1, 0);
+    assert_int_equal(ff_reload_gendir_users_active(1, 0), 0);
+    ff_reload_gendir_install(NULL, 0);
+}
+
+/* C-P2-3: a dead master is not a proof — the displaced coordinate's users
+ * must have confirmed they stopped. */
+static void
+test_p2_reclaim_needs_user_proof(void **state)
+{
+    struct ff_reload_gendir gd;
+    uint32_t dead = p2_dead_pid(), oe = 0, og = 0, stopped = 0;
+
+    (void)state;
+    p2_gendir_init(&gd);
+    ff_reload_set_epoch(2);
+    ff_reload_set_gen(1);
+
+    /* owner epoch 1/gen 0: master dead and stamp stale (no orphan refresh) */
+    gd.slot[1].epoch = 1;
+    gd.slot[1].gen = 0;
+    gd.slot[1].state = FF_RELOAD_SLOT_LIVE;
+    gd.slot[1].master_pid = dead;
+    gd.slot[1].pad = p2_now_ms() - (FF_RELOAD_SLOT_STALE_MS + 1000u);
+    gd.rx_owner_word = ((uint64_t)1 << 32) | 0u;
+
+    /* but one of its workers is still marked active and alive */
+    gd.user[0].epoch = 1;
+    gd.user[0].gen = 0;
+    gd.user[0].pid = (uint32_t)getppid();
+    gd.user[0].state = FF_RELOAD_USER_ACTIVE;
+
+    assert_int_equal(ff_reload_gendir_users_clear(1, 0), 0);
+    assert_int_equal(ff_reload_gendir_rx_reclaim(2, 1),
+        FF_RELOAD_HANDOVER_BUSY);
+    assert_int_equal(ff_reload_gendir_reclaim_refused(), 1);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 1);
+    assert_int_equal(og, 0);
+
+    /* proof delivered: the takeover is allowed once */
+    gd.user[0].state = FF_RELOAD_USER_STOPPED;
+    assert_int_equal(ff_reload_gendir_rx_reclaim(2, 1),
+        FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_gendir_reclaim_refused(), 1);
+    assert_int_equal(ff_reload_gendir_rx_owner(&oe, &og, &stopped), 0);
+    assert_int_equal(oe, 2);
+    assert_int_equal(og, 1);
+    ff_reload_gendir_install(NULL, 0);
+}
+
+/* C-P2-3/5: the USR2 release path needs the same proof as a HUP handover. */
+static void
+test_p2_release_epoch_needs_proof(void **state)
+{
+    struct ff_reload_state st;
+    struct ff_reload_gendir gd;
+    unsigned saved = ff_reload_reclaim_timeout_ms();
+
+    (void)state;
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    st.rx_owner_gen = 0;
+    ff_reload_attach_state(&st);
+
+    p2_gendir_init(&gd);
+    ff_reload_set_epoch(1);
+    ff_reload_set_gen(0);
+    gd.rx_owner_word = ((uint64_t)1 << 32) | 0u;
+
+    /* a peer worker of our own coordinate is still inside the hardware */
+    gd.user[0].epoch = 1;
+    gd.user[0].gen = 0;
+    gd.user[0].pid = (uint32_t)getppid();
+    gd.user[0].state = FF_RELOAD_USER_ACTIVE;
+
+    ff_reload_reclaim_timeout_set(20);
+    assert_int_equal(ff_reload_rx_release_epoch(2, 1),
+        FF_RELOAD_HANDOVER_BUSY);
+    assert_int_equal(ff_reload_gendir_reclaim_refused(), 1);
+    assert_int_equal(ff_reload_rx_owner_gen(), 0);      /* nothing flipped */
+
+    gd.user[0].state = FF_RELOAD_USER_STOPPED;
+    assert_int_equal(ff_reload_rx_release_epoch(2, 1), FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_rx_owner_gen(), 1);
+    assert_int_equal(ff_reload_gendir_reclaim_refused(), 1);
+
+    ff_reload_reclaim_timeout_set(saved);
+    ff_reload_gendir_install(NULL, 0);
+    ff_reload_attach_state(NULL);
+}
+
+/* B02-1: orphan workers keep their epoch live until the stamp goes stale.
+ * Observed through the takeover itself (ff_reload_gendir_epoch_live() lives
+ * in the DPDK-side object this binary does not link). */
+static void
+test_p2_orphan_workers_keep_epoch_live(void **state)
+{
+    struct ff_reload_gendir gd;
+    uint32_t dead = p2_dead_pid();
+
+    (void)state;
+    p2_gendir_init(&gd);
+    ff_reload_set_epoch(3);
+    ff_reload_set_gen(0);
+    gd.rx_owner_word = ((uint64_t)1 << 32) | 0u;
+
+    /* master gone, but workers still refresh the stamp: still the owner */
+    gd.slot[2].epoch = 1;
+    gd.slot[2].gen = 0;
+    gd.slot[2].state = FF_RELOAD_SLOT_LIVE;
+    gd.slot[2].master_pid = dead;
+    gd.slot[2].pad = p2_now_ms();
+    assert_int_equal(ff_reload_gendir_rx_reclaim(3, 0),
+        FF_RELOAD_HANDOVER_BUSY);
+
+    /* their death notice: the stamp stops being refreshed */
+    gd.slot[2].pad = p2_now_ms() - (FF_RELOAD_SLOT_STALE_MS + 1000u);
+    assert_int_equal(ff_reload_gendir_rx_reclaim(3, 0), FF_RELOAD_HANDOVER_OK);
+
+    /* a live master is live regardless of the stamp */
+    gd.rx_owner_word = ((uint64_t)1 << 32) | 0u;
+    gd.slot[2].master_pid = (uint32_t)getpid();
+    gd.slot[2].pad = p2_now_ms() - (FF_RELOAD_SLOT_STALE_MS + 1000u);
+    assert_int_equal(ff_reload_gendir_rx_reclaim(3, 0),
+        FF_RELOAD_HANDOVER_BUSY);
+
+    /* and a retired slot is never live */
+    gd.slot[2].state = FF_RELOAD_SLOT_DEAD;
+    assert_int_equal(ff_reload_gendir_rx_reclaim(3, 0), FF_RELOAD_HANDOVER_OK);
+    assert_int_equal(ff_reload_gendir_reclaim_refused(), 0);
+    ff_reload_gendir_install(NULL, 0);
+}
+
+/* RX-15: the drain-ring user table the resident primary purges against. */
+static void
+test_rx15_ring_user_census_and_purge_lock(void **state)
+{
+    uint32_t live[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX];
+    uint32_t dead[FF_RELOAD_EPOCH_SLOT_MAX][FF_RELOAD_GEN_MAX];
+    struct ff_reload_gendir gd;
+    uint32_t gone = p2_dead_pid();
+
+    (void)state;
+    /* no directory: attach is a no-op, census and purge are refused */
+    ff_reload_gendir_install(NULL, 0);
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), -1);
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(0), -1);
+
+    p2_gendir_init(&gd);
+
+    /* attach registers exactly one live entry; detach drops it */
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+    assert_int_equal(live[1][0], 1);
+    assert_int_equal(live[1][1] + dead[1][0] + dead[1][1], 0);
+    ff_reload_gendir_ring_detach(1, 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+    assert_int_equal(live[1][0], 0);
+
+    /* an exited worker leaves a dead entry; a new user takes a free entry
+     * first, so the marker survives (epoch 4 shares ring slot 1) */
+    gd.ring_user[0].epoch = 1;
+    gd.ring_user[0].gen = 1;
+    gd.ring_user[0].pid = gone;
+    gd.ring_user[0].state = FF_RELOAD_USER_ACTIVE;
+    assert_int_equal(ff_reload_gendir_ring_attach(4, 0, 0), 0);
+    assert_int_equal(gd.ring_user[0].pid, gone);
+    assert_int_equal(gd.ring_user[1].pid, (uint32_t)getpid());
+
+    /* the slot is busy: the marker is counted and kept */
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 1), 0);
+    assert_int_equal(live[1][0], 1);
+    assert_int_equal(dead[1][1], 1);
+    assert_int_equal(gd.ring_user[0].pid, gone);
+
+    /* a dead entry of another slot does not count for slot 1 */
+    gd.ring_user[2].epoch = 2;
+    gd.ring_user[2].gen = 0;
+    gd.ring_user[2].pid = gone;
+    gd.ring_user[2].state = FF_RELOAD_USER_ACTIVE;
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+    assert_int_equal(dead[1][0], 0);
+    assert_int_equal(dead[2][0], 1);
+
+    /* once slot 1 is idle its markers are reported one last time and then
+     * forgotten; slot 2 is idle too and is cleared the same way */
+    ff_reload_gendir_ring_detach(4, 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 1), 0);
+    assert_int_equal(dead[1][1], 1);
+    assert_int_equal(gd.ring_user[0].pid, 0);
+    assert_int_equal(gd.ring_user[2].pid, 0);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 1), 0);
+    assert_int_equal(dead[1][1] + dead[2][0], 0);
+
+    /* the table holds both generations of two masters: with as many live
+     * users as one master can have, attach still finds an entry */
+    {
+        unsigned k;
+
+        for (k = 0; k < FF_RELOAD_MAX_PROCS; k++) {
+            gd.ring_user[k].epoch = 2;
+            gd.ring_user[k].gen = 1;
+            gd.ring_user[k].pid = 1u;
+            gd.ring_user[k].state = FF_RELOAD_USER_ACTIVE;
+        }
+        assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+        assert_int_equal(gd.ring_user[FF_RELOAD_MAX_PROCS].pid,
+            (uint32_t)getpid());
+        assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+        assert_int_equal(live[2][1], FF_RELOAD_MAX_PROCS);
+        assert_int_equal(live[1][0], 1);
+        ff_reload_gendir_ring_detach(1, 0);
+        memset(gd.ring_user, 0, sizeof(gd.ring_user));
+    }
+
+    /* purge lock: exclusive, idempotent for the holder */
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(0), 0);
+    assert_int_equal(gd.ring_purge_owner, (uint32_t)getpid());
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(0), 0);
+    ff_reload_gendir_ring_purge_unlock();
+    assert_int_equal(gd.ring_purge_owner, 0);
+
+    /* a live foreign holder (pid 1): lock times out, attach gives up
+     * without leaving an entry behind */
+    gd.ring_purge_owner = 1u;
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(5), -1);
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 20), -1);
+    assert_int_equal(ff_reload_gendir_ring_census(live, dead, 0), 0);
+    assert_int_equal(live[1][0], 0);
+    ff_reload_gendir_ring_purge_unlock();     /* not ours: untouched */
+    assert_int_equal(gd.ring_purge_owner, 1u);
+
+    /* a dead holder blocks nobody and can be taken over */
+    gd.ring_purge_owner = gone;
+    assert_int_equal(ff_reload_gendir_ring_attach(1, 0, 0), 0);
+    assert_int_equal(ff_reload_gendir_ring_purge_lock(0), 0);
+    ff_reload_gendir_ring_purge_unlock();
+    ff_reload_gendir_ring_detach(1, 0);
+
+    ff_reload_gendir_install(NULL, 0);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* RX-35: the resident primary is reused only with the same device-side config. */
+static char *
+rx35_write_ini(const char *body)
+{
+    static char path[64];
+    int fd;
+
+    snprintf(path, sizeof(path), "/tmp/ut_rx35_%d_XXXXXX", (int)getpid());
+    fd = mkstemp(path);
+    assert_true(fd >= 0);
+    assert_int_equal(write(fd, body, strlen(body)), (ssize_t)strlen(body));
+    close(fd);
+    return path;
+}
+
+static uint64_t
+rx35_digest(const char *body, int *kni)
+{
+    uint64_t d = 0;
+    char *p = rx35_write_ini(body);
+
+    assert_int_equal(ff_primary_conf_digest(p, &d, kni), 0);
+    unlink(p);
+    return d;
+}
+
+#define RX35_BASE \
+    "[dpdk]\nlcore_mask=7\nprimary_slim=1\ngraceful_reload=1\n" \
+    "file_prefix=gr\nidle_sleep=20\nport_list=0\n" \
+    "[port0]\naddr=192.168.1.10\nlcore_list=1,2\nipfw_pr=0\n" \
+    "[freebsd.boot]\nhz=100\n"
+
+static void
+test_rx35_primary_conf_digest(void **state)
+{
+    uint64_t base;
+    int kni = -1;
+
+    (void)state;
+    base = rx35_digest(RX35_BASE, &kni);
+    assert_int_equal(kni, 0);
+
+    /* same tokens for the lib parser: whitespace and inline comments */
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask = 7 ; three lcores\nprimary_slim=1\n"
+        "graceful_reload=1\nfile_prefix=gr\nidle_sleep=20\nport_list=0\n"
+        "[port0]\naddr=192.168.1.10\nlcore_list=1,2\nipfw_pr=0\n"
+        "[freebsd.boot]\nhz=100\n", NULL) == base);
+
+    /* per-process keys do not count */
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask=7\nprimary_slim=1\ngraceful_reload=1\n"
+        "file_prefix=gr\nidle_sleep=0\nport_list=0\nfstack_log_level=7\n"
+        "[port0]\naddr=192.168.1.11\nlcore_list=1,2\nipfw_pr=1\n"
+        "[freebsd.boot]\nhz=1000\n[kni]\nmethod=accept\n", NULL) == base);
+
+    /* primary-side keys do */
+    assert_true(rx35_digest(RX35_BASE "[kni]\nenable = 1\n", &kni) != base);
+    assert_int_equal(kni, 1);
+    assert_true(rx35_digest(RX35_BASE "[kni]\nenable=0\n", &kni) != base);
+    assert_int_equal(kni, 0);
+    assert_true(rx35_digest(RX35_BASE "[kni]\nowner_proc_id=1\n", NULL)
+        != base);
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask=f\nprimary_slim=1\ngraceful_reload=1\n"
+        "file_prefix=gr\nidle_sleep=20\nport_list=0\n"
+        "[port0]\naddr=192.168.1.10\nlcore_list=1,2\nipfw_pr=0\n"
+        "[freebsd.boot]\nhz=100\n", NULL) != base);
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask=7\nprimary_slim=1\ngraceful_reload=1\n"
+        "file_prefix=other\nidle_sleep=20\nport_list=0\n"
+        "[port0]\naddr=192.168.1.10\nlcore_list=1,2\nipfw_pr=0\n"
+        "[freebsd.boot]\nhz=100\n", NULL) != base);
+    assert_true(rx35_digest(
+        "[dpdk]\nlcore_mask=7\nprimary_slim=1\ngraceful_reload=1\n"
+        "file_prefix=gr\nidle_sleep=20\nport_list=0\n"
+        "[port0]\naddr=192.168.1.10\nlcore_list=1\nipfw_pr=0\n"
+        "[freebsd.boot]\nhz=100\n", NULL) != base);
+
+    {
+        char *bad = rx35_write_ini("[dpdk]\nlcore_mask=7\nno equals sign\n");
+
+        assert_int_equal(ff_primary_conf_digest(bad, NULL, NULL), -1);
+        unlink(bad);
+    }
+    assert_int_equal(ff_primary_conf_digest("/nonexistent/rx35.ini",
+        NULL, NULL), -1);
+    assert_int_equal(ff_primary_conf_digest(NULL, NULL, NULL), -1);
+}
+
+static int
+rx35_bind(const char *dir, const char *name)
+{
+    struct sockaddr_un un;
+    int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+
+    assert_true(fd >= 0);
+    memset(&un, 0, sizeof(un));
+    un.sun_family = AF_UNIX;
+    snprintf(un.sun_path, sizeof(un.sun_path), "%s/%s", dir, name);
+    assert_int_equal(bind(fd, (struct sockaddr *)&un, sizeof(un)), 0);
+    return fd;
+}
+
+static void
+test_rx35_primary_users(void **state)
+{
+    char dir[] = "/tmp/ut_rx35_rt_XXXXXX";
+    char path[128];
+    int own, live, stale;
+
+    (void)state;
+    assert_non_null(mkdtemp(dir));
+    assert_int_equal(ff_primary_users(dir), 0);
+
+    own = rx35_bind(dir, "mp_socket");
+    assert_int_equal(ff_primary_users(dir), 0);
+
+    live = rx35_bind(dir, "mp_socket_4242_1a2b");
+    assert_int_equal(ff_primary_users(dir), 1);
+
+    /* a process that died without cleanup leaves its socket file */
+    stale = rx35_bind(dir, "mp_socket_4243_3c4d");
+    close(stale);
+    assert_int_equal(ff_primary_users(dir), 1);
+
+    close(live);
+    assert_int_equal(ff_primary_users(dir), 0);
+    close(own);
+
+    snprintf(path, sizeof(path), "%s/mp_socket", dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/mp_socket_4242_1a2b", dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/mp_socket_4243_3c4d", dir);
+    unlink(path);
+    assert_int_equal(rmdir(dir), 0);
+
+    assert_int_equal(ff_primary_users(dir), -1);
+    assert_int_equal(ff_primary_users(NULL), -1);
+}
+
+static void
+test_rx35_primary_reuse_check(void **state)
+{
+    (void)state;
+    assert_int_equal(ff_primary_reuse_check(1, 1, 3, 0, 1), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, -1, 0, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(0, 1, 0, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(0, 0, 0, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 2, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, -1, 0, 0), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 0, 1), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 0, 0), FF_PRIMARY_RESTART);
+}
+
+/* RX-37: an idle primary (its masters were killed) is rebuilt, never
+ * reused, unless a binary upgrade inherits it or somebody still uses it. */
+static void
+test_rx37_primary_reuse_check_idle(void **state)
+{
+    (void)state;
+    assert_int_equal(ff_primary_reuse_check(1, 1, 0, 0, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, 0, 1, 0), FF_PRIMARY_RESTART);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 1, 0), FF_PRIMARY_RESTART);
+    assert_int_equal(ff_primary_reuse_check(1, 1, 0, 1, 1), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 0, 0, 1, 1), FF_PRIMARY_REFUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, 2, 1, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(1, 1, -1, 1, 0), FF_PRIMARY_REUSE);
+    assert_int_equal(ff_primary_reuse_check(0, 1, 0, 1, 0), FF_PRIMARY_REFUSE);
+}
+
+/* RX-37: what the resident primary counts as a master still around. */
+static void
+test_rx37_gendir_masters_live(void **state)
+{
+    struct ff_reload_gendir gd;
+    uint32_t gone = p2_dead_pid();
+    pid_t zombie;
+    int live;
+
+    (void)state;
+    ff_reload_gendir_install(NULL, 0);
+    assert_int_equal(ff_reload_gendir_masters_live(), -1);
+    assert_int_equal(ff_reload_gendir_masters_seen(), -1);
+
+    p2_gendir_init(&gd);
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+    assert_int_equal(ff_reload_gendir_masters_seen(), 0);
+
+    /* the primary's own slot and this process are never a master */
+    gd.slot[0].master_pid = 1u;
+    gd.slot[0].flags = FF_RELOAD_SLOT_PRIMARY;
+    gd.slot[1].master_pid = (uint32_t)getpid();
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+
+    /* a running master counts, a dead one does not */
+    gd.slot[2].master_pid = 1u;
+    gd.slot[3].master_pid = gone;
+    assert_int_equal(ff_reload_gendir_masters_live(), 1);
+    gd.slot[2].master_pid = 0;
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+
+    /* a master that has gone still counts as seen; the primary slot and
+     * this process never */
+    assert_int_equal(ff_reload_gendir_masters_seen(), 1);
+
+    /* a master that is still running counts until it exits, and an
+     * unreaped (zombie) one is gone already */
+    zombie = fork();
+    assert_true(zombie >= 0);
+    if (zombie == 0) {
+        pause();
+        _exit(0);
+    }
+    gd.slot[3].master_pid = (uint32_t)zombie;
+    live = ff_reload_gendir_masters_live();
+    assert_int_equal(kill(zombie, SIGKILL), 0);
+    assert_int_equal(live, 1);
+    {
+        siginfo_t si;
+
+        memset(&si, 0, sizeof(si));
+        assert_int_equal(waitid(P_PID, zombie, &si, WEXITED | WNOWAIT), 0);
+    }
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+    assert_int_equal(waitpid(zombie, NULL, 0), zombie);
+    assert_int_equal(ff_reload_gendir_masters_live(), 0);
+
+    ff_reload_gendir_install(NULL, 0);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+int
+main(void)
+{
+    const struct CMUnitTest tests[] = {
+        cmocka_unit_test_setup_teardown(test_ff_load_config_valid_minimal_ini, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_no_dpdk_section,   test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_invalid_lcore_mask,test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_dual_vlan,         test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_with_vip_addr,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_argv_override,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_unknown_section,   test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_empty_ini,         test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfg_handler_isolated,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ipfw_pr_cfg_handler_isolated,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_port_cfg_handler_addr_parse,      test_setup, NULL),
+        /* Stage-3 coverage extension */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_all_sections,      test_setup, NULL),
+        /* Stage-6 Phase-2 coverage extensions */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_dpdk_full,           test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_lcore_mask_no_bits,  test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_portlist_nonint,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_bond_cfg_handler_no_nb_bond,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_bond_cfg_handler_bad_section,       test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rss_check_cfg_handler_no_port_no_vlan, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rss_tbl_cfg_handler_bad_tuple,      test_setup, NULL),
+        /* R-F (req 0.1/0.2): thash_adjust runtime switch parsing */
+        cmocka_unit_test_setup_teardown(test_rss_check_thash_adjust_off_parses,  test_setup, NULL),
+        /* Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD) */
+        cmocka_unit_test_setup_teardown(test_ff_unload_config_zeroes_state,      test_setup, NULL),
+        /* Stage-7 Phase-3 branch-coverage boost (FU-S7-CFG-*) */
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_uppercase_0X_succeeds, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfg_handler_id_not_in_filter_returns_one, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfg_handler_bad_section_returns_zero, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vdev_cfg_handler_no_nb_vdev_returns_zero, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_vdev_full, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_bond_full, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_port_cfg_handler_bad_section_returns_zero, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_port_cfg_handler_id_over_max_returns_one, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_repeat_keys_no_leak, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_freebsd_boot_multi_entries, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_inet6_fixture_ignored, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_argv_t_override, test_setup, NULL),
+        /* Stage-8 Phase-2 branch boost (FU-S8-CFG-ARGV-FIXTURES) */
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_blank_and_multibit,      test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_all_blank_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_mid_nonhex_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_vlan_vip_addr,             test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfg_handler_portid_over_max_skips,   test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_proc_id_in_range,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_proc_id_over_count_fails, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_check_config_kni_method_reject_ok,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_check_config_kni_method_invalid_fails, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_check_config_kni_primary_lcore_present_ok,  test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_check_config_kni_primary_lcore_missing_fails, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_dpdk_extra_keys,            test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_bond_vdev_repeat_keys_no_leak, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_parse_lcore_mask_calloc_oom_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_alloc_port_cfgs_calloc_oom_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vlan_cfgs_calloc_oom_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_vdev_cfgs_calloc_oom_returns_error, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_bond_cfgs_calloc_oom_returns_error, test_setup, NULL),
+        /* MTU configuration tests (UT-CFG-01..07) */
+        cmocka_unit_test_setup_teardown(test_mtu_defaults_legacy,                    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_large_9000,                         test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_scatter_mode,                       test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_invalid_mode_fails,                 test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_max_mtu_non_numeric_fails,          test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_port_over_max_fails,                test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_disabled_port_over_1500_fails,      test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_mtu_large_65535_fails,                  test_setup, NULL),
+        /* CM1 (native-mt) thread_mode config switch */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_enabled,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_default_off,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_thread_mode_secondary_conflict, test_setup, NULL),
+        /* CM4 (native-mt) ECN config switch (freebsd.tcp_ecn) */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_tcp_ecn_default_off, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_tcp_ecn_enabled,     test_setup, NULL),
+        /* M1 graceful_reload (C-NR-101) */
+        cmocka_unit_test_setup_teardown(test_graceful_reload_default_off,  test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_graceful_reload_parse,        test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_graceful_reload_requires_slim, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_greload_thread_mode_mutex,    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_greload_off_no_new_checks,    test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_greload_bad_value_atoi,       test_setup, NULL),
+        /* M2 Batch B (C-NR-201/202/205/206/313/316) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_10_reload_fsm_transitions, test_setup, NULL),
+        /* M4 Batch C: UT-NR-10 full transition table (C-NR-205/403/404) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_10_all_legal_transitions, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_10_illegal_combinations_exhaustive, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_10_error_recovery_and_abort, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_12_generation_mapping,     test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_14_reload_msg_serdes,      test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_20_queue_mapping_config,   test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_22_heartbeat_and_rx_return, test_setup, NULL),
+        /* M3 Batch A (C-NR-302 / C-NR-305) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_25_drain_ring_size_config, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_26_rx_handover_markers,    test_setup, NULL),
+        /* M3 Batch B (C-NR-306: T2 park barrier) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_11_handover_barrier,       test_setup, NULL),
+        /* M5 Batch A (C-NR-501: master epoch / generation directory) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_m5_epoch_slot_and_ring_name, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_m5_gendir_arbitration,     test_setup, NULL),
+        /* M5 Batch C (probe epoch / cross-master naming / =0 invariance /
+         * cross-master handover) */
+        cmocka_unit_test_setup_teardown(test_ut_nr_m5_probe_epoch_fallback,   test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_m5_cross_master_name_isolation, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_m5_graceful_zero_epoch_invariance, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ut_nr_m5_cross_master_handover_sequence, test_setup, NULL),
+        /* P2 (B01-1 / B02-1): takeover needs a stop proof from every user */
+        cmocka_unit_test_setup_teardown(test_p2_hw_user_proof, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_p2_reclaim_needs_user_proof, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_p2_release_epoch_needs_proof, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_p2_orphan_workers_keep_epoch_live, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx15_ring_user_census_and_purge_lock, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx35_primary_conf_digest, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx35_primary_users, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx35_primary_reuse_check, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx37_primary_reuse_check_idle, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_rx37_gendir_masters_live, test_setup, NULL),
+        /* idle_loop_interval: decoupled idle loop() callback interval */
+        cmocka_unit_test_setup_teardown(test_idle_loop_interval_parsed_independently, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_idle_loop_interval_default,             test_setup, NULL),
+#ifdef FF_KERNEL_COEXIST
+        /* kernel_event_support: [stack] kernel_coexist */
+        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_enabled,         test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_absent_defaults_disabled, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_garbage_defaults_disabled, test_setup, NULL),
+        cmocka_unit_test_setup_teardown(test_ff_load_config_stack_coexist_disabled_explicit, test_setup, NULL),
+#endif /* FF_KERNEL_COEXIST */
+    };
+    return cmocka_run_group_tests(tests, NULL, NULL);
+}

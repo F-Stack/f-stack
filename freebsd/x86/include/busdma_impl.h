@@ -1,8 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Konstantin Belousov <kib@FreeBSD.org>
  * under sponsorship from the FreeBSD Foundation.
@@ -27,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	__X86_BUSDMA_IMPL_H
@@ -36,28 +33,23 @@
 
 struct bus_dma_tag_common {
 	struct bus_dma_impl *impl;
-	struct bus_dma_tag_common *parent;
 	bus_size_t	  alignment;
 	bus_addr_t	  boundary;
 	bus_addr_t	  lowaddr;
 	bus_addr_t	  highaddr;
-	bus_dma_filter_t *filter;
-	void		 *filterarg;
 	bus_size_t	  maxsize;
 	u_int		  nsegments;
 	bus_size_t	  maxsegsz;
 	int		  flags;
 	bus_dma_lock_t	 *lockfunc;
 	void		 *lockfuncarg;
-	int		  ref_count;
 	int		  domain;
 };
 
 struct bus_dma_impl {
 	int (*tag_create)(bus_dma_tag_t parent,
 	    bus_size_t alignment, bus_addr_t boundary, bus_addr_t lowaddr,
-	    bus_addr_t highaddr, bus_dma_filter_t *filter,
-	    void *filterarg, bus_size_t maxsize, int nsegments,
+	    bus_addr_t highaddr, bus_size_t maxsize, int nsegments,
 	    bus_size_t maxsegsz, int flags, bus_dma_lock_t *lockfunc,
 	    void *lockfuncarg, bus_dma_tag_t *dmat);
 	int (*tag_destroy)(bus_dma_tag_t dmat);
@@ -85,16 +77,16 @@ struct bus_dma_impl {
 	void (*map_unload)(bus_dma_tag_t dmat, bus_dmamap_t map);
 	void (*map_sync)(bus_dma_tag_t dmat, bus_dmamap_t map,
 	    bus_dmasync_op_t op);
+#ifdef KMSAN
+	void (*load_kmsan)(bus_dmamap_t map, struct memdesc *mem);
+#endif
 };
 
-void bus_dma_dflt_lock(void *arg, bus_dma_lock_op_t op);
-int bus_dma_run_filter(struct bus_dma_tag_common *dmat, vm_paddr_t paddr);
 int common_bus_dma_tag_create(struct bus_dma_tag_common *parent,
     bus_size_t alignment,
     bus_addr_t boundary, bus_addr_t lowaddr, bus_addr_t highaddr,
-    bus_dma_filter_t *filter, void *filterarg, bus_size_t maxsize,
-    int nsegments, bus_size_t maxsegsz, int flags, bus_dma_lock_t *lockfunc,
-    void *lockfuncarg, size_t sz, void **dmat);
+    bus_size_t maxsize, int nsegments, bus_size_t maxsegsz, int flags,
+    bus_dma_lock_t *lockfunc, void *lockfuncarg, size_t sz, void **dmat);
 
 extern struct bus_dma_impl bus_dma_bounce_impl;
 

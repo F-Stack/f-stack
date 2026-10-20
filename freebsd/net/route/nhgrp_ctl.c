@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alexander V. Chernikov
  *
@@ -23,13 +23,10 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 #include "opt_inet.h"
 #include "opt_route.h"
 
-#include <sys/cdefs.h>
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/lock.h>
@@ -44,6 +41,7 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/route/route_ctl.h>
 #include <net/route/route_var.h>
@@ -58,6 +56,11 @@
 #include <net/route/nhop_var.h>
 #include <net/route/nhgrp_var.h>
 
+#define	DEBUG_MOD_NAME	nhgrp_ctl
+#define	DEBUG_MAX_LEVEL	LOG_DEBUG
+#include <net/route/route_debug.h>
+_DECLARE_DEBUG(LOG_INFO);
+
 /*
  * This file contains the supporting functions for creating multipath groups
  *  and compiling their dataplane parts.
@@ -71,50 +74,60 @@ CHK_STRUCT_FIELD_GENERIC(struct nhop_object, nh_flags, struct nhgrp_object, nhg_
 /* Cap multipath to 64, as the larger values would break rib_cmd_info bmasks */
 CTASSERT(RIB_MAX_MPATH_WIDTH <= 64);
 
-static int wn_cmp(const void *a, const void *b);
+static int wn_cmp_idx(const void *a, const void *b);
 static void sort_weightened_nhops(struct weightened_nhop *wn, int num_nhops);
 
 static struct nhgrp_priv *get_nhgrp(struct nh_control *ctl,
-    struct weightened_nhop *wn, int num_nhops, int *perror);
+    struct weightened_nhop *wn, int num_nhops, uint32_t uidx, int *perror);
 static void destroy_nhgrp(struct nhgrp_priv *nhg_priv);
 static void destroy_nhgrp_epoch(epoch_context_t ctx);
 static void free_nhgrp_nhops(struct nhgrp_priv *nhg_priv);
 
 static int
-wn_cmp(const void *a, const void *b)
+wn_cmp_idx(const void *a, const void *b)
 {
-	const struct weightened_nhop *wa = a;
-	const struct weightened_nhop *wb = b;
+	const struct weightened_nhop *w_a = a;
+	const struct weightened_nhop *w_b = b;
+	uint32_t a_idx = w_a->nh->nh_priv->nh_idx;
+	uint32_t b_idx = w_b->nh->nh_priv->nh_idx;
 
-	if (wa->weight > wb->weight)
-		return (1);
-	else if (wa->weight < wb->weight)
+	if (a_idx < b_idx)
 		return (-1);
-
-	/* Compare nexthops by pointer */
-	if (wa->nh > wb->nh)
+	else if (a_idx > b_idx)
 		return (1);
-	else if (wa->nh < wb->nh)
-		return (-1);
 	else
 		return (0);
 }
 
 /*
  * Perform in-place sorting for array of nexthops in @wn.
- *
- * To avoid nh groups duplication, nexthops/weights in the
- *   @wn need to be ordered deterministically.
- * As this sorting is needed only for the control plane functionality,
- *  there are no specific external requirements.
- *
- * Sort by weight first, to ease calculation of the slot sizes.
+ * Sort by nexthop index ascending.
  */
 static void
 sort_weightened_nhops(struct weightened_nhop *wn, int num_nhops)
 {
 
-	qsort(wn, num_nhops, sizeof(struct weightened_nhop), wn_cmp);
+	qsort(wn, num_nhops, sizeof(struct weightened_nhop), wn_cmp_idx);
+}
+
+/*
+ * In order to determine the minimum weight difference in the array
+ * of weights, create a sorted array of weights, using spare "storage"
+ * field in the `struct weightened_nhop`.
+ * Assume weights to be (mostly) the same and use insertion sort to
+ * make it sorted.
+ */
+static void
+sort_weightened_nhops_weights(struct weightened_nhop *wn, int num_items)
+{
+	wn[0].storage = wn[0].weight;
+	for (int i = 1, j = 0; i < num_items; i++) {
+		uint32_t weight = wn[i].weight; // read from 'weight' as it's not reordered
+		/* Move all weights > weight 1 position right */
+		for (j = i - 1; j >= 0 && wn[j].storage > weight; j--)
+			wn[j + 1].storage = wn[j].storage;
+		wn[j + 1].storage = weight;
+	}
 }
 
 /*
@@ -131,19 +144,26 @@ sort_weightened_nhops(struct weightened_nhop *wn, int num_nhops)
  * (1, 100), (2, 200), (3, 400) -> 7 slots [1, 2, 2, 3, 3, 3]
  */
 static uint32_t
-calc_min_mpath_slots_fast(const struct weightened_nhop *wn, size_t num_items)
+calc_min_mpath_slots_fast(struct weightened_nhop *wn, size_t num_items,
+    uint64_t *ptotal)
 {
 	uint32_t i, last, xmin;
 	uint64_t total = 0;
 
+	// Get sorted array of weights in .storage field
+	sort_weightened_nhops_weights(wn, num_items);
+
 	last = 0;
-	xmin = wn[0].weight;
+	xmin = wn[0].storage;
 	for (i = 0; i < num_items; i++) {
-		total += wn[i].weight;
-		if ((wn[i].weight - last < xmin) && (wn[i].weight != last))
-			xmin = wn[i].weight - last;
-		last = wn[i].weight;
+		total += wn[i].storage;
+		if ((wn[i].storage != last) &&
+		    ((wn[i].storage - last < xmin) || xmin == 0)) {
+			xmin = wn[i].storage - last;
+		}
+		last = wn[i].storage;
 	}
+	*ptotal = total;
 	/* xmin is the minimum unit of desired capacity */
 	if ((total % xmin) != 0)
 		return (0);
@@ -165,11 +185,14 @@ calc_min_mpath_slots_fast(const struct weightened_nhop *wn, size_t num_items)
  *  RIB_MAX_MPATH_WIDTH in case of any failure.
  */
 static uint32_t
-calc_min_mpath_slots(const struct weightened_nhop *wn, size_t num_items)
+calc_min_mpath_slots(struct weightened_nhop *wn, size_t num_items)
 {
 	uint32_t v;
+	uint64_t total;
 
-	v = calc_min_mpath_slots_fast(wn, num_items);
+	v = calc_min_mpath_slots_fast(wn, num_items, &total);
+	if (total == 0)
+		return (0);
 	if ((v == 0) || (v > RIB_MAX_MPATH_WIDTH))
 		v = RIB_MAX_MPATH_WIDTH;
 
@@ -222,7 +245,8 @@ compile_nhgrp(struct nhgrp_priv *dst_priv, const struct weightened_nhop *x,
 	for (i = 0; i < dst_priv->nhg_nh_count; i++)
 		remaining_sum += x[i].weight;
 	remaining_slots = num_slots;
-	DPRINTF("O: %u/%u", (uint32_t)remaining_sum, remaining_slots);
+	FIB_NH_LOG(LOG_DEBUG3, x[0].nh, "sum: %lu, slots: %d",
+	    remaining_sum, remaining_slots);
 	for (i = 0; i < dst_priv->nhg_nh_count; i++) {
 		/* Calculate number of slots for the current nexthop */
 		if (remaining_sum > 0) {
@@ -234,9 +258,9 @@ compile_nhgrp(struct nhgrp_priv *dst_priv, const struct weightened_nhop *x,
 		remaining_sum -= x[i].weight;
 		remaining_slots -= nh_slots;
 
-		DPRINTF(" OO[%d]: %u/%u curr=%d slot_idx=%d", i,
-		    (uint32_t)remaining_sum, remaining_slots,
-		    (int)nh_slots, slot_idx);
+		FIB_NH_LOG(LOG_DEBUG3, x[0].nh,
+		    " rem_sum: %lu, rem_slots: %d nh_slots: %d, slot_idx: %d",
+		    remaining_sum, remaining_slots, (int)nh_slots, slot_idx);
 
 		KASSERT((slot_idx + nh_slots <= num_slots),
 		    ("index overflow during nhg compilation"));
@@ -255,7 +279,6 @@ static struct nhgrp_priv *
 alloc_nhgrp(struct weightened_nhop *wn, int num_nhops)
 {
 	uint32_t nhgrp_size;
-	int flags = M_NOWAIT;
 	struct nhgrp_object *nhg;
 	struct nhgrp_priv *nhg_priv;
 
@@ -266,14 +289,16 @@ alloc_nhgrp(struct weightened_nhop *wn, int num_nhops)
 	}
 
 	size_t sz = get_nhgrp_alloc_size(nhgrp_size, num_nhops);
-	nhg = malloc(sz, M_NHOP, flags | M_ZERO);
+	nhg = malloc(sz, M_NHOP, M_NOWAIT | M_ZERO);
 	if (nhg == NULL) {
+		FIB_NH_LOG(LOG_INFO, wn[0].nh,
+		    "unable to allocate group with num_nhops %d (compiled %u)",
+		    num_nhops, nhgrp_size);
 		return (NULL);
 	}
 
 	/* Has to be the first to make NHGRP_PRIV() work */
 	nhg->nhg_size = nhgrp_size;
-	DPRINTF("new mpath group: num_nhops: %u", (uint32_t)nhgrp_size);
 	nhg->nhg_flags = MPF_MULTIPATH;
 
 	nhg_priv = NHGRP_PRIV(nhg);
@@ -287,6 +312,9 @@ alloc_nhgrp(struct weightened_nhop *wn, int num_nhops)
 	memcpy(&nhg_priv->nhg_nh_weights[0], wn,
 	  num_nhops * sizeof(struct weightened_nhop));
 
+	FIB_NH_LOG(LOG_DEBUG, wn[0].nh, "num_nhops: %d, compiled_nhop: %u",
+	    num_nhops, nhgrp_size);
+
 	compile_nhgrp(nhg_priv, wn, nhg->nhg_size);
 
 	return (nhg_priv);
@@ -296,7 +324,7 @@ void
 nhgrp_ref_object(struct nhgrp_object *nhg)
 {
 	struct nhgrp_priv *nhg_priv;
-	u_int old;
+	u_int old __diagused;
 
 	nhg_priv = NHGRP_PRIV(nhg);
 	old = refcount_acquire(&nhg_priv->nhg_refcount);
@@ -346,15 +374,17 @@ nhgrp_free(struct nhgrp_object *nhg)
 		ctl = nhg_priv->nh_control;
 		if (unlink_nhgrp(ctl, nhg_priv) == NULL) {
 			/* Do not try to reclaim */
-			DPRINTF("Failed to unlink nexhop group %p", nhg_priv);
+			RT_LOG(LOG_INFO, "Failed to unlink nexhop group %p",
+			    nhg_priv);
 			NET_EPOCH_EXIT(et);
 			return;
 		}
+		MPASS((nhg_priv->nhg_idx == 0));
+		MPASS((nhg_priv->nhg_refcount == 0));
 	}
 	NET_EPOCH_EXIT(et);
 
-	epoch_call(net_epoch_preempt, destroy_nhgrp_epoch,
-	    &nhg_priv->nhg_epoch_ctx);
+	NET_EPOCH_CALL(destroy_nhgrp_epoch, &nhg_priv->nhg_epoch_ctx);
 }
 
 /*
@@ -370,15 +400,14 @@ destroy_nhgrp_int(struct nhgrp_priv *nhg_priv)
 __noinline static void
 destroy_nhgrp(struct nhgrp_priv *nhg_priv)
 {
-
-	KASSERT((nhg_priv->nhg_refcount == 0), ("nhg_refcount != 0"));
-
-	DPRINTF("DEL MPATH %p", nhg_priv);
-
-	KASSERT((nhg_priv->nhg_idx == 0), ("gr_idx != 0"));
+	IF_DEBUG_LEVEL(LOG_DEBUG2) {
+		char nhgbuf[NHOP_PRINT_BUFSIZE] __unused;
+		FIB_NH_LOG(LOG_DEBUG2, nhg_priv->nhg_nh_weights[0].nh,
+		    "destroying %s", nhgrp_print_buf(nhg_priv->nhg,
+		    nhgbuf, sizeof(nhgbuf)));
+	}
 
 	free_nhgrp_nhops(nhg_priv);
-
 	destroy_nhgrp_int(nhg_priv);
 }
 
@@ -424,15 +453,24 @@ free_nhgrp_nhops(struct nhgrp_priv *nhg_priv)
 }
 
 /*
- * Creates or looks up an existing nexthop group based on @wn and @num_nhops.
- *
- * Returns referenced nhop group or NULL, passing error code in @perror.
+ * Allocate nexthop group of size @num_nhops with nexthops specified by
+ * @wn. Nexthops have to be unique and match the fibnum/family of the group.
+ * Returns unlinked nhgrp object on success or NULL and non-zero perror.
  */
-struct nhgrp_priv *
-get_nhgrp(struct nh_control *ctl, struct weightened_nhop *wn, int num_nhops,
+struct nhgrp_object *
+nhgrp_alloc(uint32_t fibnum, int family, struct weightened_nhop *wn, int num_nhops,
     int *perror)
 {
-	struct nhgrp_priv *key, *nhg_priv;
+	struct rib_head *rh = rt_tables_get_rnh(fibnum, family);
+	struct nhgrp_priv *nhg_priv;
+	struct nh_control *ctl;
+
+	if (rh == NULL) {
+		*perror = E2BIG;
+		return (NULL);
+	}
+
+	ctl = rh->nh_control;
 
 	if (num_nhops > RIB_MAX_MPATH_WIDTH) {
 		*perror = E2BIG;
@@ -451,6 +489,10 @@ get_nhgrp(struct nh_control *ctl, struct weightened_nhop *wn, int num_nhops,
 	sort_weightened_nhops(wn, num_nhops);
 	uint32_t last_id = 0;
 	for (int i = 0; i < num_nhops; i++) {
+		if (wn[i].nh->nh_priv->nh_control != ctl) {
+			*perror = EINVAL;
+			return (NULL);
+		}
 		if (wn[i].nh->nh_priv->nh_idx == last_id) {
 			*perror = EEXIST;
 			return (NULL);
@@ -458,10 +500,25 @@ get_nhgrp(struct nh_control *ctl, struct weightened_nhop *wn, int num_nhops,
 		last_id = wn[i].nh->nh_priv->nh_idx;
 	}
 
-	if ((key = alloc_nhgrp(wn, num_nhops)) == NULL) {
+	if ((nhg_priv = alloc_nhgrp(wn, num_nhops)) == NULL) {
 		*perror = ENOMEM;
 		return (NULL);
 	}
+	nhg_priv->nh_control = ctl;
+
+	*perror = 0;
+	return (nhg_priv->nhg);
+}
+
+/*
+ * Finds an existing group matching @nhg or links @nhg to the tree.
+ * Returns the referenced group or NULL and non-zero @perror.
+ */
+struct nhgrp_object *
+nhgrp_get_nhgrp(struct nhgrp_object *nhg, int *perror)
+{
+	struct nhgrp_priv *nhg_priv, *key = NHGRP_PRIV(nhg);
+	struct nh_control *ctl = key->nh_control;
 
 	nhg_priv = find_nhgrp(ctl, key);
 	if (nhg_priv != NULL) {
@@ -472,7 +529,7 @@ get_nhgrp(struct nh_control *ctl, struct weightened_nhop *wn, int num_nhops,
 		 */
 		destroy_nhgrp_int(key);
 		*perror = 0;
-		return (nhg_priv);
+		return (nhg_priv->nhg);
 	} else {
 		/* No existing group, try to link the new one */
 		if (!ref_nhgrp_nhops(key)) {
@@ -493,11 +550,34 @@ get_nhgrp(struct nh_control *ctl, struct weightened_nhop *wn, int num_nhops,
 			return (NULL);
 		}
 		*perror = 0;
-		return (key);
+		return (nhg);
 	}
 
 	/* NOTREACHED */
 }
+
+/*
+ * Creates or looks up an existing nexthop group based on @wn and @num_nhops.
+ *
+ * Returns referenced nhop group or NULL, passing error code in @perror.
+ */
+struct nhgrp_priv *
+get_nhgrp(struct nh_control *ctl, struct weightened_nhop *wn, int num_nhops,
+    uint32_t uidx, int *perror)
+{
+	struct nhgrp_object *nhg;
+
+	nhg = nhgrp_alloc(ctl->ctl_rh->rib_fibnum, ctl->ctl_rh->rib_family,
+	    wn, num_nhops, perror);
+	if (nhg == NULL)
+		return (NULL);
+	nhgrp_set_uidx(nhg, uidx);
+	nhg = nhgrp_get_nhgrp(nhg, perror);
+	if (nhg != NULL)
+		return (NHGRP_PRIV(nhg));
+	return (NULL);
+}
+
 
 /*
  * Appends one or more nexthops denoted by @wm to the nexthop group @gr_orig.
@@ -542,7 +622,7 @@ append_nhops(struct nh_control *ctl, const struct nhgrp_object *gr_orig,
 	memcpy(&pnhops[curr_nhops], wn, num_nhops * sizeof(struct weightened_nhop));
 	curr_nhops += num_nhops;
 
-	nhg_priv = get_nhgrp(ctl, pnhops, curr_nhops, perror);
+	nhg_priv = get_nhgrp(ctl, pnhops, curr_nhops, 0, perror);
 
 	if (pnhops != (struct weightened_nhop *)&storage[0])
 		free(pnhops, M_TEMP);
@@ -563,28 +643,28 @@ append_nhops(struct nh_control *ctl, const struct nhgrp_object *gr_orig,
  */
 int
 nhgrp_get_group(struct rib_head *rh, struct weightened_nhop *wn, int num_nhops,
-    struct route_nhop_data *rnd)
+    uint32_t uidx, struct nhgrp_object **pnhg)
 {
 	struct nh_control *ctl = rh->nh_control;
 	struct nhgrp_priv *nhg_priv;
 	int error;
 
-	nhg_priv = get_nhgrp(ctl, wn, num_nhops, &error);
+	nhg_priv = get_nhgrp(ctl, wn, num_nhops, uidx, &error);
 	if (nhg_priv != NULL)
-		rnd->rnd_nhgrp = nhg_priv->nhg;
-	rnd->rnd_weight = 0;
+		*pnhg = nhg_priv->nhg;
 
 	return (error);
 }
 
 /*
- * Creates new nexthop group based on @src group with the nexthops defined in bitmask
- *  @nhop_mask removed.
- * Returns referenced nexthop group or NULL on failure.
+ * Creates new nexthop group based on @src group without the nexthops
+ * chosen by @flt_func.
+ * Returns 0 on success, storring the reference nhop group/object in @rnd.
  */
 int
-nhgrp_get_filtered_group(struct rib_head *rh, const struct nhgrp_object *src,
-    nhgrp_filter_cb_t flt_func, void *flt_data, struct route_nhop_data *rnd)
+nhgrp_get_filtered_group(struct rib_head *rh, const struct rtentry *rt,
+    const struct nhgrp_object *src, rib_filter_f_t flt_func, void *flt_data,
+    struct route_nhop_data *rnd)
 {
 	char storage[64];
 	struct nh_control *ctl = rh->nh_control;
@@ -608,7 +688,7 @@ nhgrp_get_filtered_group(struct rib_head *rh, const struct nhgrp_object *src,
 	error = 0;
 	num_nhops = 0;
 	for (i = 0; i < src_priv->nhg_nh_count; i++) {
-		if (flt_func(src_priv->nhg_nh_weights[i].nh, flt_data))
+		if (flt_func(rt, src_priv->nhg_nh_weights[i].nh, flt_data))
 			continue;
 		memcpy(&pnhops[num_nhops++], &src_priv->nhg_nh_weights[i],
 		  sizeof(struct weightened_nhop));
@@ -623,7 +703,7 @@ nhgrp_get_filtered_group(struct rib_head *rh, const struct nhgrp_object *src,
 		if (nhop_try_ref_object(rnd->rnd_nhop) == 0)
 			error = EAGAIN;
 	} else {
-		mp_priv = get_nhgrp(ctl, pnhops, num_nhops, &error);
+		mp_priv = get_nhgrp(ctl, pnhops, num_nhops, 0, &error);
 		if (mp_priv != NULL)
 			rnd->rnd_nhgrp = mp_priv->nhg;
 		rnd->rnd_weight = 0;
@@ -664,7 +744,7 @@ nhgrp_get_addition_group(struct rib_head *rh, struct route_nhop_data *rnd_orig,
 		/* Simple merge of 2 non-multipath nexthops */
 		wn[1].nh = rnd_orig->rnd_nhop;
 		wn[1].weight = rnd_orig->rnd_weight;
-		nhg_priv = get_nhgrp(ctl, wn, 2, &error);
+		nhg_priv = get_nhgrp(ctl, wn, 2, 0, &error);
 	} else {
 		/* Get new nhop group with @rt->rt_nhop as an additional nhop */
 		nhg_priv = append_nhops(ctl, rnd_orig->rnd_nhgrp, &wn[0], 1,
@@ -683,17 +763,71 @@ nhgrp_get_addition_group(struct rib_head *rh, struct route_nhop_data *rnd_orig,
  * Returns pointer to array of nexthops with weights for
  * given @nhg. Stores number of items in the array into @pnum_nhops.
  */
-struct weightened_nhop *
-nhgrp_get_nhops(struct nhgrp_object *nhg, uint32_t *pnum_nhops)
+const struct weightened_nhop *
+nhgrp_get_nhops(const struct nhgrp_object *nhg, uint32_t *pnum_nhops)
+{
+	const struct nhgrp_priv *nhg_priv;
+
+	KASSERT(((nhg->nhg_flags & MPF_MULTIPATH) != 0), ("nhop is not mpath"));
+
+	nhg_priv = NHGRP_PRIV_CONST(nhg);
+	*pnum_nhops = nhg_priv->nhg_nh_count;
+
+	return (nhg_priv->nhg_nh_weights);
+}
+
+void
+nhgrp_set_uidx(struct nhgrp_object *nhg, uint32_t uidx)
 {
 	struct nhgrp_priv *nhg_priv;
 
 	KASSERT(((nhg->nhg_flags & MPF_MULTIPATH) != 0), ("nhop is not mpath"));
 
 	nhg_priv = NHGRP_PRIV(nhg);
-	*pnum_nhops = nhg_priv->nhg_nh_count;
 
-	return (nhg_priv->nhg_nh_weights);
+	nhg_priv->nhg_uidx = uidx;
+}
+
+uint32_t
+nhgrp_get_uidx(const struct nhgrp_object *nhg)
+{
+	const struct nhgrp_priv *nhg_priv;
+
+	KASSERT(((nhg->nhg_flags & MPF_MULTIPATH) != 0), ("nhop is not mpath"));
+
+	nhg_priv = NHGRP_PRIV_CONST(nhg);
+	return (nhg_priv->nhg_uidx);
+}
+
+/*
+ * Prints nexhop group @nhg data in the provided @buf.
+ * Example: nhg#33/sz=3:[#1:100,#2:100,#3:100]
+ * Example: nhg#33/sz=5:[#1:100,#2:100,..]
+ */
+char *
+nhgrp_print_buf(const struct nhgrp_object *nhg, char *buf, size_t bufsize)
+{
+	const struct nhgrp_priv *nhg_priv = NHGRP_PRIV_CONST(nhg);
+
+	int off = snprintf(buf, bufsize, "nhg#%u/sz=%u:[", nhg_priv->nhg_idx,
+	    nhg_priv->nhg_nh_count);
+
+	for (int i = 0; i < nhg_priv->nhg_nh_count; i++) {
+		const struct weightened_nhop *wn = &nhg_priv->nhg_nh_weights[i];
+		int len = snprintf(&buf[off], bufsize - off, "#%u:%u,",
+		    wn->nh->nh_priv->nh_idx, wn->weight);
+		if (len + off + 3 >= bufsize) {
+			int len = snprintf(&buf[off], bufsize - off, "...");
+			off += len;
+			break;
+		}
+		off += len;
+	}
+	if (off > 0)
+		off--; // remove last ","
+	if (off + 1 < bufsize)
+		snprintf(&buf[off], bufsize - off, "]");
+	return buf;
 }
 
 __noinline static int
@@ -774,6 +908,18 @@ nhgrp_get_idx(const struct nhgrp_object *nhg)
 	return (nhg_priv->nhg_idx);
 }
 
+uint8_t
+nhgrp_get_origin(const struct nhgrp_object *nhg)
+{
+	return (NHGRP_PRIV_CONST(nhg)->nhg_origin);
+}
+
+void
+nhgrp_set_origin(struct nhgrp_object *nhg, uint8_t origin)
+{
+	NHGRP_PRIV(nhg)->nhg_origin = origin;
+}
+
 uint32_t
 nhgrp_get_count(struct rib_head *rh)
 {
@@ -806,7 +952,9 @@ nhgrp_dump_sysctl(struct rib_head *rh, struct sysctl_req *w)
 	sz = sizeof(struct rt_msghdr) + sizeof(struct nhgrp_external);
 	sz += 2 * sizeof(struct nhgrp_container);
 	sz += 2 * sizeof(struct nhgrp_nhop_external) * RIB_MAX_MPATH_WIDTH;
-	buffer = malloc(sz, M_TEMP, M_WAITOK);
+	buffer = malloc(sz, M_TEMP, M_NOWAIT);
+	if (buffer == NULL)
+		return (ENOMEM);
 
 	NET_EPOCH_ENTER(et);
 	NHOPS_RLOCK(ctl);

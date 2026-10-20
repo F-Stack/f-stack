@@ -28,8 +28,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -38,12 +36,12 @@
  * used in preference to this.
  */
 
+#ifdef __i386__
+#include <i386/cpufunc.h>
+#else /* !__i386__ */
+
 #ifndef _MACHINE_CPUFUNC_H_
 #define	_MACHINE_CPUFUNC_H_
-
-#ifndef _SYS_CDEFS_H_
-#error this file needs sys/cdefs.h as a prerequisite
-#endif
 
 struct region_descriptor;
 
@@ -57,8 +55,6 @@ struct region_descriptor;
 #define writel(va, d)	(*(volatile uint32_t *) (va) = (d))
 #define writeq(va, d)	(*(volatile uint64_t *) (va) = (d))
 
-#if defined(__GNUCLIKE_ASM) && defined(__CC_SUPPORTS___INLINE)
-
 static __inline void
 breakpoint(void)
 {
@@ -68,10 +64,6 @@ breakpoint(void)
 #define	bsfl(mask)	__builtin_ctz(mask)
 
 #define	bsfq(mask)	__builtin_ctzl(mask)
-
-#define	bsrl(mask)	(__builtin_clz(mask) ^ 0x1f)
-
-#define	bsrq(mask)	(__builtin_clzl(mask) ^ 0x3f)
 
 static __inline void
 clflush(u_long addr)
@@ -84,7 +76,7 @@ static __inline void
 clflushopt(u_long addr)
 {
 
-	__asm __volatile(".byte 0x66;clflush %0" : : "m" (*(char *)addr));
+	__asm __volatile("clflushopt %0" : : "m" (*(char *)addr));
 }
 
 static __inline void
@@ -111,16 +103,16 @@ static __inline void
 do_cpuid(u_int ax, u_int *p)
 {
 	__asm __volatile("cpuid"
-			 : "=a" (p[0]), "=b" (p[1]), "=c" (p[2]), "=d" (p[3])
-			 :  "0" (ax));
+	    : "=a" (p[0]), "=b" (p[1]), "=c" (p[2]), "=d" (p[3])
+	    :  "0" (ax));
 }
 
 static __inline void
 cpuid_count(u_int ax, u_int cx, u_int *p)
 {
 	__asm __volatile("cpuid"
-			 : "=a" (p[0]), "=b" (p[1]), "=c" (p[2]), "=d" (p[3])
-			 :  "0" (ax), "c" (cx));
+	    : "=a" (p[0]), "=b" (p[1]), "=c" (p[2]), "=d" (p[3])
+	    :  "0" (ax), "c" (cx));
 }
 
 static __inline void
@@ -128,43 +120,6 @@ enable_intr(void)
 {
 	__asm __volatile("sti");
 }
-
-#ifdef _KERNEL
-
-#define	HAVE_INLINE_FFS
-#define	ffs(x)		__builtin_ffs(x)
-
-#define	HAVE_INLINE_FFSL
-#define	ffsl(x)		__builtin_ffsl(x)
-
-#define	HAVE_INLINE_FFSLL
-#define	ffsll(x)	__builtin_ffsll(x)
-
-#define	HAVE_INLINE_FLS
-
-static __inline __pure2 int
-fls(int mask)
-{
-	return (mask == 0 ? mask : (int)bsrl((u_int)mask) + 1);
-}
-
-#define	HAVE_INLINE_FLSL
-
-static __inline __pure2 int
-flsl(long mask)
-{
-	return (mask == 0 ? mask : (int)bsrq((u_long)mask) + 1);
-}
-
-#define	HAVE_INLINE_FLSLL
-
-static __inline __pure2 int
-flsll(long long mask)
-{
-	return (flsl((long)mask));
-}
-
-#endif /* _KERNEL */
 
 static __inline void
 halt(void)
@@ -356,11 +311,34 @@ rdtsc(void)
 }
 
 static __inline uint64_t
+rdtsc_ordered_lfence(void)
+{
+	lfence();
+	return (rdtsc());
+}
+
+static __inline uint64_t
+rdtsc_ordered_mfence(void)
+{
+	mfence();
+	return (rdtsc());
+}
+
+static __inline uint64_t
 rdtscp(void)
 {
 	uint32_t low, high;
 
 	__asm __volatile("rdtscp" : "=a" (low), "=d" (high) : : "ecx");
+	return (low | ((uint64_t)high << 32));
+}
+
+static __inline uint64_t
+rdtscp_aux(uint32_t *aux)
+{
+	uint32_t low, high;
+
+	__asm __volatile("rdtscp" : "=a" (low), "=d" (high), "=c" (*aux));
 	return (low | ((uint64_t)high << 32));
 }
 
@@ -547,6 +525,29 @@ invpcid(struct invpcid_descr *d, int type)
 	    : : "r" (d), "r" ((u_long)type) : "memory");
 }
 
+#define	INVLPGB_VA		0x0001
+#define	INVLPGB_PCID		0x0002
+#define	INVLPGB_ASID		0x0004
+#define	INVLPGB_GLOB		0x0008
+#define	INVLPGB_FIN		0x0010
+#define	INVLPGB_NEST		0x0020
+
+#define	INVLPGB_DESCR(asid, pcid)	(((pcid) << 16) | (asid))
+
+#define	INVLPGB_2M_CNT		(1u << 31)
+
+static __inline void
+invlpgb(uint64_t rax, uint32_t edx, uint32_t ecx)
+{
+	__asm __volatile("invlpgb" : : "a" (rax), "d" (edx), "c" (ecx));
+}
+
+static __inline void
+tlbsync(void)
+{
+	__asm __volatile("tlbsync");
+}
+
 static __inline u_short
 rfs(void)
 {
@@ -568,6 +569,15 @@ rss(void)
 {
 	u_short sel;
 	__asm __volatile("movw %%ss,%0" : "=rm" (sel));
+	return (sel);
+}
+
+static __inline u_short
+rcs(void)
+{
+	u_short sel;
+
+	__asm __volatile("movw %%cs,%0" : "=rm" (sel));
 	return (sel);
 }
 
@@ -941,72 +951,28 @@ sgx_eremove(void *epc)
 	return (sgx_encls(SGX_EREMOVE, 0, (uint64_t)epc, 0));
 }
 
-#else /* !(__GNUCLIKE_ASM && __CC_SUPPORTS___INLINE) */
+static __inline void
+xrstors(uint8_t *save_area, uint64_t state_bitmap)
+{
+	uint32_t low, hi;
 
-int	breakpoint(void);
-u_int	bsfl(u_int mask);
-u_int	bsrl(u_int mask);
-void	clflush(u_long addr);
-void	clts(void);
-void	cpuid_count(u_int ax, u_int cx, u_int *p);
-void	disable_intr(void);
-void	do_cpuid(u_int ax, u_int *p);
-void	enable_intr(void);
-void	halt(void);
-void	ia32_pause(void);
-u_char	inb(u_int port);
-u_int	inl(u_int port);
-void	insb(u_int port, void *addr, size_t count);
-void	insl(u_int port, void *addr, size_t count);
-void	insw(u_int port, void *addr, size_t count);
-register_t	intr_disable(void);
-void	intr_restore(register_t rf);
-void	invd(void);
-void	invlpg(u_int addr);
-void	invltlb(void);
-u_short	inw(u_int port);
-void	lidt(struct region_descriptor *addr);
-void	lldt(u_short sel);
-void	load_cr0(u_long cr0);
-void	load_cr3(u_long cr3);
-void	load_cr4(u_long cr4);
-void	load_dr0(uint64_t dr0);
-void	load_dr1(uint64_t dr1);
-void	load_dr2(uint64_t dr2);
-void	load_dr3(uint64_t dr3);
-void	load_dr6(uint64_t dr6);
-void	load_dr7(uint64_t dr7);
-void	load_fs(u_short sel);
-void	load_gs(u_short sel);
-void	ltr(u_short sel);
-void	outb(u_int port, u_char data);
-void	outl(u_int port, u_int data);
-void	outsb(u_int port, const void *addr, size_t count);
-void	outsl(u_int port, const void *addr, size_t count);
-void	outsw(u_int port, const void *addr, size_t count);
-void	outw(u_int port, u_short data);
-u_long	rcr0(void);
-u_long	rcr2(void);
-u_long	rcr3(void);
-u_long	rcr4(void);
-uint64_t rdmsr(u_int msr);
-uint32_t rdmsr32(u_int msr);
-uint64_t rdpmc(u_int pmc);
-uint64_t rdr0(void);
-uint64_t rdr1(void);
-uint64_t rdr2(void);
-uint64_t rdr3(void);
-uint64_t rdr6(void);
-uint64_t rdr7(void);
-uint64_t rdtsc(void);
-u_long	read_rflags(void);
-u_int	rfs(void);
-u_int	rgs(void);
-void	wbinvd(void);
-void	write_rflags(u_int rf);
-void	wrmsr(u_int msr, uint64_t newval);
+	low = state_bitmap;
+	hi = state_bitmap >> 32;
+	__asm __volatile("xrstors %0" : : "m"(*save_area), "a"(low),
+	    "d"(hi));
+}
 
-#endif	/* __GNUCLIKE_ASM && __CC_SUPPORTS___INLINE */
+static __inline void
+xsaves(uint8_t *save_area, uint64_t state_bitmap)
+{
+	uint32_t low, hi;
+
+	low = state_bitmap;
+	hi = state_bitmap >> 32;
+	__asm __volatile("xsaves %0" : "=m"(*save_area) : "a"(low),
+	    "d"(hi)
+	    : "memory");
+}
 
 void	reset_dbregs(void);
 
@@ -1016,3 +982,5 @@ int	wrmsr_safe(u_int msr, uint64_t newval);
 #endif
 
 #endif /* !_MACHINE_CPUFUNC_H_ */
+
+#endif /* __i386__ */

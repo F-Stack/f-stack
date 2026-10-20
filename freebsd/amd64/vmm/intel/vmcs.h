@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _VMCS_H_
@@ -76,7 +74,7 @@ int	vmcs_snapshot_any(struct vmcs *vmcs, int running, int ident,
 static __inline uint64_t
 vmcs_read(uint32_t encoding)
 {
-	int error;
+	int error __diagused;
 	uint64_t val;
 
 	error = vmread(encoding, &val);
@@ -87,7 +85,7 @@ vmcs_read(uint32_t encoding)
 static __inline void
 vmcs_write(uint32_t encoding, uint64_t val)
 {
-	int error;
+	int error __diagused;
 
 	error = vmwrite(encoding, val);
 	KASSERT(error == 0, ("vmcs_write(%u) error %d", encoding, error));

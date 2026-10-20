@@ -223,6 +223,25 @@ Display the EEPROM information of a port::
 
    testpmd> show port (port_id) (module_eeprom|eeprom)
 
+set eeprom
+~~~~~~~~~~
+
+Write a value to the device EEPROM of a port at a specific offset::
+
+   testpmd> set port (port_id) eeprom (accept_risk) magic (magic_num) value (value) \
+            offset (offset)
+
+Value should be given in the form of a hex-as-string, with no leading ``0x``.
+The offset field here is optional,
+if not specified then the offset will default to 0.
+
+.. note::
+
+   This is a high-risk command
+   and its misuse may result in unexpected behaviour from the NIC.
+   By inserting "accept_risk" into the command,
+   the user is acknowledging and taking responsibility for this risk.
+
 show port rss reta
 ~~~~~~~~~~~~~~~~~~
 
@@ -264,13 +283,12 @@ Display information for a given port's RX/TX descriptor status::
 
    testpmd> show port (port_id) (rxq|txq) (queue_id) desc (desc_id) status
 
-show rxq desc used count
-~~~~~~~~~~~~~~~~~~~~~~~~
+show desc used count(rxq|txq)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Display the number of receive packet descriptors currently filled by hardware
-and ready to be processed by the driver on a given RX queue::
+Display the number of packet descriptors currently used by hardware for a queue::
 
-   testpmd> show port (port_id) rxq (queue_id) desc used count
+   testpmd> show port (port_id) (rxq|txq) (queue_id) desc used count
 
 show config
 ~~~~~~~~~~~
@@ -1838,6 +1856,13 @@ during the flow rule creation::
 
 Otherwise the default index ``0`` is used.
 
+set port led
+~~~~~~~~~~~~
+
+Set a controllable LED associated with a certain port on or off::
+
+   testpmd> set port (port_id) led (on|off)
+
 Port Functions
 --------------
 
@@ -2114,7 +2139,7 @@ Set the RSS (Receive Side Scaling) mode on or off::
                                  ip|tcp|udp|sctp|tunnel|vlan|none| \
                                  ipv4|ipv4-frag|ipv4-tcp|ipv4-udp|ipv4-sctp|ipv4-other| \
                                  ipv6|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp| \
-                                 ipv6-other|ipv6-ex|ipv6-tcp-ex|ipv6-udp-ex| \
+                                 ipv6-other|ipv6-ex|ipv6-tcp-ex|ipv6-udp-ex|ipv6-flow-label| \
                                  l2-payload|port|vxlan|geneve|nvgre|gtpu|eth|s-vlan|c-vlan| \
                                  esp|ah|l2tpv3|pfcp|pppoe|ecpri|mpls|ipv4-chksum|l4-chksum| \
                                  l2tpv2|l3-pre96|l3-pre64|l3-pre56|l3-pre48|l3-pre40|l3-pre32| \
@@ -2262,6 +2287,16 @@ hash of input [IP] packets received on port::
                      ipv6-other|l2-payload|ipv6-ex|ipv6-tcp-ex|\
                      ipv6-udp-ex <string of hex digits \
                      (variable length, NIC dependent)>)
+
+port config rss hash algorithm
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To configure the RSS hash algorithm used to compute the RSS
+hash of input packets received on port::
+
+   testpmd> port config <port_id> rss-hash-algo (default|\
+                     simple_xor|toeplitz|symmetric_toeplitz|\
+                     symmetric_toeplitz_sort)
 
 port cleanup txq mbufs
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -2781,6 +2816,33 @@ where:
 * ``n_shared_shapers``: Number of shared shapers.
 * ``shared_shaper_id``: Shared shaper id.
 
+Query port traffic management hierarchy node
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+An added traffic management hierarchy node, whether leaf of non-leaf,
+can be queried using::
+
+    testpmd> show port tm node (port_id) (node_id)
+
+where ``port_id`` and ``node_id`` are the numeric identifiers of the ethernet port
+and the previously added traffic management node, respectively.
+The output of this command are the parameters previously provided to the add call,
+printed with appropriate labels.
+For example::
+
+   testpmd> show port tm node 0 90
+   Port 0 TM Node 90
+     Parent Node ID: 100
+     Level ID: 1
+     Priority: 0
+     Weight: 1
+     Shaper Profile ID: <none>
+     Shared Shaper IDs: <none>
+     Stats Mask: 0
+     Nonleaf Node Parameters
+       Num Strict Priorities: 1
+       WFQ Weights Mode: WFQ
+
 Delete port traffic management hierarchy node
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -2972,11 +3034,20 @@ following sections.
 - Create a table::
 
    flow table {port_id} create
-       [table_id {id}]
+       [table_id {id}] [resizable]
        [group {group_id}] [priority {level}] [ingress] [egress] [transfer]
        rules_number {number}
        pattern_template {pattern_template_id}
        actions_template {actions_template_id}
+
+- Resize a table::
+
+   flow template_table {port_id} resize
+       table_resize_id {id} table_resize_rules_num {number}
+
+- Complete table resize::
+
+   flow template_table {port_id} resize_complete table {table_id}
 
 - Destroy a table::
 
@@ -2997,6 +3068,10 @@ following sections.
        actions_template {actions_template_index}
        pattern {item} [/ {item} [...]] / end
        actions {action} [/ {action} [...]] / end
+
+- Enqueue flow update following table resize::
+
+   flow queue {port_id} update_resized {table_id} rule {rule_id}
 
 - Enqueue destruction of specific flow rules::
 
@@ -3022,6 +3097,11 @@ following sections.
 - Destroy specific flow rules::
 
    flow destroy {port_id} rule {rule_id} [...] [user_id]
+
+- Update a flow rule with new actions::
+
+   flow update {port_id} {rule_id}
+       actions {action} [/ {action} [...]] / end [user_id]
 
 - Destroy all flow rules::
 
@@ -3274,7 +3354,7 @@ The usual error message is shown when operations results cannot be pulled::
 Calculating hash
 ~~~~~~~~~~~~~~~~
 
-``flow hash`` calculates the hash for a given pattern.
+``flow hash {port_id} template_table`` calculates the hash for a given pattern.
 It is bound to ``rte_flow_calc_table_hash()``::
 
    flow hash {port_id} template_table {table_id}
@@ -3292,6 +3372,24 @@ Otherwise, it will show an error message of the form::
 
 This command uses the same pattern items as ``flow create``,
 their format is described in `Creating flow rules`_.
+
+Simulate encap hash calculation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow hash {port_id} encap`` adds hash query, that returns the hash value
+that the HW will calculate when encapsulating a packet::
+
+   flow hash {port_id} encap {target field} pattern {item} [/ {item} [...]] / end
+
+If successful, it will show::
+
+   encap hash result #[...]
+
+The value will be shown as uint16_t without endian conversion.
+
+Otherwise it will show an error message of the form::
+
+   Failed to calculate encap hash - [...]
 
 Creating a tunnel stub for offload
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -3639,7 +3737,20 @@ This section lists supported pattern items and their attributes, if any.
 - ``vxlan``: match VXLAN header.
 
   - ``vni {unsigned}``: VXLAN identifier.
-  - ``last_rsvd {unsigned}``: VXLAN last reserved 8-bits.
+  - ``flag_g {unsigned}``: VXLAN flag GBP bit.
+  - ``flag_ver {unsigned}``: VXLAN flag GPE version.
+  - ``flag_i {unsigned}``: VXLAN flag Instance bit.
+  - ``flag_p {unsigned}``: VXLAN flag GPE Next Protocol bit.
+  - ``flag_b {unsigned}``: VXLAN flag GPE Ingress-Replicated BUM.
+  - ``flag_o {unsigned}``: VXLAN flag GPE OAM Packet bit.
+  - ``flag_d {unsigned}``: VXLAN flag GBP Don't Learn bit.
+  - ``flag_a {unsigned}``: VXLAN flag GBP Applied bit.
+  - ``group_policy_id {unsigned}``: VXLAN GBP Group Policy ID.
+  - ``protocol {unsigned}`` : VXLAN GPE next protocol.
+  - ``first_rsvd {unsigned}`` : VXLAN rsvd0 first byte.
+  - ``secnd_rsvd {unsigned}`` : VXLAN rsvd0 second byte.
+  - ``third_rsvd {unsigned}`` : VXLAN rsvd0 third byte.
+  - ``last_rsvd {unsigned}``: VXLAN last reserved byte.
 
 - ``e_tag``: match IEEE 802.1BR E-Tag header.
 
@@ -3691,6 +3802,10 @@ This section lists supported pattern items and their attributes, if any.
 - ``vxlan-gpe``: match VXLAN-GPE header.
 
   - ``vni {unsigned}``: VXLAN-GPE identifier.
+  - ``flags {unsigned}``: VXLAN-GPE flags.
+  - ``protocol {unsigned}`` : VXLAN-GPE next protocol.
+  - ``rsvd0 {unsigned}``: VXLAN-GPE reserved field 0.
+  - ``rsvd1 {unsigned}``: VXLAN-GPE reserved field 1.
 
 - ``arp_eth_ipv4``: match ARP header for Ethernet/IPv4.
 
@@ -3743,6 +3858,10 @@ This section lists supported pattern items and their attributes, if any.
 - ``meta``: match application specific metadata.
 
   - ``data {unsigned}``: metadata value.
+
+- ``random``: match application specific random value.
+
+  - ``value {unsigned}``: random value.
 
 - ``gtp_psc``: match GTP PDU extension header with type 0x85.
 
@@ -3828,6 +3947,13 @@ This section lists supported pattern items and their attributes, if any.
 - ``ptype``: match the packet type (L2/L3/L4 and tunnel information).
 
         - ``packet_type {unsigned}``: packet type.
+
+- ``compare``: match the comparison result between packet fields or value.
+
+        - ``op {string}``: comparison operation type.
+        - ``a_type {string}``: compared field.
+        - ``b_type {string}``: comparator field.
+        - ``width {unsigned}``: comparison width.
 
 
 Actions list
@@ -4139,6 +4265,10 @@ This section lists supported actions and their attributes, if any.
   - ``src_ptr``: pointer to source immediate value.
   - ``width``: number of bits to copy.
 
+- ``nat64``: NAT64 IP headers translation
+
+  - ``type {unsigned}``: NAT64 translation type
+
 Destroying flow rules
 ~~~~~~~~~~~~~~~~~~~~~
 
@@ -4207,6 +4337,45 @@ Non-existent rule IDs are ignored::
    testpmd> flow destroy 0 rule 0
    Flow rule #0 destroyed
    testpmd>
+
+Updating flow rules with new actions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow update`` updates a flow rule specified by a rule ID with a new action
+list by making a call to ``rte_flow_actions_update()``::
+
+   flow update {port_id} {rule_id}
+       actions {action} [/ {action} [...]] / end [user_id]
+
+If successful, it will show::
+
+   Flow rule #[...] updated with new actions
+
+Or if ``user_id`` flag is provided::
+
+   Flow rule #[...] updated with new actions, user-id [...]
+
+If a flow rule can not be found::
+
+   Failed to find flow [...]
+
+Otherwise it will show the usual error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+Optional ``user_id`` is a flag that signifies the rule ID is the one provided
+by the user at creation.
+
+Action list is identical to the one described for the ``flow create``.
+
+Creating, updating and destroying a flow rule::
+
+   testpmd> flow create 0 group 1 pattern eth / end actions drop / end
+   Flow rule #0 created
+   testpmd> flow update 0 0 actions queue index 1 / end
+   Flow rule #0 updated with new actions
+   testpmd> flow destroy 0 rule 0
+   Flow rule #0 destroyed
 
 Enqueueing destruction of flow rules
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -5221,6 +5390,10 @@ rules like above for the peer port.
 
  testpmd> flow indirect_action 0 update 0 action conntrack_update dir / end
 
+Inspect the conntrack action state through the following command::
+
+   testpmd> flow indirect_action 0 query <action ID>
+
 Sample meter with policy rules
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -5292,6 +5465,23 @@ A RAW rule can be created as following using ``pattern_hex`` key and mask.
              is 0 limit is 0 pattern_hex spec 00000000000000000000000000000000000000000000000000000a0a0a0a
              pattern_hex mask 0000000000000000000000000000000000000000000000000000ffffffff / end actions
              queue index 4 / end
+
+Sample match with comparison rule
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Match with comparison rule can be created as following using ``compare``.
+
+::
+
+    testpmd> flow pattern_template 0 create ingress pattern_template_id 1 template compare op mask le
+             a_type mask tag a_tag_index mask 1 b_type mask tag b_tag_index mask 2 width mask 0xffffffff / end
+    testpmd> flow actions_template 0 create ingress actions_template_id 1 template count / drop / end
+             mask count / drop  / end
+    testpmd> flow template_table 0 create table_id 1 group 2 priority 1  ingress rules_number 1
+             pattern_template 1 actions_template 1
+    testpmd> flow queue 0 create 0 template_table 1 pattern_template 0 actions_template 0 postpone no
+             pattern compare op is le a_type is tag a_tag_index is 1 b_type is tag b_tag_index is 2 width is 32 / end
+	     actions count / drop / end
 
 BPF Functions
 --------------

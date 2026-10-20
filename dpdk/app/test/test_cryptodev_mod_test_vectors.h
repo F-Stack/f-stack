@@ -27,7 +27,6 @@ struct modex_test_data {
 		uint8_t data[DATA_SIZE];
 		uint16_t len;
 	} reminder;
-	uint16_t result_len;
 };
 struct modinv_test_data {
 	enum rte_crypto_asym_xform_type xform_type;
@@ -44,7 +43,6 @@ struct modinv_test_data {
 		uint8_t data[DATA_SIZE];
 		uint16_t len;
 	} inverse;
-	uint16_t result_len;
 };
 
 /* ModExp #1 */
@@ -109,7 +107,6 @@ modex_test_data modex_test_case_m128_b20_e3 = {
 		},
 		.len = 128
 	},
-	.result_len = 128
 };
 
 /* ModInv #1 */
@@ -167,7 +164,6 @@ modinv_test_data modinv_test_case = {
 		},
 		.len = 128
 	},
-	.result_len = 128
 };
 
 /* modular operation test data */
@@ -270,6 +266,81 @@ struct rte_crypto_asym_xform modinv_xform = {
 };
 
 static const struct
+modex_test_data modex_test_cases[] = {
+{
+	.description = "Modular Exponentiation (mod=20, base=20, exp=12, res=18)",
+	.xform_type = RTE_CRYPTO_ASYM_XFORM_MODEX,
+	.base = {
+		.data = {
+			0x00, 0x00, 0x45, 0xCA, 0x2C, 0x5C, 0x3A, 0x90,
+			0x00, 0xC4, 0xD7, 0x47, 0xA8, 0x2B, 0x12, 0x07,
+			0xBD, 0x1F, 0xD7, 0x81
+		},
+		.len = 20
+	},
+	.exponent = {
+		.data = {
+			0x00, 0x00, 0x00, 0x75, 0x74, 0x19, 0x19, 0x69,
+			0xBF, 0x15, 0x2A, 0xAC
+		},
+		.len = 12
+	},
+	.reminder = {
+		.data = {
+			0x5c, 0x94, 0x8f, 0x00, 0x79, 0xe3, 0xe1, 0x0b,
+			0x3f, 0x3e, 0x36, 0x75, 0xed, 0x1d, 0x84, 0xc6,
+			0x36, 0x9e
+		},
+		.len = 18
+	},
+	.modulus = {
+		.data = {
+			0x00, 0x00, 0x99, 0x28, 0x09, 0x8A, 0xE9, 0x89,
+			0xBB, 0x81, 0x3B, 0x07, 0x0E, 0x31, 0x00, 0x7F,
+			0x79, 0x97, 0xED, 0x35
+		},
+		.len = 20
+	}
+},
+{
+	.description = "Modular Exponentiation (mod=32, base=20, exp=12, res=17)",
+	.xform_type = RTE_CRYPTO_ASYM_XFORM_MODEX,
+	.base = {
+		.data = {
+			0x01, 0x31, 0x72, 0xFB, 0x81, 0x9D, 0x81, 0x7A,
+			0x91, 0xDC, 0xE6, 0x6C, 0x2D, 0x55, 0xD9, 0x25,
+			0x7A, 0xB2, 0xFF, 0xFF
+		},
+		.len = 20
+	},
+	.exponent = {
+		.data = {
+			0x00, 0x00, 0x00, 0x02, 0x36, 0x38, 0x31, 0x47,
+			0x3C, 0x07, 0x36, 0x21
+		},
+		.len = 12
+	},
+	.reminder = {
+		.data = {
+			0x02, 0x99, 0x2F, 0xE3, 0x00, 0x9F, 0xF0, 0x9E,
+			0x65, 0x3C, 0x0B, 0x4A, 0xD3, 0x1B, 0x7C, 0x7F,
+			0x1C
+		},
+		.len = 17
+	},
+	.modulus = {
+		.data = {
+			0x00, 0x00, 0x00, 0x00,	0x00, 0x00, 0x00, 0x00,
+			0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+			0xCE, 0xF0, 0x7C, 0x13, 0x26, 0x90, 0xAF, 0x49,
+			0x06, 0x4D, 0xA4, 0x5C, 0xB2, 0x43, 0x13, 0x25,
+		},
+		.len = 32
+	}
+}
+};
+
+static const struct
 modex_test_data modex_group_test_cases[] = {
 {
 	.description = "Modular Exponentiation tests for Group 5",
@@ -347,7 +418,6 @@ modex_test_data modex_group_test_cases[] = {
 		},
 		.len = 192
 	},
-	.result_len = 192
 },
 {
 	.description = "Modular Exponentiation tests for Group 14",
@@ -442,7 +512,6 @@ modex_test_data modex_group_test_cases[] = {
 		},
 		.len = 256
 	},
-	.result_len = 256
 },
 {
 	.description = "Modular Exponentiation tests for Group 15",
@@ -571,7 +640,6 @@ modex_test_data modex_group_test_cases[] = {
 		},
 		.len = 384
 	},
-	.result_len = 384
 },
 {
 	.description = "Modular Exponentiation tests for Group 16",
@@ -733,7 +801,6 @@ modex_test_data modex_group_test_cases[] = {
 		},
 		.len = 512
 	},
-	.result_len = 512
 },
 {
 	.description = "Modular Exponentiation tests for Group 17",
@@ -960,7 +1027,6 @@ modex_test_data modex_group_test_cases[] = {
 		},
 		.len = 768
 	},
-	.result_len = 768
 },
 {
 	.description = "Modular Exponentiation tests for Group 18",
@@ -1252,7 +1318,6 @@ modex_test_data modex_group_test_cases[] = {
 		},
 		.len = 1024
 	},
-	.result_len = 1024
 },
 };
 

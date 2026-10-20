@@ -1,0 +1,293 @@
+# F-Stack 知识图谱 Wiki
+
+> 由 GitNexus 知识图谱（schema v1）自动提取并结合源码人工交叉核对生成。**索引时间：2026-06-08T03:37:02Z，commit `208b0c4`**（`dev` 分支，FreeBSD 13.0 → 15.0 第一阶段升级完成后：含 M0~M5 + runtime-fix + rib-fix + Phase-5b NFR-1 PASS）。
+
+---
+
+## 1. 项目概览
+
+| 指标 | 数据 |
+|------|------|
+| 索引文件数 | 2,656 |
+| 符号节点 | 64,855 |
+| 关系边 | 113,858 |
+| 功能聚类 | 981 (communities) |
+| 执行流 | 300 (processes) |
+| 嵌入向量节点 | 0（本轮未启用语义搜索） |
+| 有效范围 | 仅 F-Stack 自有源面（gitnexus 1.6.5 schema 已正确排除 DPDK / FreeBSD 第三方树） |
+| 索引器 | gitnexus 1.6.5（ladybugdb provider；FTS 可用，向量搜索未启用） |
+
+> **Schema 迁移说明**：旧版 wiki 快照（commit `a695757`，索引时间 2026-04-09）报告 25,723 文件 / 710,596 节点，使用 gitnexus 1.5.x 时部分节点类别将 vendored 的 FreeBSD/DPDK 树也计入。Schema v1 已正确将图谱限定在 F-Stack 自有代码面，节点数大幅下降是 **测量范围修正，并非代码退化**。
+
+> **节点类型 / 命名聚类细分表已不可用**：schema v1 的 `meta.json` 仅暴露顶层总数。早期的逐类型表（Macro / Function / Property / …）与命名聚类表（Net / Netinet / Tcp_stacks / …）是 schema v0 通过 LLM 增强生成的产物。如需复现等价分类，须运行 `npx gitnexus wiki` 并配置 LLM API key（本轮未配置）。如需在不依赖 LLM 的前提下重新派生，可直接查询 `.gitnexus/lbug` 下的 ladybugdb，或参考 `docs/freebsd_13_to_15_upgrade_spec/02-architecture-analysis.md` 中的权威子系统分组。
+
+---
+
+## 2. F-Stack 13.0 → 15.0 升级 Delta 映射
+
+本索引在第一阶段 13.0 → 15.0 升级 **完成之后** 重建，因此图谱已反映以下差异：
+
+| 维度 | 在图谱中的体现 |
+|------|----------------|
+| 33 个 `lib/*.c` 文件（其中 17 个为 13.0 之后新增/重构） | `lib/` 目录与文件节点；新 stub 总枢 `lib/ff_stub_14_extra.c`（799 L，M5 + runtime-fix 落点） |
+| 14.0+ KBI/KPI 偏差（`pr_usrreqs` 合入 `protosw`；`if_t` 不透明化；`rt_alloc` 第 3 参签名变化；`rt_ifmsg` 走 rtbridge 派发；8 类 14.0+ ABI delta） | `lib/ff_glue.c`、`lib/ff_route.c`、`lib/ff_veth.c`、`lib/ff_kern_timeout.c`、`lib/ff_lock.c`、`lib/ff_syscall_wrapper.c` 与新中央 stub 库之间的边 |
+| 5 P0 SIGSEGV runtime-fix 落点（UMA `UMA_USE_DMAP`、`smr_create %gs` barrier、`rt_ifmsg` NULL、`ff_veth_setaddr` ENOBUFS、`kern_accept` `badfileops`）+ 1 防御性 `vm_page_alloc_noobj` panic | 文件 `freebsd/{amd64,arm64}/include/vmparam.h`、`freebsd/amd64/include/atomic.h`、`freebsd/kern/kern_descrip.c`、`lib/Makefile`、`lib/ff_stub_14_extra.c` |
+| 架构移除：`freebsd/mips/`（同步上游 FreeBSD 14.0 移除） | F-Stack 图谱中无 mips 架构节点；残余 `mips` 字符串仅出现在 `freebsd/contrib/device-tree/`（DTS，不参与编译） |
+| 新增的纯头文件子系统 port：`freebsd/netlink/`（18 `.h`，0 `.c`，0 `SRCS`）—— DP-2 决策"不引入 NETLINK 协议 port" | netlink 文件夹节点没有指向 F-Stack 库的任何 CALL 出边 |
+| 路由 FIB 重写子目录：`freebsd/net/route/`（22 文件：`nhop`、`fib_algo`、`route_ctl`） | route_ctl 节点新增聚类，由 `lib/ff_route.c` 与 `lib/ff_stub_14_extra.c` 连入 |
+| TCP stacks 模块化（`-DMODNAME=tcp_rack -DSTACKNAME=rack`）；F-Stack H-5 模块重命名 `tcp_rack_fstack` 已重应用 | `freebsd/netinet/tcp_stacks/`（11 文件，含 `rack.c` ~759 KB、`bbr.c` ~444 KB） |
+
+每条 delta 的逐证据可追溯链：参见 `docs/freebsd_13_to_15_upgrade_spec/{00-overview-and-glossary, 01-requirements-spec, 02-architecture-analysis, 03-freebsd-15-changes, 04-diff-and-port-strategy, 05-implementation-plan, 06-test-and-acceptance-spec}.md`，里程碑日志 `M1~M5-execution-log.md`，`runtime-fix-execution-log.md`，`rib-fix-plan.md`，以及双基线（`13.0-baseline-cvm-bench-report.md` + `physical-machine-bench-report.md`）。
+
+---
+
+## 2A. 索引后代码 delta：`FF_KERNEL_COEXIST` 内核栈共存
+
+> **人工补录（尚未重索引）**：上方图谱索引于 commit `208b0c4`（2026-06-08）。此后 `feature/1.26` 分支落地了 **`FF_KERNEL_COEXIST` 自动双栈共存** 特性（commits `ba148589d` → `55a84f313`），**R9** 增量（kqueue/kevent 共存 + IPv6 `IPV6_V6ONLY`），**R10** 增量（`ff_readv`/`ff_writev`/`ff_ioctl` 内核 fd 路由 + `ff_dup`/`ff_dup2`），以及 **issue #1078 primary_slim 主进程瘦身特性**（commits `1c28aaa2d` → `f7961b083` → `f23f1a464` → `f250ad1ea`）。在下次 `npx gitnexus analyze` 之前，以下表面以当前源码为准人工记录。
+
+该特性让单进程从同一个事件循环里（`ff_epoll_wait`，自 R9 起也支持 `ff_kqueue`/`ff_kevent`），同时通过 F-Stack 用户态栈（经 DPDK 网卡）与宿主 Linux 内核栈（经 loopback / 管理网卡）对外服务。**默认关闭**（编译期宏 + 运行期 `kernel_coexist` 开关双门控）；关闭时默认 / `SOCK_FSTACK` 路径逐字节不变。
+
+| 维度 | 源码位置 |
+|------|----------|
+| 编译 & 运行双门控（默认关） | `lib/Makefile` L174-177 向 `CFLAGS` 与 `HOST_CFLAGS` 双侧注入 `-DFF_KERNEL_COEXIST`；运行期 `config.ini [stack] kernel_coexist=0` 默认关（`ff_config.c` L1027-1033 解析 / L1366 默认；`ff_config.h` L321-325 `stack` 结构体） |
+| 受管内核 fd 空间 | `lib/ff_host_interface.h` L113-128：`FF_KERNEL_FD_BASE 0x40000000` + inline `ff_is_kernel_fd / ff_kernel_fd_encode / ff_kernel_fd_real`；受管内核 fd = `host_fd + 0x40000000`，与 FreeBSD fd（`kern.maxfiles <= 65536`）永不冲突 |
+| 双栈 fd 映射 | `lib/ff_host_interface.c` L257-278：`ff_native_fd_map[65536]` + `ff_native_map_get/set/clear`（每 F-Stack 实例单线程） |
+| 32 个宿主栈桥 | `lib/ff_host_interface.c`（`ff_host_socket` … `ff_host_getsockname`），声明于 `lib/ff_host_interface.h` —— 每个均为对宿主 libc 的薄透传。**R9 新增 3 个**：`ff_host_set_v6only`（对宿主 IPv6 socket `setsockopt IPV6_V6ONLY`）、`ff_host_kqueue_ctl`、`ff_host_kqueue_poll`（后两者服务 kqueue↔宿主 epoll 共存路径）。**R10 新增 5 个**：`ff_host_readv`、`ff_host_writev`、`ff_host_ioctl`（用原始 Linux request 直传宿主 libc）、`ff_host_dup`、`ff_host_dup2` |
+| 单 socket 栈标记 | `lib/ff_api.h` L95-100：`SOCK_FSTACK 0x01000000`、`SOCK_KERNEL 0x02000000`；优先级：per-socket 标记 > config `kernel_coexist` > F-Stack |
+| 入口路由 | `lib/ff_syscall_wrapper.c`：`ff_socket` 双建（L916-958；`AF_INET6` 双建时在 L952 调 `ff_host_set_v6only(hfd)`，使宿主 IPv6 socket 为 `IPV6_V6ONLY` 与同端口宿主 IPv4 socket 共存 —— R9/P1）；内核 fd 热路由 + 双栈 map 双驱动，覆盖 `socket/bind/listen/connect/accept[4]/close/read/write/recv*/send*/sendmsg/recvmsg/getpeername/getsockname/shutdown/setsockopt/getsockopt/fcntl`；`LINUX_IPV6_V6ONLY 26`→`IPV6_V6ONLY` 映射在 L620-621。**R10 已补内核 fd 路由：`ff_readv` / `ff_writev` / `ff_ioctl` / `ff_dup` / `ff_dup2`**（详见下方 R10 行） |
+| 统一 epoll | `lib/ff_epoll.c`（289 行）：`ff_epoll_pairs[64]{kq, host_ep}` 为每个 kqueue 惰性配对一个宿主 epoll fd；`ff_epoll_ctl` 把内核 fd 转发宿主 epoll / 对双栈 fd 双注册；`ff_epoll_wait` 先非阻塞轮询宿主 epoll 再合并 kqueue 事件。`ff_epoll_pairs_lock` 已移除 —— 单线程模型（commit `3e71f4699`）。`ff_epoll_host_ep` 由 `static` 提升为共享符号（声明于 `ff_host_interface.h` L139），供 kqueue 路径复用同一配对表 |
+| 统一 kqueue/kevent（R9/P2） | `lib/ff_syscall_wrapper.c`：`ff_kqueue`（L1895）+ `ff_kevent`（L2050）现与 epoll 对称共存。`ff_kevent` 处理 changelist → `ff_kevent_host_change`（L2006）：ident 为内核 fd（`ff_is_kernel_fd`）或双栈 fd（`ff_native_map_get>0`）的 `EVFILT_READ/WRITE` 经 `ff_host_kqueue_ctl` 注册进 kqueue 配对的宿主 epoll（内核-only 变更不下发 F-Stack kqueue；双栈 fd 仍下发）；eventlist → `ff_kevent_host_wait`（L2034）经 `ff_host_kqueue_poll`（`timeout=0`）合成 `struct kevent`（`ident`=应用面 fd，`EV_EOF`↔`EPOLLHUP|ERR`），再合并 `ff_kevent_do_each` F-Stack 事件。修复 `example/main.c` kqueue 模型：内核侧 `curl 127.0.0.1:80` 实测 **200 size=438**（修复前 000）。已知限制：内核 fd 经 kqueue 仅支持 `EVFILT_READ/WRITE` |
+| 残余入口共存（R10） | `lib/ff_syscall_wrapper.c`：`ff_ioctl`（L1067）内核 fd 用**原始 Linux request** 直传 `ff_host_ioctl`（不经 `linux2freebsd_ioctl`，因 `_IO/_IOR/_IOW(type,nr,size)` 编码在 Linux 与 FreeBSD 不同源；双栈 fd 同驱动自 R10.1 起支持 `FIONBIO`/`FIOASYNC`（F-Stack 成功后用原始 Linux request 同步配对 host fd；`FIONREAD` 等 query 类不同驱动以免覆盖 argp））；`ff_readv`（L1189）/`ff_writev`（L1251）内核 fd 经 `ff_host_readv/writev`（仿 `ff_read/write`，连接 fd 单栈热路径）；`ff_dup`（L2130）内核 fd→`ff_host_dup` 返回新 encode fd；`ff_dup2`（L2156）两端内核 fd→`ff_host_dup2` 返回 encode，**混栈（一端内核一端 F-Stack）拒绝 `errno=EINVAL`**。**已知限制**：`ff_select`（encode 内核 fd≥`0x40000000` 远超 `FD_SETSIZE`(1024) 无法装入 `fd_set`，硬限制不支持）、`ff_poll`（合并复杂度/回归风险高，保守未实现）—— 内核 fd 多路复用请用 `ff_epoll_*`/`ff_kqueue`（R9 已支持） |
+
+可追溯：`docs/kernel_event_support_spec/` 与 `docs/kernel_event_support_spec/zh_cn/`（00-10），含 R8 review-gate 日志、R9 计划 `plan-r9-kqueue-coexist-ipv6.md` 与 R10 计划 `plan-r10-readv-writev-ioctl-coexist.md`。
+
+## 2B. 索引后代码 delta：issue #1078 `primary_slim` 主进程瘦身
+
+> **人工补录（尚未重索引）**：issue #1078 在 `feature/1.26` 分支落地（commits `1c28aaa2d` → `f7961b083` → `f23f1a464` → `f250ad1ea` → `da99a766f`）。
+
+`primary_slim=1` 让 primary 不分配 rx/tx 队列，仅承担控制面职责（NIC 初始化、KNI 初始化、IPC 服务端、扩堆代理）。配套 `owner_proc_id` 指定 KNI runtime owner secondary。KNI 由 primary 执行（virtio_user vdev 只能由 primary 创建/操作），KNI RX 包通过 `kni_inject_rp` 共享 ring 转发给 owner secondary 的 TX queue，消除跨进程 TX queue 竞态。
+
+| 维度 | 源码位置 |
+|------|----------|
+| 配置开关（默认关） | `lib/ff_config.c`：`[dpdk] primary_slim=0/1` + `primary_slim_idle_sleep`（默认 1000us）；`[kni] owner_proc_id` |
+| 配置结构体 | `lib/ff_config.h`：`struct ff_config.dpdk.primary_slim` + `primary_slim_idle_sleep` + `kni.owner_proc_id` |
+| early return | `lib/ff_dpdk_if.c:541-546`：`primary_slim && PRIMARY && nb_rx_queue==0` 时 `return 0` 跳过数据面初始化 |
+| main_loop KNI 门控 | `lib/ff_dpdk_if.c:2905-2940`：`primary_slim` 时 primary 执行 `ff_kni_process`；owner secondary 执行 `ff_kni_inject_process` |
+| KNI inject ring | `lib/ff_dpdk_kni.c`：`kni_inject_rp[]` 全局数组 + `ff_kni_alloc` 中 create/lookup + `kni_process_rx` redirect + `ff_kni_inject_process` dequeue/tx_burst |
+| API | `lib/ff_dpdk_if.h`：`ff_is_slim_primary()` 返回 `primary_slim && RTE_PROC_PRIMARY` |
+| 退出清理 | `lib/ff_dpdk_if.c:3004-3026`：`ff_dpdk_run()` 在 `primary_slim+PRIMARY` 时跳过 `rte_eal_cleanup()`（详见 `docs/issue_1078/zh_cn/14-primary-slim-exit-cleanup-analysis.md`） |
+
+可追溯：`docs/issue_1078/zh_cn/`（00-15），含可行性调研、PoC 实验、正式实现、post-implementation 修复（KNI 回归 + 跨进程 TX queue 竞态）、退出清理分析、结项报告。
+
+---
+
+## 2C. 索引后代码 delta：无损 reload（nginx_reload_spec，对应英文版 §2I）
+
+> **人工补充（尚未重新索引）**：依据当前源码编写（2026-09-30 首版，2026-10-08 交叉审核后修订）。覆盖让两代协议栈在**同一个 `lcore_id`** 上共存的 reload / 二进制升级路径；默认关闭（`graceful_reload=0`）。
+
+nginx reload（HUP）或二进制升级（USR2）会拉起新一代（G_new），旧一代（G_old）处理完自己名下的连接后退出。硬件归属是一个可逆的字，reload 中止时会把硬件交还给旧一代，而不是丢流量。
+
+| 符号 / 领域 | 源码位置 |
+|-------------|---------|
+| 配置开关（默认关闭） | `lib/ff_config.c`：`graceful_reload`（`lib/ff_config.h` 中的字段 `dpdk.graceful_reload`）、`reload_heartbeat_timeout_ms`、`drain_ring_size`；要求 `primary_slim=1` 且 `nb_procs >= 2`，与 `thread_mode=1` 互斥 |
+| 新增：reload 控制面 | `lib/ff_reload.c`（2147 行）+ `lib/ff_reload.h`——共享块、代身份、rx/kni 归属、park 屏障、心跳 |
+| 新增：世代目录 | `lib/ff_reload_gendir.c`（450 行）——由常驻 slim primary 持有的 hugepage memzone：epoch→槽映射、打包的 `(epoch << 32) \| gen` 所有者坐标、存活戳、硬件使用者表与 drain ring 使用者表（primary 据此回收无主残包）。nginx master 只在设备侧配置摘要相同时复用常驻 primary（`ff_primary_conf_digest()`，记录 `/var/run/ff_slim_primary.conf`），否则在无使用者时重建、在用时拒绝启动 |
+| 新增：UDP 发布表 | `lib/ff_flow_peer.c`（510 行）——每个 worker 坐标一个 memzone `ff_fpeer_p<proc>_e<slot>_g<gen>`；`ff_flow_peer_note()` 记录 worker 服务的 UDP 流（按 `reload_udp_idle_ms` 老化），`ff_flow_peer_tick()` 在 T1、park ack 之前带窗口身份发布，`ff_flow_peer_classify()` 告诉新代分流器 UDP 报文去哪，`ff_flow_peer_stop()` 交出全部流（RX-40） |
+| 新增：软件流表 | `lib/ff_flow_map.c`（478 行；RX-40 起 key 带协议）——`ff_flow_map_admit()` 在 SYN 准入时（SYN-ACK 之前）以及主动 TCP connect 发 SYN 之前登记四元组；`ff_flow_map_lport_split()` / `ff_flow_map_lport_ok()` 让两代临时端口奇偶相反；`ff_flow_map_revoke()` 撤销 SYN-ACK 没发出去的准入；主动 connect 的 pcb 离开 hash 时也撤销其条目 |
+| 新增：drain ring | `lib/ff_drain_ring.c`（673 行）——按（队列, 代, 方向）划分的 ring，收发 G_old 的在途报文 |
+| 共享控制块 | `lib/ff_reload.h`：`struct ff_reload_state`；由 `ff_reload_attach_state()` 绑定，`ff_reload_state_valid()` 校验 |
+| rx/kni 归属 | `lib/ff_reload.c`：`ff_reload_rx_owner_gen()` / `ff_reload_rx_owner_gen_set()`、`ff_reload_rx_stopped_set()`、`ff_reload_rx_release()` / `ff_reload_rx_release_epoch()` |
+| 无硬件判定 | `lib/ff_reload.c`：`ff_no_hw_mode()`（先做目录同步，main_loop 每 pass 调用）与 `ff_no_hw_mode_nosync()`（不同步，供每包 TX 路径） |
+| T2 park 屏障 | `lib/ff_reload.c`：`ff_reload_handover_arm()` 布置新的 epoch；`ff_reload_handover_ack()` 把本 pass 已 park 的确认写入 `rx_parked[]`（并调用 `ff_reload_gendir_user_stop()` 在目录中标记本进程已离开硬件）；所有存活的旧一代进程都确认后才翻转归属 |
+| 心跳存活 | `lib/ff_reload.c`：`ff_reload_heartbeat_sample()` + `ff_reload_heartbeat_eval()` |
+| 分发分类 | `app/nginx-1.28.0/src/event/modules/ngx_ff_module.c`：`ngx_ff_flow_map_dispatcher()`——纯 SYN 留本地，命中留本地，TCP 未命中转给对端；UDP 未命中问 `ff_flow_peer_classify()`（只转发已发布且未空闲的流，已空闲的由本代接管并学习；没有可用的对端表时，例如对端是旧二进制，UDP 仍然转发） |
+| 协议栈侧写入方 | `freebsd/netinet/tcp_syncache.c`：`syncache_add()` 经 `syncache_flow_map_admit()` 准入；`freebsd/netinet/in_pcb.c` 的 `in_pcbconnect()` 与 `freebsd/netinet6/in6_pcb.c` 的 `in6_pcbconnect()` 经 `in_pcb_flow_admit()` 登记主动 connect（`in_pcbremhash_locked()` 按 `INP_FF_FLOWMAP` 撤销），`in_pcb_lport_dest()` 跳过对方代奇偶的 TCP/UDP 端口；`udp_input()`/`udp_send()` 及 IPv6 对应函数经 `in_pcb_flow_peer_note()` 记录 UDP 流，`ff_udp_flow_peer_snapshot()` 补充已连接的 UDP pcb；`ff_syncache_count()` / `ff_syncache_counters()` 供 drain 判据使用 |
+| 常驻 primary 生命周期 | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c`：`ngx_ff_slim_primary_ensure()`（double fork；就绪是 pipe 上的 1 字节，EOF 表示 primary 在就绪前退出，master 立即退出并转记 `/var/run/ff_slim_primary.log` 新增的最后一行）、`ngx_ff_slim_primary_check()`（经 `ff_primary_reuse_check()` 复用 / 重建 / 拒绝）、`ngx_ff_slim_primary_release()`（最后一个 master 退出时停止它）、`ngx_ff_slim_primary_loop()`（`ff_primary_users()` 与 `ff_reload_gendir_masters_live()` 持续为 0 时自行退出；`ff_reload_gendir_masters_seen()` 告诉它曾有 master 来过） |
+| nginx master 状态机 | `app/nginx-1.28.0/src/event/modules/ngx_ff_reload.c` + `ngx_ff_reload_fsm.h`——由 `ngx_ff_reload_fsm_event()` 驱动的 T0→T5 转移表 |
+| nginx 进程模型 | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c`：`ngx_ff_reload_hup()`、`ngx_ff_reload_wait_or_check()`、`ngx_ff_reload_t3_check()`、`ngx_ff_reload_quit_gold()`；drain 起点 `ngx_ff_is_draining_generation()` / `ngx_ff_drain_start()` |
+| 工具 | `tools/compat/ff_ipc.c`：按代/epoch 命名 ring `"<proc>[:<gen>[:<epoch>]]"`，经 `ff_set_gen_str()` / `ff_set_epoch()`；EAL 文件前缀取自 `FF_FILE_PREFIX` 或存活常驻 primary 的记录，带 `--no-pci`；follow 模式（`ff_ipc_set_follow()`，top/traffic 使用）在 reload 后重新解析代际 |
+| 可观测 | `lib/ff_dpdk_if.c`：1 Hz reload 面报告——drain 进度、心跳停滞、flow map 计数、syncache 计数 |
+
+溯源：`docs/nginx_reload_spec/zh_cn/`（00 总览、06 方案设计、07 里程碑、08 测试、09 审核）和 `docs/nginx_reload_spec/work/`（证据、审核、运行日志，本地）。这些文档中的代码锚点使用**符号名**，不使用行号。
+
+---
+
+## 3. 目录结构
+
+```
+f-stack/
+├── lib/            # F-Stack 核心库（33 个 .c；ff_stub_14_extra.c 为 14.0+ stub 中央枢）
+├── adapter/        # LD_PRELOAD 适配层（syscall hook、micro_thread 桥接）
+├── app/            # 集成应用（nginx-1.28.0/、redis-6.2.6/）
+├── example/        # 示例程序（helloworld、helloworld_epoll、main_zc.c 零拷贝）
+├── tools/          # ifconfig / netstat / arp / route 用户态移植
+├── mk/             # 构建系统（Makefile include 文件）
+├── doc/            # 上游原始文档
+├── docs/           # 三层架构知识库 + LD_PRELOAD Ring IPC spec + 13.0→15.0 升级 spec
+├── dpdk/           # DPDK 24.11.6 LTS 子模块（2026-06-09 由 23.11.5 升级；已从 gitnexus 索引排除）
+└── freebsd/        # FreeBSD 15.0 内核源码移植（已从 gitnexus 索引排除）
+```
+
+### 3.1 核心库文件 (`lib/`)
+
+`lib/` 下 33 个 `.c` 文件（已经直接 read 验证）按职责分为 6 类。下表给出代表性 anchor；完整清单与逐文件行数见 `docs/zh_cn/F-Stack_Architecture_Layer3_Function_Index.md` §"lib/ 文件索引" 与 `docs/freebsd_13_to_15_upgrade_spec/docs-sync-2026-06-08-update-matrix.md` §1.2。
+
+| 职责 | 代表文件 |
+|------|----------|
+| 公开 API 与初始化 | `ff_api.h`、`ff_init.c`（70 行）、`ff_init_main.c`（~660+ 行）、`ff_freebsd_init.c`（~154 行） |
+| 配置 | `ff_config.c`（1,694 行；含 `[stack] kernel_coexist` 解析）、`ff_ini_parser.c`（第三方 inih） |
+| DPDK 适配 | `ff_dpdk_if.c`（2,907 行；`main_loop` 在此）、`ff_dpdk_kni.c`（~441 行）、`ff_dpdk_pcap.c`（~118 行） |
+| Linux→FreeBSD 胶水 | `ff_glue.c`（1,467 行）、`ff_syscall_wrapper.c`（2,265 行；含 `FF_KERNEL_COEXIST` 入口路由 + R9 `ff_kqueue/ff_kevent` 共存 + `IPV6_V6ONLY` + R10 `ff_readv/writev/ioctl/dup/dup2` 内核 fd 路由）、`ff_host_interface.c`（617 行；32 个 `ff_host_*` 宿主栈桥含 R9 `ff_host_kqueue_ctl/poll` + `ff_host_set_v6only`、R10 `ff_host_readv/writev/ioctl/dup/dup2` + `ff_native_fd_map`）、`ff_host_interface.h`（187 行）、`ff_epoll.c`（289 行；F-Stack + 内核统一 epoll，`ff_epoll_host_ep` 与 kqueue 路径共享）、`ff_compat.c`（~360 行） |
+| 内核仿真（源自 libplebnet / libuinet） | `ff_kern_condvar.c`、`ff_kern_environment.c`（509 行）、`ff_kern_intr.c`（108 行）、`ff_kern_subr.c`（271 行）、`ff_kern_synch.c`（132 行）、`ff_kern_timeout.c`（1,266 行；callout 子系统）、`ff_lock.c`（448 行；sx/mutex/lockmgr）、`ff_log.c`（111 行）、`ff_memory.c`（481 行）、`ff_subr_epoch.c`（83 行；M2 verify-only）、`ff_subr_prf.c`（604 行）、`ff_thread.c`（51 行）、`ff_vfs_ops.c`（117 行） |
+| 网络与 netgraph | `ff_route.c`（1,604 行；rtsock 部分 port + ff_rtioctl）、`ff_veth.c`（1,132 行；M4 if_t accessor 重写）、`ff_ng_base.c`（3,887 行；netgraph 框架完整移植）、`ff_ngctl.c`（131 行） |
+| **14.0+ stub 中央枢（新增）** | `ff_stub_14_extra.c`（799 行）—— 14.0+ ABI 缺口的中央 stub 库 + 5 个 runtime-fix 补丁的落点 + 防御性 `vm_page_alloc_noobj` `panic()` |
+
+### 3.2 适配器层 (`adapter/`)
+
+`adapter/syscall/` 同时构建出 `libff_syscall.so`（被预加载到用户应用进程）与独立的 `fstack` 实例二进制，二者共同实现 LD_PRELOAD 模式。主要文件：
+
+| 文件 | 职责 |
+|------|------|
+| `syscall/ff_hook_syscall.c` / `.h` | LD_PRELOAD POSIX hook（`socket / bind / connect / accept[4] / listen / close / read / write / send* / recv* / __read_chk / __recv_chk / __recvfrom_chk / ioctl / epoll_* / fork`），经共享内存转发给 `ff_*` |
+| `syscall/ff_linux_syscall.c` / `ff_declare_syscalls.h` | Linux 标志位 → FreeBSD 标志位转换（如 `LINUX_SOCK_CLOEXEC`、`LINUX_SOCK_NONBLOCK`）与 hook 声明 |
+| `syscall/ff_socket_ops.h` / `.c` | 单 socket 操作上下文（`sc`）以及生产/消费派发逻辑 |
+| `syscall/ff_sysproto.h` | 跨进程 syscall 参数结构定义 |
+| `syscall/ff_so_zone.c` | Hugepage 共享内存 zone 管理（信号量 IPC 路径） |
+| `syscall/ff_event.c` / `ff_epoll.c` | Epoll 适配（含 polling 模式）与事件投递 |
+| `syscall/ff_ring_ops.c` / `.h` *(FF_USE_RING_IPC)* | Lock-free DPDK SPSC `rte_ring` IPC 路径，移除 `ff_so_zone` 全局锁 |
+| `syscall/Makefile` | 同时编译 `libff_syscall.so` 与 `fstack` 实例二进制 |
+
+LD_PRELOAD 模式下应用以 **两个独立进程** 运行：`fstack` 实例（链接 `libfstack.a` + DPDK）与预加载 `libff_syscall.so` 的用户应用。二者通过 Hugepage 共享内存通信——默认走信号量路径，置 `FF_USE_RING_IPC=1` 后切换为 lock-free DPDK SPSC ring 路径。编译/运行期开关 `FF_KERNEL_EVENT`、`FF_MULTI_SC`、`FF_USE_RING_IPC` 用于进一步调整行为；完整说明参见 `adapter/syscall/README.md` 与 `docs/ld_preload_ring_spec/`。
+
+---
+
+## 4. 依赖关系概览
+
+```
+                    ┌──────────────┐
+                    │  应用层      │
+                    │ (Nginx 1.28, │
+                    │  Redis 6.2.6)│
+                    └──────┬───────┘
+                           │ ff_* API
+                    ┌──────▼───────┐
+                    │   lib/       │
+                    │ F-Stack Core │
+                    └──┬───────┬───┘
+                       │       │
+              ┌────────▼──┐ ┌──▼────────┐
+              │  FreeBSD  │ │   DPDK    │
+              │  15.0     │ │ 24.11.6   │
+              │ TCP/IP 栈 │ │ (PMD/EAL) │
+              └────────────┘ └──────────┘
+
+  adapter/                    tools/
+  LD_PRELOAD Hook ─────────►  ifconfig/netstat/arp/route
+  (syscall 重定向)            (用户态网络工具)
+```
+
+### 关系类型
+
+知识图谱中所有关系均为 `CodeRelation` 类型（当前索引共 113,858 条），涵盖：
+- 函数调用（CALL）
+- 类型引用（USES_TYPE）
+- 宏展开（EXPANDS）
+- 文件包含（INCLUDES）
+- 结构体成员访问（HAS_MEMBER）
+- 社区归属（BELONGS_TO）
+
+---
+
+## 5. 知识图谱使用指南
+
+### 查询工具（经 GitNexus MCP 服务）
+
+| 工具 | 用途 | 示例 |
+|------|------|------|
+| `gitnexus_query` | 按概念搜索执行流 | "packet receive" |
+| `gitnexus_context` | 查看符号的 360° 关系 | `ff_init` 的所有调用者/被调用者 |
+| `gitnexus_impact` | 修改前影响分析 | 改 `lib/ff_dpdk_if.c` 的影响半径 |
+| `gitnexus_detect_changes` | 提交前变更范围检查 | 确认 staged 文件的影响 |
+| `gitnexus_rename` | 安全重命名 | 多文件批量重命名 |
+| `gitnexus_cypher` | 自定义图查询 | 高级分析 |
+
+### 更新索引
+
+```bash
+# 须在仓库根目录执行
+cd /data/workspace/f-stack
+
+# 检查状态
+npx gitnexus status
+
+# 增量重索引
+npx gitnexus analyze
+
+# 强制完全重建
+npx gitnexus analyze --force
+
+# 重新生成可读 wiki（需要在 ~/.gitnexus/config.json 中配置 LLM API key）
+npx gitnexus wiki --force
+```
+
+> **自动更新**：可在 `.git/hooks/post-commit` 中加入 `npx gitnexus analyze` 后台调用，每次 commit 后自动重新索引。
+
+> **重建耗时**：当前 2,656 个文件的 F-Stack 自有源面，全量重建约 11 分钟（2026-06-08 实测）。
+
+---
+
+## 6. 参考资料
+
+- **升级证据**：`docs/freebsd_13_to_15_upgrade_spec/` —— M0~M5、runtime-fix、Phase-5b、rib-fix 与双基线的完整 Markdown 记录。
+- **三层架构（本知识库）**：`docs/zh_cn/01-LAYER1-ARCHITECTURE.md` + `docs/zh_cn/F-Stack_Architecture_Layer1_System_Overview.md`；Layer 2 / Layer 3 同名。
+- **LD_PRELOAD Ring IPC 规约**：`docs/ld_preload_ring_spec/`。
+
+---
+
+*Generated from GitNexus knowledge graph (64,855 nodes, 113,858 edges) — 2026-06-08，commit `208b0c4`。Schema v1 / ladybugdb provider.*
+
+---
+
+## 索引后补充：`idle_loop_interval`（空闲 loop() 回调频率解冻耦）
+
+> **人工补充（尚未重新索引）**：依据当前源码记录（2026-10）。
+
+改动前 `main_loop()` 中用户 `loop()` 回调的空闲节流直接复用 `drain_tsc`，而 `drain_tsc` 由 `pkt_tx_delay` 推导——同一个值同时门控 TX burst 聚合发送与空闲回调频率。后果：一个旋钮管两件无关的事，且空闲回调间隔被 `BURST_TX_DRAIN_US`（100 µs）封顶，最快约 1 万次/秒。
+
+| 位置 | 源码 |
+|------|------|
+| `idle_loop_interval` 配置 | `lib/ff_config.h`（结构体字段 `dpdk.idle_loop_interval`）、`lib/ff_config.c`（`MATCH("dpdk","idle_loop_interval")`，默认 `IDLE_LOOP_INTERVAL_US_DEFAULT` = 100） |
+| 取值边界 | `lib/ff_config.h` — `IDLE_LOOP_INTERVAL_US_DEFAULT 100` / `IDLE_LOOP_INTERVAL_US_MAX 100000`；在 `ff_dpdk_if.c`（`ff_dpdk_init`）中 clamp，方式与 `pkt_tx_delay` clamp 到 `BURST_TX_DRAIN_US` 一致 |
+| 节流点 | `lib/ff_dpdk_if.c` `main_loop()` —— `idle_loop_tsc` 仅在 `idle` 时门控 `lr->loop()`；`drain_tsc`（源自 `pkt_tx_delay`）现在只门控 TX burst drain |
+| 每进程配置 | `lib/ff_config.c` `primary_digest_skip()` —— `idle_loop_interval` 已加入 `dpdk_local[]`，不参与 slim primary 设备侧配置 digest |
+| `config.ini` | `[dpdk] idle_loop_interval`，带行内注释（默认 100 µs，0 = 每圈都进，>100000 被 clamp） |
+| 单元测试 | `tests/unit/fixtures/valid_idle_loop_interval.ini`、`tests/unit/test_ff_config.c`（`test_idle_loop_interval_parsed_independently`、`test_idle_loop_interval_default`） |
+| 仍用 `pkt_tx_delay` 处 | `adapter/syscall/ff_socket_ops.c` `ff_handle_each_context()` 用 `pkt_tx_delay` 作为**回调内部**的自旋驻留时长（ring 请求批处理）。刻意不改——语义不同，需单独做 LD_PRELOAD 性能验证 |
+
+运行时验证（DPDK 网卡，`idle_sleep=20`）：空闲频率随 `idle_loop_interval` 变化（100 µs → 约 6.0k/s，1000 µs → 约 940/s，100000 µs → 约 10/s，0 → 约 12k/s 即每圈一次），且**不受 `pkt_tx_delay` 影响**（0 与 100 频率相同）；`idle_loop_interval=100000` 时，空闲约 10/s 在 HTTP 打流下跃升至约 3.0k/s——报文到达时节流被绕过。
+
+可追溯：`docs/idle_loop_interval_spec/zh_cn/`（plan.md + 实施与验证报告）。
+
+---
+
+## 索引后补充：空闲回调（`ff_regist_idle_callback`）
+
+> **人工补充（尚未重新索引）**：依据当前源码记录（2026-10）。
+
+应用可以接管主循环"无事可做"时的行为：注册空闲回调后，每个空闲圈改调该回调、不再执行库自带的空闲 sleep；未注册时 sleep 路径与改动前逐位一致。
+
+| 位置 | 源码 |
+|------|------|
+| 公开 API | `lib/ff_api.h` —— `typedef void (*idle_func_t)(void *arg);`、`void ff_regist_idle_callback(idle_func_t func, void *arg);`、`void ff_unregist_idle_callback(void);`，声明紧随 packet dispatcher 注册块 |
+| 存储 | `lib/ff_dpdk_if.c` —— `static idle_func_t idle_callback; static void *idle_callback_arg;`，与 `packet_dispatcher` 相邻 |
+| 注册/注销实现 | `lib/ff_dpdk_if.c` —— 紧跟 `ff_unregist_packet_dispatcher_context()`；`ff_regist_idle_callback(NULL, NULL)` 等价于注销，两者幂等 |
+| 触发点 | `lib/ff_dpdk_if.c` `main_loop()` —— 空闲 sleep 块新增 `unlikely(idle && idle_callback != NULL)` 优先分支（调回调、不 sleep），否则走原 `likely(idle && effective_sleep)` sleep，再否则不 sleep；`primary_slim` 的 `primary_slim_idle_sleep` 同样被旁路 |
+| 记账 | `main_loop()` —— 每圈 `idle_cb_tsc` 并入 `usr_tsc`（`usr_tsc = usr_cb_tsc + idle_cb_tsc`），`ff_top` 把回调用时算作用户态而非空闲 |
+| 符号导出 | 无需改 `ff_api.symlist`：`lib/Makefile` 只对 `${OBJS}` 做 `--localize-symbols`，`${HOST_OBJS}`（含 `ff_dpdk_if.o`）原样 `ar` 进去——`ff_regist_packet_dispatcher` 不在 symlist 却能链接同理。已实测 `nm libfstack.a \| grep ff_regist_idle_callback` 为 `T` |
+| 单元测试 | `tests/unit/test_ff_dpdk_if.c` —— `test_ff_regist_idle_callback_smoke` |
+
+语义：回调在**每个**空闲圈调用，包括本圈已调用过 `loop()` 的圈；`loop()` 仍保持自己的 `idle_loop_interval` 节流。`thread_mode=1` 下会被每个 lcore 并发调用（与 `lr->loop` 同一契约），需用户自行保证线程安全；须在 `ff_run()` 之前注册。
+
+运行时验证（DPDK 网卡，`idle_sleep=20`，`idle_loop_interval=100`，`pkt_tx_delay=30`）：未注册 → `loop()` 6.0k/s、空闲回调 0/s（与改动前基线完全一致）；注册且回调内 `usleep(20)` → 空闲回调 12.0k/s 且 `loop()` 仍为 6.0k/s（恰为 2:1，即每空闲圈一次）；注册但不自我限速 → 空闲回调约 6.2M/s（主循环满速空转，即文档警示的风险）；运行中注销 → 回调归零、`loop()` 回到 6.0k/s；HTTP 打流（`<DPDK_NIC_IP>`）15675/15675 返回 200，`loop()` 升至约 7.2k/s（有包时节流被绕过）。
+
+可追溯：`docs/idle_callback_spec/zh_cn/`（plan.md + 实施与验证报告）。

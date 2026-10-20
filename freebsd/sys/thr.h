@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003, Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -25,8 +25,6 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * $FreeBSD$
- *
  */
 
 #ifndef _SYS_THR_H_
@@ -45,6 +43,7 @@ typedef __size_t	size_t;
 #define	THR_SUSPENDED		0x0001
 /* Create the system scope thread. */
 #define	THR_SYSTEM_SCOPE	0x0002
+#define	THR_C_RUNTIME		0x0004
 
 struct thr_param {
     void	(*start_func)(void *);	/* thread entry function. */

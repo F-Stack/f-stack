@@ -23,8 +23,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -32,7 +30,6 @@
  *  http://info.isl.ntt.co.jp/crypt/eng/camellia/specifications.html
  */
 
-#include <sys/cdefs.h>
 #include <sys/types.h>
 #include <sys/endian.h>
 #ifdef _KERNEL
@@ -1012,7 +1009,7 @@ camellia_encrypt128(const uint32_t *subkey, uint32_t *io)
 void
 camellia_decrypt128(const uint32_t *subkey, uint32_t *io)
 {
-    uint32_t il,ir,t0,t1;               /* temporary valiables */
+    uint32_t il,ir,t0,t1;               /* temporary variables */
     
     /* pre whitening but absorb kw2*/
     io[0] ^= SUBL(24);
@@ -1082,7 +1079,7 @@ camellia_decrypt128(const uint32_t *subkey, uint32_t *io)
 void
 camellia_encrypt256(const uint32_t *subkey, uint32_t *io)
 {
-    uint32_t il,ir,t0,t1;           /* temporary valiables */
+    uint32_t il,ir,t0,t1;           /* temporary variables */
 
     /* pre whitening but absorb kw2*/
     io[0] ^= SUBL(0);
@@ -1165,7 +1162,7 @@ camellia_encrypt256(const uint32_t *subkey, uint32_t *io)
 void
 camellia_decrypt256(const uint32_t *subkey, uint32_t *io)
 {
-    uint32_t il,ir,t0,t1;           /* temporary valiables */
+    uint32_t il,ir,t0,t1;           /* temporary variables */
 
     /* pre whitening but absorb kw2*/
     io[0] ^= SUBL(32);

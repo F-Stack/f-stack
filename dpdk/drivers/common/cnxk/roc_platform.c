@@ -96,4 +96,6 @@ RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_sso, event, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_tim, timer, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_tm, tm, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_dpi, dpi, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_rep, rep, NOTICE);
+RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_esw, esw, NOTICE);
 RTE_LOG_REGISTER_SUFFIX(cnxk_logtype_ree, ree, NOTICE);

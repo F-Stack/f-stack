@@ -1,10 +1,10 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	rte_log;
+	rte_log_can_log;
 	rte_log_cur_msg_loglevel;
 	rte_log_cur_msg_logtype;
-	rte_log_can_log;
 	rte_log_dump;
 	rte_log_get_global_level;
 	rte_log_get_level;
@@ -25,10 +25,13 @@ DPDK_24 {
 INTERNAL {
 	global:
 
+	eal_log_color;
 	eal_log_init;
+	eal_log_journal; # WINDOWS_NO_EXPORT
 	eal_log_level2str;
 	eal_log_save_pattern;
 	eal_log_save_regexp;
-	eal_log_set_default;
+	eal_log_syslog; # WINDOWS_NO_EXPORT
+	eal_log_timestamp;
 	rte_eal_log_cleanup;
 };

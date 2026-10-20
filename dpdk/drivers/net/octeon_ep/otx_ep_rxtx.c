@@ -11,6 +11,7 @@
 #include <rte_net.h>
 #include <ethdev_pci.h>
 
+#include "cnxk_ep_rx.h"
 #include "otx_ep_common.h"
 #include "otx_ep_vf.h"
 #include "otx_ep_rxtx.h"
@@ -159,6 +160,7 @@ otx_ep_init_instr_queue(struct otx_ep_device *otx_ep, int iq_no, int num_descs,
 		otx_ep->io_qmask.iq64B |= (1ull << iq_no);
 
 	iq->iqcmd_64B = (conf->iq.instr_type == 64);
+	iq->ism_ena = otx_ep->ism_ena;
 
 	/* Set up IQ registers */
 	ret = otx_ep->fn_list.setup_iq_regs(otx_ep, iq_no);
@@ -284,6 +286,32 @@ otx_ep_droq_setup_ring_buffers(struct otx_ep_droq *droq)
 	return 0;
 }
 
+static inline uint64_t
+otx_ep_set_rearm_data(struct otx_ep_device *otx_ep)
+{
+	uint16_t port_id = otx_ep->port_id;
+	struct rte_mbuf mb_def;
+	uint64_t *tmp;
+
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_off) % 8 != 0);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, refcnt) - offsetof(struct rte_mbuf, data_off) !=
+			 2);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, nb_segs) - offsetof(struct rte_mbuf, data_off) !=
+			 4);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, port) - offsetof(struct rte_mbuf, data_off) !=
+			 6);
+	mb_def.nb_segs = 1;
+	mb_def.data_off = RTE_PKTMBUF_HEADROOM + OTX_EP_INFO_SIZE;
+	mb_def.port = port_id;
+	rte_mbuf_refcnt_set(&mb_def, 1);
+
+	/* Prevent compiler reordering: rearm_data covers previous fields */
+	rte_compiler_barrier();
+	tmp = (uint64_t *)&mb_def.rearm_data;
+
+	return *tmp;
+}
+
 /* OQ initialization */
 static int
 otx_ep_init_droq(struct otx_ep_device *otx_ep, uint32_t q_no,
@@ -340,6 +368,8 @@ otx_ep_init_droq(struct otx_ep_device *otx_ep, uint32_t q_no,
 		goto init_droq_fail;
 
 	droq->refill_threshold = c_refill_threshold;
+	droq->rearm_data = otx_ep_set_rearm_data(otx_ep);
+	droq->ism_ena = otx_ep->ism_ena;
 
 	/* Set up OQ registers */
 	ret = otx_ep->fn_list.setup_oq_regs(otx_ep, q_no);
@@ -433,8 +463,8 @@ otx_vf_update_read_index(struct otx_ep_instr_queue *iq)
 	 * number of PCIe writes.
 	 */
 	val = *iq->inst_cnt_ism;
-	iq->inst_cnt += val - iq->inst_cnt_ism_prev;
-	iq->inst_cnt_ism_prev = val;
+	iq->inst_cnt += val - iq->inst_cnt_prev;
+	iq->inst_cnt_prev = val;
 
 	if (val > (uint32_t)(1 << 31)) {
 		/*
@@ -445,12 +475,13 @@ otx_vf_update_read_index(struct otx_ep_instr_queue *iq)
 		rte_mb();
 
 		rte_write64(OTX2_SDP_REQUEST_ISM, iq->inst_cnt_reg);
-		while (__atomic_load_n(iq->inst_cnt_ism, __ATOMIC_RELAXED) >= val) {
+		while (rte_atomic_load_explicit(iq->inst_cnt_ism,
+				rte_memory_order_relaxed) >= val) {
 			rte_write64(OTX2_SDP_REQUEST_ISM, iq->inst_cnt_reg);
 			rte_mb();
 		}
 
-		iq->inst_cnt_ism_prev = 0;
+		iq->inst_cnt_prev = 0;
 	}
 	rte_write64(OTX2_SDP_REQUEST_ISM, iq->inst_cnt_reg);
 
@@ -829,8 +860,8 @@ otx_ep_check_droq_pkts(struct otx_ep_droq *droq)
 	 * number of PCIe writes.
 	 */
 	val = *droq->pkts_sent_ism;
-	new_pkts = val - droq->pkts_sent_ism_prev;
-	droq->pkts_sent_ism_prev = val;
+	new_pkts = val - droq->pkts_sent_prev;
+	droq->pkts_sent_prev = val;
 
 	if (val > (uint32_t)(1 << 31)) {
 		/*
@@ -841,12 +872,13 @@ otx_ep_check_droq_pkts(struct otx_ep_droq *droq)
 		rte_mb();
 
 		rte_write64(OTX2_SDP_REQUEST_ISM, droq->pkts_sent_reg);
-		while (__atomic_load_n(droq->pkts_sent_ism, __ATOMIC_RELAXED) >= val) {
+		while (rte_atomic_load_explicit(droq->pkts_sent_ism,
+				rte_memory_order_relaxed) >= val) {
 			rte_write64(OTX2_SDP_REQUEST_ISM, droq->pkts_sent_reg);
 			rte_mb();
 		}
 
-		droq->pkts_sent_ism_prev = 0;
+		droq->pkts_sent_prev = 0;
 	}
 	rte_write64(OTX2_SDP_REQUEST_ISM, droq->pkts_sent_reg);
 	droq->pkts_pending += new_pkts;
@@ -884,9 +916,9 @@ otx_ep_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		next_fetch = (pkts == new_pkts - 1) ? 0 : 1;
 		oq_pkt = otx_ep_droq_read_packet(otx_ep, droq, next_fetch);
 		if (!oq_pkt) {
-			RTE_LOG_DP(ERR, PMD,
+			RTE_LOG_DP_LINE(ERR, OTX_NET_EP,
 				   "DROQ read pkt failed pending %" PRIu64
-				    "last_pkt_count %" PRIu64 "new_pkts %d.\n",
+				    "last_pkt_count %" PRIu64 "new_pkts %d.",
 				   droq->pkts_pending, droq->last_pkt_count,
 				   new_pkts);
 			droq->stats.rx_err++;

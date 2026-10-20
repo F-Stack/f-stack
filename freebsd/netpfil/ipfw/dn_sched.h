@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010 Riccardo Panicucci, Luigi Rizzo, Universita` di Pisa
  * All rights reserved
@@ -28,12 +28,12 @@
 
 /*
  * The API to write a packet scheduling algorithm for dummynet.
- *
- * $FreeBSD$
  */
 
 #ifndef _DN_SCHED_H
 #define _DN_SCHED_H
+
+#include <sys/ck.h>
 
 #define	DN_MULTIQUEUE	0x01
 /*
@@ -141,7 +141,7 @@ struct dn_alg {
 
 	/* run-time fields */
 	int ref_count;      /* XXX number of instances in the system */
-	SLIST_ENTRY(dn_alg) next; /* Next scheduler in the list */
+	CK_LIST_ENTRY(dn_alg) next; /* Next scheduler in the list */
 };
 
 /* MSVC does not support initializers so we need this ugly macro */
@@ -168,7 +168,10 @@ int ipdn_bound_var(int *v, int dflt, int lo, int hi, const char *msg);
 static __inline struct mbuf*
 dn_dequeue(struct dn_queue *q)
 {
-	struct mbuf *m = q->mq.head;
+	struct mbuf *m;
+
+next:
+	m = q->mq.head;
 	if (m == NULL)
 		return NULL;
 #ifdef NEW_AQM
@@ -187,7 +190,12 @@ dn_dequeue(struct dn_queue *q)
 		q->_si->ni.len_bytes -= m->m_pkthdr.len;
 	}
 	if (q->ni.length == 0) /* queue is now idle */
-		q->q_time = dn_cfg.curr_time;
+		q->q_time = V_dn_cfg.curr_time;
+	if (m->m_pkthdr.rcvif != NULL &&
+	    __predict_false(m_rcvif_restore(m) == NULL)) {
+		m_freem(m);
+		goto next;
+	}
 	return m;
 }
 

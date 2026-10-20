@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002-2007, Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -38,9 +38,8 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_hwpmc_hooks.h"
+#include "opt_hwt_hooks.h"
 #include "opt_sched.h"
 
 #include <sys/param.h>
@@ -54,6 +53,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/proc.h>
 #include <sys/resource.h>
 #include <sys/resourcevar.h>
+#include <sys/runq.h>
 #include <sys/sched.h>
 #include <sys/sdt.h>
 #include <sys/smp.h>
@@ -61,13 +61,17 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/sysproto.h>
 #include <sys/turnstile.h>
-#include <sys/umtx.h>
+#include <sys/umtxvar.h>
 #include <sys/vmmeter.h>
 #include <sys/cpuset.h>
 #include <sys/sbuf.h>
 
 #ifdef HWPMC_HOOKS
 #include <sys/pmckern.h>
+#endif
+
+#ifdef HWT_HOOKS
+#include <dev/hwt/hwt_hook.h>
 #endif
 
 #ifdef KDTRACE_HOOKS
@@ -89,17 +93,17 @@ dtrace_vtime_switch_func_t	dtrace_vtime_switch_func;
  * Thread scheduler specific section.  All fields are protected
  * by the thread lock.
  */
-struct td_sched {	
-	struct runq	*ts_runq;	/* Run-queue we're queued on. */
+struct td_sched {
 	short		ts_flags;	/* TSF_* flags. */
-	int		ts_cpu;		/* CPU that we have affinity for. */
-	int		ts_rltick;	/* Real last tick, for affinity. */
-	int		ts_slice;	/* Ticks of slice remaining. */
+	int		ts_cpu;		/* CPU we are on, or were last on. */
+	u_int		ts_rltick;	/* Real last tick, for affinity. */
+	u_int		ts_slice;	/* Ticks of slice remaining. */
+	u_int		ts_ftick;	/* %CPU window's first tick */
+	u_int		ts_ltick;	/* %CPU window's last tick */
+	/* All ticks count below are stored shifted by SCHED_TICK_SHIFT. */
 	u_int		ts_slptime;	/* Number of ticks we vol. slept */
 	u_int		ts_runtime;	/* Number of ticks we were running */
-	int		ts_ltick;	/* Last tick that we were running on */
-	int		ts_ftick;	/* First tick that we were running on */
-	int		ts_ticks;	/* Tick count */
+	u_int		ts_ticks;	/* pctcpu window's running tick count */
 #ifdef KTR
 	char		ts_name[TS_NAME_LEN];
 #endif
@@ -133,43 +137,69 @@ _Static_assert(sizeof(struct thread) + sizeof(struct td_sched) <=
 #define	PRI_MAX_BATCH		PRI_MAX_TIMESHARE
 
 /*
- * Cpu percentage computation macros and defines.
- *
- * SCHED_TICK_SECS:	Number of seconds to average the cpu usage across.
- * SCHED_TICK_TARG:	Number of hz ticks to average the cpu usage across.
- * SCHED_TICK_MAX:	Maximum number of ticks before scaling back.
- * SCHED_TICK_SHIFT:	Shift factor to avoid rounding away results.
- * SCHED_TICK_HZ:	Compute the number of hz ticks for a given ticks count.
- * SCHED_TICK_TOTAL:	Gives the amount of time we've been recording ticks.
- */
-#define	SCHED_TICK_SECS		10
-#define	SCHED_TICK_TARG		(hz * SCHED_TICK_SECS)
-#define	SCHED_TICK_MAX		(SCHED_TICK_TARG + hz)
-#define	SCHED_TICK_SHIFT	10
-#define	SCHED_TICK_HZ(ts)	((ts)->ts_ticks >> SCHED_TICK_SHIFT)
-#define	SCHED_TICK_TOTAL(ts)	(max((ts)->ts_ltick - (ts)->ts_ftick, hz))
-
-/*
  * These macros determine priorities for non-interactive threads.  They are
  * assigned a priority based on their recent cpu utilization as expressed
  * by the ratio of ticks to the tick total.  NHALF priorities at the start
  * and end of the MIN to MAX timeshare range are only reachable with negative
  * or positive nice respectively.
  *
- * PRI_RANGE:	Priority range for utilization dependent priorities.
- * PRI_NRESV:	Number of nice values.
- * PRI_TICKS:	Compute a priority in PRI_RANGE from the ticks count and total.
- * PRI_NICE:	Determines the part of the priority inherited from nice.
+ * CPU_RANGE:	Length of range for priorities computed from CPU use.
+ * NICE:	Priority offset due to the nice value.
+ *              5/4 is to preserve historical nice effect on computation ratios.
+ * NRESV:	Number of priority levels reserved to account for nice values.
  */
-#define	SCHED_PRI_NRESV		(PRIO_MAX - PRIO_MIN)
-#define	SCHED_PRI_NHALF		(SCHED_PRI_NRESV / 2)
-#define	SCHED_PRI_MIN		(PRI_MIN_BATCH + SCHED_PRI_NHALF)
-#define	SCHED_PRI_MAX		(PRI_MAX_BATCH - SCHED_PRI_NHALF)
-#define	SCHED_PRI_RANGE		(SCHED_PRI_MAX - SCHED_PRI_MIN + 1)
-#define	SCHED_PRI_TICKS(ts)						\
-    (SCHED_TICK_HZ((ts)) /						\
-    (roundup(SCHED_TICK_TOTAL((ts)), SCHED_PRI_RANGE) / SCHED_PRI_RANGE))
-#define	SCHED_PRI_NICE(nice)	(nice)
+#define	SCHED_PRI_CPU_RANGE	(PRI_BATCH_RANGE - SCHED_PRI_NRESV)
+#define	SCHED_PRI_NICE(nice)	(((nice) - PRIO_MIN) * 5 / 4)
+#define	SCHED_PRI_NRESV		SCHED_PRI_NICE(PRIO_MAX)
+
+/*
+ * Runqueue indices for the implemented scheduling policies' priority bounds.
+ *
+ * In ULE's implementation, realtime policy covers the ITHD, REALTIME and
+ * INTERACT (see above) ranges, timesharing the BATCH range (see above), and
+ * idle policy the IDLE range.
+ *
+ * Priorities from these ranges must not be assigned to the same runqueue's
+ * queue.
+ */
+#define	RQ_RT_POL_MIN		(RQ_PRI_TO_QUEUE_IDX(PRI_MIN_ITHD))
+#define	RQ_RT_POL_MAX		(RQ_PRI_TO_QUEUE_IDX(PRI_MAX_INTERACT))
+#define	RQ_TS_POL_MIN		(RQ_PRI_TO_QUEUE_IDX(PRI_MIN_BATCH))
+#define	RQ_TS_POL_MAX		(RQ_PRI_TO_QUEUE_IDX(PRI_MAX_BATCH))
+#define	RQ_ID_POL_MIN		(RQ_PRI_TO_QUEUE_IDX(PRI_MIN_IDLE))
+#define	RQ_ID_POL_MAX		(RQ_PRI_TO_QUEUE_IDX(PRI_MAX_IDLE))
+
+_Static_assert(RQ_RT_POL_MAX != RQ_TS_POL_MIN,
+    "ULE's realtime and timeshare policies' runqueue ranges overlap");
+_Static_assert(RQ_TS_POL_MAX != RQ_ID_POL_MIN,
+    "ULE's timeshare and idle policies' runqueue ranges overlap");
+
+/* Helper to treat the timeshare range as a circular group of queues. */
+#define RQ_TS_POL_MODULO	(RQ_TS_POL_MAX - RQ_TS_POL_MIN + 1)
+
+/*
+ * Cpu percentage computation macros and defines.
+ *
+ * SCHED_TICK_SECS:	Max number of seconds to average the cpu usage across.
+ *   Must be at most 20 to avoid overflow in sched_pctcpu()'s current formula.
+ * SCHED_TICK_MAX:	Max number of hz ticks matching SCHED_TICK_SECS.
+ * SCHED_TICK_SHIFT:	Shift factor to avoid rounding away results.
+ * SCHED_TICK_RUN_SHIFTED: Number of shifted ticks running in last window.
+ * SCHED_TICK_LENGTH:	Length of last window in shifted ticks or 1 if empty.
+ * SCHED_CPU_DECAY_NUMER: Numerator of %CPU decay factor.
+ * SCHED_CPU_DECAY_DENOM: Denominator of %CPU decay factor.
+ */
+#define	SCHED_TICK_SECS			11
+#define	SCHED_TICK_MAX(hz)		((hz) * SCHED_TICK_SECS)
+#define	SCHED_TICK_SHIFT		10
+#define	SCHED_TICK_RUN_SHIFTED(ts)	((ts)->ts_ticks)
+#define	SCHED_TICK_LENGTH(ts)		(max((ts)->ts_ltick - (ts)->ts_ftick, 1))
+#define	SCHED_CPU_DECAY_NUMER		10
+#define	SCHED_CPU_DECAY_DENOM		11
+_Static_assert(SCHED_CPU_DECAY_NUMER >= 0 && SCHED_CPU_DECAY_DENOM > 0 &&
+    SCHED_CPU_DECAY_NUMER <= SCHED_CPU_DECAY_DENOM,
+    "Inconsistent values for SCHED_CPU_DECAY_NUMER and/or "
+    "SCHED_CPU_DECAY_DENOM");
 
 /*
  * These determine the interactivity of a process.  Interactivity differs from
@@ -196,6 +226,7 @@ _Static_assert(sizeof(struct thread) + sizeof(struct td_sched) <=
 #define	SCHED_SLICE_MIN_DIVISOR		6	/* DEFAULT/MIN = ~16 ms. */
 
 /* Flags kept in td_flags. */
+#define	TDF_PICKCPU	TDF_SCHED0	/* Thread should pick new CPU. */
 #define	TDF_SLICEEND	TDF_SCHED2	/* Thread time slice is over. */
 
 /*
@@ -206,7 +237,7 @@ _Static_assert(sizeof(struct thread) + sizeof(struct td_sched) <=
  * sched_slice:		Runtime of each thread before rescheduling.
  * preempt_thresh:	Priority threshold for preemption and remote IPIs.
  */
-static int __read_mostly sched_interact = SCHED_INTERACT_THRESH;
+static u_int __read_mostly sched_interact = SCHED_INTERACT_THRESH;
 static int __read_mostly tickincr = 8 << SCHED_TICK_SHIFT;
 static int __read_mostly realstathz = 127;	/* reset during boot. */
 static int __read_mostly sched_slice = 10;	/* reset during boot. */
@@ -225,9 +256,16 @@ static int __read_mostly sched_idlespins = 10000;
 static int __read_mostly sched_idlespinthresh = -1;
 
 /*
- * tdq - per processor runqs and statistics.  All fields are protected by the
- * tdq_lock.  The load and lowpri may be accessed without to avoid excess
- * locking in sched_pickcpu();
+ * tdq - per processor runqs and statistics.  A mutex synchronizes access to
+ * most fields.  Some fields are loaded or modified without the mutex.
+ *
+ * Locking protocols:
+ * (c)  constant after initialization
+ * (f)  flag, set with the tdq lock held, cleared on local CPU
+ * (l)  all accesses are CPU-local
+ * (ls) stores are performed by the local CPU, loads may be lockless
+ * (t)  all accesses are protected by the tdq mutex
+ * (ts) stores are serialized by the tdq mutex, loads may be lockless
  */
 struct tdq {
 	/* 
@@ -235,37 +273,53 @@ struct tdq {
 	 * tdq_lock is padded to avoid false sharing with tdq_load and
 	 * tdq_cpu_idle.
 	 */
-	struct mtx_padalign tdq_lock;		/* run queue lock. */
-	struct cpu_group *tdq_cg;		/* Pointer to cpu topology. */
-	volatile int	tdq_load;		/* Aggregate load. */
-	volatile int	tdq_cpu_idle;		/* cpu_idle() is active. */
-	int		tdq_sysload;		/* For loadavg, !ITHD load. */
-	volatile int	tdq_transferable;	/* Transferable thread count. */
-	volatile short	tdq_switchcnt;		/* Switches this tick. */
-	volatile short	tdq_oldswitchcnt;	/* Switches last tick. */
-	u_char		tdq_lowpri;		/* Lowest priority thread. */
-	u_char		tdq_owepreempt;		/* Remote preemption pending. */
-	u_char		tdq_idx;		/* Current insert index. */
-	u_char		tdq_ridx;		/* Current removal index. */
-	int		tdq_id;			/* cpuid. */
-	struct runq	tdq_realtime;		/* real-time run queue. */
-	struct runq	tdq_timeshare;		/* timeshare run queue. */
-	struct runq	tdq_idle;		/* Queue of IDLE threads. */
+	struct mtx_padalign tdq_lock;	/* run queue lock. */
+	struct cpu_group *tdq_cg;	/* (c) Pointer to cpu topology. */
+	struct thread	*tdq_curthread;	/* (t) Current executing thread. */
+	int		tdq_load;	/* (ts) Aggregate load. */
+	int		tdq_sysload;	/* (ts) For loadavg, !ITHD load. */
+	int		tdq_cpu_idle;	/* (ls) cpu_idle() is active. */
+	int		tdq_transferable; /* (ts) Transferable thread count. */
+	short		tdq_switchcnt;	/* (l) Switches this tick. */
+	short		tdq_oldswitchcnt; /* (l) Switches last tick. */
+	u_char		tdq_lowpri;	/* (ts) Lowest priority thread. */
+	u_char		tdq_owepreempt;	/* (f) Remote preemption pending. */
+	u_char		tdq_ts_off;	/* (t) TS insertion offset. */
+	u_char		tdq_ts_deq_off;	/* (t) TS dequeue offset. */
+	/*
+	 * (t) Number of (stathz) ticks since last offset incrementation
+	 * correction.
+	 */
+	u_char		tdq_ts_ticks;
+	int		tdq_id;		/* (c) cpuid. */
+	struct runq	tdq_runq;	/* (t) Run queue. */
 	char		tdq_name[TDQ_NAME_LEN];
 #ifdef KTR
 	char		tdq_loadname[TDQ_LOADNAME_LEN];
 #endif
-} __aligned(64);
+};
 
 /* Idle thread states and config. */
 #define	TDQ_RUNNING	1
 #define	TDQ_IDLE	2
 
+/* Lockless accessors. */
+#define	TDQ_LOAD(tdq)		atomic_load_int(&(tdq)->tdq_load)
+#define	TDQ_TRANSFERABLE(tdq)	atomic_load_int(&(tdq)->tdq_transferable)
+#define	TDQ_SWITCHCNT(tdq)	(atomic_load_short(&(tdq)->tdq_switchcnt) + \
+				 atomic_load_short(&(tdq)->tdq_oldswitchcnt))
+#define	TDQ_SWITCHCNT_INC(tdq)	(atomic_store_short(&(tdq)->tdq_switchcnt, \
+				 atomic_load_short(&(tdq)->tdq_switchcnt) + 1))
+
 #ifdef SMP
 struct cpu_group __read_mostly *cpu_top;		/* CPU topology */
 
 #define	SCHED_AFFINITY_DEFAULT	(max(1, hz / 1000))
-#define	SCHED_AFFINITY(ts, t)	((ts)->ts_rltick > ticks - ((t) * affinity))
+/*
+ * This inequality has to be written with a positive difference of ticks to
+ * correctly handle wraparound.
+ */
+#define	SCHED_AFFINITY(ts, t)	((u_int)ticks - (ts)->ts_rltick < (t) * affinity)
 
 /*
  * Run-time tunables.
@@ -300,9 +354,12 @@ static struct tdq	tdq_cpu;
 #define	TDQ_LOCK_ASSERT(t, type)	mtx_assert(TDQ_LOCKPTR((t)), (type))
 #define	TDQ_LOCK(t)		mtx_lock_spin(TDQ_LOCKPTR((t)))
 #define	TDQ_LOCK_FLAGS(t, f)	mtx_lock_spin_flags(TDQ_LOCKPTR((t)), (f))
+#define	TDQ_TRYLOCK(t)		mtx_trylock_spin(TDQ_LOCKPTR((t)))
+#define	TDQ_TRYLOCK_FLAGS(t, f)	mtx_trylock_spin_flags(TDQ_LOCKPTR((t)), (f))
 #define	TDQ_UNLOCK(t)		mtx_unlock_spin(TDQ_LOCKPTR((t)))
 #define	TDQ_LOCKPTR(t)		((struct mtx *)(&(t)->tdq_lock))
 
+static void sched_setpreempt(int);
 static void sched_priority(struct thread *);
 static void sched_thread_priority(struct thread *, u_char);
 static int sched_interact_score(struct thread *);
@@ -311,25 +368,42 @@ static void sched_interact_fork(struct thread *);
 static void sched_pctcpu_update(struct td_sched *, int);
 
 /* Operations on per processor queues */
+static inline struct thread *runq_choose_realtime(struct runq *const rq);
+static inline struct thread *runq_choose_timeshare(struct runq *const rq,
+    int off);
+static inline struct thread *runq_choose_idle(struct runq *const rq);
 static struct thread *tdq_choose(struct tdq *);
+
 static void tdq_setup(struct tdq *, int i);
 static void tdq_load_add(struct tdq *, struct thread *);
 static void tdq_load_rem(struct tdq *, struct thread *);
-static __inline void tdq_runq_add(struct tdq *, struct thread *, int);
-static __inline void tdq_runq_rem(struct tdq *, struct thread *);
+static inline void tdq_runq_add(struct tdq *, struct thread *, int);
+static inline void tdq_advance_ts_deq_off(struct tdq *, bool);
+static inline void tdq_runq_rem(struct tdq *, struct thread *);
 static inline int sched_shouldpreempt(int, int, int);
-void tdq_print(int cpu);
+static void tdq_print(int cpu);
 static void runq_print(struct runq *rq);
-static void tdq_add(struct tdq *, struct thread *, int);
+static int tdq_add(struct tdq *, struct thread *, int);
 #ifdef SMP
-static struct thread *tdq_move(struct tdq *, struct tdq *);
+static int tdq_move(struct tdq *, struct tdq *);
 static int tdq_idled(struct tdq *);
-static void tdq_notify(struct tdq *, struct thread *);
+static void tdq_notify(struct tdq *, int lowpri);
+
+static bool runq_steal_pred(const int idx, struct rq_queue *const q,
+    void *const data);
+static inline struct thread *runq_steal_range(struct runq *const rq,
+    const int lvl_min, const int lvl_max, int cpu);
+static inline struct thread *runq_steal_realtime(struct runq *const rq,
+    int cpu);
+static inline struct thread *runq_steal_timeshare(struct runq *const rq,
+    int cpu, int off);
+static inline struct thread *runq_steal_idle(struct runq *const rq,
+    int cpu);
 static struct thread *tdq_steal(struct tdq *, int);
-static struct thread *runq_steal(struct runq *, int);
+
 static int sched_pickcpu(struct thread *, int);
 static void sched_balance(void);
-static int sched_balance_pair(struct tdq *, struct tdq *);
+static bool sched_balance_pair(struct tdq *, struct tdq *);
 static inline struct tdq *sched_setcpu(struct thread *, int, int);
 static inline void thread_unblock_switch(struct thread *, struct mtx *);
 static int sysctl_kern_sched_topology_spec(SYSCTL_HANDLER_ARGS);
@@ -368,20 +442,20 @@ SDT_PROBE_DEFINE2(sched, , , surrender, "struct thread *",
 static void
 runq_print(struct runq *rq)
 {
-	struct rqhead *rqh;
+	struct rq_queue *rqq;
 	struct thread *td;
 	int pri;
 	int j;
 	int i;
 
-	for (i = 0; i < RQB_LEN; i++) {
-		printf("\t\trunq bits %d 0x%zx\n",
-		    i, rq->rq_status.rqb_bits[i]);
-		for (j = 0; j < RQB_BPW; j++)
-			if (rq->rq_status.rqb_bits[i] & (1ul << j)) {
-				pri = j + (i << RQB_L2BPW);
-				rqh = &rq->rq_queues[pri];
-				TAILQ_FOREACH(td, rqh, td_runq) {
+	for (i = 0; i < RQSW_NB; i++) {
+		printf("\t\trunq bits %d %#lx\n",
+		    i, rq->rq_status.rq_sw[i]);
+		for (j = 0; j < RQSW_BPW; j++)
+			if (rq->rq_status.rq_sw[i] & (1ul << j)) {
+				pri = RQSW_TO_QUEUE_IDX(i, j);
+				rqq = &rq->rq_queues[pri];
+				TAILQ_FOREACH(td, rqq, td_runq) {
 					printf("\t\t\ttd %p(%s) priority %d rqindex %d pri %d\n",
 					    td, td->td_name, td->td_priority,
 					    td->td_rqindex, pri);
@@ -393,7 +467,7 @@ runq_print(struct runq *rq)
 /*
  * Print the status of a per-cpu thread queue.  Should be a ddb show cmd.
  */
-void
+static void __unused
 tdq_print(int cpu)
 {
 	struct tdq *tdq;
@@ -401,21 +475,17 @@ tdq_print(int cpu)
 	tdq = TDQ_CPU(cpu);
 
 	printf("tdq %d:\n", TDQ_ID(tdq));
-	printf("\tlock            %p\n", TDQ_LOCKPTR(tdq));
-	printf("\tLock name:      %s\n", tdq->tdq_name);
-	printf("\tload:           %d\n", tdq->tdq_load);
-	printf("\tswitch cnt:     %d\n", tdq->tdq_switchcnt);
-	printf("\told switch cnt: %d\n", tdq->tdq_oldswitchcnt);
-	printf("\ttimeshare idx:  %d\n", tdq->tdq_idx);
-	printf("\ttimeshare ridx: %d\n", tdq->tdq_ridx);
+	printf("\tlock               %p\n", TDQ_LOCKPTR(tdq));
+	printf("\tLock name:         %s\n", tdq->tdq_name);
+	printf("\tload:              %d\n", tdq->tdq_load);
+	printf("\tswitch cnt:        %d\n", tdq->tdq_switchcnt);
+	printf("\told switch cnt:    %d\n", tdq->tdq_oldswitchcnt);
+	printf("\tTS insert offset:  %d\n", tdq->tdq_ts_off);
+	printf("\tTS dequeue offset: %d\n", tdq->tdq_ts_deq_off);
 	printf("\tload transferable: %d\n", tdq->tdq_transferable);
 	printf("\tlowest priority:   %d\n", tdq->tdq_lowpri);
-	printf("\trealtime runq:\n");
-	runq_print(&tdq->tdq_realtime);
-	printf("\ttimeshare runq:\n");
-	runq_print(&tdq->tdq_timeshare);
-	printf("\tidle runq:\n");
-	runq_print(&tdq->tdq_idle);
+	printf("\trunq:\n");
+	runq_print(&tdq->tdq_runq);
 }
 
 static inline int
@@ -456,11 +526,11 @@ sched_shouldpreempt(int pri, int cpri, int remote)
  * date with what is actually on the run-queue.  Selects the correct
  * queue position for timeshare threads.
  */
-static __inline void
+static inline void
 tdq_runq_add(struct tdq *tdq, struct thread *td, int flags)
 {
 	struct td_sched *ts;
-	u_char pri;
+	u_char pri, idx;
 
 	TDQ_LOCK_ASSERT(tdq, MA_OWNED);
 	THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
@@ -472,62 +542,94 @@ tdq_runq_add(struct tdq *tdq, struct thread *td, int flags)
 		tdq->tdq_transferable++;
 		ts->ts_flags |= TSF_XFERABLE;
 	}
-	if (pri < PRI_MIN_BATCH) {
-		ts->ts_runq = &tdq->tdq_realtime;
-	} else if (pri <= PRI_MAX_BATCH) {
-		ts->ts_runq = &tdq->tdq_timeshare;
-		KASSERT(pri <= PRI_MAX_BATCH && pri >= PRI_MIN_BATCH,
-			("Invalid priority %d on timeshare runq", pri));
+	if (PRI_MIN_BATCH <= pri && pri <= PRI_MAX_BATCH) {
 		/*
-		 * This queue contains only priorities between MIN and MAX
-		 * realtime.  Use the whole queue to represent these values.
+		 * The queues allocated to the batch range are not used as
+		 * a simple array but as a "circular" one where the insertion
+		 * index (derived from 'pri') is offset by 'tdq_ts_off'. 'idx'
+		 * is first set to the offset of the wanted queue in the TS'
+		 * selection policy range.
 		 */
-		if ((flags & (SRQ_BORROWING|SRQ_PREEMPTED)) == 0) {
-			pri = RQ_NQS * (pri - PRI_MIN_BATCH) / PRI_BATCH_RANGE;
-			pri = (pri + tdq->tdq_idx) % RQ_NQS;
+		if ((flags & (SRQ_BORROWING|SRQ_PREEMPTED)) != 0)
+			/* Current queue from which processes are being run. */
+			idx = tdq->tdq_ts_deq_off;
+		else {
+			idx = (RQ_PRI_TO_QUEUE_IDX(pri) - RQ_TS_POL_MIN +
+			    tdq->tdq_ts_off) % RQ_TS_POL_MODULO;
 			/*
-			 * This effectively shortens the queue by one so we
-			 * can have a one slot difference between idx and
-			 * ridx while we wait for threads to drain.
+			 * We avoid enqueuing low priority threads in the queue
+			 * that we are still draining, effectively shortening
+			 * the runqueue by one queue.
 			 */
-			if (tdq->tdq_ridx != tdq->tdq_idx &&
-			    pri == tdq->tdq_ridx)
-				pri = (unsigned char)(pri - 1) % RQ_NQS;
-		} else
-			pri = tdq->tdq_ridx;
-		runq_add_pri(ts->ts_runq, td, pri, flags);
-		return;
+			if (tdq->tdq_ts_deq_off != tdq->tdq_ts_off &&
+			    idx == tdq->tdq_ts_deq_off)
+				/* Ensure the dividend is positive. */
+				idx = (idx - 1 + RQ_TS_POL_MODULO) %
+				    RQ_TS_POL_MODULO;
+		}
+		/* Absolute queue index. */
+		idx += RQ_TS_POL_MIN;
+		runq_add_idx(&tdq->tdq_runq, td, idx, flags);
 	} else
-		ts->ts_runq = &tdq->tdq_idle;
-	runq_add(ts->ts_runq, td, flags);
+		runq_add(&tdq->tdq_runq, td, flags);
 }
 
-/* 
+/*
+ * Advance the timesharing dequeue offset to the next non-empty queue or the
+ * insertion offset, whichever is closer.
+ *
+ * If 'deq_queue_known_empty' is true, then the queue where timesharing threads
+ * are currently removed for execution (pointed to by 'tdq_ts_deq_off') is
+ * assumed empty.  Otherwise, this condition is checked for.
+ */
+static inline void
+tdq_advance_ts_deq_off(struct tdq *tdq, bool deq_queue_known_empty)
+{
+	/*
+	 * We chose a simple iterative algorithm since the difference between
+	 * offsets is small in practice (see sched_clock()).
+	 */
+	while (tdq->tdq_ts_deq_off != tdq->tdq_ts_off) {
+		if (deq_queue_known_empty)
+			deq_queue_known_empty = false;
+		else if (!runq_is_queue_empty(&tdq->tdq_runq,
+		    tdq->tdq_ts_deq_off + RQ_TS_POL_MIN))
+			break;
+
+		tdq->tdq_ts_deq_off = (tdq->tdq_ts_deq_off + 1) %
+		    RQ_TS_POL_MODULO;
+	}
+}
+
+/*
  * Remove a thread from a run-queue.  This typically happens when a thread
  * is selected to run.  Running threads are not on the queue and the
  * transferable count does not reflect them.
  */
-static __inline void
+static inline void
 tdq_runq_rem(struct tdq *tdq, struct thread *td)
 {
 	struct td_sched *ts;
+	bool queue_empty;
 
 	ts = td_get_sched(td);
 	TDQ_LOCK_ASSERT(tdq, MA_OWNED);
 	THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
-	KASSERT(ts->ts_runq != NULL,
-	    ("tdq_runq_remove: thread %p null ts_runq", td));
 	if (ts->ts_flags & TSF_XFERABLE) {
 		tdq->tdq_transferable--;
 		ts->ts_flags &= ~TSF_XFERABLE;
 	}
-	if (ts->ts_runq == &tdq->tdq_timeshare) {
-		if (tdq->tdq_idx != tdq->tdq_ridx)
-			runq_remove_idx(ts->ts_runq, td, &tdq->tdq_ridx);
-		else
-			runq_remove_idx(ts->ts_runq, td, NULL);
-	} else
-		runq_remove(ts->ts_runq, td);
+	queue_empty = runq_remove(&tdq->tdq_runq, td);
+	/*
+	 * If thread has a batch priority and the queue from which it was
+	 * removed is now empty, advance the batch's queue removal index if it
+	 * lags with respect to the batch's queue insertion index, so that we
+	 * may eventually be able to advance the latter in sched_clock().
+	 */
+	if (PRI_MIN_BATCH <= td->td_priority &&
+	    td->td_priority <= PRI_MAX_BATCH && queue_empty &&
+	    tdq->tdq_ts_deq_off + RQ_TS_POL_MIN == td->td_rqindex)
+		tdq_advance_ts_deq_off(tdq, true);
 }
 
 /*
@@ -574,7 +676,7 @@ tdq_load_rem(struct tdq *tdq, struct thread *td)
  * aside from curthread and target no more than sched_slice latency but
  * no less than sched_slice_min runtime.
  */
-static inline int
+static inline u_int
 tdq_slice(struct tdq *tdq)
 {
 	int load;
@@ -603,7 +705,7 @@ tdq_setlowpri(struct tdq *tdq, struct thread *ctd)
 
 	TDQ_LOCK_ASSERT(tdq, MA_OWNED);
 	if (ctd == NULL)
-		ctd = pcpu_find(TDQ_ID(tdq))->pc_curthread;
+		ctd = tdq->tdq_curthread;
 	td = tdq_choose(tdq);
 	if (td == NULL || td->td_priority > ctd->td_priority)
 		tdq->tdq_lowpri = ctd->td_priority;
@@ -631,170 +733,159 @@ sched_random(void)
 }
 
 struct cpu_search {
-	cpuset_t cs_mask;
-	u_int	cs_prefer;
+	cpuset_t *cs_mask;	/* The mask of allowed CPUs to choose from. */
+	int	cs_prefer;	/* Prefer this CPU and groups including it. */
+	int	cs_running;	/* The thread is now running at cs_prefer. */
 	int	cs_pri;		/* Min priority for low. */
-	int	cs_limit;	/* Max load for low, min load for high. */
-	int	cs_cpu;
-	int	cs_load;
+	int	cs_load;	/* Max load for low, min load for high. */
+	int	cs_trans;	/* Min transferable load for high. */
 };
 
-#define	CPU_SEARCH_LOWEST	0x1
-#define	CPU_SEARCH_HIGHEST	0x2
-#define	CPU_SEARCH_BOTH		(CPU_SEARCH_LOWEST|CPU_SEARCH_HIGHEST)
-
-static __always_inline int cpu_search(const struct cpu_group *cg,
-    struct cpu_search *low, struct cpu_search *high, const int match);
-int __noinline cpu_search_lowest(const struct cpu_group *cg,
-    struct cpu_search *low);
-int __noinline cpu_search_highest(const struct cpu_group *cg,
-    struct cpu_search *high);
-int __noinline cpu_search_both(const struct cpu_group *cg,
-    struct cpu_search *low, struct cpu_search *high);
+struct cpu_search_res {
+	int	csr_cpu;	/* The best CPU found. */
+	int	csr_load;	/* The load of cs_cpu. */
+};
 
 /*
- * Search the tree of cpu_groups for the lowest or highest loaded cpu
- * according to the match argument.  This routine actually compares the
- * load on all paths through the tree and finds the least loaded cpu on
- * the least loaded path, which may differ from the least loaded cpu in
- * the system.  This balances work among caches and buses.
- *
- * This inline is instantiated in three forms below using constants for the
- * match argument.  It is reduced to the minimum set for each case.  It is
- * also recursive to the depth of the tree.
+ * Search the tree of cpu_groups for the lowest or highest loaded CPU.
+ * These routines actually compare the load on all paths through the tree
+ * and find the least loaded cpu on the least loaded path, which may differ
+ * from the least loaded cpu in the system.  This balances work among caches
+ * and buses.
  */
-static __always_inline int
-cpu_search(const struct cpu_group *cg, struct cpu_search *low,
-    struct cpu_search *high, const int match)
+static int
+cpu_search_lowest(const struct cpu_group *cg, const struct cpu_search *s,
+    struct cpu_search_res *r)
 {
-	struct cpu_search lgroup;
-	struct cpu_search hgroup;
-	cpuset_t cpumask;
-	struct cpu_group *child;
+	struct cpu_search_res lr;
 	struct tdq *tdq;
-	int cpu, i, hload, lload, load, total, rnd;
+	int c, bload, l, load, p, total;
 
 	total = 0;
-	cpumask = cg->cg_mask;
-	if (match & CPU_SEARCH_LOWEST) {
-		lload = INT_MAX;
-		lgroup = *low;
-	}
-	if (match & CPU_SEARCH_HIGHEST) {
-		hload = INT_MIN;
-		hgroup = *high;
+	bload = INT_MAX;
+	r->csr_cpu = -1;
+
+	/* Loop through children CPU groups if there are any. */
+	if (cg->cg_children > 0) {
+		for (c = cg->cg_children - 1; c >= 0; c--) {
+			load = cpu_search_lowest(&cg->cg_child[c], s, &lr);
+			total += load;
+
+			/*
+			 * When balancing do not prefer SMT groups with load >1.
+			 * It allows round-robin between SMT groups with equal
+			 * load within parent group for more fair scheduling.
+			 */
+			if (__predict_false(s->cs_running) &&
+			    (cg->cg_child[c].cg_flags & CG_FLAG_THREAD) &&
+			    load >= 128 && (load & 128) != 0)
+				load += 128;
+
+			if (lr.csr_cpu >= 0 && (load < bload ||
+			    (load == bload && lr.csr_load < r->csr_load))) {
+				bload = load;
+				r->csr_cpu = lr.csr_cpu;
+				r->csr_load = lr.csr_load;
+			}
+		}
+		return (total);
 	}
 
-	/* Iterate through the child CPU groups and then remaining CPUs. */
-	for (i = cg->cg_children, cpu = mp_maxid; ; ) {
-		if (i == 0) {
-#ifdef HAVE_INLINE_FFSL
-			cpu = CPU_FFS(&cpumask) - 1;
-#else
-			while (cpu >= 0 && !CPU_ISSET(cpu, &cpumask))
-				cpu--;
-#endif
-			if (cpu < 0)
-				break;
-			child = NULL;
+	/* Loop through children CPUs otherwise. */
+	for (c = cg->cg_last; c >= cg->cg_first; c--) {
+		if (!CPU_ISSET(c, &cg->cg_mask))
+			continue;
+		tdq = TDQ_CPU(c);
+		l = TDQ_LOAD(tdq);
+		if (c == s->cs_prefer) {
+			if (__predict_false(s->cs_running))
+				l--;
+			p = 128;
 		} else
-			child = &cg->cg_child[i - 1];
+			p = 0;
+		load = l * 256;
+		total += load - p;
 
-		if (match & CPU_SEARCH_LOWEST)
-			lgroup.cs_cpu = -1;
-		if (match & CPU_SEARCH_HIGHEST)
-			hgroup.cs_cpu = -1;
-		if (child) {			/* Handle child CPU group. */
-			CPU_ANDNOT(&cpumask, &child->cg_mask);
-			switch (match) {
-			case CPU_SEARCH_LOWEST:
-				load = cpu_search_lowest(child, &lgroup);
-				break;
-			case CPU_SEARCH_HIGHEST:
-				load = cpu_search_highest(child, &hgroup);
-				break;
-			case CPU_SEARCH_BOTH:
-				load = cpu_search_both(child, &lgroup, &hgroup);
-				break;
-			}
-		} else {			/* Handle child CPU. */
-			CPU_CLR(cpu, &cpumask);
-			tdq = TDQ_CPU(cpu);
-			load = tdq->tdq_load * 256;
-			rnd = sched_random() % 32;
-			if (match & CPU_SEARCH_LOWEST) {
-				if (cpu == low->cs_prefer)
-					load -= 64;
-				/* If that CPU is allowed and get data. */
-				if (tdq->tdq_lowpri > lgroup.cs_pri &&
-				    tdq->tdq_load <= lgroup.cs_limit &&
-				    CPU_ISSET(cpu, &lgroup.cs_mask)) {
-					lgroup.cs_cpu = cpu;
-					lgroup.cs_load = load - rnd;
-				}
-			}
-			if (match & CPU_SEARCH_HIGHEST)
-				if (tdq->tdq_load >= hgroup.cs_limit &&
-				    tdq->tdq_transferable &&
-				    CPU_ISSET(cpu, &hgroup.cs_mask)) {
-					hgroup.cs_cpu = cpu;
-					hgroup.cs_load = load - rnd;
-				}
-		}
-		total += load;
+		/*
+		 * Check this CPU is acceptable.
+		 * If the threads is already on the CPU, don't look on the TDQ
+		 * priority, since it can be the priority of the thread itself.
+		 */
+		if (l > s->cs_load ||
+		    (atomic_load_char(&tdq->tdq_lowpri) <= s->cs_pri &&
+		     (!s->cs_running || c != s->cs_prefer)) ||
+		    !CPU_ISSET(c, s->cs_mask))
+			continue;
 
-		/* We have info about child item. Compare it. */
-		if (match & CPU_SEARCH_LOWEST) {
-			if (lgroup.cs_cpu >= 0 &&
-			    (load < lload ||
-			     (load == lload && lgroup.cs_load < low->cs_load))) {
-				lload = load;
-				low->cs_cpu = lgroup.cs_cpu;
-				low->cs_load = lgroup.cs_load;
-			}
+		/*
+		 * When balancing do not prefer CPUs with load > 1.
+		 * It allows round-robin between CPUs with equal load
+		 * within the CPU group for more fair scheduling.
+		 */
+		if (__predict_false(s->cs_running) && l > 0)
+			p = 0;
+
+		load -= sched_random() % 128;
+		if (bload > load - p) {
+			bload = load - p;
+			r->csr_cpu = c;
+			r->csr_load = load;
 		}
-		if (match & CPU_SEARCH_HIGHEST)
-			if (hgroup.cs_cpu >= 0 &&
-			    (load > hload ||
-			     (load == hload && hgroup.cs_load > high->cs_load))) {
-				hload = load;
-				high->cs_cpu = hgroup.cs_cpu;
-				high->cs_load = hgroup.cs_load;
-			}
-		if (child) {
-			i--;
-			if (i == 0 && CPU_EMPTY(&cpumask))
-				break;
-		}
-#ifndef HAVE_INLINE_FFSL
-		else
-			cpu--;
-#endif
 	}
 	return (total);
 }
 
-/*
- * cpu_search instantiations must pass constants to maintain the inline
- * optimization.
- */
-int
-cpu_search_lowest(const struct cpu_group *cg, struct cpu_search *low)
+static int
+cpu_search_highest(const struct cpu_group *cg, const struct cpu_search *s,
+    struct cpu_search_res *r)
 {
-	return cpu_search(cg, low, NULL, CPU_SEARCH_LOWEST);
-}
+	struct cpu_search_res lr;
+	struct tdq *tdq;
+	int c, bload, l, load, total;
 
-int
-cpu_search_highest(const struct cpu_group *cg, struct cpu_search *high)
-{
-	return cpu_search(cg, NULL, high, CPU_SEARCH_HIGHEST);
-}
+	total = 0;
+	bload = INT_MIN;
+	r->csr_cpu = -1;
 
-int
-cpu_search_both(const struct cpu_group *cg, struct cpu_search *low,
-    struct cpu_search *high)
-{
-	return cpu_search(cg, low, high, CPU_SEARCH_BOTH);
+	/* Loop through children CPU groups if there are any. */
+	if (cg->cg_children > 0) {
+		for (c = cg->cg_children - 1; c >= 0; c--) {
+			load = cpu_search_highest(&cg->cg_child[c], s, &lr);
+			total += load;
+			if (lr.csr_cpu >= 0 && (load > bload ||
+			    (load == bload && lr.csr_load > r->csr_load))) {
+				bload = load;
+				r->csr_cpu = lr.csr_cpu;
+				r->csr_load = lr.csr_load;
+			}
+		}
+		return (total);
+	}
+
+	/* Loop through children CPUs otherwise. */
+	for (c = cg->cg_last; c >= cg->cg_first; c--) {
+		if (!CPU_ISSET(c, &cg->cg_mask))
+			continue;
+		tdq = TDQ_CPU(c);
+		l = TDQ_LOAD(tdq);
+		load = l * 256;
+		total += load;
+
+		/*
+		 * Check this CPU is acceptable.
+		 */
+		if (l < s->cs_load || TDQ_TRANSFERABLE(tdq) < s->cs_trans ||
+		    !CPU_ISSET(c, s->cs_mask))
+			continue;
+
+		load -= sched_random() % 256;
+		if (load > bload) {
+			bload = load;
+			r->csr_cpu = c;
+		}
+	}
+	r->csr_load = bload;
+	return (total);
 }
 
 /*
@@ -803,45 +894,49 @@ cpu_search_both(const struct cpu_group *cg, struct cpu_search *low,
  * acceptable.
  */
 static inline int
-sched_lowest(const struct cpu_group *cg, cpuset_t mask, int pri, int maxload,
-    int prefer)
+sched_lowest(const struct cpu_group *cg, cpuset_t *mask, int pri, int maxload,
+    int prefer, int running)
 {
-	struct cpu_search low;
+	struct cpu_search s;
+	struct cpu_search_res r;
 
-	low.cs_cpu = -1;
-	low.cs_prefer = prefer;
-	low.cs_mask = mask;
-	low.cs_pri = pri;
-	low.cs_limit = maxload;
-	cpu_search_lowest(cg, &low);
-	return low.cs_cpu;
+	s.cs_prefer = prefer;
+	s.cs_running = running;
+	s.cs_mask = mask;
+	s.cs_pri = pri;
+	s.cs_load = maxload;
+	cpu_search_lowest(cg, &s, &r);
+	return (r.csr_cpu);
 }
 
 /*
  * Find the cpu with the highest load via the highest loaded path.
  */
 static inline int
-sched_highest(const struct cpu_group *cg, cpuset_t mask, int minload)
+sched_highest(const struct cpu_group *cg, cpuset_t *mask, int minload,
+    int mintrans)
 {
-	struct cpu_search high;
+	struct cpu_search s;
+	struct cpu_search_res r;
 
-	high.cs_cpu = -1;
-	high.cs_mask = mask;
-	high.cs_limit = minload;
-	cpu_search_highest(cg, &high);
-	return high.cs_cpu;
+	s.cs_mask = mask;
+	s.cs_load = minload;
+	s.cs_trans = mintrans;
+	cpu_search_highest(cg, &s, &r);
+	return (r.csr_cpu);
 }
 
 static void
 sched_balance_group(struct cpu_group *cg)
 {
 	struct tdq *tdq;
+	struct thread *td;
 	cpuset_t hmask, lmask;
 	int high, low, anylow;
 
 	CPU_FILL(&hmask);
 	for (;;) {
-		high = sched_highest(cg, hmask, 2);
+		high = sched_highest(cg, &hmask, 1, 0);
 		/* Stop if there is no more CPU with transferrable threads. */
 		if (high == -1)
 			break;
@@ -850,10 +945,30 @@ sched_balance_group(struct cpu_group *cg)
 		/* Stop if there is no more CPU left for low. */
 		if (CPU_EMPTY(&lmask))
 			break;
-		anylow = 1;
 		tdq = TDQ_CPU(high);
+		if (TDQ_LOAD(tdq) == 1) {
+			/*
+			 * There is only one running thread.  We can't move
+			 * it from here, so tell it to pick new CPU by itself.
+			 */
+			TDQ_LOCK(tdq);
+			td = tdq->tdq_curthread;
+			if (td->td_lock == TDQ_LOCKPTR(tdq) &&
+			    (td->td_flags & TDF_IDLETD) == 0 &&
+			    THREAD_CAN_MIGRATE(td)) {
+				td->td_flags |= TDF_PICKCPU;
+				ast_sched_locked(td, TDA_SCHED);
+				if (high != curcpu)
+					ipi_cpu(high, IPI_AST);
+			}
+			TDQ_UNLOCK(tdq);
+			break;
+		}
+		anylow = 1;
 nextlow:
-		low = sched_lowest(cg, lmask, -1, tdq->tdq_load - 1, high);
+		if (TDQ_TRANSFERABLE(tdq) == 0)
+			continue;
+		low = sched_lowest(cg, &lmask, -1, TDQ_LOAD(tdq) - 1, high, 1);
 		/* Stop if we looked well and found no less loaded CPU. */
 		if (anylow && low == -1)
 			break;
@@ -916,51 +1031,61 @@ tdq_unlock_pair(struct tdq *one, struct tdq *two)
 }
 
 /*
- * Transfer load between two imbalanced thread queues.
+ * Transfer load between two imbalanced thread queues.  Returns true if a thread
+ * was moved between the queues, and false otherwise.
  */
-static int
+static bool
 sched_balance_pair(struct tdq *high, struct tdq *low)
 {
-	struct thread *td;
-	int cpu;
+	int cpu, lowpri;
+	bool ret;
 
+	ret = false;
 	tdq_lock_pair(high, low);
-	td = NULL;
+
 	/*
 	 * Transfer a thread from high to low.
 	 */
-	if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load &&
-	    (td = tdq_move(high, low)) != NULL) {
-		/*
-		 * In case the target isn't the current cpu notify it of the
-		 * new load, possibly sending an IPI to force it to reschedule.
-		 */
-		cpu = TDQ_ID(low);
-		if (cpu != PCPU_GET(cpuid))
-			tdq_notify(low, td);
+	if (high->tdq_transferable != 0 && high->tdq_load > low->tdq_load) {
+		lowpri = tdq_move(high, low);
+		if (lowpri != -1) {
+			/*
+			 * In case the target isn't the current CPU notify it of
+			 * the new load, possibly sending an IPI to force it to
+			 * reschedule.  Otherwise maybe schedule a preemption.
+			 */
+			cpu = TDQ_ID(low);
+			if (cpu != PCPU_GET(cpuid))
+				tdq_notify(low, lowpri);
+			else
+				sched_setpreempt(low->tdq_lowpri);
+			ret = true;
+		}
 	}
 	tdq_unlock_pair(high, low);
-	return (td != NULL);
+	return (ret);
 }
 
 /*
- * Move a thread from one thread queue to another.
+ * Move a thread from one thread queue to another.  Returns -1 if the source
+ * queue was empty, else returns the maximum priority of all threads in
+ * the destination queue prior to the addition of the new thread.  In the latter
+ * case, this priority can be used to determine whether an IPI needs to be
+ * delivered.
  */
-static struct thread *
+static int
 tdq_move(struct tdq *from, struct tdq *to)
 {
 	struct thread *td;
-	struct tdq *tdq;
 	int cpu;
 
 	TDQ_LOCK_ASSERT(from, MA_OWNED);
 	TDQ_LOCK_ASSERT(to, MA_OWNED);
 
-	tdq = from;
 	cpu = TDQ_ID(to);
-	td = tdq_steal(tdq, cpu);
+	td = tdq_steal(from, cpu);
 	if (td == NULL)
-		return (NULL);
+		return (-1);
 
 	/*
 	 * Although the run queue is locked the thread may be
@@ -971,9 +1096,7 @@ tdq_move(struct tdq *from, struct tdq *to)
 	THREAD_LOCKPTR_ASSERT(td, TDQ_LOCKPTR(from));
 	td->td_lock = TDQ_LOCKPTR(to);
 	td_get_sched(td)->ts_cpu = cpu;
-	tdq_add(to, td, SRQ_YIELDING);
-
-	return (td);
+	return (tdq_add(to, td, SRQ_YIELDING));
 }
 
 /*
@@ -983,29 +1106,48 @@ tdq_move(struct tdq *from, struct tdq *to)
 static int
 tdq_idled(struct tdq *tdq)
 {
-	struct cpu_group *cg;
+	struct cpu_group *cg, *parent;
 	struct tdq *steal;
 	cpuset_t mask;
-	int cpu, switchcnt;
+	int cpu, switchcnt, goup;
 
 	if (smp_started == 0 || steal_idle == 0 || tdq->tdq_cg == NULL)
 		return (1);
 	CPU_FILL(&mask);
 	CPU_CLR(PCPU_GET(cpuid), &mask);
-    restart:
-	switchcnt = tdq->tdq_switchcnt + tdq->tdq_oldswitchcnt;
-	for (cg = tdq->tdq_cg; ; ) {
-		cpu = sched_highest(cg, mask, steal_thresh);
+restart:
+	switchcnt = TDQ_SWITCHCNT(tdq);
+	for (cg = tdq->tdq_cg, goup = 0; ; ) {
+		cpu = sched_highest(cg, &mask, steal_thresh, 1);
 		/*
 		 * We were assigned a thread but not preempted.  Returning
 		 * 0 here will cause our caller to switch to it.
 		 */
-		if (tdq->tdq_load)
+		if (TDQ_LOAD(tdq))
 			return (0);
+
+		/*
+		 * We found no CPU to steal from in this group.  Escalate to
+		 * the parent and repeat.  But if parent has only two children
+		 * groups we can avoid searching this group again by searching
+		 * the other one specifically and then escalating two levels.
+		 */
 		if (cpu == -1) {
-			cg = cg->cg_parent;
-			if (cg == NULL)
+			if (goup) {
+				cg = cg->cg_parent;
+				goup = 0;
+			}
+			parent = cg->cg_parent;
+			if (parent == NULL)
 				return (1);
+			if (parent->cg_children == 2) {
+				if (cg == &parent->cg_child[0])
+					cg = &parent->cg_child[1];
+				else
+					cg = &parent->cg_child[0];
+				goup = 1;
+			} else
+				cg = parent;
 			continue;
 		}
 		steal = TDQ_CPU(cpu);
@@ -1017,16 +1159,25 @@ tdq_idled(struct tdq *tdq)
 		 * this situation about 20% of the time on an 8 core
 		 * 16 thread Ryzen 7, but it still helps performance.
 		 */
-		if (steal->tdq_load < steal_thresh ||
-		    steal->tdq_transferable == 0)
+		if (TDQ_LOAD(steal) < steal_thresh ||
+		    TDQ_TRANSFERABLE(steal) == 0)
 			goto restart;
-		tdq_lock_pair(tdq, steal);
 		/*
-		 * We were assigned a thread while waiting for the locks.
-		 * Switch to it now instead of stealing a thread.
+		 * Try to lock both queues. If we are assigned a thread while
+		 * waited for the lock, switch to it now instead of stealing.
+		 * If we can't get the lock, then somebody likely got there
+		 * first so continue searching.
 		 */
-		if (tdq->tdq_load)
-			break;
+		TDQ_LOCK(tdq);
+		if (tdq->tdq_load > 0) {
+			mi_switch(SW_VOL | SWT_IDLE);
+			return (0);
+		}
+		if (TDQ_TRYLOCK_FLAGS(steal, MTX_DUPOK) == 0) {
+			TDQ_UNLOCK(tdq);
+			CPU_CLR(cpu, &mask);
+			continue;
+		}
 		/*
 		 * The data returned by sched_highest() is stale and
 		 * the chosen CPU no longer has an eligible thread, or
@@ -1034,16 +1185,16 @@ tdq_idled(struct tdq *tdq)
 		 * of date.  The latter is rare.  In either case restart
 		 * the search.
 		 */
-		if (steal->tdq_load < steal_thresh ||
-		    steal->tdq_transferable == 0 ||
-		    switchcnt != tdq->tdq_switchcnt + tdq->tdq_oldswitchcnt) {
+		if (TDQ_LOAD(steal) < steal_thresh ||
+		    TDQ_TRANSFERABLE(steal) == 0 ||
+		    switchcnt != TDQ_SWITCHCNT(tdq)) {
 			tdq_unlock_pair(tdq, steal);
 			goto restart;
 		}
 		/*
 		 * Steal the thread and switch to it.
 		 */
-		if (tdq_move(steal, tdq) != NULL)
+		if (tdq_move(steal, tdq) != -1)
 			break;
 		/*
 		 * We failed to acquire a thread even though it looked
@@ -1063,20 +1214,27 @@ tdq_idled(struct tdq *tdq)
 
 /*
  * Notify a remote cpu of new work.  Sends an IPI if criteria are met.
+ *
+ * "lowpri" is the minimum scheduling priority among all threads on
+ * the queue prior to the addition of the new thread.
  */
 static void
-tdq_notify(struct tdq *tdq, struct thread *td)
+tdq_notify(struct tdq *tdq, int lowpri)
 {
-	struct thread *ctd;
-	int pri;
 	int cpu;
+
+	TDQ_LOCK_ASSERT(tdq, MA_OWNED);
+	KASSERT(tdq->tdq_lowpri <= lowpri,
+	    ("tdq_notify: lowpri %d > tdq_lowpri %d", lowpri, tdq->tdq_lowpri));
 
 	if (tdq->tdq_owepreempt)
 		return;
-	cpu = td_get_sched(td)->ts_cpu;
-	pri = td->td_priority;
-	ctd = pcpu_find(cpu)->pc_curthread;
-	if (!sched_shouldpreempt(pri, ctd->td_priority, 1))
+
+	/*
+	 * Check to see if the newly added thread should preempt the one
+	 * currently running.
+	 */
+	if (!sched_shouldpreempt(tdq->tdq_lowpri, lowpri, 1))
 		return;
 
 	/*
@@ -1086,14 +1244,15 @@ tdq_notify(struct tdq *tdq, struct thread *td)
 	 */
 	atomic_thread_fence_seq_cst();
 
-	if (TD_IS_IDLETHREAD(ctd)) {
-		/*
-		 * If the MD code has an idle wakeup routine try that before
-		 * falling back to IPI.
-		 */
-		if (!tdq->tdq_cpu_idle || cpu_idle_wakeup(cpu))
-			return;
-	}
+	/*
+	 * Try to figure out if we can signal the idle thread instead of sending
+	 * an IPI.  This check is racy; at worst, we will deliever an IPI
+	 * unnecessarily.
+	 */
+	cpu = TDQ_ID(tdq);
+	if (TD_IS_IDLETHREAD(tdq->tdq_curthread) &&
+	    (atomic_load_int(&tdq->tdq_cpu_idle) == 0 || cpu_idle_wakeup(cpu)))
+		return;
 
 	/*
 	 * The run queues have been updated, so any switch on the remote CPU
@@ -1103,79 +1262,83 @@ tdq_notify(struct tdq *tdq, struct thread *td)
 	ipi_cpu(cpu, IPI_PREEMPT);
 }
 
+struct runq_steal_pred_data {
+	struct thread	*td;
+	int		cpu;
+};
+
+static bool
+runq_steal_pred(const int idx, struct rq_queue *const q, void *const data)
+{
+	struct runq_steal_pred_data *const d = data;
+	struct thread *td;
+
+	TAILQ_FOREACH(td, q, td_runq) {
+		if (THREAD_CAN_MIGRATE(td) && THREAD_CAN_SCHED(td, d->cpu)) {
+			d->td = td;
+			return (true);
+		}
+	}
+
+	return (false);
+}
+
+/*
+ * Steals load contained in queues with indices in the specified range.
+ */
+static inline struct thread *
+runq_steal_range(struct runq *const rq, const int lvl_min, const int lvl_max,
+    int cpu)
+{
+	struct runq_steal_pred_data data = {
+		.td = NULL,
+		.cpu = cpu,
+	};
+	int idx;
+
+	idx = runq_findq(rq, lvl_min, lvl_max, &runq_steal_pred, &data);
+	if (idx != -1) {
+		MPASS(data.td != NULL);
+		return (data.td);
+	}
+
+	MPASS(data.td == NULL);
+	return (NULL);
+}
+
+static inline struct thread *
+runq_steal_realtime(struct runq *const rq, int cpu)
+{
+
+	return (runq_steal_range(rq, RQ_RT_POL_MIN, RQ_RT_POL_MAX, cpu));
+}
+
 /*
  * Steals load from a timeshare queue.  Honors the rotating queue head
  * index.
  */
-static struct thread *
-runq_steal_from(struct runq *rq, int cpu, u_char start)
+static inline struct thread *
+runq_steal_timeshare(struct runq *const rq, int cpu, int off)
 {
-	struct rqbits *rqb;
-	struct rqhead *rqh;
-	struct thread *td, *first;
-	int bit;
-	int i;
-
-	rqb = &rq->rq_status;
-	bit = start & (RQB_BPW -1);
-	first = NULL;
-again:
-	for (i = RQB_WORD(start); i < RQB_LEN; bit = 0, i++) {
-		if (rqb->rqb_bits[i] == 0)
-			continue;
-		if (bit == 0)
-			bit = RQB_FFS(rqb->rqb_bits[i]);
-		for (; bit < RQB_BPW; bit++) {
-			if ((rqb->rqb_bits[i] & (1ul << bit)) == 0)
-				continue;
-			rqh = &rq->rq_queues[bit + (i << RQB_L2BPW)];
-			TAILQ_FOREACH(td, rqh, td_runq) {
-				if (first && THREAD_CAN_MIGRATE(td) &&
-				    THREAD_CAN_SCHED(td, cpu))
-					return (td);
-				first = td;
-			}
-		}
-	}
-	if (start != 0) {
-		start = 0;
-		goto again;
-	}
-
-	if (first && THREAD_CAN_MIGRATE(first) &&
-	    THREAD_CAN_SCHED(first, cpu))
-		return (first);
-	return (NULL);
-}
-
-/*
- * Steals load from a standard linear queue.
- */
-static struct thread *
-runq_steal(struct runq *rq, int cpu)
-{
-	struct rqhead *rqh;
-	struct rqbits *rqb;
 	struct thread *td;
-	int word;
-	int bit;
 
-	rqb = &rq->rq_status;
-	for (word = 0; word < RQB_LEN; word++) {
-		if (rqb->rqb_bits[word] == 0)
-			continue;
-		for (bit = 0; bit < RQB_BPW; bit++) {
-			if ((rqb->rqb_bits[word] & (1ul << bit)) == 0)
-				continue;
-			rqh = &rq->rq_queues[bit + (word << RQB_L2BPW)];
-			TAILQ_FOREACH(td, rqh, td_runq)
-				if (THREAD_CAN_MIGRATE(td) &&
-				    THREAD_CAN_SCHED(td, cpu))
-					return (td);
-		}
-	}
-	return (NULL);
+	MPASS(0 <= off && off < RQ_TS_POL_MODULO);
+
+	td = runq_steal_range(rq, RQ_TS_POL_MIN + off, RQ_TS_POL_MAX, cpu);
+	if (td != NULL || off == 0)
+		return (td);
+
+	td = runq_steal_range(rq, RQ_TS_POL_MIN, RQ_TS_POL_MIN + off - 1, cpu);
+	return (td);
 }
+
+static inline struct thread *
+runq_steal_idle(struct runq *const rq, int cpu)
+{
+
+	return (runq_steal_range(rq, RQ_ID_POL_MIN, RQ_ID_POL_MAX, cpu));
+}
+
 
 /*
  * Attempt to steal a thread in priority order from a thread queue.
@@ -1186,12 +1349,13 @@ tdq_steal(struct tdq *tdq, int cpu)
 	struct thread *td;
 
 	TDQ_LOCK_ASSERT(tdq, MA_OWNED);
-	if ((td = runq_steal(&tdq->tdq_realtime, cpu)) != NULL)
+	td = runq_steal_realtime(&tdq->tdq_runq, cpu);
+	if (td != NULL)
 		return (td);
-	if ((td = runq_steal_from(&tdq->tdq_timeshare,
-	    cpu, tdq->tdq_ridx)) != NULL)
+	td = runq_steal_timeshare(&tdq->tdq_runq, cpu, tdq->tdq_ts_deq_off);
+	if (td != NULL)
 		return (td);
-	return (runq_steal(&tdq->tdq_idle, cpu));
+	return (runq_steal_idle(&tdq->tdq_runq, cpu));
 }
 
 /*
@@ -1244,8 +1408,8 @@ sched_pickcpu(struct thread *td, int flags)
 	struct cpu_group *cg, *ccg;
 	struct td_sched *ts;
 	struct tdq *tdq;
-	cpuset_t mask;
-	int cpu, pri, self, intr;
+	cpuset_t *mask;
+	int cpu, pri, r, self, intr;
 
 	self = PCPU_GET(cpuid);
 	ts = td_get_sched(td);
@@ -1283,18 +1447,20 @@ sched_pickcpu(struct thread *td, int flags)
 	 * expired and it is idle, run it there.
 	 */
 	if (THREAD_CAN_SCHED(td, ts->ts_cpu) &&
-	    tdq->tdq_lowpri >= PRI_MIN_IDLE &&
+	    atomic_load_char(&tdq->tdq_lowpri) >= PRI_MIN_IDLE &&
 	    SCHED_AFFINITY(ts, CG_SHARE_L2)) {
 		if (cg->cg_flags & CG_FLAG_THREAD) {
 			/* Check all SMT threads for being idle. */
-			for (cpu = CPU_FFS(&cg->cg_mask) - 1; ; cpu++) {
+			for (cpu = cg->cg_first; cpu <= cg->cg_last; cpu++) {
+				pri =
+				    atomic_load_char(&TDQ_CPU(cpu)->tdq_lowpri);
 				if (CPU_ISSET(cpu, &cg->cg_mask) &&
-				    TDQ_CPU(cpu)->tdq_lowpri < PRI_MIN_IDLE)
+				    pri < PRI_MIN_IDLE)
 					break;
-				if (cpu >= mp_maxid) {
-					SCHED_STAT_INC(pickcpu_idle_affinity);
-					return (ts->ts_cpu);
-				}
+			}
+			if (cpu > cg->cg_last) {
+				SCHED_STAT_INC(pickcpu_idle_affinity);
+				return (ts->ts_cpu);
 			}
 		} else {
 			SCHED_STAT_INC(pickcpu_idle_affinity);
@@ -1321,34 +1487,35 @@ llc:
 	if (ccg == cpu_top)
 		ccg = NULL;
 	cpu = -1;
-	mask = td->td_cpuset->cs_mask;
+	mask = &td->td_cpuset->cs_mask;
 	pri = td->td_priority;
+	r = TD_IS_RUNNING(td);
 	/*
 	 * Try hard to keep interrupts within found LLC.  Search the LLC for
 	 * the least loaded CPU we can run now.  For NUMA systems it should
 	 * be within target domain, and it also reduces scheduling overhead.
 	 */
 	if (ccg != NULL && intr) {
-		cpu = sched_lowest(ccg, mask, pri, INT_MAX, ts->ts_cpu);
+		cpu = sched_lowest(ccg, mask, pri, INT_MAX, ts->ts_cpu, r);
 		if (cpu >= 0)
 			SCHED_STAT_INC(pickcpu_intrbind);
 	} else
 	/* Search the LLC for the least loaded idle CPU we can run now. */
 	if (ccg != NULL) {
 		cpu = sched_lowest(ccg, mask, max(pri, PRI_MAX_TIMESHARE),
-		    INT_MAX, ts->ts_cpu);
+		    INT_MAX, ts->ts_cpu, r);
 		if (cpu >= 0)
 			SCHED_STAT_INC(pickcpu_affinity);
 	}
 	/* Search globally for the least loaded CPU we can run now. */
 	if (cpu < 0) {
-		cpu = sched_lowest(cpu_top, mask, pri, INT_MAX, ts->ts_cpu);
+		cpu = sched_lowest(cpu_top, mask, pri, INT_MAX, ts->ts_cpu, r);
 		if (cpu >= 0)
 			SCHED_STAT_INC(pickcpu_lowest);
 	}
 	/* Search globally for the least loaded CPU. */
 	if (cpu < 0) {
-		cpu = sched_lowest(cpu_top, mask, -1, INT_MAX, ts->ts_cpu);
+		cpu = sched_lowest(cpu_top, mask, -1, INT_MAX, ts->ts_cpu, r);
 		if (cpu >= 0)
 			SCHED_STAT_INC(pickcpu_lowest);
 	}
@@ -1359,8 +1526,8 @@ llc:
 	 */
 	tdq = TDQ_CPU(cpu);
 	if (THREAD_CAN_SCHED(td, self) && TDQ_SELF()->tdq_lowpri > pri &&
-	    tdq->tdq_lowpri < PRI_MIN_IDLE &&
-	    TDQ_SELF()->tdq_load <= tdq->tdq_load + 1) {
+	    atomic_load_char(&tdq->tdq_lowpri) < PRI_MIN_IDLE &&
+	    TDQ_LOAD(TDQ_SELF()) <= TDQ_LOAD(tdq) + 1) {
 		SCHED_STAT_INC(pickcpu_local);
 		cpu = self;
 	}
@@ -1369,6 +1536,35 @@ llc:
 	return (cpu);
 }
 #endif
+
+static inline struct thread *
+runq_choose_realtime(struct runq *const rq)
+{
+
+	return (runq_first_thread_range(rq, RQ_RT_POL_MIN, RQ_RT_POL_MAX));
+}
+
+static struct thread *
+runq_choose_timeshare(struct runq *const rq, int off)
+{
+	struct thread *td;
+
+	MPASS(0 <= off && off < RQ_TS_POL_MODULO);
+
+	td = runq_first_thread_range(rq, RQ_TS_POL_MIN + off, RQ_TS_POL_MAX);
+	if (td != NULL || off == 0)
+		return (td);
+
+	td = runq_first_thread_range(rq, RQ_TS_POL_MIN, RQ_TS_POL_MIN + off - 1);
+	return (td);
+}
+
+static inline struct thread *
+runq_choose_idle(struct runq *const rq)
+{
+
+	return (runq_first_thread_range(rq, RQ_ID_POL_MIN, RQ_ID_POL_MAX));
+}
 
 /*
  * Pick the highest priority task we have and return it.
@@ -1379,17 +1575,17 @@ tdq_choose(struct tdq *tdq)
 	struct thread *td;
 
 	TDQ_LOCK_ASSERT(tdq, MA_OWNED);
-	td = runq_choose(&tdq->tdq_realtime);
+	td = runq_choose_realtime(&tdq->tdq_runq);
 	if (td != NULL)
 		return (td);
-	td = runq_choose_from(&tdq->tdq_timeshare, tdq->tdq_ridx);
+	td = runq_choose_timeshare(&tdq->tdq_runq, tdq->tdq_ts_deq_off);
 	if (td != NULL) {
 		KASSERT(td->td_priority >= PRI_MIN_BATCH,
 		    ("tdq_choose: Invalid priority on timeshare queue %d",
 		    td->td_priority));
 		return (td);
 	}
-	td = runq_choose(&tdq->tdq_idle);
+	td = runq_choose_idle(&tdq->tdq_runq);
 	if (td != NULL) {
 		KASSERT(td->td_priority >= PRI_MIN_IDLE,
 		    ("tdq_choose: Invalid priority on idle queue %d",
@@ -1409,9 +1605,7 @@ tdq_setup(struct tdq *tdq, int id)
 
 	if (bootverbose)
 		printf("ULE: setup cpu %d\n", id);
-	runq_init(&tdq->tdq_realtime);
-	runq_init(&tdq->tdq_timeshare);
-	runq_init(&tdq->tdq_idle);
+	runq_init(&tdq->tdq_runq);
 	tdq->tdq_id = id;
 	snprintf(tdq->tdq_name, sizeof(tdq->tdq_name),
 	    "sched lock %d", (int)TDQ_ID(tdq));
@@ -1436,6 +1630,7 @@ sched_setup_smp(void)
 		tdq->tdq_cg = smp_topo_find(cpu_top, i);
 		if (tdq->tdq_cg == NULL)
 			panic("Can't find cpu group for %d\n", i);
+		DPCPU_ID_SET(i, randomval, i * 69069 + 5);
 	}
 	PCPU_SET(sched, DPCPU_PTR(tdq));
 	balance_tdq = TDQ_SELF();
@@ -1462,6 +1657,7 @@ sched_setup(void *dummy)
 	TDQ_LOCK(tdq);
 	thread0.td_lock = TDQ_LOCKPTR(tdq);
 	tdq_load_add(tdq, &thread0);
+	tdq->tdq_curthread = &thread0;
 	tdq->tdq_lowpri = thread0.td_priority;
 	TDQ_UNLOCK(tdq);
 }
@@ -1516,7 +1712,7 @@ sched_initticks(void *dummy)
  * When a thread's sleep time is greater than its run time the
  * calculation is:
  *
- *                           scaling factor 
+ *                           scaling factor
  * interactivity score =  ---------------------
  *                        sleep time / run time
  *
@@ -1524,9 +1720,9 @@ sched_initticks(void *dummy)
  * When a thread's run time is greater than its sleep time the
  * calculation is:
  *
- *                           scaling factor 
- * interactivity score =  ---------------------    + scaling factor
- *                        run time / sleep time
+ *                                                 scaling factor
+ * interactivity score = 2 * scaling factor  -  ---------------------
+ *                                              run time / sleep time
  */
 static int
 sched_interact_score(struct thread *td)
@@ -1571,11 +1767,13 @@ sched_interact_score(struct thread *td)
 static void
 sched_priority(struct thread *td)
 {
-	int score;
-	int pri;
+	u_int pri, score;
+	int nice;
 
 	if (PRI_BASE(td->td_pri_class) != PRI_TIMESHARE)
 		return;
+
+	nice = td->td_proc->p_nice;
 	/*
 	 * If the score is interactive we place the thread in the realtime
 	 * queue with a priority that is less than kernel and interrupt
@@ -1589,26 +1787,35 @@ sched_priority(struct thread *td)
 	 * score.  Negative nice values make it easier for a thread to be
 	 * considered interactive.
 	 */
-	score = imax(0, sched_interact_score(td) + td->td_proc->p_nice);
+	score = imax(0, sched_interact_score(td) + nice);
 	if (score < sched_interact) {
 		pri = PRI_MIN_INTERACT;
-		pri += ((PRI_MAX_INTERACT - PRI_MIN_INTERACT + 1) /
-		    sched_interact) * score;
+		pri += (PRI_MAX_INTERACT - PRI_MIN_INTERACT + 1) * score /
+		    sched_interact;
 		KASSERT(pri >= PRI_MIN_INTERACT && pri <= PRI_MAX_INTERACT,
-		    ("sched_priority: invalid interactive priority %d score %d",
+		    ("sched_priority: invalid interactive priority %u score %u",
 		    pri, score));
 	} else {
-		pri = SCHED_PRI_MIN;
-		if (td_get_sched(td)->ts_ticks)
-			pri += min(SCHED_PRI_TICKS(td_get_sched(td)),
-			    SCHED_PRI_RANGE - 1);
-		pri += SCHED_PRI_NICE(td->td_proc->p_nice);
+		const struct td_sched *const ts = td_get_sched(td);
+		const u_int run = SCHED_TICK_RUN_SHIFTED(ts);
+		const u_int run_unshifted __unused = (run +
+		    (1 << SCHED_TICK_SHIFT) / 2) >> SCHED_TICK_SHIFT;
+		const u_int len = SCHED_TICK_LENGTH(ts);
+		const u_int nice_pri_off = SCHED_PRI_NICE(nice);
+		const u_int cpu_pri_off = (((SCHED_PRI_CPU_RANGE - 1) *
+		    run + len / 2) / len + (1 << SCHED_TICK_SHIFT) / 2) >>
+		    SCHED_TICK_SHIFT;
+
+		MPASS(cpu_pri_off < SCHED_PRI_CPU_RANGE);
+		pri = PRI_MIN_BATCH + cpu_pri_off + nice_pri_off;
 		KASSERT(pri >= PRI_MIN_BATCH && pri <= PRI_MAX_BATCH,
-		    ("sched_priority: invalid priority %d: nice %d, " 
-		    "ticks %d ftick %d ltick %d tick pri %d",
-		    pri, td->td_proc->p_nice, td_get_sched(td)->ts_ticks,
-		    td_get_sched(td)->ts_ftick, td_get_sched(td)->ts_ltick,
-		    SCHED_PRI_TICKS(td_get_sched(td))));
+		    ("sched_priority: Invalid computed priority %u: "
+		    "Should be between %u and %u (PRI_MIN_BATCH: %u; "
+		    "Window size (ticks): %u, runtime (shifted ticks): %u,"
+		    "(unshifted ticks): %u => CPU pri off: %u; "
+		    "Nice: %d => nice pri off: %u)",
+		    pri, PRI_MIN_BATCH, PRI_MAX_BATCH, PRI_MIN_BATCH,
+		    len, run, run_unshifted, cpu_pri_off, nice, nice_pri_off));
 	}
 	sched_user_prio(td, pri);
 
@@ -1693,10 +1900,30 @@ schedinit(void)
 	 * Set up the scheduler specific parts of thread0.
 	 */
 	ts0 = td_get_sched(&thread0);
-	ts0->ts_ltick = ticks;
-	ts0->ts_ftick = ticks;
+	ts0->ts_ftick = (u_int)ticks;
+	ts0->ts_ltick = ts0->ts_ftick;
 	ts0->ts_slice = 0;
 	ts0->ts_cpu = curcpu;	/* set valid CPU number */
+}
+
+/*
+ * schedinit_ap() is needed prior to calling sched_throw(NULL) to ensure that
+ * the pcpu requirements are met for any calls in the period between curthread
+ * initialization and sched_throw().  One can safely add threads to the queue
+ * before sched_throw(), for instance, as long as the thread lock is setup
+ * correctly.
+ *
+ * TDQ_SELF() relies on the below sched pcpu setting; it may be used only
+ * after schedinit_ap().
+ */
+void
+schedinit_ap(void)
+{
+
+#ifdef SMP
+	PCPU_SET(sched, DPCPU_PTR(tdq));
+#endif
+	PCPU_GET(idlethread)->td_lock = TDQ_LOCKPTR(TDQ_SELF());
 }
 
 /*
@@ -1713,30 +1940,56 @@ sched_rr_interval(void)
 }
 
 /*
- * Update the percent cpu tracking information when it is requested or
- * the total history exceeds the maximum.  We keep a sliding history of
- * tick counts that slowly decays.  This is less precise than the 4BSD
- * mechanism since it happens with less regular and frequent events.
+ * Update the percent cpu tracking information when it is requested or the total
+ * history exceeds the maximum.  We keep a sliding history of tick counts that
+ * slowly decays, for running threads (see comments below for more details).
+ * This is less precise than the 4BSD mechanism since it happens with less
+ * regular and frequent events.
  */
 static void
 sched_pctcpu_update(struct td_sched *ts, int run)
 {
-	int t = ticks;
+	const u_int t = (u_int)ticks;
+	u_int t_max = SCHED_TICK_MAX((u_int)hz);
+	u_int t_tgt = ((t_max << SCHED_TICK_SHIFT) * SCHED_CPU_DECAY_NUMER /
+	    SCHED_CPU_DECAY_DENOM) >> SCHED_TICK_SHIFT;
+	const u_int lu_span = t - ts->ts_ltick;
 
-	/*
-	 * The signed difference may be negative if the thread hasn't run for
-	 * over half of the ticks rollover period.
-	 */
-	if ((u_int)(t - ts->ts_ltick) >= SCHED_TICK_TARG) {
-		ts->ts_ticks = 0;
-		ts->ts_ftick = t - SCHED_TICK_TARG;
-	} else if (t - ts->ts_ftick >= SCHED_TICK_MAX) {
-		ts->ts_ticks = (ts->ts_ticks / (ts->ts_ltick - ts->ts_ftick)) *
-		    (ts->ts_ltick - (t - SCHED_TICK_TARG));
-		ts->ts_ftick = t - SCHED_TICK_TARG;
+	if (lu_span >= t_tgt) {
+		/*
+		 * Forget all previous ticks if we are more than t_tgt
+		 * (currently, 10s) apart from the last update.  Don't account
+		 * for more than 't_tgt' ticks when running.
+		 */
+		ts->ts_ticks = run ? (t_tgt << SCHED_TICK_SHIFT) : 0;
+		ts->ts_ftick = t - t_tgt;
+		ts->ts_ltick = t;
+		return;
 	}
+
+	if (t - ts->ts_ftick >= t_max) {
+		/*
+		 * First reduce the existing ticks to proportionally occupy only
+		 * what's left of the target window given 'lu_span' will occupy
+		 * the rest.  Since sched_clock() is called frequently on
+		 * running threads, these threads have a small 'lu_span', and
+		 * the next formula basically becomes an exponential decay with
+		 * ratio r = SCHED_CPU_DECAY_NUMER / SCHED_CPU_DECAY_DENOM
+		 * (currently, 10/11) and period 1s.  However, a sleeping thread
+		 * will see its accounted ticks drop linearly with a high slope
+		 * with respect to 'lu_span', approaching 0 as 'lu_span'
+		 * approaches 't_tgt' (so, continuously with respect to the
+		 * previous case).  This rescaling is completely dependent on
+		 * the frequency of calls and the span since last update passed
+		 * at each call.
+		 */
+		ts->ts_ticks = SCHED_TICK_RUN_SHIFTED(ts) /
+		    SCHED_TICK_LENGTH(ts) * (t_tgt - lu_span);
+		ts->ts_ftick = t - t_tgt;
+	}
+
 	if (run)
-		ts->ts_ticks += (t - ts->ts_ltick) << SCHED_TICK_SHIFT;
+		ts->ts_ticks += lu_span << SCHED_TICK_SHIFT;
 	ts->ts_ltick = t;
 }
 
@@ -1748,7 +2001,6 @@ sched_pctcpu_update(struct td_sched *ts, int run)
 static void
 sched_thread_priority(struct thread *td, u_char prio)
 {
-	struct td_sched *ts;
 	struct tdq *tdq;
 	int oldpri;
 
@@ -1763,7 +2015,6 @@ sched_thread_priority(struct thread *td, u_char prio)
 		SDT_PROBE4(sched, , , lend__pri, td, td->td_proc, prio, 
 		    curthread);
 	} 
-	ts = td_get_sched(td);
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
 	if (td->td_priority == prio)
 		return;
@@ -1784,7 +2035,7 @@ sched_thread_priority(struct thread *td, u_char prio)
 	 * information so other cpus are aware of our current priority.
 	 */
 	if (TD_IS_RUNNING(td)) {
-		tdq = TDQ_CPU(ts->ts_cpu);
+		tdq = TDQ_CPU(td_get_sched(td)->ts_cpu);
 		oldpri = td->td_priority;
 		td->td_priority = prio;
 		if (prio < tdq->tdq_lowpri)
@@ -1864,6 +2115,18 @@ sched_prio(struct thread *td, u_char prio)
 }
 
 /*
+ * Set the base interrupt thread priority.
+ */
+void
+sched_ithread_prio(struct thread *td, u_char prio)
+{
+	THREAD_LOCK_ASSERT(td, MA_OWNED);
+	MPASS(td->td_pri_class == PRI_ITHD);
+	td->td_base_ithread_pri = prio;
+	sched_prio(td, prio);
+}
+
+/*
  * Set the base user priority, does not effect current running priority.
  */
 void
@@ -1886,7 +2149,7 @@ sched_lend_user_prio(struct thread *td, u_char prio)
 	if (td->td_priority > td->td_user_pri)
 		sched_prio(td, td->td_user_pri);
 	else if (td->td_priority != td->td_user_pri)
-		td->td_flags |= TDF_NEEDRESCHED;
+		ast_sched_locked(td, TDA_SCHED);
 }
 
 /*
@@ -1896,15 +2159,9 @@ void
 sched_lend_user_prio_cond(struct thread *td, u_char prio)
 {
 
-	if (td->td_lend_user_pri != prio)
-		goto lend;
-	if (td->td_user_pri != min(prio, td->td_base_user_pri))
-		goto lend;
-	if (td->td_priority != td->td_user_pri)
-		goto lend;
-	return;
+	if (td->td_lend_user_pri == prio)
+		return;
 
-lend:
 	thread_lock(td);
 	sched_lend_user_prio(td, prio);
 	thread_unlock(td);
@@ -1918,63 +2175,87 @@ lend:
 static void
 tdq_trysteal(struct tdq *tdq)
 {
-	struct cpu_group *cg;
+	struct cpu_group *cg, *parent;
 	struct tdq *steal;
 	cpuset_t mask;
-	int cpu, i;
+	int cpu, i, goup;
 
-	if (smp_started == 0 || trysteal_limit == 0 || tdq->tdq_cg == NULL)
+	if (smp_started == 0 || steal_idle == 0 || trysteal_limit == 0 ||
+	    tdq->tdq_cg == NULL)
 		return;
 	CPU_FILL(&mask);
 	CPU_CLR(PCPU_GET(cpuid), &mask);
 	/* We don't want to be preempted while we're iterating. */
 	spinlock_enter();
 	TDQ_UNLOCK(tdq);
-	for (i = 1, cg = tdq->tdq_cg; ; ) {
-		cpu = sched_highest(cg, mask, steal_thresh);
+	for (i = 1, cg = tdq->tdq_cg, goup = 0; ; ) {
+		cpu = sched_highest(cg, &mask, steal_thresh, 1);
 		/*
 		 * If a thread was added while interrupts were disabled don't
 		 * steal one here.
 		 */
-		if (tdq->tdq_load > 0) {
+		if (TDQ_LOAD(tdq) > 0) {
 			TDQ_LOCK(tdq);
 			break;
 		}
+
+		/*
+		 * We found no CPU to steal from in this group.  Escalate to
+		 * the parent and repeat.  But if parent has only two children
+		 * groups we can avoid searching this group again by searching
+		 * the other one specifically and then escalating two levels.
+		 */
 		if (cpu == -1) {
-			i++;
-			cg = cg->cg_parent;
-			if (cg == NULL || i > trysteal_limit) {
+			if (goup) {
+				cg = cg->cg_parent;
+				goup = 0;
+			}
+			if (++i > trysteal_limit) {
 				TDQ_LOCK(tdq);
 				break;
 			}
+			parent = cg->cg_parent;
+			if (parent == NULL) {
+				TDQ_LOCK(tdq);
+				break;
+			}
+			if (parent->cg_children == 2) {
+				if (cg == &parent->cg_child[0])
+					cg = &parent->cg_child[1];
+				else
+					cg = &parent->cg_child[0];
+				goup = 1;
+			} else
+				cg = parent;
 			continue;
 		}
 		steal = TDQ_CPU(cpu);
 		/*
 		 * The data returned by sched_highest() is stale and
-                 * the chosen CPU no longer has an eligible thread.
+		 * the chosen CPU no longer has an eligible thread.
+		 * At this point unconditionally exit the loop to bound
+		 * the time spent in the critcal section.
 		 */
-		if (steal->tdq_load < steal_thresh ||
-		    steal->tdq_transferable == 0)
+		if (TDQ_LOAD(steal) < steal_thresh ||
+		    TDQ_TRANSFERABLE(steal) == 0)
 			continue;
-		tdq_lock_pair(tdq, steal);
 		/*
-		 * If we get to this point, unconditonally exit the loop
-		 * to bound the time spent in the critcal section.
-		 *
-		 * If a thread was added while interrupts were disabled don't
-		 * steal one here.
+		 * Try to lock both queues. If we are assigned a thread while
+		 * waited for the lock, switch to it now instead of stealing.
+		 * If we can't get the lock, then somebody likely got there
+		 * first.
 		 */
-		if (tdq->tdq_load > 0) {
-			TDQ_UNLOCK(steal);
+		TDQ_LOCK(tdq);
+		if (tdq->tdq_load > 0)
 			break;
-		}
+		if (TDQ_TRYLOCK_FLAGS(steal, MTX_DUPOK) == 0)
+			break;
 		/*
 		 * The data returned by sched_highest() is stale and
                  * the chosen CPU no longer has an eligible thread.
 		 */
-		if (steal->tdq_load < steal_thresh ||
-		    steal->tdq_transferable == 0) {
+		if (TDQ_LOAD(steal) < steal_thresh ||
+		    TDQ_TRANSFERABLE(steal) == 0) {
 			TDQ_UNLOCK(steal);
 			break;
 		}
@@ -1983,7 +2264,7 @@ tdq_trysteal(struct tdq *tdq)
 		 * bail out and let the idle thread to a more complete search
 		 * outside of a critical section.
 		 */
-		if (tdq_move(steal, tdq) == NULL) {
+		if (tdq_move(steal, tdq) == -1) {
 			TDQ_UNLOCK(steal);
 			break;
 		}
@@ -2002,6 +2283,9 @@ static struct mtx *
 sched_switch_migrate(struct tdq *tdq, struct thread *td, int flags)
 {
 	struct tdq *tdn;
+#ifdef SMP
+	int lowpri;
+#endif
 
 	KASSERT(THREAD_CAN_MIGRATE(td) ||
 	    (td_get_sched(td)->ts_flags & TSF_BOUND) != 0,
@@ -2019,8 +2303,8 @@ sched_switch_migrate(struct tdq *tdq, struct thread *td, int flags)
 	 */
 	TDQ_UNLOCK(tdq);
 	TDQ_LOCK(tdn);
-	tdq_add(tdn, td, flags);
-	tdq_notify(tdn, td);
+	lowpri = tdq_add(tdn, td, flags);
+	tdq_notify(tdn, lowpri);
 	TDQ_UNLOCK(tdn);
 	TDQ_LOCK(tdq);
 #endif
@@ -2052,6 +2336,9 @@ sched_switch(struct thread *td, int flags)
 	struct mtx *mtx;
 	int srqflag;
 	int cpuid, preempted;
+#ifdef SMP
+	int pickcpu;
+#endif
 
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
 
@@ -2059,15 +2346,22 @@ sched_switch(struct thread *td, int flags)
 	tdq = TDQ_SELF();
 	ts = td_get_sched(td);
 	sched_pctcpu_update(ts, 1);
-	ts->ts_rltick = ticks;
+#ifdef SMP
+	pickcpu = (td->td_flags & TDF_PICKCPU) != 0;
+	if (pickcpu)
+		ts->ts_rltick = (u_int)ticks - affinity * MAX_CACHE_LEVELS;
+	else
+		ts->ts_rltick = (u_int)ticks;
+#endif
 	td->td_lastcpu = td->td_oncpu;
 	preempted = (td->td_flags & TDF_SLICEEND) == 0 &&
 	    (flags & SW_PREEMPT) != 0;
-	td->td_flags &= ~(TDF_NEEDRESCHED | TDF_SLICEEND);
+	td->td_flags &= ~(TDF_PICKCPU | TDF_SLICEEND);
+	ast_unsched_locked(td, TDA_SCHED);
 	td->td_owepreempt = 0;
-	tdq->tdq_owepreempt = 0;
+	atomic_store_char(&tdq->tdq_owepreempt, 0);
 	if (!TD_IS_IDLETHREAD(td))
-		tdq->tdq_switchcnt++;
+		TDQ_SWITCHCNT_INC(tdq);
 
 	/*
 	 * Always block the thread lock so we can drop the tdq lock early.
@@ -2079,11 +2373,11 @@ sched_switch(struct thread *td, int flags)
 		TD_SET_CAN_RUN(td);
 	} else if (TD_IS_RUNNING(td)) {
 		MPASS(mtx == TDQ_LOCKPTR(tdq));
-		srqflag = preempted ?
-		    SRQ_OURSELF|SRQ_YIELDING|SRQ_PREEMPTED :
-		    SRQ_OURSELF|SRQ_YIELDING;
+		srqflag = SRQ_OURSELF | SRQ_YIELDING |
+		    (preempted ? SRQ_PREEMPTED : 0);
 #ifdef SMP
-		if (THREAD_CAN_MIGRATE(td) && !THREAD_CAN_SCHED(td, ts->ts_cpu))
+		if (THREAD_CAN_MIGRATE(td) && (!THREAD_CAN_SCHED(td, ts->ts_cpu)
+		    || pickcpu))
 			ts->ts_cpu = sched_pickcpu(td, 0);
 #endif
 		if (ts->ts_cpu == cpuid)
@@ -2119,6 +2413,7 @@ sched_switch(struct thread *td, int flags)
 	 * thread-queue locked.
 	 */
 	TDQ_LOCK_ASSERT(tdq, MA_OWNED | MA_NOTRECURSED);
+	MPASS(td == tdq->tdq_curthread);
 	newtd = choosethread();
 	sched_pctcpu_update(td_get_sched(newtd), 0);
 	TDQ_UNLOCK(tdq);
@@ -2142,6 +2437,12 @@ sched_switch(struct thread *td, int flags)
 		if (dtrace_vtime_active)
 			(*dtrace_vtime_switch_func)(newtd);
 #endif
+
+#ifdef HWT_HOOKS
+		HWT_CALL_HOOK(td, HWT_SWITCH_OUT, NULL);
+		HWT_CALL_HOOK(newtd, HWT_SWITCH_IN, NULL);
+#endif
+
 		td->td_oncpu = NOCPU;
 		cpu_switch(td, newtd, mtx);
 		cpuid = td->td_oncpu = PCPU_GET(cpuid);
@@ -2191,8 +2492,6 @@ sched_sleep(struct thread *td, int prio)
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
 
 	td->td_slptick = ticks;
-	if (TD_IS_SUSPENDED(td) || prio >= PSOCK)
-		td->td_flags |= TDF_CANSWAP;
 	if (PRI_BASE(td->td_pri_class) != PRI_TIMESHARE)
 		return;
 	if (static_boost == 1 && prio)
@@ -2215,7 +2514,6 @@ sched_wakeup(struct thread *td, int srqflags)
 
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
 	ts = td_get_sched(td);
-	td->td_flags &= ~TDF_CANSWAP;
 
 	/*
 	 * If we slept for more than a tick update our interactivity and
@@ -2228,6 +2526,15 @@ sched_wakeup(struct thread *td, int srqflags)
 		sched_interact_update(td);
 		sched_pctcpu_update(ts, 0);
 	}
+
+	/*
+	 * When resuming an idle ithread, restore its base ithread
+	 * priority.
+	 */
+	if (PRI_BASE(td->td_pri_class) == PRI_ITHD &&
+	    td->td_priority != td->td_base_ithread_pri)
+		sched_prio(td, td->td_base_ithread_pri);
+
 	/*
 	 * Reset the slice value since we slept and advanced the round-robin.
 	 */
@@ -2395,9 +2702,25 @@ sched_userret_slowpath(struct thread *td)
 	thread_unlock(td);
 }
 
+SCHED_STAT_DEFINE(ithread_demotions, "Interrupt thread priority demotions");
+SCHED_STAT_DEFINE(ithread_preemptions,
+    "Interrupt thread preemptions due to time-sharing");
+
+/*
+ * Return time slice for a given thread.  For ithreads this is
+ * sched_slice.  For other threads it is tdq_slice(tdq).
+ */
+static inline u_int
+td_slice(struct thread *td, struct tdq *tdq)
+{
+	if (PRI_BASE(td->td_pri_class) == PRI_ITHD)
+		return (sched_slice);
+	return (tdq_slice(tdq));
+}
+
 /*
  * Handle a stathz tick.  This is really only relevant for timeshare
- * threads.
+ * and interrupt threads.
  */
 void
 sched_clock(struct thread *td, int cnt)
@@ -2425,14 +2748,24 @@ sched_clock(struct thread *td, int cnt)
 	 */
 	tdq->tdq_oldswitchcnt = tdq->tdq_switchcnt;
 	tdq->tdq_switchcnt = tdq->tdq_load;
+
 	/*
-	 * Advance the insert index once for each tick to ensure that all
-	 * threads get a chance to run.
+	 * Advance the insert offset once for each tick to ensure that all
+	 * threads get a chance to run.  In order not to change too much ULE's
+	 * anti-starvation and "nice" behaviors after the switch to a single
+	 * 256-queue runqueue, since the queue insert offset is incremented by
+	 * 1 at every tick (provided the system is not too loaded) and there are
+	 * now 109 distinct levels for the timesharing selection policy instead
+	 * of 64 before (separate runqueue), we apply a factor 7/4 when
+	 * increasing the insert offset, by incrementing it by 2 instead of
+	 * 1 except for one in four ticks.
 	 */
-	if (tdq->tdq_idx == tdq->tdq_ridx) {
-		tdq->tdq_idx = (tdq->tdq_idx + 1) % RQ_NQS;
-		if (TAILQ_EMPTY(&tdq->tdq_timeshare.rq_queues[tdq->tdq_ridx]))
-			tdq->tdq_ridx = tdq->tdq_idx;
+	if (tdq->tdq_ts_off == tdq->tdq_ts_deq_off) {
+		tdq->tdq_ts_ticks += cnt;
+		tdq->tdq_ts_off = (tdq->tdq_ts_off + 2 * cnt -
+		    tdq-> tdq_ts_ticks / 4) % RQ_TS_POL_MODULO;
+		tdq->tdq_ts_ticks %= 4;
+		tdq_advance_ts_deq_off(tdq, false);
 	}
 	ts = td_get_sched(td);
 	sched_pctcpu_update(ts, 1);
@@ -2454,9 +2787,24 @@ sched_clock(struct thread *td, int cnt)
 	 * time slice (default is 100ms).
 	 */
 	ts->ts_slice += cnt;
-	if (ts->ts_slice >= tdq_slice(tdq)) {
+	if (ts->ts_slice >= td_slice(td, tdq)) {
 		ts->ts_slice = 0;
-		td->td_flags |= TDF_NEEDRESCHED | TDF_SLICEEND;
+
+		/*
+		 * If an ithread uses a full quantum, demote its
+		 * priority and preempt it.
+		 */
+		if (PRI_BASE(td->td_pri_class) == PRI_ITHD) {
+			SCHED_STAT_INC(ithread_preemptions);
+			td->td_owepreempt = 1;
+			if (td->td_base_pri + RQ_PPQ < PRI_MAX_ITHD) {
+				SCHED_STAT_INC(ithread_demotions);
+				sched_prio(td, td->td_base_pri + RQ_PPQ);
+			}
+		} else {
+			ast_sched_locked(td, TDA_SCHED);
+			td->td_flags |= TDF_SLICEEND;
+		}
 	}
 }
 
@@ -2471,30 +2819,18 @@ sched_estcpu(struct thread *td __unused)
  * Return whether the current CPU has runnable tasks.  Used for in-kernel
  * cooperative idle threads.
  */
-int
+bool
 sched_runnable(void)
 {
 	struct tdq *tdq;
-	int load;
-
-	load = 1;
 
 	tdq = TDQ_SELF();
-	if ((curthread->td_flags & TDF_IDLETD) != 0) {
-		if (tdq->tdq_load > 0)
-			goto out;
-	} else
-		if (tdq->tdq_load - 1 > 0)
-			goto out;
-	load = 0;
-out:
-	return (load);
+	return (TDQ_LOAD(tdq) > (TD_IS_IDLETHREAD(curthread) ? 0 : 1));
 }
 
 /*
  * Choose the highest priority thread to run.  The thread is removed from
- * the run-queue while running however the load remains.  For SMP we set
- * the tdq in the global idle bitmask if it idles here.
+ * the run-queue while running however the load remains.
  */
 struct thread *
 sched_choose(void)
@@ -2505,33 +2841,34 @@ sched_choose(void)
 	tdq = TDQ_SELF();
 	TDQ_LOCK_ASSERT(tdq, MA_OWNED);
 	td = tdq_choose(tdq);
-	if (td) {
+	if (td != NULL) {
 		tdq_runq_rem(tdq, td);
 		tdq->tdq_lowpri = td->td_priority;
-		return (td);
+	} else { 
+		tdq->tdq_lowpri = PRI_MAX_IDLE;
+		td = PCPU_GET(idlethread);
 	}
-	tdq->tdq_lowpri = PRI_MAX_IDLE;
-	return (PCPU_GET(idlethread));
+	tdq->tdq_curthread = td;
+	return (td);
 }
 
 /*
- * Set owepreempt if necessary.  Preemption never happens directly in ULE,
- * we always request it once we exit a critical section.
+ * Set owepreempt if the currently running thread has lower priority than "pri".
+ * Preemption never happens directly in ULE, we always request it once we exit a
+ * critical section.
  */
-static inline void
-sched_setpreempt(struct thread *td)
+static void
+sched_setpreempt(int pri)
 {
 	struct thread *ctd;
 	int cpri;
-	int pri;
-
-	THREAD_LOCK_ASSERT(curthread, MA_OWNED);
 
 	ctd = curthread;
-	pri = td->td_priority;
+	THREAD_LOCK_ASSERT(ctd, MA_OWNED);
+
 	cpri = ctd->td_priority;
 	if (pri < cpri)
-		ctd->td_flags |= TDF_NEEDRESCHED;
+		ast_sched_locked(ctd, TDA_SCHED);
 	if (KERNEL_PANICKED() || pri >= cpri || cold || TD_IS_INHIBITED(ctd))
 		return;
 	if (!sched_shouldpreempt(pri, cpri, 0))
@@ -2544,9 +2881,10 @@ sched_setpreempt(struct thread *td)
  * thread to it.  This is the internal function called when the tdq is
  * predetermined.
  */
-void
+static int
 tdq_add(struct tdq *tdq, struct thread *td, int flags)
 {
+	int lowpri;
 
 	TDQ_LOCK_ASSERT(tdq, MA_OWNED);
 	THREAD_LOCK_BLOCKED_ASSERT(td, MA_OWNED);
@@ -2557,10 +2895,12 @@ tdq_add(struct tdq *tdq, struct thread *td, int flags)
 	KASSERT(td->td_flags & TDF_INMEM,
 	    ("sched_add: thread swapped out"));
 
-	if (td->td_priority < tdq->tdq_lowpri)
+	lowpri = tdq->tdq_lowpri;
+	if (td->td_priority < lowpri)
 		tdq->tdq_lowpri = td->td_priority;
 	tdq_runq_add(tdq, td, flags);
 	tdq_load_add(tdq, td);
+	return (lowpri);
 }
 
 /*
@@ -2574,7 +2914,7 @@ sched_add(struct thread *td, int flags)
 {
 	struct tdq *tdq;
 #ifdef SMP
-	int cpu;
+	int cpu, lowpri;
 #endif
 
 	KTR_STATE2(KTR_SCHED, "thread", sched_tdname(td), "runq add",
@@ -2598,11 +2938,11 @@ sched_add(struct thread *td, int flags)
 	 */
 	cpu = sched_pickcpu(td, flags);
 	tdq = sched_setcpu(td, cpu, flags);
-	tdq_add(tdq, td, flags);
+	lowpri = tdq_add(tdq, td, flags);
 	if (cpu != PCPU_GET(cpuid))
-		tdq_notify(tdq, td);
+		tdq_notify(tdq, lowpri);
 	else if (!(flags & SRQ_YIELDING))
-		sched_setpreempt(td);
+		sched_setpreempt(td->td_priority);
 #else
 	tdq = TDQ_SELF();
 	/*
@@ -2616,9 +2956,9 @@ sched_add(struct thread *td, int flags)
 		else
 			thread_lock_set(td, TDQ_LOCKPTR(tdq));
 	}
-	tdq_add(tdq, td, flags);
+	(void)tdq_add(tdq, td, flags);
 	if (!(flags & SRQ_YIELDING))
-		sched_setpreempt(td);
+		sched_setpreempt(td->td_priority);
 #endif
 	if (!(flags & SRQ_HOLDTD))
 		thread_unlock(td);
@@ -2655,22 +2995,18 @@ sched_rem(struct thread *td)
 fixpt_t
 sched_pctcpu(struct thread *td)
 {
-	fixpt_t pctcpu;
 	struct td_sched *ts;
-
-	pctcpu = 0;
-	ts = td_get_sched(td);
+	u_int len;
+	fixpt_t pctcpu;
 
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
+	ts = td_get_sched(td);
 	sched_pctcpu_update(ts, TD_IS_RUNNING(td));
-	if (ts->ts_ticks) {
-		int rtick;
-
-		/* How many rtick per second ? */
-		rtick = min(SCHED_TICK_HZ(ts) / SCHED_TICK_SECS, hz);
-		pctcpu = (FSCALE * ((FSCALE * rtick)/hz)) >> FSHIFT;
-	}
-
+	len = SCHED_TICK_LENGTH(ts);
+	pctcpu = ((FSHIFT >= SCHED_TICK_SHIFT ? /* Resolved at compile-time. */
+	    (SCHED_TICK_RUN_SHIFTED(ts) << (FSHIFT - SCHED_TICK_SHIFT)) :
+	    (SCHED_TICK_RUN_SHIFTED(ts) >> (SCHED_TICK_SHIFT - FSHIFT))) +
+	    len / 2) / len;
 	return (pctcpu);
 }
 
@@ -2700,7 +3036,7 @@ sched_affinity(struct thread *td)
 	 * target thread is not running locally send an ipi to force
 	 * the issue.
 	 */
-	td->td_flags |= TDF_NEEDRESCHED;
+	ast_sched_locked(td, TDA_SCHED);
 	if (td != curthread)
 		ipi_cpu(ts->ts_cpu, IPI_PREEMPT);
 #endif
@@ -2726,7 +3062,7 @@ sched_bind(struct thread *td, int cpu)
 		return;
 	ts->ts_cpu = cpu;
 	/* When we return from mi_switch we'll be on the correct cpu. */
-	mi_switch(SW_VOL);
+	mi_switch(SW_VOL | SWT_BIND);
 	thread_lock(td);
 }
 
@@ -2776,10 +3112,10 @@ sched_load(void)
 
 	total = 0;
 	CPU_FOREACH(i)
-		total += TDQ_CPU(i)->tdq_sysload;
+		total += atomic_load_int(&TDQ_CPU(i)->tdq_sysload);
 	return (total);
 #else
-	return (TDQ_SELF()->tdq_sysload);
+	return (atomic_load_int(&TDQ_SELF()->tdq_sysload));
 #endif
 }
 
@@ -2819,18 +3155,18 @@ sched_idletd(void *dummy)
 	THREAD_NO_SLEEPING();
 	oldswitchcnt = -1;
 	for (;;) {
-		if (tdq->tdq_load) {
+		if (TDQ_LOAD(tdq)) {
 			thread_lock(td);
 			mi_switch(SW_VOL | SWT_IDLE);
 		}
-		switchcnt = tdq->tdq_switchcnt + tdq->tdq_oldswitchcnt;
+		switchcnt = TDQ_SWITCHCNT(tdq);
 #ifdef SMP
 		if (always_steal || switchcnt != oldswitchcnt) {
 			oldswitchcnt = switchcnt;
 			if (tdq_idled(tdq) == 0)
 				continue;
 		}
-		switchcnt = tdq->tdq_switchcnt + tdq->tdq_oldswitchcnt;
+		switchcnt = TDQ_SWITCHCNT(tdq);
 #else
 		oldswitchcnt = switchcnt;
 #endif
@@ -2843,23 +3179,23 @@ sched_idletd(void *dummy)
 		 */
 		if (TDQ_IDLESPIN(tdq) && switchcnt > sched_idlespinthresh) {
 			for (i = 0; i < sched_idlespins; i++) {
-				if (tdq->tdq_load)
+				if (TDQ_LOAD(tdq))
 					break;
 				cpu_spinwait();
 			}
 		}
 
 		/* If there was context switch during spin, restart it. */
-		switchcnt = tdq->tdq_switchcnt + tdq->tdq_oldswitchcnt;
-		if (tdq->tdq_load != 0 || switchcnt != oldswitchcnt)
+		switchcnt = TDQ_SWITCHCNT(tdq);
+		if (TDQ_LOAD(tdq) != 0 || switchcnt != oldswitchcnt)
 			continue;
 
 		/* Run main MD idle handler. */
-		tdq->tdq_cpu_idle = 1;
+		atomic_store_int(&tdq->tdq_cpu_idle, 1);
 		/*
-		 * Make sure that tdq_cpu_idle update is globally visible
-		 * before cpu_idle() read tdq_load.  The order is important
-		 * to avoid race with tdq_notify.
+		 * Make sure that the tdq_cpu_idle update is globally visible
+		 * before cpu_idle() reads tdq_load.  The order is important
+		 * to avoid races with tdq_notify().
 		 */
 		atomic_thread_fence_seq_cst();
 		/*
@@ -2867,27 +3203,76 @@ sched_idletd(void *dummy)
 		 * threads often enough to make it worthwhile to do so in
 		 * order to avoid calling cpu_idle().
 		 */
-		if (tdq->tdq_load != 0) {
-			tdq->tdq_cpu_idle = 0;
+		if (TDQ_LOAD(tdq) != 0) {
+			atomic_store_int(&tdq->tdq_cpu_idle, 0);
 			continue;
 		}
 		cpu_idle(switchcnt * 4 > sched_idlespinthresh);
-		tdq->tdq_cpu_idle = 0;
+		atomic_store_int(&tdq->tdq_cpu_idle, 0);
 
 		/*
 		 * Account thread-less hardware interrupts and
 		 * other wakeup reasons equal to context switches.
 		 */
-		switchcnt = tdq->tdq_switchcnt + tdq->tdq_oldswitchcnt;
+		switchcnt = TDQ_SWITCHCNT(tdq);
 		if (switchcnt != oldswitchcnt)
 			continue;
-		tdq->tdq_switchcnt++;
+		TDQ_SWITCHCNT_INC(tdq);
 		oldswitchcnt++;
 	}
 }
 
 /*
- * A CPU is entering for the first time or a thread is exiting.
+ * sched_throw_grab() chooses a thread from the queue to switch to
+ * next.  It returns with the tdq lock dropped in a spinlock section to
+ * keep interrupts disabled until the CPU is running in a proper threaded
+ * context.
+ */
+static struct thread *
+sched_throw_grab(struct tdq *tdq)
+{
+	struct thread *newtd;
+
+	newtd = choosethread();
+	spinlock_enter();
+	TDQ_UNLOCK(tdq);
+	KASSERT(curthread->td_md.md_spinlock_count == 1,
+	    ("invalid count %d", curthread->td_md.md_spinlock_count));
+	return (newtd);
+}
+
+/*
+ * A CPU is entering for the first time.
+ */
+void
+sched_ap_entry(void)
+{
+	struct thread *newtd;
+	struct tdq *tdq;
+
+	tdq = TDQ_SELF();
+
+	/* This should have been setup in schedinit_ap(). */
+	THREAD_LOCKPTR_ASSERT(curthread, TDQ_LOCKPTR(tdq));
+
+	TDQ_LOCK(tdq);
+	/* Correct spinlock nesting. */
+	spinlock_exit();
+	PCPU_SET(switchtime, cpu_ticks());
+	PCPU_SET(switchticks, ticks);
+
+	newtd = sched_throw_grab(tdq);
+
+#ifdef HWT_HOOKS
+	HWT_CALL_HOOK(newtd, HWT_SWITCH_IN, NULL);
+#endif
+
+	/* doesn't return */
+	cpu_throw(NULL, newtd);
+}
+
+/*
+ * A thread is exiting.
  */
 void
 sched_throw(struct thread *td)
@@ -2895,36 +3280,25 @@ sched_throw(struct thread *td)
 	struct thread *newtd;
 	struct tdq *tdq;
 
-	if (__predict_false(td == NULL)) {
-#ifdef SMP
-		PCPU_SET(sched, DPCPU_PTR(tdq));
+	tdq = TDQ_SELF();
+
+	MPASS(td != NULL);
+	THREAD_LOCK_ASSERT(td, MA_OWNED);
+	THREAD_LOCKPTR_ASSERT(td, TDQ_LOCKPTR(tdq));
+
+	tdq_load_rem(tdq, td);
+	td->td_lastcpu = td->td_oncpu;
+	td->td_oncpu = NOCPU;
+	thread_lock_block(td);
+
+	newtd = sched_throw_grab(tdq);
+
+#ifdef HWT_HOOKS
+	HWT_CALL_HOOK(newtd, HWT_SWITCH_IN, NULL);
 #endif
-		/* Correct spinlock nesting and acquire the correct lock. */
-		tdq = TDQ_SELF();
-		TDQ_LOCK(tdq);
-		spinlock_exit();
-		PCPU_SET(switchtime, cpu_ticks());
-		PCPU_SET(switchticks, ticks);
-		PCPU_GET(idlethread)->td_lock = TDQ_LOCKPTR(tdq);
-	} else {
-		tdq = TDQ_SELF();
-		THREAD_LOCK_ASSERT(td, MA_OWNED);
-		THREAD_LOCKPTR_ASSERT(td, TDQ_LOCKPTR(tdq));
-		tdq_load_rem(tdq, td);
-		td->td_lastcpu = td->td_oncpu;
-		td->td_oncpu = NOCPU;
-		thread_lock_block(td);
-	}
-	newtd = choosethread();
-	spinlock_enter();
-	TDQ_UNLOCK(tdq);
-	KASSERT(curthread->td_md.md_spinlock_count == 1,
-	    ("invalid count %d", curthread->td_md.md_spinlock_count));
+
 	/* doesn't return */
-	if (__predict_false(td == NULL))
-		cpu_throw(td, newtd);		/* doesn't return */
-	else
-		cpu_switch(td, newtd, TDQ_LOCKPTR(tdq));
+	cpu_switch(td, newtd, TDQ_LOCKPTR(tdq));
 }
 
 /*
@@ -2955,7 +3329,7 @@ sched_fork_exit(struct thread *td)
 }
 
 /*
- * Create on first use to catch odd startup conditons.
+ * Create on first use to catch odd startup conditions.
  */
 char *
 sched_tdname(struct thread *td)
@@ -3002,26 +3376,28 @@ sysctl_kern_sched_topology_spec_internal(struct sbuf *sb, struct cpu_group *cg,
 	sbuf_printf(sb, "%*s <cpu count=\"%d\" mask=\"%s\">", indent, "",
 	    cg->cg_count, cpusetobj_strprint(cpusetbuf, &cg->cg_mask));
 	first = TRUE;
-	for (i = 0; i < MAXCPU; i++) {
+	for (i = cg->cg_first; i <= cg->cg_last; i++) {
 		if (CPU_ISSET(i, &cg->cg_mask)) {
 			if (!first)
-				sbuf_printf(sb, ", ");
+				sbuf_cat(sb, ", ");
 			else
 				first = FALSE;
 			sbuf_printf(sb, "%d", i);
 		}
 	}
-	sbuf_printf(sb, "</cpu>\n");
+	sbuf_cat(sb, "</cpu>\n");
 
 	if (cg->cg_flags != 0) {
 		sbuf_printf(sb, "%*s <flags>", indent, "");
 		if ((cg->cg_flags & CG_FLAG_HTT) != 0)
-			sbuf_printf(sb, "<flag name=\"HTT\">HTT group</flag>");
+			sbuf_cat(sb, "<flag name=\"HTT\">HTT group</flag>");
 		if ((cg->cg_flags & CG_FLAG_THREAD) != 0)
-			sbuf_printf(sb, "<flag name=\"THREAD\">THREAD group</flag>");
+			sbuf_cat(sb, "<flag name=\"THREAD\">THREAD group</flag>");
 		if ((cg->cg_flags & CG_FLAG_SMT) != 0)
-			sbuf_printf(sb, "<flag name=\"SMT\">SMT group</flag>");
-		sbuf_printf(sb, "</flags>\n");
+			sbuf_cat(sb, "<flag name=\"SMT\">SMT group</flag>");
+		if ((cg->cg_flags & CG_FLAG_NODE) != 0)
+			sbuf_cat(sb, "<flag name=\"NODE\">NUMA node</flag>");
+		sbuf_cat(sb, "</flags>\n");
 	}
 
 	if (cg->cg_children > 0) {
@@ -3051,9 +3427,9 @@ sysctl_kern_sched_topology_spec(SYSCTL_HANDLER_ARGS)
 	if (topo == NULL)
 		return (ENOMEM);
 
-	sbuf_printf(topo, "<groups>\n");
+	sbuf_cat(topo, "<groups>\n");
 	err = sysctl_kern_sched_topology_spec_internal(topo, cpu_top, 1);
-	sbuf_printf(topo, "</groups>\n");
+	sbuf_cat(topo, "</groups>\n");
 
 	if (err == 0) {
 		err = sbuf_finish(topo);
@@ -3093,14 +3469,14 @@ SYSCTL_PROC(_kern_sched, OID_AUTO, quantum,
     "Quantum for timeshare threads in microseconds");
 SYSCTL_INT(_kern_sched, OID_AUTO, slice, CTLFLAG_RW, &sched_slice, 0,
     "Quantum for timeshare threads in stathz ticks");
-SYSCTL_INT(_kern_sched, OID_AUTO, interact, CTLFLAG_RW, &sched_interact, 0,
+SYSCTL_UINT(_kern_sched, OID_AUTO, interact, CTLFLAG_RWTUN, &sched_interact, 0,
     "Interactivity score threshold");
-SYSCTL_INT(_kern_sched, OID_AUTO, preempt_thresh, CTLFLAG_RW,
+SYSCTL_INT(_kern_sched, OID_AUTO, preempt_thresh, CTLFLAG_RWTUN,
     &preempt_thresh, 0,
     "Maximal (lowest) priority for preemption");
-SYSCTL_INT(_kern_sched, OID_AUTO, static_boost, CTLFLAG_RW, &static_boost, 0,
+SYSCTL_INT(_kern_sched, OID_AUTO, static_boost, CTLFLAG_RWTUN, &static_boost, 0,
     "Assign static kernel priorities to sleeping threads");
-SYSCTL_INT(_kern_sched, OID_AUTO, idlespins, CTLFLAG_RW, &sched_idlespins, 0,
+SYSCTL_INT(_kern_sched, OID_AUTO, idlespins, CTLFLAG_RWTUN, &sched_idlespins, 0,
     "Number of times idle thread will spin waiting for new work");
 SYSCTL_INT(_kern_sched, OID_AUTO, idlespinthresh, CTLFLAG_RW,
     &sched_idlespinthresh, 0,
@@ -3108,18 +3484,19 @@ SYSCTL_INT(_kern_sched, OID_AUTO, idlespinthresh, CTLFLAG_RW,
 #ifdef SMP
 SYSCTL_INT(_kern_sched, OID_AUTO, affinity, CTLFLAG_RW, &affinity, 0,
     "Number of hz ticks to keep thread affinity for");
-SYSCTL_INT(_kern_sched, OID_AUTO, balance, CTLFLAG_RW, &rebalance, 0,
+SYSCTL_INT(_kern_sched, OID_AUTO, balance, CTLFLAG_RWTUN, &rebalance, 0,
     "Enables the long-term load balancer");
 SYSCTL_INT(_kern_sched, OID_AUTO, balance_interval, CTLFLAG_RW,
     &balance_interval, 0,
     "Average period in stathz ticks to run the long-term balancer");
-SYSCTL_INT(_kern_sched, OID_AUTO, steal_idle, CTLFLAG_RW, &steal_idle, 0,
+SYSCTL_INT(_kern_sched, OID_AUTO, steal_idle, CTLFLAG_RWTUN, &steal_idle, 0,
     "Attempts to steal work from other cores before idling");
-SYSCTL_INT(_kern_sched, OID_AUTO, steal_thresh, CTLFLAG_RW, &steal_thresh, 0,
+SYSCTL_INT(_kern_sched, OID_AUTO, steal_thresh, CTLFLAG_RWTUN, &steal_thresh, 0,
     "Minimum load on remote CPU before we'll steal");
-SYSCTL_INT(_kern_sched, OID_AUTO, trysteal_limit, CTLFLAG_RW, &trysteal_limit,
-    0, "Topological distance limit for stealing threads in sched_switch()");
-SYSCTL_INT(_kern_sched, OID_AUTO, always_steal, CTLFLAG_RW, &always_steal, 0,
+SYSCTL_INT(_kern_sched, OID_AUTO, trysteal_limit, CTLFLAG_RWTUN,
+    &trysteal_limit, 0,
+    "Topological distance limit for stealing threads in sched_switch()");
+SYSCTL_INT(_kern_sched, OID_AUTO, always_steal, CTLFLAG_RWTUN, &always_steal, 0,
     "Always run the stealer from the idle thread");
 SYSCTL_PROC(_kern_sched, OID_AUTO, topology_spec, CTLTYPE_STRING |
     CTLFLAG_MPSAFE | CTLFLAG_RD, NULL, 0, sysctl_kern_sched_topology_spec, "A",

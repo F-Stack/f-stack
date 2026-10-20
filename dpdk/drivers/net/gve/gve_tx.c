@@ -255,10 +255,10 @@ gve_tx_burst_qpl(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct rte_mbuf **sw_ring = txq->sw_ring;
 	uint16_t mask = txq->nb_tx_desc - 1;
 	uint16_t tx_id = txq->tx_tail & mask;
-	uint64_t ol_flags, addr, fifo_addr;
 	uint32_t tx_tail = txq->tx_tail;
 	struct rte_mbuf *tx_pkt, *first;
 	uint16_t sw_id = txq->sw_tail;
+	uint64_t ol_flags, fifo_addr;
 	uint16_t nb_used, i;
 	uint64_t bytes = 0;
 	uint16_t nb_tx = 0;
@@ -273,6 +273,9 @@ gve_tx_burst_qpl(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		gve_tx_clean_swr_qpl(txq);
 
 	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
+		const void *mbuf_header_addr;
+		void *qpl_write_addr;
+
 		tx_pkt = *tx_pkts++;
 		ol_flags = tx_pkt->ol_flags;
 
@@ -301,13 +304,11 @@ gve_tx_burst_qpl(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			(uint32_t)(tx_offload.l2_len + tx_offload.l3_len + tx_offload.l4_len) :
 			tx_pkt->pkt_len;
 
-		sw_ring[sw_id] = tx_pkt;
 		if (!is_fifo_avail(txq, hlen)) {
 			gve_tx_clean(txq);
 			if (!is_fifo_avail(txq, hlen))
 				goto end_of_tx;
 		}
-		addr = (uint64_t)(tx_pkt->buf_addr) + tx_pkt->data_off;
 		fifo_addr = gve_tx_alloc_from_fifo(txq, tx_id, hlen);
 
 		/* For TSO, check if there's enough fifo space for data first */
@@ -318,39 +319,46 @@ gve_tx_burst_qpl(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 					goto end_of_tx;
 			}
 		}
-		if (tx_pkt->nb_segs == 1 || ol_flags & RTE_MBUF_F_TX_TCP_SEG)
-			rte_memcpy((void *)(size_t)(fifo_addr + txq->fifo_base),
-				   (void *)(size_t)addr, hlen);
-		else
-			rte_pktmbuf_read(tx_pkt, 0, hlen,
-					 (void *)(size_t)(fifo_addr + txq->fifo_base));
+
+		qpl_write_addr = (void *)(size_t)(fifo_addr + txq->fifo_base);
+		mbuf_header_addr = rte_pktmbuf_read(tx_pkt, 0, hlen, qpl_write_addr);
+
+		/* Header data is linear in the mbuf head. Copy directly. */
+		if (mbuf_header_addr != qpl_write_addr)
+			rte_memcpy(qpl_write_addr, mbuf_header_addr, hlen);
+
 		gve_tx_fill_pkt_desc(txd, tx_pkt, nb_used, hlen, fifo_addr);
 
 		if (ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+			const void *mbuf_payload_addr;
+
 			tx_id = (tx_id + 1) & mask;
 			txd = &txr[tx_id];
-			addr = (uint64_t)(tx_pkt->buf_addr) + tx_pkt->data_off + hlen;
 			fifo_addr = gve_tx_alloc_from_fifo(txq, tx_id, tx_pkt->pkt_len - hlen);
-			if (tx_pkt->nb_segs == 1)
-				rte_memcpy((void *)(size_t)(fifo_addr + txq->fifo_base),
-					   (void *)(size_t)addr,
+			qpl_write_addr = (void *)(size_t)(txq->fifo_base + fifo_addr);
+			mbuf_payload_addr = rte_pktmbuf_read(tx_pkt, hlen, tx_pkt->pkt_len - hlen,
+							     qpl_write_addr);
+
+			/* Payload data is contiguous. Take the offset from the
+			 * read request and copy from there.
+			 */
+			if (mbuf_payload_addr != qpl_write_addr)
+				rte_memcpy(qpl_write_addr, mbuf_payload_addr,
 					   tx_pkt->pkt_len - hlen);
-			else
-				rte_pktmbuf_read(tx_pkt, hlen, tx_pkt->pkt_len - hlen,
-						 (void *)(size_t)(fifo_addr + txq->fifo_base));
 
 			gve_tx_fill_seg_desc(txd, ol_flags, tx_offload,
 					     tx_pkt->pkt_len - hlen, fifo_addr);
 		}
 
 		/* record mbuf in sw_ring for free */
-		for (i = 1; i < first->nb_segs; i++) {
+		for (i = 0; i < first->nb_segs; i++) {
+			if (!tx_pkt)
+				break;
+			sw_ring[sw_id] = tx_pkt;
 			sw_id = (sw_id + 1) & mask;
 			tx_pkt = tx_pkt->next;
-			sw_ring[sw_id] = tx_pkt;
 		}
 
-		sw_id = (sw_id + 1) & mask;
 		tx_id = (tx_id + 1) & mask;
 
 		txq->nb_free -= nb_used;
@@ -536,7 +544,7 @@ gve_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid)
 		return;
 
 	if (q->is_gqi_qpl) {
-		gve_adminq_unregister_page_list(q->hw, q->qpl->id);
+		gve_teardown_queue_page_list(q->hw, q->qpl);
 		rte_free(q->iov_ring);
 		q->qpl = NULL;
 	}
@@ -559,11 +567,12 @@ gve_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id, uint16_t nb_desc,
 	uint16_t free_thresh;
 	int err = 0;
 
-	if (nb_desc != hw->tx_desc_cnt) {
-		PMD_DRV_LOG(WARNING, "gve doesn't support nb_desc config, use hw nb_desc %u.",
-			    hw->tx_desc_cnt);
+	/* Ring size is required to be a power of two. */
+	if (!rte_is_power_of_2(nb_desc)) {
+		PMD_DRV_LOG(ERR, "Invalid ring size %u. GVE ring size must be a power of 2.",
+			    nb_desc);
+		return -EINVAL;
 	}
-	nb_desc = hw->tx_desc_cnt;
 
 	/* Free memory if needed. */
 	if (dev->data->tx_queues[queue_id]) {
@@ -619,6 +628,7 @@ gve_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id, uint16_t nb_desc,
 	txq->tx_ring_phys_addr = mz->iova;
 	txq->mz = mz;
 
+	/* QPL-specific allocations. */
 	if (txq->is_gqi_qpl) {
 		txq->iov_ring = rte_zmalloc_socket("gve tx iov ring",
 						   sizeof(struct gve_tx_iovec) * nb_desc,
@@ -628,10 +638,13 @@ gve_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id, uint16_t nb_desc,
 			err = -ENOMEM;
 			goto err_tx_ring;
 		}
-		txq->qpl = &hw->qpl[queue_id];
-		err = gve_adminq_register_page_list(hw, txq->qpl);
-		if (err != 0) {
-			PMD_DRV_LOG(ERR, "Failed to register qpl %u", queue_id);
+
+		txq->qpl = gve_setup_queue_page_list(hw, queue_id, false,
+						     hw->tx_pages_per_qpl);
+		if (!txq->qpl) {
+			err = -ENOMEM;
+			PMD_DRV_LOG(ERR, "Failed to alloc tx qpl for queue %hu.",
+				    queue_id);
 			goto err_iov_ring;
 		}
 	}
@@ -641,7 +654,7 @@ gve_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id, uint16_t nb_desc,
 	if (mz == NULL) {
 		PMD_DRV_LOG(ERR, "Failed to reserve DMA memory for TX resource");
 		err = -ENOMEM;
-		goto err_iov_ring;
+		goto err_qpl;
 	}
 	txq->qres = (struct gve_queue_resources *)mz->addr;
 	txq->qres_mz = mz;
@@ -651,7 +664,11 @@ gve_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_id, uint16_t nb_desc,
 	dev->data->tx_queues[queue_id] = txq;
 
 	return 0;
-
+err_qpl:
+	if (txq->is_gqi_qpl) {
+		gve_teardown_queue_page_list(hw, txq->qpl);
+		txq->qpl = NULL;
+	}
 err_iov_ring:
 	if (txq->is_gqi_qpl)
 		rte_free(txq->iov_ring);

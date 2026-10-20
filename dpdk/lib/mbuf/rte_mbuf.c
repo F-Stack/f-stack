@@ -20,6 +20,10 @@
 #include <rte_errno.h>
 #include <rte_memcpy.h>
 
+#include "mbuf_log.h"
+
+RTE_LOG_REGISTER_DEFAULT(mbuf_logtype, INFO);
+
 /*
  * pktmbuf pool constructor, given as a callback function to
  * rte_mempool_create(), or called directly if using
@@ -227,7 +231,7 @@ rte_pktmbuf_pool_create_by_ops(const char *name, unsigned int n,
 	int ret;
 
 	if (RTE_ALIGN(priv_size, RTE_MBUF_PRIV_ALIGN) != priv_size) {
-		RTE_LOG(ERR, MBUF, "mbuf priv_size=%u is not aligned\n",
+		MBUF_LOG(ERR, "mbuf priv_size=%u is not aligned",
 			priv_size);
 		rte_errno = EINVAL;
 		return NULL;
@@ -247,7 +251,7 @@ rte_pktmbuf_pool_create_by_ops(const char *name, unsigned int n,
 		mp_ops_name = rte_mbuf_best_mempool_ops();
 	ret = rte_mempool_set_ops_byname(mp, mp_ops_name, NULL);
 	if (ret != 0) {
-		RTE_LOG(ERR, MBUF, "error setting mempool handler\n");
+		MBUF_LOG(ERR, "error setting mempool handler");
 		rte_mempool_free(mp);
 		rte_errno = -ret;
 		return NULL;
@@ -293,7 +297,7 @@ rte_pktmbuf_pool_create_extbuf(const char *name, unsigned int n,
 	int ret;
 
 	if (RTE_ALIGN(priv_size, RTE_MBUF_PRIV_ALIGN) != priv_size) {
-		RTE_LOG(ERR, MBUF, "mbuf priv_size=%u is not aligned\n",
+		MBUF_LOG(ERR, "mbuf priv_size=%u is not aligned",
 			priv_size);
 		rte_errno = EINVAL;
 		return NULL;
@@ -303,12 +307,12 @@ rte_pktmbuf_pool_create_extbuf(const char *name, unsigned int n,
 		const struct rte_pktmbuf_extmem *extm = ext_mem + i;
 
 		if (!extm->elt_size || !extm->buf_len || !extm->buf_ptr) {
-			RTE_LOG(ERR, MBUF, "invalid extmem descriptor\n");
+			MBUF_LOG(ERR, "invalid extmem descriptor");
 			rte_errno = EINVAL;
 			return NULL;
 		}
 		if (data_room_size > extm->elt_size) {
-			RTE_LOG(ERR, MBUF, "ext elt_size=%u is too small\n",
+			MBUF_LOG(ERR, "ext elt_size=%u is too small",
 				priv_size);
 			rte_errno = EINVAL;
 			return NULL;
@@ -317,7 +321,7 @@ rte_pktmbuf_pool_create_extbuf(const char *name, unsigned int n,
 	}
 	/* Check whether enough external memory provided. */
 	if (n_elts < n) {
-		RTE_LOG(ERR, MBUF, "not enough extmem\n");
+		MBUF_LOG(ERR, "not enough extmem");
 		rte_errno = ENOMEM;
 		return NULL;
 	}
@@ -338,7 +342,7 @@ rte_pktmbuf_pool_create_extbuf(const char *name, unsigned int n,
 	mp_ops_name = rte_mbuf_best_mempool_ops();
 	ret = rte_mempool_set_ops_byname(mp, mp_ops_name, NULL);
 	if (ret != 0) {
-		RTE_LOG(ERR, MBUF, "error setting mempool handler\n");
+		MBUF_LOG(ERR, "error setting mempool handler");
 		rte_mempool_free(mp);
 		rte_errno = -ret;
 		return NULL;
@@ -595,7 +599,7 @@ rte_pktmbuf_copy(const struct rte_mbuf *m, struct rte_mempool *mp,
 	__rte_mbuf_sanity_check(m, 1);
 
 	/* check for request to copy at offset past end of mbuf */
-	if (unlikely(off >= m->pkt_len))
+	if (unlikely(off > m->pkt_len))
 		return NULL;
 
 	mc = rte_pktmbuf_alloc(mp);
@@ -608,8 +612,12 @@ rte_pktmbuf_copy(const struct rte_mbuf *m, struct rte_mempool *mp,
 
 	__rte_pktmbuf_copy_hdr(mc, m);
 
-	/* copied mbuf is not indirect or external */
-	mc->ol_flags = m->ol_flags & ~(RTE_MBUF_F_INDIRECT|RTE_MBUF_F_EXTERNAL);
+	/*
+	 * copy flags except indirect and external,
+	 * while preserving flags of newly allocated mbuf
+	 * (specifically RTE_MBUF_F_EXTERNAL if using pinned external buffer)
+	 */
+	mc->ol_flags |= m->ol_flags & ~(RTE_MBUF_F_INDIRECT | RTE_MBUF_F_EXTERNAL);
 
 	prev = &mc->next;
 	m_last = mc;
@@ -709,7 +717,7 @@ const void *__rte_pktmbuf_read(const struct rte_mbuf *m, uint32_t off,
 	const struct rte_mbuf *seg = m;
 	uint32_t buf_off = 0, copy_len;
 
-	if (off + len > rte_pktmbuf_pkt_len(m))
+	if ((uint64_t)off + len > rte_pktmbuf_pkt_len(m))
 		return NULL;
 
 	while (off >= rte_pktmbuf_data_len(seg)) {

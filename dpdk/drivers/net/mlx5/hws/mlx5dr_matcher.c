@@ -198,6 +198,18 @@ static int mlx5dr_matcher_connect(struct mlx5dr_matcher *matcher)
 	struct mlx5dr_matcher *tmp_matcher;
 	int ret;
 
+	if (matcher->attr.isolated) {
+		LIST_INSERT_HEAD(&tbl->isolated_matchers, matcher, next);
+		ret = mlx5dr_table_connect_src_ft_to_miss_table(tbl, matcher->end_ft,
+								tbl->default_miss.miss_tbl);
+		if (ret) {
+			DR_LOG(ERR, "Failed to connect the new matcher to the miss_tbl");
+			goto remove_from_list;
+		}
+
+		return 0;
+	}
+
 	/* Find location in matcher list */
 	if (LIST_EMPTY(&tbl->head)) {
 		LIST_INSERT_HEAD(&tbl->head, matcher, next);
@@ -230,7 +242,7 @@ connect:
 		}
 	} else {
 		/* Connect last matcher to next miss_tbl if exists */
-		ret = mlx5dr_table_connect_to_miss_table(tbl, tbl->default_miss.miss_tbl);
+		ret = mlx5dr_table_connect_to_miss_table(tbl, tbl->default_miss.miss_tbl, true);
 		if (ret) {
 			DR_LOG(ERR, "Failed connect new matcher to miss_tbl");
 			goto remove_from_list;
@@ -284,6 +296,11 @@ static int mlx5dr_matcher_disconnect(struct mlx5dr_matcher *matcher)
 	struct mlx5dr_matcher *next;
 	int ret;
 
+	if (matcher->attr.isolated) {
+		LIST_REMOVE(matcher, next);
+		return 0;
+	}
+
 	prev_ft = tbl->ft;
 	prev_matcher = LIST_FIRST(&tbl->head);
 	LIST_FOREACH(tmp_matcher, &tbl->head, next) {
@@ -309,7 +326,7 @@ static int mlx5dr_matcher_disconnect(struct mlx5dr_matcher *matcher)
 			goto matcher_reconnect;
 		}
 	} else {
-		ret = mlx5dr_table_connect_to_miss_table(tbl, tbl->default_miss.miss_tbl);
+		ret = mlx5dr_table_connect_to_miss_table(tbl, tbl->default_miss.miss_tbl, true);
 		if (ret) {
 			DR_LOG(ERR, "Failed to disconnect last matcher");
 			goto matcher_reconnect;
@@ -485,6 +502,7 @@ static int mlx5dr_matcher_create_rtc(struct mlx5dr_matcher *matcher,
 		rtc_attr.log_depth = attr->table.sz_col_log;
 		rtc_attr.is_frst_jumbo = mlx5dr_matcher_mt_is_jumbo(mt);
 		rtc_attr.is_scnd_range = mlx5dr_matcher_mt_is_range(mt);
+		rtc_attr.is_compare = mlx5dr_matcher_is_compare(matcher);
 		rtc_attr.miss_ft_id = matcher->end_ft->id;
 
 		if (attr->insert_mode == MLX5DR_MATCHER_INSERT_BY_HASH) {
@@ -497,6 +515,10 @@ static int mlx5dr_matcher_create_rtc(struct mlx5dr_matcher *matcher,
 				rtc_attr.num_hash_definer = 1;
 				rtc_attr.match_definer_0 =
 					mlx5dr_definer_get_id(matcher->hash_definer);
+			} else if (mlx5dr_matcher_is_compare(matcher)) {
+				rtc_attr.match_definer_0 = ctx->caps->trivial_match_definer;
+				rtc_attr.fw_gen_wqe = true;
+				rtc_attr.num_hash_definer = 1;
 			} else {
 				/* The first mt is used since all share the same definer */
 				rtc_attr.match_definer_0 = mlx5dr_definer_get_id(mt->definer);
@@ -513,14 +535,17 @@ static int mlx5dr_matcher_create_rtc(struct mlx5dr_matcher *matcher,
 			}
 		} else if (attr->insert_mode == MLX5DR_MATCHER_INSERT_BY_INDEX) {
 			rtc_attr.update_index_mode = MLX5_IFC_RTC_STE_UPDATE_MODE_BY_OFFSET;
-			rtc_attr.num_hash_definer = 1;
 
 			if (attr->distribute_mode == MLX5DR_MATCHER_DISTRIBUTE_BY_HASH) {
 				/* Hash Split Table */
+				if (mlx5dr_matcher_is_always_hit(matcher))
+					rtc_attr.num_hash_definer = 1;
+
 				rtc_attr.access_index_mode = MLX5_IFC_RTC_STE_ACCESS_MODE_BY_HASH;
 				rtc_attr.match_definer_0 = mlx5dr_definer_get_id(mt->definer);
 			} else if (attr->distribute_mode == MLX5DR_MATCHER_DISTRIBUTE_BY_LINEAR) {
 				/* Linear Lookup Table */
+				rtc_attr.num_hash_definer = 1;
 				rtc_attr.access_index_mode = MLX5_IFC_RTC_STE_ACCESS_MODE_LINEAR;
 				rtc_attr.match_definer_0 = ctx->caps->linear_match_definer;
 			}
@@ -686,12 +711,16 @@ static int mlx5dr_matcher_check_and_process_at(struct mlx5dr_matcher *matcher,
 	bool valid;
 	int ret;
 
-	/* Check if action combinabtion is valid */
-	valid = mlx5dr_action_check_combo(at->action_type_arr, matcher->tbl->type);
-	if (!valid) {
-		DR_LOG(ERR, "Invalid combination in action template");
-		rte_errno = EINVAL;
-		return rte_errno;
+	if (!(at->flags & MLX5DR_ACTION_TEMPLATE_FLAG_RELAXED_ORDER)) {
+		/* Check if actions combinabtion is valid,
+		 * in the case of not relaxed actions order.
+		 */
+		valid = mlx5dr_action_check_combo(at->action_type_arr, matcher->tbl->type);
+		if (!valid) {
+			DR_LOG(ERR, "Invalid combination in action template");
+			rte_errno = EINVAL;
+			return rte_errno;
+		}
 	}
 
 	/* Process action template to setters */
@@ -702,6 +731,69 @@ static int mlx5dr_matcher_check_and_process_at(struct mlx5dr_matcher *matcher,
 	}
 
 	return 0;
+}
+
+static int
+mlx5dr_matcher_resize_init(struct mlx5dr_matcher *src_matcher)
+{
+	struct mlx5dr_matcher_resize_data *resize_data;
+
+	resize_data = simple_calloc(1, sizeof(*resize_data));
+	if (!resize_data) {
+		rte_errno = ENOMEM;
+		return rte_errno;
+	}
+
+	resize_data->max_stes = src_matcher->action_ste.max_stes;
+	resize_data->ste = src_matcher->action_ste.ste;
+	resize_data->stc = src_matcher->action_ste.stc;
+	resize_data->action_ste_rtc_0 = src_matcher->action_ste.rtc_0;
+	resize_data->action_ste_rtc_1 = src_matcher->action_ste.rtc_1;
+	resize_data->action_ste_pool = src_matcher->action_ste.max_stes ?
+				       src_matcher->action_ste.pool :
+				       NULL;
+
+	/* Place the new resized matcher on the dst matcher's list */
+	LIST_INSERT_HEAD(&src_matcher->resize_dst->resize_data,
+			 resize_data, next);
+
+	/* Move all the previous resized matchers to the dst matcher's list */
+	while (!LIST_EMPTY(&src_matcher->resize_data)) {
+		resize_data = LIST_FIRST(&src_matcher->resize_data);
+		LIST_REMOVE(resize_data, next);
+		LIST_INSERT_HEAD(&src_matcher->resize_dst->resize_data,
+				 resize_data, next);
+	}
+
+	return 0;
+}
+
+static void
+mlx5dr_matcher_resize_uninit(struct mlx5dr_matcher *matcher)
+{
+	struct mlx5dr_matcher_resize_data *resize_data;
+
+	if (!mlx5dr_matcher_is_resizable(matcher))
+		return;
+
+	while (!LIST_EMPTY(&matcher->resize_data)) {
+		resize_data = LIST_FIRST(&matcher->resize_data);
+		LIST_REMOVE(resize_data, next);
+
+		if (resize_data->max_stes) {
+			mlx5dr_action_free_single_stc(matcher->tbl->ctx,
+						matcher->tbl->type,
+						&resize_data->stc);
+
+			if (matcher->tbl->type == MLX5DR_TABLE_TYPE_FDB)
+				mlx5dr_cmd_destroy_obj(resize_data->action_ste_rtc_1);
+			mlx5dr_cmd_destroy_obj(resize_data->action_ste_rtc_0);
+			if (resize_data->action_ste_pool)
+				mlx5dr_pool_destroy(resize_data->action_ste_pool);
+		}
+
+		simple_free(resize_data);
+	}
 }
 
 static int mlx5dr_matcher_bind_at(struct mlx5dr_matcher *matcher)
@@ -716,6 +808,13 @@ static int mlx5dr_matcher_bind_at(struct mlx5dr_matcher *matcher)
 
 	if (matcher->flags & MLX5DR_MATCHER_FLAGS_COLLISION)
 		return 0;
+
+	if (matcher->attr.max_num_of_at_attach &&
+	    mlx5dr_matcher_req_fw_wqe(matcher)) {
+		DR_LOG(ERR, "FW extended matcher doesn't support additional at");
+		rte_errno = ENOTSUP;
+		return rte_errno;
+	}
 
 	for (i = 0; i < matcher->num_of_at; i++) {
 		struct mlx5dr_action_template *at = &matcher->at[i];
@@ -790,7 +889,9 @@ static void mlx5dr_matcher_unbind_at(struct mlx5dr_matcher *matcher)
 {
 	struct mlx5dr_table *tbl = matcher->tbl;
 
-	if (!matcher->action_ste.max_stes || matcher->flags & MLX5DR_MATCHER_FLAGS_COLLISION)
+	if (!matcher->action_ste.max_stes ||
+	    matcher->flags & MLX5DR_MATCHER_FLAGS_COLLISION ||
+	    mlx5dr_matcher_is_in_resize(matcher))
 		return;
 
 	mlx5dr_action_free_single_stc(tbl->ctx, tbl->type, &matcher->action_ste.stc);
@@ -892,8 +993,15 @@ mlx5dr_matcher_validate_insert_mode(struct mlx5dr_cmd_query_caps *caps,
 
 		if (attr->distribute_mode == MLX5DR_MATCHER_DISTRIBUTE_BY_HASH) {
 			/* Hash Split Table */
-			if (!caps->rtc_hash_split_table) {
+			if (attr->match_mode == MLX5DR_MATCHER_MATCH_MODE_ALWAYS_HIT &&
+			    !caps->rtc_hash_split_table) {
 				DR_LOG(ERR, "FW doesn't support insert by index and hash distribute");
+				goto not_supported;
+			}
+
+			if (attr->match_mode == MLX5DR_MATCHER_MATCH_MODE_DEFAULT &&
+			    !attr->isolated) {
+				DR_LOG(ERR, "STE array matcher supported only as an isolated matcher");
 				goto not_supported;
 			}
 		} else if (attr->distribute_mode == MLX5DR_MATCHER_DISTRIBUTE_BY_LINEAR) {
@@ -908,6 +1016,12 @@ mlx5dr_matcher_validate_insert_mode(struct mlx5dr_cmd_query_caps *caps,
 			if (attr->table.sz_row_log > MLX5_IFC_RTC_LINEAR_LOOKUP_TBL_LOG_MAX) {
 				DR_LOG(ERR, "Matcher with linear distribute: rows exceed limit %d",
 				       MLX5_IFC_RTC_LINEAR_LOOKUP_TBL_LOG_MAX);
+				goto not_supported;
+			}
+
+			if (attr->match_mode != MLX5DR_MATCHER_MATCH_MODE_ALWAYS_HIT) {
+				DR_LOG(ERR, "Linear lookup tables will always hit, given match mode is not supported %d\n",
+				       attr->match_mode);
 				goto not_supported;
 			}
 		} else {
@@ -947,6 +1061,15 @@ mlx5dr_matcher_process_attr(struct mlx5dr_cmd_query_caps *caps,
 			DR_LOG(ERR, "Root matcher does not support at attaching");
 			goto not_supported;
 		}
+		if (attr->resizable) {
+			DR_LOG(ERR, "Root matcher does not support resizing");
+			goto not_supported;
+		}
+		if (attr->isolated) {
+			DR_LOG(ERR, "Root matcher can not be isolated");
+			goto not_supported;
+		}
+
 		return 0;
 	}
 
@@ -959,6 +1082,20 @@ mlx5dr_matcher_process_attr(struct mlx5dr_cmd_query_caps *caps,
 	if (attr->mode == MLX5DR_MATCHER_RESOURCE_MODE_RULE &&
 	    attr->insert_mode == MLX5DR_MATCHER_INSERT_BY_HASH)
 		attr->table.sz_col_log = mlx5dr_matcher_rules_to_tbl_depth(attr->rule.num_log);
+
+	if (attr->isolated) {
+		if (attr->insert_mode != MLX5DR_MATCHER_INSERT_BY_INDEX ||
+		    attr->distribute_mode != MLX5DR_MATCHER_DISTRIBUTE_BY_HASH ||
+		    attr->match_mode != MLX5DR_MATCHER_MATCH_MODE_DEFAULT) {
+			DR_LOG(ERR, "Isolated matcher only supported for STE array matcher");
+			goto not_supported;
+		}
+
+		/* We reach here only in case of STE array */
+		matcher->flags |= MLX5DR_MATCHER_FLAGS_STE_ARRAY;
+	}
+
+	matcher->flags |= attr->resizable ? MLX5DR_MATCHER_FLAGS_RESIZABLE : 0;
 
 	return mlx5dr_matcher_check_attr_sz(caps, attr);
 
@@ -1018,6 +1155,7 @@ unbind_mt:
 
 static void mlx5dr_matcher_destroy_and_disconnect(struct mlx5dr_matcher *matcher)
 {
+	mlx5dr_matcher_resize_uninit(matcher);
 	mlx5dr_matcher_disconnect(matcher);
 	mlx5dr_matcher_create_uninit_shared(matcher);
 	mlx5dr_matcher_destroy_rtc(matcher, DR_MATCHER_RTC_TYPE_MATCH);
@@ -1252,7 +1390,7 @@ int mlx5dr_matcher_attach_at(struct mlx5dr_matcher *matcher,
 	int ret;
 
 	if (!matcher->attr.max_num_of_at_attach) {
-		DR_LOG(ERR, "Num of current at (%d) exceed allowed value",
+		DR_LOG(DEBUG, "Num of current at (%d) exceed allowed value",
 		       matcher->num_of_at);
 		rte_errno = ENOTSUP;
 		return -rte_errno;
@@ -1264,7 +1402,7 @@ int mlx5dr_matcher_attach_at(struct mlx5dr_matcher *matcher,
 
 	required_stes = at->num_of_action_stes - (!is_jumbo || at->only_term);
 	if (matcher->action_ste.max_stes < required_stes) {
-		DR_LOG(ERR, "Required STEs [%d] exceeds initial action template STE [%d]",
+		DR_LOG(DEBUG, "Required STEs [%d] exceeds initial action template STE [%d]",
 		       required_stes, matcher->action_ste.max_stes);
 		rte_errno = ENOMEM;
 		return -rte_errno;
@@ -1458,4 +1596,192 @@ int mlx5dr_match_template_destroy(struct mlx5dr_match_template *mt)
 	simple_free(mt->items);
 	simple_free(mt);
 	return 0;
+}
+
+bool mlx5dr_matcher_is_updatable(struct mlx5dr_matcher *matcher)
+{
+	if (mlx5dr_table_is_root(matcher->tbl) ||
+	    mlx5dr_matcher_req_fw_wqe(matcher) ||
+	    mlx5dr_matcher_is_resizable(matcher) ||
+	    (!matcher->attr.optimize_using_rule_idx &&
+	    !mlx5dr_matcher_is_insert_by_idx(matcher)))
+		return false;
+
+	return true;
+}
+
+bool mlx5dr_matcher_is_dependent(struct mlx5dr_matcher *matcher)
+{
+	int i;
+
+	if (matcher->action_ste.max_stes || mlx5dr_matcher_req_fw_wqe(matcher))
+		return true;
+
+	for (i = 0; i < matcher->num_of_at; i++) {
+		struct mlx5dr_action_template *at = &matcher->at[i];
+
+		if (at->need_dep_write)
+			return true;
+	}
+
+	return false;
+}
+
+static int mlx5dr_matcher_resize_precheck(struct mlx5dr_matcher *src_matcher,
+					  struct mlx5dr_matcher *dst_matcher)
+{
+	int i;
+
+	if (mlx5dr_table_is_root(src_matcher->tbl) ||
+	    mlx5dr_table_is_root(dst_matcher->tbl)) {
+		DR_LOG(ERR, "Src/dst matcher belongs to root table - resize unsupported");
+		goto out_einval;
+	}
+
+	if (src_matcher->tbl->type != dst_matcher->tbl->type) {
+		DR_LOG(ERR, "Table type mismatch for src/dst matchers");
+		goto out_einval;
+	}
+
+	if (mlx5dr_matcher_req_fw_wqe(src_matcher) ||
+	    mlx5dr_matcher_req_fw_wqe(dst_matcher)) {
+		DR_LOG(ERR, "Matchers require FW WQE - resize unsupported");
+		goto out_einval;
+	}
+
+	if (!mlx5dr_matcher_is_resizable(src_matcher) ||
+	    !mlx5dr_matcher_is_resizable(dst_matcher)) {
+		DR_LOG(ERR, "Src/dst matcher is not resizable");
+		goto out_einval;
+	}
+
+	if (mlx5dr_matcher_is_insert_by_idx(src_matcher) !=
+	    mlx5dr_matcher_is_insert_by_idx(dst_matcher)) {
+		DR_LOG(ERR, "Src/dst matchers insert mode mismatch");
+		goto out_einval;
+	}
+
+	if (mlx5dr_matcher_is_in_resize(src_matcher) ||
+	    mlx5dr_matcher_is_in_resize(dst_matcher)) {
+		DR_LOG(ERR, "Src/dst matcher is already in resize");
+		goto out_einval;
+	}
+
+	/* Compare match templates - make sure the definers are equivalent */
+	if (src_matcher->num_of_mt != dst_matcher->num_of_mt) {
+		DR_LOG(ERR, "Src/dst matcher match templates mismatch");
+		goto out_einval;
+	}
+
+	if (src_matcher->action_ste.max_stes > dst_matcher->action_ste.max_stes) {
+		DR_LOG(ERR, "Src/dst matcher max STEs mismatch");
+		goto out_einval;
+	}
+
+	for (i = 0; i < src_matcher->num_of_mt; i++) {
+		if (mlx5dr_definer_compare(src_matcher->mt[i].definer,
+					   dst_matcher->mt[i].definer)) {
+			DR_LOG(ERR, "Src/dst matcher definers mismatch");
+			goto out_einval;
+		}
+	}
+
+	return 0;
+
+out_einval:
+	rte_errno = EINVAL;
+	return rte_errno;
+}
+
+int mlx5dr_matcher_resize_set_target(struct mlx5dr_matcher *src_matcher,
+				     struct mlx5dr_matcher *dst_matcher)
+{
+	int ret = 0;
+
+	pthread_spin_lock(&src_matcher->tbl->ctx->ctrl_lock);
+
+	if (mlx5dr_matcher_resize_precheck(src_matcher, dst_matcher)) {
+		ret = -rte_errno;
+		goto out;
+	}
+
+	src_matcher->resize_dst = dst_matcher;
+
+	if (mlx5dr_matcher_resize_init(src_matcher)) {
+		src_matcher->resize_dst = NULL;
+		ret = -rte_errno;
+	}
+
+out:
+	pthread_spin_unlock(&src_matcher->tbl->ctx->ctrl_lock);
+	return ret;
+}
+
+int mlx5dr_matcher_resize_rule_move(struct mlx5dr_matcher *src_matcher,
+				    struct mlx5dr_rule *rule,
+				    struct mlx5dr_rule_attr *attr)
+{
+	if (unlikely(!mlx5dr_matcher_is_in_resize(src_matcher))) {
+		DR_LOG(ERR, "Matcher is not resizable or not in resize");
+		goto out_einval;
+	}
+
+	if (unlikely(src_matcher != rule->matcher)) {
+		DR_LOG(ERR, "Rule doesn't belong to src matcher");
+		goto out_einval;
+	}
+
+	return mlx5dr_rule_move_hws_add(rule, attr);
+
+out_einval:
+	rte_errno = EINVAL;
+	return -rte_errno;
+}
+
+int mlx5dr_matcher_validate_compare_attr(struct mlx5dr_matcher *matcher)
+{
+	struct mlx5dr_cmd_query_caps *caps = matcher->tbl->ctx->caps;
+	struct mlx5dr_matcher_attr *attr = &matcher->attr;
+
+	if (mlx5dr_table_is_root(matcher->tbl)) {
+		DR_LOG(ERR, "Compare matcher is not supported for root tables");
+		goto err;
+	}
+
+	if (attr->mode != MLX5DR_MATCHER_RESOURCE_MODE_HTABLE) {
+		DR_LOG(ERR, "Compare matcher is only supported with pre-defined table size");
+		goto err;
+	}
+
+	if (attr->insert_mode != MLX5DR_MATCHER_INSERT_BY_HASH ||
+		attr->distribute_mode != MLX5DR_MATCHER_DISTRIBUTE_BY_HASH) {
+		DR_LOG(ERR, "Gen WQE for compare matcher must be inserted and distribute by hash");
+		goto err;
+	}
+
+	if (matcher->num_of_mt != 1 || matcher->num_of_at != 1) {
+		DR_LOG(ERR, "Compare matcher match templates and action templates must be 1 for each");
+		goto err;
+	}
+
+	if (attr->table.sz_col_log || attr->table.sz_row_log) {
+		DR_LOG(ERR, "Compare matcher supports only 1x1 table size");
+		goto err;
+	}
+
+	if (attr->resizable) {
+		DR_LOG(ERR, "Compare matcher does not support resizeing");
+		goto err;
+	}
+
+	if (!IS_BIT_SET(caps->supp_ste_format_gen_wqe, MLX5_IFC_RTC_STE_FORMAT_4DW_RANGE)) {
+		DR_LOG(ERR, "Gen WQE Compare match format not supported");
+		goto err;
+	}
+
+	return 0;
+
+err:
+	rte_errno = ENOTSUP;
+	return rte_errno;
 }

@@ -123,6 +123,14 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 			dev->data->port_id, priv->txqs_n, txqs_n);
 		priv->txqs_n = txqs_n;
 	}
+	if (priv->ext_txqs && txqs_n >= MLX5_EXTERNAL_TX_QUEUE_ID_MIN) {
+		DRV_LOG(ERR, "port %u cannot handle this many Tx queues (%u), "
+			"the maximal number of internal Tx queues is %u",
+			dev->data->port_id, txqs_n,
+			MLX5_EXTERNAL_TX_QUEUE_ID_MIN - 1);
+		rte_errno = EINVAL;
+		return -rte_errno;
+	}
 	if (rxqs_n > priv->sh->dev_cap.ind_table_max_size) {
 		DRV_LOG(ERR, "port %u cannot handle this many Rx queues (%u)",
 			dev->data->port_id, rxqs_n);
@@ -248,8 +256,8 @@ mlx5_set_default_params(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	info->default_txportconf.ring_size = 256;
 	info->default_rxportconf.burst_size = MLX5_RX_DEFAULT_BURST;
 	info->default_txportconf.burst_size = MLX5_TX_DEFAULT_BURST;
-	if ((priv->link_speed_capa & RTE_ETH_LINK_SPEED_200G) |
-		(priv->link_speed_capa & RTE_ETH_LINK_SPEED_100G)) {
+	if (priv->link_speed_capa >> rte_bsf32(RTE_ETH_LINK_SPEED_100G)) {
+		/* if supports at least 100G */
 		info->default_rxportconf.nb_queues = 16;
 		info->default_txportconf.nb_queues = 16;
 		if (dev->data->nb_rx_queues > 2 ||
@@ -338,6 +346,23 @@ mlx5_dev_get_max_wq_size(struct mlx5_dev_ctx_shared *sh)
 }
 
 /**
+ * Get switch port ID for given DPDK port.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @return
+ *   Switch port ID reported through rte_eth_dev_info_get().
+ */
+static uint16_t
+mlx5_dev_switch_info_port_id_get(struct rte_eth_dev *dev)
+{
+	if (rte_eth_dev_is_repr(dev))
+		return dev->data->port_id;
+
+	return UINT16_MAX;
+}
+
+/**
  * DPDK callback to get information about the device.
  *
  * @param dev
@@ -352,9 +377,11 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	unsigned int max;
 	uint16_t max_wqe;
 
+	info->min_mtu = priv->min_mtu;
+	info->max_mtu = priv->max_mtu;
+	info->max_rx_pktlen = info->max_mtu + MLX5_ETH_OVERHEAD;
 	/* FIXME: we should ask the device for these values. */
 	info->min_rx_bufsize = 32;
-	info->max_rx_pktlen = 65536;
 	info->max_lro_pkt_size = MLX5_MAX_LRO_SIZE;
 	/*
 	 * Since we need one CQ per QP, the limit is the minimum number
@@ -391,7 +418,7 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 		info->dev_capa |= RTE_ETH_DEV_CAPA_RXQ_SHARE;
 	info->switch_info.name = dev->data->name;
 	info->switch_info.domain_id = priv->domain_id;
-	info->switch_info.port_id = priv->representor_id;
+	info->switch_info.port_id = mlx5_dev_switch_info_port_id_get(dev);
 	info->switch_info.rx_domain = 0; /* No sub Rx domains. */
 	if (priv->representor) {
 		uint16_t port_id;
@@ -462,13 +489,161 @@ mlx5_representor_id_encode(const struct mlx5_switch_info *info,
 	return MLX5_REPRESENTOR_ID(pf, type, repr);
 }
 
+static unsigned int
+mlx5_representor_info_count_one(struct mlx5_priv *priv)
+{
+	switch (priv->port_info.type) {
+	case MLX5_PHYS_PORT_NAME_TYPE_PFHPF:
+		return 2;
+	case MLX5_PHYS_PORT_NAME_TYPE_UPLINK:
+		/* Only representor uplinks should be reported */
+		if (!priv->representor)
+			return 0;
+		return 1;
+	case MLX5_PHYS_PORT_NAME_TYPE_NOTSET:
+		/* FALLTHROUGH */
+	case MLX5_PHYS_PORT_NAME_TYPE_LEGACY:
+		/* FALLTHROUGH */
+	case MLX5_PHYS_PORT_NAME_TYPE_PFVF:
+		/* FALLTHROUGH */
+	case MLX5_PHYS_PORT_NAME_TYPE_PFSF:
+		/* FALLTHROUGH */
+	case MLX5_PHYS_PORT_NAME_TYPE_UNKNOWN:
+		/* FALLTHROUGH */
+	default:
+		return 1;
+	}
+}
+
+static unsigned int
+mlx5_representor_info_count(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	uint16_t port_id;
+	unsigned int count = 0;
+
+	MLX5_ETH_FOREACH_DEV(port_id, dev->device) {
+		struct mlx5_priv *opriv = rte_eth_devices[port_id].data->dev_private;
+
+		if (!opriv ||
+		    opriv->sh != priv->sh ||
+		    opriv->domain_id != priv->domain_id)
+			continue;
+
+		count += mlx5_representor_info_count_one(opriv);
+	}
+
+	return count;
+}
+
+static void
+mlx5_representor_info_fill_one(struct mlx5_priv *priv,
+			       struct rte_eth_representor_info *info)
+{
+	struct rte_eth_representor_range *range;
+	unsigned int count;
+
+	count = mlx5_representor_info_count_one(priv);
+	if (count == 0)
+		return;
+
+	if (info->nb_ranges + count > info->nb_ranges_alloc) {
+		DRV_LOG(ERR, "port %u representor info already full", priv->dev_data->port_id);
+		return;
+	}
+
+	range = &info->ranges[info->nb_ranges];
+
+	switch (priv->port_info.type) {
+	case MLX5_PHYS_PORT_NAME_TYPE_UPLINK:
+		range->type = RTE_ETH_REPRESENTOR_PF;
+		range->controller = priv->port_info.ctrl_num;
+		range->pf = priv->port_info.port_num;
+		range->id_base = priv->dev_data->port_id;
+		range->id_end = range->id_base;
+		snprintf(range->name, sizeof(range->name), "pf%d", range->pf);
+		break;
+	case MLX5_PHYS_PORT_NAME_TYPE_PFSF:
+		/* Secondly, fill in SF variant. */
+		range->type = RTE_ETH_REPRESENTOR_SF;
+		range->controller = priv->port_info.ctrl_num;
+		range->pf = priv->port_info.pf_num;
+		range->sf = priv->port_info.port_num;
+		range->id_base = priv->dev_data->port_id;
+		range->id_end = range->id_base;
+		snprintf(range->name, sizeof(range->name), "pf%dsf", range->pf);
+		break;
+	case MLX5_PHYS_PORT_NAME_TYPE_PFHPF:
+		/*
+		 * Host PF can be probed either through VF(0xffff) or SF(0xffff).
+		 * Firstly fill in VF variant.
+		 */
+		range->type = RTE_ETH_REPRESENTOR_VF;
+		range->controller = priv->port_info.ctrl_num;
+		range->pf = priv->port_info.pf_num;
+		range->vf = UINT16_MAX;
+		range->id_base = priv->dev_data->port_id;
+		range->id_end = range->id_base;
+		snprintf(range->name, sizeof(range->name), "pf%dvf", range->pf);
+
+		/* Move the SF variant. */
+		range++;
+
+		/* Fill in SF variant. */
+		range->type = RTE_ETH_REPRESENTOR_SF;
+		range->controller = priv->port_info.ctrl_num;
+		range->pf = priv->port_info.pf_num;
+		range->sf = UINT16_MAX;
+		range->id_base = priv->dev_data->port_id;
+		range->id_end = range->id_base;
+		snprintf(range->name, sizeof(range->name), "pf%dsf", range->pf);
+		break;
+	case MLX5_PHYS_PORT_NAME_TYPE_PFVF:
+		/* FALLTHROUGH */
+	case MLX5_PHYS_PORT_NAME_TYPE_NOTSET:
+		/* FALLTHROUGH */
+	case MLX5_PHYS_PORT_NAME_TYPE_LEGACY:
+		/* FALLTHROUGH */
+	case MLX5_PHYS_PORT_NAME_TYPE_UNKNOWN:
+		range->type = RTE_ETH_REPRESENTOR_VF;
+		range->controller = priv->port_info.ctrl_num;
+		range->pf = priv->port_info.pf_num;
+		range->vf = priv->port_info.port_num;
+		range->id_base = priv->dev_data->port_id;
+		range->id_end = range->id_base;
+		snprintf(range->name, sizeof(range->name), "pf%dvf", range->pf);
+		break;
+	}
+
+	info->nb_ranges += count;
+}
+
+static unsigned int
+mlx5_representor_info_fill(struct rte_eth_dev *dev,
+			   struct rte_eth_representor_info *info)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	uint16_t port_id;
+
+	info->controller = priv->port_info.ctrl_num;
+	info->pf = RTE_DEV_TO_PCI(dev->device)->addr.function;
+
+	MLX5_ETH_FOREACH_DEV(port_id, dev->device) {
+		struct mlx5_priv *opriv = rte_eth_devices[port_id].data->dev_private;
+
+		if (!opriv ||
+		    opriv->sh != priv->sh ||
+		    opriv->domain_id != priv->domain_id)
+			continue;
+
+		mlx5_representor_info_fill_one(opriv, info);
+	}
+
+	return info->nb_ranges;
+}
+
 /**
  * DPDK callback to get information about representor.
- *
- * Representor ID bits definition:
- *   vf/sf: 12
- *   type: 2
- *   pf: 2
  *
  * @param dev
  *   Pointer to Ethernet device structure.
@@ -482,105 +657,11 @@ int
 mlx5_representor_info_get(struct rte_eth_dev *dev,
 			  struct rte_eth_representor_info *info)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
-	int n_type = 5; /* Representor types: PF, VF, HPF@VF, SF and HPF@SF. */
-	int n_pf = 2; /* Number of PFs. */
-	int i = 0, pf;
-	int n_entries;
-
 	if (info == NULL)
-		goto out;
+		return mlx5_representor_info_count(dev);
 
-	n_entries = n_type * n_pf;
-	if ((uint32_t)n_entries > info->nb_ranges_alloc)
-		n_entries = info->nb_ranges_alloc;
+	return mlx5_representor_info_fill(dev, info);
 
-	info->controller = 0;
-	info->pf = 0;
-	if (mlx5_is_port_on_mpesw_device(priv)) {
-		info->pf = priv->mpesw_port;
-		/* PF range, both ports will show the same information. */
-		info->ranges[i].type = RTE_ETH_REPRESENTOR_PF;
-		info->ranges[i].controller = 0;
-		info->ranges[i].pf = priv->mpesw_owner + 1;
-		info->ranges[i].vf = 0;
-		/*
-		 * The representor indexes should be the values set of "priv->mpesw_port".
-		 * In the real case now, only 1 PF/UPLINK representor is supported.
-		 * The port index will always be the value of "owner + 1".
-		 */
-		info->ranges[i].id_base =
-			MLX5_REPRESENTOR_ID(priv->mpesw_owner, info->ranges[i].type,
-					    info->ranges[i].pf);
-		info->ranges[i].id_end =
-			MLX5_REPRESENTOR_ID(priv->mpesw_owner, info->ranges[i].type,
-					    info->ranges[i].pf);
-		snprintf(info->ranges[i].name, sizeof(info->ranges[i].name),
-			 "pf%d", info->ranges[i].pf);
-		i++;
-	} else if (priv->pf_bond >= 0)
-		info->pf = priv->pf_bond;
-	for (pf = 0; pf < n_pf; ++pf) {
-		/* VF range. */
-		info->ranges[i].type = RTE_ETH_REPRESENTOR_VF;
-		info->ranges[i].controller = 0;
-		info->ranges[i].pf = pf;
-		info->ranges[i].vf = 0;
-		info->ranges[i].id_base =
-			MLX5_REPRESENTOR_ID(pf, info->ranges[i].type, 0);
-		info->ranges[i].id_end =
-			MLX5_REPRESENTOR_ID(pf, info->ranges[i].type, -1);
-		snprintf(info->ranges[i].name,
-			 sizeof(info->ranges[i].name), "pf%dvf", pf);
-		i++;
-		if (i == n_entries)
-			break;
-		/* HPF range of VF type. */
-		info->ranges[i].type = RTE_ETH_REPRESENTOR_VF;
-		info->ranges[i].controller = 0;
-		info->ranges[i].pf = pf;
-		info->ranges[i].vf = UINT16_MAX;
-		info->ranges[i].id_base =
-			MLX5_REPRESENTOR_ID(pf, info->ranges[i].type, -1);
-		info->ranges[i].id_end =
-			MLX5_REPRESENTOR_ID(pf, info->ranges[i].type, -1);
-		snprintf(info->ranges[i].name,
-			 sizeof(info->ranges[i].name), "pf%dvf", pf);
-		i++;
-		if (i == n_entries)
-			break;
-		/* SF range. */
-		info->ranges[i].type = RTE_ETH_REPRESENTOR_SF;
-		info->ranges[i].controller = 0;
-		info->ranges[i].pf = pf;
-		info->ranges[i].vf = 0;
-		info->ranges[i].id_base =
-			MLX5_REPRESENTOR_ID(pf, info->ranges[i].type, 0);
-		info->ranges[i].id_end =
-			MLX5_REPRESENTOR_ID(pf, info->ranges[i].type, -1);
-		snprintf(info->ranges[i].name,
-			 sizeof(info->ranges[i].name), "pf%dsf", pf);
-		i++;
-		if (i == n_entries)
-			break;
-		/* HPF range of SF type. */
-		info->ranges[i].type = RTE_ETH_REPRESENTOR_SF;
-		info->ranges[i].controller = 0;
-		info->ranges[i].pf = pf;
-		info->ranges[i].vf = UINT16_MAX;
-		info->ranges[i].id_base =
-			MLX5_REPRESENTOR_ID(pf, info->ranges[i].type, -1);
-		info->ranges[i].id_end =
-			MLX5_REPRESENTOR_ID(pf, info->ranges[i].type, -1);
-		snprintf(info->ranges[i].name,
-			 sizeof(info->ranges[i].name), "pf%dsf", pf);
-		i++;
-		if (i == n_entries)
-			break;
-	}
-	info->nb_ranges = i;
-out:
-	return n_type * n_pf;
 }
 
 /**
@@ -620,7 +701,7 @@ mlx5_fw_version_get(struct rte_eth_dev *dev, char *fw_ver, size_t fw_size)
  *   A pointer to the supported Packet types array.
  */
 const uint32_t *
-mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 {
 	static const uint32_t ptypes[] = {
 		/* refers to rxq_cq_to_pkt_type() */
@@ -637,15 +718,16 @@ mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 		RTE_PTYPE_INNER_L4_FRAG,
 		RTE_PTYPE_INNER_L4_TCP,
 		RTE_PTYPE_INNER_L4_UDP,
-		RTE_PTYPE_UNKNOWN
 	};
 
 	if (dev->rx_pkt_burst == mlx5_rx_burst ||
 	    dev->rx_pkt_burst == mlx5_rx_burst_out_of_order ||
 	    dev->rx_pkt_burst == mlx5_rx_burst_mprq ||
 	    dev->rx_pkt_burst == mlx5_rx_burst_vec ||
-	    dev->rx_pkt_burst == mlx5_rx_burst_mprq_vec)
+	    dev->rx_pkt_burst == mlx5_rx_burst_mprq_vec) {
+		*no_of_elements = RTE_DIM(ptypes);
 		return ptypes;
+	}
 	return NULL;
 }
 
@@ -663,7 +745,6 @@ mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 int
 mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 {
-	struct mlx5_priv *priv = dev->data->dev_private;
 	uint16_t kern_mtu = 0;
 	int ret;
 
@@ -672,7 +753,6 @@ mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 		return ret;
 
 	if (kern_mtu == mtu) {
-		priv->mtu = mtu;
 		DRV_LOG(DEBUG, "port %u adapter MTU was already set to %u",
 			dev->data->port_id, mtu);
 		return 0;
@@ -686,7 +766,6 @@ mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 	if (ret)
 		return ret;
 	if (kern_mtu == mtu) {
-		priv->mtu = mtu;
 		DRV_LOG(DEBUG, "port %u adapter MTU set to %u",
 			dev->data->port_id, mtu);
 		return 0;
@@ -835,4 +914,60 @@ mlx5_hairpin_cap_get(struct rte_eth_dev *dev, struct rte_eth_hairpin_cap *cap)
 	cap->tx_cap.locked_device_memory = 0;
 	cap->tx_cap.rte_memory = hca_attr->hairpin_sq_wq_in_host_mem;
 	return 0;
+}
+
+/**
+ * Indicate to ethdev layer, what configuration must be restored.
+ *
+ * @param[in] dev
+ *   Pointer to Ethernet device structure.
+ * @param[in] op
+ *   Type of operation which might require.
+ * @param[out] flags
+ *   Restore flags will be stored here.
+ */
+uint64_t
+mlx5_get_restore_flags(__rte_unused struct rte_eth_dev *dev,
+		       __rte_unused enum rte_eth_dev_operation op)
+{
+	/* mlx5 PMD does not require any configuration restore. */
+	return 0;
+}
+
+/**
+ * Query minimum and maximum allowed MTU value on the device.
+ *
+ * This functions will always return valid MTU bounds.
+ * In case platform-specific implementation fails or current platform does not support it,
+ * the fallback default values will be used.
+ *
+ * @param[in] dev
+ *   Pointer to Ethernet device
+ * @param[out] min_mtu
+ *   Minimum MTU value output buffer.
+ * @param[out] max_mtu
+ *   Maximum MTU value output buffer.
+ */
+void
+mlx5_get_mtu_bounds(struct rte_eth_dev *dev, uint16_t *min_mtu, uint16_t *max_mtu)
+{
+	int ret;
+
+	MLX5_ASSERT(min_mtu != NULL);
+	MLX5_ASSERT(max_mtu != NULL);
+
+	ret = mlx5_os_get_mtu_bounds(dev, min_mtu, max_mtu);
+	if (ret < 0) {
+		if (ret != -ENOTSUP)
+			DRV_LOG(INFO, "port %u failed to query MTU bounds, using fallback values",
+				dev->data->port_id);
+		*min_mtu = MLX5_ETH_MIN_MTU;
+		*max_mtu = MLX5_ETH_MAX_MTU;
+
+		/* This function does not fail. Clear rte_errno. */
+		rte_errno = 0;
+	}
+
+	DRV_LOG(INFO, "port %u minimum MTU is %u", dev->data->port_id, *min_mtu);
+	DRV_LOG(INFO, "port %u maximum MTU is %u", dev->data->port_id, *max_mtu);
 }

@@ -38,7 +38,7 @@
 #undef PCPU_SET
 
 extern __thread struct thread *pcurthread;
-extern struct pcpu *pcpup;
+extern __thread struct pcpu *pcpup;
 
 #define PCPU_GET(member)         (pcpup->pc_ ## member)
 #define PCPU_ADD(member, val)    (pcpup->pc_ ## member += (val))

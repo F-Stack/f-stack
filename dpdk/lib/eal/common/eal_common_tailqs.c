@@ -70,7 +70,7 @@ rte_eal_tailq_create(const char *name)
 
 		mcfg = rte_eal_get_configuration()->mem_config;
 		head = &mcfg->tailq_head[rte_tailqs_count];
-		strlcpy(head->name, name, sizeof(head->name) - 1);
+		strlcpy(head->name, name, sizeof(head->name));
 		TAILQ_INIT(&head->tailq_head);
 		rte_tailqs_count++;
 	}
@@ -109,8 +109,8 @@ int
 rte_eal_tailq_register(struct rte_tailq_elem *t)
 {
 	if (rte_eal_tailq_local_register(t) < 0) {
-		RTE_LOG(ERR, EAL,
-			"%s tailq is already registered\n", t->name);
+		EAL_LOG(ERR,
+			"%s tailq is already registered", t->name);
 		goto error;
 	}
 
@@ -119,8 +119,8 @@ rte_eal_tailq_register(struct rte_tailq_elem *t)
 	if (rte_tailqs_count >= 0) {
 		rte_eal_tailq_update(t);
 		if (t->head == NULL) {
-			RTE_LOG(ERR, EAL,
-				"Cannot initialize tailq: %s\n", t->name);
+			EAL_LOG(ERR,
+				"Cannot initialize tailq: %s", t->name);
 			TAILQ_REMOVE(&rte_tailq_elem_head, t, next);
 			goto error;
 		}
@@ -145,8 +145,8 @@ rte_eal_tailqs_init(void)
 		 * rte_eal_tailq_register and EAL_REGISTER_TAILQ */
 		rte_eal_tailq_update(t);
 		if (t->head == NULL) {
-			RTE_LOG(ERR, EAL,
-				"Cannot initialize tailq: %s\n", t->name);
+			EAL_LOG(ERR,
+				"Cannot initialize tailq: %s", t->name);
 			/* TAILQ_REMOVE not needed, error is already fatal */
 			goto fail;
 		}

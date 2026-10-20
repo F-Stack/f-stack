@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2017-2022 NXP
+ *   Copyright 2017-2024 NXP
  *
  */
 
@@ -20,6 +20,7 @@
 #include <dev_driver.h>
 #include <rte_io.h>
 #include <rte_ip.h>
+#include <rte_udp.h>
 #include <rte_kvargs.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
@@ -46,6 +47,7 @@
 #include <dpaax_iova_table.h>
 
 #define DRIVER_DUMP_MODE "drv_dump_mode"
+#define DPAA_DEFAULT_NAT_T_PORT 4500
 
 /* DPAA_SEC_DP_DUMP levels */
 enum dpaa_sec_dump_levels {
@@ -495,7 +497,8 @@ dpaa_sec_prep_cdb(dpaa_sec_session *ses)
 					ses->dir);
 			break;
 		default:
-			DPAA_SEC_ERR("unsupported cipher alg %d",
+			DPAA_SEC_ERR("unsupported cipher alg %s (%d)",
+					rte_cryptodev_get_cipher_algo_string(ses->cipher_alg),
 				     ses->cipher_alg);
 			return -ENOTSUP;
 		}
@@ -556,7 +559,9 @@ dpaa_sec_prep_cdb(dpaa_sec_session *ses)
 						ses->digest_length);
 			break;
 		default:
-			DPAA_SEC_ERR("unsupported auth alg %u", ses->auth_alg);
+			DPAA_SEC_ERR("unsupported auth alg %s (%u)",
+				rte_cryptodev_get_auth_algo_string(ses->auth_alg),
+				ses->auth_alg);
 		}
 		break;
 	case DPAA_SEC_AEAD:
@@ -635,9 +640,8 @@ dpaa_sec_prep_cdb(dpaa_sec_session *ses)
 				ses->iv.length,
 				ses->digest_length, ses->dir);
 		break;
-	case DPAA_SEC_HASH_CIPHER:
 	default:
-		DPAA_SEC_ERR("error: Unsupported session");
+		DPAA_SEC_ERR("error: Unsupported session %d", ses->ctxt);
 		return -ENOTSUP;
 	}
 
@@ -654,7 +658,7 @@ dpaa_sec_prep_cdb(dpaa_sec_session *ses)
 }
 
 static void
-dpaa_sec_dump(struct dpaa_sec_op_ctx *ctx, struct dpaa_sec_qp *qp)
+dpaa_sec_dump(struct dpaa_sec_op_ctx *ctx, struct dpaa_sec_qp *qp, FILE *f)
 {
 	struct dpaa_sec_job *job = &ctx->job;
 	struct rte_crypto_op *op = ctx->op;
@@ -678,9 +682,9 @@ dpaa_sec_dump(struct dpaa_sec_op_ctx *ctx, struct dpaa_sec_qp *qp)
 	cdb = &sess->cdb;
 	rte_memcpy(&c_cdb, cdb, sizeof(struct sec_cdb));
 #ifdef RTE_LIB_SECURITY
-	printf("\nsession protocol type = %d\n", sess->proto_alg);
+	fprintf(f, "\nsession protocol type = %d\n", sess->proto_alg);
 #endif
-	printf("\n****************************************\n"
+	fprintf(f, "\n****************************************\n"
 		"session params:\n\tContext type:\t%d\n\tDirection:\t%s\n"
 		"\tCipher alg:\t%d\n\tAuth alg:\t%d\n\tAead alg:\t%d\n"
 		"\tCipher key len:\t%"PRIu64"\n\tCipher alg:\t%d\n"
@@ -689,11 +693,11 @@ dpaa_sec_dump(struct dpaa_sec_op_ctx *ctx, struct dpaa_sec_qp *qp)
 		sess->cipher_alg, sess->auth_alg, sess->aead_alg,
 		(uint64_t)sess->cipher_key.length, sess->cipher_key.alg,
 		sess->cipher_key.algmode);
-		rte_hexdump(stdout, "cipher key", sess->cipher_key.data,
+		rte_hexdump(f, "cipher key", sess->cipher_key.data,
 				sess->cipher_key.length);
-		rte_hexdump(stdout, "auth key", sess->auth_key.data,
+		rte_hexdump(f, "auth key", sess->auth_key.data,
 				sess->auth_key.length);
-	printf("\tAuth key len:\t%"PRIu64"\n\tAuth alg:\t%d\n"
+	fprintf(f, "\tAuth key len:\t%"PRIu64"\n\tAuth alg:\t%d\n"
 		"\tAuth algmode:\t%d\n\tIV len:\t\t%d\n\tIV offset:\t%d\n"
 		"\tdigest length:\t%d\n\tauth only len:\t\t%d\n"
 		"\taead cipher text:\t%d\n",
@@ -703,7 +707,7 @@ dpaa_sec_dump(struct dpaa_sec_op_ctx *ctx, struct dpaa_sec_qp *qp)
 		sess->digest_length, sess->auth_only_len,
 		sess->auth_cipher_text);
 #ifdef RTE_LIB_SECURITY
-	printf("PDCP session params:\n"
+	fprintf(f, "PDCP session params:\n"
 		"\tDomain:\t\t%d\n\tBearer:\t\t%d\n\tpkt_dir:\t%d\n\thfn_ovd:"
 		"\t%d\n\tsn_size:\t%d\n\tsdap_enabled:\t%d\n\thfn_ovd_offset:"
 		"\t%d\n\thfn:\t\t%d\n"
@@ -717,63 +721,63 @@ dpaa_sec_dump(struct dpaa_sec_op_ctx *ctx, struct dpaa_sec_qp *qp)
 	c_cdb.sh_hdr.lo.word = rte_be_to_cpu_32(c_cdb.sh_hdr.lo.word);
 	bufsize = c_cdb.sh_hdr.hi.field.idlen;
 
-	printf("cdb = %p\n\n", cdb);
-	printf("Descriptor size = %d\n", bufsize);
+	fprintf(f, "cdb = %p\n\n", cdb);
+	fprintf(f, "Descriptor size = %d\n", bufsize);
 	int m;
 	for (m = 0; m < bufsize; m++)
-		printf("0x%x\n", rte_be_to_cpu_32(c_cdb.sh_desc[m]));
+		fprintf(f, "0x%x\n", rte_be_to_cpu_32(c_cdb.sh_desc[m]));
 
-	printf("\n");
+	fprintf(f, "\n");
 mbuf_dump:
 	sym_op = op->sym;
 	if (sym_op->m_src) {
-		printf("Source mbuf:\n");
-		rte_pktmbuf_dump(stdout, sym_op->m_src,
+		fprintf(f, "Source mbuf:\n");
+		rte_pktmbuf_dump(f, sym_op->m_src,
 				 sym_op->m_src->data_len);
 	}
 	if (sym_op->m_dst) {
-		printf("Destination mbuf:\n");
-		rte_pktmbuf_dump(stdout, sym_op->m_dst,
+		fprintf(f, "Destination mbuf:\n");
+		rte_pktmbuf_dump(f, sym_op->m_dst,
 				 sym_op->m_dst->data_len);
 	}
 
-	printf("Session address = %p\ncipher offset: %d, length: %d\n"
+	fprintf(f, "Session address = %p\ncipher offset: %d, length: %d\n"
 		"auth offset: %d, length:  %d\n aead offset: %d, length: %d\n",
 		sym_op->session, sym_op->cipher.data.offset,
 		sym_op->cipher.data.length,
 		sym_op->auth.data.offset, sym_op->auth.data.length,
 		sym_op->aead.data.offset, sym_op->aead.data.length);
-	printf("\n");
+	fprintf(f, "\n");
 
-	printf("******************************************************\n");
-	printf("ctx info:\n");
-	printf("job->sg[0] output info:\n");
+	fprintf(f, "******************************************************\n");
+	fprintf(f, "ctx info:\n");
+	fprintf(f, "job->sg[0] output info:\n");
 	memcpy(&sg[0], &job->sg[0], sizeof(sg[0]));
-	printf("\taddr = %"PRIx64",\n\tlen = %d,\n\tfinal = %d,\n\textension = %d"
+	fprintf(f, "\taddr = %"PRIx64",\n\tlen = %d,\n\tfinal = %d,\n\textension = %d"
 		"\n\tbpid = %d\n\toffset = %d\n",
 		(uint64_t)sg[0].addr, sg[0].length, sg[0].final,
 		sg[0].extension, sg[0].bpid, sg[0].offset);
-	printf("\njob->sg[1] input info:\n");
+	fprintf(f, "\njob->sg[1] input info:\n");
 	memcpy(&sg[1], &job->sg[1], sizeof(sg[1]));
 	hw_sg_to_cpu(&sg[1]);
-	printf("\taddr = %"PRIx64",\n\tlen = %d,\n\tfinal = %d,\n\textension = %d"
+	fprintf(f, "\taddr = %"PRIx64",\n\tlen = %d,\n\tfinal = %d,\n\textension = %d"
 		"\n\tbpid = %d\n\toffset = %d\n",
 		(uint64_t)sg[1].addr, sg[1].length, sg[1].final,
 		sg[1].extension, sg[1].bpid, sg[1].offset);
 
-	printf("\nctx pool addr = %p\n", ctx->ctx_pool);
+	fprintf(f, "\nctx pool addr = %p\n", ctx->ctx_pool);
 	if (ctx->ctx_pool)
-		printf("ctx pool available counts = %d\n",
+		fprintf(f, "ctx pool available counts = %d\n",
 			rte_mempool_avail_count(ctx->ctx_pool));
 
-	printf("\nop pool addr = %p\n", op->mempool);
+	fprintf(f, "\nop pool addr = %p\n", op->mempool);
 	if (op->mempool)
-		printf("op pool available counts = %d\n",
+		fprintf(f, "op pool available counts = %d\n",
 			rte_mempool_avail_count(op->mempool));
 
-	printf("********************************************************\n");
-	printf("Queue data:\n");
-	printf("\tFQID = 0x%x\n\tstate = %d\n\tnb_desc = %d\n"
+	fprintf(f, "********************************************************\n");
+	fprintf(f, "Queue data:\n");
+	fprintf(f, "\tFQID = 0x%x\n\tstate = %d\n\tnb_desc = %d\n"
 		"\tctx_pool = %p\n\trx_pkts = %d\n\ttx_pkts"
 	       "= %d\n\trx_errs = %d\n\ttx_errs = %d\n\n",
 		qp->outq.fqid, qp->outq.state, qp->outq.nb_desc,
@@ -852,7 +856,7 @@ dpaa_sec_deq(struct dpaa_sec_qp *qp, struct rte_crypto_op **ops, int nb_ops)
 				DPAA_SEC_DP_WARN("SEC return err:0x%x",
 						  ctx->fd_status);
 				if (dpaa_sec_dp_dump > DPAA_SEC_DP_ERR_DUMP)
-					dpaa_sec_dump(ctx, qp);
+					dpaa_sec_dump(ctx, qp, stdout);
 			}
 			op->status = RTE_CRYPTO_OP_STATUS_ERROR;
 		}
@@ -2220,8 +2224,9 @@ dpaa_sec_cipher_init(struct rte_cryptodev *dev __rte_unused,
 		session->cipher_key.alg = OP_ALG_ALGSEL_ZUCE;
 		break;
 	default:
-		DPAA_SEC_ERR("Crypto: Undefined Cipher specified %u",
-			      xform->cipher.algo);
+		DPAA_SEC_ERR("Crypto: Unsupported Cipher specified %s (%u)",
+			      rte_cryptodev_get_cipher_algo_string(xform->cipher.algo),
+				  xform->cipher.algo);
 		return -ENOTSUP;
 	}
 	session->dir = (xform->cipher.op == RTE_CRYPTO_CIPHER_OP_ENCRYPT) ?
@@ -2322,7 +2327,8 @@ dpaa_sec_auth_init(struct rte_cryptodev *dev __rte_unused,
 		session->auth_key.algmode = OP_ALG_AAI_CMAC;
 		break;
 	default:
-		DPAA_SEC_ERR("Crypto: Unsupported Auth specified %u",
+		DPAA_SEC_ERR("Crypto: Unsupported Auth specified %s (%u)",
+			rte_cryptodev_get_auth_algo_string(xform->auth.algo),
 			      xform->auth.algo);
 		return -ENOTSUP;
 	}
@@ -2411,7 +2417,8 @@ dpaa_sec_chain_init(struct rte_cryptodev *dev __rte_unused,
 		session->auth_key.algmode = OP_ALG_AAI_CMAC;
 		break;
 	default:
-		DPAA_SEC_ERR("Crypto: Unsupported Auth specified %u",
+		DPAA_SEC_ERR("Crypto: Unsupported Auth specified %s (%u)",
+			rte_cryptodev_get_auth_algo_string(auth_xform->algo),
 			      auth_xform->algo);
 		return -ENOTSUP;
 	}
@@ -2436,7 +2443,9 @@ dpaa_sec_chain_init(struct rte_cryptodev *dev __rte_unused,
 		session->cipher_key.algmode = OP_ALG_AAI_CTR;
 		break;
 	default:
-		DPAA_SEC_ERR("Crypto: Undefined Cipher specified %u",
+
+		DPAA_SEC_ERR("Crypto: Undefined Cipher specified %s (%u)",
+			rte_cryptodev_get_cipher_algo_string(cipher_xform->algo),
 			      cipher_xform->algo);
 		return -ENOTSUP;
 	}
@@ -2503,11 +2512,14 @@ static int
 dpaa_sec_detach_rxq(struct dpaa_sec_dev_private *qi, struct qman_fq *fq)
 {
 	unsigned int i;
+	int ret;
 
 	for (i = 0; i < RTE_DPAA_MAX_RX_QUEUE; i++) {
 		if (&qi->inq[i] == fq) {
-			if (qman_retire_fq(fq, NULL) != 0)
-				DPAA_SEC_DEBUG("Queue is not retired");
+			ret = qman_retire_fq(fq, NULL);
+			if (ret != 0)
+				DPAA_SEC_ERR("Queue %d is not retired err: %d",
+					     fq->fqid, ret);
 			qman_oos_fq(fq);
 			qi->inq_attach[i] = 0;
 			return 0;
@@ -2844,22 +2856,9 @@ dpaa_sec_ipsec_proto_init(struct rte_crypto_cipher_xform *cipher_xform,
 		session->auth_key.alg = OP_PCL_IPSEC_AES_XCBC_MAC_96;
 		session->auth_key.algmode = OP_ALG_AAI_XCBC_MAC;
 		break;
-	case RTE_CRYPTO_AUTH_SNOW3G_UIA2:
-	case RTE_CRYPTO_AUTH_SHA1:
-	case RTE_CRYPTO_AUTH_SHA256:
-	case RTE_CRYPTO_AUTH_SHA512:
-	case RTE_CRYPTO_AUTH_SHA224:
-	case RTE_CRYPTO_AUTH_SHA384:
-	case RTE_CRYPTO_AUTH_MD5:
-	case RTE_CRYPTO_AUTH_AES_GMAC:
-	case RTE_CRYPTO_AUTH_KASUMI_F9:
-	case RTE_CRYPTO_AUTH_AES_CBC_MAC:
-	case RTE_CRYPTO_AUTH_ZUC_EIA3:
-		DPAA_SEC_ERR("Crypto: Unsupported auth alg %u",
-			      session->auth_alg);
-		return -ENOTSUP;
 	default:
-		DPAA_SEC_ERR("Crypto: Undefined Auth specified %u",
+		DPAA_SEC_ERR("Crypto: Unsupported auth alg %s (%u)",
+			rte_cryptodev_get_auth_algo_string(session->auth_alg),
 			      session->auth_alg);
 		return -ENOTSUP;
 	}
@@ -2891,16 +2890,9 @@ dpaa_sec_ipsec_proto_init(struct rte_crypto_cipher_xform *cipher_xform,
 	case RTE_CRYPTO_CIPHER_NULL:
 		session->cipher_key.alg = OP_PCL_IPSEC_NULL;
 		break;
-	case RTE_CRYPTO_CIPHER_SNOW3G_UEA2:
-	case RTE_CRYPTO_CIPHER_ZUC_EEA3:
-	case RTE_CRYPTO_CIPHER_3DES_ECB:
-	case RTE_CRYPTO_CIPHER_AES_ECB:
-	case RTE_CRYPTO_CIPHER_KASUMI_F8:
-		DPAA_SEC_ERR("Crypto: Unsupported Cipher alg %u",
-			      session->cipher_alg);
-		return -ENOTSUP;
 	default:
-		DPAA_SEC_ERR("Crypto: Undefined Cipher specified %u",
+		DPAA_SEC_ERR("Crypto: Unsupported Cipher alg %s (%u)",
+			rte_cryptodev_get_cipher_algo_string(session->cipher_alg),
 			      session->cipher_alg);
 		return -ENOTSUP;
 	}
@@ -2970,15 +2962,22 @@ dpaa_sec_set_ipsec_session(__rte_unused struct rte_cryptodev *dev,
 				RTE_SECURITY_IPSEC_TUNNEL_IPV4) {
 			session->ip4_hdr.ip_v = IPVERSION;
 			session->ip4_hdr.ip_hl = 5;
-			session->ip4_hdr.ip_len = rte_cpu_to_be_16(
-						sizeof(session->ip4_hdr));
+			if (ipsec_xform->options.udp_encap)
+				session->ip4_hdr.ip_len = rte_cpu_to_be_16(
+					sizeof(session->ip4_hdr) + sizeof(struct rte_udp_hdr));
+			else
+				session->ip4_hdr.ip_len = rte_cpu_to_be_16(
+					sizeof(session->ip4_hdr));
 			session->ip4_hdr.ip_tos = ipsec_xform->tunnel.ipv4.dscp;
 			session->ip4_hdr.ip_id = 0;
 			session->ip4_hdr.ip_off = 0;
 			session->ip4_hdr.ip_ttl = ipsec_xform->tunnel.ipv4.ttl;
-			session->ip4_hdr.ip_p = (ipsec_xform->proto ==
-					RTE_SECURITY_IPSEC_SA_PROTO_ESP) ?
-					IPPROTO_ESP : IPPROTO_AH;
+			if (ipsec_xform->options.udp_encap)
+				session->ip4_hdr.ip_p = IPPROTO_UDP;
+			else
+				session->ip4_hdr.ip_p = (ipsec_xform->proto ==
+						RTE_SECURITY_IPSEC_SA_PROTO_ESP) ?
+						IPPROTO_ESP : IPPROTO_AH;
 			session->ip4_hdr.ip_sum = 0;
 			session->ip4_hdr.ip_src =
 					ipsec_xform->tunnel.ipv4.src_ip;
@@ -3002,9 +3001,12 @@ dpaa_sec_set_ipsec_session(__rte_unused struct rte_cryptodev *dev,
 			session->ip6_hdr.payload_len = 0;
 			session->ip6_hdr.hop_limits =
 					ipsec_xform->tunnel.ipv6.hlimit;
-			session->ip6_hdr.proto = (ipsec_xform->proto ==
-					RTE_SECURITY_IPSEC_SA_PROTO_ESP) ?
-					IPPROTO_ESP : IPPROTO_AH;
+			if (ipsec_xform->options.udp_encap)
+				session->ip6_hdr.proto = IPPROTO_UDP;
+			else
+				session->ip6_hdr.proto = (ipsec_xform->proto ==
+						RTE_SECURITY_IPSEC_SA_PROTO_ESP) ?
+						IPPROTO_ESP : IPPROTO_AH;
 			memcpy(&session->ip6_hdr.src_addr,
 					&ipsec_xform->tunnel.ipv6.src_addr, 16);
 			memcpy(&session->ip6_hdr.dst_addr,
@@ -3020,19 +3022,69 @@ dpaa_sec_set_ipsec_session(__rte_unused struct rte_cryptodev *dev,
 			PDBHMO_ESP_SNR;
 		if (ipsec_xform->options.dec_ttl)
 			session->encap_pdb.options |= PDBHMO_ESP_ENCAP_DTTL;
-		if (ipsec_xform->options.esn)
-			session->encap_pdb.options |= PDBOPTS_ESP_ESN;
 		session->encap_pdb.spi = ipsec_xform->spi;
+		/* Initializing the sequence number to 1, Security
+		 * engine will choose this sequence number for first packet
+		 * Refer: RFC4303 section: 3.3.3.Sequence Number Generation
+		 */
+		session->encap_pdb.seq_num = 1;
+		if (ipsec_xform->options.esn) {
+			session->encap_pdb.options |= PDBOPTS_ESP_ESN;
+			session->encap_pdb.seq_num_ext_hi = conf->ipsec.esn.hi;
+			session->encap_pdb.seq_num = conf->ipsec.esn.low;
+		}
+		if (ipsec_xform->options.udp_encap) {
+			struct rte_udp_hdr *udp_hdr;
 
+			if (ipsec_xform->tunnel.type == RTE_SECURITY_IPSEC_TUNNEL_IPV4)
+				udp_hdr = (struct rte_udp_hdr *)(&session->udp4.udp_hdr);
+			else
+				udp_hdr = (struct rte_udp_hdr *)(&session->udp6.udp_hdr);
+
+			if (ipsec_xform->udp.sport)
+				udp_hdr->src_port = rte_cpu_to_be_16(ipsec_xform->udp.sport);
+			else
+				udp_hdr->src_port = rte_cpu_to_be_16(DPAA_DEFAULT_NAT_T_PORT);
+
+			if (ipsec_xform->udp.dport)
+				udp_hdr->dst_port = rte_cpu_to_be_16(ipsec_xform->udp.dport);
+			else
+				udp_hdr->dst_port = rte_cpu_to_be_16(DPAA_DEFAULT_NAT_T_PORT);
+			udp_hdr->dgram_len = 0;
+			udp_hdr->dgram_cksum = 0;
+
+			session->encap_pdb.ip_hdr_len += sizeof(struct rte_udp_hdr);
+			session->encap_pdb.options |= PDBOPTS_ESP_NAT | PDBOPTS_ESP_NUC;
+		}
+		if (ipsec_xform->options.ecn)
+			session->encap_pdb.options |= PDBOPTS_ESP_TECN;
 	} else if (ipsec_xform->direction ==
 			RTE_SECURITY_IPSEC_SA_DIR_INGRESS) {
-		if (ipsec_xform->tunnel.type == RTE_SECURITY_IPSEC_TUNNEL_IPV4)
-			session->decap_pdb.options = sizeof(struct ip) << 16;
-		else
-			session->decap_pdb.options =
-					sizeof(struct rte_ipv6_hdr) << 16;
-		if (ipsec_xform->options.esn)
+		if (ipsec_xform->tunnel.type == RTE_SECURITY_IPSEC_TUNNEL_IPV4) {
+			if (ipsec_xform->options.udp_encap)
+				session->decap_pdb.options =
+					(sizeof(struct ip) + sizeof(struct rte_udp_hdr)) << 16;
+			else
+				session->decap_pdb.options = sizeof(struct ip) << 16;
+			if (ipsec_xform->options.copy_df)
+				session->decap_pdb.options |= PDBHMO_ESP_DFV;
+		} else {
+			if (ipsec_xform->options.udp_encap)
+				session->decap_pdb.options =
+				(sizeof(struct rte_ipv6_hdr) + sizeof(struct rte_udp_hdr)) << 16;
+			else
+				session->decap_pdb.options = sizeof(struct rte_ipv6_hdr) << 16;
+		}
+		if (ipsec_xform->options.esn) {
 			session->decap_pdb.options |= PDBOPTS_ESP_ESN;
+			session->decap_pdb.seq_num_ext_hi = conf->ipsec.esn.hi;
+			session->decap_pdb.seq_num = conf->ipsec.esn.low;
+		}
+		if (ipsec_xform->options.copy_dscp)
+			session->decap_pdb.options |= PDBHMO_ESP_DIFFSERV;
+		if (ipsec_xform->options.ecn)
+			session->decap_pdb.options |= PDBOPTS_ESP_TECN;
+
 		if (ipsec_xform->replay_win_sz) {
 			uint32_t win_sz;
 			win_sz = rte_align32pow2(ipsec_xform->replay_win_sz);
@@ -3176,7 +3228,8 @@ dpaa_sec_set_pdcp_session(struct rte_cryptodev *dev,
 			session->auth_key.alg = PDCP_AUTH_TYPE_NULL;
 			break;
 		default:
-			DPAA_SEC_ERR("Crypto: Unsupported auth alg %u",
+			DPAA_SEC_ERR("Crypto: Unsupported auth alg %s (%u)",
+			rte_cryptodev_get_auth_algo_string(session->auth_alg),
 				      session->auth_alg);
 			rte_free(session->cipher_key.data);
 			return -EINVAL;
@@ -3517,7 +3570,7 @@ dpaa_sec_eventq_detach(const struct rte_cryptodev *dev,
 	qman_oos_fq(&qp->outq);
 	ret = qman_init_fq(&qp->outq, 0, &opts);
 	if (ret)
-		RTE_LOG(ERR, PMD, "Error in qman_init_fq: ret: %d\n", ret);
+		DPAA_SEC_ERR("Error in qman_init_fq: ret: %d", ret);
 	qp->outq.cb.dqrr = NULL;
 
 	return ret;
@@ -3708,7 +3761,7 @@ dpaa_sec_dev_init(struct rte_cryptodev *cryptodev)
 
 	dpaa_sec_get_devargs(cryptodev->device->devargs, DRIVER_DUMP_MODE);
 
-	RTE_LOG(INFO, PMD, "%s cryptodev init\n", cryptodev->data->name);
+	DPAA_SEC_INFO("%s cryptodev init", cryptodev->data->name);
 	return 0;
 
 init_error:

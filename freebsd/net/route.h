@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)route.h	8.4 (Berkeley) 1/9/95
- * $FreeBSD$
  */
 
 #ifndef _NET_ROUTE_H_
@@ -95,11 +92,8 @@ struct rt_metrics {
 
 /*
  * rmx_rtt and rmx_rttvar are stored as microseconds;
- * RTTTOPRHZ(rtt) converts to a value suitable for use
- * by a protocol slowtimo counter.
  */
 #define	RTM_RTTUNIT	1000000	/* units for rtt, rttvar, as units per sec */
-#define	RTTTOPRHZ(r)	((r) / (RTM_RTTUNIT / PR_SLOWHZ))
 
 /* lle state is exported in rmx_state rt_metrics field */
 #define	rmx_state	rmx_weight
@@ -197,7 +191,7 @@ VNET_DECLARE(u_int, fib_hash_outbound);
 					/* 0x8000000 and up unassigned */
 #define	RTF_STICKY	 0x10000000	/* always route dst->src */
 
-#define	RTF_RNH_LOCKED	 0x40000000	/* radix node head is locked */
+/*			0x40000000	   unused, was RTF_RNH_LOCKED */
 
 #define	RTF_GWFLAG_COMPAT 0x80000000	/* a compatibility bit for interacting
 					   with existing routing apps */
@@ -245,6 +239,7 @@ struct rtstat {
 	uint64_t rts_add_retry;		/* # of route addition retries */
 	uint64_t rts_del_failure;	/* # of route deletion failure */
 	uint64_t rts_del_retry;		/* # of route deletion retries */
+	uint64_t rts_spare[5];
 };
 
 /*
@@ -268,6 +263,7 @@ struct rt_msghdr {
 
 #define RTM_VERSION	5	/* Up the ante and ignore older versions */
 
+#ifndef NETLINK_COMPAT
 /*
  * Message types.
  *
@@ -299,6 +295,9 @@ struct rt_msghdr {
 #define	RTM_DELMADDR	0x10	/* (4) mcast group membership being deleted */
 #define	RTM_IFANNOUNCE	0x11	/* (5) iface arrival/departure */
 #define	RTM_IEEE80211	0x12	/* (5) IEEE80211 wireless event */
+#define	RTM_IPFWLOG	0x13	/* (1) IPFW rule match log event */
+
+#endif /* NETLINK_COMPAT*/
 
 /*
  * Bitmask values for rtm_inits and rmx_locks.
@@ -313,6 +312,8 @@ struct rt_msghdr {
 #define RTV_RTTVAR	0x80	/* init or lock _rttvar */
 #define RTV_WEIGHT	0x100	/* init or lock _weight */
 
+#ifndef NETLINK_COMPAT
+
 /*
  * Bitmask values for rtm_addrs.
  */
@@ -324,6 +325,8 @@ struct rt_msghdr {
 #define RTA_IFA		0x20	/* interface addr sockaddr present */
 #define RTA_AUTHOR	0x40	/* sockaddr for author of redirect */
 #define RTA_BRD		0x80	/* for NEWADDR, broadcast or p-p dest addr */
+
+#endif /* NETLINK_COMPAT*/
 
 /*
  * Index offsets for sockaddr array for alternate internal encoding.
@@ -350,7 +353,7 @@ struct rt_addrinfo {
 	struct	ifaddr *rti_ifa;		/* value of rt_ifa addr */
 	struct	ifnet *rti_ifp;			/* route interface */
 	rib_filter_f_t	*rti_filter;		/* filter function */
-	void	*rti_filterdata;		/* filter paramenters */
+	void	*rti_filterdata;		/* filter parameters */
 	u_long	rti_mflags;			/* metrics RTV_ flags */
 	u_long	rti_spare;			/* Will be used for fib */
 	struct	rt_metrics *rti_rmx;		/* Pointer to route metrics */
@@ -394,6 +397,10 @@ struct rt_addrinfo {
 		}							\
 	} while (0)
 
+#define RO_GET_FAMILY(ro, dst)	((ro) != NULL &&		\
+	(ro)->ro_flags & RT_HAS_GW				\
+	? (ro)->ro_dst.sa_family : (dst)->sa_family)
+
 /*
  * Validate a cached route based on a supplied cookie.  If there is an
  * out-of-date cache, simply free it.  Update the generation number
@@ -411,15 +418,15 @@ struct ifmultiaddr;
 struct rib_head;
 
 void	 rt_ieee80211msg(struct ifnet *, int, void *, size_t);
-void	 rt_ifannouncemsg(struct ifnet *, int);
-void	 rt_ifmsg(struct ifnet *);
+void	 rt_ifmsg(struct ifnet *, int);
 void	 rt_missmsg(int, struct rt_addrinfo *, int, int);
 void	 rt_missmsg_fib(int, struct rt_addrinfo *, int, int, int);
 int	 rt_addrmsg(int, struct ifaddr *, int);
 int	 rt_routemsg(int, struct rtentry *, struct nhop_object *, int);
 int	 rt_routemsg_info(int, struct rt_addrinfo *, int);
 void	 rt_newmaddrmsg(int, struct ifmultiaddr *);
-void 	 rt_maskedcopy(struct sockaddr *, struct sockaddr *, struct sockaddr *);
+void 	 rt_maskedcopy(const struct sockaddr *, struct sockaddr *,
+	    const struct sockaddr *);
 struct rib_head *rt_table_init(int, int, u_int);
 void	rt_table_destroy(struct rib_head *);
 u_int	rt_tables_get_gen(uint32_t table, sa_family_t family);
@@ -435,15 +442,13 @@ void	rt_flushifroutes(struct ifnet *ifp);
  * For now the protocol indepedent versions are the same as the AF_INET ones
  * but this will change.. 
  */
-int	 rtioctl_fib(u_long, caddr_t, u_int);
-int	rib_lookup_info(uint32_t, const struct sockaddr *, uint32_t, uint32_t,
-	    struct rt_addrinfo *);
-void	rib_free_info(struct rt_addrinfo *info);
+int	rtioctl_fib(u_long, caddr_t, u_int);
 
 /* New API */
 void rib_flush_routes_family(int family);
 struct nhop_object *rib_lookup(uint32_t fibnum, const struct sockaddr *dst,
 	    uint32_t flags, uint32_t flowid);
+const char *rib_print_family(int family);
 #endif
 
 #endif

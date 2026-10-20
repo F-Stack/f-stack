@@ -30,10 +30,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)DEFS.h	5.1 (Berkeley) 4/23/90
- * $FreeBSD$
  */
+
+#ifdef __i386__
+#include <i386/asm.h>
+#else /* !__i386__ */
 
 #ifndef _MACHINE_ASM_H_
 #define	_MACHINE_ASM_H_
@@ -91,7 +92,7 @@
 
 #define	END(x)		.size x, . - x; .cfi_endproc
 /*
- * WEAK_REFERENCE(): create a weak reference alias from sym. 
+ * WEAK_REFERENCE(): create a weak reference alias from sym.
  * The macro is not a general asm macro that takes arbitrary names,
  * but one that takes only C names. It does the non-null name
  * translation inside the macro.
@@ -110,3 +111,5 @@
 #endif /* !STRIP_FBSDID */
 
 #endif /* !_MACHINE_ASM_H_ */
+
+#endif /* __i386__ */

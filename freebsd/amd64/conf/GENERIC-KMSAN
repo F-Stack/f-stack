@@ -1,0 +1,6 @@
+
+include GENERIC-DEBUG
+
+ident   GENERIC-KMSAN
+
+options 	KMSAN

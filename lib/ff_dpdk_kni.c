@@ -40,6 +40,7 @@
 
 #include "ff_dpdk_kni.h"
 #include "ff_config.h"
+#include "ff_reload.h"
 
 #ifndef IPPROTO_OSPFIGP
 #define IPPROTO_OSPFIGP 89  /**< OSPFIGP */
@@ -87,7 +88,52 @@ struct kni_interface_stats {
 };
 
 struct rte_ring **kni_rp;
+struct rte_ring **kni_inject_rp;
 struct kni_interface_stats **kni_stat;
+
+int
+ff_kni_is_owner_thread(void)
+{
+    if (ff_global_cfg.dpdk.thread_mode)
+        return rte_lcore_id() == ff_global_cfg.dpdk.proc_lcore[0];
+    return rte_eal_process_type() == RTE_PROC_PRIMARY;
+}
+
+int
+ff_kni_is_runtime_owner(void)
+{
+    if (ff_global_cfg.dpdk.thread_mode)
+        return rte_lcore_id() == ff_global_cfg.dpdk.proc_lcore[0];
+    if (!ff_global_cfg.dpdk.primary_slim)
+        return rte_eal_process_type() == RTE_PROC_PRIMARY;
+    if (ff_global_cfg.dpdk.proc_id != ff_global_cfg.kni.owner_proc_id)
+        return 0;
+    /* under graceful_reload two generations share the same
+     * proc_id, so the owner check must also match the generation: only the
+     * active generation owns KNI runtime (the master flips the active gen
+     * at T5). Without an attached reload state (non-nginx apps) the legacy
+     * proc_id-only comparison is kept.
+     * across masters the generation alone is ambiguous (both start at
+     * gen 0 in their own anonymous block), so the check goes through the
+     * generation directory's single (epoch, gen) KNI owner word — two
+     * processes must never both rte_eth_tx_burst the same TX queue. */
+    if (ff_global_cfg.dpdk.graceful_reload && ff_reload_state_attached())
+        return ff_reload_kni_owner_match();
+    return 1;
+}
+
+/* the stats table must exist for every process that can become the
+ * KNI runtime owner later — a slim process configured as owner_proc_id owns
+ * the inject/TX path as soon as its generation is activated, which can be
+ * after ff_kni_init(). Allocation here grants no runtime right at all:
+ * hotplug and ring creation stay gated on ff_kni_is_owner_thread(). */
+static int
+kni_needs_stats(void)
+{
+    return ff_kni_is_owner_thread() ||
+        (!ff_global_cfg.dpdk.thread_mode && ff_global_cfg.dpdk.primary_slim &&
+         ff_global_cfg.dpdk.proc_id == ff_global_cfg.kni.owner_proc_id);
+}
 
 struct kni_ratelimit kni_rate_limt = {0, 0, 0};
 
@@ -179,6 +225,23 @@ kni_process_rx(uint16_t port_id, uint16_t queue_id,
     nb_kni_rx = rte_eth_rx_burst(kni_stat[port_id]->port_id, 0, pkts_burst, count);
 
     if (nb_kni_rx > 0) {
+        if (ff_global_cfg.dpdk.primary_slim &&
+            rte_eal_process_type() == RTE_PROC_PRIMARY) {
+            /* Redirect to inject ring to avoid race between primary and
+             * owner_proc_id secondary both calling rte_eth_tx_burst on
+             * the same physical port TX queue 0. */
+            unsigned enq = rte_ring_enqueue_burst(kni_inject_rp[port_id],
+                (void **)pkts_burst, nb_kni_rx, NULL);
+            if (enq < nb_kni_rx) {
+                uint16_t i;
+                for (i = enq; i < nb_kni_rx; ++i)
+                    rte_pktmbuf_free(pkts_burst[i]);
+                kni_stat[port_id]->tx_dropped += (nb_kni_rx - enq);
+            }
+            kni_stat[port_id]->tx_packets += enq;
+            return 0;
+        }
+
         nb_rx = rte_eth_tx_burst(port_id, queue_id, pkts_burst, nb_kni_rx);
         if (nb_rx < nb_kni_rx) {
             uint16_t i;
@@ -376,7 +439,7 @@ ff_kni_proto_filter(const void *data, uint16_t len, uint16_t eth_frame_type)
 void
 ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
 {
-    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+    if (kni_needs_stats()) {
         kni_stat = rte_zmalloc("kni:stat",
             sizeof(struct kni_interface_stats *) * nb_ports,
             RTE_CACHE_LINE_SIZE);
@@ -393,6 +456,15 @@ ff_kni_init(uint16_t nb_ports, const char *tcp_ports, const char *udp_ports)
             RTE_CACHE_LINE_SIZE);
     if (kni_rp == NULL) {
         rte_exit(EXIT_FAILURE, "rte_zmalloc(%s (struct rte_ring*)) "
+                "failed\n", name_buf);
+    }
+
+    snprintf(name_buf, RTE_RING_NAMESIZE, "kni::inject_ring_%d", lcoreid);
+    kni_inject_rp = rte_zmalloc(name_buf,
+            sizeof(struct rte_ring *) * nb_ports,
+            RTE_CACHE_LINE_SIZE);
+    if (kni_inject_rp == NULL) {
+        rte_exit(EXIT_FAILURE, "rte_zmalloc(%s (kni_inject_rp)) "
                 "failed\n", name_buf);
     }
 
@@ -423,7 +495,7 @@ void
 ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
     unsigned ring_queue_size)
 {
-    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+    if (kni_needs_stats()) {
         struct rte_ether_addr addr = {{0}};
         int ret;
 
@@ -441,7 +513,9 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
         kni_stat[port_id]->tx_packets = 0;
         kni_stat[port_id]->tx_dropped = 0;
 
-        /* Get the interface default mac address */
+        /* Get the interface default mac address. A future owner reads it
+         * and stores the virtio port id below so kni_process_tx() can
+         * burst to the right port once this generation is activated. */
         rte_eth_macaddr_get(port_id,
                 (struct rte_ether_addr *)&addr);
         printf("ff_kni_alloc get Port %u MAC:"RTE_ETHER_ADDR_PRT_FMT"\n",
@@ -463,7 +537,8 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
             port_name, port_args);
 
         /* add the vdev for virtio_user */
-        if (rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
+        if (ff_kni_is_owner_thread() &&
+            rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
             rte_exit(EXIT_FAILURE, "ff_kni_alloc cannot create virtio user paired port for port %u\n", port_id);
         }
 
@@ -473,7 +548,7 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
     char ring_name[RTE_KNI_NAMESIZE];
     snprintf((char*)ring_name, RTE_KNI_NAMESIZE, "kni_ring_%u", port_id);
 
-    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+    if (ff_kni_is_owner_thread()) {
         kni_rp[port_id] = rte_ring_create(ring_name, ring_queue_size,
             socket_id, RING_F_SC_DEQ);
 
@@ -481,6 +556,10 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
             rte_panic("lookup kni ring failed!\n");
     } else {
         kni_rp[port_id] = rte_ring_lookup(ring_name);
+        if (kni_rp[port_id] == NULL)
+            rte_panic("kni ring %s not found: the primary did not create it"
+                " (is [kni] enable=1 in the primary's config?)\n",
+                ring_name);
     }
 
     if (kni_rp[port_id] == NULL)
@@ -488,6 +567,26 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
 
     printf("create kni ring success, %u ring entries are now free!\n",
         rte_ring_free_count(kni_rp[port_id]));
+
+    char inject_ring_name[RTE_KNI_NAMESIZE];
+    snprintf((char*)inject_ring_name, RTE_KNI_NAMESIZE, "kni_inject_%u", port_id);
+
+    if (ff_kni_is_owner_thread()) {
+        kni_inject_rp[port_id] = rte_ring_create(inject_ring_name, ring_queue_size,
+            socket_id, RING_F_SC_DEQ);
+
+        if (rte_ring_lookup(inject_ring_name) != kni_inject_rp[port_id])
+            rte_panic("lookup kni inject ring failed!\n");
+    } else {
+        kni_inject_rp[port_id] = rte_ring_lookup(inject_ring_name);
+        if (kni_inject_rp[port_id] == NULL)
+            rte_panic("kni ring %s not found: the primary did not create it"
+                " (is [kni] enable=1 in the primary's config?)\n",
+                inject_ring_name);
+    }
+
+    if (kni_inject_rp[port_id] == NULL)
+        rte_panic("create kni inject ring failed!\n");
 }
 
 void
@@ -496,6 +595,25 @@ ff_kni_process(uint16_t port_id, uint16_t queue_id,
 {
     kni_process_tx(port_id, queue_id, pkts_burst, count);
     kni_process_rx(port_id, queue_id, pkts_burst, count);
+}
+
+void
+ff_kni_inject_process(uint16_t port_id, uint16_t queue_id,
+    struct rte_mbuf **pkts_burst, unsigned count)
+{
+    uint16_t nb_rx = rte_ring_dequeue_burst(kni_inject_rp[port_id],
+        (void **)pkts_burst, count, NULL);
+    if (nb_rx == 0)
+        return;
+
+    uint16_t nb_tx = rte_eth_tx_burst(port_id, queue_id, pkts_burst, nb_rx);
+    if (nb_tx < nb_rx) {
+        uint16_t i;
+        for (i = nb_tx; i < nb_rx; ++i)
+            rte_pktmbuf_free(pkts_burst[i]);
+        kni_stat[port_id]->tx_dropped += (nb_rx - nb_tx);
+    }
+    kni_stat[port_id]->tx_packets += nb_tx;
 }
 
 /* enqueue the packet, and own it */
@@ -526,7 +644,7 @@ ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *pkt)
     return 0;
 
 error:
-    if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+    if (ff_kni_is_owner_thread() || ff_kni_is_runtime_owner()) {
         kni_stat[port_id]->rx_dropped++;
     }
     rte_pktmbuf_free(pkt);

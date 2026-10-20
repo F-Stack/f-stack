@@ -64,8 +64,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * seed = random (bits - 1) bit
  * n = prime, g0 = generator to n,
@@ -259,6 +257,7 @@ u_int32_t
 ip6_randomflowlabel(void)
 {
 #ifndef FSTACK
+
 	/*
 	 * It's ok to emit zero flow labels early, before random is available
 	 * (seeded).  RFC 6437:

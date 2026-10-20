@@ -65,7 +65,7 @@
  * Queues.
  *
  * Register interface and Memory-based circular buffer queues are used
- * to inferface SMMU.
+ * to interface SMMU.
  *
  * These are a Command queue for commands to send to the SMMU and an Event
  * queue for event/fault reports from the SMMU. Optionally PRI queue is
@@ -90,27 +90,35 @@
 #include "opt_platform.h"
 #include "opt_acpi.h"
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bitstring.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
+#include <sys/mutex.h>
 #include <sys/rman.h>
 #include <sys/lock.h>
+#include <sys/sysctl.h>
 #include <sys/tree.h>
 #include <sys/taskqueue.h>
 #include <vm/vm.h>
 #include <vm/vm_page.h>
-#if DEV_ACPI
+#ifdef DEV_ACPI
 #include <contrib/dev/acpica/include/acpi.h>
 #include <dev/acpica/acpivar.h>
 #endif
 #include <dev/pci/pcireg.h>
 #include <dev/pci/pcivar.h>
 #include <dev/iommu/iommu.h>
+#include <arm64/iommu/iommu_pmap.h>
+
+#include <machine/bus.h>
+
+#ifdef FDT
+#include <dev/fdt/fdt_common.h>
+#include <dev/ofw/ofw_bus.h>
+#include <dev/ofw/ofw_bus_subr.h>
+#endif
 
 #include "iommu.h"
 #include "iommu_if.h"
@@ -138,11 +146,15 @@ __FBSDID("$FreeBSD$");
 
 #define	SMMU_Q_ALIGN		(64 * 1024)
 
+#define		MAXADDR_48BIT	0xFFFFFFFFFFFFUL
+#define		MAXADDR_52BIT	0xFFFFFFFFFFFFFUL
+
 static struct resource_spec smmu_spec[] = {
 	{ SYS_RES_MEMORY, 0, RF_ACTIVE },
 	{ SYS_RES_IRQ, 0, RF_ACTIVE },
-	{ SYS_RES_IRQ, 1, RF_ACTIVE },
+	{ SYS_RES_IRQ, 1, RF_ACTIVE | RF_OPTIONAL },
 	{ SYS_RES_IRQ, 2, RF_ACTIVE },
+	{ SYS_RES_IRQ, 3, RF_ACTIVE },
 	RESOURCE_SPEC_END
 };
 
@@ -295,15 +307,6 @@ smmu_write_ack(struct smmu_softc *sc, uint32_t reg,
 	}
 
 	return (0);
-}
-
-static inline int
-ilog2(long x)
-{
-
-	KASSERT(x > 0 && powerof2(x), ("%s: invalid arg %ld", __func__, x));
-
-	return (flsl(x) - 1);
 }
 
 static int
@@ -764,8 +767,8 @@ smmu_init_ste_s1(struct smmu_softc *sc, struct smmu_cd *cd,
 	return (0);
 }
 
-static int
-smmu_init_ste(struct smmu_softc *sc, struct smmu_cd *cd, int sid, bool bypass)
+static uint64_t *
+smmu_get_ste_addr(struct smmu_softc *sc, int sid)
 {
 	struct smmu_strtab *strtab;
 	struct l1_desc *l1_desc;
@@ -782,6 +785,16 @@ smmu_init_ste(struct smmu_softc *sc, struct smmu_cd *cd, int sid, bool bypass)
 		    STRTAB_STE_DWORDS * 8 * sid);
 	};
 
+	return (addr);
+}
+
+static int
+smmu_init_ste(struct smmu_softc *sc, struct smmu_cd *cd, int sid, bool bypass)
+{
+	uint64_t *addr;
+
+	addr = smmu_get_ste_addr(sc, sid);
+
 	if (bypass)
 		smmu_init_ste_bypass(sc, sid, addr);
 	else
@@ -792,6 +805,21 @@ smmu_init_ste(struct smmu_softc *sc, struct smmu_cd *cd, int sid, bool bypass)
 	return (0);
 }
 
+static void
+smmu_deinit_ste(struct smmu_softc *sc, int sid)
+{
+	uint64_t *ste;
+
+	ste = smmu_get_ste_addr(sc, sid);
+	ste[0] = 0;
+
+	smmu_invalidate_sid(sc, sid);
+	smmu_sync_cd(sc, sid, 0, true);
+	smmu_invalidate_sid(sc, sid);
+
+	smmu_sync(sc);
+}
+
 static int
 smmu_init_cd(struct smmu_softc *sc, struct smmu_domain *domain)
 {
@@ -800,7 +828,7 @@ smmu_init_cd(struct smmu_softc *sc, struct smmu_domain *domain)
 	uint64_t val;
 	vm_size_t size;
 	struct smmu_cd *cd;
-	pmap_t p;
+	struct smmu_pmap *p;
 
 	size = 1 * (CD_DWORDS << 3);
 
@@ -819,7 +847,6 @@ smmu_init_cd(struct smmu_softc *sc, struct smmu_domain *domain)
 		return (ENXIO);
 	}
 
-	cd->size = size;
 	cd->paddr = vtophys(cd->vaddr);
 
 	ptr = cd->vaddr;
@@ -835,8 +862,8 @@ smmu_init_cd(struct smmu_softc *sc, struct smmu_domain *domain)
 	val |= ((64 - sc->ias) << CD0_T0SZ_S);
 	val |= CD0_IPS_48BITS;
 
-	paddr = p->pm_l0_paddr & CD1_TTB0_M;
-	KASSERT(paddr == p->pm_l0_paddr, ("bad allocation 1"));
+	paddr = p->sp_l0_paddr & CD1_TTB0_M;
+	KASSERT(paddr == p->sp_l0_paddr, ("bad allocation 1"));
 
 	ptr[1] = paddr;
 	ptr[2] = 0;
@@ -933,10 +960,6 @@ smmu_init_strtab_2lvl(struct smmu_softc *sc)
 	sz = strtab->num_l1_entries * sizeof(struct l1_desc);
 
 	strtab->l1 = malloc(sz, M_SMMU, M_WAITOK | M_ZERO);
-	if (strtab->l1 == NULL) {
-		contigfree(strtab->vaddr, l1size, M_SMMU);
-		return (ENOMEM);
-	}
 
 	reg = STRTAB_BASE_CFG_FMT_2LVL;
 	reg |= size << STRTAB_BASE_CFG_LOG2SIZE_S;
@@ -978,11 +1001,14 @@ smmu_init_l1_entry(struct smmu_softc *sc, int sid)
 
 	strtab = &sc->strtab;
 	l1_desc = &strtab->l1[sid >> STRTAB_SPLIT];
+	if (l1_desc->va) {
+		/* Already allocated. */
+		return (0);
+	}
 
 	size = 1 << (STRTAB_SPLIT + ilog2(STRTAB_STE_DWORDS) + 3);
 
 	l1_desc->span = STRTAB_SPLIT + 1;
-	l1_desc->size = size;
 	l1_desc->va = contigmalloc(size, M_SMMU,
 	    M_WAITOK | M_ZERO,	/* flags */
 	    0,			/* low */
@@ -1009,7 +1035,7 @@ smmu_init_l1_entry(struct smmu_softc *sc, int sid)
 	return (0);
 }
 
-static void
+static void __unused
 smmu_deinit_l1_entry(struct smmu_softc *sc, int sid)
 {
 	struct smmu_strtab *strtab;
@@ -1024,10 +1050,8 @@ smmu_deinit_l1_entry(struct smmu_softc *sc, int sid)
 	    STRTAB_L1_DESC_DWORDS * 8 * i);
 	*addr = 0;
 
-	if (sc->features & SMMU_FEATURE_2_LVL_STREAM_TABLE) {
-		l1_desc = &strtab->l1[sid >> STRTAB_SPLIT];
-		contigfree(l1_desc->va, l1_desc->size, M_SMMU);
-	}
+	l1_desc = &strtab->l1[sid >> STRTAB_SPLIT];
+	free(l1_desc->va, M_SMMU);
 }
 
 static int
@@ -1128,7 +1152,7 @@ smmu_enable_interrupts(struct smmu_softc *sc)
 	return (0);
 }
 
-#if DEV_ACPI
+#ifdef DEV_ACPI
 static void
 smmu_configure_intr(struct smmu_softc *sc, struct resource *res)
 {
@@ -1154,14 +1178,15 @@ smmu_setup_interrupts(struct smmu_softc *sc)
 
 	dev = sc->dev;
 
-#if DEV_ACPI
+#ifdef DEV_ACPI
 	/*
 	 * Configure SMMU interrupts as EDGE triggered manually
 	 * as ACPI tables carries no information for that.
 	 */
 	smmu_configure_intr(sc, sc->res[1]);
-	smmu_configure_intr(sc, sc->res[2]);
+	/* PRIQ is not in use. */
 	smmu_configure_intr(sc, sc->res[3]);
+	smmu_configure_intr(sc, sc->res[4]);
 #endif
 
 	error = bus_setup_intr(dev, sc->res[1], INTR_TYPE_MISC,
@@ -1171,7 +1196,7 @@ smmu_setup_interrupts(struct smmu_softc *sc)
 		return (ENXIO);
 	}
 
-	error = bus_setup_intr(dev, sc->res[3], INTR_TYPE_MISC,
+	error = bus_setup_intr(dev, sc->res[4], INTR_TYPE_MISC,
 	    smmu_gerr_intr, NULL, sc, &sc->intr_cookie[2]);
 	if (error) {
 		device_printf(dev, "Couldn't setup Gerr interrupt handler\n");
@@ -1316,7 +1341,7 @@ smmu_check_features(struct smmu_softc *sc)
 	switch (reg & IDR0_TTENDIAN_M) {
 	case IDR0_TTENDIAN_MIXED:
 		if (bootverbose)
-			device_printf(sc->dev, "Mixed endianess supported.\n");
+			device_printf(sc->dev, "Mixed endianness supported.\n");
 		sc->features |= SMMU_FEATURE_TT_LE;
 		sc->features |= SMMU_FEATURE_TT_BE;
 		break;
@@ -1534,12 +1559,6 @@ smmu_attach(device_t dev)
 
 	mtx_init(&sc->sc_mtx, device_get_nameunit(sc->dev), "smmu", MTX_DEF);
 
-	error = bus_alloc_resources(dev, smmu_spec, sc->res);
-	if (error) {
-		device_printf(dev, "Couldn't allocate resources.\n");
-		return (ENXIO);
-	}
-
 	error = smmu_setup_interrupts(sc);
 	if (error) {
 		bus_release_resources(dev, smmu_spec, sc->res);
@@ -1618,7 +1637,7 @@ smmu_unmap(device_t dev, struct iommu_domain *iodom,
 	dprintf("%s: %lx, %ld, domain %d\n", __func__, va, size, domain->asid);
 
 	for (i = 0; i < size; i += PAGE_SIZE) {
-		if (pmap_sremove(&domain->p, va) == 0) {
+		if (smmu_pmap_remove(&domain->p, va) == 0) {
 			/* pmap entry removed, invalidate TLB. */
 			smmu_tlbi_va(sc, va, domain->asid);
 		} else {
@@ -1653,7 +1672,7 @@ smmu_map(device_t dev, struct iommu_domain *iodom,
 
 	for (i = 0; size > 0; size -= PAGE_SIZE) {
 		pa = VM_PAGE_TO_PHYS(ma[i++]);
-		error = pmap_senter(&domain->p, va, pa, prot, 0);
+		error = smmu_pmap_enter(&domain->p, va, pa, prot, 0);
 		if (error)
 			return (error);
 		smmu_tlbi_va(sc, va, domain->asid);
@@ -1668,6 +1687,7 @@ smmu_map(device_t dev, struct iommu_domain *iodom,
 static struct iommu_domain *
 smmu_domain_alloc(device_t dev, struct iommu_unit *iommu)
 {
+	struct iommu_domain *iodom;
 	struct smmu_domain *domain;
 	struct smmu_unit *unit;
 	struct smmu_softc *sc;
@@ -1690,8 +1710,7 @@ smmu_domain_alloc(device_t dev, struct iommu_unit *iommu)
 
 	domain->asid = (uint16_t)new_asid;
 
-	pmap_pinit(&domain->p);
-	PMAP_LOCK_INIT(&domain->p);
+	smmu_pmap_pinit(&domain->p);
 
 	error = smmu_init_cd(sc, domain);
 	if (error) {
@@ -1708,7 +1727,15 @@ smmu_domain_alloc(device_t dev, struct iommu_unit *iommu)
 	LIST_INSERT_HEAD(&unit->domain_list, domain, next);
 	IOMMU_UNLOCK(iommu);
 
-	return (&domain->iodom);
+	iodom = &domain->iodom;
+
+	/*
+	 * Use 48-bit address space regardless of VAX bit
+	 * as we need 64k IOMMU_PAGE_SIZE for 52-bit space.
+	 */
+	iodom->end = MAXADDR_48BIT;
+
+	return (iodom);
 }
 
 static void
@@ -1726,13 +1753,13 @@ smmu_domain_free(device_t dev, struct iommu_domain *iodom)
 
 	cd = domain->cd;
 
-	pmap_sremove_pages(&domain->p);
-	pmap_release(&domain->p);
+	smmu_pmap_remove_pages(&domain->p);
+	smmu_pmap_release(&domain->p);
 
 	smmu_tlbi_asid(sc, domain->asid);
 	smmu_asid_free(sc, domain->asid);
 
-	contigfree(cd->vaddr, cd->size, M_SMMU);
+	free(cd->vaddr, M_SMMU);
 	free(cd, M_SMMU);
 
 	free(domain, M_SMMU);
@@ -1753,41 +1780,80 @@ smmu_set_buswide(device_t dev, struct smmu_domain *domain,
 	return (0);
 }
 
+static int
+smmu_pci_get_sid(device_t child, uintptr_t *xref0, u_int *sid0)
+{
+	struct pci_id_ofw_iommu pi;
+	int err;
+
+	err = pci_get_id(child, PCI_ID_OFW_IOMMU, (uintptr_t *)&pi);
+	if (err == 0) {
+		if (sid0)
+			*sid0 = pi.id;
+		if (xref0)
+			*xref0 = pi.xref;
+	}
+
+	return (err);
+}
+
 static struct iommu_ctx *
 smmu_ctx_alloc(device_t dev, struct iommu_domain *iodom, device_t child,
     bool disabled)
 {
 	struct smmu_domain *domain;
-	struct smmu_softc *sc;
 	struct smmu_ctx *ctx;
-	uint16_t rid;
-	u_int xref, sid;
-	int seg;
-	int err;
 
-	sc = device_get_softc(dev);
 	domain = (struct smmu_domain *)iodom;
 
-	seg = pci_get_domain(child);
-	rid = pci_get_rid(child);
-	err = acpi_iort_map_pci_smmuv3(seg, rid, &xref, &sid);
-	if (err)
-		return (NULL);
-
-	if (sc->features & SMMU_FEATURE_2_LVL_STREAM_TABLE) {
-		err = smmu_init_l1_entry(sc, sid);
-		if (err)
-			return (NULL);
-	}
-
 	ctx = malloc(sizeof(struct smmu_ctx), M_SMMU, M_WAITOK | M_ZERO);
-	ctx->vendor = pci_get_vendor(child);
-	ctx->device = pci_get_device(child);
 	ctx->dev = child;
-	ctx->sid = sid;
 	ctx->domain = domain;
 	if (disabled)
 		ctx->bypass = true;
+
+	IOMMU_DOMAIN_LOCK(iodom);
+	LIST_INSERT_HEAD(&domain->ctx_list, ctx, next);
+	IOMMU_DOMAIN_UNLOCK(iodom);
+
+	return (&ctx->ioctx);
+}
+
+static int
+smmu_ctx_init(device_t dev, struct iommu_ctx *ioctx)
+{
+	struct smmu_domain *domain;
+	struct iommu_domain *iodom;
+	struct smmu_softc *sc;
+	struct smmu_ctx *ctx;
+	devclass_t pci_class;
+	u_int sid;
+	int err;
+
+	ctx = (struct smmu_ctx *)ioctx;
+
+	sc = device_get_softc(dev);
+
+	domain = ctx->domain;
+	iodom = (struct iommu_domain *)domain;
+
+	pci_class = devclass_find("pci");
+	if (device_get_devclass(device_get_parent(ctx->dev)) == pci_class) {
+		err = smmu_pci_get_sid(ctx->dev, NULL, &sid);
+		if (err)
+			return (err);
+
+		ioctx->rid = pci_get_rid(dev);
+		ctx->sid = sid;
+		ctx->vendor = pci_get_vendor(ctx->dev);
+		ctx->device = pci_get_device(ctx->dev);
+	}
+
+	if (sc->features & SMMU_FEATURE_2_LVL_STREAM_TABLE) {
+		err = smmu_init_l1_entry(sc, ctx->sid);
+		if (err)
+			return (err);
+	}
 
 	/*
 	 * Neoverse N1 SDP:
@@ -1798,14 +1864,11 @@ smmu_ctx_alloc(device_t dev, struct iommu_domain *iodom, device_t child,
 
 	smmu_init_ste(sc, domain->cd, ctx->sid, ctx->bypass);
 
-	if (iommu_is_buswide_ctx(iodom->iommu, pci_get_bus(ctx->dev)))
-		smmu_set_buswide(dev, domain, ctx);
+	if (device_get_devclass(device_get_parent(ctx->dev)) == pci_class)
+		if (iommu_is_buswide_ctx(iodom->iommu, pci_get_bus(ctx->dev)))
+			smmu_set_buswide(dev, domain, ctx);
 
-	IOMMU_DOMAIN_LOCK(iodom);
-	LIST_INSERT_HEAD(&domain->ctx_list, ctx, next);
-	IOMMU_DOMAIN_UNLOCK(iodom);
-
-	return (&ctx->ioctx);
+	return (0);
 }
 
 static void
@@ -1819,7 +1882,7 @@ smmu_ctx_free(device_t dev, struct iommu_ctx *ioctx)
 	sc = device_get_softc(dev);
 	ctx = (struct smmu_ctx *)ioctx;
 
-	smmu_deinit_l1_entry(sc, ctx->sid);
+	smmu_deinit_ste(sc, ctx->sid);
 
 	LIST_REMOVE(ctx, next);
 
@@ -1851,7 +1914,7 @@ smmu_ctx_lookup_by_sid(device_t dev, u_int sid)
 static struct iommu_ctx *
 smmu_ctx_lookup(device_t dev, device_t child)
 {
-	struct iommu_unit *iommu;
+	struct iommu_unit *iommu __diagused;
 	struct smmu_softc *sc;
 	struct smmu_domain *domain;
 	struct smmu_unit *unit;
@@ -1882,29 +1945,14 @@ static int
 smmu_find(device_t dev, device_t child)
 {
 	struct smmu_softc *sc;
-	u_int xref, sid;
-	uint16_t rid;
-	int error;
-	int seg;
+	uintptr_t xref;
+	int err;
 
 	sc = device_get_softc(dev);
 
-	rid = pci_get_rid(child);
-	seg = pci_get_domain(child);
-
-	/*
-	 * Find an xref of an IOMMU controller that serves traffic for dev.
-	 */
-#ifdef DEV_ACPI
-	error = acpi_iort_map_pci_smmuv3(seg, rid, &xref, &sid);
-	if (error) {
-		/* Could not find reference to an SMMU device. */
+	err = smmu_pci_get_sid(child, &xref, NULL);
+	if (err)
 		return (ENOENT);
-	}
-#else
-	/* TODO: add FDT support. */
-	return (ENXIO);
-#endif
 
 	/* Check if xref is ours. */
 	if (xref != sc->xref)
@@ -1912,6 +1960,24 @@ smmu_find(device_t dev, device_t child)
 
 	return (0);
 }
+
+#ifdef FDT
+static int
+smmu_ofw_md_data(device_t dev, struct iommu_ctx *ioctx, pcell_t *cells,
+    int ncells)
+{
+	struct smmu_ctx *ctx;
+
+	ctx = (struct smmu_ctx *)ioctx;
+
+	if (ncells != 1)
+		return (-1);
+
+	ctx->sid = cells[0];
+
+	return (0);
+}
+#endif
 
 static device_method_t smmu_methods[] = {
 	/* Device interface */
@@ -1924,8 +1990,12 @@ static device_method_t smmu_methods[] = {
 	DEVMETHOD(iommu_domain_alloc,	smmu_domain_alloc),
 	DEVMETHOD(iommu_domain_free,	smmu_domain_free),
 	DEVMETHOD(iommu_ctx_alloc,	smmu_ctx_alloc),
+	DEVMETHOD(iommu_ctx_init,	smmu_ctx_init),
 	DEVMETHOD(iommu_ctx_free,	smmu_ctx_free),
 	DEVMETHOD(iommu_ctx_lookup,	smmu_ctx_lookup),
+#ifdef FDT
+	DEVMETHOD(iommu_ofw_md_data,	smmu_ofw_md_data),
+#endif
 
 	/* Bus interface */
 	DEVMETHOD(bus_read_ivar,	smmu_read_ivar),

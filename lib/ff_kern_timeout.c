@@ -56,6 +56,22 @@ __FBSDID("$FreeBSD$");
 #include <sys/systm.h>
 #include <sys/bus.h>
 #include <sys/callout.h>
+#include <sys/time.h>
+
+/*
+ * F-Stack: 14.0+ removed CALLOUT_LOCAL_ALLOC and CS_EXECUTING.
+ * Define as fallback so existing checks preserve behavior under user-space stub.
+ */
+#ifdef FSTACK
+#ifndef CALLOUT_LOCAL_ALLOC
+#define CALLOUT_LOCAL_ALLOC 0
+#endif
+#ifndef CS_EXECUTING
+#define CS_EXECUTING 0x0002
+#endif
+static int _ff_callout_stop_safe(struct callout *c, int flags, void (*drain)(void *));
+#endif
+
 #include <sys/file.h>
 #include <sys/interrupt.h>
 #include <sys/kernel.h>
@@ -69,6 +85,13 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/smp.h>
 #include <sys/timetc.h>
+
+/*
+ * F-Stack tick-wheel sbt helpers (callout_when + callout_sbt_to_ticks).
+ * Implemented in ff_callout_sbt.h so tests/unit/test_ff_callout.c compiles
+ * the same code against a host shim.
+ */
+#include "ff_callout_sbt.h"
 
 SDT_PROVIDER_DEFINE(callout_execute);
 SDT_PROBE_DEFINE1(callout_execute, , , callout__start, "struct callout *");
@@ -162,21 +185,26 @@ struct callout_cpu {
 #define cc_exec_next(cc)             cc->cc_next
 #define cc_exec_cancel(cc, dir)      cc->cc_exec_entity[dir].cc_cancel
 #define cc_exec_waiting(cc, dir)     cc->cc_exec_entity[dir].cc_waiting
-struct callout_cpu cc_cpu;
+/* Per-thread callout_cpu: each stack instance drives its own callwheel.
+ * CC_CPU/CC_SELF ignore the cpu arg and return the calling thread's own
+ * instance, so c_cpu is only a record of which thread armed the callout. */
+__thread struct callout_cpu cc_cpu;
 #define CC_CPU(cpu)    &cc_cpu
 #define CC_SELF()      &cc_cpu
 #define CC_LOCK(cc)           mtx_lock_spin(&(cc)->cc_lock)
 #define CC_UNLOCK(cc)         mtx_unlock_spin(&(cc)->cc_lock)
 #define CC_LOCK_ASSERT(cc)    mtx_assert(&(cc)->cc_lock, MA_OWNED)
 
-static int timeout_cpu;
+static __thread int timeout_cpu;
 
+void ff_callout_thread_init(void);
 static void callout_cpu_init(struct callout_cpu *cc, int cpu);
 static void softclock_call_cc(struct callout *c, struct callout_cpu *cc,
 #ifdef CALLOUT_PROFILING
     int *mpcalls, int *lockcalls, int *gcalls,
 #endif
     int direct);
+static void softclock(void *arg);
 
 static MALLOC_DEFINE(M_CALLOUT, "callout", "Callout datastructures");
 
@@ -218,21 +246,34 @@ cc_cce_migrating(struct callout_cpu *cc, int direct)
 }
 
 /*
- * Kernel low level callwheel initialization
- * called on cpu0 during kernel startup.
+ * Per-thread callwheel bootstrap for the calling thread's own cc_cpu.
+ * PRECONDITION: the global size pass (callwheelsize/callwheelmask, set in
+ * callout_callwheel_init) must run before this, because the wheel malloc
+ * below depends on callwheelsize.
+ * CM3: main thread calls it once via the SYSINIT below (behaviour
+ * unchanged). Worker per-thread invocation is wired in CM5.
  */
-static void
-callout_callwheel_init(void *dummy)
+void
+ff_callout_thread_init(void)
 {
     struct callout_cpu *cc;
 
+    memset(CC_SELF(), 0, sizeof(cc_cpu));
+
+    timeout_cpu = PCPU_GET(cpuid);
+    cc = CC_CPU(timeout_cpu);
+    cc->cc_callout = malloc(ncallout * sizeof(struct callout),
+        M_CALLOUT, M_WAITOK);
+    callout_cpu_init(cc, timeout_cpu);
+}
+
+static void
+callout_callwheel_init(void *dummy)
+{
     /*
-     * Calculate the size of the callout wheel and the preallocated
-     * timeout() structures.
-     * XXX: Clip callout to result of previous function of maxusers
-     * maximum 384.  This is still huge, but acceptable.
+     * Global size pass (once): compute callwheel size/mask and fetch
+     * tunables. callwheelsize/callwheelmask stay global read-only.
      */
-    memset(CC_CPU(0), 0, sizeof(cc_cpu));
     ncallout = imin(16 + maxproc + maxfiles, 18508);
     TUNABLE_INT_FETCH("kern.ncallout", &ncallout);
 
@@ -249,17 +290,8 @@ callout_callwheel_init(void *dummy)
     TUNABLE_INT_FETCH("kern.pin_default_swi", &pin_default_swi);
     TUNABLE_INT_FETCH("kern.pin_pcpu_swi", &pin_pcpu_swi);
 
-    /*
-     * Only cpu0 handles timeout(9) and receives a preallocation.
-     *
-     * XXX: Once all timeout(9) consumers are converted this can
-     * be removed.
-     */
-    timeout_cpu = PCPU_GET(cpuid);
-    cc = CC_CPU(timeout_cpu);
-    cc->cc_callout = malloc(ncallout * sizeof(struct callout),
-        M_CALLOUT, M_WAITOK);
-    callout_cpu_init(cc, timeout_cpu);
+    /* Build this (main) thread's own callwheel. */
+    ff_callout_thread_init();
 }
 SYSINIT(callwheel_init, SI_SUB_CPU, SI_ORDER_ANY, callout_callwheel_init, NULL);
 
@@ -289,7 +321,9 @@ callout_cpu_init(struct callout_cpu *cc, int cpu)
     for (i = 0; i < ncallout; i++) {
         c = &cc->cc_callout[i];
         callout_init(c, 0);
+#ifndef FSTACK
         c->c_iflags = CALLOUT_LOCAL_ALLOC;
+#endif
         SLIST_INSERT_HEAD(&cc->cc_callfree, c, c_links.sle);
     }
 }
@@ -554,7 +588,7 @@ skip:
  * Software (low priority) clock interrupt.
  * Run periodic events from timeout queue.
  */
-void
+static void
 softclock(void *arg)
 {
     struct callout *c;
@@ -788,8 +822,20 @@ callout_schedule(struct callout *c, int to_ticks)
     return callout_reset_on(c, to_ticks, c->c_func, c->c_arg, c->c_cpu);
 }
 
+#ifdef FSTACK
+/* 14.0+ public ABI: 2-arg, calls the 3-arg internal impl with NULL drain. */
+int
+_callout_stop_safe(struct callout *c, int flags)
+{
+    return _ff_callout_stop_safe(c, flags, NULL);
+}
+
+static int
+_ff_callout_stop_safe(struct callout *c, int flags, void (*drain)(void *))
+#else
 int
 _callout_stop_safe(struct callout *c, int flags, void (*drain)(void *))
+#endif
 {
     struct callout_cpu *cc, *old_cc;
     struct lock_class *class;
@@ -1199,6 +1245,7 @@ SYSCTL_PROC(_kern, OID_AUTO, callout_stat,
 
 #ifdef FSTACK
 void ff_hardclock(void);
+void ff_hardclock_worker(void);
 
 void
 ff_hardclock(void)
@@ -1211,6 +1258,48 @@ ff_hardclock(void)
 #ifdef DEVICE_POLLING
     hardclock_device_poll();    /* this is very short and quick */
 #endif /* DEVICE_POLLING */
+}
+
+/*
+ * Worker-thread clock: only advances this thread's own callwheel (cc_cpu is
+ * __thread). Global `ticks` and the timecounter stay owned by the main thread,
+ * otherwise N threads ticking them would make the shared time base run N times
+ * too fast and break every ticks-based timeout.
+ */
+void
+ff_hardclock_worker(void)
+{
+    callout_tick();
+}
+
+/*
+ * FSTACK: drive the HPTS pacing wheel from the f-stack run-to-completion
+ * loop so RACK/BBR paced output actually fires.
+ *
+ * Stock FreeBSD services the wheel from (a) the hpts swi thread, woken by
+ * swi_sched(), and (b) tcp_hpts_softclock() called out of userret(). In
+ * f-stack swi_sched()/intr_event are no-ops (lib/ff_kern_intr.c) and there
+ * is no userret, so neither path runs -> paced segments are queued on the
+ * wheel but never sent, and BBR stalls mid-transfer on large files.
+ *
+ * We deliberately bypass the tcp_hpts_softclock() *macro* gate
+ * (hpts_that_need_softclock > 0): that counter is only raised when a
+ * single hpts holds more than conn_cnt_thresh connections
+ * (tcp_hpts.c ~L1731), so for the common few-connection case it stays 0
+ * and the wheel would never be run. Instead we invoke the run function
+ * directly via the tcp_hpts_softclock function pointer (set to
+ * __tcp_run_hpts at init). It is cheap when idle: __tcp_run_hpts early-
+ * outs on p_hpts_active / HPTS_TRYLOCK and only emits segments whose
+ * pacing slot is already due.
+ */
+#undef tcp_hpts_softclock
+void ff_tcp_hpts_softclock(void);
+
+void
+ff_tcp_hpts_softclock(void)
+{
+    if (tcp_hpts_softclock != NULL)
+        tcp_hpts_softclock();
 }
 
 static unsigned int

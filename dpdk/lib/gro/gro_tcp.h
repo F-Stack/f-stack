@@ -133,7 +133,7 @@ merge_two_tcp_packets(struct gro_tcp_item *item,
 	pkt_head->nb_segs += pkt_tail->nb_segs;
 	pkt_head->pkt_len += pkt_tail->pkt_len;
 	if (tcp_flags != RTE_TCP_ACK_FLAG) {
-		tcp_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_tcp_hdr *,
+		tcp_hdr = rte_pktmbuf_mtod_offset(pkt_head, struct rte_tcp_hdr *,
 						l2_offset + pkt_head->l2_len + pkt_head->l3_len);
 		tcp_hdr->tcp_flags |= tcp_flags;
 	}
@@ -159,8 +159,8 @@ check_seq_option(struct gro_tcp_item *item,
 	struct rte_tcp_hdr *tcph_orig;
 	uint16_t len, tcp_hl_orig;
 
-	iph_orig = (char *)(rte_pktmbuf_mtod(pkt_orig, char *) +
-			l2_offset + pkt_orig->l2_len);
+	iph_orig = rte_pktmbuf_mtod_offset(pkt_orig, char *,
+					   l2_offset + pkt_orig->l2_len);
 	tcph_orig = (struct rte_tcp_hdr *)(iph_orig + pkt_orig->l3_len);
 	tcp_hl_orig = pkt_orig->l4_len;
 

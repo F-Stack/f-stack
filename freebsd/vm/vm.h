@@ -28,10 +28,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- *	@(#)vm.h	8.2 (Berkeley) 12/13/93
- *	@(#)vm_prot.h	8.1 (Berkeley) 6/11/93
- *	@(#)vm_inherit.h	8.1 (Berkeley) 6/11/93
- *
  * Copyright (c) 1987, 1990 Carnegie-Mellon University.
  * All rights reserved.
  *
@@ -56,8 +52,6 @@
  *
  * any improvements or extensions that they make and grant Carnegie the
  * rights to redistribute these changes.
- *
- * $FreeBSD$
  */
 
 #ifndef VM_H
@@ -82,14 +76,25 @@ typedef u_char vm_prot_t;	/* protection codes */
 #define	VM_PROT_COPY		((vm_prot_t) 0x08)	/* copy-on-read */
 #define	VM_PROT_PRIV_FLAG	((vm_prot_t) 0x10)
 #define	VM_PROT_FAULT_LOOKUP	VM_PROT_PRIV_FLAG
+#define	VM_PROT_NO_PROMOTE	VM_PROT_PRIV_FLAG
 #define	VM_PROT_QUICK_NOFAULT	VM_PROT_PRIV_FLAG	/* same to save bits */
 
 #define	VM_PROT_ALL		(VM_PROT_READ|VM_PROT_WRITE|VM_PROT_EXECUTE)
 #define VM_PROT_RW		(VM_PROT_READ|VM_PROT_WRITE)
 #define	VM_PROT_DEFAULT		VM_PROT_ALL
 
-enum obj_type { OBJT_DEFAULT, OBJT_SWAP, OBJT_VNODE, OBJT_DEVICE, OBJT_PHYS,
-		OBJT_DEAD, OBJT_SG, OBJT_MGTDEVICE };
+enum obj_type {
+	OBJT_RESERVED = 0,	/* was OBJT_DEFAULT */
+	OBJT_SWAP,
+	OBJT_DEFAULT = OBJT_SWAP,
+	OBJT_VNODE,
+	OBJT_DEVICE,
+	OBJT_PHYS,
+	OBJT_DEAD,
+	OBJT_SG,
+	OBJT_MGTDEVICE,
+	OBJT_FIRST_DYN,
+};
 typedef u_char objtype_t;
 
 union vm_map_object;
@@ -135,7 +140,7 @@ struct vm_reserv;
 typedef struct vm_reserv *vm_reserv_t;
 
 /*
- * Information passed from the machine-independant VM initialization code
+ * Information passed from the machine-independent VM initialization code
  * for use by machine-dependant code (mainly for MMU support)
  */
 struct kva_md_info {
@@ -145,21 +150,34 @@ struct kva_md_info {
 	vm_offset_t	clean_eva;
 };
 
-extern struct kva_md_info	kmi;
-extern void vm_ksubmap_init(struct kva_md_info *);
+/* bits from overcommit */
+#define	SWAP_RESERVE_FORCE_ON		(1 << 0)
+#define	SWAP_RESERVE_RLIMIT_ON		(1 << 1)
+#define	SWAP_RESERVE_ALLOW_NONWIRED	(1 << 2)
 
-extern int old_mlock;
-
-extern int vm_ndomains;
+#ifdef NUMA
+#define	__numa_used
+#else
+#define	__numa_used	__unused
+#endif
 
 #ifdef _KERNEL
 struct ucred;
+
+void vm_ksubmap_init(struct kva_md_info *);
 bool swap_reserve(vm_ooffset_t incr);
 bool swap_reserve_by_cred(vm_ooffset_t incr, struct ucred *cred);
 void swap_reserve_force(vm_ooffset_t incr);
 void swap_release(vm_ooffset_t decr);
 void swap_release_by_cred(vm_ooffset_t decr, struct ucred *cred);
-void swapper(void);
-#endif
+
+extern struct kva_md_info	kmi;
+#define VA_IS_CLEANMAP(va)					\
+	((va) >= kmi.clean_sva && (va) < kmi.clean_eva)
+
+extern int old_mlock;
+extern int vm_ndomains;
+extern int vm_overcommit;
+#endif				/* _KERNEL */
 
 #endif				/* VM_H */

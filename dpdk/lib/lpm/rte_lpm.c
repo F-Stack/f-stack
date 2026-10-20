@@ -18,6 +18,9 @@
 #include <rte_tailq.h>
 
 #include "rte_lpm.h"
+#include "lpm_log.h"
+
+RTE_LOG_REGISTER_DEFAULT(lpm_logtype, INFO);
 
 TAILQ_HEAD(rte_lpm_list, rte_tailq_entry);
 
@@ -82,7 +85,7 @@ struct __rte_lpm {
  * depth  (IN)		: range = 1 - 32
  * mask   (OUT)		: 32bit mask
  */
-static uint32_t __attribute__((pure))
+static uint32_t __rte_pure
 depth_to_mask(uint8_t depth)
 {
 	VERIFY_DEPTH(depth);
@@ -96,7 +99,7 @@ depth_to_mask(uint8_t depth)
 /*
  * Converts given depth value to its corresponding range value.
  */
-static uint32_t __attribute__((pure))
+static uint32_t __rte_pure
 depth_to_range(uint8_t depth)
 {
 	VERIFY_DEPTH(depth);
@@ -189,7 +192,7 @@ rte_lpm_create(const char *name, int socket_id,
 	/* allocate tailq entry */
 	te = rte_zmalloc("LPM_TAILQ_ENTRY", sizeof(*te), 0);
 	if (te == NULL) {
-		RTE_LOG(ERR, LPM, "Failed to allocate tailq entry\n");
+		LPM_LOG(ERR, "Failed to allocate tailq entry");
 		rte_errno = ENOMEM;
 		goto exit;
 	}
@@ -198,7 +201,7 @@ rte_lpm_create(const char *name, int socket_id,
 	i_lpm = rte_zmalloc_socket(mem_name, mem_size,
 			RTE_CACHE_LINE_SIZE, socket_id);
 	if (i_lpm == NULL) {
-		RTE_LOG(ERR, LPM, "LPM memory allocation failed\n");
+		LPM_LOG(ERR, "LPM memory allocation failed");
 		rte_free(te);
 		rte_errno = ENOMEM;
 		goto exit;
@@ -208,7 +211,7 @@ rte_lpm_create(const char *name, int socket_id,
 			(size_t)rules_size, RTE_CACHE_LINE_SIZE, socket_id);
 
 	if (i_lpm->rules_tbl == NULL) {
-		RTE_LOG(ERR, LPM, "LPM rules_tbl memory allocation failed\n");
+		LPM_LOG(ERR, "LPM rules_tbl memory allocation failed");
 		rte_free(i_lpm);
 		i_lpm = NULL;
 		rte_free(te);
@@ -220,7 +223,7 @@ rte_lpm_create(const char *name, int socket_id,
 			(size_t)tbl8s_size, RTE_CACHE_LINE_SIZE, socket_id);
 
 	if (i_lpm->lpm.tbl8 == NULL) {
-		RTE_LOG(ERR, LPM, "LPM tbl8 memory allocation failed\n");
+		LPM_LOG(ERR, "LPM tbl8 memory allocation failed");
 		rte_free(i_lpm->rules_tbl);
 		rte_free(i_lpm);
 		i_lpm = NULL;
@@ -335,7 +338,7 @@ rte_lpm_rcu_qsbr_add(struct rte_lpm *lpm, struct rte_lpm_rcu_config *cfg)
 		params.v = cfg->v;
 		i_lpm->dq = rte_rcu_qsbr_dq_create(&params);
 		if (i_lpm->dq == NULL) {
-			RTE_LOG(ERR, LPM, "LPM defer queue creation failed\n");
+			LPM_LOG(ERR, "LPM defer queue creation failed");
 			return 1;
 		}
 	} else {
@@ -562,7 +565,7 @@ tbl8_free(struct __rte_lpm *i_lpm, uint32_t tbl8_group_start)
 		status = rte_rcu_qsbr_dq_enqueue(i_lpm->dq,
 				(void *)&tbl8_group_start);
 		if (status == 1) {
-			RTE_LOG(ERR, LPM, "Failed to push QSBR FIFO\n");
+			LPM_LOG(ERR, "Failed to push QSBR FIFO");
 			return -rte_errno;
 		}
 	}
@@ -1113,7 +1116,7 @@ delete_depth_big(struct __rte_lpm *i_lpm, uint32_t ip_masked,
 		 * Prevent the free of the tbl8 group from hoisting.
 		 */
 		i_lpm->lpm.tbl24[tbl24_index].valid = 0;
-		__atomic_thread_fence(__ATOMIC_RELEASE);
+		rte_atomic_thread_fence(rte_memory_order_release);
 		status = tbl8_free(i_lpm, tbl8_group_start);
 	} else if (tbl8_recycle_index > -1) {
 		/* Update tbl24 entry. */
@@ -1129,7 +1132,7 @@ delete_depth_big(struct __rte_lpm *i_lpm, uint32_t ip_masked,
 		 */
 		__atomic_store(&i_lpm->lpm.tbl24[tbl24_index], &new_tbl24_entry,
 				__ATOMIC_RELAXED);
-		__atomic_thread_fence(__ATOMIC_RELEASE);
+		rte_atomic_thread_fence(rte_memory_order_release);
 		status = tbl8_free(i_lpm, tbl8_group_start);
 	}
 #undef group_idx

@@ -3,6 +3,7 @@
  */
 
 #include <inttypes.h>
+#include <stdalign.h>
 
 #include <rte_common.h>
 #include <rte_cycles.h>
@@ -11,13 +12,15 @@
 #include <rte_keepalive.h>
 #include <rte_malloc.h>
 
+#include "eal_private.h"
+
 struct rte_keepalive {
 	/** Core Liveness. */
 	struct {
 		/*
 		 * Each element must be cache aligned to prevent false sharing.
 		 */
-		enum rte_keepalive_state core_state __rte_cache_aligned;
+		alignas(RTE_CACHE_LINE_SIZE) enum rte_keepalive_state core_state;
 	} live_data[RTE_KEEPALIVE_MAXCORES];
 
 	/** Last-seen-alive timestamps */
@@ -53,7 +56,7 @@ struct rte_keepalive {
 static void
 print_trace(const char *msg, struct rte_keepalive *keepcfg, int idx_core)
 {
-	RTE_LOG(INFO, EAL, "%sLast seen %" PRId64 "ms ago.\n",
+	EAL_LOG(INFO, "%sLast seen %" PRId64 "ms ago.",
 		msg,
 		((rte_rdtsc() - keepcfg->last_alive[idx_core])*1000)
 		/ rte_get_tsc_hz()

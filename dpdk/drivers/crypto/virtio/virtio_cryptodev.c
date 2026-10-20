@@ -239,9 +239,8 @@ virtio_crypto_send_command(struct virtqueue *vq,
 		vq->vq_free_cnt++;
 	}
 
-	VIRTIO_CRYPTO_INIT_LOG_DBG("vq->vq_free_cnt=%d\n"
-			"vq->vq_desc_head_idx=%d",
-			vq->vq_free_cnt, vq->vq_desc_head_idx);
+	VIRTIO_CRYPTO_INIT_LOG_DBG("vq->vq_free_cnt=%d", vq->vq_free_cnt);
+	VIRTIO_CRYPTO_INIT_LOG_DBG("vq->vq_desc_head_idx=%d", vq->vq_desc_head_idx);
 
 	/* get the result */
 	if (input->status != VIRTIO_CRYPTO_OK) {
@@ -296,8 +295,6 @@ virtio_crypto_queue_setup(struct rte_cryptodev *dev,
 	unsigned int vq_size, size;
 	struct virtio_crypto_hw *hw = dev->data->dev_private;
 	struct virtqueue *vq = NULL;
-	uint32_t i = 0;
-	uint32_t j;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -358,17 +355,6 @@ virtio_crypto_queue_setup(struct rte_cryptodev *dev,
 			VIRTIO_CRYPTO_DRV_LOG_ERR("Virtio Crypto PMD "
 					"Cannot create mempool");
 			goto mpool_create_err;
-		}
-		for (i = 0; i < vq_size; i++) {
-			vq->vq_descx[i].cookie =
-				rte_zmalloc("crypto PMD op cookie pointer",
-					sizeof(struct virtio_crypto_op_cookie),
-					RTE_CACHE_LINE_SIZE);
-			if (vq->vq_descx[i].cookie == NULL) {
-				VIRTIO_CRYPTO_DRV_LOG_ERR("Failed to "
-						"alloc mem for cookie");
-				goto cookie_alloc_err;
-			}
 		}
 	}
 
@@ -433,12 +419,6 @@ virtio_crypto_queue_setup(struct rte_cryptodev *dev,
 vring_addr_err:
 	rte_memzone_free(mz);
 mz_reserve_err:
-cookie_alloc_err:
-	rte_mempool_free(vq->mpool);
-	if (i != 0) {
-		for (j = 0; j < i; j++)
-			rte_free(vq->vq_descx[j].cookie);
-	}
 mpool_create_err:
 	rte_free(vq);
 	return -ENOMEM;
@@ -731,6 +711,7 @@ crypto_virtio_create(const char *name, struct rte_pci_device *pci_dev,
 	if (cryptodev == NULL)
 		return -ENODEV;
 
+	cryptodev->driver_id = cryptodev_virtio_driver_id;
 	cryptodev->dev_ops = &virtio_crypto_dev_ops;
 
 	cryptodev->enqueue_burst = virtio_crypto_pkt_tx_burst;
@@ -754,7 +735,6 @@ crypto_virtio_create(const char *name, struct rte_pci_device *pci_dev,
 
 	if (virtio_crypto_init_device(cryptodev,
 			VIRTIO_CRYPTO_PMD_GUEST_FEATURES) < 0)
-	cryptodev->driver_id = cryptodev_virtio_driver_id;
 		return -1;
 
 	rte_cryptodev_pmd_probing_finish(cryptodev);
@@ -1054,9 +1034,8 @@ virtio_crypto_sym_clear_session(
 		return;
 	}
 
-	VIRTIO_CRYPTO_INIT_LOG_DBG("vq->vq_free_cnt=%d\n"
-			"vq->vq_desc_head_idx=%d",
-			vq->vq_free_cnt, vq->vq_desc_head_idx);
+	VIRTIO_CRYPTO_INIT_LOG_DBG("vq->vq_free_cnt=%d", vq->vq_free_cnt);
+	VIRTIO_CRYPTO_INIT_LOG_DBG("vq->vq_desc_head_idx=%d", vq->vq_desc_head_idx);
 
 	VIRTIO_CRYPTO_SESSION_LOG_INFO("Close session %"PRIu64" successfully ",
 			session->session_id);
@@ -1392,7 +1371,7 @@ virtio_crypto_dev_info_get(struct rte_cryptodev *dev,
 	PMD_INIT_FUNC_TRACE();
 
 	if (info != NULL) {
-		info->driver_id = dev->driver_id;
+		info->driver_id = cryptodev_virtio_driver_id;
 		info->feature_flags = dev->feature_flags;
 		info->max_nb_queue_pairs = hw->max_dataqueues;
 		/* No limit of number of sessions */

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 The NetBSD Foundation, Inc.
  * Copyright (c) 2014 Andrey V. Elsukov <ae@FreeBSD.org>
@@ -30,7 +30,6 @@
  * POSSIBILITY OF SUCH DAMAGE.
  *
  * $NetBSD: if_gre.h,v 1.13 2003/11/10 08:51:52 wiz Exp $
- * $FreeBSD$
  */
 
 #ifndef _NET_IF_GRE_H_

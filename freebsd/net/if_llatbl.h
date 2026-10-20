@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 Luigi Rizzo, Alessandro Cerri. All rights reserved.
  * Copyright (c) 2004-2008 Qing Li. All rights reserved.
@@ -27,8 +27,6 @@
  * SUCH DAMAGE.
  */
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifndef	_NET_IF_LLATBL_H_
 #define	_NET_IF_LLATBL_H_
 
@@ -58,7 +56,8 @@ struct llentry {
 	} r_l3addr;
 	char			r_linkdata[LLE_MAX_LINKHDR]; /* L2 data */
 	uint8_t			r_hdrlen;	/* length for LL header */
-	uint8_t			spare0[3];
+	uint8_t			r_family;	/* Upper layer proto family */
+	uint8_t			spare0[2];
 	uint16_t		r_flags;	/* LLE runtime flags */
 	uint16_t		r_skip_req;	/* feedback from fast path */
 
@@ -78,6 +77,9 @@ struct llentry {
 	time_t			lle_hittime;	/* Time when r_skip_req was unset */
 	int			 lle_refcnt;
 	char			*ll_addr;	/* link-layer address */
+	CK_SLIST_HEAD(llentry_children_head,llentry)	lle_children;	/* child encaps */
+	CK_SLIST_ENTRY(llentry)	lle_child_next;	/* child encaps */
+	struct llentry		*lle_parent;	/* parent for a child */
 
 	CK_LIST_ENTRY(llentry)	lle_chain;	/* chain of deleted items */
 	struct callout		lle_timer;
@@ -103,6 +105,8 @@ struct llentry {
 #define	LLE_REQ_UNLOCK(lle)	mtx_unlock(&(lle)->req_mtx)
 
 #define LLE_IS_VALID(lle)	(((lle) != NULL) && ((lle) != (void *)-1))
+
+#define	LLE_SF(_fam, _flags)	(((_flags) & 0xFFFF) | ((_fam) << 16))
 
 #define	LLE_ADDREF(lle) do {					\
 	LLE_WLOCK_ASSERT(lle);					\
@@ -154,13 +158,17 @@ typedef void (llt_free_tbl_t)(struct lltable *);
 typedef int (llt_link_entry_t)(struct lltable *, struct llentry *);
 typedef int (llt_unlink_entry_t)(struct llentry *);
 typedef void (llt_mark_used_t)(struct llentry *);
+typedef void (llt_post_resolved_t)(struct lltable *, struct llentry *);
 
 typedef int (llt_foreach_cb_t)(struct lltable *, struct llentry *, void *);
 typedef int (llt_foreach_entry_t)(struct lltable *, llt_foreach_cb_t *, void *);
+typedef bool (llt_match_cb_t)(struct lltable *, struct llentry *, void *);
 
 struct lltable {
 	SLIST_ENTRY(lltable)	llt_link;
-	int			llt_af;
+	sa_family_t		llt_af;
+	uint8_t			llt_flags;
+	uint8_t			llt_spare[2];
 	int			llt_hsize;
 	int			llt_entries;
 	int			llt_maxentries;
@@ -181,9 +189,15 @@ struct lltable {
 	llt_fill_sa_entry_t	*llt_fill_sa_entry;
 	llt_free_tbl_t		*llt_free_tbl;
 	llt_mark_used_t		*llt_mark_used;
+	llt_post_resolved_t	*llt_post_resolved;
 };
 
 MALLOC_DECLARE(M_LLTABLE);
+
+/*
+ * LLtable flags
+ */
+#define	LLT_ADDEDPROXY	0x01	/* added a proxy llentry */
 
 /*
  * LLentry flags
@@ -195,6 +209,7 @@ MALLOC_DECLARE(M_LLTABLE);
 #define	LLE_REDIRECT	0x0010	/* installed by redirect; has host rtentry */
 #define	LLE_PUB		0x0020	/* publish entry ??? */
 #define	LLE_LINKED	0x0040	/* linked to lookup structure */
+#define	LLE_CHILD	0x0080	/* Child LLE storing different AF encap */
 /* LLE request flags */
 #define	LLE_EXCLUSIVE	0x2000	/* return lle xlocked  */
 #define	LLE_UNLOCKED	0x4000	/* return lle unlocked */
@@ -214,6 +229,12 @@ void		lltable_link(struct lltable *llt);
 void		lltable_prefix_free(int, struct sockaddr *,
 		    struct sockaddr *, u_int);
 int		lltable_sysctl_dumparp(int, struct sysctl_req *);
+size_t		lltable_append_entry_queue(struct llentry *,
+		    struct mbuf *, size_t);
+
+struct lltable *in_lltable_get(struct ifnet *ifp);
+struct lltable *in6_lltable_get(struct ifnet *ifp);
+struct lltable *lltable_get(struct ifnet *ifp, int family);
 
 size_t		llentry_free(struct llentry *);
 
@@ -234,12 +255,19 @@ int lltable_delete_addr(struct lltable *llt, u_int flags,
     const struct sockaddr *l3addr);
 int lltable_link_entry(struct lltable *llt, struct llentry *lle);
 int lltable_unlink_entry(struct lltable *llt, struct llentry *lle);
+void lltable_link_child_entry(struct llentry *parent_lle, struct llentry *child_lle);
+void lltable_unlink_child_entry(struct llentry *child_lle);
 void lltable_fill_sa_entry(const struct llentry *lle, struct sockaddr *sa);
 struct ifnet *lltable_get_ifp(const struct lltable *llt);
 int lltable_get_af(const struct lltable *llt);
 
+bool lltable_acquire_wlock(struct ifnet *ifp, struct llentry *lle);
+
 int lltable_foreach_lle(struct lltable *llt, llt_foreach_cb_t *f,
     void *farg);
+void lltable_delete_conditional(struct lltable *llt, llt_match_cb_t *func,
+    void *farg);
+
 /*
  * Generic link layer address lookup function.
  */
@@ -250,18 +278,23 @@ lla_lookup(struct lltable *llt, u_int flags, const struct sockaddr *l3addr)
 	return (llt->llt_lookup(llt, flags, l3addr));
 }
 
+void llentry_request_feedback(struct llentry *lle);
+void llentry_mark_used(struct llentry *lle);
+time_t llentry_get_hittime(struct llentry *lle);
+int llentry_get_upper_family(const struct llentry *lle, int default_family);
+
 /*
  * Notify the LLE code that the entry was used by datapath.
  */
 static __inline void
-llentry_mark_used(struct llentry *lle)
+llentry_provide_feedback(struct llentry *lle)
 {
 
-	if (lle->r_skip_req == 0)
+	if (__predict_true(lle->r_skip_req == 0))
 		return;
-	if ((lle->r_flags & RLLE_VALID) != 0)
-		lle->lle_tbl->llt_mark_used(lle);
+	llentry_mark_used(lle);
 }
+struct llentry *llentry_lookup_family(struct llentry *lle, int family);
 
 int		lla_rt_output(struct rt_msghdr *, struct rt_addrinfo *);
 

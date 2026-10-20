@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -30,7 +30,6 @@
  * SUCH DAMAGE.
  *
  * $Id: ng_hci_evnt.c,v 1.6 2003/09/08 18:57:51 max Exp $
- * $FreeBSD$
  */
 
 #include <sys/param.h>
@@ -121,6 +120,8 @@ ng_hci_process_event(ng_hci_unit_p unit, struct mbuf *event)
 	case NG_HCI_EVENT_VENDOR:
 	case NG_HCI_EVENT_REMOTE_NAME_REQ_COMPL:
 	case NG_HCI_EVENT_READ_REMOTE_VER_INFO_COMPL:
+	case NG_HCI_EVENT_IO_CAPABILITY_REQUEST:
+	case NG_HCI_EVENT_SIMPLE_PAIRING_COMPLETE:
 		/* These do not need post processing */
 		NG_FREE_M(event);
 		break;
@@ -382,7 +383,6 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 	bdaddr_t			 bdaddr;
 	int				 error = 0;
 	int				 num_reports = 0;
-	u_int8_t event_type;
 	u_int8_t addr_type;
 
 	NG_HCI_M_PULLUP(event, sizeof(*ep));
@@ -395,11 +395,15 @@ le_advertizing_report(ng_hci_unit_p unit, struct mbuf *event)
 	ep = NULL;
 
 	for (; num_reports > 0; num_reports --) {
+		/* event_type */
+		m_adj(event, sizeof(u_int8_t));
+
 		/* Get remote unit address */
 		NG_HCI_M_PULLUP(event, sizeof(u_int8_t));
-		event_type = *mtod(event, u_int8_t *);
-		m_adj(event, sizeof(u_int8_t));
-		NG_HCI_M_PULLUP(event, sizeof(u_int8_t));
+		if (event == NULL) {
+			error = ENOBUFS;
+			goto out;
+		}
 		addr_type = *mtod(event, u_int8_t *);
 		m_adj(event, sizeof(u_int8_t));
 
@@ -528,6 +532,7 @@ static int le_connection_complete(ng_hci_unit_p unit, struct mbuf *event)
 		if (error != 0) {
 			ng_hci_con_untimeout(con);
 			ng_hci_free_con(con);
+			goto out;
 		}
 
 	} else if ((error = ng_hci_con_untimeout(con)) != 0)

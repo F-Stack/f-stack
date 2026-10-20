@@ -22,6 +22,7 @@ static int32_t test_free_null(void);
 static int32_t test_add_del_invalid(void);
 static int32_t test_get_invalid(void);
 static int32_t test_lookup(void);
+static int32_t test_drift(void);
 
 #define MAX_ROUTES	(1 << 16)
 /** Maximum number of tbl8 for 2-byte entries */
@@ -147,7 +148,7 @@ test_add_del_invalid(void)
 	struct rte_fib6 *fib = NULL;
 	struct rte_fib6_conf config;
 	uint64_t nh = 100;
-	uint8_t ip[RTE_FIB6_IPV6_ADDR_SIZE] = {0};
+	struct rte_ipv6_addr ip = RTE_IPV6_ADDR_UNSPEC;
 	int ret;
 	uint8_t depth = 24;
 
@@ -157,12 +158,12 @@ test_add_del_invalid(void)
 	config.type = RTE_FIB6_DUMMY;
 
 	/* rte_fib6_add: fib == NULL */
-	ret = rte_fib6_add(NULL, ip, depth, nh);
+	ret = rte_fib6_add(NULL, &ip, depth, nh);
 	RTE_TEST_ASSERT(ret < 0,
 		"Call succeeded with invalid parameters\n");
 
 	/* rte_fib6_delete: fib == NULL */
-	ret = rte_fib6_delete(NULL, ip, depth);
+	ret = rte_fib6_delete(NULL, &ip, depth);
 	RTE_TEST_ASSERT(ret < 0,
 		"Call succeeded with invalid parameters\n");
 
@@ -170,13 +171,13 @@ test_add_del_invalid(void)
 	fib = rte_fib6_create(__func__, SOCKET_ID_ANY, &config);
 	RTE_TEST_ASSERT(fib != NULL, "Failed to create FIB\n");
 
-	/* rte_fib6_add: depth > RTE_FIB6_MAXDEPTH */
-	ret = rte_fib6_add(fib, ip, RTE_FIB6_MAXDEPTH + 1, nh);
+	/* rte_fib6_add: depth > RTE_IPV6_MAX_DEPTH */
+	ret = rte_fib6_add(fib, &ip, RTE_IPV6_MAX_DEPTH + 1, nh);
 	RTE_TEST_ASSERT(ret < 0,
 		"Call succeeded with invalid parameters\n");
 
-	/* rte_fib6_delete: depth > RTE_FIB6_MAXDEPTH */
-	ret = rte_fib6_delete(fib, ip, RTE_FIB6_MAXDEPTH + 1);
+	/* rte_fib6_delete: depth > RTE_IPV6_MAX_DEPTH */
+	ret = rte_fib6_delete(fib, &ip, RTE_IPV6_MAX_DEPTH + 1);
 	RTE_TEST_ASSERT(ret < 0,
 		"Call succeeded with invalid parameters\n");
 
@@ -212,22 +213,22 @@ test_get_invalid(void)
  */
 static int
 lookup_and_check_asc(struct rte_fib6 *fib,
-	uint8_t ip_arr[RTE_FIB6_MAXDEPTH][RTE_FIB6_IPV6_ADDR_SIZE],
-	uint8_t ip_missing[][RTE_FIB6_IPV6_ADDR_SIZE], uint64_t def_nh,
+	struct rte_ipv6_addr *ip_arr,
+	struct rte_ipv6_addr *ip_missing, uint64_t def_nh,
 	uint32_t n)
 {
-	uint64_t nh_arr[RTE_FIB6_MAXDEPTH];
+	uint64_t nh_arr[RTE_IPV6_MAX_DEPTH];
 	int ret;
 	uint32_t i = 0;
 
-	ret = rte_fib6_lookup_bulk(fib, ip_arr, nh_arr, RTE_FIB6_MAXDEPTH);
+	ret = rte_fib6_lookup_bulk(fib, ip_arr, nh_arr, RTE_IPV6_MAX_DEPTH);
 	RTE_TEST_ASSERT(ret == 0, "Failed to lookup\n");
 
-	for (; i <= RTE_FIB6_MAXDEPTH - n; i++)
+	for (; i <= RTE_IPV6_MAX_DEPTH - n; i++)
 		RTE_TEST_ASSERT(nh_arr[i] == n,
 			"Failed to get proper nexthop\n");
 
-	for (; i < RTE_FIB6_MAXDEPTH; i++)
+	for (; i < RTE_IPV6_MAX_DEPTH; i++)
 		RTE_TEST_ASSERT(nh_arr[i] == --n,
 			"Failed to get proper nexthop\n");
 
@@ -240,22 +241,22 @@ lookup_and_check_asc(struct rte_fib6 *fib,
 
 static int
 lookup_and_check_desc(struct rte_fib6 *fib,
-	uint8_t ip_arr[RTE_FIB6_MAXDEPTH][RTE_FIB6_IPV6_ADDR_SIZE],
-	uint8_t ip_missing[][RTE_FIB6_IPV6_ADDR_SIZE], uint64_t def_nh,
+	struct rte_ipv6_addr *ip_arr,
+	struct rte_ipv6_addr *ip_missing, uint64_t def_nh,
 	uint32_t n)
 {
-	uint64_t nh_arr[RTE_FIB6_MAXDEPTH];
+	uint64_t nh_arr[RTE_IPV6_MAX_DEPTH];
 	int ret;
 	uint32_t i = 0;
 
-	ret = rte_fib6_lookup_bulk(fib, ip_arr, nh_arr, RTE_FIB6_MAXDEPTH);
+	ret = rte_fib6_lookup_bulk(fib, ip_arr, nh_arr, RTE_IPV6_MAX_DEPTH);
 	RTE_TEST_ASSERT(ret == 0, "Failed to lookup\n");
 
 	for (; i < n; i++)
-		RTE_TEST_ASSERT(nh_arr[i] == RTE_FIB6_MAXDEPTH - i,
+		RTE_TEST_ASSERT(nh_arr[i] == RTE_IPV6_MAX_DEPTH - i,
 			"Failed to get proper nexthop\n");
 
-	for (; i < RTE_FIB6_MAXDEPTH; i++)
+	for (; i < RTE_IPV6_MAX_DEPTH; i++)
 		RTE_TEST_ASSERT(nh_arr[i] == def_nh,
 			"Failed to get proper nexthop\n");
 
@@ -270,62 +271,64 @@ static int
 check_fib(struct rte_fib6 *fib)
 {
 	uint64_t def_nh = 100;
-	uint8_t ip_arr[RTE_FIB6_MAXDEPTH][RTE_FIB6_IPV6_ADDR_SIZE];
-	uint8_t ip_add[RTE_FIB6_IPV6_ADDR_SIZE] = {0};
-	uint8_t ip_missing[1][RTE_FIB6_IPV6_ADDR_SIZE] = { {255} };
+	struct rte_ipv6_addr ip_arr[RTE_IPV6_MAX_DEPTH];
+	struct rte_ipv6_addr ip_add = RTE_IPV6(0x8000, 0, 0, 0, 0, 0, 0, 0);
+	struct rte_ipv6_addr ip_missing =
+		RTE_IPV6(0x7fff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff, 0xffff);
 	uint32_t i, j;
 	int ret;
 
-	ip_add[0] = 128;
-	ip_missing[0][0] = 127;
-	for (i = 0; i < RTE_FIB6_MAXDEPTH; i++) {
-		for (j = 0; j < RTE_FIB6_IPV6_ADDR_SIZE; j++) {
-			ip_arr[i][j] = ip_add[j] |
-				~get_msk_part(RTE_FIB6_MAXDEPTH - i, j);
+	for (i = 0; i < RTE_IPV6_MAX_DEPTH; i++) {
+		ip_arr[i] = ip_add;
+		j = (RTE_IPV6_MAX_DEPTH - i) / CHAR_BIT;
+		if (j < RTE_IPV6_ADDR_SIZE) {
+			ip_arr[i].a[j] |= UINT8_MAX >> ((RTE_IPV6_MAX_DEPTH - i) % CHAR_BIT);
+			for (j++; j < RTE_IPV6_ADDR_SIZE; j++)
+				ip_arr[i].a[j] = 0xff;
 		}
 	}
 
-	ret = lookup_and_check_desc(fib, ip_arr, ip_missing, def_nh, 0);
+	ret = lookup_and_check_desc(fib, ip_arr, &ip_missing, def_nh, 0);
 	RTE_TEST_ASSERT(ret == TEST_SUCCESS, "Lookup and check fails\n");
 
-	for (i = 1; i <= RTE_FIB6_MAXDEPTH; i++) {
-		ret = rte_fib6_add(fib, ip_add, i, i);
+	for (i = 1; i <= RTE_IPV6_MAX_DEPTH; i++) {
+		ret = rte_fib6_add(fib, &ip_add, i, i);
 		RTE_TEST_ASSERT(ret == 0, "Failed to add a route\n");
-		ret = lookup_and_check_asc(fib, ip_arr, ip_missing, def_nh, i);
+		ret = lookup_and_check_asc(fib, ip_arr, &ip_missing, def_nh, i);
 		RTE_TEST_ASSERT(ret == TEST_SUCCESS,
 			"Lookup and check fails\n");
 	}
 
-	for (i = RTE_FIB6_MAXDEPTH; i > 1; i--) {
-		ret = rte_fib6_delete(fib, ip_add, i);
+	for (i = RTE_IPV6_MAX_DEPTH; i > 1; i--) {
+		ret = rte_fib6_delete(fib, &ip_add, i);
 		RTE_TEST_ASSERT(ret == 0, "Failed to delete a route\n");
-		ret = lookup_and_check_asc(fib, ip_arr, ip_missing,
+		ret = lookup_and_check_asc(fib, ip_arr, &ip_missing,
 			def_nh, i - 1);
 
 		RTE_TEST_ASSERT(ret == TEST_SUCCESS,
 			"Lookup and check fails\n");
 	}
-	ret = rte_fib6_delete(fib, ip_add, i);
+	ret = rte_fib6_delete(fib, &ip_add, i);
 	RTE_TEST_ASSERT(ret == 0, "Failed to delete a route\n");
-	ret = lookup_and_check_desc(fib, ip_arr, ip_missing, def_nh, 0);
+	ret = lookup_and_check_desc(fib, ip_arr, &ip_missing, def_nh, 0);
 	RTE_TEST_ASSERT(ret == TEST_SUCCESS,
 		"Lookup and check fails\n");
 
-	for (i = 0; i < RTE_FIB6_MAXDEPTH; i++) {
-		ret = rte_fib6_add(fib, ip_add, RTE_FIB6_MAXDEPTH - i,
-			RTE_FIB6_MAXDEPTH - i);
+	for (i = 0; i < RTE_IPV6_MAX_DEPTH; i++) {
+		ret = rte_fib6_add(fib, &ip_add, RTE_IPV6_MAX_DEPTH - i,
+			RTE_IPV6_MAX_DEPTH - i);
 		RTE_TEST_ASSERT(ret == 0, "Failed to add a route\n");
-		ret = lookup_and_check_desc(fib, ip_arr, ip_missing,
+		ret = lookup_and_check_desc(fib, ip_arr, &ip_missing,
 			def_nh, i + 1);
 		RTE_TEST_ASSERT(ret == TEST_SUCCESS,
 			"Lookup and check fails\n");
 	}
 
-	for (i = 1; i <= RTE_FIB6_MAXDEPTH; i++) {
-		ret = rte_fib6_delete(fib, ip_add, i);
+	for (i = 1; i <= RTE_IPV6_MAX_DEPTH; i++) {
+		ret = rte_fib6_delete(fib, &ip_add, i);
 		RTE_TEST_ASSERT(ret == 0, "Failed to delete a route\n");
-		ret = lookup_and_check_desc(fib, ip_arr, ip_missing, def_nh,
-			RTE_FIB6_MAXDEPTH - i);
+		ret = lookup_and_check_desc(fib, ip_arr, &ip_missing, def_nh,
+			RTE_IPV6_MAX_DEPTH - i);
 		RTE_TEST_ASSERT(ret == TEST_SUCCESS,
 			"Lookup and check fails\n");
 	}
@@ -385,6 +388,78 @@ test_lookup(void)
 	return TEST_SUCCESS;
 }
 
+/*
+ * Reproducer for the rsvd_tbl8s drift bug. depth_diff used to maintain
+ * rsvd_tbl8s is computed from the current RIB state, so it is not
+ * invariant between the ADD of a prefix and its later DEL when a
+ * covering parent prefix is removed in between.
+ *
+ * Layout: one /28 parent (fcde::/28) and three /48 siblings under it
+ * (fcde:0:6000::/48, fcde:1:6000::/48, fcde:2:6000::/48). The second
+ * hextet's high 12 bits are zero, so the three /48 IPs all fall inside
+ * the /28.
+ *
+ * One asymmetric sequence is enough to wrap the counter:
+ *   ADD /28                                  rsvd_tbl8s += 1
+ *   ADD /48 child_0,1,2 (with /28 parent)    rsvd_tbl8s += 2 each (+6)
+ *   DEL /28 (sibling /48 found)              rsvd_tbl8s -= 0
+ *   DEL /48 child_0,1,2 (no parent left)     rsvd_tbl8s -= 3 each (-9)
+ */
+static int32_t
+test_drift(void)
+{
+	struct rte_fib6_conf config = { 0 };
+	struct rte_fib6 *fib;
+	struct rte_ipv6_addr parent =
+		RTE_IPV6(0xfcde, 0, 0, 0, 0, 0, 0, 0);
+	struct rte_ipv6_addr child[3] = {
+		RTE_IPV6(0xfcde, 0, 0x6000, 0, 0, 0, 0, 0),
+		RTE_IPV6(0xfcde, 1, 0x6000, 0, 0, 0, 0, 0),
+		RTE_IPV6(0xfcde, 2, 0x6000, 0, 0, 0, 0, 0),
+	};
+	unsigned int c;
+	int ret;
+
+	config.max_routes = 1024;
+	config.rib_ext_sz = 0;
+	config.default_nh = 0;
+	config.type = RTE_FIB6_TRIE;
+	config.trie.nh_sz = RTE_FIB6_TRIE_2B;
+	config.trie.num_tbl8 = 256;
+
+	fib = rte_fib6_create(__func__, SOCKET_ID_ANY, &config);
+	RTE_TEST_ASSERT(fib != NULL, "Failed to create FIB\n");
+
+	ret = rte_fib6_add(fib, &parent, 28, 0xa);
+	RTE_TEST_ASSERT(ret == 0, "ADD /28 failed (ret=%d)\n", ret);
+
+	for (c = 0; c < 3; c++) {
+		ret = rte_fib6_add(fib, &child[c], 48, 0xb + c);
+		RTE_TEST_ASSERT(ret == 0,
+			"ADD /48 child %u failed (ret=%d)\n", c, ret);
+	}
+
+	ret = rte_fib6_delete(fib, &parent, 28);
+	RTE_TEST_ASSERT(ret == 0, "DEL /28 failed (ret=%d)\n", ret);
+
+	for (c = 0; c < 3; c++) {
+		ret = rte_fib6_delete(fib, &child[c], 48);
+		RTE_TEST_ASSERT(ret == 0,
+			"DEL /48 child %u failed (ret=%d)\n", c, ret);
+	}
+
+	/* Pre-fix: -ENOSPC. Post-fix: succeeds. */
+	ret = rte_fib6_add(fib, &parent, 28, 0xe);
+	RTE_TEST_ASSERT(ret == 0,
+		"Fresh ADD /28 spuriously failed (ret=%d)\n", ret);
+
+	ret = rte_fib6_delete(fib, &parent, 28);
+	RTE_TEST_ASSERT(ret == 0, "Final DEL /28 failed (ret=%d)\n", ret);
+
+	rte_fib6_free(fib);
+	return TEST_SUCCESS;
+}
+
 static struct unit_test_suite fib6_fast_tests = {
 	.suite_name = "fib6 autotest",
 	.setup = NULL,
@@ -395,6 +470,7 @@ static struct unit_test_suite fib6_fast_tests = {
 	TEST_CASE(test_add_del_invalid),
 	TEST_CASE(test_get_invalid),
 	TEST_CASE(test_lookup),
+	TEST_CASE(test_drift),
 	TEST_CASES_END()
 	}
 };

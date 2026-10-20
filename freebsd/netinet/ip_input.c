@@ -27,18 +27,16 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ip_input.c	8.2 (Berkeley) 1/4/94
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_bootp.h"
+#include "opt_inet.h"
 #include "opt_ipstealth.h"
 #include "opt_ipsec.h"
 #include "opt_route.h"
 #include "opt_rss.h"
+#include "opt_sctp.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -61,6 +59,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if_types.h>
 #include <net/if_var.h>
 #include <net/if_dl.h>
+#include <net/if_private.h>
 #include <net/pfil.h>
 #include <net/route.h>
 #include <net/route/nhop.h>
@@ -76,12 +75,17 @@ __FBSDID("$FreeBSD$");
 #include <netinet/in_fib.h>
 #include <netinet/in_pcb.h>
 #include <netinet/ip_var.h>
+#include <netinet/ip_encap.h>
 #include <netinet/ip_fw.h>
 #include <netinet/ip_icmp.h>
+#include <netinet/igmp_var.h>
 #include <netinet/ip_options.h>
 #include <machine/in_cksum.h>
 #include <netinet/ip_carp.h>
 #include <netinet/in_rss.h>
+#ifdef SCTP
+#include <netinet/sctp_var.h>
+#endif
 
 #include <netipsec/ipsec_support.h>
 
@@ -95,14 +99,10 @@ CTASSERT(sizeof(struct ip) == 20);
 
 /* IP reassembly functions are defined in ip_reass.c. */
 extern void ipreass_init(void);
-extern void ipreass_drain(void);
-extern void ipreass_slowtimo(void);
+extern void ipreass_vnet_init(void);
 #ifdef VIMAGE
 extern void ipreass_destroy(void);
 #endif
-
-struct rmlock in_ifaddr_lock;
-RM_SYSINIT(in_ifaddr_lock, &in_ifaddr_lock, "in_ifaddr_lock");
 
 VNET_DEFINE(int, rsvp_on);
 
@@ -120,26 +120,21 @@ SYSCTL_INT(_net_inet_ip, IPCTL_SENDREDIRECTS, redirect, CTLFLAG_VNET | CTLFLAG_R
     &VNET_NAME(ipsendredirects), 0,
     "Enable sending IP redirects");
 
-/*
- * XXX - Setting ip_checkinterface mostly implements the receive side of
- * the Strong ES model described in RFC 1122, but since the routing table
- * and transmit implementation do not implement the Strong ES model,
- * setting this to 1 results in an odd hybrid.
- *
- * XXX - ip_checkinterface currently must be disabled if you use ipnat
- * to translate the destination address to another local interface.
- *
- * XXX - ip_checkinterface must be disabled if you add IP aliases
- * to the loopback interface instead of the interface where the
- * packets for those addresses are received.
- */
-VNET_DEFINE_STATIC(int, ip_checkinterface);
-#define	V_ip_checkinterface	VNET(ip_checkinterface)
-SYSCTL_INT(_net_inet_ip, OID_AUTO, check_interface, CTLFLAG_VNET | CTLFLAG_RW,
-    &VNET_NAME(ip_checkinterface), 0,
-    "Verify packet arrives on correct interface");
+VNET_DEFINE_STATIC(bool, ip_strong_es) = false;
+#define	V_ip_strong_es	VNET(ip_strong_es)
+SYSCTL_BOOL(_net_inet_ip, OID_AUTO, rfc1122_strong_es,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip_strong_es), false,
+    "Packet's IP destination address must match address on arrival interface");
 
-VNET_DEFINE(pfil_head_t, inet_pfil_head);	/* Packet filter hooks */
+VNET_DEFINE_STATIC(bool, ip_sav) = true;
+#define	V_ip_sav	VNET(ip_sav)
+SYSCTL_BOOL(_net_inet_ip, OID_AUTO, source_address_validation,
+    CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip_sav), true,
+    "Drop incoming packets with source address that is a local address");
+
+/* Packet filter hooks */
+VNET_DEFINE(pfil_head_t, inet_pfil_head);
+VNET_DEFINE(pfil_head_t, inet_local_pfil_head);
 
 static struct netisr_handler ip_nh = {
 	.nh_name = "ip",
@@ -172,12 +167,17 @@ static struct netisr_handler ip_direct_nh = {
 };
 #endif
 
-extern	struct domain inetdomain;
-extern	struct protosw inetsw[];
-u_char	ip_protox[IPPROTO_MAX];
+ipproto_input_t		*ip_protox[IPPROTO_MAX] = {
+			    [0 ... IPPROTO_MAX - 1] = rip_input };
+ipproto_ctlinput_t	*ip_ctlprotox[IPPROTO_MAX] = {
+			    [0 ... IPPROTO_MAX - 1] = rip_ctlinput };
+
 VNET_DEFINE(struct in_ifaddrhead, in_ifaddrhead);  /* first inet address */
 VNET_DEFINE(struct in_ifaddrhashhead *, in_ifaddrhashtbl); /* inet addr hash table  */
 VNET_DEFINE(u_long, in_ifaddrhmask);		/* mask for hash table */
+
+/* Make sure it is safe to use hashinit(9) on CK_LIST. */
+CTASSERT(sizeof(struct in_ifaddrhashhead) == sizeof(LIST_HEAD(, in_addr)));
 
 #ifdef IPCTL_DEFMTU
 SYSCTL_INT(_net_inet_ip, IPCTL_DEFMTU, mtu, CTLFLAG_RW,
@@ -307,18 +307,16 @@ SYSCTL_PROC(_net_inet_ip, IPCTL_INTRDQDROPS, intr_direct_queue_drops,
  * IP initialization: fill in IP protocol switch table.
  * All protocols not implemented in kernel go to raw IP protocol handler.
  */
-void
-ip_init(void)
+static void
+ip_vnet_init(void *arg __unused)
 {
 	struct pfil_head_args args;
-	struct protosw *pr;
-	int i;
 
 	CK_STAILQ_INIT(&V_in_ifaddrhead);
 	V_in_ifaddrhashtbl = hashinit(INADDR_NHASH, M_IFADDR, &V_in_ifaddrhmask);
 
 	/* Initialize IP reassembly queue. */
-	ipreass_init();
+	ipreass_vnet_init();
 
 	/* Initialize packet filter hooks. */
 	args.pa_version = PFIL_VERSION;
@@ -326,6 +324,10 @@ ip_init(void)
 	args.pa_type = PFIL_TYPE_IP4;
 	args.pa_headname = PFIL_INET_NAME;
 	V_inet_pfil_head = pfil_head_register(&args);
+
+	args.pa_flags = PFIL_OUT;
+	args.pa_headname = PFIL_INET_LOCAL_NAME;
+	V_inet_local_pfil_head = pfil_head_register(&args);
 
 	if (hhook_head_register(HHOOK_TYPE_IPSEC_IN, AF_INET,
 	    &V_ipsec_hhh_in[HHOOK_IPSEC_INET],
@@ -338,42 +340,45 @@ ip_init(void)
 		printf("%s: WARNING: unable to register output helper hook\n",
 		    __func__);
 
-	/* Skip initialization of globals for non-default instances. */
 #ifdef VIMAGE
-	if (!IS_DEFAULT_VNET(curvnet)) {
-		netisr_register_vnet(&ip_nh);
+	netisr_register_vnet(&ip_nh);
 #ifdef	RSS
-		netisr_register_vnet(&ip_direct_nh);
+	netisr_register_vnet(&ip_direct_nh);
 #endif
-		return;
-	}
 #endif
+}
+VNET_SYSINIT(ip_vnet_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_FOURTH,
+    ip_vnet_init, NULL);
 
-	pr = pffindproto(PF_INET, IPPROTO_RAW, SOCK_RAW);
-	if (pr == NULL)
-		panic("ip_init: PF_INET not found");
+static void
+ip_init(const void *unused __unused)
+{
 
-	/* Initialize the entire ip_protox[] array to IPPROTO_RAW. */
-	for (i = 0; i < IPPROTO_MAX; i++)
-		ip_protox[i] = pr - inetsw;
+	ipreass_init();
+
 	/*
-	 * Cycle through IP protocols and put them into the appropriate place
-	 * in ip_protox[].
+	 * Register statically compiled protocols, that are unlikely to
+	 * ever become dynamic.
 	 */
-	for (pr = inetdomain.dom_protosw;
-	    pr < inetdomain.dom_protoswNPROTOSW; pr++)
-		if (pr->pr_domain->dom_family == PF_INET &&
-		    pr->pr_protocol && pr->pr_protocol != IPPROTO_RAW) {
-			/* Be careful to only index valid IP protocols. */
-			if (pr->pr_protocol < IPPROTO_MAX)
-				ip_protox[pr->pr_protocol] = pr - inetsw;
-		}
+	IPPROTO_REGISTER(IPPROTO_ICMP, icmp_input, NULL);
+	IPPROTO_REGISTER(IPPROTO_IGMP, igmp_input, NULL);
+	IPPROTO_REGISTER(IPPROTO_RSVP, rsvp_input, NULL);
+	IPPROTO_REGISTER(IPPROTO_IPV4, encap4_input, NULL);
+	IPPROTO_REGISTER(IPPROTO_MOBILE, encap4_input, NULL);
+	IPPROTO_REGISTER(IPPROTO_ETHERIP, encap4_input, NULL);
+	IPPROTO_REGISTER(IPPROTO_GRE, encap4_input, NULL);
+	IPPROTO_REGISTER(IPPROTO_IPV6, encap4_input, NULL);
+	IPPROTO_REGISTER(IPPROTO_PIM, encap4_input, NULL);
+#ifdef SCTP	/* XXX: has a loadable & static version */
+	IPPROTO_REGISTER(IPPROTO_SCTP, sctp_input, sctp_ctlinput);
+#endif
 
 	netisr_register(&ip_nh);
 #ifdef	RSS
 	netisr_register(&ip_direct_nh);
 #endif
 }
+SYSINIT(ip_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD, ip_init, NULL);
 
 #ifdef VIMAGE
 static void
@@ -439,8 +444,7 @@ ip_direct_input(struct mbuf *m)
 	}
 #endif /* IPSEC */
 	IPSTAT_INC(ips_delivered);
-	(*inetsw[ip_protox[ip->ip_p]].pr_input)(&m, &hlen, ip->ip_p);
-	return;
+	ip_protox[ip->ip_p](&m, &hlen, ip->ip_p);
 }
 #endif
 
@@ -451,15 +455,15 @@ ip_direct_input(struct mbuf *m)
 void
 ip_input(struct mbuf *m)
 {
-	struct rm_priotracker in_ifa_tracker;
 	struct ip *ip = NULL;
 	struct in_ifaddr *ia = NULL;
 	struct ifaddr *ifa;
 	struct ifnet *ifp;
-	int    checkif, hlen = 0;
+	int hlen = 0;
 	uint16_t sum, ip_len;
 	int dchg = 0;				/* dest changed after fw */
 	struct in_addr odst;			/* original dst address */
+	bool strong_es;
 
 	M_ASSERTPKTHDR(m);
 	NET_EPOCH_ASSERT();
@@ -475,28 +479,31 @@ ip_input(struct mbuf *m)
 
 	IPSTAT_INC(ips_total);
 
-	if (m->m_pkthdr.len < sizeof(struct ip))
+	if (__predict_false(m->m_pkthdr.len < sizeof(struct ip)))
 		goto tooshort;
 
-	if (m->m_len < sizeof (struct ip) &&
-	    (m = m_pullup(m, sizeof (struct ip))) == NULL) {
-		IPSTAT_INC(ips_toosmall);
-		return;
+	if (m->m_len < sizeof(struct ip)) {
+		m = m_pullup(m, sizeof(struct ip));
+		if (__predict_false(m == NULL)) {
+			IPSTAT_INC(ips_toosmall);
+			return;
+		}
 	}
 	ip = mtod(m, struct ip *);
 
-	if (ip->ip_v != IPVERSION) {
+	if (__predict_false(ip->ip_v != IPVERSION)) {
 		IPSTAT_INC(ips_badvers);
 		goto bad;
 	}
 
 	hlen = ip->ip_hl << 2;
-	if (hlen < sizeof(struct ip)) {	/* minimum header length */
+	if (__predict_false(hlen < sizeof(struct ip))) {	/* minimum header length */
 		IPSTAT_INC(ips_badhlen);
 		goto bad;
 	}
 	if (hlen > m->m_len) {
-		if ((m = m_pullup(m, hlen)) == NULL) {
+		m = m_pullup(m, hlen);
+		if (__predict_false(m == NULL)) {
 			IPSTAT_INC(ips_badhlen);
 			return;
 		}
@@ -524,19 +531,13 @@ ip_input(struct mbuf *m)
 			sum = in_cksum(m, hlen);
 		}
 	}
-	if (sum) {
+	if (__predict_false(sum)) {
 		IPSTAT_INC(ips_badsum);
 		goto bad;
 	}
 
-#ifdef ALTQ
-	if (altq_input != NULL && (*altq_input)(m, AF_INET) == 0)
-		/* packet is dropped by traffic conditioner */
-		return;
-#endif
-
 	ip_len = ntohs(ip->ip_len);
-	if (ip_len < hlen) {
+	if (__predict_false(ip_len < hlen)) {
 		IPSTAT_INC(ips_badlen);
 		goto bad;
 	}
@@ -547,7 +548,7 @@ ip_input(struct mbuf *m)
 	 * Trim mbufs if longer than we expect.
 	 * Drop packet if shorter than we expect.
 	 */
-	if (m->m_pkthdr.len < ip_len) {
+	if (__predict_false(m->m_pkthdr.len < ip_len)) {
 tooshort:
 		IPSTAT_INC(ips_tooshort);
 		goto bad;
@@ -562,8 +563,9 @@ tooshort:
 
 	/*
 	 * Try to forward the packet, but if we fail continue.
-	 * ip_tryforward() does not generate redirects, so fall
-	 * through to normal processing if redirects are required.
+	 * ip_tryforward() may generate redirects these days.
+	 * XXX the logic below falling through to normal processing
+	 * if redirects are required should be revisited as well.
 	 * ip_tryforward() does inbound and outbound packet firewall
 	 * processing. If firewall has decided that destination becomes
 	 * our local address, it sets M_FASTFWD_OURS flag. In this
@@ -576,6 +578,10 @@ tooshort:
 	    IPSEC_CAPS(ipv4, m, IPSEC_CAP_OPERABLE) == 0)
 #endif
 	    ) {
+		/*
+		 * ip_dooptions() was run so we can ignore the source route (or
+		 * any IP options case) case for redirects in ip_tryforward().
+		 */
 		if ((m = ip_tryforward(m)) == NULL)
 			return;
 		if (m->m_flags & M_FASTFWD_OURS) {
@@ -607,15 +613,12 @@ tooshort:
 		goto passin;
 
 	odst = ip->ip_dst;
-	if (pfil_run_hooks(V_inet_pfil_head, &m, ifp, PFIL_IN, NULL) !=
+	if (pfil_mbuf_in(V_inet_pfil_head, &m, ifp, NULL) !=
 	    PFIL_PASS)
-		return;
-	if (m == NULL)			/* consumed by filter */
 		return;
 
 	ip = mtod(m, struct ip *);
 	dchg = (odst.s_addr != ip->ip_dst.s_addr);
-	ifp = m->m_pkthdr.rcvif;
 
 	if (m->m_flags & M_FASTFWD_OURS) {
 		m->m_flags &= ~M_FASTFWD_OURS;
@@ -633,6 +636,17 @@ tooshort:
 		}
 	}
 passin:
+	/*
+	 * The unspecified address can appear only as a src address - RFC1122.
+	 *
+	 * The check is deferred to here to give firewalls a chance to block
+	 * (and log) such packets.  ip_tryforward() will not process such
+	 * packets.
+	 */
+	if (__predict_false(ntohl(ip->ip_dst.s_addr) == INADDR_ANY)) {
+		IPSTAT_INC(ips_badaddr);
+		goto bad;
+	}
 
 	/*
 	 * Process options and, if not destined for us,
@@ -649,7 +663,7 @@ passin:
          * anywhere else. Also checks if the rsvp daemon is running before
 	 * grabbing the packet.
          */
-	if (V_rsvp_on && ip->ip_p==IPPROTO_RSVP)
+	if (ip->ip_p == IPPROTO_RSVP && V_rsvp_on)
 		goto ours;
 
 	/*
@@ -665,45 +679,47 @@ passin:
 	/*
 	 * Enable a consistency check between the destination address
 	 * and the arrival interface for a unicast packet (the RFC 1122
-	 * strong ES model) if IP forwarding is disabled and the packet
-	 * is not locally generated and the packet is not subject to
-	 * 'ipfw fwd'.
-	 *
-	 * XXX - Checking also should be disabled if the destination
-	 * address is ipnat'ed to a different interface.
-	 *
-	 * XXX - Checking is incompatible with IP aliases added
-	 * to the loopback interface instead of the interface where
-	 * the packets are received.
-	 *
-	 * XXX - This is the case for carp vhost IPs as well so we
-	 * insert a workaround. If the packet got here, we already
-	 * checked with carp_iamatch() and carp_forus().
+	 * strong ES model) with a list of additional predicates:
+	 * - if IP forwarding is disabled
+	 * - the packet is not locally generated
+	 * - the packet is not subject to 'ipfw fwd'
+	 * - Interface is not running CARP. If the packet got here, we already
+	 *   checked it with carp_iamatch() and carp_forus().
 	 */
-	checkif = V_ip_checkinterface && (V_ipforwarding == 0) &&
-	    ifp != NULL && ((ifp->if_flags & IFF_LOOPBACK) == 0) &&
+	strong_es = V_ip_strong_es && (V_ipforwarding == 0) &&
+	    ((ifp->if_flags & IFF_LOOPBACK) == 0) &&
 	    ifp->if_carp == NULL && (dchg == 0);
 
 	/*
 	 * Check for exact addresses in the hash bucket.
 	 */
-	IN_IFADDR_RLOCK(&in_ifa_tracker);
-	LIST_FOREACH(ia, INADDR_HASH(ip->ip_dst.s_addr), ia_hash) {
+	CK_LIST_FOREACH(ia, INADDR_HASH(ip->ip_dst.s_addr), ia_hash) {
+		if (IA_SIN(ia)->sin_addr.s_addr != ip->ip_dst.s_addr)
+			continue;
+
 		/*
-		 * If the address matches, verify that the packet
-		 * arrived via the correct interface if checking is
-		 * enabled.
+		 * net.inet.ip.rfc1122_strong_es: the address matches, verify
+		 * that the packet arrived via the correct interface.
 		 */
-		if (IA_SIN(ia)->sin_addr.s_addr == ip->ip_dst.s_addr &&
-		    (!checkif || ia->ia_ifp == ifp)) {
-			counter_u64_add(ia->ia_ifa.ifa_ipackets, 1);
-			counter_u64_add(ia->ia_ifa.ifa_ibytes,
-			    m->m_pkthdr.len);
-			IN_IFADDR_RUNLOCK(&in_ifa_tracker);
-			goto ours;
+		if (__predict_false(strong_es && ia->ia_ifp != ifp)) {
+			IPSTAT_INC(ips_badaddr);
+			goto bad;
 		}
+
+		/*
+		 * net.inet.ip.source_address_validation: drop incoming
+		 * packets that pretend to be ours.
+		 */
+		if (V_ip_sav && !(ifp->if_flags & IFF_LOOPBACK) &&
+		    __predict_false(in_localip_fib(ip->ip_src, ifp->if_fib))) {
+			IPSTAT_INC(ips_badaddr);
+			goto bad;
+		}
+
+		counter_u64_add(ia->ia_ifa.ifa_ipackets, 1);
+		counter_u64_add(ia->ia_ifa.ifa_ibytes, m->m_pkthdr.len);
+		goto ours;
 	}
-	IN_IFADDR_RUNLOCK(&in_ifa_tracker);
 
 	/*
 	 * Check for broadcast addresses.
@@ -713,7 +729,7 @@ passin:
 	 * be handled via ip_forward() and ether_output() with the loopback
 	 * into the stack for SIMPLEX interfaces handled by ether_output().
 	 */
-	if (ifp != NULL && ifp->if_flags & IFF_BROADCAST) {
+	if (ifp->if_flags & IFF_BROADCAST) {
 		CK_STAILQ_FOREACH(ifa, &ifp->if_addrhead, ifa_link) {
 			if (ifa->ifa_addr->sa_family != AF_INET)
 				continue;
@@ -736,14 +752,12 @@ passin:
 		}
 		ia = NULL;
 	}
-	/* RFC 3927 2.7: Do not forward datagrams for 169.254.0.0/16. */
-	if (IN_LINKLOCAL(ntohl(ip->ip_dst.s_addr))) {
-		IPSTAT_INC(ips_cantforward);
-		m_freem(m);
-		return;
-	}
 	if (IN_MULTICAST(ntohl(ip->ip_dst.s_addr))) {
-		if (V_ip_mrouter) {
+		/*
+		 * RFC 3927 2.7: Do not forward multicast packets from
+		 * IN_LINKLOCAL.
+		 */
+		if (V_ip_mrouter && !IN_LINKLOCAL(ntohl(ip->ip_src.s_addr))) {
 			/*
 			 * If we are acting as a multicast router, all
 			 * incoming multicast packets are passed to the
@@ -763,8 +777,9 @@ passin:
 			 * all multicast IGMP packets, whether or not this
 			 * host belongs to their destination groups.
 			 */
-			if (ip->ip_p == IPPROTO_IGMP)
+			if (ip->ip_p == IPPROTO_IGMP) {
 				goto ours;
+			}
 			IPSTAT_INC(ips_forward);
 		}
 		/*
@@ -774,10 +789,15 @@ passin:
 		 */
 		goto ours;
 	}
-	if (ip->ip_dst.s_addr == (u_long)INADDR_BROADCAST)
+	if (in_broadcast(ip->ip_dst))
 		goto ours;
-	if (ip->ip_dst.s_addr == INADDR_ANY)
-		goto ours;
+	/* RFC 3927 2.7: Do not forward packets to or from IN_LINKLOCAL. */
+	if (IN_LINKLOCAL(ntohl(ip->ip_dst.s_addr)) ||
+	    IN_LINKLOCAL(ntohl(ip->ip_src.s_addr))) {
+		IPSTAT_INC(ips_cantforward);
+		m_freem(m);
+		return;
+	}
 
 	/*
 	 * Not for us; forward if possible and desirable.
@@ -799,6 +819,18 @@ ours:
 	if (V_ipstealth && hlen > sizeof (struct ip) && ip_dooptions(m, 1))
 		return;
 #endif /* IPSTEALTH */
+
+	/*
+	 * We are going to ship the packet to the local protocol stack. Call the
+	 * filter again for this 'output' action, allowing redirect-like rules
+	 * to adjust the source address.
+	 */
+	if (PFIL_HOOKED_OUT(V_inet_local_pfil_head)) {
+		if (pfil_mbuf_out(V_inet_local_pfil_head, &m, V_loif, NULL) !=
+		    PFIL_PASS)
+			return;
+		ip = mtod(m, struct ip *);
+	}
 
 	/*
 	 * Attempt reassembly; if it succeeds, proceed.
@@ -826,109 +858,43 @@ ours:
 	 */
 	IPSTAT_INC(ips_delivered);
 
-	(*inetsw[ip_protox[ip->ip_p]].pr_input)(&m, &hlen, ip->ip_p);
+	ip_protox[ip->ip_p](&m, &hlen, ip->ip_p);
 	return;
 bad:
 	m_freem(m);
 }
 
-/*
- * IP timer processing;
- * if a timer expires on a reassembly
- * queue, discard it.
- */
-void
-ip_slowtimo(void)
-{
-	VNET_ITERATOR_DECL(vnet_iter);
-
-	VNET_LIST_RLOCK_NOSLEEP();
-	VNET_FOREACH(vnet_iter) {
-		CURVNET_SET(vnet_iter);
-		ipreass_slowtimo();
-		CURVNET_RESTORE();
-	}
-	VNET_LIST_RUNLOCK_NOSLEEP();
-}
-
-void
-ip_drain(void)
-{
-	VNET_ITERATOR_DECL(vnet_iter);
-
-	VNET_LIST_RLOCK_NOSLEEP();
-	VNET_FOREACH(vnet_iter) {
-		CURVNET_SET(vnet_iter);
-		ipreass_drain();
-		CURVNET_RESTORE();
-	}
-	VNET_LIST_RUNLOCK_NOSLEEP();
-}
-
-/*
- * The protocol to be inserted into ip_protox[] must be already registered
- * in inetsw[], either statically or through pf_proto_register().
- */
 int
-ipproto_register(short ipproto)
+ipproto_register(uint8_t proto, ipproto_input_t input, ipproto_ctlinput_t ctl)
 {
-	struct protosw *pr;
 
-	/* Sanity checks. */
-	if (ipproto <= 0 || ipproto >= IPPROTO_MAX)
-		return (EPROTONOSUPPORT);
+	MPASS(proto > 0);
 
 	/*
 	 * The protocol slot must not be occupied by another protocol
-	 * already.  An index pointing to IPPROTO_RAW is unused.
+	 * already.  An index pointing to rip_input() is unused.
 	 */
-	pr = pffindproto(PF_INET, IPPROTO_RAW, SOCK_RAW);
-	if (pr == NULL)
-		return (EPFNOSUPPORT);
-	if (ip_protox[ipproto] != pr - inetsw)	/* IPPROTO_RAW */
+	if (ip_protox[proto] == rip_input) {
+		ip_protox[proto] = input;
+		ip_ctlprotox[proto] = ctl;
+		return (0);
+	} else
 		return (EEXIST);
-
-	/* Find the protocol position in inetsw[] and set the index. */
-	for (pr = inetdomain.dom_protosw;
-	     pr < inetdomain.dom_protoswNPROTOSW; pr++) {
-		if (pr->pr_domain->dom_family == PF_INET &&
-		    pr->pr_protocol && pr->pr_protocol == ipproto) {
-			ip_protox[pr->pr_protocol] = pr - inetsw;
-			return (0);
-		}
-	}
-	return (EPROTONOSUPPORT);
 }
 
 int
-ipproto_unregister(short ipproto)
+ipproto_unregister(uint8_t proto)
 {
-	struct protosw *pr;
 
-	/* Sanity checks. */
-	if (ipproto <= 0 || ipproto >= IPPROTO_MAX)
-		return (EPROTONOSUPPORT);
+	MPASS(proto > 0);
 
-	/* Check if the protocol was indeed registered. */
-	pr = pffindproto(PF_INET, IPPROTO_RAW, SOCK_RAW);
-	if (pr == NULL)
-		return (EPFNOSUPPORT);
-	if (ip_protox[ipproto] == pr - inetsw)  /* IPPROTO_RAW */
+	if (ip_protox[proto] != rip_input) {
+		ip_protox[proto] = rip_input;
+		ip_ctlprotox[proto] = rip_ctlinput;
+		return (0);
+	} else
 		return (ENOENT);
-
-	/* Reset the protocol slot to IPPROTO_RAW. */
-	ip_protox[ipproto] = pr - inetsw;
-	return (0);
 }
-
-u_char inetctlerrmap[PRC_NCMDS] = {
-	0,		0,		0,		0,
-	0,		EMSGSIZE,	EHOSTDOWN,	EHOSTUNREACH,
-	EHOSTUNREACH,	EHOSTUNREACH,	ECONNREFUSED,	ECONNREFUSED,
-	EMSGSIZE,	EHOSTUNREACH,	0,		0,
-	0,		0,		EHOSTUNREACH,	0,
-	ENOPROTOOPT,	ECONNREFUSED
-};
 
 /*
  * Forward a packet.  If some error occurs return the sender
@@ -958,7 +924,7 @@ ip_forward(struct mbuf *m, int srcrt)
 
 	NET_EPOCH_ASSERT();
 
-	if (m->m_flags & (M_BCAST|M_MCAST) || in_canforward(ip->ip_dst) == 0) {
+	if (m->m_flags & (M_BCAST|M_MCAST) || !in_canforward(ip->ip_dst)) {
 		IPSTAT_INC(ips_cantforward);
 		m_freem(m);
 		return;
@@ -980,6 +946,18 @@ ip_forward(struct mbuf *m, int srcrt)
 	flowid = m->m_pkthdr.flowid;
 	ro.ro_nh = fib4_lookup(M_GETFIB(m), ip->ip_dst, 0, NHR_REF, flowid);
 	if (ro.ro_nh != NULL) {
+		if (ro.ro_nh->nh_flags & (NHF_BLACKHOLE | NHF_BROADCAST)) {
+			IPSTAT_INC(ips_cantforward);
+			m_freem(m);
+			NH_FREE(ro.ro_nh);
+			return;
+		}
+		if (ro.ro_nh->nh_flags & NHF_REJECT) {
+			IPSTAT_INC(ips_cantforward);
+			NH_FREE(ro.ro_nh);
+			icmp_error(m, ICMP_UNREACH, ICMP_UNREACH_HOST, 0, 0);
+			return;
+		}
 		ia = ifatoia(ro.ro_nh->nh_ifa);
 	} else
 		ia = NULL;
@@ -1053,13 +1031,16 @@ ip_forward(struct mbuf *m, int srcrt)
 
 			if (nh_ia != NULL &&
 			    (src & nh_ia->ia_subnetmask) == nh_ia->ia_subnet) {
-				if (nh->nh_flags & NHF_GATEWAY)
-					dest.s_addr = nh->gw4_sa.sin_addr.s_addr;
-				else
-					dest.s_addr = ip->ip_dst.s_addr;
 				/* Router requirements says to only send host redirects */
 				type = ICMP_REDIRECT;
 				code = ICMP_REDIRECT_HOST;
+				if (nh->nh_flags & NHF_GATEWAY) {
+				    if (nh->gw_sa.sa_family == AF_INET)
+					dest.s_addr = nh->gw4_sa.sin_addr.s_addr;
+				    else /* Do not redirect in case gw is AF_INET6 */
+					type = 0;
+				} else
+					dest.s_addr = ip->ip_dst.s_addr;
 			}
 		}
 	}
@@ -1153,8 +1134,8 @@ ip_savecontrol(struct inpcb *inp, struct mbuf **mp, struct ip *ip,
 		} else {
 			bintime(&bt);
 		}
-		*mp = sbcreatecontrol((caddr_t)&bt, sizeof(bt),
-		    SCM_BINTIME, SOL_SOCKET);
+		*mp = sbcreatecontrol(&bt, sizeof(bt), SCM_BINTIME,
+		    SOL_SOCKET, M_NOWAIT);
 		if (*mp != NULL) {
 			mp = &(*mp)->m_next;
 			stamped = true;
@@ -1175,8 +1156,8 @@ ip_savecontrol(struct inpcb *inp, struct mbuf **mp, struct ip *ip,
 		} else {
 			microtime(&tv);
 		}
-		*mp = sbcreatecontrol((caddr_t)&tv, sizeof(tv),
-		    SCM_TIMESTAMP, SOL_SOCKET);
+		*mp = sbcreatecontrol((caddr_t)&tv, sizeof(tv), SCM_TIMESTAMP,
+		    SOL_SOCKET, M_NOWAIT);
 		if (*mp != NULL) {
 			mp = &(*mp)->m_next;
 			stamped = true;
@@ -1194,8 +1175,8 @@ ip_savecontrol(struct inpcb *inp, struct mbuf **mp, struct ip *ip,
 		} else {
 			nanotime(&ts);
 		}
-		*mp = sbcreatecontrol((caddr_t)&ts, sizeof(ts),
-		    SCM_REALTIME, SOL_SOCKET);
+		*mp = sbcreatecontrol(&ts, sizeof(ts), SCM_REALTIME,
+		    SOL_SOCKET, M_NOWAIT);
 		if (*mp != NULL) {
 			mp = &(*mp)->m_next;
 			stamped = true;
@@ -1208,8 +1189,8 @@ ip_savecontrol(struct inpcb *inp, struct mbuf **mp, struct ip *ip,
 			mbuf_tstmp2timespec(m, &ts);
 		else
 			nanouptime(&ts);
-		*mp = sbcreatecontrol((caddr_t)&ts, sizeof(ts),
-		    SCM_MONOTONIC, SOL_SOCKET);
+		*mp = sbcreatecontrol(&ts, sizeof(ts), SCM_MONOTONIC,
+		    SOL_SOCKET, M_NOWAIT);
 		if (*mp != NULL) {
 			mp = &(*mp)->m_next;
 			stamped = true;
@@ -1223,20 +1204,20 @@ ip_savecontrol(struct inpcb *inp, struct mbuf **mp, struct ip *ip,
 		sti.st_info_flags = ST_INFO_HW;
 		if ((m->m_flags & M_TSTMP_HPREC) != 0)
 			sti.st_info_flags |= ST_INFO_HW_HPREC;
-		*mp = sbcreatecontrol((caddr_t)&sti, sizeof(sti), SCM_TIME_INFO,
-		    SOL_SOCKET);
+		*mp = sbcreatecontrol(&sti, sizeof(sti), SCM_TIME_INFO,
+		    SOL_SOCKET, M_NOWAIT);
 		if (*mp != NULL)
 			mp = &(*mp)->m_next;
 	}
 	if (inp->inp_flags & INP_RECVDSTADDR) {
-		*mp = sbcreatecontrol((caddr_t)&ip->ip_dst,
-		    sizeof(struct in_addr), IP_RECVDSTADDR, IPPROTO_IP);
+		*mp = sbcreatecontrol(&ip->ip_dst, sizeof(struct in_addr),
+		    IP_RECVDSTADDR, IPPROTO_IP, M_NOWAIT);
 		if (*mp)
 			mp = &(*mp)->m_next;
 	}
 	if (inp->inp_flags & INP_RECVTTL) {
-		*mp = sbcreatecontrol((caddr_t)&ip->ip_ttl,
-		    sizeof(u_char), IP_RECVTTL, IPPROTO_IP);
+		*mp = sbcreatecontrol(&ip->ip_ttl, sizeof(u_char), IP_RECVTTL,
+		    IPPROTO_IP, M_NOWAIT);
 		if (*mp)
 			mp = &(*mp)->m_next;
 	}
@@ -1247,15 +1228,15 @@ ip_savecontrol(struct inpcb *inp, struct mbuf **mp, struct ip *ip,
 	 */
 	/* options were tossed already */
 	if (inp->inp_flags & INP_RECVOPTS) {
-		*mp = sbcreatecontrol((caddr_t)opts_deleted_above,
-		    sizeof(struct in_addr), IP_RECVOPTS, IPPROTO_IP);
+		*mp = sbcreatecontrol(opts_deleted_above,
+		    sizeof(struct in_addr), IP_RECVOPTS, IPPROTO_IP, M_NOWAIT);
 		if (*mp)
 			mp = &(*mp)->m_next;
 	}
 	/* ip_srcroute doesn't do what we want here, need to fix */
 	if (inp->inp_flags & INP_RECVRETOPTS) {
-		*mp = sbcreatecontrol((caddr_t)ip_srcroute(m),
-		    sizeof(struct in_addr), IP_RECVRETOPTS, IPPROTO_IP);
+		*mp = sbcreatecontrol(ip_srcroute(m), sizeof(struct in_addr),
+		    IP_RECVRETOPTS, IPPROTO_IP, M_NOWAIT);
 		if (*mp)
 			mp = &(*mp)->m_next;
 	}
@@ -1269,8 +1250,7 @@ ip_savecontrol(struct inpcb *inp, struct mbuf **mp, struct ip *ip,
 		struct sockaddr_dl *sdp;
 		struct sockaddr_dl *sdl2 = &sdlbuf.sdl;
 
-		if ((ifp = m->m_pkthdr.rcvif) &&
-		    ifp->if_index && ifp->if_index <= V_if_index) {
+		if ((ifp = m->m_pkthdr.rcvif)) {
 			sdp = (struct sockaddr_dl *)ifp->if_addr->ifa_addr;
 			/*
 			 * Change our mind and don't try copy.
@@ -1288,14 +1268,14 @@ makedummy:
 			sdl2->sdl_index = 0;
 			sdl2->sdl_nlen = sdl2->sdl_alen = sdl2->sdl_slen = 0;
 		}
-		*mp = sbcreatecontrol((caddr_t)sdl2, sdl2->sdl_len,
-		    IP_RECVIF, IPPROTO_IP);
+		*mp = sbcreatecontrol(sdl2, sdl2->sdl_len, IP_RECVIF,
+		    IPPROTO_IP, M_NOWAIT);
 		if (*mp)
 			mp = &(*mp)->m_next;
 	}
 	if (inp->inp_flags & INP_RECVTOS) {
-		*mp = sbcreatecontrol((caddr_t)&ip->ip_tos,
-		    sizeof(u_char), IP_RECVTOS, IPPROTO_IP);
+		*mp = sbcreatecontrol(&ip->ip_tos, sizeof(u_char), IP_RECVTOS,
+		    IPPROTO_IP, M_NOWAIT);
 		if (*mp)
 			mp = &(*mp)->m_next;
 	}
@@ -1310,12 +1290,12 @@ makedummy:
 		 * XXX should handle the failure of one or the
 		 * other - don't populate both?
 		 */
-		*mp = sbcreatecontrol((caddr_t) &flowid,
-		    sizeof(uint32_t), IP_FLOWID, IPPROTO_IP);
+		*mp = sbcreatecontrol(&flowid, sizeof(uint32_t), IP_FLOWID,
+		    IPPROTO_IP, M_NOWAIT);
 		if (*mp)
 			mp = &(*mp)->m_next;
-		*mp = sbcreatecontrol((caddr_t) &flow_type,
-		    sizeof(uint32_t), IP_FLOWTYPE, IPPROTO_IP);
+		*mp = sbcreatecontrol(&flow_type, sizeof(uint32_t),
+		    IP_FLOWTYPE, IPPROTO_IP, M_NOWAIT);
 		if (*mp)
 			mp = &(*mp)->m_next;
 	}
@@ -1329,8 +1309,8 @@ makedummy:
 		flow_type = M_HASHTYPE_GET(m);
 
 		if (rss_hash2bucket(flowid, flow_type, &rss_bucketid) == 0) {
-			*mp = sbcreatecontrol((caddr_t) &rss_bucketid,
-			   sizeof(uint32_t), IP_RSSBUCKETID, IPPROTO_IP);
+			*mp = sbcreatecontrol(&rss_bucketid, sizeof(uint32_t),
+			    IP_RSSBUCKETID, IPPROTO_IP, M_NOWAIT);
 			if (*mp)
 				mp = &(*mp)->m_next;
 		}
@@ -1352,10 +1332,6 @@ VNET_DEFINE(struct socket *, ip_rsvpd);
 int
 ip_rsvp_init(struct socket *so)
 {
-
-	if (so->so_type != SOCK_RAW ||
-	    so->so_proto->pr_protocol != IPPROTO_RSVP)
-		return EOPNOTSUPP;
 
 	if (V_ip_rsvpd != NULL)
 		return EADDRINUSE;

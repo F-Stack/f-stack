@@ -8,53 +8,12 @@
 
 RTE_DEFINE_PER_LCORE(pid_t, pid);
 
+uint8_t pmd_driver_id_aesni_mb;
+
 struct aesni_mb_op_buf_data {
 	struct rte_mbuf *m;
 	uint32_t offset;
 };
-
-/**
- * Calculate the authentication pre-computes
- *
- * @param one_block_hash	Function pointer
- *				to calculate digest on ipad/opad
- * @param ipad			Inner pad output byte array
- * @param opad			Outer pad output byte array
- * @param hkey			Authentication key
- * @param hkey_len		Authentication key length
- * @param blocksize		Block size of selected hash algo
- */
-static void
-calculate_auth_precomputes(hash_one_block_t one_block_hash,
-		uint8_t *ipad, uint8_t *opad,
-		const uint8_t *hkey, uint16_t hkey_len,
-		uint16_t blocksize)
-{
-	uint32_t i, length;
-
-	uint8_t ipad_buf[blocksize] __rte_aligned(16);
-	uint8_t opad_buf[blocksize] __rte_aligned(16);
-
-	/* Setup inner and outer pads */
-	memset(ipad_buf, HMAC_IPAD_VALUE, blocksize);
-	memset(opad_buf, HMAC_OPAD_VALUE, blocksize);
-
-	/* XOR hash key with inner and outer pads */
-	length = hkey_len > blocksize ? blocksize : hkey_len;
-
-	for (i = 0; i < length; i++) {
-		ipad_buf[i] ^= hkey[i];
-		opad_buf[i] ^= hkey[i];
-	}
-
-	/* Compute partial hashes */
-	(*one_block_hash)(ipad_buf, ipad);
-	(*one_block_hash)(opad_buf, opad);
-
-	/* Clean up stack */
-	memset(ipad_buf, 0, blocksize);
-	memset(opad_buf, 0, blocksize);
-}
 
 static inline int
 is_aead_algo(IMB_HASH_ALG hash_alg, IMB_CIPHER_MODE cipher_mode)
@@ -66,12 +25,10 @@ is_aead_algo(IMB_HASH_ALG hash_alg, IMB_CIPHER_MODE cipher_mode)
 
 /** Set session authentication parameters */
 static int
-aesni_mb_set_session_auth_parameters(const IMB_MGR *mb_mgr,
+aesni_mb_set_session_auth_parameters(IMB_MGR *mb_mgr,
 		struct aesni_mb_session *sess,
 		const struct rte_crypto_sym_xform *xform)
 {
-	hash_one_block_t hash_oneblock_fn = NULL;
-	unsigned int key_larger_block_size = 0;
 	uint8_t hashed_key[HMAC_MAX_BLOCK_SIZE] = { 0 };
 	uint32_t auth_precompute = 1;
 
@@ -210,13 +167,9 @@ aesni_mb_set_session_auth_parameters(const IMB_MGR *mb_mgr,
 			}
 		} else if (xform->auth.key.length == 32) {
 			sess->template_job.hash_alg = IMB_AUTH_ZUC256_EIA3_BITLEN;
-#if IMB_VERSION(1, 2, 0) < IMB_VERSION_NUM
 			if (sess->auth.req_digest_len != 4 &&
 					sess->auth.req_digest_len != 8 &&
 					sess->auth.req_digest_len != 16) {
-#else
-			if (sess->auth.req_digest_len != 4) {
-#endif
 				IPSEC_MB_LOG(ERR, "Invalid digest size");
 				return -EINVAL;
 			}
@@ -267,18 +220,15 @@ aesni_mb_set_session_auth_parameters(const IMB_MGR *mb_mgr,
 	switch (xform->auth.algo) {
 	case RTE_CRYPTO_AUTH_MD5_HMAC:
 		sess->template_job.hash_alg = IMB_AUTH_MD5;
-		hash_oneblock_fn = mb_mgr->md5_one_block;
 		break;
 	case RTE_CRYPTO_AUTH_SHA1_HMAC:
 		sess->template_job.hash_alg = IMB_AUTH_HMAC_SHA_1;
-		hash_oneblock_fn = mb_mgr->sha1_one_block;
 		if (xform->auth.key.length > get_auth_algo_blocksize(
 				IMB_AUTH_HMAC_SHA_1)) {
 			IMB_SHA1(mb_mgr,
 				xform->auth.key.data,
 				xform->auth.key.length,
 				hashed_key);
-			key_larger_block_size = 1;
 		}
 		break;
 	case RTE_CRYPTO_AUTH_SHA1:
@@ -287,14 +237,12 @@ aesni_mb_set_session_auth_parameters(const IMB_MGR *mb_mgr,
 		break;
 	case RTE_CRYPTO_AUTH_SHA224_HMAC:
 		sess->template_job.hash_alg = IMB_AUTH_HMAC_SHA_224;
-		hash_oneblock_fn = mb_mgr->sha224_one_block;
 		if (xform->auth.key.length > get_auth_algo_blocksize(
 				IMB_AUTH_HMAC_SHA_224)) {
 			IMB_SHA224(mb_mgr,
 				xform->auth.key.data,
 				xform->auth.key.length,
 				hashed_key);
-			key_larger_block_size = 1;
 		}
 		break;
 	case RTE_CRYPTO_AUTH_SHA224:
@@ -303,14 +251,12 @@ aesni_mb_set_session_auth_parameters(const IMB_MGR *mb_mgr,
 		break;
 	case RTE_CRYPTO_AUTH_SHA256_HMAC:
 		sess->template_job.hash_alg = IMB_AUTH_HMAC_SHA_256;
-		hash_oneblock_fn = mb_mgr->sha256_one_block;
 		if (xform->auth.key.length > get_auth_algo_blocksize(
 				IMB_AUTH_HMAC_SHA_256)) {
 			IMB_SHA256(mb_mgr,
 				xform->auth.key.data,
 				xform->auth.key.length,
 				hashed_key);
-			key_larger_block_size = 1;
 		}
 		break;
 	case RTE_CRYPTO_AUTH_SHA256:
@@ -319,14 +265,12 @@ aesni_mb_set_session_auth_parameters(const IMB_MGR *mb_mgr,
 		break;
 	case RTE_CRYPTO_AUTH_SHA384_HMAC:
 		sess->template_job.hash_alg = IMB_AUTH_HMAC_SHA_384;
-		hash_oneblock_fn = mb_mgr->sha384_one_block;
 		if (xform->auth.key.length > get_auth_algo_blocksize(
 				IMB_AUTH_HMAC_SHA_384)) {
 			IMB_SHA384(mb_mgr,
 				xform->auth.key.data,
 				xform->auth.key.length,
 				hashed_key);
-			key_larger_block_size = 1;
 		}
 		break;
 	case RTE_CRYPTO_AUTH_SHA384:
@@ -335,20 +279,26 @@ aesni_mb_set_session_auth_parameters(const IMB_MGR *mb_mgr,
 		break;
 	case RTE_CRYPTO_AUTH_SHA512_HMAC:
 		sess->template_job.hash_alg = IMB_AUTH_HMAC_SHA_512;
-		hash_oneblock_fn = mb_mgr->sha512_one_block;
 		if (xform->auth.key.length > get_auth_algo_blocksize(
 				IMB_AUTH_HMAC_SHA_512)) {
 			IMB_SHA512(mb_mgr,
 				xform->auth.key.data,
 				xform->auth.key.length,
 				hashed_key);
-			key_larger_block_size = 1;
 		}
 		break;
 	case RTE_CRYPTO_AUTH_SHA512:
 		sess->template_job.hash_alg = IMB_AUTH_SHA_512;
 		auth_precompute = 0;
 		break;
+#if IMB_VERSION(1, 5, 0) <= IMB_VERSION_NUM
+	case RTE_CRYPTO_AUTH_SM3:
+		sess->template_job.hash_alg = IMB_AUTH_SM3;
+		break;
+	case RTE_CRYPTO_AUTH_SM3_HMAC:
+		sess->template_job.hash_alg = IMB_AUTH_HMAC_SM3;
+		break;
+#endif
 	default:
 		IPSEC_MB_LOG(ERR,
 			"Unsupported authentication algorithm selection");
@@ -376,19 +326,9 @@ aesni_mb_set_session_auth_parameters(const IMB_MGR *mb_mgr,
 		return 0;
 
 	/* Calculate Authentication precomputes */
-	if (key_larger_block_size) {
-		calculate_auth_precomputes(hash_oneblock_fn,
-			sess->auth.pads.inner, sess->auth.pads.outer,
-			hashed_key,
-			xform->auth.key.length,
-			get_auth_algo_blocksize(sess->template_job.hash_alg));
-	} else {
-		calculate_auth_precomputes(hash_oneblock_fn,
-			sess->auth.pads.inner, sess->auth.pads.outer,
-			xform->auth.key.data,
-			xform->auth.key.length,
-			get_auth_algo_blocksize(sess->template_job.hash_alg));
-	}
+	imb_hmac_ipad_opad(mb_mgr, sess->template_job.hash_alg,
+				xform->auth.key.data, xform->auth.key.length,
+				sess->auth.pads.inner, sess->auth.pads.outer);
 	sess->template_job.u.HMAC._hashed_auth_key_xor_ipad =
 		sess->auth.pads.inner;
 	sess->template_job.u.HMAC._hashed_auth_key_xor_opad =
@@ -409,6 +349,9 @@ aesni_mb_set_session_cipher_parameters(const IMB_MGR *mb_mgr,
 	uint8_t is_zuc = 0;
 	uint8_t is_snow3g = 0;
 	uint8_t is_kasumi = 0;
+#if IMB_VERSION(1, 5, 0) <= IMB_VERSION_NUM
+	uint8_t is_sm4 = 0;
+#endif
 
 	if (xform == NULL) {
 		sess->template_job.cipher_mode = IMB_CIPHER_NULL;
@@ -479,6 +422,22 @@ aesni_mb_set_session_cipher_parameters(const IMB_MGR *mb_mgr,
 		sess->iv.offset = xform->cipher.iv.offset;
 		sess->template_job.iv_len_in_bytes = xform->cipher.iv.length;
 		return 0;
+#if IMB_VERSION(1, 5, 0) <= IMB_VERSION_NUM
+	case RTE_CRYPTO_CIPHER_SM4_CBC:
+		sess->template_job.cipher_mode = IMB_CIPHER_SM4_CBC;
+		is_sm4 = 1;
+		break;
+	case RTE_CRYPTO_CIPHER_SM4_ECB:
+		sess->template_job.cipher_mode = IMB_CIPHER_SM4_ECB;
+		is_sm4 = 1;
+		break;
+#endif
+#if IMB_VERSION(1, 5, 0) < IMB_VERSION_NUM
+	case RTE_CRYPTO_CIPHER_SM4_CTR:
+		sess->template_job.cipher_mode = IMB_CIPHER_SM4_CNTR;
+		is_sm4 = 1;
+		break;
+#endif
 	default:
 		IPSEC_MB_LOG(ERR, "Unsupported cipher mode parameter");
 		return -ENOTSUP;
@@ -613,6 +572,15 @@ aesni_mb_set_session_cipher_parameters(const IMB_MGR *mb_mgr,
 					&sess->cipher.pKeySched_kasumi_cipher);
 		sess->template_job.enc_keys = &sess->cipher.pKeySched_kasumi_cipher;
 		sess->template_job.dec_keys = &sess->cipher.pKeySched_kasumi_cipher;
+#if IMB_VERSION(1, 5, 0) <= IMB_VERSION_NUM
+	} else if (is_sm4) {
+		sess->template_job.key_len_in_bytes = IMB_KEY_128_BYTES;
+		IMB_SM4_KEYEXP(mb_mgr, xform->cipher.key.data,
+				sess->cipher.expanded_sm4_keys.encode,
+				sess->cipher.expanded_sm4_keys.decode);
+		sess->template_job.enc_keys = sess->cipher.expanded_sm4_keys.encode;
+		sess->template_job.dec_keys = sess->cipher.expanded_sm4_keys.decode;
+#endif
 	} else {
 		if (xform->cipher.key.length != 8) {
 			IPSEC_MB_LOG(ERR, "Invalid cipher key length");
@@ -761,7 +729,7 @@ aesni_mb_set_session_aead_parameters(const IMB_MGR *mb_mgr,
 }
 
 /** Configure a aesni multi-buffer session from a crypto xform chain */
-static int
+int
 aesni_mb_session_configure(IMB_MGR *mb_mgr,
 		void *priv_sess,
 		const struct rte_crypto_sym_xform *xform)
@@ -845,11 +813,9 @@ aesni_mb_session_configure(IMB_MGR *mb_mgr,
 		}
 	}
 
-#if IMB_VERSION(1, 3, 0) < IMB_VERSION_NUM
 	sess->session_id = imb_set_session(mb_mgr, &sess->template_job);
 	sess->pid = getpid();
 	RTE_PER_LCORE(pid) = sess->pid;
-#endif
 
 	return 0;
 }
@@ -982,9 +948,7 @@ aesni_mb_set_docsis_sec_session_parameters(
 		goto error_exit;
 	}
 
-#if IMB_VERSION(1, 3, 0) < IMB_VERSION_NUM
 	ipsec_sess->session_id = imb_set_session(mb_mgr, &ipsec_sess->template_job);
-#endif
 
 error_exit:
 	free_mb_mgr(mb_mgr);
@@ -1239,7 +1203,6 @@ imb_lib_support_sgl_algo(IMB_CIPHER_MODE alg)
 	return 0;
 }
 
-#if IMB_VERSION(1, 2, 0) < IMB_VERSION_NUM
 static inline int
 single_sgl_job(IMB_JOB *job, struct rte_crypto_op *op,
 		int oop, uint32_t offset, struct rte_mbuf *m_src,
@@ -1324,7 +1287,6 @@ single_sgl_job(IMB_JOB *job, struct rte_crypto_op *op,
 	job->sgl_io_segs = sgl_segs;
 	return 0;
 }
-#endif
 
 static inline int
 multi_sgl_job(IMB_JOB *job, struct rte_crypto_op *op,
@@ -1394,9 +1356,7 @@ set_gcm_job(IMB_MGR *mb_mgr, IMB_JOB *job, const uint8_t sgl,
 		job->msg_len_to_hash_in_bytes = 0;
 		job->msg_len_to_cipher_in_bytes = 0;
 		job->cipher_start_src_offset_in_bytes = 0;
-#if IMB_VERSION(1, 3, 0) < IMB_VERSION_NUM
 		imb_set_session(mb_mgr, job);
-#endif
 	} else {
 		job->hash_start_src_offset_in_bytes =
 				op->sym->aead.data.offset;
@@ -1424,13 +1384,11 @@ set_gcm_job(IMB_MGR *mb_mgr, IMB_JOB *job, const uint8_t sgl,
 		job->src = NULL;
 		job->dst = NULL;
 
-#if IMB_VERSION(1, 2, 0) < IMB_VERSION_NUM
 		if (m_src->nb_segs <= MAX_NUM_SEGS)
 			return single_sgl_job(job, op, oop,
 					m_offset, m_src, m_dst,
 					qp_data->sgl_segs);
 		else
-#endif
 			return multi_sgl_job(job, op, oop,
 					m_offset, m_src, m_dst, mb_mgr);
 	} else {
@@ -1520,10 +1478,6 @@ set_mb_job_params(IMB_JOB *job, struct ipsec_mb_qp *qp,
 	uint8_t sgl = 0;
 	uint8_t lb_sgl = 0;
 
-#if IMB_VERSION(1, 3, 0) >= IMB_VERSION_NUM
-	(void) pid;
-#endif
-
 	session = ipsec_mb_get_session_private(qp, op);
 	if (session == NULL) {
 		op->status = RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
@@ -1533,12 +1487,10 @@ set_mb_job_params(IMB_JOB *job, struct ipsec_mb_qp *qp,
 	const IMB_CIPHER_MODE cipher_mode =
 			session->template_job.cipher_mode;
 
-#if IMB_VERSION(1, 3, 0) < IMB_VERSION_NUM
 	if (session->pid != pid) {
 		memcpy(job, &session->template_job, sizeof(IMB_JOB));
 		imb_set_session(mb_mgr, job);
 	} else if (job->session_id != session->session_id)
-#endif
 		memcpy(job, &session->template_job, sizeof(IMB_JOB));
 
 	if (!op->sym->m_dst) {
@@ -1579,9 +1531,7 @@ set_mb_job_params(IMB_JOB *job, struct ipsec_mb_qp *qp,
 			job->u.GCM.ctx = &qp_data->gcm_sgl_ctx;
 			job->cipher_mode = IMB_CIPHER_GCM_SGL;
 			job->hash_alg = IMB_AUTH_GCM_SGL;
-#if IMB_VERSION(1, 3, 0) < IMB_VERSION_NUM
 			imb_set_session(mb_mgr, job);
-#endif
 		}
 		break;
 	case IMB_AUTH_AES_GMAC_128:
@@ -1606,9 +1556,7 @@ set_mb_job_params(IMB_JOB *job, struct ipsec_mb_qp *qp,
 			job->u.CHACHA20_POLY1305.ctx = &qp_data->chacha_sgl_ctx;
 			job->cipher_mode = IMB_CIPHER_CHACHA20_POLY1305_SGL;
 			job->hash_alg = IMB_AUTH_CHACHA20_POLY1305_SGL;
-#if IMB_VERSION(1, 3, 0) < IMB_VERSION_NUM
 			imb_set_session(mb_mgr, job);
-#endif
 		}
 		break;
 	default:
@@ -1804,13 +1752,11 @@ set_mb_job_params(IMB_JOB *job, struct ipsec_mb_qp *qp,
 		if (lb_sgl)
 			return handle_sgl_linear(job, op, m_offset, session);
 
-#if IMB_VERSION(1, 2, 0) < IMB_VERSION_NUM
 		if (m_src->nb_segs <= MAX_NUM_SEGS)
 			return single_sgl_job(job, op, oop,
 					m_offset, m_src, m_dst,
 					qp_data->sgl_segs);
 		else
-#endif
 			return multi_sgl_job(job, op, oop,
 					m_offset, m_src, m_dst, mb_mgr);
 	}
@@ -2130,8 +2076,7 @@ set_job_null_op(IMB_JOB *job, struct rte_crypto_op *op)
 	return job;
 }
 
-#if IMB_VERSION(1, 2, 0) < IMB_VERSION_NUM
-static uint16_t
+uint16_t
 aesni_mb_dequeue_burst(void *queue_pair, struct rte_crypto_op **ops,
 		uint16_t nb_ops)
 {
@@ -2263,144 +2208,7 @@ aesni_mb_dequeue_burst(void *queue_pair, struct rte_crypto_op **ops,
 
 	return processed_jobs;
 }
-#else
 
-/**
- * Process a completed IMB_JOB job and keep processing jobs until
- * get_completed_job return NULL
- *
- * @param qp		Queue Pair to process
- * @param mb_mgr	IMB_MGR to use
- * @param job		IMB_JOB job
- * @param ops		crypto ops to fill
- * @param nb_ops	number of crypto ops
- *
- * @return
- * - Number of processed jobs
- */
-static unsigned
-handle_completed_jobs(struct ipsec_mb_qp *qp, IMB_MGR *mb_mgr,
-		IMB_JOB *job, struct rte_crypto_op **ops,
-		uint16_t nb_ops)
-{
-	struct rte_crypto_op *op = NULL;
-	uint16_t processed_jobs = 0;
-
-	while (job != NULL) {
-		op = post_process_mb_job(qp, job);
-
-		if (op) {
-			ops[processed_jobs++] = op;
-			qp->stats.dequeued_count++;
-		} else {
-			qp->stats.dequeue_err_count++;
-			break;
-		}
-		if (processed_jobs == nb_ops)
-			break;
-
-		job = IMB_GET_COMPLETED_JOB(mb_mgr);
-	}
-
-	return processed_jobs;
-}
-
-static inline uint16_t
-flush_mb_mgr(struct ipsec_mb_qp *qp, IMB_MGR *mb_mgr,
-		struct rte_crypto_op **ops, uint16_t nb_ops)
-{
-	int processed_ops = 0;
-
-	/* Flush the remaining jobs */
-	IMB_JOB *job = IMB_FLUSH_JOB(mb_mgr);
-
-	if (job)
-		processed_ops += handle_completed_jobs(qp, mb_mgr, job,
-				&ops[processed_ops], nb_ops - processed_ops);
-
-	return processed_ops;
-}
-
-static uint16_t
-aesni_mb_dequeue_burst(void *queue_pair, struct rte_crypto_op **ops,
-		uint16_t nb_ops)
-{
-	struct ipsec_mb_qp *qp = queue_pair;
-	IMB_MGR *mb_mgr = qp->mb_mgr;
-	struct rte_crypto_op *op;
-	IMB_JOB *job;
-	int retval, processed_jobs = 0;
-	pid_t pid = 0;
-
-	if (unlikely(nb_ops == 0 || mb_mgr == NULL))
-		return 0;
-
-	uint8_t digest_idx = qp->digest_idx;
-
-	do {
-		/* Get next free mb job struct from mb manager */
-		job = IMB_GET_NEXT_JOB(mb_mgr);
-		if (unlikely(job == NULL)) {
-			/* if no free mb job structs we need to flush mb_mgr */
-			processed_jobs += flush_mb_mgr(qp, mb_mgr,
-					&ops[processed_jobs],
-					nb_ops - processed_jobs);
-
-			if (nb_ops == processed_jobs)
-				break;
-
-			job = IMB_GET_NEXT_JOB(mb_mgr);
-		}
-
-		/*
-		 * Get next operation to process from ingress queue.
-		 * There is no need to return the job to the IMB_MGR
-		 * if there are no more operations to process, since the IMB_MGR
-		 * can use that pointer again in next get_next calls.
-		 */
-		retval = rte_ring_dequeue(qp->ingress_queue, (void **)&op);
-		if (retval < 0)
-			break;
-
-		if (op->sess_type == RTE_CRYPTO_OP_SECURITY_SESSION)
-			retval = set_sec_mb_job_params(job, qp, op,
-						&digest_idx);
-		else
-			retval = set_mb_job_params(job, qp, op,
-				&digest_idx, mb_mgr, pid);
-
-		if (unlikely(retval != 0)) {
-			qp->stats.dequeue_err_count++;
-			set_job_null_op(job, op);
-		}
-
-		/* Submit job to multi-buffer for processing */
-#ifdef RTE_LIBRTE_PMD_AESNI_MB_DEBUG
-		job = IMB_SUBMIT_JOB(mb_mgr);
-#else
-		job = IMB_SUBMIT_JOB_NOCHECK(mb_mgr);
-#endif
-		/*
-		 * If submit returns a processed job then handle it,
-		 * before submitting subsequent jobs
-		 */
-		if (job)
-			processed_jobs += handle_completed_jobs(qp, mb_mgr,
-					job, &ops[processed_jobs],
-					nb_ops - processed_jobs);
-
-	} while (processed_jobs < nb_ops);
-
-	qp->digest_idx = digest_idx;
-
-	if (processed_jobs < 1)
-		processed_jobs += flush_mb_mgr(qp, mb_mgr,
-				&ops[processed_jobs],
-				nb_ops - processed_jobs);
-
-	return processed_jobs;
-}
-#endif
 static inline int
 check_crypto_sgl(union rte_crypto_sym_ofs so, const struct rte_crypto_sgl *sgl)
 {
@@ -2456,7 +2264,7 @@ verify_sync_dgst(struct rte_crypto_sym_vec *vec,
 	return k;
 }
 
-static uint32_t
+uint32_t
 aesni_mb_process_bulk(struct rte_cryptodev *dev __rte_unused,
 	struct rte_cryptodev_sym_session *sess, union rte_crypto_sym_ofs sofs,
 	struct rte_crypto_sym_vec *vec)

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010 Riccardo Panicucci, Universita` di Pisa
  * Copyright (c) 2000-2002 Luigi Rizzo, Universita` di Pisa
@@ -28,7 +28,6 @@
  */
 
 /*
- * $FreeBSD$
  */
 
 #ifdef _KERNEL
@@ -157,7 +156,8 @@ wf2qp_enqueue(struct dn_sch_inst *_si, struct dn_queue *q, struct mbuf *m)
         si->wsum += fs->fs.par[0];	/* add weight of new queue. */
 	si->inv_wsum = ONE_FP/si->wsum;
     } else { /* if it was idle then it was in the idle heap */
-        heap_extract(&si->idle_heap, q);
+        if (! heap_extract(&si->idle_heap, q))
+		return 1;
         alg_fq->S = MAX64(alg_fq->F, si->V);	/* compute new S */
     }
     alg_fq->F = alg_fq->S + len * alg_fq->inv_w;
@@ -243,6 +243,8 @@ wf2qp_dequeue(struct dn_sch_inst *_si)
 	q = HEAP_TOP(sch)->object;
 	alg_fq = (struct wf2qp_queue *)q;
 	m = dn_dequeue(q);
+	if (m == NULL)
+		return NULL;
 	heap_extract(sch, NULL); /* Remove queue from heap. */
 	si->V += (uint64_t)(m->m_pkthdr.len) * si->inv_wsum;
 	alg_fq->S = alg_fq->F;  /* Update start time. */
@@ -336,13 +338,10 @@ wf2qp_free_queue(struct dn_queue *q)
 	/* extract from the heap. XXX TODO we may need to adjust V
 	 * to make sure the invariants hold.
 	 */
-	if (q->mq.head == NULL) {
-		heap_extract(&si->idle_heap, q);
-	} else if (DN_KEY_LT(si->V, alg_fq->S)) {
-		heap_extract(&si->ne_heap, q);
-	} else {
-		heap_extract(&si->sch_heap, q);
-	}
+	heap_extract(&si->idle_heap, q);
+	heap_extract(&si->ne_heap, q);
+	heap_extract(&si->sch_heap, q);
+
 	return 0;
 }
 

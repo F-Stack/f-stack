@@ -1,12 +1,15 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2022 Intel Corporation
  */
+
+#include <stdalign.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
 #include <arpa/inet.h>
 
 #include <rte_common.h>
+#include <rte_random.h>
 #include <rte_ip.h>
 #include <rte_tailq.h>
 #include <rte_eal_memconfig.h>
@@ -154,7 +157,7 @@ struct rte_swx_ipsec {
 	/*
 	 * Table memory.
 	 */
-	uint8_t memory[] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint8_t memory[];
 };
 
 static inline struct ipsec_sa *
@@ -1317,14 +1320,14 @@ rte_swx_ipsec_sa_read(struct rte_swx_ipsec *ipsec __rte_unused,
 			CHECK(!strcmp(t[2], "srcaddr"), "Missing \"srcaddr\" keyword");
 
 			status = hex_string_parse(t[3],
-						  p->encap.tunnel.ipv6.src_addr.s6_addr,
+						  p->encap.tunnel.ipv6.src_addr.a,
 						  16);
 			CHECK(!status, "Tunnel IPv6 source address invalid format");
 
 			CHECK(!strcmp(t[4], "dstaddr"), "Missing \"dstaddr\" keyword");
 
 			status = hex_string_parse(t[5],
-						  p->encap.tunnel.ipv6.dst_addr.s6_addr,
+						  p->encap.tunnel.ipv6.dst_addr.a,
 						  16);
 			CHECK(!status, "Tunnel IPv6 destination address invalid format");
 
@@ -1383,13 +1386,11 @@ tunnel_ipv6_header_set(struct rte_ipv6_hdr *h, struct rte_swx_ipsec_sa_params *p
 		.payload_len = 0, /* Cannot be pre-computed. */
 		.proto = IPPROTO_ESP,
 		.hop_limits = 64,
-		.src_addr = {0},
-		.dst_addr = {0},
+		.src_addr = p->encap.tunnel.ipv6.src_addr,
+		.dst_addr = p->encap.tunnel.ipv6.dst_addr,
 	};
 
 	memcpy(h, &ipv6_hdr, sizeof(ipv6_hdr));
-	memcpy(h->src_addr, p->encap.tunnel.ipv6.src_addr.s6_addr, 16);
-	memcpy(h->dst_addr, p->encap.tunnel.ipv6.dst_addr.s6_addr, 16);
 }
 
 /* IPsec library SA parameters. */
@@ -1453,7 +1454,7 @@ crypto_xform_get(struct rte_swx_ipsec_sa_params *p,
 		switch (p->crypto.cipher_auth.cipher.alg) {
 		case RTE_CRYPTO_CIPHER_AES_CBC:
 		case RTE_CRYPTO_CIPHER_3DES_CBC:
-			salt = (uint32_t)rand();
+			salt = rte_rand();
 			break;
 
 		case RTE_CRYPTO_CIPHER_AES_CTR:

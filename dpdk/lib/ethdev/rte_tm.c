@@ -40,11 +40,11 @@ rte_tm_ops_get(uint16_t port_id, struct rte_tm_error *error)
 	return ops;
 }
 
-#define RTE_TM_FUNC(port_id, func)				\
-({							\
+#define RTE_TM_FUNC(port_id, func)			\
+__extension__ ({					\
 	const struct rte_tm_ops *ops =			\
 		rte_tm_ops_get(port_id, error);		\
-	if (ops == NULL)					\
+	if (ops == NULL)				\
 		return -rte_errno;			\
 							\
 	if (ops->func == NULL)				\
@@ -153,7 +153,7 @@ int rte_tm_node_capabilities_get(uint16_t port_id,
 /* Add WRED profile */
 int rte_tm_wred_profile_add(uint16_t port_id,
 	uint32_t wred_profile_id,
-	struct rte_tm_wred_params *profile,
+	const struct rte_tm_wred_params *profile,
 	struct rte_tm_error *error)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
@@ -218,7 +218,7 @@ int rte_tm_shared_wred_context_delete(uint16_t port_id,
 /* Add shaper profile */
 int rte_tm_shaper_profile_add(uint16_t port_id,
 	uint32_t shaper_profile_id,
-	struct rte_tm_shaper_params *profile,
+	const struct rte_tm_shaper_params *profile,
 	struct rte_tm_error *error)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
@@ -286,7 +286,7 @@ int rte_tm_node_add(uint16_t port_id,
 	uint32_t priority,
 	uint32_t weight,
 	uint32_t level_id,
-	struct rte_tm_node_params *params,
+	const struct rte_tm_node_params *params,
 	struct rte_tm_error *error)
 {
 	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
@@ -296,6 +296,28 @@ int rte_tm_node_add(uint16_t port_id,
 		params, error);
 
 	rte_tm_trace_node_add(port_id, node_id, parent_node_id, priority,
+			      weight, level_id, params, ret);
+
+	return ret;
+}
+
+int rte_tm_node_query(uint16_t port_id,
+	uint32_t node_id,
+	uint32_t *parent_node_id,
+	uint32_t *priority,
+	uint32_t *weight,
+	uint32_t *level_id,
+	struct rte_tm_node_params *params,
+	struct rte_tm_error *error)
+{
+	struct rte_eth_dev *dev = &rte_eth_devices[port_id];
+	int ret;
+
+	ret = RTE_TM_FUNC(port_id, node_query)(dev,
+		node_id, parent_node_id, priority, weight, level_id,
+		params, error);
+
+	rte_tm_trace_node_query(port_id, node_id, parent_node_id, priority,
 			      weight, level_id, params, ret);
 
 	return ret;

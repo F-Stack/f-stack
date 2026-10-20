@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002, Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -25,14 +25,15 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- * $FreeBSD$
- *
  */
 
 #ifndef _SYS_UMTX_H_
 #define	_SYS_UMTX_H_
 
 #include <sys/_umtx.h>
+
+#define	UMTX_UNOWNED		0x0
+#define	UMTX_CONTESTED		LONG_MIN
 
 /* Common lock flags */
 #define USYNC_PROCESS_SHARED	0x0001	/* Process shared sync objs */
@@ -73,8 +74,8 @@
 #define	USEM_COUNT(c)		((c) & USEM_MAX_COUNT)
 
 /* op code for _umtx_op */
-#define	UMTX_OP_RESERVED0	0
-#define	UMTX_OP_RESERVED1	1
+#define	UMTX_OP_LOCK		0	/* COMPAT10 */
+#define	UMTX_OP_UNLOCK		1	/* COMPAT10 */
 #define	UMTX_OP_WAIT		2
 #define	UMTX_OP_WAKE		3
 #define	UMTX_OP_MUTEX_TRYLOCK	4
@@ -100,6 +101,8 @@
 #define	UMTX_OP_SEM2_WAKE	24
 #define	UMTX_OP_SHM		25
 #define	UMTX_OP_ROBUST_LISTS	26
+#define	UMTX_OP_GET_MIN_TIMEOUT	27
+#define	UMTX_OP_SET_MIN_TIMEOUT	28
 
 /*
  * Flags for ops; the double-underbar convention must be maintained for future
@@ -129,83 +132,11 @@ struct umtx_robust_lists_params {
 	uintptr_t	robust_inact_offset;
 };
 
-#ifndef _KERNEL
-
 __BEGIN_DECLS
 
 int _umtx_op(void *obj, int op, u_long val, void *uaddr, void *uaddr2);
+int _umtx_op_err(void *obj, int op, u_long val, void *uaddr, void *uaddr2);
 
 __END_DECLS
 
-#else
-
-/*
- * The umtx_key structure is used by both the Linux futex code and the
- * umtx implementation to map userland addresses to unique keys.
- */
-
-enum {
-	TYPE_SIMPLE_WAIT,
-	TYPE_CV,
-	TYPE_SEM,
-	TYPE_SIMPLE_LOCK,
-	TYPE_NORMAL_UMUTEX,
-	TYPE_PI_UMUTEX,
-	TYPE_PP_UMUTEX,
-	TYPE_RWLOCK,
-	TYPE_FUTEX,
-	TYPE_SHM,
-	TYPE_PI_ROBUST_UMUTEX,
-	TYPE_PP_ROBUST_UMUTEX,
-};
-
-/* Key to represent a unique userland synchronous object */
-struct umtx_key {
-	int	hash;
-	int	type;
-	int	shared;
-	union {
-		struct {
-			struct vm_object *object;
-			uintptr_t	offset;
-		} shared;
-		struct {
-			struct vmspace	*vs;
-			uintptr_t	addr;
-		} private;
-		struct {
-			void		*a;
-			uintptr_t	b;
-		} both;
-	} info;
-};
-
-#define THREAD_SHARE		0
-#define PROCESS_SHARE		1
-#define AUTO_SHARE		2
-
-struct thread;
-
-static inline int
-umtx_key_match(const struct umtx_key *k1, const struct umtx_key *k2)
-{
-	return (k1->type == k2->type &&
-		k1->info.both.a == k2->info.both.a &&
-	        k1->info.both.b == k2->info.both.b);
-}
-
-int umtx_copyin_timeout(const void *, struct timespec *);
-void umtx_exec(struct proc *p);
-int umtx_key_get(const void *, int, int, struct umtx_key *);
-void umtx_key_release(struct umtx_key *);
-struct umtx_q *umtxq_alloc(void);
-void umtxq_free(struct umtx_q *);
-int kern_umtx_wake(struct thread *, void *, int, int);
-void umtx_pi_adjust(struct thread *, u_char);
-void umtx_thread_init(struct thread *);
-void umtx_thread_fini(struct thread *);
-void umtx_thread_alloc(struct thread *);
-void umtx_thread_exit(struct thread *);
-
-#endif /* !_KERNEL */
 #endif /* !_SYS_UMTX_H_ */

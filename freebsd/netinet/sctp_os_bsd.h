@@ -32,14 +32,10 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifndef _NETINET_SCTP_OS_BSD_H_
 #define _NETINET_SCTP_OS_BSD_H_
-/*
- * includes
- */
+
+#include <sys/cdefs.h>
 #include "opt_inet6.h"
 #include "opt_inet.h"
 #include "opt_sctp.h"
@@ -73,6 +69,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if.h>
 #include <net/if_types.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/route.h>
 #include <net/route/nhop.h>
 #include <net/vnet.h>
@@ -92,7 +89,6 @@ __FBSDID("$FreeBSD$");
 #include <netinet6/in6_fib.h>
 #include <netinet6/ip6_var.h>
 #include <netinet6/in6_pcb.h>
-#include <netinet6/ip6protosw.h>
 #include <netinet6/nd6.h>
 #include <netinet6/scope6_var.h>
 #endif				/* INET6 */
@@ -223,13 +219,6 @@ MALLOC_DECLARE(SCTP_M_MCORE);
 
 #define SCTP_FREE(var, type)	free(var, type)
 
-#define SCTP_MALLOC_SONAME(var, type, size) \
-	do { \
-		var = (type)malloc(size, M_SONAME, M_WAITOK | M_ZERO); \
-	} while (0)
-
-#define SCTP_FREE_SONAME(var)	free(var, M_SONAME)
-
 #define SCTP_PROCESS_STRUCT struct proc *
 
 /*
@@ -313,9 +302,8 @@ typedef struct callout sctp_os_timer_t;
 /*************************/
 /*      MTU              */
 /*************************/
-#define SCTP_GATHER_MTU_FROM_IFN_INFO(ifn, ifn_index, af) ((struct ifnet *)ifn)->if_mtu
+#define SCTP_GATHER_MTU_FROM_IFN_INFO(ifn, ifn_index) ((ifn != NULL) ? ((struct ifnet *)ifn)->if_mtu : 0)
 #define SCTP_GATHER_MTU_FROM_ROUTE(sctp_ifa, sa, nh) ((uint32_t)((nh != NULL) ? nh->nh_mtu : 0))
-#define SCTP_GATHER_MTU_FROM_INTFC(sctp_ifn) ((sctp_ifn->ifn_p != NULL) ? ((struct ifnet *)(sctp_ifn->ifn_p))->if_mtu : 0)
 
 /*************************/
 /* These are for logging */
@@ -354,7 +342,7 @@ typedef struct callout sctp_os_timer_t;
                          } while(0)
 
 /* Other m_pkthdr type things */
-#define SCTP_IS_IT_BROADCAST(dst, m) ((m->m_flags & M_PKTHDR) ? in_broadcast(dst, m->m_pkthdr.rcvif) : 0)
+#define SCTP_IS_IT_BROADCAST(dst, m) ((m->m_flags & M_PKTHDR) ? in_ifnet_broadcast(dst, m->m_pkthdr.rcvif) : 0)
 #define SCTP_IS_IT_LOOPBACK(m) ((m->m_flags & M_PKTHDR) && ((m->m_pkthdr.rcvif == NULL) || (m->m_pkthdr.rcvif->if_type == IFT_LOOP)))
 
 /* This converts any input packet header
@@ -373,18 +361,26 @@ typedef struct callout sctp_os_timer_t;
 #define SCTP_CLEAR_SO_NBIO(so)	((so)->so_state &= ~SS_NBIO)
 /* get the socket type */
 #define SCTP_SO_TYPE(so)	((so)->so_type)
-/* Use a macro for renaming sb_cc to sb_acc.
- * Initially sb_ccc was used, but this broke select() when used
- * with SCTP sockets.
- */
-#define sb_cc sb_acc
 /* reserve sb space for a socket */
 #define SCTP_SORESERVE(so, send, recv)	soreserve(so, send, recv)
 /* wakeup a socket */
 #define SCTP_SOWAKEUP(so)	wakeup(&(so)->so_timeo)
+/* number of bytes ready to read */
+#define SCTP_SBAVAIL(sb)	sbavail(sb)
 /* clear the socket buffer state */
+#define SCTP_SB_INCR(sb, incr)			\
+{						\
+	atomic_add_int(&(sb)->sb_acc, incr);	\
+	atomic_add_int(&(sb)->sb_ccc, incr);	\
+}
+#define SCTP_SB_DECR(sb, decr)					\
+{								\
+	SCTP_SAVE_ATOMIC_DECREMENT(&(sb)->sb_acc, decr);	\
+	SCTP_SAVE_ATOMIC_DECREMENT(&(sb)->sb_ccc, decr);	\
+}
 #define SCTP_SB_CLEAR(sb)	\
-	(sb).sb_cc = 0;		\
+	(sb).sb_acc = 0;	\
+	(sb).sb_ccc = 0;	\
 	(sb).sb_mb = NULL;	\
 	(sb).sb_mbcnt = 0;
 
@@ -411,28 +407,32 @@ typedef struct route sctp_route_t;
 /*
  * IP output routines
  */
-#define SCTP_IP_OUTPUT(result, o_pak, ro, stcb, vrf_id) \
-{ \
-	int o_flgs = IP_RAWOUTPUT; \
-	struct sctp_tcb *local_stcb = stcb; \
-	if (local_stcb && \
-	    local_stcb->sctp_ep && \
-	    local_stcb->sctp_ep->sctp_socket) \
-		o_flgs |= local_stcb->sctp_ep->sctp_socket->so_options & SO_DONTROUTE; \
-	m_clrprotoflags(o_pak); \
-	result = ip_output(o_pak, NULL, ro, o_flgs, 0, NULL); \
+#define SCTP_IP_OUTPUT(result, o_pak, ro, _inp, vrf_id)                      \
+{                                                                            \
+	struct sctp_inpcb *local_inp = _inp;                                 \
+	int o_flgs = IP_RAWOUTPUT;                                           \
+	                                                                     \
+	m_clrprotoflags(o_pak);                                              \
+	if ((local_inp != NULL) && (local_inp->sctp_socket != NULL)) {       \
+		o_flgs |= local_inp->sctp_socket->so_options & SO_DONTROUTE; \
+	}                                                                    \
+	result = ip_output(o_pak, NULL, ro, o_flgs, 0, NULL);                \
 }
 
-#define SCTP_IP6_OUTPUT(result, o_pak, ro, ifp, stcb, vrf_id) \
-{ \
-	struct sctp_tcb *local_stcb = stcb; \
-	m_clrprotoflags(o_pak); \
-	if (local_stcb && local_stcb->sctp_ep) \
-		result = ip6_output(o_pak, \
-				    ((struct inpcb *)(local_stcb->sctp_ep))->in6p_outputopts, \
-				    (ro), 0, 0, ifp, NULL); \
-	else \
-		result = ip6_output(o_pak, NULL, (ro), 0, 0, ifp, NULL); \
+#define SCTP_IP6_OUTPUT(result, o_pak, ro, ifp, _inp, vrf_id)                \
+{                                                                            \
+	struct sctp_inpcb *local_inp = _inp;                                 \
+	                                                                     \
+	m_clrprotoflags(o_pak);                                              \
+	if (local_inp != NULL) {                                             \
+		INP_RLOCK(&local_inp->ip_inp.inp);                           \
+		result = ip6_output(o_pak,                                   \
+		                    local_inp->ip_inp.inp.in6p_outputopts,   \
+		                    (ro), 0, 0, ifp, NULL);                  \
+		INP_RUNLOCK(&local_inp->ip_inp.inp);                         \
+	} else {                                                             \
+		result = ip6_output(o_pak, NULL, (ro), 0, 0, ifp, NULL);     \
+	}                                                                    \
 }
 
 struct mbuf *

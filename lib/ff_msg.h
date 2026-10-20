@@ -45,6 +45,13 @@ enum FF_MSG_TYPE {
     FF_IPFW_CTL,
     FF_TRAFFIC,
     FF_KNICTL,
+    /*
+     * graceful reload control family (v1.6 HANDOVER semantics,
+     * not SWITCH). Subcommand in ff_reload_args.cmd; replies carry the
+     * answering process's reload view (generation, heartbeat, active gen).
+     * Transported over the (proc_id, generation) msg_ring set.
+     */
+    FF_RELOAD,
 
     /*
      * to add other msg type before FF_MSG_NUM
@@ -127,11 +134,49 @@ struct ff_knictl_args {
     int kni_action;
 };
 
+/* FF_RELOAD message subcommands. */
+enum FF_RELOAD_CMD {
+    FF_RELOAD_CMD_UNKNOWN = 0,
+    FF_RELOAD_CMD_READY,
+    FF_RELOAD_CMD_HANDOVER_REQ,
+    FF_RELOAD_CMD_HANDOVER_ACK,
+    FF_RELOAD_CMD_DRAIN_PROGRESS,
+    FF_RELOAD_CMD_DRAIN_DONE,
+    FF_RELOAD_CMD_REJECT,
+    /*
+     * tools probe: read-only, no state change. Kept
+     * last so the value of every state-driving command stays stable.
+     */
+    FF_RELOAD_CMD_QUERY,
+};
+
+struct ff_reload_args {
+    uint32_t cmd;        /* enum FF_RELOAD_CMD */
+    uint32_t gen;        /* sender or target generation */
+    uint32_t status;     /* command result / progress */
+    uint32_t active_gen; /* serving generation: with a generation directory
+                          * this is the rx-owner gen (flips at T3, not T5);
+                          * without one it is the sender's view, as before */
+    uint64_t heartbeat;  /* heartbeat counter snapshot */
+    /* master epoch of the reported active generation. Ring names are
+     * namespaced by it, so a tool that omits it can address the wrong
+     * master's rings after an USR2. 0 == pre- / no directory. */
+    uint32_t epoch;
+    uint32_t pad;
+};
+
 
 #define MAX_MSG_BUF_SIZE 10240
 
 /* structure of ipc msg */
 struct ff_msg {
+    /* who owns this buffer. The tools' out-ring is shared by
+     * every process of one (proc_id, msg_type, slot, gen) coordinate and a
+     * DPDK secondary's hugepage VA is not the same as another's, so the
+     * reply identity must not be a pointer comparison. 0 == untagged and is
+     * never claimed as "mine". */
+    uint32_t ipc_cookie;
+    uint32_t ipc_owner_pid;
     enum FF_MSG_TYPE msg_type;
     /* Result of msg processing */
     int result;
@@ -151,7 +196,17 @@ struct ff_msg {
         struct ff_ipfw_args ipfw;
         struct ff_traffic_args traffic;
         struct ff_knictl_args knictl;
+        struct ff_reload_args reload;
     };
 } __attribute__((packed)) __rte_cache_aligned;
+
+/* the two new fields above fit into the padding the cache-line
+ * alignment already produced (32B header + 48B union + 8B = 88 of 128, after
+ * this change 96 of 128), so the *element size* of FF_MSG_POOL is unchanged.
+ * The offsets behind them do shift by 8 bytes — the stack and the tools must
+ * therefore always be built from the same tree. Pinned, because a silent
+ * growth would also change buf_len (elt_size - sizeof(struct ff_msg)) and
+ * desynchronise a running stack from a newly built tool. */
+typedef char ff_msg_size_check[(sizeof(struct ff_msg) == 128) ? 1 : -1];
 
 #endif

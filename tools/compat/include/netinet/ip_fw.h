@@ -77,6 +77,15 @@ typedef struct _ip_fw3_opheader {
 	uint16_t reserved[2];	/* Align to 64-bit boundary */
 } ip_fw3_opheader;
 
+/* M6: sync from freebsd/netinet/ip_fw.h:78-80 — required by ipfw2.c
+ * do_set3/do_get3 to instruct kernel sopt dispatcher to pick v1
+ * (modern) handlers in ip_fw_sockopt.c instead of the v0 stubs in
+ * ip_fw_compat.c (returns EOPNOTSUPP). Was missing because user-
+ * space tools/compat/include/netinet/ip_fw.h is a 13.0-era copy. */
+#define	IP_FW3_OPVER_0		0
+#define	IP_FW3_OPVER_1		1	/* 32bit rulenum */
+#define	IP_FW3_OPVER		IP_FW3_OPVER_1
+
 /* IP_FW3 opcodes */
 #define	IP_FW_TABLE_XADD	86	/* add entry */
 #define	IP_FW_TABLE_XDEL	87	/* delete entry */
@@ -936,8 +945,8 @@ typedef struct _ipfw_obj_ctlv {
 typedef struct _ipfw_range_tlv {
 	ipfw_obj_tlv	head;		/* TLV header			*/
 	uint32_t	flags;		/* Range flags			*/
-	uint16_t	start_rule;	/* Range start			*/
-	uint16_t	end_rule;	/* Range end			*/
+	uint32_t	start_rule;	/* Range start (M6: was uint16_t — sync to kernel v1, 32bit rulenum) */
+	uint32_t	end_rule;	/* Range end (M6: was uint16_t — sync to kernel v1, 32bit rulenum) */
 	uint32_t	set;		/* Range set to match		 */
 	uint32_t	new_set;	/* New set to move/swap to	*/
 } ipfw_range_tlv;

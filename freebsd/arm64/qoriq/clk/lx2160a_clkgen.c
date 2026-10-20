@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2020 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -26,8 +26,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * Clock driver for LX2160A SoC.
  */
@@ -44,7 +42,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
-#include <dev/extres/clk/clk_fixed.h>
+#include <dev/clk/clk_fixed.h>
 
 #include <arm64/qoriq/clk/qoriq_clkgen.h>
 
@@ -203,9 +201,7 @@ static device_method_t lx2160a_clkgen_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t lx2160a_clkgen_devclass;
-
 DEFINE_CLASS_1(lx2160a_clkgen, lx2160a_clkgen_driver, lx2160a_clkgen_methods,
     sizeof(struct qoriq_clkgen_softc), qoriq_clkgen_driver);
-EARLY_DRIVER_MODULE(lx2160a_clkgen, simplebus, lx2160a_clkgen_driver,
-    lx2160a_clkgen_devclass, 0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(lx2160a_clkgen, simplebus, lx2160a_clkgen_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);

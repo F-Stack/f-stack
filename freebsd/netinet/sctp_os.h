@@ -32,9 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifndef _NETINET_SCTP_OS_H_
 #define _NETINET_SCTP_OS_H_
 
@@ -42,9 +39,6 @@ __FBSDID("$FreeBSD$");
  * General kernel memory allocation:
  *  SCTP_MALLOC(element, type, size, name)
  *  SCTP_FREE(element)
- * Kernel memory allocation for "soname"- memory must be zeroed.
- *  SCTP_MALLOC_SONAME(name, type, size)
- *  SCTP_FREE_SONAME(name)
  */
 
 /*

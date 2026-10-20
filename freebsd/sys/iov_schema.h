@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014-2015 Sandvine Inc.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_IOV_SCHEMA_H_
@@ -50,5 +48,6 @@ void	pci_iov_schema_add_uint64(nvlist_t *schema, const char *name,
 	    uint32_t flags, uint64_t defaultVal);
 void	pci_iov_schema_add_unicast_mac(nvlist_t *schema, const char *name,
 	    uint32_t flags, const uint8_t * defaultVal);
-
+void	pci_iov_schema_add_vlan(nvlist_t *schema, const char *name,
+	    uint32_t flags, const uint16_t defaultVal);
 #endif

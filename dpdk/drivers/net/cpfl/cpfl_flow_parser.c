@@ -211,7 +211,7 @@ cpfl_flow_js_pattern_key_proto_field(json_t *ob_fields,
 			PMD_DRV_LOG(ERR, "The 'name' is too long.");
 			goto err;
 		}
-		strncpy(js_field->fields[i].name, name, CPFL_JS_STR_SIZE - 1);
+		strlcpy(js_field->fields[i].name, name, CPFL_JS_STR_SIZE);
 
 		if (js_field->type == RTE_FLOW_ITEM_TYPE_ETH ||
 		    js_field->type == RTE_FLOW_ITEM_TYPE_IPV4) {
@@ -647,8 +647,7 @@ cpfl_flow_js_mr_key(json_t *ob_mr_keys, struct cpfl_flow_js_mr_key *js_mr_key)
 					PMD_DRV_LOG(ERR, "The 'name' is too long.");
 					goto err;
 				}
-				strncpy(js_mr_key->actions[i].prog.name, name,
-					CPFL_JS_STR_SIZE - 1);
+				strlcpy(js_mr_key->actions[i].prog.name, name, CPFL_JS_STR_SIZE);
 			}
 
 			ob_param = json_object_get(object, "parameters");
@@ -673,8 +672,8 @@ cpfl_flow_js_mr_key(json_t *ob_mr_keys, struct cpfl_flow_js_mr_key *js_mr_key)
 						PMD_DRV_LOG(ERR, "The 'name' is too long.");
 						goto err;
 					}
-					strncpy(js_mr_key->actions[i].prog.params[j].name, name,
-						CPFL_JS_STR_SIZE - 1);
+					strlcpy(js_mr_key->actions[i].prog.params[j].name, name,
+						CPFL_JS_STR_SIZE);
 				}
 				ret = cpfl_json_t_to_uint16(subobject, "size", &value);
 				if (ret < 0) {
@@ -741,7 +740,7 @@ cpfl_flow_js_mr_layout(json_t *ob_layouts, struct cpfl_flow_js_mr_action_mod *js
 			PMD_DRV_LOG(ERR, "The 'hint' is too long.");
 			goto err;
 		}
-		strncpy(js_mod->layout[i].hint, hint, CPFL_JS_STR_SIZE - 1);
+		strlcpy(js_mod->layout[i].hint, hint, CPFL_JS_STR_SIZE);
 	}
 
 	return 0;
@@ -787,7 +786,7 @@ cpfl_flow_js_mr_content(json_t *ob_content, struct cpfl_flow_js_mr_action_mod *j
 			PMD_DRV_LOG(ERR, "The 'type' is too long.");
 			goto err;
 		}
-		strncpy(js_mod->content.fields[i].type, type, CPFL_JS_STR_SIZE - 1);
+		strlcpy(js_mod->content.fields[i].type, type, CPFL_JS_STR_SIZE);
 		ret = cpfl_json_t_to_uint16(object, "start", &start);
 		if (ret < 0) {
 			PMD_DRV_LOG(ERR, "Can not parse 'start'.");
@@ -1098,12 +1097,12 @@ cpfl_parse_fieldvectors(struct cpfl_itf *itf, struct cpfl_flow_js_fv *js_fvs, in
 			fv[2 * offset] = (uint8_t)(temp_fv >> 8);
 			fv[2 * offset + 1] = (uint8_t)(temp_fv & 0x00ff);
 		} else if (type == CPFL_FV_TYPE_METADATA) {
-			uint16_t type, v_offset, mask;
+			uint16_t v_offset, mask;
 
-			type = js_fv->meta.type;
 			v_offset = js_fv->meta.offset;
 			mask = js_fv->meta.mask;
-			temp_fv = cpfl_metadata_read16(&itf->adapter->meta, type, v_offset) & mask;
+			temp_fv = cpfl_metadata_read16(&itf->adapter->meta, js_fv->meta.type,
+					v_offset) & mask;
 			fv[2 * offset] = (uint8_t)(temp_fv & 0x00ff);
 			fv[2 * offset + 1] = (uint8_t)(temp_fv >> 8);
 		} else if (type == CPFL_FV_TYPE_PROTOCOL) {
@@ -1722,8 +1721,7 @@ cpfl_parse_check_prog_action(struct cpfl_flow_js_mr_key_action *key_act,
 			return -EINVAL;
 		if (param->has_name) {
 			mr_key_prog->has_name = TRUE;
-			strncpy(mr_key_prog->name[param->index], param->name,
-				CPFL_JS_STR_SIZE - 1);
+			strlcpy(mr_key_prog->name[param->index], param->name, CPFL_JS_STR_SIZE);
 		}
 	}
 

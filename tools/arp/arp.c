@@ -148,7 +148,7 @@ main(int argc, char *argv[])
 	while ((ch = getopt(argc, argv, "andfsSi:")) != -1)
 #else
 	ff_ipc_init();
-	while ((ch = getopt(argc, argv, "andfsSi:p:")) != -1)
+	while ((ch = getopt(argc, argv, "andfsSi:p:g:")) != -1)
 #endif
 		switch(ch) {
 		case 'a':
@@ -174,7 +174,10 @@ main(int argc, char *argv[])
 			break;
 #ifdef FSTACK
 		case 'p':
-			ff_set_proc_id(atoi(optarg));
+			ff_set_proc_id_str(optarg);
+			break;
+		case 'g':
+			ff_set_gen_str(optarg);
 			break;
 #endif
 		case '?':
@@ -745,15 +748,17 @@ usage(void)
 	    "       arp -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
 	    "       arp -f filename");
 #else
-	    "usage: arp -p <f-stack proc_id> [-n] [-i interface] hostname",
-	    "       arp -p <f-stack proc_id> [-n] [-i interface] -a",
-	    "       arp -p <f-stack proc_id> -d hostname [pub]",
-	    "       arp -p <f-stack proc_id> -d [-i interface] -a",
-	    "       arp -p <f-stack proc_id> -s hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
-	    "       arp -p <f-stack proc_id> -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
-	    "       arp -p <f-stack proc_id> -f filename");
+	    "usage: arp -p <f-stack proc_id|thread_id> [-n] [-i interface] hostname",
+	    "       arp -p <f-stack proc_id|thread_id> [-n] [-i interface] -a",
+	    "       arp -p <f-stack proc_id|thread_id> -d hostname [pub]",
+	    "       arp -p <f-stack proc_id|thread_id> -d [-i interface] -a",
+	    "       arp -p <f-stack proc_id|thread_id> -s hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
+	    "       arp -p <f-stack proc_id|thread_id> -S hostname ether_addr [temp] [reject | blackhole] [pub [only]]",
+	    "       arp -p <f-stack proc_id|thread_id> -f filename");
 #endif
 #ifdef FSTACK
+	fprintf(stderr, "%s\n",
+	    "       -p takes <proc_id>[:<gen>], -g <gen> selects the graceful_reload generation");
 	ff_ipc_exit();
 #endif
 

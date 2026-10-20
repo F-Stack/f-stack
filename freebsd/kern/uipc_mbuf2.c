@@ -58,13 +58,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)uipc_mbuf.c	8.4 (Berkeley) 2/14/95
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*#define PULLDOWN_DEBUG*/
 
 #include <sys/param.h>
@@ -314,7 +310,7 @@ m_tag_free_default(struct m_tag *t)
 
 /* Get a packet tag structure along with specified data following. */
 struct m_tag *
-m_tag_alloc(uint32_t cookie, int type, int len, int wait)
+m_tag_alloc(uint32_t cookie, uint16_t type, int len, int wait)
 {
 	struct m_tag *t;
 
@@ -376,7 +372,7 @@ m_tag_delete_nonpersistent(struct mbuf *m)
 
 /* Find a tag, starting from a given position. */
 struct m_tag *
-m_tag_locate(struct mbuf *m, uint32_t cookie, int type, struct m_tag *t)
+m_tag_locate(struct mbuf *m, uint32_t cookie, uint16_t type, struct m_tag *t)
 {
 	struct m_tag *p;
 

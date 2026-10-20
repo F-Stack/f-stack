@@ -133,6 +133,8 @@ added to by the developer.
 Building the Documentation
 --------------------------
 
+.. _doc_dependencies:
+
 Dependencies
 ~~~~~~~~~~~~
 
@@ -714,7 +716,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
   .. code-block:: c
 
      /** Number of elements in the elt_pa array. */
-     uint32_t    pg_num __rte_cache_aligned;
+     alignas(RTE_CACHE_LINE_SIZE) uint32_t    pg_num;
      uint32_t    pg_shift;     /**< LOG2 of the physical pages. */
      uintptr_t   pg_mask;      /**< Physical page mask value. */
      uintptr_t   elt_va_start;
@@ -730,7 +732,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
   .. code-block:: c
 
      /** Number of elements in the elt_pa array. */
-     uint32_t    pg_num __rte_cache_aligned;
+     alignas(RTE_CACHE_LINE_SIZE) uint32_t    pg_num;
      /** LOG2 of the physical pages. */
      uint32_t    pg_shift;
      /** Physical page mask value. */

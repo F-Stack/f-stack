@@ -41,7 +41,7 @@
 #undef _rw_try_upgrade
 #undef _rw_downgrade
 
-#define DO_NOTHING do {} while(0)
+#define DO_NOTHING ((void)0)
 
 void ff_rw_init_flags(struct lock_object *lo, const char *name, int opts);
 

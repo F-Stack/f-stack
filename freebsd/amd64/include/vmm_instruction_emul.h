@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 NetApp, Inc.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_VMM_INSTRUCTION_EMUL_H_
@@ -33,13 +31,38 @@
 
 #include <sys/mman.h>
 
+/* struct vie_op.op_type */
+enum {
+	VIE_OP_TYPE_NONE = 0,
+	VIE_OP_TYPE_MOV,
+	VIE_OP_TYPE_MOVSX,
+	VIE_OP_TYPE_MOVZX,
+	VIE_OP_TYPE_AND,
+	VIE_OP_TYPE_OR,
+	VIE_OP_TYPE_SUB,
+	VIE_OP_TYPE_TWO_BYTE,
+	VIE_OP_TYPE_PUSH,
+	VIE_OP_TYPE_CMP,
+	VIE_OP_TYPE_POP,
+	VIE_OP_TYPE_MOVS,
+	VIE_OP_TYPE_GROUP1,
+	VIE_OP_TYPE_STOS,
+	VIE_OP_TYPE_BITTEST,
+	VIE_OP_TYPE_TWOB_GRP15,
+	VIE_OP_TYPE_ADD,
+	VIE_OP_TYPE_TEST,
+	VIE_OP_TYPE_BEXTR,
+	VIE_OP_TYPE_OUTS,
+	VIE_OP_TYPE_LAST
+};
+
 /*
  * Callback functions to read and write memory regions.
  */
-typedef int (*mem_region_read_t)(void *vm, int cpuid, uint64_t gpa,
+typedef int (*mem_region_read_t)(struct vcpu *vcpu, uint64_t gpa,
 				 uint64_t *rval, int rsize, void *arg);
 
-typedef int (*mem_region_write_t)(void *vm, int cpuid, uint64_t gpa,
+typedef int (*mem_region_write_t)(struct vcpu *vcpu, uint64_t gpa,
 				  uint64_t wval, int wsize, void *arg);
 
 /*
@@ -53,11 +76,11 @@ typedef int (*mem_region_write_t)(void *vm, int cpuid, uint64_t gpa,
  * 'struct vmctx *' when called from user context.
  * s
  */
-int vmm_emulate_instruction(void *vm, int cpuid, uint64_t gpa, struct vie *vie,
+int vmm_emulate_instruction(struct vcpu *vcpu, uint64_t gpa, struct vie *vie,
     struct vm_guest_paging *paging, mem_region_read_t mrr,
     mem_region_write_t mrw, void *mrarg);
 
-int vie_update_register(void *vm, int vcpuid, enum vm_reg_name reg,
+int vie_update_register(struct vcpu *vcpu, enum vm_reg_name reg,
     uint64_t val, int size);
 
 /*
@@ -81,7 +104,7 @@ int vie_calculate_gla(enum vm_cpu_mode cpu_mode, enum vm_reg_name seg,
  *
  * 'vie' must be initialized before calling 'vmm_fetch_instruction()'
  */
-int vmm_fetch_instruction(struct vm *vm, int cpuid,
+int vmm_fetch_instruction(struct vcpu *vcpu,
 			  struct vm_guest_paging *guest_paging,
 			  uint64_t rip, int inst_length, struct vie *vie,
 			  int *is_fault);
@@ -94,14 +117,14 @@ int vmm_fetch_instruction(struct vm *vm, int cpuid,
  *   0		   1		An exception was injected into the guest
  * EFAULT	  N/A		An unrecoverable hypervisor error occurred
  */
-int vm_gla2gpa(struct vm *vm, int vcpuid, struct vm_guest_paging *paging,
+int vm_gla2gpa(struct vcpu *vcpu, struct vm_guest_paging *paging,
     uint64_t gla, int prot, uint64_t *gpa, int *is_fault);
 
 /*
  * Like vm_gla2gpa, but no exceptions are injected into the guest and
  * PTEs are not changed.
  */
-int vm_gla2gpa_nofault(struct vm *vm, int vcpuid, struct vm_guest_paging *paging,
+int vm_gla2gpa_nofault(struct vcpu *vcpu, struct vm_guest_paging *paging,
     uint64_t gla, int prot, uint64_t *gpa, int *is_fault);
 #endif /* _KERNEL */
 
@@ -114,14 +137,14 @@ void vie_init(struct vie *vie, const char *inst_bytes, int inst_length);
  * 'gla' is the guest linear address provided by the hardware assist
  * that caused the nested page table fault. It is used to verify that
  * the software instruction decoding is in agreement with the hardware.
- * 
+ *
  * Some hardware assists do not provide the 'gla' to the hypervisor.
  * To skip the 'gla' verification for this or any other reason pass
  * in VIE_INVALID_GLA instead.
  */
 #ifdef _KERNEL
 #define	VIE_INVALID_GLA		(1UL << 63)	/* a non-canonical address */
-int vmm_decode_instruction(struct vm *vm, int cpuid, uint64_t gla,
+int vmm_decode_instruction(struct vcpu *vcpu, uint64_t gla,
 			   enum vm_cpu_mode cpu_mode, int csd, struct vie *vie);
 #else /* !_KERNEL */
 /*

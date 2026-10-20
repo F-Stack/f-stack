@@ -34,8 +34,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include "opt_atpic.h"
@@ -101,9 +99,6 @@ dtrace_invop_calltrap_addr:
  * registers are reloaded on return to the usermode.
  */
 
-MCOUNT_LABEL(user)
-MCOUNT_LABEL(btrap)
-
 /* Traps that we leave interrupts disabled for. */
 	.macro	TRAP_NOEN	l, trapno
 	PTI_ENTRY	\l,\l\()_pti_k,\l\()_pti_u
@@ -119,7 +114,7 @@ MCOUNT_LABEL(btrap)
 	movq	$0,TF_ADDR(%rsp)
 	movq	$0,TF_ERR(%rsp)
 	jmp	alltraps_noen_u
-	
+
 	.globl	X\l
 	.type	X\l,@function
 X\l:
@@ -212,7 +207,7 @@ X\l:
 	 * alltraps_u/k entry points.
 	 * SWAPGS must be already performed by prologue,
 	 * if this is the first time in the kernel from userland.
-	 * Reenable interrupts if they were enabled before the trap.
+	 * Re-enable interrupts if they were enabled before the trap.
 	 * This approximates SDT_SYS386TGT on the i386 port.
 	 */
 	SUPERALIGN_TEXT
@@ -257,7 +252,6 @@ alltraps_pushregs_no_rax:
 	pushfq
 	andq	$~(PSL_D | PSL_AC),(%rsp)
 	popfq
-	FAKE_MCOUNT(TF_RIP(%rsp))
 #ifdef KDTRACE_HOOKS
 	/*
 	 * DTrace Function Boundary Trace (fbt) probes are triggered
@@ -286,9 +280,10 @@ alltraps_pushregs_no_rax:
 	.globl	calltrap
 	.type	calltrap,@function
 calltrap:
-	movq	%rsp,%rdi
+	KMSAN_ENTER
+	movq	%rsp, %rdi
 	call	trap_check
-	MEXITCOUNT
+	KMSAN_LEAVE
 	jmp	doreti			/* Handle any pending ASTs */
 
 	/*
@@ -357,8 +352,10 @@ IDTVEC(dblfault)
 	cmpq	$~0,%rax
 	je	2f
 	movq	%rax,%cr3
-2:	movq	%rsp,%rdi
+2:	KMSAN_ENTER
+	movq	%rsp,%rdi
 	call	dblfault_handler
+	KMSAN_LEAVE
 3:	hlt
 	jmp	3b
 
@@ -482,22 +479,14 @@ prot_addrf:
 	jz	6f			/* already running with kernel GS.base */
 	testb	$CPUID_STDEXT_FSGSBASE,cpu_stdext_feature(%rip)
 	jz	2f
-	cmpw	$KUF32SEL,TF_FS(%rsp)
-	jne	1f
 	rdfsbase %rax
-1:	cmpw	$KUG32SEL,TF_GS(%rsp)
-	jne	2f
 	rdgsbase %rdx
 2:	swapgs
 	lfence
 	movq	PCPU(CURPCB),%rdi
 	testb	$CPUID_STDEXT_FSGSBASE,cpu_stdext_feature(%rip)
 	jz	4f
-	cmpw	$KUF32SEL,TF_FS(%rsp)
-	jne	3f
 	movq	%rax,PCB_FSBASE(%rdi)
-3:	cmpw	$KUG32SEL,TF_GS(%rsp)
-	jne	4f
 	movq	%rdx,PCB_GSBASE(%rdi)
 	orl	$PCB_FULL_IRET,PCB_FLAGS(%rdi)	/* full iret from user #gp */
 4:	call	handle_ibrs_entry
@@ -515,7 +504,7 @@ prot_addrf:
 
 /*
  * Fast syscall entry point.  We enter here with just our new %cs/%ss set,
- * and the new privilige level.  We are still running on the old user stack
+ * and the new privilege level.  We are still running on the old user stack
  * pointer.  We have to juggle a few things around to find our stack etc.
  * swapgs gives us access to our PCPU space only.
  *
@@ -525,7 +514,6 @@ prot_addrf:
 	SUPERALIGN_TEXT
 IDTVEC(fast_syscall_pti)
 	swapgs
-	lfence
 	cmpq	$~0,PCPU(UCR3)
 	je	fast_syscall_common
 	movq	%rax,PCPU(SCRATCH_RAX)
@@ -536,7 +524,6 @@ IDTVEC(fast_syscall_pti)
 	SUPERALIGN_TEXT
 IDTVEC(fast_syscall)
 	swapgs
-	lfence
 fast_syscall_common:
 	movq	%rsp,PCPU(SCRATCH_RSP)
 	movq	PCPU(RSP0),%rsp
@@ -576,7 +563,6 @@ fast_syscall_common:
 	movq	%r14,TF_R14(%rsp)	/* C preserved */
 	movq	%r15,TF_R15(%rsp)	/* C preserved */
 	movl	$TF_HASSEGS,TF_FLAGS(%rsp)
-	FAKE_MCOUNT(TF_RIP(%rsp))
 	movq	PCPU(CURTHREAD),%rdi
 	movq	%rsp,TD_FRAME(%rdi)
 	movl	TF_RFLAGS(%rsp),%esi
@@ -589,12 +575,11 @@ fast_syscall_common:
 	jnz	4f
 	/* Check for and handle AST's on return to userland. */
 	movq	PCPU(CURTHREAD),%rax
-	testl	$TDF_ASTPENDING | TDF_NEEDRESCHED,TD_FLAGS(%rax)
+	cmpl	$0,TD_AST(%rax)
 	jne	3f
 	call	handle_ibrs_exit
 	callq	*mds_handler
 	/* Restore preserved registers. */
-	MEXITCOUNT
 	movq	TF_RDI(%rsp),%rdi	/* bonus; preserve arg 1 */
 	movq	TF_RSI(%rsp),%rsi	/* bonus: preserve arg 2 */
 	movq	TF_RDX(%rsp),%rdx	/* return value 2 */
@@ -621,7 +606,6 @@ fast_syscall_common:
 	jmp	1b
 
 4:	/* Requested full context restore, use doreti for that. */
-	MEXITCOUNT
 	jmp	doreti
 
 /*
@@ -692,10 +676,8 @@ IDTVEC(dbg)
 	rdmsr
 	movl	%eax,%r14d
 	call	handle_ibrs_entry
-2:	FAKE_MCOUNT(TF_RIP(%rsp))
-	movq	%rsp,%rdi
+2:	movq	%rsp,%rdi
 	call	trap
-	MEXITCOUNT
 	testl	$CPUID_STDEXT3_IBPB,cpu_stdext_feature3(%rip)
 	je	3f
 	movl	%r14d,%eax
@@ -740,12 +722,8 @@ dbg_fromuserspace:
 	orl	$PCB_FULL_IRET,PCB_FLAGS(%rdi)
 	testb	$CPUID_STDEXT_FSGSBASE,cpu_stdext_feature(%rip)
 	jz	3f
-	cmpw	$KUF32SEL,TF_FS(%rsp)
-	jne	2f
 	rdfsbase %rax
 	movq	%rax,PCB_FSBASE(%rdi)
-2:	cmpw	$KUG32SEL,TF_GS(%rsp)
-	jne	3f
 	movl	$MSR_KGSBASE,%ecx
 	rdmsr
 	shlq	$32,%rdx
@@ -852,12 +830,8 @@ nmi_fromuserspace:
 	orl	$PCB_FULL_IRET,PCB_FLAGS(%rdi)
 	testb	$CPUID_STDEXT_FSGSBASE,cpu_stdext_feature(%rip)
 	jz	3f
-	cmpw	$KUF32SEL,TF_FS(%rsp)
-	jne	2f
 	rdfsbase %rax
 	movq	%rax,PCB_FSBASE(%rdi)
-2:	cmpw	$KUG32SEL,TF_GS(%rsp)
-	jne	3f
 	movl	$MSR_KGSBASE,%ecx
 	rdmsr
 	shlq	$32,%rdx
@@ -866,10 +840,10 @@ nmi_fromuserspace:
 3:
 /* Note: this label is also used by ddb and gdb: */
 nmi_calltrap:
-	FAKE_MCOUNT(TF_RIP(%rsp))
+	KMSAN_ENTER
 	movq	%rsp,%rdi
 	call	trap
-	MEXITCOUNT
+	KMSAN_LEAVE
 #ifdef HWPMC_HOOKS
 	/*
 	 * Capture a userspace callchain if needed.
@@ -1055,10 +1029,10 @@ mchk_fromuserspace:
 1:	call	handle_ibrs_entry
 /* Note: this label is also used by ddb and gdb: */
 mchk_calltrap:
-	FAKE_MCOUNT(TF_RIP(%rsp))
+	KMSAN_ENTER
 	movq	%rsp,%rdi
 	call	mca_intr
-	MEXITCOUNT
+	KMSAN_LEAVE
 	testl	%ebx,%ebx	/* %ebx != 0 => return to userland */
 	jnz	doreti_exit
 	/*
@@ -1089,7 +1063,6 @@ ENTRY(fork_trampoline)
 	movq	%rbx,%rsi		/* arg1 */
 	movq	%rsp,%rdx		/* trapframe pointer */
 	call	fork_exit
-	MEXITCOUNT
 	jmp	doreti			/* Handle any ASTs */
 
 /*
@@ -1098,7 +1071,7 @@ ENTRY(fork_trampoline)
  * and bintr, and only interrupt handlers between the labels bintr and
  * eintr.  This is implemented (partly) by including files that contain
  * some of the handlers.  Before including the files, set up a normal asm
- * environment so that the included files doen't need to know that they are
+ * environment so that the included files doesn't need to know that they are
  * included.
  */
 
@@ -1115,8 +1088,6 @@ ENTRY(fork_trampoline)
 	.p2align 4
 	.text
 	SUPERALIGN_TEXT
-MCOUNT_LABEL(bintr)
-
 #include <amd64/amd64/apic_vector.S>
 
 #ifdef DEV_ATPIC
@@ -1128,9 +1099,6 @@ MCOUNT_LABEL(bintr)
 #include <amd64/amd64/atpic_vector.S>
 #endif
 
-	.text
-MCOUNT_LABEL(eintr)
-
 /*
  * void doreti(struct trapframe)
  *
@@ -1141,7 +1109,6 @@ MCOUNT_LABEL(eintr)
 	.type	doreti,@function
 	.globl	doreti
 doreti:
-	FAKE_MCOUNT($bintr)		/* init "from" bintr -> doreti */
 	/*
 	 * Check if ASTs can be handled now.
 	 */
@@ -1156,7 +1123,7 @@ doreti_ast:
 	 */
 	cli
 	movq	PCPU(CURTHREAD),%rax
-	testl	$TDF_ASTPENDING | TDF_NEEDRESCHED,TD_FLAGS(%rax)
+	cmpl	$0,TD_AST(%rax)
 	je	doreti_exit
 	sti
 	movq	%rsp,%rdi	/* pass a pointer to the trapframe */
@@ -1171,7 +1138,6 @@ doreti_ast:
 	 *	registers.  The fault is handled in trap.c.
 	 */
 doreti_exit:
-	MEXITCOUNT
 	movq	PCPU(CURPCB),%r8
 
 	/*
@@ -1195,15 +1161,12 @@ do_segs:
 	.globl	ld_fs
 ld_fs:
 	movw	%ax,%fs
-	cmpw	$KUF32SEL,%ax
-	jne	1f
 	movl	$MSR_FSBASE,%ecx
 	movl	PCB_FSBASE(%r8),%eax
 	movl	PCB_FSBASE+4(%r8),%edx
 	.globl	ld_fsbase
 ld_fsbase:
 	wrmsr
-1:
 	/* Restore %gs and gsbase */
 	movw	TF_GS(%rsp),%si
 	pushfq
@@ -1216,10 +1179,6 @@ ld_fsbase:
 	.globl	ld_gs
 ld_gs:
 	movw	%si,%gs
-	/* Save user %gs base into %r14d:%r15d */
-	rdmsr
-	movl	%eax,%r14d
-	movl	%edx,%r15d
 	/* Restore kernel %gs base */
 	movl	%r12d,%eax
 	movl	%r13d,%edx
@@ -1230,14 +1189,8 @@ ld_gs:
 	 * from the previously saved msr read.
 	 */
 	movl	$MSR_KGSBASE,%ecx
-	cmpw	$KUG32SEL,%si
-	jne	1f
 	movl	PCB_GSBASE(%r8),%eax
 	movl	PCB_GSBASE+4(%r8),%edx
-	jmp	ld_gsbase
-1:
-	movl	%r14d,%eax
-	movl	%r15d,%edx
 	.globl	ld_gsbase
 ld_gsbase:
 	wrmsr	/* May trap if non-canonical, but only for TLS. */
@@ -1332,7 +1285,6 @@ doreti_iret_fault:
 	movl	$T_PROTFLT,TF_TRAPNO(%rsp)
 	movq	$0,TF_ERR(%rsp)	/* XXX should be the error code */
 	movq	$0,TF_ADDR(%rsp)
-	FAKE_MCOUNT(TF_RIP(%rsp))
 	jmp	calltrap
 
 	ALIGN_TEXT

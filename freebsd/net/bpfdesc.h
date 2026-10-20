@@ -32,10 +32,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *      @(#)bpfdesc.h	8.1 (Berkeley) 6/10/93
- *
- * $FreeBSD$
  */
 
 #ifndef _NET_BPFDESC_H_
@@ -91,6 +87,7 @@ struct bpf_d {
 	int		bd_feedback;	/* true to feed back sent packets */
 	int		bd_async;	/* non-zero if packet reception should generate signal */
 	int		bd_sig;		/* signal to send upon packet reception */
+	int		bd_pcp;		/* VLAN pcp tag */
 	struct sigio *	bd_sigio;	/* information for async I/O */
 	struct selinfo	bd_sel;		/* bsd select info */
 	struct mtx	bd_lock;	/* per-descriptor lock */

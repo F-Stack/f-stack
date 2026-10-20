@@ -1,6 +1,5 @@
 /*-
  * Copyright (c) 2015 The FreeBSD Foundation
- * All rights reserved.
  *
  * This software was developed by Andrew Turner under
  * sponsorship from the FreeBSD Foundation.
@@ -28,17 +27,24 @@
  *
  */
 
-#include <machine/asm.h>
-__FBSDID("$FreeBSD$");
-
+#include <sys/elf_common.h>
 #include <sys/errno.h>
 
+#include <machine/asm.h>
+#include <machine/param.h>
 #include <machine/vmparam.h>
 
 #include "assym.inc"
 
 .macro check_user_access user_arg, size_arg, bad_access_func
-	adds	x6, x\user_arg, x\size_arg
+	/*
+	 * TBI is enabled from 15.0. Clear the top byte of the userspace
+	 * address before checking whether it's within the given limit.
+	 * The later load/store instructions will fault if TBI is disabled
+	 * for the current process.
+	 */
+	and	x6, x\user_arg, #(~TBI_ADDR_MASK)
+	adds	x6, x6, x\size_arg
 	b.cs	\bad_access_func
 	ldr	x7, =VM_MAXUSER_ADDRESS
 	cmp	x6, x7
@@ -101,13 +107,20 @@ ENTRY(copyinstr)
 	adr	x6, copyio_fault /* Get the handler address */
 	SET_FAULT_HANDLER(x6, x7) /* Set the handler */
 
+	/*
+	 *  As in check_user_access mask off the TBI bits for the cmp
+	 * instruction. The load will fail trap if TBI is disabled, but we
+	 * need to check the address didn't wrap.
+	 */
+	and	x6, x0, #(~TBI_ADDR_MASK)
 	ldr	x7, =VM_MAXUSER_ADDRESS
-1:	cmp	x0, x7
+1:	cmp	x6, x7
 	b.cs	copyio_fault
 	ldtrb	w4, [x0]	/* Load from uaddr */
 	add	x0, x0, #1	/* Next char */
 	strb	w4, [x1], #1	/* Store in kaddr */
 	add	x5, x5, #1	/* count++ */
+	add	x6, x6, #1	/* Increment masked address */
 	cbz	w4, 2f		/* Break when NUL-terminated */
 	sub	x2, x2, #1	/* len-- */
 	cbnz	x2, 1b
@@ -222,3 +235,5 @@ ending:
 	mov	x0, xzr		/* return 0 */
 	ret
 	.size	copycommon, . - copycommon
+
+GNU_PROPERTY_AARCH64_FEATURE_1_NOTE(GNU_PROPERTY_AARCH64_FEATURE_1_VAL)

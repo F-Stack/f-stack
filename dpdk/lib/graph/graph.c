@@ -260,6 +260,20 @@ graph_node_fini(struct graph *graph)
 						       graph_node->node->name));
 }
 
+void
+graph_node_replace_all(struct node *old, struct node *new)
+{
+	struct graph_node *graph_node;
+	struct graph *graph;
+
+	STAILQ_FOREACH(graph, &graph_list, next) {
+		STAILQ_FOREACH(graph_node, &graph->node_list, next) {
+			if (graph_node->node == old)
+				graph_node->node = new;
+		}
+	}
+}
+
 static struct rte_graph *
 graph_mem_fixup_node_ctx(struct rte_graph *graph)
 {
@@ -719,25 +733,46 @@ __rte_node_stream_alloc_size(struct rte_graph *graph, struct rte_node *node,
 static int
 graph_to_dot(FILE *f, struct graph *graph)
 {
-	const char *src_edge_color = " [color=blue]\n";
-	const char *edge_color = "\n";
 	struct graph_node *graph_node;
 	char *node_name;
 	rte_edge_t i;
 	int rc;
 
-	rc = fprintf(f, "Digraph %s {\n\trankdir=LR;\n", graph->name);
+	rc = fprintf(f, "digraph \"%s\" {\n\trankdir=LR;\n", graph->name);
+	if (rc < 0)
+		goto end;
+
+	rc = fprintf(f, "\tnode [margin=0.02 fontsize=11 fontname=sans];\n");
 	if (rc < 0)
 		goto end;
 
 	STAILQ_FOREACH(graph_node, &graph->node_list, next) {
+		const char *attrs = "";
 		node_name = graph_node->node->name;
+
+		rc = fprintf(f, "\t\"%s\"", node_name);
+		if (rc < 0)
+			goto end;
+		if (graph_node->node->flags & RTE_NODE_SOURCE_F) {
+			attrs = " [color=blue style=bold]";
+			rc = fprintf(f, "%s", attrs);
+			if (rc < 0)
+				goto end;
+		} else if (graph_node->node->nb_edges == 0) {
+			rc = fprintf(f, " [fontcolor=darkorange shape=plain]");
+			if (rc < 0)
+				goto end;
+		}
+		rc = fprintf(f, ";\n");
+		if (rc < 0)
+			goto end;
 		for (i = 0; i < graph_node->node->nb_edges; i++) {
-			rc = fprintf(f, "\t\"%s\"->\"%s\"%s", node_name,
+			const char *node_attrs = attrs;
+			if (graph_node->adjacency_list[i]->node->nb_edges == 0)
+				node_attrs = " [color=darkorange]";
+			rc = fprintf(f, "\t\"%s\" -> \"%s\"%s;\n", node_name,
 				     graph_node->adjacency_list[i]->node->name,
-				     graph_node->node->flags & RTE_NODE_SOURCE_F
-					     ? src_edge_color
-					     : edge_color);
+				     node_attrs);
 			if (rc < 0)
 				goto end;
 		}

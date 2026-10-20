@@ -1,7 +1,5 @@
 /*
  * Codel - The Controlled-Delay Active Queue Management algorithm.
- *
- * $FreeBSD$
  * 
  * Copyright (C) 2016 Centre for Advanced Internet Architectures,
  *  Swinburne University of Technology, Melbourne, Australia.
@@ -139,7 +137,7 @@ codel_dequeue(struct dn_queue *q)
 	aqm_time_t now;
 	uint16_t ok_to_drop;
 
-	cst = q->aqm_status;;
+	cst = q->aqm_status;
 	cprms = q->fs->aqmcfg;
 	now = AQM_UNOW;
 

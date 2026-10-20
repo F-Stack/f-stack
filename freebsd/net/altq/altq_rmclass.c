@@ -32,10 +32,7 @@
  *
  * LBL code modified by speer@eng.sun.com, May 1977.
  * For questions and/or comments, please send mail to cbq@ee.lbl.gov
- *
- * @(#)rm_class.c  1.48     97/12/05 SMI
  * $KAME: altq_rmclass.c,v 1.19 2005/04/13 03:44:25 suz Exp $
- * $FreeBSD$
  */
 #include "opt_altq.h"
 #include "opt_inet.h"
@@ -52,6 +49,7 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 
 #include <net/altq/if_altq.h>
 #include <net/altq/altq.h>
@@ -1448,13 +1446,8 @@ void rmc_dropall(struct rm_class *cl)
 	}
 }
 
-#if (__FreeBSD_version > 300000)
-/* hzto() is removed from FreeBSD-3.0 */
-static int hzto(struct timeval *);
-
 static int
-hzto(tv)
-	struct timeval *tv;
+hzto(struct timeval *tv)
 {
 	struct timeval t2;
 
@@ -1463,7 +1456,6 @@ hzto(tv)
 	t2.tv_usec = tv->tv_usec - t2.tv_usec;
 	return (tvtohz(&t2));
 }
-#endif /* __FreeBSD_version > 300000 */
 
 /*
  * void
@@ -1554,10 +1546,13 @@ rmc_restart(void *arg)
 {
 	struct rm_class *cl = arg;
 	struct rm_ifdat	*ifd = cl->ifdat_;
+	struct epoch_tracker et;
 	int		 s;
 
 	s = splnet();
+	NET_EPOCH_ENTER(et);
 	IFQ_LOCK(ifd->ifq_);
+	CURVNET_SET(ifd->ifq_->altq_ifp->if_vnet);
 	if (cl->sleeping_) {
 		cl->sleeping_ = 0;
 		cl->undertime_.tv_sec = 0;
@@ -1567,7 +1562,9 @@ rmc_restart(void *arg)
 			(ifd->restart)(ifd->ifq_);
 		}
 	}
+	CURVNET_RESTORE();
 	IFQ_UNLOCK(ifd->ifq_);
+	NET_EPOCH_EXIT(et);
 	splx(s);
 }
 

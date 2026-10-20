@@ -11,15 +11,15 @@
  * RTE Intel FPGA Bus Interface
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif /* __cplusplus */
-
 #include <rte_compat.h>
 #include <dev_driver.h>
 #include <rte_pci.h>
 #include <rte_interrupts.h>
 #include <rte_spinlock.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif /* __cplusplus */
 
 #define IFPGA_BUS_NAME ifpga
 
@@ -77,7 +77,7 @@ struct rte_afu_device {
 	struct rte_intr_handle *intr_handle;     /**< Interrupt handle */
 	struct rte_afu_driver *driver;          /**< Associated driver */
 	char path[IFPGA_BUS_BITSTREAM_PATH_MAX_LEN];
-} __rte_packed;
+};
 
 /**
  * @internal
@@ -115,16 +115,6 @@ rte_ifpga_device_name(const struct rte_afu_device *afu)
 		return afu->device.name;
 	return NULL;
 }
-
-/**
- * Find AFU by AFU name.
- *
- * @param name
- *   A pointer to AFU name string.
- */
-__rte_internal
-struct rte_afu_device *
-rte_ifpga_find_afu_by_name(const char *name);
 
 /**
  * Register a ifpga afu device driver.

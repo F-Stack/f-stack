@@ -38,8 +38,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * 386 Trap and System call handling
  */
@@ -55,6 +53,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/ktr.h>
 #include <sys/lock.h>
+#include <sys/msan.h>
 #include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/ptrace.h>
@@ -90,6 +89,12 @@ __FBSDID("$FreeBSD$");
 #include <machine/md_var.h>
 #include <machine/pcb.h>
 #include <machine/cpufunc.h>
+
+#include "vdso_ia32_offsets.h"
+
+extern const char _binary_elf_vdso32_so_1_start[];
+extern const char _binary_elf_vdso32_so_1_end[];
+extern char _binary_elf_vdso32_so_1_size;
 
 #define	IDTVEC(name)	__CONCAT(X,name)
 
@@ -150,6 +155,7 @@ ia32_fetch_syscall_args(struct thread *td)
 
 	params = (caddr_t)frame->tf_rsp + sizeof(u_int32_t);
 	sa->code = frame->tf_rax;
+	sa->original_code = sa->code;
 
 	/*
 	 * Need to check if this is a 32 bit or 64 bit syscall.
@@ -177,7 +183,7 @@ ia32_fetch_syscall_args(struct thread *td)
 		params += sizeof(quad_t);
 	}
  	if (sa->code >= p->p_sysent->sv_size)
- 		sa->callp = &p->p_sysent->sv_table[0];
+		sa->callp = &nosys_sysent;
   	else
  		sa->callp = &p->p_sysent->sv_table[sa->code];
 
@@ -206,6 +212,8 @@ ia32_syscall(struct trapframe *frame)
 	struct thread *td;
 	register_t orig_tf_rflags;
 	ksiginfo_t ksi;
+
+	kmsan_mark(frame, sizeof(*frame), KMSAN_STATE_INITED);
 
 	orig_tf_rflags = frame->tf_rflags;
 	td = curthread;
@@ -260,7 +268,9 @@ setup_lcall_gate(void)
 	bzero(&uap, sizeof(uap));
 	uap.start = 0;
 	uap.num = 1;
-	lcall_addr = curproc->p_sysent->sv_psstrings - sz_lcall_tramp;
+	lcall_addr = PROC_PS_STRINGS(curproc) -
+	    (_binary_elf_vdso32_so_1_end - _binary_elf_vdso32_so_1_start) +
+	    VDSO_LCALL_TRAMP_OFFSET;
 	bzero(&desc, sizeof(desc));
 	desc.sd_type = SDT_MEMERA;
 	desc.sd_dpl = SEL_UPL;

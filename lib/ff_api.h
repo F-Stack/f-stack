@@ -30,6 +30,7 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/select.h>
 #include <sys/poll.h>
@@ -38,6 +39,10 @@ extern "C" {
 
 #include "ff_event.h"
 #include "ff_errno.h"
+/* struct ff_flow_key / ff_flow_key_t. Kept in a zero-include header
+ * so the FreeBSD side (which must not include ff_api.h) can share the exact
+ * same layout. */
+#include "ff_flow_map.h"
 
 struct linux_sockaddr {
     short sa_family;
@@ -59,11 +64,31 @@ void ff_run(loop_func_t loop, void *arg);
 
 void ff_stop_run(void);
 
+/*
+ * Resident slim primary helpers (graceful_reload=1).
+ * ff_primary_conf_digest: digest of the config items the primary applies
+ *   (devices, rings, pools, KNI); -1 if the file cannot be parsed.
+ * ff_primary_users: live DPDK secondaries of the primary owning runtime_dir,
+ *   -1 if the directory cannot be read (callers treat it as "in use").
+ * ff_primary_reuse_check: FF_PRIMARY_* verdict for a live primary; idle:
+ *   the primary reports that no master and no worker uses it any more.
+ * ff_eal_runtime_dir: EAL runtime directory of this process.
+ */
+#define FF_PRIMARY_REUSE    0
+#define FF_PRIMARY_REFUSE   1
+#define FF_PRIMARY_RESTART  2
+int ff_primary_conf_digest(const char *conf, uint64_t *digest,
+    int *kni_enable);
+int ff_primary_users(const char *runtime_dir);
+int ff_primary_reuse_check(int record_ok, int same_digest, int users,
+    int idle, int inherited);
+const char *ff_eal_runtime_dir(void);
+
 /* POSIX-LIKE api begin */
 
 int ff_fcntl(int fd, int cmd, ...);
 
-int ff_sysctl(const int *name, u_int namelen, void *oldp, size_t *oldlenp,
+int ff_sysctl(const int *name, unsigned int namelen, void *oldp, size_t *oldlenp,
     const void *newp, size_t newlen);
 
 int ff_ioctl(int fd, unsigned long request, ...);
@@ -77,6 +102,28 @@ int ff_ioctl(int fd, unsigned long request, ...);
  *
  *  See also `example/main.c`
  */
+#ifdef FF_KERNEL_COEXIST
+/*
+ * Stack-selection markers (OR into the `type` argument of socket()/ff_socket()).
+ * Standardized from the syscall adapter (adapter/syscall/ff_adapter.h) so any
+ * F-Stack application can choose, per socket, which stack a fd belongs to:
+ *   - default (no marker)               : F-Stack user-space stack
+ *   - SOCK_FSTACK                        : force F-Stack stack (explicit default)
+ *   - SOCK_KERNEL (and not SOCK_FSTACK)  : host Linux kernel stack, so local
+ *                                          ping/curl can reach it and the app
+ *                                          can connect() to local/external
+ *                                          kernel-stack services.
+ * Priority: per-socket marker > config.ini [stack] kernel_coexist > F-Stack.
+ * Values MUST match adapter/syscall/ff_adapter.h.
+ */
+#ifndef SOCK_FSTACK
+#define SOCK_FSTACK 0x01000000
+#endif
+#ifndef SOCK_KERNEL
+#define SOCK_KERNEL 0x02000000
+#endif
+#endif /* FF_KERNEL_COEXIST */
+
 int ff_socket(int domain, int type, int protocol);
 
 int ff_setsockopt(int s, int level, int optname, const void *optval,
@@ -97,6 +144,14 @@ int ff_getpeername(int s, struct linux_sockaddr *name,
     socklen_t *namelen);
 int ff_getsockname(int s, struct linux_sockaddr *name,
     socklen_t *namelen);
+
+/* Read-only: this process/thread's RSS queue info (for self-check tools).
+ * In thread_mode=1, proc_id is the thread index. */
+int ff_rss_self_queue_info(uint16_t *proc_id, uint16_t *queueid,
+    uint16_t *nb_queues, uint16_t *reta_size);
+
+/* Returns 1 if this process is a slim primary (no rx/tx queues). */
+int ff_is_slim_primary(void);
 
 ssize_t ff_read(int d, void *buf, size_t nbytes);
 ssize_t ff_readv(int fd, const struct iovec *iov, int iovcnt);
@@ -150,9 +205,19 @@ int ff_gettimeofday(struct timeval *tv, struct timezone *tz);
 int ff_dup(int oldfd);
 int ff_dup2(int oldfd, int newfd);
 
+#ifndef _KERNEL
+#include <pthread.h>
+/*
+ * ff_pthread_create threads are lightweight: they inherit only the parent's
+ * thread context (pcurthread), NOT its per-CPU pcpu pointer (pcpup is NULL in
+ * the new thread). Calling any ff_* interface that touches curcpu/PCPU_* from
+ * such a thread triggers a lazy fail-fast (panic). For a full stack instance
+ * use a worker thread (ff_stack_thread_init) instead.
+ */
 int ff_pthread_create(pthread_t * thread, const pthread_attr_t * attr,
     void * (* start_routine) (void *), void * arg);
 int ff_pthread_join(pthread_t thread, void **retval);
+#endif
 
 /* POSIX-LIKE api end */
 
@@ -194,6 +259,12 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
 /* dispatch api begin */
 #define FF_DISPATCH_ERROR (-1)
 #define FF_DISPATCH_RESPONSE (-2)
+/* the packet belongs to the peer generation of a graceful
+ * reload (flow-map miss). The library forwards the mbuf on the peer
+ * generation's drain_rx ring — the callback never touches the mbuf, so
+ * ownership cannot be split. Dropped and counted if that ring is full or
+ * no reload window is open. */
+#define FF_DISPATCH_PEER (-3)
 
 /*
  * Packet dispatch callback function.
@@ -212,15 +283,82 @@ int ff_route_ctl(enum FF_ROUTE_CTL req, enum FF_ROUTE_FLAG flag,
  *   The queue id that the packet will be dispatched to.
  * @return FF_DISPATCH_ERROR (-1)
  *   Error occurs or packet is handled by user, packet will be freed.
-* @return FF_DISPATCH_RESPONSE (-2)
+ * @return FF_DISPATCH_RESPONSE (-2)
  *   Packet is handled by user, packet will be responsed.
+ * @return FF_DISPATCH_PEER (-3)
+ * the packet belongs to the peer generation of a graceful
+ * reload; the library forwards it (the mbuf stays library-owned).
  *
  */
 typedef int (*dispatch_func_t)(void *data, uint16_t *len,
     uint16_t queue_id, uint16_t nb_queues);
 
+/*
+ * Packet dispatcher context structure.
+ * Contains additional context information for packet dispatching.
+ */
+struct ff_dispatcher_context {
+  struct {
+      uint8_t stripped;
+      uint16_t vlan_tci;  /**< Priority (3) + CFI (1) + Identifier Code (12) */
+  } vlan;
+};
+
+/*
+ * Enhanced packet dispatch callback function with context.
+ * Implemented by user.
+ *
+ * @param data
+ *   The data pointer of this packet.
+ * @param len
+ *   The length of this packet.
+ * @param queue_id
+ *   Current queue of this packet.
+ * @param nb_queues
+ *   Number of queues to be dispatched.
+ * @param context
+ *   Additional context information for packet dispatching.
+ *
+ * @return 0 to (nb_queues - 1)
+ *   The queue id that the packet will be dispatched to.
+ * @return FF_DISPATCH_ERROR (-1)
+ *   Error occurs or packet is handled by user, packet will be freed.
+ * @return FF_DISPATCH_RESPONSE (-2)
+ *   Packet is handled by user, packet will be responsed.
+ * @return FF_DISPATCH_PEER (-3)
+ * the packet belongs to the peer generation of a graceful
+ * reload; the library forwards it (the mbuf stays library-owned).
+ */
+typedef int (*dispatch_func_context_t)(void *data, uint16_t *len,
+    uint16_t queue_id, uint16_t nb_queues, struct ff_dispatcher_context context);
+
 /* regist a packet dispath function */
 void ff_regist_packet_dispatcher(dispatch_func_t func);
+
+/* Register a packet dispatch function with context support */
+void ff_regist_packet_dispatcher_context(dispatch_func_context_t func);
+
+/* Unregister the packet dispatch callbacks (the new generation retires
+ * them once the reload window has closed). Idempotent —
+ * calling it with no callback registered is a no-op. */
+void ff_unregist_packet_dispatcher(void);
+void ff_unregist_packet_dispatcher_context(void);
+
+/*
+ * Idle callback, invoked on every main loop pass that received no packet.
+ * Registering it replaces the library idle sleep (idle_sleep /
+ * primary_slim_idle_sleep): the application then owns the idle behaviour and
+ * must yield the CPU by itself, otherwise the loop spins at full speed.
+ * In thread_mode=1 the callback runs concurrently on every lcore, so it must
+ * be thread-safe. Register before ff_run().
+ */
+typedef void (*idle_func_t)(void *arg);
+
+/* regist an idle callback; ff_regist_idle_callback(NULL, NULL) unregists it */
+void ff_regist_idle_callback(idle_func_t func, void *arg);
+
+/* Unregist the idle callback. Idempotent. */
+void ff_unregist_idle_callback(void);
 
 /*
  * RAW packet send direty with DPDK by user APP.
@@ -237,6 +375,122 @@ void ff_regist_packet_dispatcher(dispatch_func_t func);
  *  -1 means error.
  */
 int ff_dpdk_raw_packet_send(void *data, int total, uint16_t port_id);
+
+/* flow map api begin */
+/* software flow table used during the graceful-reload handover.
+ * While the new generation owns the hardware and the old one is still
+ * draining, every inbound packet has to be classified as "new flow, mine" or
+ * "old flow, forward to the draining generation" — the stack's inpcb cannot
+ * answer that question on its own.
+ *
+ * Entry timing: a flow is recorded when its SYN is admitted, before the
+ * SYN-ACK goes out, NOT when accept() returns. The third handshake ACK
+ * arrives while the connection is still half-open; recording at accept()
+ * time would let that ACK miss the table and be forwarded to a generation
+ * that has no syncache entry for it, which would reset every connection
+ * established across the handover.
+ *
+ * The table is process-local (each generation keeps its own), so there is no
+ * shared memory and no cross-process locking. Addresses and ports are stored
+ * in network byte order; only equality is ever tested, so nothing is byte
+ * swapped. */
+typedef struct ff_flow_key ff_flow_key_t;
+
+/* Open / close the recording window. Insert and lookup are no-ops while the
+ * window is closed, so steady state costs nothing. Both are idempotent and
+ * reversible: close() empties the table, open() starts a fresh one. */
+void ff_flow_map_open(void);
+void ff_flow_map_close(void);
+
+/* 1 = the four-tuple belongs to this generation, 0 = miss (forward it). */
+int ff_flow_map_lookup(const ff_flow_key_t *key);
+
+/* 0 = inserted, 1 = already present (idempotent), <0 = error or table full. */
+int ff_flow_map_insert(const ff_flow_key_t *key);
+
+/* flow map api end */
+
+/* reload UDP peer table api begin */
+/* Graceful reload, UDP (key proto 17). The draining generation publishes the
+ * UDP flows it serves; the new generation's dispatcher asks where a UDP
+ * packet goes:
+ *   FF_FLOW_PEER_LEGACY  no usable table (old peer binary): forward it
+ *   FF_FLOW_PEER_LOCAL   keep it (a new flow, or the peer handed over)
+ *   FF_FLOW_PEER_FWD     forward it, the peer still serves the flow
+ *   FF_FLOW_PEER_LEARN   keep it and ff_flow_map_insert() it: the peer's
+ *                        flow went idle and is taken over here */
+#define FF_FLOW_PEER_LEGACY 0
+#define FF_FLOW_PEER_LOCAL  1
+#define FF_FLOW_PEER_FWD    2
+#define FF_FLOW_PEER_LEARN  3
+int ff_flow_peer_classify(const ff_flow_key_t *key);
+
+/* Draining side. The callback runs once when publishing starts and should
+ * ff_flow_peer_publish() every UDP session the app holds (the stack adds
+ * connected sockets and every datagram in or out by itself). */
+void ff_flow_peer_snapshot_regist(void (*fn)(void));
+void ff_flow_peer_publish(const ff_flow_key_t *key);
+
+/* UDP flows published and not idle yet (0 when not publishing). */
+int ff_flow_peer_active_flows(void);
+
+/* 1 while a generation that lost rx to another master (USR2) still has
+ * active UDP flows: the app should keep serving them before it exits. */
+int ff_flow_peer_linger(void);
+
+/* Hand every published flow to the new generation (call before exiting). */
+void ff_flow_peer_stop(void);
+/* reload UDP peer table api end */
+
+/* reload drain ring api begin */
+/* hand packets to the peer generation during the graceful-reload
+ * handover. Full ring ownership model in lib/ff_drain_ring.h; these two are
+ * the app-side (dispatcher callback) entry points — the dequeue/drain sides
+ * are consumed by lib's main loop. */
+struct rte_mbuf;
+
+/* Forward a flow-map miss to the draining generation. 'gen' is the
+ * DESTINATION generation (the peer, the one that owns the PCB); 'queue_id'
+ * is the queue this packet arrived on, which is the peer's queue index too
+ * (RSS is symmetric). The caller keeps mbuf ownership when this returns
+ * non-zero (ring full / not ready) and must free it itself. */
+int ff_drain_ring_rx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
+    struct rte_mbuf *m);
+
+/* Queue an outgoing packet for the peer generation to transmit. 'gen' is
+ * the SOURCE generation (your own): the peer is the only side allowed to
+ * call rte_eth_tx_burst and it reads the source-generation ring. Same mbuf
+ * ownership rule as ff_drain_ring_rx_enqueue(). */
+int ff_drain_ring_tx_enqueue(uint16_t port_id, uint16_t queue_id, int gen,
+    struct rte_mbuf *m);
+/* reload drain ring api end */
+
+/* number of half-open (syncache) entries currently held by this
+ * process's stack. The draining generation polls it to learn when its
+ * half-open window has closed and its listening sockets can be closed. */
+int ff_syncache_count(void);
+
+/* Orphan forensics: SYN-ACKs that could not be sent, and handshake ACKs
+ * that were claimed by this generation but answered a different ISS.
+ * Any output pointer may be NULL. */
+void ff_syncache_counters(uint64_t *synack_fail, uint64_t *ack_mismatch);
+
+/* 1 = this process no longer owns rx (the peer generation took
+ * it over during a graceful reload), i.e. it is the draining generation.
+ * 0 otherwise, including when no reload is in flight. */
+int ff_is_drain_generation(void);
+
+/* total bytes the TCP sockets of this process's
+ * stack still hold queued in so_snd (listening excluded), including
+ * app-closed sockets the stack is still draining (no descriptor left).
+ * The draining generation defers its exit while it is non-zero so
+ * in-flight tails are not reset by the worker's death. */
+int ff_socket_snd_pending(void);
+
+/* number of open INET/INET6 connections (listening and UDP sockets
+ * excluded) in this process — the drain-progress figure the master waits
+ * on before declaring DRAIN_DONE. */
+int ff_socket_drain_count(void);
 
 /* dispatch api end */
 
@@ -351,10 +605,59 @@ int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len);
 int ff_zc_mbuf_write(struct ff_zc_mbuf *m, const char *data, int len);
 
 /*
- * Read data to the mbuf chain in 'sturct ff_zc_mbuf'.
- * not implemented now.
+ * Read data out of the mbuf chain in 'struct ff_zc_mbuf' into the caller's
+ * buffer, advancing the internal cursor (zm->bsd_mbuf_off / zm->off).
+ *
+ * NOTE: `data` is an OUT buffer (the chain is copied INTO it); the previous
+ * 'const char *' signature was a not-implemented placeholder.
+ *
+ * @return bytes read this call (>0), 0 when the chain is exhausted, -1 error.
  */
-int ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len);
+int ff_zc_mbuf_read(struct ff_zc_mbuf *m, char *data, int len);
+
+#ifdef FSTACK_ZC_RECV
+/*
+ * FSTACK_ZC_RECV: zero-copy receive entry. Retrieves the socket-buffer mbuf
+ * chain directly (data still points into the underlying DPDK mbuf), avoiding
+ * the soreceive->uiomove copy. On success zm->bsd_mbuf holds the chain head,
+ * zm->len the byte count, and the cursor is reset for ff_zc_mbuf_read /
+ * ff_zc_mbuf_segment traversal.
+ *
+ * The caller OWNS the returned chain and MUST release it via
+ * ff_zc_recv_free() once done — otherwise the backing DPDK mbufs leak.
+ *
+ * @return bytes received (>0), 0 on peer close, -1 on error (errno set).
+ */
+ssize_t ff_zc_recv(int fd, struct ff_zc_mbuf *zm, size_t nbytes);
+
+/*
+ * Zero-copy traversal: return the current segment's data pointer + length
+ * (pointing into the mbuf, no copy) and advance the cursor.
+ * @return seg bytes (>0), 0 when exhausted, -1 error.
+ */
+int ff_zc_mbuf_segment(struct ff_zc_mbuf *zm, void **seg_data, int *seg_len);
+
+/*
+ * Release a chain obtained from ff_zc_recv (m_freem the whole chain, which
+ * returns each backing DPDK mbuf segment). Idempotent; zeroes zm. Must be
+ * called exactly once per successful ff_zc_recv.
+ */
+void ff_zc_recv_free(struct ff_zc_mbuf *zm);
+#endif /* FSTACK_ZC_RECV */
+
+/*
+ * Zero-copy send entry. Caller must pass the mbuf chain obtained from
+ * ff_zc_mbuf_get + ff_zc_mbuf_write as `mb`. Returns the sent byte
+ * count on success, -1 on error (errno set). Internally calls
+ * kern_zc_sendit -> sosend(uio=NULL, top=chain), the FreeBSD-native
+ * zero-copy send path. On success the kernel adopts the chain; on
+ * error the kernel frees it. Reuse requires another ff_zc_mbuf_get.
+ *
+ * Plain ff_write() / ff_writev() / ff_send() / ff_sendto() must NOT
+ * be used to send a zero-copy mbuf chain — they take char buffers
+ * and would copy via uiomove. Use ff_zc_send for the ZC fast-path.
+ */
+ssize_t ff_zc_send(int fd, const void *mb, size_t nbytes);
 
 /*
  * Create user thread context for LD_PRELOAD mode.

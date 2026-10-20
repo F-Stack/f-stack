@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001 Matthew Dillon.  All Rights Reserved.
  *
@@ -44,9 +44,6 @@
  *	- pool/pool dependency ordering cannot be depended on.
  *	- possible L1 cache mastersip contention between cpus.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/proc.h>

@@ -83,10 +83,10 @@ __FBSDID("$FreeBSD$");
 #endif
 
 #ifdef PRINTF_BUFR_SIZE
-char bufr[PRINTF_BUFR_SIZE];
+__thread char bufr[PRINTF_BUFR_SIZE];
 #endif
 
-static int putbuf_done = 0;
+static __thread int putbuf_done = 0;
 
 struct putchar_arg {
     int flags;

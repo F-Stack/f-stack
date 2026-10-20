@@ -92,7 +92,7 @@ typedef int (*qat_sym_build_request_t)(void *in_op, struct qat_sym_session *ctx,
 		uint8_t *out_msg, void *op_cookie);
 
 /* Common content descriptor */
-struct qat_sym_cd {
+struct __rte_cache_aligned qat_sym_cd {
 	struct icp_qat_hw_cipher_algo_blk cipher;
 	union {
 		struct icp_qat_hw_auth_algo_blk hash;
@@ -100,7 +100,7 @@ struct qat_sym_cd {
 		struct icp_qat_hw_gen3_crc_cd crc_gen3;
 		struct icp_qat_hw_gen4_crc_cd crc_gen4;
 	};
-} __rte_packed __rte_cache_aligned;
+} __rte_packed;
 
 struct qat_sym_session {
 	enum icp_qat_fw_la_cmd_id qat_cmd;
@@ -111,10 +111,16 @@ struct qat_sym_session {
 	enum icp_qat_hw_auth_op auth_op;
 	enum icp_qat_hw_auth_mode auth_mode;
 	void *bpi_ctx;
-	struct qat_sym_cd cd;
-	uint8_t prefix_state[QAT_PREFIX_TBL_SIZE] __rte_cache_aligned;
+	union {
+		struct qat_sym_cd cd;
+		uint8_t key_array[32];
+	};
+	alignas(RTE_CACHE_LINE_SIZE) uint8_t prefix_state[QAT_PREFIX_TBL_SIZE];
 	uint8_t *cd_cur_ptr;
-	phys_addr_t cd_paddr;
+	union {
+		phys_addr_t cd_paddr;
+		phys_addr_t key_paddr;
+	};
 	phys_addr_t prefix_paddr;
 	struct icp_qat_fw_la_bulk_req fw_req;
 	uint8_t aad_len;
@@ -140,13 +146,15 @@ struct qat_sym_session {
 	uint8_t is_auth;
 	uint8_t is_cnt_zero;
 	/* Some generations need different setup of counter */
+	uint8_t is_zuc256;
+	uint8_t is_wireless;
 	uint32_t slice_types;
 	enum qat_sym_proto_flag qat_proto_flag;
 	qat_sym_build_request_t build_request[2];
 #ifndef RTE_QAT_OPENSSL
 	IMB_MGR *mb_mgr;
-	uint64_t expkey[4*15] __rte_aligned(16);
-	uint32_t dust[4*15] __rte_aligned(16);
+	alignas(16) uint64_t expkey[4 * 15];
+	alignas(16) uint32_t dust[4 * 15];
 	uint8_t docsis_key_len;
 #endif
 };

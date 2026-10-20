@@ -3,3 +3,4 @@
 #define SX_NOINLINE 1
 #define DEV_RANDOM 1
 #define NO_EVENTTIMERS 1
+#define VIMAGE 1

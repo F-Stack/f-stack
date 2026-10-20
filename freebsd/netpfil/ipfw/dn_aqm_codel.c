@@ -1,7 +1,5 @@
 /*
  * Codel - The Controlled-Delay Active Queue Management algorithm.
- *
- * $FreeBSD$
  * 
  * Copyright (C) 2016 Centre for Advanced Internet Architectures,
  *  Swinburne University of Technology, Melbourne, Australia.
@@ -139,7 +137,7 @@ SYSCTL_PROC(_net_inet_ip_dummynet_codel, OID_AUTO, interval,
  * http://betterexplained.com/articles/
  * 	understanding-quakes-fast-inverse-square-root/ 
  */
-aqm_time_t 
+aqm_time_t
 control_law(struct codel_status *cst, struct dn_aqm_codel_parms *cprms,
 	aqm_time_t t)
 {
@@ -156,10 +154,10 @@ control_law(struct codel_status *cst, struct dn_aqm_codel_parms *cprms,
 	}
 
 	/* newguess = g(1.5 - 0.5*c*g^2)
-	 * Multiplying both sides by 2 to make all the constants intergers
+	 * Multiplying both sides by 2 to make all the constants integers
 	 * newguess * 2  = g(3 - c*g^2) g=old guess, c=count
 	 * So, newguess = newguess /2
-	 * Fixed point operations are used here.  
+	 * Fixed point operations are used here.
 	 */
 
 	/* Calculate g^2 */
@@ -167,14 +165,14 @@ control_law(struct codel_status *cst, struct dn_aqm_codel_parms *cprms,
 	/* Calculate (3 - c*g^2) i.e. (3 - c * temp) */
 	temp = (3ULL<< (FIX_POINT_BITS*2)) - (count * temp);
 
-	/* 
-	 * Divide by 2 because we multiplied the original equation by two 
-	 * Also, we shift the result by 8 bits to prevent overflow. 
+	/*
+	 * Divide by 2 because we multiplied the original equation by two
+	 * Also, we shift the result by 8 bits to prevent overflow.
 	 * */
-	temp >>= (1 + 8); 
+	temp >>= (1 + 8);
 
 	/*  Now, temp = (1.5 - 0.5*c*g^2)
-	 * Calculate g (1.5 - 0.5*c*g^2) i.e. g * temp 
+	 * Calculate g (1.5 - 0.5*c*g^2) i.e. g * temp
 	 */
 	temp = (cst->isqrt * temp) >> (FIX_POINT_BITS + FIX_POINT_BITS - 8);
 	cst->isqrt = temp;
@@ -192,8 +190,9 @@ struct mbuf *
 codel_extract_head(struct dn_queue *q, aqm_time_t *pkt_ts)
 {
 	struct m_tag *mtag;
-	struct mbuf *m = q->mq.head;
+	struct mbuf *m;
 
+next:	m = q->mq.head;
 	if (m == NULL)
 		return m;
 	q->mq.head = m->m_nextpkt;
@@ -202,7 +201,7 @@ codel_extract_head(struct dn_queue *q, aqm_time_t *pkt_ts)
 	update_stats(q, -m->m_pkthdr.len, 0);
 
 	if (q->ni.length == 0) /* queue is now idle */
-			q->q_time = dn_cfg.curr_time;
+			q->q_time = V_dn_cfg.curr_time;
 
 	/* extract packet TS*/
 	mtag = m_tag_locate(m, MTAG_ABI_COMPAT, DN_AQM_MTAG_TS, NULL);
@@ -212,6 +211,11 @@ codel_extract_head(struct dn_queue *q, aqm_time_t *pkt_ts)
 	} else {
 		*pkt_ts = *(aqm_time_t *)(mtag + 1);
 		m_tag_delete(m,mtag); 
+	}
+	if (m->m_pkthdr.rcvif != NULL &&
+	    __predict_false(m_rcvif_restore(m) == NULL)) {
+		m_freem(m);
+		goto next;
 	}
 
 	return m;
@@ -256,10 +260,8 @@ aqm_codel_enqueue(struct dn_queue *q, struct mbuf *m)
 	if (mtag == NULL)
 		mtag = m_tag_alloc(MTAG_ABI_COMPAT, DN_AQM_MTAG_TS,
 			sizeof(aqm_time_t), M_NOWAIT);
-	if (mtag == NULL) {
-		m_freem(m); 
+	if (mtag == NULL)
 		goto drop;
-	}
 
 	*(aqm_time_t *)(mtag + 1) = AQM_UNOW;
 	m_tag_prepend(m, mtag);

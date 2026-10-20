@@ -1,8 +1,8 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000-2008 Poul-Henning Kamp
- * Copyright (c) 2000-2008 Dag-Erling Coïdan Smørgrav
+ * Copyright (c) 2000-2008 Dag-Erling Smørgrav
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *      $FreeBSD$
  */
 
 #ifndef _SYS_SBUF_H_
@@ -95,6 +93,7 @@ int		 sbuf_vprintf(struct sbuf *, const char *, __va_list)
 int		 sbuf_nl_terminate(struct sbuf *);
 int		 sbuf_putc(struct sbuf *, int);
 void		 sbuf_set_drain(struct sbuf *, sbuf_drain_func *, void *);
+int		 sbuf_drain(struct sbuf *);
 int		 sbuf_trim(struct sbuf *);
 int		 sbuf_error(const struct sbuf *);
 int		 sbuf_finish(struct sbuf *);

@@ -36,8 +36,6 @@
  * OF SUCH DAMAGE.
  *
  * Author: Julian Elischer <julian@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: netgraph.h,v 1.29 1999/11/01 07:56:13 julian Exp $
  */
 
@@ -71,11 +69,20 @@
  * modules.
  */
 #define _NG_ABI_VERSION 12
-#ifdef	NETGRAPH_DEBUG /*----------------------------------------------*/
-#define NG_ABI_VERSION	(_NG_ABI_VERSION + 0x10000)
-#else	/* NETGRAPH_DEBUG */ /*----------------------------------------------*/
-#define NG_ABI_VERSION	_NG_ABI_VERSION
-#endif	/* NETGRAPH_DEBUG */ /*----------------------------------------------*/
+
+#ifdef	NETGRAPH_DEBUG
+#define	_NG_ABI_PREFIX1 0x10000
+#else
+#define	_NG_ABI_PREFIX1 0
+#endif
+
+#ifdef	INVARIANTS
+#define	_NG_ABI_PREFIX2 0x20000
+#else
+#define	_NG_ABI_PREFIX2 0
+#endif
+
+#define NG_ABI_VERSION	(_NG_ABI_PREFIX1 + _NG_ABI_PREFIX2 + _NG_ABI_VERSION)
 
 /*
  * Forward references for the basic structures so we can
@@ -87,6 +94,13 @@ struct ng_item ;
 typedef	struct ng_item *item_p;
 typedef struct ng_node *node_p;
 typedef struct ng_hook *hook_p;
+typedef	struct ng_item const *item_cp;
+typedef struct ng_hook const *hook_cp;
+#ifdef	NETGRAPH_DEBUG
+typedef struct ng_node       *node_cp; /* annotated during debug */
+#else	/* NETGRAPH_DEBUG */
+typedef struct ng_node const *node_cp;
+#endif	/* NETGRAPH_DEBUG */
 
 /* node method definitions */
 typedef	int	ng_constructor_t(node_p node);
@@ -422,13 +436,11 @@ void	ng_unref_node(node_p node); /* don't move this */
  * iterator will stop and return a pointer to the hook that returned 0.
  */
 typedef	int	ng_fn_eachhook(hook_p hook, void* arg);
-#define _NG_NODE_FOREACH_HOOK(node, fn, arg, rethook)			\
+#define _NG_NODE_FOREACH_HOOK(node, fn, arg)				\
 	do {								\
 		hook_p _hook;						\
-		(rethook) = NULL;					\
 		LIST_FOREACH(_hook, &((node)->nd_hooks), hk_hooks) {	\
 			if ((fn)(_hook, arg) == 0) {			\
-				(rethook) = _hook;			\
 				break;					\
 			}						\
 		}							\
@@ -449,7 +461,7 @@ static __inline int _ng_node_is_valid(node_p node, char *file, int line);
 static __inline int _ng_node_not_valid(node_p node, char *file, int line);
 static __inline int _ng_node_numhooks(node_p node, char *file, int line);
 static __inline void _ng_node_force_writer(node_p node, char *file, int line);
-static __inline hook_p _ng_node_foreach_hook(node_p node,
+static __inline void _ng_node_foreach_hook(node_p node,
 			ng_fn_eachhook *fn, void *arg, char *file, int line);
 static __inline void _ng_node_revive(node_p node, char *file, int line);
 
@@ -562,14 +574,12 @@ _ng_node_revive(node_p node, char *file, int line)
 	_NG_NODE_REVIVE(node);
 }
 
-static __inline hook_p
+static __inline void
 _ng_node_foreach_hook(node_p node, ng_fn_eachhook *fn, void *arg,
 						char *file, int line)
 {
-	hook_p hook;
 	_chknode(node, file, line);
-	_NG_NODE_FOREACH_HOOK(node, fn, arg, hook);
-	return (hook);
+	_NG_NODE_FOREACH_HOOK(node, fn, arg);
 }
 
 #define NG_NODE_NAME(node)		_ng_node_name(node, _NN_)	
@@ -586,10 +596,8 @@ _ng_node_foreach_hook(node_p node, ng_fn_eachhook *fn, void *arg,
 #define NG_NODE_REALLY_DIE(node) 	_ng_node_really_die(node, _NN_)
 #define NG_NODE_NUMHOOKS(node)		_ng_node_numhooks(node, _NN_)
 #define NG_NODE_REVIVE(node)		_ng_node_revive(node, _NN_)
-#define NG_NODE_FOREACH_HOOK(node, fn, arg, rethook)			      \
-	do {								      \
-		rethook = _ng_node_foreach_hook(node, fn, (void *)arg, _NN_); \
-	} while (0)
+#define NG_NODE_FOREACH_HOOK(node, fn, arg)				\
+	_ng_node_foreach_hook(node, fn, (void *)arg, _NN_)
 
 #else	/* NETGRAPH_DEBUG */ /*----------------------------------------------*/
 
@@ -607,8 +615,8 @@ _ng_node_foreach_hook(node_p node, ng_fn_eachhook *fn, void *arg,
 #define NG_NODE_REALLY_DIE(node) 	_NG_NODE_REALLY_DIE(node)
 #define NG_NODE_NUMHOOKS(node)		_NG_NODE_NUMHOOKS(node)	
 #define NG_NODE_REVIVE(node)		_NG_NODE_REVIVE(node)
-#define NG_NODE_FOREACH_HOOK(node, fn, arg, rethook)			\
-		_NG_NODE_FOREACH_HOOK(node, fn, arg, rethook)
+#define NG_NODE_FOREACH_HOOK(node, fn, arg)				\
+	_NG_NODE_FOREACH_HOOK(node, fn, arg)
 #endif	/* NETGRAPH_DEBUG */ /*----------------------------------------------*/
 
 /***********************************************************************
@@ -1139,7 +1147,7 @@ int	ng_make_node_common(struct ng_type *typep, node_p *nodep);
 int	ng_name_node(node_p node, const char *name);
 node_p	ng_name2noderef(node_p node, const char *name);
 int	ng_newtype(struct ng_type *tp);
-ng_ID_t ng_node2ID(node_p node);
+ng_ID_t ng_node2ID(node_cp node);
 item_p	ng_package_data(struct mbuf *m, int flags);
 item_p	ng_package_msg(struct ng_mesg *msg, int flags);
 item_p	ng_package_msg_self(node_p here, hook_p hook, struct ng_mesg *msg);
@@ -1155,6 +1163,7 @@ int 	ng_send_fn1(node_p node, hook_p hook, ng_item_fn *fn, void *arg1,
 int 	ng_send_fn2(node_p node, hook_p hook, item_p pitem, ng_item_fn2 *fn,
 	void *arg1, int arg2, int flags);
 int	ng_uncallout(struct callout *c, node_p node);
+int	ng_uncallout_drain(struct callout *c, node_p node);
 int	ng_callout(struct callout *c, node_p node, hook_p hook, int ticks,
 	    ng_item_fn *fn, void * arg1, int arg2);
 #define	ng_callout_init(c)	callout_init(c, 1)

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002-2006 Rice University
  * Copyright (c) 2007-2011 Alan L. Cox <alc@cs.rice.edu>
@@ -39,8 +39,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_vm.h"
 
 #include <sys/param.h>
@@ -53,12 +51,14 @@ __FBSDID("$FreeBSD$");
 #include <sys/sbuf.h>
 #include <sys/sysctl.h>
 #include <sys/systm.h>
+#include <sys/bitstring.h>
 #include <sys/counter.h>
 #include <sys/ktr.h>
 #include <sys/vmmeter.h>
 #include <sys/smp.h>
 
 #include <vm/vm.h>
+#include <vm/vm_extern.h>
 #include <vm/vm_param.h>
 #include <vm/vm_object.h>
 #include <vm/vm_page.h>
@@ -76,6 +76,29 @@ __FBSDID("$FreeBSD$");
  */
 
 #if VM_NRESERVLEVEL > 0
+
+/*
+ * Temporarily simulate two-level reservations.  Effectively, VM_LEVEL_0_* is
+ * level 1, and VM_SUBLEVEL_0_* is level 0.
+ */
+#if VM_NRESERVLEVEL == 2
+#undef VM_NRESERVLEVEL
+#define	VM_NRESERVLEVEL		1
+#if VM_LEVEL_0_ORDER == 4
+#undef VM_LEVEL_0_ORDER
+#define	VM_LEVEL_0_ORDER	(4 + VM_LEVEL_1_ORDER)
+#define	VM_SUBLEVEL_0_NPAGES	(1 << 4)
+#elif VM_LEVEL_0_ORDER == 7
+#undef VM_LEVEL_0_ORDER
+#define	VM_LEVEL_0_ORDER	(7 + VM_LEVEL_1_ORDER)
+#define	VM_SUBLEVEL_0_NPAGES	(1 << 7)
+#else
+#error "Unsupported level 0 reservation size"
+#endif
+#define	VM_LEVEL_0_PSIND	2
+#else
+#define	VM_LEVEL_0_PSIND	1
+#endif
 
 #ifndef VM_LEVEL_0_ORDER_MAX
 #define	VM_LEVEL_0_ORDER_MAX	VM_LEVEL_0_ORDER
@@ -106,66 +129,10 @@ __FBSDID("$FreeBSD$");
     (((object)->pg_color + (pindex)) & (VM_LEVEL_0_NPAGES - 1))
 
 /*
- * The size of a population map entry
- */
-typedef	u_long		popmap_t;
-
-/*
- * The number of bits in a population map entry
- */
-#define	NBPOPMAP	(NBBY * sizeof(popmap_t))
-
-/*
- * The number of population map entries in a reservation
- */
-#define	NPOPMAP		howmany(VM_LEVEL_0_NPAGES, NBPOPMAP)
-#define	NPOPMAP_MAX	howmany(VM_LEVEL_0_NPAGES_MAX, NBPOPMAP)
-
-/*
  * Number of elapsed ticks before we update the LRU queue position.  Used
  * to reduce contention and churn on the list.
  */
 #define	PARTPOPSLOP	1
-
-/*
- * Clear a bit in the population map.
- */
-static __inline void
-popmap_clear(popmap_t popmap[], int i)
-{
-
-	popmap[i / NBPOPMAP] &= ~(1UL << (i % NBPOPMAP));
-}
-
-/*
- * Set a bit in the population map.
- */
-static __inline void
-popmap_set(popmap_t popmap[], int i)
-{
-
-	popmap[i / NBPOPMAP] |= 1UL << (i % NBPOPMAP);
-}
-
-/*
- * Is a bit in the population map clear?
- */
-static __inline boolean_t
-popmap_is_clear(popmap_t popmap[], int i)
-{
-
-	return ((popmap[i / NBPOPMAP] & (1UL << (i % NBPOPMAP))) == 0);
-}
-
-/*
- * Is a bit in the population map set?
- */
-static __inline boolean_t
-popmap_is_set(popmap_t popmap[], int i)
-{
-
-	return ((popmap[i / NBPOPMAP] & (1UL << (i % NBPOPMAP))) != 0);
-}
 
 /*
  * The reservation structure
@@ -198,7 +165,8 @@ struct vm_reserv {
 	uint8_t		domain;			/* (c) NUMA domain. */
 	char		inpartpopq;		/* (d, r) */
 	int		lasttick;		/* (r) last pop update tick. */
-	popmap_t	popmap[NPOPMAP_MAX];	/* (r) bit vector, used pages */
+	bitstr_t	bit_decl(popmap, VM_LEVEL_0_NPAGES_MAX);
+						/* (r) bit vector, used pages */
 };
 
 TAILQ_HEAD(vm_reserv_queue, vm_reserv);
@@ -414,7 +382,6 @@ vm_reserv_remove(vm_reserv_t rv)
 static void
 vm_reserv_insert(vm_reserv_t rv, vm_object_t object, vm_pindex_t pindex)
 {
-	int i;
 
 	vm_reserv_assert_locked(rv);
 	CTR6(KTR_VM,
@@ -427,9 +394,8 @@ vm_reserv_insert(vm_reserv_t rv, vm_object_t object, vm_pindex_t pindex)
 	    ("vm_reserv_insert: reserv %p's popcnt is corrupted", rv));
 	KASSERT(!rv->inpartpopq,
 	    ("vm_reserv_insert: reserv %p's inpartpopq is TRUE", rv));
-	for (i = 0; i < NPOPMAP; i++)
-		KASSERT(rv->popmap[i] == 0,
-		    ("vm_reserv_insert: reserv %p's popmap is corrupted", rv));
+	KASSERT(bit_ntest(rv->popmap, 0, VM_LEVEL_0_NPAGES - 1, 0),
+	    ("vm_reserv_insert: reserv %p's popmap is corrupted", rv));
 	vm_reserv_object_lock(object);
 	rv->pindex = pindex;
 	rv->object = object;
@@ -437,6 +403,27 @@ vm_reserv_insert(vm_reserv_t rv, vm_object_t object, vm_pindex_t pindex)
 	LIST_INSERT_HEAD(&object->rvq, rv, objq);
 	vm_reserv_object_unlock(object);
 }
+
+#ifdef VM_SUBLEVEL_0_NPAGES
+static inline bool
+vm_reserv_is_sublevel_full(vm_reserv_t rv, int index)
+{
+	_Static_assert(VM_SUBLEVEL_0_NPAGES == 16 ||
+	    VM_SUBLEVEL_0_NPAGES == 128,
+	    "vm_reserv_is_sublevel_full: unsupported VM_SUBLEVEL_0_NPAGES");
+	/* An equivalent bit_ntest() compiles to more instructions. */
+	switch (VM_SUBLEVEL_0_NPAGES) {
+	case 16:
+		return (((uint16_t *)rv->popmap)[index / 16] == UINT16_MAX);
+	case 128:
+		index = rounddown2(index, 128) / 64;
+		return (((uint64_t *)rv->popmap)[index] == UINT64_MAX &&
+		    ((uint64_t *)rv->popmap)[index + 1] == UINT64_MAX);
+	default:
+		__unreachable();
+	}
+}
+#endif
 
 /*
  * Reduces the given reservation's population count.  If the population count
@@ -454,7 +441,7 @@ vm_reserv_depopulate(vm_reserv_t rv, int index)
 	    __FUNCTION__, rv, rv->object, rv->popcnt, rv->inpartpopq);
 	KASSERT(rv->object != NULL,
 	    ("vm_reserv_depopulate: reserv %p is free", rv));
-	KASSERT(popmap_is_set(rv->popmap, index),
+	KASSERT(bit_test(rv->popmap, index),
 	    ("vm_reserv_depopulate: reserv %p's popmap[%d] is clear", rv,
 	    index));
 	KASSERT(rv->popcnt > 0,
@@ -463,12 +450,16 @@ vm_reserv_depopulate(vm_reserv_t rv, int index)
 	    ("vm_reserv_depopulate: reserv %p's domain is corrupted %d",
 	    rv, rv->domain));
 	if (rv->popcnt == VM_LEVEL_0_NPAGES) {
-		KASSERT(rv->pages->psind == 1,
+		KASSERT(rv->pages->psind == VM_LEVEL_0_PSIND,
 		    ("vm_reserv_depopulate: reserv %p is already demoted",
 		    rv));
-		rv->pages->psind = 0;
+		rv->pages->psind = VM_LEVEL_0_PSIND - 1;
 	}
-	popmap_clear(rv->popmap, index);
+#ifdef VM_SUBLEVEL_0_NPAGES
+	if (vm_reserv_is_sublevel_full(rv, index))
+		rv->pages[rounddown2(index, VM_SUBLEVEL_0_NPAGES)].psind = 0;
+#endif
+	bit_clear(rv->popmap, index);
 	rv->popcnt--;
 	if ((unsigned)(ticks - rv->lasttick) >= PARTPOPSLOP ||
 	    rv->popcnt == 0) {
@@ -489,7 +480,8 @@ vm_reserv_depopulate(vm_reserv_t rv, int index)
 	if (rv->popcnt == 0) {
 		vm_reserv_remove(rv);
 		vm_domain_free_lock(vmd);
-		vm_phys_free_pages(rv->pages, VM_LEVEL_0_ORDER);
+		vm_phys_free_pages(rv->pages, VM_FREEPOOL_DEFAULT,
+		    VM_LEVEL_0_ORDER);
 		vm_domain_free_unlock(vmd);
 		counter_u64_add(vm_reserv_freed, 1);
 	}
@@ -514,16 +506,17 @@ vm_reserv_from_page(vm_page_t m)
 }
 
 /*
- * Returns an existing reservation or NULL and initialized successor pointer.
+ * Either returns an existing reservation or returns NULL and initializes
+ * successor pointer.
  */
 static vm_reserv_t
 vm_reserv_from_object(vm_object_t object, vm_pindex_t pindex,
-    vm_page_t mpred, vm_page_t *msuccp)
+    vm_page_t *mpredp, vm_page_t *msuccp, struct pctrie_iter *pages)
 {
 	vm_reserv_t rv;
-	vm_page_t msucc;
+	vm_page_t mpred, msucc;
 
-	msucc = NULL;
+	mpred = vm_radix_iter_lookup_lt(pages, pindex);
 	if (mpred != NULL) {
 		KASSERT(mpred->object == object,
 		    ("vm_reserv_from_object: object doesn't contain mpred"));
@@ -531,23 +524,20 @@ vm_reserv_from_object(vm_object_t object, vm_pindex_t pindex,
 		    ("vm_reserv_from_object: mpred doesn't precede pindex"));
 		rv = vm_reserv_from_page(mpred);
 		if (rv->object == object && vm_reserv_has_pindex(rv, pindex))
-			goto found;
-		msucc = TAILQ_NEXT(mpred, listq);
-	} else
-		msucc = TAILQ_FIRST(&object->memq);
+			return (rv);
+	}
+
+	msucc = vm_radix_iter_lookup_ge(pages, pindex);
 	if (msucc != NULL) {
 		KASSERT(msucc->pindex > pindex,
 		    ("vm_reserv_from_object: msucc doesn't succeed pindex"));
 		rv = vm_reserv_from_page(msucc);
 		if (rv->object == object && vm_reserv_has_pindex(rv, pindex))
-			goto found;
+			return (rv);
 	}
-	rv = NULL;
-
-found:
+	*mpredp = mpred;
 	*msuccp = msucc;
-
-	return (rv);
+	return (NULL);
 }
 
 /*
@@ -559,6 +549,73 @@ vm_reserv_has_pindex(vm_reserv_t rv, vm_pindex_t pindex)
 {
 
 	return (((pindex - rv->pindex) & ~(VM_LEVEL_0_NPAGES - 1)) == 0);
+}
+
+/*
+ * How many pages should be in a new allocation that starts at the first page of
+ * the reservation superpage that contains 'first', fits between the allocations
+ * that include 'mpred' and 'msucc', fits within 'object', includes at least
+ * 'minpages' pages, and tries to include every allocated page in a superpage?
+ *
+ * We must synchronize with the reserv object lock to protect the pindex/object
+ * of the resulting reservations against rename while we are inspecting.
+ */
+static u_long
+vm_reserv_num_alloc_pages(vm_object_t object, vm_pindex_t first,
+    u_long minpages, vm_page_t mpred, vm_page_t msucc)
+{
+	vm_pindex_t leftcap, rightcap;
+	vm_reserv_t rv;
+	u_int allocpages;
+
+	allocpages = roundup2(minpages, VM_LEVEL_0_NPAGES);
+
+	vm_reserv_object_lock(object);
+	if (mpred != NULL) {
+		if ((rv = vm_reserv_from_page(mpred))->object != object)
+			leftcap = mpred->pindex + 1;
+		else
+			leftcap = rv->pindex + VM_LEVEL_0_NPAGES;
+		if (leftcap > first)
+			allocpages = 0;
+	}
+	if (minpages < allocpages) {
+		if (msucc == NULL) {
+			/*
+			 * Would the last new reservation extend past the end of
+			 * the object?
+			 *
+			 * If the object is unlikely to grow don't allocate a
+			 * reservation for the tail.
+			 */
+			if ((object->flags & OBJ_ANON) == 0)
+				rightcap = object->size;
+			else
+				rightcap = OBJ_MAX_SIZE;
+		} else {
+			/*
+			 * Would the last new reservation extend past the start
+			 * of another page or reservation?
+			 *
+			 * If the object would, don't allocate a reservation for
+			 * the tail.
+			 */
+			if ((rv = vm_reserv_from_page(msucc))->object != object)
+				rightcap = msucc->pindex;
+			else
+				rightcap = rv->pindex;
+		}
+		if (first + allocpages > rightcap) {
+			/*
+			 * A reservation for the last of the requested pages
+			 * will not fit.  Reduce the size of the upcoming
+			 * allocation accordingly.
+			 */
+			allocpages = minpages;
+		}
+	}
+	vm_reserv_object_unlock(object);
+	return (allocpages);
 }
 
 /*
@@ -574,17 +631,22 @@ vm_reserv_populate(vm_reserv_t rv, int index)
 	    __FUNCTION__, rv, rv->object, rv->popcnt, rv->inpartpopq);
 	KASSERT(rv->object != NULL,
 	    ("vm_reserv_populate: reserv %p is free", rv));
-	KASSERT(popmap_is_clear(rv->popmap, index),
+	KASSERT(!bit_test(rv->popmap, index),
 	    ("vm_reserv_populate: reserv %p's popmap[%d] is set", rv,
 	    index));
 	KASSERT(rv->popcnt < VM_LEVEL_0_NPAGES,
 	    ("vm_reserv_populate: reserv %p is already full", rv));
-	KASSERT(rv->pages->psind == 0,
+	KASSERT(rv->pages->psind >= 0 &&
+	    rv->pages->psind < VM_LEVEL_0_PSIND,
 	    ("vm_reserv_populate: reserv %p is already promoted", rv));
 	KASSERT(rv->domain < vm_ndomains,
 	    ("vm_reserv_populate: reserv %p's domain is corrupted %d",
 	    rv, rv->domain));
-	popmap_set(rv->popmap, index);
+	bit_set(rv->popmap, index);
+#ifdef VM_SUBLEVEL_0_NPAGES
+	if (vm_reserv_is_sublevel_full(rv, index))
+		rv->pages[rounddown2(index, VM_SUBLEVEL_0_NPAGES)].psind = 1;
+#endif
 	rv->popcnt++;
 	if ((unsigned)(ticks - rv->lasttick) < PARTPOPSLOP &&
 	    rv->inpartpopq && rv->popcnt != VM_LEVEL_0_NPAGES)
@@ -599,10 +661,10 @@ vm_reserv_populate(vm_reserv_t rv, int index)
 		rv->inpartpopq = TRUE;
 		TAILQ_INSERT_TAIL(&vm_rvd[rv->domain].partpop, rv, partpopq);
 	} else {
-		KASSERT(rv->pages->psind == 0,
+		KASSERT(rv->pages->psind == VM_LEVEL_0_PSIND - 1,
 		    ("vm_reserv_populate: reserv %p is already promoted",
 		    rv));
-		rv->pages->psind = 1;
+		rv->pages->psind = VM_LEVEL_0_PSIND;
 	}
 	vm_reserv_domain_unlock(rv->domain);
 }
@@ -624,15 +686,15 @@ vm_reserv_populate(vm_reserv_t rv, int index)
  */
 vm_page_t
 vm_reserv_alloc_contig(vm_object_t object, vm_pindex_t pindex, int domain,
-    int req, vm_page_t mpred, u_long npages, vm_paddr_t low, vm_paddr_t high,
-    u_long alignment, vm_paddr_t boundary)
+    int req, u_long npages, vm_paddr_t low, vm_paddr_t high, u_long alignment,
+    vm_paddr_t boundary, struct pctrie_iter *pages)
 {
 	struct vm_domain *vmd;
 	vm_paddr_t pa, size;
-	vm_page_t m, m_ret, msucc;
-	vm_pindex_t first, leftcap, rightcap;
+	vm_page_t m, m_ret, mpred, msucc;
+	vm_pindex_t first;
 	vm_reserv_t rv;
-	u_long allocpages, maxpages, minpages;
+	u_long allocpages;
 	int i, index, n;
 
 	VM_OBJECT_ASSERT_WLOCKED(object);
@@ -656,16 +718,14 @@ vm_reserv_alloc_contig(vm_object_t object, vm_pindex_t pindex, int domain,
 	 * possible size satisfy the alignment and boundary requirements?
 	 */
 	pa = VM_RESERV_INDEX(object, pindex) << PAGE_SHIFT;
-	if ((pa & (alignment - 1)) != 0)
-		return (NULL);
 	size = npages << PAGE_SHIFT;
-	if (((pa ^ (pa + size - 1)) & ~(boundary - 1)) != 0)
+	if (!vm_addr_ok(pa, size, alignment, boundary))
 		return (NULL);
 
 	/*
 	 * Look for an existing reservation.
 	 */
-	rv = vm_reserv_from_object(object, pindex, mpred, &msucc);
+	rv = vm_reserv_from_object(object, pindex, &mpred, &msucc, pages);
 	if (rv != NULL) {
 		KASSERT(object != kernel_object || rv->domain == domain,
 		    ("vm_reserv_alloc_contig: domain mismatch"));
@@ -682,13 +742,11 @@ vm_reserv_alloc_contig(vm_object_t object, vm_pindex_t pindex, int domain,
 		m = &rv->pages[index];
 		pa = VM_PAGE_TO_PHYS(m);
 		if (pa < low || pa + size > high ||
-		    (pa & (alignment - 1)) != 0 ||
-		    ((pa ^ (pa + size - 1)) & ~(boundary - 1)) != 0)
+		    !vm_addr_ok(pa, size, alignment, boundary))
 			goto out;
-		/* Handle vm_page_rename(m, new_object, ...). */
-		for (i = 0; i < npages; i++)
-			if (popmap_is_set(rv->popmap, index + i))
-				goto out;
+		/* Handle vm_page_iter_rename(..., m, new_object, ...). */
+		if (!bit_ntest(rv->popmap, index, index + npages - 1, 0))
+			goto out;
 		if (!vm_domain_allocate(vmd, req, npages))
 			goto out;
 		for (i = 0; i < npages; i++)
@@ -701,63 +759,14 @@ out:
 	}
 
 	/*
-	 * Could at least one reservation fit between the first index to the
-	 * left that can be used ("leftcap") and the first index to the right
-	 * that cannot be used ("rightcap")?
-	 *
-	 * We must synchronize with the reserv object lock to protect the
-	 * pindex/object of the resulting reservations against rename while
-	 * we are inspecting.
+	 * Check whether an allocation including at least one reservation can
+	 * fit between mpred and msucc.
 	 */
 	first = pindex - VM_RESERV_INDEX(object, pindex);
-	minpages = VM_RESERV_INDEX(object, pindex) + npages;
-	maxpages = roundup2(minpages, VM_LEVEL_0_NPAGES);
-	allocpages = maxpages;
-	vm_reserv_object_lock(object);
-	if (mpred != NULL) {
-		if ((rv = vm_reserv_from_page(mpred))->object != object)
-			leftcap = mpred->pindex + 1;
-		else
-			leftcap = rv->pindex + VM_LEVEL_0_NPAGES;
-		if (leftcap > first) {
-			vm_reserv_object_unlock(object);
-			return (NULL);
-		}
-	}
-	if (msucc != NULL) {
-		if ((rv = vm_reserv_from_page(msucc))->object != object)
-			rightcap = msucc->pindex;
-		else
-			rightcap = rv->pindex;
-		if (first + maxpages > rightcap) {
-			if (maxpages == VM_LEVEL_0_NPAGES) {
-				vm_reserv_object_unlock(object);
-				return (NULL);
-			}
-
-			/*
-			 * At least one reservation will fit between "leftcap"
-			 * and "rightcap".  However, a reservation for the
-			 * last of the requested pages will not fit.  Reduce
-			 * the size of the upcoming allocation accordingly.
-			 */
-			allocpages = minpages;
-		}
-	}
-	vm_reserv_object_unlock(object);
-
-	/*
-	 * Would the last new reservation extend past the end of the object?
-	 *
-	 * If the object is unlikely to grow don't allocate a reservation for
-	 * the tail.
-	 */
-	if ((object->flags & OBJ_ANON) == 0 &&
-	    first + maxpages > object->size) {
-		if (maxpages == VM_LEVEL_0_NPAGES)
-			return (NULL);
-		allocpages = minpages;
-	}
+	allocpages = vm_reserv_num_alloc_pages(object, first,
+	    VM_RESERV_INDEX(object, pindex) + npages, mpred, msucc);
+	if (allocpages < VM_LEVEL_0_NPAGES)
+		return (NULL);
 
 	/*
 	 * Allocate the physical pages.  The alignment and boundary specified
@@ -824,11 +833,11 @@ out:
  */
 vm_page_t
 vm_reserv_alloc_page(vm_object_t object, vm_pindex_t pindex, int domain,
-    int req, vm_page_t mpred)
+    int req, struct pctrie_iter *pages)
 {
 	struct vm_domain *vmd;
-	vm_page_t m, msucc;
-	vm_pindex_t first, leftcap, rightcap;
+	vm_page_t m, mpred, msucc;
+	vm_pindex_t first;
 	vm_reserv_t rv;
 	int index;
 
@@ -844,7 +853,7 @@ vm_reserv_alloc_page(vm_object_t object, vm_pindex_t pindex, int domain,
 	/*
 	 * Look for an existing reservation.
 	 */
-	rv = vm_reserv_from_object(object, pindex, mpred, &msucc);
+	rv = vm_reserv_from_object(object, pindex, &mpred, &msucc, pages);
 	if (rv != NULL) {
 		KASSERT(object != kernel_object || rv->domain == domain,
 		    ("vm_reserv_alloc_page: domain mismatch"));
@@ -855,8 +864,8 @@ vm_reserv_alloc_page(vm_object_t object, vm_pindex_t pindex, int domain,
 		vm_reserv_lock(rv);
 		/* Handle reclaim race. */
 		if (rv->object != object ||
-		    /* Handle vm_page_rename(m, new_object, ...). */
-		    popmap_is_set(rv->popmap, index)) {
+		    /* Handle vm_page_iter_rename(..., m, new_object, ...). */
+		    bit_test(rv->popmap, index)) {
 			m = NULL;
 			goto out;
 		}
@@ -870,45 +879,12 @@ out:
 	}
 
 	/*
-	 * Could a reservation fit between the first index to the left that
-	 * can be used and the first index to the right that cannot be used?
-	 *
-	 * We must synchronize with the reserv object lock to protect the
-	 * pindex/object of the resulting reservations against rename while
-	 * we are inspecting.
+	 * Check whether an allocation including reservations can fit
+	 * between mpred and msucc.
 	 */
 	first = pindex - VM_RESERV_INDEX(object, pindex);
-	vm_reserv_object_lock(object);
-	if (mpred != NULL) {
-		if ((rv = vm_reserv_from_page(mpred))->object != object)
-			leftcap = mpred->pindex + 1;
-		else
-			leftcap = rv->pindex + VM_LEVEL_0_NPAGES;
-		if (leftcap > first) {
-			vm_reserv_object_unlock(object);
-			return (NULL);
-		}
-	}
-	if (msucc != NULL) {
-		if ((rv = vm_reserv_from_page(msucc))->object != object)
-			rightcap = msucc->pindex;
-		else
-			rightcap = rv->pindex;
-		if (first + VM_LEVEL_0_NPAGES > rightcap) {
-			vm_reserv_object_unlock(object);
-			return (NULL);
-		}
-	}
-	vm_reserv_object_unlock(object);
-
-	/*
-	 * Would the last new reservation extend past the end of the object?
-	 *
-	 * If the object is unlikely to grow don't allocate a reservation for
-	 * the tail.
-	 */
-	if ((object->flags & OBJ_ANON) == 0 &&
-	    first + VM_LEVEL_0_NPAGES > object->size)
+	if (vm_reserv_num_alloc_pages(object, first, 1, mpred, msucc) < 
+	    VM_LEVEL_0_NPAGES)
 		return (NULL);
 
 	/*
@@ -950,48 +926,38 @@ out:
 static void
 vm_reserv_break(vm_reserv_t rv)
 {
-	u_long changes;
-	int bitpos, hi, i, lo;
+	vm_page_t m;
+	int pos, pos0, pos1;
 
 	vm_reserv_assert_locked(rv);
 	CTR5(KTR_VM, "%s: rv %p object %p popcnt %d inpartpop %d",
 	    __FUNCTION__, rv, rv->object, rv->popcnt, rv->inpartpopq);
 	vm_reserv_remove(rv);
-	rv->pages->psind = 0;
-	hi = lo = -1;
-	for (i = 0; i <= NPOPMAP; i++) {
-		/*
-		 * "changes" is a bitmask that marks where a new sequence of
-		 * 0s or 1s begins in popmap[i], with last bit in popmap[i-1]
-		 * considered to be 1 if and only if lo == hi.  The bits of
-		 * popmap[-1] and popmap[NPOPMAP] are considered all 1s.
-		 */
-		if (i == NPOPMAP)
-			changes = lo != hi;
-		else {
-			changes = rv->popmap[i];
-			changes ^= (changes << 1) | (lo == hi);
-			rv->popmap[i] = 0;
+	m = rv->pages;
+#ifdef VM_SUBLEVEL_0_NPAGES
+	for (; m < rv->pages + VM_LEVEL_0_NPAGES; m += VM_SUBLEVEL_0_NPAGES)
+#endif
+		m->psind = 0;
+	pos0 = bit_test(rv->popmap, 0) ? -1 : 0;
+	pos1 = -1 - pos0;
+	for (pos = 0; pos < VM_LEVEL_0_NPAGES; ) {
+		/* Find the first different bit after pos. */
+		bit_ff_at(rv->popmap, pos + 1, VM_LEVEL_0_NPAGES,
+		    pos1 < pos0, &pos);
+		if (pos == -1)
+			pos = VM_LEVEL_0_NPAGES;
+		if (pos0 < pos1) {
+			pos0 = pos;
+			continue;
 		}
-		while (changes != 0) {
-			/*
-			 * If the next change marked begins a run of 0s, set
-			 * lo to mark that position.  Otherwise set hi and
-			 * free pages from lo up to hi.
-			 */
-			bitpos = ffsl(changes) - 1;
-			changes ^= 1UL << bitpos;
-			if (lo == hi)
-				lo = NBPOPMAP * i + bitpos;
-			else {
-				hi = NBPOPMAP * i + bitpos;
-				vm_domain_free_lock(VM_DOMAIN(rv->domain));
-				vm_phys_enqueue_contig(&rv->pages[lo], hi - lo);
-				vm_domain_free_unlock(VM_DOMAIN(rv->domain));
-				lo = hi;
-			}
-		}
+		/* Free unused pages from pos0 to pos. */
+		pos1 = pos;
+		vm_domain_free_lock(VM_DOMAIN(rv->domain));
+		vm_phys_enqueue_contig(&rv->pages[pos0], VM_FREEPOOL_DEFAULT,
+		    pos1 - pos0);
+		vm_domain_free_unlock(VM_DOMAIN(rv->domain));
 	}
+	bit_nclear(rv->popmap, 0, VM_LEVEL_0_NPAGES - 1);
 	rv->popcnt = 0;
 	counter_u64_add(vm_reserv_broken, 1);
 }
@@ -1070,7 +1036,7 @@ vm_reserv_init(void)
 #ifdef VM_PHYSSEG_SPARSE
 	vm_pindex_t used;
 #endif
-	int i, j, segind;
+	int i, segind;
 
 	/*
 	 * Initialize the reservation array.  Specifically, initialize the
@@ -1112,8 +1078,7 @@ vm_reserv_init(void)
 		 * partially populated reservation queues.
 		 */
 		rvd->marker.popcnt = VM_LEVEL_0_NPAGES;
-		for (j = 0; j < NBPOPMAP; j++)
-			popmap_set(rvd->marker.popmap, j);
+		bit_nset(rvd->marker.popmap, 0, VM_LEVEL_0_NPAGES - 1);
 	}
 
 	for (i = 0; i < VM_RESERV_OBJ_LOCK_COUNT; i++)
@@ -1133,7 +1098,28 @@ vm_reserv_is_page_free(vm_page_t m)
 	rv = vm_reserv_from_page(m);
 	if (rv->object == NULL)
 		return (false);
-	return (popmap_is_clear(rv->popmap, m - rv->pages));
+	return (!bit_test(rv->popmap, m - rv->pages));
+}
+
+/*
+ * Returns true if the given page is part of a block of npages, starting at a
+ * multiple of npages, that are all allocated.  Otherwise, returns false.
+ */
+bool
+vm_reserv_is_populated(vm_page_t m, int npages)
+{
+	vm_reserv_t rv;
+	int index;
+
+	KASSERT(npages <= VM_LEVEL_0_NPAGES,
+	    ("%s: npages %d exceeds VM_LEVEL_0_NPAGES", __func__, npages));
+	KASSERT(powerof2(npages),
+	    ("%s: npages %d is not a power of 2", __func__, npages));
+	rv = vm_reserv_from_page(m);
+	if (rv->object == NULL)
+		return (false);
+	index = rounddown2(m - rv->pages, npages);
+	return (bit_ntest(rv->popmap, index, index + npages - 1, 1));
 }
 
 /*
@@ -1146,7 +1132,11 @@ vm_reserv_level(vm_page_t m)
 	vm_reserv_t rv;
 
 	rv = vm_reserv_from_page(m);
+#ifdef VM_SUBLEVEL_0_NPAGES
+	return (rv->object != NULL ? 1 : -1);
+#else
 	return (rv->object != NULL ? 0 : -1);
+#endif
 }
 
 /*
@@ -1159,7 +1149,15 @@ vm_reserv_level_iffullpop(vm_page_t m)
 	vm_reserv_t rv;
 
 	rv = vm_reserv_from_page(m);
-	return (rv->popcnt == VM_LEVEL_0_NPAGES ? 0 : -1);
+	if (rv->popcnt == VM_LEVEL_0_NPAGES) {
+#ifdef VM_SUBLEVEL_0_NPAGES
+		return (1);
+	} else if (rv->pages != NULL &&
+	    vm_reserv_is_sublevel_full(rv, m - rv->pages)) {
+#endif
+		return (0);
+	}
+	return (-1);
 }
 
 /*
@@ -1233,99 +1231,80 @@ vm_reserv_reclaim_inactive(int domain)
 /*
  * Determine whether this reservation has free pages that satisfy the given
  * request for contiguous physical memory.  Start searching from the lower
- * bound, defined by low_index.
+ * bound, defined by lo, and stop at the upper bound, hi.  Return the index
+ * of the first satisfactory free page, or -1 if none is found.
  */
-static bool
-vm_reserv_test_contig(vm_reserv_t rv, u_long npages, vm_paddr_t low,
-    vm_paddr_t high, u_long alignment, vm_paddr_t boundary)
+static int
+vm_reserv_find_contig(vm_reserv_t rv, int npages, int lo,
+    int hi, int ppn_align, int ppn_bound)
 {
-	vm_paddr_t pa, size;
-	u_long changes;
-	int bitpos, bits_left, i, hi, lo, n;
 
 	vm_reserv_assert_locked(rv);
-	size = npages << PAGE_SHIFT;
-	pa = VM_PAGE_TO_PHYS(&rv->pages[0]);
-	lo = (pa < low) ?
-	    ((low + PAGE_MASK - pa) >> PAGE_SHIFT) : 0;
-	i = lo / NBPOPMAP;
-	changes = rv->popmap[i] | ((1UL << (lo % NBPOPMAP)) - 1);
-	hi = (pa + VM_LEVEL_0_SIZE > high) ?
-	    ((high + PAGE_MASK - pa) >> PAGE_SHIFT) : VM_LEVEL_0_NPAGES;
-	n = hi / NBPOPMAP;
-	bits_left = hi % NBPOPMAP;
-	hi = lo = -1;
-	for (;;) {
-		/*
-		 * "changes" is a bitmask that marks where a new sequence of
-		 * 0s or 1s begins in popmap[i], with last bit in popmap[i-1]
-		 * considered to be 1 if and only if lo == hi.  The bits of
-		 * popmap[-1] and popmap[NPOPMAP] are considered all 1s.
-		 */
-		changes ^= (changes << 1) | (lo == hi);
-		while (changes != 0) {
-			/*
-			 * If the next change marked begins a run of 0s, set
-			 * lo to mark that position.  Otherwise set hi and
-			 * look for a satisfactory first page from lo up to hi.
-			 */
-			bitpos = ffsl(changes) - 1;
-			changes ^= 1UL << bitpos;
-			if (lo == hi) {
-				lo = NBPOPMAP * i + bitpos;
-				continue;
-			}
-			hi = NBPOPMAP * i + bitpos;
-			pa = VM_PAGE_TO_PHYS(&rv->pages[lo]);
-			if ((pa & (alignment - 1)) != 0) {
-				/* Skip to next aligned page. */
-				lo += (((pa - 1) | (alignment - 1)) + 1) >>
-				    PAGE_SHIFT;
-				if (lo >= VM_LEVEL_0_NPAGES)
-					return (false);
-				pa = VM_PAGE_TO_PHYS(&rv->pages[lo]);
-			}
-			if (((pa ^ (pa + size - 1)) & ~(boundary - 1)) != 0) {
-				/* Skip to next boundary-matching page. */
-				lo += (((pa - 1) | (boundary - 1)) + 1) >>
-				    PAGE_SHIFT;
-				if (lo >= VM_LEVEL_0_NPAGES)
-					return (false);
-				pa = VM_PAGE_TO_PHYS(&rv->pages[lo]);
-			}
-			if (lo * PAGE_SIZE + size <= hi * PAGE_SIZE)
-				return (true);
-			lo = hi;
+	KASSERT(npages <= VM_LEVEL_0_NPAGES - 1,
+	    ("%s: Too many pages", __func__));
+	KASSERT(ppn_bound <= VM_LEVEL_0_NPAGES,
+	    ("%s: Too big a boundary for reservation size", __func__));
+	KASSERT(npages <= ppn_bound,
+	    ("%s: Too many pages for given boundary", __func__));
+	KASSERT(ppn_align != 0 && powerof2(ppn_align),
+	    ("ppn_align is not a positive power of 2"));
+	KASSERT(ppn_bound != 0 && powerof2(ppn_bound),
+	    ("ppn_bound is not a positive power of 2"));
+	while (bit_ffc_area_at(rv->popmap, lo, hi, npages, &lo), lo != -1) {
+		if (lo < roundup2(lo, ppn_align)) {
+			/* Skip to next aligned page. */
+			lo = roundup2(lo, ppn_align);
+		} else if (roundup2(lo + 1, ppn_bound) >= lo + npages)
+			return (lo);
+		if (roundup2(lo + 1, ppn_bound) < lo + npages) {
+			/* Skip to next boundary-matching page. */
+			lo = roundup2(lo + 1, ppn_bound);
 		}
-		if (++i < n)
-			changes = rv->popmap[i];
-		else if (i == n)
-			changes = bits_left == 0 ? -1UL :
-			    (rv->popmap[n] | (-1UL << bits_left));
-		else
-			return (false);
 	}
+	return (-1);
 }
 
 /*
  * Searches the partially populated reservation queue for the least recently
  * changed reservation with free pages that satisfy the given request for
  * contiguous physical memory.  If a satisfactory reservation is found, it is
- * broken.  Returns true if a reservation is broken and false otherwise.
+ * broken.  Returns a page if a reservation is broken and NULL otherwise.
  */
-bool
+vm_page_t
 vm_reserv_reclaim_contig(int domain, u_long npages, vm_paddr_t low,
     vm_paddr_t high, u_long alignment, vm_paddr_t boundary)
 {
 	struct vm_reserv_queue *queue;
 	vm_paddr_t pa, size;
+	vm_page_t m_ret;
 	vm_reserv_t marker, rv, rvn;
+	int hi, lo, posn, ppn_align, ppn_bound;
 
+	KASSERT(npages > 0, ("npages is 0"));
+	KASSERT(powerof2(alignment), ("alignment is not a power of 2"));
+	KASSERT(powerof2(boundary), ("boundary is not a power of 2"));
 	if (npages > VM_LEVEL_0_NPAGES - 1)
-		return (false);
+		return (NULL);
+	size = npages << PAGE_SHIFT;
+	/* 
+	 * Ensure that a free range starting at a boundary-multiple
+	 * doesn't include a boundary-multiple within it.  Otherwise,
+	 * no boundary-constrained allocation is possible.
+	 */
+	if (!vm_addr_bound_ok(0, size, boundary))
+		return (NULL);
 	marker = &vm_rvd[domain].marker;
 	queue = &vm_rvd[domain].partpop;
-	size = npages << PAGE_SHIFT;
+	/*
+	 * Compute shifted alignment, boundary values for page-based
+	 * calculations.  Constrain to range [1, VM_LEVEL_0_NPAGES] to
+	 * avoid overflow.
+	 */
+	ppn_align = (int)(ulmin(ulmax(PAGE_SIZE, alignment),
+	    VM_LEVEL_0_SIZE) >> PAGE_SHIFT);
+	ppn_bound = boundary == 0 ? VM_LEVEL_0_NPAGES :
+	    (int)(MIN(MAX(PAGE_SIZE, boundary),
+            VM_LEVEL_0_SIZE) >> PAGE_SHIFT);
 
 	vm_reserv_domain_scan_lock(domain);
 	vm_reserv_domain_lock(domain);
@@ -1337,6 +1316,10 @@ vm_reserv_reclaim_contig(int domain, u_long npages, vm_paddr_t low,
 		}
 		if (pa + size > high) {
 			/* This entire reservation is too high; go to next. */
+			continue;
+		}
+		if (!vm_addr_align_ok(pa, alignment)) {
+			/* This entire reservation is unaligned; go to next. */
 			continue;
 		}
 
@@ -1356,12 +1339,26 @@ vm_reserv_reclaim_contig(int domain, u_long npages, vm_paddr_t low,
 			TAILQ_REMOVE(queue, marker, partpopq);
 		}
 		vm_reserv_domain_unlock(domain);
-		if (vm_reserv_test_contig(rv, npages, low, high,
-		    alignment, boundary)) {
+		lo = (pa >= low) ? 0 :
+		    (int)((low + PAGE_MASK - pa) >> PAGE_SHIFT);
+		hi = (pa + VM_LEVEL_0_SIZE <= high) ? VM_LEVEL_0_NPAGES :
+		    (int)((high - pa) >> PAGE_SHIFT);
+		posn = vm_reserv_find_contig(rv, (int)npages, lo, hi,
+		    ppn_align, ppn_bound);
+		if (posn >= 0) {
 			vm_reserv_domain_scan_unlock(domain);
+			/* Allocate requested space */
+			rv->popcnt += npages;
+			bit_nset(rv->popmap, posn, posn + npages - 1);
 			vm_reserv_reclaim(rv);
 			vm_reserv_unlock(rv);
-			return (true);
+			m_ret = &rv->pages[posn];
+			pa = VM_PAGE_TO_PHYS(m_ret);
+			KASSERT(vm_addr_ok(pa, size, alignment, boundary),
+			    ("%s: adjusted address not aligned/bounded to "
+			     "%lx/%jx",
+			     __func__, alignment, (uintmax_t)boundary));
+			return (m_ret);
 		}
 		vm_reserv_domain_lock(domain);
 		rvn = TAILQ_NEXT(rv, partpopq);
@@ -1369,7 +1366,7 @@ vm_reserv_reclaim_contig(int domain, u_long npages, vm_paddr_t low,
 	}
 	vm_reserv_domain_unlock(domain);
 	vm_reserv_domain_scan_unlock(domain);
-	return (false);
+	return (NULL);
 }
 
 /*
@@ -1415,6 +1412,10 @@ vm_reserv_size(int level)
 
 	switch (level) {
 	case 0:
+#ifdef VM_SUBLEVEL_0_NPAGES
+		return (VM_SUBLEVEL_0_NPAGES * PAGE_SIZE);
+	case 1:
+#endif
 		return (VM_LEVEL_0_SIZE);
 	case -1:
 		return (PAGE_SIZE);
@@ -1490,12 +1491,16 @@ vm_reserv_to_superpage(vm_page_t m)
 
 	VM_OBJECT_ASSERT_LOCKED(m->object);
 	rv = vm_reserv_from_page(m);
-	if (rv->object == m->object && rv->popcnt == VM_LEVEL_0_NPAGES)
-		m = rv->pages;
-	else
-		m = NULL;
-
-	return (m);
+	if (rv->object == m->object) {
+		if (rv->popcnt == VM_LEVEL_0_NPAGES)
+			return (rv->pages);
+#ifdef VM_SUBLEVEL_0_NPAGES
+		if (vm_reserv_is_sublevel_full(rv, m - rv->pages))
+			return (rv->pages + rounddown2(m - rv->pages,
+			    VM_SUBLEVEL_0_NPAGES));
+#endif
+	}
+	return (NULL);
 }
 
 #endif	/* VM_NRESERVLEVEL > 0 */

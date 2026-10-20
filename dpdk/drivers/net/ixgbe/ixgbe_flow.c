@@ -221,6 +221,13 @@ cons_parse_ntuple_filter(const struct rte_flow_attr *attr,
 	act = next_no_void_action(actions, NULL);
 	if (act->type == RTE_FLOW_ACTION_TYPE_SECURITY) {
 		const void *conf = act->conf;
+
+		if (conf == NULL) {
+			rte_flow_error_set(error, EINVAL,
+				RTE_FLOW_ERROR_TYPE_ACTION_CONF,
+				act, "NULL security conf.");
+			return -rte_errno;
+		}
 		/* check if the next not void item is END */
 		act = next_no_void_action(actions, act);
 		if (act->type != RTE_FLOW_ACTION_TYPE_END) {
@@ -243,6 +250,12 @@ cons_parse_ntuple_filter(const struct rte_flow_attr *attr,
 				return -rte_errno;
 			}
 			item = next_no_void_pattern(pattern, item);
+		}
+		if (item->spec == NULL) {
+			rte_flow_error_set(error, EINVAL,
+					RTE_FLOW_ERROR_TYPE_ITEM_SPEC, item,
+					"NULL IP pattern.");
+			return -rte_errno;
 		}
 
 		filter->proto = IPPROTO_ESP;
@@ -275,14 +288,10 @@ cons_parse_ntuple_filter(const struct rte_flow_attr *attr,
 
 		}
 		/* if the first item is MAC, the content should be NULL */
-		if ((item->spec || item->mask) &&
-			(memcmp(eth_spec, &eth_null,
-				sizeof(struct rte_flow_item_eth)) ||
-			 memcmp(eth_mask, &eth_null,
-				sizeof(struct rte_flow_item_eth)))) {
-			rte_flow_error_set(error, EINVAL,
-				RTE_FLOW_ERROR_TYPE_ITEM,
-				item, "Not supported by ntuple filter");
+		if ((item->spec != NULL && memcmp(eth_spec, &eth_null, sizeof(eth_null)) != 0) ||
+		    (item->mask != NULL && memcmp(eth_mask, &eth_null, sizeof(eth_null)) != 0)) {
+			rte_flow_error_set(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, item,
+					"Not supported by ntuple filter");
 			return -rte_errno;
 		}
 		/* check if the next not void item is IPv4 or Vlan */
@@ -308,15 +317,10 @@ cons_parse_ntuple_filter(const struct rte_flow_attr *attr,
 			return -rte_errno;
 		}
 		/* the content should be NULL */
-		if ((item->spec || item->mask) &&
-			(memcmp(vlan_spec, &vlan_null,
-				sizeof(struct rte_flow_item_vlan)) ||
-			 memcmp(vlan_mask, &vlan_null,
-				sizeof(struct rte_flow_item_vlan)))) {
-
-			rte_flow_error_set(error, EINVAL,
-				RTE_FLOW_ERROR_TYPE_ITEM,
-				item, "Not supported by ntuple filter");
+		if ((item->spec != NULL && memcmp(vlan_spec, &vlan_null, sizeof(vlan_null)) != 0) ||
+		    (item->mask != NULL && memcmp(vlan_mask, &vlan_null, sizeof(vlan_null)) != 0)) {
+			rte_flow_error_set(error, EINVAL, RTE_FLOW_ERROR_TYPE_ITEM, item,
+					"Not supported by ntuple filter");
 			return -rte_errno;
 		}
 		/* check if the next not void item is IPv4 */
@@ -1361,7 +1365,8 @@ ixgbe_parse_l2_tn_filter(struct rte_eth_dev *dev,
 
 	if (hw->mac.type != ixgbe_mac_X550 &&
 		hw->mac.type != ixgbe_mac_X550EM_x &&
-		hw->mac.type != ixgbe_mac_X550EM_a) {
+		hw->mac.type != ixgbe_mac_X550EM_a &&
+		hw->mac.type != ixgbe_mac_E610) {
 		memset(l2_tn_filter, 0, sizeof(struct ixgbe_l2_tunnel_conf));
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_ITEM,
@@ -1644,6 +1649,7 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 	memset(&rule->mask, 0xFF, sizeof(struct ixgbe_hw_fdir_mask));
 	rule->mask.vlan_tci_mask = 0;
 	rule->mask.flex_bytes_mask = 0;
+	rule->mask.l4_proto_match = 0;
 	rule->mask.dst_port_mask = 0;
 	rule->mask.src_port_mask = 0;
 
@@ -1919,9 +1925,9 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 
 		/* check src addr mask */
 		for (j = 0; j < 16; j++) {
-			if (ipv6_mask->hdr.src_addr[j] == 0) {
+			if (ipv6_mask->hdr.src_addr.a[j] == 0) {
 				rule->mask.src_ipv6_mask &= ~(1 << j);
-			} else if (ipv6_mask->hdr.src_addr[j] != UINT8_MAX) {
+			} else if (ipv6_mask->hdr.src_addr.a[j] != UINT8_MAX) {
 				memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
 				rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ITEM,
@@ -1932,9 +1938,9 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 
 		/* check dst addr mask */
 		for (j = 0; j < 16; j++) {
-			if (ipv6_mask->hdr.dst_addr[j] == 0) {
+			if (ipv6_mask->hdr.dst_addr.a[j] == 0) {
 				rule->mask.dst_ipv6_mask &= ~(1 << j);
-			} else if (ipv6_mask->hdr.dst_addr[j] != UINT8_MAX) {
+			} else if (ipv6_mask->hdr.dst_addr.a[j] != UINT8_MAX) {
 				memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
 				rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ITEM,
@@ -1947,9 +1953,9 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 			rule->b_spec = TRUE;
 			ipv6_spec = item->spec;
 			rte_memcpy(rule->ixgbe_fdir.formatted.src_ip,
-				   ipv6_spec->hdr.src_addr, 16);
+				   &ipv6_spec->hdr.src_addr, 16);
 			rte_memcpy(rule->ixgbe_fdir.formatted.dst_ip,
-				   ipv6_spec->hdr.dst_addr, 16);
+				   &ipv6_spec->hdr.dst_addr, 16);
 		}
 
 		/**
@@ -2111,56 +2117,55 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 			return -rte_errno;
 		}
 
-		/* only x550 family only support sctp port */
-		if (hw->mac.type == ixgbe_mac_X550 ||
-		    hw->mac.type == ixgbe_mac_X550EM_x ||
-		    hw->mac.type == ixgbe_mac_X550EM_a) {
-			/**
-			 * Only care about src & dst ports,
-			 * others should be masked.
-			 */
-			if (!item->mask) {
-				memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
-				rte_flow_error_set(error, EINVAL,
-					RTE_FLOW_ERROR_TYPE_ITEM,
-					item, "Not supported by fdir filter");
-				return -rte_errno;
-			}
-			rule->b_mask = TRUE;
-			sctp_mask = item->mask;
-			if (sctp_mask->hdr.tag ||
-				sctp_mask->hdr.cksum) {
-				memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
-				rte_flow_error_set(error, EINVAL,
-					RTE_FLOW_ERROR_TYPE_ITEM,
-					item, "Not supported by fdir filter");
-				return -rte_errno;
-			}
-			rule->mask.src_port_mask = sctp_mask->hdr.src_port;
-			rule->mask.dst_port_mask = sctp_mask->hdr.dst_port;
+		sctp_mask = item->mask;
+		if (sctp_mask != NULL) {
+			/* only some mac types support sctp port masking */
+			if (hw->mac.type == ixgbe_mac_X550 ||
+			    hw->mac.type == ixgbe_mac_X550EM_x ||
+			    hw->mac.type == ixgbe_mac_X550EM_a ||
+			    hw->mac.type == ixgbe_mac_E610) {
+				/**
+				 * Only care about src & dst ports,
+				 * others should be masked.
+				 */
+				rule->b_mask = TRUE;
+				if (sctp_mask->hdr.tag ||
+				    sctp_mask->hdr.cksum) {
+					memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
+					rte_flow_error_set(error, EINVAL,
+						RTE_FLOW_ERROR_TYPE_ITEM,
+						item, "Not supported by fdir filter");
+					return -rte_errno;
+				}
+				rule->mask.src_port_mask = sctp_mask->hdr.src_port;
+				rule->mask.dst_port_mask = sctp_mask->hdr.dst_port;
 
-			if (item->spec) {
-				rule->b_spec = TRUE;
-				sctp_spec = item->spec;
-				rule->ixgbe_fdir.formatted.src_port =
-					sctp_spec->hdr.src_port;
-				rule->ixgbe_fdir.formatted.dst_port =
-					sctp_spec->hdr.dst_port;
-			}
-		/* others even sctp port is not supported */
-		} else {
-			sctp_mask = item->mask;
-			if (sctp_mask &&
-				(sctp_mask->hdr.src_port ||
-				 sctp_mask->hdr.dst_port ||
-				 sctp_mask->hdr.tag ||
-				 sctp_mask->hdr.cksum)) {
+				if (item->spec) {
+					rule->b_spec = TRUE;
+					sctp_spec = item->spec;
+					rule->ixgbe_fdir.formatted.src_port =
+						sctp_spec->hdr.src_port;
+					rule->ixgbe_fdir.formatted.dst_port =
+						sctp_spec->hdr.dst_port;
+				}
+			/* others even sctp port masking is not supported */
+			} else if (sctp_mask->hdr.src_port ||
+				   sctp_mask->hdr.dst_port ||
+				   sctp_mask->hdr.tag ||
+				   sctp_mask->hdr.cksum) {
 				memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
 				rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ITEM,
 					item, "Not supported by fdir filter");
 				return -rte_errno;
 			}
+		} else if (item->spec != NULL) {
+			/* No port mask means protocol-only match; spec is invalid. */
+			memset(rule, 0, sizeof(struct ixgbe_fdir_rule));
+			rte_flow_error_set(error, EINVAL,
+				RTE_FLOW_ERROR_TYPE_ITEM,
+				item, "Not supported by fdir filter");
+			return -rte_errno;
 		}
 
 		item = next_no_fuzzy_pattern(pattern, item);
@@ -2256,6 +2261,10 @@ ixgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev,
 			return -rte_errno;
 		}
 	}
+
+	/* L4 protocol matching is enabled when parser selected an L4 type. */
+	rule->mask.l4_proto_match =
+		(rule->ixgbe_fdir.formatted.flow_type & IXGBE_ATR_L4TYPE_MASK) != 0;
 
 	return ixgbe_parse_fdir_act_attr(attr, actions, rule, error);
 }
@@ -2766,7 +2775,8 @@ ixgbe_parse_fdir_filter(struct rte_eth_dev *dev,
 		hw->mac.type != ixgbe_mac_X540 &&
 		hw->mac.type != ixgbe_mac_X550 &&
 		hw->mac.type != ixgbe_mac_X550EM_x &&
-		hw->mac.type != ixgbe_mac_X550EM_a)
+		hw->mac.type != ixgbe_mac_X550EM_a &&
+		hw->mac.type != ixgbe_mac_E610)
 		return -ENOTSUP;
 
 	ret = ixgbe_parse_fdir_filter_normal(dev, attr, pattern,
@@ -2782,12 +2792,6 @@ ixgbe_parse_fdir_filter(struct rte_eth_dev *dev,
 		return ret;
 
 step_next:
-
-	if (hw->mac.type == ixgbe_mac_82599EB &&
-		rule->fdirflags == IXGBE_FDIRCMD_DROP &&
-		(rule->ixgbe_fdir.formatted.src_port != 0 ||
-		rule->ixgbe_fdir.formatted.dst_port != 0))
-		return -ENOTSUP;
 
 	if (fdir_conf->mode == RTE_FDIR_MODE_NONE) {
 		fdir_conf->mode = rule->mode;
@@ -3059,8 +3063,12 @@ ixgbe_flow_create(struct rte_eth_dev *dev,
 
 #ifdef RTE_LIB_SECURITY
 	/* ESP flow not really a flow*/
-	if (ntuple_filter.proto == IPPROTO_ESP)
+	if (ntuple_filter.proto == IPPROTO_ESP) {
+		if (ret != 0)
+			goto out;
+		flow->is_security = true;
 		return flow;
+	}
 #endif
 
 	if (!ret) {
@@ -3349,6 +3357,12 @@ ixgbe_flow_destroy(struct rte_eth_dev *dev,
 		IXGBE_DEV_PRIVATE_TO_FDIR_INFO(dev->data->dev_private);
 	struct ixgbe_rss_conf_ele *rss_filter_ptr;
 
+	/* Special case for SECURITY flows */
+	if (flow->is_security) {
+		ret = 0;
+		goto free;
+	}
+
 	switch (filter_type) {
 	case RTE_ETH_FILTER_NTUPLE:
 		ntuple_filter_ptr = (struct ixgbe_ntuple_filter_ele *)
@@ -3397,11 +3411,16 @@ ixgbe_flow_destroy(struct rte_eth_dev *dev,
 			sizeof(struct ixgbe_fdir_rule));
 		ret = ixgbe_fdir_filter_program(dev, &fdir_rule, TRUE, FALSE);
 		if (!ret) {
+			struct rte_eth_fdir_conf *fdir_conf = IXGBE_DEV_FDIR_CONF(dev);
 			TAILQ_REMOVE(&filter_fdir_list,
 				fdir_rule_ptr, entries);
 			rte_free(fdir_rule_ptr);
-			if (TAILQ_EMPTY(&filter_fdir_list))
+			if (TAILQ_EMPTY(&filter_fdir_list)) {
 				fdir_info->mask_added = false;
+				fdir_info->mask = (struct ixgbe_hw_fdir_mask){0};
+				fdir_info->flex_bytes_offset = 0;
+				fdir_conf->mode = RTE_FDIR_MODE_NONE;
+			}
 		}
 		break;
 	case RTE_ETH_FILTER_L2_TUNNEL:
@@ -3441,6 +3460,7 @@ ixgbe_flow_destroy(struct rte_eth_dev *dev,
 		return ret;
 	}
 
+free:
 	TAILQ_FOREACH(ixgbe_flow_mem_ptr, &ixgbe_flow_list, entries) {
 		if (ixgbe_flow_mem_ptr->flow == pmd_flow) {
 			TAILQ_REMOVE(&ixgbe_flow_list,

@@ -31,9 +31,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/systm.h>
@@ -41,6 +38,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/imgact.h>
 #include <sys/linker.h>
 #include <sys/proc.h>
+#include <sys/reg.h>
 #include <sys/sysent.h>
 #include <sys/imgact_elf.h>
 #include <sys/syscall.h>
@@ -48,7 +46,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/vnode.h>
 
 #include <vm/vm.h>
+#include <vm/pmap.h>
 #include <vm/vm_param.h>
+#include <vm/vm_map.h>
 
 #include <machine/elf.h>
 #include <machine/md_var.h>
@@ -57,23 +57,42 @@ __FBSDID("$FreeBSD$");
 
 u_long __read_frequently elf_hwcap;
 u_long __read_frequently elf_hwcap2;
+u_long __read_frequently elf_hwcap3;
+u_long __read_frequently elf_hwcap4;
+/* TODO: Move to a better location */
+u_long __read_frequently linux_elf_hwcap;
+u_long __read_frequently linux_elf_hwcap2;
+u_long __read_frequently linux_elf_hwcap3;
+u_long __read_frequently linux_elf_hwcap4;
+
+struct arm64_addr_mask elf64_addr_mask = {
+    .code = TBI_ADDR_MASK,
+    .data = TBI_ADDR_MASK,
+};
+#ifdef COMPAT_FREEBSD14
+struct arm64_addr_mask elf64_addr_mask_14;
+#endif
+
+static void arm64_exec_protect(struct image_params *, int);
 
 static struct sysentvec elf64_freebsd_sysvec = {
 	.sv_size	= SYS_MAXSYSCALL,
 	.sv_table	= sysent,
-	.sv_transtrap	= NULL,
 	.sv_fixup	= __elfN(freebsd_fixup),
 	.sv_sendsig	= sendsig,
 	.sv_sigcode	= sigcode,
 	.sv_szsigcode	= &szsigcode,
 	.sv_name	= "FreeBSD ELF64",
 	.sv_coredump	= __elfN(coredump),
-	.sv_imgact_try	= NULL,
+	.sv_elf_core_osabi = ELFOSABI_FREEBSD,
+	.sv_elf_core_abi_vendor = FREEBSD_ABI_VENDOR,
+	.sv_elf_core_prepare_notes = __elfN(prepare_notes),
 	.sv_minsigstksz	= MINSIGSTKSZ,
 	.sv_minuser	= VM_MIN_ADDRESS,
 	.sv_maxuser	= VM_MAXUSER_ADDRESS,
 	.sv_usrstack	= USRSTACK,
 	.sv_psstrings	= PS_STRINGS,
+	.sv_psstringssz	= sizeof(struct ps_strings),
 	.sv_stackprot	= VM_PROT_READ | VM_PROT_WRITE,
 	.sv_copyout_auxargs = __elfN(freebsd_copyout_auxargs),
 	.sv_copyout_strings = exec_copyout_strings,
@@ -81,7 +100,7 @@ static struct sysentvec elf64_freebsd_sysvec = {
 	.sv_fixlimit	= NULL,
 	.sv_maxssiz	= NULL,
 	.sv_flags	= SV_SHP | SV_TIMEKEEP | SV_ABI_FREEBSD | SV_LP64 |
-	    SV_ASLR | SV_RNG_SEED_VER,
+	    SV_ASLR | SV_RNG_SEED_VER | SV_SIGSYS,
 	.sv_set_syscall_retval = cpu_set_syscall_retval,
 	.sv_fetch_syscall_args = cpu_fetch_syscall_args,
 	.sv_syscallnames = syscallnames,
@@ -92,6 +111,13 @@ static struct sysentvec elf64_freebsd_sysvec = {
 	.sv_trap	= NULL,
 	.sv_hwcap	= &elf_hwcap,
 	.sv_hwcap2	= &elf_hwcap2,
+	.sv_hwcap3	= &elf_hwcap3,
+	.sv_hwcap4	= &elf_hwcap4,
+	.sv_onexec_old	= exec_onexec_old,
+	.sv_protect	= arm64_exec_protect,
+	.sv_onexit	= exit_onexit,
+	.sv_regset_begin = SET_BEGIN(__elfN(regset)),
+	.sv_regset_end	= SET_LIMIT(__elfN(regset)),
 };
 INIT_SYSENTVEC(elf64_sysvec, &elf64_freebsd_sysvec);
 
@@ -99,7 +125,6 @@ static Elf64_Brandinfo freebsd_brand_info = {
 	.brand		= ELFOSABI_FREEBSD,
 	.machine	= EM_AARCH64,
 	.compat_3_brand	= "FreeBSD",
-	.emul_path	= NULL,
 	.interp_path	= "/libexec/ld-elf.so.1",
 	.sysvec		= &elf64_freebsd_sysvec,
 	.interp_newpath	= NULL,
@@ -110,11 +135,38 @@ static Elf64_Brandinfo freebsd_brand_info = {
 SYSINIT(elf64, SI_SUB_EXEC, SI_ORDER_FIRST,
     (sysinit_cfunc_t)elf64_insert_brand_entry, &freebsd_brand_info);
 
+static bool
+get_arm64_addr_mask(struct regset *rs, struct thread *td, void *buf,
+    size_t *sizep)
+{
+	if (buf != NULL) {
+		KASSERT(*sizep == sizeof(elf64_addr_mask),
+		    ("%s: invalid size", __func__));
+#ifdef COMPAT_FREEBSD14
+		/* running an old binary use the old address mask */
+		if (td->td_proc->p_osrel < TBI_VERSION)
+			memcpy(buf, &elf64_addr_mask_14,
+			    sizeof(elf64_addr_mask_14));
+		else
+#endif
+			memcpy(buf, &elf64_addr_mask, sizeof(elf64_addr_mask));
+	}
+	*sizep = sizeof(elf64_addr_mask);
+
+	return (true);
+}
+
+static struct regset regset_arm64_addr_mask = {
+	.note = NT_ARM_ADDR_MASK,
+	.size = sizeof(struct arm64_addr_mask),
+	.get = get_arm64_addr_mask,
+};
+ELF_REGSET(regset_arm64_addr_mask);
+
 void
 elf64_dump_thread(struct thread *td __unused, void *dst __unused,
     size_t *off __unused)
 {
-
 }
 
 bool
@@ -266,7 +318,7 @@ elf_cpu_load_file(linker_file_t lf)
 {
 
 	if (lf->id != 1)
-		cpu_icache_sync_range((vm_offset_t)lf->address, lf->size);
+		cpu_icache_sync_range(lf->address, lf->size);
 	return (0);
 }
 
@@ -282,4 +334,72 @@ elf_cpu_parse_dynamic(caddr_t loadbase __unused, Elf_Dyn *dynamic __unused)
 {
 
 	return (0);
+}
+
+static Elf_Note gnu_property_note = {
+	.n_namesz = sizeof(GNU_ABI_VENDOR),
+	.n_descsz = 16,
+	.n_type = NT_GNU_PROPERTY_TYPE_0,
+};
+
+static bool
+gnu_property_cb(const Elf_Note *note, void *arg0, bool *res)
+{
+	const uint32_t *data;
+	uintptr_t p;
+
+	*res = false;
+	p = (uintptr_t)(note + 1);
+	p += roundup2(note->n_namesz, 4);
+	data = (const uint32_t *)p;
+	if (data[0] != GNU_PROPERTY_AARCH64_FEATURE_1_AND)
+		return (false);
+	/*
+	 * The data length should be at least the size of a uint32, and be
+	 * a multiple of uint32_t's
+	 */
+	if (data[1] < sizeof(uint32_t) || (data[1] % sizeof(uint32_t)) != 0)
+		return (false);
+	if ((data[2] & GNU_PROPERTY_AARCH64_FEATURE_1_BTI) != 0)
+		*res = true;
+
+	return (true);
+}
+
+static void
+arm64_exec_protect(struct image_params *imgp, int flags __unused)
+{
+	const Elf_Ehdr *hdr;
+	const Elf_Phdr *phdr;
+	vm_offset_t sva, eva;
+	int i;
+	bool found;
+
+	/* Skip if BTI is not supported */
+	if ((elf_hwcap2 & HWCAP2_BTI) == 0)
+		return;
+
+	hdr = (const Elf_Ehdr *)imgp->image_header;
+	phdr = (const Elf_Phdr *)(imgp->image_header + hdr->e_phoff);
+
+	found = false;
+	for (i = 0; i < hdr->e_phnum; i++) {
+		if (phdr[i].p_type == PT_NOTE && __elfN(parse_notes)(imgp,
+		    &gnu_property_note, GNU_ABI_VENDOR, &phdr[i],
+		    gnu_property_cb, NULL)) {
+			found = true;
+			break;
+		}
+	}
+	if (!found)
+		return;
+
+	for (i = 0; i < hdr->e_phnum; i++) {
+		if (phdr[i].p_type != PT_LOAD || phdr[i].p_memsz == 0)
+			continue;
+
+		sva = phdr[i].p_vaddr + imgp->et_dyn_addr;
+		eva = sva + phdr[i].p_memsz;
+		pmap_bti_set(vmspace_pmap(imgp->proc->p_vmspace), sva, eva);
+	}
 }

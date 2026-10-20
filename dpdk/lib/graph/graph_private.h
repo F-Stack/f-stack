@@ -18,11 +18,11 @@
 #include "rte_graph_worker.h"
 
 extern int rte_graph_logtype;
+#define RTE_LOGTYPE_GRAPH rte_graph_logtype
 
 #define GRAPH_LOG(level, ...)                                                  \
-	rte_log(RTE_LOG_##level, rte_graph_logtype,                            \
-		RTE_FMT("GRAPH: %s():%u " RTE_FMT_HEAD(__VA_ARGS__, ) "\n",    \
-			__func__, __LINE__, RTE_FMT_TAIL(__VA_ARGS__, )))
+	RTE_LOG_LINE_PREFIX(level, GRAPH,                                      \
+		"%s():%u ", __func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
 #define graph_err(...) GRAPH_LOG(ERR, __VA_ARGS__)
 #define graph_warn(...) GRAPH_LOG(WARNING, __VA_ARGS__)
@@ -61,6 +61,7 @@ struct node {
 	rte_node_t id;		      /**< Allocated identifier for the node. */
 	rte_node_t parent_id;	      /**< Parent node identifier. */
 	rte_edge_t nb_edges;	      /**< Number of edges from this node. */
+	struct rte_node_xstats *xstats;	      /**< Node specific xstats. */
 	char next_nodes[][RTE_NODE_NAMESIZE]; /**< Names of next nodes. */
 };
 
@@ -70,11 +71,11 @@ struct node {
  * Structure that holds the graph scheduling workqueue node stream.
  * Used for mcore dispatch model.
  */
-struct graph_mcore_dispatch_wq_node {
+struct __rte_cache_aligned graph_mcore_dispatch_wq_node {
 	rte_graph_off_t node_off;
 	uint16_t nb_objs;
 	void *objs[RTE_GRAPH_BURST_SIZE];
-} __rte_cache_aligned;
+};
 
 /**
  * @internal
@@ -102,6 +103,8 @@ struct graph {
 	/**< Memzone to store graph data. */
 	rte_graph_off_t nodes_start;
 	/**< Node memory start offset in graph reel. */
+	rte_graph_off_t xstats_start;
+	/**< Node xstats memory start offset in graph reel. */
 	rte_node_t src_node_count;
 	/**< Number of source nodes in a graph. */
 	struct rte_graph *graph;
@@ -288,6 +291,18 @@ int graph_node_has_edge_to_src_node(struct graph *graph);
  *   - 1: Node doesn't have an edge to itself.
  */
 int graph_node_has_loop_edge(struct graph *graph);
+
+/**
+ * @internal
+ *
+ * Replace all pointers of a given node with another one in all active graphs.
+ *
+ * @param old
+ *   Node pointer to replace in all graphs.
+ * @param new
+ *   Updated pointer.
+ */
+void graph_node_replace_all(struct node *old, struct node *new);
 
 /**
  * @internal

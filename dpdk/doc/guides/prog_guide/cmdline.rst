@@ -70,6 +70,10 @@ The format of the list file must be:
 
   * ``<IP>src_ip``
 
+  * ``<IPv4>dst_ip4``
+
+  * ``<IPv6>dst_ip6``
+
 * Variable fields, which take their values from a list of options,
   have the comma-separated option list placed in braces, rather than a the type name.
   For example,
@@ -154,6 +158,19 @@ The same "cmdname" stem is used in the naming of the generated structures too.
 To get at the results structure for each command above,
 the ``parsed_result`` parameter should be cast to ``struct cmd_quit_result``
 or ``struct cmd_show_port_stats_result`` respectively.
+
+.. note::
+
+  In some cases, the user may want to have an optional variable parameter at the end of a command.
+  Such a variable parameter would not normally be included in the "cmdname" string,
+  leading to duplicate definition errors.
+  To work around this,
+  any variable token with a name prefixed by ``'__'`` will be included in the "cmdname" string,
+  with the prefix removed.
+  Using this, it is possible to have commands, such as:
+  ``start tx_first`` and ``start tx_first <UINT16>__n``, without them conflicting.
+  The resulting code generated will expect functions called ``cmd_start_tx_first_parsed``
+  and ``cmd_start_tx_first_n_parsed`` respectively.
 
 Integrating with the Application
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

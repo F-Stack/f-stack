@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _VLAPIC_H_
@@ -79,7 +77,7 @@ void vlapic_sync_tpr(struct vlapic *vlapic);
 
 uint64_t vlapic_get_apicbase(struct vlapic *vlapic);
 int vlapic_set_apicbase(struct vlapic *vlapic, uint64_t val);
-void vlapic_set_x2apic_state(struct vm *vm, int vcpuid, enum x2apic_state s);
+void vlapic_set_x2apic_state(struct vcpu *vcpu, enum x2apic_state s);
 bool vlapic_enabled(struct vlapic *vlapic);
 
 void vlapic_deliver_intr(struct vm *vm, bool level, uint32_t dest, bool phys,
@@ -114,5 +112,7 @@ void vlapic_self_ipi_handler(struct vlapic *vlapic, uint64_t val);
 #ifdef BHYVE_SNAPSHOT
 int vlapic_snapshot(struct vm *vm, struct vm_snapshot_meta *meta);
 #endif
+
+int vm_handle_ipi(struct vcpu *vcpu, struct vm_exit *vme, bool *retu);
 
 #endif	/* _VLAPIC_H_ */

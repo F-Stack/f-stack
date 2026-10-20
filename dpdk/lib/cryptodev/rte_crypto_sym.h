@@ -14,10 +14,6 @@
  * as supported symmetric crypto operation combinations.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <string.h>
 
 #include <rte_compat.h>
@@ -25,6 +21,10 @@ extern "C" {
 #include <rte_memory.h>
 #include <rte_mempool.h>
 #include <rte_common.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
  * Crypto IO Vector (in analogy with struct iovec)
@@ -176,8 +176,10 @@ enum rte_crypto_cipher_algorithm {
 	/**< ShangMi 4 (SM4) algorithm in CTR mode */
 	RTE_CRYPTO_CIPHER_SM4_OFB,
 	/**< ShangMi 4 (SM4) algorithm in OFB mode */
-	RTE_CRYPTO_CIPHER_SM4_CFB
+	RTE_CRYPTO_CIPHER_SM4_CFB,
 	/**< ShangMi 4 (SM4) algorithm in CFB mode */
+	RTE_CRYPTO_CIPHER_SM4_XTS
+	/**< ShangMi 4 (SM4) algorithm in XTS mode */
 };
 
 /** Symmetric Cipher Direction */

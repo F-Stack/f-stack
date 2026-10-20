@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Isilon Inc http://www.isilon.com/
  *
@@ -52,8 +52,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_stack.h"
 
 #include <sys/ctype.h>
@@ -68,12 +66,12 @@ __FBSDID("$FreeBSD$");
 #include <sys/proc.h>
 #include <sys/sbuf.h>
 #include <sys/sleepqueue.h>
+#include <sys/stdarg.h>
 #include <sys/sx.h>
 #include <sys/sysctl.h>
 #include <sys/types.h>
 
 #include <machine/atomic.h>
-#include <machine/stdarg.h>
 
 #ifdef ILOG_DEFINE_FOR_FILE
 ILOG_DEFINE_FOR_FILE(L_ISI_FAIL_POINT, L_ILOG, fail_point);
@@ -481,11 +479,10 @@ fail_point_init(struct fail_point *fp, const char *fmt, ...)
 
 	/* Allocate the name and fill it in. */
 	name = fp_malloc(n + 1, M_WAITOK);
-	if (name != NULL) {
-		va_start(ap, fmt);
-		vsnprintf(name, n + 1, fmt, ap);
-		va_end(ap);
-	}
+	va_start(ap, fmt);
+	vsnprintf(name, n + 1, fmt, ap);
+	va_end(ap);
+
 	fp->fp_name = name;
 	fp->fp_location = "";
 	fp->fp_flags |= FAIL_POINT_DYNAMIC_NAME;
@@ -723,31 +720,31 @@ fail_point_get(struct fail_point *fp, struct sbuf *sb,
 		if (ent->fe_pid != NO_PID)
 			sbuf_printf(sb, "[pid %d]", ent->fe_pid);
 		if (TAILQ_NEXT(ent, fe_entries))
-			sbuf_printf(sb, "->");
+			sbuf_cat(sb, "->");
 	}
 	if (!printed_entry_count)
-		sbuf_printf(sb, "off");
+		sbuf_cat(sb, "off");
 
 	fp_free(fp_entry_cpy);
 	if (verbose) {
 #ifdef STACK
 		/* Print number of sleeping threads. queue=0 is the argument
 		 * used by msleep when sending our threads to sleep. */
-		sbuf_printf(sb, "\nsleeping_thread_stacks = {\n");
+		sbuf_cat(sb, "\nsleeping_thread_stacks = {\n");
 		sleepq_sbuf_print_stacks(sb, FP_SLEEP_CHANNEL(fp), 0,
 		        &cnt_sleeping);
 
-		sbuf_printf(sb, "},\n");
+		sbuf_cat(sb, "},\n");
 #endif
 		sbuf_printf(sb, "sleeping_thread_count = %d,\n",
 		        cnt_sleeping);
 
 #ifdef STACK
-		sbuf_printf(sb, "paused_thread_stacks = {\n");
+		sbuf_cat(sb, "paused_thread_stacks = {\n");
 		sleepq_sbuf_print_stacks(sb, FP_PAUSE_CHANNEL(fp), 0,
 		        &cnt_sleeping);
 
-		sbuf_printf(sb, "},\n");
+		sbuf_cat(sb, "},\n");
 #endif
 		sbuf_printf(sb, "paused_thread_count = %d\n",
 		        cnt_sleeping);

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 The FreeBSD Foundation
  *
@@ -34,6 +34,7 @@
 #define	GDB_BUFSZ	4096
 #define	GDB_NREGS	68
 #define	GDB_REG_X0	0
+#define	GDB_REG_X19	19
 #define	GDB_REG_X29	29
 #define	GDB_REG_LR	30
 #define	GDB_REG_SP	31
@@ -77,5 +78,6 @@ gdb_end_write(void *arg __unused)
 void *gdb_cpu_getreg(int, size_t *);
 void gdb_cpu_setreg(int, void *);
 int gdb_cpu_signal(int, int);
+void gdb_cpu_stop_reason(int, int);
 
 #endif /* !_MACHINE_GDB_MACHDEP_H_ */

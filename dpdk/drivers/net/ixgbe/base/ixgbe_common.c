@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2020 Intel Corporation
+ * Copyright(c) 2001-2024 Intel Corporation
  */
 
 #include "ixgbe_common.h"
@@ -61,6 +61,7 @@ s32 ixgbe_init_ops_generic(struct ixgbe_hw *hw)
 				      ixgbe_validate_eeprom_checksum_generic;
 	eeprom->ops.update_checksum = ixgbe_update_eeprom_checksum_generic;
 	eeprom->ops.calc_checksum = ixgbe_calc_eeprom_checksum_generic;
+	eeprom->ops.read_pba_string = ixgbe_read_pba_string_generic;
 
 	/* MAC */
 	mac->ops.init_hw = ixgbe_init_hw_generic;
@@ -140,12 +141,13 @@ bool ixgbe_device_supports_autoneg_fc(struct ixgbe_hw *hw)
 	switch (hw->phy.media_type) {
 	case ixgbe_media_type_fiber_qsfp:
 	case ixgbe_media_type_fiber:
-		/* flow control autoneg black list */
+		/* flow control autoneg block list */
 		switch (hw->device_id) {
 		case IXGBE_DEV_ID_X550EM_A_SFP:
 		case IXGBE_DEV_ID_X550EM_A_SFP_N:
 		case IXGBE_DEV_ID_X550EM_A_QSFP:
 		case IXGBE_DEV_ID_X550EM_A_QSFP_N:
+		case IXGBE_DEV_ID_E610_SFP:
 			supported = false;
 			break;
 		default:
@@ -177,6 +179,8 @@ bool ixgbe_device_supports_autoneg_fc(struct ixgbe_hw *hw)
 		case IXGBE_DEV_ID_X550EM_A_10G_T:
 		case IXGBE_DEV_ID_X550EM_A_1G_T:
 		case IXGBE_DEV_ID_X550EM_A_1G_T_L:
+		case IXGBE_DEV_ID_E610_10G_T:
+		case IXGBE_DEV_ID_E610_2_5G_T:
 			supported = true;
 			break;
 		default:
@@ -231,7 +235,8 @@ s32 ixgbe_setup_fc_generic(struct ixgbe_hw *hw)
 		if (ret_val != IXGBE_SUCCESS)
 			goto out;
 
-		/* fall through - only backplane uses autoc */
+		reg = IXGBE_READ_REG(hw, IXGBE_PCS1GANA);
+		break;
 	case ixgbe_media_type_fiber_qsfp:
 	case ixgbe_media_type_fiber:
 		reg = IXGBE_READ_REG(hw, IXGBE_PCS1GANA);
@@ -576,17 +581,11 @@ s32 ixgbe_clear_hw_cntrs_generic(struct ixgbe_hw *hw)
 		}
 	}
 
-	if (hw->mac.type == ixgbe_mac_X550 || hw->mac.type == ixgbe_mac_X540) {
+	if (hw->mac.type == ixgbe_mac_X540 ||
+	    hw->mac.type == ixgbe_mac_X550 ||
+	    hw->mac.type == ixgbe_mac_E610) {
 		if (hw->phy.id == 0)
 			ixgbe_identify_phy(hw);
-		hw->phy.ops.read_reg(hw, IXGBE_PCRC8ECL,
-				     IXGBE_MDIO_PCS_DEV_TYPE, &i);
-		hw->phy.ops.read_reg(hw, IXGBE_PCRC8ECH,
-				     IXGBE_MDIO_PCS_DEV_TYPE, &i);
-		hw->phy.ops.read_reg(hw, IXGBE_LDPCECL,
-				     IXGBE_MDIO_PCS_DEV_TYPE, &i);
-		hw->phy.ops.read_reg(hw, IXGBE_LDPCECH,
-				     IXGBE_MDIO_PCS_DEV_TYPE, &i);
 	}
 
 	return IXGBE_SUCCESS;
@@ -674,7 +673,7 @@ s32 ixgbe_read_pba_string_generic(struct ixgbe_hw *hw, u8 *pba_num,
 		return ret_val;
 	}
 
-	if (length == 0xFFFF || length == 0) {
+	if (length == 0xFFFF || length == 0 || length > hw->eeprom.word_size) {
 		DEBUGOUT("NVM PBA number section invalid length\n");
 		return IXGBE_ERR_PBA_SECTION;
 	}
@@ -997,6 +996,9 @@ void ixgbe_set_pci_config_data_generic(struct ixgbe_hw *hw, u16 link_status)
 	case IXGBE_PCI_LINK_SPEED_8000:
 		hw->bus.speed = ixgbe_bus_speed_8000;
 		break;
+	case IXGBE_PCI_LINK_SPEED_16000:
+		hw->bus.speed = ixgbe_bus_speed_16000;
+		break;
 	default:
 		hw->bus.speed = ixgbe_bus_speed_unknown;
 		break;
@@ -1019,7 +1021,9 @@ s32 ixgbe_get_bus_info_generic(struct ixgbe_hw *hw)
 	DEBUGFUNC("ixgbe_get_bus_info_generic");
 
 	/* Get the negotiated link width and speed from PCI config space */
-	link_status = IXGBE_READ_PCIE_WORD(hw, IXGBE_PCI_LINK_STATUS);
+	link_status = IXGBE_READ_PCIE_WORD(hw, hw->mac.type == ixgbe_mac_E610 ?
+					   IXGBE_PCI_LINK_STATUS_E610 :
+					   IXGBE_PCI_LINK_STATUS);
 
 	ixgbe_set_pci_config_data_generic(hw, link_status);
 
@@ -1107,10 +1111,10 @@ s32 ixgbe_stop_adapter_generic(struct ixgbe_hw *hw)
 	msec_delay(2);
 
 	/*
-	 * Prevent the PCI-E bus from hanging by disabling PCI-E master
+	 * Prevent the PCI-E bus from hanging by disabling PCI-E primary
 	 * access and verify no pending requests
 	 */
-	return ixgbe_disable_pcie_master(hw);
+	return ixgbe_disable_pcie_primary(hw);
 }
 
 /**
@@ -3168,32 +3172,32 @@ STATIC u32 ixgbe_pcie_timeout_poll(struct ixgbe_hw *hw)
 }
 
 /**
- * ixgbe_disable_pcie_master - Disable PCI-express master access
+ * ixgbe_disable_pcie_primary - Disable PCI-express primary access
  * @hw: pointer to hardware structure
  *
- * Disables PCI-Express master access and verifies there are no pending
- * requests. IXGBE_ERR_MASTER_REQUESTS_PENDING is returned if master disable
- * bit hasn't caused the master requests to be disabled, else IXGBE_SUCCESS
- * is returned signifying master requests disabled.
+ * Disables PCI-Express primary access and verifies there are no pending
+ * requests. IXGBE_ERR_PRIMARY_REQUESTS_PENDING is returned if primary disable
+ * bit hasn't caused the primary requests to be disabled, else IXGBE_SUCCESS
+ * is returned signifying primary requests disabled.
  **/
-s32 ixgbe_disable_pcie_master(struct ixgbe_hw *hw)
+s32 ixgbe_disable_pcie_primary(struct ixgbe_hw *hw)
 {
 	s32 status = IXGBE_SUCCESS;
 	u32 i, poll;
 	u16 value;
 
-	DEBUGFUNC("ixgbe_disable_pcie_master");
+	DEBUGFUNC("ixgbe_disable_pcie_primary");
 
 	/* Always set this bit to ensure any future transactions are blocked */
 	IXGBE_WRITE_REG(hw, IXGBE_CTRL, IXGBE_CTRL_GIO_DIS);
 
-	/* Exit if master requests are blocked */
+	/* Exit if primary requests are blocked */
 	if (!(IXGBE_READ_REG(hw, IXGBE_STATUS) & IXGBE_STATUS_GIO) ||
 	    IXGBE_REMOVED(hw->hw_addr))
 		goto out;
 
-	/* Poll for master request bit to clear */
-	for (i = 0; i < IXGBE_PCI_MASTER_DISABLE_TIMEOUT; i++) {
+	/* Poll for primary request bit to clear */
+	for (i = 0; i < IXGBE_PCI_PRIMARY_DISABLE_TIMEOUT; i++) {
 		usec_delay(100);
 		if (!(IXGBE_READ_REG(hw, IXGBE_STATUS) & IXGBE_STATUS_GIO))
 			goto out;
@@ -3201,13 +3205,13 @@ s32 ixgbe_disable_pcie_master(struct ixgbe_hw *hw)
 
 	/*
 	 * Two consecutive resets are required via CTRL.RST per datasheet
-	 * 5.2.5.3.2 Master Disable.  We set a flag to inform the reset routine
-	 * of this need.  The first reset prevents new master requests from
+	 * 5.2.5.3.2 Primary Disable.  We set a flag to inform the reset routine
+	 * of this need. The first reset prevents new primary requests from
 	 * being issued by our device.  We then must wait 1usec or more for any
 	 * remaining completions from the PCIe bus to trickle in, and then reset
 	 * again to clear out any effects they may have had on our device.
 	 */
-	DEBUGOUT("GIO Master Disable bit didn't clear - requesting resets\n");
+	DEBUGOUT("GIO Primary Disable bit didn't clear - requesting resets\n");
 	hw->mac.flags |= IXGBE_FLAGS_DOUBLE_RESET_REQUIRED;
 
 	if (hw->mac.type >= ixgbe_mac_X550)
@@ -3229,7 +3233,7 @@ s32 ixgbe_disable_pcie_master(struct ixgbe_hw *hw)
 
 	ERROR_REPORT1(IXGBE_ERROR_POLLING,
 		     "PCIe transaction pending bit also did not clear.\n");
-	status = IXGBE_ERR_MASTER_REQUESTS_PENDING;
+	status = IXGBE_ERR_PRIMARY_REQUESTS_PENDING;
 
 out:
 	return status;
@@ -3652,6 +3656,10 @@ u16 ixgbe_get_pcie_msix_count_generic(struct ixgbe_hw *hw)
 		pcie_offset = IXGBE_PCIE_MSIX_82599_CAPS;
 		max_msix_count = IXGBE_MAX_MSIX_VECTORS_82599;
 		break;
+	case ixgbe_mac_E610:
+		pcie_offset = IXGBE_PCIE_MSIX_E610_CAPS;
+		max_msix_count = IXGBE_MAX_MSIX_VECTORS_82599;
+		break;
 	default:
 		return msix_count;
 	}
@@ -3827,14 +3835,15 @@ s32 ixgbe_set_vmdq_generic(struct ixgbe_hw *hw, u32 rar, u32 vmdq)
 }
 
 /**
+ * ixgbe_set_vmdq_san_mac_generic - Associate default VMDq pool index with
+ * a rx address
+ * @hw: pointer to hardware struct
+ * @vmdq: VMDq pool index
+ *
  * This function should only be involved in the IOV mode.
  * In IOV mode, Default pool is next pool after the number of
  * VFs advertized and not 0.
  * MPSAR table needs to be updated for SAN_MAC RAR [hw->mac.san_mac_rar_index]
- *
- * ixgbe_set_vmdq_san_mac - Associate default VMDq pool index with a rx address
- * @hw: pointer to hardware struct
- * @vmdq: VMDq pool index
  **/
 s32 ixgbe_set_vmdq_san_mac_generic(struct ixgbe_hw *hw, u32 vmdq)
 {
@@ -4192,10 +4201,25 @@ s32 ixgbe_check_mac_link_generic(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 			links_reg = IXGBE_READ_REG(hw, IXGBE_LINKS);
 		}
 	} else {
-		if (links_reg & IXGBE_LINKS_UP)
+		if (links_reg & IXGBE_LINKS_UP) {
+			if (ixgbe_need_crosstalk_fix(hw)) {
+				/* Check the link state again after a delay
+				 * to filter out spurious link up
+				 * notifications.
+				 */
+				msec_delay(5);
+				links_reg = IXGBE_READ_REG(hw, IXGBE_LINKS);
+				if (!(links_reg & IXGBE_LINKS_UP)) {
+					*link_up = false;
+					*speed = IXGBE_LINK_SPEED_UNKNOWN;
+					return IXGBE_SUCCESS;
+				}
+
+			}
 			*link_up = true;
-		else
+		} else {
 			*link_up = false;
+		}
 	}
 
 	switch (links_reg & IXGBE_LINKS_SPEED_82599) {
@@ -4211,7 +4235,7 @@ s32 ixgbe_check_mac_link_generic(struct ixgbe_hw *hw, ixgbe_link_speed *speed,
 		break;
 	case IXGBE_LINKS_SPEED_100_82599:
 		*speed = IXGBE_LINK_SPEED_100_FULL;
-		if (hw->mac.type == ixgbe_mac_X550) {
+		if (hw->mac.type == ixgbe_mac_X550 || hw->mac.type == ixgbe_mac_E610) {
 			if (links_reg & IXGBE_LINKS_SPEED_NON_STD)
 				*speed = IXGBE_LINK_SPEED_5GB_FULL;
 		}
@@ -4724,7 +4748,10 @@ void ixgbe_set_rxpba_generic(struct ixgbe_hw *hw, int num_pb, u32 headroom,
 		rxpktsize <<= IXGBE_RXPBSIZE_SHIFT;
 		for (; i < (num_pb / 2); i++)
 			IXGBE_WRITE_REG(hw, IXGBE_RXPBSIZE(i), rxpktsize);
-		/* fall through - configure remaining packet buffers */
+		rxpktsize = (pbsize / (num_pb - i)) << IXGBE_RXPBSIZE_SHIFT;
+		for (; i < num_pb; i++)
+			IXGBE_WRITE_REG(hw, IXGBE_RXPBSIZE(i), rxpktsize);
+		break;
 	case PBA_STRATEGY_EQUAL:
 		rxpktsize = (pbsize / (num_pb - i)) << IXGBE_RXPBSIZE_SHIFT;
 		for (; i < num_pb; i++)
@@ -4825,7 +4852,7 @@ STATIC const u8 ixgbe_emc_therm_limit[4] = {
 };
 
 /**
- * ixgbe_get_thermal_sensor_data - Gathers thermal sensor data
+ * ixgbe_get_thermal_sensor_data_generic - Gathers thermal sensor data
  * @hw: pointer to hardware structure
  *
  * Returns the thermal sensor data structure

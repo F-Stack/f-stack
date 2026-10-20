@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 Ian Lepore <ian@freebsd.org>
  * All rights reserved.
@@ -27,10 +27,10 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
+#ifdef _KERNEL
 #include "opt_acpi.h"
 #include "opt_ddb.h"
+#endif
 
 /*
  * Routines for describing and initializing anything related to physical memory.
@@ -38,14 +38,25 @@ __FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/bus.h>
 #include <sys/kernel.h>
+#include <sys/module.h>
 #include <sys/physmem.h>
+
+#ifdef _KERNEL
 #include <vm/vm.h>
 #include <vm/vm_param.h>
 #include <vm/vm_page.h>
 #include <vm/vm_phys.h>
 #include <vm/vm_dumpset.h>
+
 #include <machine/md_var.h>
+#include <machine/resource.h>
+#else
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
+#endif
 
 /*
  * These structures are used internally to keep track of regions of physical
@@ -64,7 +75,7 @@ __FBSDID("$FreeBSD$");
 
 #if defined(__arm__)
 #define	MAX_PHYS_ADDR	0xFFFFFFFFull
-#elif defined(__aarch64__) || defined(__riscv)
+#elif defined(__aarch64__) || defined(__amd64__) || defined(__riscv)
 #define	MAX_PHYS_ADDR	0xFFFFFFFFFFFFFFFFull
 #endif
 
@@ -87,15 +98,30 @@ static size_t excnt;
 long realmem;
 long Maxmem;
 
+#ifndef _KERNEL
+static void
+panic(const char *fmt, ...)
+{
+	va_list va;
+
+	va_start(va, fmt);
+	vfprintf(stderr, fmt, va);
+	fprintf(stderr, "\n");
+	va_end(va);
+	__builtin_trap();
+}
+#endif
+
 /*
  * Print the contents of the physical and excluded region tables using the
  * provided printf-like output function (which will be either printf or
  * db_printf).
  */
 static void
-physmem_dump_tables(int (*prfunc)(const char *, ...))
+physmem_dump_tables(int (*prfunc)(const char *, ...) __printflike(1, 2))
 {
-	int flags, i;
+	size_t i;
+	int flags;
 	uintmax_t addr, size;
 	const unsigned int mbyte = 1024 * 1024;
 
@@ -121,10 +147,12 @@ physmem_dump_tables(int (*prfunc)(const char *, ...))
 #ifdef DEBUG
 	prfunc("Avail lists:\n");
 	for (i = 0; phys_avail[i] != 0; ++i) {
-		prfunc("  phys_avail[%d] 0x%08x\n", i, phys_avail[i]);
+		prfunc("  phys_avail[%zu] 0x%08jx\n", i,
+		    (uintmax_t)phys_avail[i]);
 	}
 	for (i = 0; dump_avail[i] != 0; ++i) {
-		prfunc("  dump_avail[%d] 0x%08x\n", i, dump_avail[i]);
+		prfunc("  dump_avail[%zu] 0x%08jx\n", i,
+		    (uintmax_t)dump_avail[i]);
 	}
 #endif
 }
@@ -149,25 +177,29 @@ physmem_print_tables(void)
  *
  * Updates the value at *pavail with the sum of all pages in all hw regions.
  *
- * Returns the number of pages of non-excluded memory added to the avail list.
+ * Returns the number of entries in the avail list, which is twice the number
+ * of returned regions.
  */
 static size_t
 regions_to_avail(vm_paddr_t *avail, uint32_t exflags, size_t maxavail,
     uint64_t maxphyssz, long *pavail, long *prealmem)
 {
 	size_t acnt, exi, hwi;
-	uint64_t end, start, xend, xstart;
+	uint64_t adj, end, start, xend, xstart;
 	long availmem, totalmem;
 	const struct region *exp, *hwp;
 	uint64_t availsz;
+
+	bzero(avail, maxavail * sizeof(vm_paddr_t));
 
 	totalmem = 0;
 	availmem = 0;
 	availsz = 0;
 	acnt = 0;
 	for (hwi = 0, hwp = hwregions; hwi < hwcnt; ++hwi, ++hwp) {
-		start = hwp->addr;
-		end   = hwp->size + start;
+		adj   = round_page(hwp->addr) - hwp->addr;
+		start = round_page(hwp->addr);
+		end   = trunc_page(hwp->size + adj) + start;
 		totalmem += atop((vm_offset_t)(end - start));
 		for (exi = 0, exp = exregions; exi < excnt; ++exi, ++exp) {
 			/*
@@ -271,6 +303,67 @@ regions_to_avail(vm_paddr_t *avail, uint32_t exflags, size_t maxavail,
 }
 
 /*
+ * Check if the region at idx can be merged with the region above it.
+ */
+static size_t
+merge_upper_regions(struct region *regions, size_t rcnt, size_t idx)
+{
+	struct region *lower, *upper;
+	vm_paddr_t lend, uend;
+	size_t i, mergecnt, movecnt;
+
+	lower = &regions[idx];
+	lend = lower->addr + lower->size;
+
+	/*
+	 * Continue merging in upper entries as long as we have entries to
+	 * merge; the new block could have spanned more than one, although one
+	 * is likely the common case.
+	 */
+	for (i = idx + 1; i < rcnt; i++) {
+		upper = &regions[i];
+		if (lend < upper->addr || lower->flags != upper->flags)
+			break;
+
+		uend = upper->addr + upper->size;
+		if (uend > lend) {
+			lower->size += uend - lend;
+			lend = lower->addr + lower->size;
+		}
+
+		if (uend >= lend) {
+			/*
+			 * If we didn't move past the end of the upper region,
+			 * then we don't need to bother checking for another
+			 * merge because it would have been done already.  Just
+			 * increment i once more to maintain the invariant that
+			 * i is one past the last entry merged.
+			 */
+			i++;
+			break;
+		}
+	}
+
+	/*
+	 * We merged in the entries from [idx + 1, i); physically move the tail
+	 * end at [i, rcnt) if we need to.
+	 */
+	mergecnt = i - (idx + 1);
+	if (mergecnt > 0) {
+		movecnt = rcnt - i;
+		if (movecnt == 0) {
+			/* Merged all the way to the end, just decrease rcnt. */
+			rcnt = idx + 1;
+		} else {
+			memmove(&regions[idx + 1], &regions[idx + mergecnt + 1],
+			    movecnt * sizeof(*regions));
+			rcnt -= mergecnt;
+		}
+	}
+	return (rcnt);
+}
+
+/*
  * Insertion-sort a new entry into a regions list; sorted by start address.
  */
 static size_t
@@ -278,22 +371,54 @@ insert_region(struct region *regions, size_t rcnt, vm_paddr_t addr,
     vm_size_t size, uint32_t flags)
 {
 	size_t i;
+	vm_paddr_t nend, rend;
 	struct region *ep, *rp;
 
+	nend = addr + size;
 	ep = regions + rcnt;
 	for (i = 0, rp = regions; i < rcnt; ++i, ++rp) {
-		if (rp->addr == addr && rp->size == size) /* Pure dup. */
-			return (rcnt);
+		rend = rp->addr + rp->size;
 		if (flags == rp->flags) {
-			if (addr + size == rp->addr) {
+			if (addr <= rp->addr && nend >= rp->addr) {
+				/*
+				 * New mapping overlaps at the beginning, shift
+				 * for any difference in the beginning then
+				 * shift if the new mapping extends past.
+				 */
+				rp->size += rp->addr - addr;
 				rp->addr = addr;
-				rp->size += size;
+				if (nend > rend) {
+					rp->size += nend - rend;
+					rcnt = merge_upper_regions(regions,
+					    rcnt, i);
+				}
 				return (rcnt);
-			} else if (rp->addr + rp->size == addr) {
-				rp->size += size;
+			} else if (addr <= rend && nend > rp->addr) {
+				/*
+				 * New mapping is either entirely contained
+				 * within or it's overlapping at the end.
+				 */
+				if (nend > rend) {
+					rp->size += nend - rend;
+					rcnt = merge_upper_regions(regions,
+					    rcnt, i);
+				}
+				return (rcnt);
+			}
+		} else if ((flags != 0) && (rp->flags != 0)) {
+			/*
+			 * If we're duplicating an entry that already exists
+			 * exactly, just upgrade its flags as needed.  We could
+			 * do more if we find that we have differently specified
+			 * flags clipping existing excluding regions, but that's
+			 * probably rare.
+			 */
+			if (addr == rp->addr && nend == rend) {
+				rp->flags |= flags;
 				return (rcnt);
 			}
 		}
+
 		if (addr < rp->addr) {
 			bcopy(rp, rp + 1, (ep - rp) * sizeof(*rp));
 			break;
@@ -313,8 +438,6 @@ insert_region(struct region *regions, size_t rcnt, vm_paddr_t addr,
 void
 physmem_hardware_region(uint64_t pa, uint64_t sz)
 {
-	vm_offset_t adj;
-
 	/*
 	 * Filter out the page at PA 0x00000000.  The VM can't handle it, as
 	 * pmap_extract() == 0 means failure.
@@ -346,14 +469,6 @@ physmem_hardware_region(uint64_t pa, uint64_t sz)
 			return;
 		sz -= 1024 * 1024;
 	}
-
-	/*
-	 * Round the starting address up to a page boundary, and truncate the
-	 * ending page down to a page boundary.
-	 */
-	adj = round_page(pa) - pa;
-	pa  = round_page(pa);
-	sz  = trunc_page(sz - adj);
 
 	if (sz > 0 && hwcnt < nitems(hwregions))
 		hwcnt = insert_region(hwregions, hwcnt, pa, sz, 0);
@@ -388,6 +503,21 @@ physmem_avail(vm_paddr_t *avail, size_t maxavail)
 	return (regions_to_avail(avail, EXFLAG_NOALLOC, maxavail, 0, NULL, NULL));
 }
 
+bool
+physmem_excluded(vm_paddr_t pa, vm_size_t sz)
+{
+	const struct region *exp;
+	size_t exi;
+
+	for (exi = 0, exp = exregions; exi < excnt; ++exi, ++exp) {
+		if (pa < exp->addr || pa + sz > exp->addr + exp->size)
+			continue;
+		return (true);
+	}
+	return (false);
+}
+
+#ifdef _KERNEL
 /*
  * Process all the regions added earlier into the global avail lists.
  *
@@ -418,10 +548,80 @@ physmem_init_kernel_globals(void)
 #ifdef DDB
 #include <ddb/ddb.h>
 
-DB_SHOW_COMMAND(physmem, db_show_physmem)
+DB_SHOW_COMMAND_FLAGS(physmem, db_show_physmem, DB_CMD_MEMSAFE)
 {
 
 	physmem_dump_tables(db_printf);
 }
 
 #endif /* DDB */
+
+/*
+ * ram pseudo driver - this reserves I/O space resources corresponding to physical
+ * memory regions.
+ */
+
+static void
+ram_identify(driver_t *driver, device_t parent)
+{
+
+	if (resource_disabled("ram", 0))
+		return;
+	if (BUS_ADD_CHILD(parent, 0, "ram", 0) == NULL)
+		panic("ram_identify");
+}
+
+static int
+ram_probe(device_t dev)
+{
+
+	device_quiet(dev);
+	device_set_desc(dev, "System RAM");
+	return (BUS_PROBE_SPECIFIC);
+}
+
+static int
+ram_attach(device_t dev)
+{
+	vm_paddr_t avail_list[PHYS_AVAIL_COUNT];
+	rman_res_t start, end;
+	int rid, i;
+
+	rid = 0;
+
+	/* Get the avail list. */
+	regions_to_avail(avail_list, EXFLAG_NOALLOC | EXFLAG_NODUMP,
+	    PHYS_AVAIL_COUNT, 0, NULL, NULL);
+
+	/* Reserve all memory regions. */
+	for (i = 0; avail_list[i + 1] != 0; i += 2) {
+		start = avail_list[i];
+		end = avail_list[i + 1];
+
+		if (bootverbose)
+			device_printf(dev,
+			    "reserving memory region:   %jx-%jx\n",
+			    (uintmax_t)start, (uintmax_t)end);
+
+		if (bus_alloc_resource(dev, SYS_RES_MEMORY, &rid, start, end,
+		    end - start, 0) == NULL)
+			panic("ram_attach: resource %d failed to attach", rid);
+		rid++;
+	}
+
+	return (0);
+}
+
+static device_method_t ram_methods[] = {
+	/* Device interface */
+	DEVMETHOD(device_identify,	ram_identify),
+	DEVMETHOD(device_probe,		ram_probe),
+	DEVMETHOD(device_attach,	ram_attach),
+
+	DEVMETHOD_END
+};
+
+DEFINE_CLASS_0(ram, ram_driver, ram_methods, /* no softc */ 1);
+EARLY_DRIVER_MODULE(ram, nexus, ram_driver, 0, 0,
+    BUS_PASS_ROOT + BUS_PASS_ORDER_MIDDLE);
+#endif /* _KERNEL */

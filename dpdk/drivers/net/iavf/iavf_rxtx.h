@@ -66,6 +66,7 @@
 #define IAVF_VECTOR_PATH 0
 #define IAVF_VECTOR_OFFLOAD_PATH 1
 #define IAVF_VECTOR_CTX_OFFLOAD_PATH 2
+#define IAVF_VECTOR_CTX_PATH 3
 
 #define DEFAULT_TX_RS_THRESH     32
 #define DEFAULT_TX_FREE_THRESH   32
@@ -107,8 +108,16 @@
 #define IAVF_MAX_DATA_PER_TXD \
 	(IAVF_TXD_QW1_TX_BUF_SZ_MASK >> IAVF_TXD_QW1_TX_BUF_SZ_SHIFT)
 
+#define IAVF_TX_LLDP_DYNFIELD "intel_pmd_dynfield_tx_lldp"
+#define IAVF_CHECK_TX_LLDP(m) \
+	((rte_pmd_iavf_tx_lldp_dynfield_offset > 0) && \
+	(*RTE_MBUF_DYNFIELD((m), \
+			rte_pmd_iavf_tx_lldp_dynfield_offset, \
+			uint8_t *)))
+
 extern uint64_t iavf_timestamp_dynflag;
 extern int iavf_timestamp_dynfield_offset;
+extern int rte_pmd_iavf_tx_lldp_dynfield_offset;
 
 /**
  * Rx Flex Descriptors
@@ -296,6 +305,8 @@ struct iavf_tx_queue {
 	uint16_t next_dd;              /* next to set RS, for VPMD */
 	uint16_t next_rs;              /* next to check DD,  for VPMD */
 	uint16_t ipsec_crypto_pkt_md_offset;
+
+	uint64_t mbuf_errors;
 
 	bool q_set;                    /* if rx queue has been configured */
 	bool tx_deferred_start;        /* don't start this queue in dev start */
@@ -632,6 +643,9 @@ enum iavf_tx_ctx_desc_tunnel_l4_tunnel_type {
 /* for iavf_32b_rx_flex_desc.pkt_len member */
 #define IAVF_RX_FLX_DESC_PKT_LEN_M	(0x3FFF) /* 14-bits */
 
+/* Valid indicator bit for the time_stamp_low field */
+#define IAVF_RX_FLX_DESC_TS_VALID	(0x1UL)
+
 int iavf_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			   uint16_t queue_idx,
 			   uint16_t nb_desc,
@@ -752,6 +766,8 @@ uint16_t iavf_xmit_pkts_vec_avx512_offload(void *tx_queue,
 					   struct rte_mbuf **tx_pkts,
 					   uint16_t nb_pkts);
 uint16_t iavf_xmit_pkts_vec_avx512_ctx_offload(void *tx_queue, struct rte_mbuf **tx_pkts,
+				  uint16_t nb_pkts);
+uint16_t iavf_xmit_pkts_vec_avx512_ctx(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts);
 int iavf_txq_vec_setup_avx512(struct iavf_tx_queue *txq);
 

@@ -143,8 +143,8 @@ rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	int32_t ip_len;
 	int32_t trim;
 
-	rte_memcpy(&key.src_dst[0], ip_hdr->src_addr, 16);
-	rte_memcpy(&key.src_dst[2], ip_hdr->dst_addr, 16);
+	rte_memcpy(&key.src_dst[0], &ip_hdr->src_addr, 16);
+	rte_memcpy(&key.src_dst[2], &ip_hdr->dst_addr, 16);
 
 	key.id = frag_hdr->id;
 	key.key_len = IPV6_KEYLEN;
@@ -172,8 +172,35 @@ rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 		tbl, tbl->max_cycles, tbl->entry_mask, tbl->max_entries,
 		tbl->use_entries);
 
-	/* check that fragment length is greater then zero. */
-	if (ip_len <= 0) {
+	/*
+	 * Drop fragments with no payload, and any fragment whose end would
+	 * make the reassembled payload exceed 65535 bytes. The payload_len
+	 * field is 16 bits, so otherwise it is silently truncated while the
+	 * mbuf still holds the full length.
+	 */
+	if (ip_len <= 0 || ip_ofs + ip_len > UINT16_MAX) {
+		IP_FRAG_MBUF2DR(dr, mb);
+		return NULL;
+	}
+
+	/*
+	 * Only a fragment header directly following the IPv6 header is supported.
+	 * Per-fragment (unfragmentable) extension headers placed
+	 * before the fragment header are not handled: ipv6_frag_reassemble()
+	 * patches the IPv6 header's next-header field and removes the fragment
+	 * header assuming it sits immediately after the IPv6 header, so such a
+	 * fragment would be reassembled into a corrupt datagram. Drop it.
+	 *
+	 * Extension headers after the fragment header (destination options,
+	 * AH, ESP, upper-layer) are part of the fragmentable payload and are
+	 * reassembled as opaque bytes, so they are not affected. The test uses
+	 * the fragment header's position rather than l3_len so that callers
+	 * which include later headers in l3_len are not rejected.
+	 */
+	if ((uintptr_t)frag_hdr != (uintptr_t)(ip_hdr + 1)) {
+		IP_FRAG_LOG(DEBUG,
+			    "%s:%d: drop fragment with header before frag header, offset %zu\n",
+			    __func__, __LINE__, (uintptr_t)frag_hdr - (uintptr_t)ip_hdr);
 		IP_FRAG_MBUF2DR(dr, mb);
 		return NULL;
 	}

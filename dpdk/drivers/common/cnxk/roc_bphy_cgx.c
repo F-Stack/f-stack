@@ -65,8 +65,7 @@ roc_bphy_cgx_ack(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 }
 
 static int
-roc_bphy_cgx_wait_for_ownership(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
-				uint64_t *scr0)
+roc_bphy_cgx_wait_ack(struct roc_bphy_cgx *roc_cgx, unsigned int lmac, uint64_t *scr0, bool ack)
 {
 	int tries = 5000;
 	uint64_t scr1;
@@ -74,38 +73,19 @@ roc_bphy_cgx_wait_for_ownership(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 	do {
 		*scr0 = roc_bphy_cgx_read(roc_cgx, lmac, CGX_CMRX_SCRATCH0);
 		scr1 = roc_bphy_cgx_read(roc_cgx, lmac, CGX_CMRX_SCRATCH1);
-
-		if (FIELD_GET(SCR1_OWN_STATUS, scr1) == ETH_OWN_NON_SECURE_SW &&
-		    FIELD_GET(SCR0_ETH_EVT_STS_S_ACK, *scr0) == 0)
-			break;
 
 		/* clear async events if any */
-		if (FIELD_GET(SCR0_ETH_EVT_STS_S_EVT_TYPE, *scr0) ==
-		    ETH_EVT_ASYNC &&
-		    FIELD_GET(SCR0_ETH_EVT_STS_S_ACK, *scr0))
+		if (FIELD_GET(SCR0_ETH_EVT_STS_S_EVT_TYPE, *scr0) == ETH_EVT_ASYNC &&
+		    FIELD_GET(SCR0_ETH_EVT_STS_S_ACK, *scr0)) {
 			roc_bphy_cgx_ack(roc_cgx, lmac, scr0);
-
-		plt_delay_ms(1);
-	} while (--tries);
-
-	return tries ? 0 : -ETIMEDOUT;
-}
-
-static int
-roc_bphy_cgx_wait_for_ack(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
-			  uint64_t *scr0)
-{
-	int tries = 5000;
-	uint64_t scr1;
-
-	do {
-		*scr0 = roc_bphy_cgx_read(roc_cgx, lmac, CGX_CMRX_SCRATCH0);
-		scr1 = roc_bphy_cgx_read(roc_cgx, lmac, CGX_CMRX_SCRATCH1);
+			goto skip;
+		}
 
 		if (FIELD_GET(SCR1_OWN_STATUS, scr1) == ETH_OWN_NON_SECURE_SW &&
-		    FIELD_GET(SCR0_ETH_EVT_STS_S_ACK, *scr0))
+		    FIELD_GET(SCR0_ETH_EVT_STS_S_ACK, *scr0) == ack)
 			break;
 
+skip:
 		plt_delay_ms(1);
 	} while (--tries);
 
@@ -113,8 +93,20 @@ roc_bphy_cgx_wait_for_ack(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 }
 
 static int
-roc_bphy_cgx_intf_req(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
-		      uint64_t scr1, uint64_t *scr0)
+roc_bphy_cgx_wait_for_ownership(struct roc_bphy_cgx *roc_cgx, unsigned int lmac, uint64_t *scr0)
+{
+	return roc_bphy_cgx_wait_ack(roc_cgx, lmac, scr0, false);
+}
+
+static int
+roc_bphy_cgx_wait_for_ack(struct roc_bphy_cgx *roc_cgx, unsigned int lmac, uint64_t *scr0)
+{
+	return roc_bphy_cgx_wait_ack(roc_cgx, lmac, scr0, true);
+}
+
+static int
+roc_bphy_cgx_intf_req(struct roc_bphy_cgx *roc_cgx, unsigned int lmac, uint64_t scr1,
+		      uint64_t *scr0)
 {
 	uint8_t cmd_id = FIELD_GET(SCR1_ETH_CMD_ID, scr1);
 	int ret;
@@ -141,12 +133,6 @@ roc_bphy_cgx_intf_req(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 
 	if (cmd_id == ETH_CMD_INTF_SHUTDOWN)
 		goto out;
-
-	if (FIELD_GET(SCR0_ETH_EVT_STS_S_EVT_TYPE, *scr0) != ETH_EVT_CMD_RESP) {
-		plt_err("received async event instead of cmd resp event");
-		ret = -EIO;
-		goto out;
-	}
 
 	if (FIELD_GET(SCR0_ETH_EVT_STS_S_ID, *scr0) != cmd_id) {
 		plt_err("received resp for cmd %d expected for cmd %d",
@@ -311,7 +297,7 @@ roc_bphy_cgx_stop_rxtx(struct roc_bphy_cgx *roc_cgx, unsigned int lmac)
 
 int
 roc_bphy_cgx_set_link_state(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
-			    bool state)
+			    struct roc_bphy_cgx_link_state *state)
 {
 	uint64_t scr1, scr0;
 
@@ -321,8 +307,13 @@ roc_bphy_cgx_set_link_state(struct roc_bphy_cgx *roc_cgx, unsigned int lmac,
 	if (!roc_bphy_cgx_lmac_exists(roc_cgx, lmac))
 		return -ENODEV;
 
-	scr1 = state ? FIELD_PREP(SCR1_ETH_CMD_ID, ETH_CMD_LINK_BRING_UP) :
-		       FIELD_PREP(SCR1_ETH_CMD_ID, ETH_CMD_LINK_BRING_DOWN);
+	if (!state)
+		return -EINVAL;
+
+	scr1 = (state->state ? FIELD_PREP(SCR1_ETH_CMD_ID, ETH_CMD_LINK_BRING_UP) :
+			       FIELD_PREP(SCR1_ETH_CMD_ID, ETH_CMD_LINK_BRING_DOWN)) |
+	       FIELD_PREP(SCR1_CGX_LINK_BRINGUP_ARGS_TIMEOUT, state->timeout) |
+	       FIELD_PREP(SCR1_CGX_LINK_BRINGUP_ARGS_RX_TX_DIS, state->rx_tx_dis);
 
 	return roc_bphy_cgx_intf_req(roc_cgx, lmac, scr1, &scr0);
 }

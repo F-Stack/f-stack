@@ -1,4 +1,3 @@
-/*	$FreeBSD$	*/
 /*	$KAME: ipsec.c,v 1.103 2001/05/24 07:14:18 sakane Exp $	*/
 
 /*-
@@ -86,6 +85,7 @@
 #ifdef INET6
 #include <netipsec/ipsec6.h>
 #endif
+#include <netipsec/ipsec_offload.h>
 #include <netipsec/ah_var.h>
 #include <netipsec/esp_var.h>
 #include <netipsec/ipcomp.h>		/*XXX*/
@@ -112,12 +112,14 @@ VNET_PCPUSTAT_SYSUNINIT(ipsec4stat);
 
 /* DF bit on encap. 0: clear 1: set 2: copy */
 VNET_DEFINE(int, ip4_ipsec_dfbit) = 0;
+VNET_DEFINE(int, ip4_ipsec_min_pmtu) = 576;
 VNET_DEFINE(int, ip4_esp_trans_deflev) = IPSEC_LEVEL_USE;
 VNET_DEFINE(int, ip4_esp_net_deflev) = IPSEC_LEVEL_USE;
 VNET_DEFINE(int, ip4_ah_trans_deflev) = IPSEC_LEVEL_USE;
 VNET_DEFINE(int, ip4_ah_net_deflev) = IPSEC_LEVEL_USE;
 /* ECN ignore(-1)/forbidden(0)/allowed(1) */
 VNET_DEFINE(int, ip4_ipsec_ecn) = 0;
+VNET_DEFINE(int, ip4_ipsec_random_id) = 0;
 
 VNET_DEFINE_STATIC(int, ip4_filtertunnel) = 0;
 #define	V_ip4_filtertunnel VNET(ip4_filtertunnel)
@@ -171,8 +173,6 @@ VNET_DEFINE(int, natt_cksum_policy) = 0;
 FEATURE(ipsec, "Internet Protocol Security (IPsec)");
 FEATURE(ipsec_natt, "UDP Encapsulation of IPsec ESP Packets ('NAT-T')");
 
-SYSCTL_DECL(_net_inet_ipsec);
-
 /* net.inet.ipsec */
 SYSCTL_PROC(_net_inet_ipsec, IPSECCTL_DEF_POLICY, def_policy,
     CTLTYPE_INT | CTLFLAG_VNET | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
@@ -196,9 +196,15 @@ SYSCTL_INT(_net_inet_ipsec, IPSECCTL_AH_CLEARTOS, ah_cleartos,
 SYSCTL_INT(_net_inet_ipsec, IPSECCTL_DFBIT, dfbit,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip4_ipsec_dfbit), 0,
 	"Do not fragment bit on encap.");
+SYSCTL_INT(_net_inet_ipsec, IPSECCTL_MIN_PMTU, min_pmtu,
+	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip4_ipsec_min_pmtu), 0,
+	"Lowest acceptable PMTU value.");
 SYSCTL_INT(_net_inet_ipsec, IPSECCTL_ECN, ecn,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip4_ipsec_ecn), 0,
 	"Explicit Congestion Notification handling.");
+SYSCTL_INT(_net_inet_ipsec, IPSECCTL_RANDOM_ID, random_id,
+	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(ip4_ipsec_random_id), 0,
+	"Assign random ip_id values.");
 SYSCTL_INT(_net_inet_ipsec, OID_AUTO, crypto_support,
 	CTLFLAG_VNET | CTLFLAG_RW, &VNET_NAME(crypto_support), 0,
 	"Crypto driver selection.");
@@ -253,8 +259,6 @@ VNET_DEFINE(int, ip6_ipsec_ecn) = 0;	/* ECN ignore(-1)/forbidden(0)/allowed(1) *
 VNET_DEFINE_STATIC(int, ip6_filtertunnel) = 0;
 #define	V_ip6_filtertunnel	VNET(ip6_filtertunnel)
 
-SYSCTL_DECL(_net_inet6_ipsec6);
-
 /* net.inet6.ipsec6 */
 SYSCTL_PROC(_net_inet6_ipsec6, IPSECCTL_DEF_POLICY, def_policy,
     CTLTYPE_INT | CTLFLAG_VNET | CTLFLAG_RW | CTLFLAG_NEEDGIANT,
@@ -286,8 +290,9 @@ static int ipsec_in_reject(struct secpolicy *, struct inpcb *,
     const struct mbuf *);
 
 #ifdef INET
-static void ipsec4_get_ulp(const struct mbuf *, struct secpolicyindex *, int);
-static void ipsec4_setspidx_ipaddr(const struct mbuf *,
+static void ipsec4_get_ulp(const struct mbuf *, const struct ip *,
+    struct secpolicyindex *, int);
+static void ipsec4_setspidx_ipaddr(const struct mbuf *, struct ip *,
     struct secpolicyindex *);
 #endif
 #ifdef INET6
@@ -488,8 +493,8 @@ ipsec_getpcbpolicy(struct inpcb *inp, u_int dir)
 
 #ifdef INET
 static void
-ipsec4_get_ulp(const struct mbuf *m, struct secpolicyindex *spidx,
-    int needport)
+ipsec4_get_ulp(const struct mbuf *m, const struct ip *ip1,
+    struct secpolicyindex *spidx, int needport)
 {
 	uint8_t nxt;
 	int off;
@@ -498,21 +503,10 @@ ipsec4_get_ulp(const struct mbuf *m, struct secpolicyindex *spidx,
 	IPSEC_ASSERT(m->m_pkthdr.len >= sizeof(struct ip),
 	    ("packet too short"));
 
-	if (m->m_len >= sizeof (struct ip)) {
-		const struct ip *ip = mtod(m, const struct ip *);
-		if (ip->ip_off & htons(IP_MF | IP_OFFMASK))
-			goto done;
-		off = ip->ip_hl << 2;
-		nxt = ip->ip_p;
-	} else {
-		struct ip ih;
-
-		m_copydata(m, 0, sizeof (struct ip), (caddr_t) &ih);
-		if (ih.ip_off & htons(IP_MF | IP_OFFMASK))
-			goto done;
-		off = ih.ip_hl << 2;
-		nxt = ih.ip_p;
-	}
+	if (ip1->ip_off & htons(IP_MF | IP_OFFMASK))
+		goto done;
+	off = ip1->ip_hl << 2;
+	nxt = ip1->ip_p;
 
 	while (off < m->m_pkthdr.len) {
 		struct ip6_ext ip6e;
@@ -565,17 +559,18 @@ done_proto:
 }
 
 static void
-ipsec4_setspidx_ipaddr(const struct mbuf *m, struct secpolicyindex *spidx)
+ipsec4_setspidx_ipaddr(const struct mbuf *m, struct ip *ip1,
+    struct secpolicyindex *spidx)
 {
 
-	ipsec4_setsockaddrs(m, &spidx->src, &spidx->dst);
+	ipsec4_setsockaddrs(m, ip1, &spidx->src, &spidx->dst);
 	spidx->prefs = sizeof(struct in_addr) << 3;
 	spidx->prefd = sizeof(struct in_addr) << 3;
 }
 
 static struct secpolicy *
-ipsec4_getpolicy(const struct mbuf *m, struct inpcb *inp, u_int dir,
-    int needport)
+ipsec4_getpolicy(const struct mbuf *m, struct inpcb *inp, struct ip *ip1,
+    u_int dir, int needport)
 {
 	struct secpolicyindex spidx;
 	struct secpolicy *sp;
@@ -583,8 +578,8 @@ ipsec4_getpolicy(const struct mbuf *m, struct inpcb *inp, u_int dir,
 	sp = ipsec_getpcbpolicy(inp, dir);
 	if (sp == NULL && key_havesp(dir)) {
 		/* Make an index to look for a policy. */
-		ipsec4_setspidx_ipaddr(m, &spidx);
-		ipsec4_get_ulp(m, &spidx, needport);
+		ipsec4_setspidx_ipaddr(m, ip1, &spidx);
+		ipsec4_get_ulp(m, ip1, &spidx, needport);
 		spidx.dir = dir;
 		sp = key_allocsp(&spidx, dir);
 	}
@@ -597,13 +592,13 @@ ipsec4_getpolicy(const struct mbuf *m, struct inpcb *inp, u_int dir,
  * Check security policy for *OUTBOUND* IPv4 packet.
  */
 struct secpolicy *
-ipsec4_checkpolicy(const struct mbuf *m, struct inpcb *inp, int *error,
-    int needport)
+ipsec4_checkpolicy(const struct mbuf *m, struct inpcb *inp, struct ip *ip1,
+    int *error, int needport)
 {
 	struct secpolicy *sp;
 
 	*error = 0;
-	sp = ipsec4_getpolicy(m, inp, IPSEC_DIR_OUTBOUND, needport);
+	sp = ipsec4_getpolicy(m, inp, ip1, IPSEC_DIR_OUTBOUND, needport);
 	if (sp != NULL)
 		sp = ipsec_checkpolicy(sp, inp, error);
 	if (sp == NULL) {
@@ -630,17 +625,40 @@ ipsec4_checkpolicy(const struct mbuf *m, struct inpcb *inp, int *error,
  * rip_input() and sctp_input().
  */
 int
-ipsec4_in_reject(const struct mbuf *m, struct inpcb *inp)
+ipsec4_in_reject1(const struct mbuf *m, struct ip *ip1, struct inpcb *inp)
 {
 	struct secpolicy *sp;
+#ifdef IPSEC_OFFLOAD
+	struct ipsec_accel_in_tag *tag;
+#endif
+	struct ip ip_hdr;
 	int result;
 
-	sp = ipsec4_getpolicy(m, inp, IPSEC_DIR_INBOUND, 0);
+#ifdef IPSEC_OFFLOAD
+	tag = ipsec_accel_input_tag_lookup(m);
+	if (tag != NULL) {
+		tag->tag.m_tag_id = PACKET_TAG_IPSEC_IN_DONE;
+		__DECONST(struct mbuf *, m)->m_flags |= M_DECRYPTED;
+	}
+#endif
+
+	if (ip1 == NULL) {
+		ip1 = &ip_hdr;
+		m_copydata(m, 0, sizeof(*ip1), (char *)ip1);
+	}
+
+	sp = ipsec4_getpolicy(m, inp, ip1, IPSEC_DIR_INBOUND, 0);
 	result = ipsec_in_reject(sp, inp, m);
 	key_freesp(&sp);
 	if (result != 0)
 		IPSECSTAT_INC(ips_in_polvio);
 	return (result);
+}
+
+int
+ipsec4_in_reject(const struct mbuf *m, struct inpcb *inp)
+{
+	return (ipsec4_in_reject1(m, NULL, inp));
 }
 
 /*
@@ -662,10 +680,7 @@ ipsec4_capability(struct mbuf *m, u_int cap)
 		return (0);
 	case IPSEC_CAP_OPERABLE:
 		/* Do we have active security policies? */
-		if (key_havesp(IPSEC_DIR_INBOUND) != 0 ||
-		    key_havesp(IPSEC_DIR_OUTBOUND) != 0)
-			return (1);
-		return (0);
+		return (key_havesp_any());
 	};
 	return (EOPNOTSUPP);
 }
@@ -802,8 +817,16 @@ int
 ipsec6_in_reject(const struct mbuf *m, struct inpcb *inp)
 {
 	struct secpolicy *sp;
+#ifdef IPSEC_OFFLOAD
+	struct ipsec_accel_in_tag *tag;
+#endif
 	int result;
 
+#ifdef IPSEC_OFFLOAD
+	tag = ipsec_accel_input_tag_lookup(m);
+	if (tag != NULL)
+		return (0);
+#endif
 	sp = ipsec6_getpolicy(m, inp, IPSEC_DIR_INBOUND, 0);
 	result = ipsec_in_reject(sp, inp, m);
 	key_freesp(&sp);
@@ -831,10 +854,7 @@ ipsec6_capability(struct mbuf *m, u_int cap)
 		return (0);
 	case IPSEC_CAP_OPERABLE:
 		/* Do we have active security policies? */
-		if (key_havesp(IPSEC_DIR_INBOUND) != 0 ||
-		    key_havesp(IPSEC_DIR_OUTBOUND) != 0)
-			return (1);
-		return (0);
+		return (key_havesp_any());
 	};
 	return (EOPNOTSUPP);
 }
@@ -1013,7 +1033,7 @@ ipsec_check_history(const struct mbuf *m, struct secpolicy *sp, u_int idx)
 /*
  * Check security policy requirements against the actual
  * packet contents.  Return one if the packet should be
- * reject as "invalid"; otherwiser return zero to have the
+ * rejected as "invalid"; otherwise return zero to have the
  * packet treated as "valid".
  *
  * OUT:
@@ -1089,7 +1109,7 @@ ipsec_in_reject(struct secpolicy *sp, struct inpcb *inp, const struct mbuf *m)
  * Compute the byte size to be occupied by IPsec header.
  * In case it is tunnelled, it includes the size of outer IP header.
  */
-static size_t
+size_t
 ipsec_hdrsiz_internal(struct secpolicy *sp)
 {
 	size_t size;
@@ -1192,6 +1212,8 @@ check_window(const struct secreplay *replay, uint64_t seq)
 {
 	int index, bit_location;
 
+	SECREPLAY_ASSERT(replay);
+
 	bit_location = seq & IPSEC_BITMAP_LOC_MASK;
 	index = (seq >> IPSEC_REDUNDANT_BIT_SHIFTS)
 		& IPSEC_BITMAP_INDEX_MASK(replay->bitmap_size);
@@ -1205,6 +1227,8 @@ advance_window(const struct secreplay *replay, uint64_t seq)
 {
 	int i;
 	uint64_t index, index_cur, diff;
+
+	SECREPLAY_ASSERT(replay);
 
 	index_cur = replay->last >> IPSEC_REDUNDANT_BIT_SHIFTS;
 	index = seq >> IPSEC_REDUNDANT_BIT_SHIFTS;
@@ -1225,6 +1249,8 @@ static inline void
 set_window(const struct secreplay *replay, uint64_t seq)
 {
 	int index, bit_location;
+
+	SECREPLAY_ASSERT(replay);
 
 	bit_location = seq & IPSEC_BITMAP_LOC_MASK;
 	index = (seq >> IPSEC_REDUNDANT_BIT_SHIFTS)
@@ -1259,12 +1285,17 @@ ipsec_chkreplay(uint32_t seq, uint32_t *seqhigh, struct secasvar *sav)
 	replay = sav->replay;
 
 	/* No need to check replay if disabled. */
-	if (replay->wsize == 0)
+	if (replay->wsize == 0) {
 		return (1);
+	}
+
+	SECREPLAY_LOCK(replay);
 
 	/* Zero sequence number is not allowed. */
-	if (seq == 0 && replay->last == 0)
+	if (seq == 0 && replay->last == 0) {
+		SECREPLAY_UNLOCK(replay);
 		return (0);
+	}
 
 	window = replay->wsize << 3;		/* Size of window */
 	tl = (uint32_t)replay->last;		/* Top of window, lower part */
@@ -1282,10 +1313,13 @@ ipsec_chkreplay(uint32_t seq, uint32_t *seqhigh, struct secasvar *sav)
 		*seqhigh = th;
 		if (seq <= tl) {
 			/* Sequence number inside window - check against replay */
-			if (check_window(replay, seq))
+			if (check_window(replay, seq)) {
+				SECREPLAY_UNLOCK(replay);
 				return (0);
+			}
 		}
 
+		SECREPLAY_UNLOCK(replay);
 		/* Sequence number above top of window or not found in bitmap */
 		return (1);
 	}
@@ -1303,6 +1337,7 @@ ipsec_chkreplay(uint32_t seq, uint32_t *seqhigh, struct secasvar *sav)
 				ESPSTAT_INC(esps_wrap);
 			else if (sav->sah->saidx.proto == IPPROTO_AH)
 				AHSTAT_INC(ahs_wrap);
+			SECREPLAY_UNLOCK(replay);
 			return (0);
 		}
 
@@ -1322,8 +1357,11 @@ ipsec_chkreplay(uint32_t seq, uint32_t *seqhigh, struct secasvar *sav)
 			return (0);
 		*seqhigh = th - 1;
 		seqh = th - 1;
-		if (check_window(replay, seq))
+		if (check_window(replay, seq)) {
+			SECREPLAY_UNLOCK(replay);
 			return (0);
+		}
+		SECREPLAY_UNLOCK(replay);
 		return (1);
 	}
 
@@ -1344,6 +1382,7 @@ ipsec_chkreplay(uint32_t seq, uint32_t *seqhigh, struct secasvar *sav)
 				ESPSTAT_INC(esps_wrap);
 			else if (sav->sah->saidx.proto == IPPROTO_AH)
 				AHSTAT_INC(ahs_wrap);
+			SECREPLAY_UNLOCK(replay);
 			return (0);
 		}
 
@@ -1352,6 +1391,7 @@ ipsec_chkreplay(uint32_t seq, uint32_t *seqhigh, struct secasvar *sav)
 		    ipsec_sa2str(sav, buf, sizeof(buf))));
 	}
 
+	SECREPLAY_UNLOCK(replay);
 	return (1);
 }
 
@@ -1377,9 +1417,13 @@ ipsec_updatereplay(uint32_t seq, struct secasvar *sav)
 	if (replay->wsize == 0)
 		return (0);
 
+	SECREPLAY_LOCK(replay);
+
 	/* Zero sequence number is not allowed. */
-	if (seq == 0 && replay->last == 0)
+	if (seq == 0 && replay->last == 0) {
+		SECREPLAY_UNLOCK(replay);
 		return (1);
+	}
 
 	window = replay->wsize << 3;		/* Size of window */
 	tl = (uint32_t)replay->last;		/* Top of window, lower part */
@@ -1397,8 +1441,10 @@ ipsec_updatereplay(uint32_t seq, struct secasvar *sav)
 		seqh = th;
 		if (seq <= tl) {
 			/* Sequence number inside window - check against replay */
-			if (check_window(replay, seq))
+			if (check_window(replay, seq)) {
+				SECREPLAY_UNLOCK(replay);
 				return (1);
+			}
 			set_window(replay, seq);
 		} else {
 			advance_window(replay, ((uint64_t)seqh << 32) | seq);
@@ -1408,11 +1454,14 @@ ipsec_updatereplay(uint32_t seq, struct secasvar *sav)
 
 		/* Sequence number above top of window or not found in bitmap */
 		replay->count++;
+		SECREPLAY_UNLOCK(replay);
 		return (0);
 	}
 
-	if (!(sav->flags & SADB_X_SAFLAGS_ESN))
+	if (!(sav->flags & SADB_X_SAFLAGS_ESN)) {
+		SECREPLAY_UNLOCK(replay);
 		return (1);
+	}
 
 	/*
 	 * Seq is within [bl, 0xffffffff] and bl is within
@@ -1421,13 +1470,18 @@ ipsec_updatereplay(uint32_t seq, struct secasvar *sav)
 	 * subspace.
 	 */
 	if (tl < window - 1 && seq >= bl) {
-		if (th == 0)
+		if (th == 0) {
+			SECREPLAY_UNLOCK(replay);
 			return (1);
-		if (check_window(replay, seq))
+		}
+		if (check_window(replay, seq)) {
+			SECREPLAY_UNLOCK(replay);
 			return (1);
+		}
 
 		set_window(replay, seq);
 		replay->count++;
+		SECREPLAY_UNLOCK(replay);
 		return (0);
 	}
 
@@ -1438,13 +1492,17 @@ ipsec_updatereplay(uint32_t seq, struct secasvar *sav)
 	seqh = th + 1;
 
 	/* Don't let high part wrap. */
-	if (seqh == 0)
+	if (seqh == 0) {
+		SECREPLAY_UNLOCK(replay);
 		return (1);
+	}
 
 	advance_window(replay, ((uint64_t)seqh << 32) | seq);
 	set_window(replay, seq);
 	replay->last = ((uint64_t)seqh << 32) | seq;
 	replay->count++;
+
+	SECREPLAY_UNLOCK(replay);
 	return (0);
 }
 int
@@ -1480,17 +1538,17 @@ ipsec_updateid(struct secasvar *sav, crypto_session_t *new,
 	    printf("%s: SA(%p) moves cryptoid %p -> %p\n",
 		__func__, sav, *old, *new));
 	KEYDBG(IPSEC_DATA, kdebug_secasv(sav));
-	SECASVAR_LOCK(sav);
+	SECASVAR_WLOCK(sav);
 	if (sav->tdb_cryptoid != *old) {
 		/* cryptoid was already updated */
 		tmp = *new;
 		*new = sav->tdb_cryptoid;
 		*old = tmp;
-		SECASVAR_UNLOCK(sav);
+		SECASVAR_WUNLOCK(sav);
 		return (1);
 	}
 	sav->tdb_cryptoid = *new;
-	SECASVAR_UNLOCK(sav);
+	SECASVAR_WUNLOCK(sav);
 	return (0);
 }
 

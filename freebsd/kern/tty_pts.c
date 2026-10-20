@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
@@ -30,8 +30,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /* Add compatibility bits for FreeBSD. */
 #define PTS_COMPAT
 /* Add pty(4) compat bits. */
@@ -57,18 +55,16 @@ __FBSDID("$FreeBSD$");
 #include <sys/resourcevar.h>
 #include <sys/serial.h>
 #include <sys/stat.h>
+#include <sys/stdarg.h>
 #include <sys/syscall.h>
 #include <sys/syscallsubr.h>
 #include <sys/sysctl.h>
-#include <sys/sysent.h>
 #include <sys/sysproto.h>
 #include <sys/systm.h>
 #include <sys/tty.h>
 #include <sys/ttycom.h>
 #include <sys/uio.h>
 #include <sys/user.h>
-
-#include <machine/stdarg.h>
 
 /*
  * Our utmp(5) format is limited to 8-byte TTY line names.  This means
@@ -274,12 +270,7 @@ ptsdev_ioctl(struct file *fp, u_long cmd, void *data,
 		return (0);
 	case FIONREAD:
 		tty_lock(tp);
-		if (psc->pts_flags & PTS_FINISHED) {
-			/* Force read() to be called. */
-			*(int *)data = 1;
-		} else {
-			*(int *)data = ttydisc_getc_poll(tp);
-		}
+		*(int *)data = ttydisc_getc_poll(tp);
 		tty_unlock(tp);
 		return (0);
 	case FIODGNAME:
@@ -496,12 +487,12 @@ pts_kqops_write_event(struct knote *kn, long hint)
 	}
 }
 
-static struct filterops pts_kqops_read = {
+static const struct filterops pts_kqops_read = {
 	.f_isfd = 1,
 	.f_detach = pts_kqops_read_detach,
 	.f_event = pts_kqops_read_event,
 };
-static struct filterops pts_kqops_write = {
+static const struct filterops pts_kqops_write = {
 	.f_isfd = 1,
 	.f_detach = pts_kqops_write_detach,
 	.f_event = pts_kqops_write_event,
@@ -535,8 +526,7 @@ ptsdev_kqfilter(struct file *fp, struct knote *kn)
 }
 
 static int
-ptsdev_stat(struct file *fp, struct stat *sb, struct ucred *active_cred,
-    struct thread *td)
+ptsdev_stat(struct file *fp, struct stat *sb, struct ucred *active_cred)
 {
 	struct tty *tp = fp->f_data;
 #ifdef PTS_EXTERNAL
@@ -606,7 +596,7 @@ ptsdev_fill_kinfo(struct file *fp, struct kinfo_file *kif, struct filedesc *fdp)
 	return (0);
 }
 
-static struct fileops ptsdev_ops = {
+static const struct fileops ptsdev_ops = {
 	.fo_read	= ptsdev_read,
 	.fo_write	= ptsdev_write,
 	.fo_truncate	= invfo_truncate,
@@ -619,6 +609,7 @@ static struct fileops ptsdev_ops = {
 	.fo_chown	= invfo_chown,
 	.fo_sendfile	= invfo_sendfile,
 	.fo_fill_kinfo	= ptsdev_fill_kinfo,
+	.fo_cmp		= file_kcmp_generic,
 	.fo_flags	= DFLAG_PASSABLE,
 };
 

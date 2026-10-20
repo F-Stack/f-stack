@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2019 Conrad Meyer <cem@FreeBSD.org>
  *
@@ -26,7 +26,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
@@ -47,6 +46,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_dl.h>
 #include <net/route.h>
 #include <net/route/nhop.h>
@@ -165,7 +165,7 @@ rt_dumpentry_ddb(struct radix_node *rn, void *arg __unused)
 	return (0);
 }
 
-DB_SHOW_COMMAND(routetable, db_show_routetable_cmd)
+DB_SHOW_COMMAND(routetable, db_show_routetable)
 {
 	struct rib_head *rnh;
 	int error, i, lim;
@@ -203,7 +203,7 @@ DB_SHOW_COMMAND(routetable, db_show_routetable_cmd)
 	}
 }
 
-_DB_FUNC(_show, route, db_show_route_cmd, db_show_table, CS_OWN, NULL)
+DB_SHOW_COMMAND_FLAGS(route, db_show_route, CS_OWN)
 {
 	char abuf[INET6_ADDRSTRLEN], *buf, *end;
 	struct rib_head *rh;

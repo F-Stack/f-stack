@@ -30,13 +30,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)genassym.c	5.11 (Berkeley) 5/10/91
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_hwpmc_hooks.h"
 #include "opt_kstack_pages.h"
 
@@ -82,6 +78,7 @@ ASSYM(MD_EFIRT_TMP, offsetof(struct mdthread, md_efirt_tmp));
 
 ASSYM(TD_LOCK, offsetof(struct thread, td_lock));
 ASSYM(TD_FLAGS, offsetof(struct thread, td_flags));
+ASSYM(TD_AST, offsetof(struct thread, td_ast));
 ASSYM(TD_PCB, offsetof(struct thread, td_pcb));
 ASSYM(TD_PFLAGS, offsetof(struct thread, td_pflags));
 ASSYM(TD_PROC, offsetof(struct thread, td_proc));
@@ -89,9 +86,6 @@ ASSYM(TD_FRAME, offsetof(struct thread, td_frame));
 ASSYM(TD_MD, offsetof(struct thread, td_md));
 ASSYM(TD_MD_PCB, offsetof(struct thread, td_md.md_pcb));
 ASSYM(TD_MD_STACK_BASE, offsetof(struct thread, td_md.md_stack_base));
-
-ASSYM(TDF_ASTPENDING, TDF_ASTPENDING);
-ASSYM(TDF_NEEDRESCHED, TDF_NEEDRESCHED);
 
 ASSYM(TDP_CALLCHAIN, TDP_CALLCHAIN);
 ASSYM(TDP_KTHREAD, TDP_KTHREAD);
@@ -116,8 +110,7 @@ ASSYM(val_PML4PML4I, PML4PML4I);
 ASSYM(VM_MAXUSER_ADDRESS, VM_MAXUSER_ADDRESS);
 ASSYM(KERNBASE, KERNBASE);
 ASSYM(KERNLOAD, KERNLOAD);
-ASSYM(DMAP_MIN_ADDRESS, DMAP_MIN_ADDRESS);
-ASSYM(DMAP_MAX_ADDRESS, DMAP_MAX_ADDRESS);
+ASSYM(KSTACK_PAGES, KSTACK_PAGES);
 
 ASSYM(PCB_R15, offsetof(struct pcb, pcb_r15));
 ASSYM(PCB_R14, offsetof(struct pcb, pcb_r14));
@@ -205,6 +198,33 @@ ASSYM(PTI_SIZE, sizeof(struct pti_frame));
 ASSYM(SIGF_HANDLER, offsetof(struct sigframe, sf_ahu.sf_handler));
 ASSYM(SIGF_UC, offsetof(struct sigframe, sf_uc));
 ASSYM(UC_EFLAGS, offsetof(ucontext_t, uc_mcontext.mc_rflags));
+ASSYM(UC_RDI, offsetof(ucontext_t, uc_mcontext.mc_rdi));
+ASSYM(UC_RSI, offsetof(ucontext_t, uc_mcontext.mc_rsi));
+ASSYM(UC_RDX, offsetof(ucontext_t, uc_mcontext.mc_rdx));
+ASSYM(UC_RCX, offsetof(ucontext_t, uc_mcontext.mc_rcx));
+ASSYM(UC_R8, offsetof(ucontext_t, uc_mcontext.mc_r8));
+ASSYM(UC_R9, offsetof(ucontext_t, uc_mcontext.mc_r9));
+ASSYM(UC_RAX, offsetof(ucontext_t, uc_mcontext.mc_rax));
+ASSYM(UC_RBX, offsetof(ucontext_t, uc_mcontext.mc_rbx));
+ASSYM(UC_RBP, offsetof(ucontext_t, uc_mcontext.mc_rbp));
+ASSYM(UC_R10, offsetof(ucontext_t, uc_mcontext.mc_r10));
+ASSYM(UC_R11, offsetof(ucontext_t, uc_mcontext.mc_r11));
+ASSYM(UC_R12, offsetof(ucontext_t, uc_mcontext.mc_r12));
+ASSYM(UC_R13, offsetof(ucontext_t, uc_mcontext.mc_r13));
+ASSYM(UC_R14, offsetof(ucontext_t, uc_mcontext.mc_r14));
+ASSYM(UC_R15, offsetof(ucontext_t, uc_mcontext.mc_r15));
+ASSYM(UC_FS, offsetof(ucontext_t, uc_mcontext.mc_fs));
+ASSYM(UC_GS, offsetof(ucontext_t, uc_mcontext.mc_gs));
+ASSYM(UC_ES, offsetof(ucontext_t, uc_mcontext.mc_es));
+ASSYM(UC_DS, offsetof(ucontext_t, uc_mcontext.mc_ds));
+ASSYM(UC_RIP, offsetof(ucontext_t, uc_mcontext.mc_rip));
+ASSYM(UC_CS, offsetof(ucontext_t, uc_mcontext.mc_cs));
+ASSYM(UC_RFLAGS, offsetof(ucontext_t, uc_mcontext.mc_rflags));
+ASSYM(UC_RSP, offsetof(ucontext_t, uc_mcontext.mc_rsp));
+ASSYM(UC_SS, offsetof(ucontext_t, uc_mcontext.mc_ss));
+ASSYM(UC_FSBASE, offsetof(ucontext_t, uc_mcontext.mc_fsbase));
+ASSYM(UC_GSBASE, offsetof(ucontext_t, uc_mcontext.mc_gsbase));
+
 ASSYM(ENOENT, ENOENT);
 ASSYM(EFAULT, EFAULT);
 ASSYM(ENAMETOOLONG, ENAMETOOLONG);
@@ -227,7 +247,6 @@ ASSYM(PC_GS32P, offsetof(struct pcpu, pc_gs32p));
 ASSYM(PC_LDT, offsetof(struct pcpu, pc_ldt));
 ASSYM(PC_COMMONTSS, offsetof(struct pcpu, pc_common_tss));
 ASSYM(PC_TSS, offsetof(struct pcpu, pc_tss));
-ASSYM(PC_PM_SAVE_CNT, offsetof(struct pcpu, pc_pm_save_cnt));
 ASSYM(PC_KCR3, offsetof(struct pcpu, pc_kcr3));
 ASSYM(PC_UCR3, offsetof(struct pcpu, pc_ucr3));
 ASSYM(PC_UCR3_LOAD_MASK, offsetof(struct pcpu, pc_ucr3_load_mask));

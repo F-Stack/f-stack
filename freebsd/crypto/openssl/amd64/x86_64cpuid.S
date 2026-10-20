@@ -1,19 +1,20 @@
-/* $FreeBSD$ */
 /* Do not modify. This file is auto-generated from x86_64cpuid.pl. */
+
 
 .hidden	OPENSSL_cpuid_setup
 .section	.init
 	call	OPENSSL_cpuid_setup
 
 .hidden	OPENSSL_ia32cap_P
-.comm	OPENSSL_ia32cap_P,16,4
-
+.comm	OPENSSL_ia32cap_P,40,4
 .text	
 
 .globl	OPENSSL_atomic_add
 .type	OPENSSL_atomic_add,@function
 .align	16
 OPENSSL_atomic_add:
+.cfi_startproc	
+.byte	243,15,30,250
 	movl	(%rdi),%eax
 .Lspin:	leaq	(%rsi,%rax,1),%r8
 .byte	0xf0
@@ -22,16 +23,20 @@ OPENSSL_atomic_add:
 	movl	%r8d,%eax
 .byte	0x48,0x98
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	OPENSSL_atomic_add,.-OPENSSL_atomic_add
 
 .globl	OPENSSL_rdtsc
 .type	OPENSSL_rdtsc,@function
 .align	16
 OPENSSL_rdtsc:
+.cfi_startproc	
+.byte	243,15,30,250
 	rdtsc
 	shlq	$32,%rdx
 	orq	%rdx,%rax
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	OPENSSL_rdtsc,.-OPENSSL_rdtsc
 
 .globl	OPENSSL_ia32_cpuid
@@ -39,6 +44,7 @@ OPENSSL_rdtsc:
 .align	16
 OPENSSL_ia32_cpuid:
 .cfi_startproc	
+.byte	243,15,30,250
 	movq	%rbx,%r8
 .cfi_register	%rbx,%r8
 
@@ -158,6 +164,7 @@ OPENSSL_ia32_cpuid:
 	movl	$7,%eax
 	xorl	%ecx,%ecx
 	cpuid
+	movd	%eax,%xmm1
 	btl	$26,%r9d
 	jc	.Lnotknights
 	andl	$0xfff7ffff,%ebx
@@ -168,9 +175,31 @@ OPENSSL_ia32_cpuid:
 	jne	.Lnotskylakex
 	andl	$0xfffeffff,%ebx
 
+
 .Lnotskylakex:
 	movl	%ebx,8(%rdi)
 	movl	%ecx,12(%rdi)
+	movl	%edx,16(%rdi)
+
+	movd	%xmm1,%eax
+	cmpl	$0x1,%eax
+	jb	.Lno_extended_info
+	movl	$0x7,%eax
+	movl	$0x1,%ecx
+	cpuid
+	movl	%eax,20(%rdi)
+	movl	%edx,24(%rdi)
+	movl	%ebx,28(%rdi)
+	movl	%ecx,32(%rdi)
+
+	andl	$0x80000,%edx
+	cmpl	$0x0,%edx
+	je	.Lno_extended_info
+	movl	$0x24,%eax
+	movl	$0x0,%ecx
+	cpuid
+	movl	%ebx,36(%rdi)
+
 .Lno_extended_info:
 
 	btl	$27,%r9d
@@ -189,6 +218,9 @@ OPENSSL_ia32_cpuid:
 	cmpl	$6,%eax
 	je	.Ldone
 .Lclear_avx:
+	andl	$0xff7fffff,20(%rdi)
+
+
 	movl	$0xefffe7ff,%eax
 	andl	%eax,%r9d
 	movl	$0x3fdeffdf,%eax
@@ -207,6 +239,8 @@ OPENSSL_ia32_cpuid:
 .type	OPENSSL_cleanse,@function
 .align	16
 OPENSSL_cleanse:
+.cfi_startproc	
+.byte	243,15,30,250
 	xorq	%rax,%rax
 	cmpq	$15,%rsi
 	jae	.Lot
@@ -236,12 +270,15 @@ OPENSSL_cleanse:
 	cmpq	$0,%rsi
 	jne	.Little
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	OPENSSL_cleanse,.-OPENSSL_cleanse
 
 .globl	CRYPTO_memcmp
 .type	CRYPTO_memcmp,@function
 .align	16
 CRYPTO_memcmp:
+.cfi_startproc	
+.byte	243,15,30,250
 	xorq	%rax,%rax
 	xorq	%r10,%r10
 	cmpq	$0,%rdx
@@ -270,11 +307,14 @@ CRYPTO_memcmp:
 	shrq	$63,%rax
 .Lno_data:
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	CRYPTO_memcmp,.-CRYPTO_memcmp
 .globl	OPENSSL_wipe_cpu
 .type	OPENSSL_wipe_cpu,@function
 .align	16
 OPENSSL_wipe_cpu:
+.cfi_startproc	
+.byte	243,15,30,250
 	pxor	%xmm0,%xmm0
 	pxor	%xmm1,%xmm1
 	pxor	%xmm2,%xmm2
@@ -301,11 +341,14 @@ OPENSSL_wipe_cpu:
 	xorq	%r11,%r11
 	leaq	8(%rsp),%rax
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	OPENSSL_wipe_cpu,.-OPENSSL_wipe_cpu
 .globl	OPENSSL_instrument_bus
 .type	OPENSSL_instrument_bus,@function
 .align	16
 OPENSSL_instrument_bus:
+.cfi_startproc	
+.byte	243,15,30,250
 	movq	%rdi,%r10
 	movq	%rsi,%rcx
 	movq	%rsi,%r11
@@ -332,12 +375,15 @@ OPENSSL_instrument_bus:
 
 	movq	%r11,%rax
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	OPENSSL_instrument_bus,.-OPENSSL_instrument_bus
 
 .globl	OPENSSL_instrument_bus2
 .type	OPENSSL_instrument_bus2,@function
 .align	16
 OPENSSL_instrument_bus2:
+.cfi_startproc	
+.byte	243,15,30,250
 	movq	%rdi,%r10
 	movq	%rsi,%rcx
 	movq	%rdx,%r11
@@ -380,11 +426,14 @@ OPENSSL_instrument_bus2:
 	movq	8(%rsp),%rax
 	subq	%rcx,%rax
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	OPENSSL_instrument_bus2,.-OPENSSL_instrument_bus2
 .globl	OPENSSL_ia32_rdrand_bytes
 .type	OPENSSL_ia32_rdrand_bytes,@function
 .align	16
 OPENSSL_ia32_rdrand_bytes:
+.cfi_startproc	
+.byte	243,15,30,250
 	xorq	%rax,%rax
 	cmpq	$0,%rsi
 	je	.Ldone_rdrand_bytes
@@ -421,11 +470,14 @@ OPENSSL_ia32_rdrand_bytes:
 .Ldone_rdrand_bytes:
 	xorq	%r10,%r10
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	OPENSSL_ia32_rdrand_bytes,.-OPENSSL_ia32_rdrand_bytes
 .globl	OPENSSL_ia32_rdseed_bytes
 .type	OPENSSL_ia32_rdseed_bytes,@function
 .align	16
 OPENSSL_ia32_rdseed_bytes:
+.cfi_startproc	
+.byte	243,15,30,250
 	xorq	%rax,%rax
 	cmpq	$0,%rsi
 	je	.Ldone_rdseed_bytes
@@ -462,4 +514,26 @@ OPENSSL_ia32_rdseed_bytes:
 .Ldone_rdseed_bytes:
 	xorq	%r10,%r10
 	.byte	0xf3,0xc3
+.cfi_endproc	
 .size	OPENSSL_ia32_rdseed_bytes,.-OPENSSL_ia32_rdseed_bytes
+	.section ".note.gnu.property", "a"
+	.p2align 3
+	.long 1f - 0f
+	.long 4f - 1f
+	.long 5
+0:
+	# "GNU" encoded with .byte, since .asciz isn't supported
+	# on Solaris.
+	.byte 0x47
+	.byte 0x4e
+	.byte 0x55
+	.byte 0
+1:
+	.p2align 3
+	.long 0xc0000002
+	.long 3f - 2f
+2:
+	.long 3
+3:
+	.p2align 3
+4:

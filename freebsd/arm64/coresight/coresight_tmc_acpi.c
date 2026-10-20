@@ -32,9 +32,6 @@
 
 #include "opt_acpi.h"
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/types.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -86,7 +83,5 @@ static device_method_t tmc_acpi_methods[] = {
 DEFINE_CLASS_1(tmc, tmc_acpi_driver, tmc_acpi_methods,
     sizeof(struct tmc_softc), tmc_driver);
 
-static devclass_t tmc_acpi_devclass;
-
-EARLY_DRIVER_MODULE(tmc, acpi, tmc_acpi_driver, tmc_acpi_devclass,
-    0, 0, BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(tmc, acpi, tmc_acpi_driver, 0, 0,
+    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);

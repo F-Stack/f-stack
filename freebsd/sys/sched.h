@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: (BSD-4-Clause AND BSD-2-Clause-FreeBSD)
+ * SPDX-License-Identifier: (BSD-4-Clause AND BSD-2-Clause)
  *
  * Copyright (c) 1996, 1997
  *      HD Associates, Inc.  All rights reserved.
@@ -57,14 +57,21 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SCHED_H_
 #define	_SCHED_H_
 
 #ifdef _KERNEL
+
+#include <sys/types.h>
+#ifdef SCHED_STATS
+#include <sys/pcpu.h>
+#endif
+
+struct proc;
+struct thread;
+
 /*
  * General scheduling info.
  *
@@ -76,7 +83,7 @@
  */
 int	sched_load(void);
 int	sched_rr_interval(void);
-int	sched_runnable(void);
+bool	sched_runnable(void);
 
 /* 
  * Proc related scheduling hooks.
@@ -91,9 +98,11 @@ void	sched_nice(struct proc *p, int nice);
  * Threads are switched in and out, block on resources, have temporary
  * priorities inherited from their procs, and use up cpu time.
  */
+void	sched_ap_entry(void);
 void	sched_exit_thread(struct thread *td, struct thread *child);
 u_int	sched_estcpu(struct thread *td);
 void	sched_fork_thread(struct thread *td, struct thread *child);
+void	sched_ithread_prio(struct thread *td, u_char prio);
 void	sched_lend_prio(struct thread *td, u_char prio);
 void	sched_lend_user_prio(struct thread *td, u_char pri);
 void	sched_lend_user_prio_cond(struct thread *td, u_char pri);
@@ -180,6 +189,7 @@ static __inline void
 sched_unpin(void)
 {
 	atomic_interrupt_fence();
+	MPASS(curthread->td_pinned > 0);
 	curthread->td_pinned--;
 }
 
@@ -213,7 +223,7 @@ SYSINIT(name, SI_SUB_LAST, SI_ORDER_MIDDLE, name ## _add_proc, NULL);
     SCHED_STAT_DEFINE_VAR(name, &DPCPU_NAME(name), descr)
 /*
  * Sched stats are always incremented in critical sections so no atomic
- * is necesssary to increment them.
+ * is necessary to increment them.
  */
 #define SCHED_STAT_INC(var)     DPCPU_GET(var)++;
 #else
@@ -226,6 +236,11 @@ SYSINIT(name, SI_SUB_LAST, SI_ORDER_MIDDLE, name ## _add_proc, NULL);
  * Fixup scheduler state for proc0 and thread0
  */
 void schedinit(void);
+
+/*
+ * Fixup scheduler state for secondary APs
+ */
+void schedinit_ap(void);
 #endif /* _KERNEL */
 
 /* POSIX 1003.1b Process Scheduling */

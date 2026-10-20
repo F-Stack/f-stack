@@ -27,9 +27,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __i386__
+#include <i386/md_var.h>
+#else /* !__i386__ */
 
 #ifndef _MACHINE_MD_VAR_H_
 #define	_MACHINE_MD_VAR_H_
@@ -48,18 +50,20 @@ extern vm_paddr_t intel_graphics_stolen_base;
 extern vm_paddr_t intel_graphics_stolen_size;
 
 extern int la57;
+extern int prefer_uva_la48;
 
-/*
- * The file "conf/ldscript.amd64" defines the symbol "kernphys".  Its
- * value is the physical address at which the kernel is loaded.
- */
-extern char kernphys[];
+extern vm_paddr_t kernphys;
+extern vm_paddr_t KERNend;
 
+extern bool efi_boot;
+
+struct	__mcontext;
 struct	savefpu;
 struct	sysentvec;
 
 void	amd64_conf_fast_syscall(void);
 void	amd64_db_resume_dbreg(void);
+vm_paddr_t amd64_loadaddr(void);
 void	amd64_lower_shared_page(struct sysentvec *);
 void	amd64_bsp_pcpu_init1(struct pcpu *pc);
 void	amd64_bsp_pcpu_init2(uint64_t rsp0);
@@ -67,6 +71,7 @@ void	amd64_bsp_ist_init(struct pcpu *pc);
 void	amd64_syscall(struct thread *td, int traced);
 void	amd64_syscall_ret_flush_l1d(int error);
 void	amd64_syscall_ret_flush_l1d_recalc(void);
+void	cpu_init_small_core(void);
 void	doreti_iret(void) __asm(__STRING(doreti_iret));
 void	doreti_iret_fault(void) __asm(__STRING(doreti_iret_fault));
 void	flush_l1d_sw_abi(void);
@@ -89,5 +94,15 @@ void	set_top_of_stack_td(struct thread *td);
 struct savefpu *get_pcb_user_save_td(struct thread *td);
 struct savefpu *get_pcb_user_save_pcb(struct pcb *pcb);
 void	pci_early_quirks(void);
+void	get_fpcontext(struct thread *td, struct __mcontext *mcp,
+	    char **xfpusave, size_t *xfpusave_len);
+int	set_fpcontext(struct thread *td, struct __mcontext *mcp,
+	    char *xfpustate, size_t xfpustate_len);
+
+void	wrmsr_early_safe_start(void);
+void	wrmsr_early_safe_end(void);
+int	wrmsr_early_safe(u_int msr, uint64_t data);
 
 #endif /* !_MACHINE_MD_VAR_H_ */
+
+#endif /* __i386__ */

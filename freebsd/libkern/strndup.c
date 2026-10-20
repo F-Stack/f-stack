@@ -29,9 +29,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/libkern.h>
@@ -45,7 +42,7 @@ strndup(const char *string, size_t maxlen, struct malloc_type *type)
 
 	len = strnlen(string, maxlen) + 1;
 	copy = malloc(len, type, M_WAITOK);
-	bcopy(string, copy, len);
+	memcpy(copy, string, len);
 	copy[len - 1] = '\0';
 	return (copy);
 }

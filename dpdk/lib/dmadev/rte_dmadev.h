@@ -145,6 +145,7 @@
  */
 
 #include <stdint.h>
+#include <errno.h>
 
 #include <rte_bitops.h>
 #include <rte_common.h>
@@ -258,6 +259,13 @@ int16_t rte_dma_next_dev(int16_t start_dev_id);
  * rte_dma_vchan_setup() will fail.
  */
 #define RTE_DMA_CAPA_M2D_AUTO_FREE      RTE_BIT64(7)
+/** Support strict priority scheduling.
+ *
+ * Application could assign fixed priority to the DMA device using 'priority'
+ * field in struct rte_dma_conf. Number of supported priority levels will be
+ * known from 'nb_priorities' field in struct rte_dma_info.
+ */
+#define RTE_DMA_CAPA_PRI_POLICY_SP	RTE_BIT64(8)
 
 /** Support copy operation.
  * This capability start with index of 32, so that it could leave gap between
@@ -297,6 +305,10 @@ struct rte_dma_info {
 	int16_t numa_node;
 	/** Number of virtual DMA channel configured. */
 	uint16_t nb_vchans;
+	/** Number of priority levels (must be > 1) if priority scheduling is supported,
+	 * 0 otherwise.
+	 */
+	uint16_t nb_priorities;
 };
 
 /**
@@ -332,6 +344,14 @@ struct rte_dma_conf {
 	 * @see RTE_DMA_CAPA_SILENT
 	 */
 	bool enable_silent;
+	/* The priority of the DMA device.
+	 * This value should be lower than the field 'nb_priorities' of struct
+	 * rte_dma_info which get from rte_dma_info_get(). If the DMA device
+	 * does not support priority scheduling, this value should be zero.
+	 *
+	 * Lowest value indicates higher priority and vice-versa.
+	 */
+	uint16_t priority;
 };
 
 /**
@@ -772,7 +792,16 @@ struct rte_dma_sge {
 	uint32_t length; /**< The DMA operation length. */
 };
 
+#ifdef __cplusplus
+}
+#endif
+
 #include "rte_dmadev_core.h"
+#include "rte_dmadev_trace_fp.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**@{@name DMA operation flag
  * @see rte_dma_copy()
@@ -836,6 +865,7 @@ rte_dma_copy(int16_t dev_id, uint16_t vchan, rte_iova_t src, rte_iova_t dst,
 	     uint32_t length, uint64_t flags)
 {
 	struct rte_dma_fp_object *obj = &rte_dma_fp_objs[dev_id];
+	int ret;
 
 #ifdef RTE_DMADEV_DEBUG
 	if (!rte_dma_is_valid(dev_id) || length == 0)
@@ -844,7 +874,10 @@ rte_dma_copy(int16_t dev_id, uint16_t vchan, rte_iova_t src, rte_iova_t dst,
 		return -ENOTSUP;
 #endif
 
-	return (*obj->copy)(obj->dev_private, vchan, src, dst, length, flags);
+	ret = (*obj->copy)(obj->dev_private, vchan, src, dst, length, flags);
+	rte_dma_trace_copy(dev_id, vchan, src, dst, length, flags, ret);
+
+	return ret;
 }
 
 /**
@@ -883,6 +916,7 @@ rte_dma_copy_sg(int16_t dev_id, uint16_t vchan, struct rte_dma_sge *src,
 		uint64_t flags)
 {
 	struct rte_dma_fp_object *obj = &rte_dma_fp_objs[dev_id];
+	int ret;
 
 #ifdef RTE_DMADEV_DEBUG
 	if (!rte_dma_is_valid(dev_id) || src == NULL || dst == NULL ||
@@ -892,8 +926,12 @@ rte_dma_copy_sg(int16_t dev_id, uint16_t vchan, struct rte_dma_sge *src,
 		return -ENOTSUP;
 #endif
 
-	return (*obj->copy_sg)(obj->dev_private, vchan, src, dst, nb_src,
-			       nb_dst, flags);
+	ret = (*obj->copy_sg)(obj->dev_private, vchan, src, dst, nb_src,
+			      nb_dst, flags);
+	rte_dma_trace_copy_sg(dev_id, vchan, src, dst, nb_src, nb_dst, flags,
+			      ret);
+
+	return ret;
 }
 
 /**
@@ -927,6 +965,7 @@ rte_dma_fill(int16_t dev_id, uint16_t vchan, uint64_t pattern,
 	     rte_iova_t dst, uint32_t length, uint64_t flags)
 {
 	struct rte_dma_fp_object *obj = &rte_dma_fp_objs[dev_id];
+	int ret;
 
 #ifdef RTE_DMADEV_DEBUG
 	if (!rte_dma_is_valid(dev_id) || length == 0)
@@ -935,8 +974,11 @@ rte_dma_fill(int16_t dev_id, uint16_t vchan, uint64_t pattern,
 		return -ENOTSUP;
 #endif
 
-	return (*obj->fill)(obj->dev_private, vchan, pattern, dst, length,
-			    flags);
+	ret = (*obj->fill)(obj->dev_private, vchan, pattern, dst, length,
+			   flags);
+	rte_dma_trace_fill(dev_id, vchan, pattern, dst, length, flags, ret);
+
+	return ret;
 }
 
 /**
@@ -957,6 +999,7 @@ static inline int
 rte_dma_submit(int16_t dev_id, uint16_t vchan)
 {
 	struct rte_dma_fp_object *obj = &rte_dma_fp_objs[dev_id];
+	int ret;
 
 #ifdef RTE_DMADEV_DEBUG
 	if (!rte_dma_is_valid(dev_id))
@@ -965,37 +1008,55 @@ rte_dma_submit(int16_t dev_id, uint16_t vchan)
 		return -ENOTSUP;
 #endif
 
-	return (*obj->submit)(obj->dev_private, vchan);
+	ret = (*obj->submit)(obj->dev_private, vchan);
+	rte_dma_trace_submit(dev_id, vchan, ret);
+
+	return ret;
 }
 
 /**
- * Return the number of operations that have been successfully completed.
- * Once an operation has been reported as completed, the results of that
- * operation will be visible to all cores on the system.
+ * Return the number of operations that have completed successfully,
+ * starting from the current ring position.
+ *
+ * This function reports a contiguous run of successfully completed operations.
+ * It stops at the first operation that either failed or has not yet completed.
+ * Once an operation is reported as successfully completed,
+ * the results of that operation are visible to all cores on the system.
  *
  * @param dev_id
  *   The identifier of the device.
  * @param vchan
- *   The identifier of virtual DMA channel.
+ *   The identifier of the virtual DMA channel.
  * @param nb_cpls
- *   The maximum number of completed operations that can be processed.
+ *   The maximum number of completed operations to report.
  * @param[out] last_idx
- *   The last completed operation's ring_idx.
+ *   The ring_idx of the last successfully completed operation reported by this call.
+ *   The function stops at the first failed or incomplete operation,
+ *   and reports at most nb_cpls operations,
+ *   so this may not be the last successful operation
+ *   the device has actually completed.
  *   If not required, NULL can be passed in.
  * @param[out] has_error
- *   Indicates if there are transfer error.
+ *   When set to true, a failed operation was encountered
+ *   among the completed operations on the device (within the nb_cpls limit),
+ *   causing the function to stop early.
+ *   The returned count covers only the successful completions
+ *   preceding that first failure.
+ *   When false, all operations reported by this call succeeded;
+ *   the function stopped either because nb_cpls operations have been reported,
+ *   or because no more completed operations are available on the device.
  *   If not required, NULL can be passed in.
  *
  * @return
- *   The number of operations that successfully completed. This return value
- *   must be less than or equal to the value of nb_cpls.
+ *   The number of operations that successfully completed.
+ *   This return value is less than or equal to the value of nb_cpls.
  */
 static inline uint16_t
 rte_dma_completed(int16_t dev_id, uint16_t vchan, const uint16_t nb_cpls,
 		  uint16_t *last_idx, bool *has_error)
 {
 	struct rte_dma_fp_object *obj = &rte_dma_fp_objs[dev_id];
-	uint16_t idx;
+	uint16_t idx, ret;
 	bool err;
 
 #ifdef RTE_DMADEV_DEBUG
@@ -1019,35 +1080,46 @@ rte_dma_completed(int16_t dev_id, uint16_t vchan, const uint16_t nb_cpls,
 		has_error = &err;
 
 	*has_error = false;
-	return (*obj->completed)(obj->dev_private, vchan, nb_cpls, last_idx,
-				 has_error);
+	ret = (*obj->completed)(obj->dev_private, vchan, nb_cpls, last_idx,
+				has_error);
+	rte_dma_trace_completed(dev_id, vchan, nb_cpls, last_idx, has_error,
+				ret);
+
+	return ret;
 }
 
 /**
- * Return the number of operations that have been completed, and the operations
- * result may succeed or fail.
- * Once an operation has been reported as completed successfully, the results of that
- * operation will be visible to all cores on the system.
+ * Return the number of operations that have completed (successfully or with error),
+ * starting from the current ring position.
+ *
+ * This function reports all completed operations up to nb_cpls,
+ * regardless of whether each individual operation succeeded or failed.
+ * Once an operation has been reported as completed successfully,
+ * the results of that operation are visible to all cores on the system.
  *
  * @param dev_id
  *   The identifier of the device.
  * @param vchan
- *   The identifier of virtual DMA channel.
+ *   The identifier of the virtual DMA channel.
  * @param nb_cpls
- *   Indicates the size of status array.
+ *   The size of the status array,
+ *   i.e. the maximum number of completed operations to report.
  * @param[out] last_idx
- *   The last completed operation's ring_idx.
+ *   The ring_idx of the last completed operation reported by this call,
+ *   whether successful or failed.
+ *   The function reports up to nb_cpls completed operations
+ *   without stopping on errors, so this may not be the last operation
+ *   the device has actually completed.
  *   If not required, NULL can be passed in.
  * @param[out] status
- *   This is a pointer to an array of length 'nb_cpls' that holds the completion
- *   status code of each operation.
+ *   Pointer to an array of length 'nb_cpls'
+ *   that receives the completion status code of each reported operation.
  *   @see enum rte_dma_status_code
  *
  * @return
- *   The number of operations that completed. This return value must be less
- *   than or equal to the value of nb_cpls.
- *   If this number is greater than zero (assuming n), then n values in the
- *   status array are also set.
+ *   The number of operations that completed.
+ *   This return value is less than or equal to the value of nb_cpls.
+ *   If this number is n (n > 0), the first n entries in the status array are valid.
  */
 static inline uint16_t
 rte_dma_completed_status(int16_t dev_id, uint16_t vchan,
@@ -1055,7 +1127,7 @@ rte_dma_completed_status(int16_t dev_id, uint16_t vchan,
 			 enum rte_dma_status_code *status)
 {
 	struct rte_dma_fp_object *obj = &rte_dma_fp_objs[dev_id];
-	uint16_t idx;
+	uint16_t idx, ret;
 
 #ifdef RTE_DMADEV_DEBUG
 	if (!rte_dma_is_valid(dev_id) || nb_cpls == 0 || status == NULL)
@@ -1067,8 +1139,12 @@ rte_dma_completed_status(int16_t dev_id, uint16_t vchan,
 	if (last_idx == NULL)
 		last_idx = &idx;
 
-	return (*obj->completed_status)(obj->dev_private, vchan, nb_cpls,
-					last_idx, status);
+	ret = (*obj->completed_status)(obj->dev_private, vchan, nb_cpls,
+				       last_idx, status);
+	rte_dma_trace_completed_status(dev_id, vchan, nb_cpls, last_idx, status,
+				       ret);
+
+	return ret;
 }
 
 /**
@@ -1087,6 +1163,7 @@ static inline uint16_t
 rte_dma_burst_capacity(int16_t dev_id, uint16_t vchan)
 {
 	struct rte_dma_fp_object *obj = &rte_dma_fp_objs[dev_id];
+	uint16_t ret;
 
 #ifdef RTE_DMADEV_DEBUG
 	if (!rte_dma_is_valid(dev_id))
@@ -1094,7 +1171,10 @@ rte_dma_burst_capacity(int16_t dev_id, uint16_t vchan)
 	if (*obj->burst_capacity == NULL)
 		return 0;
 #endif
-	return (*obj->burst_capacity)(obj->dev_private, vchan);
+	ret = (*obj->burst_capacity)(obj->dev_private, vchan);
+	rte_dma_trace_burst_capacity(dev_id, vchan, ret);
+
+	return ret;
 }
 
 #ifdef __cplusplus

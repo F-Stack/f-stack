@@ -26,8 +26,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_ARM64_CORESIGHT_CORESIGHT_H_
@@ -37,6 +35,7 @@
 #include "opt_platform.h"
 
 #include <sys/bus.h>
+#include <sys/malloc.h>
 
 #ifdef FDT
 #include <dev/ofw/openfirm.h>

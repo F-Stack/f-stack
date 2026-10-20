@@ -43,8 +43,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_stack.h"
 
 #include <sys/param.h>
@@ -121,12 +119,12 @@ thread_compare(struct thread *td, struct thread *td2)
 	 * Fetch running stats, pctcpu usage, and interruptable flag.
 	 */
 	thread_lock(td);
-	runa = TD_IS_RUNNING(td) | TD_ON_RUNQ(td);
+	runa = TD_IS_RUNNING(td) || TD_ON_RUNQ(td);
 	slpa = td->td_flags & TDF_SINTR;
 	esta = sched_pctcpu(td);
 	thread_unlock(td);
 	thread_lock(td2);
-	runb = TD_IS_RUNNING(td2) | TD_ON_RUNQ(td2);
+	runb = TD_IS_RUNNING(td2) || TD_ON_RUNQ(td2);
 	estb = sched_pctcpu(td2);
 	slpb = td2->td_flags & TDF_SINTR;
 	thread_unlock(td2);
@@ -239,7 +237,11 @@ sbuf_tty_drain(void *a, const char *d, int len)
 }
 
 #ifdef STACK
+#ifdef INVARIANTS
 static int tty_info_kstacks = STACK_SBUF_FMT_COMPACT;
+#else
+static int tty_info_kstacks = STACK_SBUF_FMT_NONE;
+#endif
 
 static int
 sysctl_tty_info_kstacks(SYSCTL_HANDLER_ARGS)
@@ -302,22 +304,22 @@ tty_info(struct tty *tp)
 	sbuf_set_drain(&sb, sbuf_tty_drain, tp);
 
 	/* Print load average. */
-	load = (averunnable.ldavg[0] * 100 + FSCALE / 2) >> FSHIFT;
+	load = ((int64_t)averunnable.ldavg[0] * 100 + FSCALE / 2) >> FSHIFT;
 	sbuf_printf(&sb, "%sload: %d.%02d ", tp->t_column == 0 ? "" : "\n",
 	    load / 100, load % 100);
 
 	if (tp->t_session == NULL) {
-		sbuf_printf(&sb, "not a controlling terminal\n");
+		sbuf_cat(&sb, "not a controlling terminal\n");
 		goto out;
 	}
 	if (tp->t_pgrp == NULL) {
-		sbuf_printf(&sb, "no foreground process group\n");
+		sbuf_cat(&sb, "no foreground process group\n");
 		goto out;
 	}
 	PGRP_LOCK(tp->t_pgrp);
 	if (LIST_EMPTY(&tp->t_pgrp->pg_members)) {
 		PGRP_UNLOCK(tp->t_pgrp);
-		sbuf_printf(&sb, "empty foreground process group\n");
+		sbuf_cat(&sb, "empty foreground process group\n");
 		goto out;
 	}
 
@@ -367,12 +369,8 @@ tty_info(struct tty *tp)
 	kstacks_val = atomic_load_int(&tty_info_kstacks);
 	print_kstacks = (kstacks_val != STACK_SBUF_FMT_NONE);
 
-	if (print_kstacks) {
-		if (TD_IS_SWAPPED(td))
-			sterr = ENOENT;
-		else
-			sterr = stack_save_td(&stack, td);
-	}
+	if (print_kstacks)
+		sterr = stack_save_td(&stack, td);
 #endif
 	thread_unlock(td);
 	if (p->p_state == PRS_NEW || p->p_state == PRS_ZOMBIE)

@@ -44,9 +44,6 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/kernel.h>
@@ -55,6 +52,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/libkern.h>
 #include <sys/pcpu.h>
 #include <sys/uio.h>
+#include <machine/fpu.h>
 
 #include <opencrypto/cryptodev.h>
 #include <crypto/rijndael/rijndael.h>
@@ -83,7 +81,6 @@ static __inline void
 padlock_cbc(void *in, void *out, size_t count, void *key, union padlock_cw *cw,
     void *iv)
 {
-#ifdef __GNUCLIKE_ASM
 	/* The .byte line is really VIA C3 "xcrypt-cbc" instruction */
 	__asm __volatile(
 		"pushf				\n\t"
@@ -94,7 +91,6 @@ padlock_cbc(void *in, void *out, size_t count, void *key, union padlock_cw *cw,
 			: "b" (key), "d" (cw)
 			: "cc", "memory"
 		);
-#endif
 }
 
 static void
@@ -225,10 +221,10 @@ padlock_cipher_process(struct padlock_session *ses, struct cryptop *crp,
 	}
 
 	td = curthread;
-	fpu_kern_enter(td, ses->ses_fpu_ctx, FPU_KERN_NORMAL | FPU_KERN_KTHR);
+	fpu_kern_enter(td, NULL, FPU_KERN_NORMAL | FPU_KERN_NOCTX);
 	padlock_cbc(abuf, abuf, crp->crp_payload_length / AES_BLOCK_LEN, key,
 	    cw, iv);
-	fpu_kern_leave(td, ses->ses_fpu_ctx);
+	fpu_kern_leave(td, NULL);
 
 	if (allocated) {
 		crypto_copyback(crp, crp->crp_payload_start,

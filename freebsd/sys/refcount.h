@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 John Baldwin <jhb@FreeBSD.org>
  *
@@ -23,21 +23,18 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef __SYS_REFCOUNT_H__
 #define __SYS_REFCOUNT_H__
 
-#include <machine/atomic.h>
-
-#if defined(_KERNEL) || defined(_STANDALONE)
-#include <sys/systm.h>
-#else
+#include <sys/types.h>
+#include <sys/kassert.h>
+#if !defined(_KERNEL) && !defined(_STANDALONE)
 #include <stdbool.h>
-#define	KASSERT(exp, msg)	/* */
 #endif
+
+#include <machine/atomic.h>
 
 #define	REFCOUNT_SATURATED(val)		(((val) & (1U << 31)) != 0)
 #define	REFCOUNT_SATURATION_VALUE	(3U << 30)
@@ -67,7 +64,7 @@ refcount_init(volatile u_int *count, u_int value)
 }
 
 static __inline u_int
-refcount_load(volatile u_int *count)
+refcount_load(volatile const u_int *count)
 {
 	return (atomic_load_int(count));
 }

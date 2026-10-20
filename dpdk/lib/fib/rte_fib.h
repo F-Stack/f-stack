@@ -17,6 +17,7 @@
 
 #include <stdint.h>
 
+#include <rte_rcu_qsbr.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +28,19 @@ struct rte_rib;
 
 /** Maximum depth value possible for IPv4 FIB. */
 #define RTE_FIB_MAXDEPTH	32
+
+/** @internal Default RCU defer queue entries to reclaim in one go. */
+#define RTE_FIB_RCU_DQ_RECLAIM_MAX	16
+/** @internal Default RCU defer queue size. */
+#define RTE_FIB_RCU_DQ_RECLAIM_SZ	128
+
+/** RCU reclamation modes */
+enum rte_fib_qsbr_mode {
+	/** Create defer queue for reclaim. */
+	RTE_FIB_QSBR_MODE_DQ = 0,
+	/** Use blocking mode reclaim. No defer queue created. */
+	RTE_FIB_QSBR_MODE_SYNC
+};
 
 /** Type of FIB struct */
 enum rte_fib_type {
@@ -73,6 +87,10 @@ enum rte_fib_lookup_type {
 	/**< Vector implementation using AVX512 */
 };
 
+/** If set, fib lookup is expecting IPv4 address in network byte order */
+#define RTE_FIB_F_LOOKUP_NETWORK_ORDER 1
+#define RTE_FIB_ALLOWED_FLAGS (RTE_FIB_F_LOOKUP_NETWORK_ORDER)
+
 /** FIB configuration structure */
 struct rte_fib_conf {
 	enum rte_fib_type type; /**< Type of FIB struct */
@@ -87,6 +105,27 @@ struct rte_fib_conf {
 			uint32_t	num_tbl8;
 		} dir24_8;
 	};
+	unsigned int flags; /**< Optional feature flags from RTE_FIB_F_* **/
+};
+
+/** FIB RCU QSBR configuration structure. */
+struct rte_fib_rcu_config {
+	/** RCU QSBR variable. */
+	struct rte_rcu_qsbr *v;
+	/** Mode of RCU QSBR. See RTE_FIB_QSBR_MODE_xxx.
+	 * Default: RTE_FIB_QSBR_MODE_DQ, create defer queue for reclaim.
+	 */
+	enum rte_fib_qsbr_mode mode;
+	/** RCU defer queue size.
+	 * Default: RTE_FIB_RCU_DQ_RECLAIM_SZ.
+	 */
+	uint32_t dq_size;
+	/** Threshold to trigger auto reclaim. */
+	uint32_t reclaim_thd;
+	/** Max entries to reclaim in one go.
+	 * Default: RTE_FIB_RCU_DQ_RECLAIM_MAX.
+	 */
+	uint32_t reclaim_max;
 };
 
 /**
@@ -218,6 +257,26 @@ rte_fib_get_rib(struct rte_fib *fib);
  */
 int
 rte_fib_select_lookup(struct rte_fib *fib, enum rte_fib_lookup_type type);
+
+/**
+ * Associate RCU QSBR variable with a FIB object.
+ *
+ * @param fib
+ *   FIB object handle
+ * @param cfg
+ *   RCU QSBR configuration
+ * @return
+ *   0 on success
+ *   Negative otherwise
+ *   Possible error codes are:
+ *   - -EINVAL - invalid parameters
+ *   - -EEXIST - already added QSBR
+ *   - -ENOMEM - memory allocation failure
+ *   - -ENOTSUP - not supported by configured dataplane algorithm
+ */
+__rte_experimental
+int
+rte_fib_rcu_qsbr_add(struct rte_fib *fib, struct rte_fib_rcu_config *cfg);
 
 #ifdef __cplusplus
 }

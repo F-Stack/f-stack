@@ -12,6 +12,10 @@
  * process, enqueue and move streams of objects to the next nodes.
  */
 
+#include <assert.h>
+#include <stdalign.h>
+#include <stddef.h>
+
 #include <rte_common.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
@@ -43,7 +47,7 @@ SLIST_HEAD(rte_graph_rq_head, rte_graph);
  *
  * Data structure to hold graph data.
  */
-struct rte_graph {
+struct __rte_cache_aligned rte_graph {
 	/* Fast path area. */
 	uint32_t tail;		     /**< Tail of circular buffer. */
 	uint32_t head;		     /**< Head of circular buffer. */
@@ -57,7 +61,8 @@ struct rte_graph {
 	union {
 		/* Fast schedule area for mcore dispatch model */
 		struct {
-			struct rte_graph_rq_head *rq __rte_cache_aligned; /* The run-queue */
+			alignas(RTE_CACHE_LINE_SIZE) struct rte_graph_rq_head *rq;
+				/* The run-queue */
 			struct rte_graph_rq_head rq_head; /* The head for run-queue list */
 
 			unsigned int lcore_id;  /**< The graph running Lcore. */
@@ -77,14 +82,14 @@ struct rte_graph {
 	uint64_t nb_pkt_to_capture;
 	char pcap_filename[RTE_GRAPH_PCAP_FILE_SZ];  /**< Pcap filename. */
 	uint64_t fence;			/**< Fence. */
-} __rte_cache_aligned;
+};
 
 /**
  * @internal
  *
  * Data structure to hold node data.
  */
-struct rte_node {
+struct __rte_cache_aligned rte_node {
 	/* Slow path area  */
 	uint64_t fence;		/**< Fence. */
 	rte_graph_off_t next;	/**< Index to next node. */
@@ -99,23 +104,35 @@ struct rte_node {
 	/** Original process function when pcap is enabled. */
 	rte_node_process_t original_process;
 
+	/** Fast schedule area for mcore dispatch model. */
 	union {
-		/* Fast schedule area for mcore dispatch model */
-		struct {
+		alignas(RTE_CACHE_LINE_MIN_SIZE) struct {
 			unsigned int lcore_id;  /**< Node running lcore. */
 			uint64_t total_sched_objs; /**< Number of objects scheduled. */
 			uint64_t total_sched_fail; /**< Number of scheduled failure. */
 		} dispatch;
 	};
-	/* Fast path area  */
+
+	/** Fast path area cache line 1. */
+	alignas(RTE_CACHE_LINE_MIN_SIZE)
+	rte_graph_off_t xstat_off; /**< Offset to xstat counters. */
+
+	/** Fast path area cache line 2. */
+	__extension__ struct __rte_cache_aligned {
 #define RTE_NODE_CTX_SZ 16
-	uint8_t ctx[RTE_NODE_CTX_SZ] __rte_cache_aligned; /**< Node Context. */
-	uint16_t size;		/**< Total number of objects available. */
-	uint16_t idx;		/**< Number of objects used. */
-	rte_graph_off_t off;	/**< Offset of node in the graph reel. */
-	uint64_t total_cycles;	/**< Cycles spent in this node. */
-	uint64_t total_calls;	/**< Calls done to this node. */
-	uint64_t total_objs;	/**< Objects processed by this node. */
+		union {
+			uint8_t ctx[RTE_NODE_CTX_SZ];
+			__extension__ struct {
+				void *ctx_ptr;
+				void *ctx_ptr2;
+			};
+		}; /**< Node Context. */
+		uint16_t size;		/**< Total number of objects available. */
+		uint16_t idx;		/**< Number of objects used. */
+		rte_graph_off_t off;	/**< Offset of node in the graph reel. */
+		uint64_t total_cycles;	/**< Cycles spent in this node. */
+		uint64_t total_calls;	/**< Calls done to this node. */
+		uint64_t total_objs;	/**< Objects processed by this node. */
 		union {
 			void **objs;	   /**< Array of object pointers. */
 			uint64_t objs_u64;
@@ -124,8 +141,12 @@ struct rte_node {
 			rte_node_process_t process; /**< Process function. */
 			uint64_t process_u64;
 		};
-	struct rte_node *nodes[] __rte_cache_min_aligned; /**< Next nodes. */
-} __rte_cache_aligned;
+		alignas(RTE_CACHE_LINE_MIN_SIZE) struct rte_node *nodes[]; /**< Next nodes. */
+	};
+};
+
+static_assert(offsetof(struct rte_node, nodes) - offsetof(struct rte_node, ctx)
+	== RTE_CACHE_LINE_MIN_SIZE, "rte_node fast path area must fit in 64 bytes");
 
 /**
  * @internal
@@ -566,6 +587,28 @@ static __rte_always_inline
 uint8_t rte_graph_worker_model_no_check_get(struct rte_graph *graph)
 {
 	return graph->model;
+}
+
+/**
+ * Increment Node xstat count.
+ *
+ * Increment the count of an xstat for a given node.
+ *
+ * @param node
+ *   Pointer to the node.
+ * @param xstat_id
+ *   xstat ID.
+ * @param value
+ *   Value to increment.
+ */
+__rte_experimental
+static inline void
+rte_node_xstat_increment(struct rte_node *node, uint16_t xstat_id, uint64_t value)
+{
+	if (rte_graph_has_stats_feature()) {
+		uint64_t *xstat = (uint64_t *)RTE_PTR_ADD(node, node->xstat_off);
+		xstat[xstat_id] += value;
+	}
 }
 
 #ifdef __cplusplus

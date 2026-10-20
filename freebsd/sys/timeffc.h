@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 The University of Melbourne
  * All rights reserved.
@@ -27,8 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_TIMEFF_H_
@@ -91,7 +89,7 @@ extern int sysclock_active;
  *			of the kernel tick timer (1/hz [s]).
  * FFCLOCK_LERP:	Linear interpolation of ffclock time to guarantee
  *			monotonic time.
- * FFCLOCK_LEAPSEC:	Include leap seconds.
+ * {FB|FF}CLOCK_LEAPSEC: Include leap seconds.
  * {FB|FF}CLOCK_UPTIME:	Time stamp should be relative to system boot, not epoch.
  */
 #define	FFCLOCK_FAST		0x00000001
@@ -102,6 +100,7 @@ extern int sysclock_active;
 
 #define	FBCLOCK_FAST		0x00010000 /* Currently unused. */
 #define	FBCLOCK_UPTIME		0x00020000
+#define	FBCLOCK_LEAPSEC		0x00040000
 #define	FBCLOCK_MASK		0xffff0000
 
 /*
@@ -113,6 +112,7 @@ struct fbclock_info {
 	struct bintime		error;
 	struct bintime		tick_time;
 	uint64_t		th_scale;
+	long			th_tai_offset;
 	int			status;
 };
 

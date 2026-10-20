@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Peter Wemm
  * All rights reserved.
@@ -24,14 +24,10 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
+#include <sys/elf.h>
 #include <sys/exec.h>
 #include <sys/fcntl.h>
 #include <sys/imgact.h>
@@ -43,6 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/namei.h>
 #include <sys/proc.h>
 #include <sys/procfs.h>
+#include <sys/reg.h>
 #include <sys/resourcevar.h>
 #include <sys/systm.h>
 #include <sys/signalvar.h>
@@ -71,9 +68,6 @@ __FBSDID("$FreeBSD$");
 #include <machine/md_var.h>
 #include <machine/pcb.h>
 #include <machine/cpufunc.h>
-
-#define	CS_SECURE(cs)		(ISPL(cs) == SEL_UPL)
-#define	EFL_SECURE(ef, oef)	((((ef) ^ (oef)) & ~PSL_USERCHANGE) == 0)
 
 int
 fill_regs32(struct thread *td, struct reg32 *regs)
@@ -268,3 +262,52 @@ set_dbregs32(struct thread *td, struct dbreg32 *regs)
 		dr.dr[i] = 0;
 	return (set_dbregs(td, &dr));
 }
+
+static bool
+get_i386_segbases(struct regset *rs, struct thread *td, void *buf,
+    size_t *sizep)
+{
+	struct segbasereg32 *reg;
+	struct pcb *pcb;
+
+	if (buf != NULL) {
+		KASSERT(*sizep == sizeof(*reg), ("%s: invalid size", __func__));
+		reg = buf;
+
+		pcb = td->td_pcb;
+		if (td == curthread)
+			update_pcb_bases(pcb);
+		reg->r_fsbase = pcb->pcb_fsbase;
+		reg->r_gsbase = pcb->pcb_gsbase;
+	}
+	*sizep = sizeof(*reg);
+	return (true);
+}
+
+static bool
+set_i386_segbases(struct regset *rs, struct thread *td, void *buf,
+    size_t size)
+{
+	struct segbasereg32 *reg;
+	struct pcb *pcb;
+
+	KASSERT(size == sizeof(*reg), ("%s: invalid size", __func__));
+	reg = buf;
+
+	pcb = td->td_pcb;
+	set_pcb_flags(pcb, PCB_FULL_IRET);
+	pcb->pcb_fsbase = reg->r_fsbase;
+	td->td_frame->tf_fs = _ufssel;
+	pcb->pcb_gsbase = reg->r_gsbase;
+	td->td_frame->tf_gs = _ugssel;
+
+	return (true);
+}
+
+static struct regset regset_i386_segbases = {
+	.note = NT_X86_SEGBASES,
+	.size = sizeof(struct segbasereg),
+	.get = get_i386_segbases,
+	.set = set_i386_segbases,
+};
+ELF32_REGSET(regset_i386_segbases);

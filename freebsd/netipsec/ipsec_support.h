@@ -22,8 +22,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _NETIPSEC_IPSEC_SUPPORT_H_
@@ -31,6 +29,8 @@
 
 #ifdef _KERNEL
 #if defined(IPSEC) || defined(IPSEC_SUPPORT)
+struct ifnet;
+struct ip;
 struct mbuf;
 struct inpcb;
 struct tcphdr;
@@ -38,21 +38,54 @@ struct sockopt;
 struct sockaddr;
 struct ipsec_support;
 struct tcpmd5_support;
+struct icmp;
+struct ip6ctlparam;
+
+typedef union {
+	struct icmp *icmp;
+	struct ip6ctlparam *ip6cp;
+} ipsec_ctlinput_param_t __attribute__((__transparent_union__));
 
 size_t ipsec_hdrsiz_inpcb(struct inpcb *);
 int ipsec_init_pcbpolicy(struct inpcb *);
 int ipsec_delete_pcbpolicy(struct inpcb *);
 int ipsec_copy_pcbpolicy(struct inpcb *, struct inpcb *);
 
+#if defined(INET) || defined(INET6)
+int udp_ipsec_input(struct mbuf *, int, int);
+int udp_ipsec_pcbctl(struct inpcb *, struct sockopt *);
+#endif
+#ifdef INET
+int ipsec4_in_reject(const struct mbuf *, struct inpcb *);
+int ipsec4_in_reject1(const struct mbuf *m, struct ip *ip1, struct inpcb *inp);
+int ipsec4_input(struct mbuf *, int, int);
+int ipsec4_forward(struct mbuf *);
+int ipsec4_pcbctl(struct inpcb *, struct sockopt *);
+int ipsec4_output(struct ifnet *, struct mbuf *, struct inpcb *, u_long);
+int ipsec4_capability(struct mbuf *, u_int);
+int ipsec4_ctlinput(ipsec_ctlinput_param_t);
+#endif /* INET */
+
+#ifdef INET6
+int ipsec6_input(struct mbuf *, int, int);
+int ipsec6_in_reject(const struct mbuf *, struct inpcb *);
+int ipsec6_forward(struct mbuf *);
+int ipsec6_pcbctl(struct inpcb *, struct sockopt *);
+int ipsec6_output(struct ifnet *, struct mbuf *, struct inpcb *, u_long);
+int ipsec6_capability(struct mbuf *, u_int);
+int ipsec6_ctlinput(ipsec_ctlinput_param_t);
+#endif /* INET6 */
+
 struct ipsec_methods {
 	int	(*input)(struct mbuf *, int, int);
 	int	(*check_policy)(const struct mbuf *, struct inpcb *);
 	int	(*forward)(struct mbuf *);
-	int	(*output)(struct mbuf *, struct inpcb *);
+	int	(*output)(struct ifnet *, struct mbuf *, struct inpcb *,
+		    u_long);
 	int	(*pcbctl)(struct inpcb *, struct sockopt *);
 	size_t	(*hdrsize)(struct inpcb *);
 	int	(*capability)(struct mbuf *, u_int);
-	int	(*ctlinput)(int, struct sockaddr *, void *);
+	int	(*ctlinput)(ipsec_ctlinput_param_t);
 
 	int	(*udp_input)(struct mbuf *, int, int);
 	int	(*udp_pcbctl)(struct inpcb *, struct sockopt *);
@@ -134,11 +167,13 @@ extern const struct ipsec_support * const ipv6_ipsec_support;
     (*(proto ## _ipsec_support)->methods->capability)(m, __VA_ARGS__)
 #define	IPSEC_HDRSIZE(proto, inp)		\
     (*(proto ## _ipsec_support)->methods->hdrsize)(inp)
+#define	IPSEC_CTLINPUT(proto, param)		\
+    (*(proto ## _ipsec_support)->methods->ctlinput)(param)
 
-#define	UDPENCAP_INPUT(m, ...)			\
-    (*ipv4_ipsec_support->methods->udp_input)(m, __VA_ARGS__)
-#define	UDPENCAP_PCBCTL(inp, sopt)		\
-    (*ipv4_ipsec_support->methods->udp_pcbctl)(inp, sopt)
+#define	UDPENCAP_INPUT(proto, m, ...)			\
+    (*(proto ## _ipsec_support)->methods->udp_input)(m, __VA_ARGS__)
+#define	UDPENCAP_PCBCTL(proto, inp, sopt)		\
+    (*(proto ## _ipsec_support)->methods->udp_pcbctl)(inp, sopt)
 
 #elif defined(IPSEC_SUPPORT)
 struct ipsec_support {
@@ -156,20 +191,21 @@ int ipsec_kmod_input(struct ipsec_support * const, struct mbuf *, int, int);
 int ipsec_kmod_check_policy(struct ipsec_support * const, struct mbuf *,
     struct inpcb *);
 int ipsec_kmod_forward(struct ipsec_support * const, struct mbuf *);
-int ipsec_kmod_output(struct ipsec_support * const, struct mbuf *,
-    struct inpcb *);
+int ipsec_kmod_output(struct ipsec_support * const, struct ifnet *,
+    struct mbuf *, struct inpcb *, u_long);
 int ipsec_kmod_pcbctl(struct ipsec_support * const, struct inpcb *,
     struct sockopt *);
 int ipsec_kmod_capability(struct ipsec_support * const, struct mbuf *, u_int);
 size_t ipsec_kmod_hdrsize(struct ipsec_support * const, struct inpcb *);
+int ipsec_kmod_ctlinput(struct ipsec_support *, ipsec_ctlinput_param_t);
 int ipsec_kmod_udp_input(struct ipsec_support * const, struct mbuf *, int, int);
 int ipsec_kmod_udp_pcbctl(struct ipsec_support * const, struct inpcb *,
     struct sockopt *);
 
-#define	UDPENCAP_INPUT(m, ...)		\
-    ipsec_kmod_udp_input(ipv4_ipsec_support, m, __VA_ARGS__)
-#define	UDPENCAP_PCBCTL(inp, sopt)	\
-    ipsec_kmod_udp_pcbctl(ipv4_ipsec_support, inp, sopt)
+#define	UDPENCAP_INPUT(proto, m, ...)		\
+    ipsec_kmod_udp_input(proto ## _ipsec_support, m, __VA_ARGS__)
+#define	UDPENCAP_PCBCTL(proto, inp, sopt)	\
+    ipsec_kmod_udp_pcbctl(proto ## _ipsec_support, inp, sopt)
 
 #define	IPSEC_INPUT(proto, ...)		\
     ipsec_kmod_input(proto ## _ipsec_support, __VA_ARGS__)
@@ -185,6 +221,8 @@ int ipsec_kmod_udp_pcbctl(struct ipsec_support * const, struct inpcb *,
     ipsec_kmod_capability(proto ## _ipsec_support, __VA_ARGS__)
 #define	IPSEC_HDRSIZE(proto, ...)	\
     ipsec_kmod_hdrsize(proto ## _ipsec_support, __VA_ARGS__)
+#define	IPSEC_CTLINPUT(proto, ...)	\
+    ipsec_kmod_ctlinput(proto ## _ipsec_support, __VA_ARGS__)
 #endif /* IPSEC_SUPPORT */
 #endif /* _KERNEL */
 #endif /* _NETIPSEC_IPSEC_SUPPORT_H_ */

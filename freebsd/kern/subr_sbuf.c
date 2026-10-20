@@ -1,8 +1,8 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000-2008 Poul-Henning Kamp
- * Copyright (c) 2000-2008 Dag-Erling Coïdan Smørgrav
+ * Copyright (c) 2000-2008 Dag-Erling Smørgrav
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -28,9 +28,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 
 #ifdef _KERNEL
@@ -39,9 +36,9 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/limits.h>
 #include <sys/malloc.h>
+#include <sys/stdarg.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
-#include <machine/stdarg.h>
 #else /* _KERNEL */
 #include <ctype.h>
 #include <errno.h>
@@ -266,6 +263,10 @@ sbuf_uionew(struct sbuf *s, struct uio *uio, int *error)
 	KASSERT(error != NULL,
 	    ("%s called with NULL error pointer", __func__));
 
+	if (uio->uio_resid >= INT_MAX || uio->uio_resid < SBUF_MINSIZE - 1) {
+		*error = EINVAL;
+		return (NULL);
+	}
 	s = sbuf_new(s, NULL, uio->uio_resid + 1, 0);
 	if (s == NULL) {
 		*error = ENOMEM;
@@ -383,13 +384,17 @@ sbuf_set_drain(struct sbuf *s, sbuf_drain_func *func, void *ctx)
 /*
  * Call the drain and process the return.
  */
-static int
+int
 sbuf_drain(struct sbuf *s)
 {
 	int len;
 
-	KASSERT(s->s_len > 0, ("Shouldn't drain empty sbuf %p", s));
-	KASSERT(s->s_error == 0, ("Called %s with error on %p", __func__, s));
+	/*
+	 * Immediately return when no work to do,
+	 * or an error has already been accumulated.
+	 */
+	if ((s->s_len == 0) || (s->s_error != 0))
+		return(s->s_error);
 
 	if (SBUF_DODRAINTOEOR(s) && s->s_rec_off == 0)
 		return (s->s_error = EDEADLK);
@@ -472,7 +477,26 @@ static void
 sbuf_put_byte(struct sbuf *s, char c)
 {
 
-	sbuf_put_bytes(s, &c, 1);
+	assert_sbuf_integrity(s);
+	assert_sbuf_state(s, 0);
+
+	if (__predict_false(s->s_error != 0))
+		return;
+	if (__predict_false(SBUF_FREESPACE(s) <= 0)) {
+		/*
+		 * If there is a drain, use it, otherwise extend the
+		 * buffer.
+		 */
+		if (s->s_drain_func != NULL)
+			(void)sbuf_drain(s);
+		else if (sbuf_extend(s, 1) < 0)
+			s->s_error = ENOMEM;
+		if (s->s_error != 0)
+			return;
+	}
+	s->s_buf[s->s_len++] = c;
+	if (SBUF_ISSECTION(s))
+		s->s_sect_len++;
 }
 
 /*
@@ -615,7 +639,7 @@ static void
 sbuf_putc_func(int c, void *arg)
 {
 
-	if (c != '\0')
+	if (__predict_true(c != '\0'))
 		sbuf_put_byte(arg, c);
 }
 

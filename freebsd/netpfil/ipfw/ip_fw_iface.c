@@ -1,5 +1,7 @@
 /*-
- * Copyright (c) 2014 Yandex LLC.
+ * SPDX-License-Identifier: BSD-2-Clause
+ *
+ * Copyright (c) 2014-2025 Yandex LLC.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -24,8 +26,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * Kernel interface tracking API.
  *
@@ -50,6 +50,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/eventhandler.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/vnet.h>
 
 #include <netinet/in.h>
@@ -70,7 +71,7 @@ static int list_ifaces(struct ip_fw_chain *ch, ip_fw3_opheader *op3,
     struct sockopt_data *sd);
 
 static struct ipfw_sopt_handler	scodes[] = {
-	{ IP_FW_XIFLIST,	0,	HDIR_GET,	list_ifaces },
+    { IP_FW_XIFLIST,	IP_FW3_OPVER,	HDIR_GET,	list_ifaces },
 };
 
 /*
@@ -125,7 +126,7 @@ ipfw_kifhandler(void *arg, struct ifnet *ifp)
  * Registers interface tracking handlers for first VNET.
  */
 static void
-iface_khandler_register()
+iface_khandler_register(void)
 {
 	int create;
 
@@ -156,7 +157,7 @@ iface_khandler_register()
  * detach.
  */
 static void
-iface_khandler_deregister()
+iface_khandler_deregister(void)
 {
 	int destroy;
 
@@ -203,7 +204,7 @@ ipfw_kiflookup(char *name)
  * mutex init.
  */
 int
-ipfw_iface_init()
+ipfw_iface_init(void)
 {
 
 	mtx_init(&vnet_mtx, "IPFW ifhandler mtx", NULL, MTX_DEF);
@@ -216,7 +217,7 @@ ipfw_iface_init()
  * Unregister khandlers iff init has been done.
  */
 void
-ipfw_iface_destroy()
+ipfw_iface_destroy(void)
 {
 
 	IPFW_DEL_SOPT_HANDLER(1, scodes);
@@ -232,7 +233,7 @@ vnet_ipfw_iface_init(struct ip_fw_chain *ch)
 {
 	struct namedobj_instance *ii;
 
-	ii = ipfw_objhash_create(DEFAULT_IFACES);
+	ii = ipfw_objhash_create(DEFAULT_IFACES, DEFAULT_OBJHASH_SIZE);
 	IPFW_UH_WLOCK(ch);
 	if (ch->ifcfg == NULL) {
 		ch->ifcfg = ii;
@@ -486,7 +487,7 @@ export_iface_internal(struct namedobj_instance *ii, struct named_object *no,
 
 /*
  * Lists all interface currently tracked by ipfw.
- * Data layout (v0)(current):
+ * Data layout (v1)(current):
  * Request: [ ipfw_obj_lheader ], size = ipfw_obj_lheader.size
  * Reply: [ ipfw_obj_lheader ipfw_iface_info x N ]
  *

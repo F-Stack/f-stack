@@ -1,2 +1,5 @@
 *
 !.gitignore
+# vlan-vip-ipfw test harness (gate-keeper scripts) — keep in repo
+!vlan_test_orchestrator.sh
+!vlan_test_validate.sh

@@ -54,16 +54,16 @@ vhost_user_iotlb_share_page(struct vhost_iotlb_entry *a, struct vhost_iotlb_entr
 }
 
 static void
-vhost_user_iotlb_set_dump(struct vhost_iotlb_entry *node)
+vhost_user_iotlb_set_dump(struct virtio_net *dev, struct vhost_iotlb_entry *node)
 {
 	uint64_t start;
 
 	start = node->uaddr + node->uoffset;
-	mem_set_dump((void *)(uintptr_t)start, node->size, true, RTE_BIT64(node->page_shift));
+	mem_set_dump(dev, (void *)(uintptr_t)start, node->size, true, RTE_BIT64(node->page_shift));
 }
 
 static void
-vhost_user_iotlb_clear_dump(struct vhost_iotlb_entry *node,
+vhost_user_iotlb_clear_dump(struct virtio_net *dev, struct vhost_iotlb_entry *node,
 		struct vhost_iotlb_entry *prev, struct vhost_iotlb_entry *next)
 {
 	uint64_t start, end;
@@ -80,7 +80,7 @@ vhost_user_iotlb_clear_dump(struct vhost_iotlb_entry *node,
 		end = RTE_ALIGN_FLOOR(end, RTE_BIT64(node->page_shift));
 
 	if (end > start)
-		mem_set_dump((void *)(uintptr_t)start, end - start, false,
+		mem_set_dump(dev, (void *)(uintptr_t)start, end - start, false,
 			RTE_BIT64(node->page_shift));
 }
 
@@ -150,16 +150,16 @@ vhost_user_iotlb_pending_insert(struct virtio_net *dev, uint64_t iova, uint8_t p
 
 	node = vhost_user_iotlb_pool_get(dev);
 	if (node == NULL) {
-		VHOST_LOG_CONFIG(dev->ifname, DEBUG,
-			"IOTLB pool empty, clear entries for pending insertion\n");
+		VHOST_CONFIG_LOG(dev->ifname, DEBUG,
+			"IOTLB pool empty, clear entries for pending insertion");
 		if (!TAILQ_EMPTY(&dev->iotlb_pending_list))
 			vhost_user_iotlb_pending_remove_all(dev);
 		else
 			vhost_user_iotlb_cache_random_evict(dev);
 		node = vhost_user_iotlb_pool_get(dev);
 		if (node == NULL) {
-			VHOST_LOG_CONFIG(dev->ifname, ERR,
-				"IOTLB pool still empty, pending insertion failure\n");
+			VHOST_CONFIG_LOG(dev->ifname, ERR,
+				"IOTLB pool still empty, pending insertion failure");
 			return;
 		}
 	}
@@ -204,7 +204,7 @@ vhost_user_iotlb_cache_remove_all(struct virtio_net *dev)
 	vhost_user_iotlb_wr_lock_all(dev);
 
 	RTE_TAILQ_FOREACH_SAFE(node, &dev->iotlb_list, next, temp_node) {
-		vhost_user_iotlb_clear_dump(node, NULL, NULL);
+		vhost_user_iotlb_clear_dump(dev, node, NULL, NULL);
 
 		TAILQ_REMOVE(&dev->iotlb_list, node, next);
 		vhost_user_iotlb_remove_notify(dev, node);
@@ -230,7 +230,7 @@ vhost_user_iotlb_cache_random_evict(struct virtio_net *dev)
 		if (!entry_idx) {
 			struct vhost_iotlb_entry *next_node = RTE_TAILQ_NEXT(node, next);
 
-			vhost_user_iotlb_clear_dump(node, prev_node, next_node);
+			vhost_user_iotlb_clear_dump(dev, node, prev_node, next_node);
 
 			TAILQ_REMOVE(&dev->iotlb_list, node, next);
 			vhost_user_iotlb_remove_notify(dev, node);
@@ -253,16 +253,16 @@ vhost_user_iotlb_cache_insert(struct virtio_net *dev, uint64_t iova, uint64_t ua
 
 	new_node = vhost_user_iotlb_pool_get(dev);
 	if (new_node == NULL) {
-		VHOST_LOG_CONFIG(dev->ifname, DEBUG,
-			"IOTLB pool empty, clear entries for cache insertion\n");
+		VHOST_CONFIG_LOG(dev->ifname, DEBUG,
+			"IOTLB pool empty, clear entries for cache insertion");
 		if (!TAILQ_EMPTY(&dev->iotlb_list))
 			vhost_user_iotlb_cache_random_evict(dev);
 		else
 			vhost_user_iotlb_pending_remove_all(dev);
 		new_node = vhost_user_iotlb_pool_get(dev);
 		if (new_node == NULL) {
-			VHOST_LOG_CONFIG(dev->ifname, ERR,
-				"IOTLB pool still empty, cache insertion failed\n");
+			VHOST_CONFIG_LOG(dev->ifname, ERR,
+				"IOTLB pool still empty, cache insertion failed");
 			return;
 		}
 	}
@@ -285,7 +285,7 @@ vhost_user_iotlb_cache_insert(struct virtio_net *dev, uint64_t iova, uint64_t ua
 			vhost_user_iotlb_pool_put(dev, new_node);
 			goto unlock;
 		} else if (node->iova > new_node->iova) {
-			vhost_user_iotlb_set_dump(new_node);
+			vhost_user_iotlb_set_dump(dev, new_node);
 
 			TAILQ_INSERT_BEFORE(node, new_node, next);
 			dev->iotlb_cache_nr++;
@@ -293,7 +293,7 @@ vhost_user_iotlb_cache_insert(struct virtio_net *dev, uint64_t iova, uint64_t ua
 		}
 	}
 
-	vhost_user_iotlb_set_dump(new_node);
+	vhost_user_iotlb_set_dump(dev, new_node);
 
 	TAILQ_INSERT_TAIL(&dev->iotlb_list, new_node, next);
 	dev->iotlb_cache_nr++;
@@ -322,7 +322,7 @@ vhost_user_iotlb_cache_remove(struct virtio_net *dev, uint64_t iova, uint64_t si
 		if (iova < node->iova + node->size) {
 			struct vhost_iotlb_entry *next_node = RTE_TAILQ_NEXT(node, next);
 
-			vhost_user_iotlb_clear_dump(node, prev_node, next_node);
+			vhost_user_iotlb_clear_dump(dev, node, prev_node, next_node);
 
 			TAILQ_REMOVE(&dev->iotlb_list, node, next);
 			vhost_user_iotlb_remove_notify(dev, node);
@@ -415,7 +415,7 @@ vhost_user_iotlb_init(struct virtio_net *dev)
 		dev->iotlb_pool = rte_calloc_socket("iotlb", IOTLB_CACHE_SIZE,
 			sizeof(struct vhost_iotlb_entry), 0, socket);
 		if (!dev->iotlb_pool) {
-			VHOST_LOG_CONFIG(dev->ifname, ERR, "Failed to create IOTLB cache pool\n");
+			VHOST_CONFIG_LOG(dev->ifname, ERR, "Failed to create IOTLB cache pool");
 			return -1;
 		}
 		for (i = 0; i < IOTLB_CACHE_SIZE; i++)

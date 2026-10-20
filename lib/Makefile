@@ -20,7 +20,7 @@ PREFIX_LIB=${PREFIX}/lib
 PREFIX_INCLUDE=${PREFIX}/include
 PREFIX_BIN=${PREFIX}/bin
 F-STACK_CONF=/etc/f-stack.conf
-F-STACK_VERSION=1.25
+F-STACK_VERSION=2.0
 TGT_OS=$(shell uname)
 ifeq ($(TGT_OS),FreeBSD)
 CC=gcc
@@ -40,8 +40,8 @@ endif
 #FF_FDIR=1
 #FF_FLOW_IPIP=1
 # NETGRAPH drivers ipfw
-#FF_NETGRAPH=1
-#FF_IPFW=1
+FF_NETGRAPH=1
+FF_IPFW=1
 
 #FF_USE_PAGE_ARRAY=1
 #FF_ZC_SEND=1
@@ -52,7 +52,12 @@ FF_TCPHPTS=1
 FF_EXTRA_TCP_STACKS=1
 
 # TCP/UDP loopback.
-#FF_LOOPBACK_SUPPORT=1
+FF_LOOPBACK_SUPPORT=1
+
+# Kernel-stack coexistence: per-fd SOCK_KERNEL sockets additionally use the host
+# Linux kernel stack (local socket/fd/event access) alongside F-Stack. Disabled
+# by default; build with FF_KERNEL_COEXIST=1 (or uncomment below) to compile it.
+#FF_KERNEL_COEXIST=1
 
 include ${TOPDIR}/mk/kern.pre.mk
 
@@ -127,6 +132,21 @@ ifeq "$(GCCVERGE11)" "1"
     CFLAGS+= -Wno-error=stringop-overread
 endif
 
+GCCVERGE12 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 12)
+ifeq "$(GCCVERGE12)" "1"
+    CFLAGS+= -Wno-error=array-bounds
+endif
+
+# FreeBSD's kernel printf uses %D (hex dump format) which is unknown to GCC's
+# format checker. Disable -Werror=format and -Werror=format-extra-args on every
+# GCC version so the FreeBSD-derived sources still build.
+CFLAGS+= -Wno-error=format
+CFLAGS+= -Wno-error=format-extra-args
+
+# cast-qual is triggered by FreeBSD's atomic_store_ptr macro on every supported
+# GCC version (including GCC 8), so disable -Werror=cast-qual unconditionally.
+CFLAGS+= -Wno-error=cast-qual
+
 GCCVERGE13 = $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 13)
 ifeq "$(GCCVERGE13)" "1"
     CFLAGS+= -Wno-error=dangling-pointer
@@ -149,6 +169,22 @@ endif
 ifdef FF_LOOPBACK_SUPPORT
 HOST_CFLAGS+= -DFF_LOOPBACK_SUPPORT
 CFLAGS+= -DFF_LOOPBACK_SUPPORT
+endif
+
+ifdef FF_KERNEL_COEXIST
+HOST_CFLAGS+= -DFF_KERNEL_COEXIST
+CFLAGS+= -DFF_KERNEL_COEXIST
+endif
+
+# Test-only graceful-reload fault injection (nginx_reload_spec 08,
+# RT-05/06/07): FF_FAULT env hooks in lib/ff_reload.c. Build with
+# FF_RELOAD_FAULT_INJECTION=1 for the runtime fault-injection builds;
+# never enabled in default/production builds.
+ifdef FF_RELOAD_FAULT_INJECTION
+HOST_CFLAGS+= -DFF_RELOAD_FAULT_INJECTION
+# the SYN-ACK fault point lives in the localized stack, which is built
+# with CFLAGS rather than HOST_CFLAGS
+CFLAGS+= -DFF_RELOAD_FAULT_INJECTION
 endif
 
 HOST_C= ${CC} -c $(HOST_CFLAGS) ${HOST_INCLUDES} ${WERROR} ${PROF} $<
@@ -191,25 +227,18 @@ ifeq (${MACHINE_CPUARCH},i386)
 MACHINE=i386
 endif
 
-#
-# Distilled from FreeBSD src/sys/conf/Makefile.mips
-#
-ifeq (${MACHINE_CPUARCH},mips)
-
-# We default to the MIPS32 ISA, if none specified in the
-# kernel configuration file.
-ARCH_FLAGS?=-march=mips32
-
-HACK_EXTRA_FLAGS=-shared
-
-CFLAGS+=${EXTRA_FLAGS} $(ARCH_FLAGS)
-HACK_EXTRA_FLAGS+=${EXTRA_FLAGS} $(ARCH_FLAGS)
-endif
-
 CFLAGS+= -DFSTACK
+
+# SMP makes MAXCPU 1024 so UMA/SMR per-cpu storage is sized for all stack
+# threads; without it MAXCPU is 1 and every thread shares slot 0.
+CFLAGS+= -DSMP
 
 ifdef FF_ZC_SEND
 CFLAGS+= -DFSTACK_ZC_SEND
+endif
+
+ifdef FF_ZC_RECV
+CFLAGS+= -DFSTACK_ZC_RECV
 endif
 
 # add for LVS tcp option toa, disabled by default
@@ -267,7 +296,9 @@ FF_SRCS+=                     \
 	ff_subr_prf.c         \
 	ff_vfs_ops.c          \
 	ff_veth.c             \
-	ff_route.c
+	ff_route.c            \
+	ff_stub_14_extra.c    \
+	ff_vimage_glue.c
 
 ifdef FF_NETGRAPH
 FF_SRCS+=                   \
@@ -280,6 +311,11 @@ FF_HOST_SRCS+=              \
 	ff_thread.c         \
 	ff_config.c         \
 	ff_ini_parser.c     \
+	ff_reload.c         \
+	ff_reload_gendir.c  \
+	ff_flow_map.c       \
+	ff_flow_peer.c      \
+	ff_drain_ring.c     \
 	ff_dpdk_if.c        \
 	ff_dpdk_pcap.c      \
 	ff_epoll.c          \
@@ -405,8 +441,6 @@ NET_SRCS+=		 \
 	if_loop.c	 \
 	if_llatbl.c	 \
 	if_media.c       \
-	if_spppfr.c      \
-	if_spppsubr.c    \
 	if_vlan.c        \
 	if_vxlan.c       \
 	in_fib.c	 \
@@ -415,10 +449,10 @@ NET_SRCS+=		 \
 	netisr.c	 \
 	pfil.c		 \
 	radix.c		 \
-	raw_cb.c	 \
-	raw_usrreq.c	 \
+	ifq.c		 \
 	route.c		 \
 	route_ctl.c	 \
+	route_rtentry.c	 \
 	route_tables.c	 \
 	route_helpers.c	 \
 	route_ifaddrs.c	 \
@@ -427,12 +461,12 @@ NET_SRCS+=		 \
 	nhop.c		 \
 	nhop_ctl.c	 \
 	rtsock.c         \
-	slcompress.c
+	slcompress.c	 \
+	vnet.c
 
 ifdef FF_NETGRAPH
 NETGRAPH_SRCS +=         \
 	ng_async.c       \
-	ng_atmllc.c      \
 	ng_bridge.c      \
 	ng_car.c         \
 	ng_cisco.c       \
@@ -467,7 +501,6 @@ NETGRAPH_SRCS +=         \
 	ng_socket.c      \
 	ng_source.c      \
 	ng_split.c       \
-	ng_sppp.c        \
 	ng_tag.c         \
 	ng_tcpmss.c      \
 	ng_tee.c         \
@@ -497,7 +530,6 @@ NETINET_SRCS+=		\
 	ip_options.c	\
 	ip_output.c	\
 	raw_ip.c	\
-	tcp_debug.c	\
 	tcp_hostcache.c	\
 	tcp_input.c	\
 	tcp_lro.c	\
@@ -510,6 +542,7 @@ NETINET_SRCS+=		\
 	tcp_timer.c	\
 	tcp_timewait.c	\
 	tcp_usrreq.c	\
+	tcp_ecn.c	\
 	udp_usrreq.c	\
 	cc.c		\
 	cc_newreno.c    \
@@ -531,7 +564,6 @@ NETINET6_SRCS+=		\
 	in6_ifattach.c	\
 	in6_mcast.c	\
 	in6_pcb.c	\
-	in6_pcbgroup.c	\
 	in6_proto.c	\
 	in6_rmx.c	\
 	in6_src.c	\
@@ -597,6 +629,7 @@ NETIPFW_SRCS+=             \
 	ip_fw_table_algo.c  \
 	ip_fw_table_value.c \
 	ip_fw2.c \
+	ip_fw_compat.c \
 	ip_fw_pmod.c \
 	tcpmod.c
 endif
@@ -738,6 +771,8 @@ install:
 	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
 	rm -rf ${PREFIX_INCLUDE}/ff_log.h
+	rm -rf ${PREFIX_INCLUDE}/ff_reload.h
+	rm -rf ${PREFIX_INCLUDE}/ff_flow_map.h
 	rm -rf ${PREFIX_BIN}/ff_start
 
 	cp -f libfstack.a ${PREFIX_LIB}/libfstack.a.${F-STACK_VERSION}
@@ -748,6 +783,8 @@ install:
 	cp -f ff_errno.h ${PREFIX_INCLUDE}/ff_errno.h
 	cp -f ff_epoll.h ${PREFIX_INCLUDE}/ff_epoll.h
 	cp -f ff_log.h ${PREFIX_INCLUDE}/ff_log.h
+	cp -f ff_reload.h ${PREFIX_INCLUDE}/ff_reload.h
+	cp -f ff_flow_map.h ${PREFIX_INCLUDE}/ff_flow_map.h
 	cp -f ${TOPDIR}/start.sh ${PREFIX_BIN}/ff_start
 	test -f '${F-STACK_CONF}' || cp -f ${TOPDIR}/config.ini ${F-STACK_CONF}
 
@@ -760,6 +797,8 @@ uninstall:
 	rm -rf ${PREFIX_INCLUDE}/ff_errno.h
 	rm -rf ${PREFIX_INCLUDE}/ff_epoll.h
 	rm -rf ${PREFIX_INCLUDE}/ff_log.h
+	rm -rf ${PREFIX_INCLUDE}/ff_reload.h
+	rm -rf ${PREFIX_INCLUDE}/ff_flow_map.h
 	rm -rf ${PREFIX_BIN}/ff_start
 	rm -rf ${F-STACK_CONF}
 

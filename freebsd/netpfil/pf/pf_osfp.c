@@ -19,8 +19,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet6.h"
 
 #include <sys/param.h>
@@ -42,9 +40,6 @@ __FBSDID("$FreeBSD$");
 #endif
 
 static MALLOC_DEFINE(M_PFOSFP, "pf_osfp", "pf(4) operating system fingerprints");
-#define	DPFPRINTF(format, x...)		\
-	if (V_pf_status.debug >= PF_DEBUG_NOISY)	\
-		printf(format , ##x)
 
 SLIST_HEAD(pf_osfp_list, pf_os_fingerprint);
 VNET_DEFINE_STATIC(struct pf_osfp_list,	pf_osfp_list) =
@@ -69,25 +64,25 @@ static struct pf_os_fingerprint	*pf_osfp_validate(void);
  * Returns the list of possible OSes.
  */
 struct pf_osfp_enlist *
-pf_osfp_fingerprint(struct pf_pdesc *pd, struct mbuf *m, int off,
-    const struct tcphdr *tcp)
+pf_osfp_fingerprint(struct pf_pdesc *pd, const struct tcphdr *tcp)
 {
-	struct ip *ip;
-	struct ip6_hdr *ip6;
-	char hdr[60];
+	struct ip	*ip = NULL;
+	struct ip6_hdr	*ip6 = NULL;
+	char		 hdr[60];
 
-	if ((pd->af != PF_INET && pd->af != PF_INET6) ||
-	    pd->proto != IPPROTO_TCP || (tcp->th_off << 2) < sizeof(*tcp))
+	if (pd->proto != IPPROTO_TCP || (tcp->th_off << 2) < sizeof(*tcp))
 		return (NULL);
 
-	if (pd->af == PF_INET) {
-		ip = mtod(m, struct ip *);
+	switch (pd->af) {
+	case AF_INET:
+		ip = mtod(pd->m, struct ip *);
 		ip6 = (struct ip6_hdr *)NULL;
-	} else {
-		ip = (struct ip *)NULL;
-		ip6 = mtod(m, struct ip6_hdr *);
+		break;
+	case AF_INET6:
+		ip6 = mtod(pd->m, struct ip6_hdr *);
+		break;
 	}
-	if (!pf_pull_hdr(m, off, hdr, tcp->th_off << 2, NULL, NULL,
+	if (!pf_pull_hdr(pd->m, pd->off, hdr, tcp->th_off << 2, NULL, NULL,
 	    pd->af)) return (NULL);
 
 	return (pf_osfp_fingerprint_hdr(ip, ip6, (struct tcphdr *)hdr));
@@ -105,7 +100,7 @@ pf_osfp_fingerprint_hdr(const struct ip *ip, const struct ip6_hdr *ip6, const st
 	char srcname[INET_ADDRSTRLEN];
 #endif
 
-	if ((tcp->th_flags & (TH_SYN|TH_ACK)) != TH_SYN)
+	if ((tcp_get_flags(tcp) & (TH_SYN|TH_ACK)) != TH_SYN)
 		return (NULL);
 	if (ip) {
 		if ((ip->ip_off & htons(IP_OFFMASK)) != 0)
@@ -159,13 +154,13 @@ pf_osfp_fingerprint_hdr(const struct ip *ip, const struct ip6_hdr *ip6, const st
 					    sizeof(fp.fp_mss));
 				fp.fp_tcpopts = (fp.fp_tcpopts <<
 				    PF_OSFP_TCPOPT_BITS) | PF_OSFP_TCPOPT_MSS;
-				NTOHS(fp.fp_mss);
+				fp.fp_mss = ntohs(fp.fp_mss);
 				break;
 			case TCPOPT_WINDOW:
 				if (optlen >= TCPOLEN_WINDOW)
 					memcpy(&fp.fp_wscale, &optp[2],
 					    sizeof(fp.fp_wscale));
-				NTOHS(fp.fp_wscale);
+				fp.fp_wscale = ntohs(fp.fp_wscale);
 				fp.fp_tcpopts = (fp.fp_tcpopts <<
 				    PF_OSFP_TCPOPT_BITS) |
 				    PF_OSFP_TCPOPT_WSCALE;
@@ -191,8 +186,8 @@ pf_osfp_fingerprint_hdr(const struct ip *ip, const struct ip6_hdr *ip6, const st
 		optlen = MAX(optlen, 1);	/* paranoia */
 	}
 
-	DPFPRINTF("fingerprinted %s:%d  %d:%d:%d:%d:%llx (%d) "
-	    "(TS=%s,M=%s%d,W=%s%d)\n",
+	DPFPRINTF(PF_DEBUG_NOISY, "fingerprinted %s:%d  %d:%d:%d:%d:%llx (%d) "
+	    "(TS=%s,M=%s%d,W=%s%d)",
 	    srcname, ntohs(tcp->th_sport),
 	    fp.fp_wsize, fp.fp_ttl, (fp.fp_flags & PF_OSFP_DF) != 0,
 	    fp.fp_psize, (long long int)fp.fp_tcpopts, fp.fp_optcnt,
@@ -221,7 +216,7 @@ pf_osfp_match(struct pf_osfp_enlist *list, pf_osfp_t os)
 	if (os == PF_OSFP_ANY)
 		return (1);
 	if (list == NULL) {
-		DPFPRINTF("osfp no match against %x\n", os);
+		DPFPRINTF(PF_DEBUG_NOISY, "osfp no match against %x", os);
 		return (os == PF_OSFP_UNKNOWN);
 	}
 	PF_OSFP_UNPACK(os, os_class, os_version, os_subtype);
@@ -230,13 +225,13 @@ pf_osfp_match(struct pf_osfp_enlist *list, pf_osfp_t os)
 		if ((os_class == PF_OSFP_ANY || en_class == os_class) &&
 		    (os_version == PF_OSFP_ANY || en_version == os_version) &&
 		    (os_subtype == PF_OSFP_ANY || en_subtype == os_subtype)) {
-			DPFPRINTF("osfp matched %s %s %s  %x==%x\n",
+			DPFPRINTF(PF_DEBUG_NOISY, "osfp matched %s %s %s  %x==%x",
 			    entry->fp_class_nm, entry->fp_version_nm,
 			    entry->fp_subtype_nm, os, entry->fp_os);
 			return (1);
 		}
 	}
-	DPFPRINTF("fingerprint 0x%x didn't match\n", os);
+	DPFPRINTF(PF_DEBUG_NOISY, "fingerprint 0x%x didn't match", os);
 	return (0);
 }
 
@@ -277,8 +272,8 @@ pf_osfp_add(struct pf_osfp_ioctl *fpioc)
 	fpadd.fp_ttl = fpioc->fp_ttl;
 
 #if 0	/* XXX RYAN wants to fix logging */
-	DPFPRINTF("adding osfp %s %s %s = %s%d:%d:%d:%s%d:0x%llx %d "
-	    "(TS=%s,M=%s%d,W=%s%d) %x\n",
+	DPFPRINTF(PF_DEBUG_NOISY, "adding osfp %s %s %s ="
+	    " %s%d:%d:%d:%s%d:0x%llx %d (TS=%s,M=%s%d,W=%s%d) %x",
 	    fpioc->fp_os.fp_class_nm, fpioc->fp_os.fp_version_nm,
 	    fpioc->fp_os.fp_subtype_nm,
 	    (fpadd.fp_flags & PF_OSFP_WSIZE_MOD) ? "%" :

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Bruno Ducrot
  *
@@ -36,9 +36,6 @@
  *
  * Many thanks to Jon Noack for testing and debugging this driver.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/bus.h>
@@ -106,8 +103,8 @@ static device_method_t smist_methods[] = {
 static driver_t smist_driver = {
 	"smist", smist_methods, sizeof(struct smist_softc)
 };
-static devclass_t smist_devclass;
-DRIVER_MODULE(smist, cpu, smist_driver, smist_devclass, 0, 0);
+
+DRIVER_MODULE(smist, cpu, smist_driver, 0, 0);
 
 struct piix4_pci_device {
 	uint16_t		 vendor;
@@ -205,8 +202,7 @@ set_ownership(device_t dev)
 	    /*alignment*/ PAGE_SIZE, /*no boundary*/ 0,
 	    /*lowaddr*/ BUS_SPACE_MAXADDR_32BIT, /*highaddr*/ BUS_SPACE_MAXADDR,
 	    NULL, NULL, /*maxsize*/ PAGE_SIZE, /*segments*/ 1,
-	    /*maxsegsize*/ PAGE_SIZE, 0, busdma_lock_mutex, &Giant,
-	    &tag) != 0) {
+	    /*maxsegsize*/ PAGE_SIZE, 0, NULL, NULL, &tag) != 0) {
 		device_printf(dev, "can't create mem tag\n");
 		return (ENXIO);
 	}
@@ -309,9 +305,10 @@ smist_identify(driver_t *driver, device_t parent)
 	if (bootverbose)
 		printf("smist: found supported isa bridge %s\n", id->desc);
 
-	if (device_find_child(parent, "smist", -1) != NULL)
+	if (device_find_child(parent, "smist", DEVICE_UNIT_ANY) != NULL)
 		return;
-	if (BUS_ADD_CHILD(parent, 30, "smist", -1) == NULL)
+	if (BUS_ADD_CHILD(parent, 30, "smist", device_get_unit(parent))
+	    == NULL)
 		device_printf(parent, "smist: add child failed\n");
 }
 
@@ -333,13 +330,15 @@ smist_probe(device_t dev)
 	 * If the ACPI perf or ICH SpeedStep drivers have attached and not
 	 * just offering info, let them manage things.
 	 */
-	perf_dev = device_find_child(device_get_parent(dev), "acpi_perf", -1);
+	perf_dev = device_find_child(device_get_parent(dev), "acpi_perf",
+	    DEVICE_UNIT_ANY);
 	if (perf_dev && device_is_attached(perf_dev)) {
 		rv = CPUFREQ_DRV_TYPE(perf_dev, &type);
 		if (rv == 0 && (type & CPUFREQ_FLAG_INFO_ONLY) == 0)
 			return (ENXIO);
 	}
-	ichss_dev = device_find_child(device_get_parent(dev), "ichss", -1);
+	ichss_dev = device_find_child(device_get_parent(dev), "ichss",
+	    DEVICE_UNIT_ANY);
 	if (ichss_dev && device_is_attached(ichss_dev))
 		return (ENXIO);
 

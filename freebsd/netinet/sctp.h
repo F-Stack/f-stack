@@ -32,9 +32,6 @@
  * THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #ifndef _NETINET_SCTP_H_
 #define _NETINET_SCTP_H_
 
@@ -129,6 +126,7 @@ struct sctp_paramhdr {
 #define SCTP_NRSACK_SUPPORTED           0x00000030
 #define SCTP_PKTDROP_SUPPORTED          0x00000031
 #define SCTP_MAX_CWND                   0x00000032
+#define SCTP_ACCEPT_ZERO_CHECKSUM       0x00000033
 
 /*
  * read-only options
@@ -191,8 +189,11 @@ struct sctp_paramhdr {
 /* JRS - Pluggable Congestion Control Socket option */
 #define SCTP_PLUGGABLE_CC               0x00001202
 /* RS - Pluggable Stream Scheduling Socket option */
-#define SCTP_PLUGGABLE_SS		0x00001203
-#define SCTP_SS_VALUE			0x00001204
+#define SCTP_STREAM_SCHEDULER		0x00001203
+#define SCTP_STREAM_SCHEDULER_VALUE	0x00001204
+/* The next two are for backwards compatibility. */
+#define SCTP_PLUGGABLE_SS		SCTP_STREAM_SCHEDULER
+#define SCTP_SS_VALUE			SCTP_STREAM_SCHEDULER_VALUE
 #define SCTP_CC_OPTION			0x00001205	/* Options for CC
 							 * modules */
 /* For I-DATA */
@@ -308,15 +309,21 @@ struct sctp_paramhdr {
 /* Default simple round-robin */
 #define SCTP_SS_DEFAULT			0x00000000
 /* Real round-robin */
-#define SCTP_SS_ROUND_ROBIN		0x00000001
+#define SCTP_SS_RR			0x00000001
 /* Real round-robin per packet */
-#define SCTP_SS_ROUND_ROBIN_PACKET	0x00000002
+#define SCTP_SS_RR_PKT			0x00000002
 /* Priority */
-#define SCTP_SS_PRIORITY		0x00000003
+#define SCTP_SS_PRIO			0x00000003
 /* Fair Bandwidth */
-#define SCTP_SS_FAIR_BANDWITH		0x00000004
+#define SCTP_SS_FB			0x00000004
 /* First-come, first-serve */
-#define SCTP_SS_FIRST_COME		0x00000005
+#define SCTP_SS_FCFS			0x00000005
+/* The next five are for backwards compatibility. */
+#define SCTP_SS_ROUND_ROBIN		SCTP_SS_RR
+#define SCTP_SS_ROUND_ROBIN_PACKET	SCTP_SS_RR_PKT
+#define SCTP_SS_PRIORITY		SCTP_SS_PRIO
+#define SCTP_SS_FAIR_BANDWITH		SCTP_SS_FB
+#define SCTP_SS_FIRST_COME		SCTP_SS_FCFS
 
 /* fragment interleave constants
  * setting must be one of these or

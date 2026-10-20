@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002, Jeffrey Roberson <jeff@freebsd.org>
  * Copyright (c) 2008-2009, Lawrence Stewart <lstewart@freebsd.org>
@@ -33,25 +33,24 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_mac.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/alq.h>
+#include <sys/eventhandler.h>
+#include <sys/fcntl.h>
 #include <sys/kernel.h>
 #include <sys/kthread.h>
 #include <sys/lock.h>
+#include <sys/malloc.h>
 #include <sys/mount.h>
 #include <sys/mutex.h>
 #include <sys/namei.h>
 #include <sys/proc.h>
-#include <sys/vnode.h>
-#include <sys/alq.h>
-#include <sys/malloc.h>
+#include <sys/reboot.h>
 #include <sys/unistd.h>
-#include <sys/fcntl.h>
-#include <sys/eventhandler.h>
+#include <sys/vnode.h>
 
 #include <security/mac/mac_framework.h>
 
@@ -229,6 +228,9 @@ static void
 ald_shutdown(void *arg, int howto)
 {
 	struct alq *alq;
+
+	if ((howto & RB_NOSYNC) != 0 || SCHEDULER_STOPPED())
+		return;
 
 	ALD_LOCK();
 
@@ -431,7 +433,6 @@ int
 alq_open_flags(struct alq **alqp, const char *file, struct ucred *cred, int cmode,
     int size, int flags)
 {
-	struct thread *td;
 	struct nameidata nd;
 	struct alq *alq;
 	int oflags;
@@ -440,16 +441,15 @@ alq_open_flags(struct alq **alqp, const char *file, struct ucred *cred, int cmod
 	KASSERT((size > 0), ("%s: size <= 0", __func__));
 
 	*alqp = NULL;
-	td = curthread;
 
-	NDINIT(&nd, LOOKUP, NOFOLLOW, UIO_SYSSPACE, file, td);
+	NDINIT(&nd, LOOKUP, NOFOLLOW, UIO_SYSSPACE, file);
 	oflags = FWRITE | O_NOFOLLOW | O_CREAT;
 
 	error = vn_open_cred(&nd, &oflags, cmode, 0, cred, NULL);
 	if (error)
 		return (error);
 
-	NDFREE(&nd, NDF_ONLY_PNBUF);
+	NDFREE_PNBUF(&nd);
 	/* We just unlock so we hold a reference */
 	VOP_UNLOCK(nd.ni_vp);
 

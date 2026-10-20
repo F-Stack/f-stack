@@ -2,10 +2,7 @@
 # Copyright(c) 2017-2019 Intel Corporation
 
 project('DPDK', 'c',
-        # Get version number from file.
-        # Fallback to "more" for Windows compatibility.
-        version: run_command(find_program('cat', 'more'),
-            files('VERSION'), check: true).stdout().strip(),
+        version: files('VERSION'),
         license: 'BSD',
         default_options: [
             'buildtype=release',
@@ -13,7 +10,7 @@ project('DPDK', 'c',
             'default_library=static',
             'warning_level=2',
         ],
-        meson_version: '>= 0.53.2'
+        meson_version: '>= 0.57'
 )
 
 # check for developer mode
@@ -67,15 +64,19 @@ endif
 # configure the build, and make sure configs here and in config folder are
 # able to be included in any file. We also store a global array of include dirs
 # for passing to pmdinfogen scripts
-global_inc = include_directories('.', 'config',
+global_inc = [include_directories('.', 'config',
     'lib/eal/include',
     'lib/eal/@0@/include'.format(host_machine.system()),
     'lib/eal/@0@/include'.format(arch_subdir),
-)
+)]
 
 # do configuration and get tool paths
 subdir('buildtools')
 subdir('config')
+
+if is_linux
+    global_inc += include_directories('kernel/linux')
+endif
 
 # build libs and drivers
 subdir('lib')
@@ -178,3 +179,7 @@ foreach drv:dpdk_drvs_disabled
     output_message += drv + ':\t' + reason + '\n\t'
 endforeach
 message(output_message + '\n')
+
+message('DPDK build config complete:\n' +
+        '  source path = "' + dpdk_source_root + '"\n' +
+        '  build path  = "' + dpdk_build_root + '"')

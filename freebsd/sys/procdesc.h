@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009 Robert N. M. Watson
  * All rights reserved.
@@ -27,8 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_PROCDESC_H_
@@ -88,7 +86,6 @@ struct procdesc {
  * Flags for the pd_flags field.
  */
 #define	PDF_CLOSED	0x00000001	/* Descriptor has closed. */
-#define	PDF_SELECTED	0x00000002	/* Issue selwakeup(). */
 #define	PDF_EXITED	0x00000004	/* Process exited. */
 #define	PDF_DAEMON	0x00000008	/* Don't exit when procdesc closes. */
 
@@ -96,8 +93,10 @@ struct procdesc {
  * In-kernel interfaces to process descriptors.
  */
 int	 procdesc_exit(struct proc *);
-int	 procdesc_find(struct thread *, int fd, cap_rights_t *, struct proc **);
-int	 kern_pdgetpid(struct thread *, int fd, cap_rights_t *, pid_t *pidp);
+int	 procdesc_find(struct thread *, int fd, const cap_rights_t *,
+	    struct proc **);
+int	 kern_pdgetpid(struct thread *, int fd, const cap_rights_t *,
+	    pid_t *pidp);
 void	 procdesc_new(struct proc *, int);
 void	 procdesc_finit(struct procdesc *, struct file *);
 pid_t	 procdesc_pid(struct file *);
@@ -108,6 +107,7 @@ int	 procdesc_falloc(struct thread *, struct file **, int *, int,
 
 #else /* !_KERNEL */
 
+#include <sys/cdefs.h>
 #include <sys/_types.h>
 
 #ifndef _PID_T_DECLARED

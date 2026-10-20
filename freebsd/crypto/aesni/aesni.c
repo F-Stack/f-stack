@@ -1,13 +1,16 @@
 /*-
  * Copyright (c) 2005-2008 Pawel Jakub Dawidek <pjd@FreeBSD.org>
  * Copyright (c) 2010 Konstantin Belousov <kib@FreeBSD.org>
- * Copyright (c) 2014 The FreeBSD Foundation
+ * Copyright (c) 2014-2021 The FreeBSD Foundation
  * Copyright (c) 2017 Conrad Meyer <cem@FreeBSD.org>
  * All rights reserved.
  *
  * Portions of this software were developed by John-Mark Gurney
  * under sponsorship of the FreeBSD Foundation and
  * Rubicon Communications, LLC (Netgate).
+ *
+ * Portions of this software were developed by Ararat River
+ * Consulting, LLC under sponsorship of the FreeBSD Foundation.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -31,19 +34,14 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
 #include <sys/kobj.h>
 #include <sys/libkern.h>
-#include <sys/lock.h>
 #include <sys/malloc.h>
 #include <sys/mbuf.h>
 #include <sys/module.h>
-#include <sys/mutex.h>
 #include <sys/smp.h>
 #include <sys/systm.h>
 #include <sys/uio.h>
@@ -62,27 +60,11 @@ __FBSDID("$FreeBSD$");
 #include <machine/specialreg.h>
 #include <machine/fpu.h>
 
-static struct mtx_padalign *ctx_mtx;
-static struct fpu_kern_ctx **ctx_fpu;
-
 struct aesni_softc {
 	int32_t cid;
 	bool	has_aes;
 	bool	has_sha;
 };
-
-#define ACQUIRE_CTX(i, ctx)					\
-	do {							\
-		(i) = PCPU_GET(cpuid);				\
-		mtx_lock(&ctx_mtx[(i)]);			\
-		(ctx) = ctx_fpu[(i)];				\
-	} while (0)
-#define RELEASE_CTX(i, ctx)					\
-	do {							\
-		mtx_unlock(&ctx_mtx[(i)]);			\
-		(i) = -1;					\
-		(ctx) = NULL;					\
-	} while (0)
 
 static int aesni_cipher_setup(struct aesni_session *ses,
     const struct crypto_session_params *csp);
@@ -99,8 +81,8 @@ aesni_identify(driver_t *drv, device_t parent)
 {
 
 	/* NB: order 10 is so we get attached after h/w devices */
-	if (device_find_child(parent, "aesni", -1) == NULL &&
-	    BUS_ADD_CHILD(parent, 10, "aesni", -1) == 0)
+	if (device_find_child(parent, "aesni", DEVICE_UNIT_ANY) == NULL &&
+	    BUS_ADD_CHILD(parent, 10, "aesni", DEVICE_UNIT_ANY) == 0)
 		panic("aesni: could not attach");
 }
 
@@ -135,30 +117,10 @@ aesni_probe(device_t dev)
 	return (0);
 }
 
-static void
-aesni_cleanctx(void)
-{
-	int i;
-
-	/* XXX - no way to return driverid */
-	CPU_FOREACH(i) {
-		if (ctx_fpu[i] != NULL) {
-			mtx_destroy(&ctx_mtx[i]);
-			fpu_kern_free_ctx(ctx_fpu[i]);
-		}
-		ctx_fpu[i] = NULL;
-	}
-	free(ctx_mtx, M_AESNI);
-	ctx_mtx = NULL;
-	free(ctx_fpu, M_AESNI);
-	ctx_fpu = NULL;
-}
-
 static int
 aesni_attach(device_t dev)
 {
 	struct aesni_softc *sc;
-	int i;
 
 	sc = device_get_softc(dev);
 
@@ -168,21 +130,6 @@ aesni_attach(device_t dev)
 	if (sc->cid < 0) {
 		device_printf(dev, "Could not get crypto driver id.\n");
 		return (ENOMEM);
-	}
-
-	ctx_mtx = malloc(sizeof *ctx_mtx * (mp_maxid + 1), M_AESNI,
-	    M_WAITOK|M_ZERO);
-	ctx_fpu = malloc(sizeof *ctx_fpu * (mp_maxid + 1), M_AESNI,
-	    M_WAITOK|M_ZERO);
-
-	CPU_FOREACH(i) {
-#ifdef __amd64__
-		ctx_fpu[i] = fpu_kern_alloc_ctx_domain(
-		    pcpu_find(i)->pc_domain, FPU_KERN_NORMAL);
-#else
-		ctx_fpu[i] = fpu_kern_alloc_ctx(FPU_KERN_NORMAL);
-#endif
-		mtx_init(&ctx_mtx[i], "anifpumtx", NULL, MTX_DEF|MTX_NEW);
 	}
 
 	detect_cpu_features(&sc->has_aes, &sc->has_sha);
@@ -197,8 +144,6 @@ aesni_detach(device_t dev)
 	sc = device_get_softc(dev);
 
 	crypto_unregister_all(sc->cid);
-
-	aesni_cleanctx();
 
 	return (0);
 }
@@ -302,8 +247,7 @@ aesni_probesession(device_t dev, const struct crypto_session_params *csp)
 			if (csp->csp_auth_mlen != 0 &&
 			    csp->csp_auth_mlen != GMAC_DIGEST_LEN)
 				return (EINVAL);
-			if (csp->csp_ivlen != AES_GCM_IV_LEN ||
-			    !sc->has_aes)
+			if (!sc->has_aes)
 				return (EINVAL);
 			break;
 		case CRYPTO_AES_CCM_16:
@@ -316,11 +260,7 @@ aesni_probesession(device_t dev, const struct crypto_session_params *csp)
 				CRYPTDEB("invalid CCM key length");
 				return (EINVAL);
 			}
-			if (csp->csp_auth_mlen != 0 &&
-			    csp->csp_auth_mlen != AES_CBC_MAC_HASH_LEN)
-				return (EINVAL);
-			if (csp->csp_ivlen != AES_CCM_IV_LEN ||
-			    !sc->has_aes)
+			if (!sc->has_aes)
 				return (EINVAL);
 			break;
 		default:
@@ -343,11 +283,8 @@ static int
 aesni_newsession(device_t dev, crypto_session_t cses,
     const struct crypto_session_params *csp)
 {
-	struct aesni_softc *sc;
 	struct aesni_session *ses;
 	int error;
-
-	sc = device_get_softc(dev);
 
 	ses = crypto_get_driver_session(cses);
 
@@ -421,9 +358,8 @@ static driver_t aesni_driver = {
 	aesni_methods,
 	sizeof(struct aesni_softc),
 };
-static devclass_t aesni_devclass;
 
-DRIVER_MODULE(aesni, nexus, aesni_driver, aesni_devclass, 0, 0);
+DRIVER_MODULE(aesni, nexus, aesni_driver, 0, 0);
 MODULE_VERSION(aesni, 1);
 MODULE_DEPEND(aesni, crypto, 1, 1, 1);
 
@@ -559,9 +495,9 @@ static int
 aesni_cipher_setup(struct aesni_session *ses,
     const struct crypto_session_params *csp)
 {
-	struct fpu_kern_ctx *ctx;
 	uint8_t *schedbase;
-	int kt, ctxidx, error;
+	int error;
+	bool kt;
 
 	schedbase = (uint8_t *)roundup2((uintptr_t)ses->schedules,
 	    AES_SCHED_ALIGN);
@@ -608,13 +544,17 @@ aesni_cipher_setup(struct aesni_session *ses,
 		error = aesni_authprepare(ses, csp->csp_auth_klen);
 		if (error != 0)
 			return (error);
+	} else if (csp->csp_cipher_alg == CRYPTO_AES_CCM_16) {
+		if (csp->csp_auth_mlen == 0)
+			ses->mlen = AES_CBC_MAC_HASH_LEN;
+		else
+			ses->mlen = csp->csp_auth_mlen;
 	}
 
-	kt = is_fpu_kern_thread(0) || (csp->csp_cipher_alg == 0);
+	kt = (csp->csp_cipher_alg == 0);
 	if (!kt) {
-		ACQUIRE_CTX(ctxidx, ctx);
-		fpu_kern_enter(curthread, ctx,
-		    FPU_KERN_NORMAL | FPU_KERN_KTHR);
+		fpu_kern_enter(curthread, NULL,
+		    FPU_KERN_NORMAL | FPU_KERN_NOCTX);
 	}
 
 	error = 0;
@@ -623,8 +563,7 @@ aesni_cipher_setup(struct aesni_session *ses,
 		    csp->csp_cipher_klen);
 
 	if (!kt) {
-		fpu_kern_leave(curthread, ctx);
-		RELEASE_CTX(ctxidx, ctx);
+		fpu_kern_leave(curthread, NULL);
 	}
 	return (error);
 }
@@ -633,15 +572,16 @@ static int
 aesni_cipher_process(struct aesni_session *ses, struct cryptop *crp)
 {
 	const struct crypto_session_params *csp;
-	struct fpu_kern_ctx *ctx;
-	int error, ctxidx;
-	bool kt;
+	int error;
 
 	csp = crypto_get_params(crp->crp_session);
 	switch (csp->csp_cipher_alg) {
+	case CRYPTO_AES_CCM_16:
+		if (crp->crp_payload_length > ccm_max_payload_length(csp))
+			return (EMSGSIZE);
+		/* FALLTHROUGH */
 	case CRYPTO_AES_ICM:
 	case CRYPTO_AES_NIST_GCM_16:
-	case CRYPTO_AES_CCM_16:
 		if ((crp->crp_flags & CRYPTO_F_IV_SEPARATE) == 0)
 			return (EINVAL);
 		break;
@@ -651,16 +591,6 @@ aesni_cipher_process(struct aesni_session *ses, struct cryptop *crp)
 		if ((crp->crp_payload_length % AES_BLOCK_LEN) != 0)
 			return (EINVAL);
 		break;
-	}
-
-	ctx = NULL;
-	ctxidx = 0;
-	error = 0;
-	kt = is_fpu_kern_thread(0);
-	if (!kt) {
-		ACQUIRE_CTX(ctxidx, ctx);
-		fpu_kern_enter(curthread, ctx,
-		    FPU_KERN_NORMAL | FPU_KERN_KTHR);
 	}
 
 	/* Do work */
@@ -679,10 +609,6 @@ aesni_cipher_process(struct aesni_session *ses, struct cryptop *crp)
 	else
 		error = aesni_cipher_crypt(ses, crp, csp);
 
-	if (!kt) {
-		fpu_kern_leave(curthread, ctx);
-		RELEASE_CTX(ctxidx, ctx);
-	}
 	return (error);
 }
 
@@ -695,28 +621,36 @@ aesni_cipher_crypt(struct aesni_session *ses, struct cryptop *crp,
 	int error;
 	bool encflag, allocated, authallocated, outallocated, outcopy;
 
-	buf = aesni_cipher_alloc(crp, crp->crp_payload_start,
-	    crp->crp_payload_length, &allocated);
-	if (buf == NULL)
-		return (ENOMEM);
+	if (crp->crp_payload_length == 0) {
+		buf = NULL;
+		allocated = false;
+	} else {
+		buf = aesni_cipher_alloc(crp, crp->crp_payload_start,
+		    crp->crp_payload_length, &allocated);
+		if (buf == NULL)
+			return (ENOMEM);
+	}
 
 	outallocated = false;
 	authallocated = false;
 	authbuf = NULL;
 	if (csp->csp_cipher_alg == CRYPTO_AES_NIST_GCM_16 ||
 	    csp->csp_cipher_alg == CRYPTO_AES_CCM_16) {
-		if (crp->crp_aad != NULL)
+		if (crp->crp_aad_length == 0) {
+			authbuf = NULL;
+		} else if (crp->crp_aad != NULL) {
 			authbuf = crp->crp_aad;
-		else
+		} else {
 			authbuf = aesni_cipher_alloc(crp, crp->crp_aad_start,
 			    crp->crp_aad_length, &authallocated);
-		if (authbuf == NULL) {
-			error = ENOMEM;
-			goto out;
+			if (authbuf == NULL) {
+				error = ENOMEM;
+				goto out;
+			}
 		}
 	}
 
-	if (CRYPTO_HAS_OUTPUT_BUFFER(crp)) {
+	if (CRYPTO_HAS_OUTPUT_BUFFER(crp) && crp->crp_payload_length > 0) {
 		outbuf = crypto_buffer_contiguous_subsegment(&crp->crp_obuf,
 		    crp->crp_payload_output_start, crp->crp_payload_length);
 		if (outbuf == NULL) {
@@ -738,6 +672,8 @@ aesni_cipher_crypt(struct aesni_session *ses, struct cryptop *crp,
 		outbuf = buf;
 		outcopy = allocated;
 	}
+
+	fpu_kern_enter(curthread, NULL, FPU_KERN_NORMAL | FPU_KERN_NOCTX);
 
 	error = 0;
 	encflag = CRYPTO_OP_IS_ENCRYPT(crp->crp_op);
@@ -796,19 +732,24 @@ aesni_cipher_crypt(struct aesni_session *ses, struct cryptop *crp,
 			memset(tag, 0, sizeof(tag));			
 			AES_CCM_encrypt(buf, outbuf, authbuf, iv, tag,
 			    crp->crp_payload_length, crp->crp_aad_length,
-			    csp->csp_ivlen, ses->enc_schedule, ses->rounds);
-			crypto_copyback(crp, crp->crp_digest_start, sizeof(tag),
+			    csp->csp_ivlen, ses->mlen, ses->enc_schedule,
+			    ses->rounds);
+			crypto_copyback(crp, crp->crp_digest_start, ses->mlen,
 			    tag);
 		} else {
-			crypto_copydata(crp, crp->crp_digest_start, sizeof(tag),
+			crypto_copydata(crp, crp->crp_digest_start, ses->mlen,
 			    tag);
 			if (!AES_CCM_decrypt(buf, outbuf, authbuf, iv, tag,
 			    crp->crp_payload_length, crp->crp_aad_length,
-			    csp->csp_ivlen, ses->enc_schedule, ses->rounds))
+			    csp->csp_ivlen, ses->mlen, ses->enc_schedule,
+			    ses->rounds))
 				error = EBADMSG;
 		}
 		break;
 	}
+
+	fpu_kern_leave(curthread, NULL);
+
 	if (outcopy && error == 0)
 		crypto_copyback(crp, CRYPTO_HAS_OUTPUT_BUFFER(crp) ?
 		    crp->crp_payload_output_start : crp->crp_payload_start,
@@ -843,6 +784,8 @@ aesni_cipher_mac(struct aesni_session *ses, struct cryptop *crp,
 	else
 		key = csp->csp_auth_key;
 	keylen = csp->csp_auth_klen;
+
+	fpu_kern_enter(curthread, NULL, FPU_KERN_NORMAL | FPU_KERN_NOCTX);
 
 	if (ses->hmac) {
 		uint8_t hmac_key[SHA1_BLOCK_LEN] __aligned(16);
@@ -908,6 +851,8 @@ aesni_cipher_mac(struct aesni_session *ses, struct cryptop *crp,
 
 		ses->hash_finalize(res, &sctx);
 	}
+
+	fpu_kern_leave(curthread, NULL);
 
 	if (crp->crp_op & CRYPTO_OP_VERIFY_DIGEST) {
 		uint32_t res2[SHA2_256_HASH_LEN / sizeof(uint32_t)];

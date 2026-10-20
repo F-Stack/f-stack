@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2001-2003 Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -30,7 +30,6 @@
  * SUCH DAMAGE.
  *
  * $Id: ng_btsocket_rfcomm.c,v 1.28 2003/09/14 23:29:06 max Exp $
- * $FreeBSD$
  */
 
 #include <sys/param.h>
@@ -114,7 +113,7 @@ static void ng_btsocket_rfcomm_connect_cfm
 
 static int ng_btsocket_rfcomm_session_create
 	(ng_btsocket_rfcomm_session_p *sp, struct socket *l2so,
-	 bdaddr_p src, bdaddr_p dst, struct thread *td);
+	 const bdaddr_t *src, const bdaddr_t *dst, struct thread *td);
 static int ng_btsocket_rfcomm_session_accept
 	(ng_btsocket_rfcomm_session_p s0);
 static int ng_btsocket_rfcomm_session_connect
@@ -328,13 +327,9 @@ ng_btsocket_rfcomm_check_fcs(u_int8_t *data, int type, u_int8_t fcs)
  * Initialize everything
  */
 
-void
-ng_btsocket_rfcomm_init(void)
+static void
+ng_btsocket_rfcomm_init(void *arg __unused)
 {
-
-	/* Skip initialization of globals for non-default instances. */
-	if (!IS_DEFAULT_VNET(curvnet))
-		return;
 
 	ng_btsocket_rfcomm_debug_level = NG_BTSOCKET_WARN_LEVEL;
 	ng_btsocket_rfcomm_timo = 60;
@@ -353,6 +348,8 @@ ng_btsocket_rfcomm_init(void)
 	mtx_init(&ng_btsocket_rfcomm_sockets_mtx,
 		"btsocks_rfcomm_sockets_mtx", NULL, MTX_DEF);
 } /* ng_btsocket_rfcomm_init */
+SYSINIT(ng_btsocket_rfcomm_init, SI_SUB_PROTO_DOMAIN, SI_ORDER_THIRD,
+    ng_btsocket_rfcomm_init, NULL);
 
 /*
  * Abort connection on socket
@@ -374,17 +371,6 @@ ng_btsocket_rfcomm_close(struct socket *so)
 } /* ng_btsocket_rfcomm_close */
 
 /*
- * Accept connection on socket. Nothing to do here, socket must be connected
- * and ready, so just return peer address and be done with it.
- */
-
-int
-ng_btsocket_rfcomm_accept(struct socket *so, struct sockaddr **nam)
-{
-	return (ng_btsocket_rfcomm_peeraddr(so, nam));
-} /* ng_btsocket_rfcomm_accept */
-
-/*
  * Create and attach new socket
  */
 
@@ -398,7 +384,7 @@ ng_btsocket_rfcomm_attach(struct socket *so, int proto, struct thread *td)
 	if (so->so_type != SOCK_STREAM)
 		return (ESOCKTNOSUPPORT);
 
-#if 0 /* XXX sonewconn() calls "pru_attach" with proto == 0 */
+#if 0 /* XXX sonewconn() calls pr_attach() with proto == 0 */
 	if (proto != 0) 
 		if (proto != BLUETOOTH_PROTO_RFCOMM)
 			return (EPROTONOSUPPORT);
@@ -639,7 +625,7 @@ ng_btsocket_rfcomm_connect(struct socket *so, struct sockaddr *nam,
  */
 
 int
-ng_btsocket_rfcomm_control(struct socket *so, u_long cmd, caddr_t data,
+ng_btsocket_rfcomm_control(struct socket *so, u_long cmd, void *data,
 		struct ifnet *ifp, struct thread *td)
 {
 	return (EINVAL);
@@ -894,6 +880,7 @@ ng_btsocket_rfcomm_listen(struct socket *so, int backlog, struct thread *td)
 		 * from socreate()
 		 */
 		if (l2so == NULL) {
+			solisten_proto_abort(so);
 			error = socreate_error;
 			goto out;
 		}
@@ -907,8 +894,10 @@ ng_btsocket_rfcomm_listen(struct socket *so, int backlog, struct thread *td)
 		 */
 		error = ng_btsocket_rfcomm_session_create(&s, l2so,
 					NG_HCI_BDADDR_ANY, NULL, td);
-		if (error != 0)
+		if (error != 0) {
+			solisten_proto_abort(so);
 			goto out;
+		}
 		l2so = NULL;
 	}
 	SOCK_LOCK(so);
@@ -926,27 +915,27 @@ out:
 } /* ng_btsocket_listen */
 
 /*
- * Get peer address
+ * Return peer address for getpeername(2) or for accept(2).  For the latter
+ * case no extra work to do here, socket must be connected and ready.
  */
-
 int
-ng_btsocket_rfcomm_peeraddr(struct socket *so, struct sockaddr **nam)
+ng_btsocket_rfcomm_peeraddr(struct socket *so, struct sockaddr *sa)
 {
 	ng_btsocket_rfcomm_pcb_p	pcb = so2rfcomm_pcb(so);
-	struct sockaddr_rfcomm		sa;
+	struct sockaddr_rfcomm *rfcomm = (struct sockaddr_rfcomm *)sa;
 
 	if (pcb == NULL)
 		return (EINVAL);
 
-	bcopy(&pcb->dst, &sa.rfcomm_bdaddr, sizeof(sa.rfcomm_bdaddr));
-	sa.rfcomm_channel = pcb->channel;
-	sa.rfcomm_len = sizeof(sa);
-	sa.rfcomm_family = AF_BLUETOOTH;
+	*rfcomm = (struct sockaddr_rfcomm ){
+		.rfcomm_len = sizeof(struct sockaddr_rfcomm),
+		.rfcomm_family = AF_BLUETOOTH,
+		.rfcomm_channel = pcb->channel,
+	};
+	bcopy(&pcb->dst, &rfcomm->rfcomm_bdaddr, sizeof(rfcomm->rfcomm_bdaddr));
 
-	*nam = sodupsockaddr((struct sockaddr *) &sa, M_NOWAIT);
-
-	return ((*nam == NULL)? ENOMEM : 0);
-} /* ng_btsocket_rfcomm_peeraddr */
+	return (0);
+}
 
 /*
  * Send data to socket
@@ -996,23 +985,23 @@ drop:
  */
 
 int
-ng_btsocket_rfcomm_sockaddr(struct socket *so, struct sockaddr **nam)
+ng_btsocket_rfcomm_sockaddr(struct socket *so, struct sockaddr *sa)
 {
 	ng_btsocket_rfcomm_pcb_p	pcb = so2rfcomm_pcb(so);
-	struct sockaddr_rfcomm		sa;
+	struct sockaddr_rfcomm *rfcomm = (struct sockaddr_rfcomm *)sa;
 
 	if (pcb == NULL)
 		return (EINVAL);
 
-	bcopy(&pcb->src, &sa.rfcomm_bdaddr, sizeof(sa.rfcomm_bdaddr));
-	sa.rfcomm_channel = pcb->channel;
-	sa.rfcomm_len = sizeof(sa);
-	sa.rfcomm_family = AF_BLUETOOTH;
+	*rfcomm = (struct sockaddr_rfcomm ){
+		.rfcomm_len = sizeof(struct sockaddr_rfcomm),
+		.rfcomm_family = AF_BLUETOOTH,
+		.rfcomm_channel = pcb->channel,
+	};
+	bcopy(&pcb->src, &rfcomm->rfcomm_bdaddr, sizeof(rfcomm->rfcomm_bdaddr));
 
-	*nam = sodupsockaddr((struct sockaddr *) &sa, M_NOWAIT);
-
-	return ((*nam == NULL)? ENOMEM : 0);
-} /* ng_btsocket_rfcomm_sockaddr */
+	return (0);
+}
 
 /*
  * Upcall function for L2CAP sockets. Enqueue RFCOMM task.
@@ -1261,7 +1250,7 @@ ng_btsocket_rfcomm_connect_cfm(ng_btsocket_rfcomm_session_p s)
 
 static int
 ng_btsocket_rfcomm_session_create(ng_btsocket_rfcomm_session_p *sp,
-		struct socket *l2so, bdaddr_p src, bdaddr_p dst,
+		struct socket *l2so, const bdaddr_t *src, const bdaddr_t *dst,
 		struct thread *td)
 {
 	ng_btsocket_rfcomm_session_p	s = NULL;
@@ -1407,7 +1396,7 @@ static int
 ng_btsocket_rfcomm_session_accept(ng_btsocket_rfcomm_session_p s0)
 {
 	struct socket			*l2so;
-	struct sockaddr_l2cap		*l2sa = NULL;
+	struct sockaddr_l2cap		l2sa = { .l2cap_len = sizeof(l2sa) };
 	ng_btsocket_l2cap_pcb_t		*l2pcb = NULL;
 	ng_btsocket_rfcomm_session_p	 s = NULL;
 	int				 error;
@@ -1425,7 +1414,7 @@ ng_btsocket_rfcomm_session_accept(ng_btsocket_rfcomm_session_p s0)
 		return (error);
 	}
 
-	error = soaccept(l2so, (struct sockaddr **) &l2sa);
+	error = soaccept(l2so, (struct sockaddr *)&l2sa);
 	if (error != 0) {
 		NG_BTSOCKET_RFCOMM_ERR(
 "%s: soaccept() on L2CAP socket failed, error=%d\n", __func__, error);
@@ -1636,8 +1625,8 @@ ng_btsocket_rfcomm_session_send(ng_btsocket_rfcomm_session_p s)
 			return (0); /* we are done */
 
 		/* Call send function on the L2CAP socket */
-		error = (*s->l2so->so_proto->pr_usrreqs->pru_send)(s->l2so,
-				0, m, NULL, NULL, curthread /* XXX */);
+		error = s->l2so->so_proto->pr_send(s->l2so, 0, m, NULL, NULL,
+		    curthread /* XXX */);
 		if (error != 0) {
 			NG_BTSOCKET_RFCOMM_ERR(
 "%s: Could not send data to L2CAP socket, error=%d\n", __func__, error);
@@ -2000,7 +1989,7 @@ ng_btsocket_rfcomm_receive_sabm(ng_btsocket_rfcomm_session_p s, int dlci)
 	/* Make sure multiplexor channel is open */
 	if (s->state != NG_BTSOCKET_RFCOMM_SESSION_OPEN) {
 		NG_BTSOCKET_RFCOMM_ERR(
-"%s: Got SABM for dlci=%d with mulitplexor channel closed, state=%d, " \
+"%s: Got SABM for dlci=%d with multiplexor channel closed, state=%d, " \
 "flags=%#x\n",		__func__, dlci, s->state, s->flags);
 
 		return (EINVAL);
@@ -3398,8 +3387,7 @@ ng_btsocket_rfcomm_pcb_listener(bdaddr_p src, int channel)
 	mtx_lock(&ng_btsocket_rfcomm_sockets_mtx);
 
 	LIST_FOREACH(pcb, &ng_btsocket_rfcomm_sockets, next) {
-		if (pcb->channel != channel ||
-		    !(pcb->so->so_options & SO_ACCEPTCONN))
+		if (pcb->channel != channel || !SOLISTENING(pcb->so))
 			continue;
 
 		if (bcmp(&pcb->src, src, sizeof(*src)) == 0)

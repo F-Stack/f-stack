@@ -1,5 +1,3 @@
-# $FreeBSD$
-
 PROG=test00
 MAN=
 SRCS= ${PROG}.c rijndael-alg-fst.c rijndael-api-fst.c

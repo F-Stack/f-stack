@@ -20,13 +20,34 @@
 				     RTE_DIM(caps_##name));                    \
 	} while (0)
 
-#define SEC_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, name)                        \
+#define SEC_IPSEC_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, name)                  \
 	do {                                                                   \
 		if ((hw_caps[CPT_ENG_TYPE_SE].name) ||                         \
 		    (hw_caps[CPT_ENG_TYPE_IE].name) ||                         \
 		    (hw_caps[CPT_ENG_TYPE_AE].name))                           \
-			sec_caps_add(cnxk_caps, cur_pos, sec_caps_##name,      \
-				     RTE_DIM(sec_caps_##name));                \
+			sec_ipsec_caps_add(cnxk_caps, cur_pos,                 \
+					  sec_ipsec_caps_##name,               \
+					  RTE_DIM(sec_ipsec_caps_##name));     \
+	} while (0)
+
+#define SEC_TLS12_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, name)                  \
+	do {                                                                   \
+		if ((hw_caps[CPT_ENG_TYPE_SE].name) ||                         \
+		    (hw_caps[CPT_ENG_TYPE_IE].name) ||                         \
+		    (hw_caps[CPT_ENG_TYPE_AE].name))                           \
+			sec_tls12_caps_add(cnxk_caps, cur_pos,                 \
+					   sec_tls12_caps_##name,               \
+					   RTE_DIM(sec_tls12_caps_##name));     \
+	} while (0)
+
+#define SEC_TLS13_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, name)                  \
+	do {                                                                   \
+		if ((hw_caps[CPT_ENG_TYPE_SE].name) ||                         \
+		    (hw_caps[CPT_ENG_TYPE_IE].name) ||                         \
+		    (hw_caps[CPT_ENG_TYPE_AE].name))                           \
+			sec_tls13_caps_add(cnxk_caps, cur_pos,                 \
+					   sec_tls13_caps_##name,               \
+					   RTE_DIM(sec_tls13_caps_##name));     \
 	} while (0)
 
 static const struct rte_cryptodev_capabilities caps_mul[] = {
@@ -1180,11 +1201,27 @@ static const struct rte_cryptodev_capabilities caps_sm2[] = {
 	}
 };
 
+static const struct rte_cryptodev_capabilities caps_eddsa[] = {
+	{	/* EdDSA */
+		.op = RTE_CRYPTO_OP_TYPE_ASYMMETRIC,
+		{.asym = {
+			.xform_capa = {
+				.xform_type = RTE_CRYPTO_ASYM_XFORM_EDDSA,
+				.hash_algos = (1 << RTE_CRYPTO_AUTH_SHA512 |
+					       1 << RTE_CRYPTO_AUTH_SHAKE_256),
+				.op_types = ((1 << RTE_CRYPTO_ASYM_OP_SIGN) |
+					     (1 << RTE_CRYPTO_ASYM_OP_VERIFY))
+			}
+		}
+		}
+	}
+};
+
 static const struct rte_cryptodev_capabilities caps_end[] = {
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
 };
 
-static const struct rte_cryptodev_capabilities sec_caps_aes[] = {
+static const struct rte_cryptodev_capabilities sec_ipsec_caps_aes[] = {
 	{	/* AES GCM */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -1332,7 +1369,7 @@ static const struct rte_cryptodev_capabilities sec_caps_aes[] = {
 	},
 };
 
-static const struct rte_cryptodev_capabilities sec_caps_des[] = {
+static const struct rte_cryptodev_capabilities sec_ipsec_caps_des[] = {
 	{	/* DES  */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -1375,7 +1412,7 @@ static const struct rte_cryptodev_capabilities sec_caps_des[] = {
 	},
 };
 
-static const struct rte_cryptodev_capabilities sec_caps_sha1_sha2[] = {
+static const struct rte_cryptodev_capabilities sec_ipsec_caps_sha1_sha2[] = {
 	{	/* SHA1 HMAC */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -1478,7 +1515,7 @@ static const struct rte_cryptodev_capabilities sec_caps_sha1_sha2[] = {
 	},
 };
 
-static const struct rte_cryptodev_capabilities sec_caps_null[] = {
+static const struct rte_cryptodev_capabilities sec_ipsec_caps_null[] = {
 	{	/* NULL (CIPHER) */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
@@ -1500,6 +1537,211 @@ static const struct rte_cryptodev_capabilities sec_caps_null[] = {
 		}, }
 	},
 };
+
+static const struct rte_cryptodev_capabilities sec_tls12_caps_aes[] = {
+	{	/* AES GCM */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AEAD,
+			{.aead = {
+				.algo = RTE_CRYPTO_AEAD_AES_GCM,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 16
+				},
+				.digest_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.aad_size = {
+					.min = 13,
+					.max = 13,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 12,
+					.max = 12,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* AES CBC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_AES_CBC,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 8
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+};
+
+static const struct rte_cryptodev_capabilities sec_tls12_caps_des[] = {
+	{	/* 3DES CBC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_3DES_CBC,
+				.block_size = 8,
+				.key_size = {
+					.min = 24,
+					.max = 24,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 8,
+					.max = 8,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+};
+
+static const struct rte_cryptodev_capabilities sec_tls12_caps_sha1_sha2[] = {
+	{	/* SHA1 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA1_HMAC,
+				.block_size = 64,
+				.key_size = {
+					.min = 20,
+					.max = 20,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 20,
+					.max = 20,
+					.increment = 0
+				},
+			}, }
+		}, }
+	},
+	{	/* SHA256 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA256_HMAC,
+				.block_size = 64,
+				.key_size = {
+					.min = 32,
+					.max = 32,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 32,
+					.max = 32,
+					.increment = 0
+				},
+			}, }
+		}, }
+	},
+	{	/* SHA384 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA384_HMAC,
+				.block_size = 64,
+				.key_size = {
+					.min = 48,
+					.max = 48,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 48,
+					.max = 48,
+					.increment = 0
+				},
+			}, }
+		}, }
+	},
+
+};
+
+static const struct rte_cryptodev_capabilities sec_tls13_caps_aes[] = {
+	{	/* AES GCM */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AEAD,
+			{.aead = {
+				.algo = RTE_CRYPTO_AEAD_AES_GCM,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 16
+				},
+				.digest_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.aad_size = {
+					.min = 5,
+					.max = 5,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	{	/* CHACHA POLY */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AEAD,
+			{.aead = {
+				.algo = RTE_CRYPTO_AEAD_CHACHA20_POLY1305,
+				.block_size = 64,
+				.key_size = {
+					.min = 32,
+					.max = 32,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.aad_size = {
+					.min = 5,
+					.max = 5,
+					.increment = 0
+				},
+				.iv_size = {
+					.min = 0,
+					.max = 0,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+
+};
+
 
 static const struct rte_security_capability sec_caps_templ[] = {
 	{	/* IPsec Lookaside Protocol ESP Tunnel Ingress */
@@ -1590,6 +1832,66 @@ static const struct rte_security_capability sec_caps_templ[] = {
 		},
 		.crypto_capabilities = NULL,
 	},
+	{	/* TLS 1.2 Record Read */
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+		.protocol = RTE_SECURITY_PROTOCOL_TLS_RECORD,
+		.tls_record = {
+			.ver = RTE_SECURITY_VERSION_TLS_1_2,
+			.type = RTE_SECURITY_TLS_SESS_TYPE_READ,
+			.ar_win_size = 0,
+		},
+		.crypto_capabilities = NULL,
+	},
+	{	/* TLS 1.2 Record Write */
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+		.protocol = RTE_SECURITY_PROTOCOL_TLS_RECORD,
+		.tls_record = {
+			.ver = RTE_SECURITY_VERSION_TLS_1_2,
+			.type = RTE_SECURITY_TLS_SESS_TYPE_WRITE,
+			.ar_win_size = 0,
+		},
+		.crypto_capabilities = NULL,
+	},
+	{	/* DTLS 1.2 Record Read */
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+		.protocol = RTE_SECURITY_PROTOCOL_TLS_RECORD,
+		.tls_record = {
+			.ver = RTE_SECURITY_VERSION_DTLS_1_2,
+			.type = RTE_SECURITY_TLS_SESS_TYPE_READ,
+			.ar_win_size = 0,
+		},
+		.crypto_capabilities = NULL,
+	},
+	{	/* DTLS 1.2 Record Write */
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+		.protocol = RTE_SECURITY_PROTOCOL_TLS_RECORD,
+		.tls_record = {
+			.ver = RTE_SECURITY_VERSION_DTLS_1_2,
+			.type = RTE_SECURITY_TLS_SESS_TYPE_WRITE,
+			.ar_win_size = 0,
+		},
+		.crypto_capabilities = NULL,
+	},
+	{	/* TLS 1.3 Record Read */
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+		.protocol = RTE_SECURITY_PROTOCOL_TLS_RECORD,
+		.tls_record = {
+			.ver = RTE_SECURITY_VERSION_TLS_1_3,
+			.type = RTE_SECURITY_TLS_SESS_TYPE_READ,
+			.ar_win_size = 0,
+		},
+		.crypto_capabilities = NULL,
+	},
+	{	/* TLS 1.3 Record Write */
+		.action = RTE_SECURITY_ACTION_TYPE_LOOKASIDE_PROTOCOL,
+		.protocol = RTE_SECURITY_PROTOCOL_TLS_RECORD,
+		.tls_record = {
+			.ver = RTE_SECURITY_VERSION_TLS_1_3,
+			.type = RTE_SECURITY_TLS_SESS_TYPE_WRITE,
+			.ar_win_size = 0,
+		},
+		.crypto_capabilities = NULL,
+	},
 	{
 		.action = RTE_SECURITY_ACTION_TYPE_NONE
 	}
@@ -1654,6 +1956,9 @@ cn10k_crypto_caps_add(struct rte_cryptodev_capabilities cnxk_caps[],
 
 	if (hw_caps[CPT_ENG_TYPE_AE].sm2)
 		CPT_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, sm2);
+
+	if (hw_caps[CPT_ENG_TYPE_AE].eddsa)
+		CPT_CAPS_ADD(cnxk_caps, cur_pos, hw_caps, eddsa);
 }
 
 static void
@@ -1691,29 +1996,28 @@ cnxk_crypto_capabilities_get(struct cnxk_cpt_vf *vf)
 }
 
 static void
-sec_caps_limit_check(int *cur_pos, int nb_caps)
+sec_ipsec_caps_limit_check(int *cur_pos, int nb_caps)
 {
-	PLT_VERIFY(*cur_pos + nb_caps <= CNXK_SEC_CRYPTO_MAX_CAPS);
+	PLT_VERIFY(*cur_pos + nb_caps <= CNXK_SEC_IPSEC_CRYPTO_MAX_CAPS);
 }
 
 static void
-sec_caps_add(struct rte_cryptodev_capabilities cnxk_caps[], int *cur_pos,
-	     const struct rte_cryptodev_capabilities *caps, int nb_caps)
+sec_ipsec_caps_add(struct rte_cryptodev_capabilities cnxk_caps[], int *cur_pos,
+		   const struct rte_cryptodev_capabilities *caps, int nb_caps)
 {
-	sec_caps_limit_check(cur_pos, nb_caps);
+	sec_ipsec_caps_limit_check(cur_pos, nb_caps);
 
 	memcpy(&cnxk_caps[*cur_pos], caps, nb_caps * sizeof(caps[0]));
 	*cur_pos += nb_caps;
 }
 
 static void
-cn10k_sec_crypto_caps_update(struct rte_cryptodev_capabilities cnxk_caps[],
-			     int *cur_pos)
+cn10k_sec_ipsec_crypto_caps_update(struct rte_cryptodev_capabilities cnxk_caps[], int *cur_pos)
 {
 	const struct rte_cryptodev_capabilities *cap;
 	unsigned int i;
 
-	sec_caps_limit_check(cur_pos, 1);
+	sec_ipsec_caps_limit_check(cur_pos, 1);
 
 	/* NULL auth */
 	for (i = 0; i < RTE_DIM(caps_null); i++) {
@@ -1727,7 +2031,7 @@ cn10k_sec_crypto_caps_update(struct rte_cryptodev_capabilities cnxk_caps[],
 }
 
 static void
-cn9k_sec_crypto_caps_update(struct rte_cryptodev_capabilities cnxk_caps[])
+cn9k_sec_ipsec_crypto_caps_update(struct rte_cryptodev_capabilities cnxk_caps[])
 {
 
 	struct rte_cryptodev_capabilities *caps;
@@ -1747,27 +2051,26 @@ cn9k_sec_crypto_caps_update(struct rte_cryptodev_capabilities cnxk_caps[])
 }
 
 static void
-sec_crypto_caps_populate(struct rte_cryptodev_capabilities cnxk_caps[],
-			 union cpt_eng_caps *hw_caps)
+sec_ipsec_crypto_caps_populate(struct rte_cryptodev_capabilities cnxk_caps[],
+			       union cpt_eng_caps *hw_caps)
 {
 	int cur_pos = 0;
 
-	SEC_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, aes);
-	SEC_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, des);
-	SEC_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, sha1_sha2);
+	SEC_IPSEC_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, aes);
+	SEC_IPSEC_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, des);
+	SEC_IPSEC_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, sha1_sha2);
 
 	if (roc_model_is_cn10k())
-		cn10k_sec_crypto_caps_update(cnxk_caps, &cur_pos);
+		cn10k_sec_ipsec_crypto_caps_update(cnxk_caps, &cur_pos);
 	else
-		cn9k_sec_crypto_caps_update(cnxk_caps);
+		cn9k_sec_ipsec_crypto_caps_update(cnxk_caps);
 
-	sec_caps_add(cnxk_caps, &cur_pos, sec_caps_null,
-		     RTE_DIM(sec_caps_null));
-	sec_caps_add(cnxk_caps, &cur_pos, caps_end, RTE_DIM(caps_end));
+	sec_ipsec_caps_add(cnxk_caps, &cur_pos, sec_ipsec_caps_null, RTE_DIM(sec_ipsec_caps_null));
+	sec_ipsec_caps_add(cnxk_caps, &cur_pos, caps_end, RTE_DIM(caps_end));
 }
 
 static void
-cnxk_sec_caps_update(struct rte_security_capability *sec_cap)
+cnxk_sec_ipsec_caps_update(struct rte_security_capability *sec_cap)
 {
 	sec_cap->ipsec.options.udp_encap = 1;
 	sec_cap->ipsec.options.copy_df = 1;
@@ -1775,7 +2078,7 @@ cnxk_sec_caps_update(struct rte_security_capability *sec_cap)
 }
 
 static void
-cn10k_sec_caps_update(struct rte_security_capability *sec_cap)
+cn10k_sec_ipsec_caps_update(struct rte_security_capability *sec_cap)
 {
 	if (sec_cap->ipsec.direction == RTE_SECURITY_IPSEC_SA_DIR_EGRESS) {
 #ifdef LA_IPSEC_DEBUG
@@ -1797,7 +2100,7 @@ cn10k_sec_caps_update(struct rte_security_capability *sec_cap)
 }
 
 static void
-cn9k_sec_caps_update(struct rte_security_capability *sec_cap)
+cn9k_sec_ipsec_caps_update(struct rte_security_capability *sec_cap)
 {
 	if (sec_cap->ipsec.direction == RTE_SECURITY_IPSEC_SA_DIR_EGRESS) {
 #ifdef LA_IPSEC_DEBUG
@@ -1808,28 +2111,99 @@ cn9k_sec_caps_update(struct rte_security_capability *sec_cap)
 	sec_cap->ipsec.options.esn = 1;
 }
 
+static void
+sec_tls12_caps_limit_check(int *cur_pos, int nb_caps)
+{
+	PLT_VERIFY(*cur_pos + nb_caps <= CNXK_SEC_TLS_1_2_CRYPTO_MAX_CAPS);
+}
+
+static void
+sec_tls12_caps_add(struct rte_cryptodev_capabilities cnxk_caps[], int *cur_pos,
+		   const struct rte_cryptodev_capabilities *caps, int nb_caps)
+{
+	sec_tls12_caps_limit_check(cur_pos, nb_caps);
+
+	memcpy(&cnxk_caps[*cur_pos], caps, nb_caps * sizeof(caps[0]));
+	*cur_pos += nb_caps;
+}
+
+static void
+sec_tls12_crypto_caps_populate(struct rte_cryptodev_capabilities cnxk_caps[],
+			       union cpt_eng_caps *hw_caps)
+{
+	int cur_pos = 0;
+
+	SEC_TLS12_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, aes);
+	SEC_TLS12_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, des);
+	SEC_TLS12_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, sha1_sha2);
+
+	sec_tls12_caps_add(cnxk_caps, &cur_pos, caps_end, RTE_DIM(caps_end));
+}
+
+static void
+sec_tls13_caps_limit_check(int *cur_pos, int nb_caps)
+{
+	PLT_VERIFY(*cur_pos + nb_caps <= CNXK_SEC_TLS_1_3_CRYPTO_MAX_CAPS);
+}
+
+static void
+sec_tls13_caps_add(struct rte_cryptodev_capabilities cnxk_caps[], int *cur_pos,
+		   const struct rte_cryptodev_capabilities *caps, int nb_caps)
+{
+	sec_tls13_caps_limit_check(cur_pos, nb_caps);
+
+	memcpy(&cnxk_caps[*cur_pos], caps, nb_caps * sizeof(caps[0]));
+	*cur_pos += nb_caps;
+}
+
+static void
+sec_tls13_crypto_caps_populate(struct rte_cryptodev_capabilities cnxk_caps[],
+			       union cpt_eng_caps *hw_caps)
+{
+	int cur_pos = 0;
+
+	SEC_TLS13_CAPS_ADD(cnxk_caps, &cur_pos, hw_caps, aes);
+
+	sec_tls13_caps_add(cnxk_caps, &cur_pos, caps_end, RTE_DIM(caps_end));
+}
+
 void
 cnxk_cpt_caps_populate(struct cnxk_cpt_vf *vf)
 {
 	unsigned long i;
 
 	crypto_caps_populate(vf->crypto_caps, vf->cpt.hw_caps);
-	sec_crypto_caps_populate(vf->sec_crypto_caps, vf->cpt.hw_caps);
+	sec_ipsec_crypto_caps_populate(vf->sec_ipsec_crypto_caps, vf->cpt.hw_caps);
+
+	if (vf->cpt.hw_caps[CPT_ENG_TYPE_SE].tls) {
+		sec_tls12_crypto_caps_populate(vf->sec_tls_1_2_crypto_caps, vf->cpt.hw_caps);
+		sec_tls12_crypto_caps_populate(vf->sec_dtls_1_2_crypto_caps, vf->cpt.hw_caps);
+		sec_tls13_crypto_caps_populate(vf->sec_tls_1_3_crypto_caps, vf->cpt.hw_caps);
+	}
 
 	PLT_STATIC_ASSERT(RTE_DIM(sec_caps_templ) <= RTE_DIM(vf->sec_caps));
 	memcpy(vf->sec_caps, sec_caps_templ, sizeof(sec_caps_templ));
 
 	for (i = 0; i < RTE_DIM(sec_caps_templ) - 1; i++) {
-		vf->sec_caps[i].crypto_capabilities = vf->sec_crypto_caps;
 
-		cnxk_sec_caps_update(&vf->sec_caps[i]);
+		if (vf->sec_caps[i].protocol == RTE_SECURITY_PROTOCOL_IPSEC) {
+			vf->sec_caps[i].crypto_capabilities = vf->sec_ipsec_crypto_caps;
 
-		if (roc_model_is_cn10k())
-			cn10k_sec_caps_update(&vf->sec_caps[i]);
+			cnxk_sec_ipsec_caps_update(&vf->sec_caps[i]);
 
-		if (roc_model_is_cn9k())
-			cn9k_sec_caps_update(&vf->sec_caps[i]);
+			if (roc_model_is_cn10k())
+				cn10k_sec_ipsec_caps_update(&vf->sec_caps[i]);
 
+			if (roc_model_is_cn9k())
+				cn9k_sec_ipsec_caps_update(&vf->sec_caps[i]);
+		} else if (vf->sec_caps[i].protocol == RTE_SECURITY_PROTOCOL_TLS_RECORD) {
+			if (vf->sec_caps[i].tls_record.ver == RTE_SECURITY_VERSION_TLS_1_3)
+				vf->sec_caps[i].crypto_capabilities = vf->sec_tls_1_3_crypto_caps;
+			else if (vf->sec_caps[i].tls_record.ver == RTE_SECURITY_VERSION_DTLS_1_2)
+				vf->sec_caps[i].crypto_capabilities = vf->sec_dtls_1_2_crypto_caps;
+			else
+				vf->sec_caps[i].crypto_capabilities = vf->sec_tls_1_2_crypto_caps;
+		}
 	}
 }
 

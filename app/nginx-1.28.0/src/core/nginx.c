@@ -752,6 +752,15 @@ ngx_exec_new_binary(ngx_cycle_t *cycle, char *const *argv)
         if (ls[i].ignore) {
             continue;
         }
+#if (NGX_HAVE_FSTACK)
+        /* This process runs no f-stack instance, so ff listening sockets
+         * were never opened here (ngx_open_listening_sockets() skips them)
+         * and their fd is -1. Emitting it would make the new binary log
+         * "invalid socket number" and drop every descriptor after it. */
+        if (ls[i].fd < 0) {
+            continue;
+        }
+#endif
         p = ngx_sprintf(p, "%ud;", ls[i].fd);
     }
 

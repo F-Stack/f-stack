@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010,2013 Lawrence Stewart <lstewart@freebsd.org>
  * Copyright (c) 2010 The FreeBSD Foundation
@@ -35,9 +35,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/kernel.h>
@@ -130,7 +127,7 @@ hhook_run_hooks(struct hhook_head *hhh, void *ctx_data, struct osd *hosd)
  * Register a new helper hook function with a helper hook point.
  */
 int
-hhook_add_hook(struct hhook_head *hhh, struct hookinfo *hki, uint32_t flags)
+hhook_add_hook(struct hhook_head *hhh, const struct hookinfo *hki, uint32_t flags)
 {
 	struct hhook *hhk, *tmp;
 	int error;
@@ -187,7 +184,7 @@ hhook_add_hook(struct hhook_head *hhh, struct hookinfo *hki, uint32_t flags)
  * struct in the array.
  */
 int
-hhook_add_hook_lookup(struct hookinfo *hki, uint32_t flags)
+hhook_add_hook_lookup(const struct hookinfo *hki, uint32_t flags)
 {
 	struct hhook_head **heads_to_hook, *hhh;
 	int error, i, n_heads_to_hook;
@@ -245,7 +242,7 @@ tryagain:
  * Remove a helper hook function from a helper hook point.
  */
 int
-hhook_remove_hook(struct hhook_head *hhh, struct hookinfo *hki)
+hhook_remove_hook(struct hhook_head *hhh, const struct hookinfo *hki)
 {
 	struct hhook *tmp;
 
@@ -272,7 +269,7 @@ hhook_remove_hook(struct hhook_head *hhh, struct hookinfo *hki)
  * virtual instances of the hook point if it is virtualised).
  */
 int
-hhook_remove_hook_lookup(struct hookinfo *hki)
+hhook_remove_hook_lookup(const struct hookinfo *hki)
 {
 	struct hhook_head *hhh;
 

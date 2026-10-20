@@ -111,12 +111,14 @@ fs_set_queues_state_start(struct rte_eth_dev *dev)
 	uint16_t i;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		__rte_assume(i < RTE_MAX_QUEUES_PER_PORT);
 		rxq = dev->data->rx_queues[i];
 		if (rxq != NULL && !rxq->info.conf.rx_deferred_start)
 			dev->data->rx_queue_state[i] =
 						RTE_ETH_QUEUE_STATE_STARTED;
 	}
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		__rte_assume(i < RTE_MAX_QUEUES_PER_PORT);
 		txq = dev->data->tx_queues[i];
 		if (txq != NULL && !txq->info.conf.tx_deferred_start)
 			dev->data->tx_queue_state[i] =
@@ -176,14 +178,18 @@ fs_set_queues_state_stop(struct rte_eth_dev *dev)
 {
 	uint16_t i;
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++)
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		__rte_assume(i < RTE_MAX_QUEUES_PER_PORT);
 		if (dev->data->rx_queues[i] != NULL)
 			dev->data->rx_queue_state[i] =
 						RTE_ETH_QUEUE_STATE_STOPPED;
-	for (i = 0; i < dev->data->nb_tx_queues; i++)
+	}
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		__rte_assume(i < RTE_MAX_QUEUES_PER_PORT);
 		if (dev->data->tx_queues[i] != NULL)
 			dev->data->tx_queue_state[i] =
 						RTE_ETH_QUEUE_STATE_STOPPED;
+	}
 }
 
 static int
@@ -1282,7 +1288,7 @@ fs_dev_infos_get(struct rte_eth_dev *dev,
 }
 
 static const uint32_t *
-fs_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+fs_dev_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 {
 	struct sub_device *sdev;
 	struct rte_eth_dev *edev;
@@ -1308,7 +1314,7 @@ fs_dev_supported_ptypes_get(struct rte_eth_dev *dev)
 	 * We just return the ptypes of the device of highest
 	 * priority, usually the PREFERRED device.
 	 */
-	ret = SUBOPS(sdev, dev_supported_ptypes_get)(edev);
+	ret = SUBOPS(sdev, dev_supported_ptypes_get)(edev, no_of_elements);
 unlock:
 	fs_unlock(dev, 0);
 	return ret;

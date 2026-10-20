@@ -28,12 +28,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_ARM64_IOMMU_SMMUVAR_H_
 #define	_ARM64_IOMMU_SMMUVAR_H_
+
+#include <arm64/iommu/iommu_pmap.h>
 
 #define	SMMU_DEVSTR		"ARM System Memory Management Unit"
 #define	SMMU_LOCK(_sc)		mtx_lock(&(_sc)->sc_mtx)
@@ -55,7 +55,7 @@ struct smmu_domain {
 	LIST_ENTRY(smmu_domain)	next;
 	u_int entries_cnt;
 	struct smmu_cd			*cd;
-	struct pmap			p;
+	struct smmu_pmap		p;
 	uint16_t			asid;
 };
 
@@ -82,7 +82,6 @@ struct smmu_queue_local_copy {
 
 struct smmu_cd {
 	vm_paddr_t paddr;
-	vm_size_t size;
 	void *vaddr;
 };
 
@@ -121,7 +120,6 @@ struct smmu_cmdq_entry {
 
 struct l1_desc {
 	uint8_t		span;
-	size_t		size;
 	void		*va;
 	vm_paddr_t	pa;
 };
@@ -136,7 +134,7 @@ struct smmu_strtab {
 
 struct smmu_softc {
 	device_t		dev;
-	struct resource		*res[4];
+	struct resource		*res[5];
 	void			*intr_cookie[3];
 	uint32_t		ias; /* Intermediate Physical Address */
 	uint32_t		oas; /* Physical Address */

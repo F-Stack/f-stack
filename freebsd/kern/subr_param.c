@@ -32,19 +32,16 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)param.c	8.3 (Berkeley) 8/20/94
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_param.h"
 #include "opt_msgbuf.h"
 #include "opt_maxphys.h"
 #include "opt_maxusers.h"
 
 #include <sys/param.h>
+#include <sys/_maxphys.h>
 #include <sys/systm.h>
 #include <sys/buf.h>
 #include <sys/kernel.h>
@@ -63,11 +60,7 @@ __FBSDID("$FreeBSD$");
  */
 
 #ifndef HZ
-#  if defined(__mips__) || defined(__arm__)
-#    define	HZ 100
-#  else
-#    define	HZ 1000
-#  endif
+#  define	HZ 1000
 #  ifndef HZ_VM
 #    define	HZ_VM 100
 #  endif
@@ -76,18 +69,20 @@ __FBSDID("$FreeBSD$");
 #    define	HZ_VM HZ
 #  endif
 #endif
+/* See the comments in init_param2() for these. */
 #define	NPROC (20 + 16 * maxusers)
-#ifndef NBUF
-#define NBUF 0
-#endif
 #ifndef MAXFILES
 #define	MAXFILES (40 + 32 * maxusers)
+#endif
+#ifndef NBUF
+#define NBUF 0
 #endif
 
 static int sysctl_kern_vm_guest(SYSCTL_HANDLER_ARGS);
 
 int	hz;				/* system clock's frequency */
 int	tick;				/* usec per tick (1000000 / hz) */
+time_t	tick_seconds_max;		/* max hz * seconds an integer can hold */
 struct bintime tick_bt;			/* bintime per tick (1s / hz) */
 sbintime_t tick_sbt;
 int	maxusers;			/* base tunable */
@@ -115,6 +110,10 @@ u_long	sgrowsiz;			/* amount to grow stack */
 
 SYSCTL_INT(_kern, OID_AUTO, hz, CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &hz, 0,
     "Number of clock ticks per second");
+SYSCTL_INT(_kern, OID_AUTO, hz_max, CTLFLAG_RD, SYSCTL_NULL_INT_PTR, HZ_MAXIMUM,
+    "Maximum hz value supported");
+SYSCTL_INT(_kern, OID_AUTO, hz_min, CTLFLAG_RD, SYSCTL_NULL_INT_PTR, HZ_MINIMUM,
+    "Minimum hz value supported");
 SYSCTL_INT(_kern, OID_AUTO, nbuf, CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &nbuf, 0,
     "Number of buffers in the buffer cache");
 SYSCTL_INT(_kern, OID_AUTO, nswbuf, CTLFLAG_RDTUN | CTLFLAG_NOFETCH, &nswbuf, 0,
@@ -159,9 +158,10 @@ static const char *const vm_guest_sysctl_names[] = {
 	[VM_GUEST_BHYVE] = "bhyve",
 	[VM_GUEST_VBOX] = "vbox",
 	[VM_GUEST_PARALLELS] = "parallels",
-	[VM_LAST] = NULL
+	[VM_GUEST_NVMM] = "nvmm",
 };
-CTASSERT(nitems(vm_guest_sysctl_names) - 1 == VM_LAST);
+_Static_assert(nitems(vm_guest_sysctl_names) == VM_GUEST_LAST,
+    "new vm guest type not added to vm_guest_sysctl_names");
 
 /*
  * Boot time overrides that are not scaled against main memory
@@ -170,24 +170,38 @@ void
 init_param1(void)
 {
 
-#if !defined(__mips__) && !defined(__arm64__)
+	TSENTER();
+
+	/*
+	 * arm64 and riscv currently hard-code the thread0 kstack size
+	 * to KSTACK_PAGES, ignoring the tunable.
+	 */
 	TUNABLE_INT_FETCH("kern.kstack_pages", &kstack_pages);
-#endif
+
 	hz = -1;
 	TUNABLE_INT_FETCH("kern.hz", &hz);
 	if (hz == -1)
 		hz = vm_guest > VM_GUEST_NO ? HZ_VM : HZ;
+
+	/* range check the "hz" value */
+	if (__predict_false(hz < HZ_MINIMUM))
+		hz = HZ_MINIMUM;
+	else if (__predict_false(hz > HZ_MAXIMUM))
+		hz = HZ_MAXIMUM;
+
 	tick = 1000000 / hz;
 	tick_sbt = SBT_1S / hz;
 	tick_bt = sbttobt(tick_sbt);
+	tick_seconds_max = INT_MAX / hz;
 
 	/*
 	 * Arrange for ticks to wrap 10 minutes after boot to help catch
 	 * sign problems sooner.
 	 */
 #ifndef FSTACK
-	ticks = INT_MAX - (hz * 10 * 60);
+	ticksl = INT_MAX - (hz * 10 * 60);
 #endif
+
 	vn_lock_pair_pause_max = hz / 100;
 	if (vn_lock_pair_pause_max == 0)
 		vn_lock_pair_pause_max = 1;
@@ -217,14 +231,29 @@ init_param1(void)
 	TUNABLE_ULONG_FETCH("kern.sgrowsiz", &sgrowsiz);
 
 	/*
-	 * Let the administrator set {NGROUPS_MAX}, but disallow values
-	 * less than NGROUPS_MAX which would violate POSIX.1-2008 or
-	 * greater than INT_MAX-1 which would result in overflow.
+	 * Let the administrator set {NGROUPS_MAX}.
+	 *
+	 * Values less than NGROUPS_MAX would violate POSIX/SuS (see the
+	 * specification for <limits.h>, paragraph "Runtime Increasable
+	 * Values").
+	 *
+	 * On the other hand, a too high value would result in an overflow when
+	 * computing the number of bytes to allocate for the groups array.  We
+	 * thus limit the number of supplementary groups to some very high
+	 * number that we expect will never be reached in all practical uses,
+	 * avoiding the problem just exposed even if 'gid_t' were to be enlarged
+	 * by a magnitude.
 	 */
 	ngroups_max = NGROUPS_MAX;
 	TUNABLE_INT_FETCH("kern.ngroups", &ngroups_max);
 	if (ngroups_max < NGROUPS_MAX)
 		ngroups_max = NGROUPS_MAX;
+	else {
+		const int ngroups_max_max = (1 << 24) - 1;
+
+		if (ngroups_max > ngroups_max_max)
+			ngroups_max = ngroups_max_max;
+	}
 
 	/*
 	 * Only allow to lower the maximal pid.
@@ -237,6 +266,7 @@ init_param1(void)
 		pid_max = 300;
 
 	TUNABLE_INT_FETCH("vfs.unmapped_buf_allowed", &unmapped_buf_allowed);
+	TSEXIT();
 }
 
 /*
@@ -245,12 +275,14 @@ init_param1(void)
 void
 init_param2(long physpages)
 {
+	long maxproc_clamp, maxfiles_clamp;
 
+	TSENTER();
 	/* Base parameters */
 	maxusers = MAXUSERS;
 	TUNABLE_INT_FETCH("kern.maxusers", &maxusers);
 	if (maxusers == 0) {
-		maxusers = physpages / (2 * 1024 * 1024 / PAGE_SIZE);
+		maxusers = pgtok(physpages) / (2 * 1024);
 		if (maxusers < 32)
 			maxusers = 32;
 #ifdef VM_MAX_AUTOTUNE_MAXUSERS
@@ -259,35 +291,43 @@ init_param2(long physpages)
 #endif
                 /*
                  * Scales down the function in which maxusers grows once
-                 * we hit 384.
+                 * we hit 384 (16MB to get a new "user").
                  */
                 if (maxusers > 384)
                         maxusers = 384 + ((maxusers - 384) / 8);
         }
 
 	/*
-	 * The following can be overridden after boot via sysctl.  Note:
-	 * unless overriden, these macros are ultimately based on maxusers.
-	 * Limit maxproc so that kmap entries cannot be exhausted by
-	 * processes.
+	 * The following can be overridden after boot via sysctl.  Note: unless
+	 * overridden, these macros are ultimately based on 'maxusers'.  Limit
+	 * maxproc so that kmap entries cannot be exhausted by processes.  The
+	 * default for 'maxproc' linearly scales as 16 times 'maxusers' (so,
+	 * linearly with 8 processes per MB up to 768MB, then 1 process per MB;
+	 * overridable by a tunable), and is then clamped at 21 + 1/3 processes
+	 * per MB (which never happens by default as long as physical memory is
+	 * > ~1.5MB).
 	 */
 	maxproc = NPROC;
 	TUNABLE_INT_FETCH("kern.maxproc", &maxproc);
-	if (maxproc > (physpages / 12))
-		maxproc = physpages / 12;
+	maxproc_clamp = pgtok(physpages) / (3 * 1024 / 64);
+	if (maxproc > maxproc_clamp)
+		maxproc = maxproc_clamp;
 	if (maxproc > pid_max)
 		maxproc = pid_max;
 	maxprocperuid = (maxproc * 9) / 10;
 
 	/*
-	 * The default limit for maxfiles is 1/12 of the number of
-	 * physical page but not less than 16 times maxusers.
-	 * At most it can be 1/6 the number of physical pages.
+	 * 'maxfiles' by default is set to 32 files per MB (overridable by
+	 * a tunable), and is then clamped at 64 files per MB (which thus never
+	 * happens by default).  (The default MAXFILES is for all practical
+	 * purposes not used, as it gives a lower value than 32 files per MB as
+	 * soon as there is more than ~2.5MB of memory.)
 	 */
-	maxfiles = imax(MAXFILES, physpages / 8);
+	maxfiles = imax(MAXFILES, pgtok(physpages) / (1024 / 32));
 	TUNABLE_INT_FETCH("kern.maxfiles", &maxfiles);
-	if (maxfiles > (physpages / 4))
-		maxfiles = physpages / 4;
+	maxfiles_clamp = pgtok(physpages) / (1024 / 64);
+	if (maxfiles > maxfiles_clamp)
+		maxfiles = maxfiles_clamp;
 	maxfilesperproc = (maxfiles / 10) * 9;
 	TUNABLE_INT_FETCH("kern.maxfilesperproc", &maxfilesperproc);
 
@@ -327,6 +367,7 @@ init_param2(long physpages)
 	if (maxpipekva > (VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) / 64)
 		maxpipekva = (VM_MAX_KERNEL_ADDRESS - VM_MIN_KERNEL_ADDRESS) /
 		    64;
+	TSEXIT();
 }
 
 /*

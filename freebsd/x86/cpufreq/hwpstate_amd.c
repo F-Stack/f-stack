@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Nate Lawson
  * Copyright (c) 2004 Colin Percival
@@ -43,10 +43,9 @@
  * 31116 Rev 3.20  February 04, 2009
  * BIOS and Kernel Developer's Guide(BKDG) for AMD Family 11h Processors
  * 41256 Rev 3.00 - July 07, 2008
+ * Processor Programming Reference (PPR) for AMD Family 1Ah Model 02h,
+ * Revision C1 Processors Volume 1 of 7 - Sep 29, 2024
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/bus.h>
@@ -85,9 +84,13 @@ __FBSDID("$FreeBSD$");
 #define	AMD_10H_11H_CUR_DID(msr)		(((msr) >> 6) & 0x07)
 #define	AMD_10H_11H_CUR_FID(msr)		((msr) & 0x3F)
 
+#define	AMD_17H_CUR_IDIV(msr)			(((msr) >> 30) & 0x03)
+#define	AMD_17H_CUR_IDD(msr)			(((msr) >> 22) & 0xFF)
 #define	AMD_17H_CUR_VID(msr)			(((msr) >> 14) & 0xFF)
 #define	AMD_17H_CUR_DID(msr)			(((msr) >> 8) & 0x3F)
 #define	AMD_17H_CUR_FID(msr)			((msr) & 0xFF)
+
+#define	AMD_1AH_CUR_FID(msr)			((msr) & 0xFFF)
 
 #define	HWPSTATE_DEBUG(dev, msg...)			\
 	do {						\
@@ -156,14 +159,30 @@ static device_method_t hwpstate_methods[] = {
 	{0, 0}
 };
 
-static devclass_t hwpstate_devclass;
 static driver_t hwpstate_driver = {
 	"hwpstate",
 	hwpstate_methods,
 	sizeof(struct hwpstate_softc),
 };
 
-DRIVER_MODULE(hwpstate, cpu, hwpstate_driver, hwpstate_devclass, 0, 0);
+DRIVER_MODULE(hwpstate, cpu, hwpstate_driver, 0, 0);
+
+static int
+hwpstate_amd_iscale(int val, int div)
+{
+	switch (div) {
+	case 3: /* divide by 1000 */
+		val /= 10;
+	case 2: /* divide by 100 */
+		val /= 10;
+	case 1: /* divide by 10 */
+		val /= 10;
+	case 0: /* divide by 1 */
+	    ;
+	}
+
+	return (val);
+}
 
 /*
  * Go to Px-state on all cpus, considering the limit register (if so
@@ -323,7 +342,7 @@ static void
 hwpstate_identify(driver_t *driver, device_t parent)
 {
 
-	if (device_find_child(parent, "hwpstate", -1) != NULL)
+	if (device_find_child(parent, "hwpstate", DEVICE_UNIT_ANY) != NULL)
 		return;
 
 	if ((cpu_vendor_id != CPU_VENDOR_AMD || CPUID_TO_FAMILY(cpu_id) < 0x10) &&
@@ -341,7 +360,8 @@ hwpstate_identify(driver_t *driver, device_t parent)
 	if (resource_disabled("hwpstate", 0))
 		return;
 
-	if (BUS_ADD_CHILD(parent, 10, "hwpstate", -1) == NULL)
+	if (BUS_ADD_CHILD(parent, 10, "hwpstate", device_get_unit(parent))
+	    == NULL)
 		device_printf(parent, "hwpstate: add child failed\n");
 }
 
@@ -366,7 +386,8 @@ hwpstate_probe(device_t dev)
 	/*
 	 * Check if acpi_perf has INFO only flag.
 	 */
-	perf_dev = device_find_child(device_get_parent(dev), "acpi_perf", -1);
+	perf_dev = device_find_child(device_get_parent(dev), "acpi_perf",
+	    DEVICE_UNIT_ANY);
 	error = TRUE;
 	if (perf_dev && device_is_attached(perf_dev)) {
 		error = CPUFREQ_DRV_TYPE(perf_dev, &type);
@@ -446,6 +467,9 @@ hwpstate_get_info_from_msr(device_t dev)
 		did = AMD_10H_11H_CUR_DID(msr);
 		fid = AMD_10H_11H_CUR_FID(msr);
 
+		hwpstate_set[i].volts = CPUFREQ_VAL_UNKNOWN;
+		hwpstate_set[i].power = CPUFREQ_VAL_UNKNOWN;
+		hwpstate_set[i].lat = CPUFREQ_VAL_UNKNOWN;
 		/* Convert fid/did to frequency. */
 		switch (family) {
 		case 0x11:
@@ -459,13 +483,46 @@ hwpstate_get_info_from_msr(device_t dev)
 			break;
 		case 0x17:
 		case 0x18:
-			did = AMD_17H_CUR_DID(msr);
-			if (did == 0) {
-				HWPSTATE_DEBUG(dev, "unexpected did: 0\n");
-				did = 1;
+		case 0x19:
+		case 0x1A:
+			/* calculate freq */
+			if (family == 0x1A) {
+				fid = AMD_1AH_CUR_FID(msr);
+				/* 1Ah CPU don't use a divisor */
+				hwpstate_set[i].freq = fid;
+				if (fid > 0x0f)
+					hwpstate_set[i].freq *= 5;
+				else {
+					HWPSTATE_DEBUG(dev,
+					    "unexpected fid: %d\n", fid);
+					return (ENXIO);
+				}
+			} else {
+				did = AMD_17H_CUR_DID(msr);
+				if (did == 0) {
+					HWPSTATE_DEBUG(dev,
+					    "unexpected did: 0\n");
+					did = 1;
+				}
+				fid = AMD_17H_CUR_FID(msr);
+				hwpstate_set[i].freq = (200 * fid) / did;
 			}
-			fid = AMD_17H_CUR_FID(msr);
-			hwpstate_set[i].freq = (200 * fid) / did;
+
+			/* Vid step is 6.25mV, so scale by 100. */
+			hwpstate_set[i].volts =
+			    (155000 - (625 * AMD_17H_CUR_VID(msr))) / 100;
+			/*
+			 * Calculate current first.
+			 * This equation is mentioned in
+			 * "BKDG for AMD Family 15h Models 70h-7fh Processors",
+			 * section 2.5.2.1.6.
+			 */
+			hwpstate_set[i].power = AMD_17H_CUR_IDD(msr) * 1000;
+			hwpstate_set[i].power = hwpstate_amd_iscale(
+			    hwpstate_set[i].power, AMD_17H_CUR_IDIV(msr));
+			hwpstate_set[i].power *= hwpstate_set[i].volts;
+			/* Milli amps * milli volts to milli watts. */
+			hwpstate_set[i].power /= 1000;
 			break;
 		default:
 			HWPSTATE_DEBUG(dev, "get_info_from_msr: %s family"
@@ -475,10 +532,6 @@ hwpstate_get_info_from_msr(device_t dev)
 			return (ENXIO);
 		}
 		hwpstate_set[i].pstate_id = i;
-		/* There was volts calculation, but deleted it. */
-		hwpstate_set[i].volts = CPUFREQ_VAL_UNKNOWN;
-		hwpstate_set[i].power = CPUFREQ_VAL_UNKNOWN;
-		hwpstate_set[i].lat = CPUFREQ_VAL_UNKNOWN;
 	}
 	return (0);
 }

@@ -364,7 +364,7 @@ static void i40e_parse_cee_app_tlv(struct i40e_cee_feat_tlv *tlv,
 {
 	u16 length, typelength, offset = 0;
 	struct i40e_cee_app_prio *app;
-	u8 i;
+	u32 i;
 
 	typelength = I40E_NTOHS(tlv->hdr.typelen);
 	length = (u16)((typelength & I40E_LLDP_TLV_LEN_MASK) >>
@@ -906,7 +906,7 @@ enum i40e_status_code i40e_init_dcb(struct i40e_hw *hw, bool enable_mib_change)
 		return I40E_ERR_NOT_READY;
 
 	/* Get the LLDP AdminStatus for the current port */
-	adminstatus = lldp_cfg.adminstatus >> (hw->port * 4);
+	adminstatus = (u8)(lldp_cfg.adminstatus >> (hw->port * 4));
 	adminstatus &= 0xF;
 
 	/* LLDP agent disabled */
@@ -1169,9 +1169,9 @@ static void i40e_add_ieee_app_pri_tlv(struct i40e_lldp_org_tlv *tlv,
 				      struct i40e_dcbx_config *dcbcfg)
 {
 	u16 typelength, length, offset = 0;
-	u8 priority, selector, i = 0;
 	u8 *buf = tlv->tlvinfo;
-	u32 ouisubtype;
+	u32 ouisubtype, i = 0;
+	u8 priority, selector;
 
 	/* No APP TLVs then just return */
 	if (dcbcfg->numapps == 0)
@@ -1307,7 +1307,6 @@ enum i40e_status_code i40e_dcb_config_to_lldp(u8 *lldpmib, u16 *miblen,
 	*miblen = offset;
 	return ret;
 }
-
 
 /**
  * _i40e_read_lldp_cfg - generic read of LLDP Configuration data from NVM

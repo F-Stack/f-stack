@@ -15,10 +15,6 @@
  * after GRE header decapsulating)
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 
 #include <rte_byteorder.h>
@@ -28,6 +24,10 @@ extern "C" {
 
 #if defined(RTE_ARCH_X86) || defined(__ARM_NEON)
 #include <rte_vect.h>
+#endif
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
 #ifdef RTE_ARCH_X86
@@ -88,8 +88,8 @@ struct rte_ipv4_tuple {
  * ports/sctp_tag have to be CPU byte order
  */
 struct rte_ipv6_tuple {
-	uint8_t		src_addr[16];
-	uint8_t		dst_addr[16];
+	struct rte_ipv6_addr src_addr;
+	struct rte_ipv6_addr dst_addr;
 	union {
 		struct {
 			uint16_t dport;
@@ -99,14 +99,27 @@ struct rte_ipv6_tuple {
 	};
 };
 
+#ifdef RTE_ARCH_X86
+union __rte_aligned(XMM_SIZE) rte_thash_tuple {
+#else
 union rte_thash_tuple {
+#endif
 	struct rte_ipv4_tuple	v4;
 	struct rte_ipv6_tuple	v6;
-#ifdef RTE_ARCH_X86
-} __rte_aligned(XMM_SIZE);
-#else
 };
-#endif
+
+/** @internal
+ *  @brief Generates a random polynomial
+ *
+ * @param poly_degree
+ *   degree of the polynomial
+ *
+ * @return
+ *   random polynomial
+ */
+__rte_internal
+uint32_t
+thash_get_rand_poly(uint32_t poly_degree);
 
 /**
  * Prepare special converted key to use with rte_softrss_be()
@@ -139,24 +152,24 @@ rte_thash_load_v6_addrs(const struct rte_ipv6_hdr *orig,
 			union rte_thash_tuple *targ)
 {
 #ifdef RTE_ARCH_X86
-	__m128i ipv6 = _mm_loadu_si128((const __m128i *)orig->src_addr);
-	*(__m128i *)targ->v6.src_addr =
+	__m128i ipv6 = _mm_loadu_si128((const __m128i *)&orig->src_addr);
+	*(__m128i *)&targ->v6.src_addr =
 			_mm_shuffle_epi8(ipv6, rte_thash_ipv6_bswap_mask);
-	ipv6 = _mm_loadu_si128((const __m128i *)orig->dst_addr);
-	*(__m128i *)targ->v6.dst_addr =
+	ipv6 = _mm_loadu_si128((const __m128i *)&orig->dst_addr);
+	*(__m128i *)&targ->v6.dst_addr =
 			_mm_shuffle_epi8(ipv6, rte_thash_ipv6_bswap_mask);
 #elif defined(__ARM_NEON)
-	uint8x16_t ipv6 = vld1q_u8((uint8_t const *)orig->src_addr);
-	vst1q_u8((uint8_t *)targ->v6.src_addr, vrev32q_u8(ipv6));
-	ipv6 = vld1q_u8((uint8_t const *)orig->dst_addr);
-	vst1q_u8((uint8_t *)targ->v6.dst_addr, vrev32q_u8(ipv6));
+	uint8x16_t ipv6 = vld1q_u8(orig->src_addr.a);
+	vst1q_u8(targ->v6.src_addr.a, vrev32q_u8(ipv6));
+	ipv6 = vld1q_u8(orig->dst_addr.a);
+	vst1q_u8(targ->v6.dst_addr.a, vrev32q_u8(ipv6));
 #else
 	int i;
 	for (i = 0; i < 4; i++) {
-		*((uint32_t *)targ->v6.src_addr + i) =
-			rte_be_to_cpu_32(*((const uint32_t *)orig->src_addr + i));
-		*((uint32_t *)targ->v6.dst_addr + i) =
-			rte_be_to_cpu_32(*((const uint32_t *)orig->dst_addr + i));
+		*((uint32_t *)&targ->v6.src_addr + i) =
+			rte_be_to_cpu_32(*((const uint32_t *)&orig->src_addr + i));
+		*((uint32_t *)&targ->v6.dst_addr + i) =
+			rte_be_to_cpu_32(*((const uint32_t *)&orig->dst_addr + i));
 	}
 #endif
 }
@@ -446,6 +459,35 @@ rte_thash_adjust_tuple(struct rte_thash_ctx *ctx,
 	uint8_t *tuple, unsigned int tuple_len,
 	uint32_t desired_value, unsigned int attempts,
 	rte_thash_check_tuple_t fn, void *userdata);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Modify RSS hash key such that subtuple bits corresponding to `entropy_sz`
+ * bits starting from `entropy_start` will have the most even distribution with
+ * this key with a given ReTa size.
+ *
+ * @param key
+ *  Pointer to the RSS hash key.
+ * @param key_len
+ *  Length of the key.
+ * @param reta_sz_log
+ *  Log2 of the size of RSS redirection table,
+ *  i.e. number of bits of the RSS hash value used to identify RSS ReTa entry.
+ * @param entropy_start
+ *  Bit offset from the beginning of the tuple
+ *  where user expects best distribution of the subtuple values.
+ * @param entropy_sz
+ *  Size in bits of the part of subtuple.
+ *
+ * @return
+ *  0 on success negative otherwise
+ */
+__rte_experimental
+int
+rte_thash_gen_key(uint8_t *key, size_t key_len, size_t reta_sz_log,
+	uint32_t entropy_start, size_t entropy_sz);
 
 #ifdef __cplusplus
 }

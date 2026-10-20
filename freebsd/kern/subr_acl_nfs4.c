@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008-2010 Edward Tomasz Napierała <trasz@FreeBSD.org>
  *
@@ -32,8 +32,6 @@
  */
 
 #ifdef _KERNEL
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/kernel.h>
@@ -170,7 +168,7 @@ _acl_denies(const struct acl *aclp, int access_mask, struct ucred *cred,
 }
 
 int
-vaccess_acl_nfs4(enum vtype type, uid_t file_uid, gid_t file_gid,
+vaccess_acl_nfs4(__enum_uint8(vtype) type, uid_t file_uid, gid_t file_gid,
     struct acl *aclp, accmode_t accmode, struct ucred *cred)
 {
 	accmode_t priv_granted = 0;

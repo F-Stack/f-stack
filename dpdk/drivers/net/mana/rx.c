@@ -59,9 +59,8 @@ mana_rq_ring_doorbell(struct mana_rxq *rxq)
 }
 
 static int
-mana_alloc_and_post_rx_wqe(struct mana_rxq *rxq)
+mana_post_rx_wqe(struct mana_rxq *rxq, struct rte_mbuf *mbuf)
 {
-	struct rte_mbuf *mbuf = NULL;
 	struct gdma_sgl_element sgl[1];
 	struct gdma_work_request request;
 	uint32_t wqe_size_in_bu;
@@ -69,13 +68,7 @@ mana_alloc_and_post_rx_wqe(struct mana_rxq *rxq)
 	int ret;
 	struct mana_mr_cache *mr;
 
-	mbuf = rte_pktmbuf_alloc(rxq->mp);
-	if (!mbuf) {
-		rxq->stats.nombuf++;
-		return -ENOMEM;
-	}
-
-	mr = mana_find_pmd_mr(&rxq->mr_btree, priv, mbuf);
+	mr = mana_alloc_pmd_mr(&rxq->mr_btree, priv, mbuf);
 	if (!mr) {
 		DP_LOG(ERR, "failed to register RX MR");
 		rte_pktmbuf_free(mbuf);
@@ -109,6 +102,7 @@ mana_alloc_and_post_rx_wqe(struct mana_rxq *rxq)
 		rxq->wqe_cnt_to_short_db += wqe_size_in_bu;
 #endif
 		rxq->desc_ring_head = (rxq->desc_ring_head + 1) % rxq->num_desc;
+		rxq->desc_ring_len++;
 	} else {
 		DP_LOG(DEBUG, "failed to post recv ret %d", ret);
 		return ret;
@@ -120,20 +114,37 @@ mana_alloc_and_post_rx_wqe(struct mana_rxq *rxq)
 /*
  * Post work requests for a Rx queue.
  */
+#define MANA_MBUF_BULK 32u
 static int
-mana_alloc_and_post_rx_wqes(struct mana_rxq *rxq)
+mana_alloc_and_post_rx_wqes(struct mana_rxq *rxq, uint32_t count)
 {
 	int ret;
-	uint32_t i;
+	uint32_t i, batch_count;
+	struct rte_mbuf *mbufs[MANA_MBUF_BULK];
 
 #ifdef RTE_ARCH_32
 	rxq->wqe_cnt_to_short_db = 0;
 #endif
-	for (i = 0; i < rxq->num_desc; i++) {
-		ret = mana_alloc_and_post_rx_wqe(rxq);
+
+more_mbufs:
+	batch_count = RTE_MIN(count, MANA_MBUF_BULK);
+	ret = rte_pktmbuf_alloc_bulk(rxq->mp, mbufs, batch_count);
+	if (ret) {
+		DP_LOG(ERR, "failed to allocate mbufs for RX");
+		rxq->stats.nombuf += count;
+
+		/* Bail out to ring doorbell for posted packets */
+		goto out;
+	}
+
+	for (i = 0; i < batch_count; i++) {
+		ret = mana_post_rx_wqe(rxq, mbufs[i]);
 		if (ret) {
 			DP_LOG(ERR, "failed to post RX ret = %d", ret);
-			return ret;
+
+			/* Free the remaining mbufs that are not posted */
+			rte_pktmbuf_free_bulk(&mbufs[i], batch_count - i);
+			goto out;
 		}
 
 #ifdef RTE_ARCH_32
@@ -144,8 +155,12 @@ mana_alloc_and_post_rx_wqes(struct mana_rxq *rxq)
 #endif
 	}
 
-	mana_rq_ring_doorbell(rxq);
+	count -= batch_count;
+	if (count > 0)
+		goto more_mbufs;
 
+out:
+	mana_rq_ring_doorbell(rxq);
 	return ret;
 }
 
@@ -201,7 +216,7 @@ mana_stop_rx_queues(struct rte_eth_dev *dev)
 		}
 
 		/* Drain and free posted WQEs */
-		while (rxq->desc_ring_tail != rxq->desc_ring_head) {
+		while (rxq->desc_ring_len > 0) {
 			struct mana_rxq_desc *desc =
 				&rxq->desc_ring[rxq->desc_ring_tail];
 
@@ -209,9 +224,11 @@ mana_stop_rx_queues(struct rte_eth_dev *dev)
 
 			rxq->desc_ring_tail =
 				(rxq->desc_ring_tail + 1) % rxq->num_desc;
+			rxq->desc_ring_len--;
 		}
 		rxq->desc_ring_head = 0;
 		rxq->desc_ring_tail = 0;
+		rxq->desc_ring_len = 0;
 
 		memset(&rxq->gdma_rq, 0, sizeof(rxq->gdma_rq));
 		memset(&rxq->gdma_cq, 0, sizeof(rxq->gdma_cq));
@@ -404,7 +421,9 @@ mana_start_rx_queues(struct rte_eth_dev *dev)
 	}
 
 	for (i = 0; i < priv->num_queues; i++) {
-		ret = mana_alloc_and_post_rx_wqes(dev->data->rx_queues[i]);
+		struct mana_rxq *rxq = dev->data->rx_queues[i];
+
+		ret = mana_alloc_and_post_rx_wqes(rxq, rxq->num_desc);
 		if (ret)
 			goto fail;
 	}
@@ -423,7 +442,7 @@ uint16_t
 mana_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 {
 	uint16_t pkt_received = 0;
-	uint16_t wqe_posted = 0;
+	uint16_t wqe_consumed = 0;
 	struct mana_rxq *rxq = dpdk_rxq;
 	struct mana_priv *priv = rxq->priv;
 	struct rte_mbuf *mbuf;
@@ -432,10 +451,6 @@ mana_rx_burst(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 	uint32_t pkt_len;
 	uint32_t i;
 	int polled = 0;
-
-#ifdef RTE_ARCH_32
-	rxq->wqe_cnt_to_short_db = 0;
-#endif
 
 repoll:
 	/* Polling on new completions if we have no backlog */
@@ -517,10 +532,6 @@ repoll:
 			mbuf->hash.rss = oob->packet_info[pkt_idx].packet_hash;
 		}
 
-		pkts[pkt_received++] = mbuf;
-		rxq->stats.packets++;
-		rxq->stats.bytes += mbuf->data_len;
-
 		pkt_idx++;
 		/* Move on the next completion if all packets are processed */
 		if (pkt_idx >= RX_COM_OOB_NUM_PACKETINFO_SEGMENTS) {
@@ -528,33 +539,38 @@ repoll:
 			i++;
 		}
 
+		if (oob->rx_vlan_tag_present) {
+			mbuf->ol_flags |=
+				RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
+			mbuf->vlan_tci = oob->rx_vlan_id;
+
+			if (!priv->vlan_strip && rte_vlan_insert(&mbuf)) {
+				DRV_LOG(ERR, "vlan insert failed");
+				rxq->stats.errors++;
+				rte_pktmbuf_free(mbuf);
+
+				goto drop;
+			}
+		}
+
+		pkts[pkt_received++] = mbuf;
+		rxq->stats.packets++;
+		rxq->stats.bytes += mbuf->data_len;
+
 drop:
 		rxq->desc_ring_tail++;
 		if (rxq->desc_ring_tail >= rxq->num_desc)
 			rxq->desc_ring_tail = 0;
 
 		rxq->gdma_rq.tail += desc->wqe_size_in_bu;
+		rxq->desc_ring_len--;
 
-		/* Consume this request and post another request */
-		ret = mana_alloc_and_post_rx_wqe(rxq);
-		if (ret) {
-			DP_LOG(ERR, "failed to post rx wqe ret=%d", ret);
-			break;
-		}
-
-		wqe_posted++;
+		/* Record the number of the RX WQE we need to post to replenish
+		 * consumed RX requests
+		 */
+		wqe_consumed++;
 		if (pkt_received == pkts_n)
 			break;
-
-#ifdef RTE_ARCH_32
-		/* Ring short doorbell if approaching the wqe increment
-		 * limit.
-		 */
-		if (rxq->wqe_cnt_to_short_db > RX_WQE_SHORT_DB_THRESHOLD) {
-			mana_rq_ring_doorbell(rxq);
-			rxq->wqe_cnt_to_short_db = 0;
-		}
-#endif
 	}
 
 	rxq->backlog_idx = pkt_idx;
@@ -569,8 +585,12 @@ drop:
 		goto repoll;
 	}
 
-	if (wqe_posted)
-		mana_rq_ring_doorbell(rxq);
+	if (wqe_consumed) {
+		ret = mana_alloc_and_post_rx_wqes(rxq, wqe_consumed);
+		if (ret)
+			DRV_LOG(ERR, "failed to post %d WQEs, ret %d",
+				wqe_consumed, ret);
+	}
 
 	return pkt_received;
 }

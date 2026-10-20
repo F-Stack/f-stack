@@ -43,7 +43,7 @@
  *
  * In addition to the facilities defined in RFC7413, this implementation
  * supports a pre-shared key (PSK) mode of operation in which the TFO server
- * requires the client to be in posession of a shared secret in order for
+ * requires the client to be in possession of a shared secret in order for
  * the client to be able to successfully open TFO connections with the
  * server.  This is useful, for example, in environments where TFO servers
  * are exposed to both internal and external clients and only wish to allow
@@ -164,8 +164,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 
 #include <sys/param.h>
@@ -273,7 +271,7 @@ SYSCTL_PROC(_net_inet_tcp_fastopen, OID_AUTO, autokey,
 
 static int sysctl_net_inet_tcp_fastopen_ccache_bucket_limit(SYSCTL_HANDLER_ARGS);
 SYSCTL_PROC(_net_inet_tcp_fastopen, OID_AUTO, ccache_bucket_limit,
-    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_NEEDGIANT,
+    CTLFLAG_VNET | CTLTYPE_UINT | CTLFLAG_RWTUN | CTLFLAG_NOFETCH | CTLFLAG_NEEDGIANT,
     NULL, 0, &sysctl_net_inet_tcp_fastopen_ccache_bucket_limit, "IU",
     "Max entries per bucket in client cookie cache");
 
@@ -381,7 +379,6 @@ VNET_DEFINE_STATIC(struct tcp_fastopen_ccache, tcp_fastopen_ccache);
 #define	CCB_UNLOCK(ccb)		mtx_unlock(&(ccb)->ccb_mtx)
 #define	CCB_LOCK_ASSERT(ccb)	mtx_assert(&(ccb)->ccb_mtx, MA_OWNED)
 
-#pragma GCC diagnostic ignored "-Waddress"
 void
 tcp_fastopen_init(void)
 {
@@ -396,7 +393,8 @@ tcp_fastopen_init(void)
 	V_tcp_fastopen_keys.newest = TCP_FASTOPEN_MAX_KEYS - 1;
 	V_tcp_fastopen_keys.newest_psk = TCP_FASTOPEN_MAX_PSKS - 1;
 
-	/* May already be non-zero if kernel tunable was set */
+	TUNABLE_INT_FETCH("net.inet.tcp.fastopen.ccache_bucket_limit",
+	    &V_tcp_fastopen_ccache.bucket_limit);
 	if (V_tcp_fastopen_ccache.bucket_limit == 0)
 		V_tcp_fastopen_ccache.bucket_limit =
 		    TCP_FASTOPEN_CCACHE_BUCKET_LIMIT_DEFAULT;
@@ -443,7 +441,6 @@ tcp_fastopen_init(void)
 	    sizeof(struct tcp_fastopen_ccache_entry), NULL, NULL, NULL, NULL,
 	    UMA_ALIGN_CACHE, 0);
 }
-#pragma GCC diagnostic error "-Waddress"
 
 void
 tcp_fastopen_destroy(void)
@@ -869,7 +866,7 @@ sysctl_net_inet_tcp_fastopen_client_enable(SYSCTL_HANDLER_ARGS)
 void
 tcp_fastopen_connect(struct tcpcb *tp)
 {
-	struct inpcb *inp;
+	struct inpcb *inp = tptoinpcb(tp);
 	struct tcp_fastopen_ccache_bucket *ccb;
 	struct tcp_fastopen_ccache_entry *cce;
 	sbintime_t now;
@@ -877,7 +874,6 @@ tcp_fastopen_connect(struct tcpcb *tp)
 	uint64_t psk_cookie;
 
 	psk_cookie = 0;
-	inp = tp->t_inpcb;
 	cce = tcp_fastopen_ccache_lookup(&inp->inp_inc, &ccb);
 	if (cce) {
 		if (cce->disable_time == 0) {
@@ -957,7 +953,7 @@ tcp_fastopen_connect(struct tcpcb *tp)
 void
 tcp_fastopen_disable_path(struct tcpcb *tp)
 {
-	struct in_conninfo *inc = &tp->t_inpcb->inp_inc;
+	struct in_conninfo *inc = &tptoinpcb(tp)->inp_inc;
 	struct tcp_fastopen_ccache_bucket *ccb;
 	struct tcp_fastopen_ccache_entry *cce;
 
@@ -983,7 +979,7 @@ void
 tcp_fastopen_update_cache(struct tcpcb *tp, uint16_t mss,
     uint8_t cookie_len, uint8_t *cookie)
 {
-	struct in_conninfo *inc = &tp->t_inpcb->inp_inc;
+	struct in_conninfo *inc = &tptoinpcb(tp)->inp_inc;
 	struct tcp_fastopen_ccache_bucket *ccb;
 	struct tcp_fastopen_ccache_entry *cce;
 

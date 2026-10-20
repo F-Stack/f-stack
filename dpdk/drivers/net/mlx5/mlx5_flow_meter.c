@@ -15,6 +15,284 @@
 #include "mlx5.h"
 #include "mlx5_flow.h"
 
+#ifdef HAVE_MLX5_HWS_SUPPORT
+
+static void
+mlx5_flow_meter_uninit_guest(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	if (priv->hws_mpool) {
+		if (priv->hws_mpool->action) {
+			claim_zero(mlx5dr_action_destroy(priv->hws_mpool->action));
+			priv->hws_mpool->action = NULL;
+		}
+		priv->hws_mpool->devx_obj = NULL;
+		priv->hws_mpool->idx_pool = NULL;
+		mlx5_free(priv->hws_mpool);
+		priv->hws_mpool = NULL;
+	}
+}
+
+void
+mlx5_flow_meter_uninit(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	if (priv->shared_host) {
+		mlx5_flow_meter_uninit_guest(dev);
+		return;
+	}
+	if (priv->mtr_policy_arr) {
+		mlx5_free(priv->mtr_policy_arr);
+		priv->mtr_policy_arr = NULL;
+	}
+	if (priv->mtr_profile_arr) {
+		mlx5_free(priv->mtr_profile_arr);
+		priv->mtr_profile_arr = NULL;
+	}
+	if (priv->hws_mpool) {
+		mlx5_aso_mtr_queue_uninit(priv->sh, priv->hws_mpool, NULL);
+		mlx5_ipool_destroy(priv->hws_mpool->idx_pool);
+		mlx5_free(priv->hws_mpool);
+		priv->hws_mpool = NULL;
+	}
+	if (priv->mtr_bulk.aso) {
+		mlx5_free(priv->mtr_bulk.aso);
+		priv->mtr_bulk.aso = NULL;
+		priv->mtr_bulk.size = 0;
+		mlx5_aso_queue_uninit(priv->sh, ASO_OPC_MOD_POLICER);
+	}
+	if (priv->mtr_bulk.action) {
+		mlx5dr_action_destroy(priv->mtr_bulk.action);
+		priv->mtr_bulk.action = NULL;
+	}
+	if (priv->mtr_bulk.devx_obj) {
+		claim_zero(mlx5_devx_cmd_destroy(priv->mtr_bulk.devx_obj));
+		priv->mtr_bulk.devx_obj = NULL;
+	}
+}
+
+static int
+mlx5_flow_meter_init_guest(struct rte_eth_dev *dev)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct rte_eth_dev *host_dev = priv->shared_host;
+	struct mlx5_priv *host_priv = host_dev->data->dev_private;
+	int reg_id = 0;
+	uint32_t flags;
+	int ret = 0;
+
+	MLX5_ASSERT(priv->shared_host);
+	reg_id = mlx5_flow_get_reg_id(dev, MLX5_MTR_COLOR, 0, NULL);
+	if (reg_id < 0) {
+		rte_errno = ENOMEM;
+		ret = -rte_errno;
+		DRV_LOG(ERR, "Meter register is not available.");
+		goto err;
+	}
+	priv->hws_mpool = mlx5_malloc(MLX5_MEM_ZERO, sizeof(struct mlx5_aso_mtr_pool),
+				      RTE_CACHE_LINE_SIZE, SOCKET_ID_ANY);
+	if (!priv->hws_mpool) {
+		rte_errno = ENOMEM;
+		ret = -rte_errno;
+		DRV_LOG(ERR, "Meter ipool allocation failed.");
+		goto err;
+	}
+	MLX5_ASSERT(host_priv->hws_mpool->idx_pool);
+	MLX5_ASSERT(host_priv->hws_mpool->devx_obj);
+	priv->hws_mpool->idx_pool = host_priv->hws_mpool->idx_pool;
+	priv->hws_mpool->devx_obj = host_priv->hws_mpool->devx_obj;
+	flags = MLX5DR_ACTION_FLAG_HWS_RX | MLX5DR_ACTION_FLAG_HWS_TX;
+	if (priv->sh->config.dv_esw_en && priv->master)
+		flags |= MLX5DR_ACTION_FLAG_HWS_FDB;
+	priv->hws_mpool->action = mlx5dr_action_create_aso_meter
+			(priv->dr_ctx, (struct mlx5dr_devx_obj *)priv->hws_mpool->devx_obj,
+			 reg_id - REG_C_0, flags);
+	if (!priv->hws_mpool->action) {
+		rte_errno = ENOMEM;
+		ret = -rte_errno;
+		DRV_LOG(ERR, "Meter action creation failed.");
+		goto err;
+	}
+	return 0;
+err:
+	mlx5_flow_meter_uninit(dev);
+	return ret;
+}
+
+int
+mlx5_flow_meter_init(struct rte_eth_dev *dev,
+		     uint32_t nb_meters,
+		     uint32_t nb_meter_profiles,
+		     uint32_t nb_meter_policies,
+		     uint32_t nb_queues)
+{
+	struct mlx5_priv *priv = dev->data->dev_private;
+	struct mlx5_devx_obj *dcs = NULL;
+	uint32_t log_obj_size;
+	int ret = 0;
+	int reg_id;
+	struct mlx5_aso_mtr *aso;
+	uint32_t i;
+	struct rte_flow_error error;
+	uint32_t flags;
+	uint32_t nb_mtrs = rte_align32pow2(nb_meters);
+	struct mlx5_indexed_pool_config cfg = {
+		.size = sizeof(struct mlx5_aso_mtr),
+		.trunk_size = 1 << 12,
+		.per_core_cache = 1 << 13,
+		.need_lock = 1,
+		.release_mem_en = !!priv->sh->config.reclaim_mode,
+		.malloc = mlx5_malloc,
+		.max_idx = nb_meters,
+		.free = mlx5_free,
+		.type = "mlx5_hw_mtr_mark_action",
+	};
+
+	if (priv->shared_host)
+		return mlx5_flow_meter_init_guest(dev);
+	if (!nb_meters) {
+		ret = ENOTSUP;
+		rte_flow_error_set(&error, ENOMEM,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				  NULL, "Meter configuration is invalid.");
+		goto err;
+	}
+	if (!priv->mtr_en || !priv->sh->meter_aso_en) {
+		ret = ENOTSUP;
+		rte_flow_error_set(&error, ENOMEM,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				  NULL, "Meter ASO is not supported.");
+		goto err;
+	}
+	priv->mtr_config.nb_meters = nb_meters;
+	log_obj_size = rte_log2_u32(nb_meters >> 1);
+	dcs = mlx5_devx_cmd_create_flow_meter_aso_obj
+		(priv->sh->cdev->ctx, priv->sh->cdev->pdn,
+			log_obj_size);
+	if (!dcs) {
+		ret = ENOMEM;
+		rte_flow_error_set(&error, ENOMEM,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				  NULL, "Meter ASO object allocation failed.");
+		goto err;
+	}
+	priv->mtr_bulk.devx_obj = dcs;
+	reg_id = mlx5_flow_get_reg_id(dev, MLX5_MTR_COLOR, 0, NULL);
+	if (reg_id < 0) {
+		ret = ENOTSUP;
+		rte_flow_error_set(&error, ENOMEM,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				  NULL, "Meter register is not available.");
+		goto err;
+	}
+	flags = MLX5DR_ACTION_FLAG_HWS_RX | MLX5DR_ACTION_FLAG_HWS_TX;
+	if (priv->sh->config.dv_esw_en && priv->master)
+		flags |= MLX5DR_ACTION_FLAG_HWS_FDB;
+	priv->mtr_bulk.action = mlx5dr_action_create_aso_meter
+			(priv->dr_ctx, (struct mlx5dr_devx_obj *)dcs,
+				reg_id - REG_C_0, flags);
+	if (!priv->mtr_bulk.action) {
+		ret = ENOMEM;
+		rte_flow_error_set(&error, ENOMEM,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				  NULL, "Meter action creation failed.");
+		goto err;
+	}
+	priv->mtr_bulk.aso = mlx5_malloc(MLX5_MEM_ZERO,
+					 sizeof(struct mlx5_aso_mtr) *
+					 nb_meters,
+					 RTE_CACHE_LINE_SIZE,
+					 SOCKET_ID_ANY);
+	if (!priv->mtr_bulk.aso) {
+		ret = ENOMEM;
+		rte_flow_error_set(&error, ENOMEM,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				  NULL, "Meter bulk ASO allocation failed.");
+		goto err;
+	}
+	priv->mtr_bulk.size = nb_meters;
+	aso = priv->mtr_bulk.aso;
+	for (i = 0; i < priv->mtr_bulk.size; i++) {
+		aso->type = ASO_METER_DIRECT;
+		aso->state = ASO_METER_WAIT;
+		aso->offset = i;
+		aso++;
+	}
+	priv->hws_mpool = mlx5_malloc(MLX5_MEM_ZERO,
+				sizeof(struct mlx5_aso_mtr_pool),
+				RTE_CACHE_LINE_SIZE, SOCKET_ID_ANY);
+	if (!priv->hws_mpool) {
+		ret = ENOMEM;
+		rte_flow_error_set(&error, ENOMEM,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				  NULL, "Meter ipool allocation failed.");
+		goto err;
+	}
+	priv->hws_mpool->devx_obj = priv->mtr_bulk.devx_obj;
+	priv->hws_mpool->action = priv->mtr_bulk.action;
+	priv->hws_mpool->nb_sq = nb_queues;
+	if (mlx5_aso_mtr_queue_init(priv->sh, priv->hws_mpool,
+				    &priv->sh->mtrmng->pools_mng, nb_queues)) {
+		ret = ENOMEM;
+		rte_flow_error_set(&error, ENOMEM,
+				  RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+				  NULL, "Meter ASO queue allocation failed.");
+		goto err;
+	}
+	/*
+	 * No need for local cache if Meter number is a small number.
+	 * Since flow insertion rate will be very limited in that case.
+	 * Here let's set the number to less than default trunk size 4K.
+	 */
+	if (nb_mtrs <= cfg.trunk_size) {
+		cfg.per_core_cache = 0;
+		cfg.trunk_size = nb_mtrs;
+	} else if (nb_mtrs <= MLX5_HW_IPOOL_SIZE_THRESHOLD) {
+		cfg.per_core_cache = MLX5_HW_IPOOL_CACHE_MIN;
+	}
+	priv->hws_mpool->idx_pool = mlx5_ipool_create(&cfg);
+	if (nb_meter_profiles) {
+		priv->mtr_config.nb_meter_profiles = nb_meter_profiles;
+		priv->mtr_profile_arr =
+			mlx5_malloc(MLX5_MEM_ZERO,
+				    sizeof(struct mlx5_flow_meter_profile) *
+				    nb_meter_profiles,
+				    RTE_CACHE_LINE_SIZE,
+				    SOCKET_ID_ANY);
+		if (!priv->mtr_profile_arr) {
+			ret = ENOMEM;
+			rte_flow_error_set(&error, ENOMEM,
+					   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					   NULL, "Meter profile allocation failed.");
+			goto err;
+		}
+	}
+	if (nb_meter_policies) {
+		priv->mtr_config.nb_meter_policies = nb_meter_policies;
+		priv->mtr_policy_arr =
+			mlx5_malloc(MLX5_MEM_ZERO,
+				    sizeof(struct mlx5_flow_meter_policy) *
+				    nb_meter_policies,
+				    RTE_CACHE_LINE_SIZE,
+				    SOCKET_ID_ANY);
+		if (!priv->mtr_policy_arr) {
+			ret = ENOMEM;
+			rte_flow_error_set(&error, ENOMEM,
+					   RTE_FLOW_ERROR_TYPE_UNSPECIFIED,
+					   NULL, "Meter policy allocation failed.");
+			goto err;
+		}
+	}
+	return 0;
+err:
+	mlx5_flow_meter_uninit(dev);
+	return ret;
+}
+
+#endif /* HAVE_MLX5_HWS_SUPPORT */
+
 static int mlx5_flow_meter_disable(struct rte_eth_dev *dev,
 		uint32_t meter_id, struct rte_mtr_error *error);
 
@@ -427,6 +705,26 @@ mlx5_flow_meter_param_fill(struct mlx5_flow_meter_profile *fmp,
 }
 
 /**
+ * Callback to get MTR maximum objects number.
+ *
+ * @param[in] priv
+ *   Pointer to Ethernet device.
+ *
+ * @return
+ *   Max number of meters.
+ */
+uint32_t
+mlx5_flow_mtr_max_get(struct mlx5_priv *priv)
+{
+	struct mlx5_hca_qos_attr *qattr = &priv->sh->cdev->config.hca_attr.qos;
+
+	/* Max number of meters. */
+	return ((priv->sh->meter_aso_en) ?
+	1 << (qattr->log_max_num_meter_aso + 1) :
+	qattr->log_max_flow_meter);
+}
+
+/**
  * Callback to get MTR capabilities.
  *
  * @param[in] dev
@@ -447,19 +745,20 @@ mlx5_flow_mtr_cap_get(struct rte_eth_dev *dev,
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_hca_qos_attr *qattr = &priv->sh->cdev->config.hca_attr.qos;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_en)
 		return -rte_mtr_error_set(error, ENOTSUP,
 					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
 					  "Meter is not supported");
 	memset(cap, 0, sizeof(*cap));
+	cap->n_max = mlx5_flow_mtr_max_get(priv);
 	if (priv->sh->meter_aso_en) {
-		/* 2 meters per one ASO cache line. */
-		cap->n_max = 1 << (qattr->log_max_num_meter_aso + 1);
 		cap->srtcm_rfc2697_packet_mode_supported = 1;
 		cap->trtcm_rfc2698_packet_mode_supported = 1;
 		cap->trtcm_rfc4115_packet_mode_supported = 1;
-	} else {
-		cap->n_max = 1 << qattr->log_max_flow_meter;
 	}
 	cap->srtcm_rfc2697_byte_mode_supported = 1;
 	cap->trtcm_rfc2698_byte_mode_supported = 1;
@@ -608,6 +907,12 @@ mlx5_flow_meter_profile_get(struct rte_eth_dev *dev,
 {
 	struct mlx5_priv *priv = dev->data->dev_private;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL)) {
+		rte_mtr_error_set(error, EINVAL,
+				  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+				  "non-template flow engine was not configured");
+		return NULL;
+	}
 	if (!priv->mtr_en) {
 		rte_mtr_error_set(error, ENOTSUP,
 				  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
@@ -644,6 +949,13 @@ mlx5_flow_meter_profile_hws_add(struct rte_eth_dev *dev,
 	struct mlx5_flow_meter_profile *fmp;
 	int ret;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
+	if (priv->shared_host)
+		return -rte_mtr_error_set(error, ENOTSUP, RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "Meter profiles cannot be created on guest port");
 	if (!priv->mtr_profile_arr)
 		return mlx5_flow_meter_profile_add(dev, meter_profile_id, profile, error);
 	/* Check input params. */
@@ -681,6 +993,9 @@ mlx5_flow_meter_profile_hws_delete(struct rte_eth_dev *dev,
 	struct mlx5_priv *priv = dev->data->dev_private;
 	struct mlx5_flow_meter_profile *fmp;
 
+	if (priv->shared_host)
+		return -rte_mtr_error_set(error, ENOTSUP, RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "Meter profiles cannot be destroyed through guest port");
 	if (!priv->mtr_profile_arr)
 		return mlx5_flow_meter_profile_delete(dev, meter_profile_id, error);
 	/* Meter profile must exist. */
@@ -1156,6 +1471,12 @@ mlx5_flow_meter_policy_get(struct rte_eth_dev *dev,
 	struct mlx5_priv *priv = dev->data->dev_private;
 	uint32_t policy_idx;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL)) {
+		rte_mtr_error_set(error, EINVAL,
+				  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+				  "non-template flow engine was not configured");
+		return NULL;
+	}
 	if (!priv->mtr_en) {
 		rte_mtr_error_set(error, ENOTSUP,
 				  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
@@ -1409,9 +1730,9 @@ mlx5_flow_meter_create(struct rte_eth_dev *dev, uint32_t meter_id,
 			NULL, "Meter profile id not valid.");
 	/* Meter policy must exist. */
 	if (params->meter_policy_id == priv->sh->mtrmng->def_policy_id) {
-		__atomic_fetch_add
+		rte_atomic_fetch_add_explicit
 			(&priv->sh->mtrmng->def_policy_ref_cnt,
-			1, __ATOMIC_RELAXED);
+			1, rte_memory_order_relaxed);
 		domain_bitmap = MLX5_MTR_ALL_DOMAIN_BIT;
 		if (!priv->sh->config.dv_esw_en)
 			domain_bitmap &= ~MLX5_MTR_DOMAIN_TRANSFER_BIT;
@@ -1491,7 +1812,7 @@ mlx5_flow_meter_create(struct rte_eth_dev *dev, uint32_t meter_id,
 	fm->is_enable = params->meter_enable;
 	fm->shared = !!shared;
 	fm->color_aware = !!params->use_prev_mtr_color;
-	__atomic_fetch_add(&fm->profile->ref_cnt, 1, __ATOMIC_RELAXED);
+	rte_atomic_fetch_add_explicit(&fm->profile->ref_cnt, 1, rte_memory_order_relaxed);
 	if (params->meter_policy_id == priv->sh->mtrmng->def_policy_id) {
 		fm->def_policy = 1;
 		fm->flow_ipool = mlx5_ipool_create(&flow_ipool_cfg);
@@ -1521,7 +1842,7 @@ mlx5_flow_meter_create(struct rte_eth_dev *dev, uint32_t meter_id,
 	}
 	fm->active_state = params->meter_enable;
 	if (mtr_policy)
-		__atomic_fetch_add(&mtr_policy->ref_cnt, 1, __ATOMIC_RELAXED);
+		rte_atomic_fetch_add_explicit(&mtr_policy->ref_cnt, 1, rte_memory_order_relaxed);
 	return 0;
 error:
 	mlx5_flow_destroy_mtr_tbls(dev, fm);
@@ -1555,7 +1876,7 @@ mlx5_flow_meter_params_flush(struct rte_eth_dev *dev,
 	if (fmp == NULL)
 		return -1;
 	/* Update dependencies. */
-	__atomic_fetch_sub(&fmp->ref_cnt, 1, __ATOMIC_RELAXED);
+	rte_atomic_fetch_sub_explicit(&fmp->ref_cnt, 1, rte_memory_order_relaxed);
 	fm->profile = NULL;
 	/* Remove from list. */
 	if (!priv->sh->meter_aso_en) {
@@ -1573,15 +1894,15 @@ mlx5_flow_meter_params_flush(struct rte_eth_dev *dev,
 	}
 	mlx5_flow_destroy_mtr_tbls(dev, fm);
 	if (fm->def_policy)
-		__atomic_fetch_sub(&priv->sh->mtrmng->def_policy_ref_cnt,
-				1, __ATOMIC_RELAXED);
+		rte_atomic_fetch_sub_explicit(&priv->sh->mtrmng->def_policy_ref_cnt,
+				1, rte_memory_order_relaxed);
 	if (priv->sh->meter_aso_en) {
 		if (!fm->def_policy) {
 			mtr_policy = mlx5_flow_meter_policy_find(dev,
 						fm->policy_id, NULL);
 			if (mtr_policy)
-				__atomic_fetch_sub(&mtr_policy->ref_cnt,
-						1, __ATOMIC_RELAXED);
+				rte_atomic_fetch_sub_explicit(&mtr_policy->ref_cnt,
+						1, rte_memory_order_relaxed);
 			fm->policy_id = 0;
 		}
 		fm->def_policy = 0;
@@ -1711,6 +2032,10 @@ mlx5_flow_meter_enable(struct rte_eth_dev *dev,
 	struct mlx5_flow_meter_info *fm;
 	int ret;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_en)
 		return -rte_mtr_error_set(error, ENOTSUP,
 					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
@@ -1800,6 +2125,10 @@ mlx5_flow_meter_profile_update(struct rte_eth_dev *dev,
 			       MLX5_FLOW_METER_OBJ_MODIFY_FIELD_CIR;
 	int ret;
 
+	if (mlx5_hws_active(dev) && !mlx5_hw_ctx_validate(dev, NULL))
+		return -rte_mtr_error_set(error, EINVAL,
+					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,
+					  "non-template flow engine was not configured");
 	if (!priv->mtr_en)
 		return -rte_mtr_error_set(error, ENOTSUP,
 					  RTE_MTR_ERROR_TYPE_UNSPECIFIED, NULL,

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2002-2009 Luigi Rizzo, Universita` di Pisa
  *
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _IPFW2_H
@@ -77,6 +75,10 @@ typedef struct _ip_fw3_opheader {
 	uint16_t reserved[2];	/* Align to 64-bit boundary */
 } ip_fw3_opheader;
 
+#define	IP_FW3_OPVER_0		0
+#define	IP_FW3_OPVER_1		1	/* 32bit rulenum */
+#define	IP_FW3_OPVER		IP_FW3_OPVER_1
+
 /* IP_FW3 opcodes */
 #define	IP_FW_TABLE_XADD	86	/* add entry */
 #define	IP_FW_TABLE_XDEL	87	/* delete entry */
@@ -111,6 +113,7 @@ typedef struct _ip_fw3_opheader {
 
 #define	IP_FW_DUMP_SOPTCODES	116	/* Dump available sopts/versions */
 #define	IP_FW_DUMP_SRVOBJECTS	117	/* Dump existing named objects */
+#define	IP_FW_SKIPTO_CACHE	118	/* Manage skipto cache */
 
 #define	IP_FW_NAT64STL_CREATE	130	/* Create stateless NAT64 instance */
 #define	IP_FW_NAT64STL_DESTROY	131	/* Destroy stateless NAT64 instance */
@@ -164,136 +167,149 @@ typedef struct _ip_fw3_opheader {
  */
 
 enum ipfw_opcodes {		/* arguments (4 byte each)	*/
-	O_NOP,
+	O_NOP		= 0,
 
-	O_IP_SRC,		/* u32 = IP			*/
-	O_IP_SRC_MASK,		/* ip = IP/mask			*/
-	O_IP_SRC_ME,		/* none				*/
-	O_IP_SRC_SET,		/* u32=base, arg1=len, bitmap	*/
+	O_IP_SRC	= 1,	/* u32 = IP			*/
+	O_IP_SRC_MASK	= 2,	/* ip = IP/mask			*/
+	O_IP_SRC_ME	= 3,	/* none				*/
+	O_IP_SRC_SET	= 4,	/* u32=base, arg1=len, bitmap	*/
 
-	O_IP_DST,		/* u32 = IP			*/
-	O_IP_DST_MASK,		/* ip = IP/mask			*/
-	O_IP_DST_ME,		/* none				*/
-	O_IP_DST_SET,		/* u32=base, arg1=len, bitmap	*/
+	O_IP_DST	= 5,	/* u32 = IP			*/
+	O_IP_DST_MASK	= 6,	/* ip = IP/mask			*/
+	O_IP_DST_ME	= 7,	/* none				*/
+	O_IP_DST_SET	= 8,	/* u32=base, arg1=len, bitmap	*/
 
-	O_IP_SRCPORT,		/* (n)port list:mask 4 byte ea	*/
-	O_IP_DSTPORT,		/* (n)port list:mask 4 byte ea	*/
-	O_PROTO,		/* arg1=protocol		*/
+	O_IP_SRCPORT	= 9,	/* (n)port list:mask 4 byte ea	*/
+	O_IP_DSTPORT	= 10,	/* (n)port list:mask 4 byte ea	*/
+	O_PROTO		= 11,	/* arg1=protocol		*/
 
-	O_MACADDR2,		/* 2 mac addr:mask		*/
-	O_MAC_TYPE,		/* same as srcport		*/
+	O_MACADDR2	= 12,	/* 2 mac addr:mask		*/
+	O_MAC_TYPE	= 13,	/* same as srcport		*/
 
-	O_LAYER2,		/* none				*/
-	O_IN,			/* none				*/
-	O_FRAG,			/* none				*/
+	O_LAYER2	= 14,	/* none				*/
+	O_IN		= 15,	/* none				*/
+	O_FRAG		= 16,	/* none				*/
 
-	O_RECV,			/* none				*/
-	O_XMIT,			/* none				*/
-	O_VIA,			/* none				*/
+	O_RECV		= 17,	/* none				*/
+	O_XMIT		= 18,	/* none				*/
+	O_VIA		= 19,	/* none				*/
 
-	O_IPOPT,		/* arg1 = 2*u8 bitmap		*/
-	O_IPLEN,		/* arg1 = len			*/
-	O_IPID,			/* arg1 = id			*/
+	O_IPOPT		= 20,	/* arg1 = 2*u8 bitmap		*/
+	O_IPLEN		= 21,	/* arg1 = len			*/
+	O_IPID		= 22,	/* arg1 = id			*/
 
-	O_IPTOS,		/* arg1 = id			*/
-	O_IPPRECEDENCE,		/* arg1 = precedence << 5	*/
-	O_IPTTL,		/* arg1 = TTL			*/
+	O_IPTOS		= 23,	/* arg1 = id			*/
+	O_IPPRECEDENCE	= 24,	/* arg1 = precedence << 5	*/
+	O_IPTTL		= 25,	/* arg1 = TTL			*/
 
-	O_IPVER,		/* arg1 = version		*/
-	O_UID,			/* u32 = id			*/
-	O_GID,			/* u32 = id			*/
-	O_ESTAB,		/* none (tcp established)	*/
-	O_TCPFLAGS,		/* arg1 = 2*u8 bitmap		*/
-	O_TCPWIN,		/* arg1 = desired win		*/
-	O_TCPSEQ,		/* u32 = desired seq.		*/
-	O_TCPACK,		/* u32 = desired seq.		*/
-	O_ICMPTYPE,		/* u32 = icmp bitmap		*/
-	O_TCPOPTS,		/* arg1 = 2*u8 bitmap		*/
+	O_IPVER		= 26,	/* arg1 = version		*/
+	O_UID		= 27,	/* u32 = id			*/
+	O_GID		= 28,	/* u32 = id			*/
+	O_ESTAB		= 29,	/* none (tcp established)	*/
+	O_TCPFLAGS	= 30,	/* arg1 = 2*u8 bitmap		*/
+	O_TCPWIN	= 31,	/* arg1 = desired win		*/
+	O_TCPSEQ	= 32,	/* u32 = desired seq.		*/
+	O_TCPACK	= 33,	/* u32 = desired seq.		*/
+	O_ICMPTYPE	= 34,	/* u32 = icmp bitmap		*/
+	O_TCPOPTS	= 35,	/* arg1 = 2*u8 bitmap		*/
 
-	O_VERREVPATH,		/* none				*/
-	O_VERSRCREACH,		/* none				*/
+	O_VERREVPATH	= 36,	/* none				*/
+	O_VERSRCREACH	= 37,	/* none				*/
 
-	O_PROBE_STATE,		/* none				*/
-	O_KEEP_STATE,		/* none				*/
-	O_LIMIT,		/* ipfw_insn_limit		*/
-	O_LIMIT_PARENT,		/* dyn_type, not an opcode.	*/
+	O_PROBE_STATE	= 38,	/* v0:arg1=kidx, v1:kidx=kidx	*/
+	O_KEEP_STATE	= 39,	/* v0:arg1=kidx, v1:kidx=kidx	*/
+	O_LIMIT		= 40,	/* ipfw_insn_limit		*/
+	O_LIMIT_PARENT	= 41,	/* dyn_type, not an opcode.	*/
 
 	/*
 	 * These are really 'actions'.
 	 */
 
-	O_LOG,			/* ipfw_insn_log		*/
-	O_PROB,			/* u32 = match probability	*/
+	O_LOG		= 42,	/* ipfw_insn_log		*/
+	O_PROB		= 43,	/* u32 = match probability	*/
 
-	O_CHECK_STATE,		/* none				*/
-	O_ACCEPT,		/* none				*/
-	O_DENY,			/* none 			*/
-	O_REJECT,		/* arg1=icmp arg (same as deny)	*/
-	O_COUNT,		/* none				*/
-	O_SKIPTO,		/* arg1=next rule number	*/
-	O_PIPE,			/* arg1=pipe number		*/
-	O_QUEUE,		/* arg1=queue number		*/
-	O_DIVERT,		/* arg1=port number		*/
-	O_TEE,			/* arg1=port number		*/
-	O_FORWARD_IP,		/* fwd sockaddr			*/
-	O_FORWARD_MAC,		/* fwd mac			*/
-	O_NAT,                  /* nope                         */
-	O_REASS,                /* none                         */
+	O_CHECK_STATE	= 44,	/* v0:arg1=kidx, v1:kidx=kidx	*/
+	O_ACCEPT	= 45,	/* none				*/
+	O_DENY		= 46,	/* none				*/
+	O_REJECT	= 47,	/* arg1=icmp arg (same as deny)	*/
+	O_COUNT		= 48,	/* none				*/
+	O_SKIPTO	= 49,	/* v0:arg1=next rule number	*/
+				/* v1:kidx= next rule number	*/
+	O_PIPE		= 50,	/* arg1=pipe number		*/
+	O_QUEUE		= 51,	/* arg1=queue number		*/
+	O_DIVERT	= 52,	/* arg1=port number		*/
+	O_TEE		= 53,	/* arg1=port number		*/
+	O_FORWARD_IP	= 54,	/* fwd sockaddr			*/
+	O_FORWARD_MAC	= 55,	/* fwd mac			*/
+	O_NAT		= 56,	/* nope                         */
+	O_REASS		= 57,	/* none                         */
 
 	/*
 	 * More opcodes.
 	 */
-	O_IPSEC,		/* has ipsec history 		*/
-	O_IP_SRC_LOOKUP,	/* arg1=table number, u32=value	*/
-	O_IP_DST_LOOKUP,	/* arg1=table number, u32=value	*/
-	O_ANTISPOOF,		/* none				*/
-	O_JAIL,			/* u32 = id			*/
-	O_ALTQ,			/* u32 = altq classif. qid	*/
-	O_DIVERTED,		/* arg1=bitmap (1:loop, 2:out)	*/
-	O_TCPDATALEN,		/* arg1 = tcp data len		*/
-	O_IP6_SRC,		/* address without mask		*/
-	O_IP6_SRC_ME,		/* my addresses			*/
-	O_IP6_SRC_MASK,		/* address with the mask	*/
-	O_IP6_DST,
-	O_IP6_DST_ME,
-	O_IP6_DST_MASK,
-	O_FLOW6ID,		/* for flow id tag in the ipv6 pkt */
-	O_ICMP6TYPE,		/* icmp6 packet type filtering	*/
-	O_EXT_HDR,		/* filtering for ipv6 extension header */
-	O_IP6,
+	O_IPSEC		= 58,	/* has ipsec history 		*/
+	O_IP_SRC_LOOKUP	= 59,	/* v0:arg1=table number, u32=value */
+				/* v1:kidx=name, u32=value, arg1=key */
+	O_IP_DST_LOOKUP	= 60,	/* arg1=table number, u32=value	*/
+				/* v1:kidx=name, u32=value, arg1=key */
+	O_ANTISPOOF	= 61,	/* none				*/
+	O_JAIL		= 62,	/* u32 = id			*/
+	O_ALTQ		= 63,	/* u32 = altq classif. qid	*/
+	O_DIVERTED	= 64,	/* arg1=bitmap (1:loop, 2:out)	*/
+	O_TCPDATALEN	= 65,	/* arg1 = tcp data len		*/
+	O_IP6_SRC	= 66,	/* address without mask		*/
+	O_IP6_SRC_ME	= 67,	/* my addresses			*/
+	O_IP6_SRC_MASK	= 68,	/* address with the mask	*/
+	O_IP6_DST	= 69,
+	O_IP6_DST_ME	= 70,
+	O_IP6_DST_MASK	= 71,
+	O_FLOW6ID	= 72,	/* for flow id tag in the ipv6 pkt */
+	O_ICMP6TYPE	= 73,	/* icmp6 packet type filtering	*/
+	O_EXT_HDR	= 74,	/* filtering for ipv6 extension header */
+	O_IP6		= 75,
 
 	/*
 	 * actions for ng_ipfw
 	 */
-	O_NETGRAPH,		/* send to ng_ipfw		*/
-	O_NGTEE,		/* copy to ng_ipfw		*/
+	O_NETGRAPH	= 76,	/* send to ng_ipfw		*/
+	O_NGTEE		= 77,	/* copy to ng_ipfw		*/
 
-	O_IP4,
+	O_IP4		= 78,
 
-	O_UNREACH6,		/* arg1=icmpv6 code arg (deny)  */
+	O_UNREACH6	= 79,	/* arg1=icmpv6 code arg (deny)  */
 
-	O_TAG,   		/* arg1=tag number */
-	O_TAGGED,		/* arg1=tag number */
+	O_TAG		= 80,	/* arg1=tag number */
+	O_TAGGED	= 81,	/* arg1=tag number */
 
-	O_SETFIB,		/* arg1=FIB number */
-	O_FIB,			/* arg1=FIB desired fib number */
+	O_SETFIB	= 82,	/* arg1=FIB number */
+	O_FIB		= 83,	/* arg1=FIB desired fib number */
 
-	O_SOCKARG,		/* socket argument */
+	O_SOCKARG	= 84,	/* socket argument */
 
-	O_CALLRETURN,		/* arg1=called rule number */
+	O_CALLRETURN	= 85,	/* v0:arg1=called rule number */
+				/* v1:kidx=called rule number */
 
-	O_FORWARD_IP6,		/* fwd sockaddr_in6             */
+	O_FORWARD_IP6	= 86,	/* fwd sockaddr_in6             */
 
-	O_DSCP,			/* 2 u32 = DSCP mask */
-	O_SETDSCP,		/* arg1=DSCP value */
-	O_IP_FLOW_LOOKUP,	/* arg1=table number, u32=value	*/
+	O_DSCP		= 87,	/* 2 u32 = DSCP mask */
+	O_SETDSCP	= 88,	/* arg1=DSCP value */
+	O_IP_FLOW_LOOKUP = 89,	/* v0:arg1=table number, u32=value	*/
+				/* v1:kidx=name, u32=value */
 
-	O_EXTERNAL_ACTION,	/* arg1=id of external action handler */
-	O_EXTERNAL_INSTANCE,	/* arg1=id of eaction handler instance */
-	O_EXTERNAL_DATA,	/* variable length data */
+	O_EXTERNAL_ACTION = 90,	/* v0:arg1=id of external action handler */
+				/* v1:kidx=id of external action handler */
+	O_EXTERNAL_INSTANCE = 91, /* v0:arg1=id of eaction handler instance */
+				/* v1:kidx=id of eaction handler instance */
+	O_EXTERNAL_DATA	= 92,	/* variable length data */
 
-	O_SKIP_ACTION,		/* none				*/
-	O_TCPMSS,		/* arg1=MSS value */
+	O_SKIP_ACTION	= 93,	/* none				*/
+	O_TCPMSS	= 94,	/* arg1=MSS value */
+
+	O_MAC_SRC_LOOKUP = 95,	/* kidx=name, u32=value, arg1=key */
+	O_MAC_DST_LOOKUP = 96,	/* kidx=name, u32=value, arg1=key */
+
+	O_SETMARK	= 97,	/* u32 = value */
+	O_MARK		= 98,	/* 2 u32 = value, bitmask */
 
 	O_LAST_OPCODE		/* not an opcode!		*/
 };
@@ -372,6 +388,11 @@ typedef struct	_ipfw_insn_u32 {
 	u_int32_t d[1];	/* one or more */
 } ipfw_insn_u32;
 
+typedef struct _ipfw_insn_kidx {
+	ipfw_insn o;
+	uint32_t kidx;
+} ipfw_insn_kidx;
+
 /*
  * This is used to store IP addr-mask pairs.
  */
@@ -380,6 +401,47 @@ typedef struct	_ipfw_insn_ip {
 	struct in_addr	addr;
 	struct in_addr	mask;
 } ipfw_insn_ip;
+
+typedef struct _ipfw_insn_table {
+	ipfw_insn o;	/* arg1 is optional lookup key */
+	uint32_t kidx;	/* table name index */
+	uint32_t value;	/* table value */
+} ipfw_insn_table;
+
+#define	IPFW_LOOKUP_TYPE_MASK		0x00FF
+#define	IPFW_LOOKUP_TYPE(insn)		((insn)->arg1 & IPFW_LOOKUP_TYPE_MASK)
+#define	IPFW_SET_LOOKUP_TYPE(insn, type)	do {	\
+	(insn)->arg1 &= ~IPFW_LOOKUP_TYPE_MASK;		\
+	(insn)->arg1 |= (type) & IPFW_LOOKUP_TYPE_MASK;	\
+} while (0)
+
+/*
+ * Defines key types used by lookup instruction
+ */
+enum ipfw_table_lookup_type {
+	LOOKUP_NONE = 0,
+	LOOKUP_DST_IP,
+	LOOKUP_SRC_IP,
+	LOOKUP_DST_PORT,
+	LOOKUP_SRC_PORT,
+	LOOKUP_UID,
+	LOOKUP_JAIL,
+	LOOKUP_DSCP,
+	LOOKUP_DST_MAC,
+	LOOKUP_SRC_MAC,
+	LOOKUP_MARK,
+	LOOKUP_RULENUM,
+};
+
+enum ipfw_return_type {
+	RETURN_NEXT_RULENUM = 0,
+	RETURN_NEXT_RULE,
+};
+
+enum ipfw_skipto_cache_op {
+	SKIPTO_CACHE_DISABLE = 0,
+	SKIPTO_CACHE_ENABLE,
+};
 
 /*
  * This is used to forward to a given address (ip).
@@ -414,7 +476,8 @@ typedef struct	_ipfw_insn_if {
 	union {
 		struct in_addr ip;
 		int glob;
-		uint16_t kidx;
+		uint16_t kidx_v0;
+		uint32_t kidx;
 	} p;
 	char name[IFNAMSIZ];
 } ipfw_insn_if;
@@ -432,6 +495,7 @@ typedef struct _ipfw_insn_altq {
  */
 typedef struct	_ipfw_insn_limit {
 	ipfw_insn o;
+	u_int32_t kidx;
 	u_int8_t _pad;
 	u_int8_t limit_mask;	/* combination of DYN_* below	*/
 #define	DYN_SRC_ADDR	0x1
@@ -442,6 +506,9 @@ typedef struct	_ipfw_insn_limit {
 	u_int16_t conn_limit;
 } ipfw_insn_limit;
 
+/* MAC/InfiniBand/etc address length */
+#define	IPFW_MAX_L2_ADDR_LEN	20
+
 /*
  * This is used for log instructions.
  */
@@ -450,6 +517,22 @@ typedef struct  _ipfw_insn_log {
 	u_int32_t max_log;	/* how many do we log -- 0 = all */
 	u_int32_t log_left;	/* how many left to log 	*/
 } ipfw_insn_log;
+
+/* ipfw_insn_log->o.arg1 bitmasks */
+#define	IPFW_LOG_DEFAULT	0x0000
+#define	IPFW_LOG_SYSLOG		(1 << 15)
+#define	IPFW_LOG_IPFW0		(1 << 14)
+#define	IPFW_LOG_RTSOCK		(1 << 13)
+
+typedef struct _ipfwlog_rtsock_hdr_v2 {
+	uint32_t	rulenum;
+	uint32_t	tablearg;
+	ipfw_insn	cmd;
+	u_char		ether_shost[IPFW_MAX_L2_ADDR_LEN];
+	u_char		ether_dhost[IPFW_MAX_L2_ADDR_LEN];
+	uint32_t	mark;
+	char		comment[0];
+} ipfwlog_rtsock_hdr_v2;
 
 /* Legacy NAT structures, compat only */
 #ifndef	_KERNEL
@@ -549,6 +632,8 @@ struct nat44_cfg_nat {
 	struct in_addr	ip;		/* nat IPv4 address */
 	uint32_t	mode;		/* aliasing mode */
 	uint32_t	redir_cnt;	/* number of entry in spool chain */
+	u_short		alias_port_lo;	/* low range for port aliasing */
+	u_short		alias_port_hi;	/* high range for port aliasing */
 };
 
 /* Nat command. */
@@ -581,6 +666,10 @@ typedef struct _ipfw_insn_icmp6 {
                         *     Actually is 203
                        */
 } ipfw_insn_icmp6;
+
+/* Convert pointer to instruction with specified type */
+#define	insntod(p, type)	((ipfw_insn_ ## type *)(p))
+#define	insntoc(p, type)	((const ipfw_insn_ ## type *)(p))
 
 /*
  * Here we have the structure representing an ipfw rule.
@@ -697,30 +786,29 @@ struct ipfw_flow_id {
 /*
  * Dynamic ipfw rule.
  */
-typedef struct _ipfw_dyn_rule ipfw_dyn_rule;
+#define	IPFW_DYN_ORPHANED	0x40000	/* state's parent rule was deleted */
 
-struct _ipfw_dyn_rule {
-	ipfw_dyn_rule	*next;		/* linked list of rules.	*/
-	struct ip_fw *rule;		/* pointer to rule		*/
-	/* 'rule' is used to pass up the rule number (from the parent)	*/
-
-	ipfw_dyn_rule *parent;		/* pointer to parent rule	*/
-	u_int64_t	pcnt;		/* packet match counter		*/
-	u_int64_t	bcnt;		/* byte match counter		*/
+typedef struct _ipfw_dyn_rule {
 	struct ipfw_flow_id id;		/* (masked) flow id		*/
-	u_int32_t	expire;		/* expire time			*/
-	u_int32_t	bucket;		/* which bucket in hash table	*/
-	u_int32_t	state;		/* state of this rule (typically a
+	uint8_t		set;
+	uint8_t		type;		/* rule type			*/
+	uint16_t	pad;
+	uint32_t	expire;		/* expire time			*/
+	uint32_t	rulenum;	/* parent's rule number		*/
+	uint32_t	kidx;		/* index of named object	*/
+	uint64_t	pcnt;		/* packet match counter		*/
+	uint64_t	bcnt;		/* byte match counter		*/
+	uint32_t	hashval;	/* hash value			*/
+	union {
+		uint32_t state;		/* state of this rule (typically a
 					 * combination of TCP flags)
 					 */
-#define	IPFW_DYN_ORPHANED	0x40000	/* state's parent rule was deleted */
-	u_int32_t	ack_fwd;	/* most recent ACKs in forward	*/
-	u_int32_t	ack_rev;	/* and reverse directions (used	*/
+		uint32_t count;		/* number of linked states	*/
+	};
+	uint32_t	ack_fwd;	/* most recent ACKs in forward	*/
+	uint32_t	ack_rev;	/* and reverse directions (used	*/
 					/* to generate keepalives)	*/
-	u_int16_t	dyn_type;	/* rule type			*/
-	u_int16_t	count;		/* refcount			*/
-	u_int16_t	kidx;		/* index of named object */
-} __packed __aligned(8);
+} __packed __aligned(8) ipfw_dyn_rule;
 
 /*
  * Definitions for IP option names.
@@ -752,7 +840,8 @@ struct _ipfw_dyn_rule {
 #define	IPFW_TABLE_INTERFACE	2	/* Table for holding interface names */
 #define	IPFW_TABLE_NUMBER	3	/* Table for holding ports/uid/gid/etc */
 #define	IPFW_TABLE_FLOW		4	/* Table for holding flow data */
-#define	IPFW_TABLE_MAXTYPE	4	/* Maximum valid number */
+#define	IPFW_TABLE_MAC		5	/* Table for holding mac address prefixes */
+#define	IPFW_TABLE_MAXTYPE	5	/* Maximum valid number */
 
 #define	IPFW_TABLE_CIDR	IPFW_TABLE_ADDR	/* compat */
 
@@ -769,13 +858,7 @@ struct _ipfw_dyn_rule {
 #define	IPFW_VTYPE_LIMIT	0x00000100	/* limit */
 #define	IPFW_VTYPE_NH4		0x00000200	/* IPv4 nexthop */
 #define	IPFW_VTYPE_NH6		0x00000400	/* IPv6 nexthop */
-
-typedef struct	_ipfw_table_entry {
-	in_addr_t	addr;		/* network address		*/
-	u_int32_t	value;		/* value			*/
-	u_int16_t	tbl;		/* table number			*/
-	u_int8_t	masklen;	/* mask length			*/
-} ipfw_table_entry;
+#define	IPFW_VTYPE_MARK		0x00000800	/* [fw]mark */
 
 typedef struct	_ipfw_table_xentry {
 	uint16_t	len;		/* Total entry length		*/
@@ -791,13 +874,6 @@ typedef struct	_ipfw_table_xentry {
 	} k;
 } ipfw_table_xentry;
 #define	IPFW_TCF_INET	0x01		/* CIDR flags: IPv4 record	*/
-
-typedef struct	_ipfw_table {
-	u_int32_t	size;		/* size of entries in bytes	*/
-	u_int32_t	cnt;		/* # of entries			*/
-	u_int16_t	tbl;		/* table number			*/
-	ipfw_table_entry ent[0];	/* entries			*/
-} ipfw_table;
 
 typedef struct	_ipfw_xtable {
 	ip_fw3_opheader	opheader;	/* IP_FW3 opcode */
@@ -838,10 +914,10 @@ typedef struct _ipfw_obj_data {
 /* Object name TLV */
 typedef struct _ipfw_obj_ntlv {
 	ipfw_obj_tlv	head;		/* TLV header			*/
-	uint16_t	idx;		/* Name index			*/
+	uint32_t	idx;		/* Name index			*/
 	uint8_t		set;		/* set, if applicable		*/
 	uint8_t		type;		/* object type, if applicable	*/
-	uint32_t	spare;		/* unused			*/
+	uint16_t	spare;		/* unused			*/
 	char		name[64];	/* Null-terminated name		*/
 } ipfw_obj_ntlv;
 
@@ -864,22 +940,45 @@ struct tflow_entry {
 	} a;
 };
 
+#define	IPFW_TVALUE_TYPE_MASK		0xFF00
+#define	IPFW_TVALUE_TYPE(insn)		(((insn)->arg1 & IPFW_TVALUE_TYPE_MASK) >> 8)
+#define	IPFW_SET_TVALUE_TYPE(insn, type)	do {	\
+	(insn)->arg1 &= ~IPFW_TVALUE_TYPE_MASK;		\
+	(insn)->arg1 |= ((type) << 8) & IPFW_TVALUE_TYPE_MASK;	\
+} while (0)
+
+enum ipfw_table_value_type {
+	TVALUE_TAG = 0,
+	TVALUE_PIPE,
+	TVALUE_DIVERT,
+	TVALUE_SKIPTO,
+	TVALUE_NETGRAPH,
+	TVALUE_FIB,
+	TVALUE_NAT,
+	TVALUE_NH4,
+	TVALUE_DSCP,
+	TVALUE_LIMIT,
+	TVALUE_MARK,
+};
+
+/* 64-byte structure representing multi-field table value */
 typedef struct _ipfw_table_value {
 	uint32_t	tag;		/* O_TAG/O_TAGGED */
-	uint32_t	pipe;		/* O_PIPE/O_QUEUE */
+	uint16_t	pipe;		/* O_PIPE/O_QUEUE */
 	uint16_t	divert;		/* O_DIVERT/O_TEE */
-	uint16_t	skipto;		/* skipto, CALLRET */
+	uint32_t	skipto;		/* skipto, CALLRET */
 	uint32_t	netgraph;	/* O_NETGRAPH/O_NGTEE */
-	uint32_t	fib;		/* O_SETFIB */
 	uint32_t	nat;		/* O_NAT */
 	uint32_t	nh4;
+	uint16_t	fib;		/* O_SETFIB */
 	uint8_t		dscp;
 	uint8_t		spare0;
-	uint16_t	spare1;
+	uint32_t	kidx;		/* value kernel index */
 	struct in6_addr	nh6;
 	uint32_t	limit;		/* O_LIMIT */
 	uint32_t	zoneid;		/* scope zone id for nh6 */
-	uint64_t	reserved;
+	uint32_t	mark;		/* O_SETMARK/O_MARK */
+	uint32_t	refcnt;		/* XXX 64-bit in kernel */
 } ipfw_table_value;
 
 /* Table entry TLV */
@@ -889,14 +988,14 @@ typedef struct	_ipfw_obj_tentry {
 	uint8_t		masklen;	/* mask length			*/
 	uint8_t		result;		/* request result		*/
 	uint8_t		spare0;
-	uint16_t	idx;		/* Table name index		*/
-	uint16_t	spare1;
+	uint32_t	idx;		/* Table name index		*/
 	union {
 		/* Longest field needs to be aligned by 8-byte boundary	*/
-		struct in_addr		addr;	/* IPv4 address		*/
-		uint32_t		key;		/* uid/gid/port	*/
-		struct in6_addr		addr6;	/* IPv6 address 	*/
-		char	iface[IF_NAMESIZE];	/* interface name	*/
+		struct in_addr		addr;		/* IPv4 address		*/
+		uint32_t		key;		/* uid/gid/port		*/
+		struct in6_addr		addr6;		/* IPv6 address 	*/
+		char	iface[IF_NAMESIZE];		/* interface name	*/
+		u_char	mac[IPFW_MAX_L2_ADDR_LEN];	/* MAC address		*/
 		struct tflow_entry	flow;
 	} k;
 	union {
@@ -936,8 +1035,8 @@ typedef struct _ipfw_obj_ctlv {
 typedef struct _ipfw_range_tlv {
 	ipfw_obj_tlv	head;		/* TLV header			*/
 	uint32_t	flags;		/* Range flags			*/
-	uint16_t	start_rule;	/* Range start			*/
-	uint16_t	end_rule;	/* Range end			*/
+	uint32_t	start_rule;	/* Range start			*/
+	uint32_t	end_rule;	/* Range end			*/
 	uint32_t	set;		/* Range set to match		 */
 	uint32_t	new_set;	/* New set to move/swap to	*/
 } ipfw_range_tlv;
@@ -949,7 +1048,7 @@ typedef struct _ipfw_range_tlv {
 #define	IPFW_RCFLAG_USER	(IPFW_RCFLAG_RANGE | IPFW_RCFLAG_ALL | \
 	IPFW_RCFLAG_SET | IPFW_RCFLAG_DYNAMIC)
 /* Internally used flags */
-#define	IPFW_RCFLAG_DEFAULT	0x0100	/* Do not skip defaul rule	*/
+#define	IPFW_RCFLAG_DEFAULT	0x0100	/* Do not skip default rule	*/
 
 typedef struct _ipfw_ta_tinfo {
 	uint32_t	flags;		/* Format flags			*/
@@ -1021,10 +1120,16 @@ typedef struct _ipfw_ta_info {
 	uint64_t	spare1;
 } ipfw_ta_info;
 
+typedef struct _ipfw_cmd_header {	/* control command header	*/
+	ip_fw3_opheader	opheader;	/* IP_FW3 opcode		*/
+	uint32_t	size;		/* Total size (incl. header)	*/
+	uint32_t	cmd;		/* command			*/
+} ipfw_cmd_header;
+
 typedef struct _ipfw_obj_header {
 	ip_fw3_opheader	opheader;	/* IP_FW3 opcode		*/
-	uint32_t	spare;
-	uint16_t	idx;		/* object name index		*/
+	uint32_t	idx;		/* object name index		*/
+	uint16_t	spare;
 	uint8_t		objtype;	/* object type			*/
 	uint8_t		objsubtype;	/* object subtype		*/
 	ipfw_obj_ntlv	ntlv;		/* object name tlv		*/

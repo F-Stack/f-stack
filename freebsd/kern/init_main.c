@@ -39,12 +39,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)init_main.c	8.9 (Berkeley) 1/21/94
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include "opt_ddb.h"
 #include "opt_kdb.h"
@@ -52,7 +47,11 @@ __FBSDID("$FreeBSD$");
 #include "opt_verbose_sysinit.h"
 
 #include <sys/param.h>
-#include <sys/kernel.h>
+#include <sys/systm.h>
+#include <sys/boottrace.h>
+#include <sys/conf.h>
+#include <sys/cpuset.h>
+#include <sys/dtrace_bsd.h>
 #include <sys/epoch.h>
 #include <sys/eventhandler.h>
 #include <sys/exec.h>
@@ -60,30 +59,29 @@ __FBSDID("$FreeBSD$");
 #include <sys/filedesc.h>
 #include <sys/imgact.h>
 #include <sys/jail.h>
+#include <sys/kernel.h>
 #include <sys/ktr.h>
 #include <sys/lock.h>
 #include <sys/loginclass.h>
+#include <sys/malloc.h>
 #include <sys/mount.h>
 #include <sys/mutex.h>
-#include <sys/dtrace_bsd.h>
-#include <sys/syscallsubr.h>
-#include <sys/sysctl.h>
 #include <sys/proc.h>
 #include <sys/racct.h>
-#include <sys/resourcevar.h>
-#include <sys/systm.h>
-#include <sys/signalvar.h>
-#include <sys/vnode.h>
-#include <sys/sysent.h>
 #include <sys/reboot.h>
+#include <sys/resourcevar.h>
+#include <sys/queue.h>
+#include <sys/queue_mergesort.h>
 #include <sys/sched.h>
+#include <sys/signalvar.h>
 #include <sys/sx.h>
+#include <sys/syscallsubr.h>
+#include <sys/sysctl.h>
+#include <sys/sysent.h>
 #include <sys/sysproto.h>
-#include <sys/vmmeter.h>
 #include <sys/unistd.h>
-#include <sys/malloc.h>
-#include <sys/conf.h>
-#include <sys/cpuset.h>
+#include <sys/vmmeter.h>
+#include <sys/vnode.h>
 
 #include <machine/cpu.h>
 
@@ -140,7 +138,6 @@ SYSCTL_INT(_debug, OID_AUTO, bootverbose, CTLFLAG_RW, &bootverbose, 0,
  * - 1, 'compiled in but verbose by default' (default)
  */
 int	verbose_sysinit = VERBOSE_SYSINIT;
-TUNABLE_INT("debug.verbose_sysinit", &verbose_sysinit);
 #endif
 
 #ifdef INVARIANTS
@@ -148,53 +145,75 @@ FEATURE(invariants, "Kernel compiled with INVARIANTS, may affect performance");
 #endif
 
 /*
- * This ensures that there is at least one entry so that the sysinit_set
- * symbol is not undefined.  A sybsystem ID of SI_SUB_DUMMY is never
- * executed.
- */
-SYSINIT(placeholder, SI_SUB_DUMMY, SI_ORDER_ANY, NULL, NULL);
-
-/*
- * The sysinit table itself.  Items are checked off as the are run.
- * If we want to register new sysinit types, add them to newsysinit.
+ * The sysinit linker set compiled into the kernel.  These are placed onto the
+ * sysinit list by mi_startup; sysinit_add can add (e.g., from klds) additional
+ * sysinits to the linked list but the linker set here does not change.
  */
 SET_DECLARE(sysinit_set, struct sysinit);
-struct sysinit **sysinit, **sysinit_end;
-struct sysinit **newsysinit, **newsysinit_end;
 
 /*
- * Merge a new sysinit set into the current set, reallocating it if
- * necessary.  This can only be called after malloc is running.
+ * The sysinit lists.  Items are moved to sysinit_done_list when done.
+ */
+static STAILQ_HEAD(sysinitlist, sysinit) sysinit_list;
+static struct sysinitlist sysinit_done_list =
+    STAILQ_HEAD_INITIALIZER(sysinit_done_list);
+
+/*
+ * Compare two sysinits; return -1, 0, or 1 if a comes before, at the same time
+ * as, or after b.
+ */
+static int
+sysinit_compar(struct sysinit *a, struct sysinit *b, void *thunk __unused)
+{
+
+	if (a->subsystem < b->subsystem)
+		return (-1);
+	if (a->subsystem > b->subsystem)
+		return (1);
+	if (a->order < b->order)
+		return (-1);
+	if (a->order > b->order)
+		return (1);
+	return (0);
+}
+
+static void
+sysinit_mklist(struct sysinitlist *list, struct sysinit **set,
+    struct sysinit **set_end)
+{
+	struct sysinit **sipp;
+
+	TSENTER();
+	TSENTER2("listify");
+	STAILQ_INIT(list);
+	for (sipp = set; sipp < set_end; sipp++)
+		STAILQ_INSERT_TAIL(list, *sipp, next);
+	TSEXIT2("listify");
+	TSENTER2("mergesort");
+	STAILQ_MERGESORT(list, NULL, sysinit_compar, sysinit, next);
+	TSEXIT2("mergesort");
+	TSEXIT();
+}
+
+/*
+ * Merge a new sysinit set into the sysinit list.
  */
 void
 sysinit_add(struct sysinit **set, struct sysinit **set_end)
 {
-	struct sysinit **newset;
-	struct sysinit **sipp;
-	struct sysinit **xipp;
-	int count;
+	struct sysinitlist new_list;
 
-	count = set_end - set;
-	if (newsysinit)
-		count += newsysinit_end - newsysinit;
-	else
-		count += sysinit_end - sysinit;
-	newset = malloc(count * sizeof(*sipp), M_TEMP, M_NOWAIT);
-	if (newset == NULL)
-		panic("cannot malloc for sysinit");
-	xipp = newset;
-	if (newsysinit)
-		for (sipp = newsysinit; sipp < newsysinit_end; sipp++)
-			*xipp++ = *sipp;
-	else
-		for (sipp = sysinit; sipp < sysinit_end; sipp++)
-			*xipp++ = *sipp;
-	for (sipp = set; sipp < set_end; sipp++)
-		*xipp++ = *sipp;
-	if (newsysinit)
-		free(newsysinit, M_TEMP);
-	newsysinit = newset;
-	newsysinit_end = newset + count;
+	TSENTER();
+
+	/* Construct a sorted list from the new sysinits. */
+	sysinit_mklist(&new_list, set, set_end);
+
+	/* Merge the new list into the existing one. */
+	TSENTER2("STAILQ_MERGE");
+	STAILQ_MERGE(&sysinit_list, &new_list, NULL, sysinit_compar, sysinit, next);
+	TSEXIT2("STAILQ_MERGE");
+
+	TSEXIT();
 }
 
 #if defined (DDB) && defined(VERBOSE_SYSINIT)
@@ -229,13 +248,9 @@ symbol_name(vm_offset_t va, db_strategy_t strategy)
 void
 mi_startup(void)
 {
-
-	struct sysinit **sipp;	/* system initialization*/
-	struct sysinit **xipp;	/* interior loop of sort*/
-	struct sysinit *save;	/* bubble*/
-
-#if defined(VERBOSE_SYSINIT)
+	struct sysinit *sip;
 	int last;
+#if defined(VERBOSE_SYSINIT)
 	int verbose;
 #endif
 
@@ -244,30 +259,12 @@ mi_startup(void)
 	if (boothowto & RB_VERBOSE)
 		bootverbose++;
 
-	if (sysinit == NULL) {
-		sysinit = SET_BEGIN(sysinit_set);
-		sysinit_end = SET_LIMIT(sysinit_set);
-	}
+	/* Construct and sort sysinit list. */
+	sysinit_mklist(&sysinit_list, SET_BEGIN(sysinit_set), SET_LIMIT(sysinit_set));
 
-restart:
-	/*
-	 * Perform a bubble sort of the system initialization objects by
-	 * their subsystem (primary key) and order (secondary key).
-	 */
-	for (sipp = sysinit; sipp < sysinit_end; sipp++) {
-		for (xipp = sipp + 1; xipp < sysinit_end; xipp++) {
-			if ((*sipp)->subsystem < (*xipp)->subsystem ||
-			     ((*sipp)->subsystem == (*xipp)->subsystem &&
-			      (*sipp)->order <= (*xipp)->order))
-				continue;	/* skip*/
-			save = *sipp;
-			*sipp = *xipp;
-			*xipp = save;
-		}
-	}
-
+	last = SI_SUB_DUMMY;
 #if defined(VERBOSE_SYSINIT)
-	last = SI_SUB_COPYRIGHT;
+	TUNABLE_INT_FETCH("debug.verbose_sysinit", &verbose_sysinit);
 	verbose = 0;
 #if !defined(DDB)
 	printf("VERBOSE_SYSINIT: DDB not enabled, symbol lookups disabled.\n");
@@ -275,43 +272,48 @@ restart:
 #endif
 
 	/*
-	 * Traverse the (now) ordered list of system initialization tasks.
-	 * Perform each task, and continue on to the next task.
+	 * Perform each system initialization task from the ordered list.  Note
+	 * that if sysinit_list is modified (e.g. by a KLD) we will nonetheless
+	 * always perform the earlist-sorted sysinit at each step; using the
+	 * STAILQ_FOREACH macro would result in items being skipped if inserted
+	 * earlier than the "current item".
 	 */
-	for (sipp = sysinit; sipp < sysinit_end; sipp++) {
-		if ((*sipp)->subsystem == SI_SUB_DUMMY)
+	while ((sip = STAILQ_FIRST(&sysinit_list)) != NULL) {
+		STAILQ_REMOVE_HEAD(&sysinit_list, next);
+		STAILQ_INSERT_TAIL(&sysinit_done_list, sip, next);
+
+		if (sip->subsystem == SI_SUB_DUMMY)
 			continue;	/* skip dummy task(s)*/
 
-		if ((*sipp)->subsystem == SI_SUB_DONE)
-			continue;
+		if (sip->subsystem > last)
+			BOOTTRACE_INIT("sysinit 0x%7x", sip->subsystem);
 
 #if defined(VERBOSE_SYSINIT)
-		if ((*sipp)->subsystem > last && verbose_sysinit != 0) {
+		if (sip->subsystem != last && verbose_sysinit != 0) {
 			verbose = 1;
-			last = (*sipp)->subsystem;
-			printf("subsystem %x\n", last);
+			printf("subsystem %x\n", sip->subsystem);
 		}
 		if (verbose) {
 #if defined(DDB)
 			const char *func, *data;
 
-			func = symbol_name((vm_offset_t)(*sipp)->func,
+			func = symbol_name((vm_offset_t)sip->func,
 			    DB_STGY_PROC);
-			data = symbol_name((vm_offset_t)(*sipp)->udata,
+			data = symbol_name((vm_offset_t)sip->udata,
 			    DB_STGY_ANY);
 			if (func != NULL && data != NULL)
 				printf("   %s(&%s)... ", func, data);
 			else if (func != NULL)
-				printf("   %s(%p)... ", func, (*sipp)->udata);
+				printf("   %s(%p)... ", func, sip->udata);
 			else
 #endif
-				printf("   %p(%p)... ", (*sipp)->func,
-				    (*sipp)->udata);
+				printf("   %p(%p)... ", sip->func,
+				    sip->udata);
 		}
 #endif
 
 		/* Call function */
-		(*((*sipp)->func))((*sipp)->udata);
+		(*(sip->func))(sip->udata);
 
 #if defined(VERBOSE_SYSINIT)
 		if (verbose)
@@ -319,40 +321,32 @@ restart:
 #endif
 
 		/* Check off the one we're just done */
-		(*sipp)->subsystem = SI_SUB_DONE;
-
-		/* Check if we've installed more sysinit items via KLD */
-		if (newsysinit != NULL) {
-			if (sysinit != SET_BEGIN(sysinit_set))
-				free(sysinit, M_TEMP);
-			sysinit = newsysinit;
-			sysinit_end = newsysinit_end;
-			newsysinit = NULL;
-			newsysinit_end = NULL;
-			goto restart;
-		}
+		last = sip->subsystem;
 	}
 
 	TSEXIT();	/* Here so we don't overlap with start_init. */
+	BOOTTRACE("mi_startup done");
 
 	mtx_assert(&Giant, MA_OWNED | MA_NOTRECURSED);
 	mtx_unlock(&Giant);
 
 	/*
-	 * Now hand over this thread to swapper.
+	 * We can't free our thread structure since it is statically allocated.
+	 * Just sleep forever.  This thread could be repurposed for something if
+	 * the need arises.
 	 */
-	swapper();
-	/* NOTREACHED*/
+	for (;;)
+		tsleep(__builtin_frame_address(0), PNOLOCK, "parked", 0);
 }
 
 static void
-print_caddr_t(void *data)
+print_caddr_t(const void *data)
 {
-	printf("%s", (char *)data);
+	printf("%s", (const char *)data);
 }
 
 static void
-print_version(void *data __unused)
+print_version(const void *data __unused)
 {
 	int len;
 
@@ -364,28 +358,37 @@ print_version(void *data __unused)
 	printf("%s\n", compiler_version);
 }
 
-SYSINIT(announce, SI_SUB_COPYRIGHT, SI_ORDER_FIRST, print_caddr_t,
+C_SYSINIT(announce, SI_SUB_COPYRIGHT, SI_ORDER_FIRST, print_caddr_t,
     copyright);
-SYSINIT(trademark, SI_SUB_COPYRIGHT, SI_ORDER_SECOND, print_caddr_t,
+C_SYSINIT(trademark, SI_SUB_COPYRIGHT, SI_ORDER_SECOND, print_caddr_t,
     trademark);
-SYSINIT(version, SI_SUB_COPYRIGHT, SI_ORDER_THIRD, print_version, NULL);
+C_SYSINIT(version, SI_SUB_COPYRIGHT, SI_ORDER_THIRD, print_version, NULL);
 
 #ifdef WITNESS
-static char wit_warn[] =
+static const char wit_warn[] =
      "WARNING: WITNESS option enabled, expect reduced performance.\n";
-SYSINIT(witwarn, SI_SUB_COPYRIGHT, SI_ORDER_FOURTH,
+C_SYSINIT(witwarn, SI_SUB_COPYRIGHT, SI_ORDER_FOURTH,
    print_caddr_t, wit_warn);
-SYSINIT(witwarn2, SI_SUB_LAST, SI_ORDER_FOURTH,
+C_SYSINIT(witwarn2, SI_SUB_LAST, SI_ORDER_FOURTH,
    print_caddr_t, wit_warn);
 #endif
 
 #ifdef DIAGNOSTIC
-static char diag_warn[] =
+static const char diag_warn[] =
      "WARNING: DIAGNOSTIC option enabled, expect reduced performance.\n";
-SYSINIT(diagwarn, SI_SUB_COPYRIGHT, SI_ORDER_FIFTH,
+C_SYSINIT(diagwarn, SI_SUB_COPYRIGHT, SI_ORDER_FIFTH,
     print_caddr_t, diag_warn);
-SYSINIT(diagwarn2, SI_SUB_LAST, SI_ORDER_FIFTH,
+C_SYSINIT(diagwarn2, SI_SUB_LAST, SI_ORDER_FIFTH,
     print_caddr_t, diag_warn);
+#endif
+
+#if __SIZEOF_LONG__ == 4
+static const char ilp32_warn[] =
+    "WARNING: 32-bit kernels are deprecated and may be removed in FreeBSD 15.0.\n";
+C_SYSINIT(ilp32warn, SI_SUB_COPYRIGHT, SI_ORDER_FIFTH,
+    print_caddr_t, ilp32_warn);
+C_SYSINIT(ilp32warn2, SI_SUB_LAST, SI_ORDER_FIFTH,
+    print_caddr_t, ilp32_warn);
 #endif
 
 static int
@@ -402,22 +405,27 @@ null_set_syscall_retval(struct thread *td __unused, int error __unused)
 	panic("null_set_syscall_retval");
 }
 
+static void
+null_set_fork_retval(struct thread *td __unused)
+{
+
+}
+
 struct sysentvec null_sysvec = {
 	.sv_size	= 0,
 	.sv_table	= NULL,
-	.sv_transtrap	= NULL,
 	.sv_fixup	= NULL,
 	.sv_sendsig	= NULL,
 	.sv_sigcode	= NULL,
 	.sv_szsigcode	= NULL,
 	.sv_name	= "null",
 	.sv_coredump	= NULL,
-	.sv_imgact_try	= NULL,
 	.sv_minsigstksz	= 0,
 	.sv_minuser	= VM_MIN_ADDRESS,
 	.sv_maxuser	= VM_MAXUSER_ADDRESS,
 	.sv_usrstack	= USRSTACK,
 	.sv_psstrings	= PS_STRINGS,
+	.sv_psstringssz	= sizeof(struct ps_strings),
 	.sv_stackprot	= VM_PROT_ALL,
 	.sv_copyout_strings	= NULL,
 	.sv_setregs	= NULL,
@@ -430,6 +438,9 @@ struct sysentvec null_sysvec = {
 	.sv_schedtail	= NULL,
 	.sv_thread_detach = NULL,
 	.sv_trap	= NULL,
+	.sv_set_fork_retval = null_set_fork_retval,
+	.sv_regset_begin = NULL,
+	.sv_regset_end  = NULL,
 };
 
 /*
@@ -480,6 +491,7 @@ proc0_init(void *dummy __unused)
 	LIST_INSERT_HEAD(&allproc, p, p_list);
 	LIST_INSERT_HEAD(PIDHASH(0), p, p_hash);
 	mtx_init(&pgrp0.pg_mtx, "process group", NULL, MTX_DEF | MTX_DUPOK);
+	sx_init(&pgrp0.pg_killsx, "killpg racer");
 	p->p_pgrp = &pgrp0;
 	LIST_INSERT_HEAD(PGRPHASH(0), &pgrp0, pg_hash);
 	LIST_INIT(&pgrp0.pg_members);
@@ -499,7 +511,7 @@ proc0_init(void *dummy __unused)
 	p->p_nice = NZERO;
 	td->td_tid = THREAD0_TID;
 	tidhash_add(td);
-	td->td_state = TDS_RUNNING;
+	TD_SET_STATE(td, TDS_RUNNING);
 	td->td_pri_class = PRI_TIMESHARE;
 	td->td_user_pri = PUSER;
 	td->td_base_user_pri = PUSER;
@@ -524,6 +536,7 @@ proc0_init(void *dummy __unused)
 	callout_init_mtx(&p->p_itcallout, &p->p_mtx, 0);
 	callout_init_mtx(&p->p_limco, &p->p_mtx, 0);
 	callout_init(&td->td_slpcallout, 1);
+	TAILQ_INIT(&p->p_kqtim_stop);
 
 	/* Create credentials. */
 	newcred = crget();
@@ -540,7 +553,7 @@ proc0_init(void *dummy __unused)
 	curthread->td_ucred = NULL;
 	newcred->cr_prison = &prison0;
 	newcred->cr_users++; /* avoid assertion failure */
-	proc_set_cred_init(p, newcred);
+	p->p_ucred = crcowget(newcred);
 	newcred->cr_users--;
 	crfree(newcred);
 #ifdef AUDIT
@@ -557,7 +570,7 @@ proc0_init(void *dummy __unused)
 
 	/* Create the file descriptor table. */
 	p->p_pd = pdinit(NULL, false);
-	p->p_fd = fdinit(NULL, false, NULL);
+	p->p_fd = fdinit();
 	p->p_fdtol = NULL;
 
 	/* Create the limits structures. */
@@ -765,7 +778,8 @@ start_init(void *dummy)
 		 */
 		KASSERT((td->td_pflags & TDP_EXECVMSPC) == 0,
 		    ("nested execve"));
-		oldvmspace = td->td_proc->p_vmspace;
+		memset(td->td_frame, 0, sizeof(*td->td_frame));
+		oldvmspace = p->p_vmspace;
 		error = kern_execve(td, &args, NULL, oldvmspace);
 		KASSERT(error != 0,
 		    ("kern_execve returned success, not EJUSTRETURN"));
@@ -878,15 +892,20 @@ db_show_print_syinit(struct sysinit *sip, bool ddb)
 #undef xprint
 }
 
-DB_SHOW_COMMAND(sysinit, db_show_sysinit)
+DB_SHOW_COMMAND_FLAGS(sysinit, db_show_sysinit, DB_CMD_MEMSAFE)
 {
-	struct sysinit **sipp;
+	struct sysinit *sip;
 
 	db_printf("SYSINIT vs Name(Ptr)\n");
 	db_printf("  Subsystem  Order\n");
 	db_printf("  Function(Name)(Arg)\n");
-	for (sipp = sysinit; sipp < sysinit_end; sipp++) {
-		db_show_print_syinit(*sipp, true);
+	STAILQ_FOREACH(sip, &sysinit_done_list, next) {
+		db_show_print_syinit(sip, true);
+		if (db_pager_quit)
+			return;
+	}
+	STAILQ_FOREACH(sip, &sysinit_list, next) {
+		db_show_print_syinit(sip, true);
 		if (db_pager_quit)
 			break;
 	}

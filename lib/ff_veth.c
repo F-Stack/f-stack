@@ -54,10 +54,14 @@
 
 #include <netinet/in.h>
 #include <netinet/in_var.h>
+#include <netinet/ip.h>
 #include <netinet6/nd6.h>
+#include <netinet6/scope6_var.h>
 #ifdef FF_IPFW
 #include <netinet/ip_fw.h>
 #endif
+
+#include <netinet/tcp_lro.h>
 
 #include <machine/atomic.h>
 
@@ -66,7 +70,7 @@
 #include "ff_dpdk_if.h"
 
 struct ff_veth_softc {
-    struct ifnet *ifp;
+    if_t ifp;
     uint8_t mac[ETHER_ADDR_LEN];
     char host_ifname[IF_NAMESIZE];
 
@@ -209,15 +213,14 @@ static void
 ff_veth_init(void *arg)
 {
     struct ff_veth_softc *sc = arg;
-    struct ifnet *ifp = sc->ifp;
+    if_t ifp = sc->ifp;
 
-    ifp->if_drv_flags |= IFF_DRV_RUNNING;
-    ifp->if_drv_flags &= ~IFF_DRV_OACTIVE;
-    ifp->if_flags |= IFF_UP;
+    if_setdrvflagbits(ifp, IFF_DRV_RUNNING, IFF_DRV_OACTIVE);
+    if_setflagbits(ifp, IFF_UP, 0);
 }
 
 static void
-ff_veth_start(struct ifnet *ifp)
+ff_veth_start(if_t ifp)
 {
     /* nothing to do */
 }
@@ -225,25 +228,37 @@ ff_veth_start(struct ifnet *ifp)
 static void
 ff_veth_stop(struct ff_veth_softc *sc)
 {
-    struct ifnet *ifp = sc->ifp;
+    if_t ifp = sc->ifp;
 
-    ifp->if_drv_flags &= ~(IFF_DRV_RUNNING|IFF_DRV_OACTIVE);
-    ifp->if_flags &= ~IFF_UP;
+    if_setdrvflagbits(ifp, 0, IFF_DRV_RUNNING | IFF_DRV_OACTIVE);
+    if_setflagbits(ifp, 0, IFF_UP);
 }
 
 static int
-ff_veth_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
+ff_veth_ioctl(if_t ifp, u_long cmd, caddr_t data)
 {
     int error = 0;
-    struct ff_veth_softc *sc = ifp->if_softc;
+    struct ff_veth_softc *sc = if_getsoftc(ifp);
 
     switch (cmd) {
     case SIOCSIFFLAGS:
-        if (ifp->if_flags & IFF_UP) {
+        if (if_getflags(ifp) & IFF_UP) {
             ff_veth_init(sc);
-        } else if (ifp->if_drv_flags & IFF_DRV_RUNNING)
+        } else if (if_getdrvflags(ifp) & IFF_DRV_RUNNING)
             ff_veth_stop(sc);
         break;
+    case SIOCSIFMTU:
+        if (ff_global_cfg.dpdk.mtu_enable) {
+            struct ifreq *ifr = (struct ifreq *)data;
+            uint16_t new_mtu = (uint16_t)ifr->ifr_mtu;
+            error = ff_dpdk_if_set_mtu(sc->host_ctx, new_mtu);
+            if (error == 0) {
+                if_setmtu(ifp, new_mtu);
+                if_notifymtu(ifp);
+            }
+            break;
+        }
+        /* fall through */
     default:
         error = ether_ioctl(ifp, cmd, data);
         break;
@@ -275,15 +290,17 @@ ff_mbuf_tx_offload(void *m, struct ff_tx_offload *offload)
         offload->ip_csum = 1;
     }
 
-    if (mb->m_pkthdr.csum_flags & CSUM_TCP) {
+    /* csum_flags carries protocol-specific bits (v4/v6 are distinct),
+     * but ff_tx_offload is protocol-agnostic; map both to one flag. */
+    if (mb->m_pkthdr.csum_flags & (CSUM_TCP | CSUM_TCP_IPV6)) {
         offload->tcp_csum = 1;
     }
 
-    if (mb->m_pkthdr.csum_flags & CSUM_UDP) {
+    if (mb->m_pkthdr.csum_flags & (CSUM_UDP | CSUM_UDP_IPV6)) {
         offload->udp_csum = 1;
     }
 
-    if (mb->m_pkthdr.csum_flags & CSUM_SCTP) {
+    if (mb->m_pkthdr.csum_flags & (CSUM_SCTP | CSUM_SCTP_IPV6)) {
         offload->sctp_csum = 1;
     }
 
@@ -307,11 +324,14 @@ ff_mbuf_ext_free(struct mbuf *m)
 int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len) {
     struct mbuf *mb;
 
-    if (m == NULL) {
+    if (m == NULL || len < 0) {
         return -1;
     }
 
-    mb = m_getm2(NULL, max(len, 1), M_WAITOK, MT_DATA, 0);
+    /* M_PKTHDR is required so the chain head carries an m_pkthdr.
+     * sosend takes resid from top->m_pkthdr.len when uio == NULL;
+     * ff_zc_mbuf_write maintains pkthdr.len incrementally. */
+    mb = m_getm2(NULL, max(len, 1), M_WAITOK, MT_DATA, M_PKTHDR);
     if (mb == NULL) {
         return -1;
     }
@@ -326,12 +346,16 @@ int ff_zc_mbuf_get(struct ff_zc_mbuf *m, int len) {
 int
 ff_zc_mbuf_write(struct ff_zc_mbuf *zm, const char *data, int len)
 {
-    int ret, length, progress = 0;
-    struct mbuf *m, *mb;
+    int length, progress = 0;
+    struct mbuf *m, *mb, *head;
 
-    if (zm == NULL) {
+    if (zm == NULL || data == NULL || len < 0) {
         return -1;
     }
+    if (len == 0) {
+        return 0;
+    }
+    head = (struct mbuf *)zm->bsd_mbuf;
     m = (struct mbuf *)zm->bsd_mbuf_off;
 
     if (zm->off + len > zm->len) {
@@ -340,28 +364,104 @@ ff_zc_mbuf_write(struct ff_zc_mbuf *zm, const char *data, int len)
 
     for (mb = m; mb != NULL; mb = mb->m_next) {
         length = min(M_TRAILINGSPACE(mb), len - progress);
-        bcopy(data + progress, mtod(mb, char *) + mb->m_len, length);
-
-        mb->m_len += length;
-        progress += length;
+        if (length > 0) {
+            bcopy(data + progress, mtod(mb, char *) + mb->m_len, length);
+            mb->m_len += length;
+            progress += length;
+        }
         if (len == progress) {
             break;
         }
-        //if (flags & M_PKTHDR)
-        //    m->m_pkthdr.len += length;
     }
-    zm->off += len;
+
+    /* Maintain pkthdr.len on the chain head only (mbuf(9): only the
+     * leading mbuf carries pkthdr). sosend reads this as resid when
+     * uio == NULL. */
+    head->m_pkthdr.len += progress;
+
+    zm->off += progress;
     zm->bsd_mbuf_off = mb;
 
-    return len;
+    return progress;
 }
 
 int
-ff_zc_mbuf_read(struct ff_zc_mbuf *m, const char *data, int len)
+ff_zc_mbuf_read(struct ff_zc_mbuf *zm, char *data, int len)
 {
-    // DOTO: Support read zero copy
-    return 0;
+    struct mbuf *mb;
+    int progress = 0, length, moff;
+
+    if (zm == NULL || data == NULL || len <= 0) {
+        return -1;
+    }
+
+    /* For RECV, bsd_mbuf_off is the current mbuf cursor and `off` is the
+     * already-consumed offset WITHIN that mbuf. Copy out up to `len` bytes,
+     * spanning mbufs as needed. */
+    mb = (struct mbuf *)zm->bsd_mbuf_off;
+    moff = zm->off;
+    while (mb != NULL && progress < len) {
+        length = min(mb->m_len - moff, len - progress);
+        bcopy(mtod(mb, char *) + moff, data + progress, length);
+        progress += length;
+        moff += length;
+        if (moff >= mb->m_len) {
+            mb = mb->m_next;
+            moff = 0;
+        }
+    }
+    zm->bsd_mbuf_off = mb;
+    zm->off = moff;
+
+    return progress;
 }
+
+#ifdef FSTACK_ZC_RECV
+/*
+ * FSTACK_ZC_RECV: return the current segment's data pointer + length without
+ * copying (pointer aliases into the underlying DPDK mbuf), then advance the
+ * cursor to the next mbuf. Valid until ff_zc_recv_free() is called.
+ */
+int
+ff_zc_mbuf_segment(struct ff_zc_mbuf *zm, void **seg_data, int *seg_len)
+{
+    struct mbuf *mb;
+
+    if (zm == NULL || seg_data == NULL || seg_len == NULL) {
+        return -1;
+    }
+
+    mb = (struct mbuf *)zm->bsd_mbuf_off;
+    if (mb == NULL) {
+        return 0;   /* chain exhausted */
+    }
+
+    *seg_data = mtod(mb, void *);
+    *seg_len = mb->m_len;
+    zm->bsd_mbuf_off = mb->m_next;
+    zm->off = 0;
+
+    return mb->m_len;
+}
+
+/*
+ * FSTACK_ZC_RECV: release the whole chain obtained from ff_zc_recv. m_freem
+ * walks m_next and frees each mbuf; ext-mbuf segments trigger ff_mbuf_ext_free
+ * which returns the backing DPDK mbuf seg (see docs/zc_stack_user_spec). Idempotent.
+ */
+void
+ff_zc_recv_free(struct ff_zc_mbuf *zm)
+{
+    if (zm == NULL || zm->bsd_mbuf == NULL) {
+        return;
+    }
+    m_freem((struct mbuf *)zm->bsd_mbuf);
+    zm->bsd_mbuf = NULL;
+    zm->bsd_mbuf_off = NULL;
+    zm->off = 0;
+    zm->len = 0;
+}
+#endif /* FSTACK_ZC_RECV */
 
 void *
 ff_mbuf_gethdr(void *pkt, uint16_t total, void *data,
@@ -410,26 +510,63 @@ ff_mbuf_get(void *p, void *m, void *data, uint16_t len)
     return (void *)mb;
 }
 
+void *
+ff_lro_init(void *ifp)
+{
+    struct lro_ctrl *lc = malloc(sizeof(struct lro_ctrl),
+        M_DEVBUF, M_WAITOK | M_ZERO);
+    if (lc == NULL)
+        return NULL;
+    if (tcp_lro_init(lc) != 0) {
+        free(lc, M_DEVBUF);
+        return NULL;
+    }
+    lc->ifp = ifp;
+    return lc;
+}
+
+void
+ff_lro_free(void *lro)
+{
+    if (lro != NULL) {
+        tcp_lro_free(lro);
+        free(lro, M_DEVBUF);
+    }
+}
+
+int
+ff_lro_rx(void *lro, void *m)
+{
+    return tcp_lro_rx(lro, m, 0);
+}
+
+void
+ff_lro_flush(void *lro)
+{
+    struct timeval tv = {0, 0};
+    tcp_lro_flush_inactive(lro, &tv);
+}
+
 void
 ff_veth_process_packet(void *arg, void *m)
 {
-    struct ifnet *ifp = (struct ifnet *)arg;
+    if_t ifp = (if_t)arg;
     struct mbuf *mb = (struct mbuf *)m;
 
     mb->m_pkthdr.rcvif = ifp;
 
-    ifp->if_input(ifp, mb);
+    if_input(ifp, mb);
 }
 
 static int
-ff_veth_transmit(struct ifnet *ifp, struct mbuf *m)
+ff_veth_transmit(if_t ifp, struct mbuf *m)
 {
-    struct ff_veth_softc *sc = (struct ff_veth_softc *)ifp->if_softc;
+    struct ff_veth_softc *sc = (struct ff_veth_softc *)if_getsoftc(ifp);
     return ff_dpdk_if_send(sc->host_ctx, (void*)m, m->m_pkthdr.len);
 }
 
 static void
-ff_veth_qflush(struct ifnet *ifp)
+ff_veth_qflush(if_t ifp)
 {
 
 }
@@ -443,7 +580,7 @@ ff_veth_setaddr(struct ff_veth_softc *sc, const char *if_name)
     if (if_name) {
         strcpy(req.ifra_name, if_name);
     } else {
-        strcpy(req.ifra_name, sc->ifp->if_dname);
+        strcpy(req.ifra_name, if_getdname(sc->ifp));
     }
 
     struct sockaddr_in sa;
@@ -512,7 +649,7 @@ ff_veth_setvaddr(struct ff_veth_softc *sc, struct ff_port_cfg *cfg, const char *
     } else if (cfg->vip_ifname) {
         strlcpy(req.ifra_name, cfg->vip_ifname, IFNAMSIZ);
     } else {
-        strlcpy(req.ifra_name, sc->ifp->if_dname, IFNAMSIZ);
+        strlcpy(req.ifra_name, if_getdname(sc->ifp), IFNAMSIZ);
     }
 
     struct sockaddr_in sa;
@@ -713,7 +850,7 @@ ff_veth_setaddr6(struct ff_veth_softc *sc, const char *if_name)
     if (if_name) {
         strcpy(ifr6.ifra_name, if_name);
     } else {
-        strcpy(ifr6.ifra_name, sc->ifp->if_dname);
+        strcpy(ifr6.ifra_name, if_getdname(sc->ifp));
     }
 
     ifr6.ifra_addr.sin6_len = sizeof ifr6.ifra_addr;
@@ -762,6 +899,11 @@ ff_veth_set_gateway6(struct ff_veth_softc *sc, uint32_t fib_num)
     gw.sin6_addr = sc->gateway6;
     //dst.sin6_addr = nm.sin6_addr = 0;
 
+    /* Link-local gateway needs the outgoing interface zone to be resolvable. */
+    if (IN6_IS_ADDR_LINKLOCAL(&gw.sin6_addr)) {
+        in6_setscope(&gw.sin6_addr, sc->ifp, NULL);
+    }
+
     info.rti_info[RTAX_GATEWAY] = (struct sockaddr *)&gw;
     info.rti_info[RTAX_DST] = (struct sockaddr *)&dst;
     info.rti_info[RTAX_NETMASK] = (struct sockaddr *)&nm;
@@ -780,20 +922,16 @@ ff_veth_setvaddr6(struct ff_veth_softc *sc, struct ff_port_cfg *cfg, const char 
     } else if (cfg->vip_ifname) {
         strlcpy(ifr6.ifra_name, cfg->vip_ifname, IFNAMSIZ);
     } else {
-        strlcpy(ifr6.ifra_name, sc->ifp->if_dname, IFNAMSIZ);
+        strlcpy(ifr6.ifra_name, if_getdname(sc->ifp), IFNAMSIZ);
     }
 
     ifr6.ifra_addr.sin6_len = sizeof ifr6.ifra_addr;
     ifr6.ifra_addr.sin6_family = AF_INET6;
 
+    /* VIP as /128 host addr: avoid installing an on-link prefix route,
+     * so traffic to other addrs in the VIP subnet goes via the gateway. */
     ifr6.ifra_prefixmask.sin6_len = sizeof ifr6.ifra_prefixmask;
-    memset(&ifr6.ifra_prefixmask.sin6_addr, 0xff, sc->prefix_length / 8);
-    uint8_t mask_size_mod = sc->prefix_length % 8;
-    if (mask_size_mod)
-    {
-        ifr6.ifra_prefixmask.sin6_addr.__u6_addr.__u6_addr8[sc->prefix_length / 8] = \
-            ((1 << mask_size_mod) - 1) << (8 - mask_size_mod);
-    }
+    memset(&ifr6.ifra_prefixmask.sin6_addr, 0xff, 16);
 
     ifr6.ifra_lifetime.ia6t_pltime = ifr6.ifra_lifetime.ia6t_vltime = ND6_INFINITE_LIFETIME;
 
@@ -823,39 +961,45 @@ done:
 static int
 ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
 {
-    struct ifnet *ifp;
+    if_t ifp;
     int ret;
     uint32_t fib_num = RT_DEFAULT_FIB;
 
     ifp = sc->ifp = if_alloc(IFT_ETHER);
 
-    ifp->if_init = ff_veth_init;
-    ifp->if_softc = sc;
+    if_setinitfn(ifp, ff_veth_init);
+    if_setsoftc(ifp, sc);
 
     if_initname(ifp, sc->host_ifname, IF_DUNIT_NONE);
-    ifp->if_flags = IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST;
-    ifp->if_ioctl = ff_veth_ioctl;
-    ifp->if_start = ff_veth_start;
-    ifp->if_transmit = ff_veth_transmit;
-    ifp->if_qflush = ff_veth_qflush;
+    if_setflags(ifp, IFF_BROADCAST | IFF_SIMPLEX | IFF_MULTICAST);
+    if_setioctlfn(ifp, ff_veth_ioctl);
+    if_setstartfn(ifp, ff_veth_start);
+    if_settransmitfn(ifp, ff_veth_transmit);
+    if_setqflushfn(ifp, ff_veth_qflush);
     ether_ifattach(ifp, sc->mac);
 
     if (cfg->hw_features.rx_csum) {
-        ifp->if_capabilities |= IFCAP_RXCSUM;
+        if_setcapabilitiesbit(ifp, IFCAP_RXCSUM, 0);
+    }
+    if (cfg->hw_features.rx_lro || cfg->hw_features.sw_lro) {
+        if_setcapabilitiesbit(ifp, IFCAP_LRO, 0);
     }
     if (cfg->hw_features.tx_csum_ip) {
-        ifp->if_capabilities |= IFCAP_TXCSUM;
-        ifp->if_hwassist |= CSUM_IP;
+        if_setcapabilitiesbit(ifp, IFCAP_TXCSUM, 0);
+        if_sethwassistbits(ifp, CSUM_IP, 0);
     }
     if (cfg->hw_features.tx_csum_l4) {
-        ifp->if_hwassist |= CSUM_DELAY_DATA;
+        if_sethwassistbits(ifp, CSUM_DELAY_DATA, 0);
     }
     if (cfg->hw_features.tx_tso) {
-        ifp->if_capabilities |= IFCAP_TSO;
-        ifp->if_hwassist |= CSUM_TSO;
+        if_setcapabilitiesbit(ifp, IFCAP_TSO, 0);
+        if_sethwassistbits(ifp, CSUM_TSO, 0);
+        if_sethwtsomax(ifp, IP_MAXPACKET);
+        if_sethwtsomaxsegcount(ifp, 35);
+        if_sethwtsomaxsegsize(ifp, 2048);
     }
 
-    ifp->if_capenable = ifp->if_capabilities;
+    if_setcapenable(ifp, if_getcapabilities(ifp));
 
     sc->host_ctx = ff_dpdk_register_if((void *)sc, (void *)sc->ifp, cfg);
     if (sc->host_ctx == NULL) {
@@ -863,6 +1007,14 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
         return -1;
     } else {
         printf("%s: Successed to register dpdk interface\n", sc->host_ifname);
+    }
+
+    if (ff_global_cfg.dpdk.mtu_enable && sc->host_ctx) {
+        uint16_t init_mtu;
+        if (ff_dpdk_if_get_mtu(sc->host_ctx, &init_mtu) == 0) {
+            if_setmtu(sc->ifp, init_mtu);
+            if_notifymtu(sc->ifp);
+        }
     }
 
     /* if vlan_flag is true, all port's addrs/vips will not to set, just create the iface */
@@ -873,8 +1025,7 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
             printf("%s: ff_veth_setaddr failed\n", sc->host_ifname);
         }
 
-        fib_num = cfg->port_id;
-        ret = ff_veth_set_gateway(sc, fib_num);
+        ret = ff_veth_set_gateway(sc, RT_DEFAULT_FIB);
         if (ret != 0) {
             printf("%s: ff_veth_set_gateway failed\n", sc->host_ifname);
         }
@@ -885,11 +1036,16 @@ ff_veth_setup_interface(struct ff_veth_softc *sc, struct ff_port_cfg *cfg)
 
 #ifdef FF_IPFW
         if (cfg->nb_pr) {
+            fib_num = cfg->port_id;
             ff_ipfw_add_simple_v4(cfg, NULL, fib_num);
         }
 #endif
 
 #ifdef INET6
+        /* Skip IPv6 DAD on DPDK-backed veth: no L2 peer answers NS in
+         * userland, so DAD would leave addrs IN6_IFF_TENTATIVE forever and
+         * FreeBSD 15 ip6_input silently drops unicast to NOTREADY addrs. */
+        ND_IFINFO(ifp)->flags |= ND6_IFF_NO_DAD;
         // Set IPv6
         if (cfg->addr6_str) {
             ret = ff_veth_setaddr6(sc, NULL);
@@ -1122,5 +1278,12 @@ ff_mbuf_set_vlan_info(void *hdr, uint16_t vlan_tci) {
     m->m_pkthdr.ether_vtag = vlan_tci;
     m->m_flags |= M_VLANTAG;
     return;
+}
+
+void
+ff_mbuf_set_timestamp(void *hdr, uint64_t timestamp) {
+    struct mbuf *m = (struct mbuf *)hdr;
+    m->m_pkthdr.rcv_tstmp = timestamp;
+    m->m_flags |= M_TSTMP | M_TSTMP_HPREC;
 }
 

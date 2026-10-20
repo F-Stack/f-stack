@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Isilon Systems, LLC.
  * Copyright (c) 2005-2014 Sandvine Incorporated. All rights reserved.
@@ -29,8 +29,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 
 #include <sys/param.h>
@@ -45,6 +43,7 @@ __FBSDID("$FreeBSD$");
 #include <net/if_dl.h>
 #include <net/if_types.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 
 #include <netinet/in.h>
 #include <netinet/in_systm.h>
@@ -85,6 +84,9 @@ debugnet_handle_ip(struct debugnet_pcb *pcb, struct mbuf **mb)
 	struct ip *ip;
 	struct mbuf *m;
 	unsigned short hlen;
+
+	if (pcb->dp_state < DN_STATE_HAVE_GW_MAC)
+		return;
 
 	/* IP processing. */
 	m = *mb;
@@ -347,13 +349,19 @@ debugnet_handle_arp(struct debugnet_pcb *pcb, struct mbuf **mb)
 			    " server or gateway)\n", buf);
 			return;
 		}
+		if (pcb->dp_state >= DN_STATE_HAVE_GW_MAC) {
+			inet_ntoa_r(isaddr, buf);
+			DNETDEBUG("ignoring server ARP reply from %s (already"
+			    " have gateway address)\n", buf);
+			return;
+		}
+		MPASS(pcb->dp_state == DN_STATE_INIT);
 		memcpy(pcb->dp_gw_mac.octet, ar_sha(ah),
 		    min(ah->ar_hln, ETHER_ADDR_LEN));
 		
 		DNETDEBUG("got server MAC address %6D\n",
 		    pcb->dp_gw_mac.octet, ":");
 
-		MPASS(pcb->dp_state == DN_STATE_INIT);
 		pcb->dp_state = DN_STATE_HAVE_GW_MAC;
 		return;
 	}

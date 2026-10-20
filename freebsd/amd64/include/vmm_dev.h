@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,19 +24,15 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_VMM_DEV_H_
 #define	_VMM_DEV_H_
 
-struct vm_snapshot_meta;
+#include <sys/domainset.h>
 
-#ifdef _KERNEL
-void	vmmdev_init(void);
-int	vmmdev_cleanup(void);
-#endif
+#include <machine/vmm.h>
+#include <machine/vmm_snapshot.h>
 
 struct vm_memmap {
 	vm_paddr_t	gpa;
@@ -49,19 +45,20 @@ struct vm_memmap {
 #define	VM_MEMMAP_F_WIRED	0x01
 #define	VM_MEMMAP_F_IOMMU	0x02
 
+struct vm_munmap {
+	vm_paddr_t	gpa;
+	size_t		len;
+};
+
 #define	VM_MEMSEG_NAME(m)	((m)->name[0] != '\0' ? (m)->name : NULL)
 struct vm_memseg {
 	int		segid;
 	size_t		len;
-	char		name[VM_MAX_SUFFIXLEN + 1];
+	char 		name[VM_MAX_SUFFIXLEN + 1];
+	domainset_t	*ds_mask;
+	size_t		ds_mask_size;
+	int 		ds_policy;
 };
-
-struct vm_memseg_fbsd12 {
-	int		segid;
-	size_t		len;
-	char		name[64];
-};
-_Static_assert(sizeof(struct vm_memseg_fbsd12) == 80, "COMPAT_FREEBSD12 ABI");
 
 struct vm_register {
 	int		cpuid;
@@ -84,7 +81,9 @@ struct vm_register_set {
 
 struct vm_run {
 	int		cpuid;
-	struct vm_exit	vm_exit;
+	cpuset_t	*cpuset;	/* CPU set storage */
+	size_t		cpusetsize;
+	struct vm_exit	*vm_exit;
 };
 
 struct vm_exception {
@@ -142,7 +141,7 @@ struct vm_pptdev_mmio {
 };
 
 struct vm_pptdev_msi {
-	int		vcpu;
+	int		vcpu;		/* unused */
 	int		bus;
 	int		slot;
 	int		func;
@@ -152,7 +151,7 @@ struct vm_pptdev_msi {
 };
 
 struct vm_pptdev_msix {
-	int		vcpu;
+	int		vcpu;		/* unused */
 	int		bus;
 	int		slot;
 	int		func;
@@ -169,6 +168,7 @@ struct vm_nmi {
 #define	MAX_VM_STATS	64
 struct vm_stats {
 	int		cpuid;				/* in */
+	int		index;				/* in */
 	int		num_entries;			/* out */
 	struct timeval	tv;
 	uint64_t	statbuf[MAX_VM_STATS];
@@ -270,6 +270,7 @@ enum {
 	IOCNUM_MMAP_MEMSEG = 16,
 	IOCNUM_MMAP_GETNEXT = 17,
 	IOCNUM_GLA2GPA_NOFAULT = 18,
+	IOCNUM_MUNMAP_MEMSEG = 19,
 
 	/* register/state accessors */
 	IOCNUM_SET_REGISTER = 20,
@@ -302,9 +303,10 @@ enum {
 	IOCNUM_PPTDEV_MSI = 43,
 	IOCNUM_PPTDEV_MSIX = 44,
 	IOCNUM_PPTDEV_DISABLE_MSIX = 45,
+	IOCNUM_UNMAP_PPTDEV_MMIO = 46,
 
 	/* statistics */
-	IOCNUM_VM_STATS = 50, 
+	IOCNUM_VM_STATS = 50,
 	IOCNUM_VM_STAT_DESC = 51,
 
 	/* kernel device state */
@@ -341,23 +343,21 @@ enum {
 };
 
 #define	VM_RUN		\
-	_IOWR('v', IOCNUM_RUN, struct vm_run)
+	_IOW('v', IOCNUM_RUN, struct vm_run)
 #define	VM_SUSPEND	\
 	_IOW('v', IOCNUM_SUSPEND, struct vm_suspend)
 #define	VM_REINIT	\
 	_IO('v', IOCNUM_REINIT)
-#define	VM_ALLOC_MEMSEG_FBSD12	\
-	_IOW('v', IOCNUM_ALLOC_MEMSEG, struct vm_memseg_fbsd12)
 #define	VM_ALLOC_MEMSEG	\
 	_IOW('v', IOCNUM_ALLOC_MEMSEG, struct vm_memseg)
-#define	VM_GET_MEMSEG_FBSD12	\
-	_IOWR('v', IOCNUM_GET_MEMSEG, struct vm_memseg_fbsd12)
 #define	VM_GET_MEMSEG	\
 	_IOWR('v', IOCNUM_GET_MEMSEG, struct vm_memseg)
 #define	VM_MMAP_MEMSEG	\
 	_IOW('v', IOCNUM_MMAP_MEMSEG, struct vm_memmap)
 #define	VM_MMAP_GETNEXT	\
 	_IOWR('v', IOCNUM_MMAP_GETNEXT, struct vm_memmap)
+#define	VM_MUNMAP_MEMSEG	\
+	_IOW('v', IOCNUM_MUNMAP_MEMSEG, struct vm_munmap)
 #define	VM_SET_REGISTER \
 	_IOW('v', IOCNUM_SET_REGISTER, struct vm_register)
 #define	VM_GET_REGISTER \
@@ -416,6 +416,8 @@ enum {
 	_IOW('v', IOCNUM_PPTDEV_MSIX, struct vm_pptdev_msix)
 #define	VM_PPTDEV_DISABLE_MSIX \
 	_IOW('v', IOCNUM_PPTDEV_DISABLE_MSIX, struct vm_pptdev)
+#define	VM_UNMAP_PPTDEV_MMIO \
+	_IOW('v', IOCNUM_UNMAP_PPTDEV_MMIO, struct vm_pptdev_mmio)
 #define VM_INJECT_NMI \
 	_IOW('v', IOCNUM_INJECT_NMI, struct vm_nmi)
 #define	VM_STATS \

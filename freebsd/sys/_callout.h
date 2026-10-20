@@ -32,14 +32,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)callout.h	8.2 (Berkeley) 1/21/94
- * $FreeBSD$
  */
 
 #ifndef _SYS__CALLOUT_H
 #define	_SYS__CALLOUT_H
 
+#include <sys/_types.h>
 #include <sys/queue.h>
 
 struct lock_object;

@@ -63,11 +63,20 @@ static int mdio_complete(struct axgbe_port *pdata)
 	return 0;
 }
 
-static unsigned int axgbe_create_mdio_sca(int port, int reg)
+static unsigned int axgbe_create_mdio_sca_c22(int port, int reg)
 {
-	unsigned int mdio_sca, da;
+	unsigned int mdio_sca;
 
-	da = (reg & MII_ADDR_C45) ? reg >> 16 : 0;
+	mdio_sca = 0;
+	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, RA, reg);
+	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, PA, port);
+
+	return mdio_sca;
+}
+
+static unsigned int axgbe_create_mdio_sca_c45(int port, unsigned int da, int reg)
+{
+	unsigned int mdio_sca;
 
 	mdio_sca = 0;
 	AXGMAC_SET_BITS(mdio_sca, MAC_MDIOSCAR, RA, reg);
@@ -77,13 +86,12 @@ static unsigned int axgbe_create_mdio_sca(int port, int reg)
 	return mdio_sca;
 }
 
-static int axgbe_write_ext_mii_regs(struct axgbe_port *pdata, int addr,
-				    int reg, u16 val)
+static int axgbe_write_ext_mii_regs(struct axgbe_port *pdata,
+						unsigned int mdio_sca, u16 val)
 {
-	unsigned int mdio_sca, mdio_sccd;
+	unsigned int mdio_sccd;
 	uint64_t timeout;
 
-	mdio_sca = axgbe_create_mdio_sca(addr, reg);
 	AXGMAC_IOWRITE(pdata, MAC_MDIOSCAR, mdio_sca);
 
 	mdio_sccd = 0;
@@ -99,17 +107,38 @@ static int axgbe_write_ext_mii_regs(struct axgbe_port *pdata, int addr,
 			return 0;
 	}
 
-	PMD_DRV_LOG(ERR, "Mdio write operation timed out\n");
+	PMD_DRV_LOG_LINE(ERR, "Mdio write operation timed out");
 	return -ETIMEDOUT;
 }
 
-static int axgbe_read_ext_mii_regs(struct axgbe_port *pdata, int addr,
-				   int reg)
+
+static int axgbe_write_ext_mii_regs_c22(struct axgbe_port *pdata,
+							int addr, int reg, u16 val)
 {
-	unsigned int mdio_sca, mdio_sccd;
+	unsigned int mdio_sca;
+
+	mdio_sca = axgbe_create_mdio_sca_c22(addr, reg);
+
+	return axgbe_write_ext_mii_regs(pdata, mdio_sca, val);
+}
+
+static int axgbe_write_ext_mii_regs_c45(struct axgbe_port *pdata,
+					int addr, int devad, int reg, u16 val)
+{
+	unsigned int mdio_sca;
+
+	mdio_sca = axgbe_create_mdio_sca_c45(addr, devad, reg);
+
+	return axgbe_write_ext_mii_regs(pdata, mdio_sca, val);
+}
+
+
+static int axgbe_read_ext_mii_regs(struct axgbe_port *pdata,
+							unsigned int mdio_sca)
+{
+	unsigned int mdio_sccd;
 	uint64_t timeout;
 
-	mdio_sca = axgbe_create_mdio_sca(addr, reg);
 	AXGMAC_IOWRITE(pdata, MAC_MDIOSCAR, mdio_sca);
 
 	mdio_sccd = 0;
@@ -125,11 +154,30 @@ static int axgbe_read_ext_mii_regs(struct axgbe_port *pdata, int addr,
 			goto success;
 	}
 
-	PMD_DRV_LOG(ERR, "Mdio read operation timed out\n");
+	PMD_DRV_LOG_LINE(ERR, "Mdio read operation timed out");
 	return -ETIMEDOUT;
 
 success:
 	return AXGMAC_IOREAD_BITS(pdata, MAC_MDIOSCCDR, DATA);
+}
+
+static int axgbe_read_ext_mii_regs_c22(struct axgbe_port *pdata, int addr, int reg)
+{
+	unsigned int mdio_sca;
+
+	mdio_sca = axgbe_create_mdio_sca_c22(addr, reg);
+
+	return axgbe_read_ext_mii_regs(pdata, mdio_sca);
+}
+
+static int axgbe_read_ext_mii_regs_c45(struct axgbe_port *pdata, int addr,
+								int devad, int reg)
+{
+	unsigned int mdio_sca;
+
+	mdio_sca = axgbe_create_mdio_sca_c45(addr, devad, reg);
+
+	return axgbe_read_ext_mii_regs(pdata, mdio_sca);
 }
 
 static int axgbe_set_ext_mii_mode(struct axgbe_port *pdata, unsigned int port,
@@ -159,8 +207,8 @@ static int axgbe_read_mmd_regs_v2(struct axgbe_port *pdata,
 	unsigned int mmd_address, index, offset;
 	int mmd_data;
 
-	if (mmd_reg & MII_ADDR_C45)
-		mmd_address = mmd_reg & ~MII_ADDR_C45;
+	if (mmd_reg & AXGBE_ADDR_C45)
+		mmd_address = mmd_reg & ~AXGBE_ADDR_C45;
 	else
 		mmd_address = (pdata->mdio_mmd << 16) | (mmd_reg & 0xffff);
 
@@ -193,8 +241,8 @@ static void axgbe_write_mmd_regs_v2(struct axgbe_port *pdata,
 {
 	unsigned int mmd_address, index, offset;
 
-	if (mmd_reg & MII_ADDR_C45)
-		mmd_address = mmd_reg & ~MII_ADDR_C45;
+	if (mmd_reg & AXGBE_ADDR_C45)
+		mmd_address = mmd_reg & ~AXGBE_ADDR_C45;
 	else
 		mmd_address = (pdata->mdio_mmd << 16) | (mmd_reg & 0xffff);
 
@@ -224,7 +272,7 @@ static int axgbe_read_mmd_regs(struct axgbe_port *pdata, int prtad,
 {
 	switch (pdata->vdata->xpcs_access) {
 	case AXGBE_XPCS_ACCESS_V1:
-		PMD_DRV_LOG(ERR, "PHY_Version 1 is not supported\n");
+		PMD_DRV_LOG_LINE(ERR, "PHY_Version 1 is not supported");
 		return -1;
 	case AXGBE_XPCS_ACCESS_V2:
 	default:
@@ -237,7 +285,7 @@ static void axgbe_write_mmd_regs(struct axgbe_port *pdata, int prtad,
 {
 	switch (pdata->vdata->xpcs_access) {
 	case AXGBE_XPCS_ACCESS_V1:
-		PMD_DRV_LOG(ERR, "PHY_Version 1 is not supported\n");
+		PMD_DRV_LOG_LINE(ERR, "PHY_Version 1 is not supported");
 		return;
 	case AXGBE_XPCS_ACCESS_V2:
 	default:
@@ -250,6 +298,12 @@ static int axgbe_set_speed(struct axgbe_port *pdata, int speed)
 	unsigned int ss;
 
 	switch (speed) {
+	case SPEED_10:
+		ss = 0x07;
+		break;
+	case SPEED_100:
+		ss = 0x04;
+		break;
 	case SPEED_1000:
 		ss = 0x03;
 		break;
@@ -318,7 +372,7 @@ static int axgbe_enable_tx_flow_control(struct axgbe_port *pdata)
 
 		AXGMAC_MTL_IOWRITE_BITS(pdata, i, MTL_Q_RQOMR, EHFC, ehfc);
 
-		PMD_DRV_LOG(DEBUG, "flow control %s for RXq%u\n",
+		PMD_DRV_LOG_LINE(DEBUG, "flow control %s for RXq%u",
 			    ehfc ? "enabled" : "disabled", i);
 	}
 
@@ -557,8 +611,8 @@ static int axgbe_update_vlan_hash_table(struct axgbe_port *pdata)
 		vid_valid = pdata->active_vlans[vid_idx];
 		vid_valid = (unsigned long)vid_valid >> (vid - (64 * vid_idx));
 		if (vid_valid & 1)
-			PMD_DRV_LOG(DEBUG,
-				    "vid:%d pdata->active_vlans[%ld]=0x%lx\n",
+			PMD_DRV_LOG_LINE(DEBUG,
+				    "vid:%d pdata->active_vlans[%ld]=0x%lx",
 				    vid, vid_idx, pdata->active_vlans[vid_idx]);
 		else
 			continue;
@@ -566,13 +620,13 @@ static int axgbe_update_vlan_hash_table(struct axgbe_port *pdata)
 		vid_le = rte_cpu_to_le_16(vid);
 		crc = bitrev32(~axgbe_vid_crc32_le(vid_le)) >> 28;
 		vlan_hash_table |= (1 << crc);
-		PMD_DRV_LOG(DEBUG, "crc = %d vlan_hash_table = 0x%x\n",
+		PMD_DRV_LOG_LINE(DEBUG, "crc = %d vlan_hash_table = 0x%x",
 			    crc, vlan_hash_table);
 	}
 	/* Set the VLAN Hash Table filtering register */
 	AXGMAC_IOWRITE_BITS(pdata, MAC_VLANHTR, VLHT, vlan_hash_table);
 	reg = AXGMAC_IOREAD(pdata, MAC_VLANHTR);
-	PMD_DRV_LOG(DEBUG, "vlan_hash_table reg val = 0x%x\n", reg);
+	PMD_DRV_LOG_LINE(DEBUG, "vlan_hash_table reg val = 0x%x", reg);
 	return 0;
 }
 
@@ -876,7 +930,7 @@ static int axgbe_config_rss(struct axgbe_port *pdata)
 					i % pdata->eth_dev->data->nb_rx_queues);
 		axgbe_rss_options(pdata);
 		if (axgbe_enable_rss(pdata)) {
-			PMD_DRV_LOG(ERR, "Error in enabling RSS support\n");
+			PMD_DRV_LOG_LINE(ERR, "Error in enabling RSS support");
 			return -1;
 		}
 	} else {
@@ -961,7 +1015,7 @@ static int wrapper_rx_desc_init(struct axgbe_port *pdata)
 		for (j = 0; j < rxq->nb_desc; j++) {
 			mbuf = rte_mbuf_raw_alloc(rxq->mb_pool);
 			if (mbuf == NULL) {
-				PMD_DRV_LOG(ERR, "RX mbuf alloc failed queue_id = %u, idx = %d\n",
+				PMD_DRV_LOG_LINE(ERR, "RX mbuf alloc failed queue_id = %u, idx = %d",
 					    (unsigned int)rxq->queue_id, j);
 				axgbe_dev_rx_queue_release(pdata->eth_dev, i);
 				return -ENOMEM;
@@ -1087,7 +1141,7 @@ static void axgbe_config_rx_fifo_size(struct axgbe_port *pdata)
 	axgbe_calculate_flow_control_threshold(pdata);
 	axgbe_config_flow_control_threshold(pdata);
 
-	PMD_DRV_LOG(DEBUG, "%d Rx hardware queues, %d byte fifo per queue\n",
+	PMD_DRV_LOG_LINE(DEBUG, "%d Rx hardware queues, %d byte fifo per queue",
 		    pdata->rx_q_count, q_fifo_size);
 }
 
@@ -1113,7 +1167,7 @@ static void axgbe_config_tx_fifo_size(struct axgbe_port *pdata)
 	for (i = 0; i < pdata->tx_q_count; i++)
 		AXGMAC_MTL_IOWRITE_BITS(pdata, i, MTL_Q_TQOMR, TQS, p_fifo);
 
-	PMD_DRV_LOG(DEBUG, "%d Tx hardware queues, %d byte fifo per queue\n",
+	PMD_DRV_LOG_LINE(DEBUG, "%d Tx hardware queues, %d byte fifo per queue",
 		    pdata->tx_q_count, q_fifo_size);
 }
 
@@ -1130,12 +1184,12 @@ static void axgbe_config_queue_mapping(struct axgbe_port *pdata)
 
 	for (i = 0, queue = 0; i < pdata->hw_feat.tc_cnt; i++) {
 		for (j = 0; j < qptc; j++) {
-			PMD_DRV_LOG(DEBUG, "TXq%u mapped to TC%u\n", queue, i);
+			PMD_DRV_LOG_LINE(DEBUG, "TXq%u mapped to TC%u", queue, i);
 			AXGMAC_MTL_IOWRITE_BITS(pdata, queue, MTL_Q_TQOMR,
 						Q2TCMAP, i);
 		}
 		if (i < qptc_extra) {
-			PMD_DRV_LOG(DEBUG, "TXq%u mapped to TC%u\n", queue, i);
+			PMD_DRV_LOG_LINE(DEBUG, "TXq%u mapped to TC%u", queue, i);
 			AXGMAC_MTL_IOWRITE_BITS(pdata, queue, MTL_Q_TQOMR,
 						Q2TCMAP, i);
 		}
@@ -1203,7 +1257,7 @@ void axgbe_set_mac_hash_table(struct axgbe_port *pdata, u8 *addr, bool add)
 		pdata->uc_hash_table[htable_index] &= ~htable_bitmask;
 		pdata->uc_hash_mac_addr--;
 	}
-	PMD_DRV_LOG(DEBUG, "%s MAC hash table Bit %d at Index %#x\n",
+	PMD_DRV_LOG_LINE(DEBUG, "%s MAC hash table Bit %d at Index %#x",
 		    add ? "set" : "clear", (crc & 0x1f), htable_index);
 
 	AXGMAC_IOWRITE(pdata, MAC_HTR(htable_index),
@@ -1232,7 +1286,7 @@ void axgbe_set_mac_addn_addr(struct axgbe_port *pdata, u8 *addr, uint32_t index)
 		AXGMAC_SET_BITS(mac_addr_hi, MAC_MACA1HR, AE, 1);
 	}
 
-	PMD_DRV_LOG(DEBUG, "%s mac address at %#x\n",
+	PMD_DRV_LOG_LINE(DEBUG, "%s mac address at %#x",
 		    addr ? "set" : "clear", index);
 
 	AXGMAC_IOWRITE(pdata, MAC_MACAHR(index), mac_addr_hi);
@@ -1370,8 +1424,11 @@ void axgbe_init_function_ptrs_dev(struct axgbe_hw_if *hw_if)
 	hw_if->set_speed = axgbe_set_speed;
 
 	hw_if->set_ext_mii_mode = axgbe_set_ext_mii_mode;
-	hw_if->read_ext_mii_regs = axgbe_read_ext_mii_regs;
-	hw_if->write_ext_mii_regs = axgbe_write_ext_mii_regs;
+	hw_if->read_ext_mii_regs_c22 = axgbe_read_ext_mii_regs_c22;
+	hw_if->write_ext_mii_regs_c22 = axgbe_write_ext_mii_regs_c22;
+	hw_if->read_ext_mii_regs_c45 = axgbe_read_ext_mii_regs_c45;
+	hw_if->write_ext_mii_regs_c45 = axgbe_write_ext_mii_regs_c45;
+
 	/* For FLOW ctrl */
 	hw_if->config_tx_flow_control = axgbe_config_tx_flow_control;
 	hw_if->config_rx_flow_control = axgbe_config_rx_flow_control;

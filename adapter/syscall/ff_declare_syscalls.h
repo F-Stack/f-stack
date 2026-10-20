@@ -22,7 +22,6 @@ FF_SYSCALL_DECL(ssize_t, recvfrom, (int, void *, size_t, int,
 FF_SYSCALL_DECL(ssize_t, sendmsg, (int, const struct msghdr *, int flags));
 FF_SYSCALL_DECL(ssize_t, recvmsg, (int, struct msghdr *, int flags));
 FF_SYSCALL_DECL(int, close, (int));
-FF_SYSCALL_DECL(int, ioctl, (int, unsigned long, unsigned long));
 FF_SYSCALL_DECL(int, fcntl, (int, int, unsigned long));
 FF_SYSCALL_DECL(int, epoll_create, (int));
 FF_SYSCALL_DECL(int, epoll_ctl, (int, int, int, struct epoll_event *));

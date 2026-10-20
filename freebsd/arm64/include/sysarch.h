@@ -27,14 +27,29 @@
  * SUCH DAMAGE.
  *
  *	from: FreeBSD: src/sys/i386/include/sysarch.h,v 1.14 2000/09/21
- * $FreeBSD$
  */
+
+#ifdef __arm__
+#include <arm/sysarch.h>
+#else /* !__arm__ */
 
 /*
  * Architecture specific syscalls (arm64)
  */
 #ifndef _MACHINE_SYSARCH_H_
 #define	_MACHINE_SYSARCH_H_
+
+#include <sys/cdefs.h>
+
+#define	ARM64_GUARD_PAGE	0x100
+
+struct arm64_guard_page_args {
+	__uintptr_t	addr;
+	__size_t	len;
+};
+
+#define	ARM64_GET_SVE_VL	0x200
+/* Reserved ARM64_SET_SVE_VL	0x201 */
 
 #ifndef _KERNEL
 
@@ -45,3 +60,5 @@ __END_DECLS
 #endif
 
 #endif /* !_MACHINE_SYSARCH_H_ */
+
+#endif /* !__arm__ */

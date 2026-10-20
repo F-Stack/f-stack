@@ -27,12 +27,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)vm_meter.c	8.4 (Berkeley) 1/4/94
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -95,6 +90,7 @@ struct vmmeter __read_mostly vm_cnt = {
 	.v_rforkpages = EARLY_COUNTER,
 	.v_kthreadpages = EARLY_COUNTER,
 	.v_wire_count = EARLY_COUNTER,
+	.v_nofree_count = EARLY_COUNTER,
 };
 
 u_long __exclusive_cache_line vm_user_wire_count;
@@ -126,7 +122,7 @@ sysctl_vm_loadavg(SYSCTL_HANDLER_ARGS)
 {
 
 #ifdef SCTL_MASK32
-	u_int32_t la[4];
+	uint32_t la[4];
 
 	if (req->flags & SCTL_MASK32) {
 		la[0] = averunnable.ldavg[0];
@@ -141,21 +137,6 @@ sysctl_vm_loadavg(SYSCTL_HANDLER_ARGS)
 SYSCTL_PROC(_vm, VM_LOADAVG, loadavg, CTLTYPE_STRUCT | CTLFLAG_RD |
     CTLFLAG_MPSAFE, NULL, 0, sysctl_vm_loadavg, "S,loadavg",
     "Machine loadaverage history");
-
-/*
- * This function aims to determine if the object is mapped,
- * specifically, if it is referenced by a vm_map_entry.  Because
- * objects occasionally acquire transient references that do not
- * represent a mapping, the method used here is inexact.  However, it
- * has very low overhead and is good enough for the advisory
- * vm.vmtotal sysctl.
- */
-static bool
-is_object_active(vm_object_t obj)
-{
-
-	return (obj->ref_count > obj->shadow_count);
-}
 
 #if defined(COMPAT_FREEBSD11)
 struct vmtotal11 {
@@ -207,11 +188,9 @@ vmtotal(SYSCTL_HANDLER_ARGS)
 		if (p->p_state != PRS_NEW) {
 			FOREACH_THREAD_IN_PROC(p, td) {
 				thread_lock(td);
-				switch (td->td_state) {
+				switch (TD_GET_STATE(td)) {
 				case TDS_INHIBITED:
-					if (TD_IS_SWAPPED(td))
-						total.t_sw++;
-					else if (TD_IS_SLEEPING(td)) {
+					if (TD_IS_SLEEPING(td)) {
 						if (td->td_priority <= PZERO)
 							total.t_dw++;
 						else
@@ -258,7 +237,7 @@ vmtotal(SYSCTL_HANDLER_ARGS)
 			continue;
 		}
 		if (object->ref_count == 1 &&
-		    (object->flags & OBJ_ANON) == 0) {
+		    (object->flags & (OBJ_ANON | OBJ_SWAP)) == OBJ_SWAP) {
 			/*
 			 * Also skip otherwise unreferenced swap
 			 * objects backing tmpfs vnodes, and POSIX or
@@ -268,7 +247,7 @@ vmtotal(SYSCTL_HANDLER_ARGS)
 		}
 		total.t_vm += object->size;
 		total.t_rm += object->resident_page_count;
-		if (is_object_active(object)) {
+		if (vm_object_is_active(object)) {
 			total.t_avm += object->size;
 			total.t_arm += object->resident_page_count;
 		}
@@ -276,7 +255,7 @@ vmtotal(SYSCTL_HANDLER_ARGS)
 			/* shared object */
 			total.t_vmshr += object->size;
 			total.t_rmshr += object->resident_page_count;
-			if (is_object_active(object)) {
+			if (vm_object_is_active(object)) {
 				total.t_avmshr += object->size;
 				total.t_armshr += object->resident_page_count;
 			}
@@ -408,6 +387,7 @@ VM_STATS_UINT(v_free_target, "Pages desired free");
 VM_STATS_UINT(v_free_min, "Minimum low-free-pages threshold");
 VM_STATS_PROC(v_free_count, "Free pages", vm_free_count);
 VM_STATS_PROC(v_wire_count, "Wired pages", vm_wire_count);
+VM_STATS_PROC(v_nofree_count, "Permanently allocated pages", vm_nofree_count);
 VM_STATS_PROC(v_active_count, "Active pages", vm_active_count);
 VM_STATS_UINT(v_inactive_target, "Desired inactive pages");
 VM_STATS_PROC(v_inactive_count, "Inactive pages", vm_inactive_count);
@@ -475,7 +455,8 @@ u_int
 vm_laundry_count(void)
 {
 
-	return (vm_pagequeue_count(PQ_LAUNDRY));
+	return (vm_pagequeue_count(PQ_LAUNDRY) +
+	    vm_pagequeue_count(PQ_UNSWAPPABLE));
 }
 
 static int
@@ -496,6 +477,18 @@ sysctl_vm_pdpages(SYSCTL_HANDLER_ARGS)
 SYSCTL_PROC(_vm_stats_vm, OID_AUTO, v_pdpages,
     CTLTYPE_U64 | CTLFLAG_MPSAFE | CTLFLAG_RD, NULL, 0, sysctl_vm_pdpages, "QU",
     "Pages analyzed by pagedaemon");
+
+static int
+sysctl_vm_laundry_pages(SYSCTL_HANDLER_ARGS)
+{
+	struct vm_domain *vmd;
+	u_int ret;
+
+	vmd = arg1;
+	ret = vmd->vmd_pagequeues[PQ_LAUNDRY].pq_cnt +
+	    vmd->vmd_pagequeues[PQ_UNSWAPPABLE].pq_cnt;
+	return (SYSCTL_OUT(req, &ret, sizeof(ret)));
+}
 
 static void
 vm_domain_stats_init(struct vm_domain *vmd, struct sysctl_oid *parent)
@@ -523,8 +516,9 @@ vm_domain_stats_init(struct vm_domain *vmd, struct sysctl_oid *parent)
 	    "inactpdpgs", CTLFLAG_RD,
 	    &vmd->vmd_pagequeues[PQ_INACTIVE].pq_pdpages, 0,
 	    "Inactive pages scanned by the page daemon");
-	SYSCTL_ADD_UINT(NULL, SYSCTL_CHILDREN(oid), OID_AUTO,
-	    "laundry", CTLFLAG_RD, &vmd->vmd_pagequeues[PQ_LAUNDRY].pq_cnt, 0,
+	SYSCTL_ADD_PROC(NULL, SYSCTL_CHILDREN(oid), OID_AUTO,
+	    "laundry", CTLFLAG_RD | CTLTYPE_UINT, vmd, 0,
+	    sysctl_vm_laundry_pages, "IU",
 	    "laundry pages");
 	SYSCTL_ADD_U64(NULL, SYSCTL_CHILDREN(oid), OID_AUTO,
 	    "laundpdpgs", CTLFLAG_RD,

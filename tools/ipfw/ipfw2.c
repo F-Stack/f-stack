@@ -631,6 +631,7 @@ do_set3(int optname, ip_fw3_opheader *op3, size_t optlen)
 		err(EX_UNAVAILABLE, "socket");
 
 	op3->opcode = optname;
+	op3->version = IP_FW3_OPVER; /* M6: align with upstream 15.0 — was missing, caused v0 dispatch + EOPNOTSUPP */
 
 	return (setsockopt(ipfw_socket, IPPROTO_IP, IP_FW3, op3, optlen));
 }
@@ -660,6 +661,7 @@ do_get3(int optname, ip_fw3_opheader *op3, size_t *optlen)
 		err(EX_UNAVAILABLE, "socket");
 
 	op3->opcode = optname;
+	op3->version = IP_FW3_OPVER; /* M6: align with upstream 15.0 — was missing, caused v0 dispatch + EOPNOTSUPP */
 
 	len = *optlen;
 	error = getsockopt(ipfw_socket, IPPROTO_IP, IP_FW3, op3, &len);

@@ -1,0 +1,2926 @@
+#!/bin/bash
+# M6 graceful-reload real-machine harness (B group, C-NR-601).
+#
+# Real execution + per-case verdict + aggregated exit code. Unlike the
+# description-only test_mtu.sh, this script actually starts nginx/f-stack,
+# drives reloads and fails loudly when a criterion is not met.
+#
+# Mandated workspace rules honoured everywhere in this file:
+#   - every process stop goes through /data/workspace/kill_process.sh
+#   - every removal    goes through /data/workspace/rm_tmp_file.sh
+#   - every mode change goes through /data/workspace/chmod_modify.sh
+# No direct stop / delete / mode-change command is ever issued, including in
+# comments and in the embedded templates.
+#
+# Exit codes:
+#   0        every executed case passed
+#   100+N    N cases failed (N >= 1, capped at 150)
+#   2        usage / parameter error (missing TARGET_IP, unknown option, ...)
+#   3        environment precondition not met (three-check gate)
+#   4        required dependency missing
+#   5        aborted (signal or internal failure)
+#   6        no case failed, but some were SKIP or LIMITED
+#
+# No address is stored in this file. TARGET_IP is a mandatory argument; use
+# the placeholders <DPDK_NIC_IP> / <CLIENT_IP> / <KERNEL_NIC_IP> in reports.
+
+set -u
+set -o pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_ROOT=$(cd "$SCRIPT_DIR/../.." && pwd)
+CHECKS="$SCRIPT_DIR/common/reload_checks.py"
+SUPERVISOR="$SCRIPT_DIR/common/reload_supervisor.py"
+STACK_ID=""
+BUILD_MANIFEST=""
+RUN_ID=""
+EAL_PREFIX=""
+REMOTE_DIR=""
+PROBES_PUSHED=0
+REMOTE_CREATED=0
+STACK_STARTED=0
+CLEANUP_FAILED=0
+CURRENT_PROBE=""
+STOP_RT=0
+STOP_HP=0
+declare -a PROBE_JOBS=()
+
+KILLTOOL=/data/workspace/kill_process.sh
+RMTMP=/data/workspace/rm_tmp_file.sh
+CHMODTOOL=/data/workspace/chmod_modify.sh
+
+# ---- defaults -------------------------------------------------------------
+TARGET_IP=""
+ROUNDS=100
+INTERVAL=15
+POLL=5
+CASES="precheck,rt01,rv9"
+OUT=""
+NGINX_BIN=/usr/local/nginx_fstack/sbin/nginx
+FSTACK_TPL="$REPO_ROOT/config.ini"
+PROBE_DIR="$SCRIPT_DIR/common/reload_probes"
+CLIENT=f-stack-client
+WORKERS=2
+LCORE_MASK=""
+LCORE_MASK_SET=0
+LCORE_LIST=""
+LCORE_LIST_SET=0
+SHUTDOWN_TIMEOUT=0
+GRACEFUL=1
+DRAIN_TIMEOUT=120
+STARTUP_WAIT=28
+BASELINE=0
+BASELINE_DURATION=330
+STREAM_MB=8
+# Life span of the active-stream probe. It has to outlive the reload: the
+# drain ends exactly when the in-flight streams end, so a probe whose life is
+# one download can never be seen "still running" after the reload. Kept below
+# the 180 s summary wait and the 300 s remote probe budget.
+STREAM_DURATION=120
+# PT-NR performance-baseline knobs. Only rt30/rt31 use the cps/lc probe branch
+# of do_hup_case(), so these defaults cannot change any other case.
+PERF_THREADS=1
+PERF_CONNS=12
+# The probe has to outlive the reload window: the worst observed window is
+# ~120 s (a stalled drain hits the 90 s deadline and G_old then quits), and
+# 'probe still running after the reload' is part of the verdict. Note that
+# this also widens that liveness margin (~105 s -> ~175 s); every rate is
+# n / PERF_DURATION, so baselines stay comparable, and the longer window is
+# stricter for the fail=0 style criteria.
+PERF_DURATION=180
+# HUP anchor: the reload is sent once the probe has proven this much
+# progress, instead of a fixed sleep after the process merely exists.
+# Measured: at 3 s the probe has already produced ~20k requests (proof of
+# active traffic) and the window drains in ~2 s; anchoring later (8 s,
+# ~55k requests) reproducibly strands a half-open entry in G_old and the
+# drain runs to its 90 s deadline (2/2 runs), so 3 s is the default.
+HUP_ANCHOR_SEC=3
+HUP_ANCHOR_COUNT=200
+CAPTURE=0                       # orphan forensics: capture on the client
+CLIENT_IF=eth1
+CLIENT_PORT=80
+KERNEL_NIC_IP=""
+# Runtime fault injection (FF_FAULT). Empty = production form; a non-empty name
+# requires a fault-injection build manifest (checked by reload_checks.verify-build).
+FAULT=""
+FAULT_DELAY_MS=15000
+ZC_BUILD=auto
+RTE_FRESH_MIN=10
+# KNI owner must be a *secondary* proc_id, never the resident primary (0):
+# lib/ff_config.c:1445-1460 refuses a config whose lcore_list still holds the
+# primary lcore, and :1462-1477 then demands that proc_lcore[owner_proc_id] be
+# inside that very lcore_list. proc_id 0 is the primary, so its lcore is
+# exactly the one excluded -- only a worker proc_id satisfies both checks.
+# proc_lcore[] is filled in ascending lcore order, so proc_id 1 is always the
+# first worker (the shipped config.ini default owner_proc_id is 1 as well).
+KNI_OWNER_PROC_ID=1
+
+ALL_CASES="precheck,baseline,rt01,rt02,rv9,gr0,rt12,rt27,rt28,rt29,rt32,rt33,rt34,rt13"
+# rt13 (the zc build form) is permanently excluded by decision 2026-09-22:
+# this tree does not build the zc form, so the case is dropped from every
+# matrix (-c all). It stays invocable explicitly and then records EXCLUDED,
+# which is judged neither as PASS nor as a failure (run_case / aggregate).
+EXCLUDED_CASES="rt13"
+
+# ---- globals shared between helpers ---------------------------------------
+ERRLOG=""
+PIDFILE=""
+STREAM_MD5=""
+HUP_ANCHOR_LINE=""
+HUP_SUMMARY="NA"
+HUP_DRAIN="NA"
+HUP_FWD="NA"
+HUP_REL="NA"
+HUP_FSM="0"
+HUP_CPU_MS="NA"
+HUP_CPU_SAMPLE=0
+FAILED=0
+
+declare -a C_NAME=()
+declare -a C_VERDICT=()
+declare -a C_CRIT=()
+declare -a C_MEAS=()
+
+# ---- small helpers --------------------------------------------------------
+hp_free()      { grep HugePages_Free /proc/meminfo | awk '{print $2}'; }
+rtemap_count() { find /dev/hugepages -maxdepth 1 -name "${EAL_PREFIX}map_*" -printf '.\n' 2>/dev/null | wc -l; }
+master_pid()   { cat "$OUT/nginx.pid" 2>/dev/null; }
+
+record() { # name verdict criterion measured
+    C_NAME+=("$1"); C_VERDICT+=("$2"); C_CRIT+=("$3"); C_MEAS+=("$4")
+    printf '[%s] %s\n' "$1" "$2"
+    printf '    criterion: %s\n' "$3"
+    printf '    measured : %s\n' "$4"
+}
+
+print_summary() {
+    local i n=${#C_NAME[@]}
+    say ""
+    say "================ SUMMARY ================"
+    say "$(printf '%-10s %-8s %s' CASE VERDICT MEASURED)"
+    say "$(printf '%-10s %-8s %s' '----------' '--------' '-------------------------------------')"
+    for ((i = 0; i < n; i++)); do
+        say "$(printf '%-10s %-8s %s' "${C_NAME[$i]}" "${C_VERDICT[$i]}" "${C_MEAS[$i]}")"
+    done
+    say "-----------------------------------------"
+    say "failed=$FAILED out=$OUT"
+}
+
+usage() {
+    cat <<'USAGE'
+Usage: test_graceful_reload.sh -t <TARGET_IP> [options]
+
+  -t, --target-ip <ip>        REQUIRED. Address of the f-stack/DPDK NIC under
+                              test (write <DPDK_NIC_IP> in any report).
+  -c, --cases <list>          Comma-separated case list, or 'all'.
+                              available: precheck,baseline,rt01,rt02,rv9,gr0,
+                                         rt12,rt27,rt28,rt29,rt32,rt33,rt34,
+                                         rt35,rt13,rt20,rt20b,rt21,rt22,rt23,
+                                         rt24,rt25,rt26,rt30,rt31 (rt24 and the
+                                         other rt2x need a fault-injection
+                                         build; rt25 drives USR2 + WINCH;
+                                         rt26 needs --fault synack_fail;
+                                         rt27 changes [kni] under a
+                                         resident primary; rt28 stops,
+                                         quits and SIGKILLs nginx; rt29
+                                         starts with a rejected and a
+                                         valid MTU config; rt32 proxies to
+                                         an upstream on the client; rt33
+                                         serves UDP flows, rt34 proxies
+                                         them to the client, rt35 drives
+                                         them through USR2 + WINCH; rt32
+                                         and rt34 need --workers 1)
+  --fault <name>            runtime fault injection (FF_FAULT); requires a
+                            fault-injection build manifest. rt23 is the only
+                            fault case that runs on the production form
+  --fault-delay-ms <n>      FF_FAULT_DELAY_MS for ready_delay (1..59000)
+                              default  : precheck,rt01,rv9
+  -r, --rounds <n>            reload-loop rounds for rv9 (default 100)
+  -i, --interval <s>          reload-loop cadence in seconds (default 15)
+  -p, --poll <s>              G_old-exit poll period in seconds (default 5)
+  -o, --out <dir>             new, private runtime directory (outside docs)
+
+  --nginx <path>              nginx binary
+  --build-manifest <path>     REQUIRED. Source/build commands and artifact SHA256s
+  --fstack-conf <path>        f-stack config template (default <repo>/config.ini);
+                              NIC addresses are taken from the template as-is,
+                              only [dpdk] / [portN] / [freebsd.sysctl] keys are
+                              patched
+  --probe-dir <dir>           directory holding m4_lc.py / m4_cps.py /
+                              m4_stream.py / m4_outage.py
+  --client <ssh-host>         client machine running the probes
+  --workers <n>               nginx worker_processes (default 2)
+  --lcore-mask <hex>          default: (2^(workers+1))-1 with graceful=1,
+                              (2^workers)-1 with graceful=0 (no primary)
+  --lcore-list <csv>          default: mask minus the lowest set bit with
+                              graceful=1 (the resident primary lcore), the
+                              whole mask with graceful=0
+  --shutdown-timeout <s>      0 = omit worker_shutdown_timeout (default);
+                              10..20 recommended for the rv9 loop gate
+  --graceful <0|1>            graceful_reload value for the main cases
+  --drain-timeout <s>         per-reload completion timeout (default 120)
+  --startup-wait <s>          f-stack readiness wait after start (default 28)
+  --baseline                  run the gARP / long-run control case
+  --baseline-duration <s>     control-probe duration (default 330)
+  --stream-mb <n>             size of the active-stream payload (default 8)
+  --kernel-nic-ip <ip>        KNI (virtio_user) kernel-side address, rt12
+  --zc-build <auto|0|1>       zc build form (default auto: probed from the
+                              installed f-stack archive)
+  --rte-fresh-min <min>       /var/run/dpdk/rte freshness gate (default 10)
+  --perf-threads <n>          m4_cps.py threads for rt30 (default 1)
+  --perf-conns <n>            m4_lc.py connections for rt31 (default 12)
+  --perf-duration <s>         probe duration for rt30/rt31 (default 180)
+  --hup-anchor-sec <s>        HUP once the probe ran this long (default 3)
+  --hup-anchor-count <n>      ... and produced this many requests (default 200)
+  --capture                   capture the handshake on the client (orphan
+                              forensics; needs tcpdump on the client)
+  --client-if <if>            client interface for --capture
+
+Exit: 0 all pass | 100+N N cases failed | 2 usage | 3 preconditions
+      | 4 dependency missing | 5 aborted
+USAGE
+}
+
+die_usage() { printf 'ERROR: %s\n\n' "$1" >&2; usage >&2; exit 2; }
+die_dep()   { printf 'FATAL: %s\n' "$1" >&2; exit 4; }
+die_abort() { printf 'FATAL: aborted: %s\n' "$1" >&2; exit 5; }
+
+# ---- argument parsing -----------------------------------------------------
+parse_args() {
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -h|--help|--baseline|--capture) ;;
+        *) [ "$#" -ge 2 ] && [ -n "$2" ] || die_usage "missing option value" ;;
+    esac
+    case "$1" in
+        -t|--target-ip)      TARGET_IP="${2:-}"; shift 2 ;;
+        -c|--cases)          CASES="${2:-}"; shift 2 ;;
+        -r|--rounds)         ROUNDS="${2:-}"; shift 2 ;;
+        -i|--interval)       INTERVAL="${2:-}"; shift 2 ;;
+        -p|--poll)           POLL="${2:-}"; shift 2 ;;
+        -o|--out)            OUT="${2:-}"; shift 2 ;;
+        --nginx)             NGINX_BIN="${2:-}"; shift 2 ;;
+        --build-manifest)    BUILD_MANIFEST="${2:-}"; shift 2 ;;
+        --fstack-conf)       FSTACK_TPL="${2:-}"; shift 2 ;;
+        --probe-dir)         PROBE_DIR="${2:-}"; shift 2 ;;
+        --client)            CLIENT="${2:-}"; shift 2 ;;
+        --workers)           WORKERS="${2:-}"; shift 2 ;;
+        --lcore-mask)        LCORE_MASK="${2:-}"; LCORE_MASK_SET=1; shift 2 ;;
+        --lcore-list)        LCORE_LIST="${2:-}"; LCORE_LIST_SET=1; shift 2 ;;
+        --shutdown-timeout)  SHUTDOWN_TIMEOUT="${2:-}"; shift 2 ;;
+        --graceful)          GRACEFUL="${2:-}"; shift 2 ;;
+        --drain-timeout)     DRAIN_TIMEOUT="${2:-}"; shift 2 ;;
+        --startup-wait)      STARTUP_WAIT="${2:-}"; shift 2 ;;
+        --baseline)          BASELINE=1; shift ;;
+        --baseline-duration) BASELINE_DURATION="${2:-}"; shift 2 ;;
+        --stream-mb)         STREAM_MB="${2:-}"; shift 2 ;;
+        --kernel-nic-ip)     KERNEL_NIC_IP="${2:-}"; shift 2 ;;
+        --fault)             FAULT="${2:-}"; shift 2 ;;
+        --fault-delay-ms)   FAULT_DELAY_MS="${2:-}"; shift 2 ;;
+        --zc-build)          ZC_BUILD="${2:-}"; shift 2 ;;
+        --rte-fresh-min)     RTE_FRESH_MIN="${2:-}"; shift 2 ;;
+        --perf-threads)      PERF_THREADS="${2:-}"; shift 2 ;;
+        --perf-conns)        PERF_CONNS="${2:-}"; shift 2 ;;
+        --perf-duration)     PERF_DURATION="${2:-}"; shift 2 ;;
+        --hup-anchor-sec)    HUP_ANCHOR_SEC="${2:-}"; shift 2 ;;
+        --capture)           CAPTURE=1; shift ;;
+        --client-if)         CLIENT_IF="${2:-}"; shift 2 ;;
+        --hup-anchor-count)  HUP_ANCHOR_COUNT="${2:-}"; shift 2 ;;
+        -h|--help)           usage; exit 0 ;;
+        *)                   die_usage "unknown option: $1" ;;
+    esac
+done
+
+[ -n "$TARGET_IP" ] || die_usage "TARGET_IP is mandatory (-t <DPDK_NIC_IP>)"
+[ "$CASES" = "all" ] && CASES="$ALL_CASES"
+# Drop the permanently excluded cases from a matrix run. An explicit
+# invocation keeps them: that is how the exclusion itself is evidenced.
+if [ "$CASES" = "$ALL_CASES" ]; then
+    filtered=""
+    for c in ${ALL_CASES//,/ }; do
+        skip=0
+        for x in $EXCLUDED_CASES; do [ "$c" = "$x" ] && skip=1; done
+        [ "$skip" = 0 ] && filtered="${filtered:+$filtered,}$c"
+    done
+    CASES="$filtered"
+fi
+[ "$BASELINE" = "1" ] && case ",$CASES," in *",baseline,"*) ;; *) CASES="$CASES,baseline" ;; esac
+local n
+local -a values=()
+for n in TARGET_IP CLIENT CASES ROUNDS INTERVAL POLL WORKERS DRAIN_TIMEOUT STARTUP_WAIT \
+    STREAM_MB RTE_FRESH_MIN SHUTDOWN_TIMEOUT BASELINE_DURATION GRACEFUL ZC_BUILD FAULT \
+    FAULT_DELAY_MS PERF_THREADS PERF_CONNS PERF_DURATION \
+    HUP_ANCHOR_SEC HUP_ANCHOR_COUNT \
+    NGINX_BIN FSTACK_TPL PROBE_DIR OUT BUILD_MANIFEST KERNEL_NIC_IP LCORE_MASK LCORE_LIST; do
+    values+=("$n=${!n}")
+done
+python3 -B "$CHECKS" validate "${values[@]}" || die_usage "invalid harness parameters"
+TARGET_URL=$(python3 -B "$CHECKS" url "$TARGET_IP") || return 2
+}
+
+# ---- output dir / log -----------------------------------------------------
+init_output() {
+    umask 077
+    RUN_ID="gr_$(date +%Y%m%d_%H%M%S)_$$_$(python3 -B -c 'import secrets; print(secrets.token_hex(4))')"
+    EAL_PREFIX="container-$RUN_ID"
+    REMOTE_DIR="/tmp/$RUN_ID"
+    [ -n "$OUT" ] || OUT="/data/workspace/.nginx-reload-audit/$RUN_ID"
+    case "$OUT" in "$REPO_ROOT/docs/"*) die_usage "runtime output must be outside docs" ;; esac
+    [ ! -e "$OUT" ] && [ ! -L "$OUT" ] || die_usage "output directory already exists"
+    mkdir -p "$(dirname "$OUT")" || return 1
+    mkdir "$OUT" || return 1
+    LOG="$OUT/harness.log"
+    : > "$LOG"
+    : > "$OUT/results.jsonl"
+    # P-12: an IPv6 run prints the same criterion text and the same measured
+    # values as the IPv4 one, so the artifacts have to carry their own target
+    # and address family instead of leaving it to the invocation history.
+    run_identity=$(python3 -B - "$OUT" "$TARGET_IP" "$CASES" "${BUILD_MANIFEST:-}" <<'PYEOF'
+import ipaddress, json, subprocess, sys
+out, target, cases, manifest = sys.argv[1:5]
+try:
+    family = "ipv6" if ipaddress.ip_address(target).version == 6 else "ipv4"
+except ValueError:
+    family = "unknown"
+head = subprocess.run(["git", "-C", "/data/workspace/f-stack", "rev-parse", "HEAD"],
+                      capture_output=True, text=True).stdout.strip()
+with open(out + "/run-identity.json", "w") as handle:
+    json.dump({"target_ip": target, "address_family": family, "cases": cases,
+               "build_manifest": manifest, "head": head}, handle, indent=1)
+print("RUN address_family=%s cases=%s head=%s" % (family, cases, head))
+PYEOF
+    ) || return 1
+    say "run identity: $run_identity"
+    printf '[]\n' > "$OUT/processes.json"
+}
+
+say()  { printf '%s\n' "${*//$TARGET_IP/<DPDK_NIC_IP>}" | tee -a "$LOG"; }
+
+# RV9 runs for 30-60 minutes; an interrupt must still release the DPDK NIC
+# and the hugepages, otherwise the next start is blocked by the three-check
+# and needs manual cleanup. Drop the handlers first so the cleanup itself
+# cannot re-enter the trap.
+on_signal() {
+    trap - INT TERM
+    say "!!! interrupted -- running emergency cleanup"
+    cleanup_epilogue
+    die_abort "received a termination signal"
+}
+
+# ---- derived topology -----------------------------------------------------
+# graceful=1 reserves the lowest set bit of the mask for the resident slim
+# primary and gives the remaining bits to the workers. graceful=0 has no
+# primary at all, so every bit of the mask must be a worker: reusing the =1
+# topology (or leaving the port lcore_list untouched) puts the =0 instance on a
+# degraded form -- F-M6-3(1), where gr0 measured ok=89/windows=38 against the
+# 20024/1 baseline form of the =0 control. --lcore-mask / --lcore-list always
+# win over the derived values.
+derive_lcores() { # graceful(0|1)
+    local g="$1"
+    local l
+    if [ "$LCORE_MASK_SET" != "1" ]; then
+        if [ "$g" = "1" ]; then
+            LCORE_MASK=$(awk -v n="$WORKERS" 'BEGIN { printf "%x", (2^(n+1))-1 }')
+        else
+            LCORE_MASK=$(awk -v n="$WORKERS" 'BEGIN { printf "%x", (2^n)-1 }')
+        fi
+    fi
+    MASK_DEC=$(printf '%d' "0x$LCORE_MASK" 2>/dev/null) || MASK_DEC=0
+    [ "${MASK_DEC:-0}" -gt 0 ] || die_usage "--lcore-mask is not a valid hex mask: $LCORE_MASK"
+
+    # The resident slim primary owns the lowest set bit; the workers own the
+    # rest (with graceful=0 there is no primary, so they own all of it).
+    PRIMARY_LCORE=0
+    while [ $(( (MASK_DEC >> PRIMARY_LCORE) & 1 )) -eq 0 ]; do
+        PRIMARY_LCORE=$(( PRIMARY_LCORE + 1 ))
+    done
+    if [ "$LCORE_LIST_SET" != "1" ]; then
+        LCORE_LIST=""
+        for ((l = 0; l < 32; l++)); do
+            [ $(( (MASK_DEC >> l) & 1 )) -eq 1 ] || continue
+            [ "$g" = "1" ] && [ "$l" = "$PRIMARY_LCORE" ] && continue
+            LCORE_LIST="${LCORE_LIST:+$LCORE_LIST,}$l"
+        done
+    fi
+}
+
+# ---- process / state observation ------------------------------------------
+worker_count() {
+    local m; m=$(master_pid)
+    [ -n "$m" ] || { echo 0; return; }
+    ps -eo pid,ppid,stat,comm 2>/dev/null \
+        | awk -v m="$m" '$2==m && $1!=m && $3 !~ /^Z/ && $4 ~ /^nginx/ {c++} END {print c+0}'
+}
+
+nginx_residue() {
+    ps -eo pid,stat,comm 2>/dev/null | awk '$2 !~ /^Z/ && $3 ~ /^nginx/ {print}'
+}
+
+# Newest FSM transition; empty when no reload has happened yet.
+last_fsm() { grep 'graceful reload fsm:' "$ERRLOG" 2>/dev/null | tail -1; }
+
+# A reload is in flight when the newest FSM transition has not come back to
+# T0_IDLE. This is the log-visible mirror of the shared reload state; the
+# worker count is used by the caller as an independent corroboration.
+reload_in_flight() {
+    local l; l=$(last_fsm)
+    [ -n "$l" ] || return 1
+    case "$l" in *"-> T0_IDLE"*) return 1 ;; *) return 0 ;; esac
+}
+
+worker_psr_list() {
+    local m; m=$(master_pid)
+    [ -n "$m" ] || { echo ""; return; }
+    ps -eo pid,ppid,psr,comm 2>/dev/null \
+        | awk -v m="$m" '$2==m && $1!=m && $3 !~ /^Z/ && $4 ~ /^nginx/ {print $3}' \
+        | sort | tr '\n' ','
+}
+
+
+# ---- f-stack ini generation -----------------------------------------------
+ini_set() { # file section key value -- insert under the header, drop later dupes
+    local f="$1" sec="$2" key="$3" val="$4" tmp="$1.tmp$$"
+    awk -v sec="$sec" -v key="$key" -v kv="$key=$val" '
+        /^\[/ { cur=$0; gsub(/[][]/,"",cur); print; if (cur==sec) print kv; next }
+        { if (cur==sec && index($0, key "=")==1) next; print }
+    ' "$f" > "$tmp" && mv "$tmp" "$f"
+    grep -q "^$key=" "$f" || say "WARN ini_set: key $key not present after patching [$sec]"
+}
+
+# Workers must not sit on the resident primary lcore when graceful_reload=1;
+# with graceful_reload=0 there is no primary, so the whole mask is the worker
+# set. The harness always writes the list it derived instead of inheriting
+# whatever the template happens to carry.
+ini_force_port_lcores() { # file csv
+    local f="$1" ll="$2" tmp="$1.tmp$$"
+    awk -v ll="$ll" '
+        /^\[/ { inport = ($0 ~ /^\[port[0-9]+\]/)
+                if (inport) { print; print "lcore_list=" ll; next } }
+        inport && /^lcore_list=/ { next }
+        { print }
+    ' "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+# Drop any [kni] section a template may carry.
+ini_strip_kni() { # file
+    local f="$1" tmp="$1.tmp$$"
+    awk '
+        /^#?\[kni\]/ { skip=1; next }
+        /^\[/       { skip=0 }
+        skip == 0   { print }
+    ' "$f" > "$tmp" && mv "$tmp" "$f"
+}
+
+# RT-12: KNI in this tree is a virtio_user vdev, driven by [kni] enable=1.
+ini_force_kni() { # file owner_proc_id
+    local f="$1" owner="$2"
+    ini_strip_kni "$f"
+    cat >> "$f" <<KNI
+
+[kni]
+enable=1
+method=reject
+owner_proc_id=$owner
+tcp_port=80,443
+udp_port=53
+KNI
+}
+
+# The f-stack library owns the EAL proc-type; the harness only guarantees that
+# nobody smuggles an 'auto' proc-type in through extra_eal_args.
+ini_drop_proc_type_auto() { # file -> 1 when an auto proc-type is found
+    local f="$1" hits
+    hits=$(grep -n 'proc[-_]type' "$f" 2>/dev/null | grep -v '^[0-9]*:#' || true)
+    [ -n "$hits" ] || return 0
+    case "$hits" in
+        *auto*) say "PROCTYPE-FAIL: auto proc-type in the f-stack config:"; say "$hits"; return 1 ;;
+    esac
+    return 0
+}
+
+gen_fstack_ini() { # tag graceful kni(0|1)
+    # Two separate declarations on purpose: bash expands every word of a
+    # `local` statement before running it, so $tag would still be unset in
+    # `local tag=$1 ini=$OUT/...$tag...` and set -u would abort the function.
+    local tag="$1" g="$2" kni="${3:-0}"
+    local ini="$OUT/fstack_$tag.ini"
+    # The topology follows the graceful form of THIS case, not the global
+    # default: rv9/rt02/rt12/rt13 always run =1 while gr0 and a --graceful 0
+    # rt01/baseline run =0 (F-M6-3(1)).
+    derive_lcores "$g"
+    # Log-only on purpose: gen_fstack_ini's stdout is the ini path, so a say()
+    # here (tee to stdout + log) would end up inside the caller's variable.
+    printf 'topology tag=%s graceful=%s lcore_mask=0x%s primary_lcore=%s worker_lcores=[%s]\n' \
+        "$tag" "$g" "$LCORE_MASK" "$PRIMARY_LCORE" "$LCORE_LIST" >> "$LOG"
+    cp -f "$FSTACK_TPL" "$ini" || die_dep "cannot copy the f-stack template"
+    ini_set "$ini" dpdk graceful_reload "$g"
+    ini_set "$ini" dpdk file_prefix "$RUN_ID"
+    if [ "$g" = "1" ]; then
+        ini_set "$ini" dpdk primary_slim 1
+    else
+        ini_set "$ini" dpdk primary_slim 0
+    fi
+    ini_force_port_lcores "$ini" "$LCORE_LIST"
+    ini_set "$ini" dpdk lcore_mask "$LCORE_MASK"
+    # The template's log prefix may be a relative path, which would drop
+    # f-stack-<proc_id>.log into whatever directory the harness was started
+    # from (i.e. inside the repo). Keep every artifact under $OUT.
+    ini_set "$ini" dpdk fstack_log_file_prefix "$OUT/fstack-"
+    # per-case [dpdk] overrides, "key=value key=value"
+    for kv in ${FSTACK_EXTRA_DPDK:-}; do
+        ini_set "$ini" dpdk "${kv%%=*}" "${kv#*=}"
+    done
+    if [ "$BASELINE" = "1" ]; then
+        ini_set "$ini" freebsd.sysctl net.link.ether.inet.garp_rexmit_count 8
+    fi
+    [ "$kni" = "1" ] && ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
+    # A local template may carry [kni] enable=1; kni=0 cases must strip it or
+    # they silently run with KNI, contradicting the documented harness design.
+    [ "$kni" != "1" ] && ini_strip_kni "$ini"
+    ini_drop_proc_type_auto "$ini" || return 1
+    printf '%s' "$ini"
+}
+
+# ---- nginx conf generation ------------------------------------------------
+gen_nginx_conf() { # tag shutdown_timeout_seconds
+    # See gen_fstack_ini: $tag must be bound before it is used in a path.
+    local tag="$1" st="$2" stline=""
+    local conf="$OUT/ngx_$tag.conf" listen="80"
+    case "$TARGET_IP" in *:*) listen="[::]:80 ipv6only=on" ;; esac
+    [ "$st" != "0" ] && stline="worker_shutdown_timeout  ${st}s;"
+    cat > "$conf" <<CONF
+
+user  root;
+daemon on;
+master_process on;
+# RT-05/RT-07 fault-injection whitelist: nginx drops inherited environment
+# variables in workers unless listed here, so without these lines a worker
+# never sees FF_FAULT and injected faults stay inert.
+env FF_FAULT;
+env FF_FAULT_DELAY_MS;
+env FF_RELOAD_RUN_ID;
+worker_processes  $WORKERS;
+# worker_shutdown_timeout is deliberately absent for the active-drain verdicts
+# (RT-02 / RT-04 class): the shutdown timer caps the G_old QUIT wait and would
+# mask the natural drain completion. The rv9 loop gate sets it explicitly
+# (10..20 s) to keep the machine time bounded.
+$stline
+
+error_log  $OUT/err_$tag.log  notice;
+pid        $OUT/nginx.pid;
+
+fstack_conf $OUT/fstack_$tag.ini;
+
+events {
+    worker_connections  102400;
+    use kqueue;
+}
+
+http {
+${NGX_EXTRA_HTTP:-}
+    include       /usr/local/nginx_fstack/conf/mime.types;
+    default_type  application/octet-stream;
+    access_log    off;
+    sendfile      off;
+
+    keepalive_timeout  300;
+
+    # The long-connection case judges "the draining generation closes a
+    # keep-alive connection once"; nginx's default request cap (1000) closes
+    # one more time on a long run and is counted as a second failure.
+    keepalive_requests  100000;
+
+    server {
+        listen       $listen;
+        server_name  localhost;
+
+        location / {
+            root   html;
+            index  index.html index.htm;
+        }
+
+${NGX_EXTRA_LOC:-}
+        # active-stream payload root (RT-02 / F-M4-7)
+        location /dl/ {
+            root   $OUT/www;
+        }
+    }
+}
+${NGX_EXTRA_MAIN:-}
+CONF
+    printf '%s' "$conf"
+}
+
+# ---- start / stop ---------------------------------------------------------
+start_stack() { # tag graceful shutdown_timeout [kni]
+    local tag="$1" g="$2" st="$3" kni="${4:-0}" conf ini rc
+    ini=$(gen_fstack_ini "$tag" "$g" "$kni") || return 1
+    conf=$(gen_nginx_conf "$tag" "$st")
+    ERRLOG="$OUT/err_$tag.log"
+    PIDFILE="$OUT/nginx.pid"
+    : > "$ERRLOG"
+    say "--- start_stack tag=$tag graceful=$g shutdown_timeout=${st}s kni=$kni"
+    say "    ini=$ini conf=$conf"
+    if [ -z "$ini" ] || [ -z "$conf" ] || [ ! -f "$conf" ]; then
+        say "start_stack: generated artifacts missing (ini=[$ini] conf=[$conf])"
+        return 1
+    fi
+    verify_build_identity || return 1
+    STACK_STARTED=1
+    STACK_ID="$tag"
+    python3 -B "$SUPERVISOR" start "$STACK_ID" \
+        "$(sha256sum "$NGINX_BIN" | awk '{print $1}')" "$NGINX_BIN" -c "$conf" >> "$LOG" 2>&1
+    rc=$?
+    collect_owned || return 1
+    [ "$rc" = "0" ] || { say "start_stack: nginx exited rc=$rc"; return 1; }
+    sleep "$STARTUP_WAIT"
+    collect_owned || return 1
+    wait_http || return 1
+    say "start_stack: master=$(master_pid) workers=$(worker_count)"
+    return 0
+}
+
+
+# ---- three-check ----------------------------------------------------------
+# dual=1 is the USR2 (RT-04/04b) form: two masters coexist by design, so the
+# check records the live master list instead of failing. rt25 calls it while
+# both masters are up; stop_stack already handles the nginx.pid.oldbin pair.
+three_check() { # [dual]  dual=1 -> two masters expected (USR2), record only
+    local dual="${1:-0}" res=0 left z sp rt fresh p
+    if [ "$dual" = "1" ]; then
+        say "CHECK3-DUAL masters on duty (expected during USR2):"
+        ps -eo pid,ppid,stat,comm 2>/dev/null | awk '$2 != 1 && $4 ~ /^nginx:/ {print}'
+        for p in $(cat "$OUT/nginx.pid" "$OUT/nginx.pid.oldbin" 2>/dev/null); do
+            ps -p "$p" -o pid,stat,comm 2>/dev/null | tail -1
+        done
+    else
+        left=$(nginx_residue)
+        if [ -n "$left" ]; then
+            say "CHECK3-FAIL: nginx process residue"; say "$left"; res=1
+        fi
+    fi
+    z=$(ps -eo stat,comm 2>/dev/null | awk '$1 ~ /^Z/ && $2 ~ /^nginx/ {c++} END {print c+0}')
+    [ "$z" != "0" ] && say "CHECK3-NOTE: $z zombie nginx (bypassed, holds no resources)"
+    sp=$(ps -eo stat,comm 2>/dev/null | awk '$1 !~ /^Z/ && $2 ~ /^ff_slim/ {c++} END {print c+0}')
+    [ "$sp" != "0" ] && say "CHECK3-NOTE: $sp resident slim primary alive (expected only while a stack runs)"
+    rt=$(rtemap_count)
+    [ "$rt" != "0" ] && { say "CHECK3-FAIL: $rt rtemap files in /dev/hugepages"; res=1; }
+    if [ -d /var/run/dpdk/rte ]; then
+        # -mindepth 1: an empty leftover directory holds nothing and is a NOTE,
+        # only entries with a fresh mtime mean a live/aborted EAL is around.
+        fresh=$(find /var/run/dpdk/rte -mindepth 1 -mmin -"$RTE_FRESH_MIN" -print 2>/dev/null)
+        if [ -n "$fresh" ]; then
+            say "CHECK3-FAIL: fresh /var/run/dpdk/rte entries:"; say "$fresh"; res=1
+            # /var/run/dpdk/rte is the DEFAULT file-prefix home, so it is held
+            # either by our own f-stack stack or by tests/unit, whose
+            # equiv_eal_init_once() calls rte_eal_init() with no --file-prefix.
+            # Cross-checking the process table tells the two apart: no nginx
+            # alive means the lock is a concurrent unit-test EAL, not residue.
+            if [ -z "$(nginx_residue)" ]; then
+                say "CHECK3-HINT: no nginx alive -- likely a concurrent tests/unit EAL"
+                say "CHECK3-HINT: (equiv_eal_init_once() uses the default file-prefix)"
+            else
+                say "CHECK3-HINT: nginx is alive -- real residue, stop it before retrying"
+            fi
+        fi
+    fi
+    # Private file-prefix directories (ff_int_test / ff_kni_int / ff_kni_test /
+    # ff_reload_it) come from the unit and integration binaries, use --no-huge
+    # and hold no hugepage, so they never conflict: recorded, never judged.
+    if [ -d /var/run/dpdk ]; then
+        local others
+        others=$(find /var/run/dpdk -mindepth 1 -maxdepth 1 -type d \
+                      ! -name rte -printf '%f ' 2>/dev/null)
+        [ -n "$others" ] && say "CHECK3-NOTE: private prefix dirs in /var/run/dpdk: $others (no conflict)"
+    fi
+    say "CHECK3 ps_ok rtemap=$rt hp_free=$(hp_free) res=$res"
+    return $res
+}
+
+# ---- probe plumbing -------------------------------------------------------
+have_probe() { [ -f "$PROBE_DIR/$1" ]; }
+
+
+prep_stream_payload() {
+    mkdir -p "$OUT/www/dl" || return 1
+    [ -f "$OUT/www/dl/big.bin" ] || \
+        dd if=/dev/zero of="$OUT/www/dl/big.bin" bs=1M count="$STREAM_MB" status=none
+    STREAM_MD5=$(md5sum "$OUT/www/dl/big.bin" | awk '{print $1}')
+    say "stream payload ${STREAM_MB}MB md5=$STREAM_MD5"
+}
+
+# ===========================================================================
+# CASES
+# ===========================================================================
+
+case_precheck() {
+    local miss=0 f
+    say "=== case precheck (three-check + dependency gate) ==="
+    for f in "$KILLTOOL" "$RMTMP" "$CHMODTOOL"; do
+        [ -x "$f" ] || { say "MISSING wrapper $f"; miss=1; }
+    done
+    [ -x "$NGINX_BIN" ] || { say "MISSING nginx binary $NGINX_BIN"; miss=1; }
+    [ -f "$FSTACK_TPL" ] || { say "MISSING f-stack template $FSTACK_TPL"; miss=1; }
+    validate_probe_package || miss=1
+    [ "$miss" != "0" ] && {
+        record "precheck" "FAIL" "wrappers + nginx + f-stack template present" \
+               "missing artifacts, see $LOG"
+        return 1; }
+    if ! remote_precheck; then
+        record "precheck" "FAIL" "client $CLIENT reachable over ssh" "client unreachable"
+        return 1
+    fi
+    if three_check; then
+        record "precheck" "PASS" \
+          "ps empty + rtemap=0 + /var/run/dpdk/rte untouched for ${RTE_FRESH_MIN} min" \
+          "ps_ok rtemap=$(rtemap_count) hp_free=$(hp_free)"
+        return 0
+    fi
+    record "precheck" "FAIL" \
+      "ps empty + rtemap=0 + /var/run/dpdk/rte untouched for ${RTE_FRESH_MIN} min" \
+      "precondition violated, see CHECK3-FAIL lines"
+    return 1
+}
+
+case_baseline() {
+    local tag="base" conf out summary fails recon freshf rc fetch=0
+    say "=== case baseline (no-takeover long-run control) ==="
+    conf=$(gen_nginx_conf "$tag" 0)
+    push_probes || return 1
+    if ! start_stack "$tag" "$GRACEFUL" 0; then
+        stop_stack "$tag" "$conf" || rc=1
+        record "baseline" "FAIL" "stack starts and serves 200" "start failed"
+        return 1
+    fi
+    if have_probe m4_lc.py; then
+        local budget
+        budget=$(python3 -B -c 'import math,sys; print(math.ceil(float(sys.argv[1]))+60)' "$BASELINE_DURATION")
+        if launch_probe baseline "$budget" m4_lc.py --server "$TARGET_IP" --conns 24 \
+            --interval 0.5 --duration "$BASELINE_DURATION" --fresh 0.5 --timeout 2; then
+            fetch=0
+            summary=$(wait_client_summary baseline LC_SUMMARY "$budget") || fetch=$?
+            if [ "$fetch" = "1" ]; then
+                summary="NO_DATA (probe failed or timed out)"; rc=2
+            elif [ "$fetch" = "2" ]; then
+                # The probe judged itself failed: a real FAIL, never SKIP/PASS.
+                say "baseline probe reported a summary but failed its own criterion"
+                rc=1
+            else
+                check_summary lc "$summary" && rc=0 || rc=1
+            fi
+        else
+            summary="NO_DATA (probe failed or timed out)"; rc=2
+        fi
+    else
+        summary="NO_DATA (m4_lc.py absent from $PROBE_DIR)"; rc=2
+    fi
+    stop_stack "$tag" "$conf" || rc=1
+    case $rc in
+        0) record "baseline" "PASS" "control probe fail=0 reconnects=0 fresh_fail=0" "$summary"; return 0 ;;
+        2) record "baseline" "SKIP" "control probe fail=0 reconnects=0 fresh_fail=0" "$summary"; return 0 ;;
+        *) record "baseline" "FAIL" "control probe fail=0 reconnects=0 fresh_fail=0" "$summary"; return 1 ;;
+    esac
+}
+
+# PT-NR: "pid ticks" for every process the supervisor has on record. A reload
+# replaces the workers, so the window is sampled repeatedly and the per-pid
+# deltas are summed instead of comparing two live inventories.
+cpu_snapshot() {
+    python3 -B - "$OUT/processes.json" <<'PY' 2>/dev/null
+import json, sys
+
+try:
+    procs = json.load(open(sys.argv[1]))
+except Exception:
+    raise SystemExit(0)
+for item in procs:
+    pid = item.get("pid")
+    if not pid:
+        continue
+    try:
+        with open("/proc/%d/stat" % pid) as handle:
+            fields = handle.read().rsplit(") ", 1)[1].split()
+        # pid alone is not stable across a reload: key on pid + start_time so a
+        # recycled pid cannot mix two processes' ticks.
+        print("%d %d %d" % (pid, item.get("start_time", 0),
+                            int(fields[11]) + int(fields[12])))  # utime+stime
+    except (OSError, ValueError, IndexError):
+        continue
+PY
+}
+
+# PT-NR: milliseconds of stack CPU inside the window from the snapshots.
+# Baseline only - no samples or no growth yields NA and never changes a verdict.
+cpu_window_ms() { # sample file
+    local clk
+    clk=$(getconf CLK_TCK 2>/dev/null)
+    if [ -z "$clk" ] || [ "$clk" -le 0 ]; then
+        echo NA
+        return 0
+    fi
+    awk -v clk="$clk" '
+        NF == 3 {
+            key = $1 " " $2
+            if (!(key in first)) first[key] = $3
+            if (!(key in last) || $3 > last[key]) last[key] = $3
+            seen[key] = 1
+        }
+        END {
+            total = 0
+            for (p in seen) {
+                delta = last[p] - first[p]
+                if (delta > 0) total += delta
+            }
+            if (total == 0) { print "NA"; exit }
+            printf "%.0f", total * 1000 / clk
+        }' "$1" 2>/dev/null || echo NA
+}
+
+# One HUP against the stack that is currently running. Results land in the
+# HUP_* globals.
+hup_once() { # conf
+    local conf="$1" mark w line n drain fwd rel fsm illegal nworkers snap clk
+    mark=$(wc -l < "$ERRLOG")
+    snap="$OUT/cpu-window.samples"
+    if [ "$HUP_CPU_SAMPLE" = "1" ]; then
+        : > "$snap"
+        cpu_snapshot >> "$snap"
+    fi
+    nginx_signal "$conf" reload || return 1
+    w=0
+    while [ "$w" -lt "$DRAIN_TIMEOUT" ]; do
+        [ "$HUP_CPU_SAMPLE" = "1" ] && cpu_snapshot >> "$snap"
+        tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete' >/dev/null && break
+        sleep 1; w=$((w + 1))
+    done
+    [ "$HUP_CPU_SAMPLE" = "1" ] && cpu_snapshot >> "$snap"
+    line=$(tail -n +$((mark + 1)) "$ERRLOG" | grep 'graceful reload complete' | tail -1)
+    n=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete')
+    fsm=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload fsm: [A-Z0-9_]* -> ')
+    illegal=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload fsm: illegal event')
+    drain=$(printf '%s' "$line" | sed -n 's/.*drain \([0-9]*\) ms.*/\1/p')
+    fwd=$(printf '%s' "$line" | sed -n 's/.*drain forwarded \([0-9]*\).*/\1/p')
+    rel=$(printf '%s' "$line" | sed -n 's/.*relayed \([0-9]*\) pkts.*/\1/p')
+    nworkers=$(worker_count)
+    if [ "$HUP_CPU_SAMPLE" = "1" ]; then
+        HUP_CPU_MS=$(cpu_window_ms "$snap")
+    else
+        HUP_CPU_MS="NA"
+    fi
+    HUP_FSM="$fsm"
+    HUP_DRAIN="${drain:-NA}"
+    HUP_FWD="${fwd:-NA}"
+    HUP_REL="${rel:-NA}"
+    say "HUP fsm=$fsm/6 complete=$n drain=${HUP_DRAIN}ms forwarded=${HUP_FWD} relayed=${HUP_REL} workers=$nworkers cpu_ms=${HUP_CPU_MS}"
+    [ -n "$line" ] || { say "HUP: no 'graceful reload complete' within ${DRAIN_TIMEOUT}s"; return 1; }
+    [ "$n" = "1" ] || { say "HUP: $n completion lines, expected exactly 1"; return 1; }
+    [ "$fsm" = "6" ] || { say "HUP: $fsm FSM transitions, expected exactly 6"; return 1; }
+    [ "$illegal" = "0" ] || { say "HUP: $illegal illegal FSM events"; return 1; }
+    [ "$nworkers" = "$WORKERS" ] || { say "HUP: workers=$nworkers != $WORKERS (G_old still alive)"; return 1; }
+    return 0
+}
+
+# start -> probe -> one HUP -> judge -> stop
+# Returns: 0 pass / 1 fail / 2 the reload passed but the traffic criterion has
+# no data. A missing probe must never be silently counted as a pass, and never
+# as a regression either, hence the dedicated code.
+# Orphan forensics: a reload can answer one four-tuple with two SYN-ACKs
+# (the draining generation answered the original SYN, the new one answered
+# the retransmitted SYN). The capture makes that visible instead of
+# inferred. Bounded by timeout, so nothing has to be killed on the client.
+capture_start() { # tag
+    [ "$CAPTURE" = "1" ] || return 0
+    run_client "nohup timeout $(( PERF_DURATION + 120 )) tcpdump -nn -tttt -S -i $CLIENT_IF -s 96 -w $REMOTE_DIR/gr_${1}_cap.pcap \"host $TARGET_IP and tcp port $CLIENT_PORT and (tcp[tcpflags] & (tcp-syn|tcp-rst|tcp-fin) != 0 or (tcp[tcpflags] = tcp-ack and tcp[12] = 80))\" >/dev/null 2>&1 &" \
+        || { say "capture: cannot start tcpdump on $CLIENT"; return 1; }
+    say "capture: started on $CLIENT ($CLIENT_IF)"
+}
+
+capture_collect() { # tag
+    [ "$CAPTURE" = "1" ] || return 0
+    local pcap="$REMOTE_DIR/gr_${1}_cap.pcap"
+    local txt="$OUT/capture_${1}.txt"
+    if ! run_client "python3 -B $REMOTE_DIR/orphan_capture_analyze.py $pcap $CLIENT_PORT" > "$txt" 2>&1; then
+        say "capture: no report for $tag"
+        return 0
+    fi
+    say "capture: $(tail -1 "$txt")"
+}
+
+do_hup_case() { # tag graceful shutdown_timeout probe-kind(none|stream|lc|cps) [check-mode]
+    local tag="$1" g="$2" st="$3" probe="$4" mode="${5:-}"
+    # Reset the anchor: it is global so case_rt30/rt31 can quote it, and a
+    # leftover from the previous case must never be reported as this one's.
+    HUP_ANCHOR_LINE=""
+    local conf out rc=0 nodata=0 wave=0 fetch=0 summary="no traffic probe"
+    conf=$(gen_nginx_conf "$tag" "$st")
+    push_probes || return 1
+    capture_start "$tag" || return 1
+    if ! start_stack "$tag" "$g" "$st"; then
+        stop_stack "$tag" "$conf" || rc=1
+        HUP_SUMMARY="start failed"
+        return 1
+    fi
+    # F-M4-7: the drain verdict needs ACTIVE connections -- a continuously
+    # streaming set or a high-rate fresh-connection probe, never idle ones.
+    case "$probe" in
+        stream)
+            prep_stream_payload || { stop_stack "$tag" "$conf"; return 1; }
+            # One wave costs payload / (chunk per gap) seconds; the probe lives
+            # STREAM_DURATION and then finishes the wave in flight. Refuse a
+            # payload that cannot fit the 300 s remote probe budget instead of
+            # letting the probe be killed and the case decay into NO_DATA/SKIP.
+            wave=$(( STREAM_MB * 1048576 / 163840 ))
+            if [ $(( STREAM_DURATION + wave )) -gt 300 ]; then
+                say "stream payload ${STREAM_MB}MB needs ~$(( STREAM_DURATION + wave ))s > 300s probe budget"
+                stop_stack "$tag" "$conf"
+                return 1
+            fi
+            launch_probe "$tag" 300 m4_stream.py --server "$TARGET_IP" \
+                --path /dl/big.bin --streams 12 --chunk 16384 --gap 0.1 \
+                --timeout 5 --stall 3.0 --duration "$STREAM_DURATION" \
+                --expect-md5 "$STREAM_MD5" || { stop_stack "$tag" "$conf"; return 1; }
+            sleep 3 ;;
+        lc)
+            launch_probe "$tag" 240 m4_lc.py --server "$TARGET_IP" --conns "$PERF_CONNS" \
+                --interval 0.1 --duration "$PERF_DURATION" --fresh 0.5 --timeout 2 \
+                || { stop_stack "$tag" "$conf"; return 1; }
+            HUP_ANCHOR_LINE=$(wait_probe_progress LC_PROGRESS "$HUP_ANCHOR_SEC" \
+                "$HUP_ANCHOR_COUNT" 60) \
+                || { say "$tag: lc probe never reached the HUP anchor (${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"
+                     stop_stack "$tag" "$conf"; return 1; }
+            say "$tag: HUP anchored at: $HUP_ANCHOR_LINE" ;;
+        cps)
+            launch_probe "$tag" 240 m4_cps.py --server "$TARGET_IP" --threads "$PERF_THREADS" \
+                --duration "$PERF_DURATION" --timeout 2 \
+                || { stop_stack "$tag" "$conf"; return 1; }
+            HUP_ANCHOR_LINE=$(wait_probe_progress CPS_PROGRESS "$HUP_ANCHOR_SEC" \
+                "$HUP_ANCHOR_COUNT" 60) \
+                || { say "$tag: cps probe never reached the HUP anchor (${HUP_ANCHOR_SEC}s / ${HUP_ANCHOR_COUNT} requests)"
+                     stop_stack "$tag" "$conf"; return 1; }
+            say "$tag: HUP anchored at: $HUP_ANCHOR_LINE" ;;
+    esac
+
+    # Only the perf cases sample process CPU: the inventory walk would
+    # otherwise run for every reload case.
+    case "$probe" in
+        lc|cps) HUP_CPU_SAMPLE=1 ;;
+        *) HUP_CPU_SAMPLE=0 ;;
+    esac
+    [ "$probe" = none ] || probe_running || { say "$tag: probe not running before the reload"; rc=1; }
+    hup_once "$conf" || rc=1
+    [ "$probe" = none ] || probe_running \
+        || { say "$tag: probe not running after the reload (window longer than "
+                 "the probe? drain=${HUP_DRAIN}ms duration=${PERF_DURATION}s "
+                 "anchor=${HUP_ANCHOR_LINE:-none})"; rc=1; }
+
+    # wait_client_summary reports 1 = no data (timeout / summary absent) and
+    # 2 = the probe reported a summary but failed its own criterion. Only the
+    # first is NO_DATA (SKIP); the second keeps the real summary so the case
+    # fails on evidence instead of hiding behind "no data".
+    case "$probe" in
+        stream)
+            fetch=0
+            summary=$(wait_client_summary "/tmp/gr_${tag}_stream.log" 'STREAM_SUMMARY' 180) \
+                || fetch=$?
+            if [ "$fetch" = "1" ]; then
+                summary="NO_DATA (m4_stream.py did not report within 180 s)"; nodata=1
+            elif [ "$fetch" = "2" ]; then
+                say "stream probe reported a summary but failed its own criterion"
+                rc=1
+            fi
+            if [ "$nodata" = "0" ]; then
+                check_summary stream "$summary" \
+                    || { say "stream verdict below target: $summary"; rc=1; }
+                # F-M4-7 sanity: an active-stream drain cannot finish in <100 ms
+                if [ "$HUP_DRAIN" != "NA" ] && [ "$HUP_DRAIN" -lt 100 ]; then
+                    say "drain ${HUP_DRAIN}ms too short for an active stream (F-M4-7)"; rc=1
+                fi
+            else
+                say "stream criterion has no data: $summary"
+            fi ;;
+        lc)
+            fetch=0
+            summary=$(wait_client_summary "/tmp/gr_${tag}_lc_out.log" 'LC_SUMMARY' 180) \
+                || fetch=$?
+            if [ "$fetch" = "1" ]; then
+                summary="NO_DATA (m4_lc.py did not report within 180 s)"; nodata=1
+            elif [ "$fetch" = "2" ]; then
+                if [ "$mode" = "perf" ]; then
+                    # Long-connection form: the draining generation closes its
+                    # keep-alive connections, so the probe's own strict check
+                    # trips on reconnects. The harness criterion below is the
+                    # verdict: bounded closures plus fresh_fail=0.
+                    say "lc probe tripped its own strict criterion; the perf criterion judges the summary"
+                else
+                    say "lc probe reported a summary but failed its own criterion"
+                    rc=1
+                fi
+            fi
+            if [ "$nodata" = "0" ]; then
+                check_summary lc "$summary" "$mode" || { say "lc verdict below target"; rc=1; }
+            else
+                say "lc criterion has no data: $summary"
+            fi ;;
+        cps)
+            fetch=0
+            summary=$(wait_client_summary "/tmp/gr_${tag}_cps.log" 'CPS_SUMMARY' 180) \
+                || fetch=$?
+            if [ "$fetch" = "1" ]; then
+                summary="NO_DATA (m4_cps.py did not report within 180 s)"; nodata=1
+            elif [ "$fetch" = "2" ]; then
+                say "cps probe reported a summary but failed its own criterion"
+                rc=1
+            fi
+            if [ "$nodata" = "0" ]; then
+                check_summary cps "$summary" || { say "cps verdict below target"; rc=1; }
+            else
+                say "cps criterion has no data: $summary"
+            fi ;;
+    esac
+
+    stop_stack "$tag" "$conf" || rc=1
+    capture_collect "$tag"
+    HUP_SUMMARY="$summary"
+    [ "$rc" != "0" ] && return 1
+    [ "$nodata" != "0" ] && return 2
+    return 0
+}
+
+# ---- performance-baseline cases (PT-NR) -----------------------------------
+# rt30/rt31 load the handover window at a high rate so the flow-map cost inside
+# the window can be compared between builds. The numbers are a baseline, not a
+# gate: the functional invariants still hold, and the packet rate is derived
+# (est_pps), not measured on the wire.
+case_rt24() {
+    say "=== case rt24 (abort, then HUP again: the surviving G_old drains a second time) ==="
+    local rc=0 hrc=0 conf out before after found=0 done=0 deadline fetch
+    local crit meas completions drain nworkers t0_line
+    crit="round 1 aborts (rx ownership flip failed, G_old untouched); round 2 completes with a bounded drain (<= 15000 ms), a T5 -> T0 transition, workers back to $WORKERS, and fresh_fail=0 with at most one closure per connection"
+
+    if [ "$FAULT" != "flip_fail_once" ]; then
+        say "rt24: --fault=$FAULT does not match the case fault flip_fail_once"
+        record "rt24" "FAIL" "$crit" "fault option/case mismatch ($FAULT vs flip_fail_once)"
+        return 1
+    fi
+    export FF_FAULT="flip_fail_once"
+    unset FF_FAULT_DELAY_MS
+
+    conf=$(gen_nginx_conf "rt24" 0)
+    push_probes || { unset FF_FAULT; return 1; }
+    if ! start_stack "rt24" 1 0; then
+        stop_stack "rt24" "$conf" || rc=1
+        unset FF_FAULT
+        record "rt24" "FAIL" "$crit" "start failed (fault=flip_fail_once)"
+        return 1
+    fi
+    before=$(worker_count)
+    if have_probe m4_lc.py; then
+        # Short enough to finish inside the case: its summary is the evidence
+        # that G_old kept serving through the aborted round.
+        launch_probe "rt24" 240 m4_lc.py --server "$TARGET_IP" --conns 12 \
+            --interval 0.1 --duration 30 --fresh 0.5 --timeout 2 \
+            || { unset FF_FAULT; stop_stack "rt24" "$conf"; record "rt24" "FAIL" "$crit" "probe launch failed"; return 1; }
+        sleep 3
+    fi
+    probe_running || rc=1
+
+    # Round 1: aborted. An aborted reload never prints the completion line, so
+    # wait for the abort signature instead.
+    nginx_signal "$conf" reload || hrc=1
+    deadline=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if grep -q "graceful reload aborted: rx ownership flip failed" "$ERRLOG"; then
+            found=1; break
+        fi
+        sleep 1
+    done
+    [ "$found" = "1" ] || { say "rt24: round 1 did not abort within 60 s"; hrc=1; }
+
+    # Round 2: the old generation survived the abort, so it becomes the drain
+    # generation a second time. The drain latch is keyed on the reload epoch,
+    # so this round must converge on its own instead of waiting for the 90 s
+    # deadline.
+    sleep 5
+    nginx_signal "$conf" reload || hrc=1
+    deadline=$((SECONDS + 120))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if grep -q "graceful reload complete" "$ERRLOG"; then done=1; break; fi
+        sleep 1
+    done
+    [ "$done" = "1" ] || { say "rt24: round 2 did not complete within 120 s"; hrc=1; }
+
+    [ "$hrc" = "0" ] || rc=1
+
+    # Evidence: exactly one completion (round 1 aborted), its drain, and the
+    # FSM having reached T5 -> T0.
+    completions=$(grep -c "graceful reload complete" "$ERRLOG")
+    drain=$(sed -n 's/.*graceful reload complete.*drain \([0-9]*\) ms.*/\1/p' "$ERRLOG" | tail -1)
+    t0_line=$(grep -c "graceful reload fsm: T5_GOLD_QUIT -> T0_IDLE" "$ERRLOG")
+    nworkers=$(worker_count)
+
+    [ "$completions" = "1" ] || { say "rt24: $completions completion lines, expected exactly 1"; rc=1; }
+    [ -n "$drain" ] || drain="NA"
+    if [ "$drain" != "NA" ] && [ "$drain" -gt 15000 ]; then
+        say "rt24: round 2 drain ${drain}ms exceeds the 15000 ms bound"
+        rc=1
+    fi
+    [ "$t0_line" -ge 1 ] || { say "rt24: no T5 -> T0 transition"; rc=1; }
+    [ "$nworkers" = "$WORKERS" ] || { say "rt24: workers=$nworkers != $WORKERS"; rc=1; }
+
+    meas="round1=abort round2=complete completions=$completions drain=${drain}ms bound=15000ms t5_to_t0=$t0_line workers=${nworkers}/${WORKERS} before=$before"
+
+    # No liveness check: the probe (30 s) can finish before the second round is
+    # judged, same convention as fault_case(). Its summary is the evidence.
+    # fetch=1 is missing data; fetch=2 is the probe's own strict criterion, which
+    # an aborted round resets connections into. What has to hold is fresh_fail=0
+    # and at most one closure per connection (rt31's judgement).
+    local fetch=0
+    out=$(wait_client_summary "/tmp/gr_rt24_lc_out.log" 'LC_SUMMARY' 90) || fetch=$?
+    if [ "$fetch" = "1" ]; then
+        out="NO_DATA (m4_lc.py did not report within 90 s)"
+        say "rt24: no probe summary -- no evidence that G_old kept serving"
+        rc=1
+    elif [ "$fetch" = "2" ]; then
+        say "rt24: lc probe tripped its own strict criterion; judging it as rt31 does"
+    fi
+    if [ "$fetch" != "1" ] && ! check_summary lc "$out" perf; then
+        say "rt24: lc verdict below target (closures not bounded or a fresh failure): $out"
+        rc=1
+    fi
+
+    unset FF_FAULT
+    if [ "$rc" = "0" ]; then
+        record "rt24" "PASS" "$crit" "$meas traffic=$out"
+    else
+        record "rt24" "FAIL" "$crit" "$meas traffic=$out"
+    fi
+    [ "$rc" = "0" ]
+}
+
+# RT-04 (spec 08): USR2 binary upgrade under traffic. The old master execs the
+# new binary, waits for it to register, then WINCH hands rx over and the old
+# workers are told to quit. Every step is bounded: a step that never happens is
+# recorded as LIMITED/FAIL with its evidence, never as a silent pass.
+case_rt25() {
+    say "=== case rt25 (RT-04: USR2 binary upgrade under traffic) ==="
+    local rc=0 conf out before=0 old=0 new=0 deadline
+    local crit meas started=0 handed=0 workers_left=-1 fetch=0
+    crit="USR2 exec -> new binary takes over -> WINCH hands rx over -> old workers quit, while the new master keeps serving (fresh_fail=0, at most one closure per connection per drain round -- this run drains twice: the priming HUP and the upgrade)"
+
+    conf=$(gen_nginx_conf "rt25" 0)
+    push_probes || return 1
+    if ! start_stack "rt25" 1 0; then
+        stop_stack "rt25" "$conf" || rc=1
+        record "rt25" "FAIL" "$crit" "start failed"
+        return 1
+    fi
+    before=$(worker_count)
+    if have_probe m4_lc.py; then
+        launch_probe "rt25" 240 m4_lc.py --server "$TARGET_IP" --conns 12 \
+            --interval 0.1 --duration 45 --fresh 0.5 --timeout 2 \
+            || { stop_stack "rt25" "$conf"; record "rt25" "FAIL" "$crit" "probe launch failed"; return 1; }
+        sleep 3
+    fi
+    probe_running || rc=1
+
+    # One HUP first: a fresh binary numbers its generation 0, and so does this
+    # master, so without a preceding round the USR2 branch of the drain
+    # predicate stays in its fail-safe no-op (owner gen == own gen). After a
+    # HUP the surviving workers are generation 1 and the peer is 0, which is
+    # what the branch needs. It is also the realistic upgrade order.
+    hup_once "$conf" || rc=1
+
+    nginx_signal "$conf" usr2 || rc=1
+
+    # USR2 renames nginx.pid to nginx.pid.oldbin and execs the new binary, so
+    # the oldbin pid file is the evidence that the exec really happened.
+    deadline=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if [ -s "$OUT/nginx.pid.oldbin" ]; then started=1; break; fi
+        sleep 1
+    done
+    [ "$started" = "1" ] || { say "rt25: no nginx.pid.oldbin within 60 s (USR2 exec failed?)"; rc=1; }
+
+    # WINCH must reach the OLD master: nginx.pid now names the new one.
+    old=$(cat "$OUT/nginx.pid.oldbin" 2>/dev/null)
+    if [ "$started" = "1" ] && [ -n "$old" ]; then
+        collect_owned || rc=1
+        python3 -B "$SUPERVISOR" signal "$STACK_ID" "$old" WINCH >/dev/null || rc=1
+        deadline=$((SECONDS + 60))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+            if grep -q "ff usr2: handed rx to the new binary" "$ERRLOG"; then
+                handed=1; break
+            fi
+            sleep 1
+        done
+        [ "$handed" = "1" ] || { say "rt25: no rx handover within 60 s of WINCH"; rc=1; }
+    fi
+
+    # Two masters coexist by design here, so record them instead of failing.
+    three_check 1
+
+    # The old workers were told to quit with the handover; give them a bounded
+    # window and report what is left.
+    if [ "$handed" = "1" ]; then
+        deadline=$((SECONDS + 120))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+            # Children of the OLD master that are still alive, minus the NEW
+            # master itself (it is the old master's exec()ed child and stays by
+            # design). nginx rewrites argv, not comm, so every nginx process is
+            # 'nginx' here -- identity comes from the pid files, not the title.
+            new=$(cat "$OUT/nginx.pid" 2>/dev/null)
+            workers_left=$(ps -eo pid,ppid,stat,comm 2>/dev/null \
+                | awk -v m="$old" -v n="$new" '$2==m && $1!=m && $1!=n \
+                    && $3 !~ /^Z/ && $4 ~ /^nginx/ {c++} END {print c+0}')
+            [ "$workers_left" = "0" ] && break
+            sleep 2
+        done
+        [ "$workers_left" = "0" ] \
+            || { say "rt25: $workers_left old worker(s) still alive after 120 s"; rc=1; }
+    fi
+
+    local summary="NO_DATA (probe never reported)"
+    if have_probe m4_lc.py; then
+        summary=$(wait_client_summary /tmp/gr_rt25_lc_out.log 'LC_SUMMARY' 120) || fetch=$?
+        if [ "$fetch" = "1" ]; then
+            summary="NO_DATA (m4_lc.py did not report within 120 s)"
+            say "rt25: no probe summary -- no evidence that the new master served"
+            rc=1
+        elif ! check_summary lc "$summary" usr2; then
+            say "rt25: lc verdict below target (two drain rounds): $summary"
+            rc=1
+        fi
+    else
+        say "rt25: no lc probe -- no evidence that the new master served"
+        rc=1
+    fi
+
+    # Evidence of which path started the drain: the USR2 branch runs from the
+    # worker loop right after the handover, the fallback from the QUIT handler.
+    # Both call the same drain start, so this is recorded, not judged.
+    # The priming HUP drains too, so only lines after the USR2 handover count.
+    local drain_line=0 quit_line=0 drain_before_quit=0 hand_line=0
+    hand_line=$(grep -n "ff usr2: handed rx" "$ERRLOG" 2>/dev/null | head -1 | cut -d: -f1)
+    if [ -n "$hand_line" ]; then
+        drain_line=$(tail -n +"$hand_line" "$ERRLOG" | grep -n "ff drain: started" | head -1 | cut -d: -f1)
+        quit_line=$(tail -n +"$hand_line" "$ERRLOG" | grep -n "gracefully shutting down" | head -1 | cut -d: -f1)
+    fi
+    if [ -n "$drain_line" ] && [ -n "$quit_line" ] && [ "$drain_line" -lt "$quit_line" ]; then
+        drain_before_quit=1
+    fi
+
+    meas="usr2_exec=$started handover=$handed old_workers_left=$workers_left \
+workers_before=$before drain_before_quit=$drain_before_quit traffic=$summary"
+
+    stop_stack "rt25" "$conf" || rc=1
+
+    if [ "$rc" = "0" ]; then
+        record "rt25" "PASS" "$crit" "$meas"
+    elif [ "$started" != "1" ] || [ "$handed" != "1" ]; then
+        # The upgrade did not even get to the handover: say which step and do
+        # not call it a functional failure of the product.
+        record "rt25" "LIMITED" "$crit" "$meas -- upgrade did not reach the handover"
+        rc=1
+    else
+        record "rt25" "FAIL" "$crit" "$meas"
+    fi
+    [ "$rc" = "0" ]
+}
+
+case_rt30() {
+    say "=== case rt30 (PT-NR-01: high CPS short connections) ==="
+    local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas anchor remaining
+    crit="high-rate CPS: client fail=0 + reload complete + 6/6 FSM + workers back to $WORKERS"
+    do_hup_case "rt30" 1 0 cps || hrc=$?
+    if [ "$hrc" = "2" ]; then
+        record "rt30" "SKIP" "$crit" "NO_DATA: $HUP_SUMMARY"
+        return 0
+    fi
+    [ "$hrc" != "0" ] && rc=1
+    n=$(printf '%s' "$HUP_SUMMARY" | sed -n 's/.*CPS_SUMMARY threads=[0-9]* n=\([0-9]*\).*/\1/p')
+    rate=$(awk -v n="${n:-0}" -v d="$PERF_DURATION" 'BEGIN { if (n == 0 || d == 0) print "NA"; else printf "%.1f", n / d }')
+    cpu_per_1k=$(awk -v c="$HUP_CPU_MS" -v n="${n:-0}" 'BEGIN { if (c == "NA" || n == 0) print "NA"; else printf "%.2f", c * 1000 / n }')
+    est_pps=$(awk -v r="$rate" 'BEGIN { if (r == "NA") print "NA"; else printf "%.0f", r * 9 }')
+    # Anchor evidence: where in the probe life the reload was sent, and how
+    # much of the probe was left at that moment (not after the reload).
+    anchor=$(printf '%s' "$HUP_ANCHOR_LINE" | sed -n 's/.*elapsed=\([0-9.]*\).*/\1/p')
+    [ -n "$anchor" ] || anchor="NA"
+    remaining=$(awk -v d="$PERF_DURATION" -v a="$anchor" \
+        'BEGIN { if (a == "NA") print "NA"; else printf "%.1f", d - a }')
+    meas="mode=cps threads=$PERF_THREADS duration=${PERF_DURATION}s n=${n:-NA} rate=${rate}/s cpu_ms=$HUP_CPU_MS cpu_per_1k=$cpu_per_1k est_pps=$est_pps drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} anchor=${anchor}s remaining=${remaining}s $HUP_SUMMARY"
+    if [ "$rc" = "0" ]; then
+        record "rt30" "PASS" "$crit" "$meas"
+    else
+        record "rt30" "FAIL" "$crit" "$meas"
+    fi
+    return $rc
+}
+
+case_rt31() {
+    say "=== case rt31 (PT-NR-02: high packet rate, long connections) ==="
+    local hrc=0 rc=0 n rate cpu_per_1k est_pps crit meas anchor remaining
+    crit="high packet rate: fresh_fail=0 + at most one keep-alive closure per connection (G_old drains) + reload complete + 6/6 FSM + workers back to $WORKERS"
+    do_hup_case "rt31" 1 0 lc perf || hrc=$?
+    if [ "$hrc" = "2" ]; then
+        record "rt31" "SKIP" "$crit" "NO_DATA: $HUP_SUMMARY"
+        return 0
+    fi
+    [ "$hrc" != "0" ] && rc=1
+    n=$(printf '%s' "$HUP_SUMMARY" | sed -n 's/.*LC_SUMMARY conns=[0-9]* reqs=\([0-9]*\).*/\1/p')
+    rate=$(awk -v n="${n:-0}" -v d="$PERF_DURATION" 'BEGIN { if (n == 0 || d == 0) print "NA"; else printf "%.1f", n / d }')
+    cpu_per_1k=$(awk -v c="$HUP_CPU_MS" -v n="${n:-0}" 'BEGIN { if (c == "NA" || n == 0) print "NA"; else printf "%.2f", c * 1000 / n }')
+    est_pps=$(awk -v r="$rate" 'BEGIN { if (r == "NA") print "NA"; else printf "%.0f", r * 3 }')
+    # Anchor evidence: where in the probe life the reload was sent, and how
+    # much of the probe was left at that moment (not after the reload).
+    anchor=$(printf '%s' "$HUP_ANCHOR_LINE" | sed -n 's/.*elapsed=\([0-9.]*\).*/\1/p')
+    [ -n "$anchor" ] || anchor="NA"
+    remaining=$(awk -v d="$PERF_DURATION" -v a="$anchor" \
+        'BEGIN { if (a == "NA") print "NA"; else printf "%.1f", d - a }')
+    meas="mode=lc conns=$PERF_CONNS duration=${PERF_DURATION}s reqs=${n:-NA} rate=${rate}/s cpu_ms=$HUP_CPU_MS cpu_per_1k=$cpu_per_1k est_pps=$est_pps drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} anchor=${anchor}s remaining=${remaining}s $HUP_SUMMARY"
+    if [ "$rc" = "0" ]; then
+        record "rt31" "PASS" "$crit" "$meas"
+    else
+        record "rt31" "FAIL" "$crit" "$meas"
+    fi
+    return $rc
+}
+
+# ---- fault-injection cases (F1) ------------------------------------------
+# These need a fault-injection build (FF_RELOAD_FAULT_INJECTION=1) and a
+# manifest that declares it; reload_checks.verify-build enforces the pairing in
+# both directions. They never contribute to functional acceptance: rt23 is the
+# only one that runs on the production form.
+fault_case() { # tag fault expect(ok|abort) criterion [abort-signature] [extra-check]
+    local tag="$1" fault="$2" expect="$3" crit="$4" sig="${5:-}"
+    local extra="${6:-}"
+    local rc=0 conf out before
+    # The --fault option drives the build-form gate; it must name the same
+    # fault the case injects, otherwise a verdict could be labelled wrongly.
+    if [ "$FAULT" != "$fault" ]; then
+        say "$tag: --fault=$FAULT does not match the case fault $fault"
+        record "$tag" "FAIL" "$crit" "fault option/case mismatch ($FAULT vs $fault)"
+        return 1
+    fi
+    export FF_FAULT="$fault"
+    if [ "$fault" = "ready_delay" ]; then
+        export FF_FAULT_DELAY_MS="$FAULT_DELAY_MS"
+    else
+        unset FF_FAULT_DELAY_MS
+    fi
+    conf=$(gen_nginx_conf "$tag" 0)
+    push_probes || { unset FF_FAULT; unset FF_FAULT_DELAY_MS; return 1; }
+    if ! start_stack "$tag" 1 0; then
+        stop_stack "$tag" "$conf" || rc=1
+        unset FF_FAULT
+        record "$tag" "FAIL" "$crit" "start failed (fault=$fault)"
+        return 1
+    fi
+    before=$(worker_count)
+    if have_probe m4_lc.py; then
+        launch_probe "$tag" 120 m4_lc.py --server "$TARGET_IP" --conns 12 \
+            --interval 0.1 --duration 45 --fresh 0.5 --timeout 2 \
+            || { unset FF_FAULT; unset FF_FAULT_DELAY_MS; stop_stack "$tag" "$conf"; record "$tag" "FAIL" "$crit" "probe launch failed"; return 1; }
+        sleep 3
+    fi
+    probe_running || rc=1
+    local hrc=0
+    if [ "$expect" = abort ]; then
+        # An aborted reload never prints the completion line, so waiting for it
+        # would only burn the drain timeout. Wait for the abort signature
+        # instead, bounded by the READY/park budget plus a margin.
+        nginx_signal "$conf" reload || hrc=1
+        local deadline=$((SECONDS + 90)) found=0
+        while [ "$SECONDS" -lt "$deadline" ]; do
+            if [ -n "$sig" ]; then
+                if grep -q "graceful reload aborted: $sig" "$ERRLOG"; then found=1; break; fi
+            elif grep -q "graceful reload aborted" "$ERRLOG"; then
+                found=1; break
+            fi
+            sleep 1
+        done
+        if [ "$found" != "1" ]; then
+            say "$tag: no bounded abort within 90 s (errlog: $ERRLOG)"
+            hrc=1
+        fi
+    else
+        hup_once "$conf" || hrc=1
+    fi
+    # hrc == 0 means the expected event happened: the bounded abort signature
+    # for expect=abort, the completion line for expect=ok.
+    [ "$hrc" = "0" ] || { say "$tag: expect=$expect not satisfied (rc=$hrc)"; rc=1; }
+    # NB: no probe_running check here -- by the time the bounded abort/completion
+    # is observed the probe (45 s) has normally finished; the probe's own
+    # summary below is the evidence that G_old kept serving, not a liveness bit.
+    # G_old must have kept serving: the probe's own verdict must be clean.
+    local summary="no probe" fetch=0 lcmode=""
+    if ! have_probe m4_lc.py; then
+        # No probe means no evidence that G_old kept serving: never a silent
+        # pass (same rule as the other cases in this harness).
+        unset FF_FAULT
+        unset FF_FAULT_DELAY_MS
+        stop_stack "$tag" "$conf" || rc=1
+        record "$tag" "SKIP" "$crit" "NO_DATA (m4_lc.py absent from $PROBE_DIR)"
+        return 0
+    fi
+    if have_probe m4_lc.py; then
+        summary=$(wait_client_summary /tmp/gr_${tag}_lc_out.log 'LC_SUMMARY' 120) || fetch=$?
+        if [ "$fetch" = "1" ]; then
+            summary="NO_DATA (m4_lc.py did not report within 120 s)"; rc=1
+        elif [ "$fetch" = "2" ]; then
+            # Judged the way rt31 judges the same lc probe: once the old
+            # generation drains, each keep-alive connection is closed exactly
+            # once, which trips the probe's own strict check. What has to hold
+            # is a bounded closure per connection and no failure on fresh (new)
+            # connections -- the same rule rt31 documents for the drain.
+            say "$tag: lc probe tripped its own strict criterion"
+            if [ "$expect" = ok ]; then
+                # A completing round drains the old generation, which closes
+                # each keep-alive connection once -- the same judgement rt31
+                # documents. An aborted round must keep the strict verdict: it
+                # is exactly how the drain latch closing connections it should
+                # not have (rt21) becomes visible.
+                say "$tag: judging it as rt31 does (at most one closure per connection, fresh_fail=0)"
+                lcmode=perf
+            else
+                say "$tag: abort round keeps the strict verdict"
+                rc=1
+            fi
+        fi
+        check_summary lc "$summary" "$lcmode" \
+            || { say "$tag: lc verdict below target: $summary"; rc=1; }
+    fi
+    # no double master and no lost generation: the count must be back to
+    # exactly the pre-reload set.
+    if [ "$(worker_count)" -ne "$before" ]; then
+        say "$tag: worker count changed ($before -> $(worker_count))"
+        rc=1
+    fi
+    unset FF_FAULT
+    unset FF_FAULT_DELAY_MS
+    stop_stack "$tag" "$conf" || rc=1
+    # Optional case-specific assertion: it runs once the artifacts are
+    # complete and feeds both the verdict and the measured text.
+    local extra_txt=""
+    if [ -n "$extra" ]; then
+        extra_txt=$("$extra") || rc=1
+    fi
+    if [ "$rc" = "0" ]; then
+        record "$tag" "PASS" "$crit" \
+          "fault=$fault expect=$expect hrc=$hrc workers_before=$before traffic=$summary $extra_txt (fault-injection build)"
+    else
+        record "$tag" "FAIL" "$crit" \
+          "fault=$fault expect=$expect hrc=$hrc workers_before=$before traffic=$summary $extra_txt (fault-injection build)"
+    fi
+    return $rc
+}
+
+case_rt20() {
+    say "=== case rt20 (READY never arrives -> bounded abort) ==="
+    fault_case "rt20" ready_never abort \
+      "READY wait times out within NGX_FF_RELOAD_READY_WAIT_SEC (60s); reload aborts to T0_IDLE; G_old keeps serving; no second master" \
+      "READY wait timed out"
+}
+case_rt20b() {
+    say "=== case rt20b (READY late but reachable -> completes) ==="
+    fault_case "rt20b" ready_delay ok \
+      "READY delayed by FF_FAULT_DELAY_MS (<60s) still completes: 6/6 FSM, workers back to N, service restored"
+}
+case_rt21() {
+    say "=== case rt21 (handover flip fails -> T2/T_ERROR/T0) ==="
+    fault_case "rt21" flip_fail abort \
+      "T2 -> T_ERROR -> T0 with 'rx ownership flip failed'; G_old keeps serving; no half-handover" \
+      "rx ownership flip failed"
+}
+case_rt22() {
+    say "=== case rt22 (park never confirmed -> bounded abort) ==="
+    fault_case "rt22" park_never abort \
+      "park budget (FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT 100U) expires: T_ERROR -> T0 with 'G_old park confirmation timed out'" \
+      "G_old park confirmation timed out"
+}
+case_rt23() {
+    say "=== case rt23 (reload re-entry during drain is refused) ==="
+    local rc=0 conf out
+    # rt23 is the only fault-matrix case that runs on the PRODUCTION form:
+    # --fault/BUILD_MANIFEST are per-run globals, so refuse the mixed form and
+    # drop any inherited fault variables.
+    if [ -n "$FAULT" ]; then
+        say "rt23: requires the production form (--fault=$FAULT)"
+        record "rt23" "FAIL" "second HUP during T3 is refused; first reload still completes" \
+          "fault form not allowed for rt23"
+        return 1
+    fi
+    unset FF_FAULT
+    unset FF_FAULT_DELAY_MS
+    conf=$(gen_nginx_conf "rt23" 0)
+    prep_stream_payload || return 1
+    push_probes || return 1
+    if ! start_stack "rt23" 1 0; then
+        stop_stack "rt23" "$conf" || rc=1
+        record "rt23" "FAIL" "second HUP during T3 is refused; first reload still completes" "start failed"
+        return 1
+    fi
+    launch_probe rt23 300 m4_stream.py --server "$TARGET_IP" \
+        --path /dl/big.bin --streams 12 --chunk 16384 --gap 0.1 \
+        --timeout 5 --stall 3.0 --duration "$STREAM_DURATION" \
+        --expect-md5 "$STREAM_MD5" || { stop_stack "rt23" "$conf"; return 1; }
+    sleep 3
+    probe_running || rc=1
+    # The second HUP must land WHILE the first one is draining (T3), not after
+    # it finished, otherwise it simply starts a second reload.
+    nginx_signal "$conf" reload || rc=1
+    local deadline=$((SECONDS + 60)) in_t3=0
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if grep -q "graceful reload fsm: T2_HANDOVER -> T3_DRAIN" "$ERRLOG"; then in_t3=1; break; fi
+        sleep 1
+    done
+    [ "$in_t3" = "1" ] || { say "rt23: first reload never reached T3 within 60 s"; rc=1; }
+    nginx_signal "$conf" reload || rc=1
+    local done=0 line fsm t01 drain summary fetch=0
+    deadline=$((SECONDS + 150))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if grep -q "graceful reload complete" "$ERRLOG"; then done=1; break; fi
+        sleep 1
+    done
+    [ "$done" = "1" ] || { say "rt23: first reload did not complete within 150 s"; rc=1; }
+    grep -q "graceful reload rejected: previous reload still in progress (state T3_DRAIN)" "$ERRLOG" \
+        || { say "rt23: re-entry refusal during T3_DRAIN not found in $ERRLOG"; rc=1; }
+    # This case never runs hup_once, so its own errlog is the only evidence:
+    # exactly one round (one T0 -> T1, six transitions) and one completion.
+    fsm=$(grep -c "graceful reload fsm: [A-Z0-9_]* -> " "$ERRLOG")
+    t01=$(grep -c "graceful reload fsm: T0_IDLE -> T1_GNEW_SPAWN" "$ERRLOG")
+    line=$(grep "graceful reload complete" "$ERRLOG" | tail -1)
+    drain=$(printf '%s' "$line" | sed -n 's/.*drain \([0-9]*\) ms.*/\1/p')
+    [ "$fsm" = "6" ] || { say "rt23: $fsm FSM transitions, expected exactly 6"; rc=1; }
+    [ "$t01" = "1" ] || { say "rt23: $t01 rounds started, expected exactly 1"; rc=1; }
+    [ "$(grep -c 'graceful reload complete' "$ERRLOG")" = "1" ] \
+        || { say "rt23: completion count != 1"; rc=1; }
+    summary=$(wait_client_summary /tmp/gr_rt23_stream.log 'STREAM_SUMMARY' 120) || fetch=$?
+    if [ "$fetch" = "1" ]; then
+        summary="NO_DATA (m4_stream.py did not report within 120 s)"; rc=1
+    elif [ "$fetch" = "2" ]; then
+        say "rt23: stream probe reported a summary but failed its own criterion"; rc=1
+    elif ! check_summary stream "$summary"; then
+        say "rt23: stream verdict below target: $summary"; rc=1
+    fi
+    stop_stack "rt23" "$conf" || rc=1
+    local verdict=PASS
+    [ "$rc" = "0" ] || verdict=FAIL
+    record "rt23" "$verdict" "second HUP during T3 is refused; first reload still completes (exactly 6/6 FSM, one round, intact streams)" \
+      "fsm=$fsm/6 rounds=$t01 drain=${drain:-NA}ms traffic=$summary"
+    return $rc
+}
+
+# rt26: the counters live in the worker logs (fstack-*.log), not in nginx
+# error log. SYN-ACK failures and ACK mismatches are printed as deltas, so
+# their sum is the total; revoked is printed as a running total, so the
+# last value of a file is that file's total.
+synack_fail_counters() {
+    local f n high fails=0 undone=0
+    for f in "$OUT"/fstack-*.log; do
+        [ -r "$f" ] || continue
+        n=$(sed -n 's/.*syncache: \([0-9][0-9]*\) SYN-ACK failure(s).*/\1/p' "$f" \
+            | awk '{s+=$1} END {print s+0}')
+        high=$(sed -n 's/.*SYN-ACK failure(s), [0-9][0-9]* handshake ACK mismatch(es), \([0-9][0-9]*\) revoked.*/\1/p' "$f" | tail -1)
+        fails=$((fails + n))
+        undone=$((undone + high))
+    done
+    printf "synack_fail=%s revoked=%s" "$fails" "$undone"
+    [ "$fails" -gt 0 ] && [ "$undone" -gt 0 ]
+}
+case_rt26() {
+    say "=== case rt26 (a SYN-ACK that cannot be sent) ==="
+    local rc=0 crit
+    crit="the SYN-ACK failure is counted, its admission is undone, and the reload still completes"
+    fault_case "rt26" synack_fail ok "$crit" "" synack_fail_counters || rc=1
+    return $rc
+}
+case_rt01() {
+    say "=== case rt01 (unloaded HUP) ==="
+    local rc=0
+    do_hup_case "rt01" "$GRACEFUL" 0 none || rc=1
+    if [ "$rc" = "0" ]; then
+        record "rt01" "PASS" \
+          "reload complete + 6/6 FSM transitions + worker count back to $WORKERS" \
+          "fsm=$HUP_FSM/6 drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} traffic=$HUP_SUMMARY"
+    else
+        record "rt01" "FAIL" \
+          "reload complete + 6/6 FSM transitions + worker count back to $WORKERS" \
+          "fsm=$HUP_FSM/6 drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} traffic=$HUP_SUMMARY"
+    fi
+    return $rc
+}
+
+case_rt02() {
+    say "=== case rt02 (HUP under active streams, F-M4-7) ==="
+    local rc=0
+    if ! have_probe m4_stream.py; then
+        record "rt02" "SKIP" "12 active streams ok/md5_ok/eof_clean=12 and stalls=0" \
+               "NO_DATA: m4_stream.py absent from $PROBE_DIR"
+        return 0
+    fi
+    local hrc=0
+    do_hup_case "rt02" 1 0 stream || hrc=$?
+    if [ "$hrc" = "2" ]; then
+        record "rt02" "SKIP" \
+          "12 active streams ok=12 md5_ok=12 eof_clean=12 stalls=0; drain>=100ms; conf without worker_shutdown_timeout" \
+          "NO_DATA: reload itself completed (drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL}) but $HUP_SUMMARY"
+        return 0
+    fi
+    [ "$hrc" != "0" ] && rc=1
+    if [ "$rc" = "0" ]; then
+        record "rt02" "PASS" \
+          "12 active streams ok=12 md5_ok=12 eof_clean=12 stalls=0; drain>=100ms; conf without worker_shutdown_timeout" \
+          "drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} traffic=$HUP_SUMMARY"
+    else
+        record "rt02" "FAIL" \
+          "12 active streams ok=12 md5_ok=12 eof_clean=12 stalls=0; drain>=100ms; conf without worker_shutdown_timeout" \
+          "drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL} traffic=$HUP_SUMMARY"
+    fi
+    return $rc
+}
+
+trend_slope() { # file of one value per line -> least-squares slope
+    awk '{ n++; sx+=NR; sy+=$1; sxy+=NR*$1; sxx+=NR*NR }
+         END { if (n<2) { print 0; exit }
+               d = n*sxx - sx*sx; if (d==0) { print 0; exit }
+               printf "%.6f", (n*sxy - sx*sy)/d }' "$1"
+}
+
+case_rv9() {
+    say "=== case rv9 (reload loop) rounds=$ROUNDS interval=${INTERVAL}s poll=${POLL}s ==="
+    local conf ok=0 bad=0 rejected=0 r waited idle_ok w n line drain fwd rel
+    local rt hp base_hp final_rt final_hp pre_hp traffic="no probe" fetch=0
+    local rt_slope hp_slope rt_min rt_max hp_min
+    local st="$SHUTDOWN_TIMEOUT"
+    [ "$st" = "0" ] && st=15   # bound the drain; 0 lets T3 stretch to 90 s
+
+    pre_hp=$(hp_free)
+    conf=$(gen_nginx_conf "rv9" "$st")
+    push_probes || return 1
+    if ! start_stack "rv9" 1 "$st"; then
+        stop_stack "rv9" "$conf"
+        record "rv9" "FAIL" "stack starts for the loop" "start failed"
+        return 1
+    fi
+
+    # S7 rev-2 form: fresh-only probe. Parking keep-alive connections on G_old
+    # is what turns every round into a 90 s deadline run; high-rate fresh
+    # connections keep the drain verdict meaningful and the machine time sane.
+    if have_probe m4_lc.py; then
+        local dur=$(( ROUNDS * INTERVAL + 90 ))
+        launch_probe rv9 "$((dur + 30))" m4_lc.py --server "$TARGET_IP" --conns 0 \
+            --interval 0.5 --duration "$dur" --fresh 0.2 --timeout 2 \
+            || { stop_stack "rv9" "$conf"; return 1; }
+    else
+        stop_stack "rv9" "$conf"
+        record rv9 BLOCKED 'fresh-connection probe required' 'probe missing'
+        return 1
+    fi
+
+    base_hp=$(hp_free)
+    : > "$OUT/rv9_rt.series"; : > "$OUT/rv9_hp.series"; : > "$OUT/rv9_dr.series"
+    say "loop conf=[$conf] errlog=[$ERRLOG] master=$(master_pid)"
+
+    for r in $(seq 1 "$ROUNDS"); do
+        local t0; t0=$(date +%s)
+        idle_ok=0; waited=0
+        while [ "$waited" -lt "$DRAIN_TIMEOUT" ]; do
+            if ! reload_in_flight && [ "$(worker_count)" = "$WORKERS" ]; then
+                idle_ok=1; break
+            fi
+            sleep "$POLL"; waited=$((waited + POLL))
+        done
+        if [ "$idle_ok" != "1" ]; then
+            bad=$((bad + 1))
+            say "ROUND r=$r INCOMPLETE reason=not-idle workers=$(worker_count)"
+        else
+            local mark; mark=$(wc -l < "$ERRLOG")
+            probe_running || { bad=$((bad + 1)); break; }
+            nginx_signal "$conf" reload || { bad=$((bad + 1)); break; }
+            w=0
+            while [ "$w" -lt "$DRAIN_TIMEOUT" ]; do
+                tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete' >/dev/null && break
+                sleep 1; w=$((w + 1))
+            done
+            line=$(tail -n +$((mark + 1)) "$ERRLOG" | grep 'graceful reload complete' | tail -1)
+            n=$(tail -n +$((mark + 1)) "$ERRLOG" | grep -c 'graceful reload complete')
+            rejected=$(( rejected + $(tail -n +$((mark + 1)) "$ERRLOG" \
+                         | grep -c 'previous reload still in progress') ))
+            if [ "$n" = "1" ]; then
+                ok=$((ok + 1))
+                drain=$(printf '%s' "$line" | sed -n 's/.*drain \([0-9]*\) ms.*/\1/p')
+                fwd=$(printf '%s' "$line" | sed -n 's/.*drain forwarded \([0-9]*\).*/\1/p')
+                rel=$(printf '%s' "$line" | sed -n 's/.*relayed \([0-9]*\) pkts.*/\1/p')
+                say "ROUND r=$r OK drain=${drain:-NA}ms forwarded=${fwd:-NA} relayed=${rel:-NA}"
+            else
+                bad=$((bad + 1)); drain=""
+                say "ROUND r=$r INCOMPLETE n_complete=$n workers=$(worker_count)"
+            fi
+            echo "${drain:-0}" >> "$OUT/rv9_dr.series"
+        fi
+        rt=$(rtemap_count); hp=$(hp_free)
+        echo "$rt" >> "$OUT/rv9_rt.series"
+        echo "$hp" >> "$OUT/rv9_hp.series"
+        if [ "$r" = "1" ] || [ $((r % 10)) -eq 0 ] || [ "$r" = "$ROUNDS" ]; then
+            say "MILESTONE r=$r ok=$ok/$r bad=$bad psr=[$(worker_psr_list)] rtemap=$rt hp_free=$hp"
+        fi
+        local el=$(( $(date +%s) - t0 ))
+        while [ "$el" -lt "$INTERVAL" ]; do sleep 1; el=$(( $(date +%s) - t0 )); done
+    done
+
+    sleep 3
+    if have_probe m4_lc.py; then
+        if traffic=$(wait_client_summary /tmp/gr_rv9_lc_out.log 'LC_SUMMARY' 180); then
+            :
+        else
+            fetch=$?
+            # 2 = the probe reported but failed its own criterion: keep the
+            # real summary so the failure shows up in the verdict instead of
+            # being relabelled "did not report".
+            [ "$fetch" = "1" ] && traffic="NO_DATA (probe did not report within 180 s)"
+            # fetch=2: the probe judged itself failed -- the verdict keeps the
+            # summary, and the reload criterion below still applies.
+            [ "$fetch" = "2" ] && traffic="PROBE_FAILED $traffic"
+        fi
+    fi
+    stop_stack "rv9" "$conf" || bad=$((bad + 1))
+    final_rt=$RECLAIM_RT; final_hp=$RECLAIM_HP
+
+    # Leak is judged on the TREND, never on a single sample.
+    rt_slope=$(trend_slope "$OUT/rv9_rt.series")
+    hp_slope=$(trend_slope "$OUT/rv9_hp.series")
+    rt_min=$(sort -n "$OUT/rv9_rt.series" | head -1)
+    rt_max=$(sort -n "$OUT/rv9_rt.series" | tail -1)
+    hp_min=$(sort -n "$OUT/rv9_hp.series" | head -1)
+    say "TREND rtemap slope=$rt_slope min=$rt_min max=$rt_max | hp_free slope=$hp_slope min=$hp_min base=$base_hp"
+
+    local rc=0 notes=""
+    check_summary lc "$traffic" || { rc=1; notes="${notes}invalid_traffic;"; }
+    [ "$bad" != "0" ] && { rc=1; notes="${notes}incomplete_rounds=$bad;"; }
+    [ "$rejected" != "0" ] && notes="${notes}reentrancy_rejections=$rejected;"
+    awk -v s="$rt_slope" 'BEGIN{exit !(s>0.05)}' && { rc=1; notes="${notes}rtemap_slope=$rt_slope;"; }
+    [ $(( rt_max - rt_min )) -gt 32 ] && { rc=1; notes="${notes}rtemap_range=$((rt_max-rt_min));"; }
+    [ $(( base_hp - hp_min )) -gt 64 ] && { rc=1; notes="${notes}hp_drop=$((base_hp-hp_min));"; }
+    [ "$final_rt" != "0" ] && { rc=1; notes="${notes}rtemap_after_stop=$final_rt;"; }
+    [ $(( pre_hp - final_hp )) -gt 32 ] && { rc=1; notes="${notes}hp_unreclaimed=$((pre_hp-final_hp));"; }
+    [ -z "$notes" ] && notes="none"
+
+    local meas="ok=$ok/$ROUNDS bad=$bad rtemap[min=$rt_min max=$rt_max slope=$rt_slope] hp[base=$base_hp min=$hp_min final=$final_hp] traffic=$traffic notes=$notes"
+    if [ "$rc" = "0" ]; then
+        record "rv9" "PASS" \
+          "$ROUNDS reloads all complete; rtemap/hp trend flat; drain + forwarded/relayed recorded every round" \
+          "$meas"
+    else
+        record "rv9" "FAIL" \
+          "$ROUNDS reloads all complete; rtemap/hp trend flat; drain + forwarded/relayed recorded every round" \
+          "$meas"
+    fi
+    return $rc
+}
+
+case_gr0() {
+    say "=== case gr0 (graceful_reload=0 native control, RG-NR-01) ==="
+    local conf out summary windows longest rl rc=0 fetch=0
+    conf=$(gen_nginx_conf "gr0" 0)
+    push_probes || return 1
+    if ! start_stack "gr0" 0 0; then
+        stop_stack "gr0" "$conf"
+        record "gr0" "FAIL" "stack starts with graceful_reload=0" "start failed"
+        return 1
+    fi
+    if have_probe m4_outage.py; then
+        launch_probe gr0 45 m4_outage.py --server "$TARGET_IP" --duration 25 --timeout 0.5 \
+            || { stop_stack "gr0" "$conf"; return 1; }
+        sleep 5
+        probe_running || rc=1
+        nginx_signal "$conf" reload || rc=1
+        fetch=0
+        summary=$(wait_client_summary gr0 OUTAGE_SUMMARY 45) || fetch=$?
+        [ "$fetch" = "1" ] && summary="NO_DATA"
+        if [ "$fetch" = "2" ]; then
+            say "gr0 outage probe reported a summary but failed its own criterion"
+            rc=1
+        fi
+        check_summary outage "$summary" || rc=1
+    else
+        sleep 5
+        nginx_signal "$conf" reload
+        sleep 8
+        summary="NO_DATA (m4_outage.py absent from $PROBE_DIR)"
+    fi
+    rl=$(grep -c 'graceful reload complete\|graceful reload fsm:' "$ERRLOG")
+    stop_stack "gr0" "$conf"
+
+    if [ "${summary#NO_DATA}" != "$summary" ]; then
+        if [ "$rl" = "0" ]; then
+            record "gr0" "SKIP" "legacy outage window measured; zero graceful-reload log lines" \
+                   "$summary reload_log_lines=$rl"
+            return 0
+        fi
+        record "gr0" "FAIL" "legacy outage window measured; zero graceful-reload log lines" \
+               "$summary reload_log_lines=$rl (expected 0)"
+        return 1
+    fi
+    windows=$(printf '%s' "$summary" | sed -n 's/.*windows=\([0-9]*\).*/\1/p')
+    longest=$(printf '%s' "$summary" | sed -n 's/.*longest_outage=\([0-9.]*\)s.*/\1/p')
+    [ "$rl" = "0" ] || { rc=1; say "gr0: $rl graceful-reload log lines under =0"; }
+    [ "${windows:-0}" -ge 1 ] 2>/dev/null || { rc=1; say "gr0: no outage window measured"; }
+    awk -v v="${longest:-0}" 'BEGIN{exit !(v>=0.3 && v<=2.5)}' \
+        || { rc=1; say "gr0: longest_outage=${longest}s outside the 0.3..2.5 s band"; }
+    if [ "$rc" = "0" ]; then
+        record "gr0" "PASS" \
+          "legacy two-phase outage present and inside the 0.3..2.5 s baseline band; zero graceful-reload log lines" \
+          "$summary reload_log_lines=$rl"
+    else
+        record "gr0" "FAIL" \
+          "legacy two-phase outage present and inside the 0.3..2.5 s baseline band; zero graceful-reload log lines" \
+          "$summary reload_log_lines=$rl"
+    fi
+    return $rc
+}
+
+# ---- rt27: the resident primary and a changed fstack config ---------------
+SLIM_PIDFILE=/var/run/ff_slim_primary.pid
+SLIM_RECORD=/var/run/ff_slim_primary.conf
+
+slim_pid()   { cat "$SLIM_PIDFILE" 2>/dev/null; }
+proc_start() { awk '{sub(/.*\) /, ""); print $20}' "/proc/$1/stat" 2>/dev/null; }
+pid_alive()  { # a process that vanishes while being read is gone
+    local st
+    [ -n "$1" ] || return 1
+    st=$(grep '^State:' "/proc/$1/status" 2>/dev/null) || return 1
+    case "$st" in *Z*) return 1 ;; esac
+}
+veth_count() { ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -c '^veth[0-9][0-9]*$'; }
+http_ok()    { [ "$(run_client "curl -s -m 3 -o /dev/null -w '%{http_code}' '$TARGET_URL'" 2>/dev/null)" = 200 ]; }
+log_since()  { tail -n +$(($2 + 1)) "$1" 2>/dev/null; }
+
+wait_gone() { # pid seconds
+    local until=$((SECONDS + $2))
+    while [ "$SECONDS" -lt "$until" ]; do
+        pid_alive "$1" || return 0
+        sleep 1
+    done
+    return 1
+}
+
+wait_log() { # file mark pattern seconds
+    local until=$((SECONDS + $4))
+    while [ "$SECONDS" -lt "$until" ]; do
+        log_since "$1" "$2" | grep -q -- "$3" && return 0
+        sleep 1
+    done
+    return 1
+}
+
+# SIGKILL the master and its workers (what a by-name SIGKILL of nginx
+# matches): the resident primary is left behind without any master
+crash_master_only() {
+    local m w p
+    m=$(master_pid)
+    case "$m" in ''|*[!0-9]*) return 1 ;; esac
+    w=$(ps -eo pid,ppid,stat,comm \
+        | awk -v m="$m" '$2==m && $3 !~ /^Z/ && $4 ~ /^nginx/ {print $1}')
+    collect_owned || return 1
+    for p in $m $w; do
+        python3 -B "$SUPERVISOR" signal "$STACK_ID" "$p" KILL >> "$LOG" 2>&1 \
+            || ! pid_alive "$p" || return 1
+    done
+    for p in $m $w; do
+        wait_gone "$p" 15 || return 1
+    done
+}
+
+# start another master in the running stack (supervisor 'launch')
+relaunch_master() { # conf
+    case "$1" in "$OUT"/ngx_*.conf) ;; *) return 1 ;; esac
+    collect_owned || return 1
+    python3 -B "$SUPERVISOR" launch "$STACK_ID" \
+        "$(sha256sum "$NGINX_BIN" | awk '{print $1}')" "$NGINX_BIN" -c "$1" >> "$LOG" 2>&1
+}
+
+# the pid in the first "[emerg] <pid>#0: ...<pattern>" line since mark
+emerg_pid() { # file mark pattern
+    log_since "$1" "$2" | grep -- "$3" \
+        | sed -n 's/.*\[emerg\] \([0-9][0-9]*\)#.*/\1/p' | head -1
+}
+
+# the master started by relaunch_master refused to run: it logged the
+# expected line, removed its pid file and is gone
+expect_refused() { # step mark pattern seconds pidfile
+    local m pf="${5:-$OUT/nginx.pid}"
+    wait_log "$ERRLOG" "$2" "$3" "$4" \
+        || { say "rt27 $1: no '$3' within $4 s"; return 1; }
+    m=$(emerg_pid "$ERRLOG" "$2" "$3")
+    [ -n "$m" ] || { say "rt27 $1: no pid in the refusal line"; return 1; }
+    wait_gone "$m" 15 || { say "rt27 $1: refused master $m still alive"; return 1; }
+    [ ! -e "$pf" ] || { say "rt27 $1: the refused master left $pf"; return 1; }
+}
+
+expect_serving() { # step
+    local n
+    wait_http || { say "rt27 $1: HTTP is not 200"; return 1; }
+    n=$(worker_count)
+    [ "$n" = "$WORKERS" ] || { say "rt27 $1: workers=$n != $WORKERS"; return 1; }
+}
+
+case_rt27() {
+    say "=== case rt27 (resident primary vs a changed fstack config) ==="
+    local crit="kni 0->1 rebuilds an unused primary; a HUP / USR2 / second master / missing record / stuck primary is refused and leaves the running service alone"
+    local conf conf2 ini mark fsm0 fsm1 p1 p1s p2 p3 w1 w2 rc=0 step="" meas f pid leak=0 evmark nkill
+    # the masters of steps 5, 8 and 9 are killed: keep their primary around
+    local -x NGX_FF_SLIM_PRIMARY_ORPHAN_MS=600000
+    if [ ! -c /dev/vhost-net ]; then
+        record "rt27" "SKIP" "$crit" "LIMITED: no /dev/vhost-net device"
+        return 0
+    fi
+    conf=$(gen_nginx_conf "rt27" 0)
+    if ! start_stack "rt27" 1 0 0; then
+        stop_stack "rt27" "$conf"
+        record "rt27" "FAIL" "$crit" "kni=0 start failed, see $LOG"
+        return 1
+    fi
+    ini="$OUT/fstack_rt27.ini"
+    p1=$(slim_pid); p1s=$(proc_start "$p1")
+    say "rt27 1: kni=0 primary P1=$p1 veth=$(veth_count)"
+
+    # 2. HUP with kni=1 is refused before the window opens
+    step=2; ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
+    mark=$(wc -l < "$ERRLOG")
+    fsm0=$(grep -c 'graceful reload fsm: [A-Z0-9_]* -> ' "$ERRLOG")
+    w1=$(ps -eo pid,ppid,comm | awk -v m="$(master_pid)" '$2==m && $3 ~ /^nginx/ {print $1}' | sort | tr '\n' ' ')
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'graceful reload rejected: fstack config differs' 15 \
+        || { say "rt27 2: no rejection line"; rc=1; }
+    sleep 2
+    fsm1=$(grep -c 'graceful reload fsm: [A-Z0-9_]* -> ' "$ERRLOG")
+    w2=$(ps -eo pid,ppid,comm | awk -v m="$(master_pid)" '$2==m && $3 ~ /^nginx/ {print $1}' | sort | tr '\n' ' ')
+    [ "$fsm0" = "$fsm1" ] || { say "rt27 2: FSM moved ($fsm0 -> $fsm1)"; rc=1; }
+    [ "$w1" = "$w2" ] || { say "rt27 2: workers changed ($w1 -> $w2)"; rc=1; }
+    http_ok || { say "rt27 2: HTTP is not 200 after the refusal"; rc=1; }
+    say "rt27 2: HUP refused fsm=$fsm0->$fsm1 workers_before=[$w1] after=[$w2]"
+    # an old-generation worker that dies now respawns from its own snapshot
+    mark=$(wc -l < "$ERRLOG")
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "${w1%% *}" TERM >> "$LOG" 2>&1 || rc=1
+    sleep 8
+    expect_serving "2-respawn" || rc=1
+    if log_since "$ERRLOG" "$mark" | grep -q -E 'PANIC|cannot be respawned'; then
+        say "rt27 2: the respawned worker failed"; rc=1
+    fi
+    say "rt27 2: G_old worker ${w1%% *} TERMed, workers now $(worker_count), panics=$(log_since "$ERRLOG" "$mark" | grep -c PANIC)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 3. a binary upgrade cannot replace a primary that is in use
+    step=3; mark=$(wc -l < "$ERRLOG")
+    nginx_signal "$conf" usr2 || rc=1
+    wait_log "$ERRLOG" "$mark" 'runs another fstack config' 30 \
+        || { say "rt27 3: the new binary did not refuse"; rc=1; }
+    wait_log "$ERRLOG" "$mark" 'new binary exited before taking over' 30 \
+        || { say "rt27 3: the old master did not see the new binary exit"; rc=1; }
+    ini_strip_kni "$ini"
+    mark=$(wc -l < "$ERRLOG")
+    HUP_FSM=NA
+    hup_once "$conf" || { say "rt27 3: HUP after the refused upgrade failed"; rc=1; }
+    if log_since "$ERRLOG" "$mark" | grep -q 'HUP during a binary upgrade, rolling back'; then
+        say "rt27 3: the upgrade state was not reset"; rc=1
+    fi
+    say "rt27 3: USR2 refused, later HUP fsm=$HUP_FSM rollback=$(log_since "$ERRLOG" "$mark" | grep -c 'rolling back')"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 4. a second master cannot restart a primary that is in use
+    step=4; ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
+    conf2="$OUT/ngx_rt27b.conf"
+    sed -e "s#^error_log .*#error_log  $OUT/err_rt27b.log  notice;#" \
+        -e "s#^pid .*#pid        $OUT/nginx_rt27b.pid;#" "$conf" > "$conf2"
+    : > "$OUT/err_rt27b.log"
+    [ -e "$OUT/nginx_rt27b.pid" ] && "$RMTMP" "$OUT/nginx_rt27b.pid" >/dev/null
+    relaunch_master "$conf2" || rc=1
+    ERRLOG="$OUT/err_rt27b.log" expect_refused 4 0 'is still used by' 30 \
+        "$OUT/nginx_rt27b.pid" || rc=1
+    [ "$(slim_pid)" = "$p1" ] && [ "$(proc_start "$p1")" = "$p1s" ] \
+        || { say "rt27 4: the primary was touched"; rc=1; }
+    expect_serving 4 || rc=1
+    say "rt27 4: second master refused, primary still P1=$(slim_pid) workers=$(worker_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 5. no record: never touch the primary
+    step=5; mv "$SLIM_RECORD" "$OUT/slim_record.bak" || rc=1
+    crash_master_only || rc=1
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    expect_refused 5 "$mark" 'has no valid record' 30 || rc=1
+    mv "$OUT/slim_record.bak" "$SLIM_RECORD" || rc=1
+    [ "$(slim_pid)" = "$p1" ] && [ "$(proc_start "$p1")" = "$p1s" ] \
+        || { say "rt27 5: the primary was touched"; rc=1; }
+    say "rt27 5: no record refused, primary still P1=$(slim_pid) start=$(proc_start "$p1")"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 6. the reported case: kni 0 -> 1 rebuilds the unused primary
+    step=6; mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    wait_log "$ERRLOG" "$mark" 'restarting the resident slim primary' 30 \
+        || { say "rt27 6: no restart line"; rc=1; }
+    expect_serving 6 || rc=1
+    p2=$(slim_pid)
+    { [ -n "$p2" ] && [ "$p2" != "$p1" ] && ! pid_alive "$p1"; } \
+        || { say "rt27 6: primary not rebuilt (P1=$p1 P2=$p2)"; rc=1; }
+    [ "$(veth_count)" -ge 1 ] || { say "rt27 6: no veth netif"; rc=1; }
+    say "rt27 6: rebuilt P1=$p1 -> P2=$p2 workers=$(worker_count) veth=$(veth_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 7. an unchanged config reloads as usual, KNI included
+    step=7; HUP_FSM=NA; hup_once "$conf" || rc=1
+    [ "$(veth_count)" -ge 1 ] || { say "rt27 7: no veth netif after HUP"; rc=1; }
+    say "rt27 7: HUP fsm=$HUP_FSM veth=$(veth_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 8. the other way round: kni 1 -> 0
+    step=8; crash_master_only || rc=1
+    ini_strip_kni "$ini"
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    wait_log "$ERRLOG" "$mark" 'restarting the resident slim primary' 30 \
+        || { say "rt27 8: no restart line"; rc=1; }
+    expect_serving 8 || rc=1
+    p3=$(slim_pid)
+    { [ -n "$p3" ] && [ "$p3" != "$p2" ] && ! pid_alive "$p2"; } \
+        || { say "rt27 8: primary not rebuilt (P2=$p2 P3=$p3)"; rc=1; }
+    [ "$(veth_count)" = 0 ] || { say "rt27 8: veth netif still present"; rc=1; }
+    say "rt27 8: rebuilt P2=$p2 -> P3=$p3 workers=$(worker_count) veth=$(veth_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt27" "$conf"; record "rt27" FAIL "$crit" "$meas"; return 1; }
+
+    # 9. a primary that does not exit is never escalated
+    step=9; crash_master_only || rc=1
+    ini_force_kni "$ini" "$KNI_OWNER_PROC_ID"
+    evmark=$(wc -l < "$OUT/ownership-events.jsonl")
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$p3" STOP >> "$LOG" 2>&1 || rc=1
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    expect_refused 9 "$mark" 'did not exit within' 40 || rc=1
+    pid_alive "$p3" || { say "rt27 9: the stopped primary was escalated"; rc=1; }
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$p3" CONT >> "$LOG" 2>&1 || rc=1
+    wait_gone "$p3" 15 || { say "rt27 9: P3 did not act on its pending TERM"; rc=1; }
+    nkill=$(tail -n +$((evmark + 1)) "$OUT/ownership-events.jsonl" \
+        | grep '"event": "signal_requested"' | grep -c '"signal": "KILL"')
+    [ "$nkill" = 0 ] || { say "rt27 9: KILL was requested"; rc=1; }
+    say "rt27 9: stuck primary refused, KILL requests since STOP=$nkill, P3 gone after CONT"
+
+    say "rt27 10: snapshots before stop: $(ls /var/run/ff_nginx_fstack.* 2>/dev/null | tr '\n' ' ')"
+    stop_stack "rt27" "$conf"
+    say "rt27 10: snapshots after stop: $(ls /var/run/ff_nginx_fstack.* 2>/dev/null | tr '\n' ' ')"
+    for f in /var/run/ff_nginx_fstack.*; do
+        [ -e "$f" ] || continue
+        pid=$(basename "$f" | cut -d. -f2)
+        pid_alive "$pid" || { say "rt27 10: leaked snapshot $f"; leak=1; }
+    done
+    [ "$leak" = 0 ] || rc=1
+    meas="P1=$p1 P2=$p2 P3=$p3 refusals=hup,usr2,in-use,no-record,stuck rebuilds=0->1,1->0 snapshots_leaked=$leak"
+    if [ "$rc" = 0 ]; then
+        record "rt27" "PASS" "$crit" "$meas"
+    else
+        record "rt27" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- rt28: stopping nginx takes the resident primary with it --------------
+SLIM_IDLE=/var/run/ff_slim_primary.idle
+SLIM_LOG=/var/run/ff_slim_primary.log
+
+slim_files_gone() {
+    [ ! -e "$SLIM_PIDFILE" ] && [ ! -e "$SLIM_RECORD" ] && [ ! -e "$SLIM_IDLE" ]
+}
+
+rt28_serving() { # step
+    local n
+    wait_http || { say "rt28 $1: HTTP is not 200"; return 1; }
+    n=$(worker_count)
+    [ "$n" = "$WORKERS" ] || { say "rt28 $1: workers=$n != $WORKERS"; return 1; }
+}
+
+# stop or quit the only master: it takes the primary with it
+rt28_stop() { # step conf stop|quit
+    local m p mark res=0 deadline
+    m=$(master_pid); p=$(slim_pid); mark=$(wc -l < "$ERRLOG")
+    [ -n "$p" ] && pid_alive "$p" || { say "rt28 $1: no live primary"; return 1; }
+    nginx_signal "$2" "$3" || res=1
+    wait_gone "$m" 60 || { say "rt28 $1: master $m still alive"; res=1; }
+    wait_gone "$p" 5 || { say "rt28 $1: primary $p still alive"; res=1; }
+    slim_files_gone || { say "rt28 $1: primary files left: $(ls /var/run/ff_slim_primary.* 2>/dev/null | tr '\n' ' ')"; res=1; }
+    wait_log "$ERRLOG" "$mark" "stopped the resident slim primary (pid $p)" 5 \
+        || { say "rt28 $1: no stop line for primary $p"; res=1; }
+    deadline=$((SECONDS + 5))
+    while [ "$(veth_count)" != 0 ] && [ "$SECONDS" -lt "$deadline" ]; do
+        sleep 1
+    done
+    [ "$(veth_count)" = 0 ] || { say "rt28 $1: veth netif left"; res=1; }
+    say "rt28 $1: $3 -> master=$m primary=$p gone, veth=$(veth_count)"
+    return "$res"
+}
+
+rt28_relaunch() { # step conf pattern
+    local mark
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$2" || { say "rt28 $1: relaunch failed"; return 1; }
+    wait_log "$ERRLOG" "$mark" "$3" 30 || { say "rt28 $1: no '$3'"; return 1; }
+    rt28_serving "$1"
+}
+
+case_rt28() {
+    say "=== case rt28 (stop / quit / SIGKILL leave no resident primary behind) ==="
+    local crit="nginx -s stop and -s quit stop the resident primary with the last master; after the master and workers are SIGKILLed an unused primary is rebuilt by the next start or exits on its own; the old master of a USR2 upgrade leaves it to the new one; every start serves"
+    local conf kni=0 rc=0 step="" meas p p2 old new mark smark t0 dt=-1 started=0 handed=0 deadline
+    local -x NGX_FF_SLIM_PRIMARY_ORPHAN_MS=10000
+    [ -c /dev/vhost-net ] && kni=1
+    conf=$(gen_nginx_conf "rt28" 0)
+    if ! start_stack "rt28" 1 0 "$kni"; then
+        stop_stack "rt28" "$conf"
+        record "rt28" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+
+    # 1. nginx -s stop
+    step=1; rt28_stop 1 "$conf" stop || rc=1
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 2. a fresh start spawns a new primary and reloads as usual
+    step=2; rt28_relaunch 2 "$conf" 'spawning resident slim primary' || rc=1
+    HUP_FSM=NA; hup_once "$conf" || { say "rt28 2: HUP failed"; rc=1; }
+    say "rt28 2: restarted primary=$(slim_pid) HUP fsm=$HUP_FSM veth=$(veth_count)"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 3. nginx -s quit
+    step=3; rt28_stop 3 "$conf" quit || rc=1
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 4. SIGKILL master + workers; the next start rebuilds the idle primary
+    step=4; rt28_relaunch 4 "$conf" 'spawning resident slim primary' || rc=1
+    p=$(slim_pid)
+    [ -n "$p" ] || { say "rt28 4: no primary"; rc=1; }
+    crash_master_only || { say "rt28 4: SIGKILL via the supervisor failed"; rc=1; }
+    deadline=$((SECONDS + 10))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        [ "$(cut -d' ' -f1 "$SLIM_IDLE" 2>/dev/null)" = "$p" ] && break
+        sleep 1
+    done
+    [ "$(cut -d' ' -f1 "$SLIM_IDLE" 2>/dev/null)" = "$p" ] \
+        || { say "rt28 4: primary $p never reported idle"; rc=1; }
+    rt28_relaunch 4 "$conf" 'no master or worker uses it' || rc=1
+    p2=$(slim_pid)
+    { [ -n "$p2" ] && [ "$p2" != "$p" ] && ! pid_alive "$p"; } \
+        || { say "rt28 4: primary not rebuilt ($p -> $p2)"; rc=1; }
+    say "rt28 4: SIGKILL + start rebuilt primary $p -> $p2"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 5. SIGKILL again and wait: the primary exits on its own
+    step=5; p=$(slim_pid); smark=$(wc -l < "$SLIM_LOG")
+    [ -n "$p" ] && pid_alive "$p" || { say "rt28 5: no live primary"; rc=1; }
+    t0=$SECONDS
+    crash_master_only || { say "rt28 5: SIGKILL via the supervisor failed"; rc=1; }
+    wait_gone "$p" 40 || { say "rt28 5: primary $p still alive after 40 s"; rc=1; }
+    dt=$((SECONDS - t0))
+    log_since "$SLIM_LOG" "$smark" | grep -q "(pid $p): no master or worker for" \
+        || { say "rt28 5: no self-exit line in $SLIM_LOG"; rc=1; }
+    [ "$dt" -ge 8 ] || { say "rt28 5: primary left after ${dt}s, before the grace"; rc=1; }
+    say "rt28 5: SIGKILL -> primary $p exited on its own after ${dt}s"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+
+    # 6. USR2 + WINCH + QUIT of the old master keeps the primary; stopping
+    # the new master afterwards stops it
+    step=6; rt28_relaunch 6 "$conf" 'spawning resident slim primary' || rc=1
+    p=$(slim_pid); old=$(master_pid); mark=$(wc -l < "$ERRLOG")
+    nginx_signal "$conf" usr2 || rc=1
+    deadline=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        if [ -s "$OUT/nginx.pid.oldbin" ] && [ "$(master_pid)" != "$old" ] \
+            && [ "$(worker_count)" = "$WORKERS" ]; then started=1; break; fi
+        sleep 1
+    done
+    [ "$started" = 1 ] || { say "rt28 6: the new binary did not come up"; rc=1; }
+    new=$(master_pid)
+    collect_owned || rc=1
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$old" WINCH >> "$LOG" 2>&1 || rc=1
+    deadline=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$deadline" ]; do
+        log_since "$ERRLOG" "$mark" | grep -q "ff usr2: handed rx to the new binary" \
+            && { handed=1; break; }
+        sleep 1
+    done
+    [ "$handed" = 1 ] || { say "rt28 6: no rx handover"; rc=1; }
+    mark=$(wc -l < "$ERRLOG")
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$old" QUIT >> "$LOG" 2>&1 || rc=1
+    wait_gone "$old" 120 || { say "rt28 6: old master $old still alive"; rc=1; }
+    log_since "$ERRLOG" "$mark" | grep -q 'keeping the resident slim primary for the other master' \
+        || { say "rt28 6: the old master did not keep the primary"; rc=1; }
+    pid_alive "$p" && [ "$(slim_pid)" = "$p" ] \
+        || { say "rt28 6: primary $p lost with the old master"; rc=1; }
+    http_ok || { say "rt28 6: HTTP is not 200 on the new master"; rc=1; }
+    say "rt28 6: USR2 old=$old -> new=$new, old quit, primary $p kept"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt28" "$conf"; record "rt28" FAIL "$crit" "$meas"; return 1; }
+    rt28_stop 6 "$conf" stop || rc=1
+
+    stop_stack "rt28" "$conf" || rc=1
+    meas="kni=$kni stop,quit=primary stopped; sigkill+start=rebuilt; sigkill=self-exit ${dt}s; usr2 old quit=kept, new stop=stopped"
+    if [ "$rc" = 0 ]; then
+        record "rt28" "PASS" "$crit" "$meas"
+    else
+        record "rt28" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- rt29: an MTU config the primary rejects fails fast, with its reason ---
+case_rt29() {
+    say "=== case rt29 (MTU config: a rejected one fails fast, a valid one serves) ==="
+    local crit="with [port0] mtu=9000 and no mtu_enable the master exits within 20 s, logs the primary's reason and leaves no pid file or primary; with mtu_enable=1 the stack serves, f-stack-0 has mtu 9000 and a HUP reloads"
+    local conf ini rc=0 step="" meas mark t0 dt=-1 m p line mtu=NA
+    conf=$(gen_nginx_conf "rt29" 0)
+    if ! start_stack "rt29" 1 0 0; then
+        stop_stack "rt29" "$conf"
+        record "rt29" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    ini="$OUT/fstack_rt29.ini"
+
+    # 1. stop the 1500-MTU stack
+    step=1; m=$(master_pid); p=$(slim_pid)
+    [ -n "$p" ] && pid_alive "$p" || { say "rt29 1: no live primary"; rc=1; }
+    nginx_signal "$conf" stop || rc=1
+    wait_gone "$m" 60 || { say "rt29 1: master $m still alive"; rc=1; }
+    wait_gone "$p" 10 || { say "rt29 1: primary $p still alive"; rc=1; }
+    slim_files_gone || { say "rt29 1: primary files left"; rc=1; }
+    say "rt29 1: stopped master=$m primary=$p"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt29" "$conf"; record "rt29" FAIL "$crit" "$meas"; return 1; }
+
+    # 2. mtu=9000 without mtu_enable: refused within seconds, with the reason
+    step=2; ini_set "$ini" port0 mtu 9000
+    mark=$(wc -l < "$ERRLOG"); t0=$SECONDS
+    relaunch_master "$conf" || rc=1
+    wait_log "$ERRLOG" "$mark" 'slim primary exited during initialization' 20 \
+        || { say "rt29 2: no early-exit line within 20 s"; rc=1; }
+    dt=$((SECONDS - t0))
+    line=$(log_since "$ERRLOG" "$mark" | grep 'exited during initialization' | head -1)
+    case "$line" in
+        *'requires mtu_enable=1'*) ;;
+        *) say "rt29 2: the reason is missing: [$line]"; rc=1 ;;
+    esac
+    m=$(emerg_pid "$ERRLOG" "$mark" 'exited during initialization')
+    { [ -n "$m" ] && wait_gone "$m" 15; } || { say "rt29 2: master [$m] still alive"; rc=1; }
+    [ ! -e "$OUT/nginx.pid" ] || { say "rt29 2: nginx.pid left behind"; rc=1; }
+    ! pid_alive "$(slim_pid)" || { say "rt29 2: a primary is alive"; rc=1; }
+    if log_since "$ERRLOG" "$mark" | grep -q 'failed to become ready'; then
+        say "rt29 2: fell back to the ready timeout"; rc=1
+    fi
+    say "rt29 2: refused after ${dt}s: ${line#*graceful_reload: }"
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt29" "$conf"; record "rt29" FAIL "$crit" "$meas"; return 1; }
+
+    # 3. mtu_enable=1: the stack serves with a 9000 MTU and reloads
+    step=3; ini_set "$ini" dpdk mtu_enable 1; ini_set "$ini" dpdk max_mtu 9000
+    mark=$(wc -l < "$ERRLOG")
+    relaunch_master "$conf" || rc=1
+    wait_log "$ERRLOG" "$mark" 'slim primary ready' 60 \
+        || { say "rt29 3: no ready line"; rc=1; }
+    wait_http || { say "rt29 3: HTTP is not 200"; rc=1; }
+    [ "$(worker_count)" = "$WORKERS" ] || { say "rt29 3: workers=$(worker_count)"; rc=1; }
+    mtu=$(timeout 20 "$REPO_ROOT/tools/sbin/ifconfig" -p 1 f-stack-0 2>/dev/null \
+        | grep -o -E 'mtu [0-9]+' | head -1 | cut -d' ' -f2)
+    [ "$mtu" = 9000 ] || { say "rt29 3: f-stack-0 mtu=[$mtu]"; rc=1; }
+    HUP_FSM=NA; hup_once "$conf" || { say "rt29 3: HUP failed"; rc=1; }
+    say "rt29 3: mtu=$mtu HUP fsm=$HUP_FSM workers=$(worker_count)"
+
+    stop_stack "rt29" "$conf" || rc=1
+    meas="mtu=9000 w/o mtu_enable refused in ${dt}s with the reason; mtu_enable=1 mtu=$mtu HUP fsm=$HUP_FSM"
+    if [ "$rc" = 0 ]; then
+        record "rt29" "PASS" "$crit" "$meas"
+    else
+        record "rt29" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- rt32: reverse proxy, upstream connections opened during a reload ------
+# The upstream runs on the client (bounded reload_remote.py job), reached
+# through the f-stack NIC. Requests sent while the new generation serves and
+# the old one drains make the new generation connect upstream: the upstream's
+# SYN-ACK must stay with it (flow map), and the transfers the old generation
+# started before the HUP must still complete.
+# parity shared by every "peer_port=N" in the input, "mixed" or "none"
+rt32_parity() {
+    printf '%s\n' "$1" | sed -n 's/^ok peer_port=\([0-9]*\).*/\1/p' \
+        | awk '{p = $1 % 2; s[p] = 1} END {
+            if (s[0] && s[1]) print "mixed"; else if (s[0]) print 0;
+            else if (s[1]) print 1; else print "none" }'
+}
+
+case_rt32() {
+    say "=== case rt32 (reverse proxy across a reload) ==="
+    local crit="through the proxy (no upstream keepalive, so every request connects upstream): requests sent in the reload window all return 200, their local ports have the opposite parity of the old generation's, a 30 s stream and a 64 MiB download started before the HUP complete intact, and the window was still open while the requests ran"
+    local conf up_ip up_port=18932 rc=0 step="" meas mark out n ok slow md5 ref
+    local p_old p_new
+    WIN_OK=0
+    case "$TARGET_IP" in *:*)
+        record "rt32" "SKIP" "$crit" "IPv4 only (the upstream is reached over IPv4)"; return 0 ;;
+    esac
+    # more than one worker needs NIC RSS to steer the upstream replies to
+    # the connecting worker's queue, which this case does not verify
+    [ "$WORKERS" = 1 ] || { record "rt32" "SKIP" "$crit" "needs --workers 1"; return 0; }
+    up_ip=$(run_client "ip -4 -o addr show $CLIENT_IF" 2>/dev/null \
+        | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [ -n "$up_ip" ] || { record "rt32" "SKIP" "$crit" "no IPv4 address on the client $CLIENT_IF"; return 0; }
+
+    NGX_EXTRA_HTTP="    upstream up_rt32 { server $up_ip:$up_port; }"
+    NGX_EXTRA_LOC="        location /up/ { proxy_connect_timeout 5s; proxy_http_version 1.1; proxy_set_header Connection \"\"; proxy_buffering off; proxy_pass http://up_rt32; }"
+    conf="$OUT/ngx_rt32.conf"
+    if ! start_stack "rt32" 1 0 0; then
+        NGX_EXTRA_HTTP=""; NGX_EXTRA_LOC=""
+        stop_stack "rt32" "$conf"
+        record "rt32" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    NGX_EXTRA_HTTP=""; NGX_EXTRA_LOC=""
+    grep -q "proxy_pass http://up_rt32" "$conf" \
+        || { stop_stack "rt32" "$conf"; record "rt32" FAIL "$crit" "proxy config missing"; return 1; }
+    step=1
+    if ! launch_probe rt32_up 400 reload_upstream.py --server "$up_ip" --port "$up_port"; then
+        say "rt32 1: upstream job log: $(run_client "tail -n 3 '$REMOTE_DIR/rt32_up.log'" 2>/dev/null | tr '\n' ' ')"
+        stop_stack "rt32" "$conf"; record "rt32" FAIL "$crit" "upstream job did not start"; return 1
+    fi
+    ref=$(run_client "python3 -B '$REMOTE_DIR/reload_upstream.py' md5" 2>/dev/null)
+    for n in 1 2 3 4 5 6 7 8 9 10; do
+        [ "$(run_client "curl -s -m 3 -o /dev/null -w '%{http_code}' '$TARGET_URL/up/ok'" 2>/dev/null)" = 200 ] && break
+        sleep 1
+    done
+    out=$(CLIENT_TIMEOUT=60 run_client "for i in 1 2 3 4 5; do curl -s -m 8 -w '\n' '$TARGET_URL/up/ok'; done" 2>/dev/null)
+    ok=$(printf '%s\n' "$out" | grep -c '^ok peer_port=')
+    p_old=$(rt32_parity "$out")
+    say "rt32 1: before the reload ok=$ok/5 port parity=$p_old (upstream <CLIENT_IP>:$up_port)"
+    [ "$ok" = 5 ] || rc=1
+    case "$p_old" in 0|1) ;; *) rc=1 ;; esac
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt32" "$conf"; record "rt32" FAIL "$crit" "$meas"; return 1; }
+
+    # 2. transfers through the old generation, then HUP
+    step=2
+    run_client "nohup sh -c \"curl -s -m 120 -o /dev/null -w '%{http_code} %{size_download}' '$TARGET_URL/up/slow?sec=30' > '$REMOTE_DIR/rt32_slow.txt'\" </dev/null >/dev/null 2>&1 &
+nohup sh -c \"curl -s -m 150 --limit-rate 2M '$TARGET_URL/up/big' | md5sum > '$REMOTE_DIR/rt32_big.md5'\" </dev/null >/dev/null 2>&1 &" || rc=1
+    sleep 3
+    mark=$(wc -l < "$ERRLOG")
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'old generation draining' 30 \
+        || { say "rt32 2: the window did not open"; rc=1; }
+    sleep 2
+    [ "$rc" = 0 ] || { meas="step $step failed"; stop_stack "rt32" "$conf"; record "rt32" FAIL "$crit" "$meas"; return 1; }
+
+    # 3. new requests inside the window: the new generation connects upstream
+    step=3
+    out=$(CLIENT_TIMEOUT=200 run_client "for i in \$(seq 1 20); do curl -s -m 8 -w ' code=%{http_code}\n' '$TARGET_URL/up/ok'; done" 2>/dev/null)
+    ok=$(printf '%s\n' "$out" | grep -c '^ok peer_port=[0-9]* code=200$')
+    p_new=$(rt32_parity "$out")
+    WIN_OK=$ok
+    if log_since "$ERRLOG" "$mark" | grep -q 'graceful reload complete'; then
+        say "rt32 3: the window closed before the requests finished"; rc=1
+    fi
+    say "rt32 3: in the window ok=$ok/20 port parity=$p_new codes=[$(printf '%s\n' "$out" | sed -n 's/.*code=//p' | sort | uniq -c | tr -s ' \n' ' ')]"
+    [ "$ok" = 20 ] || rc=1
+    case "$p_old$p_new" in 01|10) ;; *) say "rt32 3: parity not split"; rc=1 ;; esac
+    if log_since "$ERRLOG" "$mark" | grep -q 'upstream timed out'; then
+        say "rt32 3: upstream timed out logged"; rc=1
+    fi
+
+    # 4. the transfers of the old generation complete intact
+    step=4
+    for n in $(seq 1 40); do
+        slow=$(run_client "cat '$REMOTE_DIR/rt32_slow.txt' 2>/dev/null")
+        md5=$(run_client "cut -d' ' -f1 '$REMOTE_DIR/rt32_big.md5' 2>/dev/null")
+        [ -n "$slow" ] && [ -n "$md5" ] && break
+        sleep 5
+    done
+    say "rt32 4: slow=[$slow] big md5 ok=$([ -n "$ref" ] && [ "$md5" = "$ref" ] && echo 1 || echo 0)"
+    [ "$slow" = "200 2457600" ] || rc=1
+    [ -n "$ref" ] && [ "$md5" = "$ref" ] || rc=1
+    wait_log "$ERRLOG" "$mark" 'graceful reload complete' 120 \
+        || { say "rt32 4: the reload did not complete"; rc=1; }
+
+    # 5. after the window
+    step=5
+    out=$(CLIENT_TIMEOUT=60 run_client "for i in 1 2 3 4 5; do curl -s -m 8 -w '\n' '$TARGET_URL/up/ok'; done" 2>/dev/null)
+    ok=$(printf '%s\n' "$out" | grep -c '^ok peer_port=')
+    say "rt32 5: after the reload ok=$ok/5 port parity=$(rt32_parity "$out")"
+    [ "$ok" = 5 ] || rc=1
+
+    stop_stack "rt32" "$conf" || rc=1
+    meas="window ok=$WIN_OK/20 parity old=$p_old new=$p_new slow=[$slow] md5_ok=$([ "$md5" = "$ref" ] && echo 1 || echo 0)"
+    if [ "$rc" = 0 ]; then
+        record "rt32" "PASS" "$crit" "$meas"
+    else
+        record "rt32" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- UDP cases (rt33 server, rt34 proxy, rt35 USR2) ------------------------
+# live nginx children of a master, comma separated
+udp_pids() { # master
+    ps -eo pid,ppid,stat,comm 2>/dev/null \
+        | awk -v m="$1" '$2==m && $1!=m && $3 !~ /^Z/ && $4 ~ /^nginx/ {print $1}' \
+        | sort -n | paste -sd, -
+}
+
+# copy a reload_udp.py job log here once it holds its summary
+udp_fetch() { # job seconds
+    local f="$OUT/$1.log" until=$((SECONDS + $2))
+    while [ "$SECONDS" -lt "$until" ]; do
+        run_client "cat '$REMOTE_DIR/$1.log'" > "$f" 2>/dev/null
+        grep -q '^UDP_SUMMARY ' "$f" && return 0
+        sleep 2
+    done
+    return 1
+}
+
+udp_check() { # job mode old new [check args]
+    local job="$1" mode="$2" old="$3" new="$4"
+    shift 4
+    python3 -B "$SCRIPT_DIR/common/reload_udp.py" check "$OUT/$job.log" \
+        --mode "$mode" --old "$old" --new "$new" "$@"
+}
+
+udp_flows() { # job seconds flows duration port [name]
+    launch_probe "$1" "$2" reload_udp.py flows --server "$TARGET_IP" \
+        --port "$5" --flows "$3" --duration "$4" --interval 0.2 \
+        --timeout 1 --name "${6:-$1}"
+}
+
+# the reload time from the completion line logged since mark, in seconds
+udp_took() { # mark
+    log_since "$ERRLOG" "$1" | grep -o 'graceful reload complete: .*(took [0-9]* ms' \
+        | tail -1 | sed -n 's/.*took \([0-9]*\) ms/\1/p' | awk '{print int($1 / 1000)}'
+}
+
+# the reload window opened at mark is still open
+udp_window_open() { # mark
+    ! log_since "$ERRLOG" "$1" | grep -q 'graceful reload complete'
+}
+
+udp_listen() { # port
+    case "$TARGET_IP" in
+        *:*) printf '[::]:%s udp ipv6only=on' "$1" ;;
+        *) printf '%s udp' "$1" ;;
+    esac
+}
+
+# ---- rt33: stream udp server across HUPs --------------------------------
+case_rt33() {
+    say "=== case rt33 (UDP server flows across HUPs) ==="
+    local crit="worker_shutdown_timeout 25 s: flows started before the HUP are answered by the old generation only, flows started in the window by the new one only, no datagram lost or refused; once the old flows go idle the reload completes before the 25 s deadline; a flow that never goes idle moves to the new generation exactly once, at most 1 datagram lost"
+    local conf port=19533 rc=0 step="" meas mark t0 m old new old2 new2
+    local ca="" cb="" cc="" dt1=-1 dt2=-1
+    NGX_EXTRA_MAIN="stream { server { listen $(udp_listen $port); return \"pid=\$pid\"; } }"
+    FSTACK_EXTRA_DPDK="reload_udp_idle_ms=3000"
+    conf="$OUT/ngx_rt33.conf"
+    if ! start_stack "rt33" 1 25 0; then
+        NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+        stop_stack "rt33" "$conf"
+        record "rt33" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+    m=$(master_pid); old=$(udp_pids "$m")
+
+    # 1. the server answers
+    step=1
+    udp_flows rt33_pre 30 2 4 "$port" || rc=1
+    udp_fetch rt33_pre 30 || rc=1
+    say "rt33 1: $(udp_check rt33_pre old "$old" "")"
+    udp_check rt33_pre old "$old" "" >/dev/null || rc=1
+    [ "$rc" = 0 ] || { stop_stack "rt33" "$conf"; record "rt33" FAIL "$crit" "step $step failed"; return 1; }
+
+    # 2. old flows, HUP, new flows inside the window
+    step=2
+    udp_flows rt33_a 90 8 15 "$port" || rc=1
+    sleep 3
+    mark=$(wc -l < "$ERRLOG"); t0=$SECONDS
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'old generation draining' 30 \
+        || { say "rt33 2: the window did not open"; rc=1; }
+    new=$(udp_pids "$m" | tr ',' '\n' | grep -v -x -F -e "${old//,/$'\n'}" | paste -sd, -)
+    udp_flows rt33_b 60 8 6 "$port" || rc=1
+    udp_fetch rt33_b 40 || rc=1
+    udp_window_open "$mark" || { say "rt33 2: the window closed before the new flows ended"; rc=1; }
+    cb=$(udp_check rt33_b new "$old" "$new")
+    say "rt33 2: new flows: $cb (old=$old new=$new)"
+    case "$cb" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+
+    # 3. the old flows stayed on the old generation, which converges once
+    # they are idle, before the deadline
+    step=3
+    udp_fetch rt33_a 60 || rc=1
+    ca=$(udp_check rt33_a old "$old" "$new")
+    say "rt33 3: old flows: $ca"
+    case "$ca" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    wait_log "$ERRLOG" "$mark" 'graceful reload complete' $((t0 + 120 - SECONDS)) \
+        || { say "rt33 3: the reload did not complete"; rc=1; }
+    dt1=$(udp_took "$mark"); dt1=${dt1:-999}
+    say "rt33 3: complete after ${dt1}s"
+    [ "$dt1" -le 24 ] || { say "rt33 3: the reload took ${dt1}s"; rc=1; }
+
+    # 4. a flow that never goes idle: handed over at the T3 deadline
+    step=4
+    old2=$(udp_pids "$m")
+    udp_flows rt33_c 150 2 60 "$port" || rc=1
+    sleep 3
+    mark=$(wc -l < "$ERRLOG"); t0=$SECONDS
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'graceful reload complete' 120 \
+        || { say "rt33 4: the reload did not complete"; rc=1; }
+    dt2=$(udp_took "$mark"); dt2=${dt2:-0}
+    new2=$(udp_pids "$m")
+    udp_fetch rt33_c 120 || rc=1
+    cc=$(udp_check rt33_c switch "$old2" "$new2" --max-lost 1 --need-switch)
+    say "rt33 4: complete after ${dt2}s; long flows: $cc"
+    case "$cc" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    # the long flows hold the old generation until the 25 s deadline
+    [ "$dt2" -ge 22 ] || { say "rt33 4: the reload took only ${dt2}s"; rc=1; }
+
+    stop_stack "rt33" "$conf" || rc=1
+    meas="new: ${cb#CHECK }; old: ${ca#CHECK }; idle reload ${dt1}s; long: ${cc#CHECK }, reload ${dt2}s"
+    if [ "$rc" = 0 ]; then
+        record "rt33" "PASS" "$crit" "$meas"
+    else
+        record "rt33" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- rt34: stream udp reverse proxy across a HUP ------------------------
+case_rt34() {
+    say "=== case rt34 (UDP reverse proxy across a HUP) ==="
+    local crit="through a stream udp proxy: every flow keeps one upstream port (one session) with no datagram lost, flows started before the HUP use the old generation's port parity and flows started in the window the opposite one, and the reload completes within 60 s"
+    local conf port=19534 up_ip up_port=18934 rc=0 step="" mark t0 m
+    local cp="" ca="" cb="" p_old="" p_new="" dt=-1 meas
+    case "$TARGET_IP" in *:*)
+        record "rt34" "SKIP" "$crit" "IPv4 only (the upstream is reached over IPv4)"; return 0 ;;
+    esac
+    [ "$WORKERS" = 1 ] || { record "rt34" "SKIP" "$crit" "needs --workers 1"; return 0; }
+    up_ip=$(run_client "ip -4 -o addr show $CLIENT_IF" 2>/dev/null \
+        | awk '{print $4}' | cut -d/ -f1 | head -1)
+    [ -n "$up_ip" ] || { record "rt34" "SKIP" "$crit" "no IPv4 address on the client $CLIENT_IF"; return 0; }
+    NGX_EXTRA_MAIN="stream { upstream up_rt34 { server $up_ip:$up_port; } server { listen $port udp; proxy_pass up_rt34; proxy_timeout 20s; } }"
+    FSTACK_EXTRA_DPDK="reload_udp_idle_ms=3000"
+    conf="$OUT/ngx_rt34.conf"
+    if ! start_stack "rt34" 1 0 0; then
+        NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+        stop_stack "rt34" "$conf"
+        record "rt34" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+    m=$(master_pid)
+
+    # 1. the upstream answers through the proxy
+    step=1
+    launch_probe rt34_up 400 reload_udp.py serve --server "$up_ip" --port "$up_port" || rc=1
+    udp_flows rt34_pre 30 2 4 "$port" || rc=1
+    udp_fetch rt34_pre 30 || rc=1
+    cp=$(udp_check rt34_pre old "" "")
+    p_old=$(printf '%s' "$cp" | sed -n 's/.* parity=\([01NA]*\) .*/\1/p')
+    say "rt34 1: $cp (upstream <CLIENT_IP>:$up_port)"
+    case "$cp" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    case "$p_old" in 0|1) ;; *) rc=1 ;; esac
+    [ "$rc" = 0 ] || { stop_stack "rt34" "$conf"; record "rt34" FAIL "$crit" "step $step failed"; return 1; }
+
+    # 2. old flows, HUP, new flows inside the window
+    step=2
+    udp_flows rt34_a 90 4 25 "$port" || rc=1
+    sleep 3
+    mark=$(wc -l < "$ERRLOG"); t0=$SECONDS
+    nginx_signal "$conf" reload || rc=1
+    wait_log "$ERRLOG" "$mark" 'old generation draining' 30 \
+        || { say "rt34 2: the window did not open"; rc=1; }
+    udp_flows rt34_b 60 4 6 "$port" || rc=1
+    udp_fetch rt34_b 40 || rc=1
+    udp_window_open "$mark" || { say "rt34 2: the window closed before the new flows ended"; rc=1; }
+    cb=$(udp_check rt34_b new "" "")
+    p_new=$(printf '%s' "$cb" | sed -n 's/.* parity=\([01NA]*\) .*/\1/p')
+    say "rt34 2: new flows: $cb"
+    case "$cb" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    case "$p_old$p_new" in 01|10) ;; *) say "rt34 2: parity not split ($p_old/$p_new)"; rc=1 ;; esac
+
+    # 3. the old flows kept their sessions, the old generation converges
+    step=3
+    udp_fetch rt34_a 60 || rc=1
+    ca=$(udp_check rt34_a old "" "")
+    say "rt34 3: old flows: $ca"
+    case "$ca" in "CHECK ok=1 "*"parity=$p_old "*) ;; *) rc=1 ;; esac
+    wait_log "$ERRLOG" "$mark" 'graceful reload complete' $((t0 + 120 - SECONDS)) \
+        || { say "rt34 3: the reload did not complete"; rc=1; }
+    dt=$(udp_took "$mark"); dt=${dt:-999}
+    say "rt34 3: complete after ${dt}s"
+    [ "$dt" -le 60 ] || rc=1
+
+    stop_stack "rt34" "$conf" || rc=1
+    meas="parity old=$p_old new=$p_new; new: ${cb#CHECK }; old: ${ca#CHECK }; reload ${dt}s"
+    if [ "$rc" = 0 ]; then
+        record "rt34" "PASS" "$crit" "$meas"
+    else
+        record "rt34" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# ---- rt35: stream udp server across USR2 + WINCH -------------------------
+case_rt35() {
+    say "=== case rt35 (UDP server flows across USR2 + WINCH) ==="
+    local crit="after a priming HUP, USR2 + WINCH: flows started before the handover are answered by the old master's workers only, flows started after it by the new master's workers only, nothing lost or refused, the old workers linger until the old flows are idle (0 flows left) and exit within 60 s of the old flows ending"
+    local conf port=19535 rc=0 step="" m old new oldm="" ca="" cb="" left=-1 meas until lg=""
+    case "$TARGET_IP" in *:*)
+        record "rt35" "SKIP" "$crit" "IPv4 only"; return 0 ;;
+    esac
+    NGX_EXTRA_MAIN="stream { server { listen $(udp_listen $port); return \"pid=\$pid\"; } }"
+    FSTACK_EXTRA_DPDK="reload_udp_idle_ms=3000"
+    conf="$OUT/ngx_rt35.conf"
+    if ! start_stack "rt35" 1 0 0; then
+        NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+        stop_stack "rt35" "$conf"
+        record "rt35" "FAIL" "$crit" "start failed, see $LOG"
+        return 1
+    fi
+    NGX_EXTRA_MAIN=""; FSTACK_EXTRA_DPDK=""
+
+    # 1. priming HUP (see rt25), then old flows and USR2 + WINCH
+    step=1
+    hup_once "$conf" || rc=1
+    oldm=$(master_pid); old=$(udp_pids "$oldm")
+    udp_flows rt35_a 90 4 25 "$port" || rc=1
+    sleep 3
+    nginx_signal "$conf" usr2 || rc=1
+    until=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$until" ] && [ ! -s "$OUT/nginx.pid.oldbin" ]; do sleep 1; done
+    [ -s "$OUT/nginx.pid.oldbin" ] || { say "rt35 1: no nginx.pid.oldbin"; rc=1; }
+    sleep 5
+    collect_owned || rc=1
+    python3 -B "$SUPERVISOR" signal "$STACK_ID" "$oldm" WINCH >/dev/null || rc=1
+    until=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$until" ]; do
+        grep -q "ff usr2: handed rx to the new binary" "$ERRLOG" && break
+        sleep 1
+    done
+    grep -q "ff usr2: handed rx to the new binary" "$ERRLOG" || { say "rt35 1: no handover"; rc=1; }
+    [ "$rc" = 0 ] || { stop_stack "rt35" "$conf"; record "rt35" FAIL "$crit" "step $step failed"; return 1; }
+
+    # 2. new flows go to the new master
+    step=2
+    m=$(master_pid); new=$(udp_pids "$m")
+    udp_flows rt35_b 60 4 6 "$port" || rc=1
+    udp_fetch rt35_b 40 || rc=1
+    [ -n "$(udp_pids "$oldm" | tr ',' '\n' | grep -v -x -e "$m")" ] \
+        || { say "rt35 2: the old workers left before the new flows ended"; rc=1; }
+    cb=$(udp_check rt35_b new "$old" "$new")
+    say "rt35 2: new flows: $cb (old=$old new=$new)"
+    case "$cb" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+
+    # 3. old flows stayed, old workers leave once they are idle
+    step=3
+    udp_fetch rt35_a 60 || rc=1
+    ca=$(udp_check rt35_a old "$old" "$new")
+    say "rt35 3: old flows: $ca"
+    case "$ca" in "CHECK ok=1"*) ;; *) rc=1 ;; esac
+    until=$((SECONDS + 60))
+    while [ "$SECONDS" -lt "$until" ]; do
+        left=$(udp_pids "$oldm" | tr ',' '\n' | grep -c -v -x -e "$m" -e '')
+        [ "$left" = 0 ] && break
+        sleep 2
+    done
+    lg=$(grep -o 'ff drain: UDP linger over after [0-9]* ms, [0-9]* flow(s) still active' "$ERRLOG" | tail -1)
+    say "rt35 3: old workers left=$left [$lg]"
+    [ "$left" = 0 ] || rc=1
+    case "$lg" in *", 0 flow(s) still active") ;; *) rc=1 ;; esac
+
+    stop_stack "rt35" "$conf" || rc=1
+    meas="new: ${cb#CHECK }; old: ${ca#CHECK }; old workers left=$left; ${lg#ff drain: }"
+    if [ "$rc" = 0 ]; then
+        record "rt35" "PASS" "$crit" "$meas"
+    else
+        record "rt35" "FAIL" "$crit" "$meas (step $step)"
+    fi
+    return "$rc"
+}
+
+# RT-12. This tree has no rte_kni: KNI is a virtio_user vdev hot-plugged by
+# ff_dpdk_kni.c, the kernel-side netif is veth<port_id>, and it needs
+# /dev/vhost-net. The verdict is written for that form, not for rte_kni.
+case_rt12() {
+    say "=== case rt12 (KNI / virtio_user management plane) ==="
+    local reason="" conf before after rc=0 crit mp_note=""
+    local ping_client="not-checked" ping_local="not-checked" mp_state="" ctrl=""
+    [ -c /dev/vhost-net ] || reason="no /dev/vhost-net device"
+    if [ -n "$reason" ]; then
+        record "rt12" "SKIP" \
+          "veth<port_id> present before and after reload; management plane reachable after reload" \
+          "LIMITED: $reason"
+        return 0
+    fi
+    # Without --kernel-nic-ip the case still runs and still proves the real
+    # KNI form (virtio_user netif survives the reload); only the management
+    # plane leg is dropped, and the criterion line says so explicitly.
+    if [ -z "$KERNEL_NIC_IP" ]; then
+        mp_note="management plane NOT checked (--kernel-nic-ip not supplied)"
+        say "rt12: $mp_note"
+    fi
+    conf=$(gen_nginx_conf "rt12" 0)
+    push_probes || return 1
+    if ! start_stack "rt12" 1 0 1; then
+        stop_stack "rt12" "$conf"
+        record "rt12" "FAIL" "stack starts with [kni] enable=1" "start failed, see $LOG"
+        return 1
+    fi
+    before=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -c '^veth[0-9][0-9]*$')
+    if have_probe m4_lc.py; then
+        # Keep the probe shorter than the wait below, otherwise it can never
+        # report and the KNI verdict gets buried under a NO_DATA skip.
+        launch_probe rt12 90 m4_lc.py --server "$TARGET_IP" --conns 0 \
+            --interval 0.5 --duration 45 --fresh 0.5 --timeout 2 \
+            || { stop_stack "rt12" "$conf"; return 1; }
+        sleep 3
+    fi
+    probe_running || rc=1
+    hup_once "$conf" || rc=1
+    probe_running || rc=1
+    local summary="no probe" nodata=0 fetch=0
+    if have_probe m4_lc.py; then
+        summary=$(wait_client_summary /tmp/gr_rt12_lc_out.log 'LC_SUMMARY' 120) \
+            || fetch=$?
+        if [ "$fetch" = "1" ]; then
+            summary="NO_DATA (m4_lc.py did not report within 120 s)"; nodata=1
+        elif [ "$fetch" = "2" ]; then
+            say "rt12: lc probe reported a summary but failed its own criterion"
+            rc=1
+        fi
+        if [ "$nodata" = "0" ]; then
+            check_summary lc "$summary" || rc=1
+        else
+            say "rt12: traffic criterion has no data: $summary"
+        fi
+    fi
+    after=$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -c '^veth[0-9][0-9]*$')
+    if [ -n "$KERNEL_NIC_IP" ]; then
+        # F-M6-3(2): the management-plane probe is issued from the CLIENT, so
+        # the ICMP really crosses the KNI path (physical rx -> f-stack -> KNI
+        # -> kernel) instead of looping inside the server. The server-local
+        # ping is kept only as a clearly labelled weak observation: an address
+        # configured on the server is answered by its own kernel and never
+        # leaves the host.
+        # P-3: keep the raw transcripts. The criterion used to be judged from
+        # a discarded exit status, so the leg had no evidence in the artifacts
+        # and could not be re-checked or compared with a negative control.
+        ping -c 2 -W 2 "$KERNEL_NIC_IP" > "$OUT/ping_local_rt12.txt" 2>&1 \
+            && ping_local="ok(local-scope,weak)" || ping_local="fail"
+        ping_client_out=$(run_client "ping -c 3 -W 2 $KERNEL_NIC_IP" 2>&1); ping_rc=$?
+        printf '%s\n' "$ping_client_out" > "$OUT/ping_client_rt12.txt"
+        # Control probe: HTTP, not ICMP, and always run -- it is the only way
+        # to tell "the stack is down" from "this address is not delivered":
+        # under [kni] method=reject an ICMP echo to the f-stack address is
+        # diverted into the kernel, so a ping failure alone proves nothing.
+        ctrl=$(run_client "curl -s -m 3 -o /dev/null -w '%{http_code}' '$TARGET_URL'" 2>/dev/null)
+        if [ "$ping_rc" = 0 ] && printf '%s\n' "$ping_client_out" | grep -q "0% packet loss"; then
+            ping_client="ok"
+        else
+            if [ "$ctrl" = "200" ]; then
+                # The control address serves, so the client does reach the host
+                # and only <KERNEL_NIC_IP> is undeliverable -- a cloud fabric
+                # that delivers platform-assigned addresses only (M6 S2.4).
+                # That is an environment limit, not a reload regression, so the
+                # criterion is downgraded instead of failed.
+                ping_client="unreachable"; mp_state="LIMITED"
+            else
+                ping_client="unreachable"; mp_state="DOWN"
+            fi
+        fi
+    fi
+    stop_stack "rt12" "$conf"
+    [ "$before" -ge 1 ] || { rc=1; say "rt12: no veth netif before reload"; }
+    [ "$after" -ge 1 ]  || { rc=1; say "rt12: no veth netif after reload"; }
+    if [ "$mp_state" = "DOWN" ]; then
+        rc=1
+        say "rt12: management plane down: <KERNEL_NIC_IP> does not answer the client ping and the control address <DPDK_NIC_IP> does not serve HTTP either (ctrl=${ctrl:-none})"
+    elif [ "$mp_state" = "LIMITED" ]; then
+        say "rt12: LIMITED: <KERNEL_NIC_IP> unreachable from the client while the control address answers -- the management-plane criterion is NOT judged (environment: only platform-assigned addresses are delivered, M6 S2.4)"
+    fi
+    crit="veth<port_id> present before and after the reload + reload completes"
+    if [ -n "$KERNEL_NIC_IP" ]; then
+        if [ "$mp_state" = "LIMITED" ]; then
+            crit="$crit + management plane (<KERNEL_NIC_IP>) reachable from the client [NOT JUDGED: undeliverable from the client while the control address answers; the server-local ping below is a local-scope weak observation only]"
+        else
+            crit="$crit + management plane (<KERNEL_NIC_IP>) reachable from the client afterwards"
+        fi
+    else
+        crit="$crit ($mp_note)"
+    fi
+    # The KNI-specific criteria (netif + management plane) are independent of
+    # the traffic probe, so missing probe data downgrades only the traffic part.
+    if [ "$rc" = "0" ] && [ "$nodata" != "0" ]; then
+        record "rt12" "SKIP" "$crit" \
+          "NO_DATA: KNI criteria passed (veth_before=$before veth_after=$after ping_client=$ping_client control_http=${ctrl:-n/a} ping_local=$ping_local drain=${HUP_DRAIN}ms) but $summary"
+        return 0
+    fi
+    if [ "$rc" = "0" ] && { [ "$mp_state" = LIMITED ] || [ -z "$KERNEL_NIC_IP" ]; }; then
+        record rt12 LIMITED "$crit" 'management-plane criterion not verified'
+        return 6
+    fi
+    if [ "$rc" = "0" ]; then
+        record "rt12" "PASS" "$crit" \
+          "veth_before=$before veth_after=$after ping_client=$ping_client control_http=${ctrl:-n/a} ping_local=$ping_local drain=${HUP_DRAIN}ms traffic=$summary"
+    else
+        record "rt12" "FAIL" "$crit" \
+          "veth_before=$before veth_after=$after ping_client=$ping_client control_http=${ctrl:-n/a} ping_local=$ping_local drain=${HUP_DRAIN}ms traffic=$summary"
+    fi
+    return $rc
+}
+
+# RT-13. zc in this tree is the FSTACK_ZC_RECV / FSTACK_ZC_SEND compile switch
+# over the stack<->application zero-copy read/write path; there is no zc
+# config key and nginx never calls ff_zc_*. The case therefore judges the
+# build form, and uses the drain forwarded/relayed pair as the observable
+# proof that the dispatcher verdict does not depend on the mbuf source
+# (hardware rx vs drain_ring).
+
+case_rt13() {
+    say "=== case rt13 (zc build form) ==="
+    local zc="$ZC_BUILD" rc=0 src_ok=1
+    [ "$zc" = "auto" ] && zc=$(detect_zc_build)
+    if [ "$zc" != "1" ]; then
+        record "rt13" "EXCLUDED" \
+          "zc build form reloads without regression; drain forwarded>0 and relayed>0 prove source independence" \
+          "EXCLUDED by decision 2026-09-22: the tree does not build the zc form (needs FF_ZC_RECV=1); not tested, not supported; the case skeleton is in place"
+        return 0
+    fi
+    local hrc=0
+    do_hup_case "rt13" 1 0 stream || hrc=$?
+    [ "${HUP_FWD:-0}" -gt 0 ] 2>/dev/null || src_ok=0
+    [ "${HUP_REL:-0}" -gt 0 ] 2>/dev/null || src_ok=0
+    [ "$src_ok" = "1" ] || { rc=1; say "rt13: forwarded/relayed pair incomplete"; }
+    if [ "$hrc" = "2" ]; then
+        record "rt13" "SKIP" \
+          "zc build form reloads without regression; forwarded>0 and relayed>0 prove source independence" \
+          "NO_DATA: reload completed (drain=${HUP_DRAIN}ms fwd=${HUP_FWD} rel=${HUP_REL}) but $HUP_SUMMARY"
+        return 0
+    fi
+    [ "$hrc" != "0" ] && rc=1
+    if [ "$rc" = "0" ]; then
+        record "rt13" "PASS" \
+          "zc build form reloads without regression; forwarded>0 and relayed>0 prove source independence" \
+          "drain=${HUP_DRAIN}ms forwarded=${HUP_FWD} relayed=${HUP_REL} traffic=$HUP_SUMMARY"
+    else
+        record "rt13" "FAIL" \
+          "zc build form reloads without regression; forwarded>0 and relayed>0 prove source independence" \
+          "drain=${HUP_DRAIN}ms forwarded=${HUP_FWD} relayed=${HUP_REL} traffic=$HUP_SUMMARY"
+    fi
+    return $rc
+}
+
+
+# ===========================================================================
+# main
+# ===========================================================================
+need_case() { case ",$CASES," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+source "$SCRIPT_DIR/common/reload_runtime.sh"
+
+main() {
+    parse_args "$@" || return $?
+    derive_lcores "$GRACEFUL"
+    if [ -z "${GR_SUPERVISOR_FD:-}" ]; then
+        init_output || return 4
+        GR_SUPERVISOR_LOCK=/data/workspace/.nginx-reload-harness.lock \
+            exec python3 -B "$SUPERVISOR" run "$OUT" "$RUN_ID" 14400 -- \
+            /bin/bash "${BASH_SOURCE[0]}" "$@"
+    fi
+    python3 -B "$SUPERVISOR" hello "${GR_SUPERVISOR_RUN:-}" >/dev/null || return 5
+    OUT="$GR_SUPERVISOR_ROOT"
+    RUN_ID="$GR_SUPERVISOR_RUN"
+    EAL_PREFIX="container-$RUN_ID"
+    REMOTE_DIR="/tmp/$RUN_ID"
+    LOG="$OUT/harness.log"
+    trap on_signal INT TERM
+    trap 'cleanup_epilogue || true' EXIT
+    local t
+    for t in "$KILLTOOL" "$RMTMP" "$CHMODTOOL"; do
+        [ -x "$t" ] || return 4
+    done
+    [ "$("$KILLTOOL" --capabilities)" = pidfd-identity-v1 ] || return 4
+    zc_probe_selftest || return 4
+    run_case precheck || { print_summary; return 3; }
+    for t in baseline rt01 rt02 rv9 gr0 rt12 rt27 rt28 rt29 rt32 rt33 rt34 rt35 rt13 rt20 rt20b rt21 rt22 rt23 rt24 rt25 rt26 rt30 rt31; do
+        need_case "$t" || continue
+        run_case "$t"
+        [ "$CLEANUP_FAILED" = 0 ] || break
+    done
+    cleanup_epilogue || CLEANUP_FAILED=1
+    trap - EXIT
+    print_summary
+    [ "$CLEANUP_FAILED" = 0 ] || return 5
+    python3 -B "$CHECKS" aggregate "$OUT/results.jsonl" "$CASES"
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+    exit $?
+fi

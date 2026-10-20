@@ -22,8 +22,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_STACK_H_
@@ -34,10 +32,28 @@
 
 struct unwind_state {
 	uintptr_t fp;
-	uintptr_t sp;
 	uintptr_t pc;
 };
 
 bool unwind_frame(struct thread *, struct unwind_state *);
+
+#ifdef _SYS_PROC_H_
+
+#include <machine/pcb.h>
+
+#define	GET_STACK_USAGE(total, used) do {				\
+	struct thread *td = curthread;					\
+	(total) = td->td_kstack_pages * PAGE_SIZE - sizeof(struct pcb);	\
+	(used) = td->td_kstack + (total) - (vm_offset_t)&td;		\
+} while (0)
+
+static __inline bool
+kstack_contains(struct thread *td, vm_offset_t va, size_t len)
+{
+	return (va >= td->td_kstack && va + len >= va &&
+	    va + len <= td->td_kstack + td->td_kstack_pages * PAGE_SIZE -
+	    sizeof(struct pcb));
+}
+#endif	/* _SYS_PROC_H_ */
 
 #endif /* !_MACHINE_STACK_H_ */

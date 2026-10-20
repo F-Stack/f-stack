@@ -33,8 +33,6 @@
  *
  * Authors: Julian Elischer <julian@freebsd.org>
  *          Archie Cobbs <archie@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_base.c,v 1.39 1999/01/28 23:54:53 julian Exp $
  */
 
@@ -65,6 +63,8 @@
 #include <sys/unistd.h>
 #include <machine/cpu.h>
 #include <vm/uma.h>
+
+#include <machine/stack.h>
 
 #include <net/netisr.h>
 #include <net/vnet.h>
@@ -787,7 +787,7 @@ ng_rmnode(node_p node, hook_p dummy1, void *dummy2, int dummy3)
 
 /*
  * Remove a reference to the node, possibly the last.
- * deadnode always acts as it it were the last.
+ * deadnode always acts as it were the last.
  */
 void
 ng_unref_node(node_p node)
@@ -836,7 +836,7 @@ ng_ID2noderef(ng_ID_t ID)
 }
 
 ng_ID_t
-ng_node2ID(node_p node)
+ng_node2ID(node_cp node)
 {
 	return (node ? NG_NODE_ID(node) : 0);
 }
@@ -854,6 +854,10 @@ ng_name_node(node_p node, const char *name)
 	uint32_t hash;
 	node_p node2;
 	int i;
+
+	/* Rename without change is a noop */
+	if (strcmp(NG_NODE_NAME(node), name) == 0)
+		return (0);
 
 	/* Check the name is valid */
 	for (i = 0; i < NG_NODESIZ; i++) {
@@ -974,7 +978,7 @@ ng_unname(node_p node)
  * Allocate a bigger name hash.
  */
 static void
-ng_name_rehash()
+ng_name_rehash(void)
 {
 	struct nodehash *new;
 	uint32_t hash;
@@ -1005,7 +1009,7 @@ ng_name_rehash()
  * Allocate a bigger ID hash.
  */
 static void
-ng_ID_rehash()
+ng_ID_rehash(void)
 {
 	struct nodehash *new;
 	uint32_t hash;
@@ -2277,7 +2281,7 @@ ng_snd_item(item_p item, int flags)
 		queue = 1;
 	} else {
 		queue = 0;
-#ifdef GET_STACK_USAGE
+
 		/*
 		 * Most of netgraph nodes have small stack consumption and
 		 * for them 25% of free stack space is more than enough.
@@ -2292,7 +2296,6 @@ ng_snd_item(item_p item, int flags)
 		    ((node->nd_flags & NGF_HI_STACK) || (hook &&
 		    (hook->hk_flags & HK_HI_STACK)))))
 			queue = 1;
-#endif
 	}
 
 	if (queue) {
@@ -2771,7 +2774,7 @@ ng_generic_msg(node_p here, item_p item, hook_p lasthook)
 
 	case NGM_BINARY2ASCII:
 	    {
-		int bufSize = 20 * 1024;	/* XXX hard coded constant */
+		int bufSize = 1024;
 		const struct ng_parse_type *argstype;
 		const struct ng_cmdlist *c;
 		struct ng_mesg *binary, *ascii;
@@ -2785,7 +2788,7 @@ ng_generic_msg(node_p here, item_p item, hook_p lasthook)
 			error = EINVAL;
 			break;
 		}
-
+retry_b2a:
 		/* Get a response message with lots of room */
 		NG_MKRESPONSE(resp, msg, sizeof(*ascii) + bufSize, M_NOWAIT);
 		if (resp == NULL) {
@@ -2827,9 +2830,13 @@ ng_generic_msg(node_p here, item_p item, hook_p lasthook)
 		if (argstype == NULL) {
 			*ascii->data = '\0';
 		} else {
-			if ((error = ng_unparse(argstype,
-			    (u_char *)binary->data,
-			    ascii->data, bufSize)) != 0) {
+			error = ng_unparse(argstype, (u_char *)binary->data,
+			    ascii->data, bufSize);
+			if (error == ERANGE) {
+				NG_FREE_MSG(resp);
+				bufSize *= 2;
+				goto retry_b2a;
+			} else if (error) {
 				NG_FREE_MSG(resp);
 				break;
 			}
@@ -3367,10 +3374,8 @@ sysctl_debug_ng_dump_items(SYSCTL_HANDLER_ARGS)
 {
 	int error;
 	int val;
-	int i;
 
 	val = allocated;
-	i = 1;
 	error = sysctl_handle_int(oidp, &val, 0, req);
 	if (error != 0 || req->newptr == NULL)
 		return (error);
@@ -3383,7 +3388,7 @@ sysctl_debug_ng_dump_items(SYSCTL_HANDLER_ARGS)
 }
 
 SYSCTL_PROC(_debug, OID_AUTO, ng_dump_items,
-    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_NEEDGIANT, 0, sizeof(int),
+    CTLTYPE_INT | CTLFLAG_RW | CTLFLAG_MPSAFE, 0, sizeof(int),
     sysctl_debug_ng_dump_items, "I",
     "Number of allocated items");
 #endif	/* NETGRAPH_DEBUG */
@@ -3434,7 +3439,22 @@ ngthread(void *arg)
 			} else {
 				NG_QUEUE_UNLOCK(&node->nd_input_queue);
 				NGI_GET_NODE(item, node); /* zaps stored node */
-				ng_apply_item(node, item, rw);
+
+				if ((item->el_flags & NGQF_TYPE) != NGQF_DATA) {
+					/*
+					 * NGQF_MESG, NGQF_FN and NGQF_FN2 items
+					 * should never be processed in
+					 * NET_EPOCH context; they generally
+					 * require heavier synchronization and
+					 * may sleep. So, temporarily exit.
+					 */
+					NET_EPOCH_EXIT(et);
+					ng_apply_item(node, item, rw);
+					NET_EPOCH_ENTER(et);
+				} else {
+					ng_apply_item(node, item, rw);
+				}
+
 				NG_NODE_UNREF(node);
 			}
 		}
@@ -3446,7 +3466,7 @@ ngthread(void *arg)
 
 /*
  * XXX
- * It's posible that a debugging NG_NODE_REF may need
+ * It's possible that a debugging NG_NODE_REF may need
  * to be outside the mutex zone
  */
 static void
@@ -3808,20 +3828,18 @@ ng_callout(struct callout *c, node_p node, hook_p hook, int ticks,
 	return (0);
 }
 
-/* A special modified version of callout_stop() */
-int
-ng_uncallout(struct callout *c, node_p node)
+/*
+ * Free references and item if callout_stop/callout_drain returned 1,
+ * meaning that callout was successfully stopped and now references
+ * belong to us.
+ */
+static void
+ng_uncallout_internal(struct callout *c, node_p node)
 {
 	item_p item;
-	int rval;
 
-	KASSERT(c != NULL, ("ng_uncallout: NULL callout"));
-	KASSERT(node != NULL, ("ng_uncallout: NULL node"));
-
-	rval = callout_stop(c);
 	item = c->c_arg;
-	/* Do an extra check */
-	if ((rval > 0) && (c->c_func == &ng_callout_trampoline) &&
+	if ((c->c_func == &ng_callout_trampoline) &&
 	    (item != NULL) && (NGI_NODE(item) == node)) {
 		/*
 		 * We successfully removed it from the queue before it ran
@@ -3831,12 +3849,40 @@ ng_uncallout(struct callout *c, node_p node)
 		NG_FREE_ITEM(item);
 	}
 	c->c_arg = NULL;
+}
 
-	/*
-	 * Callers only want to know if the callout was cancelled and
-	 * not draining or stopped.
-	 */
-	return (rval > 0);
+
+/* A special modified version of callout_stop() */
+int
+ng_uncallout(struct callout *c, node_p node)
+{
+	int rval;
+
+	rval = callout_stop(c);
+	if (rval > 0)
+		/*
+		 * XXXGL: in case if callout is already running and next
+		 * invocation is scheduled at the same time, callout_stop()
+		 * returns 0. See d153eeee97d. In this case netgraph(4) would
+		 * leak resources. However, no nodes are known to induce such
+		 * behavior.
+		 */
+		ng_uncallout_internal(c, node);
+
+	return (rval);
+}
+
+/* A special modified version of callout_drain() */
+int
+ng_uncallout_drain(struct callout *c, node_p node)
+{
+	int rval;
+
+	rval = callout_drain(c);
+	if (rval > 0)
+		ng_uncallout_internal(c, node);
+
+	return (rval);
 }
 
 /*

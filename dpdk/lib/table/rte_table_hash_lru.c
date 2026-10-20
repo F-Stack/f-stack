@@ -2,8 +2,9 @@
  * Copyright(c) 2010-2017 Intel Corporation
  */
 
-#include <string.h>
+#include <stdalign.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <rte_common.h>
 #include <rte_malloc.h>
@@ -11,6 +12,8 @@
 
 #include "rte_table_hash.h"
 #include "rte_lru.h"
+
+#include "table_log.h"
 
 #define KEYS_PER_BUCKET	4
 
@@ -74,7 +77,7 @@ struct rte_table_hash {
 	uint32_t *key_stack;
 
 	/* Table memory */
-	uint8_t memory[0] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint8_t memory[];
 };
 
 static int
@@ -105,33 +108,33 @@ check_params_create(struct rte_table_hash_params *params)
 {
 	/* name */
 	if (params->name == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: name invalid value\n", __func__);
+		TABLE_LOG(ERR, "%s: name invalid value", __func__);
 		return -EINVAL;
 	}
 
 	/* key_size */
 	if ((params->key_size < sizeof(uint64_t)) ||
 		(!rte_is_power_of_2(params->key_size))) {
-		RTE_LOG(ERR, TABLE, "%s: key_size invalid value\n", __func__);
+		TABLE_LOG(ERR, "%s: key_size invalid value", __func__);
 		return -EINVAL;
 	}
 
 	/* n_keys */
 	if (params->n_keys == 0) {
-		RTE_LOG(ERR, TABLE, "%s: n_keys invalid value\n", __func__);
+		TABLE_LOG(ERR, "%s: n_keys invalid value", __func__);
 		return -EINVAL;
 	}
 
 	/* n_buckets */
 	if ((params->n_buckets == 0) ||
 		(!rte_is_power_of_2(params->n_buckets))) {
-		RTE_LOG(ERR, TABLE, "%s: n_buckets invalid value\n", __func__);
+		TABLE_LOG(ERR, "%s: n_buckets invalid value", __func__);
 		return -EINVAL;
 	}
 
 	/* f_hash */
 	if (params->f_hash == NULL) {
-		RTE_LOG(ERR, TABLE, "%s: f_hash invalid value\n", __func__);
+		TABLE_LOG(ERR, "%s: f_hash invalid value", __func__);
 		return -EINVAL;
 	}
 
@@ -187,9 +190,9 @@ rte_table_hash_lru_create(void *params, int socket_id, uint32_t entry_size)
 		key_stack_sz + data_sz;
 
 	if (total_size > SIZE_MAX) {
-		RTE_LOG(ERR, TABLE,
+		TABLE_LOG(ERR,
 			"%s: Cannot allocate %" PRIu64 " bytes for hash "
-			"table %s\n",
+			"table %s",
 			__func__, total_size, p->name);
 		return NULL;
 	}
@@ -199,14 +202,14 @@ rte_table_hash_lru_create(void *params, int socket_id, uint32_t entry_size)
 		RTE_CACHE_LINE_SIZE,
 		socket_id);
 	if (t == NULL) {
-		RTE_LOG(ERR, TABLE,
+		TABLE_LOG(ERR,
 			"%s: Cannot allocate %" PRIu64 " bytes for hash "
-			"table %s\n",
+			"table %s",
 			__func__, total_size, p->name);
 		return NULL;
 	}
-	RTE_LOG(INFO, TABLE, "%s (%u-byte key): Hash table %s memory footprint"
-		" is %" PRIu64 " bytes\n",
+	TABLE_LOG(INFO, "%s (%u-byte key): Hash table %s memory footprint"
+		" is %" PRIu64 " bytes",
 		__func__, p->key_size, p->name, total_size);
 
 	/* Memory initialization */

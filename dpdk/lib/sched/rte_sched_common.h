@@ -5,14 +5,12 @@
 #ifndef __INCLUDE_RTE_SCHED_COMMON_H__
 #define __INCLUDE_RTE_SCHED_COMMON_H__
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <stdint.h>
 #include <sys/types.h>
 
-#define __rte_aligned_16 __rte_aligned(16)
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #if 0
 static inline uint32_t

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2005 Nuno Antunes <nuno.antunes@gmail.com>
  * Copyright (c) 2007 Alexander Motin <mav@freebsd.org>
@@ -25,8 +25,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _NETGRAPH_NG_CAR_H_
@@ -103,8 +101,7 @@ struct ng_car_hookconf {
 enum {
     NG_CAR_ACTION_FORWARD = 1,
     NG_CAR_ACTION_DROP,
-    NG_CAR_ACTION_MARK,
-    NG_CAR_ACTION_SET_TOS
+    NG_CAR_ACTION_MARK
 };
 
 /* operation modes (mode) */
@@ -115,7 +112,7 @@ enum {
     NG_CAR_SHAPE
 };
 
-/* mode options (opt) */
+/* mode options (bits in opt) */
 #define NG_CAR_COLOR_AWARE	1
 #define NG_CAR_COUNT_PACKETS	2
 

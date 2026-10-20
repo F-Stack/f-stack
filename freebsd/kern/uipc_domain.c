@@ -27,12 +27,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)uipc_domain.c	8.2 (Berkeley) 10/18/93
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/socket.h>
@@ -44,220 +39,230 @@ __FBSDID("$FreeBSD$");
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
+#include <sys/rmlock.h>
 #include <sys/socketvar.h>
 #include <sys/systm.h>
 
+#include <machine/atomic.h>
+
 #include <net/vnet.h>
 
-/*
- * System initialization
- *
- * Note: domain initialization takes place on a per domain basis
- * as a result of traversing a SYSINIT linker set.  Most likely,
- * each domain would want to call DOMAIN_SET(9) itself, which
- * would cause the domain to be added just after domaininit()
- * is called during startup.
- *
- * See DOMAIN_SET(9) for details on its use.
- */
-
-static void domaininit(void *);
-SYSINIT(domain, SI_SUB_PROTO_DOMAININIT, SI_ORDER_ANY, domaininit, NULL);
-
-static void domainfinalize(void *);
-SYSINIT(domainfin, SI_SUB_PROTO_IFATTACHDOMAIN, SI_ORDER_FIRST, domainfinalize,
-    NULL);
-
-static struct callout pffast_callout;
-static struct callout pfslow_callout;
-
-static void	pffasttimo(void *);
-static void	pfslowtimo(void *);
-
-struct domain *domains;		/* registered protocol domains */
-int domain_init_status = 0;
+struct domainhead domains = SLIST_HEAD_INITIALIZER(&domains);
+int domain_init_status = 1;
 static struct mtx dom_mtx;		/* domain list lock */
 MTX_SYSINIT(domain, &dom_mtx, "domain list", MTX_DEF);
 
-/*
- * Dummy protocol specific user requests function pointer array.
- * All functions return EOPNOTSUPP.
- */
-struct pr_usrreqs nousrreqs = {
-	.pru_accept =		pru_accept_notsupp,
-	.pru_attach =		pru_attach_notsupp,
-	.pru_bind =		pru_bind_notsupp,
-	.pru_connect =		pru_connect_notsupp,
-	.pru_connect2 =		pru_connect2_notsupp,
-	.pru_control =		pru_control_notsupp,
-	.pru_disconnect	=	pru_disconnect_notsupp,
-	.pru_listen =		pru_listen_notsupp,
-	.pru_peeraddr =		pru_peeraddr_notsupp,
-	.pru_rcvd =		pru_rcvd_notsupp,
-	.pru_rcvoob =		pru_rcvoob_notsupp,
-	.pru_send =		pru_send_notsupp,
-	.pru_sense =		pru_sense_null,
-	.pru_shutdown =		pru_shutdown_notsupp,
-	.pru_sockaddr =		pru_sockaddr_notsupp,
-	.pru_sosend =		pru_sosend_notsupp,
-	.pru_soreceive =	pru_soreceive_notsupp,
-	.pru_sopoll =		pru_sopoll_notsupp,
-};
+static int
+pr_accept_notsupp(struct socket *so, struct sockaddr *sa)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_bind_notsupp(struct socket *so, struct sockaddr *nam, struct thread *td)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_bindat_notsupp(int fd, struct socket *so, struct sockaddr *nam,
+    struct thread *td)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_connect_notsupp(struct socket *so, struct sockaddr *nam, struct thread *td)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_connectat_notsupp(int fd, struct socket *so, struct sockaddr *nam,
+    struct thread *td)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_connect2_notsupp(struct socket *so1, struct socket *so2)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_control_notsupp(struct socket *so, u_long cmd, void *data,
+    struct ifnet *ifp, struct thread *td)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_ctloutput_notsupp(struct socket *so, struct sockopt *sopt)
+{
+	return (ENOPROTOOPT);
+}
+
+static int
+pr_disconnect_notsupp(struct socket *so)
+{
+	return (EOPNOTSUPP);
+}
+
+int
+pr_listen_notsupp(struct socket *so, int backlog, struct thread *td)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_peeraddr_notsupp(struct socket *so, struct sockaddr *nam)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_rcvd_notsupp(struct socket *so, int flags)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_rcvoob_notsupp(struct socket *so, struct mbuf *m, int flags)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_send_notsupp(struct socket *so, int flags, struct mbuf *m,
+    struct sockaddr *addr, struct mbuf *control, struct thread *td)
+{
+	if (control != NULL)
+		m_freem(control);
+	if ((flags & PRUS_NOTREADY) == 0)
+		m_freem(m);
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_sendfile_wait_notsupp(struct socket *so, off_t need, int *space)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_ready_notsupp(struct socket *so, struct mbuf *m, int count)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_shutdown_notsupp(struct socket *so, enum shutdown_how how)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_sockaddr_notsupp(struct socket *so, struct sockaddr *nam)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_sosend_notsupp(struct socket *so, struct sockaddr *addr, struct uio *uio,
+    struct mbuf *top, struct mbuf *control, int flags, struct thread *td)
+{
+	return (EOPNOTSUPP);
+}
+
+static int
+pr_soreceive_notsupp(struct socket *so, struct sockaddr **paddr,
+    struct uio *uio, struct mbuf **mp0, struct mbuf **controlp, int *flagsp)
+{
+	return (EOPNOTSUPP);
+}
 
 static void
-protosw_init(struct protosw *pr)
+pr_init(struct domain *dom, struct protosw *pr)
 {
-	struct pr_usrreqs *pu;
 
-	pu = pr->pr_usrreqs;
-	KASSERT(pu != NULL, ("protosw_init: %ssw[%d] has no usrreqs!",
-	    pr->pr_domain->dom_name,
-	    (int)(pr - pr->pr_domain->dom_protosw)));
+	KASSERT(pr->pr_attach != NULL,
+	    ("%s: protocol doesn't have pr_attach", __func__));
 
-	/*
-	 * Protocol switch methods fall into three categories: mandatory,
-	 * mandatory but protosw_init() provides a default, and optional.
-	 *
-	 * For true protocols (i.e., pru_attach != NULL), KASSERT truly
-	 * mandatory methods with no defaults, and initialize defaults for
-	 * other mandatory methods if the protocol hasn't defined an
-	 * implementation (NULL function pointer).
-	 */
-#if 0
-	if (pu->pru_attach != NULL) {
-		KASSERT(pu->pru_abort != NULL,
-		    ("protosw_init: %ssw[%d] pru_abort NULL",
-		    pr->pr_domain->dom_name,
-		    (int)(pr - pr->pr_domain->dom_protosw)));
-		KASSERT(pu->pru_send != NULL,
-		    ("protosw_init: %ssw[%d] pru_send NULL",
-		    pr->pr_domain->dom_name,
-		    (int)(pr - pr->pr_domain->dom_protosw)));
-	}
-#endif
+	pr->pr_domain = dom;
 
-#define DEFAULT(foo, bar)	if ((foo) == NULL)  (foo) = (bar)
-	DEFAULT(pu->pru_accept, pru_accept_notsupp);
-	DEFAULT(pu->pru_aio_queue, pru_aio_queue_notsupp);
-	DEFAULT(pu->pru_bind, pru_bind_notsupp);
-	DEFAULT(pu->pru_bindat, pru_bindat_notsupp);
-	DEFAULT(pu->pru_connect, pru_connect_notsupp);
-	DEFAULT(pu->pru_connect2, pru_connect2_notsupp);
-	DEFAULT(pu->pru_connectat, pru_connectat_notsupp);
-	DEFAULT(pu->pru_control, pru_control_notsupp);
-	DEFAULT(pu->pru_disconnect, pru_disconnect_notsupp);
-	DEFAULT(pu->pru_listen, pru_listen_notsupp);
-	DEFAULT(pu->pru_peeraddr, pru_peeraddr_notsupp);
-	DEFAULT(pu->pru_rcvd, pru_rcvd_notsupp);
-	DEFAULT(pu->pru_rcvoob, pru_rcvoob_notsupp);
-	DEFAULT(pu->pru_sense, pru_sense_null);
-	DEFAULT(pu->pru_shutdown, pru_shutdown_notsupp);
-	DEFAULT(pu->pru_sockaddr, pru_sockaddr_notsupp);
-	DEFAULT(pu->pru_sosend, sosend_generic);
-	DEFAULT(pu->pru_soreceive, soreceive_generic);
-	DEFAULT(pu->pru_sopoll, sopoll_generic);
-	DEFAULT(pu->pru_ready, pru_ready_notsupp);
-#undef DEFAULT
-	if (pr->pr_init)
-		(*pr->pr_init)();
+#define	DEFAULT(foo, bar)	if (pr->foo == NULL) pr->foo = bar
+	DEFAULT(pr_sosend, sosend_generic);
+	DEFAULT(pr_soreceive, soreceive_generic);
+	DEFAULT(pr_sopoll, sopoll_generic);
+	DEFAULT(pr_setsbopt, sbsetopt);
+	DEFAULT(pr_aio_queue, soaio_queue_generic);
+	DEFAULT(pr_kqfilter, sokqfilter_generic);
+
+#define NOTSUPP(foo)	if (pr->foo == NULL)  pr->foo = foo ## _notsupp
+	NOTSUPP(pr_accept);
+	NOTSUPP(pr_bind);
+	NOTSUPP(pr_bindat);
+	NOTSUPP(pr_connect);
+	NOTSUPP(pr_connect2);
+	NOTSUPP(pr_connectat);
+	NOTSUPP(pr_control);
+	NOTSUPP(pr_ctloutput);
+	NOTSUPP(pr_disconnect);
+	NOTSUPP(pr_listen);
+	NOTSUPP(pr_peeraddr);
+	NOTSUPP(pr_rcvd);
+	NOTSUPP(pr_rcvoob);
+	NOTSUPP(pr_send);
+	NOTSUPP(pr_sendfile_wait);
+	NOTSUPP(pr_shutdown);
+	NOTSUPP(pr_sockaddr);
+	NOTSUPP(pr_sosend);
+	NOTSUPP(pr_soreceive);
+	NOTSUPP(pr_ready);
 }
 
 /*
  * Add a new protocol domain to the list of supported domains
- * Note: you cant unload it again because a socket may be using it.
+ * Note: you can't unload it again because a socket may be using it.
  * XXX can't fail at this time.
  */
 void
-domain_init(void *arg)
+domain_add(struct domain *dp)
 {
-	struct domain *dp = arg;
 	struct protosw *pr;
 
-	if (dp->dom_init)
-		(*dp->dom_init)();
-	for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
-		protosw_init(pr);
-	/*
-	 * update global information about maximums
-	 */
-	max_hdr = max_linkhdr + max_protohdr;
-	max_datalen = MHLEN - max_hdr;
-	if (max_datalen < 1)
-		panic("%s: max_datalen < 1", __func__);
-}
+	MPASS(IS_DEFAULT_VNET(curvnet));
 
-#ifdef VIMAGE
-void
-vnet_domain_init(void *arg)
-{
+	if (dp->dom_probe != NULL && (*dp->dom_probe)() != 0)
+		return;
 
-	/* Virtualized case is no different -- call init functions. */
-	domain_init(arg);
-}
+	for (int i = 0; i < dp->dom_nprotosw; i++)
+		if ((pr = dp->dom_protosw[i]) != NULL)
+			pr_init(dp, pr);
 
-void
-vnet_domain_uninit(void *arg)
-{
-	struct domain *dp = arg;
-
-	if (dp->dom_destroy)
-		(*dp->dom_destroy)();
-}
-#endif
-
-/*
- * Add a new protocol domain to the list of supported domains
- * Note: you cant unload it again because a socket may be using it.
- * XXX can't fail at this time.
- */
-void
-domain_add(void *data)
-{
-	struct domain *dp;
-
-	dp = (struct domain *)data;
 	mtx_lock(&dom_mtx);
-	dp->dom_next = domains;
-	domains = dp;
-
-	KASSERT(domain_init_status >= 1,
-	    ("attempt to domain_add(%s) before domaininit()",
-	    dp->dom_name));
-#ifndef INVARIANTS
-	if (domain_init_status < 1)
-		printf("WARNING: attempt to domain_add(%s) before "
-		    "domaininit()\n", dp->dom_name);
+#ifdef INVARIANTS
+	struct domain *tmp;
+	SLIST_FOREACH(tmp, &domains, dom_next)
+		MPASS(tmp->dom_family != dp->dom_family);
 #endif
-#ifdef notyet
-	KASSERT(domain_init_status < 2,
-	    ("attempt to domain_add(%s) after domainfinalize()",
-	    dp->dom_name));
-#else
-	if (domain_init_status >= 2)
-		printf("WARNING: attempt to domain_add(%s) after "
-		    "domainfinalize()\n", dp->dom_name);
-#endif
+	SLIST_INSERT_HEAD(&domains, dp, dom_next);
 	mtx_unlock(&dom_mtx);
 }
 
-/* ARGSUSED*/
-static void
-domaininit(void *dummy)
+void
+domain_remove(struct domain *dp)
 {
 
-	if (max_linkhdr < 16)		/* XXX */
-		max_linkhdr = 16;
-
-	callout_init(&pffast_callout, 1);
-	callout_init(&pfslow_callout, 1);
+	if ((dp->dom_flags & DOMF_UNLOADABLE) == 0)
+		return;
 
 	mtx_lock(&dom_mtx);
-	KASSERT(domain_init_status == 0, ("domaininit called too late!"));
-	domain_init_status = 1;
+	SLIST_REMOVE(&domains, dp, domain, dom_next);
 	mtx_unlock(&dom_mtx);
 }
 
-/* ARGSUSED*/
 static void
 domainfinalize(void *dummy)
 {
@@ -266,24 +271,23 @@ domainfinalize(void *dummy)
 	KASSERT(domain_init_status == 1, ("domainfinalize called too late!"));
 	domain_init_status = 2;
 	mtx_unlock(&dom_mtx);	
-
-	callout_reset(&pffast_callout, 1, pffasttimo, NULL);
-	callout_reset(&pfslow_callout, 1, pfslowtimo, NULL);
 }
+SYSINIT(domainfin, SI_SUB_PROTO_IFATTACHDOMAIN, SI_ORDER_FIRST, domainfinalize,
+    NULL);
 
 struct domain *
 pffinddomain(int family)
 {
 	struct domain *dp;
 
-	for (dp = domains; dp != NULL; dp = dp->dom_next)
+	SLIST_FOREACH(dp, &domains, dom_next)
 		if (dp->dom_family == family)
 			return (dp);
 	return (NULL);
 }
 
 struct protosw *
-pffindtype(int family, int type)
+pffindproto(int family, int type, int proto)
 {
 	struct domain *dp;
 	struct protosw *pr;
@@ -292,36 +296,13 @@ pffindtype(int family, int type)
 	if (dp == NULL)
 		return (NULL);
 
-	for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
-		if (pr->pr_type && pr->pr_type == type)
+	for (int i = 0; i < dp->dom_nprotosw; i++)
+		if ((pr = dp->dom_protosw[i]) != NULL && pr->pr_type == type &&
+		    (pr->pr_protocol == 0 || proto == 0 ||
+		     pr->pr_protocol == proto))
 			return (pr);
+
 	return (NULL);
-}
-
-struct protosw *
-pffindproto(int family, int protocol, int type)
-{
-	struct domain *dp;
-	struct protosw *pr;
-	struct protosw *maybe;
-
-	maybe = NULL;
-	if (family == 0)
-		return (NULL);
-
-	dp = pffinddomain(family);
-	if (dp == NULL)
-		return (NULL);
-
-	for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++) {
-		if ((pr->pr_protocol == protocol) && (pr->pr_type == type))
-			return (pr);
-
-		if (type == SOCK_RAW && pr->pr_type == SOCK_RAW &&
-		    pr->pr_protocol == 0 && maybe == NULL)
-			maybe = pr;
-	}
-	return (maybe);
 }
 
 /*
@@ -329,69 +310,49 @@ pffindproto(int family, int protocol, int type)
  * accept requests before it is registered.
  */
 int
-pf_proto_register(int family, struct protosw *npr)
+protosw_register(struct domain *dp, struct protosw *npr)
 {
-	VNET_ITERATOR_DECL(vnet_iter);
-	struct domain *dp;
-	struct protosw *pr, *fpr;
+	struct protosw **prp;
 
-	/* Sanity checks. */
-	if (family == 0)
-		return (EPFNOSUPPORT);
-	if (npr->pr_type == 0)
-		return (EPROTOTYPE);
-	if (npr->pr_protocol == 0)
-		return (EPROTONOSUPPORT);
-	if (npr->pr_usrreqs == NULL)
-		return (ENXIO);
+	MPASS(dp);
+	MPASS(npr && npr->pr_type > 0 && npr->pr_protocol > 0);
 
-	/* Try to find the specified domain based on the family. */
-	dp = pffinddomain(family);
-	if (dp == NULL)
-		return (EPFNOSUPPORT);
-
-	/* Initialize backpointer to struct domain. */
-	npr->pr_domain = dp;
-	fpr = NULL;
-
+	prp = NULL;
 	/*
 	 * Protect us against races when two protocol registrations for
 	 * the same protocol happen at the same time.
 	 */
 	mtx_lock(&dom_mtx);
+	for (int i = 0; i < dp->dom_nprotosw; i++) {
+		if (dp->dom_protosw[i] == NULL) {
+			/* Remember the first free spacer. */
+			if (prp == NULL)
+				prp = &dp->dom_protosw[i];
+		} else {
+			/*
+			 * The new protocol must not yet exist.
+			 * XXXAO: Check only protocol?
+			 * XXXGL: Maybe assert that it doesn't exist?
+			 */
+			if ((dp->dom_protosw[i]->pr_type == npr->pr_type) &&
+			    (dp->dom_protosw[i]->pr_protocol ==
+			    npr->pr_protocol)) {
+				mtx_unlock(&dom_mtx);
+				return (EEXIST);
+			}
 
-	/* The new protocol must not yet exist. */
-	for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++) {
-		if ((pr->pr_type == npr->pr_type) &&
-		    (pr->pr_protocol == npr->pr_protocol)) {
-			mtx_unlock(&dom_mtx);
-			return (EEXIST);	/* XXX: Check only protocol? */
 		}
-		/* While here, remember the first free spacer. */
-		if ((fpr == NULL) && (pr->pr_protocol == PROTO_SPACER))
-			fpr = pr;
 	}
 
 	/* If no free spacer is found we can't add the new protocol. */
-	if (fpr == NULL) {
+	if (prp == NULL) {
 		mtx_unlock(&dom_mtx);
 		return (ENOMEM);
 	}
 
-	/* Copy the new struct protosw over the spacer. */
-	bcopy(npr, fpr, sizeof(*fpr));
-
-	/* Job is done, no more protection required. */
+	pr_init(dp, npr);
+	*prp = npr;
 	mtx_unlock(&dom_mtx);
-
-	/* Initialize and activate the protocol. */
-	VNET_LIST_RLOCK();
-	VNET_FOREACH(vnet_iter) {
-		CURVNET_SET_QUIET(vnet_iter);
-		protosw_init(fpr);
-		CURVNET_RESTORE();
-	}
-	VNET_LIST_RUNLOCK();
 
 	return (0);
 }
@@ -401,107 +362,34 @@ pf_proto_register(int family, struct protosw *npr)
  * all sockets and release all locks and memory references.
  */
 int
-pf_proto_unregister(int family, int protocol, int type)
+protosw_unregister(struct protosw *pr)
 {
 	struct domain *dp;
-	struct protosw *pr, *dpr;
+	struct protosw **prp;
 
-	/* Sanity checks. */
-	if (family == 0)
-		return (EPFNOSUPPORT);
-	if (protocol == 0)
-		return (EPROTONOSUPPORT);
-	if (type == 0)
-		return (EPROTOTYPE);
+	dp = pr->pr_domain;
+	prp = NULL;
 
-	/* Try to find the specified domain based on the family type. */
-	dp = pffinddomain(family);
-	if (dp == NULL)
-		return (EPFNOSUPPORT);
-
-	dpr = NULL;
-
-	/* Lock out everyone else while we are manipulating the protosw. */
 	mtx_lock(&dom_mtx);
-
 	/* The protocol must exist and only once. */
-	for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++) {
-		if ((pr->pr_type == type) && (pr->pr_protocol == protocol)) {
-			if (dpr != NULL) {
-				mtx_unlock(&dom_mtx);
-				return (EMLINK);   /* Should not happen! */
-			} else
-				dpr = pr;
+	for (int i = 0; i < dp->dom_nprotosw; i++) {
+		if (dp->dom_protosw[i] == pr) {
+			KASSERT(prp == NULL,
+			    ("%s: domain %p protocol %p registered twice\n",
+			    __func__, dp, pr));
+			prp = &dp->dom_protosw[i];
 		}
 	}
 
-	/* Protocol does not exist. */
-	if (dpr == NULL) {
+	/* Protocol does not exist.  XXXGL: assert that it does? */
+	if (prp == NULL) {
 		mtx_unlock(&dom_mtx);
 		return (EPROTONOSUPPORT);
 	}
 
 	/* De-orbit the protocol and make the slot available again. */
-	dpr->pr_type = 0;
-	dpr->pr_domain = dp;
-	dpr->pr_protocol = PROTO_SPACER;
-	dpr->pr_flags = 0;
-	dpr->pr_input = NULL;
-	dpr->pr_output = NULL;
-	dpr->pr_ctlinput = NULL;
-	dpr->pr_ctloutput = NULL;
-	dpr->pr_init = NULL;
-	dpr->pr_fasttimo = NULL;
-	dpr->pr_slowtimo = NULL;
-	dpr->pr_drain = NULL;
-	dpr->pr_usrreqs = &nousrreqs;
-
-	/* Job is done, not more protection required. */
+	*prp = NULL;
 	mtx_unlock(&dom_mtx);
 
 	return (0);
-}
-
-void
-pfctlinput(int cmd, struct sockaddr *sa)
-{
-	struct domain *dp;
-	struct protosw *pr;
-
-	for (dp = domains; dp; dp = dp->dom_next)
-		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
-			if (pr->pr_ctlinput)
-				(*pr->pr_ctlinput)(cmd, sa, (void *)0);
-}
-
-static void
-pfslowtimo(void *arg)
-{
-	struct epoch_tracker et;
-	struct domain *dp;
-	struct protosw *pr;
-
-	NET_EPOCH_ENTER(et);
-	for (dp = domains; dp; dp = dp->dom_next)
-		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
-			if (pr->pr_slowtimo)
-				(*pr->pr_slowtimo)();
-	NET_EPOCH_EXIT(et);
-	callout_reset(&pfslow_callout, hz/2, pfslowtimo, NULL);
-}
-
-static void
-pffasttimo(void *arg)
-{
-	struct epoch_tracker et;
-	struct domain *dp;
-	struct protosw *pr;
-
-	NET_EPOCH_ENTER(et);
-	for (dp = domains; dp; dp = dp->dom_next)
-		for (pr = dp->dom_protosw; pr < dp->dom_protoswNPROTOSW; pr++)
-			if (pr->pr_fasttimo)
-				(*pr->pr_fasttimo)();
-	NET_EPOCH_EXIT(et);
-	callout_reset(&pffast_callout, hz/5, pffasttimo, NULL);
 }

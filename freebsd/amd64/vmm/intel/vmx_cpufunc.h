@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_VMX_CPUFUNC_H_
@@ -137,10 +135,9 @@ vmread(uint64_t r, uint64_t *addr)
 
 	__asm __volatile("vmread %[r], %[addr];"
 			 VMX_SET_ERROR_CODE
-			 : [error] "=r" (error)
-			 : [r] "r" (r), [addr] "m" (*addr)
+			 : [error] "=r" (error), [addr] "=m" (*addr)
+			 : [r] "r" (r)
 			 : "memory");
-
 	return (error);
 }
 

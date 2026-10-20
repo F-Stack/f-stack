@@ -1,5 +1,8 @@
 #include <rte_memcpy.h>
 #include <rte_spinlock.h>
+#ifdef FF_USE_RING_IPC
+#include <sched.h>
+#endif
 
 #include "ff_socket_ops.h"
 #include "ff_sysproto.h"
@@ -17,14 +20,18 @@ static int ff_sys_kevent(struct ff_kevent_args *args);
 #define FF_MAX_BOUND_NUM 8
 
 /* Where to call sem_post in kevent or epoll_wait */
+#ifndef FF_USE_RING_IPC
 static int sem_flag = 0;
+#endif
 
 /*
  * The event num kevent or epoll_wait returned.
  * Use for burst process event in one F-Stack loop to improve performance.
  */
-#define EVENT_LOOP_TIMES    32
-static int ff_event_loop_nb = 0;
+//#define EVENT_LOOP_TIMES    32
+//#ifndef FF_USE_RING_IPC
+//static int ff_event_loop_nb = 0;
+//#endif
 //static int ff_next_event_flag = 0;
 
 struct ff_bound_info {
@@ -305,6 +312,7 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
     ret = ff_epoll_wait(args->epfd, args->events,
         args->maxevents, args->timeout);
 
+#ifndef FF_USE_RING_IPC
 #ifdef FF_PRELOAD_POLLING_MODE
     /*
      * If an event is generated or error occurs, user app epoll_wait return imme.
@@ -331,6 +339,7 @@ ff_sys_epoll_wait(struct ff_epoll_wait_args *args)
         sem_flag = 1;
     }
 #endif
+#endif /* !FF_USE_RING_IPC */
 
     return ret;
 }
@@ -353,6 +362,7 @@ ff_sys_kevent(struct ff_kevent_args *args)
         args->nchanges = 0;
     }
 
+#ifndef FF_USE_RING_IPC
     /*
      * If timeout is NULL, and no event triggered,
      * no post sem, and next loop will continue to call ff_sys_kevent,
@@ -363,6 +373,7 @@ ff_sys_kevent(struct ff_kevent_args *args)
     } else {
         sem_flag = 1;
     }
+#endif
 
     return ret;
 }
@@ -499,6 +510,46 @@ ff_so_handler(int ops, void *args)
     return (-1);
 }
 
+#ifdef FF_USE_RING_IPC
+/*
+ * Ring mode: process a single request dequeued from req_ring.
+ * No lock needed — SPSC dequeue guarantees mutual exclusion.
+ *
+ * v3.4 D6: marked `inline` (mirrors sem mode's ff_handle_socket_ops) so the
+ * compiler can inline this into the main loop's direct call site (the inline
+ * dequeue burst path is now the default for FF_USE_RING_IPC). Function-pointer
+ * call sites in ff_ring_process_requests still take its address (compiler
+ * will keep an out-of-line copy for those — that's fine).
+ */
+static inline void
+ff_handle_socket_ops_ring(struct ff_so_context *sc)
+{
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    void *old_thread = NULL;
+    if (sc->ff_thread_handle) {
+        old_thread = ff_switch_curthread(sc->ff_thread_handle);
+    }
+#endif
+
+    errno = 0;
+    sc->result = ff_so_handler(sc->ops, sc->args);
+    sc->error = errno;
+
+#ifdef FF_USE_THREAD_STRUCT_HANDLE
+    if (sc->ff_thread_handle) {
+        ff_restore_curthread(old_thread);
+    }
+#endif
+
+    DEBUG_LOG("ff_handle_socket_ops_ring sc:%p, ops:%d, result:%d, error:%d\n",
+        sc, sc->ops, sc->result, sc->error);
+
+    /* Enqueue response — replaces sem_post */
+    ff_ring_send_response(ff_so_zone->ring_zone, sc);
+}
+#endif /* FF_USE_RING_IPC */
+
+#ifndef FF_USE_RING_IPC
 static inline void
 ff_handle_socket_ops(struct ff_so_context *sc)
 {
@@ -565,10 +616,57 @@ ff_handle_socket_ops(struct ff_so_context *sc)
 
     rte_spinlock_unlock(&sc->lock);
 }
+#endif /* !FF_USE_RING_IPC */
 
 void
 ff_handle_each_context()
 {
+#ifdef FF_USE_RING_IPC
+    /*
+     * Ring mode: O(1) batch dequeue from req_ring.
+     * No global zone lock needed — ring is lock-free.
+     */
+    static uint64_t cur_tsc, diff_tsc, drain_tsc = 0;
+
+    if (unlikely(drain_tsc == 0 && ff_global_cfg.dpdk.pkt_tx_delay)) {
+        drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S *
+            ff_global_cfg.dpdk.pkt_tx_delay;
+    }
+
+    if (ff_so_zone == NULL || ff_so_zone->ring_zone == NULL) {
+        return;
+    }
+
+    cur_tsc = rte_rdtsc();
+
+    while (1) {
+        /* v3.3 D5 + v3.4 D6 (default for FF_USE_RING_IPC):
+         * (1) D5: inline empty check via rte_ring_empty, avoiding the full
+         *     ff_ring_process_requests() call stack when req_ring is empty.
+         *     Reuses existing prod.tail/cons.tail (same cross-core fields as
+         *     baseline dequeue_burst), introducing NO new shared cache line
+         *     — unlike the failed pending_count approach (v3.2/H25, removed).
+         * (2) D6: inline dequeue burst + handler call, eliminating the
+         *     ff_ring_process_requests() call stack AND the function pointer
+         *     indirection to ff_handle_socket_ops_ring. The compiler can now
+         *     inline ff_handle_socket_ops_ring directly. */
+        if (!rte_ring_empty(ff_so_zone->ring_zone->req_ring)) {
+            void *objs[SOCKET_OPS_CONTEXT_MAX_NUM];
+            unsigned int nb = rte_ring_sc_dequeue_burst(
+                ff_so_zone->ring_zone->req_ring,
+                objs, FF_RING_SIZE, NULL);
+            for (unsigned int i = 0; i < nb; i++) {
+                ff_handle_socket_ops_ring((struct ff_so_context *)objs[i]);
+            }
+        }
+
+        diff_tsc = rte_rdtsc() - cur_tsc;
+        if (diff_tsc >= drain_tsc) {
+            break;
+        }
+        rte_pause();
+    }
+#else
     uint16_t i, nb_handled, tmp;
     static uint64_t loop_count = 0;
     static uint64_t cur_tsc, diff_tsc, drain_tsc = 0;
@@ -578,8 +676,6 @@ ff_handle_each_context()
         ERR_LOG("ff_global_cfg.dpdk.handle_sc_delay%d, drain_tsc:%lu\n",
                         ff_global_cfg.dpdk.pkt_tx_delay, drain_tsc);
     }
-
-    ff_event_loop_nb = 0;
 
     cur_tsc = rte_rdtsc();
 
@@ -643,5 +739,14 @@ ff_handle_each_context()
     DEBUG_LOG("loop_count:%lu, nb:%d, all_nb:%d\n",
         loop_count, nb_handled, tmp/*, ff_event_loop_nb, ff_next_event_flag*/);
     //, ff_event_loop_nb:%d, ff_next_event_flag:%d
+#endif /* FF_USE_RING_IPC */
 }
+
+#ifdef FF_USE_RING_IPC
+/*
+ * Ring helper functions (ff_ring_process_requests, ff_ring_send_response,
+ * ff_ring_dequeue_wait, ff_ring_alarm_wakeup) have been moved to
+ * ff_ring_ipc.c for shared use by both fstack and libff_syscall.so.
+ */
+#endif /* FF_USE_RING_IPC */
 

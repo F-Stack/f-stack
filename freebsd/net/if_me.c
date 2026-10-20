@@ -24,9 +24,6 @@
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/jail.h>
@@ -47,6 +44,7 @@ __FBSDID("$FreeBSD$");
 #include <net/ethernet.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_clone.h>
 #include <net/if_types.h>
 #include <net/netisr.h>
@@ -322,7 +320,7 @@ me_ioctl(struct ifnet *ifp, u_long cmd, caddr_t data)
 		ifr->ifr_fib = sc->me_fibnum;
 		break;
 	case SIOCSTUNFIB:
-		if ((error = priv_check(curthread, PRIV_NET_GRE)) != 0)
+		if ((error = priv_check(curthread, PRIV_NET_ME)) != 0)
 			break;
 		if (ifr->ifr_fib >= rt_numfibs)
 			error = EINVAL;
@@ -403,6 +401,7 @@ me_srcaddr(void *arg __unused, const struct sockaddr *sa,
 static int
 me_set_tunnel(struct me_softc *sc, in_addr_t src, in_addr_t dst)
 {
+	struct epoch_tracker et;
 	struct me_softc *tmp;
 
 	sx_assert(&me_ioctl_sx, SA_XLOCKED);
@@ -429,7 +428,9 @@ me_set_tunnel(struct me_softc *sc, in_addr_t src, in_addr_t dst)
 	CK_LIST_INSERT_HEAD(&ME_HASH(src, dst), sc, chain);
 	CK_LIST_INSERT_HEAD(&ME_SRCHASH(src), sc, srchash);
 
+	NET_EPOCH_ENTER(et);
 	me_set_running(sc);
+	NET_EPOCH_EXIT(et);
 	if_link_state_change(ME2IFP(sc), LINK_STATE_UP);
 	return (0);
 }
@@ -533,14 +534,15 @@ drop:
 
 static int
 me_output(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
-   struct route *ro __unused)
+   struct route *ro)
 {
 	uint32_t af;
 
-	if (dst->sa_family == AF_UNSPEC)
+	/* BPF writes need to be handled specially. */
+	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
 		bcopy(dst->sa_data, &af, sizeof(af));
 	else
-		af = dst->sa_family;
+		af = RO_GET_FAMILY(ro, dst);
 	m->m_pkthdr.csum_data = af;
 	return (ifp->if_transmit(ifp, m));
 }

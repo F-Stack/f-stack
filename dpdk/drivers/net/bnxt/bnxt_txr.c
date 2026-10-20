@@ -24,6 +24,9 @@ void bnxt_free_tx_rings(struct bnxt *bp)
 {
 	int i;
 
+	if (!bp->tx_queues || !bp->eth_dev->data->tx_queues)
+		return;
+
 	for (i = 0; i < (int)bp->tx_nr_rings; i++) {
 		struct bnxt_tx_queue *txq = bp->tx_queues[i];
 
@@ -111,36 +114,43 @@ int bnxt_init_tx_ring_struct(struct bnxt_tx_queue *txq, unsigned int socket_id)
 static bool
 bnxt_xmit_need_long_bd(struct rte_mbuf *tx_pkt, struct bnxt_tx_queue *txq)
 {
-	if (tx_pkt->ol_flags & (RTE_MBUF_F_TX_TCP_SEG | RTE_MBUF_F_TX_TCP_CKSUM |
-				RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_IP_CKSUM |
+	if (tx_pkt->ol_flags & (RTE_MBUF_F_TX_TCP_SEG |
 				RTE_MBUF_F_TX_VLAN | RTE_MBUF_F_TX_OUTER_IP_CKSUM |
 				RTE_MBUF_F_TX_TUNNEL_GRE | RTE_MBUF_F_TX_TUNNEL_VXLAN |
 				RTE_MBUF_F_TX_TUNNEL_GENEVE | RTE_MBUF_F_TX_IEEE1588_TMST |
-				RTE_MBUF_F_TX_QINQ) ||
+				RTE_MBUF_F_TX_QINQ | RTE_MBUF_F_TX_TUNNEL_VXLAN_GPE |
+				RTE_MBUF_F_TX_UDP_SEG) ||
 	     (BNXT_TRUFLOW_EN(txq->bp) &&
 	      (txq->bp->tx_cfa_action || txq->vfr_tx_cfa_action)))
 		return true;
 	return false;
 }
 
+/* Used for verifying TSO segments during TCP Segmentation Offload or
+ * UDP Fragmentation Offload. tx_pkt->tso_segsz stores the number of
+ * segments or fragments in those cases.
+ */
 static bool
-bnxt_zero_data_len_tso_segsz(struct rte_mbuf *tx_pkt, uint8_t data_len_chk)
+bnxt_zero_data_len_tso_segsz(struct rte_mbuf *tx_pkt, bool data_len_chk, bool tso_segsz_check)
 {
-	const char *type_str = "Data len";
-	uint16_t len_to_check = tx_pkt->data_len;
+	const char *type_str;
 
-	if (data_len_chk == 0) {
-		type_str = "TSO Seg size";
-		len_to_check = tx_pkt->tso_segsz;
+	/* Minimum TSO seg_size should be 4 */
+	if (tso_segsz_check && tx_pkt->tso_segsz < 4) {
+		type_str = "Unsupported TSO Seg size";
+		goto dump_pkt;
 	}
 
-	if (len_to_check == 0) {
-		PMD_DRV_LOG(ERR, "Error! Tx pkt %s == 0\n", type_str);
-		rte_pktmbuf_dump(stdout, tx_pkt, 64);
-		rte_dump_stack();
-		return true;
+	if (data_len_chk && tx_pkt->data_len == 0) {
+		type_str = "Data len == 0";
+		goto dump_pkt;
 	}
 	return false;
+dump_pkt:
+	PMD_DRV_LOG_LINE(ERR, "Error! Tx pkt %s == 0", type_str);
+	rte_pktmbuf_dump(stdout, tx_pkt, 64);
+	rte_dump_stack();
+	return true;
 }
 
 static bool
@@ -186,20 +196,56 @@ bnxt_check_pkt_needs_ts(struct rte_mbuf *m)
 	return false;
 }
 
-static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
+static bool
+bnxt_invalid_nb_segs(struct rte_mbuf *tx_pkt)
+{
+	uint16_t nb_segs = 1;
+	struct rte_mbuf *m_seg;
+
+	m_seg = tx_pkt->next;
+	while (m_seg) {
+		nb_segs++;
+		m_seg = m_seg->next;
+	}
+
+	return (nb_segs != tx_pkt->nb_segs);
+}
+
+static int bnxt_invalid_mbuf(struct rte_mbuf *mbuf)
+{
+	uint32_t mbuf_size = sizeof(struct rte_mbuf) + mbuf->priv_size;
+	const char *reason;
+
+	if (unlikely(rte_eal_iova_mode() != RTE_IOVA_VA &&
+		     rte_eal_iova_mode() != RTE_IOVA_PA))
+		return 0;
+
+	if (unlikely(rte_mbuf_check(mbuf, 1, &reason)))
+		return -EINVAL;
+
+	if (unlikely(mbuf->buf_iova < mbuf_size ||
+		     (mbuf->buf_iova != rte_mempool_virt2iova(mbuf) + mbuf_size)))
+		return -EINVAL;
+
+	return 0;
+}
+
+static int bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 				struct bnxt_tx_queue *txq,
 				uint16_t *coal_pkts,
 				struct tx_bd_long **last_txbd)
 {
+	struct tx_bd_long *last_txbd_save = *last_txbd;
 	struct bnxt_tx_ring_info *txr = txq->tx_ring;
 	struct bnxt_ring *ring = txr->tx_ring_struct;
+	uint16_t tx_raw_prod_save = txr->tx_raw_prod;
 	uint32_t outer_tpid_bd = 0;
 	struct tx_bd_long *txbd;
 	struct tx_bd_long_hi *txbd1 = NULL;
 	uint32_t vlan_tag_flags;
 	bool long_bd = false;
 	unsigned short nr_bds;
-	uint16_t prod;
+	uint16_t prod, idx;
 	bool pkt_needs_ts = 0;
 	struct rte_mbuf *m_seg;
 	struct rte_mbuf **tx_buf;
@@ -209,21 +255,37 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		TX_BD_LONG_FLAGS_LHINT_LT2K,
 		TX_BD_LONG_FLAGS_LHINT_LT2K
 	};
+	int rc = 0;
 
-	if (unlikely(is_bnxt_in_error(txq->bp)))
-		return -EIO;
+	if (unlikely(is_bnxt_in_error(txq->bp))) {
+		rc = -EIO;
+		goto ret;
+	}
+
+	if (unlikely(bnxt_invalid_mbuf(tx_pkt))) {
+		rc = -EINVAL;
+		goto drop;
+	}
+
+	if (unlikely(bnxt_invalid_nb_segs(tx_pkt))) {
+		rc = -EINVAL;
+		goto drop;
+	}
 
 	long_bd = bnxt_xmit_need_long_bd(tx_pkt, txq);
 	nr_bds = long_bd + tx_pkt->nb_segs;
 
-	if (unlikely(bnxt_tx_avail(txq) < nr_bds))
-		return -ENOMEM;
+	if (unlikely(bnxt_tx_avail(txq) < nr_bds)) {
+		rc = -ENOMEM;
+		goto ret;
+	}
 
 	/* Check if number of Tx descriptors is above HW limit */
 	if (unlikely(nr_bds > BNXT_MAX_TSO_SEGS)) {
-		PMD_DRV_LOG(ERR,
-			    "Num descriptors %d exceeds HW limit\n", nr_bds);
-		return -ENOSPC;
+		PMD_DRV_LOG_LINE(ERR,
+			    "Num descriptors %d exceeds HW limit", nr_bds);
+		rc = -EINVAL;
+		goto drop;
 	}
 
 	/* If packet length is less than minimum packet size, pad it */
@@ -232,10 +294,11 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		char *seg = rte_pktmbuf_append(tx_pkt, pad);
 
 		if (!seg) {
-			PMD_DRV_LOG(ERR,
-				    "Failed to pad mbuf by %d bytes\n",
+			PMD_DRV_LOG_LINE(ERR,
+				    "Failed to pad mbuf by %d bytes",
 				    pad);
-			return -ENOMEM;
+			rc = -ENOMEM;
+			goto ret;
 		}
 
 		/* Note: data_len, pkt len are updated in rte_pktmbuf_append */
@@ -243,8 +306,10 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	}
 
 	/* Check non zero data_len */
-	if (unlikely(bnxt_zero_data_len_tso_segsz(tx_pkt, 1)))
-		return -EIO;
+	if (unlikely(bnxt_zero_data_len_tso_segsz(tx_pkt, true, false))) {
+		rc = -EINVAL;
+		goto drop;
+	}
 
 	if (unlikely(txq->bp->ptp_cfg != NULL && txq->bp->ptp_all_rx_tstamp == 1))
 		pkt_needs_ts = bnxt_check_pkt_needs_ts(tx_pkt);
@@ -264,7 +329,10 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		txbd->flags_type |= TX_BD_LONG_FLAGS_LHINT_GTE2K;
 	else
 		txbd->flags_type |= lhint_arr[tx_pkt->pkt_len >> 9];
-	txbd->address = rte_cpu_to_le_64(rte_mbuf_data_iova(tx_pkt));
+	if (tx_pkt->ol_flags & RTE_MBUF_F_EXTERNAL)
+		txbd->address = rte_cpu_to_le_64(rte_pktmbuf_mtod_offset(tx_pkt, uint64_t, 0));
+	else
+		txbd->address = rte_cpu_to_le_64(rte_mbuf_data_iova(tx_pkt));
 	*last_txbd = txbd;
 
 	if (long_bd) {
@@ -313,7 +381,8 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 				TX_BD_LONG_CFA_ACTION_HIGH_MASK;
 		}
 
-		if (tx_pkt->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+		if (tx_pkt->ol_flags & RTE_MBUF_F_TX_TCP_SEG ||
+		    tx_pkt->ol_flags & RTE_MBUF_F_TX_UDP_SEG) {
 			uint16_t hdr_size;
 
 			/* TSO */
@@ -332,8 +401,10 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 			 */
 			txbd1->kid_or_ts_low_hdr_size = hdr_size >> 1;
 			txbd1->kid_or_ts_high_mss = tx_pkt->tso_segsz;
-			if (unlikely(bnxt_zero_data_len_tso_segsz(tx_pkt, 0)))
-				return -EIO;
+			if (unlikely(bnxt_zero_data_len_tso_segsz(tx_pkt, false, true))) {
+				rc = -EINVAL;
+				goto drop;
+			}
 
 		} else if ((tx_pkt->ol_flags & PKT_TX_OIP_IIP_TCP_UDP_CKSUM) ==
 			   PKT_TX_OIP_IIP_TCP_UDP_CKSUM) {
@@ -407,8 +478,10 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	m_seg = tx_pkt->next;
 	while (m_seg) {
 		/* Check non zero data_len */
-		if (unlikely(bnxt_zero_data_len_tso_segsz(m_seg, 1)))
-			return -EIO;
+		if (unlikely(bnxt_zero_data_len_tso_segsz(m_seg, true, false))) {
+			rc = -EINVAL;
+			goto drop;
+		}
 		txr->tx_raw_prod = RING_NEXT(txr->tx_raw_prod);
 
 		prod = RING_IDX(ring, txr->tx_raw_prod);
@@ -416,7 +489,12 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 		*tx_buf = m_seg;
 
 		txbd = &txr->tx_desc_ring[prod];
-		txbd->address = rte_cpu_to_le_64(rte_mbuf_data_iova(m_seg));
+		if (m_seg->ol_flags & RTE_MBUF_F_EXTERNAL)
+			txbd->address = rte_cpu_to_le_64(rte_pktmbuf_mtod_offset(m_seg,
+										 uint64_t,
+										 0));
+		else
+			txbd->address = rte_cpu_to_le_64(rte_mbuf_data_iova(m_seg));
 		txbd->flags_type = TX_BD_SHORT_TYPE_TX_BD_SHORT;
 		txbd->len = m_seg->data_len;
 
@@ -428,13 +506,72 @@ static uint16_t bnxt_start_xmit(struct rte_mbuf *tx_pkt,
 	txr->tx_raw_prod = RING_NEXT(txr->tx_raw_prod);
 
 	return 0;
+drop:
+	/* Roll back any descriptors and tx_buf_ring slots that were written
+	 * for this packet before the failure was detected.  Walking from the
+	 * saved producer index up to (but not including) the current one is
+	 * safe because we hold the Tx lock and the HW has not been notified
+	 * (the doorbell is only rung after bnxt_start_xmit() returns
+	 * successfully).
+	 */
+	idx = tx_raw_prod_save;
+
+	while (idx != txr->tx_raw_prod) {
+		uint16_t slot = RING_IDX(ring, idx);
+
+		txr->tx_buf_ring[slot] = NULL;
+		txr->tx_desc_ring[slot].address = 0;
+		idx = RING_NEXT(idx);
+	}
+	txr->tx_raw_prod = tx_raw_prod_save;
+	*last_txbd = last_txbd_save;
+	rte_pktmbuf_free(tx_pkt);
+ret:
+	return rc;
+}
+
+static void bnxt_tx_coal_cmp_fast(struct bnxt_tx_queue *txq, int nr_cons)
+{
+	struct bnxt_tx_ring_info *txr = txq->tx_ring;
+	struct bnxt_ring *ring = txr->tx_ring_struct;
+	struct rte_mbuf **free = txq->free;
+	uint16_t raw_cons = txr->tx_raw_cons;
+	unsigned int blk = 0;
+	int cons, bds;
+
+	for (cons = 0; cons < nr_cons; cons++) {
+		struct rte_mbuf **tx_buf;
+		unsigned short nr_bds;
+
+		tx_buf = &txr->tx_buf_ring[RING_IDX(ring, raw_cons)];
+		nr_bds = (*tx_buf)->nb_segs +
+			 bnxt_xmit_need_long_bd(*tx_buf, txq);
+		for (bds = 0; bds < nr_bds; bds++) {
+			if (*tx_buf) {
+				free[blk++] = *tx_buf;
+				/*
+				 * Each BD also tracks a consumer index.
+				 * Update cons, otherwise it will fall behind.
+				 */
+				cons++;
+				*tx_buf = NULL;
+			}
+			raw_cons = RING_NEXT(raw_cons);
+			tx_buf = &txr->tx_buf_ring[RING_IDX(ring, raw_cons)];
+		}
+	}
+	if (blk)
+		rte_mempool_put_bulk(free[0]->pool, (void *)free, blk);
+
+	txr->tx_raw_cons = raw_cons;
 }
 
 /*
  * Transmit completion function for use when RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE
  * is enabled.
  */
-static void bnxt_tx_cmp_fast(struct bnxt_tx_queue *txq, int nr_pkts)
+static void bnxt_tx_cmp_fast(struct bnxt_tx_queue *txq, int nb_tx,
+			      bool tx_coal_cmp)
 {
 	struct bnxt_tx_ring_info *txr = txq->tx_ring;
 	struct bnxt_ring *ring = txr->tx_ring_struct;
@@ -443,7 +580,10 @@ static void bnxt_tx_cmp_fast(struct bnxt_tx_queue *txq, int nr_pkts)
 	unsigned int blk = 0;
 	int i, j;
 
-	for (i = 0; i < nr_pkts; i++) {
+	if (tx_coal_cmp)
+		return bnxt_tx_coal_cmp_fast(txq, nb_tx);
+
+	for (i = 0; i < nb_tx; i++) {
 		struct rte_mbuf **tx_buf;
 		unsigned short nr_bds;
 
@@ -466,7 +606,72 @@ static void bnxt_tx_cmp_fast(struct bnxt_tx_queue *txq, int nr_pkts)
 	txr->tx_raw_cons = raw_cons;
 }
 
-static void bnxt_tx_cmp(struct bnxt_tx_queue *txq, int nr_pkts)
+static void bnxt_tx_coal_cmp(struct bnxt_tx_queue *txq, int nr_cons)
+{
+	struct bnxt_tx_ring_info *txr = txq->tx_ring;
+	struct bnxt_ring *ring = txr->tx_ring_struct;
+	struct rte_mempool *pool = NULL;
+	struct rte_mbuf **free = txq->free;
+	uint16_t raw_cons = txr->tx_raw_cons;
+	unsigned int blk = 0;
+	int cons, bds;
+
+	for (cons = 0; cons < nr_cons; cons++) {
+		struct rte_mbuf *mbuf;
+		struct rte_mbuf **tx_buf;
+		unsigned short nr_bds;
+
+		tx_buf = &txr->tx_buf_ring[RING_IDX(ring, raw_cons)];
+		nr_bds = txr->nr_bds[RING_IDX(ring, raw_cons)];
+		/* Clear the now stale number of buffer descriptors */
+		txr->nr_bds[RING_IDX(ring, raw_cons)] = 0;
+
+		for (bds = 0; bds < nr_bds; bds++) {
+			mbuf = *tx_buf;
+			*tx_buf = NULL;
+			raw_cons = RING_NEXT(raw_cons);
+			/*
+			 * Each BD also tracks a consumer index. So update the cons.
+			 * Otherwise the cons will fall behind.
+			 */
+			cons++;
+			tx_buf = &txr->tx_buf_ring[RING_IDX(ring, raw_cons)];
+			if (!mbuf)	/* long_bd's tx_buf ? */
+				continue;
+
+			mbuf = rte_pktmbuf_prefree_seg(mbuf);
+			if (unlikely(!mbuf))
+				continue;
+
+			/* EW - no need to unmap DMA memory? */
+
+			if (likely(mbuf->pool == pool)) {
+				/* Add mbuf to the bulk free array */
+				free[blk++] = mbuf;
+			} else {
+				/* Found an mbuf from a different pool. Free
+				 * mbufs accumulated so far to the previous
+				 * pool
+				 */
+				if (likely(pool != NULL))
+					rte_mempool_put_bulk(pool,
+							     (void *)free,
+							     blk);
+
+				/* Start accumulating mbufs in a new pool */
+				free[0] = mbuf;
+				pool = mbuf->pool;
+				blk = 1;
+			}
+		}
+	}
+	if (blk)
+		rte_mempool_put_bulk(pool, (void *)free, blk);
+
+	txr->tx_raw_cons = raw_cons;
+}
+
+static void bnxt_tx_cmp(struct bnxt_tx_queue *txq, int nb_tx, bool tx_coal_cmp)
 {
 	struct bnxt_tx_ring_info *txr = txq->tx_ring;
 	struct bnxt_ring *ring = txr->tx_ring_struct;
@@ -476,13 +681,19 @@ static void bnxt_tx_cmp(struct bnxt_tx_queue *txq, int nr_pkts)
 	unsigned int blk = 0;
 	int i, j;
 
-	for (i = 0; i < nr_pkts; i++) {
+	if (tx_coal_cmp)
+		return bnxt_tx_coal_cmp(txq, nb_tx);
+
+	for (i = 0; i < nb_tx; i++) {
 		struct rte_mbuf *mbuf;
 		struct rte_mbuf **tx_buf;
 		unsigned short nr_bds;
 
 		tx_buf = &txr->tx_buf_ring[RING_IDX(ring, raw_cons)];
 		nr_bds = txr->nr_bds[RING_IDX(ring, raw_cons)];
+		/* Clear the now stale number of buffer descriptors */
+		txr->nr_bds[RING_IDX(ring, raw_cons)] = 0;
+
 		for (j = 0; j < nr_bds; j++) {
 			mbuf = *tx_buf;
 			*tx_buf = NULL;
@@ -523,12 +734,35 @@ static void bnxt_tx_cmp(struct bnxt_tx_queue *txq, int nr_pkts)
 	txr->tx_raw_cons = raw_cons;
 }
 
+static bool bnxt_is_tx_cmpl_type(uint16_t type)
+{
+	return (type == CMPL_BASE_TYPE_TX_L2_PKT_TS ||
+		type == CMPL_BASE_TYPE_TX_L2_COAL ||
+		type == CMPL_BASE_TYPE_TX_L2);
+}
+
+static void bnxt_get_tx_ts_p7(struct bnxt *bp, struct tx_cmpl_packet_timestamp *txcmp)
+{
+	uint64_t tx_timestamp;
+
+	if (!(bp->fw_cap & BNXT_FW_CAP_TX_TS_CMP))
+		return;
+
+	if (!bp->ptp_cfg || !bp->ieee_1588)
+		return;
+
+	tx_timestamp = rte_le_to_cpu_16(txcmp->ts_ns_mid);
+	bp->ptp_cfg->tx_timestamp = (tx_timestamp << 32) | rte_le_to_cpu_32(txcmp->ts_ns_lo);
+}
+
 static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 {
 	uint32_t nb_tx_pkts = 0, cons, ring_mask, opaque;
 	struct bnxt_cp_ring_info *cpr = txq->cp_ring;
 	uint32_t raw_cons = cpr->cp_raw_cons;
 	struct bnxt_ring *cp_ring_struct;
+	uint32_t tx_ring_mask;
+	bool tx_coal_cmp = false;
 	struct tx_cmpl *txcmp;
 
 	if (bnxt_tx_bds_in_hw(txq) < txq->tx_free_thresh)
@@ -536,6 +770,7 @@ static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 
 	cp_ring_struct = cpr->cp_ring_struct;
 	ring_mask = cp_ring_struct->ring_mask;
+	tx_ring_mask = txq->tx_ring->tx_ring_struct->ring_mask;
 
 	do {
 		cons = RING_CMPL(ring_mask, raw_cons);
@@ -544,22 +779,34 @@ static int bnxt_handle_tx_cp(struct bnxt_tx_queue *txq)
 		if (!bnxt_cpr_cmp_valid(txcmp, raw_cons, ring_mask + 1))
 			break;
 
+		if (CMP_TYPE(txcmp) == CMPL_BASE_TYPE_TX_L2_COAL) {
+			struct tx_cmpl_coal *txcmp_c = (struct tx_cmpl_coal *)txcmp;
+
+			nb_tx_pkts = (rte_le_to_cpu_32(txcmp_c->sq_cons_idx) -
+				      (txq->tx_ring->tx_raw_cons & tx_ring_mask)) & tx_ring_mask;
+			raw_cons = NEXT_RAW_CMP(raw_cons);
+			tx_coal_cmp = true;
+			break;
+		}
+
 		opaque = rte_le_to_cpu_32(txcmp->opaque);
 
-		if (CMP_TYPE(txcmp) == TX_CMPL_TYPE_TX_L2)
+		if (bnxt_is_tx_cmpl_type(CMP_TYPE(txcmp)))
 			nb_tx_pkts += opaque;
 		else
-			RTE_LOG_DP(ERR, PMD,
-					"Unhandled CMP type %02x\n",
+			RTE_LOG_DP_LINE(ERR, BNXT,
+					"Unhandled CMP type %02x",
 					CMP_TYPE(txcmp));
+		if (CMP_TYPE(txcmp) == CMPL_BASE_TYPE_TX_L2_PKT_TS)
+			bnxt_get_tx_ts_p7(txq->bp, (struct tx_cmpl_packet_timestamp *)txcmp);
 		raw_cons = NEXT_RAW_CMP(raw_cons);
 	} while (nb_tx_pkts < ring_mask);
 
 	if (nb_tx_pkts) {
 		if (txq->offloads & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
-			bnxt_tx_cmp_fast(txq, nb_tx_pkts);
+			bnxt_tx_cmp_fast(txq, nb_tx_pkts, tx_coal_cmp);
 		else
-			bnxt_tx_cmp(txq, nb_tx_pkts);
+			bnxt_tx_cmp(txq, nb_tx_pkts, tx_coal_cmp);
 		cpr->cp_raw_cons = raw_cons;
 		bnxt_db_cq(cpr);
 	}
@@ -588,13 +835,14 @@ uint16_t _bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint16_t coal_pkts = 0;
 	struct bnxt_tx_queue *txq = tx_queue;
 	struct tx_bd_long *last_txbd = NULL;
+	uint8_t dropped = 0;
 
 	/* Handle TX completions */
 	bnxt_handle_tx_cp(txq);
 
 	/* Tx queue was stopped; wait for it to be restarted */
 	if (unlikely(!txq->tx_started)) {
-		PMD_DRV_LOG(DEBUG, "Tx q stopped;return\n");
+		PMD_DRV_LOG_LINE(DEBUG, "Tx q stopped;return");
 		return 0;
 	}
 
@@ -604,17 +852,30 @@ uint16_t _bnxt_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		rc = bnxt_start_xmit(tx_pkts[nb_tx_pkts], txq,
 				     &coal_pkts, &last_txbd);
 
-		if (unlikely(rc))
+		if (unlikely(rc)) {
+			if (rc == -EINVAL) {
+				coal_pkts--;
+				rte_atomic_fetch_add_explicit(&txq->tx_mbuf_drop, 1,
+							      rte_memory_order_relaxed);
+				dropped++;
+				continue;
+			}
 			break;
+		}
 	}
 
-	if (likely(nb_tx_pkts)) {
+	/* last_txbd is used to check for if any packets have been sent in
+	 * the burst as bnxt_start_xmit will update it to the most recent
+	 * non-dropped buffer descriptor in the burst.
+	 */
+	if (likely(last_txbd != NULL)) {
 		/* Request a completion on the last packet */
 		last_txbd->flags_type &= ~TX_BD_LONG_FLAGS_NO_CMPL;
 		bnxt_db_write(&txq->tx_ring->tx_db, txq->tx_ring->tx_raw_prod);
 	}
 
-	return nb_tx_pkts;
+	return RTE_MIN((uint16_t)(nb_tx_pkts + dropped), nb_pkts);
+
 }
 
 int bnxt_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
@@ -638,9 +899,19 @@ int bnxt_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	if (rc)
 		return rc;
 
+	/* reset the previous stats for the tx_queue since the counters
+	 * will be cleared when the queue is started.
+	 */
+	if (BNXT_TPA_V2_P7(bp))
+		memset(&bp->prev_tx_ring_stats_ext[tx_queue_id], 0,
+		       sizeof(struct bnxt_ring_stats));
+	else
+		memset(&bp->prev_tx_ring_stats[tx_queue_id], 0,
+		       sizeof(struct bnxt_ring_stats));
+
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STARTED;
 	txq->tx_started = true;
-	PMD_DRV_LOG(DEBUG, "Tx queue started\n");
+	PMD_DRV_LOG_LINE(DEBUG, "Tx queue started");
 
 	return 0;
 }
@@ -660,9 +931,18 @@ int bnxt_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 
 	dev->data->tx_queue_state[tx_queue_id] = RTE_ETH_QUEUE_STATE_STOPPED;
 	txq->tx_started = false;
-	PMD_DRV_LOG(DEBUG, "Tx queue stopped\n");
+	PMD_DRV_LOG_LINE(DEBUG, "Tx queue stopped");
 
 	return 0;
+}
+
+static bool bnxt_is_tx_mpc_flush_cmpl_type(uint16_t type)
+{
+	return (type == CMPL_BASE_TYPE_TX_L2_PKT_TS ||
+		type == CMPL_BASE_TYPE_TX_L2_COAL ||
+		type == CMPL_BASE_TYPE_TX_L2 ||
+		type == CMPL_BASE_TYPE_MID_PATH_SHORT ||
+		type == CMPL_BASE_TYPE_MID_PATH_LONG);
 }
 
 /* Sweep the Tx completion queue till HWRM_DONE for ring flush is received.
@@ -690,7 +970,7 @@ int bnxt_flush_tx_cmp(struct bnxt_cp_ring_info *cpr)
 		opaque = rte_cpu_to_le_32(txcmp->opaque);
 		raw_cons = NEXT_RAW_CMP(raw_cons);
 
-		if (CMP_TYPE(txcmp) == TX_CMPL_TYPE_TX_L2)
+		if (bnxt_is_tx_mpc_flush_cmpl_type(CMP_TYPE(txcmp)))
 			nb_tx_pkts += opaque;
 		else if (CMP_TYPE(txcmp) == HWRM_CMPL_TYPE_HWRM_DONE)
 			return 1;

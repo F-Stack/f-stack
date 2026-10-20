@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1997 Berkeley Software Design, Inc. All rights reserved.
  *
@@ -28,7 +28,6 @@
  * SUCH DAMAGE.
  *
  *	from BSDI Id: mutex.h,v 2.7.2.35 2000/04/27 03:10:26 cp
- * $FreeBSD$
  */
 
 #ifndef _SYS_LOCK_H_
@@ -67,6 +66,7 @@ struct lock_class {
 	int		(*lc_owner)(const struct lock_object *lock,
 			    struct thread **owner);
 	uintptr_t	(*lc_unlock)(struct lock_object *lock);
+	int		(*lc_trylock)(struct lock_object *lock, uintptr_t how);
 };
 
 #define	LC_SLEEPLOCK	0x00000001	/* Sleep lock. */
@@ -182,7 +182,7 @@ extern u_short locks_delay_loops;
 
 struct lock_delay_arg {
 	struct lock_delay_config *config;
-	u_short delay;
+	u_int delay;
 	u_int spin_cnt;
 };
 
@@ -237,6 +237,7 @@ int	witness_list_locks(struct lock_list_entry **,
 	    int (*)(const char *, ...));
 int	witness_warn(int, struct lock_object *, const char *, ...);
 void	witness_assert(const struct lock_object *, int, const char *, int);
+int	witness_is_owned(const struct lock_object *lock);
 void	witness_display_spinlock(struct lock_object *, struct thread *,
 	    int (*)(const char *, ...));
 int	witness_line(struct lock_object *);

@@ -34,15 +34,10 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <libkern/quad.h>
 
 /*
  * Return remainder after dividing two signed quads.
- *
- * XXX
- * If -1/2 should produce -1 on this machine, this code is wrong.
  */
 quad_t
 __moddi3(quad_t a, quad_t b)
@@ -50,10 +45,13 @@ __moddi3(quad_t a, quad_t b)
 	u_quad_t ua, ub, ur;
 	int neg;
 
-	if (a < 0)
-		ua = -(u_quad_t)a, neg = 1;
-	else
-		ua = a, neg = 0;
+	if (a < 0) {
+		ua = -(u_quad_t)a;
+		neg = 1;
+	} else {
+		ua = a;
+		neg = 0;
+	}
 	if (b < 0)
 		ub = -(u_quad_t)b;
 	else

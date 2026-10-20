@@ -10,21 +10,21 @@
 #include <assert.h>
 #include <sys/ioctl.h>
 
+#include <rte_lcore.h>
+
 #include "ff_config.h"
 #include "ff_api.h"
 #include "ff_log.h"
 
 #define MAX_EVENTS 512
 
-/* kevent set */
-struct kevent kevSet;
-/* events */
-struct kevent events[MAX_EVENTS];
-/* kq */
-int kq;
-int sockfd;
+/* Per-thread state: each lcore runs its own kq/sockfd in thread_mode=1. */
+static __thread struct kevent kevSet;
+static __thread struct kevent events[MAX_EVENTS];
+static __thread int kq = -1;
+static __thread int sockfd = -1;
 #ifdef INET6
-int sockfd6;
+static __thread int sockfd6 = -1;
 #endif
 
 char html[] =
@@ -59,8 +59,90 @@ char html[] =
 "</body>\r\n"
 "</html>";
 
+static void
+init_thread(void)
+{
+    if (kq >= 0) return;
+
+    kq = ff_kqueue();
+    if (kq < 0) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kqueue failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+
+    sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+
+    int on = 1;
+    ff_ioctl(sockfd, FIONBIO, &on);
+    ff_setsockopt(sockfd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+
+    struct sockaddr_in my_addr;
+    bzero(&my_addr, sizeof(my_addr));
+    my_addr.sin_family = AF_INET;
+    my_addr.sin_port = htons(80);
+    my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+    int ret = ff_bind(sockfd, (struct linux_sockaddr *)&my_addr, sizeof(my_addr));
+    if (ret < 0) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+
+    ret = ff_listen(sockfd, MAX_EVENTS);
+    if (ret < 0) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+
+    EV_SET(&kevSet, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
+    ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
+
+#ifdef INET6
+    sockfd6 = ff_socket(AF_INET6, SOCK_STREAM, 0);
+    if (sockfd6 < 0) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+
+    ff_setsockopt(sockfd6, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on));
+
+    struct sockaddr_in6 my_addr6;
+    bzero(&my_addr6, sizeof(my_addr6));
+    my_addr6.sin6_family = AF_INET6;
+    my_addr6.sin6_port = htons(80);
+    my_addr6.sin6_addr = in6addr_any;
+
+    ret = ff_bind(sockfd6, (struct linux_sockaddr *)&my_addr6, sizeof(my_addr6));
+    if (ret < 0) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+
+    ret = ff_listen(sockfd6, MAX_EVENTS);
+    if (ret < 0) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+
+    EV_SET(&kevSet, sockfd6, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
+    ret = ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
+    if (ret < 0) {
+        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kevent failed:%d, %s\n", errno, strerror(errno));
+        exit(1);
+    }
+#endif
+
+    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_APP, "thread init success on lcore %u.\n", rte_lcore_id());
+}
+
 int loop(void *arg)
 {
+    init_thread();
+
     /* Wait for events to happen */
     int nevents = ff_kevent(kq, NULL, 0, events, MAX_EVENTS, NULL);
     int i;
@@ -140,79 +222,6 @@ int main(int argc, char * argv[])
 
     ff_log_set_global_level(FF_LOG_INFO);
     ff_log_set_level(FF_LOGTYPE_FSTACK_APP, FF_LOG_INFO);
-
-    kq = ff_kqueue();
-    if (kq < 0) {
-        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kqueue failed, errno:%d, %s\n", errno, strerror(errno));
-        exit(1);
-    }
-
-    sockfd = ff_socket(AF_INET, SOCK_STREAM, 0);
-    if (sockfd < 0) {
-        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
-        exit(1);
-    }
-
-    /* Set non blocking */
-    int on = 1;
-    ff_ioctl(sockfd, FIONBIO, &on);
-
-    struct sockaddr_in my_addr;
-    bzero(&my_addr, sizeof(my_addr));
-    my_addr.sin_family = AF_INET;
-    my_addr.sin_port = htons(80);
-    my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-
-    int ret = ff_bind(sockfd, (struct linux_sockaddr *)&my_addr, sizeof(my_addr));
-    if (ret < 0) {
-       ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
-        exit(1);
-    }
-
-     ret = ff_listen(sockfd, MAX_EVENTS);
-    if (ret < 0) {
-        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed, sockfd:%d, errno:%d, %s\n", sockfd, errno, strerror(errno));
-        exit(1);
-    }
-
-    EV_SET(&kevSet, sockfd, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
-    /* Update kqueue */
-    ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
-
-#ifdef INET6
-    sockfd6 = ff_socket(AF_INET6, SOCK_STREAM, 0);
-    if (sockfd6 < 0) {
-        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_socket failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
-        exit(1);
-    }
-
-    struct sockaddr_in6 my_addr6;
-    bzero(&my_addr6, sizeof(my_addr6));
-    my_addr6.sin6_family = AF_INET6;
-    my_addr6.sin6_port = htons(80);
-    my_addr6.sin6_addr = in6addr_any;
-
-    ret = ff_bind(sockfd6, (struct linux_sockaddr *)&my_addr6, sizeof(my_addr6));
-    if (ret < 0) {
-        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_bind failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
-        exit(1);
-    }
-
-    ret = ff_listen(sockfd6, MAX_EVENTS);
-    if (ret < 0) {
-        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_listen failed, sockfd6:%d, errno:%d, %s\n", sockfd6, errno, strerror(errno));
-        exit(1);
-    }
-
-    EV_SET(&kevSet, sockfd6, EVFILT_READ, EV_ADD, 0, MAX_EVENTS, NULL);
-    ret = ff_kevent(kq, &kevSet, 1, NULL, 0, NULL);
-    if (ret < 0) {
-        ff_log(FF_LOG_ERR, FF_LOGTYPE_FSTACK_APP, "ff_kevent failed:%d, %s\n", errno, strerror(errno));
-        exit(1);
-    }
-#endif
-
-    ff_log(FF_LOG_INFO, FF_LOGTYPE_FSTACK_APP, "helloworld init success.\n");
 
     ff_run(loop, NULL);
 

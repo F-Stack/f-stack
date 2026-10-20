@@ -58,9 +58,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)in_pcb.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 #ifndef _NETINET6_IN6_PCB_H_
@@ -71,52 +68,32 @@
 #define	sin6tosa(sin6)	((struct sockaddr *)(sin6))
 #define	ifatoia6(ifa)	((struct in6_ifaddr *)(ifa))
 
-struct	inpcbgroup *
-	in6_pcbgroup_byhash(struct inpcbinfo *, u_int, uint32_t);
-struct	inpcbgroup *
-	in6_pcbgroup_byinpcb(struct inpcb *);
-struct inpcbgroup *
-	in6_pcbgroup_bymbuf(struct inpcbinfo *, struct mbuf *);
-struct	inpcbgroup *
-	in6_pcbgroup_bytuple(struct inpcbinfo *, const struct in6_addr *,
-	    u_short, const struct in6_addr *, u_short);
-
 void	in6_pcbpurgeif0(struct inpcbinfo *, struct ifnet *);
 void	in6_losing(struct inpcb *);
-int	in6_pcbbind(struct inpcb *, struct sockaddr *, struct ucred *);
-int	in6_pcbconnect(struct inpcb *, struct sockaddr *, struct ucred *);
-int	in6_pcbconnect_mbuf(struct inpcb *, struct sockaddr *,
-	    struct ucred *, struct mbuf *, bool);
+int	in6_pcbbind(struct inpcb *, struct sockaddr_in6 *, int, struct ucred *);
+int	in6_pcbconnect(struct inpcb *, struct sockaddr_in6 *, struct ucred *,
+	    bool);
 void	in6_pcbdisconnect(struct inpcb *);
-struct	inpcb *
-	in6_pcblookup_local(struct inpcbinfo *,
-				 struct in6_addr *, u_short, int,
-				 struct ucred *);
-struct inpcb *
-	in6_pcblookup_hash_locked(struct inpcbinfo *pcbinfo,
-	    struct in6_addr *faddr, u_int fport_arg, struct in6_addr *laddr,
-	    u_int lport_arg, int lookupflags, struct ifnet *ifp, uint8_t);
-struct	inpcb *
-	in6_pcblookup(struct inpcbinfo *, struct in6_addr *,
-			   u_int, struct in6_addr *, u_int, int,
-			   struct ifnet *);
-struct	inpcb *
-	in6_pcblookup_mbuf(struct inpcbinfo *, struct in6_addr *,
-			   u_int, struct in6_addr *, u_int, int,
-			   struct ifnet *ifp, struct mbuf *);
-void	in6_pcbnotify(struct inpcbinfo *, struct sockaddr *,
-			   u_int, const struct sockaddr *, u_int, int, void *,
+struct inpcb *in6_pcblookup_local(struct inpcbinfo *, const struct in6_addr *,
+	    u_short, int, int, struct ucred *);
+struct inpcb *in6_pcblookup_hash_locked(struct inpcbinfo *pcbinfo,
+	    const struct in6_addr *faddr, u_int fport_arg,
+	    const struct in6_addr *laddr, u_int lport_arg,
+	    int lookupflags, uint8_t numa_domain, int fib);
+struct inpcb *in6_pcblookup(struct inpcbinfo *, const struct in6_addr *, u_int,
+	    const struct in6_addr *, u_int, int, struct ifnet *);
+struct inpcb *in6_pcblookup_mbuf(struct inpcbinfo *, const struct in6_addr *,
+	    u_int, const struct in6_addr *, u_int, int, struct ifnet *ifp,
+	    struct mbuf *);
+void	in6_pcbnotify(struct inpcbinfo *, struct sockaddr_in6 *, u_int,
+			   const struct sockaddr_in6 *, u_int, int, void *,
 			   struct inpcb *(*)(struct inpcb *, int));
 struct inpcb *
 	in6_rtchange(struct inpcb *, int);
-struct sockaddr *
-	in6_sockaddr(in_port_t port, struct in6_addr *addr_p);
-struct sockaddr *
-	in6_v4mapsin6_sockaddr(in_port_t port, struct in_addr *addr_p);
-int	in6_getpeeraddr(struct socket *so, struct sockaddr **nam);
-int	in6_getsockaddr(struct socket *so, struct sockaddr **nam);
-int	in6_mapped_sockaddr(struct socket *so, struct sockaddr **nam);
-int	in6_mapped_peeraddr(struct socket *so, struct sockaddr **nam);
+int	in6_getpeeraddr(struct socket *, struct sockaddr *);
+int	in6_getsockaddr(struct socket *, struct sockaddr *);
+int	in6_mapped_sockaddr(struct socket *, struct sockaddr *);
+int	in6_mapped_peeraddr(struct socket *, struct sockaddr *);
 int	in6_selecthlim(struct inpcb *, struct ifnet *);
 int	in6_pcbsetport(struct in6_addr *, struct inpcb *, struct ucred *);
 void	init_sin6(struct sockaddr_in6 *sin6, struct mbuf *m, int);

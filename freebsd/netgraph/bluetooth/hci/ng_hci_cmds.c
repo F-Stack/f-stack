@@ -3,7 +3,7 @@
  */
 
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -30,7 +30,6 @@
  * SUCH DAMAGE.
  *
  * $Id: ng_hci_cmds.c,v 1.4 2003/09/08 18:57:51 max Exp $
- * $FreeBSD$
  */
 
 #include <sys/param.h>
@@ -615,8 +614,10 @@ process_hc_baseband_params(ng_hci_unit_p unit, u_int16_t ocf,
 	case NG_HCI_OCF_READ_LOCAL_NAME:
 	case NG_HCI_OCF_READ_UNIT_CLASS:
 	case NG_HCI_OCF_WRITE_UNIT_CLASS:
+	case NG_HCI_OCF_WRITE_SIMPLE_PAIRING:
 	case NG_HCI_OCF_READ_LE_HOST_SUPPORTED:
 	case NG_HCI_OCF_WRITE_LE_HOST_SUPPORTED:
+	case NG_HCI_OCF_WRITE_SECURE_CONNECTIONS_HOST_SUPPORT:
 		/* These do not need post processing */
 		break;
 

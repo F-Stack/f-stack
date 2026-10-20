@@ -621,6 +621,7 @@ cpfl_tx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 	return 0;
 
 err_complq_setup:
+	rte_free(txq->sw_ring);
 err_sw_ring_alloc:
 	cpfl_dma_zone_release(mz);
 err_mz_reserve:
@@ -1200,7 +1201,8 @@ cpfl_rx_queue_start(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	}
 
 	/* Ready to switch the queue on */
-	err = idpf_vc_queue_switch(vport, rx_queue_id, true, true);
+	err = idpf_vc_queue_switch(vport, rx_queue_id, true, true,
+							VIRTCHNL2_QUEUE_TYPE_RX);
 	if (err != 0) {
 		PMD_DRV_LOG(ERR, "Failed to switch RX queue %u on",
 			    rx_queue_id);
@@ -1252,7 +1254,8 @@ cpfl_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	}
 
 	/* Ready to switch the queue on */
-	err = idpf_vc_queue_switch(vport, tx_queue_id, false, true);
+	err = idpf_vc_queue_switch(vport, tx_queue_id, false, true,
+							VIRTCHNL2_QUEUE_TYPE_TX);
 	if (err != 0) {
 		PMD_DRV_LOG(ERR, "Failed to switch TX queue %u on",
 			    tx_queue_id);
@@ -1283,7 +1286,8 @@ cpfl_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 						     rx_queue_id - cpfl_vport->nb_data_txq,
 						     true, false);
 	else
-		err = idpf_vc_queue_switch(vport, rx_queue_id, true, false);
+		err = idpf_vc_queue_switch(vport, rx_queue_id, true, false,
+								VIRTCHNL2_QUEUE_TYPE_RX);
 	if (err != 0) {
 		PMD_DRV_LOG(ERR, "Failed to switch RX queue %u off",
 			    rx_queue_id);
@@ -1331,7 +1335,8 @@ cpfl_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 						     tx_queue_id - cpfl_vport->nb_data_txq,
 						     false, false);
 	else
-		err = idpf_vc_queue_switch(vport, tx_queue_id, false, false);
+		err = idpf_vc_queue_switch(vport, tx_queue_id, false, false,
+								VIRTCHNL2_QUEUE_TYPE_TX);
 	if (err != 0) {
 		PMD_DRV_LOG(ERR, "Failed to switch TX queue %u off",
 			    tx_queue_id);

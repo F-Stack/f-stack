@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010-2011 Alexander V. Chernikov <melifaro@ipfw.ru>
  * Copyright (c) 2004-2005 Gleb Smirnoff <glebius@FreeBSD.org>
@@ -31,8 +31,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_route.h"
@@ -55,6 +53,7 @@ __FBSDID("$FreeBSD$");
 #include <net/route.h>
 #include <net/if_arp.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_vlan_var.h>
 #include <net/bpf.h>
 #include <netinet/in.h>
@@ -594,11 +593,15 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 	struct ip *ip = NULL;
 	struct ip6_hdr *ip6 = NULL;
 	struct m_tag *mtag;
-	int pullup_len = 0, off;
-	uint8_t acct = 0, bypass = 0, flags = 0, upper_proto = 0;
+	int pullup_len = 0;
+	uint8_t acct = 0, bypass = 0;
 	int error = 0, l3_off = 0;
+#if defined(INET) || defined(INET6)
+	int off;
+	uint8_t flags = 0, upper_proto = 0;
 	unsigned int src_if_index;
 	caddr_t upper_ptr = NULL;
+#endif
 	fib_export_p fe;	
 	uint32_t fib;
 
@@ -655,8 +658,10 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 		}
 	}
 
+#if defined(INET) || defined(INET6)
 	/* Import configuration flags related to flow creation */
 	flags = iface->info.conf & NG_NETFLOW_FLOW_FLAGS;
+#endif
 
 	NGI_GET_M(item, m);
 	m_old = m;
@@ -775,7 +780,9 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 		break;
 	}
 
+#if defined(INET) || defined(INET6)
 	off = pullup_len;
+#endif
 
 	if ((ip != NULL) && ((ip->ip_off & htons(IP_OFFMASK)) == 0)) {
 		if ((ip->ip_v != IPVERSION) ||
@@ -787,9 +794,11 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 		 */
 		M_CHECK((ip->ip_hl << 2) - sizeof(struct ip));
 
+#if defined(INET) || defined(INET6)
 		/* Save upper layer offset and proto */
 		off = pullup_len;
 		upper_proto = ip->ip_p;
+#endif
 
 		/*
 		 * XXX: in case of wrong upper layer header we will
@@ -811,8 +820,10 @@ ng_netflow_rcvdata (hook_p hook, item_p item)
 		 * Nothing to save except upper layer proto,
 		 * since this is a packet fragment.
 		 */
+#if defined(INET) || defined(INET6)
 		flags |= NG_NETFLOW_IS_FRAG;
 		upper_proto = ip->ip_p;
+#endif
 		if ((ip->ip_v != IPVERSION) ||
 		    ((ip->ip_hl << 2) < sizeof(struct ip)))
 			goto bypass;
@@ -914,6 +925,7 @@ loopend:
 			ip6 = (struct ip6_hdr *)(mtod(m, caddr_t) + l3_off);
  	}
 
+#if defined(INET) || defined(INET6)
 	upper_ptr = (caddr_t)(mtod(m, caddr_t) + off);
 
 	/* Determine packet input interface. Prefer configured. */
@@ -923,6 +935,7 @@ loopend:
 			src_if_index = m->m_pkthdr.rcvif->if_index;
 	} else
 		src_if_index = iface->info.ifinfo_index;
+#endif
 
 	/* Check packet FIB */
 	fib = M_GETFIB(m);

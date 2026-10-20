@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2018 Emmanuel Vadot <manu@FreeBSD.org>
  *
@@ -26,9 +26,6 @@
  *
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -51,7 +48,7 @@ __FBSDID("$FreeBSD$");
 
 #include <dev/fdt/fdt_pinctrl.h>
 
-#include <dev/extres/syscon/syscon.h>
+#include <dev/syscon/syscon.h>
 
 #include "gpio_if.h"
 #include "syscon_if.h"
@@ -767,10 +764,248 @@ struct rk_pinctrl_conf rk3399_conf = {
 	.get_bias_value = rk3399_get_bias_value,
 };
 
+#define	GRF_IOFUNC_SEL0		0x0300
+#define	 GMAC1_IOMUX_SEL_M0		0x01000000
+#define	 GMAC1_IOMUX_SEL_M1		0x01000100
+
+static struct rk_pinctrl_gpio rk3568_gpio_bank[] = {
+	RK_GPIO(0, "gpio0"),
+	RK_GPIO(1, "gpio1"),
+	RK_GPIO(2, "gpio2"),
+	RK_GPIO(3, "gpio3"),
+	RK_GPIO(4, "gpio4"),
+};
+
+static struct rk_pinctrl_bank rk3568_iomux_bank[] = {
+	/*    bank sub  offs   nbits */
+	RK_IOMUX(0, 0, 0x0000, 4),	/* PMU_GRF */
+	RK_IOMUX(0, 1, 0x0008, 4),
+	RK_IOMUX(0, 2, 0x0010, 4),
+	RK_IOMUX(0, 3, 0x0018, 4),
+
+	RK_IOMUX(1, 0, 0x0000, 4),	/* SYS_GRF */
+	RK_IOMUX(1, 1, 0x0008, 4),
+	RK_IOMUX(1, 2, 0x0010, 4),
+	RK_IOMUX(1, 3, 0x0018, 4),
+	RK_IOMUX(2, 0, 0x0020, 4),
+	RK_IOMUX(2, 1, 0x0028, 4),
+	RK_IOMUX(2, 2, 0x0030, 4),
+	RK_IOMUX(2, 3, 0x0038, 4),
+	RK_IOMUX(3, 0, 0x0040, 4),
+	RK_IOMUX(3, 1, 0x0048, 4),
+	RK_IOMUX(3, 2, 0x0050, 4),
+	RK_IOMUX(3, 3, 0x0058, 4),
+	RK_IOMUX(4, 0, 0x0060, 4),
+	RK_IOMUX(4, 1, 0x0068, 4),
+	RK_IOMUX(4, 2, 0x0070, 4),
+	RK_IOMUX(4, 3, 0x0078, 4),
+};
+
+static struct rk_pinctrl_pin_fixup rk3568_pin_fixup[] = {};
+
+static struct rk_pinctrl_pin_drive rk3568_pin_drive[] = {
+	/*       bank sub offs val ma */
+	/* GPIO0A */
+	RK_PINDRIVE(0, 0, 0x0020, 0, 2),
+	RK_PINDRIVE(0, 0, 0x0020, 1, 4),
+	RK_PINDRIVE(0, 0, 0x0020, 2, 8),
+	RK_PINDRIVE(0, 0, 0x0020, 3, 12),
+
+	/* GPIO0B */
+	RK_PINDRIVE(0, 1, 0x0024, 0, 2),
+	RK_PINDRIVE(0, 1, 0x0024, 1, 4),
+	RK_PINDRIVE(0, 1, 0x0024, 2, 8),
+	RK_PINDRIVE(0, 1, 0x0024, 3, 12),
+
+	/* GPIO0C */
+	RK_PINDRIVE(0, 1, 0x0028, 0, 2),
+	RK_PINDRIVE(0, 1, 0x0028, 1, 4),
+	RK_PINDRIVE(0, 1, 0x0028, 2, 8),
+	RK_PINDRIVE(0, 1, 0x0028, 3, 12),
+
+	/* GPIO0D */
+	RK_PINDRIVE(0, 1, 0x002c, 0, 2),
+	RK_PINDRIVE(0, 1, 0x002c, 1, 4),
+	RK_PINDRIVE(0, 1, 0x002c, 2, 8),
+	RK_PINDRIVE(0, 1, 0x002c, 3, 12),
+
+	/* GPIO1A */
+	RK_PINDRIVE(1, 0, 0x0080, 0, 2),
+	RK_PINDRIVE(1, 0, 0x0080, 1, 4),
+	RK_PINDRIVE(1, 0, 0x0080, 2, 8),
+	RK_PINDRIVE(1, 0, 0x0080, 3, 12),
+
+	/* GPIO1B */
+	RK_PINDRIVE(1, 1, 0x0084, 0, 2),
+	RK_PINDRIVE(1, 1, 0x0084, 1, 4),
+	RK_PINDRIVE(1, 1, 0x0084, 2, 8),
+	RK_PINDRIVE(1, 1, 0x0084, 3, 12),
+
+	/* GPIO1C */
+	RK_PINDRIVE(1, 2, 0x0088, 0, 2),
+	RK_PINDRIVE(1, 2, 0x0088, 1, 4),
+	RK_PINDRIVE(1, 2, 0x0088, 2, 8),
+	RK_PINDRIVE(1, 2, 0x0088, 3, 12),
+
+	/* GPIO1D */
+	RK_PINDRIVE(1, 3, 0x008c, 0, 2),
+	RK_PINDRIVE(1, 3, 0x008c, 1, 4),
+	RK_PINDRIVE(1, 3, 0x008c, 2, 8),
+	RK_PINDRIVE(1, 3, 0x008c, 3, 12),
+
+	/* GPIO2A */
+	RK_PINDRIVE(2, 0, 0x0090, 0, 2),
+	RK_PINDRIVE(2, 0, 0x0090, 1, 4),
+	RK_PINDRIVE(2, 0, 0x0090, 2, 8),
+	RK_PINDRIVE(2, 0, 0x0090, 3, 12),
+
+	/* GPIO2B */
+	RK_PINDRIVE(2, 1, 0x0094, 0, 2),
+	RK_PINDRIVE(2, 1, 0x0094, 1, 4),
+	RK_PINDRIVE(2, 1, 0x0094, 2, 8),
+	RK_PINDRIVE(2, 1, 0x0094, 3, 12),
+
+	/* GPIO2C */
+	RK_PINDRIVE(2, 2, 0x0098, 0, 2),
+	RK_PINDRIVE(2, 2, 0x0098, 1, 4),
+	RK_PINDRIVE(2, 2, 0x0098, 2, 8),
+	RK_PINDRIVE(2, 2, 0x0098, 3, 12),
+
+	/* GPIO2D */
+	RK_PINDRIVE(2, 3, 0x009c, 0, 2),
+	RK_PINDRIVE(2, 3, 0x009c, 1, 4),
+	RK_PINDRIVE(2, 3, 0x009c, 2, 8),
+	RK_PINDRIVE(2, 3, 0x009c, 3, 12),
+
+	/* GPIO3A */
+	RK_PINDRIVE(3, 0, 0x00a0, 0, 2),
+	RK_PINDRIVE(3, 0, 0x00a0, 1, 4),
+	RK_PINDRIVE(3, 0, 0x00a0, 2, 8),
+	RK_PINDRIVE(3, 0, 0x00a0, 3, 12),
+
+	/* GPIO3B */
+	RK_PINDRIVE(3, 1, 0x00a4, 0, 2),
+	RK_PINDRIVE(3, 1, 0x00a4, 1, 4),
+	RK_PINDRIVE(3, 1, 0x00a4, 2, 8),
+	RK_PINDRIVE(3, 1, 0x00a4, 3, 12),
+
+	/* GPIO3C */
+	RK_PINDRIVE(3, 2, 0x00a8, 0, 2),
+	RK_PINDRIVE(3, 2, 0x00a8, 1, 4),
+	RK_PINDRIVE(3, 2, 0x00a8, 2, 8),
+	RK_PINDRIVE(3, 2, 0x00a8, 3, 12),
+
+	/* GPIO3D */
+	RK_PINDRIVE(3, 3, 0x00ac, 0, 2),
+	RK_PINDRIVE(3, 3, 0x00ac, 1, 4),
+	RK_PINDRIVE(3, 3, 0x00ac, 2, 8),
+	RK_PINDRIVE(3, 3, 0x00ac, 3, 12),
+
+	/* GPIO4A */
+	RK_PINDRIVE(4, 0, 0x00b0, 0, 2),
+	RK_PINDRIVE(4, 0, 0x00b0, 1, 4),
+	RK_PINDRIVE(4, 0, 0x00b0, 2, 8),
+	RK_PINDRIVE(4, 0, 0x00b0, 3, 12),
+
+	/* GPIO4B */
+	RK_PINDRIVE(4, 1, 0x00b4, 0, 2),
+	RK_PINDRIVE(4, 1, 0x00b4, 1, 4),
+	RK_PINDRIVE(4, 1, 0x00b4, 2, 8),
+	RK_PINDRIVE(4, 1, 0x00b4, 3, 12),
+
+	/* GPIO4C */
+	RK_PINDRIVE(4, 2, 0x00b8, 0, 2),
+	RK_PINDRIVE(4, 2, 0x00b8, 1, 4),
+	RK_PINDRIVE(4, 2, 0x00b8, 2, 8),
+	RK_PINDRIVE(4, 2, 0x00b8, 3, 12),
+
+	/* GPIO4D */
+	RK_PINDRIVE(4, 3, 0x00bc, 0, 2),
+	RK_PINDRIVE(4, 3, 0x00bc, 1, 4),
+	RK_PINDRIVE(4, 3, 0x00bc, 2, 8),
+	RK_PINDRIVE(4, 3, 0x00bc, 3, 12),
+};
+
+static uint32_t
+rk3568_get_pd_offset(struct rk_pinctrl_softc *sc, uint32_t bank)
+{
+
+	if (bank == 0)
+		return (0x20);
+
+	/*
+	 * Registers start at 0x80, but bank index starts at 1. Return 0x70
+	 * so later calculations get the correct offset.
+	 */
+	return (0x70);
+}
+
+static struct syscon *
+rk3568_get_syscon(struct rk_pinctrl_softc *sc, uint32_t bank)
+{
+
+	if (bank)
+		return (sc->grf);
+	else
+		return (sc->pmu);
+}
+
+static int
+rk3568_parse_bias(phandle_t node, int bank)
+{
+
+	if (OF_hasprop(node, "bias-disable"))
+		return (0);
+	if (OF_hasprop(node, "bias-pull-up"))
+		return (1);
+	if (OF_hasprop(node, "bias-pull-down"))
+		return (2);
+	return (-1);
+}
+
+static int
+rk3568_resolv_bias_value(int bank, int bias)
+{
+
+	if (bias == 1)
+		return (GPIO_PIN_PULLUP);
+	if (bias == 2)
+		return (GPIO_PIN_PULLDOWN);
+	return (0);
+}
+
+static int
+rk3568_get_bias_value(int bank, int bias)
+{
+
+	if (bias & GPIO_PIN_PULLUP)
+		return (1);
+	if (bias & GPIO_PIN_PULLDOWN)
+		return (2);
+	return (0);
+}
+
+struct rk_pinctrl_conf rk3568_conf = {
+	.iomux_conf = rk3568_iomux_bank,
+	.iomux_nbanks = nitems(rk3568_iomux_bank),
+	.pin_fixup = rk3568_pin_fixup,
+	.npin_fixup = nitems(rk3568_pin_fixup),
+	.pin_drive = rk3568_pin_drive,
+	.npin_drive = nitems(rk3568_pin_drive),
+	.gpio_bank = rk3568_gpio_bank,
+	.ngpio_bank = nitems(rk3568_gpio_bank),
+	.get_pd_offset = rk3568_get_pd_offset,
+	.get_syscon = rk3568_get_syscon,
+	.parse_bias = rk3568_parse_bias,
+	.resolv_bias_value = rk3568_resolv_bias_value,
+	.get_bias_value = rk3568_get_bias_value,
+};
+
 static struct ofw_compat_data compat_data[] = {
 	{"rockchip,rk3288-pinctrl", (uintptr_t)&rk3288_conf},
 	{"rockchip,rk3328-pinctrl", (uintptr_t)&rk3328_conf},
 	{"rockchip,rk3399-pinctrl", (uintptr_t)&rk3399_conf},
+	{"rockchip,rk3568-pinctrl", (uintptr_t)&rk3568_conf},
 	{NULL,             0}
 };
 
@@ -906,9 +1141,9 @@ rk_pinctrl_configure_pin(struct rk_pinctrl_softc *sc, uint32_t *pindata)
 {
 	phandle_t pin_conf;
 	struct syscon *syscon;
-	uint32_t bank, subbank, pin, function, bias;
+	uint32_t bank, subbank, pin, function;
 	uint32_t bit, mask, reg, drive;
-	int i, rv;
+	int i, rv, bias;
 
 	bank = pindata[0];
 	pin = pindata[1];
@@ -944,11 +1179,31 @@ rk_pinctrl_configure_pin(struct rk_pinctrl_softc *sc, uint32_t *pindata)
 	}
 
 	/* Then drive strength */
-	rv = rk_pinctrl_parse_drive(sc, pin_conf, bank, subbank, &drive, &reg);
-	if (rv == 0) {
-		bit = (pin % 8) * 2;
-		mask = (0x3 << bit);
-		SYSCON_MODIFY_4(syscon, reg, mask, drive << bit | (mask << 16));
+	if (ofw_bus_node_is_compatible(ofw_bus_get_node(sc->dev),
+	    "rockchip,rk3568-pinctrl")) {
+		uint32_t value;
+		if (OF_getencprop(pin_conf, "drive-strength", &value,
+		    sizeof(value)) == 0) {
+			if (bank)
+				reg = 0x01c0 + (bank * 0x40) + (pin / 2 * 4);
+			else
+				reg = 0x0070 + (pin / 2 * 4);
+
+			drive = ((1 << (value + 1)) - 1) << (pin % 2);
+
+			mask = 0x3f << (pin % 2);
+
+			SYSCON_WRITE_4(syscon, reg, drive | (mask << 16));
+		}
+	} else {
+		rv = rk_pinctrl_parse_drive(sc, pin_conf, bank, subbank, &drive,
+		    &reg);
+		if (rv == 0) {
+			bit = (pin % 8) * 2;
+			mask = (0x3 << bit);
+			SYSCON_MODIFY_4(syscon, reg, mask,
+			    drive << bit | (mask << 16));
+		}
 	}
 
 	/* Finally set the pin function */
@@ -985,6 +1240,17 @@ rk_pinctrl_configure_pin(struct rk_pinctrl_softc *sc, uint32_t *pindata)
 	 * without hi-word write mask.
 	 */
 	SYSCON_MODIFY_4(syscon, reg, mask, function << bit | (mask << 16));
+
+	/* RK3568 specific pin mux for various functionalities */
+	if (ofw_bus_node_is_compatible(ofw_bus_get_node(sc->dev),
+	    "rockchip,rk3568-pinctrl")) {
+		if (bank == 3 && pin == 9 && function == 3)
+			SYSCON_WRITE_4(sc->grf,
+			    GRF_IOFUNC_SEL0, GMAC1_IOMUX_SEL_M0);
+		if (bank == 4 && pin == 7 && function == 3)
+			SYSCON_WRITE_4(sc->grf,
+			    GRF_IOFUNC_SEL0, GMAC1_IOMUX_SEL_M1);
+	}
 }
 
 static int
@@ -1117,7 +1383,7 @@ rk_pinctrl_get_flags(device_t pinctrl, device_t gpio, uint32_t pin,
 {
 	struct rk_pinctrl_softc *sc;
 	struct syscon *syscon;
-	uint32_t reg, mask, bit;
+	uint32_t reg, bit;
 	uint32_t bias;
 	int bank;
 	int rv = 0;
@@ -1141,7 +1407,6 @@ rk_pinctrl_get_flags(device_t pinctrl, device_t gpio, uint32_t pin,
 	reg = sc->conf->get_pd_offset(sc, bank);
 	reg += bank * 0x10 + ((pin / 8) * 0x4);
 	bit = (pin % 8) * 2;
-	mask = (0x3 << bit) << 16;
 	reg = SYSCON_READ_4(syscon, reg);
 	reg = (reg >> bit) & 0x3;
 	bias = sc->conf->resolv_bias_value(bank, reg);
@@ -1192,21 +1457,6 @@ done:
 }
 
 static int
-rk_pinctrl_register_gpio(struct rk_pinctrl_softc *sc, char *gpio_name,
-    device_t gpio_dev)
-{
-	int i;
-
-	for(i = 0; i < sc->conf->ngpio_bank; i++) {
-		if (strcmp(gpio_name, sc->conf->gpio_bank[i].gpio_name) != 0)
-			continue;
-		sc->conf->gpio_bank[i].gpio_dev = gpio_dev;
-		return(0);
-	}
-	return (ENXIO);
-}
-
-static int
 rk_pinctrl_probe(device_t dev)
 {
 
@@ -1226,8 +1476,7 @@ rk_pinctrl_attach(device_t dev)
 	struct rk_pinctrl_softc *sc;
 	phandle_t node;
 	device_t cdev;
-	char *gpio_name, *eptr;
-	int rv;
+	int rv, gpio_unit;
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
@@ -1241,8 +1490,9 @@ rk_pinctrl_attach(device_t dev)
 		return (ENXIO);
 	}
 
-	/* RK3399,RK3288 has banks in PMU. RK3328 does not have a PMU. */
-	if (ofw_bus_node_is_compatible(node, "rockchip,rk3399-pinctrl") ||
+	/* RK3568,RK3399,RK3288 have banks in PMU. RK3328 doesn't have a PMU. */
+	if (ofw_bus_node_is_compatible(node, "rockchip,rk3568-pinctrl") ||
+	    ofw_bus_node_is_compatible(node, "rockchip,rk3399-pinctrl") ||
 	    ofw_bus_node_is_compatible(node, "rockchip,rk3288-pinctrl")) {
 		if (OF_hasprop(node, "rockchip,pmu") &&
 		    syscon_get_by_ofw_property(dev, node,
@@ -1261,59 +1511,34 @@ rk_pinctrl_attach(device_t dev)
 
 	simplebus_init(dev, node);
 
-	bus_generic_probe(dev);
+	bus_identify_children(dev);
 
 	/* Attach child devices */
-	for (node = OF_child(node); node > 0; node = OF_peer(node)) {
+	for (node = OF_child(node), gpio_unit = 0; node > 0;
+	     node = OF_peer(node)) {
 		if (!ofw_bus_node_is_compatible(node, "rockchip,gpio-bank"))
 			continue;
-
-		rv = OF_getprop_alloc(node, "name", (void **)&gpio_name);
-		if (rv <= 0) {
-			device_printf(sc->dev, "Cannot GPIO subdevice name.\n");
-			continue;
-		}
-
 		cdev = simplebus_add_device(dev, node, 0, NULL, -1, NULL);
 		if (cdev == NULL) {
-			device_printf(dev, " Cannot add GPIO subdevice: %s\n",
-			    gpio_name);
-			OF_prop_free(gpio_name);
+			device_printf(dev, " Cannot add GPIO subdevice\n");
+			gpio_unit += 1;
 			continue;
 		}
-
 		rv = device_probe_and_attach(cdev);
 		if (rv != 0) {
 			device_printf(sc->dev,
-			    "Cannot attach GPIO subdevice: %s\n", gpio_name);
-			OF_prop_free(gpio_name);
+			    "Cannot attach GPIO subdevice\n");
+			gpio_unit += 1;
 			continue;
 		}
-
-		/* Grep device name from name property */
-		eptr = gpio_name;
-		strsep(&eptr, "@");
-		if (gpio_name == eptr) {
-			device_printf(sc->dev,
-			    "Unrecognized format of GPIO subdevice name: %s\n",
-			    gpio_name);
-			OF_prop_free(gpio_name);
-			continue;
-		}
-		rv =  rk_pinctrl_register_gpio(sc, gpio_name, cdev);
-		if (rv != 0) {
-			device_printf(sc->dev,
-			    "Cannot register GPIO subdevice %s: %d\n",
-			    gpio_name, rv);
-			OF_prop_free(gpio_name);
-			continue;
-		}
-		OF_prop_free(gpio_name);
+		sc->conf->gpio_bank[gpio_unit].gpio_dev = cdev;
+		gpio_unit += 1;
 	}
 
 	fdt_pinctrl_configure_tree(dev);
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static int
@@ -1338,11 +1563,9 @@ static device_method_t rk_pinctrl_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t rk_pinctrl_devclass;
-
 DEFINE_CLASS_1(rk_pinctrl, rk_pinctrl_driver, rk_pinctrl_methods,
     sizeof(struct rk_pinctrl_softc), simplebus_driver);
 
-EARLY_DRIVER_MODULE(rk_pinctrl, simplebus, rk_pinctrl_driver,
-    rk_pinctrl_devclass, 0, 0, BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(rk_pinctrl, simplebus, rk_pinctrl_driver, 0, 0,
+    BUS_PASS_INTERRUPT + BUS_PASS_ORDER_MIDDLE);
 MODULE_VERSION(rk_pinctrl, 1);

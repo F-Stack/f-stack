@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000 Peter Wemm <peter@FreeBSD.org>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _X86_LEGACYVAR_H_
@@ -60,10 +58,14 @@ int	legacy_pcib_write_ivar(device_t dev, device_t child, int which,
 struct resource *legacy_pcib_alloc_resource(device_t dev, device_t child,
     int type, int *rid, rman_res_t start, rman_res_t end, rman_res_t count,
     u_int flags);
-int	legacy_pcib_adjust_resource(device_t dev, device_t child, int type,
+int	legacy_pcib_adjust_resource(device_t dev, device_t child,
     struct resource *r, rman_res_t start, rman_res_t end);
-int	legacy_pcib_release_resource(device_t dev, device_t child, int type,
-    int rid, struct resource *r);
+int	legacy_pcib_release_resource(device_t dev, device_t child,
+    struct resource *r);
+int	legacy_pcib_activate_resource(device_t dev, device_t child,
+    struct resource *r);
+int	legacy_pcib_deactivate_resource(device_t dev, device_t child,
+    struct resource *r);
 int	legacy_pcib_alloc_msi(device_t pcib, device_t dev, int count,
     int maxcount, int *irqs);
 int	legacy_pcib_alloc_msix(device_t pcib, device_t dev, int *irq);

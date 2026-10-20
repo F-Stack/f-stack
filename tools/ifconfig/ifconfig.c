@@ -240,12 +240,13 @@ usage(void)
 	"       ifconfig -l [-d] [-u] [address_family]\n"
 	"       ifconfig %s[-d] [-m] [-u] [-v]\n",
 #else
-	"usage: ifconfig -p <f-stack proc_id> [-f type:format] %sinterface address_family\n"
+	"usage: ifconfig -p <f-stack proc_id|thread_id>[:<gen>] [-f type:format] %sinterface address_family\n"
 	"                [address [dest_address]] [parameters]\n"
-	"       ifconfig -p <f-stack proc_id> interface create\n"
-	"       ifconfig -p <f-stack proc_id> -a %s[-d] [-m] [-u] [-v] [address_family]\n"
-	"       ifconfig -p <f-stack proc_id> -l [-d] [-u] [address_family]\n"
-	"       ifconfig -p <f-stack proc_id> %s[-d] [-m] [-u] [-v]\n",
+	"       (:<gen> selects the graceful_reload generation, default: the active one)\n"
+	"       ifconfig -p <f-stack proc_id|thread_id> interface create\n"
+	"       ifconfig -p <f-stack proc_id|thread_id> -a %s[-d] [-m] [-u] [-v] [address_family]\n"
+	"       ifconfig -p <f-stack proc_id|thread_id> -l [-d] [-u] [address_family]\n"
+	"       ifconfig -p <f-stack proc_id|thread_id> %s[-d] [-m] [-u] [-v]\n",
 #endif
 		options, options, options);
 
@@ -510,7 +511,10 @@ main(int argc, char *argv[])
 		switch (c) {
 #ifdef FSTACK
 		case 'p':
-			ff_set_proc_id(atoi(optarg));
+			/* -g/-G are taken by interface groups here, so the
+			 * graceful_reload generation rides on -p as
+			 * "<proc_id>[:<gen>]" */
+			ff_set_proc_id_str(optarg);
 			break;
 #endif
 		case 'a':	/* scan all interfaces */
@@ -1736,7 +1740,8 @@ ifmaybeload(const char *name)
 	 * infer the names of all drivers (eg mlx4en(4)).
 	 */
 	(void) kldload(ifkind);
-#endif
+
+#endif
 }
 
 static struct cmd basic_cmds[] = {

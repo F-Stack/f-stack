@@ -28,7 +28,6 @@
  * changes without encumbrance.
  *
  * $KAME: altq_hfsc.h,v 1.12 2003/12/05 05:40:46 kjc Exp $
- * $FreeBSD$
  */
 #ifndef _ALTQ_ALTQ_HFSC_H_
 #define	_ALTQ_ALTQ_HFSC_H_
@@ -60,7 +59,7 @@ struct service_curve_v1 {
 
 /* special class handles */
 #define	HFSC_NULLCLASS_HANDLE	0
-#define	HFSC_MAX_CLASSES	64
+#define	HFSC_MAX_CLASSES	2048
 
 /* hfsc class flags */
 #define	HFCF_RED		0x0001	/* use RED */

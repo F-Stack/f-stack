@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2010 Hudson River Trading LLC
  * Written by: John H. Baldwin <jhb@FreeBSD.org>
@@ -33,9 +33,6 @@
  * is a child of nexus0 and then creates Host-PCI bridges as a
  * child of that.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/bus.h>
@@ -83,7 +80,7 @@ qpi_identify(driver_t *driver, device_t parent)
 		return;
 
 	/* Add a qpi bus device. */
-	if (BUS_ADD_CHILD(parent, 20, "qpi", -1) == NULL)
+	if (BUS_ADD_CHILD(parent, 20, "qpi", DEVICE_UNIT_ANY) == NULL)
 		panic("Failed to add qpi bus");
 }
 
@@ -120,7 +117,7 @@ qpi_probe_pcib(device_t dev, int bus)
 	 * the bus is not present.
 	 */
 	for (s = 0; s <= PCI_SLOTMAX; s++) {
-		devid = pci_cfgregread(bus, s, 0, PCIR_DEVVENDOR, 4);
+		devid = pci_cfgregread(0, bus, s, 0, PCIR_DEVVENDOR, 4);
 		if (devid != 0xffffffff)
 			break;
 	}
@@ -135,7 +132,7 @@ qpi_probe_pcib(device_t dev, int bus)
 		return (ENXIO);
 	}
 
-	child = BUS_ADD_CHILD(dev, 0, "pcib", -1);
+	child = BUS_ADD_CHILD(dev, 0, "pcib", DEVICE_UNIT_ANY);
 	if (child == NULL)
 		panic("%s: failed to add pci bus %d", device_get_nameunit(dev),
 		    bus);
@@ -158,7 +155,8 @@ qpi_attach(device_t dev)
 	for (bus = PCI_BUSMAX; bus >= 0; bus--)
 		qpi_probe_pcib(dev, bus);
 
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 }
 
 static int
@@ -214,10 +212,8 @@ static device_method_t qpi_methods[] = {
 	{ 0, 0 }
 };
 
-static devclass_t qpi_devclass;
-
 DEFINE_CLASS_0(qpi, qpi_driver, qpi_methods, 0);
-DRIVER_MODULE(qpi, nexus, qpi_driver, qpi_devclass, 0, 0);
+DRIVER_MODULE(qpi, nexus, qpi_driver, 0, 0);
 
 static int
 qpi_pcib_probe(device_t dev)
@@ -231,8 +227,9 @@ static int
 qpi_pcib_attach(device_t dev)
 {
 
-	device_add_child(dev, "pci", -1);
-	return (bus_generic_attach(dev));
+	device_add_child(dev, "pci", DEVICE_UNIT_ANY);
+	bus_attach_children(dev);
+	return (0);
 }
 
 static int
@@ -251,7 +248,6 @@ qpi_pcib_read_ivar(device_t dev, device_t child, int which, uintptr_t *result)
 	}
 }
 
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 static struct resource *
 qpi_pcib_alloc_resource(device_t dev, device_t child, int type, int *rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
@@ -263,7 +259,6 @@ qpi_pcib_alloc_resource(device_t dev, device_t child, int type, int *rid,
 	return (bus_generic_alloc_resource(dev, child, type, rid, start, end,
 	    count, flags));
 }
-#endif
 
 static int
 qpi_pcib_map_msi(device_t pcib, device_t dev, int irq, uint64_t *addr,
@@ -285,16 +280,11 @@ static device_method_t qpi_pcib_methods[] = {
 
 	/* Bus interface */
 	DEVMETHOD(bus_read_ivar,	qpi_pcib_read_ivar),
-#if defined(NEW_PCIB) && defined(PCI_RES_BUS)
 	DEVMETHOD(bus_alloc_resource,	qpi_pcib_alloc_resource),
 	DEVMETHOD(bus_adjust_resource,	legacy_pcib_adjust_resource),
 	DEVMETHOD(bus_release_resource,	legacy_pcib_release_resource),
-#else
-	DEVMETHOD(bus_alloc_resource,	bus_generic_alloc_resource),
-	DEVMETHOD(bus_release_resource,	bus_generic_release_resource),
-#endif
-	DEVMETHOD(bus_activate_resource, bus_generic_activate_resource),
-	DEVMETHOD(bus_deactivate_resource, bus_generic_deactivate_resource),
+	DEVMETHOD(bus_activate_resource, legacy_pcib_activate_resource),
+	DEVMETHOD(bus_deactivate_resource, legacy_pcib_deactivate_resource),
 	DEVMETHOD(bus_setup_intr,	bus_generic_setup_intr),
 	DEVMETHOD(bus_teardown_intr,	bus_generic_teardown_intr),
 
@@ -311,7 +301,5 @@ static device_method_t qpi_pcib_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t qpi_pcib_devclass;
-
 DEFINE_CLASS_0(pcib, qpi_pcib_driver, qpi_pcib_methods, 0);
-DRIVER_MODULE(pcib, qpi, qpi_pcib_driver, qpi_pcib_devclass, 0, 0);
+DRIVER_MODULE(pcib, qpi, qpi_pcib_driver, 0, 0);

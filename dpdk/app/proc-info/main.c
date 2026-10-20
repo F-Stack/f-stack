@@ -19,6 +19,7 @@
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_ethdev.h>
+#include <rte_malloc.h>
 #include <rte_memory.h>
 #include <rte_memzone.h>
 #include <rte_launch.h>
@@ -637,6 +638,10 @@ meminfo_display(void)
 	rte_memzone_dump(stdout);
 	printf("---------- END_MEMORY_ZONES -----------\n");
 
+	printf("---------- MALLOC_HEAP_DUMP -----------\n");
+	rte_malloc_dump_heaps(stdout);
+	printf("-------- END_MALLOC_HEAP_DUMP ---------\n");
+
 	printf("------------- TAIL_QUEUES -------------\n");
 	rte_dump_tailq(stdout);
 	printf("---------- END_TAIL_QUEUES ------------\n");
@@ -691,7 +696,7 @@ nic_stats_clear(uint16_t port_id)
 
 static void collectd_resolve_cnt_type(char *cnt_type, size_t cnt_type_len,
 				      const char *cnt_name) {
-	char *type_end = strrchr(cnt_name, '_');
+	const char *type_end = strrchr(cnt_name, '_');
 
 	if ((type_end != NULL) &&
 	    (strncmp(cnt_name, "rx_", strlen("rx_")) == 0)) {

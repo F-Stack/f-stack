@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_inet.h"
 #include "opt_inet6.h"
@@ -51,7 +49,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/racct.h>
 #include <sys/refcount.h>
 #include <sys/sx.h>
-#include <sys/sysent.h>
 #include <sys/namei.h>
 #include <sys/mount.h>
 #include <sys/queue.h>
@@ -64,6 +61,13 @@ __FBSDID("$FreeBSD$");
 #include <net/vnet.h>
 
 #include <netinet/in.h>
+
+static in_addr_t
+prison_primary_ip4(const struct prison *pr)
+{
+
+	return (((const struct in_addr *)prison_ip_get0(pr, PR_INET))->s_addr);
+}
 
 int
 prison_qcmp_v4(const void *ip1, const void *ip2)
@@ -90,88 +94,10 @@ prison_qcmp_v4(const void *ip1, const void *ip2)
 		return (0);
 }
 
-/*
- * Restrict a prison's IP address list with its parent's, possibly replacing
- * it.  Return true if the replacement buffer was used (or would have been).
- */
-int
-prison_restrict_ip4(struct prison *pr, struct in_addr *newip4)
+bool
+prison_valid_v4(const void *ip)
 {
-	int ii, ij, used;
-	struct prison *ppr;
-
-	ppr = pr->pr_parent;
-	if (!(pr->pr_flags & PR_IP4_USER)) {
-		/* This has no user settings, so just copy the parent's list. */
-		if (pr->pr_ip4s < ppr->pr_ip4s) {
-			/*
-			 * There's no room for the parent's list.  Use the
-			 * new list buffer, which is assumed to be big enough
-			 * (if it was passed).  If there's no buffer, try to
-			 * allocate one.
-			 */
-			used = 1;
-			if (newip4 == NULL) {
-				newip4 = malloc(ppr->pr_ip4s * sizeof(*newip4),
-				    M_PRISON, M_NOWAIT);
-				if (newip4 != NULL)
-					used = 0;
-			}
-			if (newip4 != NULL) {
-				bcopy(ppr->pr_ip4, newip4,
-				    ppr->pr_ip4s * sizeof(*newip4));
-				free(pr->pr_ip4, M_PRISON);
-				pr->pr_ip4 = newip4;
-				pr->pr_ip4s = ppr->pr_ip4s;
-			}
-			return (used);
-		}
-		pr->pr_ip4s = ppr->pr_ip4s;
-		if (pr->pr_ip4s > 0)
-			bcopy(ppr->pr_ip4, pr->pr_ip4,
-			    pr->pr_ip4s * sizeof(*newip4));
-		else if (pr->pr_ip4 != NULL) {
-			free(pr->pr_ip4, M_PRISON);
-			pr->pr_ip4 = NULL;
-		}
-	} else if (pr->pr_ip4s > 0) {
-		/* Remove addresses that aren't in the parent. */
-		for (ij = 0; ij < ppr->pr_ip4s; ij++)
-			if (pr->pr_ip4[0].s_addr == ppr->pr_ip4[ij].s_addr)
-				break;
-		if (ij < ppr->pr_ip4s)
-			ii = 1;
-		else {
-			bcopy(pr->pr_ip4 + 1, pr->pr_ip4,
-			    --pr->pr_ip4s * sizeof(*pr->pr_ip4));
-			ii = 0;
-		}
-		for (ij = 1; ii < pr->pr_ip4s; ) {
-			if (pr->pr_ip4[ii].s_addr == ppr->pr_ip4[0].s_addr) {
-				ii++;
-				continue;
-			}
-			switch (ij >= ppr->pr_ip4s ? -1 :
-				prison_qcmp_v4(&pr->pr_ip4[ii], &ppr->pr_ip4[ij])) {
-			case -1:
-				bcopy(pr->pr_ip4 + ii + 1, pr->pr_ip4 + ii,
-				    (--pr->pr_ip4s - ii) * sizeof(*pr->pr_ip4));
-				break;
-			case 0:
-				ii++;
-				ij++;
-				break;
-			case 1:
-				ij++;
-				break;
-			}
-		}
-		if (pr->pr_ip4s == 0) {
-			free(pr->pr_ip4, M_PRISON);
-			pr->pr_ip4 = NULL;
-		}
-	}
-	return (0);
+	return (!in_broadcast(*(const struct in_addr *)ip));
 }
 
 /*
@@ -199,60 +125,58 @@ prison_get_ip4(struct ucred *cred, struct in_addr *ia)
 		mtx_unlock(&pr->pr_mtx);
 		return (0);
 	}
-	if (pr->pr_ip4 == NULL) {
+	if (pr->pr_addrs[PR_INET] == NULL) {
 		mtx_unlock(&pr->pr_mtx);
 		return (EAFNOSUPPORT);
 	}
 
-	ia->s_addr = pr->pr_ip4[0].s_addr;
+	ia->s_addr = prison_primary_ip4(pr);
 	mtx_unlock(&pr->pr_mtx);
 	return (0);
 }
 
 /*
- * Return 1 if we should do proper source address selection or are not jailed.
- * We will return 0 if we should bypass source address selection in favour
+ * Return true if we should do proper source address selection or are not jailed.
+ * We will return false if we should bypass source address selection in favour
  * of the primary jail IPv4 address. Only in this case *ia will be updated and
  * returned in NBO.
- * Return EAFNOSUPPORT, in case this jail does not allow IPv4.
+ * Return true, even in case this jail does not allow IPv4.
  */
-int
+bool
 prison_saddrsel_ip4(struct ucred *cred, struct in_addr *ia)
 {
 	struct prison *pr;
 	struct in_addr lia;
-	int error;
 
 	KASSERT(cred != NULL, ("%s: cred is NULL", __func__));
 	KASSERT(ia != NULL, ("%s: ia is NULL", __func__));
 
 	if (!jailed(cred))
-		return (1);
+		return (true);
 
 	pr = cred->cr_prison;
 	if (pr->pr_flags & PR_IP4_SADDRSEL)
-		return (1);
+		return (true);
 
 	lia.s_addr = INADDR_ANY;
-	error = prison_get_ip4(cred, &lia);
-	if (error)
-		return (error);
+	if (prison_get_ip4(cred, &lia) != 0)
+		return (true);
 	if (lia.s_addr == INADDR_ANY)
-		return (1);
+		return (true);
 
 	ia->s_addr = lia.s_addr;
-	return (0);
+	return (false);
 }
 
 /*
  * Return true if pr1 and pr2 have the same IPv4 address restrictions.
  */
-int
+bool
 prison_equal_ip4(struct prison *pr1, struct prison *pr2)
 {
 
 	if (pr1 == pr2)
-		return (1);
+		return (true);
 
 	/*
 	 * No need to lock since the PR_IP4_USER flag can't be altered for
@@ -299,7 +223,7 @@ prison_local_ip4(struct ucred *cred, struct in_addr *ia)
 		mtx_unlock(&pr->pr_mtx);
 		return (0);
 	}
-	if (pr->pr_ip4 == NULL) {
+	if (pr->pr_addrs[PR_INET] == NULL) {
 		mtx_unlock(&pr->pr_mtx);
 		return (EAFNOSUPPORT);
 	}
@@ -310,15 +234,15 @@ prison_local_ip4(struct ucred *cred, struct in_addr *ia)
 		/*
 		 * In case there is only 1 IPv4 address, bind directly.
 		 */
-		if (pr->pr_ip4s == 1)
-			ia->s_addr = pr->pr_ip4[0].s_addr;
+		if (prison_ip_cnt(pr, PR_INET) == 1)
+			ia->s_addr = prison_primary_ip4(pr);
 		mtx_unlock(&pr->pr_mtx);
 		return (0);
 	}
 
 	error = prison_check_ip4_locked(pr, ia);
 	if (error == EADDRNOTAVAIL && ia0.s_addr == INADDR_LOOPBACK) {
-		ia->s_addr = pr->pr_ip4[0].s_addr;
+		ia->s_addr = prison_primary_ip4(pr);
 		error = 0;
 	}
 
@@ -348,14 +272,14 @@ prison_remote_ip4(struct ucred *cred, struct in_addr *ia)
 		mtx_unlock(&pr->pr_mtx);
 		return (0);
 	}
-	if (pr->pr_ip4 == NULL) {
+	if (pr->pr_addrs[PR_INET] == NULL) {
 		mtx_unlock(&pr->pr_mtx);
 		return (EAFNOSUPPORT);
 	}
 
 	if (ntohl(ia->s_addr) == INADDR_LOOPBACK &&
 	    prison_check_ip4_locked(pr, ia) == EADDRNOTAVAIL) {
-		ia->s_addr = pr->pr_ip4[0].s_addr;
+		ia->s_addr = prison_primary_ip4(pr);
 		mtx_unlock(&pr->pr_mtx);
 		return (0);
 	}
@@ -376,31 +300,11 @@ prison_remote_ip4(struct ucred *cred, struct in_addr *ia)
 int
 prison_check_ip4_locked(const struct prison *pr, const struct in_addr *ia)
 {
-	int i, a, z, d;
 
-	/*
-	 * Check the primary IP.
-	 */
-	if (pr->pr_ip4[0].s_addr == ia->s_addr)
+	if (!(pr->pr_flags & PR_IP4))
 		return (0);
 
-	/*
-	 * All the other IPs are sorted so we can do a binary search.
-	 */
-	a = 0;
-	z = pr->pr_ip4s - 2;
-	while (a <= z) {
-		i = (a + z) / 2;
-		d = prison_qcmp_v4(&pr->pr_ip4[i+1], ia);
-		if (d > 0)
-			z = i - 1;
-		else if (d < 0)
-			a = i + 1;
-		else
-			return (0);
-	}
-
-	return (EADDRNOTAVAIL);
+	return (prison_ip_check(pr, PR_INET, ia));
 }
 
 int
@@ -420,7 +324,7 @@ prison_check_ip4(const struct ucred *cred, const struct in_addr *ia)
 		mtx_unlock(&pr->pr_mtx);
 		return (0);
 	}
-	if (pr->pr_ip4 == NULL) {
+	if (pr->pr_addrs[PR_INET] == NULL) {
 		mtx_unlock(&pr->pr_mtx);
 		return (EAFNOSUPPORT);
 	}

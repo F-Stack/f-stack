@@ -32,8 +32,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -54,6 +52,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/netisr.h>
 #include <net/route.h>
 #include <net/route/nhop.h>
@@ -75,6 +74,10 @@ __FBSDID("$FreeBSD$");
 #include <netinet/in_pcb.h>
 
 #include <netipsec/ipsec_support.h>
+
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+#include <netinet/sctp_crc32.h>
+#endif
 
 /*
  * Forward a packet.  If some error occurs return the sender
@@ -110,11 +113,11 @@ ip6_forward(struct mbuf *m, int srcrt)
 	 */
 	if ((m->m_flags & (M_BCAST|M_MCAST)) != 0 ||
 	    IN6_IS_ADDR_MULTICAST(&ip6->ip6_dst) ||
-	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_src)) {
+	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_src) ||
+	    IN6_IS_ADDR_UNSPECIFIED(&ip6->ip6_dst)) {
 		IP6STAT_INC(ip6s_cantforward);
 		/* XXX in6_ifstat_inc(rt->rt_ifp, ifs6_in_discard) */
-		if (V_ip6_log_time + V_ip6_log_interval < time_uptime) {
-			V_ip6_log_time = time_uptime;
+		if (V_ip6_log_cannot_forward && ip6_log_ratelimit()) {
 			log(LOG_DEBUG,
 			    "cannot forward "
 			    "from %s to %s nxt %d received on %s\n",
@@ -196,6 +199,18 @@ again:
 		goto bad;
 	}
 
+	if (nh->nh_flags & (NHF_BLACKHOLE | NHF_REJECT)) {
+		IP6STAT_INC(ip6s_cantforward);
+		if (mcopy != NULL) {
+			if (nh->nh_flags & NHF_REJECT) {
+				icmp6_error(mcopy, ICMP6_DST_UNREACH,
+				    ICMP6_DST_UNREACH_REJECT, 0);
+			} else
+				m_freem(mcopy);
+		}
+		goto bad;
+	}
+
 	/*
 	 * Source scope check: if a packet can't be delivered to its
 	 * destination for the reason that the destination is beyond the scope
@@ -211,8 +226,7 @@ again:
 		IP6STAT_INC(ip6s_badscope);
 		in6_ifstat_inc(nh->nh_ifp, ifs6_in_discard);
 
-		if (V_ip6_log_time + V_ip6_log_interval < time_uptime) {
-			V_ip6_log_time = time_uptime;
+		if (V_ip6_log_cannot_forward && ip6_log_ratelimit()) {
 			log(LOG_DEBUG,
 			    "cannot forward "
 			    "src %s, dst %s, nxt %d, rcvif %s, outif %s\n",
@@ -313,8 +327,8 @@ again:
 
 	odst = ip6->ip6_dst;
 	/* Run through list of hooks for forwarded packets. */
-	if (pfil_run_hooks(V_inet6_pfil_head, &m, nh->nh_ifp, PFIL_OUT |
-	    PFIL_FWD, NULL) != PFIL_PASS)
+	if (pfil_mbuf_fwd(V_inet6_pfil_head, &m, nh->nh_ifp,
+	    NULL) != PFIL_PASS)
 		goto freecopy;
 	ip6 = mtod(m, struct ip6_hdr *);
 
@@ -378,6 +392,29 @@ pass:
 			    IN6_LINKMTU(nh->nh_ifp));
 		goto bad;
 	}
+
+	/*
+	 * If TCP/UDP header still needs a valid checksum and interface will not
+	 * calculate it for us, do it here.
+	 */
+	if (__predict_false(m->m_pkthdr.csum_flags & CSUM_DELAY_DATA_IPV6 &
+	    ~nh->nh_ifp->if_hwassist)) {
+		int offset = ip6_lasthdr(m, 0, IPPROTO_IPV6, NULL);
+
+		if (offset < sizeof(struct ip6_hdr) || offset > m->m_pkthdr.len)
+			goto bad;
+		in6_delayed_cksum(m, m->m_pkthdr.len - offset, offset);
+		m->m_pkthdr.csum_flags &= ~CSUM_DELAY_DATA_IPV6;
+	}
+#if defined(SCTP) || defined(SCTP_SUPPORT)
+	if (__predict_false(m->m_pkthdr.csum_flags & CSUM_IP6_SCTP &
+	    ~nh->nh_ifp->if_hwassist)) {
+		int offset = ip6_lasthdr(m, 0, IPPROTO_IPV6, NULL);
+
+		sctp_delayed_cksum(m, offset);
+		m->m_pkthdr.csum_flags &= ~CSUM_IP6_SCTP;
+	}
+#endif
 
 	/* Currently LLE layer stores embedded IPv6 addresses */
 	if (IN6_IS_SCOPE_LINKLOCAL(&dst.sin6_addr)) {

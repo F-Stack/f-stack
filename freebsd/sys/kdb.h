@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2004 Marcel Moolenaar
  * All rights reserved.
@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_KDB_H_
@@ -114,7 +112,6 @@ extern const char * volatile kdb_why;
 #define	KDB_WHY_BREAK		"break"		/* Console or serial break. */
 #define	KDB_WHY_WATCHDOG	"watchdog"	/* Watchdog entered debugger. */
 #define	KDB_WHY_CAM		"cam"		/* CAM has entered debugger. */
-#define	KDB_WHY_NDIS		"ndis"		/* NDIS entered debugger. */
 #define	KDB_WHY_ACPI		"acpi"		/* ACPI entered debugger. */
 #define	KDB_WHY_TRAPSIG		"trapsig"	/* Sparc fault. */
 #define	KDB_WHY_POWERFAIL	"powerfail"	/* Powerfail NMI. */
@@ -122,10 +119,17 @@ extern const char * volatile kdb_why;
 #define	KDB_WHY_POWERPC		"powerpc"	/* Unhandled powerpc intr. */
 #define	KDB_WHY_UNIONFS		"unionfs"	/* Unionfs bug. */
 #define	KDB_WHY_DTRACE		"dtrace"	/* DTrace action entered debugger. */
+#define	KDB_WHY_REBOOT		"reboot"	/* reboot was requested. */
 
 /* Return values for kdb_alt_break */
 #define	KDB_REQ_DEBUGGER	1	/* User requested Debugger */
 #define	KDB_REQ_PANIC		2	/* User requested a panic */
 #define	KDB_REQ_REBOOT		3	/* User requested a clean reboot */
+
+/* Debug breakpoint/watchpoint access types */
+#define	KDB_DBG_ACCESS_EXEC	0
+#define	KDB_DBG_ACCESS_R	1
+#define	KDB_DBG_ACCESS_W	2
+#define	KDB_DBG_ACCESS_RW	3
 
 #endif /* !_SYS_KDB_H_ */

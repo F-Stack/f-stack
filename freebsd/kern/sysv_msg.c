@@ -17,7 +17,7 @@
  * This software is provided ``AS IS'' without any warranties of any kind.
  */
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2005 McAfee, Inc.
  * Copyright (c) 2016-2017 Robert N. M. Watson
@@ -54,9 +54,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include "opt_sysvipc.h"
 
@@ -210,7 +207,7 @@ static struct syscall_helper_data msg32_syscalls[] = {
 #endif
 
 static int
-msginit()
+msginit(void)
 {
 	struct prison *pr;
 	void **rsv;
@@ -290,7 +287,7 @@ msginit()
 		if (rsv == NULL)
 			rsv = osd_reserve(msg_prison_slot);
 		prison_lock(pr);
-		if (prison_isvalid(pr) && (pr->pr_allow & PR_ALLOW_SYSVIPC)) {
+		if (pr->pr_allow & PR_ALLOW_SYSVIPC) {
 			(void)osd_jail_set_reserved(pr, msg_prison_slot, rsv,
 			    &prison0);
 			rsv = NULL;
@@ -313,7 +310,7 @@ msginit()
 }
 
 static int
-msgunload()
+msgunload(void)
 {
 	struct msqid_kernel *msqkptr;
 	int msqid;
@@ -896,7 +893,7 @@ kern_msgsnd(struct thread *td, int msqid, const void *msgp,
 				we_own_it = 1;
 			}
 			DPRINTF(("msgsnd:  goodnight\n"));
-			error = msleep(msqkptr, &msq_mtx, (PZERO - 4) | PCATCH,
+			error = msleep(msqkptr, &msq_mtx, PVFS | PCATCH,
 			    "msgsnd", hz);
 			DPRINTF(("msgsnd:  good morning, error=%d\n", error));
 			if (we_own_it)
@@ -1305,7 +1302,7 @@ kern_msgrcv(struct thread *td, int msqid, void *msgp, size_t msgsz, long msgtyp,
 		 */
 
 		DPRINTF(("msgrcv:  goodnight\n"));
-		error = msleep(msqkptr, &msq_mtx, (PZERO - 4) | PCATCH,
+		error = msleep(msqkptr, &msq_mtx, PVFS | PCATCH,
 		    "msgrcv", 0);
 		DPRINTF(("msgrcv:  good morning (error=%d)\n", error));
 
@@ -1477,6 +1474,40 @@ sysctl_msqids(SYSCTL_HANDLER_ARGS)
 			break;
 	}
 	return (error);
+}
+
+int
+kern_get_msqids(struct thread *td, struct msqid_kernel **res, size_t *sz)
+{
+	struct msqid_kernel *pmsqk;
+	struct prison *pr, *rpr;
+	int i, mi;
+
+	*sz = mi = msginfo.msgmni;
+	if (res == NULL)
+		return (0);
+
+	pr = td->td_ucred->cr_prison;
+	rpr = msg_find_prison(td->td_ucred);
+	*res = malloc(sizeof(struct msqid_kernel) * mi, M_TEMP, M_WAITOK);
+	for (i = 0; i < mi; i++) {
+		pmsqk = &(*res)[i];
+		mtx_lock(&msq_mtx);
+		if (msqids[i].u.msg_qbytes == 0 || rpr == NULL ||
+		    msq_prison_cansee(rpr, &msqids[i]) != 0)
+			bzero(pmsqk, sizeof(*pmsqk));
+		else {
+			*pmsqk = msqids[i];
+			if (pmsqk->cred->cr_prison != pr)
+				pmsqk->u.msg_perm.key = IPC_PRIVATE;
+		}
+		mtx_unlock(&msq_mtx);
+		pmsqk->u.__msg_first = NULL;
+		pmsqk->u.__msg_last = NULL;
+		pmsqk->label = NULL;
+		pmsqk->cred = NULL;
+	}
+	return (0);
 }
 
 SYSCTL_INT(_kern_ipc, OID_AUTO, msgmax, CTLFLAG_RD, &msginfo.msgmax, 0,
@@ -1693,7 +1724,7 @@ freebsd32_msgsys(struct thread *td, struct freebsd32_msgsys_args *uap)
 		return (sys_msgsys(td, (struct msgsys_args *)uap));
 	}
 #else
-	return (nosys(td, NULL));
+	return (kern_nosys(td, 0));
 #endif
 }
 
@@ -1704,7 +1735,7 @@ freebsd7_freebsd32_msgctl(struct thread *td,
     struct freebsd7_freebsd32_msgctl_args *uap)
 {
 	struct msqid_ds msqbuf;
-	struct msqid_ds32_old msqbuf32;
+	struct msqid_ds_old32 msqbuf32;
 	int error;
 
 	if (uap->cmd == IPC_SET) {

@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	rte_fib6_add;
@@ -21,4 +21,11 @@ DPDK_24 {
 	rte_fib_select_lookup;
 
 	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	# added in 24.11
+	rte_fib_rcu_qsbr_add;
 };

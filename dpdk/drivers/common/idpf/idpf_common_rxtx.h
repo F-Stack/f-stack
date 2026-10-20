@@ -55,7 +55,7 @@
 #define IDPF_VPMD_TX_MAX_BURST		32
 #define IDPF_VPMD_DESCS_PER_LOOP	4
 #define IDPF_RXQ_REARM_THRESH		64
-#define IDPD_TXQ_SCAN_CQ_THRESH	64
+#define IDPF_TXQ_SCAN_CQ_THRESH	64
 #define IDPF_TX_CTYPE_NUM	8
 
 /* MTS */
@@ -97,7 +97,7 @@
 #define IDPF_RX_SPLIT_BUFQ2_ID	2
 
 struct idpf_rx_stats {
-	uint64_t mbuf_alloc_failed;
+	RTE_ATOMIC(uint64_t) mbuf_alloc_failed;
 };
 
 struct idpf_rx_queue {

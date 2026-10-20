@@ -27,8 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_DUMP_H_
@@ -39,6 +37,9 @@
 /* XXX: I suppose 20 should be enough. */
 #define	DUMPSYS_MD_PA_NPAIRS	20
 #define	DUMPSYS_NUM_AUX_HDRS	1
+
+/* How often to check the dump progress bar? */
+#define	DUMPSYS_PB_CHECK_BITS	22	/* Every 4MB */
 
 void dumpsys_wbinv_all(void);
 int dumpsys_write_aux_headers(struct dumperinfo *di);

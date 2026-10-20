@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright 2016 Michal Meloun <mmel@FreeBSD.org>
  * All rights reserved.
@@ -24,13 +24,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 #ifndef _IMX_CLK_MUX_H_
 #define _IMX_CLK_MUX_H_
 
-#include <dev/extres/clk/clk.h>
+#include <dev/clk/clk.h>
 
 struct imx_clk_mux_def {
 	struct clknode_init_def clkdef;

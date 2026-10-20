@@ -10,6 +10,21 @@
 #include <ngx_event.h>
 #include <ngx_channel.h>
 
+#if (NGX_HAVE_FSTACK)
+#include <fcntl.h>
+#include <poll.h>
+#include <semaphore.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <sys/wait.h>
+#include "ff_api.h"
+#include "ff_reload.h"              /* ff_reload_* */
+#include "ngx_ff_reload.h"
+#include "ngx_ff_reload_fsm.h"
+#endif
+
 
 static void ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n,
     ngx_int_t type);
@@ -28,8 +43,151 @@ static void ngx_cache_manager_process_handler(ngx_event_t *ev);
 static void ngx_cache_loader_process_handler(ngx_event_t *ev);
 
 #if (NGX_HAVE_FSTACK)
+static void ngx_ff_master_start_fatal(ngx_cycle_t *cycle);
+static ngx_int_t ngx_ff_slim_primary_ensure(ngx_cycle_t *cycle);
+static void ngx_ff_slim_primary_spawn_child(ngx_cycle_t *cycle,
+    int ready_fd);
+static ngx_int_t ngx_ff_slim_primary_alive(void);
+static int ngx_ff_slim_primary_loop(void *arg);
+static void ngx_ff_slim_primary_release(ngx_cycle_t *cycle);
+static ngx_int_t ngx_ff_reload_hup(ngx_cycle_t **pcycle,
+    ngx_core_conf_t **pccf, ngx_uint_t *live);
+static ngx_int_t ngx_ff_reload_handover(ngx_cycle_t *cycle);
+static void ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle);
+/* USR2 binary upgrade, old-master side */
+static void ngx_ff_usr2_begin(ngx_cycle_t *cycle);
+static ngx_int_t ngx_ff_usr2_handover(ngx_cycle_t *cycle);
+static void ngx_ff_usr2_reclaim(ngx_cycle_t *cycle);
+static void ngx_ff_usr2_check(ngx_cycle_t *cycle);
+static ngx_uint_t ngx_ff_usr2_old_workers(void);
+static void ngx_ff_conf_snapshot_sweep(void);
+static ngx_int_t ngx_ff_conf_snapshot_take(ngx_log_t *log, const char *src,
+    char *dst);
+static void ngx_ff_conf_snapshot_drop(char *path);
+static void ngx_ff_conf_snapshot_drop_all(void);
+static ngx_int_t ngx_ff_slim_primary_check(ngx_cycle_t *cycle,
+    ngx_uint_t no_restart);
+static ngx_int_t ngx_ff_reload_conf_precheck(ngx_cycle_t *cycle,
+    const char *conf);
+
+/* The resident slim primary applies the device-side part of the fstack config
+ * (ports, pools, rings, KNI) once. It is reused only with the same digest of
+ * that part (/var/run/ff_slim_primary.conf, written by the primary itself),
+ * and every generation reads a private snapshot of the config it was
+ * started or reloaded with. */
+
+#define NGX_FF_SLIM_PRIMARY_CONFFILE    "/var/run/ff_slim_primary.conf"
+#define NGX_FF_CONF_SNAPSHOT_DIR        "/var/run"
+#define NGX_FF_CONF_SNAPSHOT_PREFIX     "ff_nginx_fstack."
+#define NGX_FF_SLIM_PRIMARY_STOP_SEC    10
+/* written by a primary that no master and no worker uses any more */
+#define NGX_FF_SLIM_PRIMARY_IDLEFILE    "/var/run/ff_slim_primary.idle"
+/* how long such a primary waits before it exits on its own */
+#define NGX_FF_SLIM_PRIMARY_ORPHAN_MS   10000
+/* the same for a primary that never had a user (its master died early) */
+#define NGX_FF_SLIM_PRIMARY_UNUSED_MS   180000
+
+typedef struct {
+    int                  pid;
+    unsigned long long   start_time;
+    uint64_t             digest;
+    int                  kni;
+    char                 runtime_dir[NGX_MAX_PATH];
+} ngx_ff_primary_record_t;
+
+static char        ngx_ff_conf_snap[NGX_MAX_PATH];
+static char        ngx_ff_conf_snap_next[NGX_MAX_PATH];
+static ngx_uint_t  ngx_ff_conf_snap_seq;
+/* 90s drain fix: how long the drain generation waits for its half-open
+ * window to close before closing the listeners anyway. An entry still here
+ * after the grace cannot complete any more -- its client gave up, or its ACK
+ * was claimed by the successor generation and is never forwarded back -- so
+ * waiting for it only pinned T3 to its 90 s deadline. Long enough for a
+ * forwarded third handshake ACK, far below hard cap. */
+#define NGX_FF_SYNCACHE_GRACE_MS      3000
+
+static ngx_msec_t ngx_ff_syncache_grace_ms;
+static ngx_msec_t ngx_ff_reload_env_msec(const char *name,
+    ngx_msec_t def);
+
+static ngx_msec_t
+ngx_ff_syncache_grace(void)
+{
+    if (ngx_ff_syncache_grace_ms == 0) {
+        ngx_ff_syncache_grace_ms = ngx_ff_reload_env_msec(
+            "NGX_FF_SYNCACHE_GRACE_MS", NGX_FF_SYNCACHE_GRACE_MS);
+    }
+
+    return ngx_ff_syncache_grace_ms;
+}
+
+
+static void ngx_ff_reload_t3_check(ngx_cycle_t *cycle);
+static void ngx_ff_reload_quit_gold(ngx_cycle_t *cycle);
+static void ngx_ff_reload_watchdog_arm(ngx_cycle_t *cycle);
+static void ngx_ff_reload_watchdog_disarm(void);
 extern int ff_mod_init(const char *conf, int proc_id, int proc_type);
+extern int ngx_ff_slim_primary_init(const char *conf);
+extern int ngx_ff_graceful_reload_detect(const char *conf);
+extern int ngx_ff_conf_dpdk_nb_procs(const char *conf);
 ngx_int_t     ngx_ff_process;
+/* reload orchestration: G_new slots (JUST_RESPAWN snapshot) and G_old
+ * slots (signaled set) of the in-flight round */
+static unsigned char ngx_ff_reload_new_slots[NGX_MAX_PROCESSES];
+static unsigned char ngx_ff_reload_old_slots[NGX_MAX_PROCESSES];
+static uint32_t ngx_ff_reload_ready_epoch;
+/* T5 drain watchdog — the SIGCHLD-driven master loop only wakes on
+ * child exits, so a stuck G_old worker needs a timer; thresholds bound
+ * both a lost channel QUIT (re-deliver) and a wedged worker (escalate) */
+static ngx_msec_t ngx_ff_reload_t5_start;
+static ngx_uint_t ngx_ff_reload_t5_resent;
+static ngx_uint_t ngx_ff_reload_t5_tered;
+/* T3 drain wait bookkeeping (async, watchdog-driven);
+ * worker 0 attach failure flag (reload round only) */
+/* 90s drain fix: T3 that is still not converged after this long logs the
+ * counters of the worker that blocks it, once per round. Without it a
+ * stalled drain was only visible as "deadline forced" 90 s later. */
+#define NGX_FF_RELOAD_T3_STALL_LOG_MS 5000
+
+static ngx_msec_t ngx_ff_reload_t3_start;
+static ngx_uint_t   ngx_ff_reload_t3_stall_logged;
+static ngx_int_t  ngx_ff_reload_attach_failed;
+/* the expected worker set of the round. Without it a
+ * worker that never spawned, or never got a slot, is simply missing from
+ * every snapshot and a short round still declares ALL_READY / DRAIN_DONE.
+ * Registered at T1 (worker_processes) and compared against the spawns and
+ * the READY / drain passes; only ever used inside a reload round. */
+static ngx_uint_t ngx_ff_reload_n_expected;
+static ngx_uint_t ngx_ff_reload_n_spawned;
+static ngx_int_t  ngx_ff_reload_spawn_failed;
+/* 1 s watchdog ownership — only the arm owner disarms, and never
+ * while the native terminate path holds ITIMER_REAL. the T5
+ * thresholds are env-overridable (defaults in the defines below). */
+static ngx_uint_t ngx_ff_reload_wd_armed;
+static ngx_msec_t ngx_ff_reload_resend_quit_ms;
+static ngx_msec_t ngx_ff_reload_escalate_term_ms;
+/* USR2 bookkeeping. The old master keeps owning the
+ * hardware until the operator asks for the cut-over (WINCH), so a broken new
+ * binary costs nothing; HUP during an upgrade takes rx back. */
+#define NGX_FF_USR2_NONE      0
+#define NGX_FF_USR2_PENDING   1   /* new binary running, we still own rx */
+#define NGX_FF_USR2_HANDED    2   /* rx handed to the new master's epoch */
+static ngx_uint_t ngx_ff_usr2_state;
+static uint32_t   ngx_ff_usr2_base_epoch;  /* peer_epoch when exec()ed */
+static uint32_t   ngx_ff_usr2_epoch;       /* epoch rx was handed to */
+static ngx_msec_t ngx_ff_usr2_start;
+static ngx_uint_t ngx_ff_usr2_winch;       /* WINCH before the peer was up */
+static ngx_msec_t ngx_ff_usr2_wait_ms;
+#define NGX_FF_USR2_WAIT_MS   120000
+#define NGX_FF_RELOAD_READY_WAIT_SEC  60   /* aligns the M1 attach confirm */
+
+/* bounded park wait for the USR2 handover. Same order of
+ * magnitude as the HUP park barrier, but long enough for a busy worker to
+ * reach its next loop pass; a timeout only retries on a later pass (the
+ * old generation keeps serving), it never forces the handover. */
+#define NGX_FF_USR2_PARK_WAIT_MS      1000
+#define NGX_FF_RELOAD_T5_RESEND_QUIT_MS   10000
+#define NGX_FF_RELOAD_T5_ESCALATE_TERM_MS 90000
 #endif
 
 ngx_uint_t    ngx_process;
@@ -138,6 +296,74 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
     ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
 
+#if (NGX_HAVE_FSTACK)
+    /* graceful_reload=1: make sure a resident slim primary is up before any
+     * worker attaches as a secondary. The slim primary is double-forked and
+     * detached from this master, so a reload or an upgrade never signals it;
+     * the last master to exit stops it. */
+    if (ngx_ff_graceful_reload_detect((const char *) ccf->fstack_conf.data)) {
+        ngx_int_t  nb_procs;
+
+        ngx_ff_conf_snapshot_sweep();
+        if (ngx_ff_conf_snapshot_take(cycle->log,
+                (const char *) ccf->fstack_conf.data, ngx_ff_conf_snap)
+            != NGX_OK)
+        {
+            ngx_ff_master_start_fatal(cycle);
+        }
+
+        if (!ngx_ff_graceful_reload_detect(ngx_ff_conf_snap)) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload: fstack conf \"%V\" changed "
+                          "during startup", &ccf->fstack_conf);
+            ngx_ff_master_start_fatal(cycle);
+        }
+
+        /* Topology check: slim primary (proc_id 0) + worker_processes
+         * secondaries must match the lcore_mask bit count exactly. */
+        nb_procs = ngx_ff_conf_dpdk_nb_procs(ngx_ff_conf_snap);
+        if (nb_procs < 0) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload=1: cannot read dpdk.lcore_mask "
+                          "from fstack conf \"%V\"", &ccf->fstack_conf);
+            /* fatal */
+            ngx_ff_master_start_fatal(cycle);
+        }
+
+        if (nb_procs > ccf->worker_processes + 1) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload=1: dpdk lcore_mask has %d lcores "
+                          "but worker_processes+1 is %d; the extra queues "
+                          "would have no consumer (silent RSS black hole)",
+                          nb_procs, (int) ccf->worker_processes + 1);
+            /* fatal */
+            ngx_ff_master_start_fatal(cycle);
+        }
+
+        if (nb_procs < ccf->worker_processes + 1) {
+            ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                          "graceful_reload=1: worker_processes+1 is %d but "
+                          "dpdk lcore_mask has only %d lcores; worker attach "
+                          "would fail (proc_id out of range)",
+                          (int) ccf->worker_processes + 1, nb_procs);
+            /* fatal */
+            ngx_ff_master_start_fatal(cycle);
+        }
+
+        /* shared reload control block must exist before
+         * the slim primary and any worker are forked (inherited mappings). */
+        if (ngx_ff_reload_state_create(cycle) != NGX_OK) {
+            /* fatal */
+            ngx_ff_master_start_fatal(cycle);
+        }
+
+        if (ngx_ff_slim_primary_ensure(cycle) != NGX_OK) {
+            /* fatal */
+            ngx_ff_master_start_fatal(cycle);
+        }
+    }
+#endif
+
     ngx_start_worker_processes(cycle, ccf->worker_processes,
                                NGX_PROCESS_RESPAWN);
     ngx_start_cache_manager_processes(cycle, 0);
@@ -185,6 +411,17 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
             live = ngx_reap_children(cycle);
         }
 
+#if (NGX_HAVE_FSTACK)
+        /* T5 completion + F3 drain watchdog — must run on every
+         * master loop pass, not only after a reap, or a stuck G_old worker
+         * (lost channel QUIT / long non-cancellable timer) is never
+         * noticed between child exits */
+        if (ngx_ff_graceful_reload) {
+            ngx_ff_reload_wait_or_check(cycle);
+            ngx_ff_usr2_check(cycle);
+        }
+#endif
+
         if (!live && (ngx_terminate || ngx_quit)) {
             ngx_master_process_exit(cycle);
         }
@@ -212,6 +449,20 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         if (ngx_quit) {
+#if (NGX_HAVE_FSTACK)
+            /* quitting the old master before the new generation
+             * registered would leave a hardware queue with no poller until
+             * this master is gone. Move rx first when we still can. */
+            if (ngx_ff_graceful_reload
+                && ngx_ff_usr2_state == NGX_FF_USR2_PENDING
+                && ngx_ff_usr2_handover(cycle) != NGX_OK)
+            {
+                ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                              "ff usr2: QUIT before the new generation "
+                              "registered, the new binary takes over once "
+                              "this master exits");
+            }
+#endif
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
 #if (!NGX_HAVE_FSTACK)
@@ -222,6 +473,24 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
         if (ngx_reconfigure) {
 #if (NGX_HAVE_FSTACK)
+            if (ngx_ff_graceful_reload) {
+                /* graceful_reload=1 reloads in the native order
+                 * (fork G_new -> wait FF_RELOAD_READY -> [same-era
+                 * handover] -> QUIT G_old), with re-entry protection
+                 * (a HUP while T1..T5 is in flight is rejected
+                 * and logged). graceful_reload=0 keeps the legacy two-phase
+                 * block below byte-for-byte. */
+                ngx_reconfigure = 0;
+                if (ngx_ff_reload_hup(&cycle, &ccf, &live) != NGX_OK
+                    && ngx_ff_reload_fsm_state() == NGX_FF_RELOAD_T0_IDLE)
+                {
+                    /* refused or aborted: the old generation keeps serving;
+                     * make sure `live` reflects the surviving workers */
+                    live = 1;
+                }
+                continue;
+            }
+
             if (!sig_worker_quit) {
                 sig_worker_quit = 1;
                 ngx_signal_worker_processes(cycle,
@@ -271,10 +540,27 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
 
         if (ngx_restart) {
             ngx_restart = 0;
-            ngx_start_worker_processes(cycle, ccf->worker_processes,
-                                       NGX_PROCESS_RESPAWN);
-            ngx_start_cache_manager_processes(cycle, 0);
-            live = 1;
+#if (NGX_HAVE_FSTACK)
+            /* under graceful_reload, ngx_restart only ever
+             * means "the new binary died after a WINCH". Respawning right
+             * away would add a second worker set with the same (epoch, gen,
+             * proc_id) while the old workers are still serving (deferred
+             * WINCH) or draining (rx already handed over) — two rx pollers
+             * and two ring consumers the generation directory cannot
+             * arbitrate apart. Same rule as the roll-back: only
+             * respawn once the last old worker is gone. */
+            if (ngx_ff_graceful_reload && ngx_ff_usr2_old_workers() > 0) {
+                ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                              "ff usr2: new binary died with old workers "
+                              "still alive, keeping them (respawn skipped)");
+            } else
+#endif
+            {
+                ngx_start_worker_processes(cycle, ccf->worker_processes,
+                                           NGX_PROCESS_RESPAWN);
+                ngx_start_cache_manager_processes(cycle, 0);
+                live = 1;
+            }
         }
 
         if (ngx_reopen) {
@@ -286,19 +572,2552 @@ ngx_master_process_cycle(ngx_cycle_t *cycle)
         }
 
         if (ngx_change_binary) {
+#if (NGX_HAVE_FSTACK)
+            /* an upgrade and a reload round both move the
+             * hardware, so refuse to interleave them; a second upgrade
+             * after the traffic already moved is refused as well. */
+            if (ngx_ff_graceful_reload
+                && (ngx_ff_usr2_state == NGX_FF_USR2_HANDED
+                    || (ngx_ff_usr2_state == NGX_FF_USR2_NONE
+                        && ngx_ff_reload_fsm_state()
+                           != NGX_FF_RELOAD_T0_IDLE)))
+            {
+                ngx_change_binary = 0;
+                ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                              "ff usr2: rejected, %s",
+                              ngx_ff_usr2_state == NGX_FF_USR2_HANDED
+                                  ? "traffic already handed over"
+                                  : "a graceful reload round is in flight");
+                continue;
+            }
+#endif
             ngx_change_binary = 0;
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "changing binary");
             ngx_new_binary = ngx_exec_new_binary(cycle, ngx_argv);
+#if (NGX_HAVE_FSTACK)
+            if (ngx_ff_graceful_reload && ngx_new_binary > 0) {
+                ngx_ff_usr2_begin(cycle);
+            }
+#endif
         }
 
         if (ngx_noaccept) {
             ngx_noaccept = 0;
             ngx_noaccepting = 1;
+#if (NGX_HAVE_FSTACK)
+            /* this master owns the only hardware queue set, so
+             * WINCH must hand rx to the new binary's generation before the
+             * old workers start draining. If that generation has not
+             * registered yet, defer the QUIT to the watchdog instead of
+             * leaving the queue with no poller. */
+            if (ngx_ff_graceful_reload
+                && ngx_ff_usr2_state == NGX_FF_USR2_PENDING
+                && ngx_ff_usr2_handover(cycle) != NGX_OK)
+            {
+                ngx_ff_usr2_winch = 1;
+                ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                              "ff usr2: WINCH before the new generation "
+                              "registered, deferring (old workers keep "
+                              "serving)");
+                continue;
+            }
+#endif
             ngx_signal_worker_processes(cycle,
                                         ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
         }
     }
 }
+
+#if (NGX_HAVE_FSTACK)
+
+/* Resident slim primary bookkeeping.
+ *
+ * The slim primary is a DPDK primary with no rx/tx queue (primary_slim=1)
+ * that outlives a master handing over to a new binary. Detection uses a
+ * pidfile plus proc/<pid>/comm to guard against pid reuse; readiness is
+ * one byte on a pipe to the spawning master, and EOF on it means the
+ * primary died before it got ready. */
+
+#define NGX_FF_SLIM_PRIMARY_COMM        "ff_slim_primary"
+#define NGX_FF_SLIM_PRIMARY_PIDFILE     "/var/run/ff_slim_primary.pid"
+#define NGX_FF_SLIM_PRIMARY_LOGFILE     "/var/run/ff_slim_primary.log"
+/* primary_slim baseline reports measured ~25s for primary init (hugepage
+ * mapping + port setup); wait with ample margin instead of the legacy 15s
+ * worker gate. */
+#define NGX_FF_SLIM_PRIMARY_READY_SEC   60
+/* Worker 0 attach confirm timeout under graceful_reload=1. */
+#define NGX_FF_GRACEFUL_ATTACH_SEC      60
+
+/* state (field 3) and start time (field 22) of /proc/<pid>/stat */
+static int
+ngx_ff_proc_stat(int pid, char *state, unsigned long long *start)
+{
+    char     path[48], buf[1024], *p;
+    int      fd, i;
+    ssize_t  n;
+
+    snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+    fd = open(path, O_RDONLY);
+    if (fd < 0) {
+        return -1;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return -1;
+    }
+    buf[n] = '\0';
+
+    p = strrchr(buf, ')');
+    if (p == NULL || p[1] != ' ') {
+        return -1;
+    }
+    p += 2;
+
+    if (state != NULL) {
+        *state = *p;
+    }
+
+    for (i = 0; i < 19; i++) {
+        p = strchr(p, ' ');
+        if (p == NULL) {
+            return -1;
+        }
+        p++;
+    }
+
+    if (start != NULL) {
+        *start = strtoull(p, NULL, 10);
+    }
+
+    return 0;
+}
+
+
+static int
+ngx_ff_proc_threads(int pid)
+{
+    char            path[48];
+    DIR            *dir;
+    struct dirent  *e;
+    int             n = 0;
+
+    snprintf(path, sizeof(path), "/proc/%d/task", pid);
+    dir = opendir(path);
+    if (dir == NULL) {
+        return 0;
+    }
+
+    while ((e = readdir(dir)) != NULL) {
+        if (e->d_name[0] != '.') {
+            n++;
+        }
+    }
+
+    (void) closedir(dir);
+    return n;
+}
+
+
+static void
+ngx_ff_conf_snapshot_drop(char *path)
+{
+    if (path[0] != '\0') {
+        (void) unlink(path);
+        path[0] = '\0';
+    }
+}
+
+
+static void
+ngx_ff_conf_snapshot_drop_all(void)
+{
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap_next);
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap);
+}
+
+
+/* snapshots are named <prefix><pid>.<start_time>.<seq>; drop the ones whose
+ * master is gone, and any left by an earlier process with our pid */
+static void
+ngx_ff_conf_snapshot_sweep(void)
+{
+    char                 path[NGX_MAX_PATH];
+    DIR                 *dir;
+    struct dirent       *e;
+    int                  pid;
+    unsigned long long   st, now;
+    size_t               plen = sizeof(NGX_FF_CONF_SNAPSHOT_PREFIX) - 1;
+
+    dir = opendir(NGX_FF_CONF_SNAPSHOT_DIR);
+    if (dir == NULL) {
+        return;
+    }
+
+    while ((e = readdir(dir)) != NULL) {
+        if (strncmp(e->d_name, NGX_FF_CONF_SNAPSHOT_PREFIX, plen) != 0
+            || sscanf(e->d_name + plen, "%d.%llu.", &pid, &st) != 2)
+        {
+            continue;
+        }
+
+        if (pid != (int) ngx_pid
+            && ngx_ff_proc_stat(pid, NULL, &now) == 0 && now == st)
+        {
+            continue;
+        }
+
+        snprintf(path, sizeof(path), NGX_FF_CONF_SNAPSHOT_DIR "/%s",
+                 e->d_name);
+        (void) unlink(path);
+    }
+
+    (void) closedir(dir);
+}
+
+
+static ngx_int_t
+ngx_ff_conf_snapshot_take(ngx_log_t *log, const char *src, char *dst)
+{
+    char                 tmp[NGX_MAX_PATH + 8], buf[4096];
+    int                  in, out = -1;
+    ssize_t              n;
+    unsigned long long   st;
+
+    if (ngx_ff_proc_stat((int) ngx_pid, NULL, &st) != 0) {
+        ngx_log_error(NGX_LOG_EMERG, log, ngx_errno,
+                      "graceful_reload: cannot read /proc/%P/stat", ngx_pid);
+        dst[0] = '\0';
+        return NGX_ERROR;
+    }
+
+    snprintf(dst, NGX_MAX_PATH,
+             NGX_FF_CONF_SNAPSHOT_DIR "/" NGX_FF_CONF_SNAPSHOT_PREFIX
+             "%d.%llu.%u.conf", (int) ngx_pid, st,
+             (unsigned) ++ngx_ff_conf_snap_seq);
+    snprintf(tmp, sizeof(tmp), "%s.tmp", dst);
+
+    in = open(src, O_RDONLY | O_CLOEXEC);
+    if (in < 0) {
+        goto failed;
+    }
+
+    out = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+               0600);
+    if (out < 0) {
+        goto failed;
+    }
+
+    while ((n = read(in, buf, sizeof(buf))) > 0) {
+        if (write(out, buf, n) != n) {
+            goto failed;
+        }
+    }
+
+    if (n < 0) {
+        goto failed;
+    }
+
+    if (close(out) != 0) {
+        out = -1;
+        goto failed;
+    }
+    out = -1;
+    (void) close(in);
+    in = -1;
+
+    if (rename(tmp, dst) != 0) {
+        goto failed;
+    }
+
+    return NGX_OK;
+
+failed:
+
+    ngx_log_error(NGX_LOG_EMERG, log, ngx_errno,
+                  "graceful_reload: cannot snapshot fstack conf \"%s\" "
+                  "to \"%s\"", src, dst);
+    if (in >= 0) {
+        (void) close(in);
+    }
+    if (out >= 0) {
+        (void) close(out);
+    }
+    (void) unlink(tmp);
+    dst[0] = '\0';
+    return NGX_ERROR;
+}
+
+
+/* runs in the slim primary after ff_init() */
+static ngx_int_t
+ngx_ff_primary_record_write(const char *conf)
+{
+    ngx_ff_primary_record_t   r;
+    const char               *dir;
+    char                      tmp[64];
+    int                       fd, rc;
+
+    if (ff_primary_conf_digest(conf, &r.digest, &r.kni) != 0
+        || ngx_ff_proc_stat(getpid(), NULL, &r.start_time) != 0)
+    {
+        return NGX_ERROR;
+    }
+
+    dir = ff_eal_runtime_dir();
+    if (dir == NULL || dir[0] == '\0') {
+        return NGX_ERROR;
+    }
+
+    snprintf(tmp, sizeof(tmp), NGX_FF_SLIM_PRIMARY_CONFFILE ".%d.tmp",
+             (int) getpid());
+    (void) unlink(tmp);
+
+    fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        return NGX_ERROR;
+    }
+
+    rc = dprintf(fd, "pid=%d\nstart_time=%llu\ndigest=%016llx\nkni=%d\n"
+                 "runtime_dir=%s\n", (int) getpid(), r.start_time,
+                 (unsigned long long) r.digest, r.kni, dir);
+
+    if (close(fd) != 0 || rc < 0
+        || rename(tmp, NGX_FF_SLIM_PRIMARY_CONFFILE) != 0)
+    {
+        (void) unlink(tmp);
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_ff_primary_record_read(int pid, ngx_ff_primary_record_t *r)
+{
+    char                 buf[NGX_MAX_PATH + 256], *p, *v, *nl;
+    int                  fd, have = 0;
+    ssize_t              n;
+    unsigned long long   st;
+
+    fd = open(NGX_FF_SLIM_PRIMARY_CONFFILE, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) {
+        return NGX_ERROR;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return NGX_ERROR;
+    }
+    buf[n] = '\0';
+
+    ngx_memzero(r, sizeof(ngx_ff_primary_record_t));
+
+    for (p = buf; *p != '\0'; p = nl) {
+        nl = strchr(p, '\n');
+        if (nl != NULL) {
+            *nl++ = '\0';
+        } else {
+            nl = p + strlen(p);
+        }
+
+        v = strchr(p, '=');
+        if (v == NULL) {
+            continue;
+        }
+        *v++ = '\0';
+
+        if (strcmp(p, "pid") == 0) {
+            r->pid = atoi(v);
+            have |= 1;
+        } else if (strcmp(p, "start_time") == 0) {
+            r->start_time = strtoull(v, NULL, 10);
+            have |= 2;
+        } else if (strcmp(p, "digest") == 0) {
+            r->digest = strtoull(v, NULL, 16);
+            have |= 4;
+        } else if (strcmp(p, "kni") == 0) {
+            r->kni = atoi(v);
+            have |= 8;
+        } else if (strcmp(p, "runtime_dir") == 0) {
+            snprintf(r->runtime_dir, sizeof(r->runtime_dir), "%s", v);
+            have |= 16;
+        }
+    }
+
+    if (have != 31 || r->pid != pid || r->runtime_dir[0] == '\0'
+        || ngx_ff_proc_stat(pid, NULL, &st) != 0 || st != r->start_time)
+    {
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_ff_primary_idle_read(int pid, unsigned long long start)
+{
+    char                 buf[64];
+    int                  fd, p = 0;
+    ssize_t              n;
+    unsigned long long   st = 0;
+
+    fd = open(NGX_FF_SLIM_PRIMARY_IDLEFILE, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) {
+        return 0;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = '\0';
+
+    return sscanf(buf, "%d %llu", &p, &st) == 2 && p == pid && st == start;
+}
+
+
+/* pid at the start of a file, after 'key' (0 when unreadable) */
+static int
+ngx_ff_slim_primary_file_pid(const char *path, const char *key)
+{
+    char     buf[256], *p;
+    int      fd;
+    ssize_t  n;
+
+    fd = open(path, O_RDONLY | O_NOFOLLOW);
+    if (fd < 0) {
+        return 0;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = '\0';
+
+    p = buf;
+    if (ngx_strncmp(p, key, ngx_strlen(key)) != 0) {
+        return 0;
+    }
+
+    return atoi(p + ngx_strlen(key));
+}
+
+
+/* drop the files of a primary that is gone, never those of a newer one */
+static void
+ngx_ff_slim_primary_forget(int pid)
+{
+    if (ngx_ff_slim_primary_file_pid(NGX_FF_SLIM_PRIMARY_PIDFILE, "") == pid) {
+        (void) unlink(NGX_FF_SLIM_PRIMARY_PIDFILE);
+    }
+
+    if (ngx_ff_slim_primary_file_pid(NGX_FF_SLIM_PRIMARY_CONFFILE, "pid=")
+        == pid)
+    {
+        (void) unlink(NGX_FF_SLIM_PRIMARY_CONFFILE);
+    }
+
+    if (ngx_ff_slim_primary_file_pid(NGX_FF_SLIM_PRIMARY_IDLEFILE, "") == pid) {
+        (void) unlink(NGX_FF_SLIM_PRIMARY_IDLEFILE);
+    }
+}
+
+
+/* only for a primary nobody uses any more; never escalates past SIGTERM */
+static ngx_int_t
+ngx_ff_slim_primary_stop(ngx_cycle_t *cycle, ngx_ff_primary_record_t *r)
+{
+    char                 comm[16], cpath[48], state;
+    int                  fd, pfd, users, rc;
+    ssize_t              n = 0;
+    ngx_uint_t           i;
+    unsigned long long   st;
+
+    users = ff_primary_users(r->runtime_dir);
+    if (users != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "is still used by %d process(es); not stopping it",
+                      r->pid, users);
+        return NGX_ERROR;
+    }
+
+    /* the pidfd pins the process checked below, so the signal cannot
+     * reach a recycled pid (Linux 5.3+) */
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    pfd = (int) syscall(SYS_pidfd_open, r->pid, 0);
+#else
+    pfd = -1;
+    errno = ENOSYS;
+#endif
+    if (pfd < 0 && errno == ESRCH) {
+        goto gone;
+    }
+
+    if (pfd < 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: pidfd_open(%d) failed%s; not "
+                      "stopping the resident slim primary", r->pid,
+                      errno == ENOSYS ? " (pidfd unsupported)" : "");
+        return NGX_ERROR;
+    }
+
+    errno = 0;
+    rc = ngx_ff_proc_stat(r->pid, NULL, &st);
+    if ((rc != 0 && (errno == ENOENT || errno == ESRCH))
+        || (rc == 0 && st != r->start_time))
+    {
+        (void) close(pfd);
+        goto gone;
+    }
+
+    snprintf(cpath, sizeof(cpath), "/proc/%d/comm", r->pid);
+    fd = open(cpath, O_RDONLY);
+    if (fd >= 0) {
+        n = read(fd, comm, sizeof(comm));
+        (void) close(fd);
+
+    } else if (errno == ENOENT) {
+        (void) close(pfd);
+        goto gone;
+    }
+
+    if (rc != 0 || n <= 0
+        || strncmp(comm, NGX_FF_SLIM_PRIMARY_COMM,
+                   sizeof(NGX_FF_SLIM_PRIMARY_COMM) - 1) != 0)
+    {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: cannot verify the resident slim "
+                      "primary (pid %d) before stopping it", r->pid);
+        (void) close(pfd);
+        return NGX_ERROR;
+    }
+
+#if defined(SYS_pidfd_open) && defined(SYS_pidfd_send_signal)
+    if (syscall(SYS_pidfd_send_signal, pfd, SIGTERM, NULL, 0) != 0) {
+#else
+    if (1) {
+#endif
+        if (errno == ESRCH) {
+            (void) close(pfd);
+            goto gone;
+        }
+
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: cannot send SIGTERM to the resident "
+                      "slim primary (pid %d)", r->pid);
+        (void) close(pfd);
+        return NGX_ERROR;
+    }
+    (void) close(pfd);
+
+    for (i = 0; i < NGX_FF_SLIM_PRIMARY_STOP_SEC * 10; i++) {
+        if (ngx_ff_proc_stat(r->pid, &state, &st) != 0
+            || st != r->start_time
+            || ((state == 'Z' || state == 'X')
+                && ngx_ff_proc_threads(r->pid) <= 1))
+        {
+            break;
+        }
+        ngx_msleep(100);
+    }
+
+    if (i == NGX_FF_SLIM_PRIMARY_STOP_SEC * 10) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "did not exit within %ds after SIGTERM; not escalating",
+                      r->pid, NGX_FF_SLIM_PRIMARY_STOP_SEC);
+        return NGX_ERROR;
+    }
+
+gone:
+
+    ngx_ff_slim_primary_forget(r->pid);
+    return NGX_OK;
+}
+
+
+/* NGX_OK: reuse the live primary; NGX_DECLINED: spawn one (none alive, or
+ * the stale one was stopped); NGX_ERROR: refused, already logged */
+static ngx_int_t
+ngx_ff_slim_primary_check(ngx_cycle_t *cycle, ngx_uint_t no_restart)
+{
+    ngx_ff_primary_record_t   r;
+    uint64_t                  digest;
+    int                       pid, kni, ok, same, idle = 0, users = -1;
+
+    pid = (int) ngx_ff_slim_primary_alive();
+    if (pid == 0) {
+        return NGX_DECLINED;
+    }
+
+    if (ff_primary_conf_digest(ngx_ff_conf_snap, &digest, &kni) != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: cannot parse fstack conf \"%s\"",
+                      ngx_ff_conf_snap);
+        return NGX_ERROR;
+    }
+
+    ok = (ngx_ff_primary_record_read(pid, &r) == NGX_OK);
+    same = ok && r.digest == digest;
+    if (ok) {
+        users = ff_primary_users(r.runtime_dir);
+        idle = ngx_ff_primary_idle_read(pid, r.start_time);
+    }
+
+    switch (ff_primary_reuse_check(ok, same, users, idle,
+                                   no_restart || ngx_inherited))
+    {
+    case FF_PRIMARY_REUSE:
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: resident slim primary found, reusing");
+        return NGX_OK;
+
+    case FF_PRIMARY_RESTART:
+        if (same) {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "graceful_reload: restarting the resident slim "
+                          "primary (pid %d): no master or worker uses it",
+                          pid);
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "graceful_reload: restarting the resident slim "
+                          "primary (pid %d): its fstack config differs "
+                          "([kni] enable %d -> %d)", pid, r.kni, kni);
+        }
+        return ngx_ff_slim_primary_stop(cycle, &r) == NGX_OK
+               ? NGX_DECLINED : NGX_ERROR;
+
+    default:
+        break;
+    }
+
+    if (!ok) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "has no valid record in " NGX_FF_SLIM_PRIMARY_CONFFILE
+                      " (started by another build?); stop it and start "
+                      "nginx again", pid);
+
+    } else if (users != 0) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "runs another fstack config ([kni] enable %d, this "
+                      "config %d) and is still used by %d process(es) "
+                      "(-1: unknown); stop them and the slim primary, then "
+                      "start nginx again", pid, r.kni, kni, users);
+
+    } else {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "runs another fstack config ([kni] enable %d, this "
+                      "config %d); an upgrade cannot replace it, stop nginx "
+                      "and the slim primary, then start nginx again",
+                      pid, r.kni, kni);
+    }
+
+    return NGX_ERROR;
+}
+
+
+/* HUP: the new generation must match the resident primary; on success
+ * ngx_ff_conf_snap_next holds the snapshot it will read */
+static ngx_int_t
+ngx_ff_reload_conf_precheck(ngx_cycle_t *cycle, const char *conf)
+{
+    ngx_ff_primary_record_t   r;
+    uint64_t                  digest;
+    int                       pid, kni;
+
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap_next);
+    if (ngx_ff_conf_snapshot_take(cycle->log, conf, ngx_ff_conf_snap_next)
+        != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload rejected: cannot snapshot the fstack "
+                      "config");
+        return NGX_ERROR;
+    }
+
+    pid = (int) ngx_ff_slim_primary_alive();
+    if (pid == 0) {
+        return NGX_OK;
+    }
+
+    if (ff_primary_conf_digest(ngx_ff_conf_snap_next, &digest, &kni) != 0) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload rejected: cannot parse fstack conf "
+                      "\"%s\"", conf);
+
+    } else if (ngx_ff_primary_record_read(pid, &r) != NGX_OK) {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload rejected: the resident slim primary "
+                      "(pid %d) has no valid record; restart nginx and the "
+                      "slim primary", pid);
+
+    } else if (r.digest == digest) {
+        return NGX_OK;
+
+    } else {
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload rejected: fstack config differs from "
+                      "the resident slim primary (kni %d -> %d); restart "
+                      "nginx and the slim primary to apply it", r.kni, kni);
+    }
+
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap_next);
+    return NGX_ERROR;
+}
+
+
+static ngx_int_t
+ngx_ff_slim_primary_alive(void)
+{
+    int         fd;
+    ssize_t     n;
+    char        buf[32], comm[16], cpath[48];
+    int         pid;
+
+    fd = open(NGX_FF_SLIM_PRIMARY_PIDFILE, O_RDONLY);
+    if (fd < 0) {
+        return 0;
+    }
+
+    n = read(fd, buf, sizeof(buf) - 1);
+    (void) close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+    buf[n] = '\0';
+
+    pid = atoi(buf);
+    if (pid <= 0) {
+        return 0;
+    }
+
+    if (kill(pid, 0) != 0 && errno != EPERM) {
+        return 0;
+    }
+
+    /* guard against pid reuse: comm must still be the slim primary */
+    snprintf(cpath, sizeof(cpath), "/proc/%d/comm", pid);
+    fd = open(cpath, O_RDONLY);
+    if (fd >= 0) {
+        n = read(fd, comm, sizeof(comm));
+        (void) close(fd);
+        if (n <= 0 || strncmp(comm, NGX_FF_SLIM_PRIMARY_COMM,
+                              sizeof(NGX_FF_SLIM_PRIMARY_COMM) - 1) != 0)
+        {
+            return 0;
+        }
+    }
+
+    return pid;
+}
+
+
+/* the last master to leave takes the resident primary with it; the other
+ * master of a binary upgrade, or any process still attached, keeps it */
+static void
+ngx_ff_slim_primary_release(ngx_cycle_t *cycle)
+{
+    ngx_ff_primary_record_t  r;
+    int                      pid, users;
+
+    if (ngx_process != NGX_PROCESS_MASTER || !ngx_ff_graceful_reload) {
+        return;
+    }
+
+    if (ngx_new_binary != 0 || (ngx_inherited && getppid() == ngx_parent)) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: keeping the resident slim primary "
+                      "for the other master of the binary upgrade");
+        return;
+    }
+
+    pid = (int) ngx_ff_slim_primary_alive();
+    if (pid == 0) {
+        return;
+    }
+
+    if (ngx_ff_primary_record_read(pid, &r) != NGX_OK) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: the resident slim primary (pid %d) "
+                      "has no valid record; not stopping it", pid);
+        return;
+    }
+
+    users = ff_primary_users(r.runtime_dir);
+    if (users != 0) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: keeping the resident slim primary "
+                      "(pid %d): still used by %d process(es)", pid, users);
+        return;
+    }
+
+    if (ngx_ff_slim_primary_stop(cycle, &r) == NGX_OK) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: stopped the resident slim primary "
+                      "(pid %d)", pid);
+    }
+}
+
+
+static void
+ngx_ff_slim_primary_idle_mark(ngx_uint_t on)
+{
+    const char          *tmp = NGX_FF_SLIM_PRIMARY_IDLEFILE ".tmp";
+    unsigned long long   st;
+    int                  fd;
+
+    if (ngx_ff_proc_stat(getpid(), NULL, &st) != 0) {
+        return;
+    }
+
+    if (!on) {
+        if (ngx_ff_primary_idle_read(getpid(), st)) {
+            (void) unlink(NGX_FF_SLIM_PRIMARY_IDLEFILE);
+        }
+        return;
+    }
+
+    fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW, 0644);
+    if (fd < 0) {
+        return;
+    }
+
+    if (dprintf(fd, "%d %llu\n", (int) getpid(), st) < 0 || close(fd) != 0
+        || rename(tmp, NGX_FF_SLIM_PRIMARY_IDLEFILE) != 0)
+    {
+        (void) unlink(tmp);
+    }
+}
+
+
+static int
+ngx_ff_slim_primary_loop(void *arg)
+{
+    /* control-plane only: the lib main_loop handles EAL IPC, KNI and the
+     * primary_slim idle sleep. Once no master and no worker has been left
+     * for a while (the masters were killed), the primary exits; its files
+     * stay, they are self-checking. */
+    static ngx_msec_t   next, since, limit;
+    static ngx_uint_t   seen, idle, stopping;
+    struct timespec     ts;
+    ngx_msec_t          now;
+    int                 users, masters;
+
+    (void) arg;
+
+    (void) clock_gettime(CLOCK_MONOTONIC, &ts);
+    now = (ngx_msec_t) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (stopping || now < next) {
+        return 0;
+    }
+    next = now + 1000;
+
+    if (limit == 0) {
+        limit = ngx_ff_reload_env_msec("NGX_FF_SLIM_PRIMARY_ORPHAN_MS",
+                                       NGX_FF_SLIM_PRIMARY_ORPHAN_MS);
+        if (limit < 3000 || limit > 3600000) {
+            limit = NGX_FF_SLIM_PRIMARY_ORPHAN_MS;
+        }
+    }
+
+    users = ff_primary_users(ff_eal_runtime_dir());
+    masters = ff_reload_gendir_masters_live();
+    if (users != 0 || masters != 0) {
+        seen = 1;
+        since = 0;
+        if (idle) {
+            ngx_ff_slim_primary_idle_mark(0);
+            idle = 0;
+        }
+        return 0;
+    }
+
+    if (since == 0) {
+        since = now;
+    }
+
+    /* a master whose workers attached and died between two checks */
+    if (!seen && ff_reload_gendir_masters_seen() > 0) {
+        seen = 1;
+    }
+
+    if (seen && !idle) {
+        ngx_ff_slim_primary_idle_mark(1);
+        idle = 1;
+    }
+
+    if (now - since < (seen ? limit
+                            : ngx_max(limit, NGX_FF_SLIM_PRIMARY_UNUSED_MS)))
+    {
+        return 0;
+    }
+
+    fprintf(stderr, "ff slim primary (pid %d): no master or worker for "
+            "%lu ms, exiting\n", (int) getpid(), (unsigned long) (now - since));
+    stopping = 1;
+    ff_stop_run();
+    return 0;
+}
+
+
+static void
+ngx_ff_slim_primary_spawn_child(ngx_cycle_t *cycle, int ready_fd)
+{
+    /* runs in the double-forked grandchild, reparented to init; never
+     * returns to nginx code */
+    struct rlimit      rl;
+    ngx_int_t          i, max_fd;
+    int                devnull, logfd, pf;
+    ngx_core_conf_t   *ccf;
+    sigset_t           set;
+    char               conf[NGX_MAX_PATH];
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    snprintf(conf, sizeof(conf), "%s", ngx_ff_conf_snap[0] != '\0'
+             ? ngx_ff_conf_snap : (char *) ccf->fstack_conf.data);
+
+    /* stdio: diagnostics to a dedicated log, everything else to /dev/null */
+    devnull = open("/dev/null", O_RDWR);
+    if (devnull >= 0) {
+        (void) dup2(devnull, STDIN_FILENO);
+        (void) dup2(devnull, STDOUT_FILENO);
+    }
+
+    logfd = open(NGX_FF_SLIM_PRIMARY_LOGFILE,
+                 O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (logfd >= 0) {
+        (void) dup2(logfd, STDERR_FILENO);
+    } else if (devnull >= 0) {
+        (void) dup2(devnull, STDERR_FILENO);
+    }
+
+    /* close every other inherited fd: the slim primary must not hold the
+     * nginx listening sockets open (they would survive worker reloads) nor
+     * any master channel fds. EAL attach happens only after this. */
+    if (getrlimit(RLIMIT_NOFILE, &rl) == 0 && rl.rlim_cur != RLIM_INFINITY) {
+        max_fd = rl.rlim_cur;
+    } else {
+        max_fd = sysconf(_SC_OPEN_MAX);
+        if (max_fd < 0) {
+            max_fd = 65536;
+        }
+    }
+    for (i = 3; i < max_fd; i++) {
+        if (i != ready_fd) {
+            (void) close(i);
+        }
+    }
+
+    /* reset signal state inherited from the nginx master */
+    for (i = 1; i < NSIG; i++) {
+        (void) signal(i, SIG_DFL);
+    }
+    (void) signal(SIGPIPE, SIG_IGN);
+    sigemptyset(&set);
+    (void) sigprocmask(SIG_SETMASK, &set, NULL);
+
+    ngx_ff_process = NGX_FF_PROCESS_SLIM_PRIMARY;
+    (void) prctl(PR_SET_NAME, NGX_FF_SLIM_PRIMARY_COMM, 0, 0, 0);
+
+    if (ngx_ff_slim_primary_init(conf) != 0) {
+        /* ff_init() exits on its own failure paths; only a late check can
+         * land here */
+        fprintf(stderr, "ff slim primary: init failed\n");
+        _exit(2);
+    }
+
+    if (ngx_ff_primary_record_write(conf) != NGX_OK) {
+        fprintf(stderr, "ff slim primary: cannot write %s\n",
+                NGX_FF_SLIM_PRIMARY_CONFFILE);
+        _exit(2);
+    }
+
+    /* publish the pidfile before signalling readiness */
+    pf = open(NGX_FF_SLIM_PRIMARY_PIDFILE,
+              O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (pf >= 0) {
+        dprintf(pf, "%d\n", (int) getpid());
+        (void) close(pf);
+    }
+
+    pf = ngx_ff_slim_primary_file_pid(NGX_FF_SLIM_PRIMARY_IDLEFILE, "");
+    if (pf > 0 && kill(pf, 0) != 0 && errno == ESRCH) {
+        (void) unlink(NGX_FF_SLIM_PRIMARY_IDLEFILE);
+    }
+
+    if (ready_fd != -1) {
+        if (write(ready_fd, "r", 1) != 1) {
+            fprintf(stderr, "ff slim primary: master no longer waits\n");
+        }
+        (void) close(ready_fd);
+    }
+
+    ff_run(ngx_ff_slim_primary_loop, NULL);
+    _exit(0);
+}
+
+
+static void
+ngx_ff_master_start_fatal(ngx_cycle_t *cycle)
+{
+    ngx_ff_conf_snapshot_drop_all();
+    ngx_delete_pidfile(cycle);
+    exit(2);
+}
+
+
+/* last non-empty line the primary logged past offset "from"; *busy is set
+ * when EAL found another primary on the same runtime dir */
+static size_t
+ngx_ff_slim_primary_log_reason(off_t from, char *buf, size_t len,
+    ngx_uint_t *busy)
+{
+    char         tail[1024], *s, *e;
+    int          fd;
+    size_t       k;
+    ssize_t      n, i;
+    struct stat  st;
+
+    *busy = 0;
+    buf[0] = '\0';
+
+    fd = open(NGX_FF_SLIM_PRIMARY_LOGFILE,
+              O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+    if (fd == -1) {
+        return 0;
+    }
+
+    if (fstat(fd, &st) == -1 || !S_ISREG(st.st_mode)) {
+        (void) close(fd);
+        return 0;
+    }
+
+    if (st.st_size < from) {
+        from = 0;
+    }
+    if (st.st_size - from > (off_t) sizeof(tail) - 1) {
+        from = st.st_size - (off_t) sizeof(tail) + 1;
+    }
+
+    n = pread(fd, tail, sizeof(tail) - 1, from);
+    (void) close(fd);
+    if (n <= 0) {
+        return 0;
+    }
+
+    for (i = 0; i < n; i++) {
+        if (tail[i] == '\0') {
+            tail[i] = '?';
+        }
+    }
+    tail[n] = '\0';
+
+    if (strstr(tail, "Is another primary") != NULL) {
+        *busy = 1;
+    }
+
+    e = tail + n;
+    while (e > tail && (e[-1] == '\n' || e[-1] == '\r' || e[-1] == ' ')) {
+        e--;
+    }
+    s = e;
+    while (s > tail && s[-1] != '\n') {
+        s--;
+    }
+
+    k = ngx_min((size_t) (e - s), len - 1);
+    for (i = 0; i < (ssize_t) k; i++) {
+        buf[i] = (s[i] < 0x20 || s[i] > 0x7e) ? '?' : s[i];
+    }
+    buf[k] = '\0';
+    return k;
+}
+
+
+static ngx_int_t
+ngx_ff_slim_primary_ensure(ngx_cycle_t *cycle)
+{
+    int            fds[2], fd, i, r;
+    char           c, reason[256];
+    off_t          off;
+    pid_t          pid;
+    ssize_t        n;
+    ngx_err_t      err;
+    ngx_msec_t     deadline;
+    ngx_uint_t     busy;
+    struct stat    st;
+    struct pollfd  pfd;
+
+    r = ngx_ff_slim_primary_check(cycle, 0);
+    if (r != NGX_DECLINED) {
+        return r;
+    }
+
+    if (pipe2(fds, O_CLOEXEC) == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: pipe2 failed");
+        return NGX_ERROR;
+    }
+
+    /* keep both ends off stdio: the primary rebinds fds 0-2 */
+    err = 0;
+    for (i = 0; i < 2; i++) {
+        if (fds[i] > STDERR_FILENO) {
+            continue;
+        }
+        fd = fcntl(fds[i], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+        if (fd == -1) {
+            err = ngx_errno;
+        }
+        (void) close(fds[i]);
+        fds[i] = fd;
+    }
+    if (fds[0] == -1 || fds[1] == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, err,
+                      "graceful_reload: fcntl(F_DUPFD_CLOEXEC) failed");
+        if (fds[0] != -1) {
+            (void) close(fds[0]);
+        }
+        if (fds[1] != -1) {
+            (void) close(fds[1]);
+        }
+        return NGX_ERROR;
+    }
+
+    off = (stat(NGX_FF_SLIM_PRIMARY_LOGFILE, &st) == 0) ? st.st_size : 0;
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "graceful_reload: spawning resident slim primary");
+
+    pid = fork();
+    if (pid == -1) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, ngx_errno,
+                      "graceful_reload: fork failed");
+        (void) close(fds[0]);
+        (void) close(fds[1]);
+        return NGX_ERROR;
+    }
+
+    if (pid == 0) {
+        /* intermediate child: new session, then fork again so the slim
+         * primary is reparented to init and detached from this master */
+        if (setsid() == -1) {
+            _exit(1);
+        }
+
+        pid = fork();
+        if (pid == -1) {
+            _exit(1);
+        }
+
+        if (pid > 0) {
+            _exit(0);
+        }
+
+        ngx_ff_slim_primary_spawn_child(cycle, fds[1]);
+        _exit(2);
+    }
+
+    /* master: reap the intermediate child right away */
+    (void) close(fds[1]);
+    (void) waitpid(pid, NULL, 0);
+
+    ngx_time_update();
+    deadline = ngx_current_msec + NGX_FF_SLIM_PRIMARY_READY_SEC * 1000;
+    pfd.fd = fds[0];
+    pfd.events = POLLIN;
+    n = -1;
+
+    for ( ;; ) {
+        ngx_time_update();
+        if (ngx_current_msec >= deadline) {
+            break;
+        }
+
+        pfd.revents = 0;
+        r = poll(&pfd, 1, (int) (deadline - ngx_current_msec));
+        if (r == -1 && ngx_errno == NGX_EINTR) {
+            continue;
+        }
+        if (r == -1) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
+                          "graceful_reload: poll failed");
+        }
+        if (r <= 0) {
+            break;
+        }
+
+        /* POLLHUP alone means EOF: read() tells */
+        n = read(fds[0], &c, 1);
+        if (n == -1 && ngx_errno == NGX_EINTR) {
+            continue;
+        }
+        if (n == -1) {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, ngx_errno,
+                          "graceful_reload: read() failed");
+        }
+        break;
+    }
+
+    (void) close(fds[0]);
+
+    if (n == 1) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: slim primary ready");
+        return NGX_OK;
+    }
+
+    if (n == 0) {
+        /* the primary died before it got ready */
+        (void) ngx_ff_slim_primary_log_reason(off, reason, sizeof(reason),
+                                              &busy);
+
+        /* it lost the EAL lock to a primary another master is starting */
+        while (busy && !ngx_ff_slim_primary_alive()) {
+            ngx_time_update();
+            if (ngx_current_msec >= deadline) {
+                break;
+            }
+            ngx_msleep(200);
+        }
+
+        if (!ngx_ff_slim_primary_alive()) {
+            if (reason[0] != '\0') {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                              "graceful_reload: slim primary exited during "
+                              "initialization: \"%s\" (see %s)",
+                              reason, NGX_FF_SLIM_PRIMARY_LOGFILE);
+            } else {
+                ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                              "graceful_reload: slim primary exited during "
+                              "initialization (see %s)",
+                              NGX_FF_SLIM_PRIMARY_LOGFILE);
+            }
+            return NGX_ERROR;
+        }
+
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful_reload: our slim primary exited (\"%s\") "
+                      "while another one came up", reason);
+
+    } else if (!ngx_ff_slim_primary_alive()) {
+        /* timed out: our grandchild never came up */
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload: slim primary failed to become "
+                      "ready within %ds", NGX_FF_SLIM_PRIMARY_READY_SEC);
+        return NGX_ERROR;
+    }
+
+    /* an externally started slim primary appeared in the meantime */
+    if (ngx_ff_slim_primary_check(cycle, 1) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "graceful_reload: reusing externally-started "
+                  "slim primary");
+    return NGX_OK;
+}
+
+
+/* graceful reload orchestration -------------------
+ *
+ * ngx_ff_reload_hup runs inside the master's reconfigure branch:
+ * T0 --HUP--> T1 fork G_new (JUST_RESPAWN) -> bounded wait for
+ * FF_RELOAD_READY from every G_new worker -> T2 park + rx flip -> T3
+ * asynchronous drain wait -> T4 -> QUIT G_old only (just_spawn children
+ * are skipped by ngx_signal_worker_processes) -> T5.
+ * T5 completion is asynchronous: ngx_ff_reload_wait_or_check is called from
+ * the master loop after every ngx_reap_children() and closes the round when
+ * every G_old slot has exited (generations flip, KNI owner follows).
+ *
+ * Spawn/signal/READY-wait sequencing lives here because it needs the
+ * statics of this file (ngx_processes[], ngx_start_worker_processes,
+ * ngx_signal_worker_processes) and the master-loop `live` local; the pure
+ * FSM and the shared-state updates live in ngx_ff_reload(_fsm).{h,c}. */
+
+/* the master sleeps in sigsuspend, so every FSM state
+ * it can only leave on time (T3 drain wait, T5 exit wait) needs the 1 s
+ * ITIMER_REAL to keep the loop waking. Armed immediately at the waiting
+ * state's entry (F7: the arm used to live only inside wait_or_check, so a
+ * master that never saw a child exit never armed it), disarmed only by
+ * its owner and never while the native terminate path holds the timer. */
+static void
+ngx_ff_reload_watchdog_arm(ngx_cycle_t *cycle)
+{
+    struct itimerval  itv;
+
+    if (ngx_ff_reload_wd_armed) {
+        return;
+    }
+
+    ngx_memzero(&itv, sizeof(itv));
+    itv.it_value.tv_sec = 1;
+    itv.it_interval.tv_sec = 1;
+    if (setitimer(ITIMER_REAL, &itv, NULL) == -1) {
+        ngx_log_error(NGX_LOG_WARN, cycle->log, ngx_errno,
+                      "graceful reload: watchdog setitimer() failed, "
+                      "stuck G_old detection disabled");
+        return;
+    }
+    ngx_ff_reload_wd_armed = 1;
+}
+
+static void
+ngx_ff_reload_watchdog_disarm(void)
+{
+    struct itimerval  itv;
+
+    if (!ngx_ff_reload_wd_armed) {
+        return;                 /* P3-a: never touch a foreign timer */
+    }
+    if (ngx_terminate) {
+        return;                 /* native delay backoff owns ITIMER_REAL */
+    }
+
+    ngx_memzero(&itv, sizeof(itv));
+    (void) setitimer(ITIMER_REAL, &itv, NULL);
+    ngx_ff_reload_wd_armed = 0;
+}
+
+/* the watchdog thresholds stay constants by default; the two env
+ * overrides let an operator tighten them without a rebuild. */
+static ngx_msec_t
+ngx_ff_reload_env_msec(const char *name, ngx_msec_t def)
+{
+    u_char     *v;
+    ngx_int_t   n;
+
+    v = (u_char *) getenv(name);
+    if (v == NULL) {
+        return def;
+    }
+
+    n = ngx_atoi(v, ngx_strlen(v));
+    return (n > 0) ? (ngx_msec_t) n : def;
+}
+
+static void
+ngx_ff_reload_abort(ngx_cycle_t *cycle, int fsm_event, const char *reason)
+{
+    ngx_int_t  i;
+
+    /* the round is over — no expected set to compare against until
+     * the next T1 registers one. */
+    ngx_ff_reload_n_expected = 0;
+    ngx_ff_reload_n_spawned = 0;
+
+    /* terminate EVERY process spawned for the aborted round — the
+     * JUST_RESPAWN workers AND the cache manager/loader children spawned
+     * by ngx_start_cache_manager_processes(cycle, 1). A leftover
+     * just_spawn slot would be swept into the next round's new_slots
+     * snapshot and, never reporting READY, re-abort every later reload. */
+    for (i = 0; i < ngx_last_process; i++) {
+        if (!ngx_processes[i].just_spawn && !ngx_ff_reload_new_slots[i]) {
+            continue;
+        }
+
+        if (ngx_processes[i].pid != -1 && !ngx_processes[i].exited) {
+            if (kill(ngx_processes[i].pid,
+                     ngx_signal_value(NGX_TERMINATE_SIGNAL)) == 0)
+            {
+                ngx_processes[i].exiting = 1;
+            }
+        }
+        /* never resurrect the aborted generation, never let a later
+         * ngx_signal_worker_processes skip the dying slot */
+        ngx_processes[i].respawn = 0;
+        ngx_processes[i].just_spawn = 0;
+    }
+
+    (void) ngx_ff_reload_fsm_event(fsm_event);   /* -> T_ERROR */
+    (void) ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_RESET); /* -> T0 */
+
+    ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                  "graceful reload aborted: %s (old generation untouched)",
+                  reason);
+}
+
+/* bounded wait for every G_new worker's FF_RELOAD_READY (epoch-stamped,
+ * pid-correlated in the shared block). Early child exit aborts. */
+
+/* probe whether a direct child has already exited WITHOUT consuming
+ * its exit status (WNOWAIT keeps it pending for ngx_process_get_status,
+ * which runs later in ngx_reap_children). */
+static ngx_int_t
+ngx_ff_reload_probe_dead(ngx_pid_t pid)
+{
+    siginfo_t  si;
+
+    if (pid <= 0) {
+        return 0;
+    }
+
+    ngx_memzero(&si, sizeof(si));
+
+    if (waitid(P_PID, (id_t) pid, &si, WEXITED | WNOHANG | WNOWAIT) == 0) {
+        return si.si_pid != 0;
+    }
+
+    /* waitid unsupported: fall back to kill() — zombies still answer, so
+     * this only catches fully gone pids; waitid above is the primary. */
+    return (kill(pid, 0) == -1 && ngx_errno == ESRCH) ? 1 : 0;
+}
+
+/* independent liveness check for the new generation. The SIGCHLD
+ * handler only sets ngx_reap; ngx_processes[].exited is filled by
+ * ngx_reap_children, which cannot run while wait_ready blocks the master
+ * loop. Worse, a SIGTERM'd worker still finishes its init and publishes
+ * READY before exiting, so the READY view alone cannot detect death. */
+static ngx_uint_t
+ngx_ff_reload_gnew_died(void)
+{
+    ngx_int_t  i;
+
+    for (i = 0; i < ngx_last_process; i++) {
+        if (!ngx_ff_reload_new_slots[i]) {
+            continue;
+        }
+
+        if (ngx_processes[i].pid == -1) {
+            continue;
+        }
+
+        if (ngx_processes[i].exited
+            || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+        {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
+static ngx_int_t
+ngx_ff_reload_wait_ready(ngx_cycle_t *cycle)
+{
+    ngx_int_t    i;
+    ngx_uint_t   all_ready, n_slots, n_ready;
+    ngx_msec_t   deadline;
+
+    deadline = ngx_current_msec + NGX_FF_RELOAD_READY_WAIT_SEC * 1000;
+
+    for ( ;; ) {
+
+        ngx_time_update();
+
+        /* liveness first — a worker killed during init never shows
+         * up as exited until the master loop reaps, and it may publish
+         * READY right before dying */
+        if (ngx_ff_reload_gnew_died()) {
+            ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                                "a new worker exited before READY");
+            return NGX_ERROR;
+        }
+
+        all_ready = 1;
+        n_slots = 0;
+        n_ready = 0;
+
+        for (i = 0; i < ngx_last_process; i++) {
+            if (!ngx_ff_reload_new_slots[i]) {
+                continue;
+            }
+
+            n_slots++;
+
+            if (ngx_processes[i].pid == -1 || ngx_processes[i].exited) {
+                all_ready = 0;
+                break;
+            }
+
+            if (!ff_reload_ready_matches((unsigned) i,
+                                         (uint32_t) ngx_processes[i].pid,
+                                         ngx_ff_reload_ready_epoch))
+            {
+                all_ready = 0;
+            } else {
+                n_ready++;
+            }
+        }
+
+        /* the snapshot is not the contract — every expected
+         * worker has to be there AND ready, so a round that lost a worker
+         * before the snapshot cannot declare ALL_READY. */
+        if (all_ready && ngx_ff_reload_n_expected != 0
+            && (n_slots != ngx_ff_reload_n_expected
+                || n_ready != ngx_ff_reload_n_expected))
+        {
+            all_ready = 0;
+        }
+
+        if (all_ready) {
+
+            /* re-probe after the READY pass — a SIGTERM'd worker may
+             * have published READY and died within the same poll window;
+             * the residual µs race is owned by the native respawn path */
+            if (ngx_ff_reload_gnew_died()) {
+                ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                                    "a new worker exited right after READY");
+                return NGX_ERROR;
+            }
+
+            return NGX_OK;
+        }
+
+        if (ngx_current_msec >= deadline) {
+            ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_READY_TIMEOUT,
+                                "READY wait timed out");
+            return NGX_ERROR;
+        }
+
+        ngx_msleep(10);
+    }
+}
+
+/* T2 same-era handover — park G_old, then flip rx/tx
+ * ownership to G_new. Sequence (all markers live in the shared block):
+ *
+ * 1. arm a fresh handover epoch;
+ * 2. order the owner generation to park (rx_stopped=1): every G_old
+ * worker's next main-loop pass skips rx_burst/tx drain and acks the
+ * epoch (the park order parks BOTH generations, so nothing polls in
+ * between);
+ * 3. wait, bounded by the handover timeout, for every live G_old worker
+ * slot to ack — the ack implies that worker's last hardware pass is
+ * complete, which is what rules out an in-flight rx_burst racing the
+ * new owner. A dead worker never acks and is treated as parked
+ * (its liveness is probed, not assumed);
+ * 4. timeout -> abort the round: the markers are
+ * restored to the active generation and G_old simply resumes
+ * polling. Forcing past a wedged G_old would risk two pollers on one
+ * virtqueue and stays refused;
+ * 5. all acked -> ff_reload_rx_release() flips the ownership in the
+ * safe order and ff_queue_handover_mutex() (already satisfied)
+ * clears rx_stopped, so G_new's main loops resume rx/tx on their
+ * next pass while G_old stays parked (reversible: an rx return just
+ * writes the markers back).
+ *
+ * Listen need no explicit takeover: both generations listen from their
+ * own init; whoever owns rx accepts. KNI runtime ownership follows the
+ * active generation and flips at completion. */
+static ngx_int_t
+ngx_ff_reload_handover(ngx_cycle_t *cycle)
+{
+    uint32_t    epoch;
+    ngx_int_t   i;
+    ngx_msec_t  deadline, t_start;
+    ngx_uint_t  waiting;
+    int         active, target;
+
+    active = ff_reload_active_gen();
+    target = ff_reload_target_gen();
+
+    /* takeover latency (park order -> owner flip) */
+    t_start = ngx_current_msec;
+
+    if (active == target) {
+        /* no generation to take over from (should not happen: the window
+         * is open) — nothing to park, flip directly */
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                      "graceful reload: handover with active == target "
+                      "(%d), skipping park barrier", active);
+        return NGX_OK;
+    }
+
+    ff_reload_handover_arm(&epoch);
+
+    /* park order */
+    ff_reload_rx_stopped_set(1);
+
+    deadline = ngx_current_msec + FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT;
+
+    for ( ;; ) {
+
+        ngx_time_update();
+
+        waiting = 0;
+
+        for (i = 0; i < ngx_last_process; i++) {
+            if (ngx_processes[i].pid == -1
+                || ngx_processes[i].just_spawn
+                || ngx_ff_reload_new_slots[i]
+                || ngx_processes[i].proc != ngx_worker_process_cycle)
+            {
+                /* not an old-generation worker: cache managers never run
+                 * an ff main loop and never ack; the just-spawned set is
+                 * G_new (parked already since it does not own rx) */
+                continue;
+            }
+
+            if (ngx_processes[i].exited
+                || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+            {
+                continue;   /* dead is parked */
+            }
+
+            if (!ff_reload_handover_parked((unsigned) i, epoch)) {
+                waiting = 1;
+                break;
+            }
+        }
+
+        if (!waiting) {
+            break;
+        }
+
+        if (ngx_current_msec >= deadline) {
+            ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_ABORT,
+                                "G_old park confirmation timed out");
+            return NGX_ERROR;
+        }
+
+        ngx_msleep(1);
+    }
+
+    /* every live G_old worker has acked: flip the ownership. rx_release
+     * rewrites the park markers in the safe order; the mutex helper then
+     * clears rx_stopped so G_new resumes polling. */
+    if (ff_reload_rx_release(target) != FF_RELOAD_HANDOVER_OK
+        || ff_queue_handover_mutex(0, 0, active, target,
+                                   FF_RELOAD_HANDOVER_TIMEOUT_MS_DEFAULT)
+           != FF_RELOAD_HANDOVER_OK)
+    {
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_ABORT,
+                            "rx ownership flip failed");
+        return NGX_ERROR;
+    }
+
+    /* publish the takeover latency for the completion summary */
+    ff_reload_phase_ms_set(FF_RELOAD_PHASE_HANDOVER,
+                           (uint32_t) (ngx_current_msec - t_start));
+
+    return NGX_OK;
+}
+
+static ngx_int_t
+ngx_ff_reload_hup(ngx_cycle_t **pcycle, ngx_core_conf_t **pccf,
+    ngx_uint_t *live)
+{
+    ngx_cycle_t     *cycle = *pcycle;
+    ngx_core_conf_t *ccf;
+    ngx_int_t        i;
+    ngx_uint_t       n_gnew;
+    char             oldconf[NGX_MAX_PATH];
+
+    /* a HUP while a binary upgrade is being tracked is
+     * the roll-back, not a reload. The block write alone cannot create a
+     * second rx poller — ff_reload_dir_sync() refuses to displace a live
+     * owner, so the hardware only actually comes back once the new master
+     * is gone. */
+    if (ngx_ff_usr2_state != NGX_FF_USR2_NONE) {
+        ngx_uint_t  nlive;
+
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "ff usr2: HUP during a binary upgrade, rolling back "
+                      "(state %ui)", ngx_ff_usr2_state);
+        ngx_ff_usr2_reclaim(cycle);
+        ngx_ff_usr2_state = NGX_FF_USR2_NONE;
+        ngx_ff_usr2_winch = 0;
+
+        /* Roll-back semantics: workers that never got a QUIT are serving
+         * again the moment the owner markers are ours. Workers already
+         * quitting keep the native one-way exit (they finish their
+         * connections instead of being resurrected), so a WINCH that ran to
+         * completion can leave this master with no worker at all — respawn
+         * them, exactly like the native path does after a failed binary. */
+        nlive = 0;
+        for (i = 0; i < ngx_last_process; i++) {
+            if (ngx_processes[i].pid != -1
+                && !ngx_processes[i].exited
+                && ngx_processes[i].proc == ngx_worker_process_cycle)
+            {
+                nlive++;
+            }
+        }
+
+        if (nlive == 0) {
+            ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx,
+                                                   ngx_core_module);
+            ngx_start_worker_processes(cycle, ccf->worker_processes,
+                                       NGX_PROCESS_RESPAWN);
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff usr2: no old worker left, respawned %d",
+                          (int) ccf->worker_processes);
+        }
+
+        *live = 1;
+        return NGX_OK;
+    }
+
+    /* no reload while T1.T5 is in flight */
+    if (ngx_ff_reload_fsm_state() != NGX_FF_RELOAD_T0_IDLE) {
+        ngx_ff_reload_note_hup_rejected();
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful reload rejected: previous reload still in "
+                      "progress (state %s)",
+                      ngx_ff_reload_fsm_state_name(ngx_ff_reload_fsm_state()));
+        return NGX_DECLINED;
+    }
+
+    /* an upgrade this master tracks is rolled back above, so reaching
+     * here with one means the state machine is out of step. A new binary
+     * left running after a rollback is not a reason to refuse: the hardware
+     * is ours again and the HUP chain has to keep working. */
+    if (ngx_new_binary && ngx_ff_usr2_state != NGX_FF_USR2_NONE) {
+        ngx_ff_reload_note_hup_rejected();
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful reload rejected: binary upgrade in progress");
+        return NGX_DECLINED;
+    }
+
+    /* a third generation would share the ephemeral port parity of one of
+     * the two already running */
+    if (ngx_inherited && getppid() == ngx_parent) {
+        ngx_ff_reload_note_hup_rejected();
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful reload rejected: the old master of the "
+                      "binary upgrade is still running");
+        return NGX_DECLINED;
+    }
+
+    if (ngx_ff_reload_shm == NULL) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful reload rejected: shared state missing");
+        return NGX_DECLINED;
+    }
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    snprintf(oldconf, sizeof(oldconf), "%s", (char *) ccf->fstack_conf.data);
+    if (ngx_ff_reload_conf_precheck(cycle, oldconf) != NGX_OK) {
+        ngx_ff_reload_note_hup_rejected();
+        return NGX_DECLINED;
+    }
+
+    /* ff_reload_log was bound to a cycle log that a previous reload's
+     * ngx_init_cycle may already have destroyed (pool freed, fd closed);
+     * rebind to the live cycle log before any FSM logging below */
+    ngx_ff_reload_set_log(cycle->log);
+
+    /* T0 --HUP--> T1 (opens the reload window: epoch++, target gen) */
+    if (ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_HUP)
+        != NGX_FF_RELOAD_T1_GNEW_SPAWN)
+    {
+        return NGX_DECLINED;
+    }
+    ngx_ff_reload_ready_epoch = ngx_ff_reload_epoch();
+
+    /* fresh per-round drain counters (slots are epoch-tagged
+     * and need no clearing) */
+    ff_reload_drain_reset();
+    ngx_ff_reload_attach_failed = 0;
+
+    /* (bounce 1): clear the G_new slot snapshot BEFORE any
+     * spawn or abort of this round. Every abort below the snapshot
+     * (failed init_cycle, failed worker-0 attach) TERMs just_spawn ||
+     * new_slots[]; on round >= 2 the stale array still names the
+     * PREVIOUS round's G_new — the currently active generation — so an
+     * early abort would TERM every live worker with respawn=0 and take
+     * the whole service down instead of keeping G_old serving. With the
+     * early clear, a pre-snapshot abort touches only just_spawn slots
+     * (none spawned yet, or the failed worker 0 alone). */
+    ngx_memzero(ngx_ff_reload_new_slots, sizeof(ngx_ff_reload_new_slots));
+
+    /* re-read the configuration; on failure roll back (G_old untouched,
+     * aligned with the kernel HUP semantics) */
+    cycle = ngx_init_cycle(cycle);
+    if (cycle == NULL) {
+        cycle = *pcycle;
+        ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap_next);
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "new configuration failed to load");
+        return NGX_ERROR;
+    }
+
+    /* switch to the new cycle log — the old one is being destroyed */
+    ngx_ff_reload_set_log(cycle->log);
+
+    ngx_cycle = cycle;
+    *pcycle = cycle;
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    *pccf = ccf;
+
+    if (ccf->fstack_conf.data != NULL
+        && ngx_strcmp(oldconf, ccf->fstack_conf.data) != 0
+        && ngx_ff_reload_conf_precheck(cycle,
+               (const char *) ccf->fstack_conf.data) != NGX_OK)
+    {
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "the new fstack_conf differs from the resident "
+                            "slim primary");
+        return NGX_ERROR;
+    }
+
+    /* G_new and every later respawn read the snapshot taken for it */
+    ngx_ff_conf_snapshot_drop(ngx_ff_conf_snap);
+    ngx_memcpy(ngx_ff_conf_snap, ngx_ff_conf_snap_next,
+               sizeof(ngx_ff_conf_snap));
+    ngx_ff_conf_snap_next[0] = '\0';
+
+    /* the expected set is the configured worker count —
+     * registered before the fork so a short round can be detected. */
+    ngx_ff_reload_n_expected = (ngx_uint_t) ccf->worker_processes;
+    ngx_ff_reload_n_spawned = 0;
+    ngx_ff_reload_spawn_failed = 0;
+
+    /* fork G_new in the native order */
+    ngx_start_worker_processes(cycle, ccf->worker_processes,
+                               NGX_PROCESS_JUST_RESPAWN);
+
+    if (ngx_ff_reload_spawn_failed) {
+        ngx_ff_reload_spawn_failed = 0;
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "a new worker failed to spawn");
+        return NGX_ERROR;
+    }
+
+    if (ngx_ff_reload_n_spawned != ngx_ff_reload_n_expected) {
+        /* missing workers are not "fewer workers": every queue of the
+         * configuration has to be owned by a live process */
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "graceful reload: only %ui of %ui new workers were "
+                      "spawned", ngx_ff_reload_n_spawned,
+                      ngx_ff_reload_n_expected);
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "not every new worker was spawned");
+        return NGX_ERROR;
+    }
+
+    if (ngx_ff_reload_attach_failed) {
+        /* worker 0 failed to attach; roll the round
+         * back instead of killing the master (see the attach gate in
+         * ngx_start_worker_processes). G_old keeps serving. */
+        ngx_ff_reload_attach_failed = 0;
+        ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_GNEW_DIED,
+                            "worker 0 failed to attach to the resident "
+                            "primary");
+        return NGX_ERROR;
+    }
+
+    /* snapshot the new worker slots before the cache manager processes
+     * also become just_spawn (the flag is consumed later by
+     * ngx_signal_worker_processes to spare the new generation) */
+    n_gnew = 0;
+    ngx_memzero(ngx_ff_reload_new_slots, sizeof(ngx_ff_reload_new_slots));
+    for (i = 0; i < ngx_last_process; i++) {
+        if (ngx_processes[i].pid != -1 && ngx_processes[i].just_spawn) {
+            ngx_ff_reload_new_slots[i] = 1;
+            n_gnew++;
+        }
+    }
+    ngx_start_cache_manager_processes(cycle, 1);
+
+    /* bounded wait for FF_RELOAD_READY from every G_new worker */
+    if (ngx_ff_reload_wait_ready(cycle) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    (void) ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_ALL_READY);   /* -> T2 */
+
+    /* real same-era handover — park G_old behind the epoch
+     * barrier, then flip rx/tx ownership to G_new (which also activates
+     * the flow-map callback it registered at init, the drain rings and
+     * the ARP/NDP clone). EV_HANDOVER_DONE is only fired on success; a
+     * failure aborts the round with G_old restored to the hardware. */
+    if (ngx_ff_reload_handover(cycle) != NGX_OK) {
+        return NGX_ERROR;
+    }
+    (void) ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_HANDOVER_DONE); /* -> T3 */
+
+    /* T3 is a real waiting state now. The master returns
+     * to its loop (stays responsive to signals; the anchor's blocking
+     * risk) and the 1 s watchdog drives ngx_ff_reload_t3_check() from
+     * wait_or_check until every live G_old worker reports an empty drain
+     * set or the deadline forces the round onward. */
+
+    /* Snapshot the G_old set at T3 entry: it is both the drain-wait
+     * audience and the QUIT audience (nothing signals workers in between,
+     * so just_spawn is unchanged from the flow's later snapshot). */
+    ngx_memzero(ngx_ff_reload_old_slots, sizeof(ngx_ff_reload_old_slots));
+    for (i = 0; i < ngx_last_process; i++) {
+        if (ngx_processes[i].pid != -1 && !ngx_processes[i].just_spawn
+            && !ngx_ff_reload_new_slots[i])
+        {
+            ngx_ff_reload_old_slots[i] = 1;
+        }
+    }
+
+    ngx_ff_reload_t3_start = ngx_current_msec;
+    ngx_ff_reload_t3_stall_logged = 0;
+    ngx_ff_reload_watchdog_arm(cycle);   /* F7: arm at the waiting state */
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "graceful reload: new generation ready (%ui workers), "
+                  "old generation draining", n_gnew);
+
+    *live = 1;
+    return NGX_OK;
+}
+
+/* DRAIN_DONE confirmed — quit the old generation and enter
+ * T5. Extracted from the straight-through path so the async T3 wait
+ * can fire it when the drain completes. */
+static void
+ngx_ff_reload_quit_gold(ngx_cycle_t *cycle)
+{
+    ngx_signal_worker_processes(cycle,
+                                ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
+
+    if (ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_QUIT_GOLD)
+        != NGX_FF_RELOAD_T5_GOLD_QUIT)
+    {
+        ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                      "graceful reload: QUIT_GOLD transition failed in "
+                      "state %s",
+                      ngx_ff_reload_fsm_state_name(
+                          ngx_ff_reload_fsm_state()));
+    }
+}
+
+/* asynchronous T3 drain wait, evaluated once per
+ * master-loop pass (the watchdog wakes the loop every second). DRAIN_DONE
+ * needs every live G_old worker's report to show zero open connections,
+ * an empty send backlog and no half-open syncache entries
+ * (the forwarding window must outlive late final ACKs); dead slots
+ * count as drained (probed, not assumed). Forced through once the drain
+ * exceeds worker_shutdown_timeout (the T5 escalation constant when the
+ * directive is off) so a stuck round can never wedge re-entry forever. */
+static void
+ngx_ff_reload_t3_check(ngx_cycle_t *cycle)
+{
+    ngx_core_conf_t  *ccf;
+    uint32_t          epoch = ngx_ff_reload_ready_epoch;
+    uint32_t          conns;
+    uint64_t          snd_pending;
+    uint64_t          syncache;
+    ngx_msec_t        deadline;
+    ngx_int_t         i;
+    ngx_int_t         blocking = -1;
+    ngx_uint_t        drained, forced, syncache_expired = 0;
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+
+    ngx_ff_reload_watchdog_arm(cycle);   /* F7: defensive re-arm */
+
+    /* a G_old worker that took rx back after the new
+     * generation stalled flags it here; abort the round — G_old is
+     * already serving again, only the reload window needs closing. */
+    {
+        uint32_t  r_epoch;
+        int       r_gen;
+
+        if (ff_reload_drain_reclaim(&r_epoch, &r_gen) == 0
+            && r_epoch == epoch)
+        {
+            ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_ABORT,
+                                "new generation stalled: old generation "
+                                "reclaimed rx, rolling back");
+            ngx_ff_reload_t3_start = 0;
+            ngx_ff_reload_watchdog_disarm();
+            return;
+        }
+    }
+
+    /* 90s drain fix: the half-open counter only blocks T3 for the same grace
+     * the worker uses. An entry that is still there afterwards cannot complete
+     * any more (its client gave up, or its ACK was claimed by the successor and
+     * is never forwarded back), and closing the listeners does not drop it, so
+     * waiting for it only pinned every round to the deadline. */
+    syncache_expired = ngx_current_msec - ngx_ff_reload_t3_start
+                           > ngx_ff_syncache_grace();
+
+    drained = 1;
+    for (i = 0; i < ngx_last_process; i++) {
+        if (!ngx_ff_reload_old_slots[i]) {
+            continue;
+        }
+        /* the drain contract only covers workers. A cache manager is
+         * part of the old snapshot (it is not just_spawn) but runs no ff
+         * loop and never publishes a report — counting it here would make
+         * the round look permanently undrained (and, with the force gate
+         * below, abort a perfectly healthy round). */
+        if (ngx_processes[i].proc != ngx_worker_process_cycle) {
+            continue;
+        }
+        if (ngx_processes[i].pid == -1 || ngx_processes[i].exited
+            || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+        {
+            continue;           /* dead is drained */
+        }
+
+        if (ff_reload_drain_report((unsigned) i, epoch, &conns,
+                                   &snd_pending, &syncache, NULL) != 0
+            || conns != 0 || snd_pending != 0
+            || (syncache != 0 && !syncache_expired))
+        {
+            drained = 0;
+            blocking = (int) i;
+            break;
+        }
+    }
+
+    deadline = ccf->shutdown_timeout ? ccf->shutdown_timeout
+                                     : ngx_ff_reload_escalate_term_ms;
+    forced = !drained
+        && ngx_current_msec - ngx_ff_reload_t3_start > deadline;
+
+    /* 90s drain fix: name the counter that holds T3 open instead of only
+     * reporting the deadline 90 s later. */
+    if (!drained && blocking >= 0 && !ngx_ff_reload_t3_stall_logged
+        && ngx_current_msec - ngx_ff_reload_t3_start
+            > NGX_FF_RELOAD_T3_STALL_LOG_MS)
+    {
+        ngx_ff_reload_t3_stall_logged = 1;
+
+        if (ff_reload_drain_report((unsigned) blocking, epoch, &conns,
+                                   &snd_pending, &syncache, NULL) != 0)
+        {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff drain: T3 stalled, slot %d published no report",
+                          blocking);
+
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff drain: T3 stalled on slot %d "
+                          "(conns=%ul snd_pending=%ul syncache=%ul, "
+                          "elapsed %M ms)",
+                          blocking, (unsigned long) conns,
+                          (unsigned long) snd_pending,
+                          (unsigned long) syncache,
+                          ngx_current_msec - ngx_ff_reload_t3_start);
+        }
+    }
+
+    if (forced) {
+        /* forcing may only complete over workers we can
+         * account for. A live old worker that never published a drain
+         * report is unobserved, not drained — aborting the round (G_new
+         * is killed by the abort path) is safer than declaring a drain
+         * that never happened. */
+        for (i = 0; i < ngx_last_process; i++) {
+            if (!ngx_ff_reload_old_slots[i]) {
+                continue;
+            }
+
+            /* same filter as the drain pass above: only workers publish */
+            if (ngx_processes[i].proc != ngx_worker_process_cycle) {
+                continue;
+            }
+
+            if (ngx_processes[i].pid == -1 || ngx_processes[i].exited
+                || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+            {
+                continue;               /* dead is accounted for */
+            }
+
+            if (ff_reload_drain_report((unsigned) i, epoch, &conns,
+                                       &snd_pending, &syncache, NULL) != 0)
+            {
+                ngx_ff_reload_abort(cycle, NGX_FF_RELOAD_EV_ABORT,
+                                    "T3 forced with an old worker that "
+                                    "never reported its drain state");
+                ngx_ff_reload_t3_start = 0;
+                ngx_ff_reload_watchdog_disarm();
+                return;
+            }
+        }
+    }
+
+    if (!drained && !forced) {
+        return;
+    }
+
+    /* T3 -> T4 -> T5 */
+    ff_reload_phase_ms_set(FF_RELOAD_PHASE_DRAIN,
+                           (uint32_t) (ngx_current_msec
+                                       - ngx_ff_reload_t3_start));
+    ngx_ff_reload_t3_start = 0;
+
+    if (ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_DRAIN_DONE)
+        != NGX_FF_RELOAD_T4_DRAIN_DONE)
+    {
+        return;
+    }
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "graceful reload: old generation drained%s, quitting",
+                  forced ? " (deadline forced)" : "");
+
+    ngx_ff_reload_quit_gold(cycle);
+}
+
+/* master-loop hook: close T5 once every G_old slot is gone (flips
+ * generations: active = target, KNI owner follows, re-entry protection
+ * lifts with the return to T0).
+ *
+ * run from every master loop pass (not only the reap branch) and arm
+ * a 1s ITIMER_REAL while in T5 — the master otherwise sleeps in sigsuspend
+ * and would never notice a stuck G_old worker between child exits. The
+ * QUIT command is delivered through the channel socket; a worker whose
+ * channel is broken (birth-time "recvmsg() not enough data" alert) never
+ * sees NGX_CMD_QUIT and would hang forever: re-deliver QUIT directly via
+ * kill() (the worker's signal handler sets ngx_quit itself), and escalate
+ * to SIGTERM if it still refuses to exit. */
+static void
+ngx_ff_reload_wait_or_check(ngx_cycle_t *cycle)
+{
+    ngx_int_t         i;
+    ngx_msec_t        now;
+    int               state;
+
+    /* resolve the env overrides once (0 is not a valid threshold,
+     * so it doubles as the "unresolved" sentinel) */
+    if (ngx_ff_reload_resend_quit_ms == 0) {
+        ngx_ff_reload_resend_quit_ms = ngx_ff_reload_env_msec(
+            "NGX_FF_RELOAD_T5_RESEND_QUIT_MS",
+            NGX_FF_RELOAD_T5_RESEND_QUIT_MS);
+        ngx_ff_reload_escalate_term_ms = ngx_ff_reload_env_msec(
+            "NGX_FF_RELOAD_T5_ESCALATE_TERM_MS",
+            NGX_FF_RELOAD_T5_ESCALATE_TERM_MS);
+    }
+
+    state = ngx_ff_reload_fsm_state();
+
+    /* T3 is evaluated here — the 1 s watchdog keeps the
+     * master loop waking while the old generation drains. */
+    if (state == NGX_FF_RELOAD_T3_DRAIN) {
+        ngx_ff_reload_t3_check(cycle);
+        return;
+    }
+
+    if (state != NGX_FF_RELOAD_T5_GOLD_QUIT) {
+
+        /* defensive disarm if T5 was left by any other path (the
+         * disarm only fires for a timer this module armed) */
+        ngx_ff_reload_watchdog_disarm();
+        ngx_ff_reload_t5_start = 0;
+
+        return;
+    }
+
+    now = ngx_current_msec;
+
+    if (ngx_ff_reload_t5_start == 0) {
+        ngx_ff_reload_watchdog_arm(cycle);   /* F7: also reached async */
+        ngx_ff_reload_t5_start = now;
+        ngx_ff_reload_t5_resent = 0;
+        ngx_ff_reload_t5_tered = 0;
+    }
+
+    /* the periodic SIGALRM is ours while not terminating: do not let a
+     * stale ngx_sigalrm skew the native terminate-path delay backoff */
+    if (ngx_sigalrm && !ngx_terminate) {
+        ngx_sigalrm = 0;
+    }
+
+    if (!ngx_ff_reload_t5_resent
+        && now - ngx_ff_reload_t5_start > ngx_ff_reload_resend_quit_ms)
+    {
+        ngx_ff_reload_t5_resent = 1;
+
+        /* resend to every still-alive G_old slot: a worker whose channel
+         * is broken also has exiting=1 (set after the buffered channel
+         * write), so exiting is NOT a "received the command" proof */
+        for (i = 0; i < ngx_last_process; i++) {
+            if (ngx_ff_reload_old_slots[i]
+                && ngx_processes[i].pid != -1
+                && !ngx_processes[i].exited)
+            {
+                (void) kill(ngx_processes[i].pid,
+                            ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
+                ngx_processes[i].exiting = 1;
+            }
+        }
+
+        ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                      "graceful reload: G_old drain exceeds %M ms, QUIT "
+                      "re-delivered by signal (channel suspected lost)",
+                      ngx_ff_reload_resend_quit_ms);
+    }
+
+    if (!ngx_ff_reload_t5_tered
+        && now - ngx_ff_reload_t5_start > ngx_ff_reload_escalate_term_ms)
+    {
+        ngx_ff_reload_t5_tered = 1;
+
+        for (i = 0; i < ngx_last_process; i++) {
+            if (ngx_ff_reload_old_slots[i]
+                && ngx_processes[i].pid != -1
+                && !ngx_processes[i].exited)
+            {
+                (void) kill(ngx_processes[i].pid,
+                            ngx_signal_value(NGX_TERMINATE_SIGNAL));
+                ngx_processes[i].exiting = 1;
+            }
+        }
+
+        ngx_log_error(NGX_LOG_WARN, cycle->log, 0,
+                      "graceful reload: G_old drain exceeds %M ms, "
+                      "SIGTERM escalation (open connections will be reset)",
+                      ngx_ff_reload_escalate_term_ms);
+    }
+
+    for (i = 0; i < ngx_last_process; i++) {
+        if (!ngx_ff_reload_old_slots[i]) {
+            continue;
+        }
+        if (ngx_processes[i].pid != -1 && !ngx_processes[i].exited) {
+            return;
+        }
+    }
+
+    ngx_ff_reload_watchdog_disarm();
+    ngx_ff_reload_t5_start = 0;
+
+    if (ngx_ff_reload_fsm_event(NGX_FF_RELOAD_EV_GOLD_EXITED)
+        == NGX_FF_RELOAD_T0_IDLE)
+    {
+        /* completion summary — master-measured durations plus
+         * the worker-published drain-plane counters. */
+        uint64_t  rx_fwd, tx_fwd, rx_peak, tx_peak;
+
+        ff_reload_drain_counters(&rx_fwd, &tx_fwd, &rx_peak, &tx_peak);
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "graceful reload complete: generation %d now active "
+                      "(took %M ms: handover %M ms, drain %M ms, "
+                      "drain forwarded %uL / relayed %uL pkts, "
+                      "ring peak rx %uL / tx %uL)",
+                      ff_reload_active_gen(), ngx_ff_reload_elapsed_ms(),
+                      (ngx_msec_t) ff_reload_phase_ms_get(
+                          FF_RELOAD_PHASE_HANDOVER),
+                      (ngx_msec_t) ff_reload_phase_ms_get(
+                          FF_RELOAD_PHASE_DRAIN),
+                      rx_fwd, tx_fwd, rx_peak, tx_peak);
+    }
+}
+
+/* USR2 binary upgrade ----------------------------
+ *
+ * Two nginx masters share one hardware queue set and one resident slim
+ * primary. Batch A gave every master its own epoch (minted in the hugepage
+ * generation directory by whichever worker calls ff_dpdk_init() first) and
+ * made the directory the single authority on who may poll rx. What is left
+ * for the old master is the decision itself, and it can only be expressed
+ * through its own anonymous block: the master never runs ff_init() and has
+ * no EAL, so it can neither read nor write the directory. That is enough,
+ * because the coordinate it must hand the hardware to (the peer's epoch and
+ * generation) is mirrored into its block by its own workers, and every
+ * worker mirrors the block back into the directory on each main-loop pass.
+ *
+ * Cut-over: WINCH, exactly where native nginx stops serving on the old
+ * binary. USR2 alone only starts the new master and never moves rx, so a new
+ * binary that dies (bad configuration, failed attach) costs nothing. HUP
+ * while an upgrade is tracked is the roll-back. */
+
+/* Peer coordinate from the master's point of view: whatever the workers
+ * mirrored, minus "no peer" (0 / NONE) and minus the value already present
+ * when the new binary was exec()ed (ff_reload_peer_coord() falls back to our
+ * own epoch when there is no other live master). Returns 0 when there is no
+ * usable peer yet. */
+static uint32_t
+ngx_ff_usr2_peer(uint32_t *gen)
+{
+    uint32_t  epoch, g;
+
+    if (ngx_ff_reload_shm == NULL) {
+        return 0;
+    }
+
+    ff_reload_peer_block(&epoch, &g);
+
+    if (epoch == 0 || epoch == FF_RELOAD_EPOCH_NONE
+        || epoch == ngx_ff_usr2_base_epoch)
+    {
+        return 0;
+    }
+
+    if (g >= FF_RELOAD_GEN_MAX) {
+        return 0;
+    }
+
+    if (gen != NULL) {
+        *gen = g;
+    }
+
+    return epoch;
+}
+
+static void
+ngx_ff_usr2_begin(ngx_cycle_t *cycle)
+{
+    if (ngx_ff_reload_shm == NULL) {
+        return;
+    }
+
+    ngx_ff_usr2_state = NGX_FF_USR2_PENDING;
+    ngx_ff_usr2_epoch = 0;
+    ngx_ff_usr2_winch = 0;
+    ngx_ff_usr2_start = ngx_current_msec;
+
+    (void) ff_reload_peer_block(&ngx_ff_usr2_base_epoch, NULL);
+
+    ngx_ff_reload_watchdog_arm(cycle);
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff usr2: new binary started, waiting for its generation "
+                  "to register (WINCH moves the traffic)");
+}
+
+/* the USR2 handover used to flip ownership straight away. It
+ * now runs the same park barrier a HUP round runs: arm a handover epoch,
+ * park our workers, wait (bounded) until every one of them has acked from
+ * a pass that touches no hardware, and only then move rx. */
+static ngx_int_t
+ngx_ff_usr2_wait_parked(ngx_cycle_t *cycle, uint32_t epoch)
+{
+    ngx_int_t    i;
+    ngx_msec_t   deadline;
+    ngx_uint_t   waiting;
+
+    deadline = ngx_current_msec + NGX_FF_USR2_PARK_WAIT_MS;
+
+    for ( ;; ) {
+
+        ngx_time_update();
+
+        waiting = 0;
+
+        for (i = 0; i < ngx_last_process; i++) {
+            if (ngx_processes[i].pid == -1
+                || ngx_processes[i].proc != ngx_worker_process_cycle)
+            {
+                continue;              /* cache managers never ack */
+            }
+
+            if (ngx_processes[i].exited
+                || ngx_ff_reload_probe_dead(ngx_processes[i].pid))
+            {
+                continue;              /* dead is parked */
+            }
+
+            if (!ff_reload_handover_parked((unsigned) i, epoch)) {
+                waiting = 1;
+                break;
+            }
+        }
+
+        if (!waiting) {
+            return NGX_OK;
+        }
+
+        if (ngx_current_msec >= deadline) {
+            return NGX_DECLINED;
+        }
+
+        ngx_msleep(1);
+    }
+}
+
+/* Hand the hardware to the new master's generation. Block-only: the
+ * directory is moved by our own workers on their next pass, and
+ * ff_reload_dir_sync() never displaces a live owner, so this can neither
+ * lose the hardware nor create a second poller. */
+static ngx_int_t
+ngx_ff_usr2_handover(ngx_cycle_t *cycle)
+{
+    uint32_t  epoch, gen = 0, ho_epoch = 0;
+
+    if (ngx_ff_reload_shm == NULL) {
+        return NGX_OK;                 /* graceful_reload=0: native WINCH */
+    }
+
+    epoch = ngx_ff_usr2_peer(&gen);
+    if (epoch == 0) {
+        return NGX_DECLINED;           /* nothing registered yet */
+    }
+
+    ff_reload_handover_arm(&ho_epoch);
+
+    /* park order first: a worker only acks from the pass that skips rx/tx */
+    ff_reload_rx_stopped_set(1);
+
+    if (ngx_ff_usr2_wait_parked(cycle, ho_epoch) != NGX_OK) {
+        ff_reload_rx_stopped_set(0);
+        /* retried on the next pass, so this is notice-level: the old
+         * generation keeps serving and nothing was lost */
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "ff usr2: park confirmation timed out, "
+                      "old generation keeps serving");
+        return NGX_DECLINED;           /* retry on a later pass */
+    }
+
+    if (ff_reload_rx_release_epoch(epoch, (int) gen)
+        != FF_RELOAD_HANDOVER_OK)
+    {
+        /* roll the park order back — nothing was handed over */
+        ff_reload_rx_stopped_set(0);
+        ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                      "ff usr2: rx handover to epoch %uD failed, "
+                      "old generation keeps serving", epoch);
+        return NGX_ERROR;
+    }
+
+    ngx_ff_usr2_state = NGX_FF_USR2_HANDED;
+    ngx_ff_usr2_epoch = epoch;
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff usr2: handed rx to the new binary (epoch %uD gen %uD), "
+                  "old generation draining", epoch, gen);
+
+    return NGX_OK;
+}
+
+/* (1) semantics, master side: declare the hardware ours again. Safe
+ * even while the new master is alive and healthy — the directory keeps the
+ * old workers parked until the new epoch is really gone. */
+static void
+ngx_ff_usr2_reclaim(ngx_cycle_t *cycle)
+{
+    if (ngx_ff_reload_shm == NULL) {
+        return;
+    }
+
+    (void) ff_reload_rx_release_epoch(0, ff_reload_active_gen());
+    ff_reload_rx_stopped_set(0);
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff usr2: rx owner reset to generation %d, "
+                  "old generation serving again", ff_reload_active_gen());
+}
+
+/* workers of this master still holding their (epoch, gen,
+ * proc_id) coordinates — serving (deferred WINCH) or draining (rx already
+ * handed over). Live, non-exited worker-process slots only. */
+static ngx_uint_t
+ngx_ff_usr2_old_workers(void)
+{
+    ngx_int_t   i;
+    ngx_uint_t  n;
+
+    n = 0;
+    for (i = 0; i < ngx_last_process; i++) {
+        if (ngx_processes[i].pid != -1
+            && !ngx_processes[i].exited
+            && ngx_processes[i].proc == ngx_worker_process_cycle)
+        {
+            n++;
+        }
+    }
+
+    return n;
+}
+
+static void
+ngx_ff_usr2_check(ngx_cycle_t *cycle)
+{
+    if (!ngx_ff_graceful_reload || ngx_ff_usr2_state == NGX_FF_USR2_NONE) {
+        return;
+    }
+
+    if (ngx_ff_usr2_wait_ms == 0) {
+        ngx_ff_usr2_wait_ms = ngx_ff_reload_env_msec("NGX_FF_USR2_WAIT_MS",
+                                                     NGX_FF_USR2_WAIT_MS);
+    }
+
+    if (ngx_new_binary == 0) {
+        /* exec() failed or the new binary already exited: nothing can take
+         * the hardware over. */
+        if (ngx_ff_usr2_state == NGX_FF_USR2_HANDED) {
+            ngx_ff_usr2_reclaim(cycle);
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff usr2: new binary exited before taking over, "
+                          "old generation keeps serving");
+        }
+
+        ngx_ff_usr2_state = NGX_FF_USR2_NONE;
+        ngx_ff_usr2_winch = 0;
+
+        return;
+    }
+
+    if (ngx_ff_usr2_state == NGX_FF_USR2_HANDED) {
+        if (ngx_ff_usr2_peer(NULL) != ngx_ff_usr2_epoch) {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff usr2: new binary (epoch %uD) is gone, "
+                          "taking rx back", ngx_ff_usr2_epoch);
+            ngx_ff_usr2_reclaim(cycle);
+            ngx_ff_usr2_state = NGX_FF_USR2_NONE;
+            ngx_ff_usr2_winch = 0;
+        }
+
+        return;
+    }
+
+    /* PENDING: poll until the new generation registers, then honour a WINCH
+     * that arrived too early. */
+    ngx_ff_reload_watchdog_arm(cycle);
+
+    if (ngx_ff_usr2_winch && ngx_ff_usr2_handover(cycle) == NGX_OK) {
+        ngx_ff_usr2_winch = 0;
+        ngx_signal_worker_processes(cycle,
+                                    ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
+        return;
+    }
+
+    /* a peer that already registered means the upgrade is
+     * armed, not stalled — PENDING then waits for the operator's WINCH
+     * with no deadline. Only a new binary whose generation never showed
+     * up (or mirrored an unusable coordinate) may time out. */
+    if (ngx_current_msec - ngx_ff_usr2_start > ngx_ff_usr2_wait_ms
+        && ngx_ff_usr2_peer(NULL) == 0)
+    {
+        uint32_t  raw_epoch, raw_gen;
+
+        ff_reload_peer_block(&raw_epoch, &raw_gen);
+
+        if (raw_epoch != 0 && raw_epoch != FF_RELOAD_EPOCH_NONE
+            && raw_epoch != ngx_ff_usr2_base_epoch)
+        {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "ff usr2: peer epoch %uD mirrored with unusable "
+                          "gen %uD for %M ms, giving up on the upgrade",
+                          raw_epoch, raw_gen, ngx_ff_usr2_wait_ms);
+        } else {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, 0,
+                          "ff usr2: no new generation registered within "
+                          "%M ms", ngx_ff_usr2_wait_ms);
+        }
+
+        if (ngx_ff_usr2_winch) {
+            /* the operator asked for the old workers to go: do not wedge
+             * the shutdown on a new binary that never came up */
+            ngx_ff_usr2_winch = 0;
+            ngx_signal_worker_processes(cycle,
+                                        ngx_signal_value(NGX_SHUTDOWN_SIGNAL));
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff usr2: old generation keeps serving");
+        }
+
+        ngx_ff_usr2_state = NGX_FF_USR2_NONE;
+    }
+}
+
+#endif
+
 
 #if (NGX_HAVE_FSTACK)
 static int
@@ -361,6 +3180,12 @@ ngx_single_process_cycle(ngx_cycle_t *cycle)
     if (ccf->fstack_conf.len == 0) {
         ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                         "fstack_conf null");
+        exit(2);
+    }
+
+    if (ngx_ff_graceful_reload_detect((const char *) ccf->fstack_conf.data)) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "graceful_reload=1 requires master process mode");
         exit(2);
     }
 
@@ -478,9 +3303,30 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "start worker processes");
 
     for (i = 0; i < n; i++) {
+        ngx_pid_t  pid;
 
-        ngx_spawn_process(cycle, ngx_worker_process_cycle,
-                          (void *) (intptr_t) i, "worker process", type);
+        pid = ngx_spawn_process(cycle, ngx_worker_process_cycle,
+                                (void *) (intptr_t) i, "worker process", type);
+
+        /* a failed spawn used to be invisible — the round
+         * simply ran with fewer workers. Inside a reload round it has to
+         * stop the round; outside one (first start, respawn) the native
+         * behaviour is kept, only the error is logged. */
+        if (pid == NGX_INVALID_PID) {
+            ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
+                          "start worker processes: ngx_spawn_process failed");
+
+            if (ngx_ff_graceful_reload
+                && ngx_ff_reload_fsm_state() == NGX_FF_RELOAD_T1_GNEW_SPAWN)
+            {
+                ngx_ff_reload_spawn_failed = 1;
+                break;
+            }
+        } else if (ngx_ff_graceful_reload
+                   && ngx_ff_reload_fsm_state() == NGX_FF_RELOAD_T1_GNEW_SPAWN)
+        {
+            ngx_ff_reload_n_spawned++;
+        }
 
         ngx_pass_open_channel(cycle);
 
@@ -491,7 +3337,11 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
             struct timespec ts;
             (void) clock_gettime(CLOCK_REALTIME,&ts);
 
-            ts.tv_sec  += 15; //15s
+            /* graceful_reload=1: the primary is already resident, this wait
+             * confirms worker 0 attached as a secondary (ff_mod_init posts
+             * after a successful attach); legacy path keeps the 15s gate. */
+            ts.tv_sec += ngx_ff_graceful_reload ? NGX_FF_GRACEFUL_ATTACH_SEC
+                                                : 15; //15s
             while ((r = sem_timedwait(ngx_ff_worker_sem, &ts)) == -1
                     && errno == EINTR)
             {
@@ -500,13 +3350,38 @@ ngx_start_worker_processes(ngx_cycle_t *cycle, ngx_int_t n, ngx_int_t type)
 
             if (r == -1) {
                 ngx_log_error(NGX_LOG_ERR, cycle->log, ngx_errno,
-                        "primary worker process failed to initialize");
-                exit(2);
+                        ngx_ff_graceful_reload
+                            ? "worker 0 failed to attach to the resident primary"
+                            : "primary worker process failed to initialize");
+
+                /* inside a reload round the master must
+                 * survive a failed attach — report to the caller, which
+                 * aborts and rolls the round back (G_old keeps serving).
+                 * First-start and respawn paths keep the native exit(2). */
+                if (ngx_ff_graceful_reload
+                    && ngx_ff_reload_fsm_state()
+                       == NGX_FF_RELOAD_T1_GNEW_SPAWN)
+                {
+                    ngx_ff_reload_attach_failed = 1;
+                } else {
+                    ngx_ff_master_start_fatal(cycle);
+                }
             }
 
             sem_destroy(ngx_ff_worker_sem);
             munmap(ngx_ff_worker_sem, sizeof(sem_t));
             shm_unlink(shm_name);
+            /* the mapping and the shm object are gone here, but the
+             * static pointer is inherited by every later fork — including
+             * the same-slot respawn from ngx_reap_children(), which does
+             * not run ngx_start_worker_processes() again. A respawned
+             * worker 0 would post through a dangling pointer (glibc futex
+             * fatal -> SIGABRT storm), so clear it. */
+            ngx_ff_worker_sem = NULL;
+
+            if (ngx_ff_reload_attach_failed) {
+                break;      /* no point spawning the rest of G_new */
+            }
         }
 #endif
 
@@ -761,6 +3636,14 @@ ngx_reap_children(ngx_cycle_t *cycle)
                 && !ngx_quit
 #if (NGX_HAVE_FSTACK)
                 && !ngx_reconfigure
+                /* T3 is a long-lived state now; a worker
+                 * crashing mid-round must not be respawned — the respawned
+                 * hybrid would bind to the target generation with a
+                 * proc_id that collides with an existing G_new worker.
+                 * Reload-round failures are handled by the abort paths. */
+                && !(ngx_ff_graceful_reload
+                     && ngx_ff_reload_fsm_state()
+                        != NGX_FF_RELOAD_T0_IDLE)
 #endif
             )
             {
@@ -826,7 +3709,17 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
 {
     ngx_uint_t  i;
 
+#if (NGX_HAVE_FSTACK)
+    /* before the pid file goes: whoever waits for it must find the
+     * primary stopped too */
+    ngx_ff_slim_primary_release(cycle);
+#endif
+
     ngx_delete_pidfile(cycle);
+
+#if (NGX_HAVE_FSTACK)
+    ngx_ff_conf_snapshot_drop_all();
+#endif
 
     ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exit");
 
@@ -864,13 +3757,452 @@ ngx_master_process_exit(ngx_cycle_t *cycle)
 }
 
 #if (NGX_HAVE_FSTACK)
+
+/*
+ * delayed listening close for a draining worker
+ * (graceful_reload=1). After QUIT the worker stops accepting but keeps
+ * its listening sockets open until its syncache half-open entries are
+ * gone: a third handshake ACK for a pre-handover SYN is forwarded back by
+ * the new generation and must still find a listening socket for
+ * syncache_expand() to complete the handshake instead of being reset.
+ *
+ * A non-cancelable poll timer keeps ngx_event_no_timers_left() from
+ * reporting "done" while the half-open window is still open, so the exit
+ * check at the top of the loop cannot fire early. The shutdown timer set
+ * by (and the master's TERM escalation) bounds the wait.
+ */
+
+#define NGX_FF_LISTEN_CLOSE_POLL_MS   100
+
+/* hard cap on the delayed listening close.
+ * Miss-forwarded fresh SYNs keep refilling the dying generation's
+ * syncache (S7' root cause), so natural convergence is not guaranteed;
+ * twice the syncache retransmit-exhaustion bound (~15s) caps the wait. */
+#define NGX_FF_LISTEN_CLOSE_MAX_MS    30000
+
+static ngx_event_t  ngx_ff_listen_close_timer;
+static ngx_int_t    ngx_ff_listen_close_pending;
+static ngx_msec_t   ngx_ff_listen_close_quit_msec;
+static ngx_uint_t   ngx_ff_drain_started;
+static uint32_t     ngx_ff_drain_epoch;
+static ngx_msec_t   ngx_ff_drain_idle_msec;
+
+static void ngx_ff_stop_accept_events(ngx_cycle_t *cycle);
+static void ngx_ff_listen_close_timer_handler(ngx_event_t *ev);
+static void ngx_ff_drain_start(ngx_cycle_t *cycle);
+
+
+/* how long a drain that cannot converge on its own may keep
+ * the worker alive. Both callers bound a wait that would otherwise run
+ * forever, not a wait the operator asked for, so the cap follows
+ * worker_shutdown_timeout upwards and never shrinks below the built-in
+ * value: without that directive it is still NGX_FF_LISTEN_CLOSE_MAX_MS,
+ * which makes every existing configuration behave exactly as before. */
+static ngx_msec_t
+ngx_ff_drain_cap_ms(ngx_cycle_t *cycle)
+{
+    ngx_core_conf_t  *ccf;
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+
+    if (ccf->shutdown_timeout > NGX_FF_LISTEN_CLOSE_MAX_MS) {
+        return ccf->shutdown_timeout;
+    }
+
+    return NGX_FF_LISTEN_CLOSE_MAX_MS;
+}
+
+
+static void
+ngx_ff_stop_accept_events(ngx_cycle_t *cycle)
+{
+    ngx_uint_t         i;
+    ngx_listening_t   *ls;
+    ngx_connection_t  *c;
+
+    /* Same read-event removal as ngx_disable_accept_events() (native WINCH
+     * path), applied to every listening socket, reuseport ones included:
+     * the draining worker must not accept new connections anymore. */
+    ls = cycle->listening.elts;
+    for (i = 0; i < cycle->listening.nelts; i++) {
+
+        c = ls[i].connection;
+
+        if (c == NULL || !c->read->active) {
+            continue;
+        }
+
+        if (ngx_del_event(c->read, NGX_READ_EVENT, NGX_DISABLE_EVENT)
+            == NGX_ERROR)
+        {
+            ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
+                          "del accept event failed");
+        }
+    }
+}
+
+
+static void
+ngx_ff_listen_close_timer_handler(ngx_event_t *ev)
+{
+    /* Re-arm while the delayed close is pending so a non-cancelable timer
+     * always keeps the worker alive through the exit check. The actual
+     * poll runs in ngx_worker_process_cycle_loop() on every pass. */
+    if (ngx_ff_listen_close_pending) {
+        ngx_add_timer(ev, NGX_FF_LISTEN_CLOSE_POLL_MS);
+    }
+}
+
+
+/*
+ * the draining worker must not exit while any of
+ * its sockets still queues data in so_snd — process death resets in-flight
+ * tails (measured 3~54 KB losses per flow). Only the drain generation
+ * waits: a full shutdown (nginx -s quit) and graceful_reload=0 keep the
+ * native judgement, avoiding an unbounded wait when worker_shutdown_timeout
+ * is unset. Sampled at most once a second, never a per-packet path; the
+ * Batch A listen-close keepalive timer invariant is untouched (this check
+ * only ADDS a wait condition on top of no_timers_left).
+ */
+#define NGX_FF_SND_POLL_MS   1000
+
+/* 90s drain fix: "this worker's generation is the one being drained".
+ * Three conditions, in this order:
+ * a reload is in flight (active != target; both read back as 0 when the
+ * shared block is not attached, so that case falls out here);
+ * this worker belongs to the generation that is being replaced (active);
+ * rx ownership really moved to the other generation.
+ * The last one is what ff_is_drain_generation() cannot tell: it also reports 1
+ * for the incoming generation, and it reports 1 for the outgoing one as soon
+ * as the window opens -- before the handover. Draining on the window alone
+ * made an aborted round (flip fails, the old generation keeps serving) close
+ * its idle keep-alive connections after all, which cost every client a
+ * reconnect (rt21: fail=12 reconnects=12). */
+static ngx_uint_t
+ngx_ff_is_draining_generation(void)
+{
+    int      active, target, owner;
+    uint32_t peer_epoch, peer_gen;
+
+    if (!ngx_ff_graceful_reload) {
+        return 0;
+    }
+
+    active = ff_reload_active_gen();
+    target = ff_reload_target_gen();
+
+    if (active == target || ff_reload_gen() != active) {
+        /* Not a HUP round of our own. It can still be an USR2 upgrade: the old
+         * master hands rx to the new binary's epoch, which never shows up as
+         * active != target in our block (the round is the peer's). USR2 sends
+         * QUIT right after the handover, so this is about doing the same
+         * sweep and leaving the same evidence as a HUP round, not about a
+         * stall -- USR2 has no T3 wait to be stuck in.
+         *
+         * Both conditions are required, and the second is what keeps it safe:
+         * while the upgrade is still PENDING the owner is still our own
+         * generation, so nothing is closed before rx really moved. Should the
+         * peer master number its generation the same as ours, the branch
+         * simply never fires and the QUIT path drains as before (fail-safe). */
+        ff_reload_peer_block(&peer_epoch, &peer_gen);
+
+        if (peer_epoch == 0 || peer_epoch == FF_RELOAD_EPOCH_NONE
+            || peer_epoch == ff_reload_epoch())
+        {
+            return 0;
+        }
+
+        owner = ff_reload_rx_owner_gen();
+
+        if (owner < 0 || owner == ff_reload_gen()) {
+            return 0;
+        }
+
+        return 1;
+    }
+
+    owner = ff_reload_rx_owner_gen();
+
+    /* Not attached, or rx still ours: the handover did not happen, so there is
+     * nothing to drain yet (and on an aborted round there never will be). */
+    if (owner < 0 || owner == ff_reload_gen()) {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+/* 90s drain fix: T3 asks every old worker for conns == 0, snd_pending == 0
+ * and syncache == 0, but the drain generation used to start draining only
+ * when QUIT arrived -- in T4, i.e. after T3 had already been waiting for
+ * exactly those counters. A keep-alive connection (never ends on its own) or
+ * a half-open entry that can no longer complete therefore pinned T3 to its
+ * deadline on every round. Start the drain as soon as this worker is the
+ * drain generation instead: only idle connections are closed here, so an
+ * active request (rt02's 8 MB stream) still runs to completion.
+ * Idempotent: re-entering must not restart the cap clock below. */
+static void
+ngx_ff_drain_start(ngx_cycle_t *cycle)
+{
+    uint32_t  epoch = ff_reload_shared_epoch();
+
+    /* One drain per reload round, not one per worker: an abort leaves the old
+     * generation alive and untouched (only the new one is killed), so the same
+     * worker drains again on the next HUP. */
+    if (ngx_ff_drain_started && epoch == ngx_ff_drain_epoch) {
+        return;
+    }
+
+    ngx_ff_drain_started = 1;
+    ngx_ff_drain_epoch = epoch;
+    ngx_ff_drain_idle_msec = ngx_current_msec;
+
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff drain: started (drain generation, conns=%d syncache=%d)",
+                  ff_socket_drain_count(), ff_syncache_count());
+
+    /* Only the idle connections go. Stopping the accept events here would
+     * strand the connections that were already queued at the handover and
+     * reset them when the worker exits (measured as one client failure per
+     * round); the drain generation no longer receives new SYNs anyway, so
+     * nothing refills the queue. The listeners close on QUIT, unchanged. */
+    ngx_close_idle_connections(cycle);
+}
+
+
+static ngx_uint_t
+ngx_ff_worker_may_exit(ngx_cycle_t *cycle)
+{
+    static ngx_msec_t  last_check;
+    static ngx_uint_t  last_result = 1;
+    static ngx_uint_t  cap_logged = 0;
+    ngx_msec_t         cap;
+
+    if (!ngx_ff_graceful_reload || !ff_is_drain_generation()) {
+        return 1;
+    }
+
+    /* worker_shutdown_timeout force-closes the nginx side, but
+     * orphan sockets (fd already closed, so_snd still unACKed) retransmit
+     * for TCP-RTO minutes, so the snd_pending wait below is unbounded and
+     * the master reaps us with TERM at 90s (S8'' T5 = 92s). Cap it like
+     * caps the listen close: past the drain cap since QUIT, give up
+     * — the orphans die with the worker (peers see RST), matching the
+     * native nginx shutdown_timeout semantics. quit_msec == 0 means the
+     * drain-QUIT path never ran: keep the original judgement. */
+    cap = ngx_ff_drain_cap_ms(cycle);
+
+    if (ngx_ff_listen_close_quit_msec != 0
+        && ngx_current_msec - ngx_ff_listen_close_quit_msec >= cap)
+    {
+        if (!cap_logged) {
+            cap_logged = 1;
+            ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                          "ff drain: snd_pending wait capped at %M ms "
+                          "(quit+%ui ms, snd_pending=%d, syncache=%d), "
+                          "giving up; orphans reset with the worker",
+                          cap,
+                          (ngx_uint_t) (ngx_current_msec
+                                        - ngx_ff_listen_close_quit_msec),
+                          ff_socket_snd_pending(), ff_syncache_count());
+        }
+        return 1;
+    }
+
+    if (last_check != 0
+        && ngx_current_msec - last_check < NGX_FF_SND_POLL_MS)
+    {
+        return last_result;
+    }
+    last_check = ngx_current_msec;
+    last_result = (ff_socket_snd_pending() == 0);
+
+    return last_result;
+}
+
+
+/* graceful reload, UDP: the stream udp sessions of this worker */
+static ngx_uint_t   ngx_ff_udp_linger_state;    /* 0 no, 1 on, 2 over */
+static ngx_msec_t   ngx_ff_udp_linger_msec;
+
+
+static ngx_uint_t
+ngx_ff_udp_session(ngx_connection_t *c)
+{
+    return c->fd != (ngx_socket_t) -1 && c->read != NULL
+           && !c->read->accept && !c->read->channel && !c->read->resolver
+           && c->type == SOCK_DGRAM && c->shared && c->listening != NULL
+           && c->sockaddr != NULL && c->local_sockaddr != NULL;
+}
+
+
+static ngx_int_t
+ngx_ff_udp_key(ngx_connection_t *c, ff_flow_key_t *k)
+{
+    struct sockaddr_in   *f4, *l4;
+#if (NGX_HAVE_INET6)
+    struct sockaddr_in6  *f6, *l6;
+#endif
+
+    ngx_memzero(k, sizeof(ff_flow_key_t));
+    k->proto = IPPROTO_UDP;
+
+    if (c->sockaddr->sa_family == AF_INET
+        && c->local_sockaddr->sa_family == AF_INET)
+    {
+        f4 = (struct sockaddr_in *) c->sockaddr;
+        l4 = (struct sockaddr_in *) c->local_sockaddr;
+        if (l4->sin_addr.s_addr == INADDR_ANY) {
+            return NGX_DECLINED;
+        }
+        k->af = FF_FLOW_MAP_V4;
+        ngx_memcpy(&k->src[0], &f4->sin_addr, 4);
+        ngx_memcpy(&k->dst[0], &l4->sin_addr, 4);
+        k->sport = f4->sin_port;
+        k->dport = l4->sin_port;
+        return NGX_OK;
+    }
+
+#if (NGX_HAVE_INET6)
+    if (c->sockaddr->sa_family == AF_INET6
+        && c->local_sockaddr->sa_family == AF_INET6)
+    {
+        f6 = (struct sockaddr_in6 *) c->sockaddr;
+        l6 = (struct sockaddr_in6 *) c->local_sockaddr;
+        if (IN6_IS_ADDR_UNSPECIFIED(&l6->sin6_addr)) {
+            return NGX_DECLINED;
+        }
+        if (IN6_IS_ADDR_V4MAPPED(&f6->sin6_addr)) {
+            if (!IN6_IS_ADDR_V4MAPPED(&l6->sin6_addr)) {
+                return NGX_DECLINED;
+            }
+            k->af = FF_FLOW_MAP_V4;
+            ngx_memcpy(&k->src[0], &f6->sin6_addr.s6_addr[12], 4);
+            ngx_memcpy(&k->dst[0], &l6->sin6_addr.s6_addr[12], 4);
+        } else {
+            k->af = FF_FLOW_MAP_V6;
+            ngx_memcpy(k->src, &f6->sin6_addr, 16);
+            ngx_memcpy(k->dst, &l6->sin6_addr, 16);
+        }
+        k->sport = f6->sin6_port;
+        k->dport = l6->sin6_port;
+        return NGX_OK;
+    }
+#endif
+
+    return NGX_DECLINED;
+}
+
+
+/* called by the lib when this generation starts publishing its UDP flows */
+static void
+ngx_ff_udp_snapshot(void)
+{
+    ngx_uint_t         i;
+    ngx_connection_t  *c;
+    ff_flow_key_t      k;
+
+    c = ngx_cycle->connections;
+
+    for (i = 0; i < ngx_cycle->connection_n; i++) {
+        if (ngx_ff_udp_session(&c[i])
+            && ngx_ff_udp_key(&c[i], &k) == NGX_OK)
+        {
+            ff_flow_peer_publish(&k);
+        }
+    }
+}
+
+
+/* After USR2 the old master quits its workers right after the handover:
+ * keep serving the UDP flows still active, within one shutdown budget. */
+static ngx_uint_t
+ngx_ff_udp_linger(ngx_cycle_t *cycle)
+{
+    int               n;
+    ngx_msec_t        cap, el;
+    ngx_core_conf_t  *ccf;
+
+    if (ngx_ff_udp_linger_state == 2 || ngx_terminate) {
+        return 0;
+    }
+
+    ccf = (ngx_core_conf_t *) ngx_get_conf(cycle->conf_ctx, ngx_core_module);
+    cap = ccf->shutdown_timeout ? ccf->shutdown_timeout
+                                : ngx_ff_drain_cap_ms(cycle);
+    n = ff_flow_peer_active_flows();
+
+    if (ngx_ff_udp_linger_state == 0) {
+        if (!ff_flow_peer_linger()) {
+            return 0;
+        }
+        ngx_ff_udp_linger_state = 1;
+        ngx_ff_udp_linger_msec = ngx_current_msec;
+        ngx_set_shutdown_timer(cycle);
+        ngx_ff_drain_start(cycle);
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "ff drain: UDP linger: %d flow(s), up to %M ms", n, cap);
+        return 1;
+    }
+
+    el = ngx_current_msec - ngx_ff_udp_linger_msec;
+
+    if (n > 0 && el < cap) {
+        if (ngx_current_msec - ngx_ff_drain_idle_msec >= NGX_FF_SND_POLL_MS) {
+            ngx_ff_drain_idle_msec = ngx_current_msec;
+            ngx_close_idle_connections(cycle);
+        }
+        return 1;
+    }
+
+    ngx_ff_udp_linger_state = 2;
+    ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                  "ff drain: UDP linger over after %M ms, %d flow(s) still "
+                  "active", el, n);
+    return 0;
+}
+
+
+/* the new generation takes every UDP flow over: end the sessions here */
+static void
+ngx_ff_udp_handover(ngx_cycle_t *cycle)
+{
+    ngx_uint_t         i, n;
+    ngx_connection_t  *c;
+
+    ff_flow_peer_stop();
+
+    n = 0;
+    c = cycle->connections;
+
+    for (i = 0; i < cycle->connection_n; i++) {
+        if (!ngx_ff_udp_session(&c[i])) {
+            continue;
+        }
+        c[i].close = 1;
+        c[i].error = 1;
+        c[i].read->handler(c[i].read);
+        n++;
+    }
+
+    if (n) {
+        ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                      "ff drain: closed %ui UDP session(s), UDP flows "
+                      "handed over", n);
+    }
+}
+
+
 static int
 ngx_worker_process_cycle_loop(void *arg)
 {
     ngx_cycle_t *cycle = (ngx_cycle_t *)arg;
 
     if (ngx_exiting) {
-        if (ngx_event_no_timers_left() == NGX_OK) {
+        if (ngx_event_no_timers_left() == NGX_OK
+            && ngx_ff_worker_may_exit(cycle))
+        {
             ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0, "exiting");
             ngx_worker_process_exit(cycle);
         }
@@ -885,7 +4217,10 @@ ngx_worker_process_cycle_loop(void *arg)
         ngx_worker_process_exit(cycle);
     }
 
-    if (ngx_quit) {
+    if (ngx_quit
+        && (ngx_exiting || !ngx_ff_graceful_reload
+            || !ngx_ff_udp_linger(cycle)))
+    {
         ngx_quit = 0;
         ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
                       "gracefully shutting down");
@@ -893,8 +4228,90 @@ ngx_worker_process_cycle_loop(void *arg)
 
         if (!ngx_exiting) {
             ngx_exiting = 1;
-            ngx_close_listening_sockets(cycle);
+            if (ngx_ff_udp_linger_state == 0) {
+                ngx_set_shutdown_timer(cycle);
+            }
+
+            if (ngx_ff_graceful_reload && ff_is_drain_generation()) {
+                /* graceful drain: stop accepting but keep the
+                 * listening sockets open until the syncache half-open
+                 * window closes (see the poll below). Only the generation
+                 * that lost rx to the successor delays: a full shutdown
+                 * (nginx -s quit) still owns rx and must close at once,
+                 * otherwise new SYNs keep refilling the syncache and the
+                 * count never reaches zero. The drain generation normally
+                 * got here earlier (ngx_ff_drain_start(), on becoming the
+                 * drain generation); this call is the idempotent backstop. */
+                ngx_ff_drain_start(cycle);
+
+                /* before the UDP listeners stop being read */
+                ngx_ff_udp_handover(cycle);
+
+                /* as before: stop accepting but keep the listeners
+                 * open until the half-open window closes (poll below). Only
+                 * here, and not already in ngx_ff_drain_start(), because a
+                 * handover-instant accept queue must still be served. */
+                ngx_ff_stop_accept_events(cycle);
+                ngx_ff_listen_close_pending = 1;
+                ngx_ff_listen_close_quit_msec = ngx_ff_udp_linger_state
+                                                ? ngx_ff_udp_linger_msec
+                                                : ngx_current_msec;
+                ngx_ff_listen_close_timer.handler =
+                    ngx_ff_listen_close_timer_handler;
+                ngx_ff_listen_close_timer.log = cycle->log;
+                ngx_add_timer(&ngx_ff_listen_close_timer,
+                              NGX_FF_LISTEN_CLOSE_POLL_MS);
+
+            } else {
+                ngx_close_listening_sockets(cycle);
+            }
+
             ngx_close_idle_connections(cycle);
+            ngx_event_process_posted(cycle, &ngx_posted_events);
+        }
+    }
+
+    /* 90s drain fix: see ngx_ff_drain_start(). T3 is already waiting for
+     * this worker's counters, so it must start draining on its own instead
+     * of waiting for a QUIT that only arrives once T3 has completed. */
+    if (ngx_ff_is_draining_generation()) {
+        ngx_ff_drain_start(cycle);
+
+        /* A connection that only becomes idle after the sweep above is never
+         * closed by it (keep-alive stays enabled until ngx_exiting, and that
+         * is set by QUIT in T4 -- too late for T3 to converge), so sweep again
+         * about once a second while this generation is being drained. */
+        if (ngx_current_msec - ngx_ff_drain_idle_msec >= NGX_FF_SND_POLL_MS) {
+            ngx_ff_drain_idle_msec = ngx_current_msec;
+            ngx_close_idle_connections(cycle);
+        }
+    }
+
+    if (ngx_ff_listen_close_pending) {
+        if (ff_syncache_count() == 0 || ngx_terminate) {
+            ngx_ff_listen_close_pending = 0;
+            ngx_close_listening_sockets(cycle);
+
+        } else {
+            ngx_msec_t  cap = ngx_ff_drain_cap_ms(cycle);
+            ngx_msec_t  grace = ngx_ff_syncache_grace();
+            ngx_msec_t  wait_ms = grace < cap ? grace : cap;
+
+            if (ngx_current_msec - ngx_ff_listen_close_quit_msec >= wait_ms) {
+                /* 90s drain fix: past the grace the remaining entry cannot
+                 * complete any more (see NGX_FF_SYNCACHE_GRACE_MS), so stop
+                 * holding the listeners -- and with them T3 -- open for it.
+                 * The drain cap still bounds the pathological refill case. */
+                ngx_ff_listen_close_pending = 0;
+                ngx_log_error(NGX_LOG_NOTICE, cycle->log, 0,
+                              "ff drain: syncache wait capped at %M ms "
+                              "(quit+%ui ms, syncache=%d, snd_pending=%d)",
+                              wait_ms,
+                              (ngx_uint_t) (ngx_current_msec
+                                            - ngx_ff_listen_close_quit_msec),
+                              ff_syncache_count(), ff_socket_snd_pending());
+                ngx_close_listening_sockets(cycle);
+            }
         }
     }
 
@@ -1114,20 +4531,39 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
             exit(2);
         }
 
-        if (worker == 0) {
+        if (ngx_ff_graceful_reload) {
+            /* resident slim primary owns the DPDK primary role; every
+             * worker attaches as a secondary (proc_id shift happens in
+             * ff_mod_init) */
+            ngx_ff_process = NGX_FF_PROCESS_SECONDARY;
+        } else if (worker == 0) {
             ngx_ff_process = NGX_FF_PROCESS_PRIMARY;
         } else {
             ngx_ff_process = NGX_FF_PROCESS_SECONDARY;
         }
 
-        if (ff_mod_init((const char *)ccf->fstack_conf.data, worker,
+        if (ff_mod_init(ngx_ff_conf_snap[0] != '\0' ? ngx_ff_conf_snap
+                            : (const char *) ccf->fstack_conf.data, worker,
             ngx_ff_process == NGX_FF_PROCESS_PRIMARY)) {
             ngx_log_error(NGX_LOG_ALERT, cycle->log, 0,
                           "ff_mod_init failed");
             exit(2);
         }
 
-        if (worker == 0) {
+        /* publish this worker's slot in the shared block so its
+         * main loop can ack the T2 park barrier (helpers forked through
+         * ngx_worker_process_init(worker == -1) never get here). */
+        ff_reload_set_slot(ngx_process_slot);
+
+        if (ngx_ff_graceful_reload) {
+            ff_flow_peer_snapshot_regist(ngx_ff_udp_snapshot);
+        }
+
+        /* only a worker 0 forked out of ngx_start_worker_processes()
+         * has a master waiting on this semaphore; a same-slot respawn has
+         * neither a waiter nor a mapping (see the NULL assignment there),
+         * so posting is skipped instead of touching a dangling pointer. */
+        if (worker == 0 && ngx_ff_worker_sem != NULL) {
             (void) sem_post(ngx_ff_worker_sem);
         }
 
@@ -1188,6 +4624,14 @@ ngx_worker_process_init(ngx_cycle_t *cycle, ngx_int_t worker)
         /* fatal */
         exit(2);
     }
+
+#if (NGX_HAVE_FSTACK)
+    /* the ff stack, listening
+     * sockets and modules are all up; publish FF_RELOAD_READY for this
+     * worker slot (graceful_reload only; the master correlates
+     * slot + pid + epoch). */
+    ngx_ff_reload_worker_ready();
+#endif
 }
 
 

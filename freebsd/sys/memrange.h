@@ -1,11 +1,11 @@
 /*
  * Memory range attribute operations, performed on /dev/mem
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_MEMRANGE_H_
 #define	_SYS_MEMRANGE_H_
+
+#include <sys/ioccom.h>
 
 /* Memory range attributes */
 #define MDF_UNCACHEABLE		(1<<0)	/* region not cached */
@@ -58,6 +58,16 @@ struct mem_extract {
 };
 
 #define	MEM_EXTRACT_PADDR	_IOWR('m', 52, struct mem_extract)
+
+struct mem_livedump_arg {
+	int		fd;
+	int		flags;
+	uint8_t		compression;
+	uint8_t		pad1[7];
+	uint64_t	pad2[2];
+};
+
+#define	MEM_KERNELDUMP	_IOW('m', 53, struct mem_livedump_arg)
 
 #ifdef _KERNEL
 

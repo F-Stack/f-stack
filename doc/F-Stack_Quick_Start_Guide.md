@@ -23,7 +23,7 @@ Read DPDK Quick Started Guide or run the command below
 
 	cd /data/f-stack/dpdk
     # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
-	meson -Denable_kmods=true build
+	meson setup -Denable_kmods=true build
 	ninja -C build
 	ninja -C build install
 
@@ -87,9 +87,7 @@ The mount point can be made permanent across reboots, by adding the following li
 
 ### Compile Redis
 
-	cd app/redis-6.2.6/deps/jemalloc
-	./autogen.sh
-	cd ../..
+	cd app/redis-6.2.6
 	make
 	# run with start.sh
 	./start.sh -b ./redis-server -o /path/to/redis.conf

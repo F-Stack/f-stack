@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000,2003 Doug Rabson
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	$FreeBSD$
  */
 
 #ifndef _SYS_KOBJ_H_
@@ -37,7 +35,7 @@
 typedef struct kobj		*kobj_t;
 typedef struct kobj_class	*kobj_class_t;
 typedef const struct kobj_method kobj_method_t;
-typedef int			(*kobjop_t)(void);
+typedef void			(*kobjop_t)(void);
 typedef struct kobj_ops		*kobj_ops_t;
 typedef struct kobjop_desc	*kobjop_desc_t;
 struct malloc_type;
@@ -234,7 +232,7 @@ extern u_int kobj_lookup_misses;
 	} else							\
 		kobj_lookup_hits++;				\
 	_m = _ce->func;						\
-} while(0)
+} while (0)
 #else
 #define KOBJOPLOOKUP(OPS,OP) do {				\
 	kobjop_desc_t _desc = &OP##_##desc;			\
@@ -245,7 +243,7 @@ extern u_int kobj_lookup_misses;
 		_ce = kobj_lookup_method(OPS->cls,		\
 					 _cep, _desc);		\
 	_m = _ce->func;						\
-} while(0)
+} while (0)
 #endif
 
 kobj_method_t* kobj_lookup_method(kobj_class_t cls,

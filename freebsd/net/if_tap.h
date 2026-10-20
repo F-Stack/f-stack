@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (C) 1999-2000 by Maksim Yevmenkin <m_evmenkin@yahoo.com>
  * All rights reserved.
@@ -33,7 +33,6 @@
  */
 
 /*
- * $FreeBSD$
  * $Id: if_tap.h,v 0.7 2000/07/12 04:12:51 max Exp $
  */
 
@@ -58,6 +57,8 @@
 #define	TAPGIFNAME		TUNGIFNAME
 #define	TAPSVNETHDR		_IOW('t', 91, int)
 #define	TAPGVNETHDR		_IOR('t', 94, int)
+#define	TAPSTRANSIENT		TUNSTRANSIENT
+#define	TAPGTRANSIENT		TUNGTRANSIENT
 
 /* VMware ioctl's */
 #define VMIO_SIOCSIFFLAGS	_IOWINT('V', 0)

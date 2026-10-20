@@ -49,7 +49,7 @@ Currently, besides authorized DNS server of DNSPod, there are various products i
     # Compile DPDK
     cd dpdk/
     # igb_uio is about 5% more efficient than vfio-pci, so continue using it.
-    meson -Denable_kmods=true build
+    meson setup -Denable_kmods=true build
     ninja -C build
     ninja -C build install
 
@@ -131,9 +131,7 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
 
 #### Redis
 
-    cd app/redis-6.2.6/deps/jemalloc
-    ./autogen.sh 
-    cd ../..
+    cd app/redis-6.2.6
     make
     make install
 
@@ -146,6 +144,33 @@ for more details, see [nginx guide](https://github.com/F-Stack/f-stack/blob/mast
     ifconfig veth0 <ipaddr>  netmask <netmask>  broadcast <broadcast> hw ether <mac addr>
     route add -net 0.0.0.0 gw <gateway> dev veth0
     # route add -net ...  # other route rules
+
+## Notes for sources copied from Windows
+
+A Windows filesystem keeps neither the Unix executable bit nor symlinks. If the
+source tree is copied from a Windows host (shared folder, exported zip, etc.)
+instead of being cloned with git, the build breaks in non-obvious ways. Restore
+the lost metadata before compiling:
+
+    # DPDK helper scripts
+    chmod +x dpdk/usertools/*
+    chmod +x dpdk/buildtools/*
+
+    # F-Stack lib: recreate the arch include symlink (do not copy a directory)
+    cd lib/include && rm -f machine && ln -s amd64/include/ machine && cd -
+
+    # Redis / jemalloc: without these jemalloc's configure cannot run, and the
+    # build fails with "jemalloc/jemalloc.h: No such file or directory" or
+    # "Newer version of jemalloc required"
+    chmod +x app/redis-6.2.6/deps/jemalloc/configure
+    chmod +x app/redis-6.2.6/deps/jemalloc/include/jemalloc/*.sh
+    chmod +x app/redis-6.2.6/deps/jemalloc/include/jemalloc/internal/*.sh
+    chmod +x app/redis-6.2.6/deps/jemalloc/build-aux/*
+    chmod +x app/redis-6.2.6/src/*.sh
+    chmod +x app/redis-6.2.6/utils/*.sh
+
+A plain `git clone` keeps all of this intact, so the steps above are only
+needed when the tree comes from Windows.
 
 ## Nginx Testing Result
 
@@ -199,4 +224,4 @@ And more info see [deepwiki of F-Stack](https://deepwiki.com/F-Stack/f-stack), [
 Tencent Cloud F-Stack team developed F-Stack which is a general network framework based on DPDK and provides ultra high network performance. We are here looking for more and more talented people with great passion on technology to join us. You would have the chance to work with brightest minds on this planet and help Tencent cloud and F-stack continuously evolve. Send us your resume or refer your friend to us if you are interested in joining us.
 
 Open Positions: Software engineer(C/C++), Web developer, IOS/Android developer, Product Manager, Operating Manager, etc.
-Contact: Please send your resume to [us](mailto:fengbojiang@tencent.com)
+Contact: Please send your resume to [us](mailto:ellalujiang@tencent.com)

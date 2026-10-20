@@ -99,6 +99,9 @@ static const struct rte_pci_id pci_id_ark_map[] = {
 	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x101e)},
 	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x101f)},
 	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x1022)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x1024)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x1025)},
+	{RTE_PCI_DEVICE(AR_VENDOR_ID, 0x1026)},
 	{.vendor_id = 0, /* sentinel */ },
 };
 
@@ -436,6 +439,10 @@ eth_ark_dev_init(struct rte_eth_dev *dev)
 					   sizeof(struct ark_adapter),
 					   RTE_CACHE_LINE_SIZE,
 					   rte_socket_id());
+		if (eth_dev->data->dev_private == NULL) {
+			ARK_PMD_LOG(ERR, "Memory allocation for dev_private failed\n");
+			goto error;
+		}
 
 		memcpy(eth_dev->data->dev_private, ark,
 		       sizeof(struct ark_adapter));

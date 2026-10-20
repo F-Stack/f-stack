@@ -32,27 +32,26 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)sys_generic.c	8.5 (Berkeley) 1/21/94
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include "opt_capsicum.h"
 #include "opt_ktrace.h"
 
+#define	EXTERR_CATEGORY	EXTERR_CAT_GENIO
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/sysproto.h>
 #include <sys/capsicum.h>
+#include <sys/exterrvar.h>
 #include <sys/filedesc.h>
 #include <sys/filio.h>
 #include <sys/fcntl.h>
 #include <sys/file.h>
+#include <sys/inotify.h>
 #include <sys/lock.h>
 #include <sys/proc.h>
 #include <sys/signalvar.h>
+#include <sys/protosw.h>
 #include <sys/socketvar.h>
 #include <sys/uio.h>
 #include <sys/eventfd.h>
@@ -69,6 +68,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/sysent.h>
 #include <sys/vnode.h>
+#include <sys/unistd.h>
 #include <sys/bio.h>
 #include <sys/buf.h>
 #include <sys/condvar.h>
@@ -196,7 +196,7 @@ sys_read(struct thread *td, struct read_args *uap)
 	int error;
 
 	if (uap->nbyte > IOSIZE_MAX)
-		return (EINVAL);
+		return (EXTERROR(EINVAL, "length > iosize_max"));
 	aiov.iov_base = uap->buf;
 	aiov.iov_len = uap->nbyte;
 	auio.uio_iov = &aiov;
@@ -234,7 +234,7 @@ kern_pread(struct thread *td, int fd, void *buf, size_t nbyte, off_t offset)
 	int error;
 
 	if (nbyte > IOSIZE_MAX)
-		return (EINVAL);
+		return (EXTERROR(EINVAL, "length > iosize_max"));
 	aiov.iov_base = buf;
 	aiov.iov_len = nbyte;
 	auio.uio_iov = &aiov;
@@ -274,7 +274,7 @@ sys_readv(struct thread *td, struct readv_args *uap)
 	if (error)
 		return (error);
 	error = kern_readv(td, uap->fd, auio);
-	free(auio, M_IOV);
+	freeuio(auio);
 	return (error);
 }
 
@@ -313,7 +313,7 @@ sys_preadv(struct thread *td, struct preadv_args *uap)
 	if (error)
 		return (error);
 	error = kern_preadv(td, uap->fd, auio, uap->offset);
-	free(auio, M_IOV);
+	freeuio(auio);
 	return (error);
 }
 
@@ -330,7 +330,7 @@ kern_preadv(struct thread *td, int fd, struct uio *auio, off_t offset)
 		error = ESPIPE;
 	else if (offset < 0 &&
 	    (fp->f_vnode == NULL || fp->f_vnode->v_type != VCHR))
-		error = EINVAL;
+		error = EXTERROR(EINVAL, "neg offset");
 	else
 		error = dofileread(td, fd, fp, auio, offset, FOF_OFFSET);
 	fdrop(fp, td);
@@ -397,7 +397,7 @@ sys_write(struct thread *td, struct write_args *uap)
 	int error;
 
 	if (uap->nbyte > IOSIZE_MAX)
-		return (EINVAL);
+		return (EXTERROR(EINVAL, "length > iosize_max"));
 	aiov.iov_base = (void *)(uintptr_t)uap->buf;
 	aiov.iov_len = uap->nbyte;
 	auio.uio_iov = &aiov;
@@ -436,7 +436,7 @@ kern_pwrite(struct thread *td, int fd, const void *buf, size_t nbyte,
 	int error;
 
 	if (nbyte > IOSIZE_MAX)
-		return (EINVAL);
+		return (EXTERROR(EINVAL, "length > iosize_max"));
 	aiov.iov_base = (void *)(uintptr_t)buf;
 	aiov.iov_len = nbyte;
 	auio.uio_iov = &aiov;
@@ -476,7 +476,7 @@ sys_writev(struct thread *td, struct writev_args *uap)
 	if (error)
 		return (error);
 	error = kern_writev(td, uap->fd, auio);
-	free(auio, M_IOV);
+	freeuio(auio);
 	return (error);
 }
 
@@ -515,7 +515,7 @@ sys_pwritev(struct thread *td, struct pwritev_args *uap)
 	if (error)
 		return (error);
 	error = kern_pwritev(td, uap->fd, auio, uap->offset);
-	free(auio, M_IOV);
+	freeuio(auio);
 	return (error);
 }
 
@@ -532,7 +532,7 @@ kern_pwritev(struct thread *td, int fd, struct uio *auio, off_t offset)
 		error = ESPIPE;
 	else if (offset < 0 &&
 	    (fp->f_vnode == NULL || fp->f_vnode->v_type != VCHR))
-		error = EINVAL;
+		error = EXTERROR(EINVAL, "neg offset");
 	else
 		error = dofilewrite(td, fd, fp, auio, offset, FOF_OFFSET);
 	fdrop(fp, td);
@@ -562,12 +562,16 @@ dofilewrite(struct thread *td, int fd, struct file *fp, struct uio *auio,
 		ktruio = cloneuio(auio);
 #endif
 	cnt = auio->uio_resid;
-	if ((error = fo_write(fp, auio, td->td_ucred, flags, td))) {
+	error = fo_write(fp, auio, td->td_ucred, flags, td);
+	/*
+	 * Socket layer is responsible for special error handling,
+	 * see sousrsend().
+	 */
+	if (error != 0 && fp->f_type != DTYPE_SOCKET) {
 		if (auio->uio_resid != cnt && (error == ERESTART ||
 		    error == EINTR || error == EWOULDBLOCK))
 			error = 0;
-		/* Socket layer is responsible for issuing SIGPIPE. */
-		if (fp->f_type != DTYPE_SOCKET && error == EPIPE) {
+		if (error == EPIPE) {
 			PROC_LOCK(td->td_proc);
 			tdsignal(td, SIGPIPE);
 			PROC_UNLOCK(td->td_proc);
@@ -576,7 +580,8 @@ dofilewrite(struct thread *td, int fd, struct file *fp, struct uio *auio,
 	cnt -= auio->uio_resid;
 #ifdef KTRACE
 	if (ktruio != NULL) {
-		ktruio->uio_resid = cnt;
+		if (error == 0)
+			ktruio->uio_resid = cnt;
 		ktrgenio(fd, UIO_WRITE, ktruio, error);
 	}
 #endif
@@ -598,14 +603,14 @@ kern_ftruncate(struct thread *td, int fd, off_t length)
 
 	AUDIT_ARG_FD(fd);
 	if (length < 0)
-		return (EINVAL);
+		return (EXTERROR(EINVAL, "negative length"));
 	error = fget(td, fd, &cap_ftruncate_rights, &fp);
 	if (error)
 		return (error);
 	AUDIT_ARG_FILE(td->td_proc, fp);
 	if (!(fp->f_flag & FWRITE)) {
 		fdrop(fp, td);
-		return (EINVAL);
+		return (EXTERROR(EINVAL, "non-writable"));
 	}
 	error = fo_truncate(fp, length, td->td_ucred, td);
 	fdrop(fp, td);
@@ -748,7 +753,7 @@ kern_ioctl(struct thread *td, int fd, u_long com, caddr_t data)
 	}
 
 #ifdef CAPABILITIES
-	if ((fp = fget_locked(fdp, fd)) == NULL) {
+	if ((fp = fget_noref(fdp, fd)) == NULL) {
 		error = EBADF;
 		goto out;
 	}
@@ -836,8 +841,10 @@ kern_posix_fallocate(struct thread *td, int fd, off_t offset, off_t len)
 	int error;
 
 	AUDIT_ARG_FD(fd);
-	if (offset < 0 || len <= 0)
-		return (EINVAL);
+	if (offset < 0)
+		return (EXTERROR(EINVAL, "negative offset"));
+	if (len <= 0)
+		return (EXTERROR(EINVAL, "negative length"));
 	/* Check for wrap. */
 	if (offset > OFF_MAX - len)
 		return (EFBIG);
@@ -862,10 +869,84 @@ kern_posix_fallocate(struct thread *td, int fd, off_t offset, off_t len)
 }
 
 int
+sys_fspacectl(struct thread *td, struct fspacectl_args *uap)
+{
+	struct spacectl_range rqsr, rmsr;
+	int error, cerror;
+
+	error = copyin(uap->rqsr, &rqsr, sizeof(rqsr));
+	if (error != 0)
+		return (error);
+
+	error = kern_fspacectl(td, uap->fd, uap->cmd, &rqsr, uap->flags,
+	    &rmsr);
+	if (uap->rmsr != NULL) {
+		cerror = copyout(&rmsr, uap->rmsr, sizeof(rmsr));
+		if (error == 0)
+			error = cerror;
+	}
+	return (error);
+}
+
+int
+kern_fspacectl(struct thread *td, int fd, int cmd,
+    const struct spacectl_range *rqsr, int flags, struct spacectl_range *rmsrp)
+{
+	struct file *fp;
+	struct spacectl_range rmsr;
+	int error;
+
+	AUDIT_ARG_FD(fd);
+	AUDIT_ARG_CMD(cmd);
+	AUDIT_ARG_FFLAGS(flags);
+
+	if (rqsr == NULL)
+		return (EXTERROR(EINVAL, "no range"));
+	rmsr = *rqsr;
+	if (rmsrp != NULL)
+		*rmsrp = rmsr;
+
+	if (cmd != SPACECTL_DEALLOC)
+		return (EXTERROR(EINVAL, "cmd", cmd));
+	if (rqsr->r_offset < 0)
+		return (EXTERROR(EINVAL, "neg offset"));
+	if (rqsr->r_len <= 0)
+		return (EXTERROR(EINVAL, "neg len"));
+	if (rqsr->r_offset > OFF_MAX - rqsr->r_len)
+		return (EXTERROR(EINVAL, "offset too large"));
+	if ((flags & ~SPACECTL_F_SUPPORTED) != 0)
+		return (EXTERROR(EINVAL, "reserved flags", flags));
+
+	error = fget_write(td, fd, &cap_pwrite_rights, &fp);
+	if (error != 0)
+		return (error);
+	AUDIT_ARG_FILE(td->td_proc, fp);
+	if ((fp->f_ops->fo_flags & DFLAG_SEEKABLE) == 0) {
+		error = ESPIPE;
+		goto out;
+	}
+	if ((fp->f_flag & FWRITE) == 0) {
+		error = EBADF;
+		goto out;
+	}
+
+	error = fo_fspacectl(fp, cmd, &rmsr.r_offset, &rmsr.r_len, flags,
+	    td->td_ucred, td);
+	/* fspacectl is not restarted after signals if the file is modified. */
+	if (rmsr.r_len != rqsr->r_len && (error == ERESTART ||
+	    error == EINTR || error == EWOULDBLOCK))
+		error = 0;
+	if (rmsrp != NULL)
+		*rmsrp = rmsr;
+out:
+	fdrop(fp, td);
+	return (error);
+}
+
+int
 kern_specialfd(struct thread *td, int type, void *arg)
 {
 	struct file *fp;
-	struct specialfd_eventfd *ae;
 	int error, fd, fflags;
 
 	fflags = 0;
@@ -874,14 +955,24 @@ kern_specialfd(struct thread *td, int type, void *arg)
 		return (error);
 
 	switch (type) {
-	case SPECIALFD_EVENTFD:
+	case SPECIALFD_EVENTFD: {
+		struct specialfd_eventfd *ae;
+
 		ae = arg;
 		if ((ae->flags & EFD_CLOEXEC) != 0)
 			fflags |= O_CLOEXEC;
 		error = eventfd_create_file(td, fp, ae->initval, ae->flags);
 		break;
+	}
+	case SPECIALFD_INOTIFY: {
+		struct specialfd_inotify *si;
+
+		si = arg;
+		error = inotify_create_file(td, fp, si->flags, &fflags);
+		break;
+	}
 	default:
-		error = EINVAL;
+		error = EXTERROR(EINVAL, "invalid type", type);
 		break;
 	}
 
@@ -896,13 +987,14 @@ kern_specialfd(struct thread *td, int type, void *arg)
 int
 sys___specialfd(struct thread *td, struct __specialfd_args *args)
 {
-	struct specialfd_eventfd ae;
 	int error;
 
 	switch (args->type) {
-	case SPECIALFD_EVENTFD:
+	case SPECIALFD_EVENTFD: {
+		struct specialfd_eventfd ae;
+
 		if (args->len != sizeof(struct specialfd_eventfd)) {
-			error = EINVAL;
+			error = EXTERROR(EINVAL, "eventfd params ABI");
 			break;
 		}
 		error = copyin(args->req, &ae, sizeof(ae));
@@ -910,13 +1002,27 @@ sys___specialfd(struct thread *td, struct __specialfd_args *args)
 			break;
 		if ((ae.flags & ~(EFD_CLOEXEC | EFD_NONBLOCK |
 		    EFD_SEMAPHORE)) != 0) {
-			error = EINVAL;
+			error = EXTERROR(EINVAL, "reserved flag");
 			break;
 		}
 		error = kern_specialfd(td, args->type, &ae);
 		break;
+	}
+	case SPECIALFD_INOTIFY: {
+		struct specialfd_inotify si;
+
+		if (args->len != sizeof(si)) {
+			error = EINVAL;
+			break;
+		}
+		error = copyin(args->req, &si, sizeof(si));
+		if (error != 0)
+			break;
+		error = kern_specialfd(td, args->type, &si);
+		break;
+	}
 	default:
-		error = EINVAL;
+		error = EXTERROR(EINVAL, "unknown type", args->type);
 		break;
 	}
 	return (error);
@@ -970,6 +1076,7 @@ kern_pselect(struct thread *td, int nd, fd_set *in, fd_set *ou, fd_set *ex,
     struct timeval *tvp, sigset_t *uset, int abi_nfdbits)
 {
 	int error;
+
 #ifndef FSTACK
 	if (uset != NULL) {
 		error = kern_sigprocmask(td, SIG_SETMASK, uset,
@@ -977,17 +1084,29 @@ kern_pselect(struct thread *td, int nd, fd_set *in, fd_set *ou, fd_set *ex,
 		if (error != 0)
 			return (error);
 		td->td_pflags |= TDP_OLDMASK;
-		/*
-		 * Make sure that ast() is called on return to
-		 * usermode and TDP_OLDMASK is cleared, restoring old
-		 * sigmask.
-		 */
-		thread_lock(td);
-		td->td_flags |= TDF_ASTPENDING;
-		thread_unlock(td);
 	}
 #endif
 	error = kern_select(td, nd, in, ou, ex, tvp, abi_nfdbits);
+#ifndef FSTACK
+	if (uset != NULL) {
+		/*
+		 * Make sure that ast() is called on return to
+		 * usermode and TDP_OLDMASK is cleared, restoring old
+		 * sigmask.  If we didn't get interrupted, then the caller is
+		 * likely not expecting a signal to hit that should normally be
+		 * blocked by its signal mask, so we restore the mask before
+		 * any signals could be delivered.
+		 */
+		if (error == EINTR) {
+			ast_sched(td, TDA_SIGSUSPEND);
+		} else {
+			/* *select(2) should never restart. */
+			MPASS(error != ERESTART);
+			ast_sched(td, TDA_PSELECT);
+		}
+	}
+#endif
+
 	return (error);
 }
 
@@ -1083,7 +1202,7 @@ kern_select(struct thread *td, int nd, fd_set *fd_in, fd_set *fd_ou,
 	int error, lf, ndu;
 
 	if (nd < 0)
-		return (EINVAL);
+		return (EXTERROR(EINVAL, "negative ndescs"));
 	fdp = td->td_proc->p_fd;
 	ndu = nd;
 	lf = fdp->fd_nfiles;
@@ -1176,7 +1295,7 @@ kern_select(struct thread *td, int nd, fd_set *fd_in, fd_set *fd_ou,
 		rtv = *tvp;
 		if (rtv.tv_sec < 0 || rtv.tv_usec < 0 ||
 		    rtv.tv_usec >= 1000000) {
-			error = EINVAL;
+			error = EXTERROR(EINVAL, "invalid timeval");
 			goto done;
 		}
 		if (!timevalisset(&rtv))
@@ -1245,7 +1364,7 @@ done:
  * The backend always returns POLLHUP/POLLERR if appropriate and we
  * return this as a set bit in any set.
  */
-static int select_flags[3] = {
+static const int select_flags[3] = {
     POLLRDNORM | POLLHUP | POLLERR,
     POLLWRNORM | POLLHUP | POLLERR,
     POLLRDBAND | POLLERR
@@ -1337,7 +1456,7 @@ selrescan(struct thread *td, fd_mask **ibits, fd_mask **obits)
 		if (only_user)
 			error = fget_only_user(fdp, fd, &cap_event_rights, &fp);
 		else
-			error = fget_unlocked(fdp, fd, &cap_event_rights, &fp);
+			error = fget_unlocked(td, fd, &cap_event_rights, &fp);
 		if (__predict_false(error != 0))
 			return (error);
 		idx = fd / NFDBITS;
@@ -1383,7 +1502,7 @@ selscan(struct thread *td, fd_mask **ibits, fd_mask **obits, int nfd)
 			if (only_user)
 				error = fget_only_user(fdp, fd, &cap_event_rights, &fp);
 			else
-				error = fget_unlocked(fdp, fd, &cap_event_rights, &fp);
+				error = fget_unlocked(td, fd, &cap_event_rights, &fp);
 			if (__predict_false(error != 0))
 				return (error);
 			selfdalloc(td, (void *)(uintptr_t)fd);
@@ -1408,7 +1527,7 @@ sys_poll(struct thread *td, struct poll_args *uap)
 
 	if (uap->timeout != INFTIM) {
 		if (uap->timeout < 0)
-			return (EINVAL);
+			return (EXTERROR(EINVAL, "invalid timeout"));
 		ts.tv_sec = uap->timeout / 1000;
 		ts.tv_nsec = (uap->timeout % 1000) * 1000000;
 		tsp = &ts;
@@ -1418,12 +1537,13 @@ sys_poll(struct thread *td, struct poll_args *uap)
 	return (kern_poll(td, uap->fds, uap->nfds, tsp, NULL));
 }
 
+/*
+ * kfds points to an array in the kernel.
+ */
 int
-kern_poll(struct thread *td, struct pollfd *ufds, u_int nfds,
+kern_poll_kfds(struct thread *td, struct pollfd *kfds, u_int nfds,
     struct timespec *tsp, sigset_t *uset)
 {
-	struct pollfd *kfds;
-	struct pollfd stackfds[32];
 	sbintime_t sbt, precision, tmp;
 	time_t over;
 	struct timespec ts;
@@ -1431,10 +1551,8 @@ kern_poll(struct thread *td, struct pollfd *ufds, u_int nfds,
 
 	precision = 0;
 	if (tsp != NULL) {
-		if (tsp->tv_sec < 0)
-			return (EINVAL);
-		if (tsp->tv_nsec < 0 || tsp->tv_nsec >= 1000000000)
-			return (EINVAL);
+		if (!timespecvalid_interval(tsp))
+			return (EXTERROR(EINVAL, "invalid timespec"));
 		if (tsp->tv_sec == 0 && tsp->tv_nsec == 0)
 			sbt = 0;
 		else {
@@ -1454,38 +1572,13 @@ kern_poll(struct thread *td, struct pollfd *ufds, u_int nfds,
 	} else
 		sbt = -1;
 
-	/*
-	 * This is kinda bogus.  We have fd limits, but that is not
-	 * really related to the size of the pollfd array.  Make sure
-	 * we let the process use at least FD_SETSIZE entries and at
-	 * least enough for the system-wide limits.  We want to be reasonably
-	 * safe, but not overly restrictive.
-	 */
-	if (nfds > maxfilesperproc && nfds > FD_SETSIZE) 
-		return (EINVAL);
-	if (nfds > nitems(stackfds))
-		kfds = mallocarray(nfds, sizeof(*kfds), M_TEMP, M_WAITOK);
-	else
-		kfds = stackfds;
-	error = copyin(ufds, kfds, nfds * sizeof(*kfds));
-	if (error)
-		goto done;
-
 #ifndef FSTACK
 	if (uset != NULL) {
 		error = kern_sigprocmask(td, SIG_SETMASK, uset,
 		    &td->td_oldsigmask, 0);
 		if (error)
-			goto done;
+			return (error);
 		td->td_pflags |= TDP_OLDMASK;
-		/*
-		 * Make sure that ast() is called on return to
-		 * usermode and TDP_OLDMASK is cleared, restoring old
-		 * sigmask.
-		 */
-		thread_lock(td);
-		td->td_flags |= TDF_ASTPENDING;
-		thread_unlock(td);
 	}
 #endif
 
@@ -1504,20 +1597,29 @@ kern_poll(struct thread *td, struct pollfd *ufds, u_int nfds,
 	}
 	seltdclear(td);
 
-done:
 	/* poll is not restarted after signals... */
 	if (error == ERESTART)
 		error = EINTR;
 	if (error == EWOULDBLOCK)
 		error = 0;
-	if (error == 0) {
-		error = pollout(td, kfds, ufds, nfds);
-		if (error)
-			goto out;
+
+#ifndef FSTACK
+	if (uset != NULL) {
+		/*
+		 * Make sure that ast() is called on return to
+		 * usermode and TDP_OLDMASK is cleared, restoring old
+		 * sigmask.  If we didn't get interrupted, then the caller is
+		 * likely not expecting a signal to hit that should normally be
+		 * blocked by its signal mask, so we restore the mask before
+		 * any signals could be delivered.
+		 */
+		if (error == EINTR)
+			ast_sched(td, TDA_SIGSUSPEND);
+		else
+			ast_sched(td, TDA_PSELECT);
 	}
-out:
-	if (nfds > nitems(stackfds))
-		free(kfds, M_TEMP);
+#endif
+
 	return (error);
 }
 
@@ -1542,12 +1644,57 @@ sys_ppoll(struct thread *td, struct ppoll_args *uap)
 		ssp = &set;
 	} else
 		ssp = NULL;
-	/*
-	 * fds is still a pointer to user space. kern_poll() will
-	 * take care of copyin that array to the kernel space.
-	 */
-
 	return (kern_poll(td, uap->fds, uap->nfds, tsp, ssp));
+}
+
+/*
+ * ufds points to an array in user space.
+ */
+int
+kern_poll(struct thread *td, struct pollfd *ufds, u_int nfds,
+    struct timespec *tsp, sigset_t *set)
+{
+	struct pollfd *kfds;
+	struct pollfd stackfds[32];
+	int error;
+
+	if (kern_poll_maxfds(nfds))
+		return (EXTERROR(EINVAL, "too large nfds"));
+	if (nfds > nitems(stackfds))
+		kfds = mallocarray(nfds, sizeof(*kfds), M_TEMP, M_WAITOK);
+	else
+		kfds = stackfds;
+	error = copyin(ufds, kfds, nfds * sizeof(*kfds));
+	if (error != 0)
+		goto out;
+
+	error = kern_poll_kfds(td, kfds, nfds, tsp, set);
+	if (error == 0)
+		error = pollout(td, kfds, ufds, nfds);
+#ifdef KTRACE
+	if (error == 0 && KTRPOINT(td, KTR_STRUCT_ARRAY))
+		ktrstructarray("pollfd", UIO_USERSPACE, ufds, nfds,
+		    sizeof(*ufds));
+#endif
+
+out:
+	if (nfds > nitems(stackfds))
+		free(kfds, M_TEMP);
+	return (error);
+}
+
+bool
+kern_poll_maxfds(u_int nfds)
+{
+
+	/*
+	 * This is kinda bogus.  We have fd limits, but that is not
+	 * really related to the size of the pollfd array.  Make sure
+	 * we let the process use at least FD_SETSIZE entries and at
+	 * least enough for the system-wide limits.  We want to be reasonably
+	 * safe, but not overly restrictive.
+	 */
+	return (nfds > maxfilesperproc && nfds > FD_SETSIZE);
 }
 
 static int
@@ -1577,7 +1724,7 @@ pollrescan(struct thread *td)
 		if (only_user)
 			error = fget_only_user(fdp, fd->fd, &cap_event_rights, &fp);
 		else
-			error = fget_unlocked(fdp, fd->fd, &cap_event_rights, &fp);
+			error = fget_unlocked(td, fd->fd, &cap_event_rights, &fp);
 		if (__predict_false(error != 0)) {
 			fd->revents = POLLNVAL;
 			n++;
@@ -1640,7 +1787,7 @@ pollscan(struct thread *td, struct pollfd *fds, u_int nfd)
 		if (only_user)
 			error = fget_only_user(fdp, fds->fd, &cap_event_rights, &fp);
 		else
-			error = fget_unlocked(fdp, fds->fd, &cap_event_rights, &fp);
+			error = fget_unlocked(td, fds->fd, &cap_event_rights, &fp);
 		if (__predict_false(error != 0)) {
 			fds->revents = POLLNVAL;
 			n++;
@@ -1689,7 +1836,7 @@ selsocket(struct socket *so, int events, struct timeval *tvp, struct thread *td)
 		rtv = *tvp;
 		if (rtv.tv_sec < 0 || rtv.tv_usec < 0 || 
 		    rtv.tv_usec >= 1000000)
-			return (EINVAL);
+			return (EXTERROR(EINVAL, "invalid timeval"));
 		if (!timevalisset(&rtv))
 			asbt = 0;
 		else if (rtv.tv_sec <= INT32_MAX) {
@@ -1712,10 +1859,10 @@ selsocket(struct socket *so, int events, struct timeval *tvp, struct thread *td)
 	 */
 	for (;;) {
 		selfdalloc(td, NULL);
-		error = sopoll(so, events, NULL, td);
-		/* error here is actually the ready events. */
-		if (error)
-			return (0);
+		if (so->so_proto->pr_sopoll(so, events, td) != 0) {
+			error = 0;
+			break;
+		}
 		error = seltdwait(td, asbt, precision);
 		if (error)
 			break;
@@ -1994,4 +2141,209 @@ kern_posix_error(struct thread *td, int error)
 	td->td_pflags |= TDP_NERRNO;
 	td->td_retval[0] = error;
 	return (0);
+}
+
+int
+kcmp_cmp(uintptr_t a, uintptr_t b)
+{
+	if (a == b)
+		return (0);
+	else if (a < b)
+		return (1);
+	return (2);
+}
+
+static int
+kcmp_pget(struct thread *td, pid_t pid, struct proc **pp)
+{
+	int error;
+
+	if (pid == td->td_proc->p_pid) {
+		*pp = td->td_proc;
+		return (0);
+	}
+	error = pget(pid, PGET_NOTID | PGET_CANDEBUG | PGET_NOTWEXIT |
+	    PGET_HOLD, pp);
+	MPASS(*pp != td->td_proc);
+	return (error);
+}
+
+int
+kern_kcmp(struct thread *td, pid_t pid1, pid_t pid2, int type,
+    uintptr_t idx1, uintptr_t idx2)
+{
+	struct proc *p1, *p2;
+	struct file *fp1, *fp2;
+	int error, res;
+
+	res = -1;
+	p1 = p2 = NULL;
+	error = kcmp_pget(td, pid1, &p1);
+	if (error == 0)
+		error = kcmp_pget(td, pid2, &p2);
+	if (error != 0)
+		goto out;
+
+	switch (type) {
+	case KCMP_FILE:
+	case KCMP_FILEOBJ:
+		error = fget_remote(td, p1, idx1, &fp1);
+		if (error == 0) {
+			error = fget_remote(td, p2, idx2, &fp2);
+			if (error == 0) {
+				if (type == KCMP_FILEOBJ)
+					res = fo_cmp(fp1, fp2, td);
+				else
+					res = kcmp_cmp((uintptr_t)fp1,
+					    (uintptr_t)fp2);
+				fdrop(fp2, td);
+			}
+			fdrop(fp1, td);
+		}
+		break;
+	case KCMP_FILES:
+		res = kcmp_cmp((uintptr_t)p1->p_fd, (uintptr_t)p2->p_fd);
+		break;
+	case KCMP_SIGHAND:
+		res = kcmp_cmp((uintptr_t)p1->p_sigacts,
+		    (uintptr_t)p2->p_sigacts);
+		break;
+	case KCMP_VM:
+		res = kcmp_cmp((uintptr_t)p1->p_vmspace,
+		    (uintptr_t)p2->p_vmspace);
+		break;
+	default:
+		error = EXTERROR(EINVAL, "unknown op");
+		break;
+	}
+
+out:
+	if (p1 != NULL && p1 != td->td_proc)
+		PRELE(p1);
+	if (p2 != NULL && p2 != td->td_proc)
+		PRELE(p2);
+
+	td->td_retval[0] = res;
+	return (error);
+}
+
+int
+sys_kcmp(struct thread *td, struct kcmp_args *uap)
+{
+	return (kern_kcmp(td, uap->pid1, uap->pid2, uap->type,
+	    uap->idx1, uap->idx2));
+}
+
+int
+file_kcmp_generic(struct file *fp1, struct file *fp2, struct thread *td)
+{
+	if (fp1->f_type != fp2->f_type)
+		return (3);
+	return (kcmp_cmp((uintptr_t)fp1->f_data, (uintptr_t)fp2->f_data));
+}
+
+int
+exterr_to_ue(struct thread *td, struct uexterror *ue)
+{
+	if ((td->td_pflags2 & TDP2_EXTERR) == 0)
+		return (ENOENT);
+
+	memset(ue, 0, sizeof(*ue));
+	ue->error = td->td_kexterr.error;
+	ue->cat = td->td_kexterr.cat;
+	ue->src_line = td->td_kexterr.src_line;
+	ue->p1 = td->td_kexterr.p1;
+	ue->p2 = td->td_kexterr.p2;
+	if (td->td_kexterr.msg != NULL)
+		strlcpy(ue->msg, td->td_kexterr.msg, sizeof(ue->msg));
+	return (0);
+}
+
+void
+exterr_copyout(struct thread *td)
+{
+	struct uexterror ue;
+	ksiginfo_t ksi;
+	void *uloc;
+	size_t sz;
+	int error;
+
+	MPASS((td->td_pflags2 & TDP2_UEXTERR) != 0);
+
+	uloc = (char *)td->td_exterr_ptr + __offsetof(struct uexterror,
+	    error);
+	error = exterr_to_ue(td, &ue);
+	if (error != 0) {
+		ue.error = 0;
+		sz = sizeof(ue.error);
+	} else {
+		ktrexterr(td);
+		sz = sizeof(ue) - __offsetof(struct uexterror, error);
+	}
+	error = copyout(&ue.error, uloc, sz);
+	if (error != 0) {
+		td->td_pflags2 &= ~TDP2_UEXTERR;
+		ksiginfo_init_trap(&ksi);
+		ksi.ksi_signo = SIGSEGV;
+		ksi.ksi_code = SEGV_ACCERR;
+		ksi.ksi_addr = uloc;
+		trapsignal(td, &ksi);
+	}
+}
+
+int
+sys_exterrctl(struct thread *td, struct exterrctl_args *uap)
+{
+	uint32_t ver;
+	int error;
+
+	if ((uap->flags & ~(EXTERRCTLF_FORCE)) != 0)
+		return (EINVAL);
+	switch (uap->op) {
+	case EXTERRCTL_ENABLE:
+		if ((td->td_pflags2 & TDP2_UEXTERR) != 0 &&
+		    (uap->flags & EXTERRCTLF_FORCE) == 0)
+			return (EBUSY);
+		td->td_pflags2 &= ~TDP2_UEXTERR;
+		error = copyin(uap->ptr, &ver, sizeof(ver));
+		if (error != 0)
+			return (error);
+		if (ver != UEXTERROR_VER)
+			return (EINVAL);
+		td->td_pflags2 |= TDP2_UEXTERR;
+		td->td_exterr_ptr = uap->ptr;
+		return (0);
+	case EXTERRCTL_DISABLE:
+		if ((td->td_pflags2 & TDP2_UEXTERR) == 0)
+			return (EINVAL);
+		td->td_pflags2 &= ~TDP2_UEXTERR;
+		return (0);
+	case EXTERRCTL_UD:
+		/*
+		 * Important: this code must always return EINVAL and never any
+		 * extended error, for testing purposes.
+		 */
+		/* FALLTHROUGH */
+	default:
+		return (EINVAL);
+	}
+}
+
+int
+exterr_set(int eerror, int category, const char *mmsg, uintptr_t pp1,
+    uintptr_t pp2, int line)
+{
+	struct thread *td;
+
+	td = curthread;
+	if ((td->td_pflags2 & TDP2_UEXTERR) != 0) {
+		td->td_pflags2 |= TDP2_EXTERR;
+		td->td_kexterr.error = eerror;
+		td->td_kexterr.cat = category;
+		td->td_kexterr.msg = mmsg;
+		td->td_kexterr.p1 = pp1;
+		td->td_kexterr.p2 = pp2;
+		td->td_kexterr.src_line = line;
+	}
+	return (eerror);
 }

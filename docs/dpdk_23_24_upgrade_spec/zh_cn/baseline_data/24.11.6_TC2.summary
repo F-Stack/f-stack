@@ -1,0 +1,9 @@
+config=24.11.6
+tc=TC2
+n=1000
+trials=3
+median_s=7.199056060
+min_s=7.188024605
+max_s=7.375819328
+jitter_s=0.188
+csv=/tmp/p5b/24.11.6_TC2.csv

@@ -29,7 +29,6 @@
  * SUCH DAMAGE.
  *
  *	$KAME: nd6.h,v 1.76 2001/12/18 02:10:31 itojun Exp $
- * $FreeBSD$
  */
 
 #ifndef _NETINET6_ND6_H_
@@ -99,7 +98,7 @@ struct nd_ifinfo {
 
 #ifdef _KERNEL
 #define ND_IFINFO(ifp) \
-	(((struct in6_ifextra *)(ifp)->if_afdata[AF_INET6])->nd_ifinfo)
+	(((struct in6_ifextra *)if_getafdata(ifp, AF_INET6))->nd_ifinfo)
 #define IN6_LINKMTU(ifp) \
 	((ND_IFINFO(ifp)->linkmtu && ND_IFINFO(ifp)->linkmtu < (ifp)->if_mtu) \
 	    ? ND_IFINFO(ifp)->linkmtu \
@@ -185,10 +184,10 @@ struct	in6_ndifreq {
 #define RETRANS_TIMER			1000	/* msec */
 #define MIN_RANDOM_FACTOR		512	/* 1024 * 0.5 */
 #define MAX_RANDOM_FACTOR		1536	/* 1024 * 1.5 */
-#define DEF_TEMP_VALID_LIFETIME		604800	/* 1 week */
+#define DEF_TEMP_VALID_LIFETIME		172800	/* 2 days */
 #define DEF_TEMP_PREFERRED_LIFETIME	86400	/* 1 day */
 #define TEMPADDR_REGEN_ADVANCE		5	/* sec */
-#define MAX_TEMP_DESYNC_FACTOR		600	/* 10 min */
+#define TEMP_MAX_DESYNC_FACTOR_BASE	300	/* 5 min */
 #define ND_COMPUTE_RTIME(x) \
 		(((MIN_RANDOM_FACTOR * (x >> 10)) + (arc4random() & \
 		((MAX_RANDOM_FACTOR - MIN_RANDOM_FACTOR) * (x >> 10)))) /1000)
@@ -255,26 +254,12 @@ MALLOC_DECLARE(M_IP6NDP);
 #endif
 
 /* nd6.c */
-VNET_DECLARE(int, nd6_prune);
-VNET_DECLARE(int, nd6_delay);
-VNET_DECLARE(int, nd6_umaxtries);
 VNET_DECLARE(int, nd6_mmaxtries);
-VNET_DECLARE(int, nd6_useloopback);
-VNET_DECLARE(int, nd6_maxnudhint);
-VNET_DECLARE(int, nd6_gctimer);
 VNET_DECLARE(struct nd_prhead, nd_prefix);
 VNET_DECLARE(int, nd6_debug);
-VNET_DECLARE(int, nd6_onlink_ns_rfc4861);
-#define	V_nd6_prune			VNET(nd6_prune)
-#define	V_nd6_delay			VNET(nd6_delay)
-#define	V_nd6_umaxtries			VNET(nd6_umaxtries)
 #define	V_nd6_mmaxtries			VNET(nd6_mmaxtries)
-#define	V_nd6_useloopback		VNET(nd6_useloopback)
-#define	V_nd6_maxnudhint		VNET(nd6_maxnudhint)
-#define	V_nd6_gctimer			VNET(nd6_gctimer)
 #define	V_nd_prefix			VNET(nd_prefix)
 #define	V_nd6_debug			VNET(nd6_debug)
-#define	V_nd6_onlink_ns_rfc4861		VNET(nd6_onlink_ns_rfc4861)
 
 /* Lock for the prefix and default router lists. */
 VNET_DECLARE(struct rwlock, nd6_lock);
@@ -307,11 +292,13 @@ VNET_DECLARE(struct mtx, nd6_onlink_mtx);
 /* nd6_rtr.c */
 VNET_DECLARE(int, nd6_defifindex);
 VNET_DECLARE(int, ip6_desync_factor);	/* seconds */
+VNET_DECLARE(uint32_t, ip6_temp_max_desync_factor); /* seconds */
 VNET_DECLARE(u_int32_t, ip6_temp_preferred_lifetime); /* seconds */
 VNET_DECLARE(u_int32_t, ip6_temp_valid_lifetime); /* seconds */
 VNET_DECLARE(int, ip6_temp_regen_advance); /* seconds */
 #define	V_nd6_defifindex		VNET(nd6_defifindex)
 #define	V_ip6_desync_factor		VNET(ip6_desync_factor)
+#define	V_ip6_temp_max_desync_factor	VNET(ip6_temp_max_desync_factor)
 #define	V_ip6_temp_preferred_lifetime	VNET(ip6_temp_preferred_lifetime)
 #define	V_ip6_temp_valid_lifetime	VNET(ip6_temp_valid_lifetime)
 #define	V_ip6_temp_regen_advance	VNET(ip6_temp_regen_advance)
@@ -376,10 +363,10 @@ int nd6_resolve(struct ifnet *, int, struct mbuf *,
 int nd6_ioctl(u_long, caddr_t, struct ifnet *);
 void nd6_cache_lladdr(struct ifnet *, struct in6_addr *,
 	char *, int, int, int);
-void nd6_grab_holdchain(struct llentry *, struct mbuf **,
-    struct sockaddr_in6 *);
-int nd6_flush_holdchain(struct ifnet *, struct mbuf *,
-    struct sockaddr_in6 *);
+bool nd6_try_set_entry_addr(struct ifnet *ifp, struct llentry *lle, char *lladdr);
+struct mbuf *nd6_grab_holdchain(struct llentry *);
+int nd6_flush_holdchain(struct ifnet *, struct llentry *, struct mbuf *);
+void nd6_flush_children_holdchain(struct ifnet *, struct llentry *);
 int nd6_add_ifa_lle(struct in6_ifaddr *);
 void nd6_rem_ifa_lle(struct in6_ifaddr *, int);
 int nd6_output_ifp(struct ifnet *, struct ifnet *, struct mbuf *,

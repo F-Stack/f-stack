@@ -14,10 +14,6 @@
  * authentication operations.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <rte_compat.h>
 #include "rte_kvargs.h"
 #include "rte_crypto.h"
@@ -26,27 +22,31 @@ extern "C" {
 
 #include "rte_cryptodev_trace_fp.h"
 
-/* Logging Macros */
+#ifdef __cplusplus
+extern "C" {
+#endif
 
+/**
+ * @internal Logtype used for cryptodev related messages.
+ */
+extern int rte_cryptodev_logtype;
+#define RTE_LOGTYPE_CRYPTODEV rte_cryptodev_logtype
+
+/* Logging Macros */
 #define CDEV_LOG_ERR(...) \
-	RTE_LOG(ERR, CRYPTODEV, \
-		RTE_FMT("%s() line %u: " RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
-			__func__, __LINE__, RTE_FMT_TAIL(__VA_ARGS__,)))
+	RTE_LOG_LINE_PREFIX(ERR, CRYPTODEV, \
+		"%s() line %u: ", __func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
 #define CDEV_LOG_INFO(...) \
-	RTE_LOG(INFO, CRYPTODEV, \
-		RTE_FMT(RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
-			RTE_FMT_TAIL(__VA_ARGS__,)))
+	RTE_LOG_LINE(INFO, CRYPTODEV, "" __VA_ARGS__)
 
 #define CDEV_LOG_DEBUG(...) \
-	RTE_LOG(DEBUG, CRYPTODEV, \
-		RTE_FMT("%s() line %u: " RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
-			__func__, __LINE__, RTE_FMT_TAIL(__VA_ARGS__,)))
+	RTE_LOG_LINE_PREFIX(DEBUG, CRYPTODEV, \
+		"%s() line %u: ", __func__ RTE_LOG_COMMA __LINE__, __VA_ARGS__)
 
 #define CDEV_PMD_TRACE(...) \
-	RTE_LOG(DEBUG, CRYPTODEV, \
-		RTE_FMT("[%s] %s: " RTE_FMT_HEAD(__VA_ARGS__,) "\n", \
-			dev, __func__, RTE_FMT_TAIL(__VA_ARGS__,)))
+	RTE_LOG_LINE_PREFIX(DEBUG, CRYPTODEV, \
+		"[%s] %s: ", dev RTE_LOG_COMMA __func__, __VA_ARGS__)
 
 /**
  * A macro that points to an offset from the start
@@ -185,6 +185,9 @@ struct rte_cryptodev_asymmetric_xform_capability {
 		 * Value 0 means unavailable, and application should pass the required
 		 * random value. Otherwise, PMD would internally compute the random number.
 		 */
+
+		uint32_t op_capa[RTE_CRYPTO_ASYM_OP_LIST_END];
+		/**< Operation specific capabilities. */
 	};
 
 	uint64_t hash_algos;
@@ -358,6 +361,26 @@ bool
 rte_cryptodev_asym_xform_capability_check_hash(
 	const struct rte_cryptodev_asymmetric_xform_capability *capability,
 	enum rte_crypto_auth_algorithm hash);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Check if op capability is supported
+ *
+ * @param	capability	Description of the asymmetric crypto capability.
+ * @param	op_type		op type
+ * @param	cap		op capability
+ *
+ * @return
+ *   - Return 1 if the op capability is supported
+ *   - Return 0 if unsupported
+ */
+__rte_experimental
+int
+rte_cryptodev_asym_xform_capability_check_opcap(
+	const struct rte_cryptodev_asymmetric_xform_capability *capability,
+	enum rte_crypto_asym_op_type op_type, uint8_t cap);
 
 /**
  * Provide the cipher algorithm enum, given an algorithm string
@@ -608,12 +631,34 @@ enum rte_cryptodev_event_type {
 	RTE_CRYPTODEV_EVENT_MAX		/**< max value of this enum */
 };
 
+/* Crypto queue pair priority levels */
+#define RTE_CRYPTODEV_QP_PRIORITY_HIGHEST   0
+/**< Highest priority of a cryptodev queue pair
+ * @see rte_cryptodev_queue_pair_setup(), rte_cryptodev_enqueue_burst()
+ */
+#define RTE_CRYPTODEV_QP_PRIORITY_NORMAL    128
+/**< Normal priority of a cryptodev queue pair
+ * @see rte_cryptodev_queue_pair_setup(), rte_cryptodev_enqueue_burst()
+ */
+#define RTE_CRYPTODEV_QP_PRIORITY_LOWEST    255
+/**< Lowest priority of a cryptodev queue pair
+ * @see rte_cryptodev_queue_pair_setup(), rte_cryptodev_enqueue_burst()
+ */
+
 /** Crypto device queue pair configuration structure. */
 /* Structure rte_cryptodev_qp_conf 8<*/
 struct rte_cryptodev_qp_conf {
 	uint32_t nb_descriptors; /**< Number of descriptors per queue pair */
 	struct rte_mempool *mp_session;
 	/**< The mempool for creating session in sessionless mode */
+	uint8_t priority;
+	/**< Priority for this queue pair relative to other queue pairs.
+	 *
+	 * The requested priority should in the range of
+	 * [@ref RTE_CRYPTODEV_QP_PRIORITY_HIGHEST, @ref RTE_CRYPTODEV_QP_PRIORITY_LOWEST].
+	 * The implementation may normalize the requested priority to
+	 * device supported priority value.
+	 */
 };
 /* >8 End of structure rte_cryptodev_qp_conf. */
 
@@ -838,6 +883,35 @@ rte_cryptodev_close(uint8_t dev_id);
  */
 int
 rte_cryptodev_queue_pair_setup(uint8_t dev_id, uint16_t queue_pair_id,
+		const struct rte_cryptodev_qp_conf *qp_conf, int socket_id);
+
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change without prior notice.
+ *
+ * Reset a queue pair for a device.
+ * The caller of this API must ensure that, there are no enqueues to the queue and there are no
+ * pending/inflight packets in the queue when the API is called.
+ * The API can reconfigure the queue pair when the queue pair configuration data is provided.
+ *
+ * @param	dev_id		The identifier of the device.
+ * @param	queue_pair_id	The index of the queue pairs to set up. The value must be in the
+ *				range [0, nb_queue_pair - 1] previously supplied to
+ *				rte_cryptodev_configure().
+ * @param	qp_conf		The pointer to configuration data to be used for the queue pair.
+ *				It should be NULL, if the API is called from an interrupt context.
+ * @param	socket_id	The *socket_id* argument is the socket identifier in case of NUMA.
+ *				The value can be *SOCKET_ID_ANY* if there is no NUMA constraint
+ *				for the DMA memory allocated for the queue pair.
+ *
+ * @return
+ *   - 0:  Queue pair is reset successfully.
+ *   - ENOTSUP: If the operation is not supported by the PMD.
+ *   - <0: Queue pair reset failed
+ */
+__rte_experimental
+int
+rte_cryptodev_queue_pair_reset(uint8_t dev_id, uint16_t queue_pair_id,
 		const struct rte_cryptodev_qp_conf *qp_conf, int socket_id);
 
 /**
@@ -1525,7 +1599,7 @@ struct rte_crypto_raw_dp_ctx {
 	cryptodev_sym_raw_operation_done_t dequeue_done;
 
 	/* Driver specific context data */
-	__extension__ uint8_t drv_ctx_data[];
+	uint8_t drv_ctx_data[];
 };
 
 /**
@@ -1858,7 +1932,16 @@ int rte_cryptodev_remove_deq_callback(uint8_t dev_id,
 				      uint16_t qp_id,
 				      struct rte_cryptodev_cb *cb);
 
-#include <rte_cryptodev_core.h>
+#ifdef __cplusplus
+}
+#endif
+
+#include "rte_cryptodev_core.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  *
  * Dequeue a burst of processed crypto operations from a queue on the crypto
@@ -2005,7 +2088,51 @@ rte_cryptodev_enqueue_burst(uint8_t dev_id, uint16_t qp_id,
 	return fp_ops->enqueue_burst(qp, ops, nb_ops);
 }
 
+/**
+ * @warning
+ * @b EXPERIMENTAL: this API may change, or be removed, without prior notice
+ *
+ * Get the number of used descriptors or depth of a cryptodev queue pair.
+ *
+ * This function retrieves the number of used descriptors in a crypto queue.
+ * Applications can use this API in the fast path to inspect QP occupancy and
+ * take appropriate action.
+ *
+ * Since it is a fast-path function, no check is performed on dev_id and qp_id.
+ * Caller must therefore ensure that the device is enabled and queue pair is setup.
+ *
+ * @param	dev_id		The identifier of the device.
+ * @param	qp_id		The index of the queue pair for which used descriptor
+ *				count is to be retrieved. The value
+ *				must be in the range [0, nb_queue_pairs - 1]
+ *				previously supplied to *rte_cryptodev_configure*.
+ *
+ * @return
+ *  The number of used descriptors on the specified queue pair, or:
+ *   - (-ENOTSUP) if the device does not support this function.
+ */
 
+__rte_experimental
+static inline int
+rte_cryptodev_qp_depth_used(uint8_t dev_id, uint16_t qp_id)
+{
+	const struct rte_crypto_fp_ops *fp_ops;
+	void *qp;
+	int rc;
+
+	fp_ops = &rte_crypto_fp_ops[dev_id];
+	qp = fp_ops->qp.data[qp_id];
+
+	if (fp_ops->qp_depth_used == NULL) {
+		rc = -ENOTSUP;
+		goto out;
+	}
+
+	rc = fp_ops->qp_depth_used(qp);
+out:
+	rte_cryptodev_trace_qp_depth_used(dev_id, qp_id);
+	return rc;
+}
 
 #ifdef __cplusplus
 }

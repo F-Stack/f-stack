@@ -5,6 +5,7 @@
 #include <stdbool.h>
 #include <netinet/in.h>
 
+#include <rte_bitops.h>
 #include <rte_mbuf.h>
 #include <rte_malloc.h>
 #include <ethdev_driver.h>
@@ -53,6 +54,33 @@ get_vlan_offset(struct rte_ether_hdr *eth_hdr, uint16_t *proto)
 		}
 	}
 	return vlan_offset;
+}
+
+static uint16_t
+bond_ethdev_rx_secondary(void *queue __rte_unused,
+			 struct rte_mbuf **bufs __rte_unused, uint16_t nb_pkts __rte_unused)
+{
+	static bool once = true;
+
+	if (once) {
+		/* once per process is enough of a notice */
+		RTE_BOND_LOG(ERR, "receive not supported in secondary");
+		once = false;
+	}
+	return 0;
+}
+
+static uint16_t
+bond_ethdev_tx_secondary(void *queue __rte_unused, struct rte_mbuf **bufs, uint16_t nb_pkts)
+{
+	static bool once = true;
+
+	if (once) {
+		RTE_BOND_LOG(ERR, "transmit not supported in secondary");
+		once = false;
+	}
+	rte_pktmbuf_free_bulk(bufs, nb_pkts);
+	return nb_pkts;
 }
 
 static uint16_t
@@ -491,9 +519,9 @@ update_client_stats(uint32_t addr, uint16_t port, uint32_t *TXorRXindicator)
 
 #ifdef RTE_LIBRTE_BOND_DEBUG_ALB
 #define MODE6_DEBUG(info, src_ip, dst_ip, eth_h, arp_op, port, burstnumber) \
-	rte_log(RTE_LOG_DEBUG, bond_logtype,				\
+	RTE_LOG_LINE(DEBUG, BOND,				\
 		"%s port:%d SrcMAC:" RTE_ETHER_ADDR_PRT_FMT " SrcIP:%s " \
-		"DstMAC:" RTE_ETHER_ADDR_PRT_FMT " DstIP:%s %s %d\n", \
+		"DstMAC:" RTE_ETHER_ADDR_PRT_FMT " DstIP:%s %s %d", \
 		info,							\
 		port,							\
 		RTE_ETHER_ADDR_BYTES(&eth_h->src_addr),                  \
@@ -689,10 +717,8 @@ ipv4_hash(struct rte_ipv4_hdr *ipv4_hdr)
 static inline uint32_t
 ipv6_hash(struct rte_ipv6_hdr *ipv6_hdr)
 {
-	unaligned_uint32_t *word_src_addr =
-		(unaligned_uint32_t *)&(ipv6_hdr->src_addr[0]);
-	unaligned_uint32_t *word_dst_addr =
-		(unaligned_uint32_t *)&(ipv6_hdr->dst_addr[0]);
+	unaligned_uint32_t *word_src_addr = (unaligned_uint32_t *)&ipv6_hdr->src_addr;
+	unaligned_uint32_t *word_dst_addr = (unaligned_uint32_t *)&ipv6_hdr->dst_addr;
 
 	return (word_src_addr[0] ^ word_dst_addr[0]) ^
 			(word_src_addr[1] ^ word_dst_addr[1]) ^
@@ -1600,6 +1626,11 @@ bond_ethdev_mode_set(struct rte_eth_dev *eth_dev, uint8_t mode)
 {
 	struct bond_dev_private *internals;
 
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		RTE_BOND_LOG(ERR, "Setting mode in secondary not allowed");
+		return -1;
+	}
+
 	internals = eth_dev->data->dev_private;
 
 	switch (mode) {
@@ -1702,11 +1733,18 @@ member_configure_slow_queue(struct rte_eth_dev *bonding_eth_dev,
 		if (member_info.rx_desc_lim.nb_min != 0)
 			nb_rx_desc = member_info.rx_desc_lim.nb_min;
 
-		/* Configure slow Rx queue */
+		/* Configure slow Rx queue.
+		 * Use explicit conf rather than NULL so we can clamp rx_free_thresh:
+		 * with a minimum-sized ring the default rx_free_thresh may be too large
+		 * for some drivers to work correctly, so clamp it to ring_size / 4.
+		 */
+		struct rte_eth_rxconf slow_rx_conf = member_info.default_rxconf;
+		if (slow_rx_conf.rx_free_thresh > nb_rx_desc / 4)
+			slow_rx_conf.rx_free_thresh = nb_rx_desc / 4;
 		errval = rte_eth_rx_queue_setup(member_eth_dev->data->port_id,
 				internals->mode4.dedicated_queues.rx_qid, nb_rx_desc,
 				rte_eth_dev_socket_id(member_eth_dev->data->port_id),
-				NULL, port->slow_pool);
+				&slow_rx_conf, port->slow_pool);
 		if (errval != 0) {
 			RTE_BOND_LOG(ERR,
 					"rte_eth_rx_queue_setup: port=%d queue_id %d, err (%d)",
@@ -3791,9 +3829,18 @@ bond_probe(struct rte_vdev_device *dev)
 			RTE_BOND_LOG(ERR, "Failed to probe %s", name);
 			return -1;
 		}
-		/* TODO: request info from primary to set up Rx and Tx */
+
 		eth_dev->dev_ops = &default_dev_ops;
 		eth_dev->device = &dev->device;
+
+		/*
+		 * Propagation of bond mode would require adding
+		 * MP client/server support and lots of error handling.
+		 *
+		 * For now just install a black hole.
+		 */
+		eth_dev->tx_pkt_burst = bond_ethdev_tx_secondary;
+		eth_dev->rx_pkt_burst = bond_ethdev_rx_secondary;
 		rte_eth_dev_probing_finish(eth_dev);
 		return 0;
 	}
@@ -4004,7 +4051,7 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 		 * Two '1' in binary of 'link_speeds': bit0 and a unique
 		 * speed bit.
 		 */
-		if (__builtin_popcountl(link_speeds) != 2) {
+		if (rte_popcount64(link_speeds) != 2) {
 			RTE_BOND_LOG(ERR, "please set a unique speed.");
 			return -EINVAL;
 		}

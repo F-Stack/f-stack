@@ -28,7 +28,7 @@ struct cluster_node {
 	struct rte_node *nodes[];
 };
 
-struct rte_graph_cluster_stats {
+struct __rte_cache_aligned rte_graph_cluster_stats {
 	/* Header */
 	rte_graph_cluster_stats_cb_t fn;
 	uint32_t cluster_node_size; /* Size of struct cluster_node */
@@ -36,10 +36,9 @@ struct rte_graph_cluster_stats {
 	int socket_id;
 	bool dispatch;
 	void *cookie;
-	size_t sz;
 
 	struct cluster_node clusters[];
-} __rte_cache_aligned;
+};
 
 #define boarder_model_dispatch()                                                              \
 	fprintf(f, "+-------------------------------+---------------+--------" \
@@ -121,6 +120,25 @@ print_node(FILE *f, const struct rte_graph_cluster_node_stats *stat, bool dispat
 	}
 }
 
+static inline void
+print_xstat(FILE *f, const struct rte_graph_cluster_node_stats *stat, bool dispatch)
+{
+	int i;
+
+	if (dispatch) {
+		for (i = 0; i < stat->xstat_cntrs; i++)
+			fprintf(f,
+				"|\t%-24s|%15s|%-15" PRIu64 "|%15s|%15s|%15s|%15s|%15s|%11.4s|\n",
+				stat->xstat_desc[i], "", stat->xstat_count[i], "", "", "", "", "",
+				"");
+	} else {
+		for (i = 0; i < stat->xstat_cntrs; i++)
+			fprintf(f,
+				"|\t%-24s|%15s|%-15" PRIu64 "|%15s|%15.3s|%15.6s|%11.4s|\n",
+				stat->xstat_desc[i], "", stat->xstat_count[i], "", "", "", "");
+	}
+}
+
 static int
 graph_cluster_stats_cb(bool dispatch, bool is_first, bool is_last, void *cookie,
 		       const struct rte_graph_cluster_node_stats *stat)
@@ -129,8 +147,11 @@ graph_cluster_stats_cb(bool dispatch, bool is_first, bool is_last, void *cookie,
 
 	if (unlikely(is_first))
 		print_banner(f, dispatch);
-	if (stat->objs)
+	if (stat->objs) {
 		print_node(f, stat, dispatch);
+		if (stat->xstat_cntrs)
+			print_xstat(f, stat, dispatch);
+	}
 	if (unlikely(is_last)) {
 		if (dispatch)
 			boarder_model_dispatch();
@@ -155,15 +176,55 @@ graph_cluster_stats_cb_dispatch(bool is_first, bool is_last, void *cookie,
 	return graph_cluster_stats_cb(true, is_first, is_last, cookie, stat);
 };
 
+static uint32_t
+cluster_count_nodes(const struct cluster *cluster)
+{
+	rte_node_t *nodes = NULL;
+	uint32_t max_nodes = 0;
+
+	for (unsigned int i = 0; i < cluster->nb_graphs; i++) {
+		struct graph_node *graph_node;
+
+		STAILQ_FOREACH(graph_node, &cluster->graphs[i]->node_list, next) {
+			rte_node_t *new_nodes;
+			unsigned int n;
+
+			for (n = 0; n < max_nodes; n++) {
+				if (nodes[n] != graph_node->node->id)
+					continue;
+				break;
+			}
+			if (n != max_nodes)
+				continue;
+
+			max_nodes++;
+			new_nodes = realloc(nodes, max_nodes * sizeof(nodes[0]));
+			if (new_nodes == NULL) {
+				free(nodes);
+				return 0;
+			}
+			nodes = new_nodes;
+			nodes[n] = graph_node->node->id;
+		}
+	}
+	free(nodes);
+
+	return max_nodes;
+}
+
 static struct rte_graph_cluster_stats *
 stats_mem_init(struct cluster *cluster,
 	       const struct rte_graph_cluster_stats_param *prm)
 {
-	size_t sz = sizeof(struct rte_graph_cluster_stats);
 	struct rte_graph_cluster_stats *stats;
 	rte_graph_cluster_stats_cb_t fn;
 	int socket_id = prm->socket_id;
 	uint32_t cluster_node_size;
+	uint32_t max_nodes;
+
+	max_nodes = cluster_count_nodes(cluster);
+	if (max_nodes == 0)
+		return NULL;
 
 	/* Fix up callback */
 	fn = prm->fn;
@@ -180,29 +241,28 @@ stats_mem_init(struct cluster *cluster,
 	cluster_node_size += cluster->nb_graphs * sizeof(struct rte_node *);
 	cluster_node_size = RTE_ALIGN(cluster_node_size, RTE_CACHE_LINE_SIZE);
 
-	stats = realloc(NULL, sz);
+	stats = rte_zmalloc_socket(NULL, sizeof(struct rte_graph_cluster_stats) +
+		max_nodes * cluster_node_size, 0, socket_id);
 	if (stats) {
-		memset(stats, 0, sz);
 		stats->fn = fn;
 		stats->cluster_node_size = cluster_node_size;
 		stats->max_nodes = 0;
 		stats->socket_id = socket_id;
 		stats->cookie = prm->cookie;
-		stats->sz = sz;
 	}
 
 	return stats;
 }
 
 static int
-stats_mem_populate(struct rte_graph_cluster_stats **stats_in,
+stats_mem_populate(struct rte_graph_cluster_stats *stats,
 		   struct rte_graph *graph, struct graph_node *graph_node)
 {
-	struct rte_graph_cluster_stats *stats = *stats_in;
 	rte_node_t id = graph_node->node->id;
 	struct cluster_node *cluster;
 	struct rte_node *node;
 	rte_node_t count;
+	uint8_t i;
 
 	cluster = stats->clusters;
 
@@ -223,39 +283,50 @@ stats_mem_populate(struct rte_graph_cluster_stats **stats_in,
 		cluster = RTE_PTR_ADD(cluster, stats->cluster_node_size);
 	}
 
-	/* Hey, it is a new node, allocate space for it in the reel */
-	stats = realloc(stats, stats->sz + stats->cluster_node_size);
-	if (stats == NULL)
-		SET_ERR_JMP(ENOMEM, err, "Realloc failed");
-	*stats_in = NULL;
-
-	/* Clear the new struct cluster_node area */
-	cluster = RTE_PTR_ADD(stats, stats->sz),
-	memset(cluster, 0, stats->cluster_node_size);
 	memcpy(cluster->stat.name, graph_node->node->name, RTE_NODE_NAMESIZE);
 	cluster->stat.id = graph_node->node->id;
 	cluster->stat.hz = rte_get_timer_hz();
 	node = graph_node_id_to_ptr(graph, id);
 	if (node == NULL)
-		SET_ERR_JMP(ENOENT, free, "Failed to find node %s in graph %s",
+		SET_ERR_JMP(ENOENT, err, "Failed to find node %s in graph %s",
 			    graph_node->node->name, graph->name);
 	cluster->nodes[cluster->nb_nodes++] = node;
+	if (graph_node->node->xstats) {
+		cluster->stat.xstat_cntrs = graph_node->node->xstats->nb_xstats;
+		cluster->stat.xstat_count = rte_zmalloc_socket(NULL,
+			sizeof(uint64_t) * graph_node->node->xstats->nb_xstats,
+			RTE_CACHE_LINE_SIZE, stats->socket_id);
+		if (cluster->stat.xstat_count == NULL)
+			SET_ERR_JMP(ENOMEM, err, "Failed to allocate memory node %s graph %s",
+				    graph_node->node->name, graph->name);
 
-	stats->sz += stats->cluster_node_size;
+		cluster->stat.xstat_desc = rte_zmalloc_socket(NULL,
+			RTE_NODE_XSTAT_DESC_SIZE * graph_node->node->xstats->nb_xstats,
+			RTE_CACHE_LINE_SIZE, stats->socket_id);
+		if (cluster->stat.xstat_desc == NULL) {
+			rte_free(cluster->stat.xstat_count);
+			SET_ERR_JMP(ENOMEM, err, "Failed to allocate memory node %s graph %s",
+				    graph_node->node->name, graph->name);
+		}
+
+		for (i = 0; i < cluster->stat.xstat_cntrs; i++) {
+			if (rte_strscpy(cluster->stat.xstat_desc[i],
+					graph_node->node->xstats->xstat_desc[i],
+					RTE_NODE_XSTAT_DESC_SIZE) < 0) {
+				rte_free(cluster->stat.xstat_count);
+				rte_free(cluster->stat.xstat_desc);
+				SET_ERR_JMP(E2BIG, err,
+					    "Error description overflow node %s graph %s",
+					    graph_node->node->name, graph->name);
+			}
+		}
+	}
+
 	stats->max_nodes++;
-	*stats_in = stats;
 
 	return 0;
-free:
-	free(stats);
 err:
 	return -rte_errno;
-}
-
-static void
-stats_mem_fini(struct rte_graph_cluster_stats *stats)
-{
-	free(stats);
 }
 
 static void
@@ -326,10 +397,7 @@ struct rte_graph_cluster_stats *
 rte_graph_cluster_stats_create(const struct rte_graph_cluster_stats_param *prm)
 {
 	struct rte_graph_cluster_stats *stats, *rc = NULL;
-	struct graph_node *graph_node;
 	struct cluster cluster;
-	struct graph *graph;
-	const char *pattern;
 	rte_graph_t i;
 
 	/* Sanity checks */
@@ -347,37 +415,36 @@ rte_graph_cluster_stats_create(const struct rte_graph_cluster_stats_param *prm)
 	graph_spinlock_lock();
 	/* Expand graph pattern and add the graph to the cluster */
 	for (i = 0; i < prm->nb_graph_patterns; i++) {
-		pattern = prm->graph_patterns[i];
-		if (expand_pattern_to_cluster(&cluster, pattern))
+		if (expand_pattern_to_cluster(&cluster, prm->graph_patterns[i]))
 			goto bad_pattern;
 	}
 
 	/* Alloc the stats memory */
 	stats = stats_mem_init(&cluster, prm);
 	if (stats == NULL)
-		SET_ERR_JMP(ENOMEM, bad_pattern, "Failed alloc stats memory");
+		SET_ERR_JMP(ENOMEM, bad_pattern, "Failed rte_malloc for stats memory");
 
 	/* Iterate over M(Graph) x N (Nodes in graph) */
 	for (i = 0; i < cluster.nb_graphs; i++) {
+		struct graph_node *graph_node;
+		struct graph *graph;
+
 		graph = cluster.graphs[i];
 		STAILQ_FOREACH(graph_node, &graph->node_list, next) {
 			struct rte_graph *graph_fp = graph->graph;
-			if (stats_mem_populate(&stats, graph_fp, graph_node))
+			if (stats_mem_populate(stats, graph_fp, graph_node))
 				goto realloc_fail;
 		}
 		if (graph->graph->model == RTE_GRAPH_MODEL_MCORE_DISPATCH)
 			stats->dispatch = true;
 	}
 
-	/* Finally copy to hugepage memory to avoid pressure on rte_realloc */
-	rc = rte_malloc_socket(NULL, stats->sz, 0, stats->socket_id);
-	if (rc)
-		rte_memcpy(rc, stats, stats->sz);
-	else
-		SET_ERR_JMP(ENOMEM, realloc_fail, "rte_malloc failed");
+	rc = stats;
+	stats = NULL;
 
 realloc_fail:
-	stats_mem_fini(stats);
+	if (stats != NULL)
+		rte_graph_cluster_stats_destroy(stats);
 bad_pattern:
 	graph_spinlock_unlock();
 	cluster_fini(&cluster);
@@ -388,6 +455,18 @@ fail:
 void
 rte_graph_cluster_stats_destroy(struct rte_graph_cluster_stats *stat)
 {
+	struct cluster_node *cluster;
+	rte_node_t count;
+
+	cluster = stat->clusters;
+	for (count = 0; count < stat->max_nodes; count++) {
+		if (cluster->stat.xstat_cntrs) {
+			rte_free(cluster->stat.xstat_count);
+			rte_free(cluster->stat.xstat_desc);
+		}
+
+		cluster = RTE_PTR_ADD(cluster, stat->cluster_node_size);
+	}
 	return rte_free(stat);
 }
 
@@ -399,7 +478,11 @@ cluster_node_arregate_stats(struct cluster_node *cluster, bool dispatch)
 	uint64_t sched_objs = 0, sched_fail = 0;
 	struct rte_node *node;
 	rte_node_t count;
+	uint64_t *xstat;
+	uint8_t i;
 
+	if (stat->xstat_cntrs != 0)
+		memset(stat->xstat_count, 0, sizeof(uint64_t) * stat->xstat_cntrs);
 	for (count = 0; count < cluster->nb_nodes; count++) {
 		node = cluster->nodes[count];
 
@@ -412,6 +495,12 @@ cluster_node_arregate_stats(struct cluster_node *cluster, bool dispatch)
 		objs += node->total_objs;
 		cycles += node->total_cycles;
 		realloc_count += node->realloc_count;
+
+		if (node->xstat_off == 0)
+			continue;
+		xstat = RTE_PTR_ADD(node, node->xstat_off);
+		for (i = 0; i < stat->xstat_cntrs; i++)
+			stat->xstat_count[i] += xstat[i];
 	}
 
 	stat->calls = calls;
@@ -464,6 +553,7 @@ rte_graph_cluster_stats_reset(struct rte_graph_cluster_stats *stat)
 {
 	struct cluster_node *cluster;
 	rte_node_t count;
+	uint8_t i;
 
 	cluster = stat->clusters;
 
@@ -479,6 +569,8 @@ rte_graph_cluster_stats_reset(struct rte_graph_cluster_stats *stat)
 		node->prev_objs = 0;
 		node->prev_cycles = 0;
 		node->realloc_count = 0;
+		for (i = 0; i < node->xstat_cntrs; i++)
+			node->xstat_count[i] = 0;
 		cluster = RTE_PTR_ADD(cluster, stat->cluster_node_size);
 	}
 }

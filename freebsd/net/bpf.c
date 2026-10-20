@@ -33,13 +33,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *      @(#)bpf.c	8.4 (Berkeley) 1/9/95
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_bpf.h"
 #include "opt_ddb.h"
 #include "opt_netgraph.h"
@@ -78,6 +74,8 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
+#include <net/if_vlan_var.h>
 #include <net/if_dl.h>
 #include <net/bpf.h>
 #include <net/bpf_buffer.h>
@@ -100,7 +98,7 @@ __FBSDID("$FreeBSD$");
 
 MALLOC_DEFINE(M_BPF, "BPF", "BPF data");
 
-static struct bpf_if_ext dead_bpf_if = {
+static const struct bpf_if_ext dead_bpf_if = {
 	.bif_dlist = CK_LIST_HEAD_INITIALIZER()
 };
 
@@ -130,6 +128,7 @@ struct bpf_program_buffer {
 #if defined(DEV_BPF) || defined(NETGRAPH_BPF)
 
 #define PRINET  26			/* interruptible */
+#define BPF_PRIO_MAX	7
 
 #define	SIZEOF_BPF_HDR(type)	\
     (offsetof(type, bh_hdrlen) + sizeof(((type *)0)->bh_hdrlen))
@@ -173,7 +172,7 @@ struct bpf_dltlist32 {
 #define	BIOCSETFNR32	_IOW('B', 130, struct bpf_program32)
 #endif
 
-#define BPF_LOCK()	   sx_xlock(&bpf_sx)
+#define BPF_LOCK()		sx_xlock(&bpf_sx)
 #define BPF_UNLOCK()		sx_xunlock(&bpf_sx)
 #define BPF_LOCK_ASSERT()	sx_assert(&bpf_sx, SA_XLOCKED)
 /*
@@ -183,7 +182,7 @@ struct bpf_dltlist32 {
  * frames, ethernet frames, etc).
  */
 CK_LIST_HEAD(bpf_iflist, bpf_if);
-static struct bpf_iflist bpf_iflist;
+static struct bpf_iflist bpf_iflist = CK_LIST_HEAD_INITIALIZER();
 static struct sx	bpf_sx;		/* bpf global lock */
 static int		bpf_bpfd_cnt;
 
@@ -211,6 +210,7 @@ static int	bpf_getdltlist(struct bpf_d *, struct bpf_dltlist *);
 static int	bpf_setdlt(struct bpf_d *, u_int);
 static void	filt_bpfdetach(struct knote *);
 static int	filt_bpfread(struct knote *, long);
+static int	filt_bpfwrite(struct knote *, long);
 static void	bpf_drvinit(void *);
 static int	bpf_stats_sysctl(SYSCTL_HANDLER_ARGS);
 
@@ -249,10 +249,16 @@ static struct cdevsw bpf_cdevsw = {
 	.d_kqfilter =	bpfkqfilter,
 };
 
-static struct filterops bpfread_filtops = {
+static const struct filterops bpfread_filtops = {
 	.f_isfd = 1,
 	.f_detach = filt_bpfdetach,
 	.f_event = filt_bpfread,
+};
+
+static const struct filterops bpfwrite_filtops = {
+	.f_isfd = 1,
+	.f_detach = filt_bpfdetach,
+	.f_event = filt_bpfwrite,
 };
 
 /*
@@ -641,7 +647,8 @@ bpf_movein(struct uio *uio, int linktype, struct ifnet *ifp, struct mbuf **mp,
 	if (len < hlen || len - hlen > ifp->if_mtu)
 		return (EMSGSIZE);
 
-	m = m_get2(len, M_WAITOK, MT_DATA, M_PKTHDR);
+	/* Allocate a mbuf, up to MJUM16BYTES bytes, for our write. */
+	m = m_get3(len, M_WAITOK, MT_DATA, M_PKTHDR);
 	if (m == NULL)
 		return (EIO);
 	m->m_pkthdr.len = m->m_len = len;
@@ -753,6 +760,10 @@ bpf_attachd(struct bpf_d *d, struct bpf_if *bp)
 		CK_LIST_INSERT_HEAD(&bp->bif_dlist, d, bd_next);
 
 	reset_d(d);
+
+	/* Trigger EVFILT_WRITE events. */
+	bpf_wakeup(d);
+
 	BPFD_UNLOCK(d);
 	bpf_bpfd_cnt++;
 
@@ -959,7 +970,7 @@ bpfopen(struct cdev *dev, int flags, int fmt, struct thread *td)
 	d->bd_bufmode = BPF_BUFMODE_BUFFER;
 	d->bd_sig = SIGIO;
 	d->bd_direction = BPF_D_INOUT;
-	d->bd_refcnt = 1;
+	refcount_init(&d->bd_refcnt, 1);
 	BPF_PID_REFRESH(d, td);
 #ifdef MAC
 	mac_bpfdesc_init(d);
@@ -968,6 +979,9 @@ bpfopen(struct cdev *dev, int flags, int fmt, struct thread *td)
 	mtx_init(&d->bd_lock, devtoname(dev), "bpf cdev lock", MTX_DEF);
 	callout_init_mtx(&d->bd_callout, &d->bd_lock, 0);
 	knlist_init_mtx(&d->bd_sel.si_note, &d->bd_lock);
+
+	/* Disable VLAN pcp tagging. */
+	d->bd_pcp = 0;
 
 	return (0);
 }
@@ -1008,7 +1022,7 @@ bpfread(struct cdev *dev, struct uio *uio, int ioflag)
 	d->bd_state = BPF_IDLE;
 	while (d->bd_hbuf_in_use) {
 		error = mtx_sleep(&d->bd_hbuf_in_use, &d->bd_lock,
-		    PRINET|PCATCH, "bd_hbuf", 0);
+		    PRINET | PCATCH, "bd_hbuf", 0);
 		if (error != 0) {
 			BPFD_UNLOCK(d);
 			return (error);
@@ -1051,7 +1065,7 @@ bpfread(struct cdev *dev, struct uio *uio, int ioflag)
 			BPFD_UNLOCK(d);
 			return (EWOULDBLOCK);
 		}
-		error = msleep(d, &d->bd_lock, PRINET|PCATCH,
+		error = msleep(d, &d->bd_lock, PRINET | PCATCH,
 		     "bpf", d->bd_rtout);
 		if (error == EINTR || error == ERESTART) {
 			BPFD_UNLOCK(d);
@@ -1096,13 +1110,15 @@ bpfread(struct cdev *dev, struct uio *uio, int ioflag)
 	error = bpf_uiomove(d, d->bd_hbuf, d->bd_hlen, uio);
 
 	BPFD_LOCK(d);
-	KASSERT(d->bd_hbuf != NULL, ("bpfread: lost bd_hbuf"));
-	d->bd_fbuf = d->bd_hbuf;
-	d->bd_hbuf = NULL;
-	d->bd_hlen = 0;
-	bpf_buf_reclaimed(d);
-	d->bd_hbuf_in_use = 0;
-	wakeup(&d->bd_hbuf_in_use);
+	if (d->bd_hbuf_in_use) {
+		KASSERT(d->bd_hbuf != NULL, ("bpfread: lost bd_hbuf"));
+		d->bd_fbuf = d->bd_hbuf;
+		d->bd_hbuf = NULL;
+		d->bd_hlen = 0;
+		bpf_buf_reclaimed(d);
+		d->bd_hbuf_in_use = 0;
+		wakeup(&d->bd_hbuf_in_use);
+	}
 	BPFD_UNLOCK(d);
 
 	return (error);
@@ -1259,6 +1275,9 @@ bpfwrite(struct cdev *dev, struct uio *uio, int ioflag)
 		ro.ro_flags = RT_HAS_HEADER;
 	}
 
+	if (d->bd_pcp != 0)
+		vlan_set_pcp(m, d->bd_pcp);
+
 	/* Avoid possible recursion on BPFD_LOCK(). */
 	NET_EPOCH_ENTER(et);
 	BPFD_UNLOCK(d);
@@ -1348,6 +1367,7 @@ reset_d(struct bpf_d *d)
  *  BIOCROTZBUF		Force rotation of zero-copy buffer
  *  BIOCSETBUFMODE	Set buffer mode.
  *  BIOCGETBUFMODE	Get current buffer mode.
+ *  BIOCSETVLANPCP	Set VLAN PCP tag.
  */
 /* ARGSUSED */
 static	int
@@ -1494,18 +1514,18 @@ bpfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags,
 	 * Put interface into promiscuous mode.
 	 */
 	case BIOCPROMISC:
+		BPF_LOCK();
 		if (d->bd_bif == NULL) {
 			/*
 			 * No interface attached yet.
 			 */
 			error = EINVAL;
-			break;
-		}
-		if (d->bd_promisc == 0) {
+		} else if (d->bd_promisc == 0) {
 			error = ifpromisc(d->bd_bif->bif_ifp, 1);
 			if (error == 0)
 				d->bd_promisc = 1;
 		}
+		BPF_UNLOCK();
 		break;
 
 	/*
@@ -1624,7 +1644,7 @@ bpfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags,
 #endif
 		{
 			struct timeval *tv = (struct timeval *)addr;
-#if defined(COMPAT_FREEBSD32) && !defined(__mips__)
+#if defined(COMPAT_FREEBSD32)
 			struct timeval32 *tv32;
 			struct timeval tv64;
 
@@ -1898,6 +1918,19 @@ bpfioctl(struct cdev *dev, u_long cmd, caddr_t addr, int flags,
 	case BIOCROTZBUF:
 		error = bpf_ioctl_rotzbuf(td, d, (struct bpf_zbuf *)addr);
 		break;
+
+	case BIOCSETVLANPCP:
+		{
+			u_int pcp;
+
+			pcp = *(u_int *)addr;
+			if (pcp > BPF_PRIO_MAX || pcp < 0) {
+				error = EINVAL;
+				break;
+			}
+			d->bd_pcp = pcp;
+			break;
+		}
 	}
 	CURVNET_RESTORE();
 	return (error);
@@ -2059,10 +2092,20 @@ bpf_setif(struct bpf_d *d, struct ifreq *ifr)
 	BPF_LOCK_ASSERT();
 
 	theywant = ifunit(ifr->ifr_name);
-	if (theywant == NULL || theywant->if_bpf == NULL)
+	if (theywant == NULL)
+		return (ENXIO);
+	/*
+	 * Look through attached interfaces for the named one.
+	 */
+	CK_LIST_FOREACH(bp, &bpf_iflist, bif_next) {
+		if (bp->bif_ifp == theywant &&
+		    bp->bif_bpf == &theywant->if_bpf)
+			break;
+	}
+	if (bp == NULL)
 		return (ENXIO);
 
-	bp = theywant->if_bpf;
+	MPASS(bp == theywant->if_bpf);
 	/*
 	 * At this point, we expect the buffer is already allocated.  If not,
 	 * return an error.
@@ -2101,7 +2144,7 @@ bpfpoll(struct cdev *dev, int events, struct thread *td)
 
 	if (devfs_get_cdevpriv((void **)&d) != 0 || d->bd_bif == NULL)
 		return (events &
-		    (POLLHUP|POLLIN|POLLRDNORM|POLLOUT|POLLWRNORM));
+		    (POLLHUP | POLLIN | POLLRDNORM | POLLOUT | POLLWRNORM));
 
 	/*
 	 * Refresh PID associated with this descriptor.
@@ -2135,16 +2178,27 @@ bpfkqfilter(struct cdev *dev, struct knote *kn)
 {
 	struct bpf_d *d;
 
-	if (devfs_get_cdevpriv((void **)&d) != 0 ||
-	    kn->kn_filter != EVFILT_READ)
+	if (devfs_get_cdevpriv((void **)&d) != 0)
 		return (1);
+
+	switch (kn->kn_filter) {
+	case EVFILT_READ:
+		kn->kn_fop = &bpfread_filtops;
+		break;
+
+	case EVFILT_WRITE:
+		kn->kn_fop = &bpfwrite_filtops;
+		break;
+
+	default:
+		return (1);
+	}
 
 	/*
 	 * Refresh PID associated with this descriptor.
 	 */
 	BPFD_LOCK(d);
 	BPF_PID_REFRESH_CUR(d);
-	kn->kn_fop = &bpfread_filtops;
 	kn->kn_hook = d;
 	knlist_add(&d->bd_sel.si_note, kn, 1);
 	BPFD_UNLOCK(d);
@@ -2184,6 +2238,22 @@ filt_bpfread(struct knote *kn, long hint)
 	return (ready);
 }
 
+static int
+filt_bpfwrite(struct knote *kn, long hint)
+{
+	struct bpf_d *d = (struct bpf_d *)kn->kn_hook;
+
+	BPFD_LOCK_ASSERT(d);
+
+	if (d->bd_bif == NULL) {
+		kn->kn_data = 0;
+		return (0);
+	} else {
+		kn->kn_data = d->bd_bif->bif_ifp->if_mtu;
+		return (1);
+	}
+}
+
 #define	BPF_TSTAMP_NONE		0
 #define	BPF_TSTAMP_FAST		1
 #define	BPF_TSTAMP_NORMAL	2
@@ -2204,6 +2274,7 @@ bpf_ts_quality(int tstype)
 static int
 bpf_gettime(struct bintime *bt, int tstype, struct mbuf *m)
 {
+	struct timespec ts;
 	struct m_tag *tag;
 	int quality;
 
@@ -2212,6 +2283,11 @@ bpf_gettime(struct bintime *bt, int tstype, struct mbuf *m)
 		return (quality);
 
 	if (m != NULL) {
+		if ((m->m_flags & (M_PKTHDR | M_TSTMP)) == (M_PKTHDR | M_TSTMP)) {
+			mbuf_tstmp2timespec(m, &ts);
+			timespec2bintime(&ts, bt);
+			return (BPF_TSTAMP_EXTERN);
+		}
 		tag = m_tag_locate(m, MTAG_BPF, MTAG_BPF_TIMESTAMP, NULL);
 		if (tag != NULL) {
 			*bt = *(struct bintime *)(tag + 1);
@@ -2281,6 +2357,13 @@ bpf_tap(struct bpf_if *bp, u_char *pkt, u_int pktlen)
 	NET_EPOCH_EXIT(et);
 }
 
+void
+bpf_tap_if(if_t ifp, u_char *pkt, u_int pktlen)
+{
+	if (bpf_peers_present(ifp->if_bpf))
+		bpf_tap(ifp->if_bpf, pkt, pktlen);
+}
+
 #define	BPF_CHECK_DIRECTION(d, r, i)				\
 	    (((d)->bd_direction == BPF_D_IN && (r) != (i)) ||	\
 	    ((d)->bd_direction == BPF_D_OUT && (r) == (i)))
@@ -2341,6 +2424,15 @@ bpf_mtap(struct bpf_if *bp, struct mbuf *m)
 	NET_EPOCH_EXIT(et);
 }
 
+void
+bpf_mtap_if(if_t ifp, struct mbuf *m)
+{
+	if (bpf_peers_present(ifp->if_bpf)) {
+		M_ASSERTVALID(m);
+		bpf_mtap(ifp->if_bpf, m);
+	}
+}
+
 /*
  * Incoming linkage from device drivers, when packet is in
  * an mbuf chain and to be prepended by a contiguous header.
@@ -2396,6 +2488,15 @@ bpf_mtap2(struct bpf_if *bp, void *data, u_int dlen, struct mbuf *m)
 		}
 	}
 	NET_EPOCH_EXIT(et);
+}
+
+void
+bpf_mtap2_if(if_t ifp, void *data, u_int dlen, struct mbuf *m)
+{
+	if (bpf_peers_present(ifp->if_bpf)) {
+		M_ASSERTVALID(m);
+		bpf_mtap2(ifp->if_bpf, data, dlen, m);
+	}
 }
 
 #undef	BPF_CHECK_DIRECTION
@@ -2475,6 +2576,7 @@ catchpacket(struct bpf_d *d, u_char *pkt, u_int pktlen, u_int snaplen,
     void (*cpfn)(struct bpf_d *, caddr_t, u_int, void *, u_int),
     struct bintime *bt)
 {
+	static char zeroes[BPF_ALIGNMENT];
 	struct bpf_xhdr hdr;
 #ifndef BURN_BRIDGES
 	struct bpf_hdr hdr_old;
@@ -2482,7 +2584,7 @@ catchpacket(struct bpf_d *d, u_char *pkt, u_int pktlen, u_int snaplen,
 	struct bpf_hdr32 hdr32_old;
 #endif
 #endif
-	int caplen, curlen, hdrlen, totlen;
+	int caplen, curlen, hdrlen, pad, totlen;
 	int do_wakeup = 0;
 	int do_timestamp;
 	int tstype;
@@ -2548,13 +2650,25 @@ catchpacket(struct bpf_d *d, u_char *pkt, u_int pktlen, u_int snaplen,
 		ROTATE_BUFFERS(d);
 		do_wakeup = 1;
 		curlen = 0;
-	} else if (d->bd_immediate || d->bd_state == BPF_TIMED_OUT)
-		/*
-		 * Immediate mode is set, or the read timeout has already
-		 * expired during a select call.  A packet arrived, so the
-		 * reader should be woken up.
-		 */
-		do_wakeup = 1;
+	} else {
+		if (d->bd_immediate || d->bd_state == BPF_TIMED_OUT) {
+			/*
+			 * Immediate mode is set, or the read timeout has
+			 * already expired during a select call.  A packet
+			 * arrived, so the reader should be woken up.
+			 */
+			do_wakeup = 1;
+		}
+		pad = curlen - d->bd_slen;
+		KASSERT(pad >= 0 && pad <= sizeof(zeroes),
+		    ("%s: invalid pad byte count %d", __func__, pad));
+		if (pad > 0) {
+			/* Zero pad bytes. */
+			bpf_append_bytes(d, d->bd_sbuf, d->bd_slen, zeroes,
+			    pad);
+		}
+	}
+
 	caplen = totlen - hdrlen;
 	tstype = d->bd_tstamp;
 	do_timestamp = tstype != BPF_T_NONE;
@@ -2696,7 +2810,7 @@ bpfattach2(struct ifnet *ifp, u_int dlt, u_int hdrlen,
 	bp->bif_dlt = dlt;
 	bp->bif_hdrlen = hdrlen;
 	bp->bif_bpf = driverp;
-	bp->bif_refcnt = 1;
+	refcount_init(&bp->bif_refcnt, 1);
 	*driverp = bp;
 	/*
 	 * Reference ifnet pointer, so it won't freed until
@@ -2735,6 +2849,33 @@ bpf_get_bp_params(struct bpf_if *bp, u_int *bif_dlt, u_int *bif_hdrlen)
 
 	return (0);
 }
+
+/*
+ * Detach descriptors on interface's vmove event.
+ */
+void
+bpf_ifdetach(struct ifnet *ifp)
+{
+	struct bpf_if *bp;
+	struct bpf_d *d;
+
+	BPF_LOCK();
+	CK_LIST_FOREACH(bp, &bpf_iflist, bif_next) {
+		if (bp->bif_ifp != ifp)
+			continue;
+
+		/* Detach common descriptors */
+		while ((d = CK_LIST_FIRST(&bp->bif_dlist)) != NULL) {
+			bpf_detachd_locked(d, true);
+		}
+
+		/* Detach writer-only descriptors */
+		while ((d = CK_LIST_FIRST(&bp->bif_wlist)) != NULL) {
+			bpf_detachd_locked(d, true);
+		}
+	}
+	BPF_UNLOCK();
+}
 #endif
 
 /*
@@ -2755,7 +2896,7 @@ bpfdetach(struct ifnet *ifp)
 			continue;
 
 		CK_LIST_REMOVE(bp, bif_next);
-		*bp->bif_bpf = (struct bpf_if *)&dead_bpf_if;
+		*bp->bif_bpf = __DECONST(struct bpf_if *, &dead_bpf_if);
 
 		CTR4(KTR_NET,
 		    "%s: sheduling free for encap %d (%p) for if %p",
@@ -2773,6 +2914,12 @@ bpfdetach(struct ifnet *ifp)
 		bpfif_rele(bp);
 	}
 	BPF_UNLOCK();
+}
+
+bool
+bpf_peers_present_if(struct ifnet *ifp)
+{
+	return (bpf_peers_present(ifp->if_bpf));
 }
 
 /*
@@ -2861,8 +3008,6 @@ bpf_drvinit(void *unused)
 	struct cdev *dev;
 
 	sx_init(&bpf_sx, "bpf global lock");
-	CK_LIST_INIT(&bpf_iflist);
-
 	dev = make_dev(&bpf_cdevsw, 0, UID_ROOT, GID_WHEEL, 0600, "bpf");
 	/* For compatibility */
 	make_dev_alias(dev, "bpf0");
@@ -2998,7 +3143,7 @@ bpf_stats_sysctl(SYSCTL_HANDLER_ARGS)
 	return (error);
 }
 
-SYSINIT(bpfdev,SI_SUB_DRIVERS,SI_ORDER_MIDDLE,bpf_drvinit,NULL);
+SYSINIT(bpfdev, SI_SUB_DRIVERS, SI_ORDER_MIDDLE, bpf_drvinit, NULL);
 
 #else /* !DEV_BPF && !NETGRAPH_BPF */
 
@@ -3015,12 +3160,27 @@ bpf_tap(struct bpf_if *bp, u_char *pkt, u_int pktlen)
 }
 
 void
+bpf_tap_if(if_t ifp, u_char *pkt, u_int pktlen)
+{
+}
+
+void
 bpf_mtap(struct bpf_if *bp, struct mbuf *m)
 {
 }
 
 void
+bpf_mtap_if(if_t ifp, struct mbuf *m)
+{
+}
+
+void
 bpf_mtap2(struct bpf_if *bp, void *d, u_int l, struct mbuf *m)
+{
+}
+
+void
+bpf_mtap2_if(if_t ifp, void *data, u_int dlen, struct mbuf *m)
 {
 }
 
@@ -3035,7 +3195,7 @@ void
 bpfattach2(struct ifnet *ifp, u_int dlt, u_int hdrlen, struct bpf_if **driverp)
 {
 
-	*driverp = (struct bpf_if *)&dead_bpf_if;
+	*driverp = __DECONST(struct bpf_if *, &dead_bpf_if);
 }
 
 void
@@ -3043,16 +3203,22 @@ bpfdetach(struct ifnet *ifp)
 {
 }
 
+bool
+bpf_peers_present_if(struct ifnet *ifp)
+{
+	return (false);
+}
+
 u_int
 bpf_filter(const struct bpf_insn *pc, u_char *p, u_int wirelen, u_int buflen)
 {
-	return -1;	/* "no filter" behaviour */
+	return (-1);	/* "no filter" behaviour */
 }
 
 int
 bpf_validate(const struct bpf_insn *f, int len)
 {
-	return 0;		/* false */
+	return (0);	/* false */
 }
 
 #endif /* !DEV_BPF && !NETGRAPH_BPF */
@@ -3066,6 +3232,7 @@ bpf_show_bpf_if(struct bpf_if *bpf_if)
 		return;
 	db_printf("%p:\n", bpf_if);
 #define	BPF_DB_PRINTF(f, e)	db_printf("   %s = " f "\n", #e, bpf_if->e);
+#define	BPF_DB_PRINTF_RAW(f, e)	db_printf("   %s = " f "\n", #e, e);
 	/* bif_ext.bif_next */
 	/* bif_ext.bif_dlist */
 	BPF_DB_PRINTF("%#x", bif_dlt);
@@ -3073,7 +3240,7 @@ bpf_show_bpf_if(struct bpf_if *bpf_if)
 	/* bif_wlist */
 	BPF_DB_PRINTF("%p", bif_ifp);
 	BPF_DB_PRINTF("%p", bif_bpf);
-	BPF_DB_PRINTF("%u", bif_refcnt);
+	BPF_DB_PRINTF_RAW("%u", refcount_load(&bpf_if->bif_refcnt));
 }
 
 DB_SHOW_COMMAND(bpf_if, db_show_bpf_if)

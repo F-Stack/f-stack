@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998-2000 Doug Rabson
  * All rights reserved.
@@ -26,17 +26,11 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_gdb.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
-#ifdef GPROF
-#include <sys/gmon.h>
-#endif
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
@@ -52,6 +46,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/vnode.h>
 #include <sys/linker.h>
 #include <sys/sysctl.h>
+#include <sys/tslog.h>
 
 #include <machine/elf.h>
 
@@ -72,6 +67,10 @@ __FBSDID("$FreeBSD$");
 #include <sys/link_elf.h>
 
 #include "linker_if.h"
+
+#ifdef DDB_CTF
+#include <ddb/db_ctf.h>
+#endif
 
 #define MAXSEGS 4
 
@@ -144,8 +143,14 @@ static int	link_elf_load_file(linker_class_t, const char *,
 		    linker_file_t *);
 static int	link_elf_lookup_symbol(linker_file_t, const char *,
 		    c_linker_sym_t *);
+static int	link_elf_lookup_debug_symbol(linker_file_t, const char *,
+		    c_linker_sym_t *);
+static int 	link_elf_lookup_debug_symbol_ctf(linker_file_t lf,
+		    const char *name, c_linker_sym_t *sym, linker_ctf_t *lc);
 static int	link_elf_symbol_values(linker_file_t, c_linker_sym_t,
 		    linker_symval_t *);
+static int	link_elf_debug_symbol_values(linker_file_t, c_linker_sym_t,
+		    linker_symval_t*);
 static int	link_elf_search_symbol(linker_file_t, caddr_t,
 		    c_linker_sym_t *, long *);
 
@@ -160,11 +165,17 @@ static int	link_elf_each_function_nameval(linker_file_t,
 static void	link_elf_reloc_local(linker_file_t);
 static long	link_elf_symtab_get(linker_file_t, const Elf_Sym **);
 static long	link_elf_strtab_get(linker_file_t, caddr_t *);
+#ifdef VIMAGE
+static void	link_elf_propagate_vnets(linker_file_t);
+#endif
 static int	elf_lookup(linker_file_t, Elf_Size, int, Elf_Addr *);
 
 static kobj_method_t link_elf_methods[] = {
 	KOBJMETHOD(linker_lookup_symbol,	link_elf_lookup_symbol),
+	KOBJMETHOD(linker_lookup_debug_symbol,	link_elf_lookup_debug_symbol),
+	KOBJMETHOD(linker_lookup_debug_symbol_ctf, link_elf_lookup_debug_symbol_ctf),
 	KOBJMETHOD(linker_symbol_values,	link_elf_symbol_values),
+	KOBJMETHOD(linker_debug_symbol_values,	link_elf_debug_symbol_values),
 	KOBJMETHOD(linker_search_symbol,	link_elf_search_symbol),
 	KOBJMETHOD(linker_unload,		link_elf_unload_file),
 	KOBJMETHOD(linker_load_file,		link_elf_load_file),
@@ -174,8 +185,12 @@ static kobj_method_t link_elf_methods[] = {
 	KOBJMETHOD(linker_each_function_name,	link_elf_each_function_name),
 	KOBJMETHOD(linker_each_function_nameval, link_elf_each_function_nameval),
 	KOBJMETHOD(linker_ctf_get,		link_elf_ctf_get),
+	KOBJMETHOD(linker_ctf_lookup_typename,  link_elf_ctf_lookup_typename),
 	KOBJMETHOD(linker_symtab_get,		link_elf_symtab_get),
 	KOBJMETHOD(linker_strtab_get,		link_elf_strtab_get),
+#ifdef VIMAGE
+	KOBJMETHOD(linker_propagate_vnets,	link_elf_propagate_vnets),
+#endif
 	KOBJMETHOD_END
 };
 
@@ -187,6 +202,11 @@ static struct linker_class link_elf_class = {
 #endif
 	link_elf_methods, sizeof(struct elf_file)
 };
+
+static bool link_elf_leak_locals = true;
+SYSCTL_BOOL(_debug, OID_AUTO, link_elf_leak_locals,
+    CTLFLAG_RWTUN, &link_elf_leak_locals, 0,
+    "Allow local symbols to participate in global module symbol resolution");
 
 typedef int (*elf_reloc_fn)(linker_file_t lf, Elf_Addr relocbase,
     const void *data, int type, elf_lookup_fn lookup);
@@ -338,7 +358,7 @@ link_elf_error(const char *filename, const char *s)
 }
 
 static void
-link_elf_invoke_ctors(caddr_t addr, size_t size)
+link_elf_invoke_cbs(caddr_t addr, size_t size)
 {
 	void (**ctor)(void);
 	size_t i, cnt;
@@ -351,6 +371,17 @@ link_elf_invoke_ctors(caddr_t addr, size_t size)
 		if (ctor[i] != NULL)
 			(*ctor[i])();
 	}
+}
+
+static void
+link_elf_invoke_ctors(linker_file_t lf)
+{
+	KASSERT(lf->ctors_invoked == LF_NONE,
+	    ("%s: file %s ctor state %d",
+	    __func__, lf->filename, lf->ctors_invoked));
+
+	link_elf_invoke_cbs(lf->ctors_addr, lf->ctors_size);
+	lf->ctors_invoked = LF_CTORS;
 }
 
 /*
@@ -383,7 +414,7 @@ link_elf_link_common_finish(linker_file_t lf)
 #endif
 
 	/* Invoke .ctors */
-	link_elf_invoke_ctors(lf->ctors_addr, lf->ctors_size);
+	link_elf_invoke_ctors(lf);
 	return (0);
 }
 
@@ -419,18 +450,14 @@ link_elf_init(void* arg)
 	Elf_Dyn *dp;
 	Elf_Addr *ctors_addrp;
 	Elf_Size *ctors_sizep;
-	caddr_t modptr, baseptr, sizeptr;
+	caddr_t baseptr, sizeptr;
 	elf_file_t ef;
 	const char *modname;
 
 	linker_add_class(&link_elf_class);
 
 	dp = (Elf_Dyn *)&_DYNAMIC;
-	modname = NULL;
-	modptr = preload_search_by_type("elf" __XSTRING(__ELF_WORD_SIZE) " kernel");
-	if (modptr == NULL)
-		modptr = preload_search_by_type("elf kernel");
-	modname = (char *)preload_search_info(modptr, MODINFO_NAME);
+	modname = (char *)preload_search_info(preload_kmdp, MODINFO_NAME);
 	if (modname == NULL)
 		modname = "kernel";
 	linker_kernel_file = linker_make_file(modname, &link_elf_class);
@@ -462,17 +489,17 @@ link_elf_init(void* arg)
 	linker_kernel_file->size = -(intptr_t)linker_kernel_file->address;
 #endif
 
-	if (modptr != NULL) {
-		ef->modptr = modptr;
-		baseptr = preload_search_info(modptr, MODINFO_ADDR);
+	if (preload_kmdp != NULL) {
+		ef->modptr = preload_kmdp;
+		baseptr = preload_search_info(preload_kmdp, MODINFO_ADDR);
 		if (baseptr != NULL)
 			linker_kernel_file->address = *(caddr_t *)baseptr;
-		sizeptr = preload_search_info(modptr, MODINFO_SIZE);
+		sizeptr = preload_search_info(preload_kmdp, MODINFO_SIZE);
 		if (sizeptr != NULL)
 			linker_kernel_file->size = *(size_t *)sizeptr;
-		ctors_addrp = (Elf_Addr *)preload_search_info(modptr,
+		ctors_addrp = (Elf_Addr *)preload_search_info(preload_kmdp,
 			MODINFO_METADATA | MODINFOMD_CTORS_ADDR);
-		ctors_sizep = (Elf_Size *)preload_search_info(modptr,
+		ctors_sizep = (Elf_Size *)preload_search_info(preload_kmdp,
 			MODINFO_METADATA | MODINFOMD_CTORS_SIZE);
 		if (ctors_addrp != NULL && ctors_sizep != NULL) {
 			linker_kernel_file->ctors_addr = ef->address +
@@ -491,8 +518,15 @@ link_elf_init(void* arg)
 	(void)link_elf_link_common_finish(linker_kernel_file);
 	linker_kernel_file->flags |= LINKER_FILE_LINKED;
 	TAILQ_INIT(&set_pcpu_list);
+	ef->pcpu_start = DPCPU_START;
+	ef->pcpu_stop = DPCPU_STOP;
+	ef->pcpu_base = DPCPU_START;
 #ifdef VIMAGE
 	TAILQ_INIT(&set_vnet_list);
+	vnet_save_init((void *)VNET_START, VNET_STOP - VNET_START);
+	ef->vnet_start = VNET_START;
+	ef->vnet_stop = VNET_STOP;
+	ef->vnet_base = VNET_START;
 #endif
 }
 
@@ -715,6 +749,7 @@ parse_vnet(elf_file_t ef)
 
 	ef->vnet_start = 0;
 	ef->vnet_stop = 0;
+	ef->vnet_base = 0;
 	error = link_elf_lookup_set(&ef->lf, "vnet", (void ***)&ef->vnet_start,
 	    (void ***)&ef->vnet_stop, NULL);
 	/* Error just means there is no vnet data set to relocate. */
@@ -757,7 +792,7 @@ parse_vnet(elf_file_t ef)
 		return (ENOSPC);
 	}
 	memcpy((void *)ef->vnet_base, (void *)ef->vnet_start, size);
-	vnet_data_copy((void *)ef->vnet_base, size);
+	vnet_save_init((void *)ef->vnet_base, size);
 	elf_set_add(&set_vnet_list, ef->vnet_start, ef->vnet_stop,
 	    ef->vnet_base);
 
@@ -773,7 +808,7 @@ parse_vnet(elf_file_t ef)
 static int
 preload_protect(elf_file_t ef, vm_prot_t prot)
 {
-#ifdef __amd64__
+#if defined(__aarch64__) || defined(__amd64__)
 	Elf_Ehdr *hdr;
 	Elf_Phdr *phdr, *phlimit;
 	vm_prot_t nprot;
@@ -870,9 +905,7 @@ link_elf_link_preload(linker_class_t cls, const char *filename,
 	sizeptr = preload_search_info(modptr, MODINFO_SIZE);
 	dynptr = preload_search_info(modptr,
 	    MODINFO_METADATA | MODINFOMD_DYNAMIC);
-	if (type == NULL ||
-	    (strcmp(type, "elf" __XSTRING(__ELF_WORD_SIZE) " module") != 0 &&
-	     strcmp(type, "elf module") != 0))
+	if (type == NULL || strcmp(type, preload_modtype) != 0)
 		return (EFTYPE);
 	if (baseptr == NULL || sizeptr == NULL || dynptr == NULL)
 		return (EINVAL);
@@ -976,12 +1009,12 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 	lf = NULL;
 	shstrs = NULL;
 
-	NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE, filename, td);
+	NDINIT(&nd, LOOKUP, FOLLOW, UIO_SYSSPACE, filename);
 	flags = FREAD;
 	error = vn_open(&nd, &flags, 0, NULL);
 	if (error != 0)
 		return (error);
-	NDFREE(&nd, NDF_ONLY_PNBUF);
+	NDFREE_PNBUF(&nd);
 	if (nd.ni_vp->v_type != VREG) {
 		error = ENOEXEC;
 		firstpage = NULL;
@@ -1172,14 +1205,6 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 		bzero(segbase + segs[i]->p_filesz,
 		    segs[i]->p_memsz - segs[i]->p_filesz);
 	}
-
-#ifdef GPROF
-	/* Update profiling information with the new text segment. */
-	mtx_lock(&Giant);
-	kmupetext((uintfptr_t)(mapbase + segs[0]->p_vaddr - base_vaddr +
-	    segs[0]->p_memsz));
-	mtx_unlock(&Giant);
-#endif
 
 	ef->dynamic = (Elf_Dyn *) (mapbase + phdyn->p_vaddr - base_vaddr);
 
@@ -1435,6 +1460,7 @@ relocate_file1(elf_file_t ef, elf_lookup_fn lookup, elf_reloc_fn reloc,
 	const Elf_Rela *rela;
 	const char *symname;
 
+	TSENTER();
 #define	APPLY_RELOCS(iter, tbl, tblsize, type) do {			\
 	for ((iter) = (tbl); (iter) != NULL &&				\
 	    (iter) < (tbl) + (tblsize) / sizeof(*(iter)); (iter)++) {	\
@@ -1453,12 +1479,15 @@ relocate_file1(elf_file_t ef, elf_lookup_fn lookup, elf_reloc_fn reloc,
 } while (0)
 
 	APPLY_RELOCS(rel, ef->rel, ef->relsize, ELF_RELOC_REL);
+	TSENTER2("ef->rela");
 	APPLY_RELOCS(rela, ef->rela, ef->relasize, ELF_RELOC_RELA);
+	TSEXIT2("ef->rela");
 	APPLY_RELOCS(rel, ef->pltrel, ef->pltrelsize, ELF_RELOC_REL);
 	APPLY_RELOCS(rela, ef->pltrela, ef->pltrelasize, ELF_RELOC_RELA);
 
 #undef APPLY_RELOCS
 
+	TSEXIT();
 	return (0);
 }
 
@@ -1474,34 +1503,31 @@ relocate_file(elf_file_t ef)
 }
 
 /*
- * Hash function for symbol table lookup.  Don't even think about changing
- * this.  It is specified by the System V ABI.
+ * SysV hash function for symbol table lookup.  It is specified by the
+ * System V ABI.
  */
-static unsigned long
+static Elf32_Word
 elf_hash(const char *name)
 {
-	const unsigned char *p = (const unsigned char *) name;
-	unsigned long h = 0;
-	unsigned long g;
+	const unsigned char *p = (const unsigned char *)name;
+	Elf32_Word h = 0;
 
 	while (*p != '\0') {
 		h = (h << 4) + *p++;
-		if ((g = h & 0xf0000000) != 0)
-			h ^= g >> 24;
-		h &= ~g;
+		h ^= (h >> 24) & 0xf0;
 	}
-	return (h);
+	return (h & 0x0fffffff);
 }
 
 static int
-link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
+link_elf_lookup_symbol1(linker_file_t lf, const char *name, c_linker_sym_t *sym,
+    bool see_local)
 {
 	elf_file_t ef = (elf_file_t) lf;
 	unsigned long symnum;
 	const Elf_Sym* symp;
 	const char *strp;
-	unsigned long hash;
-	int i;
+	Elf32_Word hash;
 
 	/* If we don't have a hash, bail. */
 	if (ef->buckets == NULL || ef->nbuckets == 0) {
@@ -1532,8 +1558,11 @@ link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
 			    (symp->st_value != 0 &&
 			    (ELF_ST_TYPE(symp->st_info) == STT_FUNC ||
 			    ELF_ST_TYPE(symp->st_info) == STT_GNU_IFUNC))) {
-				*sym = (c_linker_sym_t) symp;
-				return (0);
+				if (see_local ||
+				    ELF_ST_BIND(symp->st_info) != STB_LOCAL) {
+					*sym = (c_linker_sym_t) symp;
+					return (0);
+				}
 			}
 			return (ENOENT);
 		}
@@ -1541,11 +1570,29 @@ link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
 		symnum = ef->chains[symnum];
 	}
 
-	/* If we have not found it, look at the full table (if loaded) */
-	if (ef->symtab == ef->ddbsymtab)
-		return (ENOENT);
+	return (ENOENT);
+}
 
-	/* Exhaustive search */
+static int
+link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
+{
+	if (link_elf_leak_locals)
+		return (link_elf_lookup_debug_symbol(lf, name, sym));
+	return (link_elf_lookup_symbol1(lf, name, sym, false));
+}
+
+static int
+link_elf_lookup_debug_symbol(linker_file_t lf, const char *name,
+    c_linker_sym_t *sym)
+{
+	elf_file_t ef = (elf_file_t)lf;
+	const Elf_Sym* symp;
+	const char *strp;
+	int i;
+
+	if (link_elf_lookup_symbol1(lf, name, sym, true) == 0)
+		return (0);
+
 	for (i = 0, symp = ef->ddbsymtab; i < ef->ddbsymcnt; i++, symp++) {
 		strp = ef->ddbstrtab + symp->st_name;
 		if (strcmp(name, strp) == 0) {
@@ -1564,33 +1611,116 @@ link_elf_lookup_symbol(linker_file_t lf, const char *name, c_linker_sym_t *sym)
 }
 
 static int
-link_elf_symbol_values(linker_file_t lf, c_linker_sym_t sym,
-    linker_symval_t *symval)
+link_elf_lookup_debug_symbol_ctf(linker_file_t lf, const char *name,
+    c_linker_sym_t *sym, linker_ctf_t *lc)
+{
+	elf_file_t ef = (elf_file_t)lf;
+	const Elf_Sym *symp;
+	const char *strp;
+	int i;
+
+	for (i = 0, symp = ef->ddbsymtab; i < ef->ddbsymcnt; i++, symp++) {
+		strp = ef->ddbstrtab + symp->st_name;
+		if (strcmp(name, strp) == 0) {
+			if (symp->st_shndx != SHN_UNDEF ||
+			    (symp->st_value != 0 &&
+				(ELF_ST_TYPE(symp->st_info) == STT_FUNC ||
+				    ELF_ST_TYPE(symp->st_info) ==
+					STT_GNU_IFUNC))) {
+				*sym = (c_linker_sym_t)symp;
+				break;
+			}
+			return (ENOENT);
+		}
+	}
+
+	/* Populate CTF info structure if symbol was found. */
+	return (i < ef->ddbsymcnt ? link_elf_ctf_get_ddb(lf, lc) : ENOENT);
+}
+
+static void
+link_elf_ifunc_symbol_value(linker_file_t lf, caddr_t *valp, size_t *sizep)
+{
+	c_linker_sym_t sym;
+	elf_file_t ef;
+	const Elf_Sym *es;
+	caddr_t val;
+	long off;
+
+	val = *valp;
+	ef = (elf_file_t)lf;
+
+	/* Provide the value and size of the target symbol, if available. */
+	val = ((caddr_t (*)(void))val)();
+	if (link_elf_search_symbol(lf, val, &sym, &off) == 0 && off == 0) {
+		es = (const Elf_Sym *)sym;
+		*valp = (caddr_t)ef->address + es->st_value;
+		*sizep = es->st_size;
+	} else {
+		*valp = val;
+		*sizep = 0;
+	}
+}
+
+static int
+link_elf_symbol_values1(linker_file_t lf, c_linker_sym_t sym,
+    linker_symval_t *symval, bool see_local)
 {
 	elf_file_t ef;
 	const Elf_Sym *es;
 	caddr_t val;
+	size_t size;
 
 	ef = (elf_file_t)lf;
 	es = (const Elf_Sym *)sym;
-	if (es >= ef->symtab && es < (ef->symtab + ef->nchains)) {
+	if (es >= ef->symtab && es < ef->symtab + ef->nchains) {
+		if (!see_local && ELF_ST_BIND(es->st_info) == STB_LOCAL)
+			return (ENOENT);
 		symval->name = ef->strtab + es->st_name;
 		val = (caddr_t)ef->address + es->st_value;
 		if (ELF_ST_TYPE(es->st_info) == STT_GNU_IFUNC)
-			val = ((caddr_t (*)(void))val)();
+			link_elf_ifunc_symbol_value(lf, &val, &size);
+		else
+			size = es->st_size;
 		symval->value = val;
-		symval->size = es->st_size;
+		symval->size = size;
 		return (0);
 	}
+	return (ENOENT);
+}
+
+static int
+link_elf_symbol_values(linker_file_t lf, c_linker_sym_t sym,
+    linker_symval_t *symval)
+{
+	if (link_elf_leak_locals)
+		return (link_elf_debug_symbol_values(lf, sym, symval));
+	return (link_elf_symbol_values1(lf, sym, symval, false));
+}
+
+static int
+link_elf_debug_symbol_values(linker_file_t lf, c_linker_sym_t sym,
+    linker_symval_t *symval)
+{
+	elf_file_t ef = (elf_file_t)lf;
+	const Elf_Sym *es = (const Elf_Sym *)sym;
+	caddr_t val;
+	size_t size;
+
+	if (link_elf_symbol_values1(lf, sym, symval, true) == 0)
+		return (0);
 	if (ef->symtab == ef->ddbsymtab)
 		return (ENOENT);
+
 	if (es >= ef->ddbsymtab && es < (ef->ddbsymtab + ef->ddbsymcnt)) {
 		symval->name = ef->ddbstrtab + es->st_name;
 		val = (caddr_t)ef->address + es->st_value;
 		if (ELF_ST_TYPE(es->st_info) == STT_GNU_IFUNC)
-			val = ((caddr_t (*)(void))val)();
+			link_elf_ifunc_symbol_value(lf, &val, &size);
+		else
+			size = es->st_size;
 		symval->value = val;
-		symval->size = es->st_size;
+		symval->size = size;
 		return (0);
 	}
 	return (ENOENT);
@@ -1600,12 +1730,12 @@ static int
 link_elf_search_symbol(linker_file_t lf, caddr_t value,
     c_linker_sym_t *sym, long *diffp)
 {
-	elf_file_t ef = (elf_file_t) lf;
-	u_long off = (uintptr_t) (void *) value;
+	elf_file_t ef = (elf_file_t)lf;
+	u_long off = (uintptr_t)(void *)value;
 	u_long diff = off;
 	u_long st_value;
-	const Elf_Sym* es;
-	const Elf_Sym* best = NULL;
+	const Elf_Sym *es;
+	const Elf_Sym *best = NULL;
 	int i;
 
 	for (i = 0, es = ef->ddbsymtab; i < ef->ddbsymcnt; i++, es++) {
@@ -1715,7 +1845,7 @@ link_elf_each_function_nameval(linker_file_t file,
 {
 	linker_symval_t symval;
 	elf_file_t ef = (elf_file_t)file;
-	const Elf_Sym* symp;
+	const Elf_Sym *symp;
 	int i, error;
 
 	/* Exhaustive search */
@@ -1723,11 +1853,10 @@ link_elf_each_function_nameval(linker_file_t file,
 		if (symp->st_value != 0 &&
 		    (ELF_ST_TYPE(symp->st_info) == STT_FUNC ||
 		    ELF_ST_TYPE(symp->st_info) == STT_GNU_IFUNC)) {
-			error = link_elf_symbol_values(file,
+			error = link_elf_debug_symbol_values(file,
 			    (c_linker_sym_t) symp, &symval);
-			if (error != 0)
-				return (error);
-			error = callback(file, i, &symval, opaque);
+			if (error == 0)
+				error = callback(file, i, &symval, opaque);
 			if (error != 0)
 				return (error);
 		}
@@ -1882,6 +2011,20 @@ link_elf_strtab_get(linker_file_t lf, caddr_t *strtab)
 	return (ef->ddbstrcnt);
 }
 
+#ifdef VIMAGE
+static void
+link_elf_propagate_vnets(linker_file_t lf)
+{
+	elf_file_t ef = (elf_file_t)lf;
+	int size;
+
+	if (ef->vnet_base != 0) {
+		size = (uintptr_t)ef->vnet_stop - (uintptr_t)ef->vnet_start;
+		vnet_data_copy((void *)ef->vnet_base, size);
+	}
+}
+#endif
+
 #if defined(__i386__) || defined(__amd64__) || defined(__aarch64__) || defined(__powerpc__)
 /*
  * Use this lookup routine when performing relocations early during boot.
@@ -1907,16 +2050,17 @@ elf_lookup_ifunc(linker_file_t lf, Elf_Size symidx, int deps __unused,
 }
 
 void
-link_elf_ireloc(caddr_t kmdp)
+link_elf_ireloc(void)
 {
 	struct elf_file eff;
 	elf_file_t ef;
 
+	TSENTER();
 	ef = &eff;
 
 	bzero_early(ef, sizeof(*ef));
 
-	ef->modptr = kmdp;
+	ef->modptr = preload_kmdp;
 	ef->dynamic = (Elf_Dyn *)&_DYNAMIC;
 
 #ifdef RELOCATABLE_KERNEL
@@ -1928,6 +2072,7 @@ link_elf_ireloc(caddr_t kmdp)
 
 	link_elf_preload_parse_symbols(ef);
 	relocate_file1(ef, elf_lookup_ifunc, elf_reloc, true);
+	TSEXIT();
 }
 
 #if defined(__aarch64__) || defined(__amd64__)

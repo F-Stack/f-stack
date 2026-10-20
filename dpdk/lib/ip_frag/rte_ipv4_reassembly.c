@@ -101,7 +101,6 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 {
 	struct ip_frag_pkt *fp;
 	struct ip_frag_key key;
-	const unaligned_uint64_t *psd;
 	uint16_t flag_offset, ip_ofs, ip_flag;
 	int32_t ip_len;
 	int32_t trim;
@@ -110,10 +109,15 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 	ip_ofs = (uint16_t)(flag_offset & RTE_IPV4_HDR_OFFSET_MASK);
 	ip_flag = (uint16_t)(flag_offset & RTE_IPV4_HDR_MF_FLAG);
 
-	psd = (unaligned_uint64_t *)&ip_hdr->src_addr;
+	/*
+	 * RFC 791 requires using: source, destination, identifier field and protocol
+	 */
+
 	/* use first 8 bytes only */
-	key.src_dst[0] = psd[0];
-	key.id = ip_hdr->packet_id;
+	memcpy(&key.src_dst[0], &ip_hdr->src_addr, 8);
+
+	/* packet_id is 16 bits and proto id is 8 bits */
+	key.id = ((uint32_t) ip_hdr->next_proto_id << 16) | ip_hdr->packet_id;
 	key.key_len = IPV4_KEYLEN;
 
 	ip_ofs *= RTE_IPV4_HDR_OFFSET_UNITS;
@@ -130,8 +134,13 @@ rte_ipv4_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 		tbl, tbl->max_cycles, tbl->entry_mask, tbl->max_entries,
 		tbl->use_entries);
 
-	/* check that fragment length is greater then zero. */
-	if (ip_len <= 0) {
+	/*
+	 * Drop fragments with no payload, and any fragment whose end would
+	 * make the reassembled datagram exceed the maximum IPv4 size. The
+	 * total_length field is 16 bits, so otherwise it is silently
+	 * truncated while the mbuf still holds the full length.
+	 */
+	if (ip_len <= 0 || ip_ofs + ip_len + mb->l3_len > UINT16_MAX) {
 		IP_FRAG_MBUF2DR(dr, mb);
 		return NULL;
 	}

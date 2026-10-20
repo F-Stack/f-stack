@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1998 Doug Rabson
  * All rights reserved.
@@ -24,15 +24,14 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
+
+#ifdef __i386__
+#include <i386/atomic.h>
+#else /* !__i386__ */
+
 #ifndef _MACHINE_ATOMIC_H_
 #define	_MACHINE_ATOMIC_H_
-
-#ifndef _SYS_CDEFS_H_
-#error this file needs sys/cdefs.h as a prerequisite
-#endif
 
 /*
  * To express interprocessor (as opposed to processor and device) memory
@@ -68,8 +67,8 @@
 #define	OFFSETOF_MONITORBUF	0x100
 #endif
 
-#if defined(KCSAN) && !defined(KCSAN_RUNTIME)
-#include <sys/_cscan_atomic.h>
+#if defined(SAN_NEEDS_INTERCEPTORS) && !defined(SAN_RUNTIME)
+#include <sys/atomic_san.h>
 #else
 #include <sys/atomic_common.h>
 
@@ -103,56 +102,10 @@
  */
 
 /*
- * The above functions are expanded inline in the statically-linked
- * kernel.  Lock prefixes are generated if an SMP kernel is being
- * built.
+ * Always use lock prefixes.  The result is slightly less optimal for
+ * UP systems, but it matters less now, and sometimes UP is emulated
+ * over SMP.
  *
- * Kernel modules call real functions which are built into the kernel.
- * This allows kernel modules to be portable between UP and SMP systems.
- */
-#if !defined(__GNUCLIKE_ASM)
-#define	ATOMIC_ASM(NAME, TYPE, OP, CONS, V)			\
-void atomic_##NAME##_##TYPE(volatile u_##TYPE *p, u_##TYPE v);	\
-void atomic_##NAME##_barr_##TYPE(volatile u_##TYPE *p, u_##TYPE v)
-
-int	atomic_cmpset_char(volatile u_char *dst, u_char expect, u_char src);
-int	atomic_cmpset_short(volatile u_short *dst, u_short expect, u_short src);
-int	atomic_cmpset_int(volatile u_int *dst, u_int expect, u_int src);
-int	atomic_cmpset_long(volatile u_long *dst, u_long expect, u_long src);
-int	atomic_fcmpset_char(volatile u_char *dst, u_char *expect, u_char src);
-int	atomic_fcmpset_short(volatile u_short *dst, u_short *expect,
-	    u_short src);
-int	atomic_fcmpset_int(volatile u_int *dst, u_int *expect, u_int src);
-int	atomic_fcmpset_long(volatile u_long *dst, u_long *expect, u_long src);
-u_int	atomic_fetchadd_int(volatile u_int *p, u_int v);
-u_long	atomic_fetchadd_long(volatile u_long *p, u_long v);
-int	atomic_testandset_int(volatile u_int *p, u_int v);
-int	atomic_testandset_long(volatile u_long *p, u_int v);
-int	atomic_testandclear_int(volatile u_int *p, u_int v);
-int	atomic_testandclear_long(volatile u_long *p, u_int v);
-void	atomic_thread_fence_acq(void);
-void	atomic_thread_fence_acq_rel(void);
-void	atomic_thread_fence_rel(void);
-void	atomic_thread_fence_seq_cst(void);
-
-#define	ATOMIC_LOAD(TYPE)					\
-u_##TYPE	atomic_load_acq_##TYPE(volatile u_##TYPE *p)
-#define	ATOMIC_STORE(TYPE)					\
-void		atomic_store_rel_##TYPE(volatile u_##TYPE *p, u_##TYPE v)
-
-#else /* !KLD_MODULE && __GNUCLIKE_ASM */
-
-/*
- * For userland, always use lock prefixes so that the binaries will run
- * on both SMP and !SMP systems.
- */
-#if defined(SMP) || !defined(_KERNEL) || defined(KLD_MODULE)
-#define	MPLOCKED	"lock ; "
-#else
-#define	MPLOCKED
-#endif
-
-/*
  * The assembly is volatilized to avoid code chunk removal by the compiler.
  * GCC aggressively reorders operations and memory clobbering is necessary
  * in order to avoid that for memory barriers.
@@ -161,7 +114,7 @@ void		atomic_store_rel_##TYPE(volatile u_##TYPE *p, u_##TYPE v)
 static __inline void					\
 atomic_##NAME##_##TYPE(volatile u_##TYPE *p, u_##TYPE v)\
 {							\
-	__asm __volatile(MPLOCKED OP			\
+	__asm __volatile("lock; " OP			\
 	: "+m" (*p)					\
 	: CONS (V)					\
 	: "cc");					\
@@ -170,7 +123,7 @@ atomic_##NAME##_##TYPE(volatile u_##TYPE *p, u_##TYPE v)\
 static __inline void					\
 atomic_##NAME##_barr_##TYPE(volatile u_##TYPE *p, u_##TYPE v)\
 {							\
-	__asm __volatile(MPLOCKED OP			\
+	__asm __volatile("lock; " OP			\
 	: "+m" (*p)					\
 	: CONS (V)					\
 	: "memory", "cc");				\
@@ -199,8 +152,7 @@ atomic_cmpset_##TYPE(volatile u_##TYPE *dst, u_##TYPE expect, u_##TYPE src) \
 	u_char res;					\
 							\
 	__asm __volatile(				\
-	"	" MPLOCKED "		"		\
-	"	cmpxchg %3,%1 ;	"			\
+	" lock; cmpxchg %3,%1 ;	"			\
 	"# atomic_cmpset_" #TYPE "	"		\
 	: "=@cce" (res),		/* 0 */		\
 	  "+m" (*dst),			/* 1 */		\
@@ -216,8 +168,7 @@ atomic_fcmpset_##TYPE(volatile u_##TYPE *dst, u_##TYPE *expect, u_##TYPE src) \
 	u_char res;					\
 							\
 	__asm __volatile(				\
-	"	" MPLOCKED "		"		\
-	"	cmpxchg %3,%1 ;		"		\
+	" lock; cmpxchg %3,%1 ;		"		\
 	"# atomic_fcmpset_" #TYPE "	"		\
 	: "=@cce" (res),		/* 0 */		\
 	  "+m" (*dst),			/* 1 */		\
@@ -236,22 +187,22 @@ atomic_fcmpset_##TYPE(volatile u_##TYPE *dst, u_##TYPE *expect, u_##TYPE src) \
  * But use the function can fix it.
  * This function copied from DPDK's rte_atomic.h
  */
-static __inline int					\
-atomic_fcmpset_int32(volatile u_int *dst, u_int *expect, u_int src) \
-{										\
-	u_char res;							\
-										\
-	__asm __volatile(					\
-	"	" MPLOCKED "		"			\
-	"cmpxchgl %[src], %[dst];"			\
-	"sete %[res];"						\
-	: [res] "=a" (res),     /* output */ \
-	  [dst] "=m" (*dst)					\
-	: [src] "r" (src),      /* input */	\
-	  "a" (*expect),					\
-	  "m" (*dst) 						\
-	: "memory");            /* no-clobber list */ \
-	return (res);						\
+static __inline int
+atomic_fcmpset_int32(volatile u_int *dst, u_int *expect, u_int src)
+{
+	u_char res;
+
+	__asm __volatile(
+	"	" "lock ; " "		"
+	"cmpxchgl %[src], %[dst];"
+	"sete %[res];"
+	: [res] "=a" (res),     /* output */
+	  [dst] "=m" (*dst)
+	: [src] "r" (src),      /* input */
+	  "a" (*expect),
+	  "m" (*dst)
+	: "memory");            /* no-clobber list */
+	return (res);
 }
 #endif
 
@@ -269,8 +220,7 @@ atomic_fetchadd_int(volatile u_int *p, u_int v)
 {
 
 	__asm __volatile(
-	"	" MPLOCKED "		"
-	"	xaddl	%0,%1 ;		"
+	" lock; xaddl	%0,%1 ;		"
 	"# atomic_fetchadd_int"
 	: "+r" (v),			/* 0 */
 	  "+m" (*p)			/* 1 */
@@ -287,8 +237,7 @@ atomic_fetchadd_long(volatile u_long *p, u_long v)
 {
 
 	__asm __volatile(
-	"	" MPLOCKED "		"
-	"	xaddq	%0,%1 ;		"
+	" lock;	xaddq	%0,%1 ;		"
 	"# atomic_fetchadd_long"
 	: "+r" (v),			/* 0 */
 	  "+m" (*p)			/* 1 */
@@ -302,8 +251,7 @@ atomic_testandset_int(volatile u_int *p, u_int v)
 	u_char res;
 
 	__asm __volatile(
-	"	" MPLOCKED "		"
-	"	btsl	%2,%1 ;		"
+	" lock;	btsl	%2,%1 ;		"
 	"# atomic_testandset_int"
 	: "=@ccc" (res),		/* 0 */
 	  "+m" (*p)			/* 1 */
@@ -318,8 +266,7 @@ atomic_testandset_long(volatile u_long *p, u_int v)
 	u_char res;
 
 	__asm __volatile(
-	"	" MPLOCKED "		"
-	"	btsq	%2,%1 ;		"
+	" lock;	btsq	%2,%1 ;		"
 	"# atomic_testandset_long"
 	: "=@ccc" (res),		/* 0 */
 	  "+m" (*p)			/* 1 */
@@ -334,8 +281,7 @@ atomic_testandclear_int(volatile u_int *p, u_int v)
 	u_char res;
 
 	__asm __volatile(
-	"	" MPLOCKED "		"
-	"	btrl	%2,%1 ;		"
+	" lock;	btrl	%2,%1 ;		"
 	"# atomic_testandclear_int"
 	: "=@ccc" (res),		/* 0 */
 	  "+m" (*p)			/* 1 */
@@ -350,8 +296,7 @@ atomic_testandclear_long(volatile u_long *p, u_int v)
 	u_char res;
 
 	__asm __volatile(
-	"	" MPLOCKED "		"
-	"	btrq	%2,%1 ;		"
+	" lock;	btrq	%2,%1 ;		"
 	"# atomic_testandclear_long"
 	: "=@ccc" (res),		/* 0 */
 	  "+m" (*p)			/* 1 */
@@ -372,43 +317,28 @@ atomic_testandclear_long(volatile u_long *p, u_int v)
  * special address for "mem".  In the kernel, we use a private per-cpu
  * cache line.  In user space, we use a word in the stack's red zone
  * (-8(%rsp)).
- *
- * For UP kernels, however, the memory of the single processor is
- * always consistent, so we only need to stop the compiler from
- * reordering accesses in a way that violates the semantics of acquire
- * and release.
  */
 
-#if defined(_KERNEL)
-
-#if defined(SMP) || defined(KLD_MODULE)
 static __inline void
 __storeload_barrier(void)
 {
-
-	__asm __volatile("lock; addl $0,%%gs:%0"
-	    : "+m" (*(u_int *)OFFSETOF_MONITORBUF) : : "memory", "cc");
-}
-#else /* _KERNEL && UP */
-static __inline void
-__storeload_barrier(void)
-{
-
-	__compiler_membar();
-}
-#endif /* SMP */
-#else /* !_KERNEL */
-static __inline void
-__storeload_barrier(void)
-{
-
+#if defined(_KERNEL) && !defined(FSTACK)
+	__asm __volatile("lock; addl $0,%%gs:%c0"
+	    : : "i" (OFFSETOF_MONITORBUF) : "memory", "cc");
+#else /* !_KERNEL || FSTACK */
+	/*
+	 * F-Stack DP-RT-2026-06-01: F-Stack runs in user space; %gs PCPU
+	 * segment is not set up by the userland process, so accessing
+	 * %gs:OFFSETOF_MONITORBUF would SIGSEGV (observed in smr_create()).
+	 * Fall back to the userland-safe rsp variant.
+	 */
 	__asm __volatile("lock; addl $0,-8(%%rsp)" : : : "memory", "cc");
+#endif /* _KERNEL && !FSTACK */
 }
-#endif /* _KERNEL*/
 
 #define	ATOMIC_LOAD(TYPE)					\
 static __inline u_##TYPE					\
-atomic_load_acq_##TYPE(volatile u_##TYPE *p)			\
+atomic_load_acq_##TYPE(const volatile u_##TYPE *p)		\
 {								\
 	u_##TYPE res;						\
 								\
@@ -456,8 +386,6 @@ atomic_thread_fence_seq_cst(void)
 	__storeload_barrier();
 }
 
-#endif /* KLD_MODULE || !__GNUCLIKE_ASM */
-
 ATOMIC_ASM(set,	     char,  "orb %b1,%0",  "iq",  v);
 ATOMIC_ASM(clear,    char,  "andb %b1,%0", "iq", ~v);
 ATOMIC_ASM(add,	     char,  "addb %b1,%0", "iq",  v);
@@ -491,11 +419,8 @@ ATOMIC_LOADSTORE(long);
 #undef ATOMIC_LOAD
 #undef ATOMIC_STORE
 #undef ATOMIC_LOADSTORE
-#ifndef WANT_FUNCTIONS
 
 /* Read the current value and store a new value in the destination. */
-#ifdef __GNUCLIKE_ASM
-
 static __inline u_int
 atomic_swap_int(volatile u_int *p, u_int v)
 {
@@ -519,13 +444,6 @@ atomic_swap_long(volatile u_long *p, u_long v)
 	  "+m" (*p));			/* 1 */
 	return (v);
 }
-
-#else /* !__GNUCLIKE_ASM */
-
-u_int	atomic_swap_int(volatile u_int *p, u_int v);
-u_long	atomic_swap_long(volatile u_long *p, u_long v);
-
-#endif /* __GNUCLIKE_ASM */
 
 #define	atomic_set_acq_char		atomic_set_barr_char
 #define	atomic_set_rel_char		atomic_set_barr_char
@@ -704,9 +622,11 @@ u_long	atomic_swap_long(volatile u_long *p, u_long v);
 #define	atomic_fcmpset_rel_ptr	atomic_fcmpset_rel_long
 #define	atomic_swap_ptr		atomic_swap_long
 #define	atomic_readandclear_ptr	atomic_readandclear_long
+#define	atomic_testandset_ptr	atomic_testandset_long
+#define	atomic_testandclear_ptr	atomic_testandclear_long
 
-#endif /* !WANT_FUNCTIONS */
-
-#endif /* KCSAN && !KCSAN_RUNTIME */
+#endif /* !SAN_NEEDS_INTERCEPTORS || SAN_RUNTIME */
 
 #endif /* !_MACHINE_ATOMIC_H_ */
+
+#endif /* __i386__ */

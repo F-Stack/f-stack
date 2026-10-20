@@ -1,8 +1,7 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
- * Copyright (c) 2013 Dmitry Chagin
- * All rights reserved.
+ * Copyright (c) 2013 Dmitry Chagin <dchagin@FreeBSD.org>
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -26,16 +25,10 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
-#include "opt_compat.h"
-
 #include <sys/param.h>
 #include <sys/kernel.h>
-#include <sys/sdt.h>
-#include <sys/systm.h>
 #include <sys/proc.h>
+#include <sys/sdt.h>
 
 #include <arm64/linux/linux.h>
 #include <arm64/linux/linux_proto.h>
@@ -49,15 +42,4 @@ LIN_SDT_PROVIDER_DECLARE(LINUX_DTRACE);
  * Before adding new stubs to this file, please check if a stub can be added to
  * the machine-independent code in sys/compat/linux/linux_dummy.c.
  */
-
-UNIMPLEMENTED(get_thread_area);
-UNIMPLEMENTED(set_thread_area);
-UNIMPLEMENTED(uselib);
-
-DUMMY(mq_open);
-DUMMY(mq_unlink);
-DUMMY(mq_timedsend);
-DUMMY(mq_timedreceive);
-DUMMY(mq_notify);
-DUMMY(mq_getsetattr);
-DUMMY(semtimedop);
+DUMMY(kexec_file_load);

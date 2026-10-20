@@ -115,6 +115,7 @@ const struct feature_entry rte_cpu_feature_table[] = {
 	FEAT_DEF(SVEF32MM,	REG_HWCAP2,   10)
 	FEAT_DEF(SVEF64MM,	REG_HWCAP2,   11)
 	FEAT_DEF(SVEBF16,	REG_HWCAP2,   12)
+	FEAT_DEF(WFXT,		REG_HWCAP2,   31)
 	FEAT_DEF(AARCH64,	REG_PLATFORM,  0)
 };
 #endif /* RTE_ARCH */
@@ -163,7 +164,7 @@ void
 rte_cpu_get_intrinsics_support(struct rte_cpu_intrinsics *intrinsics)
 {
 	memset(intrinsics, 0, sizeof(*intrinsics));
-#ifdef RTE_ARM_USE_WFE
+#ifdef RTE_ARCH_64
 	intrinsics->power_monitor = 1;
-#endif
+#endif /* RTE_ARCH_64 */
 }

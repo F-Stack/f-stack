@@ -24,8 +24,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * MAX77620 PMIC driver
  */
@@ -42,7 +40,7 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/bus.h>
 
-#include <dev/extres/regulator/regulator.h>
+#include <dev/regulator/regulator.h>
 #include <dev/fdt/fdt_pinctrl.h>
 #include <dev/gpio/gpiobusvar.h>
 #include <dev/iicbus/iiconf.h>
@@ -291,7 +289,7 @@ max77620_encode_fps_period(struct max77620_softc *sc, int val)
 static int
 max77620_init(struct max77620_softc *sc)
 {
-	uint8_t mask, val, tmp;;
+	uint8_t mask, val, tmp;
 	int i, rv;
 
 	mask = 0;
@@ -383,16 +381,13 @@ static int
 max77620_attach(device_t dev)
 {
 	struct max77620_softc *sc;
-	const char *dname;
-	int dunit, rv, rid;
+	int rv, rid;
 	phandle_t node;
 
 	sc = device_get_softc(dev);
 	sc->dev = dev;
 	sc->bus_addr = iicbus_get_addr(dev);
 	node = ofw_bus_get_node(sc->dev);
-	dname = device_get_name(dev);
-	dunit = device_get_unit(dev);
 	rv = 0;
 	LOCK_INIT(sc);
 
@@ -440,7 +435,8 @@ max77620_attach(device_t dev)
 		goto fail;
 	}
 #endif
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 
 fail:
 	if (sc->irq_h != NULL)
@@ -455,6 +451,11 @@ static int
 max77620_detach(device_t dev)
 {
 	struct max77620_softc *sc;
+	int error;
+
+	error = bus_generic_detach(dev);
+	if (error != 0)
+		return (error);
 
 	sc = device_get_softc(dev);
 	if (sc->irq_h != NULL)
@@ -463,7 +464,7 @@ max77620_detach(device_t dev)
 		bus_release_resource(dev, SYS_RES_IRQ, 0, sc->irq_res);
 	LOCK_DESTROY(sc);
 
-	return (bus_generic_detach(dev));
+	return (0);
 }
 
 static phandle_t
@@ -504,8 +505,6 @@ static device_method_t max77620_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t max77620_devclass;
 static DEFINE_CLASS_0(gpio, max77620_driver, max77620_methods,
     sizeof(struct max77620_softc));
-EARLY_DRIVER_MODULE(max77620, iicbus, max77620_driver, max77620_devclass,
-    NULL, NULL, 74);
+EARLY_DRIVER_MODULE(max77620, iicbus, max77620_driver, NULL, NULL, 74);

@@ -24,7 +24,6 @@
  * SUCH DAMAGE.
  *
  * $KAME: if_altq.h,v 1.12 2005/04/13 03:44:25 suz Exp $
- * $FreeBSD$
  */
 #ifndef _ALTQ_IF_ALTQ_H_
 #define	_ALTQ_IF_ALTQ_H_
@@ -62,10 +61,6 @@ struct	ifaltq {
 				struct altq_pktattr *);
 	struct	mbuf *(*altq_dequeue)(struct ifaltq *, int);
 	int	(*altq_request)(struct ifaltq *, int, void *);
-
-	/* classifier fields */
-	void	*altq_clfier;		/* classifier-specific use */
-	void	*(*altq_classify)(void *, struct mbuf *, int);
 
 	/* token bucket regulator */
 	struct	tb_regulator *altq_tbr;
@@ -127,7 +122,7 @@ struct tb_regulator {
 /* if_altqflags */
 #define	ALTQF_READY	 0x01	/* driver supports alternate queueing */
 #define	ALTQF_ENABLED	 0x02	/* altq is in use */
-#define	ALTQF_CLASSIFY	 0x04	/* classify packets */
+/* 	ALTQF_CLASSIFY	 0x04	obsolete classify packets */
 #define	ALTQF_CNDTNING	 0x08	/* altq traffic conditioning is enabled */
 #define	ALTQF_DRIVER1	 0x40	/* driver specific */
 
@@ -147,7 +142,6 @@ struct tb_regulator {
 #else
 #define	ALTQ_IS_ENABLED(ifq)		0
 #endif
-#define	ALTQ_NEEDS_CLASSIFY(ifq)	((ifq)->altq_flags & ALTQF_CLASSIFY)
 #define	ALTQ_IS_CNDTNING(ifq)		((ifq)->altq_flags & ALTQF_CNDTNING)
 
 #define	ALTQ_SET_CNDTNING(ifq)		((ifq)->altq_flags |= ALTQF_CNDTNING)
@@ -169,14 +163,11 @@ extern int altq_attach(struct ifaltq *, int, void *,
 		       int (*)(struct ifaltq *, struct mbuf *,
 			       struct altq_pktattr *),
 		       struct mbuf *(*)(struct ifaltq *, int),
-		       int (*)(struct ifaltq *, int, void *),
-		       void *,
-		       void *(*)(void *, struct mbuf *, int));
+		       int (*)(struct ifaltq *, int, void *));
 extern int altq_detach(struct ifaltq *);
 extern int altq_enable(struct ifaltq *);
 extern int altq_disable(struct ifaltq *);
 extern struct mbuf *(*tbr_dequeue_ptr)(struct ifaltq *, int);
-extern int (*altq_input)(struct mbuf *, int);
 #if 0 /* ALTQ3_CLFIER_COMPAT */
 void altq_etherclassify(struct ifaltq *, struct mbuf *, struct altq_pktattr *);
 #endif

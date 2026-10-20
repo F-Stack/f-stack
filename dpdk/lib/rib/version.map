@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	rte_rib6_create;
@@ -31,4 +31,11 @@ DPDK_24 {
 	rte_rib_set_nh;
 
 	local: *;
+};
+
+INTERNAL {
+	global:
+
+	rte_rib6_node_has_children;
+	rte_rib6_get_parent;
 };

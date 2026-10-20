@@ -94,9 +94,9 @@ ff_mtx_init(struct lock_object *lo, const char *name, const char *type, int opts
 }
 
 void
-mtx_sysinit(void *arg)
+mtx_sysinit(const void *arg)
 {
-    struct mtx_args *margs = arg;
+    const struct mtx_args *margs = arg;
     mtx_init((struct mtx *)margs->ma_mtx, margs->ma_desc, NULL, margs->ma_opts);
 }
 
@@ -147,9 +147,9 @@ struct lock_class lock_class_rw = {
 };
 
 void
-rw_sysinit(void *arg)
+rw_sysinit(const void *arg)
 {
-    struct rw_args *args = arg;
+    const struct rw_args *args = arg;
     rw_init((struct rwlock *)args->ra_rw, args->ra_desc);
 }
 
@@ -228,9 +228,9 @@ rm_init_flags(struct rmlock *rm, const char *name, int opts)
 }
 
 void
-rm_sysinit(void *arg)
+rm_sysinit(const void *arg)
 {
-    struct rm_args *args = arg;
+    const struct rm_args *args = arg;
     rm_init((struct rmlock *)args->ra_rm, args->ra_desc);
 }
 
@@ -372,9 +372,9 @@ sx_downgrade_(struct sx *sx, const char *file, int line)
 }
 
 void
-sx_sysinit(void *arg)
+sx_sysinit(const void *arg)
 {
-    struct sx_args *args = arg;
+    const struct sx_args *args = arg;
     sx_init(args->sa_sx, args->sa_desc);
 }
 

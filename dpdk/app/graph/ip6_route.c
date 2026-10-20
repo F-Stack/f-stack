@@ -11,6 +11,7 @@
 #include <cmdline_socket.h>
 
 #include <rte_node_ip6_api.h>
+#include <rte_ip6.h>
 
 #include "module_api.h"
 #include "route_priv.h"
@@ -43,38 +44,20 @@ find_route6_entry(struct route_ipv6_config *route)
 	return NULL;
 }
 
-static uint8_t
-convert_ip6_netmask_to_depth(uint8_t *netmask)
-{
-	uint8_t setbits = 0;
-	uint8_t mask;
-	int i;
-
-	for (i = 0; i < ETHDEV_IPV6_ADDR_LEN; i++) {
-		mask = netmask[i];
-		while (mask & 0x80) {
-			mask = mask << 1;
-			setbits++;
-		}
-	}
-
-	return setbits;
-}
-
 static int
 route6_rewirte_table_update(struct route_ipv6_config *ipv6route)
 {
 	uint8_t depth;
 	int portid;
 
-	portid = ethdev_portid_by_ip6(ipv6route->gateway, ipv6route->mask);
+	portid = ethdev_portid_by_ip6(&ipv6route->gateway, &ipv6route->mask);
 	if (portid < 0) {
 		printf("Invalid portid found to install the route\n");
 		return portid;
 	}
-	depth = convert_ip6_netmask_to_depth(ipv6route->mask);
+	depth = rte_ipv6_mask_depth(&ipv6route->mask);
 
-	return rte_node_ip6_route_add(ipv6route->ip, depth, portid,
+	return rte_node_ip6_route_add(&ipv6route->ip, depth, portid,
 			RTE_NODE_IP6_LOOKUP_NEXT_REWRITE);
 
 }
@@ -84,7 +67,6 @@ route_ip6_add(struct route_ipv6_config *route)
 {
 	struct route_ipv6_config *ipv6route;
 	int rc = -EINVAL;
-	int j;
 
 	ipv6route = find_route6_entry(route);
 	if (!ipv6route) {
@@ -95,11 +77,9 @@ route_ip6_add(struct route_ipv6_config *route)
 		return 0;
 	}
 
-	for (j = 0; j < ETHDEV_IPV6_ADDR_LEN; j++) {
-		ipv6route->ip[j] = route->ip[j];
-		ipv6route->mask[j] = route->mask[j];
-		ipv6route->gateway[j] = route->gateway[j];
-	}
+	ipv6route->ip = route->ip;
+	ipv6route->mask = route->mask;
+	ipv6route->gateway = route->gateway;
 	ipv6route->is_used = true;
 
 	if (!graph_status_get())
@@ -132,9 +112,9 @@ route_ip6_add_to_lookup(void)
 	return 0;
 }
 
-static void
-cli_ipv6_lookup_help(__rte_unused void *parsed_result, __rte_unused struct cmdline *cl,
-		     __rte_unused void *data)
+void
+cmd_help_ipv6_lookup_parsed(__rte_unused void *parsed_result, __rte_unused struct cmdline *cl,
+			    __rte_unused void *data)
 {
 	size_t len;
 
@@ -148,82 +128,19 @@ cli_ipv6_lookup_help(__rte_unused void *parsed_result, __rte_unused struct cmdli
 	conn->msg_out_len_max -= len;
 }
 
-static void
-cli_ipv6_lookup(void *parsed_result, __rte_unused struct cmdline *cl, void *data __rte_unused)
+void
+cmd_ipv6_lookup_route_add_ipv6_parsed(void *parsed_result, __rte_unused struct cmdline *cl,
+				      void *data __rte_unused)
 {
-	struct ip6_lookup_cmd_tokens *res = parsed_result;
-	struct route_ipv6_config config;
-	int rc = -EINVAL;
-
-	if (parser_ip6_read(config.ip, res->ip)) {
-		printf(MSG_ARG_INVALID, "ipv6");
-		return;
-	}
-
-	if (parser_ip6_read(config.mask, res->mask)) {
-		printf(MSG_ARG_INVALID, "netmask");
-		return;
-	}
-
-	if (parser_ip6_read(config.gateway, res->via_ip)) {
-		printf(MSG_ARG_INVALID, "gateway ip");
-		return;
-	}
+	struct cmd_ipv6_lookup_route_add_ipv6_result *res = parsed_result;
+	struct route_ipv6_config config = {
+		.ip = res->ip.addr.ipv6,
+		.mask = res->mask.addr.ipv6,
+		.gateway = res->via_ip.addr.ipv6,
+	};
+	int rc;
 
 	rc = route_ip6_add(&config);
 	if (rc)
-		printf(MSG_CMD_FAIL, res->cmd);
+		printf(MSG_CMD_FAIL, res->ipv6_lookup);
 }
-
-cmdline_parse_token_string_t ip6_lookup_cmd =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, cmd, "ipv6_lookup");
-cmdline_parse_token_string_t ip6_lookup_route =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, route, "route");
-cmdline_parse_token_string_t ip6_lookup_add =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, add, "add");
-cmdline_parse_token_string_t ip6_lookup_ip6 =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, ip6, "ipv6");
-cmdline_parse_token_string_t ip6_lookup_ip =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, ip, NULL);
-cmdline_parse_token_string_t ip6_lookup_netmask =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, netmask, "netmask");
-cmdline_parse_token_string_t ip6_lookup_mask =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, mask, NULL);
-cmdline_parse_token_string_t ip6_lookup_via =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, via, "via");
-cmdline_parse_token_string_t ip6_lookup_via_ip =
-	TOKEN_STRING_INITIALIZER(struct ip6_lookup_cmd_tokens, via_ip, NULL);
-
-cmdline_parse_inst_t ipv6_lookup_cmd_ctx = {
-	.f = cli_ipv6_lookup,
-	.data = NULL,
-	.help_str = cmd_ipv6_lookup_help,
-	.tokens = {
-		(void *)&ip6_lookup_cmd,
-		(void *)&ip6_lookup_route,
-		(void *)&ip6_lookup_add,
-		(void *)&ip6_lookup_ip6,
-		(void *)&ip6_lookup_ip,
-		(void *)&ip6_lookup_netmask,
-		(void *)&ip6_lookup_mask,
-		(void *)&ip6_lookup_via,
-		(void *)&ip6_lookup_via_ip,
-		NULL,
-	},
-};
-
-cmdline_parse_token_string_t ipv6_lookup_help_cmd =
-	TOKEN_STRING_INITIALIZER(struct ipv6_lookup_help_cmd_tokens, cmd, "help");
-cmdline_parse_token_string_t ipv6_lookup_help_module =
-	TOKEN_STRING_INITIALIZER(struct ipv6_lookup_help_cmd_tokens, module, "ipv6_lookup");
-
-cmdline_parse_inst_t ipv6_lookup_help_cmd_ctx = {
-	.f = cli_ipv6_lookup_help,
-	.data = NULL,
-	.help_str = "",
-	.tokens = {
-		(void *)&ipv6_lookup_help_cmd,
-		(void *)&ipv6_lookup_help_module,
-		NULL,
-	},
-};

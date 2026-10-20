@@ -25,9 +25,7 @@
 
 #include "opt_inet.h"
 #include "opt_inet6.h"
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
+#include "opt_kbd.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -38,12 +36,16 @@ __FBSDID("$FreeBSD$");
 #include <sys/module.h>
 #include <sys/socket.h>
 #include <sys/sysctl.h>
+#ifdef KDB
+#include <sys/kdb.h>
+#endif
 
 #include <net/bpf.h>
 #include <net/ethernet.h>
 #include <net/infiniband.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_dl.h>
 #include <net/if_media.h>
 #include <net/if_lagg.h>
@@ -127,6 +129,10 @@ infiniband_bpf_mtap(struct ifnet *ifp, struct mbuf *mb)
 	struct infiniband_header *ibh;
 	struct ether_header eh;
 
+	if (!bpf_peers_present(ifp->if_bpf))
+		return;
+
+	M_ASSERTVALID(mb);
 	if (mb->m_len < sizeof(*ibh))
 		return;
 
@@ -141,6 +147,43 @@ infiniband_bpf_mtap(struct ifnet *ifp, struct mbuf *mb)
 	mb->m_data -= sizeof(*ibh);
 	mb->m_len += sizeof(*ibh);
 	mb->m_pkthdr.len += sizeof(*ibh);
+}
+
+/*
+ * For clients using BPF to send broadcasts.
+ *
+ * This driver binds to BPF as an EN10MB (Ethernet) device type. As such, it is
+ * expected BPF and BPF users will send frames with Ethernet headers, which
+ * we'll do our best to handle. We can't resolve non-native unicast or multicast
+ * link-layer addresses, but we can handle broadcast frames.
+ *
+ * phlen is populated with IB header size if ibh was populated, 0 otherwise.
+ */
+static int
+infiniband_resolve_bpf(struct ifnet *ifp, const struct sockaddr *dst,
+    struct mbuf *mb, const struct route *ro, struct infiniband_header *ibh,
+    int *phlen)
+{
+	struct ether_header *eh = (struct ether_header *)ro->ro_prepend;
+	/* If the prepend data & address length don't have the signature of a frame
+	 * forwarded by BPF, allow frame to passthrough. */
+	if (((ro->ro_flags & RT_HAS_HEADER) == 0) ||
+	    (ro->ro_plen != ETHER_HDR_LEN)) {
+		*phlen = 0;
+		return (0);
+	}
+
+	/* Looks like this frame is from BPF. Handle broadcasts, reject otherwise */
+	if (!ETHER_IS_BROADCAST(eh->ether_dhost))
+		return (EOPNOTSUPP);
+
+	memcpy(ibh->ib_hwaddr, ifp->if_broadcastaddr, sizeof(ibh->ib_hwaddr));
+	ibh->ib_protocol = eh->ether_type;
+	mb->m_flags &= ~M_MCAST;
+	mb->m_flags |= M_BCAST;
+
+	*phlen = INFINIBAND_HDR_LEN;
+	return (0);
 }
 
 static void
@@ -223,13 +266,14 @@ infiniband_resolve_addr(struct ifnet *ifp, struct mbuf *m,
     const struct sockaddr *dst, struct route *ro, uint8_t *phdr,
     uint32_t *pflags, struct llentry **plle)
 {
-	struct infiniband_header *ih;
+#if defined(INET) || defined(INET6)
+	struct infiniband_header *ih = (struct infiniband_header *)phdr;
+#endif
 	uint32_t lleflags = 0;
 	int error = 0;
 
 	if (plle)
 		*plle = NULL;
-	ih = (struct infiniband_header *)phdr;
 
 	switch (dst->sa_family) {
 #ifdef INET
@@ -253,7 +297,9 @@ infiniband_resolve_addr(struct ifnet *ifp, struct mbuf *m,
 #ifdef INET6
 	case AF_INET6:
 		if ((m->m_flags & M_MCAST) == 0) {
-			error = nd6_resolve(ifp, 0, m, dst, phdr, &lleflags, plle);
+			int af = RO_GET_FAMILY(ro, dst);
+			error = nd6_resolve(ifp, LLE_SF(af, 0), m, dst, phdr,
+			    &lleflags, plle);
 		} else {
 			infiniband_ipv6_multicast_map(
 			    &((const struct sockaddr_in6 *)dst)->sin6_addr,
@@ -297,7 +343,7 @@ infiniband_output(struct ifnet *ifp, struct mbuf *m,
 	struct llentry *lle = NULL;
 	struct infiniband_header *ih;
 	int error = 0;
-	int hlen;	/* link layer header length */
+	int hlen  = 0;	/* link layer header length */
 	uint32_t pflags;
 	bool addref;
 
@@ -307,10 +353,20 @@ infiniband_output(struct ifnet *ifp, struct mbuf *m,
 	phdr = NULL;
 	pflags = 0;
 	if (ro != NULL) {
-		/* XXX BPF uses ro_prepend */
+		/* XXX BPF and ARP use ro_prepend */
 		if (ro->ro_prepend != NULL) {
-			phdr = ro->ro_prepend;
-			hlen = ro->ro_plen;
+			ih = (struct infiniband_header *)linkhdr;
+			/* Assess whether frame is from BPF and handle */
+			error = infiniband_resolve_bpf(ifp, dst, m, ro, ih, &hlen);
+			if (error != 0)
+				goto bad;
+
+			if (hlen != 0) {
+				phdr = linkhdr;
+			} else {
+				phdr = ro->ro_prepend;
+				hlen = ro->ro_plen;
+			}
 		} else if (!(m->m_flags & (M_BCAST | M_MCAST))) {
 			if ((ro->ro_flags & RT_LLE_CACHE) != 0) {
 				lle = ro->ro_lle;
@@ -329,7 +385,7 @@ infiniband_output(struct ifnet *ifp, struct mbuf *m,
 					 * the entry was used
 					 * by datapath.
 					 */
-					llentry_mark_used(lle);
+					llentry_provide_feedback(lle);
 			}
 			if (lle != NULL) {
 				phdr = lle->r_linkdata;
@@ -370,14 +426,14 @@ infiniband_output(struct ifnet *ifp, struct mbuf *m,
 
 	if ((pflags & RT_L2_ME) != 0) {
 		update_mbuf_csumflags(m, m);
-		return (if_simloop(ifp, m, dst->sa_family, 0));
+		return (if_simloop(ifp, m, RO_GET_FAMILY(ro, dst), 0));
 	}
 
 	/*
 	 * Add local infiniband header. If no space in first mbuf,
 	 * allocate another.
 	 */
-	M_PREPEND(m, INFINIBAND_HDR_LEN, M_NOWAIT);
+	M_PREPEND(m, hlen, M_NOWAIT);
 	if (m == NULL) {
 		error = ENOBUFS;
 		goto bad;
@@ -407,8 +463,33 @@ infiniband_input(struct ifnet *ifp, struct mbuf *m)
 	struct infiniband_header *ibh;
 	struct epoch_tracker et;
 	int isr;
+	bool needs_epoch;
+
+	needs_epoch = (ifp->if_flags & IFF_NEEDSEPOCH);
+#ifdef INVARIANTS
+	/*
+	 * This temporary code is here to prevent epoch unaware and unmarked
+	 * drivers to panic the system.  Once all drivers are taken care of,
+	 * the whole INVARIANTS block should go away.
+	 */
+	if (!needs_epoch && !in_epoch(net_epoch_preempt)) {
+		static bool printedonce;
+
+		needs_epoch = true;
+		if (!printedonce) {
+			printedonce = true;
+			if_printf(ifp, "called %s w/o net epoch! "
+			    "PLEASE file a bug report.", __func__);
+#ifdef KDB
+			kdb_backtrace();
+#endif
+		}
+	}
+#endif
 
 	CURVNET_SET_QUIET(ifp->if_vnet);
+	if (__predict_false(needs_epoch))
+		NET_EPOCH_ENTER(et);
 
 	if ((ifp->if_flags & IFF_UP) == 0) {
 		if_inc_counter(ifp, IFCOUNTER_IERRORS, 1);
@@ -435,7 +516,7 @@ infiniband_input(struct ifnet *ifp, struct mbuf *m)
 	}
 
 	/* Let BPF have it before we strip the header. */
-	INFINIBAND_BPF_MTAP(ifp, m);
+	infiniband_bpf_mtap(ifp, m);
 
 	/* Allow monitor mode to claim this frame, after stats are updated. */
 	if (ifp->if_flags & IFF_MONITOR) {
@@ -496,10 +577,10 @@ infiniband_input(struct ifnet *ifp, struct mbuf *m)
 	mac_ifnet_create_mbuf(ifp, m);
 #endif
 	/* Allow monitor mode to claim this frame, after stats are updated. */
-	NET_EPOCH_ENTER(et);
 	netisr_dispatch(isr, m);
-	NET_EPOCH_EXIT(et);
 done:
+	if (__predict_false(needs_epoch))
+		NET_EPOCH_EXIT(et);
 	CURVNET_RESTORE();
 }
 

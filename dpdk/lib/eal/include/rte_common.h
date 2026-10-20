@@ -12,17 +12,19 @@
  * for DPDK.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#include <stdint.h>
+#include <assert.h>
 #include <limits.h>
+#include <stdint.h>
+#include <stdalign.h>
 
 #include <rte_config.h>
 
 /* OS specific include */
 #include <rte_os.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 #ifndef RTE_TOOLCHAIN_MSVC
 #ifndef typeof
@@ -37,7 +39,15 @@ extern "C" {
 #endif
 
 #ifdef RTE_TOOLCHAIN_MSVC
+#ifdef __cplusplus
 #define __extension__
+#endif
+#endif
+
+#ifdef RTE_TOOLCHAIN_MSVC
+#define __rte_constant(e) 0
+#else
+#define __rte_constant(e) __extension__(__builtin_constant_p(e))
 #endif
 
 /*
@@ -62,10 +72,19 @@ extern "C" {
 #endif
 
 /**
- * Force alignment
+ * Force type alignment
+ *
+ * This macro should be used when alignment of a struct or union type
+ * is required. For toolchain compatibility it should appear between
+ * the {struct,union} keyword and tag. e.g.
+ *
+ *   struct __rte_aligned(8) tag { ... };
+ *
+ * If alignment of an object/variable is required then this macro should
+ * not be used, instead prefer C11 alignas(a).
  */
 #ifdef RTE_TOOLCHAIN_MSVC
-#define __rte_aligned(a)
+#define __rte_aligned(a) __declspec(align(a))
 #else
 #define __rte_aligned(a) __attribute__((__aligned__(a)))
 #endif
@@ -124,6 +143,15 @@ typedef uint16_t unaligned_uint16_t;
 #define __rte_weak __attribute__((__weak__))
 
 /**
+ * Mark a function to be pure.
+ */
+#ifdef RTE_TOOLCHAIN_MSVC
+#define __rte_pure
+#else
+#define __rte_pure __attribute__((pure))
+#endif
+
+/**
  * Force symbol to be generated even if it appears to be unused.
  */
 #ifdef RTE_TOOLCHAIN_MSVC
@@ -178,6 +206,17 @@ typedef uint16_t unaligned_uint16_t;
 #endif
 
 /**
+ * Specify data or function section/segment.
+ */
+#ifdef RTE_TOOLCHAIN_MSVC
+#define __rte_section(name) \
+	__pragma(data_seg(name)) __declspec(allocate(name))
+#else
+#define __rte_section(name) \
+	__attribute__((section(name)))
+#endif
+
+/**
  * Tells compiler that the function returns a value that points to
  * memory, where the size is given by the one or two arguments.
  * Used by compiler to validate object size.
@@ -187,6 +226,40 @@ typedef uint16_t unaligned_uint16_t;
 	__attribute__((alloc_size(__VA_ARGS__)))
 #else
 #define __rte_alloc_size(...)
+#endif
+
+/**
+ * Tells the compiler that the function returns a value that points to
+ * memory aligned by a function argument.
+ *
+ * Note: not enabled on Clang because it warns if align argument is zero.
+ */
+#if defined(RTE_CC_GCC)
+#define __rte_alloc_align(argno) \
+	__attribute__((alloc_align(argno)))
+#else
+#define __rte_alloc_align(argno)
+#endif
+
+/**
+ * Tells the compiler this is a function like malloc and that the pointer
+ * returned cannot alias any other pointer (ie new memory).
+ */
+#if defined(RTE_CC_GCC) || defined(RTE_CC_CLANG)
+#define __rte_malloc __attribute__((__malloc__))
+#else
+#define __rte_malloc
+#endif
+
+/**
+ * With recent GCC versions also able to track that proper
+ * deallocator function is used for this pointer.
+ */
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 110000)
+#define __rte_dealloc(dealloc, argno) \
+	__attribute__((malloc(dealloc, argno)))
+#else
+#define __rte_dealloc(dealloc, argno)
 #endif
 
 #define RTE_PRIORITY_LOG 101
@@ -294,6 +367,15 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 #endif
 
 /**
+ * Hint point in program never reached
+ */
+#if defined(RTE_TOOLCHAIN_GCC) || defined(RTE_TOOLCHAIN_CLANG)
+#define __rte_unreachable() __extension__(__builtin_unreachable())
+#else
+#define __rte_unreachable() __assume(0)
+#endif
+
+/**
  * Issue a warning in case the function's return value is ignored.
  *
  * The use of this attribute should be restricted to cases where
@@ -348,6 +430,22 @@ static void __attribute__((destructor(RTE_PRIO(prio)), used)) func(void)
 #define __rte_cold
 #else
 #define __rte_cold __attribute__((cold))
+#endif
+
+/**
+ * Hint precondition
+ *
+ * @warning Depending on the compiler, any code in ``condition`` might be executed.
+ * This currently only occurs with GCC prior to version 13.
+ */
+#if defined(RTE_TOOLCHAIN_GCC) && (GCC_VERSION >= 130000)
+#define __rte_assume(condition) __attribute__((assume(condition)))
+#elif defined(RTE_TOOLCHAIN_GCC)
+#define __rte_assume(condition) do { if (!(condition)) __rte_unreachable(); } while (0)
+#elif defined(RTE_TOOLCHAIN_CLANG)
+#define __rte_assume(condition) __extension__(__builtin_assume(condition))
+#else
+#define __rte_assume(condition) __assume(condition)
 #endif
 
 /**
@@ -492,10 +590,18 @@ rte_is_aligned(const void * const __rte_restrict ptr, const unsigned int align)
 
 /*********** Macros for compile type checks ********/
 
+/* Workaround for toolchain issues with missing C11 macro in FreeBSD */
+#if !defined(static_assert) && !defined(__cplusplus)
+#define	static_assert	_Static_assert
+#endif
+
 /**
  * Triggers an error at compilation time if the condition is true.
+ *
+ * The do { } while(0) exists to workaround a bug in clang (#55821)
+ * where it would not handle _Static_assert in a switch case.
  */
-#define RTE_BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
+#define RTE_BUILD_BUG_ON(condition) do { static_assert(!(condition), #condition); } while (0)
 
 /*********** Cache line related macros ********/
 
@@ -518,18 +624,14 @@ rte_is_aligned(const void * const __rte_restrict ptr, const unsigned int align)
 #define RTE_CACHE_LINE_MIN_SIZE 64
 
 /** Force alignment to cache line. */
-#ifdef RTE_TOOLCHAIN_MSVC
-#define __rte_cache_aligned
-#else
 #define __rte_cache_aligned __rte_aligned(RTE_CACHE_LINE_SIZE)
-#endif
 
 /** Force minimum cache line alignment. */
 #define __rte_cache_min_aligned __rte_aligned(RTE_CACHE_LINE_MIN_SIZE)
 
 #define _RTE_CACHE_GUARD_HELPER2(unique) \
-	char cache_guard_ ## unique[RTE_CACHE_LINE_SIZE * RTE_CACHE_GUARD_LINES] \
-	__rte_cache_aligned
+	alignas(RTE_CACHE_LINE_SIZE) \
+	char cache_guard_ ## unique[RTE_CACHE_LINE_SIZE * RTE_CACHE_GUARD_LINES]
 #define _RTE_CACHE_GUARD_HELPER1(unique) _RTE_CACHE_GUARD_HELPER2(unique)
 /**
  * Empty cache lines, to guard against false sharing-like effects
@@ -537,8 +639,12 @@ rte_is_aligned(const void * const __rte_restrict ptr, const unsigned int align)
  *
  * Use as spacing between data accessed by different lcores,
  * to prevent cache thrashing on hardware with speculative prefetching.
+ *
+ * Note: Although __COUNTER__ would be better for uniqueness,
+ * it is not yet (March 2026) part of the C standard,
+ * so compilation would fail when building in pedantic mode.
  */
-#define RTE_CACHE_GUARD _RTE_CACHE_GUARD_HELPER1(__COUNTER__)
+#define RTE_CACHE_GUARD _RTE_CACHE_GUARD_HELPER1(__LINE__)
 
 /*********** PA/IOVA type definitions ********/
 
@@ -586,6 +692,16 @@ __extension__ typedef uint64_t RTE_MARKER64[0];
 	})
 
 /**
+ * Macro to return the minimum of two numbers
+ *
+ * As opposed to RTE_MIN, it does not use temporary variables so it is not safe
+ * if a or b is an expression. Yet it is guaranteed to be constant for use in
+ * static_assert().
+ */
+#define RTE_MIN_T(a, b, t) \
+	((t)(a) < (t)(b) ? (t)(a) : (t)(b))
+
+/**
  * Macro to return the maximum of two numbers
  */
 #define RTE_MAX(a, b) \
@@ -594,6 +710,16 @@ __extension__ typedef uint64_t RTE_MARKER64[0];
 		typeof (b) _b = (b); \
 		_a > _b ? _a : _b; \
 	})
+
+/**
+ * Macro to return the maximum of two numbers
+ *
+ * As opposed to RTE_MAX, it does not use temporary variables so it is not safe
+ * if a or b is an expression. Yet it is guaranteed to be constant for use in
+ * static_assert().
+ */
+#define RTE_MAX_T(a, b, t) \
+	((t)(a) > (t)(b) ? (t)(a) : (t)(b))
 
 /*********** Other general functions / macros ********/
 

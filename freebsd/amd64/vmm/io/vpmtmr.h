@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 Neel Natu (neel@freebsd.org)
  * All rights reserved.
@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _VPMTMR_H_
@@ -39,8 +37,7 @@ struct vm_snapshot_meta;
 struct vpmtmr *vpmtmr_init(struct vm *vm);
 void vpmtmr_cleanup(struct vpmtmr *pmtmr);
 
-int vpmtmr_handler(struct vm *vm, int vcpuid, bool in, int port, int bytes,
-    uint32_t *val);
+int vpmtmr_handler(struct vm *vm, bool in, int port, int bytes, uint32_t *val);
 
 #ifdef BHYVE_SNAPSHOT
 int vpmtmr_snapshot(struct vpmtmr *vpmtmr, struct vm_snapshot_meta *meta);

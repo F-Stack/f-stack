@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2015-2019 Yandex LLC
  * Copyright (c) 2015-2019 Andrey V. Elsukov <ae@FreeBSD.org>
@@ -25,9 +25,6 @@
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -61,7 +58,7 @@ __FBSDID("$FreeBSD$");
 #include "nat64stl.h"
 
 #define	NAT64_LOOKUP(chain, cmd)	\
-	(struct nat64stl_cfg *)SRV_OBJECT((chain), (cmd)->arg1)
+    (struct nat64stl_cfg *)SRV_OBJECT((chain), insntod(cmd, kidx)->kidx)
 
 static void
 nat64stl_log(struct pfloghdr *plog, struct mbuf *m, sa_family_t family,
@@ -207,8 +204,8 @@ int
 ipfw_nat64stl(struct ip_fw_chain *chain, struct ip_fw_args *args,
     ipfw_insn *cmd, int *done)
 {
-	ipfw_insn *icmd;
 	struct nat64stl_cfg *cfg;
+	ipfw_insn *icmd;
 	in_addr_t dst4;
 	uint32_t tablearg;
 	int ret;
@@ -216,9 +213,9 @@ ipfw_nat64stl(struct ip_fw_chain *chain, struct ip_fw_args *args,
 	IPFW_RLOCK_ASSERT(chain);
 
 	*done = 0; /* try next rule if not matched */
-	icmd = cmd + 1;
+	icmd = cmd + F_LEN(cmd);
 	if (cmd->opcode != O_EXTERNAL_ACTION ||
-	    cmd->arg1 != V_nat64stl_eid ||
+	    insntod(cmd, kidx)->kidx != V_nat64stl_eid ||
 	    icmd->opcode != O_EXTERNAL_INSTANCE ||
 	    (cfg = NAT64_LOOKUP(chain, icmd)) == NULL)
 		return (0);

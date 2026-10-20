@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	From: @(#)if_loop.c	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 /*
@@ -50,9 +47,9 @@
 #include <net/ethernet.h>	/* Ethernet related constants and types */
 #include <net/if.h>
 #include <net/if_var.h>		/* basic part of ifnet(9) */
+#include <net/if_private.h>
 #include <net/if_clone.h>	/* network interface cloning */
 #include <net/if_types.h>	/* IFT_ETHER and friends */
-#include <net/if_var.h>		/* kernel-only part of ifnet(9) */
 #include <net/vnet.h>
 
 static const char edscname[] = "edsc";
@@ -105,11 +102,6 @@ edsc_clone_create(struct if_clone *ifc, int unit, caddr_t params)
 	 */
 	sc = malloc(sizeof(struct edsc_softc), M_EDSC, M_WAITOK | M_ZERO);
 	ifp = sc->sc_ifp = if_alloc(IFT_ETHER);
-	if (ifp == NULL) {
-		free(sc, M_EDSC);
-		return (ENOSPC);
-	}
-
 	ifp->if_softc = sc;
 
 	/*

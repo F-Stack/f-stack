@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	From: @(#)if_loop.c	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 /*
@@ -48,6 +45,7 @@
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_clone.h>
 #include <net/if_types.h>
 #include <net/route.h>
@@ -87,11 +85,6 @@ disc_clone_create(struct if_clone *ifc, int unit, caddr_t params)
 
 	sc = malloc(sizeof(struct disc_softc), M_DISC, M_WAITOK | M_ZERO);
 	ifp = sc->sc_ifp = if_alloc(IFT_LOOP);
-	if (ifp == NULL) {
-		free(sc, M_DISC);
-		return (ENOSPC);
-	}
-
 	ifp->if_softc = sc;
 	if_initname(ifp, discname, unit);
 	ifp->if_mtu = DSMTU;
@@ -182,10 +175,10 @@ discoutput(struct ifnet *ifp, struct mbuf *m, const struct sockaddr *dst,
 	M_ASSERTPKTHDR(m);
 
 	/* BPF writes need to be handled specially. */
-	if (dst->sa_family == AF_UNSPEC)
+	if (dst->sa_family == AF_UNSPEC || dst->sa_family == pseudo_AF_HDRCMPLT)
 		bcopy(dst->sa_data, &af, sizeof(af));
 	else
-		af = dst->sa_family;
+		af = RO_GET_FAMILY(ro, dst);
 
 	if (bpf_peers_present(ifp->if_bpf))
 		bpf_mtap2(ifp->if_bpf, &af, sizeof(af), m);

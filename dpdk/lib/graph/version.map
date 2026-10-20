@@ -1,4 +1,4 @@
-DPDK_24 {
+DPDK_25 {
 	global:
 
 	__rte_graph_mcore_dispatch_sched_node_enqueue;
@@ -51,4 +51,11 @@ DPDK_24 {
 	rte_node_next_stream_put;
 
 	local: *;
+};
+
+EXPERIMENTAL {
+	global:
+
+	# added in 24.11
+	rte_node_xstat_increment;
 };

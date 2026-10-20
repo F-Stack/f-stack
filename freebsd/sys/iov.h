@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013-2015 Sandvine Inc.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_IOV_H_
@@ -47,6 +45,8 @@
 #define	TYPE_SCHEMA_NAME	"TYPE"
 #define	DEFAULT_SCHEMA_NAME	"DEFAULT"
 #define	REQUIRED_SCHEMA_NAME	"REQUIRED"
+
+#define	VF_VLAN_TRUNK		4096
 
 /*
  * Because each PF device is expected to expose a unique set of possible
@@ -211,7 +211,7 @@ struct pci_iov_schema
  *    (PF or individual VF).
  *         Note: We will refer to the section of the configuration schema that
  *               specifies the parameters for this subsystem and device
- *               configuration as the device/subystem schema.
+ *               configuration as the device/subsystem schema.
  * 2) The subsystem node must contain only keys that correspond to parameters
  *    that are specified in the device/subsystem schema.
  * 3) Every parameter specified as required in the device/subsystem schema is

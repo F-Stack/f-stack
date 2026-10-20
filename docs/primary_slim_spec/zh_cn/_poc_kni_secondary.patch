@@ -1,0 +1,106 @@
+diff --git a/lib/ff_config.c b/lib/ff_config.c
+index 223c1a479..29c383c91 100644
+--- a/lib/ff_config.c
++++ b/lib/ff_config.c
+@@ -1084,6 +1084,8 @@ ini_parse_handler(void* user, const char* section, const char* name,
+         return ff_parse_mbuf_mode(value, &pconfig->dpdk.mbuf_mode);
+     } else if (MATCH("kni", "enable")) {
+         pconfig->kni.enable= atoi(value);
++    } else if (MATCH("kni", "owner_proc_id")) {
++        pconfig->kni.owner_proc_id= atoi(value);
+     } else if (MATCH("kni", "console_packets_ratelimit")) {
+         pconfig->kni.console_packets_ratelimit= atoi(value);
+     } else if (MATCH("kni", "general_packets_ratelimit")) {
+diff --git a/lib/ff_config.h b/lib/ff_config.h
+index c7b562ae5..99fb5017a 100644
+--- a/lib/ff_config.h
++++ b/lib/ff_config.h
+@@ -339,6 +339,7 @@ struct ff_config {
+         int console_packets_ratelimit;
+         int general_packets_ratelimit;
+         int kernel_packets_ratelimit;
++        int owner_proc_id;
+         char *kni_action;
+         char *method;
+         char *tcp_port;
+diff --git a/lib/ff_dpdk_if.c b/lib/ff_dpdk_if.c
+index fe7c5c49b..50a6b4ff8 100644
+--- a/lib/ff_dpdk_if.c
++++ b/lib/ff_dpdk_if.c
+@@ -819,7 +819,7 @@ init_port_start(void)
+ 
+     total_nb_ports = nb_ports;
+ #ifdef FF_KNI
+-    if (enable_kni && ff_kni_is_owner_thread()) {
++    if (enable_kni && rte_eal_process_type() == RTE_PROC_PRIMARY) {
+             total_nb_ports *= 2;  /* one more virtio_user port for kernel per port */
+     }
+ #endif
+@@ -2077,7 +2077,7 @@ process_packets(uint16_t port_id, uint16_t queue_id, struct rte_mbuf **bufs,
+             }
+ 
+ #ifdef FF_KNI
+-            if (enable_kni && ff_kni_is_owner_thread()) {
++            if (enable_kni && ff_kni_is_runtime_owner()) {
+                 mbuf_pool = pktmbuf_pool[qconf->socket_id];
+                 mbuf_clone = pktmbuf_deep_clone(rtem, mbuf_pool);
+                 if(mbuf_clone) {
+@@ -2762,7 +2762,7 @@ main_loop(void *arg)
+             ctx = veth_ctx[rte_lcore_id()][port_id];
+ 
+ #ifdef FF_KNI
+-            if (enable_kni && ff_kni_is_owner_thread()) {
++            if (enable_kni && ff_kni_is_runtime_owner()) {
+                 ff_kni_process(port_id, queue_id, pkts_burst, MAX_PKT_BURST);
+             }
+ #endif
+diff --git a/lib/ff_dpdk_kni.c b/lib/ff_dpdk_kni.c
+index 4712947d5..9a0c7a55e 100644
+--- a/lib/ff_dpdk_kni.c
++++ b/lib/ff_dpdk_kni.c
+@@ -97,6 +97,14 @@ ff_kni_is_owner_thread(void)
+     return rte_eal_process_type() == RTE_PROC_PRIMARY;
+ }
+ 
++int
++ff_kni_is_runtime_owner(void)
++{
++    if (ff_global_cfg.dpdk.thread_mode)
++        return rte_lcore_id() == ff_global_cfg.dpdk.proc_lcore[0];
++    return ff_global_cfg.dpdk.proc_id == ff_global_cfg.kni.owner_proc_id;
++}
++
+ struct kni_ratelimit kni_rate_limt = {0, 0, 0};
+ 
+ static void
+@@ -431,7 +439,7 @@ void
+ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
+     unsigned ring_queue_size)
+ {
+-    if (ff_kni_is_owner_thread()) {
++    if (ff_kni_is_owner_thread() || ff_kni_is_runtime_owner()) {
+         struct rte_ether_addr addr = {{0}};
+         int ret;
+ 
+@@ -471,7 +479,8 @@ ff_kni_alloc(uint16_t port_id, unsigned socket_id, int port_idx,
+             port_name, port_args);
+ 
+         /* add the vdev for virtio_user */
+-        if (rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
++        if (ff_kni_is_owner_thread() &&
++            rte_eal_hotplug_add("vdev", port_name, port_args) < 0) {
+             rte_exit(EXIT_FAILURE, "ff_kni_alloc cannot create virtio user paired port for port %u\n", port_id);
+         }
+ 
+diff --git a/lib/ff_dpdk_kni.h b/lib/ff_dpdk_kni.h
+index f61e52330..aa5990001 100644
+--- a/lib/ff_dpdk_kni.h
++++ b/lib/ff_dpdk_kni.h
+@@ -73,5 +73,7 @@ int ff_kni_enqueue(enum FilterReturn filter, uint16_t port_id, struct rte_mbuf *
+ 
+ int ff_kni_is_owner_thread(void);
+ 
++int ff_kni_is_runtime_owner(void);
++
+ 
+ #endif /* ifndef _FSTACK_DPDK_KNI_H */

@@ -20,9 +20,10 @@
  */
 
 extern int idxd_pmd_logtype;
+#define RTE_LOGTYPE_IDXD_PMD idxd_pmd_logtype
 
-#define IDXD_PMD_LOG(level, fmt, args...) rte_log(RTE_LOG_ ## level, \
-		idxd_pmd_logtype, "IDXD: %s(): " fmt "\n", __func__, ##args)
+#define IDXD_PMD_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, IDXD_PMD, "%s(): ", __func__, __VA_ARGS__)
 
 #define IDXD_PMD_DEBUG(fmt, args...)  IDXD_PMD_LOG(DEBUG, fmt, ## args)
 #define IDXD_PMD_INFO(fmt, args...)   IDXD_PMD_LOG(INFO, fmt, ## args)
@@ -33,7 +34,7 @@ struct idxd_pci_common {
 	rte_spinlock_t lk;
 
 	uint8_t wq_cfg_sz;
-	uint16_t ref_count;
+	RTE_ATOMIC(uint16_t) ref_count;
 	volatile struct rte_idxd_bar0 *regs;
 	volatile uint32_t *wq_regs_base;
 	volatile struct rte_idxd_grpcfg *grp_regs;

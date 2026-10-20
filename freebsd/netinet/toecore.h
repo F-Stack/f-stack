@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Chelsio Communications, Inc.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _NETINET_TOE_H_
@@ -35,8 +33,10 @@
 #error "no user-serviceable parts inside"
 #endif
 
+#include <netinet/tcp.h>
 #include <sys/_eventhandler.h>
 
+struct tcpcb;
 struct tcpopt;
 struct tcphdr;
 struct in_conninfo;
@@ -66,7 +66,7 @@ struct toedev {
 	void (*tod_input)(struct toedev *, struct tcpcb *, struct mbuf *);
 
 	/*
-	 * This is called by the kernel during pru_rcvd for an offloaded TCP
+	 * This is called by the kernel during pr_rcvd() for an offloaded TCP
 	 * connection and provides an opportunity for the TOE driver to manage
 	 * its rx window and credits.
 	 */
@@ -108,12 +108,15 @@ struct toedev {
 	void (*tod_ctloutput)(struct toedev *, struct tcpcb *, int, int);
 
 	/* Update software state */
-	void (*tod_tcp_info)(struct toedev *, struct tcpcb *,
+	void (*tod_tcp_info)(struct toedev *, const struct tcpcb *,
 	    struct tcp_info *);
 
 	/* Create a TLS session */
 	int (*tod_alloc_tls_session)(struct toedev *, struct tcpcb *,
 	    struct ktls_session *, int);
+
+	/* ICMP fragmentation-needed received, adjust PMTU. */
+	void (*tod_pmtu_update)(struct toedev *, struct tcpcb *, tcp_seq, int);
 };
 
 typedef	void (*tcp_offload_listen_start_fn)(void *, struct tcpcb *);

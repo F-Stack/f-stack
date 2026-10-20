@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 John Baldwin <jhb@FreeBSD.org>
  *
@@ -30,18 +30,18 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_auto_eoi.h"
 #include "opt_isa.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/asan.h>
 #include <sys/bus.h>
 #include <sys/interrupt.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/module.h>
+#include <sys/msan.h>
 
 #include <machine/cpufunc.h>
 #include <machine/frame.h>
@@ -113,8 +113,12 @@ inthand_t
 	}
 
 #define	INTSRC(irq)							\
-	{ { &atpics[(irq) / 8].at_pic }, IDTVEC(atpic_intr ## irq ),	\
-	    IDTVEC(atpic_intr ## irq ## _pti), (irq) % 8 }
+	{								\
+		.at_intsrc = { &atpics[(irq) / 8].at_pic },		\
+		.at_intr = IDTVEC(atpic_intr ## irq ),			\
+		.at_intr_pti = IDTVEC(atpic_intr ## irq ## _pti),	\
+		.at_irq = (irq) % 8,					\
+	}
 
 struct atpic {
 	struct pic at_pic;
@@ -522,6 +526,10 @@ atpic_handle_intr(u_int vector, struct trapframe *frame)
 {
 	struct intsrc *isrc;
 
+	kasan_mark(frame, sizeof(*frame), sizeof(*frame), 0);
+	kmsan_mark(frame, sizeof(*frame), KMSAN_STATE_INITED);
+	trap_check_kstack();
+
 	KASSERT(vector < NUM_ISA_IRQS, ("unknown int %u\n", vector));
 	isrc = &atintrs[vector].at_intsrc;
 
@@ -591,29 +599,10 @@ atpic_attach(device_t dev)
 	return (0);
 }
 
-/*
- * Return a bitmap of the current interrupt requests.  This is 8259-specific
- * and is only suitable for use at probe time.
- */
-intrmask_t
-isa_irq_pending(void)
-{
-	u_char irr1;
-	u_char irr2;
-
-	irr1 = inb(IO_ICU1);
-	irr2 = inb(IO_ICU2);
-	return ((irr2 << 8) | irr1);
-}
-
 static device_method_t atpic_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		atpic_probe),
 	DEVMETHOD(device_attach,	atpic_attach),
-	DEVMETHOD(device_detach,	bus_generic_detach),
-	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
-	DEVMETHOD(device_suspend,	bus_generic_suspend),
-	DEVMETHOD(device_resume,	bus_generic_resume),
 	{ 0, 0 }
 };
 
@@ -623,9 +612,7 @@ static driver_t atpic_driver = {
 	1,		/* no softc */
 };
 
-static devclass_t atpic_devclass;
-
-DRIVER_MODULE(atpic, isa, atpic_driver, atpic_devclass, 0, 0);
-DRIVER_MODULE(atpic, acpi, atpic_driver, atpic_devclass, 0, 0);
+DRIVER_MODULE(atpic, isa, atpic_driver, 0, 0);
+DRIVER_MODULE(atpic, acpi, atpic_driver, 0, 0);
 ISA_PNP_INFO(atpic_ids);
 #endif /* DEV_ISA */

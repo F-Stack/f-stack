@@ -2,16 +2,14 @@
  * System call names.
  *
  * DO NOT EDIT-- this file is automatically @generated.
- * $FreeBSD$
  */
 
 const char *linux32_syscallnames[] = {
-#define	nosys	linux_nosys
 	"#0",			/* 0 = setup */
 	"linux_exit",			/* 1 = linux_exit */
 	"linux_fork",			/* 2 = linux_fork */
 	"read",			/* 3 = read */
-	"write",			/* 4 = write */
+	"linux_write",			/* 4 = linux_write */
 	"linux_open",			/* 5 = linux_open */
 	"close",			/* 6 = close */
 	"linux_waitpid",			/* 7 = linux_waitpid */
@@ -175,7 +173,7 @@ const char *linux32_syscallnames[] = {
 	"linux_getresuid16",			/* 165 = linux_getresuid16 */
 	"#166",			/* 166 = vm86 */
 	"#167",			/* 167 = query_module */
-	"poll",			/* 168 = poll */
+	"linux_poll",			/* 168 = linux_poll */
 	"#169",			/* 169 = nfsservctl */
 	"linux_setresgid16",			/* 170 = linux_setresgid16 */
 	"linux_getresgid16",			/* 171 = linux_getresgid16 */
@@ -429,11 +427,35 @@ const char *linux32_syscallnames[] = {
 	"linux_mq_timedreceive_time64",			/* 419 = linux_mq_timedreceive_time64 */
 	"linux_semtimedop_time64",			/* 420 = linux_semtimedop_time64 */
 	"linux_rt_sigtimedwait_time64",			/* 421 = linux_rt_sigtimedwait_time64 */
-	"linux_futex_time64",			/* 422 = linux_futex_time64 */
+	"linux_sys_futex_time64",			/* 422 = linux_sys_futex_time64 */
 	"linux_sched_rr_get_interval_time64",			/* 423 = linux_sched_rr_get_interval_time64 */
 	"linux_pidfd_send_signal",			/* 424 = linux_pidfd_send_signal */
 	"linux_io_uring_setup",			/* 425 = linux_io_uring_setup */
 	"linux_io_uring_enter",			/* 426 = linux_io_uring_enter */
 	"linux_io_uring_register",			/* 427 = linux_io_uring_register */
-	"#428",			/* 428 = nosys */
+	"linux_open_tree",			/* 428 = linux_open_tree */
+	"linux_move_mount",			/* 429 = linux_move_mount */
+	"linux_fsopen",			/* 430 = linux_fsopen */
+	"linux_fsconfig",			/* 431 = linux_fsconfig */
+	"linux_fsmount",			/* 432 = linux_fsmount */
+	"linux_fspick",			/* 433 = linux_fspick */
+	"linux_pidfd_open",			/* 434 = linux_pidfd_open */
+	"linux_clone3",			/* 435 = linux_clone3 */
+	"linux_close_range",			/* 436 = linux_close_range */
+	"linux_openat2",			/* 437 = linux_openat2 */
+	"linux_pidfd_getfd",			/* 438 = linux_pidfd_getfd */
+	"linux_faccessat2",			/* 439 = linux_faccessat2 */
+	"linux_process_madvise",			/* 440 = linux_process_madvise */
+	"linux_epoll_pwait2_64",			/* 441 = linux_epoll_pwait2_64 */
+	"linux_mount_setattr",			/* 442 = linux_mount_setattr */
+	"linux_quotactl_fd",			/* 443 = linux_quotactl_fd */
+	"linux_landlock_create_ruleset",			/* 444 = linux_landlock_create_ruleset */
+	"linux_landlock_add_rule",			/* 445 = linux_landlock_add_rule */
+	"linux_landlock_restrict_self",			/* 446 = linux_landlock_restrict_self */
+	"linux_memfd_secret",			/* 447 = linux_memfd_secret */
+	"linux_process_mrelease",			/* 448 = linux_process_mrelease */
+	"linux_futex_waitv",			/* 449 = linux_futex_waitv */
+	"linux_set_mempolicy_home_node",			/* 450 = linux_set_mempolicy_home_node */
+	"linux_cachestat",			/* 451 = linux_cachestat */
+	"linux_fchmodat2",			/* 452 = linux_fchmodat2 */
 };

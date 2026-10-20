@@ -14,10 +14,13 @@
 #include <rte_eal.h>
 #include <rte_lcore.h>
 #include <rte_mbuf_pool_ops.h>
+#include <rte_mcslock.h>
 #include <rte_mempool.h>
 #include <rte_pci.h>
 
 #include <roc_api.h>
+
+#include "cnxk_dma_event_dp.h"
 
 #define CNXK_DPI_MAX_POINTER		    15
 #define CNXK_DPI_STRM_INC(s, var)	    ((s).var = ((s).var + 1) & (s).max_cnt)
@@ -25,8 +28,10 @@
 						((s).var - 1))
 #define CNXK_DPI_MAX_DESC		    32768
 #define CNXK_DPI_MIN_DESC		    2
+#define CN10K_DPI_MAX_PRI		    2
 #define CNXK_DPI_MAX_VCHANS_PER_QUEUE	    4
 #define CNXK_DPI_QUEUE_BUF_SIZE		    16256
+#define CNXK_DPI_QUEUE_BUF_SIZE_V2	    130944
 #define CNXK_DPI_POOL_MAX_CACHE_SZ	    (16)
 #define CNXK_DPI_DW_PER_SINGLE_CMD	    8
 #define CNXK_DPI_HDR_LEN		    4
@@ -34,7 +39,7 @@
 #define CNXK_DPI_MAX_CMD_SZ		    CNXK_DPI_CMD_LEN(CNXK_DPI_MAX_POINTER,		\
 							     CNXK_DPI_MAX_POINTER)
 #define CNXK_DPI_CHUNKS_FROM_DESC(cz, desc) (((desc) / (((cz) / 8) / CNXK_DPI_MAX_CMD_SZ)) + 1)
-
+#define CNXK_DPI_COMPL_OFFSET		    ROC_CACHE_LINE_SZ
 /* Set Completion data to 0xFF when request submitted,
  * upon successful request completion engine reset to completion status
  */
@@ -83,16 +88,11 @@ union cnxk_dpi_instr_cmd {
 	} cn10k;
 };
 
-struct cnxk_dpi_compl_s {
-	uint64_t cdata;
-	void *cb_data;
-};
-
 struct cnxk_dpi_cdesc_data_s {
-	struct cnxk_dpi_compl_s **compl_ptr;
 	uint16_t max_cnt;
 	uint16_t head;
 	uint16_t tail;
+	uint8_t *compl_ptr;
 };
 
 struct cnxk_dpi_conf {
@@ -103,6 +103,7 @@ struct cnxk_dpi_conf {
 	uint16_t desc_idx;
 	struct rte_dma_stats stats;
 	uint64_t completed_offset;
+	bool adapter_enabled;
 };
 
 struct cnxk_dpi_vf_s {
@@ -112,6 +113,7 @@ struct cnxk_dpi_vf_s {
 	uint16_t chunk_size_m1;
 	struct rte_mempool *chunk_pool;
 	struct cnxk_dpi_conf conf[CNXK_DPI_MAX_VCHANS_PER_QUEUE];
+	RTE_ATOMIC(rte_mcslock_t *) mcs_lock;
 	/* Slow path */
 	struct roc_dpi rdpi;
 	uint32_t aura;

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alstom Group.
  * Copyright (c) 2020 Semihalf.
@@ -26,9 +26,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
@@ -42,7 +39,7 @@ __FBSDID("$FreeBSD$");
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
-#include <dev/extres/clk/clk_fixed.h>
+#include <dev/clk/clk_fixed.h>
 
 #include <arm64/qoriq/clk/qoriq_clkgen.h>
 
@@ -194,10 +191,8 @@ static device_method_t ls1046a_clkgen_methods[] = {
 DEFINE_CLASS_1(ls1046a_clkgen, ls1046a_clkgen_driver, ls1046a_clkgen_methods,
     sizeof(struct qoriq_clkgen_softc), qoriq_clkgen_driver);
 
-static devclass_t ls1046a_clkgen_devclass;
-
-EARLY_DRIVER_MODULE(ls1046a_clkgen, simplebus, ls1046a_clkgen_driver,
-    ls1046a_clkgen_devclass, 0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
+EARLY_DRIVER_MODULE(ls1046a_clkgen, simplebus, ls1046a_clkgen_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_MIDDLE);
 
 static int
 ls1046a_fman_init(device_t dev)

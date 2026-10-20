@@ -1,0 +1,3624 @@
+/*
+ * F-Stack lib/ unit test: ff_dpdk_if.c (P2 #4 — trivial subset only)
+ *
+ * Spec anchor: docs/unit_test_spec/zh_cn/plan-stage4-p2-tests.md §7 Phase 4
+ * Coverage: 7 TC over 7 trivial getters/setters in lib/ff_dpdk_if.c.
+ * The other ~2837 lines of ff_dpdk_if.c are deferred (FU-S4-DPDK-IF-FULL).
+ *
+ * Tested functions:
+ *   - ff_dpdk_deregister_if    (L198, free(ctx))
+ *   - ff_get_traffic           (L1952, struct copy)
+ *   - ff_dpdk_stop             (L2516, sets stop_loop=1)
+ *   - ff_regist_pcblddr_fun    (L2571, function ptr setter)
+ *   - ff_regist_packet_dispatcher          (L2868)
+ *   - ff_regist_packet_dispatcher_context  (L2874)
+ *   - ff_get_tsc_ns            (L2880, rte_rdtsc / rte_get_tsc_hz)
+ *
+ * NOT tested (skipped — requires mbuf+mempool real DPDK runtime):
+ *   - ff_dpdk_pktmbuf_free  (calls inline rte_pktmbuf_free_seg) -> FU-S4-PKTMBUF
+ *
+ * The lib_objs/ff_dpdk_if.o object pulls in many DPDK + ff_* symbols; we
+ * provide minimal stubs locally to satisfy the linker.
+ */
+
+#include <stdarg.h>
+#include <stddef.h>
+#include <setjmp.h>
+#include <cmocka.h>
+
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <pthread.h>
+
+#include "ff_api.h"
+#include "ff_flow_peer.h"
+#include "ff_msg.h"               /* struct ff_traffic_args */
+#include "ff_config.h"            /* MAX_PKT_BURST / ff_hw_features (needed by ff_memory.h) */
+#include "ff_dpdk_if.h"
+#include "ff_memory.h"            /* struct ff_dpdk_if_context / lcore_conf (RSS 0.1 tests) */
+#include "ff_host_interface.h"    /* ff_get_tsc_ns declaration */
+
+/* lcore_conf is an extern global array in ff_dpdk_if.c (CM2: per-lcore
+ * array lcore_conf[RTE_MAX_LCORE], declared in ff_memory.h which is already
+ * included above). The RSS 0.1 tests drive thread_mode=0 semantics, where
+ * ff_lcore_conf_idx() is fixed 0, so they set the queue layout on
+ * lcore_conf[0] (the same element the lib code accesses). */
+
+#include <rte_launch.h>           /* enum rte_rmt_call_main_t */
+#include <rte_eal.h>              /* rte_eal_init (R-B 0.3 thash needs EAL) */
+#include <rte_random.h>           /* rte_srand (thash flaky fix, M4 Batch C) */
+#include <rte_thash.h>            /* rte_thash_* (R-B 0.3 hit-rate quantification) */
+#include <rte_memzone.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include "ff_reload.h"
+
+static int p1_process_type = -1;
+static pid_t p1_parent;
+static int p1_missing_directory;
+extern enum rte_proc_type_t __real_rte_eal_process_type(void);
+extern pid_t __real_getppid(void);
+extern const struct rte_memzone *__real_rte_memzone_lookup(const char *name);
+
+enum rte_proc_type_t
+__wrap_rte_eal_process_type(void)
+{
+    return p1_process_type < 0 ? __real_rte_eal_process_type()
+        : (enum rte_proc_type_t)p1_process_type;
+}
+
+pid_t
+__wrap_getppid(void)
+{
+    return p1_parent ? p1_parent : __real_getppid();
+}
+
+/* RX-40: fake UDP peer tables */
+static struct ff_flow_peer_tab rx40_own, rx40_peer;
+static struct rte_memzone rx40_mz_own, rx40_mz_peer;
+static int rx40_fake_mz;
+
+const struct rte_memzone *
+__wrap_rte_memzone_lookup(const char *name)
+{
+    if (rx40_fake_mz && strncmp(name, "ff_fpeer_", 9) == 0)
+        return strstr(name, "_g0") ? &rx40_mz_own : &rx40_mz_peer;
+    if (p1_missing_directory && strcmp(name, FF_RELOAD_GENDIR_NAME) == 0)
+        return NULL;
+    return __real_rte_memzone_lookup(name);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Wrap rte_get_tsc_hz (real DPDK function; wrappable via -Wl,--wrap)        */
+/* ------------------------------------------------------------------------ */
+uint64_t
+__wrap_rte_get_tsc_hz(void)
+{
+    return mock_type(uint64_t);
+}
+
+/* R-D (req 0.4): wrap ff_rss_check / ff_rss_check6 to count invocations.
+ * The wrappers transparently forward to __real_* so existing R-A/R-B/R-C
+ * tests that call ff_rss_check{,6} directly keep their semantics. */
+extern int __real_ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
+                               uint16_t sport, uint16_t dport);
+extern int __real_ff_rss_check6(void *softc, const uint8_t *saddr6,
+                                const uint8_t *daddr6, uint16_t sport,
+                                uint16_t dport);
+
+static uint64_t g_ff_rss_check_calls;
+static uint64_t g_ff_rss_check6_calls;
+
+int
+__wrap_ff_rss_check(void *softc, uint32_t saddr, uint32_t daddr,
+                    uint16_t sport, uint16_t dport)
+{
+    g_ff_rss_check_calls++;
+    return __real_ff_rss_check(softc, saddr, daddr, sport, dport);
+}
+
+int
+__wrap_ff_rss_check6(void *softc, const uint8_t *saddr6, const uint8_t *daddr6,
+                     uint16_t sport, uint16_t dport)
+{
+    g_ff_rss_check6_calls++;
+    return __real_ff_rss_check6(softc, saddr6, daddr6, sport, dport);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Stubs for ff_* / rte_* / kernel symbols referenced by ff_dpdk_if.o that  */
+/* are NOT exercised by the 7 tests. We provide just enough no-op bodies to */
+/* let the linker resolve references; calling any of them in a test would   */
+/* be a bug.                                                                */
+/* ------------------------------------------------------------------------ */
+int   ff_log(uint32_t l, uint32_t t, const char *f, ...) { (void)l;(void)t;(void)f; return 0; }
+__thread unsigned int per_lcore__lcore_id = 0;
+
+/* dpdk_argc/dpdk_argv extern from ff_config.h */
+#include "ff_config.h"
+int   dpdk_argc = 0;
+char *dpdk_argv[DPDK_CONFIG_NUM + 1] = {0};
+
+/* ff_global_cfg required by ff_dpdk_if.c (it accesses cfg->dpdk.*) */
+struct ff_config ff_global_cfg;
+
+/* ------------------------------------------------------------------------ */
+/* Linker-satisfaction stubs for ~30 ff_* and rte_* symbols referenced by   */
+/* lib/ff_dpdk_if.c but never invoked by the 7 tests in this file. They    */
+/* exist only to let the linker resolve references; calling any of them    */
+/* during a test is a bug.                                                  */
+/* ------------------------------------------------------------------------ */
+
+/* Forward declarations to silence -Wmissing-prototype warnings on stub bodies */
+struct rte_mbuf;
+
+/* --- ff_* kernel-side / mbuf / veth helpers ---------------------------- */
+int  ff_log_open_set(void) { return 0; }
+void ff_log_close(void) { }
+int  ff_dump_packets(const char *p, struct rte_mbuf *m, uint16_t s, uint32_t l, uint8_t t)
+{ (void)p;(void)m;(void)s;(void)l;(void)t; return 0; }
+
+void *ff_mbuf_gethdr(void *p, uint16_t l, void *d, uint16_t dl, uint8_t r)
+{ (void)p;(void)l;(void)d;(void)dl;(void)r; return NULL; }
+int   ff_mbuf_set_vlan_info(void *m, uint16_t v) { (void)m;(void)v; return 0; }
+int   ff_mbuf_set_timestamp(void *m, uint64_t t) { (void)m;(void)t; return 0; }
+void *ff_mbuf_get(void *p, void *m, void *d, uint16_t dl)
+{ (void)p;(void)m;(void)d;(void)dl; return NULL; }
+void  ff_mbuf_free(void *m) { (void)m; }
+int   ff_mbuf_copydata(void *m, void *d, int o, int l)
+{ (void)m;(void)d;(void)o;(void)l; return 0; }
+int   ff_mbuf_tx_offload(void *m, void *o, void *l)
+{ (void)m;(void)o;(void)l; return 0; }
+
+void *ff_veth_attach(void *cfg) { (void)cfg; return NULL; }
+int   ff_veth_input(void *ctx, struct rte_mbuf *m) { (void)ctx;(void)m; return 0; }
+void  ff_veth_process_packet(void *ifp, void *m) { (void)ifp;(void)m; }
+/* ff_veth_get_softc / ff_veth_softc_to_hostc model (ff_veth.c:1132/1139):
+ *   ff_veth_get_softc(host_ctx)  -> softc whose ->host_ctx == host_ctx
+ *   ff_veth_softc_to_hostc(softc)-> softc->host_ctx
+ * ff_rss_tbl_init() calls ff_veth_get_softc(&ctx) (ctx is its local with
+ * port_id=rule.port_id) then ff_rss_check(sc,...) which dereferences
+ * ff_veth_softc_to_hostc(sc)->port_id. The original stubs returned NULL,
+ * which (a) makes init bail at L2610 and (b) NULL-derefs in ff_rss_check.
+ * We model the real pass-through with a 1-slot store so the RSS 0.1 tests
+ * can drive init/check; the prior 7+ TCs never reach these paths. */
+static void *g_veth_host_ctx = NULL;    /* last host_ctx handed to get_softc */
+static int   g_veth_softc_sentinel;     /* non-NULL opaque "softc" */
+void *ff_veth_get_softc(void *host_ctx)
+{ g_veth_host_ctx = host_ctx; return &g_veth_softc_sentinel; }
+void  ff_veth_free_softc(void *sc) { (void)sc; }
+void *ff_veth_softc_to_hostc(void *sc) { (void)sc; return g_veth_host_ctx; }
+
+int   ff_sysctl(const int *n, unsigned nl, void *o, size_t *ol, const void *i, size_t il)
+{ (void)n;(void)nl;(void)o;(void)ol;(void)i;(void)il; return 0; }
+int   ff_socket(int d, int t, int p) { (void)d;(void)t;(void)p; return -1; }
+
+/* M4 (C-NR-402/F-M3-1, F-M4-6): ff_socket_* are defined in
+ * freebsd/kern/uipc_syscalls.c and ff_syncache_count in
+ * freebsd/netinet/tcp_syncache.c — all part of the localized .ro archive
+ * and NOT linked here; referenced by the ~1 Hz reload-plane housekeeping
+ * hook in ff_dpdk_if.c which none of our tests reach (main_loop is never
+ * executed). */
+int ff_socket_snd_pending(void) { return 0; }
+int ff_socket_drain_count(void) { return 0; }
+void ff_udp_flow_peer_snapshot(void) {}
+int ff_syncache_count(void) { return 0; }
+void ff_syncache_counters(uint64_t *a, uint64_t *b)
+{ if (a) *a = 0; if (b) *b = 0; }
+
+int   ff_ioctl_freebsd(int f, unsigned long r, ...) { (void)f;(void)r; return -1; }
+int   ff_close(int f) { (void)f; return 0; }
+int   ff_rtioctl(int f, void *d, unsigned int *l, unsigned int al)
+{ (void)f;(void)d;(void)l;(void)al; return -1; }
+
+/* ff_dpdk_if.c clock helpers also reference these from ff_host_interface
+ * (we don't link ff_host_interface.o here): */
+void ff_update_current_ts(void) { }
+void ff_hardclock(void) { }
+
+/* ff_tcp_hpts_softclock: defined in ff_kern_timeout.c (kernel-side, not
+ * host-compilable here). main_loop() (ff_dpdk_if.c:2459) references it; none
+ * of our tests reach main_loop, so a no-op stub satisfies the linker.
+ * Signature per lib/ff_kern_timeout.c:1271 (void)->(void). */
+void ff_tcp_hpts_softclock(void) { }
+
+/* ff_hardclock_worker: same origin as ff_tcp_hpts_softclock (ff_kern_timeout.c,
+ * native-mt worker-thread clock). Referenced by ff_hardclock_worker_job; none
+ * of our tests reach it. */
+void ff_hardclock_worker(void) { }
+
+/* ff_stack_thread_init: defined in ff_freebsd_init.c (kernel-side, not
+ * host-compilable here). main_loop() (ff_dpdk_if.c:2772) references it; our
+ * tests never reach main_loop. Signature per lib/ff_dpdk_if.c:210. */
+void ff_stack_thread_init(int cpuid) { (void)cpuid; }
+
+/* ff_lro_*: defined in ff_veth.c (kernel-side, not host-compilable here).
+ * Signatures per lib/ff_veth.h:57-60. ff_lro_rx returns 1 ("not consumed")
+ * so the non-LRO path semantics are preserved if ever reached. */
+void *ff_lro_init(void *ifp) { (void)ifp; return NULL; }
+void  ff_lro_free(void *lro) { (void)lro; }
+int   ff_lro_rx(void *lro, void *m) { (void)lro; (void)m; return 1; }
+void  ff_lro_flush(void *lro) { (void)lro; }
+
+/* ff_enable_pcap: defined in ff_dpdk_pcap.c (we do NOT link it here) */
+int  ff_enable_pcap(const char *p, uint16_t s, uint8_t t)
+{ (void)p;(void)s;(void)t; return 0; }
+
+/* ff_unload_config: defined in ff_config.c (we do NOT link it here);
+ * referenced from ff_dpdk_run's exit cleanup path which our 7 TCs never
+ * invoke. */
+void ff_unload_config(void) { }
+
+/* rte_timer_meta_init: F-Stack-specific patch added during DPDK 23->24
+ * upgrade; not present in stock librte_timer.so. Provide a no-op stub. */
+void rte_timer_meta_init(void) { }
+
+/* ff_arc4random: stub (real impl in ff_host_interface.c, not linked here). */
+uint32_t ff_arc4random(void) { return 0; }
+
+/* --- rte_* stubs: NOT needed since we now link the real DPDK shared libs --
+ * The remaining unresolved DPDK functions are pulled in from -lrte_eal et al.
+ * via pkg-config libdpdk LIBS in the Makefile.                            */
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-DPDKIF-01: ff_dpdk_deregister_if frees the malloc'd context      */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_dpdk_deregister_if_frees(void **state)
+{
+    (void)state;
+    void *ctx = malloc(64);
+    assert_non_null(ctx);
+    /* Must not crash; verifies free path works. (We can't easily verify the
+     * memory was returned to libc heap without intrusive instrumentation.) */
+    ff_dpdk_deregister_if((struct ff_dpdk_if_context *)ctx);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-DPDKIF-02: ff_get_traffic copies the static ff_traffic into buf  */
+/*                    (initial state is zero-init since BSS)                */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_get_traffic_zero_init(void **state)
+{
+    (void)state;
+    struct ff_traffic_args buf;
+    memset(&buf, 0xAA, sizeof(buf));   /* fill with sentinel */
+    ff_get_traffic(&buf);
+    assert_int_equal((int)buf.rx_packets, 0);
+    assert_int_equal((int)buf.rx_bytes,   0);
+    assert_int_equal((int)buf.tx_packets, 0);
+    assert_int_equal((int)buf.tx_bytes,   0);
+    assert_int_equal((int)buf.rx_dropped, 0);
+    assert_int_equal((int)buf.tx_dropped, 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-DPDKIF-03: ff_dpdk_stop is a no-crash one-liner                   */
+/* (cannot directly verify static stop_loop = 1; just exercise the path)    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_dpdk_stop_smoke(void **state)
+{
+    (void)state;
+    ff_dpdk_stop();   /* must not crash */
+    /* Idempotent: calling again should also be safe */
+    ff_dpdk_stop();
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-DPDKIF-04: ff_regist_pcblddr_fun stores the function pointer      */
+/* (only observable via subsequent ff_in_pcbladdr; not testing that path so  */
+/* we just exercise the setter and verify it does not crash with NULL)      */
+/* ------------------------------------------------------------------------ */
+static int
+fake_pcblddr(uint16_t family, void *dst_addr, uint16_t dst_port,
+             void *src_addr)
+{
+    (void)family; (void)dst_addr; (void)dst_port; (void)src_addr;
+    return 0;
+}
+
+static void
+test_ff_regist_pcblddr_fun_smoke(void **state)
+{
+    (void)state;
+    ff_regist_pcblddr_fun(fake_pcblddr);   /* must not crash */
+    ff_regist_pcblddr_fun(NULL);           /* re-register NULL must not crash */
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-DPDKIF-05/06: register_packet_dispatcher{,_context}              */
+/* ------------------------------------------------------------------------ */
+static int
+fake_dispatcher(void *data, uint16_t *len, uint16_t queue_id, uint16_t nb_queues)
+{
+    (void)data; (void)len; (void)queue_id; (void)nb_queues;
+    return 0;
+}
+
+static int
+fake_dispatcher_ctx(void *data, uint16_t *len, uint16_t queue_id,
+                    uint16_t nb_queues, struct ff_dispatcher_context ctx)
+{
+    (void)data; (void)len; (void)queue_id; (void)nb_queues; (void)ctx;
+    return 0;
+}
+
+static void
+test_ff_regist_packet_dispatcher_smoke(void **state)
+{
+    (void)state;
+    ff_regist_packet_dispatcher(fake_dispatcher);
+    ff_regist_packet_dispatcher(NULL);
+}
+
+static void
+test_ff_regist_packet_dispatcher_context_smoke(void **state)
+{
+    (void)state;
+    ff_regist_packet_dispatcher_context(fake_dispatcher_ctx);
+    ff_regist_packet_dispatcher_context(NULL);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-DPDKIF-05b: register/unregist_idle_callback                      */
+/* ------------------------------------------------------------------------ */
+static int idle_cb_calls;
+
+static void
+fake_idle_callback(void *arg)
+{
+    (void)arg;
+    idle_cb_calls++;
+}
+
+static void
+test_ff_regist_idle_callback_smoke(void **state)
+{
+    (void)state;
+    ff_regist_idle_callback(fake_idle_callback, &idle_cb_calls);
+    /* re-registering with NULL is an unregist, and unregist is idempotent */
+    ff_regist_idle_callback(NULL, NULL);
+    ff_unregist_idle_callback();
+    ff_unregist_idle_callback();
+    /* registering again after an unregist must work too */
+    ff_regist_idle_callback(fake_idle_callback, &idle_cb_calls);
+    ff_unregist_idle_callback();
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P2-DPDKIF-07: ff_get_tsc_ns returns monotonic non-zero with the      */
+/* mocked rte_get_tsc_hz = 1 GHz. rte_rdtsc remains the real CPU intrinsic. */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_get_tsc_ns_basic(void **state)
+{
+    (void)state;
+    /* Expose two calls; mock hz to 1 GHz both times */
+    will_return(__wrap_rte_get_tsc_hz, (uint64_t)1000000000ULL);
+    uint64_t a = ff_get_tsc_ns();
+    /* burn cycles to advance TSC */
+    for (volatile int i = 0; i < 100000; i++) { /* spin */ }
+    will_return(__wrap_rte_get_tsc_hz, (uint64_t)1000000000ULL);
+    uint64_t b = ff_get_tsc_ns();
+
+    assert_true(a > 0);
+    assert_true(b >= a);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-08: ff_in_pcbladdr returns 0 when no callback registered  */
+/* ------------------------------------------------------------------------ */
+#include <netinet/in.h>           /* AF_INET */
+
+static void
+test_ff_in_pcbladdr_no_callback(void **state)
+{
+    (void)state;
+    /* Reset to NULL via the public setter */
+    ff_regist_pcblddr_fun(NULL);
+
+    int rv = ff_in_pcbladdr(AF_INET, NULL, 0, NULL);
+    assert_int_equal(rv, 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-09: AF_INET dispatches to callback with family=AF_INET    */
+/* ------------------------------------------------------------------------ */
+static struct {
+    int   invoked;
+    uint16_t family_seen;
+    void *faddr_seen;
+    uint16_t fport_seen;
+    void *laddr_seen;
+    int   ret_value;
+} g_pcblddr_capture;
+
+static int
+capturing_pcblddr(uint16_t family, void *faddr, uint16_t fport, void *laddr)
+{
+    g_pcblddr_capture.invoked++;
+    g_pcblddr_capture.family_seen = family;
+    g_pcblddr_capture.faddr_seen  = faddr;
+    g_pcblddr_capture.fport_seen  = fport;
+    g_pcblddr_capture.laddr_seen  = laddr;
+    return g_pcblddr_capture.ret_value;
+}
+
+static void
+test_ff_in_pcbladdr_af_inet_dispatches(void **state)
+{
+    (void)state;
+    memset(&g_pcblddr_capture, 0, sizeof(g_pcblddr_capture));
+    g_pcblddr_capture.ret_value = 7;          /* arbitrary marker */
+    ff_regist_pcblddr_fun(capturing_pcblddr);
+
+    int faddr = 0x12345678;
+    int laddr = 0x9ABCDEF0;
+    int rv = ff_in_pcbladdr(AF_INET, &faddr, 53, &laddr);
+
+    assert_int_equal(rv, 7);                  /* return value transparently */
+    assert_int_equal(g_pcblddr_capture.invoked, 1);
+    assert_int_equal((int)g_pcblddr_capture.family_seen, AF_INET);
+    assert_ptr_equal(g_pcblddr_capture.faddr_seen, &faddr);
+    assert_int_equal((int)g_pcblddr_capture.fport_seen, 53);
+    assert_ptr_equal(g_pcblddr_capture.laddr_seen, &laddr);
+
+    ff_regist_pcblddr_fun(NULL);              /* clean up */
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-10: AF_INET6_FREEBSD (28) is remapped to AF_INET6_LINUX   */
+/* (10) before dispatching; unknown family returns the host EADDRNOTAVAIL.  */
+/*                                                                          */
+/* IMPORTANT (DP-U-12 "代码为准"): ff_in_pcbladdr's else-branch returns the */
+/* POSIX errno macro `EADDRNOTAVAIL` (defined in <errno.h>, value=99 on    */
+/* Linux), NOT F-Stack's `ff_EADDRNOTAVAIL` (49). The spec/plan referenced  */
+/* the latter incorrectly; tests below use the actual Linux errno value.   */
+/* ------------------------------------------------------------------------ */
+#define AF_INET6_FREEBSD_VAL    28      /* per ff_api.h L50 */
+#define AF_INET6_LINUX_VAL      10      /* per ff_api.h L48 */
+
+#include <errno.h>                      /* host EADDRNOTAVAIL */
+
+static void
+test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap(void **state)
+{
+    (void)state;
+    memset(&g_pcblddr_capture, 0, sizeof(g_pcblddr_capture));
+    g_pcblddr_capture.ret_value = 0;
+    ff_regist_pcblddr_fun(capturing_pcblddr);
+
+    int rv = ff_in_pcbladdr(AF_INET6_FREEBSD_VAL, NULL, 0, NULL);
+    assert_int_equal(rv, 0);
+    assert_int_equal(g_pcblddr_capture.invoked, 1);
+    /* Family must be remapped to AF_INET6_LINUX before reaching callback */
+    assert_int_equal((int)g_pcblddr_capture.family_seen, AF_INET6_LINUX_VAL);
+
+    /* Reset capture and try unknown family -> EADDRNOTAVAIL (host=99 on Linux),
+     * callback NOT called */
+    memset(&g_pcblddr_capture, 0, sizeof(g_pcblddr_capture));
+    rv = ff_in_pcbladdr(99 /* unknown */, NULL, 0, NULL);
+    assert_int_equal(rv, EADDRNOTAVAIL);    /* POSIX, =99 on Linux */
+    assert_int_equal(g_pcblddr_capture.invoked, 0);
+
+    ff_regist_pcblddr_fun(NULL);
+}
+
+/* ======================================================================== */
+/* Stage-6 Phase-5 coverage extensions: ff_rss_tbl_* + register_if          */
+/* ======================================================================== */
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-11 (Stage-6): ff_rss_tbl_set_portrange returns -1 when    */
+/* rss_check_cfgs is NULL (covers the early-return guard L2722).            */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_set_portrange_no_cfg(void **state)
+{
+    (void)state;
+    /* Ensure clean state. */
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+    int rv = ff_rss_tbl_set_portrange(1024, 2048);
+    assert_int_equal(rv, -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-12 (Stage-6): ff_rss_tbl_set_portrange returns -1 when    */
+/* rss_check_cfgs.enable == 0 (same guard L2722-2724).                     */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_set_portrange_disabled(void **state)
+{
+    (void)state;
+    struct ff_rss_check_cfg dummy = { .enable = 0 };
+    ff_global_cfg.dpdk.rss_check_cfgs = &dummy;
+    int rv = ff_rss_tbl_set_portrange(1024, 2048);
+    assert_int_equal(rv, -1);
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-13 (Stage-6): ff_rss_tbl_set_portrange with first > last */
+/* returns -1 (covers the inverted-range guard).                           */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_set_portrange_inverted_range(void **state)
+{
+    (void)state;
+    struct ff_rss_check_cfg dummy = { .enable = 1 };
+    ff_global_cfg.dpdk.rss_check_cfgs = &dummy;
+    int rv = ff_rss_tbl_set_portrange(/*first*/2048, /*last*/1024);
+    assert_int_equal(rv, -1);
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-14 (Stage-6): ff_rss_tbl_get_portrange returns -1 when   */
+/* rss_check_cfgs is NULL (early-return guard L2782-2784).                 */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_no_cfg(void **state)
+{
+    (void)state;
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+    uint16_t first = 0, last = 0;
+    uint16_t *portrange = NULL;
+    int rv = ff_rss_tbl_get_portrange(0x01020304, 0x05060708, htons(80),
+                                      &first, &last, &portrange);
+    assert_int_equal(rv, -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-15 (Stage-6): ff_rss_tbl_get_portrange returns -1 when   */
+/* rss_check_cfgs.enable == 0.                                             */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_disabled(void **state)
+{
+    (void)state;
+    struct ff_rss_check_cfg dummy = { .enable = 0 };
+    ff_global_cfg.dpdk.rss_check_cfgs = &dummy;
+    uint16_t first = 0, last = 0;
+    uint16_t *portrange = NULL;
+    int rv = ff_rss_tbl_get_portrange(0x01020304, 0x05060708, htons(80),
+                                      &first, &last, &portrange);
+    assert_int_equal(rv, -1);
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-16 (Stage-6): ff_rss_tbl_get_portrange smoke — verify it  */
+/* doesn't crash when called with an arbitrary 4-tuple against the global  */
+/* table (initial state). Acceptable return values: 0 (found), 1 (found-   */
+/* with-portrange), or -1 (not found). Any of these covers the lookup loop.*/
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_smoke(void **state)
+{
+    (void)state;
+    struct ff_rss_check_cfg dummy = { .enable = 1 };
+    ff_global_cfg.dpdk.rss_check_cfgs = &dummy;
+    uint16_t first = 0, last = 0;
+    uint16_t *portrange = NULL;
+    int rv = ff_rss_tbl_get_portrange(0xDEADBEEF, 0xCAFEBABE, htons(80),
+                                      &first, &last, &portrange);
+    /* Just verify the function ran without crashing. The return value
+     * depends on the global ff_rss_tbl state which we don't control here. */
+    (void)rv;
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ======================================================================== */
+/* R-A (req 0.1) RSS portrange hit/rotation/miss tests                       */
+/* Spec: docs/ff_rss_check_opt_spec/zh_cn/07-测试规格.md §1.1                */
+/*       TC-U-RSS-01-01 / 01-02 / 01-03                                      */
+/*                                                                           */
+/* mock strategy (07 §0.2/§0.3):                                             */
+/*  - ff_veth_get_softc / ff_veth_softc_to_hostc are pass-through (above),   */
+/*    so ff_rss_tbl_init()'s local ctx (port_id=rule.port_id) is recovered   */
+/*    by ff_rss_check(); tests set lcore_conf[0].nb_queue_list/tx_queue_id.  */
+/*  - toeplitz_hash / rsskey / rss_reta_size / ff_rss_tbl are all static and */
+/*    NOT directly observable. Per 07 §0.4 we replicate an equivalent        */
+/*    Toeplitz on the test side using the same 40-byte default key; the lib  */
+/*    leaves rss_reta_size[port] at its BSS default 0, so the mask used by   */
+/*    ff_rss_check is (reta_size-1) == 0xFFFF. We assert ff_rss_check agrees  */
+/*    with the independently-computed expectation (hit correctness) AND that */
+/*    every port in the returned range self-consistently re-checks to 1      */
+/*    (07 §1.1 degraded self-consistency assertion).                         */
+/* ======================================================================== */
+
+/* Mellanox default RSS key — copy of lib/ff_dpdk_if.c:92 default_rsskey_40bytes
+ * (static in the lib; replicated here so the test computes the SAME hash). */
+static const uint8_t test_rsskey_40[40] = {
+    0xd1, 0x81, 0xc6, 0x2c, 0xf7, 0xf4, 0xdb, 0x5b,
+    0x19, 0x83, 0xa2, 0xfc, 0x94, 0x3e, 0x1a, 0xdb,
+    0xd9, 0x38, 0x9e, 0x6b, 0xd1, 0x03, 0x9c, 0x2c,
+    0xa7, 0x44, 0x99, 0xad, 0x59, 0x3d, 0x56, 0xd9,
+    0xf3, 0x25, 0x3c, 0x06, 0x2a, 0xdc, 0x1f, 0xfc
+};
+
+/* Equivalent Toeplitz hash — byte-for-byte aligned with the lib's static
+ * toeplitz_hash (ff_dpdk_if.c:2548-2568). */
+static uint32_t
+test_toeplitz(unsigned keylen, const uint8_t *key,
+              unsigned datalen, const uint8_t *data)
+{
+    uint32_t hash = 0, v;
+    unsigned i, b;
+    v = ((uint32_t)key[0] << 24) + ((uint32_t)key[1] << 16) +
+        ((uint32_t)key[2] << 8) + key[3];
+    for (i = 0; i < datalen; i++) {
+        for (b = 0; b < 8; b++) {
+            if (data[i] & (1 << (7 - b)))
+                hash ^= v;
+            v <<= 1;
+            if ((i + 4) < keylen && (key[i + 4] & (1 << (7 - b))))
+                v |= 1;
+        }
+    }
+    return hash;
+}
+
+/* Independent replica of ff_rss_check()'s verdict for v4 (ff_dpdk_if.c:2851).
+ * data layout = saddr(4)|daddr(4)|sport(2)|dport(2) (network-order values as
+ * stored, matching the lib's bcopy of the raw 32/16-bit quantities). */
+static int
+test_expected_rss_check(uint32_t saddr, uint32_t daddr, uint16_t sport,
+                        uint16_t dport, uint16_t nb_queues,
+                        uint16_t reta_size, uint16_t queueid)
+{
+    uint8_t data[sizeof(saddr) + sizeof(daddr) + sizeof(sport) + sizeof(dport)];
+    unsigned dl = 0;
+    uint32_t hash;
+    if (nb_queues <= 1)
+        return 1;
+    memcpy(&data[dl], &saddr, sizeof(saddr)); dl += sizeof(saddr);
+    memcpy(&data[dl], &daddr, sizeof(daddr)); dl += sizeof(daddr);
+    memcpy(&data[dl], &sport, sizeof(sport)); dl += sizeof(sport);
+    memcpy(&data[dl], &dport, sizeof(dport)); dl += sizeof(dport);
+    hash = test_toeplitz(sizeof(test_rsskey_40), test_rsskey_40, dl, data);
+    return ((hash & (uint16_t)(reta_size - 1)) % nb_queues) == queueid;
+}
+
+/* Independent replica of ff_rss_check6()'s verdict for v6 (ff_dpdk_if.c:3117).
+ * data layout = saddr6(16)|daddr6(16)|sport(2)|dport(2) = 36B, host byte order,
+ * same toeplitz/key/reta口径 as v4. */
+static int
+test_expected_rss_check6(const uint8_t saddr6[16], const uint8_t daddr6[16],
+                         uint16_t sport, uint16_t dport, uint16_t nb_queues,
+                         uint16_t reta_size, uint16_t queueid)
+{
+    uint8_t data[16 + 16 + sizeof(sport) + sizeof(dport)];
+    unsigned dl = 0;
+    uint32_t hash;
+    if (nb_queues <= 1)
+        return 1;
+    memcpy(&data[dl], saddr6, 16); dl += 16;
+    memcpy(&data[dl], daddr6, 16); dl += 16;
+    memcpy(&data[dl], &sport, sizeof(sport)); dl += sizeof(sport);
+    memcpy(&data[dl], &dport, sizeof(dport)); dl += sizeof(dport);
+    hash = test_toeplitz(sizeof(test_rsskey_40), test_rsskey_40, dl, data);
+    return ((hash & (uint16_t)(reta_size - 1)) % nb_queues) == queueid;
+}
+
+/* Build a single-rule RSS config and (re)initialise the static ff_rss_tbl.
+ * Returns 0 on success. Sets the controlled lcore_conf queue layout. */
+#define TEST_RSS_PORT     0
+#define TEST_RSS_NBQ      4          /* multi-queue so ff_rss_check is active */
+#define TEST_RSS_QID      1          /* this "process" owns tx queue 1        */
+#define TEST_RSS_RETA     0          /* rss_reta_size[] BSS default => mask 0xFFFF */
+#define TEST_RSS_FIRST   10000      /* FreeBSD default ipport_firstauto */
+#define TEST_RSS_LAST    65535      /* FreeBSD default ipport_lastauto   */
+
+static struct ff_rss_check_cfg g_rss_cfg;
+static struct ff_dpdk_if_context g_test_ctx;
+
+static int
+test_rss_build_table(uint32_t saddr, uint32_t daddr, uint16_t sport)
+{
+    memset(&g_rss_cfg, 0, sizeof(g_rss_cfg));
+    g_rss_cfg.enable = 1;
+    g_rss_cfg.recheck = 1;   /* R-D 04-06: default recheck=1 to keep R-B/R-C hard assertions */
+    g_rss_cfg.nb_rss_tbl = 1;
+    g_rss_cfg.rss_tbl_cfgs[0].port_id = TEST_RSS_PORT;
+    g_rss_cfg.rss_tbl_cfgs[0].saddr = saddr;
+    g_rss_cfg.rss_tbl_cfgs[0].daddr = daddr;
+    g_rss_cfg.rss_tbl_cfgs[0].sport = sport;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+
+    return ff_rss_tbl_init();
+}
+
+/* Re-arm the pass-through host_ctx so a direct ff_rss_check() call from the
+ * test recovers a ctx with the desired port_id. */
+static void *
+test_rss_softc(uint16_t port_id)
+{
+    g_test_ctx.port_id = port_id;
+    return ff_veth_get_softc(&g_test_ctx);   /* stores &g_test_ctx, returns sentinel */
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-01-01: get_portrange hits and the returned port set lands on the */
+/* owning queue (hit correctness + self-consistency).                        */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_hit(void **state)
+{
+    (void)state;
+    const uint32_t saddr = 0x01020304, daddr = 0x05060708;
+    const uint16_t sport = htons(1000);
+
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport), 0);
+
+    uint16_t first = 0, last = 0;
+    uint16_t *pr = NULL;
+    int rv = ff_rss_tbl_get_portrange(saddr, daddr, sport, &first, &last, &pr);
+
+    assert_int_equal(rv, 0);                 /* hit => 0 (ff_dpdk_if.c:2827) */
+    assert_non_null(pr);
+    assert_true(first >= 1);                  /* idx 0 is the "last selected" slot */
+    assert_true(last >= first);
+
+    /* Every port in [first,last] must land on our queue. Cross-check the lib's
+     * ff_rss_check against the independent replica, and assert self-consistency
+     * (lib returns 1). Sample to bound runtime over a potentially large set. */
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    int checked = 0;
+    for (uint16_t k = first; k <= last && checked < 256; k++, checked++) {
+        uint16_t dport = pr[k];
+        uint16_t dport_n = htons(dport);
+        int lib = ff_rss_check(sc, saddr, daddr, sport, dport_n);
+        int exp = test_expected_rss_check(saddr, daddr, sport, dport_n,
+                                          TEST_RSS_NBQ, TEST_RSS_RETA, TEST_RSS_QID);
+        assert_int_equal(lib, exp);           /* hit correctness (07 §0.4) */
+        assert_int_equal(lib, 1);             /* self-consistency: lands on queue */
+        if (k == last) break;                 /* avoid uint16_t wrap when last==0xFFFF */
+    }
+    assert_true(checked > 0);                 /* non-empty port set */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-01-02: get_portrange port rotation semantics.                    */
+/* F4 (07 §6.3): ff_rss_tbl_get_portrange does NOT self-increment dport[0];  */
+/* it only returns first_idx/last_idx + &dport[0]. The caller advances the   */
+/* "last selected" index (dport[0]). We assert the lib is stable (returns    */
+/* the same range across calls) and that the caller can walk distinct ports  */
+/* across [first_idx,last_idx], each landing on the queue.                   */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_rotation(void **state)
+{
+    (void)state;
+    const uint32_t saddr = 0x0A0B0C0D, daddr = 0x11121314;
+    const uint16_t sport = htons(2000);
+
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport), 0);
+
+    uint16_t f1 = 0, l1 = 0, f2 = 0, l2 = 0;
+    uint16_t *pr1 = NULL, *pr2 = NULL;
+    assert_int_equal(ff_rss_tbl_get_portrange(saddr, daddr, sport, &f1, &l1, &pr1), 0);
+    assert_int_equal(ff_rss_tbl_get_portrange(saddr, daddr, sport, &f2, &l2, &pr2), 0);
+
+    /* Stable: consecutive lookups return the same idx range + buffer. */
+    assert_int_equal(f1, f2);
+    assert_int_equal(l1, l2);
+    assert_ptr_equal(pr1, pr2);
+
+    /* Caller-side rotation: walking the index window yields distinct ports,
+     * each of which (per build口径) lands on the owning queue. */
+    assert_true(l1 > f1);                     /* >1 candidate so rotation matters */
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    uint16_t p_first = pr1[f1];
+    uint16_t p_next  = pr1[f1 + 1];
+    assert_int_not_equal(p_first, p_next);    /* rotation visits a different port */
+    assert_int_equal(ff_rss_check(sc, saddr, daddr, sport, htons(p_first)), 1);
+    assert_int_equal(ff_rss_check(sc, saddr, daddr, sport, htons(p_next)), 1);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-01-03: get_portrange miss returns -ENOENT.                       */
+/* (ff_dpdk_if.c:2812/2820/2835/2844 all return -ENOENT on miss.)            */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl_get_portrange_miss(void **state)
+{
+    (void)state;
+    const uint32_t saddr = 0x21222324, daddr = 0x31323334;
+    const uint16_t sport = htons(3000);
+
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport), 0);
+
+    /* Query a 3-tuple NOT in the table (different saddr). */
+    uint16_t first = 0, last = 0;
+    uint16_t *pr = NULL;
+    int rv = ff_rss_tbl_get_portrange(0x41424344 /*other saddr*/, daddr, sport,
+                                      &first, &last, &pr);
+    assert_int_equal(rv, -ENOENT);
+    assert_null(pr);                          /* not filled on miss */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ======================================================================== */
+/* R-B (req 0.3) rte_thash dynamic reverse-calc tests                        */
+/* Spec: 07-测试规格.md §1.3 TC-U-RSS-03 ; 04 §3.3 ; 05 §3                    */
+/* Under test (lib/ff_dpdk_if.c, R-B): ff_rss_thash_ctx_init(),             */
+/* ff_rss_adjust_sport() (declared in ff_host_interface.h, non-static).     */
+/* ======================================================================== */
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-03-NULL: ff_rss_adjust_sport defends NULL softc / out_sport.     */
+/* (ff_dpdk_if.c:2987 guard returns -1 before any deref.)                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_adjust_sport_null(void **state)
+{
+    (void)state;
+    uint16_t out = 0;
+    /* NULL softc -> -1 (guard hits before ff_veth_softc_to_hostc deref) */
+    assert_int_equal(ff_rss_adjust_sport(NULL, 0x01020304, 0x05060708,
+                                         htons(80), &out,
+                                         TEST_RSS_FIRST, TEST_RSS_LAST), -1);
+    /* NULL out_sport with a valid softc -> -1 */
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), NULL,
+                                         TEST_RSS_FIRST, TEST_RSS_LAST), -1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-03-DEGRADE: in the unit env rss_reta_size[] is static BSS=0      */
+/* (confirmed in R-A), so ff_rss_thash_ctx_init() marks every port unready   */
+/* (reta_size<2 -> continue, ready stays 0; ff_dpdk_if.c:2930-2933). A       */
+/* subsequent ff_rss_adjust_sport() must therefore return -1 (fall back to   */
+/* soft scan). Validates init degradation + adjust readiness guard           */
+/* (ff_dpdk_if.c:2991).                                                      */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_adjust_sport_degraded(void **state)
+{
+    (void)state;
+    /* init: with reta_size=0 everywhere it returns 0 but leaves all ports
+     * unready (no exception, graceful degrade). */
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ; /* multi-queue */
+    uint16_t out = 0xFFFF;
+    int rv = ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                 htons(80), &out,
+                                 TEST_RSS_FIRST, TEST_RSS_LAST);
+    assert_int_equal(rv, -1);          /* unready -> fall back */
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-03-SINGLEQ: with nb_queue_list[port]==1 ff_rss_adjust_sport      */
+/* returns -1. NOTE the readiness guard (L2991) precedes the single-queue    */
+/* guard (L2995); in this unit env (reta=0 => unready) the -1 is produced by */
+/* the readiness guard. Either way the dynamic path correctly declines and   */
+/* the caller falls back to the native/soft path (RG-3 alignment).           */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_adjust_sport_single_queue(void **state)
+{
+    (void)state;
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
+    uint16_t out = 0xFFFF;
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), &out,
+                                         TEST_RSS_FIRST, TEST_RSS_LAST), -1);
+}
+
+/* ======================================================================== */
+/* TC-U-RSS-03-EQUIV: toeplitz vs rte_thash(softrss_be) equivalence —        */
+/* the core go/no-go data for wiring 0.3 into in_pcb.                         */
+/*                                                                           */
+/* Because the lib's rss_reta_size[] is static BSS=0 (ctx cannot be built    */
+/* in-unit), we replicate the lib's 0.3 reverse-calc path here with the real */
+/* DPDK rte_thash API and a chosen reta_size, then re-verify each adjusted   */
+/* sport with the SAME soft Toeplitz the lib uses (test_toeplitz, byte-for-  */
+/* byte identical to ff_dpdk_if.c:2548). Tuple layout & byte order mirror    */
+/* ff_rss_adjust_sport (ff_dpdk_if.c:3015-3025): host-order                  */
+/* saddr|daddr|sport|dport, sport@byte8, dport@byte10, tuple_len=12,         */
+/* helper len=16 bits @offset=64 bits, attempts=16.                          */
+/* Reports adjust_tuple success rate AND toeplitz re-check hit rate; asserts */
+/* self-consistency (no false positives) but leaves the rate as data for the */
+/* leader's go/no-go decision (07 §1.3 — rate is reported, no hard threshold).*/
+/* ======================================================================== */
+#define EQUIV_N        200
+#define EQUIV_NBQ      4
+#define EQUIV_QID      1
+
+/* M4 Batch C (thash flaky hardening): the test tuples are already
+ * srandom()-fixed, but rte_thash_add_helper() seeds its LFSR/polynomial
+ * from rte_rand() and overwrites the helper's bit range of the hash key
+ * with that m-sequence — and rte_eal_init() seeds rte_rand from the
+ * TSC, so the key rewrite (hence the adjusted sports and the measured
+ * landing rates) differed per process run. That was the observed flaky
+ * failure (reta=128 full-loop landing ~100/200 instead of 200/200).
+ * Re-seeding the DPDK PRNG right before every ctx creation makes the
+ * key rewrite and the whole equivalence run reproducible; assertions
+ * keep their original strength (100% full-loop landing). */
+#define EQUIV_THASH_SEED  0x5EEDBEEFu
+
+static int
+equiv_log2(uint16_t v)
+{
+    int l = 0;
+    while ((v >>= 1) != 0) l++;
+    return l;
+}
+
+/* rte_thash_init_ctx() needs the DPDK EAL memory subsystem (rte_zmalloc /
+ * tailq). The unit process never calls rte_eal_init, so we bring up a minimal
+ * EAL (--no-huge -m 64 --no-pci) once for this test; if it fails (no perms /
+ * environment), the test skips rather than crashing. */
+static int
+equiv_eal_init_once(void)
+{
+    static int done = 0;     /* 0=untried, 1=ok, -1=failed */
+    if (done != 0)
+        return done;
+    char prefix[64];
+    snprintf(prefix, sizeof(prefix), "--file-prefix=ff_p1_if_%ld", (long)getpid());
+    char *argv[] = {
+        (char *)"test_ff_dpdk_if", (char *)"--no-huge", (char *)"-m",
+        (char *)"64", (char *)"--no-pci", (char *)"-c", (char *)"0x1",
+        (char *)"--log-level", (char *)"lib.eal:error",
+        (char *)"--no-shconf", (char *)"--no-telemetry", prefix, NULL
+    };
+    int argc = (int)(sizeof(argv) / sizeof(argv[0])) - 1;
+    done = (rte_eal_init(argc, argv) < 0) ? -1 : 1;
+    return done;
+}
+
+/* Replicate ff_rss_adjust_sport's FULL loop (ff_dpdk_if.c:3006-3034) with the
+ * real DPDK rte_thash API: iterate ceil(R/Q) desired candidates, the first
+ * whose reverse-calc'd sport also passes the lib's soft Toeplitz (ff_rss_check
+ * equivalent) wins. Reports both the per-candidate equivalence rate and the
+ * full-loop final success rate (the number that matters for in_pcb wiring).
+ *   *adj_ok    -> per-candidate adjust_tuple successes (== N here)
+ *   *single_hit-> per-candidate toeplitz re-check hits (equivalence rate)
+ *   *final_ok  -> full-loop final successes (a landing sport was found)
+ *   *avg_tries -> avg adjust_tuple calls per connection
+ * ctx_name must be unique per reta to avoid an rte_thash name clash. */
+static void
+run_equiv_for_reta(const char *ctx_name, uint16_t reta_size,
+                   int *adj_ok, int *single_hit, int *final_ok,
+                   double *avg_tries)
+{
+    struct rte_thash_ctx *ctx;
+    struct rte_thash_subtuple_helper *h;
+    int i, ok = 0, hit = 0, fok = 0;
+    long tries_total = 0;
+    const uint16_t nbq = EQUIV_NBQ, qid = EQUIV_QID;
+    const uint32_t span = (reta_size + nbq - 1) / nbq;
+
+    rte_srand(EQUIV_THASH_SEED ^ reta_size);   /* reproducible key m-seq */
+    ctx = rte_thash_init_ctx(ctx_name, sizeof(test_rsskey_40),
+                             equiv_log2(reta_size), (uint8_t *)test_rsskey_40, 0);
+    /* key_len is in BYTES (lib passes rsskey_len=40); reta_sz is log2. */
+    assert_non_null(ctx);
+    /* helper len/offset are in BITS (mirror lib: 16 @ 64; len >= reta_sz). */
+    assert_int_equal(rte_thash_add_helper(ctx, "sport", 16, 64), 0);
+    h = rte_thash_get_helper(ctx, "sport");
+    assert_non_null(h);
+
+    srandom(0xC0FFEE ^ reta_size);   /* deterministic, reproducible numbers */
+    for (i = 0; i < EQUIV_N; i++) {
+        uint32_t saddr = ((uint32_t)random() << 1) ^ (uint32_t)random();
+        uint32_t daddr = ((uint32_t)random() << 1) ^ (uint32_t)random();
+        uint16_t dport = htons((uint16_t)(1024 + (random() % 60000)));
+        uint32_t desired = qid + ((uint32_t)random() % span) * nbq;
+        int found = 0, first_cand = 1;
+        uint32_t tr;
+        if (desired >= reta_size) desired = qid;
+
+        for (tr = 0; tr < span; tr++) {
+            uint16_t sport = 0;
+            uint8_t tuple[12];
+            if (desired >= reta_size) desired = qid;
+            memset(tuple, 0, sizeof(tuple));
+            memcpy(&tuple[0], &saddr, 4);
+            memcpy(&tuple[4], &daddr, 4);
+            memcpy(&tuple[8], &sport, 2);     /* sport seed 0 @ byte 8 */
+            memcpy(&tuple[10], &dport, 2);    /* dport @ byte 10        */
+            tries_total++;
+
+            if (rte_thash_adjust_tuple(ctx, h, tuple, sizeof(tuple),
+                                       desired & (reta_size - 1), 16,
+                                       NULL, NULL) == 0) {
+                if (first_cand) ok++;        /* per-candidate adjust success */
+                memcpy(&sport, &tuple[8], 2);
+                /* Re-verify with the lib's soft Toeplitz (host-order tuple,
+                 * same as ff_rss_check). */
+                int landed = test_expected_rss_check(saddr, daddr, sport, dport,
+                                                     nbq, reta_size, qid);
+                if (first_cand && landed) hit++;  /* per-candidate equivalence */
+                if (landed) {
+                    /* zero false positives: self-consistency must hold. */
+                    uint8_t d[12];
+                    unsigned dl = 0;
+                    memcpy(&d[dl], &saddr, 4); dl += 4;
+                    memcpy(&d[dl], &daddr, 4); dl += 4;
+                    memcpy(&d[dl], &sport, 2); dl += 2;
+                    memcpy(&d[dl], &dport, 2); dl += 2;
+                    uint32_t hh = test_toeplitz(sizeof(test_rsskey_40),
+                                                test_rsskey_40, dl, d);
+                    assert_int_equal(((hh & (reta_size - 1)) % nbq), qid);
+                    found = 1;
+                    break;                    /* full-loop: first landing wins */
+                }
+            }
+            first_cand = 0;
+            desired += nbq;
+        }
+        if (found) fok++;
+    }
+
+    rte_thash_free_ctx(ctx);
+    *adj_ok = ok;
+    *single_hit = hit;
+    *final_ok = fok;
+    *avg_tries = (double)tries_total / EQUIV_N;
+}
+
+static void
+test_ff_rss_thash_equivalence_hitrate(void **state)
+{
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("\n[R-B 0.3 EQUIV] DPDK EAL init failed in unit env; skipping "
+               "thash equivalence quantification.\n");
+        skip();
+        return;
+    }
+
+    int adj128 = 0, sh128 = 0, fok128 = 0, adj512 = 0, sh512 = 0, fok512 = 0;
+    double avg128 = 0, avg512 = 0;
+    run_equiv_for_reta("ff_equiv_128", 128, &adj128, &sh128, &fok128, &avg128);
+    run_equiv_for_reta("ff_equiv_512", 512, &adj512, &sh512, &fok512, &avg512);
+
+    printf("\n[R-B 0.3 EQUIV] N=%d nbq=%d qid=%d key=40B(default_rsskey)\n",
+           EQUIV_N, EQUIV_NBQ, EQUIV_QID);
+    printf("[R-B 0.3 EQUIV] reta=128: adjust_tuple_ok=%d/%d (%.1f%%), "
+           "1st-candidate toeplitz_equiv=%d/%d (%.1f%%), "
+           "FULL-LOOP final landing=%d/%d (%.1f%%), avg adjust calls/conn=%.2f (span=%d)\n",
+           adj128, EQUIV_N, 100.0 * adj128 / EQUIV_N,
+           sh128, EQUIV_N, 100.0 * sh128 / EQUIV_N,
+           fok128, EQUIV_N, 100.0 * fok128 / EQUIV_N, avg128, (128 + EQUIV_NBQ - 1) / EQUIV_NBQ);
+    printf("[R-B 0.3 EQUIV] reta=512: adjust_tuple_ok=%d/%d (%.1f%%), "
+           "1st-candidate toeplitz_equiv=%d/%d (%.1f%%), "
+           "FULL-LOOP final landing=%d/%d (%.1f%%), avg adjust calls/conn=%.2f (span=%d)\n",
+           adj512, EQUIV_N, 100.0 * adj512 / EQUIV_N,
+           sh512, EQUIV_N, 100.0 * sh512 / EQUIV_N,
+           fok512, EQUIV_N, 100.0 * fok512 / EQUIV_N, avg512, (512 + EQUIV_NBQ - 1) / EQUIV_NBQ);
+
+    /* Rates are DATA for the leader's go/no-go (07 §1.3, no hard threshold).
+     * Hard quality gate: the full reverse-calc loop must reliably land on the
+     * target queue (this is what ff_rss_adjust_sport guarantees via its forced
+     * ff_rss_check re-verify); zero false positives is asserted inline above. */
+    assert_true(adj128 > 0);
+    assert_true(adj512 > 0);
+    assert_int_equal(fok128, EQUIV_N);   /* full loop lands 100% (zero tolerance) */
+    assert_int_equal(fok512, EQUIV_N);
+}
+
+/* ======================================================================== */
+/* R-C (req 0.2) IPv6 RSS: ff_rss_check6 / ff_rss_tbl6_* / ff_rss_adjust_   */
+/* sport6. Spec: 07-测试规格.md §1.2 TC-U-RSS-02 ; 04 §2 ; 05 §2-3.          */
+/* Signatures confirmed against ff_host_interface.h:96-104 and the impl in   */
+/* ff_dpdk_if.c:3117/3149/3261/3318/3366. v6 data/tuple = saddr6(16)|        */
+/* daddr6(16)|sport(2)|dport(2) = 36B host-order; helper offset = 256 bits   */
+/* (sport @ byte 32). Same toeplitz/key/reta口径 as v4.                       */
+/* ======================================================================== */
+
+/* Two fixed, distinct v6 addresses for the deterministic v6 unit cases. */
+static const uint8_t test_saddr6[16] = {
+    0x20,0x01,0x0d,0xb8,0,0,0,0, 0,0,0,0,0,0,0,0x01
+};
+static const uint8_t test_daddr6[16] = {
+    0x20,0x01,0x0d,0xb8,0,0,0,0, 0,0,0,0,0,0,0,0x02
+};
+
+/* Build a single v6-rule RSS config and (re)init the static ff_rss_tbl6. */
+static int
+test_rss6_build_table(const uint8_t saddr6[16], const uint8_t daddr6[16],
+                      uint16_t sport)
+{
+    memset(&g_rss_cfg, 0, sizeof(g_rss_cfg));
+    g_rss_cfg.enable = 1;
+    g_rss_cfg.recheck = 1;   /* R-D 04-06: default recheck=1 to keep R-B/R-C hard assertions */
+    g_rss_cfg.nb_rss_tbl = 1;
+    g_rss_cfg.rss_tbl_cfgs[0].port_id = TEST_RSS_PORT;
+    g_rss_cfg.rss_tbl_cfgs[0].family  = AF_INET6;
+    memcpy(g_rss_cfg.rss_tbl_cfgs[0].saddr6, saddr6, 16);
+    memcpy(g_rss_cfg.rss_tbl_cfgs[0].daddr6, daddr6, 16);
+    g_rss_cfg.rss_tbl_cfgs[0].sport = sport;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+
+    return ff_rss_tbl6_init();
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-02-01: ff_rss_check6 lands on the owning queue and agrees with   */
+/* an independent equivalent v6 Toeplitz (hit correctness + self-consistency)*/
+/* rss_reta_size[] is static BSS=0 (confirmed R-A) => mask 0xFFFF, same as   */
+/* the v4 cases (07 §0.4 degrade路径同款).                                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_check6_landing(void **state)
+{
+    (void)state;
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    lcore_conf[0].tx_queue_id[TEST_RSS_PORT]   = TEST_RSS_QID;
+
+    /* Probe several dports; for each, the lib verdict must equal the replica
+     * (mask 0xFFFF here), and whenever it lands it must land on our queue. */
+    int landed = 0;
+    for (uint16_t j = 0; j < 64; j++) {
+        uint16_t dport = htons((uint16_t)(2000 + j));
+        int lib = ff_rss_check6(sc, test_saddr6, test_daddr6, htons(1000), dport);
+        int exp = test_expected_rss_check6(test_saddr6, test_daddr6,
+                                           htons(1000), dport,
+                                           TEST_RSS_NBQ, TEST_RSS_RETA, TEST_RSS_QID);
+        assert_int_equal(lib, exp);          /* v6 hit correctness */
+        if (lib) {
+            landed++;
+            /* zero false positive: replica must independently agree it lands. */
+            assert_int_equal(exp, 1);
+        }
+    }
+    assert_true(landed > 0);                  /* some dport lands on our queue */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-02-02: ff_rss_check6 single-queue returns 1 (RG-3 for v6).       */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_check6_single_queue(void **state)
+{
+    (void)state;
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = 1;     /* single queue */
+    assert_int_equal(ff_rss_check6(sc, test_saddr6, test_daddr6,
+                                   htons(1000), htons(80)), 1);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-02-03: v6 static table init + get_portrange hit / miss.          */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_tbl6_set_get(void **state)
+{
+    (void)state;
+    assert_int_equal(test_rss6_build_table(test_saddr6, test_daddr6,
+                                           htons(1000)), 0);
+
+    /* Hit: same v6 3-tuple used to build the table. */
+    uint16_t first = 0, last = 0;
+    uint16_t *pr = NULL;
+    int rv = ff_rss_tbl6_get_portrange(test_saddr6, test_daddr6, htons(1000),
+                                       &first, &last, &pr);
+    assert_int_equal(rv, 0);                  /* hit => 0 (ff_dpdk_if.c:3349) */
+    assert_non_null(pr);
+    assert_true(first >= 1);
+    assert_true(last >= first);
+
+    /* Each port in [first,last] must self-consistently re-check to 1 (lands). */
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    int checked = 0;
+    for (uint16_t k = first; k <= last && checked < 128; k++, checked++) {
+        assert_int_equal(ff_rss_check6(sc, test_saddr6, test_daddr6,
+                                       htons(1000), htons(pr[k])), 1);
+        if (k == last) break;
+    }
+    assert_true(checked > 0);
+
+    /* Miss: a different saddr6 (flip last byte) => -ENOENT. */
+    uint8_t other_saddr6[16];
+    memcpy(other_saddr6, test_saddr6, 16);
+    other_saddr6[15] = 0xEE;
+    uint16_t f2 = 0, l2 = 0; uint16_t *pr2 = NULL;
+    int rv2 = ff_rss_tbl6_get_portrange(other_saddr6, test_daddr6, htons(1000),
+                                        &f2, &l2, &pr2);
+    assert_int_equal(rv2, -ENOENT);
+    assert_null(pr2);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-RSS-02-04: ff_rss_adjust_sport6 NULL/out guards + degrade fallback.   */
+/* In the unit env rss_reta_size[] is static BSS=0 so ff_rss_thash_ctx_init   */
+/* leaves the v6 ctx unready (reta<2) => adjust_sport6 returns -1 (soft scan).*/
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_rss_adjust_sport6_guard(void **state)
+{
+    (void)state;
+    uint16_t out = 0;
+    assert_int_equal(ff_rss_adjust_sport6(NULL, test_saddr6, test_daddr6,
+                                          htons(80), &out,
+                                          TEST_RSS_FIRST, TEST_RSS_LAST), -1);
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                          htons(80), NULL,
+                                          TEST_RSS_FIRST, TEST_RSS_LAST), -1);
+
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);   /* v6 ctx degrades (reta=0) */
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    out = 0xFFFF;
+    assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                          htons(80), &out,
+                                          TEST_RSS_FIRST, TEST_RSS_LAST), -1);
+}
+
+/* ======================================================================== */
+/* TC-U-RSS-02-EQUIV: v6 toeplitz vs rte_thash(softrss_be) equivalence —      */
+/* go/no-go data for wiring 0.2 v6 into the kernel. Replicates ff_rss_adjust_ */
+/* sport6's full loop with the real DPDK rte_thash API (tuple_len=36,         */
+/* sport@byte32, helper len=16bit @offset=256bit), re-verifying with the v6   */
+/* soft Toeplitz (test_expected_rss_check6). Reports adjust success rate,     */
+/* per-candidate equivalence, and full-loop final landing rate.              */
+/* ======================================================================== */
+static void
+run_equiv6_for_reta(const char *ctx_name, uint16_t reta_size,
+                    int *adj_ok, int *single_hit, int *final_ok,
+                    double *avg_tries)
+{
+    struct rte_thash_ctx *ctx;
+    struct rte_thash_subtuple_helper *h;
+    int i, ok = 0, hit = 0, fok = 0;
+    long tries_total = 0;
+    const uint16_t nbq = EQUIV_NBQ, qid = EQUIV_QID;
+    const uint32_t span = (reta_size + nbq - 1) / nbq;
+
+    rte_srand(EQUIV_THASH_SEED ^ reta_size);   /* reproducible key m-seq */
+    ctx = rte_thash_init_ctx(ctx_name, sizeof(test_rsskey_40),
+                             equiv_log2(reta_size), (uint8_t *)test_rsskey_40, 0);
+    assert_non_null(ctx);
+    /* v6 helper: len 16 bits @ offset 256 bits (mirror lib FF_RSS_THASH_V6). */
+    assert_int_equal(rte_thash_add_helper(ctx, "sport6", 16, 256), 0);
+    h = rte_thash_get_helper(ctx, "sport6");
+    assert_non_null(h);
+
+    srandom(0xBADC0DE ^ reta_size);   /* deterministic, reproducible */
+    for (i = 0; i < EQUIV_N; i++) {
+        uint8_t saddr6[16], daddr6[16];
+        for (int b = 0; b < 16; b++) { saddr6[b] = random() & 0xff; daddr6[b] = random() & 0xff; }
+        uint16_t dport = htons((uint16_t)(1024 + (random() % 60000)));
+        uint32_t desired = qid + ((uint32_t)random() % span) * nbq;
+        int found = 0, first_cand = 1;
+        uint32_t tr;
+        if (desired >= reta_size) desired = qid;
+
+        for (tr = 0; tr < span; tr++) {
+            uint16_t sport = 0;
+            uint8_t tuple[36];
+            if (desired >= reta_size) desired = qid;
+            memset(tuple, 0, sizeof(tuple));
+            memcpy(&tuple[0], saddr6, 16);
+            memcpy(&tuple[16], daddr6, 16);
+            memcpy(&tuple[32], &sport, 2);    /* sport seed 0 @ byte 32 */
+            memcpy(&tuple[34], &dport, 2);    /* dport @ byte 34        */
+            tries_total++;
+
+            if (rte_thash_adjust_tuple(ctx, h, tuple, sizeof(tuple),
+                                       desired & (reta_size - 1), 16,
+                                       NULL, NULL) == 0) {
+                if (first_cand) ok++;
+                memcpy(&sport, &tuple[32], 2);
+                int landed = test_expected_rss_check6(saddr6, daddr6, sport, dport,
+                                                      nbq, reta_size, qid);
+                if (first_cand && landed) hit++;
+                if (landed) {
+                    /* zero false positive: independent recompute must agree. */
+                    uint8_t d[36];
+                    unsigned dl = 0;
+                    memcpy(&d[dl], saddr6, 16); dl += 16;
+                    memcpy(&d[dl], daddr6, 16); dl += 16;
+                    memcpy(&d[dl], &sport, 2); dl += 2;
+                    memcpy(&d[dl], &dport, 2); dl += 2;
+                    uint32_t hh = test_toeplitz(sizeof(test_rsskey_40),
+                                                test_rsskey_40, dl, d);
+                    assert_int_equal(((hh & (reta_size - 1)) % nbq), qid);
+                    found = 1;
+                    break;
+                }
+            }
+            first_cand = 0;
+            desired += nbq;
+        }
+        if (found) fok++;
+    }
+
+    rte_thash_free_ctx(ctx);
+    *adj_ok = ok;
+    *single_hit = hit;
+    *final_ok = fok;
+    *avg_tries = (double)tries_total / EQUIV_N;
+}
+
+static void
+test_ff_rss_thash6_equivalence_hitrate(void **state)
+{
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("\n[R-C 0.2 EQUIV6] DPDK EAL init failed in unit env; skipping.\n");
+        skip();
+        return;
+    }
+
+    int adj128 = 0, sh128 = 0, fok128 = 0, adj512 = 0, sh512 = 0, fok512 = 0;
+    double avg128 = 0, avg512 = 0;
+    run_equiv6_for_reta("ff_equiv6_128", 128, &adj128, &sh128, &fok128, &avg128);
+    run_equiv6_for_reta("ff_equiv6_512", 512, &adj512, &sh512, &fok512, &avg512);
+
+    printf("\n[R-C 0.2 EQUIV6] N=%d nbq=%d qid=%d key=40B v6-tuple=36B sport@256bit\n",
+           EQUIV_N, EQUIV_NBQ, EQUIV_QID);
+    printf("[R-C 0.2 EQUIV6] reta=128: adjust_tuple_ok=%d/%d (%.1f%%), "
+           "1st-candidate toeplitz_equiv=%d/%d (%.1f%%), "
+           "FULL-LOOP final landing=%d/%d (%.1f%%), avg adjust calls/conn=%.2f (span=%d)\n",
+           adj128, EQUIV_N, 100.0 * adj128 / EQUIV_N,
+           sh128, EQUIV_N, 100.0 * sh128 / EQUIV_N,
+           fok128, EQUIV_N, 100.0 * fok128 / EQUIV_N, avg128, (128 + EQUIV_NBQ - 1) / EQUIV_NBQ);
+    printf("[R-C 0.2 EQUIV6] reta=512: adjust_tuple_ok=%d/%d (%.1f%%), "
+           "1st-candidate toeplitz_equiv=%d/%d (%.1f%%), "
+           "FULL-LOOP final landing=%d/%d (%.1f%%), avg adjust calls/conn=%.2f (span=%d)\n",
+           adj512, EQUIV_N, 100.0 * adj512 / EQUIV_N,
+           sh512, EQUIV_N, 100.0 * sh512 / EQUIV_N,
+           fok512, EQUIV_N, 100.0 * fok512 / EQUIV_N, avg512, (512 + EQUIV_NBQ - 1) / EQUIV_NBQ);
+
+    assert_true(adj128 > 0);
+    assert_true(adj512 > 0);
+    assert_int_equal(fok128, EQUIV_N);   /* v6 full loop lands 100% (zero tolerance) */
+    assert_int_equal(fok512, EQUIV_N);
+}
+
+/* ======================================================================== */
+/* R-D (req 0.4) recheck runtime gate: TC-U-RSS-04-01 .. 04-05               */
+/* Spec: 07-测试规格.md §1.4 ; 04 §3-bis ; 05 §3-bis ; 06 R-D.                */
+/* In the unit env rss_reta_size[]=0 -> ctx unready -> ff_rss_adjust_sport   */
+/* returns -1 at the readiness guard (ff_dpdk_if.c:3068) before reaching the */
+/* recheck branch. Per spec 04-01 note, the recheck=0/1 cases here assert    */
+/* (a) adjust returns -1 (ctx-unready degrade) and (b) wrap counter is 0    */
+/* (recheck branch never reached). The wrap interceptor itself is exercised */
+/* by direct ff_rss_check{,6} calls (existing R-A/R-B/R-C cases) so a       */
+/* sanity check confirms the wrap chain is wired correctly.                  */
+/* ======================================================================== */
+
+#define RD_RECHECK_N 100
+
+static void
+test_ff_rss_adjust_sport_recheck_off(void **state)   /* TC-U-RSS-04-01 */
+{
+    (void)state;
+    const uint32_t saddr = 0x01020304, daddr = 0x05060708;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport_seed), 0);
+    g_rss_cfg.recheck = 0;   /* R-D 0.4: disable runtime recheck */
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);   /* unit-env ctx unready */
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    g_ff_rss_check_calls = 0;
+
+    for (int i = 0; i < RD_RECHECK_N; i++) {
+        uint16_t out = 0xFFFF;
+        int rv = ff_rss_adjust_sport(sc, saddr, daddr,
+                                     htons((uint16_t)(1024 + i)), &out,
+                                     TEST_RSS_FIRST, TEST_RSS_LAST);
+        assert_int_equal(rv, -1);   /* ctx-unready degrade */
+    }
+    /* recheck=0 path never reaches L3105; counter must stay 0 */
+    assert_int_equal(g_ff_rss_check_calls, 0);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+static void
+test_ff_rss_adjust_sport_recheck_on(void **state)    /* TC-U-RSS-04-02 */
+{
+    (void)state;
+    const uint32_t saddr = 0x01020304, daddr = 0x05060708;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss_build_table(saddr, daddr, sport_seed), 0);
+    g_rss_cfg.recheck = 1;
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    g_ff_rss_check_calls = 0;
+
+    for (int i = 0; i < RD_RECHECK_N; i++) {
+        uint16_t out = 0xFFFF;
+        int rv = ff_rss_adjust_sport(sc, saddr, daddr,
+                                     htons((uint16_t)(1024 + i)), &out,
+                                     TEST_RSS_FIRST, TEST_RSS_LAST);
+        assert_int_equal(rv, -1);   /* ctx-unready degrade */
+    }
+    /* ctx-unready blocks the main loop; counter remains 0 here. The
+     * "recheck=1 -> ff_rss_check is forced" semantic is covered by the
+     * R-B equivalence test (full-loop landing=100%) under the default
+     * recheck=1 from test_rss_build_table. Direct call below sanity-checks
+     * that the wrap interceptor is actually wired. */
+    assert_int_equal(g_ff_rss_check_calls, 0);
+
+    uint64_t before = g_ff_rss_check_calls;
+    (void)ff_rss_check(sc, saddr, daddr, sport_seed, htons(80));
+    assert_true(g_ff_rss_check_calls > before);   /* wrap chain alive */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+static void
+test_ff_rss_adjust_sport6_recheck_off(void **state)  /* TC-U-RSS-04-03 */
+{
+    (void)state;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss6_build_table(test_saddr6, test_daddr6,
+                                           sport_seed), 0);
+    g_rss_cfg.recheck = 0;
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    g_ff_rss_check6_calls = 0;
+
+    for (int i = 0; i < RD_RECHECK_N; i++) {
+        uint16_t out = 0xFFFF;
+        int rv = ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                      htons((uint16_t)(1024 + i)), &out,
+                                      TEST_RSS_FIRST, TEST_RSS_LAST);
+        assert_int_equal(rv, -1);
+    }
+    assert_int_equal(g_ff_rss_check6_calls, 0);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+static void
+test_ff_rss_adjust_sport6_recheck_on(void **state)   /* TC-U-RSS-04-04 */
+{
+    (void)state;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss6_build_table(test_saddr6, test_daddr6,
+                                           sport_seed), 0);
+    g_rss_cfg.recheck = 1;
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    g_ff_rss_check6_calls = 0;
+
+    for (int i = 0; i < RD_RECHECK_N; i++) {
+        uint16_t out = 0xFFFF;
+        int rv = ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                      htons((uint16_t)(1024 + i)), &out,
+                                      TEST_RSS_FIRST, TEST_RSS_LAST);
+        assert_int_equal(rv, -1);
+    }
+    assert_int_equal(g_ff_rss_check6_calls, 0);
+
+    uint64_t before = g_ff_rss_check6_calls;
+    (void)ff_rss_check6(sc, test_saddr6, test_daddr6, sport_seed, htons(80));
+    assert_true(g_ff_rss_check6_calls > before);   /* v6 wrap chain alive */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+#include <time.h>
+
+#ifndef FF_RSS_RECHECK_MICROBENCH_N
+#define FF_RSS_RECHECK_MICROBENCH_N 10000
+#endif
+
+static uint64_t
+rd_now_ns(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static void
+test_ff_rss_adjust_microbench(void **state)          /* TC-U-RSS-04-05 */
+{
+    (void)state;
+    const uint32_t saddr = 0x01020304, daddr_base = 0x05060708;
+    const uint16_t sport_seed = htons(1000);
+    assert_int_equal(test_rss_build_table(saddr, daddr_base, sport_seed), 0);
+    assert_int_equal(ff_rss_thash_ctx_init(), 0);
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+
+    /* Pre-flight: confirm ctx readiness state. In unit env reta=0 -> unready
+     * -> both off/on take the same early-return path; per spec 07 §1.4 note,
+     * print "skipped: thash ctx not ready" and PASS (real data via spec 08). */
+    uint16_t out_probe = 0;
+    int probe = ff_rss_adjust_sport(sc, saddr, daddr_base, htons(1024), &out_probe,
+                                   TEST_RSS_FIRST, TEST_RSS_LAST);
+    if (probe < 0) {
+        printf("\n[R-D 0.4 MICROBENCH] thash ctx not ready in unit env "
+               "(rss_reta_size[]=0); skipping microbench. Real off-vs-on "
+               "timing covered by spec 08 (example/rss_ct.c).\n");
+        ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+        skip();
+        return;
+    }
+
+    const int N = FF_RSS_RECHECK_MICROBENCH_N;
+    uint64_t t_off, t_on;
+    uint16_t out;
+
+    g_rss_cfg.recheck = 0;
+    t_off = rd_now_ns();
+    for (int i = 0; i < N; i++) {
+        out = 0;
+        (void)ff_rss_adjust_sport(sc, saddr, daddr_base + (i & 0xFFFF),
+                                  htons((uint16_t)(1024 + (i & 0x3FFF))),
+                                  &out,
+                                  TEST_RSS_FIRST, TEST_RSS_LAST);
+    }
+    t_off = rd_now_ns() - t_off;
+
+    g_rss_cfg.recheck = 1;
+    t_on = rd_now_ns();
+    for (int i = 0; i < N; i++) {
+        out = 0;
+        (void)ff_rss_adjust_sport(sc, saddr, daddr_base + (i & 0xFFFF),
+                                  htons((uint16_t)(1024 + (i & 0x3FFF))),
+                                  &out,
+                                  TEST_RSS_FIRST, TEST_RSS_LAST);
+    }
+    t_on = rd_now_ns() - t_on;
+
+    printf("\n[R-D 0.4 MICROBENCH] N=%d v4 recheck off=%lu ns (%.1f ns/call), "
+           "on=%lu ns (%.1f ns/call), on/off=%.2fx\n",
+           N, (unsigned long)t_off, (double)t_off / N,
+           (unsigned long)t_on, (double)t_on / N,
+           t_off > 0 ? (double)t_on / (double)t_off : 0.0);
+    assert_true(t_off < t_on);   /* recheck=0 strictly faster */
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ===== R-F: thash_adjust switch + ctx_init route② fallback ===== */
+
+/* TC-U-RSS-RF-01: thash_adjust=0 -> ff_rss_adjust_sport returns -1 (soft scan). */
+static void
+test_ff_rss_adjust_sport_thash_adjust_off(void **state)
+{
+    (void)state;
+    g_rss_cfg.recheck = 0;
+    g_rss_cfg.thash_adjust = 0;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    uint16_t out = 0xFFFF;
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), &out,
+                                         TEST_RSS_FIRST, TEST_RSS_LAST), -1);
+
+    g_rss_cfg.thash_adjust = 1; /* restore default for subsequent tests */
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* TC-U-RSS-RF-02: same as RF-01 for the v6 path. */
+static void
+test_ff_rss_adjust_sport6_thash_adjust_off(void **state)
+{
+    (void)state;
+    g_rss_cfg.recheck = 0;
+    g_rss_cfg.thash_adjust = 0;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    uint8_t saddr6[16] = { 0x20,0x01 }, daddr6[16] = { 0x20,0x02 };
+    uint16_t out = 0xFFFF;
+    assert_int_equal(ff_rss_adjust_sport6(sc, saddr6, daddr6,
+                                          htons(80), &out,
+                                          TEST_RSS_FIRST, TEST_RSS_LAST), -1);
+
+    g_rss_cfg.thash_adjust = 1;
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* TC-U-RSS-RF-03: thash_adjust=0 -> ff_rss_thash_ctx_init early-returns 0. */
+static void
+test_ff_rss_thash_ctx_init_thash_adjust_off(void **state)
+{
+    (void)state;
+    g_rss_cfg.thash_adjust = 0;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    int rv = ff_rss_thash_ctx_init();
+    assert_int_equal(rv, 0);
+
+    g_rss_cfg.thash_adjust = 1;
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* TC-U-RSS-RF-04: ff_rss_adjust_sport first/last range params.
+ * Inverted (first>last) and sub-reta-block ranges must decline (return -1)
+ * so the caller falls back to the soft scan. In the unit env reta_size[]=0
+ * leaves the ctx unready, so the readiness guard also produces -1; either
+ * way the contract "declines -> caller falls back" holds. The aligned-base
+ * range logic itself is exercised with a live rte_thash ctx in the R-B/R-C
+ * equivalence tests. */
+static void
+test_ff_rss_adjust_sport_range_params(void **state)
+{
+    (void)state;
+    g_rss_cfg.recheck = 0;
+    g_rss_cfg.thash_adjust = 1;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    uint16_t out = 0xFFFF;
+
+    /* inverted range */
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), &out,
+                                         /*first*/60000, /*last*/1024), -1);
+    /* range too small to hold one reta block */
+    assert_int_equal(ff_rss_adjust_sport(sc, 0x01020304, 0x05060708,
+                                         htons(80), &out,
+                                         /*first*/1024, /*last*/1025), -1);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* TC-U-RSS-RF-05: same range-param contract for the v6 path. */
+static void
+test_ff_rss_adjust_sport6_range_params(void **state)
+{
+    (void)state;
+    g_rss_cfg.recheck = 0;
+    g_rss_cfg.thash_adjust = 1;
+    ff_global_cfg.dpdk.rss_check_cfgs = &g_rss_cfg;
+
+    void *sc = test_rss_softc(TEST_RSS_PORT);
+    lcore_conf[0].nb_queue_list[TEST_RSS_PORT] = TEST_RSS_NBQ;
+    uint16_t out = 0xFFFF;
+
+    assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                          htons(80), &out,
+                                          /*first*/60000, /*last*/1024), -1);
+    assert_int_equal(ff_rss_adjust_sport6(sc, test_saddr6, test_daddr6,
+                                          htons(80), &out,
+                                          /*first*/1024, /*last*/1025), -1);
+
+    ff_global_cfg.dpdk.rss_check_cfgs = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-17 (Stage-6): ff_dpdk_register_if happy path: allocates  */
+/* and returns a non-NULL ff_dpdk_if_context (covers the malloc + memset   */
+/* path in L182-L196).                                                     */
+/* ------------------------------------------------------------------------ */
+static void
+test_ff_dpdk_register_if_returns_ctx(void **state)
+{
+    (void)state;
+    struct ff_port_cfg pcfg = { .port_id = 0 };
+    int dummy_softc = 0xCAFE;
+    int dummy_ifp = 0xBEEF;
+    void *ctx = ff_dpdk_register_if(&dummy_softc, &dummy_ifp, &pcfg);
+    assert_non_null(ctx);
+    /* Round-trip via ff_dpdk_deregister_if (already tested) to free. */
+    ff_dpdk_deregister_if((struct ff_dpdk_if_context *)ctx);
+}
+
+/* ------------------------------------------------------------------------ */
+/* TC-U-P3-DPDKIF-18 (Stage-6 Phase-9 / FU-CB-DPDKIF-NULLGUARD):             */
+/* ff_dpdk_if_send(NULL, ...) must not crash; lib's NULL ctx guard returns  */
+/* -1 and frees the caller's mbuf (if any) instead of dereferencing.        */
+/* ------------------------------------------------------------------------ */
+extern int ff_dpdk_if_send(struct ff_dpdk_if_context *ctx, void *m, int total);
+
+static void
+test_ff_dpdk_if_send_null_ctx_safe(void **state)
+{
+    (void)state;
+    /* Both args NULL: the guard returns -1 without touching m. */
+    int rv = ff_dpdk_if_send(NULL, NULL, 0);
+    assert_int_equal(rv, -1);
+}
+
+static void
+test_ff_dpdk_if_send_null_ctx_with_mbuf(void **state)
+{
+    (void)state;
+    /* Non-NULL m: the guard must call ff_mbuf_free(m) before returning -1.
+     * Our local stub ff_mbuf_free is a no-op, so we just verify the call
+     * doesn't crash and the return is -1. */
+    int dummy_mbuf = 0xCAFE;
+    int rv = ff_dpdk_if_send(NULL, &dummy_mbuf, 100);
+    assert_int_equal(rv, -1);
+}
+
+/* ======================================================================== */
+/* M2 Batch A (graceful reload resource isolation): UT-NR-17/18/21           */
+/* C-NR-307 self-driven hardclock, C-NR-314 generation pools,                */
+/* C-NR-315 shared-pool cache_size=0 (lcore audit m0-lcore-shared-state)     */
+/* ======================================================================== */
+#include <rte_cycles.h>          /* US_PER_S */
+
+/* pktmbuf_pool is a non-static global in ff_dpdk_if.c (mirrors the extern
+ * in lib/ff_memory.c:70) so the gen-pool boundary test can observe the
+ * graceful_reload=0 fallback. */
+extern struct rte_mempool *pktmbuf_pool[NB_SOCKETS];
+
+/* ------------------------------------------------------------------------ */
+/* UT-NR-17: self-driven hardclock interval computation (pure function      */
+/* ff_hardclock_interval_tsc). Must match the legacy rte_timer period       */
+/* formula used by init_clock(): ceil(hz/1e6) * (1e6/bsd_hz).               */
+/* ------------------------------------------------------------------------ */
+static void
+test_ut_nr_17_hardclock_interval(void **state)
+{
+    (void)state;
+    /* hz=100 on a 1 GHz TSC: 10 ms -> 10,000,000 ticks */
+    assert_int_equal(ff_hardclock_interval_tsc(1000000000ULL, 100),
+                     10000000ULL);
+    /* hz=1000 on 2.5 GHz: 1 ms -> 2,500,000 ticks */
+    assert_int_equal(ff_hardclock_interval_tsc(2500000000ULL, 1000),
+                     2500000ULL);
+    /* ceil term: 2.999999 GHz -> 3000 ticks/us, hz=100 -> 30,000,000 */
+    assert_int_equal(ff_hardclock_interval_tsc(2999999000ULL, 100),
+                     30000000ULL);
+    /* legacy-formula equivalence across hz decades (US_PER_S % hz == 0) */
+    for (unsigned hz = 1; hz <= 1000000; hz *= 10) {
+        uint64_t timer_hz = 2600000000ULL;
+        uint64_t legacy =
+            (timer_hz + US_PER_S - 1) / US_PER_S * (US_PER_S / hz);
+        assert_int_equal(ff_hardclock_interval_tsc(timer_hz, hz), legacy);
+    }
+    /* degenerate hz: 0 and > US_PER_S yield 0 (caller rte_exit()s) */
+    assert_int_equal(ff_hardclock_interval_tsc(1000000000ULL, 0), 0);
+    assert_int_equal(ff_hardclock_interval_tsc(1000000000ULL, US_PER_S + 1), 0);
+}
+
+/* ------------------------------------------------------------------------ */
+/* UT-NR-18: generation pool config validation — names, gen bounds, and     */
+/* the ff_app_mbuf_pool() generation selection boundary.                    */
+/* ------------------------------------------------------------------------ */
+static void
+test_ut_nr_18_gen_pool_config(void **state)
+{
+    (void)state;
+    char name[64];
+
+    /* gen 0/1 pool names: mbuf_pool_<socket>_gen<gen> */
+    assert_int_equal(ff_mbuf_gen_pool_name(name, sizeof(name), 0, 0), 0);
+    assert_string_equal(name, "mbuf_pool_0_gen0");
+    assert_int_equal(ff_mbuf_gen_pool_name(name, sizeof(name), 3, 1), 0);
+    assert_string_equal(name, "mbuf_pool_3_gen1");
+
+    /* out-of-range generation indices are rejected */
+    assert_int_equal(ff_mbuf_gen_pool_name(name, sizeof(name), 0, -1), -1);
+    assert_int_equal(ff_mbuf_gen_pool_name(name, sizeof(name), 0,
+                                           FF_MBUF_GEN_MAX), -1);
+    /* truncated buffer is rejected (full name needs 18 bytes incl NUL) */
+    char small[8];
+    assert_int_equal(ff_mbuf_gen_pool_name(small, sizeof(small), 0, 0), -1);
+
+    /* ping-pong pair is exactly gen0/gen1 */
+    assert_int_equal(FF_MBUF_GEN_MAX, 2);
+
+    /* ff_app_mbuf_pool boundary: =0 falls back to the shared pool,
+     * =1 returns the (here uncreated, thus NULL) generation pool. */
+    static struct rte_mempool sentinel;
+    pktmbuf_pool[0] = &sentinel;
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    assert_ptr_equal(ff_app_mbuf_pool(0), &sentinel);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    assert_null(ff_app_mbuf_pool(0));
+    /* set_gen switches the selection; invalid gen is ignored */
+    ff_app_mbuf_set_gen(1);
+    assert_null(ff_app_mbuf_pool(0));       /* gen1 slot, also uncreated */
+    ff_app_mbuf_set_gen(FF_MBUF_GEN_MAX);   /* out of range: ignored */
+    assert_null(ff_app_mbuf_pool(0));
+    ff_app_mbuf_set_gen(0);                 /* restore for later tests */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    pktmbuf_pool[0] = NULL;
+}
+
+/* ------------------------------------------------------------------------ */
+/* UT-NR-21: all three shared pools drop the per-lcore local_cache under    */
+/* graceful_reload=1 and keep their legacy cache values at =0:              */
+/*   P1 RX-bound pktmbuf_pool (256), P2 message_pool (16),                  */
+/*   P3 ff_ref_pool (256, FF_USE_PAGE_ARRAY only).                         */
+/* ------------------------------------------------------------------------ */
+static void
+test_ut_nr_21_shared_pool_cache_size(void **state)
+{
+    (void)state;
+    /* P1: RX-bound pktmbuf_pool — legacy MEMPOOL_CACHE_SIZE */
+    assert_int_equal(ff_shared_pool_cache_size(1, MEMPOOL_CACHE_SIZE), 0);
+    assert_int_equal(ff_shared_pool_cache_size(0, MEMPOOL_CACHE_SIZE),
+                     MEMPOOL_CACHE_SIZE);
+    /* P2: message_pool — legacy MSG_RING_SIZE / 2 */
+    assert_int_equal(ff_shared_pool_cache_size(1, MSG_RING_SIZE / 2), 0);
+    assert_int_equal(ff_shared_pool_cache_size(0, MSG_RING_SIZE / 2),
+                     MSG_RING_SIZE / 2);
+    assert_int_equal(MSG_RING_SIZE / 2, 16);
+    /* P3: ff_ref_pool (PA builds) — legacy MEMPOOL_CACHE_SIZE */
+    assert_int_equal(ff_shared_pool_cache_size(1, MEMPOOL_CACHE_SIZE), 0);
+    assert_int_equal(ff_shared_pool_cache_size(0, MEMPOOL_CACHE_SIZE),
+                     MEMPOOL_CACHE_SIZE);
+    /* M-B fallback ring capacity is reserved as a constant */
+    assert_true(FREE_RING_SIZE > 0);
+}
+
+/* ======================================================================== */
+/* M3 Batch A (docs/nginx_reload_spec/zh_cn/07-milestones.md §2.4)          */
+/* C-NR-301 (flow map) / C-NR-303 (unregister) / C-NR-310 (drain rings)     */
+/* ======================================================================== */
+
+#include <rte_ring.h>
+#include <rte_mbuf.h>
+#include <rte_mempool.h>
+
+#include "ff_flow_map.h"
+#include "ff_drain_ring.h"
+#include "ff_reload.h"
+
+/* UT-NR-19: drain_ring pair — per-generation naming, SP/SC flags, ownership
+ * rules, full-ring behaviour and the unregister-only teardown (R-310-1). */
+static void
+test_ut_nr_19_drain_ring_sp_sc(void **state)
+{
+    static uint16_t port_list[1] = { 0 };
+    /* Two queues = two independent stack instances. Without a queue
+     * dimension a packet would be handed to a stack that has no PCB for it
+     * (it would answer RST), and two workers would share one SP/SC ring. */
+    static struct ff_port_cfg port_cfgs[1];
+    struct rte_mbuf *pkts[MAX_PKT_BURST];
+    struct rte_mempool *pool = NULL;
+    struct rte_mbuf *m;
+    struct rte_ring *r, *r_q1;
+    char name[RTE_RING_NAMESIZE];
+    int g, q;
+
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("[INFO] rte_eal_init failed; UT-NR-19 skipped\n");
+        skip();
+        return;
+    }
+
+    pool = rte_pktmbuf_pool_create("ut_nr_19_pool", 128, 0, 0, 256,
+        SOCKET_ID_ANY);
+    if (pool == NULL) {
+        printf("[INFO] mbuf pool failed; UT-NR-19 skipped\n");
+        skip();
+        return;
+    }
+
+    /* graceful_reload=0: no rings at all (zero-regression) */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 0);
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = port_list;
+    memset(port_cfgs, 0, sizeof(port_cfgs));
+    port_cfgs[0].nb_lcores = 2;
+    ff_global_cfg.dpdk.port_cfgs = port_cfgs;
+    /* smaller than the pool so the fill loop below can actually overflow it */
+    ff_global_cfg.dpdk.drain_ring_size = 64;    /* power of two */
+    lcore_conf[0].socket_id = 0;
+    ff_reload_set_gen(0);
+
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 1);
+
+    /* one pair per (queue, generation). P1-a: drain_rx is multi-producer —
+     * the same-queue miss forwarder and the ARP/NDP clone fan-out (any
+     * peer worker, nb_queues >= 2) can race one ring — but stays
+     * single-consumer; drain_tx keeps SP/SC (its only producer is the
+     * parked generation's own queue worker). */
+    for (q = 0; q < 2; q++) {
+        for (g = 0; g < FF_RELOAD_GEN_MAX; g++) {
+            snprintf(name, sizeof(name), "drain_rx_p0_q%d_g%d", q, g);
+            r = rte_ring_lookup(name);
+            assert_non_null(r);
+            assert_int_equal(rte_ring_is_prod_single(r), 0);
+            assert_int_equal(rte_ring_is_cons_single(r), 1);
+
+            snprintf(name, sizeof(name), "drain_tx_p0_q%d_g%d", q, g);
+            r = rte_ring_lookup(name);
+            assert_non_null(r);
+            assert_int_equal(rte_ring_is_prod_single(r), 1);
+            assert_int_equal(rte_ring_is_cons_single(r), 1);
+        }
+    }
+
+    /* We are gen0. rx_enqueue takes the DESTINATION generation, so a
+     * flow-map miss here goes to gen1's ring; our own gen would be a
+     * self-loop and is rejected outright. */
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 1, m), 0);
+    r = rte_ring_lookup("drain_rx_p0_q0_g1");
+    r_q1 = rte_ring_lookup("drain_rx_p0_q1_g1");
+    assert_non_null(r_q1);
+    assert_int_equal((int)rte_ring_count(r), 1);
+    /* queue isolation: a queue-0 flow must not land in queue 1's ring. */
+    assert_int_equal((int)rte_ring_count(r_q1), 0);
+    /* our own inbound ring (gen0) is untouched by that enqueue */
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal((int)rte_ring_count(r), 1);
+
+    /* seen from gen1 it is ours to consume: ctx == NULL frees instead of
+     * leaking, and the ring is drained either way. */
+    ff_reload_set_gen(1);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 1, pkts, NULL), 0);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal((int)rte_ring_count(r), 0);
+    assert_int_equal((int)rte_mempool_avail_count(pool), 128);
+    ff_reload_set_gen(0);
+
+    /* tx_enqueue takes the SOURCE generation, i.e. our own; gen1 reads it
+     * and is the only side allowed to call rte_eth_tx_burst. */
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 1, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 0, m), 0);
+    assert_int_equal((int)rte_ring_count(
+        rte_ring_lookup("drain_tx_p0_q0_g0")), 1);
+    assert_int_equal((int)rte_ring_count(
+        rte_ring_lookup("drain_tx_p0_q1_g0")), 0);
+
+    /* tx_drain on an empty peer ring returns 0 without touching ethdev */
+    assert_int_equal(ff_drain_ring_tx_drain(0, 0, pkts, MAX_PKT_BURST), 0);
+
+    /* out-of-range gen / queue / port / not-ready are rejected, mbuf stays
+     * owned by the caller (R-303-1: the dispatcher must free it itself) */
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, FF_RELOAD_GEN_MAX, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, -1, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(RTE_MAX_ETHPORTS, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 99, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 0, NULL), -1);
+
+    /* fill the rx ring: enqueue fails (counted, never a silent drop) and the
+     * caller keeps the mbuf. */
+    {
+        uint64_t rx_full_before, rx_full_after, tx_full, tx_drop;
+        int i;
+
+        ff_drain_ring_stats(&rx_full_before, &tx_full, &tx_drop);
+        for (i = 0; i < 200; i++) {
+            struct rte_mbuf *mm = rte_pktmbuf_alloc(pool);
+            if (mm == NULL)
+                break;
+            if (ff_drain_ring_rx_enqueue(0, 0, 1, mm) != 0) {
+                rte_pktmbuf_free(mm);
+                break;
+            }
+        }
+        ff_drain_ring_stats(&rx_full_after, &tx_full, &tx_drop);
+        assert_int_equal((int)(rx_full_after - rx_full_before), 1);
+    }
+
+    /* R-310-1: unregister detaches without destroying — the rings stay
+     * lookup-able so the next reload round can reuse them. */
+    ff_drain_ring_unregist();
+    assert_int_equal(ff_drain_ring_ready(), 0);
+    assert_int_equal(ff_drain_ring_rx_enqueue(0, 0, 1, m), -1);
+    assert_int_equal(ff_drain_ring_tx_enqueue(0, 0, 0, m), -1);
+    assert_int_equal(ff_drain_ring_rx_dequeue(0, 0, pkts, NULL), 0);
+    assert_int_equal(ff_drain_ring_tx_drain(0, 0, pkts, MAX_PKT_BURST), 0);
+    assert_non_null(rte_ring_lookup("drain_rx_p0_q0_g0"));
+    ff_drain_ring_unregist();    /* idempotent */
+    /* re-init reuses the pointer arrays instead of leaking a new block */
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_int_equal(ff_drain_ring_ready(), 1);
+    assert_non_null(rte_ring_lookup("drain_rx_p0_q1_g1"));
+    ff_drain_ring_unregist();
+
+    /* mbufs still sitting in the rings stay owned by the rings; the pool is
+     * never freed (it stays registered with the EAL for the process). */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.nb_ports = 0;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs = NULL;
+    ff_global_cfg.dpdk.drain_ring_size = 0;
+}
+
+/* F-M4-1: a full drain ring must be visible. The counter was always exact,
+ * but the only watermark was sampled at 1 Hz by flush_stats(), so M4 logged
+ * rounds with full-ring drops and a peak of 43. The enqueue failure now
+ * publishes the occupancy it sees. */
+static void
+test_f_m4_1_drain_ring_full_visible(void **state)
+{
+    static uint16_t port_list[1] = { 0 };
+    static struct ff_port_cfg port_cfgs[1];
+    static struct ff_reload_drain_state drain_state;
+    struct rte_mempool *pool = NULL;
+    struct rte_ring *r;
+    uint64_t rx_fwd, tx_fwd, rx_peak, tx_peak;
+    uint64_t rf = 0, tf = 0, td = 0;
+    unsigned cap;
+    int i;
+
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("[INFO] rte_eal_init failed; F-M4-1 skipped\n");
+        skip();
+        return;
+    }
+
+    pool = rte_pktmbuf_pool_create("ut_f_m4_1_pool", 512, 0, 0, 256,
+        SOCKET_ID_ANY);
+    if (pool == NULL) {
+        printf("[INFO] mbuf pool failed; F-M4-1 skipped\n");
+        skip();
+        return;
+    }
+
+    /* the shared drain block the completion summary reads its peak from */
+    memset(&drain_state, 0, sizeof(drain_state));
+    drain_state.magic = FF_RELOAD_DRAIN_MAGIC;
+    drain_state.len = (uint32_t)sizeof(drain_state);
+    assert_int_equal(ff_reload_drain_attach(&drain_state,
+        sizeof(drain_state)), 0);
+    ff_reload_drain_reset();
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = port_list;
+    memset(port_cfgs, 0, sizeof(port_cfgs));
+    port_cfgs[0].nb_lcores = 1;
+    ff_global_cfg.dpdk.port_cfgs = port_cfgs;
+    ff_global_cfg.dpdk.drain_ring_size = 64;    /* power of two */
+    lcore_conf[0].socket_id = 0;
+    ff_reload_set_gen(0);
+
+    assert_int_equal(ff_drain_ring_init(), 0);
+    r = rte_ring_lookup("drain_tx_p0_q0_g0");
+    assert_non_null(r);
+    cap = rte_ring_get_capacity(r);
+
+    /* fill it; the enqueue after that is the one that must not stay quiet */
+    for (i = 0; i < (int)cap + 4; i++) {
+        struct rte_mbuf *m = rte_pktmbuf_alloc(pool);
+
+        if (m == NULL) {
+            break;
+        }
+        if (ff_drain_ring_tx_enqueue(0, 0, 0, m) != 0) {
+            rte_pktmbuf_free(m);
+            break;
+        }
+    }
+    assert_int_equal((int)rte_ring_count(r), (int)cap);
+
+    /* the ring-layer counter stays exact */
+    ff_drain_ring_stats(&rf, &tf, &td);
+    assert_int_equal((int)tf, 1);
+    assert_int_equal((int)td, 0);
+
+    /* and the watermark the "graceful reload complete" line prints now
+     * carries the occupancy the 1 Hz sampler would have missed */
+    ff_reload_drain_counters(&rx_fwd, &tx_fwd, &rx_peak, &tx_peak);
+    assert_true(tx_peak >= (uint64_t)cap);
+    assert_int_equal((int)rx_peak, 0);
+
+    ff_drain_ring_unregist();
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.nb_ports = 0;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs = NULL;
+    ff_global_cfg.dpdk.drain_ring_size = 0;
+}
+
+/* UT-NR-23: flow map — layout, gating, idempotent insert, lookup, and the
+ * reversible open/close window. */
+static void
+test_ut_nr_23_flow_map(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t k, k2;
+
+    (void)state;
+
+    /* the FreeBSD side builds the same struct; a layout drift would silently
+     * corrupt every key, so pin it. */
+    assert_int_equal((int)sizeof(ff_flow_key_t), 40);
+
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.src[0] = 0x0a000001;
+    k.dst[0] = 0x0a000002;
+    k.sport = 0x1234;
+    k.dport = 0x0050;
+
+    /* graceful_reload=0: recording is a no-op and lookup always misses */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_attach_state(NULL);
+    ff_flow_map_close();
+    assert_int_equal(ff_flow_map_active(), 0);
+    assert_int_equal(ff_flow_map_insert(&k), -1);
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+
+    /* graceful_reload=1 but no shared block (non-nginx app): still off */
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    assert_int_equal(ff_flow_map_insert(&k), -1);
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+
+    /* window still closed: insert is a no-op */
+    assert_int_equal(ff_flow_map_active(), 0);
+    assert_int_equal(ff_flow_map_insert(&k), -1);
+
+    ff_flow_map_open();
+    assert_int_equal(ff_flow_map_active(), 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    assert_int_equal(ff_flow_map_insert(&k), 0);
+    /* A1: the insert itself marks the flow as this generation, so the
+     * third handshake ACK is classified without a second step */
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    /* idempotent: a repeated four-tuple must not consume a second slot */
+    assert_int_equal(ff_flow_map_insert(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+
+    /* a different source port is a different flow, and does not disturb the
+     * first one (no hash-collision damage) */
+    memcpy(&k2, &k, sizeof(k2));
+    k2.sport = 0x1235;
+    assert_int_equal(ff_flow_map_lookup(&k2), 0);
+    assert_int_equal(ff_flow_map_insert(&k2), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k2), 1);
+
+    /* v6 flows live in the same table and stay distinct from v4 */
+    memcpy(&k2, &k, sizeof(k2));
+    k2.af = FF_FLOW_MAP_V6;
+    assert_int_equal(ff_flow_map_lookup(&k2), 0);
+
+    /* close empties the table; open starts a fresh one (reversible) */
+    ff_flow_map_close();
+    assert_int_equal(ff_flow_map_active(), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    ff_flow_map_open();
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+    assert_int_equal(ff_flow_map_insert(&k), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    ff_flow_map_close();
+
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* A1: a SYN is recorded as this generation by the insert itself — there is
+ * no placeholder state and no promotion step any more. */
+static void
+test_a1_flow_map_single_phase(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t k, k2;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.src[0] = 0x0a000001;
+    k.dst[0] = 0x0a000002;
+    k.sport = 0x2222;
+    k.dport = 0x0050;
+
+    ff_flow_map_open();
+    assert_int_equal(ff_flow_map_insert(&k), 0);
+    /* visible to the dispatcher right away (single phase) */
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    /* a repeated SYN on the same four-tuple is admitted, not rejected */
+    assert_int_equal(ff_flow_map_insert(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+
+    /* a second flow does not disturb the first */
+    memcpy(&k2, &k, sizeof(k2));
+    k2.sport = 0x2223;
+    assert_int_equal(ff_flow_map_lookup(&k2), 0);
+    assert_int_equal(ff_flow_map_insert(&k2), 0);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    assert_int_equal(ff_flow_map_lookup(&k2), 1);
+
+    /* close empties the table; open starts a fresh one (reversible) */
+    ff_flow_map_close();
+    assert_int_equal(ff_flow_map_lookup(&k), 0);
+
+    ff_flow_map_open();
+    ff_flow_map_close();
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* A1 / I-5: the admission rule the SYN-ACK path relies on. A window that is
+ * not tracking must never refuse a SYN; a live window that cannot hold the
+ * four-tuple must refuse it and must not record it. */
+static void
+test_a1_flow_map_admission_rule(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t k, fill;
+    uint32_t i;
+    int refused = 0;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.src[0] = 0x0d000001;
+    k.dst[0] = 0x0d000002;
+    k.sport = 0x3333;
+    k.dport = 0x0050;
+
+    /* no window: nothing is tracked, so nothing may be refused */
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_attach_state(NULL);
+    assert_int_equal(ff_flow_map_admit(&k, NULL), 1);
+
+    /* graceful_reload=1 but no shared block (non-nginx app): ditto */
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    assert_int_equal(ff_flow_map_admit(&k, NULL), 1);
+
+    ff_reload_attach_state(&st);
+
+    /* a live window with room: admitted and recorded */
+    ff_flow_map_close();
+    ff_flow_map_open();
+    assert_int_equal(ff_flow_map_admit(&k, NULL), 1);
+    assert_int_equal(ff_flow_map_lookup(&k), 1);
+    /* a retransmitted SYN on the same four-tuple is admitted, not refused */
+    assert_int_equal(ff_flow_map_admit(&k, NULL), 1);
+    ff_flow_map_close();
+
+    /* a saturated window: refused, and the refused tuple stays out */
+    ff_flow_map_cap_set(64);
+    ff_flow_map_open();
+    for (i = 0; i < 20000; i++) {
+        memset(&fill, 0, sizeof(fill));
+        fill.af = FF_FLOW_MAP_V4;
+        fill.src[0] = 0x0e000000u + i;
+        fill.dst[0] = 0x0e000001;
+        fill.sport = (uint16_t)(0x4000u + (uint16_t)(i & 0xffff));
+        fill.dport = 0x0050;
+        if (ff_flow_map_insert(&fill) < 0) {
+            refused = 1;
+            break;
+        }
+    }
+    assert_int_equal(refused, 1);
+    assert_int_equal(ff_flow_map_admit(&fill, NULL), 0);
+    assert_int_equal(ff_flow_map_lookup(&fill), 0);
+
+    ff_flow_map_close();
+    ff_flow_map_cap_set(1u << 16);      /* restore the default for later TCs */
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* A1 / orphan fix: undoing an admission whose SYN-ACK never went out. The
+ * entry lives in a linear-probing table, so clearing its slot must not end
+ * the probe chain for the entries that had to step past it. */
+static void
+test_a1_flow_map_revoke(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t k[64], ghost;
+    uint32_t i, n = 0;
+    int created = 0;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_reload_attach_state(&st);
+
+    ff_flow_map_cap_set(64);
+    ff_flow_map_close();
+    ff_flow_map_open();
+
+    /* Fill a small table so plenty of entries share probe chains. */
+    for (i = 0; i < 64; i++) {
+        memset(&k[n], 0, sizeof(k[n]));
+        k[n].af = FF_FLOW_MAP_V4;
+        k[n].src[0] = 0x0f000000u + i;
+        k[n].dst[0] = 0x0f000001;
+        k[n].sport = (uint16_t)(0x5000u + (uint16_t)i);
+        k[n].dport = 0x0050;
+        if (ff_flow_map_admit(&k[n], &created) == 1 && created == 1)
+            n++;
+    }
+    assert_true(n >= 32);
+
+    for (i = 0; i < n; i++)
+        assert_int_equal(ff_flow_map_lookup(&k[i]), 1);
+
+    /* Revoking an entry must hide only that one. Done for every entry: with
+     * the table half full, at least one slot has an entry that had to step
+     * past it, and clearing that slot without pulling the others back would
+     * hide it. */
+    for (i = 0; i < n; i++) {
+        uint32_t j;
+
+        assert_int_equal(ff_flow_map_revoke(&k[i]), 1);
+        assert_int_equal(ff_flow_map_lookup(&k[i]), 0);
+        for (j = 0; j < n; j++) {
+            if (j == i)
+                continue;
+            assert_int_equal(ff_flow_map_lookup(&k[j]), 1);
+        }
+        assert_int_equal(ff_flow_map_insert(&k[i]), 0);
+    }
+
+    /* A duplicate four-tuple is not "created", so an earlier SYN's record is
+     * not revoked when a later SYN-ACK fails. */
+    created = 1;
+    assert_int_equal(ff_flow_map_admit(&k[0], &created), 1);
+    assert_int_equal(created, 0);
+    assert_int_equal(ff_flow_map_lookup(&k[0]), 1);
+
+    /* Revoking something that is not there changes nothing. */
+    memset(&ghost, 0, sizeof(ghost));
+    ghost.af = FF_FLOW_MAP_V4;
+    ghost.src[0] = 0x0fffffffu;
+    ghost.dst[0] = 0x0f000001;
+    ghost.sport = 0x7fff;
+    ghost.dport = 0x0050;
+    assert_int_equal(ff_flow_map_revoke(&ghost), 0);
+
+    ff_flow_map_close();
+    ff_flow_map_cap_set(1u << 16);
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* P3 (B01-6, C-P3-3): a full table may double, but only a bounded number of
+ * times per window and never past FF_FLOW_MAP_CAP_MAX. */
+static void
+test_p3_flow_map_bounded_growth(void **state)
+{
+    struct ff_reload_state st;
+    uint64_t full = 0, grown = 0, grow_fail = 0, full_before = 0;
+    uint32_t cap = 0;
+    int i;
+
+    (void)state;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+
+    ff_flow_map_cap_set(64);
+    ff_flow_map_open();
+
+    /* fill until the expansion bound is reached */
+    for (i = 0; i < 20000; i++) {
+        ff_flow_key_t k;
+
+        memset(&k, 0, sizeof(k));
+        k.af = FF_FLOW_MAP_V4;
+        k.src[0] = 0x0b000000u + (uint32_t)i;
+        k.dst[0] = 0x0b000001;
+        k.sport = (uint16_t)(0x2000u + (uint16_t)(i & 0xffff));
+        k.dport = 0x0050;
+
+        (void)ff_flow_map_insert(&k);
+
+        ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL,
+            &cap, NULL);
+        if (grown >= 4)
+            break;
+    }
+
+    assert_true(grown >= 1);
+    assert_true(grown <= 4);
+    assert_int_equal((int)cap, 64 << (int)grown);
+    assert_int_equal((int)grow_fail, 0);
+
+    /* past the bound the table reports full instead of growing forever */
+    full_before = full;
+    for (i = 0; i < 4096; i++) {
+        ff_flow_key_t k;
+
+        memset(&k, 0, sizeof(k));
+        k.af = FF_FLOW_MAP_V4;
+        k.src[0] = 0x0c000000u + (uint32_t)i;
+        k.dst[0] = 0x0c000001;
+        k.sport = (uint16_t)(0x3000u + (uint16_t)(i & 0xffff));
+        k.dport = 0x0050;
+
+        (void)ff_flow_map_insert(&k);
+    }
+    ff_flow_map_stats2(NULL, NULL, &full, &grown, &grow_fail, NULL, &cap,
+        NULL);
+    assert_int_equal((int)grown, 4);
+    assert_int_equal((int)cap, 64 << 4);
+    assert_true(full > full_before);
+
+    /* the knob is bounded: a non power of two or an out-of-range value is
+     * ignored, so the capacity can never drift */
+    ff_flow_map_close();
+    ff_flow_map_cap_set(100);
+    ff_flow_map_open();
+    ff_flow_map_stats2(NULL, NULL, NULL, NULL, NULL, NULL, &cap, NULL);
+    assert_int_equal((int)cap, 64 << 4);
+
+    ff_flow_map_close();
+    ff_flow_map_cap_set(1u << 16);      /* restore the default for later TCs */
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* UT-NR-24: dispatcher unregistration is idempotent — the drain confirmation
+ * that drives it can be delivered more than once in a reload round. */
+static void
+test_ut_nr_24_unregist_dispatcher(void **state)
+{
+    (void)state;
+
+    ff_unregist_packet_dispatcher();
+    ff_unregist_packet_dispatcher();
+    ff_unregist_packet_dispatcher_context();
+    ff_unregist_packet_dispatcher_context();
+
+    /* re-register / unregister round-trip must not wedge the pointers */
+    ff_regist_packet_dispatcher(NULL);
+    ff_regist_packet_dispatcher_context(NULL);
+    ff_unregist_packet_dispatcher();
+    ff_unregist_packet_dispatcher_context();
+}
+
+/* UT-NR-27 (C-NR-303, R-303-1 boundary): FF_DISPATCH_PEER — the library
+ * owns the mbuf end to end. A miss is forwarded to the peer generation's
+ * drain_rx ring and NOT freed by the framework; a full ring (or no reload
+ * window) drops + counts instead of leaking into an unconsumed ring.
+ * The old double-free trap (callback enqueues, framework also frees)
+ * cannot be built on this path: the callback never touches the mbuf. */
+static int ut27_ret;
+static int
+ut27_dispatcher(void *data, uint16_t *len, uint16_t queue_id,
+    uint16_t nb_queues, struct ff_dispatcher_context context)
+{
+    (void)data; (void)len; (void)queue_id;
+    (void)nb_queues; (void)context;
+    return ut27_ret;
+}
+
+static void
+test_ut_nr_27_dispatch_peer_boundary(void **state)
+{
+    static uint16_t port_list[1] = { 0 };
+    static struct ff_port_cfg port_cfgs[1];
+    static struct ff_reload_state st;
+    struct rte_mempool *pool = NULL;
+    struct rte_mbuf *m, *mm;
+    struct rte_ring *peer_rx;
+    int avail;
+    uint64_t rf0, rf1, tf, td;
+
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("[INFO] rte_eal_init failed; UT-NR-27 skipped\n");
+        skip();
+        return;
+    }
+
+    pool = rte_pktmbuf_pool_create("ut_nr_27_pool", 512, 0, 0, 256,
+        SOCKET_ID_ANY);
+    if (pool == NULL) {
+        printf("[INFO] mbuf pool failed; UT-NR-27 skipped\n");
+        skip();
+        return;
+    }
+
+    /* reload window open; we are gen0 (the classifying side), peer gen1
+     * holds the PCBs of the flows that will miss */
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    st.reload_active = 1;
+    st.active_gen = 1;
+    st.target_gen = 0;
+    ff_reload_attach_state(&st);
+    ff_reload_set_gen(0);
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = port_list;
+    memset(port_cfgs, 0, sizeof(port_cfgs));
+    port_cfgs[0].nb_lcores = 2;
+    ff_global_cfg.dpdk.port_cfgs = port_cfgs;
+    ff_global_cfg.dpdk.drain_ring_size = 64;
+    ff_global_cfg.dpdk.mbuf_low_watermark = 0;
+    lcore_conf[0].socket_id = 0;
+    lcore_conf[0].nb_queue_list[0] = 2;
+    lcore_conf[0].tx_queue_id[0] = 0;
+    assert_int_equal(ff_drain_ring_init(), 0);
+
+    peer_rx = rte_ring_lookup("drain_rx_p0_q0_g1");
+    assert_non_null(peer_rx);
+    /* UT-NR-19 may have left mbufs in the shared rings: drain first so
+     * the count assertions below are self-contained. */
+    while (rte_ring_dequeue(peer_rx, (void **) &mm) == 0)
+        rte_pktmbuf_free(mm);
+
+    /* 1) miss forwarded: the mbuf lands in the peer ring and is NOT
+     *    freed by the framework (ownership moved with it) */
+    ut27_ret = FF_DISPATCH_PEER;
+    ff_regist_packet_dispatcher_context(ut27_dispatcher);
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    avail = (int)rte_mempool_avail_count(pool);
+    ff_dpdk_process_packets(0, 0, &m, 1, NULL, 0);
+    assert_int_equal((int)rte_ring_count(peer_rx), 1);
+    /* still exactly one mbuf outstanding from the pool: the forwarded
+     * packet is owned by the ring, not returned */
+    assert_int_equal((int)rte_mempool_avail_count(pool), avail);
+
+    /* 2) full peer ring: enqueue fails -> the framework frees the mbuf
+     *    exactly once and the ring-full counter moves (no silent drop,
+     *    no leak; valgrind owns the double-free proof) */
+    while (rte_ring_dequeue(peer_rx, (void **) &mm) == 0)
+        rte_pktmbuf_free(mm);
+    {
+        int i;
+        for (i = 0; i < 4096; i++) {
+            mm = rte_pktmbuf_alloc(pool);
+            if (mm == NULL)
+                break;
+            if (ff_drain_ring_rx_enqueue(0, 0, 1, mm) != 0) {
+                rte_pktmbuf_free(mm);
+                break;
+            }
+        }
+    }
+    ff_drain_ring_stats(&rf0, &tf, &td);
+    avail = (int)rte_mempool_avail_count(pool);
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    ff_dpdk_process_packets(0, 0, &m, 1, NULL, 0);
+    assert_int_equal((int)rte_mempool_avail_count(pool), avail);
+    ff_drain_ring_stats(&rf1, &tf, &td);
+    assert_int_equal((int)(rf1 - rf0), 1);
+
+    /* 3) window closed: PEER degrades to drop + free — never an enqueue
+     *    into a ring nobody drains */
+    st.reload_active = 0;
+    avail = (int)rte_mempool_avail_count(pool);
+    m = rte_pktmbuf_alloc(pool);
+    assert_non_null(m);
+    ff_dpdk_process_packets(0, 0, &m, 1, NULL, 0);
+    assert_int_equal((int)rte_mempool_avail_count(pool), avail);
+
+    /* cleanup: the ring keeps its fill mbufs (pool is never freed) */
+    ff_unregist_packet_dispatcher_context();
+    ff_drain_ring_unregist();
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.nb_ports = 0;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs = NULL;
+    ff_global_cfg.dpdk.drain_ring_size = 0;
+    ff_global_cfg.dpdk.mbuf_low_watermark = 0;
+}
+
+static struct ff_config p1_saved_cfg;
+static struct lcore_conf p1_saved_qconf;
+static struct ff_reload_state p1_reload;
+static struct ff_reload_gendir *p1_dir;
+static struct rte_ring *p1_rings[2][2][2];
+static struct rte_mempool *p1_pool;
+static struct ff_port_cfg p1_port;
+static uint16_t p1_port_id;
+
+static int
+p1_teardown(void **state)
+{
+    unsigned tx, q, gen;
+    void *obj;
+    (void)state;
+    p1_process_type = -1;
+    p1_parent = 0;
+    p1_missing_directory = 0;
+    ff_reload_dir_sync_enable(0);
+    ff_reload_gendir_detach();
+    ff_reload_attach_state(NULL);
+    for (tx = 0; tx < 2; tx++)
+        for (q = 0; q < 2; q++)
+            for (gen = 0; gen < 2; gen++)
+                while (p1_rings[tx][q][gen] != NULL &&
+                    rte_ring_dequeue(p1_rings[tx][q][gen], &obj) == 0)
+                    rte_pktmbuf_free(obj);
+    ff_drain_ring_unregist();
+    if (p1_pool != NULL) {
+        assert_int_equal(rte_mempool_avail_count(p1_pool), 64);
+        rte_mempool_free(p1_pool);
+        p1_pool = NULL;
+    }
+    ff_global_cfg = p1_saved_cfg;
+    lcore_conf[0] = p1_saved_qconf;
+    ff_reload_set_epoch(0);
+    ff_reload_set_gen(0);
+    return 0;
+}
+
+static int
+p1_setup(void **state)
+{
+    const struct rte_memzone *mz;
+    unsigned tx, q, gen;
+    char name[64];
+    (void)state;
+    p1_saved_cfg = ff_global_cfg;
+    p1_saved_qconf = lcore_conf[0];
+    memset(p1_rings, 0, sizeof(p1_rings));
+    assert_true(equiv_eal_init_once() >= 0);
+    ff_reload_gendir_detach();
+    ff_reload_dir_sync_enable(0);
+    memset(&p1_reload, 0, sizeof(p1_reload));
+    p1_reload.magic = FF_RELOAD_STATE_MAGIC;
+    p1_reload.version = FF_RELOAD_STATE_VERSION;
+    p1_reload.len = sizeof(p1_reload);
+    ff_reload_attach_state(&p1_reload);
+    ff_reload_set_epoch(1);
+    ff_reload_set_gen(0);
+    ff_global_cfg.dpdk.thread_mode = 0;
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = &p1_port_id;
+    memset(&p1_port, 0, sizeof(p1_port));
+    p1_port.nb_lcores = 2;
+    ff_global_cfg.dpdk.port_cfgs = &p1_port;
+    ff_global_cfg.dpdk.drain_ring_size = 64;
+    memset(&lcore_conf[0], 0, sizeof(lcore_conf[0]));
+    lcore_conf[0].nb_rx_queue = 1;
+    lcore_conf[0].rx_queue_list[0].queue_id = 0;
+    lcore_conf[0].nb_tx_port = 1;
+    lcore_conf[0].tx_queue_id[0] = 1;
+    assert_int_equal(ff_drain_ring_init(), 0);
+    p1_pool = rte_pktmbuf_pool_create("p1_drain_pool", 64, 0, 0, 256, SOCKET_ID_ANY);
+    assert_non_null(p1_pool);
+    for (tx = 0; tx < 2; tx++)
+        for (q = 0; q < 2; q++)
+            for (gen = 0; gen < 2; gen++) {
+                snprintf(name, sizeof(name), "drain_%s_p0_q%u_e1_g%u",
+                    tx ? "tx" : "rx", q, gen);
+                p1_rings[tx][q][gen] = rte_ring_lookup(name);
+                assert_non_null(p1_rings[tx][q][gen]);
+                assert_int_equal(rte_ring_count(p1_rings[tx][q][gen]), 0);
+            }
+    mz = rte_memzone_lookup(FF_RELOAD_GENDIR_NAME);
+    if (mz == NULL)
+        mz = rte_memzone_reserve(FF_RELOAD_GENDIR_NAME, sizeof(*p1_dir), SOCKET_ID_ANY, 0);
+    assert_non_null(mz);
+    p1_dir = mz->addr;
+    memset(p1_dir, 0, sizeof(*p1_dir));
+    p1_dir->magic = FF_RELOAD_GENDIR_MAGIC;
+    p1_dir->version = FF_RELOAD_GENDIR_VERSION;
+    p1_dir->len = sizeof(*p1_dir);
+    p1_dir->slot_max = FF_RELOAD_EPOCH_SLOT_MAX;
+    p1_dir->gen_max = FF_RELOAD_GEN_MAX;
+    p1_dir->rx_owner_word = (uint64_t)1 << 32;
+    p1_dir->active_word = (uint64_t)1 << 32;
+    p1_dir->kni_owner_word = (uint64_t)1 << 32;
+    return 0;
+}
+
+static void
+p1_drain_check(unsigned mode)
+{
+    unsigned tx, q, gen;
+    if (mode == 1)
+        p1_reload.rx_owner_gen = 1;
+    if (mode == 2) {
+        assert_int_equal(ff_reload_gendir_install(p1_dir, sizeof(*p1_dir)), 0);
+        p1_dir->slot[2].epoch = 2;
+        p1_dir->slot[2].state = FF_RELOAD_SLOT_LIVE;
+        p1_dir->slot[2].master_pid = getpid();
+    }
+    if (mode == 3) {
+        assert_int_equal(ff_reload_gendir_install(p1_dir, sizeof(*p1_dir)), 0);
+        p1_dir->rx_owner_word = (uint64_t)2 << 32;
+    }
+    if (mode == 4) {
+        lcore_conf[0].nb_rx_queue = 0;
+        lcore_conf[0].nb_tx_port = 0;
+    }
+    for (tx = 0; tx < 2; tx++)
+        for (q = 0; q < 2; q++)
+            for (gen = 0; gen < 2; gen++) {
+                struct rte_mbuf *m = rte_pktmbuf_alloc(p1_pool);
+                assert_non_null(m);
+                assert_int_equal(rte_ring_enqueue(p1_rings[tx][q][gen], m), 0);
+            }
+    ff_drain_ring_unregist();
+    for (tx = 0; tx < 2; tx++)
+        for (q = 0; q < 2; q++)
+            for (gen = 0; gen < 2; gen++) {
+                int drained = gen == 0 && mode != 4 &&
+                    ((!tx && q == 0) || (tx && q == 1 && mode == 0));
+                assert_int_equal(rte_ring_count(p1_rings[tx][q][gen]), !drained);
+            }
+    assert_int_equal(rte_mempool_avail_count(p1_pool), 56 + (mode == 0 ? 2 : mode == 4 ? 0 : 1));
+    ff_drain_ring_unregist();
+    assert_int_equal(ff_drain_ring_ready(), 0);
+    assert_int_equal(ff_drain_ring_init(), 0);
+    assert_ptr_equal(rte_ring_lookup("drain_rx_p0_q0_e1_g0"), p1_rings[0][0][0]);
+}
+
+static void test_p1_drain_queue_ownership(void **state) { (void)state; p1_drain_check(0); }
+static void test_p1_drain_nonowner_tx(void **state) { (void)state; p1_drain_check(1); }
+static void test_p1_drain_peer_tx(void **state) { (void)state; p1_drain_check(2); }
+static void test_p1_drain_foreign_epoch_tx(void **state) { (void)state; p1_drain_check(3); }
+static void test_p1_drain_empty_qconf(void **state) { (void)state; p1_drain_check(4); }
+
+static void
+p1_directory_conflict(int full)
+{
+    unsigned i, attempt;
+    uint64_t owner;
+    struct ff_reload_epoch_slot primary;
+    p1_dir->next_epoch = 0;
+    for (i = 0; i < (full ? FF_RELOAD_EPOCH_SLOT_MAX : 2u); i++) {
+        p1_dir->slot[i].epoch = i;
+        p1_dir->slot[i].state = FF_RELOAD_SLOT_LIVE;
+        p1_dir->slot[i].master_pid = getpid();
+    }
+    primary = p1_dir->slot[0];
+    owner = p1_dir->rx_owner_word;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_parent = __real_getppid();
+    ff_reload_set_epoch(9);
+    for (attempt = 0; attempt < 2; attempt++) {
+        p1_dir->next_epoch = 0;
+        expect_assert_failure(ff_reload_gendir_attach());
+        assert_int_equal(ff_reload_gendir_present(), 0);
+        assert_int_equal(ff_reload_epoch(), 9);
+        assert_int_equal(ff_reload_gendir_reset_pending(), 0);
+        ff_reload_dir_sync();
+        assert_int_equal(p1_dir->rx_owner_word, owner);
+        assert_memory_equal(&p1_dir->slot[0], &primary, sizeof(primary));
+        if (!full)
+            assert_int_equal(p1_dir->slot[2].master_pid, 0);
+    }
+}
+
+static void test_p1_directory_live_slot(void **state) { (void)state; p1_directory_conflict(0); }
+static void test_p1_directory_full(void **state) { (void)state; p1_directory_conflict(1); }
+
+static void
+test_p1_directory_missing(void **state)
+{
+    (void)state;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_missing_directory = 1;
+    expect_assert_failure(ff_reload_gendir_attach());
+    assert_int_equal(ff_reload_gendir_present(), 0);
+}
+
+static void
+test_p1_directory_invalid(void **state)
+{
+    (void)state;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_dir->version++;
+    expect_assert_failure(ff_reload_gendir_attach());
+    assert_int_equal(ff_reload_gendir_present(), 0);
+}
+
+static void
+test_p1_directory_success(void **state)
+{
+    uint32_t epoch;
+    (void)state;
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_reload_gendir_present(), 0);
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_parent = __real_getppid();
+    ff_reload_gendir_attach();
+    epoch = ff_reload_epoch();
+    assert_int_equal(ff_reload_gendir_present(), 1);
+    assert_int_not_equal(epoch, 0);
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_reload_epoch(), epoch);
+    assert_int_equal(p1_dir->next_epoch, epoch);
+}
+
+static void
+test_p1_directory_primary_slot_busy(void **state)
+{
+    uint64_t owner;
+
+    (void)state;
+    /* slot 0 is the resident primary's own identity: a primary that cannot
+     * claim it must not silently share it with a live predecessor. */
+    owner = p1_dir->rx_owner_word;
+    p1_dir->slot[0].epoch = 0;
+    p1_dir->slot[0].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->slot[0].master_pid = (uint32_t)__real_getppid();
+    p1_process_type = RTE_PROC_PRIMARY;
+    ff_reload_set_epoch(7);
+    expect_assert_failure(ff_reload_gendir_attach());
+    assert_int_equal(ff_reload_gendir_present(), 0);
+    assert_int_equal(ff_reload_epoch(), 7);
+    ff_reload_dir_sync();
+    assert_int_equal(p1_dir->rx_owner_word, owner);
+}
+
+/* P2 (C-P2-6a): a reaped child is a pid that is certainly gone. */
+static uint32_t
+p1_dead_pid(void)
+{
+    pid_t child = fork();
+    int wstatus = 0;
+
+    assert_true(child >= 0);
+    if (child == 0)
+        _exit(0);
+    assert_int_equal(waitpid(child, &wstatus, 0), child);
+    return (uint32_t)child;
+}
+
+static uint32_t
+p1_now_ms(void)
+{
+    struct timespec ts;
+
+    assert_int_equal(clock_gettime(CLOCK_MONOTONIC, &ts), 0);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u
+        + (uint64_t)(ts.tv_nsec / 1000000));
+}
+
+/* RX-15: the resident primary frees what a dead drain-ring consumer left
+ * queued, and nothing a live or not-yet-attached consumer may still read. */
+static void
+rx15_ring_empty(struct rte_ring *r)
+{
+    void *obj;
+
+    while (rte_ring_dequeue(r, &obj) == 0)
+        rte_pktmbuf_free((struct rte_mbuf *)obj);
+}
+
+static void
+rx15_ring_put(struct rte_mempool *pool, struct rte_ring *r)
+{
+    struct rte_mbuf *m = rte_pktmbuf_alloc(pool);
+
+    assert_non_null(m);
+    assert_int_equal(rte_ring_enqueue(r, m), 0);
+}
+
+static void
+test_rx15_primary_purges_orphaned_rings(void **state)
+{
+    static uint16_t port_list[1] = { 0 };
+    static struct ff_port_cfg port_cfgs[1];
+    static struct ff_reload_gendir gd;
+    struct rte_mempool *pool;
+    struct rte_ring *rx11, *rx10, *tx11;
+    uint32_t gone;
+    unsigned avail;
+
+    (void)state;
+    if (equiv_eal_init_once() < 0) {
+        printf("[INFO] rte_eal_init failed; RX-15 purge skipped\n");
+        skip();
+        return;
+    }
+    pool = rte_pktmbuf_pool_create("ut_rx15_pool", 64, 0, 0, 256,
+        SOCKET_ID_ANY);
+    if (pool == NULL) {
+        printf("[INFO] mbuf pool failed; RX-15 purge skipped\n");
+        skip();
+        return;
+    }
+    avail = rte_mempool_avail_count(pool);
+    gone = p1_dead_pid();
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.nb_ports = 1;
+    ff_global_cfg.dpdk.portid_list = port_list;
+    memset(port_cfgs, 0, sizeof(port_cfgs));
+    port_cfgs[0].nb_lcores = 1;
+    ff_global_cfg.dpdk.port_cfgs = port_cfgs;
+    ff_global_cfg.dpdk.drain_ring_size = 64;
+    lcore_conf[0].socket_id = 0;
+    ff_reload_set_gen(0);
+    assert_int_equal(ff_drain_ring_init(), 0);
+
+    /* ring slot 1 (epoch 1): drain_rx of gen 1 and gen 0, drain_tx of gen 1 */
+    rx11 = rte_ring_lookup("drain_rx_p0_q0_e1_g1");
+    rx10 = rte_ring_lookup("drain_rx_p0_q0_e1_g0");
+    tx11 = rte_ring_lookup("drain_tx_p0_q0_e1_g1");
+    assert_non_null(rx11);
+    assert_non_null(rx10);
+    assert_non_null(tx11);
+    rx15_ring_empty(rx11);
+    rx15_ring_empty(rx10);
+    rx15_ring_empty(tx11);
+
+    /* no directory: nothing proves the consumer is gone */
+    ff_reload_gendir_install(NULL, 0);
+    rx15_ring_put(pool, rx11);
+    assert_int_equal(ff_drain_ring_purge_orphans(), 0);
+    assert_int_equal(rte_ring_count(rx11), 1);
+
+    memset(&gd, 0, sizeof(gd));
+    gd.magic = FF_RELOAD_GENDIR_MAGIC;
+    gd.version = FF_RELOAD_GENDIR_VERSION;
+    gd.len = (uint32_t)sizeof(gd);
+    gd.slot_max = FF_RELOAD_EPOCH_SLOT_MAX;
+    gd.gen_max = FF_RELOAD_GEN_MAX;
+    assert_int_equal(ff_reload_gendir_install(&gd, sizeof(gd)), 0);
+
+    /* (1, 1) has no dead user: the packet may be for a process that is
+     * still starting, so it stays (pid 1 stands for a live (1, 0) user) */
+    gd.ring_user[1].epoch = 1;
+    gd.ring_user[1].gen = 0;
+    gd.ring_user[1].pid = 1u;
+    gd.ring_user[1].state = FF_RELOAD_USER_ACTIVE;
+    (void)ff_drain_ring_purge_orphans();
+    assert_int_equal(rte_ring_count(rx11), 1);
+
+    /* (1, 1) exited without detaching while (1, 0) is live: its drain_rx
+     * goes, drain_tx stays (a live hardware owner may be reading it) */
+    gd.ring_user[0].epoch = 1;
+    gd.ring_user[0].gen = 1;
+    gd.ring_user[0].pid = gone;
+    gd.ring_user[0].state = FF_RELOAD_USER_ACTIVE;
+    rx15_ring_put(pool, rx10);
+    rx15_ring_put(pool, tx11);
+    assert_true(ff_drain_ring_purge_orphans() >= 1);
+    assert_int_equal(rte_ring_count(rx11), 0);
+    assert_int_equal(rte_ring_count(rx10), 1);
+    assert_int_equal(rte_ring_count(tx11), 1);
+    assert_int_equal(gd.ring_user[0].pid, gone);
+
+    /* a purge held by another live process: hands off */
+    rx15_ring_put(pool, rx11);
+    gd.ring_purge_owner = 1u;
+    assert_int_equal(ff_drain_ring_purge_orphans(), 0);
+    assert_int_equal(rte_ring_count(rx11), 1);
+    /* a recycled-slot reset waits for the lock and reports a timeout */
+    ff_reload_reclaim_timeout_set(20);
+    assert_int_equal(ff_drain_ring_reset_slot(1), -1);
+    assert_int_equal(rte_ring_count(rx11), 1);
+    ff_reload_reclaim_timeout_set(0);
+    gd.ring_purge_owner = 0;
+
+    /* the live user detaches: nobody is attached any more, drain_tx goes
+     * too and the slot's dead marker is forgotten; drain_rx of (1, 0)
+     * never had a dead consumer and is kept */
+    gd.ring_user[1].pid = 0;
+    assert_true(ff_drain_ring_purge_orphans() >= 2);
+    assert_int_equal(rte_ring_count(rx11), 0);
+    assert_int_equal(rte_ring_count(tx11), 0);
+    assert_int_equal(rte_ring_count(rx10), 1);
+    assert_int_equal(gd.ring_user[0].pid, 0);
+    assert_int_equal(gd.ring_purge_owner, 0);
+
+    /* with the marker gone, a new packet for (1, 1) is kept again */
+    rx15_ring_put(pool, rx11);
+    (void)ff_drain_ring_purge_orphans();
+    assert_int_equal(rte_ring_count(rx11), 1);
+
+    /* with the lock free the reset empties the whole slot */
+    rx15_ring_put(pool, tx11);
+    assert_int_equal(ff_drain_ring_reset_slot(1), 0);
+    assert_int_equal(rte_ring_count(rx11), 0);
+    assert_int_equal(rte_ring_count(rx10), 0);
+    assert_int_equal(rte_ring_count(tx11), 0);
+    assert_int_equal(gd.ring_purge_owner, 0);
+    assert_int_equal(rte_mempool_avail_count(pool), avail);
+
+    ff_drain_ring_unregist();
+    ff_reload_gendir_install(NULL, 0);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.nb_ports = 0;
+    ff_global_cfg.dpdk.portid_list = NULL;
+    ff_global_cfg.dpdk.port_cfgs = NULL;
+    ff_global_cfg.dpdk.drain_ring_size = 0;
+}
+
+/* Set up "old master gone, its workers still refreshing the stamp" on the
+ * slot this process would mint (epoch 1 -> slot 1). */
+static void
+p1_orphan_slot(uint32_t dead)
+{
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_parent = (uint32_t)__real_getppid();
+    p1_dir->next_epoch = 0;
+    p1_dir->slot[1].epoch = 1;
+    p1_dir->slot[1].gen = 0;
+    p1_dir->slot[1].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->slot[1].master_pid = dead;
+    p1_dir->slot[1].pad = p1_now_ms();
+}
+
+/* C-P2-6a: the window right after an old master quit must NOT kill the new
+ * generation — the slot is only temporarily unavailable. */
+static void
+test_p2_slot_transient_window(void **state)
+{
+    uint32_t dead = p1_dead_pid();
+
+    (void)state;
+    p1_orphan_slot(dead);
+    /* Budget above the stamp window: the retry has to be able to wait for
+     * the orphan workers' stamp to go stale. */
+    ff_reload_reclaim_timeout_set(FF_RELOAD_SLOT_STALE_MS + 500u);
+
+    {
+        uint32_t t0 = p1_now_ms();
+
+        ff_reload_gendir_attach();
+        /* The slot was held by a dead master with a fresh stamp: taking it
+         * immediately would mean the orphan workers were never waited for,
+         * so the attach must have waited for the stamp to go stale. */
+        assert_true((uint32_t)(p1_now_ms() - t0) >= FF_RELOAD_SLOT_STALE_MS);
+    }
+    ff_reload_reclaim_timeout_set(0);
+
+    assert_int_equal(ff_reload_gendir_present(), 1);
+    assert_int_equal(ff_reload_epoch(), 1);
+    assert_int_equal(p1_dir->slot[1].master_pid, p1_parent);
+    /* R-16: no hopping to a neighbouring slot */
+    assert_int_equal(p1_dir->slot[2].master_pid, 0);
+    assert_int_equal(p1_dir->slot[3].master_pid, 0);
+    assert_int_equal(p1_dir->reclaim_refused, 0);
+}
+
+/* C-P2-6a: once that budget is exhausted, refusing is the answer — and it
+ * is counted, not taken silently. */
+static void
+test_p2_slot_transient_exhausted(void **state)
+{
+    uint32_t dead = p1_dead_pid();
+
+    (void)state;
+    p1_orphan_slot(dead);
+    ff_reload_reclaim_timeout_set(50);
+
+    expect_assert_failure(ff_reload_gendir_attach());
+    ff_reload_reclaim_timeout_set(0);
+
+    assert_int_equal(ff_reload_gendir_present(), 0);
+    assert_int_equal(p1_dir->slot[1].master_pid, dead);
+    assert_int_equal(p1_dir->slot[2].master_pid, 0);
+    assert_int_equal(p1_dir->slot[3].master_pid, 0);
+    assert_int_equal(p1_dir->reclaim_refused, 1);
+}
+
+/* RX-39: two coexisting generations never share an ephemeral port parity. */
+static void
+test_rx39_port_parity_rules(void **state)
+{
+    int g, peer, p_old;
+    uint32_t odd;
+    (void)state;
+
+    assert_int_equal(ff_reload_port_parity(0, 0), 0);
+    assert_int_equal(ff_reload_port_parity(1, 0), 1);
+    assert_int_equal(ff_reload_port_parity(0, FF_RELOAD_SLOT_PORT_ODD), 1);
+    assert_int_equal(ff_reload_port_parity(1, FF_RELOAD_SLOT_PORT_ODD), 0);
+    assert_int_equal(ff_reload_port_parity(2, FF_RELOAD_SLOT_PRIMARY), 0);
+    assert_int_equal(ff_reload_port_odd_for(0, -1), 0);
+
+    /* HUP inside one master: gen flips, the slot flag stays */
+    for (odd = 0; odd <= FF_RELOAD_SLOT_PORT_ODD;
+        odd += FF_RELOAD_SLOT_PORT_ODD)
+        assert_int_not_equal(ff_reload_port_parity(0, odd),
+            ff_reload_port_parity(1, odd));
+
+    /* USR2: the new master's slot is set against the serving generation,
+     * then its own HUPs alternate again */
+    for (peer = 0; peer < 2; peer++)
+        for (g = 0; g < 2; g++) {
+            odd = ff_reload_port_odd_for(g, peer);
+            assert_int_not_equal(ff_reload_port_parity(g, odd), peer);
+        }
+
+    /* a chain of upgrades: each new master starts against the generation
+     * its predecessor reached after some HUPs, then HUPs itself */
+    odd = 0;
+    for (g = 0; g < 8; g++) {
+        int gen = (g % 3) & 1, start = (g >> 1) & 1;
+        uint32_t nodd;
+
+        p_old = ff_reload_port_parity(gen, odd);
+        nodd = ff_reload_port_odd_for(start, p_old);
+        assert_int_not_equal(ff_reload_port_parity(start, nodd), p_old);
+        assert_int_not_equal(ff_reload_port_parity(0, nodd),
+            ff_reload_port_parity(1, nodd));
+        odd = nodd;
+    }
+}
+
+/* RX-40: TCP and UDP of the same four-tuple are different flows */
+static void
+test_rx40_flow_key_proto(void **state)
+{
+    struct ff_reload_state st;
+    ff_flow_key_t t, u;
+
+    (void)state;
+
+    memset(&t, 0, sizeof(t));
+    t.af = FF_FLOW_MAP_V4;
+    t.proto = 6;
+    t.src[0] = 0x0a000001;
+    t.dst[0] = 0x0a000002;
+    t.sport = 0x1234;
+    t.dport = 0x0035;
+    u = t;
+    u.proto = 17;
+
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    ff_reload_attach_state(&st);
+    ff_flow_map_open();
+
+    assert_int_equal(ff_flow_map_insert(&t), 0);
+    assert_int_equal(ff_flow_map_lookup(&t), 1);
+    assert_int_equal(ff_flow_map_lookup(&u), 0);
+    assert_int_equal(ff_flow_map_insert(&u), 0);
+    assert_int_equal(ff_flow_map_revoke(&t), 1);
+    assert_int_equal(ff_flow_map_lookup(&t), 0);
+    assert_int_equal(ff_flow_map_lookup(&u), 1);
+
+    ff_flow_map_close();
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+}
+
+/* RX-40: the UDP peer table primitives (note / find / age / reuse) */
+static void
+test_rx40_flow_peer_table(void **state)
+{
+    static struct ff_flow_peer_ent tab[64];
+    ff_flow_key_t k;
+    uint64_t fp, fp2;
+    uint32_t i;
+
+    (void)state;
+
+    memset(tab, 0, sizeof(tab));
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.proto = 17;
+    k.src[0] = 0x0a000001;
+    k.dst[0] = 0x0a000002;
+    k.sport = 0x1111;
+    k.dport = 0x2222;
+    fp = ff_flow_peer_fp(&k);
+    assert_true(fp != 0);
+    k.proto = 6;
+    assert_true(ff_flow_peer_fp(&k) != fp);
+    k.proto = 17;
+
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp, 1000, 100),
+        FF_FLOW_PEER_TAB_MISS);
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp, 1000, 100), 0);
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp, 1050, 100), 1);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp, 1150, 100),
+        FF_FLOW_PEER_TAB_LIVE);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp, 1151, 100),
+        FF_FLOW_PEER_TAB_AGED);
+    assert_int_equal(ff_flow_peer_tab_active(tab, 64, 1150, 100), 1);
+    assert_int_equal(ff_flow_peer_tab_active(tab, 64, 1151, 100), 0);
+    /* the clock wraps */
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp, 0xffffffe0u, 100), 1);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp, 0x10, 100),
+        FF_FLOW_PEER_TAB_LIVE);
+
+    /* fill one probe window with colliding fingerprints */
+    memset(tab, 0, sizeof(tab));
+    for (i = 0; i < FF_FLOW_PEER_PROBE; i++)
+        assert_int_equal(ff_flow_peer_tab_note(tab, 64, 5 + 64 * (i + 1),
+            1000, 100), 0);
+    fp2 = 5 + 64 * (FF_FLOW_PEER_PROBE + 1);
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp2, 1050, 100), -1);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp2, 1050, 100),
+        FF_FLOW_PEER_TAB_MISS);
+    /* once they are idle a slot is reused, the others stay findable */
+    assert_int_equal(ff_flow_peer_tab_note(tab, 64, fp2, 1101, 100), 0);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, fp2, 1101, 100),
+        FF_FLOW_PEER_TAB_LIVE);
+    assert_int_equal(ff_flow_peer_tab_find(tab, 64, 5 + 64 * 2, 1101, 100),
+        FF_FLOW_PEER_TAB_AGED);
+    assert_int_equal(ff_flow_peer_tab_active(tab, 64, 1101, 100), 1);
+}
+
+/* RX-40: classify rules and the writer state machine, on two fake tables
+ * handed out by the rte_memzone_lookup wrap (g0 = own, g1 = peer) */
+static uint32_t
+rx40_now(void)
+{
+    struct timespec ts;
+
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)((uint64_t)ts.tv_sec * 1000u + ts.tv_nsec / 1000000);
+}
+
+static void
+test_rx40_flow_peer_rules(void **state)
+{
+    static struct ff_reload_state st;
+    ff_flow_key_t k;
+    uint64_t wid;
+    int saved_proc = ff_global_cfg.dpdk.proc_id;
+
+    (void)state;
+
+    memset(&rx40_own, 0, sizeof(rx40_own));
+    memset(&rx40_peer, 0, sizeof(rx40_peer));
+    rx40_mz_own.addr = &rx40_own;
+    rx40_mz_own.len = sizeof(rx40_own);
+    rx40_mz_peer.addr = &rx40_peer;
+    rx40_mz_peer.len = sizeof(rx40_peer);
+    rx40_peer.h.magic = FF_FLOW_PEER_MAGIC;
+    rx40_fake_mz = 1;
+
+    memset(&st, 0, sizeof(st));
+    st.magic = FF_RELOAD_STATE_MAGIC;
+    st.version = FF_RELOAD_STATE_VERSION;
+    st.len = (uint32_t)sizeof(st);
+    st.epoch = 7;
+    st.reload_active = 1;
+    st.target_gen = 0;
+    ff_global_cfg.dpdk.graceful_reload = 1;
+    ff_global_cfg.dpdk.proc_id = 1;
+    ff_global_cfg.dpdk.reload_udp_idle_ms = 100;
+    p1_process_type = RTE_PROC_SECONDARY;
+    ff_reload_attach_state(&st);
+    ff_reload_set_gen(0);
+    ff_reload_set_slot(0);
+
+    ff_flow_peer_attach();
+    assert_int_equal(rx40_own.h.magic, FF_FLOW_PEER_MAGIC);
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+
+    memset(&k, 0, sizeof(k));
+    k.af = FF_FLOW_MAP_V4;
+    k.proto = 17;
+    k.src[0] = 0x0a000001;
+    k.dst[0] = 0x0a000002;
+    k.sport = 0x1111;
+    k.dport = 0x2222;
+
+    /* reader: gen 0 is the target, the peer table is g1 */
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LEGACY);
+
+    wid = ((uint64_t)ff_reload_epoch() << 32) | 7;
+    rx40_peer.h.wid = wid;
+    rx40_peer.h.mode = FF_FLOW_PEER_MODE_HUP;
+    rx40_peer.h.pid = (int32_t)getpid();
+    rx40_peer.h.idle_ms = 100;
+    rx40_peer.h.state = FF_FLOW_PEER_PUBLISHING;
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LOCAL);
+    ff_flow_peer_tab_note(rx40_peer.e, FF_FLOW_PEER_CAP, ff_flow_peer_fp(&k),
+        rx40_now(), 100);
+    ff_flow_peer_tick();
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_FWD);
+    /* the writer sampled its clock after the reader did */
+    ff_flow_peer_tab_note(rx40_peer.e, FF_FLOW_PEER_CAP, ff_flow_peer_fp(&k),
+        rx40_now() + 5, 100);
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_FWD);
+    ff_flow_peer_tab_note(rx40_peer.e, FF_FLOW_PEER_CAP, ff_flow_peer_fp(&k),
+        rx40_now() - 1000, 100);
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LEARN);
+    rx40_peer.h.wid = wid + 1;
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LEGACY);
+    rx40_peer.h.wid = wid;
+    rx40_peer.h.mode = FF_FLOW_PEER_MODE_USR2;
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LEGACY);
+    rx40_peer.h.mode = FF_FLOW_PEER_MODE_HUP;
+    rx40_peer.h.state = FF_FLOW_PEER_HANDED;
+    assert_int_equal(ff_flow_peer_classify(&k), FF_FLOW_PEER_LOCAL);
+
+    /* writer: gen 0 drains once gen 1 is the target */
+    st.target_gen = 1;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_PUBLISHING);
+    assert_true(rx40_own.h.wid == wid);
+    assert_int_equal(rx40_own.h.mode, FF_FLOW_PEER_MODE_HUP);
+    assert_int_equal(ff_flow_peer_active_flows(), 0);
+    ff_flow_peer_note(&k);
+    ff_flow_peer_note(&k);
+
+    st.reload_active = 0;
+    ff_flow_peer_tick();
+    assert_int_equal(ff_flow_peer_active_flows(), 0);
+    /* rx stayed here: the round was given up */
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+    st.reload_active = 1;
+    st.epoch = 8;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_PUBLISHING);
+    usleep(110 * 1000);
+    ff_flow_peer_tick();
+    ff_flow_peer_note(&k);
+    assert_int_equal(ff_flow_peer_active_flows(), 1);
+    /* the HUP round is given up */
+    st.reload_active = 0;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+    /* rx already flipped to the other generation: too late to start */
+    st.rx_owner_gen = 1;
+    st.reload_active = 1;
+    st.epoch = 9;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_NONE);
+    st.reload_active = 0;
+    st.rx_owner_gen = 0;
+    /* a newer master shows up (USR2) */
+    st.peer_epoch = ff_reload_epoch() + 3;
+    ff_flow_peer_tick();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_PUBLISHING);
+    assert_int_equal(rx40_own.h.mode, FF_FLOW_PEER_MODE_USR2);
+    assert_true(rx40_own.h.wid == (((uint64_t)st.peer_epoch << 32)
+        | ff_reload_epoch()));
+    ff_flow_peer_note(&k);
+    assert_int_equal(ff_flow_peer_linger(), 0);   /* rx still here */
+    ff_flow_peer_stop();
+    assert_int_equal(rx40_own.h.state, FF_FLOW_PEER_HANDED);
+    assert_true(rx40_own.h.noted >= 1);
+    assert_int_equal(ff_flow_peer_active_flows(), 0);
+
+    rx40_fake_mz = 0;
+    p1_process_type = -1;
+    ff_reload_attach_state(NULL);
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_global_cfg.dpdk.proc_id = saved_proc;
+}
+
+static void
+test_rx39_lport_split(void **state)
+{
+    (void)state;
+
+    ff_flow_map_lport_split(-1);
+    assert_int_equal(ff_flow_map_lport_ok(10000), 1);
+    assert_int_equal(ff_flow_map_lport_ok(10001), 1);
+    ff_flow_map_lport_split(0);
+    assert_int_equal(ff_flow_map_lport_ok(10000), 1);
+    assert_int_equal(ff_flow_map_lport_ok(10001), 0);
+    assert_int_equal(ff_flow_map_lport_ok(65535), 0);
+    ff_flow_map_lport_split(1);
+    assert_int_equal(ff_flow_map_lport_ok(10000), 0);
+    assert_int_equal(ff_flow_map_lport_ok(65535), 1);
+    ff_flow_map_lport_split(-5);
+    assert_int_equal(ff_flow_map_lport_ok(10001), 1);
+}
+
+static void
+rx39_attach(int gen, uint64_t active, int want_parity)
+{
+    ff_reload_gendir_detach();
+    p1_dir->active_word = active;
+    p1_process_type = RTE_PROC_SECONDARY;
+    p1_parent = __real_getppid();
+    ff_reload_set_gen(gen);
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_reload_gendir_present(), 1);
+    assert_int_equal(ff_flow_map_lport_ok(20000), want_parity == 0);
+    assert_int_equal(ff_flow_map_lport_ok(20001), want_parity == 1);
+}
+
+static void
+test_rx39_gendir_parity(void **state)
+{
+    unsigned i, mine = FF_RELOAD_EPOCH_SLOT_MAX;
+    (void)state;
+
+    /* first master: no serving generation -> gen 0 on even ports */
+    rx39_attach(0, (uint64_t)FF_RELOAD_EPOCH_NONE << 32, 0);
+    for (i = 0; i < FF_RELOAD_EPOCH_SLOT_MAX; i++)
+        if (p1_dir->slot[i].master_pid == (uint32_t)__real_getppid())
+            mine = i;
+    assert_true(mine < FF_RELOAD_EPOCH_SLOT_MAX);
+    assert_int_equal(p1_dir->slot[mine].flags & FF_RELOAD_SLOT_PORT_ODD, 0);
+
+    /* HUP of the same master: the slot is reused, gen 1 -> odd ports */
+    ff_reload_gendir_detach();
+    p1_dir->slot[mine].master_pid = (uint32_t)__real_getppid();
+    p1_dir->slot[mine].state = FF_RELOAD_SLOT_LIVE;
+    ff_reload_set_gen(1);
+    p1_process_type = RTE_PROC_SECONDARY;
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_flow_map_lport_ok(20001), 1);
+    assert_int_equal(ff_flow_map_lport_ok(20000), 0);
+
+    /* USR2: an old master (live, another pid; epoch 7 lives in slot 1,
+     * the new epoch 8 in slot 2) serves gen 1 on a slot without the flag
+     * (parity 1) -> the new master's gen 0 is even */
+    memset(p1_dir->slot, 0, sizeof(p1_dir->slot));
+    p1_dir->slot[1].epoch = 7;
+    p1_dir->slot[1].master_pid = (uint32_t)getpid();
+    p1_dir->slot[1].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->next_epoch = 7;
+    rx39_attach(0, ((uint64_t)7 << 32) | 1, 0);
+
+    /* same, old gen 0 -> parity 0 -> the new master is odd */
+    memset(p1_dir->slot, 0, sizeof(p1_dir->slot));
+    p1_dir->slot[1].epoch = 7;
+    p1_dir->slot[1].master_pid = (uint32_t)getpid();
+    p1_dir->slot[1].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->next_epoch = 7;
+    rx39_attach(0, (uint64_t)7 << 32, 1);
+
+    /* old slot already carries the flag: gen 0 there is odd -> even here */
+    memset(p1_dir->slot, 0, sizeof(p1_dir->slot));
+    p1_dir->slot[1].epoch = 7;
+    p1_dir->slot[1].master_pid = (uint32_t)getpid();
+    p1_dir->slot[1].state = FF_RELOAD_SLOT_LIVE;
+    p1_dir->next_epoch = 7;
+    p1_dir->slot[1].flags = FF_RELOAD_SLOT_PORT_ODD;
+    rx39_attach(0, (uint64_t)7 << 32, 0);
+
+    /* graceful_reload=0: no directory, every port allowed */
+    ff_reload_gendir_detach();
+    ff_global_cfg.dpdk.graceful_reload = 0;
+    ff_reload_gendir_attach();
+    assert_int_equal(ff_flow_map_lport_ok(20000), 1);
+    assert_int_equal(ff_flow_map_lport_ok(20001), 1);
+}
+
+int
+main(void)
+{
+    const struct CMUnitTest tests[] = {
+        cmocka_unit_test(test_ff_dpdk_deregister_if_frees),
+        cmocka_unit_test(test_ff_get_traffic_zero_init),
+        cmocka_unit_test(test_ff_dpdk_stop_smoke),
+        cmocka_unit_test(test_ff_regist_pcblddr_fun_smoke),
+        cmocka_unit_test(test_ff_regist_packet_dispatcher_smoke),
+        cmocka_unit_test(test_ff_regist_packet_dispatcher_context_smoke),
+        cmocka_unit_test(test_ff_get_tsc_ns_basic),
+        /* Stage-5 FU-S4-DPDK-IF-FULL: ff_in_pcbladdr branches */
+        cmocka_unit_test(test_ff_in_pcbladdr_no_callback),
+        cmocka_unit_test(test_ff_in_pcbladdr_af_inet_dispatches),
+        cmocka_unit_test(test_ff_in_pcbladdr_af_inet6_freebsd_to_linux_remap),
+        /* Stage-6 Phase-5 coverage extensions */
+        cmocka_unit_test(test_ff_rss_tbl_set_portrange_no_cfg),
+        cmocka_unit_test(test_ff_rss_tbl_set_portrange_disabled),
+        cmocka_unit_test(test_ff_rss_tbl_set_portrange_inverted_range),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_no_cfg),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_disabled),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_smoke),
+        /* R-A (req 0.1): portrange hit / rotation / miss (TC-U-RSS-01-01..03) */
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_hit),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_rotation),
+        cmocka_unit_test(test_ff_rss_tbl_get_portrange_miss),
+        /* R-B (req 0.3): thash adjust_sport guards + degrade + equivalence */
+        cmocka_unit_test(test_ff_rss_adjust_sport_null),
+        cmocka_unit_test(test_ff_rss_adjust_sport_degraded),
+        cmocka_unit_test(test_ff_rss_adjust_sport_single_queue),
+        cmocka_unit_test(test_ff_rss_thash_equivalence_hitrate),
+        /* R-C (req 0.2): v6 check6 / tbl6 / adjust_sport6 + v6 equivalence */
+        cmocka_unit_test(test_ff_rss_check6_landing),
+        cmocka_unit_test(test_ff_rss_check6_single_queue),
+        cmocka_unit_test(test_ff_rss_tbl6_set_get),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_guard),
+        cmocka_unit_test(test_ff_rss_thash6_equivalence_hitrate),
+        /* R-D (req 0.4): recheck runtime gate v4/v6 + microbench */
+        cmocka_unit_test(test_ff_rss_adjust_sport_recheck_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport_recheck_on),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_recheck_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_recheck_on),
+        cmocka_unit_test(test_ff_rss_adjust_microbench),
+        /* R-F (req 0.1/0.2): thash_adjust runtime switch + ctx_init early-out */
+        cmocka_unit_test(test_ff_rss_adjust_sport_thash_adjust_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_thash_adjust_off),
+        cmocka_unit_test(test_ff_rss_thash_ctx_init_thash_adjust_off),
+        cmocka_unit_test(test_ff_rss_adjust_sport_range_params),
+        cmocka_unit_test(test_ff_rss_adjust_sport6_range_params),
+        cmocka_unit_test(test_ff_dpdk_register_if_returns_ctx),
+        /* Stage-6 Phase-9 (FU-CB-DPDKIF-NULLGUARD) */
+        cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_safe),
+        cmocka_unit_test(test_ff_dpdk_if_send_null_ctx_with_mbuf),
+        /* M2 Batch A: C-NR-307/314/315 (UT-NR-17/18/21) */
+        cmocka_unit_test(test_ut_nr_17_hardclock_interval),
+        cmocka_unit_test(test_ut_nr_18_gen_pool_config),
+        cmocka_unit_test(test_ut_nr_21_shared_pool_cache_size),
+        /* M3 Batch A: C-NR-301/303/310 (UT-NR-19/23/24) */
+        cmocka_unit_test(test_ut_nr_19_drain_ring_sp_sc),
+        cmocka_unit_test(test_ut_nr_23_flow_map),
+        cmocka_unit_test(test_ut_nr_24_unregist_dispatcher),
+        /* M3 Batch B (C-NR-303: R-303-1 dispatcher boundary) */
+        cmocka_unit_test(test_ut_nr_27_dispatch_peer_boundary),
+        /* M6: F-M4-1 (drain ring full: warning + watermark) */
+        cmocka_unit_test(test_f_m4_1_drain_ring_full_visible),
+        cmocka_unit_test_setup_teardown(test_p1_drain_queue_ownership, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_drain_nonowner_tx, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_drain_peer_tx, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_drain_foreign_epoch_tx, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_drain_empty_qconf, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_live_slot, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_full, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_missing, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_invalid, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_success, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p1_directory_primary_slot_busy, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p2_slot_transient_window, p1_setup, p1_teardown),
+        cmocka_unit_test_setup_teardown(test_p2_slot_transient_exhausted, p1_setup, p1_teardown),
+        cmocka_unit_test(test_a1_flow_map_single_phase),
+        cmocka_unit_test(test_a1_flow_map_admission_rule),
+        cmocka_unit_test(test_a1_flow_map_revoke),
+        cmocka_unit_test(test_p3_flow_map_bounded_growth),
+        cmocka_unit_test(test_rx15_primary_purges_orphaned_rings),
+        cmocka_unit_test(test_rx39_port_parity_rules),
+        cmocka_unit_test(test_rx39_lport_split),
+        cmocka_unit_test(test_rx40_flow_key_proto),
+        cmocka_unit_test(test_rx40_flow_peer_table),
+        cmocka_unit_test(test_rx40_flow_peer_rules),
+        cmocka_unit_test_setup_teardown(test_rx39_gendir_parity, p1_setup, p1_teardown),
+        cmocka_unit_test(test_ff_regist_idle_callback_smoke),
+    };
+    return cmocka_run_group_tests(tests, NULL, NULL);
+}

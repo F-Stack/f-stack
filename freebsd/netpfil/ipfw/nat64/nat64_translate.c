@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2015-2019 Yandex LLC
  * Copyright (c) 2015-2019 Andrey V. Elsukov <ae@FreeBSD.org>
@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ipstealth.h"
 
 #include <sys/param.h>
@@ -46,6 +44,7 @@ __FBSDID("$FreeBSD$");
 
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_pflog.h>
 #include <net/pfil.h>
 #include <net/netisr.h>
@@ -521,7 +520,7 @@ nat64_init_ip4hdr(const struct ip6_hdr *ip6, const struct ip6_frag *frag,
 		ip->ip_ttl -= IPV6_HLIMDEC;
 	ip->ip_sum = 0;
 	ip->ip_p = (proto == IPPROTO_ICMPV6) ? IPPROTO_ICMP: proto;
-	ip_fillid(ip);
+	ip_fillid(ip, V_ip_random_id);
 	if (frag != NULL) {
 		ip->ip_off = htons(ntohs(frag->ip6f_offlg) >> 3);
 		if (frag->ip6f_offlg & IP6F_MORE_FRAG)
@@ -622,27 +621,22 @@ static struct nhop_object *
 nat64_find_route6(struct sockaddr_in6 *dst, struct mbuf *m)
 {
 	struct nhop_object *nh;
+
 	NET_EPOCH_ASSERT();
-	nh = fib6_lookup(M_GETFIB(m), &dst->sin6_addr, 0, 0, 0);
+	nh = fib6_lookup(M_GETFIB(m), &dst->sin6_addr, 0, NHR_NONE, 0);
 	if (nh == NULL)
-		return NULL;
+		return (NULL);
 	if (nh->nh_flags & (NHF_BLACKHOLE | NHF_REJECT))
-		return NULL;
-	/*
-	 * XXX: we need to use destination address with embedded scope
-	 * zone id, because LLTABLE uses such form of addresses for lookup.
-	 */
+		return (NULL);
+
 	dst->sin6_family = AF_INET6;
 	dst->sin6_len = sizeof(*dst);
-	dst->sin6_addr = ifatoia6(nh->nh_ifa)->ia_addr.sin6_addr;
-	if (IN6_IS_SCOPE_LINKLOCAL(&dst->sin6_addr))
-		dst->sin6_addr.s6_addr16[1] =
-		    htons(nh->nh_ifp->if_index & 0xffff);
+	if (nh->nh_flags & NHF_GATEWAY)
+		dst->sin6_addr = nh->gw6_sa.sin6_addr;
 	dst->sin6_port = 0;
 	dst->sin6_scope_id = 0;
 	dst->sin6_flowinfo = 0;
-
-	return nh;
+	return (nh);
 }
 
 #define	NAT64_ICMP6_PLEN	64
@@ -722,7 +716,7 @@ nat64_icmp6_reflect(struct mbuf *m, uint8_t type, uint8_t code, uint32_t mtu,
 	/*
 	 * Move pkthdr from original mbuf. We should have initialized some
 	 * fields, because we can reinject this mbuf to netisr and it will
-	 * go trough input path (it requires at least rcvif should be set).
+	 * go through input path (it requires at least rcvif should be set).
 	 * Also do M_ALIGN() to reduce chances of need to allocate new mbuf
 	 * in the chain, when we will do M_PREPEND() or make some type of
 	 * tunneling.
@@ -776,17 +770,18 @@ nat64_find_route4(struct sockaddr_in *dst, struct mbuf *m)
 	struct nhop_object *nh;
 
 	NET_EPOCH_ASSERT();
-	nh = fib4_lookup(M_GETFIB(m), dst->sin_addr, 0, 0, 0);
+	nh = fib4_lookup(M_GETFIB(m), dst->sin_addr, 0, NHR_NONE, 0);
 	if (nh == NULL)
-		return NULL;
+		return (NULL);
 	if (nh->nh_flags & (NHF_BLACKHOLE | NHF_BROADCAST | NHF_REJECT))
-		return NULL;
+		return (NULL);
 
 	dst->sin_family = AF_INET;
 	dst->sin_len = sizeof(*dst);
-	dst->sin_addr = IA_SIN(nh->nh_ifa)->sin_addr;
+	if (nh->nh_flags & NHF_GATEWAY)
+		dst->sin_addr = nh->gw4_sa.sin_addr;
 	dst->sin_port = 0;
-	return nh;
+	return (nh);
 }
 
 #define	NAT64_ICMP_PLEN	64
@@ -850,7 +845,7 @@ nat64_icmp_reflect(struct mbuf *m, uint8_t type,
 	oip->ip_len = htons(n->m_pkthdr.len);
 	oip->ip_ttl = V_ip_defttl;
 	oip->ip_p = IPPROTO_ICMP;
-	ip_fillid(oip);
+	ip_fillid(oip, V_ip_random_id);
 	oip->ip_off = htons(IP_DF);
 	oip->ip_src = ip->ip_dst;
 	oip->ip_dst = ip->ip_src;

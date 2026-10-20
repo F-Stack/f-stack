@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alexander V. Chernikov
  *
@@ -23,14 +23,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include "opt_inet.h"
 #include "opt_route.h"
 
-#include <sys/cdefs.h>
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/lock.h>
@@ -60,6 +57,11 @@
 #include <net/route/nhop_var.h>
 #include <net/route/nhgrp_var.h>
 
+#define	DEBUG_MOD_NAME	nhgrp
+#define	DEBUG_MAX_LEVEL	LOG_DEBUG
+#include <net/route/route_debug.h>
+_DECLARE_DEBUG(LOG_INFO);
+
 /*
  * This file contains data structures management logic for the nexthop
  * groups ("nhgrp") route subsystem.
@@ -82,7 +84,7 @@
  *
  */
 
-static void consider_resize(struct nh_control *ctl, uint32_t new_nh_buckets,
+static void consider_resize(struct nh_control *ctl, uint32_t new_gr_buckets,
     uint32_t new_idx_items);
 
 static int cmp_nhgrp(const struct nhgrp_priv *a, const struct nhgrp_priv *b);
@@ -110,7 +112,7 @@ cmp_nhgrp(const struct nhgrp_priv *a, const struct nhgrp_priv *b)
 	 * different set of "data plane" nexthops.
 	 * For now, ignore the data plane and focus on the control plane list.
 	 */
-	if (a->nhg_nh_count != b->nhg_nh_count)
+	if (a->nhg_nh_count != b->nhg_nh_count || a->nhg_uidx != b->nhg_uidx)
 		return (0);
 	return !memcmp(a->nhg_nh_weights, b->nhg_nh_weights,
 	    sizeof(struct weightened_nhop) * a->nhg_nh_count);
@@ -159,11 +161,11 @@ link_nhgrp(struct nh_control *ctl, struct nhgrp_priv *grp_priv)
 	NHOPS_WLOCK(ctl);
 	/* Check if we need to resize hash and index */
 	new_num_buckets = CHT_SLIST_GET_RESIZE_BUCKETS(&ctl->gr_head);
-	new_num_items = bitmask_get_resize_items(&ctl->gr_idx_head);
+	new_num_items = bitmask_get_resize_items(&ctl->nh_idx_head);
 
-	if (bitmask_alloc_idx(&ctl->gr_idx_head, &idx) != 0) {
+	if (bitmask_alloc_idx(&ctl->nh_idx_head, &idx) != 0) {
 		NHOPS_WUNLOCK(ctl);
-		DPRINTF("Unable to allocate mpath index");
+		FIB_RH_LOG(LOG_DEBUG, ctl->ctl_rh, "Unable to allocate nhg index");
 		consider_resize(ctl, new_num_buckets, new_num_items);
 		return (0);
 	}
@@ -174,6 +176,11 @@ link_nhgrp(struct nh_control *ctl, struct nhgrp_priv *grp_priv)
 
 	NHOPS_WUNLOCK(ctl);
 
+	IF_DEBUG_LEVEL(LOG_DEBUG2) {
+		char nhgrp_buf[NHOP_PRINT_BUFSIZE] __unused;
+		FIB_RH_LOG(LOG_DEBUG2, ctl->ctl_rh, "linked %s",
+		    nhgrp_print_buf(grp_priv->nhg, nhgrp_buf, sizeof(nhgrp_buf)));
+	}
 	consider_resize(ctl, new_num_buckets, new_num_items);
 
 	return (1);
@@ -183,24 +190,31 @@ struct nhgrp_priv *
 unlink_nhgrp(struct nh_control *ctl, struct nhgrp_priv *key)
 {
 	struct nhgrp_priv *nhg_priv_ret;
-	int ret, idx;
+	int idx;
 
 	NHOPS_WLOCK(ctl);
 
-	CHT_SLIST_REMOVE_BYOBJ(&ctl->gr_head, mpath, key, nhg_priv_ret);
+	CHT_SLIST_REMOVE(&ctl->gr_head, mpath, key, nhg_priv_ret);
 
 	if (nhg_priv_ret == NULL) {
-		DPRINTF("Unable to find nhop group!");
+		FIB_RH_LOG(LOG_DEBUG, ctl->ctl_rh, "Unable to find nhg");
 		NHOPS_WUNLOCK(ctl);
 		return (NULL);
 	}
 
 	idx = nhg_priv_ret->nhg_idx;
-	ret = bitmask_free_idx(&ctl->gr_idx_head, idx);
+	bitmask_free_idx(&ctl->nh_idx_head, idx);
 	nhg_priv_ret->nhg_idx = 0;
 	nhg_priv_ret->nh_control = NULL;
 
 	NHOPS_WUNLOCK(ctl);
+
+	IF_DEBUG_LEVEL(LOG_DEBUG2) {
+		char nhgrp_buf[NHOP_PRINT_BUFSIZE];
+		nhgrp_print_buf(nhg_priv_ret->nhg, nhgrp_buf, sizeof(nhgrp_buf));
+		FIB_RH_LOG(LOG_DEBUG2, ctl->ctl_rh, "unlinked idx#%d %s", idx,
+		    nhgrp_buf);
+	}
 
 	return (nhg_priv_ret);
 }
@@ -209,47 +223,48 @@ unlink_nhgrp(struct nh_control *ctl, struct nhgrp_priv *key)
  * Checks if hash needs resizing and performs this resize if necessary
  *
  */
-__noinline static void
-consider_resize(struct nh_control *ctl, uint32_t new_nh_buckets, uint32_t new_idx_items)
+static void
+consider_resize(struct nh_control *ctl, uint32_t new_gr_bucket, uint32_t new_idx_items)
 {
-	void *nh_ptr, *nh_idx_ptr;
+	void *gr_ptr, *gr_idx_ptr;
 	void *old_idx_ptr;
 	size_t alloc_size;
 
-	nh_ptr = NULL ;
-	if (new_nh_buckets != 0) {
-		alloc_size = CHT_SLIST_GET_RESIZE_SIZE(new_nh_buckets);
-		nh_ptr = malloc(alloc_size, M_NHOP, M_NOWAIT | M_ZERO);
+	gr_ptr = NULL ;
+	if (new_gr_bucket != 0) {
+		alloc_size = CHT_SLIST_GET_RESIZE_SIZE(new_gr_bucket);
+		gr_ptr = malloc(alloc_size, M_NHOP, M_NOWAIT | M_ZERO);
 	}
 
-	nh_idx_ptr = NULL;
+	gr_idx_ptr = NULL;
 	if (new_idx_items != 0) {
 		alloc_size = bitmask_get_size(new_idx_items);
-		nh_idx_ptr = malloc(alloc_size, M_NHOP, M_NOWAIT | M_ZERO);
+		gr_idx_ptr = malloc(alloc_size, M_NHOP, M_NOWAIT | M_ZERO);
 	}
 
-	if (nh_ptr == NULL && nh_idx_ptr == NULL) {
+	if (gr_ptr == NULL && gr_idx_ptr == NULL) {
 		/* Either resize is not required or allocations have failed. */
 		return;
 	}
 
-	DPRINTF("mp: going to resize: nh:[ptr:%p sz:%u] idx:[ptr:%p sz:%u]",
-	    nh_ptr, new_nh_buckets, nh_idx_ptr, new_idx_items);
+	FIB_RH_LOG(LOG_DEBUG, ctl->ctl_rh,
+	    "going to resize nhg hash: [ptr:%p sz:%u] idx:[ptr:%p sz:%u]",
+	    gr_ptr, new_gr_bucket, gr_idx_ptr, new_idx_items);
 
 	old_idx_ptr = NULL;
 
 	NHOPS_WLOCK(ctl);
-	if (nh_ptr != NULL) {
-		CHT_SLIST_RESIZE(&ctl->gr_head, mpath, nh_ptr, new_nh_buckets);
+	if (gr_ptr != NULL) {
+		CHT_SLIST_RESIZE(&ctl->gr_head, mpath, gr_ptr, new_gr_bucket);
 	}
-	if (nh_idx_ptr != NULL) {
-		if (bitmask_copy(&ctl->gr_idx_head, nh_idx_ptr, new_idx_items) == 0)
-			bitmask_swap(&ctl->gr_idx_head, nh_idx_ptr, new_idx_items, &old_idx_ptr);
+	if (gr_idx_ptr != NULL) {
+		if (bitmask_copy(&ctl->nh_idx_head, gr_idx_ptr, new_idx_items) == 0)
+			bitmask_swap(&ctl->nh_idx_head, gr_idx_ptr, new_idx_items, &old_idx_ptr);
 	}
 	NHOPS_WUNLOCK(ctl);
 
-	if (nh_ptr != NULL)
-		free(nh_ptr, M_NHOP);
+	if (gr_ptr != NULL)
+		free(gr_ptr, M_NHOP);
 	if (old_idx_ptr != NULL)
 		free(old_idx_ptr, M_NHOP);
 }
@@ -261,8 +276,8 @@ bool
 nhgrp_ctl_alloc_default(struct nh_control *ctl, int malloc_flags)
 {
 	size_t alloc_size;
-	uint32_t num_buckets, num_items;
-	void *cht_ptr, *mask_ptr;
+	uint32_t num_buckets;
+	void *cht_ptr;
 
 	malloc_flags = (malloc_flags & (M_NOWAIT | M_WAITOK)) | M_ZERO;
 
@@ -271,18 +286,7 @@ nhgrp_ctl_alloc_default(struct nh_control *ctl, int malloc_flags)
 	cht_ptr = malloc(alloc_size, M_NHOP, malloc_flags);
 
 	if (cht_ptr == NULL) {
-		DPRINTF("mpath init failed");
-		return (false);
-	}
-
-	/*
-	 * Allocate nexthop index bitmask.
-	 */
-	num_items = 128;
-	mask_ptr = malloc(bitmask_get_size(num_items), M_NHOP, malloc_flags);
-	if (mask_ptr == NULL) {
-		DPRINTF("mpath bitmask init failed");
-		free(cht_ptr, M_NHOP);
+		FIB_RH_LOG(LOG_WARNING, ctl->ctl_rh, "multipath init failed");
 		return (false);
 	}
 
@@ -291,17 +295,14 @@ nhgrp_ctl_alloc_default(struct nh_control *ctl, int malloc_flags)
 	if (ctl->gr_head.hash_size == 0) {
 		/* Init hash and bitmask */
 		CHT_SLIST_INIT(&ctl->gr_head, cht_ptr, num_buckets);
-		bitmask_init(&ctl->gr_idx_head, mask_ptr, num_items);
 		NHOPS_WUNLOCK(ctl);
 	} else {
 		/* Other thread has already initiliazed hash/bitmask */
 		NHOPS_WUNLOCK(ctl);
 		free(cht_ptr, M_NHOP);
-		free(mask_ptr, M_NHOP);
 	}
 
-	DPRINTF("mpath init done for fib/af %d/%d", ctl->rh->rib_fibnum,
-	    ctl->rh->rib_family);
+	FIB_RH_LOG(LOG_DEBUG, ctl->ctl_rh, "multipath init done");
 
 	return (true);
 }
@@ -315,18 +316,14 @@ nhgrp_ctl_init(struct nh_control *ctl)
 	 * routes will not be necessarily used.
 	 */
 	CHT_SLIST_INIT(&ctl->gr_head, NULL, 0);
-	bitmask_init(&ctl->gr_idx_head, NULL, 0);
 	return (0);
 }
 
 void
 nhgrp_ctl_free(struct nh_control *ctl)
 {
-
 	if (ctl->gr_head.ptr != NULL)
 		free(ctl->gr_head.ptr, M_NHOP);
-	if (ctl->gr_idx_head.idx != NULL)
-		free(ctl->gr_idx_head.idx, M_NHOP);
 }
 
 void
@@ -337,7 +334,11 @@ nhgrp_ctl_unlink_all(struct nh_control *ctl)
 	NHOPS_WLOCK_ASSERT(ctl);
 
 	CHT_SLIST_FOREACH(&ctl->gr_head, mpath, nhg_priv) {
-		DPRINTF("Marking nhgrp %u unlinked", nhg_priv->nhg_idx);
+		IF_DEBUG_LEVEL(LOG_DEBUG2) {
+			char nhgbuf[NHOP_PRINT_BUFSIZE] __unused;
+			FIB_RH_LOG(LOG_DEBUG2, ctl->ctl_rh, "marking %s unlinked",
+			    nhgrp_print_buf(nhg_priv->nhg, nhgbuf, sizeof(nhgbuf)));
+		}
 		refcount_release(&nhg_priv->nhg_linked);
 	} CHT_SLIST_FOREACH_END;
 }

@@ -5,6 +5,12 @@
 #ifndef _CNXK_GPIO_H_
 #define _CNXK_GPIO_H_
 
+extern int cnxk_logtype_gpio;
+#define RTE_LOGTYPE_CNXK_GPIO cnxk_logtype_gpio
+
+#define CNXK_GPIO_LOG(level, ...) \
+	RTE_LOG_LINE(level, CNXK_GPIO, __VA_ARGS__)
+
 struct cnxk_gpiochip;
 
 struct cnxk_gpio {

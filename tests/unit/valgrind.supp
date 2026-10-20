@@ -1,0 +1,15 @@
+#
+# valgrind suppressions for F-Stack unit tests (FU-S2-1).
+#
+# Stage-6 Phase-8 (FU-S2-2-CFG-UNLOAD) closed: lib/ff_config.c now exposes
+# ff_unload_config() and registers it via atexit() at the end of the first
+# ff_load_config(). Subsequent ff_load_config() calls also clear prior
+# state. Repeated load/unload cycles in test harnesses no longer leak.
+#
+# As a result, this file currently holds NO entries: every leak detected by
+# `make check` should be a real regression. If a future test legitimately
+# needs to suppress a third-party (DPDK / cmocka / glibc) allocation, add
+# a tightly-scoped block here with a justifying comment.
+#
+# Suppression syntax: see https://valgrind.org/docs/manual/manual-core.html#manual-core.suppress
+#

@@ -25,9 +25,6 @@
  *
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/conf.h>
@@ -52,6 +49,7 @@ memrw(struct cdev *dev, struct uio *uio, int flags)
 	struct vm_page m;
 	vm_page_t marr;
 	vm_offset_t off, v;
+	vm_prot_t prot;
 	u_int cnt;
 	int error;
 
@@ -81,8 +79,16 @@ memrw(struct cdev *dev, struct uio *uio, int flags)
 				break;
 			}
 
-			if (!kernacc((void *)v, cnt, uio->uio_rw == UIO_READ ?
-			    VM_PROT_READ : VM_PROT_WRITE)) {
+			switch (uio->uio_rw) {
+			case UIO_READ:
+				prot = VM_PROT_READ;
+				break;
+			case UIO_WRITE:
+				prot = VM_PROT_WRITE;
+				break;
+			}
+
+			if (!kernacc((void *)v, cnt, prot)) {
 				error = EFAULT;
 				break;
 			}

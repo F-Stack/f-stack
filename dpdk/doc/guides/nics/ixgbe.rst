@@ -74,7 +74,7 @@ Ensure that the following pre-conditions are satisfied:
 
 These conditions are checked in the code.
 
-By default, IXGBE_MAX_RING_DESC is set to 4096 and RTE_PMD_IXGBE_RX_MAX_BURST is set to 32.
+By default, IXGBE_MAX_RING_DESC is set to 8192 and RTE_PMD_IXGBE_RX_MAX_BURST is set to 32.
 
 Windows Prerequisites and Pre-conditions
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

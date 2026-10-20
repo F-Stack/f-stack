@@ -60,14 +60,13 @@ extern struct dpaa_bp_info *rte_dpaa_bpid_info;
 
 /* Mempool related logs */
 
-#define DPAA_MEMPOOL_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, dpaa_logtype_mempool, "%s(): " fmt "\n", \
-		__func__, ##args)
+#define DPAA_MEMPOOL_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, DPAA_MEMPOOL, "%s(): ", __func__, __VA_ARGS__)
 
 #define MEMPOOL_INIT_FUNC_TRACE() DPAA_MEMPOOL_LOG(DEBUG, " >>")
 
 #define DPAA_MEMPOOL_DPDEBUG(fmt, args...) \
-	RTE_LOG_DP(DEBUG, PMD, fmt, ## args)
+	RTE_LOG_DP(DEBUG, DPAA_MEMPOOL, fmt, ## args)
 #define DPAA_MEMPOOL_DEBUG(fmt, args...) \
 	DPAA_MEMPOOL_LOG(DEBUG, fmt, ## args)
 #define DPAA_MEMPOOL_ERR(fmt, args...) \

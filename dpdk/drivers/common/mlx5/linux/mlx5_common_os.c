@@ -555,6 +555,14 @@ mlx5_os_pd_prepare(struct mlx5_common_device *cdev)
 #endif /* HAVE_IBV_FLOW_DV_SUPPORT */
 }
 
+static bool
+pci_addr_partial_match(const struct rte_pci_addr *addr1, const struct rte_pci_addr *addr2)
+{
+	return addr1->domain == addr2->domain &&
+	       addr1->bus == addr2->bus &&
+	       addr1->devid == addr2->devid;
+}
+
 static struct ibv_device *
 mlx5_os_get_ibv_device(const struct rte_pci_device *pci_dev)
 {
@@ -576,17 +584,23 @@ mlx5_os_get_ibv_device(const struct rte_pci_device *pci_dev)
 	}
 	ret1 = mlx5_get_device_guid(addr, guid1, sizeof(guid1));
 	while (n-- > 0) {
+		bool pci_partial_match;
+		bool guid_match;
+		bool bond_match;
+
 		DRV_LOG(DEBUG, "Checking device \"%s\"..", ibv_list[n]->name);
 		if (mlx5_get_pci_addr(ibv_list[n]->ibdev_path, &paddr) != 0)
 			continue;
 		if (ret1 > 0)
 			ret2 = mlx5_get_device_guid(&paddr, guid2, sizeof(guid2));
+		guid_match = ret1 > 0 && ret2 > 0 && memcmp(guid1, guid2, sizeof(guid1)) == 0;
+		pci_partial_match = pci_addr_partial_match(addr, &paddr);
 		/* Bond device can bond secondary PCIe */
-		if ((strstr(ibv_list[n]->name, "bond") && !is_vf_dev &&
-		     ((ret1 > 0 && ret2 > 0 && !memcmp(guid1, guid2, sizeof(guid1))) ||
-		      (addr->domain == paddr.domain && addr->bus == paddr.bus &&
-		       addr->devid == paddr.devid))) ||
-		    !rte_pci_addr_cmp(addr, &paddr)) {
+		bond_match = !is_vf_dev &&
+			     mlx5_os_is_device_bond(ibv_list[n]) &&
+			     (guid_match || pci_partial_match);
+		/* IB device matches either through bond or directly. */
+		if (bond_match || !rte_pci_addr_cmp(addr, &paddr)) {
 			ibv_match = ibv_list[n];
 			break;
 		}
@@ -873,6 +887,58 @@ mlx5_os_open_device(struct mlx5_common_device *cdev, uint32_t classes)
 	return 0;
 }
 
+/**
+ * API function to obtain a new InfiniBand (IB) context for a given common device.
+ *
+ * This function provides a port-agnostic IB context for a physical device, enabling the
+ * device to create and manage resources that can be initialized when a port starts and
+ * released when another port stops.
+ *
+ * For Linux, it imports new context from the existing context.
+ *
+ * @param cdev
+ *   Pointer to the mlx5 device structure.
+ *
+ * @return
+ *   Pointer to an `ibv_context` on success, or NULL on failure, with `rte_errno` set.
+ */
+void *
+mlx5_os_get_physical_device_ctx(struct mlx5_common_device *cdev)
+{
+	struct ibv_context *ctx = NULL;
+	int cmd_fd = ((struct ibv_context *)cdev->ctx)->cmd_fd;
+	int new_cmd_fd;
+
+	/*
+	 * Duplicate the command FD to pass it as input to the import device function.
+	 * If the import function succeeds, the new device context takes ownership of
+	 * this FD, which will be freed when the new device is closed.
+	 * If the import function fails, we are responsible for closing this FD.
+	 */
+	new_cmd_fd = dup(cmd_fd);
+	if (new_cmd_fd < 0) {
+		DRV_LOG(ERR,
+			"Failed to duplicate FD %d for IB device \"%s\": %s",
+			cmd_fd, mlx5_os_get_ctx_device_name(cdev->ctx),
+			rte_strerror(errno));
+		rte_errno = errno;
+		return NULL;
+	}
+	/* Attempt to import the duplicated FD to create a new device context. */
+	ctx = mlx5_glue->import_device(new_cmd_fd);
+	if (!ctx) {
+		DRV_LOG(ERR, "Failed to import IB device \"%s\": %s",
+			mlx5_os_get_ctx_device_name(cdev->ctx),
+			rte_strerror(errno));
+		close(new_cmd_fd);
+		rte_errno = errno;
+		return NULL;
+	}
+	DRV_LOG(INFO, "IB device \"%s\" successfully imported, old_fd=%d, new_fd=%d",
+		mlx5_os_get_ctx_device_name(cdev->ctx), cmd_fd, new_cmd_fd);
+	return (void *)ctx;
+}
+
 int
 mlx5_get_device_guid(const struct rte_pci_addr *dev, uint8_t *guid, size_t len)
 {
@@ -1096,4 +1162,65 @@ mlx5_os_interrupt_handler_destroy(struct rte_intr_handle *intr_handle,
 	if (rte_intr_fd_get(intr_handle) >= 0)
 		mlx5_intr_callback_unregister(intr_handle, cb, cb_arg);
 	rte_intr_instance_free(intr_handle);
+}
+
+bool
+mlx5_os_is_device_bond(const void *dev)
+{
+	const struct ibv_device *ibdev;
+	char path[PATH_MAX];
+	struct dirent *e;
+	DIR *net_dir;
+	bool result;
+	int ret;
+
+	if (dev == NULL)
+		return false;
+	ibdev = dev;
+
+	DRV_LOG(DEBUG, "Checking if %s ibdev belongs to bond", ibdev->name);
+
+	ret = snprintf(path, sizeof(path), "%s/device/net", ibdev->ibdev_path);
+	if (ret < 0 || ret >= (int)sizeof(path)) {
+		DRV_LOG(DEBUG, "Unable to get netdevs path for IB device %s", ibdev->name);
+		return false;
+	}
+
+	net_dir = opendir(path);
+	if (net_dir == NULL) {
+		DRV_LOG(DEBUG, "Unable to open directory %s (%s)", path, rte_strerror(errno));
+		return false;
+	}
+
+	result = false;
+	while ((e = readdir(net_dir)) != NULL) {
+		if (e->d_name[0] == '.')
+			continue;
+
+		DRV_LOG(DEBUG, "Checking if %s netdev related to %s ibdev belongs to bond",
+			e->d_name, ibdev->name);
+
+		ret = snprintf(path, sizeof(path), "/sys/class/net/%s/master/bonding", e->d_name);
+		if (ret < 0 || ret >= (int)sizeof(path)) {
+			DRV_LOG(DEBUG, "Unable to get bond path for %s netdev", e->d_name);
+			continue;
+		}
+
+		if (access(path, F_OK) == 0) {
+			/* At least one associated netdev is part of a bond. */
+			DRV_LOG(DEBUG, "Bonding path exists for %s netdev", e->d_name);
+			result = true;
+			goto end;
+		}
+
+		DRV_LOG(DEBUG, "Unable to access bond path for %s netdev (%s)",
+			e->d_name, rte_strerror(errno));
+	}
+
+	DRV_LOG(DEBUG, "No bonded netdev related to %s ibdev found",
+		ibdev->name);
+
+end:
+	closedir(net_dir);
+	return result;
 }

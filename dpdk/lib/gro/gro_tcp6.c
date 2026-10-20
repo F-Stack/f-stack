@@ -99,8 +99,8 @@ insert_new_flow(struct gro_tcp6_tbl *tbl,
 	dst = &(tbl->flows[flow_idx].key);
 
 	ASSIGN_COMMON_TCP_KEY((&src->cmn_key), (&dst->cmn_key));
-	memcpy(&dst->src_addr[0], &src->src_addr[0], sizeof(dst->src_addr));
-	memcpy(&dst->dst_addr[0], &src->dst_addr[0], sizeof(dst->dst_addr));
+	dst->src_addr = src->src_addr;
+	dst->dst_addr = src->dst_addr;
 	dst->vtc_flow = src->vtc_flow;
 
 	tbl->flows[flow_idx].start_index = item_idx;
@@ -118,8 +118,8 @@ update_header(struct gro_tcp_item *item)
 	struct rte_ipv6_hdr *ipv6_hdr;
 	struct rte_mbuf *pkt = item->firstseg;
 
-	ipv6_hdr = (struct rte_ipv6_hdr *)(rte_pktmbuf_mtod(pkt, char *) +
-			pkt->l2_len);
+	ipv6_hdr = rte_pktmbuf_mtod_offset(pkt, struct rte_ipv6_hdr *,
+					   pkt->l2_len);
 	ipv6_hdr->payload_len = rte_cpu_to_be_16(pkt->pkt_len -
 			pkt->l2_len - pkt->l3_len);
 }
@@ -168,8 +168,8 @@ gro_tcp6_reassemble(struct rte_mbuf *pkt,
 
 	rte_ether_addr_copy(&(eth_hdr->src_addr), &(key.cmn_key.eth_saddr));
 	rte_ether_addr_copy(&(eth_hdr->dst_addr), &(key.cmn_key.eth_daddr));
-	memcpy(&key.src_addr[0], &ipv6_hdr->src_addr, sizeof(key.src_addr));
-	memcpy(&key.dst_addr[0], &ipv6_hdr->dst_addr, sizeof(key.dst_addr));
+	key.src_addr = ipv6_hdr->src_addr;
+	key.dst_addr = ipv6_hdr->dst_addr;
 	key.cmn_key.src_port = tcp_hdr->src_port;
 	key.cmn_key.dst_port = tcp_hdr->dst_port;
 	key.cmn_key.recv_ack = tcp_hdr->recv_ack;

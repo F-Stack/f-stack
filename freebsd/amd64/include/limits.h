@@ -27,19 +27,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)limits.h	8.3 (Berkeley) 1/4/94
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_LIMITS_H_
 #define	_MACHINE_LIMITS_H_
 
-#include <sys/cdefs.h>
-
-#ifdef __CC_SUPPORTS_WARNING
 #warning "machine/limits.h is deprecated.  Include sys/limits.h instead."
-#endif
 
 #include <sys/limits.h>
 

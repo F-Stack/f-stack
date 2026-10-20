@@ -42,6 +42,11 @@
 
 #undef UMA_MD_SMALL_ALLOC
 
+/*
+ * curcpu is per-thread here (sys/pcpu.h), not per-CPU, so preemption cannot
+ * change which uz_cpu[] slot this thread uses and no other thread uses it;
+ * the dense pcpu slot is the whole protection (spec 17 §2.4).
+ */
 #define critical_enter() do {} while(0)
 #define critical_exit()  do {} while(0)
 

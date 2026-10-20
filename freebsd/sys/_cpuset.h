@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008,	Jeffrey Roberson <jeff@freebsd.org>
  * All rights reserved.
@@ -27,8 +27,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS__CPUSET_H_
@@ -37,16 +35,25 @@
 #include <sys/_bitset.h>
 
 #ifdef _KERNEL
+#include <machine/param.h>
+
 #define	CPU_SETSIZE	MAXCPU
 #endif
 
-#define	CPU_MAXSIZE	256
+#define	CPU_MAXSIZE	1024
 
 #ifndef	CPU_SETSIZE
 #define	CPU_SETSIZE	CPU_MAXSIZE
 #endif
 
-BITSET_DEFINE(_cpuset, CPU_SETSIZE);
+__BITSET_DEFINE(_cpuset, CPU_SETSIZE);
 typedef struct _cpuset cpuset_t;
+
+#ifndef _KERNEL
+__BEGIN_DECLS
+cpuset_t *__cpuset_alloc(size_t set_size);
+void __cpuset_free(cpuset_t *ptr);
+__END_DECLS
+#endif
 
 #endif /* !_SYS__CPUSET_H_ */

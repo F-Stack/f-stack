@@ -51,9 +51,13 @@ INTERNAL {
 	mlx5_devx_cmd_modify_rq;
 	mlx5_devx_cmd_modify_rqt;
 	mlx5_devx_cmd_modify_sq;
+	mlx5_devx_cmd_query_sq;
+	mlx5_devx_cmd_query_rq;
+	mlx5_devx_cmd_query_cq;
 	mlx5_devx_cmd_modify_tir;
 	mlx5_devx_cmd_modify_virtq;
 	mlx5_devx_cmd_qp_query_tis_td;
+	mlx5_devx_cmd_query_geneve_tlv_option;
 	mlx5_devx_cmd_query_hca_attr;
 	mlx5_devx_cmd_query_lag;
 	mlx5_devx_cmd_query_parse_samples;
@@ -142,7 +146,10 @@ INTERNAL {
 	mlx5_nl_vf_mac_addr_modify; # WINDOWS_NO_EXPORT
 	mlx5_nl_vlan_vmwa_create; # WINDOWS_NO_EXPORT
 	mlx5_nl_vlan_vmwa_delete; # WINDOWS_NO_EXPORT
+	mlx5_nl_get_mtu_bounds; # WINDOWS_NO_EXPORT
 
+	mlx5_os_get_physical_device_ctx;
+	mlx5_os_is_device_bond; # WINDOWS_NO_EXPORT
 	mlx5_os_umem_dereg;
 	mlx5_os_umem_reg;
 

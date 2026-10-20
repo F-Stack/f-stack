@@ -41,9 +41,6 @@
  * https://131002.net/siphash/
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/types.h>
 #include <sys/systm.h>
@@ -95,16 +92,21 @@ SipBuf(SIPHASH_CTX *ctx, const uint8_t **src, size_t len, int final)
 {
 	size_t x = 0;
 
-	KASSERT((!final && len > 0) || (final && len == 0),
-	    ("%s: invalid parameters", __func__));
+	/* handle hashing 0 length buffer - needed for test vectors */
+	if (len == 0 && final == 0)
+		return (0);
 
-	if (!final) {
+	if (final) {
+		KASSERT(len == 0, ("%s: invalid len param", __func__));
+		ctx->buf.b8[7] = (uint8_t)ctx->bytes;
+	} else {
+		KASSERT((len > 0) && src && *src,
+			("%s: invalid parameters", __func__));
 		x = MIN(len, sizeof(ctx->buf.b64) - ctx->buflen);
 		bcopy(*src, &ctx->buf.b8[ctx->buflen], x);
 		ctx->buflen += x;
 		*src += x;
-	} else
-		ctx->buf.b8[7] = (uint8_t)ctx->bytes;
+	}
 
 	if (ctx->buflen == 8 || final) {
 		ctx->v[3] ^= le64toh(ctx->buf.b64);

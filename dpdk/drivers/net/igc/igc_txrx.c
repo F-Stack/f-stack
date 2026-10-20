@@ -148,8 +148,8 @@ rx_desc_statuserr_to_pkt_flags(uint32_t statuserr)
 static inline uint32_t
 rx_desc_pkt_info_to_pkt_type(uint32_t pkt_info)
 {
-	static const uint32_t
-		ptype_table[IGC_PACKET_TYPE_MAX] __rte_cache_aligned = {
+	static const alignas(RTE_CACHE_LINE_SIZE) uint32_t
+		ptype_table[IGC_PACKET_TYPE_MAX] = {
 		[IGC_PACKET_TYPE_IPV4] = RTE_PTYPE_L2_ETHER |
 			RTE_PTYPE_L3_IPV4,
 		[IGC_PACKET_TYPE_IPV4_EXT] = RTE_PTYPE_L2_ETHER |
@@ -824,17 +824,20 @@ igc_rss_configure(struct rte_eth_dev *dev)
 	uint16_t i;
 
 	/* Fill in redirection table. */
-	for (i = 0; i < IGC_RSS_RDT_SIZD; i++) {
-		union igc_rss_reta_reg reta;
-		uint16_t q_idx, reta_idx;
+	for (i = 0; i < IGC_RSS_RDT_SIZD; i += IGC_RSS_RDT_REG_SIZE) {
+		union igc_rss_reta_reg reta = { .dword = 0 };
+		uint16_t reta_idx;
 
-		q_idx = (uint8_t)((dev->data->nb_rx_queues > 1) ?
-				   i % dev->data->nb_rx_queues : 0);
-		reta_idx = i % sizeof(reta);
-		reta.bytes[reta_idx] = q_idx;
-		if (reta_idx == sizeof(reta) - 1)
-			IGC_WRITE_REG_LE_VALUE(hw,
-				IGC_RETA(i / sizeof(reta)), reta.dword);
+		RTE_BUILD_BUG_ON(sizeof(reta.bytes) != IGC_RSS_RDT_REG_SIZE);
+		for (reta_idx = 0; reta_idx < IGC_RSS_RDT_REG_SIZE; reta_idx++) {
+			uint16_t q_idx;
+
+			q_idx = (uint8_t)((dev->data->nb_rx_queues > 1) ?
+				(i + reta_idx) % dev->data->nb_rx_queues : 0);
+			reta.bytes[reta_idx] = q_idx;
+		}
+		IGC_WRITE_REG_LE_VALUE(hw,
+			IGC_RETA(i / IGC_RSS_RDT_REG_SIZE), reta.dword);
 	}
 
 	/*
@@ -940,18 +943,18 @@ igc_add_rss_filter(struct rte_eth_dev *dev, struct igc_rss_filter *rss)
 	igc_rss_conf_set(rss_filter, &rss->conf);
 
 	/* Fill in redirection table. */
-	for (i = 0, j = 0; i < IGC_RSS_RDT_SIZD; i++, j++) {
-		union igc_rss_reta_reg reta;
-		uint16_t q_idx, reta_idx;
+	for (i = 0, j = 0; i < IGC_RSS_RDT_SIZD; i += IGC_RSS_RDT_REG_SIZE) {
+		union igc_rss_reta_reg reta = { .dword = 0 };
+		uint16_t reta_idx;
 
-		if (j == rss->conf.queue_num)
-			j = 0;
-		q_idx = rss->conf.queue[j];
-		reta_idx = i % sizeof(reta);
-		reta.bytes[reta_idx] = q_idx;
-		if (reta_idx == sizeof(reta) - 1)
-			IGC_WRITE_REG_LE_VALUE(hw,
-				IGC_RETA(i / sizeof(reta)), reta.dword);
+		RTE_BUILD_BUG_ON(sizeof(reta.bytes) != IGC_RSS_RDT_REG_SIZE);
+		for (reta_idx = 0; reta_idx < IGC_RSS_RDT_REG_SIZE; reta_idx++, j++) {
+			if (j == rss->conf.queue_num)
+				j = 0;
+			reta.bytes[reta_idx] = rss->conf.queue[j];
+		}
+		IGC_WRITE_REG_LE_VALUE(hw,
+			IGC_RETA(i / IGC_RSS_RDT_REG_SIZE), reta.dword);
 	}
 
 	if (rss_conf.rss_key == NULL)
@@ -1416,6 +1419,10 @@ what_advctx_update(struct igc_tx_queue *txq, uint64_t flags,
 {
 	uint32_t curr = txq->ctx_curr;
 
+	/* Launch time feature always need a new context descriptor */
+	if (flags & igc_tx_timestamp_dynflag)
+		return IGC_CTX_NUM;
+
 	/* If match with the current context */
 	if (likely(txq->ctx_cache[curr].flags == flags &&
 		txq->ctx_cache[curr].tx_offload.data ==
@@ -1621,7 +1628,8 @@ igc_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		tx_last = (uint16_t)(tx_id + tx_pkt->nb_segs - 1);
 
 		ol_flags = tx_pkt->ol_flags;
-		tx_ol_req = ol_flags & IGC_TX_OFFLOAD_MASK;
+		tx_ol_req = ol_flags & (IGC_TX_OFFLOAD_MASK |
+				igc_tx_timestamp_dynflag);
 
 		/* If a Context Descriptor need be built . */
 		if (tx_ol_req) {
@@ -1675,7 +1683,11 @@ igc_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		 * The "last descriptor" of the previously sent packet, if any,
 		 * which used the last descriptor to allocate.
 		 */
-		tx_end = sw_ring[tx_last].last_id;
+		tx_end = (uint16_t)(tx_last);
+		if (tx_end >= txq->nb_tx_desc)
+			tx_end = (uint16_t)(tx_end - txq->nb_tx_desc);
+
+		tx_end = sw_ring[tx_end].last_id;
 
 		/*
 		 * The next descriptor following that "last descriptor" in the

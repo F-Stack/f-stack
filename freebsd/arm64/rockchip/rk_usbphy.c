@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -25,9 +25,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
@@ -39,15 +36,15 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/bus.h>
 
-#include <dev/extres/clk/clk.h>
-#include <dev/extres/hwreset/hwreset.h>
-#include <dev/extres/phy/phy_usb.h>
-#include <dev/extres/regulator/regulator.h>
-#include <dev/extres/syscon/syscon.h>
+#include <dev/clk/clk.h>
+#include <dev/hwreset/hwreset.h>
+#include <dev/phy/phy_usb.h>
+#include <dev/regulator/regulator.h>
+#include <dev/syscon/syscon.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
-#include <dev/extres/syscon/syscon.h>
+#include <dev/syscon/syscon.h>
 #include <dev/fdt/simple_mfd.h>
 #include "phynode_if.h"
 #include "phynode_usb_if.h"
@@ -277,7 +274,8 @@ rk_usbphy_attach(device_t dev)
 		if (rv != 0)
 			goto fail;
 	}
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 
 fail:
 	return (ENXIO);
@@ -286,9 +284,6 @@ fail:
 static int
 rk_usbphy_detach(device_t dev)
 {
-	struct rk_usbphy_softc *sc;
-	sc = device_get_softc(dev);
-
 	return (0);
 }
 
@@ -300,8 +295,7 @@ static device_method_t rk_usbphy_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t rk_usbphy_devclass;
 static DEFINE_CLASS_0(rk_usbphy, rk_usbphy_driver, rk_usbphy_methods,
     sizeof(struct rk_usbphy_softc));
-EARLY_DRIVER_MODULE(rk_usbphy, simplebus, rk_usbphy_driver,
-    rk_usbphy_devclass, NULL, NULL, BUS_PASS_TIMER + BUS_PASS_ORDER_LAST);
+EARLY_DRIVER_MODULE(rk_usbphy, simplebus, rk_usbphy_driver, NULL, NULL,
+    BUS_PASS_TIMER + BUS_PASS_ORDER_LAST);

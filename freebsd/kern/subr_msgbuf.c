@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003 Ian Dowse.  All rights reserved.
  *
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 /*
@@ -69,10 +67,10 @@ msgbuf_init(struct msgbuf *mbp, void *ptr, int size)
 	mbp->msg_ptr = ptr;
 	mbp->msg_size = size;
 	mbp->msg_seqmod = SEQMOD(size);
-	msgbuf_clear(mbp);
-	mbp->msg_magic = MSG_MAGIC;
 	mbp->msg_lastpri = -1;
 	mbp->msg_flags = 0;
+	msgbuf_clear(mbp);
+	mbp->msg_magic = MSG_MAGIC;
 	bzero(&mbp->msg_lock, sizeof(mbp->msg_lock));
 	mtx_init(&mbp->msg_lock, "msgbuf", NULL, MTX_SPIN);
 }
@@ -123,6 +121,7 @@ msgbuf_clear(struct msgbuf *mbp)
 	mbp->msg_wseq = 0;
 	mbp->msg_rseq = 0;
 	mbp->msg_cksum = 0;
+	mbp->msg_flags &= ~MSGBUF_WRAP;
 }
 
 /*
@@ -145,18 +144,17 @@ msgbuf_getcount(struct msgbuf *mbp)
  *
  * The caller should hold the message buffer spinlock.
  */
-
 static void
-msgbuf_do_addchar(struct msgbuf * const mbp, u_int * const seq, const int c)
+msgbuf_do_addchar(struct msgbuf * const mbp, const int c)
 {
 	u_int pos;
 
 	/* Make sure we properly wrap the sequence number. */
-	pos = MSGBUF_SEQ_TO_POS(mbp, *seq);
+	pos = MSGBUF_SEQ_TO_POS(mbp, mbp->msg_wseq);
 	mbp->msg_cksum += (u_int)(u_char)c -
 	    (u_int)(u_char)mbp->msg_ptr[pos];
 	mbp->msg_ptr[pos] = c;
-	*seq = MSGBUF_SEQNORM(mbp, *seq + 1);
+	mbp->msg_wseq = MSGBUF_SEQADD(mbp, mbp->msg_wseq, 1);
 }
 
 /*
@@ -167,7 +165,9 @@ msgbuf_addchar(struct msgbuf *mbp, int c)
 {
 	mtx_lock_spin(&mbp->msg_lock);
 
-	msgbuf_do_addchar(mbp, &mbp->msg_wseq, c);
+	msgbuf_do_addchar(mbp, c);
+	if (mbp->msg_wseq >= mbp->msg_size)
+		mbp->msg_flags |= MSGBUF_WRAP;
 
 	mtx_unlock_spin(&mbp->msg_lock);
 }
@@ -183,7 +183,6 @@ msgbuf_addchar(struct msgbuf *mbp, int c)
 void
 msgbuf_addstr(struct msgbuf *mbp, int pri, const char *str, int filter_cr)
 {
-	u_int seq;
 	size_t len, prefix_len;
 	char prefix[MAXPRIBUF];
 	char buf[32];
@@ -206,11 +205,6 @@ msgbuf_addstr(struct msgbuf *mbp, int pri, const char *str, int filter_cr)
 		prefix_len = sprintf(prefix, "<%d>", pri);
 
 	/*
-	 * Starting write sequence number.
-	 */
-	seq = mbp->msg_wseq;
-
-	/*
 	 * Whenever there is a change in priority, we have to insert a
 	 * newline, and a priority prefix if the priority is not -1.  Here
 	 * we detect whether there was a priority change, and whether we
@@ -218,7 +212,7 @@ msgbuf_addstr(struct msgbuf *mbp, int pri, const char *str, int filter_cr)
 	 * insert a newline before this string.
 	 */
 	if (mbp->msg_lastpri != pri && (mbp->msg_flags & MSGBUF_NEEDNL) != 0) {
-		msgbuf_do_addchar(mbp, &seq, '\n');
+		msgbuf_do_addchar(mbp, '\n');
 		mbp->msg_flags &= ~MSGBUF_NEEDNL;
 	}
 
@@ -233,15 +227,23 @@ msgbuf_addstr(struct msgbuf *mbp, int pri, const char *str, int filter_cr)
 			int j;
 
 			for (j = 0; j < prefix_len; j++)
-				msgbuf_do_addchar(mbp, &seq, prefix[j]);
+				msgbuf_do_addchar(mbp, prefix[j]);
 		}
 
 		if (msgbuf_show_timestamp && needtime == 1 &&
 		    (mbp->msg_flags & MSGBUF_NEEDNL) == 0) {
-			snprintf(buf, sizeof(buf), "[%jd] ",
-			    (intmax_t)time_uptime);
+			if (msgbuf_show_timestamp == 1) {
+				snprintf(buf, sizeof(buf), "[%jd] ",
+				    (intmax_t)time_uptime);
+			} else {
+				struct timeval tv;
+
+				microuptime(&tv);
+				snprintf(buf, sizeof(buf), "[%jd.%06d] ",
+				    (intmax_t)tv.tv_sec, (int)tv.tv_usec);
+			}
 			for (j = 0; buf[j] != '\0'; j++)
-				msgbuf_do_addchar(mbp, &seq, buf[j]);
+				msgbuf_do_addchar(mbp, buf[j]);
 			needtime = 0;
 		}
 
@@ -265,14 +267,10 @@ msgbuf_addstr(struct msgbuf *mbp, int pri, const char *str, int filter_cr)
 		else
 			mbp->msg_flags |= MSGBUF_NEEDNL;
 
-		msgbuf_do_addchar(mbp, &seq, str[i]);
+		msgbuf_do_addchar(mbp, str[i]);
 	}
-	/*
-	 * Update the write sequence number for the actual number of
-	 * characters we put in the message buffer.  (Depends on whether
-	 * carriage returns are filtered.)
-	 */
-	mbp->msg_wseq = seq;
+	if (mbp->msg_wseq >= mbp->msg_size)
+		mbp->msg_flags |= MSGBUF_WRAP;
 
 	/*
 	 * Set the last priority.
@@ -302,9 +300,9 @@ msgbuf_getchar(struct msgbuf *mbp)
 		return (-1);
 	}
 	if (len > mbp->msg_size)
-		mbp->msg_rseq = MSGBUF_SEQNORM(mbp, wseq - mbp->msg_size);
+		mbp->msg_rseq = MSGBUF_SEQSUB(mbp, wseq, mbp->msg_size);
 	c = (u_char)mbp->msg_ptr[MSGBUF_SEQ_TO_POS(mbp, mbp->msg_rseq)];
-	mbp->msg_rseq = MSGBUF_SEQNORM(mbp, mbp->msg_rseq + 1);
+	mbp->msg_rseq = MSGBUF_SEQADD(mbp, mbp->msg_rseq, 1);
 
 	mtx_unlock_spin(&mbp->msg_lock);
 
@@ -329,7 +327,7 @@ msgbuf_getbytes(struct msgbuf *mbp, char *buf, int buflen)
 		return (0);
 	}
 	if (len > mbp->msg_size) {
-		mbp->msg_rseq = MSGBUF_SEQNORM(mbp, wseq - mbp->msg_size);
+		mbp->msg_rseq = MSGBUF_SEQSUB(mbp, wseq, mbp->msg_size);
 		len = mbp->msg_size;
 	}
 	pos = MSGBUF_SEQ_TO_POS(mbp, mbp->msg_rseq);
@@ -337,7 +335,7 @@ msgbuf_getbytes(struct msgbuf *mbp, char *buf, int buflen)
 	len = min(len, (u_int)buflen);
 
 	bcopy(&mbp->msg_ptr[pos], buf, len);
-	mbp->msg_rseq = MSGBUF_SEQNORM(mbp, mbp->msg_rseq + len);
+	mbp->msg_rseq = MSGBUF_SEQADD(mbp, mbp->msg_rseq, len);
 
 	mtx_unlock_spin(&mbp->msg_lock);
 
@@ -363,7 +361,10 @@ msgbuf_peekbytes(struct msgbuf *mbp, char *buf, int buflen, u_int *seqp)
 
 	if (buf == NULL) {
 		/* Just initialise *seqp. */
-		*seqp = MSGBUF_SEQNORM(mbp, mbp->msg_wseq - mbp->msg_size);
+		if (mbp->msg_flags & MSGBUF_WRAP)
+			*seqp = MSGBUF_SEQSUB(mbp, mbp->msg_wseq, mbp->msg_size);
+		else
+			*seqp = 0;
 		mtx_unlock_spin(&mbp->msg_lock);
 		return (0);
 	}
@@ -375,14 +376,14 @@ msgbuf_peekbytes(struct msgbuf *mbp, char *buf, int buflen, u_int *seqp)
 		return (0);
 	}
 	if (len > mbp->msg_size) {
-		*seqp = MSGBUF_SEQNORM(mbp, wseq - mbp->msg_size);
+		*seqp = MSGBUF_SEQSUB(mbp, wseq, mbp->msg_size);
 		len = mbp->msg_size;
 	}
 	pos = MSGBUF_SEQ_TO_POS(mbp, *seqp);
 	len = min(len, mbp->msg_size - pos);
 	len = min(len, (u_int)buflen);
 	bcopy(&mbp->msg_ptr[MSGBUF_SEQ_TO_POS(mbp, *seqp)], buf, len);
-	*seqp = MSGBUF_SEQNORM(mbp, *seqp + len);
+	*seqp = MSGBUF_SEQADD(mbp, *seqp, len);
 
 	mtx_unlock_spin(&mbp->msg_lock);
 
@@ -413,4 +414,19 @@ msgbuf_copy(struct msgbuf *src, struct msgbuf *dst)
 
 	while ((c = msgbuf_getchar(src)) >= 0)
 		msgbuf_addchar(dst, c);
+}
+
+/*
+ * Get a snapshot of the message buffer, without modifying its internal state
+ * (i.e. don't mark any new characters as read).
+ */
+void
+msgbuf_duplicate(struct msgbuf *src, struct msgbuf *dst, char *dst_msgptr)
+{
+
+	mtx_lock_spin(&src->msg_lock);
+	bcopy(src, dst, sizeof(struct msgbuf));
+	dst->msg_ptr = dst_msgptr;
+	bcopy(src->msg_ptr, dst->msg_ptr, src->msg_size);
+	mtx_unlock_spin(&src->msg_lock);
 }

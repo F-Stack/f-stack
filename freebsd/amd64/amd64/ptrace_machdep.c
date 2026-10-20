@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 Konstantin Belousov <kib@FreeBSD.org>
  * All rights reserved.
@@ -27,14 +27,15 @@
  *
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/elf.h>
+#include <sys/lock.h>
 #include <sys/malloc.h>
+#include <sys/mutex.h>
 #include <sys/proc.h>
 #include <sys/ptrace.h>
+#include <sys/reg.h>
 #include <sys/sysent.h>
 #include <vm/vm.h>
 #include <vm/pmap.h>
@@ -48,6 +49,102 @@ struct ptrace_xstate_info32 {
 	uint32_t	xsave_mask1, xsave_mask2;
 	uint32_t	xsave_len;
 };
+#endif
+
+static bool
+get_segbases(struct regset *rs, struct thread *td, void *buf,
+    size_t *sizep)
+{
+	struct segbasereg *reg;
+	struct pcb *pcb;
+
+	if (buf != NULL) {
+		KASSERT(*sizep == sizeof(*reg), ("%s: invalid size", __func__));
+		reg = buf;
+
+		pcb = td->td_pcb;
+		reg->r_fsbase = pcb->pcb_fsbase;
+		reg->r_gsbase = pcb->pcb_gsbase;
+	}
+	*sizep = sizeof(*reg);
+	return (true);
+}
+
+static bool
+set_segbases(struct regset *rs, struct thread *td, void *buf,
+    size_t size)
+{
+	struct segbasereg *reg;
+	struct pcb *pcb;
+
+	KASSERT(size == sizeof(*reg), ("%s: invalid size", __func__));
+	reg = buf;
+
+	pcb = td->td_pcb;
+	set_pcb_flags(pcb, PCB_FULL_IRET);
+	pcb->pcb_fsbase = reg->r_fsbase;
+	td->td_frame->tf_fs = _ufssel;
+	pcb->pcb_gsbase = reg->r_gsbase;
+	td->td_frame->tf_gs = _ugssel;
+
+	return (true);
+}
+
+static struct regset regset_segbases = {
+	.note = NT_X86_SEGBASES,
+	.size = sizeof(struct segbasereg),
+	.get = get_segbases,
+	.set = set_segbases,
+};
+ELF_REGSET(regset_segbases);
+
+#ifdef COMPAT_FREEBSD32
+static bool
+get_segbases32(struct regset *rs, struct thread *td, void *buf,
+    size_t *sizep)
+{
+	struct segbasereg32 *reg;
+	struct pcb *pcb;
+
+	if (buf != NULL) {
+		KASSERT(*sizep == sizeof(*reg), ("%s: invalid size", __func__));
+		reg = buf;
+
+		pcb = td->td_pcb;
+		reg->r_fsbase = (uint32_t)pcb->pcb_fsbase;
+		reg->r_gsbase = (uint32_t)pcb->pcb_gsbase;
+	}
+	*sizep = sizeof(*reg);
+	return (true);
+}
+
+static bool
+set_segbases32(struct regset *rs, struct thread *td, void *buf,
+    size_t size)
+{
+	struct segbasereg32 *reg;
+	struct pcb *pcb;
+
+	KASSERT(size == sizeof(*reg), ("%s: invalid size", __func__));
+	reg = buf;
+
+	pcb = td->td_pcb;
+	set_pcb_flags(pcb, PCB_FULL_IRET);
+	pcb->pcb_fsbase = reg->r_fsbase;
+	td->td_frame->tf_fs = _ufssel;
+	pcb->pcb_gsbase = reg->r_gsbase;
+	td->td_frame->tf_gs = _ugssel;
+
+	return (true);
+}
+
+static struct regset regset_segbases32 = {
+	.note = NT_X86_SEGBASES,
+	.size = sizeof(struct segbasereg32),
+	.get = get_segbases32,
+	.set = set_segbases32,
+};
+ELF32_REGSET(regset_segbases32);
 #endif
 
 static int
@@ -271,10 +368,62 @@ cpu_ptrace(struct thread *td, int req, void *addr, int data)
 		cpu_ptrace_setbase(td, req, rv);
 		break;
 
+	case PT_GETTLSBASE:
+		pcb = td->td_pcb;
+		if ((pcb->pcb_flags & PCB_TLSBASE) != 0)
+			error = copyout(&pcb->pcb_tlsbase, addr, sizeof(*r));
+		else
+			error = ESRCH;
+		break;
+
+	case PT_SETTLSBASE:
+		pcb = td->td_pcb;
+		error = copyin(addr, &rv, sizeof(rv));
+		if (error != 0)
+			break;
+		if (rv >= td->td_proc->p_sysent->sv_maxuser) {
+			error = EINVAL;
+			break;
+		}
+		pcb->pcb_tlsbase = rv;
+		set_pcb_flags(pcb, PCB_TLSBASE);
+		break;
+
 	default:
 		error = EINVAL;
 		break;
 	}
 
 	return (error);
+}
+
+int
+ptrace_set_pc(struct thread *td, unsigned long addr)
+{
+
+	td->td_frame->tf_rip = addr;
+	set_pcb_flags(td->td_pcb, PCB_FULL_IRET);
+	return (0);
+}
+
+int
+ptrace_single_step(struct thread *td)
+{
+
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	if ((td->td_frame->tf_rflags & PSL_T) == 0) {
+		td->td_frame->tf_rflags |= PSL_T;
+		td->td_dbgflags |= TDB_STEP;
+	}
+	return (0);
+}
+
+int
+ptrace_clear_single_step(struct thread *td)
+{
+
+	PROC_LOCK_ASSERT(td->td_proc, MA_OWNED);
+	td->td_frame->tf_rflags &= ~PSL_T;
+	td->td_dbgflags &= ~TDB_STEP;
+	return (0);
 }

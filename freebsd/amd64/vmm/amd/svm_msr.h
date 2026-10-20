@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 Neel Natu (neel@freebsd.org)
  * All rights reserved.
@@ -24,23 +24,20 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SVM_MSR_H_
 #define	_SVM_MSR_H_
 
 struct svm_softc;
+struct svm_vcpu;
 
 void svm_msr_init(void);
-void svm_msr_guest_init(struct svm_softc *sc, int vcpu);
-void svm_msr_guest_enter(struct svm_softc *sc, int vcpu);
-void svm_msr_guest_exit(struct svm_softc *sc, int vcpu);
+void svm_msr_guest_init(struct svm_softc *sc, struct svm_vcpu *vcpu);
+void svm_msr_guest_enter(struct svm_vcpu *vcpu);
+void svm_msr_guest_exit(struct svm_vcpu *vcpu);
 
-int svm_wrmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t val,
-    bool *retu);
-int svm_rdmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t *result,
-    bool *retu);
+int svm_wrmsr(struct svm_vcpu *vcpu, u_int num, uint64_t val, bool *retu);
+int svm_rdmsr(struct svm_vcpu *vcpu, u_int num, uint64_t *result, bool *retu);
 
 #endif	/* _SVM_MSR_H_ */

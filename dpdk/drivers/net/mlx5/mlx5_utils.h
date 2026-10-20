@@ -22,12 +22,6 @@
 
 #include "mlx5_defs.h"
 
-/* Convert a bit number to the corresponding 64-bit mask */
-#define MLX5_BITSHIFT(v) (UINT64_C(1) << (v))
-
-/* Save and restore errno around argument evaluation. */
-#define ERRNO_SAFE(x) ((errno = (int []){ errno, ((x), 0) }[0]))
-
 extern int mlx5_logtype;
 
 #define MLX5_NET_LOG_PREFIX "mlx5_net"
@@ -235,12 +229,12 @@ struct mlx5_indexed_trunk {
 	uint32_t next; /* Next free trunk in free list. */
 	uint32_t free; /* Free entries available */
 	struct rte_bitmap *bmp;
-	uint8_t data[] __rte_cache_aligned; /* Entry data start. */
+	alignas(RTE_CACHE_LINE_SIZE) uint8_t data[]; /* Entry data start. */
 };
 
 struct mlx5_indexed_cache {
 	struct mlx5_indexed_trunk **trunks;
-	volatile uint32_t n_trunk_valid; /* Trunks allocated. */
+	volatile RTE_ATOMIC(uint32_t) n_trunk_valid; /* Trunks allocated. */
 	uint32_t n_trunk; /* Trunk pointer array size. */
 	uint32_t ref_cnt;
 	uint32_t len;
@@ -266,7 +260,7 @@ struct mlx5_indexed_pool {
 			uint32_t free_list; /* Index to first free trunk. */
 		};
 		struct {
-			struct mlx5_indexed_cache *gc;
+			RTE_ATOMIC(struct mlx5_indexed_cache *) gc;
 			/* Global cache. */
 			struct mlx5_ipool_per_lcore *cache[RTE_MAX_LCORE + 1];
 			/* Local cache. */
@@ -426,6 +420,23 @@ void mlx5_ipool_flush_cache(struct mlx5_indexed_pool *pool);
  *
  */
 void *mlx5_ipool_get_next(struct mlx5_indexed_pool *pool, uint32_t *pos);
+
+/**
+ * This function resize the ipool.
+ *
+ * @param pool
+ *   Pointer to the index memory pool handler.
+ * @param num_entries
+ *   Number of entries to be added to the pool.
+ *   This number should be divisible by trunk_size.
+ *
+ * @return
+ *   - non-zero value on error.
+ *   - 0 on success.
+ *
+ */
+int mlx5_ipool_resize(struct mlx5_indexed_pool *pool, uint32_t num_entries,
+		      struct rte_flow_error *error);
 
 /**
  * This function allocates new empty Three-level table.

@@ -170,6 +170,7 @@ struct nix {
 	uintptr_t base;
 	bool sdp_link;
 	bool lbk_link;
+	bool esw_link;
 	bool ptp_en;
 	bool is_nix1;
 
@@ -408,6 +409,7 @@ int nix_tm_sq_sched_conf(struct nix *nix, struct nix_tm_node *node,
 
 int nix_rq_cn9k_cfg(struct dev *dev, struct roc_nix_rq *rq, uint16_t qints,
 		    bool cfg, bool ena);
+int nix_rq_cn10k_cfg(struct dev *dev, struct roc_nix_rq *rq, uint16_t qints, bool cfg, bool ena);
 int nix_rq_cfg(struct dev *dev, struct roc_nix_rq *rq, uint16_t qints, bool cfg,
 	       bool ena);
 int nix_rq_ena_dis(struct dev *dev, struct roc_nix_rq *rq, bool enable);
@@ -467,15 +469,15 @@ struct nix_tm_shaper_profile *nix_tm_shaper_profile_alloc(void);
 void nix_tm_shaper_profile_free(struct nix_tm_shaper_profile *profile);
 
 uint64_t nix_get_blkaddr(struct dev *dev);
-void nix_lf_rq_dump(__io struct nix_cn10k_rq_ctx_s *ctx, FILE *file);
+void nix_cn10k_lf_rq_dump(__io struct nix_cn10k_rq_ctx_s *ctx, FILE *file);
+void nix_lf_rq_dump(__io struct nix_cn20k_rq_ctx_s *ctx, FILE *file);
 int nix_lf_gen_reg_dump(uintptr_t nix_lf_base, uint64_t *data);
-int nix_lf_stat_reg_dump(uintptr_t nix_lf_base, uint64_t *data,
-			 uint8_t lf_tx_stats, uint8_t lf_rx_stats);
-int nix_lf_int_reg_dump(uintptr_t nix_lf_base, uint64_t *data, uint16_t qints,
-			uint16_t cints);
-int nix_q_ctx_get(struct dev *dev, uint8_t ctype, uint16_t qid,
-		  __io void **ctx_p);
+int nix_lf_stat_reg_dump(uintptr_t nix_lf_base, uint64_t *data, uint8_t lf_tx_stats,
+			 uint8_t lf_rx_stats);
+int nix_lf_int_reg_dump(uintptr_t nix_lf_base, uint64_t *data, uint16_t qints, uint16_t cints);
+int nix_q_ctx_get(struct dev *dev, uint8_t ctype, uint16_t qid, __io void **ctx_p);
 uint8_t nix_tm_lbk_relchan_get(struct nix *nix);
+int nix_vlan_tpid_set(struct mbox *mbox, uint16_t pcifunc, uint32_t type, uint16_t tpid);
 
 /*
  * Telemetry
@@ -485,5 +487,13 @@ void nix_tel_node_del(struct roc_nix *roc_nix);
 int nix_tel_node_add_rq(struct roc_nix_rq *rq);
 int nix_tel_node_add_cq(struct roc_nix_cq *cq);
 int nix_tel_node_add_sq(struct roc_nix_sq *sq);
+
+/*
+ * RSS
+ */
+int nix_rss_reta_pffunc_set(struct roc_nix *roc_nix, uint8_t group,
+			    uint16_t reta[ROC_NIX_RSS_RETA_MAX], uint16_t pf_func);
+int nix_rss_flowkey_pffunc_set(struct roc_nix *roc_nix, uint8_t *alg_idx, uint32_t flowkey,
+			       uint8_t group, int mcam_index, uint16_t pf_func);
 
 #endif /* _ROC_NIX_PRIV_H_ */

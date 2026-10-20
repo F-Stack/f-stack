@@ -191,6 +191,15 @@ void rte_timer_subsystem_finalize(void);
 void rte_timer_init(struct rte_timer *tim);
 
 /**
+ * Initialize the timer metadata.
+ * For f-stack internal use only.
+ * @return
+ *   - 0: Success
+ *   - -EINVAL: invalid timer data instance identifier
+ */
+int rte_timer_meta_init(void);
+
+/**
  * Reset and start the timer associated with the timer handle.
  *
  * The rte_timer_reset() function resets and starts the timer

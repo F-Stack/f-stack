@@ -1,4 +1,3 @@
-/* $FreeBSD$ */
 /* Do not modify. This file is auto-generated from x86cpuid.pl. */
 #ifdef PIC
 .text
@@ -7,6 +6,11 @@
 .align	16
 OPENSSL_ia32_cpuid:
 .L_OPENSSL_ia32_cpuid_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -120,6 +124,24 @@ OPENSSL_ia32_cpuid:
 	xorl	%ecx,%ecx
 	.byte	0x0f,0xa2
 	movl	%ebx,8(%edi)
+	movl	%ecx,12(%edi)
+	movl	%edx,16(%edi)
+	cmpl	$1,%eax
+	jb	.L005no_extended_info
+	movl	$7,%eax
+	movl	$1,%ecx
+	.byte	0x0f,0xa2
+	movl	%eax,20(%edi)
+	movl	%edx,24(%edi)
+	movl	%ebx,28(%edi)
+	movl	%ecx,32(%edi)
+	andl	$524288,%edx
+	cmpl	$0,%edx
+	je	.L005no_extended_info
+	movl	$36,%eax
+	movl	$0,%ecx
+	.byte	0x0f,0xa2
+	movl	%ebx,36(%edi)
 .L005no_extended_info:
 	btl	$27,%ebp
 	jnc	.L006clear_avx
@@ -135,6 +157,7 @@ OPENSSL_ia32_cpuid:
 	andl	$4278190079,%esi
 .L006clear_avx:
 	andl	$4026525695,%ebp
+	andl	$4286578687,20(%edi)
 	andl	$4294967263,8(%edi)
 .L007done:
 	movl	%esi,%eax
@@ -151,6 +174,11 @@ OPENSSL_ia32_cpuid:
 .align	16
 OPENSSL_rdtsc:
 .L_OPENSSL_rdtsc_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	xorl	%eax,%eax
 	xorl	%edx,%edx
 	call	.L009PIC_me_up
@@ -168,6 +196,11 @@ OPENSSL_rdtsc:
 .align	16
 OPENSSL_instrument_halt:
 .L_OPENSSL_instrument_halt_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	call	.L011PIC_me_up
 .L011PIC_me_up:
 	popl	%ecx
@@ -200,6 +233,11 @@ OPENSSL_instrument_halt:
 .align	16
 OPENSSL_far_spin:
 .L_OPENSSL_far_spin_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushfl
 	popl	%eax
 	btl	$9,%eax
@@ -227,6 +265,11 @@ OPENSSL_far_spin:
 .align	16
 OPENSSL_wipe_cpu:
 .L_OPENSSL_wipe_cpu_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	xorl	%eax,%eax
 	xorl	%edx,%edx
 	call	.L015PIC_me_up
@@ -258,6 +301,11 @@ OPENSSL_wipe_cpu:
 .align	16
 OPENSSL_atomic_add:
 .L_OPENSSL_atomic_add_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	movl	4(%esp),%edx
 	movl	8(%esp),%ecx
 	pushl	%ebx
@@ -277,6 +325,11 @@ OPENSSL_atomic_add:
 .align	16
 OPENSSL_cleanse:
 .L_OPENSSL_cleanse_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	movl	4(%esp),%edx
 	movl	8(%esp),%ecx
 	xorl	%eax,%eax
@@ -314,6 +367,11 @@ OPENSSL_cleanse:
 .align	16
 CRYPTO_memcmp:
 .L_CRYPTO_memcmp_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	pushl	%edi
 	movl	12(%esp),%esi
@@ -343,6 +401,11 @@ CRYPTO_memcmp:
 .align	16
 OPENSSL_instrument_bus:
 .L_OPENSSL_instrument_bus_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -391,6 +454,11 @@ OPENSSL_instrument_bus:
 .align	16
 OPENSSL_instrument_bus2:
 .L_OPENSSL_instrument_bus2_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -452,6 +520,11 @@ OPENSSL_instrument_bus2:
 .align	16
 OPENSSL_ia32_rdrand_bytes:
 .L_OPENSSL_ia32_rdrand_bytes_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%edi
 	pushl	%ebx
 	xorl	%eax,%eax
@@ -495,6 +568,11 @@ OPENSSL_ia32_rdrand_bytes:
 .align	16
 OPENSSL_ia32_rdseed_bytes:
 .L_OPENSSL_ia32_rdseed_bytes_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%edi
 	pushl	%ebx
 	xorl	%eax,%eax
@@ -535,9 +613,26 @@ OPENSSL_ia32_rdseed_bytes:
 .size	OPENSSL_ia32_rdseed_bytes,.-.L_OPENSSL_ia32_rdseed_bytes_begin
 .hidden	OPENSSL_cpuid_setup
 .hidden	OPENSSL_ia32cap_P
-.comm	OPENSSL_ia32cap_P,16,4
+.comm	OPENSSL_ia32cap_P,40,4
 .section	.init
 	call	OPENSSL_cpuid_setup
+
+	.section ".note.gnu.property", "a"
+	.p2align 2
+	.long 1f - 0f
+	.long 4f - 1f
+	.long 5
+0:
+	.asciz "GNU"
+1:
+	.p2align 2
+	.long 0xc0000002
+	.long 3f - 2f
+2:
+	.long 3
+3:
+	.p2align 2
+4:
 #else
 .text
 .globl	OPENSSL_ia32_cpuid
@@ -545,6 +640,11 @@ OPENSSL_ia32_rdseed_bytes:
 .align	16
 OPENSSL_ia32_cpuid:
 .L_OPENSSL_ia32_cpuid_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -658,6 +758,24 @@ OPENSSL_ia32_cpuid:
 	xorl	%ecx,%ecx
 	.byte	0x0f,0xa2
 	movl	%ebx,8(%edi)
+	movl	%ecx,12(%edi)
+	movl	%edx,16(%edi)
+	cmpl	$1,%eax
+	jb	.L005no_extended_info
+	movl	$7,%eax
+	movl	$1,%ecx
+	.byte	0x0f,0xa2
+	movl	%eax,20(%edi)
+	movl	%edx,24(%edi)
+	movl	%ebx,28(%edi)
+	movl	%ecx,32(%edi)
+	andl	$524288,%edx
+	cmpl	$0,%edx
+	je	.L005no_extended_info
+	movl	$36,%eax
+	movl	$0,%ecx
+	.byte	0x0f,0xa2
+	movl	%ebx,36(%edi)
 .L005no_extended_info:
 	btl	$27,%ebp
 	jnc	.L006clear_avx
@@ -673,6 +791,7 @@ OPENSSL_ia32_cpuid:
 	andl	$4278190079,%esi
 .L006clear_avx:
 	andl	$4026525695,%ebp
+	andl	$4286578687,20(%edi)
 	andl	$4294967263,8(%edi)
 .L007done:
 	movl	%esi,%eax
@@ -689,6 +808,11 @@ OPENSSL_ia32_cpuid:
 .align	16
 OPENSSL_rdtsc:
 .L_OPENSSL_rdtsc_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	xorl	%eax,%eax
 	xorl	%edx,%edx
 	leal	OPENSSL_ia32cap_P,%ecx
@@ -703,6 +827,11 @@ OPENSSL_rdtsc:
 .align	16
 OPENSSL_instrument_halt:
 .L_OPENSSL_instrument_halt_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	leal	OPENSSL_ia32cap_P,%ecx
 	btl	$4,(%ecx)
 	jnc	.L010nohalt
@@ -732,6 +861,11 @@ OPENSSL_instrument_halt:
 .align	16
 OPENSSL_far_spin:
 .L_OPENSSL_far_spin_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushfl
 	popl	%eax
 	btl	$9,%eax
@@ -759,6 +893,11 @@ OPENSSL_far_spin:
 .align	16
 OPENSSL_wipe_cpu:
 .L_OPENSSL_wipe_cpu_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	xorl	%eax,%eax
 	xorl	%edx,%edx
 	leal	OPENSSL_ia32cap_P,%ecx
@@ -787,6 +926,11 @@ OPENSSL_wipe_cpu:
 .align	16
 OPENSSL_atomic_add:
 .L_OPENSSL_atomic_add_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	movl	4(%esp),%edx
 	movl	8(%esp),%ecx
 	pushl	%ebx
@@ -806,6 +950,11 @@ OPENSSL_atomic_add:
 .align	16
 OPENSSL_cleanse:
 .L_OPENSSL_cleanse_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	movl	4(%esp),%edx
 	movl	8(%esp),%ecx
 	xorl	%eax,%eax
@@ -843,6 +992,11 @@ OPENSSL_cleanse:
 .align	16
 CRYPTO_memcmp:
 .L_CRYPTO_memcmp_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%esi
 	pushl	%edi
 	movl	12(%esp),%esi
@@ -872,6 +1026,11 @@ CRYPTO_memcmp:
 .align	16
 OPENSSL_instrument_bus:
 .L_OPENSSL_instrument_bus_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -917,6 +1076,11 @@ OPENSSL_instrument_bus:
 .align	16
 OPENSSL_instrument_bus2:
 .L_OPENSSL_instrument_bus2_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%ebp
 	pushl	%ebx
 	pushl	%esi
@@ -975,6 +1139,11 @@ OPENSSL_instrument_bus2:
 .align	16
 OPENSSL_ia32_rdrand_bytes:
 .L_OPENSSL_ia32_rdrand_bytes_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%edi
 	pushl	%ebx
 	xorl	%eax,%eax
@@ -1018,6 +1187,11 @@ OPENSSL_ia32_rdrand_bytes:
 .align	16
 OPENSSL_ia32_rdseed_bytes:
 .L_OPENSSL_ia32_rdseed_bytes_begin:
+	#ifdef __CET__
+
+.byte	243,15,30,251
+	#endif
+
 	pushl	%edi
 	pushl	%ebx
 	xorl	%eax,%eax
@@ -1058,7 +1232,24 @@ OPENSSL_ia32_rdseed_bytes:
 .size	OPENSSL_ia32_rdseed_bytes,.-.L_OPENSSL_ia32_rdseed_bytes_begin
 .hidden	OPENSSL_cpuid_setup
 .hidden	OPENSSL_ia32cap_P
-.comm	OPENSSL_ia32cap_P,16,4
+.comm	OPENSSL_ia32cap_P,40,4
 .section	.init
 	call	OPENSSL_cpuid_setup
+
+	.section ".note.gnu.property", "a"
+	.p2align 2
+	.long 1f - 0f
+	.long 4f - 1f
+	.long 5
+0:
+	.asciz "GNU"
+1:
+	.p2align 2
+	.long 0xc0000002
+	.long 3f - 2f
+2:
+	.long 3
+3:
+	.p2align 2
+4:
 #endif

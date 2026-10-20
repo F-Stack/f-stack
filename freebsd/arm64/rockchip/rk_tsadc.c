@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Michal Meloun <mmel@FreeBSD.org>
  *
@@ -26,8 +26,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 /*
  * Thermometer and thermal zones driver for RockChip SoCs.
  * Calibration data are taken from Linux, because this part of SoC
@@ -46,14 +44,19 @@ __FBSDID("$FreeBSD$");
 
 #include <machine/bus.h>
 
-#include <dev/extres/clk/clk.h>
-#include <dev/extres/hwreset/hwreset.h>
-#include <dev/extres/syscon/syscon.h>
+#include <dev/clk/clk.h>
+#include <dev/hwreset/hwreset.h>
+#include <dev/syscon/syscon.h>
 #include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/ofw_bus_subr.h>
 
 #include "syscon_if.h"
 #include "rk_tsadc_if.h"
+
+/* Version of HW */
+#define	TSADC_V2				1
+#define	TSADC_V3				2
+#define	TSADC_V7				3
 
 /* Global registers */
 #define	TSADC_USER_CON				0x000
@@ -78,7 +81,7 @@ __FBSDID("$FreeBSD$");
 #define	TSADC_COMP0_LOW_INT			0x080	/* V3 only */
 #define	TSADC_COMP1_LOW_INT			0x084	/* V3 only */
 
-/* GFR Bits */
+/* V3 GFR registers */
 #define	GRF_SARADC_TESTBIT			0x0e644
 #define	 GRF_SARADC_TESTBIT_ON				(0x10001 << 2)
 #define GRF_TSADC_TESTBIT_L			0x0e648
@@ -86,6 +89,13 @@ __FBSDID("$FreeBSD$");
 #define	GRF_TSADC_TESTBIT_H			0x0e64c
 #define	 GRF_TSADC_VCM_EN_H				(0x10001 << 7)
 #define	 GRF_TSADC_TESTBIT_H_ON				(0x10001 << 2)
+
+/* V7 GRF register */
+#define	GRF_TSADC_CON				0x0600
+#define	 GRF_TSADC_ANA_REG0			(0x10001 << 0)
+#define	 GRF_TSADC_ANA_REG1			(0x10001 << 1)
+#define	 GRF_TSADC_ANA_REG2			(0x10001 << 2)
+#define	 GRF_TSADC_TSEN				(0x10001 << 8)
 
 #define	WR4(_sc, _r, _v)	bus_write_4((_sc)->mem_res, (_r), (_v))
 #define	RD4(_sc, _r)		bus_read_4((_sc)->mem_res, (_r))
@@ -109,7 +119,7 @@ struct tsadc_calib_info {
 };
 
 struct tsadc_conf {
-	int			use_syscon;
+	int			version;
 	int			q_sel_ntc;
 	int			shutdown_temp;
 	int			shutdown_mode;
@@ -127,7 +137,7 @@ struct tsadc_softc {
 
 	clk_t			tsadc_clk;
 	clk_t			apb_pclk_clk;
-	hwreset_t		hwreset;
+	hwreset_array_t		hwreset;
 	struct syscon		*grf;
 
 	struct tsadc_conf	*conf;
@@ -183,7 +193,7 @@ struct tsensor rk3288_tsensors[] = {
 };
 
 struct tsadc_conf rk3288_tsadc_conf = {
-	.use_syscon =		0,
+	.version =		TSADC_V2,
 	.q_sel_ntc =		0,
 	.shutdown_temp =	95000,
 	.shutdown_mode =	1, /* GPIO */
@@ -237,7 +247,7 @@ static struct tsensor rk3328_tsensors[] = {
 };
 
 static struct tsadc_conf rk3328_tsadc_conf = {
-	.use_syscon =		0,
+	.version =		TSADC_V2,
 	.q_sel_ntc =		1,
 	.shutdown_temp =	95000,
 	.shutdown_mode =	0, /* CRU */
@@ -293,7 +303,7 @@ static struct tsensor rk3399_tsensors[] = {
 };
 
 static struct tsadc_conf rk3399_tsadc_conf = {
-	.use_syscon =		1,
+	.version =		TSADC_V3,
 	.q_sel_ntc =		1,
 	.shutdown_temp =	95000,
 	.shutdown_mode =	1, /* GPIO */
@@ -306,10 +316,68 @@ static struct tsadc_conf rk3399_tsadc_conf = {
 	}
 };
 
+static struct rk_calib_entry rk3568_calib_data[] = {
+	{0, -40000},
+	{1584, -40000},
+	{1620, -35000},
+	{1652, -30000},
+	{1688, -25000},
+	{1720, -20000},
+	{1756, -15000},
+	{1788, -10000},
+	{1824, -5000},
+	{1856, 0},
+	{1892, 5000},
+	{1924, 10000},
+	{1956, 15000},
+	{1992, 20000},
+	{2024, 25000},
+	{2060, 30000},
+	{2092, 35000},
+	{2128, 40000},
+	{2160, 45000},
+	{2196, 50000},
+	{2228, 55000},
+	{2264, 60000},
+	{2300, 65000},
+	{2332, 70000},
+	{2368, 75000},
+	{2400, 80000},
+	{2436, 85000},
+	{2468, 90000},
+	{2500, 95000},
+	{2536, 100000},
+	{2572, 105000},
+	{2604, 110000},
+	{2636, 115000},
+	{2672, 120000},
+	{2704, 125000},
+};
+
+static struct tsensor rk3568_tsensors[] = {
+	{ .channel = 0, .id = 0, .name = "CPU"},
+	{ .channel = 1, .id = 1, .name = "GPU"},
+};
+
+static struct tsadc_conf rk3568_tsadc_conf = {
+	.version =		TSADC_V7,
+	.q_sel_ntc =		1,
+	.shutdown_temp =        95000,
+	.shutdown_mode =	1, /* GPIO */
+	.shutdown_pol =		0, /* Low  */
+	.tsensors =		rk3568_tsensors,
+	.ntsensors =		nitems(rk3568_tsensors),
+	.calib_info =	{
+			.table = rk3568_calib_data,
+			.nentries = nitems(rk3568_calib_data),
+	}
+};
+
 static struct ofw_compat_data compat_data[] = {
 	{"rockchip,rk3288-tsadc",	(uintptr_t)&rk3288_tsadc_conf},
 	{"rockchip,rk3328-tsadc",	(uintptr_t)&rk3328_tsadc_conf},
 	{"rockchip,rk3399-tsadc",	(uintptr_t)&rk3399_tsadc_conf},
+	{"rockchip,rk3568-tsadc",	(uintptr_t)&rk3568_tsadc_conf},
 	{NULL,		0}
 };
 
@@ -416,7 +484,7 @@ tsadc_init_tsensor(struct tsadc_softc *sc, struct tsensor *sensor)
 	WR4(sc, TSADC_INT_EN, val);
 
 	/* Shutdown temperature */
-	val =  tsadc_raw_to_temp(sc, sc->shutdown_temp);
+	val =  tsadc_temp_to_raw(sc, sc->shutdown_temp);
 	WR4(sc, TSADC_COMP_SHUT(sensor->channel), val);
 	val = RD4(sc, TSADC_AUTO_CON);
 	val |= TSADC_AUTO_SRC_EN(sensor->channel);
@@ -445,13 +513,15 @@ tsadc_init(struct tsadc_softc *sc)
 		val |= TSADC_AUTO_Q_SEL;
 	WR4(sc, TSADC_AUTO_CON, val);
 
-	if (!sc->conf->use_syscon) {
+	switch (sc->conf->version) {
+	case TSADC_V2:
 		/* V2 init */
 		WR4(sc, TSADC_AUTO_PERIOD, 250); 	/* 250 ms */
 		WR4(sc, TSADC_AUTO_PERIOD_HT, 50);	/*  50 ms */
 		WR4(sc, TSADC_HIGHT_INT_DEBOUNCE, 4);
 		WR4(sc, TSADC_HIGHT_TSHUT_DEBOUNCE, 4);
-	} else {
+		break;
+	case TSADC_V3:
 		/* V3 init */
 		if (sc->grf == NULL) {
 			/* Errata: adjust interleave to working value */
@@ -473,6 +543,26 @@ tsadc_init(struct tsadc_softc *sc)
 		WR4(sc, TSADC_AUTO_PERIOD_HT, 1875);	/* 2.5 ms */
 		WR4(sc, TSADC_HIGHT_INT_DEBOUNCE, 4);
 		WR4(sc, TSADC_HIGHT_TSHUT_DEBOUNCE, 4);
+		break;
+	case TSADC_V7:
+		/* V7 init */
+		WR4(sc, TSADC_USER_CON, 0xfc0);		/* 97us, at least 90us */
+		WR4(sc, TSADC_AUTO_PERIOD, 1622);	/* 2.5ms */
+		WR4(sc, TSADC_HIGHT_INT_DEBOUNCE, 4);
+		WR4(sc, TSADC_AUTO_PERIOD_HT, 1622);	/* 2.5ms */
+		WR4(sc, TSADC_HIGHT_TSHUT_DEBOUNCE, 4);
+		if (sc->grf) {
+			SYSCON_WRITE_4(sc->grf, GRF_TSADC_CON, GRF_TSADC_TSEN);
+			DELAY(15);			/* 10 usec min */
+			SYSCON_WRITE_4(sc->grf, GRF_TSADC_CON,
+			    GRF_TSADC_ANA_REG0);
+			SYSCON_WRITE_4(sc->grf, GRF_TSADC_CON,
+			    GRF_TSADC_ANA_REG1);
+			SYSCON_WRITE_4(sc->grf, GRF_TSADC_CON,
+			    GRF_TSADC_ANA_REG2);
+			DELAY(100);			/* 90 usec min */
+		}
+		break;
 	}
 }
 
@@ -485,13 +575,11 @@ tsadc_read_temp(struct tsadc_softc *sc, struct tsensor *sensor, int *temp)
 	*temp = tsadc_raw_to_temp(sc, val);
 
 #ifdef DEBUG
-	printf("%s: Sensor(id: %d, ch: %d), temp: %d\n", __func__,
-	    sensor->id, sensor->channel, *temp);
-	printf(" status: 0x%08X, 0x%08X\n",
-	    RD4(sc, TSADC_USER_CON),
-	    RD4(sc, TSADC_AUTO_CON));
-	printf(" Data: 0x%08X, 0x%08X, 0x%08X\n",
-	    RD4(sc, TSADC_DATA(sensor->channel)),
+	device_printf(sc->dev, "%s: Sensor(id: %d, ch: %d), val: %d temp: %d\n",
+	    __func__, sensor->id, sensor->channel, val, *temp);
+	device_printf(sc->dev, "%s: user_con=0x%08x auto_con=0x%08x "
+	    "comp_int=0x%08x comp_shut=0x%08x\n",
+	    __func__, RD4(sc, TSADC_USER_CON), RD4(sc, TSADC_AUTO_CON),
 	    RD4(sc, TSADC_COMP_INT(sensor->channel)),
 	    RD4(sc, TSADC_COMP_SHUT(sensor->channel)));
 #endif
@@ -646,9 +734,9 @@ tsadc_attach(device_t dev)
 	}
 
 	/* FDT resources */
-	rv = hwreset_get_by_ofw_name(dev, 0, "tsadc-apb", &sc->hwreset);
+	rv = hwreset_array_get_ofw(dev, 0, &sc->hwreset);
 	if (rv != 0) {
-		device_printf(dev, "Cannot get 'tsadc-apb' reset\n");
+		device_printf(dev, "Cannot get resets\n");
 		goto fail;
 	}
 	rv = clk_get_by_ofw_name(dev, 0, "tsadc", &sc->tsadc_clk);
@@ -685,7 +773,7 @@ tsadc_attach(device_t dev)
 		sc->shutdown_pol = sc->conf->shutdown_pol;
 
 	/* Wakeup controller */
-	rv = hwreset_assert(sc->hwreset);
+	rv = hwreset_array_assert(sc->hwreset);
 	if (rv != 0) {
 		device_printf(dev, "Cannot assert reset\n");
 		goto fail;
@@ -708,7 +796,7 @@ tsadc_attach(device_t dev)
 		device_printf(dev, "Cannot enable 'apb_pclk' clock: %d\n", rv);
 		goto fail;
 	}
-	rv = hwreset_deassert(sc->hwreset);
+	rv = hwreset_array_deassert(sc->hwreset);
 	if (rv != 0) {
 		device_printf(dev, "Cannot deassert reset\n");
 		goto fail;
@@ -730,7 +818,8 @@ tsadc_attach(device_t dev)
 	}
 
 	OF_device_register_xref(OF_xref_from_node(node), dev);
-	return (bus_generic_attach(dev));
+	bus_attach_children(dev);
+	return (0);
 
 fail_sysctl:
 	sysctl_ctx_free(&tsadc_sysctl_ctx);
@@ -742,7 +831,7 @@ fail:
 	if (sc->apb_pclk_clk != NULL)
 		clk_release(sc->apb_pclk_clk);
 	if (sc->hwreset != NULL)
-		hwreset_release(sc->hwreset);
+		hwreset_array_release(sc->hwreset);
 	if (sc->irq_res != NULL)
 		bus_release_resource(dev, SYS_RES_IRQ, 0, sc->irq_res);
 	if (sc->mem_res != NULL)
@@ -765,7 +854,7 @@ tsadc_detach(device_t dev)
 	if (sc->apb_pclk_clk != NULL)
 		clk_release(sc->apb_pclk_clk);
 	if (sc->hwreset != NULL)
-		hwreset_release(sc->hwreset);
+		hwreset_array_release(sc->hwreset);
 	if (sc->irq_res != NULL)
 		bus_release_resource(dev, SYS_RES_IRQ, 0, sc->irq_res);
 	if (sc->mem_res != NULL)
@@ -786,8 +875,7 @@ static device_method_t rk_tsadc_methods[] = {
 	DEVMETHOD_END
 };
 
-static devclass_t rk_tsadc_devclass;
 static DEFINE_CLASS_0(rk_tsadc, rk_tsadc_driver, rk_tsadc_methods,
     sizeof(struct tsadc_softc));
-EARLY_DRIVER_MODULE(rk_tsadc, simplebus, rk_tsadc_driver,
-    rk_tsadc_devclass, NULL, NULL, BUS_PASS_TIMER + BUS_PASS_ORDER_LAST);
+EARLY_DRIVER_MODULE(rk_tsadc, simplebus, rk_tsadc_driver, NULL, NULL,
+    BUS_PASS_TIMER + BUS_PASS_ORDER_LAST);

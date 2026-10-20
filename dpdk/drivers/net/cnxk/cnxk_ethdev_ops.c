@@ -70,6 +70,10 @@ cnxk_nix_info_get(struct rte_eth_dev *eth_dev, struct rte_eth_dev_info *devinfo)
 			    RTE_ETH_DEV_CAPA_FLOW_RULE_KEEP;
 
 	devinfo->max_rx_mempools = CNXK_NIX_NUM_POOLS_MAX;
+	if (eth_dev->data->dev_flags & RTE_ETH_DEV_REPRESENTOR) {
+		devinfo->switch_info.name = eth_dev->device->name;
+		devinfo->switch_info.domain_id = dev->switch_domain_id;
+	}
 
 	return 0;
 }
@@ -1327,4 +1331,14 @@ nix_priority_flow_ctrl_sq_conf(struct rte_eth_dev *eth_dev, uint16_t qid,
 	rc = roc_nix_pfc_mode_set(nix, &pfc_cfg);
 exit:
 	return rc;
+}
+
+int
+cnxk_nix_tx_descriptor_dump(const struct rte_eth_dev *eth_dev, uint16_t qid, uint16_t offset,
+			    uint16_t num, FILE *file)
+{
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	struct roc_nix *nix = &dev->nix;
+
+	return roc_nix_sq_desc_dump(nix, qid, offset, num, file);
 }

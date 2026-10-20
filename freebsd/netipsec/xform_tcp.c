@@ -30,8 +30,6 @@
 
 /* TCP MD5 Signature Option (RFC2385) */
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 #include "opt_ipsec.h"
@@ -55,6 +53,7 @@ __FBSDID("$FreeBSD$");
 #include <netinet/ip_var.h>
 #include <netinet/tcp.h>
 #include <netinet/tcp_var.h>
+#include <netinet/udp.h>
 
 #include <net/vnet.h>
 
@@ -86,7 +85,7 @@ tcp_ipsec_pcbctl(struct inpcb *inp, struct sockopt *sopt)
 
 	if (sopt->sopt_dir == SOPT_GET) {
 		INP_RLOCK(inp);
-		if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
+		if (inp->inp_flags & INP_DROPPED) {
 			INP_RUNLOCK(inp);
 			return (ECONNRESET);
 		}
@@ -104,7 +103,7 @@ tcp_ipsec_pcbctl(struct inpcb *inp, struct sockopt *sopt)
 
 	/* INP_WLOCK_RECHECK */
 	INP_WLOCK(inp);
-	if (inp->inp_flags & (INP_TIMEWAIT | INP_DROPPED)) {
+	if (inp->inp_flags & INP_DROPPED) {
 		INP_WUNLOCK(inp);
 		return (ECONNRESET);
 	}
@@ -136,15 +135,20 @@ ip_pseudo_compute(struct mbuf *m, MD5_CTX *ctx)
 {
 	struct ippseudo ipp;
 	struct ip *ip;
+	int hdr_len;
 
 	ip = mtod(m, struct ip *);
 	ipp.ippseudo_src.s_addr = ip->ip_src.s_addr;
 	ipp.ippseudo_dst.s_addr = ip->ip_dst.s_addr;
 	ipp.ippseudo_p = IPPROTO_TCP;
 	ipp.ippseudo_pad = 0;
-	ipp.ippseudo_len = htons(m->m_pkthdr.len - (ip->ip_hl << 2));
+	hdr_len = ip->ip_hl << 2;
+	if (ip->ip_p == IPPROTO_UDP)
+		/* TCP over UDP */
+		hdr_len += sizeof(struct udphdr);
+	ipp.ippseudo_len = htons(m->m_pkthdr.len - hdr_len);
 	MD5Update(ctx, (char *)&ipp, sizeof(ipp));
-	return (ip->ip_hl << 2);
+	return (hdr_len);
 }
 #endif
 
@@ -158,14 +162,20 @@ ip6_pseudo_compute(struct mbuf *m, MD5_CTX *ctx)
 		uint32_t nxt;
 	} ip6p __aligned(4);
 	struct ip6_hdr *ip6;
+	int hdr_len;
 
 	ip6 = mtod(m, struct ip6_hdr *);
 	ip6p.src = ip6->ip6_src;
 	ip6p.dst = ip6->ip6_dst;
-	ip6p.len = htonl(m->m_pkthdr.len - sizeof(*ip6)); /* XXX: ext headers */
+	hdr_len = sizeof(struct ip6_hdr);
+	if (ip6->ip6_nxt == IPPROTO_UDP)
+		/* TCP over UDP */
+		hdr_len += sizeof(struct udphdr);
+	/* XXX: ext headers */
+	ip6p.len = htonl(m->m_pkthdr.len - hdr_len);
 	ip6p.nxt = htonl(IPPROTO_TCP);
 	MD5Update(ctx, (char *)&ip6p, sizeof(ip6p));
-	return (sizeof(*ip6));
+	return (hdr_len);
 }
 #endif
 
@@ -230,7 +240,7 @@ setsockaddrs(const struct mbuf *m, union sockaddr_union *src,
 	switch (ip->ip_v) {
 #ifdef INET
 	case IPVERSION:
-		ipsec4_setsockaddrs(m, src, dst);
+		ipsec4_setsockaddrs(m, ip, src, dst);
 		break;
 #endif
 #ifdef INET6
@@ -251,7 +261,7 @@ setsockaddrs(const struct mbuf *m, union sockaddr_union *src,
  * th		pointer to TCP header
  * buf		pointer to storage for computed MD5 digest
  *
- * Return 0 if successful, otherwise return -1.
+ * Return 0 if successful, otherwise return error code.
  */
 static int
 tcp_ipsec_input(struct mbuf *m, struct tcphdr *th, u_char *buf)
@@ -267,6 +277,11 @@ tcp_ipsec_input(struct mbuf *m, struct tcphdr *th, u_char *buf)
 	sav = key_allocsa_tcpmd5(&saidx);
 	if (sav == NULL) {
 		KMOD_TCPSTAT_INC(tcps_sig_err_buildsig);
+		return (ENOENT);
+	}
+	if (buf == NULL) {
+		key_freesav(&sav);
+		KMOD_TCPSTAT_INC(tcps_sig_err_nosigopt);
 		return (EACCES);
 	}
 	/*
@@ -307,7 +322,7 @@ tcp_ipsec_output(struct mbuf *m, struct tcphdr *th, u_char *buf)
 	sav = key_allocsa_tcpmd5(&saidx);
 	if (sav == NULL) {
 		KMOD_TCPSTAT_INC(tcps_sig_err_buildsig);
-		return (EACCES);
+		return (ENOENT);
 	}
 	tcp_signature_compute(m, th, sav, buf);
 	key_freesav(&sav);

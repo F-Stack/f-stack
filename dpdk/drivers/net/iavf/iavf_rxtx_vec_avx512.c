@@ -623,18 +623,10 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 #ifndef RTE_LIBRTE_IAVF_16BYTE_RX_DESC
 #ifdef IAVF_RX_TS_OFFLOAD
 	uint8_t inflection_point = 0;
-	bool is_tsinit = false;
 	__m256i hw_low_last = _mm256_set_epi32(0, 0, 0, 0, 0, 0, 0, (uint32_t)rxq->phc_time);
 
 	if (rxq->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP) {
-		uint64_t sw_cur_time = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
-
-		if (unlikely(sw_cur_time - rxq->hw_time_update > 4)) {
-			hw_low_last = _mm256_setzero_si256();
-			is_tsinit = 1;
-		} else {
-			hw_low_last = _mm256_set_epi32(0, 0, 0, 0, 0, 0, 0, (uint32_t)rxq->phc_time);
-		}
+		hw_low_last = _mm256_set_epi32(0, 0, 0, 0, 0, 0, 0, (uint32_t)rxq->phc_time);
 	}
 #endif
 #endif
@@ -1353,11 +1345,9 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 					*RTE_MBUF_DYNFIELD(rx_pkts[i + 7],
 						iavf_timestamp_dynfield_offset, uint32_t *) = _mm256_extract_epi32(ts_low1, 7);
 
-					if (unlikely(is_tsinit)) {
+					{
 						uint32_t in_timestamp;
 
-						if (iavf_get_phc_time(rxq))
-							PMD_DRV_LOG(ERR, "get physical time failed");
 						in_timestamp = *RTE_MBUF_DYNFIELD(rx_pkts[i + 0],
 										iavf_timestamp_dynfield_offset, uint32_t *);
 						rxq->phc_time = iavf_tstamp_convert_32b_64b(rxq->phc_time, in_timestamp);
@@ -1596,8 +1586,6 @@ _iavf_recv_raw_pkts_vec_avx512_flex_rxd(struct iavf_rx_queue *rxq,
 				PMD_DRV_LOG(ERR, "invalid inflection point for rx timestamp");
 				break;
 			}
-
-			rxq->hw_time_update = rte_get_timer_cycles() / (rte_get_timer_hz() / 1000);
 		}
 #endif
 #endif
@@ -1999,7 +1987,7 @@ iavf_vtx(volatile struct iavf_tx_desc *txdp,
 	/* if unaligned on 32-bit boundary, do one to align */
 	if (((uintptr_t)txdp & 0x1F) != 0 && nb_pkts != 0) {
 		iavf_vtx1(txdp, *pkt, flags, offload);
-		nb_pkts--, txdp++, pkt++;
+		nb_pkts--; txdp++; pkt++;
 	}
 
 	/* do 4 at a time while possible, in bursts */
@@ -2043,7 +2031,7 @@ iavf_vtx(volatile struct iavf_tx_desc *txdp,
 	/* do any last ones */
 	while (nb_pkts) {
 		iavf_vtx1(txdp, *pkt, flags, offload);
-		txdp++, pkt++, nb_pkts--;
+		txdp++; pkt++; nb_pkts--;
 	}
 }
 
@@ -2213,6 +2201,9 @@ ctx_vtx1(volatile struct iavf_tx_desc *txdp, struct rte_mbuf *pkt,
 			low_ctx_qw |= (uint64_t)pkt->vlan_tci << IAVF_TXD_CTX_QW0_L2TAG2_PARAM;
 		}
 	}
+	if (IAVF_CHECK_TX_LLDP(pkt))
+		high_ctx_qw |= IAVF_TX_CTX_DESC_SWTCH_UPLINK
+			<< IAVF_TXD_CTX_QW1_CMD_SHIFT;
 	uint64_t high_data_qw = (IAVF_TX_DESC_DTYPE_DATA |
 				((uint64_t)flags  << IAVF_TXD_QW1_CMD_SHIFT) |
 				((uint64_t)pkt->data_len << IAVF_TXD_QW1_TX_BUF_SZ_SHIFT));
@@ -2236,7 +2227,7 @@ ctx_vtx(volatile struct iavf_tx_desc *txdp,
 	/* if unaligned on 32-bit boundary, do one to align */
 	if (((uintptr_t)txdp & 0x1F) != 0 && nb_pkts != 0) {
 		ctx_vtx1(txdp, *pkt, flags, offload, vlan_flag);
-		nb_pkts--, txdp++, pkt++;
+		nb_pkts--; txdp++; pkt++;
 	}
 
 	for (; nb_pkts > 1; txdp += 4, pkt += 2, nb_pkts -= 2) {
@@ -2265,6 +2256,9 @@ ctx_vtx(volatile struct iavf_tx_desc *txdp,
 					(uint64_t)pkt[1]->vlan_tci << IAVF_TXD_QW1_L2TAG1_SHIFT;
 			}
 		}
+		if (IAVF_CHECK_TX_LLDP(pkt[1]))
+			hi_ctx_qw1 |= IAVF_TX_CTX_DESC_SWTCH_UPLINK
+				<< IAVF_TXD_CTX_QW1_CMD_SHIFT;
 
 		if (pkt[0]->ol_flags & RTE_MBUF_F_TX_VLAN) {
 			if (vlan_flag & IAVF_TX_FLAGS_VLAN_TAG_LOC_L2TAG2) {
@@ -2277,6 +2271,9 @@ ctx_vtx(volatile struct iavf_tx_desc *txdp,
 					(uint64_t)pkt[0]->vlan_tci << IAVF_TXD_QW1_L2TAG1_SHIFT;
 			}
 		}
+		if (IAVF_CHECK_TX_LLDP(pkt[0]))
+			hi_ctx_qw0 |= IAVF_TX_CTX_DESC_SWTCH_UPLINK
+				<< IAVF_TXD_CTX_QW1_CMD_SHIFT;
 
 		if (offload) {
 			iavf_txd_enable_offload(pkt[1], &hi_data_qw1);
@@ -2526,4 +2523,11 @@ iavf_xmit_pkts_vec_avx512_ctx_offload(void *tx_queue, struct rte_mbuf **tx_pkts,
 				  uint16_t nb_pkts)
 {
 	return iavf_xmit_pkts_vec_avx512_ctx_cmn(tx_queue, tx_pkts, nb_pkts, true);
+}
+
+uint16_t
+iavf_xmit_pkts_vec_avx512_ctx(void *tx_queue, struct rte_mbuf **tx_pkts,
+				  uint16_t nb_pkts)
+{
+	return iavf_xmit_pkts_vec_avx512_ctx_cmn(tx_queue, tx_pkts, nb_pkts, false);
 }

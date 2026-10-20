@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008-2011 Robert N. M. Watson
  * Copyright (c) 2010-2011 Jonathan Anderson
@@ -50,16 +50,15 @@
  * derived from existing capabilities, but only if they have the same or a
  * strict subset of the rights on the original capability.
  *
- * System calls permitted in capability mode are defined in capabilities.conf;
- * calls must be carefully audited for safety to ensure that they don't allow
- * escape from a sandbox.  Some calls permit only a subset of operations in
- * capability mode -- for example, shm_open(2) is limited to creating
- * anonymous, rather than named, POSIX shared memory objects.
+ * System calls permitted in capability mode are defined by CAPENABLED
+ * flags in syscalls.master; calls must be carefully audited for safety
+ * to ensure that they don't allow escape from a sandbox.  Some calls
+ * permit only a subset of operations in capability mode -- for example,
+ * shm_open(2) is limited to creating anonymous, rather than named,
+ * POSIX shared memory objects.
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_capsicum.h"
 #include "opt_ktrace.h"
 
@@ -87,7 +86,7 @@ __FBSDID("$FreeBSD$");
 
 bool __read_frequently trap_enotcap;
 SYSCTL_BOOL(_kern, OID_AUTO, trap_enotcap, CTLFLAG_RWTUN, &trap_enotcap, 0,
-    "Deliver SIGTRAP on ENOTCAPABLE");
+    "Deliver SIGTRAP on ECAPMODE and ENOTCAPABLE");
 
 #ifdef CAPABILITY_MODE
 
@@ -156,14 +155,13 @@ MALLOC_DECLARE(M_FILECAPS);
 
 static inline int
 _cap_check(const cap_rights_t *havep, const cap_rights_t *needp,
-    enum ktr_cap_fail_type type)
+    enum ktr_cap_violation type)
 {
+	const cap_rights_t rights[] = { *needp, *havep };
 
 	if (!cap_rights_contains(havep, needp)) {
-#ifdef KTRACE
-		if (KTRPOINT(curthread, KTR_CAPFAIL))
-			ktrcapfail(type, needp, havep);
-#endif
+		if (CAP_TRACING(curthread))
+			ktrcapfail(type, rights);
 		return (ENOTCAPABLE);
 	}
 	return (0);
@@ -182,11 +180,10 @@ cap_check(const cap_rights_t *havep, const cap_rights_t *needp)
 int
 cap_check_failed_notcapable(const cap_rights_t *havep, const cap_rights_t *needp)
 {
+	const cap_rights_t rights[] = { *needp, *havep };
 
-#ifdef KTRACE
-	if (KTRPOINT(curthread, KTR_CAPFAIL))
-		ktrcapfail(CAPFAIL_NOTCAPABLE, needp, havep);
-#endif
+	if (CAP_TRACING(curthread))
+		ktrcapfail(CAPFAIL_NOTCAPABLE, rights);
 	return (ENOTCAPABLE);
 }
 
@@ -239,7 +236,7 @@ kern_cap_rights_limit(struct thread *td, int fd, cap_rights_t *rights)
 
 	fdp = td->td_proc->p_fd;
 	FILEDESC_XLOCK(fdp);
-	fdep = fdeget_locked(fdp, fd);
+	fdep = fdeget_noref(fdp, fd);
 	if (fdep == NULL) {
 		FILEDESC_XUNLOCK(fdp);
 		return (EBADF);
@@ -325,7 +322,7 @@ sys___cap_rights_get(struct thread *td, struct __cap_rights_get_args *uap)
 
 	fdp = td->td_proc->p_fd;
 	FILEDESC_SLOCK(fdp);
-	if (fget_locked(fdp, fd) == NULL) {
+	if (fget_noref(fdp, fd) == NULL) {
 		FILEDESC_SUNLOCK(fdp);
 		return (EBADF);
 	}
@@ -367,7 +364,7 @@ cap_ioctl_check(struct filedesc *fdp, int fd, u_long cmd)
 	KASSERT(fd >= 0 && fd < fdp->fd_nfiles,
 		("%s: invalid fd=%d", __func__, fd));
 
-	fdep = fdeget_locked(fdp, fd);
+	fdep = fdeget_noref(fdp, fd);
 	KASSERT(fdep != NULL,
 	    ("%s: invalid fd=%d", __func__, fd));
 
@@ -433,7 +430,7 @@ kern_cap_ioctls_limit(struct thread *td, int fd, u_long *cmds, size_t ncmds)
 	fdp = td->td_proc->p_fd;
 	FILEDESC_XLOCK(fdp);
 
-	fdep = fdeget_locked(fdp, fd);
+	fdep = fdeget_noref(fdp, fd);
 	if (fdep == NULL) {
 		error = EBADF;
 		goto out;
@@ -509,7 +506,7 @@ sys_cap_ioctls_get(struct thread *td, struct cap_ioctls_get_args *uap)
 	}
 
 	FILEDESC_SLOCK(fdp);
-	fdep = fdeget_locked(fdp, fd);
+	fdep = fdeget_noref(fdp, fd);
 	if (fdep == NULL) {
 		error = EBADF;
 		FILEDESC_SUNLOCK(fdp);
@@ -593,7 +590,7 @@ sys_cap_fcntls_limit(struct thread *td, struct cap_fcntls_limit_args *uap)
 	fdp = td->td_proc->p_fd;
 	FILEDESC_XLOCK(fdp);
 
-	fdep = fdeget_locked(fdp, fd);
+	fdep = fdeget_noref(fdp, fd);
 	if (fdep == NULL) {
 		FILEDESC_XUNLOCK(fdp);
 		return (EBADF);
@@ -626,7 +623,7 @@ sys_cap_fcntls_get(struct thread *td, struct cap_fcntls_get_args *uap)
 
 	fdp = td->td_proc->p_fd;
 	FILEDESC_SLOCK(fdp);
-	fdep = fdeget_locked(fdp, fd);
+	fdep = fdeget_noref(fdp, fd);
 	if (fdep == NULL) {
 		FILEDESC_SUNLOCK(fdp);
 		return (EBADF);

@@ -468,41 +468,41 @@ error:
 }
 
 void
-tunable_int_init(void *data)
+tunable_int_init(const void *data)
 {
-    struct tunable_int *d = (struct tunable_int *)data;
+    const struct tunable_int *d = (const struct tunable_int *)data;
 
     TUNABLE_INT_FETCH(d->path, d->var);
 }
 
 void
-tunable_long_init(void *data)
+tunable_long_init(const void *data)
 {
-    struct tunable_long *d = (struct tunable_long *)data;
+    const struct tunable_long *d = (const struct tunable_long *)data;
 
     TUNABLE_LONG_FETCH(d->path, d->var);
 }
 
 void
-tunable_ulong_init(void *data)
+tunable_ulong_init(const void *data)
 {
-    struct tunable_ulong *d = (struct tunable_ulong *)data;
+    const struct tunable_ulong *d = (const struct tunable_ulong *)data;
 
     TUNABLE_ULONG_FETCH(d->path, d->var);
 }
 
 void
-tunable_quad_init(void *data)
+tunable_quad_init(const void *data)
 {
-    struct tunable_quad *d = (struct tunable_quad *)data;
+    const struct tunable_quad *d = (const struct tunable_quad *)data;
 
     TUNABLE_QUAD_FETCH(d->path, d->var);
 }
 
 void
-tunable_str_init(void *data)
+tunable_str_init(const void *data)
 {
-    struct tunable_str *d = (struct tunable_str *)data;
+    const struct tunable_str *d = (const struct tunable_str *)data;
 
     TUNABLE_STR_FETCH(d->path, d->var, d->size);
 }

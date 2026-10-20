@@ -28,10 +28,8 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
+#include <sys/disk.h>
 #include <sys/kernel.h>
 #include <sys/systm.h>
 #include <sys/bio.h>
@@ -51,17 +49,9 @@ SDT_PROVIDER_DEFINE(io);
 
 SDT_PROBE_DEFINE2(io, , , start, "struct bio *", "struct devstat *");
 SDT_PROBE_DEFINE2(io, , , done, "struct bio *", "struct devstat *");
-SDT_PROBE_DEFINE2(io, , , wait__start, "struct bio *",
-    "struct devstat *");
-SDT_PROBE_DEFINE2(io, , , wait__done, "struct bio *",
-    "struct devstat *");
 
-#define	DTRACE_DEVSTAT_START()		SDT_PROBE2(io, , , start, NULL, ds)
 #define	DTRACE_DEVSTAT_BIO_START()	SDT_PROBE2(io, , , start, bp, ds)
-#define	DTRACE_DEVSTAT_DONE()		SDT_PROBE2(io, , , done, NULL, ds)
 #define	DTRACE_DEVSTAT_BIO_DONE()	SDT_PROBE2(io, , , done, bp, ds)
-#define	DTRACE_DEVSTAT_WAIT_START()	SDT_PROBE2(io, , , wait__start, NULL, ds)
-#define	DTRACE_DEVSTAT_WAIT_DONE()	SDT_PROBE2(io, , , wait__done, NULL, ds)
 
 static int devstat_num_devs;
 static long devstat_generation = 1;
@@ -244,7 +234,6 @@ devstat_start_transaction(struct devstat *ds, const struct bintime *now)
 			binuptime(&ds->busy_from);
 	}
 	atomic_add_rel_int(&ds->sequence0, 1);
-	DTRACE_DEVSTAT_START();
 }
 
 void
@@ -340,7 +329,6 @@ devstat_end_transaction(struct devstat *ds, uint32_t bytes,
 
 	ds->end_count++;
 	atomic_add_rel_int(&ds->sequence0, 1);
-	DTRACE_DEVSTAT_DONE();
 }
 
 void
@@ -473,10 +461,12 @@ SYSCTL_INT(_kern_devstat, OID_AUTO, version, CTLFLAG_RD,
 
 #define statsperpage (PAGE_SIZE / sizeof(struct devstat))
 
+static d_ioctl_t devstat_ioctl;
 static d_mmap_t devstat_mmap;
 
 static struct cdevsw devstat_cdevsw = {
 	.d_version =	D_VERSION,
+	.d_ioctl =	devstat_ioctl,
 	.d_mmap =	devstat_mmap,
 	.d_name =	"devstat",
 };
@@ -487,8 +477,25 @@ struct statspage {
 	u_int			nfree;
 };
 
+static size_t pagelist_pages = 0;
 static TAILQ_HEAD(, statspage)	pagelist = TAILQ_HEAD_INITIALIZER(pagelist);
 static MALLOC_DEFINE(M_DEVSTAT, "devstat", "Device statistics");
+
+static int
+devstat_ioctl(struct cdev *dev, u_long cmd, caddr_t data, int fflag,
+    struct thread *td)
+{
+	int error = ENOTTY;
+
+	switch (cmd) {
+	case DIOCGMEDIASIZE:
+		error = 0;
+		*(off_t *)data = pagelist_pages * PAGE_SIZE;
+		break;
+	}
+
+	return (error);
+}
 
 static int
 devstat_mmap(struct cdev *dev, vm_ooffset_t offset, vm_paddr_t *paddr,
@@ -556,6 +563,7 @@ devstat_alloc(void)
 			 * head but the order on the list determine the
 			 * sequence of the mapping so we can't do that.
 			 */
+			pagelist_pages++;
 			TAILQ_INSERT_TAIL(&pagelist, spp, list);
 		} else
 			break;
@@ -591,5 +599,4 @@ devstat_free(struct devstat *dsp)
 	}
 }
 
-SYSCTL_INT(_debug_sizeof, OID_AUTO, devstat, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct devstat), "sizeof(struct devstat)");
+SYSCTL_SIZEOF_STRUCT(devstat);

@@ -11,8 +11,10 @@
 libraries = [
         'log',
         'kvargs', # eal depends on kvargs
+        'argparse',
         'telemetry', # basic info querying
         'eal', # everything depends on eal
+        'ptr_compress',
         'ring',
         'rcu', # rcu depends on ring
         'mempool',
@@ -67,59 +69,23 @@ libraries = [
         'node',
 ]
 
-if is_ms_compiler
-    libraries = [
-            'log',
-            'kvargs',
-            'telemetry',
-    ]
-endif
-
-optional_libs = [
-        'bbdev',
-        'bitratestats',
-        'bpf',
-        'cfgfile',
-        'compressdev',
-        'cryptodev',
-        'dispatcher',
-        'distributor',
-        'dmadev',
-        'efd',
-        'eventdev',
-        'gpudev',
-        'graph',
-        'gro',
-        'gso',
-        'ip_frag',
-        'ipsec',
-        'jobstats',
-        'latencystats',
-        'member',
-        'metrics',
-        'mldev',
-        'node',
-        'pcapng',
-        'pdcp',
-        'pdump',
-        'pipeline',
-        'port',
-        'power',
-        'rawdev',
-        'regexdev',
-        'reorder',
-        'sched',
-        'security',
-        'table',
-        'vhost',
+always_enable = [
+        'cmdline',
+        'eal',
+        'ethdev',
+        'hash',
+        'kvargs',
+        'log',
+        'mbuf',
+        'mempool',
+        'meter',
+        'net',
+        'pci',
+        'rcu',
+        'ring',
+        'stack',
+        'telemetry',
 ]
-
-always_enable = []
-foreach l:libraries
-    if not optional_libs.contains(l)
-        always_enable += l
-    endif
-endforeach
 
 enable_deprecated_libs = []
 foreach l:run_command(list_dir_globs, get_option('enable_deprecated_libs'),
@@ -136,9 +102,10 @@ enable_libs = run_command(list_dir_globs, get_option('enable_libs'), check: true
 require_libs = true
 if enable_libs.length() == 0
     require_libs = false
-    enable_libs += optional_libs
+    enable_libs = libraries
+else
+    enable_libs += always_enable
 endif
-enable_libs += always_enable
 
 default_cflags = machine_args
 default_cflags += ['-DALLOW_EXPERIMENTAL_API']
@@ -246,6 +213,22 @@ foreach l:libraries
     includes += include_directories(l)
     dpdk_includes += include_directories(l)
 
+    # special case for header only libraries
+    if sources.length() == 0
+        shared_dep = declare_dependency(include_directories: includes,
+                dependencies: shared_deps)
+        static_dep = declare_dependency(include_directories: includes,
+                dependencies: static_deps)
+        set_variable('shared_rte_' + name, shared_dep)
+        set_variable('static_rte_' + name, static_dep)
+        dpdk_shared_lib_deps += shared_dep
+        dpdk_static_lib_deps += static_dep
+        if developer_mode
+            message('lib/@0@: Defining dependency "@1@"'.format(l, name))
+        endif
+        continue
+    endif
+
     if developer_mode and is_windows and use_function_versioning
         message('@0@: Function versioning is not supported by Windows.'.format(name))
     endif
@@ -293,14 +276,8 @@ foreach l:libraries
 
         if is_ms_compiler
             lk_args = ['/def:' + def_file.full_path()]
-            if meson.version().version_compare('<0.54.0')
-                lk_args += ['/implib:lib\\librte_' + l + '.dll.a']
-            endif
         else
             lk_args = ['-Wl,/def:' + def_file.full_path()]
-            if meson.version().version_compare('<0.54.0')
-                lk_args += ['-Wl,/implib:lib\\librte_' + l + '.dll.a']
-            endif
         endif
     else
         if is_windows

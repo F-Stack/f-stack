@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 The FreeBSD Foundation
  *
@@ -41,6 +41,7 @@
 #include <machine/pcb.h>
 
 #include <gdb/gdb.h>
+#include <gdb/gdb_int.h>
 
 void *
 gdb_cpu_getreg(int regnum, size_t *regsz)
@@ -54,15 +55,19 @@ gdb_cpu_getreg(int regnum, size_t *regsz)
 		case GDB_REG_SP:   return (&kdb_frame->tf_sp);
 		case GDB_REG_PC:   return (&kdb_frame->tf_elr);
 		case GDB_REG_CSPR: return (&kdb_frame->tf_spsr);
+		default:
+			if (regnum >= GDB_REG_X0 && regnum <= GDB_REG_X29)
+				return (&kdb_frame->tf_x[regnum - GDB_REG_X0]);
+			break;
 		}
 	}
 	switch (regnum) {
 	case GDB_REG_SP: return (&kdb_thrctx->pcb_sp);
 	case GDB_REG_PC: /* FALLTHROUGH */
-	case GDB_REG_LR: return (&kdb_thrctx->pcb_lr);
+	case GDB_REG_LR: return (&kdb_thrctx->pcb_x[PCB_LR]);
 	default:
-		if (regnum >= GDB_REG_X0 && regnum <= GDB_REG_X29)
-			return (&kdb_thrctx->pcb_x[regnum]);
+		if (regnum >= GDB_REG_X19 && regnum <= GDB_REG_X29)
+			return (&kdb_thrctx->pcb_x[regnum - GDB_REG_X19]);
 		break;
 	}
 
@@ -88,11 +93,11 @@ gdb_cpu_setreg(int regnum, void *val)
 	}
 	switch (regnum) {
 	case GDB_REG_PC: /* FALLTHROUGH */
-	case GDB_REG_LR: kdb_thrctx->pcb_lr = regval; break;
+	case GDB_REG_LR: kdb_thrctx->pcb_x[PCB_LR] = regval; break;
 	case GDB_REG_SP: kdb_thrctx->pcb_sp = regval; break;
 	default:
-		if (regnum >= GDB_REG_X0 && regnum <= GDB_REG_X29) {
-			kdb_thrctx->pcb_x[regnum] = regval;
+		if (regnum >= GDB_REG_X19 && regnum <= GDB_REG_X29) {
+			kdb_thrctx->pcb_x[regnum - GDB_REG_X19] = regval;
 		}
 		break;
 	}
@@ -105,8 +110,27 @@ gdb_cpu_signal(int type, int code __unused)
 	switch (type) {
 	case EXCP_WATCHPT_EL1:
 	case EXCP_SOFTSTP_EL1:
+	case EXCP_BRKPT_EL1:
 	case EXCP_BRK:
 		return (SIGTRAP);
 	}
 	return (SIGEMT);
+}
+
+void
+gdb_cpu_stop_reason(int type, int code __unused)
+{
+
+	switch (type) {
+	case EXCP_WATCHPT_EL1:
+		gdb_tx_str("watch:");
+		gdb_tx_varhex((uintmax_t)READ_SPECIALREG(far_el1));
+		gdb_tx_char(';');
+		break;
+	case EXCP_BRKPT_EL1:
+		gdb_tx_str("hwbreak:;");
+		break;
+	default:
+		break;
+	}
 }

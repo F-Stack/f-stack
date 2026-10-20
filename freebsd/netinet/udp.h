@@ -28,13 +28,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)udp.h	8.1 (Berkeley) 6/10/93
- * $FreeBSD$
  */
 
 #ifndef _NETINET_UDP_H_
 #define	_NETINET_UDP_H_
+
+#include <sys/types.h>
 
 /*
  * UDP protocol header.
@@ -45,7 +44,7 @@ struct udphdr {
 	u_short	uh_dport;		/* destination port */
 	u_short	uh_ulen;		/* udp length */
 	u_short	uh_sum;			/* udp checksum */
-};
+} __packed;
 
 /*
  * User-settable options (used with setsockopt).

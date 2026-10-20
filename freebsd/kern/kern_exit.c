@@ -32,13 +32,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)kern_exit.c	8.7 (Berkeley) 2/12/94
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_ktrace.h"
 
@@ -66,6 +62,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sched.h>
 #include <sys/sx.h>
 #include <sys/syscallsubr.h>
+#include <sys/sysctl.h>
 #include <sys/syslog.h>
 #include <sys/ptrace.h>
 #include <sys/acct.h>		/* for acct_process() function prototype */
@@ -75,7 +72,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/sem.h>
 #include <sys/sysent.h>
 #include <sys/timers.h>
-#include <sys/umtx.h>
+#include <sys/umtxvar.h>
 #ifdef KTRACE
 #include <sys/ktrace.h>
 #endif
@@ -98,6 +95,16 @@ dtrace_execexit_func_t	dtrace_fasttrap_exit;
 
 SDT_PROVIDER_DECLARE(proc);
 SDT_PROBE_DEFINE1(proc, , , exit, "int");
+
+static int kern_kill_on_dbg_exit = 1;
+SYSCTL_INT(_kern, OID_AUTO, kill_on_debugger_exit, CTLFLAG_RWTUN,
+    &kern_kill_on_dbg_exit, 0,
+    "Kill ptraced processes when debugger exits");
+
+static bool kern_wait_dequeue_sigchld = 1;
+SYSCTL_BOOL(_kern, OID_AUTO, wait_dequeue_sigchld, CTLFLAG_RWTUN,
+    &kern_wait_dequeue_sigchld, 0,
+    "Dequeue SIGCHLD on wait(2) for live process");
 
 struct proc *
 proc_realparent(struct proc *child)
@@ -125,7 +132,7 @@ reaper_abandon_children(struct proc *p, bool exiting)
 {
 	struct proc *p1, *p2, *ptmp;
 
-	sx_assert(&proctree_lock, SX_LOCKED);
+	sx_assert(&proctree_lock, SX_XLOCKED);
 	KASSERT(p != initproc, ("reaper_abandon_children for initproc"));
 	if ((p->p_treeflag & P_TREE_REAPER) == 0)
 		return;
@@ -184,15 +191,29 @@ proc_clear_orphan(struct proc *p)
 	p->p_treeflag &= ~P_TREE_ORPHANED;
 }
 
+void
+exit_onexit(struct proc *p)
+{
+	MPASS(p->p_numthreads == 1);
+	umtx_thread_exit(FIRST_THREAD_IN_PROC(p));
+}
+
 /*
  * exit -- death of process.
  */
-void
-sys_sys_exit(struct thread *td, struct sys_exit_args *uap)
+int
+sys__exit(struct thread *td, struct _exit_args *uap)
 {
 
 	exit1(td, uap->rval, 0);
-	/* NOTREACHED */
+	__unreachable();
+}
+
+void
+proc_set_p2_wexit(struct proc *p)
+{
+	PROC_LOCK_ASSERT(p, MA_OWNED);
+	p->p_flag2 |= P2_WEXIT;
 }
 
 /*
@@ -210,13 +231,15 @@ exit1(struct thread *td, int rval, int signo)
 
 	mtx_assert(&Giant, MA_NOTOWNED);
 	KASSERT(rval == 0 || signo == 0, ("exit1 rv %d sig %d", rval, signo));
+	TSPROCEXIT(td->td_proc->p_pid);
 
 	p = td->td_proc;
 	/*
-	 * XXX in case we're rebooting we just let init die in order to
-	 * work around an unsolved stack overflow seen very late during
-	 * shutdown on sparc64 when the gmirror worker process exists.
-	 * XXX what to do now that sparc64 is gone... remove if?
+	 * In case we're rebooting we just let init die in order to
+	 * work around an issues where pid 1 might get a fatal signal.
+	 * For instance, if network interface serving NFS root is
+	 * going down due to reboot, page-in requests for text are
+	 * failing.
 	 */
 	if (p == initproc && rebooting == 0) {
 		printf("init died (signal %d, exit %d)\n", signo, rval);
@@ -224,14 +247,18 @@ exit1(struct thread *td, int rval, int signo)
 	}
 
 	/*
-	 * Deref SU mp, since the thread does not return to userspace.
+	 * Process deferred operations, designated with ASTF_KCLEAR.
+	 * For instance, we need to deref SU mp, since the thread does
+	 * not return to userspace, and wait for geom to stabilize.
 	 */
-	td_softdep_cleanup(td);
+	ast_kclear(td);
 
 	/*
 	 * MUST abort all other threads before proceeding past here.
 	 */
 	PROC_LOCK(p);
+	proc_set_p2_wexit(p);
+
 	/*
 	 * First check if some other thread or external request got
 	 * here before us.  If so, act appropriately: exit or suspend.
@@ -244,16 +271,15 @@ exit1(struct thread *td, int rval, int signo)
 		 * Kill off the other threads. This requires
 		 * some co-operation from other parts of the kernel
 		 * so it may not be instantaneous.  With this state set
-		 * any thread entering the kernel from userspace will
-		 * thread_exit() in trap().  Any thread attempting to
+		 * any thread attempting to interruptibly
 		 * sleep will return immediately with EINTR or EWOULDBLOCK
 		 * which will hopefully force them to back out to userland
 		 * freeing resources as they go.  Any thread attempting
-		 * to return to userland will thread_exit() from userret().
+		 * to return to userland will thread_exit() from ast().
 		 * thread_exit() will unsuspend us when the last of the
 		 * other threads exits.
 		 * If there is already a thread singler after resumption,
-		 * calling thread_single will fail; in that case, we just
+		 * calling thread_single() will fail; in that case, we just
 		 * re-check all suspension request, the thread should
 		 * either be suspended there or exit.
 		 */
@@ -329,9 +355,6 @@ exit1(struct thread *td, int rval, int signo)
 
 	itimers_exit(p);
 
-	if (p->p_sysent->sv_onexit != NULL)
-		p->p_sysent->sv_onexit(p);
-
 	/*
 	 * Check if any loadable modules need anything done at process exit.
 	 * E.g. SYSV IPC stuff.
@@ -352,17 +375,18 @@ exit1(struct thread *td, int rval, int signo)
 	 * Stop the real interval timer.  If the handler is currently
 	 * executing, prevent it from rearming itself and let it finish.
 	 */
+	p->p_flag2 &= ~P2_ITSTOPPED;
 	if (timevalisset(&p->p_realtimer.it_value) &&
-	    _callout_stop_safe(&p->p_itcallout, CS_EXECUTING, NULL) == 0) {
+	    callout_stop(&p->p_itcallout) == 0) {
 		timevalclear(&p->p_realtimer.it_interval);
-		msleep(&p->p_itcallout, &p->p_mtx, PWAIT, "ritwait", 0);
-		KASSERT(!timevalisset(&p->p_realtimer.it_value),
-		    ("realtime timer is still armed"));
+		PROC_UNLOCK(p);
+		callout_drain(&p->p_itcallout);
+	} else {
+		PROC_UNLOCK(p);
 	}
 
-	PROC_UNLOCK(p);
-
-	umtx_thread_exit(td);
+	if (p->p_sysent->sv_onexit != NULL)
+		p->p_sysent->sv_onexit(p);
 	seltdfini(td);
 
 	/*
@@ -379,13 +403,6 @@ exit1(struct thread *td, int rval, int signo)
 	fdescfree(td);
 
 	/*
-	 * If this thread tickled GEOM, we need to wait for the giggling to
-	 * stop before we return to userland
-	 */
-	if (td->td_pflags & TDP_GEOM)
-		g_waitidle();
-
-	/*
 	 * Remove ourself from our leader's peer list and wake our leader.
 	 */
 	if (p->p_leader->p_peers != NULL) {
@@ -400,6 +417,7 @@ exit1(struct thread *td, int rval, int signo)
 		mtx_unlock(&ppeers_lock);
 	}
 
+	exec_free_abi_mappings(p);
 	vmspace_exit(td);
 	(void)acct_process(td);
 
@@ -407,11 +425,19 @@ exit1(struct thread *td, int rval, int signo)
 	ktrprocexit(td);
 #endif
 	/*
-	 * Release reference to text vnode
+	 * Release reference to text vnode etc
 	 */
 	if (p->p_textvp != NULL) {
 		vrele(p->p_textvp);
 		p->p_textvp = NULL;
+	}
+	if (p->p_textdvp != NULL) {
+		vrele(p->p_textdvp);
+		p->p_textdvp = NULL;
+	}
+	if (p->p_binname != NULL) {
+		free(p->p_binname, M_PARGS);
+		p->p_binname = NULL;
 	}
 
 	/*
@@ -445,12 +471,15 @@ exit1(struct thread *td, int rval, int signo)
 	 */
 	p->p_list.le_prev = NULL;
 #endif
+	prison_proc_unlink(p->p_ucred->cr_prison, p);
 	sx_xunlock(&allproc_lock);
 
 	sx_xlock(&proctree_lock);
-	PROC_LOCK(p);
-	p->p_flag &= ~(P_TRACED | P_PPWAIT | P_PPTRACE);
-	PROC_UNLOCK(p);
+	if ((p->p_flag & (P_TRACED | P_PPWAIT | P_PPTRACE)) != 0) {
+		PROC_LOCK(p);
+		p->p_flag &= ~(P_TRACED | P_PPWAIT | P_PPTRACE);
+		PROC_UNLOCK(p);
+	}
 
 	/*
 	 * killjobc() might drop and re-acquire proctree_lock to
@@ -468,7 +497,7 @@ exit1(struct thread *td, int rval, int signo)
 		wakeup(q->p_reaper);
 	for (; q != NULL; q = nq) {
 		nq = LIST_NEXT(q, p_sibling);
-		ksi = ksiginfo_alloc(TRUE);
+		ksi = ksiginfo_alloc(M_WAITOK);
 		PROC_LOCK(q);
 		q->p_sigparent = SIGCHLD;
 
@@ -504,8 +533,9 @@ exit1(struct thread *td, int rval, int signo)
 			}
 		} else {
 			/*
-			 * Traced processes are killed since their existence
-			 * means someone is screwing up.
+			 * Traced processes are killed by default
+			 * since their existence means someone is
+			 * screwing up.
 			 */
 			t = proc_realparent(q);
 			if (t == p) {
@@ -522,14 +552,23 @@ exit1(struct thread *td, int rval, int signo)
 			 * orphan link for q now while q is locked.
 			 */
 			proc_clear_orphan(q);
-			q->p_flag &= ~(P_TRACED | P_STOPPED_TRACE);
+			q->p_flag &= ~P_TRACED;
 			q->p_flag2 &= ~P2_PTRACE_FSTP;
 			q->p_ptevents = 0;
+			p->p_xthread = NULL;
 			FOREACH_THREAD_IN_PROC(q, tdt) {
 				tdt->td_dbgflags &= ~(TDB_SUSPEND | TDB_XSIG |
 				    TDB_FSTP);
+				tdt->td_xsig = 0;
 			}
-			kern_psignal(q, SIGKILL);
+			if (kern_kill_on_dbg_exit) {
+				q->p_flag &= ~P_STOPPED_TRACE;
+				kern_psignal(q, SIGKILL);
+			} else if ((q->p_flag & (P_STOPPED_TRACE |
+			    P_STOPPED_SIG)) != 0) {
+				sigqueue_delete_proc(q, SIGTRAP);
+				ptrace_unsuspend(q);
+			}
 		}
 		PROC_UNLOCK(q);
 		if (ksi != NULL)
@@ -650,7 +689,7 @@ exit1(struct thread *td, int rval, int signo)
 	prison_proc_free(p->p_ucred->cr_prison);
 
 	/*
-	 * The state PRS_ZOMBIE prevents other proesses from sending
+	 * The state PRS_ZOMBIE prevents other processes from sending
 	 * signal to the process, to avoid memory leak, we free memory
 	 * for signal queue at the time when the state is set.
 	 */
@@ -700,9 +739,40 @@ struct abort2_args {
 int
 sys_abort2(struct thread *td, struct abort2_args *uap)
 {
+	void *uargs[16];
+	void **uargsp;
+	int error, nargs;
+
+	nargs = uap->nargs;
+	if (nargs < 0 || nargs > nitems(uargs))
+		nargs = -1;
+	uargsp = NULL;
+	if (nargs > 0) {
+		if (uap->args != NULL) {
+			error = copyin(uap->args, uargs,
+			    nargs * sizeof(void *));
+			if (error != 0)
+				nargs = -1;
+			else
+				uargsp = uargs;
+		} else
+			nargs = -1;
+	}
+	return (kern_abort2(td, uap->why, nargs, uargsp));
+}
+
+/*
+ * kern_abort2()
+ * Arguments:
+ *  why - user pointer to why
+ *  nargs - number of arguments copied or -1 if an error occurred in copying
+ *  args - pointer to an array of pointers in kernel format
+ */
+int
+kern_abort2(struct thread *td, const char *why, int nargs, void **uargs)
+{
 	struct proc *p = td->td_proc;
 	struct sbuf *sb;
-	void *uargs[16];
 	int error, i, sig;
 
 	/*
@@ -720,31 +790,26 @@ sys_abort2(struct thread *td, struct abort2_args *uap)
 	 */
 	sig = SIGKILL;
 	/* Prevent from DoSes from user-space. */
-	if (uap->nargs < 0 || uap->nargs > 16)
+	if (nargs == -1)
 		goto out;
-	if (uap->nargs > 0) {
-		if (uap->args == NULL)
-			goto out;
-		error = copyin(uap->args, uargs, uap->nargs * sizeof(void *));
-		if (error != 0)
-			goto out;
-	}
+	KASSERT(nargs >= 0 && nargs <= 16, ("called with too many args (%d)",
+	    nargs));
 	/*
 	 * Limit size of 'reason' string to 128. Will fit even when
 	 * maximal number of arguments was chosen to be logged.
 	 */
-	if (uap->why != NULL) {
-		error = sbuf_copyin(sb, uap->why, 128);
+	if (why != NULL) {
+		error = sbuf_copyin(sb, why, 128);
 		if (error < 0)
 			goto out;
 	} else {
-		sbuf_printf(sb, "(null)");
+		sbuf_cat(sb, "(null)");
 	}
-	if (uap->nargs > 0) {
-		sbuf_printf(sb, "(");
-		for (i = 0;i < uap->nargs; i++)
+	if (nargs > 0) {
+		sbuf_putc(sb, '(');
+		for (i = 0;i < nargs; i++)
 			sbuf_printf(sb, "%s%p", i == 0 ? "" : ", ", uargs[i]);
-		sbuf_printf(sb, ")");
+		sbuf_putc(sb, ')');
 	}
 	/*
 	 * Final stage: arguments were proper, string has been
@@ -755,14 +820,15 @@ sys_abort2(struct thread *td, struct abort2_args *uap)
 out:
 	if (sig == SIGKILL) {
 		sbuf_trim(sb);
-		sbuf_printf(sb, " (Reason text inaccessible)");
+		sbuf_cat(sb, " (Reason text inaccessible)");
 	}
 	sbuf_cat(sb, "\n");
 	sbuf_finish(sb);
 	log(LOG_INFO, "%s", sbuf_data(sb));
 	sbuf_delete(sb);
-	exit1(td, 0, sig);
-	return (0);
+	PROC_LOCK(p);
+	sigexit(td, sig);
+	/* NOTREACHED */
 }
 
 #ifdef COMPAT_43
@@ -935,11 +1001,6 @@ proc_reap(struct thread *td, struct proc *p, int *status, int options)
 	PROC_UNLOCK(q);
 
 	/*
-	 * Decrement the count of procs running with this uid.
-	 */
-	(void)chgproccnt(p->p_ucred->cr_ruidinfo, -1, 0);
-
-	/*
 	 * Destroy resource accounting information associated with the process.
 	 */
 #ifdef RACCT
@@ -952,9 +1013,10 @@ proc_reap(struct thread *td, struct proc *p, int *status, int options)
 	racct_proc_exit(p);
 
 	/*
-	 * Free credentials, arguments, and sigacts.
+	 * Free credentials, arguments, and sigacts, and decrement the count of
+	 * processes running with this uid.
 	 */
-	proc_unset_cred(p);
+	proc_unset_cred(p, true);
 	pargs_drop(p->p_args);
 	p->p_args = NULL;
 	sigacts_free(p->p_sigacts);
@@ -1191,9 +1253,12 @@ report_alive_proc(struct thread *td, struct proc *p, siginfo_t *siginfo,
 			p->p_flag &= ~P_CONTINUED;
 		else
 			p->p_flag |= P_WAITED;
-		PROC_LOCK(td->td_proc);
-		sigqueue_take(p->p_ksi);
-		PROC_UNLOCK(td->td_proc);
+		if (kern_wait_dequeue_sigchld &&
+		    (td->td_proc->p_sysent->sv_flags & SV_SIG_WAITNDQ) == 0) {
+			PROC_LOCK(td->td_proc);
+			sigqueue_take(p->p_ksi);
+			PROC_UNLOCK(td->td_proc);
+		}
 	}
 	sx_xunlock(&proctree_lock);
 	if (siginfo != NULL) {
@@ -1202,8 +1267,8 @@ report_alive_proc(struct thread *td, struct proc *p, siginfo_t *siginfo,
 	}
 	if (status != NULL)
 		*status = cont ? SIGCONT : W_STOPCODE(p->p_xsig);
-	PROC_UNLOCK(p);
 	td->td_retval[0] = p->p_pid;
+	PROC_UNLOCK(p);
 }
 
 int
@@ -1260,6 +1325,18 @@ loop_locked:
 		else if (ret != 1) {
 			td->td_retval[0] = pid;
 			return (0);
+		}
+
+		/*
+		 * When running in capsicum(4) mode, make wait(2) ignore
+		 * processes created with pdfork(2).  This is because one can
+		 * disown them - by passing their process descriptor to another
+		 * process - which means it needs to be prevented from touching
+		 * them afterwards.
+		 */
+		if (IN_CAPABILITY_MODE(td) && p->p_procdesc != NULL) {
+			PROC_UNLOCK(p);
+			continue;
 		}
 
 		nfound++;

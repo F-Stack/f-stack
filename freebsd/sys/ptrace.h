@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)ptrace.h	8.2 (Berkeley) 1/4/94
- * $FreeBSD$
  */
 
 #ifndef	_SYS_PTRACE_H_
@@ -74,6 +71,8 @@
 #define	PT_GET_SC_ARGS	27	/* fetch syscall args */
 #define	PT_GET_SC_RET	28	/* fetch syscall results */
 
+#define PT_COREDUMP	29	/* create a coredump */
+
 #define PT_GETREGS      33	/* get general-purpose registers */
 #define PT_SETREGS      34	/* set general-purpose registers */
 #define PT_GETFPREGS    35	/* get floating-point registers */
@@ -83,9 +82,20 @@
 
 #define	PT_VM_TIMESTAMP	40	/* Get VM version (timestamp) */
 #define	PT_VM_ENTRY	41	/* Get VM map (entry) */
+#define	PT_GETREGSET	42	/* Get a target register set */
+#define	PT_SETREGSET	43	/* Set a target register set */
+#define	PT_SC_REMOTE	44	/* Execute a syscall */
 
 #define PT_FIRSTMACH    64	/* for machine-specific requests */
+#define	PT_LASTMACH     127
 #include <machine/ptrace.h>	/* machine-specific requests, if any */
+
+#ifdef _KERNEL
+/* Space for ptrace commands not exposed directly to userspace. */
+#define	PTINTERNAL_FIRST	128
+#define	PTINTERNAL_LAST		191
+#define	PTLINUX_GET_SC_ARGS	(PTINTERNAL_FIRST + 0)
+#endif
 
 /* Events used with PT_GET_EVENT_MASK and PT_SET_EVENT_MASK */
 #define	PTRACE_EXEC	0x0001
@@ -148,7 +158,7 @@ struct ptrace_lwpinfo32 {
 	int	pl_flags;	/* LWP flags. */
 	sigset_t	pl_sigmask;	/* LWP signal mask */
 	sigset_t	pl_siglist;	/* LWP pending signal */
-	struct siginfo32 pl_siginfo;	/* siginfo for signal */
+	struct __siginfo32 pl_siginfo;	/* siginfo for signal */
 	char		pl_tdname[MAXCOMLEN + 1]; /* LWP name. */
 	pid_t		pl_child_pid;	/* New child pid */
 	u_int		pl_syscall_code;
@@ -158,7 +168,7 @@ struct ptrace_lwpinfo32 {
 
 /* Argument structure for PT_GET_SC_RET. */
 struct ptrace_sc_ret {
-	register_t	sr_retval[2];	/* Only valid if sr_error == 0. */
+	syscallarg_t	sr_retval[2];	/* Only valid if sr_error == 0. */
 	int		sr_error;
 };
 
@@ -176,7 +186,41 @@ struct ptrace_vm_entry {
 	char		*pve_path;	/* Path name of object. */
 };
 
+/* Argument structure for PT_COREDUMP */
+struct ptrace_coredump {
+	int		pc_fd;		/* File descriptor to write dump to. */
+	uint32_t	pc_flags;	/* Flags PC_* */
+	off_t		pc_limit;	/* Maximum size of the coredump,
+					   0 for no limit. */
+};
+
+/* Flags for PT_COREDUMP pc_flags */
+#define	PC_COMPRESS	0x00000001	/* Allow compression */
+#define	PC_ALL		0x00000002	/* Include non-dumpable entries */
+
+struct ptrace_sc_remote {
+	struct ptrace_sc_ret pscr_ret;
+	u_int	pscr_syscall;
+	u_int	pscr_nargs;
+	syscallarg_t	*pscr_args;
+};
+
 #ifdef _KERNEL
+
+#include <sys/proc.h>
+
+struct thr_coredump_req {
+	struct vnode	*tc_vp;		/* vnode to write coredump to. */
+	off_t		tc_limit;	/* max coredump file size. */
+	int		tc_flags;	/* user flags */
+	int		tc_error;	/* request result */
+};
+
+struct thr_syscall_req {
+	struct ptrace_sc_ret ts_ret;
+	u_int	ts_nargs;
+	struct syscall_args ts_sa;
+};
 
 int	ptrace_set_pc(struct thread *_td, unsigned long _addr);
 int	ptrace_single_step(struct thread *_td);
@@ -219,6 +263,11 @@ int	proc_write_fpregs32(struct thread *_td, struct fpreg32 *_fpreg32);
 int	proc_read_dbregs32(struct thread *_td, struct dbreg32 *_dbreg32);
 int	proc_write_dbregs32(struct thread *_td, struct dbreg32 *_dbreg32);
 #endif
+
+void	ptrace_unsuspend(struct proc *p);
+
+extern bool allow_ptrace;
+
 #else /* !_KERNEL */
 
 #include <sys/cdefs.h>

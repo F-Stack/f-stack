@@ -22,6 +22,8 @@
 struct ff_linux_syscall {
     #define FF_SYSCALL_DECL(ret, fn, args)  ret (*pf_##fn) args;
     #include "ff_declare_syscalls.h"
+    /* ioctl removed from ff_declare_syscalls.h (issue #942 fix), add manually */
+    int (*pf_ioctl)(int, unsigned long, unsigned long);
 };
 
 static int linux_syscall_inited;
@@ -44,6 +46,8 @@ linux_syscall_load_symbol()
     #define FF_SYSCALL_DECL(ret, fn, args)  \
     syscalls.pf_##fn = (typeof(syscalls.pf_##fn))dlsym(linux_lib_handle, #fn);
     #include <ff_declare_syscalls.h>
+    /* ioctl removed from ff_declare_syscalls.h (issue #942 fix), load manually */
+    syscalls.pf_ioctl = (typeof(syscalls.pf_ioctl))dlsym(linux_lib_handle, "ioctl");
 
     return 0;
 }

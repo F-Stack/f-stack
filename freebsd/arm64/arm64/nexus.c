@@ -34,38 +34,35 @@
  * attachment point for both processors and buses, and to manage
  * resources which are common to all of them.  In particular,
  * this code implements the core resource managers for interrupt
- * requests, DMA requests (which rightfully should be a part of the
- * ISA code but it's easier to do it here for now), I/O port addresses,
- * and I/O memory address space.
+ * requests and I/O memory address space.
  */
 
 #include "opt_acpi.h"
 #include "opt_platform.h"
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/bus.h>
+#include <sys/interrupt.h>
 #include <sys/kernel.h>
 #include <sys/malloc.h>
 #include <sys/module.h>
-#include <machine/bus.h>
 #include <sys/rman.h>
-#include <sys/interrupt.h>
+#include <sys/sysctl.h>
 
-#include <machine/machdep.h>
-#include <machine/vmparam.h>
-#include <machine/pcb.h>
 #include <vm/vm.h>
 #include <vm/pmap.h>
 
-#include <machine/resource.h>
+#include <machine/bus.h>
 #include <machine/intr.h>
+#include <machine/machdep.h>
+#include <machine/pcb.h>
+#include <machine/resource.h>
+#include <machine/vmparam.h>
 
 #ifdef FDT
 #include <dev/ofw/ofw_bus_subr.h>
+#include <dev/ofw/ofw_bus.h>
 #include <dev/ofw/openfirm.h>
 #include "ofw_bus_if.h"
 #endif
@@ -73,7 +70,6 @@ __FBSDID("$FreeBSD$");
 #include <contrib/dev/acpica/include/acpi.h>
 #include <dev/acpica/acpivar.h>
 #include "acpi_bus_if.h"
-#include "pcib_if.h"
 #endif
 
 extern struct bus_space memmap_bus;
@@ -83,6 +79,10 @@ static MALLOC_DEFINE(M_NEXUSDEV, "nexusdev", "Nexus device");
 struct nexus_device {
 	struct resource_list	nx_resources;
 };
+
+static int force_np;
+SYSCTL_INT(_kern, OID_AUTO, force_nonposted, CTLFLAG_RDTUN, &force_np, 0,
+    "Force all devices to use non-posted device memory");
 
 #define DEVTONX(dev)	((struct nexus_device *)device_get_ivars(dev))
 
@@ -94,59 +94,66 @@ static	int nexus_attach(device_t);
 #ifdef FDT
 static device_probe_t	nexus_fdt_probe;
 static device_attach_t	nexus_fdt_attach;
+static bus_activate_resource_t nexus_fdt_activate_resource;
 #endif
 #ifdef DEV_ACPI
-static device_probe_t	nexus_acpi_probe;
-static device_attach_t	nexus_acpi_attach;
+static device_probe_t		nexus_acpi_probe;
+static device_attach_t		nexus_acpi_attach;
 #endif
 
-static	int nexus_print_child(device_t, device_t);
-static	device_t nexus_add_child(device_t, u_int, const char *, int);
-static	struct resource *nexus_alloc_resource(device_t, device_t, int, int *,
-    rman_res_t, rman_res_t, rman_res_t, u_int);
-static	int nexus_activate_resource(device_t, device_t, int, int,
-    struct resource *);
-static int nexus_config_intr(device_t dev, int irq, enum intr_trigger trig,
-    enum intr_polarity pol);
-static struct resource_list *nexus_get_reslist(device_t, device_t);
-static	int nexus_set_resource(device_t, device_t, int, int,
-    rman_res_t, rman_res_t);
-static	int nexus_deactivate_resource(device_t, device_t, int, int,
-    struct resource *);
-static int nexus_release_resource(device_t, device_t, int, int,
-    struct resource *);
+static bus_add_child_t		nexus_add_child;
+static bus_print_child_t	nexus_print_child;
 
-static int nexus_setup_intr(device_t dev, device_t child, struct resource *res,
-    int flags, driver_filter_t *filt, driver_intr_t *intr, void *arg, void **cookiep);
-static int nexus_teardown_intr(device_t, device_t, struct resource *, void *);
-static bus_space_tag_t nexus_get_bus_tag(device_t, device_t);
+static bus_activate_resource_t	nexus_activate_resource;
+static bus_alloc_resource_t	nexus_alloc_resource;
+static bus_get_resource_list_t	nexus_get_reslist;
+static bus_get_rman_t		nexus_get_rman;
+static bus_map_resource_t	nexus_map_resource;
+static bus_unmap_resource_t	nexus_unmap_resource;
+
 #ifdef SMP
-static int nexus_bind_intr(device_t, device_t, struct resource *, int);
+static bus_bind_intr_t		nexus_bind_intr;
 #endif
+static bus_config_intr_t	nexus_config_intr;
+static bus_describe_intr_t	nexus_describe_intr;
+static bus_setup_intr_t		nexus_setup_intr;
+static bus_teardown_intr_t	nexus_teardown_intr;
+
+static bus_get_bus_tag_t	nexus_get_bus_tag;
 
 #ifdef FDT
-static int nexus_ofw_map_intr(device_t dev, device_t child, phandle_t iparent,
-    int icells, pcell_t *intr);
+static ofw_bus_map_intr_t	nexus_ofw_map_intr;
 #endif
 
 static device_method_t nexus_methods[] = {
+	/* Device interface */
+	DEVMETHOD(device_shutdown,	bus_generic_shutdown),
+
 	/* Bus interface */
-	DEVMETHOD(bus_print_child,	nexus_print_child),
 	DEVMETHOD(bus_add_child,	nexus_add_child),
+	DEVMETHOD(bus_print_child,	nexus_print_child),
+	DEVMETHOD(bus_activate_resource, nexus_activate_resource),
+	DEVMETHOD(bus_adjust_resource,	bus_generic_rman_adjust_resource),
 	DEVMETHOD(bus_alloc_resource,	nexus_alloc_resource),
-	DEVMETHOD(bus_activate_resource,	nexus_activate_resource),
-	DEVMETHOD(bus_config_intr,	nexus_config_intr),
+	DEVMETHOD(bus_deactivate_resource, bus_generic_rman_deactivate_resource),
+	DEVMETHOD(bus_delete_resource, bus_generic_rl_delete_resource),
+	DEVMETHOD(bus_get_resource,	bus_generic_rl_get_resource),
 	DEVMETHOD(bus_get_resource_list, nexus_get_reslist),
-	DEVMETHOD(bus_set_resource,	nexus_set_resource),
-	DEVMETHOD(bus_deactivate_resource,	nexus_deactivate_resource),
-	DEVMETHOD(bus_release_resource,	nexus_release_resource),
-	DEVMETHOD(bus_setup_intr,	nexus_setup_intr),
-	DEVMETHOD(bus_teardown_intr,	nexus_teardown_intr),
-	DEVMETHOD(bus_get_bus_tag,	nexus_get_bus_tag),
+	DEVMETHOD(bus_get_rman,		nexus_get_rman),
+	DEVMETHOD(bus_map_resource,	nexus_map_resource),
+	DEVMETHOD(bus_release_resource,	bus_generic_rman_release_resource),
+	DEVMETHOD(bus_set_resource,	bus_generic_rl_set_resource),
+	DEVMETHOD(bus_unmap_resource,	nexus_unmap_resource),
 #ifdef SMP
 	DEVMETHOD(bus_bind_intr,	nexus_bind_intr),
 #endif
-	{ 0, 0 }
+	DEVMETHOD(bus_config_intr,	nexus_config_intr),
+	DEVMETHOD(bus_describe_intr,	nexus_describe_intr),
+	DEVMETHOD(bus_setup_intr,	nexus_setup_intr),
+	DEVMETHOD(bus_teardown_intr,	nexus_teardown_intr),
+	DEVMETHOD(bus_get_bus_tag,	nexus_get_bus_tag),
+
+	DEVMETHOD_END
 };
 
 static driver_t nexus_driver = {
@@ -173,8 +180,8 @@ nexus_attach(device_t dev)
 	if (rman_init(&irq_rman) || rman_manage_region(&irq_rman, 0, ~0))
 		panic("nexus_attach irq_rman");
 
-	bus_generic_probe(dev);
-	bus_generic_attach(dev);
+	bus_identify_children(dev);
+	bus_attach_children(dev);
 
 	return (0);
 }
@@ -209,20 +216,30 @@ nexus_add_child(device_t bus, u_int order, const char *name, int unit)
 	return (child);
 }
 
+static struct rman *
+nexus_get_rman(device_t bus, int type, u_int flags)
+{
+
+	switch (type) {
+	case SYS_RES_IRQ:
+		return (&irq_rman);
+	case SYS_RES_MEMORY:
+		return (&mem_rman);
+	default:
+		return (NULL);
+	}
+}
+
 /*
  * Allocate a resource on behalf of child.  NB: child is usually going to be a
  * child of one of our descendants, not a direct child of nexus0.
- * (Exceptions include footbridge.)
  */
 static struct resource *
 nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
     rman_res_t start, rman_res_t end, rman_res_t count, u_int flags)
 {
 	struct nexus_device *ndev = DEVTONX(child);
-	struct resource *rv;
 	struct resource_list_entry *rle;
-	struct rman *rm;
-	int needactivate = flags & RF_ACTIVE;
 
 	/*
 	 * If this is an allocation of the "default" range for a given
@@ -232,58 +249,17 @@ nexus_alloc_resource(device_t bus, device_t child, int type, int *rid,
 	 */
 	if (RMAN_IS_DEFAULT_RANGE(start, end) && (count == 1)) {
 		if (device_get_parent(child) != bus || ndev == NULL)
-			return(NULL);
+			return (NULL);
 		rle = resource_list_find(&ndev->nx_resources, type, *rid);
 		if (rle == NULL)
-			return(NULL);
+			return (NULL);
 		start = rle->start;
 		end = rle->end;
 		count = rle->count;
 	}
 
-	switch (type) {
-	case SYS_RES_IRQ:
-		rm = &irq_rman;
-		break;
-
-	case SYS_RES_MEMORY:
-	case SYS_RES_IOPORT:
-		rm = &mem_rman;
-		break;
-
-	default:
-		return (NULL);
-	}
-
-	rv = rman_reserve_resource(rm, start, end, count, flags, child);
-	if (rv == NULL)
-		return (NULL);
-
-	rman_set_rid(rv, *rid);
-	rman_set_bushandle(rv, rman_get_start(rv));
-
-	if (needactivate) {
-		if (bus_activate_resource(child, type, *rid, rv)) {
-			rman_release_resource(rv);
-			return (NULL);
-		}
-	}
-
-	return (rv);
-}
-
-static int
-nexus_release_resource(device_t bus, device_t child, int type, int rid,
-    struct resource *res)
-{
-	int error;
-
-	if (rman_get_flags(res) & RF_ACTIVE) {
-		error = bus_deactivate_resource(child, type, rid, res);
-		if (error)
-			return (error);
-	}
-	return (rman_release_resource(res));
+	return (bus_generic_rman_alloc_resource(bus, child, type, rid, start,
+	    end, count, flags));
 }
 
 static int
@@ -324,6 +300,14 @@ nexus_teardown_intr(device_t dev, device_t child, struct resource *r, void *ih)
 	return (intr_teardown_irq(child, r, ih));
 }
 
+static int
+nexus_describe_intr(device_t dev, device_t child, struct resource *irq,
+    void *cookie, const char *descr)
+{
+
+	return (intr_describe_irq(child, irq, cookie, descr));
+}
+
 #ifdef SMP
 static int
 nexus_bind_intr(device_t dev, device_t child, struct resource *irq, int cpu)
@@ -337,43 +321,54 @@ static bus_space_tag_t
 nexus_get_bus_tag(device_t bus __unused, device_t child __unused)
 {
 
-	return(&memmap_bus);
+	return (&memmap_bus);
 }
 
 static int
-nexus_activate_resource(device_t bus, device_t child, int type, int rid,
-    struct resource *r)
+nexus_activate_resource_flags(device_t bus, device_t child, struct resource *r,
+    int flags)
 {
-	int err;
-	bus_addr_t paddr;
-	bus_size_t psize;
-	bus_space_handle_t vaddr;
-
-	if ((err = rman_activate_resource(r)) != 0)
-		return (err);
+	struct resource_map_request args;
+	struct resource_map map;
+	int err, use_np;
 
 	/*
 	 * If this is a memory resource, map it into the kernel.
 	 */
-	if (type == SYS_RES_MEMORY || type == SYS_RES_IOPORT) {
-		paddr = (bus_addr_t)rman_get_start(r);
-		psize = (bus_size_t)rman_get_size(r);
-		err = bus_space_map(&memmap_bus, paddr, psize, 0, &vaddr);
-		if (err != 0) {
-			rman_deactivate_resource(r);
+	switch (rman_get_type(r)) {
+	case SYS_RES_MEMORY:
+		if ((err = rman_activate_resource(r)) != 0)
 			return (err);
+
+		if ((rman_get_flags(r) & RF_UNMAPPED) == 0) {
+			resource_init_map_request(&args);
+			use_np = (flags & BUS_SPACE_MAP_NONPOSTED) != 0 ||
+			    force_np;
+			if (!use_np)
+				resource_int_value(device_get_name(child),
+				    device_get_unit(child), "force_nonposted",
+				    &use_np);
+			if (use_np)
+				args.memattr = VM_MEMATTR_DEVICE_NP;
+			err = nexus_map_resource(bus, child, r, &args, &map);
+			if (err != 0) {
+				rman_deactivate_resource(r);
+				return (err);
+			}
+
+			rman_set_mapping(r, &map);
 		}
-		rman_set_bustag(r, &memmap_bus);
-		rman_set_virtual(r, (void *)vaddr);
-		rman_set_bushandle(r, vaddr);
-	} else if (type == SYS_RES_IRQ) {
-		err = intr_activate_irq(child, r);
-		if (err != 0) {
-			rman_deactivate_resource(r);
-			return (err);
-		}
+		break;
+	default:
+		return (bus_generic_rman_activate_resource(bus, child, r));
 	}
 	return (0);
+}
+
+static int
+nexus_activate_resource(device_t dev, device_t child, struct resource *r)
+{
+	return (nexus_activate_resource_flags(dev, child, r, 0));
 }
 
 static struct resource_list *
@@ -385,39 +380,53 @@ nexus_get_reslist(device_t dev, device_t child)
 }
 
 static int
-nexus_set_resource(device_t dev, device_t child, int type, int rid,
-    rman_res_t start, rman_res_t count)
+nexus_map_resource(device_t bus, device_t child, struct resource *r,
+    struct resource_map_request *argsp, struct resource_map *map)
 {
-	struct nexus_device	*ndev = DEVTONX(child);
-	struct resource_list	*rl = &ndev->nx_resources;
+	struct resource_map_request args;
+	rman_res_t length, start;
+	int error;
 
-	/* XXX this should return a success/failure indicator */
-	resource_list_add(rl, type, rid, start, start + count - 1, count);
+	/* Resources must be active to be mapped. */
+	if ((rman_get_flags(r) & RF_ACTIVE) == 0)
+		return (ENXIO);
 
-	return(0);
+	/* Mappings are only supported on memory resources. */
+	switch (rman_get_type(r)) {
+	case SYS_RES_MEMORY:
+		break;
+	default:
+		return (EINVAL);
+	}
+
+	resource_init_map_request(&args);
+	error = resource_validate_map_request(r, argsp, &args, &start, &length);
+	if (error)
+		return (error);
+
+	map->r_vaddr = pmap_mapdev_attr(start, length, args.memattr);
+	map->r_bustag = &memmap_bus;
+	map->r_size = length;
+
+	/*
+	 * The handle is the virtual address.
+	 */
+	map->r_bushandle = (bus_space_handle_t)map->r_vaddr;
+	return (0);
 }
 
 static int
-nexus_deactivate_resource(device_t bus, device_t child, int type, int rid,
-    struct resource *r)
+nexus_unmap_resource(device_t bus, device_t child, struct resource *r,
+    struct resource_map *map)
 {
-	bus_size_t psize;
-	bus_space_handle_t vaddr;
 
-	if (type == SYS_RES_MEMORY || type == SYS_RES_IOPORT) {
-		psize = (bus_size_t)rman_get_size(r);
-		vaddr = rman_get_bushandle(r);
-
-		if (vaddr != 0) {
-			bus_space_unmap(&memmap_bus, vaddr, psize);
-			rman_set_virtual(r, NULL);
-			rman_set_bushandle(r, 0);
-		}
-	} else if (type == SYS_RES_IRQ) {
-		intr_deactivate_irq(child, r);
+	switch (rman_get_type(r)) {
+	case SYS_RES_MEMORY:
+		pmap_unmapdev(map->r_vaddr, map->r_size);
+		return (0);
+	default:
+		return (EINVAL);
 	}
-
-	return (rman_deactivate_resource(r));
 }
 
 #ifdef FDT
@@ -425,6 +434,9 @@ static device_method_t nexus_fdt_methods[] = {
 	/* Device interface */
 	DEVMETHOD(device_probe,		nexus_fdt_probe),
 	DEVMETHOD(device_attach,	nexus_fdt_attach),
+
+	/* Bus interface */
+	DEVMETHOD(bus_activate_resource,	nexus_fdt_activate_resource),
 
 	/* OFW interface */
 	DEVMETHOD(ofw_bus_map_intr,	nexus_ofw_map_intr),
@@ -435,10 +447,9 @@ static device_method_t nexus_fdt_methods[] = {
 #define nexus_baseclasses nexus_fdt_baseclasses
 DEFINE_CLASS_1(nexus, nexus_fdt_driver, nexus_fdt_methods, 1, nexus_driver);
 #undef nexus_baseclasses
-static devclass_t nexus_fdt_devclass;
 
-EARLY_DRIVER_MODULE(nexus_fdt, root, nexus_fdt_driver, nexus_fdt_devclass,
-    0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_FIRST);
+EARLY_DRIVER_MODULE(nexus_fdt, root, nexus_fdt_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_FIRST);
 
 static int
 nexus_fdt_probe(device_t dev)
@@ -457,6 +468,37 @@ nexus_fdt_attach(device_t dev)
 
 	nexus_add_child(dev, 10, "ofwbus", 0);
 	return (nexus_attach(dev));
+}
+
+static int
+nexus_fdt_activate_resource(device_t bus, device_t child, struct resource *r)
+{
+	phandle_t node, parent;
+	int flags;
+
+	flags = 0;
+	switch (rman_get_type(r)) {
+	case SYS_RES_MEMORY:
+		/*
+		 * If the fdt parent has the nonposted-mmio property we
+		 * need to use non-posted IO to access the device. When
+		 * we find this property set the BUS_SPACE_MAP_NONPOSTED
+		 * flag to be passed to bus_space_map.
+		 */
+		node = ofw_bus_get_node(child);
+		if (node != -1) {
+			parent = OF_parent(node);
+			if (parent != 0 &&
+			    OF_hasprop(parent, "nonposted-mmio")) {
+				flags |= BUS_SPACE_MAP_NONPOSTED;
+			}
+		}
+		break;
+	default:
+		break;
+	}
+
+	return (nexus_activate_resource_flags(bus, child, r, flags));
 }
 
 static int
@@ -496,10 +538,9 @@ static device_method_t nexus_acpi_methods[] = {
 DEFINE_CLASS_1(nexus, nexus_acpi_driver, nexus_acpi_methods, 1,
     nexus_driver);
 #undef nexus_baseclasses
-static devclass_t nexus_acpi_devclass;
 
-EARLY_DRIVER_MODULE(nexus_acpi, root, nexus_acpi_driver, nexus_acpi_devclass,
-    0, 0, BUS_PASS_BUS + BUS_PASS_ORDER_FIRST);
+EARLY_DRIVER_MODULE(nexus_acpi, root, nexus_acpi_driver, 0, 0,
+    BUS_PASS_BUS + BUS_PASS_ORDER_FIRST);
 
 static int
 nexus_acpi_probe(device_t dev)

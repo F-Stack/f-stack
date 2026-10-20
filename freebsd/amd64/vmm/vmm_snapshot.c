@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2016 Flavius Anton
  * Copyright (c) 2016 Mihai Tiganus
@@ -33,9 +33,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/types.h>
 #include <sys/systm.h>
 
@@ -57,14 +54,11 @@ vm_snapshot_buf_err(const char *bufname, const enum vm_snapshot_op op)
 }
 
 int
-vm_snapshot_buf(volatile void *data, size_t data_size,
-	     struct vm_snapshot_meta *meta)
+vm_snapshot_buf(void *data, size_t data_size, struct vm_snapshot_meta *meta)
 {
 	struct vm_snapshot_buffer *buffer;
-	int op;
-	void *nv_data;
+	int op, error;
 
-	nv_data = __DEVOLATILE(void *, data);
 	buffer = &meta->buffer;
 	op = meta->op;
 
@@ -74,11 +68,14 @@ vm_snapshot_buf(volatile void *data, size_t data_size,
 	}
 
 	if (op == VM_SNAPSHOT_SAVE)
-		copyout(nv_data, buffer->buf, data_size);
+		error = copyout(data, buffer->buf, data_size);
 	else if (op == VM_SNAPSHOT_RESTORE)
-		copyin(buffer->buf, nv_data, data_size);
+		error = copyin(buffer->buf, data, data_size);
 	else
-		return (EINVAL);
+		error = EINVAL;
+
+	if (error)
+		return (error);
 
 	buffer->buf += data_size;
 	buffer->buf_rem -= data_size;
@@ -103,39 +100,4 @@ vm_get_snapshot_size(struct vm_snapshot_meta *meta)
 	}
 
 	return (length);
-}
-
-int
-vm_snapshot_buf_cmp(volatile void *data, size_t data_size,
-		    struct vm_snapshot_meta *meta)
-{
-	struct vm_snapshot_buffer *buffer;
-	int op;
-	int ret;
-	void *_data = *(void **)(void *)&data;
-
-	buffer = &meta->buffer;
-	op = meta->op;
-
-	if (buffer->buf_rem < data_size) {
-		printf("%s: buffer too small\r\n", __func__);
-		ret = E2BIG;
-		goto done;
-	}
-
-	if (op == VM_SNAPSHOT_SAVE) {
-		ret = 0;
-		copyout(_data, buffer->buf, data_size);
-	} else if (op == VM_SNAPSHOT_RESTORE) {
-		ret = memcmp(_data, buffer->buf, data_size);
-	} else {
-		ret = EINVAL;
-		goto done;
-	}
-
-	buffer->buf += data_size;
-	buffer->buf_rem -= data_size;
-
-done:
-	return (ret);
 }

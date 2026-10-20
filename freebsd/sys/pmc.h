@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2003-2008, Joseph Koshy
  * Copyright (c) 2007 The FreeBSD Foundation
@@ -28,8 +28,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_PMC_H_
@@ -61,8 +59,8 @@
  *
  * The patch version is incremented for every bug fix.
  */
-#define	PMC_VERSION_MAJOR	0x09
-#define	PMC_VERSION_MINOR	0x03
+#define	PMC_VERSION_MAJOR	0x0A
+#define	PMC_VERSION_MINOR	0x00
 #define	PMC_VERSION_PATCH	0x0000
 
 #define	PMC_VERSION		(PMC_VERSION_MAJOR << 24 |		\
@@ -79,57 +77,51 @@ extern char pmc_cpuid[PMC_CPUID_LEN];
  * some way for PMC operations.  CPU names are grouped by manufacturer
  * and numbered sparsely in order to minimize changes to the ABI involved
  * when new CPUs are added.
+ *
+ * Please keep the pmc(3) manual page in sync with this list.
  */
-
-#define	__PMC_CPUS()						\
-	__PMC_CPU(AMD_K7,	0x00,	"AMD K7")		\
-	__PMC_CPU(AMD_K8,	0x01,	"AMD K8")		\
-	__PMC_CPU(INTEL_P5,	0x80,	"Intel Pentium")	\
-	__PMC_CPU(INTEL_P6,	0x81,	"Intel Pentium Pro")	\
-	__PMC_CPU(INTEL_CL,	0x82,	"Intel Celeron")	\
-	__PMC_CPU(INTEL_PII,	0x83,	"Intel Pentium II")	\
-	__PMC_CPU(INTEL_PIII,	0x84,	"Intel Pentium III")	\
-	__PMC_CPU(INTEL_PM,	0x85,	"Intel Pentium M")	\
-	__PMC_CPU(INTEL_PIV,	0x86,	"Intel Pentium IV")	\
-	__PMC_CPU(INTEL_CORE,	0x87,	"Intel Core Solo/Duo")	\
-	__PMC_CPU(INTEL_CORE2,	0x88,	"Intel Core2")		\
-	__PMC_CPU(INTEL_CORE2EXTREME,	0x89,	"Intel Core2 Extreme")	\
-	__PMC_CPU(INTEL_ATOM,	0x8A,	"Intel Atom")		\
-	__PMC_CPU(INTEL_COREI7, 0x8B,   "Intel Core i7")	\
-	__PMC_CPU(INTEL_WESTMERE, 0x8C,   "Intel Westmere")	\
-	__PMC_CPU(INTEL_SANDYBRIDGE, 0x8D,   "Intel Sandy Bridge")	\
-	__PMC_CPU(INTEL_IVYBRIDGE, 0x8E,   "Intel Ivy Bridge")	\
-	__PMC_CPU(INTEL_SANDYBRIDGE_XEON, 0x8F,   "Intel Sandy Bridge Xeon")	\
-	__PMC_CPU(INTEL_IVYBRIDGE_XEON, 0x90,   "Intel Ivy Bridge Xeon")	\
-	__PMC_CPU(INTEL_HASWELL, 0x91,   "Intel Haswell")	\
-	__PMC_CPU(INTEL_ATOM_SILVERMONT, 0x92,	"Intel Atom Silvermont")    \
-	__PMC_CPU(INTEL_NEHALEM_EX, 0x93,   "Intel Nehalem Xeon 7500")	\
-	__PMC_CPU(INTEL_WESTMERE_EX, 0x94,   "Intel Westmere Xeon E7")	\
-	__PMC_CPU(INTEL_HASWELL_XEON, 0x95,   "Intel Haswell Xeon E5 v3") \
-	__PMC_CPU(INTEL_BROADWELL, 0x96,   "Intel Broadwell") \
-	__PMC_CPU(INTEL_BROADWELL_XEON, 0x97,   "Intel Broadwell Xeon") \
-	__PMC_CPU(INTEL_SKYLAKE, 0x98,   "Intel Skylake")		\
-	__PMC_CPU(INTEL_SKYLAKE_XEON, 0x99,   "Intel Skylake Xeon")	\
-	__PMC_CPU(INTEL_ATOM_GOLDMONT, 0x9A,   "Intel Atom Goldmont")	\
-	__PMC_CPU(INTEL_XSCALE,	0x100,	"Intel XScale")		\
-	__PMC_CPU(MIPS_24K,     0x200,  "MIPS 24K")		\
-	__PMC_CPU(MIPS_OCTEON,  0x201,  "Cavium Octeon")	\
-	__PMC_CPU(MIPS_74K,     0x202,  "MIPS 74K")		\
-	__PMC_CPU(MIPS_BERI,	0x203,  "BERI")			\
-	__PMC_CPU(PPC_7450,     0x300,  "PowerPC MPC7450")	\
-	__PMC_CPU(PPC_E500,     0x340,  "PowerPC e500 Core")	\
-	__PMC_CPU(PPC_970,      0x380,  "IBM PowerPC 970")	\
-	__PMC_CPU(PPC_POWER8,   0x390,  "IBM POWER8")		\
-	__PMC_CPU(GENERIC, 	0x400,  "Generic")		\
-	__PMC_CPU(ARMV7_CORTEX_A5,	0x500,	"ARMv7 Cortex A5")	\
-	__PMC_CPU(ARMV7_CORTEX_A7,	0x501,	"ARMv7 Cortex A7")	\
-	__PMC_CPU(ARMV7_CORTEX_A8,	0x502,	"ARMv7 Cortex A8")	\
-	__PMC_CPU(ARMV7_CORTEX_A9,	0x503,	"ARMv7 Cortex A9")	\
-	__PMC_CPU(ARMV7_CORTEX_A15,	0x504,	"ARMv7 Cortex A15")	\
-	__PMC_CPU(ARMV7_CORTEX_A17,	0x505,	"ARMv7 Cortex A17")	\
-	__PMC_CPU(ARMV8_CORTEX_A53,	0x600,	"ARMv8 Cortex A53")	\
-	__PMC_CPU(ARMV8_CORTEX_A57,	0x601,	"ARMv8 Cortex A57")	\
-	__PMC_CPU(ARMV8_CORTEX_A76,	0x602,	"ARMv8 Cortex A76")
+#define	__PMC_CPUS()								\
+    __PMC_CPU(AMD_K8,			0x01,	"AMD K8")			\
+    __PMC_CPU(INTEL_CORE,		0x87,	"Intel Core Solo/Duo")		\
+    __PMC_CPU(INTEL_CORE2,		0x88,	"Intel Core2")			\
+    __PMC_CPU(INTEL_CORE2EXTREME,	0x89,	"Intel Core2 Extreme")		\
+    __PMC_CPU(INTEL_ATOM,		0x8A,	"Intel Atom")			\
+    __PMC_CPU(INTEL_COREI7,		0x8B,	"Intel Core i7")		\
+    __PMC_CPU(INTEL_WESTMERE,		0x8C,	"Intel Westmere")		\
+    __PMC_CPU(INTEL_SANDYBRIDGE,	0x8D,	"Intel Sandy Bridge")		\
+    __PMC_CPU(INTEL_IVYBRIDGE,		0x8E,	"Intel Ivy Bridge")		\
+    __PMC_CPU(INTEL_SANDYBRIDGE_XEON,	0x8F,	"Intel Sandy Bridge Xeon")	\
+    __PMC_CPU(INTEL_IVYBRIDGE_XEON,	0x90,	"Intel Ivy Bridge Xeon")	\
+    __PMC_CPU(INTEL_HASWELL,		0x91,	"Intel Haswell")		\
+    __PMC_CPU(INTEL_ATOM_SILVERMONT,	0x92,	"Intel Atom Silvermont")	\
+    __PMC_CPU(INTEL_NEHALEM_EX,		0x93,	"Intel Nehalem Xeon 7500")	\
+    __PMC_CPU(INTEL_WESTMERE_EX,	0x94,	"Intel Westmere Xeon E7")	\
+    __PMC_CPU(INTEL_HASWELL_XEON,	0x95,	"Intel Haswell Xeon E5 v3")	\
+    __PMC_CPU(INTEL_BROADWELL,		0x96,	"Intel Broadwell")		\
+    __PMC_CPU(INTEL_BROADWELL_XEON,	0x97,	"Intel Broadwell Xeon")		\
+    __PMC_CPU(INTEL_SKYLAKE,		0x98,	"Intel Skylake")		\
+    __PMC_CPU(INTEL_SKYLAKE_XEON,	0x99,	"Intel Skylake Xeon")		\
+    __PMC_CPU(INTEL_ATOM_GOLDMONT,	0x9A,	"Intel Atom Goldmont")		\
+    __PMC_CPU(INTEL_ICELAKE,		0x9B,	"Intel Icelake")		\
+    __PMC_CPU(INTEL_ICELAKE_XEON,	0x9C,	"Intel Icelake Xeon")		\
+    __PMC_CPU(INTEL_ALDERLAKE,		0x9D,	"Intel Alderlake")		\
+    __PMC_CPU(INTEL_ATOM_GOLDMONT_P,	0x9E,	"Intel Atom Goldmont Plus")	\
+    __PMC_CPU(INTEL_ATOM_TREMONT,	0x9F,	"Intel Atom Tremont")		\
+    __PMC_CPU(INTEL_XSCALE,		0x100,	"Intel XScale")			\
+    __PMC_CPU(PPC_7450,			0x300,	"PowerPC MPC7450")		\
+    __PMC_CPU(PPC_E500,			0x340,	"PowerPC e500 Core")		\
+    __PMC_CPU(PPC_970,			0x380,	"IBM PowerPC 970")		\
+    __PMC_CPU(PPC_POWER8,		0x390,	"IBM POWER8")			\
+    __PMC_CPU(GENERIC,			0x400,	"Generic")			\
+    __PMC_CPU(ARMV7_CORTEX_A5,		0x500,	"ARMv7 Cortex A5")		\
+    __PMC_CPU(ARMV7_CORTEX_A7,		0x501,	"ARMv7 Cortex A7")		\
+    __PMC_CPU(ARMV7_CORTEX_A8,		0x502,	"ARMv7 Cortex A8")		\
+    __PMC_CPU(ARMV7_CORTEX_A9,		0x503,	"ARMv7 Cortex A9")		\
+    __PMC_CPU(ARMV7_CORTEX_A15,		0x504,	"ARMv7 Cortex A15")		\
+    __PMC_CPU(ARMV7_CORTEX_A17,		0x505,	"ARMv7 Cortex A17")		\
+    __PMC_CPU(ARMV8_CORTEX_A53,		0x600,	"ARMv8 Cortex A53")		\
+    __PMC_CPU(ARMV8_CORTEX_A57,		0x601,	"ARMv8 Cortex A57")		\
+    __PMC_CPU(ARMV8_CORTEX_A76,		0x602,	"ARMv8 Cortex A76")
 
 enum pmc_cputype {
 #undef	__PMC_CPU
@@ -137,36 +129,30 @@ enum pmc_cputype {
 	__PMC_CPUS()
 };
 
-#define	PMC_CPU_FIRST	PMC_CPU_AMD_K7
-#define	PMC_CPU_LAST	PMC_CPU_GENERIC
+#define	PMC_CPU_FIRST	PMC_CPU_AMD_K8
+#define	PMC_CPU_LAST	PMC_CPU_ARMV8_CORTEX_A76
 
 /*
  * Classes of PMCs
  */
-
-#define	__PMC_CLASSES()							\
-	__PMC_CLASS(TSC,	0x00,	"CPU Timestamp counter")	\
-	__PMC_CLASS(K7,		0x01,	"AMD K7 performance counters")	\
-	__PMC_CLASS(K8,		0x02,	"AMD K8 performance counters")	\
-	__PMC_CLASS(P5,		0x03,	"Intel Pentium counters")	\
-	__PMC_CLASS(P6,		0x04,	"Intel Pentium Pro counters")	\
-	__PMC_CLASS(P4,		0x05,	"Intel Pentium-IV counters")	\
-	__PMC_CLASS(IAF,	0x06,	"Intel Core2/Atom, fixed function") \
-	__PMC_CLASS(IAP,	0x07,	"Intel Core...Atom, programmable") \
-	__PMC_CLASS(UCF,	0x08,	"Intel Uncore fixed function")	\
-	__PMC_CLASS(UCP,	0x09,	"Intel Uncore programmable")	\
-	__PMC_CLASS(XSCALE,	0x0A,	"Intel XScale counters")	\
-	__PMC_CLASS(MIPS24K,	0x0B,	"MIPS 24K")			\
-	__PMC_CLASS(OCTEON,	0x0C,	"Cavium Octeon")		\
-	__PMC_CLASS(PPC7450,	0x0D,	"Motorola MPC7450 class")	\
-	__PMC_CLASS(PPC970,	0x0E,	"IBM PowerPC 970 class")	\
-	__PMC_CLASS(SOFT,	0x0F,	"Software events")		\
-	__PMC_CLASS(ARMV7,	0x10,	"ARMv7")			\
-	__PMC_CLASS(ARMV8,	0x11,	"ARMv8")			\
-	__PMC_CLASS(MIPS74K,	0x12,	"MIPS 74K")			\
-	__PMC_CLASS(E500,	0x13,	"Freescale e500 class")		\
-	__PMC_CLASS(BERI,	0x14,	"MIPS BERI")			\
-	__PMC_CLASS(POWER8,	0x15,	"IBM POWER8 class")
+#define	__PMC_CLASSES()								\
+    __PMC_CLASS(TSC,		0x00,	"CPU Timestamp counter")		\
+    __PMC_CLASS(K8,		0x02,	"AMD K8 performance counters")		\
+    __PMC_CLASS(IAF,		0x06,	"Intel Core2/Atom, fixed function")	\
+    __PMC_CLASS(IAP,		0x07,	"Intel Core...Atom, programmable")	\
+    __PMC_CLASS(UCF,		0x08,	"Intel Uncore fixed function")		\
+    __PMC_CLASS(UCP,		0x09,	"Intel Uncore programmable")		\
+    __PMC_CLASS(XSCALE,		0x0A,	"Intel XScale counters")		\
+    __PMC_CLASS(PPC7450,	0x0D,	"Motorola MPC7450 class")		\
+    __PMC_CLASS(PPC970,		0x0E,	"IBM PowerPC 970 class")		\
+    __PMC_CLASS(SOFT,		0x0F,	"Software events")			\
+    __PMC_CLASS(ARMV7,		0x10,	"ARMv7")				\
+    __PMC_CLASS(ARMV8,		0x11,	"ARMv8")				\
+    __PMC_CLASS(E500,		0x13,	"Freescale e500 class")			\
+    __PMC_CLASS(POWER8,		0x15,	"IBM POWER8 class")			\
+    __PMC_CLASS(DMC620_PMU_CD2,	0x16,	"ARM DMC620 Memory Controller PMU CLKDIV2") \
+    __PMC_CLASS(DMC620_PMU_C,	0x17,	"ARM DMC620 Memory Controller PMU CLK")	\
+    __PMC_CLASS(CMN600_PMU,	0x18,	"Arm CoreLink CMN600 Coherent Mesh Network PMU")
 
 enum pmc_class {
 #undef  __PMC_CLASS
@@ -175,7 +161,7 @@ enum pmc_class {
 };
 
 #define	PMC_CLASS_FIRST	PMC_CLASS_TSC
-#define	PMC_CLASS_LAST	PMC_CLASS_POWER8
+#define	PMC_CLASS_LAST	PMC_CLASS_CMN600_PMU
 
 /*
  * A PMC can be in the following states:
@@ -303,7 +289,9 @@ enum pmc_disp {
 	__PMC_CAP(QUALIFIER,	8, "further qualify monitored events")	\
 	__PMC_CAP(PRECISE,	9, "perform precise sampling")		\
 	__PMC_CAP(TAGGING,	10, "tag upstream events")		\
-	__PMC_CAP(CASCADE,	11, "cascade counters")
+	__PMC_CAP(CASCADE,	11, "cascade counters")			\
+	__PMC_CAP(SYSWIDE,	12, "system wide counter")		\
+	__PMC_CAP(DOMWIDE,	13, "NUMA domain wide counter")
 
 enum pmc_caps
 {
@@ -313,7 +301,7 @@ enum pmc_caps
 };
 
 #define	PMC_CAP_FIRST		PMC_CAP_INTERRUPT
-#define	PMC_CAP_LAST		PMC_CAP_CASCADE
+#define	PMC_CAP_LAST		PMC_CAP_DOMWIDE
 
 /*
  * PMC Event Numbers
@@ -379,6 +367,14 @@ enum pmc_ops {
 #define	PMC_F_CALLCHAIN		0x00000080 /*OP ALLOCATE capture callchains */
 #define	PMC_F_USERCALLCHAIN	0x00000100 /*OP ALLOCATE use userspace stack */
 
+/* V10 API */
+#define	PMC_F_EV_PMU		0x00000200 /*
+					    * OP ALLOCATE: pm_ev has special
+					    * userspace meaning; counter
+					    * configuration is communicated
+					    * through class-dependent fields
+					    */
+
 /* internal flags */
 #define	PMC_F_ATTACHED_TO_OWNER	0x00010000 /*attached to owner*/
 #define	PMC_F_NEEDS_LOGFILE	0x00020000 /*needs log file */
@@ -404,7 +400,7 @@ typedef uint64_t	pmc_value_t;
  * |   CPU      | PMC MODE | CLASS | ROW INDEX |
  * +-----------------------+-------+-----------+
  *
- * where CPU is 12 bits, MODE 8, CLASS 4, and ROW INDEX 8  Field 'CPU'
+ * where CPU is 12 bits, MODE 4, CLASS 8, and ROW INDEX 8  Field 'CPU'
  * is set to the requested CPU for system-wide PMCs or PMC_CPU_ANY for
  * process-mode PMCs.  Field 'PMC MODE' is the allocated PMC mode.
  * Field 'PMC CLASS' is the class of the PMC.  Field 'ROW INDEX' is the
@@ -415,12 +411,12 @@ typedef uint64_t	pmc_value_t;
  */
 
 #define	PMC_ID_TO_ROWINDEX(ID)	((ID) & 0xFF)
-#define	PMC_ID_TO_CLASS(ID)	(((ID) & 0xF00) >> 8)
-#define	PMC_ID_TO_MODE(ID)	(((ID) & 0xFF000) >> 12)
+#define	PMC_ID_TO_CLASS(ID)	(((ID) & 0xFF00) >> 8)
+#define	PMC_ID_TO_MODE(ID)	(((ID) & 0xF0000) >> 16)
 #define	PMC_ID_TO_CPU(ID)	(((ID) & 0xFFF00000) >> 20)
 #define	PMC_ID_MAKE_ID(CPU,MODE,CLASS,ROWINDEX)			\
-	((((CPU) & 0xFFF) << 20) | (((MODE) & 0xFF) << 12) |	\
-	(((CLASS) & 0xF) << 8) | ((ROWINDEX) & 0xFF))
+	((((CPU) & 0xFFF) << 20) | (((MODE) & 0xF) << 16) |	\
+	(((CLASS) & 0xFF) << 8) | ((ROWINDEX) & 0xFF))
 
 /*
  * Data structures for system calls supported by the pmc driver.
@@ -992,6 +988,7 @@ struct pmc_cpu {
 struct pmc_binding {
 	int	pb_bound;	/* is bound? */
 	int	pb_cpu;		/* if so, to which CPU */
+	u_char	pb_priority;	/* Thread active priority. */
 };
 
 struct pmc_mdep;
@@ -1011,8 +1008,10 @@ struct pmc_classdep {
 	/* configuring/reading/writing the hardware PMCs */
 	int (*pcd_config_pmc)(int _cpu, int _ri, struct pmc *_pm);
 	int (*pcd_get_config)(int _cpu, int _ri, struct pmc **_ppm);
-	int (*pcd_read_pmc)(int _cpu, int _ri, pmc_value_t *_value);
-	int (*pcd_write_pmc)(int _cpu, int _ri, pmc_value_t _value);
+	int (*pcd_read_pmc)(int _cpu, int _ri, struct pmc *_pm,
+	    pmc_value_t *_value);
+	int (*pcd_write_pmc)(int _cpu, int _ri, struct pmc *_pm,
+	    pmc_value_t _value);
 
 	/* pmc allocation/release */
 	int (*pcd_allocate_pmc)(int _cpu, int _ri, struct pmc *_t,
@@ -1020,8 +1019,8 @@ struct pmc_classdep {
 	int (*pcd_release_pmc)(int _cpu, int _ri, struct pmc *_pm);
 
 	/* starting and stopping PMCs */
-	int (*pcd_start_pmc)(int _cpu, int _ri);
-	int (*pcd_stop_pmc)(int _cpu, int _ri);
+	int (*pcd_start_pmc)(int _cpu, int _ri, struct pmc *_pm);
+	int (*pcd_stop_pmc)(int _cpu, int _ri, struct pmc *_pm);
 
 	/* description */
 	int (*pcd_describe)(int _cpu, int _ri, struct pmc_info *_pi,
@@ -1050,10 +1049,6 @@ struct pmc_mdep  {
 	 * Machine dependent methods.
 	 */
 
-	/* per-cpu initialization and finalization */
-	int (*pmd_pcpu_init)(struct pmc_mdep *_md, int _cpu);
-	int (*pmd_pcpu_fini)(struct pmc_mdep *_md, int _cpu);
-
 	/* thread context switch in/out */
 	int (*pmd_switch_in)(struct pmc_cpu *_p, struct pmc_process *_pp);
 	int (*pmd_switch_out)(struct pmc_cpu *_p, struct pmc_process *_pp);
@@ -1078,9 +1073,21 @@ extern struct pmc_cpu **pmc_pcpu;
 extern struct pmc_driverstats pmc_stats;
 
 #if	defined(HWPMC_DEBUG)
+
+/* HWPMC_DEBUG without KTR will compile but is a no-op. */
+#if !defined(KTR) || !defined(KTR_COMPILE) || ((KTR_COMPILE & KTR_SUBSYS) == 0)
+#error "HWPMC_DEBUG requires KTR and KTR_COMPILE=KTR_SUBSYS -- see ktr(4)"
+#endif
+
 #include <sys/ktr.h>
 
-/* debug flags, major flag groups */
+#define	__pmcdbg_used		/* unused variable annotation */
+
+/*
+ * Debug flags, major flag groups.
+ *
+ * Please keep the DEBUGGING section of the hwpmc(4) man page in sync.
+ */
 struct pmc_debugflags {
 	int	pdb_CPU;
 	int	pdb_CSW;
@@ -1196,6 +1203,7 @@ extern struct pmc_debugflags pmc_debugflags;
 #define	PMC_DEBUG_MIN_CLO	       12 /* close */
 
 #else
+#define	__pmcdbg_used			__unused
 #define	PMCDBG0(M, N, L, F)		/* nothing */
 #define	PMCDBG1(M, N, L, F, p1)
 #define	PMCDBG2(M, N, L, F, p1, p2)
@@ -1220,6 +1228,9 @@ int	pmc_save_kernel_callchain(uintptr_t *_cc, int _maxsamples,
     struct trapframe *_tf);
 int	pmc_save_user_callchain(uintptr_t *_cc, int _maxsamples,
     struct trapframe *_tf);
+void	pmc_restore_cpu_binding(struct pmc_binding *pb);
+void	pmc_save_cpu_binding(struct pmc_binding *pb);
+void	pmc_select_cpu(int cpu);
 struct pmc_mdep *pmc_mdep_alloc(int nclasses);
 void pmc_mdep_free(struct pmc_mdep *md);
 uint64_t pmc_rdtsc(void);

@@ -9,7 +9,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdlib.h>
-#include <smmintrin.h>
+#include <rte_vect.h>
 
 #include <rte_mbuf.h>
 #include <rte_mempool.h>
@@ -65,13 +65,15 @@ rxq_copy_mbuf_v(struct rte_mbuf **elts, struct rte_mbuf **pkts, uint16_t n)
  * @param elts
  *   Pointer to SW ring to be filled. The first mbuf has to be pre-built from
  *   the title completion descriptor to be copied to the rest of mbufs.
+ * @param keep
+ *   Keep unzipping if the next CQE is the miniCQE array.
  *
  * @return
  *   Number of mini-CQEs successfully decompressed.
  */
 static inline uint16_t
 rxq_cq_decompress_v(struct mlx5_rxq_data *rxq, volatile struct mlx5_cqe *cq,
-		    struct rte_mbuf **elts)
+		    struct rte_mbuf **elts, bool keep)
 {
 	volatile struct mlx5_mini_cqe8 *mcq = (void *)(cq + !rxq->cqe_comp_layout);
 	/* Title packet is pre-built. */
@@ -360,7 +362,7 @@ cycle:
 			}
 		}
 	}
-	if (rxq->cqe_comp_layout) {
+	if (rxq->cqe_comp_layout && keep) {
 		int ret;
 		/* Keep unzipping if the next CQE is the miniCQE array. */
 		cq = &cq[mcqe_n];

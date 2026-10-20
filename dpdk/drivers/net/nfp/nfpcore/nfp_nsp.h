@@ -8,6 +8,23 @@
 
 #include "nfp_cpp.h"
 
+/* EEPROM byte offsets */
+#define SFP_SFF8472_COMPLIANCE          0x5e
+#define SFP_SFF_REV_COMPLIANCE          1
+#define NSP_SFF_EEPROM_BLOCK_LEN        8
+
+/* Defines the valid values of the 'abi_drv_reset' hwinfo key */
+#define NFP_NSP_DRV_RESET_DISK                  0
+#define NFP_NSP_DRV_RESET_ALWAYS                1
+#define NFP_NSP_DRV_RESET_NEVER                 2
+#define NFP_NSP_DRV_RESET_DEFAULT               "0"
+
+/* Defines the valid values of the 'app_fw_from_flash' hwinfo key */
+#define NFP_NSP_APP_FW_LOAD_DISK                0
+#define NFP_NSP_APP_FW_LOAD_FLASH               1
+#define NFP_NSP_APP_FW_LOAD_PREF                2
+#define NFP_NSP_APP_FW_LOAD_DEFAULT             "2"
+
 struct nfp_nsp;
 
 struct nfp_nsp *nfp_nsp_open(struct nfp_cpp *cpp);
@@ -16,6 +33,7 @@ uint16_t nfp_nsp_get_abi_ver_major(struct nfp_nsp *state);
 uint16_t nfp_nsp_get_abi_ver_minor(struct nfp_nsp *state);
 int nfp_nsp_wait(struct nfp_nsp *state);
 int nfp_nsp_device_soft_reset(struct nfp_nsp *state);
+int nfp_nsp_device_activate(struct nfp_nsp *state);
 int nfp_nsp_load_fw(struct nfp_nsp *state, void *buf, size_t size);
 int nfp_nsp_mac_reinit(struct nfp_nsp *state);
 int nfp_nsp_read_identify(struct nfp_nsp *state, void *buf, size_t size);
@@ -100,6 +118,7 @@ enum nfp_eth_fec {
 	NFP_FEC_BASER_BIT,
 	NFP_FEC_REED_SOLOMON_BIT,
 	NFP_FEC_DISABLED_BIT,
+	NFP_FEC_INVALID_BIT,
 };
 
 #define NFP_FEC_AUTO            RTE_BIT32(NFP_FEC_AUTO_BIT)
@@ -169,6 +188,12 @@ void *nfp_nsp_config_entries(struct nfp_nsp *state);
 struct nfp_cpp *nfp_nsp_cpp(struct nfp_nsp *state);
 bool nfp_nsp_config_modified(struct nfp_nsp *state);
 uint32_t nfp_nsp_config_idx(struct nfp_nsp *state);
+int nfp_nsp_hwinfo_set(struct nfp_nsp *state,
+		const void *buf,
+		size_t size);
+int nfp_nsp_read_media(struct nfp_nsp *state,
+		void *buf,
+		size_t size);
 
 static inline bool
 nfp_eth_can_support_fec(struct nfp_eth_table_port *eth_port)
@@ -191,6 +216,7 @@ int nfp_eth_set_speed(struct nfp_nsp *nsp, uint32_t speed);
 int nfp_eth_set_split(struct nfp_nsp *nsp, uint32_t lanes);
 int nfp_eth_set_tx_pause(struct nfp_nsp *nsp, bool tx_pause);
 int nfp_eth_set_rx_pause(struct nfp_nsp *nsp, bool rx_pause);
+int nfp_eth_set_idmode(struct nfp_cpp *cpp, uint32_t idx, bool is_on);
 
 /* NSP static information */
 struct nfp_nsp_identify {
@@ -217,5 +243,64 @@ enum nfp_nsp_sensor_id {
 int nfp_hwmon_read_sensor(struct nfp_cpp *cpp, enum nfp_nsp_sensor_id id,
 		uint32_t *val);
 bool nfp_nsp_fw_loaded(struct nfp_nsp *state);
+int nfp_nsp_load_stored_fw(struct nfp_nsp *state);
+int nfp_nsp_hwinfo_lookup(struct nfp_nsp *state, void *buf, uint32_t size);
+int nfp_nsp_hwinfo_lookup_optional(struct nfp_nsp *state,
+		void *buf, size_t size, const char *default_val);
+int nfp_nsp_read_module_eeprom(struct nfp_nsp *state, int eth_index,
+		uint32_t offset, void *data,
+		uint32_t len, uint32_t *read_len);
+
+/* The buf used to receive bitmap of link modes */
+struct nfp_eth_media_buf {
+	uint8_t eth_index;
+	uint8_t reserved[7];
+	uint64_t supported_modes[2];
+	uint64_t reserved_2[2];
+};
+
+/* Link modes about RJ45 haven't been used, so there's no mapping to them */
+enum nfp_link_mode_list {
+	NFP_MEDIA_W0_RJ45_10M,
+	NFP_MEDIA_W0_RJ45_10M_HD,
+	NFP_MEDIA_W0_RJ45_100M,
+	NFP_MEDIA_W0_RJ45_100M_HD,
+	NFP_MEDIA_W0_RJ45_1G,
+	NFP_MEDIA_W0_RJ45_2P5G,
+	NFP_MEDIA_W0_RJ45_5G,
+	NFP_MEDIA_W0_RJ45_10G,
+	NFP_MEDIA_1000BASE_CX,
+	NFP_MEDIA_1000BASE_KX,
+	NFP_MEDIA_10GBASE_KX4,
+	NFP_MEDIA_10GBASE_KR,
+	NFP_MEDIA_10GBASE_CX4,
+	NFP_MEDIA_10GBASE_CR,
+	NFP_MEDIA_10GBASE_SR,
+	NFP_MEDIA_10GBASE_ER,
+	NFP_MEDIA_25GBASE_KR,
+	NFP_MEDIA_25GBASE_KR_S,
+	NFP_MEDIA_25GBASE_CR,
+	NFP_MEDIA_25GBASE_CR_S,
+	NFP_MEDIA_25GBASE_SR,
+	NFP_MEDIA_40GBASE_CR4,
+	NFP_MEDIA_40GBASE_KR4,
+	NFP_MEDIA_40GBASE_SR4,
+	NFP_MEDIA_40GBASE_LR4,
+	NFP_MEDIA_50GBASE_KR,
+	NFP_MEDIA_50GBASE_SR,
+	NFP_MEDIA_50GBASE_CR,
+	NFP_MEDIA_50GBASE_LR,
+	NFP_MEDIA_50GBASE_ER,
+	NFP_MEDIA_50GBASE_FR,
+	NFP_MEDIA_100GBASE_KR4,
+	NFP_MEDIA_100GBASE_SR4,
+	NFP_MEDIA_100GBASE_CR4,
+	NFP_MEDIA_100GBASE_KP4,
+	NFP_MEDIA_100GBASE_CR10,
+	NFP_MEDIA_10GBASE_LR,
+	NFP_MEDIA_25GBASE_LR,
+	NFP_MEDIA_25GBASE_ER,
+	NFP_MEDIA_LINK_MODES_NUMBER
+};
 
 #endif /* __NSP_NSP_H__ */

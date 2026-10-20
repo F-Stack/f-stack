@@ -35,7 +35,13 @@ CWARNEXTRA?=	-Wno-error-tautological-compare -Wno-error-empty-body \
 endif
 
 ifeq (${COMPILER_TYPE},gcc)
+# -Wno-address-of-packed-member was added in GCC 9.0, omit it on older GCC
+GCCVER_GE9 := $(shell expr `gcc -dumpversion | cut -f1 -d.` \>= 9)
+ifeq "$(GCCVER_GE9)" "1"
 CWARNEXTRA?=	-Wno-unused-but-set-variable -Wno-address-of-packed-member
+else
+CWARNEXTRA?=	-Wno-unused-but-set-variable
+endif
 endif
 
 #
@@ -96,11 +102,6 @@ ifeq (${MACHINE_ARCH},powerpc64)
 CFLAGS+=	
 endif
 
-ifeq (${MACHINE_CPUARCH},mips)
-CFLAGS+=	
-INLINE_LIMIT?=	8000
-endif
-
 ifeq (${MACHINE_CPUARCH},arm64)
 INLINE_LIMIT?=	15000
 endif
@@ -111,9 +112,7 @@ endif
 ifneq (${MK_SSP},no)
 ifneq (${MACHINE_CPUARCH},ia64)
 ifneq (${MACHINE_CPUARCH},arm)
-ifneq (${MACHINE_CPUARCH},mips)
 CFLAGS+=	-fstack-protector
-endif
 endif
 endif
 endif

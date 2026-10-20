@@ -27,13 +27,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)in_proto.c	8.2 (Berkeley) 2/9/95
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_mrouting.h"
 #include "opt_ipsec.h"
 #include "opt_inet.h"
@@ -51,6 +47,11 @@ __FBSDID("$FreeBSD$");
 #include <sys/queue.h>
 #include <sys/sysctl.h>
 
+#include <net/if.h>
+#include <net/if_var.h>
+#include <netinet/in.h>
+#include <netinet/in_var.h>
+
 /*
  * While this file provides the domain and protocol switch tables for IPv4, it
  * also provides the sysctl node declarations for net.inet.* often shared with
@@ -58,255 +59,44 @@ __FBSDID("$FreeBSD$");
  * support compile out everything but these sysctl nodes.
  */
 #ifdef INET
-#include <net/if.h>
-#include <net/if_var.h>
-#include <net/route.h>
-#include <net/vnet.h>
-#endif /* INET */
-
-#if defined(INET) || defined(INET6)
-#include <netinet/in.h>
-#endif
-
-#ifdef INET
-#include <netinet/in_systm.h>
-#include <netinet/in_var.h>
-#include <netinet/ip.h>
-#include <netinet/ip_var.h>
-#include <netinet/ip_icmp.h>
-#include <netinet/igmp_var.h>
-#include <netinet/tcp.h>
-#include <netinet/tcp_timer.h>
-#include <netinet/tcp_var.h>
-#include <netinet/udp.h>
-#include <netinet/udp_var.h>
-#include <netinet/ip_encap.h>
-
-/*
- * TCP/IP protocol family: IP, ICMP, UDP, TCP.
- */
-
-static struct pr_usrreqs nousrreqs;
-
-#ifdef SCTP
-#include <netinet/in_pcb.h>
-#include <netinet/sctp_pcb.h>
-#include <netinet/sctp.h>
-#include <netinet/sctp_var.h>
-#endif
+/* netinet/raw_ip.c */
+extern struct protosw rip_protosw;
+/* netinet/udp_usrreq.c */
+extern struct protosw udp_protosw, udplite_protosw;
+/* netinet/tcp_usrreq.c */
+extern struct protosw tcp_protosw;
+/* netinet/sctp_usrreq.c */
+extern struct protosw sctp_seqpacket_protosw, sctp_stream_protosw;
 
 FEATURE(inet, "Internet Protocol version 4");
-
-extern	struct domain inetdomain;
-
-/* Spacer for loadable protocols. */
-#define IPPROTOSPACER   			\
-{						\
-	.pr_domain =		&inetdomain,	\
-	.pr_protocol =		PROTO_SPACER,	\
-	.pr_usrreqs =		&nousrreqs	\
-}
-
-struct protosw inetsw[] = {
-{
-	.pr_type =		0,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_IP,
-	.pr_init =		ip_init,
-	.pr_slowtimo =		ip_slowtimo,
-	.pr_drain =		ip_drain,
-	.pr_usrreqs =		&nousrreqs
-},
-{
-	.pr_type =		SOCK_DGRAM,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_UDP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_input =		udp_input,
-	.pr_ctlinput =		udp_ctlinput,
-	.pr_ctloutput =		udp_ctloutput,
-	.pr_init =		udp_init,
-	.pr_usrreqs =		&udp_usrreqs
-},
-{
-	.pr_type =		SOCK_STREAM,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_TCP,
-	.pr_flags =		PR_CONNREQUIRED|PR_IMPLOPCL|PR_WANTRCVD,
-	.pr_input =		tcp_input,
-	.pr_ctlinput =		tcp_ctlinput,
-	.pr_ctloutput =		tcp_ctloutput,
-	.pr_init =		tcp_init,
-	.pr_slowtimo =		tcp_slowtimo,
-	.pr_drain =		tcp_drain,
-	.pr_usrreqs =		&tcp_usrreqs
-},
-#ifdef SCTP
-{
-	.pr_type =		SOCK_SEQPACKET,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_SCTP,
-	.pr_flags =		PR_WANTRCVD|PR_LASTHDR,
-	.pr_input =		sctp_input,
-	.pr_ctlinput =		sctp_ctlinput,
-	.pr_ctloutput =		sctp_ctloutput,
-	.pr_init =		sctp_init,
-	.pr_drain =		sctp_drain,
-	.pr_usrreqs =		&sctp_usrreqs
-},
-{
-	.pr_type =		SOCK_STREAM,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_SCTP,
-	.pr_flags =		PR_CONNREQUIRED|PR_WANTRCVD|PR_LASTHDR,
-	.pr_input =		sctp_input,
-	.pr_ctlinput =		sctp_ctlinput,
-	.pr_ctloutput =		sctp_ctloutput,
-	.pr_drain =		NULL, /* Covered by the SOCK_SEQPACKET entry. */
-	.pr_usrreqs =		&sctp_usrreqs
-},
-#endif /* SCTP */
-{
-	.pr_type =		SOCK_DGRAM,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_UDPLITE,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_input =		udp_input,
-	.pr_ctlinput =		udplite_ctlinput,
-	.pr_ctloutput =		udp_ctloutput,
-	.pr_init =		udplite_init,
-	.pr_usrreqs =		&udp_usrreqs
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_RAW,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_input =		rip_input,
-	.pr_ctlinput =		rip_ctlinput,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_ICMP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		icmp_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_IGMP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		igmp_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_fasttimo =		igmp_fasttimo,
-	.pr_slowtimo =		igmp_slowtimo,
-	.pr_usrreqs =		&rip_usrreqs
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_RSVP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		rsvp_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_IPV4,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		encap4_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_MOBILE,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		encap4_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_ETHERIP,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		encap4_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_GRE,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		encap4_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-# ifdef INET6
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_IPV6,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		encap4_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-#endif
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_protocol =		IPPROTO_PIM,
-	.pr_flags =		PR_ATOMIC|PR_ADDR|PR_LASTHDR,
-	.pr_input =		encap4_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_usrreqs =		&rip_usrreqs
-},
-/* Spacer n-times for loadable protocols. */
-IPPROTOSPACER,
-IPPROTOSPACER,
-IPPROTOSPACER,
-IPPROTOSPACER,
-IPPROTOSPACER,
-IPPROTOSPACER,
-IPPROTOSPACER,
-IPPROTOSPACER,
-/* raw wildcard */
-{
-	.pr_type =		SOCK_RAW,
-	.pr_domain =		&inetdomain,
-	.pr_flags =		PR_ATOMIC|PR_ADDR,
-	.pr_input =		rip_input,
-	.pr_ctloutput =		rip_ctloutput,
-	.pr_init =		rip_init,
-	.pr_usrreqs =		&rip_usrreqs
-},
-};
 
 struct domain inetdomain = {
 	.dom_family =		AF_INET,
 	.dom_name =		"internet",
-	.dom_protosw =		inetsw,
-	.dom_protoswNPROTOSW =	&inetsw[nitems(inetsw)],
 	.dom_rtattach =		in_inithead,
 #ifdef VIMAGE
 	.dom_rtdetach =		in_detachhead,
 #endif
 	.dom_ifattach =		in_domifattach,
-	.dom_ifdetach =		in_domifdetach
+	.dom_ifdetach =		in_domifdetach,
+	.dom_nprotosw =		14,
+	.dom_protosw = {
+		&tcp_protosw,
+		&udp_protosw,
+#ifdef SCTP
+		&sctp_seqpacket_protosw,
+		&sctp_stream_protosw,
+#else
+		NULL, NULL,
+#endif
+		&udplite_protosw,
+		&rip_protosw,
+		/* Spacer 8 times for loadable protocols. XXXGL: why 8? */
+		NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL,
+	},
 };
 
-VNET_DOMAIN_SET(inet);
+DOMAIN_SET(inet);
 #endif /* INET */
 
 SYSCTL_NODE(_net, PF_INET, inet, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
@@ -318,6 +108,8 @@ SYSCTL_NODE(_net_inet, IPPROTO_ICMP, icmp, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "ICMP");
 SYSCTL_NODE(_net_inet, IPPROTO_UDP, udp, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "UDP");
+SYSCTL_NODE(_net_inet, IPPROTO_UDPLITE, udplite, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
+    "UDP-Lite");
 SYSCTL_NODE(_net_inet, IPPROTO_TCP, tcp, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "TCP");
 #if defined(SCTP) || defined(SCTP_SUPPORT)

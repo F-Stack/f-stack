@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2009-2010
  *	Swinburne University of Technology, Melbourne, Australia
@@ -53,15 +53,13 @@
  *   http://caia.swin.edu.au/urp/newtcp/
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/kernel.h>
 #include <sys/khelp.h>
 #include <sys/limits.h>
 #include <sys/malloc.h>
 #include <sys/module.h>
+#include <sys/prng.h>
 #include <sys/queue.h>
 #include <sys/socket.h>
 #include <sys/socketvar.h>
@@ -70,7 +68,8 @@ __FBSDID("$FreeBSD$");
 
 #include <net/vnet.h>
 
-#include <netinet/tcp.h>
+#include <netinet/in.h>
+#include <netinet/in_pcb.h>
 #include <netinet/tcp_seq.h>
 #include <netinet/tcp_timer.h>
 #include <netinet/tcp_var.h>
@@ -79,11 +78,12 @@ __FBSDID("$FreeBSD$");
 
 #include <netinet/khelp/h_ertt.h>
 
-/* Largest possible number returned by random(). */
-#define	RANDOM_MAX	INT_MAX
+/* Largest possible number returned by prng32(). */
+#define	RANDOM_MAX	UINT32_MAX
 
-static void	hd_ack_received(struct cc_var *ccv, uint16_t ack_type);
+static void	hd_ack_received(struct cc_var *ccv, ccsignal_t ack_type);
 static int	hd_mod_init(void);
+static size_t	hd_data_sz(void);
 
 static int ertt_id;
 
@@ -97,8 +97,18 @@ VNET_DEFINE_STATIC(uint32_t, hd_pmax) = 5;
 struct cc_algo hd_cc_algo = {
 	.name = "hd",
 	.ack_received = hd_ack_received,
-	.mod_init = hd_mod_init
+	.mod_init = hd_mod_init,
+	.cc_data_sz = hd_data_sz,
+	.after_idle = newreno_cc_after_idle,
+	.cong_signal = newreno_cc_cong_signal,
+	.post_recovery = newreno_cc_post_recovery,
 };
+
+static size_t
+hd_data_sz(void)
+{
+	return (0);
+}
 
 /*
  * Hamilton backoff function. Returns 1 if we should backoff or 0 otherwise.
@@ -119,7 +129,7 @@ should_backoff(int qdly, int maxqdly)
 			p = (RANDOM_MAX / 100) * V_hd_pmax;
 	}
 
-	return (random() < p);
+	return (prng32() < p);
 }
 
 /*
@@ -129,13 +139,13 @@ should_backoff(int qdly, int maxqdly)
  * as NewReno in all other circumstances.
  */
 static void
-hd_ack_received(struct cc_var *ccv, uint16_t ack_type)
+hd_ack_received(struct cc_var *ccv, ccsignal_t ack_type)
 {
 	struct ertt *e_t;
 	int qdly;
 
 	if (ack_type == CC_ACK) {
-		e_t = khelp_get_osd(CCV(ccv, osd), ertt_id);
+		e_t = khelp_get_osd(&CCV(ccv, t_osd), ertt_id);
 
 		if (e_t->rtt && e_t->minrtt && V_hd_qthresh > 0) {
 			qdly = e_t->rtt - e_t->minrtt;
@@ -150,14 +160,14 @@ hd_ack_received(struct cc_var *ccv, uint16_t ack_type)
 					 * half cwnd and behave like an ECN (ie
 					 * not a packet loss).
 					 */
-					newreno_cc_algo.cong_signal(ccv,
+					newreno_cc_cong_signal(ccv,
 					    CC_ECN);
 					return;
 				}
 			}
 		}
 	}
-	newreno_cc_algo.ack_received(ccv, ack_type); /* As for NewReno. */
+	newreno_cc_ack_received(ccv, ack_type);
 }
 
 static int
@@ -169,11 +179,6 @@ hd_mod_init(void)
 		printf("%s: h_ertt module not found\n", __func__);
 		return (ENOENT);
 	}
-
-	hd_cc_algo.after_idle = newreno_cc_algo.after_idle;
-	hd_cc_algo.cong_signal = newreno_cc_algo.cong_signal;
-	hd_cc_algo.post_recovery = newreno_cc_algo.post_recovery;
-
 	return (0);
 }
 
@@ -251,5 +256,5 @@ SYSCTL_PROC(_net_inet_tcp_cc_hd, OID_AUTO, queue_min,
     "minimum queueing delay threshold (qmin) in ticks");
 
 DECLARE_CC_MODULE(hd, &hd_cc_algo);
-MODULE_VERSION(hd, 1);
+MODULE_VERSION(hd, 2);
 MODULE_DEPEND(hd, ertt, 1, 1, 1);

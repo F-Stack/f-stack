@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2015-2019 Yandex LLC
  * Copyright (c) 2015-2019 Andrey V. Elsukov <ae@FreeBSD.org>
@@ -24,8 +24,6 @@
  * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
  * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
  * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_IP_FW_NAT64STL_H_
@@ -37,8 +35,8 @@
 struct nat64stl_cfg {
 	struct named_object	no;
 
-	uint16_t		map64;	/* table with 6to4 mapping */
-	uint16_t		map46;	/* table with 4to6 mapping */
+	uint32_t		map64;	/* table with 6to4 mapping */
+	uint32_t		map46;	/* table with 4to6 mapping */
 
 	struct nat64_config	base;
 #define	NAT64STL_KIDX		0x0100
@@ -49,7 +47,7 @@ struct nat64stl_cfg {
 	char			name[64];
 };
 
-VNET_DECLARE(uint16_t, nat64stl_eid);
+VNET_DECLARE(uint32_t, nat64stl_eid);
 #define	V_nat64stl_eid	VNET(nat64stl_eid)
 #define	IPFW_TLV_NAT64STL_NAME	IPFW_TLV_EACTION_NAME(V_nat64stl_eid)
 

@@ -220,7 +220,7 @@ int main(int argc, char * argv[])
     ev.events = EPOLLIN;
     ret = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd, &ev);
     if (ret < 0) {
-        printf("ff_listen failed\n");
+        printf("ff_epoll_ctl failed\n");
         close(epfd);
         close(sockfd);
         close(sockfd_kernel);
@@ -230,7 +230,7 @@ int main(int argc, char * argv[])
     ev.events = EPOLLIN;
     ret = epoll_ctl(epfd, EPOLL_CTL_ADD, sockfd_kernel, &ev);
     if (ret < 0) {
-        printf("ff_listen failed\n");
+        printf("ff_epoll_ctl failed\n");
         close(epfd);
         close(sockfd);
         close(sockfd_kernel);

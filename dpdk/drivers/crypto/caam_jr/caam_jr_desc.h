@@ -32,7 +32,7 @@
 /* Macro for setting up a JD. The structure of the JD is common across all
  * supported protocols, thus its structure is identical.
  */
-#define SEC_JD_INIT(descriptor)	      ({ \
+#define SEC_JD_INIT(descriptor)	      __extension__ ({ \
 	/* CTYPE = job descriptor			       \
 	 * RSMS, DNR = 0
 	 * ONE = 1
@@ -110,13 +110,13 @@
 	((struct descriptor_header_s *)(descriptor))->command.jd.desclen)
 
 /* Helper macro for dumping the hex representation of a descriptor */
-#define SEC_DUMP_DESC(descriptor) {					\
+#define SEC_DUMP_DESC(descriptor, f) {					\
 	int __i;							\
 	CAAM_JR_INFO("Des@ 0x%08x\n", (uint32_t)((uint32_t *)(descriptor)));\
 	for (__i = 0;						\
 		__i < SEC_GET_DESC_LEN(descriptor);			\
 		__i++) {						\
-		printf("0x%08x: 0x%08x\n",			\
+		fprintf(f, "0x%08x: 0x%08x\n",			\
 			(uint32_t)(((uint32_t *)(descriptor)) + __i),	\
 			*(((uint32_t *)(descriptor)) + __i));		\
 	}								\
@@ -261,15 +261,15 @@ struct load_command_s {
  * will be type-casted to this one
  * this one.
  */
-struct sec_sd_t {
+struct __rte_aligned(64) sec_sd_t {
 	uint32_t rsvd[MAX_DESC_SIZE_WORDS];
-} __rte_packed __rte_aligned(64);
+} __rte_packed;
 
 /* Structure encompassing a job descriptor which processes
  * a single packet from a context. The job descriptor references
  * a shared descriptor from a SEC context.
  */
-struct sec_job_descriptor_t {
+struct __rte_aligned(64) sec_job_descriptor_t {
 	struct descriptor_header_s deschdr;
 	dma_addr_t sd_ptr;
 	struct seq_out_command_s seq_out;
@@ -280,6 +280,6 @@ struct sec_job_descriptor_t {
 	uint32_t in_ext_length;
 	struct load_command_s load_dpovrd;
 	uint32_t dpovrd;
-} __rte_packed __rte_aligned(64);
+} __rte_packed;
 
 #endif

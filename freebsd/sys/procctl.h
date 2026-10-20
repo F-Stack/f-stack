@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 Hudson River Trading LLC
  * Copyright (c) 2014, 2016 The FreeBSD Foundation
@@ -29,8 +29,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_SYS_PROCCTL_H_
@@ -63,6 +61,12 @@
 #define	PROC_PROTMAX_STATUS	16	/* query implicit PROT_MAX status */
 #define	PROC_STACKGAP_CTL	17	/* en/dis stack gap on MAP_STACK */
 #define	PROC_STACKGAP_STATUS	18	/* query stack gap */
+#define	PROC_NO_NEW_PRIVS_CTL	19	/* disable setuid/setgid */
+#define	PROC_NO_NEW_PRIVS_STATUS 20	/* query suid/sgid disabled status */
+#define	PROC_WXMAP_CTL		21	/* control W^X */
+#define	PROC_WXMAP_STATUS	22	/* query W^X */
+#define	PROC_LOGSIGEXIT_CTL	23	/* en/dis logging on sigexit */
+#define	PROC_LOGSIGEXIT_STATUS	24	/* query logging on sigexit */
 
 /* Operations for PROC_SPROTECT (passed in integer arg). */
 #define	PPROT_OP(x)	((x) & 0xf)
@@ -98,6 +102,9 @@ struct procctl_reaper_pidinfo {
 #define	REAPER_PIDINFO_VALID	0x00000001
 #define	REAPER_PIDINFO_CHILD	0x00000002
 #define	REAPER_PIDINFO_REAPER	0x00000004
+#define	REAPER_PIDINFO_ZOMBIE	0x00000008
+#define	REAPER_PIDINFO_STOPPED	0x00000010
+#define	REAPER_PIDINFO_EXITING	0x00000020
 
 struct procctl_reaper_pids {
 	u_int	rp_count;
@@ -140,6 +147,17 @@ struct procctl_reaper_kill {
 #define	PROC_STACKGAP_DISABLE		0x0002
 #define	PROC_STACKGAP_ENABLE_EXEC	0x0004
 #define	PROC_STACKGAP_DISABLE_EXEC	0x0008
+
+#define	PROC_NO_NEW_PRIVS_ENABLE	1
+#define	PROC_NO_NEW_PRIVS_DISABLE	2
+
+#define	PROC_WX_MAPPINGS_PERMIT		0x0001
+#define	PROC_WX_MAPPINGS_DISALLOW_EXEC	0x0002
+#define	PROC_WXORX_ENFORCE		0x80000000
+
+#define	PROC_LOGSIGEXIT_CTL_NOFORCE		1
+#define	PROC_LOGSIGEXIT_CTL_FORCE_ENABLE	2
+#define	PROC_LOGSIGEXIT_CTL_FORCE_DISABLE	3
 
 #ifndef _KERNEL
 __BEGIN_DECLS

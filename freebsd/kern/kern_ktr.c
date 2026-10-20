@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2000 John Baldwin <jhb@FreeBSD.org>
  *
@@ -31,8 +31,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_ktr.h"
 #include "opt_alq.h"
@@ -253,9 +251,12 @@ SYSCTL_PROC(_debug_ktr, OID_AUTO, entries,
 
 #ifdef KTR_VERBOSE
 int	ktr_verbose = KTR_VERBOSE;
-TUNABLE_INT("debug.ktr.verbose", &ktr_verbose);
-SYSCTL_INT(_debug_ktr, OID_AUTO, verbose, CTLFLAG_RW, &ktr_verbose, 0, "");
+#else
+int	ktr_verbose = 0;
 #endif
+TUNABLE_INT("debug.ktr.verbose", &ktr_verbose);
+SYSCTL_INT(_debug_ktr, OID_AUTO, verbose, CTLFLAG_RWTUN, &ktr_verbose, 0,
+    "Print extra info when logging to the console");
 
 #ifdef KTR_ALQ
 struct alq *ktr_alq;
@@ -377,7 +378,6 @@ ktr_tracepoint(uint64_t mask, const char *file, int line, const char *format,
 			file += 3;
 	entry->ktr_file = file;
 	entry->ktr_line = line;
-#ifdef KTR_VERBOSE
 	if (ktr_verbose) {
 #ifdef SMP
 		printf("cpu%d ", cpu);
@@ -389,7 +389,6 @@ ktr_tracepoint(uint64_t mask, const char *file, int line, const char *format,
 		printf(format, arg1, arg2, arg3, arg4, arg5, arg6);
 		printf("\n");
 	}
-#endif
 	entry->ktr_desc = format;
 	entry->ktr_parms[0] = arg1;
 	entry->ktr_parms[1] = arg2;
@@ -417,7 +416,7 @@ static	struct tstate tstate;
 static	int db_ktr_verbose;
 static	int db_mach_vtrace(void);
 
-DB_SHOW_COMMAND(ktr, db_ktr_all)
+DB_SHOW_COMMAND_FLAGS(ktr, db_ktr_all, DB_CMD_MEMSAFE)
 {
 
 	tstate.cur = (ktr_idx - 1) % ktr_entries;

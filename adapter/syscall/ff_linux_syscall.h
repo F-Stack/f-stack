@@ -10,4 +10,8 @@
 #define FF_SYSCALL_DECL(ret, fn, args) ret ff_linux_##fn args
 #include "ff_declare_syscalls.h"
 
+/* ioctl is removed from ff_declare_syscalls.h (variadic conflict fix, issue #942),
+ * declare ff_linux_ioctl explicitly here. */
+int ff_linux_ioctl(int fd, unsigned long req, unsigned long data);
+
 #endif

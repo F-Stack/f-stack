@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014 Tycho Nightingale <tycho.nightingale@pluribusnetworks.com>
  * All rights reserved.
@@ -24,16 +24,14 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef	_VMM_IOPORT_H_
 #define	_VMM_IOPORT_H_
 
-typedef int (*ioport_handler_func_t)(struct vm *vm, int vcpuid,
+typedef int (*ioport_handler_func_t)(struct vm *vm,
     bool in, int port, int bytes, uint32_t *val);
 
-int vm_handle_inout(struct vm *vm, int vcpuid, struct vm_exit *vme, bool *retu);
+int vm_handle_inout(struct vcpu *vcpu, struct vm_exit *vme, bool *retu);
 
 #endif	/* _VMM_IOPORT_H_ */

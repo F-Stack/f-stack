@@ -30,8 +30,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)kern_malloc.c	8.3 (Berkeley) 1/4/94
  */
 
 /*
@@ -46,17 +44,17 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ddb.h"
 #include "opt_vm.h"
 
 #include <sys/param.h>
 #include <sys/systm.h>
+#include <sys/asan.h>
 #include <sys/kdb.h>
 #include <sys/kernel.h>
 #include <sys/lock.h>
 #include <sys/malloc.h>
+#include <sys/msan.h>
 #include <sys/mutex.h>
 #include <sys/vmmeter.h>
 #include <sys/proc.h>
@@ -110,13 +108,23 @@ dtrace_malloc_probe_func_t __read_mostly	dtrace_malloc_probe;
 #define	MALLOC_DEBUG	1
 #endif
 
-#ifdef DEBUG_REDZONE
+#if defined(KASAN) || defined(DEBUG_REDZONE)
 #define	DEBUG_REDZONE_ARG_DEF	, unsigned long osize
 #define	DEBUG_REDZONE_ARG	, osize
 #else
 #define	DEBUG_REDZONE_ARG_DEF
 #define	DEBUG_REDZONE_ARG
 #endif
+
+typedef	enum {
+	SLAB_COOKIE_SLAB_PTR		= 0x0,
+	SLAB_COOKIE_MALLOC_LARGE	= 0x1,
+	SLAB_COOKIE_CONTIG_MALLOC	= 0x2,
+} slab_cookie_t;
+#define	SLAB_COOKIE_MASK		0x3
+#define	SLAB_COOKIE_SHIFT		2
+#define	GET_SLAB_COOKIE(_slab)						\
+    ((slab_cookie_t)(uintptr_t)(_slab) & SLAB_COOKIE_MASK)
 
 /*
  * When realloc() is called, if the new size is sufficiently smaller than
@@ -453,47 +461,82 @@ malloc_type_freed(struct malloc_type *mtp, unsigned long size)
  *	If M_NOWAIT is set, this routine will not block and return NULL if
  *	the allocation fails.
  */
+#define	IS_CONTIG_MALLOC(_slab)						\
+    (GET_SLAB_COOKIE(_slab) == SLAB_COOKIE_CONTIG_MALLOC)
+#define	CONTIG_MALLOC_SLAB(_size)					\
+    ((void *)(((_size) << SLAB_COOKIE_SHIFT) | SLAB_COOKIE_CONTIG_MALLOC))
+static inline size_t
+contigmalloc_size(uma_slab_t slab)
+{
+	uintptr_t va;
+
+	KASSERT(IS_CONTIG_MALLOC(slab),
+	    ("%s: called on non-contigmalloc allocation: %p", __func__, slab));
+	va = (uintptr_t)slab;
+	return (va >> SLAB_COOKIE_SHIFT);
+}
+
 void *
-contigmalloc(unsigned long size, struct malloc_type *type, int flags,
+contigmalloc(unsigned long osize, struct malloc_type *type, int flags,
     vm_paddr_t low, vm_paddr_t high, unsigned long alignment,
     vm_paddr_t boundary)
 {
 	void *ret;
+	unsigned long size;
+
+#ifdef DEBUG_REDZONE
+	size = redzone_size_ntor(osize);
+#else
+	size = osize;
+#endif
 
 	ret = (void *)kmem_alloc_contig(size, flags, low, high, alignment,
 	    boundary, VM_MEMATTR_DEFAULT);
-	if (ret != NULL)
+	if (ret != NULL) {
+		/* Use low bits unused for slab pointers. */
+		vsetzoneslab((uintptr_t)ret, NULL, CONTIG_MALLOC_SLAB(size));
 		malloc_type_allocated(type, round_page(size));
+#ifdef DEBUG_REDZONE
+		ret = redzone_setup(ret, osize);
+#endif
+	}
 	return (ret);
 }
 
 void *
-contigmalloc_domainset(unsigned long size, struct malloc_type *type,
+contigmalloc_domainset(unsigned long osize, struct malloc_type *type,
     struct domainset *ds, int flags, vm_paddr_t low, vm_paddr_t high,
     unsigned long alignment, vm_paddr_t boundary)
 {
 	void *ret;
+	unsigned long size;
+
+#ifdef DEBUG_REDZONE
+	size = redzone_size_ntor(osize);
+#else
+	size = osize;
+#endif
 
 	ret = (void *)kmem_alloc_contig_domainset(ds, size, flags, low, high,
 	    alignment, boundary, VM_MEMATTR_DEFAULT);
-	if (ret != NULL)
+	if (ret != NULL) {
+		/* Use low bits unused for slab pointers. */
+		vsetzoneslab((uintptr_t)ret, NULL, CONTIG_MALLOC_SLAB(size));
 		malloc_type_allocated(type, round_page(size));
+#ifdef DEBUG_REDZONE
+		ret = redzone_setup(ret, osize);
+#endif
+	}
 	return (ret);
 }
+#undef	IS_CONTIG_MALLOC
+#undef	CONTIG_MALLOC_SLAB
 
-/*
- *	contigfree:
- *
- *	Free a block of memory allocated by contigmalloc.
- *
- *	This routine may not block.
- */
+/* contigfree(9) is deprecated. */
 void
-contigfree(void *addr, unsigned long size, struct malloc_type *type)
+contigfree(void *addr, unsigned long size __unused, struct malloc_type *type)
 {
-
-	kmem_free((vm_offset_t)addr, size);
-	malloc_type_freed(type, round_page(size));
+	free(addr, type);
 }
 
 #ifdef MALLOC_DEBUG
@@ -501,25 +544,13 @@ static int
 malloc_dbg(caddr_t *vap, size_t *sizep, struct malloc_type *mtp,
     int flags)
 {
-#ifdef INVARIANTS
-	int indx;
-
 	KASSERT(mtp->ks_version == M_VERSION, ("malloc: bad malloc type version"));
-	/*
-	 * Check that exactly one of M_WAITOK or M_NOWAIT is specified.
-	 */
-	indx = flags & (M_WAITOK | M_NOWAIT);
-	if (indx != M_NOWAIT && indx != M_WAITOK) {
-		static	struct timeval lasterr;
-		static	int curerr, once;
-		if (once == 0 && ppsratecheck(&lasterr, &curerr, 1)) {
-			printf("Bad malloc flags: %x\n", indx);
-			kdb_backtrace();
-			flags |= M_WAITOK;
-			once++;
-		}
-	}
-#endif
+	KASSERT((flags & (M_WAITOK | M_NOWAIT)) != 0,
+	    ("malloc: flags must include either M_WAITOK or M_NOWAIT"));
+	KASSERT((flags & (M_WAITOK | M_NOWAIT)) != (M_WAITOK | M_NOWAIT),
+	    ("malloc: flags may not include both M_WAITOK and M_NOWAIT"));
+	KASSERT((flags & M_NEVERFREED) == 0,
+	    ("malloc: M_NEVERFREED is for internal use only"));
 #ifdef MALLOC_MAKE_FAILURES
 	if ((flags & M_NOWAIT) && (malloc_failure_rate != 0)) {
 		atomic_add_int(&malloc_nowait_count, 1);
@@ -537,7 +568,7 @@ malloc_dbg(caddr_t *vap, size_t *sizep, struct malloc_type *mtp,
 #ifdef EPOCH_TRACE
 			epoch_trace_list(curthread);
 #endif
-			KASSERT(1, 
+			KASSERT(0,
 			    ("malloc(M_WAITOK) with sleeping prohibited"));
 		}
 	}
@@ -564,50 +595,44 @@ malloc_dbg(caddr_t *vap, size_t *sizep, struct malloc_type *mtp,
 /*
  * Handle large allocations and frees by using kmem_malloc directly.
  */
-static inline bool
-malloc_large_slab(uma_slab_t slab)
-{
-	uintptr_t va;
-
-	va = (uintptr_t)slab;
-	return ((va & 1) != 0);
-}
-
+#define	IS_MALLOC_LARGE(_slab)						\
+    (GET_SLAB_COOKIE(_slab) == SLAB_COOKIE_MALLOC_LARGE)
+#define	MALLOC_LARGE_SLAB(_size)					\
+    ((void *)(((_size) << SLAB_COOKIE_SHIFT) | SLAB_COOKIE_MALLOC_LARGE))
 static inline size_t
 malloc_large_size(uma_slab_t slab)
 {
 	uintptr_t va;
 
 	va = (uintptr_t)slab;
-	return (va >> 1);
+	KASSERT(IS_MALLOC_LARGE(slab),
+	    ("%s: called on non-malloc_large allocation: %p", __func__, slab));
+	return (va >> SLAB_COOKIE_SHIFT);
 }
 
 static caddr_t __noinline
-malloc_large(size_t *size, struct malloc_type *mtp, struct domainset *policy,
+malloc_large(size_t size, struct malloc_type *mtp, struct domainset *policy,
     int flags DEBUG_REDZONE_ARG_DEF)
 {
-	vm_offset_t kva;
-	caddr_t va;
-	size_t sz;
+	void *va;
 
-	sz = roundup(*size, PAGE_SIZE);
-	kva = kmem_malloc_domainset(policy, sz, flags);
-	if (kva != 0) {
-		/* The low bit is unused for slab pointers. */
-		vsetzoneslab(kva, NULL, (void *)((sz << 1) | 1));
-		uma_total_inc(sz);
-		*size = sz;
+	size = roundup(size, PAGE_SIZE);
+	va = kmem_malloc_domainset(policy, size, flags);
+	if (va != NULL) {
+		/* Use low bits unused for slab pointers. */
+		vsetzoneslab((uintptr_t)va, NULL, MALLOC_LARGE_SLAB(size));
+		uma_total_inc(size);
 	}
-	va = (caddr_t)kva;
-	malloc_type_allocated(mtp, va == NULL ? 0 : sz);
+	malloc_type_allocated(mtp, va == NULL ? 0 : size);
 	if (__predict_false(va == NULL)) {
 		KASSERT((flags & M_WAITOK) == 0,
 		    ("malloc(M_WAITOK) returned NULL"));
-	}
+	} else {
 #ifdef DEBUG_REDZONE
-	if (va != NULL)
 		va = redzone_setup(va, osize);
 #endif
+		kasan_mark(va, osize, size, KASAN_MALLOC_REDZONE);
+	}
 	return (va);
 }
 
@@ -615,9 +640,11 @@ static void
 free_large(void *addr, size_t size)
 {
 
-	kmem_free((vm_offset_t)addr, size);
+	kmem_free(addr, size);
 	uma_total_dec(size);
 }
+#undef	IS_MALLOC_LARGE
+#undef	MALLOC_LARGE_SLAB
 
 /*
  *	malloc:
@@ -633,7 +660,7 @@ void *
 	int indx;
 	caddr_t va;
 	uma_zone_t zone;
-#ifdef DEBUG_REDZONE
+#if defined(DEBUG_REDZONE) || defined(KASAN)
 	unsigned long osize = size;
 #endif
 
@@ -646,16 +673,21 @@ void *
 #endif
 
 	if (__predict_false(size > kmem_zmax))
-		return (malloc_large(&size, mtp, DOMAINSET_RR(), flags
+		return (malloc_large(size, mtp, DOMAINSET_RR(), flags
 		    DEBUG_REDZONE_ARG));
 
 	if (size & KMEM_ZMASK)
 		size = (size & ~KMEM_ZMASK) + KMEM_ZBASE;
 	indx = kmemsize[size >> KMEM_ZSHIFT];
 	zone = kmemzones[indx].kz_zone[mtp_get_subzone(mtp)];
-	va = uma_zalloc(zone, flags);
-	if (va != NULL)
+	va = uma_zalloc_arg(zone, zone, flags);
+	if (va != NULL) {
 		size = zone->uz_size;
+		if ((flags & M_ZERO) == 0) {
+			kmsan_mark(va, size, KMSAN_STATE_UNINIT);
+			kmsan_orig(va, size, KMSAN_TYPE_MALLOC, KMSAN_RET_ADDR);
+		}
+	}
 	malloc_type_zone_allocated(mtp, va == NULL ? 0 : size, indx);
 	if (__predict_false(va == NULL)) {
 		KASSERT((flags & M_WAITOK) == 0,
@@ -664,6 +696,10 @@ void *
 #ifdef DEBUG_REDZONE
 	if (va != NULL)
 		va = redzone_setup(va, osize);
+#endif
+#ifdef KASAN
+	if (va != NULL)
+		kasan_mark((void *)va, osize, size, KASAN_MALLOC_REDZONE);
 #endif
 	return ((void *) va);
 }
@@ -679,12 +715,12 @@ malloc_domain(size_t *sizep, int *indxp, struct malloc_type *mtp, int domain,
 
 	size = *sizep;
 	KASSERT(size <= kmem_zmax && (flags & M_EXEC) == 0,
-	    ("malloc_domain: Called with bad flag / size combination."));
+	    ("malloc_domain: Called with bad flag / size combination"));
 	if (size & KMEM_ZMASK)
 		size = (size & ~KMEM_ZMASK) + KMEM_ZBASE;
 	indx = kmemsize[size >> KMEM_ZSHIFT];
 	zone = kmemzones[indx].kz_zone[mtp_get_subzone(mtp)];
-	va = uma_zalloc_domain(zone, NULL, domain, flags);
+	va = uma_zalloc_domain(zone, zone, domain, flags);
 	if (va != NULL)
 		*sizep = zone->uz_size;
 	*indxp = indx;
@@ -699,7 +735,7 @@ malloc_domainset(size_t size, struct malloc_type *mtp, struct domainset *ds,
 	caddr_t va;
 	int domain;
 	int indx;
-#ifdef DEBUG_REDZONE
+#if defined(KASAN) || defined(DEBUG_REDZONE)
 	unsigned long osize = size;
 #endif
 
@@ -712,14 +748,17 @@ malloc_domainset(size_t size, struct malloc_type *mtp, struct domainset *ds,
 #endif
 
 	if (__predict_false(size > kmem_zmax))
-		return (malloc_large(&size, mtp, DOMAINSET_RR(), flags
+		return (malloc_large(size, mtp, DOMAINSET_RR(), flags
 		    DEBUG_REDZONE_ARG));
 
-	vm_domainset_iter_policy_init(&di, ds, &domain, &flags);
-	do {
-		va = malloc_domain(&size, &indx, mtp, domain, flags);
-	} while (va == NULL && vm_domainset_iter_policy(&di, &domain) == 0);
+	indx = -1;
+	va = NULL;
+	if (vm_domainset_iter_policy_init(&di, ds, &domain, &flags) == 0)
+		do {
+			va = malloc_domain(&size, &indx, mtp, domain, flags);
+		} while (va == NULL && vm_domainset_iter_policy(&di, &domain) == 0);
 	malloc_type_zone_allocated(mtp, va == NULL ? 0 : size, indx);
+
 	if (__predict_false(va == NULL)) {
 		KASSERT((flags & M_WAITOK) == 0,
 		    ("malloc(M_WAITOK) returned NULL"));
@@ -727,6 +766,16 @@ malloc_domainset(size_t size, struct malloc_type *mtp, struct domainset *ds,
 #ifdef DEBUG_REDZONE
 	if (va != NULL)
 		va = redzone_setup(va, osize);
+#endif
+#ifdef KASAN
+	if (va != NULL)
+		kasan_mark((void *)va, osize, size, KASAN_MALLOC_REDZONE);
+#endif
+#ifdef KMSAN
+	if ((flags & M_ZERO) == 0) {
+		kmsan_mark(va, size, KMSAN_STATE_UNINIT);
+		kmsan_orig(va, size, KMSAN_TYPE_MALLOC, KMSAN_RET_ADDR);
+	}
 #endif
 	return (va);
 }
@@ -745,7 +794,7 @@ void *
 malloc_domainset_exec(size_t size, struct malloc_type *mtp, struct domainset *ds,
     int flags)
 {
-#ifdef DEBUG_REDZONE
+#if defined(DEBUG_REDZONE) || defined(KASAN)
 	unsigned long osize = size;
 #endif
 #ifdef MALLOC_DEBUG
@@ -760,7 +809,14 @@ malloc_domainset_exec(size_t size, struct malloc_type *mtp, struct domainset *ds
 		return (va);
 #endif
 
-	return (malloc_large(&size, mtp, ds, flags DEBUG_REDZONE_ARG));
+	return (malloc_large(size, mtp, ds, flags DEBUG_REDZONE_ARG));
+}
+
+void *
+malloc_aligned(size_t size, size_t align, struct malloc_type *type, int flags)
+{
+	return (malloc_domainset_aligned(size, align, type, DOMAINSET_RR(),
+	    flags));
 }
 
 void *
@@ -770,7 +826,7 @@ malloc_domainset_aligned(size_t size, size_t align,
 	void *res;
 	size_t asize;
 
-	KASSERT(align != 0 && powerof2(align),
+	KASSERT(powerof2(align),
 	    ("malloc_domainset_aligned: wrong align %#zx size %#zx",
 	    align, size));
 	KASSERT(align <= PAGE_SIZE,
@@ -785,6 +841,8 @@ malloc_domainset_aligned(size_t size, size_t align,
 	 * align, since malloc zones provide alignment equal to their
 	 * size.
 	 */
+	if (size == 0)
+		size = 1;
 	asize = size <= align ? align : 1UL << flsl(size - 1);
 
 	res = malloc_domainset(asize, mtp, ds, flags);
@@ -804,7 +862,18 @@ mallocarray(size_t nmemb, size_t size, struct malloc_type *type, int flags)
 	return (malloc(size * nmemb, type, flags));
 }
 
-#ifdef INVARIANTS
+void *
+mallocarray_domainset(size_t nmemb, size_t size, struct malloc_type *type,
+    struct domainset *ds, int flags)
+{
+
+	if (WOULD_OVERFLOW(nmemb, size))
+		panic("mallocarray_domainset: %zu * %zu overflowed", nmemb, size);
+
+	return (malloc_domainset(size * nmemb, type, ds, flags));
+}
+
+#if defined(INVARIANTS) && !defined(KASAN)
 static void
 free_save_type(void *addr, struct malloc_type *mtp, u_long size)
 {
@@ -856,15 +925,8 @@ free_dbg(void **addrp, struct malloc_type *mtp)
 }
 #endif
 
-/*
- *	free:
- *
- *	Free a block of memory allocated by malloc.
- *
- *	This routine may not block.
- */
-void
-free(void *addr, struct malloc_type *mtp)
+static __always_inline void
+_free(void *addr, struct malloc_type *mtp, bool dozero)
 {
 	uma_zone_t zone;
 	uma_slab_t slab;
@@ -880,62 +942,63 @@ free(void *addr, struct malloc_type *mtp)
 
 	vtozoneslab((vm_offset_t)addr & (~UMA_SLAB_MASK), &zone, &slab);
 	if (slab == NULL)
-		panic("free: address %p(%p) has not been allocated.\n",
-		    addr, (void *)((u_long)addr & (~UMA_SLAB_MASK)));
+		panic("%s(%d): address %p(%p) has not been allocated", __func__,
+		    dozero, addr, (void *)((uintptr_t)addr & (~UMA_SLAB_MASK)));
 
-	if (__predict_true(!malloc_large_slab(slab))) {
+	switch (GET_SLAB_COOKIE(slab)) {
+	case __predict_true(SLAB_COOKIE_SLAB_PTR):
 		size = zone->uz_size;
-#ifdef INVARIANTS
+#if defined(INVARIANTS) && !defined(KASAN)
 		free_save_type(addr, mtp, size);
 #endif
+		if (dozero) {
+			kasan_mark(addr, size, size, 0);
+			explicit_bzero(addr, size);
+		}
 		uma_zfree_arg(zone, addr, slab);
-	} else {
+		break;
+	case SLAB_COOKIE_MALLOC_LARGE:
 		size = malloc_large_size(slab);
+		if (dozero) {
+			kasan_mark(addr, size, size, 0);
+			explicit_bzero(addr, size);
+		}
 		free_large(addr, size);
+		break;
+	case SLAB_COOKIE_CONTIG_MALLOC:
+		size = round_page(contigmalloc_size(slab));
+		if (dozero)
+			explicit_bzero(addr, size);
+		kmem_free(addr, size);
+		break;
+	default:
+		panic("%s(%d): addr %p slab %p with unknown cookie %d",
+		    __func__, dozero, addr, slab, GET_SLAB_COOKIE(slab));
+		/* NOTREACHED */
 	}
 	malloc_type_freed(mtp, size);
 }
 
 /*
- *	zfree:
- *
- *	Zero then free a block of memory allocated by malloc.
- *
+ * free:
+ *	Free a block of memory allocated by malloc/contigmalloc.
+ *	This routine may not block.
+ */
+void
+free(void *addr, struct malloc_type *mtp)
+{
+	_free(addr, mtp, false);
+}
+
+/*
+ * zfree:
+ *	Zero then free a block of memory allocated by malloc/contigmalloc.
  *	This routine may not block.
  */
 void
 zfree(void *addr, struct malloc_type *mtp)
 {
-	uma_zone_t zone;
-	uma_slab_t slab;
-	u_long size;
-
-#ifdef MALLOC_DEBUG
-	if (free_dbg(&addr, mtp) != 0)
-		return;
-#endif
-	/* free(NULL, ...) does nothing */
-	if (addr == NULL)
-		return;
-
-	vtozoneslab((vm_offset_t)addr & (~UMA_SLAB_MASK), &zone, &slab);
-	if (slab == NULL)
-		panic("free: address %p(%p) has not been allocated.\n",
-		    addr, (void *)((u_long)addr & (~UMA_SLAB_MASK)));
-
-	if (__predict_true(!malloc_large_slab(slab))) {
-		size = zone->uz_size;
-#ifdef INVARIANTS
-		free_save_type(addr, mtp, size);
-#endif
-		explicit_bzero(addr, size);
-		uma_zfree_arg(zone, addr, slab);
-	} else {
-		size = malloc_large_size(slab);
-		explicit_bzero(addr, size);
-		free_large(addr, size);
-	}
-	malloc_type_freed(mtp, size);
+	_free(addr, mtp, true);
 }
 
 /*
@@ -944,8 +1007,10 @@ zfree(void *addr, struct malloc_type *mtp)
 void *
 realloc(void *addr, size_t size, struct malloc_type *mtp, int flags)
 {
+#ifndef DEBUG_REDZONE
 	uma_zone_t zone;
 	uma_slab_t slab;
+#endif
 	unsigned long alloc;
 	void *newaddr;
 
@@ -969,8 +1034,6 @@ realloc(void *addr, size_t size, struct malloc_type *mtp, int flags)
 #endif
 
 #ifdef DEBUG_REDZONE
-	slab = NULL;
-	zone = NULL;
 	alloc = redzone_get_size(addr);
 #else
 	vtozoneslab((vm_offset_t)addr & (~UMA_SLAB_MASK), &zone, &slab);
@@ -980,22 +1043,38 @@ realloc(void *addr, size_t size, struct malloc_type *mtp, int flags)
 	    ("realloc: address %p out of range", (void *)addr));
 
 	/* Get the size of the original block */
-	if (!malloc_large_slab(slab))
+	switch (GET_SLAB_COOKIE(slab)) {
+	case __predict_true(SLAB_COOKIE_SLAB_PTR):
 		alloc = zone->uz_size;
-	else
+		break;
+	case SLAB_COOKIE_MALLOC_LARGE:
 		alloc = malloc_large_size(slab);
+		break;
+	default:
+#ifdef INVARIANTS
+		panic("%s: called for addr %p of unsupported allocation type; "
+		    "slab %p cookie %d", __func__, addr, slab, GET_SLAB_COOKIE(slab));
+#endif
+		return (NULL);
+	}
 
 	/* Reuse the original block if appropriate */
-	if (size <= alloc
-	    && (size > (alloc >> REALLOC_FRACTION) || alloc == MINALLOCSIZE))
+	if (size <= alloc &&
+	    (size > (alloc >> REALLOC_FRACTION) || alloc == MINALLOCSIZE)) {
+		kasan_mark((void *)addr, size, alloc, KASAN_MALLOC_REDZONE);
 		return (addr);
+	}
 #endif /* !DEBUG_REDZONE */
 
 	/* Allocate a new, bigger (or smaller) block */
 	if ((newaddr = malloc(size, mtp, flags)) == NULL)
 		return (NULL);
 
-	/* Copy over original contents */
+	/*
+	 * Copy over original contents.  For KASAN, the redzone must be marked
+	 * valid before performing the copy.
+	 */
+	kasan_mark(addr, alloc, alloc, 0);
 	bcopy(addr, newaddr, min(size, alloc));
 	free(addr, mtp);
 	return (newaddr);
@@ -1024,7 +1103,7 @@ malloc_size(size_t size)
 	int indx;
 
 	if (size > kmem_zmax)
-		return (0);
+		return (round_page(size));
 	if (size & KMEM_ZMASK)
 		size = (size & ~KMEM_ZMASK) + KMEM_ZBASE;
 	indx = kmemsize[size >> KMEM_ZSHIFT];
@@ -1056,14 +1135,32 @@ malloc_usable_size(const void *addr)
 #else
 	vtozoneslab((vm_offset_t)addr & (~UMA_SLAB_MASK), &zone, &slab);
 	if (slab == NULL)
-		panic("malloc_usable_size: address %p(%p) is not allocated.\n",
+		panic("malloc_usable_size: address %p(%p) is not allocated",
 		    addr, (void *)((u_long)addr & (~UMA_SLAB_MASK)));
 
-	if (!malloc_large_slab(slab))
+	switch (GET_SLAB_COOKIE(slab)) {
+	case __predict_true(SLAB_COOKIE_SLAB_PTR):
 		size = zone->uz_size;
-	else
+		break;
+	case SLAB_COOKIE_MALLOC_LARGE:
 		size = malloc_large_size(slab);
+		break;
+	case SLAB_COOKIE_CONTIG_MALLOC:
+		size = round_page(contigmalloc_size(slab));
+		break;
+	default:
+		__assert_unreachable();
+		size = 0;
+		break;
+	}
 #endif
+
+	/*
+	 * Unmark the redzone to avoid reports from consumers who are
+	 * (presumably) about to use the full allocation size.
+	 */
+	kasan_mark(addr, size, size, 0);
+
 	return (size);
 }
 
@@ -1140,6 +1237,18 @@ kmeminit(void)
 		vm_kmem_size = 2 * mem_size * PAGE_SIZE;
 
 	vm_kmem_size = round_page(vm_kmem_size);
+
+	/*
+	 * With KASAN or KMSAN enabled, dynamically allocated kernel memory is
+	 * shadowed.  Account for this when setting the UMA limit.
+	 */
+#if defined(KASAN)
+	vm_kmem_size = (vm_kmem_size * KASAN_SHADOW_SCALE) /
+	    (KASAN_SHADOW_SCALE + 1);
+#elif defined(KMSAN)
+	vm_kmem_size /= 3;
+#endif
+
 #ifdef DEBUG_MEMGUARD
 	tmp = memguard_fudge(vm_kmem_size, kernel_map);
 #else
@@ -1186,7 +1295,7 @@ mallocinit(void *dummy)
 		for (subzone = 0; subzone < numzones; subzone++) {
 			kmemzones[indx].kz_zone[subzone] =
 			    uma_zcreate(name, size,
-#ifdef INVARIANTS
+#if defined(INVARIANTS) && !defined(KASAN) && !defined(KMSAN)
 			    mtrash_ctor, mtrash_dtor, mtrash_init, mtrash_fini,
 #else
 			    NULL, NULL, NULL, NULL,
@@ -1205,7 +1314,8 @@ malloc_init(void *data)
 	struct malloc_type_internal *mtip;
 	struct malloc_type *mtp;
 
-	KASSERT(vm_cnt.v_page_count != 0, ("malloc_register before vm_init"));
+	KASSERT(vm_cnt.v_page_count != 0,
+	    ("malloc_init() called before vm_mem_init()"));
 
 	mtp = data;
 	if (mtp->ks_version != M_VERSION)
@@ -1415,7 +1525,7 @@ get_malloc_stats(const struct malloc_type_internal *mtip, uint64_t *allocs,
 	return (alloced - freed);
 }
 
-DB_SHOW_COMMAND(malloc, db_show_malloc)
+DB_SHOW_COMMAND_FLAGS(malloc, db_show_malloc, DB_CMD_MEMSAFE)
 {
 	const char *fmt_hdr, *fmt_entry;
 	struct malloc_type *mtp;

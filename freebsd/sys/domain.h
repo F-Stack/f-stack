@@ -27,13 +27,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)domain.h	8.1 (Berkeley) 6/2/93
- * $FreeBSD$
  */
 
 #ifndef _SYS_DOMAIN_H_
 #define _SYS_DOMAIN_H_
+#include <sys/queue.h>
 
 /*
  * Structure per communications domain.
@@ -48,18 +46,12 @@ struct	socket;
 struct	rib_head;
 
 struct domain {
+	SLIST_ENTRY(domain) dom_next;
 	int	dom_family;		/* AF_xxx */
+	u_int	dom_nprotosw;		/* length of dom_protosw[] */
 	char	*dom_name;
-	void	(*dom_init)		/* initialize domain data structures */
-		(void);
-	void	(*dom_destroy)		/* cleanup structures / state */
-		(void);
-	int	(*dom_externalize)	/* externalize access rights */
-		(struct mbuf *, struct mbuf **, int);
-	void	(*dom_dispose)		/* dispose of internalized rights */
-		(struct socket *);
-	struct	protosw *dom_protosw, *dom_protoswNPROTOSW;
-	struct	domain *dom_next;
+	int	dom_flags;
+	int	(*dom_probe)(void);	/* check for support (optional) */
 	struct rib_head *(*dom_rtattach)	/* initialize routing table */
 		(uint32_t);
 	void	(*dom_rtdetach)		/* clean up routing table */
@@ -68,13 +60,17 @@ struct domain {
 	void	(*dom_ifdetach)(struct ifnet *, void *);
 	int	(*dom_ifmtu)(struct ifnet *);
 					/* af-dependent data on ifnet */
+	struct	protosw *dom_protosw[];
 };
+
+/* dom_flags */
+#define	DOMF_UNLOADABLE	0x0004	/* Can be unloaded */
 
 #ifdef _KERNEL
 extern int	domain_init_status;
-extern struct	domain *domains;
-void		domain_add(void *);
-void		domain_init(void *);
+extern SLIST_HEAD(domainhead, domain) domains;
+void		domain_add(struct domain *);
+void		domain_remove(struct domain *);
 #ifdef VIMAGE
 void		vnet_domain_init(void *);
 void		vnet_domain_uninit(void *);
@@ -83,21 +79,8 @@ void		vnet_domain_uninit(void *);
 #define	DOMAIN_SET(name)						\
 	SYSINIT(domain_add_ ## name, SI_SUB_PROTO_DOMAIN,		\
 	    SI_ORDER_FIRST, domain_add, & name ## domain);		\
-	SYSINIT(domain_init_ ## name, SI_SUB_PROTO_DOMAIN,		\
-	    SI_ORDER_SECOND, domain_init, & name ## domain);
-#ifdef VIMAGE
-#define	VNET_DOMAIN_SET(name)						\
-	SYSINIT(domain_add_ ## name, SI_SUB_PROTO_DOMAIN,		\
-	    SI_ORDER_FIRST, domain_add, & name ## domain);		\
-	VNET_SYSINIT(vnet_domain_init_ ## name, SI_SUB_PROTO_DOMAIN,	\
-	    SI_ORDER_SECOND, vnet_domain_init, & name ## domain);	\
-	VNET_SYSUNINIT(vnet_domain_uninit_ ## name,			\
-	    SI_SUB_PROTO_DOMAIN, SI_ORDER_SECOND, vnet_domain_uninit,	\
-	    & name ## domain)
-#else /* !VIMAGE */
-#define	VNET_DOMAIN_SET(name)	DOMAIN_SET(name)
-#endif /* VIMAGE */
-
+	SYSUNINIT(domain_remove_ ## name, SI_SUB_PROTO_DOMAIN,		\
+	    SI_ORDER_FIRST, domain_remove, & name ## domain);
 #endif /* _KERNEL */
 
 #endif /* !_SYS_DOMAIN_H_ */

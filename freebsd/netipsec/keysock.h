@@ -1,4 +1,3 @@
-/*	$FreeBSD$	*/
 /*	$KAME: keysock.h,v 1.8 2000/03/27 05:11:06 sumikawa Exp $	*/
 
 /*-
@@ -67,8 +66,11 @@ struct pfkeystat {
 #ifdef _KERNEL
 #include <sys/counter.h>
 
+SYSCTL_DECL(_net_key);
+
 struct keycb {
-	struct rawcb kp_raw;	/* rawcb */
+	LIST_ENTRY(keycb) kp_next;
+	struct socket *kp_socket;
 	int kp_promisc;		/* promiscuous mode */
 	int kp_registered;	/* registered socket */
 };

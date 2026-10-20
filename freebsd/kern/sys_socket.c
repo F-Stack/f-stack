@@ -27,12 +27,7 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)sys_socket.c	8.1 (Berkeley) 6/10/93
  */
-
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 
 #include <sys/param.h>
 #include <sys/systm.h>
@@ -92,17 +87,18 @@ static fo_rdwr_t soo_read;
 static fo_rdwr_t soo_write;
 static fo_ioctl_t soo_ioctl;
 static fo_poll_t soo_poll;
-extern fo_kqfilter_t soo_kqfilter;
+static fo_kqfilter_t soo_kqfilter;
 static fo_stat_t soo_stat;
 static fo_close_t soo_close;
+static fo_chmod_t soo_chmod;
 #ifndef FSTACK
 static fo_fill_kinfo_t soo_fill_kinfo;
 static fo_aio_queue_t soo_aio_queue;
-
-static void	soo_aio_cancel(struct kaiocb *job);
 #endif
 
-struct fileops	socketops = {
+static void	soo_aio_cancel(struct kaiocb *job);
+
+const struct fileops socketops = {
 	.fo_read = soo_read,
 	.fo_write = soo_write,
 	.fo_truncate = invfo_truncate,
@@ -111,13 +107,14 @@ struct fileops	socketops = {
 	.fo_kqfilter = soo_kqfilter,
 	.fo_stat = soo_stat,
 	.fo_close = soo_close,
-	.fo_chmod = invfo_chmod,
+	.fo_chmod = soo_chmod,
 	.fo_chown = invfo_chown,
 	.fo_sendfile = invfo_sendfile,
 #ifndef FSTACK
 	.fo_fill_kinfo = soo_fill_kinfo,
 	.fo_aio_queue = soo_aio_queue,
 #endif
+	.fo_cmp = file_kcmp_generic,
 	.fo_flags = DFLAG_PASSABLE
 };
 
@@ -149,12 +146,7 @@ soo_write(struct file *fp, struct uio *uio, struct ucred *active_cred,
 	if (error)
 		return (error);
 #endif
-	error = sosend(so, 0, uio, 0, 0, 0, uio->uio_td);
-	if (error == EPIPE && (so->so_options & SO_NOSIGPIPE) == 0) {
-		PROC_LOCK(uio->uio_td->td_proc);
-		tdsignal(uio->uio_td, SIGPIPE);
-		PROC_UNLOCK(uio->uio_td->td_proc);
-	}
+	error = sousrsend(so, NULL, uio, NULL, 0, NULL);
 	return (error);
 }
 
@@ -183,12 +175,12 @@ soo_ioctl(struct file *fp, u_long cmd, void *data, struct ucred *active_cred,
 				so->sol_sbrcv_flags |= SB_ASYNC;
 				so->sol_sbsnd_flags |= SB_ASYNC;
 			} else {
-				SOCKBUF_LOCK(&so->so_rcv);
+				SOCK_RECVBUF_LOCK(so);
 				so->so_rcv.sb_flags |= SB_ASYNC;
-				SOCKBUF_UNLOCK(&so->so_rcv);
-				SOCKBUF_LOCK(&so->so_snd);
+				SOCK_RECVBUF_UNLOCK(so);
+				SOCK_SENDBUF_LOCK(so);
 				so->so_snd.sb_flags |= SB_ASYNC;
-				SOCKBUF_UNLOCK(&so->so_snd);
+				SOCK_SENDBUF_UNLOCK(so);
 			}
 			SOCK_UNLOCK(so);
 		} else {
@@ -198,24 +190,25 @@ soo_ioctl(struct file *fp, u_long cmd, void *data, struct ucred *active_cred,
 				so->sol_sbrcv_flags &= ~SB_ASYNC;
 				so->sol_sbsnd_flags &= ~SB_ASYNC;
 			} else {
-				SOCKBUF_LOCK(&so->so_rcv);
+				SOCK_RECVBUF_LOCK(so);
 				so->so_rcv.sb_flags &= ~SB_ASYNC;
-				SOCKBUF_UNLOCK(&so->so_rcv);
-				SOCKBUF_LOCK(&so->so_snd);
+				SOCK_RECVBUF_UNLOCK(so);
+				SOCK_SENDBUF_LOCK(so);
 				so->so_snd.sb_flags &= ~SB_ASYNC;
-				SOCKBUF_UNLOCK(&so->so_snd);
+				SOCK_SENDBUF_UNLOCK(so);
 			}
 			SOCK_UNLOCK(so);
 		}
 		break;
 
 	case FIONREAD:
-		/* Unlocked read. */
+		SOCK_RECVBUF_LOCK(so);
 		if (SOLISTENING(so)) {
 			error = EINVAL;
 		} else {
-			*(int *)data = sbavail(&so->so_rcv);
+			*(int *)data = sbavail(&so->so_rcv) - so->so_rcv.sb_ctl;
 		}
+		SOCK_RECVBUF_UNLOCK(so);
 		break;
 
 	case FIONWRITE:
@@ -279,8 +272,7 @@ soo_ioctl(struct file *fp, u_long cmd, void *data, struct ucred *active_cred,
 			CURVNET_RESTORE();
 		} else {
 			CURVNET_SET(so->so_vnet);
-			error = ((*so->so_proto->pr_usrreqs->pru_control)
-			    (so, cmd, data, 0, td));
+			error = so->so_proto->pr_control(so, cmd, data, 0, td);
 			CURVNET_RESTORE();
 		}
 		break;
@@ -300,15 +292,22 @@ soo_poll(struct file *fp, int events, struct ucred *active_cred,
 	if (error)
 		return (error);
 #endif
-	return (sopoll(so, events, fp->f_cred, td));
+	return (so->so_proto->pr_sopoll(so, events, td));
 }
 
 static int
-soo_stat(struct file *fp, struct stat *ub, struct ucred *active_cred,
-    struct thread *td)
+soo_kqfilter(struct file *fp, struct knote *kn)
 {
 	struct socket *so = fp->f_data;
-	int error;
+
+	return (so->so_proto->pr_kqfilter(so, kn));
+}
+
+static int
+soo_stat(struct file *fp, struct stat *ub, struct ucred *active_cred)
+{
+	struct socket *so = fp->f_data;
+	int error = 0;
 
 	bzero((caddr_t)ub, sizeof (*ub));
 	ub->st_mode = S_IFSOCK;
@@ -326,21 +325,22 @@ soo_stat(struct file *fp, struct stat *ub, struct ucred *active_cred,
 		 * in the receive buffer, the socket is still readable.
 		 */
 		sb = &so->so_rcv;
-		SOCKBUF_LOCK(sb);
+		SOCK_RECVBUF_LOCK(so);
 		if ((sb->sb_state & SBS_CANTRCVMORE) == 0 || sbavail(sb))
 			ub->st_mode |= S_IRUSR | S_IRGRP | S_IROTH;
 		ub->st_size = sbavail(sb) - sb->sb_ctl;
-		SOCKBUF_UNLOCK(sb);
+		SOCK_RECVBUF_UNLOCK(so);
 
 		sb = &so->so_snd;
-		SOCKBUF_LOCK(sb);
+		SOCK_SENDBUF_LOCK(so);
 		if ((sb->sb_state & SBS_CANTSENDMORE) == 0)
 			ub->st_mode |= S_IWUSR | S_IWGRP | S_IWOTH;
-		SOCKBUF_UNLOCK(sb);
+		SOCK_SENDBUF_UNLOCK(so);
 	}
 	ub->st_uid = so->so_cred->cr_uid;
 	ub->st_gid = so->so_cred->cr_gid;
-	error = so->so_proto->pr_usrreqs->pru_sense(so, ub);
+	if (so->so_proto->pr_sense)
+		error = so->so_proto->pr_sense(so, ub);
 	SOCK_UNLOCK(so);
 	return (error);
 }
@@ -366,12 +366,25 @@ soo_close(struct file *fp, struct thread *td)
 	return (error);
 }
 
+static int
+soo_chmod(struct file *fp, mode_t mode, struct ucred *cred, struct thread *td)
+{
+	struct socket *so;
+	int error;
+
+	so = fp->f_data;
+	if (so->so_proto->pr_chmod != NULL)
+		error = so->so_proto->pr_chmod(so, mode, cred, td);
+	else
+		error = EINVAL;
+	return (error);
+}
+
 #ifndef FSTACK
 static int
 soo_fill_kinfo(struct file *fp, struct kinfo_file *kif, struct filedesc *fdp)
 {
-	struct sockaddr *sa;
-	struct inpcb *inpcb;
+	struct sockaddr_storage ss = { .ss_len = sizeof(ss) };
 	struct unpcb *unpcb;
 	struct socket *so;
 	int error;
@@ -387,17 +400,16 @@ soo_fill_kinfo(struct file *fp, struct kinfo_file *kif, struct filedesc *fdp)
 	switch (kif->kf_un.kf_sock.kf_sock_domain0) {
 	case AF_INET:
 	case AF_INET6:
-		if (kif->kf_un.kf_sock.kf_sock_protocol0 == IPPROTO_TCP) {
-			if (so->so_pcb != NULL) {
-				inpcb = (struct inpcb *)(so->so_pcb);
-				kif->kf_un.kf_sock.kf_sock_inpcb =
-				    (uintptr_t)inpcb->inp_ppcb;
-				kif->kf_un.kf_sock.kf_sock_sendq =
-				    sbused(&so->so_snd);
-				kif->kf_un.kf_sock.kf_sock_recvq =
-				    sbused(&so->so_rcv);
-			}
-		}
+		/* XXX: kf_sock_inpcb is obsolete.  It may be removed. */
+		kif->kf_un.kf_sock.kf_sock_inpcb = (uintptr_t)so->so_pcb;
+		kif->kf_un.kf_sock.kf_sock_rcv_sb_state =
+		    so->so_rcv.sb_state;
+		kif->kf_un.kf_sock.kf_sock_snd_sb_state =
+		    so->so_snd.sb_state;
+		kif->kf_un.kf_sock.kf_sock_sendq =
+		    sbused(&so->so_snd);
+		kif->kf_un.kf_sock.kf_sock_recvq =
+		    sbused(&so->so_rcv);
 		break;
 	case AF_UNIX:
 		if (so->so_pcb != NULL) {
@@ -417,23 +429,23 @@ soo_fill_kinfo(struct file *fp, struct kinfo_file *kif, struct filedesc *fdp)
 		}
 		break;
 	}
-	error = so->so_proto->pr_usrreqs->pru_sockaddr(so, &sa);
+	error = sosockaddr(so, (struct sockaddr *)&ss);
 	if (error == 0 &&
-	    sa->sa_len <= sizeof(kif->kf_un.kf_sock.kf_sa_local)) {
-		bcopy(sa, &kif->kf_un.kf_sock.kf_sa_local, sa->sa_len);
-		free(sa, M_SONAME);
+	    ss.ss_len <= sizeof(kif->kf_un.kf_sock.kf_sa_local)) {
+		bcopy(&ss, &kif->kf_un.kf_sock.kf_sa_local, ss.ss_len);
 	}
-	error = so->so_proto->pr_usrreqs->pru_peeraddr(so, &sa);
+	ss.ss_len = sizeof(ss);
+	error = sopeeraddr(so, (struct sockaddr *)&ss);
 	if (error == 0 &&
-	    sa->sa_len <= sizeof(kif->kf_un.kf_sock.kf_sa_peer)) {
-		bcopy(sa, &kif->kf_un.kf_sock.kf_sa_peer, sa->sa_len);
-		free(sa, M_SONAME);
+	    ss.ss_len <= sizeof(kif->kf_un.kf_sock.kf_sa_peer)) {
+		bcopy(&ss, &kif->kf_un.kf_sock.kf_sa_peer, ss.ss_len);
 	}
 	strncpy(kif->kf_path, so->so_proto->pr_domain->dom_name,
 	    sizeof(kif->kf_path));
 	CURVNET_RESTORE();
 	return (0);	
 }
+#endif
 
 /*
  * Use the 'backend3' field in AIO jobs to store the amount of data
@@ -588,8 +600,6 @@ soaio_init(void)
 	mtx_init(&soaio_jobs_lock, "soaio jobs", NULL, MTX_DEF);
 	soaio_kproc_unr = new_unrhdr(1, INT_MAX, NULL);
 	TASK_INIT(&soaio_kproc_task, 0, soaio_kproc_create, NULL);
-	if (soaio_target_procs > 0)
-		taskqueue_enqueue(taskqueue_thread, &soaio_kproc_task);
 }
 SYSINIT(soaio, SI_SUB_VFS, SI_ORDER_ANY, soaio_init, NULL);
 
@@ -600,19 +610,21 @@ soaio_ready(struct socket *so, struct sockbuf *sb)
 }
 
 static void
-soaio_process_job(struct socket *so, struct sockbuf *sb, struct kaiocb *job)
+soaio_process_job(struct socket *so, sb_which which, struct kaiocb *job)
 {
 	struct ucred *td_savedcred;
 	struct thread *td;
-	struct file *fp;
-	size_t cnt, done, job_total_nbytes;
+	struct sockbuf *sb = sobuf(so, which);
+#ifdef MAC
+	struct file *fp = job->fd_file;
+#endif
+	size_t cnt, done, job_total_nbytes __diagused;
 	long ru_before;
 	int error, flags;
 
-	SOCKBUF_UNLOCK(sb);
+	SOCK_BUF_UNLOCK(so, which);
 	aio_switch_vmspace(job);
 	td = curthread;
-	fp = job->fd_file;
 retry:
 	td_savedcred = td->td_ucred;
 	td->td_ucred = job->cred;
@@ -649,15 +661,10 @@ retry:
 		error = mac_socket_check_send(fp->f_cred, so);
 		if (error == 0)
 #endif
-			error = sosend(so, NULL, job->uiop, NULL, NULL, flags,
-			    td);
+			error = sousrsend(so, NULL, job->uiop, NULL, flags,
+			    job->userproc);
 		if (td->td_ru.ru_msgsnd != ru_before)
 			job->msgsnd = 1;
-		if (error == EPIPE && (so->so_options & SO_NOSIGPIPE) == 0) {
-			PROC_LOCK(job->userproc);
-			kern_psignal(job->userproc, SIGPIPE);
-			PROC_UNLOCK(job->userproc);
-		}
 	}
 
 	done += cnt - job->uiop->uio_resid;
@@ -675,28 +682,28 @@ retry:
 		 * queue to try again when the socket is ready.
 		 */
 		MPASS(done != job_total_nbytes);
-		SOCKBUF_LOCK(sb);
+		SOCK_BUF_LOCK(so, which);
 		if (done == 0 || !(so->so_state & SS_NBIO)) {
 			empty_results++;
 			if (soaio_ready(so, sb)) {
 				empty_retries++;
-				SOCKBUF_UNLOCK(sb);
+				SOCK_BUF_UNLOCK(so, which);
 				goto retry;
 			}
 			
 			if (!aio_set_cancel_function(job, soo_aio_cancel)) {
-				SOCKBUF_UNLOCK(sb);
+				SOCK_BUF_UNLOCK(so, which);
 				if (done != 0)
 					aio_complete(job, done, 0);
 				else
 					aio_cancel(job);
-				SOCKBUF_LOCK(sb);
+				SOCK_BUF_LOCK(so, which);
 			} else {
 				TAILQ_INSERT_HEAD(&sb->sb_aiojobq, job, list);
 			}
 			return;
 		}
-		SOCKBUF_UNLOCK(sb);
+		SOCK_BUF_UNLOCK(so, which);
 	}		
 	if (done != 0 && (error == ERESTART || error == EINTR ||
 	    error == EWOULDBLOCK))
@@ -705,23 +712,24 @@ retry:
 		aio_complete(job, -1, error);
 	else
 		aio_complete(job, done, 0);
-	SOCKBUF_LOCK(sb);
+	SOCK_BUF_LOCK(so, which);
 }
 
 static void
-soaio_process_sb(struct socket *so, struct sockbuf *sb)
+soaio_process_sb(struct socket *so, sb_which which)
 {
 	struct kaiocb *job;
+	struct sockbuf *sb = sobuf(so, which);
 
 	CURVNET_SET(so->so_vnet);
-	SOCKBUF_LOCK(sb);
+	SOCK_BUF_LOCK(so, which);
 	while (!TAILQ_EMPTY(&sb->sb_aiojobq) && soaio_ready(so, sb)) {
 		job = TAILQ_FIRST(&sb->sb_aiojobq);
 		TAILQ_REMOVE(&sb->sb_aiojobq, job, list);
 		if (!aio_clear_cancel_function(job))
 			continue;
 
-		soaio_process_job(so, sb, job);
+		soaio_process_job(so, which, job);
 	}
 
 	/*
@@ -732,9 +740,8 @@ soaio_process_sb(struct socket *so, struct sockbuf *sb)
 	if (!TAILQ_EMPTY(&sb->sb_aiojobq))
 		sb->sb_flags |= SB_AIO;
 	sb->sb_flags &= ~SB_AIO_RUNNING;
-	SOCKBUF_UNLOCK(sb);
+	SOCK_BUF_UNLOCK(so, which);
 
-	SOCK_LOCK(so);
 	sorele(so);
 	CURVNET_RESTORE();
 }
@@ -745,7 +752,7 @@ soaio_rcv(void *context, int pending)
 	struct socket *so;
 
 	so = context;
-	soaio_process_sb(so, &so->so_rcv);
+	soaio_process_sb(so, SO_RCV);
 }
 
 void
@@ -754,14 +761,16 @@ soaio_snd(void *context, int pending)
 	struct socket *so;
 
 	so = context;
-	soaio_process_sb(so, &so->so_snd);
+	soaio_process_sb(so, SO_SND);
 }
 
 void
-sowakeup_aio(struct socket *so, struct sockbuf *sb)
+sowakeup_aio(struct socket *so, sb_which which)
 {
+	struct sockbuf *sb = sobuf(so, which);
 
-	SOCKBUF_LOCK_ASSERT(sb);
+	SOCK_BUF_LOCK_ASSERT(so, which);
+
 	sb->sb_flags &= ~SB_AIO;
 	if (sb->sb_flags & SB_AIO_RUNNING)
 		return;
@@ -777,22 +786,25 @@ soo_aio_cancel(struct kaiocb *job)
 	struct sockbuf *sb;
 	long done;
 	int opcode;
+	sb_which which;
 
 	so = job->fd_file->f_data;
 	opcode = job->uaiocb.aio_lio_opcode;
-	if (opcode & LIO_READ)
+	if (opcode & LIO_READ) {
 		sb = &so->so_rcv;
-	else {
+		which = SO_RCV;
+	} else {
 		MPASS(opcode & LIO_WRITE);
 		sb = &so->so_snd;
+		which = SO_SND;
 	}
 
-	SOCKBUF_LOCK(sb);
+	SOCK_BUF_LOCK(so, which);
 	if (!aio_cancel_cleared(job))
 		TAILQ_REMOVE(&sb->sb_aiojobq, job, list);
 	if (TAILQ_EMPTY(&sb->sb_aiojobq))
 		sb->sb_flags &= ~SB_AIO;
-	SOCKBUF_UNLOCK(sb);
+	SOCK_BUF_UNLOCK(so, which);
 
 	done = job->aio_done;
 	if (done != 0)
@@ -801,40 +813,52 @@ soo_aio_cancel(struct kaiocb *job)
 		aio_cancel(job);
 }
 
+#ifndef FSTACK
 static int
 soo_aio_queue(struct file *fp, struct kaiocb *job)
 {
-	struct socket *so;
+	struct socket *so = fp->f_data;
+
+	return (so->so_proto->pr_aio_queue(so, job));
+}
+#endif
+
+int
+soaio_queue_generic(struct socket *so, struct kaiocb *job)
+{
 	struct sockbuf *sb;
-	int error;
+	sb_which which;
 
-	so = fp->f_data;
-	error = (*so->so_proto->pr_usrreqs->pru_aio_queue)(so, job);
-	if (error == 0)
-		return (0);
-
+	/* Lock through the socket, since this may be a listening socket. */
 	switch (job->uaiocb.aio_lio_opcode & (LIO_WRITE | LIO_READ)) {
 	case LIO_READ:
+		SOCK_RECVBUF_LOCK(so);
 		sb = &so->so_rcv;
+		which = SO_RCV;
 		break;
 	case LIO_WRITE:
+		SOCK_SENDBUF_LOCK(so);
 		sb = &so->so_snd;
+		which = SO_SND;
 		break;
 	default:
 		return (EINVAL);
 	}
 
-	SOCKBUF_LOCK(sb);
+	if (SOLISTENING(so)) {
+		SOCK_BUF_UNLOCK(so, which);
+		return (EINVAL);
+	}
+
 	if (!aio_set_cancel_function(job, soo_aio_cancel))
 		panic("new job was cancelled");
 	TAILQ_INSERT_TAIL(&sb->sb_aiojobq, job, list);
 	if (!(sb->sb_flags & SB_AIO_RUNNING)) {
 		if (soaio_ready(so, sb))
-			sowakeup_aio(so, sb);
+			sowakeup_aio(so, which);
 		else
 			sb->sb_flags |= SB_AIO;
 	}
-	SOCKBUF_UNLOCK(sb);
+	SOCK_BUF_UNLOCK(so, which);
 	return (0);
 }
-#endif

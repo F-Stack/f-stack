@@ -25,8 +25,8 @@
  *
  */
 
+#include <sys/elf_common.h>
 #include <machine/asm.h>
-__FBSDID("$FreeBSD$");
 
 ENTRY(generic_bs_r_1)
 	ldrb	w0, [x1, x2]
@@ -400,7 +400,7 @@ END(generic_bs_wr_8)
 ENTRY(generic_bs_fault)
 	mov	x0, #-1
 	ret
-END(bus_fault)
+END(generic_bs_fault)
 
 ENTRY(generic_bs_peek_1)
 	.globl	generic_bs_peek_1f
@@ -477,3 +477,5 @@ generic_bs_poke_8f:
 	mov	x0, #0
 	ret
 END(generic_bs_poke_8)
+
+GNU_PROPERTY_AARCH64_FEATURE_1_NOTE(GNU_PROPERTY_AARCH64_FEATURE_1_VAL)

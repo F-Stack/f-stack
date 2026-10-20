@@ -31,6 +31,7 @@
 #define TXGBE_FLAG_NEED_LINK_CONFIG (uint32_t)(1 << 4)
 #define TXGBE_FLAG_NEED_AN_CONFIG   (uint32_t)(1 << 5)
 #define TXGBE_FLAG_OVERHEAT         (uint32_t)(1 << 6)
+#define TXGBE_FLAG_TX_DESC_ERR      (uint32_t)(1 << 7)
 
 /*
  * Defines that were not part of txgbe_type.h as they are not used by the
@@ -89,7 +90,6 @@ struct txgbe_hw_fdir_mask {
 	uint16_t src_port_mask;
 	uint16_t dst_port_mask;
 	uint16_t flex_bytes_mask;
-	uint8_t  mac_addr_byte_mask;
 	uint8_t  pkt_type_mask; /* reversed mask for hw */
 };
 
@@ -243,6 +243,7 @@ struct txgbe_filter_info {
 	/* Bit mask for every used 5tuple filter */
 	uint32_t fivetuple_mask[TXGBE_5TUPLE_ARRAY_SIZE];
 	struct txgbe_5tuple_filter_list fivetuple_list;
+	bool ntuple_is_full;
 	/* store the SYN filter info */
 	uint32_t syn_info;
 	/* store the rss filter info */
@@ -365,6 +366,7 @@ struct txgbe_adapter {
 	struct txgbe_ipsec          ipsec;
 #endif
 	bool rx_bulk_alloc_allowed;
+	bool rx_vec_allowed;
 	struct rte_timecounter      systime_tc;
 	struct rte_timecounter      rx_tstamp_tc;
 	struct rte_timecounter      tx_tstamp_tc;
@@ -373,7 +375,7 @@ struct txgbe_adapter {
 	/* For RSS reta table update */
 	uint8_t rss_reta_updated;
 
-	uint32_t link_thread_running;
+	RTE_ATOMIC(uint32_t) link_thread_running;
 	rte_thread_t link_thread_tid;
 };
 
@@ -473,6 +475,8 @@ int txgbe_dev_rx_queue_stop(struct rte_eth_dev *dev, uint16_t rx_queue_id);
 int txgbe_dev_tx_queue_start(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 
 int txgbe_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id);
+
+void txgbe_tx_queue_clear_error(void *param);
 
 void txgbe_rxq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_rxq_info *qinfo);
@@ -706,7 +710,8 @@ struct rte_txgbe_xstats_name_off {
 	unsigned int offset;
 };
 
-const uint32_t *txgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev);
+const uint32_t *txgbe_dev_supported_ptypes_get(struct rte_eth_dev *dev,
+					       size_t *no_of_elements);
 int txgbe_dev_set_mc_addr_list(struct rte_eth_dev *dev,
 				      struct rte_ether_addr *mc_addr_set,
 				      uint32_t nb_mc_addr);

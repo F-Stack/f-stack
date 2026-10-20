@@ -1,7 +1,5 @@
 /* 
  * FQ_Codel - The FlowQueue-Codel scheduler/AQM
- *
- * $FreeBSD$
  * 
  * Copyright (C) 2016 Centre for Advanced Internet Architectures,
  *  Swinburne University of Technology, Melbourne, Australia.
@@ -165,7 +163,7 @@ codel_drop_head(struct fq_codel_flow *q, struct fq_codel_si *si)
 	fq_update_stats(q, si, -m->m_pkthdr.len, 1);
 
 	if (si->main_q.ni.length == 0) /* queue is now idle */
-			si->main_q.q_time = dn_cfg.curr_time;
+			si->main_q.q_time = V_dn_cfg.curr_time;
 
 	FREE_PKT(m);
 }
@@ -189,12 +187,13 @@ codel_enqueue(struct fq_codel_flow *q, struct mbuf *m, struct fq_codel_si *si)
 	if (mtag == NULL)
 		mtag = m_tag_alloc(MTAG_ABI_COMPAT, DN_AQM_MTAG_TS, sizeof(aqm_time_t),
 			M_NOWAIT);
-	if (mtag == NULL) {
-		m_freem(m); 
+	if (mtag == NULL)
 		goto drop;
-	}
 	*(aqm_time_t *)(mtag + 1) = AQM_UNOW;
 	m_tag_prepend(m, mtag);
+
+	if (m->m_pkthdr.rcvif != NULL)
+		m_rcvif_serialize(m);
 
 	mq_append(&q->mq, m);
 	fq_update_stats(q, si, len, 0);

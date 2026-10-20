@@ -95,12 +95,18 @@
 /* Maximum data length for single pass GMAC: 2^14-1 */
 #define QAT_AES_GMAC_SPC_MAX_SIZE 16383
 
+/* Digest length for GCM Algo is 16 bytes */
+#define GCM_256_DIGEST_LEN 16
+
+/* IV length for GCM algo is 12 bytes */
+#define GCM_IV_LENGTH_GEN_LCE 12
+
 struct qat_sym_session;
 
-struct qat_sym_sgl {
+struct __rte_cache_aligned qat_sym_sgl {
 	qat_sgl_hdr;
 	struct qat_flat_buf buffers[QAT_SYM_SGL_MAX_NUMBER];
-} __rte_packed __rte_cache_aligned;
+} __rte_packed;
 
 struct qat_sym_op_cookie {
 	struct qat_sym_sgl qat_sgl_src;
@@ -110,8 +116,8 @@ struct qat_sym_op_cookie {
 	union {
 		/* Used for Single-Pass AES-GMAC only */
 		struct {
-			struct icp_qat_hw_cipher_algo_blk cd_cipher
-					__rte_packed __rte_cache_aligned;
+			alignas(RTE_CACHE_LINE_SIZE) struct icp_qat_hw_cipher_algo_blk cd_cipher
+					__rte_packed;
 			phys_addr_t cd_phys_addr;
 		} spc_gmac;
 	} opt;
@@ -135,6 +141,9 @@ qat_sym_enqueue_burst(void *qp, struct rte_crypto_op **ops,
 uint16_t
 qat_sym_dequeue_burst(void *qp, struct rte_crypto_op **ops,
 		uint16_t nb_ops);
+
+uint16_t
+qat_sym_dequeue_burst_gen_lce(void *qp, struct rte_crypto_op **ops, uint16_t nb_ops);
 
 #ifdef RTE_QAT_OPENSSL
 /** Encrypt a single partial block
@@ -197,13 +206,14 @@ qat_bpicipher_postprocess(struct qat_sym_session *ctx,
 
 		last_block_offset = sym_op->cipher.data.offset +
 				sym_op->cipher.data.length - last_block_len;
-		last_block = (uint8_t *) rte_pktmbuf_mtod_offset(sym_op->m_src,
-				uint8_t *, last_block_offset);
+		last_block = rte_pktmbuf_mtod_offset(sym_op->m_src, uint8_t *,
+						     last_block_offset);
 
 		if (unlikely(sym_op->m_dst != NULL))
 			/* out-of-place operation (OOP) */
-			dst = (uint8_t *) rte_pktmbuf_mtod_offset(sym_op->m_dst,
-						uint8_t *, last_block_offset);
+			dst = rte_pktmbuf_mtod_offset(sym_op->m_dst,
+						      uint8_t *,
+						      last_block_offset);
 		else
 			dst = last_block;
 
@@ -383,6 +393,46 @@ qat_sym_process_response(void **op, uint8_t *resp, void *op_cookie,
 	return 1;
 }
 
+static __rte_always_inline int
+qat_sym_process_response_gen_lce(void **op, uint8_t *resp, void *op_cookie __rte_unused,
+		uint64_t *dequeue_err_count __rte_unused)
+{
+	struct icp_qat_fw_comn_resp *resp_msg = (struct icp_qat_fw_comn_resp *)resp;
+	struct rte_crypto_op *rx_op = (struct rte_crypto_op *)(uintptr_t) (resp_msg->opaque_data);
+	struct qat_sym_session *sess;
+
+#if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
+	QAT_DP_HEXDUMP_LOG(DEBUG, "qat_response:", (uint8_t *)resp_msg,
+			sizeof(struct icp_qat_fw_comn_resp));
+#endif
+
+	sess = CRYPTODEV_GET_SYM_SESS_PRIV(rx_op->sym->session);
+
+	rx_op->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+
+	if (ICP_QAT_FW_COMN_STATUS_FLAG_OK != ICP_QAT_FW_COMN_RESP_UNSUPPORTED_REQUEST_STAT_GET(
+			resp_msg->comn_hdr.comn_status))
+		rx_op->status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
+
+	else if (ICP_QAT_FW_COMN_STATUS_FLAG_OK != ICP_QAT_FW_COMN_RESP_INVALID_PARAM_STAT_GET(
+			resp_msg->comn_hdr.comn_status))
+		rx_op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+
+	if (sess->qat_dir == ICP_QAT_HW_CIPHER_DECRYPT) {
+		if (ICP_QAT_FW_LA_VER_STATUS_FAIL == ICP_QAT_FW_COMN_RESP_CRYPTO_STAT_GET(
+				resp_msg->comn_hdr.comn_status))
+			rx_op->status =	RTE_CRYPTO_OP_STATUS_AUTH_FAILED;
+	}
+
+	*op = (void *)rx_op;
+
+	/*
+	 * return 1 as dequeue op only move on to the next op
+	 * if one was ready to return to API
+	 */
+	return 1;
+}
+
 int
 qat_sym_configure_dp_ctx(struct rte_cryptodev *dev, uint16_t qp_id,
 	struct rte_crypto_raw_dp_ctx *raw_dp_ctx,
@@ -448,7 +498,13 @@ qat_sym_preprocess_requests(void **ops __rte_unused,
 
 static inline void
 qat_sym_process_response(void **op __rte_unused, uint8_t *resp __rte_unused,
-	void *op_cookie __rte_unused)
+	void *op_cookie __rte_unused, uint64_t *dequeue_err_count __rte_unused)
+{
+}
+
+static inline void
+qat_sym_process_response_gen_lce(void **op __rte_unused, uint8_t *resp __rte_unused,
+	void *op_cookie __rte_unused, uint64_t *dequeue_err_count __rte_unused)
 {
 }
 

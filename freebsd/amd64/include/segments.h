@@ -31,10 +31,11 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)segments.h	7.1 (Berkeley) 5/9/91
- * $FreeBSD$
  */
+
+#ifdef __i386__
+#include <i386/segments.h>
+#else /* !__i386__ */
 
 #ifndef _MACHINE_SEGMENTS_H_
 #define	_MACHINE_SEGMENTS_H_
@@ -105,3 +106,5 @@ void	update_gdt_fsbase(struct thread *td, uint32_t base);
 #endif /* _KERNEL */
 
 #endif /* !_MACHINE_SEGMENTS_H_ */
+
+#endif /* __i386__ */

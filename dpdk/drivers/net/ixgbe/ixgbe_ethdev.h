@@ -165,6 +165,7 @@ struct ixgbe_hw_fdir_mask {
 	uint32_t dst_ipv4_mask;
 	uint16_t src_ipv6_mask;
 	uint16_t dst_ipv6_mask;
+	uint8_t  l4_proto_match;
 	uint16_t src_port_mask;
 	uint16_t dst_port_mask;
 	uint16_t flex_bytes_mask;
@@ -359,6 +360,8 @@ struct ixgbe_l2_tn_info {
 
 struct rte_flow {
 	enum rte_filter_type filter_type;
+	/* security flows are not rte_filter_type */
+	bool is_security;
 	void *rule;
 };
 
@@ -511,14 +514,14 @@ struct ixgbe_adapter {
 	 */
 	uint8_t pflink_fullchk;
 	uint8_t mac_ctrl_frame_fwd;
-	bool link_thread_running;
+	RTE_ATOMIC(bool) link_thread_running;
 	rte_thread_t link_thread_tid;
 };
 
 struct ixgbe_vf_representor {
 	uint16_t vf_id;
 	uint16_t switch_domain_id;
-	struct rte_eth_dev *pf_ethdev;
+	uint16_t pf_port_id;
 };
 
 int ixgbe_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params);

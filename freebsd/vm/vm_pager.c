@@ -31,8 +31,6 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- *	from: @(#)vm_pager.c	8.6 (Berkeley) 1/12/94
- *
  *
  * Copyright (c) 1987, 1990 Carnegie-Mellon University.
  * All rights reserved.
@@ -66,8 +64,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_param.h"
 
 #include <sys/param.h>
@@ -79,6 +75,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/ucred.h>
 #include <sys/malloc.h>
 #include <sys/rwlock.h>
+#include <sys/user.h>
 
 #include <vm/vm.h>
 #include <vm/vm_param.h>
@@ -100,6 +97,7 @@ static vm_object_t dead_pager_alloc(void *, vm_ooffset_t, vm_prot_t,
 static void dead_pager_putpages(vm_object_t, vm_page_t *, int, int, int *);
 static boolean_t dead_pager_haspage(vm_object_t, vm_pindex_t, int *, int *);
 static void dead_pager_dealloc(vm_object_t);
+static void dead_pager_getvp(vm_object_t, struct vnode **, bool *);
 
 static int
 dead_pager_getpages(vm_object_t obj, vm_page_t *ma, int count, int *rbehind,
@@ -127,7 +125,7 @@ dead_pager_putpages(vm_object_t object, vm_page_t *m, int count,
 		rtvals[i] = VM_PAGER_AGAIN;
 }
 
-static int
+static boolean_t
 dead_pager_haspage(vm_object_t object, vm_pindex_t pindex, int *prev, int *next)
 {
 
@@ -144,36 +142,52 @@ dead_pager_dealloc(vm_object_t object)
 
 }
 
-static struct pagerops deadpagerops = {
+static void
+dead_pager_getvp(vm_object_t object, struct vnode **vpp, bool *vp_heldp)
+{
+	/*
+	 * For OBJT_DEAD objects, v_writecount was handled in
+	 * vnode_pager_dealloc().
+	 */
+}
+
+static const struct pagerops deadpagerops = {
+	.pgo_kvme_type = KVME_TYPE_DEAD,
 	.pgo_alloc = 	dead_pager_alloc,
 	.pgo_dealloc =	dead_pager_dealloc,
 	.pgo_getpages =	dead_pager_getpages,
 	.pgo_putpages =	dead_pager_putpages,
 	.pgo_haspage =	dead_pager_haspage,
+	.pgo_getvp =	dead_pager_getvp,
 };
 
-struct pagerops *pagertab[] = {
-	&defaultpagerops,	/* OBJT_DEFAULT */
-	&swappagerops,		/* OBJT_SWAP */
-	&vnodepagerops,		/* OBJT_VNODE */
-	&devicepagerops,	/* OBJT_DEVICE */
-	&physpagerops,		/* OBJT_PHYS */
-	&deadpagerops,		/* OBJT_DEAD */
-	&sgpagerops,		/* OBJT_SG */
-	&mgtdevicepagerops,	/* OBJT_MGTDEVICE */
+const struct pagerops *pagertab[16] __read_mostly = {
+	[OBJT_SWAP] =		&swappagerops,
+	[OBJT_VNODE] =		&vnodepagerops,
+	[OBJT_DEVICE] =		&devicepagerops,
+	[OBJT_PHYS] =		&physpagerops,
+	[OBJT_DEAD] =		&deadpagerops,
+	[OBJT_SG] = 		&sgpagerops,
+	[OBJT_MGTDEVICE] = 	&mgtdevicepagerops,
 };
+static struct mtx pagertab_lock;
 
 void
 vm_pager_init(void)
 {
-	struct pagerops **pgops;
+	const struct pagerops **pgops;
+	int i;
+
+	mtx_init(&pagertab_lock, "dynpag", NULL, MTX_DEF);
 
 	/*
 	 * Initialize known pagers
 	 */
-	for (pgops = pagertab; pgops < &pagertab[nitems(pagertab)]; pgops++)
-		if ((*pgops)->pgo_init != NULL)
+	for (i = 0; i < OBJT_FIRST_DYN; i++) {
+		pgops = &pagertab[i];
+		if (*pgops != NULL && (*pgops)->pgo_init != NULL)
 			(*(*pgops)->pgo_init)();
+	}
 }
 
 static int nswbuf_max;
@@ -198,6 +212,15 @@ pbuf_zsecond_create(const char *name, int max)
 
 	zone = uma_zsecond_create(name, pbuf_ctor, pbuf_dtor, NULL, NULL,
 	    pbuf_zone);
+
+#ifdef KMSAN
+	/*
+	 * Shrink the size of the pbuf pools if KMSAN is enabled, otherwise the
+	 * shadows of the large KVA allocations eat up too much memory.
+	 */
+	max /= 3;
+#endif
+
 	/*
 	 * uma_prealloc() rounds up to items per slab. If we would prealloc
 	 * immediately on every pbuf_zsecond_create(), we may accumulate too
@@ -231,15 +254,14 @@ vm_object_t
 vm_pager_allocate(objtype_t type, void *handle, vm_ooffset_t size,
     vm_prot_t prot, vm_ooffset_t off, struct ucred *cred)
 {
-	vm_object_t ret;
-	struct pagerops *ops;
+	vm_object_t object;
 
-	ops = pagertab[type];
-	if (ops)
-		ret = (*ops->pgo_alloc)(handle, size, prot, off, cred);
-	else
-		ret = NULL;
-	return (ret);
+	MPASS(type < nitems(pagertab));
+
+	object = (*pagertab[type]->pgo_alloc)(handle, size, prot, off, cred);
+	if (object != NULL)
+		object->type = type;
+	return (object);
 }
 
 /*
@@ -250,6 +272,7 @@ vm_pager_deallocate(vm_object_t object)
 {
 
 	VM_OBJECT_ASSERT_WLOCKED(object);
+	MPASS(object->type < nitems(pagertab));
 	(*pagertab[object->type]->pgo_dealloc) (object);
 }
 
@@ -301,6 +324,7 @@ vm_pager_get_pages(vm_object_t object, vm_page_t *m, int count, int *rbehind,
 #endif
 	int r;
 
+	MPASS(object->type < nitems(pagertab));
 	vm_pager_assert_in(object, m, count);
 
 	r = (*pagertab[object->type]->pgo_getpages)(object, m, count, rbehind,
@@ -314,12 +338,11 @@ vm_pager_get_pages(vm_object_t object, vm_page_t *m, int count, int *rbehind,
 		 * updated the array.
 		 */
 #ifdef INVARIANTS
-		VM_OBJECT_RLOCK(object);
-		KASSERT(m[i] == vm_page_lookup(object, pindex++),
+		KASSERT(m[i] == vm_page_relookup(object, pindex++),
 		    ("%s: mismatch page %p pindex %ju", __func__,
 		    m[i], (uintmax_t )pindex - 1));
-		VM_OBJECT_RUNLOCK(object);
 #endif
+
 		/*
 		 * Zero out partially filled data.
 		 */
@@ -334,6 +357,7 @@ vm_pager_get_pages_async(vm_object_t object, vm_page_t *m, int count,
     int *rbehind, int *rahead, pgo_getpages_iodone_t iodone, void *arg)
 {
 
+	MPASS(object->type < nitems(pagertab));
 	vm_pager_assert_in(object, m, count);
 
 	return ((*pagertab[object->type]->pgo_getpages_async)(object, m,
@@ -371,6 +395,63 @@ vm_pager_object_lookup(struct pagerlst *pg_list, void *handle)
 	return (object);
 }
 
+int
+vm_pager_alloc_dyn_type(struct pagerops *ops, int base_type)
+{
+	int res;
+
+	mtx_lock(&pagertab_lock);
+	MPASS(base_type == -1 ||
+	    (base_type >= OBJT_SWAP && base_type < nitems(pagertab)));
+	for (res = OBJT_FIRST_DYN; res < nitems(pagertab); res++) {
+		if (pagertab[res] == NULL)
+			break;
+	}
+	if (res == nitems(pagertab)) {
+		mtx_unlock(&pagertab_lock);
+		return (-1);
+	}
+	if (base_type != -1) {
+		MPASS(pagertab[base_type] != NULL);
+#define	FIX(n)								\
+		if (ops->pgo_##n == NULL)				\
+			ops->pgo_##n = pagertab[base_type]->pgo_##n
+		FIX(init);
+		FIX(alloc);
+		FIX(dealloc);
+		FIX(getpages);
+		FIX(getpages_async);
+		FIX(putpages);
+		FIX(haspage);
+		FIX(populate);
+		FIX(pageunswapped);
+		FIX(update_writecount);
+		FIX(release_writecount);
+		FIX(set_writeable_dirty);
+		FIX(mightbedirty);
+		FIX(getvp);
+		FIX(freespace);
+		FIX(page_inserted);
+		FIX(page_removed);
+		FIX(can_alloc_page);
+#undef FIX
+	}
+	pagertab[res] = ops;	/* XXXKIB should be rel, but acq is too much */
+	mtx_unlock(&pagertab_lock);
+	return (res);
+}
+
+void
+vm_pager_free_dyn_type(objtype_t type)
+{
+	MPASS(type >= OBJT_FIRST_DYN && type < nitems(pagertab));
+
+	mtx_lock(&pagertab_lock);
+	MPASS(pagertab[type] != NULL);
+	pagertab[type] = NULL;
+	mtx_unlock(&pagertab_lock);
+}
+
 static int
 pbuf_ctor(void *mem, int size, void *arg, int flags)
 {
@@ -389,7 +470,7 @@ pbuf_ctor(void *mem, int size, void *arg, int flags)
 	bp->b_ioflags = 0;
 	bp->b_iodone = NULL;
 	bp->b_error = 0;
-	BUF_LOCK(bp, LK_EXCLUSIVE, NULL);
+	BUF_LOCK(bp, LK_EXCLUSIVE | LK_NOWITNESS, NULL);
 
 	return (0);
 }
@@ -411,19 +492,25 @@ pbuf_dtor(void *mem, int size, void *arg)
 	BUF_UNLOCK(bp);
 }
 
+static const char pbuf_wmesg[] = "pbufwait";
+
 static int
 pbuf_init(void *mem, int size, int flags)
 {
 	struct buf *bp = mem;
 
+	TSENTER();
+
 	bp->b_kvabase = (void *)kva_alloc(ptoa(PBUF_PAGES));
 	if (bp->b_kvabase == NULL)
 		return (ENOMEM);
 	bp->b_kvasize = ptoa(PBUF_PAGES);
-	BUF_LOCKINIT(bp);
+	BUF_LOCKINIT(bp, pbuf_wmesg);
 	LIST_INIT(&bp->b_dep);
 	bp->b_rcred = bp->b_wcred = NOCRED;
 	bp->b_xflags = 0;
+
+	TSEXIT();
 
 	return (0);
 }
@@ -496,4 +583,44 @@ pbrelbo(struct buf *bp)
 
 	bp->b_bufobj = NULL;
 	bp->b_flags &= ~B_PAGING;
+}
+
+void
+vm_object_set_writeable_dirty(vm_object_t object)
+{
+	pgo_set_writeable_dirty_t *method;
+
+	MPASS(object->type < nitems(pagertab));
+
+	method = pagertab[object->type]->pgo_set_writeable_dirty;
+	if (method != NULL)
+		method(object);
+}
+
+bool
+vm_object_mightbedirty(vm_object_t object)
+{
+	pgo_mightbedirty_t *method;
+
+	MPASS(object->type < nitems(pagertab));
+
+	method = pagertab[object->type]->pgo_mightbedirty;
+	if (method == NULL)
+		return (false);
+	return (method(object));
+}
+
+/*
+ * Return the kvme type of the given object.
+ * If vpp is not NULL, set it to the object's vm_object_vnode() or NULL.
+ */
+int
+vm_object_kvme_type(vm_object_t object, struct vnode **vpp)
+{
+	VM_OBJECT_ASSERT_LOCKED(object);
+	MPASS(object->type < nitems(pagertab));
+
+	if (vpp != NULL)
+		*vpp = vm_object_vnode(object);
+	return (pagertab[object->type]->pgo_kvme_type);
 }

@@ -21,11 +21,8 @@
  * entered quiescent state.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #include <inttypes.h>
+#include <stdalign.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -35,24 +32,27 @@ extern "C" {
 #include <rte_atomic.h>
 #include <rte_ring.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 extern int rte_rcu_log_type;
+#define RTE_LOGTYPE_RCU rte_rcu_log_type
 
 #if RTE_LOG_DP_LEVEL >= RTE_LOG_DEBUG
-#define __RTE_RCU_DP_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, rte_rcu_log_type, \
-		"%s(): " fmt "\n", __func__, ## args)
+#define __RTE_RCU_DP_LOG(level, ...) \
+	RTE_LOG_DP_LINE_PREFIX(level, RCU, "%s(): ", __func__, __VA_ARGS__)
 #else
-#define __RTE_RCU_DP_LOG(level, fmt, args...)
+#define __RTE_RCU_DP_LOG(level, ...)
 #endif
 
 #if defined(RTE_LIBRTE_RCU_DEBUG)
-#define __RTE_RCU_IS_LOCK_CNT_ZERO(v, thread_id, level, fmt, args...) do {\
+#define __RTE_RCU_IS_LOCK_CNT_ZERO(v, thread_id, level, ...) do { \
 	if (v->qsbr_cnt[thread_id].lock_cnt) \
-		rte_log(RTE_LOG_ ## level, rte_rcu_log_type, \
-			"%s(): " fmt "\n", __func__, ## args); \
+		RTE_LOG_LINE_PREFIX(level, RCU, "%s(): ", __func__, __VA_ARGS__); \
 } while (0)
 #else
-#define __RTE_RCU_IS_LOCK_CNT_ZERO(v, thread_id, level, fmt, args...)
+#define __RTE_RCU_IS_LOCK_CNT_ZERO(v, thread_id, level, ...)
 #endif
 
 /* Registered thread IDs are stored as a bitmap of 64b element array.
@@ -70,7 +70,7 @@ extern int rte_rcu_log_type;
 #define RTE_QSBR_THRID_INVALID 0xffffffff
 
 /* Worker thread counter */
-struct rte_rcu_qsbr_cnt {
+struct __rte_cache_aligned rte_rcu_qsbr_cnt {
 	RTE_ATOMIC(uint64_t) cnt;
 	/**< Quiescent state counter. Value 0 indicates the thread is offline
 	 *   64b counter is used to avoid adding more code to address
@@ -79,7 +79,7 @@ struct rte_rcu_qsbr_cnt {
 	 */
 	RTE_ATOMIC(uint32_t) lock_cnt;
 	/**< Lock counter. Used when RTE_LIBRTE_RCU_DEBUG is enabled */
-} __rte_cache_aligned;
+};
 
 #define __RTE_QSBR_CNT_THR_OFFLINE 0
 #define __RTE_QSBR_CNT_INIT 1
@@ -92,28 +92,28 @@ struct rte_rcu_qsbr_cnt {
  * 1) Quiescent state counter array
  * 2) Register thread ID array
  */
-struct rte_rcu_qsbr {
-	RTE_ATOMIC(uint64_t) token __rte_cache_aligned;
+struct __rte_cache_aligned rte_rcu_qsbr {
+	alignas(RTE_CACHE_LINE_SIZE) RTE_ATOMIC(uint64_t) token;
 	/**< Counter to allow for multiple concurrent quiescent state queries */
 	RTE_ATOMIC(uint64_t) acked_token;
 	/**< Least token acked by all the threads in the last call to
 	 *   rte_rcu_qsbr_check API.
 	 */
 
-	uint32_t num_elems __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint32_t num_elems;
 	/**< Number of elements in the thread ID array */
 	RTE_ATOMIC(uint32_t) num_threads;
 	/**< Number of threads currently using this QS variable */
 	uint32_t max_threads;
 	/**< Maximum number of threads using this QS variable */
 
-	struct rte_rcu_qsbr_cnt qsbr_cnt[0] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct rte_rcu_qsbr_cnt qsbr_cnt[];
 	/**< Quiescent state counter array of 'max_threads' elements */
 
 	/**< Registered thread IDs are stored in a bitmap array,
 	 *   after the quiescent state counter array.
 	 */
-} __rte_cache_aligned;
+};
 
 /**
  * Call back function called to free the resources.
@@ -563,7 +563,7 @@ __rte_rcu_qsbr_check_selective(struct rte_rcu_qsbr *v, uint64_t t, bool wait)
 			if (c != __RTE_QSBR_CNT_THR_OFFLINE && acked_token > c)
 				acked_token = c;
 
-			bmap &= ~(1UL << j);
+			bmap &= ~RTE_BIT64(j);
 		}
 	}
 

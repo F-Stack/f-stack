@@ -5,12 +5,9 @@
 #ifndef APP_GRAPH_ROUTE_H
 #define APP_GRAPH_ROUTE_H
 
-#define MAX_ROUTE_ENTRIES 32
+#include <rte_ip6.h>
 
-extern cmdline_parse_inst_t ipv4_lookup_cmd_ctx;
-extern cmdline_parse_inst_t ipv6_lookup_cmd_ctx;
-extern cmdline_parse_inst_t ipv4_lookup_help_cmd_ctx;
-extern cmdline_parse_inst_t ipv6_lookup_help_cmd_ctx;
+#define MAX_ROUTE_ENTRIES 32
 
 struct route_ipv4_config {
 	TAILQ_ENTRY(route_ipv4_config) next;
@@ -24,9 +21,9 @@ TAILQ_HEAD(ip4_route, route_ipv4_config);
 
 struct route_ipv6_config {
 	TAILQ_ENTRY(route_ipv6_config) next;
-	uint8_t ip[16];
-	uint8_t mask[16];
-	uint8_t gateway[16];
+	struct rte_ipv6_addr ip;
+	struct rte_ipv6_addr mask;
+	struct rte_ipv6_addr gateway;
 	bool is_used;
 };
 

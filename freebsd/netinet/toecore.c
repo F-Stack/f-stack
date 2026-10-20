@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2012 Chelsio Communications, Inc.
  * All rights reserved.
@@ -28,8 +28,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_inet.h"
 #include "opt_inet6.h"
 
@@ -48,6 +46,7 @@ __FBSDID("$FreeBSD$");
 #include <net/ethernet.h>
 #include <net/if.h>
 #include <net/if_var.h>
+#include <net/if_private.h>
 #include <net/if_types.h>
 #include <net/if_vlan_var.h>
 #include <net/if_llatbl.h>
@@ -184,7 +183,7 @@ toedev_ctloutput(struct toedev *tod __unused, struct tcpcb *tp __unused,
 }
 
 static void
-toedev_tcp_info(struct toedev *tod __unused, struct tcpcb *tp __unused,
+toedev_tcp_info(struct toedev *tod __unused, const struct tcpcb *tp __unused,
     struct tcp_info *ti __unused)
 {
 
@@ -197,6 +196,14 @@ toedev_alloc_tls_session(struct toedev *tod __unused, struct tcpcb *tp __unused,
 {
 
 	return (EINVAL);
+}
+
+static void
+toedev_pmtu_update(struct toedev *tod __unused, struct tcpcb *tp __unused,
+    tcp_seq seq __unused, int mtu __unused)
+{
+
+	return;
 }
 
 /*
@@ -212,7 +219,7 @@ toe_listen_start(struct inpcb *inp, void *arg)
 	KASSERT(inp->inp_pcbinfo == &V_tcbinfo,
 	    ("%s: inp is not a TCP inp", __func__));
 
-	if (inp->inp_flags & (INP_DROPPED | INP_TIMEWAIT))
+	if (inp->inp_flags & INP_DROPPED)
 		return;
 
 	tp = intotcpcb(inp);
@@ -231,7 +238,7 @@ toe_listen_start(struct inpcb *inp, void *arg)
 static void
 toe_listen_start_event(void *arg __unused, struct tcpcb *tp)
 {
-	struct inpcb *inp = tp->t_inpcb;
+	struct inpcb *inp = tptoinpcb(tp);
 
 	INP_WLOCK_ASSERT(inp);
 	KASSERT(tp->t_state == TCPS_LISTEN,
@@ -245,7 +252,7 @@ toe_listen_stop_event(void *arg __unused, struct tcpcb *tp)
 {
 	struct toedev *tod;
 #ifdef INVARIANTS
-	struct inpcb *inp = tp->t_inpcb;
+	struct inpcb *inp = tptoinpcb(tp);
 #endif
 
 	INP_WLOCK_ASSERT(inp);
@@ -290,6 +297,7 @@ init_toedev(struct toedev *tod)
 	tod->tod_ctloutput = toedev_ctloutput;
 	tod->tod_tcp_info = toedev_tcp_info;
 	tod->tod_alloc_tls_session = toedev_alloc_tls_session;
+	tod->tod_pmtu_update = toedev_pmtu_update;
 }
 
 /*
@@ -313,7 +321,7 @@ register_toedev(struct toedev *tod)
 	registered_toedevs++;
 	mtx_unlock(&toedev_lock);
 
-	inp_apply_all(toe_listen_start, tod);
+	inp_apply_all(&V_tcbinfo, toe_listen_start, tod);
 
 	return (0);
 }
@@ -348,11 +356,11 @@ void
 toe_syncache_add(struct in_conninfo *inc, struct tcpopt *to, struct tcphdr *th,
     struct inpcb *inp, void *tod, void *todctx, uint8_t iptos)
 {
-	struct socket *lso = inp->inp_socket;
 
-	INP_WLOCK_ASSERT(inp);
+	INP_RLOCK_ASSERT(inp);
 
-	syncache_add(inc, to, th, inp, &lso, NULL, tod, todctx, iptos);
+	(void )syncache_add(inc, to, th, inp, inp->inp_socket, NULL, tod,
+	    todctx, iptos, htons(0));
 }
 
 int
@@ -362,7 +370,7 @@ toe_syncache_expand(struct in_conninfo *inc, struct tcpopt *to,
 
 	NET_EPOCH_ASSERT();
 
-	return (syncache_expand(inc, to, th, lsop, NULL));
+	return (syncache_expand(inc, to, th, lsop, NULL, htons(0)));
 }
 
 /*
@@ -377,23 +385,25 @@ int
 toe_4tuple_check(struct in_conninfo *inc, struct tcphdr *th, struct ifnet *ifp)
 {
 	struct inpcb *inp;
+	struct tcpcb *tp;
 
 	if (inc->inc_flags & INC_ISIPV6) {
 		inp = in6_pcblookup(&V_tcbinfo, &inc->inc6_faddr,
 		    inc->inc_fport, &inc->inc6_laddr, inc->inc_lport,
-		    INPLOOKUP_WLOCKPCB, ifp);
+		    INPLOOKUP_RLOCKPCB, ifp);
 	} else {
 		inp = in_pcblookup(&V_tcbinfo, inc->inc_faddr, inc->inc_fport,
-		    inc->inc_laddr, inc->inc_lport, INPLOOKUP_WLOCKPCB, ifp);
+		    inc->inc_laddr, inc->inc_lport, INPLOOKUP_RLOCKPCB, ifp);
 	}
 	if (inp != NULL) {
-		INP_WLOCK_ASSERT(inp);
+		INP_RLOCK_ASSERT(inp);
 
-		if ((inp->inp_flags & INP_TIMEWAIT) && th != NULL) {
+		tp = intotcpcb(inp);
+		if (tp->t_state == TCPS_TIME_WAIT && th != NULL) {
 			if (!tcp_twcheck(inp, NULL, th, NULL, 0))
 				return (EADDRINUSE);
 		} else {
-			INP_WUNLOCK(inp);
+			INP_RUNLOCK(inp);
 			return (EADDRINUSE);
 		}
 	}
@@ -474,7 +484,8 @@ toe_l2_resolve(struct toedev *tod, struct ifnet *ifp, struct sockaddr *sa,
 #endif
 #ifdef INET6
 	case AF_INET6:
-		rc = nd6_resolve(ifp, 0, NULL, sa, lladdr, NULL, NULL);
+		rc = nd6_resolve(ifp, LLE_SF(AF_INET6, 0), NULL, sa, lladdr,
+		    NULL, NULL);
 		break;
 #endif
 	default:
@@ -514,7 +525,7 @@ toe_connect_failed(struct toedev *tod, struct inpcb *inp, int err)
 			/*
 			 * Temporary failure during offload, take this PCB back.
 			 * Detach from the TOE driver and do the rest of what
-			 * TCP's pru_connect would have done if the connection
+			 * TCP's pr_connect() would have done if the connection
 			 * wasn't offloaded.
 			 */
 
@@ -522,7 +533,8 @@ toe_connect_failed(struct toedev *tod, struct inpcb *inp, int err)
 			KASSERT(!(tp->t_flags & TF_TOE),
 			    ("%s: tp %p still offloaded.", __func__, tp));
 			tcp_timer_activate(tp, TT_KEEP, TP_KEEPINIT(tp));
-			(void) tp->t_fb->tfb_tcp_output(tp);
+			if (tcp_output(tp) < 0)
+				INP_WLOCK(inp);	/* re-acquire */
 		} else {
 			tp = tcp_drop(tp, err);
 			if (tp == NULL)

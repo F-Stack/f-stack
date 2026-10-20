@@ -35,7 +35,7 @@ static const char *MZ_MLX5_PMD_SHARED_DATA = "mlx5_pmd_shared_data";
 static rte_spinlock_t mlx5_shared_data_lock = RTE_SPINLOCK_INITIALIZER;
 
 /* rte flow indexed pool configuration. */
-static struct mlx5_indexed_pool_config icfg[] = {
+static const struct mlx5_indexed_pool_config default_icfg[] = {
 	{
 		.size = sizeof(struct rte_flow),
 		.trunk_size = 64,
@@ -83,6 +83,7 @@ mlx5_queue_counter_id_prepare(struct rte_eth_dev *dev)
 		DRV_LOG(ERR, "Port %d queue counter object cannot be created "
 			"by DevX - imissed counter will be unavailable",
 			dev->data->port_id);
+		priv->q_counters_allocation_failure = 1;
 		return;
 	}
 	priv->counter_set_id = priv->q_counters->id;
@@ -352,7 +353,9 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	int own_domain_id = 0;
 	uint16_t port_id;
 	int i;
+	struct mlx5_indexed_pool_config icfg[RTE_DIM(default_icfg)];
 
+	memcpy(icfg, default_icfg, sizeof(icfg));
 	/* Build device name. */
 	strlcpy(name, dpdk_dev->name, sizeof(name));
 	/* check if the device is already spawned */
@@ -394,7 +397,6 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	priv->sh = sh;
 	priv->dev_port = spawn->phys_port;
 	priv->pci_dev = spawn->pci_dev;
-	priv->mtu = RTE_ETHER_MTU;
 	priv->mp_id.port_id = port_id;
 	strlcpy(priv->mp_id.name, MLX5_MP_NAME, RTE_MP_MAX_NAME_LEN);
 	priv->representor = !!switch_info->representor;
@@ -475,6 +477,8 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	eth_dev->data->mac_addrs = priv->mac;
 	eth_dev->device = dpdk_dev;
 	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
+	/* Fetch minimum and maximum allowed MTU from the device. */
+	mlx5_get_mtu_bounds(eth_dev, &priv->min_mtu, &priv->max_mtu);
 	/* Configure the first MAC address by default. */
 	if (mlx5_get_mac(eth_dev, &mac.addr_bytes)) {
 		DRV_LOG(ERR,
@@ -500,13 +504,13 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	}
 #endif
 	/* Get actual MTU if possible. */
-	err = mlx5_get_mtu(eth_dev, &priv->mtu);
+	err = mlx5_get_mtu(eth_dev, &eth_dev->data->mtu);
 	if (err) {
 		err = rte_errno;
 		goto error;
 	}
 	DRV_LOG(DEBUG, "port %u MTU is %u.", eth_dev->data->port_id,
-		priv->mtu);
+		eth_dev->data->mtu);
 	/* Initialize burst functions to prevent crashes before link-up. */
 	eth_dev->rx_pkt_burst = rte_eth_pkt_burst_dummy;
 	eth_dev->tx_pkt_burst = rte_eth_pkt_burst_dummy;
@@ -540,6 +544,10 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 		icfg[i].release_mem_en = !!sh->config.reclaim_mode;
 		if (sh->config.reclaim_mode)
 			icfg[i].per_core_cache = 0;
+#ifdef HAVE_MLX5_HWS_SUPPORT
+		if (priv->sh->config.dv_flow_en == 2)
+			icfg[i].size = sizeof(struct rte_flow_hw) + sizeof(struct rte_flow_nt2hws);
+#endif
 		priv->flows[i] = mlx5_ipool_create(&icfg[i]);
 		if (!priv->flows[i])
 			goto error;
@@ -595,6 +603,9 @@ mlx5_dev_spawn(struct rte_device *dpdk_dev,
 	}
 	mlx5_flow_counter_mode_config(eth_dev);
 	mlx5_queue_counter_id_prepare(eth_dev);
+	rte_spinlock_init(&priv->hw_ctrl_lock);
+	LIST_INIT(&priv->hw_ctrl_flows);
+	LIST_INIT(&priv->hw_ext_ctrl_flows);
 	return eth_dev;
 error:
 	if (priv) {
@@ -677,23 +688,27 @@ mlx5_os_read_dev_stat(struct mlx5_priv *priv, const char *ctr_name,
 
 /**
  * Flush device MAC addresses
- * Currently it has no support under Windows.
- *
+ * Currently Windows does not support adding and removing MAC addresses,
+ * This function resets the mac_own bit for all MAC addresses for internal tracking.
  * @param dev
  *   Pointer to Ethernet device structure.
- *
  */
 void
 mlx5_os_mac_addr_flush(struct rte_eth_dev *dev)
 {
-	(void)dev;
-	DRV_LOG(WARNING, "%s: is not supported", __func__);
+	struct mlx5_priv *priv = dev->data->dev_private;
+	int i;
+
+	for (i = MLX5_MAX_MAC_ADDRESSES - 1; i >= 0; --i) {
+		if (BITFIELD_ISSET(priv->mac_own, i))
+			BITFIELD_RESET(priv->mac_own, i);
+	}
 }
 
 /**
  * Remove a MAC address from device
- * Currently it has no support under Windows.
- *
+ * Currently Windows does not support adding and removing MAC addresses,
+ * This function resets the mac_own bit for the specified index for internal tracking.
  * @param dev
  *   Pointer to Ethernet device structure.
  * @param index
@@ -702,14 +717,16 @@ mlx5_os_mac_addr_flush(struct rte_eth_dev *dev)
 void
 mlx5_os_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index)
 {
-	(void)dev;
-	(void)(index);
-	DRV_LOG(WARNING, "%s: is not supported", __func__);
+	struct mlx5_priv *priv = dev->data->dev_private;
+
+	if (index < MLX5_MAX_MAC_ADDRESSES)
+		BITFIELD_RESET(priv->mac_own, index);
 }
 
 /**
  * Adds a MAC address to the device
- * Currently it has no support under Windows.
+ * Currently Windows does not support adding and removing MAC addresses,
+ * This function sets the mac_own bit only if the MAC address already exists.
  *
  * @param dev
  *   Pointer to Ethernet device structure.
@@ -725,7 +742,7 @@ int
 mlx5_os_mac_addr_add(struct rte_eth_dev *dev, struct rte_ether_addr *mac,
 		     uint32_t index)
 {
-	(void)index;
+	struct mlx5_priv *priv = dev->data->dev_private;
 	struct rte_ether_addr lmac;
 
 	if (mlx5_get_mac(dev, &lmac.addr_bytes)) {
@@ -740,6 +757,8 @@ mlx5_os_mac_addr_add(struct rte_eth_dev *dev, struct rte_ether_addr *mac,
 			"adding new mac address to device is unsupported");
 		return -ENOTSUP;
 	}
+	/* Mark this MAC address as owned by the PMD */
+	BITFIELD_SET(priv->mac_own, index);
 	return 0;
 }
 

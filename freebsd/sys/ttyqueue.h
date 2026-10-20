@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2008 Ed Schouten <ed@FreeBSD.org>
  * All rights reserved.
@@ -27,8 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_TTYQUEUE_H_
@@ -80,6 +78,7 @@ size_t	ttyinq_write(struct ttyinq *ti, const void *buf, size_t len,
 int	ttyinq_write_nofrag(struct ttyinq *ti, const void *buf, size_t len,
     int quote);
 void	ttyinq_canonicalize(struct ttyinq *ti);
+void	ttyinq_canonicalize_break(struct ttyinq *ti, const char *breakc);
 size_t	ttyinq_findchar(struct ttyinq *ti, const char *breakc, size_t maxlen,
     char *lastc);
 void	ttyinq_flush(struct ttyinq *ti);

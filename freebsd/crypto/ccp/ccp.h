@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2017 Conrad Meyer <cem@FreeBSD.org>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #pragma once
@@ -64,7 +62,7 @@ enum sha_version {
  * than a single request in flight at a time.
  */
 struct ccp_session_hmac {
-	struct auth_hash *auth_hash;
+	const struct auth_hash *auth_hash;
 	int hash_len;
 	unsigned int auth_mode;
 	char ipad[CCP_HASH_MAX_BLOCK_SIZE];

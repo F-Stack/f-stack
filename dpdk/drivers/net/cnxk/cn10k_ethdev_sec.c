@@ -14,6 +14,20 @@
 #include <cnxk_security.h>
 #include <roc_priv.h>
 
+PLT_STATIC_ASSERT(offsetof(struct rte_pmd_cnxk_ipsec_inb_sa, ctx.ar_winbits) ==
+		  offsetof(struct roc_ot_ipsec_inb_sa, ctx.ar_winbits));
+
+PLT_STATIC_ASSERT(offsetof(struct rte_pmd_cnxk_ipsec_outb_sa, ctx.mib_pkts) ==
+		  offsetof(struct roc_ot_ipsec_outb_sa, ctx.mib_pkts));
+
+PLT_STATIC_ASSERT(RTE_PMD_CNXK_CTX_MAX_CKEY_LEN == ROC_CTX_MAX_CKEY_LEN);
+PLT_STATIC_ASSERT(RTE_PMD_CNXK_CTX_MAX_OPAD_IPAD_LEN == RTE_PMD_CNXK_CTX_MAX_OPAD_IPAD_LEN);
+
+PLT_STATIC_ASSERT(RTE_PMD_CNXK_AR_WIN_SIZE_MIN == ROC_AR_WIN_SIZE_MIN);
+PLT_STATIC_ASSERT(RTE_PMD_CNXK_AR_WIN_SIZE_MAX == ROC_AR_WIN_SIZE_MAX);
+PLT_STATIC_ASSERT(RTE_PMD_CNXK_LOG_MIN_AR_WIN_SIZE_M1 == ROC_LOG_MIN_AR_WIN_SIZE_M1);
+PLT_STATIC_ASSERT(RTE_PMD_CNXK_AR_WINBITS_SZ == ROC_AR_WINBITS_SZ);
+
 cnxk_ethdev_rx_offload_cb_t cnxk_ethdev_rx_offload_cb;
 void
 cnxk_ethdev_rx_offload_cb_register(cnxk_ethdev_rx_offload_cb_t cb)
@@ -653,10 +667,10 @@ outb_dbg_iv_update(struct roc_ot_ipsec_outb_sa *outb_sa, const char *__iv_str)
 	if (!iv_str)
 		return;
 
-	if (outb_sa->w2.s.enc_type == ROC_IE_OT_SA_ENC_AES_GCM ||
-	    outb_sa->w2.s.enc_type == ROC_IE_OT_SA_ENC_AES_CTR ||
-	    outb_sa->w2.s.enc_type == ROC_IE_OT_SA_ENC_AES_CCM ||
-	    outb_sa->w2.s.auth_type == ROC_IE_OT_SA_AUTH_AES_GMAC) {
+	if (outb_sa->w2.s.enc_type == ROC_IE_SA_ENC_AES_GCM ||
+	    outb_sa->w2.s.enc_type == ROC_IE_SA_ENC_AES_CTR ||
+	    outb_sa->w2.s.enc_type == ROC_IE_SA_ENC_AES_CCM ||
+	    outb_sa->w2.s.auth_type == ROC_IE_SA_AUTH_AES_GMAC) {
 		memset(outb_sa->iv.s.iv_dbg1, 0, sizeof(outb_sa->iv.s.iv_dbg1));
 		memset(outb_sa->iv.s.iv_dbg2, 0, sizeof(outb_sa->iv.s.iv_dbg2));
 
@@ -747,6 +761,9 @@ cn10k_eth_sec_session_create(void *device,
 	else if (conf->protocol != RTE_SECURITY_PROTOCOL_IPSEC)
 		return -ENOTSUP;
 
+	if (nix->custom_inb_sa)
+		return -ENOTSUP;
+
 	if (rte_security_dynfield_register() < 0)
 		return -ENOTSUP;
 
@@ -783,7 +800,6 @@ cn10k_eth_sec_session_create(void *device,
 		return -EEXIST;
 	}
 
-	memset(eth_sec, 0, sizeof(struct cnxk_eth_sec_sess));
 	sess_priv.u64 = 0;
 
 	lock = inbound ? &dev->inb.lock : &dev->outb.lock;
@@ -792,6 +808,8 @@ cn10k_eth_sec_session_create(void *device,
 	/* Acquire lock on inline dev for inbound */
 	if (inbound && inl_dev)
 		roc_nix_inl_dev_lock();
+
+	memset(eth_sec, 0, sizeof(struct cnxk_eth_sec_sess));
 
 	if (inbound) {
 		struct roc_ot_ipsec_inb_sa *inb_sa, *inb_sa_dptr;
@@ -998,7 +1016,7 @@ cn10k_eth_sec_session_create(void *device,
 		roc_nix_inl_dev_unlock();
 	rte_spinlock_unlock(lock);
 
-	plt_nix_dbg("Created %s session with spi=%u, sa_idx=%u inl_dev=%u",
+	plt_nix_dbg("Created %s session with spi=0x%x, sa_idx=0x%x inl_dev=%u",
 		    inbound ? "inbound" : "outbound", eth_sec->spi,
 		    eth_sec->sa_idx, eth_sec->inl_dev);
 	/*
@@ -1034,6 +1052,8 @@ cn10k_eth_sec_session_destroy(void *device, struct rte_security_session *sess)
 			return cnxk_eth_macsec_session_destroy(dev, sess);
 		return -ENOENT;
 	}
+	if (dev->nix.custom_inb_sa)
+		return -ENOTSUP;
 
 	lock = eth_sec->inb ? &dev->inb.lock : &dev->outb.lock;
 	rte_spinlock_lock(lock);
@@ -1078,7 +1098,7 @@ cn10k_eth_sec_session_destroy(void *device, struct rte_security_session *sess)
 
 	rte_spinlock_unlock(lock);
 
-	plt_nix_dbg("Destroyed %s session with spi=%u, sa_idx=%u, inl_dev=%u",
+	plt_nix_dbg("Destroyed %s session with spi=0x%x, sa_idx=0x%x, inl_dev=%u",
 		    eth_sec->inb ? "inbound" : "outbound", eth_sec->spi,
 		    eth_sec->sa_idx, eth_sec->inl_dev);
 
@@ -1101,7 +1121,8 @@ cn10k_eth_sec_session_update(void *device, struct rte_security_session *sess,
 	struct cn10k_sec_sess_priv sess_priv;
 	struct rte_crypto_sym_xform *crypto;
 	struct cnxk_eth_sec_sess *eth_sec;
-	bool inbound;
+	bool inbound, inl_dev;
+	rte_spinlock_t *lock;
 	int rc;
 
 	if (conf->action_type != RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL ||
@@ -1115,6 +1136,14 @@ cn10k_eth_sec_session_update(void *device, struct rte_security_session *sess,
 	eth_sec = cnxk_eth_sec_sess_get_by_sess(dev, sess);
 	if (!eth_sec)
 		return -ENOENT;
+
+	inl_dev = !!dev->inb.inl_dev;
+	lock = inbound ? &dev->inb.lock : &dev->outb.lock;
+	rte_spinlock_lock(lock);
+
+	/* Acquire lock on inline dev for inbound */
+	if (inbound && inl_dev)
+		roc_nix_inl_dev_lock();
 
 	eth_sec->spi = conf->ipsec.spi;
 
@@ -1130,7 +1159,7 @@ cn10k_eth_sec_session_update(void *device, struct rte_security_session *sess,
 		rc = cnxk_ot_ipsec_inb_sa_fill(inb_sa_dptr, ipsec, crypto,
 					       true);
 		if (rc)
-			return -EINVAL;
+			goto err;
 		/* Use cookie for original data */
 		inb_sa_dptr->w1.s.cookie = inb_sa->w1.s.cookie;
 
@@ -1148,7 +1177,7 @@ cn10k_eth_sec_session_update(void *device, struct rte_security_session *sess,
 					   eth_sec->inb,
 					   sizeof(struct roc_ot_ipsec_inb_sa));
 		if (rc)
-			return -EINVAL;
+			goto err;
 
 		/* Save userdata in inb private area */
 		inb_priv->userdata = conf->userdata;
@@ -1165,7 +1194,7 @@ cn10k_eth_sec_session_update(void *device, struct rte_security_session *sess,
 
 		rc = cnxk_ot_ipsec_outb_sa_fill(outb_sa_dptr, ipsec, crypto);
 		if (rc)
-			return -EINVAL;
+			goto err;
 
 		/* Save rlen info */
 		cnxk_ipsec_outb_rlens_get(rlens, ipsec, crypto);
@@ -1194,85 +1223,40 @@ cn10k_eth_sec_session_update(void *device, struct rte_security_session *sess,
 					   eth_sec->inb,
 					   sizeof(struct roc_ot_ipsec_outb_sa));
 		if (rc)
-			return -EINVAL;
+			goto err;
 
 		/* Save userdata */
 		outb_priv->userdata = conf->userdata;
 		sess->fast_mdata = sess_priv.u64;
 	}
 
+	if (inbound && inl_dev)
+		roc_nix_inl_dev_unlock();
+	rte_spinlock_unlock(lock);
+
+	plt_nix_dbg("Updated %s session with spi=0x%x, sa_idx=0x%x inl_dev=%u",
+		    inbound ? "inbound" : "outbound", eth_sec->spi, eth_sec->sa_idx,
+		    eth_sec->inl_dev);
 	return 0;
-}
 
-int
-rte_pmd_cnxk_hw_sa_read(void *device, struct rte_security_session *sess,
-			void *data, uint32_t len)
-{
-	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)device;
-	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
-	struct cnxk_eth_sec_sess *eth_sec;
-	int rc;
+err:
+	if (inbound && inl_dev)
+		roc_nix_inl_dev_unlock();
+	rte_spinlock_unlock(lock);
 
-	eth_sec = cnxk_eth_sec_sess_get_by_sess(dev, sess);
-	if (eth_sec == NULL)
-		return -EINVAL;
-
-	rc = roc_nix_inl_sa_sync(&dev->nix, eth_sec->sa, eth_sec->inb,
-			    ROC_NIX_INL_SA_OP_FLUSH);
-	if (rc)
-		return -EINVAL;
-	rte_delay_ms(1);
-	memcpy(data, eth_sec->sa, len);
-
-	return 0;
-}
-
-int
-rte_pmd_cnxk_hw_sa_write(void *device, struct rte_security_session *sess,
-			 void *data, uint32_t len)
-{
-	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)device;
-	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
-	struct cnxk_eth_sec_sess *eth_sec;
-	int rc = -EINVAL;
-
-	eth_sec = cnxk_eth_sec_sess_get_by_sess(dev, sess);
-	if (eth_sec == NULL)
-		return rc;
-	rc = roc_nix_inl_ctx_write(&dev->nix, data, eth_sec->sa, eth_sec->inb,
-				   len);
-	if (rc)
-		return rc;
-
-	return 0;
-}
-
-void *
-rte_pmd_cnxk_inl_ipsec_res(struct rte_mbuf *mbuf)
-{
-	const union nix_rx_parse_u *rx;
-	uint16_t desc_size;
-	uintptr_t wqe;
-
-	if (!mbuf || !(mbuf->ol_flags & RTE_MBUF_F_RX_SEC_OFFLOAD))
-		return NULL;
-
-	wqe = (uintptr_t)(mbuf + 1);
-	rx = (const union nix_rx_parse_u *)(wqe + 8);
-	desc_size = (rx->desc_sizem1 + 1) * 16;
-
-	/* cpt_res_s sits after SG list at 16B aligned address */
-	return (void *)(wqe + 64 + desc_size);
+	return rc;
 }
 
 static int
 cn10k_eth_sec_session_stats_get(void *device, struct rte_security_session *sess,
-			    struct rte_security_stats *stats)
+				struct rte_security_stats *stats)
 {
 	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)device;
 	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
 	struct cnxk_macsec_sess *macsec_sess;
 	struct cnxk_eth_sec_sess *eth_sec;
+	rte_spinlock_t *lock;
+	bool inl_dev, inb;
 	int rc;
 
 	eth_sec = cnxk_eth_sec_sess_get_by_sess(dev, sess);
@@ -1283,10 +1267,18 @@ cn10k_eth_sec_session_stats_get(void *device, struct rte_security_session *sess,
 		return -EINVAL;
 	}
 
-	rc = roc_nix_inl_sa_sync(&dev->nix, eth_sec->sa, eth_sec->inb,
-			    ROC_NIX_INL_SA_OP_FLUSH);
+	inl_dev = !!dev->inb.inl_dev;
+	inb = eth_sec->inb;
+	lock = inb ? &dev->inb.lock : &dev->outb.lock;
+	rte_spinlock_lock(lock);
+
+	/* Acquire lock on inline dev for inbound */
+	if (inb && inl_dev)
+		roc_nix_inl_dev_lock();
+
+	rc = roc_nix_inl_sa_sync(&dev->nix, eth_sec->sa, eth_sec->inb, ROC_NIX_INL_SA_OP_FLUSH);
 	if (rc)
-		return -EINVAL;
+		goto err;
 	rte_delay_ms(1);
 
 	stats->protocol = RTE_SECURITY_PROTOCOL_IPSEC;
@@ -1303,7 +1295,12 @@ cn10k_eth_sec_session_stats_get(void *device, struct rte_security_session *sess,
 			((struct roc_ot_ipsec_outb_sa *)eth_sec->sa)->ctx.mib_octs;
 	}
 
-	return 0;
+err:
+	if (inb && inl_dev)
+		roc_nix_inl_dev_unlock();
+	rte_spinlock_unlock(lock);
+
+	return rc;
 }
 
 static void
@@ -1314,6 +1311,93 @@ eth_sec_caps_add(struct rte_security_capability eth_sec_caps[], uint32_t *idx,
 
 	rte_memcpy(&eth_sec_caps[*idx], caps, nb_caps * sizeof(caps[0]));
 	*idx += nb_caps;
+}
+
+static uint16_t __rte_hot
+cn10k_eth_sec_inb_rx_inject(void *device, struct rte_mbuf **pkts,
+			    struct rte_security_session **sess, uint16_t nb_pkts)
+{
+	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)device;
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+
+	return cn10k_nix_inj_pkts(sess, &dev->inj_cfg, pkts, nb_pkts);
+}
+
+static int
+cn10k_eth_sec_rx_inject_config(void *device, uint16_t port_id, bool enable)
+{
+	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)device;
+	struct cnxk_eth_dev *dev = cnxk_eth_pmd_priv(eth_dev);
+	uint64_t channel, pf_func, inj_match_id = 0xFFFFUL;
+	struct cnxk_ethdev_inj_cfg *inj_cfg;
+	struct roc_nix *nix = &dev->nix;
+	struct roc_cpt_lf *inl_lf;
+	uint64_t sa_base;
+
+	if (!rte_eth_dev_is_valid_port(port_id))
+		return -EINVAL;
+
+	if (eth_dev->data->dev_started || !eth_dev->data->dev_configured)
+		return -EBUSY;
+
+	if (!roc_nix_inl_inb_rx_inject_enable(nix, dev->inb.inl_dev))
+		return -ENOTSUP;
+
+	roc_idev_nix_rx_inject_set(port_id, enable);
+
+	inl_lf = roc_nix_inl_inb_inj_lf_get(nix);
+	if (!inl_lf)
+		return -ENOTSUP;
+	sa_base = roc_nix_inl_inb_sa_base_get(nix, dev->inb.inl_dev);
+
+	inj_cfg = &dev->inj_cfg;
+	inj_cfg->sa_base = sa_base | eth_dev->data->port_id;
+	inj_cfg->io_addr = inl_lf->io_addr;
+	inj_cfg->lmt_base = nix->lmt_base;
+	channel = roc_nix_get_base_chan(nix);
+	pf_func = roc_idev_nix_inl_dev_pffunc_get();
+	inj_cfg->cmd_w0 = pf_func << 48 | inj_match_id << 32 | channel << 4;
+
+	return 0;
+}
+
+#define CPT_LMTST_BURST 32
+static uint16_t
+cn10k_inl_dev_submit(struct roc_nix_inl_dev_q *q, void *inst, uint16_t nb_inst)
+{
+	uintptr_t lbase = q->lmt_base;
+	uint8_t lnum, shft, loff;
+	uint16_t left, burst;
+	rte_iova_t io_addr;
+	uint16_t lmt_id;
+
+	/* Check the flow control to avoid the queue overflow */
+	if (cnxk_nix_inl_fc_check(q->fc_addr, &q->fc_addr_sw, q->nb_desc, nb_inst))
+		return 0;
+
+	io_addr = q->io_addr;
+	ROC_LMT_CPT_BASE_ID_GET(lbase, lmt_id);
+
+	left = nb_inst;
+again:
+	burst = left > CPT_LMTST_BURST ? CPT_LMTST_BURST : left;
+
+	lnum = 0;
+	loff = 0;
+	shft = 16;
+	memcpy(PLT_PTR_CAST(lbase), inst, burst * sizeof(struct cpt_inst_s));
+	loff = (burst % 2) ? 1 : 0;
+	lnum = (burst / 2);
+	shft = shft + (lnum * 3);
+
+	left -= burst;
+	cn10k_nix_sec_steorl(io_addr, lmt_id, lnum, loff, shft);
+	rte_io_wmb();
+	if (left) {
+		inst = RTE_PTR_ADD(inst, burst * sizeof(struct cpt_inst_s));
+		goto again;
+	}
+	return nb_inst;
 }
 
 void
@@ -1350,4 +1434,9 @@ cn10k_eth_sec_ops_override(void)
 	cnxk_eth_sec_ops.session_stats_get = cn10k_eth_sec_session_stats_get;
 	cnxk_eth_sec_ops.macsec_sc_stats_get = cnxk_eth_macsec_sc_stats_get;
 	cnxk_eth_sec_ops.macsec_sa_stats_get = cnxk_eth_macsec_sa_stats_get;
+	cnxk_eth_sec_ops.rx_inject_configure = cn10k_eth_sec_rx_inject_config;
+	cnxk_eth_sec_ops.inb_pkt_rx_inject = cn10k_eth_sec_inb_rx_inject;
+
+	/* Update platform specific rte_pmd_cnxk ops */
+	cnxk_pmd_ops.inl_dev_submit = cn10k_inl_dev_submit;
 }

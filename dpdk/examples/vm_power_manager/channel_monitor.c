@@ -31,7 +31,8 @@
 #ifdef RTE_NET_I40E
 #include <rte_pmd_i40e.h>
 #endif
-#include <rte_power.h>
+#include <rte_power_cpufreq.h>
+#include <rte_power_guest_channel.h>
 
 #include <libvirt/libvirt.h>
 #include "channel_monitor.h"
@@ -128,16 +129,6 @@ set_policy_mac(struct rte_power_channel_packet *pkt, int idx, char *mac)
 
 	pkt->vfid[idx] = pfid.pfid;
 	return 0;
-}
-
-static char*
-get_resource_name_from_chn_path(const char *channel_path)
-{
-	char *substr = NULL;
-
-	substr = strstr(channel_path, CHANNEL_MGR_FIFO_PATTERN_NAME);
-
-	return substr;
 }
 
 static int
@@ -828,8 +819,9 @@ process_request(struct rte_power_channel_packet *pkt,
 		return -1;
 
 	uint32_t channel_connected = CHANNEL_MGR_CHANNEL_CONNECTED;
-	if (__atomic_compare_exchange_n(&(chan_info->status), &channel_connected,
-		CHANNEL_MGR_CHANNEL_PROCESSING, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED) == 0)
+	if (rte_atomic_compare_exchange_strong_explicit(&(chan_info->status), &channel_connected,
+			CHANNEL_MGR_CHANNEL_PROCESSING, rte_memory_order_relaxed,
+			rte_memory_order_relaxed) == 0)
 		return -1;
 
 	if (pkt->command == RTE_POWER_CPU_POWER) {
@@ -934,8 +926,8 @@ process_request(struct rte_power_channel_packet *pkt,
 	 * from management thread
 	 */
 	uint32_t channel_processing = CHANNEL_MGR_CHANNEL_PROCESSING;
-	__atomic_compare_exchange_n(&(chan_info->status), &channel_processing,
-		CHANNEL_MGR_CHANNEL_CONNECTED, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+	rte_atomic_compare_exchange_strong_explicit(&(chan_info->status), &channel_processing,
+		CHANNEL_MGR_CHANNEL_CONNECTED, rte_memory_order_relaxed, rte_memory_order_relaxed);
 	return 0;
 
 }
@@ -1064,8 +1056,8 @@ read_json_packet(struct channel_info *chan_info)
 		root = json_loads(json_data, 0, &error);
 
 		if (root) {
-			resource_name = get_resource_name_from_chn_path(
-				chan_info->channel_path);
+			resource_name = strstr(chan_info->channel_path,
+					CHANNEL_MGR_FIFO_PATTERN_NAME);
 			/*
 			 * Because our data is now in the json
 			 * object, we can overwrite the pkt

@@ -28,9 +28,6 @@
  * SUCH DAMAGE.
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/bus.h>
 #include <sys/kernel.h>
@@ -66,19 +63,19 @@ static void *
 map_table(vm_paddr_t pa, const char *sig)
 {
 	ACPI_TABLE_HEADER *header;
-	vm_offset_t length;
+	vm_size_t length;
 	void *table;
 
 	header = pmap_mapbios(pa, sizeof(ACPI_TABLE_HEADER));
 	if (strncmp(header->Signature, sig, ACPI_NAMESEG_SIZE) != 0) {
-		pmap_unmapbios((vm_offset_t)header, sizeof(ACPI_TABLE_HEADER));
+		pmap_unmapbios(header, sizeof(ACPI_TABLE_HEADER));
 		return (NULL);
 	}
 	length = header->Length;
-	pmap_unmapbios((vm_offset_t)header, sizeof(ACPI_TABLE_HEADER));
+	pmap_unmapbios(header, sizeof(ACPI_TABLE_HEADER));
 
 	table = pmap_mapbios(pa, length);
-	if (ACPI_FAILURE(AcpiTbChecksum(table, length))) {
+	if (ACPI_FAILURE(AcpiUtChecksum(table, length))) {
 		if (bootverbose)
 			printf("ACPI: Failed checksum for table %s\n", sig);
 #if (ACPI_CHECKSUM_ABORT)
@@ -91,7 +88,7 @@ map_table(vm_paddr_t pa, const char *sig)
 
 /*
  * See if a given ACPI table is the requested table.  Returns the
- * length of the able if it matches or zero on failure.
+ * length of the table if it matches or zero on failure.
  */
 static int
 probe_table(vm_paddr_t address, const char *sig)
@@ -107,10 +104,10 @@ probe_table(vm_paddr_t address, const char *sig)
 	}
 
 	if (strncmp(table->Signature, sig, ACPI_NAMESEG_SIZE) != 0) {
-		pmap_unmapbios((vm_offset_t)table, sizeof(ACPI_TABLE_HEADER));
+		pmap_unmapbios(table, sizeof(ACPI_TABLE_HEADER));
 		return (0);
 	}
-	pmap_unmapbios((vm_offset_t)table, sizeof(ACPI_TABLE_HEADER));
+	pmap_unmapbios(table, sizeof(ACPI_TABLE_HEADER));
 	return (1);
 }
 
@@ -121,7 +118,7 @@ acpi_unmap_table(void *table)
 	ACPI_TABLE_HEADER *header;
 
 	header = (ACPI_TABLE_HEADER *)table;
-	pmap_unmapbios((vm_offset_t)table, header->Length);
+	pmap_unmapbios(table, header->Length);
 }
 
 /*
@@ -161,8 +158,7 @@ acpi_find_table(const char *sig)
 		return (0);
 	rsdp = pmap_mapbios(rsdp_ptr, sizeof(ACPI_TABLE_RSDP));
 	if (rsdp == NULL) {
-		if (bootverbose)
-			printf("ACPI: Failed to map RSDP\n");
+		printf("ACPI: Failed to map RSDP\n");
 		return (0);
 	}
 
@@ -173,17 +169,15 @@ acpi_find_table(const char *sig)
 		 * the version 1.0 portion of the RSDP.  Version 2.0 has
 		 * an additional checksum that we verify first.
 		 */
-		if (AcpiTbChecksum((UINT8 *)rsdp, ACPI_RSDP_XCHECKSUM_LENGTH)) {
-			if (bootverbose)
-				printf("ACPI: RSDP failed extended checksum\n");
+		if (AcpiUtChecksum((UINT8 *)rsdp, ACPI_RSDP_XCHECKSUM_LENGTH)) {
+			printf("ACPI: RSDP failed extended checksum\n");
+			pmap_unmapbios(rsdp, sizeof(ACPI_TABLE_RSDP));
 			return (0);
 		}
 		xsdt = map_table(rsdp->XsdtPhysicalAddress, ACPI_SIG_XSDT);
 		if (xsdt == NULL) {
-			if (bootverbose)
-				printf("ACPI: Failed to map XSDT\n");
-			pmap_unmapbios((vm_offset_t)rsdp,
-			    sizeof(ACPI_TABLE_RSDP));
+			printf("ACPI: Failed to map XSDT\n");
+			pmap_unmapbios(rsdp, sizeof(ACPI_TABLE_RSDP));
 			return (0);
 		}
 		count = (xsdt->Header.Length - sizeof(ACPI_TABLE_HEADER)) /
@@ -194,8 +188,11 @@ acpi_find_table(const char *sig)
 				break;
 			}
 		acpi_unmap_table(xsdt);
+	} else {
+		printf("ACPI: Unsupported RSDP version %d and XSDT %#lx\n",
+		    rsdp->Revision, rsdp->XsdtPhysicalAddress);
 	}
-	pmap_unmapbios((vm_offset_t)rsdp, sizeof(ACPI_TABLE_RSDP));
+	pmap_unmapbios(rsdp, sizeof(ACPI_TABLE_RSDP));
 
 	if (addr == 0)
 		return (0);

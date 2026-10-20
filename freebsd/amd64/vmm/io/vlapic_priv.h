@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2013 Neel Natu <neel@freebsd.org>
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _VLAPIC_PRIV_H_
@@ -125,12 +123,6 @@ do {									\
 	VLAPIC_CTR1((vlapic), msg " isr7 0x%08x", isrptr[7 << 2]);	\
 } while (0)
 
-enum boot_state {
-	BS_INIT,
-	BS_SIPI,
-	BS_RUNNING
-};
-
 /*
  * 16 priority levels with at most one vector injected per level.
  */
@@ -138,6 +130,7 @@ enum boot_state {
 
 #define VLAPIC_MAXLVT_INDEX	APIC_LVT_CMCI
 
+struct vcpu;
 struct vlapic;
 
 struct vlapic_ops {
@@ -151,6 +144,7 @@ struct vlapic_ops {
 
 struct vlapic {
 	struct vm		*vm;
+	struct vcpu		*vcpu;
 	int			vcpuid;
 	struct LAPIC		*apic_page;
 	struct vlapic_ops	ops;
@@ -173,7 +167,6 @@ struct vlapic {
 	int		isrvec_stk_top;
 
 	uint64_t	msr_apicbase;
-	enum boot_state	boot_state;
 
 	/*
 	 * Copies of some registers in the virtual APIC page. We do this for
@@ -183,6 +176,8 @@ struct vlapic {
 	 */
 	uint32_t	svr_last;
 	uint32_t	lvt_last[VLAPIC_MAXLVT_INDEX + 1];
+
+	bool		ipi_exit;
 };
 
 void vlapic_init(struct vlapic *vlapic);

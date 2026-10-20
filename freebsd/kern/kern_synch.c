@@ -32,13 +32,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)kern_synch.c	8.9 (Berkeley) 5/19/95
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_ktrace.h"
 #include "opt_sched.h"
 
@@ -49,6 +45,7 @@ __FBSDID("$FreeBSD$");
 #include <sys/kdb.h>
 #include <sys/kernel.h>
 #include <sys/ktr.h>
+#include <sys/ktrace.h>
 #include <sys/lock.h>
 #include <sys/mutex.h>
 #include <sys/proc.h>
@@ -64,7 +61,6 @@ __FBSDID("$FreeBSD$");
 #include <sys/vmmeter.h>
 #ifdef KTRACE
 #include <sys/uio.h>
-#include <sys/ktrace.h>
 #endif
 #ifdef EPOCH_TRACE
 #include <sys/epoch.h>
@@ -87,7 +83,7 @@ struct loadavg averunnable =
  * Constants for averages over 1, 5, and 15 minutes
  * when sampling at 5 second intervals.
  */
-static fixpt_t cexp[3] = {
+static uint64_t cexp[3] = {
 	0.9200444146293232 * FSCALE,	/* exp(-1/12) */
 	0.9834714538216174 * FSCALE,	/* exp(-1/60) */
 	0.9944598480048967 * FSCALE,	/* exp(-1/180) */
@@ -135,12 +131,13 @@ int
 _sleep(const void *ident, struct lock_object *lock, int priority,
     const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags)
 {
-	struct thread *td;
+	struct thread *td __ktrace_used;
 	struct lock_class *class;
 	uintptr_t lock_state;
 	int catch, pri, rval, sleepq_flags;
 	WITNESS_SAVE_DECL(lock_witness);
 
+	TSENTER();
 	td = curthread;
 #ifdef KTRACE
 	if (KTRPOINT(td, KTR_CSW))
@@ -148,7 +145,8 @@ _sleep(const void *ident, struct lock_object *lock, int priority,
 #endif
 	WITNESS_WARN(WARN_GIANTOK | WARN_SLEEPOK, lock,
 	    "Sleeping on \"%s\"", wmesg);
-	KASSERT(sbt != 0 || mtx_owned(&Giant) || lock != NULL,
+	KASSERT(sbt != 0 || mtx_owned(&Giant) || lock != NULL ||
+	    (priority & PNOLOCK) != 0,
 	    ("sleeping without a lock"));
 	KASSERT(ident != NULL, ("_sleep: NULL ident"));
 	KASSERT(TD_IS_RUNNING(td), ("_sleep: curthread not running"));
@@ -160,7 +158,7 @@ _sleep(const void *ident, struct lock_object *lock, int priority,
 	else
 		class = NULL;
 
-	if (SCHEDULER_STOPPED_TD(td)) {
+	if (SCHEDULER_STOPPED()) {
 		if (lock != NULL && priority & PDROP)
 			class->lc_unlock(lock);
 		return (0);
@@ -187,6 +185,8 @@ _sleep(const void *ident, struct lock_object *lock, int priority,
 	DROP_GIANT();
 	if (lock != NULL && lock != &Giant.lock_object &&
 	    !(class->lc_flags & LC_SLEEPABLE)) {
+		KASSERT(!(class->lc_flags & LC_SPINLOCK),
+		    ("spin locks can only use msleep_spin"));
 		WITNESS_SAVE(lock, lock_witness);
 		lock_state = class->lc_unlock(lock);
 	} else
@@ -230,6 +230,7 @@ _sleep(const void *ident, struct lock_object *lock, int priority,
 		class->lc_lock(lock, lock_state);
 		WITNESS_RESTORE(lock, lock_witness);
 	}
+	TSEXIT();
 	return (rval);
 }
 
@@ -237,7 +238,7 @@ int
 msleep_spin_sbt(const void *ident, struct mtx *mtx, const char *wmesg,
     sbintime_t sbt, sbintime_t pr, int flags)
 {
-	struct thread *td;
+	struct thread *td __ktrace_used;
 	int rval;
 	WITNESS_SAVE_DECL(mtx);
 
@@ -246,7 +247,7 @@ msleep_spin_sbt(const void *ident, struct mtx *mtx, const char *wmesg,
 	KASSERT(ident != NULL, ("msleep_spin_sbt: NULL ident"));
 	KASSERT(TD_IS_RUNNING(td), ("msleep_spin_sbt: curthread not running"));
 
-	if (SCHEDULER_STOPPED_TD(td))
+	if (SCHEDULER_STOPPED())
 		return (0);
 
 	sleepq_lock(ident);
@@ -343,16 +344,9 @@ pause_sbt(const char *wmesg, sbintime_t sbt, sbintime_t pr, int flags)
 void
 wakeup(const void *ident)
 {
-	int wakeup_swapper;
-
 	sleepq_lock(ident);
-	wakeup_swapper = sleepq_broadcast(ident, SLEEPQ_SLEEP, 0, 0);
+	sleepq_broadcast(ident, SLEEPQ_SLEEP, 0, 0);
 	sleepq_release(ident);
-	if (wakeup_swapper) {
-		KASSERT(ident != &proc0,
-		    ("wakeup and wakeup_swapper and proc0"));
-		kick_proc0();
-	}
 }
 
 /*
@@ -363,26 +357,15 @@ wakeup(const void *ident)
 void
 wakeup_one(const void *ident)
 {
-	int wakeup_swapper;
-
 	sleepq_lock(ident);
-	wakeup_swapper = sleepq_signal(ident, SLEEPQ_SLEEP, 0, 0);
-	sleepq_release(ident);
-	if (wakeup_swapper)
-		kick_proc0();
+	sleepq_signal(ident, SLEEPQ_SLEEP | SLEEPQ_DROP, 0, 0);
 }
 
 void
 wakeup_any(const void *ident)
 {
-	int wakeup_swapper;
-
 	sleepq_lock(ident);
-	wakeup_swapper = sleepq_signal(ident, SLEEPQ_SLEEP | SLEEPQ_UNFAIR,
-	    0, 0);
-	sleepq_release(ident);
-	if (wakeup_swapper)
-		kick_proc0();
+	sleepq_signal(ident, SLEEPQ_SLEEP | SLEEPQ_UNFAIR | SLEEPQ_DROP, 0, 0);
 }
 
 /*
@@ -480,7 +463,7 @@ kdb_switch(void)
 }
 
 /*
- * The machine independent parts of context switching.
+ * mi_switch(9): The machine-independent parts of context switching.
  *
  * The thread lock is required on entry and is no longer held on return.
  */
@@ -497,17 +480,22 @@ mi_switch(int flags)
 	if (!TD_ON_LOCK(td) && !TD_IS_RUNNING(td))
 		mtx_assert(&Giant, MA_NOTOWNED);
 #endif
+	/* thread_lock() performs spinlock_enter(). */
 	KASSERT(td->td_critnest == 1 || KERNEL_PANICKED(),
-		("mi_switch: switch in a critical section"));
+	    ("mi_switch: switch in a critical section"));
 	KASSERT((flags & (SW_INVOL | SW_VOL)) != 0,
 	    ("mi_switch: switch must be voluntary or involuntary"));
+	KASSERT((flags & SW_TYPE_MASK) != 0,
+	    ("mi_switch: a switch reason (type) must be specified"));
+	KASSERT((flags & SW_TYPE_MASK) < SWT_COUNT,
+	    ("mi_switch: invalid switch reason %d", (flags & SW_TYPE_MASK)));
 
 	/*
 	 * Don't perform context switches from the debugger.
 	 */
 	if (kdb_active)
 		kdb_switch();
-	if (SCHEDULER_STOPPED_TD(td))
+	if (SCHEDULER_STOPPED())
 		return;
 	if (flags & SW_VOL) {
 		td->td_ru.ru_nvcsw++;
@@ -554,25 +542,23 @@ mi_switch(int flags)
 }
 
 /*
- * Change thread state to be runnable, placing it on the run queue if
- * it is in memory.  If it is swapped out, return true so our caller
- * will know to awaken the swapper.
+ * Change thread state to be runnable, placing it on the run queue.
  *
  * Requires the thread lock on entry, drops on exit.
  */
-int
+void
 setrunnable(struct thread *td, int srqflags)
 {
-	int swapin;
-
 	THREAD_LOCK_ASSERT(td, MA_OWNED);
 	KASSERT(td->td_proc->p_state != PRS_ZOMBIE,
 	    ("setrunnable: pid %d is a zombie", td->td_proc->p_pid));
 
-	swapin = 0;
-	switch (td->td_state) {
+	switch (TD_GET_STATE(td)) {
 	case TDS_RUNNING:
 	case TDS_RUNQ:
+	case TDS_INHIBITED:
+		if ((srqflags & (SRQ_HOLD | SRQ_HOLDTD)) == 0)
+			thread_unlock(td);
 		break;
 	case TDS_CAN_RUN:
 		KASSERT((td->td_flags & TDF_INMEM) != 0,
@@ -580,25 +566,10 @@ setrunnable(struct thread *td, int srqflags)
 		    td, td->td_flags, td->td_inhibitors));
 		/* unlocks thread lock according to flags */
 		sched_wakeup(td, srqflags);
-		return (0);
-	case TDS_INHIBITED:
-		/*
-		 * If we are only inhibited because we are swapped out
-		 * arrange to swap in this process.
-		 */
-		if (td->td_inhibitors == TDI_SWAPPED &&
-		    (td->td_flags & TDF_SWAPINREQ) == 0) {
-			td->td_flags |= TDF_SWAPINREQ;
-			swapin = 1;
-		}
 		break;
 	default:
-		panic("setrunnable: state 0x%x", td->td_state);
+		panic("setrunnable: state 0x%x", TD_GET_STATE(td));
 	}
-	if ((srqflags & (SRQ_HOLD | SRQ_HOLDTD)) == 0)
-		thread_unlock(td);
-
-	return (swapin);
 }
 
 /*
@@ -608,14 +579,15 @@ setrunnable(struct thread *td, int srqflags)
 static void
 loadav(void *arg)
 {
-	int i, nrun;
+	int i;
+	uint64_t nrun;
 	struct loadavg *avg;
 
-	nrun = sched_load();
+	nrun = (uint64_t)sched_load();
 	avg = &averunnable;
 
 	for (i = 0; i < 3; i++)
-		avg->ldavg[i] = (cexp[i] * avg->ldavg[i] +
+		avg->ldavg[i] = (cexp[i] * (uint64_t)avg->ldavg[i] +
 		    nrun * FSCALE * (FSCALE - cexp[i])) >> FSHIFT;
 
 	/*
@@ -628,17 +600,33 @@ loadav(void *arg)
 	    loadav, NULL, C_DIRECT_EXEC | C_PREL(32));
 }
 
-/* ARGSUSED */
 static void
-synch_setup(void *dummy)
+ast_scheduler(struct thread *td, int tda __unused)
+{
+#ifdef KTRACE
+	if (KTRPOINT(td, KTR_CSW))
+		ktrcsw(1, 1, __func__);
+#endif
+	thread_lock(td);
+	sched_prio(td, td->td_user_pri);
+	mi_switch(SW_INVOL | SWT_NEEDRESCHED);
+#ifdef KTRACE
+	if (KTRPOINT(td, KTR_CSW))
+		ktrcsw(0, 1, __func__);
+#endif
+}
+
+static void
+synch_setup(void *dummy __unused)
 {
 	callout_init(&loadav_callout, 1);
+	ast_register(TDA_SCHED, ASTR_ASTF_REQUIRED, 0, ast_scheduler);
 
 	/* Kick off timeout driven events by calling first time. */
 	loadav(NULL);
 }
 
-int
+bool
 should_yield(void)
 {
 
@@ -681,5 +669,12 @@ sys_yield(struct thread *td, struct yield_args *uap)
 		sched_prio(td, PRI_MAX_TIMESHARE);
 	mi_switch(SW_VOL | SWT_RELINQUISH);
 	td->td_retval[0] = 0;
+	return (0);
+}
+
+int
+sys_sched_getcpu(struct thread *td, struct sched_getcpu_args *uap)
+{
+	td->td_retval[0] = td->td_oncpu;
 	return (0);
 }

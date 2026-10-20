@@ -27,9 +27,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	from: @(#)specialreg.h	7.1 (Berkeley) 5/9/91
- * $FreeBSD$
  */
 
 #ifndef _MACHINE_SPECIALREG_H_
@@ -54,45 +51,63 @@
 #define	CR0_NW  0x20000000	/* Not Write-through */
 #define	CR0_CD  0x40000000	/* Cache Disable */
 
-#define	CR3_PCID_SAVE 0x8000000000000000
-#define	CR3_PCID_MASK 0xfff
+#define	CR3_PCID_MASK	0x0000000000000fff
+#define	CR3_LAM_U57	0x2000000000000000
+#define	CR3_LAM_U48	0x4000000000000000
+#define	CR3_PCID_SAVE	0x8000000000000000
 
 /*
  * Bits in PPro special registers
  */
-#define	CR4_VME	0x00000001	/* Virtual 8086 mode extensions */
-#define	CR4_PVI	0x00000002	/* Protected-mode virtual interrupts */
-#define	CR4_TSD	0x00000004	/* Time stamp disable */
-#define	CR4_DE	0x00000008	/* Debugging extensions */
-#define	CR4_PSE	0x00000010	/* Page size extensions */
-#define	CR4_PAE	0x00000020	/* Physical address extension */
-#define	CR4_MCE	0x00000040	/* Machine check enable */
-#define	CR4_PGE	0x00000080	/* Page global enable */
-#define	CR4_PCE	0x00000100	/* Performance monitoring counter enable */
-#define	CR4_FXSR 0x00000200	/* Fast FPU save/restore used by OS */
-#define	CR4_XMM	0x00000400	/* enable SIMD/MMX2 to use except 16 */
-#define	CR4_UMIP 0x00000800	/* User Mode Instruction Prevention */
-#define	CR4_LA57 0x00001000	/* Enable 5-level paging */
-#define	CR4_VMXE 0x00002000	/* enable VMX operation (Intel-specific) */
-#define	CR4_FSGSBASE 0x00010000	/* Enable FS/GS BASE accessing instructions */
-#define	CR4_PCIDE 0x00020000	/* Enable Context ID */
-#define	CR4_XSAVE 0x00040000	/* XSETBV/XGETBV */
-#define	CR4_SMEP 0x00100000	/* Supervisor-Mode Execution Prevention */
-#define	CR4_SMAP 0x00200000	/* Supervisor-Mode Access Prevention */
-#define	CR4_PKE	0x00400000	/* Protection Keys Enable */
+#define	CR4_VME		0x00000001	/* Virtual 8086 mode extensions */
+#define	CR4_PVI		0x00000002	/* Protected-mode virtual interrupts */
+#define	CR4_TSD		0x00000004	/* Time stamp disable */
+#define	CR4_DE		0x00000008	/* Debugging extensions */
+#define	CR4_PSE		0x00000010	/* Page size extensions */
+#define	CR4_PAE		0x00000020	/* Physical address extension */
+#define	CR4_MCE		0x00000040	/* Machine check enable */
+#define	CR4_PGE		0x00000080	/* Page global enable */
+#define	CR4_PCE		0x00000100	/* Performance monitoring counter
+					   enable */
+#define	CR4_FXSR	0x00000200	/* Fast FPU save/restore used by OS */
+#define	CR4_XMM		0x00000400	/* enable SIMD/MMX2 to use except 16 */
+#define	CR4_UMIP	0x00000800	/* User Mode Instruction Prevention */
+#define	CR4_LA57	0x00001000	/* Enable 5-level paging */
+#define	CR4_VMXE	0x00002000	/* enable VMX operation
+					   (Intel-specific) */
+#define	CR4_FSGSBASE	0x00010000	/* Enable FS/GS BASE access
+					   instructions */
+#define	CR4_PCIDE	0x00020000	/* Enable Context ID */
+#define	CR4_XSAVE	0x00040000	/* XSETBV/XGETBV */
+#define	CR4_SMEP	0x00100000	/* Supervisor-Mode Execution
+					   Prevention */
+#define	CR4_SMAP	0x00200000	/* Supervisor-Mode Access
+					   Prevention */
+#define	CR4_PKE		0x00400000	/* Protection Keys Enable */
+#define	CR4_CET		0x00800000	/* Control-flow Enforcement
+					   Technology */
+#define	CR4_PKS		0x01000000	/* Protection Keys for Supervisor */
+#define	CR4_UINTR	0x02000000	/* User Interrupts Enable */
+#define	CR4_LASS	0x08000000	/* Linear Address Space Separation */
+#define	CR4_LAM_SUP	0x10000000	/* Linear-Address Masking for
+					   Supervisor */
 
 /*
  * Bits in AMD64 special registers.  EFER is 64 bits wide.
  */
-#define	EFER_SCE 0x000000001	/* System Call Extensions (R/W) */
-#define	EFER_LME 0x000000100	/* Long mode enable (R/W) */
-#define	EFER_LMA 0x000000400	/* Long mode active (R) */
-#define	EFER_NXE 0x000000800	/* PTE No-Execute bit enable (R/W) */
-#define	EFER_SVM 0x000001000	/* SVM enable bit for AMD, reserved for Intel */
-#define	EFER_LMSLE 0x000002000	/* Long Mode Segment Limit Enable */
-#define	EFER_FFXSR 0x000004000	/* Fast FXSAVE/FSRSTOR */
-#define	EFER_TCE   0x000008000	/* Translation Cache Extension */
-#define	EFER_MCOMMIT	0x00020000	/* Enable MCOMMIT (AMD) */
+#define	EFER_SCE	0x000000001	/* System Call Extensions (R/W) */
+#define	EFER_LME	0x000000100	/* Long mode enable (R/W) */
+#define	EFER_LMA	0x000000400	/* Long mode active (R) */
+#define	EFER_NXE	0x000000800	/* PTE No-Execute bit enable (R/W) */
+#define	EFER_SVM	0x000001000	/* SVM enable bit for AMD, reserved
+					   for Intel */
+#define	EFER_LMSLE	0x000002000	/* Long Mode Segment Limit Enable */
+#define	EFER_FFXSR	0x000004000	/* Fast FXSAVE/FSRSTOR */
+#define	EFER_TCE	0x000008000	/* Translation Cache Extension */
+#define	EFER_MCOMMIT	0x000020000	/* Enable MCOMMIT (AMD) */
+#define	EFER_INTWB	0x000040000	/* Interruptible WBINVD */
+#define	EFER_UAIE	0x000100000	/* Upper Address Ignore */
+#define	EFER_AIBRSE	0x000200000	/* Automatic IBRS */
 
 /*
  * Intel Extended Features registers
@@ -108,6 +123,10 @@
 #define	XFEATURE_ENABLED_OPMASK		0x00000020
 #define	XFEATURE_ENABLED_ZMM_HI256	0x00000040
 #define	XFEATURE_ENABLED_HI16_ZMM	0x00000080
+#define	XFEATURE_ENABLED_PT		0x00000100
+#define	XFEATURE_ENABLED_PKRU		0x00000200
+#define	XFEATURE_ENABLED_TILECONFIG	0x00020000
+#define	XFEATURE_ENABLED_TILEDATA	0x00040000
 
 #define	XFEATURE_AVX					\
     (XFEATURE_ENABLED_X87 | XFEATURE_ENABLED_SSE | XFEATURE_ENABLED_AVX)
@@ -195,6 +214,7 @@
 #define	CPUPT_MTC		(1 << 3)	/* MTC Supported */
 #define	CPUPT_PRW		(1 << 4)	/* PTWRITE Supported */
 #define	CPUPT_PWR		(1 << 5)	/* Power Event Trace Supported */
+#define	CPUPT_DIS_TNT		(1 << 8)	/* TNT disable supported */
 
 /* Leaf 0 ecx. */
 #define	CPUPT_TOPA		(1 << 0)	/* ToPA Output Supported */
@@ -335,7 +355,9 @@
 #define	CPUTPM1_HWP_PECI_OVR		0x00010000
 #define	CPUTPM1_HWP_FLEXIBLE		0x00020000
 #define	CPUTPM1_HWP_FAST_MSR		0x00040000
+#define	CPUTPM1_HW_FEEDBACK		0x00080000
 #define	CPUTPM1_HWP_IGN_IDLE		0x00100000
+#define	CPUTPM1_THREAD_DIRECTOR		0x00800000
 
 /* Ebx. */
 #define	CPUTPM_B_NSENSINTTHRESH		0x0000000f
@@ -343,6 +365,13 @@
 /* Ecx. */
 #define	CPUID_PERF_STAT			0x00000001
 #define	CPUID_PERF_BIAS			0x00000008
+#define	CPUID_PERF_TD_CLASSES		0x0000ff00
+
+/* Edx. */
+#define	CPUID_HF_PERFORMANCE		0x00000001
+#define	CPUID_HF_EFFICIENCY		0x00000002
+#define	CPUID_TD_CAPABLITIES		0x0000000f
+#define	CPUID_TD_TBLPAGES		0x00000f00
 
 /* 
  * CPUID instruction 0xb ebx info.
@@ -358,6 +387,14 @@
 #define	CPUID_EXTSTATE_XSAVEC	0x00000002
 #define	CPUID_EXTSTATE_XINUSE	0x00000004
 #define	CPUID_EXTSTATE_XSAVES	0x00000008
+
+/*
+ * CPUID instruction 0xd Processor Extended State Enumeration
+ * Sub-leaf > 1 ecx info
+ */
+#define	CPUID_EXTSTATE_SUPERVISOR	0x00000001
+#define	CPUID_EXTSTATE_ALIGNED		0x00000002
+#define	CPUID_EXTSTATE_XFD_SUPPORTED	0x00000004
 
 /*
  * AMD extended function 8000_0007h ebx info
@@ -388,21 +425,31 @@
 #define	AMDFEID_CLZERO		0x00000001
 #define	AMDFEID_IRPERF		0x00000002
 #define	AMDFEID_XSAVEERPTR	0x00000004
+#define	AMDFEID_INVLPGB		0x00000008
 #define	AMDFEID_RDPRU		0x00000010
+#define	AMDFEID_BE		0x00000040
 #define	AMDFEID_MCOMMIT		0x00000100
 #define	AMDFEID_WBNOINVD	0x00000200
 #define	AMDFEID_IBPB		0x00001000
+#define	AMDFEID_INT_WBINVD	0x00002000
 #define	AMDFEID_IBRS		0x00004000
 #define	AMDFEID_STIBP		0x00008000
 /* The below are only defined if the corresponding base feature above exists. */
 #define	AMDFEID_IBRS_ALWAYSON	0x00010000
 #define	AMDFEID_STIBP_ALWAYSON	0x00020000
 #define	AMDFEID_PREFER_IBRS	0x00040000
+#define	AMDFEID_SAMEMODE_IBRS	0x00080000
+#define	AMDFEID_NO_LMSLE	0x00100000
+#define	AMDFEID_INVLPGB_NEST	0x00200000
 #define	AMDFEID_PPIN		0x00800000
 #define	AMDFEID_SSBD		0x01000000
 /* SSBD via MSRC001_011F instead of MSR 0x48: */
 #define	AMDFEID_VIRT_SSBD	0x02000000
 #define	AMDFEID_SSB_NO		0x04000000
+#define	AMDFEID_CPPC		0x08000000
+#define	AMDFEID_PSFD		0x10000000
+#define	AMDFEID_BTC_NO		0x20000000
+#define	AMDFEID_IBPB_RET	0x40000000
 
 /*
  * AMD extended function 8000_0008h ecx info
@@ -410,6 +457,13 @@
 #define	AMDID_CMP_CORES		0x000000ff
 #define	AMDID_COREID_SIZE	0x0000f000
 #define	AMDID_COREID_SIZE_SHIFT	12
+
+/*
+ * AMD extended function 8000_0008h edx info
+ */
+#define	AMDID_INVLPGB_MAXCNT	0x0000ffff
+#define	AMDID_RDPRU_SHIFT	16
+#define	AMDID_RDPRU_ID		0xffff0000
 
 /*
  * CPUID instruction 7 Structured Extended Features, leaf 0 ebx info
@@ -490,6 +544,17 @@
 #define	CPUID_STDEXT3_CORE_CAP		0x40000000
 #define	CPUID_STDEXT3_SSBD		0x80000000
 
+/*
+ * CPUID instruction 7 Structured Extended Features, leaf 1 eax info
+ */
+#define	CPUID_STDEXT4_LASS		0x00000040
+#define	CPUID_STDEXT4_LAM		0x04000000
+
+/* CPUID_HYBRID_ID leaf 0x1a */
+#define	CPUID_HYBRID_CORE_MASK	0xff000000
+#define	CPUID_HYBRID_SMALL_CORE	0x20000000
+#define	CPUID_HYBRID_LARGE_CORE	0x40000000
+
 /* MSR IA32_ARCH_CAP(ABILITIES) bits */
 #define	IA32_ARCH_CAP_RDCL_NO	0x00000001
 #define	IA32_ARCH_CAP_IBRS_ALL	0x00000002
@@ -559,6 +624,7 @@
 #define	MSR_BBL_CR_CTL3		0x11e
 #define	MSR_IA32_TSX_CTRL	0x122
 #define	MSR_IA32_MCU_OPT_CTRL	0x123
+#define	MSR_MISC_FEATURE_ENABLES	0x140
 #define	MSR_SYSENTER_CS_MSR	0x174
 #define	MSR_SYSENTER_ESP_MSR	0x175
 #define	MSR_SYSENTER_EIP_MSR	0x176
@@ -575,6 +641,8 @@
 #define	MSR_TURBO_RATIO_LIMIT	0x1ad
 #define	MSR_TURBO_RATIO_LIMIT1	0x1ae
 #define	MSR_IA32_ENERGY_PERF_BIAS	0x1b0
+#define	MSR_IA32_PKG_THERM_STATUS	0x1b1
+#define	MSR_IA32_PKG_THERM_INTERRUPT	0x1b2
 #define	MSR_DEBUGCTLMSR		0x1d9
 #define	MSR_LASTBRANCHFROMIP	0x1db
 #define	MSR_LASTBRANCHTOIP	0x1dc
@@ -588,6 +656,12 @@
 #define	MSR_PAT			0x277
 #define	MSR_MC0_CTL2		0x280
 #define	MSR_MTRRdefType		0x2ff
+#define	MSR_IA_GLOBAL_STATUS    0x38E
+#define	MSR_IA_GLOBAL_CTRL      0x38F
+#define	MSR_IA_GLOBAL_OVF_CTRL  0x390
+#define	MSR_IA_GLOBAL_STATUS_RESET	0x390
+#define	MSR_IA_GLOBAL_STATUS_SET	0x391
+#define	 GLOBAL_STATUS_FLAG_TRACETOPAPMI	(1ULL << 55)
 #define	MSR_MC0_CTL		0x400
 #define	MSR_MC0_STATUS		0x401
 #define	MSR_MC0_ADDR		0x402
@@ -608,6 +682,7 @@
 #define	MSR_MC4_STATUS		0x411
 #define	MSR_MC4_ADDR		0x412
 #define	MSR_MC4_MISC		0x413
+#define	MSR_MCG_EXT_CTL		0x4d0
 #define	MSR_RAPL_POWER_UNIT	0x606
 #define	MSR_PKG_ENERGY_STATUS	0x611
 #define	MSR_DRAM_ENERGY_STATUS	0x619
@@ -714,6 +789,7 @@
 #define	 RTIT_CTL_ADDR2_CFG_M	(0xfULL << RTIT_CTL_ADDR2_CFG_S)
 #define	 RTIT_CTL_ADDR3_CFG_S	44
 #define	 RTIT_CTL_ADDR3_CFG_M	(0xfULL << RTIT_CTL_ADDR3_CFG_S)
+#define	RTIT_CTL_DIS_TNT	(1ULL << 55)
 #define	MSR_IA32_RTIT_STATUS		0x571	/* Tracing Status Register (R/W) */
 #define	 RTIT_STATUS_FILTEREN	(1 << 0)
 #define	 RTIT_STATUS_CONTEXTEN	(1 << 1)
@@ -758,6 +834,14 @@
 #define	TOPA_END	(1 << 0)
 
 /*
+ *  Intel Hardware Feedback Interface / Thread Director MSRs
+ */
+#define	MSR_IA32_HW_FEEDBACK_PTR		0x17d0
+#define	MSR_IA32_HW_FEEDBACK_CONFIG		0x17d1
+#define	MSR_IA32_THREAD_FEEDBACK_CHAR		0x17d2
+#define	MSR_IA32_HW_FEEDBACK_THREAD_CONFIG	0x17d4
+
+/*
  * Constants related to MSR's.
  */
 #define	APICBASE_RESERVED	0x000002ff
@@ -770,6 +854,7 @@
 #define	IA32_FEATURE_CONTROL_LOCK	0x01	/* lock bit */
 #define	IA32_FEATURE_CONTROL_SMX_EN	0x02	/* enable VMX inside SMX */
 #define	IA32_FEATURE_CONTROL_VMX_EN	0x04	/* enable VMX outside SMX */
+#define	IA32_FEATURE_CONTROL_LMCE_EN	0x100000 /* enable local MCE */
 
 /* MSR IA32_MISC_ENABLE */
 #define	IA32_MISC_EN_FASTSTR	0x0000000000000001ULL
@@ -825,6 +910,19 @@
 
 /* MSR IA32_ENERGY_PERF_BIAS */
 #define	IA32_ENERGY_PERF_BIAS_POLICY_HINT_MASK		(0xfULL << 0)
+
+/* MSR IA32_HW_FEEDBACK_PTR */
+#define	IA32_HW_FEEDBACK_PTR_ENABLE			(0x1ULL << 0)
+
+/* MSR IA32_HW_FEEDBACK_CONFIG */
+#define	IA32_HW_FEEDBACK_CONFIG_EN_HFI			(0x1ULL << 0)
+#define	IA32_HW_FEEDBACK_CONFIG_EN_THDIR		(0x1ULL << 1)
+
+/* MSR IA32_PKG_THERM_STATUS */
+#define	IA32_PKG_THERM_STATUS_HFI_UPDATED		(0x1ULL << 26)
+
+/* MSR IA32_PKG_THERM_INTERRUPT */
+#define	IA32_PKG_THERM_INTERRUPT_HFI_ENABLE		(0x1ULL << 25)
 
 /*
  * PAT modes.
@@ -908,7 +1006,7 @@
 
 #define	CCR4			0xe8
 #define	CCR4_IOMASK		0x07
-#define	CCR4_MEM		0x08	/* Enables momory bypassing */
+#define	CCR4_MEM		0x08	/* Enables memory bypassing */
 #define	CCR4_DTE		0x10	/* Enables directory table entry cache */
 #define	CCR4_FASTFPE	0x20	/* Fast FPU exception */
 #define	CCR4_CPUID		0x80	/* Enables CPUID instruction */
@@ -928,7 +1026,7 @@
 #define	PCR0_RSTK		0x01	/* Enables return stack */
 #define	PCR0_BTB		0x02	/* Enables branch target buffer */
 #define	PCR0_LOOP		0x04	/* Enables loop */
-#define	PCR0_AIS		0x08	/* Enables all instrcutions stalled to
+#define	PCR0_AIS		0x08	/* Enables all instructions stalled to
 								   serialize pipe. */
 #define	PCR0_MLR		0x10	/* Enables reordering of misaligned loads */
 #define	PCR0_BTBRT		0x40	/* Enables BTB test register. */
@@ -948,9 +1046,13 @@
 #define	MCG_CAP_TES_P		0x00000800
 #define	MCG_CAP_EXT_CNT		0x00ff0000
 #define	MCG_CAP_SER_P		0x01000000
+#define	MCG_CAP_EMC_P		0x02000000
+#define	MCG_CAP_ELOG_P		0x04000000
+#define	MCG_CAP_LMCE_P		0x08000000
 #define	MCG_STATUS_RIPV		0x00000001
 #define	MCG_STATUS_EIPV		0x00000002
 #define	MCG_STATUS_MCIP		0x00000004
+#define	MCG_STATUS_LMCS		0x00000008		/* if MCG_CAP_LMCE_P */
 #define	MCG_CTL_ENABLE		0xffffffffffffffff
 #define	MCG_CTL_DISABLE		0x0000000000000000
 #define	MSR_MC_CTL(x)		(MSR_MC0_CTL + (x) * 4)
@@ -974,6 +1076,11 @@
 #define	MC_STATUS_VAL		0x8000000000000000
 #define	MC_MISC_RA_LSB		0x000000000000003f	/* If MCG_CAP_SER_P */
 #define	MC_MISC_ADDRESS_MODE	0x00000000000001c0	/* If MCG_CAP_SER_P */
+#define	MC_MISC_PCIE_RID	0x00000000ffff0000
+#define	MC_MISC_PCIE_FUNC	0x0000000000070000
+#define	MC_MISC_PCIE_SLOT	0x0000000000f80000
+#define	MC_MISC_PCIE_BUS	0x00000000ff000000
+#define	MC_MISC_PCIE_SEG	0x000000ff00000000
 #define	MC_CTL2_THRESHOLD	0x0000000000007fff
 #define	MC_CTL2_CMCI_EN		0x0000000040000000
 #define	MC_AMDNB_BANK		4
@@ -1073,7 +1180,7 @@
 
 /*
  * The region control registers specify the attributes associated with
- * the ARRx addres regions.
+ * the ARRx address regions.
  */
 #define	RCR0	0xdc
 #define	RCR1	0xdd
@@ -1141,11 +1248,17 @@
 #define	MSR_IC_CFG	0xc0011021	/* Instruction Cache Configuration */
 #define	MSR_DE_CFG	0xc0011029	/* Decode Configuration */
 
+/* MSR_AMDK8_IPM */
+#define	AMDK8_SMIONCMPHALT	(1ULL << 27)
+#define	AMDK8_C1EONCMPHALT	(1ULL << 28)
+
 /* MSR_VM_CR related */
 #define	VM_CR_SVMDIS		0x10	/* SVM: disabled by BIOS */
 
-#define	AMDK8_SMIONCMPHALT	(1ULL << 27)
-#define	AMDK8_C1EONCMPHALT	(1ULL << 28)
+/* MSR_DE_CFG */
+#define DE_CFG_10H_12H_STACK_POINTER_JUMP_FIX_BIT	0x1
+#define DE_CFG_ZEN_LOAD_STALE_DATA_FIX_BIT		0x2000
+#define DE_CFG_ZEN2_FP_BACKUP_FIX_BIT			0x200
 
 /* VIA ACE crypto featureset: for via_feature_rng */
 #define	VIA_HAS_RNG		1	/* cpu has RNG */

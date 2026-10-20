@@ -1,0 +1,662 @@
+# 07 里程碑规划：M0~M7 里程碑与编码工作清单
+
+| 项 | 值 |
+|---|---|
+| 文档编号 | 07 |
+| 标题 | Nginx 无损 reload（S3 方案）里程碑规划与后续编码工作清单（C-NR-100~604） |
+| 版本 | v1.29（v1.28 基础上：**2026-10-08：交叉审核同步——drain 起点、用例登记、结项状态与 P-2/P-13 关闭**）——v1.28（v1.27 基础上：**2026-09-30：代码锚点由 `文件:行号` 改为 `文件: 符号名`（删除冗余注释后行号整体漂移，符号名稳定）**）——v1.27（v1.26 基础上：**2026-09-29：孤儿半开条目立项取证，机制①为主且与 A1 无关，机制③由 revoke 修复**）——v1.26（v1.25 基础上：**2026-09-28 I-5：C-NR-301 登记准入规则下沉与首条自动化断言**）——v1.25（v1.24 基础上：**2026-09-28 A1 加注：C-NR-301 入表时机的实际实现早于原表述——SYN 准入即入表（SYN-ACK 之前），单阶段入表即可见**）——v1.24（v1.23 基础上：**2026-09-22 第四轮真机登记：P2a 之后运行时矩阵 + F1 故障/边界矩阵 + G-F 初步结项**）——v1.23（v1.22 基础上：**2026-09-22 G-D 订正：RT-13（zc）永久排除，历史 RT-13 PASS 行加注为历史口径，「后续机时补跑」待办标记已作废（保留原行、改为终态「已作废，不再补跑」）**）——v1.22（v1.21 基础上：**2026-09-22 交叉审核 medium/P2 级订正：M03-1（timer 判据统一为 PT-NR-08 功能口径）、M03-2（DR5 已取消）、C01-8（F-M6-1 已修，zc 检测绑定被测 binary）**）—— v1.21（v1.20 基础上：**终门禁 G-D 返工**——① **R-01 代码修复已落地**（`lib/ff_dpdk_if.c: init_app_mem_pool()` 代际池 `cache_size=0`），本篇涉及 R-01 的措辞同步（§2.6 前置行的世代目录 kni owner 描述）；② **F-02 登记 R-30**（§2.6 新增 (5b)：drain 窗口 KNI 双向停服，按 G-A §7.5/§7.8 分 inject 侧＝R-02 次生、投递侧＝T5 翻转既有缺口）；③ **F-03 补登记 RT-3**（§2.7 末：2026-09-17、md5 `d4171372…`、7 PASS + rt13 SKIP、rv9 50/50、退出码写「由 `failed=0` 推断」）。v1.18 = 按 `plan_cross_audit` G-A 裁决 R-03~R-27 文档订正——F2 名称去证伪机理、F-M3-2「0ms 即时 abort」改判、F-M6-5 `config.ini` 定性与归因更正并撤销 forward-fix 建议、追加真实内网地址入库面普查登记、harness 覆盖度与行数（1331）如实化、C-NR-316 锚点重坐实、C-NR-502 补落地文件、C-NR-603 与 08 统一 `lib/Makefile:234/:238`、M2 DoD 补 UT-NR-09/13、篇头整篇兜底声明收敛为逐条已核锚点清单；v1.17 = 终门禁 N1/N3 定向整改 + O-3；v1.16 = RT 结果收口；v1.15 = 同步第二轮真机回归；v1.14 = 本轮 plan_audit 交叉审核订正） |
+| 日期 | 2026-09-09（v1.14~v1.21 增补：2026-09-17~18） ；**v1.22~v1.24 增补：2026-09-22** |
+| 状态 | 2026-09-23 正式结项（结项证据基线 ca5dcb03b）；2026-10-08 对 HEAD eb6b32c82 交叉审核并回归，结论见 §2.7 (9) |
+| 对齐基线 | [06-方案设计](06-solution-design.md) **v1.9.17**（v1.6：同队列 + 同期接管 + flow_map；**v1.9.1 人工决策：D-A 反转为两代同 lcore_id ⇒ 取消四链解耦/代际 lcore 池（C-NR-311、DR5），自驱 hardclock 与代际 mempool 恢复为必需项（C-NR-307/308/314/315），新增心跳与 rx 交还（C-NR-316）**；M1′ 单硬件所有者 + G_old 软件寄生 + 双向 drain_ring 维持不变；v1.9.4/v1.9.5 为 M4/M5 实现批注版） |
+| 来源产物 | work/milestones-testing.md（规划师 milestone-planner，2026-08-18 落盘）。本篇为其里程碑与编码工作清单部分的正式化改写；测试计划部分拆分至 [08-测试计划](08-testing.md)。输入：[06-方案设计](06-solution-design.md)（推荐方案 S3，含四层所有权模型、T0-T5 时序、接口面清单 5.4、RV1-10、DR1-7——**v1.9 已扩展为 RV1-14 / DR1-10，v1.4 再扩展为 RV1-15 / DR1-11**）、[04-现状分析](04-fstack-current-analysis.md)（8 项障碍清单）、[01-VPP/VCL 调研](01-vpp-vcl-research.md)（§6.3-7 VPP 验证模式）、[03-旧方案考证](03-fstack-legacy-solution.md)（旧方案失败教训）；对齐 docs/primary_slim_spec/zh_cn/ 里程碑切分粒度 |
+| 修订记录 | **v1.29（2026-10-08）：新增 §2.7 (9) 交叉审核同步；C-NR-405 补现行 drain 起点并订正错误锚点；结项状态与 [09] §27/§28 对齐** —— **v1.28（2026-09-30）：代码锚点改引符号名——清理冗余注释后行号整体漂移，zh_cn 全篇 948 处 `file:line` 锚点改为 `file: 符号名`（ctags 解析并校验符号在当前代码仍存在）；11 处纯行号审计叙述与 1 处仓库外文件保留原样** —— **v1.27（2026-09-29）：孤儿半开条目取证结论——机制①主导且与 A1 无关；机制③（SYN-ACK 未发出）由 `ff_flow_map_revoke()` 修复** ——  **v1.26（2026-09-28）：C-NR-301 登记 I-5——准入规则下沉为 `ff_flow_map_admit()`，满表拒 SYN 首获自动化断言** ——  **v1.25（2026-09-28）：C-NR-301 入表时机加注（SYN 准入即入表、SYN-ACK 之前；单阶段入表即可见）** ——  **v1.24（2026-09-22）：新增第四轮真机登记——P2a 之后运行时矩阵 + F1 故障/边界矩阵 + G-F 初步结项** ——  **v1.23（2026-09-22·G-D 订正）：RT-13（zc）永久排除**（用户决定：不测、不进行支持，本仓库不构建 zc 形态）；历史 RT-13 PASS 行加注为历史口径（判据终态表 / G-M6 门禁表 / 用例表 / 遗留项表 / A-NR-18 验收行），「后续机时补跑」待办标记已作废（保留原行、改为终态「已作废，不再补跑」））—— v1.1（2026-08-21）：据 [06] v1.6 贯通——删除乒乓双队列段与 reta 切流，M3 改为同期移交+flow_map。v1.2（2026-08-31）：据 [06] v1.7 贯通——M2 新增 C-NR-307 自驱 hardclock / C-NR-308 应用 mempool 分代际，编码点总数 35→37；删除已废弃的 RV2/DR3，新增 RV10；修正 M0 一票否决项、8 项障碍消解机制、DAG 与全部残留的「乒乓/reta/原子切流」表述。**v1.3（2026-09-01）：据 [06] v1.9 交叉审核贯通**——新增 5 个编码点（C-NR-309~313）承载 M1′ 形态与 6 项缺陷修复，编码点总数 37→42；C-NR-307/308 由必需降为**加固项**；M3 改为「同期接管 + TX 独占 + 双向 drain_ring」；新增 RV11~14 与 DR8~10；DR6 新增「T3 后 G_new 崩溃」必答项；统一 lcore_id 口径为「两代不同 lcore_id」。**v1.4（2026-09-01）：人工决策反转 D-A = 两代使用相同 lcore_id** ⇒ 取消 C-NR-311 与 DR5（代际 lcore 池/四链解耦），P0-3 随之消解；C-NR-307 自驱 hardclock 与 C-NR-308 代际 mempool **恢复为 M2 必需项**，308 细化拆分为 C-NR-314（应用侧）+ C-NR-315（共享 RX 池）；新增 C-NR-316（心跳检测 + rx 交还，DR6 定案①）；新增 DR11（RX 池 M-A/M-B）与 RV15；编码点 42 → **43**（M2 12→13：+314/315/316，−311，308 转索引不计数）。**v1.4 门禁修正（据独立门禁审核 G1）**：修正 7 项 D-A 反转口径残留（摘要计数、障碍 8、C-NR-201/307 表述、M2 风险表、DAG）、修正「45」为「43」的算术错误。**v1.5（2026-09-02）：DR11 定案 M-A 为主**（M-B 备选，[09] §24.1），DR11 相关表述全篇同步；mbuf 池归属问题调研结论落盘（[09] §24.2/24.3）；**DR1 定案候选 b**（[09] §24.6），M0 DoD 与前置评审表同步。**v1.6（2026-09-02）：M0 实测结论回写**——五项一票否决全 PASS（RV12 为「问题坐实+修法预算充足」，端到端留 M1）；E-NR-03 同 lcore 必崩实测坐实，C-NR-307 扩为 5 处改动点 + 新增 N-1/N-2/N-3 配套修复；C-NR-315 落点精确化（无独立 RX 池）+ 扩展 message_pool；C-NR-201 新增 ENV-1 约束（移交期禁重协商 RSS/MQ）；DR4 定案确认；M2 风险表 ④⑤ 修正 v1.3 过时口径并登记大页泄漏风险（证据：work/impl/m0-poc-runner-veto2.md、m0-lcore-shared-state-audit.md、m0-dr2-dr4-review.md）。**v1.7（2026-09-02）：M1 CR 补注**——C-NR-104 的 attach 确认超时 15s→60s（数据出处与理由见该行补注）；C-NR-102 实现引入 proc_id 移位（worker i → proc_id i+1，slim primary 占 0），配置约束 worker_processes = nb_procs−1（master 侧双向校验拦截错配）。**v1.8（2026-09-03）：M2 实现补注**——DR4 行内回写「master↔worker 方向控制事件走 nginx channel + 匿名共享块（worker/primary 方向仍走 msg_ring）」；M5 前置表登记跨 master 世代 gen/ring 撞号硬前置。**v1.9（2026-09-03）：M3 实现批注**——① C-NR-310 行内回写：D-6（命名含队列维度 `(port,queue,gen)`）、D-1（每进程附全代 4 ring）、flags 修正（drain_rx 改 MP/SC——miss 转发 + ARP/NDP clone fan-out 双生产者；drain_tx 保持 SP/SC）、R-310-1（仅注销不销毁）；② C-NR-306 实现新增 **T2 park barrier**（共享块扩展 handover_epoch + rx_parked，master 收齐全部存活 G_old worker 的 epoch ack 才翻转 rx owner——结构性封死 RV3；cache manager/loader 无 ff 主循环被排除）；③ C-NR-303 实现选**方案 b**（新返回值 `FF_DISPATCH_PEER`，lib 内兜底 enqueue——mbuf 所有权全程不跨 API，R-303-1 double-free 结构性消除）；④ C-NR-309 五路径覆盖 + `send_burst` 防御性短路（RV11 成结构性保证）；⑤ FF_RELOAD 消息面新增只读 `FF_RELOAD_CMD_QUERY`（tools `-g` 观测用），非 QUERY 一律 ENOTSUP；⑥ `ff_no_hw_mode()` 读序为**先 stopped 后 owner**（撕裂读不可达证明见 lib/ff_reload.c 注释）。**v1.10（2026-09-04）：M4 实现批注**——① C-NR-401/402/403/404/405/406/312 各行补【M4 实现】结论与偏离（401 实为补回两行调用、函数本就存在；312 选方案 (a)，计数器走 insert/drop/expand 三处；402 通道定案为共享块 `reserved` 字扩展；403 的 T3→T4 由占位直通改为真实异步等待 + DRAIN_DONE 三谓词；404 的 DR6① 按实现形态表述；406 打点项清单）；② §2.4 C-NR-301 补【M4 修正】：分派器流表键端口字节序缺陷（主机序 vs 网络序），HIT 分支自 M3 落地起为死路径、M4 修复；③ §0.3 RV9/RV12 补 M4 实机数据；④ §2.5 末新增「M4 门禁结论、登记项与 M6 移交」块；⑤ §2.5 提交建议改为实际五层切分。**锚点提醒**：§2.5 表内 spec v1.9 的 `ngx_process_cycle.c 〔锚点失效：d752ed69f 误映射，已移除〕/9xx` 与 `tcp_syncache.c: syncache_socket()` 锚点已全部失效（M1~M3 在该文件中部插入约 950 行），以 work/impl/m4-anchor-verifier.md 基线总表为准。**v1.11（2026-09-07）：M5 实现批注**——① §2.6 C-NR-501/502/503/504 各行补【M5 实现】结论与偏离（501 = NGINX_VAR 真 bug 修复 + master 零 ff 状态复核；502 = 硬前置四件套闭合 + 新 master 零新增代码 + 架构约束「master 无 EAL」+ **切流点定案 = WINCH**（spec 修订，措辞采纳 m5-reviewer-b §10）；503 = primary 豁免「拓扑保证、无代码落点」+ 失效条件登记；504 = 回退 reclaim + P1-1/P1-2 互锁）；② §2.6 前置表登记硬前置已解决（落地形态：memzone 世代目录 + epoch slot 命名 + pid liveness 回收）；③ DoD 补判据终态（G-M5 PASS，runtime bounce 1）+ F-M5-x 终版登记 + M6 移交清单（§2.6 末门禁结论块）；④ 提交建议改为实际四层切分。**v1.12（2026-09-08）：M6 实现批注**——① §2.7 C-NR-601/602/603/604 各行补【M6 实现】结论与偏离（601 = harness 落地形态与独立 Makefile 目标 `reload-harness`；602 = RT-12 按 KNI=virtio_user 实际形态定案 + 数据面双向取证；603 = RT-13 按 zc 编译开关定案（构建形态正交性）；604 = 三文件文档入库清单）；② §2.7 DoD 补终态（G-M6 PASS：RV9 100/100 零错误零泄漏、RT-12/13 PASS 附限制结论、全矩阵不劣化、F2 闭环）；③ §2.7 末新增「M6 门禁结论块」（门禁与判据终态 + F2 根因更正（证伪「脏 EAL」假设）+ 移交项终版（F-M5-2/P2-10·F-M5-4/F-M4-1/F2 均消解）+ F-M6-1~4 登记）；④ 提交建议改为实际四层切分；⑤ 对齐基线行 [06] 版本同步 v1.9.1→v1.9.5。**v1.13（2026-09-09）：M6b 遗留闭环批注**——§2.7 末门禁结论块新增 **(8) M6b 遗留闭环**：① 四项遗留（F-M6-1 zc 探测含新发现的 `grep -q`+pipefail SIGPIPE 隐患、F-M6-3① =0 拓扑推导、F-M6-3② rt12 管理面 ping 三分支、RT-11 两套指令核实与四组实跑）均已闭环并给出判据终态；② 新登记 F-M6B-1~F-M6B-5（含「混跑下 G_old 退出切断内核栈空闲连接」这一设计内限制）；③ 记录 F-M6-5（`config.ini [port0] addr` 本机测试值入库，P2）与 rt13 运行时复跑、物理网卡 rt12 `ok` 分支两项未闭环移交项；④ 对齐基线行保持不变（[06] 仍 v1.9.5），[08] 同步升 v1.10。**v1.14（2026-09-17）：本轮 plan_audit P1 独立双审核员交叉审核订正**——① §0 摘要残留「M2 15 … = 45」修正为「M2 **13** … = **43**」；② §0.1 前缀表与 §0.3/§0.4 标题同步 RV1-15/DR1-11；③ §2 各 C-NR 的 `lib/` 侧锚点按 HEAD `28e751259` 复核订正（203/304/305/307/309/310/312/313/314/315/603 等），并在 §2 开头加基线声明；④ C-NR-302 实现落点回写 `lib/ff_reload.c`（未新建 `ff_handover.c`）；⑤ C-NR-312 计数接口由「未导出」订正为「M4 已新增导出」；⑥ M2 DoD 的 UT 门禁口径同步（04/05/15/16 未实现，覆盖缺口已登记）。**v1.15（2026-09-17）：第二轮真机回归（RT-2）结果同步**——§2.7 末新增记录块（`work/rt-round2-report.md` 独立复核版）：退出码 0 / failed=0，7 项 PASS + rt13 SKIP，rv9 20/20 轮 complete / drain 恒 1000~1001ms（v1.16 按 C4 改为逐值口径：RT-2b `19×1000ms + 1×1001ms`）/ 零 deadline forced / 零防重入拒绝 / 零泄漏（rtemap 恒 138 slope 0、hp 终态回收 2048）、fresh_fail=0；受限项 L1/L2/L3/L4/L6 如实登记；**终门禁裁决以 gate-reviewer 为准**。**v1.16（2026-09-17）：RT 结果收口（P5b）**——① §2.7 末 RT 记录改以 **RT-2b（修复后 / 设计形态：非 rt12 kni=0、rt12 kni=1）为权威数据**，**RT-2a（修复前 / 形态失真）留档**（C8-①/②）；② drain 改逐值口径：RT-2b `19×1000ms + 1×1001ms`、RT-2a `恒 1000ms（20 次）`（C4）；③ 受限项补 L5 性质变化（设计内范围限定）；④ (8.2) 新增 **F-M6B-6**（harness `kni=0` 继承模板 `[kni] enable=1` 致形态失真，`ini_strip_kni()` 已修并三层验证）。**v1.17（2026-09-17）：终门禁 N1/N3 定向整改 + O-3**——① **N1 执行者口径**：§0 速览 C-NR-316 行、§0.4 DR6 行、§2.3 C-NR-316 详述 ⑤、§2.3 M2 DoD ⑧ 四处原本以 primary 为 rx 回写者的表述统一改为「**G_old worker 自治夺回 rx**（自行写回 `rx_owner_gen`，非 primary 回写）」；② **N3 心跳校准口径**：§0.4 DR6 行与 §2.3 C-NR-316 详述 ④ 的「已由 M4 校准」表述改为「是否实测校准见 [08](08-testing.md) §5-14（当前 UNVERIFIED）」；③ **O-3**：文头「日期」行补注「（v1.14~v1.17 增补：2026-09-17）」；④ grep 复核另发现 §2.5 C-NR-404 行内同源历史表述，一并就地加注订正（同源残留，超出 N1 枚举清单）。**v1.18（2026-09-17）：按 `plan_cross_audit` G-A 裁决（R-03~R-27）订正**——① **R-07**：§2.5 表 F2 行与 §2.5(5) 第 1 条去掉已证伪的「脏 EAL」作唯一名称，改为「worker 非正常死亡 respawn 风暴」并就地标注证伪（落实本篇 §2.7(3) 自定的「该表述作废、不得再引用」）；② **R-08**：§2.5 F-M3-2 行与 §2.4 RT-09 行的「0ms 即时 abort」改为「走满 60s `sem_timedwait` attach 门后 abort」并交叉引用 §2.7(5) F-M6-4；③ **R-09/R-06**：§2.7(8.3) F-M6-5 由「本机测试值已入库、归因 `a8966870e`」更正为「上游默认模板值 `192.168.1.2`（`9ef6dc92e` 回滚引入）」并**撤销 forward-fix 回本机地址建议**（违规方向），同时追加「真实内网地址入库面普查（12 个文件，非 reload 功能引入，转仓库专项治理）」登记；④ **R-10/R-19**：§2.7(6)-5 与 §2.6 C-NR-601 的 harness 覆盖度改为「8 case、复跑 RT-01/02/12/13 四个用例，其余 12 个 RT 编号需人工/ad-hoc」，行数 755 → **1331**；⑤ **R-11**：§2.7(3) F2 锚点 〔锚点失效：d752ed69f 误映射，已移除〕/〔锚点失效：d752ed69f 误映射，已移除〕 → 〔锚点失效：d752ed69f 误映射，已移除〕/〔锚点失效：d752ed69f 误映射，已移除〕（post 在 〔锚点失效：d752ed69f 误映射，已移除〕）；§2 开头锚点基线声明由整篇兜底改为**逐条已核锚点清单**，未列入者标「未复核」；⑥ **R-14**：§2.6 C-NR-502 补 `lib/ff_reload_gendir.c` 落地文件与职责，登记 `ngx_ff_reload_fsm.h`、`tools/compat/check_ring_name_mirror.sh`（未进 CI）；⑦ **R-18**：§2.3 C-NR-316 锚点按 HEAD 重坐实为 `ff_reload.c: ff_reload_msg_ring_name_e()/1494/1508/1516` + `ff_dpdk_if.c: ff_reload_plane_housekeeping()/3705`，**删去「锚点已坐实并补齐」自评**并标注原坐标作废；⑧ **R-19/R-20**：C-NR-603 的 `lib/Makefile` 锚点统一为 `lib/Makefile` 的 CFLAGS 行（非 C 文件，按文件名引用；d752ed69f 曾误映射为 C 符号）（CFLAGS 行），与 08 RT-13 同口径；⑨ **R-27**：§2.3 M2 DoD ① 补「另 UT-NR-09/13 属 M3，未实现」。**v1.19（2026-09-18）：终门禁 G-D 返工（F-01/F-02/F-03）**——① **R-01 代码修复已落地，本篇措辞同步**：代际应用池已套 `ff_shared_pool_cache_size(graceful_reload, MEMPOOL_CACHE_SIZE)`（`lib/ff_dpdk_if.c: init_app_mem_pool()`，`graceful_reload=1` ⇒ `cache_size=0`）；§2.6 前置行的世代目录描述补注「kni owner 字翻转时机 = T5，由此产生的 drain 窗口 KNI 停服见本节 (5b)」，本篇其余 R-01 表述经回扫无需改写（C-NR-314/315 行本身不含「代际池未归零」表述）；全库回扫 R-01 同义表述（「仍以裸 / 未覆盖代际应用池 / 未消除 / 保留 256」）在 07 篇**零命中**；② **F-02 登记 R-30**：§2.6 新增 **(5b)**，用表格分开写 **inject 侧**（`ff_dpdk_kni.c: ff_kni_alloc()`，本次 R-02 修复的**次生行为**）与 **投递侧**（`ff_dpdk_if.c: ff_dpdk_process_packets()`，**T5 翻转设计的既有缺口、非本次引入**），注明「不死锁不崩溃、降级为丢包并计 `kni_stat[port_id]->tx_dropped`、量级未坐实」，并明确「**R-02 不得声称完整修复**」；③ **F-03 补登记 RT-3**：§2.7 末新增第三轮真机回归（R-01/R-02 修复后，50 轮）记录块 —— 日期 2026-09-17、二进制 md5 `d4171372…`、7 PASS + rt13 SKIP、rv9 50/50、**退出码 exit 0 明确写为「由 `failed=0` 与脚本 exit 映射推断」而非实测**，并如实登记三项覆盖边界（rtemap/HugePages 平坦不构成 R-01 定向断言；无 KNI TX 注入定向实机 ⇒ R-02/R-30 量级未坐实；客户端侧数值仅自洽验算、未逐字节重算）；该记录块另含完整数据：**rv9 drain `48 × 1000 ms + 2 × 1001 ms`（r=25/31）、零 deadline forced、零防重入拒绝、rtemap 50 采样恒 138 slope 0.000000、HugePages 运行期恒 1910 终态 2048、fresh_n=1936 fresh_fail=0、与 RT-2b 的 22 项对比 21 项同形或更优**（唯一走高项 #14 rt02 worst_gap 0.221 → 0.270 s，`stalls=0` 判据仍成立、**不构成判据级劣化**），以及**三项如实登记**（rt13 SKIP / rt12 管理面未判 / rt12 `ok` 分支不可构造）；二进制 md5 补全为 **`d4171372f39a2db55b569453ae5689c3`**（并注明中间态 `e725d9b7…` 为准入前产物、本轮以 `d4171372…` 为准）；④ **F-02 补（R-02 定性）**：§2.6 (5b) 补 G-D 裁定口径「**R-02 = 机理闭环、行为闭环不完整（缺 KNI TX 注入定向实机）**」。**v1.20（2026-09-18）：R-01 机理错误收尾（G-D「提交前必补」）**——① 该机理错误（`local_cache` 是 per-mempool 成员 ⇒「两池 cache 互不重叠」⇒ 误判「同 lcore_id 不冲突」，并误把 v1.7 的正确表述当作错误更正）全库共 **7 处**，前两轮已订 5 处（06 §7 自检表 / 06 §9 定案汇总 / 00 §3.3 / 06 §2 语义 12(1) / 06 §6.6.1），**本轮由 08 §1.4 与 09 §21.3 补齐余下 2 处**；② **本篇落点已订正**：v1.19 轮我曾判定「本篇无该机理错误落点」，**该判定有误** —— §2.3 **C-NR-314 行**含「分代际后两代 cache 互不重叠，应用侧竞态归零」，即同一机理错误（回扫时只按「两池 cache 互不重叠」字面检索、漏掉了「分代际后…互不重叠」这一变体写法）。本轮已就该行加删除线 + 就地订正（分代际只排除「两池之间」、不排除「同一池内两进程」；跨代 free 落回 G_old 池的 `local_cache[L]`；现状已由 R-01 消除 + 回退耦合指向 BR-02）；③ 同步「对齐基线」行中 [06] 的交叉版本号为 **v1.9.9**。**v1.21（2026-09-18）：宽口径回扫补订（G-D bounce 2/3 + F-06）**——上一批自检用 `互不重叠/两块不同内存/不重叠` 回扫**漏掉一类同义变体**（「分代际即消除应用侧竞态」「全局 `cache_size=0` 不再是必选项」「独立 cache ⇒ 应用侧竞态归零」），本批处理 **§2.3 C-NR-308 行**（ff_dpdk_if.c: veth_ctx〔锚点未核实〕）：**该行标注「本编号保留为索引」，属历史行**，故**按 R-13 体例保留原文不改写**（体例同 [09](09-review-report.md) §21.3 的 09:641→644），在其后加**就地加注**四条 —— ① per-mempool 成员的事实成立但推不出「消除冲突」（只排除两池之间、不排除同一池内两进程；跨代 free 落回 G_old 池的 `local_cache[L]` ⇒「分代际即消除应用侧竞态」不成立）；② **v1.7 那句「即使不同 pool 仍会同号 cache 槽竞态」恰恰是对的，v1.9.1 对它的「更正」才是错误**；代际池 `cache_size=0` **一直是必选项**；③ 现状已由 R-01 修复消除（`lib/ff_dpdk_if.c: init_app_mem_pool()`，`graceful_reload=1` ⇒ `cache_size=0` ⇒ `rte_mempool_default_cache()` 恒 NULL），运行时定向断言（PT-NR-09 / RV1）未执行、维持登记；④ 回退 R-01 须连带回退 R-15（[06](06-solution-design.md) §6.6.2 表下 BR-02）。**注**：本行 F-06 的处理体例由「删除线 + 订正」改为「保留原文 + 就地加注」，系采纳 gate-reviewer 2026-09-18 的更正（历史行不改写）。同时同步「对齐基线」行中 [06] 的交叉版本号为 **v1.9.10**；本版本另含 `07:257` 一处标点叠写的排版清理 |
+
+相关篇章：[00-总览](00-overview.md) | [06-方案设计](06-solution-design.md) | [08-测试计划](08-testing.md)
+
+---
+
+## 摘要
+
+本文把 [06-方案设计](06-solution-design.md) 的推荐方案 S3（**M1′ 同队列 + ready 后同期接管 rx+tx+listen + G_new 独占硬件 + G_old 软件寄生 + 双向 drain_ring** + flow_map 软件分发表 + rx 互斥 + ARP/NDP clone + **两代同 lcore_id 及其两项资源隔离（自驱 hardclock + 代际 mempool，均为必需项）** + **心跳与 rx 交还**，承接 primary_slim；M2 大阶段：可选 dispatcher 中心化）拆解为 **M0 预研 → M1 常驻 primary 化 → M2 新旧并存 → M3 同期接管+TX 独占+flow_map → M4 drain 收尾 → M5 USR2 → M6 门禁收尾 → M7（可选，DR7 触发）** 共 8 个里程碑、**43 个编码改动点（C-NR-100~604；v1.7 新增 307/308；v1.9 新增 309~313；v1.4 新增 314/315/316，取消 311，308 拆分为索引）**。逐项给出文件:行号锚点、依赖、DoD、测试门禁与回退方案；并把 **RV1-15** 逐项分配到里程碑、**DR1-11** 标注为对应里程碑开工前置评审。测试计划（单测编号 UT-NR-01~27、真 EAL 集成编号 IT-NR-A01~A14、实机用例 RT-00~15、性能基线 PT-NR-01~10、验收标准 A-NR-01~28、循环 reload 门禁；未落地资产已在 [08](08-testing.md) 如实标注）见 [08-测试计划](08-testing.md)。
+
+> 【数字口径说明】本文规模数字以实际清点为准（**v1.4 重新清点，修正 v1.4 初稿的算术错误**）：**43 个编码改动点** = M1 7（100~106）+ M2 **13**（201~208 八个 + **307 自驱 hardclock** + **313** msg_ring/KNI 代际隔离 + **314** 代际 mempool 应用侧 + **315** 共享 RX 池跨代 free + **316** 心跳与 rx 交还）+ M3 **8**（301~306 + **309** TX 独占 + **310** drain_ring 双向通道）+ M4 **7**（401~406 + **312** 半开连接窗口）+ M5 4（501~504）+ M6 4（601~604）。
+>
+> **计数规则（人工裁定）**：**C-NR-308 已于 v1.4 拆分为 C-NR-314 + C-NR-315，其条目仅作索引保留、不重复计数**；**C-NR-311 已取消、不计数**。用例数见 [08](08-testing.md)。
+>
+> **自动清点对照（供审核员核对）**：全文  得 **45 个唯一编号**（C-NR-100~106、201~208、301~316、401~406、501~504、601~604）。**45 − 308（索引条目）− 311（已取消）= 43 个有效编码点**。若后续再增删编码点，请同步本对照式。
+>
+> **v1.4 变更说明**：D-A 反转为「两代同 lcore_id」后，C-NR-307/308 **由加固项恢复为必需项**，代际 mempool 细化为 314/315；代际 lcore 池（311）取消。净变化：42 −311 −308（转索引）+314 +315 +316 = **43**。
+>
+> **勘误**：v1.4 初稿曾写「45」（误把 308 与 314/315 重复计数、且 M2 误记为 15），经独立门禁审核发现并修正为 **43**。00/06/09 三篇的同源数字已同步。
+>
+> **v1.2 修正**：v1.0/v1.1 正文残留的「35」未计入 v1.7 新增的 C-NR-307/308，与摘要自相矛盾，已统一为 37（v1.3 再增至 42）。C-NR-307/308/311/313 虽编号为 3xx，但语义上属「新旧代际共存的前提改造」，故归属 M2 而非 M3。来源产物 work/milestones-testing.md 中的同源旧数字（41/6/13）系中间产物原文，不回改；如与本文冲突以本文为准。
+>
+> **v1.3 新增编码点速览**（全部来自 [06] v1.9 交叉审核的 6 项 P0 缺陷）：
+
+| 编号 | 归属 | 对应缺陷 | 一句话 |
+|---|---|---|---|
+| C-NR-309 | M3 | **P0-1** TX 并发 | G_new 独占 tx；G_old 出包经 `drain_ring_tx` 由 G_new 代发 |
+| C-NR-310 | M3 | **P0-2** ring 双消费者 | per-generation `drain_ring_rx` 替代 `dispatch_ring` 转发旧连接包 |
+| ~~C-NR-311~~ | ~~M2~~ | ~~P0-3/P0-4~~ | **已取消**（D-A = 同 lcore_id，无需代际 lcore 池；P0-3 消解） |
+| C-NR-312 | M4 | **P0-5** 半开连接窗口 | G_old 停 accept 但延迟 close listening 至 syncache 排空 |
+| C-NR-313 | M2（+M4 收尾） | **P0-6** msg_ring/KNI owner | msg_ring 按 (proc_id, 代际) 索引；KNI runtime owner 跟随活跃代际 |
+| **C-NR-314**（v1.4） | M2 | **同 lcore_id 的 mempool 同槽（应用侧）** | 代际 mempool `gen0/gen1` init 期预建 + 乒乓复用；应用侧 alloc 改用本代际 pool |
+| **C-NR-315**（v1.4；**v1.6 扩展**） | M2 | **同 lcore_id 的 mempool 同槽（共享池）** | DR11：**M-A 为主**（`cache_size=0`）；M-B（`free_ring` 由 G_new 代 free）为备选。**v1.6 两个扩展**：① 落点精确化——F-Stack **无独立「RX 池」**，RX 队列绑定（〔锚点失效：d752ed69f 误映射，已移除〕→〔锚点失效：d752ed69f 误映射，已移除〕）与应用侧 alloc（`:2563/:2705/:2172/:2187`）用的是**同一个** `pktmbuf_pool[socketid]`（cache=256，`ff_memory.h: MEMPOOL_CACHE_SIZE〔锚点未核实〕`），该池**不参与代际乒乓、保持固定名**；② **`message_pool`（`ff_dpdk_if.c: message_pool〔锚点未核实〕`，cache=16）与 `ff_ref_pool`（`lib/ff_memory.c: ff_init_ref_pool()`，cache=256，`FF_USE_PAGE_ARRAY=1` 条件编译）双池必须一并改 `cache_size=0`**——前者承载 reload 握手消息（READY/DRAIN_DONE/REJECT/HANDOVER_ACK，reload 期间恰是其高频期），后者在 PA 启用时同为两代共用（终审 P3-4 补入；PA 默认关闭，启用时须校验拦截或直接置 0）（lcore 清查 N-4，work/impl/m0-lcore-shared-state-audit.md §6.4） |
+| **C-NR-316**（v1.4） | M2 + M4 | **DR6 定案①** | 共享内存全局切换标记每 loop 递增作心跳；G_old 检测失活后**自治夺回 rx**（自行写回 `rx_owner_gen`，非 primary 回写）；超时默认 1s 可配 |
+
+> **v1.4 编码点总数**：M1 7 + M2 **13**（201~208 + 307/313/314/315/316；308 为索引、311 已取消）+ M3 8 + M4 7 + M5 4 + M6 4 = **43**。
+
+## 关键结论
+
+1. **最强回滚点仍是配置级**：`graceful_reload=0`（默认）⇒ reload 行为与现状逐字一致（[06](06-solution-design.md) 5.4-3 的 0 回归原则）。所有里程碑的代码都以该开关门控，与 primary_slim 的 `primary_slim=0` 同构。
+2. **M0 必须先行解决三个一票否决预研项（v1.2 据 [06] v1.6/v1.7 重列）**：
+   - **RV7**（双代际栈隔离 listen 同 IP:port 是否真不冲突——[04](04-fstack-current-analysis.md) §3.5 仅为静态推断）：失败则方案需重新评审。
+   - **RV3**（同期移交的跨进程互斥正确性——G_old 停 poll 与 G_new 起 poll 的串行化是否可靠，残余风险为 virtqueue 数据结构并发损坏，**静态无法定论**）：失败则 S3 主路径不成立。
+   - **RV10**（v1.6 新增：新旧进程同核处理时切换瞬间的流量/丢包/CPU 抢占）：失败则需回退到「新旧进程各占独立物理核」形态（代价是稳态预留一倍核）。
+   - **RV11（v1.9 新增）**：**TX 独占的正确性**——能否确保 drain 期 G_old 无任何 `rte_eth_tx_burst` 路径。这是 M1′ 的核心不变量，失败则 M1′ 不成立（须退 DR9 的 (b) tx queue 分离或 (c) 自旋锁形态）。
+   - **RV12（v1.9 新增）**：**半开连接窗口**——移交前 G_old 已收 SYN、ACK 在接管后到达的连接能否完成握手（语义 14 两种修法至少一种生效）。失败则「新连接零丢失」目标不成立。
+
+   五者**在 M1 开工前必须出结论**（RV11/RV12 可与 RV3 合并到同一 PoC 环境，降低搭建成本）。~~RV2（reta 运行时更新）~~ 已随 v1.6「reta 不改」决策**取消**——S3 不再依赖任何 NIC RSS 能力，virtio 与物理网卡均可用。
+3. **本文 M 编号与 [06](06-solution-design.md) 的 M1/M2 不同名不同义**：本文 M1+M2+M3+M4 合起来 = 方案设计的 S3-M1；本文 M7 = S3-M2。映射表见第 0.2 节，后续文档引用本文编号时以此为准。
+4. **M2（新旧并存）是风险最集中的里程碑**：它一次性引入多 secondary 双代际并存（RV1）、**queue_id 代际无关映射（两代同 lcore_id）**、FF_RELOAD 控制消息（DR4）、**msg_ring 与 KNI owner 代际隔离（C-NR-313）**、**同 lcore_id 的两项资源隔离改造——自驱 hardclock（C-NR-307）与代际 mempool（C-NR-314/315）**、以及心跳与 rx 交还（C-NR-316），且删除了现状两段串行 reload 的「安全」行为——该里程碑必须独立成提交串、独立验收，不得与 M3 混批。
+   **v1.4 风险重估**：D-A 反转为「同 lcore_id」后，C-NR-307/314/315 **恢复为必需项、无退路**，M2 的风险面相对 v1.9 是**上升**的（v1.9 曾把它们降为可选）。其中 **C-NR-307 改动全局 timer 心跳，须按最高回归风险对待**（独立提交 + PT-NR-08 门槛）。**v1.4 的补偿**：取消了 C-NR-311（代际 lcore 池），不再改动 `lcore_mask → nb_procs → 队列数` 这条全局配置链，配置面风险归零。
+5. **测试环境的三个如实约束**（引自 primary_slim 08 §7 实测）：
+   - 本机仅 virtio 系 PMD。**v1.6 起 S3 不再依赖 reta（不调用 `set_rss_table`），故「物理网卡上 reta 结论不可外推」这一约束对本方案主路径已不适用**；但保留两条 virtio 特有限制：① virtio PMD stats **无 `imissed`**（只有 `ierrors`/`rx_nombuf`），无主队列/移交窗口的丢包发生在 host 侧，**guest 侧不可观测**；② 本机 virtio 未协商 `VIRTIO_NET_F_RSS`（`reta_size==0`），需留意 `ff_rss_check` 在 virtio 多队列下本就与硬件落点无关（既有失效项，独立于 reload，建议单独记 issue）。
+   - `wrk` 在本环境不可用，压测用 `ab` + python 探测脚本（`_e2_probe_client.py` 模式）。
+   - primary/secondary 初始化各需约 25s，脚本必须轮询就绪标志不得裸 sleep。
+6. **实机脚本硬性规约**：进程终止一律 `/data/workspace/kill_process.sh`、临时文件清理一律 `/data/workspace/rm_tmp_file.sh`、加执行位一律 `/data/workspace/chmod_modify.sh`；目标地址为必填参数，严禁硬编码（不得重蹈 `test_mtu.sh` 曾硬编码真实内网地址的覆辙）。
+
+## 0. 编号体系与总分配表
+
+### 0.1 编号前缀
+
+| 前缀 | 含义 | 前缀 | 含义 |
+|---|---|---|---|
+| M0~M7 | 里程碑 | UT-NR-xx | 单元测试用例（[08](08-testing.md)） |
+| C-NR-xxx | 编码改动点 | IT-NR-Axx | cmocka 真 EAL 集成用例（[08](08-testing.md)） |
+| E-NR-xx | M0 预研实验项 | IT-NR-RT-xx（RT-xx） | 实机用例（[08](08-testing.md)） |
+| F-NR-x | 单测 fixture（[08](08-testing.md)） | PT-NR-xx | 性能基线用例（[08](08-testing.md)） |
+| RV1-15 | [06](06-solution-design.md) §6.1 运行时验证项（v1.9 新增 RV11~14；v1.4 新增 RV15） | A-NR-xx | 验收标准（[08](08-testing.md)） |
+| DR1-11 | [06](06-solution-design.md) §6.2 设计评审项（v1.9 新增 DR8~10；v1.4 新增 DR11） | RG-NR-xx | 回归项（[08](08-testing.md)） |
+
+### 0.2 本文里程碑与方案设计阶段的映射
+
+| 方案设计（06 篇） | 本文里程碑 | 内容 |
+|---|---|---|
+| （前置，S3 依赖） | M0 | 预研定案 + 基线采集 |
+| S3-M1′ | M1 → M2 → M3 → M4 | 常驻 primary 化 → 新旧并存（**两代同 lcore_id** + 同 lcore_id 资源隔离 + msg_ring/KNI 代际隔离 + 心跳） → 同期接管 rx/tx+TX 独占+flow_map 转发兜底 → drain 收尾+半开连接窗口+状态机完备 |
+| S3-M1 收尾 | M5、M6 | USR2 升级路径；循环 reload 终门禁 + 特殊场景回归 + 文档 |
+| S3-M2 | M7（可选） | dispatcher 中心化（DR7 触发才立项） |
+
+### 0.3 RV1-15 分配总表
+
+> v1.2 据 [06] v1.6/v1.7 重列。~~RV2（reta 运行时更新）~~ 已取消（reta 不改）；RV3 由「降级变体」升为**主路径**；RV6 因 v1.7 自驱 hardclock 而性质改变。
+> **v1.3 据 [06] v1.9 重列**：RV3 改为「rx 接管互斥」（tx 已独占）；RV4 改为「双向 `drain_ring` 的吞吐与满环行为」；**新增 RV11（TX 独占）、RV12（半开连接窗口）、RV13（msg_ring/KNI 代际隔离）、RV14（keepalive 下 drain 时长与门禁节拍）**。
+> **v1.4 再重列**：D-A 反转为「同 lcore_id」后，~~「不同 lcore 的 timer 隔离」~~ 不再成立，RV6 改为**验证自驱 hardclock 本身的精度**（PT-NR-08 功能口径，**单次偏差 ≤1 tick**；**【2026-09-22 同步·M03-1】原「精度等价性」表述作废——`rte_timer` 挂槽基线不可测（P0-NEW）**）（C-NR-307 恢复必需，PT-NR-08 为门槛）；并新增 **RV15（同 lcore_id 下的 mempool 隔离：代际池乒乓复用 + 共享 RX 池跨代 free）**。
+
+| RV | 项目（[06](06-solution-design.md) §6.1） | 首验里程碑 | 复验/关闭里程碑 |
+|---|---|---|---|
+| RV1 | **N+N 双代际** worker + 1 slim primary 多 secondary 并存稳定性（同队列，不配 2N 队列） | M2 | M6（长稳） |
+| ~~RV2~~ | ~~reta 运行时更新在目标 PMD 的支持度与生效时延~~ | **已取消**（v1.6：reta 不改，不依赖 NIC RSS） | — |
+| RV3 | **同期接管 rx 的互斥正确性**（v1.9：互斥只覆盖 rx，tx 已独占）：跨进程互斥标记（SEQ_CST 原子）保证 G_old 停 rx 后 G_new 才起 rx；接管窗口靠 NIC rx ring（RX_QUEUE_SIZE 4096）兜底；残余风险为 virtqueue 数据结构并发损坏（静态无法定论）；**virtio 无 `imissed`，guest 侧不可观测** | **M0**（PoC，一票否决项） | M3（集成后复测）、M6（长循环） |
+| RV4 | **双向 `drain_ring` 的吞吐/时延与满环行为**（v1.9 改写：drain 期存量连接**双向各一跳**、100% 走 ring；满环不得静默丢已建连接包） | M3 | M6（循环 reload 期间） |
+| RV5 | flow_map 查表开销【仅 reload 窗口，稳态零开销】 | M3 | M6（PT-NR-06 关闭） |
+| RV6 | **自驱 hardclock 的 timer 精度等价性**（v1.4 再改：D-A = 同 lcore_id ⇒ `priv_timer` 必然同槽，**C-NR-307 是唯一解法、无退路**；本项验证其精度**【2026-09-22 同步·M03-1：判据已统一为 PT-NR-08 功能口径（单次偏差 ≤1 tick）；`rte_timer` 挂槽基线不可测（P0-NEW 坐实 timer 从未挂载），原「精度等价」表述作废】**） | M0（双进程共存初验） | **M2（PT-NR-08 为合入门槛）**、M6（长稳） |
+| RV7 | 多代际栈隔离 listen 同 IP:port 实际行为 | **M0**（PoC，一票否决项） | M2（正式链路） |
+| RV8 | KNI 启用场景与双代际 worker 交互（**v1.9：owner 须跟随活跃代际，C-NR-313**） | M6 | M6 |
+| RV9 | 端到端循环 reload 门禁（≥100 次）；**v1.9 补充：须先由 RV14 确定 keepalive 与强退阈值，否则机时不可控**。**【M4 实机】** 50 轮带流量小规模预演：首轮 14/50（qps 崩至正常值 2~7%）→ 三轮 bounce → **50/50 全自然收敛**（drain 分布 1~11s，零 90s deadline），CPS fail 171/255029（0.067%，全 TIMEOUT、零 RST）；残留 fresh_fail 10.7% 登记为 M6 观察项。**keepalive 挂窗形态已量化**（S5 rev1：keepalive 长连接不关闭 → 每轮 drain 均跑满 90s T3 deadline 兜底；关闭 keepalive 后同款流量 11s 自然收敛），可作为 RV14/PT-NR-05 的配置输入 | M4（20 次小规模） | **M6（终门禁，≥100 次）** |
+| **RV10**（v1.6 新增） | **同核处理新旧进程的切换瞬间性能**（v1.9 补充：M1′ 下 G_old 不 poll 硬件，算力占用低于 v1.6 形态，预期改善但仍需实测） | **M0**（PoC，一票否决项） | M3/M6（高负载压测） |
+| **RV11**（v1.9 新增） | **TX 独占正确性**：drain 期 G_old 零 `rte_eth_tx_burst` 路径；`drain_ring_tx` 代发在高出包量下不成为瓶颈 | **M0**（PoC，一票否决项；可与 E-NR-02b 合并环境） | M3（IT-NR-A09）、M6 |
+| **RV12**（v1.9 新增） | **半开连接窗口**：移交前 G_old 收 SYN、ACK 在接管后到达的连接能否完成握手（语义 14 两种修法实测对比）。**【M4 实机】** 2/12 → 4/12 → 6/12 → **12/12** 逐级达成（S8ᶠ 全轮 HTTP200）：FIX-1（syncache 纳入 DRAIN_DONE）把转发窗口从 ~1s 扩至 11s，FIX-5 把 T5 挂窗由 92s 收敛到 30s cap，字节序修复使窗口期 SYN 本地入表后其 ACK 能 HIT 本地；**IT-NR-A10 只做到机制级**（TC-6，降级理由与 RV12 四项判据的实机移交见 [08](08-testing.md) IT-NR-A10 行注）。**(b) syncache 导出形态未实现**（U-NR-9 定案 a），无 (a)/(b) 取舍数据 | **M0**（PoC，一票否决项） | M4（IT-NR-A10）、M6 |
+| **RV13**（v1.9 新增） | **msg_ring 代际隔离与 KNI owner 跟随**：两代并存期间控制消息不错收；多轮交替后 KNI 仍可用 | M2（IT-NR-A11） | M6（长循环） |
+| **RV14**（v1.9 新增） | **keepalive 场景下 drain 时长与门禁节拍可行性**：实测 `keepalive_timeout`（默认 75s）下的 drain 时长，确定 shutdown timer 强退阈值与 RV9 总机时 | M4（RT 实测） | M6（确定门禁配置） |
+| **RV15**（v1.4 新增） | **同 lcore_id 下的 mempool 隔离**：代际池 `gen0/gen1` 乒乓复用后资源总量恒定、跨代 alloc/free 无泄漏与双重释放、**共享 RX 池的跨代 free 路径正确**（DR11 选型的实测依据） | M2（PT-NR-09 + IT-NR-A13） | M6（长稳） |
+
+### 0.4 DR1-11 前置评审分配总表
+
+| DR | 项目 | 评审时点（对应里程碑开工前） |
+|---|---|---|
+| DR1 | reload 编排者：master vs slim primary | **已定案（v1.9.3）= 候选 b：master 编排 + primary 原语**（决定 M1 的 primary 拉起方式与 M2 状态机归属，见 [09] §24.5/24.6） |
+| DR2 | 旧连接归属判定：实时查询 vs 快照表（两形态均须遵守流表窗口化：READY 后生效、排空确认后关表，[06] 第 2 节语义 6） | M0（接口初评）→ **M3 开工前定案**（RV5 数据支撑） |
+| ~~DR3~~ | ~~reta 切流 vs 末期一次性队列移交~~ | **已取消**（v1.6：reta 不改，同期移交为唯一主路径，见 [06] §6.2 DR3） |
+| DR4 | reload 控制通道载体（v1.6 已定）：移交互斥用**共享内存标记**（非 msg ring），READY/DRAIN_DONE/REJECT 用 msg ring。**【M2 v1.8 实现补注（CR 裁定：接受偏离但限定条件）】master↔worker 方向的控制事件（READY 现状、M4 的 DRAIN_DONE/REJECT）实际走 nginx channel + 匿名 MAP_SHARED 共享块**——master 非 DPDK 进程无法 dequeue msg_ring（EAL attach 会破坏 M1 fork 安全定案）；FF_RELOAD 消息族仍在 (proc_id,gen) 隔离的 msg_ring 上承载（lib 侧查询/验证面）。**worker↔primary 方向（M3 的 HANDOVER_REQ/ACK）必须走 msg_ring**（全 EAL 进程） | **已定案确认**（M0 评审 + M2 CR） |
+| ~~DR5~~ | ~~四链解耦与代际 lcore 池的配置表达~~ | **已取消（2026-09-01 人工决策）**：D-A = 同 lcore_id，无 2N lcore_id 需求，`lcore_mask`/`nb_procs`/队列数保持 N。C-NR-311 随之取消 |
+| DR6 | 异常回退完备性（每阶段回退目标态） | **M4 开工前**。**T3 之后 G_new 崩溃已于 2026-09-01 定案：方案① 由 G_old worker 自治夺回 rx**（实现形态，见 [06](06-solution-design.md) §5.2/§6.2 DR6 附则/§9）；检测手段 = 共享内存全局切换标记每 loop 递增作心跳（G_old 采样，G_old 排空后标记随 flow_map 消亡不再递增）；超时 **默认 1s 可配置**（是否实测校准见 [08](08-testing.md) §5-14，当前 UNVERIFIED）。落地编码点 **C-NR-316**，附则见 [06] §6.2 DR6 附则 |
+| DR7 | M7（dispatcher 中心化）启动判据与阈值 | **M7 立项评审**（M6 数据齐后；暂定阈值：reload 窗口内转发开销致吞吐下降 >5%、或 drain 期 P99 劣化 >10%、或高存量连接场景 drain 时长超 SLO——流表窗口化后稳态损耗恒 0，原稳态阈值失效）。**v1.9 决策 D-C：M2 不提前，维持可选演进** |
+| **DR8**（v1.9 新增·**2026-09-01 终版定案**） | **lcore_id 策略** | **已定案：两代使用相同 lcore_id**（推翻本轮前一版「不同 lcore_id」）。理由：拆 lcore 链引发的各类池冲突远严重于同槽问题；DPDK 硬禁令（`multi_proc_support.rst:169-172`）的理由即 mempool cache 损坏，由代际 mempool 消除 ⇒ 例外适用。**【2026-09-17 订正·R-05】该「例外论证」措辞不完备**：官方原文为 *among other issues*，mempool cache 只是举一例；已识别并隔离的仅 mempool（C-NR-314/315）与 timer（C-NR-307）两条，其余按 lcore_id 索引的共享槽位未穷举；代际应用池的跨代 free 已由 R-01 修复（机理层＋编译/单测层），运行时定向断言 PT-NR-09/RV1 未执行、维持登记。**推论：C-NR-307/308/314/315 恢复为必需项** |
+| **DR9**（v1.9 新增） | **TX 处理形态**：(a) G_new 代发（M1′ 主路径）/ (b) init 期多配 `nb_tx_queues=2N` 代际各一组 / (c) 共享内存自旋锁保护 tx queue | **M3 开工前**（倾向 a；RV11 数据支撑，不达标则评 b） |
+| **DR10**（v1.9 新增） | **防重入可否放松**：G_old 退化为纯软件进程后可支持多代并存，是否允许「上一代未排空即接受新 reload」 | **M6 后**（默认保持防重入；属可选增强） |
+| **DR11**（v1.4 新增） | **共享 RX 池的跨代 free**：M-A（RX 池 `cache_size=0`，简单但稳态有损耗）/ M-B（`free_ring` 由 G_new 代 free，稳态零损耗） | **已定案（v1.9.3 人工决策）：M-A 为主，M-B 备选**；M-B 仅在 PT-NR-09 显示 M-A 稳态损耗不可接受时启用 |
+
+### 0.5 8 项障碍（[04](04-fstack-current-analysis.md) §4）→ 里程碑消解映射
+
+| 障碍 | 内容 | 消解里程碑 | 机制（v1.6/v1.7） |
+|---|---|---|---|
+| 1 | 两段串行空窗 | M2 + M3 | 并存 + **同期接管 rx/tx**（跨进程互斥标记保证队列始终有主；~~reta 切流~~ 已废弃） |
+| 2 | listening fd 无法跨进程 | M2 | 回避式：栈隔离多代际 listen（RV7 验证） |
+| 3 | TCP 连接无迁移 | M3 + M4 | **flow_map miss → `drain_ring_rx` 转发兜底** + 出包经 `drain_ring_tx` 代发 + drain（v1.9） |
+| 4 | primary 单点/硬编码 | M1 | 全 secondary + 常驻 slim primary |
+| 5 | respawn/时序脆弱（500ms/15s） | M2 | 显式 READY 协议取代 |
+| 6 | master 不在数据面 | M2 + M3 | master 编排 + primary 原语（**DR1 已定案候选 b**） |
+| 7 | RSS 静态映射窗口 | M3 | **同期接管 rx + 互斥**（reta 不改 → `ff_rss_check`/`adjust_sport`/`tbl`/`thash` 四件套不变；~~reta 原子切流（DR3）~~ 已取消）；**v1.9 追加：tx 由 G_new 独占（C-NR-309），互斥只需覆盖 rx** |
+| 8 | 定时器随进程消亡 | M2（**必需项**） | **v1.9.1 终版定案 D-A：两代 lcore_id 相同 ⇒ `priv_timer[L]` 必然同槽**（`rte_timer.c: rte_timer_init()〔锚点未核实〕` 的 memset 会清零 G_old 的 skiplist）⇒ 由 **C-NR-307 自驱 hardclock（必需，无退路）** 解决：main_loop 按 TSC 间隔直调 `ff_hardclock()`，每进程 timer 完全独立。合入门槛 = PT-NR-08。~~v1.9 曾定「两代 lcore_id 不同 ⇒ 天然隔离」~~ 已被推翻。**M0 实测（E-NR-03）：同 lcore_id 双实例 2/2 必崩**——旧实例 `rte_timer_manage` 段错误（死者持锁）、新实例永久自旋（指令级坐实：崩溃点落在 `list_lock` 临界区内 `rte_timer.c: __rte_timer_manage()`）。**v1.6 改动点扩为 5 处**（lcore 清查 + 复核定案，缺一无效）：`ff_dpdk_if.c: ff_dpdk_process_packets()`（main_loop manage）、ff_dpdk_if.c: init_port_start()（init_clock：meta_init 清槽 + 注册，两件都要去）、ff_dpdk_if.c: init_port_start()+ff_dpdk_if.c: ff_dpdk_run()（stop_clock/stop_sync）、ff_dpdk_if.c: init_port_start()+ff_dpdk_if.c: ff_dpdk_process_packets()（thread_mode 路径）、ff_dpdk_if.c: init_port_start()〔锚点未核实〕（subsystem_init 持共享 tlock，须改 attach 旁路）。**另须配套修 N-1/N-2/N-3**：`rte_timer_meta_init` 幂等保护（每进程 memset 共享槽是崩溃扳机）、G_old 退出不走 `rte_timer_stop_sync`（无界自旋）、G_new 不调 `rte_timer_subsystem_init` |
+| 补充 | worker QUIT 缺 ngx_set_shutdown_timer | M4 | 补回（修 bug 性质，独立可先做） |
+| 补充 | **移交瞬间半开连接无归属**（v1.9 P0-5） | M4 | C-NR-312：G_old 停 accept 但延迟 close listening 至 syncache 排空 |
+| 补充 | **msg_ring / KNI owner 落在已退代际**（v1.9 P0-6） | M2 + M4 | C-NR-313：按 (proc_id, 代际) 索引；owner 跟随活跃代际（T5 更新） |
+
+## 1. 里程碑总览
+
+| 里程碑 | 目标 | 编码点数 | 主要文件 | 前置 | 独立验收 | 回退点 |
+|---|---|---|---|---|---|---|
+| **M0** 预研定案 | **RV7/RV3/RV10** 一票否决项出结论；DR4 定案 + DR2 初评；基线数据（~~DR1 已定案候选 b~~；~~DR5 已取消~~） | 0（PoC 脚本/报告） | 无正式编码 | 无 | ✅ | — |
+| **M1** 常驻 primary 化 | nginx worker 全 secondary，slim primary 常驻不随 reload 退出；`graceful_reload` 开关落地 | 7（C-NR-100~106） | `ngx_ff_module.c`/`ngx_process_cycle.c`/`ff_config.{h,c}`/`config.ini` | M0（DR1 定案）；primary_slim 已合入 | ✅ | `graceful_reload=0` + revert 提交串 |
+| **M2** 新旧并存 | **queue_id 代际无关映射**（v1.6 取代乒乓段）+ **两代同 lcore_id（D-A v1.4）** + **msg_ring/KNI 代际隔离（C-NR-313）** + **同 lcore_id 资源隔离：自驱 hardclock（C-NR-307）+ 代际 mempool（C-NR-314/315）** + **心跳与 rx 交还（C-NR-316）** + FF_RELOAD 消息族 + READY 协议 + 双代际 worker 并存；删除两段串行 reload（条件化） | **13（C-NR-201~208 + 307/313/314/315/316；308 拆分为索引不计数、~~311~~ 已取消）** | `ff_config.{h,c}`/`ff_msg.h`/`ff_dpdk_if.c`/`ff_dpdk_kni.c`/`ngx_process_cycle.c`/新增 `ngx_ff_reload.c` | M1；DR4 评审（DR5 已取消；DR8 已定案；**DR11 已定案 M-A 为主**） | ✅ | `graceful_reload=0` 走旧路径；各 C-NR 独立提交串 |
+| **M3** 同期接管+TX 独占+flow_map | **flow_map 软件分发表** + **rx 跨进程互斥原语** + **TX 独占与 `drain_ring_tx` 代发（C-NR-309）** + **per-generation `drain_ring_rx`（C-NR-310）** + ARP/NDP clone + RX_QUEUE_SIZE 放大；旧连接包经 flow_map miss → `drain_ring_rx` 转发（**reta 不改**） | **8（C-NR-301~306 + 309/310）** | `ff_api.h`/新增 `ff_flow_map.c`/`ff_handover.c`/`ff_drain_ring.c`/`ff_dpdk_if.c`/`ngx_ff_module.c` | M2；DR2/DR4/**DR9** 定案 | ✅ | 接管消息不触发即回退（状态机停 T2） |
+| **M4** drain 收尾 | 补 shutdown timer、drain 上报与强退、**半开连接窗口处理（C-NR-312：延迟 close listening）**、T0-T5 状态机完备与异常分支（含 **T3 后 G_new 崩溃回退**）、HUP 全链路打通 | **7（C-NR-401~406 + 312）** | `ngx_process_cycle.c`/`ngx_ff_reload.c`/`ff_msg.h`/`freebsd/netinet/tcp_syncache.{c,h}` | M3；DR6 评审 | ✅ | 各点独立 revert |
+| **M5** USR2 升级 | master exec 换代 + 新 master 对接常驻 primary；WINCH/QUIT 语义 | 4（C-NR-501~504） | `ngx_process_cycle.c`/`nginx.c` | M4 | ✅ | 不用 USR2 即无影响 |
+| **M6** 门禁收尾 | RV9 终门禁、RV8/zc/KNI 回归、文档 | 4（C-NR-601~604） | `tests/`/`doc/` | M4（M5 可并行） | ✅ | — |
+| **M7**（可选） | dispatcher 中心化（S3-M2） | 另立 spec | — | DR7 触发 | — | 独立演进线 |
+
+**通用规约提醒（适用于全部里程碑，写进每个实现阶段的工作约定）**：
+- 改代码后必须 `make clean && make`（lib/ 与 example/ 均 exit 0），增量编译通过不算通过。
+- lib/ 代码最小注释，F-Stack 代码注释一律英文（ftdns 相关可中文）；commit message 英文 1~3 句。
+- 遵循 F-Stack 惯例：**每个里程碑一次或多次独立可 revert 的 git 提交**（建议每个 C-NR 功能簇一个 commit），示例：`nginx: spawn all workers as DPDK secondary under graceful_reload` / `lib: add FF_RELOAD message family for reload control plane`。
+- `config.ini` 只提交特性相关注释块与注释掉的示例项，本地测试值（lcore_mask/地址等）不入库。
+- 文档与测试脚本严禁真实 IP；Shell 清理/终止/加执行位只走 `rm_tmp_file.sh` / `kill_process.sh` / `chmod_modify.sh`。
+- 每个里程碑 DoD = 单测全绿（含既有零回归）+ clean build + 实机运行时回归门禁（[08](08-testing.md) 对应用例）。
+
+## 2. 各里程碑详述
+
+> **锚点基线声明（2026-09-17 修订·R-11；2026-09-30 改引符号名）**：本清单各 C-NR 的锚点**自 2026-09-30 起一律写作 `文件: 符号名`**（此前为行号，且删除冗余注释后行号再次整体漂移）；下表锚点原为**编码前基线**（M1~M6 实现后 `lib/ff_dpdk_if.c` 由 4233 行增至 5046 行，锚点整体漂移 +300~+800）。**此前「`lib/` 侧行号已按 HEAD `28e751259` 复核订正」为整篇兜底声明，已废弃——整篇兜底声明不等于逐条复核（本轮 R-18 即为其失效实例）。**以下为**经 `grep -n`/`awk` 逐条实测确认**的锚点：C-NR-203/304/305/307/309/310/312/313/314/315/603（2026-09-17 按 HEAD `28e751259` 逐条复核）；**C-NR-316**（v1.18 重核，原锚点 `ff_dpdk_if.c: ff_dpdk_process_packets()`/ff_dpdk_if.c: handle_knictl_msg() 作废并重坐实为 `ff_reload.c: ff_reload_msg_ring_name_e()/1494/1508/1516` + `ff_dpdk_if.c: ff_reload_plane_housekeeping()/3705`）；**C-NR-502**（v1.18 补 `lib/ff_reload_gendir.c` 等文件名锚点）；**C-NR-601**（v1.18 实测 harness 1331 行）；**§2.7(3) F2 段**（v1.18 实测 `ngx_process_cycle.c: ngx_ff_usr2_check()`/ngx_process_cycle.c: ngx_ff_worker_may_exit()）；**C-NR-603**（v1.18 实测 `lib/Makefile:234`/ngx_process_cycle.c: ngx_master_process_cycle()）。**未列入上列者一律视为「未复核」**，引用前须以 `grep -n` 实测。§2.5 表内 `ngx_process_cycle.c` 侧锚点同样以 `work/impl/m4-anchor-verifier.md` 基线总表为准。
+
+### 2.1 M0：预研与设计定案（无正式编码）
+
+| 项 | 内容 |
+|---|---|
+| **目标** | 用最小 PoC 消除 S3-M1 的**三个一票否决不确定性（RV7、RV3、RV10）**，完成 DR1/DR4/DR5 设计定案，采集性能基线，为 M1~M6 提供决策数据。（~~RV2 reta 运行时更新~~ 已随 v1.6「reta 不改」决策取消） |
+| **范围** | 不改任何 lib/app 正式代码；PoC 可用临时补丁/脚本（产物入库为报告，补丁仅留档不进主线，参照 primary_slim `_poc_*.patch` 的做法） |
+
+**实验与评审清单**：
+
+| 编号 | 内容 | 方法 | 通过判据 | 失败时的换档 |
+|---|---|---|---|---|
+| E-NR-01（RV7） | 双代际栈隔离 listen 同 `<IP>:80` 是否冲突 | 常驻 slim primary（primary_slim=1）+ 两个 secondary helloworld/nginx 实例各自 bind/listen 同 `<DPDK_NIC_IP>:80`，从 f-stack-client 并发 SYN 压测，两实例各自 accept | 两实例均正常 accept、无 bind 报错、无 RST；两栈各自独立维护 pcb/syncache 表（v1.6 起 reta 不改，连接分布由网卡既有分发决定，**不校验 reta 映射**） | S3 需重新评审（listen 层加协调） |
+| ~~E-NR-02（RV2）~~ | ~~virtio PMD 上 `rte_eth_dev_rss_reta_update`/`set_rss_table` 运行时更新是否生效、时延~~ | **已取消**（v1.6：reta 不改，本项不再是一票否决项）。保留此行仅供审计追溯 | — | — |
+| **E-NR-02b（RV3，一票否决）** | **同期移交的跨进程互斥是否可靠**——G_old 停 poll → G_new 起 poll 的串行化；残余风险为两进程并发操作同一 virtqueue/rxq 造成**数据结构损坏**（非业务语义、无软件兜底） | 双进程 PoC：A poll 同队列 N 秒 → 停（共享内存标记 + ACK）→ B 接管 → 校验 `rx_packets` 连续、无 crash、无 mbuf 双重释放/校验错误；virtio 与物理网卡各测；扫 `RX_QUEUE_SIZE` 512/4096 两档 | 移交全程无任何一瞬间两进程并发 `rx_burst`；无 crash；**virtio 上丢包 guest 侧不可观测**（virtio PMD stats 只有 `ierrors`/`rx_nombuf`，**无 `imissed`**），故判据以**端到端业务指标**（客户端错误数/重传率）+ 宿主机侧 tap/vhost 统计为准 | S3 主路径不成立，须回炉（或退 [06] §4.2 的 S4 蓝绿多实例） |
+| E-NR-03（RV6 初验） | 双进程共存期的 TCP 定时器行为（**v1.4 再改**：两代**同 lcore_id**，采集 `rte_timer` 挂槽模式的基线**【2026-09-22 同步·M03-1：该基线不可测（P0-NEW），本项改为按 PT-NR-08 功能口径（单次偏差 ≤1 tick）直接验收，不再做等价性对比】**，供 C-NR-307 自驱 hardclock 精度判据使用） | E-NR-01 的双实例运行（**两实例须用相同 lcore_id**，复现生产形态）期间观测 RTO/keepalive 精度与 `rte_timer` 状态（ff_top/sysctl 采样）；**直接采集改造后（自驱）数据**【2026-09-22 同步·M03-1：改造前挂槽基线不可测（P0-NEW），不再采集】 | 无 timer 重复触发/停摆迹象；TCP 定时器精度正常（**单次偏差 ≤1 tick**，PT-NR-08 功能口径）；数据落盘 | 自驱 hardclock 精度不满足 ≤1 tick（或漏/重复触发）→ **升级为 blocker**（同 lcore_id 下无替代方案） |
+| E-NR-04 | 现状串行 reload 基线数据（[04](04-fstack-current-analysis.md) §5-3） | 现状代码跑一轮 HUP reload：实测空窗时长（服务不可用窗口）、reload 总时长、期间丢包/失败数 | 产出基线数值（用于 A-NR-14 的 reload 耗时上限与 PT-NR-03 对照） | — |
+| E-NR-05 | 性能基线采集（PT-NR-01 前置） | 按 primary_slim 06 方法：`ab -k -c 50 -n 20000 http://<DPDK_NIC_IP>/`，3 轮取区间 | 产出改造前稳态 QPS/延迟基线 | — |
+| **E-NR-06（RV10，一票否决，v1.6 新增）** | **同核处理新旧进程的切换瞬间性能**：两代进程**同 lcore_id ⇒ 必然同核**（v1.4：不再是「可经 `--lcores` 亲和」的可选项，而是 D-A 定案的必然后果），切换瞬间的流量/丢包/CPU 抢占，以及 drain 期算力分配造成的「drain 变慢 → 抢核更久」正反馈 | 双代际同核共存压测：稳态基线 → 触发接管 → 观测切换瞬间 pps/丢包/两侧 CPU 占用 → 持续至 drain 完成，记录 drain 时长 | 产出量化数据：切换瞬间丢包数、两侧有效算力占比、drain 时长。**v1.4 补充预期**：M1′ 下 G_old 不 poll 硬件，算力占用低于 v1.6 形态，预期改善 | 若 drain 时长或切换丢包不可接受 → 需重新评估（**v1.4 注意：同 lcore_id 下已无法改用独立核，此路已封**，可选方向只剩优化 G_old 的循环开销或缩短 drain） |
+| **E-NR-07（RV11，一票否决，v1.9 新增）** | **TX 独占可行性**：能否让 G_old 在 drain 期完全不调用 `rte_eth_tx_burst`，所有出包经 ring 由 G_new 代发；代发路径在高出包量（大量 RTO 重传）下是否成为瓶颈 | 双进程 PoC：G_old 置「无硬件模式」标志后，审计其所有出包路径（`ff_dpdk_if_send`/`send_single_packet`/`send_burst`/main_loop tx drain/`ff_dpdk_raw_packet_send`）均无 tx_burst 调用；构造 RTO 重传高峰观测代发时延与 `drain_ring_tx` 水位 | ① G_old 零 tx_burst（代码路径审计 + 运行时计数器断言）；② 代发路径在高出包量下无成为瓶颈的迹象（给出水位与 pps 数据） | M1′ 不成立，按 DR9 切 (b) tx queue 分离或 (c) 自旋锁形态 |
+| **E-NR-08（RV12，一票否决，v1.9 新增）** | **半开连接窗口**：移交前 G_old 已收 SYN、第 3 个 ACK 在接管后到达的连接能否完成握手 | 构造确定时序：向 G_old 发 SYN（不回 ACK）→ 触发接管 → 再发 ACK；分别验证语义 14 的 (a) 延迟 close listening 与 (b) syncache 导出两种修法 | 握手成功率 100%（无 RST、无连接失败）；(a)/(b) 至少一种可行并给出取舍 | 「新连接零丢失」目标不成立，需重新设计移交时序（如延后接管至 syncache 排空） |
+| 评审 | ~~DR1（编排者）~~ **已定案候选 b（v1.9.3）**；DR4（控制通道载体）、DR2 初评（flow_map 形态）评审。~~DR5（四链解耦与代际 lcore 池）~~ **已取消**；**DR8（lcore_id 策略）已于 2026-09-01 定案「两代同 lcore_id」**；**DR11 已定案 M-A 为主，M-B 备选** | 评审会，结论更新回 [06](06-solution-design.md) 或本文附录 | 定案记录在案 | — |
+
+> **E-NR-02b / 06 / 07 / 08 的不可分割性**：RV3（rx 接管互斥）、RV10（同核性能）、RV11（TX 独占）、RV12（半开连接窗口）四项**都依赖「双代际共存」这一前提**，建议合并为同一个 PoC 环境的四次实验，避免重复搭建环境（v1.9：四项中 RV3/RV11/RV12 为一票否决项）。
+
+**slim primary 拉起方式（U-NR-1，DR1 已定案候选 b，M1 编码按此执行）**：
+- 候选 a（独立常驻进程）：部署形态新增一个 systemd unit 拉起的 slim primary 守护进程；nginx master 启动时探测其存活（EAL attach 失败即报错退出）。运维形态变化明确，primary 生命周期与 nginx 完全解耦。
+- 候选 b（master 代管 + double-fork 脱离）：nginx master 首次启动时检测 primary 缺席则 spawn 专职 slim primary 子进程并 double-fork/setsid 脱离 master 生命周期，reload/USR2 均不对其发信号。nginx 语义内聚，但需处理老 master 退出不波及 primary 的细节。
+- **DR1 已于 v1.9.3 定案候选 b（运维零新增）**；两候选在 M1 的差异仅在 C-NR-100/101 两点。
+
+| 项 | 内容 |
+|---|---|
+| **DoD** | E-NR-01（RV7）/**E-NR-02b（RV3）**/**E-NR-06（RV10）**/**E-NR-07（RV11）**/**E-NR-08（RV12）** 五项一票否决项出明确结论；**DR1 已定案候选 b**；DR4/DR8/DR2 初评有书面定案（DR5 已取消）；基线数据落盘 `work/m0-poc-report.md` |
+| **测试门禁** | 本身即测试产出；无代码门禁 |
+| **风险与回退** | RV7/RV3/RV10/RV11/RV12 任一失败 → 按「失败换档」列处理，M3 范围调整或方案回炉（RV3 或 RV11 失败则退 [06] §4.2 的 S4 蓝绿多实例，或按 DR9 换 TX 形态）；不产生主线代码风险 |
+| **提交** | 仅文档（m0-poc-report.md）；英文 commit 1~3 句 |
+
+### 2.2 M1：常驻 primary 化（worker 全 secondary + graceful_reload 开关）
+
+| 项 | 内容 |
+|---|---|
+| **目标** | 消解障碍 4：nginx worker 0 不再硬编码 DPDK primary；slim primary 常驻（承接 primary_slim #1078），nginx 全部 worker 以 secondary attach。reload 时 primary 不退出 |
+| **范围** | [06](06-solution-design.md) 接口面 5.4-3（config.ini）+ 5.4-4 第 2 条（secondary 化）；不改 reload 顺序本身（仍两段串行，M2 才动） |
+
+**编码工作清单**：
+
+| 编号 | 代码锚点（`文件: 符号名`；引自 [04](04-fstack-current-analysis.md)，以实际代码为准） | 类型 | 要点 |
+|---|---|---|---|
+| C-NR-100 | 新增：slim primary 拉起（候选 a：`tools/` 或 `example/` 下小工具；候选 b：`ngx_process_cycle.c` master 启动分支） | 新增 | 按 DR1 定案二选一；primary 进程以 `--proc-type=primary --proc-id=0` + `primary_slim=1` 常驻 |
+| C-NR-101 | `lib/ff_config.h: graceful_reload〔锚点未核实〕`（dpdk 段字段区）+ `lib/ff_config.c: ff_default_config`（解析）+ `ff_default_config()`（ff_config.c: ff_default_config()） | 新增 | `[dpdk] graceful_reload`（int，默认 0）；校验链：`graceful_reload=1` 要求 `primary_slim=1`、`nb_procs>=2`、与 `thread_mode=1` 互斥（沿用 primary_slim V4 风格，新增 V-NR 系列） |
+| C-NR-102 | `app/nginx-1.28.0/src/event/modules/ngx_ff_module.c: ff_mod_init()` | 修改 | `ff_mod_init` 拼参：`graceful_reload=1` 时 proc_type 一律 secondary（去掉 worker==0 → primary 硬编码分支） |
+| C-NR-103 | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c: ngx_ff_process` + `ngx_process_cycle.h: ngx_ff_process` | 修改 | `ngx_ff_process` 赋值：全 worker → `NGX_FF_PROCESS_SECONDARY`；枚举按需扩展 slim primary 角色（候选 b） |
+| C-NR-104 | `ngx_process_cycle.c: ngx_master_process_cycle()`（sem 同步块） | 修改 | `graceful_reload=1` 时跳过 master 的 15s sem 等待（primary 常驻已就绪），改为 attach 确认（worker 0 ff_mod_init 成功即上报，超时语义保留）；`=0` 时逐字保留现状。**【v1.7 实现补注（M1 CR 裁定）】`=1` 的 attach 确认超时取 60s 而非 15s**：15s 是「primary worker 首次初始化」的历史经验值，而 attach 场景的实测参考是 secondary 初始化 ~25s（primary_slim 06 §6-4 基线报告，经 milestones-testing.md 转引；M0 自测 worker 就绪 0.8s 是无 primary_slim 场景，不可比）；60s 保留「超时失败 exit(2)」语义不变 |
+| C-NR-105 | `ngx_process_cycle.c: ngx_ff_reload_hup()〔锚点未核实〕`（primary 退前 500ms） | 修改 | `graceful_reload=1` 时无 primary worker，该分支自然不触发；条件化保留供 `=0` |
+| C-NR-106 | `config.ini` 注释块 + `doc/F-Stack_Nginx_APP_Guide.md` | 文档 | `graceful_reload` 注释掉的示例项 + 与 primary_slim 的配合说明；本地测试值不入库 |
+
+| 项 | 内容 |
+|---|---|
+| **前置** | M0（DR1 定案）；primary_slim 已合入主线 |
+| **DoD** | ① clean build 全绿；② 单测 UT-NR-01~03/07~09 全绿 + 既有 TC 零回归；③ 实机 RT-00（启动基线）：`graceful_reload=1` 下 nginx 正常启动收发（此阶段 reload 仍串行，行为不劣化）；④ `graceful_reload=0` 时与现状逐字一致 |
+| **测试门禁** | UT（[08](08-testing.md) §1）+ RT-00 + RG-NR-01 |
+| **风险与回退** | 风险：常驻 primary 与 nginx 生命周期的拉起/探测细节（候选 b 的 double-fork）；回退：`graceful_reload=0` 或整体 revert C-NR-100~106（一个自洽提交串） |
+| **提交建议** | 2~3 个 commit：lib 配置项 / nginx secondary 化 / primary 拉起 |
+
+### 2.3 M2：新旧 worker 并存与 FF_RELOAD 协议（v1.9.1：queue_id 代际无关映射 + **两代同 lcore_id** + 同 lcore_id 资源隔离 + 代际隔离）
+
+| 项 | 内容 |
+|---|---|
+| **目标** | 消解障碍 1（前半）/2/5/8：reload 改回原生「先起新再退旧」顺序；G_new 与 G_old 并存（同队列：queue_id 代际无关映射，**两代取相同 lcore_id**，D-A v1.9.1；~~C-NR-311 代际 lcore 池~~ 已取消）；**同 lcore_id 的两项资源隔离**：自驱 hardclock（C-NR-307，绕开共享 `priv_timer` 槽）+ 代际 mempool（C-NR-314 应用侧 / C-NR-315 共享 RX 池）；**心跳与 rx 交还**（C-NR-316）；msg_ring 与 KNI owner 代际隔离（C-NR-313）；READY 显式协议取代 500ms/15s 时序 |
+| **范围** | [06](06-solution-design.md) 5.4-2（FF_RELOAD 消息族）、5.4-3（proc_id 代际无关配置）、5.4-4 第 1 条（两段式条件化）；时序 T0-T2 |
+
+**编码工作清单**：
+
+| 编号 | 代码锚点（`文件: 符号名`） | 类型 | 要点 |
+|---|---|---|---|
+| C-NR-201 | `lib/ff_config.h`（dpdk 段，字段区 `:274/:293/:297/:320` 附近）+ `ff_config.c` 解析/校验（〔锚点失效：d752ed69f 误映射，已移除〕 区域） | 修改 | ~~`reload_lcore_policy=pingpong`~~ → v1.6 改为：**queue_id 代际无关固定映射**配置（G_new 直接用 G_old 的 queue 映射，`rx_queue_list/tx_queue_id/reta/rss_check` 四件套不变）；**v1.9 拆分**：本点只保留 queue 映射语义；**v1.9.1 终版：D-A 定案「两代同 lcore_id」后，lcore_id 的代际分配问题不存在**（`lcore_mask`/`nb_procs`/队列数保持 N，proc_lcore 映射不变，~~C-NR-311 代际 lcore 池~~ 已取消，P0-3 消解）。V-NR 校验链：worker 数与 queue 数一致、primary lcore 排除、`graceful_reload=0` 时全部新校验不生效。**【M0 v1.6 新增约束 ENV-1】移交期与整个 reload 窗口严禁重协商 RSS/MQ/`dev_configure`**——M0 实测坐实：单 poll 队列不协商 RSS 时，vhost 多队列分流存在「逐轮随机整流静默丢弃」（四态全复现，`imissed=0` guest 侧不可观测）；F-Stack 靠 `ff_dpdk_if.c: init_msg_ring()` 显式 RSS+RETA 编程规避，重协商 = 重掷骰子（证据 work/impl/m0-poc-runner-veto2.md §2） |
+| C-NR-202 | `lib/ff_msg.h: FF_MSG_TYPE〔锚点未核实〕` 旁 | 新增 | FF_RELOAD 消息族（v1.6 修订）：`FF_RELOAD_READY` / `FF_RELOAD_HANDOVER_REQ`（移交请求，[06] 第 2 节语义 7）/ `FF_RELOAD_HANDOVER_ACK` / `FF_RELOAD_DRAIN_PROGRESS` / `FF_RELOAD_DRAIN_DONE`（G_old 排空确认→G_new 关 flow_map 回稳态）/ `FF_RELOAD_REJECT`（防重入）；~~SWITCH_REQ/SWITCH_ACK~~ → 改为 HANDOVER 语义（v1.6 不切流，同期移交） |
+| C-NR-203 | `lib/ff_dpdk_if.c: handle_ipfw_msg()`（handle_msg，回复入队 ff_dpdk_if.c: handle_knictl_msg()） | 修改 | FF_RELOAD 处理器注册与分派；容量/实时性按 DR4 结论 |
+| C-NR-204 | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c: ngx_master_process_cycle()` | 修改 | **两段式 reload 块整体条件化**：`graceful_reload=1` 走原生顺序（fork G_new JUST_RESPAWN → 等 READY → 同期移交[M3] → G_old QUIT）；T1~T5 期间再次收到 HUP → **拒绝并记日志（reload 防重入，[06] 第 2 节语义 6）**；`=0` 逐字保留旧两段式 |
+| C-NR-205 | 新增 `app/nginx-1.28.0/src/event/modules/ngx_ff_reload.c` + `auto/sources` 挂载 | 新增 | **reload 编排状态机**：T0-T5 状态枚举 + 纯转移函数 + 每阶段打点（状态日志 + ff_top 可见计数）；master 侧驱动 |
+| C-NR-206 | `lib/ff_config.c` proc_lcore 分配（`ff_dpdk_if.c: ff_is_slim_primary()` 消费侧，ff_dpdk_if.c: ff_is_slim_primary() proc_id→proc_lcore、ff_dpdk_if.c: init_lcore_conf() lcore→queueid）+ `ngx_process_cycle.c: ngx_ff_reload_wait_ready()` | 修改 | ~~代际号→段号取模~~ → v1.6 改为 proc_id 代际无关固定映射（消除审核 B-1 乒乓代际重合）。**v1.9 重要修正**：proc_id 同值会连带撞上**按 proc_id 索引的 msg_ring**（`ff_dpdk_if.c: handle_ngctl_msg()〔锚点未核实〕`/ff_dpdk_if.c: is_tcp_syn()〔锚点未核实〕，`RING_F_SP_ENQ\|RING_F_SC_DEQ`）→ 控制消息错收（P0-6）。故本点**必须与 C-NR-313 成套实现**：proc_id 同值只用于 queue 映射，msg_ring 与 KNI owner 一律按 (proc_id, 代际) 或活跃代际判定。**不得单独合入本点** |
+| C-NR-207 | `ngx_process_cycle.c: ngx_ff_slim_primary_ensure()`（respawn 条件） | 修改 | `graceful_reload=1` 时恢复原生 respawn 语义（reload 期间 worker 挂了允许重生或按状态机决策，DR6 定） |
+| C-NR-208 | worker 侧 READY 上报 | 新增 | worker 完成 `ff_freebsd_init` + `ngx_open_listening_sockets` 后经 FF_RELOAD_READY 上报 master |
+| C-NR-307 | `lib/ff_dpdk_if.c` init_clock(:1508)/init_clock_worker(:1553)/main_loop(:3489-3499，graceful 走 TSC 自驱、=0 走 `rte_timer_manage`) | 修改 | **自驱 hardclock**（[06] 第 2 节语义 11）。**【v1.9.1 终版：M2 必需项，无退路】**——D-A 定案「两代同 lcore_id」后 `priv_timer[L]` **必然同槽**（`rte_timer.c: priv_timer〔锚点未核实〕` 的 `priv_timer[RTE_MAX_LCORE]` 位于共享 memzone、rte_timer.c: rte_timer_init()〔锚点未核实〕 `rte_timer_meta_init` 的 memset 会清零 G_old 的 `pending_head`/skiplist；叠加 `rte_timer_manage` 跨进程解引用对方私有地址，**不可修补**），本项为唯一解法。~~v1.9 曾以「两代 lcore_id 不同 ⇒ 天然不同槽」为由降为加固项~~ 已随 D-A 反转推翻。**做法**：init_clock 删除 `rte_timer_subsystem_init/rte_timer_meta_init/rte_timer_init/reset` 四连，改为计算 `hardclock_interval_tsc = hz_tsc / freebsd.hz`；main_loop 的 `if (freebsd_clock.expire < cur_tsc) rte_timer_manage()` 改为 `if (next_hardclock_tsc < cur_tsc) { ff_hardclock(); ff_update_current_ts(); next_hardclock_tsc += interval; }`。**合入门槛**：PT-NR-08 精度回归**【2026-09-22 同步·M03-1：判据改为功能口径（单次偏差 ≤1 tick），原「偏差 ≤5%」为被取代的基线口径】**（无漏/重复触发、`graceful_reload=0` 行为等价）**不可省略**。**须独立提交**——改动全局 timer 心跳，是本项目回归风险最高的单点之一 |
+| C-NR-308 | （**v1.9.1 拆分为 C-NR-314 + C-NR-315**，本编号保留为索引） | 修改 | **代际 mempool（应用侧 + 共享 RX 池）**，[06] 语义 12 / §6.6。**【v1.9.1 变更：恢复为 M2 必需项，并细化拆分】**：① **C-NR-314** = 应用侧分代际 pool（独立 cache ⇒ 应用侧竞态归零）；② **C-NR-315** = 共享 RX 池的跨代 free（DR11：**M-A 为主**（`cache_size=0`）/ M-B 备选（代 free，v1.9.3 人工定案）。**v1.9.1 新坐实**：`local_cache` 为 per-mempool 成员（`rte_mempool.h: local_cache`）⇒ v1.7 所称「即使不同 pool 仍会同号 cache 槽竞态」不成立，**分代际即消除应用侧竞态**，全局 `cache_size=0` 不再是必选项。**【2026-09-18 就地加注（本行为「本编号保留为索引」的历史行，v1.9.1 结论保留原文不改写；体例同 [09](09-review-report.md) §21.3 的 09:641→644）】** ① 「`local_cache` 是 per-mempool 成员、两池各一份」这个**事实成立**，「两个不同 mempool 的同号 `local_cache[L]` 是两块不同内存」也**成立** —— 但由此**推不出「消除冲突」**：它**只排除「两池之间」的冲突，不排除「同一池内两进程」的冲突**。跨代 free（ARP/NDP clone `ff_dpdk_if.c: ff_dpdk_process_packets()`、drain_tx 代发 `ff_drain_ring.c: ff_drain_ring_tx_drain()`）下，G_new 释放 G_old 分配的 mbuf 会落回 **G_old 池的 `local_cache[L]`**（正是 G_old 自己所用的槽）⇒ **「分代际即消除应用侧竞态」不成立**。② 因此 **v1.7 那句「即使不同 pool 仍会同号 cache 槽竞态」恰恰是对的，v1.9.1 对它的「更正」才是错误**；代际池 `cache_size=0` **一直是必选项**（原「不再是必选项」错误）。③ **现状：已由 R-01 修复消除** —— 代际应用池创建点已套 `ff_shared_pool_cache_size(graceful_reload, MEMPOOL_CACHE_SIZE)`（`lib/ff_dpdk_if.c: init_app_mem_pool()`），`graceful_reload=1` ⇒ `cache_size=0` ⇒ `rte_mempool_default_cache()` 恒 NULL ⇒ 跨代 free 不再触碰 `local_cache`；**机理层 + 编译/单测层已消除，运行时定向断言（PT-NR-09 / RV1）未执行、维持登记**。④ **回退 R-01 须连带回退 R-15**（R-15 排空路径 free 对端代际池 mbuf，安全性同样依赖本 `cache_size=0`），见 [06](06-solution-design.md) §6.6.2 表下 **BR-02** |
+| ~~**C-NR-311**~~ | ~~代际 lcore 池与四链解耦（原属 M2）~~ | **已取消** | **【2026-09-01 人工决策】D-A 定案「两代使用相同 lcore_id」后本点不再需要**：不需要 2N 个 lcore_id，`lcore_mask`/`nb_procs`/队列数保持 N 不变，无新增配置面。取而代之的是**同 lcore_id 下的两处资源隔离**（C-NR-307 自驱 hardclock、C-NR-308 代际 mempool），二者**恢复为 M2 必需项**。保留本行仅供审计追溯 |
+| **C-NR-314**（v1.4 新增；锚点已由独立审核员坐实，见 [09](09-review-report.md) §22；**【2026-09-17 订正·R-18】该「独立坐实」对 §22.1 中 C-NR-316 三行并不成立（已全部落错并订正），引用 §22 时须按 [09](09-review-report.md) §22.1 的 R-18 加注逐条重核**） | `lib/ff_dpdk_if.c: init_mem_pool()`（`init_mem_pool`；代际池创建 ff_dpdk_if.c: init_mem_pool()，池名生成 `ff_memory.h: ff_cur_lcore_conf〔锚点未核实〕 ff_mbuf_gen_pool_name`、用法 `ff_dpdk_if.c: init_app_mem_pool()`）+ 应用侧 alloc/clone 点 **ff_dpdk_if.c: send_burst()/ff_dpdk_if.c: ff_dpdk_if_send()/ff_dpdk_if.c: ff_fanout_neighbour()**（取池行；原写 ff_dpdk_if.c: pkt_is_ndp()/ff_dpdk_if.c: ff_dpdk_process_packets()〔锚点未核实〕/ff_dpdk_if.c: ff_dpdk_init()〔锚点未核实〕）+ `lib/ff_memory.{h,c}`（`ff_ref_pool`：`ff_memory.c: ff_init_ref_pool` 声明、ff_memory.c: ff_init_ref_pool() `ff_init_ref_pool()`、ff_memory.c: ff_init_ref_pool() 创建、ff_memory.c: ff_init_ref_pool() lookup、alloc ff_memory.c: ff_bsd_to_rte()；对外声明 `ff_memory.h: lcore_conf`——**原写 ff_memory.h: lcore_conf 实为 `extern struct lcore_conf lcore_conf[]`，并非 accessor**）+ `lib/ff_config.{h,c}`（代际池配置） | 新增+修改 | **【代际 mempool 细化实现·应用侧】**（[06] 语义 12 / §6.6.3，D-A 反转后的必需项）。① `graceful_reload=1` 时 **init 期预建** `mbuf_pool_%d_gen0/gen1`（含对应的 `ff_ref_pool`），G_new secondary `rte_mempool_lookup`；② 代际号按 reload 轮次**乒乓复用**（资源上界恒定）；③ 应用侧 alloc/clone 点改用本代际 pool；跨进程 free 靠 `m->pool` 指针自动回正确池，**无需额外记账**。依据：`local_cache` 是 per-mempool 成员（`dpdk/lib/mempool/rte_mempool.h: local_cache`，访问见 rte_mempool.h: rte_mempool_default_cache()）⇒ ~~分代际后两代 cache 互不重叠，应用侧竞态归零~~ **【2026-09-18 订正·R-01 机理】**：`local_cache` 是 per-mempool 成员、两池各一份**确不重叠**，但这**只排除「两池之间」的冲突，不排除「同一池内两进程」的冲突** —— **跨代 free** 下 G_new 释放 G_old 分配的 mbuf 会落回 **G_old 池的 `local_cache[L]`**（正是 G_old 自己所用的槽）⇒ **分代际本身不足以使应用侧竞态归零**。**现状：已由 R-01 修复消除** —— 代际池创建点已套 `ff_shared_pool_cache_size(graceful_reload, MEMPOOL_CACHE_SIZE)`（`lib/ff_dpdk_if.c: init_app_mem_pool()`），`graceful_reload=1` ⇒ `cache_size=0` ⇒ `rte_mempool_default_cache()` 恒 NULL ⇒ 跨代 free 不再触碰 `local_cache` ⇒ **应用侧竞态全路径归零成立**（机理层 + 编译/单测层；运行时定向断言 PT-NR-09/RV1 未执行、维持登记）。**回退 R-01 须连带回退 R-15（[06](06-solution-design.md) §6.6.2 表下 BR-02）。** **坐实附注**：(a) ff_dpdk_if.c: pkt_is_ndp()〔锚点未核实〕 在 `FF_USE_PAGE_ARRAY` 打开时因 ff_dpdk_if.c: pkt_is_ndp()〔锚点未核实〕 提前 return 而不执行，该构建下应用侧 alloc 只剩 ff_dpdk_if.c: ff_dpdk_process_packets()〔锚点未核实〕；**(b) ff_dpdk_if.c: ff_dpdk_init()（ARP/NDP dispatch clone）与 ff_dpdk_if.c: ff_dpdk_init()（`#ifdef FF_KNI` 内的 KNI clone）两处 `pktmbuf_deep_clone` 均纳入应用侧代际池**（M2 Batch A 实现按 lcore 清查合并版 §6.3 的权威口径执行，CR 已核对：alloc 出自本代池、free 经 `m->pool` 回本代池，功能安全且性能更优；KNI 无独立池，mbuf 全出于此点）；(c) `ff_ref_pool` 是 `ff_memory.c` 内的 `static`，代际化需先新增 accessor |
+| **C-NR-315**（v1.4 新增；锚点 2026-09-17 按 HEAD `28e751259` 复核订正） | M-A → **`lib/ff_dpdk_if.c: init_mem_pool()`**（`ff_shared_pool_cache_size(graceful, MEMPOOL_CACHE_SIZE)` 传入 `rte_pktmbuf_pool_create` 的 cache_size 实参；原写 ff_dpdk_if.c: app_mbuf_gen）；M-B → 新增 `free_ring` + **主循环 TX drain 点 ff_dpdk_if.c: main_loop()〔锚点未核实〕**（`ff_drain_ring_tx_drain`，本轮回收即可复用）+ G_old 侧 free 改 enqueue；常量 `FREE_RING_SIZE` 加在 **`lib/ff_memory.h: FREE_RING_SIZE`**（`FF_MBUF_GEN_MAX :45` 之后；原写 ff_memory.h: FREE_RING_SIZE，实测**不在** `DISPATCH_RING_SIZE :36` 与 `MSG_RING_SIZE :38` 之间）。RX 池绑定事实：**`rte_eth_rx_queue_setup` 在 ff_memory.h: DISPATCH_RING_SIZE**，pool 实参来自 〔锚点失效：d752ed69f 误映射，已移除〕 | 新增+修改 | **【共享 RX 池的跨代 free】**（[06] DR11，**v1.9.3 定案 M-A 为主**）。**M-A（主）**：RX 池 `cache_size=0`，简单但有**稳态持续损耗**（由 PT-NR-09 量化并下调 [06] §4.1 D5）；**M-B（备选）**：RX 池**保留 cache**，G_old 用完的 RX mbuf 批量 enqueue 到 `free_ring` 由 G_new 统一 free ⇒ 稳态零损耗；M-B 仅在 PT-NR-09 显示 M-A 稳态损耗不可接受时启用。**实现建议**：与 C-NR-310 的 `drain_ring_tx`（同为 G_old→G_new 方向）合并为一条通道，用 mbuf 私有标记区分「待发送」与「待释放」。**M-A 机理已坐实**：`cache_size=0` 时 `rte_mempool_default_cache` 返回 NULL（`rte_mempool.h: rte_mempool_default_cache()`），get/put 直接走 `rte_mempool_ops_{dequeue,enqueue}_bulk`（rte_mempool.h: rte_mempool_do_generic_get() / rte_mempool.h: rte_mempool_do_generic_put()），全程无 per-lcore 私有缓存 ⇒ 多进程安全。取舍由 PT-NR-09 数据定案 |
+| **C-NR-316**（v1.4 新增；**【2026-09-17 复核订正·R-18】原「锚点已坐实并补齐」自评有误，原锚点作废，以下为重新坐实结果**） | **实现主体在 `lib/ff_reload.c`**：ff_reload.c: ff_reload_heartbeat_eval()（`ff_reload_heartbeat_eval` 失活判定）、ff_reload.c: ff_reload_heartbeat_tick()（`ff_reload_heartbeat_tick` 递增）、ff_reload.c: ff_reload_heartbeat_counter()（`ff_reload_heartbeat_counter`）、ff_reload.c: ff_reload_heartbeat_sample()（`ff_reload_heartbeat_sample` 采样）；`lib/ff_dpdk_if.c` 侧调用点为 **〔锚点失效：d752ed69f 误映射，已移除〕**（tick）/ **〔锚点失效：d752ed69f 误映射，已移除〕**（sample）。~~原写「心跳递增点 `lib/ff_dpdk_if.c: ff_dpdk_process_packets()` + G_old 采样点 ff_dpdk_if.c: handle_knictl_msg()（idle sleep ff_dpdk_if.c: ff_get_traffic() 之前）」~~ 经 2026-09-17 按 HEAD 复核与代码不符（ff_dpdk_if.c: ff_dpdk_process_packets() 为 `msg->result = 0;`、ff_dpdk_if.c: handle_knictl_msg() 为 `break;`），**已作废、不得再引用**；该组错坐标同时污染了 [09](09-review-report.md) §22.1（同源同批订正）。+ 配置项（2026-09-17 按 HEAD 复核订正）：**`ff_config.h: pkt_tx_delay`**（dpdk 段字段区，**位于 `pkt_tx_delay` 之前**，非原写的「插在 `pkt_tx_delay` 后」）、**`ff_config.c: MATCH`**（dpdk 段解析，含 `<10ms` 兜底）、**`ff_config.c: ff_default_config()`**（`ff_default_config()` 设默认值 1000） | 新增+修改 | **【G_new 崩溃检测与 rx 交还】**（[06] DR6 附则 / U-NR-8 定案）。① 共享内存**全局切换标记**由 G_new 每 loop 递增；② G_old 每 loop 采样比对，连续未递增超过阈值即判定失活；③ **标记随 G_old 排空退出、flow_map 消亡而停止递增**（避免 G_old 退出后无人递增导致误报）；④ 超时默认 **1s 可配置**（`reload_heartbeat_timeout_ms`；是否实测校准见 [08](08-testing.md) §5-14，当前 UNVERIFIED）；⑤ 回退动作 = **G_old worker 自治夺回 rx**（自行写回 `rx_owner_gen`，非 primary 回写）：置 `rx_owner_gen` 回退、G_old 退出无硬件模式恢复 rx/tx、关闭 flow_map。**实现约束（落到 C-NR-309）**：无硬件模式标志必须**可逆**，且恢复 rx 前须确认 G_new 确已不再 poll（否则回到并发 poll）。**坐实附注**：代码里**没有现成的运行时可切换标志**可复用——现有的 `primary_slim`（`ff_config.h: primary_slim`）是静态只读配置，main_loop 内直接判 `dpdk.primary_slim` 的位置为 ff_config.h: primary_slim（KNI inject）与 ff_config.h: pcap〔锚点未核实〕（idle sleep），可作为「运行时标志门禁」的写法参照；另有 ff_config.h: pcap〔锚点未核实〕（`nb_rx_queue==0` 豁免）、ff_config.h: pcap〔锚点未核实〕（`ff_dpdk_if_up`）可参考。`rx_owner`/`no_hw`/`gen_id` 全库 0 命中，须新建。⑥**【2026-09-17 补登记·R-03】粒度限制（已知边界，此前未登记）**：心跳载体是**全进程组单字**（`ff_reload.h: ff_reload_state` 的 `uint64_t heartbeat`，N 个 G_new worker 由 `ff_reload_heartbeat_tick()` 递增同一字、任一存活即前进）⇒ **本机制仅覆盖「整代失活」，per-queue / 单 worker 失活不可检出**；且 G_old 任一 worker 采样判定失活后的 rx 交还是**全局翻转**（写 `rx_owner_gen`），**仍健康的 G_new worker 会一并无硬件化**。该全局粒度属有意设计（单字、process-wide），非实现 bug。**改为 per-queue 心跳数组须改共享内存布局 + 采样/交还 API + 全部既有 RV 判据，列为下一轮议题；[08](08-testing.md) 需补一条「部分 worker 死亡」实机用例（当前 RT 集合中无该场景）。** |
+| **C-NR-313** | `lib/ff_dpdk_if.c: init_msg_ring()〔锚点未核实〕`（`init_msg_ring`，含 `:956-1000+` 的 ring 创建循环与 `RING_F_SP_ENQ\|RING_F_SC_DEQ`）/ff_dpdk_if.c: init_msg_ring()（`handle_msg` 回复 enqueue）/ff_dpdk_if.c: handle_msg()（`process_msg_ring`）/ff_dpdk_if.c: main_loop()（main_loop 按 proc_id 调用）；`lib/ff_dpdk_kni.c: ff_kni_is_runtime_owner()〔锚点未核实〕`（`ff_kni_is_runtime_owner`，ff_dpdk_kni.c: ff_kni_is_runtime_owner() 比较 `proc_id == kni.owner_proc_id`）；`lib/ff_config.h: owner_proc_id`（`owner_proc_id` 字段）+ `lib/ff_config.c: ini_parse_handler()`（解析）+ ff_config.c: CHECK_VALID〔锚点未核实〕（owner lcore 必须在 lcore_list 的校验） | 修改 | **【v1.9 新增·P0-6】msg_ring 与 KNI runtime owner 的代际隔离**。① msg_ring 索引由 `proc_id` 改为 `(proc_id, 代际号)`（或代际各建一套 ring），保证 READY/DRAIN_DONE/REJECT/HANDOVER_ACK 只被本代际收到；② KNI runtime owner 改为跟随「当前活跃代际」，由 master/primary 在 T5（接管完成）更新，避免 owner 落到已退代际；③ `ff_config.c: CHECK_VALID` 的 owner-lcore 校验须同步适配（两代同 lcore_id 下 owner 靠代际标记区分，不靠 lcore 区分）。**必须与 C-NR-206 成套实现** |
+
+| 项 | 内容 |
+|---|---|
+| **前置** | M1 合入；**DR4 定案确认**（M0 评审：互斥=共享内存标记已运行时验证，消息=msg ring 维持；DR5 已取消；DR8 已定案；DR11 已定案 M-A 为主）。**v1.6 新增前置：lcore_id 共享态清查已闭环**（work/impl/m0-lcore-shared-state-audit.md：Class A 仅 timer 与 mempool 两项需处置，分别由 C-NR-307 五处与 C-NR-314/315+message_pool 覆盖；N-1/N-2/N-3 纳入 M2 编码） |
+| **DoD** | ① clean build + 单测（UT-NR-06/10/12/**17/18/20** + 零回归；**v1.4：C-NR-307/308 恢复必需，UT-NR-17/18 一并恢复为必过**；**2026-09-17 门禁口径订正（audit-F F-04）**：UT-NR-06 已实现；UT-NR-04/05/15/16 **未实现**（计划编号，未落地资产），其语义由配置校验负例与 FSM 实机（rv9/gr0）覆盖，覆盖缺口已登记于 [08](08-testing.md) §1.2；**另 UT-NR-09/13 属 M3，未实现；全量清单见 [08](08-testing.md) §2.1**）；② 实机 RT-01（空载 reload：双代际并存、各自 listen、G_old 退出后 G_new 独自服务——此阶段尚未做同期接管，判据放宽为：reload 完成、服务最终恢复、无 crash）；③ RV1 初验（双代际共存 ≥30min 无异常，含 mbuf 水位平稳无泄漏趋势）；④ ~~C-NR-311 四链解耦~~ **已取消（D-A = 同 lcore_id）**——改为断言「两代 lcore_id 相同、`nb_procs`/队列数保持 N 未被撑到 2N」（承载用例 UT-NR-20，**v1.4 改为反向断言**）；⑤ **C-NR-313 代际隔离：双代际并存期间控制消息不错收（IT-NR-A11、UT-NR-12），KNI owner 交替后仍正确（RV13）**；⑥ **C-NR-307 自驱 hardclock：PT-NR-08 精度回归通过**【2026-09-22 同步·M03-1：**单次偏差 ≤1 tick**（PT-NR-08 功能口径，原「偏差 ≤5%」的基线口径已被取代，因挂槽基线不可测）**、无漏/重复触发、`graceful_reload=0` 行为等价——合入门槛，不可省略**；⑦ **C-NR-314/315 代际 mempool：跨代 alloc/free 无泄漏、无 pool 错配、无双重释放；两个代际池乒乓复用，池数量不随 reload 轮次增长（PT-NR-09 + RV1）**；⑧ **C-NR-316 心跳：注入 G_new 失活（杀进程）→ G_old 在超时内检出并自治夺回 rx，服务恢复（新增 IT-NR-A12 / RT 用例）**。v1.4 复审修正：UT-NR-19 属 C-NR-310（M3 才实现），**不属 M2** |
+| **测试门禁** | UT-NR-17/18/**20** + IT-NR-A11/A12（**计划编号，当前未落地资产**，见 [08](08-testing.md) §2.2）+ RT-01 + RV1/RV6/RV13 观测记录 + **PT-NR-08（门槛）/PT-NR-09**。**不属 M2**：UT-NR-19、IT-NR-A09/A10（属 M3/M4） |
+| **风险与回退** | 风险：① 多 secondary 并存的 mempool/EAL/msg_ring 并发（RV1 主体风险）；② **C-NR-311 四链解耦是新引入的配置语义变更**——`lcore_mask` 不再唯一决定 lcore 分配，配置错误可能让两代落到同一 lcore_id（违反 DPDK 硬禁令）或撑大 nb_procs，须靠校验链拦截并加启动期自检；③ **C-NR-313 若不与 C-NR-206 成套合入，控制消息会被错收**（P0-6，属必现缺陷）；④ **C-NR-307 改动全局 timer 心跳，且 v1.6 扩为 5 处改动点 + N-1/N-2/N-3 配套**（v1.3 曾降为加固项已被 v1.4 推翻；M0 实测同 lcore 必崩，此项是 M2 可运行的前提），须按最高回归风险对待（独立提交 + PT-NR-08 门槛）；⑤ **C-NR-315 `cache_size=0` 稳态损耗**（v1.4 恢复必需；v1.6 扩展到 message_pool）。**M0 新增风险登记**：ENV-1（vhost 分流骰子，约束见 C-NR-201）与 SIGTERM 大页泄漏（每进程组 ~23 页/次，M6 循环 reload 门禁须加大页余量断言，三次独立复现）。回退：`graceful_reload=0`（FF_RELOAD 不注册、reload 走旧路径）；C-NR-201~208、C-NR-311、C-NR-313、C-NR-307/308 各自独立提交串可分别 revert |
+| **提交建议** | 7~8 个 commit：**自驱 hardclock（C-NR-307，最先独立合入 + PT-NR-08 回归）** / **代际 mempool 应用侧（C-NR-314）** / **共享 RX 池跨代 free（C-NR-315，DR11 已定案 M-A）** / **心跳与 rx 交还（C-NR-316）** / 配置与校验 / **msg_ring 与 KNI 代际隔离（C-NR-313，与 C-NR-206 同批）** / FF_RELOAD 消息族 / 状态机与 reload 顺序 / READY 协议 |
+
+### 2.4 M3：同期接管 rx+tx+listen、TX 独占与 flow_map 软件分发表（v1.9：reta 不改，主路径）
+
+| 项 | 内容 |
+|---|---|
+| **目标** | 消解障碍 3/6/7：G_new READY 后**同期接管 rx poll + tx + listen**（跨进程互斥标记保证不并发 rx poll；tx 由 G_new 独占）；**G_old 自此完全脱离硬件**（C-NR-309/310）；G_new 注册 flow_map 软件分发表（只记新流，miss 经 `drain_ring_rx` 转 G_old）；ARP/NDP clone 给 G_old；reta 不改（rss_check 四件套不变）；RX_QUEUE_SIZE 4096 增大接管窗口缓冲 |
+| **范围** | [06](06-solution-design.md) 5.4-1（flow_map 三函数+互斥原语+drain_ring+ARP clone）、5.2 时序 T3 |
+
+**编码工作清单**：
+
+| 编号 | 代码锚点（`文件: 符号名`） | 类型 | 要点 |
+|---|---|---|---|
+| C-NR-301 | `lib/ff_api.h` + 新增 `lib/ff_flow_map.c` | 新增 | **flow_map 三函数**：`ff_flow_map_lookup(four_tuple)` / `ff_flow_map_insert(four_tuple)` / `ff_flow_map_close()`（排空确认后关闭回稳态，[06] 第 2 节语义 6）——软件分发表替代 ~~ff_conn_owner_query~~ inpcb 查询，避免 syncache/inpcb 语义漏洞（审核 B-3/Q3b）。**【v1.2 修正·入表时机】**：插入点必须在**本栈收到 SYN 的时刻**（`syncache_add` 内、**SYN-ACK 发出之前**，早于 `syncache_insert`；**【2026-09-28 A1 加注】**早期文档写为「发出 SYN-ACK 的时刻」，实际实现更早——SYN 准入即入表，且单阶段入表即可见），**不得**推迟到 `accept()` 返回时——三次握手的第 3 个 ACK 到达时连接仍在 syncache、尚无 inpcb，`accept()` 尚未发生；若按「accept 时入表」，该 ACK 会 flow_map miss → 被转给 G_old → G_old 无对应 syncache 条目 → 回 RST → **reload 窗口内新建连接全失败**（这正是 B-3/Q3b 的原始病根，仅换了一层形式）。实现须在 `tcp_input` 的 listen 分支、**SYN 准入成功时**（早于 `syncache_insert`）挂钩入表，并同步覆盖 SYN 重传（重传 SYN 命中已有表项，不重复插入）。**【M4 修正·键端口字节序缺陷】** C-NR-301 落地后 `ngx_ff_flow_map_dispatcher` 用 `(p[l4]<<8)\|p[l4+1]` 把线上字节拼成**主机序**端口，而 `ff_flow_map.h: FF_FLOW_MAP_V6〔锚点未核实〕` 的契约（"ports are kept in network byte order"）、`tcp_syncache.c` 的 insert 钩子（原样取 `sc_inc.inc_fport/inc_lport`）与 `tests/integration` 的镜像分派器（`memcpy` 取线上原字节）三方均为**网络序** —— 两个键在 sport/dport 上相差一次字节交换，FNV-1a 落到完全不同的槽位、probe 链（最长 16）覆盖不到，**HIT 分支自 M3 落地起从未命中**（诊断计数 `hit` 恒 0 且 `full=0`、`dup=0`，排除容量驱逐）。M4 追加定向修复改为 `memcpy` 取线上原字节（与地址字段一致），修复后 `hit` 0→17255、`miss_peer` 3596→5、`dup` 0→1416。**对 M3 结论的影响**：M3 的 miss→PEER 语义因此等价覆盖了全部流量（既有新流也走 PEER），M3 的实测结论不受影响；但「新连接由接管代本地处理」的设计意图**到 M4 才真正生效**，凡依赖该语义的判据须按此理解。另注：入表时机已由 M4 复核坐实为 `syncache_add` 内 `syncache_flow_map_admit(sc)`（`tcp_syncache.c: syncache_add()`；SYN-ACK 在 tcp_syncache.c: syncache_add() 发出），与本行 v1.2 修正一致。**【2026-09-28 A1/I-5】**其保护语义（满表拒 SYN、不发 SYN-ACK）的规则已下沉为 `lib/ff_flow_map.c` 的 `ff_flow_map_admit()`，由单测 `test_a1_flow_map_admission_rule` 覆盖——此前该保护**无任何自动化断言**（集成 harness 不链接真实栈） |
+| C-NR-302 | ~~新增 `lib/ff_handover.c` 或扩展 `lib/ff_dpdk_if.c`~~ → **实现落点 = `lib/ff_reload.c: ff_queue_handover_mutex()`（`ff_queue_handover_mutex`，未新建 `ff_handover.c`）**，状态字段见 `lib/ff_reload.h: ff_reload_state`（`handover_epoch`/`rx_parked`） | 新增 | **跨进程互斥原语** `ff_queue_handover_mutex(port, queue, from_gen, to_gen)`：共享内存标记（非 msg ring）——G_old 设停 rx 标记 + 确认已停 → G_new 确认后起 rx poll；保证不同时 poll 同一 queue（[06] 第 2 节语义 7）。~~set_rss_table 切流原语改造~~ v1.6 删除（reta 不改）。**【v1.9 补全规格，原仅给函数名】**：① 载体 = hugepage 共享内存 `struct ff_handover_state{ magic; rx_owner_gen; rx_stopped; }`，由 primary 创建；② 读写一律 `__atomic_*_n(..., __ATOMIC_SEQ_CST)`，禁止裸 volatile 轮询；③ **「G_old 停 poll」的精确定义 = 跳过 `rte_eth_rx_burst`（`ff_dpdk_if.c: handle_ioctl_msg()〔锚点未核实〕`）与 tx drain（ff_dpdk_if.c: handle_sysctl_msg()〔锚点未核实〕），但不退出主循环**——退出循环会导致 G_old 收不到 `drain_ring_rx` 的转发包（P1-4）；④ 超时（初值 100ms，RV3 校准）→ HANDOVER_TIMEOUT，由 master 决定放弃本轮或强制接管；⑤ G_old 异常退出时须清理脏标记 |
+| C-NR-303 | `app/nginx-1.28.0/src/event/modules/ngx_ff_module.c`（worker init） | 修改 | G_new worker **READY 后自动注册** flow_map 查表回调（[06] 第 2 节语义 6，稳态零开销）：**① 先做协议过滤——仅 TCP/UDP 四元组参与归属判定，ARP/NDP/ICMP/非 IP/分片一律返回 `queue_id`（本栈处理），保留原生克隆路径**（否则 G_new 邻居表建不起来，见 C-NR-304）；② 解析四元组 → `ff_flow_map_lookup` → 命中（本代际新流，含 syncache 中的半连接）本栈处理 / **miss 一律**经 **`drain_ring_rx`** 转 G_old（**v1.9：不复用 `dispatch_ring`**——同队列下两代会成为同一 SC ring 的两个消费者，见 C-NR-310）；③ **目标 G_old 须按代际精确反算**并校验存活——G_old 已退出则本栈处理并按 TCP 规范回 RST，禁止 enqueue 到无主 ring；④ **排空确认后注销回调**（C-NR-403 通知驱动，含「`drain_ring_rx` 已排空」条件，见 U-NR-5） |
+| C-NR-304 | `lib/ff_dpdk_if.c: protocol_filter()`（`protocol_filter`）+ ff_dpdk_if.c: protocol_filter()（ARP/NDP 克隆分支；v1.9 复审修正：原写 ff_dpdk_if.c: protocol_filter()，ff_dpdk_if.c: ff_dpdk_init() 实际是 dispatcher 回调门禁而非 ARP/NDP 分支起点） | 修改 | **ARP/NDP clone 给 G_old**（[06] 第 2 节语义 9；审核 B Q3a）：ARP/NDP 等协议包在转给 G_new 协议栈处理的同时，额外 clone 一份转发给所有 G_old 进程——原有 clone 给其他 G_new 和 KNI 的逻辑不变（ff_dpdk_if.c: ff_dpdk_init()），新增 clone 给 G_old 分支。**v1.9 补充**：M1′ 下 G_old 已无硬件出口，此路径是其邻居表的唯一来源，从「优化项」升为**必需项** |
+| C-NR-305 | `lib/ff_memory.h: ff_rx_queue_size()`（RX_QUEUE_SIZE）+ ff_memory.h: ff_rx_queue_size（RX_QUEUE_SIZE_GRACEFUL）+ ff_memory.h: ff_rx_queue_size（`ff_rx_queue_size()`）+ `lib/ff_config.{h,c}` | 修改 | RX_QUEUE_SIZE 默认 512→**4096**（[06] 第 2 节语义 7：接管窗口缓冲放大 8 倍）；**v1.9 追加**：新增 `drain_ring_size` 配置项（默认 2048，见 C-NR-310），并同步计入 mbuf 池预留 |
+| C-NR-306 | `ngx_ff_reload.c` 状态机 | 修改 | T3 状态（v1.9 时序）：master 触发同期接管→**建立双向 drain_ring**→G_old 停 rx（互斥标记）→**G_old 进入无硬件模式**→G_new 起 rx poll+接管 listen+**独占 tx**→G_new 注册 flow_map→ARP/NDP clone 生效；~~SWITCH_REQ reta 切流~~ 改为 HANDOVER 消息族；超时/失败分支（DR6 前半） |
+| **C-NR-310** | 新建 `lib/ff_drain_ring.c`（参照 `lib/ff_dpdk_if.c: create_ring()` `create_ring` 封装与 ff_dpdk_if.c: init_dispatch_ring() `init_dispatch_ring`）+ `lib/ff_memory.h`（容量常量 `:49 FREE_RING_SIZE`）+ `ff_dpdk_if.c: ff_fanout_neighbour()`（回调转发 enqueue 点，改为写 `drain_ring_rx`）+ `:2718+`（`process_dispatch_ring`，**仅作语义参照，不复用**）+ ff_dpdk_if.c: main_loop()（主循环 rx/dequeue 点） | 新增+修改 | **【v1.9 新增·P0-2】per-generation 双向 drain_ring**（**本点须先于 C-NR-309 实现**，309 依赖本点提供的 `drain_ring_tx`）。① 两个 ring 按 `(port, queue, 代际号)` 命名（**M3 实现 D-6 偏离**：多一个队列维度——F-Stack 每队列一个独立 FreeBSD 栈实例，包必须交回对端**同队列**实例，否则该栈无 PCB 会回 RST；N worker 共享一 ring 也会破坏单消费者语义），primary 创建、secondary lookup，且**每进程须创建/附着全部代际的 ring**（M3 实现 D-1：drain_ring 双向，任一代际都要本代 rx/tx + 对端 rx/tx 全部 4 个）；**flags 两侧不同（M3 CR 修正）**：`drain_ring_rx` 仅 `RING_F_SC_DEQ`（MP/SC——生产者有两类：owner 代 queue-q worker 的 flow_map miss 转发 + owner 代任意 worker 的 ARP/NDP clone fan-out，`RING_F_SP_ENQ` 会因多生产者损坏 prod head），`drain_ring_tx` 取 `RING_F_SP_ENQ | RING_F_SC_DEQ`（唯一生产者 ff_divert_tx_mbuf，保留零 CAS 快路径）；② `drain_ring_rx`：生产者 = G_new（flow_map miss），消费者 = G_old（**替代 `dispatch_ring` 转发，避免同队列下两代 dequeue 同一 SC ring**）；③ `drain_ring_tx`：生产者 = G_old，消费者 = G_new（出向代发）；④ **不可复用 `process_dispatch_ring`**，其语义是 dequeue 后以 `pkts_from_ring=1` 进 `process_packets → ff_veth_input`（入向进协议栈），与出向代发相反；⑤ 排空确认后**注销**（C-NR-403 驱动）；**M3 实现仅注销不销毁**（R-310-1：`rte_ring_free` 跨进程只能一个进程 free，且 `_g<gen>` 乒乓复用下销毁后下轮还要重建；注销后 ring 驻留 hugepage，创建者 re-init 经 EEXIST 回退 lookup 复用）。**承载用例**：UT-NR-19、IT-NR-A03 |
+| **C-NR-309** | `lib/ff_dpdk_if.c: ff_dpdk_if_send()`（`ff_dpdk_if_send`，协议栈出包统一入口）/ff_dpdk_if.c: send_single_packet()（`send_single_packet`）/ff_dpdk_if.c: send_burst()（`send_burst`，全文件唯一 `rte_eth_tx_burst`）/main_loop ff_dpdk_if.c: ff_dpdk_raw_packet_send()（tx drain 段）/ff_dpdk_if.c: ff_dpdk_raw_packet_send()（`ff_dpdk_raw_packet_send`） | 新增+修改 | **【v1.9 新增·P0-1】TX 独占与 `drain_ring_tx` 代发**（**依赖 C-NR-310**）。**【v1.9.1 追加约束】无硬件模式标志必须「可逆」**——C-NR-316 的 rx 交还依赖本点：G_old 判定 G_new 失活后须能退出无硬件模式、恢复 `rte_eth_rx_burst` 与 tx；且恢复前必须确认 G_new 确已不再 poll（否则回到并发 poll 的老问题）。故本点实现时**不得**把该标志设计为一次性/不可回退。依据：`tx_queue_id` 与 rx 同号（`:486/:534`）、唯一 tx 出口在 `send_burst`（ff_dpdk_if.c: send_burst()）、`dpdk/lib/ethdev/rte_ethdev.h: rte_eth_tx_descriptor_status()〔锚点未核实〕` 限定仅 `MT_LOCKFREE` PMD 允许同一 tx queue 无锁并发（virtio 未声明）。**做法**：① 新增「无硬件模式」标志（G_old 在 T3 后置位）；② `ff_dpdk_if_send` 在该标志下不调 `send_single_packet`，改为 `rte_ring_enqueue(drain_ring_tx[port][gen], m)`；③ `send_burst` 与**全部三处 flush 入口**在无硬件模式下不执行——rte_ethdev.h: RTE_ETH_FOREACH_DEV_SIBLING〔锚点未核实〕（`send_single_packet` 满 burst）、rte_ethdev.h: RTE_ETH_FOREACH_DEV_SIBLING〔锚点未核实〕（`FF_USE_PAGE_ARRAY` 分支内，**易漏**）、rte_ethdev.h: RTE_ETH_FOREACH_DEV_SIBLING〔锚点未核实〕（main_loop tx drain），保证 G_old 零 `rte_eth_tx_burst`；④ G_new 主循环每轮 dequeue `drain_ring_tx` 并直接 `rte_eth_tx_burst`（唯一消费者）；⑤ 满环须计数+告警，禁止沿用 rte_ethdev.h: RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS〔锚点未核实〕 的静默 `rx_dropped++`。**判据（RV11）**：drain 期 G_old 无任何 tx_burst 路径（含异常/超时分支、含 `FF_USE_PAGE_ARRAY` 构建）。**承载用例**：IT-NR-A09 |
+
+| 项 | 内容 |
+|---|---|
+| **前置** | M2 合入；**DR2/DR4/DR9 定案**（flow_map 形态 + 控制通道载体 + TX 处理形态） |
+| **DoD** | ① clean build + 单测（UT-NR-11/13/14/**19** + 零回归）；② 实机 RT-02（带长连接流量 HUP：新连接全走 G_new、旧连接包 flow_map miss → `drain_ring_rx` 转发回 G_old 零 RST、G_old 出包经 `drain_ring_tx` 代发成功、ARP/NDP 正常）；③ RT-03（持续 CPS 压力下 reload，客户端错误 0）；④ **RV11：TX 独占断言通过（IT-NR-A09）——G_old 在 drain 期零 `rte_eth_tx_burst`**；⑤ RV3 互斥正确性 + RV4/RV5 实测数据落盘（DR7/DR9 输入） |
+| **测试门禁** | UT（含 UT-NR-19）+ **IT-NR-A09/A10** + IT-NR-A02/A03/A07/A08 + RT-02/RT-03 |
+| **风险与回退** | 风险：RV3 互斥标记实现缺陷导致并发 rx poll（virtqueue 数据结构损坏，静态无法定论需实测）；RV4 ring 容量与满环行为；RV5 flow_map 查表开销；**RV11 代发路径在出包高峰成为瓶颈（则按 DR9 切 tx queue 分离）**。**v1.9 新增风险**：T3 后 **G_new 崩溃时 G_old 已脱离硬件、无法续服**（v1.6 形态下 G_old 仍持 rx），回退依赖 primary/master 检测与恢复，须与 DR6 一并定案。回退：接管消息不触发（状态机停在 T2，G_old 继续服务，本轮 reload 放弃）；互斥标记保证不会并发 rx poll；`graceful_reload=0` 兜底 |
+| **提交建议** | 6 个 commit：flow_map 三函数 / 互斥原语（含规格⑤点） / **drain_ring 双向通道（C-NR-310）** / **TX 独占与代发（C-NR-309，依赖 C-NR-310）** / ARP clone+RX_QUEUE_SIZE+drain_ring_size / 回调注册与状态机 T3 |
+
+### 2.5 M4：drain 收尾、异常回退与状态机完备（HUP 全链路）
+
+| 项 | 内容 |
+|---|---|
+| **目标** | 消解障碍 3（drain 保障）与 [04](04-fstack-current-analysis.md) §4 补充事实：T4/T5 落地——**G_old 停 accept 并延迟 close listen（C-NR-312，v1.9 修正）**、drain 存量连接至自然关闭（出包经 `drain_ring_tx` 代发）、drain 挂起强退兜底、flow_map 关表 + drain_ring 注销回稳态；T0-T5 全链路 + 全部异常分支打通（**含 T3 后 G_new 崩溃**） |
+| **范围** | [06](06-solution-design.md) 5.4-4 第 3/4 条、DR6 全部回退目标态、5.2 异常分支 |
+
+**编码工作清单**：
+
+| 编号 | 代码锚点（`文件: 符号名`） | 类型 | 要点 |
+|---|---|---|---|
+| C-NR-401 | `ngx_process_cycle.c: ngx_ff_reload_watchdog_disarm()〔锚点未核实〕`（对照原生 :951-957） | 修改 | **补回 `ngx_set_shutdown_timer`**（F-Stack 版 worker QUIT 分支缺失，[04](04-fstack-current-analysis.md) §4 补充事实）；此项是修 bug 性质，可提前独立提交（不依赖 M1~M3，`graceful_reload=0` 也受益）。**【M4 实现】** 实为**补回两行调用**——`ngx_set_shutdown_timer()` 的定义与声明本就存在（`ngx_cycle.c: ngx_set_shutdown_timer()〔锚点未核实〕` / `ngx_cycle.h: ngx_is_init_cycle〔锚点未核实〕`，原生 unix 分支已在调用），F-Stack 分支缺的只是调用；按 CR 一并补回 `ngx_event_process_posted`（对齐原生次序 timer→close listening→close idle→process posted）。**锚点已失效**：本行 v1.9 的 ngx_cycle.h: ngx_is_init_cycle 实际落在 ngx_cycle.h: ngx_is_init_cycle、原生对照分支为 ngx_cycle.h: ngx_is_init_cycle（M1 slim primary 块 + M2/M3 编排块在该文件中部插入约 950 行），spec v1.9 的 `ngx_process_cycle.c 〔锚点失效：d752ed69f 误映射，已移除〕/9xx` 系列锚点一律改用 work/impl/m4-anchor-verifier.md 基线总表。**=0 有意变化项**：该两行使 =0 行为对齐原生（改前 = 原生减两行），S9ᶠ 实测 QUIT + `worker_shutdown_timeout` 15s 精确强退、graceful/FSM/drain 日志行 0 |
+| C-NR-402 | `ngx_ff_reload.c` + `ff_msg.h` | 新增 | drain 进度上报（FF_RELOAD_DRAIN_PROGRESS：剩余连接数/最后活动时间）+ **G_old 排空确认上报（FF_RELOAD_DRAIN_DONE：连接数=0 且全部 G_old 进程退出）** + drain 强退阈值（shutdown timer 时长，默认建议对齐 nginx `worker_shutdown_timeout` 语义，值经 RT-06 校准）。**【M4 实现】** 通道定案为**共享块 `reserved` 字扩展**（D-M4-1），**不是 msg_ring**：master 非 DPDK 进程、无法 dequeue msg_ring（EAL attach 会破坏 M1 fork 安全定案），与 DR4 已定的「master↔worker 走 nginx channel + 匿名 MAP_SHARED」形态一致，故 `ff_msg.h` 枚举面未动（DRAIN_PROGRESS/DRAIN_DONE 枚举值仍无生产者/消费者）。落位：`reserved[0..1]` 存第二块匿名 MAP_SHARED 扩展块的指针（master 在任何 fork 前 mmap、进程经 fork 继承，与主块同一继承模型；指针 SEQ_CST 写回使主块自描述），扩展块为 `struct ff_reload_drain_state`（magic/len + 128 slot per-worker 报告 + rx_fwd/tx_fwd/rx_peak/tx_peak/reclaim 共享计数），主块尺寸与版本号未变；槽位沿用 ready[]/rx_parked[] 的 **epoch-tag 协议**（abort 轮陈旧报告永不误读、slot 免清零）。强退阈值取 `ccf->worker_shutdown_timeout`，未配置时回退 ESCALATE_TERM（90s，env 可覆盖）。**F7（看门狗 arm 缺口）一并修复**：arm 抽成 `ngx_ff_reload_watchdog_arm`（1s ITIMER_REAL，arm 幂等），在 T3 入口与 wait_or_check 的等待态转移点调用；disarm 双守卫（`wd_armed` 本模块 arm 过 + `!ngx_terminate`）保证 native terminate 的 delay 回退 itimer 永不被误杀 |
+| C-NR-403 | `ngx_ff_reload.c` | 修改 | 状态机 T4/T5：收 G_old 全退 SIGCHLD/DRAIN_DONE → **通知 G_new 关闭 flow_map 并注销双向 drain_ring，G_new 进入稳态成为下轮 G_old（防性能退化，[06] 第 2 节语义 6；防重入拦截随排空确认解除）** → **【v1.9 追加】更新 KNI runtime owner 至当前活跃代际（C-NR-313 的收尾动作）** → ~~释放段 A → 乒乓翻转记账~~（v1.6 删除：不再乒乓，同队列）→ reload 完成打点。**【M4 实现】** T3→T4 的**占位直通整体删除**，改为真实异步等待：hup 在 T3 入口快照 old_slots + 记 `t3_start` + **立即 arm 1s watchdog** 后返回 `*live=1`，master 回 sigsuspend、每秒被 SIGALRM 唤醒跑 `ngx_ff_reload_t3_check`（规避「阻塞式 master 在 drain 期不可响应信号」）。**DRAIN_DONE = 三谓词 AND**：全部存活 old slot 上报 `conns==0 && snd_pending==0 && syncache==0`（syncache 为 bounce-1 FIX-1 追加，承载 F-M4-6；死亡 slot 由 `ngx_ff_reload_probe_dead` 判已排空），达成后记 drain_ms 打点 → EV_DRAIN_DONE → `ngx_ff_reload_quit_gold`。G_new 侧 teardown/退役**实际由 lib 侧 1Hz housekeeping 触发**（`ff_reload_plane_housekeeping`：关窗后注销 dispatcher + `ff_flow_map_close()` + drain_ring unregist；开窗时 re-arm），M3 铺的 `ngx_ff_reload_flow_map_teardown` 保留为应用面导出但当前无调用者（`ff_drain_ring_unregist` 非 symlist 符号，nginx 不可见）——M6 收敛双通道。KNI runtime owner 已由 `ff_reload_master_complete` 原子地与 active_gen 同值翻转（`kni_owner_gen` 保留为观测快照字段），本轮未改 |
+| C-NR-404 | `ngx_ff_reload.c` 异常分支 | 修改 | ① T2 前 G_new 任一 worker 起不来/READY 超时 → 放弃本轮（G_old 未动，对齐内核 HUP 配置失败回滚语义）；② T3 接管失败（G_old 未确认停 rx / G_new 起 rx 超时）→ 放弃本轮（互斥标记保证不会并发 rx poll）；③ primary 被 kill → 本轮 reload 安全放弃 + 告警（primary_slim E10：primary 不可复活）；**④ 【v1.9 新增·DR6 必答项】T3 之后 G_new 崩溃**——M1′ 下 G_old 已脱离硬件、无法自行恢复 rx（这是相对 v1.6 形态**新增的风险**），须定案回退目标态：由原定案的回写者交还 rx（若仍在；**执行者口径后续已订正为 G_old 自治夺回，见本行末【M4 实现】④**）/ 触发新代际重生 / 整体降级为有损 reload，并给出检测手段（心跳/SIGCHLD）与超时。**【M4 实现】** ①/② 为 M2 既有结构，本轮补齐的是 **abort 全 8 调用点走查 + P0-1 修复**：hup 在 EV_HUP 接受后、任何 spawn/abort 之前前置 `ngx_memzero(ngx_ff_reload_new_slots)` —— 原实现 new_slots 唯一写点在 spawn 快照处，`init_cycle` 配置失败与 worker attach 失败两个 abort 都在快照**之前**，round≥2 时会拿到上一轮陈旧快照（即当前活跃代际）并 TERM 全部活跃 worker，与「G_old keeps serving」相反；修复后这两处只 TERM 本轮 just_spawn 集合（分别为空集与 worker 0 单点）。③ primary 被 kill 实测三态：T3 窗口内 kill → 数据面零中断、本轮自然完成；死后残留 rte 文件再 reload → 仍成功；rte 文件清除后 reload → worker attach 失败后**走满 60s `sem_timedwait` attach 门再 abort**（F-M3-2 修复实证，G_old 全程零影响；**「0ms 即时 abort」为错误表述**，见 §2.7(5) F-M6-4）。**④ DR6① 维持方案①，但按 M3 已实现的形态表述为「G_old worker 自治夺回」**（执行者由 primary 改为 G_old 自身，心跳载体/1s 超时/`rx_owner_gen` 回退三点语义等价，且自治形态天然防空交还；spec 已按此修订，见 [06](06-solution-design.md) §6.2 DR6 附则）——**不得按本行字面重做 primary 回写，否则引入双写者竞态**。M4 只补收尾（D-M4-2）：夺回侧写 epoch-tagged `reclaim` 共享字 + 告警秒级限频（`ff_reload_stall_warn`，F-M3-4 修复），master 在 t3_check 轮询该字（epoch 匹配）→ EV_ABORT 回滚（TERM 残留 G_new + 关窗 + `ff_reload_master_abort` 复位 owner，与夺回方所写值幂等）；**flow_map teardown 为结构性 no-op**（G_old 从未 arm 过 dispatcher —— `ngx_ff_flow_map_arm` 仅 init 期受 `hw_locked && gen==target_gen` 双门控调用；失活 G_new 的进程局部状态随其死亡消亡）。T5 期间不检测（FSM 表 T5 仅接受 GOLD_EXITED），该窄边归 M6 |
+| C-NR-405 | `ngx_process_cycle.c` G_old graceful 分支（F-Stack 版 `ngx_process_cycle.c: ngx_worker_process_cycle_loop()` 的 QUIT 分支，对照原生 nginx 的 `ngx_worker_process_cycle()` QUIT 处理；2026-10-08 订正：原「对照 ngx_ff_reload_abort()」是锚点批量转换的误映射） | 修改 | G_old 收 QUIT：**【v1.9 修正】先停 accept，延迟 close listening 至自身 syncache 半开条目排空或超时**（C-NR-312，不立即 close）+ 进入无硬件模式继续跑 ff_run drain；**存量连接后续包经 flow_map miss → `drain_ring_rx` 转发回来，出包经 `drain_ring_tx` 由 G_new 代发**（M3 已铺）。注：drain 期存量连接流量**100%** 走 ring 转发且**双向各一跳**（v1.6 为出向零跳；M1′ 出向也走 ring），RV4 的 ring 容量与背压压力按此量级评估。**【M4 实现】** QUIT 分支重作为「摘 read 事件停 accept → 置 pending → arm 保活定时器 → 轮询后延迟 close」：停 accept 用本地 helper 复刻 `ngx_disable_accept_events` 语义（`ngx_del_event` → ff_kqueue → 栈内原生 EV_DISABLE；**reuseport 不豁免**，drain 语义要求全停），保活定时器取 100ms 且**非 cancelable**（关键：`ngx_set_shutdown_timer` 设的是 cancelable 定时器，`ngx_event_no_timers_left()` 对其返回 NGX_OK 不阻断退出，若仅剩 syncache 残留会提前退出杀死半开窗口）。**两处实现细化**：(a) 延迟关闭判据由 `ngx_ff_graceful_reload` 收紧为 `ngx_ff_graceful_reload && ff_is_drain_generation()`（判据 = `ff_reload_gen() != ff_reload_rx_owner_gen()`，**不能用 active_gen** —— 其在 T5→T0 的 `ff_reload_master_complete` 才翻转，QUIT 时刻对 G_old 恒相等、判据失效），使 `nginx -s quit` 全量退出回到原生立即 close，消除「持续新建流量下计数非单调 → 永挂且无 TERM 兜底」；(b) 延迟 close 轮询与 `ngx_ff_worker_may_exit` **各加 30s 硬上限**（FIX-4/FIX-5，同一锚点 `ngx_ff_listen_close_quit_msec`、同一 `NGX_FF_LISTEN_CLOSE_MAX_MS=30000`），抗 FIX-2 inpcb 口径下孤儿 socket 的无界等待（S8'' 实测 T5 挂 92s → 30s），两处 cap 触发点各打一条 NOTICE 作为 M6 观测锚点（grep `ff drain: .* capped`）。存量连接双向各一跳形态不变。**【2026-10-08 现行口径，09-28 提交 b94751e5f/203a9dfc6/83bd1f954/bba149f82/f2febd67c】** drain 不再等 QUIT：worker 一旦发现本代失去 rx 所有权（`ngx_ff_is_draining_generation()`，T3 移交成功后）就调用 `ngx_ff_drain_start()`，每轮按 epoch latch 一次，启动时 `ngx_close_idle_connections()`，此后约每 1 s 再扫一次空闲连接；QUIT 仍负责停 accept 和延迟关闭 listening。listening 的等待时长是 min(`NGX_FF_SYNCACHE_GRACE_MS`=3000 ms 宽限, drain 上限)，drain 上限 `ngx_ff_drain_cap_ms()` = max(30 s, worker_shutdown_timeout)；syncache 为 0 时立即关闭。效果：keepalive 不再把 T3 顶到 90 s（实测 T3 降到 1–4 s），代价是空闲 keepalive 连接每轮被关闭一次 |
+| C-NR-406 | 打点与可观测收尾 | 新增 | 每阶段耗时/计数落 ff_top 或日志（reload 总时长、接管时延、drain 时长、**上行/下行转发包量**、`drain_ring` 满环次数、水位峰值），供 PT-NR-03/10 与 A-NR-14 度量。**【M4 实现】** 打点项定案：reload 完成汇总 NOTICE 一行给出**总耗时 + handover/drain 分段 + rx_fwd/tx_fwd 转发累计 + rx_peak/tx_peak 水位峰值**（S1 实测字样 `graceful reload complete: generation 1 now active (took 1306 ms: handover 1 ms, drain 1001 ms, drain forwarded 0 / relayed 0 pkts, ring peak rx 0 / tx 1)`），handover/drain 分段另写共享块 `reserved[2]/[3]` 供 tools 观测；FSM 每转移一条 NOTICE；稳态退役一条 `reload data plane retired (steady state, generation N)`。**不入的项（D11 取舍）**：per-worker 末次报告明细（slot 级运维价值低，master 日志已有 `deadline forced` 标记）、`drain_ring` 满环次数（`g_rx_full` 等为进程局部静态，上共享块需新增原子操作；既有 worker 侧限频告警 `drain_ring_tx full: packet dropped` 与 ff_top 可观测）。转发计数与水位走「本地累计 + 1Hz 冲 delta（peak 用 CAS max）」，reload 数据面热路径零新增原子操作 |
+| **C-NR-312** | `app/nginx-1.28.0/src/os/unix/ngx_process_cycle.c: ngx_worker_process_cycle_loop()`（F-Stack 版 QUIT 分支，`:896 ngx_close_listening_sockets`；对照原生 ngx_process_cycle.c: ngx_ff_reload_abort()〔锚点未核实〕，`:953 ngx_set_shutdown_timer`）+ `freebsd/netinet/tcp_syncache.h: syncache`（导出接口清单；**M4 已新增 `:49 syncache_count()` / `:51 ff_syncache_count()`**）+ `tcp_syncache.c`（`syncache_lookup` 为 static，〔锚点失效：d752ed69f 误映射，已移除〕；`syncache_expand :1101`） | 新增+修改 | **【v1.9 新增·P0-5】半开连接窗口处理**。问题：移交前 G_old 收到的 SYN 停留在自身 syncache；T4 若立即 close listening，第 3 个 ACK 到 G_new → flow_map miss → 转回 G_old → 虽有 syncache 条目但 `syncache_expand`（`tcp_syncache.c: syncache_expand()〔锚点未核实〕`）需 `*lsop` 建 socket 而 listening 已 `in_pcbdrop`（`tcp_close` 对 LISTEN 只做 `in_pcbdrop`，`tcp_subr.c: tcp_close()`，**不清 syncache**）→ 连接失败。**做法（择一，倾向 a）**：(a) **延迟 close listening**：G_old 只停 accept，保留 listening socket，轮询自身 syncache 半开条目计数至 0 或超时后 close（超时由 C-NR-401 的 shutdown timer 兜底）；**注意（编码前事实）`tcp_syncache.h: syncache〔锚点未核实〕` 当时未导出任何半开条目计数接口**（只有 `syncache_init/destroy/unreach/expand/add/chkrst/pcblist`），需新增一个轻量导出函数或复用 `syncache_pcblist` 的统计路径；**【M4 已实现】已新增导出 `syncache_count()`/`ff_syncache_count()`（`freebsd/netinet/tcp_syncache.h: syncache〔锚点未核实〕/51`，实现 `tcp_syncache.c: ff_syncache_count()/496`）——M4 未走 `syncache_pcblist` 路径，改为直读 per-VNET 计数器（详见同段【M4 实现·选方案 (a)】）**；(b) T3 时导出 G_old syncache 中的半开四元组给 G_new，登记进 flow_map 并标记「转 G_old」（需把 `syncache_lookup` 从 static 改为导出或新增遍历钩子，改动更大）。**判据（RV12）**：构造「SYN 在 T3 前、ACK 在 T3 后」的注入用例，握手成功率 100%。**【M4 实现·选方案 (a)】** ① 计数接口**不走 `syncache_pcblist` 统计路径**（持锁遍历、不可复用），改为 per-VNET 计数器 `V_syncache_entries`（VIMAGE 未定义 ⇒ 进程内普通全局，单线程 datapath 免原子）+ 直读导出 `ff_syncache_count()`；落位 `tcp_syncache.c` 同 TU（**偏离本行「`tcp_syncache.h` 导出」的写法**）：宿主侧实现 wrapper 会迫使非 ff_ 前缀的 `syncache_count` 进 `ff_api.symlist` 污染应用可见面，并让直链 `ff_flow_map.o` 的 `tests/unit` 链接失败。链接产物实证：`ff_syncache_count` = `T`（全局导出）、`syncache_count` = `t`（栈内局部）。**漏斗为三处而非两处**——`syncache_insert`（:400 ++）/ `syncache_drop`（:470 --）/ `syncache_expand` 的**直删点**（:1344 --），后者是 G-A4 CR 坐实的 P0：`syncache_expand` 完成三次握手时直接 `TAILQ_REMOVE` + `sch_length--`、不经 drop 漏斗，漏计会使 drain 期每个完成的握手泄漏 +1 → 计数永不归零 → listening 永不 close（reload 靠 90s TERM 收尸、全量退出永挂）；全文件 `TAILQ_REMOVE` 与 `sch->sch_length` 写点已逐处 grep 复核无第三例。② 延迟 close 的代际门控见 C-NR-405。③ 该计数自 bounce-1（FIX-1）起**同时参与 master 侧 DRAIN_DONE 判定**，S8 实测 drain 由 ~1s 延至 11s，使 2s 级 ACK 延迟稳定落入转发窗口。④ **M4 追加定向修复**：分派器流表键的端口字节序错误使「SYN 留本地后其 ACK 能 HIT 本地表」这一前提长期不成立（FIX-3 曾因此在 bounce-3 整体回退），修复细节见 §2.4 C-NR-301 的【M4 修正】 |
+
+| 项 | 内容 |
+|---|---|
+| **前置** | M3 合入；**DR6 评审完成**（含 T3 后 G_new 崩溃的回退定案） |
+| **DoD** | ① clean build + 单测（UT-NR-10 状态机全转移 + 零回归）；② 实机 HUP 全链路：RT-01~RT-03 复跑全绿 + RT-05/06/07/09 异常注入全绿 + RT-10（连续 20 轮 reload：**每轮 queue/lcore 映射一致、无资源泄漏、抢先 HUP 被正确拒绝**）；③ RT-14（同核高负载切换，RV10 集成复验）；④ **RV12：半开连接窗口用例通过（IT-NR-A10）**；⑤ RV9 小规模预演：带流量连续 reload 50 次零错误。**【M4 达成情况】** 全部满足：**G-A4 / G-B4 各 bounce 1 次通过、G-C4 通过**（P2-4 半修在门禁后一行补齐）。实机首轮 **12/14 判据 PASS**（RV9、RV12 未字面达成，登记 F-M4-5 / F-M4-6 两项 P1）；三次 bounce 净修复 **FIX-1**（syncache 纳入 DRAIN_DONE）/ **FIX-2**（`ff_socket_snd_pending` 改 inpcb 全量口径，覆盖 fd 表盲区的孤儿 socket）/ **FIX-4**（延迟 close 30s 硬上限）/ **FIX-5**（`may_exit` 30s 硬上限，T5 92s→30s），FIX-3 因 insert→lookup 实测断链曾在 bounce-3 整体回退；**追加定向修复（分派器键端口字节序 + FIX-3 重做）后 14/14 判据达成**：S3ᶠ fail 8~10 → **0**（n=524589，真零 RST 零 TIMEOUT）、S7ᶠ **50/50** 自然收敛（qps 431、fail 0.067% 全 TIMEOUT）、S8ᶠ **12/12**（T5 ≤31s）、S2ᶠ 12/12 与 S9ᶠ =0 等价无回归；**终裁「无 P1 残留 PASS」**。gARP baseline（`garp_rexmit_count=8`，330s / 24 连接 / 15840 请求）零丢失，排除上游 L2 老化假阴性；=0 等价硬中断 1.001s 与 M0~M3 基线同形、reload 日志行 0 |
+| **测试门禁** | UT + **IT-NR-A10** + RT-01~RT-10 + 50 次循环 reload |
+| **风险与回退** | 风险：drain 强退阈值过短误杀长连接（RT-06 校准）；异常分支状态机死锁（用例覆盖每分支）；**C-NR-312 若选 (a)，延迟关闭的超时值需要权衡「半开连接完成握手」与「drain 及时收尾」**。回退：C-NR-401 独立；402~406 与 C-NR-312 各自独立提交串 revert 后 M3 行为保留（drain 依赖 nginx 原生 no_timers_left，无强退兜底） |
+| **提交建议** | 4 个 commit：shutdown timer（可提前）/ drain 上报与强退 / **半开连接窗口（C-NR-312）** / 状态机 T4-T5 与异常分支。**【M4 实际切分】** 未按本行的 4 个功能提交切分，实际按 **5 层**提交：① **lib**（syncache 计数导出 + `ff_is_drain_generation` / drain 报告族与共享块扩展 / `ff_socket_snd_pending`·`ff_socket_drain_count` / 注入开关基建与两处 P2 日志）；② **nginx 控制面**（C-NR-401/402/403/404/405/406 的编排、状态机、看门狗与打点）；③ **分派器修复**（字节序 + FIX-3 重做，纯 `ngx_ff_module.c`）；④ **测试**（UT-NR-10 全转移表补全 / IT-NR-A10 TC-6 启用 / `FF_RELOAD_FAULT_INJECTION` / 集成 harness 断链修复与链接桩）；⑤ **spec 回写**（06/07/08）。**偏离理由**：M4 改动跨 Batch A/B/C 与四轮运行时修复，**多文件混合且同一文件被多个功能点反复触碰**（`ngx_process_cycle.c` 同时承载 401/403/405 与 FIX-4/FIX-5，`ff_reload.c` 同时承载 402/403/404），hunk 级拆成 4 个功能提交不可行；按层切分后**每层自洽可编、可按层 revert**，与「401 独立、402~406 与 312 各自独立可 revert」的回退意图等价 |
+
+**【M4 门禁结论、登记项与 M6 移交（2026-09-04 实测；证据见 work/impl/m4-*.md 与 test-m4.md）】**
+
+**(1) 判据终态（14 项）**
+
+| 判据 | 终态 | 一行证据 |
+|---|---|---|
+| 前置 G-A4 / G-B4 / G-C4 | PASS（A、B 各 bounce 1 次；C 一次通过 + 一行补齐） | A：P0 `syncache_expand` 直删漏计 + P1 代际限定；B：P0-1 round≥2 陈旧 `new_slots`；C：P2-4 `stall_warn` 日志补 gen |
+| gARP baseline | PASS | `garp_rexmit_count=8`，330s / 24 连接 / 15840 请求 fail=0 |
+| RT-01 空载全判据 | PASS | FSM 六转移 + complete NOTICE + 代际翻转（tools `-g` 双通道）+ 稳态退役 |
+| RT-02 活跃长连接 | PASS | 12/12 流 md5 全对、0 RST、0 尾丢、worst_gap 0.101s（**F-M3-1 修复实证**：M3 为 12/12 收 RST + 尾丢 3~54KB） |
+| RT-03 CPS 压力 | PASS（核心）→ 追加修复后真零 | qps 8478 / p99 1.249ms；T3 切换时刻零失败；残留 8~10 RST 为 F-M4-2 → S3ᶠ **fail=0** |
+| RT-05 新 worker 不 READY | PASS | ready_never×2 轮 60s abort + ready_delay 70s 迟到 READY 忽略；PART1 round≥2 快照前 abort 回归 PASS |
+| RT-06 drain 挂起强退 | PASS | 20s deadline → QUIT → shutdown timer 精确 20s 强退 → 40.6s 完成，不永久挂起 |
+| RT-07 移交失败 | PASS | park_never / flip_fail / mutex_timeout 三 fault 均 abort 回 T0，G_old 零影响、无双消费者 |
+| RT-09 kill primary | PASS | T3 窗口内 kill 数据面零中断（12/12 流）；attach gate（F-M3-2）走满 60s attach 门后 abort |
+| RT-10 连续 20 轮 | PASS | 20/20 complete、psr 恒 [1,2]、抢先 HUP 全拒、rtemap/hp 恒定 136/1912、终态全回收零泄漏 |
+| RT-14 同核高负载 | PASS | fail=0（489911/489911）、pps 下凹仅 1s、drain 为 S2 的 1.06 倍、算力 G_old ~16-17% vs G_new ~7.5-8% |
+| RV9 50 轮带流量 | **首轮 FAIL → 终态 PASS** | 14/50 → 34/50 → **50/50** 自然收敛（零 90s deadline），CPS fail 0.067% 全 TIMEOUT |
+| RV12 半开窗口 | **首轮 FAIL → 终态 PASS** | 2/12 → 4/12 → 6/12 → **12/12** HTTP200，T5 由 92s 收敛到 30s cap |
+| =0 等价回归 | PASS | 硬中断 1.001s（与 M0~M3 基线 0.666~1.005s 同形）、`reload_line_count=0`；QUIT 的 15s shutdown timer 为声明的有意变化项 |
+
+**(2) F-M4-x 终版登记**
+
+| 编号 | 级别 | 内容 | 终态 |
+|---|---|---|---|
+| F-M4-1 | P3 观察 | drain 起始突发 `drain_ring_tx` 满环丢包（限频 1/s 告警，TCP 重传自愈，端到端零影响；S2×2 / S3×4 / S6×2 累计） | **未修**（非 P1）→ M6：ring 扩容或突发平滑。注：峰值采样 tx=43 与瞬态满环并存，1Hz 采样未捕捉尖峰 |
+| F-M4-2 | P2 | G_old 退出时刻孤儿 socket（nginx 已 close fd、栈内 `so_snd` 仍在排空）随进程消亡被 RST（S3 8~10 个 / 0.002%） | **已消除**：FIX-2（snd_pending 改 inpcb 全量口径）+ 追加定向修复后 **S3ᶠ fail=0**（n=524589，真零 RST 零 TIMEOUT） |
+| F-M4-3 | P2 | RT-06 强退窗口（deadline forced → G_old 退出）新建连接 ~12s 失败 | **已消除**：与 F-M4-4/5/6 同族共因，随字节序修复 + FIX-3 重做切断「垂死 G_old 持续接收新流量」的补充源 |
+| F-M4-4 | P2 | S5 r=17 自然 drain 窗口新 SYN 无应答 ~8s（1/20 轮偶发） | **已消除**（同上） |
+| F-M4-5 | **P1** | 特定压力组合下 drain 恒 90s deadline 且 G_new 服务通路大面积超时（三谓词 conns / snd_pending / syncache 在持续新建流量下**交替非零**，AND 判定数学上不可满足） | **已消除**：S7ᶠ **50/50**、qps 65.6 → 431、fail 14745 → 171（0.067%），drain 全部自然收敛零 deadline |
+| F-M4-6 | **P1** | 半开窗口实际宽度 ≈ drain 时长（空载 ~1s），2s 级 ACK 延迟吃稳态 RST；无 shutdown timer 时半开连接致 T5 挂 90s | **已消除**：FIX-1（syncache 纳入 DRAIN_DONE）+ FIX-5（30s cap）+ 字节序修复 → **S8ᶠ 12/12**，T5 ≤31s |
+| F-M4-7 | 方法学 | RT-02 类 drain 判据**必须使用活跃连接**，否则 drain 完成判定天然满足、判据失效 | **已判据化**（非缺陷）：完整表述与两形态对照登记在 [08](08-testing.md) RT-02 行注与 §2.3 通用判据段 |
+
+**(3) 观察项（非 P1，随实现长期存在）**
+
+| 项 | 级别 | 数据 | 建议 |
+|---|---|---|---|
+| S7ᶠ `fresh_fail` | 观察 | **独立复测口径 152/1420 = 10.7%**（TIMEOUT 型，50 轮切换瞬间窗口累计）；编码方自测为 151/1424 = 10.6% —— 两轮同水位，本表统一取**独立复测口径**，编码方自测值仅作一致性参照 | M6 观察项：高频探测（50ms 级）复跑 100+ 轮定位窗口边界 |
+| S8ᶠ 每轮 T5 走 30s cap | P2-10 | `listen close capped (syncache=1)`；有界、无失败，但 cap 为固定 30s、**不随 `worker_shutdown_timeout` 取 max** —— 运维显式配置 >30s 的 shutdown_timeout 时其优雅窗口被截断 | M6：cap 取 `max(30s, shutdown_timeout)` 或文档声明 |
+| `drain_ring_tx` 满环告警 | P3 | 同 F-M4-1 | M6 |
+| P2-6 syncache 撕裂窄边 | P2 | 1Hz 节拍下 reader 理论可见「新 word + 旧 syncache」，竞态方向恰退化为修复前行为（该 ACK 吃稳态 RST），不产生新危害 | 接受登记，word-last / seqlock 重构无必要 |
+| P2-7 `snd_pending` 口径收窄 | P2 | 改 inpcb 口径后只统计 TCP（`V_tcbinfo`），不再含 UDP INET socket；UDP close 无孤儿排空语义 | 契约注释已如实改写；M6 若引入 UDP 测试面需重评 |
+| P2-11 流表容量与生命周期 | P2 | 65536 槽 / probe 16 / **表项不随连接 close 回收**；修复前 HIT 为死路径、容量语义从未真实运行，修复后单窗口 ~3k 插入且 `g_full=0` | M6 观察项：长窗口（S2 型 36s drain 叠高 CPS）下需评估扩容 / 表项跟连接回收 / 满表回退语义 |
+| P2-8 双 SYN-ACK 窄边竞态 | P2 | FIX-3 重做后 SYN+ACK（ACK 位置位）仍判 PEER，触发条件收窄为「pre-T3 SYN 的 SYN-ACK 在 drain_tx 环内滞留 >1s」；最坏单次握手失败 + 客户端换源端口重试成功 | 严重度不高于修复前形态，M6 复评（彻底闭合需 expand 序号不匹配时回退转发） |
+| P2-9 UDP 新流无判别面（2026-10-13 已由 RX-40 处理，见 [06] §10.10） | P2 | UDP 无 SYN 标记，`proto==6` 不满足 → miss 仍走 PEER；字节序修复后 UDP 键亦与栈侧一致（同走 `memcpy` 端口路径） | M6：若引入 UDP 测试面需专项设计判别面（如 socket 维度） |
+
+**(4) 既有移交项状态**
+
+| 编号 | 内容 | 状态 |
+|---|---|---|
+| F2 | worker 非正常死亡 respawn 风暴（~~脏 EAL~~，机理已证伪：实为 nginx `ff_shm` 信号量悬垂，见 §2.7(3)） | **维持登记 M6**（用户裁决）；含 core_pattern 尸检 |
+| F-M3-1 | G_old 退出时 RST 在途连接 | **已修**（S2 12/12 零 RST 零尾丢，跨 M3→M4 实证） |
+| F-M3-2 | master 对 worker attach 失败不可恢复 | **已修**（RT-09 场景 3：走满 60s `sem_timedwait` attach 门后 master 存活并回滚，G_old 全程零影响；「0ms 即时 abort」为错误表述，见 §2.7(5) F-M6-4） |
+| F7 | 看门狗 arm 缺口 | **已修**（`ngx_ff_reload_watchdog_arm` 在 T3 入口与 wait_or_check 等待态转移点调用，disarm 双守卫） |
+| F-M3-4 | 心跳告警限频 | **已修**（`ff_reload_stall_warn` 秒级限频，镜像 `ff_divert_drop_warn`） |
+
+**(5) M6 课题清单（按优先级）**
+
+1. **F2 专项**：worker 非正常死亡 respawn 风暴（原记「脏 EAL」，M6 已证伪，见 §2.7(3)；含 core_pattern 尸检）。
+2. **流表容量与生命周期**（P2-11）：HIT 分支真实生效后该面才转为活跃。
+3. **cap 与 `worker_shutdown_timeout` 联动**（P2-10）。
+4. **测试方法论**：分派器的流表键构造收敛为**共享内联函数**（生产分派器与 `tests/integration` 的镜像分派器各写一份键构造，字节序缺陷因此长期未被镜像测试暴露）—— 这是本轮最贵的教训。
+5. **UDP 新流判别面**（原 P2-9，随 FIX-3 重做需重评；2026-10-13 已由 RX-40 处理，见 [06] §10.10）。
+6. F-M4-1 `drain_ring_tx` 满环（P3）与 S7ᶠ `fresh_fail` 10.7% 残留（观察项）。
+7. 收敛 G_new teardown 双通道（`ngx_ff_reload_flow_map_teardown` 至今无调用者，实际由 lib 侧 housekeeping 触发）。
+
+> **方法学注记**：FIX-3 的失败与回退说明——对「跨层数据流闭环」类前提（本例为「栈内 syncache insert → 分派器 lookup HIT」），静态代码复核与评审**无法替代运行时证据**；bounce-2 在未取 PoC 级运行时证据的情况下合入，导致 S3''/S7'' 重大回归并整体回退。后续同类改动应先取运行时证据再合入。
+
+### 2.6 M5：USR2 二进制升级
+
+| 项 | 内容 |
+|---|---|
+| **目标** | [06](06-solution-design.md) 5.2 USR2 段：master 无 ff 状态可安全 exec；新 master 对接常驻 primary，fork 全 secondary worker，复用 M2~M4 全套 T1-T5 机制；老 master 保留回退能力 |
+
+**编码工作清单**：
+
+| 编号 | 代码锚点（`文件: 符号名`） | 类型 | 要点 |
+|---|---|---|---|
+| C-NR-501 | `src/core/nginx.c`（USR2/exec 路径） | 验证+微调 | 确认 master 侧无任何 ff 状态残留（[04](04-fstack-current-analysis.md) §2.2 已证 master 不 ff_init、socket 未劫持）；处理 exec 后 pid 文件/channel 与常驻 primary 的共存（候选 a/b 差异点）。**【M5 实现】** master 零 ff 状态复核坐实（`ff_init_with_args` 全树仅 worker/single 与 slim primary 两处调用，master 只 attach 匿名块）。**NGINX_VAR 真 bug 修复**：master 里 ff listening fd 恒为 -1，`%ud` 格式化把 -1 变 `4294967295` 传给新 master，`getsockname` 必失败 → 每监听一条 CRIT 噪音 + 幻影 inherited 条目（功能良性、host fd 不受影响，非断链级）；修复为 `#if (NGX_HAVE_FSTACK)` 分支跳过 `fd < 0`（`nginx.c` 9 行），NGINX_VAR 语义回归「只传真实可继承 fd」，native 构建逐字节不变；该修复与 graceful 无关、=0/=1 同向生效（无回归；RG-NR-01 不覆盖 USR2，登记即可）。pid 双文件/Channel/primary 归属零改动：channel 对 detached 子进程不建 socketpair、其余 channel fd 全带 FD_CLOEXEC，exec 后无跨 master channel，信号面只有 kill(pid)；primary 归属为共存复用（`ngx_ff_slim_primary_ensure` 命中即复用，不重复 spawn） |
+| C-NR-502 | 新 master 启动分支（`ngx_master_process_cycle`） | 修改 | 探测常驻 primary → 全 secondary fork（复用 C-NR-100~104）→ READY → 切流（复用 M3）；老 master 的 worker 即「G_old 代际」，复用 drain。**【M5 实现 + spec 修订（切流点 = WINCH，措辞定案）】** **【2026-09-17 补登记·R-14】本点落地文件 = `lib/ff_reload_gendir.c`（世代目录：master epoch 铸造 / rx owner 与 kni owner 字 / slot 表 + pid liveness 回收 / 单 CAS owner 仲裁；对应头文件 `lib/ff_reload_gendir.h`）**；老 master 侧 USR2 状态机（PENDING/HANDED + 1s watchdog + 自动回滚）的定义在 **`app/nginx-1.28.0/src/event/modules/ngx_ff_reload_fsm.h`**；ring 命名掺 epoch slot 的一致性由 **`tools/compat/check_ring_name_mirror.sh`** 校验（**当前未进 CI，为手工/本地校验脚本**）。实际序列：探测常驻 primary（已实现，`ngx_ff_slim_primary_ensure`）→ 全 secondary fork（复用 C-NR-100~104）→ 新代际 worker 经世代目录按 `getppid()` 自动注册 epoch（master 无 EAL，不参与）→ **切流点 = 老 master 收到 WINCH**（运维确认新代际就绪后发出）：老 master 调 `ff_reload_rx_release_epoch(peer_epoch, peer_gen)` 将 rx 所有权交给新代际坐标，目录由双方 worker 的 `dir_sync()` 搬运、合取判定保证交接窗口无双主；**USR2 本身不移动任何硬件所有权**（新二进制启动失败零成本）。老 master 的 worker 即 G_old 代际，复用 M4 drain。已知限制：目录无 READY 位，老 master 无法自动确认新代际就绪，故不支持 USR2 自动切流（后续里程碑候选，F-M5-3）。**为何 USR2 即切流不可行**：注册行出现在 `ff_dpdk_init` 开头、距 worker 真正可服务（hugepage 映射/队列 attach/M3 park barrier）差数十秒，USR2 即切流 = 把 rx 交给可能几十秒内无法 poll 的代际 → 真实断流，与 RT-04「错误 0」直接冲突。**新 master 侧零新增代码**；老 master 侧新增 USR2 状态机（PENDING/HANDED + 1s watchdog + 自动回滚），**不走 M3/M4 FSM**（复用的是 drain/park/drain_ring 机制而非 T1-T5 状态机，全程零 FSM 日志）。**架构约束（实证修正 plan 前提）**：nginx master 从不 `ff_init()` ⇒ 无 EAL ⇒ 读写不到 hugepage 目录——目录写入全部由有 EAL 的 worker/primary 完成（worker 逐 pass `dir_sync()` 镜像，master 只写自己的匿名块、经 `peer_epoch/peer_gen` 读对端坐标），「两 master 都可写目录」不成立 |
+| C-NR-503 | WINCH/QUIT 语义 | 修改 | 老 master 收 WINCH → 对老 worker 走 M4 drain；QUIT 收尾不波及常驻 primary（候选 b 需显式豁免）。**【M5 实现】** WINCH 先交接再 QUIT 老 worker（WINCH 早到则 defer 至 peer 注册后由 1s watchdog 补做），老 worker 走既有 M4 drain 路径**零新增 drain 代码**；QUIT 路径同样先尝试交接（「USR2 后直接 QUIT」的运维捷径不会把硬件丢给无人），失败记 WARN 走原生 QUIT。**primary 豁免复核结论：无需代码落点**——primary 经 `setsid()` + 双 fork 被 init 收养、不在 `ngx_processes[]`，`ngx_signal_worker_processes()`/`ngx_reap_children()` 均触达不到，且全树无 `killpg()`/`kill(0, sig)`，QUIT/WINCH/TERM/REOPEN 天然豁免；按字面去找「豁免点」只会误改 reap 路径。**失效条件登记**：若将来 primary 改单 fork / 不 setsid / 挂进 `ngx_processes[]`，该结论立即失效，须同步补 detached 标记豁免 |
+| C-NR-504 | 回退路径 | 验定 | USR2 后新二进制异常 → 对老 master 发 HUP 回退（老 worker 未 drain 完时语义验证，RT-04b）。**【M5 实现】** HUP = 回退（`ngx_ff_usr2_state != NONE` 一律解释为回滚而非 reload）：`ngx_ff_usr2_reclaim()` 复位 rx owner + 取消升级跟踪 + 老 worker 全退后 respawn 一整套；「回滚是声明不是抢占」——新代际仍 live 时老 worker 被目录挡住，真正夺回只在新 master 死后（`epoch_live` 转 false 自动写回）。**两项 G-B5 bounce-1 修复（边界时序）**：P1-1 PENDING 120s 超时加 peer 注册前置（peer 已注册则不超时 = 「升级已武装」无限期武装态，语义闭合；只剩「新二进制起了但从未注册」才超时）；P1-2 原生 `ngx_restart` respawn 与 USR2 状态机互锁（`ngx_ff_usr2_old_workers()` nlive 判定，**不依赖 usr2 state**——同 pass 内 `usr2_check` 先清 state，守卫恰好覆盖 state 已被清除的窗口），杜绝新 master 死亡时与 drain 中老 worker 并存出同 (epoch,gen,proc_id) 双 worker 集（双 rx poll + SC 环双消费者，目录无法仲裁完全相同的坐标）。G1 残留登记：skip/回退的 respawn 均为一次性 nlive 判定，drain 中 worker 全退后无自动补 respawn（实机验证 HUP 可闭合恢复） |
+
+| 项 | 内容 |
+|---|---|
+| **前置** | M4 合入。**【M2 CR 移交的硬前置】跨 master 世代 gen/ring 撞号问题必须解决**：USR2 新 master 重建匿名块 active_gen=0 起步，老 worker（偶数次 reload 后 gen=0）与新 worker 撞号 ⇒ 共享 gen0 msg_ring 双消费者 + KNI 双主（块独立但 DPDK ring/mempool 名字空间跨 master 共享、常驻 primary 不换代）——ring 名掺入 master epoch 或改命名 shm + 世代握手（C-NR-502 承载）。**【M5 实现已解决】** 由世代目录四件套闭合（C-NR-502 承载），落地形态：**常驻 primary 内 hugepage memzone 世代目录（master epoch 铸造 / rx owner / kni owner / slot 表）+ ring 命名掺 epoch slot（1 位十进制 + 编译期断言压 28 字节硬上限；slot 0 留 primary 与「无目录」身份，`=0` 名字逐字节不变）+ 目录 (epoch,gen) 单 CAS owner 仲裁（**kni owner 字亦由该目录持有，其翻转时机 = T5 `ff_reload_master_complete()`；由此产生的 drain 窗口 KNI 停服见本节末 R-30 登记**；数据面合取判定，只收窄不放大）+ slot 有界 4 组循环复用与 pid liveness 回收（环总量与 USR2 轮数无关）**；KNI 双主同因消除（`ff_kni_is_runtime_owner()` 改经目录 (epoch,gen) 判定——**M4 的「owner 已自动翻转」结论仅在单 master 下成立**，跨 master 由目录仲裁修正）。锚点审计（work/impl/m5-anchor-verifier.md）坐实：5 类跨进程命名资源中仅 msg_ring（graceful=1 分支）与 drain_ring 必须掺 epoch，dispatch_ring 不改名、靠目录仲裁保证单消费者 |
+| **DoD** | ① RT-04（USR2 带流量升级零错误）；② RT-04b（升级失败回退可用）；③ HUP 回归复跑不劣化。**【M5 达成情况】** 三道编码门禁 G-A5/G-B5/G-C5 各 bounce 1 次通过；实机首轮 RT-04 核心判据「客户端错误 0」FAIL（F-M5-1 P0：12/12 流在 WINCH 交接瞬间全灭 RST），runtime bounce-1（m5-coder-f1 修复 + 复审 PASS + 复测）后**全判据达成，G-M5 终裁 PASS**；RT-04b/RG-NR-01/HUP 回归/观测面/资源全 PASS；残留均为 P3 登记项（F-M5-2/3/4）。判据终态与登记项详见下方门禁结论块 |
+| **测试门禁** | RT-04/04b + RG-NR-01 |
+| **风险与回退** | 风险：exec 后环境/fd 细节（channel 继承）；候选 b 下 primary 归属交接。回退：不使用 USR2 即无影响（HUP 路径不依赖本章）。**【M5 复核】** channel 继承无干扰（detached 不建 socketpair + FD_CLOEXEC）；primary 归属为共存复用（详见 C-NR-501 注）。回退路径与判据不变 |
+| **提交建议** | 1~2 个 commit。**【M5 实际切分】** 未按功能切分，实际按 **4 层**：① lib 数据面（世代目录 + 命名上下文 + 仲裁 + 环生命周期 + F-M5-1 的 lib 侧门扩展）；② nginx 控制面（C-NR-501~504 + G-B5 bounce 修复 + F-M5-1 的 arm 门）；③ 测试（UT M5 用例 + IT mp harness + FINDING-1/TC-7）；④ spec 回写（06/07/08）。偏离理由同 M4：多文件混批、同一文件被多个功能点反复触碰，按层切分后每层自洽可编、可按层 revert |
+
+**【M5 门禁结论、登记项与 M6 移交（2026-09-07 实测；证据见 work/impl/m5-*.md 与 test-m5.md）】**
+
+**(1) 门禁终态**
+
+| 门禁 | 阶段 | 结果 |
+|---|---|---|
+| G-A5 | Batch A（世代目录 + 命名上下文 + 仲裁 + 环生命周期） | PASS（bounce 1：P0-1 tools 死代码 / P1-1 无效写入 / P1-2 接口不自洽 / P1-3 slot 复用不清空 / P1-4 环名断言+单测） |
+| G-B5 | Batch B（C-NR-501/502/503/504） | PASS（bounce 1：P1-1 PENDING 超时不判 peer / P1-2 ngx_restart 无互锁） |
+| G-C5 | Batch C（UT/IT + 双二进制）+ FINDING-1 修复 | PASS（bounce 1：真 EAL mp IT 编排竞态 → 两段式释放协议；FINDING-1 槽位回收修复一次过） |
+| G-M5 实机 | S0~S6 首轮 | RT-04b/RG-NR-01/HUP 回归/观测面/资源全 PASS；RT-04 核心判据 FAIL（F-M5-1 P0） |
+| **G-M5 bounce-1** | **F-M5-1 修复（m5-coder-f1）+ 复审 PASS + 复测** | **全判据达成，G-M5 终裁 PASS**（runtime bounce 计 1，未超限） |
+
+**(2) 判据终态（Runtime bounce-1 复测）**
+
+| 判据 | 结果 | 一行证据 |
+|---|---|---|
+| **RT-04 核心判据：客户端错误 0** | **PASS（bounce-1 后）** | 12/12 流零 RST 零尾丢 md5 全对（worst_gap 0.101s）；CPS 531619/531619 **fail=0**（qps 8860）；gdb 前后对照 `g_open` 0→1（三方证据闭合） |
+| RT-04：新 master + G_new 接管 | PASS | `handed rx to the new binary (epoch 3 gen 0)`；新代 epoch≠老代、slot∈1..3；跨代 `_e<slot>_g0` drain 链路闭合 |
+| RT-04：老 worker drain | PASS | 恢复自然排空（12 流自然 EOF 时刻 exiting，无 30s cap 强退） |
+| RT-04：pid 双文件共存期正确 | PASS | `nginx.pid`（新）/`nginx.pid.oldbin`（老）语义与切换时序正确 |
+| RT-04：无资源泄漏 | PASS | 各阶段终态 `CLEANED rtemap=0 hp_free=2048`；常驻 primary PID 全程不变 |
+| RT-04b：回退（V1 坏 conf / V2 WINCH 后新 master 死亡） | PASS | V1 老代零中断 + 恢复链路正常；V2 老连接续传 99.6%（修复前 0%）、reclaim/P1-2/G1 闭环复验 |
+| RG-NR-01：=0 全量回归 | PASS | HUP 停机 1.001s 与基线一致零 reload 行；USR2 原生路径零 M5 介入（=0 双代同名资源冲突为 pre-M5 既有形态，未介入未恶化）；单测 13/13 零变红 |
+| HUP 回归（RT-01/02/03/RT-10-lite） | PASS | RT-02 12/12 drain 36s 与 M4 基线逐项一致；RT-03 fail=0；RT-10-lite 8/8 零泄漏 |
+| 观测面（tools auto-probe，P0-1 修复实机成立） | PASS | 双 master 期/WINCH 后全窗口 rc=0 不挂死 |
+
+**(3) F-M5-x 终版登记**
+
+| 编号 | 级别 | 内容 | 终态 |
+|---|---|---|---|
+| F-M5-1 | **P0** | **USR2 跨 master 交接后新代 flow_map dispatcher 永不 arm**：arm 三重门与 miss 转发/ARP clone/drain ring init-retire-flush 共 5 类同源门 + drain ring 自环守卫（共 6 处）只认本 master 匿名块 `reload_active`，而 USR2 新 master 的块全新、不走 M3/M4 FSM、窗口永不开 ⇒ WINCH 接管后老代存量连接包喂给新代本地栈 → 全部 RST，miss→drain_ring 跨代转发缺位 | **已消除**（修复 = 统一以目录维度「窗口等价」`ff_reload_peer_draining()` 对全部 6 处做 OR 扩展，per-packet 门走块镜像廉价视图 `ff_reload_peer_mirror_draining()`，排水窗口语义用 slot stamp（2s staleness）；arm 保持 `ff_mod_init` 末尾（parked 代早开不可区分，无接管瞬间 RST 窗口）；S2' 全判据 + gdb 对照 + 同二进制 M4 路径对照三方证据） |
+| F-M5-2 | P3 | tools 显式 `-g <gen>` / `-p <id>:<gen>` 强制 epoch 0/slot 0——=1 实例活跃环全在 epoch>0 slot，显式 -g 一律 Broken pipe（M4 时代的 `-g` 翻转观测法失效；auto-probe 为受支持路径且全程工作） | 登记 → M6：扩 `id:gen[:epoch]` 参数格式 |
+| F-M5-3 | P3 | 跨 master 无 READY 信号：WINCH 时机完全依赖运维/脚本自行确认就绪（目录 slot 无 READY 位；注册行出现在 `ff_dpdk_init` 开头非就绪标志，脚本勿以其为门；本轮 20s 裕量实测安全） | 登记 → M6：gendir 增 ready 位（同时是「USR2 自动切流」的前置） |
+| F-M5-4 | P3 | kill 回退场景（RT-04b V2）老 worker 30s cap 上界：QUIT 后 may_exit/listen close cap 固定 30s、不受 `worker_shutdown_timeout` 控制，长 drain 需求下尾部 ~30KB/流损失（与 M4 RT-06 强退形态同族，declared behavior） | 登记 → M6：cap 可配或取 max（与 P2-10 同族） |
+
+**(4) 复审登记（不阻断）**：O-1（老 worker >2s 停顿 → stamp 过期 → 瞬态 retire、恢复后 re-init 自愈，间隙内 miss drop 为安全侧）、O-2（miss 门窗口内全量 peer 扫描，频度有界）、G2/G3 窄窗、ENV-1 RSS 门维持原样（S2 实证不扰服务代）、TC-2 quarantine 观察、FINDING-2（safe-delete hook，已以 env -i 固化于构建脚本）、FINDING-3（DPDK primary 退出 rtemap 不 unlink，M6 观察）。
+
+**(5) M6 移交**：F-M5-2（`-g` 跨 epoch 格式扩展）、F-M5-3（READY 信号/自动化 WINCH 时机）、F-M5-4（kill 回退 cap 收窄评估）、FINDING-3（rtemap 泄漏）；M4 既有移交项（F2、P2-10/11 等）不变。
+
+**(5b)【2026-09-17 登记·R-30（P2，已知劣化）】drain 窗口（T3→T5）内 KNI 双向停服** —— 与世代目录持有的 `kni_owner_gen` 翻转时机直接相关，故登记于本节（机理详见 [06](06-solution-design.md) §2 语义 15 的 R-30 条目）：
+
+| 侧 | 落点 | 归属 | 说明 |
+|---|---|---|---|
+| **(a) inject 侧**（内核 → 网卡，出队 `lib/ff_dpdk_kni.c: ff_kni_inject_process()`） | R-02 修复给 `ff_kni_inject_process` 加 `likely(!no_hw)` 门控（`ff_dpdk_if.c: main_loop()〔锚点未核实〕`）后，drain 期 G_old 不再出队 `kni_inject_rp`（唯一入队点 `ff_dpdk_kni.c: kni_process_rx()〔锚点未核实〕`）⇒ **环零消费者** | **本次 R-02 修复的次生行为**（新引入的可知劣化） | 方向正确：原行为是并发 TX 违例，现降级为丢包 |
+| **(b) 投递侧**（网卡 → 内核，`ff_dpdk_if.c: ff_dpdk_process_packets()` 收包 clone → `ff_kni_enqueue`） | 该路径从未受 `no_hw` 门控，只受 `ff_kni_is_runtime_owner()` 门控；T3→T5 内 owner 是被 park 的 G_old（不 poll rx，到不了 ff_dpdk_if.c: ff_dpdk_process_packets()），G_new 又匹配不上 owner ⇒ 同样无人投递 | **T5 翻转设计的既有缺口，非本次 R-02 引入** | 与 (a) 同根因（`kni_owner_gen` 只在 T5 `ff_reload.c: ff_reload_master_complete()` 翻转），但**不是** R-02 造成的 |
+
+- **后果**：**不死锁、不崩溃**，primary 的 enqueue 填满后溢出、mbuf 释放并计入 **`kni_stat[port_id]->tx_dropped`**（`ff_dpdk_kni.c: kni_process_rx()`）；T5 后由新代际恢复。**量级未坐实** —— 无定向实机：rt12 虽为 KNI 形态但窗口内无注入负载、仅 1 s，`tx_dropped` 恒 0，零判别力。
+- **触发条件**：`[kni] enable=1` + `[dpdk] primary_slim=1` + `graceful_reload=1`，且 drain 窗口内内核侧有 KNI 注入流量（**非默认组合**）。
+- **修法（未采纳，登记）**：`kni_owner_gen` 翻转从 T5 提前到 **T3 硬件接管**。**【G-A §7.8 更正】** 只改一点不自洽，须扩到 4 个「硬件所有权变更点」同步翻转，其中 **`ff_reload_master_abort()` 的回滚** 与 **`ff_dpdk_if.c: main_loop()〔锚点未核实〕` 的心跳回收**为**必需项**（漏掉任一点 ⇒ kni owner 挂在已死代际上永久停服，比现状更坏）。
+- **本轮处置**：code-fixer 未采纳 T3 翻转 ⇒ **不补跑**，R-30 关闭为「**登记项 + 已知劣化**」，量级维持**未坐实**，留待后续专项。
+- **【R-02 的定性（G-D 裁定，spec 一律按此写）】：R-02 =「机理闭环，行为闭环不完整（缺 KNI TX 注入定向实机）」**。已闭环：加 `likely(!no_hw)` 后 drain 期 G_old 的**全部 4 个 `rte_eth_tx_burst` 调用点**均不可达（`send_burst :3075` 有 `no_hw` 兜底；`ff_kni_process :192/:232` primary-only 结构性不可达；`ff_kni_inject_process :586` 本次新增门控；`ff_drain_ring_tx_drain :505` 已有门控）⇒ TX 独占违例**在结构上消除**。未闭环：① 无 KNI TX 注入定向实机（rt12 为 KNI 形态但窗口内无注入负载、仅 1 s，`tx_dropped` 恒 0，零判别力）；② 次生行为 R-30 未实机观测。**因此 R-02 不得声称「完整修复」** —— 一律写「R-02 已修复（TX 独占违例消除）；drain 期 KNI inject 停服为已知次生劣化（R-30），量级未坐实」。
+
+**(6) 关键技术成果（跨里程碑复用价值）**：① 硬前置闭合四件套（世代目录 / epoch slot 命名 / 单 CAS 仲裁 / slot 有界复用）；②「master 无 EAL」架构约束的发现与适配（目录写入由 worker/primary 承载，master 经匿名块 peer 坐标间接参与）；③ 切流点 = WINCH 的语义定案（USR2 零成本武装 + 运维确认后无损切流）；④ F-M5-1 的「窗口等价」信号族（目录维度 peer_draining + 块镜像廉价视图 + slot stamp 排水窗口）；⑤ 双二进制构建脚本（`work/m5-poc/build_dual_nginx.sh`，genA/genB 可区分可重复，含 USR2/WINCH/回退操作序列）。
+
+### 2.7 M6：终门禁、特殊场景回归与文档收尾
+
+| 项 | 内容 |
+|---|---|
+| **目标** | 关闭全部 RV：RV9 终门禁（v1.6 修订：循环 reload ≥100 次，每 5s 检测共享内存状态所有 G_old 已退出后 reload 一次，对齐 [01](01-vpp-vcl-research.md) §6.3-7 VPP 模式并适配防重入语义）、RV8（KNI）、zc 场景回归、文档入库 |
+
+**编码工作清单**：
+
+| 编号 | 文件 | 类型 | 要点 |
+|---|---|---|---|
+| C-NR-601 | 新增 `tests/integration/test_graceful_reload.sh`（实机 B 组 harness） | 新增 | 真实执行 + 逐用例判定 + 退出码汇总；TARGET_IP 必填参数；进程终止走 `kill_process.sh`、清理走 `rm_tmp_file.sh`（硬性规约见本文「关键结论 6」）；内嵌循环 reload 驱动（可配次数/间隔）。**【M6 实现】** 落地为 harness（M6 初版 **755 行**，M6b 与 2026-09-17 `ini_strip_kni()` 修复后实测 **1331 行**；`--baseline`/`--cases`/`--rounds`/`--interval`/`--shutdown-timeout`/`--zc-build` 可配），承载 RV9 并复用 m4-poc 资产（三查/泄漏量化函数、`m4_lc.py`/`m4_cps.py`、s7_rv9 循环骨架、`m5_common.sh` USR2 增量）；**Makefile 挂载为独立目标 `reload-harness` / `reload-harness-dry`（2 轮冒烟），刻意不并入 `ALL_TESTS`/`make test`**——现有 `make test` 被 CI 调用而实机用例需要 TARGET_IP + 客户端机 + DPDK 独占网卡，挂入必挂（anchor §1.1 落笔建议采纳；`tests/integration` 既有体系为 4 个纯 C 二进制，唯一 .sh 先例 test_mtu.sh 是未挂 Makefile 的说明型脚本，已与之划清界限）。G_old 退出判定以「FSM 日志镜像 + worker 数回归」双通道承载（tools 侧共享内存 dump 入口尚无，G-A6 A-3 认可为可接受替代）。测试过程自曝 3 类驱动误判（`local` 多词展开空 conf / rt06 判据 grep 模式与实际日志文本不符 / `tail` 缺行数参数），全部定位修复并以日志证据人工改判，如实登记于 test-m6 §5.3 |
+| C-NR-602 | 无正式编码（RV8 用例执行） | 测试 | `enable_kni=1` 的 reload 回归（RT-12），问题修复按需另立 C 项。**【M6 实现·按实际形态定案】** 本树 KNI **不是 rte_kni**（DPDK 24.11 已移除 rte_kni.ko，`lib/Makefile:34` 注释明示），而是 **virtio_user 异常路径**：配置项为 `[kni] enable=1`（非 `enable_kni`，spec 原键名有误），内核侧网口 `veth<port_id>`，依赖 `/dev/vhost-net`，无需 igb_uio/内核头文件；`graceful_reload=1` 下 KNI owner 经世代目录跨代/跨 master 仲裁。RT-12 实机 **PASS**：`[kni] enable=1 + owner_proc_id=1 + method=reject` 下 RT-02 全判据达成（FSM 6/6、`veth0` 跨 reload 存活、业务流量 90/90 零失败）；KNI 管理面以**数据面双向取证**替代（reload 前后 tcpdump `-i veth0` 入向 ICMP 捕获 + veth0 邻接表 ARP-REACHABLE 出向注入闭环，四组证据）——「客户端 ping 自选 KNI IP」在云环境**不可构造**（fabric 仅投递平台分配 IP，自选 IP 的 ARP 被网关代理应答、数据包永不到达网卡），出 A-NR-18 式明确限制结论。附带登记 **F-M6-2 运维警示**：veth0 地址必须 `/32` 或独立网段（同网段掩码在宿主机生成第二条连接路由、劫持回程，实测致 ssh 断链），已写入 C-NR-604 运维手册 |
+| C-NR-603 | 无正式编码（zc 回归用例） | 测试 | zc 收包路径下 reload 回归（RT-13，[06](06-solution-design.md) 5.5 正交性验证）。**【M6 实现·语义重新定案】** 本树 zc **无 config.ini 配置项**，是 `FSTACK_ZC_RECV`/`FSTACK_ZC_SEND` **编译开关**（`lib/Makefile:234`/〔锚点失效：d752ed69f 误映射，已移除〕（CFLAGS 行；完整块 〔锚点失效：d752ed69f 误映射，已移除〕/〔锚点失效：d752ed69f 误映射，已移除〕），2026-09-17 按 HEAD 复核；原写 〔锚点失效：d752ed69f 误映射，已移除〕，07/08 口径已统一为 〔锚点失效：d752ed69f 误映射，已移除〕/〔锚点失效：d752ed69f 误映射，已移除〕，**不得混用 ifdef 行与 CFLAGS 行**），作用于**协议栈↔应用**零拷贝读写（`kern_zc_recvit`，`freebsd/kern/uipc_syscalls.c: kern_zc_recvit()〔锚点未核实〕`），与收包路径无关；nginx 全树零 `ff_zc_*` 调用 ⇒ 原「zc 收包路径」「回调判定与 mbuf 来源无关（[06] §5.5 原表述）」无法按字面构造（anchor §2.2 三方案中取方案 1），[06] §5.5 已同步修订。RT-13 判据落定为「**构建形态正交性**」：`make FF_ZC_RECV=1` 重建 lib + `env -i` 五参数重链 nginx（`kern_zc_recvit` 符号 nm 核验）后跑 RT-02 全判据——实机 **PASS**：12 路活跃流全绿（`ok=12 md5_ok=12 eof_clean=12 stalls=0`），drain/forwarded/relayed（49000/11389/66082）与默认构建（49000/11455/66104）同形，drain_ring 跨代转发（forwarded>0 relayed>0 双通道）与零拷贝读写路径**正交成立**。harness `detect_zc_build()` 因 `ff_zc_mbuf_get` 无条件编译恒误报，登记 **F-M6-1**；**【2026-09-22 同步·C01-8】F-M6-1 已修**：判定改为在被测 binary 上 nm 查 `kern_zc_recvit`（`tests/integration/common/reload_runtime.sh`），并须与源码/构建清单/archive 绑定，**手写 `--zc-build 1` 不能证明 zc 已启用，形态错配应拒绝而非绕开**。**【2026-09-22 决定】RT-13（zc）永久排除：不测、不进行支持；本行「实机 PASS」为 M6 期（2026-09-08）历史口径** |
+| C-NR-604 | `doc/F-Stack_Nginx_APP_Guide.md`、`doc/F-Stack_Release_Note.md`、`config.ini` 注释 | 文档 | 部署形态（常驻 primary + **queue_id 代际无关映射 + 两代同 lcore_id** + **代际 mempool（乒乓复用）** + graceful_reload 开关矩阵）、运维手册（reload 状态打点解读、**`drain_ring` 水位与满环告警**、primary 死亡降级处置、**T3 后 G_new 崩溃的处置流程（含心跳超时调优）**、drain 强退阈值调优）、**DPDK 硬禁令例外适用的说明**、语义变更声明。**【M6 实现】** 三文件入库：① APP Guide（107→201 行）：原「Graceful reload preparation (experimental)」（M1 阶段措辞）升级为正式章节 `## Graceful reload`，含 9 小节（部署形态与开关矩阵 / T0-T5 打点与 `reload complete` 行逐字段 / drain_ring 水位与满环告警 / primary 死亡降级 / 心跳夺回与 `reload_heartbeat_timeout_ms` 调优 / 强退 cap 取 max / USR2-WINCH 五步流程与回退 / KNI veth /32 警示 / tools `-p`·`-g` 跨 epoch 寻址），并更正 nginx 版本号 1.25.2→1.28.0、`reload` 指令 =0/=1 行为对照；② Release Note：新增 graceful reload 特性条目（lib 8 条 + ff tools 1 条 + APP 2 条含已知限制）；③ config.ini **仅注释层**（开关矩阵 + 新增 `drain_ring_size` 注释块，纯注释 hunk 可 `git add -p` 干净分离，本地测试值不入库）。日志行格式全部对照工作树代码逐字核对，未沿用 M4/M5 报告过期行号；DPDK 硬禁令例外说明由「两代同 lcore_id + 代际 mempool 乒乓」的部署形态小节承载。详见 work/impl/m6-doc-writer.md |
+
+| 项 | 内容 |
+|---|---|
+| **前置** | M4（M5 可并行推进）；**RV14 已确定门禁节拍配置** |
+| **DoD** | ① RV9：持续流量 + 每 5s 检测共享内存状态所有 G_old 已退出后 reload 一次，≥100 次零错误、无死锁无 crash、mbuf/内存无泄漏趋势（v1.6 修订：原「每 2~5s reload、≥1000 次」与防重入语义+25s 初始化不可同时成立；**v1.9 补充：须先由 RV14 给出 keepalive 配置与强退阈值，否则 100 轮的机时不可控**）；② RT-12/13 通过（或出明确结论与限制声明）；③ 全部 RV1-15 关闭记录在案；④ 文档入库。**【M6 终态：全部达成，G-M6 PASS（无 P1 残留；runtime 零 bounce）】** ① RV9：**100/100 轮全部 complete、fresh_n=7891 fresh_fail=0**（历史最佳——M4 预演 50/50 带 10.7% fresh_fail 残留）、无死锁无 crash（drain 恒 1000~1001ms 自然完成、零 deadline forced、零防重入拒绝）、无泄漏趋势（rtemap 100 轮恒 138 斜率 0、运行期 hp_free 恒 1910、终态全回收 2048/2048），A-NR-16 关闭；② RT-12 按 KNI=virtio_user 实际形态 PASS（附管理面云环境限制结论）+ RT-13 按 zc 编译开关形态 PASS（历史口径；2026-09-22 起永久排除，见本表 G-M6 ②）（正交性验证）；③ 全量 RT 矩阵（RT-01/02/03/04/04b/05/06/07/09/10/14 + RG-NR-01 =0 HUP 与 =0 USR2）逐项与 M4/M5 基线同形或更优，硬判据全达成；附带 **F2 尸检闭环**（根因更正见下方门禁结论块 (3)）；④ C-NR-604 三文件文档入库 |
+| **测试门禁** | PT-NR-05 终门禁 + 全量 RT 矩阵复跑 |
+| **风险与回退** | 风险：长循环暴露的低概率状态错位（VPP #3547/#3645 前车之鉴，[01](01-vpp-vcl-research.md) §4.3/§6.4）——这正是门禁价值所在，暴露即回 M4 状态机修。回退：无代码回退需求 |
+| **提交建议** | 2 个 commit：测试脚本 / 文档。**【M6 实际切分：4 层】** ① lib/nginx/tools 代码（三项移交项修复 + F2 修复）；② tests（harness + Makefile 目标 + `test_ff_ipc` 单测）；③ 文档（C-NR-604：APP Guide / Release Note / config.ini 注释）；④ spec 回写（07 §2.7 + 08 判据修订含 F-M6-4 更正）。偏离理由同 M4/M5：多文件混批、同一文件被多个功能点反复触碰，按层切分后每层自洽可编、可按层 revert；config.ini 本地测试值不入库 |
+
+**【M6 门禁结论、登记项与移交项终版（2026-09-08 实测；证据见 work/impl/test-m6.md、m6-gate-ruling.md、m6-f2-forensics.md、m6-coder-fixes.md、m6-doc-writer.md 与 state.json）】**
+
+**(1) 门禁终态**
+
+| 门禁 | 阶段 | 结果 |
+|---|---|---|
+| G-A6 | harness + 三项移交项（F-M5-2 / P2-10·F-M5-4 / F-M4-1） | PASS（有条件）：复审后 2 项 P1 + 全部 P2 已整改复验（开工前必修项，不占 bounce） |
+| G-M6 ① | RV9 / PT-NR-05 / A-NR-16 循环 reload 终门禁 | **PASS**：100/100 轮 complete、fresh_fail=0、零死锁零 crash、零泄漏趋势（历史最佳数据） |
+| G-M6 ② | RT-12（KNI）/ RT-13（zc） | **PASS**（RT-12 附 A-NR-18 式环境限制结论；RT-13 按编译开关实际形态；【2026-09-22 决定·G-D】RT-13（zc）自该日起**永久排除**：本仓库不构建 zc 形态，不测、不进行支持；以下 RT-13 结论仅为 M6 期（2026-09-08）历史口径，不作现行判据。 |
+| G-M6 ③ | 全量 RT 矩阵不劣化 | **PASS**：逐项与 M4/M5 基线同形或更优，硬判据（fail=0/md5 全对/零 RST）全部达成 |
+| G-M6 ④ | F2 尸检 | **已闭环**：稳定复现 + 3 个同因同址 core；根因更正（见 (3)）；2 行修复后 sig6=0、respawn 恰 1 次、fresh 300/300 零失败 |
+
+**G-M6 终裁：PASS（无 P1 残留；runtime 零 bounce）。**
+
+**(2) 判据终态**
+
+| 判据 | 结果 | 一行证据 |
+|---|---|---|
+| RV9 核心判据：错误数 0 | **PASS** | 100/100 轮 complete；fresh_n=7891 **fresh_fail=0**（M4 预演为 50/50 带 10.7% 残留） |
+| RV9：无死锁无 crash | **PASS** | 每轮 drain 恒 1000~1001ms 自然完成（watchdog 1s 节拍）；零 deadline forced、零防重入拒绝（notes=none） |
+| RV9：无泄漏趋势 | **PASS** | rtemap 100 轮 min=max=138 斜率 0.000000；运行期 hp_free 恒 1910；终态 `CLEANED rtemap=0 hp_free=2048` 全回收 |
+| RT-12（KNI=virtio_user） | **PASS** | `[kni] enable=1` 下 FSM 6/6、veth0 跨 reload 存活、业务 90/90 零失败；KNI 数据面双向取证四组证据（tcpdump 入向 ×2 + ARP-REACHABLE 出向 ×2）；管理面「客户端 ping 自选 IP」云环境不可构造（限制结论） |
+| RT-13（zc=编译开关） | **PASS（历史口径；2026-09-22 起永久排除）** | `FF_ZC_RECV=1` 构建下 12/12 流全绿；drain/forwarded/relayed（49000/11389/66082）与默认构建同形——正交性成立 |
+| 全量 RT 矩阵不劣化 | **PASS** | RT-01/02/03/05/06/07/09/10/14 + RT-04/04b（两变体两分支）+ RG-NR-01（=0 HUP + =0 USR2）逐项同形或更优；rt06 强退 RST 未触发、rt04b_v2 双分支闭环、**P2-10 cap=max(30000, worker_shutdown_timeout) 实机验证闭环**（rt06c `capped at 35000 ms`、quit_to_exit=35s） |
+| F2（worker 非正常死亡 respawn 风暴） | **已闭环** | 根因与修复见 (3)/(4)；本轮被测二进制与 F2 修复验证构建逐字节一致（md5 同），运行时证据直接适用 |
+
+**(3) F2 根因更正（本轮最重要发现，证伪沿用四轮的「脏 EAL」假设）**
+
+- 实机三轮稳定复现：SIGKILL 打 slot1（worker 1）→ respawn 正常**零崩溃**（对照）；SIGKILL 打 slot0（worker 0）→ **风暴 2435 次/267s**；**SIGTERM 让 slot0 干净退出（走完整清理含 `rte_eal_cleanup`）同样风暴** ⇒ **决定性变量 = 槽位 0（worker 0 / proc_id 1），与死亡方式无关**。
+- 真实根因 = **nginx 侧 `ff_shm` 信号量生命周期错配**（非脏 EAL）：`ngx_ff_worker_sem` 只在 `ngx_start_worker_processes()` 创建/销毁（`ngx_process_cycle.c: ngx_ff_worker_sem`），但 worker 0 的 `sem_post()` 在 `ngx_worker_process_init()`（ngx_process_cycle.c: ngx_worker_process_init()，仅 `worker == 0`、无判空）——同槽 respawn 的 worker 0 由 fork 继承**悬垂指针** → `sem_post` 打到已 `munmap` 的地址 → glibc futex fatal → SIGABRT → 无限 respawn（实测 9.1 次/秒，267s 不自停，HUP 才止）。三个 core 崩溃栈完全一致且**崩溃点在 nginx 代码不在 EAL**；崩溃前 gendir attach 日志证明 secondary attach 已成功 ⇒ **M2 登记的「worker 退出未走 rte_eal_cleanup 遗留脏 EAL」机理证伪，该表述自此作废、不得再引用**。
+- 修复 2 行（ngx_process_cycle.c: ngx_ff_worker_sem 销毁后补 `ngx_ff_worker_sem = NULL;` + ngx_process_cycle.c: ngx_ff_worker_sem post 前判空，post 语句在 ngx_process_cycle.c: ngx_ff_worker_may_exit()），=0/=1 双模式行为等价自证；修复后 SIGKILL/SIGTERM 打 slot 0 各轮 sig6=0、respawn 恰 1 次、fresh 300/300 零失败。同一机理同时解释「HUP 为何能自愈」（reconfigure 走 `ngx_start_worker_processes` 会重建 ff_shm，而 reap 槽位 respawn 不重建——两条 respawn 路径的差异即本 bug 的触发边界）。
+
+**(4) 移交项终版（M4/M5 移交 M6 的全部高价值项，均已消解）**
+
+| 编号 | 内容 | 终态 |
+|---|---|---|
+| F-M5-2 | tools 显式 `-g <gen>`/`-p <id>:<gen>` 强制 epoch 0/slot 0 → 活跃环 Broken pipe | **已修**：`ff_set_proc_id_str` 支持 `<proc>[:<gen>[:<epoch>]]`，新增 `ff_set_gen_str`/`ff_set_epoch`，10 个工具 `-g` 调用点接入；新增单测 `test_ff_ipc` 7/7 + 实机 `-p 0:0:3` 完整往返命中 epoch 环；「不静默回落」契约（M5 已实现）保持未回退 |
+| P2-10 / F-M5-4 | drain 强退 cap 固定 30s，截断运维显式配置的更长优雅窗口 | **已修**：cap 取 `max(30000, worker_shutdown_timeout)`（零新增指令、零配置面；两处使用点同一 helper 保证一致）；rt06c 实机 `capped at 35000 ms` + quit_to_exit=35s 验证闭环；未配置或 ≤30s 时逐值不变（=0 路径守卫处不可达，等价天然成立） |
+| F-M4-1 | drain_ring 满环无告警 + 1Hz 采样漏瞬态尖峰 | **已修**：`ff_drain_ring.c` 内秒级限频告警（rx/tx 独立桶，最坏 2 行/秒）+ 满环点同步把当前水位写进共享块（满环事件必然体现在 `ring peak` 观测面）；新增单测 TC + 集成 4/4 零回归。全 RT 用例零满环、peak <1.2% capacity ⇒ **`drain_ring_size` 2048 默认值维持**，上调与否登记为待实测决策项（水位面已补齐，按站点 peak/capacity 比值决策） |
+| F2 | worker 非正常死亡 → respawn 风暴（M2 登记「脏 EAL respawn」） | **已闭环**：根因更正 + 2 行修复（见 (3)）；M2「脏 EAL」机理登记作废；legacy =0 下 primary 被杀的脏 EAL respawn 残留面（`EAL: Cannot allocate memzone list → exit 1`，非 signal 6）维持登记、不属 F2 范围 |
+
+**(5) F-M6-x 新发现登记（全 P3）**
+
+| 编号 | 内容 | 处置 |
+|---|---|---|
+| F-M6-1 | harness `detect_zc_build()` 误报：`ff_zc_mbuf_get` 定义于 `lib/ff_veth.c: ff_zc_mbuf_get()〔锚点未核实〕` 且无条件编译，默认构建即命中 ⇒ auto 探测恒报 zc=1 | harness 改用 `kern_zc_recvit`（真受 `FSTACK_ZC_RECV` 门控）作探测符号；本轮以显式 `--zc-build 1` 规避。**【M6b 已修并实测：见本节 (8.1)；另发现同源的 `grep -q`+`pipefail` SIGPIPE 隐患，登记 F-M6B-3】** |
+| F-M6-2 | KNI veth0 同网段掩码污染宿主路由（实测致 ssh 劫持、harness HTTP_READY 假 FAIL） | **已写入 C-NR-604 运维手册**（/32 或独立网段） |
+| F-M6-3 | harness `case_gr0` 对 g=0 不强制 port lcore 拓扑（=0 须 `lcore_mask=3`/`lcore_list=0,1`，与 =1 拓扑不对称）；rt12 的 ping 判据为服务器本机 ping（走 loopback 不经 KNI），观测口径偏弱 | 登记改进；本轮以修正拓扑复跑 + S2.3 双向取证替代覆盖。**【M6b 已修并实跑 A/B：见本节 (8.1)】** |
+| F-M6-4 | 08-testing.md RT-09 段「0ms 即时 abort（不空等 60s READY 超时）」表述错误（实走满 60s attach 门后 abort；"elapsed 0 ms" 是 FSM transition 计数） | **08 v1.9 已回写更正**（不改代码） |
+
+**(6) 关键技术成果（跨里程碑复用价值）**
+
+1. RV9 终门禁历史最佳数据：零错误 + 零泄漏 + 全自然排空，关闭 A-NR-16；
+2. F2 根因更正（证伪「脏 EAL」，`ff_shm` 信号量悬垂指针坐实）与 2 行修复；
+3. 三项移交项全部消解（F-M5-2 跨 epoch 寻址 / P2-10 cap 取 max / F-M4-1 满环告警与水位）；
+4. RT-12/RT-13 按实际形态定案（KNI=virtio_user 异常路径、zc=栈↔应用零拷贝编译开关），spec 表述随之修订；
+5. C-NR-601 harness 落地（**1331 行**（M6 初版 755 行，M6b 与 2026-09-17 `ini_strip_kni()` 修复后增长）、独立 Makefile 目标 `reload-harness`，承载 RV9 循环门禁，并复跑 RT-01/02/12/13 四个实机用例（harness 共 8 case：`precheck`/`baseline`/`rt01`/`rt02`/`rv9`/`gr0`/`rt12`/`rt13`（**其中 `rt13` 自 2026-09-22 起永久排除**）；`gr0` 承载 RG-NR-01；其余 12 个 RT 编号需人工或 ad-hoc 脚本执行））。
+
+**(7) 诚实边界**：RT-08/RT-11 不在 M6 复跑清单（前者已由 M1/RG 覆盖、后者可选项未跑）；RT-12 管理面「外部 IP 可达」在本云环境不可构造，已给等价证据（数据面双向取证）与限制结论，物理网卡环境应按原判据复跑；qps/p50 水平偏移（7567~7831 vs 基线 8743~8798）判同机环境噪声（测试窗口内他方 agent 活动），错误类/瞬态类指标零偏移；RV9 的 G_old 退出判定为日志镜像实现（无 tools 侧共享内存 dump 入口，G-A6 A-3 认可）。
+
+**（8）M6b 遗留闭环（2026-09-09 实测；证据见 work/impl/m6b-coder-harness.md、m6b-test-rt11.md）**
+
+M6 收尾时登记的可选/遗留项在本轮全部实跑闭环。**RT-11 由「M6 未跑的可选项」转为此处四项闭环之一**，M6 §(7) 中「RT-11 未跑」的表述自本版起失效。
+
+**(8.1) 四项遗留的闭环终态**
+
+| 编号 | M6 登记内容 | M6b 闭环 | 终态 |
+|---|---|---|---|
+| F-M6-1 | harness `detect_zc_build()` 误报（`ff_zc_mbuf_get` 无条件编译） | 探测只认 `kern_zc_recvit`（受 `FSTACK_ZC_RECV` 门控），并用 `grep -c` 取代 `grep -q` 规避 `pipefail` 下的 SIGPIPE（新发现隐患：旧探测在两种构建下实测**恒返回 0**，M6 S3 记的「恒报 1」是静态推断非实测值）；新增 `zc_probe_selftest()` 干跑自检（默认构建必须 detected=0、gated>0 必须 detected=1、并发重建重读一次），失败 exit 5 早退 | **已修 + 自检实测有效**（默认/ zc 双构建各验一轮；自检当场抓到一个真 bug）。残留：rt13 **运行时**判据未复跑——**已作废（2026-09-22 决定）：RT-13 永久排除，不测、不进行支持、不再补跑**（同本表「rt13 运行时复跑」行） |
+| F-M6-3① | harness `case_gr0` 对 `graceful_reload=0` 不强制 port lcore 拓扑 | 新增 `derive_lcores(graceful)`：`g=1` mask=`(2^(W+1))-1`（最低位给 slim primary）、`g=0` mask=`(2^W)-1`（worker 占全部位）；`ini_force_port_lcores` 两种形态都写，=0 不再继承模板残留的 `lcore_list` | **已修**：同一模板（`lcore_list=1,2`）修复前 **FAIL**（`start failed`）→ 修复后 `lcore_mask=3 / lcore_list=0,1`、**PASS**（`ok=20178 windows=1 longest_outage=1.001s reload_log_lines=0`，回到 RG-NR-01 基线 `ok=20024~20289`）；=1 无回归。诚实边界：M6 干跑记的劣化数值 `ok=89/windows=38` 本机未复现，本机劣化形态为更极端的「=0 实例不服务」，以本机实测为准 |
+| F-M6-3② | rt12 管理面 ping 为服务器本机 ping（走本机路由，不过 KNI） | 判据改为**客户端发起** + **三分支**（`ok` / `LIMITED`（KNI 不通但控制组通 → 判据显式 NOT JUDGED 不判失败）/ `DOWN`（都不同 → 显式 FAIL））；控制组由 ping 改为 **HTTP**（`method=reject` 下 ICMP 被分流进内核、内核不持有该地址 ⇒ 永不回包） | **已修 + 实跑**：本环境 `ping_client=unreachable control_http=200` ⇒ 走 **LIMITED**（`[rt12] PASS`，criterion 显式 `[NOT JUDGED]`）；**DOWN 分支亦实跑到**（控制组误用 ping 的旧版 → 显式 FAIL，无假 PASS）；**ok 分支在本云环境不可构造**（fabric 只投递平台分配地址），须在物理网卡环境补跑 |
+| RT-11 | 内核栈混跑对照（M6 未跑） | 核实本树有**两套语义不同**的指令（server 侧 `kernel_network_stack` / 上游侧 `proxy_kernel_network_stack`），按四组实跑：a / b（含本地等价形态 bl）/ b2（http 上游）/ c（负对照） | **已闭环**：a = **PASS + 限制**（监听 fd 跨 reload inode 不变；**空闲** keepalive 内核栈连接在 G_old `exiting` 同刻被切，活跃连接不受影响，登记 F-M6B-1）；b = **PASS**（机器判定，`ok_conns=8`）；c = **PASS**（off → 回源 0 字节 + `upstream timed out`，内核直连通）；b2 = **PASS**（覆盖度弱，1MB/流仅尾段约 1.5s 与 reload 窗口重叠）；**c-remote 未跑**（与本地负对照语义重复，机时让位）。判据与结论已回写 [08] v1.10 RT-11 整行 |
+
+**(8.2) F-M6B-x 新发现登记（全 P3，均为驱动/文档级，非产品缺陷）**
+
+| 编号 | 内容 | 处置 |
+|---|---|---|
+| **F-M6B-1** | **混跑设计内限制**：`kernel_network_stack` server 上的**空闲**长连接在 reload 的 G_old 退出时刻被切断——G_old 排空判据是 f-stack 语义（`ff_socket_snd_pending()` / `ff_syncache_count()` + `worker_shutdown_timeout`），**内核栈连接不进入该统计**，故只有内核栈空闲连接时 drain 1000 ms 即完成、QUIT 后 `ngx_close_idle_connections()` 立即关掉。**活跃**连接不受影响（rt11bl/rt11b 8/8 流零中断、G_old 留到自然结束） | **已写入 C-NR-604 运维手册**（`doc/F-Stack_Nginx_APP_Guide.md`「Mixed mode」段）并回写 [08] RT-11 判据。**不判缺陷、不打回**；长连接场景需按限制规划（或把该类流量放 f-stack 监听侧） |
+| **F-M6B-2** | harness/驱动 tcp 模式在不传 `--expect-md5` 时仍输出 `md5_ok=0`，与「md5 比对失败」同形，易被误读为硬判据失败（曾据此一度误判 rt11b 失败）。受影响的只有**收尾短探针**（只读 64KB、不比 md5），主探针带 `--expect-md5` 时 `md5_ok=8` 有效 | 建议探针在 md5 未启用时输出 `md5_ok=n/a`；驱动判据按模式区分（仅 md5 模式校验 md5）。**未修**（脚本改进项） |
+| **F-M6B-3** | **同类 `grep -q` + `pipefail` 隐患残留两处**：`tests/integration/test_graceful_reload.sh:714`（`hup_once` 的「`tail` 管道接 `grep -q 'graceful reload complete'` 后 `&& break`」）与 〔锚点失效：d752ed69f 误映射，已移除〕（`case_rv9` 同形一行）。`tail` 输出超过管道缓冲时被 SIGPIPE 杀死、管道返回 141、`&& break` 不成立 ⇒ 循环空转到 `DRAIN_TIMEOUT`（120s）才退出；退出后仍用不带 `-q` 的 `grep` 重取行，**判据本身不受影响，后果良性（只是白等）**，日志小时不触发 | 建议后续统一改 `grep -c`。本次保持最小 diff 未改（F-M6-1 只改 zc 探测一处） |
+| **F-M6B-4** | 后端多线程 `print` 无锁时两条记录挤进同一行，`grep -c` 按**行**计数少计（曾致 `ok_conns=7` 误判 FAIL）。同源风险：任何「多写者追加同一日志 + `grep -c` 计数」的判据 | 后端打印加锁；计数一律改成 `grep -o` 管道接 `wc -l` 的按记录计数。已在本轮驱动内修，模式记此备查 |
+| **F-M6B-5** | `record_case` 的 measured 串引用被删变量时，`set -u` 会让 shell 在收尾后静默退出、判定行缺失（曾发生一次，表现为「该轮无判定」） | measured 串只引用当轮已赋值变量；或局部 `set +u` 兜底。已在本轮驱动内修 |
+| **F-M6B-6** | **harness `kni=0` 用例继承模板 `[kni] enable=1` 导致测试形态失真**（`tests/integration/test_graceful_reload.sh`）：`gen_fstack_ini()` 未剥离本地模板中的 `[kni]` 段，故非 rt12 用例在 2026-09-17 第一轮（RT-2a）实际以 **KNI 开启形态**运行（`Port 1` ×7 等指纹） | **已修（2026-09-17，code-fixer）**：新增 `ini_strip_kni()`（`awk '/^#?\[kni\]/{skip=1;next} /^\[/{skip=0} skip==0{print}'`），kni=0 时剥离整段（diff 13+/5-，仪表 md5 `9c4d7c555e3e2e688f311878e17df79a`）；rt-auditor `work/rt-round2-report.md` §8（diff 复核 PASS）+ §9.3（ini 段级 / 进程日志级 / 端口级三层生效验证）坐实。**不判产品缺陷**（属仪表/驱动级） |
+
+> 编号说明：F-M6B-2/4/5 分别对应 `m6b-test-rt11.md` §6.4 的 F-M6B-1/2/3，因 F-M6B-1 已用于「混跑限制」这一产品侧结论，此处重排为 2/4/5 以便按「产品级 → 驱动级」排序；三者的内容与处置未变。
+
+**(8.3) M6b 未闭环移交项**
+
+| 项 | 状态 | 建议 |
+|---|---|---|
+| **F-M6-5（P2）**【2026-09-17 订正·R-09/R-06】 | `config.ini` 的 `[port0] addr` 现为**上游默认模板值 `192.168.1.2`**（`9ef6dc92e` 回滚引入，**并非**本机测试用私有地址；`a8966870e` 只改注释、未改该行，原归因错误）。以仓库 `config.ini` 为 harness 默认模板（`--fstack-conf`）会把 `TARGET_IP` 取成该默认值，致前端探测全失败（原记「TCP 全端口 403 + ICMP TTL exceeded」系本机**未提交**地址下的现象，与 HEAD 值不同源）。**正确的本机测试地址应保持未提交（现状即合规，符合「本地测试值不入库」规约）**；**撤销原「forward-fix 回本机地址」建议**（属把本地值写回仓库的违规方向）。**本机测试地址入库面普查（R-06 追加登记）**：另有 12 个已入库文件含某内网地址（`9.134.x.x`）：`config.test-vlan.ini`、`dpdk/f-stack-lib/test-configs/dpdk-23-24-upgrade/01-requirements-spec.md` 与 `06-test-and-acceptance-spec.md`、`example/*.{c,py}`（echo/udp/epoll 系列示例）、`lib/ff_stub_14_extra.c`、`tools/sbin/p5b_perf_matrix.sh`。**注明：非 reload 功能引入（M1 起从未触碰这些文件），转仓库层面专项治理，不在本 spec 闭环。** | 维持以仓库 `config.ini` 为模板的现状（其内容已是上游默认模板值）；实机运行所需的本机地址由运维在**未提交**的工作树 `config.ini` 或 harness 的独立配置文件中提供。**不建议**再以仓库 `config.ini` 当实机默认模板 |
+| rt13 运行时复跑 | 探测与自检已 100% 实测，运行时判据（zc 构建 + 12 路活跃流）未跑 | **已作废（2026-09-22 决定）：RT-13 永久排除，不测、不进行支持、不再补跑** |
+| rt12 的 `ok` 分支 | 本云环境不可构造（自选 KNI IP 不被投递） | 物理网卡环境复跑覆盖 |
+
+> **【2026-09-17 第二轮真机回归（RT-2b，修复后 / 权威轮）】** 依据 `work/rt-round2-report.md`（rt-auditor 独立复核版，从原始产物逐项重算、非采信 runner 摘要）：运行形态 `-c all -r 20 -i 6 -p 5 --shutdown-timeout 15`（全量用例 + rv9 20 轮），**退出码 0 / failed=0**；precheck / baseline / rt01 / rt02 / rv9 / gr0 / rt12 = **PASS**，**rt13 = SKIP（LIMITED：zc 未编译，未执行）**。**测试形态披露（C8-①）**：RT-2b 为修复后**设计形态**——**非 rt12 用例 kni=0、rt12 kni=1**（三层坐实：ini 层非 rt12 `[kni]` 段=0、日志层非 rt12 `virtio_user`=0、端口层 `Port 1` 仅存于 rt12 块）。关键实测：rv9 **20/20** 轮 complete、**drain 19×1000ms + 1×1001ms**、零 deadline forced、零防重入拒绝、rtemap 恒 138（slope 0）、HugePages 运行期恒 1910 / 终态回收 2048、fresh_n=1043 且 fresh_fail=0；rt02 12 流 md5 全对 / eof_clean 12 / worst_gap 0.221s；gr0 ok=19942 / windows=1 longest_outage=1.001s；baseline 15840 请求 fail=0；被测二进制 md5 与第一轮一致（两轮差异只来自 KNI 形态）。**权威轮次（C8-②）**：**以 RT-2b 为文档与门禁的权威数据**；第一轮 **RT-2a**（修复前 / 形态失真：harness `kni=0` 未剥离本地模板 `[kni] enable=1` ⇒ 全部 6 用例 KNI 实开；**drain 恒 1000ms（20 次，无其它取值）**，fresh_n=1042）**留档**——其 verdict 与 RT-2b 一致（7 PASS + rt13 SKIP、exit 0、failed=0），仅形态失真（rt-auditor §9.5）。**受限/未执行项（如实登记）**：L1 rt13 zc 编译形态未跑（M6 期曾以 zc 形态 PASS）；L2 rt12 管理面未判（未传 `--kernel-nic-ip`）；L3 无 keepalive 空闲长连接场景未覆盖（沿用 M6 门禁配置）；L4 precheck 第三腿（rte freshness）本次空判；L5 非 rt12 用例不覆盖 KNI 路径（**设计内范围限定**，非缺陷）；L6 rt12 veth 判据缺原始 `ip link` 转储（UNVERIFIED-from-artifacts）。**口径声明**：本轮**非**「全用例 PASS」（rt13 未执行、rt12 管理面未判）。**终门禁裁决以 gate-reviewer 为准。**
+
+> **【2026-09-18 补登记·RT-3（第三轮真机回归，R-01/R-02 修复后 / 50 轮）】** 依据 `work/rt-round3/rt3-auditor-report.md`（rt-auditor 门禁 G-C，从原始产物逐项独立重算、非采信 runner 摘要）。运行形态 `-c all -r 50 -i 6 -p 5 --shutdown-timeout 15`；**日期 2026-09-17**；**被测二进制 md5 `d4171372f39a2db55b569453ae5689c3`**（运行前 21:34 与运行后 21:53 两次 `md5sum` 一致，运行期未被重建；安装态 = 构建态；G-C 另实测静态库三个目标文件与工作树目标文件逐字节相同。**注**：该二进制此前存在过中间态 `e725d9b7…`（R-01 未落地时的产物），**本轮以 `d4171372…` 为准**）。结果：**7 项 PASS（precheck / baseline / rt01 / rt02 / rv9 / gr0 / rt12）+ rt13 SKIP（LIMITED：zc 未编译，未执行）**；**rv9 50/50 轮 complete**（`ROUND r=` 50 行、`… OK` 50 行、`bad/FAIL/INCOMPLETE` 零命中、轮号 1..50 连续无缺）；`failed=0`；**rv9 drain 逐值分布 `48 × 1000 ms + 2 × 1001 ms`**（r=25、r=31 两轮为 1001 ms；min=1000 / max=1001 / mean=1000.04）；**零 deadline forced**（`grep -c deadline err_rv9.log` = 0）、**零防重入拒绝**（`grep -c 'previous reload still in progress'` = 0，rv9 `notes=none`）；**rtemap 50 次采样恒 138、slope=0.000000**；**HugePages 运行期恒 1910、终态回满 2048**；**fresh_n=1936 / fresh_fail=0**（归一化速率 1936 ÷ 390 s = 4.96/s，与 RT-2b 的 1043 ÷ 210 s = 4.97/s 同速率 —— 绝对数随探测时长变化、**不可直接比**）；代际 0/1 严格交替 25/25。**退出码 exit 0 —— 由 `failed=0` 与脚本 exit 映射推断**（日志中 epilogue 完整，**非直接实测值**，不得写成「实测」）。**关键自洽验算**：baseline 24 conns × 330 s ÷ 0.5 s = 15840 = reqs（恰等）；rt12 fresh 45 ÷ 0.5 = 90 = fresh_n（恰等）；rv9 fresh 期望 1950 vs 实测 1936（99.3%，与 RT-2b 的 1043/1050 同比例）。**与 RT-2b 的关系**：RT-2b（20 轮）为第二轮权威轮；**RT-3（50 轮）是 R-01/R-02 代码修复后的权威实机证据**，在 RV9「≥100 次」判据上把累计有效轮次推进到 20 + 50 = 70 轮。**与 RT-2b 的 22 项逐项对比（`rt3-runner-report.md` §4）**：**21 项同形或更优**（含 #16 gr0 ok 19942 → 19989 略增 +0.24%、#19 baseline reqs 15840/fail 0 完全一致），**唯一数值走高项为 #14 rt02 worst_gap 0.221 s → 0.270 s**（+0.049 s）—— 判据 `stalls(>3.0s)=0` **仍成立**，属同档抖动、**不构成判据级劣化**。**结论：无任何判定级劣化。** **三项如实登记（未覆盖/待裁决）**：① **rt13 = SKIP**（zc 未编译，`ZC-PROBE … gated(kern_zc_recvit)=0 … detected=0`）；② **rt12 管理面未判**（未传 `--kernel-nic-ip`，脚本自述 `rt12: management plane NOT checked`）；③ **rt12 的 `ok` 分支不可构造**（本云环境 fabric 只投递平台分配地址，自选 KNI IP 不被投递 ⇒ 须在物理网卡环境补跑）。目标地址一律以占位符表述（`<DPDK_NIC_IP>` / `<CLIENT_IP>` / `<KERNEL_NIC_IP>`），本篇不写任何真实地址。**覆盖边界（如实）**：① rtemap/HugePages 平坦**不能**证明 mempool cache 完整性（mempool 对象内存 init 期一次性从 hugepage 分配）⇒ **RT-3 不构成 R-01 的定向运行时断言**，R-01 放行依据仍为结构性自证 + 编译/单测层，定向断言（drain 期大量 TX + ARP 注入下的 `avail_count` / `rte_mempool_audit()`）**未执行、维持登记（PT-NR-09 / RV1）**；② **无 KNI TX 注入的定向实机**（rt12 为 KNI 形态但窗口内无注入负载、仅 1 s，`tx_dropped` 恒 0，零判别力）⇒ **R-02/R-30 的实际触发率与丢包量级维持未坐实**；③ 客户端侧 `streams/md5_ok/eof_clean/worst_gap`、`ok/windows/longest_outage` 因客户端原始日志未归档到 `harness-out/`，**本轮只能做数值自洽性交叉验算，不能逐字节重算**（RT-2b 的复核者曾 ssh 补读并确认为逐字节一致，本轮未重复该动作）。**报告**：`work/rt-round3/rt3-auditor-report.md`（另见 `rt3-runner-report.md`）。
+
+> **【2026-09-22 第四轮真机（P2a 之后运行时矩阵 + F1 故障/边界矩阵）】** 依据 `docs/nginx_reload_spec/work/recheck-20260921/`（`runtime-evidence-post-p2a.md`、`task5-fault-matrix-f1-status.md`、`gf-final-gate-20260922.md`），被测 HEAD `f7b1fe200`。
+>
+> - **形态**：生产构建（`nm --defined-only lib/libfstack.a | grep -c ff_reload_fault_is` = **0**，清单 `build-manifest-20260922c.json`；**归属说明**：生产矩阵实测于 2026-09-21（清单 `build-manifest-20260921b.json` / HEAD `daedf35b1dc8`），`20260922c` 为 G-F 终态复建清单，故障→生产恢复后**仅抽测 rt01**，rt02/rv9 未重跑 ⇒ **LIMITED**）；故障形态为**另行构建**（`fault_injection: true`，`nm` 钩子 1），其结论**只用于故障路径判据，不进功能验收 aggregate**。
+> - **生产形态实测**：precheck PASS；rt01 PASS（`fsm=6/6 drain=1000ms`）；**rt02 由 FAIL 修复为 PASS**（探针改 `--duration` 有界，解耦「探针寿命」与「数据量」，消除「排空完成 ⇔ 长流跑完」同秒竞态；`streams=36 ok=36 md5_ok=36 eof_clean=36 stalls=0`，负例仍可判别；**P-9**：`ok` / `md5_ok` / `eof_clean` 改为**独立计数**并新增 `integrity_fail`，不再把同一个计数器打印成四个字段）；gr0 PASS（`longest_outage=1.001s`）；rt12 PASS（`veth_before=1 veth_after=1 ping_client=ok`，内核侧地址 = f-stack 地址本身；**P-3 已闭环**：客户端 ping 原文与服务端本地 ping 原文均落盘（`ping_client_rt12.txt` / `ping_local_rt12.txt`），HTTP 控制腿改为常跑（`control_http=200`），并以「veth0 存在但未配址」负对照取得 **100% packet loss** ⇒ 该腿可判别，不再仅凭退出码判断）；baseline PASS（`reqs=9600 fail=0`）；**rv9 IPv4 100/100**（`rtemap slope=0`、`hp final=2048`）；rt01 IPv6 PASS；**rv9 IPv6 100/100**（2026-09-23 实机：`ok=100/100 bad=0`、`rtemap[min=138 max=138 slope=0]`、`hp[base=1910 final=2048]`、`failed=0`；产物由 `run-identity.json` 自证 `address_family=ipv6`）。
+> - **F1 故障形态**：rt20（`ready_never`）/ rt21（`flip_fail`）/ rt22（`park_never`）/ rt20b（`ready_delay` + `FF_FAULT_DELAY_MS=15000`）**均 PASS**（中止签名命中、worker 数 2→2、探针 `fail=0 reconnects=0 fresh_fail=0`）；rt20b 重载完成 `took 42297 ms`；rt23（重入）PASS **但判据不自洽**（`measured fsm=0/6`，首次重载 6/6 未在判据与产物中体现，P-2 待闭环）。**限定**：rt20 首轮「红跑」FAIL（`FF_FAULT` 未转发到 worker）已订正后复验 PASS；rt21 的 PASS **不得**作为「abort 语义无缺陷」的证据（abort 后 master 退出语义仍挂账，P-13）。
+> - **排除**：rt13（zc）**永久排除**（不构建、不测、不进行支持）；`-c all` 已剔除该用例，显式调用记录 `EXCLUDED`，不再计入 `failed`（P-11）。
+> - **门禁**：G-F **PASS（附条件）→ 初步可用、初步结项**；附条件 7 项（P-3 / P-4 / P-12 / P-9 / P-11 / F-R2-03 / F-R2-04-05）**已于 2026-09-23 全部闭环**。
+> - **待办（不做实际动作）**：F2/F3 场景、跨进程 MP 集成、G-D 英文译审。
+> - **口径声明**：本轮**非**「全用例 PASS」——rt13 永久排除、rt12 管理面为弱判据、故障形态结论不进功能验收。
+
+**(9) 2026-10-08 交叉审核同步（对 HEAD eb6b32c82）**
+
+- **结项状态**：M6 终门禁 G-F 于 2026-09-23 **正式结项**（`work/recheck-20260921/formal-close-20260923.md`，被测 HEAD ca5dcb03b）。此后 09-24~09-30 又有 57 个提交改动了 drain 起点、flow-map 准入与 revoke、USR2 drain 分支和测试资产，这些只有局部回归证据；本轮在 HEAD eb6b32c82（加本轮修复）上补做了完整回归，结果见 [08] §2.3.2、§2.3.3、[09] §28。
+- **09-24 后新增、此前未登记的用例**：`rt24`（`flip_fail_once`：首轮 abort 后同一 master 再 HUP 一次必须成功）、`rt25`（USR2 + WINCH，带长连接流量，是 RT-04 的 harness 落点）、`rt26`（`synack_fail`：SYN-ACK 发不出去时撤销准入，并以计数器证明）、`rt30`/`rt31`（PT-NR-01/02 性能基线）。故障名新增 `flip_fail_once`、`synack_fail`。
+- **drain 起点**：见 C-NR-405 的 2026-10-08 现行口径；C-NR-312「延迟 close listening 至 syncache 排空」仍成立，但宽限期为 3 s，超过后不再等半开条目。
+- **验收口径**：drain 开始时主动关闭空闲 keepalive，所以长连接探针每条连接每轮会被关闭一次，「无损」的现行判据是新建请求 0 失败（`fresh_fail=0`）加每连接关闭次数有界（`fail/reconnects ≤ conns`，USR2 两轮为 2×conns；只用于会经历 drain 的长连接用例，其余用例仍要求 fail=0），详见 [08] §2.3.2、§2.3.3。
+- **P-2 关闭**：根因是 harness 仪表缺陷——`case_rt23()` 不调用 `hup_once()`，打印的 fsm/drain 是全局变量的陈旧值。本轮改为由 rt23 从自己的 errlog 解析：恰好 6 次 FSM 转移、恰好 1 次 T0→T1、恰好 1 条完成行，重入拒绝串必须带 `(state T3_DRAIN)`，流探针结果走 `check_summary stream`。改后生产形态复跑 PASS。
+- **P-13 关闭**：abort 后 master **不退出**是预期回滚语义。`ngx_ff_reload_abort()` 只给新代槽发 TERM、置 respawn=0，然后经 T_ERROR→T0 回到空闲；主循环只有在 `!live && (ngx_terminate || ngx_quit)` 时才调用 `ngx_master_process_exit()`。rt24 中同一个 master 在 abort 后又完成一次 HUP，是直接运行时证据。
+- **本轮代码修复**：R-02（TX 每包不再做目录同步；USR2 共存期 kill(2) 有界），见 [06] §10.1。
+
+### 2.8 M7（可选）：dispatcher 中心化（S3-M2）
+
+仅当 DR7 触发（M6 数据，v1.3 修订判据——流表窗口化后稳态损耗恒 0，原稳态判据失效：改为 **reload 窗口内**转发开销致吞吐下降 >5%、或 drain 期 P99 劣化 >10%、或高存量连接场景 drain 时长超 SLO）才立项。方向：slim primary 统一收包 + 流表分发，worker 变纯 ring 消费者（VPP app_listener workers bitmap 同构 + 旧 iWiki dispatch 思想现代化，避开同核共存）。**若触发须另立 spec 重新走本流程**，本文不展开。
+
+## 3. 后续编码工作清单汇总（按提交批次）
+
+**43 个编码点**已按里程碑列于第 2 节各表（计数规则见 §0 数字口径说明：308 已拆为 314/315 作索引不计数、311 已取消）。此处仅给跨里程碑的总依赖序（DAG 摘要）与并行度建议（**v1.4 更新**）：
+
+```
+M0(E-NR-01   RV7   栈隔离 listen        ── 一票否决
+  +E-NR-02b  RV3   rx 接管互斥          ── 一票否决
+  +E-NR-06   RV10  同核切换             ── 一票否决
+  +E-NR-07   RV11  TX 独占（v1.9 新增）  ── 一票否决
+  +E-NR-08   RV12  半开连接窗口（v1.9）  ── 一票否决
+  + E-NR-03/04/05 基线与初验 + DR1/DR4/DR8 定案 + DR2 初评（~~DR5 已取消~~）)
+        │
+        ▼
+  C-NR-100/101 ──> 102/103 ──> 104/105 ──> 106                              [M1  7]
+        │
+        ▼ (DR4/DR8；~~DR5 已取消~~)
+  C-NR-307（自驱 hardclock，**M2 最先做**，独改全局 timer 心跳，独立回归 PT-NR-08）
+  C-NR-314（代际 mempool 应用侧，init 期预建 + 乒乓复用）──┐
+  C-NR-315（共享 RX 池跨代 free，**DR11 已定案 M-A**）────────┤ 三者构成
+  C-NR-307 + 314 + 315 = 同 lcore_id 下的资源隔离三件套 ──┘「同 lcore_id 前提」
+        │
+        ▼
+  C-NR-201/206 + C-NR-313（msg_ring/KNI 代际隔离，**必须与 206 同批**）
+        ──> 202/203 ──> 205 ──> 204/207 ──> 208                              [M2 13]
+  C-NR-316（心跳 + rx 交还，依赖 307/309 的「无硬件模式可逆」）── M2 铺检测、M4 验收
+        │
+        ▼ (DR2/DR4/DR9 终案)
+  C-NR-301 ──> 310（drain_ring 双向通道）──> 309（TX 独占与代发，依赖 310）
+        ──> 302 ──> 303 ──> 304/305 ──> 306                                  [M3  8]
+C-NR-401（shutdown timer，可提前至任意时点独立提交）
+        │
+        ▼ (DR6，含「T3 后 G_new 崩溃」必答项)
+  C-NR-402/403 ──> 312（半开连接窗口）──> 404 ──> 405/406                     [M4  7]
+        │
+        ├──> 501~504 [M5  4]
+        └──> 601~604 [M6  4]（M5/M6 可并行；RV14 确定门禁节拍后执行）
+```
+
+- **可提前独立项**：
+  - C-NR-401：补 shutdown timer（修 bug 性质，不依赖 M1~M3，`graceful_reload=0` 也受益）。
+  - **C-NR-307 自驱 hardclock**：**v1.4 恢复为必需项**，且因改动全局 timer 心跳，建议**最先独立合入 + 独立回归（PT-NR-08）**后再做 M2 其余部分。
+- **v1.4 最高风险单点（重排，D-A 反转后）**：
+  1. **C-NR-307 自驱 hardclock**：改动 timer 心跳这一全局基础机制，精度劣化会**静默**影响 RTO/keepalive。同 lcore_id 定案后本项为唯一解法，无退路；门槛是 PT-NR-08。
+  2. **C-NR-314/315 代际 mempool**：同 lcore_id 下唯一的资源冲突点。风险在于「池乒乓复用的时序」与「跨代 free 的正确性」——表现为 mbuf 泄漏、双重释放或 pool 错配，需 PT-NR-09 + RV1 长稳双重覆盖。**M-B 的 `free_ring` 若与 `drain_ring_tx` 合并通道，需防止「待发送」与「待释放」标记混淆**。
+  3. **C-NR-309 TX 独占**：若 G_old 残留任何 tx 路径（含 `FF_USE_PAGE_ARRAY` 分支），即为 DPDK 契约违反；须有 IT-NR-A09 断言兜底。
+  4. **C-NR-316 心跳与 rx 交还**：依赖 C-NR-309 的「无硬件模式」必须**可逆**；且交还 rx 前须确认 G_new 确已不再 poll，否则回到并发 poll 的老问题。
+- **并行度**：M1 单人串行；C-NR-401 可与任意里程碑并行；C-NR-307/308（若启用）独立串行回归；M5 与 M6 前半可双线并行；M7 条件触发（D-C：不提前）。
+- 每个提交串保持独立可 revert；revert 顺序遵守依赖反向。

@@ -32,3 +32,65 @@ dpdk/.travis.yml
 .code.yml
 .orange-ci.yml
 SMEDockerfile
+.gitnexus
+.gitnexusignore
+adapter/syscall/helloworld_stack
+adapter/syscall/helloworld_stack_epoll
+adapter/syscall/helloworld_stack_epoll_kernel
+adapter/syscall/helloworld_stack_epoll_thread_socket
+adapter/syscall/helloworld_stack_thread_socket
+
+# AI agent / planning artifacts (local only)
+.claude/
+AGENTS.md
+CLAUDE.md
+plan.md
+docs/unit_test_spec/zh_cn/plan-*.md
+
+# Nginx graceful-reload spec working artifacts (local only; harness output
+# embeds the machine's real addresses, so it must never be committed)
+docs/nginx_reload_spec/work/
+
+# Nginx build artifacts (F-Stack app/nginx-1.28.0)
+app/nginx-1.28.0/Makefile
+app/nginx-1.28.0/dist/
+app/nginx-1.28.0/objs/
+
+# AI agent local spec backup mirrors (per unit_test_spec plan.md §6)
+.spec-backup/
+
+# Unit-test build artifacts (keep source / Makefile / fixtures tracked)
+tests/unit/*.o
+tests/unit/lib_objs/
+tests/unit/test_hello
+tests/unit/test_ff_ini_parser
+tests/unit/test_ff_log
+tests/unit/test_ff_host_interface
+tests/unit/test_ff_epoll
+tests/unit/test_ff_config
+tests/unit/test_ff_config_pa
+tests/unit/test_ff_callout
+tests/unit/test_ff_zc_send
+tests/unit/test_ff_dpdk_if
+tests/unit/test_ff_ipc
+tests/unit/reload_process_fixture
+tests/unit/common/*.o
+tests/integration/test_ff_dpdk_if_integration
+tests/integration/test_ff_kni_integration
+tests/integration/test_ff_reload_integration
+tests/integration/test_ff_gendir_mp_integration
+
+# Stage-3 coverage artifacts (produced by `make coverage`)
+tests/unit/*.gcda
+tests/unit/*.gcno
+tests/unit/common/*.gcda
+tests/unit/common/*.gcno
+tests/unit/lib_objs/*.gcda
+tests/unit/lib_objs/*.gcno
+tests/unit/coverage.info
+tests/unit/coverage_report/
+tests/unit/test_ff_thread
+tests/unit/test_ff_init
+tests/unit/test_ff_dpdk_pcap
+tests/unit/test_ff_dpdk_if
+tests/unit/test_ff_dpdk_kni

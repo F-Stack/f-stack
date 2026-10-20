@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2020 Alexander V. Chernikov
  *
@@ -26,7 +26,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
 #include "opt_inet.h"
 #include "opt_route.h"
 
@@ -47,6 +46,11 @@ __FBSDID("$FreeBSD$");
 #include <net/route/nhop.h>
 #include <net/route/nhop_var.h>
 #include <net/vnet.h>
+
+#define	DEBUG_MOD_NAME	nhop
+#define	DEBUG_MAX_LEVEL	LOG_DEBUG
+#include <net/route/route_debug.h>
+_DECLARE_DEBUG(LOG_INFO);
 
 /*
  * This file contains data structures management logic for the nexthop ("nhop")
@@ -99,8 +103,7 @@ nhops_init_rib(struct rib_head *rh)
 	rh->nh_control = ctl;
 	ctl->ctl_rh = rh;
 
-	DPRINTF("NHOPS init for fib %u af %u: ctl %p rh %p", rh->rib_fibnum,
-	    rh->rib_family, ctl, rh);
+	FIB_CTL_LOG(LOG_DEBUG2, ctl, "nhops init: ctl %p rh %p", ctl, rh);
 
 	return (0);
 }
@@ -154,7 +157,7 @@ nhops_destroy_rib(struct rib_head *rh)
 
 	NHOPS_WLOCK(ctl);
 	CHT_SLIST_FOREACH(&ctl->nh_head, nhops, nh_priv) {
-		DPRINTF("Marking nhop %u unlinked", nh_priv->nh_idx);
+		FIB_RH_LOG(LOG_DEBUG3, rh, "marking nhop %u unlinked", nh_priv->nh_idx);
 		refcount_release(&nh_priv->nh_linked);
 	} CHT_SLIST_FOREACH_END;
 #ifdef ROUTE_MPATH
@@ -166,8 +169,7 @@ nhops_destroy_rib(struct rib_head *rh)
 	 * Postpone destruction till the end of current epoch
 	 * so nhop_free() can safely use nh_control pointer.
 	 */
-	epoch_call(net_epoch_preempt, destroy_ctl_epoch,
-	    &ctl->ctl_epoch_ctx);
+	NET_EPOCH_CALL(destroy_ctl_epoch, &ctl->ctl_epoch_ctx);
 }
 
 /*
@@ -183,13 +185,13 @@ nhops_destroy_rib(struct rib_head *rh)
  * With that in mind, hash nexthops by the combination of the interface
  *  and GW IP address.
  *
- * To optimize hash calculation, ignore higher bytes of ifindex, as they
- *  give very little entropy.
+ * To optimize hash calculation, ignore lower bits of ifnet pointer,
+ * as they  give very little entropy.
  * Similarly, use lower 4 bytes of IPv6 address to distinguish between the
  *  neighbors.
  */
 struct _hash_data {
-	uint16_t	ifindex;
+	uint16_t	ifentropy;
 	uint8_t		family;
 	uint8_t		nh_type;
 	uint32_t	gw_addr;
@@ -210,21 +212,15 @@ djb_hash(const unsigned char *h, const int len)
 static uint32_t
 hash_priv(const struct nhop_priv *priv)
 {
-	struct nhop_object *nh;
-	uint16_t ifindex;
-	struct _hash_data key;
-
-	nh = priv->nh;
-	ifindex = nh->nh_ifp->if_index & 0xFFFF;
-	memset(&key, 0, sizeof(key));
-
-	key.ifindex = ifindex;
-	key.family = nh->gw_sa.sa_family;
-	key.nh_type = priv->nh_type & 0xFF;
-	if (nh->gw_sa.sa_family == AF_INET6)
-		memcpy(&key.gw_addr, &nh->gw6_sa.sin6_addr.s6_addr32[3], 4);
-	else if (nh->gw_sa.sa_family == AF_INET)
-		memcpy(&key.gw_addr, &nh->gw4_sa.sin_addr, 4);
+	struct nhop_object *nh = priv->nh;
+	struct _hash_data key = {
+	    .ifentropy = (uint16_t)((((uintptr_t)nh->nh_ifp) >> 6) & 0xFFFF),
+	    .family = nh->gw_sa.sa_family,
+	    .nh_type = priv->nh_type & 0xFF,
+	    .gw_addr = (nh->gw_sa.sa_family == AF_INET6) ?
+		nh->gw6_sa.sin6_addr.s6_addr32[3] :
+		nh->gw4_sa.sin_addr.s_addr
+	};
 
 	return (uint32_t)(djb_hash((const unsigned char *)&key, sizeof(key)));
 }
@@ -257,8 +253,9 @@ consider_resize(struct nh_control *ctl, uint32_t new_nh_buckets, uint32_t new_id
 		return;
 	}
 
-	DPRINTF("going to resize: nh:[ptr:%p sz:%u] idx:[ptr:%p sz:%u]", nh_ptr,
-	    new_nh_buckets, nh_idx_ptr, new_idx_items);
+	FIB_CTL_LOG(LOG_DEBUG, ctl,
+	    "going to resize: nh:[ptr:%p sz:%u] idx:[ptr:%p sz:%u]",
+	    nh_ptr, new_nh_buckets, nh_idx_ptr, new_idx_items);
 
 	old_idx_ptr = NULL;
 
@@ -302,7 +299,7 @@ link_nhop(struct nh_control *ctl, struct nhop_priv *nh_priv)
 
 	if (bitmask_alloc_idx(&ctl->nh_idx_head, &idx) != 0) {
 		NHOPS_WUNLOCK(ctl);
-		DPRINTF("Unable to allocate nhop index");
+		FIB_CTL_LOG(LOG_INFO, ctl, "Unable to allocate nhop index");
 		RTSTAT_INC(rts_nh_idx_alloc_failure);
 		consider_resize(ctl, num_buckets_new, num_items_new);
 		return (0);
@@ -310,13 +307,15 @@ link_nhop(struct nh_control *ctl, struct nhop_priv *nh_priv)
 
 	nh_priv->nh_idx = idx;
 	nh_priv->nh_control = ctl;
+	nh_priv->nh_finalized = 1;
 
 	CHT_SLIST_INSERT_HEAD(&ctl->nh_head, nhops, nh_priv);
 
 	NHOPS_WUNLOCK(ctl);
 
-	DPRINTF("Linked nhop priv %p to %d, hash %u, ctl %p", nh_priv, idx,
-	    hash_priv(nh_priv), ctl);
+	FIB_RH_LOG(LOG_DEBUG2, ctl->ctl_rh,
+	    "Linked nhop priv %p to %d, hash %u, ctl %p",
+	    nh_priv, idx, hash_priv(nh_priv), ctl);
 	consider_resize(ctl, num_buckets_new, num_items_new);
 
 	return (idx);
@@ -337,7 +336,7 @@ unlink_nhop(struct nh_control *ctl, struct nhop_priv *nh_priv_del)
 	idx = 0;
 
 	NHOPS_WLOCK(ctl);
-	CHT_SLIST_REMOVE_BYOBJ(&ctl->nh_head, nhops, nh_priv_del, priv_ret);
+	CHT_SLIST_REMOVE(&ctl->nh_head, nhops, nh_priv_del, priv_ret);
 
 	if (priv_ret != NULL) {
 		idx = priv_ret->nh_idx;
@@ -345,9 +344,9 @@ unlink_nhop(struct nh_control *ctl, struct nhop_priv *nh_priv_del)
 
 		KASSERT((idx != 0), ("bogus nhop index 0"));
 		if ((bitmask_free_idx(&ctl->nh_idx_head, idx)) != 0) {
-			DPRINTF("Unable to remove index %d from fib %u af %d",
-			    idx, ctl->ctl_rh->rib_fibnum,
-			    ctl->ctl_rh->rib_family);
+			FIB_CTL_LOG(LOG_DEBUG, ctl,
+			    "Unable to remove index %d from fib %u af %d",
+			    idx, ctl->ctl_rh->rib_fibnum, ctl->ctl_rh->rib_family);
 		}
 	}
 
@@ -357,11 +356,14 @@ unlink_nhop(struct nh_control *ctl, struct nhop_priv *nh_priv_del)
 
 	NHOPS_WUNLOCK(ctl);
 
-	if (priv_ret == NULL)
-		DPRINTF("Unable to unlink nhop priv %p from hash, hash %u ctl %p",
+	if (priv_ret == NULL) {
+		FIB_CTL_LOG(LOG_INFO, ctl,
+		    "Unable to unlink nhop priv %p from hash, hash %u ctl %p",
 		    nh_priv_del, hash_priv(nh_priv_del), ctl);
-	else
-		DPRINTF("Unlinked nhop %p priv idx %d", priv_ret, idx);
+	} else {
+		FIB_CTL_LOG(LOG_DEBUG2, ctl, "Unlinked nhop %p priv idx %d",
+		    priv_ret, idx);
+	}
 
 	consider_resize(ctl, num_buckets_new, num_items_new);
 

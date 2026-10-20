@@ -36,8 +36,6 @@
  * OF SUCH DAMAGE.
  *
  * Author: Julian Elischer <julian@freebsd.org>
- *
- * $FreeBSD$
  * $Whistle: ng_pppoe.h,v 1.7 1999/10/16 10:16:43 julian Exp $
  */
 
@@ -141,7 +139,7 @@ struct ngpppoe_init_data {
 }
 
 /*
- * This structure is used by the asychronous success and failure messages.
+ * This structure is used by the asynchronous success and failure messages.
  * (to report which hook has failed or connected). The message is sent
  * to whoever requested the connection. (close may use this too).
  */

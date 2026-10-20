@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2020 Intel Corporation
+ * Copyright(c) 2001-2024 Intel Corporation
  */
 
 #ifndef _IXGBE_API_H_
@@ -18,6 +18,7 @@ extern s32 ixgbe_init_ops_X550(struct ixgbe_hw *hw);
 extern s32 ixgbe_init_ops_X550EM(struct ixgbe_hw *hw);
 extern s32 ixgbe_init_ops_X550EM_x(struct ixgbe_hw *hw);
 extern s32 ixgbe_init_ops_X550EM_a(struct ixgbe_hw *hw);
+extern s32 ixgbe_init_ops_E610(struct ixgbe_hw *hw);
 extern s32 ixgbe_init_ops_vf(struct ixgbe_hw *hw);
 
 s32 ixgbe_set_mac_type(struct ixgbe_hw *hw);
@@ -105,6 +106,7 @@ s32 ixgbe_fc_enable(struct ixgbe_hw *hw);
 s32 ixgbe_setup_fc(struct ixgbe_hw *hw);
 s32 ixgbe_set_fw_drv_ver(struct ixgbe_hw *hw, u8 maj, u8 min, u8 build,
 			 u8 ver, u16 len, char *driver_ver);
+bool ixgbe_get_fw_tsam_mode(struct ixgbe_hw *hw);
 s32 ixgbe_get_thermal_sensor_data(struct ixgbe_hw *hw);
 s32 ixgbe_init_thermal_sensor_thresh(struct ixgbe_hw *hw);
 void ixgbe_set_mta(struct ixgbe_hw *hw, u8 *mc_addr);
@@ -118,7 +120,6 @@ u64 ixgbe_get_supported_physical_layer(struct ixgbe_hw *hw);
 s32 ixgbe_enable_rx_dma(struct ixgbe_hw *hw, u32 regval);
 s32 ixgbe_disable_sec_rx_path(struct ixgbe_hw *hw);
 s32 ixgbe_enable_sec_rx_path(struct ixgbe_hw *hw);
-s32 ixgbe_mng_fw_enabled(struct ixgbe_hw *hw);
 s32 ixgbe_reinit_fdir_tables_82599(struct ixgbe_hw *hw);
 s32 ixgbe_init_fdir_signature_82599(struct ixgbe_hw *hw, u32 fdirctrl);
 s32 ixgbe_init_fdir_perfect_82599(struct ixgbe_hw *hw, u32 fdirctrl,
@@ -193,5 +194,6 @@ void ixgbe_disable_rx(struct ixgbe_hw *hw);
 void ixgbe_enable_rx(struct ixgbe_hw *hw);
 s32 ixgbe_negotiate_fc(struct ixgbe_hw *hw, u32 adv_reg, u32 lp_reg,
 			u32 adv_sym, u32 adv_asm, u32 lp_sym, u32 lp_asm);
-
+s32 ixgbe_get_fw_version(struct ixgbe_hw *hw);
+s32 ixgbe_get_nvm_ver(struct ixgbe_hw *hw, struct ixgbe_nvm_info *nvm);
 #endif /* _IXGBE_API_H_ */

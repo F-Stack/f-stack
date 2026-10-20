@@ -33,13 +33,9 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)kern_sysctl.c	8.4 (Berkeley) 4/14/94
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_posix.h"
 #include "opt_config.h"
 
@@ -61,6 +57,8 @@ __FBSDID("$FreeBSD$");
 #include <sys/sysctl.h>
 #include <sys/systm.h>
 #include <sys/unistd.h>
+
+#include <vm/vm_param.h>
 
 SYSCTL_ROOT_NODE(0, sysctl, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Sysctl internal magic");
@@ -96,20 +94,20 @@ SYSCTL_ROOT_NODE(OID_AUTO, regression, CTLFLAG_RW | CTLFLAG_MPSAFE, 0,
     "Regression test MIB");
 #endif
 
-SYSCTL_STRING(_kern, OID_AUTO, ident, CTLFLAG_RD|CTLFLAG_MPSAFE,
-    kern_ident, 0, "Kernel identifier");
+SYSCTL_CONST_STRING(_kern, OID_AUTO, ident, CTLFLAG_RD,
+    kern_ident, "Kernel identifier");
 
-SYSCTL_INT(_kern, KERN_OSREV, osrevision, CTLFLAG_RD|CTLFLAG_CAPRD,
+SYSCTL_INT(_kern, KERN_OSREV, osrevision, CTLFLAG_RD | CTLFLAG_CAPRD,
     SYSCTL_NULL_INT_PTR, BSD, "Operating system revision");
 
-SYSCTL_STRING(_kern, KERN_VERSION, version, CTLFLAG_RD|CTLFLAG_MPSAFE,
-    version, 0, "Kernel version");
+SYSCTL_CONST_STRING(_kern, KERN_VERSION, version, CTLFLAG_RD,
+    version, "Kernel version");
 
-SYSCTL_STRING(_kern, OID_AUTO, compiler_version, CTLFLAG_RD|CTLFLAG_MPSAFE,
-    compiler_version, 0, "Version of compiler used to compile kernel");
+SYSCTL_CONST_STRING(_kern, OID_AUTO, compiler_version, CTLFLAG_RD,
+    compiler_version, "Version of compiler used to compile kernel");
 
-SYSCTL_STRING(_kern, KERN_OSTYPE, ostype, CTLFLAG_RD|CTLFLAG_MPSAFE|
-    CTLFLAG_CAPRD, ostype, 0, "Operating system type");
+SYSCTL_CONST_STRING(_kern, KERN_OSTYPE, ostype, CTLFLAG_RD | CTLFLAG_CAPRD,
+    ostype, "Operating system type");
 
 SYSCTL_INT(_kern, KERN_MAXPROC, maxproc, CTLFLAG_RDTUN | CTLFLAG_NOFETCH,
     &maxproc, 0, "Maximum number of processes");
@@ -143,7 +141,7 @@ SYSCTL_INT(_kern, KERN_SAVED_IDS, saved_ids, CTLFLAG_RD|CTLFLAG_CAPRD,
 
 char kernelname[MAXPATHLEN] = PATH_KERNEL;	/* XXX bloat */
 
-SYSCTL_STRING(_kern, KERN_BOOTFILE, bootfile, CTLFLAG_RW | CTLFLAG_MPSAFE,
+SYSCTL_STRING(_kern, KERN_BOOTFILE, bootfile, CTLFLAG_RW,
     kernelname, sizeof kernelname, "Name of kernel file booted");
 
 #ifdef COMPAT_FREEBSD12
@@ -184,10 +182,14 @@ sysctl_kern_arnd(SYSCTL_HANDLER_ARGS)
 {
 	char buf[256];
 	size_t len;
+	int error;
 
 	len = MIN(req->oldlen, sizeof(buf));
 	read_random(buf, len);
-	return (SYSCTL_OUT(req, buf, len));
+
+	error = SYSCTL_OUT(req, buf, len);
+	explicit_bzero(buf, len);
+	return (error);
 }
 
 SYSCTL_PROC(_kern, KERN_ARND, arandom,
@@ -246,7 +248,11 @@ SYSCTL_PROC(_hw, HW_USERMEM, usermem,
 SYSCTL_LONG(_hw, OID_AUTO, availpages, CTLFLAG_RD, &physmem, 0,
     "Amount of physical memory (in pages)");
 
-u_long pagesizes[MAXPAGESIZES] = { PAGE_SIZE };
+#if VM_NRESERVLEVEL > 0
+_Static_assert(MAXPAGESIZES > VM_NRESERVLEVEL, "MAXPAGESIZES is too small");
+#endif
+
+u_long __read_mostly pagesizes[MAXPAGESIZES] = { PAGE_SIZE };
 
 static int
 sysctl_hw_pagesizes(SYSCTL_HANDLER_ARGS)
@@ -315,19 +321,28 @@ sysctl_hw_machine_arch(SYSCTL_HANDLER_ARGS)
 	return (SYSCTL_OUT(req, machine_arch, strlen(machine_arch) + 1));
 }
 SYSCTL_PROC(_hw, HW_MACHINE_ARCH, machine_arch, CTLTYPE_STRING | CTLFLAG_RD |
-    CTLFLAG_MPSAFE, NULL, 0, sysctl_hw_machine_arch, "A",
+    CTLFLAG_CAPRD | CTLFLAG_MPSAFE, NULL, 0, sysctl_hw_machine_arch, "A",
     "System architecture");
 
-#ifndef MACHINE_ARCHES
 #ifdef COMPAT_FREEBSD32
-#define	MACHINE_ARCHES	MACHINE_ARCH " " MACHINE_ARCH32
-#else
-#define	MACHINE_ARCHES	MACHINE_ARCH
-#endif
+#include <compat/freebsd32/freebsd32_util.h>
 #endif
 
-SYSCTL_STRING(_kern, OID_AUTO, supported_archs, CTLFLAG_RD | CTLFLAG_MPSAFE,
-    MACHINE_ARCHES, 0, "Supported architectures for binaries");
+static int
+sysctl_kern_supported_archs(SYSCTL_HANDLER_ARGS)
+{
+	const char *supported_archs;
+
+	supported_archs =
+#ifdef COMPAT_FREEBSD32
+	    compat_freebsd_32bit ? MACHINE_ARCH " " MACHINE_ARCH32 :
+#endif
+	    MACHINE_ARCH;
+	return (SYSCTL_OUT(req, supported_archs, strlen(supported_archs) + 1));
+}
+SYSCTL_PROC(_kern, OID_AUTO, supported_archs, CTLFLAG_RD | CTLFLAG_MPSAFE |
+    CTLFLAG_CAPRD | CTLTYPE_STRING, NULL, 0, sysctl_kern_supported_archs, "A",
+    "Supported architectures for binaries");
 
 static int
 sysctl_hostname(SYSCTL_HANDLER_ARGS)
@@ -449,10 +464,10 @@ SYSCTL_PROC(_kern, KERN_SECURELVL, securelevel,
 
 #ifdef INCLUDE_CONFIG_FILE
 /* Actual kernel configuration options. */
-extern char kernconfstring[];
+extern const char kernconfstring[];
 
-SYSCTL_STRING(_kern, OID_AUTO, conftxt, CTLFLAG_RD | CTLFLAG_MPSAFE,
-    kernconfstring, 0, "Kernel configuration file");
+SYSCTL_CONST_STRING(_kern, OID_AUTO, conftxt, CTLFLAG_RD,
+    kernconfstring, "Kernel configuration file");
 #endif
 
 static int
@@ -559,12 +574,11 @@ sysctl_osreldate(SYSCTL_HANDLER_ARGS)
 }
 
 /*
- * NOTICE: The *userland* release date is available in
- * /usr/include/osreldate.h
+ * NOTICE: The *userland* version is available in /usr/include/osreldate.h
  */
 SYSCTL_PROC(_kern, KERN_OSRELDATE, osreldate,
     CTLTYPE_INT | CTLFLAG_CAPRD | CTLFLAG_RD | CTLFLAG_MPSAFE,
-    NULL, 0, sysctl_osreldate, "I", "Kernel release date");
+    NULL, 0, sysctl_osreldate, "I", "Kernel version");
 
 /*
  * The build-id is copied from the ELF section .note.gnu.build-id.  The linker
@@ -632,6 +646,34 @@ FEATURE(compat_freebsd6, "Compatible with FreeBSD 6");
 FEATURE(compat_freebsd7, "Compatible with FreeBSD 7");
 #endif
 
+#ifdef COMPAT_FREEBSD8
+FEATURE(compat_freebsd8, "Compatible with FreeBSD 8");
+#endif
+
+#ifdef COMPAT_FREEBSD9
+FEATURE(compat_freebsd9, "Compatible with FreeBSD 9");
+#endif
+
+#ifdef COMPAT_FREEBSD10
+FEATURE(compat_freebsd10, "Compatible with FreeBSD 10");
+#endif
+
+#ifdef COMPAT_FREEBSD11
+FEATURE(compat_freebsd11, "Compatible with FreeBSD 11");
+#endif
+
+#ifdef COMPAT_FREEBSD12
+FEATURE(compat_freebsd12, "Compatible with FreeBSD 12");
+#endif
+
+#ifdef COMPAT_FREEBSD13
+FEATURE(compat_freebsd13, "Compatible with FreeBSD 13");
+#endif
+
+#ifdef COMPAT_FREEBSD14
+FEATURE(compat_freebsd14, "Compatible with FreeBSD 14");
+#endif
+
 /*
  * This is really cheating.  These actually live in the libc, something
  * which I'm not quite sure is a good idea anyway, but in order for
@@ -687,11 +729,9 @@ SYSCTL_STRING(_user, USER_LOCALBASE, localbase, CTLFLAG_RWTUN,
     localbase, sizeof(localbase), "Prefix used to install and locate add-on packages");
 
 #include <sys/vnode.h>
-SYSCTL_INT(_debug_sizeof, OID_AUTO, vnode, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct vnode), "sizeof(struct vnode)");
+SYSCTL_SIZEOF_STRUCT(vnode);
 
-SYSCTL_INT(_debug_sizeof, OID_AUTO, proc, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct proc), "sizeof(struct proc)");
+SYSCTL_SIZEOF_STRUCT(proc);
 
 static int
 sysctl_kern_pid_max(SYSCTL_HANDLER_ARGS)
@@ -721,21 +761,21 @@ SYSCTL_PROC(_kern, OID_AUTO, pid_max, CTLTYPE_INT |
     CTLFLAG_RWTUN | CTLFLAG_NOFETCH | CTLFLAG_MPSAFE,
     0, 0, sysctl_kern_pid_max, "I", "Maximum allowed pid");
 
+SYSCTL_INT(_kern, OID_AUTO, pid_max_limit, CTLFLAG_RD,
+    SYSCTL_NULL_INT_PTR, PID_MAX,
+    "Maximum allowed pid (kern.pid_max) top limit");
+
 #include <sys/bio.h>
 #include <sys/buf.h>
-SYSCTL_INT(_debug_sizeof, OID_AUTO, bio, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct bio), "sizeof(struct bio)");
-SYSCTL_INT(_debug_sizeof, OID_AUTO, buf, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct buf), "sizeof(struct buf)");
+SYSCTL_SIZEOF_STRUCT(bio);
+SYSCTL_SIZEOF_STRUCT(buf);
 
 #include <sys/user.h>
-SYSCTL_INT(_debug_sizeof, OID_AUTO, kinfo_proc, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct kinfo_proc), "sizeof(struct kinfo_proc)");
+SYSCTL_SIZEOF_STRUCT(kinfo_proc);
 
 /* Used by kernel debuggers. */
 const int pcb_size = sizeof(struct pcb);
-SYSCTL_INT(_debug_sizeof, OID_AUTO, pcb, CTLFLAG_RD,
-    SYSCTL_NULL_INT_PTR, sizeof(struct pcb), "sizeof(struct pcb)");
+SYSCTL_SIZEOF_STRUCT(pcb);
 
 /* XXX compatibility, remove for 6.0 */
 #include <sys/imgact.h>

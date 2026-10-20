@@ -56,9 +56,6 @@
  * 1.0 First working version
  */
 
-#include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <crypto/des/des_locl.h>

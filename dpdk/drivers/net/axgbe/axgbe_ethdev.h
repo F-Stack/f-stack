@@ -113,11 +113,12 @@
 #define AXGBE_LINK_TIMEOUT		5
 #define AXGBE_KR_TRAINING_WAIT_ITER	50
 
-#define AXGBE_SGMII_AN_LINK_STATUS	BIT(1)
+#define AXGBE_SGMII_AN_LINK_STATUS	BIT(4)
 #define AXGBE_SGMII_AN_LINK_SPEED	(BIT(2) | BIT(3))
+#define AXGBE_SGMII_AN_LINK_SPEED_10	0x00
 #define AXGBE_SGMII_AN_LINK_SPEED_100	0x04
 #define AXGBE_SGMII_AN_LINK_SPEED_1000	0x08
-#define AXGBE_SGMII_AN_LINK_DUPLEX	BIT(4)
+#define AXGBE_SGMII_AN_LINK_DUPLEX	BIT(1)
 
 /* ECC correctable error notification window (seconds) */
 #define AXGBE_ECC_LIMIT			60
@@ -214,6 +215,7 @@ enum axgbe_mode {
 	AXGBE_MODE_KX_2500,
 	AXGBE_MODE_KR,
 	AXGBE_MODE_X,
+	AXGBE_MODE_SGMII_10,
 	AXGBE_MODE_SGMII_100,
 	AXGBE_MODE_SGMII_1000,
 	AXGBE_MODE_SFI,
@@ -229,6 +231,32 @@ enum axgbe_mdio_mode {
 	AXGBE_MDIO_MODE_NONE = 0,
 	AXGBE_MDIO_MODE_CL22,
 	AXGBE_MDIO_MODE_CL45,
+};
+
+enum axgbe_mb_cmd {
+	AXGBE_MB_CMD_POWER_OFF = 0,
+	AXGBE_MB_CMD_SET_1G,
+	AXGBE_MB_CMD_SET_2_5G,
+	AXGBE_MB_CMD_SET_10G_SFI,
+	AXGBE_MB_CMD_SET_10G_KR,
+	AXGBE_MB_CMD_RRC
+};
+
+enum axgbe_mb_subcmd {
+	AXGBE_MB_SUBCMD_NONE = 0,
+	AXGBE_MB_SUBCMD_RX_ADAP,
+
+	/* 10GbE SFP subcommands */
+	AXGBE_MB_SUBCMD_ACTIVE = 0,
+	AXGBE_MB_SUBCMD_PASSIVE_1M,
+	AXGBE_MB_SUBCMD_PASSIVE_3M,
+	AXGBE_MB_SUBCMD_PASSIVE_OTHER,
+
+	/* 1GbE Mode subcommands */
+	AXGBE_MB_SUBCMD_10MBITS = 0,
+	AXGBE_MB_SUBCMD_100MBITS,
+	AXGBE_MB_SUBCMD_1G_SGMII,
+	AXGBE_MB_SUBCMD_1G_KX
 };
 
 struct axgbe_phy {
@@ -298,8 +326,11 @@ struct axgbe_hw_if {
 
 	int (*set_ext_mii_mode)(struct axgbe_port *, unsigned int,
 				enum axgbe_mdio_mode);
-	int (*read_ext_mii_regs)(struct axgbe_port *, int, int);
-	int (*write_ext_mii_regs)(struct axgbe_port *, int, int, uint16_t);
+	int (*read_ext_mii_regs_c22)(struct axgbe_port *pdata, int addr, int reg);
+	int (*write_ext_mii_regs_c22)(struct axgbe_port *pdata, int addr, int reg, uint16_t val);
+	int (*read_ext_mii_regs_c45)(struct axgbe_port *pdata, int addr, int devad, int reg);
+	int (*write_ext_mii_regs_c45)(struct axgbe_port *pdata, int addr, int devad,
+									int reg, uint16_t val);
 
 	/* For FLOW ctrl */
 	int (*config_tx_flow_control)(struct axgbe_port *);
@@ -541,6 +572,13 @@ struct axgbe_port {
 	void *xprop_regs;	/* AXGBE property registers */
 	void *xi2c_regs;	/* AXGBE I2C CSRs */
 
+	/* Port property registers */
+	unsigned int pp0;
+	unsigned int pp1;
+	unsigned int pp2;
+	unsigned int pp3;
+	unsigned int pp4;
+
 	bool cdr_track_early;
 	/* XPCS indirect addressing lock */
 	unsigned int xpcs_window_def_reg;
@@ -651,6 +689,7 @@ struct axgbe_port {
 	enum axgbe_an an_state;
 	enum axgbe_rx kr_state;
 	enum axgbe_rx kx_state;
+	unsigned int an_again;
 	unsigned int an_supported;
 	unsigned int parallel_detect;
 	unsigned int fec_ability;
@@ -684,6 +723,10 @@ struct axgbe_port {
 	struct rte_timecounter tx_tstamp;
 	unsigned int tstamp_addend;
 
+	bool en_rx_adap;
+	int rx_adapt_retries;
+	bool rx_adapt_done;
+	bool mode_set;
 };
 
 void axgbe_init_function_ptrs_dev(struct axgbe_hw_if *hw_if);

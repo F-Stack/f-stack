@@ -95,8 +95,8 @@
 #define ACC_COMPANION_PTRS             8
 #define ACC_FCW_VER                    2
 #define ACC_MUX_5GDL_DESC              6
-#define ACC_CMP_ENC_SIZE               20
-#define ACC_CMP_DEC_SIZE               24
+#define ACC_CMP_ENC_SIZE               (sizeof(struct rte_bbdev_op_ldpc_enc) - ACC_ENC_OFFSET)
+#define ACC_CMP_DEC_SIZE               (sizeof(struct rte_bbdev_op_ldpc_dec) - ACC_DEC_OFFSET)
 #define ACC_ENC_OFFSET                (32)
 #define ACC_DEC_OFFSET                (80)
 #define ACC_LIMIT_DL_MUX_BITS          534
@@ -106,7 +106,7 @@
 #define ACC_MAX_FCW_SIZE              128
 #define ACC_IQ_SIZE                    4
 
-#define ACC_FCW_FFT_BLEN_3             28
+#define ACC_FCW_FFT_BLEN_VRB2         128
 
 /* Constants from K0 computation from 3GPP 38.212 Table 5.4.2.1-2 */
 #define ACC_N_ZC_1 66 /* N = 66 Zc for BG 1 */
@@ -149,11 +149,15 @@
 #define VRB2_VF_ID_SHIFT     6
 
 #define ACC_MAX_FFT_WIN      16
+#define ACC_MAX_RING_BUFFER  64
+#define VRB2_MAX_Q_PER_OP 256
+
+extern int acc_common_logtype;
+#define RTE_LOGTYPE_ACC_COMMON acc_common_logtype
 
 /* Helper macro for logging */
-#define rte_acc_log(level, fmt, ...) \
-	rte_log(RTE_LOG_ ## level, RTE_LOG_NOTICE, fmt "\n", \
-		##__VA_ARGS__)
+#define rte_acc_log(level, ...) \
+	RTE_LOG_LINE(level, ACC_COMMON, __VA_ARGS__)
 
 /* ACC100 DMA Descriptor triplet */
 struct acc_dma_triplet {
@@ -579,6 +583,9 @@ struct acc_device {
 	void *sw_rings_base;  /* Base addr of un-aligned memory for sw rings */
 	void *sw_rings;  /* 64MBs of 64MB aligned memory for sw rings */
 	rte_iova_t sw_rings_iova;  /* IOVA address of sw_rings */
+	void *sw_rings_array[ACC_MAX_RING_BUFFER];  /* Array of aligned memory for sw rings. */
+	rte_iova_t sw_rings_iova_array[ACC_MAX_RING_BUFFER];  /* Array of sw_rings IOVA. */
+	uint32_t queue_index[ACC_MAX_RING_BUFFER]; /* Tracking queue index per ring buffer. */
 	/* Virtual address of the info memory routed to the this function under
 	 * operation, whether it is PF or VF.
 	 * HW may DMA information data at this location asynchronously
@@ -760,6 +767,7 @@ alloc_sw_rings_min_mem(struct rte_bbdev *dev, struct acc_device *d,
 	int i = 0;
 	uint32_t q_sw_ring_size = ACC_MAX_QUEUE_DEPTH * get_desc_len();
 	uint32_t dev_sw_ring_size = q_sw_ring_size * num_queues;
+	uint32_t alignment = q_sw_ring_size * rte_align32pow2(num_queues);
 	/* Free first in case this is a reconfiguration */
 	rte_free(d->sw_rings_base);
 
@@ -767,12 +775,12 @@ alloc_sw_rings_min_mem(struct rte_bbdev *dev, struct acc_device *d,
 	while (i < ACC_SW_RING_MEM_ALLOC_ATTEMPTS) {
 		/*
 		 * sw_ring allocated memory is guaranteed to be aligned to
-		 * q_sw_ring_size at the condition that the requested size is
-		 * less than the page size
+		 * the variable 'alignment' at the condition that the requested
+		 * size is less than the page size
 		 */
 		sw_rings_base = rte_zmalloc_socket(
 				dev->device->driver->name,
-				dev_sw_ring_size, q_sw_ring_size, socket);
+				dev_sw_ring_size, alignment, socket);
 
 		if (sw_rings_base == NULL) {
 			rte_acc_log(ERR,
@@ -980,8 +988,10 @@ acc_fcw_te_fill(const struct rte_bbdev_enc_op *op, struct acc_fcw_te *fcw)
  * Starting position of different redundancy versions, k0
  */
 static inline uint16_t
-get_k0(uint16_t n_cb, uint16_t z_c, uint8_t bg, uint8_t rv_index)
+get_k0(uint16_t n_cb, uint16_t z_c, uint8_t bg, uint8_t rv_index, uint16_t k0)
 {
+	if (k0 > 0)
+		return k0;
 	if (rv_index == 0)
 		return 0;
 	uint16_t n = (bg == 1 ? ACC_N_ZC_1 : ACC_N_ZC_2) * z_c;
@@ -1018,7 +1028,7 @@ acc_fcw_le_fill(const struct rte_bbdev_enc_op *op,
 	fcw->Zc = op->ldpc_enc.z_c;
 	fcw->ncb = op->ldpc_enc.n_cb;
 	fcw->k0 = get_k0(fcw->ncb, fcw->Zc, op->ldpc_enc.basegraph,
-			op->ldpc_enc.rv_index);
+			op->ldpc_enc.rv_index, 0);
 	fcw->rm_e = (default_e == 0) ? op->ldpc_enc.cb_params.e : default_e;
 	fcw->crc_select = check_bit(op->ldpc_enc.op_flags,
 			RTE_BBDEV_LDPC_CRC_24B_ATTACH);
@@ -1551,6 +1561,24 @@ acc_aq_avail(struct rte_bbdev_queue_data *q_data, uint16_t num_ops)
 	if (aq_avail <= 0)
 		acc_enqueue_queue_full(q_data);
 	return aq_avail;
+}
+
+/* Update queue stats during enqueue. */
+static inline void
+acc_update_qstat_enqueue(struct rte_bbdev_queue_data *q_data,
+		uint16_t enq_count, uint16_t enq_err_count)
+{
+	q_data->queue_stats.enqueued_count += enq_count;
+	q_data->queue_stats.enqueue_err_count += enq_err_count;
+	q_data->queue_stats.enqueue_depth_avail = acc_aq_avail(q_data, 0);
+}
+
+/* Update queue stats during dequeue. */
+static inline void
+acc_update_qstat_dequeue(struct rte_bbdev_queue_data *q_data, uint16_t deq_count)
+{
+	q_data->queue_stats.dequeued_count += deq_count;
+	q_data->queue_stats.enqueue_depth_avail = acc_aq_avail(q_data, 0);
 }
 
 /* Calculates number of CBs in processed encoder TB based on 'r' and input

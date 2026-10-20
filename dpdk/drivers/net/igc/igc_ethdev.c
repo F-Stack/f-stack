@@ -208,7 +208,8 @@ static int eth_igc_infos_get(struct rte_eth_dev *dev,
 			struct rte_eth_dev_info *dev_info);
 static int eth_igc_led_on(struct rte_eth_dev *dev);
 static int eth_igc_led_off(struct rte_eth_dev *dev);
-static const uint32_t *eth_igc_supported_ptypes_get(struct rte_eth_dev *dev);
+static const uint32_t *eth_igc_supported_ptypes_get(struct rte_eth_dev *dev,
+						    size_t *no_of_elements);
 static int eth_igc_rar_set(struct rte_eth_dev *dev,
 		struct rte_ether_addr *mac_addr, uint32_t index, uint32_t pool);
 static void eth_igc_rar_clear(struct rte_eth_dev *dev, uint32_t index);
@@ -415,6 +416,7 @@ eth_igc_set_link_down(struct rte_eth_dev *dev)
 
 	/*
 	 * This function calls into the base driver, which in turn will use
+	 * function pointers, which are not guaranteed to be valid in secondary
 	 * processes, so avoid using this function in secondary processes.
 	 */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
@@ -1307,14 +1309,14 @@ eth_igc_close(struct rte_eth_dev *dev)
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 	struct igc_adapter *adapter = IGC_DEV_PRIVATE(dev);
 	int retry = 0;
-	int ret = 0;
+	int retval = 0;
 
 	PMD_INIT_FUNC_TRACE();
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return 0;
 
 	if (!adapter->stopped)
-		ret = eth_igc_stop(dev);
+		retval = eth_igc_stop(dev);
 
 	igc_flow_flush(dev, NULL);
 	igc_clear_all_filter(dev);
@@ -1337,7 +1339,7 @@ eth_igc_close(struct rte_eth_dev *dev)
 	/* Reset any pending lock */
 	igc_reset_swfw_lock(hw);
 
-	return ret;
+	return retval;
 }
 
 static void
@@ -1593,10 +1595,10 @@ eth_igc_fw_version_get(struct rte_eth_dev *dev, char *fw_version,
 	 * function pointers, which are not guaranteed to be valid in secondary
 	 * processes, so avoid using this function in secondary processes.
 	 */
-	igc_get_fw_version(hw, &fw);
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return -E_RTE_SECONDARY;
 
+	igc_get_fw_version(hw, &fw);
 
 	/* if option rom is valid, display its version too */
 	if (fw.or_valid) {
@@ -1714,7 +1716,8 @@ eth_igc_led_off(struct rte_eth_dev *dev)
 }
 
 static const uint32_t *
-eth_igc_supported_ptypes_get(__rte_unused struct rte_eth_dev *dev)
+eth_igc_supported_ptypes_get(__rte_unused struct rte_eth_dev *dev,
+			     size_t *no_of_elements)
 {
 	static const uint32_t ptypes[] = {
 		/* refers to rx_desc_pkt_info_to_pkt_type() */
@@ -1731,9 +1734,9 @@ eth_igc_supported_ptypes_get(__rte_unused struct rte_eth_dev *dev)
 		RTE_PTYPE_INNER_L3_IPV6_EXT,
 		RTE_PTYPE_INNER_L4_TCP,
 		RTE_PTYPE_INNER_L4_UDP,
-		RTE_PTYPE_UNKNOWN
 	};
 
+	*no_of_elements = RTE_DIM(ptypes);
 	return ptypes;
 }
 
@@ -2549,6 +2552,7 @@ eth_igc_rss_hash_conf_get(struct rte_eth_dev *dev,
 		/* read RSS key from register */
 		for (i = 0; i < IGC_HKEY_MAX_INDEX; i++)
 			hash_key[i] = IGC_READ_REG_LE_VALUE(hw, IGC_RSSRK(i));
+		rss_conf->rss_key_len = IGC_HKEY_MAX_INDEX * sizeof(uint32_t);
 	}
 
 	/* get RSS functions configured in MRQC register */
@@ -2803,6 +2807,12 @@ eth_igc_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
 {
 	struct igc_hw *hw = IGC_DEV_PRIVATE_HW(dev);
 
+	/*
+	 * Reading the SYSTIML register latches the upper 32 bits to the SYSTIMH
+	 * shadow register for coherent access. As long as we read SYSTIML first
+	 * followed by SYSTIMH, we avoid race conditions where the time rolls
+	 * over between the two register reads.
+	 */
 	ts->tv_nsec = IGC_READ_REG(hw, IGC_SYSTIML);
 	ts->tv_sec = IGC_READ_REG(hw, IGC_SYSTIMH);
 
@@ -2962,10 +2972,10 @@ eth_igc_timesync_disable(struct rte_eth_dev *dev)
 static int
 eth_igc_read_clock(__rte_unused struct rte_eth_dev *dev, uint64_t *clock)
 {
-	struct timespec system_time;
+	struct timespec ts;
 
-	clock_gettime(CLOCK_REALTIME, &system_time);
-	*clock = system_time.tv_sec * NSEC_PER_SEC + system_time.tv_nsec;
+	eth_igc_timesync_read_time(dev, &ts);
+	*clock = rte_timespec_to_ns(&ts);
 
 	return 0;
 }

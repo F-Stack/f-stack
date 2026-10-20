@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2019 Justin Hibbits
  *
@@ -23,8 +23,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_ATOMIC64E_H_
@@ -57,7 +55,7 @@ int	atomic_fcmpset_64(volatile u_int64_t *, u_int64_t *, u_int64_t);
 
 u_int64_t atomic_fetchadd_64(volatile u_int64_t *, u_int64_t);
 
-u_int64_t	atomic_load_64(volatile u_int64_t *);
+u_int64_t	atomic_load_64(const volatile u_int64_t *);
 #define	atomic_load_acq_64	atomic_load_64
 
 void	atomic_readandclear_64(volatile u_int64_t *);

@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause AND BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1996-2000 Whistle Communications, Inc.
  * All rights reserved.
@@ -59,8 +59,6 @@
  * SUCH DAMAGE.
  *
  * Authors: Archie Cobbs <archie@freebsd.org>, Alexander Motin <mav@alkar.net>
- *
- * $FreeBSD$
  * $Whistle: ng_ppp.c,v 1.24 1999/11/01 09:24:52 julian Exp $
  */
 
@@ -322,7 +320,7 @@ static void	ng_ppp_frag_timeout(node_p node, hook_p hook, void *arg1,
 static void	ng_ppp_frag_checkstale(node_p node);
 static void	ng_ppp_frag_reset(node_p node);
 static void	ng_ppp_mp_strategy(node_p node, int len, int *distrib);
-static int	ng_ppp_intcmp(void *latency, const void *v1, const void *v2);
+static int	ng_ppp_intcmp(const void *v1, const void *v2, void *latency);
 static struct mbuf *ng_ppp_addproto(struct mbuf *m, uint16_t proto, int compOK);
 static struct mbuf *ng_ppp_cutproto(struct mbuf *m, uint16_t *proto);
 static struct mbuf *ng_ppp_prepend(struct mbuf *m, const void *buf, int len);
@@ -1514,7 +1512,7 @@ done:
  *	is increased.
  *
  *    o If we receive a fragment with seq# < MSEQ, we throw it away
- *	because we've already delcared it lost.
+ *	because we've already declared it lost.
  *
  * This assumes linkNum != NG_PPP_BUNDLE_LINKNUM.
  */
@@ -1892,7 +1890,6 @@ ng_ppp_frag_checkstale(node_p node)
 	struct mbuf *m;
 	int seq;
 	item_p item;
-	int endseq;
 	uint16_t proto;
 
 	now.tv_sec = 0;			/* uninitialized state */
@@ -1941,7 +1938,6 @@ ng_ppp_frag_checkstale(node_p node)
 		}
 
 		/* Extract completed packet */
-		endseq = end->seq;
 		ng_ppp_get_packet(node, &m);
 
 		if ((m = ng_ppp_cutproto(m, &proto)) == NULL)
@@ -2318,8 +2314,8 @@ ng_ppp_mp_strategy(node_p node, int len, int *distrib)
 	}
 
 	/* Sort active links by latency */
-	qsort_r(sortByLatency,
-	    priv->numActiveLinks, sizeof(*sortByLatency), latency, ng_ppp_intcmp);
+	qsort_r(sortByLatency, priv->numActiveLinks, sizeof(*sortByLatency),
+	    ng_ppp_intcmp, latency);
 
 	/* Find the interval we need (add links in sortByLatency[] order) */
 	for (numFragments = 1;
@@ -2403,7 +2399,7 @@ ng_ppp_mp_strategy(node_p node, int len, int *distrib)
  * Compare two integers
  */
 static int
-ng_ppp_intcmp(void *latency, const void *v1, const void *v2)
+ng_ppp_intcmp(const void *v1, const void *v2, void *latency)
 {
 	const int index1 = *((const int *) v1);
 	const int index2 = *((const int *) v2);

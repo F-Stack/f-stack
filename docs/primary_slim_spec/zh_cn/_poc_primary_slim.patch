@@ -1,0 +1,23 @@
+diff --git a/lib/ff_dpdk_if.c b/lib/ff_dpdk_if.c
+index fe7c5c49b..9c986f05e 100644
+--- a/lib/ff_dpdk_if.c
++++ b/lib/ff_dpdk_if.c
+@@ -505,7 +505,8 @@ init_lcore_conf(void)
+         ff_cur_lcore_conf()->nb_queue_list[port_id] = pconf->nb_lcores;
+     }
+ 
+-    if (ff_cur_lcore_conf()->nb_rx_queue == 0) {
++    if (ff_cur_lcore_conf()->nb_rx_queue == 0 &&
++        rte_eal_process_type() != RTE_PROC_PRIMARY) {
+         rte_exit(EXIT_FAILURE, "lcore %u has nothing to do\n", lcore_id);
+     }
+ 
+@@ -532,7 +533,7 @@ init_mem_pool(void)
+     uint32_t nb_lcores = ff_global_cfg.dpdk.thread_mode
+         ? ff_global_cfg.dpdk.nb_threads : ff_global_cfg.dpdk.nb_procs;
+     uint32_t nb_tx_queue = nb_lcores;
+-    uint32_t nb_rx_queue = ff_cur_lcore_conf()->nb_rx_queue * nb_lcores;
++    uint32_t nb_rx_queue = nb_ports * nb_lcores;
+     uint16_t max_portid = ff_global_cfg.dpdk.max_portid;
+ 
+     unsigned nb_mbuf = RTE_ALIGN_CEIL (

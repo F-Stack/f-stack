@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 1996-1998 John D. Polstra.
  * All rights reserved.
@@ -24,8 +24,6 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #ifndef _SYS_ELF64_H_
@@ -165,6 +163,8 @@ typedef struct {
 #define	ELF64_R_TYPE_ID(info)	(((Elf64_Xword)(info)<<56)>>56)
 #define	ELF64_R_TYPE_INFO(data, type)	\
 				(((Elf64_Xword)(data)<<8)+(Elf64_Xword)(type))
+
+typedef Elf64_Xword Elf64_Relr;
 
 /*
  *	Note entry header

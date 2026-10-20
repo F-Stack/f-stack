@@ -25,13 +25,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- *	@(#)disklabel.h	8.2 (Berkeley) 7/10/94
- * $FreeBSD$
  */
 
 #ifndef _SYS_DISK_BSD_H_
 #define	_SYS_DISK_BSD_H_
+
+#include <sys/types.h>
 
 /* The disk magic number */
 #define BSD_MAGIC		0x82564557U

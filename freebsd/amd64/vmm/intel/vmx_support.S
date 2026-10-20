@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2011 NetApp, Inc.
  * Copyright (c) 2013 Neel Natu <neel@freebsd.org>
@@ -25,20 +25,12 @@
  * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
- *
- * $FreeBSD$
  */
 
 #include <machine/asmacros.h>
 #include <machine/specialreg.h>
 
 #include "vmx_assym.h"
-
-#ifdef SMP
-#define	LK	lock ;
-#else
-#define	LK
-#endif
 
 /* Be friendly to DTrace FBT's prologue/epilogue pattern matching */
 #define VENTER  push %rbp ; mov %rsp,%rbp
@@ -179,13 +171,11 @@ do_launch:
 	 */
 	movq	%rsp, %rdi		/* point %rdi back to 'vmxctx' */
 	movl	$VMX_VMLAUNCH_ERROR, %eax
-	jmp	decode_inst_error
-
+	/* FALLTHROUGH */
 decode_inst_error:
 	movl	$VM_FAIL_VALID, %r11d
-	jz	inst_error
-	movl	$VM_FAIL_INVALID, %r11d
-inst_error:
+	movl	$VM_FAIL_INVALID, %esi
+	cmovnzl	%esi, %r11d
 	movl	%r11d, VMXCTX_INST_FAIL_STATUS(%rdi)
 
 	/*

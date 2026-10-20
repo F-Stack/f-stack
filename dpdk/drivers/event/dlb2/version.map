@@ -1,9 +1,10 @@
-DPDK_24 {
+DPDK_25 {
 	local: *;
 };
 
 EXPERIMENTAL {
 	global:
 
+	# added in 20.11
 	rte_pmd_dlb2_set_token_pop_mode;
 };

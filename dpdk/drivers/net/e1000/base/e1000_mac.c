@@ -1826,6 +1826,7 @@ s32 e1000_id_led_init_generic(struct e1000_hw *hw)
 		return ret_val;
 
 	mac->ledctl_default = E1000_READ_REG(hw, E1000_LEDCTL);
+	rte_compiler_barrier();
 	mac->ledctl_mode1 = mac->ledctl_default;
 	mac->ledctl_mode2 = mac->ledctl_default;
 
@@ -1953,7 +1954,7 @@ s32 e1000_blink_led_generic(struct e1000_hw *hw)
 			     (mode == E1000_LEDCTL_MODE_LED_OFF))) {
 				ledctl_blink &=
 				    ~(E1000_LEDCTL_LED0_MODE_MASK << i);
-				ledctl_blink |= (E1000_LEDCTL_LED0_BLINK |
+				ledctl_blink |= (u32)(E1000_LEDCTL_LED0_BLINK |
 						 E1000_LEDCTL_MODE_LED_ON) << i;
 			}
 		}

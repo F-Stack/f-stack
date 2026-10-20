@@ -1,5 +1,5 @@
 /*-
- * SPDX-License-Identifier: BSD-2-Clause-FreeBSD
+ * SPDX-License-Identifier: BSD-2-Clause
  *
  * Copyright (c) 2014, Neel Natu (neel@freebsd.org)
  * All rights reserved.
@@ -27,8 +27,6 @@
  */
 
 #include <sys/cdefs.h>
-__FBSDID("$FreeBSD$");
-
 #include "opt_bhyve_snapshot.h"
 
 #include <sys/param.h>
@@ -61,7 +59,7 @@ static uint64_t host_msrs[HOST_MSR_NUM];
 void
 svm_msr_init(void)
 {
-	/* 
+	/*
 	 * It is safe to cache the values of the following MSRs because they
 	 * don't change based on curcpu, curproc or curthread.
 	 */
@@ -72,7 +70,7 @@ svm_msr_init(void)
 }
 
 void
-svm_msr_guest_init(struct svm_softc *sc, int vcpu)
+svm_msr_guest_init(struct svm_softc *sc, struct svm_vcpu *vcpu)
 {
 	/*
 	 * All the MSRs accessible to the guest are either saved/restored by
@@ -86,7 +84,7 @@ svm_msr_guest_init(struct svm_softc *sc, int vcpu)
 }
 
 void
-svm_msr_guest_enter(struct svm_softc *sc, int vcpu)
+svm_msr_guest_enter(struct svm_vcpu *vcpu)
 {
 	/*
 	 * Save host MSRs (if any) and restore guest MSRs (if any).
@@ -94,7 +92,7 @@ svm_msr_guest_enter(struct svm_softc *sc, int vcpu)
 }
 
 void
-svm_msr_guest_exit(struct svm_softc *sc, int vcpu)
+svm_msr_guest_exit(struct svm_vcpu *vcpu)
 {
 	/*
 	 * Save guest MSRs (if any) and restore host MSRs.
@@ -108,8 +106,7 @@ svm_msr_guest_exit(struct svm_softc *sc, int vcpu)
 }
 
 int
-svm_rdmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t *result,
-    bool *retu)
+svm_rdmsr(struct svm_vcpu *vcpu, u_int num, uint64_t *result, bool *retu)
 {
 	int error = 0;
 
@@ -120,9 +117,14 @@ svm_rdmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t *result,
 		break;
 	case MSR_MTRRcap:
 	case MSR_MTRRdefType:
-	case MSR_MTRR4kBase ... MSR_MTRR4kBase + 8:
+	case MSR_MTRR4kBase ... MSR_MTRR4kBase + 7:
 	case MSR_MTRR16kBase ... MSR_MTRR16kBase + 1:
 	case MSR_MTRR64kBase:
+	case MSR_MTRRVarBase ... MSR_MTRRVarBase + (VMM_MTRR_VAR_MAX * 2) - 1:
+		if (vm_rdmtrr(&vcpu->mtrr, num, result) != 0) {
+			vm_inject_gp(vcpu->vcpu);
+		}
+		break;
 	case MSR_SYSCFG:
 	case MSR_AMDK8_IPM:
 	case MSR_EXTFEATURES:
@@ -137,7 +139,7 @@ svm_rdmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t *result,
 }
 
 int
-svm_wrmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t val, bool *retu)
+svm_wrmsr(struct svm_vcpu *vcpu, u_int num, uint64_t val, bool *retu)
 {
 	int error = 0;
 
@@ -146,12 +148,15 @@ svm_wrmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t val, bool *retu)
 	case MSR_MCG_STATUS:
 		break;		/* ignore writes */
 	case MSR_MTRRcap:
-		vm_inject_gp(sc->vm, vcpu);
-		break;
 	case MSR_MTRRdefType:
-	case MSR_MTRR4kBase ... MSR_MTRR4kBase + 8:
+	case MSR_MTRR4kBase ... MSR_MTRR4kBase + 7:
 	case MSR_MTRR16kBase ... MSR_MTRR16kBase + 1:
 	case MSR_MTRR64kBase:
+	case MSR_MTRRVarBase ... MSR_MTRRVarBase + (VMM_MTRR_VAR_MAX * 2) - 1:
+		if (vm_wrmtrr(&vcpu->mtrr, num, val) != 0) {
+			vm_inject_gp(vcpu->vcpu);
+		}
+		break;
 	case MSR_SYSCFG:
 		break;		/* Ignore writes */
 	case MSR_AMDK8_IPM:
@@ -166,7 +171,7 @@ svm_wrmsr(struct svm_softc *sc, int vcpu, u_int num, uint64_t val, bool *retu)
 		break;
 #ifdef BHYVE_SNAPSHOT
 	case MSR_TSC:
-		error = svm_set_tsc_offset(sc, vcpu, val - rdtsc());
+		svm_set_tsc_offset(vcpu, val - rdtsc());
 		break;
 #endif
 	case MSR_EXTFEATURES:

@@ -1,0 +1,271 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 1340" font-family="'Helvetica Neue', Arial, sans-serif" font-size="13">
+  <!-- ================== STYLES ================== -->
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#444"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f6feb"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#d97706"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#059669"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7c3aed"/>
+    </marker>
+    <style>
+      .title { font-size:22px; font-weight:700; fill:#111827; }
+      .subtitle { font-size:14px; font-weight:600; fill:#374151; }
+      .h2 { font-size:16px; font-weight:700; fill:#111827; }
+      .lab { font-size:12px; fill:#374151; }
+      .lab-sm { font-size:11px; fill:#4b5563; }
+      .mono { font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size:11px; fill:#1f2937; }
+      .mono-w { font-family: 'SFMono-Regular', Consolas, Menlo, monospace; font-size:11px; fill:#fff; }
+      .step { font-weight:700; fill:#fff; font-size:13px; }
+      .pill-srv { fill:#fff5e6; stroke:#e67e22; stroke-width:1.5; }
+      .pill-cli { fill:#e6f3ff; stroke:#3498db; stroke-width:1.5; }
+      .pill-ai  { fill:#f5f3ff; stroke:#7c3aed; stroke-width:1.8; }
+      .lane-srv { fill:#fffaf2; stroke:#e67e22; stroke-width:1.2; stroke-dasharray:4,3; }
+      .lane-cli { fill:#f5fbff; stroke:#3498db; stroke-width:1.2; stroke-dasharray:4,3; }
+      .lane-op  { fill:#faf7ff; stroke:#7c3aed; stroke-width:1.2; stroke-dasharray:4,3; }
+      .box-op   { fill:#7c3aed; stroke:#4c1d95; }
+      .box-srv  { fill:#e67e22; stroke:#a35414; }
+      .box-cli  { fill:#3498db; stroke:#1f6e9b; }
+      .box-clean{ fill:#dc2626; stroke:#7f1d1d; }
+      .box-loop { fill:#7c3aed; stroke:#4c1d95; }
+      .box-doc  { fill:#059669; stroke:#064e3b; }
+      .arrow-net { stroke:#444; stroke-width:1.6; fill:none; marker-end:url(#arrow); }
+      .arrow-flow{ stroke:#444; stroke-width:1.6; fill:none; marker-end:url(#arrow); }
+      .arrow-ssh { stroke:#7c3aed; stroke-width:2; fill:none; marker-end:url(#arrowPurple); }
+      .arrow-loop{ stroke:#7c3aed; stroke-width:1.8; fill:none; marker-end:url(#arrow); stroke-dasharray:6,4; }
+    </style>
+  </defs>
+
+  <!-- ============ HEADER ============ -->
+  <text x="40" y="38" class="title">F-Stack CVM 双机基准测试方法（client 旁路 / 内核可选 → server F-Stack A/B）</text>
+  <text x="40" y="60" class="subtitle">适用：helloworld · helloworld_epoll · nginx_fstack · redis_fstack · 多进程功能验证</text>
+  <text x="40" y="78" class="lab-sm">来源：runtime-fix-execution-log.md §12.10 / §12.12 / §12.13 / §12.14 / §12.15 抽象统一</text>
+
+  <!-- ============ PART 1: TOPOLOGY ============ -->
+  <text x="40" y="118" class="h2">一、物理拓扑（CVM × 2，server 侧 AI AGENT 通过 ssh 驱动 client）</text>
+
+  <!-- Server box -->
+  <rect x="40" y="135" width="500" height="340" rx="10" class="pill-srv"/>
+  <text x="60" y="160" class="subtitle" fill="#a35414">SERVER  CVM, 16 vCPU, AMD EPYC 7K62  ─ 双网卡：数据面 x.x.x.176 → 192.168.1.1（DPDK） &#124; 控制面 x.x.x.87 → 192.168.1.3（kernel）</text>
+
+  <!-- AI AGENT inset on server -->
+  <rect x="60" y="174" width="460" height="40" rx="6" class="pill-ai"/>
+  <text x="70" y="192" class="lab" fill="#5b21b6"><tspan font-weight="700">AI AGENT (本机)</tspan>  ── 编排 / 落盘 / 文档分析</text>
+  <text x="70" y="208" class="mono" fill="#5b21b6">ssh client "wrk ..." | sed → /tmp/*-bench/*.txt   (落盘前完成混淆与归档)</text>
+
+  <!-- Server stack -->
+  <rect x="60" y="226" width="460" height="40" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="244" class="lab">config.ini / f-stack.conf  (lcore_mask 决定 nb_procs)</text>
+  <text x="70" y="260" class="mono">单 lcore: 0x10  ·  2 lcore: 0x30  ·  4 lcore: 0xf0</text>
+
+  <rect x="60" y="272" width="460" height="64" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="290" class="lab">F-Stack 应用（A/B 双份独立二进制）</text>
+  <text x="70" y="308" class="mono">helloworld · helloworld_epoll · nginx_fstack_{15rfix,13baseline}</text>
+  <text x="70" y="324" class="mono">redis_fstack_{15rfix,13baseline}     ── 单进程或多进程</text>
+
+  <rect x="60" y="342" width="460" height="60" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="360" class="lab">F-Stack lib  (双树 A/B 切换)</text>
+  <text x="70" y="378" class="mono">A: /data/workspace/f-stack/lib/libfstack.a            (15.0 runtime-fix)</text>
+  <text x="70" y="394" class="mono">B: /data/workspace/f-stack-13.0-baseline/lib/libfstack.a (13.0 baseline)</text>
+
+  <rect x="60" y="408" width="460" height="40" rx="4" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="426" class="lab">DPDK 23.11.5 + hugepages</text>
+  <text x="70" y="442" class="mono">/dev/hugepages/rtemap_*  (primary 1 + secondary N-1)</text>
+
+  <rect x="60" y="454" width="460" height="14" fill="#fce7d2" stroke="#e67e22"/>
+  <text x="70" y="465" class="lab-sm">NIC: virtio_net 00:09.0  ─ DPDK PMD 接管，kernel 不再持有</text>
+
+  <!-- Client box -->
+  <rect x="640" y="135" width="500" height="340" rx="10" class="pill-cli"/>
+  <text x="660" y="160" class="subtitle" fill="#1f6e9b">CLIENT  x.x.x.67  (CVM)  ─ 文档中混淆为 192.168.1.2</text>
+
+  <!-- sshd inset -->
+  <rect x="660" y="174" width="460" height="40" rx="6" fill="#e0e7ff" stroke="#4f46e5"/>
+  <text x="670" y="192" class="lab" fill="#3730a3"><tspan font-weight="700">sshd</tspan>  ── 接受 AI AGENT 指令并 exec 压测命令</text>
+  <text x="670" y="208" class="mono" fill="#3730a3">command stdout 通过 ssh 隧道回流到 server 侧 AI AGENT</text>
+
+  <!-- Client tools -->
+  <rect x="660" y="226" width="460" height="60" rx="4" fill="#dbeefb" stroke="#3498db"/>
+  <text x="670" y="244" class="lab">压测/探测工具（按需选择运行栈）</text>
+  <text x="670" y="262" class="mono">wrk 4.x  ·  curl  ·  redis-benchmark 7.2.7  ·  redis-cli</text>
+  <text x="670" y="278" class="mono">三档场景  T1 t2c10·5s  /  T2 t4c100·30s  /  T3 t8c500·30s</text>
+
+  <!-- Stack option box -->
+  <rect x="660" y="292" width="460" height="120" rx="6" fill="#fff" stroke="#3498db" stroke-dasharray="3,3"/>
+  <text x="670" y="310" class="lab" font-weight="700">运行栈二选一（按测试目的）</text>
+
+  <rect x="675" y="318" width="215" height="86" rx="4" fill="#dbeefb" stroke="#3498db"/>
+  <text x="782" y="336" text-anchor="middle" class="lab" font-weight="700">选项 A  ─  Linux kernel TCP/IP</text>
+  <text x="685" y="354" class="lab-sm">• 普通 socket(2) / connect(2)</text>
+  <text x="685" y="370" class="lab-sm">• 走 conntrack / tcp_ipv4 / NIC ring</text>
+  <text x="685" y="386" class="lab-sm">• 用例：仅压 server，client 不旁路</text>
+  <text x="685" y="402" class="lab-sm">• 部署最简，client NIC 仍归 kernel</text>
+
+  <rect x="900" y="318" width="220" height="86" rx="4" fill="#cfe6fb" stroke="#1f6e9b"/>
+  <text x="1010" y="336" text-anchor="middle" class="lab" font-weight="700">选项 B  ─  F-Stack adapter</text>
+  <text x="910" y="354" class="lab-sm">• fstack-client + LD_PRELOAD</text>
+  <text x="910" y="370" class="lab-sm">• syscall 旁路到 F-Stack 协议栈</text>
+  <text x="910" y="386" class="lab-sm">• 用例：双端旁路、对齐生产</text>
+  <text x="910" y="402" class="lab-sm">• 需 client NIC 也由 DPDK 接管</text>
+
+  <rect x="660" y="418" width="460" height="44" rx="4" fill="#dbeefb" stroke="#3498db"/>
+  <text x="670" y="436" class="lab">网络层（按选项决定路径）</text>
+  <text x="670" y="452" class="mono">A: kernel virtio_net  ｜  B: DPDK virtio_net + fstack-client rtemap</text>
+
+  <!-- Network arrows: server <-> client -->
+  <line x1="540" y1="298" x2="640" y2="298" class="arrow-net"/>
+  <line x1="640" y1="320" x2="540" y2="320" class="arrow-net"/>
+  <text x="555" y="291" class="lab-sm" fill="#1f6feb">server bind 0.0.0.0:80 / 6379</text>
+  <text x="555" y="338" class="lab-sm" fill="#d97706">client wrk/curl/redis-benchmark 主动注入 → server</text>
+
+  <!-- ssh control plane arrow (top, AI AGENT -> sshd) -->
+  <path d="M520,194 C580,194 600,194 660,194" class="arrow-ssh"/>
+  <text x="540" y="186" class="lab-sm" fill="#7c3aed" font-weight="700">ssh 控制通道  (server 控制面 x.x.x.87 → client x.x.x.67)</text>
+
+  <!-- ssh return (stdout) -->
+  <path d="M660,210 C600,210 580,210 520,210" stroke="#7c3aed" stroke-width="2" fill="none" marker-end="url(#arrowPurple)"/>
+  <text x="535" y="226" class="lab-sm" fill="#7c3aed">stdout 回流（命令结果）</text>
+
+  <text x="40" y="498" class="lab-sm">注：① server 数据面 NIC (x.x.x.176) 由 DPDK 接管，控制面 NIC (x.x.x.87) 仍归 kernel 用于 ssh；② client 侧栈选择不影响 A/B 结论的相对差异，但绝对吞吐会因栈不同而不同；③ AI AGENT 下发命令、收回 stdout、应用 sed 混淆、写入工件、维护文档与 git，全部在 server 同机本地完成。</text>
+
+  <!-- ============ PART 2: TIMELINE / SWIMLANES ============ -->
+  <text x="40" y="538" class="h2">二、流程泳道图（AI AGENT / Server / Client，自上而下）</text>
+
+  <!-- Lane backgrounds -->
+  <rect x="40"  y="556" width="280"  height="730" rx="8" class="lane-op"/>
+  <rect x="330" y="556" width="430"  height="730" rx="8" class="lane-srv"/>
+  <rect x="770" y="556" width="370"  height="730" rx="8" class="lane-cli"/>
+
+  <!-- Lane headers -->
+  <rect x="40" y="556" width="280" height="34" rx="8" fill="#7c3aed"/>
+  <text x="180" y="578" text-anchor="middle" font-weight="700" fill="#fff">AI AGENT (本机, server 同机)</text>
+
+  <rect x="330" y="556" width="430" height="34" rx="8" fill="#e67e22"/>
+  <text x="545" y="578" text-anchor="middle" font-weight="700" fill="#fff">SERVER  data x.x.x.176 &#47; ctrl x.x.x.87</text>
+
+  <rect x="770" y="556" width="370" height="34" rx="8" fill="#3498db"/>
+  <text x="955" y="578" text-anchor="middle" font-weight="700" fill="#fff">CLIENT x.x.x.67  (kernel 或 F-Stack adapter)</text>
+
+  <!-- ===== Step 1: build dual tree ===== -->
+  <rect x="55" y="606" width="250" height="48" rx="6" class="box-op"/>
+  <text x="180" y="628" text-anchor="middle" class="step">① 双树 build</text>
+  <text x="180" y="646" text-anchor="middle" class="mono-w">make -C f-stack/lib && f-stack-13.0-baseline/lib</text>
+
+  <rect x="345" y="606" width="400" height="48" rx="6" fill="#fefdf6" stroke="#e67e22"/>
+  <text x="360" y="624" class="lab">产出双份静态库：</text>
+  <text x="360" y="642" class="mono">f-stack/lib/libfstack.a  +  f-stack-13.0-baseline/lib/libfstack.a</text>
+
+  <!-- ===== Step 2: build apps ===== -->
+  <rect x="55" y="664" width="250" height="48" rx="6" class="box-op"/>
+  <text x="180" y="686" text-anchor="middle" class="step">② 应用双份编译</text>
+  <text x="180" y="704" text-anchor="middle" class="mono-w">FF_PATH 切换 + make</text>
+
+  <rect x="345" y="664" width="400" height="48" rx="6" fill="#fefdf6" stroke="#e67e22"/>
+  <text x="360" y="682" class="lab">helloworld / nginx / redis 各产出 _15rfix + _13baseline 双份二进制</text>
+  <text x="360" y="700" class="mono">/usr/local/{nginx,redis}_fstack_{15rfix,13baseline}/</text>
+
+  <!-- ===== Step 3: start server ===== -->
+  <rect x="345" y="722" width="400" height="56" rx="6" class="box-srv"/>
+  <text x="545" y="745" text-anchor="middle" class="step">③ Server 启动（其中一棵树）</text>
+  <text x="545" y="764" text-anchor="middle" class="mono-w">nohup ./app --conf config.ini --proc-type=primary &amp; disown</text>
+
+  <line x1="305" y1="750" x2="345" y2="750" class="arrow-flow" stroke="#d97706" marker-end="url(#arrowOrange)"/>
+
+  <rect x="345" y="786" width="400" height="36" rx="6" fill="#fefdf6" stroke="#e67e22"/>
+  <text x="360" y="804" class="lab">DPDK init / hugepage / "f-stack-0: Successed to register"</text>
+  <text x="360" y="818" class="mono">每 worker 占 1 lcore，primary proc_id=0</text>
+
+  <!-- ===== Step 4: smoke via ssh ===== -->
+  <rect x="55" y="832" width="250" height="56" rx="6" class="box-op"/>
+  <text x="180" y="855" text-anchor="middle" class="step">④ 通过 ssh 触发 smoke</text>
+  <text x="180" y="874" text-anchor="middle" class="mono-w">ssh client "curl ..." | sed</text>
+
+  <rect x="785" y="832" width="340" height="56" rx="6" class="box-cli"/>
+  <text x="955" y="855" text-anchor="middle" class="step">④' Smoke 探测（执行）</text>
+  <text x="955" y="874" text-anchor="middle" class="mono-w">curl 10x ⇒ 200  ｜  PING ⇒ PONG</text>
+
+  <!-- ssh arrows op -> client -->
+  <line x1="305" y1="850" x2="785" y2="850" class="arrow-ssh"/>
+  <text x="450" y="844" class="lab-sm" fill="#7c3aed" font-weight="700">ssh exec</text>
+
+  <!-- client -> server (data plane) -->
+  <line x1="785" y1="864" x2="745" y2="804" class="arrow-flow" stroke="#1f6feb" marker-end="url(#arrowBlue)"/>
+  <line x1="745" y1="816" x2="785" y2="876" class="arrow-flow" stroke="#d97706" marker-end="url(#arrowOrange)"/>
+
+  <!-- client -> op (stdout return) -->
+  <path d="M785,888 C600,920 400,920 305,888" stroke="#7c3aed" stroke-width="1.8" fill="none" marker-end="url(#arrowPurple)" stroke-dasharray="4,3"/>
+  <text x="540" y="918" class="lab-sm" fill="#7c3aed">stdout 回流</text>
+
+  <!-- ===== Step 5: bench via ssh ===== -->
+  <rect x="55" y="932" width="250" height="64" rx="6" class="box-op"/>
+  <text x="180" y="956" text-anchor="middle" class="step">⑤ 通过 ssh 触发 benchmark</text>
+  <text x="180" y="974" text-anchor="middle" class="mono-w">ssh client "wrk -d30s ..." | sed</text>
+  <text x="180" y="990" text-anchor="middle" class="mono-w">&gt; /tmp/.../wrk.txt</text>
+
+  <rect x="785" y="932" width="340" height="64" rx="6" class="box-cli"/>
+  <text x="955" y="956" text-anchor="middle" class="step">⑤' T1/T2/T3 压测（执行）</text>
+  <text x="955" y="974" text-anchor="middle" class="mono-w">wrk -t4 -c100 -d30s http://srv/</text>
+  <text x="955" y="990" text-anchor="middle" class="mono-w">redis-benchmark -t set,get -P 16</text>
+
+  <line x1="305" y1="950" x2="785" y2="950" class="arrow-ssh"/>
+  <text x="450" y="944" class="lab-sm" fill="#7c3aed" font-weight="700">ssh exec</text>
+
+  <line x1="785" y1="970" x2="745" y2="800" class="arrow-flow" stroke="#1f6feb" marker-end="url(#arrowBlue)" stroke-dasharray="0"/>
+  <line x1="745" y1="820" x2="785" y2="980" class="arrow-flow" stroke="#d97706" marker-end="url(#arrowOrange)"/>
+
+  <path d="M785,996 C600,1020 400,1020 305,996" stroke="#7c3aed" stroke-width="1.8" fill="none" marker-end="url(#arrowPurple)" stroke-dasharray="4,3"/>
+  <text x="540" y="1016" class="lab-sm" fill="#7c3aed">stdout 回流（即将进入 sed 管道）</text>
+
+  <!-- ===== Step 6: source-side IP redact ===== -->
+  <rect x="55" y="1036" width="250" height="48" rx="6" class="box-doc"/>
+  <text x="180" y="1058" text-anchor="middle" class="step">⑥ AI AGENT 源头 IP 混淆</text>
+  <text x="180" y="1076" text-anchor="middle" class="mono-w">sed → /tmp/*-bench/*.txt</text>
+
+  <rect x="345" y="1036" width="780" height="48" rx="6" fill="#ecfdf5" stroke="#059669"/>
+  <text x="360" y="1054" class="lab">stdout 流回 AI AGENT 时立即过 sed，落盘前已不含真实 IP：</text>
+  <text x="360" y="1072" class="mono">x.x.x.176 → 192.168.1.1   x.x.x.67 → 192.168.1.2   x.x.x.87 → 192.168.1.3   :&lt;实际ssh端口&gt; → :22</text>
+
+  <!-- ===== Step 7: kill master ===== -->
+  <rect x="345" y="1094" width="400" height="48" rx="6" class="box-clean"/>
+  <text x="545" y="1116" text-anchor="middle" class="step">⑦ 终止 server master</text>
+  <text x="545" y="1134" text-anchor="middle" class="mono-w">/data/workspace/kill_process.sh &lt;master_pid&gt;</text>
+
+  <!-- ===== Step 8: rtemap cleanup ===== -->
+  <rect x="345" y="1150" width="400" height="48" rx="6" class="box-clean"/>
+  <text x="545" y="1172" text-anchor="middle" class="step">⑧ 清理 rtemap 残留</text>
+  <text x="545" y="1190" text-anchor="middle" class="mono-w">/data/workspace/rm_tmp_file.sh /dev/hugepages/rtemap_*</text>
+
+  <line x1="305" y1="1118" x2="345" y2="1118" class="arrow-flow" stroke="#dc2626" marker-end="url(#arrow)"/>
+
+  <!-- ===== Step 9: switch tree ===== -->
+  <rect x="55" y="1206" width="250" height="40" rx="6" class="box-loop"/>
+  <text x="180" y="1230" text-anchor="middle" class="step">⑨ 切换另一棵树 → 回 ③</text>
+
+  <rect x="345" y="1206" width="400" height="40" rx="6" fill="#f5f3ff" stroke="#7c3aed"/>
+  <text x="360" y="1224" class="lab">回到 ③ 用另一份二进制重启，重复 ④⑤⑥⑦⑧</text>
+  <text x="360" y="1238" class="mono">同时间窗口 A/B：基线漂移最小化</text>
+
+  <!-- loop arrow back -->
+  <path d="M170,1206 C170,1100 170,840 170,778" class="arrow-loop"/>
+  <text x="185" y="980" class="lab-sm" fill="#7c3aed">loop ×2 (A 树 + B 树)</text>
+
+  <!-- ===== Step 10: doc + commit ===== -->
+  <rect x="55" y="1252" width="250" height="32" rx="6" class="box-doc"/>
+  <text x="180" y="1273" text-anchor="middle" class="step">⑩ 文档落盘 + 配置还原</text>
+
+  <rect x="345" y="1252" width="780" height="32" rx="6" fill="#ecfdf5" stroke="#059669"/>
+  <text x="360" y="1273" class="mono">runtime-fix-execution-log.md §12.x  +  *.bak_1proc 还原  +  git commit (英文，不 push)</text>
+
+  <line x1="305" y1="1268" x2="345" y2="1268" class="arrow-flow" stroke="#059669" marker-end="url(#arrowGreen)"/>
+
+  <!-- ============ FOOTER ============ -->
+  <text x="40" y="1316" class="lab-sm">说明：① 全图真实 IP 仅保留 D 段：server 数据面 .176（DPDK） &#47; server 控制面 .87（ssh 出口） &#47; client .67 → 落盘混淆后分别为 192.168.1.1 &#47; 192.168.1.3 &#47; 192.168.1.2；② client 端协议栈 kernel/F-Stack 二选一不影响 A/B 流程，仅影响绝对值；③ ssh 通道为带外控制面，与 DPDK 数据面 (server↔client) 完全分离。</text>
+</svg>
