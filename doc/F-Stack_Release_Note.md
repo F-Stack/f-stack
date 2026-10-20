@@ -2,29 +2,6 @@
 
  F-Stack is an open source network framework based on DPDK.
 
-## Unreleased (dev)
-
-1. F-Stack lib:
-
-- Add graceful reload support (`graceful_reload=1`, requires `primary_slim=1`): lossless nginx reload (HUP) — the new generation spawns and reaches READY while the old one keeps serving, rx ownership flips at handover, and established connections drain to natural completion over per-generation drain rings.
-- Add a resident slim primary deployment form: the DPDK primary holds no rx/tx queue, survives reload/upgrade/master exit, and all nginx workers attach as DPDK secondaries.
-- Add a hugepage-backed generation directory (master epoch minting, single-CAS rx-owner arbitration, bounded slot reuse) so two generations and two masters (USR2) coexist without ring or KNI ownership conflicts.
-- Add generation-agnostic queue/lcore mapping (both generations of a worker slot share one lcore_id) and ping-pong generational mempools (`mbuf_pool_<n>_gen0/gen1`).
-- Add drain rings with rate-limited full-ring alerts and ring-peak watermark observability; new `drain_ring_size` config (default 2048).
-- Add reload heartbeat (`reload_heartbeat_timeout_ms`, default 1000): the old generation autonomously reclaims rx when the new generation stalls after handover.
-- Apply the drain forced-exit caps at max(30s, `worker_shutdown_timeout`) instead of a fixed 30s.
-- Fix a worker-0 respawn SIGABRT storm caused by a dangling ff_shm semaphore pointer (worker 0 killed in steady state).
-- Add `idle_loop_interval` parameter in `config.ini` (µs, default 100, range 0-100000, `0` = every loop pass): the interval between user `loop()` callback invocations when no packet is received. `pkt_tx_delay` no longer controls that rate and is back to gating only the TX burst drain. Deployments that explicitly lowered `pkt_tx_delay` below 100 now get a 100 µs idle callback interval by default; set `idle_loop_interval` to the old `pkt_tx_delay` value to keep the previous behaviour.
-- Add an idle callback registration API (`ff_regist_idle_callback()` / `ff_unregist_idle_callback()`, see `ff_api.h`): once registered, the main loop calls it on every idle pass **instead of** taking the library idle sleep (`idle_sleep` / `primary_slim_idle_sleep`), so the application owns the idle behaviour. **The application must then yield the CPU by itself** — with no pacing in the callback the loop spins at full speed (measured ~6.2M callbacks/s vs ~12k/s with a 20 µs in-callback sleep). Without a registered callback the sleep behaviour is unchanged. The callback is invoked on every idle pass, `loop()` keeps its own `idle_loop_interval` throttle, and its execution time is now accounted as user time in `ff_top` instead of idle.
-
-1. ff tools
-
-- Support cross-epoch generation addressing: `-p <proc>[:<gen>[:<epoch>]]` and `-g <gen>[:<epoch>]`; auto-probe of the active (epoch, gen) is the recommended path; tools refuse with an explicit error instead of silently falling back.
-
-1. APP
-
-- Nginx: lossless reload (HUP) and lossless binary upgrade (USR2, traffic switched on WINCH, HUP rolls back) with `graceful_reload=1`.
-- Known limitations: KNI management-plane reachability of a self-chosen address cannot be validated on clouds that only deliver platform-assigned IPs (KNI data-plane forwarding is verified instead); the KNI kernel-side veth address must be /32 or in a dedicated subnet; if both generations die after the handover, only an external restart recovers.
 
 ## 2025.11 F-Stack v1.25
 
