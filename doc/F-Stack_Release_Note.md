@@ -2,6 +2,43 @@
 
  F-Stack is an open source network framework based on DPDK.
 
+## 2026.10 F-Stack v1.21.7(LTS)
+
+1. F-Stack lib:
+
+- Port kernel-stack coexistence from release/2.0.
+- Port LRO support and TSO improvements from branch of dev.
+- Fix software LRO crash on flush by setting mbuf rcvif.
+- Port MTU change (jumbo frame) support from branch of dev.
+- Port IPv6 RSS check static-table support from branch of dev.
+- Run RSS aware port selection for IPv6 outbound connects.
+- Support nanosecond timestamp precision in pcap dump.
+- Add mbuf water-level backpressure for high connection rate scenarios. Thanks @Sai-Raveendra-Kandregula
+- Add fine-grained TX checksum offload control in config.ini. Thanks @vincentmli
+- Add extra_eal_args config option for generic DPDK EAL argument passthrough. Thanks @whatmatrix
+- Add ff_accept4 API with LINUX_SOCK_CLOEXEC/LINUX_SOCK_NONBLOCK support. @liujinhui-job
+- Add an API ff_regist_packet_dispatcher_context that allows to pass more context to callback. @jinliu777
+- Fix a build error on DPDK 19.11 by using PKT_RX_VLAN_STRIPPED.
+
+1. FreeBSD:
+
+- Port IPv6 RSS check static-table support from branch of dev.
+- Fix EVFILT_TIMER precision of kqueue. Thanks @vanlink
+
+1. ff tools:
+
+- Fix IPFW crash when the rule list is large. Thanks @chocosnat
+- Fix start.sh lcore_mask parsing to ignore commented lines.
+
+1. APP:
+
+- Nginx: fix a SIGSEGV in stream udp proxying, upstream connections have no c->listening.
+
+1. doc:
+
+- Replace dpdk-setup.sh with 'make config T=x86_64-native-linuxapp-gcc' and point FF_DPDK/insmod paths to dpdk/build in docs and Makefiles.
+- Document how to restore the executable bits and the symlink lost when sources are copied from Windows.
+
 ## 2025.11 F-Stack v1.21.6(LTS)
 
 1. F-Stack lib:
