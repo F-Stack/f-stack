@@ -3,6 +3,86 @@
  F-Stack is an open source network framework based on DPDK.
 
 
+## 2026.10 F-Stack v2.0
+
+1. F-Stack lib:
+
+- Support single-process multi-thread mode (`thread_mode=1`).
+- Add `primary_slim` mode, the primary keeps no rx/tx queue. Ref #1078.
+- Add `graceful_reload` for nginx, HUP reload is lossless.
+- Support lossless binary upgrade with USR2 under `graceful_reload=1`.
+- Dispatch UDP flows across graceful reload.
+- Add `drain_ring_size`, `reload_heartbeat_timeout_ms` and `reload_udp_idle_ms` in config.ini.
+- Add `idle_loop_interval` in config.ini.
+- Add `ff_regist_idle_callback()` and `ff_unregist_idle_callback()`.
+- Add LRO offload with software fallback, and improve TSO for IPv6.
+- Support runtime MTU change and jumbo frames.
+- Add mbuf water-level backpressure. Thanks @Sai-Raveendra-Kandregula
+- Add fine-grained TX checksum offload control. Thanks @vincentmli
+- Add `extra_eal_args` config option. Thanks @whatmatrix
+- Add zero-copy receive `ff_zc_recv()`, and rework `ff_zc_send()` without the magic sentinel.
+- Add `FF_KERNEL_COEXIST` for kernel stack coexistence.
+- Optimize `ff_rss_check()` with `rte_thash_adjust_tuple()`, and support IPv6.
+- Run RSS aware port selection for IPv6 outbound connects.
+- Add `ff_regist_packet_dispatcher_context()`. @jinliu777
+- Support nanosecond timestamp precision in pcap dump.
+- Recognize IPv6 L4 checksum offload flags in `ff_mbuf_tx_offload()`.
+- Fix the BBR large-file hang.
+- Add a cmocka based unit test framework.
+
+1. adapter
+
+- Add lock-free ring IPC for LD_PRELOAD (`FF_USE_RING_IPC`).
+- Map Linux `SO_TIMESTAMP` to FreeBSD. @tarun-t
+- Propagate the DPDK mbuf RX timestamp to the FreeBSD mbuf. @tarun-t
+- Fix the `ioctl` conflicting types compile error on older glibc.
+- Add an addrlen check in `ff_hook_bind()` (#1068).
+
+1. FreeBSD
+
+- Upgrade to FreeBSD-releng-15.0.
+- Fix TCP timers never being armed (`callout_when()` was an empty stub).
+- Fix EVFILT_TIMER precision of kqueue. Thanks @vanlink
+
+1. ff tools
+
+- Let the F-Stack tools find a stack by themselves (#419). @alberthaolihai
+- Let `ff_top` and `ff_traffic` follow a graceful reload.
+- Support cross-generation addressing with `-p` and `-g`.
+- Fix IPFW crash when the rule list is large. Thanks @chocosnat
+- Fix start.sh lcore_mask parsing to ignore commented lines.
+- Fix ff tools build error with gcc-15.2.0 in ubuntu-26.04.
+
+1. DPDK:
+
+- Upgrade to DPDK-24.11.8(LTS).
+- Fix the secondary process resetting the NIC (#860).
+- Fix an infinite loop when a DPDK secondary process restarts. @jinliu777
+- Fix the vmxnet3 `rss_key_len` in RSS mode. @WK-Tseng
+- Fix build with GCC 15 and DPDK 25.11. @tarun-t
+- Bump black, cryptography and pynacl in /dpdk/dts. @dependabot[bot]
+
+1. APP
+
+- Nginx: lossless reload (HUP) and binary upgrade (USR2).
+- Nginx: dispatch UDP flows across reload.
+- Nginx: fix a SIGSEGV in stream udp proxying.
+- Nginx: add a reverse-proxy example with buffer settings.
+- Redis: fix the build when the jemalloc configure script is missing (#802).
+
+1. example
+
+- Make helloworld thread-safe for `thread_mode=1`.
+- Add a UDP echo server example (#1063).
+
+1. doc:
+
+- Add three-layer architecture docs and knowledge graph.
+- Add F-Stack 2.0 preview blogs in Chinese and English.
+- Update the nginx guide for graceful reload.
+- Document the executable bits and symlink loss when the tree is copied from Windows.
+
+
 ## 2025.11 F-Stack v1.25
 
 1. F-Stack lib:
