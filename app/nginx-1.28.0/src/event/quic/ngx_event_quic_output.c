@@ -455,7 +455,9 @@ ngx_quic_send_segments(ngx_connection_t *c, u_char *buf, size_t len,
 
 #if (NGX_HAVE_ADDRINFO_CMSG)
 #if (NGX_HAVE_FSTACK)
-    if ((!c->listening->belong_to_host) && c->listening && c->listening->wildcard && c->local_sockaddr) {
+    if (c->listening && !c->listening->belong_to_host
+        && c->listening->wildcard && c->local_sockaddr)
+    {
 #else
     if (c->listening && c->listening->wildcard && c->local_sockaddr) {
 #endif
@@ -733,7 +735,9 @@ ngx_quic_send(ngx_connection_t *c, u_char *buf, size_t len,
 
 #if (NGX_HAVE_ADDRINFO_CMSG)
 #if (NGX_HAVE_FSTACK)
-    if ((!c->listening->belong_to_host) && c->listening && c->listening->wildcard && c->local_sockaddr) {
+    if (c->listening && !c->listening->belong_to_host
+        && c->listening->wildcard && c->local_sockaddr)
+    {
 #else
     if (c->listening && c->listening->wildcard && c->local_sockaddr) {
 #endif
