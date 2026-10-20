@@ -4573,7 +4573,8 @@ static const struct token token_list[] = {
 		.help = "tag control information",
 		.next = NEXT(item_vlan, NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
-		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vlan, hdr.vlan_tci)),
+		.args = ARGS(ARGS_ENTRY_MASK_HTON(struct rte_flow_item_vlan,
+					  hdr.vlan_tci, "\xff\xff")),
 	},
 	[ITEM_VLAN_PCP] = {
 		.name = "pcp",
@@ -4604,8 +4605,8 @@ static const struct token token_list[] = {
 		.help = "inner EtherType",
 		.next = NEXT(item_vlan, NEXT_ENTRY(COMMON_UNSIGNED),
 			     item_param),
-		.args = ARGS(ARGS_ENTRY_HTON(struct rte_flow_item_vlan,
-					     hdr.eth_proto)),
+		.args = ARGS(ARGS_ENTRY_MASK_HTON(struct rte_flow_item_vlan,
+						  hdr.eth_proto, "\xff\xff")),
 	},
 	[ITEM_VLAN_HAS_MORE_VLAN] = {
 		.name = "has_more_vlan",
@@ -11806,7 +11807,7 @@ parse_string0(struct context *ctx, const struct token *token __rte_unused,
 	if (!ctx->object)
 		return len;
 	buf = (uint8_t *)ctx->object + arg_data->offset;
-	strncpy(buf, str, len);
+	memcpy(buf, str, len);
 	if (ctx->objmask)
 		memset((uint8_t *)ctx->objmask + arg_data->offset, 0xff, len);
 	return len;

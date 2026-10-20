@@ -88,6 +88,8 @@
 #define HWRM_VERSION_1_9_1		0x10901
 #define HWRM_VERSION_1_9_2		0x10903
 #define HWRM_VERSION_1_10_2_13		0x10a020d
+/* Minimum spec version that supports AUTONEG_PAUSE bit in auto_pause field */
+#define HWRM_SPEC_CODE_AUTONEG_PAUSE	0x10201
 
 #define BNXT_MAX_MTU		9574
 #define BNXT_NUM_VLANS		2
@@ -331,6 +333,14 @@ struct bnxt_link_info {
 	uint8_t                 active_lanes;
 	uint8_t			option_flags;
 	uint16_t                pmd_speed_lanes;
+	/* Bitmask tracking which autoneg modes are active */
+	uint8_t			autoneg;
+#define BNXT_AUTONEG_SPEED		1 /* speed autoneg enabled */
+#define BNXT_AUTONEG_FLOW_CTRL		2 /* pause/flow-ctrl autoneg enabled */
+	/* True after autoneg->forced FC transition; cleared once set_pause
+	 * sends the combined pause+link HWRM request successfully.
+	 */
+	bool			link_reconfig_needed;
 };
 
 #define BNXT_COS_QUEUE_COUNT	8
@@ -404,6 +414,8 @@ struct bnxt_ptp_cfg {
 	uint64_t			current_time;
 	uint64_t			old_time;
 	rte_spinlock_t			ptp_lock;
+	/* On P7, the Tx timestamp is present in the Tx completion record */
+	uint64_t			tx_timestamp;
 };
 
 struct bnxt_coal {
@@ -425,8 +437,10 @@ struct bnxt_coal {
 #define DBR_TYPE_SQ				(0x0ULL << 60)
 #define DBR_TYPE_SRQ				(0x2ULL << 60)
 #define DBR_TYPE_CQ				(0x4ULL << 60)
+#define DBR_TYPE_CQ_ARMALL			(0x6ULL << 60)
 #define DBR_TYPE_NQ				(0xaULL << 60)
 #define DBR_TYPE_NQ_ARM				(0xbULL << 60)
+#define DBR_TYPE_NQ_MASK			(0xeULL << 60)
 
 #define DB_PF_OFFSET			0x10000
 #define DB_VF_OFFSET			0x4000
@@ -866,6 +880,7 @@ struct bnxt {
 #define BNXT_FW_CAP_TX_COAL_CMPL	BIT(10)
 #define BNXT_FW_CAP_RX_ALL_PKT_TS	BIT(11)
 #define BNXT_FW_CAP_BACKING_STORE_V2	BIT(12)
+#define BNXT_FW_CAP_TIMED_TX_PACING	BIT(15)
 #define BNXT_FW_CAP_RX_RATE_PROFILE	BIT(17)
 #define BNXT_FW_BACKING_STORE_V2_EN(bp)	\
 	((bp)->fw_cap & BNXT_FW_CAP_BACKING_STORE_V2)
@@ -874,6 +889,7 @@ struct bnxt {
 	 (bp)->hwrm_spec_code >= HWRM_VERSION_1_9_2 && \
 	 !BNXT_VF((bp)))
 #define BNXT_FW_CAP_UDP_GSO		BIT(13)
+#define BNXT_FW_CAP_TX_TS_CMP		BIT(16)
 #define BNXT_TRUFLOW_EN(bp)	((bp)->fw_cap & BNXT_FW_CAP_TRUFLOW_EN &&\
 				 (bp)->app_id != 0xFF)
 
@@ -1248,6 +1264,7 @@ extern int bnxt_logtype_driver;
 #define BNXT_LINK_SPEEDS_V2(bp) (((bp)->link_info) && (((bp)->link_info->support_speeds_v2) || \
 						       BNXT_LINK_SPEEDS_V2_VF((bp))))
 #define BNXT_MAX_SPEED_LANES 8
+#define BNXT_SUPPORTS_TPA(bp)  (!BNXT_CHIP_P5_P7(bp) || (bp)->max_tpa_v2)
 extern const struct rte_flow_ops bnxt_ulp_rte_flow_ops;
 int32_t bnxt_ulp_port_init(struct bnxt *bp);
 void bnxt_ulp_port_deinit(struct bnxt *bp);

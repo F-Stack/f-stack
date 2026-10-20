@@ -1820,7 +1820,7 @@ eth_ixgbe_pci_probe(struct rte_pci_driver *pci_drv __rte_unused,
 
 		representor.vf_id = eth_da.representor_ports[i];
 		representor.switch_domain_id = vfinfo->switch_domain_id;
-		representor.pf_ethdev = pf_ethdev;
+		representor.pf_port_id = pf_ethdev->data->port_id;
 
 		/* representor port net_bdf_port */
 		snprintf(name, sizeof(name), "net_%s_representor_%d",
@@ -3180,8 +3180,9 @@ ixgbe_read_stats_registers(struct ixgbe_hw *hw,
 			   uint64_t *total_missed_rx, uint64_t *total_qbrc,
 			   uint64_t *total_qprc, uint64_t *total_qprdc)
 {
-	uint32_t bprc, lxon, lxoff, total;
-	uint32_t delta_gprc = 0;
+	uint32_t bprc, lxon, lxoff;
+	uint64_t total;
+	uint64_t delta_gprc = 0;
 	unsigned i;
 	/* Workaround for RX byte count not including CRC bytes when CRC
 	 * strip is enabled. CRC bytes are removed from counters when crc_strip
@@ -3236,7 +3237,7 @@ ixgbe_read_stats_registers(struct ixgbe_hw *hw,
 		hw_stats->qbrc[i] +=
 		    ((uint64_t)IXGBE_READ_REG(hw, IXGBE_QBRC_H(i)) << 32);
 		if (crc_strip == 0)
-			hw_stats->qbrc[i] -= delta_qprc * RTE_ETHER_CRC_LEN;
+			hw_stats->qbrc[i] -= (uint64_t)delta_qprc * RTE_ETHER_CRC_LEN;
 
 		hw_stats->qbtc[i] += IXGBE_READ_REG(hw, IXGBE_QBTC_L(i));
 		hw_stats->qbtc[i] +=
@@ -3309,7 +3310,7 @@ ixgbe_read_stats_registers(struct ixgbe_hw *hw,
 	hw_stats->lxontxc += lxon;
 	lxoff = IXGBE_READ_REG(hw, IXGBE_LXOFFTXC);
 	hw_stats->lxofftxc += lxoff;
-	total = lxon + lxoff;
+	total = (uint64_t)lxon + lxoff;
 
 	hw_stats->mptc += IXGBE_READ_REG(hw, IXGBE_MPTC);
 	hw_stats->ptc64 += IXGBE_READ_REG(hw, IXGBE_PTC64);
@@ -3621,8 +3622,9 @@ static int ixgbe_dev_xstats_get_names_by_id(
 			PMD_INIT_LOG(ERR, "id value isn't valid");
 			return -1;
 		}
-		strcpy(xstats_names[i].name,
-				xstats_names_copy[ids[i]].name);
+		strlcpy(xstats_names[i].name,
+				xstats_names_copy[ids[i]].name,
+				sizeof(xstats_names[i].name));
 	}
 	return limit;
 }
@@ -7416,6 +7418,12 @@ ixgbe_get_module_info(struct rte_eth_dev *dev,
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return -E_RTE_SECONDARY;
 
+	if (hw->phy.media_type == ixgbe_media_type_copper) {
+		PMD_DRV_LOG(DEBUG, "Port %u is Base-T (copper), no SFF module info.",
+				dev->data->port_id);
+		return -ENOTSUP;
+	}
+
 	/* Check whether we support SFF-8472 or not */
 	status = hw->phy.ops.read_i2c_eeprom(hw,
 					     IXGBE_SFF_SFF_8472_COMP,
@@ -7468,6 +7476,12 @@ ixgbe_get_module_eeprom(struct rte_eth_dev *dev,
 	 */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return -E_RTE_SECONDARY;
+
+	if (hw->phy.media_type == ixgbe_media_type_copper) {
+		PMD_DRV_LOG(DEBUG, "Port %u is Base-T (copper), cannot read module EEPROM.",
+				dev->data->port_id);
+		return -ENOTSUP;
+	}
 
 	for (i = info->offset; i < info->offset + info->length; i++) {
 		if (i < RTE_ETH_MODULE_SFF_8079_LEN)

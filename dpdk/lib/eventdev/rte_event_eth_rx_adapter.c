@@ -269,8 +269,8 @@ rxa_timestamp_dynfield(struct rte_mbuf *mbuf)
 		event_eth_rx_timestamp_dynfield_offset, rte_mbuf_timestamp_t *);
 }
 
-static inline int
-rxa_validate_id(uint8_t id)
+static inline bool
+rxa_validate_id(unsigned long id)
 {
 	return id < RTE_EVENT_ETH_RX_ADAPTER_MAX_INSTANCE;
 }
@@ -293,21 +293,21 @@ rxa_event_buf_get(struct event_eth_rx_adapter *rx_adapter, uint16_t eth_dev_id,
 
 #define RTE_EVENT_ETH_RX_ADAPTER_ID_VALID_OR_ERR_RET(id, retval) do { \
 	if (!rxa_validate_id(id)) { \
-		RTE_EDEV_LOG_ERR("Invalid eth Rx adapter id = %d", id); \
+		RTE_EDEV_LOG_ERR("Invalid eth Rx adapter id = %lu", (unsigned long)id); \
 		return retval; \
 	} \
 } while (0)
 
 #define RTE_EVENT_ETH_RX_ADAPTER_ID_VALID_OR_GOTO_ERR_RET(id, retval) do { \
 	if (!rxa_validate_id(id)) { \
-		RTE_EDEV_LOG_ERR("Invalid eth Rx adapter id = %d", id); \
+		RTE_EDEV_LOG_ERR("Invalid eth Rx adapter id = %lu", (unsigned long)id); \
 		ret = retval; \
 		goto error; \
 	} \
 } while (0)
 
 #define RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, retval) do { \
-	if ((token) == NULL || strlen(token) == 0 || !isdigit(*token)) { \
+	if ((token) == NULL || strlen(token) == 0 || !isdigit((unsigned char)*token)) { \
 		RTE_EDEV_LOG_ERR("Invalid eth Rx adapter token"); \
 		ret = retval; \
 		goto error; \
@@ -315,8 +315,8 @@ rxa_event_buf_get(struct event_eth_rx_adapter *rx_adapter, uint16_t eth_dev_id,
 } while (0)
 
 #define RTE_EVENT_ETH_RX_ADAPTER_PORTID_VALID_OR_GOTO_ERR_RET(port_id, retval) do { \
-	if (!rte_eth_dev_is_valid_port(port_id)) { \
-		RTE_EDEV_LOG_ERR("Invalid port_id=%u", port_id); \
+	if (port_id >= RTE_MAX_ETHPORTS || !rte_eth_dev_is_valid_port(port_id)) { \
+		RTE_EDEV_LOG_ERR("Invalid port_id=%lu", (unsigned long)port_id); \
 		ret = retval; \
 		goto error; \
 	} \
@@ -3583,14 +3583,14 @@ handle_rxa_stats(const char *cmd __rte_unused,
 		 const char *params,
 		 struct rte_tel_data *d)
 {
-	uint8_t rx_adapter_id;
+	unsigned long rx_adapter_id;
 	struct rte_event_eth_rx_adapter_stats rx_adptr_stats;
 
-	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
+	if (params == NULL || strlen(params) == 0 || !isdigit((unsigned char)*params))
 		return -1;
 
 	/* Get Rx adapter ID from parameter string */
-	rx_adapter_id = atoi(params);
+	rx_adapter_id = strtoul(params, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_ID_VALID_OR_ERR_RET(rx_adapter_id, -EINVAL);
 
 	/* Get Rx adapter stats */
@@ -3624,13 +3624,13 @@ handle_rxa_stats_reset(const char *cmd __rte_unused,
 		       const char *params,
 		       struct rte_tel_data *d __rte_unused)
 {
-	uint8_t rx_adapter_id;
+	unsigned long rx_adapter_id;
 
-	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
+	if (params == NULL || strlen(params) == 0 || !isdigit((unsigned char)*params))
 		return -1;
 
 	/* Get Rx adapter ID from parameter string */
-	rx_adapter_id = atoi(params);
+	rx_adapter_id = strtoul(params, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_ID_VALID_OR_ERR_RET(rx_adapter_id, -EINVAL);
 
 	/* Reset Rx adapter stats */
@@ -3647,44 +3647,42 @@ handle_rxa_get_queue_conf(const char *cmd __rte_unused,
 			  const char *params,
 			  struct rte_tel_data *d)
 {
-	uint8_t rx_adapter_id;
-	uint16_t rx_queue_id;
-	uint16_t eth_dev_id;
+	unsigned long rx_adapter_id, rx_queue_id, eth_dev_id;
 	int ret = -1;
-	char *token, *l_params;
+	char *token, *l_params, *saveptr = NULL;
 	struct rte_event_eth_rx_adapter_queue_conf queue_conf;
 
-	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
+	if (params == NULL || strlen(params) == 0 || !isdigit((unsigned char)*params))
 		return -1;
 
 	/* Get Rx adapter ID from parameter string */
 	l_params = strdup(params);
 	if (l_params == NULL)
 		return -ENOMEM;
-	token = strtok(l_params, ",");
+	token = strtok_r(l_params, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 	rx_adapter_id = strtoul(token, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_ID_VALID_OR_GOTO_ERR_RET(rx_adapter_id, -EINVAL);
 
-	token = strtok(NULL, ",");
+	token = strtok_r(NULL, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 
 	/* Get device ID from parameter string */
 	eth_dev_id = strtoul(token, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_PORTID_VALID_OR_GOTO_ERR_RET(eth_dev_id, -EINVAL);
 
-	token = strtok(NULL, ",");
+	token = strtok_r(NULL, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 
 	/* Get Rx queue ID from parameter string */
 	rx_queue_id = strtoul(token, NULL, 10);
 	if (rx_queue_id >= rte_eth_devices[eth_dev_id].data->nb_rx_queues) {
-		RTE_EDEV_LOG_ERR("Invalid rx queue_id %u", rx_queue_id);
+		RTE_EDEV_LOG_ERR("Invalid rx queue_id %lu", rx_queue_id);
 		ret = -EINVAL;
 		goto error;
 	}
 
-	token = strtok(NULL, "\0");
+	token = strtok_r(NULL, "\0", &saveptr);
 	if (token != NULL)
 		RTE_EDEV_LOG_ERR("Extra parameters passed to eventdev"
 				 " telemetry command, ignoring");
@@ -3720,44 +3718,42 @@ handle_rxa_get_queue_stats(const char *cmd __rte_unused,
 			   const char *params,
 			   struct rte_tel_data *d)
 {
-	uint8_t rx_adapter_id;
-	uint16_t rx_queue_id;
-	uint16_t eth_dev_id;
+	unsigned long rx_adapter_id, rx_queue_id, eth_dev_id;
 	int ret = -1;
-	char *token, *l_params;
+	char *token, *l_params, *saveptr = NULL;
 	struct rte_event_eth_rx_adapter_queue_stats q_stats;
 
-	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
+	if (params == NULL || strlen(params) == 0 || !isdigit((unsigned char)*params))
 		return -1;
 
 	/* Get Rx adapter ID from parameter string */
 	l_params = strdup(params);
 	if (l_params == NULL)
 		return -ENOMEM;
-	token = strtok(l_params, ",");
+	token = strtok_r(l_params, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 	rx_adapter_id = strtoul(token, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_ID_VALID_OR_GOTO_ERR_RET(rx_adapter_id, -EINVAL);
 
-	token = strtok(NULL, ",");
+	token = strtok_r(NULL, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 
 	/* Get device ID from parameter string */
 	eth_dev_id = strtoul(token, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_PORTID_VALID_OR_GOTO_ERR_RET(eth_dev_id, -EINVAL);
 
-	token = strtok(NULL, ",");
+	token = strtok_r(NULL, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 
 	/* Get Rx queue ID from parameter string */
 	rx_queue_id = strtoul(token, NULL, 10);
 	if (rx_queue_id >= rte_eth_devices[eth_dev_id].data->nb_rx_queues) {
-		RTE_EDEV_LOG_ERR("Invalid rx queue_id %u", rx_queue_id);
+		RTE_EDEV_LOG_ERR("Invalid rx queue_id %lu", rx_queue_id);
 		ret = -EINVAL;
 		goto error;
 	}
 
-	token = strtok(NULL, "\0");
+	token = strtok_r(NULL, "\0", &saveptr);
 	if (token != NULL)
 		RTE_EDEV_LOG_ERR("Extra parameters passed to eventdev"
 				 " telemetry command, ignoring");
@@ -3792,43 +3788,41 @@ handle_rxa_queue_stats_reset(const char *cmd __rte_unused,
 			     const char *params,
 			     struct rte_tel_data *d __rte_unused)
 {
-	uint8_t rx_adapter_id;
-	uint16_t rx_queue_id;
-	uint16_t eth_dev_id;
+	unsigned long rx_adapter_id, rx_queue_id, eth_dev_id;
 	int ret = -1;
-	char *token, *l_params;
+	char *token, *l_params, *saveptr = NULL;
 
-	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
+	if (params == NULL || strlen(params) == 0 || !isdigit((unsigned char)*params))
 		return -1;
 
 	/* Get Rx adapter ID from parameter string */
 	l_params = strdup(params);
 	if (l_params == NULL)
 		return -ENOMEM;
-	token = strtok(l_params, ",");
+	token = strtok_r(l_params, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 	rx_adapter_id = strtoul(token, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_ID_VALID_OR_GOTO_ERR_RET(rx_adapter_id, -EINVAL);
 
-	token = strtok(NULL, ",");
+	token = strtok_r(NULL, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 
 	/* Get device ID from parameter string */
 	eth_dev_id = strtoul(token, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_PORTID_VALID_OR_GOTO_ERR_RET(eth_dev_id, -EINVAL);
 
-	token = strtok(NULL, ",");
+	token = strtok_r(NULL, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 
 	/* Get Rx queue ID from parameter string */
 	rx_queue_id = strtoul(token, NULL, 10);
 	if (rx_queue_id >= rte_eth_devices[eth_dev_id].data->nb_rx_queues) {
-		RTE_EDEV_LOG_ERR("Invalid rx queue_id %u", rx_queue_id);
+		RTE_EDEV_LOG_ERR("Invalid rx queue_id %lu", rx_queue_id);
 		ret = -EINVAL;
 		goto error;
 	}
 
-	token = strtok(NULL, "\0");
+	token = strtok_r(NULL, "\0", &saveptr);
 	if (token != NULL)
 		RTE_EDEV_LOG_ERR("Extra parameters passed to eventdev"
 				 " telemetry command, ignoring");
@@ -3855,36 +3849,35 @@ handle_rxa_instance_get(const char *cmd __rte_unused,
 			struct rte_tel_data *d)
 {
 	uint8_t instance_id;
-	uint16_t rx_queue_id;
-	uint16_t eth_dev_id;
+	unsigned long rx_queue_id, eth_dev_id;
 	int ret = -1;
-	char *token, *l_params;
+	char *token, *l_params, *saveptr = NULL;
 
-	if (params == NULL || strlen(params) == 0 || !isdigit(*params))
+	if (params == NULL || strlen(params) == 0 || !isdigit((unsigned char)*params))
 		return -1;
 
 	l_params = strdup(params);
 	if (l_params == NULL)
 		return -ENOMEM;
-	token = strtok(l_params, ",");
+	token = strtok_r(l_params, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 
 	/* Get device ID from parameter string */
 	eth_dev_id = strtoul(token, NULL, 10);
 	RTE_EVENT_ETH_RX_ADAPTER_PORTID_VALID_OR_GOTO_ERR_RET(eth_dev_id, -EINVAL);
 
-	token = strtok(NULL, ",");
+	token = strtok_r(NULL, ",", &saveptr);
 	RTE_EVENT_ETH_RX_ADAPTER_TOKEN_VALID_OR_GOTO_ERR_RET(token, -1);
 
 	/* Get Rx queue ID from parameter string */
 	rx_queue_id = strtoul(token, NULL, 10);
 	if (rx_queue_id >= rte_eth_devices[eth_dev_id].data->nb_rx_queues) {
-		RTE_EDEV_LOG_ERR("Invalid rx queue_id %u", rx_queue_id);
+		RTE_EDEV_LOG_ERR("Invalid rx queue_id %lu", rx_queue_id);
 		ret = -EINVAL;
 		goto error;
 	}
 
-	token = strtok(NULL, "\0");
+	token = strtok_r(NULL, "\0", &saveptr);
 	if (token != NULL)
 		RTE_EDEV_LOG_ERR("Extra parameters passed to eventdev"
 				 " telemetry command, ignoring");
@@ -3896,7 +3889,7 @@ handle_rxa_instance_get(const char *cmd __rte_unused,
 						  rx_queue_id,
 						  &instance_id)) {
 		RTE_EDEV_LOG_ERR("Failed to get RX adapter instance ID "
-				 " for rx_queue_id = %d", rx_queue_id);
+				 " for rx_queue_id = %lu", rx_queue_id);
 		return -1;
 	}
 

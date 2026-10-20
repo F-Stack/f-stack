@@ -239,7 +239,19 @@ eval_apply_mask(struct bpf_reg_val *rv, uint64_t mask)
 static void
 eval_add(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, uint64_t msk)
 {
+	struct bpf_reg_val rs_buf;
 	struct bpf_reg_val rv;
+
+	if (RTE_BPF_ARG_PTR_TYPE(rs->v.type) != 0) {
+		if (RTE_BPF_ARG_PTR_TYPE(rd->v.type) != 0) {
+			/* treat sum of pointers as sum of two unknown scalars */
+			eval_fill_max_bound(&rs_buf, msk);
+			*rd = rs_buf;
+			rs = &rs_buf;
+		} else
+			/* scalar + pointer is a pointer of the same type */
+			rd->v = rs->v;
+	}
 
 	rv.u.min = (rd->u.min + rs->u.min) & msk;
 	rv.u.max = (rd->u.max + rs->u.max) & msk;
@@ -284,9 +296,9 @@ eval_sub(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, uint64_t msk)
 		eval_umax_bound(&rv, msk);
 
 	if ((rd->s.min != rd->s.max || rs->s.min != rs->s.max) &&
-			(((rs->s.min < 0 && rv.s.min < rd->s.min) ||
+			(((rs->s.max < 0 && rv.s.min < rd->s.min) ||
 			rv.s.min > rd->s.min) ||
-			((rs->s.max < 0 && rv.s.max < rd->s.max) ||
+			((rs->s.min < 0 && rv.s.max < rd->s.max) ||
 			rv.s.max > rd->s.max)))
 		eval_smax_bound(&rv, msk);
 
@@ -314,7 +326,8 @@ eval_lsh(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, size_t opsz,
 
 	/* check that dreg values are and would remain always positive */
 	if ((uint64_t)rd->s.min >> (opsz - 1) != 0 || rd->s.max >=
-			RTE_LEN2MASK(opsz - rs->u.max - 1, int64_t))
+			(rs->u.max == opsz - 1 ? 0 :
+				 RTE_LEN2MASK(opsz - rs->u.max - 1, int64_t)))
 		eval_smax_bound(rd, msk);
 	else {
 		rd->s.max <<= rs->u.max;
@@ -416,7 +429,7 @@ eval_and(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, size_t opsz,
 		rd->u.max &= rs->u.max;
 	} else {
 		rd->u.max = eval_uand_max(rd->u.max, rs->u.max, opsz);
-		rd->u.min &= rs->u.min;
+		rd->u.min = 0;
 	}
 
 	/* both operands are constants */
@@ -427,7 +440,7 @@ eval_and(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, size_t opsz,
 	} else if (rd->s.min >= 0 || rs->s.min >= 0) {
 		rd->s.max = eval_uand_max(rd->s.max & (msk >> 1),
 			rs->s.max & (msk >> 1), opsz);
-		rd->s.min &= rs->s.min;
+		rd->s.min = 0;
 	} else
 		eval_smax_bound(rd, msk);
 }
@@ -442,7 +455,7 @@ eval_or(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, size_t opsz,
 		rd->u.max |= rs->u.max;
 	} else {
 		rd->u.max = eval_uor_max(rd->u.max, rs->u.max, opsz);
-		rd->u.min |= rs->u.min;
+		rd->u.min = RTE_MAX(rd->u.min, rs->u.min);
 	}
 
 	/* both operands are constants */
@@ -451,9 +464,9 @@ eval_or(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, size_t opsz,
 		rd->s.max |= rs->s.max;
 
 	/* both operands are non-negative */
-	} else if (rd->s.min >= 0 || rs->s.min >= 0) {
+	} else if (rd->s.min >= 0 && rs->s.min >= 0) {
 		rd->s.max = eval_uor_max(rd->s.max, rs->s.max, opsz);
-		rd->s.min |= rs->s.min;
+		rd->s.min = RTE_MAX(rd->s.min, rs->s.min);
 	} else
 		eval_smax_bound(rd, msk);
 }
@@ -477,7 +490,7 @@ eval_xor(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, size_t opsz,
 		rd->s.max ^= rs->s.max;
 
 	/* both operands are non-negative */
-	} else if (rd->s.min >= 0 || rs->s.min >= 0) {
+	} else if (rd->s.min >= 0 && rs->s.min >= 0) {
 		rd->s.max = eval_uor_max(rd->s.max, rs->s.max, opsz);
 		rd->s.min = 0;
 	} else
@@ -495,25 +508,24 @@ eval_mul(struct bpf_reg_val *rd, const struct bpf_reg_val *rs, size_t opsz,
 	/* check for overflow */
 	} else if (rd->u.max <= msk >> opsz / 2 && rs->u.max <= msk >> opsz) {
 		rd->u.max *= rs->u.max;
-		rd->u.min *= rd->u.min;
+		rd->u.min *= rs->u.min;
 	} else
 		eval_umax_bound(rd, msk);
 
 	/* both operands are constants */
 	if (rd->s.min == rd->s.max && rs->s.min == rs->s.max) {
-		rd->s.min = (rd->s.min * rs->s.min) & msk;
-		rd->s.max = (rd->s.max * rs->s.max) & msk;
+		rd->s.min = ((uint64_t)rd->s.min * (uint64_t)rs->s.min) & msk;
+		rd->s.max = ((uint64_t)rd->s.max * (uint64_t)rs->s.max) & msk;
 	/* check that both operands are positive and no overflow */
 	} else if (rd->s.min >= 0 && rs->s.min >= 0) {
 		rd->s.max *= rs->s.max;
-		rd->s.min *= rd->s.min;
+		rd->s.min *= rs->s.min;
 	} else
 		eval_smax_bound(rd, msk);
 }
 
 static const char *
-eval_divmod(uint32_t op, struct bpf_reg_val *rd, struct bpf_reg_val *rs,
-	size_t opsz, uint64_t msk)
+eval_divmod(uint32_t op, struct bpf_reg_val *rd, struct bpf_reg_val *rs, uint64_t msk)
 {
 	/* both operands are constants */
 	if (rd->u.min == rd->u.max && rs->u.min == rs->u.max) {
@@ -534,33 +546,16 @@ eval_divmod(uint32_t op, struct bpf_reg_val *rd, struct bpf_reg_val *rs,
 		rd->u.min = 0;
 	}
 
-	/* if we have 32-bit values - extend them to 64-bit */
-	if (opsz == sizeof(uint32_t) * CHAR_BIT) {
-		rd->s.min = (int32_t)rd->s.min;
-		rd->s.max = (int32_t)rd->s.max;
-		rs->s.min = (int32_t)rs->s.min;
-		rs->s.max = (int32_t)rs->s.max;
-	}
-
-	/* both operands are constants */
-	if (rd->s.min == rd->s.max && rs->s.min == rs->s.max) {
-		if (rs->s.max == 0)
-			return "division by 0";
-		if (op == BPF_DIV) {
-			rd->s.min /= rs->s.min;
-			rd->s.max /= rs->s.max;
-		} else {
-			rd->s.min %= rs->s.min;
-			rd->s.max %= rs->s.max;
-		}
-	} else if (op == BPF_MOD) {
-		rd->s.min = RTE_MAX(rd->s.max, 0);
-		rd->s.min = RTE_MIN(rd->s.min, 0);
+	if (rd->u.min >= (uint64_t)INT64_MIN || rd->u.max <= (uint64_t)INT64_MAX) {
+		/*
+		 * All values have the same sign bit, which means range
+		 * contiguous as unsigned is also contiguous as signed,
+		 * so we can just reuse it without any changes.
+		 */
+		rd->s.min = rd->u.min;
+		rd->s.max = rd->u.max;
 	} else
 		eval_smax_bound(rd, msk);
-
-	rd->s.max &= msk;
-	rd->s.min &= msk;
 
 	return NULL;
 }
@@ -570,6 +565,11 @@ eval_neg(struct bpf_reg_val *rd, size_t opsz, uint64_t msk)
 {
 	uint64_t ux, uy;
 	int64_t sx, sy;
+	/* additional limits imposed by signed on unsigned and back */
+	struct bpf_reg_val cross_limits = {
+		.s = { INT64_MIN, INT64_MAX },
+		.u = { 0, UINT64_MAX },
+	};
 
 	/* if we have 32-bit values - extend them to 64-bit */
 	if (opsz == sizeof(uint32_t) * CHAR_BIT) {
@@ -577,11 +577,29 @@ eval_neg(struct bpf_reg_val *rd, size_t opsz, uint64_t msk)
 		rd->u.max = (int32_t)rd->u.max;
 	}
 
-	ux = -(int64_t)rd->u.min & msk;
-	uy = -(int64_t)rd->u.max & msk;
+	if (rd->u.min == 0) {
+		/* special case: ranges that include 0 and, possibly, 1 */
 
-	rd->u.max = RTE_MAX(ux, uy);
-	rd->u.min = RTE_MIN(ux, uy);
+		/*
+		 * Calculate requirements on the signed range of negation.
+		 * It is only possible when negated range does not cross from
+		 * INT64_MIN to INT64_MAX, which means our original range does
+		 * not reach (uint64_t)-INT64_MAX.
+		 */
+		if (rd->u.max < (uint64_t)-INT64_MAX) {
+			cross_limits.s.min = -rd->u.max;
+			cross_limits.s.max = -rd->u.min;
+		}
+
+		if (rd->u.max != 0)
+			rd->u.max = UINT64_MAX;
+	} else {
+		ux = -rd->u.min & msk;
+		uy = -rd->u.max & msk;
+
+		rd->u.max = RTE_MAX(ux, uy);
+		rd->u.min = RTE_MIN(ux, uy);
+	}
 
 	/* if we have 32-bit values - extend them to 64-bit */
 	if (opsz == sizeof(uint32_t) * CHAR_BIT) {
@@ -589,11 +607,27 @@ eval_neg(struct bpf_reg_val *rd, size_t opsz, uint64_t msk)
 		rd->s.max = (int32_t)rd->s.max;
 	}
 
-	sx = -rd->s.min & msk;
-	sy = -rd->s.max & msk;
+	if (rd->s.min == INT64_MIN) {
+		/* special case: negation of INT64_MIN is INT64_MIN */
+		if (rd->s.max <= 0) {
+			cross_limits.u.min = -(uint64_t)rd->s.max;
+			cross_limits.u.max = -(uint64_t)rd->s.min;
+		}
+		if (rd->s.max != INT64_MIN)
+			rd->s.max = INT64_MAX;
+	} else {
+		/* since max >= min, neither can be INT64_MIN here */
+		sx = -rd->s.min & msk;
+		sy = -rd->s.max & msk;
 
-	rd->s.max = RTE_MAX(sx, sy);
-	rd->s.min = RTE_MIN(sx, sy);
+		rd->s.max = RTE_MAX(sx, sy);
+		rd->s.min = RTE_MIN(sx, sy);
+	}
+
+	rd->s.min = RTE_MAX(rd->s.min, cross_limits.s.min) & msk;
+	rd->s.max = RTE_MIN(rd->s.max, cross_limits.s.max) & msk;
+	rd->u.min = RTE_MAX(rd->u.min, cross_limits.u.min) & msk;
+	rd->u.max = RTE_MIN(rd->u.max, cross_limits.u.max) & msk;
 }
 
 static const char *
@@ -706,7 +740,7 @@ eval_alu(struct bpf_verifier *bvf, const struct ebpf_insn *ins)
 	else if (op == BPF_MUL)
 		eval_mul(rd, &rs, opsz, msk);
 	else if (op == BPF_DIV || op == BPF_MOD)
-		err = eval_divmod(op, rd, &rs, opsz, msk);
+		err = eval_divmod(op, rd, &rs, msk);
 	else if (op == BPF_NEG)
 		eval_neg(rd, opsz, msk);
 	else if (op == EBPF_MOV)
@@ -800,10 +834,11 @@ eval_max_load(struct bpf_reg_val *rv, uint64_t mask)
 	/* full 64-bit load */
 	if (mask == UINT64_MAX)
 		eval_smax_bound(rv, mask);
-
-	/* zero-extend load */
-	rv->s.min = rv->u.min;
-	rv->s.max = rv->u.max;
+	else {
+		/* zero-extend load */
+		rv->s.min = rv->u.min;
+		rv->s.max = rv->u.max;
+	}
 }
 
 
@@ -1061,8 +1096,10 @@ static void
 eval_jgt_jle(struct bpf_reg_val *trd, struct bpf_reg_val *trs,
 	struct bpf_reg_val *frd, struct bpf_reg_val *frs)
 {
-	frd->u.max = RTE_MIN(frd->u.max, frs->u.min);
+	frd->u.max = RTE_MIN(frd->u.max, frs->u.max);
+	frs->u.min = RTE_MAX(frs->u.min, frd->u.min);
 	trd->u.min = RTE_MAX(trd->u.min, trs->u.min + 1);
+	trs->u.max = RTE_MIN(trs->u.max, trd->u.max - 1);
 }
 
 static void
@@ -1070,15 +1107,19 @@ eval_jlt_jge(struct bpf_reg_val *trd, struct bpf_reg_val *trs,
 	struct bpf_reg_val *frd, struct bpf_reg_val *frs)
 {
 	frd->u.min = RTE_MAX(frd->u.min, frs->u.min);
+	frs->u.max = RTE_MIN(frs->u.max, frd->u.max);
 	trd->u.max = RTE_MIN(trd->u.max, trs->u.max - 1);
+	trs->u.min = RTE_MAX(trs->u.min, trd->u.min + 1);
 }
 
 static void
 eval_jsgt_jsle(struct bpf_reg_val *trd, struct bpf_reg_val *trs,
 	struct bpf_reg_val *frd, struct bpf_reg_val *frs)
 {
-	frd->s.max = RTE_MIN(frd->s.max, frs->s.min);
+	frd->s.max = RTE_MIN(frd->s.max, frs->s.max);
+	frs->s.min = RTE_MAX(frs->s.min, frd->s.min);
 	trd->s.min = RTE_MAX(trd->s.min, trs->s.min + 1);
+	trs->s.max = RTE_MIN(trs->s.max, trd->s.max - 1);
 }
 
 static void
@@ -1086,7 +1127,9 @@ eval_jslt_jsge(struct bpf_reg_val *trd, struct bpf_reg_val *trs,
 	struct bpf_reg_val *frd, struct bpf_reg_val *frs)
 {
 	frd->s.min = RTE_MAX(frd->s.min, frs->s.min);
+	frs->s.max = RTE_MIN(frs->s.max, frd->s.max);
 	trd->s.max = RTE_MIN(trd->s.max, trs->s.max - 1);
+	trs->s.min = RTE_MAX(trs->s.min, trd->s.min + 1);
 }
 
 static const char *
@@ -2143,6 +2186,10 @@ static int
 evst_pool_init(struct bpf_verifier *bvf)
 {
 	uint32_t k, n;
+
+	if (bvf->nb_jcc_nodes > UINT32_MAX / 4)
+		/* Calculations that follow may overflow. */
+		return -E2BIG;
 
 	/*
 	 * We need nb_jcc_nodes + 1 for save_cur/restore_cur

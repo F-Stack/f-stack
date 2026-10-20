@@ -1432,6 +1432,9 @@ static int bnxt_scattered_rx(struct rte_eth_dev *eth_dev)
 	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
 		struct bnxt_rx_queue *rxq = eth_dev->data->rx_queues[i];
 
+		if (rxq == NULL)
+			continue;
+
 		buf_size = (uint16_t)(rte_pktmbuf_data_room_size(rxq->mb_pool) -
 				      RTE_PKTMBUF_HEADROOM);
 		if (eth_dev->data->mtu + overhead > buf_size)
@@ -2491,7 +2494,7 @@ static int bnxt_flow_ctrl_get_op(struct rte_eth_dev *dev,
 		return rc;
 
 	memset(fc_conf, 0, sizeof(*fc_conf));
-	if (bp->link_info->auto_pause)
+	if (bp->link_info->autoneg & BNXT_AUTONEG_FLOW_CTRL)
 		fc_conf->autoneg = 1;
 	switch (bp->link_info->pause) {
 	case 0:
@@ -2525,6 +2528,14 @@ static int bnxt_flow_ctrl_set_op(struct rte_eth_dev *dev,
 		PMD_DRV_LOG_LINE(ERR,
 			    "Flow Control Settings cannot be modified on VF or on shared PF");
 		return -ENOTSUP;
+	}
+
+	if (fc_conf->autoneg) {
+		bp->link_info->autoneg |= BNXT_AUTONEG_FLOW_CTRL;
+	} else {
+		if (bp->link_info->autoneg & BNXT_AUTONEG_FLOW_CTRL)
+			bp->link_info->link_reconfig_needed = true;
+		bp->link_info->autoneg &= ~BNXT_AUTONEG_FLOW_CTRL;
 	}
 
 	switch (fc_conf->mode) {
@@ -2568,7 +2579,7 @@ static int bnxt_flow_ctrl_set_op(struct rte_eth_dev *dev,
 		}
 		break;
 	}
-	return bnxt_set_hwrm_link_config(bp, true);
+	return bnxt_hwrm_set_pause(bp);
 }
 
 /* Add UDP tunneling port */
@@ -3685,148 +3696,6 @@ bnxt_dev_supported_ptypes_get_op(struct rte_eth_dev *dev,
 	return ptypes;
 }
 
-static int bnxt_map_regs(struct bnxt *bp, uint32_t *reg_arr, int count,
-			 int reg_win)
-{
-	uint32_t reg_base = *reg_arr & 0xfffff000;
-	uint32_t win_off;
-	int i;
-
-	for (i = 0; i < count; i++) {
-		if ((reg_arr[i] & 0xfffff000) != reg_base)
-			return -ERANGE;
-	}
-	win_off = BNXT_GRCPF_REG_WINDOW_BASE_OUT + (reg_win - 1) * 4;
-	rte_write32(reg_base, (uint8_t *)bp->bar0 + win_off);
-	return 0;
-}
-
-static int bnxt_map_ptp_regs(struct bnxt *bp)
-{
-	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
-	uint32_t *reg_arr;
-	int rc, i;
-
-	reg_arr = ptp->rx_regs;
-	rc = bnxt_map_regs(bp, reg_arr, BNXT_PTP_RX_REGS, 5);
-	if (rc)
-		return rc;
-
-	reg_arr = ptp->tx_regs;
-	rc = bnxt_map_regs(bp, reg_arr, BNXT_PTP_TX_REGS, 6);
-	if (rc)
-		return rc;
-
-	for (i = 0; i < BNXT_PTP_RX_REGS; i++)
-		ptp->rx_mapped_regs[i] = 0x5000 + (ptp->rx_regs[i] & 0xfff);
-
-	for (i = 0; i < BNXT_PTP_TX_REGS; i++)
-		ptp->tx_mapped_regs[i] = 0x6000 + (ptp->tx_regs[i] & 0xfff);
-
-	return 0;
-}
-
-static void bnxt_unmap_ptp_regs(struct bnxt *bp)
-{
-	rte_write32(0, (uint8_t *)bp->bar0 +
-			 BNXT_GRCPF_REG_WINDOW_BASE_OUT + 16);
-	rte_write32(0, (uint8_t *)bp->bar0 +
-			 BNXT_GRCPF_REG_WINDOW_BASE_OUT + 20);
-}
-
-static uint64_t bnxt_cc_read(struct bnxt *bp)
-{
-	uint64_t ns;
-
-	ns = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-			      BNXT_GRCPF_REG_SYNC_TIME));
-	ns |= (uint64_t)(rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-					  BNXT_GRCPF_REG_SYNC_TIME + 4))) << 32;
-	return ns;
-}
-
-static int bnxt_get_tx_ts(struct bnxt *bp, uint64_t *ts)
-{
-	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
-	uint32_t fifo;
-
-	fifo = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				ptp->tx_mapped_regs[BNXT_PTP_TX_FIFO]));
-	if (fifo & BNXT_PTP_TX_FIFO_EMPTY)
-		return -EAGAIN;
-
-	fifo = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				ptp->tx_mapped_regs[BNXT_PTP_TX_FIFO]));
-	*ts = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				ptp->tx_mapped_regs[BNXT_PTP_TX_TS_L]));
-	*ts |= (uint64_t)rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				ptp->tx_mapped_regs[BNXT_PTP_TX_TS_H])) << 32;
-	rte_read32((uint8_t *)bp->bar0 + ptp->tx_mapped_regs[BNXT_PTP_TX_SEQ]);
-
-	return 0;
-}
-
-static int bnxt_clr_rx_ts(struct bnxt *bp, uint64_t *last_ts)
-{
-	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
-	struct bnxt_pf_info *pf = bp->pf;
-	uint16_t port_id;
-	int i = 0;
-	uint32_t fifo;
-
-	if (!ptp || (bp->flags & BNXT_FLAG_CHIP_P5))
-		return -EINVAL;
-
-	port_id = pf->port_id;
-	fifo = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO]));
-	while ((fifo & BNXT_PTP_RX_FIFO_PENDING) && (i < BNXT_PTP_RX_PND_CNT)) {
-		rte_write32(1 << port_id, (uint8_t *)bp->bar0 +
-			    ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO_ADV]);
-		fifo = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-					ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO]));
-		*last_ts = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-					ptp->rx_mapped_regs[BNXT_PTP_RX_TS_L]));
-		*last_ts |= (uint64_t)rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-					ptp->rx_mapped_regs[BNXT_PTP_RX_TS_H])) << 32;
-		i++;
-	}
-
-	if (i >= BNXT_PTP_RX_PND_CNT)
-		return -EBUSY;
-
-	return 0;
-}
-
-static int bnxt_get_rx_ts(struct bnxt *bp, uint64_t *ts)
-{
-	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
-	struct bnxt_pf_info *pf = bp->pf;
-	uint16_t port_id;
-	uint32_t fifo;
-
-	fifo = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO]));
-	if (!(fifo & BNXT_PTP_RX_FIFO_PENDING))
-		return -EAGAIN;
-
-	port_id = pf->port_id;
-	rte_write32(1 << port_id, (uint8_t *)bp->bar0 +
-	       ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO_ADV]);
-
-	fifo = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				   ptp->rx_mapped_regs[BNXT_PTP_RX_FIFO]));
-	if (fifo & BNXT_PTP_RX_FIFO_PENDING)
-		return bnxt_clr_rx_ts(bp, ts);
-
-	*ts = rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				ptp->rx_mapped_regs[BNXT_PTP_RX_TS_L]));
-	*ts |= (uint64_t)rte_le_to_cpu_32(rte_read32((uint8_t *)bp->bar0 +
-				ptp->rx_mapped_regs[BNXT_PTP_RX_TS_H])) << 32;
-
-	return 0;
-}
-
 static int
 bnxt_timesync_write_time(struct rte_eth_dev *dev, const struct timespec *ts)
 {
@@ -3857,12 +3726,9 @@ bnxt_timesync_read_time(struct rte_eth_dev *dev, struct timespec *ts)
 	if (!ptp)
 		return -ENOTSUP;
 
-	/* TODO Revisit for Thor 2 */
 	if (BNXT_CHIP_P5(bp))
 		rc = bnxt_hwrm_port_ts_query(bp, BNXT_PTP_FLAGS_CURRENT_TIME,
 					     &systime_cycles);
-	else
-		systime_cycles = bnxt_cc_read(bp);
 
 	ns = rte_timecounter_update(&ptp->tc, systime_cycles);
 	*ts = rte_ns_to_timespec(ns);
@@ -3907,13 +3773,7 @@ bnxt_timesync_enable(struct rte_eth_dev *dev)
 	ptp->tx_tstamp_tc.cc_shift = shift;
 	ptp->tx_tstamp_tc.nsec_mask = (1ULL << shift) - 1;
 
-	/* TODO Revisit for Thor 2 */
-	if (!BNXT_CHIP_P5(bp))
-		bnxt_map_ptp_regs(bp);
-	else
-		rc = bnxt_ptp_start(bp);
-
-	return rc;
+	return bnxt_ptp_start(bp);
 }
 
 static int
@@ -3932,12 +3792,8 @@ bnxt_timesync_disable(struct rte_eth_dev *dev)
 
 	bnxt_hwrm_ptp_cfg(bp);
 
-	/* TODO Revisit for Thor 2 */
 	bp->ptp_all_rx_tstamp = 0;
-	if (!BNXT_CHIP_P5(bp))
-		bnxt_unmap_ptp_regs(bp);
-	else
-		bnxt_ptp_stop(bp);
+	bnxt_ptp_stop(bp);
 
 	return 0;
 }
@@ -3955,11 +3811,7 @@ bnxt_timesync_read_rx_timestamp(struct rte_eth_dev *dev,
 	if (!ptp)
 		return -ENOTSUP;
 
-	/* TODO Revisit for Thor 2 */
-	if (BNXT_CHIP_P5(bp))
-		rx_tstamp_cycles = ptp->rx_timestamp;
-	else
-		bnxt_get_rx_ts(bp, &rx_tstamp_cycles);
+	rx_tstamp_cycles = ptp->rx_timestamp;
 
 	ns = rte_timecounter_update(&ptp->rx_tstamp_tc, rx_tstamp_cycles);
 	*timestamp = rte_ns_to_timespec(ns);
@@ -3979,12 +3831,11 @@ bnxt_timesync_read_tx_timestamp(struct rte_eth_dev *dev,
 	if (!ptp)
 		return -ENOTSUP;
 
-	/* TODO Revisit for Thor 2 */
-	if (BNXT_CHIP_P5(bp))
+	if (BNXT_CHIP_P7(bp))
+		tx_tstamp_cycles = ptp->tx_timestamp;
+	else
 		rc = bnxt_hwrm_port_ts_query(bp, BNXT_PTP_FLAGS_PATH_TX,
 					     &tx_tstamp_cycles);
-	else
-		rc = bnxt_get_tx_ts(bp, &tx_tstamp_cycles);
 
 	ns = rte_timecounter_update(&ptp->tx_tstamp_tc, tx_tstamp_cycles);
 	*timestamp = rte_ns_to_timespec(ns);
@@ -5340,11 +5191,11 @@ int bnxt_alloc_ctx_pg_tbls(struct bnxt *bp)
 			if (ctxm->type == HWRM_FUNC_BACKING_STORE_CFG_V2_INPUT_TYPE_CQ)
 				entries = ctxm->cq_l2_entries;
 			else if (ctxm->type == HWRM_FUNC_BACKING_STORE_CFG_V2_INPUT_TYPE_QP)
-				entries = ctxm->qp_l2_entries;
+				entries = ctxm->qp_l2_entries + ctxm->qp_qp1_entries;
 			else if (ctxm->type == HWRM_FUNC_BACKING_STORE_CFG_V2_INPUT_TYPE_MRAV)
 				entries = ctxm->mrav_av_entries;
 			else if (ctxm->type == HWRM_FUNC_BACKING_STORE_CFG_V2_INPUT_TYPE_TIM)
-				entries = ctx2->qp_l2_entries;
+				entries = ctx2->qp_l2_entries + ctx2->qp_qp1_entries;
 			entries = clamp_t(uint32_t, entries, ctxm->min_entries,
 					  ctxm->max_entries);
 			ctx_pg[i].entries = entries;
@@ -5830,31 +5681,12 @@ try_again:
 static int
 bnxt_init_locks(struct bnxt *bp)
 {
-	int err;
+	rte_thread_mutex_init_shared(&bp->flow_lock);
+	rte_thread_mutex_init_shared(&bp->def_cp_lock);
+	rte_thread_mutex_init_shared(&bp->health_check_lock);
+	rte_thread_mutex_init_shared(&bp->err_recovery_lock);
 
-	err = pthread_mutex_init(&bp->flow_lock, NULL);
-	if (err) {
-		PMD_DRV_LOG_LINE(ERR, "Unable to initialize flow_lock");
-		return err;
-	}
-
-	err = pthread_mutex_init(&bp->def_cp_lock, NULL);
-	if (err) {
-		PMD_DRV_LOG_LINE(ERR, "Unable to initialize def_cp_lock");
-		return err;
-	}
-
-	err = pthread_mutex_init(&bp->health_check_lock, NULL);
-	if (err) {
-		PMD_DRV_LOG_LINE(ERR, "Unable to initialize health_check_lock");
-		return err;
-	}
-
-	err = pthread_mutex_init(&bp->err_recovery_lock, NULL);
-	if (err)
-		PMD_DRV_LOG_LINE(ERR, "Unable to initialize err_recovery_lock");
-
-	return err;
+	return 0;
 }
 
 /* This should be called after we have queried trusted VF cap */
@@ -6755,7 +6587,7 @@ static void bnxt_free_rep_info(struct bnxt *bp)
 
 static int bnxt_init_rep_info(struct bnxt *bp)
 {
-	int i = 0, rc;
+	int i = 0;
 
 	if (bp->rep_info)
 		return 0;
@@ -6779,14 +6611,8 @@ static int bnxt_init_rep_info(struct bnxt *bp)
 	for (i = 0; i < BNXT_MAX_CFA_CODE; i++)
 		bp->cfa_code_map[i] = BNXT_VF_IDX_INVALID;
 
-	rc = pthread_mutex_init(&bp->rep_info->vfr_start_lock, NULL);
-	if (rc) {
-		PMD_DRV_LOG_LINE(ERR, "Unable to initialize vfr_start_lock");
-		bnxt_free_rep_info(bp);
-		return rc;
-	}
-
-	return rc;
+	rte_thread_mutex_init_shared(&bp->rep_info->vfr_start_lock);
+	return 0;
 }
 
 static int bnxt_rep_port_probe(struct rte_pci_device *pci_dev,

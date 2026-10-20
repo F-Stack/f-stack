@@ -165,6 +165,7 @@ struct ixgbe_hw_fdir_mask {
 	uint32_t dst_ipv4_mask;
 	uint16_t src_ipv6_mask;
 	uint16_t dst_ipv6_mask;
+	uint8_t  l4_proto_match;
 	uint16_t src_port_mask;
 	uint16_t dst_port_mask;
 	uint16_t flex_bytes_mask;
@@ -520,7 +521,7 @@ struct ixgbe_adapter {
 struct ixgbe_vf_representor {
 	uint16_t vf_id;
 	uint16_t switch_domain_id;
-	struct rte_eth_dev *pf_ethdev;
+	uint16_t pf_port_id;
 };
 
 int ixgbe_vf_representor_init(struct rte_eth_dev *ethdev, void *init_params);

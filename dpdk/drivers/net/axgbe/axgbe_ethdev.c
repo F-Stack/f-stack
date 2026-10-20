@@ -12,6 +12,7 @@
 
 #include "eal_filesystem.h"
 
+#include <rte_thread.h>
 #include <rte_vect.h>
 
 #ifdef RTE_ARCH_X86
@@ -2248,7 +2249,7 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 		edx == CPUID_VENDOR_AuthenticAMD_edx &&
 		ecx == CPUID_VENDOR_AuthenticAMD_ecx) {
 		int unknown_cpu = 0;
-		eax = 0, ebx = 0, ecx = 0, edx = 0;
+		eax = 0; ebx = 0; ecx = 0; edx = 0;
 
 		__cpuid(0x1, eax, ebx, ecx, edx);
 
@@ -2396,10 +2397,10 @@ eth_axgbe_dev_init(struct rte_eth_dev *eth_dev)
 
 	pdata->tx_desc_count = AXGBE_MAX_RING_DESC;
 	pdata->rx_desc_count = AXGBE_MAX_RING_DESC;
-	pthread_mutex_init(&pdata->xpcs_mutex, NULL);
-	pthread_mutex_init(&pdata->i2c_mutex, NULL);
-	pthread_mutex_init(&pdata->an_mutex, NULL);
-	pthread_mutex_init(&pdata->phy_mutex, NULL);
+	rte_thread_mutex_init_shared(&pdata->xpcs_mutex);
+	rte_thread_mutex_init_shared(&pdata->i2c_mutex);
+	rte_thread_mutex_init_shared(&pdata->an_mutex);
+	rte_thread_mutex_init_shared(&pdata->phy_mutex);
 
 	ret = pdata->phy_if.phy_init(pdata);
 	if (ret) {

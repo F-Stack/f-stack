@@ -133,7 +133,7 @@ static const struct rte_dpaa_xstats_name_off dpaa_xstats_strings[] = {
 		offsetof(struct dpaa_if_stats, terr)},
 	{"tx_vlan_frame",
 		offsetof(struct dpaa_if_stats, tvlan)},
-	{"rx_undersized",
+	{"tx_undersized",
 		offsetof(struct dpaa_if_stats, tund)},
 	{"rx_frame_counter",
 		offsetof(struct dpaa_if_rx_bmi_stats, fmbm_rfrc)},
@@ -143,13 +143,13 @@ static const struct rte_dpaa_xstats_name_off dpaa_xstats_strings[] = {
 		offsetof(struct dpaa_if_rx_bmi_stats, fmbm_rlfc)},
 	{"rx_filter_frames_count",
 		offsetof(struct dpaa_if_rx_bmi_stats, fmbm_rffc)},
-	{"rx_frame_discrad_count",
+	{"rx_frame_discard_count",
 		offsetof(struct dpaa_if_rx_bmi_stats, fmbm_rfdc)},
 	{"rx_frame_list_dma_err_count",
 		offsetof(struct dpaa_if_rx_bmi_stats, fmbm_rfldec)},
-	{"rx_out_of_buffer_discard ",
+	{"rx_out_of_buffer_discard",
 		offsetof(struct dpaa_if_rx_bmi_stats, fmbm_rodc)},
-	{"rx_buf_diallocate",
+	{"rx_buf_deallocate",
 		offsetof(struct dpaa_if_rx_bmi_stats, fmbm_rbdc)},
 };
 
@@ -415,8 +415,6 @@ dpaa_supported_ptypes_get(struct rte_eth_dev *dev, size_t *no_of_elements)
 		RTE_PTYPE_L4_TCP,
 		RTE_PTYPE_L4_UDP,
 		RTE_PTYPE_L4_FRAG,
-		RTE_PTYPE_L4_TCP,
-		RTE_PTYPE_L4_UDP,
 		RTE_PTYPE_L4_SCTP,
 		RTE_PTYPE_TUNNEL_ESP,
 		RTE_PTYPE_TUNNEL_GRE,
@@ -570,7 +568,7 @@ static int dpaa_eth_dev_close(struct rte_eth_dev *dev)
 		}
 		ret = rte_intr_callback_unregister(intr_handle,
 			dpaa_interrupt_handler, (void *)dev);
-		if (ret) {
+		if (ret < 0) {
 			DPAA_PMD_WARN("%s: unregister interrupt failed(%d)",
 				dev->data->name, ret);
 		}
@@ -954,7 +952,8 @@ dpaa_xstats_get_by_id(struct rte_eth_dev *dev, const uint64_t *ids,
 			values[i] =
 				values_copy[dpaa_xstats_strings[i].offset / 8];
 
-		fman_if_bmi_stats_get_all(dev->process_private, values);
+		/* i continues from previous loop; BMI stats fill values[i..stat_cnt-1] */
+		fman_if_bmi_stats_get_all(dev->process_private, values_copy);
 		for (j = 0; i < stat_cnt; i++, j++)
 			values[i] = values_copy[j];
 
@@ -1332,7 +1331,7 @@ int dpaa_eth_rx_queue_setup(struct rte_eth_dev *dev, uint16_t queue_idx,
 		rxq->nb_desc = nb_desc;
 		/* Enable tail drop with cgr on this queue */
 		qm_cgr_cs_thres_set64(&cgr_opts.cgr.cs_thres, nb_desc, 0);
-		ret = qman_modify_cgr(dpaa_intf->cgr_rx, 0, &cgr_opts);
+		ret = qman_modify_cgr(&dpaa_intf->cgr_rx[queue_idx], 0, &cgr_opts);
 		if (ret) {
 			DPAA_PMD_WARN(
 				"rx taildrop modify fail on fqid %d (ret=%d)",
@@ -2709,18 +2708,20 @@ static int
 rte_dpaa_remove(struct rte_dpaa_device *dpaa_dev)
 {
 	struct rte_eth_dev *eth_dev;
-	int ret;
+	int ret = 0;
 
 	PMD_INIT_FUNC_TRACE();
 
 	eth_dev = dpaa_dev->eth_dev;
-	dpaa_eth_dev_close(eth_dev);
-	ret = rte_eth_dev_release_port(eth_dev);
-	dpaa_valid_dev--;
-	if (!dpaa_valid_dev) {
-		rte_mempool_free(dpaa_tx_sg_pool);
-		dpaa_finish();
+	ret = dpaa_eth_dev_close(eth_dev);
+	if (eth_dev->state !=  RTE_ETH_DEV_UNUSED) {
+		dpaa_eth_dev_close(eth_dev);
+		ret = rte_eth_dev_release_port(eth_dev);
 	}
+	dpaa_valid_dev--;
+	if (!dpaa_valid_dev)
+		rte_mempool_free(dpaa_tx_sg_pool);
+
 	return ret;
 }
 

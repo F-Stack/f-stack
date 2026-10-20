@@ -581,6 +581,82 @@ vring_translate(struct virtio_net *dev, struct vhost_virtqueue *vq)
 	return 0;
 }
 
+static int
+is_vring_iotlb_split(struct vhost_virtqueue *vq, struct vhost_iotlb_msg *imsg)
+{
+	struct vhost_vring_addr *ra;
+	uint64_t start, end, len;
+
+	start = imsg->iova;
+	end = start + imsg->size;
+
+	ra = &vq->ring_addrs;
+	len = sizeof(struct vring_desc) * vq->size;
+	if (ra->desc_user_addr < end && (ra->desc_user_addr + len) > start)
+		return 1;
+
+	len = sizeof(struct vring_avail) + sizeof(uint16_t) * vq->size;
+	if (ra->avail_user_addr < end && (ra->avail_user_addr + len) > start)
+		return 1;
+
+	len = sizeof(struct vring_used) +
+	       sizeof(struct vring_used_elem) * vq->size;
+	if (ra->used_user_addr < end && (ra->used_user_addr + len) > start)
+		return 1;
+
+	if (ra->flags & (1 << VHOST_VRING_F_LOG)) {
+		len = sizeof(uint64_t);
+		if (ra->log_guest_addr < end &&
+		    (ra->log_guest_addr + len) > start)
+			return 1;
+	}
+
+	return 0;
+}
+
+static int
+is_vring_iotlb_packed(struct vhost_virtqueue *vq, struct vhost_iotlb_msg *imsg)
+{
+	struct vhost_vring_addr *ra;
+	uint64_t start, end, len;
+
+	start = imsg->iova;
+	end = start + imsg->size;
+
+	ra = &vq->ring_addrs;
+	len = sizeof(struct vring_packed_desc) * vq->size;
+	if (ra->desc_user_addr < end && (ra->desc_user_addr + len) > start)
+		return 1;
+
+	len = sizeof(struct vring_packed_desc_event);
+	if (ra->avail_user_addr < end && (ra->avail_user_addr + len) > start)
+		return 1;
+
+	len = sizeof(struct vring_packed_desc_event);
+	if (ra->used_user_addr < end && (ra->used_user_addr + len) > start)
+		return 1;
+
+	if (ra->flags & (1 << VHOST_VRING_F_LOG)) {
+		len = sizeof(uint64_t);
+		if (ra->log_guest_addr < end &&
+		    (ra->log_guest_addr + len) > start)
+			return 1;
+	}
+
+	return 0;
+}
+
+int
+is_vring_iotlb(struct virtio_net *dev,
+	       struct vhost_virtqueue *vq,
+	       struct vhost_iotlb_msg *imsg)
+{
+	if (vq_is_packed(dev))
+		return is_vring_iotlb_packed(vq, imsg);
+	else
+		return is_vring_iotlb_split(vq, imsg);
+}
+
 void
 vring_invalidate(struct virtio_net *dev __rte_unused, struct vhost_virtqueue *vq)
 {
@@ -1084,6 +1160,9 @@ rte_vhost_set_inflight_desc_split(int vid, uint16_t vring_idx,
 	if (unlikely(idx >= vq->size))
 		return -1;
 
+	if (unlikely(idx >= vq->inflight_split->desc_num))
+		return -1;
+
 	vq->inflight_split->desc[idx].counter = vq->global_counter++;
 	vq->inflight_split->desc[idx].inflight = 1;
 	return 0;
@@ -1128,6 +1207,9 @@ rte_vhost_set_inflight_desc_packed(int vid, uint16_t vring_idx,
 	desc = vq->desc_packed;
 	old_free_head = inflight_info->old_free_head;
 	if (unlikely(old_free_head >= vq->size))
+		return -1;
+
+	if (unlikely(old_free_head >= inflight_info->desc_num))
 		return -1;
 
 	free_head = old_free_head;
@@ -1188,6 +1270,9 @@ rte_vhost_clr_inflight_desc_split(int vid, uint16_t vring_idx,
 	if (unlikely(idx >= vq->size))
 		return -1;
 
+	if (unlikely(idx >= vq->inflight_split->desc_num))
+		return -1;
+
 	rte_atomic_thread_fence(rte_memory_order_seq_cst);
 
 	vq->inflight_split->desc[idx].inflight = 0;
@@ -1229,6 +1314,9 @@ rte_vhost_clr_inflight_desc_packed(int vid, uint16_t vring_idx,
 		return -1;
 
 	if (unlikely(head >= vq->size))
+		return -1;
+
+	if (unlikely(head >= inflight_info->desc_num))
 		return -1;
 
 	rte_atomic_thread_fence(rte_memory_order_seq_cst);
@@ -1313,8 +1401,14 @@ rte_vhost_set_last_inflight_io_packed(int vid, uint16_t vring_idx,
 	if (unlikely(head >= vq->size))
 		return -1;
 
+	if (unlikely(head >= inflight_info->desc_num))
+		return -1;
+
 	last = inflight_info->desc[head].last;
 	if (unlikely(last >= vq->size))
+		return -1;
+
+	if (unlikely(last >= inflight_info->desc_num))
 		return -1;
 
 	inflight_info->desc[last].next = inflight_info->free_head;

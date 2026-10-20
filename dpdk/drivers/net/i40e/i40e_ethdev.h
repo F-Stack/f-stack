@@ -1190,6 +1190,10 @@ struct i40e_pf {
 
 	/* When firmware > 8.3, the enable flag for outer VLAN processing */
 	bool fw8_3gt;
+	/* MAC config needs re-applying when link first comes up */
+	bool mac_config_on_link_up;
+	/* true when interrupt path unavailable */
+	bool use_aq_polling;
 
 	struct i40e_vf_msg_cfg vf_msg_cfg;
 	uint64_t prev_rx_bytes;

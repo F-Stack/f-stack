@@ -100,6 +100,7 @@ static int iavf_dev_start(struct rte_eth_dev *dev);
 static int iavf_dev_stop(struct rte_eth_dev *dev);
 static int iavf_dev_close(struct rte_eth_dev *dev);
 static int iavf_dev_reset(struct rte_eth_dev *dev);
+static bool iavf_is_reset_detected(struct iavf_adapter *adapter);
 static int iavf_dev_info_get(struct rte_eth_dev *dev,
 			     struct rte_eth_dev_info *dev_info);
 static const uint32_t *iavf_dev_supported_ptypes_get(struct rte_eth_dev *dev,
@@ -1824,8 +1825,16 @@ iavf_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 					 RTE_ETH_RX_OFFLOAD_KEEP_CRC) ? 0 :
 					 RTE_ETHER_CRC_LEN;
 		iavf_update_stats(vsi, pstats);
-		stats->ipackets = pstats->rx_unicast + pstats->rx_multicast +
-				pstats->rx_broadcast - pstats->rx_discards;
+		stats->ipackets = pstats->rx_unicast + pstats->rx_multicast + pstats->rx_broadcast;
+		/*
+		 * Unicast/multicast/broadcast counters include discarded packets, so subtract
+		 * rx_discards to report only the packets delivered to the application. The
+		 * counters are sampled from separate sources and can be momentarily inconsistent
+		 * under load. If rx_discards exceeds their sum then essentially nothing was
+		 * delivered, so saturate at zero rather than underflow.
+		 */
+		stats->ipackets = stats->ipackets >= pstats->rx_discards ?
+					stats->ipackets - pstats->rx_discards : 0;
 		stats->opackets = pstats->tx_broadcast + pstats->tx_multicast +
 						pstats->tx_unicast;
 		stats->imissed = pstats->rx_discards;
@@ -2677,6 +2686,10 @@ iavf_uninit_vf(struct rte_eth_dev *dev)
 
 	rte_free(vf->qos_cap);
 	vf->qos_cap = NULL;
+	free(vf->qtc_map);
+	vf->qtc_map = NULL;
+	rte_free(vf->proto_xtr);
+	vf->proto_xtr = NULL;
 
 	rte_free(vf->rss_lut);
 	vf->rss_lut = NULL;
@@ -2827,7 +2840,7 @@ iavf_dev_init(struct rte_eth_dev *eth_dev)
 	adapter->stopped = 1;
 	adapter->mac_primary_set = false;
 
-	if (iavf_dev_event_handler_init())
+	if (!vf->in_reset_recovery && iavf_dev_event_handler_init())
 		goto init_vf_err;
 
 	if (iavf_init_vf(eth_dev) != 0) {
@@ -2962,15 +2975,28 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	ret = iavf_dev_stop(dev);
 
 	/*
-	 * Release redundant queue resource when close the dev
-	 * so that other vfs can re-use the queues.
+	 * Prevent sending close-time virtchnl messages to the AdminQ
+	 * during PF-initiated reset recovery.
 	 */
-	if (vf->lv_enabled) {
-		ret = iavf_request_queues(dev, IAVF_MAX_NUM_QUEUES_DFLT);
-		if (ret)
-			PMD_DRV_LOG(ERR, "Reset the num of queues failed");
+	if (!vf->pf_reset_in_progress) {
 
-		vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
+		/*
+		 * Release redundant queue resource when close the dev
+		 * so that other vfs can re-use the queues.
+		 */
+		if (vf->lv_enabled) {
+			ret = iavf_request_queues(dev, IAVF_MAX_NUM_QUEUES_DFLT);
+			if (ret)
+				PMD_DRV_LOG(ERR, "Reset the num of queues failed");
+			vf->max_rss_qregion = IAVF_MAX_NUM_QUEUES_DFLT;
+		}
+
+		/*
+		 * Disable promiscuous mode before resetting the VF. This is to avoid
+		 * potential issues when the PF is bound to the kernel driver.
+		 */
+		if (vf->promisc_unicast_enabled || vf->promisc_multicast_enabled)
+			iavf_config_promisc(adapter, false, false);
 	}
 
 	adapter->closed = true;
@@ -2982,14 +3008,19 @@ iavf_dev_close(struct rte_eth_dev *dev)
 	iavf_flow_uninit(adapter);
 
 	/*
-	 * disable promiscuous mode before reset vf
-	 * it is a workaround solution when work with kernel driver
-	 * and it is not the normal way
+	 * Prevent sending VIRTCHNL_OP_RESET_VF during PF-initiated
+	 * reset recovery.
 	 */
-	if (vf->promisc_unicast_enabled || vf->promisc_multicast_enabled)
-		iavf_config_promisc(adapter, false, false);
-
-	iavf_vf_reset(hw);
+	if (!vf->pf_reset_in_progress)
+		iavf_vf_reset(hw);
+	/*
+	 * If a reset is pending, wait for the PF to disable the VF's admin
+	 * receive queue (its first reset action) before we shut it down
+	 * ourselves.  This ensures iavf_check_vf_reset_done() does not see
+	 * a stale VFACTIVE value on the re-init path.
+	 */
+	if (vf->reset_pending)
+		iavf_is_reset_detected(adapter);
 	iavf_shutdown_adminq(hw);
 	if (vf->vf_res->vf_cap_flags & VIRTCHNL_VF_OFFLOAD_WB_ON_ITR) {
 		/* disable uio intr before callback unregister */
@@ -3016,6 +3047,9 @@ iavf_dev_close(struct rte_eth_dev *dev)
 			vf->rss_key = NULL;
 		}
 	}
+
+	rte_free(vf->proto_xtr);
+	vf->proto_xtr = NULL;
 
 	rte_free(vf->vf_res);
 	vf->vsi_res = NULL;
@@ -3069,6 +3103,7 @@ iavf_dev_reset(struct rte_eth_dev *dev)
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
 	struct iavf_hw *hw = IAVF_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 	/*
 	 * Check whether the VF reset has been done and inform application,
 	 * to avoid calling the virtual channel command, which may cause
@@ -3081,8 +3116,10 @@ iavf_dev_reset(struct rte_eth_dev *dev)
 	}
 	iavf_set_no_poll(adapter, false);
 
+	vf->reset_pending = true;
 	PMD_DRV_LOG(DEBUG, "Start dev_reset ...");
 	ret = iavf_dev_uninit(dev);
+	vf->reset_pending = false;
 	if (ret)
 		return ret;
 
@@ -3131,6 +3168,7 @@ iavf_handle_hw_reset(struct rte_eth_dev *dev)
 	}
 
 	vf->in_reset_recovery = true;
+	vf->pf_reset_in_progress = true;
 	iavf_set_no_poll(adapter, false);
 
 	ret = iavf_dev_reset(dev);
@@ -3153,9 +3191,10 @@ iavf_handle_hw_reset(struct rte_eth_dev *dev)
 	goto exit;
 
 error:
-	PMD_DRV_LOG(DEBUG, "RESET recover with error code=%dn", ret);
+	PMD_DRV_LOG(DEBUG, "RESET recover with error code=%d", ret);
 exit:
 	vf->in_reset_recovery = false;
+	vf->pf_reset_in_progress = false;
 	iavf_set_no_poll(adapter, false);
 
 	return;

@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2010-2017 Intel Corporation
  */
+#include <stdlib.h>
+
 #include <rte_tm_driver.h>
 
 #include "iavf.h"
@@ -95,6 +97,9 @@ iavf_tm_conf_uninit(struct rte_eth_dev *dev)
 			     shaper_profile, node);
 		rte_free(shaper_profile);
 	}
+
+	free(vf->qtc_map);
+	vf->qtc_map = NULL;
 }
 
 static inline struct iavf_tm_node *
@@ -177,12 +182,6 @@ iavf_node_param_check(struct iavf_info *vf, uint32_t node_id,
 			error->type =
 				RTE_TM_ERROR_TYPE_NODE_PARAMS_N_SP_PRIORITIES;
 			error->message = "SP priority not supported";
-			return -EINVAL;
-		} else if (params->nonleaf.wfq_weight_mode &&
-			   !(*params->nonleaf.wfq_weight_mode)) {
-			error->type =
-				RTE_TM_ERROR_TYPE_NODE_PARAMS_WFQ_WEIGHT_MODE;
-			error->message = "WFP should be byte mode";
 			return -EINVAL;
 		}
 
@@ -801,11 +800,12 @@ static int iavf_hierarchy_commit(struct rte_eth_dev *dev,
 	struct iavf_info *vf = IAVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 	struct iavf_adapter *adapter =
 		IAVF_DEV_PRIVATE_TO_ADAPTER(dev->data->dev_private);
-	struct virtchnl_queue_tc_mapping *q_tc_mapping;
-	struct virtchnl_queues_bw_cfg *q_bw;
+	struct virtchnl_queue_tc_mapping *q_tc_mapping = NULL;
+	struct virtchnl_queues_bw_cfg *q_bw = NULL;
 	struct iavf_tm_node_list *queue_list = &vf->tm_conf.queue_list;
 	struct iavf_tm_node *tm_node;
-	struct iavf_qtc_map *qtc_map;
+	struct iavf_qtc_map *qtc_map = NULL;
+	struct iavf_qtc_map *old_qtc_map = vf->qtc_map; /* to free memory if new map assigned */
 	uint16_t size, size_q;
 	int index = 0, node_committed = 0;
 	int i, ret_val = IAVF_SUCCESS;
@@ -832,7 +832,7 @@ static int iavf_hierarchy_commit(struct rte_eth_dev *dev,
 
 	size = sizeof(*q_tc_mapping) + sizeof(q_tc_mapping->tc[0]) *
 		(vf->qos_cap->num_elem - 1);
-	q_tc_mapping = rte_zmalloc("q_tc", size, 0);
+	q_tc_mapping = calloc(1, size);
 	if (!q_tc_mapping) {
 		ret_val = IAVF_ERR_NO_MEMORY;
 		goto fail_clear;
@@ -840,7 +840,7 @@ static int iavf_hierarchy_commit(struct rte_eth_dev *dev,
 
 	size_q = sizeof(*q_bw) + sizeof(q_bw->cfg[0]) *
 		(vf->num_queue_pairs - 1);
-	q_bw = rte_zmalloc("q_bw", size_q, 0);
+	q_bw = calloc(1, size_q);
 	if (!q_bw) {
 		ret_val = IAVF_ERR_NO_MEMORY;
 		goto fail_clear;
@@ -887,10 +887,11 @@ static int iavf_hierarchy_commit(struct rte_eth_dev *dev,
 		goto fail_clear;
 
 	/* store the queue TC mapping info */
-	qtc_map = rte_zmalloc("qtc_map",
-		sizeof(struct iavf_qtc_map) * q_tc_mapping->num_tc, 0);
-	if (!qtc_map)
-		return IAVF_ERR_NO_MEMORY;
+	qtc_map = calloc(q_tc_mapping->num_tc, sizeof(struct iavf_qtc_map));
+	if (!qtc_map) {
+		ret_val = IAVF_ERR_NO_MEMORY;
+		goto fail_clear;
+	}
 
 	for (i = 0; i < q_tc_mapping->num_tc; i++) {
 		q_tc_mapping->tc[i].req.start_queue_id = index;
@@ -906,7 +907,10 @@ static int iavf_hierarchy_commit(struct rte_eth_dev *dev,
 		goto fail_clear;
 
 	vf->qtc_map = qtc_map;
+	free(old_qtc_map);
 	vf->tm_conf.committed = true;
+	free(q_bw);
+	free(q_tc_mapping);
 	return ret_val;
 
 fail_clear:
@@ -916,5 +920,8 @@ fail_clear:
 		iavf_tm_conf_init(dev);
 	}
 err:
+	free(q_bw);
+	free(q_tc_mapping);
+	free(qtc_map);
 	return ret_val;
 }

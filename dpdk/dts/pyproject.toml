@@ -3,6 +3,7 @@
 # Copyright(c) 2023 PANTHEON.tech s.r.o.
 
 [tool.poetry]
+package-mode = false
 name = "dts"
 version = "0.1.0"
 description = "DPDK Test Suite."
@@ -13,35 +14,52 @@ authors = [
     "Jeremy Spewock <jspewock@iol.unh.edu>"
 ]
 maintainers = [
-    "Lijuan Tu <lijuan.tu@intel.com>",
     "Juraj Linkeš <juraj.linkes@pantheon.tech>"
 ]
 documentation = "https://doc.dpdk.org/guides/tools/dts.html"
 
 [tool.poetry.dependencies]
 python = "^3.10"
-warlock = "^2.0.1"
 PyYAML = "^6.0"
 types-PyYAML = "^6.0.8"
 fabric = "^2.7.1"
 scapy = "^2.5.0"
+pydocstyle = "6.1.1"
+typing-extensions = "^4.11.0"
+aenum = "^3.1.15"
+pydantic = "^2.9.2"
 
 [tool.poetry.group.dev.dependencies]
-mypy = "^0.961"
-black = "^26.3.1"
+mypy = "^1.10.0"
+black = "^22.6.0"
 isort = "^5.10.1"
 pylama = "^8.4.1"
 pyflakes = "^2.5.0"
 toml = "^0.10.2"
+
+[tool.poetry.group.docs]
+optional = true
+
+[tool.poetry.group.docs.dependencies]
+sphinx = "<=7"
+sphinx-rtd-theme = ">=1.2.2"
+pyelftools = "^0.31"
+autodoc-pydantic = "^2.2.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.pylama]
-linters = "mccabe,pycodestyle,pyflakes"
+linters = "mccabe,pycodestyle,pydocstyle,pyflakes"
 format = "pylint"
 max_line_length = 100
+
+[tool.pylama.linter.pycodestyle]
+ignore = "E203,W503"
+
+[tool.pylama.linter.pydocstyle]
+convention = "google"
 
 [tool.mypy]
 python_version = "3.10"

@@ -1842,7 +1842,7 @@ ice_send_driver_ver(struct ice_hw *hw)
 	dv.minor_ver = 0;
 	dv.build_ver = 0;
 	dv.subbuild_ver = 0;
-	strncpy((char *)dv.driver_string, "dpdk", sizeof(dv.driver_string));
+	strlcpy((char *)dv.driver_string, "dpdk", sizeof(dv.driver_string));
 
 	return ice_aq_send_driver_ver(hw, &dv, NULL);
 }
@@ -1988,24 +1988,22 @@ int ice_load_pkg(struct ice_adapter *adapter, bool use_dsn, uint64_t dsn)
 	if (!use_dsn)
 		goto no_dsn;
 
-	strncpy(pkg_file, ICE_PKG_FILE_SEARCH_PATH_UPDATES,
-		ICE_MAX_PKG_FILENAME_SIZE);
-	strcat(pkg_file, opt_ddp_filename);
+	strlcpy(pkg_file, ICE_PKG_FILE_SEARCH_PATH_UPDATES, ICE_MAX_PKG_FILENAME_SIZE);
+	strlcat(pkg_file, opt_ddp_filename, ICE_MAX_PKG_FILENAME_SIZE);
 	if (rte_firmware_read(pkg_file, &buf, &bufsz) == 0)
 		goto load_fw;
 
-	strncpy(pkg_file, ICE_PKG_FILE_SEARCH_PATH_DEFAULT,
-		ICE_MAX_PKG_FILENAME_SIZE);
-	strcat(pkg_file, opt_ddp_filename);
+	strlcpy(pkg_file, ICE_PKG_FILE_SEARCH_PATH_DEFAULT, ICE_MAX_PKG_FILENAME_SIZE);
+	strlcat(pkg_file, opt_ddp_filename, ICE_MAX_PKG_FILENAME_SIZE);
 	if (rte_firmware_read(pkg_file, &buf, &bufsz) == 0)
 		goto load_fw;
 
 no_dsn:
-	strncpy(pkg_file, ICE_PKG_FILE_UPDATES, ICE_MAX_PKG_FILENAME_SIZE);
+	strlcpy(pkg_file, ICE_PKG_FILE_UPDATES, ICE_MAX_PKG_FILENAME_SIZE);
 	if (rte_firmware_read(pkg_file, &buf, &bufsz) == 0)
 		goto load_fw;
 
-	strncpy(pkg_file, ICE_PKG_FILE_DEFAULT, ICE_MAX_PKG_FILENAME_SIZE);
+	strlcpy(pkg_file, ICE_PKG_FILE_DEFAULT, ICE_MAX_PKG_FILENAME_SIZE);
 	if (rte_firmware_read(pkg_file, &buf, &bufsz) < 0) {
 		PMD_INIT_LOG(ERR, "failed to search file path");
 		return -1;
@@ -4058,6 +4056,8 @@ tx_err:
 	for (i = 0; i < nb_txq; i++)
 		ice_tx_queue_stop(dev, i);
 
+	pf->adapter_stopped = true;
+
 	return -EIO;
 }
 
@@ -4607,7 +4607,8 @@ static int
 ice_vlan_filter_set(struct rte_eth_dev *dev, uint16_t vlan_id, int on)
 {
 	struct ice_pf *pf = ICE_DEV_PRIVATE_TO_PF(dev->data->dev_private);
-	struct ice_vlan vlan = ICE_VLAN(RTE_ETHER_TYPE_VLAN, vlan_id);
+	/* Use the configured outer_ethertype instead of hardcoded 0x8100 */
+	struct ice_vlan vlan = ICE_VLAN(pf->outer_ethertype, vlan_id);
 	struct ice_vsi *vsi = pf->main_vsi;
 	int ret;
 
@@ -5998,6 +5999,15 @@ ice_update_vsi_stats(struct ice_vsi *vsi)
 	struct ice_hw *hw = ICE_VSI_TO_HW(vsi);
 	int idx = rte_le_to_cpu_16(vsi->vsi_id);
 
+	/*
+	 * Unicast/multicast/broadcast counters include discarded packets. Received packets is
+	 * calculated by deducting discards from unicast/multicast/broadcast. To prevent a
+	 * potential underflow, read discards first to guarantee it is smaller than
+	 * unicast/multicast/broadcast.
+	 */
+	ice_stat_update_32(hw, GLV_RDPC(idx), vsi->offset_loaded,
+			   &oes->rx_discards, &nes->rx_discards);
+
 	ice_stat_update_40(hw, GLV_GORCH(idx), GLV_GORCL(idx),
 			   vsi->offset_loaded, &oes->rx_bytes,
 			   &nes->rx_bytes);
@@ -6021,8 +6031,6 @@ ice_update_vsi_stats(struct ice_vsi *vsi)
 	nes->rx_bytes -= (nes->rx_unicast + nes->rx_multicast +
 			  nes->rx_broadcast) * RTE_ETHER_CRC_LEN;
 
-	ice_stat_update_32(hw, GLV_RDPC(idx), vsi->offset_loaded,
-			   &oes->rx_discards, &nes->rx_discards);
 	/* GLV_REPC not supported */
 	/* GLV_RMPC not supported */
 	ice_stat_update_32(hw, GLSWID_RUPP(idx), vsi->offset_loaded,

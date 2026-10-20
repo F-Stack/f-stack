@@ -7,12 +7,16 @@
 
 /**
  * @file
+ * DPDK spinlocks
  *
- * RTE Spinlocks
+ * This is an API for spinlocks.
+ * This kind of lock simply waits in a loop
+ * repeatedly checking until the lock becomes available.
  *
- * This file defines an API for read-write locks, which are implemented
- * in an architecture-specific way. This kind of lock simply waits in
- * a loop repeatedly checking until the lock becomes available.
+ * Some functions may have an architecture-specific implementation
+ * if RTE_FORCE_INTRINSICS is disabled.
+ * The hardware transactional memory (lock elision) functions have _tm suffix
+ * and are implemented in architecture-specific files.
  *
  * All locks must be initialised before use, and only initialised once.
  */
@@ -197,8 +201,8 @@ rte_spinlock_trylock_tm(rte_spinlock_t *sl)
  */
 typedef struct {
 	rte_spinlock_t sl; /**< the actual spinlock */
-	volatile int user; /**< core id using lock, -1 for unused */
-	volatile int count; /**< count of time this lock has been called */
+	RTE_ATOMIC(int) owner; /**< thread id owning lock, -1 for unused */
+	int count; /**< count of time this lock has been called */
 } rte_spinlock_recursive_t;
 
 /**
@@ -215,7 +219,7 @@ typedef struct {
 static inline void rte_spinlock_recursive_init(rte_spinlock_recursive_t *slr)
 {
 	rte_spinlock_init(&slr->sl);
-	slr->user = -1;
+	rte_atomic_store_explicit(&slr->owner, -1, rte_memory_order_relaxed);
 	slr->count = 0;
 }
 
@@ -230,9 +234,9 @@ static inline void rte_spinlock_recursive_lock(rte_spinlock_recursive_t *slr)
 {
 	int id = rte_gettid();
 
-	if (slr->user != id) {
+	if (rte_atomic_load_explicit(&slr->owner, rte_memory_order_relaxed) != id) {
 		rte_spinlock_lock(&slr->sl);
-		slr->user = id;
+		rte_atomic_store_explicit(&slr->owner, id, rte_memory_order_relaxed);
 	}
 	slr->count++;
 }
@@ -246,10 +250,9 @@ static inline void rte_spinlock_recursive_unlock(rte_spinlock_recursive_t *slr)
 	__rte_no_thread_safety_analysis
 {
 	if (--(slr->count) == 0) {
-		slr->user = -1;
+		rte_atomic_store_explicit(&slr->owner, -1, rte_memory_order_relaxed);
 		rte_spinlock_unlock(&slr->sl);
 	}
-
 }
 
 /**
@@ -266,10 +269,10 @@ static inline int rte_spinlock_recursive_trylock(rte_spinlock_recursive_t *slr)
 {
 	int id = rte_gettid();
 
-	if (slr->user != id) {
+	if (rte_atomic_load_explicit(&slr->owner, rte_memory_order_relaxed) != id) {
 		if (rte_spinlock_trylock(&slr->sl) == 0)
 			return 0;
-		slr->user = id;
+		rte_atomic_store_explicit(&slr->owner, id, rte_memory_order_relaxed);
 	}
 	slr->count++;
 	return 1;

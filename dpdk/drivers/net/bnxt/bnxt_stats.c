@@ -547,15 +547,20 @@ void bnxt_free_stats(struct bnxt *bp)
 {
 	int i;
 
-	for (i = 0; i < (int)bp->tx_cp_nr_rings; i++) {
-		struct bnxt_tx_queue *txq = bp->tx_queues[i];
+	if (bp->tx_queues && bp->eth_dev->data->tx_queues) {
+		for (i = 0; i < (int)bp->tx_cp_nr_rings; i++) {
+			struct bnxt_tx_queue *txq = bp->tx_queues[i];
 
-		bnxt_free_txq_stats(txq);
+			bnxt_free_txq_stats(txq);
+		}
 	}
-	for (i = 0; i < (int)bp->rx_cp_nr_rings; i++) {
-		struct bnxt_rx_queue *rxq = bp->rx_queues[i];
 
-		bnxt_free_rxq_stats(rxq);
+	if (bp->rx_queues && bp->eth_dev->data->rx_queues) {
+		for (i = 0; i < (int)bp->rx_cp_nr_rings; i++) {
+			struct bnxt_rx_queue *rxq = bp->rx_queues[i];
+
+			bnxt_free_rxq_stats(rxq);
+		}
 	}
 }
 
@@ -674,6 +679,9 @@ static int bnxt_stats_get_ext(struct rte_eth_dev *eth_dev,
 		struct bnxt_tx_queue *txq = bp->tx_queues[i];
 		struct bnxt_cp_ring_info *cpr = txq->cp_ring;
 		struct bnxt_ring_stats_ext ring_stats = {0};
+
+		bnxt_stats->oerrors += rte_atomic_load_explicit(&txq->tx_mbuf_drop,
+							     rte_memory_order_relaxed);
 
 		if (!txq->tx_started)
 			continue;

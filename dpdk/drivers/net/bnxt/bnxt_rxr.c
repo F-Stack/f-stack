@@ -727,14 +727,26 @@ bnxt_set_ol_flags(struct bnxt_rx_ring_info *rxr, struct rx_pkt_cmpl *rxcmp,
 	mbuf->ol_flags = ol_flags;
 }
 
-static void
-bnxt_get_rx_ts_p5(struct bnxt *bp, uint32_t rx_ts_cmpl)
+static void bnxt_get_rx_ts(struct bnxt *bp)
 {
 	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
-	uint64_t last_hwrm_time = 0;
+
+	if (!ptp)
+		return;
+
+	rte_spinlock_lock(&ptp->ptp_lock);
+	ptp->rx_timestamp = ptp->old_time;
+	rte_spinlock_unlock(&ptp->ptp_lock);
+}
+
+static void
+bnxt_get_rx_ts_p5_p7(struct bnxt *bp, uint32_t rx_ts_cmpl)
+{
+	struct bnxt_ptp_cfg *ptp = bp->ptp_cfg;
+	uint64_t last_hwrm_time;
 	uint64_t pkt_time = 0;
 
-	if (!BNXT_CHIP_P5(bp) || !ptp)
+	if (!ptp)
 		return;
 
 	/* On P5, Rx timestamps are provided directly in the
@@ -1190,11 +1202,25 @@ static int bnxt_rx_pkt(struct rte_mbuf **rx_pkt,
 	mbuf->data_len = mbuf->pkt_len;
 	mbuf->port = rxq->port_id;
 
-	if (unlikely((rte_le_to_cpu_16(rxcmp->flags_type) &
-		      RX_PKT_CMPL_FLAGS_MASK) ==
-		      RX_PKT_CMPL_FLAGS_ITYPE_PTP_W_TIMESTAMP) ||
-		      bp->ptp_all_rx_tstamp)
-		bnxt_get_rx_ts_p5(rxq->bp, rxcmp1->reorder);
+	/* Extract the hardware timestamp from the completion record if:
+	 * 1. The packet is explicitly classified as a PTP packet (with or
+	 *    without timestamp), OR
+	 * 2. Promiscuous timestamping is enabled (ptp_all_rx_tstamp), which
+	 *    instructs the hardware to timestamp all packets, including
+	 *    non-PTP traffic (e.g., IPv6).
+	 */
+	if (unlikely(((rte_le_to_cpu_16(rxcmp->flags_type) &
+			RX_PKT_CMPL_FLAGS_MASK) ==
+			RX_PKT_CMPL_FLAGS_ITYPE_PTP_W_TIMESTAMP) ||
+			((rte_le_to_cpu_16(rxcmp->flags_type) &
+			RX_PKT_CMPL_FLAGS_MASK) ==
+			RX_PKT_CMPL_FLAGS_ITYPE_PTP_WO_TIMESTAMP) ||
+			bp->ptp_all_rx_tstamp)) {
+		if (BNXT_CHIP_P5_P7(bp))
+			bnxt_get_rx_ts_p5_p7(rxq->bp, rxcmp1->reorder);
+		else
+			bnxt_get_rx_ts(rxq->bp);
+	}
 
 	if (cmp_type == CMPL_BASE_TYPE_RX_L2_V3) {
 		bnxt_parse_csum_v3(mbuf, rxcmp1);
@@ -1452,7 +1478,7 @@ void bnxt_free_rx_rings(struct bnxt *bp)
 	int i;
 	struct bnxt_rx_queue *rxq;
 
-	if (!bp->rx_queues)
+	if (!bp->rx_queues || !bp->eth_dev->data->rx_queues)
 		return;
 
 	for (i = 0; i < (int)bp->rx_nr_rings; i++) {

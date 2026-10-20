@@ -14,7 +14,6 @@
 #include <linux/sockios.h>
 #include <linux/ethtool.h>
 #include <fcntl.h>
-#include <dlfcn.h>
 
 #include <rte_malloc.h>
 #include <ethdev_driver.h>
@@ -1164,7 +1163,7 @@ representor_match_port(const struct mlx5_dev_spawn_data *spawn,
 
 		/* Uplink ports should not be matched against representor_ports. */
 		if (spawn->info.name_type == MLX5_PHYS_PORT_NAME_TYPE_UPLINK)
-			return false;
+			continue;
 
 		for (uint16_t f = 0; f < eth_da->nb_representor_ports; ++f) {
 			uint16_t port_num = eth_da->representor_ports[f];
@@ -1651,9 +1650,13 @@ err_secondary:
 		err = ENOMEM;
 		goto error;
 	}
+	priv->port_info.type = spawn->info.name_type;
+	priv->port_info.ctrl_num = spawn->info.ctrl_num;
+	priv->port_info.pf_num = spawn->info.pf_num;
+	priv->port_info.port_num = spawn->info.port_name;
 	if (priv->representor) {
 		eth_dev->data->dev_flags |= RTE_ETH_DEV_REPRESENTOR;
-		eth_dev->data->representor_id = priv->representor_id;
+		eth_dev->data->representor_id = eth_dev->data->port_id;
 		MLX5_ETH_FOREACH_DEV(port_id, dpdk_dev) {
 			struct mlx5_priv *opriv =
 				rte_eth_devices[port_id].data->dev_private;
@@ -2212,7 +2215,6 @@ close_nlsk_fd:
 
 #define SYSFS_MPESW_PARAM_MAX_LEN 16
 
-static char *(*real_if_indextoname)(unsigned int, char *) = NULL;
 static int
 mlx5_sysfs_esw_multiport_get(struct ibv_device *ibv, struct rte_pci_addr *pci_addr, int *enabled)
 {
@@ -2242,16 +2244,7 @@ mlx5_sysfs_esw_multiport_get(struct ibv_device *ibv, struct rte_pci_addr *pci_ad
 		ifindex = mlx5_nl_ifindex(nl_rdma, ibv->name, i);
 		if (!ifindex)
 			continue;
-
-		// for ff tools
-		if (!real_if_indextoname) {
-			real_if_indextoname = __extension__ (char *(*)(unsigned int, char *))dlsym(RTLD_NEXT, "if_indextoname");
-			if (!real_if_indextoname) {
-				rte_errno = errno;
-				return -rte_errno;
-			}
-		}
-		if (!real_if_indextoname(ifindex, ifname))
+		if (!if_indextoname(ifindex, ifname))
 			continue;
 		MKSTR(sysfs_if_path, "/sys/class/net/%s", ifname);
 		if (mlx5_get_pci_addr(sysfs_if_path, &if_pci_addr))

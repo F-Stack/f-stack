@@ -1534,6 +1534,9 @@ int qman_create_fq(u32 fqid, u32 flags, struct qman_fq *fq)
 err:
 	if (flags & QMAN_FQ_FLAG_DYNAMIC_FQID)
 		qman_release_fqid(fqid);
+#ifdef CONFIG_FSL_QMAN_FQ_LOOKUP
+	clear_fq_table_entry(fq->key);
+#endif
 	return -EIO;
 }
 
@@ -1907,11 +1910,11 @@ int qman_query_fq(struct qman_fq *fq, struct qm_fqd *fqd)
 		cpu_relax();
 	DPAA_ASSERT((mcr->verb & QM_MCR_VERB_MASK) == QM_MCR_VERB_QUERYFQ);
 	res = mcr->result;
-	if (res == QM_MCR_RESULT_OK)
-		*fqd = mcr->queryfq.fqd;
-	hw_fqd_to_cpu(fqd);
 	if (res != QM_MCR_RESULT_OK)
 		return -EIO;
+
+	*fqd = mcr->queryfq.fqd;
+	hw_fqd_to_cpu(fqd);
 	return 0;
 }
 

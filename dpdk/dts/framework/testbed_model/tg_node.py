@@ -5,37 +5,33 @@
 
 """Traffic generator node.
 
-This is the node where the traffic generator resides.
-The distinction between a node and a traffic generator is as follows:
-A node is a host that DTS connects to. It could be a baremetal server,
-a VM or a container.
-A traffic generator is software running on the node.
-A traffic generator node is a node running a traffic generator.
-A node can be a traffic generator node as well as system under test node.
+A traffic generator (TG) generates traffic that's sent towards the SUT node.
+A TG node is where the TG runs.
 """
 
-from scapy.packet import Packet  # type: ignore[import]
+from scapy.packet import Packet  # type: ignore[import-untyped]
 
-from framework.config import (
-    ScapyTrafficGeneratorConfig,
-    TGNodeConfiguration,
-    TrafficGeneratorType,
+from framework.config import TGNodeConfiguration
+from framework.testbed_model.traffic_generator.capturing_traffic_generator import (
+    PacketFilteringConfig,
 )
-from framework.exception import ConfigurationError
 
-from .capturing_traffic_generator import CapturingTrafficGenerator
-from .hw.port import Port
 from .node import Node
+from .port import Port
+from .traffic_generator import CapturingTrafficGenerator, create_traffic_generator
 
 
 class TGNode(Node):
-    """Manage connections to a node with a traffic generator.
+    """The traffic generator node.
 
-    Apart from basic node management capabilities, the Traffic Generator node has
-    specialized methods for handling the traffic generator running on it.
+    The TG node extends :class:`Node` with TG specific features:
 
-    Arguments:
-        node_config: The user configuration of the traffic generator node.
+        * Traffic generator initialization,
+        * The sending of traffic and receiving packets,
+        * The sending of traffic without receiving packets.
+
+    Not all traffic generators are capable of capturing traffic, which is why there
+    must be a way to send traffic without that.
 
     Attributes:
         traffic_generator: The traffic generator running on the node.
@@ -44,53 +40,62 @@ class TGNode(Node):
     traffic_generator: CapturingTrafficGenerator
 
     def __init__(self, node_config: TGNodeConfiguration):
-        super(TGNode, self).__init__(node_config)
+        """Extend the constructor with TG node specifics.
+
+        Initialize the traffic generator on the TG node.
+
+        Args:
+            node_config: The TG node's test run configuration.
+        """
+        super().__init__(node_config)
         self.traffic_generator = create_traffic_generator(self, node_config.traffic_generator)
         self._logger.info(f"Created node: {self.name}")
 
-    def send_packet_and_capture(
+    def send_packets_and_capture(
         self,
-        packet: Packet,
+        packets: list[Packet],
         send_port: Port,
         receive_port: Port,
+        filter_config: PacketFilteringConfig = PacketFilteringConfig(),
         duration: float = 1,
     ) -> list[Packet]:
-        """Send a packet, return received traffic.
+        """Send `packets`, return received traffic.
 
-        Send a packet on the send_port and then return all traffic captured
-        on the receive_port for the given duration. Also record the captured traffic
+        Send `packets` on `send_port` and then return all traffic captured
+        on `receive_port` for the given duration. Also record the captured traffic
         in a pcap file.
 
         Args:
-            packet: The packet to send.
+            packets: The packets to send.
             send_port: The egress port on the TG node.
             receive_port: The ingress port in the TG node.
-            duration: Capture traffic for this amount of time after sending the packet.
+            filter_config: The filter to use when capturing packets.
+            duration: Capture traffic for this amount of time after sending `packet`.
 
         Returns:
              A list of received packets. May be empty if no packets are captured.
         """
-        return self.traffic_generator.send_packet_and_capture(
-            packet, send_port, receive_port, duration
+        return self.traffic_generator.send_packets_and_capture(
+            packets,
+            send_port,
+            receive_port,
+            filter_config,
+            duration,
         )
 
+    def send_packets(self, packets: list[Packet], port: Port):
+        """Send packets without capturing resulting received packets.
+
+        Args:
+            packets: Packets to send.
+            port: Port to send the packets on.
+        """
+        self.traffic_generator.send_packets(packets, port)
+
     def close(self) -> None:
-        """Free all resources used by the node"""
+        """Free all resources used by the node.
+
+        This extends the superclass method with TG cleanup.
+        """
         self.traffic_generator.close()
-        super(TGNode, self).close()
-
-
-def create_traffic_generator(
-    tg_node: TGNode, traffic_generator_config: ScapyTrafficGeneratorConfig
-) -> CapturingTrafficGenerator:
-    """A factory function for creating traffic generator object from user config."""
-
-    from .scapy import ScapyTrafficGenerator
-
-    match traffic_generator_config.traffic_generator_type:
-        case TrafficGeneratorType.SCAPY:
-            return ScapyTrafficGenerator(tg_node, traffic_generator_config)
-        case _:
-            raise ConfigurationError(
-                f"Unknown traffic generator: {traffic_generator_config.traffic_generator_type}"
-            )
+        super().close()

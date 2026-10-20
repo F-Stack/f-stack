@@ -24,7 +24,7 @@
 /**
  * Per-lcore info for timers.
  */
-struct priv_timer {
+struct __rte_cache_aligned priv_timer {
 	struct rte_timer pending_head;  /**< dummy timer instance to head up list */
 	rte_spinlock_t list_lock;       /**< lock to protect list access */
 
@@ -44,7 +44,7 @@ struct priv_timer {
 	/** per-lcore statistics */
 	struct rte_timer_debug_stats stats;
 #endif
-} __rte_cache_aligned;
+};
 
 #define FL_ALLOCATED	(1 << 0)
 struct rte_timer_data {
@@ -211,20 +211,6 @@ rte_timer_init(struct rte_timer *tim)
 	status.state = RTE_TIMER_STOP;
 	status.owner = RTE_TIMER_NO_OWNER;
 	rte_atomic_store_explicit(&tim->status.u32, status.u32, rte_memory_order_relaxed);
-}
-
-int
-rte_timer_meta_init(void)
-{
-    struct rte_timer_data *timer_data;
-    struct priv_timer *pt;
-    unsigned lcore_id = rte_lcore_id();
-
-    TIMER_DATA_VALID_GET_OR_ERR_RET(default_data_id, timer_data, -EINVAL);
-    pt = &timer_data->priv_timer[lcore_id];
-    memset(pt, 0, sizeof(*pt));
-    pt->prev_lcore = lcore_id;
-    return 0;
 }
 
 /*

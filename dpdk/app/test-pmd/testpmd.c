@@ -3251,6 +3251,8 @@ port_free_job_list(portid_t pi)
 {
 	struct rte_port *port = &ports[pi];
 	free(port->job_list);
+	port->job_list = NULL;
+	port->queue_nb = 0;
 }
 
 static void
@@ -4379,6 +4381,8 @@ print_stats(void)
 static void
 signal_handler(int signum __rte_unused)
 {
+	signal(SIGINT, SIG_DFL);
+	signal(SIGTERM, SIG_DFL);
 	f_quit = 1;
 	prompt_exit();
 }

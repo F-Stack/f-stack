@@ -1952,6 +1952,24 @@ struct mlx5_quota_ctx {
 	struct mlx5_indexed_pool *quota_ipool; /* Manage quota objects */
 };
 
+/* Stores info parsed from phys_port_name related to given DPDK port. */
+struct mlx5_representor_info {
+	enum mlx5_nl_phys_port_name_type type;
+	/* PCI controller index. 0 if no controller was reported in phys_port_name. */
+	int32_t ctrl_num;
+	/* PF index. */
+	int32_t pf_num;
+	/*
+	 * Representor number:
+	 *
+	 * - For VF/SF - VF/SF index.
+	 * - For PFHPF - -1.
+	 * - For uplink - physical port index.
+	 * - For others - VF representor is assumed, so VF index.
+	 */
+	int32_t port_num;
+};
+
 struct mlx5_priv {
 	struct rte_eth_dev_data *dev_data;  /* Pointer to device data. */
 	struct mlx5_dev_ctx_shared *sh; /* Shared device context. */
@@ -1982,6 +2000,7 @@ struct mlx5_priv {
 	uint32_t vport_meta_tag; /* Used for vport index match ove VF LAG. */
 	uint32_t vport_meta_mask; /* Used for vport index field match mask. */
 	uint16_t representor_id; /* UINT16_MAX if not a representor. */
+	struct mlx5_representor_info port_info;
 	int32_t pf_bond; /* >=0, representor owner PF index in bonding. */
 	int32_t mpesw_owner; /* >=0, representor owner PF index in MPESW. */
 	int32_t mpesw_port; /* Related port index of MPESW device. < 0 - no MPESW. */
@@ -2003,6 +2022,7 @@ struct mlx5_priv {
 	rte_spinlock_t hw_ctrl_lock;
 	LIST_HEAD(hw_ctrl_flow, mlx5_ctrl_flow_entry) hw_ctrl_flows;
 	LIST_HEAD(hw_ext_ctrl_flow, mlx5_ctrl_flow_entry) hw_ext_ctrl_flows;
+	struct mlx5_flow_hw_lacp_miss *hw_lacp_miss; /* HWS LACP miss flow tables */
 	struct mlx5_flow_hw_ctrl_fdb *hw_ctrl_fdb;
 	struct rte_flow_pattern_template *hw_tx_repr_tagging_pt;
 	struct rte_flow_actions_template *hw_tx_repr_tagging_at;

@@ -38,6 +38,7 @@ test_inline_ipsec_sg(void)
 
 #else
 
+#include <rte_cycles.h>
 #include <rte_eventdev.h>
 #include <rte_event_eth_rx_adapter.h>
 #include <rte_event_eth_tx_adapter.h>
@@ -94,8 +95,7 @@ static struct rte_eth_conf port_conf = {
 	},
 	.txmode = {
 		.mq_mode = RTE_ETH_MQ_TX_NONE,
-		.offloads = RTE_ETH_TX_OFFLOAD_SECURITY |
-			    RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
+		.offloads = RTE_ETH_TX_OFFLOAD_SECURITY,
 	},
 	.lpbk_mode = 1,  /* enable loopback */
 };
@@ -1266,7 +1266,6 @@ test_ipsec_inline_sa_exp_event_callback(uint16_t port_id,
 		printf("Event descriptor not set\n");
 		return -1;
 	}
-	vector->notify_event = true;
 	if (event_desc->metadata != (uint64_t)vector->sa_data) {
 		printf("Mismatch in event specific metadata\n");
 		return -1;
@@ -1288,6 +1287,10 @@ test_ipsec_inline_sa_exp_event_callback(uint16_t port_id,
 		printf("Invalid IPsec event reported\n");
 		return -1;
 	}
+
+	/* Ensure event subtype is visible before signaling notify_event. */
+	rte_io_wmb();
+	vector->notify_event = true;
 
 	return 0;
 }
@@ -1435,6 +1438,16 @@ test_ipsec_inline_proto_process(struct ipsec_test_data *td,
 				break;
 		} while (j++ < 5 || nb_rx == 0);
 
+	/* Wait for soft expiry event from the err-ring poll thread. */
+	if ((flags->sa_expiry_pkts_soft || flags->sa_expiry_bytes_soft) &&
+	    td->ipsec_xform.direction == RTE_SECURITY_IPSEC_SA_DIR_EGRESS) {
+		j = 0;
+		while (!vector.notify_event && j++ < 100) {
+			rte_delay_us(1000);
+			rte_io_rmb();
+		}
+	}
+
 	if (!flags->sa_expiry_pkts_hard &&
 			!flags->sa_expiry_bytes_hard &&
 			(nb_rx != nb_sent)) {
@@ -1498,10 +1511,13 @@ out:
 		destroy_default_flow(port_id);
 	if (flags->sa_expiry_pkts_soft || flags->sa_expiry_bytes_soft ||
 		flags->sa_expiry_pkts_hard || flags->sa_expiry_bytes_hard) {
-		if (vector.notify_event && (vector.event == event))
-			ret = TEST_SUCCESS;
-		else
+		if (vector.notify_event) {
+			rte_io_rmb();
+			ret = (vector.event == event) ?
+				TEST_SUCCESS : TEST_FAILED;
+		} else {
 			ret = TEST_FAILED;
+		}
 
 		rte_eth_dev_callback_unregister(port_id, RTE_ETH_EVENT_IPSEC,
 			test_ipsec_inline_sa_exp_event_callback, &vector);
@@ -1996,10 +2012,36 @@ inline_ipsec_testsuite_setup(void)
 	}
 
 	memcpy(&local_port_conf, &port_conf, sizeof(port_conf));
+	local_port_conf.rxmode.offloads &= dev_info.rx_offload_capa;
+	local_port_conf.txmode.offloads &= dev_info.tx_offload_capa;
+
+	if (!(local_port_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_SECURITY) ||
+	    !(local_port_conf.txmode.offloads & RTE_ETH_TX_OFFLOAD_SECURITY)) {
+		printf("Inline IPsec unsupported: required security offloads are missing\n");
+		return TEST_SKIPPED;
+	}
+
 	/* Add Multi seg flags */
 	if (sg_mode) {
-		uint16_t max_data_room = RTE_MBUF_DEFAULT_DATAROOM *
-			dev_info.rx_desc_lim.nb_seg_max;
+		uint32_t max_data_room;
+
+		if (!(dev_info.rx_offload_capa & RTE_ETH_RX_OFFLOAD_SCATTER) ||
+		    !(dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MULTI_SEGS)) {
+			printf("SG mode unsupported: required scatter or multi-seg offloads are missing\n");
+			return TEST_SKIPPED;
+		}
+
+		if (dev_info.rx_desc_lim.nb_seg_max == 0) {
+			printf("SG mode unsupported: invalid max Rx segments (0)\n");
+			return TEST_SKIPPED;
+		}
+
+		max_data_room = RTE_MBUF_DEFAULT_DATAROOM * dev_info.rx_desc_lim.nb_seg_max;
+		if (max_data_room <= 256) {
+			printf("SG mode unsupported: max data room (%u) too small\n",
+				max_data_room);
+			return TEST_SKIPPED;
+		}
 
 		local_port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_SCATTER;
 		local_port_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
@@ -2054,6 +2096,25 @@ inline_ipsec_testsuite_setup(void)
 		plaintext_len = 0;
 	}
 
+	/* Check that at least one inline IPsec capability is registered */
+	void *sec_ctx = rte_eth_dev_get_sec_ctx(port_id);
+	const struct rte_security_capability *cap;
+
+	if (sec_ctx == NULL) {
+		printf("No security context on port %d\n", port_id);
+		return TEST_SKIPPED;
+	}
+	for (cap = rte_security_capabilities_get(sec_ctx);
+			cap != NULL && cap->action != RTE_SECURITY_ACTION_TYPE_NONE; cap++) {
+		if (cap->action == RTE_SECURITY_ACTION_TYPE_INLINE_PROTOCOL &&
+				cap->protocol == RTE_SECURITY_PROTOCOL_IPSEC)
+			break;
+	}
+	if (cap == NULL || cap->action == RTE_SECURITY_ACTION_TYPE_NONE) {
+		printf("No inline IPsec capabilities registered\n");
+		return TEST_SKIPPED;
+	}
+
 	return 0;
 }
 
@@ -2082,6 +2143,8 @@ event_inline_ipsec_testsuite_setup(void)
 	struct rte_event_dev_config eventdev_conf = {0};
 	struct rte_event_queue_conf eventq_conf = {0};
 	struct rte_event_port_conf ev_port_conf = {0};
+	struct rte_eth_conf local_port_conf;
+	struct rte_eth_dev_info dev_info;
 	const uint16_t nb_txd = 1024, nb_rxd = 1024;
 	uint16_t nb_rx_queue = 1, nb_tx_queue = 1;
 	uint8_t ev_queue_id = 0, tx_queue_id = 0;
@@ -2092,6 +2155,11 @@ event_inline_ipsec_testsuite_setup(void)
 	int ret;
 
 	printf("Start event inline IPsec test.\n");
+
+	if (rte_event_dev_count() == 0) {
+		printf("Event inline IPsec unsupported: no event devices available\n");
+		return TEST_SKIPPED;
+	}
 
 	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports == 0) {
@@ -2124,9 +2192,23 @@ event_inline_ipsec_testsuite_setup(void)
 
 	/* configuring port 0 for the test is enough */
 	port_id = 0;
+	if (rte_eth_dev_info_get(port_id, &dev_info)) {
+		printf("Failed to get devinfo");
+		return -1;
+	}
+
+	memcpy(&local_port_conf, &port_conf, sizeof(port_conf));
+	local_port_conf.rxmode.offloads &= dev_info.rx_offload_capa;
+	local_port_conf.txmode.offloads &= dev_info.tx_offload_capa;
+	if ((local_port_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_SECURITY) == 0 ||
+	    (local_port_conf.txmode.offloads & RTE_ETH_TX_OFFLOAD_SECURITY) == 0) {
+		printf("Event inline IPsec unsupported: required security offloads are missing\n");
+		return TEST_SKIPPED;
+	}
+
 	/* port configure */
 	ret = rte_eth_dev_configure(port_id, nb_rx_queue,
-				    nb_tx_queue, &port_conf);
+				    nb_tx_queue, &local_port_conf);
 	if (ret < 0) {
 		printf("Cannot configure device: err=%d, port=%d\n",
 			 ret, port_id);

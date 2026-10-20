@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2022 Intel Corporation
  */
+#include <stdlib.h>
+
 #include <rte_ethdev.h>
 #include <rte_tm_driver.h>
 
@@ -88,8 +90,11 @@ ice_node_param_check(uint32_t node_id,
 		      uint32_t priority, uint32_t weight,
 		      const struct rte_tm_node_params *params,
 		      bool is_leaf,
+		      uint16_t nb_txq,
 		      struct rte_tm_error *error)
 {
+	uint32_t max_leaf_id = (nb_txq != 0) ? nb_txq : RTE_MAX_QUEUES_PER_PORT;
+
 	/* checked all the unsupported parameter */
 	if (node_id == RTE_TM_NODE_ID_NULL) {
 		error->type = RTE_TM_ERROR_TYPE_NODE_ID;
@@ -123,6 +128,11 @@ ice_node_param_check(uint32_t node_id,
 
 	/* for non-leaf node */
 	if (!is_leaf) {
+		if (node_id < max_leaf_id) {
+			error->type = RTE_TM_ERROR_TYPE_NODE_ID;
+			error->message = "node ID is reserved for leaf nodes";
+			return -EINVAL;
+		}
 		if (params->nonleaf.wfq_weight_mode) {
 			error->type =
 				RTE_TM_ERROR_TYPE_NODE_PARAMS_WFQ_WEIGHT_MODE;
@@ -146,7 +156,7 @@ ice_node_param_check(uint32_t node_id,
 	}
 
 	/* for leaf node */
-	if (node_id >= RTE_MAX_QUEUES_PER_PORT) {
+	if (node_id >= max_leaf_id) {
 		error->type = RTE_TM_ERROR_TYPE_NODE_ID;
 		error->message = "Node ID out of range for a leaf node.";
 		return -EINVAL;
@@ -440,7 +450,8 @@ ice_tm_node_add(struct rte_eth_dev *dev, uint32_t node_id,
 			return -EINVAL;
 		}
 
-		ret = ice_node_param_check(node_id, priority, weight, params, false, error);
+		ret = ice_node_param_check(node_id, priority, weight, params, false,
+				dev->data->nb_tx_queues, error);
 		if (ret)
 			return ret;
 
@@ -456,6 +467,8 @@ ice_tm_node_add(struct rte_eth_dev *dev, uint32_t node_id,
 		tm_node->parent = NULL;
 		tm_node->reference_count = 0;
 		tm_node->shaper_profile = shaper_profile;
+		if (shaper_profile != NULL)
+			shaper_profile->reference_count++;
 		tm_node->children = RTE_PTR_ADD(tm_node, sizeof(struct ice_tm_node));
 		tm_node->params = *params;
 		pf->tm_conf.root = tm_node;
@@ -479,7 +492,8 @@ ice_tm_node_add(struct rte_eth_dev *dev, uint32_t node_id,
 	}
 
 	ret = ice_node_param_check(node_id, priority, weight,
-			params, level_id == ice_get_leaf_level(pf), error);
+			params, level_id == ice_get_leaf_level(pf),
+			dev->data->nb_tx_queues, error);
 	if (ret)
 		return ret;
 
@@ -518,6 +532,8 @@ ice_tm_node_add(struct rte_eth_dev *dev, uint32_t node_id,
 	tm_node->parent = parent_node;
 	tm_node->level = level_id;
 	tm_node->shaper_profile = shaper_profile;
+	if (shaper_profile != NULL)
+		shaper_profile->reference_count++;
 	tm_node->children = RTE_PTR_ADD(tm_node, sizeof(struct ice_tm_node));
 	tm_node->parent->children[tm_node->parent->reference_count++] = tm_node;
 	tm_node->params = *params;
@@ -568,6 +584,8 @@ ice_tm_node_delete(struct rte_eth_dev *dev, uint32_t node_id,
 
 	/* root node */
 	if (tm_node->level == 0) {
+		if (tm_node->shaper_profile != NULL)
+			tm_node->shaper_profile->reference_count--;
 		rte_free(tm_node);
 		pf->tm_conf.root = NULL;
 		return 0;
@@ -582,6 +600,8 @@ ice_tm_node_delete(struct rte_eth_dev *dev, uint32_t node_id,
 		tm_node->parent->children[j] = tm_node->parent->children[j + 1];
 
 	tm_node->parent->reference_count--;
+	if (tm_node->shaper_profile != NULL)
+		tm_node->shaper_profile->reference_count--;
 	rte_free(tm_node);
 
 	return 0;
@@ -696,7 +716,7 @@ ice_tm_setup_txq_node(struct ice_pf *pf, struct ice_hw *hw, uint16_t qid, uint32
 		uint8_t txqs_moved = 0;
 		uint16_t buf_size = ice_struct_size(buf, txqs, 1);
 
-		buf = ice_malloc(hw, buf_size);
+		buf = calloc(1, buf_size);
 		if (buf == NULL)
 			return -ENOMEM;
 
@@ -709,9 +729,9 @@ ice_tm_setup_txq_node(struct ice_pf *pf, struct ice_hw *hw, uint16_t qid, uint32
 
 		int ret = ice_aq_move_recfg_lan_txq(hw, 1, true, false, false, false, 50,
 						NULL, buf, buf_size, &txqs_moved, NULL);
+		free(buf);
 		if (ret || txqs_moved == 0) {
 			PMD_DRV_LOG(ERR, "move lan queue %u failed", qid);
-			ice_free(hw, buf);
 			return ICE_ERR_PARAM;
 		}
 
@@ -805,6 +825,19 @@ create_sched_node_recursive(struct ice_pf *pf, struct ice_port_info *pi,
 	return 0;
 }
 
+static void
+reset_hw_node_recursive(struct ice_hw *hw, struct ice_sched_node *node)
+{
+	uint16_t i;
+
+	for (i = 0; i < node->num_children; i++) {
+		reset_hw_node_recursive(hw, node->children[i]);
+		if (ice_cfg_hw_node(hw, NULL, node->children[i]))
+			PMD_DRV_LOG(WARNING, "Failed to reset node %u to default configuration",
+					node->children[i]->info.node_teid);
+	}
+}
+
 static int
 commit_new_hierarchy(struct rte_eth_dev *dev)
 {
@@ -820,8 +853,15 @@ commit_new_hierarchy(struct rte_eth_dev *dev)
 	struct ice_sched_node *new_vsi_root = hw->vsi_ctx[pf->main_vsi->idx]->sched.vsi_node[0];
 
 	if (sw_root == NULL) {
-		PMD_DRV_LOG(ERR, "No root node defined in TM hierarchy");
-		return -1;
+		if (!pf->tm_conf.committed) {
+			PMD_DRV_LOG(ERR, "No root node defined in TM hierarchy");
+			return -EINVAL;
+		}
+		/* TM hierarchy deleted. Restore default scheduler state. */
+		reset_hw_node_recursive(hw, hw->vsi_ctx[pf->main_vsi->idx]->sched.vsi_node[0]);
+		pf->main_vsi->nb_qps = pf->lan_nb_qps;
+		pf->tm_conf.committed = false;
+		return ice_alloc_lan_q_ctx(hw, 0, 0, pf->main_vsi->nb_qps);
 	}
 
 	/* handle case where VSI node needs to move DOWN the hierarchy */
