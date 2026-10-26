@@ -2070,7 +2070,15 @@ ff_dpdk_init(int argc, char **argv)
         exit(1);
     }
 
-    int ret = rte_eal_init(argc, argv);
+    /* rte_eal_init() permutes argv and overwrites argv[optind - 1] with argv[0],
+     * so two slots would alias one string and ff_unload_config(), which frees
+     * every dpdk_argv[] entry, would free it twice. Give EAL a scratch copy. */
+    char *eal_argv[DPDK_CONFIG_NUM + 1] = {NULL};
+    if (argc > DPDK_CONFIG_NUM) {
+        rte_exit(EXIT_FAILURE, "too many EAL arguments: %d\n", argc);
+    }
+    memcpy(eal_argv, argv, sizeof(char *) * argc);
+    int ret = rte_eal_init(argc, eal_argv);
     if (ret < 0) {
         rte_exit(EXIT_FAILURE, "Error with EAL initialization\n");
     }
