@@ -17,10 +17,10 @@ Previously expired Roadmap.
    - The minimum timeout unit for epoll_wati in interrupt mode is 1ms, which is not suitable for F-Stack and is therefore abandoned.
    - You can config idle_sleep to instead of interrupt mode, and the difference in effect is very small.
 2. Run as a network daemon. done.
-   - Alread support >= F-Stack-1.23.
-3. ~~SPDK supportted.~~
+   - Already support >= F-Stack-1.23.
+3. ~~SPDK supported.~~
 4. Encapsulate Cyptodev API(Intel QAT). done.
-   - Alread support >= F-Stack-1.24‘s Nginx, bug you need merge yourself [QAT's pr](https://github.com/intel/QAT_Engine/pull/316).
+   - Already support >= F-Stack-1.24‘s Nginx, bug you need merge yourself [QAT's pr](https://github.com/intel/QAT_Engine/pull/316).
 5. HTTP3(QUIC) support. done.
-   - Alread support >= F-Stack-1.23's Nginx.
+   - Already support >= F-Stack-1.23's Nginx.
 

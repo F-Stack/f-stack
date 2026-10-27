@@ -95,7 +95,7 @@ Applications with stateful(high latency) use F-Stack , state need to be stored f
 
 ## F-Stack configure file reference
 
-  DPDK related parameters, including coremask adn NIC ports num.
+  DPDK related parameters, including coremask and NIC ports num.
   FreeBSD related parameters, similar with original FreeBSD's /boot.config and /etc/sysctl.conf.
 
 ## Start a F-Stack application

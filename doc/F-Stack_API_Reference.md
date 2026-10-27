@@ -196,7 +196,7 @@ However, it is  supported only before F-Stack is started.
 ​    
     int mt_tcpsendrcv(struct sockaddr_in* dst, void* pkg, int len, void* rcv_buf, int& buf_size, int timeout, MtFuncTcpMsgLen chek_func);
 
-  Use connection pool to send and recv tcp packet, keep-alive default are 10 mintues. The parameter of buf can't use `static`.
+  Use connection pool to send and recv tcp packet, keep-alive default are 10 minutes. The parameter of buf can't use `static`.
 ​    
 
     enum MT_TCP_CONN_TYPE
@@ -221,7 +221,7 @@ However, it is  supported only before F-Stack is started.
     int mt_tcpsendrcv(struct sockaddr_in* dst, void* pkg, int len, void*& rcv_buf, int& recv_pkg_size, int timeout, MtFuncTcpMsgChecker check_func, void* msg_ctx=NULL, bool keep_rcv_buf=false);
 
 
-  Use connection pool to send and recv tcp packet, keep-alive default are 10 mintues. The parameter of buf can't use `static`.
+  Use connection pool to send and recv tcp packet, keep-alive default are 10 minutes. The parameter of buf can't use `static`.
 
 #### Socket API for micro threads
 
@@ -235,7 +235,7 @@ However, it is  supported only before F-Stack is started.
 
 	void ff_regist_packet_dispatcher(dispatch_func_t func);
 
-  Regist a packet dispath function.
+  Regist a packet dispatch function.
 
 #### param
 
