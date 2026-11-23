@@ -1547,8 +1547,22 @@ init_clock(void)
         return 0;
     }
 
-    rte_timer_subsystem_init();
+    int timer_rc = rte_timer_subsystem_init();
+    if (timer_rc != 0 && timer_rc != -EALREADY) {
+        rte_exit(EXIT_FAILURE, "timer subsystem initialization failed: %d\n",
+            timer_rc);
+    }
+#ifdef HAVE_RTE_TIMER_META_INIT
     rte_timer_meta_init();
+#else
+    /* Unmodified upstream DPDK does not provide F-Stack's rte_timer_meta_init().
+     * Fail fast if secondary process or graceful_reload is requested. */
+    if (rte_eal_process_type() != RTE_PROC_PRIMARY ||
+        ff_global_cfg.dpdk.graceful_reload) {
+        rte_exit(EXIT_FAILURE,
+            "secondary process and graceful_reload require F-Stack bundled DPDK\n");
+    }
+#endif
     uint64_t hz = rte_get_timer_hz();
     uint64_t intrs = US_PER_S / ff_global_cfg.freebsd.hz;
     uint64_t tsc = (hz + US_PER_S - 1) / US_PER_S * intrs;
