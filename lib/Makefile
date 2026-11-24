@@ -92,6 +92,13 @@ HOST_CFLAGS+= -DFF_KNI
 endif
 
 HOST_CFLAGS+= ${DPDK_CFLAGS}
+
+ifneq ($(MAKECMDGOALS),clean)
+HAVE_RTE_TIMER_META_INIT := $(shell printf '#include <rte_timer.h>\nvoid (*fn)(void) = rte_timer_meta_init;\n' | $(CC) -x c $(shell $(PKGCONF) --cflags libdpdk) -fsyntax-only - >/dev/null 2>&1 && echo 1 || echo 0)
+ifeq ($(HAVE_RTE_TIMER_META_INIT),1)
+HOST_CFLAGS+= -DHAVE_RTE_TIMER_META_INIT
+endif
+endif
 HOST_CFLAGS+= ${CONF_CFLAGS}
 
 ifdef FF_FDIR
