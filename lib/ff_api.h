@@ -65,6 +65,16 @@ void ff_run(loop_func_t loop, void *arg);
 void ff_stop_run(void);
 
 /*
+ * Control whether ff_run() automatically tears down config, DPDK EAL, and log
+ * before returning (default: 1). Set to 0 when the application needs to close
+ * BSD sockets or epoll fds after ff_run() returns, then call ff_cleanup().
+ */
+void ff_set_auto_cleanup(int enable);
+
+/* Idempotent teardown of config, DPDK EAL, and F-Stack log. */
+int ff_cleanup(void);
+
+/*
  * Resident slim primary helpers (graceful_reload=1).
  * ff_primary_conf_digest: digest of the config items the primary applies
  *   (devices, rings, pools, KNI); -1 if the file cannot be parsed.

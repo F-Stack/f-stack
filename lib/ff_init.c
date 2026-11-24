@@ -69,6 +69,18 @@ ff_stop_run(void)
     ff_dpdk_stop();
 }
 
+void
+ff_set_auto_cleanup(int enable)
+{
+    ff_dpdk_set_auto_cleanup(enable);
+}
+
+int
+ff_cleanup(void)
+{
+    return ff_dpdk_cleanup();
+}
+
 const char *
 ff_eal_runtime_dir(void)
 {

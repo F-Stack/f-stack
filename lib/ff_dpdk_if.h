@@ -58,6 +58,8 @@ int ff_dpdk_init(int argc, char **argv);
 int ff_dpdk_if_up(void);
 void ff_dpdk_run(loop_func_t loop, void *arg);
 void ff_dpdk_stop(void);
+void ff_dpdk_set_auto_cleanup(int enable);
+int ff_dpdk_cleanup(void);
 
 struct ff_dpdk_if_context;
 struct ff_port_cfg;

@@ -4153,6 +4153,8 @@ ff_dpdk_if_up(void) {
     return 0;
 }
 
+static int ff_auto_cleanup = 1;
+
 void
 ff_dpdk_run(loop_func_t loop, void *arg) {
     struct loop_routine *lr = rte_malloc(NULL,
@@ -4165,6 +4167,27 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
     stop_clock();
     rte_free(lr);
 
+    if (ff_auto_cleanup) {
+        ff_dpdk_cleanup();
+    }
+}
+
+void
+ff_dpdk_set_auto_cleanup(int enable)
+{
+    ff_auto_cleanup = enable ? 1 : 0;
+}
+
+int
+ff_dpdk_cleanup(void)
+{
+    static int cleaned = 0;
+    if (cleaned) {
+        return 0;
+    }
+    cleaned = 1;
+
+    int ret = 0;
     /* FU-S2-2-CFG-UNLOAD: free ff_global_cfg before EAL cleanup so any
      * cfg.* allocations made via DPDK helpers (none today, but defensive)
      * are released while the EAL is still up. Mirrors the comment block
@@ -4172,9 +4195,10 @@ ff_dpdk_run(loop_func_t loop, void *arg) {
     if (!(ff_global_cfg.dpdk.primary_slim &&
           rte_eal_process_type() == RTE_PROC_PRIMARY)) {
         ff_unload_config();
-        rte_eal_cleanup();
+        ret = rte_eal_cleanup();
     }
     ff_log_close();
+    return ret;
 }
 
 void
